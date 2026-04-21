@@ -1,6 +1,7 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::{extract::State, Json};
+use pulsedag_core::rebuild_state_from_blocks;
 use serde::Deserialize;
 
 use crate::{api::ApiResponse, api::RpcStateLike};
@@ -61,6 +62,36 @@ pub async fn post_prune_chain<S: RpcStateLike>(
             .storage()
             .append_runtime_event("warn", "prune_rejected", &reason);
         return Json(ApiResponse::err("PRUNE_REQUIRES_VALID_SNAPSHOT", reason));
+    }
+
+    let replay_precheck = match state.storage().list_blocks() {
+        Ok(blocks) => {
+            let retained_blocks = blocks
+                .into_iter()
+                .filter(|block| block.header.height >= keep_from_height)
+                .collect::<Vec<_>>();
+            if retained_blocks.is_empty() {
+                Ok(())
+            } else {
+                rebuild_state_from_blocks(chain_id.clone(), retained_blocks).map(|_| ())
+            }
+        }
+        Err(e) => Err(e),
+    };
+
+    if let Err(e) = replay_precheck {
+        let _ = state.storage().append_runtime_event(
+            "error",
+            "prune_replay_precheck_failed",
+            &format!(
+                "refusing prune below {} because replay precheck failed: {}",
+                keep_from_height, e
+            ),
+        );
+        return Json(ApiResponse::err(
+            "PRUNE_REPLAY_VERIFY_FAILED",
+            format!("replay precheck failed before prune: {}", e),
+        ));
     }
 
     let pruned_block_count = match state.storage().prune_blocks_below_height(keep_from_height) {
