@@ -1,0 +1,45 @@
+name: Mini Testnet (3 nodes)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  testnet:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Build
+        run: cargo build --workspace
+
+      - name: Start Node A
+        run: |
+          PULSEDAG_RPC_BIND=127.0.0.1:8080 \
+          PULSEDAG_P2P_PORT=9001 \
+          PULSEDAG_BOOTSTRAP_NODES=127.0.0.1:9002,127.0.0.1:9003 \
+          nohup cargo run -p pulsedagd > node-a.log 2>&1 &
+
+      - name: Start Node B
+        run: |
+          PULSEDAG_RPC_BIND=127.0.0.1:8081 \
+          PULSEDAG_P2P_PORT=9002 \
+          PULSEDAG_BOOTSTRAP_NODES=127.0.0.1:9001,127.0.0.1:9003 \
+          nohup cargo run -p pulsedagd > node-b.log 2>&1 &
+
+      - name: Start Node C
+        run: |
+          PULSEDAG_RPC_BIND=127.0.0.1:8082 \
+          PULSEDAG_P2P_PORT=9003 \
+          PULSEDAG_BOOTSTRAP_NODES=127.0.0.1:9001,127.0.0.1:9002 \
+          nohup cargo run -p pulsedagd > node-c.log 2>&1 &
+
+      - name: Wait network
+        run: sleep 10
+
+      - name: Health checks
+        run: |
+          curl --fail http://127.0.0.1:8080/health
+          curl --fail http://127.0.0.1:8081/health
+          curl --fail http://127.0.0.1:8082/health
