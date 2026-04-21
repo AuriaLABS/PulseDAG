@@ -1,14 +1,18 @@
 mod app_state;
 mod config;
 
-use std::{net::SocketAddr, sync::Arc, time::{SystemTime, UNIX_EPOCH}};
+use std::{
+    net::SocketAddr,
+    sync::Arc,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use anyhow::Result;
 use app_state::{new_runtime_stats, AppState};
 use axum::Router;
 use config::Config;
 use pulsedag_core::accept::{accept_block, accept_transaction, AcceptSource};
-use pulsedag_core::reconcile_mempool;
+use pulsedag_core::sanitize_mempool;
 use pulsedag_p2p::{build_p2p_stack, InboundEvent, Libp2pConfig, P2pHandle, P2pMode};
 use pulsedag_rpc::routes::router;
 use pulsedag_storage::Storage;
@@ -19,7 +23,9 @@ use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt().with_env_filter(EnvFilter::from_default_env()).init();
+    tracing_subscriber::fmt()
+        .with_env_filter(EnvFilter::from_default_env())
+        .init();
 
     let cfg = Config::from_env();
     let storage = Arc::new(Storage::open(&cfg.rocksdb_path)?);
@@ -27,9 +33,22 @@ async fn main() -> Result<()> {
     let snapshot_exists = storage.snapshot_exists().unwrap_or(false);
     let persisted_blocks = storage.list_blocks().unwrap_or_default();
     let mut chain_state = storage.load_or_init_genesis(cfg.chain_id.clone())?;
-    let startup_persisted_max_height = persisted_blocks.iter().map(|b| b.header.height).max().unwrap_or(0);
+    chain_state.mempool.limit = cfg.mempool_limit;
+    chain_state.mempool.fee_floor = cfg.mempool_fee_floor;
+    chain_state.mempool.ttl_secs = cfg.mempool_ttl_secs;
+    let startup_persisted_max_height = persisted_blocks
+        .iter()
+        .map(|b| b.header.height)
+        .max()
+        .unwrap_or(0);
     let startup_consistency_issue_count = pulsedag_core::dag_consistency_issues(&chain_state).len();
-    let mut startup_recovery_mode = if snapshot_exists { "snapshot".to_string() } else if persisted_blocks.is_empty() { "genesis_init".to_string() } else { "snapshot_missing".to_string() };
+    let mut startup_recovery_mode = if snapshot_exists {
+        "snapshot".to_string()
+    } else if persisted_blocks.is_empty() {
+        "genesis_init".to_string()
+    } else {
+        "snapshot_missing".to_string()
+    };
     let mut startup_rebuild_reason: Option<String> = None;
 
     if cfg.auto_rebuild_on_start && !persisted_blocks.is_empty() {
@@ -39,13 +58,23 @@ async fn main() -> Result<()> {
             rebuild_reasons.push("snapshot missing".to_string());
         }
         if persisted_blocks.len() > in_memory_block_count {
-            rebuild_reasons.push(format!("persisted blocks ({}) exceed in-memory blocks ({})", persisted_blocks.len(), in_memory_block_count));
+            rebuild_reasons.push(format!(
+                "persisted blocks ({}) exceed in-memory blocks ({})",
+                persisted_blocks.len(),
+                in_memory_block_count
+            ));
         }
         if startup_consistency_issue_count > 0 {
-            rebuild_reasons.push(format!("startup consistency issues detected ({})", startup_consistency_issue_count));
+            rebuild_reasons.push(format!(
+                "startup consistency issues detected ({})",
+                startup_consistency_issue_count
+            ));
         }
         if startup_persisted_max_height > chain_state.dag.best_height {
-            rebuild_reasons.push(format!("persisted max height ({}) exceeds snapshot height ({})", startup_persisted_max_height, chain_state.dag.best_height));
+            rebuild_reasons.push(format!(
+                "persisted max height ({}) exceeds snapshot height ({})",
+                startup_persisted_max_height, chain_state.dag.best_height
+            ));
         }
         if !rebuild_reasons.is_empty() {
             let reason = rebuild_reasons.join("; ");
@@ -56,16 +85,22 @@ async fn main() -> Result<()> {
         }
     }
 
-    let reconcile_result = reconcile_mempool(&mut chain_state);
+    let reconcile_result = sanitize_mempool(&mut chain_state);
     if !reconcile_result.removed_txids.is_empty() {
-        warn!(removed_mempool_tx = reconcile_result.removed_txids.len(), "removed invalid mempool transactions on startup");
+        warn!(
+            removed_mempool_tx = reconcile_result.removed_txids.len(),
+            "removed invalid mempool transactions on startup"
+        );
     }
 
     if cfg.persist_snapshot_on_start {
         storage.persist_chain_state(&chain_state)?;
     }
 
-    let (p2p, inbound_rx): (Option<Arc<dyn P2pHandle>>, Option<tokio::sync::mpsc::UnboundedReceiver<InboundEvent>>) = if cfg.p2p_enabled {
+    let (p2p, inbound_rx): (
+        Option<Arc<dyn P2pHandle>>,
+        Option<tokio::sync::mpsc::UnboundedReceiver<InboundEvent>>,
+    ) = if cfg.p2p_enabled {
         let stack = if cfg.p2p_mode.as_str() == "libp2p" {
             build_p2p_stack(P2pMode::Libp2p(Libp2pConfig {
                 chain_id: cfg.chain_id.clone(),
@@ -92,13 +127,26 @@ async fn main() -> Result<()> {
     runtime_stats.startup_consistency_issue_count = startup_consistency_issue_count;
     runtime_stats.startup_recovery_mode = startup_recovery_mode.clone();
     runtime_stats.startup_rebuild_reason = startup_rebuild_reason.clone();
-    runtime_stats.last_self_audit_unix = Some(SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0));
+    runtime_stats.last_self_audit_unix = Some(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0),
+    );
     runtime_stats.last_self_audit_ok = startup_consistency_issue_count == 0;
     runtime_stats.last_self_audit_issue_count = startup_consistency_issue_count;
-    runtime_stats.last_self_audit_message = if startup_consistency_issue_count == 0 { Some("startup audit ok".to_string()) } else { Some(format!("startup audit found {} consistency issues", startup_consistency_issue_count)) };
+    runtime_stats.last_self_audit_message = if startup_consistency_issue_count == 0 {
+        Some("startup audit ok".to_string())
+    } else {
+        Some(format!(
+            "startup audit found {} consistency issues",
+            startup_consistency_issue_count
+        ))
+    };
     runtime_stats.last_observed_best_height = chain_state.dag.best_height;
     runtime_stats.last_height_change_unix = runtime_stats.last_self_audit_unix;
     runtime_stats.active_alerts = Vec::new();
+    runtime_stats.mempool_sanitize_runs = chain_state.mempool.sanitize_runs;
 
     let app_state = AppState {
         chain: Arc::new(tokio::sync::RwLock::new(chain_state)),
@@ -111,11 +159,18 @@ async fn main() -> Result<()> {
         let summary = if startup_consistency_issue_count == 0 {
             format!("startup audit ok; recovery_mode={}", startup_recovery_mode)
         } else {
-            format!("startup audit found {} consistency issues; recovery_mode={}", startup_consistency_issue_count, startup_recovery_mode)
+            format!(
+                "startup audit found {} consistency issues; recovery_mode={}",
+                startup_consistency_issue_count, startup_recovery_mode
+            )
         };
-        let _ = app_state.storage.append_runtime_event("info", "startup_audit", &summary);
+        let _ = app_state
+            .storage
+            .append_runtime_event("info", "startup_audit", &summary);
         if let Some(reason) = startup_rebuild_reason.clone() {
-            let _ = app_state.storage.append_runtime_event("warn", "startup_rebuild", &reason);
+            let _ = app_state
+                .storage
+                .append_runtime_event("warn", "startup_rebuild", &reason);
         }
     }
 
@@ -129,7 +184,9 @@ async fn main() -> Result<()> {
                     InboundEvent::Transaction(tx) => {
                         let mut guard = chain.write().await;
                         let already_in_mempool = guard.mempool.transactions.contains_key(&tx.txid);
-                        let already_confirmed = guard.dag.blocks.values().any(|block| block.transactions.iter().any(|known| known.txid == tx.txid));
+                        let already_confirmed = guard.dag.blocks.values().any(|block| {
+                            block.transactions.iter().any(|known| known.txid == tx.txid)
+                        });
                         if already_in_mempool || already_confirmed {
                             let mut rt = runtime.write().await;
                             rt.duplicate_p2p_txs += 1;
@@ -149,7 +206,9 @@ async fn main() -> Result<()> {
                     }
                     InboundEvent::Block(block) => {
                         let mut guard = chain.write().await;
-                        if guard.dag.blocks.contains_key(&block.hash) || guard.orphan_blocks.contains_key(&block.hash) {
+                        if guard.dag.blocks.contains_key(&block.hash)
+                            || guard.orphan_blocks.contains_key(&block.hash)
+                        {
                             let mut rt = runtime.write().await;
                             rt.duplicate_p2p_blocks += 1;
                             info!(block = %block.hash, "ignored duplicate inbound p2p block");
@@ -157,8 +216,16 @@ async fn main() -> Result<()> {
                         }
                         let missing_parents = pulsedag_core::missing_block_parents(&block, &guard);
                         if !missing_parents.is_empty() {
-                            pulsedag_core::queue_orphan_block(&mut guard, block.clone(), missing_parents.clone());
-                            let pruned = pulsedag_core::prune_orphans(&mut guard, pulsedag_core::DEFAULT_ORPHAN_MAX_COUNT, pulsedag_core::DEFAULT_ORPHAN_MAX_AGE_MS);
+                            pulsedag_core::queue_orphan_block(
+                                &mut guard,
+                                block.clone(),
+                                missing_parents.clone(),
+                            );
+                            let pruned = pulsedag_core::prune_orphans(
+                                &mut guard,
+                                pulsedag_core::DEFAULT_ORPHAN_MAX_COUNT,
+                                pulsedag_core::DEFAULT_ORPHAN_MAX_AGE_MS,
+                            );
                             {
                                 let mut rt = runtime.write().await;
                                 rt.queued_orphan_blocks += 1;
@@ -170,19 +237,26 @@ async fn main() -> Result<()> {
                             if let Err(e) = storage.persist_chain_state(&guard) {
                                 warn!(error = %e, "failed persisting chain state after orphan queue");
                             }
-                        } else if let Err(e) = accept_block(block.clone(), &mut guard, AcceptSource::P2p) {
+                        } else if let Err(e) =
+                            accept_block(block.clone(), &mut guard, AcceptSource::P2p)
+                        {
                             let mut rt = runtime.write().await;
                             rt.rejected_p2p_blocks += 1;
                             warn!(error = %e, "rejected inbound p2p block");
                         } else {
-                            let adopted = pulsedag_core::adopt_ready_orphans(&mut guard, AcceptSource::P2p);
+                            let adopted =
+                                pulsedag_core::adopt_ready_orphans(&mut guard, AcceptSource::P2p);
                             {
                                 let mut rt = runtime.write().await;
                                 rt.accepted_p2p_blocks += 1;
                                 rt.adopted_orphan_blocks += adopted as u64;
                             }
                             if adopted > 0 {
-                                info!(adopted, remaining_orphans = guard.orphan_blocks.len(), "adopted ready orphan blocks after inbound block");
+                                info!(
+                                    adopted,
+                                    remaining_orphans = guard.orphan_blocks.len(),
+                                    "adopted ready orphan blocks after inbound block"
+                                );
                             }
                             if let Err(e) = storage.persist_block(&block) {
                                 warn!(error = %e, "failed persisting inbound block");
@@ -207,16 +281,27 @@ async fn main() -> Result<()> {
         tokio::spawn(async move {
             loop {
                 sleep(Duration::from_secs(60)).await;
-                let (issue_count, best_height, orphan_count, mempool_size) = {
-                    let guard = chain.read().await;
+                let (issue_count, best_height, orphan_count, mempool_size, sanitize_runs) = {
+                    let mut guard = chain.write().await;
+                    let sanitize = pulsedag_core::sanitize_mempool(&mut guard);
+                    if !sanitize.removed_txids.is_empty() {
+                        warn!(
+                            removed = sanitize.removed_txids.len(),
+                            "periodic mempool sanitize removed transactions"
+                        );
+                    }
                     (
                         pulsedag_core::dag_consistency_issues(&guard).len(),
                         guard.dag.best_height,
                         guard.orphan_blocks.len(),
                         guard.mempool.transactions.len(),
+                        guard.mempool.sanitize_runs,
                     )
                 };
-                let now = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+                let now = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
                 let mut rt = runtime.write().await;
                 if best_height > rt.last_observed_best_height {
                     rt.last_observed_best_height = best_height;
@@ -229,28 +314,63 @@ async fn main() -> Result<()> {
                 if mempool_size >= 512 {
                     active_alerts.push(format!("high mempool size: {}", mempool_size));
                 }
-                let stagnation_secs = rt.last_height_change_unix.map(|ts| now.saturating_sub(ts)).unwrap_or(0);
+                let stagnation_secs = rt
+                    .last_height_change_unix
+                    .map(|ts| now.saturating_sub(ts))
+                    .unwrap_or(0);
                 if stagnation_secs >= 600 {
                     active_alerts.push(format!("height stagnant for {} seconds", stagnation_secs));
                 }
                 rt.active_alerts = active_alerts.clone();
+                rt.mempool_sanitize_runs = sanitize_runs;
                 rt.last_self_audit_unix = Some(now);
                 rt.last_self_audit_ok = issue_count == 0;
                 rt.last_self_audit_issue_count = issue_count;
                 rt.last_self_audit_message = if issue_count == 0 {
                     Some(format!("periodic self audit ok at height {}", best_height))
                 } else {
-                    Some(format!("periodic self audit found {} issues at height {}", issue_count, best_height))
+                    Some(format!(
+                        "periodic self audit found {} issues at height {}",
+                        issue_count, best_height
+                    ))
                 };
                 if issue_count == 0 {
-                    info!(best_height, orphan_count, mempool_size, active_alert_count = rt.active_alerts.len(), "periodic self audit ok");
+                    info!(
+                        best_height,
+                        orphan_count,
+                        mempool_size,
+                        active_alert_count = rt.active_alerts.len(),
+                        "periodic self audit ok"
+                    );
                 } else {
-                    warn!(best_height, issue_count, orphan_count, mempool_size, active_alert_count = rt.active_alerts.len(), "periodic self audit found consistency issues");
-                    let _ = storage.append_runtime_event("warn", "consistency_issue", &format!("{} consistency issues detected at height {}", issue_count, best_height));
+                    warn!(
+                        best_height,
+                        issue_count,
+                        orphan_count,
+                        mempool_size,
+                        active_alert_count = rt.active_alerts.len(),
+                        "periodic self audit found consistency issues"
+                    );
+                    let _ = storage.append_runtime_event(
+                        "warn",
+                        "consistency_issue",
+                        &format!(
+                            "{} consistency issues detected at height {}",
+                            issue_count, best_height
+                        ),
+                    );
                 }
                 if !active_alerts.is_empty() {
                     warn!(best_height, alerts = ?active_alerts, "runtime alerts active");
-                    let _ = storage.append_runtime_event("warn", "runtime_alert", &format!("height {} alerts: {}", best_height, active_alerts.join(" | ")));
+                    let _ = storage.append_runtime_event(
+                        "warn",
+                        "runtime_alert",
+                        &format!(
+                            "height {} alerts: {}",
+                            best_height,
+                            active_alerts.join(" | ")
+                        ),
+                    );
                 }
             }
         });

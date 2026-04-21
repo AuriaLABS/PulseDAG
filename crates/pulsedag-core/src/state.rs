@@ -23,7 +23,6 @@ pub struct ContractRuntimeState {
     pub last_receipt_id: Option<String>,
 }
 
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DagState {
     pub blocks: HashMap<Hash, Block>,
@@ -39,10 +38,61 @@ pub struct UtxoState {
     pub address_index: HashMap<Address, Vec<OutPoint>>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+fn default_mempool_limit() -> usize {
+    4096
+}
+fn default_mempool_fee_floor() -> u64 {
+    0
+}
+fn default_mempool_ttl_secs() -> u64 {
+    3600
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Mempool {
+    #[serde(default)]
     pub transactions: HashMap<Hash, Transaction>,
+    #[serde(default)]
     pub spent_outpoints: HashSet<OutPoint>,
+    #[serde(default)]
+    pub received_at_unix: HashMap<Hash, u64>,
+    #[serde(default)]
+    pub tx_sequence: HashMap<Hash, u64>,
+    #[serde(default)]
+    pub next_sequence: u64,
+    #[serde(default = "default_mempool_limit")]
+    pub limit: usize,
+    #[serde(default = "default_mempool_fee_floor")]
+    pub fee_floor: u64,
+    #[serde(default = "default_mempool_ttl_secs")]
+    pub ttl_secs: u64,
+    #[serde(default)]
+    pub evicted_total: u64,
+    #[serde(default)]
+    pub rejected_total: u64,
+    #[serde(default)]
+    pub rejected_fee_floor_total: u64,
+    #[serde(default)]
+    pub sanitize_runs: u64,
+}
+
+impl Default for Mempool {
+    fn default() -> Self {
+        Self {
+            transactions: HashMap::new(),
+            spent_outpoints: HashSet::new(),
+            received_at_unix: HashMap::new(),
+            tx_sequence: HashMap::new(),
+            next_sequence: 0,
+            limit: default_mempool_limit(),
+            fee_floor: default_mempool_fee_floor(),
+            ttl_secs: default_mempool_ttl_secs(),
+            evicted_total: 0,
+            rejected_total: 0,
+            rejected_fee_floor_total: 0,
+            sanitize_runs: 0,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

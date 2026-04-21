@@ -56,8 +56,9 @@ use crate::{
         topology::get_topology,
         transactions::get_confirmed_transactions,
         tx::{
-            get_mempool, get_tx, get_txs, get_txs_page, get_txs_recent, post_tx_build,
-            post_tx_submit, post_tx_validate,
+            get_mempool, get_mempool_policy, get_mempool_status, get_mempool_top, get_tx, get_txs,
+            get_txs_page, get_txs_recent, post_mempool_sanitize, post_tx_build, post_tx_submit,
+            post_tx_validate,
         },
         wallet::{post_wallet_new, post_wallet_sign, post_wallet_transfer},
     },
@@ -88,6 +89,10 @@ where
         .route("/txs/page", get(get_txs_page::<S>))
         .route("/transactions", get(get_confirmed_transactions::<S>))
         .route("/mempool", get(get_mempool::<S>))
+        .route("/mempool/status", get(get_mempool_status::<S>))
+        .route("/mempool/policy", get(get_mempool_policy::<S>))
+        .route("/mempool/top", get(get_mempool_top::<S>))
+        .route("/mempool/sanitize", post(post_mempool_sanitize::<S>))
         .route("/txs/:txid", get(get_tx::<S>))
         .route("/tx/build", post(post_tx_build::<S>))
         .route("/tx/submit", post(post_tx_submit::<S>))
