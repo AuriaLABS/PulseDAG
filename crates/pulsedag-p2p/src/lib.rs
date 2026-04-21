@@ -1,7 +1,9 @@
 pub mod messages;
 
 use std::collections::{HashMap, HashSet};
+use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use libp2p::{gossipsub, identity, PeerId};
 use pulsedag_core::{
@@ -96,6 +98,27 @@ struct InnerState {
     last_message_kind: Option<String>,
     last_swarm_event: Option<String>,
     per_topic_publishes: HashMap<String, usize>,
+    peer_book: HashMap<String, PeerHealth>,
+    peer_tick: u64,
+}
+
+#[derive(Debug, Clone)]
+struct PeerHealth {
+    score: i32,
+    fail_streak: u32,
+    next_retry_unix: u64,
+    connected: bool,
+}
+
+impl Default for PeerHealth {
+    fn default() -> Self {
+        Self {
+            score: 100,
+            fail_streak: 0,
+            next_retry_unix: 0,
+            connected: true,
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -196,6 +219,11 @@ impl Libp2pHandle {
         state.peer_id = peer_id.to_string();
         state.listening = vec![cfg.listen_addr.clone()];
         state.connected_peers = cfg.bootstrap.clone();
+        state.peer_book = cfg
+            .bootstrap
+            .iter()
+            .map(|peer| (peer.clone(), PeerHealth::default()))
+            .collect();
         state.topics = topics.clone();
         state.subscriptions_active = topics.len();
         state.mdns = cfg.enable_mdns;
@@ -213,6 +241,76 @@ impl Libp2pHandle {
         ));
 
         Ok((Self { inner, outbound_tx }, inbound_rx))
+    }
+}
+
+fn now_unix() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+fn peer_jitter(peer: &str) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    peer.hash(&mut hasher);
+    hasher.finish() % 3
+}
+
+fn register_peer_result(inner: &Arc<Mutex<InnerState>>, peer: &str, success: bool) {
+    let now = now_unix();
+    if let Ok(mut guard) = inner.lock() {
+        let health = guard.peer_book.entry(peer.to_string()).or_default();
+        if success {
+            health.connected = true;
+            health.fail_streak = 0;
+            health.next_retry_unix = now;
+            health.score = (health.score + 8).min(200);
+        } else {
+            health.connected = false;
+            health.fail_streak = health.fail_streak.saturating_add(1);
+            health.score = (health.score - 16).max(-200);
+            let exp = health.fail_streak.min(6);
+            let backoff = 2u64.pow(exp);
+            health.next_retry_unix = now.saturating_add(backoff + peer_jitter(peer));
+        }
+
+        let mut candidates = guard
+            .peer_book
+            .iter()
+            .filter(|(_, v)| v.connected)
+            .map(|(k, v)| (k.clone(), v.score))
+            .collect::<Vec<_>>();
+        candidates.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        guard.connected_peers = candidates.into_iter().map(|(peer, _)| peer).collect();
+    }
+}
+
+fn tick_peer_maintenance(inner: &Arc<Mutex<InnerState>>) {
+    let now = now_unix();
+    let candidates = if let Ok(mut guard) = inner.lock() {
+        guard.peer_tick = guard.peer_tick.saturating_add(1);
+        let tick = guard.peer_tick;
+        guard
+            .peer_book
+            .iter()
+            .filter_map(|(peer, health)| {
+                if health.next_retry_unix <= now {
+                    Some((peer.clone(), tick))
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
+
+    for (peer, tick) in candidates {
+        // Temporary churn model: deterministic failures ensure backoff behavior is exercised
+        // in the runtime skeleton before real swarm connectivity is wired.
+        let unstable = (peer_jitter(&peer) + tick) % 4 == 0;
+        register_peer_result(inner, &peer, !unstable);
     }
 }
 
@@ -387,6 +485,7 @@ async fn run_libp2p_runtime(
                 let _ = &topics; // reserved for real gossipsub publish bindings
             }
             _ = sleep(Duration::from_secs(5)) => {
+                tick_peer_maintenance(&inner);
                 let heartbeat = serde_json::to_vec(&NetworkMessage::GetTips {
                     chain_id: cfg.chain_id.clone(),
                 });
@@ -467,5 +566,43 @@ pub fn build_p2p_stack(mode: P2pMode) -> Result<P2pStack, PulseError> {
                 inbound_rx: Some(inbound_rx),
             })
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn peer_failures_increase_backoff_and_lower_score() {
+        let state = Arc::new(Mutex::new(InnerState {
+            peer_book: HashMap::from([("peer-a".to_string(), PeerHealth::default())]),
+            ..Default::default()
+        }));
+
+        register_peer_result(&state, "peer-a", false);
+        let first = state.lock().unwrap().peer_book.get("peer-a").cloned().unwrap();
+        register_peer_result(&state, "peer-a", false);
+        let second = state.lock().unwrap().peer_book.get("peer-a").cloned().unwrap();
+
+        assert!(second.next_retry_unix >= first.next_retry_unix);
+        assert!(second.score < first.score);
+        assert!(!second.connected);
+    }
+
+    #[test]
+    fn peer_success_recovers_score_and_connectivity() {
+        let state = Arc::new(Mutex::new(InnerState {
+            peer_book: HashMap::from([("peer-a".to_string(), PeerHealth::default())]),
+            ..Default::default()
+        }));
+
+        register_peer_result(&state, "peer-a", false);
+        register_peer_result(&state, "peer-a", true);
+        let health = state.lock().unwrap().peer_book.get("peer-a").cloned().unwrap();
+
+        assert!(health.connected);
+        assert_eq!(health.fail_streak, 0);
+        assert!(health.score > 80);
     }
 }
