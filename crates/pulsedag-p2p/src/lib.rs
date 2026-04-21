@@ -1,7 +1,9 @@
 pub mod messages;
 
 use std::collections::{HashMap, HashSet};
+use std::fs;
 use std::hash::{Hash, Hasher};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -55,7 +57,10 @@ pub struct Libp2pConfig {
 
 #[derive(Debug, Clone)]
 pub enum P2pMode {
-    Memory { chain_id: String, peers: Vec<String> },
+    Memory {
+        chain_id: String,
+        peers: Vec<String>,
+    },
     Libp2p(Libp2pConfig),
 }
 
@@ -99,10 +104,10 @@ struct InnerState {
     last_swarm_event: Option<String>,
     per_topic_publishes: HashMap<String, usize>,
     peer_book: HashMap<String, PeerHealth>,
-    peer_tick: u64,
+    peer_state_path: Option<PathBuf>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct PeerHealth {
     score: i32,
     fail_streak: u32,
@@ -127,7 +132,10 @@ pub struct MemoryP2pHandle {
 }
 
 impl MemoryP2pHandle {
-    pub fn new(chain_id: String, peers: Vec<String>) -> (Self, mpsc::UnboundedReceiver<InboundEvent>) {
+    pub fn new(
+        chain_id: String,
+        peers: Vec<String>,
+    ) -> (Self, mpsc::UnboundedReceiver<InboundEvent>) {
         let (_inbound_tx, inbound_rx) = mpsc::unbounded_channel();
         let mut state = InnerState::default();
         state.mode = "memory-simulated".into();
@@ -149,27 +157,42 @@ impl MemoryP2pHandle {
 
 impl P2pHandle for MemoryP2pHandle {
     fn broadcast_transaction(&self, tx: &Transaction) -> Result<(), PulseError> {
-        let mut inner = self.inner.lock().map_err(|_| PulseError::Internal("p2p lock poisoned".into()))?;
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| PulseError::Internal("p2p lock poisoned".into()))?;
         inner.seen_message_ids.insert(message_id_for_tx(tx));
         inner.publish_attempts += 1;
         inner.broadcasted_messages += 1;
         inner.last_message_kind = Some("tx".into());
-        *inner.per_topic_publishes.entry("memory-txs".into()).or_insert(0) += 1;
+        *inner
+            .per_topic_publishes
+            .entry("memory-txs".into())
+            .or_insert(0) += 1;
         Ok(())
     }
 
     fn broadcast_block(&self, block: &Block) -> Result<(), PulseError> {
-        let mut inner = self.inner.lock().map_err(|_| PulseError::Internal("p2p lock poisoned".into()))?;
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| PulseError::Internal("p2p lock poisoned".into()))?;
         inner.seen_message_ids.insert(message_id_for_block(block));
         inner.publish_attempts += 1;
         inner.broadcasted_messages += 1;
         inner.last_message_kind = Some("block".into());
-        *inner.per_topic_publishes.entry("memory-blocks".into()).or_insert(0) += 1;
+        *inner
+            .per_topic_publishes
+            .entry("memory-blocks".into())
+            .or_insert(0) += 1;
         Ok(())
     }
 
     fn status(&self) -> Result<P2pStatus, PulseError> {
-        let inner = self.inner.lock().map_err(|_| PulseError::Internal("p2p lock poisoned".into()))?;
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|_| PulseError::Internal("p2p lock poisoned".into()))?;
         Ok(P2pStatus {
             mode: inner.mode.clone(),
             peer_id: inner.peer_id.clone(),
@@ -201,7 +224,9 @@ pub struct Libp2pHandle {
 }
 
 impl Libp2pHandle {
-    pub fn new(cfg: Libp2pConfig) -> Result<(Self, mpsc::UnboundedReceiver<InboundEvent>), PulseError> {
+    pub fn new(
+        cfg: Libp2pConfig,
+    ) -> Result<(Self, mpsc::UnboundedReceiver<InboundEvent>), PulseError> {
         let local_key = identity::Keypair::generate_ed25519();
         let peer_id = local_key.public().to_peer_id();
         let topics = topic_names(&cfg.chain_id);
@@ -218,12 +243,25 @@ impl Libp2pHandle {
         state.runtime_mode_detail = "swarm-poll-loop-skeleton".into();
         state.peer_id = peer_id.to_string();
         state.listening = vec![cfg.listen_addr.clone()];
-        state.connected_peers = cfg.bootstrap.clone();
         state.peer_book = cfg
             .bootstrap
             .iter()
             .map(|peer| (peer.clone(), PeerHealth::default()))
             .collect();
+        state.peer_state_path = peer_state_path();
+        if let Some(path) = state.peer_state_path.as_ref() {
+            for (peer, health) in load_peer_book(path) {
+                state.peer_book.insert(peer, health);
+            }
+        }
+        let mut candidates = state
+            .peer_book
+            .iter()
+            .filter(|(_, v)| v.connected)
+            .map(|(k, v)| (k.clone(), v.score))
+            .collect::<Vec<_>>();
+        candidates.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        state.connected_peers = candidates.into_iter().map(|(peer, _)| peer).collect();
         state.topics = topics.clone();
         state.subscriptions_active = topics.len();
         state.mdns = cfg.enable_mdns;
@@ -257,6 +295,43 @@ fn peer_jitter(peer: &str) -> u64 {
     hasher.finish() % 3
 }
 
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct PeerBookSnapshot {
+    peer_book: HashMap<String, PeerHealth>,
+}
+
+fn peer_state_path() -> Option<PathBuf> {
+    std::env::var("PULSEDAG_P2P_PEER_STATE_PATH")
+        .ok()
+        .map(PathBuf::from)
+}
+
+fn load_peer_book(path: &PathBuf) -> HashMap<String, PeerHealth> {
+    fs::read(path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<PeerBookSnapshot>(&bytes).ok())
+        .map(|snapshot| snapshot.peer_book)
+        .unwrap_or_default()
+}
+
+fn persist_peer_book(path: &PathBuf, peer_book: &HashMap<String, PeerHealth>) {
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let snapshot = PeerBookSnapshot {
+        peer_book: peer_book.clone(),
+    };
+    if let Ok(bytes) = serde_json::to_vec(&snapshot) {
+        let _ = fs::write(path, bytes);
+    }
+}
+
+fn persist_peer_state_if_configured(state: &InnerState) {
+    if let Some(path) = state.peer_state_path.as_ref() {
+        persist_peer_book(path, &state.peer_book);
+    }
+}
+
 fn register_peer_result(inner: &Arc<Mutex<InnerState>>, peer: &str, success: bool) {
     let now = now_unix();
     if let Ok(mut guard) = inner.lock() {
@@ -283,44 +358,25 @@ fn register_peer_result(inner: &Arc<Mutex<InnerState>>, peer: &str, success: boo
             .collect::<Vec<_>>();
         candidates.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
         guard.connected_peers = candidates.into_iter().map(|(peer, _)| peer).collect();
+        persist_peer_state_if_configured(&guard);
     }
 }
 
-fn tick_peer_maintenance(inner: &Arc<Mutex<InnerState>>) {
-    let now = now_unix();
-    let candidates = if let Ok(mut guard) = inner.lock() {
-        guard.peer_tick = guard.peer_tick.saturating_add(1);
-        let tick = guard.peer_tick;
-        guard
-            .peer_book
-            .iter()
-            .filter_map(|(peer, health)| {
-                if health.next_retry_unix <= now {
-                    Some((peer.clone(), tick))
-                } else {
-                    None
-                }
-            })
-            .collect::<Vec<_>>()
-    } else {
-        Vec::new()
-    };
-
-    for (peer, tick) in candidates {
-        // Temporary churn model: deterministic failures ensure backoff behavior is exercised
-        // in the runtime skeleton before real swarm connectivity is wired.
-        let unstable = (peer_jitter(&peer) + tick) % 4 == 0;
-        register_peer_result(inner, &peer, !unstable);
-    }
-}
-
-fn record_publish(inner: &Arc<Mutex<InnerState>>, topic: &str, message_kind: &str, message_id: &str) {
+fn record_publish(
+    inner: &Arc<Mutex<InnerState>>,
+    topic: &str,
+    message_kind: &str,
+    message_id: &str,
+) {
     if let Ok(mut guard) = inner.lock() {
         guard.publish_attempts += 1;
         guard.broadcasted_messages += 1;
         guard.last_message_kind = Some(message_kind.to_string());
         guard.seen_message_ids.insert(message_id.to_string());
-        *guard.per_topic_publishes.entry(topic.to_string()).or_insert(0) += 1;
+        *guard
+            .per_topic_publishes
+            .entry(topic.to_string())
+            .or_insert(0) += 1;
     }
 }
 
@@ -344,7 +400,10 @@ fn dispatch_network_message(
     };
 
     match msg {
-        NetworkMessage::NewTransaction { chain_id, transaction } => {
+        NetworkMessage::NewTransaction {
+            chain_id,
+            transaction,
+        } => {
             if chain_id != expected_chain_id {
                 return;
             }
@@ -422,15 +481,19 @@ fn fake_swarm_bootstrap_events(
     inbound_tx: &mpsc::UnboundedSender<InboundEvent>,
 ) {
     note_swarm_event(inner, format!("swarm-created:{}", local_peer_id));
-    let _ = inbound_tx.send(InboundEvent::PeerConnected(format!("local:{}", local_peer_id)));
+    let _ = inbound_tx.send(InboundEvent::PeerConnected(format!(
+        "local:{}",
+        local_peer_id
+    )));
     note_swarm_event(inner, "listen-started");
     for addr in &cfg.bootstrap {
         let _ = inbound_tx.send(InboundEvent::PeerConnected(addr.clone()));
         note_swarm_event(inner, format!("bootstrap-seen:{}", addr));
+        register_peer_result(inner, addr, true);
     }
     if let Ok(mut guard) = inner.lock() {
-        guard.connected_peers = cfg.bootstrap.clone();
         guard.listening = vec![cfg.listen_addr.clone()];
+        persist_peer_state_if_configured(&guard);
     }
 }
 
@@ -485,7 +548,6 @@ async fn run_libp2p_runtime(
                 let _ = &topics; // reserved for real gossipsub publish bindings
             }
             _ = sleep(Duration::from_secs(5)) => {
-                tick_peer_maintenance(&inner);
                 let heartbeat = serde_json::to_vec(&NetworkMessage::GetTips {
                     chain_id: cfg.chain_id.clone(),
                 });
@@ -506,7 +568,10 @@ async fn run_libp2p_runtime(
 impl P2pHandle for Libp2pHandle {
     fn broadcast_transaction(&self, tx: &Transaction) -> Result<(), PulseError> {
         {
-            let mut inner = self.inner.lock().map_err(|_| PulseError::Internal("p2p lock poisoned".into()))?;
+            let mut inner = self
+                .inner
+                .lock()
+                .map_err(|_| PulseError::Internal("p2p lock poisoned".into()))?;
             inner.queued_messages += 1;
         }
         self.outbound_tx
@@ -516,7 +581,10 @@ impl P2pHandle for Libp2pHandle {
 
     fn broadcast_block(&self, block: &Block) -> Result<(), PulseError> {
         {
-            let mut inner = self.inner.lock().map_err(|_| PulseError::Internal("p2p lock poisoned".into()))?;
+            let mut inner = self
+                .inner
+                .lock()
+                .map_err(|_| PulseError::Internal("p2p lock poisoned".into()))?;
             inner.queued_messages += 1;
         }
         self.outbound_tx
@@ -525,7 +593,10 @@ impl P2pHandle for Libp2pHandle {
     }
 
     fn status(&self) -> Result<P2pStatus, PulseError> {
-        let inner = self.inner.lock().map_err(|_| PulseError::Internal("p2p lock poisoned".into()))?;
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|_| PulseError::Internal("p2p lock poisoned".into()))?;
         Ok(P2pStatus {
             mode: inner.mode.clone(),
             peer_id: inner.peer_id.clone(),
@@ -581,9 +652,21 @@ mod tests {
         }));
 
         register_peer_result(&state, "peer-a", false);
-        let first = state.lock().unwrap().peer_book.get("peer-a").cloned().unwrap();
+        let first = state
+            .lock()
+            .unwrap()
+            .peer_book
+            .get("peer-a")
+            .cloned()
+            .unwrap();
         register_peer_result(&state, "peer-a", false);
-        let second = state.lock().unwrap().peer_book.get("peer-a").cloned().unwrap();
+        let second = state
+            .lock()
+            .unwrap()
+            .peer_book
+            .get("peer-a")
+            .cloned()
+            .unwrap();
 
         assert!(second.next_retry_unix >= first.next_retry_unix);
         assert!(second.score < first.score);
@@ -599,10 +682,49 @@ mod tests {
 
         register_peer_result(&state, "peer-a", false);
         register_peer_result(&state, "peer-a", true);
-        let health = state.lock().unwrap().peer_book.get("peer-a").cloned().unwrap();
+        let health = state
+            .lock()
+            .unwrap()
+            .peer_book
+            .get("peer-a")
+            .cloned()
+            .unwrap();
 
         assert!(health.connected);
         assert_eq!(health.fail_streak, 0);
         assert!(health.score > 80);
+    }
+
+    #[tokio::test]
+    async fn restart_rehydrates_peer_health_from_persisted_state() {
+        let path = std::env::temp_dir().join(format!("pulsedag-peer-state-{}.json", now_unix()));
+        std::env::set_var("PULSEDAG_P2P_PEER_STATE_PATH", &path);
+
+        let persisted = HashMap::from([(
+            "peer-rejoin".to_string(),
+            PeerHealth {
+                score: 145,
+                fail_streak: 0,
+                next_retry_unix: now_unix(),
+                connected: true,
+            },
+        )]);
+        persist_peer_book(&path, &persisted);
+
+        let cfg = Libp2pConfig {
+            chain_id: "testnet".into(),
+            listen_addr: "/ip4/127.0.0.1/tcp/30333".into(),
+            bootstrap: vec!["peer-bootstrap".into()],
+            enable_mdns: false,
+            enable_kademlia: false,
+        };
+        let (handle, _rx) = Libp2pHandle::new(cfg).expect("libp2p handle should init");
+        let status = handle.status().expect("status should work");
+
+        assert!(status.connected_peers.iter().any(|p| p == "peer-rejoin"));
+        assert!(status.connected_peers.iter().any(|p| p == "peer-bootstrap"));
+
+        std::env::remove_var("PULSEDAG_P2P_PEER_STATE_PATH");
+        let _ = fs::remove_file(path);
     }
 }
