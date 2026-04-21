@@ -1,0 +1,5 @@
+Write-Host "PulseDAG three-node smoke placeholder"
+Write-Host "1. start nodes A, B, C"
+Write-Host "2. connect B and C to A"
+Write-Host "3. mine on A and verify propagation"
+Write-Host "4. restart C and verify catch-up"

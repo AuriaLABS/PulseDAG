@@ -1,0 +1,10 @@
+[package]
+name = "pulsedag-crypto"
+version = "0.6.3"
+edition = "2021"
+
+[dependencies]
+pulsedag-core = { path = "../pulsedag-core" }
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+rand = "0.8"
+hex = "0.4"

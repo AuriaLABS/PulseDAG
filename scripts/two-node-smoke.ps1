@@ -1,0 +1,5 @@
+Write-Host "PulseDAG two-node smoke placeholder"
+Write-Host "1. start node A"
+Write-Host "2. start node B with bootstrap to A"
+Write-Host "3. mine via external miner against A"
+Write-Host "4. verify topology, sync lag and runtime counters"

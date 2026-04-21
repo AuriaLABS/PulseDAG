@@ -1,0 +1,9 @@
+FROM rust:1.95 as builder
+WORKDIR /app
+COPY . .
+RUN cargo build --release -p pulsedagd
+
+FROM debian:bookworm-slim
+WORKDIR /app
+COPY --from=builder /app/target/release/pulsedagd /usr/local/bin/pulsedagd
+CMD ["pulsedagd"]

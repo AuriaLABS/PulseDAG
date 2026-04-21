@@ -1,0 +1,12 @@
+[workspace]
+resolver = "2"
+members = [
+  "crates/pulsedag-core",
+  "crates/pulsedag-crypto",
+  "crates/pulsedag-wallet",
+  "crates/pulsedag-storage",
+  "crates/pulsedag-p2p",
+  "crates/pulsedag-rpc",
+  "apps/pulsedagd",
+  "apps/pulsedag-miner",
+]

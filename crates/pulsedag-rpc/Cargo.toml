@@ -1,0 +1,18 @@
+[package]
+name = "pulsedag-rpc"
+version = "0.6.3"
+edition = "2021"
+
+[dependencies]
+axum = "0.7"
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+hex = "0.4"
+ed25519-dalek = "2"
+
+pulsedag-core = { path = "../pulsedag-core" }
+pulsedag-wallet = { path = "../pulsedag-wallet" }
+pulsedag-crypto = { path = "../pulsedag-crypto" }
+pulsedag-p2p = { path = "../pulsedag-p2p" }
+pulsedag-storage = { path = "../pulsedag-storage" }

@@ -1,0 +1,16 @@
+[package]
+name = "pulsedagd"
+version = "0.6.3"
+edition = "2021"
+
+[dependencies]
+anyhow = "1"
+axum = "0.7"
+tokio = { version = "1", features = ["full"] }
+pulsedag-core = { path = "../../crates/pulsedag-core" }
+pulsedag-storage = { path = "../../crates/pulsedag-storage" }
+pulsedag-p2p = { path = "../../crates/pulsedag-p2p" }
+pulsedag-rpc = { path = "../../crates/pulsedag-rpc" }
+
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }

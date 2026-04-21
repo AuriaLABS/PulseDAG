@@ -1,0 +1,11 @@
+[package]
+name = "pulsedag-p2p"
+version = "0.6.9"
+edition = "2021"
+
+[dependencies]
+pulsedag-core = { path = "../pulsedag-core" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["sync", "rt", "macros", "time"] }
+libp2p = { version = "0.54", default-features = false, features = ["tokio", "gossipsub", "identify", "kad", "mdns", "macros", "tcp", "noise", "yamux"] }

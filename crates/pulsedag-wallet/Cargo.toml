@@ -1,0 +1,10 @@
+[package]
+name = "pulsedag-wallet"
+version = "0.6.3"
+edition = "2021"
+
+[dependencies]
+pulsedag-core = { path = "../pulsedag-core" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+hex = "0.4"
