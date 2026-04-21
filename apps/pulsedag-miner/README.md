@@ -29,6 +29,12 @@ Con nodo explícito:
 cargo run -p pulsedag-miner -- --node http://127.0.0.1:8080 --miner-address TU_DIRECCION --loop
 ```
 
+Con multi-thread explícito:
+
+```bash
+cargo run -p pulsedag-miner -- --node http://127.0.0.1:8080 --miner-address TU_DIRECCION --threads 4 --max-tries 500000 --loop --sleep-ms 1000
+```
+
 ## Flags soportadas
 
 - `--node`
@@ -36,6 +42,7 @@ cargo run -p pulsedag-miner -- --node http://127.0.0.1:8080 --miner-address TU_D
 - `--max-tries`
 - `--loop`
 - `--sleep-ms`
+- `--threads`
 
 ## Fuera de alcance
 
