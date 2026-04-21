@@ -76,9 +76,8 @@ pub fn adopt_ready_orphans(state: &mut ChainState, source: AcceptSource) -> usiz
         let Some(block) = state.orphan_blocks.remove(&hash) else { continue };
         state.orphan_missing_parents.remove(&hash);
         state.orphan_received_at_ms.remove(&hash);
-        match accept_block(block, state, source.clone()) {
-            Ok(()) => adopted += 1,
-            Err(_) => {}
+        if let Ok(()) = accept_block(block, state, source) {
+            adopted += 1;
         }
     }
     adopted
