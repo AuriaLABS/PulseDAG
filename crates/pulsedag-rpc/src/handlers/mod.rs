@@ -83,8 +83,8 @@ pub mod pow_mine_capture;
 
 pub mod pow_auto_run;
 
-pub mod mining_template;
 pub mod mining_submit;
+pub mod mining_template;
 pub mod mining_workers;
 
 pub mod mining_jobs;
@@ -99,4 +99,5 @@ pub mod contracts;
 
 pub mod orphans;
 
+pub mod pruning;
 pub mod runtime;

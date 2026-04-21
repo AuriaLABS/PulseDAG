@@ -25,10 +25,23 @@ pub struct ApiMeta {}
 
 impl<T> ApiResponse<T> {
     pub fn ok(data: T) -> Self {
-        Self { ok: true, data: Some(data), error: None, meta: ApiMeta::default() }
+        Self {
+            ok: true,
+            data: Some(data),
+            error: None,
+            meta: ApiMeta::default(),
+        }
     }
     pub fn err(code: impl Into<String>, message: impl Into<String>) -> Self {
-        Self { ok: false, data: None, error: Some(ApiError { code: code.into(), message: message.into() }), meta: ApiMeta::default() }
+        Self {
+            ok: false,
+            data: None,
+            error: Some(ApiError {
+                code: code.into(),
+                message: message.into(),
+            }),
+            meta: ApiMeta::default(),
+        }
     }
 }
 
@@ -100,6 +113,15 @@ pub struct NodeRuntimeStats {
     pub last_observed_best_height: u64,
     pub last_height_change_unix: Option<u64>,
     pub active_alerts: Vec<String>,
+    pub snapshot_auto_every_blocks: u64,
+    pub auto_prune_enabled: bool,
+    pub auto_prune_every_blocks: u64,
+    pub prune_keep_recent_blocks: u64,
+    pub prune_require_snapshot: bool,
+    pub last_snapshot_height: Option<u64>,
+    pub last_snapshot_unix: Option<u64>,
+    pub last_prune_height: Option<u64>,
+    pub last_prune_unix: Option<u64>,
 }
 
 pub trait RpcStateLike: Clone + Send + Sync + 'static {
@@ -109,7 +131,6 @@ pub trait RpcStateLike: Clone + Send + Sync + 'static {
     fn runtime(&self) -> Arc<RwLock<NodeRuntimeStats>>;
 }
 
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SyncRebuildRequest {
     pub force: bool,
@@ -117,7 +138,6 @@ pub struct SyncRebuildRequest {
     pub reconcile_mempool: Option<bool>,
     pub allow_partial_replay: Option<bool>,
 }
-
 
 #[cfg(test)]
 mod tests {

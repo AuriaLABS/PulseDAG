@@ -42,13 +42,14 @@ use crate::{
         pow_mine_capture::post_pow_mine_capture,
         pow_policy::get_pow_policy,
         pow_validate::post_pow_validate_header,
+        pruning::post_prune_chain,
         readiness::get_readiness,
         rebuild::get_rebuild_preview,
         release::get_release_info,
         replay::get_replay_plan,
         runtime::{get_runtime_events, get_runtime_events_summary, get_runtime_status},
         search::get_search,
-        snapshot::get_snapshot_info,
+        snapshot::{get_snapshot_info, post_snapshot_create},
         status::get_status,
         sync::{get_sync_status, post_sync_rebuild, post_sync_reconcile_mempool},
         sync_blocks::get_sync_blocks,
@@ -153,6 +154,8 @@ where
         .route("/sync/blocks", get(get_sync_blocks::<S>))
         .route("/sync/verify", get(get_sync_verify::<S>))
         .route("/snapshot", get(get_snapshot_info::<S>))
+        .route("/snapshot/create", post(post_snapshot_create::<S>))
+        .route("/prune", post(post_prune_chain::<S>))
         .route("/sync/rebuild", post(post_sync_rebuild::<S>))
         .route(
             "/sync/reconcile-mempool",
