@@ -1,6 +1,7 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::{extract::State, Json};
+use pulsedag_core::rebuild_state_from_blocks;
 use serde::Deserialize;
 
 use crate::{api::ApiResponse, api::RpcStateLike};
@@ -61,6 +62,29 @@ pub async fn post_prune_chain<S: RpcStateLike>(
             .storage()
             .append_runtime_event("warn", "prune_rejected", &reason);
         return Json(ApiResponse::err("PRUNE_REQUIRES_VALID_SNAPSHOT", reason));
+    }
+
+    let pre_prune_blocks = match state.storage().list_blocks() {
+        Ok(v) => v,
+        Err(e) => return Json(ApiResponse::err("PRUNE_BLOCKS_READ_ERROR", e.to_string())),
+    };
+    let retained_blocks: Vec<_> = pre_prune_blocks
+        .into_iter()
+        .filter(|b| b.header.height >= keep_from_height)
+        .collect();
+    if let Err(e) = rebuild_state_from_blocks(chain_id.clone(), retained_blocks) {
+        let _ = state.storage().append_runtime_event(
+            "error",
+            "prune_replay_precheck_failed",
+            &format!(
+                "replay precheck failed before prune at keep_from_height {}: {}",
+                keep_from_height, e
+            ),
+        );
+        return Json(ApiResponse::err(
+            "PRUNE_REPLAY_PRECHECK_FAILED",
+            e.to_string(),
+        ));
     }
 
     let pruned_block_count = match state.storage().prune_blocks_below_height(keep_from_height) {
