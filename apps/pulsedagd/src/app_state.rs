@@ -1,4 +1,7 @@
-use std::{sync::Arc, time::{SystemTime, UNIX_EPOCH}};
+use std::{
+    sync::Arc,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use tokio::sync::RwLock;
 
@@ -17,7 +20,10 @@ pub struct AppState {
 
 pub fn new_runtime_stats() -> NodeRuntimeStats {
     NodeRuntimeStats {
-        started_at_unix: SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0),
+        started_at_unix: SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0),
         accepted_p2p_blocks: 0,
         rejected_p2p_blocks: 0,
         duplicate_p2p_blocks: 0,
@@ -41,12 +47,29 @@ pub fn new_runtime_stats() -> NodeRuntimeStats {
         last_observed_best_height: 0,
         last_height_change_unix: None,
         active_alerts: Vec::new(),
+        snapshot_auto_every_blocks: 0,
+        auto_prune_enabled: false,
+        auto_prune_every_blocks: 0,
+        prune_keep_recent_blocks: 0,
+        prune_require_snapshot: true,
+        last_snapshot_height: None,
+        last_snapshot_unix: None,
+        last_prune_height: None,
+        last_prune_unix: None,
     }
 }
 
 impl RpcStateLike for AppState {
-    fn chain(&self) -> Arc<RwLock<ChainState>> { self.chain.clone() }
-    fn p2p(&self) -> Option<Arc<dyn P2pHandle>> { self.p2p.clone() }
-    fn storage(&self) -> Arc<Storage> { self.storage.clone() }
-    fn runtime(&self) -> Arc<RwLock<NodeRuntimeStats>> { self.runtime.clone() }
+    fn chain(&self) -> Arc<RwLock<ChainState>> {
+        self.chain.clone()
+    }
+    fn p2p(&self) -> Option<Arc<dyn P2pHandle>> {
+        self.p2p.clone()
+    }
+    fn storage(&self) -> Arc<Storage> {
+        self.storage.clone()
+    }
+    fn runtime(&self) -> Arc<RwLock<NodeRuntimeStats>> {
+        self.runtime.clone()
+    }
 }

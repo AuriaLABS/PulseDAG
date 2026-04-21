@@ -13,7 +13,10 @@ pub struct NodeStatusData {
     pub utxo_count: usize,
     pub address_count: usize,
     pub snapshot_exists: bool,
+    pub snapshot_height: Option<u64>,
+    pub captured_at_unix: Option<u64>,
     pub persisted_block_count: usize,
+    pub recommended_keep_from_height: u64,
     pub p2p_enabled: bool,
     pub peer_count: usize,
     pub last_block_hash: Option<String>,
@@ -40,8 +43,18 @@ pub async fn get_status<S: RpcStateLike>(
     };
 
     let contracts_prepared = state.storage().contract_namespaces_ready();
+    let captured_at_unix = match state.storage().snapshot_captured_at_unix() {
+        Ok(v) => v,
+        Err(e) => return Json(ApiResponse::err("STORAGE_ERROR", e.to_string())),
+    };
     let chain_handle = state.chain();
     let chain = chain_handle.read().await;
+    let runtime = state.runtime().read().await;
+    let keep_recent = runtime.prune_keep_recent_blocks.max(1);
+    let recommended_keep_from_height = chain
+        .dag
+        .best_height
+        .saturating_sub(keep_recent.saturating_sub(1));
     let peer_count = state
         .p2p()
         .and_then(|p| p.status().ok())
@@ -65,7 +78,14 @@ pub async fn get_status<S: RpcStateLike>(
         utxo_count: chain.utxo.utxos.len(),
         address_count: chain.utxo.address_index.len(),
         snapshot_exists,
+        snapshot_height: if snapshot_exists {
+            Some(chain.dag.best_height)
+        } else {
+            None
+        },
+        captured_at_unix,
         persisted_block_count: persisted_blocks.len(),
+        recommended_keep_from_height,
         p2p_enabled: state.p2p().is_some(),
         peer_count,
         last_block_hash,

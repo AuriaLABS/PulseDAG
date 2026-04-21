@@ -1,4 +1,7 @@
-use std::{sync::Arc, time::{SystemTime, UNIX_EPOCH}};
+use std::{
+    sync::Arc,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use pulsedag_core::{
     errors::PulseError,
@@ -11,6 +14,7 @@ use rocksdb::{ColumnFamilyDescriptor, DB};
 use serde::{Deserialize, Serialize};
 
 const CHAIN_STATE_KEY: &[u8] = b"chain_state";
+const SNAPSHOT_CAPTURED_AT_UNIX_KEY: &[u8] = b"snapshot_captured_at_unix";
 const RUNTIME_EVENT_PREFIX: &str = "runtime_event:";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -20,7 +24,6 @@ pub struct RuntimeEvent {
     pub kind: String,
     pub message: String,
 }
-
 
 pub struct Storage {
     pub db: Arc<DB>,
@@ -45,18 +48,30 @@ impl Storage {
     }
 
     pub fn persist_block(&self, block: &Block) -> Result<(), PulseError> {
-        let cf = self.db.cf_handle("blocks").ok_or_else(|| PulseError::StorageError("missing cf blocks".into()))?;
-        self.db.put_cf(cf, block.hash.as_bytes(), serde_json::to_vec(block).map_err(|e| PulseError::StorageError(e.to_string()))?)
+        let cf = self
+            .db
+            .cf_handle("blocks")
+            .ok_or_else(|| PulseError::StorageError("missing cf blocks".into()))?;
+        self.db
+            .put_cf(
+                cf,
+                block.hash.as_bytes(),
+                serde_json::to_vec(block).map_err(|e| PulseError::StorageError(e.to_string()))?,
+            )
             .map_err(|e| PulseError::StorageError(e.to_string()))
     }
 
     pub fn list_blocks(&self) -> Result<Vec<Block>, PulseError> {
-        let cf = self.db.cf_handle("blocks").ok_or_else(|| PulseError::StorageError("missing cf blocks".into()))?;
+        let cf = self
+            .db
+            .cf_handle("blocks")
+            .ok_or_else(|| PulseError::StorageError("missing cf blocks".into()))?;
         let iter = self.db.iterator_cf(cf, rocksdb::IteratorMode::Start);
         let mut blocks = Vec::new();
         for item in iter {
             let (_, value) = item.map_err(|e| PulseError::StorageError(e.to_string()))?;
-            let block: Block = serde_json::from_slice(&value).map_err(|e| PulseError::StorageError(e.to_string()))?;
+            let block: Block = serde_json::from_slice(&value)
+                .map_err(|e| PulseError::StorageError(e.to_string()))?;
             blocks.push(block);
         }
         blocks.sort_by_key(|b| b.header.height);
@@ -64,37 +79,86 @@ impl Storage {
     }
 
     pub fn persist_utxo(&self, outpoint: &OutPoint, utxo: &Utxo) -> Result<(), PulseError> {
-        let cf = self.db.cf_handle("utxos").ok_or_else(|| PulseError::StorageError("missing cf utxos".into()))?;
-        let key = serde_json::to_vec(outpoint).map_err(|e| PulseError::StorageError(e.to_string()))?;
-        let value = serde_json::to_vec(utxo).map_err(|e| PulseError::StorageError(e.to_string()))?;
-        self.db.put_cf(cf, key, value).map_err(|e| PulseError::StorageError(e.to_string()))
+        let cf = self
+            .db
+            .cf_handle("utxos")
+            .ok_or_else(|| PulseError::StorageError("missing cf utxos".into()))?;
+        let key =
+            serde_json::to_vec(outpoint).map_err(|e| PulseError::StorageError(e.to_string()))?;
+        let value =
+            serde_json::to_vec(utxo).map_err(|e| PulseError::StorageError(e.to_string()))?;
+        self.db
+            .put_cf(cf, key, value)
+            .map_err(|e| PulseError::StorageError(e.to_string()))
     }
 
     pub fn delete_utxo(&self, outpoint: &OutPoint) -> Result<(), PulseError> {
-        let cf = self.db.cf_handle("utxos").ok_or_else(|| PulseError::StorageError("missing cf utxos".into()))?;
-        let key = serde_json::to_vec(outpoint).map_err(|e| PulseError::StorageError(e.to_string()))?;
-        self.db.delete_cf(cf, key).map_err(|e| PulseError::StorageError(e.to_string()))
+        let cf = self
+            .db
+            .cf_handle("utxos")
+            .ok_or_else(|| PulseError::StorageError("missing cf utxos".into()))?;
+        let key =
+            serde_json::to_vec(outpoint).map_err(|e| PulseError::StorageError(e.to_string()))?;
+        self.db
+            .delete_cf(cf, key)
+            .map_err(|e| PulseError::StorageError(e.to_string()))
     }
 
     pub fn get_block(&self, hash: &Hash) -> Result<Option<Block>, PulseError> {
-        let cf = self.db.cf_handle("blocks").ok_or_else(|| PulseError::StorageError("missing cf blocks".into()))?;
-        let raw = self.db.get_cf(cf, hash.as_bytes()).map_err(|e| PulseError::StorageError(e.to_string()))?;
+        let cf = self
+            .db
+            .cf_handle("blocks")
+            .ok_or_else(|| PulseError::StorageError("missing cf blocks".into()))?;
+        let raw = self
+            .db
+            .get_cf(cf, hash.as_bytes())
+            .map_err(|e| PulseError::StorageError(e.to_string()))?;
         match raw {
-            Some(bytes) => Ok(Some(serde_json::from_slice(&bytes).map_err(|e| PulseError::StorageError(e.to_string()))?)),
+            Some(bytes) => Ok(Some(
+                serde_json::from_slice(&bytes)
+                    .map_err(|e| PulseError::StorageError(e.to_string()))?,
+            )),
             None => Ok(None),
         }
     }
 
     pub fn persist_chain_state(&self, state: &ChainState) -> Result<(), PulseError> {
-        let cf = self.db.cf_handle("meta").ok_or_else(|| PulseError::StorageError("missing cf meta".into()))?;
-        let value = bincode::serialize(state).map_err(|e| PulseError::StorageError(e.to_string()))?;
-        self.db.put_cf(cf, CHAIN_STATE_KEY, value).map_err(|e| PulseError::StorageError(e.to_string()))
+        let cf = self
+            .db
+            .cf_handle("meta")
+            .ok_or_else(|| PulseError::StorageError("missing cf meta".into()))?;
+        let value =
+            bincode::serialize(state).map_err(|e| PulseError::StorageError(e.to_string()))?;
+        self.db
+            .put_cf(cf, CHAIN_STATE_KEY, value)
+            .map_err(|e| PulseError::StorageError(e.to_string()))?;
+        let captured_at_unix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        self.db
+            .put_cf(
+                cf,
+                SNAPSHOT_CAPTURED_AT_UNIX_KEY,
+                captured_at_unix.to_string().as_bytes(),
+            )
+            .map_err(|e| PulseError::StorageError(e.to_string()))
     }
 
     pub fn load_chain_state(&self) -> Result<Option<ChainState>, PulseError> {
-        let cf = self.db.cf_handle("meta").ok_or_else(|| PulseError::StorageError("missing cf meta".into()))?;
-        match self.db.get_cf(cf, CHAIN_STATE_KEY).map_err(|e| PulseError::StorageError(e.to_string()))? {
-            Some(bytes) => Ok(Some(bincode::deserialize(&bytes).map_err(|e| PulseError::StorageError(e.to_string()))?)),
+        let cf = self
+            .db
+            .cf_handle("meta")
+            .ok_or_else(|| PulseError::StorageError("missing cf meta".into()))?;
+        match self
+            .db
+            .get_cf(cf, CHAIN_STATE_KEY)
+            .map_err(|e| PulseError::StorageError(e.to_string()))?
+        {
+            Some(bytes) => Ok(Some(
+                bincode::deserialize(&bytes)
+                    .map_err(|e| PulseError::StorageError(e.to_string()))?,
+            )),
             None => Ok(None),
         }
     }
@@ -131,10 +195,64 @@ impl Storage {
         Ok(self.load_chain_state()?.is_some())
     }
 
-    pub fn append_runtime_event(&self, level: &str, kind: &str, message: &str) -> Result<RuntimeEvent, PulseError> {
-        let cf = self.db.cf_handle("meta").ok_or_else(|| PulseError::StorageError("missing cf meta".into()))?;
-        let timestamp_unix = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
-        let unique_nanos = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+    pub fn snapshot_captured_at_unix(&self) -> Result<Option<u64>, PulseError> {
+        let cf = self
+            .db
+            .cf_handle("meta")
+            .ok_or_else(|| PulseError::StorageError("missing cf meta".into()))?;
+        let raw = self
+            .db
+            .get_cf(cf, SNAPSHOT_CAPTURED_AT_UNIX_KEY)
+            .map_err(|e| PulseError::StorageError(e.to_string()))?;
+        match raw {
+            Some(bytes) => {
+                let value = std::str::from_utf8(&bytes)
+                    .map_err(|e| PulseError::StorageError(e.to_string()))?;
+                let parsed = value
+                    .parse::<u64>()
+                    .map_err(|e| PulseError::StorageError(e.to_string()))?;
+                Ok(Some(parsed))
+            }
+            None => Ok(None),
+        }
+    }
+
+    pub fn prune_blocks_below_height(&self, keep_from_height: u64) -> Result<usize, PulseError> {
+        let cf = self
+            .db
+            .cf_handle("blocks")
+            .ok_or_else(|| PulseError::StorageError("missing cf blocks".into()))?;
+        let blocks = self.list_blocks()?;
+        let mut removed = 0usize;
+        for block in blocks {
+            if block.header.height < keep_from_height {
+                self.db
+                    .delete_cf(cf, block.hash.as_bytes())
+                    .map_err(|e| PulseError::StorageError(e.to_string()))?;
+                removed += 1;
+            }
+        }
+        Ok(removed)
+    }
+
+    pub fn append_runtime_event(
+        &self,
+        level: &str,
+        kind: &str,
+        message: &str,
+    ) -> Result<RuntimeEvent, PulseError> {
+        let cf = self
+            .db
+            .cf_handle("meta")
+            .ok_or_else(|| PulseError::StorageError("missing cf meta".into()))?;
+        let timestamp_unix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let unique_nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
         let event = RuntimeEvent {
             timestamp_unix,
             level: level.to_string(),
@@ -142,14 +260,20 @@ impl Storage {
             message: message.to_string(),
         };
         let key = format!("{}{:020}", RUNTIME_EVENT_PREFIX, unique_nanos);
-        let value = serde_json::to_vec(&event).map_err(|e| PulseError::StorageError(e.to_string()))?;
-        self.db.put_cf(cf, key.as_bytes(), value).map_err(|e| PulseError::StorageError(e.to_string()))?;
+        let value =
+            serde_json::to_vec(&event).map_err(|e| PulseError::StorageError(e.to_string()))?;
+        self.db
+            .put_cf(cf, key.as_bytes(), value)
+            .map_err(|e| PulseError::StorageError(e.to_string()))?;
         let _ = self.prune_runtime_events(2_000);
         Ok(event)
     }
 
     pub fn prune_runtime_events(&self, max_events: usize) -> Result<usize, PulseError> {
-        let cf = self.db.cf_handle("meta").ok_or_else(|| PulseError::StorageError("missing cf meta".into()))?;
+        let cf = self
+            .db
+            .cf_handle("meta")
+            .ok_or_else(|| PulseError::StorageError("missing cf meta".into()))?;
         let iter = self.db.iterator_cf(cf, rocksdb::IteratorMode::Start);
         let mut keys = Vec::new();
         for item in iter {
@@ -165,20 +289,26 @@ impl Storage {
         }
         let to_delete = keys.len() - max_events;
         for key in keys.into_iter().take(to_delete) {
-            self.db.delete_cf(cf, key).map_err(|e| PulseError::StorageError(e.to_string()))?;
+            self.db
+                .delete_cf(cf, key)
+                .map_err(|e| PulseError::StorageError(e.to_string()))?;
         }
         Ok(to_delete)
     }
 
     pub fn list_runtime_events(&self, limit: usize) -> Result<Vec<RuntimeEvent>, PulseError> {
-        let cf = self.db.cf_handle("meta").ok_or_else(|| PulseError::StorageError("missing cf meta".into()))?;
+        let cf = self
+            .db
+            .cf_handle("meta")
+            .ok_or_else(|| PulseError::StorageError("missing cf meta".into()))?;
         let iter = self.db.iterator_cf(cf, rocksdb::IteratorMode::Start);
         let mut events = Vec::new();
         for item in iter {
             let (key, value) = item.map_err(|e| PulseError::StorageError(e.to_string()))?;
             if let Ok(key_str) = std::str::from_utf8(&key) {
                 if key_str.starts_with(RUNTIME_EVENT_PREFIX) {
-                    let event: RuntimeEvent = serde_json::from_slice(&value).map_err(|e| PulseError::StorageError(e.to_string()))?;
+                    let event: RuntimeEvent = serde_json::from_slice(&value)
+                        .map_err(|e| PulseError::StorageError(e.to_string()))?;
                     events.push(event);
                 }
             }
@@ -195,5 +325,4 @@ impl Storage {
             && self.db.cf_handle("contracts_storage").is_some()
             && self.db.cf_handle("contracts_receipts").is_some()
     }
-
 }
