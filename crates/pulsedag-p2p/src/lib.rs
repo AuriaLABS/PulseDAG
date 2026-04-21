@@ -36,6 +36,9 @@ pub struct P2pStatus {
     pub last_message_kind: Option<String>,
     pub last_swarm_event: Option<String>,
     pub per_topic_publishes: HashMap<String, usize>,
+    pub peer_count: usize,
+    pub healthy_peer_count: usize,
+    pub retry_due_peers: usize,
 }
 
 pub trait P2pHandle: Send + Sync {
@@ -170,6 +173,7 @@ impl P2pHandle for MemoryP2pHandle {
 
     fn status(&self) -> Result<P2pStatus, PulseError> {
         let inner = self.inner.lock().map_err(|_| PulseError::Internal("p2p lock poisoned".into()))?;
+        let (peer_count, healthy_peer_count, retry_due_peers) = peer_health_counters(&inner);
         Ok(P2pStatus {
             mode: inner.mode.clone(),
             peer_id: inner.peer_id.clone(),
@@ -190,6 +194,9 @@ impl P2pHandle for MemoryP2pHandle {
             last_message_kind: inner.last_message_kind.clone(),
             last_swarm_event: inner.last_swarm_event.clone(),
             per_topic_publishes: inner.per_topic_publishes.clone(),
+            peer_count,
+            healthy_peer_count,
+            retry_due_peers,
         })
     }
 }
@@ -284,6 +291,18 @@ fn register_peer_result(inner: &Arc<Mutex<InnerState>>, peer: &str, success: boo
         candidates.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
         guard.connected_peers = candidates.into_iter().map(|(peer, _)| peer).collect();
     }
+}
+
+fn peer_health_counters(inner: &InnerState) -> (usize, usize, usize) {
+    let now = now_unix();
+    let peer_count = inner.peer_book.len();
+    let healthy_peer_count = inner.peer_book.values().filter(|p| p.connected).count();
+    let retry_due_peers = inner
+        .peer_book
+        .values()
+        .filter(|p| !p.connected && p.next_retry_unix <= now)
+        .count();
+    (peer_count, healthy_peer_count, retry_due_peers)
 }
 
 fn tick_peer_maintenance(inner: &Arc<Mutex<InnerState>>) {
@@ -526,6 +545,7 @@ impl P2pHandle for Libp2pHandle {
 
     fn status(&self) -> Result<P2pStatus, PulseError> {
         let inner = self.inner.lock().map_err(|_| PulseError::Internal("p2p lock poisoned".into()))?;
+        let (peer_count, healthy_peer_count, retry_due_peers) = peer_health_counters(&inner);
         Ok(P2pStatus {
             mode: inner.mode.clone(),
             peer_id: inner.peer_id.clone(),
@@ -546,6 +566,9 @@ impl P2pHandle for Libp2pHandle {
             last_message_kind: inner.last_message_kind.clone(),
             last_swarm_event: inner.last_swarm_event.clone(),
             per_topic_publishes: inner.per_topic_publishes.clone(),
+            peer_count,
+            healthy_peer_count,
+            retry_due_peers,
         })
     }
 }
@@ -604,5 +627,23 @@ mod tests {
         assert!(health.connected);
         assert_eq!(health.fail_streak, 0);
         assert!(health.score > 80);
+    }
+
+    #[test]
+    fn failed_peer_is_removed_from_connected_set() {
+        let state = Arc::new(Mutex::new(InnerState {
+            peer_book: HashMap::from([
+                ("peer-a".to_string(), PeerHealth::default()),
+                ("peer-b".to_string(), PeerHealth::default()),
+            ]),
+            ..Default::default()
+        }));
+
+        register_peer_result(&state, "peer-a", true);
+        register_peer_result(&state, "peer-b", false);
+
+        let guard = state.lock().unwrap();
+        assert!(guard.connected_peers.contains(&"peer-a".to_string()));
+        assert!(!guard.connected_peers.contains(&"peer-b".to_string()));
     }
 }
