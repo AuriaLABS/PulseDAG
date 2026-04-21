@@ -2,7 +2,7 @@ use crate::types::{Block, BlockHeader, Transaction, TxOutput};
 
 pub fn current_ts() -> u64 {
     use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs()
+    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |duration| duration.as_secs())
 }
 
 pub fn is_coinbase(tx: &Transaction) -> bool {
