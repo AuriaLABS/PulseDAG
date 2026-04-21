@@ -1,0 +1,24 @@
+name: Node Smoke Test
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  node-smoke:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Build node
+        run: cargo build -p pulsedagd
+
+      - name: Run node
+        run: |
+          nohup cargo run -p pulsedagd > node.log 2>&1 &
+          sleep 5
+
+      - name: Health check
+        run: curl http://127.0.0.1:8080/health
