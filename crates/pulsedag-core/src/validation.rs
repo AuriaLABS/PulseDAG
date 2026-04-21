@@ -37,7 +37,11 @@ pub fn validate_transaction(tx: &Transaction, state: &ChainState) -> Result<(), 
         acc.checked_add(utxo.amount).ok_or_else(|| PulseError::InvalidTransaction("input overflow".into()))
     })?;
 
-    let total_output: u64 = tx.outputs.iter().map(|o| o.amount).sum();
+    let total_output = tx
+        .outputs
+        .iter()
+        .try_fold(0_u64, |acc, output| acc.checked_add(output.amount))
+        .ok_or_else(|| PulseError::InvalidTransaction("output overflow".into()))?;
     let required = total_output.checked_add(tx.fee).ok_or_else(|| PulseError::InvalidTransaction("output overflow".into()))?;
     if total_input < required {
         return Err(PulseError::InsufficientFunds);
