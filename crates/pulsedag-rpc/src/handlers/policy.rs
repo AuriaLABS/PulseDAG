@@ -1,5 +1,6 @@
-use axum::Json;
-use crate::api::ApiResponse;
+use axum::{extract::State, Json};
+
+use crate::api::{ApiResponse, RpcStateLike};
 
 #[derive(Debug, serde::Serialize)]
 pub struct PolicyData {
@@ -8,9 +9,16 @@ pub struct PolicyData {
     pub transaction_rules: Vec<String>,
     pub block_rules: Vec<String>,
     pub dag_rules: Vec<String>,
+    pub target_block_interval_secs: u64,
+    pub window_size: usize,
+    pub retarget_multiplier_bps: u64,
+    pub suggested_difficulty: u64,
 }
 
-pub async fn get_policy() -> Json<ApiResponse<PolicyData>> {
+pub async fn get_policy<S: RpcStateLike>(State(state): State<S>) -> Json<ApiResponse<PolicyData>> {
+    let chain = state.chain().read().await;
+    let snapshot = pulsedag_core::dev_difficulty_snapshot(&chain);
+
     Json(ApiResponse::ok(PolicyData {
         stage: "v1.1.0".to_string(),
         mempool_policy: vec![
@@ -37,5 +45,9 @@ pub async fn get_policy() -> Json<ApiResponse<PolicyData>> {
             "persisted and in-memory blocks should remain aligned".into(),
             "sync diagnostics should be checked before release".into(),
         ],
+        target_block_interval_secs: snapshot.policy.target_block_interval_secs,
+        window_size: snapshot.policy.window_size,
+        retarget_multiplier_bps: snapshot.retarget_multiplier_bps,
+        suggested_difficulty: snapshot.suggested_difficulty,
     }))
 }

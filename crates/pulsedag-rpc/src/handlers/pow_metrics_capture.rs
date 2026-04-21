@@ -1,6 +1,6 @@
-use std::{fs, path::PathBuf};
-use axum::{extract::State, Json};
 use crate::{api::ApiResponse, api::RpcStateLike};
+use axum::{extract::State, Json};
+use std::{fs, path::PathBuf};
 
 #[derive(Debug, serde::Serialize)]
 pub struct PowMetricsCaptureData {
@@ -17,26 +17,19 @@ pub struct PowMetricsCaptureData {
     pub history_snapshot_path: String,
 }
 
-pub async fn post_pow_metrics_capture<S: RpcStateLike>(State(state): State<S>) -> Json<ApiResponse<PowMetricsCaptureData>> {
-    let chain_handle = state.chain();
-    let chain = chain_handle.read().await;
-    let best_height = chain.dag.best_height;
-    let window_size = 10usize;
-
-    let mut blocks = chain.dag.blocks.values().collect::<Vec<_>>();
-    blocks.sort_by(|a, b| b.header.height.cmp(&a.header.height).then_with(|| b.header.timestamp.cmp(&a.header.timestamp)));
-    let window = blocks.into_iter().take(window_size).collect::<Vec<_>>();
-    let observed_block_count = window.len();
-    let avg_block_interval_secs = if observed_block_count >= 2 {
-        let newest = window.first().map(|b| b.header.timestamp).unwrap_or(0);
-        let oldest = window.last().map(|b| b.header.timestamp).unwrap_or(0);
-        newest.saturating_sub(oldest) / ((observed_block_count - 1) as u64)
-    } else { 0 };
-
-    let suggested_difficulty = pulsedag_core::dev_recommended_difficulty_for_chain(&chain);
-    let target_u64 = pulsedag_core::dev_target_u64(suggested_difficulty);
-    let target_block_interval_secs = pulsedag_core::dev_target_block_interval_secs();
-    let retarget_multiplier_bps = pulsedag_core::dev_retarget_multiplier_bps(avg_block_interval_secs);
+pub async fn post_pow_metrics_capture<S: RpcStateLike>(
+    State(state): State<S>,
+) -> Json<ApiResponse<PowMetricsCaptureData>> {
+    let chain = state.chain().read().await;
+    let snapshot = pulsedag_core::dev_difficulty_snapshot(&chain);
+    let best_height = snapshot.best_height;
+    let window_size = snapshot.policy.window_size;
+    let observed_block_count = snapshot.observed_block_count;
+    let avg_block_interval_secs = snapshot.avg_block_interval_secs;
+    let suggested_difficulty = snapshot.suggested_difficulty;
+    let target_u64 = snapshot.target_u64;
+    let target_block_interval_secs = snapshot.policy.target_block_interval_secs;
+    let retarget_multiplier_bps = snapshot.retarget_multiplier_bps;
 
     let snapshot_dir = PathBuf::from("./data/metrics");
     let _ = fs::create_dir_all(&snapshot_dir);
@@ -53,12 +46,20 @@ pub async fn post_pow_metrics_capture<S: RpcStateLike>(State(state): State<S>) -
         "target_block_interval_secs": target_block_interval_secs,
         "retarget_multiplier_bps": retarget_multiplier_bps,
     });
-    let latest_ok = fs::write(&snapshot_path, serde_json::to_vec_pretty(&payload).unwrap_or_default()).is_ok();
-    let history_ok = fs::write(&history_snapshot_path, serde_json::to_vec_pretty(&payload).unwrap_or_default()).is_ok();
+    let latest_ok = fs::write(
+        &snapshot_path,
+        serde_json::to_vec_pretty(&payload).unwrap_or_default(),
+    )
+    .is_ok();
+    let history_ok = fs::write(
+        &history_snapshot_path,
+        serde_json::to_vec_pretty(&payload).unwrap_or_default(),
+    )
+    .is_ok();
     let persisted = latest_ok && history_ok;
 
     Json(ApiResponse::ok(PowMetricsCaptureData {
-        algorithm: pulsedag_core::selected_pow_name().to_string(),
+        algorithm: snapshot.algorithm.to_string(),
         best_height,
         observed_block_count,
         avg_block_interval_secs,
@@ -74,6 +75,9 @@ pub async fn post_pow_metrics_capture<S: RpcStateLike>(State(state): State<S>) -
 
 fn chrono_like_now() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
-    let secs = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
     secs.to_string()
 }

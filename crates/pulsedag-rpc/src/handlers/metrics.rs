@@ -1,4 +1,5 @@
 use axum::{extract::State, Json};
+
 use crate::{api::ApiResponse, api::RpcStateLike};
 
 #[derive(Debug, serde::Serialize)]
@@ -12,11 +13,17 @@ pub struct MetricsData {
     pub address_count: usize,
     pub circulating_supply: u64,
     pub last_block_hash: Option<String>,
+    pub target_block_interval_secs: u64,
+    pub window_size: usize,
+    pub retarget_multiplier_bps: u64,
+    pub suggested_difficulty: u64,
 }
 
-pub async fn get_metrics<S: RpcStateLike>(State(state): State<S>) -> Json<ApiResponse<MetricsData>> {
-    let chain_handle = state.chain();
-    let chain = chain_handle.read().await;
+pub async fn get_metrics<S: RpcStateLike>(
+    State(state): State<S>,
+) -> Json<ApiResponse<MetricsData>> {
+    let chain = state.chain().read().await;
+    let snapshot = pulsedag_core::dev_difficulty_snapshot(&chain);
     let circulating_supply = chain.utxo.utxos.values().map(|u| u.amount).sum();
     let last_block_hash = chain
         .dag
@@ -35,5 +42,9 @@ pub async fn get_metrics<S: RpcStateLike>(State(state): State<S>) -> Json<ApiRes
         address_count: chain.utxo.address_index.len(),
         circulating_supply,
         last_block_hash,
+        target_block_interval_secs: snapshot.policy.target_block_interval_secs,
+        window_size: snapshot.policy.window_size,
+        retarget_multiplier_bps: snapshot.retarget_multiplier_bps,
+        suggested_difficulty: snapshot.suggested_difficulty,
     }))
 }

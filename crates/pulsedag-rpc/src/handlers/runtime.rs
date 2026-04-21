@@ -1,10 +1,13 @@
 use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use axum::{extract::{Query, State}, Json};
+use axum::{
+    extract::{Query, State},
+    Json,
+};
 use serde::{Deserialize, Serialize};
 
-use crate::{api::{ApiResponse, RpcStateLike}};
+use crate::api::{ApiResponse, RpcStateLike};
 
 #[derive(Debug, serde::Serialize)]
 pub struct RuntimeStatusData {
@@ -36,16 +39,27 @@ pub struct RuntimeStatusData {
     pub last_observed_best_height: u64,
     pub last_height_change_unix: Option<u64>,
     pub active_alerts: Vec<String>,
+    pub target_block_interval_secs: u64,
+    pub window_size: usize,
+    pub retarget_multiplier_bps: u64,
+    pub suggested_difficulty: u64,
 }
 
-pub async fn get_runtime_status<S: RpcStateLike>(State(state): State<S>) -> Json<ApiResponse<RuntimeStatusData>> {
+pub async fn get_runtime_status<S: RpcStateLike>(
+    State(state): State<S>,
+) -> Json<ApiResponse<RuntimeStatusData>> {
     let runtime_handle = state.runtime();
     let runtime = runtime_handle.read().await;
-    let now = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(runtime.started_at_unix);
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(runtime.started_at_unix);
     let uptime_secs = now.saturating_sub(runtime.started_at_unix);
     let burn_in_target_days: u64 = 30;
     let burn_in_elapsed_days = uptime_secs / 86_400;
     let burn_in_remaining_days = burn_in_target_days.saturating_sub(burn_in_elapsed_days);
+    let chain = state.chain().read().await;
+    let snapshot = pulsedag_core::dev_difficulty_snapshot(&chain);
     Json(ApiResponse::ok(RuntimeStatusData {
         started_at_unix: runtime.started_at_unix,
         uptime_secs,
@@ -75,6 +89,10 @@ pub async fn get_runtime_status<S: RpcStateLike>(State(state): State<S>) -> Json
         last_observed_best_height: runtime.last_observed_best_height,
         last_height_change_unix: runtime.last_height_change_unix,
         active_alerts: runtime.active_alerts.clone(),
+        target_block_interval_secs: snapshot.policy.target_block_interval_secs,
+        window_size: snapshot.policy.window_size,
+        retarget_multiplier_bps: snapshot.retarget_multiplier_bps,
+        suggested_difficulty: snapshot.suggested_difficulty,
     }))
 }
 
@@ -95,7 +113,10 @@ pub async fn get_runtime_events<S: RpcStateLike>(
 ) -> Json<ApiResponse<RuntimeEventsData>> {
     let limit = query.limit.unwrap_or(20).min(200);
     match state.storage().list_runtime_events(limit) {
-        Ok(events) => Json(ApiResponse::ok(RuntimeEventsData { count: events.len(), events })),
+        Ok(events) => Json(ApiResponse::ok(RuntimeEventsData {
+            count: events.len(),
+            events,
+        })),
         Err(e) => Json(ApiResponse::err("RUNTIME_EVENTS_ERROR", &e.to_string())),
     }
 }
@@ -126,6 +147,9 @@ pub async fn get_runtime_events_summary<S: RpcStateLike>(
                 by_level,
             }))
         }
-        Err(e) => Json(ApiResponse::err("RUNTIME_EVENTS_SUMMARY_ERROR", &e.to_string())),
+        Err(e) => Json(ApiResponse::err(
+            "RUNTIME_EVENTS_SUMMARY_ERROR",
+            &e.to_string(),
+        )),
     }
 }

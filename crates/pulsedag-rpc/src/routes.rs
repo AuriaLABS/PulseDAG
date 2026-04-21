@@ -127,7 +127,7 @@ where
         .route("/readiness", get(get_readiness::<S>))
         .route("/runtime", get(get_runtime_status::<S>))
         .route("/release", get(get_release_info))
-        .route("/policy", get(get_policy))
+        .route("/policy", get(get_policy::<S>))
         .route("/pow", get(get_pow_info))
         .route("/pow/validate-header", post(post_pow_validate_header))
         .route("/pow/hash-header", post(post_pow_hash_header))
