@@ -7,6 +7,7 @@ Consolidated release-candidate snapshot before public testnet.
 - No pool logic inside the miner.
 - Smart contracts remain disabled until the network completes **30 days of stable testnet burn-in**.
 - Current block target is **60 seconds per block**.
+- Node RPC keeps mining-template + submit APIs for the **external miner app**, but pool/accounting/payout surfaces are out of scope in this phase.
 
 ## Current priority order
 1. pruning + snapshot

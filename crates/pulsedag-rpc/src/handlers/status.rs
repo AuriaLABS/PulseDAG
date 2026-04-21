@@ -1,5 +1,5 @@
-use axum::{extract::State, Json};
 use crate::{api::ApiResponse, api::RpcStateLike};
+use axum::{extract::State, Json};
 
 #[derive(Debug, serde::Serialize)]
 pub struct NodeStatusData {
@@ -22,7 +22,13 @@ pub struct NodeStatusData {
     pub contracts_vm_version: String,
 }
 
-pub async fn get_status<S: RpcStateLike>(State(state): State<S>) -> Json<ApiResponse<NodeStatusData>> {
+fn repo_version() -> String {
+    include_str!("../../../../VERSION").trim().to_string()
+}
+
+pub async fn get_status<S: RpcStateLike>(
+    State(state): State<S>,
+) -> Json<ApiResponse<NodeStatusData>> {
     let snapshot_exists = match state.storage().snapshot_exists() {
         Ok(v) => v,
         Err(e) => return Json(ApiResponse::err("STORAGE_ERROR", e.to_string())),
@@ -50,7 +56,7 @@ pub async fn get_status<S: RpcStateLike>(State(state): State<S>) -> Json<ApiResp
 
     Json(ApiResponse::ok(NodeStatusData {
         service: "pulsedagd".into(),
-        version: "v1.0.0-alpha1".into(),
+        version: repo_version(),
         chain_id: chain.chain_id.clone(),
         best_height: chain.dag.best_height,
         block_count: chain.dag.blocks.len(),
