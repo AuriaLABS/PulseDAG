@@ -92,6 +92,14 @@ pub fn sanitize_mempool(state: &mut ChainState) -> MempoolReconcileResult {
         let _ = remove_tx_from_mempool(state, &txid);
     }
     let mut result = reconcile_mempool(state);
+    while state.mempool.transactions.len() > state.mempool.limit {
+        if let Some(evicted_txid) = evict_lowest_fee_density(state) {
+            result.removed_txids.push(evicted_txid.clone());
+            result.kept_txids.retain(|txid| txid != &evicted_txid);
+        } else {
+            break;
+        }
+    }
     state.mempool.sanitize_runs = state.mempool.sanitize_runs.saturating_add(1);
     result.kept_txids.sort();
     result.removed_txids.sort();

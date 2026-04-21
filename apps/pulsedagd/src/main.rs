@@ -85,6 +85,12 @@ async fn main() -> Result<()> {
         }
     }
 
+    // Ensure operator-configured mempool policy is reapplied even when startup
+    // recovery rebuilt chain state from persisted blocks.
+    chain_state.mempool.limit = cfg.mempool_limit;
+    chain_state.mempool.fee_floor = cfg.mempool_fee_floor;
+    chain_state.mempool.ttl_secs = cfg.mempool_ttl_secs;
+
     let reconcile_result = sanitize_mempool(&mut chain_state);
     if !reconcile_result.removed_txids.is_empty() {
         warn!(
