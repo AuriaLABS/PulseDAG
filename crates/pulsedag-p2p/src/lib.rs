@@ -38,6 +38,10 @@ pub struct P2pStatus {
     pub last_message_kind: Option<String>,
     pub last_swarm_event: Option<String>,
     pub per_topic_publishes: HashMap<String, usize>,
+    pub inbound_decode_failed: usize,
+    pub inbound_chain_mismatch_dropped: usize,
+    pub inbound_duplicates_suppressed: usize,
+    pub last_drop_reason: Option<String>,
 }
 
 pub trait P2pHandle: Send + Sync {
@@ -103,6 +107,10 @@ struct InnerState {
     last_message_kind: Option<String>,
     last_swarm_event: Option<String>,
     per_topic_publishes: HashMap<String, usize>,
+    inbound_decode_failed: usize,
+    inbound_chain_mismatch_dropped: usize,
+    inbound_duplicates_suppressed: usize,
+    last_drop_reason: Option<String>,
     peer_book: HashMap<String, PeerHealth>,
     peer_state_path: Option<PathBuf>,
 }
@@ -213,6 +221,10 @@ impl P2pHandle for MemoryP2pHandle {
             last_message_kind: inner.last_message_kind.clone(),
             last_swarm_event: inner.last_swarm_event.clone(),
             per_topic_publishes: inner.per_topic_publishes.clone(),
+            inbound_decode_failed: inner.inbound_decode_failed,
+            inbound_chain_mismatch_dropped: inner.inbound_chain_mismatch_dropped,
+            inbound_duplicates_suppressed: inner.inbound_duplicates_suppressed,
+            last_drop_reason: inner.last_drop_reason.clone(),
         })
     }
 }
@@ -396,7 +408,13 @@ fn dispatch_network_message(
     let parsed = serde_json::from_slice::<NetworkMessage>(bytes);
     let msg = match parsed {
         Ok(v) => v,
-        Err(_) => return,
+        Err(_) => {
+            if let Ok(mut guard) = inner.lock() {
+                guard.inbound_decode_failed += 1;
+                guard.last_drop_reason = Some("decode_failed".into());
+            }
+            return;
+        }
     };
 
     match msg {
@@ -405,11 +423,17 @@ fn dispatch_network_message(
             transaction,
         } => {
             if chain_id != expected_chain_id {
+                if let Ok(mut guard) = inner.lock() {
+                    guard.inbound_chain_mismatch_dropped += 1;
+                    guard.last_drop_reason = Some("chain_mismatch_tx".into());
+                }
                 return;
             }
             let id = message_id_for_tx(&transaction);
             if let Ok(mut guard) = inner.lock() {
                 if !guard.seen_message_ids.insert(id) {
+                    guard.inbound_duplicates_suppressed += 1;
+                    guard.last_drop_reason = Some("duplicate_tx".into());
                     return;
                 }
                 guard.inbound_messages += 1;
@@ -419,11 +443,17 @@ fn dispatch_network_message(
         }
         NetworkMessage::NewBlock { chain_id, block } => {
             if chain_id != expected_chain_id {
+                if let Ok(mut guard) = inner.lock() {
+                    guard.inbound_chain_mismatch_dropped += 1;
+                    guard.last_drop_reason = Some("chain_mismatch_block".into());
+                }
                 return;
             }
             let id = message_id_for_block(&block);
             if let Ok(mut guard) = inner.lock() {
                 if !guard.seen_message_ids.insert(id) {
+                    guard.inbound_duplicates_suppressed += 1;
+                    guard.last_drop_reason = Some("duplicate_block".into());
                     return;
                 }
                 guard.inbound_messages += 1;
@@ -457,12 +487,18 @@ fn dispatch_network_message(
         }
         NetworkMessage::BlockData { chain_id, block } => {
             if chain_id != expected_chain_id {
+                if let Ok(mut guard) = inner.lock() {
+                    guard.inbound_chain_mismatch_dropped += 1;
+                    guard.last_drop_reason = Some("chain_mismatch_block_data".into());
+                }
                 return;
             }
             if let Some(block) = block {
                 let id = message_id_for_block(&block);
                 if let Ok(mut guard) = inner.lock() {
                     if !guard.seen_message_ids.insert(id) {
+                        guard.inbound_duplicates_suppressed += 1;
+                        guard.last_drop_reason = Some("duplicate_block_data".into());
                         return;
                     }
                     guard.inbound_messages += 1;
@@ -617,6 +653,10 @@ impl P2pHandle for Libp2pHandle {
             last_message_kind: inner.last_message_kind.clone(),
             last_swarm_event: inner.last_swarm_event.clone(),
             per_topic_publishes: inner.per_topic_publishes.clone(),
+            inbound_decode_failed: inner.inbound_decode_failed,
+            inbound_chain_mismatch_dropped: inner.inbound_chain_mismatch_dropped,
+            inbound_duplicates_suppressed: inner.inbound_duplicates_suppressed,
+            last_drop_reason: inner.last_drop_reason.clone(),
         })
     }
 }
