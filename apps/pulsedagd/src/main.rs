@@ -205,38 +205,36 @@ async fn main() -> Result<()> {
                                 block.transactions.iter().any(|known| known.txid == txid)
                             });
                         if already_in_mempool || already_confirmed {
-                            let mut rt = runtime.write().await;
-                            rt.duplicate_p2p_txs += 1;
-                            rt.dropped_p2p_txs += 1;
-                            rt.last_tx_drop_unix = Some(now_unix());
-                            rt.last_tx_drop_txid = Some(txid.clone());
                             let reason = if already_in_mempool {
-                                rt.dropped_p2p_txs_duplicate_mempool += 1;
                                 "duplicate_mempool"
                             } else {
-                                rt.dropped_p2p_txs_duplicate_confirmed += 1;
                                 "duplicate_confirmed"
                             };
-                            rt.last_tx_drop_reason = Some(reason.to_string());
-                            rt.tx_drop_reasons
-                                .push(format!("txid={} reason={}", txid, reason));
-                            if rt.tx_drop_reasons.len() > 32 {
-                                let overflow = rt.tx_drop_reasons.len() - 32;
-                                rt.tx_drop_reasons.drain(0..overflow);
+                            {
+                                let mut rt = runtime.write().await;
+                                rt.duplicate_p2p_txs += 1;
+                                rt.dropped_p2p_txs += 1;
+                                rt.last_tx_drop_unix = Some(now_unix());
+                                rt.last_tx_drop_txid = Some(txid.clone());
+                                if already_in_mempool {
+                                    rt.dropped_p2p_txs_duplicate_mempool += 1;
+                                } else {
+                                    rt.dropped_p2p_txs_duplicate_confirmed += 1;
+                                }
+                                rt.last_tx_drop_reason = Some(reason.to_string());
+                                rt.tx_drop_reasons
+                                    .push(format!("txid={} reason={}", txid, reason));
+                                if rt.tx_drop_reasons.len() > 32 {
+                                    let overflow = rt.tx_drop_reasons.len() - 32;
+                                    rt.tx_drop_reasons.drain(0..overflow);
+                                }
                             }
+                            drop(guard);
                             info!(txid = %txid, already_in_mempool, already_confirmed, "ignored duplicate inbound p2p transaction");
                             let _ = storage.append_runtime_event(
                                 "info",
                                 "tx_drop",
-                                &format!(
-                                    "txid={} reason={}",
-                                    txid,
-                                    if already_in_mempool {
-                                        "duplicate_mempool"
-                                    } else {
-                                        "duplicate_confirmed"
-                                    }
-                                ),
+                                &format!("txid={} reason={}", txid, reason),
                             );
                             continue;
                         }
