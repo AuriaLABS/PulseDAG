@@ -420,28 +420,39 @@ fn dispatch_network_message(
                 return;
             }
             let id = message_id_for_tx(&transaction);
-            if let Ok(mut guard) = inner.lock() {
-                if !remember_message_id(&mut guard, id) {
+            if let Ok(guard) = inner.lock() {
+                if guard.seen_message_ids.contains(&id) {
                     return;
                 }
-                guard.inbound_messages += 1;
-                guard.last_message_kind = Some("tx-inbound".into());
             }
-            let _ = inbound_tx.try_send(InboundEvent::Transaction(transaction));
+            if inbound_tx
+                .try_send(InboundEvent::Transaction(transaction))
+                .is_ok()
+            {
+                if let Ok(mut guard) = inner.lock() {
+                    remember_message_id(&mut guard, id);
+                    guard.inbound_messages += 1;
+                    guard.last_message_kind = Some("tx-inbound".into());
+                }
+            }
         }
         NetworkMessage::NewBlock { chain_id, block } => {
             if chain_id != expected_chain_id {
                 return;
             }
             let id = message_id_for_block(&block);
-            if let Ok(mut guard) = inner.lock() {
-                if !remember_message_id(&mut guard, id) {
+            if let Ok(guard) = inner.lock() {
+                if guard.seen_message_ids.contains(&id) {
                     return;
                 }
-                guard.inbound_messages += 1;
-                guard.last_message_kind = Some("block-inbound".into());
             }
-            let _ = inbound_tx.try_send(InboundEvent::Block(block));
+            if inbound_tx.try_send(InboundEvent::Block(block)).is_ok() {
+                if let Ok(mut guard) = inner.lock() {
+                    remember_message_id(&mut guard, id);
+                    guard.inbound_messages += 1;
+                    guard.last_message_kind = Some("block-inbound".into());
+                }
+            }
         }
         NetworkMessage::GetTips { chain_id } => {
             if chain_id == expected_chain_id {
@@ -473,14 +484,18 @@ fn dispatch_network_message(
             }
             if let Some(block) = block {
                 let id = message_id_for_block(&block);
-                if let Ok(mut guard) = inner.lock() {
-                    if !remember_message_id(&mut guard, id) {
+                if let Ok(guard) = inner.lock() {
+                    if guard.seen_message_ids.contains(&id) {
                         return;
                     }
-                    guard.inbound_messages += 1;
-                    guard.last_message_kind = Some("block-data".into());
                 }
-                let _ = inbound_tx.try_send(InboundEvent::Block(block));
+                if inbound_tx.try_send(InboundEvent::Block(block)).is_ok() {
+                    if let Ok(mut guard) = inner.lock() {
+                        remember_message_id(&mut guard, id);
+                        guard.inbound_messages += 1;
+                        guard.last_message_kind = Some("block-data".into());
+                    }
+                }
             }
         }
     }
@@ -748,5 +763,35 @@ mod tests {
         assert_eq!(state.seen_message_ids.len(), MAX_SEEN_MESSAGE_IDS);
         assert_eq!(state.seen_message_ids_order.len(), MAX_SEEN_MESSAGE_IDS);
         assert!(!state.seen_message_ids.contains("msg-0"));
+    }
+
+    #[test]
+    fn dispatch_does_not_mark_messages_seen_when_inbound_queue_is_full() {
+        let expected_chain_id = "testnet";
+        let tx_message = Transaction {
+            txid: "tx-1".into(),
+            version: 1,
+            inputs: vec![],
+            outputs: vec![],
+            fee: 0,
+            nonce: 0,
+        };
+        let message_id = message_id_for_tx(&tx_message);
+        let payload = serde_json::to_vec(&NetworkMessage::NewTransaction {
+            chain_id: expected_chain_id.into(),
+            transaction: tx_message,
+        })
+        .expect("new transaction message should serialize");
+        let inner = Arc::new(Mutex::new(InnerState::default()));
+        let (inbound_tx, _inbound_rx) = mpsc::channel(1);
+        inbound_tx
+            .try_send(InboundEvent::PeerConnected("saturated".into()))
+            .expect("queue should accept first event");
+
+        dispatch_network_message(expected_chain_id, &payload, &inner, &inbound_tx);
+
+        let guard = inner.lock().expect("state lock should work");
+        assert!(!guard.seen_message_ids.contains(&message_id));
+        assert_eq!(guard.inbound_messages, 0);
     }
 }
