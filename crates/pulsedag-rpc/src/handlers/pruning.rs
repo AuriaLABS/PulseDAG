@@ -1,7 +1,7 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::{extract::State, Json};
-use pulsedag_core::rebuild_state_from_blocks;
+use pulsedag_core::rebuild_state_from_snapshot_and_blocks;
 use serde::Deserialize;
 
 use crate::{api::ApiResponse, api::RpcStateLike};
@@ -25,32 +25,36 @@ pub async fn post_prune_chain<S: RpcStateLike>(
     State(state): State<S>,
     Json(req): Json<PruneRequest>,
 ) -> Json<ApiResponse<PruneData>> {
-    let (prune_keep_recent_blocks, prune_require_snapshot) = {
+    let prune_keep_recent_blocks = {
         let runtime = state.runtime().read().await;
-        (
-            req.keep_recent_blocks
-                .unwrap_or(runtime.prune_keep_recent_blocks)
-                .max(1),
-            runtime.prune_require_snapshot,
-        )
+        req.keep_recent_blocks
+            .unwrap_or(runtime.prune_keep_recent_blocks)
+            .max(1)
     };
 
     let chain_guard = state.chain().read().await;
     let best_height = chain_guard.dag.best_height;
     let keep_from_height = best_height.saturating_sub(prune_keep_recent_blocks.saturating_sub(1));
-    let chain_id = chain_guard.chain_id.clone();
     drop(chain_guard);
 
-    let (snapshot_validated, snapshot_height) = match state.storage().load_chain_state() {
-        Ok(Some(snapshot)) => (
-            snapshot.dag.best_height >= keep_from_height,
-            Some(snapshot.dag.best_height),
-        ),
-        Ok(None) => (false, None),
+    let snapshot = match state.storage().load_chain_state() {
+        Ok(Some(snapshot)) => snapshot,
+        Ok(None) => {
+            let reason = format!(
+                "snapshot required for prune base is missing (keep_from_height={})",
+                keep_from_height
+            );
+            let _ = state
+                .storage()
+                .append_runtime_event("warn", "prune_rejected", &reason);
+            return Json(ApiResponse::err("PRUNE_REQUIRES_VALID_SNAPSHOT", reason));
+        }
         Err(e) => return Json(ApiResponse::err("SNAPSHOT_READ_ERROR", e.to_string())),
     };
+    let snapshot_validated = snapshot.dag.best_height >= keep_from_height;
+    let snapshot_height = Some(snapshot.dag.best_height);
 
-    if prune_require_snapshot && !snapshot_validated {
+    if !snapshot_validated {
         let reason = match snapshot_height {
             Some(h) => format!(
                 "snapshot height {} below required keep_from_height {}",
@@ -73,19 +77,22 @@ pub async fn post_prune_chain<S: RpcStateLike>(
         .filter(|b| b.header.height >= keep_from_height)
         .collect();
 
-    let precheck_rebuilt = match rebuild_state_from_blocks(chain_id.clone(), retained_blocks) {
+    let precheck_rebuilt = match rebuild_state_from_snapshot_and_blocks(
+        snapshot.clone(),
+        retained_blocks,
+    ) {
         Ok(v) => v,
         Err(e) => {
             let _ = state.storage().append_runtime_event(
                 "error",
-                "prune_replay_precheck_failed",
+                "prune_snapshot_delta_precheck_failed",
                 &format!(
-                    "replay precheck failed before prune at keep_from_height {}: {}",
-                    keep_from_height, e
+                    "snapshot+delta precheck failed before prune (snapshot_height={}, keep_from_height={}): {}",
+                    snapshot.dag.best_height, keep_from_height, e
                 ),
             );
             return Json(ApiResponse::err(
-                "PRUNE_REPLAY_PRECHECK_FAILED",
+                "PRUNE_SNAPSHOT_DELTA_PRECHECK_FAILED",
                 e.to_string(),
             ));
         }
@@ -104,19 +111,20 @@ pub async fn post_prune_chain<S: RpcStateLike>(
         Ok(v) => v,
         Err(e) => return Json(ApiResponse::err("PRUNE_BLOCKS_READ_ERROR", e.to_string())),
     };
-    let rebuilt = match rebuild_state_from_blocks(chain_id, post_prune_blocks) {
+    let rebuilt = match rebuild_state_from_snapshot_and_blocks(snapshot.clone(), post_prune_blocks)
+    {
         Ok(v) => v,
         Err(e) => {
             let _ = state.storage().append_runtime_event(
                 "error",
-                "prune_replay_postprune_failed",
+                "prune_snapshot_delta_postprune_failed",
                 &format!(
-                    "replay rebuild failed after prune at keep_from_height {}: {}",
-                    keep_from_height, e
+                    "snapshot+delta rebuild failed after prune (snapshot_height={}, keep_from_height={}): {}",
+                    snapshot.dag.best_height, keep_from_height, e
                 ),
             );
             return Json(ApiResponse::err(
-                "PRUNE_REPLAY_POSTPRUNE_FAILED",
+                "PRUNE_SNAPSHOT_DELTA_POSTPRUNE_FAILED",
                 e.to_string(),
             ));
         }
@@ -151,8 +159,8 @@ pub async fn post_prune_chain<S: RpcStateLike>(
         "info",
         "prune_manual",
         &format!(
-            "manual prune removed {} blocks below {}; replay verified at height {}",
-            pruned_block_count, keep_from_height, rebuilt.dag.best_height
+            "manual prune removed {} blocks below {}; snapshot+delta verified at height {} (snapshot_height={})",
+            pruned_block_count, keep_from_height, rebuilt.dag.best_height, snapshot.dag.best_height
         ),
     );
 
@@ -160,7 +168,7 @@ pub async fn post_prune_chain<S: RpcStateLike>(
         pruned_block_count,
         keep_from_height,
         best_height: rebuilt.dag.best_height,
-        snapshot_required: prune_require_snapshot,
+        snapshot_required: true,
         snapshot_validated,
         replay_verified: true,
     }))

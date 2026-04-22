@@ -25,7 +25,8 @@ pub use tx::{
 pub use types::*;
 
 pub use replay::{
-    rebuild_state_from_blocks, rebuild_state_from_blocks_defensive, ReplayDefensiveReport,
+    rebuild_state_from_blocks, rebuild_state_from_blocks_defensive,
+    rebuild_state_from_snapshot_and_blocks, ReplayDefensiveReport,
 };
 
 pub use pow::{

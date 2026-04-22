@@ -1,10 +1,6 @@
 use crate::{
-    apply::apply_block,
-    errors::PulseError,
-    genesis::init_chain_state,
-    state::ChainState,
-    types::Block,
-    validation::validate_block,
+    apply::apply_block, errors::PulseError, genesis::init_chain_state, state::ChainState,
+    types::Block, validation::validate_block,
 };
 
 #[derive(Debug, Clone)]
@@ -16,7 +12,10 @@ pub struct ReplayDefensiveReport {
     pub skipped_reasons: Vec<String>,
 }
 
-pub fn rebuild_state_from_blocks(chain_id: String, mut blocks: Vec<Block>) -> Result<ChainState, PulseError> {
+pub fn rebuild_state_from_blocks(
+    chain_id: String,
+    mut blocks: Vec<Block>,
+) -> Result<ChainState, PulseError> {
     if blocks.is_empty() {
         return Ok(init_chain_state(chain_id));
     }
@@ -35,13 +34,63 @@ pub fn rebuild_state_from_blocks(chain_id: String, mut blocks: Vec<Block>) -> Re
     Ok(state)
 }
 
-
-pub fn rebuild_state_from_blocks_defensive(chain_id: String, mut blocks: Vec<Block>) -> ReplayDefensiveReport {
+pub fn rebuild_state_from_snapshot_and_blocks(
+    snapshot: ChainState,
+    mut blocks: Vec<Block>,
+) -> Result<ChainState, PulseError> {
     if blocks.is_empty() {
-        return ReplayDefensiveReport { state: init_chain_state(chain_id), accepted_blocks: 0, skipped_blocks: 0, skipped_hashes: Vec::new(), skipped_reasons: Vec::new() };
+        return Ok(snapshot);
     }
 
-    blocks.sort_by(|a, b| a.header.height.cmp(&b.header.height).then_with(|| a.header.timestamp.cmp(&b.header.timestamp)).then_with(|| a.hash.cmp(&b.hash)));
+    blocks.sort_by(|a, b| {
+        a.header
+            .height
+            .cmp(&b.header.height)
+            .then_with(|| a.header.timestamp.cmp(&b.header.timestamp))
+            .then_with(|| a.hash.cmp(&b.hash))
+    });
+
+    let snapshot_height = snapshot.dag.best_height;
+    let mut state = snapshot;
+
+    for block in blocks.into_iter() {
+        if block.hash == state.dag.genesis_hash {
+            continue;
+        }
+        if block.header.height <= snapshot_height {
+            continue;
+        }
+        if state.dag.blocks.contains_key(&block.hash) {
+            continue;
+        }
+        validate_block(&block, &state)?;
+        apply_block(&block, &mut state)?;
+    }
+
+    Ok(state)
+}
+
+pub fn rebuild_state_from_blocks_defensive(
+    chain_id: String,
+    mut blocks: Vec<Block>,
+) -> ReplayDefensiveReport {
+    if blocks.is_empty() {
+        return ReplayDefensiveReport {
+            state: init_chain_state(chain_id),
+            accepted_blocks: 0,
+            skipped_blocks: 0,
+            skipped_hashes: Vec::new(),
+            skipped_reasons: Vec::new(),
+        };
+    }
+
+    blocks.sort_by(|a, b| {
+        a.header
+            .height
+            .cmp(&b.header.height)
+            .then_with(|| a.header.timestamp.cmp(&b.header.timestamp))
+            .then_with(|| a.hash.cmp(&b.hash))
+    });
     let mut state = init_chain_state(chain_id);
     let mut accepted_blocks = 0usize;
     let mut skipped_hashes = Vec::new();
@@ -61,5 +110,11 @@ pub fn rebuild_state_from_blocks_defensive(chain_id: String, mut blocks: Vec<Blo
     }
 
     let skipped_blocks = skipped_hashes.len();
-    ReplayDefensiveReport { state, accepted_blocks, skipped_blocks, skipped_hashes, skipped_reasons }
+    ReplayDefensiveReport {
+        state,
+        accepted_blocks,
+        skipped_blocks,
+        skipped_hashes,
+        skipped_reasons,
+    }
 }
