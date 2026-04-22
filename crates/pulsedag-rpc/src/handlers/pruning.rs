@@ -68,12 +68,7 @@ pub async fn post_prune_chain<S: RpcStateLike>(
         Ok(v) => v,
         Err(e) => return Json(ApiResponse::err("PRUNE_BLOCKS_READ_ERROR", e.to_string())),
     };
-    let retained_blocks: Vec<_> = pre_prune_blocks
-        .into_iter()
-        .filter(|b| b.header.height >= keep_from_height)
-        .collect();
-
-    let rebuilt = match rebuild_state_from_blocks(chain_id.clone(), retained_blocks) {
+    let rebuilt = match rebuild_state_from_blocks(chain_id.clone(), pre_prune_blocks) {
         Ok(v) => v,
         Err(e) => {
             let _ = state.storage().append_runtime_event(
