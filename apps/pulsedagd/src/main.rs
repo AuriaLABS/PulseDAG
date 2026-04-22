@@ -98,19 +98,23 @@ async fn main() -> Result<()> {
         Option<Arc<dyn P2pHandle>>,
         Option<tokio::sync::mpsc::UnboundedReceiver<InboundEvent>>,
     ) = if cfg.p2p_enabled {
-        let stack = if cfg.p2p_mode.as_str() == "libp2p" {
-            build_p2p_stack(P2pMode::Libp2p(Libp2pConfig {
-                chain_id: cfg.chain_id.clone(),
-                listen_addr: cfg.p2p_listen.clone(),
-                bootstrap: cfg.p2p_bootstrap.clone(),
-                enable_mdns: cfg.p2p_mdns,
-                enable_kademlia: cfg.p2p_kademlia,
-            }))?
-        } else {
-            build_p2p_stack(P2pMode::Memory {
+        let libp2p_cfg = Libp2pConfig {
+            chain_id: cfg.chain_id.clone(),
+            listen_addr: cfg.p2p_listen.clone(),
+            bootstrap: cfg.p2p_bootstrap.clone(),
+            enable_mdns: cfg.p2p_mdns,
+            enable_kademlia: cfg.p2p_kademlia,
+        };
+
+        let stack = match cfg.p2p_mode.as_str() {
+            "libp2p-real" => build_p2p_stack(P2pMode::Libp2pReal(libp2p_cfg))?,
+            "libp2p" | "libp2p-skeleton" | "libp2p-simulated" | "libp2p-loopback" => {
+                build_p2p_stack(P2pMode::Libp2pSkeleton(libp2p_cfg))?
+            }
+            _ => build_p2p_stack(P2pMode::Memory {
                 chain_id: cfg.chain_id.clone(),
                 peers: cfg.simulated_peers.clone(),
-            })?
+            })?,
         };
         (Some(stack.handle), stack.inbound_rx)
     } else {
@@ -161,6 +165,33 @@ async fn main() -> Result<()> {
         p2p,
         runtime: Arc::new(tokio::sync::RwLock::new(runtime_stats)),
     };
+
+    if let Some(ref p2p_handle) = app_state.p2p {
+        match p2p_handle.status() {
+            Ok(status) => {
+                if status.mode.contains("loopback") || status.mode.contains("simulated") {
+                    warn!(
+                        requested_p2p_mode = %cfg.p2p_mode,
+                        effective_p2p_mode = %status.mode,
+                        runtime_mode_detail = %status.runtime_mode_detail,
+                        announced_peers = ?status.connected_peers,
+                        "p2p running in simulated/loopback mode; no real remote swarm connectivity is active"
+                    );
+                } else {
+                    info!(
+                        requested_p2p_mode = %cfg.p2p_mode,
+                        effective_p2p_mode = %status.mode,
+                        runtime_mode_detail = %status.runtime_mode_detail,
+                        announced_peers = ?status.connected_peers,
+                        "p2p runtime initialized"
+                    );
+                }
+            }
+            Err(e) => {
+                warn!(error = %e, requested_p2p_mode = %cfg.p2p_mode, "failed to read p2p startup status");
+            }
+        }
+    }
 
     {
         let summary = if startup_consistency_issue_count == 0 {
@@ -274,7 +305,11 @@ async fn main() -> Result<()> {
                         }
                     }
                     InboundEvent::PeerConnected(peer) => {
-                        info!(peer = %peer, "p2p peer connected or runtime event");
+                        if peer.starts_with("simulated-loopback:") {
+                            info!(peer = %peer, "p2p simulated loopback event");
+                        } else {
+                            info!(peer = %peer, "p2p peer connected");
+                        }
                     }
                 }
             }
@@ -531,7 +566,22 @@ async fn main() -> Result<()> {
     let addr: SocketAddr = cfg.rpc_bind.parse()?;
     let listener = TcpListener::bind(addr).await?;
 
-    info!(p2p_enabled = cfg.p2p_enabled, p2p_mode = %cfg.p2p_mode, auto_rebuild_on_start = cfg.auto_rebuild_on_start, persist_snapshot_on_start = cfg.persist_snapshot_on_start, snapshot_auto_every_blocks = cfg.snapshot_auto_every_blocks, auto_prune_enabled = cfg.auto_prune_enabled, auto_prune_every_blocks = cfg.auto_prune_every_blocks, prune_keep_recent_blocks = cfg.prune_keep_recent_blocks, prune_require_snapshot = cfg.prune_require_snapshot, target_block_interval_secs = cfg.target_block_interval_secs, difficulty_window = cfg.difficulty_window, max_future_drift_secs = cfg.max_future_drift_secs, "pulsedagd RPC listening on {}", addr);
+    info!(
+        p2p_enabled = cfg.p2p_enabled,
+        p2p_mode = %cfg.p2p_mode,
+        auto_rebuild_on_start = cfg.auto_rebuild_on_start,
+        persist_snapshot_on_start = cfg.persist_snapshot_on_start,
+        snapshot_auto_every_blocks = cfg.snapshot_auto_every_blocks,
+        auto_prune_enabled = cfg.auto_prune_enabled,
+        auto_prune_every_blocks = cfg.auto_prune_every_blocks,
+        prune_keep_recent_blocks = cfg.prune_keep_recent_blocks,
+        prune_require_snapshot = cfg.prune_require_snapshot,
+        target_block_interval_secs = cfg.target_block_interval_secs,
+        difficulty_window = cfg.difficulty_window,
+        max_future_drift_secs = cfg.max_future_drift_secs,
+        "pulsedagd RPC listening on {}",
+        addr
+    );
     axum::serve(listener, app).await?;
     Ok(())
 }
