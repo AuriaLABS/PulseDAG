@@ -74,6 +74,13 @@ pub struct RuntimeStatusData {
     pub window_size: usize,
     pub retarget_multiplier_bps: u64,
     pub suggested_difficulty: u64,
+    pub p2p_peer_reconnect_attempts: u64,
+    pub p2p_peer_recovery_success_count: u64,
+    pub p2p_last_peer_recovery_unix: Option<u64>,
+    pub p2p_peer_cooldown_suppressed_count: u64,
+    pub p2p_peer_flap_suppressed_count: u64,
+    pub p2p_peers_under_cooldown: usize,
+    pub p2p_peers_under_flap_guard: usize,
 }
 
 pub async fn get_runtime_status<S: RpcStateLike>(
@@ -91,6 +98,21 @@ pub async fn get_runtime_status<S: RpcStateLike>(
     let burn_in_remaining_days = burn_in_target_days.saturating_sub(burn_in_elapsed_days);
     let chain = state.chain().read().await;
     let snapshot = pulsedag_core::dev_difficulty_snapshot(&chain);
+    let p2p_recovery = state
+        .p2p()
+        .and_then(|p2p| p2p.status().ok())
+        .map(|status| {
+            (
+                status.peer_reconnect_attempts,
+                status.peer_recovery_success_count,
+                status.last_peer_recovery_unix,
+                status.peer_cooldown_suppressed_count,
+                status.peer_flap_suppressed_count,
+                status.peers_under_cooldown,
+                status.peers_under_flap_guard,
+            )
+        })
+        .unwrap_or((0, 0, None, 0, 0, 0, 0));
     Json(ApiResponse::ok(RuntimeStatusData {
         started_at_unix: runtime.started_at_unix,
         uptime_secs,
@@ -155,6 +177,13 @@ pub async fn get_runtime_status<S: RpcStateLike>(
         window_size: snapshot.policy.window_size,
         retarget_multiplier_bps: snapshot.retarget_multiplier_bps,
         suggested_difficulty: snapshot.suggested_difficulty,
+        p2p_peer_reconnect_attempts: p2p_recovery.0,
+        p2p_peer_recovery_success_count: p2p_recovery.1,
+        p2p_last_peer_recovery_unix: p2p_recovery.2,
+        p2p_peer_cooldown_suppressed_count: p2p_recovery.3,
+        p2p_peer_flap_suppressed_count: p2p_recovery.4,
+        p2p_peers_under_cooldown: p2p_recovery.5,
+        p2p_peers_under_flap_guard: p2p_recovery.6,
     }))
 }
 
