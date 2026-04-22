@@ -1,6 +1,6 @@
 pub mod messages;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
 use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
@@ -16,6 +16,9 @@ use tokio::sync::mpsc;
 use tokio::time::{sleep, Duration};
 
 use crate::messages::{message_id_for_block, message_id_for_tx, topic_names, NetworkMessage};
+
+const MAX_SEEN_MESSAGE_IDS: usize = 20_000;
+const P2P_CHANNEL_CAPACITY: usize = 4_096;
 
 #[derive(Debug, Clone)]
 pub struct P2pStatus {
@@ -79,7 +82,7 @@ enum OutboundMessage {
 
 pub struct P2pStack {
     pub handle: Arc<dyn P2pHandle>,
-    pub inbound_rx: Option<mpsc::UnboundedReceiver<InboundEvent>>,
+    pub inbound_rx: Option<mpsc::Receiver<InboundEvent>>,
 }
 
 #[derive(Default)]
@@ -89,6 +92,7 @@ struct InnerState {
     inbound_messages: usize,
     connected_peers: Vec<String>,
     seen_message_ids: HashSet<String>,
+    seen_message_ids_order: VecDeque<String>,
     queued_messages: usize,
     topics: Vec<String>,
     mode: String,
@@ -132,11 +136,8 @@ pub struct MemoryP2pHandle {
 }
 
 impl MemoryP2pHandle {
-    pub fn new(
-        chain_id: String,
-        peers: Vec<String>,
-    ) -> (Self, mpsc::UnboundedReceiver<InboundEvent>) {
-        let (_inbound_tx, inbound_rx) = mpsc::unbounded_channel();
+    pub fn new(chain_id: String, peers: Vec<String>) -> (Self, mpsc::Receiver<InboundEvent>) {
+        let (_inbound_tx, inbound_rx) = mpsc::channel(P2P_CHANNEL_CAPACITY);
         let mut state = InnerState::default();
         state.mode = "memory-simulated".into();
         state.runtime_mode_detail = "in-process-dispatch".into();
@@ -161,7 +162,7 @@ impl P2pHandle for MemoryP2pHandle {
             .inner
             .lock()
             .map_err(|_| PulseError::Internal("p2p lock poisoned".into()))?;
-        inner.seen_message_ids.insert(message_id_for_tx(tx));
+        remember_message_id(&mut inner, message_id_for_tx(tx));
         inner.publish_attempts += 1;
         inner.broadcasted_messages += 1;
         inner.last_message_kind = Some("tx".into());
@@ -177,7 +178,7 @@ impl P2pHandle for MemoryP2pHandle {
             .inner
             .lock()
             .map_err(|_| PulseError::Internal("p2p lock poisoned".into()))?;
-        inner.seen_message_ids.insert(message_id_for_block(block));
+        remember_message_id(&mut inner, message_id_for_block(block));
         inner.publish_attempts += 1;
         inner.broadcasted_messages += 1;
         inner.last_message_kind = Some("block".into());
@@ -220,13 +221,11 @@ impl P2pHandle for MemoryP2pHandle {
 #[derive(Clone)]
 pub struct Libp2pHandle {
     inner: Arc<Mutex<InnerState>>,
-    outbound_tx: mpsc::UnboundedSender<OutboundMessage>,
+    outbound_tx: mpsc::Sender<OutboundMessage>,
 }
 
 impl Libp2pHandle {
-    pub fn new(
-        cfg: Libp2pConfig,
-    ) -> Result<(Self, mpsc::UnboundedReceiver<InboundEvent>), PulseError> {
+    pub fn new(cfg: Libp2pConfig) -> Result<(Self, mpsc::Receiver<InboundEvent>), PulseError> {
         let local_key = identity::Keypair::generate_ed25519();
         let peer_id = local_key.public().to_peer_id();
         let topics = topic_names(&cfg.chain_id);
@@ -235,8 +234,8 @@ impl Libp2pHandle {
             .map(|t| gossipsub::IdentTopic::new(t.clone()))
             .collect::<Vec<_>>();
 
-        let (outbound_tx, outbound_rx) = mpsc::unbounded_channel::<OutboundMessage>();
-        let (inbound_tx, inbound_rx) = mpsc::unbounded_channel::<InboundEvent>();
+        let (outbound_tx, outbound_rx) = mpsc::channel::<OutboundMessage>(P2P_CHANNEL_CAPACITY);
+        let (inbound_tx, inbound_rx) = mpsc::channel::<InboundEvent>(P2P_CHANNEL_CAPACITY);
 
         let mut state = InnerState::default();
         state.mode = "libp2p-swarm-skeleton".into();
@@ -372,12 +371,25 @@ fn record_publish(
         guard.publish_attempts += 1;
         guard.broadcasted_messages += 1;
         guard.last_message_kind = Some(message_kind.to_string());
-        guard.seen_message_ids.insert(message_id.to_string());
+        remember_message_id(&mut guard, message_id.to_string());
         *guard
             .per_topic_publishes
             .entry(topic.to_string())
             .or_insert(0) += 1;
     }
+}
+
+fn remember_message_id(state: &mut InnerState, message_id: String) -> bool {
+    if !state.seen_message_ids.insert(message_id.clone()) {
+        return false;
+    }
+    state.seen_message_ids_order.push_back(message_id);
+    while state.seen_message_ids_order.len() > MAX_SEEN_MESSAGE_IDS {
+        if let Some(oldest) = state.seen_message_ids_order.pop_front() {
+            state.seen_message_ids.remove(&oldest);
+        }
+    }
+    true
 }
 
 fn note_swarm_event(inner: &Arc<Mutex<InnerState>>, label: impl Into<String>) {
@@ -391,7 +403,7 @@ fn dispatch_network_message(
     expected_chain_id: &str,
     bytes: &[u8],
     inner: &Arc<Mutex<InnerState>>,
-    inbound_tx: &mpsc::UnboundedSender<InboundEvent>,
+    inbound_tx: &mpsc::Sender<InboundEvent>,
 ) {
     let parsed = serde_json::from_slice::<NetworkMessage>(bytes);
     let msg = match parsed {
@@ -409,13 +421,13 @@ fn dispatch_network_message(
             }
             let id = message_id_for_tx(&transaction);
             if let Ok(mut guard) = inner.lock() {
-                if !guard.seen_message_ids.insert(id) {
+                if !remember_message_id(&mut guard, id) {
                     return;
                 }
                 guard.inbound_messages += 1;
                 guard.last_message_kind = Some("tx-inbound".into());
             }
-            let _ = inbound_tx.send(InboundEvent::Transaction(transaction));
+            let _ = inbound_tx.try_send(InboundEvent::Transaction(transaction));
         }
         NetworkMessage::NewBlock { chain_id, block } => {
             if chain_id != expected_chain_id {
@@ -423,13 +435,13 @@ fn dispatch_network_message(
             }
             let id = message_id_for_block(&block);
             if let Ok(mut guard) = inner.lock() {
-                if !guard.seen_message_ids.insert(id) {
+                if !remember_message_id(&mut guard, id) {
                     return;
                 }
                 guard.inbound_messages += 1;
                 guard.last_message_kind = Some("block-inbound".into());
             }
-            let _ = inbound_tx.send(InboundEvent::Block(block));
+            let _ = inbound_tx.try_send(InboundEvent::Block(block));
         }
         NetworkMessage::GetTips { chain_id } => {
             if chain_id == expected_chain_id {
@@ -462,13 +474,13 @@ fn dispatch_network_message(
             if let Some(block) = block {
                 let id = message_id_for_block(&block);
                 if let Ok(mut guard) = inner.lock() {
-                    if !guard.seen_message_ids.insert(id) {
+                    if !remember_message_id(&mut guard, id) {
                         return;
                     }
                     guard.inbound_messages += 1;
                     guard.last_message_kind = Some("block-data".into());
                 }
-                let _ = inbound_tx.send(InboundEvent::Block(block));
+                let _ = inbound_tx.try_send(InboundEvent::Block(block));
             }
         }
     }
@@ -478,16 +490,16 @@ fn fake_swarm_bootstrap_events(
     local_peer_id: PeerId,
     cfg: &Libp2pConfig,
     inner: &Arc<Mutex<InnerState>>,
-    inbound_tx: &mpsc::UnboundedSender<InboundEvent>,
+    inbound_tx: &mpsc::Sender<InboundEvent>,
 ) {
     note_swarm_event(inner, format!("swarm-created:{}", local_peer_id));
-    let _ = inbound_tx.send(InboundEvent::PeerConnected(format!(
+    let _ = inbound_tx.try_send(InboundEvent::PeerConnected(format!(
         "local:{}",
         local_peer_id
     )));
     note_swarm_event(inner, "listen-started");
     for addr in &cfg.bootstrap {
-        let _ = inbound_tx.send(InboundEvent::PeerConnected(addr.clone()));
+        let _ = inbound_tx.try_send(InboundEvent::PeerConnected(addr.clone()));
         note_swarm_event(inner, format!("bootstrap-seen:{}", addr));
         register_peer_result(inner, addr, true);
     }
@@ -502,8 +514,8 @@ async fn run_libp2p_runtime(
     local_peer_id: PeerId,
     topics: Vec<gossipsub::IdentTopic>,
     inner: Arc<Mutex<InnerState>>,
-    mut outbound_rx: mpsc::UnboundedReceiver<OutboundMessage>,
-    inbound_tx: mpsc::UnboundedSender<InboundEvent>,
+    mut outbound_rx: mpsc::Receiver<OutboundMessage>,
+    inbound_tx: mpsc::Sender<InboundEvent>,
 ) {
     fake_swarm_bootstrap_events(local_peer_id, &cfg, &inner, &inbound_tx);
 
@@ -511,7 +523,7 @@ async fn run_libp2p_runtime(
         tokio::select! {
             Some(msg) = outbound_rx.recv() => {
                 if let Ok(mut guard) = inner.lock() {
-                    guard.queued_messages = guard.queued_messages.saturating_sub(1);
+                    guard.queued_messages = outbound_rx.len();
                 }
 
                 let (wire, topic_name, message_kind, message_id) = match msg {
@@ -567,29 +579,27 @@ async fn run_libp2p_runtime(
 
 impl P2pHandle for Libp2pHandle {
     fn broadcast_transaction(&self, tx: &Transaction) -> Result<(), PulseError> {
-        {
-            let mut inner = self
-                .inner
-                .lock()
-                .map_err(|_| PulseError::Internal("p2p lock poisoned".into()))?;
-            inner.queued_messages += 1;
-        }
         self.outbound_tx
-            .send(OutboundMessage::Transaction(tx.clone()))
-            .map_err(|e| PulseError::Internal(format!("p2p send failed: {e}")))
+            .try_send(OutboundMessage::Transaction(tx.clone()))
+            .map_err(|e| PulseError::Internal(format!("p2p send failed: {e}")))?;
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| PulseError::Internal("p2p lock poisoned".into()))?;
+        inner.queued_messages = self.outbound_tx.max_capacity() - self.outbound_tx.capacity();
+        Ok(())
     }
 
     fn broadcast_block(&self, block: &Block) -> Result<(), PulseError> {
-        {
-            let mut inner = self
-                .inner
-                .lock()
-                .map_err(|_| PulseError::Internal("p2p lock poisoned".into()))?;
-            inner.queued_messages += 1;
-        }
         self.outbound_tx
-            .send(OutboundMessage::Block(block.clone()))
-            .map_err(|e| PulseError::Internal(format!("p2p send failed: {e}")))
+            .try_send(OutboundMessage::Block(block.clone()))
+            .map_err(|e| PulseError::Internal(format!("p2p send failed: {e}")))?;
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| PulseError::Internal("p2p lock poisoned".into()))?;
+        inner.queued_messages = self.outbound_tx.max_capacity() - self.outbound_tx.capacity();
+        Ok(())
     }
 
     fn status(&self) -> Result<P2pStatus, PulseError> {
@@ -726,5 +736,17 @@ mod tests {
 
         std::env::remove_var("PULSEDAG_P2P_PEER_STATE_PATH");
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn seen_message_cache_is_bounded() {
+        let mut state = InnerState::default();
+        for i in 0..(MAX_SEEN_MESSAGE_IDS + 100) {
+            let id = format!("msg-{i}");
+            assert!(remember_message_id(&mut state, id));
+        }
+        assert_eq!(state.seen_message_ids.len(), MAX_SEEN_MESSAGE_IDS);
+        assert_eq!(state.seen_message_ids_order.len(), MAX_SEEN_MESSAGE_IDS);
+        assert!(!state.seen_message_ids.contains("msg-0"));
     }
 }
