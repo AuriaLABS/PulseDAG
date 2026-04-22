@@ -272,8 +272,8 @@ async fn main() -> Result<()> {
                         } else {
                             let tx_for_rebroadcast = guard.mempool.transactions.get(&txid).cloned();
                             let snapshot = guard.clone();
-                            drop(guard);
                             if let Err(e) = storage.persist_chain_state(&snapshot) {
+                                drop(guard);
                                 let mut rt = runtime.write().await;
                                 rt.dropped_p2p_txs += 1;
                                 rt.tx_inbound_dropped_total += 1;
@@ -296,6 +296,7 @@ async fn main() -> Result<()> {
                                     &format!("txid={} reason=persist_failed error={}", txid, e),
                                 );
                             } else {
+                                drop(guard);
                                 let mut rt = runtime.write().await;
                                 rt.accepted_p2p_txs += 1;
                                 rt.tx_inbound_accepted_total += 1;
