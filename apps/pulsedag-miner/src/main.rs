@@ -203,68 +203,77 @@ async fn mine_header_multithread(
     let max_tries = max_tries.max(1);
     let start = Instant::now();
 
-    let (final_header, accepted, tries, final_hash_hex) = tokio::task::spawn_blocking(move || {
-        let effective_threads = threads.max(1).min(max_tries as usize);
-        let found = Arc::new(AtomicBool::new(false));
-        let tries = Arc::new(AtomicU64::new(0));
-        let winner: Arc<Mutex<Option<(BlockHeader, String)>>> = Arc::new(Mutex::new(None));
-        let mut handles = Vec::with_capacity(effective_threads);
+    let (final_header, accepted, tries, final_hash_hex) =
+        tokio::task::spawn_blocking(move || -> Result<(BlockHeader, bool, u64, String)> {
+            let effective_threads = threads.max(1).min(max_tries as usize);
+            let found = Arc::new(AtomicBool::new(false));
+            let tries = Arc::new(AtomicU64::new(0));
+            let winner: Arc<Mutex<Option<(BlockHeader, String)>>> = Arc::new(Mutex::new(None));
+            let mut handles = Vec::with_capacity(effective_threads);
 
-        for tid in 0..effective_threads {
-            let found = Arc::clone(&found);
-            let tries = Arc::clone(&tries);
-            let winner = Arc::clone(&winner);
-            let thread_header = header.clone();
+            for tid in 0..effective_threads {
+                let found = Arc::clone(&found);
+                let tries = Arc::clone(&tries);
+                let winner = Arc::clone(&winner);
+                let thread_header = header.clone();
 
-            let handle = std::thread::spawn(move || {
-                let mut local_tries = 0u64;
-                let mut nonce = tid as u64;
+                let handle = std::thread::spawn(move || -> Result<()> {
+                    let mut local_tries = 0u64;
+                    let mut nonce = tid as u64;
 
-                while nonce < max_tries {
-                    if found.load(Ordering::Relaxed) {
-                        break;
-                    }
-
-                    let mut candidate = thread_header.clone();
-                    candidate.nonce = nonce;
-                    local_tries = local_tries.saturating_add(1);
-
-                    let hash_hex = dev_surrogate_pow_hash(&candidate);
-                    if dev_pow_accepts(&candidate) {
-                        let already_found = found.swap(true, Ordering::SeqCst);
-                        if !already_found {
-                            let mut guard = winner.lock().expect("winner mutex poisoned");
-                            *guard = Some((candidate, hash_hex));
+                    while nonce < max_tries {
+                        if found.load(Ordering::Relaxed) {
+                            break;
                         }
-                        break;
+
+                        let mut candidate = thread_header.clone();
+                        candidate.nonce = nonce;
+                        local_tries = local_tries.saturating_add(1);
+
+                        let hash_hex = dev_surrogate_pow_hash(&candidate);
+                        if dev_pow_accepts(&candidate) {
+                            let already_found = found.swap(true, Ordering::SeqCst);
+                            if !already_found {
+                                let mut guard = winner.lock().map_err(|_| {
+                                    anyhow!("winner mutex poisoned during candidate selection")
+                                })?;
+                                *guard = Some((candidate, hash_hex));
+                            }
+                            break;
+                        }
+
+                        nonce = nonce.saturating_add(effective_threads as u64);
                     }
 
-                    nonce = nonce.saturating_add(effective_threads as u64);
-                }
+                    tries.fetch_add(local_tries, Ordering::Relaxed);
+                    Ok(())
+                });
+                handles.push(handle);
+            }
 
-                tries.fetch_add(local_tries, Ordering::Relaxed);
-            });
-            handles.push(handle);
-        }
+            for handle in handles {
+                let thread_result = handle
+                    .join()
+                    .map_err(|_| anyhow!("a mining thread panicked during execution"))?;
+                thread_result?;
+            }
 
-        for handle in handles {
-            let _ = handle.join();
-        }
+            let total_tries = tries.load(Ordering::Relaxed).min(max_tries);
+            let winner_candidate = winner
+                .lock()
+                .map_err(|_| anyhow!("winner mutex poisoned when finalizing result"))?
+                .clone();
+            if let Some((winner_header, winner_hash)) = winner_candidate {
+                return Ok((winner_header, true, total_tries, winner_hash));
+            }
 
-        let total_tries = tries.load(Ordering::Relaxed).min(max_tries);
-        if let Some((winner_header, winner_hash)) =
-            winner.lock().expect("winner mutex poisoned").clone()
-        {
-            return (winner_header, true, total_tries, winner_hash);
-        }
-
-        let mut fallback_header = header;
-        fallback_header.nonce = max_tries.saturating_sub(1);
-        let fallback_hash = dev_surrogate_pow_hash(&fallback_header);
-        (fallback_header, false, total_tries.max(1), fallback_hash)
-    })
-    .await
-    .context("mining worker task panicked")?;
+            let mut fallback_header = header;
+            fallback_header.nonce = max_tries.saturating_sub(1);
+            let fallback_hash = dev_surrogate_pow_hash(&fallback_header);
+            Ok((fallback_header, false, total_tries.max(1), fallback_hash))
+        })
+        .await
+        .context("mining worker task panicked")??;
 
     let elapsed = start.elapsed();
     let elapsed_secs = elapsed.as_secs_f64();
