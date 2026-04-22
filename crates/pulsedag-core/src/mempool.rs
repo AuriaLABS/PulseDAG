@@ -88,10 +88,14 @@ pub fn sanitize_mempool(state: &mut ChainState) -> MempoolReconcileResult {
         .filter(|(_, received_at)| now.saturating_sub(**received_at) > ttl_secs)
         .map(|(txid, _)| txid.clone())
         .collect::<Vec<_>>();
+    let mut ttl_pruned_txids = Vec::new();
     for txid in stale {
-        let _ = remove_tx_from_mempool(state, &txid);
+        if remove_tx_from_mempool(state, &txid).is_some() {
+            ttl_pruned_txids.push(txid);
+        }
     }
     let mut result = reconcile_mempool(state);
+    result.removed_txids.extend(ttl_pruned_txids);
     while state.mempool.transactions.len() > state.mempool.limit {
         if let Some(evicted_txid) = evict_lowest_fee_density(state) {
             result.removed_txids.push(evicted_txid.clone());

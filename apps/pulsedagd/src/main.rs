@@ -13,6 +13,7 @@ use axum::Router;
 use config::Config;
 use pulsedag_core::accept::{accept_block, accept_transaction, AcceptSource};
 use pulsedag_core::sanitize_mempool;
+use pulsedag_core::ChainState;
 use pulsedag_p2p::{build_p2p_stack, InboundEvent, Libp2pConfig, P2pHandle, P2pMode};
 use pulsedag_rpc::routes::router;
 use pulsedag_storage::Storage;
@@ -20,6 +21,12 @@ use tokio::net::TcpListener;
 use tokio::time::{sleep, Duration};
 use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
+
+fn apply_runtime_mempool_policy(chain_state: &mut ChainState, cfg: &Config) {
+    chain_state.mempool.limit = cfg.mempool_limit;
+    chain_state.mempool.fee_floor = cfg.mempool_fee_floor;
+    chain_state.mempool.ttl_secs = cfg.mempool_ttl_secs;
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -33,9 +40,6 @@ async fn main() -> Result<()> {
     let snapshot_exists = storage.snapshot_exists().unwrap_or(false);
     let persisted_blocks = storage.list_blocks().unwrap_or_default();
     let mut chain_state = storage.load_or_init_genesis(cfg.chain_id.clone())?;
-    chain_state.mempool.limit = cfg.mempool_limit;
-    chain_state.mempool.fee_floor = cfg.mempool_fee_floor;
-    chain_state.mempool.ttl_secs = cfg.mempool_ttl_secs;
     let startup_persisted_max_height = persisted_blocks
         .iter()
         .map(|b| b.header.height)
@@ -87,9 +91,7 @@ async fn main() -> Result<()> {
 
     // Ensure operator-configured mempool policy is reapplied even when startup
     // recovery rebuilt chain state from persisted blocks.
-    chain_state.mempool.limit = cfg.mempool_limit;
-    chain_state.mempool.fee_floor = cfg.mempool_fee_floor;
-    chain_state.mempool.ttl_secs = cfg.mempool_ttl_secs;
+    apply_runtime_mempool_policy(&mut chain_state, &cfg);
 
     let reconcile_result = sanitize_mempool(&mut chain_state);
     if !reconcile_result.removed_txids.is_empty() {
