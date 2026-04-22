@@ -96,7 +96,7 @@ async fn main() -> Result<()> {
 
     let (p2p, inbound_rx): (
         Option<Arc<dyn P2pHandle>>,
-        Option<tokio::sync::mpsc::UnboundedReceiver<InboundEvent>>,
+        Option<tokio::sync::mpsc::Receiver<InboundEvent>>,
     ) = if cfg.p2p_enabled {
         let stack = if cfg.p2p_mode.as_str() == "libp2p" {
             build_p2p_stack(P2pMode::Libp2p(Libp2pConfig {
@@ -148,6 +148,7 @@ async fn main() -> Result<()> {
     runtime_stats.auto_prune_every_blocks = cfg.auto_prune_every_blocks;
     runtime_stats.prune_keep_recent_blocks = cfg.prune_keep_recent_blocks;
     runtime_stats.prune_require_snapshot = cfg.prune_require_snapshot;
+    runtime_stats.mempool_max_txs = cfg.mempool_max_txs;
     runtime_stats.last_snapshot_height = if snapshot_exists {
         Some(chain_state.dag.best_height)
     } else {
@@ -185,6 +186,7 @@ async fn main() -> Result<()> {
         let chain = app_state.chain.clone();
         let storage = storage.clone();
         let runtime = app_state.runtime.clone();
+        let mempool_max_txs = cfg.mempool_max_txs;
         tokio::spawn(async move {
             while let Some(event) = rx.recv().await {
                 match event {
@@ -198,6 +200,20 @@ async fn main() -> Result<()> {
                             let mut rt = runtime.write().await;
                             rt.duplicate_p2p_txs += 1;
                             info!(txid = %tx.txid, already_in_mempool, already_confirmed, "ignored duplicate inbound p2p transaction");
+                            continue;
+                        }
+                        if guard.mempool.transactions.len() >= mempool_max_txs {
+                            let mut rt = runtime.write().await;
+                            rt.dropped_p2p_txs_mempool_full += 1;
+                            warn!(txid = %tx.txid, mempool_max_txs, "dropped inbound p2p transaction because mempool is full");
+                            let _ = storage.append_runtime_event(
+                                "warn",
+                                "tx_drop_mempool_full",
+                                &format!(
+                                    "source=p2p txid={} mempool_max_txs={}",
+                                    tx.txid, mempool_max_txs
+                                ),
+                            );
                             continue;
                         }
                         if let Err(e) = accept_transaction(tx, &mut guard, AcceptSource::P2p) {

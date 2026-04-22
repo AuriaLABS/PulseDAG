@@ -20,6 +20,7 @@ pub struct Config {
     pub auto_prune_every_blocks: u64,
     pub prune_keep_recent_blocks: u64,
     pub prune_require_snapshot: bool,
+    pub mempool_max_txs: usize,
 }
 
 impl Config {
@@ -95,6 +96,11 @@ impl Config {
             prune_require_snapshot: std::env::var("PULSEDAG_PRUNE_REQUIRE_SNAPSHOT")
                 .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
                 .unwrap_or(true),
+            mempool_max_txs: std::env::var("PULSEDAG_MEMPOOL_MAX_TXS")
+                .ok()
+                .and_then(|v| v.parse::<usize>().ok())
+                .filter(|v| *v > 0)
+                .unwrap_or(5000),
         }
     }
 }

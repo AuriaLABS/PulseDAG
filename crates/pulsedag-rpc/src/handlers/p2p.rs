@@ -2,7 +2,9 @@ use axum::{extract::State, Json};
 
 use crate::api::{ApiResponse, RpcStateLike};
 
-pub async fn get_p2p_status<S: RpcStateLike>(State(state): State<S>) -> Json<ApiResponse<serde_json::Value>> {
+pub async fn get_p2p_status<S: RpcStateLike>(
+    State(state): State<S>,
+) -> Json<ApiResponse<serde_json::Value>> {
     match state.p2p() {
         Some(p2p) => match p2p.status() {
             Ok(status) => Json(ApiResponse::ok(serde_json::json!({
@@ -18,6 +20,7 @@ pub async fn get_p2p_status<S: RpcStateLike>(State(state): State<S>) -> Json<Api
                 "seen_message_ids": status.seen_message_ids,
                 "queued_messages": status.queued_messages,
                 "inbound_messages": status.inbound_messages,
+                "dropped_inbound_messages": status.dropped_inbound_messages,
                 "runtime_started": status.runtime_started,
                 "runtime_mode_detail": status.runtime_mode_detail,
                 "swarm_events_seen": status.swarm_events_seen,
@@ -31,7 +34,6 @@ pub async fn get_p2p_status<S: RpcStateLike>(State(state): State<S>) -> Json<Api
         None => Json(ApiResponse::err("P2P_DISABLED", "p2p is disabled")),
     }
 }
-
 
 #[derive(Debug, serde::Serialize)]
 pub struct P2pPeerItem {
@@ -53,16 +55,25 @@ pub struct P2pTopicsData {
     pub per_topic_publishes: std::collections::HashMap<String, usize>,
 }
 
-pub async fn get_p2p_peers<S: RpcStateLike>(State(state): State<S>) -> Json<ApiResponse<P2pPeersData>> {
+pub async fn get_p2p_peers<S: RpcStateLike>(
+    State(state): State<S>,
+) -> Json<ApiResponse<P2pPeersData>> {
     match state.p2p() {
         Some(p2p) => match p2p.status() {
             Ok(status) => {
-                let peers = status.connected_peers.into_iter().map(|peer_id| P2pPeerItem {
-                    peer_id,
-                    connected: true,
-                    source_mode: status.mode.clone(),
-                }).collect::<Vec<_>>();
-                Json(ApiResponse::ok(P2pPeersData { count: peers.len(), peers }))
+                let peers = status
+                    .connected_peers
+                    .into_iter()
+                    .map(|peer_id| P2pPeerItem {
+                        peer_id,
+                        connected: true,
+                        source_mode: status.mode.clone(),
+                    })
+                    .collect::<Vec<_>>();
+                Json(ApiResponse::ok(P2pPeersData {
+                    count: peers.len(),
+                    peers,
+                }))
             }
             Err(e) => Json(ApiResponse::err("P2P_ERROR", e.to_string())),
         },
@@ -70,7 +81,9 @@ pub async fn get_p2p_peers<S: RpcStateLike>(State(state): State<S>) -> Json<ApiR
     }
 }
 
-pub async fn get_p2p_topics<S: RpcStateLike>(State(state): State<S>) -> Json<ApiResponse<P2pTopicsData>> {
+pub async fn get_p2p_topics<S: RpcStateLike>(
+    State(state): State<S>,
+) -> Json<ApiResponse<P2pTopicsData>> {
     match state.p2p() {
         Some(p2p) => match p2p.status() {
             Ok(status) => Json(ApiResponse::ok(P2pTopicsData {
