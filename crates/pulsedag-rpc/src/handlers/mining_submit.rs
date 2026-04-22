@@ -1,10 +1,10 @@
+use super::mining_template::load_template;
+use crate::api::{ApiResponse, RpcStateLike, SubmitMinedBlockRequest};
 use axum::{extract::State, Json};
-use crate::{api::{ApiResponse, RpcStateLike, SubmitMinedBlockRequest},};
 use pulsedag_core::{
     accept_block, adopt_ready_orphans, dev_pow_accepts, dev_target_u64, preferred_tip_hash,
     AcceptSource,
 };
-use super::mining_template::load_template;
 
 #[derive(Debug, serde::Serialize)]
 pub struct MiningSubmitData {
@@ -37,7 +37,10 @@ where
     Ok(())
 }
 
-pub async fn post_mining_submit<S: RpcStateLike>(State(state): State<S>, Json(req): Json<SubmitMinedBlockRequest>) -> Json<ApiResponse<MiningSubmitData>> {
+pub async fn post_mining_submit<S: RpcStateLike>(
+    State(state): State<S>,
+    Json(req): Json<SubmitMinedBlockRequest>,
+) -> Json<ApiResponse<MiningSubmitData>> {
     let chain_handle = state.chain();
     let mut chain = chain_handle.write().await;
     let pow_accepted_dev = dev_pow_accepts(&req.block.header);
@@ -49,32 +52,61 @@ pub async fn post_mining_submit<S: RpcStateLike>(State(state): State<S>, Json(re
         let runtime_handle = state.runtime();
         let mut runtime = runtime_handle.write().await;
         runtime.rejected_mined_blocks += 1;
-        return Json(ApiResponse::err("INVALID_POW", "submitted block does not satisfy current dev pow check".to_string()));
+        return Json(ApiResponse::err(
+            "INVALID_POW",
+            "submitted block does not satisfy current dev pow check".to_string(),
+        ));
     }
 
     if height <= chain.dag.best_height {
-        return Json(ApiResponse::err("STALE_TEMPLATE", format!("stale template: current best height is {} and submitted block height is {}", chain.dag.best_height, height)));
+        return Json(ApiResponse::err(
+            "STALE_TEMPLATE",
+            format!(
+                "stale template: current best height is {} and submitted block height is {}",
+                chain.dag.best_height, height
+            ),
+        ));
     }
 
     let mut current_parents = chain.dag.tips.iter().cloned().collect::<Vec<_>>();
     current_parents.sort();
     let current_selected_tip = preferred_tip_hash(&chain);
-    let expected_template_id = format!("{}:{}", chain.dag.best_height + 1, current_parents.join(","));
+    let expected_template_id = format!(
+        "{}:{}",
+        chain.dag.best_height + 1,
+        current_parents.join(",")
+    );
 
     if let Some(template_id) = req.template_id.as_ref() {
         if template_id != &expected_template_id {
             if let Some(stored) = load_template(template_id) {
                 if stored.height != chain.dag.best_height + 1 {
-                    return Json(ApiResponse::err("STALE_TEMPLATE", format!("template height {} is stale; current next height is {}", stored.height, chain.dag.best_height + 1)));
+                    return Json(ApiResponse::err(
+                        "STALE_TEMPLATE",
+                        format!(
+                            "template height {} is stale; current next height is {}",
+                            stored.height,
+                            chain.dag.best_height + 1
+                        ),
+                    ));
                 }
                 if stored.parent_hashes != current_parents {
-                    return Json(ApiResponse::err("STALE_TEMPLATE", "template parents no longer match current tips"));
+                    return Json(ApiResponse::err(
+                        "STALE_TEMPLATE",
+                        "template parents no longer match current tips",
+                    ));
                 }
                 if stored.selected_tip != current_selected_tip {
-                    return Json(ApiResponse::err("STALE_TEMPLATE", "template selected_tip no longer matches current preferred tip"));
+                    return Json(ApiResponse::err(
+                        "STALE_TEMPLATE",
+                        "template selected_tip no longer matches current preferred tip",
+                    ));
                 }
             } else {
-                return Json(ApiResponse::err("UNKNOWN_TEMPLATE", format!("template_id {} not found", template_id)));
+                return Json(ApiResponse::err(
+                    "UNKNOWN_TEMPLATE",
+                    format!("template_id {} not found", template_id),
+                ));
             }
         }
     }
@@ -82,22 +114,30 @@ pub async fn post_mining_submit<S: RpcStateLike>(State(state): State<S>, Json(re
     let mut submitted_parents = req.block.header.parents.clone();
     submitted_parents.sort();
     if submitted_parents != current_parents {
-        return Json(ApiResponse::err("STALE_TEMPLATE", "submitted block parents no longer match current tip set"));
+        return Json(ApiResponse::err(
+            "STALE_TEMPLATE",
+            "submitted block parents no longer match current tip set",
+        ));
     }
 
     match accept_block(req.block.clone(), &mut chain, AcceptSource::Rpc) {
         Ok(_) => {
             let adopted_orphans = adopt_ready_orphans(&mut chain, AcceptSource::Rpc);
 
-            if let Err(e) = persist_then_broadcast_mined_block(&req.block, &chain, |block, chain| {
-                state.storage().persist_block(block)?;
-                state.storage().persist_chain_state(chain)?;
-                Ok(())
-            }, |block| {
-                if let Some(p2p) = state.p2p() {
-                    let _ = p2p.broadcast_block(block);
-                }
-            }) {
+            if let Err(e) = persist_then_broadcast_mined_block(
+                &req.block,
+                &chain,
+                |block, chain| {
+                    state.storage().persist_block(block)?;
+                    state.storage().persist_chain_state(chain)?;
+                    Ok(())
+                },
+                |block| {
+                    if let Some(p2p) = state.p2p() {
+                        let _ = p2p.broadcast_block(block);
+                    }
+                },
+            ) {
                 return Json(ApiResponse::err("STORAGE_ERROR", e.to_string()));
             }
 
@@ -125,7 +165,7 @@ pub async fn post_mining_submit<S: RpcStateLike>(State(state): State<S>, Json(re
             let mut runtime = runtime_handle.write().await;
             runtime.rejected_mined_blocks += 1;
             Json(ApiResponse::err("SUBMIT_BLOCK_ERROR", e.to_string()))
-        },
+        }
     }
 }
 
@@ -135,8 +175,11 @@ mod tests {
     use crate::api::{NodeRuntimeStats, RpcStateLike, SubmitMinedBlockRequest};
     use axum::{extract::State, Json};
     use pulsedag_core::{
-        build_candidate_block, build_coinbase_transaction, dev_difficulty_snapshot, dev_mine_header,
-        errors::PulseError, state::ChainState, types::{Block, Transaction},
+        build_candidate_block, build_coinbase_transaction, dev_difficulty_snapshot,
+        dev_mine_header,
+        errors::PulseError,
+        state::ChainState,
+        types::{Block, Transaction},
     };
     use pulsedag_p2p::{P2pHandle, P2pStatus};
     use pulsedag_storage::Storage;
@@ -198,6 +241,18 @@ mod tests {
                 last_message_kind: Some("block".into()),
                 last_swarm_event: None,
                 per_topic_publishes: std::collections::HashMap::new(),
+                inbound_decode_failed: 0,
+                inbound_chain_mismatch_dropped: 0,
+                inbound_duplicates_suppressed: 0,
+                last_drop_reason: None,
+                peer_reconnect_attempts: 0,
+                peer_recovery_success_count: 0,
+                last_peer_recovery_unix: None,
+                peer_cooldown_suppressed_count: 0,
+                peer_flap_suppressed_count: 0,
+                peers_under_cooldown: 0,
+                peers_under_flap_guard: 0,
+                peer_recovery: vec![],
             })
         }
     }
@@ -239,7 +294,9 @@ mod tests {
     fn build_state_with_fake_p2p() -> (TestState, FakeP2pHandle) {
         let path = temp_db_path("mining-submit-tests");
         let storage = Arc::new(Storage::open(path.to_str().unwrap()).unwrap());
-        let chain = storage.load_or_init_genesis("testnet-dev".to_string()).unwrap();
+        let chain = storage
+            .load_or_init_genesis("testnet-dev".to_string())
+            .unwrap();
         let fake = FakeP2pHandle::new();
         let state = TestState {
             chain: Arc::new(RwLock::new(chain)),
@@ -255,8 +312,8 @@ mod tests {
         let height = chain.dag.best_height + 1;
         let mut parents = chain.dag.tips.iter().cloned().collect::<Vec<_>>();
         parents.sort();
-        let difficulty = u32::try_from(dev_difficulty_snapshot(&chain).suggested_difficulty)
-            .unwrap_or(u32::MAX);
+        let difficulty =
+            u32::try_from(dev_difficulty_snapshot(&chain).suggested_difficulty).unwrap_or(u32::MAX);
         let txs = vec![build_coinbase_transaction("kaspa:qptestminer", 50, height)];
         let mut block = build_candidate_block(parents, height, difficulty, txs);
         let (mined_header, mined, _, _) = dev_mine_header(block.header.clone(), 100_000);
@@ -272,7 +329,10 @@ mod tests {
 
         let Json(response) = post_mining_submit(
             State(state),
-            Json(SubmitMinedBlockRequest { template_id: None, block }),
+            Json(SubmitMinedBlockRequest {
+                template_id: None,
+                block,
+            }),
         )
         .await;
 
@@ -287,7 +347,10 @@ mod tests {
 
         let Json(first_response) = post_mining_submit(
             State(state.clone()),
-            Json(SubmitMinedBlockRequest { template_id: None, block: block.clone() }),
+            Json(SubmitMinedBlockRequest {
+                template_id: None,
+                block: block.clone(),
+            }),
         )
         .await;
         assert!(first_response.ok);
@@ -295,7 +358,10 @@ mod tests {
 
         let Json(second_response) = post_mining_submit(
             State(state),
-            Json(SubmitMinedBlockRequest { template_id: None, block }),
+            Json(SubmitMinedBlockRequest {
+                template_id: None,
+                block,
+            }),
         )
         .await;
 
@@ -307,12 +373,14 @@ mod tests {
     fn persist_error_does_not_broadcast() {
         let path = temp_db_path("persist-error-tests");
         let storage = Arc::new(Storage::open(path.to_str().unwrap()).unwrap());
-        let chain = storage.load_or_init_genesis("testnet-dev".to_string()).unwrap();
+        let chain = storage
+            .load_or_init_genesis("testnet-dev".to_string())
+            .unwrap();
         let height = chain.dag.best_height + 1;
         let mut parents = chain.dag.tips.iter().cloned().collect::<Vec<_>>();
         parents.sort();
-        let difficulty = u32::try_from(dev_difficulty_snapshot(&chain).suggested_difficulty)
-            .unwrap_or(u32::MAX);
+        let difficulty =
+            u32::try_from(dev_difficulty_snapshot(&chain).suggested_difficulty).unwrap_or(u32::MAX);
         let txs = vec![build_coinbase_transaction("kaspa:qptestminer", 50, height)];
         let block = build_candidate_block(parents, height, difficulty, txs);
         let broadcasts = Arc::new(AtomicUsize::new(0));

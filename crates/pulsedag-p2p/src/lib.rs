@@ -5,7 +5,7 @@ use std::fs;
 use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration as StdDuration, SystemTime, UNIX_EPOCH};
 
 use libp2p::{gossipsub, identity, PeerId};
 use pulsedag_core::{
@@ -23,6 +23,22 @@ pub const P2P_MODE_LIBP2P_REAL: &str = "libp2p-real";
 
 pub fn mode_connected_peers_are_real_network(mode: &str) -> bool {
     mode == P2P_MODE_LIBP2P_REAL
+}
+
+#[derive(Debug, Clone)]
+pub struct PeerRecoveryStatus {
+    pub peer_id: String,
+    pub score: i32,
+    pub fail_streak: u32,
+    pub connected: bool,
+    pub next_retry_unix: u64,
+    pub reconnect_attempts: u64,
+    pub recovery_success_count: u64,
+    pub last_recovery_unix: Option<u64>,
+    pub cooldown_suppressed_count: u64,
+    pub flap_suppressed_count: u64,
+    pub flap_events: u32,
+    pub suppression_until_unix: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -50,6 +66,14 @@ pub struct P2pStatus {
     pub inbound_chain_mismatch_dropped: usize,
     pub inbound_duplicates_suppressed: usize,
     pub last_drop_reason: Option<String>,
+    pub peer_reconnect_attempts: u64,
+    pub peer_recovery_success_count: u64,
+    pub last_peer_recovery_unix: Option<u64>,
+    pub peer_cooldown_suppressed_count: u64,
+    pub peer_flap_suppressed_count: u64,
+    pub peers_under_cooldown: usize,
+    pub peers_under_flap_guard: usize,
+    pub peer_recovery: Vec<PeerRecoveryStatus>,
 }
 
 pub trait P2pHandle: Send + Sync {
@@ -121,14 +145,28 @@ struct InnerState {
     last_drop_reason: Option<String>,
     peer_book: HashMap<String, PeerHealth>,
     peer_state_path: Option<PathBuf>,
+    peer_reconnect_attempts: u64,
+    peer_recovery_success_count: u64,
+    last_peer_recovery_unix: Option<u64>,
+    peer_cooldown_suppressed_count: u64,
+    peer_flap_suppressed_count: u64,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 struct PeerHealth {
     score: i32,
     fail_streak: u32,
     next_retry_unix: u64,
     connected: bool,
+    reconnect_attempts: u64,
+    recovery_success_count: u64,
+    last_recovery_unix: Option<u64>,
+    last_failure_unix: Option<u64>,
+    flap_events: u32,
+    suppressed_until_unix: u64,
+    cooldown_suppressed_count: u64,
+    flap_suppressed_count: u64,
 }
 
 impl Default for PeerHealth {
@@ -138,6 +176,14 @@ impl Default for PeerHealth {
             fail_streak: 0,
             next_retry_unix: 0,
             connected: true,
+            reconnect_attempts: 0,
+            recovery_success_count: 0,
+            last_recovery_unix: None,
+            last_failure_unix: None,
+            flap_events: 0,
+            suppressed_until_unix: 0,
+            cooldown_suppressed_count: 0,
+            flap_suppressed_count: 0,
         }
     }
 }
@@ -209,6 +255,8 @@ impl P2pHandle for MemoryP2pHandle {
             .inner
             .lock()
             .map_err(|_| PulseError::Internal("p2p lock poisoned".into()))?;
+        let (peers_under_cooldown, peers_under_flap_guard, peer_recovery) =
+            peer_recovery_snapshot(&inner);
         Ok(P2pStatus {
             mode: inner.mode.clone(),
             peer_id: inner.peer_id.clone(),
@@ -233,6 +281,14 @@ impl P2pHandle for MemoryP2pHandle {
             inbound_chain_mismatch_dropped: inner.inbound_chain_mismatch_dropped,
             inbound_duplicates_suppressed: inner.inbound_duplicates_suppressed,
             last_drop_reason: inner.last_drop_reason.clone(),
+            peer_reconnect_attempts: inner.peer_reconnect_attempts,
+            peer_recovery_success_count: inner.peer_recovery_success_count,
+            last_peer_recovery_unix: inner.last_peer_recovery_unix,
+            peer_cooldown_suppressed_count: inner.peer_cooldown_suppressed_count,
+            peer_flap_suppressed_count: inner.peer_flap_suppressed_count,
+            peers_under_cooldown,
+            peers_under_flap_guard,
+            peer_recovery,
         })
     }
 }
@@ -322,6 +378,42 @@ fn peer_jitter(peer: &str) -> u64 {
     hasher.finish() % 3
 }
 
+const FLAP_WINDOW: StdDuration = StdDuration::from_secs(45);
+const FLAP_BASE_COOLDOWN: u64 = 30;
+
+fn peer_recovery_snapshot(state: &InnerState) -> (usize, usize, Vec<PeerRecoveryStatus>) {
+    let now = now_unix();
+    let mut peer_recovery = state
+        .peer_book
+        .iter()
+        .map(|(peer_id, health)| PeerRecoveryStatus {
+            peer_id: peer_id.clone(),
+            score: health.score,
+            fail_streak: health.fail_streak,
+            connected: health.connected,
+            next_retry_unix: health.next_retry_unix,
+            reconnect_attempts: health.reconnect_attempts,
+            recovery_success_count: health.recovery_success_count,
+            last_recovery_unix: health.last_recovery_unix,
+            cooldown_suppressed_count: health.cooldown_suppressed_count,
+            flap_suppressed_count: health.flap_suppressed_count,
+            flap_events: health.flap_events,
+            suppression_until_unix: (health.suppressed_until_unix > now)
+                .then_some(health.suppressed_until_unix),
+        })
+        .collect::<Vec<_>>();
+    peer_recovery.sort_by(|a, b| a.peer_id.cmp(&b.peer_id));
+    let peers_under_cooldown = peer_recovery
+        .iter()
+        .filter(|peer| peer.next_retry_unix > now)
+        .count();
+    let peers_under_flap_guard = peer_recovery
+        .iter()
+        .filter(|peer| peer.suppression_until_unix.is_some())
+        .count();
+    (peers_under_cooldown, peers_under_flap_guard, peer_recovery)
+}
+
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 struct PeerBookSnapshot {
     peer_book: HashMap<String, PeerHealth>,
@@ -360,21 +452,77 @@ fn persist_peer_state_if_configured(state: &InnerState) {
 }
 
 fn register_peer_result(inner: &Arc<Mutex<InnerState>>, peer: &str, success: bool) {
-    let now = now_unix();
+    register_peer_result_at(inner, peer, success, now_unix());
+}
+
+fn register_peer_result_at(inner: &Arc<Mutex<InnerState>>, peer: &str, success: bool, now: u64) {
     if let Ok(mut guard) = inner.lock() {
-        let health = guard.peer_book.entry(peer.to_string()).or_default();
+        guard.peer_reconnect_attempts = guard.peer_reconnect_attempts.saturating_add(1);
+        let mut counted_cooldown_suppression = false;
+        let mut counted_flap_suppression = false;
+        {
+            let health = guard.peer_book.entry(peer.to_string()).or_default();
+            health.reconnect_attempts = health.reconnect_attempts.saturating_add(1);
+            if success {
+                health.connected = true;
+                health.fail_streak = 0;
+                health.next_retry_unix = now;
+                health.score = (health.score + 8).min(200);
+                health.recovery_success_count = health.recovery_success_count.saturating_add(1);
+                health.last_recovery_unix = Some(now);
+                if health
+                    .last_failure_unix
+                    .map(|last_fail| now.saturating_sub(last_fail) <= FLAP_WINDOW.as_secs())
+                    .unwrap_or(false)
+                {
+                    health.flap_events = health.flap_events.saturating_add(1);
+                } else {
+                    health.flap_events = 0;
+                }
+                health.suppressed_until_unix = 0;
+            } else {
+                if health.next_retry_unix > now {
+                    health.cooldown_suppressed_count =
+                        health.cooldown_suppressed_count.saturating_add(1);
+                    counted_cooldown_suppression = true;
+                }
+                health.connected = false;
+                health.fail_streak = health.fail_streak.saturating_add(1);
+                health.score = (health.score - 16).max(-200);
+                let exp = health.fail_streak.min(6);
+                let backoff = 2u64.pow(exp);
+                let mut next_retry_unix = now.saturating_add(backoff + peer_jitter(peer));
+                if health
+                    .last_recovery_unix
+                    .map(|last_ok| now.saturating_sub(last_ok) <= FLAP_WINDOW.as_secs())
+                    .unwrap_or(false)
+                {
+                    health.flap_events = health.flap_events.saturating_add(1);
+                } else {
+                    health.flap_events = 0;
+                }
+                if health.flap_events >= 2 {
+                    let flap_cooldown =
+                        FLAP_BASE_COOLDOWN.saturating_mul(health.flap_events as u64);
+                    health.suppressed_until_unix = now.saturating_add(flap_cooldown);
+                    next_retry_unix = next_retry_unix.max(health.suppressed_until_unix);
+                    health.flap_suppressed_count = health.flap_suppressed_count.saturating_add(1);
+                    counted_flap_suppression = true;
+                }
+                health.last_failure_unix = Some(now);
+                health.next_retry_unix = next_retry_unix;
+            }
+        }
         if success {
-            health.connected = true;
-            health.fail_streak = 0;
-            health.next_retry_unix = now;
-            health.score = (health.score + 8).min(200);
-        } else {
-            health.connected = false;
-            health.fail_streak = health.fail_streak.saturating_add(1);
-            health.score = (health.score - 16).max(-200);
-            let exp = health.fail_streak.min(6);
-            let backoff = 2u64.pow(exp);
-            health.next_retry_unix = now.saturating_add(backoff + peer_jitter(peer));
+            guard.peer_recovery_success_count = guard.peer_recovery_success_count.saturating_add(1);
+            guard.last_peer_recovery_unix = Some(now);
+        }
+        if counted_cooldown_suppression {
+            guard.peer_cooldown_suppressed_count =
+                guard.peer_cooldown_suppressed_count.saturating_add(1);
+        }
+        if counted_flap_suppression {
+            guard.peer_flap_suppressed_count = guard.peer_flap_suppressed_count.saturating_add(1);
         }
 
         if mode_connected_peers_are_real_network(&guard.mode) {
@@ -652,6 +800,8 @@ impl P2pHandle for Libp2pHandle {
             .inner
             .lock()
             .map_err(|_| PulseError::Internal("p2p lock poisoned".into()))?;
+        let (peers_under_cooldown, peers_under_flap_guard, peer_recovery) =
+            peer_recovery_snapshot(&inner);
         Ok(P2pStatus {
             mode: inner.mode.clone(),
             peer_id: inner.peer_id.clone(),
@@ -676,6 +826,14 @@ impl P2pHandle for Libp2pHandle {
             inbound_chain_mismatch_dropped: inner.inbound_chain_mismatch_dropped,
             inbound_duplicates_suppressed: inner.inbound_duplicates_suppressed,
             last_drop_reason: inner.last_drop_reason.clone(),
+            peer_reconnect_attempts: inner.peer_reconnect_attempts,
+            peer_recovery_success_count: inner.peer_recovery_success_count,
+            last_peer_recovery_unix: inner.last_peer_recovery_unix,
+            peer_cooldown_suppressed_count: inner.peer_cooldown_suppressed_count,
+            peer_flap_suppressed_count: inner.peer_flap_suppressed_count,
+            peers_under_cooldown,
+            peers_under_flap_guard,
+            peer_recovery,
         })
     }
 }
@@ -797,6 +955,8 @@ mod tests {
         assert_eq!(status.seen_message_ids, 2);
         assert_eq!(status.per_topic_publishes.get("memory-txs"), Some(&1));
         assert_eq!(status.per_topic_publishes.get("memory-blocks"), Some(&1));
+        assert_eq!(status.peer_reconnect_attempts, 0);
+        assert_eq!(status.peer_recovery_success_count, 0);
     }
 
     #[test]
@@ -822,6 +982,7 @@ mod tests {
                 fail_streak: 0,
                 next_retry_unix: now_unix(),
                 connected: true,
+                ..PeerHealth::default()
             },
         )]);
         persist_peer_book(&path, &persisted);
@@ -842,5 +1003,81 @@ mod tests {
 
         std::env::remove_var("PULSEDAG_P2P_PEER_STATE_PATH");
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn peer_recovery_reduces_backoff_and_increments_metrics() {
+        let state = Arc::new(Mutex::new(InnerState {
+            peer_book: HashMap::from([("peer-a".to_string(), PeerHealth::default())]),
+            ..Default::default()
+        }));
+
+        register_peer_result_at(&state, "peer-a", false, 1_000);
+        let failed = state
+            .lock()
+            .unwrap()
+            .peer_book
+            .get("peer-a")
+            .cloned()
+            .unwrap();
+
+        register_peer_result_at(&state, "peer-a", true, 1_020);
+        let guard = state.lock().unwrap();
+        let recovered = guard.peer_book.get("peer-a").cloned().unwrap();
+
+        assert!(failed.next_retry_unix > 1_000);
+        assert_eq!(recovered.next_retry_unix, 1_020);
+        assert_eq!(recovered.recovery_success_count, 1);
+        assert_eq!(guard.peer_recovery_success_count, 1);
+        assert_eq!(guard.last_peer_recovery_unix, Some(1_020));
+    }
+
+    #[test]
+    fn repeated_failures_flap_and_cooldown_are_suppressed() {
+        let state = Arc::new(Mutex::new(InnerState {
+            peer_book: HashMap::from([("peer-a".to_string(), PeerHealth::default())]),
+            ..Default::default()
+        }));
+
+        register_peer_result_at(&state, "peer-a", false, 2_000);
+        register_peer_result_at(&state, "peer-a", false, 2_001);
+        register_peer_result_at(&state, "peer-a", true, 2_010);
+        register_peer_result_at(&state, "peer-a", false, 2_020);
+        register_peer_result_at(&state, "peer-a", true, 2_030);
+        register_peer_result_at(&state, "peer-a", false, 2_040);
+
+        let guard = state.lock().unwrap();
+        let health = guard.peer_book.get("peer-a").cloned().unwrap();
+        assert!(guard.peer_cooldown_suppressed_count >= 1);
+        assert!(guard.peer_flap_suppressed_count >= 1);
+        assert!(health.flap_suppressed_count >= 1);
+        assert!(health.suppressed_until_unix >= health.next_retry_unix);
+    }
+
+    #[test]
+    fn peer_recovery_snapshot_is_sorted_and_stable() {
+        let mut state = InnerState::default();
+        state.peer_book.insert(
+            "peer-b".into(),
+            PeerHealth {
+                connected: false,
+                next_retry_unix: 5_000,
+                ..PeerHealth::default()
+            },
+        );
+        state.peer_book.insert(
+            "peer-a".into(),
+            PeerHealth {
+                connected: true,
+                recovery_success_count: 2,
+                ..PeerHealth::default()
+            },
+        );
+
+        let (_cooldown, _flap, snapshot) = peer_recovery_snapshot(&state);
+        assert_eq!(snapshot.len(), 2);
+        assert_eq!(snapshot[0].peer_id, "peer-a");
+        assert_eq!(snapshot[1].peer_id, "peer-b");
+        assert_eq!(snapshot[0].recovery_success_count, 2);
     }
 }
