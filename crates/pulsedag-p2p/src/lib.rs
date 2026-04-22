@@ -250,17 +250,20 @@ impl Libp2pHandle {
         let (outbound_tx, outbound_rx) = mpsc::unbounded_channel::<OutboundMessage>();
         let (inbound_tx, inbound_rx) = mpsc::unbounded_channel::<InboundEvent>();
 
-        let mut state = InnerState::default();
-        state.mode = "libp2p-swarm-skeleton".into();
-        state.runtime_mode_detail = "swarm-poll-loop-skeleton".into();
-        state.peer_id = peer_id.to_string();
-        state.listening = vec![cfg.listen_addr.clone()];
-        state.peer_book = cfg
+        let peer_book = cfg
             .bootstrap
             .iter()
             .map(|peer| (peer.clone(), PeerHealth::default()))
             .collect();
-        state.peer_state_path = peer_state_path();
+        let mut state = InnerState {
+            mode: "libp2p-swarm-skeleton".into(),
+            runtime_mode_detail: "swarm-poll-loop-skeleton".into(),
+            peer_id: peer_id.to_string(),
+            listening: vec![cfg.listen_addr.clone()],
+            peer_book,
+            peer_state_path: peer_state_path(),
+            ..InnerState::default()
+        };
         if let Some(path) = state.peer_state_path.as_ref() {
             for (peer, health) in load_peer_book(path) {
                 state.peer_book.insert(peer, health);
