@@ -10,7 +10,7 @@ use pulsedag_core::{
     state::ChainState,
     types::{Block, Hash, OutPoint, Utxo},
 };
-use rocksdb::{ColumnFamilyDescriptor, DB};
+use rocksdb::{ColumnFamilyDescriptor, WriteBatch, DB};
 use serde::{Deserialize, Serialize};
 
 const CHAIN_STATE_KEY: &[u8] = b"chain_state";
@@ -145,6 +145,43 @@ impl Storage {
             .map_err(|e| PulseError::StorageError(e.to_string()))
     }
 
+    pub fn persist_block_and_chain_state(
+        &self,
+        block: &Block,
+        state: &ChainState,
+    ) -> Result<(), PulseError> {
+        let blocks_cf = self
+            .db
+            .cf_handle("blocks")
+            .ok_or_else(|| PulseError::StorageError("missing cf blocks".into()))?;
+        let meta_cf = self
+            .db
+            .cf_handle("meta")
+            .ok_or_else(|| PulseError::StorageError("missing cf meta".into()))?;
+        let block_value =
+            serde_json::to_vec(block).map_err(|e| PulseError::StorageError(e.to_string()))?;
+        let state_value =
+            bincode::serialize(state).map_err(|e| PulseError::StorageError(e.to_string()))?;
+        let captured_at_unix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0)
+            .to_string();
+
+        let mut batch = WriteBatch::default();
+        batch.put_cf(blocks_cf, block.hash.as_bytes(), block_value);
+        batch.put_cf(meta_cf, CHAIN_STATE_KEY, state_value);
+        batch.put_cf(
+            meta_cf,
+            SNAPSHOT_CAPTURED_AT_UNIX_KEY,
+            captured_at_unix.as_bytes(),
+        );
+
+        self.db
+            .write(batch)
+            .map_err(|e| PulseError::StorageError(e.to_string()))
+    }
+
     pub fn load_chain_state(&self) -> Result<Option<ChainState>, PulseError> {
         let cf = self
             .db
@@ -174,9 +211,8 @@ impl Storage {
             return Ok(rebuilt);
         }
         let state = init_chain_state(chain_id);
-        self.persist_chain_state(&state)?;
         for block in state.dag.blocks.values() {
-            self.persist_block(block)?;
+            self.persist_block_and_chain_state(block, &state)?;
         }
         Ok(state)
     }
@@ -324,5 +360,109 @@ impl Storage {
         self.db.cf_handle("contracts_meta").is_some()
             && self.db.cf_handle("contracts_storage").is_some()
             && self.db.cf_handle("contracts_receipts").is_some()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Storage;
+    use pulsedag_core::genesis::init_chain_state;
+
+    fn temp_db_path(test_name: &str) -> String {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        std::env::temp_dir()
+            .join(format!("pulsedag-storage-{}-{}", test_name, unique))
+            .to_string_lossy()
+            .into_owned()
+    }
+
+    #[test]
+    fn persist_block_and_chain_state_round_trips_genesis() {
+        let path = temp_db_path("atomic-round-trip");
+        let storage = Storage::open(&path).expect("open storage");
+        let state = init_chain_state("testnet".to_string());
+        let genesis = state
+            .dag
+            .blocks
+            .get(&state.dag.best_hash)
+            .cloned()
+            .expect("genesis block");
+
+        storage
+            .persist_block_and_chain_state(&genesis, &state)
+            .expect("persist atomically");
+
+        let loaded_state = storage
+            .load_chain_state()
+            .expect("load chain state")
+            .expect("snapshot present");
+        let loaded_block = storage
+            .get_block(&genesis.hash)
+            .expect("get block")
+            .expect("block present");
+
+        assert_eq!(loaded_state.dag.best_hash, state.dag.best_hash);
+        assert_eq!(loaded_state.dag.best_height, state.dag.best_height);
+        assert_eq!(loaded_block.hash, genesis.hash);
+        assert_eq!(loaded_block.header.height, genesis.header.height);
+        assert!(storage
+            .snapshot_captured_at_unix()
+            .expect("snapshot metadata")
+            .is_some());
+
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn persist_chain_state_still_supports_snapshot_only_updates() {
+        let path = temp_db_path("snapshot-only");
+        let storage = Storage::open(&path).expect("open storage");
+        let state = init_chain_state("testnet".to_string());
+
+        storage
+            .persist_chain_state(&state)
+            .expect("persist chain state only");
+
+        let loaded_state = storage
+            .load_chain_state()
+            .expect("load chain state")
+            .expect("snapshot present");
+        let blocks = storage.list_blocks().expect("list blocks");
+
+        assert_eq!(loaded_state.dag.best_hash, state.dag.best_hash);
+        assert!(blocks.is_empty());
+        assert!(storage
+            .snapshot_captured_at_unix()
+            .expect("snapshot metadata")
+            .is_some());
+
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn load_or_init_genesis_persists_block_and_snapshot() {
+        let path = temp_db_path("genesis-init");
+        let storage = Storage::open(&path).expect("open storage");
+
+        let state = storage
+            .load_or_init_genesis("testnet".to_string())
+            .expect("load or init genesis");
+        let blocks = storage.list_blocks().expect("list blocks");
+
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0].hash, state.dag.best_hash);
+        assert!(storage
+            .load_chain_state()
+            .expect("load chain state")
+            .is_some());
+        assert!(storage
+            .snapshot_captured_at_unix()
+            .expect("snapshot metadata")
+            .is_some());
+
+        let _ = std::fs::remove_dir_all(path);
     }
 }
