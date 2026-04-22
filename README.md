@@ -28,7 +28,7 @@ cargo run -p pulsedag-miner -- --node http://127.0.0.1:8080 --miner-address YOUR
 ```
 
 ## Operator package index (v2.1)
-- Runbooks: `docs/runbooks/INDEX.md`
+- Runbook index (snapshot restore, snapshot+delta rebuild, burn-in evidence, p2p recovery/rejoin, staging upgrade, staging rollback): `docs/runbooks/INDEX.md`
 - Dashboard package: `docs/dashboard/README.md`
 
 ## P2P mode labels (honest status/log semantics)

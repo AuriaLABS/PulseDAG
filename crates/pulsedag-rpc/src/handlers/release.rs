@@ -69,17 +69,34 @@ mod tests {
     fn runbook_index_covers_v2_1_operator_topics() {
         let index = include_str!("../../../../docs/runbooks/INDEX.md");
         for required in [
-            "Snapshot / Restore",
-            "Prune / Replay",
-            "P2P Recovery",
+            "Snapshot Restore",
+            "Rebuild from Snapshot + Delta",
             "Burn-in Evidence",
-            "Staging Upgrade / Rollback",
+            "P2P Recovery / Partition Rejoin",
+            "Staging Upgrade",
+            "Staging Rollback",
         ] {
             assert!(
                 index.contains(required),
                 "runbook index missing: {required}"
             );
         }
+    }
+
+    #[test]
+    fn policy_and_diagnostics_expose_aligned_release_metadata() {
+        let policy = include_str!("policy.rs");
+        let diagnostics = include_str!("diagnostics.rs");
+
+        assert!(policy.contains("pub version: String"));
+        assert!(policy.contains("pub stage: String"));
+        assert!(policy.contains("version: repo_version()"));
+        assert!(policy.contains("stage: operator_stage().to_string()"));
+
+        assert!(diagnostics.contains("pub version: String"));
+        assert!(diagnostics.contains("pub stage: String"));
+        assert!(diagnostics.contains("version: repo_version()"));
+        assert!(diagnostics.contains("stage: operator_stage().to_string()"));
     }
 
     #[test]
