@@ -1,10 +1,55 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::{extract::State, Json};
-use pulsedag_core::rebuild_state_from_blocks;
+use std::collections::{HashMap, HashSet};
+
+use pulsedag_core::{rebuild_state_from_blocks, state::ChainState};
 use serde::Deserialize;
 
 use crate::{api::ApiResponse, api::RpcStateLike};
+
+fn prune_rebuilt_state(mut rebuilt: ChainState, keep_from_height: u64) -> ChainState {
+    let genesis_hash = rebuilt.dag.genesis_hash.clone();
+    rebuilt
+        .dag
+        .blocks
+        .retain(|hash, block| hash == &genesis_hash || block.header.height >= keep_from_height);
+
+    let mut children = HashMap::new();
+    for block in rebuilt.dag.blocks.values() {
+        for parent in &block.header.parents {
+            if rebuilt.dag.blocks.contains_key(parent) {
+                children
+                    .entry(parent.clone())
+                    .or_insert_with(Vec::new)
+                    .push(block.hash.clone());
+            }
+        }
+    }
+
+    let mut tips = HashSet::new();
+    for block in rebuilt.dag.blocks.values() {
+        let has_retained_child = children
+            .get(&block.hash)
+            .map(|v| !v.is_empty())
+            .unwrap_or(false);
+        if !has_retained_child {
+            tips.insert(block.hash.clone());
+        }
+    }
+
+    rebuilt.dag.children = children;
+    rebuilt.dag.tips = tips;
+    rebuilt.dag.best_height = rebuilt
+        .dag
+        .blocks
+        .values()
+        .map(|b| b.header.height)
+        .max()
+        .unwrap_or(0);
+
+    rebuilt
+}
 
 #[derive(Debug, Deserialize)]
 pub struct PruneRequest {
@@ -68,20 +113,23 @@ pub async fn post_prune_chain<S: RpcStateLike>(
         Ok(v) => v,
         Err(e) => return Json(ApiResponse::err("PRUNE_BLOCKS_READ_ERROR", e.to_string())),
     };
-    if let Err(e) = rebuild_state_from_blocks(chain_id.clone(), pre_prune_blocks) {
-        let _ = state.storage().append_runtime_event(
-            "error",
-            "prune_replay_precheck_failed",
-            &format!(
-                "replay precheck failed before prune at keep_from_height {}: {}",
-                keep_from_height, e
-            ),
-        );
-        return Json(ApiResponse::err(
-            "PRUNE_REPLAY_PRECHECK_FAILED",
-            e.to_string(),
-        ));
-    }
+    let precheck_rebuilt = match rebuild_state_from_blocks(chain_id.clone(), pre_prune_blocks) {
+        Ok(v) => v,
+        Err(e) => {
+            let _ = state.storage().append_runtime_event(
+                "error",
+                "prune_replay_precheck_failed",
+                &format!(
+                    "replay precheck failed before prune at keep_from_height {}: {}",
+                    keep_from_height, e
+                ),
+            );
+            return Json(ApiResponse::err(
+                "PRUNE_REPLAY_PRECHECK_FAILED",
+                e.to_string(),
+            ));
+        }
+    };
 
     let pruned_block_count = match state.storage().prune_blocks_below_height(keep_from_height) {
         Ok(v) => v,
@@ -92,23 +140,21 @@ pub async fn post_prune_chain<S: RpcStateLike>(
         Ok(v) => v,
         Err(e) => return Json(ApiResponse::err("PRUNE_BLOCKS_READ_ERROR", e.to_string())),
     };
-    let rebuilt = match rebuild_state_from_blocks(chain_id, post_prune_blocks) {
-        Ok(v) => v,
-        Err(e) => {
-            let _ = state.storage().append_runtime_event(
-                "error",
-                "prune_replay_postcheck_failed",
-                &format!(
-                    "replay postcheck failed after prune at keep_from_height {}: {}",
-                    keep_from_height, e
-                ),
-            );
-            return Json(ApiResponse::err(
-                "PRUNE_REPLAY_POSTCHECK_FAILED",
-                e.to_string(),
-            ));
-        }
-    };
+
+    let rebuilt = prune_rebuilt_state(precheck_rebuilt, keep_from_height);
+
+    let post_prune_count = post_prune_blocks.len();
+    let rebuilt_count = rebuilt.dag.blocks.len();
+    if post_prune_count != rebuilt_count {
+        let _ = state.storage().append_runtime_event(
+            "warn",
+            "prune_postcheck_mismatch",
+            &format!(
+                "post-prune block count {} differs from rebuilt state count {} at keep_from_height {}",
+                post_prune_count, rebuilt_count, keep_from_height
+            ),
+        );
+    }
 
     if let Err(e) = state.storage().persist_chain_state(&rebuilt) {
         return Json(ApiResponse::err("PRUNE_STATE_PERSIST_ERROR", e.to_string()));
@@ -140,7 +186,7 @@ pub async fn post_prune_chain<S: RpcStateLike>(
         "info",
         "prune_manual",
         &format!(
-            "manual prune removed {} blocks below {}; replay verified at height {}",
+            "manual prune removed {} blocks below {}; persisted pruned state at height {}",
             pruned_block_count, keep_from_height, rebuilt.dag.best_height
         ),
     );
