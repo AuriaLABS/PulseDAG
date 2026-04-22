@@ -68,7 +68,7 @@ pub async fn post_prune_chain<S: RpcStateLike>(
         Ok(v) => v,
         Err(e) => return Json(ApiResponse::err("PRUNE_BLOCKS_READ_ERROR", e.to_string())),
     };
-    let rebuilt = match rebuild_state_from_blocks(chain_id.clone(), pre_prune_blocks) {
+    let precheck_rebuilt = match rebuild_state_from_blocks(chain_id.clone(), pre_prune_blocks) {
         Ok(v) => v,
         Err(e) => {
             let _ = state.storage().append_runtime_event(
@@ -86,7 +86,7 @@ pub async fn post_prune_chain<S: RpcStateLike>(
         }
     };
 
-    if let Err(e) = state.storage().persist_chain_state(&rebuilt) {
+    if let Err(e) = state.storage().persist_chain_state(&precheck_rebuilt) {
         return Json(ApiResponse::err("PRUNE_STATE_PERSIST_ERROR", e.to_string()));
     }
 
@@ -94,6 +94,32 @@ pub async fn post_prune_chain<S: RpcStateLike>(
         Ok(v) => v,
         Err(e) => return Json(ApiResponse::err("PRUNE_ERROR", e.to_string())),
     };
+
+    let post_prune_blocks = match state.storage().list_blocks() {
+        Ok(v) => v,
+        Err(e) => return Json(ApiResponse::err("PRUNE_BLOCKS_READ_ERROR", e.to_string())),
+    };
+    let rebuilt = match rebuild_state_from_blocks(chain_id, post_prune_blocks) {
+        Ok(v) => v,
+        Err(e) => {
+            let _ = state.storage().append_runtime_event(
+                "error",
+                "prune_replay_postcheck_failed",
+                &format!(
+                    "replay postcheck failed after prune at keep_from_height {}: {}",
+                    keep_from_height, e
+                ),
+            );
+            return Json(ApiResponse::err(
+                "PRUNE_REPLAY_POSTCHECK_FAILED",
+                e.to_string(),
+            ));
+        }
+    };
+
+    if let Err(e) = state.storage().persist_chain_state(&rebuilt) {
+        return Json(ApiResponse::err("PRUNE_STATE_PERSIST_ERROR", e.to_string()));
+    }
 
     {
         let mut chain = state.chain().write().await;
