@@ -1,0 +1,40 @@
+{
+  "title": "PulseDAG Operator Overview (v2.1)",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "15s",
+  "timezone": "browser",
+  "tags": ["pulsedag", "v2.1", "operations"],
+  "panels": [
+    {
+      "type": "stat",
+      "title": "Best Height",
+      "datasource": "PulseDAG-Prometheus",
+      "targets": [{ "expr": "pulsedag_best_height" }]
+    },
+    {
+      "type": "timeseries",
+      "title": "Block Interval (s)",
+      "datasource": "PulseDAG-Prometheus",
+      "targets": [{ "expr": "pulsedag_block_interval_seconds" }]
+    },
+    {
+      "type": "timeseries",
+      "title": "Mempool Size",
+      "datasource": "PulseDAG-Prometheus",
+      "targets": [{ "expr": "pulsedag_mempool_size" }]
+    },
+    {
+      "type": "stat",
+      "title": "Connected Peers",
+      "datasource": "PulseDAG-Prometheus",
+      "targets": [{ "expr": "pulsedag_p2p_connected_peers" }]
+    },
+    {
+      "type": "stat",
+      "title": "Snapshot Exists",
+      "datasource": "PulseDAG-Prometheus",
+      "targets": [{ "expr": "pulsedag_snapshot_exists" }]
+    }
+  ]
+}

@@ -1,6 +1,8 @@
 use crate::api::ApiResponse;
 use axum::Json;
 
+pub const OPERATOR_STAGE: &str = "v2.1-readiness";
+
 #[derive(Debug, serde::Serialize)]
 pub struct ReleaseInfoData {
     pub version: String,
@@ -9,14 +11,18 @@ pub struct ReleaseInfoData {
     pub core_endpoints: Vec<String>,
 }
 
-fn repo_version() -> String {
+pub fn repo_version() -> String {
     include_str!("../../../../VERSION").trim().to_string()
+}
+
+pub fn operator_stage() -> &'static str {
+    OPERATOR_STAGE
 }
 
 pub async fn get_release_info() -> Json<ApiResponse<ReleaseInfoData>> {
     Json(ApiResponse::ok(ReleaseInfoData {
         version: repo_version(),
-        stage: "rc-final".to_string(),
+        stage: operator_stage().to_string(),
         capabilities: vec![
             "wallets".into(),
             "external_miner_protocol".into(),
@@ -47,4 +53,69 @@ pub async fn get_release_info() -> Json<ApiResponse<ReleaseInfoData>> {
             "/readiness".into(),
         ],
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{operator_stage, repo_version};
+
+    #[test]
+    fn version_and_stage_match_v2_1_readiness() {
+        assert!(repo_version().starts_with("v2.1."));
+        assert_eq!(operator_stage(), "v2.1-readiness");
+    }
+
+    #[test]
+    fn runbook_index_covers_v2_1_operator_topics() {
+        let index = include_str!("../../../../docs/runbooks/INDEX.md");
+        for required in [
+            "Snapshot / Restore",
+            "Prune / Replay",
+            "P2P Recovery",
+            "Burn-in Evidence",
+            "Staging Upgrade / Rollback",
+        ] {
+            assert!(
+                index.contains(required),
+                "runbook index missing: {required}"
+            );
+        }
+    }
+
+    #[test]
+    fn dashboard_package_is_published_and_referenced() {
+        let index = include_str!("../../../../docs/runbooks/INDEX.md");
+        let dashboard_readme = include_str!("../../../../docs/dashboard/README.md");
+        let dashboard_json =
+            include_str!("../../../../docs/dashboard/assets/pulsedag-operator-overview.json");
+        let datasource =
+            include_str!("../../../../docs/dashboard/config/datasource-prometheus.yml");
+
+        assert!(index.contains("docs/dashboard/README.md"));
+        assert!(dashboard_readme.contains("Operator Dashboard Package (v2.1)"));
+        assert!(dashboard_json.contains("PulseDAG Operator Overview (v2.1)"));
+        assert!(datasource.contains("PulseDAG-Prometheus"));
+    }
+    #[test]
+    fn legacy_versions_are_not_used_in_operator_handlers() {
+        let release = include_str!("release.rs");
+        let policy = include_str!("policy.rs");
+        let diagnostics = include_str!("diagnostics.rs");
+        let stale_versions = [
+            format!("v{}.{}.{}", 1, 1, 0),
+            format!("v{}.{}.{}", 1, 1, 1),
+            ["rc", "final"].join("-"),
+        ];
+        for stale in stale_versions {
+            assert!(
+                !release.contains(&stale),
+                "release.rs still contains {stale}"
+            );
+            assert!(!policy.contains(&stale), "policy.rs still contains {stale}");
+            assert!(
+                !diagnostics.contains(&stale),
+                "diagnostics.rs still contains {stale}"
+            );
+        }
+    }
 }
