@@ -198,6 +198,10 @@ async fn main() -> Result<()> {
                 match event {
                     InboundEvent::Transaction(tx) => {
                         let txid = tx.txid.clone();
+                        {
+                            let mut rt = runtime.write().await;
+                            rt.tx_inbound_total += 1;
+                        }
                         let mut guard = chain.write().await;
                         let already_in_mempool = guard.mempool.transactions.contains_key(&txid);
                         let already_confirmed =
@@ -208,6 +212,7 @@ async fn main() -> Result<()> {
                             let mut rt = runtime.write().await;
                             rt.duplicate_p2p_txs += 1;
                             rt.dropped_p2p_txs += 1;
+                            rt.tx_inbound_dropped_total += 1;
                             rt.last_tx_drop_unix = Some(now_unix());
                             rt.last_tx_drop_txid = Some(txid.clone());
                             let reason = if already_in_mempool {
@@ -244,6 +249,8 @@ async fn main() -> Result<()> {
                             let mut rt = runtime.write().await;
                             rt.rejected_p2p_txs += 1;
                             rt.dropped_p2p_txs += 1;
+                            rt.tx_inbound_rejected_total += 1;
+                            rt.tx_inbound_dropped_total += 1;
                             rt.dropped_p2p_txs_accept_failed += 1;
                             let now = now_unix();
                             rt.last_tx_reject_unix = Some(now);
@@ -262,43 +269,83 @@ async fn main() -> Result<()> {
                                 "tx_reject",
                                 &format!("txid={} reason=accept_failed error={}", txid, e),
                             );
-                        } else if let Err(e) = storage.persist_chain_state(&guard) {
-                            let mut rt = runtime.write().await;
-                            rt.dropped_p2p_txs += 1;
-                            rt.dropped_p2p_txs_persist_failed += 1;
-                            rt.last_tx_drop_unix = Some(now_unix());
-                            rt.last_tx_drop_reason = Some("persist_failed".to_string());
-                            rt.last_tx_drop_txid = Some(txid.clone());
-                            rt.tx_drop_reasons
-                                .push(format!("txid={} reason=persist_failed error={}", txid, e));
-                            if rt.tx_drop_reasons.len() > 32 {
-                                let overflow = rt.tx_drop_reasons.len() - 32;
-                                rt.tx_drop_reasons.drain(0..overflow);
-                            }
-                            warn!(error = %e, "failed persisting chain state after inbound transaction");
-                            let _ = storage.append_runtime_event(
-                                "warn",
-                                "tx_drop",
-                                &format!("txid={} reason=persist_failed error={}", txid, e),
-                            );
                         } else {
-                            let mut rt = runtime.write().await;
-                            rt.accepted_p2p_txs += 1;
-                            rt.last_tx_accept_unix = Some(now_unix());
-                            if let Some(ref p2p) = p2p {
-                                rt.tx_rebroadcast_attempts += 1;
-                                match p2p.broadcast_transaction(&guard.mempool.transactions[&txid])
-                                {
-                                    Ok(_) => rt.tx_rebroadcast_success += 1,
-                                    Err(e) => {
-                                        rt.tx_rebroadcast_failed += 1;
-                                        warn!(txid = %txid, error = %e, "failed rebroadcasting accepted inbound p2p transaction");
-                                        let _ = storage.append_runtime_event(
-                                            "warn",
-                                            "tx_rebroadcast_failed",
-                                            &format!("txid={} error={}", txid, e),
-                                        );
+                            let tx_for_rebroadcast = guard.mempool.transactions.get(&txid).cloned();
+                            let snapshot = guard.clone();
+                            drop(guard);
+                            if let Err(e) = storage.persist_chain_state(&snapshot) {
+                                let mut rt = runtime.write().await;
+                                rt.dropped_p2p_txs += 1;
+                                rt.tx_inbound_dropped_total += 1;
+                                rt.dropped_p2p_txs_persist_failed += 1;
+                                rt.last_tx_drop_unix = Some(now_unix());
+                                rt.last_tx_drop_reason = Some("persist_failed".to_string());
+                                rt.last_tx_drop_txid = Some(txid.clone());
+                                rt.tx_drop_reasons.push(format!(
+                                    "txid={} reason=persist_failed error={}",
+                                    txid, e
+                                ));
+                                if rt.tx_drop_reasons.len() > 32 {
+                                    let overflow = rt.tx_drop_reasons.len() - 32;
+                                    rt.tx_drop_reasons.drain(0..overflow);
+                                }
+                                warn!(error = %e, "failed persisting chain state after inbound transaction");
+                                let _ = storage.append_runtime_event(
+                                    "warn",
+                                    "tx_drop",
+                                    &format!("txid={} reason=persist_failed error={}", txid, e),
+                                );
+                            } else {
+                                let mut rt = runtime.write().await;
+                                rt.accepted_p2p_txs += 1;
+                                rt.tx_inbound_accepted_total += 1;
+                                rt.last_tx_accept_unix = Some(now_unix());
+                                if let Some(ref p2p) = p2p {
+                                    if let Ok(status) = p2p.status() {
+                                        if status.connected_peers.is_empty() {
+                                            rt.tx_rebroadcast_skipped_no_peers += 1;
+                                            let _ = storage.append_runtime_event(
+                                                "warn",
+                                                "tx_rebroadcast_skipped",
+                                                &format!("txid={} reason=no_connected_peers", txid),
+                                            );
+                                            continue;
+                                        }
                                     }
+                                    rt.tx_rebroadcast_attempts += 1;
+                                    rt.last_tx_rebroadcast_unix = Some(now_unix());
+                                    rt.last_tx_rebroadcast_error = None;
+                                    match tx_for_rebroadcast.as_ref() {
+                                        Some(tx_to_rebroadcast) => {
+                                            match p2p.broadcast_transaction(tx_to_rebroadcast) {
+                                                Ok(_) => rt.tx_rebroadcast_success += 1,
+                                                Err(e) => {
+                                                    rt.tx_rebroadcast_failed += 1;
+                                                    rt.last_tx_rebroadcast_error =
+                                                        Some(e.to_string());
+                                                    warn!(txid = %txid, error = %e, "failed rebroadcasting accepted inbound p2p transaction");
+                                                    let _ = storage.append_runtime_event(
+                                                        "warn",
+                                                        "tx_rebroadcast_failed",
+                                                        &format!("txid={} error={}", txid, e),
+                                                    );
+                                                }
+                                            }
+                                        }
+                                        None => {
+                                            rt.tx_rebroadcast_failed += 1;
+                                            rt.last_tx_rebroadcast_error =
+                                                Some("tx_missing_after_accept".to_string());
+                                            warn!(txid = %txid, "accepted transaction missing from mempool before rebroadcast");
+                                        }
+                                    }
+                                } else {
+                                    rt.tx_rebroadcast_skipped_no_p2p += 1;
+                                    let _ = storage.append_runtime_event(
+                                        "info",
+                                        "tx_rebroadcast_skipped",
+                                        &format!("txid={} reason=p2p_disabled", txid),
+                                    );
                                 }
                             }
                         }
