@@ -21,6 +21,13 @@ use tokio::time::{sleep, Duration};
 use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
+fn now_unix() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
@@ -185,30 +192,115 @@ async fn main() -> Result<()> {
         let chain = app_state.chain.clone();
         let storage = storage.clone();
         let runtime = app_state.runtime.clone();
+        let p2p = app_state.p2p.clone();
         tokio::spawn(async move {
             while let Some(event) = rx.recv().await {
                 match event {
                     InboundEvent::Transaction(tx) => {
+                        let txid = tx.txid.clone();
                         let mut guard = chain.write().await;
-                        let already_in_mempool = guard.mempool.transactions.contains_key(&tx.txid);
-                        let already_confirmed = guard.dag.blocks.values().any(|block| {
-                            block.transactions.iter().any(|known| known.txid == tx.txid)
-                        });
+                        let already_in_mempool = guard.mempool.transactions.contains_key(&txid);
+                        let already_confirmed =
+                            guard.dag.blocks.values().any(|block| {
+                                block.transactions.iter().any(|known| known.txid == txid)
+                            });
                         if already_in_mempool || already_confirmed {
                             let mut rt = runtime.write().await;
                             rt.duplicate_p2p_txs += 1;
-                            info!(txid = %tx.txid, already_in_mempool, already_confirmed, "ignored duplicate inbound p2p transaction");
+                            rt.dropped_p2p_txs += 1;
+                            rt.last_tx_drop_unix = Some(now_unix());
+                            rt.last_tx_drop_txid = Some(txid.clone());
+                            let reason = if already_in_mempool {
+                                rt.dropped_p2p_txs_duplicate_mempool += 1;
+                                "duplicate_mempool"
+                            } else {
+                                rt.dropped_p2p_txs_duplicate_confirmed += 1;
+                                "duplicate_confirmed"
+                            };
+                            rt.last_tx_drop_reason = Some(reason.to_string());
+                            rt.tx_drop_reasons
+                                .push(format!("txid={} reason={}", txid, reason));
+                            if rt.tx_drop_reasons.len() > 32 {
+                                let overflow = rt.tx_drop_reasons.len() - 32;
+                                rt.tx_drop_reasons.drain(0..overflow);
+                            }
+                            info!(txid = %txid, already_in_mempool, already_confirmed, "ignored duplicate inbound p2p transaction");
+                            let _ = storage.append_runtime_event(
+                                "info",
+                                "tx_drop",
+                                &format!(
+                                    "txid={} reason={}",
+                                    txid,
+                                    if already_in_mempool {
+                                        "duplicate_mempool"
+                                    } else {
+                                        "duplicate_confirmed"
+                                    }
+                                ),
+                            );
                             continue;
                         }
                         if let Err(e) = accept_transaction(tx, &mut guard, AcceptSource::P2p) {
                             let mut rt = runtime.write().await;
                             rt.rejected_p2p_txs += 1;
-                            warn!(error = %e, "rejected inbound p2p transaction");
+                            rt.dropped_p2p_txs += 1;
+                            rt.dropped_p2p_txs_accept_failed += 1;
+                            let now = now_unix();
+                            rt.last_tx_reject_unix = Some(now);
+                            rt.last_tx_drop_unix = Some(now);
+                            rt.last_tx_drop_reason = Some("accept_failed".to_string());
+                            rt.last_tx_drop_txid = Some(txid.clone());
+                            rt.tx_drop_reasons
+                                .push(format!("txid={} reason=accept_failed error={}", txid, e));
+                            if rt.tx_drop_reasons.len() > 32 {
+                                let overflow = rt.tx_drop_reasons.len() - 32;
+                                rt.tx_drop_reasons.drain(0..overflow);
+                            }
+                            warn!(txid = %txid, error = %e, "rejected inbound p2p transaction");
+                            let _ = storage.append_runtime_event(
+                                "warn",
+                                "tx_reject",
+                                &format!("txid={} reason=accept_failed error={}", txid, e),
+                            );
                         } else if let Err(e) = storage.persist_chain_state(&guard) {
+                            let mut rt = runtime.write().await;
+                            rt.dropped_p2p_txs += 1;
+                            rt.dropped_p2p_txs_persist_failed += 1;
+                            rt.last_tx_drop_unix = Some(now_unix());
+                            rt.last_tx_drop_reason = Some("persist_failed".to_string());
+                            rt.last_tx_drop_txid = Some(txid.clone());
+                            rt.tx_drop_reasons
+                                .push(format!("txid={} reason=persist_failed error={}", txid, e));
+                            if rt.tx_drop_reasons.len() > 32 {
+                                let overflow = rt.tx_drop_reasons.len() - 32;
+                                rt.tx_drop_reasons.drain(0..overflow);
+                            }
                             warn!(error = %e, "failed persisting chain state after inbound transaction");
+                            let _ = storage.append_runtime_event(
+                                "warn",
+                                "tx_drop",
+                                &format!("txid={} reason=persist_failed error={}", txid, e),
+                            );
                         } else {
                             let mut rt = runtime.write().await;
                             rt.accepted_p2p_txs += 1;
+                            rt.last_tx_accept_unix = Some(now_unix());
+                            if let Some(ref p2p) = p2p {
+                                rt.tx_rebroadcast_attempts += 1;
+                                match p2p.broadcast_transaction(&guard.mempool.transactions[&txid])
+                                {
+                                    Ok(_) => rt.tx_rebroadcast_success += 1,
+                                    Err(e) => {
+                                        rt.tx_rebroadcast_failed += 1;
+                                        warn!(txid = %txid, error = %e, "failed rebroadcasting accepted inbound p2p transaction");
+                                        let _ = storage.append_runtime_event(
+                                            "warn",
+                                            "tx_rebroadcast_failed",
+                                            &format!("txid={} error={}", txid, e),
+                                        );
+                                    }
+                                }
+                            }
                         }
                     }
                     InboundEvent::Block(block) => {
