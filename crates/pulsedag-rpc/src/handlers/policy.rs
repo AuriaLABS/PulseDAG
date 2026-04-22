@@ -2,11 +2,12 @@ use axum::{extract::State, Json};
 
 use crate::{
     api::{ApiResponse, RpcStateLike},
-    handlers::release::operator_stage,
+    handlers::release::{operator_stage, repo_version},
 };
 
 #[derive(Debug, serde::Serialize)]
 pub struct PolicyData {
+    pub version: String,
     pub stage: String,
     pub mempool_policy: Vec<String>,
     pub transaction_rules: Vec<String>,
@@ -23,6 +24,7 @@ pub async fn get_policy<S: RpcStateLike>(State(state): State<S>) -> Json<ApiResp
     let snapshot = pulsedag_core::dev_difficulty_snapshot(&chain);
 
     Json(ApiResponse::ok(PolicyData {
+        version: repo_version(),
         stage: operator_stage().to_string(),
         mempool_policy: vec![
             "reject double spends".into(),

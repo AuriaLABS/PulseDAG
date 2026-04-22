@@ -1,9 +1,14 @@
-use crate::{api::ApiResponse, api::RpcStateLike, handlers::release::repo_version};
+use crate::{
+    api::ApiResponse,
+    api::RpcStateLike,
+    handlers::release::{operator_stage, repo_version},
+};
 use axum::{extract::State, Json};
 
 #[derive(Debug, serde::Serialize)]
 pub struct DiagnosticsData {
     pub version: String,
+    pub stage: String,
     pub chain_id: String,
     pub best_height: u64,
     pub block_count: usize,
@@ -31,6 +36,7 @@ pub async fn get_diagnostics<S: RpcStateLike>(
 
     Json(ApiResponse::ok(DiagnosticsData {
         version: repo_version(),
+        stage: operator_stage().to_string(),
         chain_id: chain.chain_id.clone(),
         best_height: chain.dag.best_height,
         block_count: chain.dag.blocks.len(),
