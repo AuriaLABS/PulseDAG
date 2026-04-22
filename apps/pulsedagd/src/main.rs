@@ -105,6 +105,7 @@ async fn main() -> Result<()> {
         Option<Arc<dyn P2pHandle>>,
         Option<tokio::sync::mpsc::UnboundedReceiver<InboundEvent>>,
     ) = if cfg.p2p_enabled {
+        let configured_mode = cfg.p2p_mode.clone();
         let stack = if cfg.p2p_mode.as_str() == "libp2p" {
             build_p2p_stack(P2pMode::Libp2p(Libp2pConfig {
                 chain_id: cfg.chain_id.clone(),
@@ -119,8 +120,20 @@ async fn main() -> Result<()> {
                 peers: cfg.simulated_peers.clone(),
             })?
         };
+        if let Ok(status) = stack.handle.status() {
+            info!(
+                configured_mode = %configured_mode,
+                effective_mode = %status.mode,
+                runtime_mode_detail = %status.runtime_mode_detail,
+                connected_peers_are_real_network = pulsedag_p2p::mode_connected_peers_are_real_network(&status.mode),
+                "p2p initialized"
+            );
+        } else {
+            warn!(configured_mode = %configured_mode, "p2p initialized but status unavailable");
+        }
         (Some(stack.handle), stack.inbound_rx)
     } else {
+        info!("p2p disabled");
         (None, None)
     };
 

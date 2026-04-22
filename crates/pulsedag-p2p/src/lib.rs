@@ -17,6 +17,14 @@ use tokio::time::{sleep, Duration};
 
 use crate::messages::{message_id_for_block, message_id_for_tx, topic_names, NetworkMessage};
 
+pub const P2P_MODE_MEMORY_SIMULATED: &str = "memory-simulated";
+pub const P2P_MODE_LIBP2P_DEV_LOOPBACK_SKELETON: &str = "libp2p-dev-loopback-skeleton";
+pub const P2P_MODE_LIBP2P_REAL: &str = "libp2p-real";
+
+pub fn mode_connected_peers_are_real_network(mode: &str) -> bool {
+    mode == P2P_MODE_LIBP2P_REAL
+}
+
 #[derive(Debug, Clone)]
 pub struct P2pStatus {
     pub mode: String,
@@ -146,7 +154,7 @@ impl MemoryP2pHandle {
     ) -> (Self, mpsc::UnboundedReceiver<InboundEvent>) {
         let (_inbound_tx, inbound_rx) = mpsc::unbounded_channel();
         let mut state = InnerState::default();
-        state.mode = "memory-simulated".into();
+        state.mode = P2P_MODE_MEMORY_SIMULATED.into();
         state.runtime_mode_detail = "in-process-dispatch".into();
         state.peer_id = "memory".into();
         state.listening = vec!["memory://local".into()];
@@ -256,7 +264,7 @@ impl Libp2pHandle {
             .map(|peer| (peer.clone(), PeerHealth::default()))
             .collect();
         let mut state = InnerState {
-            mode: "libp2p-swarm-skeleton".into(),
+            mode: P2P_MODE_LIBP2P_DEV_LOOPBACK_SKELETON.into(),
             runtime_mode_detail: "swarm-poll-loop-skeleton".into(),
             peer_id: peer_id.to_string(),
             listening: vec![cfg.listen_addr.clone()],
@@ -269,14 +277,18 @@ impl Libp2pHandle {
                 state.peer_book.insert(peer, health);
             }
         }
-        let mut candidates = state
-            .peer_book
-            .iter()
-            .filter(|(_, v)| v.connected)
-            .map(|(k, v)| (k.clone(), v.score))
-            .collect::<Vec<_>>();
-        candidates.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-        state.connected_peers = candidates.into_iter().map(|(peer, _)| peer).collect();
+        if mode_connected_peers_are_real_network(&state.mode) {
+            let mut candidates = state
+                .peer_book
+                .iter()
+                .filter(|(_, v)| v.connected)
+                .map(|(k, v)| (k.clone(), v.score))
+                .collect::<Vec<_>>();
+            candidates.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+            state.connected_peers = candidates.into_iter().map(|(peer, _)| peer).collect();
+        } else {
+            state.connected_peers.clear();
+        }
         state.topics = topics.clone();
         state.subscriptions_active = topics.len();
         state.mdns = cfg.enable_mdns;
@@ -365,14 +377,18 @@ fn register_peer_result(inner: &Arc<Mutex<InnerState>>, peer: &str, success: boo
             health.next_retry_unix = now.saturating_add(backoff + peer_jitter(peer));
         }
 
-        let mut candidates = guard
-            .peer_book
-            .iter()
-            .filter(|(_, v)| v.connected)
-            .map(|(k, v)| (k.clone(), v.score))
-            .collect::<Vec<_>>();
-        candidates.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-        guard.connected_peers = candidates.into_iter().map(|(peer, _)| peer).collect();
+        if mode_connected_peers_are_real_network(&guard.mode) {
+            let mut candidates = guard
+                .peer_book
+                .iter()
+                .filter(|(_, v)| v.connected)
+                .map(|(k, v)| (k.clone(), v.score))
+                .collect::<Vec<_>>();
+            candidates.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+            guard.connected_peers = candidates.into_iter().map(|(peer, _)| peer).collect();
+        } else {
+            guard.connected_peers.clear();
+        }
         persist_peer_state_if_configured(&guard);
     }
 }
@@ -771,9 +787,11 @@ mod tests {
         handle
             .broadcast_block(&block)
             .expect("memory mode block broadcast should succeed");
-        let status = handle.status().expect("memory mode status should be available");
+        let status = handle
+            .status()
+            .expect("memory mode status should be available");
 
-        assert_eq!(status.mode, "memory-simulated");
+        assert_eq!(status.mode, P2P_MODE_MEMORY_SIMULATED);
         assert_eq!(status.publish_attempts, 2);
         assert_eq!(status.broadcasted_messages, 2);
         assert_eq!(status.seen_message_ids, 2);
@@ -781,8 +799,19 @@ mod tests {
         assert_eq!(status.per_topic_publishes.get("memory-blocks"), Some(&1));
     }
 
+    #[test]
+    fn connected_peers_truth_flag_is_mode_dependent() {
+        assert!(!mode_connected_peers_are_real_network(
+            P2P_MODE_MEMORY_SIMULATED
+        ));
+        assert!(!mode_connected_peers_are_real_network(
+            P2P_MODE_LIBP2P_DEV_LOOPBACK_SKELETON
+        ));
+        assert!(mode_connected_peers_are_real_network(P2P_MODE_LIBP2P_REAL));
+    }
+
     #[tokio::test]
-    async fn restart_rehydrates_peer_health_from_persisted_state() {
+    async fn restart_rehydrates_peer_health_without_claiming_real_connectivity() {
         let path = std::env::temp_dir().join(format!("pulsedag-peer-state-{}.json", now_unix()));
         std::env::set_var("PULSEDAG_P2P_PEER_STATE_PATH", &path);
 
@@ -807,8 +836,9 @@ mod tests {
         let (handle, _rx) = Libp2pHandle::new(cfg).expect("libp2p handle should init");
         let status = handle.status().expect("status should work");
 
-        assert!(status.connected_peers.iter().any(|p| p == "peer-rejoin"));
-        assert!(status.connected_peers.iter().any(|p| p == "peer-bootstrap"));
+        assert_eq!(status.mode, P2P_MODE_LIBP2P_DEV_LOOPBACK_SKELETON);
+        assert!(status.connected_peers.is_empty());
+        assert!(!mode_connected_peers_are_real_network(&status.mode));
 
         std::env::remove_var("PULSEDAG_P2P_PEER_STATE_PATH");
         let _ = fs::remove_file(path);
