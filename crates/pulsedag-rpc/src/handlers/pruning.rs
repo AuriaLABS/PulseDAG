@@ -73,7 +73,7 @@ pub async fn post_prune_chain<S: RpcStateLike>(
         .filter(|b| b.header.height >= keep_from_height)
         .collect();
 
-    let rebuilt = match rebuild_state_from_blocks(chain_id.clone(), retained_blocks) {
+    let pre_prune_rebuilt = match rebuild_state_from_blocks(chain_id.clone(), retained_blocks) {
         Ok(v) => v,
         Err(e) => {
             let _ = state.storage().append_runtime_event(
@@ -91,14 +91,35 @@ pub async fn post_prune_chain<S: RpcStateLike>(
         }
     };
 
-    if let Err(e) = state.storage().persist_chain_state(&rebuilt) {
-        return Json(ApiResponse::err("PRUNE_STATE_PERSIST_ERROR", e.to_string()));
-    }
-
     let pruned_block_count = match state.storage().prune_blocks_below_height(keep_from_height) {
         Ok(v) => v,
         Err(e) => return Json(ApiResponse::err("PRUNE_ERROR", e.to_string())),
     };
+
+    let post_prune_blocks = match state.storage().list_blocks() {
+        Ok(v) => v,
+        Err(e) => return Json(ApiResponse::err("PRUNE_BLOCKS_READ_ERROR", e.to_string())),
+    };
+    let rebuilt = match rebuild_state_from_blocks(chain_id, post_prune_blocks) {
+        Ok(v) => v,
+        Err(e) => {
+            let _ = state.storage().append_runtime_event(
+                "error",
+                "prune_replay_postcheck_failed",
+                &format!(
+                    "replay rebuild failed after prune at keep_from_height {}: {}",
+                    keep_from_height, e
+                ),
+            );
+            return Json(ApiResponse::err(
+                "PRUNE_REPLAY_POSTCHECK_FAILED",
+                e.to_string(),
+            ));
+        }
+    };
+    if let Err(e) = state.storage().persist_chain_state(&rebuilt) {
+        return Json(ApiResponse::err("PRUNE_STATE_PERSIST_ERROR", e.to_string()));
+    }
 
     {
         let mut chain = state.chain().write().await;
@@ -126,8 +147,8 @@ pub async fn post_prune_chain<S: RpcStateLike>(
         "info",
         "prune_manual",
         &format!(
-            "manual prune removed {} blocks below {}; replay verified at height {}",
-            pruned_block_count, keep_from_height, rebuilt.dag.best_height
+            "manual prune removed {} blocks below {}; replay verified from pre-prune height {} to post-prune height {}",
+            pruned_block_count, keep_from_height, pre_prune_rebuilt.dag.best_height, rebuilt.dag.best_height
         ),
     );
 
