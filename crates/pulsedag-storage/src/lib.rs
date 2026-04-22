@@ -10,7 +10,7 @@ use pulsedag_core::{
     state::ChainState,
     types::{Block, Hash, OutPoint, Utxo},
 };
-use rocksdb::{ColumnFamilyDescriptor, DB};
+use rocksdb::{ColumnFamilyDescriptor, WriteBatch, DB};
 use serde::{Deserialize, Serialize};
 
 const CHAIN_STATE_KEY: &[u8] = b"chain_state";
@@ -127,22 +127,55 @@ impl Storage {
             .db
             .cf_handle("meta")
             .ok_or_else(|| PulseError::StorageError("missing cf meta".into()))?;
+        let mut batch = WriteBatch::default();
+        self.stage_chain_state_snapshot(&mut batch, &cf, state)?;
+        self.db
+            .write(batch)
+            .map_err(|e| PulseError::StorageError(e.to_string()))
+    }
+
+    pub fn persist_block_and_chain_state(
+        &self,
+        block: &Block,
+        state: &ChainState,
+    ) -> Result<(), PulseError> {
+        let blocks_cf = self
+            .db
+            .cf_handle("blocks")
+            .ok_or_else(|| PulseError::StorageError("missing cf blocks".into()))?;
+        let meta_cf = self
+            .db
+            .cf_handle("meta")
+            .ok_or_else(|| PulseError::StorageError("missing cf meta".into()))?;
+        let block_value =
+            serde_json::to_vec(block).map_err(|e| PulseError::StorageError(e.to_string()))?;
+        let mut batch = WriteBatch::default();
+        batch.put_cf(&blocks_cf, block.hash.as_bytes(), block_value);
+        self.stage_chain_state_snapshot(&mut batch, &meta_cf, state)?;
+        self.db
+            .write(batch)
+            .map_err(|e| PulseError::StorageError(e.to_string()))
+    }
+
+    fn stage_chain_state_snapshot(
+        &self,
+        batch: &mut WriteBatch,
+        meta_cf: &impl rocksdb::AsColumnFamilyRef,
+        state: &ChainState,
+    ) -> Result<(), PulseError> {
         let value =
             bincode::serialize(state).map_err(|e| PulseError::StorageError(e.to_string()))?;
-        self.db
-            .put_cf(cf, CHAIN_STATE_KEY, value)
-            .map_err(|e| PulseError::StorageError(e.to_string()))?;
         let captured_at_unix = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0);
-        self.db
-            .put_cf(
-                cf,
-                SNAPSHOT_CAPTURED_AT_UNIX_KEY,
-                captured_at_unix.to_string().as_bytes(),
-            )
-            .map_err(|e| PulseError::StorageError(e.to_string()))
+        batch.put_cf(meta_cf, CHAIN_STATE_KEY, value);
+        batch.put_cf(
+            meta_cf,
+            SNAPSHOT_CAPTURED_AT_UNIX_KEY,
+            captured_at_unix.to_string().into_bytes(),
+        );
+        Ok(())
     }
 
     pub fn load_chain_state(&self) -> Result<Option<ChainState>, PulseError> {
