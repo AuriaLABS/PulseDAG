@@ -73,7 +73,7 @@ pub async fn post_prune_chain<S: RpcStateLike>(
         .filter(|b| b.header.height >= keep_from_height)
         .collect();
 
-    let rebuilt = match rebuild_state_from_blocks(chain_id.clone(), retained_blocks) {
+    let precheck_rebuilt = match rebuild_state_from_blocks(chain_id.clone(), retained_blocks) {
         Ok(v) => v,
         Err(e) => {
             let _ = state.storage().append_runtime_event(
@@ -91,13 +91,27 @@ pub async fn post_prune_chain<S: RpcStateLike>(
         }
     };
 
-    if let Err(e) = state.storage().persist_chain_state(&rebuilt) {
-        return Json(ApiResponse::err("PRUNE_STATE_PERSIST_ERROR", e.to_string()));
-    }
-
     let pruned_block_count = match state.storage().prune_blocks_below_height(keep_from_height) {
         Ok(v) => v,
         Err(e) => return Json(ApiResponse::err("PRUNE_ERROR", e.to_string())),
+    };
+
+    let rebuilt = match state.storage().replay_blocks_or_init(chain_id) {
+        Ok(v) => v,
+        Err(e) => {
+            let _ = state.storage().append_runtime_event(
+                "error",
+                "prune_replay_postcheck_failed",
+                &format!(
+                    "replay failed after prune at keep_from_height {}: {}",
+                    keep_from_height, e
+                ),
+            );
+            return Json(ApiResponse::err(
+                "PRUNE_REPLAY_POSTCHECK_FAILED",
+                e.to_string(),
+            ));
+        }
     };
 
     {
@@ -126,8 +140,11 @@ pub async fn post_prune_chain<S: RpcStateLike>(
         "info",
         "prune_manual",
         &format!(
-            "manual prune removed {} blocks below {}; replay verified at height {}",
-            pruned_block_count, keep_from_height, rebuilt.dag.best_height
+            "manual prune removed {} blocks below {}; replay precheck height {}; replay verified at height {}",
+            pruned_block_count,
+            keep_from_height,
+            precheck_rebuilt.dag.best_height,
+            rebuilt.dag.best_height
         ),
     );
 
