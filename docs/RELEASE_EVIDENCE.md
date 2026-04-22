@@ -48,3 +48,16 @@ Before approving v2.1:
 3. Confirm cadence records match planned snapshot/pruning schedule.
 4. Confirm restart and p2p recovery notes include outcomes and follow-up items.
 5. Attach sign-off to the final evidence bundle.
+
+
+## Staging reversibility evidence (upgrade + rollback)
+For the v2.1 release gate, attach a staging rehearsal bundle that demonstrates operational reversibility:
+- Baseline capture prior to upgrade.
+- Post-upgrade validation output.
+- Post-rollback validation output (including health/coherence checks).
+- Operator notes that indicate whether snapshot/restore rebuild steps were required.
+
+Primary runbooks:
+- `docs/runbooks/STAGING_UPGRADE.md`
+- `docs/runbooks/STAGING_ROLLBACK.md`
+

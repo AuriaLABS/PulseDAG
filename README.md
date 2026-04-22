@@ -35,6 +35,12 @@ cargo run -p pulsedag-miner -- --node http://127.0.0.1:8080 --miner-address YOUR
 The node startup logs and `/status`, `/p2p/status`, `/p2p/topology` endpoints now expose whether `connected_peers` should be interpreted as real network connectivity.  
 See `docs/OPERATIONS_P2P.md` for operational guidance.
 
+
+## Staging upgrade and rollback validation (v2.1)
+- Upgrade runbook: `docs/runbooks/STAGING_UPGRADE.md`
+- Rollback runbook: `docs/runbooks/STAGING_ROLLBACK.md`
+- Validation helper: `scripts/staging/validate_upgrade_rollback.sh`
+
 ## Burn-in and evidence for v2.1
 - The CI workflow `Soak Smoke (short CI signal)` is intentionally a short regression signal, not a release burn-in claim.
 - Real release burn-in for v2.1 requires a 14-day operated run with evidence collection.
