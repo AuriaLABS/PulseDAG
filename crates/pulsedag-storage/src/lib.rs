@@ -29,6 +29,15 @@ pub struct Storage {
     pub db: Arc<DB>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RestoreDrillReport {
+    pub used_snapshot: bool,
+    pub fallback_to_full_rebuild: bool,
+    pub persisted_block_count: usize,
+    pub best_height: u64,
+    pub restore_duration_ms: u128,
+}
+
 impl Storage {
     pub fn open(path: &str) -> Result<Self, PulseError> {
         let cfs = vec![
@@ -215,8 +224,43 @@ impl Storage {
 
     pub fn replay_blocks_or_init(&self, chain_id: String) -> Result<ChainState, PulseError> {
         let blocks = self.list_blocks()?;
-        if let Some(snapshot) = self.load_chain_state()? {
-            let state = rebuild_state_from_snapshot_and_blocks(snapshot, blocks)?;
+        let snapshot = self.load_chain_state();
+        if let Ok(Some(snapshot)) = snapshot {
+            match rebuild_state_from_snapshot_and_blocks(snapshot, blocks.clone()) {
+                Ok(state) => {
+                    self.persist_chain_state(&state)?;
+                    return Ok(state);
+                }
+                Err(snapshot_delta_err) => {
+                    if blocks.is_empty() {
+                        return Err(snapshot_delta_err);
+                    }
+                    let _ = self.append_runtime_event(
+                        "warn",
+                        "snapshot_delta_replay_failed_fallback_full",
+                        &format!(
+                            "snapshot+delta replay failed and full rebuild fallback engaged: {}",
+                            snapshot_delta_err
+                        ),
+                    );
+                    let state = rebuild_state_from_blocks(chain_id, blocks)?;
+                    self.persist_chain_state(&state)?;
+                    return Ok(state);
+                }
+            }
+        } else if let Err(snapshot_err) = snapshot {
+            if blocks.is_empty() {
+                return Err(snapshot_err);
+            }
+            let _ = self.append_runtime_event(
+                "warn",
+                "snapshot_decode_failed_fallback_full",
+                &format!(
+                    "snapshot decode failed and full rebuild fallback engaged: {}",
+                    snapshot_err
+                ),
+            );
+            let state = rebuild_state_from_blocks(chain_id, blocks)?;
             self.persist_chain_state(&state)?;
             return Ok(state);
         }
@@ -236,6 +280,93 @@ impl Storage {
         let state = rebuild_state_from_snapshot_and_blocks(snapshot, blocks)?;
         self.persist_chain_state(&state)?;
         Ok(state)
+    }
+
+    pub fn restore_drill_snapshot_and_delta(
+        &self,
+        chain_id: String,
+    ) -> Result<RestoreDrillReport, PulseError> {
+        let started = std::time::Instant::now();
+        let persisted_blocks = self.list_blocks()?;
+        let persisted_block_count = persisted_blocks.len();
+        let snapshot = self.load_chain_state();
+
+        let (state, used_snapshot, fallback_to_full_rebuild) = match snapshot {
+            Ok(Some(snapshot_state)) => {
+                match rebuild_state_from_snapshot_and_blocks(
+                    snapshot_state,
+                    persisted_blocks.clone(),
+                ) {
+                    Ok(state) => (state, true, false),
+                    Err(snapshot_delta_err) => {
+                        if persisted_blocks.is_empty() {
+                            return Err(snapshot_delta_err);
+                        }
+                        let _ = self.append_runtime_event(
+                            "warn",
+                            "restore_drill_snapshot_delta_failed_fallback_full",
+                            &format!(
+                                "restore drill snapshot+delta failed; fallback to full rebuild: {}",
+                                snapshot_delta_err
+                            ),
+                        );
+                        (
+                            rebuild_state_from_blocks(chain_id.clone(), persisted_blocks)?,
+                            true,
+                            true,
+                        )
+                    }
+                }
+            }
+            Ok(None) => {
+                if persisted_blocks.is_empty() {
+                    return Err(PulseError::StorageError(
+                        "restore drill requires snapshot or persisted blocks".to_string(),
+                    ));
+                }
+                (
+                    rebuild_state_from_blocks(chain_id.clone(), persisted_blocks)?,
+                    false,
+                    true,
+                )
+            }
+            Err(snapshot_err) => {
+                if persisted_blocks.is_empty() {
+                    return Err(snapshot_err);
+                }
+                let _ = self.append_runtime_event(
+                    "warn",
+                    "restore_drill_snapshot_decode_failed_fallback_full",
+                    &format!(
+                        "restore drill snapshot decode failed; fallback to full rebuild: {}",
+                        snapshot_err
+                    ),
+                );
+                (
+                    rebuild_state_from_blocks(chain_id, persisted_blocks)?,
+                    false,
+                    true,
+                )
+            }
+        };
+
+        self.persist_chain_state(&state)?;
+        let restore_duration_ms = started.elapsed().as_millis();
+        let _ = self.append_runtime_event(
+            "info",
+            "restore_drill_completed",
+            &format!(
+                "restore drill completed in {} ms (used_snapshot={}, fallback_to_full_rebuild={}, best_height={})",
+                restore_duration_ms, used_snapshot, fallback_to_full_rebuild, state.dag.best_height
+            ),
+        );
+        Ok(RestoreDrillReport {
+            used_snapshot,
+            fallback_to_full_rebuild,
+            persisted_block_count,
+            best_height: state.dag.best_height,
+            restore_duration_ms,
+        })
     }
 
     pub fn snapshot_exists(&self) -> Result<bool, PulseError> {
@@ -554,6 +685,111 @@ mod tests {
         assert!(
             message.contains("missing parent"),
             "expected missing parent error, got: {message}"
+        );
+
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn replay_blocks_or_init_falls_back_when_snapshot_is_corrupt() {
+        let path = temp_db_path("fallback-corrupt-snapshot");
+        let storage = Storage::open(&path).expect("open storage");
+        let state = build_linear_chain("testnet", 5);
+        let mut blocks: Vec<_> = state.dag.blocks.values().cloned().collect();
+        blocks.sort_by_key(|b| b.header.height);
+        for block in &blocks {
+            storage.persist_block(block).expect("persist block");
+        }
+
+        let meta_cf = storage.db.cf_handle("meta").expect("meta cf");
+        storage
+            .db
+            .put_cf(&meta_cf, b"chain_state", b"{invalid-bincode")
+            .expect("write corrupt snapshot bytes");
+
+        let rebuilt = storage
+            .replay_blocks_or_init("testnet".to_string())
+            .expect("must fall back to full rebuild");
+        assert_eq!(rebuilt.dag.best_height, state.dag.best_height);
+        assert_eq!(rebuilt.dag.best_hash, state.dag.best_hash);
+        assert_eq!(
+            storage.list_blocks().expect("list persisted blocks").len(),
+            blocks.len()
+        );
+        let events = storage.list_runtime_events(25).expect("runtime events");
+        assert!(
+            events
+                .iter()
+                .any(|e| e.kind == "snapshot_decode_failed_fallback_full"),
+            "expected fallback runtime event"
+        );
+
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn replay_blocks_or_init_fails_explicitly_with_corrupt_snapshot_and_no_blocks() {
+        let path = temp_db_path("corrupt-snapshot-no-blocks");
+        let storage = Storage::open(&path).expect("open storage");
+        let meta_cf = storage.db.cf_handle("meta").expect("meta cf");
+        storage
+            .db
+            .put_cf(&meta_cf, b"chain_state", b"corrupt-bytes")
+            .expect("write corrupt snapshot bytes");
+
+        let err = storage
+            .replay_blocks_or_init("testnet".to_string())
+            .expect_err("must fail explicitly when no block replay fallback exists");
+        assert!(
+            err.to_string().contains("Storage error"),
+            "unexpected error message: {err}"
+        );
+        assert!(
+            storage
+                .list_blocks()
+                .expect("list blocks after failure")
+                .is_empty(),
+            "no blocks should be mutated by failed replay"
+        );
+
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn restore_drill_snapshot_and_delta_reports_timing_and_preserves_coherence() {
+        let path = temp_db_path("restore-drill-report");
+        let storage = Storage::open(&path).expect("open storage");
+        let state = build_linear_chain("testnet", 6);
+        let mut blocks: Vec<_> = state.dag.blocks.values().cloned().collect();
+        blocks.sort_by_key(|b| b.header.height);
+        for block in &blocks {
+            storage.persist_block(block).expect("persist block");
+        }
+        storage
+            .persist_chain_state(&state)
+            .expect("persist baseline snapshot");
+        storage
+            .prune_blocks_below_height(5)
+            .expect("prune history below drill retention");
+
+        let report = storage
+            .restore_drill_snapshot_and_delta("testnet".to_string())
+            .expect("restore drill should succeed");
+        let rebuilt = storage
+            .load_chain_state()
+            .expect("load state")
+            .expect("snapshot should exist");
+
+        assert!(report.used_snapshot);
+        assert!(!report.fallback_to_full_rebuild);
+        assert_eq!(report.best_height, 6);
+        assert_eq!(rebuilt.dag.best_hash, state.dag.best_hash);
+        assert!(report.restore_duration_ms < 30_000);
+
+        let events = storage.list_runtime_events(25).expect("runtime events");
+        assert!(
+            events.iter().any(|e| e.kind == "restore_drill_completed"),
+            "expected restore drill completion event"
         );
 
         let _ = std::fs::remove_dir_all(path);
