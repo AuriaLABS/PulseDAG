@@ -523,7 +523,6 @@ async fn main() -> Result<()> {
                 sleep(Duration::from_secs(5)).await;
                 let chain_snapshot = chain.read().await.clone();
                 let best_height = chain_snapshot.dag.best_height;
-                let chain_id = chain_snapshot.chain_id.clone();
                 let now = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
                     .map(|d| d.as_secs())
@@ -535,7 +534,6 @@ async fn main() -> Result<()> {
                     auto_prune_enabled,
                     auto_prune_every,
                     prune_keep_recent_blocks,
-                    prune_require_snapshot,
                     last_prune_height,
                 ) = {
                     let rt = runtime.read().await;
@@ -545,7 +543,6 @@ async fn main() -> Result<()> {
                         rt.auto_prune_enabled,
                         rt.auto_prune_every_blocks,
                         rt.prune_keep_recent_blocks.max(1),
-                        rt.prune_require_snapshot,
                         rt.last_prune_height,
                     )
                 };
@@ -593,65 +590,75 @@ async fn main() -> Result<()> {
                     if should_prune {
                         let keep_from_height =
                             best_height.saturating_sub(prune_keep_recent_blocks.saturating_sub(1));
-                        let snapshot_validated = match storage.load_chain_state() {
-                            Ok(Some(snapshot)) => snapshot.dag.best_height >= keep_from_height,
-                            Ok(None) => false,
-                            Err(_) => false,
+                        let snapshot_status = match storage.load_chain_state() {
+                            Ok(Some(snapshot)) => (
+                                snapshot.dag.best_height >= keep_from_height,
+                                Some(snapshot.dag.best_height),
+                            ),
+                            Ok(None) => (false, None),
+                            Err(_) => (false, None),
                         };
-                        if prune_require_snapshot && !snapshot_validated {
-                            warn!(
-                                best_height,
-                                keep_from_height, "auto prune skipped; valid snapshot required"
-                            );
-                            let _ = storage.append_runtime_event(
-                                "warn",
-                                "prune_auto_skipped",
-                                &format!(
-                                    "auto prune skipped at height {}: snapshot missing or below {}",
+                        if !snapshot_status.0 {
+                            let reason = match snapshot_status.1 {
+                                Some(height) => format!(
+                                    "auto prune skipped at height {}: snapshot_height={} below keep_from_height={}",
+                                    best_height, height, keep_from_height
+                                ),
+                                None => format!(
+                                    "auto prune skipped at height {}: validated snapshot required and missing (keep_from_height={})",
                                     best_height, keep_from_height
                                 ),
+                            };
+                            warn!(
+                                best_height,
+                                keep_from_height,
+                                "auto prune skipped; validated snapshot+delta base required"
                             );
+                            let _ =
+                                storage.append_runtime_event("warn", "prune_auto_skipped", &reason);
                             continue;
                         }
 
                         match storage.prune_blocks_below_height(keep_from_height) {
-                            Ok(pruned) => match storage.replay_blocks_or_init(chain_id.clone()) {
-                                Ok(rebuilt) => {
-                                    {
-                                        let mut chain_guard = chain.write().await;
-                                        *chain_guard = rebuilt.clone();
+                            Ok(pruned) => {
+                                match storage.replay_from_validated_snapshot_and_delta() {
+                                    Ok(rebuilt) => {
+                                        {
+                                            let mut chain_guard = chain.write().await;
+                                            *chain_guard = rebuilt.clone();
+                                        }
+                                        {
+                                            let mut rt = runtime.write().await;
+                                            rt.last_prune_height = Some(rebuilt.dag.best_height);
+                                            rt.last_prune_unix = Some(now);
+                                            rt.last_snapshot_height = Some(rebuilt.dag.best_height);
+                                            rt.last_snapshot_unix = storage
+                                                .snapshot_captured_at_unix()
+                                                .ok()
+                                                .flatten()
+                                                .or(Some(now));
+                                        }
+                                        info!(
+                                            best_height = rebuilt.dag.best_height,
+                                            pruned,
+                                            keep_from_height,
+                                            "auto prune completed and snapshot+delta verified"
+                                        );
+                                        let _ = storage.append_runtime_event("info", "prune_auto", &format!("auto prune removed {} blocks below {}; snapshot+delta verified at height {}", pruned, keep_from_height, rebuilt.dag.best_height));
                                     }
-                                    {
-                                        let mut rt = runtime.write().await;
-                                        rt.last_prune_height = Some(rebuilt.dag.best_height);
-                                        rt.last_prune_unix = Some(now);
-                                        rt.last_snapshot_height = Some(rebuilt.dag.best_height);
-                                        rt.last_snapshot_unix = storage
-                                            .snapshot_captured_at_unix()
-                                            .ok()
-                                            .flatten()
-                                            .or(Some(now));
-                                    }
-                                    info!(
-                                        best_height = rebuilt.dag.best_height,
-                                        pruned,
-                                        keep_from_height,
-                                        "auto prune completed and replay verified"
-                                    );
-                                    let _ = storage.append_runtime_event("info", "prune_auto", &format!("auto prune removed {} blocks below {}; replay verified at height {}", pruned, keep_from_height, rebuilt.dag.best_height));
-                                }
-                                Err(e) => {
-                                    warn!(error = %e, best_height, keep_from_height, "auto prune replay verification failed");
-                                    let _ = storage.append_runtime_event(
+                                    Err(e) => {
+                                        warn!(error = %e, best_height, keep_from_height, "auto prune snapshot+delta verification failed");
+                                        let _ = storage.append_runtime_event(
                                         "error",
                                         "prune_auto_failed",
                                         &format!(
-                                            "auto prune replay verify failed at height {}: {}",
+                                            "auto prune snapshot+delta verify failed at height {}: {}",
                                             best_height, e
                                         ),
                                     );
+                                    }
                                 }
-                            },
+                            }
                             Err(e) => {
                                 warn!(error = %e, best_height, keep_from_height, "auto prune failed");
                                 let _ = storage.append_runtime_event(

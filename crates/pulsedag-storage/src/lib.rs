@@ -6,7 +6,7 @@ use std::{
 use pulsedag_core::{
     errors::PulseError,
     genesis::init_chain_state,
-    rebuild_state_from_blocks,
+    rebuild_state_from_blocks, rebuild_state_from_snapshot_and_blocks,
     state::ChainState,
     types::{Block, Hash, OutPoint, Utxo},
 };
@@ -178,43 +178,6 @@ impl Storage {
         Ok(())
     }
 
-    pub fn persist_block_and_chain_state(
-        &self,
-        block: &Block,
-        state: &ChainState,
-    ) -> Result<(), PulseError> {
-        let blocks_cf = self
-            .db
-            .cf_handle("blocks")
-            .ok_or_else(|| PulseError::StorageError("missing cf blocks".into()))?;
-        let meta_cf = self
-            .db
-            .cf_handle("meta")
-            .ok_or_else(|| PulseError::StorageError("missing cf meta".into()))?;
-        let block_value =
-            serde_json::to_vec(block).map_err(|e| PulseError::StorageError(e.to_string()))?;
-        let state_value =
-            bincode::serialize(state).map_err(|e| PulseError::StorageError(e.to_string()))?;
-        let captured_at_unix = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0)
-            .to_string();
-
-        let mut batch = WriteBatch::default();
-        batch.put_cf(blocks_cf, block.hash.as_bytes(), block_value);
-        batch.put_cf(meta_cf, CHAIN_STATE_KEY, state_value);
-        batch.put_cf(
-            meta_cf,
-            SNAPSHOT_CAPTURED_AT_UNIX_KEY,
-            captured_at_unix.as_bytes(),
-        );
-
-        self.db
-            .write(batch)
-            .map_err(|e| PulseError::StorageError(e.to_string()))
-    }
-
     pub fn load_chain_state(&self) -> Result<Option<ChainState>, PulseError> {
         let cf = self
             .db
@@ -252,10 +215,25 @@ impl Storage {
 
     pub fn replay_blocks_or_init(&self, chain_id: String) -> Result<ChainState, PulseError> {
         let blocks = self.list_blocks()?;
+        if let Some(snapshot) = self.load_chain_state()? {
+            let state = rebuild_state_from_snapshot_and_blocks(snapshot, blocks)?;
+            self.persist_chain_state(&state)?;
+            return Ok(state);
+        }
         if blocks.is_empty() {
             return self.load_or_init_genesis(chain_id);
         }
         let state = rebuild_state_from_blocks(chain_id, blocks)?;
+        self.persist_chain_state(&state)?;
+        Ok(state)
+    }
+
+    pub fn replay_from_validated_snapshot_and_delta(&self) -> Result<ChainState, PulseError> {
+        let snapshot = self
+            .load_chain_state()?
+            .ok_or_else(|| PulseError::StorageError("validated snapshot missing".to_string()))?;
+        let blocks = self.list_blocks()?;
+        let state = rebuild_state_from_snapshot_and_blocks(snapshot, blocks)?;
         self.persist_chain_state(&state)?;
         Ok(state)
     }
@@ -399,7 +377,11 @@ impl Storage {
 #[cfg(test)]
 mod tests {
     use super::Storage;
-    use pulsedag_core::genesis::init_chain_state;
+    use pulsedag_core::{
+        accept::{accept_block, AcceptSource},
+        build_candidate_block, build_coinbase_transaction, dev_mine_header,
+        genesis::init_chain_state,
+    };
 
     fn temp_db_path(test_name: &str) -> String {
         let unique = std::time::SystemTime::now()
@@ -410,6 +392,25 @@ mod tests {
             .join(format!("pulsedag-storage-{}-{}", test_name, unique))
             .to_string_lossy()
             .into_owned()
+    }
+
+    fn build_linear_chain(chain_id: &str, blocks_to_add: usize) -> pulsedag_core::ChainState {
+        let mut state = init_chain_state(chain_id.to_string());
+        for i in 1..=blocks_to_add {
+            let parent = state.dag.best_hash.clone();
+            let mut block = build_candidate_block(
+                vec![parent],
+                i as u64,
+                1,
+                vec![build_coinbase_transaction("miner", 50, i as u64)],
+            );
+            let (header, mined, _, _) = dev_mine_header(block.header.clone(), 25_000);
+            assert!(mined, "failed to mine test block at height {}", i);
+            block.header = header;
+            block.hash = format!("block-{}-{}", i, block.header.nonce);
+            accept_block(block, &mut state, AcceptSource::LocalMining).expect("accept mined block");
+        }
+        state
     }
 
     #[test]
@@ -495,6 +496,65 @@ mod tests {
             .snapshot_captured_at_unix()
             .expect("snapshot metadata")
             .is_some());
+
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn replay_blocks_or_init_uses_snapshot_plus_delta_after_prune() {
+        let path = temp_db_path("snapshot-plus-delta");
+        let storage = Storage::open(&path).expect("open storage");
+        let state = build_linear_chain("testnet", 5);
+        let mut blocks: Vec<_> = state.dag.blocks.values().cloned().collect();
+        blocks.sort_by_key(|b| b.header.height);
+
+        for block in &blocks {
+            storage.persist_block(block).expect("persist block");
+        }
+        storage
+            .persist_chain_state(&state)
+            .expect("persist validated snapshot");
+
+        storage
+            .prune_blocks_below_height(4)
+            .expect("prune old blocks while keeping 4+");
+
+        let rebuilt = storage
+            .replay_blocks_or_init("testnet".to_string())
+            .expect("rebuild from validated snapshot plus retained delta");
+        assert_eq!(rebuilt.dag.best_height, 5);
+
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn replay_blocks_or_init_rejects_truncated_history_without_snapshot() {
+        let path = temp_db_path("reject-truncated-without-snapshot");
+        let storage = Storage::open(&path).expect("open storage");
+        let state = build_linear_chain("testnet", 4);
+        let mut blocks: Vec<_> = state
+            .dag
+            .blocks
+            .values()
+            .filter(|b| b.header.height >= 3)
+            .cloned()
+            .collect();
+        blocks.sort_by_key(|b| b.header.height);
+
+        for block in &blocks {
+            storage
+                .persist_block(block)
+                .expect("persist retained-only blocks");
+        }
+
+        let err = storage
+            .replay_blocks_or_init("testnet".to_string())
+            .expect_err("must reject replay from truncated history without snapshot");
+        let message = err.to_string();
+        assert!(
+            message.contains("missing parent"),
+            "expected missing parent error, got: {message}"
+        );
 
         let _ = std::fs::remove_dir_all(path);
     }
