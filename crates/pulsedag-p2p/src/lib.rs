@@ -421,13 +421,18 @@ fn dispatch_network_message(
             }
             let id = message_id_for_tx(&transaction);
             if let Ok(mut guard) = inner.lock() {
-                if !remember_message_id(&mut guard, id) {
+                if guard.seen_message_ids.contains(&id) {
                     return;
                 }
-                guard.inbound_messages += 1;
-                guard.last_message_kind = Some("tx-inbound".into());
+                if inbound_tx
+                    .try_send(InboundEvent::Transaction(transaction))
+                    .is_ok()
+                {
+                    remember_message_id(&mut guard, id);
+                    guard.inbound_messages += 1;
+                    guard.last_message_kind = Some("tx-inbound".into());
+                }
             }
-            let _ = inbound_tx.try_send(InboundEvent::Transaction(transaction));
         }
         NetworkMessage::NewBlock { chain_id, block } => {
             if chain_id != expected_chain_id {
@@ -435,13 +440,15 @@ fn dispatch_network_message(
             }
             let id = message_id_for_block(&block);
             if let Ok(mut guard) = inner.lock() {
-                if !remember_message_id(&mut guard, id) {
+                if guard.seen_message_ids.contains(&id) {
                     return;
                 }
-                guard.inbound_messages += 1;
-                guard.last_message_kind = Some("block-inbound".into());
+                if inbound_tx.try_send(InboundEvent::Block(block)).is_ok() {
+                    remember_message_id(&mut guard, id);
+                    guard.inbound_messages += 1;
+                    guard.last_message_kind = Some("block-inbound".into());
+                }
             }
-            let _ = inbound_tx.try_send(InboundEvent::Block(block));
         }
         NetworkMessage::GetTips { chain_id } => {
             if chain_id == expected_chain_id {
@@ -474,13 +481,15 @@ fn dispatch_network_message(
             if let Some(block) = block {
                 let id = message_id_for_block(&block);
                 if let Ok(mut guard) = inner.lock() {
-                    if !remember_message_id(&mut guard, id) {
+                    if guard.seen_message_ids.contains(&id) {
                         return;
                     }
-                    guard.inbound_messages += 1;
-                    guard.last_message_kind = Some("block-data".into());
+                    if inbound_tx.try_send(InboundEvent::Block(block)).is_ok() {
+                        remember_message_id(&mut guard, id);
+                        guard.inbound_messages += 1;
+                        guard.last_message_kind = Some("block-data".into());
+                    }
                 }
-                let _ = inbound_tx.try_send(InboundEvent::Block(block));
             }
         }
     }
@@ -653,6 +662,7 @@ pub fn build_p2p_stack(mode: P2pMode) -> Result<P2pStack, PulseError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pulsedag_core::types::Transaction;
 
     #[test]
     fn peer_failures_increase_backoff_and_lower_score() {
@@ -748,5 +758,44 @@ mod tests {
         assert_eq!(state.seen_message_ids.len(), MAX_SEEN_MESSAGE_IDS);
         assert_eq!(state.seen_message_ids_order.len(), MAX_SEEN_MESSAGE_IDS);
         assert!(!state.seen_message_ids.contains("msg-0"));
+    }
+
+    #[test]
+    fn dispatch_only_marks_seen_after_enqueue_succeeds() {
+        let inner = Arc::new(Mutex::new(InnerState::default()));
+        let (inbound_tx, mut inbound_rx) = mpsc::channel(1);
+        inbound_tx
+            .try_send(InboundEvent::PeerConnected("occupied".into()))
+            .expect("channel should accept first event");
+
+        let tx = Transaction {
+            txid: "tx-1".into(),
+            version: 1,
+            inputs: vec![],
+            outputs: vec![],
+            fee: 0,
+            nonce: 1,
+        };
+        let message_id = message_id_for_tx(&tx);
+        let bytes = serde_json::to_vec(&NetworkMessage::NewTransaction {
+            chain_id: "testnet".into(),
+            transaction: tx.clone(),
+        })
+        .expect("transaction should serialize");
+
+        dispatch_network_message("testnet", &bytes, &inner, &inbound_tx);
+        {
+            let guard = inner.lock().expect("lock should be available");
+            assert!(!guard.seen_message_ids.contains(&message_id));
+            assert_eq!(guard.inbound_messages, 0);
+        }
+
+        let _ = inbound_rx.try_recv();
+        dispatch_network_message("testnet", &bytes, &inner, &inbound_tx);
+        {
+            let guard = inner.lock().expect("lock should be available");
+            assert!(guard.seen_message_ids.contains(&message_id));
+            assert_eq!(guard.inbound_messages, 1);
+        }
     }
 }
