@@ -1,10 +1,10 @@
-name: Burn-in Simulated
+name: Soak Smoke (short CI signal)
 
 on:
   workflow_dispatch:
 
 jobs:
-  burnin:
+  soak-smoke:
     runs-on: ubuntu-latest
 
     steps:
@@ -26,19 +26,19 @@ jobs:
             --miner-address test \
             --loop > miner.log 2>&1 &
 
-      - name: Burn-in loop
+      - name: Short soak health loop (~150s)
         run: |
           for i in {1..30}
           do
             echo "Iteration $i"
-            curl -s http://127.0.0.1:8080/status
+            curl -sSf http://127.0.0.1:8080/status > /dev/null
             sleep 5
           done
 
-      - name: Upload logs
+      - name: Upload short-soak logs
         uses: actions/upload-artifact@v4
         with:
-          name: burnin-logs
+          name: short-soak-logs
           path: |
             node.log
             miner.log
