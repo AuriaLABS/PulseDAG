@@ -1,4 +1,5 @@
 use axum::{extract::State, Json};
+use pulsedag_p2p::mode_connected_peers_are_real_network;
 
 use crate::api::{ApiResponse, RpcStateLike};
 
@@ -9,6 +10,7 @@ pub async fn get_p2p_status<S: RpcStateLike>(
         Some(p2p) => match p2p.status() {
             Ok(status) => Json(ApiResponse::ok(serde_json::json!({
                 "mode": status.mode,
+                "connected_peers_are_real_network": mode_connected_peers_are_real_network(&status.mode),
                 "peer_id": status.peer_id,
                 "listening": status.listening,
                 "connected_peers": status.connected_peers,
@@ -64,12 +66,14 @@ pub async fn get_p2p_peers<S: RpcStateLike>(
     match state.p2p() {
         Some(p2p) => match p2p.status() {
             Ok(status) => {
+                let connected_peers_are_real_network =
+                    mode_connected_peers_are_real_network(&status.mode);
                 let peers = status
                     .connected_peers
                     .into_iter()
                     .map(|peer_id| P2pPeerItem {
                         peer_id,
-                        connected: true,
+                        connected: connected_peers_are_real_network,
                         source_mode: status.mode.clone(),
                     })
                     .collect::<Vec<_>>();

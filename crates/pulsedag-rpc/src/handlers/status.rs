@@ -1,5 +1,6 @@
 use crate::{api::ApiResponse, api::RpcStateLike};
 use axum::{extract::State, Json};
+use pulsedag_p2p::mode_connected_peers_are_real_network;
 
 #[derive(Debug, serde::Serialize)]
 pub struct NodeStatusData {
@@ -18,6 +19,8 @@ pub struct NodeStatusData {
     pub persisted_block_count: usize,
     pub recommended_keep_from_height: u64,
     pub p2p_enabled: bool,
+    pub p2p_mode: Option<String>,
+    pub connected_peers_are_real_network: bool,
     pub peer_count: usize,
     pub last_block_hash: Option<String>,
     pub contracts_prepared: bool,
@@ -55,11 +58,13 @@ pub async fn get_status<S: RpcStateLike>(
         .dag
         .best_height
         .saturating_sub(keep_recent.saturating_sub(1));
-    let peer_count = state
-        .p2p()
-        .and_then(|p| p.status().ok())
-        .map(|s| s.connected_peers.len())
-        .unwrap_or(0);
+    let p2p_status = state.p2p().and_then(|p| p.status().ok()).map(|s| {
+        let peers_are_real = mode_connected_peers_are_real_network(&s.mode);
+        (s.mode, peers_are_real, s.connected_peers.len())
+    });
+    let (p2p_mode, connected_peers_are_real_network, peer_count) =
+        p2p_status.unwrap_or((String::new(), false, 0));
+    let p2p_enabled = state.p2p().is_some();
     let last_block_hash = chain
         .dag
         .blocks
@@ -86,7 +91,13 @@ pub async fn get_status<S: RpcStateLike>(
         captured_at_unix,
         persisted_block_count: persisted_blocks.len(),
         recommended_keep_from_height,
-        p2p_enabled: state.p2p().is_some(),
+        p2p_enabled,
+        p2p_mode: if p2p_enabled && !p2p_mode.is_empty() {
+            Some(p2p_mode)
+        } else {
+            None
+        },
+        connected_peers_are_real_network,
         peer_count,
         last_block_hash,
         contracts_prepared,
