@@ -110,6 +110,10 @@ pub async fn post_prune_chain<S: RpcStateLike>(
             }
         };
 
+    if let Err(e) = state.storage().persist_chain_state(&precheck_rebuilt) {
+        return Json(ApiResponse::err("PRUNE_STATE_PERSIST_ERROR", e.to_string()));
+    }
+
     let pruned_block_count = match state.storage().prune_blocks_below_height(keep_from_height) {
         Ok(v) => v,
         Err(e) => return Json(ApiResponse::err("PRUNE_ERROR", e.to_string())),
