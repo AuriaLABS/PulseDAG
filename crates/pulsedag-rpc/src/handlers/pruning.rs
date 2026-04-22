@@ -68,26 +68,19 @@ pub async fn post_prune_chain<S: RpcStateLike>(
         Ok(v) => v,
         Err(e) => return Json(ApiResponse::err("PRUNE_BLOCKS_READ_ERROR", e.to_string())),
     };
-    let precheck_rebuilt = match rebuild_state_from_blocks(chain_id.clone(), pre_prune_blocks) {
-        Ok(v) => v,
-        Err(e) => {
-            let _ = state.storage().append_runtime_event(
-                "error",
-                "prune_replay_precheck_failed",
-                &format!(
-                    "replay precheck failed before prune at keep_from_height {}: {}",
-                    keep_from_height, e
-                ),
-            );
-            return Json(ApiResponse::err(
-                "PRUNE_REPLAY_PRECHECK_FAILED",
-                e.to_string(),
-            ));
-        }
-    };
-
-    if let Err(e) = state.storage().persist_chain_state(&precheck_rebuilt) {
-        return Json(ApiResponse::err("PRUNE_STATE_PERSIST_ERROR", e.to_string()));
+    if let Err(e) = rebuild_state_from_blocks(chain_id.clone(), pre_prune_blocks) {
+        let _ = state.storage().append_runtime_event(
+            "error",
+            "prune_replay_precheck_failed",
+            &format!(
+                "replay precheck failed before prune at keep_from_height {}: {}",
+                keep_from_height, e
+            ),
+        );
+        return Json(ApiResponse::err(
+            "PRUNE_REPLAY_PRECHECK_FAILED",
+            e.to_string(),
+        ));
     }
 
     let pruned_block_count = match state.storage().prune_blocks_below_height(keep_from_height) {
