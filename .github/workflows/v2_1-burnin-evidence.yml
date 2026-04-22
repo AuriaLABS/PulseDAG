@@ -1,0 +1,43 @@
+name: v2.1 Burn-in Evidence Bundle
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: "Identifier for this evidence collection run"
+        required: true
+        default: "v2.1-burnin"
+      run_date_utc:
+        description: "UTC date (YYYY-MM-DD). Leave empty for current UTC date."
+        required: false
+        default: ""
+
+jobs:
+  evidence-bundle:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Generate release evidence bundle
+        run: |
+          scripts/release/generate_burnin_evidence.sh \
+            "${{ github.event.inputs.run_id }}" \
+            "${{ github.event.inputs.run_date_utc }}"
+
+      - name: Determinism check (same inputs => same bundle)
+        run: |
+          OUT_A="artifacts/determinism/a"
+          OUT_B="artifacts/determinism/b"
+          mkdir -p "${OUT_A}" "${OUT_B}"
+          scripts/release/generate_burnin_evidence.sh "determinism" "2026-01-01" "${OUT_A}"
+          scripts/release/generate_burnin_evidence.sh "determinism" "2026-01-01" "${OUT_B}"
+          find "${OUT_A}" -type f -print0 | sort -z | xargs -0 sha256sum > "${OUT_A}/sha256.txt"
+          find "${OUT_B}" -type f -print0 | sort -z | xargs -0 sha256sum > "${OUT_B}/sha256.txt"
+          diff -u "${OUT_A}/sha256.txt" "${OUT_B}/sha256.txt"
+
+      - name: Upload v2.1 evidence artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: v2_1-burnin-evidence-${{ github.event.inputs.run_id }}
+          path: artifacts/release-evidence/${{ github.event.inputs.run_id }}
