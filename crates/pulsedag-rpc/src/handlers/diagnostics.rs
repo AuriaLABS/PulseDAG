@@ -1,5 +1,5 @@
+use crate::{api::ApiResponse, api::RpcStateLike, handlers::release::repo_version};
 use axum::{extract::State, Json};
-use crate::{api::ApiResponse, api::RpcStateLike};
 
 #[derive(Debug, serde::Serialize)]
 pub struct DiagnosticsData {
@@ -15,7 +15,9 @@ pub struct DiagnosticsData {
     pub peer_count: usize,
 }
 
-pub async fn get_diagnostics<S: RpcStateLike>(State(state): State<S>) -> Json<ApiResponse<DiagnosticsData>> {
+pub async fn get_diagnostics<S: RpcStateLike>(
+    State(state): State<S>,
+) -> Json<ApiResponse<DiagnosticsData>> {
     let chain_handle = state.chain();
     let chain = chain_handle.read().await;
     let snapshot_exists = state.storage().snapshot_exists().unwrap_or(false);
@@ -28,7 +30,7 @@ pub async fn get_diagnostics<S: RpcStateLike>(State(state): State<S>) -> Json<Ap
     };
 
     Json(ApiResponse::ok(DiagnosticsData {
-        version: "v1.1.1".to_string(),
+        version: repo_version(),
         chain_id: chain.chain_id.clone(),
         best_height: chain.dag.best_height,
         block_count: chain.dag.blocks.len(),
