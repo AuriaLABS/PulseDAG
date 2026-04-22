@@ -738,6 +738,49 @@ mod tests {
         assert!(health.score > 80);
     }
 
+    #[test]
+    fn memory_mode_tracks_publish_metrics_by_topic() {
+        let (handle, _inbound_rx) = MemoryP2pHandle::new("testnet".into(), vec!["peer-a".into()]);
+        let tx = Transaction {
+            txid: "tx-1".into(),
+            version: 1,
+            inputs: vec![],
+            outputs: vec![],
+            fee: 10,
+            nonce: 1,
+        };
+        let block = Block {
+            hash: "block-1".into(),
+            header: pulsedag_core::types::BlockHeader {
+                version: 1,
+                parents: vec![],
+                timestamp: 1,
+                difficulty: 1,
+                nonce: 1,
+                merkle_root: "mr".into(),
+                state_root: "sr".into(),
+                blue_score: 1,
+                height: 1,
+            },
+            transactions: vec![tx.clone()],
+        };
+
+        handle
+            .broadcast_transaction(&tx)
+            .expect("memory mode tx broadcast should succeed");
+        handle
+            .broadcast_block(&block)
+            .expect("memory mode block broadcast should succeed");
+        let status = handle.status().expect("memory mode status should be available");
+
+        assert_eq!(status.mode, "memory-simulated");
+        assert_eq!(status.publish_attempts, 2);
+        assert_eq!(status.broadcasted_messages, 2);
+        assert_eq!(status.seen_message_ids, 2);
+        assert_eq!(status.per_topic_publishes.get("memory-txs"), Some(&1));
+        assert_eq!(status.per_topic_publishes.get("memory-blocks"), Some(&1));
+    }
+
     #[tokio::test]
     async fn restart_rehydrates_peer_health_from_persisted_state() {
         let path = std::env::temp_dir().join(format!("pulsedag-peer-state-{}.json", now_unix()));
