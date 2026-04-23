@@ -38,6 +38,25 @@ pub struct RestoreDrillReport {
     pub restore_duration_ms: u128,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StorageAuditIssue {
+    pub code: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StorageAuditReport {
+    pub ok: bool,
+    pub read_only: bool,
+    pub deep_check_performed: bool,
+    pub snapshot_exists: bool,
+    pub snapshot_best_height: Option<u64>,
+    pub persisted_block_count: usize,
+    pub persisted_best_height: Option<u64>,
+    pub issue_count: usize,
+    pub issues: Vec<StorageAuditIssue>,
+}
+
 impl Storage {
     pub fn open(path: &str) -> Result<Self, PulseError> {
         let cfs = vec![
@@ -371,6 +390,112 @@ impl Storage {
 
     pub fn snapshot_exists(&self) -> Result<bool, PulseError> {
         Ok(self.load_chain_state()?.is_some())
+    }
+
+    pub fn audit_state_integrity(
+        &self,
+        expected_chain_id: Option<&str>,
+        deep_check: bool,
+    ) -> Result<StorageAuditReport, PulseError> {
+        let mut issues = Vec::new();
+        let snapshot = self.load_chain_state();
+        let blocks = self.list_blocks()?;
+        let persisted_block_count = blocks.len();
+        let persisted_best_height = blocks.iter().map(|b| b.header.height).max();
+        let block_hashes = blocks
+            .iter()
+            .map(|b| b.hash.clone())
+            .collect::<std::collections::BTreeSet<_>>();
+
+        let mut snapshot_exists = false;
+        let mut snapshot_best_height = None;
+        match snapshot {
+            Ok(Some(state)) => {
+                snapshot_exists = true;
+                snapshot_best_height = Some(state.dag.best_height);
+                if let Some(chain_id) = expected_chain_id {
+                    if state.chain_id != chain_id {
+                        issues.push(StorageAuditIssue {
+                            code: "SNAPSHOT_CHAIN_ID_MISMATCH".to_string(),
+                            message: format!(
+                                "snapshot chain_id={} does not match expected {}",
+                                state.chain_id, chain_id
+                            ),
+                        });
+                    }
+                }
+            }
+            Ok(None) => {}
+            Err(err) => {
+                issues.push(StorageAuditIssue {
+                    code: "SNAPSHOT_DECODE_FAILED".to_string(),
+                    message: err.to_string(),
+                });
+            }
+        }
+
+        for block in &blocks {
+            if block.header.height == 0 {
+                continue;
+            }
+            if block.parents.is_empty() {
+                issues.push(StorageAuditIssue {
+                    code: "BLOCK_MISSING_PARENTS".to_string(),
+                    message: format!(
+                        "block {} at height {} has no parents",
+                        block.hash, block.header.height
+                    ),
+                });
+            }
+            for parent in &block.parents {
+                if !block_hashes.contains(parent) && !snapshot_exists {
+                    issues.push(StorageAuditIssue {
+                        code: "BLOCK_PARENT_MISSING_IN_STORAGE".to_string(),
+                        message: format!(
+                            "block {} references parent {} not found in persisted set",
+                            block.hash, parent
+                        ),
+                    });
+                }
+            }
+        }
+
+        if deep_check {
+            if let Ok(Some(snapshot_state)) = self.load_chain_state() {
+                if let Err(err) =
+                    rebuild_state_from_snapshot_and_blocks(snapshot_state, blocks.clone())
+                {
+                    issues.push(StorageAuditIssue {
+                        code: "DEEP_REPLAY_FAILED".to_string(),
+                        message: err.to_string(),
+                    });
+                }
+            } else if !blocks.is_empty() {
+                if let Some(chain_id) = expected_chain_id {
+                    if let Err(err) =
+                        rebuild_state_from_blocks(chain_id.to_string(), blocks.clone())
+                    {
+                        issues.push(StorageAuditIssue {
+                            code: "DEEP_REBUILD_FAILED".to_string(),
+                            message: err.to_string(),
+                        });
+                    }
+                }
+            }
+        }
+
+        let issue_count = issues.len();
+        Ok(StorageAuditReport {
+            ok: issue_count == 0,
+            read_only: true,
+            deep_check_performed: deep_check,
+            snapshot_exists,
+            snapshot_best_height,
+            persisted_block_count,
+            persisted_best_height,
+            issue_count,
+            issues,
+        })
     }
 
     pub fn snapshot_captured_at_unix(&self) -> Result<Option<u64>, PulseError> {
@@ -791,6 +916,88 @@ mod tests {
             events.iter().any(|e| e.kind == "restore_drill_completed"),
             "expected restore drill completion event"
         );
+
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn audit_self_check_detects_inconsistent_snapshot() {
+        let path = temp_db_path("audit-detects-inconsistent");
+        let storage = Storage::open(&path).expect("open storage");
+        let state = build_linear_chain("testnet", 3);
+        let mut blocks: Vec<_> = state.dag.blocks.values().cloned().collect();
+        blocks.sort_by_key(|b| b.header.height);
+        for block in &blocks {
+            storage.persist_block(block).expect("persist block");
+        }
+        let meta_cf = storage.db.cf_handle("meta").expect("meta cf");
+        storage
+            .db
+            .put_cf(&meta_cf, CHAIN_STATE_KEY, b"corrupt")
+            .expect("inject corrupt snapshot");
+
+        let report = storage
+            .audit_state_integrity(Some("testnet"), true)
+            .expect("run audit");
+        assert!(!report.ok);
+        assert!(report
+            .issues
+            .iter()
+            .any(|i| i.code == "SNAPSHOT_DECODE_FAILED"));
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn audit_self_check_passes_on_healthy_state() {
+        let path = temp_db_path("audit-healthy");
+        let storage = Storage::open(&path).expect("open storage");
+        let state = build_linear_chain("testnet", 4);
+        let mut blocks: Vec<_> = state.dag.blocks.values().cloned().collect();
+        blocks.sort_by_key(|b| b.header.height);
+        for block in &blocks {
+            storage.persist_block(block).expect("persist block");
+        }
+        storage
+            .persist_chain_state(&state)
+            .expect("persist snapshot");
+
+        let report = storage
+            .audit_state_integrity(Some("testnet"), true)
+            .expect("run audit");
+        assert!(report.ok, "issues: {:?}", report.issues);
+        assert!(report.issue_count == 0);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn audit_read_only_path_does_not_mutate_state() {
+        let path = temp_db_path("audit-read-only");
+        let storage = Storage::open(&path).expect("open storage");
+        let state = build_linear_chain("testnet", 2);
+        let mut blocks: Vec<_> = state.dag.blocks.values().cloned().collect();
+        blocks.sort_by_key(|b| b.header.height);
+        for block in &blocks {
+            storage.persist_block(block).expect("persist block");
+        }
+        storage
+            .persist_chain_state(&state)
+            .expect("persist snapshot");
+
+        let before_blocks = storage.list_blocks().expect("list before");
+        let before_snapshot_ts = storage
+            .snapshot_captured_at_unix()
+            .expect("snapshot ts before");
+
+        let report = storage
+            .audit_state_integrity(Some("testnet"), false)
+            .expect("run read-only audit");
+        assert!(report.read_only);
+        let after_blocks = storage.list_blocks().expect("list after");
+        let after_snapshot_ts = storage
+            .snapshot_captured_at_unix()
+            .expect("snapshot ts after");
+        assert_eq!(before_blocks.len(), after_blocks.len());
+        assert_eq!(before_snapshot_ts, after_snapshot_ts);
 
         let _ = std::fs::remove_dir_all(path);
     }
