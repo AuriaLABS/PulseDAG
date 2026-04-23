@@ -390,10 +390,6 @@ async fn main() -> Result<()> {
                             let now = now_unix();
                             rt.sync_pipeline.begin_cycle(now);
                             rt.sync_pipeline.observe_peer_candidate(now);
-                            rt.sync_pipeline.observe_headers(1, now);
-                            rt.sync_pipeline.request_blocks(1, now);
-                            rt.sync_pipeline.acquire_blocks(1);
-                            rt.sync_pipeline.validate_and_apply_blocks(1, now);
                         }
                         let mut guard = chain.write().await;
                         if guard.dag.blocks.contains_key(&block.hash)
@@ -403,6 +399,13 @@ async fn main() -> Result<()> {
                             rt.duplicate_p2p_blocks += 1;
                             info!(block = %block.hash, "ignored duplicate inbound p2p block");
                             continue;
+                        }
+                        {
+                            let mut rt = runtime.write().await;
+                            let now = now_unix();
+                            rt.sync_pipeline.observe_headers(1, now);
+                            rt.sync_pipeline.request_blocks(1, now);
+                            rt.sync_pipeline.acquire_blocks(1);
                         }
                         let missing_parents = pulsedag_core::missing_block_parents(&block, &guard);
                         if !missing_parents.is_empty() {
@@ -449,6 +452,7 @@ async fn main() -> Result<()> {
                                 pulsedag_core::adopt_ready_orphans(&mut guard, AcceptSource::P2p);
                             {
                                 let mut rt = runtime.write().await;
+                                rt.sync_pipeline.validate_and_apply_blocks(1, now_unix());
                                 rt.accepted_p2p_blocks += 1;
                                 rt.adopted_orphan_blocks += adopted as u64;
                                 rt.sync_pipeline.complete_cycle(now_unix());
