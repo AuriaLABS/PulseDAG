@@ -36,7 +36,7 @@ async fn main() -> Result<()> {
         .with_env_filter(EnvFilter::from_default_env())
         .init();
 
-    let cfg = Config::from_env();
+    let cfg = Config::from_env()?;
     let storage = Arc::new(Storage::open(&cfg.rocksdb_path)?);
 
     let snapshot_exists = storage.snapshot_exists().unwrap_or(false);

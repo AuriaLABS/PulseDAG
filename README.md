@@ -27,6 +27,29 @@ cargo run -p pulsedagd
 cargo run -p pulsedag-miner -- --node http://127.0.0.1:8080 --miner-address YOUR_ADDRESS --threads 4 --loop --sleep-ms 1500 --max-tries 50000
 ```
 
+## Node configuration profiles (v2.2)
+`pulsedagd` supports profile-oriented defaults through `PULSEDAG_CONFIG_PROFILE`:
+
+- `dev` (default): local development with in-memory P2P simulation (`PULSEDAG_P2P_ENABLED=false`, `PULSEDAG_P2P_MODE=memory`).
+- `testnet`: testnet-friendly defaults with libp2p dev loopback mode enabled (`PULSEDAG_P2P_ENABLED=true`, `PULSEDAG_P2P_MODE=libp2p`).
+- `operator` (alias: `staging`): operator-oriented defaults with real libp2p runtime mode (`PULSEDAG_P2P_ENABLED=true`, `PULSEDAG_P2P_MODE=libp2p-real`) and conservative pruning retention.
+
+Example:
+```bash
+PULSEDAG_CONFIG_PROFILE=testnet cargo run -p pulsedagd
+```
+
+All existing explicit env overrides still take precedence over profile defaults.  
+Example override on top of `operator`:
+```bash
+PULSEDAG_CONFIG_PROFILE=operator \
+PULSEDAG_P2P_MODE=memory \
+PULSEDAG_CHAIN_ID=my-custom-chain \
+cargo run -p pulsedagd
+```
+
+Invalid `PULSEDAG_CONFIG_PROFILE` values now fail fast with a clear startup error listing supported profile names.
+
 ## Operator package index (v2.2)
 - Runbook index (recovery orchestration, maintenance/self-check, snapshot restore, snapshot+delta rebuild, fast-boot/fallback interpretation, staging upgrade/rollback): `docs/runbooks/INDEX.md`
 - Dashboard package: `docs/dashboard/README.md`
