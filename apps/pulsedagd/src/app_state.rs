@@ -62,6 +62,8 @@ pub fn new_runtime_stats() -> NodeRuntimeStats {
         startup_consistency_issue_count: 0,
         startup_recovery_mode: "unknown".to_string(),
         startup_rebuild_reason: None,
+        startup_fastboot_used: false,
+        startup_fastboot_fallback: false,
         last_self_audit_unix: None,
         last_self_audit_ok: true,
         last_self_audit_issue_count: 0,

@@ -42,6 +42,17 @@ pub fn rebuild_state_from_snapshot_and_blocks(
         return Ok(snapshot);
     }
 
+    let snapshot_height = snapshot.dag.best_height;
+    let snapshot_hashes = &snapshot.dag.blocks;
+    blocks.retain(|block| {
+        block.header.height > snapshot_height
+            && !snapshot_hashes.contains_key(&block.hash)
+            && block.hash != snapshot.dag.genesis_hash
+    });
+    if blocks.is_empty() {
+        return Ok(snapshot);
+    }
+
     blocks.sort_by(|a, b| {
         a.header
             .height
@@ -50,19 +61,9 @@ pub fn rebuild_state_from_snapshot_and_blocks(
             .then_with(|| a.hash.cmp(&b.hash))
     });
 
-    let snapshot_height = snapshot.dag.best_height;
     let mut state = snapshot;
 
     for block in blocks.into_iter() {
-        if block.hash == state.dag.genesis_hash {
-            continue;
-        }
-        if block.header.height <= snapshot_height {
-            continue;
-        }
-        if state.dag.blocks.contains_key(&block.hash) {
-            continue;
-        }
         validate_block(&block, &state)?;
         apply_block(&block, &mut state)?;
     }
