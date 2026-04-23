@@ -333,11 +333,7 @@ impl Libp2pHandle {
         let (outbound_tx, outbound_rx) = mpsc::unbounded_channel::<OutboundMessage>();
         let (inbound_tx, inbound_rx) = mpsc::unbounded_channel::<InboundEvent>();
 
-        let peer_book = cfg
-            .bootstrap
-            .iter()
-            .map(|peer| (peer.clone(), PeerHealth::default()))
-            .collect();
+        let real_network_connectivity = matches!(cfg.runtime, Libp2pRuntimeMode::RealSwarm);
         let (mode, runtime_mode_detail) = match cfg.runtime {
             Libp2pRuntimeMode::DevLoopbackSkeleton => (
                 P2P_MODE_LIBP2P_DEV_LOOPBACK_SKELETON.to_string(),
@@ -348,6 +344,17 @@ impl Libp2pHandle {
                 "swarm-poll-loop-real".to_string(),
             ),
         };
+        let peer_book = cfg
+            .bootstrap
+            .iter()
+            .map(|peer| {
+                let mut health = PeerHealth::default();
+                if real_network_connectivity {
+                    health.connected = false;
+                }
+                (peer.clone(), health)
+            })
+            .collect();
         let mut state = InnerState {
             mode,
             runtime_mode_detail,
@@ -362,7 +369,12 @@ impl Libp2pHandle {
                 state.peer_book.insert(peer, health);
             }
         }
-        if mode_connected_peers_are_real_network(&state.mode) {
+        if real_network_connectivity {
+            for health in state.peer_book.values_mut() {
+                health.connected = false;
+            }
+        }
+        if real_network_connectivity {
             let mut candidates = state
                 .peer_book
                 .iter()
@@ -1460,7 +1472,7 @@ mod tests {
         let cfg = Libp2pConfig {
             chain_id: "testnet".into(),
             listen_addr: "/ip4/127.0.0.1/tcp/0".into(),
-            bootstrap: vec![],
+            bootstrap: vec!["bootstrap-peer".into()],
             enable_mdns: false,
             enable_kademlia: false,
             runtime: Libp2pRuntimeMode::RealSwarm,
@@ -1473,5 +1485,52 @@ mod tests {
         assert_eq!(status.mode, P2P_MODE_LIBP2P_REAL);
         assert!(mode_connected_peers_are_real_network(&status.mode));
         assert_eq!(status.runtime_mode_detail, "swarm-poll-loop-real");
+        assert!(status.connected_peers.is_empty());
+        let guard = handle.inner.lock().unwrap();
+        assert_eq!(
+            guard.peer_book.get("bootstrap-peer").map(|h| h.connected),
+            Some(false)
+        );
+    }
+
+    #[tokio::test]
+    async fn real_runtime_clears_persisted_connected_flags_on_startup() {
+        let path = std::env::temp_dir().join(format!(
+            "pulsedag-peer-state-real-runtime-{}.json",
+            now_unix()
+        ));
+        std::env::set_var("PULSEDAG_P2P_PEER_STATE_PATH", &path);
+
+        let persisted = HashMap::from([(
+            "persisted-peer".to_string(),
+            PeerHealth {
+                connected: true,
+                ..PeerHealth::default()
+            },
+        )]);
+        persist_peer_book(&path, &persisted);
+
+        let cfg = Libp2pConfig {
+            chain_id: "testnet".into(),
+            listen_addr: "/ip4/127.0.0.1/tcp/0".into(),
+            bootstrap: vec!["bootstrap-peer".into()],
+            enable_mdns: false,
+            enable_kademlia: false,
+            runtime: Libp2pRuntimeMode::RealSwarm,
+        };
+
+        let (handle, _rx) = Libp2pHandle::new(cfg).expect("real swarm handle should init");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let status = handle.status().expect("status should be available");
+
+        assert!(status.connected_peers.is_empty());
+        let guard = handle.inner.lock().unwrap();
+        assert_eq!(
+            guard.peer_book.get("persisted-peer").map(|h| h.connected),
+            Some(false)
+        );
+
+        std::env::remove_var("PULSEDAG_P2P_PEER_STATE_PATH");
+        let _ = fs::remove_file(path);
     }
 }
