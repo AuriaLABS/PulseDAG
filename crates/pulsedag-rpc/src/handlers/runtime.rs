@@ -101,6 +101,9 @@ pub struct RuntimeStatusData {
     pub p2p_peer_health_healthy: usize,
     pub p2p_peer_health_degraded: usize,
     pub p2p_peer_health_recovering: usize,
+    pub p2p_tx_outbound_duplicates_suppressed: usize,
+    pub p2p_tx_outbound_first_seen_relayed: usize,
+    pub p2p_inbound_duplicates_suppressed: usize,
 }
 
 #[derive(Default)]
@@ -118,6 +121,9 @@ struct RuntimeP2pRecoverySummary {
     peer_health_healthy: usize,
     peer_health_degraded: usize,
     peer_health_recovering: usize,
+    tx_outbound_duplicates_suppressed: usize,
+    tx_outbound_first_seen_relayed: usize,
+    inbound_duplicates_suppressed: usize,
 }
 
 fn is_peer_recovering(peer: &PeerRecoveryStatus, now_unix: u64) -> bool {
@@ -199,6 +205,9 @@ pub async fn get_runtime_status<S: RpcStateLike>(
                 peer_health_healthy,
                 peer_health_degraded,
                 peer_health_recovering,
+                tx_outbound_duplicates_suppressed: status.tx_outbound_duplicates_suppressed,
+                tx_outbound_first_seen_relayed: status.tx_outbound_first_seen_relayed,
+                inbound_duplicates_suppressed: status.inbound_duplicates_suppressed,
             }
         })
         .unwrap_or_default();
@@ -291,6 +300,9 @@ pub async fn get_runtime_status<S: RpcStateLike>(
         p2p_peer_health_healthy: p2p_recovery.peer_health_healthy,
         p2p_peer_health_degraded: p2p_recovery.peer_health_degraded,
         p2p_peer_health_recovering: p2p_recovery.peer_health_recovering,
+        p2p_tx_outbound_duplicates_suppressed: p2p_recovery.tx_outbound_duplicates_suppressed,
+        p2p_tx_outbound_first_seen_relayed: p2p_recovery.tx_outbound_first_seen_relayed,
+        p2p_inbound_duplicates_suppressed: p2p_recovery.inbound_duplicates_suppressed,
     }))
 }
 
@@ -432,6 +444,8 @@ mod tests {
             inbound_decode_failed: 0,
             inbound_chain_mismatch_dropped: 0,
             inbound_duplicates_suppressed: 0,
+            tx_outbound_duplicates_suppressed: 0,
+            tx_outbound_first_seen_relayed: 0,
             last_drop_reason: None,
             peer_reconnect_attempts: 5,
             peer_recovery_success_count: 1,
