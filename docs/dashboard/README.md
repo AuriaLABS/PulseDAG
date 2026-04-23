@@ -25,6 +25,20 @@ The package references only fields emitted by the node APIs:
 - `GET /tx/mempool`
 - `GET /pow/health`
 
+### External mining telemetry fields (v2.2)
+`GET /runtime/status` now includes dedicated external mining flow telemetry:
+- `external_mining_templates_emitted`
+- `external_mining_templates_invalidated`
+- `external_mining_stale_work_detected`
+- `external_mining_submit_accepted`
+- `external_mining_submit_rejected`
+- rejection taxonomy:
+  - `external_mining_rejected_invalid_pow`
+  - `external_mining_rejected_stale_template`
+  - `external_mining_rejected_unknown_template`
+  - `external_mining_rejected_submit_block_error`
+  - `external_mining_rejected_storage_error`
+
 ## How operators use this package
 1. Wire your telemetry collector (Prometheus, OTEL collector, or Grafana JSON/Infinity datasource) to poll the API endpoints above.
 2. Import/translate dashboard panels in `ops/dashboard/v2.2/official-dashboards.json` into your Grafana dashboard objects.

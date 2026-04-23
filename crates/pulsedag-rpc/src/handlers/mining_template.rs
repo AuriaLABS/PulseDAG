@@ -172,6 +172,45 @@ pub async fn post_mining_template<S: RpcStateLike>(
         mempool_tx_count: lifecycle.mempool_tx_count,
         expires_at_unix,
     });
+    {
+        let runtime_handle = state.runtime();
+        let mut runtime = runtime_handle.write().await;
+        runtime.external_mining_templates_emitted =
+            runtime.external_mining_templates_emitted.saturating_add(1);
+        if runtime
+            .external_mining_last_template_id
+            .as_ref()
+            .is_some_and(|last| last != &template_id)
+        {
+            runtime.external_mining_templates_invalidated = runtime
+                .external_mining_templates_invalidated
+                .saturating_add(1);
+            runtime.external_mining_stale_work_detected = runtime
+                .external_mining_stale_work_detected
+                .saturating_add(1);
+            let _ = state.storage().append_runtime_event(
+                "warn",
+                "external_mining_template_invalidated",
+                &format!(
+                    "previous={} current={}",
+                    runtime
+                        .external_mining_last_template_id
+                        .clone()
+                        .unwrap_or_default(),
+                    template_id
+                ),
+            );
+        }
+        runtime.external_mining_last_template_id = Some(template_id.clone());
+    }
+    let _ = state.storage().append_runtime_event(
+        "info",
+        "external_mining_template_emitted",
+        &format!(
+            "template_id={} height={} expires_at_unix={} miner={}",
+            template_id, height, expires_at_unix, req.miner_address
+        ),
+    );
 
     let metrics_hint = PowMetricsData {
         algorithm: pulsedag_core::selected_pow_name().to_string(),
