@@ -81,6 +81,8 @@ pub struct RuntimeStatusData {
     pub p2p_peer_flap_suppressed_count: u64,
     pub p2p_peers_under_cooldown: usize,
     pub p2p_peers_under_flap_guard: usize,
+    pub p2p_last_peer_seen_unix: Option<u64>,
+    pub p2p_peers_with_recent_failures: usize,
 }
 
 pub async fn get_runtime_status<S: RpcStateLike>(
@@ -102,6 +104,16 @@ pub async fn get_runtime_status<S: RpcStateLike>(
         .p2p()
         .and_then(|p2p| p2p.status().ok())
         .map(|status| {
+            let p2p_last_peer_seen_unix = status
+                .peer_recovery
+                .iter()
+                .filter_map(|peer| peer.last_seen_unix)
+                .max();
+            let p2p_peers_with_recent_failures = status
+                .peer_recovery
+                .iter()
+                .filter(|peer| !peer.recent_failures_unix.is_empty())
+                .count();
             (
                 status.peer_reconnect_attempts,
                 status.peer_recovery_success_count,
@@ -110,9 +122,11 @@ pub async fn get_runtime_status<S: RpcStateLike>(
                 status.peer_flap_suppressed_count,
                 status.peers_under_cooldown,
                 status.peers_under_flap_guard,
+                p2p_last_peer_seen_unix,
+                p2p_peers_with_recent_failures,
             )
         })
-        .unwrap_or((0, 0, None, 0, 0, 0, 0));
+        .unwrap_or((0, 0, None, 0, 0, 0, 0, None, 0));
     Json(ApiResponse::ok(RuntimeStatusData {
         started_at_unix: runtime.started_at_unix,
         uptime_secs,
@@ -184,6 +198,8 @@ pub async fn get_runtime_status<S: RpcStateLike>(
         p2p_peer_flap_suppressed_count: p2p_recovery.4,
         p2p_peers_under_cooldown: p2p_recovery.5,
         p2p_peers_under_flap_guard: p2p_recovery.6,
+        p2p_last_peer_seen_unix: p2p_recovery.7,
+        p2p_peers_with_recent_failures: p2p_recovery.8,
     }))
 }
 
