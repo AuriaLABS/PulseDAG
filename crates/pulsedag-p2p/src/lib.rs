@@ -73,6 +73,8 @@ pub struct P2pStatus {
     pub inbound_decode_failed: usize,
     pub inbound_chain_mismatch_dropped: usize,
     pub inbound_duplicates_suppressed: usize,
+    pub tx_outbound_duplicates_suppressed: usize,
+    pub tx_outbound_first_seen_relayed: usize,
     pub last_drop_reason: Option<String>,
     pub peer_reconnect_attempts: u64,
     pub peer_recovery_success_count: u64,
@@ -159,7 +161,11 @@ struct InnerState {
     inbound_decode_failed: usize,
     inbound_chain_mismatch_dropped: usize,
     inbound_duplicates_suppressed: usize,
+    tx_outbound_duplicates_suppressed: usize,
+    tx_outbound_first_seen_relayed: usize,
     last_drop_reason: Option<String>,
+    inbound_seen_at_unix: HashMap<String, u64>,
+    outbound_tx_seen_at_unix: HashMap<String, u64>,
     peer_book: HashMap<String, PeerHealth>,
     peer_state_path: Option<PathBuf>,
     peer_reconnect_attempts: u64,
@@ -246,7 +252,12 @@ impl P2pHandle for MemoryP2pHandle {
             .inner
             .lock()
             .map_err(|_| PulseError::Internal("p2p lock poisoned".into()))?;
-        inner.seen_message_ids.insert(message_id_for_tx(tx));
+        let tx_id = message_id_for_tx(tx);
+        if !should_relay_outbound_tx(&mut inner, &tx_id, now_unix()) {
+            inner.last_drop_reason = Some("duplicate_tx_outbound".into());
+            return Ok(());
+        }
+        inner.seen_message_ids.insert(tx_id);
         inner.publish_attempts += 1;
         inner.broadcasted_messages += 1;
         inner.last_message_kind = Some("tx".into());
@@ -305,6 +316,8 @@ impl P2pHandle for MemoryP2pHandle {
             inbound_decode_failed: inner.inbound_decode_failed,
             inbound_chain_mismatch_dropped: inner.inbound_chain_mismatch_dropped,
             inbound_duplicates_suppressed: inner.inbound_duplicates_suppressed,
+            tx_outbound_duplicates_suppressed: inner.tx_outbound_duplicates_suppressed,
+            tx_outbound_first_seen_relayed: inner.tx_outbound_first_seen_relayed,
             last_drop_reason: inner.last_drop_reason.clone(),
             peer_reconnect_attempts: inner.peer_reconnect_attempts,
             peer_recovery_success_count: inner.peer_recovery_success_count,
@@ -432,6 +445,9 @@ fn peer_jitter(peer: &str) -> u64 {
 
 const FLAP_WINDOW: StdDuration = StdDuration::from_secs(45);
 const FLAP_BASE_COOLDOWN: u64 = 30;
+const MESSAGE_DEDUP_WINDOW_SECS: u64 = 120;
+const TX_OUTBOUND_DEDUP_WINDOW_SECS: u64 = 30;
+const MAX_DEDUP_TRACKED_IDS: usize = 16_384;
 
 fn peer_recovery_snapshot(state: &InnerState) -> (usize, usize, Vec<PeerRecoveryStatus>) {
     let now = now_unix();
@@ -697,6 +713,59 @@ fn record_publish(
     }
 }
 
+fn trim_old_entries(seen: &mut HashMap<String, u64>, now: u64, window_secs: u64) {
+    let keep_after = now.saturating_sub(window_secs);
+    seen.retain(|_, seen_at| *seen_at >= keep_after);
+    if seen.len() > MAX_DEDUP_TRACKED_IDS {
+        let mut entries = seen
+            .iter()
+            .map(|(id, seen_at)| (id.clone(), *seen_at))
+            .collect::<Vec<_>>();
+        entries.sort_by_key(|(_, seen_at)| *seen_at);
+        let remove_count = seen.len().saturating_sub(MAX_DEDUP_TRACKED_IDS);
+        for (id, _) in entries.into_iter().take(remove_count) {
+            seen.remove(&id);
+        }
+    }
+}
+
+fn mark_inbound_id_seen(state: &mut InnerState, id: String, now: u64) -> bool {
+    trim_old_entries(
+        &mut state.inbound_seen_at_unix,
+        now,
+        MESSAGE_DEDUP_WINDOW_SECS,
+    );
+    match state.inbound_seen_at_unix.get(&id) {
+        Some(last_seen) if now.saturating_sub(*last_seen) <= MESSAGE_DEDUP_WINDOW_SECS => false,
+        _ => {
+            state.inbound_seen_at_unix.insert(id.clone(), now);
+            state.seen_message_ids.insert(id);
+            true
+        }
+    }
+}
+
+fn should_relay_outbound_tx(state: &mut InnerState, id: &str, now: u64) -> bool {
+    trim_old_entries(
+        &mut state.outbound_tx_seen_at_unix,
+        now,
+        TX_OUTBOUND_DEDUP_WINDOW_SECS,
+    );
+    match state.outbound_tx_seen_at_unix.get(id) {
+        Some(last_seen) if now.saturating_sub(*last_seen) <= TX_OUTBOUND_DEDUP_WINDOW_SECS => {
+            state.tx_outbound_duplicates_suppressed =
+                state.tx_outbound_duplicates_suppressed.saturating_add(1);
+            false
+        }
+        _ => {
+            state.outbound_tx_seen_at_unix.insert(id.to_string(), now);
+            state.tx_outbound_first_seen_relayed =
+                state.tx_outbound_first_seen_relayed.saturating_add(1);
+            true
+        }
+    }
+}
+
 fn note_swarm_event(inner: &Arc<Mutex<InnerState>>, label: impl Into<String>) {
     if let Ok(mut guard) = inner.lock() {
         guard.swarm_events_seen += 1;
@@ -736,7 +805,7 @@ fn dispatch_network_message(
             }
             let id = message_id_for_tx(&transaction);
             if let Ok(mut guard) = inner.lock() {
-                if !guard.seen_message_ids.insert(id) {
+                if !mark_inbound_id_seen(&mut guard, id, now_unix()) {
                     guard.inbound_duplicates_suppressed += 1;
                     guard.last_drop_reason = Some("duplicate_tx".into());
                     return;
@@ -756,7 +825,7 @@ fn dispatch_network_message(
             }
             let id = message_id_for_block(&block);
             if let Ok(mut guard) = inner.lock() {
-                if !guard.seen_message_ids.insert(id) {
+                if !mark_inbound_id_seen(&mut guard, id, now_unix()) {
                     guard.inbound_duplicates_suppressed += 1;
                     guard.last_drop_reason = Some("duplicate_block".into());
                     return;
@@ -801,7 +870,7 @@ fn dispatch_network_message(
             if let Some(block) = block {
                 let id = message_id_for_block(&block);
                 if let Ok(mut guard) = inner.lock() {
-                    if !guard.seen_message_ids.insert(id) {
+                    if !mark_inbound_id_seen(&mut guard, id, now_unix()) {
                         guard.inbound_duplicates_suppressed += 1;
                         guard.last_drop_reason = Some("duplicate_block_data".into());
                         return;
@@ -1085,6 +1154,11 @@ impl P2pHandle for Libp2pHandle {
                 .inner
                 .lock()
                 .map_err(|_| PulseError::Internal("p2p lock poisoned".into()))?;
+            let tx_id = message_id_for_tx(tx);
+            if !should_relay_outbound_tx(&mut inner, &tx_id, now_unix()) {
+                inner.last_drop_reason = Some("duplicate_tx_outbound".into());
+                return Ok(());
+            }
             inner.queued_messages += 1;
         }
         self.outbound_tx
@@ -1137,6 +1211,8 @@ impl P2pHandle for Libp2pHandle {
             inbound_decode_failed: inner.inbound_decode_failed,
             inbound_chain_mismatch_dropped: inner.inbound_chain_mismatch_dropped,
             inbound_duplicates_suppressed: inner.inbound_duplicates_suppressed,
+            tx_outbound_duplicates_suppressed: inner.tx_outbound_duplicates_suppressed,
+            tx_outbound_first_seen_relayed: inner.tx_outbound_first_seen_relayed,
             last_drop_reason: inner.last_drop_reason.clone(),
             peer_reconnect_attempts: inner.peer_reconnect_attempts,
             peer_recovery_success_count: inner.peer_recovery_success_count,
@@ -1174,6 +1250,17 @@ pub fn build_p2p_stack(mode: P2pMode) -> Result<P2pStack, PulseError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn sample_tx(txid: &str) -> Transaction {
+        Transaction {
+            txid: txid.into(),
+            version: 1,
+            inputs: vec![],
+            outputs: vec![],
+            fee: 10,
+            nonce: 1,
+        }
+    }
 
     #[test]
     fn peer_failures_increase_backoff_and_lower_score() {
@@ -1229,14 +1316,7 @@ mod tests {
     #[test]
     fn memory_mode_tracks_publish_metrics_by_topic() {
         let (handle, _inbound_rx) = MemoryP2pHandle::new("testnet".into(), vec!["peer-a".into()]);
-        let tx = Transaction {
-            txid: "tx-1".into(),
-            version: 1,
-            inputs: vec![],
-            outputs: vec![],
-            fee: 10,
-            nonce: 1,
-        };
+        let tx = sample_tx("tx-1");
         let block = Block {
             hash: "block-1".into(),
             header: pulsedag_core::types::BlockHeader {
@@ -1271,6 +1351,93 @@ mod tests {
         assert_eq!(status.per_topic_publishes.get("memory-blocks"), Some(&1));
         assert_eq!(status.peer_reconnect_attempts, 0);
         assert_eq!(status.peer_recovery_success_count, 0);
+    }
+
+    #[test]
+    fn duplicate_tx_announcements_are_suppressed() {
+        let inner = Arc::new(Mutex::new(InnerState::default()));
+        let (inbound_tx, mut inbound_rx) = mpsc::unbounded_channel();
+        let tx = sample_tx("tx-dup-announcement");
+        let wire = serde_json::to_vec(&NetworkMessage::NewTransaction {
+            chain_id: "testnet".into(),
+            transaction: tx,
+        })
+        .expect("serialize tx announcement");
+
+        dispatch_network_message("testnet", &wire, &inner, &inbound_tx);
+        dispatch_network_message("testnet", &wire, &inner, &inbound_tx);
+
+        assert!(matches!(
+            inbound_rx.try_recv(),
+            Ok(InboundEvent::Transaction(_))
+        ));
+        assert!(inbound_rx.try_recv().is_err());
+        let guard = inner.lock().unwrap();
+        assert_eq!(guard.inbound_messages, 1);
+        assert_eq!(guard.inbound_duplicates_suppressed, 1);
+    }
+
+    #[test]
+    fn outbound_tx_first_seen_relay_still_occurs() {
+        let (handle, _inbound_rx) = MemoryP2pHandle::new("testnet".into(), vec!["peer-a".into()]);
+        let tx = sample_tx("tx-first-seen");
+
+        handle
+            .broadcast_transaction(&tx)
+            .expect("first-time relay should succeed");
+
+        let status = handle.status().expect("status should be available");
+        assert_eq!(status.publish_attempts, 1);
+        assert_eq!(status.broadcasted_messages, 1);
+        assert_eq!(status.tx_outbound_first_seen_relayed, 1);
+        assert_eq!(status.tx_outbound_duplicates_suppressed, 0);
+    }
+
+    #[test]
+    fn repeated_tx_relay_storm_is_deduped_without_counter_inflation() {
+        let (handle, _inbound_rx) = MemoryP2pHandle::new("testnet".into(), vec!["peer-a".into()]);
+        let tx = sample_tx("tx-storm");
+
+        for _ in 0..10 {
+            handle
+                .broadcast_transaction(&tx)
+                .expect("duplicate relay should not error");
+        }
+
+        let status = handle.status().expect("status should be available");
+        assert_eq!(status.publish_attempts, 1);
+        assert_eq!(status.broadcasted_messages, 1);
+        assert_eq!(status.tx_outbound_first_seen_relayed, 1);
+        assert_eq!(status.tx_outbound_duplicates_suppressed, 9);
+    }
+
+    #[test]
+    fn outbound_dedup_is_windowed_and_allows_restart_relay() {
+        let mut state = InnerState::default();
+        assert!(should_relay_outbound_tx(&mut state, "tx-windowed", 1_000));
+        assert!(!should_relay_outbound_tx(&mut state, "tx-windowed", 1_010));
+        assert!(should_relay_outbound_tx(
+            &mut state,
+            "tx-windowed",
+            1_000 + TX_OUTBOUND_DEDUP_WINDOW_SECS + 1
+        ));
+
+        let (handle_a, _inbound_rx_a) =
+            MemoryP2pHandle::new("testnet".into(), vec!["peer-a".into()]);
+        let tx = sample_tx("tx-after-restart");
+        handle_a
+            .broadcast_transaction(&tx)
+            .expect("first handle relay should succeed");
+        let status_a = handle_a.status().expect("status should be available");
+        assert_eq!(status_a.publish_attempts, 1);
+
+        let (handle_b, _inbound_rx_b) =
+            MemoryP2pHandle::new("testnet".into(), vec!["peer-a".into()]);
+        handle_b
+            .broadcast_transaction(&tx)
+            .expect("post-restart relay should not be suppressed");
+        let status_b = handle_b.status().expect("status should be available");
+        assert_eq!(status_b.publish_attempts, 1);
     }
 
     #[test]

@@ -244,6 +244,8 @@ mod tests {
                 inbound_decode_failed: 0,
                 inbound_chain_mismatch_dropped: 0,
                 inbound_duplicates_suppressed: 0,
+                tx_outbound_duplicates_suppressed: 0,
+                tx_outbound_first_seen_relayed: 0,
                 last_drop_reason: None,
                 peer_reconnect_attempts: 0,
                 peer_recovery_success_count: 0,
