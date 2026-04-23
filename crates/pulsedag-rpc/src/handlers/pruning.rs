@@ -26,13 +26,15 @@ pub async fn post_prune_chain<S: RpcStateLike>(
     Json(req): Json<PruneRequest>,
 ) -> Json<ApiResponse<PruneData>> {
     let prune_keep_recent_blocks = {
-        let runtime = state.runtime().read().await;
+        let runtime_handle = state.runtime();
+        let runtime = runtime_handle.read().await;
         req.keep_recent_blocks
             .unwrap_or(runtime.prune_keep_recent_blocks)
             .max(1)
     };
 
-    let chain_guard = state.chain().read().await;
+    let chain_handle = state.chain();
+    let chain_guard = chain_handle.read().await;
     let best_height = chain_guard.dag.best_height;
     let keep_from_height = best_height.saturating_sub(prune_keep_recent_blocks.saturating_sub(1));
     drop(chain_guard);
@@ -134,7 +136,8 @@ pub async fn post_prune_chain<S: RpcStateLike>(
     }
 
     {
-        let mut chain = state.chain().write().await;
+        let chain_handle = state.chain();
+        let mut chain = chain_handle.write().await;
         *chain = rebuilt.clone();
     }
 
@@ -143,7 +146,8 @@ pub async fn post_prune_chain<S: RpcStateLike>(
         .map(|d| d.as_secs())
         .unwrap_or(0);
     {
-        let mut runtime = state.runtime().write().await;
+        let runtime_handle = state.runtime();
+        let mut runtime = runtime_handle.write().await;
         runtime.last_prune_height = Some(rebuilt.dag.best_height);
         runtime.last_prune_unix = Some(now);
         runtime.last_snapshot_height = Some(rebuilt.dag.best_height);

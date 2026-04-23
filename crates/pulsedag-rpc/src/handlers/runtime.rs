@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::api::{ApiResponse, RpcStateLike};
 use pulsedag_core::{SyncPhase, SyncProgressCounters};
+use pulsedag_p2p::{mode_connected_peers_are_real_network, PeerRecoveryStatus};
 
 #[derive(Debug, serde::Serialize)]
 pub struct RuntimeStatusData {
@@ -96,6 +97,44 @@ pub struct RuntimeStatusData {
     pub p2p_peers_under_flap_guard: usize,
     pub p2p_last_peer_seen_unix: Option<u64>,
     pub p2p_peers_with_recent_failures: usize,
+    pub p2p_connected_peers_are_real_network: bool,
+    pub p2p_peer_health_healthy: usize,
+    pub p2p_peer_health_degraded: usize,
+    pub p2p_peer_health_recovering: usize,
+}
+
+#[derive(Default)]
+struct RuntimeP2pRecoverySummary {
+    reconnect_attempts: u64,
+    recovery_success_count: u64,
+    last_recovery_unix: Option<u64>,
+    cooldown_suppressed_count: u64,
+    flap_suppressed_count: u64,
+    peers_under_cooldown: usize,
+    peers_under_flap_guard: usize,
+    last_peer_seen_unix: Option<u64>,
+    peers_with_recent_failures: usize,
+    connected_peers_are_real_network: bool,
+    peer_health_healthy: usize,
+    peer_health_degraded: usize,
+    peer_health_recovering: usize,
+}
+
+fn is_peer_recovering(peer: &PeerRecoveryStatus, now_unix: u64) -> bool {
+    if !peer.connected || peer.fail_streak > 0 {
+        return true;
+    }
+    if peer
+        .suppression_until_unix
+        .is_some_and(|until| until > now_unix)
+    {
+        return true;
+    }
+    peer.next_retry_unix > now_unix
+}
+
+fn is_peer_degraded(peer: &PeerRecoveryStatus) -> bool {
+    peer.score < 80 || peer.flap_events > 0 || !peer.recent_failures_unix.is_empty()
 }
 
 pub async fn get_runtime_status<S: RpcStateLike>(
@@ -111,7 +150,8 @@ pub async fn get_runtime_status<S: RpcStateLike>(
     let burn_in_target_days: u64 = 30;
     let burn_in_elapsed_days = uptime_secs / 86_400;
     let burn_in_remaining_days = burn_in_target_days.saturating_sub(burn_in_elapsed_days);
-    let chain = state.chain().read().await;
+    let chain_handle = state.chain();
+    let chain = chain_handle.read().await;
     let snapshot = pulsedag_core::dev_difficulty_snapshot(&chain);
     let p2p_recovery = state
         .p2p()
@@ -127,19 +167,41 @@ pub async fn get_runtime_status<S: RpcStateLike>(
                 .iter()
                 .filter(|peer| !peer.recent_failures_unix.is_empty())
                 .count();
-            (
-                status.peer_reconnect_attempts,
-                status.peer_recovery_success_count,
-                status.last_peer_recovery_unix,
-                status.peer_cooldown_suppressed_count,
-                status.peer_flap_suppressed_count,
-                status.peers_under_cooldown,
-                status.peers_under_flap_guard,
-                p2p_last_peer_seen_unix,
-                p2p_peers_with_recent_failures,
-            )
+            let now_unix = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            let mut peer_health_healthy = 0usize;
+            let mut peer_health_degraded = 0usize;
+            let mut peer_health_recovering = 0usize;
+            for peer in &status.peer_recovery {
+                if is_peer_recovering(peer, now_unix) {
+                    peer_health_recovering = peer_health_recovering.saturating_add(1);
+                } else if is_peer_degraded(peer) {
+                    peer_health_degraded = peer_health_degraded.saturating_add(1);
+                } else {
+                    peer_health_healthy = peer_health_healthy.saturating_add(1);
+                }
+            }
+            RuntimeP2pRecoverySummary {
+                reconnect_attempts: status.peer_reconnect_attempts,
+                recovery_success_count: status.peer_recovery_success_count,
+                last_recovery_unix: status.last_peer_recovery_unix,
+                cooldown_suppressed_count: status.peer_cooldown_suppressed_count,
+                flap_suppressed_count: status.peer_flap_suppressed_count,
+                peers_under_cooldown: status.peers_under_cooldown,
+                peers_under_flap_guard: status.peers_under_flap_guard,
+                last_peer_seen_unix: p2p_last_peer_seen_unix,
+                peers_with_recent_failures: p2p_peers_with_recent_failures,
+                connected_peers_are_real_network: mode_connected_peers_are_real_network(
+                    &status.mode,
+                ),
+                peer_health_healthy,
+                peer_health_degraded,
+                peer_health_recovering,
+            }
         })
-        .unwrap_or((0, 0, None, 0, 0, 0, 0, None, 0));
+        .unwrap_or_default();
     Json(ApiResponse::ok(RuntimeStatusData {
         started_at_unix: runtime.started_at_unix,
         uptime_secs,
@@ -216,15 +278,19 @@ pub async fn get_runtime_status<S: RpcStateLike>(
         window_size: snapshot.policy.window_size,
         retarget_multiplier_bps: snapshot.retarget_multiplier_bps,
         suggested_difficulty: snapshot.suggested_difficulty,
-        p2p_peer_reconnect_attempts: p2p_recovery.0,
-        p2p_peer_recovery_success_count: p2p_recovery.1,
-        p2p_last_peer_recovery_unix: p2p_recovery.2,
-        p2p_peer_cooldown_suppressed_count: p2p_recovery.3,
-        p2p_peer_flap_suppressed_count: p2p_recovery.4,
-        p2p_peers_under_cooldown: p2p_recovery.5,
-        p2p_peers_under_flap_guard: p2p_recovery.6,
-        p2p_last_peer_seen_unix: p2p_recovery.7,
-        p2p_peers_with_recent_failures: p2p_recovery.8,
+        p2p_peer_reconnect_attempts: p2p_recovery.reconnect_attempts,
+        p2p_peer_recovery_success_count: p2p_recovery.recovery_success_count,
+        p2p_last_peer_recovery_unix: p2p_recovery.last_recovery_unix,
+        p2p_peer_cooldown_suppressed_count: p2p_recovery.cooldown_suppressed_count,
+        p2p_peer_flap_suppressed_count: p2p_recovery.flap_suppressed_count,
+        p2p_peers_under_cooldown: p2p_recovery.peers_under_cooldown,
+        p2p_peers_under_flap_guard: p2p_recovery.peers_under_flap_guard,
+        p2p_last_peer_seen_unix: p2p_recovery.last_peer_seen_unix,
+        p2p_peers_with_recent_failures: p2p_recovery.peers_with_recent_failures,
+        p2p_connected_peers_are_real_network: p2p_recovery.connected_peers_are_real_network,
+        p2p_peer_health_healthy: p2p_recovery.peer_health_healthy,
+        p2p_peer_health_degraded: p2p_recovery.peer_health_degraded,
+        p2p_peer_health_recovering: p2p_recovery.peer_health_recovering,
     }))
 }
 
@@ -238,6 +304,7 @@ mod tests {
 
     use axum::{extract::State, Json};
     use pulsedag_core::{ChainState, SyncPhase};
+    use pulsedag_p2p::{P2pHandle, P2pStatus, PeerRecoveryStatus, P2P_MODE_LIBP2P_REAL};
     use pulsedag_storage::Storage;
     use tokio::sync::RwLock;
 
@@ -250,6 +317,7 @@ mod tests {
         chain: Arc<RwLock<ChainState>>,
         storage: Arc<Storage>,
         runtime: Arc<RwLock<NodeRuntimeStats>>,
+        p2p: Option<Arc<dyn P2pHandle>>,
     }
 
     impl RpcStateLike for TestState {
@@ -258,7 +326,7 @@ mod tests {
         }
 
         fn p2p(&self) -> Option<Arc<dyn pulsedag_p2p::P2pHandle>> {
-            None
+            self.p2p.clone()
         }
 
         fn storage(&self) -> Arc<Storage> {
@@ -278,6 +346,29 @@ mod tests {
         std::env::temp_dir().join(format!("pulsedag-{name}-{unique}"))
     }
 
+    #[derive(Clone)]
+    struct TestP2pHandle {
+        status: P2pStatus,
+    }
+
+    impl P2pHandle for TestP2pHandle {
+        fn broadcast_transaction(
+            &self,
+            _tx: &pulsedag_core::types::Transaction,
+        ) -> Result<(), pulsedag_core::errors::PulseError> {
+            Ok(())
+        }
+        fn broadcast_block(
+            &self,
+            _block: &pulsedag_core::types::Block,
+        ) -> Result<(), pulsedag_core::errors::PulseError> {
+            Ok(())
+        }
+        fn status(&self) -> Result<P2pStatus, pulsedag_core::errors::PulseError> {
+            Ok(self.status.clone())
+        }
+    }
+
     #[tokio::test]
     async fn runtime_status_surfaces_sync_phase_coherently() {
         let path = temp_db_path("runtime-sync-phase");
@@ -295,6 +386,7 @@ mod tests {
             chain: Arc::new(RwLock::new(chain)),
             storage,
             runtime: Arc::new(RwLock::new(runtime)),
+            p2p: None,
         };
 
         let Json(resp) = get_runtime_status(State(state)).await;
@@ -304,6 +396,102 @@ mod tests {
         assert_eq!(data.sync_counters.headers_discovered, 5);
         assert_eq!(data.sync_counters.blocks_requested, 5);
         assert_eq!(data.sync_counters.blocks_applied, 2);
+    }
+
+    #[tokio::test]
+    async fn runtime_status_surfaces_p2p_mode_and_peer_health_summary() {
+        let path = temp_db_path("runtime-p2p-summary");
+        let storage = Arc::new(Storage::open(path.to_str().expect("utf8 temp path")).unwrap());
+        let chain = storage
+            .load_or_init_genesis("testnet-dev".to_string())
+            .unwrap();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let p2p_status = P2pStatus {
+            mode: P2P_MODE_LIBP2P_REAL.to_string(),
+            peer_id: "self".into(),
+            listening: vec![],
+            connected_peers: vec!["peer-a".into()],
+            topics: vec![],
+            mdns: false,
+            kademlia: true,
+            broadcasted_messages: 0,
+            publish_attempts: 0,
+            seen_message_ids: 0,
+            queued_messages: 0,
+            inbound_messages: 0,
+            runtime_started: true,
+            runtime_mode_detail: "swarm-poll-loop-real".into(),
+            swarm_events_seen: 0,
+            subscriptions_active: 0,
+            last_message_kind: None,
+            last_swarm_event: None,
+            per_topic_publishes: std::collections::HashMap::new(),
+            inbound_decode_failed: 0,
+            inbound_chain_mismatch_dropped: 0,
+            inbound_duplicates_suppressed: 0,
+            last_drop_reason: None,
+            peer_reconnect_attempts: 5,
+            peer_recovery_success_count: 1,
+            last_peer_recovery_unix: Some(now.saturating_sub(3)),
+            peer_cooldown_suppressed_count: 2,
+            peer_flap_suppressed_count: 1,
+            peers_under_cooldown: 1,
+            peers_under_flap_guard: 1,
+            peer_recovery: vec![
+                PeerRecoveryStatus {
+                    peer_id: "healthy".into(),
+                    score: 100,
+                    fail_streak: 0,
+                    connected: true,
+                    last_seen_unix: Some(now),
+                    last_successful_connect_unix: Some(now),
+                    next_retry_unix: 0,
+                    reconnect_attempts: 0,
+                    recovery_success_count: 0,
+                    last_recovery_unix: Some(now.saturating_sub(3)),
+                    recent_failures_unix: vec![],
+                    cooldown_suppressed_count: 0,
+                    flap_suppressed_count: 0,
+                    flap_events: 0,
+                    suppression_until_unix: None,
+                },
+                PeerRecoveryStatus {
+                    peer_id: "recovering".into(),
+                    score: 60,
+                    fail_streak: 1,
+                    connected: false,
+                    last_seen_unix: Some(now.saturating_sub(100)),
+                    last_successful_connect_unix: Some(now.saturating_sub(200)),
+                    next_retry_unix: now.saturating_add(50),
+                    reconnect_attempts: 4,
+                    recovery_success_count: 1,
+                    last_recovery_unix: Some(now.saturating_sub(40)),
+                    recent_failures_unix: vec![now.saturating_sub(20)],
+                    cooldown_suppressed_count: 2,
+                    flap_suppressed_count: 1,
+                    flap_events: 2,
+                    suppression_until_unix: Some(now.saturating_add(10)),
+                },
+            ],
+            sync_candidates: vec![],
+            selected_sync_peer: Some("peer-a".into()),
+        };
+        let state = TestState {
+            chain: Arc::new(RwLock::new(chain)),
+            storage,
+            runtime: Arc::new(RwLock::new(NodeRuntimeStats::default())),
+            p2p: Some(Arc::new(TestP2pHandle { status: p2p_status })),
+        };
+
+        let Json(resp) = get_runtime_status(State(state)).await;
+        let data = resp.data.expect("runtime status data");
+        assert!(data.p2p_connected_peers_are_real_network);
+        assert_eq!(data.p2p_peer_health_healthy, 1);
+        assert_eq!(data.p2p_peer_health_degraded, 0);
+        assert_eq!(data.p2p_peer_health_recovering, 1);
     }
 }
 

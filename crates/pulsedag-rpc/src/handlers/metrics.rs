@@ -22,7 +22,8 @@ pub struct MetricsData {
 pub async fn get_metrics<S: RpcStateLike>(
     State(state): State<S>,
 ) -> Json<ApiResponse<MetricsData>> {
-    let chain = state.chain().read().await;
+    let chain_handle = state.chain();
+    let chain = chain_handle.read().await;
     let snapshot = pulsedag_core::dev_difficulty_snapshot(&chain);
     let circulating_supply = chain.utxo.utxos.values().map(|u| u.amount).sum();
     let last_block_hash = chain

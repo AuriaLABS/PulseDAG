@@ -20,7 +20,8 @@ pub struct PowPolicyData {
 pub async fn get_pow_policy<S: RpcStateLike>(
     State(state): State<S>,
 ) -> Json<ApiResponse<PowPolicyData>> {
-    let chain = state.chain().read().await;
+    let chain_handle = state.chain();
+    let chain = chain_handle.read().await;
     let snapshot = pulsedag_core::dev_difficulty_snapshot(&chain);
 
     Json(ApiResponse::ok(PowPolicyData {
