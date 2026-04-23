@@ -60,6 +60,16 @@ These artifacts should be linked from `README.md` in the run directory:
    - Source: `docs/dashboard/README.md` (`GET /runtime/status` mining telemetry fields)
    - Record accepted/rejected submit trends and rejection taxonomy highlights.
 
+
+## v2.2 closeout evidence index
+Use `docs/V2_2_CLOSEOUT_CHECKLIST.md` as the release-manager closeout wrapper and verify each referenced surface resolves in-repo:
+- Burn-in policy: `docs/BURN_IN_14D.md`
+- Runbook hub: `docs/runbooks/INDEX.md`
+- Recovery/startup interpretation: `docs/runbooks/FAST_BOOT_AND_FALLBACK.md`
+- Runtime/event surfaces: `docs/RUNTIME_EVENT_STREAM.md`
+- Mining telemetry source (`GET /runtime/status`): `docs/dashboard/README.md`
+- Release artifacts provenance workflow: `.github/workflows/release-binaries.yml`
+
 ## Deterministic artifact expectation
 The scaffold generated for the same `run_id` + `run_date_utc` must be byte-for-byte deterministic.
 The workflow at `.github/workflows/v2_1-burnin-evidence.yml` includes a determinism check to enforce this.
@@ -85,3 +95,9 @@ For the v2.2 release gate, attach a staging rehearsal bundle that demonstrates o
 Primary runbooks:
 - `docs/runbooks/STAGING_UPGRADE.md`
 - `docs/runbooks/STAGING_ROLLBACK.md`
+
+## Closeout validation checks (release hygiene)
+1. Checklist accuracy: no stale or fictional step remains in closeout documents.
+2. Evidence references: every checklist reference maps to an existing repo doc/workflow/runtime surface.
+3. Operator flow coherence: burn-in -> evidence collection -> recovery drills -> upgrade/rollback rehearsal -> release sign-off is traceable end-to-end.
+4. Scope freeze: closeout commits include no consensus/miner/pool/product feature additions.

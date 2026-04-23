@@ -23,6 +23,7 @@ This index consolidates the v2.2 operator package for recovery, rebuild, restore
 - `docs/runbooks/STAGING_ROLLBACK.md` — rollback decision and execution path.
 
 ## Evidence and operations support docs
+- `docs/V2_2_CLOSEOUT_CHECKLIST.md` — final v2.2 closeout checklist and evidence index.
 - `docs/RELEASE_EVIDENCE.md` — release evidence bundle requirements.
 - `docs/BURN_IN_14D.md` — 14-day burn-in requirements.
 - `docs/dashboard/README.md` — operator dashboard package.

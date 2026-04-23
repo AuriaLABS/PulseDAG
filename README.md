@@ -73,3 +73,11 @@ See `docs/OPERATIONS_P2P.md` for operational guidance.
 - The CI workflow `Soak Smoke (short CI signal)` is intentionally a short regression signal, not a release burn-in claim.
 - Real release burn-in for v2.2 requires an operated run with evidence collection per release policy.
 - See `docs/BURN_IN_14D.md` and `docs/RELEASE_EVIDENCE.md` for process and required artifacts.
+
+## v2.2 closeout package (release hygiene only)
+- Final release closeout checklist: `docs/V2_2_CLOSEOUT_CHECKLIST.md`
+- Burn-in execution guide: `docs/BURN_IN_14D.md`
+- Evidence bundle/index: `docs/RELEASE_EVIDENCE.md`
+- Runbook index: `docs/runbooks/INDEX.md`
+
+This closeout package is explicitly limited to release hygiene and evidence organization (no consensus/miner/pool feature scope changes).
