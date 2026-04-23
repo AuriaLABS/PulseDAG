@@ -913,10 +913,25 @@ pub async fn get_runtime_events_stream<S: RpcStateLike>(
     let scan_limit = query.scan_limit.unwrap_or(200).clamp(20, 1_000);
     let emit_limit = query.emit_limit.unwrap_or(32).clamp(1, 200);
     let heartbeat_secs = query.heartbeat_secs.unwrap_or(15).clamp(5, 60);
+    let storage = state.storage();
+    let event_stream =
+        build_runtime_events_stream(storage, poll_interval_ms, scan_limit, emit_limit);
+    Sse::new(event_stream).keep_alive(
+        KeepAlive::new()
+            .interval(Duration::from_secs(heartbeat_secs))
+            .text("keep-alive"),
+    )
+}
+
+fn build_runtime_events_stream(
+    storage: std::sync::Arc<pulsedag_storage::Storage>,
+    poll_interval_ms: u64,
+    scan_limit: usize,
+    emit_limit: usize,
+) -> impl futures_core::Stream<Item = Result<Event, Infallible>> {
     let mut ticker = tokio::time::interval(Duration::from_millis(poll_interval_ms));
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    let storage = state.storage();
-    let event_stream = stream! {
+    stream! {
         let mut sequence = 0u64;
         let mut deduper = StreamDeduper::new(scan_limit.saturating_mul(4));
         loop {
@@ -951,18 +966,17 @@ pub async fn get_runtime_events_stream<S: RpcStateLike>(
                 }
             }
         }
-    };
-    Sse::new(event_stream).keep_alive(
-        KeepAlive::new()
-            .interval(Duration::from_secs(heartbeat_secs))
-            .text("keep-alive"),
-    )
+    }
 }
 
 #[cfg(test)]
 mod stream_tests {
-    use super::{RuntimeEventStreamEnvelope, StreamDeduper};
+    use std::{sync::Arc, time::Duration};
+
+    use super::{build_runtime_events_stream, RuntimeEventStreamEnvelope, StreamDeduper};
+    use futures_util::StreamExt;
     use pulsedag_storage::RuntimeEvent;
+    use pulsedag_storage::Storage;
 
     fn runtime_event(ts: u64, kind: &str, message: &str) -> RuntimeEvent {
         RuntimeEvent {
@@ -1038,5 +1052,26 @@ mod stream_tests {
                 "snapshot".to_string()
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn stream_client_disconnect_drop_is_safe() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let path = std::env::temp_dir().join(format!("pulsedag-runtime-stream-drop-{unique}"));
+        let storage = Arc::new(Storage::open(path.to_str().expect("utf8 temp path")).unwrap());
+        storage
+            .append_runtime_event("info", "startup_completed", "startup completed")
+            .expect("append runtime event");
+        let mut stream = Box::pin(build_runtime_events_stream(storage, 100, 20, 10));
+        let event = tokio::time::timeout(Duration::from_secs(2), stream.next())
+            .await
+            .expect("stream poll timeout")
+            .expect("stream ended unexpectedly")
+            .expect("stream event result");
+        let _ = event;
+        drop(stream);
     }
 }

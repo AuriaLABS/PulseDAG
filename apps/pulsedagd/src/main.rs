@@ -8,7 +8,9 @@ use std::{
 };
 
 use anyhow::Result;
-use app_state::{derive_startup_path_report, new_runtime_stats, AppState};
+use app_state::{
+    build_startup_lifecycle_events, derive_startup_path_report, new_runtime_stats, AppState,
+};
 use axum::Router;
 use config::Config;
 use pulsedag_core::accept::{accept_block, accept_transaction, AcceptSource};
@@ -219,6 +221,17 @@ async fn main() -> Result<()> {
     };
 
     {
+        let lifecycle_events = build_startup_lifecycle_events(
+            &startup_recovery_mode,
+            &startup_report,
+            startup_duration_ms,
+        );
+        for event in lifecycle_events {
+            let _ = app_state
+                .storage
+                .append_runtime_event(event.level, event.kind, &event.message);
+        }
+
         let summary = if startup_consistency_issue_count == 0 {
             format!(
                 "startup audit ok; recovery_mode={}; startup_path={}",

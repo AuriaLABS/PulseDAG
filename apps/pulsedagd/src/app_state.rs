@@ -21,6 +21,85 @@ pub struct StartupPathReport {
     pub startup_fallback_reason: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StartupLifecycleEvent {
+    pub level: &'static str,
+    pub kind: &'static str,
+    pub message: String,
+}
+
+pub fn build_startup_lifecycle_events(
+    startup_recovery_mode: &str,
+    startup_report: &StartupPathReport,
+    startup_duration_ms: u128,
+) -> Vec<StartupLifecycleEvent> {
+    let mut events = Vec::new();
+    if startup_report.startup_snapshot_detected {
+        events.push(StartupLifecycleEvent {
+            level: "info",
+            kind: "snapshot_validation_started",
+            message: "validating startup snapshot state".to_string(),
+        });
+        if startup_report.startup_snapshot_validated {
+            events.push(StartupLifecycleEvent {
+                level: "info",
+                kind: "snapshot_validation_succeeded",
+                message: "startup snapshot validation succeeded".to_string(),
+            });
+            events.push(StartupLifecycleEvent {
+                level: "info",
+                kind: "delta_apply_started",
+                message: "applying persisted delta on top of validated snapshot".to_string(),
+            });
+            events.push(StartupLifecycleEvent {
+                level: "info",
+                kind: "delta_apply_succeeded",
+                message: "persisted delta apply completed".to_string(),
+            });
+        } else {
+            let reason = startup_report
+                .startup_fallback_reason
+                .clone()
+                .unwrap_or_else(|| "startup snapshot validation failed".to_string());
+            events.push(StartupLifecycleEvent {
+                level: "warn",
+                kind: "snapshot_validation_failed",
+                message: reason.clone(),
+            });
+            events.push(StartupLifecycleEvent {
+                level: "warn",
+                kind: "delta_apply_failed",
+                message: format!(
+                    "delta apply skipped because snapshot validation failed: {reason}"
+                ),
+            });
+        }
+    }
+
+    if startup_recovery_mode == "replayed_blocks" {
+        events.push(StartupLifecycleEvent {
+            level: "warn",
+            kind: "full_replay_started",
+            message: "starting full replay from persisted blocks".to_string(),
+        });
+        events.push(StartupLifecycleEvent {
+            level: "info",
+            kind: "full_replay_completed",
+            message: "full replay from persisted blocks completed".to_string(),
+        });
+    }
+
+    events.push(StartupLifecycleEvent {
+        level: "info",
+        kind: "startup_completed",
+        message: format!(
+            "startup completed (path={}, duration_ms={})",
+            startup_report.startup_path, startup_duration_ms
+        ),
+    });
+    events
+}
+
 pub fn derive_startup_path_report(
     startup_recovery_mode: &str,
     snapshot_exists: bool,
@@ -166,7 +245,7 @@ impl RpcStateLike for AppState {
 
 #[cfg(test)]
 mod tests {
-    use super::derive_startup_path_report;
+    use super::{build_startup_lifecycle_events, derive_startup_path_report};
 
     #[test]
     fn valid_snapshot_path_reports_fastboot_usage_correctly() {
@@ -226,5 +305,77 @@ mod tests {
         assert!(!report.startup_fastboot_used);
         assert!(report.startup_fallback_reason.is_none());
         assert!(report.startup_replay_required);
+    }
+
+    #[test]
+    fn startup_path_emits_lifecycle_events_in_operator_friendly_order() {
+        let report = derive_startup_path_report("snapshot", true, 10, None);
+        let events = build_startup_lifecycle_events("snapshot", &report, 12);
+        let kinds: Vec<&str> = events.iter().map(|event| event.kind).collect();
+        assert_eq!(
+            kinds,
+            vec![
+                "snapshot_validation_started",
+                "snapshot_validation_succeeded",
+                "delta_apply_started",
+                "delta_apply_succeeded",
+                "startup_completed"
+            ]
+        );
+    }
+
+    #[test]
+    fn fallback_sequence_reports_snapshot_failure_then_replay_honestly() {
+        let report = derive_startup_path_report(
+            "replayed_blocks",
+            true,
+            10,
+            Some("persisted max height exceeds snapshot height".to_string()),
+        );
+        let events = build_startup_lifecycle_events("replayed_blocks", &report, 33);
+        let kinds: Vec<&str> = events.iter().map(|event| event.kind).collect();
+        assert_eq!(
+            kinds,
+            vec![
+                "snapshot_validation_started",
+                "snapshot_validation_failed",
+                "delta_apply_failed",
+                "full_replay_started",
+                "full_replay_completed",
+                "startup_completed"
+            ]
+        );
+    }
+
+    #[test]
+    fn startup_success_always_emits_single_completion_event() {
+        let report = derive_startup_path_report("snapshot", true, 3, None);
+        let events = build_startup_lifecycle_events("snapshot", &report, 7);
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event.kind == "startup_completed")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn lifecycle_events_avoid_obvious_duplicate_kinds() {
+        let report = derive_startup_path_report(
+            "replayed_blocks",
+            true,
+            9,
+            Some("startup consistency issues detected".to_string()),
+        );
+        let events = build_startup_lifecycle_events("replayed_blocks", &report, 14);
+        let mut unique = std::collections::HashSet::new();
+        for event in events {
+            assert!(
+                unique.insert(event.kind),
+                "duplicate event kind: {}",
+                event.kind
+            );
+        }
     }
 }
