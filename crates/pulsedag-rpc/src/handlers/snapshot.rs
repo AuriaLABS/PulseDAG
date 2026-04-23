@@ -44,6 +44,10 @@ pub async fn get_snapshot_info<S: RpcStateLike>(
     let runtime_handle = state.runtime();
     let runtime = runtime_handle.read().await;
     let keep_recent = runtime.prune_keep_recent_blocks.max(1);
+    let startup_path = runtime.startup_path.clone();
+    let startup_fastboot_used = runtime.startup_fastboot_used;
+    let startup_replay_required = runtime.startup_replay_required;
+    let startup_fallback_reason = runtime.startup_fallback_reason.clone();
     let recommended_keep_from_height = best_height.saturating_sub(keep_recent.saturating_sub(1));
     drop(runtime);
 
@@ -65,10 +69,10 @@ pub async fn get_snapshot_info<S: RpcStateLike>(
             utxo_count: Some(snapshot.utxo.utxos.len()),
             mempool_size: Some(snapshot.mempool.transactions.len()),
             persisted_block_count,
-            startup_path: runtime.startup_path.clone(),
-            startup_fastboot_used: runtime.startup_fastboot_used,
-            startup_replay_required: runtime.startup_replay_required,
-            startup_fallback_reason: runtime.startup_fallback_reason.clone(),
+            startup_path: startup_path.clone(),
+            startup_fastboot_used,
+            startup_replay_required,
+            startup_fallback_reason: startup_fallback_reason.clone(),
         })),
         Ok(None) => Json(ApiResponse::ok(SnapshotInfoData {
             snapshot_exists: false,
@@ -82,10 +86,10 @@ pub async fn get_snapshot_info<S: RpcStateLike>(
             utxo_count: None,
             mempool_size: None,
             persisted_block_count,
-            startup_path: runtime.startup_path.clone(),
-            startup_fastboot_used: runtime.startup_fastboot_used,
-            startup_replay_required: runtime.startup_replay_required,
-            startup_fallback_reason: runtime.startup_fallback_reason.clone(),
+            startup_path,
+            startup_fastboot_used,
+            startup_replay_required,
+            startup_fallback_reason,
         })),
         Err(e) => Json(ApiResponse::err("STORAGE_ERROR", e.to_string())),
     }

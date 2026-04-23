@@ -939,7 +939,7 @@ fn build_runtime_events_stream(
             let events = match storage.list_runtime_events(scan_limit) {
                 Ok(events) => events,
                 Err(err) => {
-                    let payload = ApiResponse::err(
+                    let payload: ApiResponse<()> = ApiResponse::err(
                         "RUNTIME_EVENTS_STREAM_ERROR",
                         format!("event stream poll failed: {err}"),
                     );
