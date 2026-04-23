@@ -23,3 +23,12 @@ jobs:
 
       - name: Test
         run: cargo test --workspace || true
+
+      - name: Property/fuzz harness smoke
+        env:
+          PROPTEST_CASES: "32"
+        run: |
+          cargo test -p pulsedag-core --test fuzz_parsing_props
+          cargo test -p pulsedag-core mempool::tests::reconcile_never_keeps_more_than_one_conflicting_spend
+          cargo test -p pulsedag-storage replay_from_snapshot_plus_pruned_blocks_preserves_tip
+          cargo test -p pulsedag-rpc handlers::blocks::tests::limit_normalization

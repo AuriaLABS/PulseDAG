@@ -16,3 +16,6 @@ pulsedag-wallet = { path = "../pulsedag-wallet" }
 pulsedag-crypto = { path = "../pulsedag-crypto" }
 pulsedag-p2p = { path = "../pulsedag-p2p" }
 pulsedag-storage = { path = "../pulsedag-storage" }
+
+[dev-dependencies]
+proptest = "1"
