@@ -435,19 +435,20 @@ impl Storage {
         }
 
         for block in &blocks {
-            if block.header.height == 0 {
+            let header = &block.header;
+            if header.height == 0 {
                 continue;
             }
-            if block.header.parents.is_empty() {
+            if header.parents.is_empty() {
                 issues.push(StorageAuditIssue {
                     code: "BLOCK_MISSING_PARENTS".to_string(),
                     message: format!(
                         "block {} at height {} has no parents",
-                        block.hash, block.header.height
+                        block.hash, header.height
                     ),
                 });
             }
-            for parent in &block.header.parents {
+            for parent in &header.parents {
                 if !block_hashes.contains(parent) && !snapshot_exists {
                     issues.push(StorageAuditIssue {
                         code: "BLOCK_PARENT_MISSING_IN_STORAGE".to_string(),
