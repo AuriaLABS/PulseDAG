@@ -17,6 +17,10 @@ pub struct SnapshotInfoData {
     pub utxo_count: Option<usize>,
     pub mempool_size: Option<usize>,
     pub persisted_block_count: usize,
+    pub startup_path: String,
+    pub startup_fastboot_used: bool,
+    pub startup_replay_required: bool,
+    pub startup_fallback_reason: Option<String>,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -61,6 +65,10 @@ pub async fn get_snapshot_info<S: RpcStateLike>(
             utxo_count: Some(snapshot.utxo.utxos.len()),
             mempool_size: Some(snapshot.mempool.transactions.len()),
             persisted_block_count,
+            startup_path: runtime.startup_path.clone(),
+            startup_fastboot_used: runtime.startup_fastboot_used,
+            startup_replay_required: runtime.startup_replay_required,
+            startup_fallback_reason: runtime.startup_fallback_reason.clone(),
         })),
         Ok(None) => Json(ApiResponse::ok(SnapshotInfoData {
             snapshot_exists: false,
@@ -74,6 +82,10 @@ pub async fn get_snapshot_info<S: RpcStateLike>(
             utxo_count: None,
             mempool_size: None,
             persisted_block_count,
+            startup_path: runtime.startup_path.clone(),
+            startup_fastboot_used: runtime.startup_fastboot_used,
+            startup_replay_required: runtime.startup_replay_required,
+            startup_fallback_reason: runtime.startup_fallback_reason.clone(),
         })),
         Err(e) => Json(ApiResponse::err("STORAGE_ERROR", e.to_string())),
     }

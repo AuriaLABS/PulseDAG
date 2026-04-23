@@ -10,6 +10,54 @@ use pulsedag_p2p::P2pHandle;
 use pulsedag_rpc::api::{NodeRuntimeStats, RpcStateLike};
 use pulsedag_storage::Storage;
 
+#[derive(Debug, Clone)]
+pub struct StartupPathReport {
+    pub startup_path: String,
+    pub startup_fastboot_used: bool,
+    pub startup_snapshot_detected: bool,
+    pub startup_snapshot_validated: bool,
+    pub startup_delta_applied: bool,
+    pub startup_replay_required: bool,
+    pub startup_fallback_reason: Option<String>,
+}
+
+pub fn derive_startup_path_report(
+    startup_recovery_mode: &str,
+    snapshot_exists: bool,
+    persisted_block_count: usize,
+    startup_rebuild_reason: Option<String>,
+) -> StartupPathReport {
+    let replayed_blocks = startup_recovery_mode == "replayed_blocks";
+    let startup_fallback_reason = if replayed_blocks {
+        startup_rebuild_reason
+    } else {
+        None
+    };
+    let startup_path = if replayed_blocks && startup_fallback_reason.is_some() {
+        "fallback_full_replay"
+    } else if replayed_blocks {
+        "full_replay"
+    } else if snapshot_exists {
+        "fast_boot"
+    } else if persisted_block_count > 0 {
+        "full_replay"
+    } else {
+        "genesis_init"
+    }
+    .to_string();
+    let startup_fastboot_used = startup_path == "fast_boot";
+
+    StartupPathReport {
+        startup_path,
+        startup_fastboot_used,
+        startup_snapshot_detected: snapshot_exists,
+        startup_snapshot_validated: startup_fastboot_used,
+        startup_delta_applied: false,
+        startup_replay_required: !startup_fastboot_used,
+        startup_fallback_reason,
+    }
+}
+
 #[derive(Clone)]
 pub struct AppState {
     pub chain: Arc<RwLock<ChainState>>,
@@ -73,6 +121,14 @@ pub fn new_runtime_stats() -> NodeRuntimeStats {
         startup_consistency_issue_count: 0,
         startup_recovery_mode: "unknown".to_string(),
         startup_rebuild_reason: None,
+        startup_path: "unknown".to_string(),
+        startup_fastboot_used: false,
+        startup_snapshot_detected: false,
+        startup_snapshot_validated: false,
+        startup_delta_applied: false,
+        startup_replay_required: false,
+        startup_fallback_reason: None,
+        startup_duration_ms: 0,
         last_self_audit_unix: None,
         last_self_audit_ok: true,
         last_self_audit_issue_count: 0,
@@ -105,5 +161,70 @@ impl RpcStateLike for AppState {
     }
     fn runtime(&self) -> Arc<RwLock<NodeRuntimeStats>> {
         self.runtime.clone()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::derive_startup_path_report;
+
+    #[test]
+    fn valid_snapshot_path_reports_fastboot_usage_correctly() {
+        let report = derive_startup_path_report("snapshot", true, 10, None);
+        assert_eq!(report.startup_path, "fast_boot");
+        assert!(report.startup_fastboot_used);
+        assert!(report.startup_snapshot_detected);
+        assert!(report.startup_snapshot_validated);
+        assert!(!report.startup_replay_required);
+    }
+
+    #[test]
+    fn invalid_snapshot_path_reports_fallback_reason_correctly() {
+        let reason = "persisted max height exceeds snapshot height".to_string();
+        let report = derive_startup_path_report("replayed_blocks", true, 10, Some(reason.clone()));
+        assert_eq!(report.startup_path, "fallback_full_replay");
+        assert_eq!(report.startup_fallback_reason, Some(reason));
+        assert!(!report.startup_fastboot_used);
+    }
+
+    #[test]
+    fn full_replay_path_reports_replay_required_status_correctly() {
+        let report = derive_startup_path_report("snapshot_missing", false, 42, None);
+        assert_eq!(report.startup_path, "full_replay");
+        assert!(report.startup_replay_required);
+        assert!(!report.startup_fastboot_used);
+    }
+
+    #[test]
+    fn restart_does_not_leave_stale_or_contradictory_flags() {
+        let first = derive_startup_path_report("snapshot", true, 12, None);
+        let second = derive_startup_path_report("snapshot_missing", false, 12, None);
+        assert!(first.startup_fastboot_used);
+        assert!(!second.startup_fastboot_used);
+        assert!(second.startup_replay_required);
+        assert!(second.startup_fallback_reason.is_none());
+    }
+
+    #[test]
+    fn runtime_output_stays_coherent_after_fallback() {
+        let report = derive_startup_path_report(
+            "replayed_blocks",
+            true,
+            20,
+            Some("startup consistency issues detected".to_string()),
+        );
+        assert_eq!(report.startup_path, "fallback_full_replay");
+        assert!(report.startup_replay_required);
+        assert!(!report.startup_fastboot_used);
+        assert!(!report.startup_snapshot_validated);
+    }
+
+    #[test]
+    fn startup_classification_regression_guard_for_genesis_init() {
+        let report = derive_startup_path_report("genesis_init", false, 0, None);
+        assert_eq!(report.startup_path, "genesis_init");
+        assert!(!report.startup_fastboot_used);
+        assert!(report.startup_fallback_reason.is_none());
+        assert!(report.startup_replay_required);
     }
 }
