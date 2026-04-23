@@ -438,7 +438,7 @@ impl Storage {
             if block.header.height == 0 {
                 continue;
             }
-            if block.parents.is_empty() {
+            if block.header.parents.is_empty() {
                 issues.push(StorageAuditIssue {
                     code: "BLOCK_MISSING_PARENTS".to_string(),
                     message: format!(
@@ -447,7 +447,7 @@ impl Storage {
                     ),
                 });
             }
-            for parent in &block.parents {
+            for parent in &block.header.parents {
                 if !block_hashes.contains(parent) && !snapshot_exists {
                     issues.push(StorageAuditIssue {
                         code: "BLOCK_PARENT_MISSING_IN_STORAGE".to_string(),

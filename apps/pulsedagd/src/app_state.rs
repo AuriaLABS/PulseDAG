@@ -56,6 +56,28 @@ pub fn new_runtime_stats() -> NodeRuntimeStats {
         tx_drop_reasons: Vec::new(),
         accepted_mined_blocks: 0,
         rejected_mined_blocks: 0,
+        mining_templates_issued: 0,
+        mining_template_refresh_events: 0,
+        mining_template_invalidations: 0,
+        mining_submit_total: 0,
+        mining_submit_accepted: 0,
+        mining_submit_rejected: 0,
+        mining_submit_rejected_stale: 0,
+        mining_submit_rejected_invalid_pow: 0,
+        mining_submit_rejected_unknown_template: 0,
+        mining_submit_rejected_storage: 0,
+        mining_submit_rejected_other: 0,
+        mining_submit_broadcast_success: 0,
+        mining_submit_broadcast_failed: 0,
+        mining_stale_work_indicated: 0,
+        mining_submit_traces_completed: 0,
+        mining_last_template_id: None,
+        mining_last_template_created_unix: None,
+        mining_last_submit_block_hash: None,
+        mining_last_submit_unix: None,
+        mining_last_accept_unix: None,
+        mining_last_broadcast_unix: None,
+        mining_last_rejection_code: None,
         startup_snapshot_exists: false,
         startup_persisted_block_count: 0,
         startup_persisted_max_height: 0,
@@ -94,5 +116,26 @@ impl RpcStateLike for AppState {
     }
     fn runtime(&self) -> Arc<RwLock<NodeRuntimeStats>> {
         self.runtime.clone()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::new_runtime_stats;
+
+    #[test]
+    fn runtime_stats_restart_snapshot_is_coherent() {
+        let mut before_restart = new_runtime_stats();
+        before_restart.mining_submit_total = 9;
+        before_restart.mining_submit_accepted = 4;
+        before_restart.mining_submit_rejected = 5;
+        before_restart.mining_template_invalidations = 3;
+
+        let after_restart = new_runtime_stats();
+        assert!(after_restart.started_at_unix > 0);
+        assert_eq!(after_restart.mining_submit_total, 0);
+        assert_eq!(after_restart.mining_submit_accepted, 0);
+        assert_eq!(after_restart.mining_submit_rejected, 0);
+        assert_eq!(after_restart.mining_template_invalidations, 0);
     }
 }

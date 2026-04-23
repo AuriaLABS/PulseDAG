@@ -5,6 +5,7 @@ use pulsedag_core::{
     accept_block, adopt_ready_orphans, dev_pow_accepts, dev_target_u64, preferred_tip_hash,
     AcceptSource,
 };
+use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, serde::Serialize)]
 pub struct MiningSubmitData {
@@ -17,6 +18,36 @@ pub struct MiningSubmitData {
     pub stale_template: bool,
     pub selected_tip: Option<String>,
     pub adopted_orphans: usize,
+    pub trace_id: String,
+    pub broadcasted: bool,
+}
+
+fn now_unix() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+async fn register_submit_rejection<S: RpcStateLike>(state: &S, code: &str, block_hash: &str) {
+    let runtime_handle = state.runtime();
+    let mut runtime = runtime_handle.write().await;
+    runtime.mining_submit_total += 1;
+    runtime.mining_submit_rejected += 1;
+    runtime.rejected_mined_blocks += 1;
+    runtime.mining_last_submit_block_hash = Some(block_hash.to_string());
+    runtime.mining_last_submit_unix = Some(now_unix());
+    runtime.mining_last_rejection_code = Some(code.to_string());
+    match code {
+        "STALE_TEMPLATE" => {
+            runtime.mining_submit_rejected_stale += 1;
+            runtime.mining_stale_work_indicated += 1;
+        }
+        "INVALID_POW" => runtime.mining_submit_rejected_invalid_pow += 1,
+        "UNKNOWN_TEMPLATE" => runtime.mining_submit_rejected_unknown_template += 1,
+        "STORAGE_ERROR" => runtime.mining_submit_rejected_storage += 1,
+        _ => runtime.mining_submit_rejected_other += 1,
+    }
 }
 
 fn persist_then_broadcast_mined_block<FPersist, FBroadcast>(
@@ -47,11 +78,10 @@ pub async fn post_mining_submit<S: RpcStateLike>(
     let target_u64 = dev_target_u64(req.block.header.difficulty as u64);
     let block_hash = req.block.hash.clone();
     let height = req.block.header.height;
+    let trace_id = format!("mining-submit:{height}:{block_hash}");
 
     if !pow_accepted_dev {
-        let runtime_handle = state.runtime();
-        let mut runtime = runtime_handle.write().await;
-        runtime.rejected_mined_blocks += 1;
+        register_submit_rejection(&state, "INVALID_POW", &block_hash).await;
         return Json(ApiResponse::err(
             "INVALID_POW",
             "submitted block does not satisfy current dev pow check".to_string(),
@@ -59,6 +89,7 @@ pub async fn post_mining_submit<S: RpcStateLike>(
     }
 
     if height <= chain.dag.best_height {
+        register_submit_rejection(&state, "STALE_TEMPLATE", &block_hash).await;
         return Json(ApiResponse::err(
             "STALE_TEMPLATE",
             format!(
@@ -81,6 +112,7 @@ pub async fn post_mining_submit<S: RpcStateLike>(
         if template_id != &expected_template_id {
             if let Some(stored) = load_template(template_id) {
                 if stored.height != chain.dag.best_height + 1 {
+                    register_submit_rejection(&state, "STALE_TEMPLATE", &block_hash).await;
                     return Json(ApiResponse::err(
                         "STALE_TEMPLATE",
                         format!(
@@ -91,18 +123,21 @@ pub async fn post_mining_submit<S: RpcStateLike>(
                     ));
                 }
                 if stored.parent_hashes != current_parents {
+                    register_submit_rejection(&state, "STALE_TEMPLATE", &block_hash).await;
                     return Json(ApiResponse::err(
                         "STALE_TEMPLATE",
                         "template parents no longer match current tips",
                     ));
                 }
                 if stored.selected_tip != current_selected_tip {
+                    register_submit_rejection(&state, "STALE_TEMPLATE", &block_hash).await;
                     return Json(ApiResponse::err(
                         "STALE_TEMPLATE",
                         "template selected_tip no longer matches current preferred tip",
                     ));
                 }
             } else {
+                register_submit_rejection(&state, "UNKNOWN_TEMPLATE", &block_hash).await;
                 return Json(ApiResponse::err(
                     "UNKNOWN_TEMPLATE",
                     format!("template_id {} not found", template_id),
@@ -114,6 +149,7 @@ pub async fn post_mining_submit<S: RpcStateLike>(
     let mut submitted_parents = req.block.header.parents.clone();
     submitted_parents.sort();
     if submitted_parents != current_parents {
+        register_submit_rejection(&state, "STALE_TEMPLATE", &block_hash).await;
         return Json(ApiResponse::err(
             "STALE_TEMPLATE",
             "submitted block parents no longer match current tip set",
@@ -123,6 +159,7 @@ pub async fn post_mining_submit<S: RpcStateLike>(
     match accept_block(req.block.clone(), &mut chain, AcceptSource::Rpc) {
         Ok(_) => {
             let adopted_orphans = adopt_ready_orphans(&mut chain, AcceptSource::Rpc);
+            let mut broadcasted = false;
 
             if let Err(e) = persist_then_broadcast_mined_block(
                 &req.block,
@@ -134,18 +171,33 @@ pub async fn post_mining_submit<S: RpcStateLike>(
                 },
                 |block| {
                     if let Some(p2p) = state.p2p() {
-                        let _ = p2p.broadcast_block(block);
+                        broadcasted = p2p.broadcast_block(block).is_ok();
                     }
                 },
             ) {
+                register_submit_rejection(&state, "STORAGE_ERROR", &block_hash).await;
                 return Json(ApiResponse::err("STORAGE_ERROR", e.to_string()));
             }
 
             {
                 let runtime_handle = state.runtime();
                 let mut runtime = runtime_handle.write().await;
+                runtime.mining_submit_total += 1;
+                runtime.mining_submit_accepted += 1;
                 runtime.accepted_mined_blocks += 1;
                 runtime.adopted_orphan_blocks += adopted_orphans as u64;
+                if broadcasted {
+                    runtime.mining_submit_broadcast_success += 1;
+                    runtime.mining_last_broadcast_unix = Some(now_unix());
+                } else {
+                    runtime.mining_submit_broadcast_failed += 1;
+                }
+                runtime.mining_submit_traces_completed += 1;
+                let now = now_unix();
+                runtime.mining_last_submit_block_hash = Some(block_hash.clone());
+                runtime.mining_last_submit_unix = Some(now);
+                runtime.mining_last_accept_unix = Some(now);
+                runtime.mining_last_rejection_code = None;
             }
 
             Json(ApiResponse::ok(MiningSubmitData {
@@ -158,12 +210,12 @@ pub async fn post_mining_submit<S: RpcStateLike>(
                 stale_template: false,
                 selected_tip: preferred_tip_hash(&chain),
                 adopted_orphans,
+                trace_id,
+                broadcasted,
             }))
         }
         Err(e) => {
-            let runtime_handle = state.runtime();
-            let mut runtime = runtime_handle.write().await;
-            runtime.rejected_mined_blocks += 1;
+            register_submit_rejection(&state, "SUBMIT_BLOCK_ERROR", &block_hash).await;
             Json(ApiResponse::err("SUBMIT_BLOCK_ERROR", e.to_string()))
         }
     }
@@ -379,6 +431,103 @@ mod tests {
 
         assert!(!second_response.ok);
         assert_eq!(fake_p2p.block_calls(), 1);
+    }
+
+    #[tokio::test]
+    async fn submit_counters_track_accept_and_reject() {
+        let (state, _fake_p2p) = build_state_with_fake_p2p();
+        let block = build_mined_block(&state).await;
+
+        let Json(first_response) = post_mining_submit(
+            State(state.clone()),
+            Json(SubmitMinedBlockRequest {
+                template_id: None,
+                block: block.clone(),
+            }),
+        )
+        .await;
+        assert!(first_response.ok);
+
+        let Json(second_response) = post_mining_submit(
+            State(state.clone()),
+            Json(SubmitMinedBlockRequest {
+                template_id: None,
+                block,
+            }),
+        )
+        .await;
+        assert!(!second_response.ok);
+
+        let runtime = state.runtime.read().await;
+        assert_eq!(runtime.mining_submit_total, 2);
+        assert_eq!(runtime.mining_submit_accepted, 1);
+        assert_eq!(runtime.mining_submit_rejected, 1);
+        assert_eq!(runtime.mining_submit_rejected_stale, 1);
+        assert_eq!(runtime.accepted_mined_blocks, 1);
+        assert_eq!(runtime.rejected_mined_blocks, 1);
+    }
+
+    #[tokio::test]
+    async fn stale_work_counter_increments_after_tip_change() {
+        let (state, _fake_p2p) = build_state_with_fake_p2p();
+        let stale_candidate = build_mined_block(&state).await;
+        let fresh_candidate = build_mined_block(&state).await;
+
+        let Json(fresh_response) = post_mining_submit(
+            State(state.clone()),
+            Json(SubmitMinedBlockRequest {
+                template_id: None,
+                block: fresh_candidate,
+            }),
+        )
+        .await;
+        assert!(fresh_response.ok);
+
+        let Json(stale_response) = post_mining_submit(
+            State(state.clone()),
+            Json(SubmitMinedBlockRequest {
+                template_id: None,
+                block: stale_candidate,
+            }),
+        )
+        .await;
+        assert!(!stale_response.ok);
+        assert_eq!(stale_response.error.unwrap().code, "STALE_TEMPLATE");
+
+        let runtime = state.runtime.read().await;
+        assert_eq!(runtime.mining_submit_rejected_stale, 1);
+        assert_eq!(runtime.mining_stale_work_indicated, 1);
+    }
+
+    #[tokio::test]
+    async fn submit_trace_is_coherent_for_accept_and_broadcast() {
+        let (state, _fake_p2p) = build_state_with_fake_p2p();
+        let block = build_mined_block(&state).await;
+        let expected_hash = block.hash.clone();
+
+        let Json(response) = post_mining_submit(
+            State(state.clone()),
+            Json(SubmitMinedBlockRequest {
+                template_id: None,
+                block,
+            }),
+        )
+        .await;
+
+        let data = response.data.expect("mining submit data");
+        assert!(data.accepted);
+        assert!(data.broadcasted);
+        assert!(data.trace_id.starts_with("mining-submit:"));
+
+        let runtime = state.runtime.read().await;
+        assert_eq!(
+            runtime.mining_last_submit_block_hash.as_deref(),
+            Some(expected_hash.as_str())
+        );
+        assert_eq!(runtime.mining_submit_traces_completed, 1);
+        assert_eq!(runtime.mining_submit_broadcast_success, 1);
+        assert!(runtime.mining_last_accept_unix.is_some());
+        assert!(runtime.mining_last_broadcast_unix.is_some());
     }
 
     #[test]

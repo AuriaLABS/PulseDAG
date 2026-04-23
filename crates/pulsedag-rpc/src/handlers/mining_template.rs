@@ -103,6 +103,22 @@ pub async fn post_mining_template<S: RpcStateLike>(
         created_at_unix,
         target_u64,
     });
+    {
+        let runtime_handle = state.runtime();
+        let mut runtime = runtime_handle.write().await;
+        runtime.mining_templates_issued += 1;
+        runtime.mining_template_refresh_events += 1;
+        if runtime
+            .mining_last_template_id
+            .as_ref()
+            .is_some_and(|previous| previous != &template_id)
+        {
+            runtime.mining_template_invalidations += 1;
+            runtime.mining_stale_work_indicated += 1;
+        }
+        runtime.mining_last_template_id = Some(template_id.clone());
+        runtime.mining_last_template_created_unix = Some(created_at_unix);
+    }
 
     let metrics_hint = PowMetricsData {
         algorithm: pulsedag_core::selected_pow_name().to_string(),
@@ -128,4 +144,98 @@ pub async fn post_mining_template<S: RpcStateLike>(
         target_u64,
         metrics_hint,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::post_mining_template;
+    use crate::api::{GetBlockTemplateRequest, NodeRuntimeStats, RpcStateLike};
+    use axum::{extract::State, Json};
+    use pulsedag_core::state::ChainState;
+    use pulsedag_p2p::P2pHandle;
+    use pulsedag_storage::Storage;
+    use std::{
+        path::PathBuf,
+        sync::Arc,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+    use tokio::sync::RwLock;
+
+    #[derive(Clone)]
+    struct TestState {
+        chain: Arc<RwLock<ChainState>>,
+        storage: Arc<Storage>,
+        runtime: Arc<RwLock<NodeRuntimeStats>>,
+    }
+
+    impl RpcStateLike for TestState {
+        fn chain(&self) -> Arc<RwLock<ChainState>> {
+            self.chain.clone()
+        }
+        fn p2p(&self) -> Option<Arc<dyn P2pHandle>> {
+            None
+        }
+        fn storage(&self) -> Arc<Storage> {
+            self.storage.clone()
+        }
+        fn runtime(&self) -> Arc<RwLock<NodeRuntimeStats>> {
+            self.runtime.clone()
+        }
+    }
+
+    fn temp_db_path(name: &str) -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        std::env::temp_dir().join(format!("pulsedag-{name}-{unique}"))
+    }
+
+    fn build_state() -> TestState {
+        let path = temp_db_path("mining-template-tests");
+        let storage = Arc::new(Storage::open(path.to_str().unwrap()).unwrap());
+        let chain = storage
+            .load_or_init_genesis("testnet-dev".to_string())
+            .unwrap();
+        TestState {
+            chain: Arc::new(RwLock::new(chain)),
+            storage,
+            runtime: Arc::new(RwLock::new(NodeRuntimeStats::default())),
+        }
+    }
+
+    #[tokio::test]
+    async fn template_counters_capture_refresh_and_invalidation() {
+        let state = build_state();
+        let req = GetBlockTemplateRequest {
+            miner_address: "kaspa:qptestminer".to_string(),
+        };
+
+        let Json(first) = post_mining_template(State(state.clone()), Json(req.clone())).await;
+        assert!(first.ok);
+        let first_template_id = first.data.unwrap().template_id;
+
+        let Json(second) = post_mining_template(State(state.clone()), Json(req)).await;
+        assert!(second.ok);
+        let second_template_id = second.data.unwrap().template_id;
+        assert_eq!(first_template_id, second_template_id);
+
+        let mut runtime = state.runtime.write().await;
+        runtime.mining_last_template_id = Some("forced-old-template".to_string());
+        drop(runtime);
+
+        let Json(third) = post_mining_template(
+            State(state.clone()),
+            Json(GetBlockTemplateRequest {
+                miner_address: "kaspa:qptestminer".to_string(),
+            }),
+        )
+        .await;
+        assert!(third.ok);
+
+        let runtime = state.runtime.read().await;
+        assert_eq!(runtime.mining_templates_issued, 3);
+        assert_eq!(runtime.mining_template_refresh_events, 3);
+        assert_eq!(runtime.mining_template_invalidations, 1);
+    }
 }

@@ -128,7 +128,7 @@ mod tests {
         let genesis = chain
             .dag
             .blocks
-            .get(&chain.dag.best_hash)
+            .get(&chain.dag.genesis_hash)
             .expect("genesis")
             .clone();
         storage.persist_block(&genesis).expect("persist genesis");
