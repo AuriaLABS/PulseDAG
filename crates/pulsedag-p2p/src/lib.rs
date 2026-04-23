@@ -13,7 +13,9 @@ use libp2p::swarm::{NetworkBehaviour, SwarmEvent};
 use libp2p::{identity, Multiaddr, PeerId, SwarmBuilder};
 use pulsedag_core::{
     errors::PulseError,
+    rank_sync_candidates,
     types::{Block, Transaction},
+    RankedSyncPeer, SyncPeerCandidate,
 };
 use tokio::sync::mpsc;
 use tokio::time::{sleep, Duration};
@@ -80,6 +82,8 @@ pub struct P2pStatus {
     pub peers_under_cooldown: usize,
     pub peers_under_flap_guard: usize,
     pub peer_recovery: Vec<PeerRecoveryStatus>,
+    pub sync_candidates: Vec<RankedSyncPeer>,
+    pub selected_sync_peer: Option<String>,
 }
 
 pub trait P2pHandle: Send + Sync {
@@ -276,6 +280,8 @@ impl P2pHandle for MemoryP2pHandle {
             .map_err(|_| PulseError::Internal("p2p lock poisoned".into()))?;
         let (peers_under_cooldown, peers_under_flap_guard, peer_recovery) =
             peer_recovery_snapshot(&inner);
+        let sync_candidates = sync_candidates_snapshot(&inner);
+        let selected_sync_peer = sync_candidates.first().map(|peer| peer.peer_id.clone());
         Ok(P2pStatus {
             mode: inner.mode.clone(),
             peer_id: inner.peer_id.clone(),
@@ -308,6 +314,8 @@ impl P2pHandle for MemoryP2pHandle {
             peers_under_cooldown,
             peers_under_flap_guard,
             peer_recovery,
+            sync_candidates,
+            selected_sync_peer,
         })
     }
 }
@@ -374,18 +382,7 @@ impl Libp2pHandle {
                 health.connected = false;
             }
         }
-        if real_network_connectivity {
-            let mut candidates = state
-                .peer_book
-                .iter()
-                .filter(|(_, v)| v.connected)
-                .map(|(k, v)| (k.clone(), v.score))
-                .collect::<Vec<_>>();
-            candidates.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-            state.connected_peers = candidates.into_iter().map(|(peer, _)| peer).collect();
-        } else {
-            state.connected_peers.clear();
-        }
+        refresh_connected_peers_from_health(&mut state);
         state.topics = topics.clone();
         state.subscriptions_active = topics.len();
         state.mdns = cfg.enable_mdns;
@@ -470,6 +467,37 @@ fn peer_recovery_snapshot(state: &InnerState) -> (usize, usize, Vec<PeerRecovery
         .filter(|peer| peer.suppression_until_unix.is_some())
         .count();
     (peers_under_cooldown, peers_under_flap_guard, peer_recovery)
+}
+
+fn sync_candidates_snapshot(state: &InnerState) -> Vec<RankedSyncPeer> {
+    let now = now_unix();
+    let candidates = state
+        .peer_book
+        .iter()
+        .map(|(peer_id, health)| SyncPeerCandidate {
+            peer_id: peer_id.clone(),
+            score: health.score,
+            fail_streak: health.fail_streak,
+            connected: health.connected,
+            next_retry_unix: health.next_retry_unix,
+            suppressed_until_unix: health.suppressed_until_unix,
+            recovery_success_count: health.recovery_success_count,
+            recent_failures: health.recent_failures_unix.len(),
+        })
+        .collect::<Vec<_>>();
+    rank_sync_candidates(&candidates, now)
+}
+
+fn refresh_connected_peers_from_health(state: &mut InnerState) {
+    if mode_connected_peers_are_real_network(&state.mode) {
+        state.connected_peers = sync_candidates_snapshot(state)
+            .into_iter()
+            .filter(|peer| peer.excluded_until_unix.is_none())
+            .map(|peer| peer.peer_id)
+            .collect();
+    } else {
+        state.connected_peers.clear();
+    }
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -639,18 +667,7 @@ fn register_peer_result_at(inner: &Arc<Mutex<InnerState>>, peer: &str, success: 
             guard.peer_flap_suppressed_count = guard.peer_flap_suppressed_count.saturating_add(1);
         }
 
-        if mode_connected_peers_are_real_network(&guard.mode) {
-            let mut candidates = guard
-                .peer_book
-                .iter()
-                .filter(|(_, v)| v.connected)
-                .map(|(k, v)| (k.clone(), v.score))
-                .collect::<Vec<_>>();
-            candidates.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-            guard.connected_peers = candidates.into_iter().map(|(peer, _)| peer).collect();
-        } else {
-            guard.connected_peers.clear();
-        }
+        refresh_connected_peers_from_health(&mut guard);
         persist_peer_state_if_configured(&guard);
     }
 }
@@ -1088,6 +1105,8 @@ impl P2pHandle for Libp2pHandle {
             .map_err(|_| PulseError::Internal("p2p lock poisoned".into()))?;
         let (peers_under_cooldown, peers_under_flap_guard, peer_recovery) =
             peer_recovery_snapshot(&inner);
+        let sync_candidates = sync_candidates_snapshot(&inner);
+        let selected_sync_peer = sync_candidates.first().map(|peer| peer.peer_id.clone());
         Ok(P2pStatus {
             mode: inner.mode.clone(),
             peer_id: inner.peer_id.clone(),
@@ -1120,6 +1139,8 @@ impl P2pHandle for Libp2pHandle {
             peers_under_cooldown,
             peers_under_flap_guard,
             peer_recovery,
+            sync_candidates,
+            selected_sync_peer,
         })
     }
 }
@@ -1465,6 +1486,38 @@ mod tests {
         assert_eq!(snapshot[0].peer_id, "peer-a");
         assert_eq!(snapshot[1].peer_id, "peer-b");
         assert_eq!(snapshot[0].recovery_success_count, 2);
+    }
+
+    #[test]
+    fn sync_candidate_selection_deprioritizes_slow_or_degraded_peers() {
+        let mut state = InnerState::default();
+        state.mode = P2P_MODE_LIBP2P_REAL.into();
+        state.peer_book.insert(
+            "peer-fast".into(),
+            PeerHealth {
+                connected: true,
+                score: 130,
+                recovery_success_count: 2,
+                next_retry_unix: 0,
+                ..PeerHealth::default()
+            },
+        );
+        state.peer_book.insert(
+            "peer-slow".into(),
+            PeerHealth {
+                connected: true,
+                score: 140,
+                fail_streak: 3,
+                next_retry_unix: now_unix().saturating_add(120),
+                recent_failures_unix: vec![now_unix()],
+                ..PeerHealth::default()
+            },
+        );
+        refresh_connected_peers_from_health(&mut state);
+        assert_eq!(
+            state.connected_peers.first().map(String::as_str),
+            Some("peer-fast")
+        );
     }
 
     #[tokio::test]

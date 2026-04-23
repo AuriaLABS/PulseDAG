@@ -40,6 +40,12 @@ pub async fn get_p2p_status<S: RpcStateLike>(
                 "peer_flap_suppressed_count": status.peer_flap_suppressed_count,
                 "peers_under_cooldown": status.peers_under_cooldown,
                 "peers_under_flap_guard": status.peers_under_flap_guard,
+                "selected_sync_peer": status.selected_sync_peer,
+                "sync_candidates": status.sync_candidates.into_iter().map(|candidate| serde_json::json!({
+                    "peer_id": candidate.peer_id,
+                    "rank_score": candidate.rank_score,
+                    "excluded_until_unix": candidate.excluded_until_unix
+                })).collect::<Vec<_>>(),
                 "peer_recovery": status.peer_recovery.into_iter().map(|peer| serde_json::json!({
                     "peer_id": peer.peer_id,
                     "score": peer.score,
