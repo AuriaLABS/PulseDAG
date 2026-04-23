@@ -35,8 +35,10 @@ pub async fn get_snapshot_info<S: RpcStateLike>(
     };
     let persisted_block_count = persisted_blocks.len();
 
-    let best_height = state.chain().read().await.dag.best_height;
-    let runtime = state.runtime().read().await;
+    let chain_handle = state.chain();
+    let best_height = chain_handle.read().await.dag.best_height;
+    let runtime_handle = state.runtime();
+    let runtime = runtime_handle.read().await;
     let keep_recent = runtime.prune_keep_recent_blocks.max(1);
     let recommended_keep_from_height = best_height.saturating_sub(keep_recent.saturating_sub(1));
     drop(runtime);
@@ -80,7 +82,8 @@ pub async fn get_snapshot_info<S: RpcStateLike>(
 pub async fn post_snapshot_create<S: RpcStateLike>(
     State(state): State<S>,
 ) -> Json<ApiResponse<SnapshotCreateData>> {
-    let chain = state.chain().read().await.clone();
+    let chain_handle = state.chain();
+    let chain = chain_handle.read().await.clone();
     if let Err(e) = state.storage().persist_chain_state(&chain) {
         return Json(ApiResponse::err("SNAPSHOT_PERSIST_ERROR", e.to_string()));
     }
@@ -94,7 +97,8 @@ pub async fn post_snapshot_create<S: RpcStateLike>(
         Err(e) => return Json(ApiResponse::err("SNAPSHOT_METADATA_ERROR", e.to_string())),
     };
     {
-        let mut runtime = state.runtime().write().await;
+        let runtime_handle = state.runtime();
+        let mut runtime = runtime_handle.write().await;
         runtime.last_snapshot_height = Some(chain.dag.best_height);
         runtime.last_snapshot_unix = Some(captured_at_unix);
     }

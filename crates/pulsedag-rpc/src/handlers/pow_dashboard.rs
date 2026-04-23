@@ -18,7 +18,8 @@ pub struct PowDashboardData {
 pub async fn get_pow_dashboard<S: RpcStateLike>(
     State(state): State<S>,
 ) -> Json<ApiResponse<PowDashboardData>> {
-    let chain = state.chain().read().await;
+    let chain_handle = state.chain();
+    let chain = chain_handle.read().await;
     let snapshot = pulsedag_core::dev_difficulty_snapshot(&chain);
     let best_height = snapshot.best_height;
     let suggested_difficulty = snapshot.suggested_difficulty;

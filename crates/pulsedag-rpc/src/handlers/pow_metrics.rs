@@ -19,7 +19,8 @@ pub struct PowMetricsData {
 pub async fn get_pow_metrics<S: RpcStateLike>(
     State(state): State<S>,
 ) -> Json<ApiResponse<PowMetricsData>> {
-    let chain = state.chain().read().await;
+    let chain_handle = state.chain();
+    let chain = chain_handle.read().await;
     let snapshot = pulsedag_core::dev_difficulty_snapshot(&chain);
 
     Json(ApiResponse::ok(PowMetricsData {

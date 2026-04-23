@@ -53,7 +53,8 @@ pub async fn get_status<S: RpcStateLike>(
     };
     let chain_handle = state.chain();
     let chain = chain_handle.read().await;
-    let runtime = state.runtime().read().await;
+    let runtime_handle = state.runtime();
+    let runtime = runtime_handle.read().await;
     let keep_recent = runtime.prune_keep_recent_blocks.max(1);
     let recommended_keep_from_height = chain
         .dag

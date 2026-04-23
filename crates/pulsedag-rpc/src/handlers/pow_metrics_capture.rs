@@ -20,7 +20,8 @@ pub struct PowMetricsCaptureData {
 pub async fn post_pow_metrics_capture<S: RpcStateLike>(
     State(state): State<S>,
 ) -> Json<ApiResponse<PowMetricsCaptureData>> {
-    let chain = state.chain().read().await;
+    let chain_handle = state.chain();
+    let chain = chain_handle.read().await;
     let snapshot = pulsedag_core::dev_difficulty_snapshot(&chain);
     let best_height = snapshot.best_height;
     let window_size = snapshot.policy.window_size;
