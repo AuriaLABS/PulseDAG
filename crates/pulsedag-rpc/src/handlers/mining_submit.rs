@@ -253,6 +253,8 @@ mod tests {
                 peers_under_cooldown: 0,
                 peers_under_flap_guard: 0,
                 peer_recovery: vec![],
+                sync_candidates: vec![],
+                selected_sync_peer: None,
             })
         }
     }

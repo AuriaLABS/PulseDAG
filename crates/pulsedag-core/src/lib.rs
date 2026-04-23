@@ -53,4 +53,7 @@ pub use orphans::{
 };
 
 pub use mining::{build_candidate_block, build_coinbase_transaction, current_ts, is_coinbase};
-pub use sync_pipeline::{SyncPhase, SyncPipelineStatus, SyncProgressCounters};
+pub use sync_pipeline::{
+    rank_sync_candidates, RankedSyncPeer, SyncPeerCandidate, SyncPhase, SyncPipelineStatus,
+    SyncProgressCounters,
+};
