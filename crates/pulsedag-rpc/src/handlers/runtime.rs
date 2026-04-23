@@ -8,6 +8,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 
 use crate::api::{ApiResponse, RpcStateLike};
+use pulsedag_core::{SyncPhase, SyncProgressCounters};
 
 #[derive(Debug, serde::Serialize)]
 pub struct RuntimeStatusData {
@@ -70,6 +71,12 @@ pub struct RuntimeStatusData {
     pub last_snapshot_unix: Option<u64>,
     pub last_prune_height: Option<u64>,
     pub last_prune_unix: Option<u64>,
+    pub sync_phase: SyncPhase,
+    pub sync_last_transition_unix: Option<u64>,
+    pub sync_completed_cycles: u64,
+    pub sync_restart_count: u64,
+    pub sync_last_error: Option<String>,
+    pub sync_counters: SyncProgressCounters,
     pub target_block_interval_secs: u64,
     pub window_size: usize,
     pub retarget_multiplier_bps: u64,
@@ -187,6 +194,12 @@ pub async fn get_runtime_status<S: RpcStateLike>(
         last_snapshot_unix: runtime.last_snapshot_unix,
         last_prune_height: runtime.last_prune_height,
         last_prune_unix: runtime.last_prune_unix,
+        sync_phase: runtime.sync_pipeline.phase,
+        sync_last_transition_unix: runtime.sync_pipeline.last_transition_unix,
+        sync_completed_cycles: runtime.sync_pipeline.completed_cycles,
+        sync_restart_count: runtime.sync_pipeline.restart_count,
+        sync_last_error: runtime.sync_pipeline.last_error.clone(),
+        sync_counters: runtime.sync_pipeline.counters.clone(),
         target_block_interval_secs: snapshot.policy.target_block_interval_secs,
         window_size: snapshot.policy.window_size,
         retarget_multiplier_bps: snapshot.retarget_multiplier_bps,
@@ -201,6 +214,85 @@ pub async fn get_runtime_status<S: RpcStateLike>(
         p2p_last_peer_seen_unix: p2p_recovery.7,
         p2p_peers_with_recent_failures: p2p_recovery.8,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        path::PathBuf,
+        sync::Arc,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    use axum::{extract::State, Json};
+    use pulsedag_core::{ChainState, SyncPhase};
+    use pulsedag_storage::Storage;
+    use tokio::sync::RwLock;
+
+    use crate::api::{NodeRuntimeStats, RpcStateLike};
+
+    use super::get_runtime_status;
+
+    #[derive(Clone)]
+    struct TestState {
+        chain: Arc<RwLock<ChainState>>,
+        storage: Arc<Storage>,
+        runtime: Arc<RwLock<NodeRuntimeStats>>,
+    }
+
+    impl RpcStateLike for TestState {
+        fn chain(&self) -> Arc<RwLock<ChainState>> {
+            self.chain.clone()
+        }
+
+        fn p2p(&self) -> Option<Arc<dyn pulsedag_p2p::P2pHandle>> {
+            None
+        }
+
+        fn storage(&self) -> Arc<Storage> {
+            self.storage.clone()
+        }
+
+        fn runtime(&self) -> Arc<RwLock<NodeRuntimeStats>> {
+            self.runtime.clone()
+        }
+    }
+
+    fn temp_db_path(name: &str) -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        std::env::temp_dir().join(format!("pulsedag-{name}-{unique}"))
+    }
+
+    #[tokio::test]
+    async fn runtime_status_surfaces_sync_phase_coherently() {
+        let path = temp_db_path("runtime-sync-phase");
+        let storage = Arc::new(Storage::open(path.to_str().expect("utf8 temp path")).unwrap());
+        let chain = storage
+            .load_or_init_genesis("testnet-dev".to_string())
+            .unwrap();
+        let mut runtime = NodeRuntimeStats::default();
+        runtime.sync_pipeline.begin_cycle(100);
+        runtime.sync_pipeline.observe_headers(5, 101);
+        runtime.sync_pipeline.request_blocks(5, 102);
+        runtime.sync_pipeline.validate_and_apply_blocks(2, 103);
+
+        let state = TestState {
+            chain: Arc::new(RwLock::new(chain)),
+            storage,
+            runtime: Arc::new(RwLock::new(runtime)),
+        };
+
+        let Json(resp) = get_runtime_status(State(state)).await;
+        assert!(resp.ok);
+        let data = resp.data.expect("runtime status payload");
+        assert_eq!(data.sync_phase, SyncPhase::ValidationApplication);
+        assert_eq!(data.sync_counters.headers_discovered, 5);
+        assert_eq!(data.sync_counters.blocks_requested, 5);
+        assert_eq!(data.sync_counters.blocks_applied, 2);
+    }
 }
 
 #[derive(Debug, Deserialize)]

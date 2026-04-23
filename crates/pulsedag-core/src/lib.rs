@@ -10,6 +10,7 @@ pub mod pow;
 pub mod replay;
 pub mod selection;
 pub mod state;
+pub mod sync_pipeline;
 pub mod tx;
 pub mod types;
 pub mod validation;
@@ -52,3 +53,4 @@ pub use orphans::{
 };
 
 pub use mining::{build_candidate_block, build_coinbase_transaction, current_ts, is_coinbase};
+pub use sync_pipeline::{SyncPhase, SyncPipelineStatus, SyncProgressCounters};

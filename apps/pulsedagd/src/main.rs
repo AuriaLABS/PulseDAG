@@ -193,6 +193,7 @@ async fn main() -> Result<()> {
         None
     };
     runtime_stats.last_snapshot_unix = storage.snapshot_captured_at_unix().ok().flatten();
+    runtime_stats.sync_pipeline.resume_after_restart(now_unix());
 
     let app_state = AppState {
         chain: Arc::new(tokio::sync::RwLock::new(chain_state)),
@@ -384,6 +385,16 @@ async fn main() -> Result<()> {
                         }
                     }
                     InboundEvent::Block(block) => {
+                        {
+                            let mut rt = runtime.write().await;
+                            let now = now_unix();
+                            rt.sync_pipeline.begin_cycle(now);
+                            rt.sync_pipeline.observe_peer_candidate(now);
+                            rt.sync_pipeline.observe_headers(1, now);
+                            rt.sync_pipeline.request_blocks(1, now);
+                            rt.sync_pipeline.acquire_blocks(1);
+                            rt.sync_pipeline.validate_and_apply_blocks(1, now);
+                        }
                         let mut guard = chain.write().await;
                         if guard.dag.blocks.contains_key(&block.hash)
                             || guard.orphan_blocks.contains_key(&block.hash)
@@ -408,6 +419,13 @@ async fn main() -> Result<()> {
                             {
                                 let mut rt = runtime.write().await;
                                 rt.queued_orphan_blocks += 1;
+                                rt.sync_pipeline.fallback_after_failure(
+                                    format!(
+                                        "orphaned block {} missing parents {:?}",
+                                        block.hash, missing_parents
+                                    ),
+                                    now_unix(),
+                                );
                             }
                             info!(block = %block.hash, missing_parents = ?missing_parents, orphan_count = guard.orphan_blocks.len(), pruned, "queued inbound p2p orphan block");
                             if let Err(e) = storage.persist_block(&block) {
@@ -421,6 +439,10 @@ async fn main() -> Result<()> {
                         {
                             let mut rt = runtime.write().await;
                             rt.rejected_p2p_blocks += 1;
+                            rt.sync_pipeline.fallback_after_failure(
+                                format!("block {} validation failed: {}", block.hash, e),
+                                now_unix(),
+                            );
                             warn!(error = %e, "rejected inbound p2p block");
                         } else {
                             let adopted =
@@ -429,6 +451,7 @@ async fn main() -> Result<()> {
                                 let mut rt = runtime.write().await;
                                 rt.accepted_p2p_blocks += 1;
                                 rt.adopted_orphan_blocks += adopted as u64;
+                                rt.sync_pipeline.complete_cycle(now_unix());
                             }
                             if adopted > 0 {
                                 info!(
