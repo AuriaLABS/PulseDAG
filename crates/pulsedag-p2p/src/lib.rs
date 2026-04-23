@@ -324,6 +324,7 @@ impl Libp2pHandle {
         let (outbound_tx, outbound_rx) = mpsc::unbounded_channel::<OutboundMessage>();
         let (inbound_tx, inbound_rx) = mpsc::unbounded_channel::<InboundEvent>();
 
+        let real_network_connectivity = matches!(cfg.runtime, Libp2pRuntimeMode::RealSwarm);
         let (mode, runtime_mode_detail) = match cfg.runtime {
             Libp2pRuntimeMode::DevLoopbackSkeleton => (
                 P2P_MODE_LIBP2P_DEV_LOOPBACK_SKELETON.to_string(),
@@ -339,7 +340,7 @@ impl Libp2pHandle {
             .iter()
             .map(|peer| {
                 let mut health = PeerHealth::default();
-                if mode_connected_peers_are_real_network(&mode) {
+                if real_network_connectivity {
                     health.connected = false;
                 }
                 (peer.clone(), health)
@@ -359,12 +360,12 @@ impl Libp2pHandle {
                 state.peer_book.insert(peer, health);
             }
         }
-        if mode_connected_peers_are_real_network(&state.mode) {
+        if real_network_connectivity {
             for health in state.peer_book.values_mut() {
                 health.connected = false;
             }
         }
-        if mode_connected_peers_are_real_network(&state.mode) {
+        if real_network_connectivity {
             let mut candidates = state
                 .peer_book
                 .iter()
