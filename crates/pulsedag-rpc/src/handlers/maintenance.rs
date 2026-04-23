@@ -10,6 +10,9 @@ pub struct MaintenanceReportData {
     pub best_height: u64,
     pub in_memory_block_count: usize,
     pub persisted_block_count: usize,
+    pub block_index_entries: usize,
+    pub block_index_rebuilt_entries: usize,
+    pub block_index_removed_stale_entries: usize,
     pub recommended_keep_from_height: u64,
     pub consistent: bool,
     pub recommended_action: String,
@@ -23,6 +26,10 @@ pub async fn get_maintenance_report<S: RpcStateLike>(
         Err(e) => return Json(ApiResponse::err("STORAGE_ERROR", e.to_string())),
     };
     let persisted_blocks = match state.storage().list_blocks() {
+        Ok(v) => v,
+        Err(e) => return Json(ApiResponse::err("STORAGE_ERROR", e.to_string())),
+    };
+    let index_health = match state.storage().block_index_health() {
         Ok(v) => v,
         Err(e) => return Json(ApiResponse::err("STORAGE_ERROR", e.to_string())),
     };
@@ -68,6 +75,9 @@ pub async fn get_maintenance_report<S: RpcStateLike>(
         best_height: chain.dag.best_height,
         in_memory_block_count: memory_hashes.len(),
         persisted_block_count: persisted_hashes.len(),
+        block_index_entries: index_health.index_entries,
+        block_index_rebuilt_entries: index_health.rebuilt_entries,
+        block_index_removed_stale_entries: index_health.removed_stale_entries,
         recommended_keep_from_height,
         consistent,
         recommended_action,

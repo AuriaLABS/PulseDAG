@@ -16,6 +16,8 @@ use serde::{Deserialize, Serialize};
 const CHAIN_STATE_KEY: &[u8] = b"chain_state";
 const SNAPSHOT_CAPTURED_AT_UNIX_KEY: &[u8] = b"snapshot_captured_at_unix";
 const RUNTIME_EVENT_PREFIX: &str = "runtime_event:";
+const BLOCK_INDEX_PREFIX: &str = "block_index:";
+const BLOCK_INDEX_REPORT_INTERVAL: usize = 1_000;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RuntimeEvent {
@@ -38,10 +40,20 @@ pub struct RestoreDrillReport {
     pub restore_duration_ms: u128,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BlockIndexHealth {
+    pub total_blocks: usize,
+    pub index_entries: usize,
+    pub rebuilt_entries: usize,
+    pub removed_stale_entries: usize,
+    pub used_full_scan: bool,
+}
+
 impl Storage {
     pub fn open(path: &str) -> Result<Self, PulseError> {
         let cfs = vec![
             ColumnFamilyDescriptor::new("blocks", Default::default()),
+            ColumnFamilyDescriptor::new("block_index", Default::default()),
             ColumnFamilyDescriptor::new("utxos", Default::default()),
             ColumnFamilyDescriptor::new("meta", Default::default()),
             ColumnFamilyDescriptor::new("contracts_meta", Default::default()),
@@ -57,20 +69,37 @@ impl Storage {
     }
 
     pub fn persist_block(&self, block: &Block) -> Result<(), PulseError> {
-        let cf = self
+        let blocks_cf = self
             .db
             .cf_handle("blocks")
             .ok_or_else(|| PulseError::StorageError("missing cf blocks".into()))?;
+        let block_index_cf = self
+            .db
+            .cf_handle("block_index")
+            .ok_or_else(|| PulseError::StorageError("missing cf block_index".into()))?;
+        let value =
+            serde_json::to_vec(block).map_err(|e| PulseError::StorageError(e.to_string()))?;
+        let mut batch = WriteBatch::default();
+        batch.put_cf(&blocks_cf, block.hash.as_bytes(), value);
+        batch.put_cf(
+            &block_index_cf,
+            Self::block_index_key(block.header.height, &block.hash).as_bytes(),
+            block.hash.as_bytes(),
+        );
         self.db
-            .put_cf(
-                cf,
-                block.hash.as_bytes(),
-                serde_json::to_vec(block).map_err(|e| PulseError::StorageError(e.to_string()))?,
-            )
+            .write(batch)
             .map_err(|e| PulseError::StorageError(e.to_string()))
     }
 
     pub fn list_blocks(&self) -> Result<Vec<Block>, PulseError> {
+        let index_health = self.ensure_block_index()?;
+        if !index_health.used_full_scan {
+            return self.list_blocks_via_index();
+        }
+        self.list_blocks_from_blocks_cf()
+    }
+
+    fn list_blocks_from_blocks_cf(&self) -> Result<Vec<Block>, PulseError> {
         let cf = self
             .db
             .cf_handle("blocks")
@@ -83,7 +112,42 @@ impl Storage {
                 .map_err(|e| PulseError::StorageError(e.to_string()))?;
             blocks.push(block);
         }
-        blocks.sort_by_key(|b| b.header.height);
+        blocks.sort_by(|a, b| {
+            a.header
+                .height
+                .cmp(&b.header.height)
+                .then_with(|| a.hash.cmp(&b.hash))
+        });
+        Ok(blocks)
+    }
+
+    fn list_blocks_via_index(&self) -> Result<Vec<Block>, PulseError> {
+        let blocks_cf = self
+            .db
+            .cf_handle("blocks")
+            .ok_or_else(|| PulseError::StorageError("missing cf blocks".into()))?;
+        let block_index_cf = self
+            .db
+            .cf_handle("block_index")
+            .ok_or_else(|| PulseError::StorageError("missing cf block_index".into()))?;
+        let iter = self
+            .db
+            .iterator_cf(block_index_cf, rocksdb::IteratorMode::Start);
+        let mut blocks = Vec::new();
+        for item in iter {
+            let (_, hash_bytes) = item.map_err(|e| PulseError::StorageError(e.to_string()))?;
+            let hash = std::str::from_utf8(&hash_bytes)
+                .map_err(|e| PulseError::StorageError(e.to_string()))?;
+            if let Some(block_bytes) = self
+                .db
+                .get_cf(blocks_cf, hash.as_bytes())
+                .map_err(|e| PulseError::StorageError(e.to_string()))?
+            {
+                let block: Block = serde_json::from_slice(&block_bytes)
+                    .map_err(|e| PulseError::StorageError(e.to_string()))?;
+                blocks.push(block);
+            }
+        }
         Ok(blocks)
     }
 
@@ -158,12 +222,128 @@ impl Storage {
             .ok_or_else(|| PulseError::StorageError("missing cf meta".into()))?;
         let block_value =
             serde_json::to_vec(block).map_err(|e| PulseError::StorageError(e.to_string()))?;
+        let block_index_cf = self
+            .db
+            .cf_handle("block_index")
+            .ok_or_else(|| PulseError::StorageError("missing cf block_index".into()))?;
         let mut batch = WriteBatch::default();
         batch.put_cf(&blocks_cf, block.hash.as_bytes(), block_value);
+        batch.put_cf(
+            &block_index_cf,
+            Self::block_index_key(block.header.height, &block.hash).as_bytes(),
+            block.hash.as_bytes(),
+        );
         self.stage_chain_state_snapshot(&mut batch, &meta_cf, state)?;
         self.db
             .write(batch)
             .map_err(|e| PulseError::StorageError(e.to_string()))
+    }
+
+    fn block_index_key(height: u64, hash: &str) -> String {
+        format!("{}{:020}:{}", BLOCK_INDEX_PREFIX, height, hash)
+    }
+
+    pub fn block_index_health(&self) -> Result<BlockIndexHealth, PulseError> {
+        self.ensure_block_index()
+    }
+
+    fn ensure_block_index(&self) -> Result<BlockIndexHealth, PulseError> {
+        let blocks_cf = self
+            .db
+            .cf_handle("blocks")
+            .ok_or_else(|| PulseError::StorageError("missing cf blocks".into()))?;
+        let block_index_cf = self
+            .db
+            .cf_handle("block_index")
+            .ok_or_else(|| PulseError::StorageError("missing cf block_index".into()))?;
+
+        let blocks_iter = self.db.iterator_cf(blocks_cf, rocksdb::IteratorMode::Start);
+        let mut blocks = Vec::new();
+        for item in blocks_iter {
+            let (_, value) = item.map_err(|e| PulseError::StorageError(e.to_string()))?;
+            let block: Block = serde_json::from_slice(&value)
+                .map_err(|e| PulseError::StorageError(e.to_string()))?;
+            blocks.push(block);
+        }
+        blocks.sort_by(|a, b| {
+            a.header
+                .height
+                .cmp(&b.header.height)
+                .then_with(|| a.hash.cmp(&b.hash))
+        });
+
+        let total_blocks = blocks.len();
+        let mut batch = WriteBatch::default();
+        let mut index_entries = 0usize;
+        let mut rebuilt_entries = 0usize;
+        let mut removed_stale_entries = 0usize;
+        let mut needs_repair = false;
+        let mut expected_keys = std::collections::BTreeSet::new();
+
+        for block in &blocks {
+            let key = Self::block_index_key(block.header.height, &block.hash);
+            expected_keys.insert(key.clone());
+            let existing = self
+                .db
+                .get_cf(block_index_cf, key.as_bytes())
+                .map_err(|e| PulseError::StorageError(e.to_string()))?;
+            match existing {
+                Some(hash) if hash.as_ref() == block.hash.as_bytes() => {
+                    index_entries += 1;
+                }
+                _ => {
+                    batch.put_cf(&block_index_cf, key.as_bytes(), block.hash.as_bytes());
+                    rebuilt_entries += 1;
+                    needs_repair = true;
+                    if rebuilt_entries % BLOCK_INDEX_REPORT_INTERVAL == 0 {
+                        let _ = self.append_runtime_event(
+                            "info",
+                            "block_index_repair_progress",
+                            &format!(
+                                "block index repair progress: rebuilt_entries={} of total_blocks={}",
+                                rebuilt_entries, total_blocks
+                            ),
+                        );
+                    }
+                }
+            }
+        }
+
+        let index_iter = self
+            .db
+            .iterator_cf(block_index_cf, rocksdb::IteratorMode::Start);
+        for item in index_iter {
+            let (key, _) = item.map_err(|e| PulseError::StorageError(e.to_string()))?;
+            let key_str =
+                std::str::from_utf8(&key).map_err(|e| PulseError::StorageError(e.to_string()))?;
+            if key_str.starts_with(BLOCK_INDEX_PREFIX) && !expected_keys.contains(key_str) {
+                batch.delete_cf(&block_index_cf, key);
+                removed_stale_entries += 1;
+                needs_repair = true;
+            }
+        }
+
+        if needs_repair {
+            self.db
+                .write(batch)
+                .map_err(|e| PulseError::StorageError(e.to_string()))?;
+            let _ = self.append_runtime_event(
+                "info",
+                "block_index_repaired",
+                &format!(
+                    "block index repair complete: total_blocks={}, repaired_entries={}, removed_stale_entries={}",
+                    total_blocks, rebuilt_entries, removed_stale_entries
+                ),
+            );
+        }
+
+        Ok(BlockIndexHealth {
+            total_blocks,
+            index_entries: index_entries + rebuilt_entries,
+            rebuilt_entries,
+            removed_stale_entries,
+            used_full_scan: total_blocks == 0 && (index_entries + rebuilt_entries) == 0,
+        })
     }
 
     fn stage_chain_state_snapshot(
@@ -396,19 +576,31 @@ impl Storage {
     }
 
     pub fn prune_blocks_below_height(&self, keep_from_height: u64) -> Result<usize, PulseError> {
-        let cf = self
+        let blocks_cf = self
             .db
             .cf_handle("blocks")
             .ok_or_else(|| PulseError::StorageError("missing cf blocks".into()))?;
+        let block_index_cf = self
+            .db
+            .cf_handle("block_index")
+            .ok_or_else(|| PulseError::StorageError("missing cf block_index".into()))?;
         let blocks = self.list_blocks()?;
         let mut removed = 0usize;
+        let mut batch = WriteBatch::default();
         for block in blocks {
             if block.header.height < keep_from_height {
-                self.db
-                    .delete_cf(cf, block.hash.as_bytes())
-                    .map_err(|e| PulseError::StorageError(e.to_string()))?;
+                batch.delete_cf(&blocks_cf, block.hash.as_bytes());
+                batch.delete_cf(
+                    &block_index_cf,
+                    Self::block_index_key(block.header.height, &block.hash).as_bytes(),
+                );
                 removed += 1;
             }
+        }
+        if removed > 0 {
+            self.db
+                .write(batch)
+                .map_err(|e| PulseError::StorageError(e.to_string()))?;
         }
         Ok(removed)
     }
@@ -793,5 +985,115 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn rebuild_path_matches_normal_path_final_state() {
+        let path = temp_db_path("rebuild-final-state-equivalence");
+        let storage = Storage::open(&path).expect("open storage");
+        let state = build_linear_chain("testnet", 7);
+        let mut blocks: Vec<_> = state.dag.blocks.values().cloned().collect();
+        blocks.sort_by_key(|b| b.header.height);
+        for block in &blocks {
+            storage.persist_block(block).expect("persist block");
+        }
+
+        let rebuilt = storage
+            .replay_blocks_or_init("testnet".to_string())
+            .expect("replay should match normal path state");
+        assert_eq!(rebuilt.dag.best_hash, state.dag.best_hash);
+        assert_eq!(rebuilt.dag.best_height, state.dag.best_height);
+
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn interrupted_rebuild_fails_cleanly_without_mutating_blocks() {
+        let path = temp_db_path("interrupted-rebuild-clean-failure");
+        let storage = Storage::open(&path).expect("open storage");
+        let state = build_linear_chain("testnet", 6);
+        let mut partial_blocks: Vec<_> = state
+            .dag
+            .blocks
+            .values()
+            .filter(|b| b.header.height >= 4)
+            .cloned()
+            .collect();
+        partial_blocks.sort_by_key(|b| b.header.height);
+        for block in &partial_blocks {
+            storage
+                .persist_block(block)
+                .expect("persist partial block set");
+        }
+
+        let err = storage
+            .replay_blocks_or_init("testnet".to_string())
+            .expect_err("rebuild should fail cleanly with missing parents");
+        assert!(err.to_string().contains("missing parent"));
+        assert_eq!(
+            storage
+                .list_blocks()
+                .expect("read persisted blocks after failed rebuild")
+                .len(),
+            partial_blocks.len()
+        );
+    }
+
+    #[test]
+    fn index_recovers_after_partial_loss_and_stays_coherent() {
+        let path = temp_db_path("index-recovery-partial-loss");
+        let storage = Storage::open(&path).expect("open storage");
+        let state = build_linear_chain("testnet", 8);
+        let mut blocks: Vec<_> = state.dag.blocks.values().cloned().collect();
+        blocks.sort_by_key(|b| b.header.height);
+        for block in &blocks {
+            storage.persist_block(block).expect("persist block");
+        }
+
+        let block_index_cf = storage.db.cf_handle("block_index").expect("block index cf");
+        for block in blocks.iter().take(3) {
+            storage
+                .db
+                .delete_cf(
+                    &block_index_cf,
+                    Storage::block_index_key(block.header.height, &block.hash).as_bytes(),
+                )
+                .expect("simulate partial index loss");
+        }
+
+        let loaded_blocks = storage.list_blocks().expect("list blocks repairs index");
+        assert_eq!(loaded_blocks.len(), blocks.len());
+        let health = storage.block_index_health().expect("index health");
+        assert_eq!(health.total_blocks, blocks.len());
+        assert!(health.index_entries >= blocks.len());
+    }
+
+    #[test]
+    fn block_index_repair_emits_progress_events_when_repairs_occur() {
+        let path = temp_db_path("index-progress-events");
+        let storage = Storage::open(&path).expect("open storage");
+        let state = build_linear_chain("testnet", 3);
+        let mut blocks: Vec<_> = state.dag.blocks.values().cloned().collect();
+        blocks.sort_by_key(|b| b.header.height);
+        for block in &blocks {
+            storage.persist_block(block).expect("persist block");
+        }
+
+        let block_index_cf = storage.db.cf_handle("block_index").expect("block index cf");
+        let block = blocks.last().expect("have at least one block");
+        storage
+            .db
+            .delete_cf(
+                &block_index_cf,
+                Storage::block_index_key(block.header.height, &block.hash).as_bytes(),
+            )
+            .expect("drop one index entry");
+
+        let _ = storage.list_blocks().expect("trigger index repair");
+        let events = storage.list_runtime_events(50).expect("runtime events");
+        assert!(
+            events.iter().any(|e| e.kind == "block_index_repaired"),
+            "expected index repair event"
+        );
     }
 }
