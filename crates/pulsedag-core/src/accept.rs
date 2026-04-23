@@ -5,7 +5,7 @@ use crate::{
     selected_pow_name,
     state::ChainState,
     types::{Block, Transaction},
-    validation::{validate_block, validate_transaction},
+    validation::{missing_transaction_inputs, validate_block, validate_transaction},
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -29,20 +29,141 @@ fn lowest_priority_txid(state: &ChainState) -> Option<String> {
         .map(|tx| tx.txid.clone())
 }
 
+fn prune_orphans(state: &mut ChainState) {
+    if state.mempool.orphan_transactions.len() <= state.mempool.max_orphans {
+        return;
+    }
+    let mut by_age = state
+        .mempool
+        .orphan_received_order
+        .iter()
+        .map(|(txid, order)| (txid.clone(), *order))
+        .collect::<Vec<_>>();
+    by_age.sort_by_key(|(_, order)| *order);
+
+    let overflow = state
+        .mempool
+        .orphan_transactions
+        .len()
+        .saturating_sub(state.mempool.max_orphans);
+    for (txid, _) in by_age.into_iter().take(overflow) {
+        let removed = state.mempool.orphan_transactions.remove(&txid).is_some();
+        state.mempool.orphan_missing_outpoints.remove(&txid);
+        state.mempool.orphan_received_order.remove(&txid);
+        if removed {
+            state.mempool.counters.orphan_dropped_total = state
+                .mempool
+                .counters
+                .orphan_dropped_total
+                .saturating_add(1);
+            state.mempool.counters.orphan_pruned_total =
+                state.mempool.counters.orphan_pruned_total.saturating_add(1);
+        }
+    }
+}
+
+fn store_orphan_transaction(tx: Transaction, state: &mut ChainState) {
+    let txid = tx.txid.clone();
+    let missing = missing_transaction_inputs(&tx, state);
+    let replaced = state
+        .mempool
+        .orphan_transactions
+        .insert(txid.clone(), tx)
+        .is_some();
+    state
+        .mempool
+        .orphan_missing_outpoints
+        .insert(txid.clone(), missing);
+    if !replaced {
+        let order = state.mempool.next_orphan_order;
+        state.mempool.next_orphan_order = state.mempool.next_orphan_order.saturating_add(1);
+        state.mempool.orphan_received_order.insert(txid, order);
+        state.mempool.counters.orphaned_total =
+            state.mempool.counters.orphaned_total.saturating_add(1);
+    }
+    prune_orphans(state);
+}
+
+fn remove_orphan_transaction(txid: &str, state: &mut ChainState) {
+    state.mempool.orphan_transactions.remove(txid);
+    state.mempool.orphan_missing_outpoints.remove(txid);
+    state.mempool.orphan_received_order.remove(txid);
+}
+
+fn promote_ready_orphans(state: &mut ChainState, source: AcceptSource) {
+    loop {
+        let mut ready = state
+            .mempool
+            .orphan_transactions
+            .iter()
+            .filter_map(|(txid, tx)| {
+                if missing_transaction_inputs(tx, state).is_empty() {
+                    Some(txid.clone())
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+        if ready.is_empty() {
+            break;
+        }
+        ready.sort();
+
+        let mut promoted_any = false;
+        for txid in ready {
+            let Some(tx) = state.mempool.orphan_transactions.get(&txid).cloned() else {
+                continue;
+            };
+            remove_orphan_transaction(&txid, state);
+            match accept_transaction(tx.clone(), state, source) {
+                Ok(()) => {
+                    state.mempool.counters.orphan_promoted_total = state
+                        .mempool
+                        .counters
+                        .orphan_promoted_total
+                        .saturating_add(1);
+                    promoted_any = true;
+                }
+                Err(PulseError::UtxoNotFound) => {
+                    // Became unresolved again due to competing promotion; park back as orphan.
+                    store_orphan_transaction(tx, state);
+                }
+                Err(_) => {
+                    state.mempool.counters.orphan_dropped_total = state
+                        .mempool
+                        .counters
+                        .orphan_dropped_total
+                        .saturating_add(1);
+                }
+            }
+        }
+        if !promoted_any {
+            break;
+        }
+    }
+}
+
 pub fn accept_transaction(
     tx: Transaction,
     state: &mut ChainState,
-    _source: AcceptSource,
+    source: AcceptSource,
 ) -> Result<(), PulseError> {
-    if let Err(err) = validate_transaction(&tx, state) {
-        state.mempool.counters.rejected_total =
-            state.mempool.counters.rejected_total.saturating_add(1);
-        return Err(err);
-    }
-    if state.mempool.transactions.contains_key(&tx.txid) {
+    if state.mempool.transactions.contains_key(&tx.txid)
+        || state.mempool.orphan_transactions.contains_key(&tx.txid)
+    {
         state.mempool.counters.rejected_total =
             state.mempool.counters.rejected_total.saturating_add(1);
         return Err(PulseError::TxAlreadyExists);
+    }
+
+    if let Err(err) = validate_transaction(&tx, state) {
+        if matches!(err, PulseError::UtxoNotFound) {
+            store_orphan_transaction(tx, state);
+            return Ok(());
+        }
+        state.mempool.counters.rejected_total =
+            state.mempool.counters.rejected_total.saturating_add(1);
+        return Err(err);
     }
     if state.mempool.transactions.len() >= state.mempool.max_transactions {
         state.mempool.counters.pressure_events_total = state
@@ -90,6 +211,7 @@ pub fn accept_transaction(
     }
     state.mempool.transactions.insert(tx.txid.clone(), tx);
     state.mempool.counters.accepted_total = state.mempool.counters.accepted_total.saturating_add(1);
+    promote_ready_orphans(state, source);
     Ok(())
 }
 

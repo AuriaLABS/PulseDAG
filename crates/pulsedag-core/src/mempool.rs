@@ -577,4 +577,225 @@ mod tests {
         assert_eq!(state.mempool.counters.rejected_total, 1);
         assert_eq!(state.mempool.counters.rejected_low_priority_total, 1);
     }
+
+    #[test]
+    fn orphan_tx_is_stored_in_orphan_pool() {
+        let mut state = init_chain_state("test".into());
+        state.mempool.max_orphans = 8;
+
+        let parent_key = signing_key(71);
+        let child_key = signing_key(72);
+
+        let parent_output = OutPoint {
+            txid: "missing-parent".into(),
+            index: 0,
+        };
+        let orphan = signed_tx(
+            &child_key,
+            vec![parent_output.clone()],
+            vec![TxOutput {
+                address: address_from_public_key(&public_key_hex(&parent_key)),
+                amount: 10,
+            }],
+            1,
+            1,
+        );
+
+        accept_transaction(orphan.clone(), &mut state, AcceptSource::Rpc).unwrap();
+
+        assert!(state.mempool.transactions.is_empty());
+        assert!(state.mempool.orphan_transactions.contains_key(&orphan.txid));
+        assert_eq!(
+            state.mempool.orphan_missing_outpoints.get(&orphan.txid),
+            Some(&vec![parent_output])
+        );
+    }
+
+    #[test]
+    fn orphan_is_promoted_when_dependency_arrives() {
+        let mut state = init_chain_state("test".into());
+        let parent_key = signing_key(81);
+
+        let funded = fund_address(
+            &mut state,
+            "fund-parent",
+            0,
+            address_from_public_key(&public_key_hex(&parent_key)),
+            50,
+        );
+        let parent = signed_tx(
+            &parent_key,
+            vec![funded],
+            vec![TxOutput {
+                address: address_from_public_key(&public_key_hex(&parent_key)),
+                amount: 45,
+            }],
+            5,
+            1,
+        );
+        let child = signed_tx(
+            &parent_key,
+            vec![OutPoint {
+                txid: parent.txid.clone(),
+                index: 0,
+            }],
+            vec![TxOutput {
+                address: "pulse1child-dest".into(),
+                amount: 40,
+            }],
+            5,
+            2,
+        );
+
+        accept_transaction(child.clone(), &mut state, AcceptSource::Rpc).unwrap();
+        assert!(state.mempool.orphan_transactions.contains_key(&child.txid));
+
+        accept_transaction(parent.clone(), &mut state, AcceptSource::Rpc).unwrap();
+        assert!(state.mempool.transactions.contains_key(&parent.txid));
+        assert!(state.mempool.transactions.contains_key(&child.txid));
+        assert!(!state.mempool.orphan_transactions.contains_key(&child.txid));
+        assert_eq!(state.mempool.counters.orphan_promoted_total, 1);
+    }
+
+    #[test]
+    fn invalid_orphan_is_dropped_safely_on_promotion_attempt() {
+        let mut state = init_chain_state("test".into());
+        let parent_key = signing_key(91);
+        let child_key = signing_key(92);
+
+        let funded = fund_address(
+            &mut state,
+            "fund-invalid-parent",
+            0,
+            address_from_public_key(&public_key_hex(&parent_key)),
+            60,
+        );
+        let parent = signed_tx(
+            &parent_key,
+            vec![funded],
+            vec![TxOutput {
+                address: address_from_public_key(&public_key_hex(&parent_key)),
+                amount: 55,
+            }],
+            5,
+            1,
+        );
+        let invalid_child = signed_tx(
+            &child_key,
+            vec![OutPoint {
+                txid: parent.txid.clone(),
+                index: 0,
+            }],
+            vec![TxOutput {
+                address: "pulse1invalid-child".into(),
+                amount: 50,
+            }],
+            5,
+            2,
+        );
+
+        accept_transaction(invalid_child.clone(), &mut state, AcceptSource::Rpc).unwrap();
+        assert!(state
+            .mempool
+            .orphan_transactions
+            .contains_key(&invalid_child.txid));
+
+        accept_transaction(parent, &mut state, AcceptSource::Rpc).unwrap();
+        assert!(!state
+            .mempool
+            .orphan_transactions
+            .contains_key(&invalid_child.txid));
+        assert!(!state.mempool.transactions.contains_key(&invalid_child.txid));
+        assert!(state.mempool.counters.orphan_dropped_total >= 1);
+    }
+
+    #[test]
+    fn orphan_limits_prevent_unbounded_growth() {
+        let mut state = init_chain_state("test".into());
+        state.mempool.max_orphans = 2;
+        let key = signing_key(101);
+
+        for idx in 0..3u32 {
+            let orphan = signed_tx(
+                &key,
+                vec![OutPoint {
+                    txid: format!("missing-limit-{idx}"),
+                    index: 0,
+                }],
+                vec![TxOutput {
+                    address: "pulse1limit".into(),
+                    amount: 10,
+                }],
+                1,
+                idx as u64,
+            );
+            accept_transaction(orphan, &mut state, AcceptSource::Rpc).unwrap();
+        }
+
+        assert_eq!(state.mempool.orphan_transactions.len(), 2);
+        assert_eq!(state.mempool.counters.orphan_pruned_total, 1);
+    }
+
+    #[test]
+    fn double_spend_conflict_is_enforced_after_orphan_promotion() {
+        let mut state = init_chain_state("test".into());
+        let key = signing_key(111);
+        let funded = fund_address(
+            &mut state,
+            "fund-promotion-conflict",
+            0,
+            address_from_public_key(&public_key_hex(&key)),
+            70,
+        );
+
+        let parent = signed_tx(
+            &key,
+            vec![funded],
+            vec![TxOutput {
+                address: address_from_public_key(&public_key_hex(&key)),
+                amount: 60,
+            }],
+            10,
+            1,
+        );
+        let orphan_a = signed_tx(
+            &key,
+            vec![OutPoint {
+                txid: parent.txid.clone(),
+                index: 0,
+            }],
+            vec![TxOutput {
+                address: "pulse1conflict-a".into(),
+                amount: 55,
+            }],
+            5,
+            2,
+        );
+        let orphan_b = signed_tx(
+            &key,
+            vec![OutPoint {
+                txid: parent.txid.clone(),
+                index: 0,
+            }],
+            vec![TxOutput {
+                address: "pulse1conflict-b".into(),
+                amount: 54,
+            }],
+            6,
+            3,
+        );
+
+        accept_transaction(orphan_a.clone(), &mut state, AcceptSource::Rpc).unwrap();
+        accept_transaction(orphan_b.clone(), &mut state, AcceptSource::Rpc).unwrap();
+        accept_transaction(parent, &mut state, AcceptSource::Rpc).unwrap();
+
+        let promoted = [
+            state.mempool.transactions.contains_key(&orphan_a.txid),
+            state.mempool.transactions.contains_key(&orphan_b.txid),
+        ]
+        .into_iter()
+        .filter(|present| *present)
+        .count();
+        assert_eq!(promoted, 1, "exactly one conflicting orphan should promote");
+    }
 }

@@ -47,10 +47,18 @@ pub struct MempoolCounters {
     pub pressure_events_total: u64,
     pub reconcile_runs_total: u64,
     pub reconcile_removed_total: u64,
+    pub orphaned_total: u64,
+    pub orphan_promoted_total: u64,
+    pub orphan_dropped_total: u64,
+    pub orphan_pruned_total: u64,
 }
 
 fn default_mempool_max_transactions() -> usize {
     1_024
+}
+
+fn default_mempool_max_orphans() -> usize {
+    512
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -58,9 +66,19 @@ pub struct Mempool {
     pub transactions: HashMap<Hash, Transaction>,
     pub spent_outpoints: HashSet<OutPoint>,
     #[serde(default)]
+    pub orphan_transactions: HashMap<Hash, Transaction>,
+    #[serde(default)]
+    pub orphan_missing_outpoints: HashMap<Hash, Vec<OutPoint>>,
+    #[serde(default)]
+    pub orphan_received_order: HashMap<Hash, u64>,
+    #[serde(default)]
+    pub next_orphan_order: u64,
+    #[serde(default)]
     pub counters: MempoolCounters,
     #[serde(default = "default_mempool_max_transactions")]
     pub max_transactions: usize,
+    #[serde(default = "default_mempool_max_orphans")]
+    pub max_orphans: usize,
 }
 
 impl Default for Mempool {
@@ -68,8 +86,13 @@ impl Default for Mempool {
         Self {
             transactions: HashMap::new(),
             spent_outpoints: HashSet::new(),
+            orphan_transactions: HashMap::new(),
+            orphan_missing_outpoints: HashMap::new(),
+            orphan_received_order: HashMap::new(),
+            next_orphan_order: 0,
             counters: MempoolCounters::default(),
             max_transactions: default_mempool_max_transactions(),
+            max_orphans: default_mempool_max_orphans(),
         }
     }
 }
