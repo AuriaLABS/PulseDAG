@@ -65,3 +65,13 @@ A v2.2 burn-in is complete only when all of the following are true:
 - Runbook index: `docs/runbooks/INDEX.md`
 - Dashboard package: `docs/dashboard/README.md`
 - Alert guide: `docs/dashboard/ALERTS.md`
+
+## Release closeout gate (post day-14)
+After day 14 completes, run the final closeout checklist in `docs/V2_2_CLOSEOUT_CHECKLIST.md` to verify:
+- recovery evidence completeness,
+- startup path visibility capture (fast-boot/replay/fallback),
+- mining telemetry verification coverage,
+- upgrade/rollback rehearsal evidence, and
+- release binaries provenance references.
+
+Closeout remains release-hygiene only: no consensus/miner/pool feature changes are permitted in this stage.
