@@ -2,7 +2,7 @@ use crate::api::{ApiResponse, MineRequest, RpcStateLike};
 use axum::{extract::State, Json};
 use pulsedag_core::{
     accept_block, dev_difficulty_snapshot, dev_mine_header, dev_pow_accepts,
-    dev_surrogate_pow_hash, dev_target_u64,
+    dev_target_u64,
     mining::{build_candidate_block, build_coinbase_transaction},
     AcceptSource,
 };

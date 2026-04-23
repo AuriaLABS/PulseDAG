@@ -1,5 +1,4 @@
 use axum::{extract::State, Json};
-use serde::Serialize;
 
 use crate::{api::ApiResponse, api::RpcStateLike};
 

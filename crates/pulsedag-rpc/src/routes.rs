@@ -61,7 +61,7 @@ use crate::{
         transactions::get_confirmed_transactions,
         tx::{
             get_mempool, get_tx, get_txs, get_txs_page, get_txs_recent, post_tx_build,
-            post_tx_submit, post_tx_validate,
+            post_tx_submit,
         },
         wallet::{post_wallet_new, post_wallet_sign, post_wallet_transfer},
     },
