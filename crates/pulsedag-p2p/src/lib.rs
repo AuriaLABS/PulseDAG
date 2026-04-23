@@ -492,7 +492,14 @@ fn refresh_connected_peers_from_health(state: &mut InnerState) {
     if mode_connected_peers_are_real_network(&state.mode) {
         state.connected_peers = sync_candidates_snapshot(state)
             .into_iter()
-            .filter(|peer| peer.excluded_until_unix.is_none())
+            .filter(|peer| {
+                peer.excluded_until_unix.is_none()
+                    && state
+                        .peer_book
+                        .get(&peer.peer_id)
+                        .map(|health| health.connected)
+                        .unwrap_or(false)
+            })
             .map(|peer| peer.peer_id)
             .collect();
     } else {
@@ -1518,6 +1525,34 @@ mod tests {
             state.connected_peers.first().map(String::as_str),
             Some("peer-fast")
         );
+    }
+
+    #[test]
+    fn refresh_connected_peers_excludes_disconnected_ranked_candidates() {
+        let mut state = InnerState::default();
+        state.mode = P2P_MODE_LIBP2P_REAL.into();
+        state.peer_book.insert(
+            "peer-live".into(),
+            PeerHealth {
+                connected: true,
+                score: 95,
+                ..PeerHealth::default()
+            },
+        );
+        state.peer_book.insert(
+            "peer-offline".into(),
+            PeerHealth {
+                connected: false,
+                score: 150,
+                next_retry_unix: 0,
+                suppressed_until_unix: 0,
+                ..PeerHealth::default()
+            },
+        );
+
+        refresh_connected_peers_from_health(&mut state);
+
+        assert_eq!(state.connected_peers, vec!["peer-live".to_string()]);
     }
 
     #[tokio::test]
