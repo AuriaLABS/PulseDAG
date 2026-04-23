@@ -18,6 +18,7 @@ use pulsedag_core::{
     RankedSyncPeer, SyncPeerCandidate,
 };
 use tokio::sync::mpsc;
+use tokio::sync::mpsc::error::TryRecvError;
 use tokio::time::{sleep, Duration};
 
 use crate::messages::{message_id_for_block, message_id_for_tx, topic_names, NetworkMessage};
@@ -62,6 +63,14 @@ pub struct P2pStatus {
     pub publish_attempts: usize,
     pub seen_message_ids: usize,
     pub queued_messages: usize,
+    pub queued_block_messages: usize,
+    pub queued_non_block_messages: usize,
+    pub queue_max_depth: usize,
+    pub dequeued_block_messages: usize,
+    pub dequeued_non_block_messages: usize,
+    pub queue_block_priority_picks: usize,
+    pub queue_non_block_fair_picks: usize,
+    pub queue_starvation_relief_picks: usize,
     pub inbound_messages: usize,
     pub runtime_started: bool,
     pub runtime_mode_detail: String,
@@ -145,6 +154,14 @@ struct InnerState {
     connected_peers: Vec<String>,
     seen_message_ids: HashSet<String>,
     queued_messages: usize,
+    queued_block_messages: usize,
+    queued_non_block_messages: usize,
+    queue_max_depth: usize,
+    dequeued_block_messages: usize,
+    dequeued_non_block_messages: usize,
+    queue_block_priority_picks: usize,
+    queue_non_block_fair_picks: usize,
+    queue_starvation_relief_picks: usize,
     topics: Vec<String>,
     mode: String,
     peer_id: String,
@@ -305,6 +322,14 @@ impl P2pHandle for MemoryP2pHandle {
             publish_attempts: inner.publish_attempts,
             seen_message_ids: inner.seen_message_ids.len(),
             queued_messages: inner.queued_messages,
+            queued_block_messages: inner.queued_block_messages,
+            queued_non_block_messages: inner.queued_non_block_messages,
+            queue_max_depth: inner.queue_max_depth,
+            dequeued_block_messages: inner.dequeued_block_messages,
+            dequeued_non_block_messages: inner.dequeued_non_block_messages,
+            queue_block_priority_picks: inner.queue_block_priority_picks,
+            queue_non_block_fair_picks: inner.queue_non_block_fair_picks,
+            queue_starvation_relief_picks: inner.queue_starvation_relief_picks,
             inbound_messages: inner.inbound_messages,
             runtime_started: inner.runtime_started,
             runtime_mode_detail: inner.runtime_mode_detail.clone(),
@@ -448,6 +473,7 @@ const FLAP_BASE_COOLDOWN: u64 = 30;
 const MESSAGE_DEDUP_WINDOW_SECS: u64 = 120;
 const TX_OUTBOUND_DEDUP_WINDOW_SECS: u64 = 30;
 const MAX_DEDUP_TRACKED_IDS: usize = 16_384;
+const BLOCK_PRIORITY_BURST_LIMIT: usize = 8;
 
 fn peer_recovery_snapshot(state: &InnerState) -> (usize, usize, Vec<PeerRecoveryStatus>) {
     let now = now_unix();
@@ -520,6 +546,92 @@ fn refresh_connected_peers_from_health(state: &mut InnerState) {
             .collect();
     } else {
         state.connected_peers.clear();
+    }
+}
+
+#[derive(Default)]
+struct OutboundPriorityQueue {
+    blocks: std::collections::VecDeque<OutboundMessage>,
+    non_blocks: std::collections::VecDeque<OutboundMessage>,
+    consecutive_block_picks: usize,
+}
+
+fn track_queue_depth_on_enqueue(state: &mut InnerState) {
+    state.queue_max_depth = state.queue_max_depth.max(state.queued_messages);
+}
+
+fn enqueue_outbound_message(
+    _inner: &Arc<Mutex<InnerState>>,
+    queue: &mut OutboundPriorityQueue,
+    msg: OutboundMessage,
+) {
+    match msg {
+        OutboundMessage::Block(block) => {
+            queue.blocks.push_back(OutboundMessage::Block(block));
+        }
+        OutboundMessage::Transaction(tx) => {
+            queue.non_blocks.push_back(OutboundMessage::Transaction(tx));
+        }
+    }
+}
+
+fn pop_outbound_message(
+    inner: &Arc<Mutex<InnerState>>,
+    queue: &mut OutboundPriorityQueue,
+) -> Option<OutboundMessage> {
+    let blocks_waiting = !queue.blocks.is_empty();
+    let non_blocks_waiting = !queue.non_blocks.is_empty();
+    if !blocks_waiting && !non_blocks_waiting {
+        return None;
+    }
+    let take_non_block_for_fairness = blocks_waiting
+        && non_blocks_waiting
+        && queue.consecutive_block_picks >= BLOCK_PRIORITY_BURST_LIMIT;
+    let picked = if take_non_block_for_fairness {
+        queue.consecutive_block_picks = 0;
+        queue.non_blocks.pop_front()
+    } else if blocks_waiting {
+        queue.consecutive_block_picks = queue.consecutive_block_picks.saturating_add(1);
+        queue.blocks.pop_front()
+    } else {
+        queue.consecutive_block_picks = 0;
+        queue.non_blocks.pop_front()
+    };
+    if let (Some(msg), Ok(mut guard)) = (picked.as_ref(), inner.lock()) {
+        guard.queued_messages = guard.queued_messages.saturating_sub(1);
+        match msg {
+            OutboundMessage::Block(_) => {
+                guard.queued_block_messages = guard.queued_block_messages.saturating_sub(1);
+                guard.dequeued_block_messages = guard.dequeued_block_messages.saturating_add(1);
+                guard.queue_block_priority_picks =
+                    guard.queue_block_priority_picks.saturating_add(1);
+            }
+            OutboundMessage::Transaction(_) => {
+                guard.queued_non_block_messages = guard.queued_non_block_messages.saturating_sub(1);
+                guard.dequeued_non_block_messages =
+                    guard.dequeued_non_block_messages.saturating_add(1);
+                guard.queue_non_block_fair_picks =
+                    guard.queue_non_block_fair_picks.saturating_add(1);
+                if blocks_waiting {
+                    guard.queue_starvation_relief_picks =
+                        guard.queue_starvation_relief_picks.saturating_add(1);
+                }
+            }
+        }
+    }
+    picked
+}
+
+fn drain_outbound_rx_to_priority_queue(
+    inner: &Arc<Mutex<InnerState>>,
+    outbound_rx: &mut mpsc::UnboundedReceiver<OutboundMessage>,
+    queue: &mut OutboundPriorityQueue,
+) {
+    loop {
+        match outbound_rx.try_recv() {
+            Ok(msg) => enqueue_outbound_message(inner, queue, msg),
+            Err(TryRecvError::Empty) | Err(TryRecvError::Disconnected) => break,
+        }
     }
 }
 
@@ -916,15 +1028,15 @@ async fn run_libp2p_runtime(
     inbound_tx: mpsc::UnboundedSender<InboundEvent>,
 ) {
     fake_swarm_bootstrap_events(local_peer_id, &cfg, &inner, &inbound_tx);
+    let mut outbound_queue = OutboundPriorityQueue::default();
 
     loop {
         tokio::select! {
             Some(msg) = outbound_rx.recv() => {
-                if let Ok(mut guard) = inner.lock() {
-                    guard.queued_messages = guard.queued_messages.saturating_sub(1);
-                }
-
-                let (wire, topic_name, message_kind, message_id) = match msg {
+                enqueue_outbound_message(&inner, &mut outbound_queue, msg);
+                drain_outbound_rx_to_priority_queue(&inner, &mut outbound_rx, &mut outbound_queue);
+                while let Some(msg) = pop_outbound_message(&inner, &mut outbound_queue) {
+                    let (wire, topic_name, message_kind, message_id) = match msg {
                     OutboundMessage::Transaction(tx) => {
                         let topic_name = format!("{}-txs", cfg.chain_id);
                         let wire = serde_json::to_vec(&NetworkMessage::NewTransaction {
@@ -945,17 +1057,18 @@ async fn run_libp2p_runtime(
                     }
                 };
 
-                note_swarm_event(&inner, format!("publish-attempt:{topic_name}"));
-                record_publish(&inner, &topic_name, message_kind, &message_id);
+                    note_swarm_event(&inner, format!("publish-attempt:{topic_name}"));
+                    record_publish(&inner, &topic_name, message_kind, &message_id);
 
-                if let Ok(bytes) = wire {
-                    // v0.6.9 keeps one canonical wire path while the actual Swarm
-                    // publish/poll code is staged. The bytes are decoded through the
-                    // same dispatcher that the live Swarm loop will use.
-                    dispatch_network_message(&cfg.chain_id, &bytes, &inner, &inbound_tx);
+                    if let Ok(bytes) = wire {
+                        // v0.6.9 keeps one canonical wire path while the actual Swarm
+                        // publish/poll code is staged. The bytes are decoded through the
+                        // same dispatcher that the live Swarm loop will use.
+                        dispatch_network_message(&cfg.chain_id, &bytes, &inner, &inbound_tx);
+                    }
+
+                    let _ = &topics; // reserved for real gossipsub publish bindings
                 }
-
-                let _ = &topics; // reserved for real gossipsub publish bindings
             }
             _ = sleep(Duration::from_secs(5)) => {
                 let heartbeat = serde_json::to_vec(&NetworkMessage::GetTips {
@@ -1059,15 +1172,15 @@ async fn run_libp2p_real_runtime(
             note_swarm_event(&inner, format!("bootstrap-dialing:{addr}"));
         }
     }
+    let mut outbound_queue = OutboundPriorityQueue::default();
 
     loop {
         tokio::select! {
             Some(msg) = outbound_rx.recv() => {
-                if let Ok(mut guard) = inner.lock() {
-                    guard.queued_messages = guard.queued_messages.saturating_sub(1);
-                }
-
-                let (wire, topic_name, message_kind, message_id) = match msg {
+                enqueue_outbound_message(&inner, &mut outbound_queue, msg);
+                drain_outbound_rx_to_priority_queue(&inner, &mut outbound_rx, &mut outbound_queue);
+                while let Some(msg) = pop_outbound_message(&inner, &mut outbound_queue) {
+                    let (wire, topic_name, message_kind, message_id) = match msg {
                     OutboundMessage::Transaction(tx) => {
                         let topic_name = format!("{}-txs", cfg.chain_id);
                         let wire = serde_json::to_vec(&NetworkMessage::NewTransaction {
@@ -1088,13 +1201,14 @@ async fn run_libp2p_real_runtime(
                     }
                 };
 
-                note_swarm_event(&inner, format!("publish-attempt:{topic_name}"));
-                record_publish(&inner, &topic_name, message_kind, &message_id);
+                    note_swarm_event(&inner, format!("publish-attempt:{topic_name}"));
+                    record_publish(&inner, &topic_name, message_kind, &message_id);
 
-                if let Ok(bytes) = wire {
-                    let topic = gossipsub::IdentTopic::new(topic_name);
-                    if let Err(e) = swarm.behaviour_mut().gossipsub.publish(topic, bytes) {
-                        note_swarm_event(&inner, format!("publish-failed:{e}"));
+                    if let Ok(bytes) = wire {
+                        let topic = gossipsub::IdentTopic::new(topic_name);
+                        if let Err(e) = swarm.behaviour_mut().gossipsub.publish(topic, bytes) {
+                            note_swarm_event(&inner, format!("publish-failed:{e}"));
+                        }
                     }
                 }
             }
@@ -1160,6 +1274,8 @@ impl P2pHandle for Libp2pHandle {
                 return Ok(());
             }
             inner.queued_messages += 1;
+            inner.queued_non_block_messages += 1;
+            track_queue_depth_on_enqueue(&mut inner);
         }
         self.outbound_tx
             .send(OutboundMessage::Transaction(tx.clone()))
@@ -1173,6 +1289,8 @@ impl P2pHandle for Libp2pHandle {
                 .lock()
                 .map_err(|_| PulseError::Internal("p2p lock poisoned".into()))?;
             inner.queued_messages += 1;
+            inner.queued_block_messages += 1;
+            track_queue_depth_on_enqueue(&mut inner);
         }
         self.outbound_tx
             .send(OutboundMessage::Block(block.clone()))
@@ -1200,6 +1318,14 @@ impl P2pHandle for Libp2pHandle {
             publish_attempts: inner.publish_attempts,
             seen_message_ids: inner.seen_message_ids.len(),
             queued_messages: inner.queued_messages,
+            queued_block_messages: inner.queued_block_messages,
+            queued_non_block_messages: inner.queued_non_block_messages,
+            queue_max_depth: inner.queue_max_depth,
+            dequeued_block_messages: inner.dequeued_block_messages,
+            dequeued_non_block_messages: inner.dequeued_non_block_messages,
+            queue_block_priority_picks: inner.queue_block_priority_picks,
+            queue_non_block_fair_picks: inner.queue_non_block_fair_picks,
+            queue_starvation_relief_picks: inner.queue_starvation_relief_picks,
             inbound_messages: inner.inbound_messages,
             runtime_started: inner.runtime_started,
             runtime_mode_detail: inner.runtime_mode_detail.clone(),
@@ -1449,6 +1575,161 @@ mod tests {
             P2P_MODE_LIBP2P_DEV_LOOPBACK_SKELETON
         ));
         assert!(mode_connected_peers_are_real_network(P2P_MODE_LIBP2P_REAL));
+    }
+
+    #[test]
+    fn block_messages_are_prioritized_over_non_block_messages() {
+        let inner = Arc::new(Mutex::new(InnerState {
+            queued_messages: 4,
+            queued_block_messages: 1,
+            queued_non_block_messages: 3,
+            ..Default::default()
+        }));
+        let mut queue = OutboundPriorityQueue::default();
+        enqueue_outbound_message(
+            &inner,
+            &mut queue,
+            OutboundMessage::Transaction(sample_tx("tx-a")),
+        );
+        enqueue_outbound_message(
+            &inner,
+            &mut queue,
+            OutboundMessage::Transaction(sample_tx("tx-b")),
+        );
+        enqueue_outbound_message(
+            &inner,
+            &mut queue,
+            OutboundMessage::Block(Block {
+                hash: "block-priority".into(),
+                header: pulsedag_core::types::BlockHeader {
+                    version: 1,
+                    parents: vec![],
+                    timestamp: 1,
+                    difficulty: 1,
+                    nonce: 1,
+                    merkle_root: "mr".into(),
+                    state_root: "sr".into(),
+                    blue_score: 1,
+                    height: 1,
+                },
+                transactions: vec![],
+            }),
+        );
+        enqueue_outbound_message(
+            &inner,
+            &mut queue,
+            OutboundMessage::Transaction(sample_tx("tx-c")),
+        );
+
+        let first = pop_outbound_message(&inner, &mut queue).expect("must pop");
+        assert!(matches!(first, OutboundMessage::Block(_)));
+    }
+
+    #[test]
+    fn mixed_bursty_queue_avoids_non_block_starvation() {
+        let inner = Arc::new(Mutex::new(InnerState {
+            queued_messages: 18,
+            queued_block_messages: 16,
+            queued_non_block_messages: 2,
+            ..Default::default()
+        }));
+        let mut queue = OutboundPriorityQueue::default();
+        for idx in 0..16 {
+            enqueue_outbound_message(
+                &inner,
+                &mut queue,
+                OutboundMessage::Block(Block {
+                    hash: format!("block-{idx}"),
+                    header: pulsedag_core::types::BlockHeader {
+                        version: 1,
+                        parents: vec![],
+                        timestamp: 1,
+                        difficulty: 1,
+                        nonce: 1,
+                        merkle_root: "mr".into(),
+                        state_root: "sr".into(),
+                        blue_score: 1,
+                        height: idx + 1,
+                    },
+                    transactions: vec![],
+                }),
+            );
+        }
+        enqueue_outbound_message(
+            &inner,
+            &mut queue,
+            OutboundMessage::Transaction(sample_tx("tx-1")),
+        );
+        enqueue_outbound_message(
+            &inner,
+            &mut queue,
+            OutboundMessage::Transaction(sample_tx("tx-2")),
+        );
+
+        let mut tx_seen = 0;
+        for _ in 0..10 {
+            let msg = pop_outbound_message(&inner, &mut queue).expect("message exists");
+            if matches!(msg, OutboundMessage::Transaction(_)) {
+                tx_seen += 1;
+            }
+        }
+        assert!(tx_seen >= 1);
+        let status = inner.lock().unwrap();
+        assert!(status.queue_starvation_relief_picks >= 1);
+    }
+
+    #[test]
+    fn queue_counters_remain_coherent_through_drain() {
+        let inner = Arc::new(Mutex::new(InnerState::default()));
+        {
+            let mut guard = inner.lock().unwrap();
+            guard.queued_messages = 5;
+            guard.queued_block_messages = 2;
+            guard.queued_non_block_messages = 3;
+            guard.queue_max_depth = 5;
+        }
+
+        let mut queue = OutboundPriorityQueue::default();
+        for idx in 0..2 {
+            enqueue_outbound_message(
+                &inner,
+                &mut queue,
+                OutboundMessage::Block(Block {
+                    hash: format!("block-c-{idx}"),
+                    header: pulsedag_core::types::BlockHeader {
+                        version: 1,
+                        parents: vec![],
+                        timestamp: 1,
+                        difficulty: 1,
+                        nonce: 1,
+                        merkle_root: "mr".into(),
+                        state_root: "sr".into(),
+                        blue_score: 1,
+                        height: idx + 1,
+                    },
+                    transactions: vec![],
+                }),
+            );
+        }
+        for idx in 0..3 {
+            enqueue_outbound_message(
+                &inner,
+                &mut queue,
+                OutboundMessage::Transaction(sample_tx(&format!("tx-c-{idx}"))),
+            );
+        }
+
+        for _ in 0..5 {
+            let _ = pop_outbound_message(&inner, &mut queue);
+        }
+        let status = inner.lock().unwrap();
+        assert_eq!(status.queued_messages, 0);
+        assert_eq!(status.queued_block_messages, 0);
+        assert_eq!(status.queued_non_block_messages, 0);
+        assert_eq!(
+            status.dequeued_block_messages + status.dequeued_non_block_messages,
+            5
+        );
     }
 
     #[tokio::test]
