@@ -1,4 +1,4 @@
-# P2P Recovery Runbook (v2.1)
+# P2P Recovery Runbook (v2.2)
 
 ## Purpose
 Recover and verify node networking health after peer loss, prolonged zero-peer state, or topology drift.
@@ -15,18 +15,21 @@ Recover and verify node networking health after peer loss, prolonged zero-peer s
 
 ## Recovery procedure
 1. Capture current state:
+   - `GET /health`
+   - `GET /readiness`
    - `GET /status`
    - `GET /p2p/status`
    - `GET /p2p/topology`
-   - `GET /runtime/events?limit=200`
-2. Validate node health baseline:
-   - `GET /health`
+   - `GET /sync/status`
    - `GET /sync/verify`
+   - `GET /runtime/events?limit=200`
+2. Interpret peer status using mode semantics from `docs/OPERATIONS_P2P.md`.
 3. Confirm seed/bootnode config is correct and reachable.
 4. Restart node process cleanly.
 5. Re-check `/p2p/status` and `/p2p/topology` for peer convergence.
 6. If still isolated, validate firewall/NAT rules and known peer availability.
-7. If sync drift remains, run snapshot/replay path from:
+7. If peer state stabilizes but sync coherence remains bad, continue with:
+   - `docs/runbooks/RECOVERY_ORCHESTRATION.md`
    - `docs/runbooks/REBUILD_FROM_SNAPSHOT_AND_DELTA.md`
 
 ## Success criteria

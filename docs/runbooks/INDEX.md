@@ -1,25 +1,28 @@
-# PulseDAG v2.1 Runbook Index
+# PulseDAG v2.2 Runbook Index
 
-This index consolidates the operator procedures required for the v2.1 readiness package.
+This index consolidates the v2.2 operator package for recovery, rebuild, restore, maintenance, and staging safety workflows.
 
-## Snapshot Restore
-- `docs/runbooks/SNAPSHOT_RESTORE.md` — snapshot restore drill, fallback behavior, and RTO evidence.
+## Start here (decision flow)
+1. **Node unhealthy or degraded?** Start with `docs/runbooks/MAINTENANCE_SELF_CHECK.md`.
+2. **Peer loss / partition symptoms?** Use `docs/runbooks/P2P_RECOVERY.md`.
+3. **State rebuild or restore required?** Use `docs/runbooks/RECOVERY_ORCHESTRATION.md`.
+4. **Need deeper rebuild details?** Use `docs/runbooks/REBUILD_FROM_SNAPSHOT_AND_DELTA.md`.
+5. **Need restore drill and RTO evidence?** Use `docs/runbooks/SNAPSHOT_RESTORE.md`.
+6. **Need startup-mode interpretation and fallback counters?** Use `docs/runbooks/FAST_BOOT_AND_FALLBACK.md`.
 
-## Rebuild from Snapshot + Delta
-- `docs/runbooks/REBUILD_FROM_SNAPSHOT_AND_DELTA.md` — retained-delta replay/rebuild workflow and validation checkpoints.
+## Core runbooks
+- `docs/runbooks/MAINTENANCE_SELF_CHECK.md` — routine operator self-check, drift checks, and pre-maintenance safety gates.
+- `docs/runbooks/P2P_RECOVERY.md` — peer-loss / topology recovery and rejoin checklist.
+- `docs/runbooks/RECOVERY_ORCHESTRATION.md` — recovery triage matrix (recovery vs rebuild vs restore).
+- `docs/runbooks/REBUILD_FROM_SNAPSHOT_AND_DELTA.md` — snapshot + delta rebuild workflow and post-checks.
+- `docs/runbooks/SNAPSHOT_RESTORE.md` — restore drill procedure, fallback expectations, and RTO evidence.
+- `docs/runbooks/FAST_BOOT_AND_FALLBACK.md` — fast-boot behavior, fallback signals, and when to escalate.
 
-## Burn-in Evidence
-- `docs/BURN_IN_14D.md` — required burn-in duration/process.
+## Staging safety
+- `docs/runbooks/STAGING_UPGRADE.md` — staged upgrade validation path.
+- `docs/runbooks/STAGING_ROLLBACK.md` — rollback decision and execution path.
+
+## Evidence and operations support docs
 - `docs/RELEASE_EVIDENCE.md` — release evidence bundle requirements.
-
-## P2P Recovery / Partition Rejoin
-- `docs/runbooks/P2P_RECOVERY.md` — node-level P2P recovery and rejoin verification checklist.
-
-## Staging Upgrade
-- `docs/runbooks/STAGING_UPGRADE.md` — upgrade validation procedure.
-
-## Staging Rollback
-- `docs/runbooks/STAGING_ROLLBACK.md` — rollback decision path and validation.
-
-## Operator Dashboard Package
-- `docs/dashboard/README.md` — packaged dashboard assets/configuration for v2.1 operations.
+- `docs/BURN_IN_14D.md` — 14-day burn-in requirements.
+- `docs/dashboard/README.md` — operator dashboard package.
