@@ -8,7 +8,7 @@ use std::{
 };
 
 use anyhow::Result;
-use app_state::{new_runtime_stats, AppState};
+use app_state::{derive_startup_path_report, new_runtime_stats, AppState};
 use axum::Router;
 use config::Config;
 use pulsedag_core::accept::{accept_block, accept_transaction, AcceptSource};
@@ -32,6 +32,7 @@ fn now_unix() -> u64 {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    let startup_begin = std::time::Instant::now();
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::from_default_env())
         .init();
@@ -156,6 +157,13 @@ async fn main() -> Result<()> {
         (None, None)
     };
 
+    let startup_report = derive_startup_path_report(
+        &startup_recovery_mode,
+        snapshot_exists,
+        persisted_blocks.len(),
+        startup_rebuild_reason.clone(),
+    );
+    let startup_duration_ms = startup_begin.elapsed().as_millis();
     let mut runtime_stats = new_runtime_stats();
     runtime_stats.startup_snapshot_exists = snapshot_exists;
     runtime_stats.startup_persisted_block_count = persisted_blocks.len();
@@ -163,6 +171,14 @@ async fn main() -> Result<()> {
     runtime_stats.startup_consistency_issue_count = startup_consistency_issue_count;
     runtime_stats.startup_recovery_mode = startup_recovery_mode.clone();
     runtime_stats.startup_rebuild_reason = startup_rebuild_reason.clone();
+    runtime_stats.startup_path = startup_report.startup_path.clone();
+    runtime_stats.startup_fastboot_used = startup_report.startup_fastboot_used;
+    runtime_stats.startup_snapshot_detected = startup_report.startup_snapshot_detected;
+    runtime_stats.startup_snapshot_validated = startup_report.startup_snapshot_validated;
+    runtime_stats.startup_delta_applied = startup_report.startup_delta_applied;
+    runtime_stats.startup_replay_required = startup_report.startup_replay_required;
+    runtime_stats.startup_fallback_reason = startup_report.startup_fallback_reason.clone();
+    runtime_stats.startup_duration_ms = startup_duration_ms;
     runtime_stats.last_self_audit_unix = Some(
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -204,21 +220,38 @@ async fn main() -> Result<()> {
 
     {
         let summary = if startup_consistency_issue_count == 0 {
-            format!("startup audit ok; recovery_mode={}", startup_recovery_mode)
+            format!(
+                "startup audit ok; recovery_mode={}; startup_path={}",
+                startup_recovery_mode, startup_report.startup_path
+            )
         } else {
             format!(
-                "startup audit found {} consistency issues; recovery_mode={}",
-                startup_consistency_issue_count, startup_recovery_mode
+                "startup audit found {} consistency issues; recovery_mode={}; startup_path={}",
+                startup_consistency_issue_count, startup_recovery_mode, startup_report.startup_path
             )
         };
         let _ = app_state
             .storage
             .append_runtime_event("info", "startup_audit", &summary);
-        if let Some(reason) = startup_rebuild_reason.clone() {
+        if let Some(reason) = startup_report.startup_fallback_reason.clone() {
             let _ = app_state
                 .storage
                 .append_runtime_event("warn", "startup_rebuild", &reason);
         }
+        let _ = app_state.storage.append_runtime_event(
+            "info",
+            "startup_path",
+            &format!(
+                "path={} fastboot_used={} snapshot_detected={} snapshot_validated={} delta_applied={} replay_required={} duration_ms={}",
+                startup_report.startup_path,
+                startup_report.startup_fastboot_used,
+                startup_report.startup_snapshot_detected,
+                startup_report.startup_snapshot_validated,
+                startup_report.startup_delta_applied,
+                startup_report.startup_replay_required,
+                startup_duration_ms
+            ),
+        );
     }
 
     if let Some(mut rx) = inbound_rx {

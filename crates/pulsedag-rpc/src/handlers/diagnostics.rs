@@ -22,6 +22,10 @@ pub struct DiagnosticsData {
     pub storage_audit_ok: bool,
     pub storage_audit_issue_count: usize,
     pub storage_audit_summary: StorageAuditReport,
+    pub startup_path: String,
+    pub startup_fastboot_used: bool,
+    pub startup_replay_required: bool,
+    pub startup_fallback_reason: Option<String>,
 }
 
 pub async fn get_diagnostics<S: RpcStateLike>(
@@ -47,6 +51,8 @@ pub async fn get_diagnostics<S: RpcStateLike>(
             }],
         });
     let snapshot_exists = state.storage().snapshot_exists().unwrap_or(false);
+    let runtime_handle = state.runtime();
+    let runtime = runtime_handle.read().await;
     let (p2p_enabled, peer_count) = match state.p2p() {
         Some(p2p) => match p2p.status() {
             Ok(status) => (true, status.connected_peers.len()),
@@ -70,6 +76,10 @@ pub async fn get_diagnostics<S: RpcStateLike>(
         storage_audit_ok: storage_audit.ok,
         storage_audit_issue_count: storage_audit.issue_count,
         storage_audit_summary: storage_audit,
+        startup_path: runtime.startup_path.clone(),
+        startup_fastboot_used: runtime.startup_fastboot_used,
+        startup_replay_required: runtime.startup_replay_required,
+        startup_fallback_reason: runtime.startup_fallback_reason.clone(),
     }))
 }
 
