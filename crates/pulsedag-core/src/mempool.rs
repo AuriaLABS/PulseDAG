@@ -48,12 +48,20 @@ fn simulate_mempool_accept(tx: &Transaction, state: &mut ChainState) -> Result<(
             .push(outpoint);
     }
 
-    state.mempool.transactions.insert(tx.txid.clone(), tx.clone());
+    state
+        .mempool
+        .transactions
+        .insert(tx.txid.clone(), tx.clone());
     Ok(())
 }
 
 pub fn reconcile_mempool(state: &mut ChainState) -> MempoolReconcileResult {
     let tx_count = state.mempool.transactions.len();
+    state.mempool.counters.reconcile_runs_total = state
+        .mempool
+        .counters
+        .reconcile_runs_total
+        .saturating_add(1);
     if tx_count == 0 {
         state.mempool.spent_outpoints.clear();
         return MempoolReconcileResult {
@@ -85,7 +93,14 @@ pub fn reconcile_mempool(state: &mut ChainState) -> MempoolReconcileResult {
         }
     }
 
-    state.mempool = working.mempool;
+    let mut rebuilt_mempool = working.mempool;
+    rebuilt_mempool.counters = state.mempool.counters.clone();
+    rebuilt_mempool.max_transactions = state.mempool.max_transactions;
+    rebuilt_mempool.counters.reconcile_removed_total = rebuilt_mempool
+        .counters
+        .reconcile_removed_total
+        .saturating_add(removed_txids.len() as u64);
+    state.mempool = rebuilt_mempool;
 
     MempoolReconcileResult {
         removed_txids,
@@ -357,5 +372,209 @@ mod tests {
         let err = accept_transaction(conflicting_tx, &mut state, AcceptSource::Rpc)
             .expect_err("conflicting transaction should be rejected after reconcile");
         assert!(matches!(err, PulseError::DoubleSpend));
+    }
+
+    #[test]
+    fn admits_higher_priority_transaction_under_pressure_by_evicting_lowest_priority() {
+        let mut state = init_chain_state("test".into());
+        state.mempool.max_transactions = 2;
+
+        let key_a = signing_key(41);
+        let key_b = signing_key(42);
+        let key_c = signing_key(43);
+
+        let input_a = fund_address(
+            &mut state,
+            "fund-pressure-a",
+            0,
+            address_from_public_key(&public_key_hex(&key_a)),
+            80,
+        );
+        let input_b = fund_address(
+            &mut state,
+            "fund-pressure-b",
+            0,
+            address_from_public_key(&public_key_hex(&key_b)),
+            90,
+        );
+        let input_c = fund_address(
+            &mut state,
+            "fund-pressure-c",
+            0,
+            address_from_public_key(&public_key_hex(&key_c)),
+            100,
+        );
+
+        let low_fee_tx = signed_tx(
+            &key_a,
+            vec![input_a.clone()],
+            vec![TxOutput {
+                address: "pulse1dest-low".into(),
+                amount: 79,
+            }],
+            1,
+            1,
+        );
+        let mid_fee_tx = signed_tx(
+            &key_b,
+            vec![input_b.clone()],
+            vec![TxOutput {
+                address: "pulse1dest-mid".into(),
+                amount: 85,
+            }],
+            5,
+            2,
+        );
+        let high_fee_tx = signed_tx(
+            &key_c,
+            vec![input_c.clone()],
+            vec![TxOutput {
+                address: "pulse1dest-high".into(),
+                amount: 90,
+            }],
+            10,
+            3,
+        );
+
+        accept_transaction(low_fee_tx.clone(), &mut state, AcceptSource::Rpc).unwrap();
+        accept_transaction(mid_fee_tx.clone(), &mut state, AcceptSource::Rpc).unwrap();
+        accept_transaction(high_fee_tx.clone(), &mut state, AcceptSource::Rpc).unwrap();
+
+        assert_eq!(state.mempool.transactions.len(), 2);
+        assert!(!state.mempool.transactions.contains_key(&low_fee_tx.txid));
+        assert!(state.mempool.transactions.contains_key(&mid_fee_tx.txid));
+        assert!(state.mempool.transactions.contains_key(&high_fee_tx.txid));
+        assert_eq!(state.mempool.spent_outpoints.len(), 2);
+        assert!(!state.mempool.spent_outpoints.contains(&input_a));
+        assert!(state.mempool.spent_outpoints.contains(&input_b));
+        assert!(state.mempool.spent_outpoints.contains(&input_c));
+    }
+
+    #[test]
+    fn rejects_lower_priority_transaction_when_capacity_reached() {
+        let mut state = init_chain_state("test".into());
+        state.mempool.max_transactions = 1;
+
+        let high_key = signing_key(51);
+        let low_key = signing_key(52);
+
+        let high_input = fund_address(
+            &mut state,
+            "fund-capacity-high",
+            0,
+            address_from_public_key(&public_key_hex(&high_key)),
+            100,
+        );
+        let low_input = fund_address(
+            &mut state,
+            "fund-capacity-low",
+            0,
+            address_from_public_key(&public_key_hex(&low_key)),
+            100,
+        );
+
+        let high_tx = signed_tx(
+            &high_key,
+            vec![high_input],
+            vec![TxOutput {
+                address: "pulse1dest-cap-high".into(),
+                amount: 80,
+            }],
+            20,
+            1,
+        );
+        let low_tx = signed_tx(
+            &low_key,
+            vec![low_input.clone()],
+            vec![TxOutput {
+                address: "pulse1dest-cap-low".into(),
+                amount: 95,
+            }],
+            5,
+            2,
+        );
+
+        accept_transaction(high_tx.clone(), &mut state, AcceptSource::Rpc).unwrap();
+        let err = accept_transaction(low_tx, &mut state, AcceptSource::Rpc)
+            .expect_err("lower priority tx should be rejected under pressure");
+        assert!(matches!(err, PulseError::InvalidTransaction(_)));
+        assert_eq!(state.mempool.transactions.len(), 1);
+        assert!(state.mempool.transactions.contains_key(&high_tx.txid));
+        assert_eq!(state.mempool.counters.rejected_low_priority_total, 1);
+    }
+
+    #[test]
+    fn mempool_pressure_counters_stay_coherent() {
+        let mut state = init_chain_state("test".into());
+        state.mempool.max_transactions = 1;
+
+        let key_a = signing_key(61);
+        let key_b = signing_key(62);
+        let key_c = signing_key(63);
+
+        let input_a = fund_address(
+            &mut state,
+            "fund-counter-a",
+            0,
+            address_from_public_key(&public_key_hex(&key_a)),
+            100,
+        );
+        let input_b = fund_address(
+            &mut state,
+            "fund-counter-b",
+            0,
+            address_from_public_key(&public_key_hex(&key_b)),
+            100,
+        );
+        let input_c = fund_address(
+            &mut state,
+            "fund-counter-c",
+            0,
+            address_from_public_key(&public_key_hex(&key_c)),
+            100,
+        );
+
+        let first = signed_tx(
+            &key_a,
+            vec![input_a],
+            vec![TxOutput {
+                address: "pulse1dest-counter-a".into(),
+                amount: 96,
+            }],
+            4,
+            1,
+        );
+        let second_higher = signed_tx(
+            &key_b,
+            vec![input_b],
+            vec![TxOutput {
+                address: "pulse1dest-counter-b".into(),
+                amount: 90,
+            }],
+            10,
+            2,
+        );
+        let third_lower = signed_tx(
+            &key_c,
+            vec![input_c],
+            vec![TxOutput {
+                address: "pulse1dest-counter-c".into(),
+                amount: 99,
+            }],
+            1,
+            3,
+        );
+
+        accept_transaction(first, &mut state, AcceptSource::Rpc).unwrap();
+        accept_transaction(second_higher.clone(), &mut state, AcceptSource::Rpc).unwrap();
+        let _ = accept_transaction(third_lower, &mut state, AcceptSource::Rpc);
+
+        assert_eq!(state.mempool.transactions.len(), 1);
+        assert!(state.mempool.transactions.contains_key(&second_higher.txid));
+        assert_eq!(state.mempool.counters.accepted_total, 2);
+        assert_eq!(state.mempool.counters.evicted_total, 1);
+        assert_eq!(state.mempool.counters.pressure_events_total, 2);
+        assert_eq!(state.mempool.counters.rejected_total, 1);
+        assert_eq!(state.mempool.counters.rejected_low_priority_total, 1);
     }
 }
