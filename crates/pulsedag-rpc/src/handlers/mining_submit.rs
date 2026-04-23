@@ -40,6 +40,70 @@ where
     Ok(())
 }
 
+#[derive(Clone, Copy)]
+enum ExternalMiningRejectKind {
+    InvalidPow,
+    StaleTemplate,
+    UnknownTemplate,
+    SubmitBlockError,
+    StorageError,
+}
+
+async fn record_external_mining_rejection<S: RpcStateLike>(
+    state: &S,
+    kind: ExternalMiningRejectKind,
+    message: &str,
+) {
+    let runtime_handle = state.runtime();
+    let mut runtime = runtime_handle.write().await;
+    runtime.external_mining_submit_rejected =
+        runtime.external_mining_submit_rejected.saturating_add(1);
+    match kind {
+        ExternalMiningRejectKind::InvalidPow => {
+            runtime.external_mining_rejected_invalid_pow = runtime
+                .external_mining_rejected_invalid_pow
+                .saturating_add(1);
+        }
+        ExternalMiningRejectKind::StaleTemplate => {
+            runtime.external_mining_rejected_stale_template = runtime
+                .external_mining_rejected_stale_template
+                .saturating_add(1);
+            runtime.external_mining_stale_work_detected = runtime
+                .external_mining_stale_work_detected
+                .saturating_add(1);
+        }
+        ExternalMiningRejectKind::UnknownTemplate => {
+            runtime.external_mining_rejected_unknown_template = runtime
+                .external_mining_rejected_unknown_template
+                .saturating_add(1);
+        }
+        ExternalMiningRejectKind::SubmitBlockError => {
+            runtime.external_mining_rejected_submit_block_error = runtime
+                .external_mining_rejected_submit_block_error
+                .saturating_add(1);
+        }
+        ExternalMiningRejectKind::StorageError => {
+            runtime.external_mining_rejected_storage_error = runtime
+                .external_mining_rejected_storage_error
+                .saturating_add(1);
+        }
+    }
+    drop(runtime);
+
+    let kind_label = match kind {
+        ExternalMiningRejectKind::InvalidPow => "invalid_pow",
+        ExternalMiningRejectKind::StaleTemplate => "stale_template",
+        ExternalMiningRejectKind::UnknownTemplate => "unknown_template",
+        ExternalMiningRejectKind::SubmitBlockError => "submit_block_error",
+        ExternalMiningRejectKind::StorageError => "storage_error",
+    };
+    let _ = state.storage().append_runtime_event(
+        "warn",
+        "external_mining_submit_rejected",
+        &format!("reason={} {}", kind_label, message),
+    );
+}
+
 pub async fn post_mining_submit<S: RpcStateLike>(
     State(state): State<S>,
     Json(req): Json<SubmitMinedBlockRequest>,
@@ -55,6 +119,13 @@ pub async fn post_mining_submit<S: RpcStateLike>(
         let runtime_handle = state.runtime();
         let mut runtime = runtime_handle.write().await;
         runtime.rejected_mined_blocks += 1;
+        drop(runtime);
+        record_external_mining_rejection(
+            &state,
+            ExternalMiningRejectKind::InvalidPow,
+            "submitted block does not satisfy current dev pow check",
+        )
+        .await;
         return Json(ApiResponse::err(
             "INVALID_POW",
             "submitted block does not satisfy current dev pow check".to_string(),
@@ -62,6 +133,15 @@ pub async fn post_mining_submit<S: RpcStateLike>(
     }
 
     if height <= chain.dag.best_height {
+        record_external_mining_rejection(
+            &state,
+            ExternalMiningRejectKind::StaleTemplate,
+            &format!(
+                "stale template: current best height is {} and submitted block height is {}",
+                chain.dag.best_height, height
+            ),
+        )
+        .await;
         return Json(ApiResponse::err(
             "STALE_TEMPLATE",
             format!(
@@ -83,6 +163,12 @@ pub async fn post_mining_submit<S: RpcStateLike>(
     if let Some(template_id) = req.template_id.as_ref() {
         if let Some(stored) = load_template(template_id) {
             if stored.height != chain.dag.best_height + 1 {
+                record_external_mining_rejection(
+                    &state,
+                    ExternalMiningRejectKind::StaleTemplate,
+                    "template height stale for current next height",
+                )
+                .await;
                 return Json(ApiResponse::err(
                     "STALE_TEMPLATE",
                     format!(
@@ -93,12 +179,24 @@ pub async fn post_mining_submit<S: RpcStateLike>(
                 ));
             }
             if stored.parent_hashes != current_parents {
+                record_external_mining_rejection(
+                    &state,
+                    ExternalMiningRejectKind::StaleTemplate,
+                    "template parents mismatch current tips",
+                )
+                .await;
                 return Json(ApiResponse::err(
                     "STALE_TEMPLATE",
                     "template parents no longer match current tips",
                 ));
             }
             if stored.selected_tip != current_selected_tip {
+                record_external_mining_rejection(
+                    &state,
+                    ExternalMiningRejectKind::StaleTemplate,
+                    "template selected_tip mismatch current preferred tip",
+                )
+                .await;
                 return Json(ApiResponse::err(
                     "STALE_TEMPLATE",
                     "template selected_tip no longer matches current preferred tip",
@@ -107,12 +205,24 @@ pub async fn post_mining_submit<S: RpcStateLike>(
             if stored.difficulty != lifecycle.difficulty
                 || stored.target_u64 != lifecycle.target_u64
             {
+                record_external_mining_rejection(
+                    &state,
+                    ExternalMiningRejectKind::StaleTemplate,
+                    "template difficulty/target mismatch node state",
+                )
+                .await;
                 return Json(ApiResponse::err(
                     "STALE_TEMPLATE",
                     "template difficulty/target no longer matches node state",
                 ));
             }
             if stored.mempool_fingerprint != lifecycle.mempool_fingerprint {
+                record_external_mining_rejection(
+                    &state,
+                    ExternalMiningRejectKind::StaleTemplate,
+                    "template mempool view changed",
+                )
+                .await;
                 return Json(ApiResponse::err(
                     "STALE_TEMPLATE",
                     "template mempool view changed; refresh template",
@@ -124,6 +234,12 @@ pub async fn post_mining_submit<S: RpcStateLike>(
                 stored.expires_at_unix
             };
             if now_unix > expires_at_unix {
+                record_external_mining_rejection(
+                    &state,
+                    ExternalMiningRejectKind::StaleTemplate,
+                    "template ttl expired",
+                )
+                .await;
                 return Json(ApiResponse::err(
                     "STALE_TEMPLATE",
                     format!(
@@ -133,12 +249,24 @@ pub async fn post_mining_submit<S: RpcStateLike>(
                 ));
             }
             if template_id != &expected_template_id {
+                record_external_mining_rejection(
+                    &state,
+                    ExternalMiningRejectKind::StaleTemplate,
+                    "template lifecycle state changed",
+                )
+                .await;
                 return Json(ApiResponse::err(
                     "STALE_TEMPLATE",
                     "template no longer matches current lifecycle state",
                 ));
             }
         } else {
+            record_external_mining_rejection(
+                &state,
+                ExternalMiningRejectKind::UnknownTemplate,
+                &format!("template_id {} not found", template_id),
+            )
+            .await;
             return Json(ApiResponse::err(
                 "UNKNOWN_TEMPLATE",
                 format!("template_id {} not found", template_id),
@@ -149,6 +277,12 @@ pub async fn post_mining_submit<S: RpcStateLike>(
     let mut submitted_parents = req.block.header.parents.clone();
     submitted_parents.sort();
     if submitted_parents != current_parents {
+        record_external_mining_rejection(
+            &state,
+            ExternalMiningRejectKind::StaleTemplate,
+            "submitted block parents mismatch current tips",
+        )
+        .await;
         return Json(ApiResponse::err(
             "STALE_TEMPLATE",
             "submitted block parents no longer match current tip set",
@@ -173,6 +307,12 @@ pub async fn post_mining_submit<S: RpcStateLike>(
                     }
                 },
             ) {
+                record_external_mining_rejection(
+                    &state,
+                    ExternalMiningRejectKind::StorageError,
+                    &e.to_string(),
+                )
+                .await;
                 return Json(ApiResponse::err("STORAGE_ERROR", e.to_string()));
             }
 
@@ -180,8 +320,21 @@ pub async fn post_mining_submit<S: RpcStateLike>(
                 let runtime_handle = state.runtime();
                 let mut runtime = runtime_handle.write().await;
                 runtime.accepted_mined_blocks += 1;
+                runtime.external_mining_submit_accepted =
+                    runtime.external_mining_submit_accepted.saturating_add(1);
                 runtime.adopted_orphan_blocks += adopted_orphans as u64;
             }
+            let _ = state.storage().append_runtime_event(
+                "info",
+                "external_mining_submit_accepted",
+                &format!(
+                    "template_id={} block_hash={} height={} adopted_orphans={}",
+                    req.template_id.clone().unwrap_or_else(|| "-".to_string()),
+                    block_hash,
+                    height,
+                    adopted_orphans
+                ),
+            );
 
             Json(ApiResponse::ok(MiningSubmitData {
                 accepted: true,
@@ -199,6 +352,13 @@ pub async fn post_mining_submit<S: RpcStateLike>(
             let runtime_handle = state.runtime();
             let mut runtime = runtime_handle.write().await;
             runtime.rejected_mined_blocks += 1;
+            drop(runtime);
+            record_external_mining_rejection(
+                &state,
+                ExternalMiningRejectKind::SubmitBlockError,
+                &e.to_string(),
+            )
+            .await;
             Json(ApiResponse::err("SUBMIT_BLOCK_ERROR", e.to_string()))
         }
     }
@@ -389,6 +549,14 @@ mod tests {
 
         assert!(response.ok);
         assert_eq!(fake_p2p.block_calls(), 1);
+        let runtime = state.runtime.read().await;
+        assert_eq!(runtime.external_mining_submit_accepted, 1);
+        assert_eq!(runtime.external_mining_submit_rejected, 0);
+        drop(runtime);
+        let events = state.storage.list_runtime_events(50).unwrap();
+        assert!(events
+            .iter()
+            .any(|event| event.kind == "external_mining_submit_accepted"));
     }
 
     #[tokio::test]
@@ -418,6 +586,10 @@ mod tests {
 
         assert!(!second_response.ok);
         assert_eq!(fake_p2p.block_calls(), 1);
+        let runtime = state.runtime.read().await;
+        assert_eq!(runtime.external_mining_submit_accepted, 1);
+        assert_eq!(runtime.external_mining_submit_rejected, 1);
+        assert_eq!(runtime.external_mining_rejected_stale_template, 1);
     }
 
     #[tokio::test]
@@ -458,6 +630,9 @@ mod tests {
         let err = submit_response.error.expect("error expected");
         assert_eq!(err.code, "STALE_TEMPLATE");
         assert!(err.message.contains("mempool view changed"));
+        let runtime = state.runtime.read().await;
+        assert_eq!(runtime.external_mining_submit_rejected, 1);
+        assert_eq!(runtime.external_mining_stale_work_detected, 1);
     }
 
     #[tokio::test]
@@ -501,6 +676,45 @@ mod tests {
         let err = submit_response.error.expect("error expected");
         assert_eq!(err.code, "STALE_TEMPLATE");
         assert!(err.message.contains("expired"));
+        let runtime = state.runtime.read().await;
+        assert_eq!(runtime.external_mining_submit_rejected, 1);
+        assert_eq!(runtime.external_mining_rejected_stale_template, 1);
+    }
+
+    #[tokio::test]
+    async fn template_invalidation_updates_runtime_metrics() {
+        let (state, _fake_p2p) = build_state_with_fake_p2p();
+        let Json(first) = post_mining_template(
+            State(state.clone()),
+            Json(GetBlockTemplateRequest {
+                miner_address: "kaspa:qptestminer".to_string(),
+            }),
+        )
+        .await;
+        assert!(first.ok);
+        {
+            let mut chain = state.chain.write().await;
+            let tx =
+                build_coinbase_transaction("kaspa:qptestmempool", 1, chain.dag.best_height + 1);
+            chain.mempool.transactions.insert(tx.txid.clone(), tx);
+        }
+        let Json(second) = post_mining_template(
+            State(state.clone()),
+            Json(GetBlockTemplateRequest {
+                miner_address: "kaspa:qptestminer".to_string(),
+            }),
+        )
+        .await;
+        assert!(second.ok);
+        let runtime = state.runtime.read().await;
+        assert_eq!(runtime.external_mining_templates_emitted, 2);
+        assert_eq!(runtime.external_mining_templates_invalidated, 1);
+        assert_eq!(runtime.external_mining_stale_work_detected, 1);
+        drop(runtime);
+        let events = state.storage.list_runtime_events(50).unwrap();
+        assert!(events
+            .iter()
+            .any(|event| event.kind == "external_mining_template_invalidated"));
     }
 
     #[test]
