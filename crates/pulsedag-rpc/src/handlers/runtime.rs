@@ -1,8 +1,14 @@
-use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
+use std::{
+    collections::{BTreeMap, HashSet, VecDeque},
+    convert::Infallible,
+    time::Duration,
+};
 
+use async_stream::stream;
 use axum::{
     extract::{Query, State},
+    response::sse::{Event, KeepAlive, Sse},
     Json,
 };
 use serde::{Deserialize, Serialize};
@@ -745,6 +751,14 @@ pub struct RuntimeEventsQuery {
     pub limit: Option<usize>,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct RuntimeEventStreamQuery {
+    pub poll_interval_ms: Option<u64>,
+    pub scan_limit: Option<usize>,
+    pub emit_limit: Option<usize>,
+    pub heartbeat_secs: Option<u64>,
+}
+
 #[derive(Debug, Serialize)]
 pub struct RuntimeEventsData {
     pub count: usize,
@@ -795,5 +809,194 @@ pub async fn get_runtime_events_summary<S: RpcStateLike>(
             "RUNTIME_EVENTS_SUMMARY_ERROR",
             &e.to_string(),
         )),
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct RuntimeEventStreamEnvelope {
+    sequence: u64,
+    dropped_count: usize,
+    event: pulsedag_storage::RuntimeEvent,
+}
+
+#[derive(Debug)]
+struct StreamDeduper {
+    seen: VecDeque<String>,
+    seen_lookup: HashSet<String>,
+    cap: usize,
+}
+
+impl StreamDeduper {
+    fn new(cap: usize) -> Self {
+        Self {
+            seen: VecDeque::with_capacity(cap),
+            seen_lookup: HashSet::with_capacity(cap),
+            cap,
+        }
+    }
+
+    fn unseen<'a>(
+        &mut self,
+        events: impl IntoIterator<Item = &'a pulsedag_storage::RuntimeEvent>,
+    ) -> Vec<pulsedag_storage::RuntimeEvent> {
+        let mut unseen = Vec::new();
+        for event in events {
+            let key = format!(
+                "{}|{}|{}|{}",
+                event.timestamp_unix, event.level, event.kind, event.message
+            );
+            if self.seen_lookup.contains(&key) {
+                continue;
+            }
+            self.remember(key);
+            unseen.push(event.clone());
+        }
+        unseen
+    }
+
+    fn remember(&mut self, key: String) {
+        self.seen_lookup.insert(key.clone());
+        self.seen.push_back(key);
+        if self.seen.len() > self.cap {
+            if let Some(old) = self.seen.pop_front() {
+                self.seen_lookup.remove(&old);
+            }
+        }
+    }
+}
+
+pub async fn get_runtime_events_stream<S: RpcStateLike>(
+    State(state): State<S>,
+    Query(query): Query<RuntimeEventStreamQuery>,
+) -> Sse<impl futures_core::Stream<Item = Result<Event, Infallible>>> {
+    let poll_interval_ms = query.poll_interval_ms.unwrap_or(500).clamp(100, 5_000);
+    let scan_limit = query.scan_limit.unwrap_or(200).clamp(20, 1_000);
+    let emit_limit = query.emit_limit.unwrap_or(32).clamp(1, 200);
+    let heartbeat_secs = query.heartbeat_secs.unwrap_or(15).clamp(5, 60);
+    let mut ticker = tokio::time::interval(Duration::from_millis(poll_interval_ms));
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let storage = state.storage();
+    let event_stream = stream! {
+        let mut sequence = 0u64;
+        let mut deduper = StreamDeduper::new(scan_limit.saturating_mul(4));
+        loop {
+            ticker.tick().await;
+            let events = match storage.list_runtime_events(scan_limit) {
+                Ok(events) => events,
+                Err(err) => {
+                    let payload = ApiResponse::err(
+                        "RUNTIME_EVENTS_STREAM_ERROR",
+                        format!("event stream poll failed: {err}"),
+                    );
+                    if let Ok(data) = serde_json::to_string(&payload) {
+                        yield Ok(Event::default().event("error").data(data));
+                    }
+                    continue;
+                }
+            };
+            let unseen = deduper.unseen(events.iter());
+            if unseen.is_empty() {
+                continue;
+            }
+            let dropped_count = unseen.len().saturating_sub(emit_limit);
+            for event in unseen.into_iter().skip(dropped_count) {
+                sequence = sequence.saturating_add(1);
+                let envelope = RuntimeEventStreamEnvelope {
+                    sequence,
+                    dropped_count,
+                    event,
+                };
+                if let Ok(data) = serde_json::to_string(&envelope) {
+                    yield Ok(Event::default().event("runtime_event").data(data));
+                }
+            }
+        }
+    };
+    Sse::new(event_stream).keep_alive(
+        KeepAlive::new()
+            .interval(Duration::from_secs(heartbeat_secs))
+            .text("keep-alive"),
+    )
+}
+
+#[cfg(test)]
+mod stream_tests {
+    use super::{RuntimeEventStreamEnvelope, StreamDeduper};
+    use pulsedag_storage::RuntimeEvent;
+
+    fn runtime_event(ts: u64, kind: &str, message: &str) -> RuntimeEvent {
+        RuntimeEvent {
+            timestamp_unix: ts,
+            level: "info".into(),
+            kind: kind.into(),
+            message: message.into(),
+        }
+    }
+
+    #[test]
+    fn stream_deduper_emits_first_seen_events() {
+        let events = vec![
+            runtime_event(10, "sync_phase_change", "headers"),
+            runtime_event(11, "p2p_reconnect", "peer-a"),
+        ];
+        let mut deduper = StreamDeduper::new(32);
+        let unseen = deduper.unseen(events.iter());
+        assert_eq!(unseen.len(), 2);
+        assert_eq!(unseen[0].kind, "sync_phase_change");
+    }
+
+    #[test]
+    fn stream_deduper_suppresses_replays_between_polls() {
+        let events = vec![runtime_event(10, "sync_phase_change", "headers")];
+        let mut deduper = StreamDeduper::new(32);
+        assert_eq!(deduper.unseen(events.iter()).len(), 1);
+        assert!(deduper.unseen(events.iter()).is_empty());
+    }
+
+    #[test]
+    fn stream_backpressure_policy_drops_oldest_in_batch() {
+        let events = vec![
+            runtime_event(1, "a", "one"),
+            runtime_event(2, "b", "two"),
+            runtime_event(3, "c", "three"),
+        ];
+        let mut deduper = StreamDeduper::new(32);
+        let unseen = deduper.unseen(events.iter());
+        let emit_limit = 2usize;
+        let dropped_count = unseen.len().saturating_sub(emit_limit);
+        let emitted: Vec<RuntimeEventStreamEnvelope> = unseen
+            .into_iter()
+            .skip(dropped_count)
+            .enumerate()
+            .map(|(i, event)| RuntimeEventStreamEnvelope {
+                sequence: (i + 1) as u64,
+                dropped_count,
+                event,
+            })
+            .collect();
+        assert_eq!(dropped_count, 1);
+        assert_eq!(emitted.len(), 2);
+        assert_eq!(emitted[0].event.kind, "b");
+        assert_eq!(emitted[1].event.kind, "c");
+    }
+
+    #[test]
+    fn stream_ordering_is_monotonic_for_emitted_events() {
+        let events = vec![
+            runtime_event(2, "sync_phase_change", "header-sync"),
+            runtime_event(3, "snapshot", "rebuild-start"),
+            runtime_event(4, "snapshot", "rebuild-done"),
+        ];
+        let mut deduper = StreamDeduper::new(32);
+        let unseen = deduper.unseen(events.iter());
+        let emitted_kinds: Vec<String> = unseen.into_iter().map(|event| event.kind).collect();
+        assert_eq!(
+            emitted_kinds,
+            vec![
+                "sync_phase_change".to_string(),
+                "snapshot".to_string(),
+                "snapshot".to_string()
+            ]
+        );
     }
 }

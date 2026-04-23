@@ -47,7 +47,10 @@ use crate::{
         rebuild::get_rebuild_preview,
         release::get_release_info,
         replay::get_replay_plan,
-        runtime::{get_runtime_events, get_runtime_events_summary, get_runtime_status},
+        runtime::{
+            get_runtime_events, get_runtime_events_stream, get_runtime_events_summary,
+            get_runtime_status,
+        },
         search::get_search,
         snapshot::{get_snapshot_info, post_snapshot_create},
         status::get_status,
@@ -116,6 +119,10 @@ where
         .route("/orphans", get(get_orphans::<S>))
         .route("/dashboard", get(get_dashboard::<S>))
         .route("/runtime/events", get(get_runtime_events::<S>))
+        .route(
+            "/runtime/events/stream",
+            get(get_runtime_events_stream::<S>),
+        )
         .route(
             "/runtime/events/summary",
             get(get_runtime_events_summary::<S>),
