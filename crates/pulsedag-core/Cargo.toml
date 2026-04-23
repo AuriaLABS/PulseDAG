@@ -12,3 +12,6 @@ hex = "0.4"
 ed25519-dalek = "2"
 
 blake3 = "1"
+
+[dev-dependencies]
+proptest = "1"

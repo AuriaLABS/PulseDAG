@@ -119,6 +119,7 @@ mod tests {
         types::{OutPoint, Transaction, TxInput, TxOutput, Utxo},
     };
     use ed25519_dalek::{Signer, SigningKey};
+    use proptest::prelude::*;
 
     fn signing_key(seed: u8) -> SigningKey {
         SigningKey::from_bytes(&[seed; 32])
@@ -873,5 +874,38 @@ mod tests {
         .filter(|present| *present)
         .count();
         assert_eq!(promoted, 1, "exactly one conflicting orphan should promote");
+    }
+
+    proptest! {
+        #[test]
+        fn reconcile_never_keeps_more_than_one_conflicting_spend(tx_count in 2usize..8usize) {
+            let mut state = init_chain_state("test".into());
+            let key = signing_key(23);
+            let address = address_from_public_key(&public_key_hex(&key));
+            let shared_input = fund_address(&mut state, "fund-shared-prop", 0, address, 500);
+
+            for nonce in 0..tx_count {
+                let tx = signed_tx(
+                    &key,
+                    vec![shared_input.clone()],
+                    vec![TxOutput {
+                        address: format!("pulse1dest-{nonce}"),
+                        amount: 400,
+                    }],
+                    100,
+                    nonce as u64 + 1,
+                );
+                state
+                    .mempool
+                    .transactions
+                    .insert(tx.txid.clone(), tx);
+            }
+
+            let result = reconcile_mempool(&mut state);
+
+            prop_assert_eq!(result.kept_txids.len(), 1);
+            prop_assert_eq!(state.mempool.transactions.len(), 1);
+            prop_assert!(state.mempool.spent_outpoints.contains(&shared_input));
+        }
     }
 }

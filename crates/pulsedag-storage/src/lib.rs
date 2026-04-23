@@ -633,6 +633,7 @@ impl Storage {
 #[cfg(test)]
 mod tests {
     use super::Storage;
+    use proptest::prelude::*;
     use pulsedag_core::{
         accept::{accept_block, AcceptSource},
         build_candidate_block, build_coinbase_transaction, dev_mine_header,
@@ -1000,5 +1001,29 @@ mod tests {
         assert_eq!(before_snapshot_ts, after_snapshot_ts);
 
         let _ = std::fs::remove_dir_all(path);
+    }
+
+    proptest! {
+        #[test]
+        fn replay_from_snapshot_plus_pruned_blocks_preserves_tip(blocks_to_add in 2usize..6usize, prune_below in 1u64..5u64) {
+            let path = temp_db_path("prop-replay-pruned");
+            let storage = Storage::open(&path).expect("open storage");
+            let state = build_linear_chain("testnet", blocks_to_add);
+            let mut blocks: Vec<_> = state.dag.blocks.values().cloned().collect();
+            blocks.sort_by_key(|b| b.header.height);
+            for block in &blocks {
+                storage.persist_block(block).expect("persist block");
+            }
+            storage.persist_chain_state(&state).expect("persist snapshot");
+            storage.prune_blocks_below_height(prune_below).expect("prune old blocks");
+
+            let rebuilt = storage
+                .replay_blocks_or_init("testnet".to_string())
+                .expect("replay after prune");
+
+            prop_assert_eq!(rebuilt.dag.best_height, state.dag.best_height);
+            prop_assert_eq!(rebuilt.dag.best_hash, state.dag.best_hash);
+            let _ = std::fs::remove_dir_all(path);
+        }
     }
 }
