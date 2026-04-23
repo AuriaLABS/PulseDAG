@@ -34,7 +34,7 @@ cargo run -p pulsedag-miner -- --node http://127.0.0.1:8080 --miner-address YOUR
 ## P2P mode labels (honest status/log semantics)
 - `memory-simulated`: fully in-process simulation mode.
 - `libp2p-dev-loopback-skeleton`: development skeleton that uses libp2p types/runtime wiring but **does not** represent a real external peer network yet.
-- `libp2p-real`: reserved label for a future/real libp2p networking mode where `connected_peers` reflects true network connectivity.
+- `libp2p-real`: real Swarm-backed foundation path where `connected_peers` is only treated as true network connectivity when this mode is active.
 
 The node startup logs and `/status`, `/p2p/status`, `/p2p/topology` endpoints now expose whether `connected_peers` should be interpreted as real network connectivity.
 See `docs/OPERATIONS_P2P.md` for operational guidance.
