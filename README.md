@@ -30,6 +30,8 @@ cargo run -p pulsedag-miner -- --node http://127.0.0.1:8080 --miner-address YOUR
 ## Operator package index (v2.2)
 - Runbook index (recovery orchestration, maintenance/self-check, snapshot restore, snapshot+delta rebuild, fast-boot/fallback interpretation, staging upgrade/rollback): `docs/runbooks/INDEX.md`
 - Dashboard package: `docs/dashboard/README.md`
+- Official dashboard definitions: `ops/dashboard/v2.2/official-dashboards.json`
+- Official alert rules: `ops/dashboard/v2.2/official-alert-rules.json`
 
 ## P2P mode labels (honest status/log semantics)
 - `memory-simulated`: fully in-process simulation mode.

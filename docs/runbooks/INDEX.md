@@ -26,3 +26,4 @@ This index consolidates the v2.2 operator package for recovery, rebuild, restore
 - `docs/RELEASE_EVIDENCE.md` — release evidence bundle requirements.
 - `docs/BURN_IN_14D.md` — 14-day burn-in requirements.
 - `docs/dashboard/README.md` — operator dashboard package.
+- `docs/dashboard/ALERTS.md` — official alert catalog and first-response mapping.
