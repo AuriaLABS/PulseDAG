@@ -34,10 +34,13 @@ pub struct PeerRecoveryStatus {
     pub score: i32,
     pub fail_streak: u32,
     pub connected: bool,
+    pub last_seen_unix: Option<u64>,
+    pub last_successful_connect_unix: Option<u64>,
     pub next_retry_unix: u64,
     pub reconnect_attempts: u64,
     pub recovery_success_count: u64,
     pub last_recovery_unix: Option<u64>,
+    pub recent_failures_unix: Vec<u64>,
     pub cooldown_suppressed_count: u64,
     pub flap_suppressed_count: u64,
     pub flap_events: u32,
@@ -169,10 +172,13 @@ struct PeerHealth {
     fail_streak: u32,
     next_retry_unix: u64,
     connected: bool,
+    last_seen_unix: Option<u64>,
+    last_successful_connect_unix: Option<u64>,
     reconnect_attempts: u64,
     recovery_success_count: u64,
     last_recovery_unix: Option<u64>,
     last_failure_unix: Option<u64>,
+    recent_failures_unix: Vec<u64>,
     flap_events: u32,
     suppressed_until_unix: u64,
     cooldown_suppressed_count: u64,
@@ -186,10 +192,13 @@ impl Default for PeerHealth {
             fail_streak: 0,
             next_retry_unix: 0,
             connected: true,
+            last_seen_unix: None,
+            last_successful_connect_unix: None,
             reconnect_attempts: 0,
             recovery_success_count: 0,
             last_recovery_unix: None,
             last_failure_unix: None,
+            recent_failures_unix: vec![],
             flap_events: 0,
             suppressed_until_unix: 0,
             cooldown_suppressed_count: 0,
@@ -425,10 +434,13 @@ fn peer_recovery_snapshot(state: &InnerState) -> (usize, usize, Vec<PeerRecovery
             score: health.score,
             fail_streak: health.fail_streak,
             connected: health.connected,
+            last_seen_unix: health.last_seen_unix,
+            last_successful_connect_unix: health.last_successful_connect_unix,
             next_retry_unix: health.next_retry_unix,
             reconnect_attempts: health.reconnect_attempts,
             recovery_success_count: health.recovery_success_count,
             last_recovery_unix: health.last_recovery_unix,
+            recent_failures_unix: health.recent_failures_unix.clone(),
             cooldown_suppressed_count: health.cooldown_suppressed_count,
             flap_suppressed_count: health.flap_suppressed_count,
             flap_events: health.flap_events,
@@ -450,8 +462,13 @@ fn peer_recovery_snapshot(state: &InnerState) -> (usize, usize, Vec<PeerRecovery
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 struct PeerBookSnapshot {
+    #[serde(default)]
+    persisted_at_unix: u64,
     peer_book: HashMap<String, PeerHealth>,
 }
+
+const PEER_RECORD_MAX_AGE_SECS: u64 = 60 * 60 * 24 * 30;
+const RECENT_FAILURES_KEEP: usize = 8;
 
 fn peer_state_path() -> Option<PathBuf> {
     std::env::var("PULSEDAG_P2P_PEER_STATE_PATH")
@@ -460,10 +477,11 @@ fn peer_state_path() -> Option<PathBuf> {
 }
 
 fn load_peer_book(path: &PathBuf) -> HashMap<String, PeerHealth> {
+    let now = now_unix();
     fs::read(path)
         .ok()
         .and_then(|bytes| serde_json::from_slice::<PeerBookSnapshot>(&bytes).ok())
-        .map(|snapshot| snapshot.peer_book)
+        .map(|snapshot| sanitize_loaded_peer_book(snapshot.peer_book, now))
         .unwrap_or_default()
 }
 
@@ -472,11 +490,53 @@ fn persist_peer_book(path: &PathBuf, peer_book: &HashMap<String, PeerHealth>) {
         let _ = fs::create_dir_all(parent);
     }
     let snapshot = PeerBookSnapshot {
+        persisted_at_unix: now_unix(),
         peer_book: peer_book.clone(),
     };
     if let Ok(bytes) = serde_json::to_vec(&snapshot) {
         let _ = fs::write(path, bytes);
     }
+}
+
+fn sanitize_loaded_peer_book(
+    peer_book: HashMap<String, PeerHealth>,
+    now: u64,
+) -> HashMap<String, PeerHealth> {
+    let stale_before = now.saturating_sub(PEER_RECORD_MAX_AGE_SECS);
+    peer_book
+        .into_iter()
+        .filter_map(|(peer, mut health)| {
+            let last_activity = health
+                .last_seen_unix
+                .or(health.last_successful_connect_unix)
+                .or(health.last_failure_unix)
+                .or(health.last_recovery_unix)
+                .unwrap_or(0);
+            if last_activity > 0 && last_activity < stale_before {
+                return None;
+            }
+            health.last_seen_unix = health.last_seen_unix.filter(|v| *v <= now);
+            health.last_successful_connect_unix =
+                health.last_successful_connect_unix.filter(|v| *v <= now);
+            health.last_recovery_unix = health.last_recovery_unix.filter(|v| *v <= now);
+            health.last_failure_unix = health.last_failure_unix.filter(|v| *v <= now);
+            health
+                .recent_failures_unix
+                .retain(|ts| *ts <= now && *ts >= stale_before);
+            if health.recent_failures_unix.len() > RECENT_FAILURES_KEEP {
+                let keep_from = health.recent_failures_unix.len() - RECENT_FAILURES_KEEP;
+                health.recent_failures_unix = health.recent_failures_unix.split_off(keep_from);
+            }
+            if health.next_retry_unix > now.saturating_add(PEER_RECORD_MAX_AGE_SECS) {
+                health.next_retry_unix = now;
+            }
+            if health.suppressed_until_unix > now.saturating_add(PEER_RECORD_MAX_AGE_SECS) {
+                health.suppressed_until_unix = 0;
+            }
+            health.connected = false;
+            Some((peer, health))
+        })
+        .collect()
 }
 
 fn persist_peer_state_if_configured(state: &InnerState) {
@@ -497,6 +557,7 @@ fn register_peer_result_at(inner: &Arc<Mutex<InnerState>>, peer: &str, success: 
         {
             let health = guard.peer_book.entry(peer.to_string()).or_default();
             health.reconnect_attempts = health.reconnect_attempts.saturating_add(1);
+            health.last_seen_unix = Some(now);
             if success {
                 health.connected = true;
                 health.fail_streak = 0;
@@ -504,6 +565,7 @@ fn register_peer_result_at(inner: &Arc<Mutex<InnerState>>, peer: &str, success: 
                 health.score = (health.score + 8).min(200);
                 health.recovery_success_count = health.recovery_success_count.saturating_add(1);
                 health.last_recovery_unix = Some(now);
+                health.last_successful_connect_unix = Some(now);
                 if health
                     .last_failure_unix
                     .map(|last_fail| now.saturating_sub(last_fail) <= FLAP_WINDOW.as_secs())
@@ -515,6 +577,7 @@ fn register_peer_result_at(inner: &Arc<Mutex<InnerState>>, peer: &str, success: 
                 }
                 health.suppressed_until_unix = 0;
             } else {
+                let previous_next_retry_unix = health.next_retry_unix;
                 if health.next_retry_unix > now {
                     health.cooldown_suppressed_count =
                         health.cooldown_suppressed_count.saturating_add(1);
@@ -544,7 +607,12 @@ fn register_peer_result_at(inner: &Arc<Mutex<InnerState>>, peer: &str, success: 
                     counted_flap_suppression = true;
                 }
                 health.last_failure_unix = Some(now);
-                health.next_retry_unix = next_retry_unix;
+                health.recent_failures_unix.push(now);
+                if health.recent_failures_unix.len() > RECENT_FAILURES_KEEP {
+                    let keep_from = health.recent_failures_unix.len() - RECENT_FAILURES_KEEP;
+                    health.recent_failures_unix = health.recent_failures_unix.split_off(keep_from);
+                }
+                health.next_retry_unix = next_retry_unix.max(previous_next_retry_unix);
             }
         }
         if success {
@@ -1181,13 +1249,18 @@ mod tests {
         let path = std::env::temp_dir().join(format!("pulsedag-peer-state-{}.json", now_unix()));
         std::env::set_var("PULSEDAG_P2P_PEER_STATE_PATH", &path);
 
+        let now = now_unix();
         let persisted = HashMap::from([(
             "peer-rejoin".to_string(),
             PeerHealth {
                 score: 145,
                 fail_streak: 0,
-                next_retry_unix: now_unix(),
+                next_retry_unix: now,
                 connected: true,
+                last_seen_unix: Some(now),
+                last_successful_connect_unix: Some(now),
+                last_recovery_unix: Some(now),
+                recent_failures_unix: vec![now.saturating_sub(10)],
                 ..PeerHealth::default()
             },
         )]);
@@ -1207,9 +1280,103 @@ mod tests {
         assert_eq!(status.mode, P2P_MODE_LIBP2P_DEV_LOOPBACK_SKELETON);
         assert!(status.connected_peers.is_empty());
         assert!(!mode_connected_peers_are_real_network(&status.mode));
+        assert_eq!(status.peer_recovery.len(), 2);
+        let rejoin = status
+            .peer_recovery
+            .iter()
+            .find(|peer| peer.peer_id == "peer-rejoin")
+            .cloned()
+            .expect("persisted peer should be surfaced");
+        assert_eq!(rejoin.last_seen_unix, Some(now));
+        assert_eq!(rejoin.last_successful_connect_unix, Some(now));
+        assert_eq!(rejoin.recent_failures_unix.len(), 1);
 
         std::env::remove_var("PULSEDAG_P2P_PEER_STATE_PATH");
         let _ = fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn corrupt_peer_metadata_fails_safe_on_startup() {
+        let path =
+            std::env::temp_dir().join(format!("pulsedag-peer-state-corrupt-{}.json", now_unix()));
+        std::env::set_var("PULSEDAG_P2P_PEER_STATE_PATH", &path);
+        fs::write(&path, b"{ definitely-not-json").expect("write corrupt peer snapshot");
+
+        let cfg = Libp2pConfig {
+            chain_id: "testnet".into(),
+            listen_addr: "/ip4/127.0.0.1/tcp/30334".into(),
+            bootstrap: vec!["peer-bootstrap".into()],
+            enable_mdns: false,
+            enable_kademlia: false,
+            runtime: Libp2pRuntimeMode::DevLoopbackSkeleton,
+        };
+        let (handle, _rx) = Libp2pHandle::new(cfg).expect("libp2p handle should init");
+        let status = handle.status().expect("status should work");
+        assert!(status
+            .peer_recovery
+            .iter()
+            .any(|peer| peer.peer_id == "peer-bootstrap"));
+
+        std::env::remove_var("PULSEDAG_P2P_PEER_STATE_PATH");
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn stale_peer_records_are_dropped_during_load() {
+        let now = now_unix();
+        let stale = now
+            .saturating_sub(PEER_RECORD_MAX_AGE_SECS)
+            .saturating_sub(100);
+        let fresh = now.saturating_sub(60);
+        let loaded = sanitize_loaded_peer_book(
+            HashMap::from([
+                (
+                    "peer-stale".to_string(),
+                    PeerHealth {
+                        last_seen_unix: Some(stale),
+                        ..PeerHealth::default()
+                    },
+                ),
+                (
+                    "peer-fresh".to_string(),
+                    PeerHealth {
+                        last_seen_unix: Some(fresh),
+                        connected: true,
+                        ..PeerHealth::default()
+                    },
+                ),
+            ]),
+            now,
+        );
+        assert!(!loaded.contains_key("peer-stale"));
+        let fresh_peer = loaded.get("peer-fresh").expect("fresh peer should survive");
+        assert!(!fresh_peer.connected);
+    }
+
+    #[test]
+    fn reconnect_uses_loaded_history_and_respects_cooldown() {
+        let now = now_unix();
+        let state = Arc::new(Mutex::new(InnerState {
+            peer_book: sanitize_loaded_peer_book(
+                HashMap::from([(
+                    "peer-a".to_string(),
+                    PeerHealth {
+                        next_retry_unix: now.saturating_add(120),
+                        last_seen_unix: Some(now.saturating_sub(10)),
+                        ..PeerHealth::default()
+                    },
+                )]),
+                now,
+            ),
+            ..Default::default()
+        }));
+
+        register_peer_result_at(&state, "peer-a", false, now.saturating_add(5));
+        let guard = state.lock().unwrap();
+        let health = guard.peer_book.get("peer-a").cloned().unwrap();
+        assert!(health.next_retry_unix >= now.saturating_add(120));
+        assert!(health.cooldown_suppressed_count >= 1);
+        assert_eq!(health.last_seen_unix, Some(now.saturating_add(5)));
     }
 
     #[test]
