@@ -189,6 +189,22 @@ fn assert_stays_converged(
     }
 }
 
+fn assert_recovers_within_slo(
+    harness: &mut Harness,
+    node_ids: &[usize],
+    mine_schedule: &[&[usize]],
+    scenario: &str,
+) -> u64 {
+    let recovered_in = harness
+        .converges_within_slo(node_ids, RECOVERY_SLO_TICKS, mine_schedule)
+        .unwrap_or_else(|| panic!("{scenario} should converge within SLO"));
+    assert!(
+        recovered_in <= RECOVERY_SLO_TICKS,
+        "{scenario} exceeded recovery SLO"
+    );
+    recovered_in
+}
+
 #[test]
 fn partition_rejoin_3_node_converges() {
     let mut h = Harness::new(3);
@@ -320,4 +336,167 @@ fn no_persistent_fork_after_rejoin() {
         );
         previous_hash = current_hash;
     }
+}
+
+#[test]
+fn restart_matrix_converges_correctly() {
+    let mut h = Harness::new(5);
+    h.step(&[0, 1, 2, 3, 4]);
+
+    let restart_matrix: [(&[usize], &[usize]); 4] = [
+        (&[1], &[0, 2, 3]),
+        (&[3, 4], &[0, 2]),
+        (&[0], &[1, 2, 4]),
+        (&[2], &[0, 3, 4]),
+    ];
+
+    for (offline, miners) in restart_matrix {
+        for node in offline {
+            h.set_online(*node, false);
+        }
+        h.step(miners);
+        for node in offline {
+            h.set_online(*node, true);
+        }
+        h.step(&[0, 1, 2, 3, 4]);
+    }
+
+    assert_recovers_within_slo(
+        &mut h,
+        &[0, 1, 2, 3, 4],
+        &[&[0], &[1], &[2], &[3], &[4]],
+        "restart matrix",
+    );
+    assert_stays_converged(&mut h, &[0, 1, 2, 3, 4], STABILITY_WINDOW_TICKS, &[2]);
+}
+
+#[test]
+fn repeated_churn_converges_correctly() {
+    let mut h = Harness::new(5);
+    h.step(&[0, 1, 2, 3, 4]);
+
+    for round in 0..10 {
+        if round % 2 == 0 {
+            h.disconnect(0, 4);
+            h.disconnect(1, 3);
+            h.set_online(2, false);
+            h.step(&[0, 4]);
+        } else {
+            h.connect(0, 4);
+            h.connect(1, 3);
+            h.set_online(2, true);
+            h.step(&[1, 2, 3]);
+        }
+    }
+
+    h.make_fully_connected();
+    h.set_online(2, true);
+
+    assert_recovers_within_slo(
+        &mut h,
+        &[0, 1, 2, 3, 4],
+        &[&[0, 2], &[1, 3], &[4]],
+        "repeated churn",
+    );
+    assert_stays_converged(&mut h, &[0, 1, 2, 3, 4], STABILITY_WINDOW_TICKS + 1, &[4]);
+}
+
+#[test]
+fn partition_restart_rejoin_converges_correctly() {
+    let mut h = Harness::new(5);
+    h.step(&[0, 1, 2, 3, 4]);
+    h.set_partition(&[&[0, 1], &[2, 3, 4]]);
+
+    for _ in 0..3 {
+        h.step(&[0, 2, 3]);
+    }
+
+    h.set_online(3, false);
+    h.step(&[0, 2, 4]);
+    h.set_online(3, true);
+
+    h.make_fully_connected();
+
+    assert_recovers_within_slo(
+        &mut h,
+        &[0, 1, 2, 3, 4],
+        &[&[0], &[2], &[3], &[4]],
+        "partition + restart + rejoin",
+    );
+    assert_stays_converged(&mut h, &[0, 1, 2, 3, 4], STABILITY_WINDOW_TICKS, &[1]);
+}
+
+#[test]
+fn recovery_slo_evidence_from_mixed_instability_matrix() {
+    let mut h = Harness::new(5);
+    h.step(&[0, 1, 2, 3, 4]);
+
+    let mut observed_recoveries = Vec::new();
+
+    h.disconnect(0, 4);
+    h.disconnect(1, 3);
+    h.set_online(2, false);
+    h.step(&[0, 4]);
+    h.connect(0, 4);
+    h.connect(1, 3);
+    h.set_online(2, true);
+    observed_recoveries.push(assert_recovers_within_slo(
+        &mut h,
+        &[0, 1, 2, 3, 4],
+        &[&[0, 2], &[1, 3], &[4]],
+        "mixed instability - churn phase",
+    ));
+
+    h.set_partition(&[&[0, 1], &[2, 3, 4]]);
+    h.step(&[0, 2, 3]);
+    h.set_online(4, false);
+    h.step(&[0, 2]);
+    h.set_online(4, true);
+    h.make_fully_connected();
+    observed_recoveries.push(assert_recovers_within_slo(
+        &mut h,
+        &[0, 1, 2, 3, 4],
+        &[&[0], &[1], &[2], &[3], &[4]],
+        "mixed instability - partition + restart phase",
+    ));
+
+    assert!(
+        observed_recoveries.iter().all(|ticks| *ticks <= RECOVERY_SLO_TICKS),
+        "all recovery points must satisfy SLO: {observed_recoveries:?}"
+    );
+    assert!(
+        observed_recoveries.iter().copied().max().unwrap_or(0) <= RECOVERY_SLO_TICKS,
+        "worst-case recovery must satisfy SLO evidence: {observed_recoveries:?}"
+    );
+}
+
+#[test]
+fn no_regression_in_partition_rejoin_paths() {
+    let mut h3 = Harness::new(3);
+    h3.step(&[0, 1, 2]);
+    h3.set_partition(&[&[0, 1], &[2]]);
+    for _ in 0..4 {
+        h3.step(&[0, 2]);
+    }
+    h3.make_fully_connected();
+    assert_recovers_within_slo(
+        &mut h3,
+        &[0, 1, 2],
+        &[&[0], &[1], &[2]],
+        "3-node partition/rejoin regression check",
+    );
+
+    let mut h5 = Harness::new(5);
+    h5.step(&[0, 1, 2, 3, 4]);
+    h5.set_partition(&[&[0, 1], &[2, 3, 4]]);
+    for _ in 0..5 {
+        h5.step(&[0, 2, 3]);
+    }
+    h5.make_fully_connected();
+    assert_recovers_within_slo(
+        &mut h5,
+        &[0, 1, 2, 3, 4],
+        &[&[0], &[1], &[2], &[3], &[4]],
+        "5-node partition/rejoin regression check",
+    );
 }
