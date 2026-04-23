@@ -51,8 +51,32 @@ pub fn accept_transaction(
             .pressure_events_total
             .saturating_add(1);
 
+        while state.mempool.transactions.len() > state.mempool.max_transactions {
+            let trim_txid = lowest_priority_txid(state).ok_or_else(|| {
+                PulseError::Internal(
+                    "mempool exceeds capacity but no trim candidate was found".into(),
+                )
+            })?;
+            if let Some(evicted) = state.mempool.transactions.remove(&trim_txid) {
+                for input in &evicted.inputs {
+                    state.mempool.spent_outpoints.remove(&input.previous_output);
+                }
+                state.mempool.counters.evicted_total =
+                    state.mempool.counters.evicted_total.saturating_add(1);
+            }
+        }
+
         let lowest_txid = lowest_priority_txid(state).ok_or_else(|| {
-            PulseError::Internal("mempool pressure detected with no eviction candidate".into())
+            state.mempool.counters.rejected_total =
+                state.mempool.counters.rejected_total.saturating_add(1);
+            state.mempool.counters.rejected_low_priority_total = state
+                .mempool
+                .counters
+                .rejected_low_priority_total
+                .saturating_add(1);
+            PulseError::InvalidTransaction(
+                "mempool under pressure: no admission slots available at current capacity".into(),
+            )
         })?;
         let should_evict = state
             .mempool

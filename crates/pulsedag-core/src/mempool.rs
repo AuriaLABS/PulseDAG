@@ -577,4 +577,104 @@ mod tests {
         assert_eq!(state.mempool.counters.rejected_total, 1);
         assert_eq!(state.mempool.counters.rejected_low_priority_total, 1);
     }
+
+    #[test]
+    fn trims_oversize_mempool_before_applying_pressure_admission() {
+        let mut state = init_chain_state("test".into());
+        state.mempool.max_transactions = 3;
+
+        let key_a = signing_key(71);
+        let key_b = signing_key(72);
+        let key_c = signing_key(73);
+        let key_d = signing_key(74);
+
+        let input_a = fund_address(
+            &mut state,
+            "fund-oversize-a",
+            0,
+            address_from_public_key(&public_key_hex(&key_a)),
+            100,
+        );
+        let input_b = fund_address(
+            &mut state,
+            "fund-oversize-b",
+            0,
+            address_from_public_key(&public_key_hex(&key_b)),
+            100,
+        );
+        let input_c = fund_address(
+            &mut state,
+            "fund-oversize-c",
+            0,
+            address_from_public_key(&public_key_hex(&key_c)),
+            100,
+        );
+        let input_d = fund_address(
+            &mut state,
+            "fund-oversize-d",
+            0,
+            address_from_public_key(&public_key_hex(&key_d)),
+            100,
+        );
+
+        let fee_1 = signed_tx(
+            &key_a,
+            vec![input_a.clone()],
+            vec![TxOutput {
+                address: "pulse1dest-oversize-1".into(),
+                amount: 99,
+            }],
+            1,
+            1,
+        );
+        let fee_2 = signed_tx(
+            &key_b,
+            vec![input_b.clone()],
+            vec![TxOutput {
+                address: "pulse1dest-oversize-2".into(),
+                amount: 98,
+            }],
+            2,
+            2,
+        );
+        let fee_3 = signed_tx(
+            &key_c,
+            vec![input_c.clone()],
+            vec![TxOutput {
+                address: "pulse1dest-oversize-3".into(),
+                amount: 97,
+            }],
+            3,
+            3,
+        );
+        let fee_4 = signed_tx(
+            &key_d,
+            vec![input_d.clone()],
+            vec![TxOutput {
+                address: "pulse1dest-oversize-4".into(),
+                amount: 96,
+            }],
+            4,
+            4,
+        );
+
+        accept_transaction(fee_1.clone(), &mut state, AcceptSource::Rpc).unwrap();
+        accept_transaction(fee_2.clone(), &mut state, AcceptSource::Rpc).unwrap();
+        accept_transaction(fee_3.clone(), &mut state, AcceptSource::Rpc).unwrap();
+
+        state.mempool.max_transactions = 2;
+        accept_transaction(fee_4.clone(), &mut state, AcceptSource::Rpc).unwrap();
+
+        assert_eq!(state.mempool.transactions.len(), 2);
+        assert!(state.mempool.transactions.contains_key(&fee_3.txid));
+        assert!(state.mempool.transactions.contains_key(&fee_4.txid));
+        assert!(!state.mempool.transactions.contains_key(&fee_1.txid));
+        assert!(!state.mempool.transactions.contains_key(&fee_2.txid));
+        assert_eq!(state.mempool.spent_outpoints.len(), 2);
+        assert!(state.mempool.spent_outpoints.contains(&input_c));
+        assert!(state.mempool.spent_outpoints.contains(&input_d));
+        assert!(!state.mempool.spent_outpoints.contains(&input_a));
+        assert!(!state.mempool.spent_outpoints.contains(&input_b));
+        assert_eq!(state.mempool.counters.evicted_total, 2);
+    }
 }
