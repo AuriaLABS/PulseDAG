@@ -104,6 +104,14 @@ pub struct RuntimeStatusData {
     pub p2p_tx_outbound_duplicates_suppressed: usize,
     pub p2p_tx_outbound_first_seen_relayed: usize,
     pub p2p_inbound_duplicates_suppressed: usize,
+    pub p2p_queued_block_messages: usize,
+    pub p2p_queued_non_block_messages: usize,
+    pub p2p_queue_max_depth: usize,
+    pub p2p_dequeued_block_messages: usize,
+    pub p2p_dequeued_non_block_messages: usize,
+    pub p2p_queue_block_priority_picks: usize,
+    pub p2p_queue_non_block_fair_picks: usize,
+    pub p2p_queue_starvation_relief_picks: usize,
 }
 
 #[derive(Default)]
@@ -124,6 +132,14 @@ struct RuntimeP2pRecoverySummary {
     tx_outbound_duplicates_suppressed: usize,
     tx_outbound_first_seen_relayed: usize,
     inbound_duplicates_suppressed: usize,
+    queued_block_messages: usize,
+    queued_non_block_messages: usize,
+    queue_max_depth: usize,
+    dequeued_block_messages: usize,
+    dequeued_non_block_messages: usize,
+    queue_block_priority_picks: usize,
+    queue_non_block_fair_picks: usize,
+    queue_starvation_relief_picks: usize,
 }
 
 fn is_peer_recovering(peer: &PeerRecoveryStatus, now_unix: u64) -> bool {
@@ -208,6 +224,14 @@ pub async fn get_runtime_status<S: RpcStateLike>(
                 tx_outbound_duplicates_suppressed: status.tx_outbound_duplicates_suppressed,
                 tx_outbound_first_seen_relayed: status.tx_outbound_first_seen_relayed,
                 inbound_duplicates_suppressed: status.inbound_duplicates_suppressed,
+                queued_block_messages: status.queued_block_messages,
+                queued_non_block_messages: status.queued_non_block_messages,
+                queue_max_depth: status.queue_max_depth,
+                dequeued_block_messages: status.dequeued_block_messages,
+                dequeued_non_block_messages: status.dequeued_non_block_messages,
+                queue_block_priority_picks: status.queue_block_priority_picks,
+                queue_non_block_fair_picks: status.queue_non_block_fair_picks,
+                queue_starvation_relief_picks: status.queue_starvation_relief_picks,
             }
         })
         .unwrap_or_default();
@@ -303,6 +327,14 @@ pub async fn get_runtime_status<S: RpcStateLike>(
         p2p_tx_outbound_duplicates_suppressed: p2p_recovery.tx_outbound_duplicates_suppressed,
         p2p_tx_outbound_first_seen_relayed: p2p_recovery.tx_outbound_first_seen_relayed,
         p2p_inbound_duplicates_suppressed: p2p_recovery.inbound_duplicates_suppressed,
+        p2p_queued_block_messages: p2p_recovery.queued_block_messages,
+        p2p_queued_non_block_messages: p2p_recovery.queued_non_block_messages,
+        p2p_queue_max_depth: p2p_recovery.queue_max_depth,
+        p2p_dequeued_block_messages: p2p_recovery.dequeued_block_messages,
+        p2p_dequeued_non_block_messages: p2p_recovery.dequeued_non_block_messages,
+        p2p_queue_block_priority_picks: p2p_recovery.queue_block_priority_picks,
+        p2p_queue_non_block_fair_picks: p2p_recovery.queue_non_block_fair_picks,
+        p2p_queue_starvation_relief_picks: p2p_recovery.queue_starvation_relief_picks,
     }))
 }
 
@@ -433,6 +465,14 @@ mod tests {
             publish_attempts: 0,
             seen_message_ids: 0,
             queued_messages: 0,
+            queued_block_messages: 0,
+            queued_non_block_messages: 0,
+            queue_max_depth: 0,
+            dequeued_block_messages: 0,
+            dequeued_non_block_messages: 0,
+            queue_block_priority_picks: 0,
+            queue_non_block_fair_picks: 0,
+            queue_starvation_relief_picks: 0,
             inbound_messages: 0,
             runtime_started: true,
             runtime_mode_detail: "swarm-poll-loop-real".into(),
