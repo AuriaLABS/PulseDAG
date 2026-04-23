@@ -504,6 +504,78 @@ mod tests {
     }
 
     #[test]
+    fn preserves_in_mempool_ancestors_when_evicting_under_pressure() {
+        let mut state = init_chain_state("test".into());
+        state.mempool.max_transactions = 2;
+
+        let parent_key = signing_key(54);
+        let independent_key = signing_key(55);
+
+        let parent_address = address_from_public_key(&public_key_hex(&parent_key));
+        let parent_input = fund_address(
+            &mut state,
+            "fund-ancestor-parent",
+            0,
+            parent_address.clone(),
+            100,
+        );
+        let independent_input = fund_address(
+            &mut state,
+            "fund-ancestor-independent",
+            0,
+            address_from_public_key(&public_key_hex(&independent_key)),
+            100,
+        );
+
+        let parent_tx = signed_tx(
+            &parent_key,
+            vec![parent_input],
+            vec![TxOutput {
+                address: parent_address,
+                amount: 99,
+            }],
+            1,
+            1,
+        );
+        let independent_tx = signed_tx(
+            &independent_key,
+            vec![independent_input],
+            vec![TxOutput {
+                address: "pulse1dest-ancestor-independent".into(),
+                amount: 95,
+            }],
+            5,
+            2,
+        );
+        let child_input = OutPoint {
+            txid: parent_tx.txid.clone(),
+            index: 0,
+        };
+        let child_tx = signed_tx(
+            &parent_key,
+            vec![child_input],
+            vec![TxOutput {
+                address: "pulse1dest-ancestor-child".into(),
+                amount: 85,
+            }],
+            10,
+            3,
+        );
+
+        accept_transaction(parent_tx.clone(), &mut state, AcceptSource::Rpc).unwrap();
+        accept_transaction(independent_tx.clone(), &mut state, AcceptSource::Rpc).unwrap();
+        accept_transaction(child_tx.clone(), &mut state, AcceptSource::Rpc).unwrap();
+
+        assert_eq!(state.mempool.transactions.len(), 2);
+        assert!(state.mempool.transactions.contains_key(&parent_tx.txid));
+        assert!(state.mempool.transactions.contains_key(&child_tx.txid));
+        assert!(!state
+            .mempool
+            .transactions
+            .contains_key(&independent_tx.txid));
+    }
+
+    #[test]
     fn mempool_pressure_counters_stay_coherent() {
         let mut state = init_chain_state("test".into());
         state.mempool.max_transactions = 1;

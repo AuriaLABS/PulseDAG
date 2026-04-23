@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use crate::{
     apply::apply_block,
     dev_pow_accepts,
@@ -20,11 +22,38 @@ fn is_higher_priority(candidate: &Transaction, existing: &Transaction) -> bool {
         || (candidate.fee == existing.fee && candidate.txid < existing.txid)
 }
 
-fn lowest_priority_txid(state: &ChainState) -> Option<String> {
+fn mempool_ancestors_for_transaction(tx: &Transaction, state: &ChainState) -> BTreeSet<String> {
+    let mut ancestors = BTreeSet::new();
+    let mut stack = tx
+        .inputs
+        .iter()
+        .map(|input| input.previous_output.txid.clone())
+        .collect::<Vec<_>>();
+
+    while let Some(txid) = stack.pop() {
+        if !ancestors.insert(txid.clone()) {
+            continue;
+        }
+        if let Some(parent) = state.mempool.transactions.get(&txid) {
+            stack.extend(
+                parent
+                    .inputs
+                    .iter()
+                    .map(|input| input.previous_output.txid.clone()),
+            );
+        }
+    }
+
+    ancestors
+}
+
+fn lowest_priority_evictable_txid(state: &ChainState, candidate: &Transaction) -> Option<String> {
+    let protected = mempool_ancestors_for_transaction(candidate, state);
     state
         .mempool
         .transactions
         .values()
+        .filter(|existing| !protected.contains(&existing.txid))
         .min_by(|a, b| a.fee.cmp(&b.fee).then_with(|| b.txid.cmp(&a.txid)))
         .map(|tx| tx.txid.clone())
 }
@@ -172,7 +201,7 @@ pub fn accept_transaction(
             .pressure_events_total
             .saturating_add(1);
 
-        let lowest_txid = lowest_priority_txid(state).ok_or_else(|| {
+        let lowest_txid = lowest_priority_evictable_txid(state, &tx).ok_or_else(|| {
             PulseError::Internal("mempool pressure detected with no eviction candidate".into())
         })?;
         let should_evict = state
