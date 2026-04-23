@@ -48,6 +48,23 @@ pub struct RuntimeStatusData {
     pub last_tx_drop_reason: Option<String>,
     pub last_tx_drop_txid: Option<String>,
     pub tx_drop_reasons: Vec<String>,
+    pub mempool_transactions: usize,
+    pub mempool_max_transactions: usize,
+    pub mempool_orphan_transactions: usize,
+    pub mempool_max_orphans: usize,
+    pub mempool_pending_transactions: usize,
+    pub mempool_pressure_bps: u64,
+    pub mempool_admitted_total: u64,
+    pub mempool_rejected_total: u64,
+    pub mempool_rejected_low_priority_total: u64,
+    pub mempool_evicted_total: u64,
+    pub mempool_pressure_events_total: u64,
+    pub mempool_reconcile_runs_total: u64,
+    pub mempool_reconcile_removed_total: u64,
+    pub mempool_orphaned_total: u64,
+    pub mempool_orphan_promoted_total: u64,
+    pub mempool_orphan_dropped_total: u64,
+    pub mempool_orphan_pruned_total: u64,
     pub accepted_mined_blocks: u64,
     pub rejected_mined_blocks: u64,
     pub startup_snapshot_exists: bool,
@@ -103,6 +120,8 @@ pub struct RuntimeStatusData {
     pub p2p_peer_health_recovering: usize,
     pub p2p_tx_outbound_duplicates_suppressed: usize,
     pub p2p_tx_outbound_first_seen_relayed: usize,
+    pub p2p_tx_relay_total_events: usize,
+    pub p2p_tx_relay_duplicate_ratio_bps: u64,
     pub p2p_inbound_duplicates_suppressed: usize,
     pub p2p_queued_block_messages: usize,
     pub p2p_queued_non_block_messages: usize,
@@ -175,6 +194,20 @@ pub async fn get_runtime_status<S: RpcStateLike>(
     let chain_handle = state.chain();
     let chain = chain_handle.read().await;
     let snapshot = pulsedag_core::dev_difficulty_snapshot(&chain);
+    let mempool_transactions = chain.mempool.transactions.len();
+    let mempool_max_transactions = chain.mempool.max_transactions;
+    let mempool_orphan_transactions = chain.mempool.orphan_transactions.len();
+    let mempool_max_orphans = chain.mempool.max_orphans;
+    let mempool_pending_transactions =
+        mempool_transactions.saturating_add(mempool_orphan_transactions);
+    let mempool_pressure_bps = if mempool_max_transactions == 0 {
+        0
+    } else {
+        (mempool_transactions as u64)
+            .saturating_mul(10_000)
+            .saturating_div(mempool_max_transactions as u64)
+            .min(10_000)
+    };
     let p2p_recovery = state
         .p2p()
         .and_then(|p2p| p2p.status().ok())
@@ -235,6 +268,17 @@ pub async fn get_runtime_status<S: RpcStateLike>(
             }
         })
         .unwrap_or_default();
+    let p2p_tx_relay_total_events = p2p_recovery
+        .tx_outbound_duplicates_suppressed
+        .saturating_add(p2p_recovery.tx_outbound_first_seen_relayed);
+    let p2p_tx_relay_duplicate_ratio_bps = if p2p_tx_relay_total_events == 0 {
+        0
+    } else {
+        (p2p_recovery.tx_outbound_duplicates_suppressed as u64)
+            .saturating_mul(10_000)
+            .saturating_div(p2p_tx_relay_total_events as u64)
+            .min(10_000)
+    };
     Json(ApiResponse::ok(RuntimeStatusData {
         started_at_unix: runtime.started_at_unix,
         uptime_secs,
@@ -271,6 +315,23 @@ pub async fn get_runtime_status<S: RpcStateLike>(
         last_tx_drop_reason: runtime.last_tx_drop_reason.clone(),
         last_tx_drop_txid: runtime.last_tx_drop_txid.clone(),
         tx_drop_reasons: runtime.tx_drop_reasons.clone(),
+        mempool_transactions,
+        mempool_max_transactions,
+        mempool_orphan_transactions,
+        mempool_max_orphans,
+        mempool_pending_transactions,
+        mempool_pressure_bps,
+        mempool_admitted_total: chain.mempool.counters.accepted_total,
+        mempool_rejected_total: chain.mempool.counters.rejected_total,
+        mempool_rejected_low_priority_total: chain.mempool.counters.rejected_low_priority_total,
+        mempool_evicted_total: chain.mempool.counters.evicted_total,
+        mempool_pressure_events_total: chain.mempool.counters.pressure_events_total,
+        mempool_reconcile_runs_total: chain.mempool.counters.reconcile_runs_total,
+        mempool_reconcile_removed_total: chain.mempool.counters.reconcile_removed_total,
+        mempool_orphaned_total: chain.mempool.counters.orphaned_total,
+        mempool_orphan_promoted_total: chain.mempool.counters.orphan_promoted_total,
+        mempool_orphan_dropped_total: chain.mempool.counters.orphan_dropped_total,
+        mempool_orphan_pruned_total: chain.mempool.counters.orphan_pruned_total,
         accepted_mined_blocks: runtime.accepted_mined_blocks,
         rejected_mined_blocks: runtime.rejected_mined_blocks,
         startup_snapshot_exists: runtime.startup_snapshot_exists,
@@ -326,6 +387,8 @@ pub async fn get_runtime_status<S: RpcStateLike>(
         p2p_peer_health_recovering: p2p_recovery.peer_health_recovering,
         p2p_tx_outbound_duplicates_suppressed: p2p_recovery.tx_outbound_duplicates_suppressed,
         p2p_tx_outbound_first_seen_relayed: p2p_recovery.tx_outbound_first_seen_relayed,
+        p2p_tx_relay_total_events,
+        p2p_tx_relay_duplicate_ratio_bps,
         p2p_inbound_duplicates_suppressed: p2p_recovery.inbound_duplicates_suppressed,
         p2p_queued_block_messages: p2p_recovery.queued_block_messages,
         p2p_queued_non_block_messages: p2p_recovery.queued_non_block_messages,
@@ -347,6 +410,7 @@ mod tests {
     };
 
     use axum::{extract::State, Json};
+    use pulsedag_core::types::Transaction;
     use pulsedag_core::{ChainState, SyncPhase};
     use pulsedag_p2p::{P2pHandle, P2pStatus, PeerRecoveryStatus, P2P_MODE_LIBP2P_REAL};
     use pulsedag_storage::Storage;
@@ -546,6 +610,125 @@ mod tests {
         assert_eq!(data.p2p_peer_health_healthy, 1);
         assert_eq!(data.p2p_peer_health_degraded, 0);
         assert_eq!(data.p2p_peer_health_recovering, 1);
+    }
+
+    #[tokio::test]
+    async fn runtime_status_surfaces_mempool_pressure_and_relay_visibility_metrics() {
+        let path = temp_db_path("runtime-mempool-relay-metrics");
+        let storage = Arc::new(Storage::open(path.to_str().expect("utf8 temp path")).unwrap());
+        let mut chain = storage
+            .load_or_init_genesis("testnet-dev".to_string())
+            .unwrap();
+        chain.mempool.max_transactions = 4;
+        chain.mempool.max_orphans = 3;
+        chain.mempool.transactions.insert(
+            "tx-1".into(),
+            Transaction {
+                txid: "tx-1".into(),
+                version: 1,
+                inputs: vec![],
+                outputs: vec![],
+                fee: 1,
+                nonce: 1,
+            },
+        );
+        chain.mempool.transactions.insert(
+            "tx-2".into(),
+            Transaction {
+                txid: "tx-2".into(),
+                version: 1,
+                inputs: vec![],
+                outputs: vec![],
+                fee: 2,
+                nonce: 2,
+            },
+        );
+        chain.mempool.orphan_transactions.insert(
+            "orphan-1".into(),
+            Transaction {
+                txid: "orphan-1".into(),
+                version: 1,
+                inputs: vec![],
+                outputs: vec![],
+                fee: 0,
+                nonce: 3,
+            },
+        );
+        chain.mempool.counters.accepted_total = 7;
+        chain.mempool.counters.rejected_total = 3;
+        chain.mempool.counters.rejected_low_priority_total = 2;
+        chain.mempool.counters.evicted_total = 1;
+        chain.mempool.counters.pressure_events_total = 4;
+        chain.mempool.counters.reconcile_runs_total = 5;
+        chain.mempool.counters.reconcile_removed_total = 2;
+        chain.mempool.counters.orphaned_total = 6;
+        chain.mempool.counters.orphan_promoted_total = 4;
+        chain.mempool.counters.orphan_dropped_total = 1;
+        chain.mempool.counters.orphan_pruned_total = 1;
+
+        let p2p_status = P2pStatus {
+            mode: P2P_MODE_LIBP2P_REAL.to_string(),
+            peer_id: "self".into(),
+            listening: vec![],
+            connected_peers: vec!["peer-a".into()],
+            topics: vec![],
+            mdns: false,
+            kademlia: true,
+            broadcasted_messages: 0,
+            publish_attempts: 0,
+            seen_message_ids: 0,
+            queued_messages: 0,
+            inbound_messages: 0,
+            runtime_started: true,
+            runtime_mode_detail: "swarm-poll-loop-real".into(),
+            swarm_events_seen: 0,
+            subscriptions_active: 0,
+            last_message_kind: None,
+            last_swarm_event: None,
+            per_topic_publishes: std::collections::HashMap::new(),
+            inbound_decode_failed: 0,
+            inbound_chain_mismatch_dropped: 0,
+            inbound_duplicates_suppressed: 2,
+            tx_outbound_duplicates_suppressed: 3,
+            tx_outbound_first_seen_relayed: 9,
+            last_drop_reason: None,
+            peer_reconnect_attempts: 0,
+            peer_recovery_success_count: 0,
+            last_peer_recovery_unix: None,
+            peer_cooldown_suppressed_count: 0,
+            peer_flap_suppressed_count: 0,
+            peers_under_cooldown: 0,
+            peers_under_flap_guard: 0,
+            peer_recovery: vec![],
+            sync_candidates: vec![],
+            selected_sync_peer: None,
+        };
+        let state = TestState {
+            chain: Arc::new(RwLock::new(chain)),
+            storage,
+            runtime: Arc::new(RwLock::new(NodeRuntimeStats::default())),
+            p2p: Some(Arc::new(TestP2pHandle { status: p2p_status })),
+        };
+
+        let Json(resp) = get_runtime_status(State(state)).await;
+        let data = resp.data.expect("runtime status data");
+        assert_eq!(data.mempool_transactions, 2);
+        assert_eq!(data.mempool_orphan_transactions, 1);
+        assert_eq!(data.mempool_pending_transactions, 3);
+        assert_eq!(data.mempool_pressure_bps, 5_000);
+        assert_eq!(data.mempool_admitted_total, 7);
+        assert_eq!(data.mempool_rejected_total, 3);
+        assert_eq!(data.mempool_rejected_low_priority_total, 2);
+        assert_eq!(data.mempool_evicted_total, 1);
+        assert_eq!(data.mempool_pressure_events_total, 4);
+        assert_eq!(data.mempool_reconcile_runs_total, 5);
+        assert_eq!(data.mempool_reconcile_removed_total, 2);
+        assert_eq!(data.mempool_orphaned_total, 6);
+        assert_eq!(data.mempool_orphan_promoted_total, 4);
+        assert_eq!(data.mempool_orphan_dropped_total, 1);
+        assert_eq!(data.mempool_orphan_pruned_total, 1);
+        assert_eq!(data.p2p_tx_relay_total_events, 12);
+        assert_eq!(data.p2p_tx_relay_duplicate_ratio_bps, 2_500);
     }
 }
 
