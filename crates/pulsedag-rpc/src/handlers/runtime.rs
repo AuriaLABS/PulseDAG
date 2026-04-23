@@ -73,6 +73,8 @@ pub struct RuntimeStatusData {
     pub startup_consistency_issue_count: usize,
     pub startup_recovery_mode: String,
     pub startup_rebuild_reason: Option<String>,
+    pub startup_fastboot_used: bool,
+    pub startup_fastboot_fallback: bool,
     pub last_self_audit_unix: Option<u64>,
     pub last_self_audit_ok: bool,
     pub last_self_audit_issue_count: usize,
@@ -340,6 +342,8 @@ pub async fn get_runtime_status<S: RpcStateLike>(
         startup_consistency_issue_count: runtime.startup_consistency_issue_count,
         startup_recovery_mode: runtime.startup_recovery_mode.clone(),
         startup_rebuild_reason: runtime.startup_rebuild_reason.clone(),
+        startup_fastboot_used: runtime.startup_fastboot_used,
+        startup_fastboot_fallback: runtime.startup_fastboot_fallback,
         last_self_audit_unix: runtime.last_self_audit_unix,
         last_self_audit_ok: runtime.last_self_audit_ok,
         last_self_audit_issue_count: runtime.last_self_audit_issue_count,
@@ -729,6 +733,37 @@ mod tests {
         assert_eq!(data.mempool_orphan_pruned_total, 1);
         assert_eq!(data.p2p_tx_relay_total_events, 12);
         assert_eq!(data.p2p_tx_relay_duplicate_ratio_bps, 2_500);
+    }
+
+    #[tokio::test]
+    async fn runtime_status_surfaces_fastboot_or_fallback_startup_path() {
+        let path = temp_db_path("runtime-fastboot-status");
+        let storage = Arc::new(Storage::open(path.to_str().expect("utf8 temp path")).unwrap());
+        let chain = storage
+            .load_or_init_genesis("testnet-dev".to_string())
+            .unwrap();
+        let mut runtime = NodeRuntimeStats::default();
+        runtime.startup_recovery_mode = "full_rebuild_fallback".to_string();
+        runtime.startup_rebuild_reason = Some("snapshot+delta replay failed".to_string());
+        runtime.startup_fastboot_used = true;
+        runtime.startup_fastboot_fallback = true;
+
+        let state = TestState {
+            chain: Arc::new(RwLock::new(chain)),
+            storage,
+            runtime: Arc::new(RwLock::new(runtime)),
+            p2p: None,
+        };
+
+        let Json(resp) = get_runtime_status(State(state)).await;
+        let data = resp.data.expect("runtime status data");
+        assert_eq!(data.startup_recovery_mode, "full_rebuild_fallback");
+        assert!(data.startup_fastboot_used);
+        assert!(data.startup_fastboot_fallback);
+        assert_eq!(
+            data.startup_rebuild_reason.as_deref(),
+            Some("snapshot+delta replay failed")
+        );
     }
 }
 

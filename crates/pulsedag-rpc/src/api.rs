@@ -129,6 +129,8 @@ pub struct NodeRuntimeStats {
     pub startup_consistency_issue_count: usize,
     pub startup_recovery_mode: String,
     pub startup_rebuild_reason: Option<String>,
+    pub startup_fastboot_used: bool,
+    pub startup_fastboot_fallback: bool,
     pub last_self_audit_unix: Option<u64>,
     pub last_self_audit_ok: bool,
     pub last_self_audit_issue_count: usize,

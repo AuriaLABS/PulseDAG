@@ -38,6 +38,23 @@ pub struct RestoreDrillReport {
     pub restore_duration_ms: u128,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum FastBootPath {
+    SnapshotDelta,
+    FullReplayFallback,
+    FullReplayNoSnapshot,
+    GenesisInit,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReplayBlocksReport {
+    pub state: ChainState,
+    pub path: FastBootPath,
+    pub persisted_block_count: usize,
+    pub snapshot_available: bool,
+    pub fallback_reason: Option<String>,
+}
+
 impl Storage {
     pub fn open(path: &str) -> Result<Self, PulseError> {
         let cfs = vec![
@@ -223,18 +240,33 @@ impl Storage {
     }
 
     pub fn replay_blocks_or_init(&self, chain_id: String) -> Result<ChainState, PulseError> {
+        Ok(self.replay_blocks_or_init_with_report(chain_id)?.state)
+    }
+
+    pub fn replay_blocks_or_init_with_report(
+        &self,
+        chain_id: String,
+    ) -> Result<ReplayBlocksReport, PulseError> {
         let blocks = self.list_blocks()?;
+        let persisted_block_count = blocks.len();
         let snapshot = self.load_chain_state();
         if let Ok(Some(snapshot)) = snapshot {
             match rebuild_state_from_snapshot_and_blocks(snapshot, blocks.clone()) {
                 Ok(state) => {
                     self.persist_chain_state(&state)?;
-                    return Ok(state);
+                    return Ok(ReplayBlocksReport {
+                        state,
+                        path: FastBootPath::SnapshotDelta,
+                        persisted_block_count,
+                        snapshot_available: true,
+                        fallback_reason: None,
+                    });
                 }
                 Err(snapshot_delta_err) => {
                     if blocks.is_empty() {
                         return Err(snapshot_delta_err);
                     }
+                    let fallback_reason = snapshot_delta_err.to_string();
                     let _ = self.append_runtime_event(
                         "warn",
                         "snapshot_delta_replay_failed_fallback_full",
@@ -245,13 +277,20 @@ impl Storage {
                     );
                     let state = rebuild_state_from_blocks(chain_id, blocks)?;
                     self.persist_chain_state(&state)?;
-                    return Ok(state);
+                    return Ok(ReplayBlocksReport {
+                        state,
+                        path: FastBootPath::FullReplayFallback,
+                        persisted_block_count,
+                        snapshot_available: true,
+                        fallback_reason: Some(fallback_reason),
+                    });
                 }
             }
         } else if let Err(snapshot_err) = snapshot {
             if blocks.is_empty() {
                 return Err(snapshot_err);
             }
+            let fallback_reason = snapshot_err.to_string();
             let _ = self.append_runtime_event(
                 "warn",
                 "snapshot_decode_failed_fallback_full",
@@ -262,14 +301,33 @@ impl Storage {
             );
             let state = rebuild_state_from_blocks(chain_id, blocks)?;
             self.persist_chain_state(&state)?;
-            return Ok(state);
+            return Ok(ReplayBlocksReport {
+                state,
+                path: FastBootPath::FullReplayFallback,
+                persisted_block_count,
+                snapshot_available: false,
+                fallback_reason: Some(fallback_reason),
+            });
         }
         if blocks.is_empty() {
-            return self.load_or_init_genesis(chain_id);
+            let state = self.load_or_init_genesis(chain_id)?;
+            return Ok(ReplayBlocksReport {
+                state,
+                path: FastBootPath::GenesisInit,
+                persisted_block_count,
+                snapshot_available: false,
+                fallback_reason: None,
+            });
         }
         let state = rebuild_state_from_blocks(chain_id, blocks)?;
         self.persist_chain_state(&state)?;
-        Ok(state)
+        Ok(ReplayBlocksReport {
+            state,
+            path: FastBootPath::FullReplayNoSnapshot,
+            persisted_block_count,
+            snapshot_available: false,
+            fallback_reason: Some("validated snapshot missing".to_string()),
+        })
     }
 
     pub fn replay_from_validated_snapshot_and_delta(&self) -> Result<ChainState, PulseError> {
@@ -507,7 +565,7 @@ impl Storage {
 
 #[cfg(test)]
 mod tests {
-    use super::Storage;
+    use super::{FastBootPath, Storage};
     use pulsedag_core::{
         accept::{accept_block, AcceptSource},
         build_candidate_block, build_coinbase_transaction, dev_mine_header,
@@ -651,9 +709,10 @@ mod tests {
             .expect("prune old blocks while keeping 4+");
 
         let rebuilt = storage
-            .replay_blocks_or_init("testnet".to_string())
+            .replay_blocks_or_init_with_report("testnet".to_string())
             .expect("rebuild from validated snapshot plus retained delta");
-        assert_eq!(rebuilt.dag.best_height, 5);
+        assert_eq!(rebuilt.state.dag.best_height, 5);
+        assert_eq!(rebuilt.path, FastBootPath::SnapshotDelta);
 
         let _ = std::fs::remove_dir_all(path);
     }
@@ -708,10 +767,11 @@ mod tests {
             .expect("write corrupt snapshot bytes");
 
         let rebuilt = storage
-            .replay_blocks_or_init("testnet".to_string())
+            .replay_blocks_or_init_with_report("testnet".to_string())
             .expect("must fall back to full rebuild");
-        assert_eq!(rebuilt.dag.best_height, state.dag.best_height);
-        assert_eq!(rebuilt.dag.best_hash, state.dag.best_hash);
+        assert_eq!(rebuilt.state.dag.best_height, state.dag.best_height);
+        assert_eq!(rebuilt.state.dag.best_hash, state.dag.best_hash);
+        assert_eq!(rebuilt.path, FastBootPath::FullReplayFallback);
         assert_eq!(
             storage.list_blocks().expect("list persisted blocks").len(),
             blocks.len()
@@ -750,6 +810,49 @@ mod tests {
                 .expect("list blocks after failure")
                 .is_empty(),
             "no blocks should be mutated by failed replay"
+        );
+
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn replay_blocks_or_init_falls_back_safely_when_delta_invalid_for_snapshot() {
+        let path = temp_db_path("invalid-delta-fallback");
+        let storage = Storage::open(&path).expect("open storage");
+        let state = build_linear_chain("testnet", 4);
+        let mut blocks: Vec<_> = state.dag.blocks.values().cloned().collect();
+        blocks.sort_by_key(|b| b.header.height);
+        for block in &blocks {
+            storage.persist_block(block).expect("persist block");
+        }
+
+        let mut invalid_snapshot = state.clone();
+        invalid_snapshot.chain_id = "wrong-chain".to_string();
+        storage
+            .persist_chain_state(&invalid_snapshot)
+            .expect("persist invalid snapshot");
+
+        let rebuilt = storage
+            .replay_blocks_or_init_with_report("testnet".to_string())
+            .expect("must fall back to full replay for invalid delta");
+        assert_eq!(rebuilt.path, FastBootPath::FullReplayFallback);
+        assert!(
+            rebuilt
+                .fallback_reason
+                .as_deref()
+                .unwrap_or_default()
+                .contains("chain id mismatch"),
+            "unexpected fallback reason: {:?}",
+            rebuilt.fallback_reason
+        );
+        assert_eq!(rebuilt.state.dag.best_height, state.dag.best_height);
+
+        let events = storage.list_runtime_events(25).expect("runtime events");
+        assert!(
+            events
+                .iter()
+                .any(|e| e.kind == "snapshot_delta_replay_failed_fallback_full"),
+            "expected fallback runtime event"
         );
 
         let _ = std::fs::remove_dir_all(path);

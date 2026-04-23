@@ -17,7 +17,7 @@ use pulsedag_p2p::{
     build_p2p_stack, InboundEvent, Libp2pConfig, Libp2pRuntimeMode, P2pHandle, P2pMode,
 };
 use pulsedag_rpc::routes::router;
-use pulsedag_storage::Storage;
+use pulsedag_storage::{FastBootPath, Storage};
 use tokio::net::TcpListener;
 use tokio::time::{sleep, Duration};
 use tracing::{info, warn};
@@ -56,6 +56,8 @@ async fn main() -> Result<()> {
         "snapshot_missing".to_string()
     };
     let mut startup_rebuild_reason: Option<String> = None;
+    let mut startup_fastboot_used = false;
+    let mut startup_fastboot_fallback = false;
 
     if cfg.auto_rebuild_on_start && !persisted_blocks.is_empty() {
         let in_memory_block_count = chain_state.dag.blocks.len();
@@ -85,9 +87,24 @@ async fn main() -> Result<()> {
         if !rebuild_reasons.is_empty() {
             let reason = rebuild_reasons.join("; ");
             info!(snapshot_exists = snapshot_exists, persisted_block_count = persisted_blocks.len(), in_memory_block_count = in_memory_block_count, startup_persisted_max_height, startup_consistency_issue_count, reason = %reason, "rebuilding chain state from persisted blocks on startup");
-            startup_recovery_mode = "replayed_blocks".to_string();
             startup_rebuild_reason = Some(reason);
-            chain_state = storage.replay_blocks_or_init(cfg.chain_id.clone())?;
+            let replay_report = storage.replay_blocks_or_init_with_report(cfg.chain_id.clone())?;
+            startup_fastboot_used = matches!(replay_report.path, FastBootPath::SnapshotDelta);
+            startup_fastboot_fallback =
+                matches!(replay_report.path, FastBootPath::FullReplayFallback);
+            startup_recovery_mode = match replay_report.path {
+                FastBootPath::SnapshotDelta => "fastboot_snapshot_delta".to_string(),
+                FastBootPath::FullReplayFallback => "full_rebuild_fallback".to_string(),
+                FastBootPath::FullReplayNoSnapshot => "full_rebuild_no_snapshot".to_string(),
+                FastBootPath::GenesisInit => "genesis_init".to_string(),
+            };
+            if let Some(fallback_reason) = replay_report.fallback_reason {
+                startup_rebuild_reason = Some(match startup_rebuild_reason {
+                    Some(existing) => format!("{existing}; replay detail: {fallback_reason}"),
+                    None => fallback_reason,
+                });
+            }
+            chain_state = replay_report.state;
         }
     }
 
@@ -163,6 +180,8 @@ async fn main() -> Result<()> {
     runtime_stats.startup_consistency_issue_count = startup_consistency_issue_count;
     runtime_stats.startup_recovery_mode = startup_recovery_mode.clone();
     runtime_stats.startup_rebuild_reason = startup_rebuild_reason.clone();
+    runtime_stats.startup_fastboot_used = startup_fastboot_used;
+    runtime_stats.startup_fastboot_fallback = startup_fastboot_fallback;
     runtime_stats.last_self_audit_unix = Some(
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -219,6 +238,14 @@ async fn main() -> Result<()> {
                 .storage
                 .append_runtime_event("warn", "startup_rebuild", &reason);
         }
+        let _ = app_state.storage.append_runtime_event(
+            "info",
+            "startup_path",
+            &format!(
+                "startup path selected: mode={}, fastboot_used={}, fastboot_fallback={}",
+                startup_recovery_mode, startup_fastboot_used, startup_fastboot_fallback
+            ),
+        );
     }
 
     if let Some(mut rx) = inbound_rx {
