@@ -5,9 +5,15 @@ on:
     tags:
       - "v*"
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to publish (for example: v1.2.3)"
+        required: true
+        type: string
 
 env:
   BIN_NAME: pulsedagd
+  RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref_name }}
 
 jobs:
   build:
@@ -67,7 +73,7 @@ jobs:
           chmod +x "dist/${{ matrix.output_name }}"
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: ${{ matrix.name }}
           path: dist/${{ matrix.output_name }}
@@ -82,7 +88,7 @@ jobs:
 
     steps:
       - name: Download artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           path: artifacts
 
@@ -98,5 +104,5 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
-          gh release create "${{ github.ref_name }}" final/* --generate-notes || \
-          gh release upload "${{ github.ref_name }}" final/* --clobber
+          gh release create "${{ env.RELEASE_TAG }}" final/* --generate-notes || \
+          gh release upload "${{ env.RELEASE_TAG }}" final/* --clobber
