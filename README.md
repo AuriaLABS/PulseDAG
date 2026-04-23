@@ -1,6 +1,6 @@
-# PulseDAG v2.1.0-readiness
+# PulseDAG v2.2.0-ops-readiness
 
-Consolidated v2.1 operator-readiness package prior to the public testnet cutover window.
+Consolidated v2.2 operator-readiness package for operational recovery, rebuild, restore, and maintenance workflows.
 
 ## Frozen decisions
 - Miner remains an external standalone application.
@@ -27,8 +27,8 @@ cargo run -p pulsedagd
 cargo run -p pulsedag-miner -- --node http://127.0.0.1:8080 --miner-address YOUR_ADDRESS --threads 4 --loop --sleep-ms 1500 --max-tries 50000
 ```
 
-## Operator package index (v2.1)
-- Runbook index (snapshot restore, snapshot+delta rebuild, burn-in evidence, p2p recovery/rejoin, staging upgrade, staging rollback): `docs/runbooks/INDEX.md`
+## Operator package index (v2.2)
+- Runbook index (recovery orchestration, maintenance/self-check, snapshot restore, snapshot+delta rebuild, fast-boot/fallback interpretation, staging upgrade/rollback): `docs/runbooks/INDEX.md`
 - Dashboard package: `docs/dashboard/README.md`
 
 ## P2P mode labels (honest status/log semantics)
@@ -39,12 +39,12 @@ cargo run -p pulsedag-miner -- --node http://127.0.0.1:8080 --miner-address YOUR
 The node startup logs and `/status`, `/p2p/status`, `/p2p/topology` endpoints now expose whether `connected_peers` should be interpreted as real network connectivity.
 See `docs/OPERATIONS_P2P.md` for operational guidance.
 
-## Staging upgrade and rollback validation (v2.1)
+## Staging upgrade and rollback validation (v2.2)
 - Upgrade runbook: `docs/runbooks/STAGING_UPGRADE.md`
 - Rollback runbook: `docs/runbooks/STAGING_ROLLBACK.md`
 - Validation helper: `scripts/staging/validate_upgrade_rollback.sh`
 
-## Burn-in and evidence for v2.1
+## Burn-in and evidence for v2.2
 - The CI workflow `Soak Smoke (short CI signal)` is intentionally a short regression signal, not a release burn-in claim.
-- Real release burn-in for v2.1 requires a 14-day operated run with evidence collection.
+- Real release burn-in for v2.2 requires an operated run with evidence collection per release policy.
 - See `docs/BURN_IN_14D.md` and `docs/RELEASE_EVIDENCE.md` for process and required artifacts.
