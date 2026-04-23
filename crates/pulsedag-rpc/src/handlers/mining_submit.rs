@@ -1,10 +1,13 @@
-use super::mining_template::load_template;
+use super::mining_template::{
+    current_template_state, load_template, template_id_for_state, TEMPLATE_TTL_SECS,
+};
 use crate::api::{ApiResponse, RpcStateLike, SubmitMinedBlockRequest};
 use axum::{extract::State, Json};
 use pulsedag_core::{
     accept_block, adopt_ready_orphans, dev_pow_accepts, dev_target_u64, preferred_tip_hash,
     AcceptSource,
 };
+use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, serde::Serialize)]
 pub struct MiningSubmitData {
@@ -68,46 +71,78 @@ pub async fn post_mining_submit<S: RpcStateLike>(
         ));
     }
 
-    let mut current_parents = chain.dag.tips.iter().cloned().collect::<Vec<_>>();
-    current_parents.sort();
-    let current_selected_tip = preferred_tip_hash(&chain);
-    let expected_template_id = format!(
-        "{}:{}",
-        chain.dag.best_height + 1,
-        current_parents.join(",")
-    );
+    let lifecycle = current_template_state(&chain);
+    let current_parents = lifecycle.parent_hashes.clone();
+    let current_selected_tip = lifecycle.selected_tip.clone();
+    let expected_template_id = template_id_for_state(&lifecycle);
+    let now_unix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
 
     if let Some(template_id) = req.template_id.as_ref() {
-        if template_id != &expected_template_id {
-            if let Some(stored) = load_template(template_id) {
-                if stored.height != chain.dag.best_height + 1 {
-                    return Json(ApiResponse::err(
-                        "STALE_TEMPLATE",
-                        format!(
-                            "template height {} is stale; current next height is {}",
-                            stored.height,
-                            chain.dag.best_height + 1
-                        ),
-                    ));
-                }
-                if stored.parent_hashes != current_parents {
-                    return Json(ApiResponse::err(
-                        "STALE_TEMPLATE",
-                        "template parents no longer match current tips",
-                    ));
-                }
-                if stored.selected_tip != current_selected_tip {
-                    return Json(ApiResponse::err(
-                        "STALE_TEMPLATE",
-                        "template selected_tip no longer matches current preferred tip",
-                    ));
-                }
-            } else {
+        if let Some(stored) = load_template(template_id) {
+            if stored.height != chain.dag.best_height + 1 {
                 return Json(ApiResponse::err(
-                    "UNKNOWN_TEMPLATE",
-                    format!("template_id {} not found", template_id),
+                    "STALE_TEMPLATE",
+                    format!(
+                        "template height {} is stale; current next height is {}",
+                        stored.height,
+                        chain.dag.best_height + 1
+                    ),
                 ));
             }
+            if stored.parent_hashes != current_parents {
+                return Json(ApiResponse::err(
+                    "STALE_TEMPLATE",
+                    "template parents no longer match current tips",
+                ));
+            }
+            if stored.selected_tip != current_selected_tip {
+                return Json(ApiResponse::err(
+                    "STALE_TEMPLATE",
+                    "template selected_tip no longer matches current preferred tip",
+                ));
+            }
+            if stored.difficulty != lifecycle.difficulty
+                || stored.target_u64 != lifecycle.target_u64
+            {
+                return Json(ApiResponse::err(
+                    "STALE_TEMPLATE",
+                    "template difficulty/target no longer matches node state",
+                ));
+            }
+            if stored.mempool_fingerprint != lifecycle.mempool_fingerprint {
+                return Json(ApiResponse::err(
+                    "STALE_TEMPLATE",
+                    "template mempool view changed; refresh template",
+                ));
+            }
+            let expires_at_unix = if stored.expires_at_unix == 0 {
+                stored.created_at_unix.saturating_add(TEMPLATE_TTL_SECS)
+            } else {
+                stored.expires_at_unix
+            };
+            if now_unix > expires_at_unix {
+                return Json(ApiResponse::err(
+                    "STALE_TEMPLATE",
+                    format!(
+                        "template expired after {}s ttl; refresh and retry",
+                        TEMPLATE_TTL_SECS
+                    ),
+                ));
+            }
+            if template_id != &expected_template_id {
+                return Json(ApiResponse::err(
+                    "STALE_TEMPLATE",
+                    "template no longer matches current lifecycle state",
+                ));
+            }
+        } else {
+            return Json(ApiResponse::err(
+                "UNKNOWN_TEMPLATE",
+                format!("template_id {} not found", template_id),
+            ));
         }
     }
 
@@ -172,12 +207,16 @@ pub async fn post_mining_submit<S: RpcStateLike>(
 #[cfg(test)]
 mod tests {
     use super::{persist_then_broadcast_mined_block, post_mining_submit};
-    use crate::api::{NodeRuntimeStats, RpcStateLike, SubmitMinedBlockRequest};
+    use crate::{
+        api::{GetBlockTemplateRequest, NodeRuntimeStats, RpcStateLike, SubmitMinedBlockRequest},
+        handlers::mining_template::{post_mining_template, store_template, StoredMiningTemplate},
+    };
     use axum::{extract::State, Json};
     use pulsedag_core::{
         build_candidate_block, build_coinbase_transaction, dev_difficulty_snapshot,
-        dev_mine_header,
+        dev_mine_header, dev_target_u64,
         errors::PulseError,
+        preferred_tip_hash,
         state::ChainState,
         types::{Block, Transaction},
     };
@@ -379,6 +418,89 @@ mod tests {
 
         assert!(!second_response.ok);
         assert_eq!(fake_p2p.block_calls(), 1);
+    }
+
+    #[tokio::test]
+    async fn stale_template_rejected_when_mempool_changes() {
+        let (state, _fake_p2p) = build_state_with_fake_p2p();
+        let Json(template_response) = post_mining_template(
+            State(state.clone()),
+            Json(GetBlockTemplateRequest {
+                miner_address: "kaspa:qptestminer".to_string(),
+            }),
+        )
+        .await;
+        assert!(template_response.ok);
+        let template = template_response.data.expect("template expected");
+
+        {
+            let mut chain = state.chain.write().await;
+            let tx =
+                build_coinbase_transaction("kaspa:qptestmempool", 1, chain.dag.best_height + 1);
+            chain.mempool.transactions.insert(tx.txid.clone(), tx);
+        }
+
+        let mut block = template.block;
+        let (mined_header, mined, _, _) = dev_mine_header(block.header.clone(), 100_000);
+        assert!(mined);
+        block.header = mined_header;
+
+        let Json(submit_response) = post_mining_submit(
+            State(state),
+            Json(SubmitMinedBlockRequest {
+                template_id: Some(template.template_id),
+                block,
+            }),
+        )
+        .await;
+
+        assert!(!submit_response.ok);
+        let err = submit_response.error.expect("error expected");
+        assert_eq!(err.code, "STALE_TEMPLATE");
+        assert!(err.message.contains("mempool view changed"));
+    }
+
+    #[tokio::test]
+    async fn stale_template_rejected_when_expired() {
+        let (state, _fake_p2p) = build_state_with_fake_p2p();
+        let block = build_mined_block(&state).await;
+        let chain = state.chain.read().await;
+        let mut parents = chain.dag.tips.iter().cloned().collect::<Vec<_>>();
+        parents.sort();
+        drop(chain);
+
+        let template_id = "expired-template".to_string();
+        let selected_tip = {
+            let chain = state.chain.read().await;
+            preferred_tip_hash(&chain)
+        };
+        store_template(&StoredMiningTemplate {
+            template_id: template_id.clone(),
+            miner_address: "kaspa:qptestminer".to_string(),
+            selected_tip,
+            parent_hashes: parents,
+            height: block.header.height,
+            difficulty: block.header.difficulty,
+            created_at_unix: 1,
+            target_u64: dev_target_u64(block.header.difficulty as u64),
+            mempool_fingerprint: "0:".to_string(),
+            mempool_tx_count: 0,
+            expires_at_unix: 1,
+        });
+
+        let Json(submit_response) = post_mining_submit(
+            State(state),
+            Json(SubmitMinedBlockRequest {
+                template_id: Some(template_id),
+                block,
+            }),
+        )
+        .await;
+
+        assert!(!submit_response.ok);
+        let err = submit_response.error.expect("error expected");
+        assert_eq!(err.code, "STALE_TEMPLATE");
+        assert!(err.message.contains("expired"));
     }
 
     #[test]
