@@ -23,7 +23,6 @@ pub struct ContractRuntimeState {
     pub last_receipt_id: Option<String>,
 }
 
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DagState {
     pub blocks: HashMap<Hash, Block>,
@@ -40,9 +39,39 @@ pub struct UtxoState {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct MempoolCounters {
+    pub accepted_total: u64,
+    pub rejected_total: u64,
+    pub rejected_low_priority_total: u64,
+    pub evicted_total: u64,
+    pub pressure_events_total: u64,
+    pub reconcile_runs_total: u64,
+    pub reconcile_removed_total: u64,
+}
+
+fn default_mempool_max_transactions() -> usize {
+    1_024
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Mempool {
     pub transactions: HashMap<Hash, Transaction>,
     pub spent_outpoints: HashSet<OutPoint>,
+    #[serde(default)]
+    pub counters: MempoolCounters,
+    #[serde(default = "default_mempool_max_transactions")]
+    pub max_transactions: usize,
+}
+
+impl Default for Mempool {
+    fn default() -> Self {
+        Self {
+            transactions: HashMap::new(),
+            spent_outpoints: HashSet::new(),
+            counters: MempoolCounters::default(),
+            max_transactions: default_mempool_max_transactions(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
