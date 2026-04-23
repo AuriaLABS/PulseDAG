@@ -579,6 +579,82 @@ mod tests {
     }
 
     #[test]
+    fn reconcile_and_restart_like_rebuild_preserve_mempool_counters_coherently() {
+        let mut state = init_chain_state("test".into());
+        state.mempool.max_transactions = 1;
+
+        let key_a = signing_key(64);
+        let key_b = signing_key(65);
+        let input_a = fund_address(
+            &mut state,
+            "fund-reconcile-counter-a",
+            0,
+            address_from_public_key(&public_key_hex(&key_a)),
+            100,
+        );
+        let input_b = fund_address(
+            &mut state,
+            "fund-reconcile-counter-b",
+            0,
+            address_from_public_key(&public_key_hex(&key_b)),
+            100,
+        );
+        let first = signed_tx(
+            &key_a,
+            vec![input_a],
+            vec![TxOutput {
+                address: "pulse1reconcile-counter-a".into(),
+                amount: 98,
+            }],
+            2,
+            1,
+        );
+        let second = signed_tx(
+            &key_b,
+            vec![input_b],
+            vec![TxOutput {
+                address: "pulse1reconcile-counter-b".into(),
+                amount: 90,
+            }],
+            10,
+            2,
+        );
+
+        accept_transaction(first, &mut state, AcceptSource::Rpc).unwrap();
+        accept_transaction(second.clone(), &mut state, AcceptSource::Rpc).unwrap();
+        let before_reconcile = state.mempool.counters.clone();
+        let reconcile = reconcile_mempool(&mut state);
+        assert!(reconcile.removed_txids.is_empty());
+        assert_eq!(state.mempool.counters.reconcile_runs_total, 1);
+        assert_eq!(state.mempool.counters.reconcile_removed_total, 0);
+
+        let mut restored = init_chain_state("test".into());
+        restored.utxo = state.utxo.clone();
+        restored.mempool.transactions = state.mempool.transactions.clone();
+        restored.mempool.max_transactions = state.mempool.max_transactions;
+        restored.mempool.counters = state.mempool.counters.clone();
+        restored.mempool.spent_outpoints.clear();
+        let restarted_reconcile = reconcile_mempool(&mut restored);
+        assert!(restarted_reconcile.removed_txids.is_empty());
+        assert_eq!(
+            restored.mempool.counters.accepted_total,
+            before_reconcile.accepted_total
+        );
+        assert_eq!(
+            restored.mempool.counters.evicted_total,
+            before_reconcile.evicted_total
+        );
+        assert_eq!(
+            restored.mempool.counters.pressure_events_total,
+            before_reconcile.pressure_events_total
+        );
+        assert_eq!(restored.mempool.counters.reconcile_runs_total, 2);
+        assert_eq!(restored.mempool.counters.reconcile_removed_total, 0);
+        assert_eq!(restored.mempool.transactions.len(), 1);
+        assert!(restored.mempool.transactions.contains_key(&second.txid));
+    }
+
+    #[test]
     fn orphan_tx_is_stored_in_orphan_pool() {
         let mut state = init_chain_state("test".into());
         state.mempool.max_orphans = 8;
