@@ -7,7 +7,10 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration as StdDuration, SystemTime, UNIX_EPOCH};
 
-use libp2p::{gossipsub, identity, PeerId};
+use libp2p::futures::StreamExt;
+use libp2p::gossipsub::{self, MessageAuthenticity, ValidationMode};
+use libp2p::swarm::{NetworkBehaviour, SwarmEvent};
+use libp2p::{identity, Multiaddr, PeerId, SwarmBuilder};
 use pulsedag_core::{
     errors::PulseError,
     types::{Block, Transaction},
@@ -89,6 +92,13 @@ pub struct Libp2pConfig {
     pub bootstrap: Vec<String>,
     pub enable_mdns: bool,
     pub enable_kademlia: bool,
+    pub runtime: Libp2pRuntimeMode,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Libp2pRuntimeMode {
+    DevLoopbackSkeleton,
+    RealSwarm,
 }
 
 #[derive(Debug, Clone)]
@@ -319,9 +329,19 @@ impl Libp2pHandle {
             .iter()
             .map(|peer| (peer.clone(), PeerHealth::default()))
             .collect();
+        let (mode, runtime_mode_detail) = match cfg.runtime {
+            Libp2pRuntimeMode::DevLoopbackSkeleton => (
+                P2P_MODE_LIBP2P_DEV_LOOPBACK_SKELETON.to_string(),
+                "swarm-poll-loop-skeleton".to_string(),
+            ),
+            Libp2pRuntimeMode::RealSwarm => (
+                P2P_MODE_LIBP2P_REAL.to_string(),
+                "swarm-poll-loop-real".to_string(),
+            ),
+        };
         let mut state = InnerState {
-            mode: P2P_MODE_LIBP2P_DEV_LOOPBACK_SKELETON.into(),
-            runtime_mode_detail: "swarm-poll-loop-skeleton".into(),
+            mode,
+            runtime_mode_detail,
             peer_id: peer_id.to_string(),
             listening: vec![cfg.listen_addr.clone()],
             peer_book,
@@ -352,14 +372,28 @@ impl Libp2pHandle {
         state.runtime_started = true;
         let inner = Arc::new(Mutex::new(state));
 
-        tokio::spawn(run_libp2p_runtime(
-            cfg,
-            peer_id,
-            topic_objs,
-            inner.clone(),
-            outbound_rx,
-            inbound_tx,
-        ));
+        match cfg.runtime {
+            Libp2pRuntimeMode::DevLoopbackSkeleton => {
+                tokio::spawn(run_libp2p_skeleton_runtime(
+                    cfg,
+                    peer_id,
+                    topic_objs,
+                    inner.clone(),
+                    outbound_rx,
+                    inbound_tx,
+                ));
+            }
+            Libp2pRuntimeMode::RealSwarm => {
+                tokio::spawn(run_libp2p_real_runtime(
+                    cfg,
+                    local_key,
+                    topic_objs,
+                    inner.clone(),
+                    outbound_rx,
+                    inbound_tx,
+                ));
+            }
+        }
 
         Ok((Self { inner, outbound_tx }, inbound_rx))
     }
@@ -768,6 +802,178 @@ async fn run_libp2p_runtime(
     }
 }
 
+#[derive(NetworkBehaviour)]
+struct PulseBehaviour {
+    gossipsub: gossipsub::Behaviour,
+}
+
+fn parse_bootstrap(bootstrap: &[String]) -> Vec<Multiaddr> {
+    bootstrap
+        .iter()
+        .filter_map(|addr| addr.parse::<Multiaddr>().ok())
+        .collect()
+}
+
+async fn run_libp2p_real_runtime(
+    cfg: Libp2pConfig,
+    local_key: identity::Keypair,
+    topics: Vec<gossipsub::IdentTopic>,
+    inner: Arc<Mutex<InnerState>>,
+    mut outbound_rx: mpsc::UnboundedReceiver<OutboundMessage>,
+    inbound_tx: mpsc::UnboundedSender<InboundEvent>,
+) {
+    let mut gossip_config = gossipsub::ConfigBuilder::default();
+    gossip_config.validation_mode(ValidationMode::Permissive);
+    let gossip = match gossipsub::Behaviour::new(
+        MessageAuthenticity::Signed(local_key.clone()),
+        gossip_config.build().unwrap_or_default(),
+    ) {
+        Ok(v) => v,
+        Err(e) => {
+            note_swarm_event(&inner, format!("swarm-init-failed:gossipsub:{e}"));
+            return;
+        }
+    };
+
+    let mut swarm = match SwarmBuilder::with_existing_identity(local_key)
+        .with_tokio()
+        .with_tcp(
+            libp2p::tcp::Config::default(),
+            libp2p::noise::Config::new,
+            libp2p::yamux::Config::default,
+        ) {
+        Ok(builder) => match builder.with_behaviour(|_| PulseBehaviour { gossipsub: gossip }) {
+            Ok(builder) => builder.build(),
+            Err(e) => {
+                note_swarm_event(&inner, format!("swarm-init-failed:behaviour:{e}"));
+                return;
+            }
+        },
+        Err(e) => {
+            note_swarm_event(&inner, format!("swarm-init-failed:transport:{e}"));
+            return;
+        }
+    };
+
+    let listen_addr = match cfg.listen_addr.parse::<Multiaddr>() {
+        Ok(addr) => addr,
+        Err(e) => {
+            note_swarm_event(
+                &inner,
+                format!(
+                    "swarm-init-failed:invalid-listen-addr:{}:{e}",
+                    cfg.listen_addr
+                ),
+            );
+            return;
+        }
+    };
+    if let Err(e) = swarm.listen_on(listen_addr.clone()) {
+        note_swarm_event(&inner, format!("swarm-init-failed:listen:{e}"));
+        return;
+    }
+
+    for topic in &topics {
+        let _ = swarm.behaviour_mut().gossipsub.subscribe(topic);
+    }
+
+    note_swarm_event(&inner, "swarm-real-started");
+    note_swarm_event(&inner, format!("listen-attempt:{listen_addr}"));
+    for addr in parse_bootstrap(&cfg.bootstrap) {
+        if let Err(e) = swarm.dial(addr.clone()) {
+            note_swarm_event(&inner, format!("bootstrap-dial-failed:{addr}:{e}"));
+        } else {
+            note_swarm_event(&inner, format!("bootstrap-dialing:{addr}"));
+        }
+    }
+
+    loop {
+        tokio::select! {
+            Some(msg) = outbound_rx.recv() => {
+                if let Ok(mut guard) = inner.lock() {
+                    guard.queued_messages = guard.queued_messages.saturating_sub(1);
+                }
+
+                let (wire, topic_name, message_kind, message_id) = match msg {
+                    OutboundMessage::Transaction(tx) => {
+                        let topic_name = format!("{}-txs", cfg.chain_id);
+                        let wire = serde_json::to_vec(&NetworkMessage::NewTransaction {
+                            chain_id: cfg.chain_id.clone(),
+                            transaction: tx.clone(),
+                        });
+                        let message_id = message_id_for_tx(&tx);
+                        (wire, topic_name, "tx", message_id)
+                    }
+                    OutboundMessage::Block(block) => {
+                        let topic_name = format!("{}-blocks", cfg.chain_id);
+                        let wire = serde_json::to_vec(&NetworkMessage::NewBlock {
+                            chain_id: cfg.chain_id.clone(),
+                            block: block.clone(),
+                        });
+                        let message_id = message_id_for_block(&block);
+                        (wire, topic_name, "block", message_id)
+                    }
+                };
+
+                note_swarm_event(&inner, format!("publish-attempt:{topic_name}"));
+                record_publish(&inner, &topic_name, message_kind, &message_id);
+
+                if let Ok(bytes) = wire {
+                    let topic = gossipsub::IdentTopic::new(topic_name);
+                    if let Err(e) = swarm.behaviour_mut().gossipsub.publish(topic, bytes) {
+                        note_swarm_event(&inner, format!("publish-failed:{e}"));
+                    }
+                }
+            }
+            event = swarm.select_next_some() => {
+                match event {
+                    SwarmEvent::Behaviour(PulseBehaviourEvent::Gossipsub(gossipsub::Event::Message { message, .. })) => {
+                        dispatch_network_message(&cfg.chain_id, &message.data, &inner, &inbound_tx);
+                    }
+                    SwarmEvent::ConnectionEstablished { peer_id, .. } => {
+                        note_swarm_event(&inner, format!("peer-connected:{peer_id}"));
+                        register_peer_result(&inner, &peer_id.to_string(), true);
+                        let _ = inbound_tx.send(InboundEvent::PeerConnected(peer_id.to_string()));
+                    }
+                    SwarmEvent::ConnectionClosed { peer_id, .. } => {
+                        note_swarm_event(&inner, format!("peer-disconnected:{peer_id}"));
+                        register_peer_result(&inner, &peer_id.to_string(), false);
+                    }
+                    SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => {
+                        if let Some(peer_id) = peer_id {
+                            register_peer_result(&inner, &peer_id.to_string(), false);
+                        }
+                        note_swarm_event(&inner, format!("outgoing-connection-error:{error}"));
+                    }
+                    SwarmEvent::NewListenAddr { address, .. } => {
+                        note_swarm_event(&inner, format!("listening:{address}"));
+                        if let Ok(mut guard) = inner.lock() {
+                            if !guard.listening.iter().any(|item| item == &address.to_string()) {
+                                guard.listening.push(address.to_string());
+                            }
+                        }
+                    }
+                    other => {
+                        note_swarm_event(&inner, format!("swarm:{other:?}"));
+                    }
+                }
+            }
+            else => break,
+        }
+    }
+}
+
+async fn run_libp2p_skeleton_runtime(
+    cfg: Libp2pConfig,
+    local_peer_id: PeerId,
+    topics: Vec<gossipsub::IdentTopic>,
+    inner: Arc<Mutex<InnerState>>,
+    outbound_rx: mpsc::UnboundedReceiver<OutboundMessage>,
+    inbound_tx: mpsc::UnboundedSender<InboundEvent>,
+) {
+    run_libp2p_runtime(cfg, local_peer_id, topics, inner, outbound_rx, inbound_tx).await;
+}
+
 impl P2pHandle for Libp2pHandle {
     fn broadcast_transaction(&self, tx: &Transaction) -> Result<(), PulseError> {
         {
@@ -993,6 +1199,7 @@ mod tests {
             bootstrap: vec!["peer-bootstrap".into()],
             enable_mdns: false,
             enable_kademlia: false,
+            runtime: Libp2pRuntimeMode::DevLoopbackSkeleton,
         };
         let (handle, _rx) = Libp2pHandle::new(cfg).expect("libp2p handle should init");
         let status = handle.status().expect("status should work");
@@ -1079,5 +1286,25 @@ mod tests {
         assert_eq!(snapshot[0].peer_id, "peer-a");
         assert_eq!(snapshot[1].peer_id, "peer-b");
         assert_eq!(snapshot[0].recovery_success_count, 2);
+    }
+
+    #[tokio::test]
+    async fn real_runtime_mode_initializes_without_loopback_labeling() {
+        let cfg = Libp2pConfig {
+            chain_id: "testnet".into(),
+            listen_addr: "/ip4/127.0.0.1/tcp/0".into(),
+            bootstrap: vec![],
+            enable_mdns: false,
+            enable_kademlia: false,
+            runtime: Libp2pRuntimeMode::RealSwarm,
+        };
+
+        let (handle, _rx) = Libp2pHandle::new(cfg).expect("real swarm handle should init");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let status = handle.status().expect("status should be available");
+
+        assert_eq!(status.mode, P2P_MODE_LIBP2P_REAL);
+        assert!(mode_connected_peers_are_real_network(&status.mode));
+        assert_eq!(status.runtime_mode_detail, "swarm-poll-loop-real");
     }
 }

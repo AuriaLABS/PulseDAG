@@ -6,6 +6,7 @@ use pulsedag_p2p::mode_connected_peers_are_real_network;
 pub struct TopologyData {
     pub p2p_enabled: bool,
     pub mode: Option<String>,
+    pub runtime_mode_detail: Option<String>,
     pub connected_peers_are_real_network: bool,
     pub peer_count: usize,
     pub topic_count: usize,
@@ -24,6 +25,7 @@ pub async fn get_topology<S: RpcStateLike>(
                     &status.mode,
                 ),
                 mode: Some(status.mode),
+                runtime_mode_detail: Some(status.runtime_mode_detail),
                 peer_count: status.connected_peers.len(),
                 topic_count: status.topics.len(),
                 peers: status.connected_peers,
@@ -34,6 +36,7 @@ pub async fn get_topology<S: RpcStateLike>(
         None => Json(ApiResponse::ok(TopologyData {
             p2p_enabled: false,
             mode: None,
+            runtime_mode_detail: None,
             connected_peers_are_real_network: false,
             peer_count: 0,
             topic_count: 0,

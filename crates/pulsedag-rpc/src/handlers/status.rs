@@ -20,6 +20,7 @@ pub struct NodeStatusData {
     pub recommended_keep_from_height: u64,
     pub p2p_enabled: bool,
     pub p2p_mode: Option<String>,
+    pub p2p_runtime_mode_detail: Option<String>,
     pub connected_peers_are_real_network: bool,
     pub peer_count: usize,
     pub last_block_hash: Option<String>,
@@ -60,10 +61,15 @@ pub async fn get_status<S: RpcStateLike>(
         .saturating_sub(keep_recent.saturating_sub(1));
     let p2p_status = state.p2p().and_then(|p| p.status().ok()).map(|s| {
         let peers_are_real = mode_connected_peers_are_real_network(&s.mode);
-        (s.mode, peers_are_real, s.connected_peers.len())
+        (
+            s.mode,
+            s.runtime_mode_detail,
+            peers_are_real,
+            s.connected_peers.len(),
+        )
     });
-    let (p2p_mode, connected_peers_are_real_network, peer_count) =
-        p2p_status.unwrap_or((String::new(), false, 0));
+    let (p2p_mode, p2p_runtime_mode_detail, connected_peers_are_real_network, peer_count) =
+        p2p_status.unwrap_or((String::new(), String::new(), false, 0));
     let p2p_enabled = state.p2p().is_some();
     let last_block_hash = chain
         .dag
@@ -94,6 +100,11 @@ pub async fn get_status<S: RpcStateLike>(
         p2p_enabled,
         p2p_mode: if p2p_enabled && !p2p_mode.is_empty() {
             Some(p2p_mode)
+        } else {
+            None
+        },
+        p2p_runtime_mode_detail: if p2p_enabled && !p2p_runtime_mode_detail.is_empty() {
+            Some(p2p_runtime_mode_detail)
         } else {
             None
         },

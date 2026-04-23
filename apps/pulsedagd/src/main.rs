@@ -13,7 +13,9 @@ use axum::Router;
 use config::Config;
 use pulsedag_core::accept::{accept_block, accept_transaction, AcceptSource};
 use pulsedag_core::reconcile_mempool;
-use pulsedag_p2p::{build_p2p_stack, InboundEvent, Libp2pConfig, P2pHandle, P2pMode};
+use pulsedag_p2p::{
+    build_p2p_stack, InboundEvent, Libp2pConfig, Libp2pRuntimeMode, P2pHandle, P2pMode,
+};
 use pulsedag_rpc::routes::router;
 use pulsedag_storage::Storage;
 use tokio::net::TcpListener;
@@ -106,19 +108,36 @@ async fn main() -> Result<()> {
         Option<tokio::sync::mpsc::UnboundedReceiver<InboundEvent>>,
     ) = if cfg.p2p_enabled {
         let configured_mode = cfg.p2p_mode.clone();
-        let stack = if cfg.p2p_mode.as_str() == "libp2p" {
-            build_p2p_stack(P2pMode::Libp2p(Libp2pConfig {
+        let stack = match cfg.p2p_mode.as_str() {
+            "libp2p-real" => build_p2p_stack(P2pMode::Libp2p(Libp2pConfig {
                 chain_id: cfg.chain_id.clone(),
                 listen_addr: cfg.p2p_listen.clone(),
                 bootstrap: cfg.p2p_bootstrap.clone(),
                 enable_mdns: cfg.p2p_mdns,
                 enable_kademlia: cfg.p2p_kademlia,
-            }))?
-        } else {
-            build_p2p_stack(P2pMode::Memory {
+                runtime: Libp2pRuntimeMode::RealSwarm,
+            }))?,
+            "libp2p" | "libp2p-dev" | "libp2p-skeleton" => {
+                build_p2p_stack(P2pMode::Libp2p(Libp2pConfig {
+                    chain_id: cfg.chain_id.clone(),
+                    listen_addr: cfg.p2p_listen.clone(),
+                    bootstrap: cfg.p2p_bootstrap.clone(),
+                    enable_mdns: cfg.p2p_mdns,
+                    enable_kademlia: cfg.p2p_kademlia,
+                    runtime: Libp2pRuntimeMode::DevLoopbackSkeleton,
+                }))?
+            }
+            "memory" | "simulated" => build_p2p_stack(P2pMode::Memory {
                 chain_id: cfg.chain_id.clone(),
                 peers: cfg.simulated_peers.clone(),
-            })?
+            })?,
+            other => {
+                warn!(configured_mode = %other, "unknown P2P mode, using memory-simulated mode");
+                build_p2p_stack(P2pMode::Memory {
+                    chain_id: cfg.chain_id.clone(),
+                    peers: cfg.simulated_peers.clone(),
+                })?
+            }
         };
         if let Ok(status) = stack.handle.status() {
             info!(
