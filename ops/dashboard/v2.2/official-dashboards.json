@@ -1,0 +1,105 @@
+{
+  "version": "v2.2",
+  "published_at": "2026-04-23",
+  "owner": "AuriaLABS/PulseDAG",
+  "source_endpoints": [
+    "/runtime/status",
+    "/status",
+    "/sync/status",
+    "/p2p/status",
+    "/tx/mempool",
+    "/pow/health"
+  ],
+  "dashboards": [
+    {
+      "id": "runtime-and-release-health",
+      "title": "Runtime & Release Health",
+      "surfaces": ["node release/runtime health"],
+      "panels": [
+        {"title": "Node version", "endpoint": "/status", "field": "version"},
+        {"title": "Uptime seconds", "endpoint": "/runtime/status", "field": "uptime_secs"},
+        {"title": "Active alert count", "endpoint": "/runtime/status", "field": "active_alerts", "transform": "length"},
+        {"title": "Last self-audit OK", "endpoint": "/runtime/status", "field": "last_self_audit_ok"},
+        {"title": "Last self-audit issue count", "endpoint": "/runtime/status", "field": "last_self_audit_issue_count"},
+        {"title": "Startup recovery mode", "endpoint": "/runtime/status", "field": "startup_recovery_mode"}
+      ]
+    },
+    {
+      "id": "p2p-health-and-recovery",
+      "title": "P2P Health & Recovery",
+      "surfaces": ["p2p health/recovery", "relay behavior"],
+      "panels": [
+        {"title": "Peer health healthy", "endpoint": "/runtime/status", "field": "p2p_peer_health_healthy"},
+        {"title": "Peer health degraded", "endpoint": "/runtime/status", "field": "p2p_peer_health_degraded"},
+        {"title": "Peer health recovering", "endpoint": "/runtime/status", "field": "p2p_peer_health_recovering"},
+        {"title": "Reconnect attempts", "endpoint": "/runtime/status", "field": "p2p_peer_reconnect_attempts"},
+        {"title": "Recovery successes", "endpoint": "/runtime/status", "field": "p2p_peer_recovery_success_count"},
+        {"title": "Peers with recent failures", "endpoint": "/runtime/status", "field": "p2p_peers_with_recent_failures"},
+        {"title": "Queue max depth", "endpoint": "/runtime/status", "field": "p2p_queue_max_depth"},
+        {"title": "Relay duplicate ratio (bps)", "endpoint": "/runtime/status", "field": "p2p_tx_relay_duplicate_ratio_bps"},
+        {"title": "Inbound duplicates suppressed", "endpoint": "/runtime/status", "field": "p2p_inbound_duplicates_suppressed"}
+      ]
+    },
+    {
+      "id": "sync-and-lag",
+      "title": "Sync State & Lag",
+      "surfaces": ["sync state and lag"],
+      "panels": [
+        {"title": "Sync phase", "endpoint": "/runtime/status", "field": "sync_phase"},
+        {"title": "Sync completed cycles", "endpoint": "/runtime/status", "field": "sync_completed_cycles"},
+        {"title": "Sync restarts", "endpoint": "/runtime/status", "field": "sync_restart_count"},
+        {"title": "Sync fallback count", "endpoint": "/runtime/status", "field": "sync_fallback_count"},
+        {"title": "Sync timeout fallback count", "endpoint": "/runtime/status", "field": "sync_timeout_fallback_count"},
+        {"title": "Sync blocks requested", "endpoint": "/runtime/status", "field": "sync_counters.blocks_requested"},
+        {"title": "Sync blocks applied", "endpoint": "/runtime/status", "field": "sync_counters.blocks_applied"},
+        {"title": "Replay gap", "endpoint": "/sync/status", "field": "replay_gap"},
+        {"title": "Rebuild recommended", "endpoint": "/sync/status", "field": "rebuild_recommended"},
+        {"title": "Consistency issue count", "endpoint": "/sync/status", "field": "consistency_issue_count"}
+      ]
+    },
+    {
+      "id": "mempool-and-relay-pressure",
+      "title": "Mempool Pressure & Relay Behavior",
+      "surfaces": ["mempool pressure", "relay behavior"],
+      "panels": [
+        {"title": "Mempool transactions", "endpoint": "/runtime/status", "field": "mempool_transactions"},
+        {"title": "Mempool pressure (bps)", "endpoint": "/runtime/status", "field": "mempool_pressure_bps"},
+        {"title": "Mempool pressure events", "endpoint": "/runtime/status", "field": "mempool_pressure_events_total"},
+        {"title": "Mempool rejects", "endpoint": "/runtime/status", "field": "mempool_rejected_total"},
+        {"title": "Mempool low-priority rejects", "endpoint": "/runtime/status", "field": "mempool_rejected_low_priority_total"},
+        {"title": "Mempool evictions", "endpoint": "/runtime/status", "field": "mempool_evicted_total"},
+        {"title": "Reconcile removed tx", "endpoint": "/runtime/status", "field": "mempool_reconcile_removed_total"},
+        {"title": "Tx inbound dropped total", "endpoint": "/runtime/status", "field": "tx_inbound_dropped_total"},
+        {"title": "Last tx drop reason", "endpoint": "/runtime/status", "field": "last_tx_drop_reason"}
+      ]
+    },
+    {
+      "id": "storage-snapshot-prune-rebuild",
+      "title": "Snapshot / Prune / Rebuild Health",
+      "surfaces": ["snapshot/prune/rebuild health"],
+      "panels": [
+        {"title": "Startup snapshot exists", "endpoint": "/runtime/status", "field": "startup_snapshot_exists"},
+        {"title": "Last snapshot height", "endpoint": "/runtime/status", "field": "last_snapshot_height"},
+        {"title": "Last prune height", "endpoint": "/runtime/status", "field": "last_prune_height"},
+        {"title": "Startup consistency issues", "endpoint": "/runtime/status", "field": "startup_consistency_issue_count"},
+        {"title": "Auto prune enabled", "endpoint": "/runtime/status", "field": "auto_prune_enabled"},
+        {"title": "Prune keep recent blocks", "endpoint": "/runtime/status", "field": "prune_keep_recent_blocks"},
+        {"title": "Persisted block count", "endpoint": "/sync/status", "field": "persisted_block_count"},
+        {"title": "In-memory block count", "endpoint": "/sync/status", "field": "in_memory_block_count"}
+      ]
+    },
+    {
+      "id": "mining-flow-health",
+      "title": "Mining Flow Health",
+      "surfaces": ["mining flow health"],
+      "panels": [
+        {"title": "Accepted mined blocks", "endpoint": "/runtime/status", "field": "accepted_mined_blocks"},
+        {"title": "Rejected mined blocks", "endpoint": "/runtime/status", "field": "rejected_mined_blocks"},
+        {"title": "Suggested difficulty", "endpoint": "/runtime/status", "field": "suggested_difficulty"},
+        {"title": "Retarget multiplier (bps)", "endpoint": "/runtime/status", "field": "retarget_multiplier_bps"},
+        {"title": "Target interval (s)", "endpoint": "/runtime/status", "field": "target_block_interval_secs"},
+        {"title": "Last observed best height", "endpoint": "/runtime/status", "field": "last_observed_best_height"}
+      ]
+    }
+  ]
+}

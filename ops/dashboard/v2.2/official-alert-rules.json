@@ -1,0 +1,114 @@
+{
+  "version": "v2.2",
+  "published_at": "2026-04-23",
+  "alerts": [
+    {
+      "id": "runtime-self-audit-failing",
+      "severity": "critical",
+      "endpoint": "/runtime/status",
+      "field": "last_self_audit_ok",
+      "condition": "equals_false",
+      "for": "5m",
+      "runbook": "docs/runbooks/MAINTENANCE_SELF_CHECK.md"
+    },
+    {
+      "id": "active-runtime-alerts-present",
+      "severity": "warning",
+      "endpoint": "/runtime/status",
+      "field": "active_alerts",
+      "transform": "length",
+      "condition": "greater_than",
+      "threshold": 0,
+      "for": "10m",
+      "runbook": "docs/runbooks/RECOVERY_ORCHESTRATION.md"
+    },
+    {
+      "id": "p2p-peer-recovery-stall",
+      "severity": "warning",
+      "endpoint": "/runtime/status",
+      "field": "p2p_peers_with_recent_failures",
+      "condition": "greater_than",
+      "threshold": 0,
+      "for": "15m",
+      "runbook": "docs/runbooks/P2P_RECOVERY.md"
+    },
+    {
+      "id": "p2p-relay-duplicate-ratio-high",
+      "severity": "warning",
+      "endpoint": "/runtime/status",
+      "field": "p2p_tx_relay_duplicate_ratio_bps",
+      "condition": "greater_than",
+      "threshold": 7000,
+      "for": "10m",
+      "runbook": "docs/runbooks/P2P_RECOVERY.md"
+    },
+    {
+      "id": "sync-fallbacks-growing",
+      "severity": "warning",
+      "endpoint": "/runtime/status",
+      "field": "sync_timeout_fallback_count",
+      "condition": "rate_increase",
+      "threshold": 0,
+      "for": "15m",
+      "runbook": "docs/runbooks/RECOVERY_ORCHESTRATION.md"
+    },
+    {
+      "id": "sync-rebuild-recommended",
+      "severity": "warning",
+      "endpoint": "/sync/status",
+      "field": "rebuild_recommended",
+      "condition": "equals_true",
+      "for": "5m",
+      "runbook": "docs/runbooks/REBUILD_FROM_SNAPSHOT_AND_DELTA.md"
+    },
+    {
+      "id": "mempool-pressure-high",
+      "severity": "warning",
+      "endpoint": "/runtime/status",
+      "field": "mempool_pressure_bps",
+      "condition": "greater_than",
+      "threshold": 8500,
+      "for": "10m",
+      "runbook": "docs/runbooks/MAINTENANCE_SELF_CHECK.md"
+    },
+    {
+      "id": "mempool-reject-rate-rising",
+      "severity": "warning",
+      "endpoint": "/runtime/status",
+      "field": "mempool_rejected_total",
+      "condition": "rate_increase",
+      "threshold": 0,
+      "for": "10m",
+      "runbook": "docs/runbooks/MAINTENANCE_SELF_CHECK.md"
+    },
+    {
+      "id": "snapshot-missing-on-startup",
+      "severity": "warning",
+      "endpoint": "/runtime/status",
+      "field": "startup_snapshot_exists",
+      "condition": "equals_false",
+      "for": "5m",
+      "runbook": "docs/runbooks/SNAPSHOT_RESTORE.md"
+    },
+    {
+      "id": "consistency-issues-present",
+      "severity": "critical",
+      "endpoint": "/sync/status",
+      "field": "consistency_issue_count",
+      "condition": "greater_than",
+      "threshold": 0,
+      "for": "5m",
+      "runbook": "docs/runbooks/REBUILD_FROM_SNAPSHOT_AND_DELTA.md"
+    },
+    {
+      "id": "mining-rejections-increasing",
+      "severity": "warning",
+      "endpoint": "/runtime/status",
+      "field": "rejected_mined_blocks",
+      "condition": "rate_increase",
+      "threshold": 0,
+      "for": "10m",
+      "runbook": "docs/runbooks/MAINTENANCE_SELF_CHECK.md"
+    }
+  ]
+}
