@@ -92,11 +92,38 @@ impl Storage {
     }
 
     pub fn list_blocks(&self) -> Result<Vec<Block>, PulseError> {
-        let index_health = self.ensure_block_index()?;
-        if !index_health.used_full_scan {
+        let block_count = self.count_cf_entries("blocks")?;
+        if block_count == 0 {
+            return Ok(Vec::new());
+        }
+
+        let index_count = self.count_cf_entries("block_index")?;
+        if index_count != block_count {
+            self.ensure_block_index()?;
             return self.list_blocks_via_index();
         }
-        self.list_blocks_from_blocks_cf()
+
+        match self.list_blocks_via_index() {
+            Ok(blocks) if blocks.len() == block_count => Ok(blocks),
+            _ => {
+                self.ensure_block_index()?;
+                self.list_blocks_via_index()
+            }
+        }
+    }
+
+    fn count_cf_entries(&self, cf_name: &str) -> Result<usize, PulseError> {
+        let cf = self
+            .db
+            .cf_handle(cf_name)
+            .ok_or_else(|| PulseError::StorageError(format!("missing cf {cf_name}")))?;
+        let iter = self.db.iterator_cf(cf, rocksdb::IteratorMode::Start);
+        let mut count = 0usize;
+        for item in iter {
+            item.map_err(|e| PulseError::StorageError(e.to_string()))?;
+            count += 1;
+        }
+        Ok(count)
     }
 
     fn list_blocks_from_blocks_cf(&self) -> Result<Vec<Block>, PulseError> {
@@ -138,15 +165,18 @@ impl Storage {
             let (_, hash_bytes) = item.map_err(|e| PulseError::StorageError(e.to_string()))?;
             let hash = std::str::from_utf8(&hash_bytes)
                 .map_err(|e| PulseError::StorageError(e.to_string()))?;
-            if let Some(block_bytes) = self
+            let Some(block_bytes) = self
                 .db
                 .get_cf(blocks_cf, hash.as_bytes())
                 .map_err(|e| PulseError::StorageError(e.to_string()))?
-            {
-                let block: Block = serde_json::from_slice(&block_bytes)
-                    .map_err(|e| PulseError::StorageError(e.to_string()))?;
-                blocks.push(block);
-            }
+            else {
+                return Err(PulseError::StorageError(format!(
+                    "block index points to missing block {hash}"
+                )));
+            };
+            let block: Block = serde_json::from_slice(&block_bytes)
+                .map_err(|e| PulseError::StorageError(e.to_string()))?;
+            blocks.push(block);
         }
         Ok(blocks)
     }
