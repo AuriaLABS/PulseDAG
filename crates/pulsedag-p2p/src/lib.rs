@@ -506,12 +506,18 @@ fn sanitize_loaded_peer_book(
     peer_book
         .into_iter()
         .filter_map(|(peer, mut health)| {
-            let last_activity = health
-                .last_seen_unix
-                .or(health.last_successful_connect_unix)
-                .or(health.last_failure_unix)
-                .or(health.last_recovery_unix)
-                .unwrap_or(0);
+            let last_activity = [
+                health.last_seen_unix,
+                health.last_successful_connect_unix,
+                health.last_failure_unix,
+                health.last_recovery_unix,
+            ]
+            .into_iter()
+            .flatten()
+            .chain(health.recent_failures_unix.iter().copied())
+            .filter(|timestamp| *timestamp <= now)
+            .max()
+            .unwrap_or(0);
             if last_activity > 0 && last_activity < stale_before {
                 return None;
             }
@@ -1351,6 +1357,27 @@ mod tests {
         assert!(!loaded.contains_key("peer-stale"));
         let fresh_peer = loaded.get("peer-fresh").expect("fresh peer should survive");
         assert!(!fresh_peer.connected);
+    }
+
+    #[test]
+    fn staleness_uses_newest_non_future_activity() {
+        let now = now_unix();
+        let stale = now
+            .saturating_sub(PEER_RECORD_MAX_AGE_SECS)
+            .saturating_sub(100);
+        let recent = now.saturating_sub(30);
+        let loaded = sanitize_loaded_peer_book(
+            HashMap::from([(
+                "peer-recovered".to_string(),
+                PeerHealth {
+                    last_failure_unix: Some(stale),
+                    last_recovery_unix: Some(recent),
+                    ..PeerHealth::default()
+                },
+            )]),
+            now,
+        );
+        assert!(loaded.contains_key("peer-recovered"));
     }
 
     #[test]
