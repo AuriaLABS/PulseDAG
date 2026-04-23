@@ -78,6 +78,7 @@ pub fn new_runtime_stats() -> NodeRuntimeStats {
         last_snapshot_unix: None,
         last_prune_height: None,
         last_prune_unix: None,
+        sync_pipeline: pulsedag_core::SyncPipelineStatus::default(),
     }
 }
 

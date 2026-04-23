@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use pulsedag_core::state::ChainState;
+use pulsedag_core::SyncPipelineStatus;
 use pulsedag_p2p::P2pHandle;
 use pulsedag_storage::Storage;
 use serde::{Deserialize, Serialize};
@@ -144,6 +145,7 @@ pub struct NodeRuntimeStats {
     pub last_snapshot_unix: Option<u64>,
     pub last_prune_height: Option<u64>,
     pub last_prune_unix: Option<u64>,
+    pub sync_pipeline: SyncPipelineStatus,
 }
 
 pub trait RpcStateLike: Clone + Send + Sync + 'static {
