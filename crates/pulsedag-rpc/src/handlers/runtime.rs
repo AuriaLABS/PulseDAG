@@ -84,6 +84,9 @@ pub struct RuntimeStatusData {
     pub external_mining_rejected_submit_block_error: u64,
     pub external_mining_rejected_storage_error: u64,
     pub external_mining_last_template_id: Option<String>,
+    pub external_mining_last_rejection_kind: Option<String>,
+    pub external_mining_last_rejection_reason: Option<String>,
+    pub external_mining_last_invalid_pow_reason: Option<String>,
     pub startup_snapshot_exists: bool,
     pub startup_persisted_block_count: usize,
     pub startup_persisted_max_height: u64,
@@ -372,6 +375,13 @@ pub async fn get_runtime_status<S: RpcStateLike>(
             .external_mining_rejected_submit_block_error,
         external_mining_rejected_storage_error: runtime.external_mining_rejected_storage_error,
         external_mining_last_template_id: runtime.external_mining_last_template_id.clone(),
+        external_mining_last_rejection_kind: runtime.external_mining_last_rejection_kind.clone(),
+        external_mining_last_rejection_reason: runtime
+            .external_mining_last_rejection_reason
+            .clone(),
+        external_mining_last_invalid_pow_reason: runtime
+            .external_mining_last_invalid_pow_reason
+            .clone(),
         startup_snapshot_exists: runtime.startup_snapshot_exists,
         startup_persisted_block_count: runtime.startup_persisted_block_count,
         startup_persisted_max_height: runtime.startup_persisted_max_height,
@@ -783,6 +793,69 @@ mod tests {
         assert_eq!(data.mempool_orphan_pruned_total, 1);
         assert_eq!(data.p2p_tx_relay_total_events, 12);
         assert_eq!(data.p2p_tx_relay_duplicate_ratio_bps, 2_500);
+    }
+
+    #[tokio::test]
+    async fn runtime_status_surfaces_external_mining_diagnostics_without_regression() {
+        let path = temp_db_path("runtime-mining-diagnostics");
+        let storage = Arc::new(Storage::open(path.to_str().expect("utf8 temp path")).unwrap());
+        let chain = storage
+            .load_or_init_genesis("testnet-dev".to_string())
+            .unwrap();
+        let mut runtime = NodeRuntimeStats::default();
+        runtime.accepted_mined_blocks = 4;
+        runtime.rejected_mined_blocks = 3;
+        runtime.external_mining_templates_emitted = 7;
+        runtime.external_mining_templates_invalidated = 2;
+        runtime.external_mining_stale_work_detected = 5;
+        runtime.external_mining_submit_accepted = 4;
+        runtime.external_mining_submit_rejected = 3;
+        runtime.external_mining_rejected_invalid_pow = 2;
+        runtime.external_mining_rejected_stale_template = 1;
+        runtime.external_mining_rejected_unknown_template = 0;
+        runtime.external_mining_rejected_submit_block_error = 0;
+        runtime.external_mining_rejected_storage_error = 0;
+        runtime.external_mining_last_template_id = Some("tpl-007".to_string());
+        runtime.external_mining_last_rejection_kind = Some("invalid_pow".to_string());
+        runtime.external_mining_last_rejection_reason =
+            Some("submitted block does not satisfy randomx policy".to_string());
+        runtime.external_mining_last_invalid_pow_reason = Some("score=9999 target=100".to_string());
+
+        let state = TestState {
+            chain: Arc::new(RwLock::new(chain)),
+            storage,
+            runtime: Arc::new(RwLock::new(runtime)),
+            p2p: None,
+        };
+
+        let Json(resp) = get_runtime_status(State(state)).await;
+        assert!(resp.ok);
+        let data = resp.data.expect("runtime status data");
+        assert_eq!(data.accepted_mined_blocks, 4);
+        assert_eq!(data.rejected_mined_blocks, 3);
+        assert_eq!(data.external_mining_templates_emitted, 7);
+        assert_eq!(data.external_mining_templates_invalidated, 2);
+        assert_eq!(data.external_mining_stale_work_detected, 5);
+        assert_eq!(data.external_mining_submit_accepted, 4);
+        assert_eq!(data.external_mining_submit_rejected, 3);
+        assert_eq!(data.external_mining_rejected_invalid_pow, 2);
+        assert_eq!(data.external_mining_rejected_stale_template, 1);
+        assert_eq!(
+            data.external_mining_last_template_id.as_deref(),
+            Some("tpl-007")
+        );
+        assert_eq!(
+            data.external_mining_last_rejection_kind.as_deref(),
+            Some("invalid_pow")
+        );
+        assert!(data
+            .external_mining_last_rejection_reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("randomx")));
+        assert!(data
+            .external_mining_last_invalid_pow_reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("score=9999")));
     }
 }
 
