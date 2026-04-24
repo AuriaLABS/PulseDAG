@@ -106,7 +106,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
+        working-directory: ${{ github.workspace }}
         shell: bash
         run: |
-          gh release create "${{ env.RELEASE_TAG }}" final/* --generate-notes --repo "${GH_REPO}" || \
-          gh release upload "${{ env.RELEASE_TAG }}" final/* --clobber --repo "${GH_REPO}"
+          if gh release view "${{ env.RELEASE_TAG }}" --repo "${GH_REPO}" >/dev/null 2>&1; then
+            gh release upload "${{ env.RELEASE_TAG }}" final/* --clobber --repo "${GH_REPO}"
+          else
+            gh release create "${{ env.RELEASE_TAG }}" final/* --generate-notes --repo "${GH_REPO}"
+          fi
