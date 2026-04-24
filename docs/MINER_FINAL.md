@@ -2,6 +2,8 @@
 
 Estado: **cerrado**
 
+Especificación canónica congelada: `docs/POW_SPEC_FINAL.md`.
+
 ## Contrato funcional
 
 El miner es una aplicación externa separada del nodo.
@@ -31,3 +33,8 @@ El miner es una aplicación externa separada del nodo.
 ## Decisión de arquitectura
 
 Toda la lógica de pool, si existe, vive en el nodo o en servicios del lado servidor.
+
+## Algoritmo PoW (testnet pública)
+
+- El identificador activo se mantiene como `kHeavyHash`.
+- Para esta testnet, su definición exacta está congelada en `docs/POW_SPEC_FINAL.md`.

@@ -30,6 +30,9 @@ fn read_env_bool(name: &str, default: bool) -> bool {
 
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub enum PowAlgorithm {
+    /// Canonical public-testnet PoW identifier.
+    ///
+    /// NOTE: the name remains `KHeavyHash` for network compatibility.
     KHeavyHash,
 }
 
@@ -54,6 +57,9 @@ pub struct DevDifficultySnapshot {
     pub policy: DevDifficultyPolicy,
 }
 
+/// One-byte discriminant to version the serialized PoW preimage format.
+pub const POW_HEADER_PREIMAGE_VERSION: u8 = 1;
+
 pub fn selected_pow_algorithm() -> PowAlgorithm {
     PowAlgorithm::KHeavyHash
 }
@@ -64,9 +70,52 @@ pub fn selected_pow_name() -> &'static str {
     }
 }
 
+fn encode_len_prefixed_utf8(out: &mut Vec<u8>, value: &str) {
+    let len = value.len() as u16;
+    out.extend_from_slice(&len.to_le_bytes());
+    out.extend_from_slice(value.as_bytes());
+}
+
+/// Canonical PoW header preimage bytes used by both nodes and external miners.
+///
+/// Field order and encoding are frozen for public testnet:
+/// 1) preimage version (`u8`)
+/// 2) header.version (`u32`, little-endian)
+/// 3) parent count (`u16`, little-endian)
+/// 4) each parent hash string as (`u16` byte length LE + UTF-8 bytes)
+/// 5) header.timestamp (`u64`, little-endian)
+/// 6) header.difficulty (`u32`, little-endian)
+/// 7) header.nonce (`u64`, little-endian)
+/// 8) header.merkle_root (`u16` length LE + UTF-8 bytes)
+/// 9) header.state_root (`u16` length LE + UTF-8 bytes)
+/// 10) header.blue_score (`u64`, little-endian)
+/// 11) header.height (`u64`, little-endian)
+pub fn pow_preimage_bytes(header: &BlockHeader) -> Vec<u8> {
+    let mut out = Vec::with_capacity(256);
+    out.push(POW_HEADER_PREIMAGE_VERSION);
+    out.extend_from_slice(&header.version.to_le_bytes());
+
+    let parent_count = header.parents.len() as u16;
+    out.extend_from_slice(&parent_count.to_le_bytes());
+    for parent in &header.parents {
+        encode_len_prefixed_utf8(&mut out, parent);
+    }
+
+    out.extend_from_slice(&header.timestamp.to_le_bytes());
+    out.extend_from_slice(&header.difficulty.to_le_bytes());
+    out.extend_from_slice(&header.nonce.to_le_bytes());
+    encode_len_prefixed_utf8(&mut out, &header.merkle_root);
+    encode_len_prefixed_utf8(&mut out, &header.state_root);
+    out.extend_from_slice(&header.blue_score.to_le_bytes());
+    out.extend_from_slice(&header.height.to_le_bytes());
+    out
+}
+
+/// Debug-oriented helper string that mirrors canonical field order.
 pub fn pow_preimage_string(header: &BlockHeader) -> String {
     format!(
-        "v={}|parents={}|ts={}|difficulty={}|nonce={}|merkle={}|state={}|blue={}|height={}",
+        "pv={}|v={}|parents={}|ts={}|difficulty={}|nonce={}|merkle={}|state={}|blue={}|height={}",
+        POW_HEADER_PREIMAGE_VERSION,
         header.version,
         header.parents.join(","),
         header.timestamp,
@@ -80,8 +129,8 @@ pub fn pow_preimage_string(header: &BlockHeader) -> String {
 }
 
 pub fn dev_surrogate_pow_hash(header: &BlockHeader) -> String {
-    let preimage = pow_preimage_string(header);
-    blake3::hash(preimage.as_bytes()).to_hex().to_string()
+    let preimage = pow_preimage_bytes(header);
+    blake3::hash(&preimage).to_hex().to_string()
 }
 
 pub fn dev_target_u64(difficulty: u64) -> u64 {
@@ -90,9 +139,10 @@ pub fn dev_target_u64(difficulty: u64) -> u64 {
 }
 
 pub fn dev_hash_score_u64(header: &BlockHeader) -> u64 {
-    let hash = dev_surrogate_pow_hash(header);
-    let prefix = &hash[..16.min(hash.len())];
-    u64::from_str_radix(prefix, 16).unwrap_or(u64::MAX)
+    let hash_bytes = blake3::hash(&pow_preimage_bytes(header));
+    let mut prefix = [0u8; 8];
+    prefix.copy_from_slice(&hash_bytes.as_bytes()[..8]);
+    u64::from_be_bytes(prefix)
 }
 
 pub fn dev_pow_accepts(header: &BlockHeader) -> bool {
@@ -286,4 +336,55 @@ pub fn dev_difficulty_snapshot(state: &ChainState) -> DevDifficultySnapshot {
 
 pub fn dev_recommended_difficulty_for_chain(state: &ChainState) -> u64 {
     dev_difficulty_snapshot(state).suggested_difficulty
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_header() -> BlockHeader {
+        BlockHeader {
+            version: 1,
+            parents: vec!["aa".to_string(), "bb".to_string()],
+            timestamp: 1_700_000_000,
+            difficulty: 4,
+            nonce: 42,
+            merkle_root: "merkle-10".to_string(),
+            state_root: "state-10".to_string(),
+            blue_score: 10,
+            height: 10,
+        }
+    }
+
+    #[test]
+    fn preimage_is_stable_and_nonce_sensitive() {
+        let mut h1 = sample_header();
+        let mut h2 = sample_header();
+        h2.nonce = h1.nonce + 1;
+
+        let p1 = pow_preimage_bytes(&h1);
+        let p2 = pow_preimage_bytes(&h2);
+        assert_ne!(p1, p2, "nonce must change preimage");
+
+        h1.nonce = h2.nonce;
+        assert_eq!(pow_preimage_bytes(&h1), p2, "same header => same preimage");
+    }
+
+    #[test]
+    fn hash_score_uses_big_endian_prefix() {
+        let h = sample_header();
+        let hash = blake3::hash(&pow_preimage_bytes(&h));
+        let mut bytes = [0u8; 8];
+        bytes.copy_from_slice(&hash.as_bytes()[..8]);
+        let expected = u64::from_be_bytes(bytes);
+        assert_eq!(dev_hash_score_u64(&h), expected);
+    }
+
+    #[test]
+    fn acceptance_rule_matches_target_rule() {
+        let h = sample_header();
+        let target = dev_target_u64(h.difficulty as u64);
+        let score = dev_hash_score_u64(&h);
+        assert_eq!(dev_pow_accepts(&h), score <= target);
+    }
 }

@@ -45,14 +45,23 @@ pub struct Utxo {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BlockHeader {
+    /// Encoded as little-endian `u32` in the canonical PoW preimage.
     pub version: u32,
+    /// Ordered list; serialized in-list-order with length-prefixed UTF-8 strings.
     pub parents: Vec<Hash>,
+    /// Unix timestamp seconds, little-endian `u64`.
     pub timestamp: u64,
+    /// Difficulty scalar, little-endian `u32`.
     pub difficulty: u32,
+    /// Miner-controlled nonce, little-endian `u64`.
     pub nonce: u64,
+    /// Length-prefixed UTF-8 in canonical PoW preimage.
     pub merkle_root: Hash,
+    /// Length-prefixed UTF-8 in canonical PoW preimage.
     pub state_root: Hash,
+    /// little-endian `u64`.
     pub blue_score: u64,
+    /// little-endian `u64`.
     pub height: u64,
 }
 

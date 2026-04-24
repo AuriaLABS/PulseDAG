@@ -36,9 +36,9 @@ pub use pow::{
     dev_difficulty_window, dev_hash_score_u64, dev_max_future_drift_secs, dev_mine_header,
     dev_pow_accepts, dev_recent_avg_block_interval_secs, dev_recent_block_interval_secs_with_mode,
     dev_recommended_difficulty, dev_recommended_difficulty_for_chain, dev_retarget_multiplier_bps,
-    dev_surrogate_pow_hash, dev_target_block_interval_secs, dev_target_u64, pow_preimage_string,
-    selected_pow_algorithm, selected_pow_name, DevDifficultyPolicy, DevDifficultySnapshot,
-    PowAlgorithm,
+    dev_surrogate_pow_hash, dev_target_block_interval_secs, dev_target_u64, pow_preimage_bytes,
+    pow_preimage_string, selected_pow_algorithm, selected_pow_name, DevDifficultyPolicy,
+    DevDifficultySnapshot, PowAlgorithm, POW_HEADER_PREIMAGE_VERSION,
 };
 
 pub use mempool::{reconcile_mempool, MempoolReconcileResult};
