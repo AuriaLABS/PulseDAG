@@ -1,6 +1,6 @@
-# v2.2 14-day burn-in execution guide
+# v2.2.2 14-day burn-in execution guide
 
-This document defines the **real** v2.2 release burn-in process for PulseDAG operator readiness.
+This document defines the practical v2.2.2 release burn-in process for PulseDAG operator readiness.
 
 ## Non-negotiable guardrails
 - Do **not** change consensus during the 14-day run.
@@ -59,8 +59,17 @@ Every day of the 14-day run must be represented in evidence under these categori
 
 Use `docs/RELEASE_EVIDENCE.md` for the artifact structure and release acceptance checklist.
 
+
+## Daily operator checklist (10-minute pass)
+For each UTC day, confirm and record:
+- Node health and alerts reviewed; incidents triaged or linked to tickets.
+- Snapshot/pruning jobs completed or explicitly deferred with reason.
+- At least one runtime/event-stream sample captured for the day.
+- Mining telemetry trend reviewed (accept/reject + stale/invalid signals).
+- Any restart/recovery activity logged with startup mode and elapsed recovery time.
+
 ## Pass/fail criteria for release managers
-A v2.2 burn-in is complete only when all of the following are true:
+A v2.2.2 burn-in is complete only when all of the following are true:
 - 14 full days completed with no unresolved Sev-1 incident tied to consensus/sync safety.
 - Evidence bundle is complete for all required categories and days.
 - Restart + recovery notes include clear outcomes and follow-up actions.
@@ -76,7 +85,7 @@ A v2.2 burn-in is complete only when all of the following are true:
 - Alert guide: `docs/dashboard/ALERTS.md`
 
 ## Release closeout gate (post day-14)
-After day 14 completes, run the final closeout checklist in `docs/V2_2_CLOSEOUT_CHECKLIST.md` to verify:
+After day 14 completes, run the final closeout checklist in `docs/checklists/V2_2_2_BURNIN_CLOSEOUT.md` to verify:
 - recovery evidence completeness,
 - startup path visibility capture (fast-boot/replay/fallback),
 - mining telemetry verification coverage,
