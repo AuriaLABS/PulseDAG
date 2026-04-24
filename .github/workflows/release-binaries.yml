@@ -73,7 +73,7 @@ jobs:
           chmod +x "dist/${{ matrix.output_name }}"
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           name: ${{ matrix.name }}
           path: dist/${{ matrix.output_name }}
@@ -91,16 +91,34 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Download artifacts
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v6
         with:
           path: artifacts
 
       - name: Flatten files
         shell: bash
         run: |
+          set -euo pipefail
           mkdir -p final
-          find artifacts -type f -exec cp {} final/ \;
+          find artifacts -type f -exec cp "{}" final/ \;
           ls -lah final
+
+      - name: Validate release files
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=(final/*)
+
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "::error::No release artifacts were downloaded. Expected files in ./final."
+            exit 1
+          fi
+
+          echo "Release artifacts found:"
+          for file in "${files[@]}"; do
+            printf ' - %s\n' "$(basename "$file")"
+          done
 
       - name: Publish to GitHub Release
         env:
@@ -109,8 +127,29 @@ jobs:
         working-directory: ${{ github.workspace }}
         shell: bash
         run: |
-          if gh release view "${{ env.RELEASE_TAG }}" --repo "${GH_REPO}" >/dev/null 2>&1; then
-            gh release upload "${{ env.RELEASE_TAG }}" final/* --clobber --repo "${GH_REPO}"
-          else
-            gh release create "${{ env.RELEASE_TAG }}" final/* --generate-notes --repo "${GH_REPO}"
+          set -euo pipefail
+          shopt -s nullglob
+          files=(final/*)
+
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "::error::No files available to publish from ./final."
+            exit 1
           fi
+
+          tag="${{ env.RELEASE_TAG }}"
+
+          if gh release view "${tag}" --repo "${GH_REPO}" >/dev/null 2>&1; then
+            echo "Release ${tag} already exists. Uploading assets with --clobber."
+          else
+            echo "Creating release ${tag}."
+            if ! gh release create "${tag}" --generate-notes --repo "${GH_REPO}"; then
+              if gh release view "${tag}" --repo "${GH_REPO}" >/dev/null 2>&1; then
+                echo "Release ${tag} was created concurrently. Continuing with upload."
+              else
+                echo "::error::Failed to create release ${tag}."
+                exit 1
+              fi
+            fi
+          fi
+
+          gh release upload "${tag}" "${files[@]}" --clobber --repo "${GH_REPO}"
