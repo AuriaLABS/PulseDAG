@@ -60,11 +60,23 @@ async fn record_external_mining_rejection<S: RpcStateLike>(
     let mut runtime = runtime_handle.write().await;
     runtime.external_mining_submit_rejected =
         runtime.external_mining_submit_rejected.saturating_add(1);
+    runtime.external_mining_last_rejection_kind = Some(
+        match kind {
+            ExternalMiningRejectKind::InvalidPow => "invalid_pow",
+            ExternalMiningRejectKind::StaleTemplate => "stale_template",
+            ExternalMiningRejectKind::UnknownTemplate => "unknown_template",
+            ExternalMiningRejectKind::SubmitBlockError => "submit_block_error",
+            ExternalMiningRejectKind::StorageError => "storage_error",
+        }
+        .to_string(),
+    );
+    runtime.external_mining_last_rejection_reason = Some(message.to_string());
     match kind {
         ExternalMiningRejectKind::InvalidPow => {
             runtime.external_mining_rejected_invalid_pow = runtime
                 .external_mining_rejected_invalid_pow
                 .saturating_add(1);
+            runtime.external_mining_last_invalid_pow_reason = Some(message.to_string());
         }
         ExternalMiningRejectKind::StaleTemplate => {
             runtime.external_mining_rejected_stale_template = runtime
@@ -628,6 +640,8 @@ mod tests {
         assert!(response.ok);
         assert_eq!(fake_p2p.block_calls(), 1);
         let runtime = state.runtime.read().await;
+        assert_eq!(runtime.accepted_mined_blocks, 1);
+        assert_eq!(runtime.rejected_mined_blocks, 0);
         assert_eq!(runtime.external_mining_submit_accepted, 1);
         assert_eq!(runtime.external_mining_submit_rejected, 0);
         drop(runtime);
@@ -686,6 +700,8 @@ mod tests {
         assert!(!second_response.ok);
         assert_eq!(fake_p2p.block_calls(), 1);
         let runtime = state.runtime.read().await;
+        assert_eq!(runtime.accepted_mined_blocks, 1);
+        assert_eq!(runtime.rejected_mined_blocks, 1);
         assert_eq!(runtime.external_mining_submit_accepted, 1);
         assert_eq!(runtime.external_mining_submit_rejected, 1);
         assert_eq!(runtime.external_mining_rejected_stale_template, 1);
@@ -730,6 +746,7 @@ mod tests {
         assert_eq!(err.code, "STALE_TEMPLATE");
         assert!(err.message.contains("mempool view changed"));
         let runtime = state.runtime.read().await;
+        assert_eq!(runtime.rejected_mined_blocks, 1);
         assert_eq!(runtime.external_mining_submit_rejected, 1);
         assert_eq!(runtime.external_mining_stale_work_detected, 1);
     }
@@ -782,7 +799,16 @@ mod tests {
         assert!(err.message.contains("score="));
         assert!(err.message.contains("target="));
         let runtime = state.runtime.read().await;
+        assert_eq!(runtime.rejected_mined_blocks, 1);
         assert_eq!(runtime.external_mining_rejected_invalid_pow, 1);
+        assert_eq!(
+            runtime.external_mining_last_rejection_kind.as_deref(),
+            Some("invalid_pow")
+        );
+        assert!(runtime
+            .external_mining_last_invalid_pow_reason
+            .as_deref()
+            .is_some_and(|msg| msg.contains("score=")));
     }
 
     #[tokio::test]
@@ -801,6 +827,8 @@ mod tests {
         assert!(submit_response.ok);
         let runtime = state.runtime.read().await;
         assert_eq!(runtime.external_mining_templates_emitted, 1);
+        assert_eq!(runtime.accepted_mined_blocks, 1);
+        assert_eq!(runtime.rejected_mined_blocks, 0);
         assert_eq!(runtime.external_mining_submit_accepted, 1);
         assert_eq!(runtime.external_mining_submit_rejected, 0);
     }
