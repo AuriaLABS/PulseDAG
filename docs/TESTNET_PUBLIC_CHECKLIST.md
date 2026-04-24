@@ -1,6 +1,10 @@
 # Testnet public checklist
 
 ## Mandatory
+- [ ] final PoW dry-run completed via `docs/runbooks/FINAL_POW_PUBLIC_TESTNET_DRY_RUN.md`
+- [ ] dry-run topology executed (>=5 nodes, >=4 external miners, no pool logic)
+- [ ] restart, churn, and recovery checks passed in dry-run evidence
+- [ ] explicit dry-run go/no-go record (`artifacts/release-evidence/<run_id>/dry-run/go-no-go.md`)
 - [ ] `cargo build` clean enough for release
 - [ ] node starts with documented env only
 - [ ] 3 nodes connect and sync
