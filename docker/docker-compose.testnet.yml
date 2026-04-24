@@ -35,3 +35,25 @@ services:
       - "9003:9003"
     volumes:
       - ../data/node-c:/app/data/node-c
+
+  miner-a:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.miner
+    env_file:
+      - ../config/miner/miner-a.env
+    environment:
+      NODE_URL: http://node-a:8080
+    depends_on:
+      - node-a
+
+  miner-b:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.miner
+    env_file:
+      - ../config/miner/miner-b.env
+    environment:
+      NODE_URL: http://node-b:8081
+    depends_on:
+      - node-b

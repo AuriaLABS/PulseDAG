@@ -1,6 +1,6 @@
 [package]
 name = "pulsedag-crypto"
-version = "2.2.0"
+version.workspace = true
 edition = "2021"
 
 [dependencies]

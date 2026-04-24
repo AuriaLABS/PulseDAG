@@ -1,4 +1,4 @@
-# PulseDAG v2.2.0-ops-readiness
+# PulseDAG v2.2.1-ops-readiness
 
 Consolidated v2.2 operator-readiness package for operational recovery, rebuild, restore, and maintenance workflows.
 
