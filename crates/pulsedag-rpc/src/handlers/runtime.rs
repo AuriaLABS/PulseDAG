@@ -87,6 +87,15 @@ pub struct RuntimeStatusData {
     pub external_mining_last_rejection_kind: Option<String>,
     pub external_mining_last_rejection_reason: Option<String>,
     pub external_mining_last_invalid_pow_reason: Option<String>,
+    pub external_mining_submit_total: u64,
+    pub external_mining_submit_outcome_total: u64,
+    pub external_mining_submit_outcome_counters_coherent: bool,
+    pub external_mining_submit_outcome_counter_delta: i64,
+    pub external_mining_rejection_reason_total: u64,
+    pub external_mining_rejection_counters_coherent: bool,
+    pub external_mining_rejection_counter_delta: i64,
+    pub external_mining_stale_work_submit_rejections: u64,
+    pub external_mining_stale_work_template_invalidations: u64,
     pub startup_snapshot_exists: bool,
     pub startup_persisted_block_count: usize,
     pub startup_persisted_max_height: u64,
@@ -298,6 +307,30 @@ pub async fn get_runtime_status<S: RpcStateLike>(
             }
         })
         .unwrap_or_default();
+    let external_mining_submit_total = runtime
+        .external_mining_submit_accepted
+        .saturating_add(runtime.external_mining_submit_rejected);
+    let external_mining_submit_outcome_total = runtime
+        .accepted_mined_blocks
+        .saturating_add(runtime.rejected_mined_blocks);
+    let external_mining_submit_outcome_counter_delta = i64::try_from(external_mining_submit_total)
+        .unwrap_or(i64::MAX)
+        - i64::try_from(external_mining_submit_outcome_total).unwrap_or(i64::MAX);
+    let external_mining_rejection_reason_total = runtime
+        .external_mining_rejected_invalid_pow
+        .saturating_add(runtime.external_mining_rejected_stale_template)
+        .saturating_add(runtime.external_mining_rejected_unknown_template)
+        .saturating_add(runtime.external_mining_rejected_submit_block_error)
+        .saturating_add(runtime.external_mining_rejected_storage_error);
+    let external_mining_rejection_counter_delta =
+        i64::try_from(runtime.external_mining_submit_rejected).unwrap_or(i64::MAX)
+            - i64::try_from(external_mining_rejection_reason_total).unwrap_or(i64::MAX);
+    let external_mining_stale_work_submit_rejections =
+        runtime.external_mining_rejected_stale_template;
+    let external_mining_stale_work_template_invalidations = runtime
+        .external_mining_stale_work_detected
+        .saturating_sub(external_mining_stale_work_submit_rejections);
+
     let p2p_tx_relay_total_events = p2p_recovery
         .tx_outbound_duplicates_suppressed
         .saturating_add(p2p_recovery.tx_outbound_first_seen_relayed);
@@ -384,6 +417,16 @@ pub async fn get_runtime_status<S: RpcStateLike>(
         external_mining_last_invalid_pow_reason: runtime
             .external_mining_last_invalid_pow_reason
             .clone(),
+        external_mining_submit_total,
+        external_mining_submit_outcome_total,
+        external_mining_submit_outcome_counters_coherent:
+            external_mining_submit_outcome_counter_delta == 0,
+        external_mining_submit_outcome_counter_delta,
+        external_mining_rejection_reason_total,
+        external_mining_rejection_counters_coherent: external_mining_rejection_counter_delta == 0,
+        external_mining_rejection_counter_delta,
+        external_mining_stale_work_submit_rejections,
+        external_mining_stale_work_template_invalidations,
         startup_snapshot_exists: runtime.startup_snapshot_exists,
         startup_persisted_block_count: runtime.startup_persisted_block_count,
         startup_persisted_max_height: runtime.startup_persisted_max_height,
@@ -842,8 +885,17 @@ mod tests {
         assert_eq!(data.external_mining_stale_work_detected, 5);
         assert_eq!(data.external_mining_submit_accepted, 4);
         assert_eq!(data.external_mining_submit_rejected, 3);
+        assert_eq!(data.external_mining_submit_total, 7);
+        assert_eq!(data.external_mining_submit_outcome_total, 7);
+        assert!(data.external_mining_submit_outcome_counters_coherent);
+        assert_eq!(data.external_mining_submit_outcome_counter_delta, 0);
         assert_eq!(data.external_mining_rejected_invalid_pow, 2);
         assert_eq!(data.external_mining_rejected_stale_template, 1);
+        assert_eq!(data.external_mining_rejection_reason_total, 3);
+        assert!(data.external_mining_rejection_counters_coherent);
+        assert_eq!(data.external_mining_rejection_counter_delta, 0);
+        assert_eq!(data.external_mining_stale_work_submit_rejections, 1);
+        assert_eq!(data.external_mining_stale_work_template_invalidations, 4);
         assert_eq!(
             data.external_mining_last_template_id.as_deref(),
             Some("tpl-007")
@@ -860,6 +912,43 @@ mod tests {
             .external_mining_last_invalid_pow_reason
             .as_deref()
             .is_some_and(|reason| reason.contains("score=9999")));
+    }
+
+    #[tokio::test]
+    async fn runtime_status_flags_external_mining_counter_incoherence() {
+        let path = temp_db_path("runtime-mining-counter-incoherence");
+        let storage = Arc::new(Storage::open(path.to_str().unwrap()).expect("storage"));
+        let chain = storage
+            .load_or_init_genesis("testnet-dev".to_string())
+            .expect("genesis");
+
+        let mut runtime = NodeRuntimeStats::default();
+        runtime.accepted_mined_blocks = 5;
+        runtime.rejected_mined_blocks = 2;
+        runtime.external_mining_submit_accepted = 4;
+        runtime.external_mining_submit_rejected = 1;
+        runtime.external_mining_rejected_invalid_pow = 1;
+        runtime.external_mining_rejected_stale_template = 0;
+        runtime.external_mining_rejected_unknown_template = 0;
+        runtime.external_mining_rejected_submit_block_error = 0;
+        runtime.external_mining_rejected_storage_error = 0;
+        runtime.external_mining_stale_work_detected = 0;
+
+        let state = TestState {
+            chain: Arc::new(RwLock::new(chain)),
+            storage,
+            runtime: Arc::new(RwLock::new(runtime)),
+            p2p: None,
+        };
+
+        let Json(resp) = get_runtime_status(State(state)).await;
+        let data = resp.data.expect("runtime status data");
+        assert_eq!(data.external_mining_submit_total, 5);
+        assert_eq!(data.external_mining_submit_outcome_total, 7);
+        assert!(!data.external_mining_submit_outcome_counters_coherent);
+        assert_eq!(data.external_mining_submit_outcome_counter_delta, -2);
+        assert_eq!(data.external_mining_rejection_reason_total, 1);
+        assert!(data.external_mining_rejection_counters_coherent);
     }
 }
 
