@@ -9,6 +9,7 @@ This document records measured PoW performance using the current final implement
 - Miner remains **external** (`apps/pulsedag-miner`), not embedded into node runtime.
 - No pool logic is introduced.
 - Performance guidance is grounded in measured benchmark output (not theoretical-only estimates).
+- Optimization work should only proceed after measuring these baselines on the target deployment class.
 
 ## Repeatable benchmark commands
 
@@ -27,40 +28,43 @@ cargo run -p pulsedag-core --release --example pow_thread_baseline
 
 ## Benchmark environment
 
-- CPU model: Intel(R) Xeon(R) Platinum 8171M CPU @ 2.60GHz
+- CPU model: Intel(R) Xeon(R) Platinum 8370C CPU @ 2.80GHz
 - Visible CPUs: 3
 - Threads per core: 1
+- Hypervisor: KVM
 - OS/containerized CI-style Linux environment
 
-## Captured outputs
+## Captured outputs (from `scripts/pow-bench.sh`)
+
+Raw benchmark transcript: `docs/benchmarks/POW_BENCHMARK_OUTPUT_2026-04-24.md`.
 
 ### Core microbenchmarks (criterion)
 
 `cargo bench -p pulsedag-core --bench pow_core -- --sample-size 20 --warm-up-time 1 --measurement-time 2`
 
-- `pow_preimage_bytes`: **[169.98 ns, 178.15 ns, 184.56 ns]** (~1.55–1.68 GiB/s)
-- `pow_hash_score_u64`: **[571.51 ns, 581.82 ns, 599.23 ns]** (~1.67–1.75 Mhash/s)
-- `pow_accepts/1`: **[555.86 ns, 582.05 ns, 616.17 ns]**
-- `pow_accepts/64`: **[552.96 ns, 587.83 ns, 649.00 ns]**
-- `pow_accepts/512`: **[555.49 ns, 566.46 ns, 581.00 ns]**
+- `pow_preimage_bytes`: **[109.36 ns, 111.56 ns, 114.84 ns]** (~2.49–2.61 GiB/s)
+- `pow_hash_score_u64`: **[496.19 ns, 498.98 ns, 501.40 ns]** (~1.99–2.02 Mhash/s)
+- `pow_accepts/1`: **[473.58 ns, 474.76 ns, 475.99 ns]**
+- `pow_accepts/64`: **[496.55 ns, 499.21 ns, 502.09 ns]**
+- `pow_accepts/512`: **[513.62 ns, 533.81 ns, 550.32 ns]**
 
 ### Thread-scaling baseline
 
 `cargo run -p pulsedag-core --release --example pow_thread_baseline`
 
-- `threads=1 hps=1319063`
-- `threads=2 hps=2506337`
-- `threads=4 hps=2509104`
-- `threads=8 hps=2542339`
+- `threads=1 hps=1605357`
+- `threads=2 hps=3051085`
+- `threads=4 hps=2928877`
+- `threads=8 hps=3402374`
 
 ## Operator guidance (testnet planning)
 
-1. **Expect sub-linear thread scaling.**
-   - 8 logical worker threads achieved ~1.93x throughput over 1 thread in this environment.
+1. **Expect non-linear thread scaling.**
+   - In this measured environment, 8 worker threads delivered ~2.12x throughput over 1 thread.
 2. **Use measured local baseline before setting expectations.**
    - Start with 1, 2, 4, and 8 threads and retain the best sustained H/s value.
 3. **Do not assume this environment equals bare-metal.**
-   - VM/container scheduling and CPU quotas can reduce throughput materially.
+   - VM/container scheduling and CPU quotas can materially shift throughput and scaling shape.
 4. **Difficulty and block timing are network-level controls.**
    - Higher per-operator H/s raises solve probability but does not guarantee short solve intervals.
 5. **No pool assumptions in public docs or operations runbooks.**
