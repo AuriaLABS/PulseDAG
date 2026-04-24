@@ -183,6 +183,7 @@ struct InnerState {
     last_drop_reason: Option<String>,
     inbound_seen_at_unix: HashMap<String, u64>,
     outbound_tx_seen_at_unix: HashMap<String, u64>,
+    outbound_block_seen_at_unix: HashMap<String, u64>,
     peer_book: HashMap<String, PeerHealth>,
     peer_state_path: Option<PathBuf>,
     peer_reconnect_attempts: u64,
@@ -290,7 +291,12 @@ impl P2pHandle for MemoryP2pHandle {
             .inner
             .lock()
             .map_err(|_| PulseError::Internal("p2p lock poisoned".into()))?;
-        inner.seen_message_ids.insert(message_id_for_block(block));
+        let block_id = message_id_for_block(block);
+        if !should_relay_outbound_block(&mut inner, &block_id, now_unix()) {
+            inner.last_drop_reason = Some("duplicate_block_outbound".into());
+            return Ok(());
+        }
+        inner.seen_message_ids.insert(block_id);
         inner.publish_attempts += 1;
         inner.broadcasted_messages += 1;
         inner.last_message_kind = Some("block".into());
@@ -472,6 +478,7 @@ const FLAP_WINDOW: StdDuration = StdDuration::from_secs(45);
 const FLAP_BASE_COOLDOWN: u64 = 30;
 const MESSAGE_DEDUP_WINDOW_SECS: u64 = 120;
 const TX_OUTBOUND_DEDUP_WINDOW_SECS: u64 = 30;
+const BLOCK_OUTBOUND_DEDUP_WINDOW_SECS: u64 = 30;
 const MAX_DEDUP_TRACKED_IDS: usize = 16_384;
 const BLOCK_PRIORITY_BURST_LIMIT: usize = 8;
 
@@ -873,6 +880,23 @@ fn should_relay_outbound_tx(state: &mut InnerState, id: &str, now: u64) -> bool 
             state.outbound_tx_seen_at_unix.insert(id.to_string(), now);
             state.tx_outbound_first_seen_relayed =
                 state.tx_outbound_first_seen_relayed.saturating_add(1);
+            true
+        }
+    }
+}
+
+fn should_relay_outbound_block(state: &mut InnerState, id: &str, now: u64) -> bool {
+    trim_old_entries(
+        &mut state.outbound_block_seen_at_unix,
+        now,
+        BLOCK_OUTBOUND_DEDUP_WINDOW_SECS,
+    );
+    match state.outbound_block_seen_at_unix.get(id) {
+        Some(last_seen) if now.saturating_sub(*last_seen) <= BLOCK_OUTBOUND_DEDUP_WINDOW_SECS => {
+            false
+        }
+        _ => {
+            state.outbound_block_seen_at_unix.insert(id.to_string(), now);
             true
         }
     }
@@ -1288,6 +1312,11 @@ impl P2pHandle for Libp2pHandle {
                 .inner
                 .lock()
                 .map_err(|_| PulseError::Internal("p2p lock poisoned".into()))?;
+            let block_id = message_id_for_block(block);
+            if !should_relay_outbound_block(&mut inner, &block_id, now_unix()) {
+                inner.last_drop_reason = Some("duplicate_block_outbound".into());
+                return Ok(());
+            }
             inner.queued_messages += 1;
             inner.queued_block_messages += 1;
             track_queue_depth_on_enqueue(&mut inner);
@@ -1535,6 +1564,36 @@ mod tests {
         assert_eq!(status.broadcasted_messages, 1);
         assert_eq!(status.tx_outbound_first_seen_relayed, 1);
         assert_eq!(status.tx_outbound_duplicates_suppressed, 9);
+    }
+
+    #[test]
+    fn repeated_block_relay_storm_is_deduped_without_counter_inflation() {
+        let (handle, _inbound_rx) = MemoryP2pHandle::new("testnet".into(), vec!["peer-a".into()]);
+        let block = Block {
+            hash: "block-storm".into(),
+            header: pulsedag_core::types::BlockHeader {
+                version: 1,
+                parents: vec!["genesis".into()],
+                timestamp: 1,
+                difficulty: 1,
+                nonce: 1,
+                merkle_root: "mr".into(),
+                state_root: "sr".into(),
+                blue_score: 1,
+                height: 1,
+            },
+            transactions: vec![sample_tx("tx-for-block-storm")],
+        };
+
+        for _ in 0..10 {
+            handle
+                .broadcast_block(&block)
+                .expect("duplicate block relay should not error");
+        }
+
+        let status = handle.status().expect("status should be available");
+        assert_eq!(status.publish_attempts, 1);
+        assert_eq!(status.broadcasted_messages, 1);
     }
 
     #[test]
