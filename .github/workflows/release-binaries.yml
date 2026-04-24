@@ -87,6 +87,9 @@ jobs:
       contents: write
 
     steps:
+      - name: Checkout (required for gh release create context)
+        uses: actions/checkout@v4
+
       - name: Download artifacts
         uses: actions/download-artifact@v5
         with:
@@ -105,5 +108,5 @@ jobs:
           GH_REPO: ${{ github.repository }}
         shell: bash
         run: |
-          gh release create "${{ env.RELEASE_TAG }}" final/* --generate-notes || \
-          gh release upload "${{ env.RELEASE_TAG }}" final/* --clobber
+          gh release create "${{ env.RELEASE_TAG }}" final/* --generate-notes --repo "${GH_REPO}" || \
+          gh release upload "${{ env.RELEASE_TAG }}" final/* --clobber --repo "${GH_REPO}"
