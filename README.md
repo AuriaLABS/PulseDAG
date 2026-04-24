@@ -9,6 +9,10 @@ Consolidated v2.2 operator-readiness package for operational recovery, rebuild, 
 - Current block target is **60 seconds per block**.
 - Node RPC keeps mining-template + submit APIs for the **external miner app**, but pool/accounting/payout surfaces are out of scope in this phase.
 
+## PoW clarity references
+- PoW current-path audit guide: `docs/POW_CURRENT_PATH.md` (what node validates today, provisional/dev labels, and upgrade boundaries).
+- Canonical PoW spec for current public testnet: `docs/POW_SPEC_FINAL.md`.
+
 ## Current priority order
 1. pruning + snapshot
 2. miner multi-thread
