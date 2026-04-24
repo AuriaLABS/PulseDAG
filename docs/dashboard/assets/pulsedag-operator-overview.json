@@ -1,10 +1,10 @@
 {
-  "title": "PulseDAG Operator Overview (v2.1)",
+  "title": "PulseDAG Operator Overview (v2.2)",
   "schemaVersion": 39,
   "version": 1,
   "refresh": "15s",
   "timezone": "browser",
-  "tags": ["pulsedag", "v2.1", "operations"],
+  "tags": ["pulsedag", "v2.2", "operations"],
   "panels": [
     {
       "type": "stat",

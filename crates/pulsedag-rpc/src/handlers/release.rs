@@ -1,7 +1,7 @@
 use crate::api::ApiResponse;
 use axum::Json;
 
-pub const OPERATOR_STAGE: &str = "v2.1-readiness";
+pub const OPERATOR_STAGE: &str = "v2.2-readiness";
 
 #[derive(Debug, serde::Serialize)]
 pub struct ReleaseInfoData {
@@ -60,13 +60,13 @@ mod tests {
     use super::{operator_stage, repo_version};
 
     #[test]
-    fn version_and_stage_match_v2_1_readiness() {
-        assert!(repo_version().starts_with("v2.1."));
-        assert_eq!(operator_stage(), "v2.1-readiness");
+    fn version_and_stage_match_v2_2_readiness() {
+        assert!(repo_version().starts_with("v2.2."));
+        assert_eq!(operator_stage(), "v2.2-readiness");
     }
 
     #[test]
-    fn runbook_index_covers_v2_1_operator_topics() {
+    fn runbook_index_covers_v2_2_operator_topics() {
         let index = include_str!("../../../../docs/runbooks/INDEX.md");
         for required in [
             "Snapshot Restore",
@@ -109,8 +109,8 @@ mod tests {
             include_str!("../../../../docs/dashboard/config/datasource-prometheus.yml");
 
         assert!(index.contains("docs/dashboard/README.md"));
-        assert!(dashboard_readme.contains("Operator Dashboard Package (v2.1)"));
-        assert!(dashboard_json.contains("PulseDAG Operator Overview (v2.1)"));
+        assert!(dashboard_readme.contains("Operator Dashboard Package (v2.2)"));
+        assert!(dashboard_json.contains("PulseDAG Operator Overview (v2.2)"));
         assert!(datasource.contains("PulseDAG-Prometheus"));
     }
     #[test]
