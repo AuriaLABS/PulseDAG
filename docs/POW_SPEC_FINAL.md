@@ -1,129 +1,108 @@
-# PulseDAG Public Testnet PoW Specification (Frozen)
+# PulseDAG Public Testnet PoW Specification (Current Canonical Path)
 
-Status: **FINAL / CANONICAL**
+Status: **CURRENT / CANONICAL FOR PUBLIC TESTNET**
 
-This document freezes the single Proof-of-Work path used by PulseDAG public testnet.
-It is intentionally explicit so a miner or node can be implemented independently and still interoperate.
+This document defines the PoW behavior that nodes validate **today** on public testnet, and marks which nearby surfaces are provisional/dev-oriented.
 
 ## 1) Scope and architecture boundaries
 
-- The **node** validates headers and blocks, emits mining templates, and accepts/rejects submitted solved blocks.
-- The **miner** is **external and standalone**. It requests templates, searches nonce space, and submits candidate blocks.
-- **Pool logic is out of scope** for this specification and is not part of the official miner flow.
-- **Smart contracts are not activated by this PoW spec**.
-- There is **one PoW path only** (no runtime algorithm switching).
+- The **node** validates blocks and headers, serves mining templates, and accepts/rejects submitted mined blocks.
+- The **miner** remains **external and standalone**. It fetches templates, searches nonce space, and submits candidate blocks.
+- **Pool logic is not part of the official miner flow** in this phase.
+- There is **one active PoW path** for validation (`kHeavyHash` identity; §2 + §5).
+- This document does **not** change contract/smart-contract activation scope.
 
-## 2) Algorithm identity
+## 2) Algorithm identity (what nodes enforce today)
 
-- The active algorithm identifier remains **`kHeavyHash`**.
-- For this public testnet spec, `kHeavyHash` is concretely defined as:
-  1. build the canonical serialized header preimage bytes in §3,
-  2. compute `BLAKE3(preimage_bytes)` (32 bytes),
-  3. evaluate acceptance via §5.
+- Active algorithm name: **`kHeavyHash`**.
+- Current concrete definition:
+  1. Build canonical header preimage bytes exactly as in §3.
+  2. Compute `BLAKE3(preimage_bytes)` (32 bytes).
+  3. Evaluate acceptance with §5 (`score_u64 <= target_u64`).
 
-No alternate hashing path is valid for public testnet.
+No alternate hashing path is valid for the node validation path.
 
 ## 3) Canonical header preimage (exact bytes)
 
-### 3.1 Field order (MUST be exact)
+### 3.1 Field order (MUST match exactly)
 
 1. `preimage_version` (`u8`) = `1`
 2. `header.version` (`u32`, little-endian)
 3. `parent_count` (`u16`, little-endian)
 4. each `parent` string in list order as:
    - `parent_len` (`u16`, little-endian, byte length)
-   - UTF-8 bytes of parent string (no null terminator)
+   - UTF-8 bytes of parent string
 5. `header.timestamp` (`u64`, little-endian)
 6. `header.difficulty` (`u32`, little-endian)
 7. `header.nonce` (`u64`, little-endian)
-8. `header.merkle_root` as (`u16` LE len + UTF-8 bytes)
-9. `header.state_root` as (`u16` LE len + UTF-8 bytes)
+8. `header.merkle_root` as (`u16` little-endian length + UTF-8 bytes)
+9. `header.state_root` as (`u16` little-endian length + UTF-8 bytes)
 10. `header.blue_score` (`u64`, little-endian)
 11. `header.height` (`u64`, little-endian)
 
 ### 3.2 Serialization rules
 
-- Strings are serialized exactly as UTF-8 bytes, prefixed by a 16-bit little-endian byte length.
-- No separators, delimiters, whitespace normalization, or JSON encoding are used in canonical bytes.
-- Parent list order is consensus-relevant and must match the header order exactly.
+- Strings are serialized as raw UTF-8 bytes with 16-bit little-endian byte lengths.
+- No JSON canonicalization, separators, whitespace normalization, or null terminators are used.
+- Parent list order is consensus-relevant because it is hashed as-provided.
 
 ## 4) Nonce handling
 
-- Nonce field width is `u64`.
-- Miner mutates only `header.nonce` while searching work from a template.
-- Node validates the submitted header nonce as part of PoW acceptance.
-- Official miner thread partitioning (reference behavior): each worker starts at `tid` and increments by `thread_count`.
+- Nonce width is `u64`.
+- Miner mutates `header.nonce` while searching.
+- Node validates the submitted nonce via PoW acceptance.
+- Reference miner thread partitioning: worker `tid` starts at nonce `tid` and steps by `thread_count`.
 
 ## 5) Target encoding and acceptance rule
 
-Let `D = max(header.difficulty, 1)` interpreted as unsigned integer.
+Let `D = max(header.difficulty, 1)`.
 
-- Target scalar:
-  - `target_u64 = floor((2^64 - 1) / D)`
-- Hash score extraction:
-  - `hash32 = BLAKE3(preimage_bytes)`
-  - `score_u64 = big_endian_u64(hash32[0..8])`
-- Acceptance:
-  - header is PoW-valid iff `score_u64 <= target_u64`
+- `target_u64 = floor((2^64 - 1) / D)`
+- `hash32 = BLAKE3(preimage_bytes)`
+- `score_u64 = big_endian_u64(hash32[0..8])`
+- Accepted iff `score_u64 <= target_u64`
 
-This is the only acceptance rule for public testnet PoW.
+`difficulty = 0` is normalized to `1` for PoW arithmetic.
 
-## 6) Difficulty relationship
+## 6) What the node validates today on `/mining/submit`
 
-- Difficulty is inversely proportional to acceptance target:
-  - higher `difficulty` -> lower `target_u64` -> fewer acceptable nonces.
-- `difficulty = 0` is normalized to `1` for PoW math.
+Beyond PoW acceptance itself, node submit handling currently rejects stale/invalid work if template lifecycle state no longer matches (height, parents, preferred tip, difficulty/target, mempool fingerprint, TTL, and template transaction set), and then runs normal block acceptance.
 
-## 7) Node/miner responsibility split (no ambiguity)
+See `docs/POW_CURRENT_PATH.md` for the step-by-step request/validation flow and code pointers.
 
-### Node responsibilities
+## 7) Current vs provisional/dev-oriented surfaces
 
-- Build and serve templates (`/mining/template`).
-- Enforce canonical PoW rule on submitted blocks.
-- Accept or reject submissions (`/mining/submit`) and maintain chain state.
+The following names are retained for compatibility and operator visibility, but do not represent an alternate consensus PoW algorithm:
 
-### Miner responsibilities
+- helper function aliases prefixed with `dev_*` that currently delegate to the active PoW path,
+- response fields such as `pow_accepted_dev`.
 
-- Fetch template from node.
-- Search nonces externally using this spec.
-- Submit solved block back to node.
+Interpretation: these are **naming/operational surfaces**, not a second PoW rule.
 
-### Explicit non-responsibilities of miner
+## 8) Upgrade boundaries for future final-PoW changes
 
-- No pool coordinator behavior.
-- No share accounting, payout logic, or worker orchestration service.
-- No server-side block validation authority.
+To avoid node/miner divergence, future PoW upgrades should be introduced only through explicit, coordinated changes to:
 
-## 8) Canonical references in source tree
+1. canonical preimage versioning and serialization in `pow.rs`,
+2. deterministic vectors in `fixtures/pow/official_vectors.json`,
+3. miner implementation consuming the same preimage/acceptance rules,
+4. any RPC schema changes (if ever needed) behind explicit versioning/migration notes.
+
+Until such a coordinated upgrade lands, implementers should treat §2–§5 as normative behavior.
+
+## 9) Canonical references
 
 - PoW serialization/hash/acceptance: `crates/pulsedag-core/src/pow.rs`
-- Header field definitions: `crates/pulsedag-core/src/types.rs`
-- External miner behavior: `apps/pulsedag-miner/src/main.rs`
-- Miner scope statement: `docs/MINER_FINAL.md`, `apps/pulsedag-miner/README.md`
+- Header fields: `crates/pulsedag-core/src/types.rs`
+- Template flow: `crates/pulsedag-rpc/src/handlers/mining_template.rs`
+- Submit validation path: `crates/pulsedag-rpc/src/handlers/mining_submit.rs`
+- External miner: `apps/pulsedag-miner/src/main.rs`
+- Flow explainer: `docs/POW_CURRENT_PATH.md`
 
-Any conflicting old notes should be considered non-canonical.
+## 10) Deterministic test vectors
 
-## 9) Official deterministic test vectors
-
-The canonical PoW vectors used for both node and miner test suites live at:
+Canonical PoW vectors:
 
 - `fixtures/pow/official_vectors.json`
 
-Vector format is intentionally append-only and extension-friendly:
-
-- `schema_version`: fixture schema version (currently `1`).
-- `algorithm`: must be `kHeavyHash`.
-- `valid_vectors[]`: vectors that **must** match canonical outputs exactly.
-- `invalid_vectors[]`: vectors with intentionally tampered expectations that **must fail** on `must_fail_fields[]`.
-
-Each vector contains:
-
-- `id`: stable identifier for diagnostics.
-- `header`: canonical header input.
-- `expected.preimage_hex`
-- `expected.pow_hash_hex`
-- `expected.pow_score_u64`
-- `expected.target_u64`
-- `expected.accepts`
-
-To extend vectors later, append new entries (do not mutate existing IDs/expected outputs), preserving deterministic reproducibility across node and external miner implementations.
+Extension rule: append vectors without mutating existing vector IDs/expected outputs.

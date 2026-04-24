@@ -3,6 +3,7 @@
 Estado: **cerrado**
 
 Especificación canónica congelada: `docs/POW_SPEC_FINAL.md`.
+Ruta PoW actual (validación del nodo, superficies provisionales y límites de upgrade): `docs/POW_CURRENT_PATH.md`.
 
 ## Contrato funcional
 

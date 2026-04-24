@@ -3,6 +3,7 @@
 Minero externo oficial de PulseDAG.
 
 Especificación PoW canónica congelada: `docs/POW_SPEC_FINAL.md`.
+Guía operativa/auditoría del flujo actual: `docs/POW_CURRENT_PATH.md`.
 
 ## Alcance cerrado
 
