@@ -30,8 +30,19 @@ The package references only fields emitted by the node APIs:
 - `external_mining_templates_emitted`
 - `external_mining_templates_invalidated`
 - `external_mining_stale_work_detected`
+- stale-work attribution helpers:
+  - `external_mining_stale_work_submit_rejections`
+  - `external_mining_stale_work_template_invalidations`
 - `external_mining_submit_accepted`
 - `external_mining_submit_rejected`
+- submit/rejection counter coherence helpers:
+  - `external_mining_submit_total`
+  - `external_mining_submit_outcome_total`
+  - `external_mining_submit_outcome_counters_coherent`
+  - `external_mining_submit_outcome_counter_delta`
+  - `external_mining_rejection_reason_total`
+  - `external_mining_rejection_counters_coherent`
+  - `external_mining_rejection_counter_delta`
 - rejection taxonomy:
   - `external_mining_rejected_invalid_pow`
   - `external_mining_rejected_stale_template`
