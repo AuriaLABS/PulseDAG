@@ -2,6 +2,8 @@
 
 Minero externo oficial de PulseDAG.
 
+Especificación PoW canónica congelada: `docs/POW_SPEC_FINAL.md`.
+
 ## Alcance cerrado
 
 Este binario **no** contiene lógica de pool.
@@ -52,3 +54,8 @@ cargo run -p pulsedag-miner -- --node http://127.0.0.1:8080 --miner-address TU_D
 - accounting
 - coordinación de workers
 - lógica de servidor
+
+## Algoritmo PoW
+
+- El identificador de algoritmo permanece como `kHeavyHash`.
+- La codificación exacta del preimage, endianness, target y regla de aceptación está congelada en `docs/POW_SPEC_FINAL.md`.
