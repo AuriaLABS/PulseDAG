@@ -1,53 +1,18 @@
 use pulsedag_core::pow::{
     mine_header, pow_accepts, pow_hash_hex, pow_hash_score_u64, pow_preimage_bytes, pow_target_u64,
 };
-use pulsedag_core::types::BlockHeader;
 use pulsedag_miner::{
     miner_pow_accepts, miner_pow_hash_hex, miner_pow_preimage_bytes, miner_pow_score_u64,
 };
-use serde::Deserialize;
 
-#[derive(Debug, Deserialize)]
-struct VectorFixture {
-    valid_vectors: Vec<FixtureVector>,
-    invalid_vectors: Vec<InvalidFixtureVector>,
-}
-
-#[derive(Debug, Deserialize)]
-struct FixtureVector {
-    id: String,
-    header: BlockHeader,
-    expected: ExpectedPow,
-}
-
-#[derive(Debug, Deserialize)]
-struct InvalidFixtureVector {
-    id: String,
-    header: BlockHeader,
-    expected: ExpectedPow,
-    must_fail_fields: Vec<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct ExpectedPow {
-    preimage_hex: String,
-    pow_hash_hex: String,
-    pow_score_u64: u64,
-    target_u64: u64,
-    accepts: bool,
-}
-
-fn load_fixture() -> VectorFixture {
-    let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let fixture_path = manifest_dir.join("../../fixtures/pow/official_vectors.json");
-    let body = std::fs::read_to_string(&fixture_path)
-        .unwrap_or_else(|e| panic!("failed to read {}: {e}", fixture_path.display()));
-    serde_json::from_str::<VectorFixture>(&body).expect("official pow fixture must parse")
-}
+#[path = "../../../tests/support/pow_fixture.rs"]
+mod pow_fixture;
 
 #[test]
 fn official_vectors_pass_in_miner() {
-    let fixture = load_fixture();
+    let fixture = pow_fixture::load_official_fixture(env!("CARGO_MANIFEST_DIR"));
+    assert_eq!(fixture.schema_version, 1);
+    assert_eq!(fixture.algorithm, "kHeavyHash");
 
     for vector in fixture.valid_vectors {
         let preimage_hex = hex::encode(miner_pow_preimage_bytes(&vector.header));
@@ -86,7 +51,7 @@ fn official_vectors_pass_in_miner() {
 
 #[test]
 fn node_and_miner_cross_check_matches_exactly() {
-    let fixture = load_fixture();
+    let fixture = pow_fixture::load_official_fixture(env!("CARGO_MANIFEST_DIR"));
 
     for vector in fixture.valid_vectors {
         let node_preimage = pow_preimage_bytes(&vector.header);
@@ -120,7 +85,7 @@ fn node_and_miner_cross_check_matches_exactly() {
 
 #[test]
 fn node_and_miner_nonce_search_determinism_matches() {
-    let fixture = load_fixture();
+    let fixture = pow_fixture::load_official_fixture(env!("CARGO_MANIFEST_DIR"));
 
     for vector in fixture.valid_vectors {
         let max_tries = 8192;
@@ -154,7 +119,7 @@ fn node_and_miner_nonce_search_determinism_matches() {
 
 #[test]
 fn invalid_vectors_fail_in_miner() {
-    let fixture = load_fixture();
+    let fixture = pow_fixture::load_official_fixture(env!("CARGO_MANIFEST_DIR"));
 
     for vector in fixture.invalid_vectors {
         let actual_preimage_hex = hex::encode(miner_pow_preimage_bytes(&vector.header));
@@ -163,14 +128,33 @@ fn invalid_vectors_fail_in_miner() {
         let actual_target = pow_target_u64(vector.header.difficulty as u64);
         let actual_accepts = miner_pow_accepts(&vector.header);
 
+        assert!(
+            !vector.must_fail_fields.is_empty(),
+            "{} should include at least one must_fail field",
+            vector.id
+        );
+
         for must_fail in &vector.must_fail_fields {
-            let failed = match must_fail.as_str() {
-                "preimage_hex" => actual_preimage_hex != vector.expected.preimage_hex,
-                "pow_hash_hex" => actual_hash != vector.expected.pow_hash_hex,
-                "pow_score_u64" => actual_score != vector.expected.pow_score_u64,
-                "target_u64" => actual_target != vector.expected.target_u64,
-                "accepts" => actual_accepts != vector.expected.accepts,
-                other => panic!("{} contains unknown must_fail field: {other}", vector.id),
+            let failed = match pow_fixture::PowVectorField::parse(must_fail) {
+                Some(pow_fixture::PowVectorField::PreimageHex) => {
+                    actual_preimage_hex != vector.expected.preimage_hex
+                }
+                Some(pow_fixture::PowVectorField::PowHashHex) => {
+                    actual_hash != vector.expected.pow_hash_hex
+                }
+                Some(pow_fixture::PowVectorField::PowScoreU64) => {
+                    actual_score != vector.expected.pow_score_u64
+                }
+                Some(pow_fixture::PowVectorField::TargetU64) => {
+                    actual_target != vector.expected.target_u64
+                }
+                Some(pow_fixture::PowVectorField::Accepts) => {
+                    actual_accepts != vector.expected.accepts
+                }
+                None => panic!(
+                    "{} contains unknown must_fail field: {must_fail}",
+                    vector.id
+                ),
             };
             assert!(failed, "{} should fail on field {must_fail}", vector.id);
         }
