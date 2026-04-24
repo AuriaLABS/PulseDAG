@@ -117,10 +117,10 @@ pub async fn post_mine<S: RpcStateLike>(
         Ok(_) => {
             let snapshot = chain.clone();
             drop(chain);
-            if let Err(e) = state.storage().persist_block(&block) {
-                return Json(ApiResponse::err("STORAGE_ERROR", e.to_string()));
-            }
-            if let Err(e) = state.storage().persist_chain_state(&snapshot) {
+            if let Err(e) = state
+                .storage()
+                .persist_block_and_chain_state(&block, &snapshot)
+            {
                 return Json(ApiResponse::err("STORAGE_ERROR", e.to_string()));
             }
             if let Some(p2p) = state.p2p() {

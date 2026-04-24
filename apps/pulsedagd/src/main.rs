@@ -477,10 +477,7 @@ async fn main() -> Result<()> {
                                 );
                             }
                             info!(block = %block.hash, missing_parents = ?missing_parents, orphan_count = guard.orphan_blocks.len(), pruned, "queued inbound p2p orphan block");
-                            if let Err(e) = storage.persist_block(&block) {
-                                warn!(error = %e, "failed persisting inbound orphan block");
-                            }
-                            if let Err(e) = storage.persist_chain_state(&guard) {
+                            if let Err(e) = storage.persist_block_and_chain_state(&block, &guard) {
                                 warn!(error = %e, "failed persisting chain state after orphan queue");
                             }
                         } else if let Err(e) =
@@ -510,10 +507,7 @@ async fn main() -> Result<()> {
                                     "adopted ready orphan blocks after inbound block"
                                 );
                             }
-                            if let Err(e) = storage.persist_block(&block) {
-                                warn!(error = %e, "failed persisting inbound block");
-                            }
-                            if let Err(e) = storage.persist_chain_state(&guard) {
+                            if let Err(e) = storage.persist_block_and_chain_state(&block, &guard) {
                                 warn!(error = %e, "failed persisting chain state after inbound block");
                             }
                         }
