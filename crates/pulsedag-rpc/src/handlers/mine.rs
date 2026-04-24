@@ -1,8 +1,7 @@
 use crate::api::{ApiResponse, MineRequest, RpcStateLike};
 use axum::{extract::State, Json};
 use pulsedag_core::{
-    accept_block, dev_difficulty_snapshot, dev_mine_header, dev_pow_accepts,
-    dev_target_u64,
+    accept_block, dev_difficulty_snapshot, dev_mine_header, dev_pow_accepts, dev_target_u64,
     mining::{build_candidate_block, build_coinbase_transaction},
     AcceptSource,
 };
@@ -100,7 +99,14 @@ pub async fn post_mine<S: RpcStateLike>(
         reward,
         height,
     )];
-    txs.extend(chain.mempool.transactions.values().cloned());
+    let mut mempool_txs = chain
+        .mempool
+        .transactions
+        .values()
+        .cloned()
+        .collect::<Vec<_>>();
+    mempool_txs.sort_by(|a, b| a.txid.cmp(&b.txid));
+    txs.extend(mempool_txs);
     let header_difficulty = u32::try_from(difficulty).unwrap_or(u32::MAX);
     let mut block = build_candidate_block(parents.clone(), height, header_difficulty, txs);
     let max_tries = req.pow_max_tries.unwrap_or(10_000).min(1_000_000);

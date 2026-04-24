@@ -10,8 +10,8 @@ use crate::{
 };
 use axum::{extract::State, Json};
 use pulsedag_core::{
-    build_candidate_block, build_coinbase_transaction, dev_difficulty_snapshot, preferred_tip_hash,
-    state::ChainState,
+    build_candidate_block, build_coinbase_transaction, dev_difficulty_snapshot, pow_preimage_bytes,
+    preferred_tip_hash, state::ChainState,
 };
 
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
@@ -30,6 +30,8 @@ pub struct StoredMiningTemplate {
     pub mempool_tx_count: usize,
     #[serde(default)]
     pub expires_at_unix: u64,
+    #[serde(default)]
+    pub template_txids: Vec<String>,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -45,6 +47,10 @@ pub struct MiningTemplateData {
     pub target_u64: u64,
     pub mempool_tx_count: usize,
     pub metrics_hint: PowMetricsData,
+    pub pow_preimage_hex: String,
+    pub pow_preimage_nonce_offset: usize,
+    pub pow_header_preimage_version: u8,
+    pub mutable_header_fields: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -59,6 +65,7 @@ pub(crate) struct TemplateLifecycleState {
 }
 
 pub(crate) const TEMPLATE_TTL_SECS: u64 = 30;
+const POW_NONCE_OFFSET: usize = 1 + 4;
 
 pub(crate) fn current_template_state(chain: &ChainState) -> TemplateLifecycleState {
     let height = chain.dag.best_height + 1;
@@ -154,10 +161,23 @@ pub async fn post_mining_template<S: RpcStateLike>(
         reward,
         height,
     )];
-    txs.extend(chain.mempool.transactions.values().cloned());
+    let mut mempool_txs = chain
+        .mempool
+        .transactions
+        .values()
+        .cloned()
+        .collect::<Vec<_>>();
+    mempool_txs.sort_by(|a, b| a.txid.cmp(&b.txid));
+    txs.extend(mempool_txs);
     let header_difficulty = lifecycle.difficulty;
     let block = build_candidate_block(parents.clone(), height, header_difficulty, txs);
     let target_u64 = lifecycle.target_u64;
+    let template_txids = block
+        .transactions
+        .iter()
+        .map(|tx| tx.txid.clone())
+        .collect::<Vec<_>>();
+    let pow_preimage_hex = hex::encode(pow_preimage_bytes(&block.header));
 
     store_template(&StoredMiningTemplate {
         template_id: template_id.clone(),
@@ -171,6 +191,7 @@ pub async fn post_mining_template<S: RpcStateLike>(
         mempool_fingerprint: lifecycle.mempool_fingerprint.clone(),
         mempool_tx_count: lifecycle.mempool_tx_count,
         expires_at_unix,
+        template_txids: template_txids.clone(),
     });
     {
         let runtime_handle = state.runtime();
@@ -237,6 +258,10 @@ pub async fn post_mining_template<S: RpcStateLike>(
         target_u64,
         mempool_tx_count: lifecycle.mempool_tx_count,
         metrics_hint,
+        pow_preimage_hex,
+        pow_preimage_nonce_offset: POW_NONCE_OFFSET,
+        pow_header_preimage_version: pulsedag_core::POW_HEADER_PREIMAGE_VERSION,
+        mutable_header_fields: vec!["nonce".to_string()],
     }))
 }
 
