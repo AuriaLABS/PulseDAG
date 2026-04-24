@@ -4,8 +4,8 @@ use super::mining_template::{
 use crate::api::{ApiResponse, RpcStateLike, SubmitMinedBlockRequest};
 use axum::{extract::State, Json};
 use pulsedag_core::{
-    accept_block, adopt_ready_orphans, dev_pow_accepts, dev_target_u64, preferred_tip_hash,
-    AcceptSource,
+    accept_block, adopt_ready_orphans, dev_hash_score_u64, dev_pow_accepts, dev_target_u64,
+    preferred_tip_hash, AcceptSource,
 };
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -20,6 +20,8 @@ pub struct MiningSubmitData {
     pub stale_template: bool,
     pub selected_tip: Option<String>,
     pub adopted_orphans: usize,
+    pub pow_hash_score_u64: u64,
+    pub pow_rejection_reason: Option<String>,
 }
 
 fn persist_then_broadcast_mined_block<FPersist, FBroadcast>(
@@ -112,6 +114,7 @@ pub async fn post_mining_submit<S: RpcStateLike>(
     let mut chain = chain_handle.write().await;
     let pow_accepted_dev = dev_pow_accepts(&req.block.header);
     let target_u64 = dev_target_u64(req.block.header.difficulty as u64);
+    let pow_hash_score_u64 = dev_hash_score_u64(&req.block.header);
     let block_hash = req.block.hash.clone();
     let height = req.block.header.height;
 
@@ -123,12 +126,28 @@ pub async fn post_mining_submit<S: RpcStateLike>(
         record_external_mining_rejection(
             &state,
             ExternalMiningRejectKind::InvalidPow,
-            "submitted block does not satisfy current dev pow check",
+            &format!(
+                "submitted block does not satisfy {} policy: score={} target={} difficulty={} height={} nonce={}",
+                pulsedag_core::selected_pow_name(),
+                pow_hash_score_u64,
+                target_u64,
+                req.block.header.difficulty,
+                req.block.header.height,
+                req.block.header.nonce
+            ),
         )
         .await;
         return Json(ApiResponse::err(
             "INVALID_POW",
-            "submitted block does not satisfy current dev pow check".to_string(),
+            format!(
+                "submitted block does not satisfy {} policy: score={} target={} difficulty={} height={} nonce={}",
+                pulsedag_core::selected_pow_name(),
+                pow_hash_score_u64,
+                target_u64,
+                req.block.header.difficulty,
+                req.block.header.height,
+                req.block.header.nonce
+            ),
         ));
     }
 
@@ -260,6 +279,46 @@ pub async fn post_mining_submit<S: RpcStateLike>(
                     "template no longer matches current lifecycle state",
                 ));
             }
+            if req.block.header.difficulty != stored.difficulty {
+                record_external_mining_rejection(
+                    &state,
+                    ExternalMiningRejectKind::StaleTemplate,
+                    "submitted header difficulty differs from template difficulty",
+                )
+                .await;
+                return Json(ApiResponse::err(
+                    "STALE_TEMPLATE",
+                    format!(
+                        "submitted difficulty {} does not match template difficulty {}",
+                        req.block.header.difficulty, stored.difficulty
+                    ),
+                ));
+            }
+            if !stored.template_txids.is_empty() {
+                let submitted_txids = req
+                    .block
+                    .transactions
+                    .iter()
+                    .map(|tx| tx.txid.as_str())
+                    .collect::<Vec<_>>();
+                let expected_txids = stored
+                    .template_txids
+                    .iter()
+                    .map(|txid| txid.as_str())
+                    .collect::<Vec<_>>();
+                if submitted_txids != expected_txids {
+                    record_external_mining_rejection(
+                        &state,
+                        ExternalMiningRejectKind::StaleTemplate,
+                        "submitted transaction list differs from template transaction list",
+                    )
+                    .await;
+                    return Json(ApiResponse::err(
+                        "STALE_TEMPLATE",
+                        "submitted transactions differ from template; refresh template and retry",
+                    ));
+                }
+            }
         } else {
             record_external_mining_rejection(
                 &state,
@@ -346,6 +405,8 @@ pub async fn post_mining_submit<S: RpcStateLike>(
                 stale_template: false,
                 selected_tip: preferred_tip_hash(&chain),
                 adopted_orphans,
+                pow_hash_score_u64,
+                pow_rejection_reason: None,
             }))
         }
         Err(e) => {
@@ -533,13 +594,30 @@ mod tests {
         block
     }
 
+    async fn build_mined_template_block(state: &TestState) -> (String, Block) {
+        let Json(template_response) = post_mining_template(
+            State(state.clone()),
+            Json(GetBlockTemplateRequest {
+                miner_address: "kaspa:qptestminer".to_string(),
+            }),
+        )
+        .await;
+        assert!(template_response.ok);
+        let template = template_response.data.expect("template expected");
+        let mut block = template.block;
+        let (mined_header, mined, _, _) = dev_mine_header(block.header.clone(), 100_000);
+        assert!(mined, "expected mined template header");
+        block.header = mined_header;
+        (template.template_id, block)
+    }
+
     #[tokio::test]
     async fn accepted_block_broadcasts_to_p2p() {
         let (state, fake_p2p) = build_state_with_fake_p2p();
         let block = build_mined_block(&state).await;
 
         let Json(response) = post_mining_submit(
-            State(state),
+            State(state.clone()),
             Json(SubmitMinedBlockRequest {
                 template_id: None,
                 block,
@@ -560,6 +638,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn valid_template_leads_to_acceptable_mined_block() {
+        let (state, _fake_p2p) = build_state_with_fake_p2p();
+        let (template_id, block) = build_mined_template_block(&state).await;
+
+        let Json(submit_response) = post_mining_submit(
+            State(state.clone()),
+            Json(SubmitMinedBlockRequest {
+                template_id: Some(template_id),
+                block,
+            }),
+        )
+        .await;
+
+        assert!(submit_response.ok);
+        let data = submit_response.data.expect("submit data expected");
+        assert!(data.accepted);
+        assert!(data.pow_accepted_dev);
+        assert!(data.pow_hash_score_u64 <= data.target_u64);
+    }
+
+    #[tokio::test]
     async fn rejected_block_does_not_broadcast() {
         let (state, fake_p2p) = build_state_with_fake_p2p();
         let block = build_mined_block(&state).await;
@@ -576,7 +675,7 @@ mod tests {
         assert_eq!(fake_p2p.block_calls(), 1);
 
         let Json(second_response) = post_mining_submit(
-            State(state),
+            State(state.clone()),
             Json(SubmitMinedBlockRequest {
                 template_id: None,
                 block,
@@ -618,7 +717,7 @@ mod tests {
         block.header = mined_header;
 
         let Json(submit_response) = post_mining_submit(
-            State(state),
+            State(state.clone()),
             Json(SubmitMinedBlockRequest {
                 template_id: Some(template.template_id),
                 block,
@@ -633,6 +732,77 @@ mod tests {
         let runtime = state.runtime.read().await;
         assert_eq!(runtime.external_mining_submit_rejected, 1);
         assert_eq!(runtime.external_mining_stale_work_detected, 1);
+    }
+
+    #[tokio::test]
+    async fn malformed_submit_is_rejected_cleanly() {
+        let (state, _fake_p2p) = build_state_with_fake_p2p();
+        let block = build_mined_block(&state).await;
+        let mut malformed = block.clone();
+        malformed.header.parents.clear();
+        malformed.header.difficulty = 1;
+        let (mined_header, mined, _, _) = dev_mine_header(malformed.header.clone(), 100_000);
+        assert!(mined);
+        malformed.header = mined_header;
+
+        let Json(submit_response) = post_mining_submit(
+            State(state.clone()),
+            Json(SubmitMinedBlockRequest {
+                template_id: None,
+                block: malformed,
+            }),
+        )
+        .await;
+
+        assert!(!submit_response.ok);
+        let err = submit_response.error.expect("error expected");
+        assert_eq!(err.code, "SUBMIT_BLOCK_ERROR");
+        assert!(err.message.contains("block has no parents"));
+    }
+
+    #[tokio::test]
+    async fn invalid_pow_submit_returns_diagnostic() {
+        let (state, _fake_p2p) = build_state_with_fake_p2p();
+        let (_template_id, mut block) = build_mined_template_block(&state).await;
+        block.header.difficulty = u32::MAX;
+        block.header.nonce = 0;
+
+        let Json(submit_response) = post_mining_submit(
+            State(state.clone()),
+            Json(SubmitMinedBlockRequest {
+                template_id: None,
+                block,
+            }),
+        )
+        .await;
+
+        assert!(!submit_response.ok);
+        let err = submit_response.error.expect("error expected");
+        assert_eq!(err.code, "INVALID_POW");
+        assert!(err.message.contains("score="));
+        assert!(err.message.contains("target="));
+        let runtime = state.runtime.read().await;
+        assert_eq!(runtime.external_mining_rejected_invalid_pow, 1);
+    }
+
+    #[tokio::test]
+    async fn no_regression_in_mining_rpc_flow() {
+        let (state, _fake_p2p) = build_state_with_fake_p2p();
+        let (template_id, block) = build_mined_template_block(&state).await;
+
+        let Json(submit_response) = post_mining_submit(
+            State(state.clone()),
+            Json(SubmitMinedBlockRequest {
+                template_id: Some(template_id),
+                block,
+            }),
+        )
+        .await;
+        assert!(submit_response.ok);
+        let runtime = state.runtime.read().await;
+        assert_eq!(runtime.external_mining_templates_emitted, 1);
+        assert_eq!(runtime.external_mining_submit_accepted, 1);
+        assert_eq!(runtime.external_mining_submit_rejected, 0);
     }
 
     #[tokio::test]
@@ -661,10 +831,15 @@ mod tests {
             mempool_fingerprint: "0:".to_string(),
             mempool_tx_count: 0,
             expires_at_unix: 1,
+            template_txids: block
+                .transactions
+                .iter()
+                .map(|tx| tx.txid.clone())
+                .collect(),
         });
 
         let Json(submit_response) = post_mining_submit(
-            State(state),
+            State(state.clone()),
             Json(SubmitMinedBlockRequest {
                 template_id: Some(template_id),
                 block,
