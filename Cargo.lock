@@ -2645,7 +2645,7 @@ dependencies = [
 
 [[package]]
 name = "pulsedag-core"
-version = "2.2.0"
+version = "2.2.1"
 dependencies = [
  "blake3",
  "criterion",
@@ -2660,7 +2660,7 @@ dependencies = [
 
 [[package]]
 name = "pulsedag-crypto"
-version = "2.2.0"
+version = "2.2.1"
 dependencies = [
  "ed25519-dalek",
  "hex",
@@ -2670,7 +2670,7 @@ dependencies = [
 
 [[package]]
 name = "pulsedag-miner"
-version = "2.2.0"
+version = "2.2.1"
 dependencies = [
  "anyhow",
  "hex",
@@ -2684,7 +2684,7 @@ dependencies = [
 
 [[package]]
 name = "pulsedag-p2p"
-version = "2.2.0"
+version = "2.2.1"
 dependencies = [
  "libp2p",
  "pulsedag-core",
@@ -2695,7 +2695,7 @@ dependencies = [
 
 [[package]]
 name = "pulsedag-rpc"
-version = "2.2.0"
+version = "2.2.1"
 dependencies = [
  "async-stream",
  "axum",
@@ -2715,7 +2715,7 @@ dependencies = [
 
 [[package]]
 name = "pulsedag-storage"
-version = "2.2.0"
+version = "2.2.1"
 dependencies = [
  "bincode",
  "proptest",
@@ -2727,7 +2727,7 @@ dependencies = [
 
 [[package]]
 name = "pulsedag-wallet"
-version = "2.2.0"
+version = "2.2.1"
 dependencies = [
  "hex",
  "pulsedag-core",
@@ -2737,7 +2737,7 @@ dependencies = [
 
 [[package]]
 name = "pulsedagd"
-version = "2.2.0"
+version = "2.2.1"
 dependencies = [
  "anyhow",
  "axum",

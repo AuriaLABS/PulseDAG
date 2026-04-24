@@ -1,7 +1,7 @@
 # Auditoría de errores — 2026-04-24
 
 ## Alcance
-Auditoría rápida de estabilidad para la actualización a v2.2.0:
+Auditoría rápida de estabilidad para la actualización a v2.2.1:
 
 1. Compilación del crate núcleo (`pulsedag-core`).
 2. Ejecución de tests de `pulsedag-core`.
@@ -33,4 +33,4 @@ Auditoría rápida de estabilidad para la actualización a v2.2.0:
 
 ## Conclusión
 
-La base revisada queda alineada a v2.2.0 con validación técnica rápida satisfactoria en el núcleo y sin bloqueantes evidentes en la auditoría ejecutada.
+La base revisada queda alineada a v2.2.1 con validación técnica rápida satisfactoria en el núcleo y sin bloqueantes evidentes en la auditoría ejecutada.

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-RUN_ID="${1:-v2.1-burnin}"
+REPO_VERSION="$(< VERSION)"
+RUN_ID="${1:-${REPO_VERSION}-burnin}"
 RUN_DATE="${2:-}"
 OUTPUT_DIR="${3:-artifacts/release-evidence/${RUN_ID}}"
 
@@ -12,7 +13,7 @@ fi
 mkdir -p "${OUTPUT_DIR}"/{runtime-alerts,snapshot-cadence,pruning-cadence,p2p-recovery,restart-recovery-notes}
 
 cat > "${OUTPUT_DIR}/README.md" <<EOT
-# PulseDAG v2.1 burn-in evidence bundle
+# PulseDAG ${REPO_VERSION} burn-in evidence bundle
 
 - Run ID: ${RUN_ID}
 - Run date (UTC): ${RUN_DATE}
@@ -61,7 +62,7 @@ cat > "${OUTPUT_DIR}/restart-recovery-notes/restart-log.md" <<'EOT'
 EOT
 
 cat > "${OUTPUT_DIR}/CHECKLIST.md" <<EOT
-# v2.1 burn-in evidence checklist
+# ${REPO_VERSION} burn-in evidence checklist
 
 Run ID: ${RUN_ID}
 Run date (UTC): ${RUN_DATE}

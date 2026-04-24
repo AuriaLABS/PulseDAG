@@ -1,6 +1,6 @@
 [package]
 name = "pulsedag-p2p"
-version = "2.2.0"
+version.workspace = true
 edition = "2021"
 
 [dependencies]

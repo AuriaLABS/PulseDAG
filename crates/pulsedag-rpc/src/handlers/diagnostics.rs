@@ -63,7 +63,7 @@ pub async fn get_diagnostics<S: RpcStateLike>(
 
     Json(ApiResponse::ok(DiagnosticsData {
         version: repo_version(),
-        stage: operator_stage().to_string(),
+        stage: operator_stage(),
         chain_id: chain.chain_id.clone(),
         best_height: chain.dag.best_height,
         block_count: chain.dag.blocks.len(),

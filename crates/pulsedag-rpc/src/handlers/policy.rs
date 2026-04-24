@@ -26,7 +26,7 @@ pub async fn get_policy<S: RpcStateLike>(State(state): State<S>) -> Json<ApiResp
 
     Json(ApiResponse::ok(PolicyData {
         version: repo_version(),
-        stage: operator_stage().to_string(),
+        stage: operator_stage(),
         mempool_policy: vec![
             "reject double spends".into(),
             "require structurally valid transactions".into(),

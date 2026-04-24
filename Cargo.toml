@@ -10,3 +10,6 @@ members = [
   "apps/pulsedagd",
   "apps/pulsedag-miner",
 ]
+
+[workspace.package]
+version = "2.2.1"

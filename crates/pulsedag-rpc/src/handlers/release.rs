@@ -1,8 +1,6 @@
 use crate::api::ApiResponse;
 use axum::Json;
 
-pub const OPERATOR_STAGE: &str = "v2.2-readiness";
-
 #[derive(Debug, serde::Serialize)]
 pub struct ReleaseInfoData {
     pub version: String,
@@ -15,14 +13,18 @@ pub fn repo_version() -> String {
     include_str!("../../../../VERSION").trim().to_string()
 }
 
-pub fn operator_stage() -> &'static str {
-    OPERATOR_STAGE
+pub fn operator_stage() -> String {
+    let version = repo_version();
+    let mut parts = version.trim_start_matches('v').split('.');
+    let major = parts.next().unwrap_or("0");
+    let minor = parts.next().unwrap_or("0");
+    format!("v{major}.{minor}-readiness")
 }
 
 pub async fn get_release_info() -> Json<ApiResponse<ReleaseInfoData>> {
     Json(ApiResponse::ok(ReleaseInfoData {
         version: repo_version(),
-        stage: operator_stage().to_string(),
+        stage: operator_stage(),
         capabilities: vec![
             "wallets".into(),
             "external_miner_protocol".into(),
@@ -91,12 +93,12 @@ mod tests {
         assert!(policy.contains("pub version: String"));
         assert!(policy.contains("pub stage: String"));
         assert!(policy.contains("version: repo_version()"));
-        assert!(policy.contains("stage: operator_stage().to_string()"));
+        assert!(policy.contains("stage: operator_stage()"));
 
         assert!(diagnostics.contains("pub version: String"));
         assert!(diagnostics.contains("pub stage: String"));
         assert!(diagnostics.contains("version: repo_version()"));
-        assert!(diagnostics.contains("stage: operator_stage().to_string()"));
+        assert!(diagnostics.contains("stage: operator_stage()"));
     }
 
     #[test]
