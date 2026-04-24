@@ -102,3 +102,28 @@ This is the only acceptance rule for public testnet PoW.
 - Miner scope statement: `docs/MINER_FINAL.md`, `apps/pulsedag-miner/README.md`
 
 Any conflicting old notes should be considered non-canonical.
+
+## 9) Official deterministic test vectors
+
+The canonical PoW vectors used for both node and miner test suites live at:
+
+- `fixtures/pow/official_vectors.json`
+
+Vector format is intentionally append-only and extension-friendly:
+
+- `schema_version`: fixture schema version (currently `1`).
+- `algorithm`: must be `kHeavyHash`.
+- `valid_vectors[]`: vectors that **must** match canonical outputs exactly.
+- `invalid_vectors[]`: vectors with intentionally tampered expectations that **must fail** on `must_fail_fields[]`.
+
+Each vector contains:
+
+- `id`: stable identifier for diagnostics.
+- `header`: canonical header input.
+- `expected.preimage_hex`
+- `expected.pow_hash_hex`
+- `expected.pow_score_u64`
+- `expected.target_u64`
+- `expected.accepts`
+
+To extend vectors later, append new entries (do not mutate existing IDs/expected outputs), preserving deterministic reproducibility across node and external miner implementations.
