@@ -1,7 +1,7 @@
 use crate::{
     errors::PulseError,
     state::ChainState,
-    types::{OutPoint, Transaction, Utxo},
+    types::Transaction,
     validation::validate_transaction,
 };
 
@@ -13,39 +13,17 @@ pub struct MempoolReconcileResult {
 
 fn simulate_mempool_accept(tx: &Transaction, state: &mut ChainState) -> Result<(), PulseError> {
     for input in &tx.inputs {
-        let spent = state
-            .utxo
-            .utxos
-            .remove(&input.previous_output)
-            .ok_or(PulseError::UtxoNotFound)?;
-        if let Some(entries) = state.utxo.address_index.get_mut(&spent.address) {
-            entries.retain(|op| op != &input.previous_output);
+        if state
+            .mempool
+            .spent_outpoints
+            .contains(&input.previous_output)
+        {
+            return Err(PulseError::DoubleSpend);
         }
         state
             .mempool
             .spent_outpoints
             .insert(input.previous_output.clone());
-    }
-
-    for (index, output) in tx.outputs.iter().enumerate() {
-        let outpoint = OutPoint {
-            txid: tx.txid.clone(),
-            index: index as u32,
-        };
-        let utxo = Utxo {
-            outpoint: outpoint.clone(),
-            address: output.address.clone(),
-            amount: output.amount,
-            coinbase: false,
-            height: 0,
-        };
-        state.utxo.utxos.insert(outpoint.clone(), utxo);
-        state
-            .utxo
-            .address_index
-            .entry(output.address.clone())
-            .or_default()
-            .push(outpoint);
     }
 
     state
