@@ -31,6 +31,14 @@ pub fn mode_connected_peers_are_real_network(mode: &str) -> bool {
     mode == P2P_MODE_LIBP2P_REAL
 }
 
+pub fn connected_peers_semantics(mode: &str) -> &'static str {
+    if mode_connected_peers_are_real_network(mode) {
+        "real-network-connected-peers"
+    } else {
+        "simulated-or-internal-peer-observations"
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct PeerRecoveryStatus {
     pub peer_id: String,
@@ -896,7 +904,9 @@ fn should_relay_outbound_block(state: &mut InnerState, id: &str, now: u64) -> bo
             false
         }
         _ => {
-            state.outbound_block_seen_at_unix.insert(id.to_string(), now);
+            state
+                .outbound_block_seen_at_unix
+                .insert(id.to_string(), now);
             true
         }
     }
@@ -1634,6 +1644,22 @@ mod tests {
             P2P_MODE_LIBP2P_DEV_LOOPBACK_SKELETON
         ));
         assert!(mode_connected_peers_are_real_network(P2P_MODE_LIBP2P_REAL));
+    }
+
+    #[test]
+    fn connected_peer_semantics_label_is_mode_dependent() {
+        assert_eq!(
+            connected_peers_semantics(P2P_MODE_MEMORY_SIMULATED),
+            "simulated-or-internal-peer-observations"
+        );
+        assert_eq!(
+            connected_peers_semantics(P2P_MODE_LIBP2P_DEV_LOOPBACK_SKELETON),
+            "simulated-or-internal-peer-observations"
+        );
+        assert_eq!(
+            connected_peers_semantics(P2P_MODE_LIBP2P_REAL),
+            "real-network-connected-peers"
+        );
     }
 
     #[test]

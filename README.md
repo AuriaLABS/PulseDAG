@@ -61,7 +61,7 @@ Invalid `PULSEDAG_CONFIG_PROFILE` values now fail fast with a clear startup erro
 - `libp2p-dev-loopback-skeleton`: development skeleton that uses libp2p types/runtime wiring but **does not** represent a real external peer network yet.
 - `libp2p-real`: real Swarm-backed foundation path where `connected_peers` is only treated as true network connectivity when this mode is active.
 
-The node startup logs and `/status`, `/p2p/status`, `/p2p/topology` endpoints now expose whether `connected_peers` should be interpreted as real network connectivity.
+The node startup logs and `/status`, `/p2p/status`, `/p2p/topology` endpoints now expose whether `connected_peers` should be interpreted as real network connectivity, including `connected_peers_semantics` (`real-network-connected-peers` vs `simulated-or-internal-peer-observations`).
 See `docs/OPERATIONS_P2P.md` for operational guidance.
 
 ## Staging upgrade and rollback validation (v2.2)
