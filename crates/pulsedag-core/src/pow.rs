@@ -70,6 +70,133 @@ pub fn selected_pow_name() -> &'static str {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PowHeaderPreimage<'a> {
+    pub version: u32,
+    pub parents: &'a [String],
+    pub timestamp: u64,
+    pub difficulty: u32,
+    pub nonce: u64,
+    pub merkle_root: &'a str,
+    pub state_root: &'a str,
+    pub blue_score: u64,
+    pub height: u64,
+}
+
+impl<'a> PowHeaderPreimage<'a> {
+    pub fn from_header(header: &'a BlockHeader) -> Self {
+        Self {
+            version: header.version,
+            parents: &header.parents,
+            timestamp: header.timestamp,
+            difficulty: header.difficulty,
+            nonce: header.nonce,
+            merkle_root: &header.merkle_root,
+            state_root: &header.state_root,
+            blue_score: header.blue_score,
+            height: header.height,
+        }
+    }
+
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(256);
+        out.push(POW_HEADER_PREIMAGE_VERSION);
+        out.extend_from_slice(&self.version.to_le_bytes());
+
+        let parent_count = self.parents.len() as u16;
+        out.extend_from_slice(&parent_count.to_le_bytes());
+        for parent in self.parents {
+            encode_len_prefixed_utf8(&mut out, parent);
+        }
+
+        out.extend_from_slice(&self.timestamp.to_le_bytes());
+        out.extend_from_slice(&self.difficulty.to_le_bytes());
+        out.extend_from_slice(&self.nonce.to_le_bytes());
+        encode_len_prefixed_utf8(&mut out, self.merkle_root);
+        encode_len_prefixed_utf8(&mut out, self.state_root);
+        out.extend_from_slice(&self.blue_score.to_le_bytes());
+        out.extend_from_slice(&self.height.to_le_bytes());
+        out
+    }
+
+    pub fn to_debug_string(&self) -> String {
+        format!(
+            "pv={}|v={}|parents={}|ts={}|difficulty={}|nonce={}|merkle={}|state={}|blue={}|height={}",
+            POW_HEADER_PREIMAGE_VERSION,
+            self.version,
+            self.parents.join(","),
+            self.timestamp,
+            self.difficulty,
+            self.nonce,
+            self.merkle_root,
+            self.state_root,
+            self.blue_score,
+            self.height,
+        )
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PowEvaluation {
+    pub algorithm: PowAlgorithm,
+    pub hash_hex: String,
+    pub score_u64: u64,
+    pub target_u64: u64,
+    pub accepted: bool,
+}
+
+pub trait PowEngine {
+    fn algorithm(&self) -> PowAlgorithm;
+    fn hash_preimage_hex(&self, preimage: &[u8]) -> String;
+    fn score_preimage_u64(&self, preimage: &[u8]) -> u64;
+    fn target_u64(&self, difficulty: u64) -> u64 {
+        let difficulty = difficulty.max(1);
+        u64::MAX / difficulty
+    }
+    fn evaluate_preimage(&self, preimage: &[u8], difficulty: u64) -> PowEvaluation {
+        let hash_hex = self.hash_preimage_hex(preimage);
+        let score_u64 = self.score_preimage_u64(preimage);
+        let target_u64 = self.target_u64(difficulty);
+        PowEvaluation {
+            algorithm: self.algorithm(),
+            hash_hex,
+            score_u64,
+            target_u64,
+            accepted: score_u64 <= target_u64,
+        }
+    }
+    fn evaluate_header(&self, header: &BlockHeader) -> PowEvaluation {
+        self.evaluate_preimage(
+            &PowHeaderPreimage::from_header(header).to_bytes(),
+            header.difficulty as u64,
+        )
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct CanonicalPowEngine;
+
+impl PowEngine for CanonicalPowEngine {
+    fn algorithm(&self) -> PowAlgorithm {
+        PowAlgorithm::KHeavyHash
+    }
+
+    fn hash_preimage_hex(&self, preimage: &[u8]) -> String {
+        blake3::hash(preimage).to_hex().to_string()
+    }
+
+    fn score_preimage_u64(&self, preimage: &[u8]) -> u64 {
+        let hash = blake3::hash(preimage);
+        let mut prefix = [0u8; 8];
+        prefix.copy_from_slice(&hash.as_bytes()[..8]);
+        u64::from_be_bytes(prefix)
+    }
+}
+
+pub fn canonical_pow_engine() -> CanonicalPowEngine {
+    CanonicalPowEngine
+}
+
 fn encode_len_prefixed_utf8(out: &mut Vec<u8>, value: &str) {
     let len = value.len() as u16;
     out.extend_from_slice(&len.to_le_bytes());
@@ -91,75 +218,45 @@ fn encode_len_prefixed_utf8(out: &mut Vec<u8>, value: &str) {
 /// 10) header.blue_score (`u64`, little-endian)
 /// 11) header.height (`u64`, little-endian)
 pub fn pow_preimage_bytes(header: &BlockHeader) -> Vec<u8> {
-    let mut out = Vec::with_capacity(256);
-    out.push(POW_HEADER_PREIMAGE_VERSION);
-    out.extend_from_slice(&header.version.to_le_bytes());
-
-    let parent_count = header.parents.len() as u16;
-    out.extend_from_slice(&parent_count.to_le_bytes());
-    for parent in &header.parents {
-        encode_len_prefixed_utf8(&mut out, parent);
-    }
-
-    out.extend_from_slice(&header.timestamp.to_le_bytes());
-    out.extend_from_slice(&header.difficulty.to_le_bytes());
-    out.extend_from_slice(&header.nonce.to_le_bytes());
-    encode_len_prefixed_utf8(&mut out, &header.merkle_root);
-    encode_len_prefixed_utf8(&mut out, &header.state_root);
-    out.extend_from_slice(&header.blue_score.to_le_bytes());
-    out.extend_from_slice(&header.height.to_le_bytes());
-    out
+    PowHeaderPreimage::from_header(header).to_bytes()
 }
 
 /// Debug-oriented helper string that mirrors canonical field order.
 pub fn pow_preimage_string(header: &BlockHeader) -> String {
-    format!(
-        "pv={}|v={}|parents={}|ts={}|difficulty={}|nonce={}|merkle={}|state={}|blue={}|height={}",
-        POW_HEADER_PREIMAGE_VERSION,
-        header.version,
-        header.parents.join(","),
-        header.timestamp,
-        header.difficulty,
-        header.nonce,
-        header.merkle_root,
-        header.state_root,
-        header.blue_score,
-        header.height,
-    )
+    PowHeaderPreimage::from_header(header).to_debug_string()
 }
 
 pub fn pow_hash_hex(header: &BlockHeader) -> String {
-    let preimage = pow_preimage_bytes(header);
-    blake3::hash(&preimage).to_hex().to_string()
+    canonical_pow_engine().evaluate_header(header).hash_hex
 }
 
 pub fn pow_target_u64(difficulty: u64) -> u64 {
-    let difficulty = difficulty.max(1);
-    u64::MAX / difficulty
+    canonical_pow_engine().target_u64(difficulty)
 }
 
 pub fn pow_hash_score_u64(header: &BlockHeader) -> u64 {
-    let hash_bytes = blake3::hash(&pow_preimage_bytes(header));
-    let mut prefix = [0u8; 8];
-    prefix.copy_from_slice(&hash_bytes.as_bytes()[..8]);
-    u64::from_be_bytes(prefix)
+    canonical_pow_engine().evaluate_header(header).score_u64
 }
 
 pub fn pow_accepts(header: &BlockHeader) -> bool {
-    pow_hash_score_u64(header) <= pow_target_u64(header.difficulty.into())
+    canonical_pow_engine().evaluate_header(header).accepted
+}
+
+pub fn pow_evaluate(header: &BlockHeader) -> PowEvaluation {
+    canonical_pow_engine().evaluate_header(header)
 }
 
 pub fn mine_header(mut header: BlockHeader, max_tries: u64) -> (BlockHeader, bool, u64, String) {
     let tries = max_tries.max(1);
     for i in 0..tries {
         header.nonce = i;
-        let hash_hex = pow_hash_hex(&header);
-        if pow_accepts(&header) {
-            return (header, true, i + 1, hash_hex);
+        let evaluation = pow_evaluate(&header);
+        if evaluation.accepted {
+            return (header, true, i + 1, evaluation.hash_hex);
         }
     }
-    let hash_hex = pow_hash_hex(&header);
-    (header, false, tries, hash_hex)
+    let evaluation = pow_evaluate(&header);
+    (header, false, tries, evaluation.hash_hex)
 }
 
 pub fn dev_surrogate_pow_hash(header: &BlockHeader) -> String {
@@ -416,9 +513,11 @@ mod tests {
     #[test]
     fn acceptance_rule_matches_target_rule() {
         let h = sample_header();
-        let target = pow_target_u64(h.difficulty as u64);
-        let score = pow_hash_score_u64(&h);
-        assert_eq!(pow_accepts(&h), score <= target);
+        let evaluation = pow_evaluate(&h);
+        assert_eq!(
+            pow_accepts(&h),
+            evaluation.score_u64 <= evaluation.target_u64
+        );
     }
 
     #[test]
@@ -442,6 +541,24 @@ mod tests {
         let mut h = sample_header();
         h.difficulty = u32::MAX;
         assert!(!pow_accepts(&h));
+    }
+
+    #[test]
+    fn engine_evaluation_is_deterministic_for_same_header() {
+        let h = sample_header();
+        let first = pow_evaluate(&h);
+        let second = pow_evaluate(&h);
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn preimage_evaluation_matches_header_evaluation() {
+        let h = sample_header();
+        let engine = canonical_pow_engine();
+        let preimage = PowHeaderPreimage::from_header(&h).to_bytes();
+        let from_header = engine.evaluate_header(&h);
+        let from_preimage = engine.evaluate_preimage(&preimage, h.difficulty as u64);
+        assert_eq!(from_header, from_preimage);
     }
 
     fn append_block(
