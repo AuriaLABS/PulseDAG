@@ -148,6 +148,7 @@ async fn main() -> Result<()> {
                 effective_mode = %status.mode,
                 runtime_mode_detail = %status.runtime_mode_detail,
                 connected_peers_are_real_network = pulsedag_p2p::mode_connected_peers_are_real_network(&status.mode),
+                connected_peers_semantics = pulsedag_p2p::connected_peers_semantics(&status.mode),
                 "p2p initialized"
             );
         } else {
@@ -383,11 +384,20 @@ async fn main() -> Result<()> {
                                 if let Some(ref p2p) = p2p {
                                     if let Ok(status) = p2p.status() {
                                         if status.connected_peers.is_empty() {
+                                            let peers_are_real_network =
+                                                pulsedag_p2p::mode_connected_peers_are_real_network(
+                                                    &status.mode,
+                                                );
+                                            let skip_reason = if peers_are_real_network {
+                                                "no_connected_peers"
+                                            } else {
+                                                "no_real_network_connectivity_in_current_mode"
+                                            };
                                             rt.tx_rebroadcast_skipped_no_peers += 1;
                                             let _ = storage.append_runtime_event(
                                                 "warn",
                                                 "tx_rebroadcast_skipped",
-                                                &format!("txid={} reason=no_connected_peers", txid),
+                                                &format!("txid={} reason={}", txid, skip_reason),
                                             );
                                             continue;
                                         }

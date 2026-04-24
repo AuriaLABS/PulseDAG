@@ -1,5 +1,7 @@
 use axum::{extract::State, Json};
-use pulsedag_p2p::{mode_connected_peers_are_real_network, PeerRecoveryStatus};
+use pulsedag_p2p::{
+    connected_peers_semantics, mode_connected_peers_are_real_network, PeerRecoveryStatus,
+};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::api::{ApiResponse, RpcStateLike};
@@ -98,6 +100,7 @@ pub async fn get_p2p_status<S: RpcStateLike>(
                 Json(ApiResponse::ok(serde_json::json!({
                     "mode": status.mode,
                     "connected_peers_are_real_network": mode_connected_peers_are_real_network(&status.mode),
+                    "connected_peers_semantics": connected_peers_semantics(&status.mode),
                     "peer_id": status.peer_id,
                     "listening": status.listening,
                     "connected_peers": status.connected_peers,
@@ -392,6 +395,10 @@ mod tests {
         let Json(resp) = get_p2p_status(State(mk_state(status))).await;
         let data = resp.data.expect("p2p status data");
         assert!(data.get("connected_peers").is_some());
+        assert_eq!(
+            data["connected_peers_semantics"],
+            "simulated-or-internal-peer-observations"
+        );
         assert!(data.get("peer_recovery").is_some());
         assert_eq!(data["peer_state_summary"]["total"], 2);
         assert_eq!(data["peer_state_summary"]["healthy"], 1);

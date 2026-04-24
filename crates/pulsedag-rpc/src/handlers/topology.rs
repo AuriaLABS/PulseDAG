@@ -1,6 +1,8 @@
 use crate::{api::ApiResponse, api::RpcStateLike};
 use axum::{extract::State, Json};
-use pulsedag_p2p::{mode_connected_peers_are_real_network, PeerRecoveryStatus};
+use pulsedag_p2p::{
+    connected_peers_semantics, mode_connected_peers_are_real_network, PeerRecoveryStatus,
+};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, serde::Serialize)]
@@ -29,6 +31,7 @@ pub struct TopologyData {
     pub mode: Option<String>,
     pub runtime_mode_detail: Option<String>,
     pub connected_peers_are_real_network: bool,
+    pub connected_peers_semantics: String,
     pub peer_count: usize,
     pub topic_count: usize,
     pub peers: Vec<String>,
@@ -103,6 +106,7 @@ pub async fn get_topology<S: RpcStateLike>(
                     connected_peers_are_real_network: mode_connected_peers_are_real_network(
                         &status.mode,
                     ),
+                    connected_peers_semantics: connected_peers_semantics(&status.mode).to_string(),
                     mode: Some(status.mode),
                     runtime_mode_detail: Some(status.runtime_mode_detail),
                     peer_count: status.connected_peers.len(),
@@ -129,6 +133,7 @@ pub async fn get_topology<S: RpcStateLike>(
             mode: None,
             runtime_mode_detail: None,
             connected_peers_are_real_network: false,
+            connected_peers_semantics: connected_peers_semantics("").to_string(),
             peer_count: 0,
             topic_count: 0,
             peers: Vec::new(),
@@ -359,12 +364,22 @@ mod tests {
         let mut real_status = base_status(P2P_MODE_LIBP2P_REAL);
         real_status.peer_recovery = vec![peer("r", true, 0, 100, 0, 0, None, vec![])];
         let Json(real_resp) = get_topology(State(mk_state(real_status))).await;
-        assert!(real_resp.data.unwrap().connected_peers_are_real_network);
+        let real_data = real_resp.data.unwrap();
+        assert!(real_data.connected_peers_are_real_network);
+        assert_eq!(
+            real_data.connected_peers_semantics,
+            "real-network-connected-peers"
+        );
 
         let mut dev_status = base_status(P2P_MODE_MEMORY_SIMULATED);
         dev_status.peer_recovery = vec![peer("d", true, 0, 100, 0, 0, None, vec![])];
         let Json(dev_resp) = get_topology(State(mk_state(dev_status))).await;
-        assert!(!dev_resp.data.unwrap().connected_peers_are_real_network);
+        let dev_data = dev_resp.data.unwrap();
+        assert!(!dev_data.connected_peers_are_real_network);
+        assert_eq!(
+            dev_data.connected_peers_semantics,
+            "simulated-or-internal-peer-observations"
+        );
     }
 
     #[tokio::test]

@@ -20,14 +20,17 @@ Evitar ambigüedad operativa entre simulación local, skeleton de desarrollo y r
 - `GET /status`
   - `p2p_mode`
   - `connected_peers_are_real_network`
+  - `connected_peers_semantics`
   - `peer_count`
 - `GET /p2p/status`
   - `mode`
   - `connected_peers_are_real_network`
+  - `connected_peers_semantics`
   - `connected_peers`
 - `GET /p2p/topology`
   - `mode`
   - `connected_peers_are_real_network`
+  - `connected_peers_semantics`
   - `peer_count`
 
 ## Logs de arranque
