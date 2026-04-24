@@ -63,11 +63,12 @@ pub async fn get_status<S: RpcStateLike>(
         .saturating_sub(keep_recent.saturating_sub(1));
     let p2p_status = state.p2p().and_then(|p| p.status().ok()).map(|s| {
         let peers_are_real = mode_connected_peers_are_real_network(&s.mode);
+        let mode = s.mode.clone();
         (
-            s.mode,
+            mode.clone(),
             s.runtime_mode_detail,
             peers_are_real,
-            connected_peers_semantics(&s.mode).to_string(),
+            connected_peers_semantics(&mode).to_string(),
             s.connected_peers.len(),
         )
     });
