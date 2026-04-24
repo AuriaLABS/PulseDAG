@@ -1,6 +1,6 @@
-# v2.2 release evidence bundle
+# v2.2.2 release evidence bundle
 
-This document defines the standard evidence package for v2.2 burn-in and release readiness.
+This document defines the standard evidence package for v2.2.2 burn-in and release readiness.
 
 ## Evidence bundle generation
 Generate the base structure with:
@@ -84,8 +84,8 @@ These artifacts should be linked from `README.md` in the run directory:
    - Record accepted/rejected submit trends and rejection taxonomy highlights.
 
 
-## v2.2 closeout evidence index
-Use `docs/V2_2_CLOSEOUT_CHECKLIST.md` as the release-manager closeout wrapper and verify each referenced surface resolves in-repo:
+## v2.2.2 closeout evidence index
+Use `docs/checklists/V2_2_2_BURNIN_CLOSEOUT.md` as the release-manager closeout wrapper and verify each referenced surface resolves in-repo:
 - Burn-in policy: `docs/BURN_IN_14D.md`
 - Runbook hub: `docs/runbooks/INDEX.md`
 - Recovery/startup interpretation: `docs/runbooks/FAST_BOOT_AND_FALLBACK.md`
@@ -93,12 +93,21 @@ Use `docs/V2_2_CLOSEOUT_CHECKLIST.md` as the release-manager closeout wrapper an
 - Mining telemetry source (`GET /runtime/status`): `docs/dashboard/README.md`
 - Release artifacts provenance workflow: `.github/workflows/release-binaries.yml`
 
+
+## Minimum evidence required before tagging `v2.2.2`
+The tag is blocked unless all items below are present and reviewed:
+1. Complete 14-day evidence coverage in all required CSV/markdown categories.
+2. Explicit restart/recovery proof with startup mode (fast-boot/replay/fallback).
+3. Snapshot cadence proof plus at least one restore/rebuild verification note.
+4. Dry-run `go-no-go.md` decision with release + ops owner names and UTC timestamp.
+5. Staging upgrade/rollback rehearsal evidence attached and cross-linked.
+
 ## Deterministic artifact expectation
 The scaffold generated for the same `run_id` + `run_date_utc` must be byte-for-byte deterministic.
 The workflow at `.github/workflows/v2_1-burnin-evidence.yml` includes a determinism check to enforce this.
 
 ## Release manager checklist
-Before approving v2.2:
+Before approving v2.2.2:
 1. Confirm evidence completeness for all 14 days.
 2. Confirm unresolved Sev-1 incidents are zero, or release is blocked.
 3. Confirm cadence records match planned snapshot/pruning schedule.
@@ -110,7 +119,7 @@ Before approving v2.2:
 9. Confirm dry-run `go-no-go.md` decision is present and all required inputs are traceable.
 
 ## Staging reversibility evidence (upgrade + rollback)
-For the v2.2 release gate, attach a staging rehearsal bundle that demonstrates operational reversibility:
+For the v2.2.2 release gate, attach a staging rehearsal bundle that demonstrates operational reversibility:
 - Baseline capture prior to upgrade.
 - Post-upgrade validation output.
 - Post-rollback validation output (including health/coherence checks).
