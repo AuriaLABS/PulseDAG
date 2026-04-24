@@ -31,7 +31,7 @@ pub struct StartupLifecycleEvent {
 }
 
 pub fn build_startup_lifecycle_events(
-    startup_recovery_mode: &str,
+    _startup_recovery_mode: &str,
     startup_report: &StartupPathReport,
     startup_duration_ms: u128,
 ) -> Vec<StartupLifecycleEvent> {
@@ -78,7 +78,11 @@ pub fn build_startup_lifecycle_events(
         }
     }
 
-    if startup_recovery_mode == "replayed_blocks" {
+    let replay_path = matches!(
+        startup_report.startup_path.as_str(),
+        "full_replay" | "fallback_full_replay"
+    );
+    if replay_path {
         events.push(StartupLifecycleEvent {
             level: "warn",
             kind: "full_replay_started",
@@ -102,28 +106,67 @@ pub fn build_startup_lifecycle_events(
     events
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StartupRecoveryMode {
+    Snapshot,
+    SnapshotMissing,
+    ReplayedBlocks,
+    GenesisInit,
+    Unknown,
+}
+
+impl StartupRecoveryMode {
+    fn parse(value: &str) -> Self {
+        match value {
+            "snapshot" => Self::Snapshot,
+            "snapshot_missing" => Self::SnapshotMissing,
+            "replayed_blocks" => Self::ReplayedBlocks,
+            "genesis_init" => Self::GenesisInit,
+            _ => Self::Unknown,
+        }
+    }
+}
+
 pub fn derive_startup_path_report(
     startup_recovery_mode: &str,
     snapshot_exists: bool,
     persisted_block_count: usize,
     startup_rebuild_reason: Option<String>,
 ) -> StartupPathReport {
-    let replayed_blocks = startup_recovery_mode == "replayed_blocks";
-    let startup_fallback_reason = if replayed_blocks {
-        startup_rebuild_reason
-    } else {
-        None
-    };
-    let startup_path = if replayed_blocks && startup_fallback_reason.is_some() {
-        "fallback_full_replay"
-    } else if replayed_blocks {
-        "full_replay"
-    } else if snapshot_exists {
-        "fast_boot"
-    } else if persisted_block_count > 0 {
-        "full_replay"
-    } else {
-        "genesis_init"
+    let mode = StartupRecoveryMode::parse(startup_recovery_mode);
+    let mut startup_fallback_reason = None;
+    let startup_path = match mode {
+        StartupRecoveryMode::ReplayedBlocks => {
+            startup_fallback_reason = Some(startup_rebuild_reason.unwrap_or_else(|| {
+                "startup recovery requested full replay without explicit fallback reason"
+                    .to_string()
+            }));
+            "fallback_full_replay"
+        }
+        StartupRecoveryMode::Snapshot if snapshot_exists => "fast_boot",
+        StartupRecoveryMode::Snapshot | StartupRecoveryMode::SnapshotMissing => {
+            if persisted_block_count > 0 {
+                "full_replay"
+            } else {
+                "genesis_init"
+            }
+        }
+        StartupRecoveryMode::GenesisInit => {
+            if persisted_block_count > 0 {
+                "full_replay"
+            } else {
+                "genesis_init"
+            }
+        }
+        StartupRecoveryMode::Unknown => {
+            if snapshot_exists {
+                "fast_boot"
+            } else if persisted_block_count > 0 {
+                "full_replay"
+            } else {
+                "genesis_init"
+            }
+        }
     }
     .to_string();
     let startup_fastboot_used = startup_path == "fast_boot";
@@ -142,6 +185,11 @@ pub fn derive_startup_path_report(
         format!(
             "{} startup via {}; fallback_reason={}",
             startup_bootstrap_mode, startup_path, reason
+        )
+    } else if mode == StartupRecoveryMode::Snapshot && !snapshot_exists {
+        format!(
+            "{} startup via {}; recovered from contradictory input mode=snapshot while snapshot_exists=false",
+            startup_bootstrap_mode, startup_path
         )
     } else {
         format!("{startup_bootstrap_mode} startup via {startup_path}")
@@ -423,12 +471,48 @@ mod tests {
     }
 
     #[test]
+    fn replay_path_reported_coherently_for_operator_status() {
+        let report = derive_startup_path_report("snapshot_missing", false, 25, None);
+        let events = build_startup_lifecycle_events("snapshot_missing", &report, 11);
+        let kinds: Vec<&str> = events.iter().map(|event| event.kind).collect();
+        assert_eq!(
+            kinds,
+            vec![
+                "full_replay_started",
+                "full_replay_completed",
+                "startup_completed"
+            ]
+        );
+        assert_eq!(report.startup_bootstrap_mode, "replay");
+        assert_eq!(report.startup_path, "full_replay");
+        assert!(report.startup_fallback_reason.is_none());
+    }
+
+    #[test]
     fn fallback_path_is_explicitly_marked_as_recovery_fallback() {
         let reason = "snapshot decode failed; rebuilding from persisted blocks".to_string();
         let report = derive_startup_path_report("replayed_blocks", true, 25, Some(reason.clone()));
         assert_eq!(report.startup_bootstrap_mode, "recovery_fallback");
         assert_eq!(report.startup_path, "fallback_full_replay");
         assert_eq!(report.startup_fallback_reason, Some(reason));
+    }
+
+    #[test]
+    fn recovery_path_reported_coherently_as_snapshot_assisted() {
+        let report = derive_startup_path_report("snapshot", true, 42, None);
+        assert_eq!(report.startup_bootstrap_mode, "snapshot_assisted");
+        assert_eq!(report.startup_path, "fast_boot");
+        assert!(report.startup_fastboot_used);
+        assert!(!report.startup_replay_required);
+    }
+
+    #[test]
+    fn fallback_path_reported_coherently_with_reason() {
+        let report = derive_startup_path_report("replayed_blocks", true, 42, None);
+        assert_eq!(report.startup_bootstrap_mode, "recovery_fallback");
+        assert_eq!(report.startup_path, "fallback_full_replay");
+        assert!(report.startup_fallback_reason.is_some());
+        assert!(report.startup_status_summary.contains("fallback_reason="));
     }
 
     #[test]
@@ -472,5 +556,18 @@ mod tests {
                 assert!(report.startup_fallback_reason.is_some());
             }
         }
+    }
+
+    #[test]
+    fn contradictory_startup_state_is_prevented() {
+        let report = derive_startup_path_report("snapshot", false, 18, None);
+        assert_eq!(report.startup_path, "full_replay");
+        assert_eq!(report.startup_bootstrap_mode, "replay");
+        assert!(!report.startup_fastboot_used);
+        assert!(!report.startup_snapshot_validated);
+        assert!(report.startup_replay_required);
+        assert!(report
+            .startup_status_summary
+            .contains("contradictory input mode=snapshot"));
     }
 }

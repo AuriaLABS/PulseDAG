@@ -217,6 +217,63 @@ fn is_peer_degraded(peer: &PeerRecoveryStatus) -> bool {
     peer.score < 80 || peer.flap_events > 0 || !peer.recent_failures_unix.is_empty()
 }
 
+#[derive(Debug, Clone)]
+struct StartupStatusView {
+    path: String,
+    bootstrap_mode: String,
+    status_summary: String,
+    fastboot_used: bool,
+    snapshot_detected: bool,
+    snapshot_validated: bool,
+    delta_applied: bool,
+    replay_required: bool,
+    fallback_reason: Option<String>,
+}
+
+fn startup_status_view(runtime: &crate::api::NodeRuntimeStats) -> StartupStatusView {
+    let path = runtime.startup_path.clone();
+    let bootstrap_mode = match path.as_str() {
+        "fast_boot" => "snapshot_assisted".to_string(),
+        "fallback_full_replay" => "recovery_fallback".to_string(),
+        "full_replay" => "replay".to_string(),
+        _ => "normal".to_string(),
+    };
+    let fastboot_used = path == "fast_boot";
+    let snapshot_detected = runtime.startup_snapshot_detected || runtime.startup_snapshot_exists;
+    let snapshot_validated = fastboot_used;
+    let delta_applied = fastboot_used;
+    let replay_required = !fastboot_used;
+    let fallback_reason = if path == "fallback_full_replay" {
+        runtime.startup_fallback_reason.clone().or_else(|| {
+            Some(
+                "fallback replay reported without explicit reason; inspect startup logs"
+                    .to_string(),
+            )
+        })
+    } else {
+        None
+    };
+    let status_summary = if let Some(reason) = fallback_reason.as_ref() {
+        format!(
+            "{} startup via {}; fallback_reason={}",
+            bootstrap_mode, path, reason
+        )
+    } else {
+        format!("{} startup via {}", bootstrap_mode, path)
+    };
+    StartupStatusView {
+        path,
+        bootstrap_mode,
+        status_summary,
+        fastboot_used,
+        snapshot_detected,
+        snapshot_validated,
+        delta_applied,
+        replay_required,
+        fallback_reason,
+    }
+}
+
 pub async fn get_runtime_status<S: RpcStateLike>(
     State(state): State<S>,
 ) -> Json<ApiResponse<RuntimeStatusData>> {
@@ -232,6 +289,7 @@ pub async fn get_runtime_status<S: RpcStateLike>(
     let burn_in_remaining_days = burn_in_target_days.saturating_sub(burn_in_elapsed_days);
     let chain_handle = state.chain();
     let chain = chain_handle.read().await;
+    let startup = startup_status_view(&runtime);
     let snapshot = pulsedag_core::dev_difficulty_snapshot(&chain);
     let mempool_transactions = chain.mempool.transactions.len();
     let mempool_max_transactions = chain.mempool.max_transactions;
@@ -433,15 +491,15 @@ pub async fn get_runtime_status<S: RpcStateLike>(
         startup_consistency_issue_count: runtime.startup_consistency_issue_count,
         startup_recovery_mode: runtime.startup_recovery_mode.clone(),
         startup_rebuild_reason: runtime.startup_rebuild_reason.clone(),
-        startup_path: runtime.startup_path.clone(),
-        startup_bootstrap_mode: runtime.startup_bootstrap_mode.clone(),
-        startup_status_summary: runtime.startup_status_summary.clone(),
-        startup_fastboot_used: runtime.startup_fastboot_used,
-        startup_snapshot_detected: runtime.startup_snapshot_detected,
-        startup_snapshot_validated: runtime.startup_snapshot_validated,
-        startup_delta_applied: runtime.startup_delta_applied,
-        startup_replay_required: runtime.startup_replay_required,
-        startup_fallback_reason: runtime.startup_fallback_reason.clone(),
+        startup_path: startup.path,
+        startup_bootstrap_mode: startup.bootstrap_mode,
+        startup_status_summary: startup.status_summary,
+        startup_fastboot_used: startup.fastboot_used,
+        startup_snapshot_detected: startup.snapshot_detected,
+        startup_snapshot_validated: startup.snapshot_validated,
+        startup_delta_applied: startup.delta_applied,
+        startup_replay_required: startup.replay_required,
+        startup_fallback_reason: startup.fallback_reason,
         startup_duration_ms: runtime.startup_duration_ms,
         last_self_audit_unix: runtime.last_self_audit_unix,
         last_self_audit_ok: runtime.last_self_audit_ok,
@@ -1140,7 +1198,6 @@ mod stream_tests {
     use std::{sync::Arc, time::Duration};
 
     use super::{build_runtime_events_stream, RuntimeEventStreamEnvelope, StreamDeduper};
-    use futures_util::StreamExt;
     use pulsedag_storage::RuntimeEvent;
     use pulsedag_storage::Storage;
 
@@ -1232,12 +1289,65 @@ mod stream_tests {
             .append_runtime_event("info", "startup_completed", "startup completed")
             .expect("append runtime event");
         let mut stream = Box::pin(build_runtime_events_stream(storage, 100, 20, 10));
-        let event = tokio::time::timeout(Duration::from_secs(2), stream.next())
+        let event = tokio::time::timeout(
+            Duration::from_secs(2),
+            std::future::poll_fn(|cx| futures_core::Stream::poll_next(stream.as_mut(), cx)),
+        )
             .await
             .expect("stream poll timeout")
             .expect("stream ended unexpectedly")
             .expect("stream event result");
         let _ = event;
         drop(stream);
+    }
+}
+
+#[cfg(test)]
+mod startup_tests {
+    use super::startup_status_view;
+    use crate::api::NodeRuntimeStats;
+
+    #[test]
+    fn startup_view_reports_replay_path_coherently() {
+        let runtime = NodeRuntimeStats {
+            startup_path: "full_replay".to_string(),
+            startup_snapshot_exists: false,
+            ..NodeRuntimeStats::default()
+        };
+        let view = startup_status_view(&runtime);
+        assert_eq!(view.bootstrap_mode, "replay");
+        assert!(view.replay_required);
+        assert!(!view.fastboot_used);
+        assert!(view.fallback_reason.is_none());
+    }
+
+    #[test]
+    fn startup_view_reports_recovery_fallback_coherently() {
+        let runtime = NodeRuntimeStats {
+            startup_path: "fallback_full_replay".to_string(),
+            startup_fallback_reason: Some("snapshot validation failed".to_string()),
+            ..NodeRuntimeStats::default()
+        };
+        let view = startup_status_view(&runtime);
+        assert_eq!(view.bootstrap_mode, "recovery_fallback");
+        assert!(view.replay_required);
+        assert!(view.fallback_reason.is_some());
+    }
+
+    #[test]
+    fn startup_view_prevents_contradictory_fastboot_flags() {
+        let runtime = NodeRuntimeStats {
+            startup_path: "full_replay".to_string(),
+            startup_fastboot_used: true,
+            startup_snapshot_validated: true,
+            startup_delta_applied: true,
+            startup_replay_required: false,
+            ..NodeRuntimeStats::default()
+        };
+        let view = startup_status_view(&runtime);
+        assert!(!view.fastboot_used);
+        assert!(!view.snapshot_validated);
+        assert!(!view.delta_applied);
+        assert!(view.replay_required);
     }
 }
