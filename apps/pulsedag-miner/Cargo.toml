@@ -11,3 +11,6 @@ serde_json = "1"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 pulsedag-core = { path = "../../crates/pulsedag-core" }
 pulsedag-rpc = { path = "../../crates/pulsedag-rpc" }
+
+[dev-dependencies]
+hex = "0.4"
