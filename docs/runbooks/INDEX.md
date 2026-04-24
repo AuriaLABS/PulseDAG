@@ -22,6 +22,9 @@ This index consolidates the v2.2 operator package for recovery, rebuild, restore
 - `docs/runbooks/STAGING_UPGRADE.md` — staged upgrade validation path.
 - `docs/runbooks/STAGING_ROLLBACK.md` — rollback decision and execution path.
 
+## Public testnet readiness gate
+- `docs/runbooks/FINAL_POW_PUBLIC_TESTNET_DRY_RUN.md` — final multi-node, multi-miner dry-run and go/no-go gate before public testnet open.
+
 ## Evidence and operations support docs
 - `docs/V2_2_CLOSEOUT_CHECKLIST.md` — final v2.2 closeout checklist and evidence index.
 - `docs/RELEASE_EVIDENCE.md` — release evidence bundle requirements.

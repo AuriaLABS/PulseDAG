@@ -38,6 +38,29 @@ artifacts/release-evidence/<run_id>/
 - `p2p-recovery/recovery-events.csv`: recovery timing under peer churn/rejoin.
 - `restart-recovery-notes/restart-log.md`: restart incidents, startup mode (fast-boot/replay), recovery duration, and follow-up notes.
 
+## Final PoW dry-run evidence (public testnet gate)
+Before public testnet launch, attach a dry-run package under:
+
+```text
+artifacts/release-evidence/<run_id>/dry-run/
+  topology.md
+  timeline.md
+  metrics-summary.md
+  go-no-go.md
+  incident-log.md
+  raw/
+```
+
+Execution and acceptance policy source:
+- `docs/runbooks/FINAL_POW_PUBLIC_TESTNET_DRY_RUN.md`
+
+Dry-run evidence must show:
+1. Multi-node and multi-miner topology (external miner only).
+2. Restart, churn, and recovery drill timeline with UTC timestamps.
+3. Explicit pass/fail outcomes against pre-declared acceptance criteria.
+4. Final go/no-go decision rationale signed by release/operator owners.
+5. Confirmation that no pool logic was introduced.
+
 ## Additional v2.2 operator evidence (attach to bundle)
 These artifacts should be linked from `README.md` in the run directory:
 
@@ -84,6 +107,7 @@ Before approving v2.2:
 6. Confirm startup mode visibility (fast-boot/replay/fallback counters) is captured for restart drills.
 7. Confirm mining telemetry does not show unresolved regression patterns.
 8. Attach release manager sign-off to the final evidence bundle.
+9. Confirm dry-run `go-no-go.md` decision is present and all required inputs are traceable.
 
 ## Staging reversibility evidence (upgrade + rollback)
 For the v2.2 release gate, attach a staging rehearsal bundle that demonstrates operational reversibility:

@@ -8,6 +8,15 @@ This document defines the **real** v2.2 release burn-in process for PulseDAG ope
 - Do **not** add pool logic during the 14-day run.
 - CI workflows (including short soak jobs) are supporting signals only and **do not prove** a full 14-day burn-in.
 
+## Public-testnet prerequisite (final PoW dry-run)
+Before public testnet open and before counting day-1 of the 14-day burn-in, execute:
+- `docs/runbooks/FINAL_POW_PUBLIC_TESTNET_DRY_RUN.md`
+
+That dry-run is the readiness gate for:
+- multi-node + multi-miner topology validation,
+- restart/churn/recovery verification,
+- explicit go/no-go decision evidence.
+
 ## What CI covers vs what release burn-in covers
 - `Soak Smoke (short CI signal)` workflow: short regression signal for obvious breakage.
 - 14-day release burn-in: continuously operated testnet/staging run with active operator monitoring, incident handling, and formal evidence collection.
