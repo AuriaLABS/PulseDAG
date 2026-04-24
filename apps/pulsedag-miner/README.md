@@ -59,3 +59,7 @@ cargo run -p pulsedag-miner -- --node http://127.0.0.1:8080 --miner-address TU_D
 
 - El identificador de algoritmo permanece como `kHeavyHash`.
 - La codificación exacta del preimage, endianness, target y regla de aceptación está congelada en `docs/POW_SPEC_FINAL.md`.
+
+## Benchmark y baseline de operador
+
+Para ejecutar benchmarks repetibles y revisar baseline CPU/hilos, ver `docs/POW_OPERATOR_BASELINES.md` y `scripts/pow-bench.sh`.

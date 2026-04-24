@@ -38,3 +38,7 @@ Toda la lógica de pool, si existe, vive en el nodo o en servicios del lado serv
 
 - El identificador activo se mantiene como `kHeavyHash`.
 - Para esta testnet, su definición exacta está congelada en `docs/POW_SPEC_FINAL.md`.
+
+## Expectativas operativas y baseline
+
+Para baseline de rendimiento PoW, metodología repetible y guía para operadores, ver `docs/POW_OPERATOR_BASELINES.md`.
