@@ -1,7 +1,7 @@
 use crate::{
     apply::apply_block,
     errors::PulseError,
-    pow_accepts, selected_pow_name,
+    pow_evaluate, selected_pow_name,
     state::ChainState,
     types::{Block, Transaction},
     validation::{missing_transaction_inputs, validate_block, validate_transaction},
@@ -225,7 +225,8 @@ pub fn accept_block(
         source,
         AcceptSource::Rpc | AcceptSource::P2p | AcceptSource::LocalMining
     );
-    if enforce_pow && !pow_accepts(&block.header) {
+    let pow = pow_evaluate(&block.header);
+    if enforce_pow && !pow.accepted {
         return Err(PulseError::InvalidBlock(format!(
             "pow rejected by current {} policy",
             selected_pow_name()
@@ -255,5 +256,17 @@ mod tests {
 
         let err = accept_block(block, &mut state, AcceptSource::P2p).unwrap_err();
         assert!(matches!(err, PulseError::InvalidBlock(msg) if msg.contains("pow rejected")));
+    }
+
+    #[test]
+    fn accepts_block_with_valid_pow() {
+        let mut state = init_chain_state("test".to_string());
+        let parents = vec![state.dag.genesis_hash.clone()];
+        let txs = vec![build_coinbase_transaction("miner1", 50, 1)];
+        let mut block = build_candidate_block(parents, 1, 1, txs);
+        block.hash = "good-pow".to_string();
+        block.header.nonce = 0;
+
+        assert!(accept_block(block, &mut state, AcceptSource::P2p).is_ok());
     }
 }

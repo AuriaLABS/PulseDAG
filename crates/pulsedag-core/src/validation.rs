@@ -181,4 +181,19 @@ mod tests {
 
         assert!(validate_block(&block, &state).is_ok());
     }
+
+    #[test]
+    fn validate_block_keeps_pow_checks_outside_structural_validation() {
+        let state = init_chain_state("test".to_string());
+        let parents = vec![state.dag.genesis_hash.clone()];
+        let txs = vec![build_coinbase_transaction("miner1", 50, 1)];
+        let mut block = build_candidate_block(parents, 1, u32::MAX, txs);
+        block.hash = "pow-agnostic-structural-check".to_string();
+        block.header.nonce = 0;
+
+        assert!(
+            validate_block(&block, &state).is_ok(),
+            "structural validation should remain independent from PoW engine evaluation"
+        );
+    }
 }
