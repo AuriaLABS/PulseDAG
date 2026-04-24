@@ -186,6 +186,10 @@ pub const DEV_TARGET_BLOCK_INTERVAL_SECS: u64 = 60;
 pub const DEV_DIFFICULTY_WINDOW: usize = 20;
 pub const DEV_MAX_FUTURE_DRIFT_SECS: u64 = 120;
 pub const DEV_DIFFICULTY_USE_MEDIAN: bool = false;
+const DEV_RETARGET_DEADBAND_BPS: u64 = 800;
+const DEV_RETARGET_DAMPING_DIVISOR: u64 = 2;
+const DEV_RETARGET_MIN_BPS: u64 = 8_000;
+const DEV_RETARGET_MAX_BPS: u64 = 12_500;
 
 pub fn dev_target_block_interval_secs() -> u64 {
     read_env_u64(
@@ -226,7 +230,15 @@ pub fn dev_retarget_multiplier_bps(avg_block_interval_secs: u64) -> u64 {
     }
     let target = dev_target_block_interval_secs().max(1);
     let raw = target.saturating_mul(10_000) / avg_block_interval_secs.max(1);
-    raw.clamp(5_000, 20_000)
+    let lower_bound = 10_000u64.saturating_sub(DEV_RETARGET_DEADBAND_BPS);
+    let upper_bound = 10_000u64.saturating_add(DEV_RETARGET_DEADBAND_BPS);
+    if (lower_bound..=upper_bound).contains(&raw) {
+        return 10_000;
+    }
+
+    let deviation = raw as i64 - 10_000;
+    let damped = 10_000i64 + (deviation / DEV_RETARGET_DAMPING_DIVISOR as i64);
+    (damped as u64).clamp(DEV_RETARGET_MIN_BPS, DEV_RETARGET_MAX_BPS)
 }
 
 pub fn dev_adjust_difficulty_for_interval(current: u64, avg_block_interval_secs: u64) -> u64 {
@@ -358,6 +370,10 @@ pub fn dev_recommended_difficulty_for_chain(state: &ChainState) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{
+        genesis::init_chain_state,
+        types::{Block, BlockHeader, Transaction},
+    };
 
     fn sample_header() -> BlockHeader {
         BlockHeader {
@@ -426,5 +442,116 @@ mod tests {
         let mut h = sample_header();
         h.difficulty = u32::MAX;
         assert!(!pow_accepts(&h));
+    }
+
+    fn append_block(
+        state: &mut crate::state::ChainState,
+        height: u64,
+        timestamp: u64,
+        difficulty: u32,
+    ) {
+        let hash = format!("block-{height}");
+        let parent = if height == 1 {
+            state.dag.genesis_hash.clone()
+        } else {
+            format!("block-{}", height - 1)
+        };
+
+        state.dag.blocks.insert(
+            hash.clone(),
+            Block {
+                hash: hash.clone(),
+                header: BlockHeader {
+                    version: 1,
+                    parents: vec![parent],
+                    timestamp,
+                    difficulty,
+                    nonce: 0,
+                    merkle_root: format!("merkle-{height}"),
+                    state_root: format!("state-{height}"),
+                    blue_score: height,
+                    height,
+                },
+                transactions: Vec::<Transaction>::new(),
+            },
+        );
+        state.dag.best_height = height;
+        state.dag.tips.clear();
+        state.dag.tips.insert(hash);
+    }
+
+    fn build_chain_with_intervals(
+        intervals_secs: &[u64],
+        difficulty: u32,
+    ) -> crate::state::ChainState {
+        let mut state = init_chain_state("pow-test".into());
+        let mut timestamp = 0u64;
+        for (idx, interval) in intervals_secs.iter().enumerate() {
+            timestamp = timestamp.saturating_add(*interval);
+            append_block(&mut state, (idx + 1) as u64, timestamp, difficulty);
+        }
+        state
+    }
+
+    #[test]
+    fn difficulty_rises_on_sudden_hashpower_increase() {
+        let mut intervals = vec![60; 12];
+        intervals.extend(vec![15; 8]);
+        let chain = build_chain_with_intervals(&intervals, 100);
+
+        let suggested = dev_recommended_difficulty_for_chain(&chain);
+        assert!(
+            suggested > 100,
+            "expected increased difficulty, got {suggested}"
+        );
+        assert!(
+            suggested <= 125,
+            "single retarget should remain bounded, got {suggested}"
+        );
+    }
+
+    #[test]
+    fn difficulty_drops_on_sudden_hashpower_drop() {
+        let mut intervals = vec![60; 12];
+        intervals.extend(vec![180; 8]);
+        let chain = build_chain_with_intervals(&intervals, 100);
+
+        let suggested = dev_recommended_difficulty_for_chain(&chain);
+        assert!(
+            suggested < 100,
+            "expected decreased difficulty, got {suggested}"
+        );
+        assert!(
+            suggested >= 80,
+            "single retarget should remain bounded, got {suggested}"
+        );
+    }
+
+    #[test]
+    fn stable_regime_stays_near_current_difficulty() {
+        let chain = build_chain_with_intervals(&vec![60; 20], 100);
+        assert_eq!(dev_recommended_difficulty_for_chain(&chain), 100);
+
+        let near_target_fast = build_chain_with_intervals(&vec![56; 20], 100);
+        assert_eq!(dev_recommended_difficulty_for_chain(&near_target_fast), 100);
+
+        let near_target_slow = build_chain_with_intervals(&vec![64; 20], 100);
+        assert_eq!(dev_recommended_difficulty_for_chain(&near_target_slow), 100);
+    }
+
+    #[test]
+    fn alternating_intervals_do_not_cause_extreme_oscillation() {
+        let mut difficulty = 100u64;
+        let mut observed = Vec::new();
+        for i in 0..32 {
+            let interval = if i % 2 == 0 { 30 } else { 120 };
+            difficulty = dev_adjust_difficulty_for_interval(difficulty, interval);
+            observed.push(difficulty);
+        }
+
+        let min = *observed.iter().min().unwrap();
+        let max = *observed.iter().max().unwrap();
+        assert!(max <= 130, "expected bounded upside, got {max}");
+        assert!(min >= 80, "expected bounded downside, got {min}");
     }
 }
