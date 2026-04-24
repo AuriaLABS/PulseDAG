@@ -167,6 +167,21 @@ impl Storage {
         block: &Block,
         state: &ChainState,
     ) -> Result<(), PulseError> {
+        self.persist_block_and_chain_state_with_write(block, state, |db, batch| {
+            db.write(batch)
+                .map_err(|e| PulseError::StorageError(e.to_string()))
+        })
+    }
+
+    fn persist_block_and_chain_state_with_write<F>(
+        &self,
+        block: &Block,
+        state: &ChainState,
+        write_batch: F,
+    ) -> Result<(), PulseError>
+    where
+        F: FnOnce(&Arc<DB>, WriteBatch) -> Result<(), PulseError>,
+    {
         let blocks_cf = self
             .db
             .cf_handle("blocks")
@@ -180,9 +195,7 @@ impl Storage {
         let mut batch = WriteBatch::default();
         batch.put_cf(&blocks_cf, block.hash.as_bytes(), block_value);
         self.stage_chain_state_snapshot(&mut batch, &meta_cf, state)?;
-        self.db
-            .write(batch)
-            .map_err(|e| PulseError::StorageError(e.to_string()))
+        write_batch(&self.db, batch)
     }
 
     fn stage_chain_state_snapshot(
@@ -633,13 +646,23 @@ impl Storage {
 
 #[cfg(test)]
 mod tests {
-    use super::Storage;
+    use super::{Storage, CHAIN_STATE_KEY};
     use proptest::prelude::*;
     use pulsedag_core::{
         accept::{accept_block, AcceptSource},
         build_candidate_block, build_coinbase_transaction, dev_mine_header,
         genesis::init_chain_state,
     };
+
+    fn best_tip_hash(state: &pulsedag_core::ChainState) -> String {
+        state
+            .dag
+            .tips
+            .iter()
+            .min()
+            .cloned()
+            .unwrap_or_else(|| state.dag.genesis_hash.clone())
+    }
 
     fn temp_db_path(test_name: &str) -> String {
         let unique = std::time::SystemTime::now()
@@ -655,7 +678,7 @@ mod tests {
     fn build_linear_chain(chain_id: &str, blocks_to_add: usize) -> pulsedag_core::ChainState {
         let mut state = init_chain_state(chain_id.to_string());
         for i in 1..=blocks_to_add {
-            let parent = state.dag.best_hash.clone();
+            let parent = best_tip_hash(&state);
             let mut block = build_candidate_block(
                 vec![parent],
                 i as u64,
@@ -679,7 +702,7 @@ mod tests {
         let genesis = state
             .dag
             .blocks
-            .get(&state.dag.best_hash)
+            .get(&best_tip_hash(&state))
             .cloned()
             .expect("genesis block");
 
@@ -696,7 +719,7 @@ mod tests {
             .expect("get block")
             .expect("block present");
 
-        assert_eq!(loaded_state.dag.best_hash, state.dag.best_hash);
+        assert_eq!(best_tip_hash(&loaded_state), best_tip_hash(&state));
         assert_eq!(loaded_state.dag.best_height, state.dag.best_height);
         assert_eq!(loaded_block.hash, genesis.hash);
         assert_eq!(loaded_block.header.height, genesis.header.height);
@@ -704,6 +727,211 @@ mod tests {
             .snapshot_captured_at_unix()
             .expect("snapshot metadata")
             .is_some());
+
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn accepted_block_and_snapshot_advance_coherently() {
+        let path = temp_db_path("accepted-coherent");
+        let storage = Storage::open(&path).expect("open storage");
+        let mut state = init_chain_state("testnet".to_string());
+        let genesis = state
+            .dag
+            .blocks
+            .get(&best_tip_hash(&state))
+            .cloned()
+            .expect("genesis block");
+        storage
+            .persist_block_and_chain_state(&genesis, &state)
+            .expect("persist genesis");
+
+        let mut block = build_candidate_block(
+            vec![best_tip_hash(&state)],
+            1,
+            1,
+            vec![build_coinbase_transaction("miner", 50, 1)],
+        );
+        let (header, mined, _, _) = dev_mine_header(block.header.clone(), 25_000);
+        assert!(mined, "failed to mine test block");
+        block.header = header;
+        block.hash = format!("accepted-coherent-{}", block.header.nonce);
+        accept_block(block.clone(), &mut state, AcceptSource::LocalMining).expect("accept block");
+
+        storage
+            .persist_block_and_chain_state(&block, &state)
+            .expect("persist accepted block + snapshot");
+
+        let snapshot = storage
+            .load_chain_state()
+            .expect("load snapshot")
+            .expect("snapshot present");
+        let persisted_block = storage
+            .get_block(&block.hash)
+            .expect("get block")
+            .expect("block present");
+        assert_eq!(snapshot.dag.best_height, persisted_block.header.height);
+        assert_eq!(best_tip_hash(&snapshot), persisted_block.hash);
+
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn simulated_interruption_before_atomic_write_leaves_no_partial_advancement() {
+        let path = temp_db_path("atomic-interruption");
+        let storage = Storage::open(&path).expect("open storage");
+        let mut state = init_chain_state("testnet".to_string());
+        let genesis = state
+            .dag
+            .blocks
+            .get(&best_tip_hash(&state))
+            .cloned()
+            .expect("genesis block");
+        storage
+            .persist_block_and_chain_state(&genesis, &state)
+            .expect("persist genesis");
+        let snapshot_before = storage
+            .load_chain_state()
+            .expect("load snapshot before")
+            .expect("snapshot before present");
+
+        let mut block = build_candidate_block(
+            vec![best_tip_hash(&state)],
+            1,
+            1,
+            vec![build_coinbase_transaction("miner", 50, 1)],
+        );
+        let (header, mined, _, _) = dev_mine_header(block.header.clone(), 25_000);
+        assert!(mined, "failed to mine test block");
+        block.header = header;
+        block.hash = format!("atomic-interruption-{}", block.header.nonce);
+        accept_block(block.clone(), &mut state, AcceptSource::LocalMining).expect("accept block");
+
+        let err = storage
+            .persist_block_and_chain_state_with_write(&block, &state, |_db, _batch| {
+                Err(pulsedag_core::errors::PulseError::StorageError(
+                    "simulated interruption".to_string(),
+                ))
+            })
+            .expect_err("simulated interruption must fail before write");
+        assert!(
+            err.to_string().contains("simulated interruption"),
+            "unexpected error: {err}"
+        );
+        assert!(
+            storage
+                .get_block(&block.hash)
+                .expect("read block")
+                .is_none(),
+            "block must not persist on interrupted atomic write"
+        );
+        let snapshot_after = storage
+            .load_chain_state()
+            .expect("load snapshot after")
+            .expect("snapshot after present");
+        assert_eq!(best_tip_hash(&snapshot_before), best_tip_hash(&snapshot_after));
+        assert_eq!(
+            snapshot_before.dag.best_height,
+            snapshot_after.dag.best_height
+        );
+
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn restart_recovers_cleanly_from_legacy_partial_persisted_advancement() {
+        let path = temp_db_path("restart-recovers-partial");
+        let storage = Storage::open(&path).expect("open storage");
+        let mut state = init_chain_state("testnet".to_string());
+        let genesis = state
+            .dag
+            .blocks
+            .get(&best_tip_hash(&state))
+            .cloned()
+            .expect("genesis block");
+        storage
+            .persist_block_and_chain_state(&genesis, &state)
+            .expect("persist genesis");
+
+        let mut block = build_candidate_block(
+            vec![best_tip_hash(&state)],
+            1,
+            1,
+            vec![build_coinbase_transaction("miner", 50, 1)],
+        );
+        let (header, mined, _, _) = dev_mine_header(block.header.clone(), 25_000);
+        assert!(mined, "failed to mine test block");
+        block.header = header;
+        block.hash = format!("restart-recovers-{}", block.header.nonce);
+        accept_block(block.clone(), &mut state, AcceptSource::LocalMining).expect("accept block");
+
+        storage
+            .persist_block(&block)
+            .expect("simulate legacy partial persistence");
+
+        let rebuilt = storage
+            .replay_blocks_or_init("testnet".to_string())
+            .expect("restart recovery should repair partial advancement");
+        assert_eq!(rebuilt.dag.best_height, 1);
+        assert_eq!(best_tip_hash(&rebuilt), block.hash);
+        let persisted_snapshot = storage
+            .load_chain_state()
+            .expect("load repaired snapshot")
+            .expect("snapshot should exist");
+        assert_eq!(best_tip_hash(&persisted_snapshot), block.hash);
+
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn accepted_block_atomic_persistence_path_has_no_regression() {
+        let path = temp_db_path("atomic-path-regression");
+        let storage = Storage::open(&path).expect("open storage");
+        let mut state = init_chain_state("testnet".to_string());
+        let genesis = state
+            .dag
+            .blocks
+            .get(&best_tip_hash(&state))
+            .cloned()
+            .expect("genesis block");
+        storage
+            .persist_block_and_chain_state(&genesis, &state)
+            .expect("persist genesis");
+
+        for height in 1..=3 {
+            let mut block = build_candidate_block(
+                vec![best_tip_hash(&state)],
+                height,
+                1,
+                vec![build_coinbase_transaction("miner", 50, height)],
+            );
+            let (header, mined, _, _) = dev_mine_header(block.header.clone(), 25_000);
+            assert!(mined, "failed to mine test block at height {}", height);
+            block.header = header;
+            block.hash = format!("atomic-path-regression-{}-{}", height, block.header.nonce);
+            accept_block(block.clone(), &mut state, AcceptSource::LocalMining)
+                .expect("accept block");
+            storage
+                .persist_block_and_chain_state(&block, &state)
+                .expect("persist block + snapshot");
+        }
+
+        drop(storage);
+        let reopened = Storage::open(&path).expect("reopen storage");
+        let snapshot = reopened
+            .load_chain_state()
+            .expect("load snapshot")
+            .expect("snapshot present");
+        let blocks = reopened.list_blocks().expect("list blocks");
+        assert_eq!(snapshot.dag.best_height, 3);
+        assert_eq!(
+            blocks.len(),
+            4,
+            "genesis + 3 accepted blocks should persist"
+        );
+        assert!(blocks.iter().any(
+            |b| b.hash == best_tip_hash(&snapshot) && b.header.height == snapshot.dag.best_height
+        ));
 
         let _ = std::fs::remove_dir_all(path);
     }
@@ -724,7 +952,7 @@ mod tests {
             .expect("snapshot present");
         let blocks = storage.list_blocks().expect("list blocks");
 
-        assert_eq!(loaded_state.dag.best_hash, state.dag.best_hash);
+        assert_eq!(best_tip_hash(&loaded_state), best_tip_hash(&state));
         assert!(blocks.is_empty());
         assert!(storage
             .snapshot_captured_at_unix()
@@ -745,7 +973,7 @@ mod tests {
         let blocks = storage.list_blocks().expect("list blocks");
 
         assert_eq!(blocks.len(), 1);
-        assert_eq!(blocks[0].hash, state.dag.best_hash);
+        assert_eq!(blocks[0].hash, best_tip_hash(&state));
         assert!(storage
             .load_chain_state()
             .expect("load chain state")
@@ -838,7 +1066,7 @@ mod tests {
             .replay_blocks_or_init("testnet".to_string())
             .expect("must fall back to full rebuild");
         assert_eq!(rebuilt.dag.best_height, state.dag.best_height);
-        assert_eq!(rebuilt.dag.best_hash, state.dag.best_hash);
+        assert_eq!(best_tip_hash(&rebuilt), best_tip_hash(&state));
         assert_eq!(
             storage.list_blocks().expect("list persisted blocks").len(),
             blocks.len()
@@ -868,7 +1096,7 @@ mod tests {
             .replay_blocks_or_init("testnet".to_string())
             .expect_err("must fail explicitly when no block replay fallback exists");
         assert!(
-            err.to_string().contains("Storage error"),
+            err.to_string().to_lowercase().contains("storage error"),
             "unexpected error message: {err}"
         );
         assert!(
@@ -910,7 +1138,7 @@ mod tests {
         assert!(report.used_snapshot);
         assert!(!report.fallback_to_full_rebuild);
         assert_eq!(report.best_height, 6);
-        assert_eq!(rebuilt.dag.best_hash, state.dag.best_hash);
+        assert_eq!(best_tip_hash(&rebuilt), best_tip_hash(&state));
         assert!(report.restore_duration_ms < 30_000);
 
         let events = storage.list_runtime_events(25).expect("runtime events");
@@ -1023,7 +1251,7 @@ mod tests {
                 .expect("replay after prune");
 
             prop_assert_eq!(rebuilt.dag.best_height, state.dag.best_height);
-            prop_assert_eq!(rebuilt.dag.best_hash, state.dag.best_hash);
+            prop_assert_eq!(best_tip_hash(&rebuilt), best_tip_hash(&state));
             let _ = std::fs::remove_dir_all(path);
         }
     }

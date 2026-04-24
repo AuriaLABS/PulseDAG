@@ -367,11 +367,7 @@ pub async fn post_mining_submit<S: RpcStateLike>(
             if let Err(e) = persist_then_broadcast_mined_block(
                 &req.block,
                 &chain,
-                |block, chain| {
-                    state.storage().persist_block(block)?;
-                    state.storage().persist_chain_state(chain)?;
-                    Ok(())
-                },
+                |block, chain| state.storage().persist_block_and_chain_state(block, chain),
                 |block| {
                     if let Some(p2p) = state.p2p() {
                         let _ = p2p.broadcast_block(block);
