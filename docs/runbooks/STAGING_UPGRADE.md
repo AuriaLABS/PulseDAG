@@ -1,7 +1,7 @@
-# Staging Upgrade Validation Runbook (v2.1)
+# Staging Upgrade Validation Runbook (v2.2)
 
 ## Purpose
-Provide a **repeatable** staging upgrade procedure for v2.1 that verifies node health and chain/runtime coherence without changing consensus or miner behavior.
+Provide a **repeatable** staging upgrade procedure for v2.2 that verifies node health and chain/runtime coherence without changing consensus or miner behavior.
 
 ## Scope and guardrails
 - Operational procedure only (release readiness validation).
@@ -35,7 +35,7 @@ scripts/staging/validate_upgrade_rollback.sh baseline \
 ## Upgrade procedure
 1. **Freeze writes** in staging traffic tooling (if used) to reduce noisy mempool churn during package swap.
 2. Stop the node process cleanly.
-3. Deploy v2.1 node artifact/configuration for staging.
+3. Deploy v2.2 node artifact/configuration for staging.
 4. Start node process.
 5. Wait for RPC health to return.
 6. Run post-upgrade validation checks.
@@ -67,7 +67,7 @@ Checks performed:
 - If any validation check fails, execute rollback runbook immediately: `docs/runbooks/STAGING_ROLLBACK.md`.
 - Preserve evidence directory for root-cause analysis.
 
-## Evidence to attach to v2.1 release gate
+## Evidence to attach to v2.2 release gate
 - Baseline JSON set.
 - Post-upgrade JSON set.
 - Validation script output log.

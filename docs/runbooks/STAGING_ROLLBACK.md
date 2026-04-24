@@ -1,7 +1,7 @@
-# Staging Rollback Validation Runbook (v2.1)
+# Staging Rollback Validation Runbook (v2.2)
 
 ## Purpose
-Provide an explicit rollback path for staging v2.1 upgrade validation, including snapshot/restore interaction and objective post-rollback health checks.
+Provide an explicit rollback path for staging v2.2 upgrade validation, including snapshot/restore interaction and objective post-rollback health checks.
 
 ## Scope and guardrails
 - Operational rollback only.
@@ -65,7 +65,7 @@ Checks performed:
 - Node is healthy and coherent by `/sync/verify` + `/readiness`.
 - Chain head and persistence are stable for at least one check interval.
 
-## Evidence to attach to v2.1 release gate
+## Evidence to attach to v2.2 release gate
 - Post-rollback JSON set.
 - Validation output log.
 - Snapshot/restore decision notes (whether rebuild was required).
