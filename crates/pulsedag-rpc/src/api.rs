@@ -144,6 +144,8 @@ pub struct NodeRuntimeStats {
     pub startup_recovery_mode: String,
     pub startup_rebuild_reason: Option<String>,
     pub startup_path: String,
+    pub startup_bootstrap_mode: String,
+    pub startup_status_summary: String,
     pub startup_fastboot_used: bool,
     pub startup_snapshot_detected: bool,
     pub startup_snapshot_validated: bool,

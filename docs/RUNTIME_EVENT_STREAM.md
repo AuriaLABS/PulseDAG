@@ -46,6 +46,12 @@ Query params:
 
 - This stream is incremental and focused on operator visibility.
 - Typical high-value `kind` values include reconnect/recovery, sync phase changes, snapshot/rebuild lifecycle, and mining accept/reject signals, when those events are appended to runtime events.
+- Startup observability fields in `GET /runtime/status` are intended to be non-contradictory:
+  - `startup_bootstrap_mode=normal` means genesis-style startup (`startup_path=genesis_init`).
+  - `startup_bootstrap_mode=replay` means replay without fallback (`startup_path=full_replay`).
+  - `startup_bootstrap_mode=recovery_fallback` means replay due to startup fallback (`startup_path=fallback_full_replay` and a non-empty `startup_fallback_reason`).
+  - `startup_bootstrap_mode=snapshot_assisted` means validated snapshot-assisted startup (`startup_path=fast_boot`, `startup_snapshot_validated=true`, `startup_delta_applied=true`).
+  - `startup_status_summary` provides a compact operator-facing sentence that aligns with the structured flags above.
 - Existing polling endpoints remain available:
   - `GET /runtime/events`
   - `GET /runtime/events/summary`

@@ -13,6 +13,8 @@ use pulsedag_storage::Storage;
 #[derive(Debug, Clone)]
 pub struct StartupPathReport {
     pub startup_path: String,
+    pub startup_bootstrap_mode: String,
+    pub startup_status_summary: String,
     pub startup_fastboot_used: bool,
     pub startup_snapshot_detected: bool,
     pub startup_snapshot_validated: bool,
@@ -125,13 +127,34 @@ pub fn derive_startup_path_report(
     }
     .to_string();
     let startup_fastboot_used = startup_path == "fast_boot";
+    let startup_delta_applied = startup_fastboot_used;
+    let startup_bootstrap_mode = if startup_path == "fallback_full_replay" {
+        "recovery_fallback"
+    } else if startup_fastboot_used {
+        "snapshot_assisted"
+    } else if startup_path == "full_replay" {
+        "replay"
+    } else {
+        "normal"
+    }
+    .to_string();
+    let startup_status_summary = if let Some(reason) = startup_fallback_reason.as_ref() {
+        format!(
+            "{} startup via {}; fallback_reason={}",
+            startup_bootstrap_mode, startup_path, reason
+        )
+    } else {
+        format!("{startup_bootstrap_mode} startup via {startup_path}")
+    };
 
     StartupPathReport {
         startup_path,
+        startup_bootstrap_mode,
+        startup_status_summary,
         startup_fastboot_used,
         startup_snapshot_detected: snapshot_exists,
         startup_snapshot_validated: startup_fastboot_used,
-        startup_delta_applied: false,
+        startup_delta_applied,
         startup_replay_required: !startup_fastboot_used,
         startup_fallback_reason,
     }
@@ -204,6 +227,8 @@ pub fn new_runtime_stats() -> NodeRuntimeStats {
         startup_recovery_mode: "unknown".to_string(),
         startup_rebuild_reason: None,
         startup_path: "unknown".to_string(),
+        startup_bootstrap_mode: "unknown".to_string(),
+        startup_status_summary: "startup status unknown".to_string(),
         startup_fastboot_used: false,
         startup_snapshot_detected: false,
         startup_snapshot_validated: false,
@@ -254,9 +279,11 @@ mod tests {
     fn valid_snapshot_path_reports_fastboot_usage_correctly() {
         let report = derive_startup_path_report("snapshot", true, 10, None);
         assert_eq!(report.startup_path, "fast_boot");
+        assert_eq!(report.startup_bootstrap_mode, "snapshot_assisted");
         assert!(report.startup_fastboot_used);
         assert!(report.startup_snapshot_detected);
         assert!(report.startup_snapshot_validated);
+        assert!(report.startup_delta_applied);
         assert!(!report.startup_replay_required);
     }
 
@@ -265,6 +292,7 @@ mod tests {
         let reason = "persisted max height exceeds snapshot height".to_string();
         let report = derive_startup_path_report("replayed_blocks", true, 10, Some(reason.clone()));
         assert_eq!(report.startup_path, "fallback_full_replay");
+        assert_eq!(report.startup_bootstrap_mode, "recovery_fallback");
         assert_eq!(report.startup_fallback_reason, Some(reason));
         assert!(!report.startup_fastboot_used);
     }
@@ -273,6 +301,7 @@ mod tests {
     fn full_replay_path_reports_replay_required_status_correctly() {
         let report = derive_startup_path_report("snapshot_missing", false, 42, None);
         assert_eq!(report.startup_path, "full_replay");
+        assert_eq!(report.startup_bootstrap_mode, "replay");
         assert!(report.startup_replay_required);
         assert!(!report.startup_fastboot_used);
     }
@@ -299,12 +328,14 @@ mod tests {
         assert!(report.startup_replay_required);
         assert!(!report.startup_fastboot_used);
         assert!(!report.startup_snapshot_validated);
+        assert!(!report.startup_delta_applied);
     }
 
     #[test]
     fn startup_classification_regression_guard_for_genesis_init() {
         let report = derive_startup_path_report("genesis_init", false, 0, None);
         assert_eq!(report.startup_path, "genesis_init");
+        assert_eq!(report.startup_bootstrap_mode, "normal");
         assert!(!report.startup_fastboot_used);
         assert!(report.startup_fallback_reason.is_none());
         assert!(report.startup_replay_required);
@@ -379,6 +410,67 @@ mod tests {
                 "duplicate event kind: {}",
                 event.kind
             );
+        }
+    }
+
+    #[test]
+    fn replay_path_is_reported_without_fallback_noise() {
+        let report = derive_startup_path_report("snapshot_missing", false, 25, None);
+        assert_eq!(report.startup_bootstrap_mode, "replay");
+        assert_eq!(report.startup_path, "full_replay");
+        assert!(report.startup_replay_required);
+        assert!(report.startup_fallback_reason.is_none());
+    }
+
+    #[test]
+    fn fallback_path_is_explicitly_marked_as_recovery_fallback() {
+        let reason = "snapshot decode failed; rebuilding from persisted blocks".to_string();
+        let report = derive_startup_path_report("replayed_blocks", true, 25, Some(reason.clone()));
+        assert_eq!(report.startup_bootstrap_mode, "recovery_fallback");
+        assert_eq!(report.startup_path, "fallback_full_replay");
+        assert_eq!(report.startup_fallback_reason, Some(reason));
+    }
+
+    #[test]
+    fn startup_summary_distinguishes_snapshot_assisted_from_normal_boot() {
+        let snapshot_assisted = derive_startup_path_report("snapshot", true, 25, None);
+        let normal = derive_startup_path_report("genesis_init", false, 0, None);
+        assert!(snapshot_assisted
+            .startup_status_summary
+            .contains("snapshot_assisted"));
+        assert!(normal.startup_status_summary.contains("normal"));
+    }
+
+    #[test]
+    fn startup_flags_do_not_contradict_each_other() {
+        let scenarios = vec![
+            derive_startup_path_report("snapshot", true, 8, None),
+            derive_startup_path_report("snapshot_missing", false, 8, None),
+            derive_startup_path_report(
+                "replayed_blocks",
+                true,
+                8,
+                Some("snapshot validation failed".to_string()),
+            ),
+            derive_startup_path_report("genesis_init", false, 0, None),
+        ];
+        for report in scenarios {
+            assert_eq!(
+                report.startup_fastboot_used,
+                report.startup_path == "fast_boot"
+            );
+            assert_eq!(
+                report.startup_snapshot_validated,
+                report.startup_fastboot_used
+            );
+            assert_eq!(report.startup_delta_applied, report.startup_fastboot_used);
+            assert_eq!(
+                report.startup_replay_required,
+                !report.startup_fastboot_used
+            );
+            if report.startup_bootstrap_mode == "recovery_fallback" {
+                assert!(report.startup_fallback_reason.is_some());
+            }
         }
     }
 }

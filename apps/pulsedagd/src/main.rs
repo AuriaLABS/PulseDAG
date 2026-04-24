@@ -175,6 +175,8 @@ async fn main() -> Result<()> {
     runtime_stats.startup_recovery_mode = startup_recovery_mode.clone();
     runtime_stats.startup_rebuild_reason = startup_rebuild_reason.clone();
     runtime_stats.startup_path = startup_report.startup_path.clone();
+    runtime_stats.startup_bootstrap_mode = startup_report.startup_bootstrap_mode.clone();
+    runtime_stats.startup_status_summary = startup_report.startup_status_summary.clone();
     runtime_stats.startup_fastboot_used = startup_report.startup_fastboot_used;
     runtime_stats.startup_snapshot_detected = startup_report.startup_snapshot_detected;
     runtime_stats.startup_snapshot_validated = startup_report.startup_snapshot_validated;
@@ -256,14 +258,16 @@ async fn main() -> Result<()> {
             "info",
             "startup_path",
             &format!(
-                "path={} fastboot_used={} snapshot_detected={} snapshot_validated={} delta_applied={} replay_required={} duration_ms={}",
+                "path={} bootstrap_mode={} fastboot_used={} snapshot_detected={} snapshot_validated={} delta_applied={} replay_required={} duration_ms={} summary=\"{}\"",
                 startup_report.startup_path,
+                startup_report.startup_bootstrap_mode,
                 startup_report.startup_fastboot_used,
                 startup_report.startup_snapshot_detected,
                 startup_report.startup_snapshot_validated,
                 startup_report.startup_delta_applied,
                 startup_report.startup_replay_required,
-                startup_duration_ms
+                startup_duration_ms,
+                startup_report.startup_status_summary
             ),
         );
     }
