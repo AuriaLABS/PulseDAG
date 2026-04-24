@@ -128,41 +128,58 @@ pub fn pow_preimage_string(header: &BlockHeader) -> String {
     )
 }
 
-pub fn dev_surrogate_pow_hash(header: &BlockHeader) -> String {
+pub fn pow_hash_hex(header: &BlockHeader) -> String {
     let preimage = pow_preimage_bytes(header);
     blake3::hash(&preimage).to_hex().to_string()
 }
 
-pub fn dev_target_u64(difficulty: u64) -> u64 {
+pub fn pow_target_u64(difficulty: u64) -> u64 {
     let difficulty = difficulty.max(1);
     u64::MAX / difficulty
 }
 
-pub fn dev_hash_score_u64(header: &BlockHeader) -> u64 {
+pub fn pow_hash_score_u64(header: &BlockHeader) -> u64 {
     let hash_bytes = blake3::hash(&pow_preimage_bytes(header));
     let mut prefix = [0u8; 8];
     prefix.copy_from_slice(&hash_bytes.as_bytes()[..8]);
     u64::from_be_bytes(prefix)
 }
 
-pub fn dev_pow_accepts(header: &BlockHeader) -> bool {
-    dev_hash_score_u64(header) <= dev_target_u64(header.difficulty.into())
+pub fn pow_accepts(header: &BlockHeader) -> bool {
+    pow_hash_score_u64(header) <= pow_target_u64(header.difficulty.into())
 }
 
-pub fn dev_mine_header(
-    mut header: BlockHeader,
-    max_tries: u64,
-) -> (BlockHeader, bool, u64, String) {
+pub fn mine_header(mut header: BlockHeader, max_tries: u64) -> (BlockHeader, bool, u64, String) {
     let tries = max_tries.max(1);
     for i in 0..tries {
         header.nonce = i;
-        let hash_hex = dev_surrogate_pow_hash(&header);
-        if dev_pow_accepts(&header) {
+        let hash_hex = pow_hash_hex(&header);
+        if pow_accepts(&header) {
             return (header, true, i + 1, hash_hex);
         }
     }
-    let hash_hex = dev_surrogate_pow_hash(&header);
+    let hash_hex = pow_hash_hex(&header);
     (header, false, tries, hash_hex)
+}
+
+pub fn dev_surrogate_pow_hash(header: &BlockHeader) -> String {
+    pow_hash_hex(header)
+}
+
+pub fn dev_target_u64(difficulty: u64) -> u64 {
+    pow_target_u64(difficulty)
+}
+
+pub fn dev_hash_score_u64(header: &BlockHeader) -> u64 {
+    pow_hash_score_u64(header)
+}
+
+pub fn dev_pow_accepts(header: &BlockHeader) -> bool {
+    pow_accepts(header)
+}
+
+pub fn dev_mine_header(header: BlockHeader, max_tries: u64) -> (BlockHeader, bool, u64, String) {
+    mine_header(header, max_tries)
 }
 
 pub const DEV_TARGET_BLOCK_INTERVAL_SECS: u64 = 60;
@@ -328,7 +345,7 @@ pub fn dev_difficulty_snapshot(state: &ChainState) -> DevDifficultySnapshot {
         avg_block_interval_secs,
         current_difficulty,
         suggested_difficulty,
-        target_u64: dev_target_u64(suggested_difficulty),
+        target_u64: pow_target_u64(suggested_difficulty),
         retarget_multiplier_bps,
         policy,
     }
@@ -377,14 +394,37 @@ mod tests {
         let mut bytes = [0u8; 8];
         bytes.copy_from_slice(&hash.as_bytes()[..8]);
         let expected = u64::from_be_bytes(bytes);
-        assert_eq!(dev_hash_score_u64(&h), expected);
+        assert_eq!(pow_hash_score_u64(&h), expected);
     }
 
     #[test]
     fn acceptance_rule_matches_target_rule() {
         let h = sample_header();
-        let target = dev_target_u64(h.difficulty as u64);
-        let score = dev_hash_score_u64(&h);
-        assert_eq!(dev_pow_accepts(&h), score <= target);
+        let target = pow_target_u64(h.difficulty as u64);
+        let score = pow_hash_score_u64(&h);
+        assert_eq!(pow_accepts(&h), score <= target);
+    }
+
+    #[test]
+    fn known_header_matches_known_pow_hash() {
+        let h = sample_header();
+        assert_eq!(
+            pow_hash_hex(&h),
+            "98384a054292e340f392d2a7f53e623a26213375b10073790d2d82954fee0a89"
+        );
+    }
+
+    #[test]
+    fn target_accepts_when_score_is_below_threshold() {
+        let mut h = sample_header();
+        h.difficulty = 1;
+        assert!(pow_accepts(&h));
+    }
+
+    #[test]
+    fn target_rejects_when_score_is_above_threshold() {
+        let mut h = sample_header();
+        h.difficulty = u32::MAX;
+        assert!(!pow_accepts(&h));
     }
 }

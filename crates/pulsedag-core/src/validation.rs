@@ -162,3 +162,23 @@ pub fn validate_block(block: &Block, state: &ChainState) -> Result<(), PulseErro
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        genesis::init_chain_state,
+        mining::{build_candidate_block, build_coinbase_transaction},
+    };
+
+    #[test]
+    fn validate_block_accepts_well_formed_coinbase_block() {
+        let state = init_chain_state("test".to_string());
+        let parents = vec![state.dag.genesis_hash.clone()];
+        let txs = vec![build_coinbase_transaction("miner1", 50, 1)];
+        let mut block = build_candidate_block(parents, 1, 1, txs);
+        block.hash = "block-1".to_string();
+
+        assert!(validate_block(&block, &state).is_ok());
+    }
+}
