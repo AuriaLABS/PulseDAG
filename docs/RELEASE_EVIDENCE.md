@@ -29,6 +29,11 @@ artifacts/release-evidence/<run_id>/
   pruning-cadence/pruning-events.csv
   p2p-recovery/recovery-events.csv
   restart-recovery-notes/restart-log.md
+  chaos-suite/
+    manifest.csv
+    events.csv
+    summary.md
+    raw/
 ```
 
 ## Required content
@@ -37,6 +42,7 @@ artifacts/release-evidence/<run_id>/
 - `pruning-cadence/pruning-events.csv`: each prune run/result and reclaimed bytes.
 - `p2p-recovery/recovery-events.csv`: recovery timing under peer churn/rejoin.
 - `restart-recovery-notes/restart-log.md`: restart incidents, startup mode (fast-boot/replay), recovery duration, and follow-up notes.
+- `chaos-suite/*`: scenario manifest, timestamped event captures, and pass/fail summary for crash/restart/churn/recovery drills.
 
 ## Final PoW dry-run evidence (public testnet gate)
 Before public testnet launch, attach a dry-run package under:

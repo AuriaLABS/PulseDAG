@@ -27,7 +27,7 @@ for endpoint in \
 done
 
 # 3) Ensure scripts referenced by runbooks exist.
-for script in scripts/restore-drill-evidence.sh scripts/smoke.ps1 scripts/dev-smoke.ps1 scripts/recovery-smoke.ps1 scripts/staging/validate_upgrade_rollback.sh; do
+for script in scripts/restore-drill-evidence.sh scripts/smoke.ps1 scripts/dev-smoke.ps1 scripts/recovery-smoke.ps1 scripts/staging/validate_upgrade_rollback.sh scripts/chaos/run-validation-suite.sh scripts/chaos/validate-evidence.sh; do
   if [[ ! -f "$script" ]]; then
     echo "missing script referenced by runbooks: $script"
     missing=1
