@@ -33,7 +33,11 @@ artifacts/release-evidence/<run_id>/
     manifest.csv
     events.csv
     summary.md
+    scenario-outcomes.csv
+    run-info.json
     raw/
+  chaos-suite-<run_id>.tar.gz
+  chaos-suite-<run_id>.tar.gz.sha256
 ```
 
 ## Required content
@@ -42,7 +46,8 @@ artifacts/release-evidence/<run_id>/
 - `pruning-cadence/pruning-events.csv`: each prune run/result and reclaimed bytes.
 - `p2p-recovery/recovery-events.csv`: recovery timing under peer churn/rejoin.
 - `restart-recovery-notes/restart-log.md`: restart incidents, startup mode (fast-boot/replay), recovery duration, and follow-up notes.
-- `chaos-suite/*`: scenario manifest, timestamped event captures, and pass/fail summary for crash/restart/churn/recovery drills.
+- `chaos-suite/*`: scenario manifest, timestamped event captures, human-readable summary, and machine-readable scenario outcomes for crash/restart/churn/recovery drills.
+- `chaos-suite-<run_id>.tar.gz` + `.sha256`: immutable transfer artifact for release evidence review.
 
 ## Burn-in drill evidence minimums (explicit)
 The v2.2.3 package is incomplete unless the following minimums are present:
