@@ -85,6 +85,11 @@ See `docs/OPERATIONS_P2P.md` for operational guidance.
 - Rollback runbook: `docs/runbooks/STAGING_ROLLBACK.md`
 - Validation helper: `scripts/staging/validate_upgrade_rollback.sh`
 
+## Release artifact packaging and verification (v2.2)
+- Release asset naming + checksum policy: `docs/release/ARTIFACTS.md`
+- Staging upgrade runbook: `docs/runbooks/STAGING_UPGRADE.md`
+- Staging rollback runbook: `docs/runbooks/STAGING_ROLLBACK.md`
+
 ## Burn-in and evidence for v2.2
 - The CI workflow `Soak Smoke (short CI signal)` is intentionally a short regression signal, not a release burn-in claim.
 - Real release burn-in for v2.2 requires an operated run with evidence collection per release policy.
