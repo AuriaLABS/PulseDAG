@@ -76,6 +76,28 @@ The package references only fields emitted by the node APIs:
   - `p2p_block_relay_total_events`
   - `p2p_block_relay_duplicate_ratio_bps`
 
+### Runtime status surface extensions (v2.3)
+`GET /runtime/status` now includes additive operator-facing coherence/health helpers across node, sync, p2p, mempool, and mining surfaces:
+- node-level rollup:
+  - `node_runtime_surface_health`
+- sync rollup and backlogs:
+  - `sync_surface_health`
+  - `sync_counters_coherent`
+  - `sync_blocks_request_backlog`
+  - `sync_blocks_validation_backlog`
+- p2p health rollup:
+  - `p2p_peer_health_total`
+  - `p2p_peer_health_counters_coherent`
+  - `p2p_surface_health`
+- mempool pressure rollup:
+  - `mempool_capacity_remaining_transactions`
+  - `mempool_orphan_pressure_bps`
+  - `mempool_surface_health`
+- external mining rollup:
+  - `external_mining_surface_health`
+
+These fields are strictly additive and designed for coherent dashboards: contradictory combinations are normalized into explicit degraded/counter-mismatch states instead of ambiguous operator signals.
+
 ## How operators use this package
 1. Wire your telemetry collector (Prometheus, OTEL collector, or Grafana JSON/Infinity datasource) to poll the API endpoints above.
 2. Import/translate dashboard panels in `ops/dashboard/v2.2/official-dashboards.json` into your Grafana dashboard objects.
