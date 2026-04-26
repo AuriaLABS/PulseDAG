@@ -58,6 +58,71 @@ pub struct StorageAuditReport {
 }
 
 impl Storage {
+    fn validate_restore_inputs(
+        &self,
+        expected_chain_id: Option<&str>,
+    ) -> Result<(ChainState, Vec<Block>), PulseError> {
+        let snapshot = self
+            .load_chain_state()?
+            .ok_or_else(|| PulseError::StorageError("validated snapshot missing".to_string()))?;
+        if let Some(chain_id) = expected_chain_id {
+            if snapshot.chain_id != chain_id {
+                return Err(PulseError::StorageError(format!(
+                    "validated snapshot chain_id={} does not match expected {}",
+                    snapshot.chain_id, chain_id
+                )));
+            }
+        }
+        if !snapshot.dag.blocks.contains_key(&snapshot.dag.genesis_hash) {
+            return Err(PulseError::StorageError(
+                "validated snapshot missing genesis block".to_string(),
+            ));
+        }
+        let snapshot_max_height = snapshot
+            .dag
+            .blocks
+            .values()
+            .map(|b| b.header.height)
+            .max()
+            .unwrap_or(0);
+        if snapshot_max_height != snapshot.dag.best_height {
+            return Err(PulseError::StorageError(format!(
+                "validated snapshot best_height {} does not match max DAG height {}",
+                snapshot.dag.best_height, snapshot_max_height
+            )));
+        }
+        let blocks = self.list_blocks()?;
+        let snapshot_hashes = snapshot
+            .dag
+            .blocks
+            .keys()
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>();
+        let persisted_hashes = blocks
+            .iter()
+            .map(|b| b.hash.clone())
+            .collect::<std::collections::BTreeSet<_>>();
+        for block in &blocks {
+            if block.header.height <= snapshot.dag.best_height
+                && !snapshot_hashes.contains(&block.hash)
+            {
+                return Err(PulseError::StorageError(format!(
+                    "persisted block {} at height {} is not present in validated snapshot",
+                    block.hash, block.header.height
+                )));
+            }
+            for parent in &block.header.parents {
+                if !snapshot_hashes.contains(parent) && !persisted_hashes.contains(parent) {
+                    return Err(PulseError::StorageError(format!(
+                        "persisted block {} references missing parent {}",
+                        block.hash, parent
+                    )));
+                }
+            }
+        }
+        Ok((snapshot, blocks))
+    }
+
     pub fn open(path: &str) -> Result<Self, PulseError> {
         let cfs = vec![
             ColumnFamilyDescriptor::new("blocks", Default::default()),
@@ -304,11 +369,11 @@ impl Storage {
         Ok(state)
     }
 
-    pub fn replay_from_validated_snapshot_and_delta(&self) -> Result<ChainState, PulseError> {
-        let snapshot = self
-            .load_chain_state()?
-            .ok_or_else(|| PulseError::StorageError("validated snapshot missing".to_string()))?;
-        let blocks = self.list_blocks()?;
+    pub fn replay_from_validated_snapshot_and_delta(
+        &self,
+        expected_chain_id: Option<&str>,
+    ) -> Result<ChainState, PulseError> {
+        let (snapshot, blocks) = self.validate_restore_inputs(expected_chain_id)?;
         let state = rebuild_state_from_snapshot_and_blocks(snapshot, blocks)?;
         self.persist_chain_state(&state)?;
         Ok(state)
@@ -319,68 +384,9 @@ impl Storage {
         chain_id: String,
     ) -> Result<RestoreDrillReport, PulseError> {
         let started = std::time::Instant::now();
-        let persisted_blocks = self.list_blocks()?;
+        let (snapshot, persisted_blocks) = self.validate_restore_inputs(Some(&chain_id))?;
         let persisted_block_count = persisted_blocks.len();
-        let snapshot = self.load_chain_state();
-
-        let (state, used_snapshot, fallback_to_full_rebuild) = match snapshot {
-            Ok(Some(snapshot_state)) => {
-                match rebuild_state_from_snapshot_and_blocks(
-                    snapshot_state,
-                    persisted_blocks.clone(),
-                ) {
-                    Ok(state) => (state, true, false),
-                    Err(snapshot_delta_err) => {
-                        if persisted_blocks.is_empty() {
-                            return Err(snapshot_delta_err);
-                        }
-                        let _ = self.append_runtime_event(
-                            "warn",
-                            "restore_drill_snapshot_delta_failed_fallback_full",
-                            &format!(
-                                "restore drill snapshot+delta failed; fallback to full rebuild: {}",
-                                snapshot_delta_err
-                            ),
-                        );
-                        (
-                            rebuild_state_from_blocks(chain_id.clone(), persisted_blocks)?,
-                            true,
-                            true,
-                        )
-                    }
-                }
-            }
-            Ok(None) => {
-                if persisted_blocks.is_empty() {
-                    return Err(PulseError::StorageError(
-                        "restore drill requires snapshot or persisted blocks".to_string(),
-                    ));
-                }
-                (
-                    rebuild_state_from_blocks(chain_id.clone(), persisted_blocks)?,
-                    false,
-                    true,
-                )
-            }
-            Err(snapshot_err) => {
-                if persisted_blocks.is_empty() {
-                    return Err(snapshot_err);
-                }
-                let _ = self.append_runtime_event(
-                    "warn",
-                    "restore_drill_snapshot_decode_failed_fallback_full",
-                    &format!(
-                        "restore drill snapshot decode failed; fallback to full rebuild: {}",
-                        snapshot_err
-                    ),
-                );
-                (
-                    rebuild_state_from_blocks(chain_id, persisted_blocks)?,
-                    false,
-                    true,
-                )
-            }
-        };
+        let state = rebuild_state_from_snapshot_and_blocks(snapshot, persisted_blocks)?;
 
         self.persist_chain_state(&state)?;
         let restore_duration_ms = started.elapsed().as_millis();
@@ -389,12 +395,12 @@ impl Storage {
             "restore_drill_completed",
             &format!(
                 "restore drill completed in {} ms (used_snapshot={}, fallback_to_full_rebuild={}, best_height={})",
-                restore_duration_ms, used_snapshot, fallback_to_full_rebuild, state.dag.best_height
+                restore_duration_ms, true, false, state.dag.best_height
             ),
         );
         Ok(RestoreDrillReport {
-            used_snapshot,
-            fallback_to_full_rebuild,
+            used_snapshot: true,
+            fallback_to_full_rebuild: false,
             persisted_block_count,
             best_height: state.dag.best_height,
             restore_duration_ms,
@@ -829,7 +835,10 @@ mod tests {
             .load_chain_state()
             .expect("load snapshot after")
             .expect("snapshot after present");
-        assert_eq!(best_tip_hash(&snapshot_before), best_tip_hash(&snapshot_after));
+        assert_eq!(
+            best_tip_hash(&snapshot_before),
+            best_tip_hash(&snapshot_after)
+        );
         assert_eq!(
             snapshot_before.dag.best_height,
             snapshot_after.dag.best_height
@@ -929,9 +938,10 @@ mod tests {
             4,
             "genesis + 3 accepted blocks should persist"
         );
-        assert!(blocks.iter().any(
-            |b| b.hash == best_tip_hash(&snapshot) && b.header.height == snapshot.dag.best_height
-        ));
+        assert!(blocks
+            .iter()
+            .any(|b| b.hash == best_tip_hash(&snapshot)
+                && b.header.height == snapshot.dag.best_height));
 
         let _ = std::fs::remove_dir_all(path);
     }
@@ -1147,6 +1157,131 @@ mod tests {
             "expected restore drill completion event"
         );
 
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn replay_from_validated_snapshot_and_delta_succeeds_for_valid_restore_inputs() {
+        let path = temp_db_path("validated-restore-success");
+        let storage = Storage::open(&path).expect("open storage");
+        let state = build_linear_chain("testnet", 5);
+        let mut blocks: Vec<_> = state.dag.blocks.values().cloned().collect();
+        blocks.sort_by_key(|b| b.header.height);
+        for block in &blocks {
+            storage.persist_block(block).expect("persist block");
+        }
+        storage
+            .persist_chain_state(&state)
+            .expect("persist validated snapshot");
+
+        storage
+            .prune_blocks_below_height(4)
+            .expect("prune history to exercise snapshot+delta restore");
+        let restored = storage
+            .replay_from_validated_snapshot_and_delta(Some("testnet"))
+            .expect("validated restore should succeed");
+
+        assert_eq!(restored.dag.best_height, state.dag.best_height);
+        assert_eq!(best_tip_hash(&restored), best_tip_hash(&state));
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn replay_from_validated_snapshot_and_delta_rejects_incomplete_inputs_safely() {
+        let path = temp_db_path("validated-restore-fails-incomplete");
+        let storage = Storage::open(&path).expect("open storage");
+        let state = build_linear_chain("testnet", 3);
+        storage
+            .persist_chain_state(&state)
+            .expect("persist validated snapshot");
+
+        let mut invalid_block = build_candidate_block(
+            vec!["missing-parent-hash".to_string()],
+            state.dag.best_height + 1,
+            1,
+            vec![build_coinbase_transaction(
+                "miner",
+                50,
+                state.dag.best_height + 1,
+            )],
+        );
+        let (header, mined, _, _) = dev_mine_header(invalid_block.header.clone(), 25_000);
+        assert!(mined, "failed to mine invalid test block");
+        invalid_block.header = header;
+        invalid_block.hash = format!("incomplete-restore-{}", invalid_block.header.nonce);
+        storage
+            .persist_block(&invalid_block)
+            .expect("persist invalid delta block");
+
+        let err = storage
+            .replay_from_validated_snapshot_and_delta(Some("testnet"))
+            .expect_err("restore must fail safely on incomplete inputs");
+        assert!(
+            err.to_string().contains("references missing parent"),
+            "unexpected error: {err}"
+        );
+        let snapshot_after = storage
+            .load_chain_state()
+            .expect("load snapshot after failed restore")
+            .expect("snapshot should still exist");
+        assert_eq!(
+            snapshot_after.dag.best_height, state.dag.best_height,
+            "failed restore must not advance stored snapshot"
+        );
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn restore_drill_preserves_recovery_entrypoint_coherence() {
+        let path = temp_db_path("restore-drill-recovery-coherent");
+        let storage = Storage::open(&path).expect("open storage");
+        let state = build_linear_chain("testnet", 6);
+        let mut blocks: Vec<_> = state.dag.blocks.values().cloned().collect();
+        blocks.sort_by_key(|b| b.header.height);
+        for block in &blocks {
+            storage.persist_block(block).expect("persist block");
+        }
+        storage
+            .persist_chain_state(&state)
+            .expect("persist baseline snapshot");
+        storage
+            .prune_blocks_below_height(5)
+            .expect("retain snapshot + delta window");
+
+        let report = storage
+            .restore_drill_snapshot_and_delta("testnet".to_string())
+            .expect("restore drill must succeed");
+        assert!(report.used_snapshot);
+        assert!(!report.fallback_to_full_rebuild);
+
+        let restarted = storage
+            .replay_blocks_or_init("testnet".to_string())
+            .expect("normal recovery entrypoint should remain coherent after restore");
+        assert_eq!(restarted.dag.best_height, state.dag.best_height);
+        assert_eq!(best_tip_hash(&restarted), best_tip_hash(&state));
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn replay_blocks_or_init_normal_startup_path_has_no_regression_without_snapshot() {
+        let path = temp_db_path("normal-startup-no-regression");
+        let storage = Storage::open(&path).expect("open storage");
+        let state = build_linear_chain("testnet", 4);
+        let mut blocks: Vec<_> = state.dag.blocks.values().cloned().collect();
+        blocks.sort_by_key(|b| b.header.height);
+        for block in &blocks {
+            storage.persist_block(block).expect("persist block");
+        }
+
+        let rebuilt = storage
+            .replay_blocks_or_init("testnet".to_string())
+            .expect("normal startup replay must still succeed");
+        assert_eq!(rebuilt.dag.best_height, state.dag.best_height);
+        assert_eq!(best_tip_hash(&rebuilt), best_tip_hash(&state));
+        assert!(storage
+            .load_chain_state()
+            .expect("load restored snapshot")
+            .is_some());
         let _ = std::fs::remove_dir_all(path);
     }
 
