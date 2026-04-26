@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Package release artifacts and emit per-asset sha256 checksums."""
+"""Package release artifacts and emit checksums with provenance metadata."""
 
 from __future__ import annotations
 
@@ -56,6 +56,10 @@ def main() -> None:
     parser.add_argument("--output-dir", required=True, type=Path)
     parser.add_argument("--tag", required=True)
     parser.add_argument("--bin-name", default="pulsedagd")
+    parser.add_argument("--repository", default="")
+    parser.add_argument("--commit", default="")
+    parser.add_argument("--run-id", default="")
+    parser.add_argument("--run-attempt", default="")
     args = parser.parse_args()
 
     binary_path = args.binary.resolve()
@@ -93,14 +97,22 @@ def main() -> None:
     checksum_file.write_text(f"{checksum}  {archive_path.name}\n", encoding="utf-8")
 
     manifest_file = output_dir / f"{archive_path.name}.json"
+    file_size_bytes = archive_path.stat().st_size
     manifest_file.write_text(
         json.dumps(
             {
                 "tag": args.tag,
                 "archive": archive_path.name,
                 "archive_sha256": checksum,
+                "archive_size_bytes": file_size_bytes,
                 "target": target,
                 "binary": staged_binary_name,
+                "provenance": {
+                    "repository": args.repository,
+                    "commit": args.commit,
+                    "github_run_id": args.run_id,
+                    "github_run_attempt": args.run_attempt,
+                },
             },
             indent=2,
             sort_keys=True,
@@ -108,6 +120,8 @@ def main() -> None:
         + "\n",
         encoding="utf-8",
     )
+
+    shutil.rmtree(stage_dir)
 
     print(f"Packaged: {archive_path}")
     print(f"Checksum: {checksum_file}")

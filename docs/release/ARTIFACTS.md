@@ -25,6 +25,17 @@ For every archive the workflow emits:
 - Per-asset checksum sidecar: `<archive>.sha256`
 - Per-asset manifest metadata: `<archive>.json`
 - Consolidated checksum list across all archives: `SHA256SUMS.txt`
+- Consolidated provenance summary: `release-provenance.json`
+
+In addition, each platform archive is attested in GitHub artifact attestations using the release workflow identity (OIDC-backed provenance).
+
+Per-archive JSON manifests now include:
+- `archive_sha256`
+- `archive_size_bytes`
+- `provenance.repository`
+- `provenance.commit`
+- `provenance.github_run_id`
+- `provenance.github_run_attempt`
 
 ## Operator verification before upgrade
 From a release download directory:
@@ -32,6 +43,12 @@ From a release download directory:
 ```bash
 sha256sum -c pulsedagd-v2.2.2-x86_64-unknown-linux-gnu.tar.gz.sha256
 sha256sum -c SHA256SUMS.txt --ignore-missing
+```
+
+Optional provenance spot-check:
+
+```bash
+jq '.artifacts[] | {archive, archive_sha256, provenance}' release-provenance.json
 ```
 
 Then unpack and stage:
