@@ -265,6 +265,10 @@ mod tests {
             peer_recovery: vec![],
             sync_candidates: vec![],
             selected_sync_peer: None,
+            connection_slot_budget: 0,
+            connected_slots_in_use: 0,
+            available_connection_slots: 0,
+            sync_selection_sticky_until_unix: None,
         }
     }
 

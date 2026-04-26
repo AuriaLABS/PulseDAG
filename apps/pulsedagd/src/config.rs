@@ -11,6 +11,7 @@ pub struct Config {
     pub p2p_bootstrap: Vec<String>,
     pub p2p_mdns: bool,
     pub p2p_kademlia: bool,
+    pub p2p_connection_slot_budget: usize,
     pub rocksdb_path: String,
     pub simulated_peers: Vec<String>,
     pub auto_rebuild_on_start: bool,
@@ -68,6 +69,7 @@ impl Config {
                 p2p_bootstrap: Vec::new(),
                 p2p_mdns: true,
                 p2p_kademlia: true,
+                p2p_connection_slot_budget: 8,
                 rocksdb_path: "./data/rocksdb".into(),
                 simulated_peers: Vec::new(),
                 auto_rebuild_on_start: true,
@@ -90,6 +92,7 @@ impl Config {
                 p2p_bootstrap: Vec::new(),
                 p2p_mdns: true,
                 p2p_kademlia: true,
+                p2p_connection_slot_budget: 24,
                 rocksdb_path: "./data/rocksdb".into(),
                 simulated_peers: Vec::new(),
                 auto_rebuild_on_start: true,
@@ -112,6 +115,7 @@ impl Config {
                 p2p_bootstrap: Vec::new(),
                 p2p_mdns: false,
                 p2p_kademlia: true,
+                p2p_connection_slot_budget: 32,
                 rocksdb_path: "./data/rocksdb".into(),
                 simulated_peers: Vec::new(),
                 auto_rebuild_on_start: true,
@@ -137,6 +141,11 @@ impl Config {
         self.p2p_bootstrap = read_env_list("PULSEDAG_P2P_BOOTSTRAP", &self.p2p_bootstrap);
         self.p2p_mdns = read_env_bool("PULSEDAG_P2P_MDNS", self.p2p_mdns);
         self.p2p_kademlia = read_env_bool("PULSEDAG_P2P_KADEMLIA", self.p2p_kademlia);
+        self.p2p_connection_slot_budget = read_env_usize_positive(
+            "PULSEDAG_P2P_CONNECTION_SLOT_BUDGET",
+            self.p2p_connection_slot_budget,
+            1,
+        );
         self.rocksdb_path = read_env_string("PULSEDAG_ROCKSDB_PATH", &self.rocksdb_path);
         self.simulated_peers = read_env_list("PULSEDAG_SIMULATED_PEERS", &self.simulated_peers);
         self.auto_rebuild_on_start =
@@ -239,6 +248,7 @@ mod tests {
             "PULSEDAG_RPC_BIND",
             "PULSEDAG_P2P_ENABLED",
             "PULSEDAG_P2P_MODE",
+            "PULSEDAG_P2P_CONNECTION_SLOT_BUDGET",
             "PULSEDAG_P2P_MDNS",
             "PULSEDAG_AUTO_PRUNE_ENABLED",
             "PULSEDAG_PRUNE_KEEP_RECENT_BLOCKS",
@@ -256,6 +266,7 @@ mod tests {
         assert_eq!(cfg.chain_id, "pulsedag-devnet");
         assert!(!cfg.p2p_enabled);
         assert_eq!(cfg.p2p_mode, "memory");
+        assert_eq!(cfg.p2p_connection_slot_budget, 8);
         assert!(!cfg.auto_prune_enabled);
     }
 
@@ -268,6 +279,7 @@ mod tests {
         assert_eq!(cfg.chain_id, "pulsedag-testnet");
         assert!(cfg.p2p_enabled);
         assert_eq!(cfg.p2p_mode, "libp2p");
+        assert_eq!(cfg.p2p_connection_slot_budget, 24);
         assert!(cfg.auto_prune_enabled);
         assert_eq!(cfg.prune_keep_recent_blocks, 500);
     }
@@ -281,6 +293,7 @@ mod tests {
         assert_eq!(cfg.chain_id, "pulsedag-testnet");
         assert!(cfg.p2p_enabled);
         assert_eq!(cfg.p2p_mode, "libp2p-real");
+        assert_eq!(cfg.p2p_connection_slot_budget, 32);
         assert!(!cfg.p2p_mdns);
         assert_eq!(cfg.prune_keep_recent_blocks, 1000);
     }
@@ -291,10 +304,12 @@ mod tests {
         clear_test_env();
         std::env::set_var("PULSEDAG_CONFIG_PROFILE", "operator");
         std::env::set_var("PULSEDAG_P2P_MODE", "memory");
+        std::env::set_var("PULSEDAG_P2P_CONNECTION_SLOT_BUDGET", "5");
         std::env::set_var("PULSEDAG_CHAIN_ID", "custom-chain");
         std::env::set_var("PULSEDAG_AUTO_PRUNE_ENABLED", "false");
         let cfg = Config::from_env().expect("config");
         assert_eq!(cfg.p2p_mode, "memory");
+        assert_eq!(cfg.p2p_connection_slot_budget, 5);
         assert_eq!(cfg.chain_id, "custom-chain");
         assert!(!cfg.auto_prune_enabled);
     }

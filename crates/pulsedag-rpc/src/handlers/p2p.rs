@@ -147,6 +147,10 @@ pub async fn get_p2p_status<S: RpcStateLike>(
                         "peers_under_flap_guard": status.peers_under_flap_guard
                     },
                     "selected_sync_peer": status.selected_sync_peer,
+                    "connection_slot_budget": status.connection_slot_budget,
+                    "connected_slots_in_use": status.connected_slots_in_use,
+                    "available_connection_slots": status.available_connection_slots,
+                    "sync_selection_sticky_until_unix": status.sync_selection_sticky_until_unix,
                     "sync_candidates": sync_candidates,
                     "peer_recovery": peer_recovery
                 })))
@@ -390,6 +394,10 @@ mod tests {
             ],
             sync_candidates: vec![],
             selected_sync_peer: Some("peer-a".into()),
+            connection_slot_budget: 8,
+            connected_slots_in_use: 2,
+            available_connection_slots: 6,
+            sync_selection_sticky_until_unix: Some(now.saturating_add(30)),
         };
 
         let Json(resp) = get_p2p_status(State(mk_state(status))).await;
