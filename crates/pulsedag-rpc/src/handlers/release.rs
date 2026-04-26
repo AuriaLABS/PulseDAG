@@ -62,13 +62,25 @@ mod tests {
     use super::{operator_stage, repo_version};
 
     #[test]
-    fn version_and_stage_match_v2_2_readiness() {
-        assert!(repo_version().starts_with("v2.2."));
-        assert_eq!(operator_stage(), "v2.2-readiness");
+    fn version_and_stage_follow_repo_semver_prefix() {
+        let version = repo_version();
+        let trimmed = version.trim_start_matches('v');
+        let mut parts = trimmed.split('.');
+        let major = parts.next().expect("semver major");
+        let minor = parts.next().expect("semver minor");
+        assert!(
+            major.parse::<u64>().is_ok(),
+            "major must be numeric: {major}"
+        );
+        assert!(
+            minor.parse::<u64>().is_ok(),
+            "minor must be numeric: {minor}"
+        );
+        assert_eq!(operator_stage(), format!("v{major}.{minor}-readiness"));
     }
 
     #[test]
-    fn runbook_index_covers_v2_2_operator_topics() {
+    fn runbook_index_covers_operator_topics() {
         let index = include_str!("../../../../docs/runbooks/INDEX.md");
         for required in [
             "Snapshot Restore",

@@ -35,11 +35,18 @@ jobs:
           PULSEDAG_BOOTSTRAP_NODES=127.0.0.1:9001,127.0.0.1:9002 \
           nohup cargo run -p pulsedagd > node-c.log 2>&1 &
 
-      - name: Wait network
-        run: sleep 10
-
-      - name: Health checks
+      - name: Wait for network health
         run: |
-          curl --fail http://127.0.0.1:8080/health
-          curl --fail http://127.0.0.1:8081/health
-          curl --fail http://127.0.0.1:8082/health
+          for port in 8080 8081 8082; do
+            for i in {1..45}; do
+              if curl -sSf "http://127.0.0.1:${port}/health" > /dev/null; then
+                echo "Node on ${port} healthy"
+                break
+              fi
+              if [ "$i" -eq 45 ]; then
+                echo "Node on ${port} failed health check"
+                exit 1
+              fi
+              sleep 2
+            done
+          done

@@ -1,0 +1,38 @@
+name: RPC and Release Validation
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  rpc-tests:
+    runs-on: ubuntu-latest
+    env:
+      RUST_TEST_THREADS: 1
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build pulsedag-rpc tests
+        run: cargo test -p pulsedag-rpc --all-targets --no-run
+
+      - name: Run full pulsedag-rpc suite
+        run: cargo test -p pulsedag-rpc --all-targets
+
+  release-readiness-tests:
+    runs-on: ubuntu-latest
+    env:
+      RUST_TEST_THREADS: 1
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Runtime/read-plane/release regression tests
+        run: |
+          cargo test -p pulsedag-rpc handlers::runtime::tests::
+          cargo test -p pulsedag-rpc handlers::release::tests::
+          cargo test -p pulsedag-rpc handlers::status::tests::
+          cargo test -p pulsedag-rpc handlers::tx::tests::
