@@ -92,6 +92,10 @@ pub struct P2pStatus {
     pub inbound_duplicates_suppressed: usize,
     pub tx_outbound_duplicates_suppressed: usize,
     pub tx_outbound_first_seen_relayed: usize,
+    pub tx_outbound_recovery_relayed: usize,
+    pub block_outbound_duplicates_suppressed: usize,
+    pub block_outbound_first_seen_relayed: usize,
+    pub block_outbound_recovery_relayed: usize,
     pub last_drop_reason: Option<String>,
     pub peer_reconnect_attempts: u64,
     pub peer_recovery_success_count: u64,
@@ -194,10 +198,18 @@ struct InnerState {
     inbound_duplicates_suppressed: usize,
     tx_outbound_duplicates_suppressed: usize,
     tx_outbound_first_seen_relayed: usize,
+    tx_outbound_recovery_relayed: usize,
+    block_outbound_duplicates_suppressed: usize,
+    block_outbound_first_seen_relayed: usize,
+    block_outbound_recovery_relayed: usize,
     last_drop_reason: Option<String>,
     inbound_seen_at_unix: HashMap<String, u64>,
     outbound_tx_seen_at_unix: HashMap<String, u64>,
     outbound_block_seen_at_unix: HashMap<String, u64>,
+    outbound_tx_recovery_relay_generation: HashMap<String, u64>,
+    outbound_block_recovery_relay_generation: HashMap<String, u64>,
+    recovery_rebroadcast_generation: u64,
+    recovery_rebroadcast_until_unix: u64,
     peer_book: HashMap<String, PeerHealth>,
     peer_state_path: Option<PathBuf>,
     peer_reconnect_attempts: u64,
@@ -372,6 +384,10 @@ impl P2pHandle for MemoryP2pHandle {
             inbound_duplicates_suppressed: inner.inbound_duplicates_suppressed,
             tx_outbound_duplicates_suppressed: inner.tx_outbound_duplicates_suppressed,
             tx_outbound_first_seen_relayed: inner.tx_outbound_first_seen_relayed,
+            tx_outbound_recovery_relayed: inner.tx_outbound_recovery_relayed,
+            block_outbound_duplicates_suppressed: inner.block_outbound_duplicates_suppressed,
+            block_outbound_first_seen_relayed: inner.block_outbound_first_seen_relayed,
+            block_outbound_recovery_relayed: inner.block_outbound_recovery_relayed,
             last_drop_reason: inner.last_drop_reason.clone(),
             peer_reconnect_attempts: inner.peer_reconnect_attempts,
             peer_recovery_success_count: inner.peer_recovery_success_count,
@@ -518,6 +534,7 @@ const BACKOFF_MAX_SECS: u64 = 300;
 const MESSAGE_DEDUP_WINDOW_SECS: u64 = 120;
 const TX_OUTBOUND_DEDUP_WINDOW_SECS: u64 = 30;
 const BLOCK_OUTBOUND_DEDUP_WINDOW_SECS: u64 = 30;
+const RECOVERY_REBROADCAST_GRACE_SECS: u64 = 8;
 const MAX_DEDUP_TRACKED_IDS: usize = 16_384;
 const BLOCK_PRIORITY_BURST_LIMIT: usize = 8;
 
@@ -819,6 +836,7 @@ fn register_peer_result_at(inner: &Arc<Mutex<InnerState>>, peer: &str, success: 
         guard.peer_reconnect_attempts = guard.peer_reconnect_attempts.saturating_add(1);
         let mut counted_cooldown_suppression = false;
         let mut counted_flap_suppression = false;
+        let mut trigger_rebroadcast_window = false;
         {
             let health = guard.peer_book.entry(peer.to_string()).or_default();
             health.reconnect_attempts = health.reconnect_attempts.saturating_add(1);
@@ -827,6 +845,7 @@ fn register_peer_result_at(inner: &Arc<Mutex<InnerState>>, peer: &str, success: 
                 health.connected = true;
                 health.fail_streak = 0;
                 health.next_retry_unix = now;
+                trigger_rebroadcast_window = true;
                 let success_bonus = if health.score < 0 {
                     PEER_SUCCESS_BASE_BONUS + 4
                 } else {
@@ -889,6 +908,12 @@ fn register_peer_result_at(inner: &Arc<Mutex<InnerState>>, peer: &str, success: 
                 }
                 health.next_retry_unix = next_retry_unix.max(previous_next_retry_unix);
             }
+        }
+        if trigger_rebroadcast_window {
+            guard.recovery_rebroadcast_generation =
+                guard.recovery_rebroadcast_generation.saturating_add(1);
+            guard.recovery_rebroadcast_until_unix =
+                now.saturating_add(RECOVERY_REBROADCAST_GRACE_SECS);
         }
         if success {
             guard.peer_recovery_success_count = guard.peer_recovery_success_count.saturating_add(1);
@@ -965,6 +990,18 @@ fn should_relay_outbound_tx(state: &mut InnerState, id: &str, now: u64) -> bool 
     );
     match state.outbound_tx_seen_at_unix.get(id) {
         Some(last_seen) if now.saturating_sub(*last_seen) <= TX_OUTBOUND_DEDUP_WINDOW_SECS => {
+            if should_allow_recovery_rebroadcast(
+                &mut state.outbound_tx_recovery_relay_generation,
+                state.recovery_rebroadcast_generation,
+                state.recovery_rebroadcast_until_unix,
+                id,
+                now,
+            ) {
+                state.outbound_tx_seen_at_unix.insert(id.to_string(), now);
+                state.tx_outbound_recovery_relayed =
+                    state.tx_outbound_recovery_relayed.saturating_add(1);
+                return true;
+            }
             state.tx_outbound_duplicates_suppressed =
                 state.tx_outbound_duplicates_suppressed.saturating_add(1);
             false
@@ -986,12 +1023,52 @@ fn should_relay_outbound_block(state: &mut InnerState, id: &str, now: u64) -> bo
     );
     match state.outbound_block_seen_at_unix.get(id) {
         Some(last_seen) if now.saturating_sub(*last_seen) <= BLOCK_OUTBOUND_DEDUP_WINDOW_SECS => {
+            if should_allow_recovery_rebroadcast(
+                &mut state.outbound_block_recovery_relay_generation,
+                state.recovery_rebroadcast_generation,
+                state.recovery_rebroadcast_until_unix,
+                id,
+                now,
+            ) {
+                state
+                    .outbound_block_seen_at_unix
+                    .insert(id.to_string(), now);
+                state.block_outbound_recovery_relayed =
+                    state.block_outbound_recovery_relayed.saturating_add(1);
+                return true;
+            }
+            state.block_outbound_duplicates_suppressed =
+                state.block_outbound_duplicates_suppressed.saturating_add(1);
             false
         }
         _ => {
             state
                 .outbound_block_seen_at_unix
                 .insert(id.to_string(), now);
+            state.block_outbound_first_seen_relayed =
+                state.block_outbound_first_seen_relayed.saturating_add(1);
+            true
+        }
+    }
+}
+
+fn should_allow_recovery_rebroadcast(
+    recovery_relays: &mut HashMap<String, u64>,
+    current_generation: u64,
+    recovery_until_unix: u64,
+    id: &str,
+    now: u64,
+) -> bool {
+    if current_generation == 0 || now > recovery_until_unix {
+        return false;
+    }
+    if recovery_relays.len() > MAX_DEDUP_TRACKED_IDS {
+        recovery_relays.retain(|_, generation| *generation == current_generation);
+    }
+    match recovery_relays.get(id) {
+        Some(previous_generation) if *previous_generation == current_generation => false,
+        _ => {
+            recovery_relays.insert(id.to_string(), current_generation);
             true
         }
     }
@@ -1469,6 +1546,10 @@ impl P2pHandle for Libp2pHandle {
             inbound_duplicates_suppressed: inner.inbound_duplicates_suppressed,
             tx_outbound_duplicates_suppressed: inner.tx_outbound_duplicates_suppressed,
             tx_outbound_first_seen_relayed: inner.tx_outbound_first_seen_relayed,
+            tx_outbound_recovery_relayed: inner.tx_outbound_recovery_relayed,
+            block_outbound_duplicates_suppressed: inner.block_outbound_duplicates_suppressed,
+            block_outbound_first_seen_relayed: inner.block_outbound_first_seen_relayed,
+            block_outbound_recovery_relayed: inner.block_outbound_recovery_relayed,
             last_drop_reason: inner.last_drop_reason.clone(),
             peer_reconnect_attempts: inner.peer_reconnect_attempts,
             peer_recovery_success_count: inner.peer_recovery_success_count,
@@ -1760,6 +1841,9 @@ mod tests {
         let status = handle.status().expect("status should be available");
         assert_eq!(status.publish_attempts, 1);
         assert_eq!(status.broadcasted_messages, 1);
+        assert_eq!(status.block_outbound_first_seen_relayed, 1);
+        assert_eq!(status.block_outbound_duplicates_suppressed, 9);
+        assert_eq!(status.block_outbound_recovery_relayed, 0);
     }
 
     #[test]
@@ -1789,6 +1873,68 @@ mod tests {
             .expect("post-restart relay should not be suppressed");
         let status_b = handle_b.status().expect("status should be available");
         assert_eq!(status_b.publish_attempts, 1);
+    }
+
+    #[test]
+    fn recovery_rebroadcast_allows_one_duplicate_per_rejoin_event() {
+        let mut state = InnerState::default();
+        assert!(should_relay_outbound_tx(&mut state, "tx-recovery", 1_000));
+        assert!(should_relay_outbound_block(
+            &mut state,
+            "block-recovery",
+            1_000
+        ));
+        assert!(!should_relay_outbound_tx(&mut state, "tx-recovery", 1_001));
+        assert!(!should_relay_outbound_block(
+            &mut state,
+            "block-recovery",
+            1_001
+        ));
+
+        let shared = Arc::new(Mutex::new(state));
+        register_peer_result_at(&shared, "peer-a", true, 1_002);
+
+        let mut guard = shared.lock().unwrap();
+        assert!(should_relay_outbound_tx(&mut guard, "tx-recovery", 1_003));
+        assert!(should_relay_outbound_block(
+            &mut guard,
+            "block-recovery",
+            1_003
+        ));
+        assert!(!should_relay_outbound_tx(&mut guard, "tx-recovery", 1_004));
+        assert!(!should_relay_outbound_block(
+            &mut guard,
+            "block-recovery",
+            1_004
+        ));
+        assert_eq!(guard.tx_outbound_recovery_relayed, 1);
+        assert_eq!(guard.block_outbound_recovery_relayed, 1);
+    }
+
+    #[test]
+    fn churn_rejoin_recovery_relay_rearms_and_then_reconverges() {
+        let shared = Arc::new(Mutex::new(InnerState::default()));
+        {
+            let mut guard = shared.lock().unwrap();
+            assert!(should_relay_outbound_tx(&mut guard, "tx-churn", 2_000));
+            assert!(!should_relay_outbound_tx(&mut guard, "tx-churn", 2_001));
+        }
+
+        register_peer_result_at(&shared, "peer-a", false, 2_010);
+        register_peer_result_at(&shared, "peer-a", true, 2_020);
+        {
+            let mut guard = shared.lock().unwrap();
+            assert!(should_relay_outbound_tx(&mut guard, "tx-churn", 2_021));
+            assert!(!should_relay_outbound_tx(&mut guard, "tx-churn", 2_022));
+        }
+
+        register_peer_result_at(&shared, "peer-a", false, 2_030);
+        register_peer_result_at(&shared, "peer-a", true, 2_040);
+        let mut guard = shared.lock().unwrap();
+        assert!(should_relay_outbound_tx(&mut guard, "tx-churn", 2_041));
+        assert!(!should_relay_outbound_tx(&mut guard, "tx-churn", 2_042));
+        assert_eq!(guard.tx_outbound_recovery_relayed, 2);
+        assert!(guard.tx_outbound_duplicates_suppressed >= 3);
     }
 
     #[test]
