@@ -757,6 +757,10 @@ mod tests {
             ],
             sync_candidates: vec![],
             selected_sync_peer: Some("peer-a".into()),
+            connection_slot_budget: 8,
+            connected_slots_in_use: 1,
+            available_connection_slots: 7,
+            sync_selection_sticky_until_unix: Some(now.saturating_add(30)),
         };
         let state = TestState {
             chain: Arc::new(RwLock::new(chain)),
@@ -871,6 +875,10 @@ mod tests {
             peer_recovery: vec![],
             sync_candidates: vec![],
             selected_sync_peer: None,
+            connection_slot_budget: 8,
+            connected_slots_in_use: 0,
+            available_connection_slots: 8,
+            sync_selection_sticky_until_unix: None,
         };
         let state = TestState {
             chain: Arc::new(RwLock::new(chain)),
@@ -1293,10 +1301,10 @@ mod stream_tests {
             Duration::from_secs(2),
             std::future::poll_fn(|cx| futures_core::Stream::poll_next(stream.as_mut(), cx)),
         )
-            .await
-            .expect("stream poll timeout")
-            .expect("stream ended unexpectedly")
-            .expect("stream event result");
+        .await
+        .expect("stream poll timeout")
+        .expect("stream ended unexpectedly")
+        .expect("stream event result");
         let _ = event;
         drop(stream);
     }

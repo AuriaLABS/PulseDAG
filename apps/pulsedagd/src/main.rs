@@ -118,6 +118,8 @@ async fn main() -> Result<()> {
                 bootstrap: cfg.p2p_bootstrap.clone(),
                 enable_mdns: cfg.p2p_mdns,
                 enable_kademlia: cfg.p2p_kademlia,
+                connection_slot_budget: cfg.p2p_connection_slot_budget,
+                sync_selection_stickiness_secs: 30,
                 runtime: Libp2pRuntimeMode::RealSwarm,
             }))?,
             "libp2p" | "libp2p-dev" | "libp2p-skeleton" => {
@@ -127,6 +129,8 @@ async fn main() -> Result<()> {
                     bootstrap: cfg.p2p_bootstrap.clone(),
                     enable_mdns: cfg.p2p_mdns,
                     enable_kademlia: cfg.p2p_kademlia,
+                    connection_slot_budget: cfg.p2p_connection_slot_budget,
+                    sync_selection_stickiness_secs: 30,
                     runtime: Libp2pRuntimeMode::DevLoopbackSkeleton,
                 }))?
             }

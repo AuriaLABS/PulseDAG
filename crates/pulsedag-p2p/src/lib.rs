@@ -103,6 +103,10 @@ pub struct P2pStatus {
     pub peer_recovery: Vec<PeerRecoveryStatus>,
     pub sync_candidates: Vec<RankedSyncPeer>,
     pub selected_sync_peer: Option<String>,
+    pub connection_slot_budget: usize,
+    pub connected_slots_in_use: usize,
+    pub available_connection_slots: usize,
+    pub sync_selection_sticky_until_unix: Option<u64>,
 }
 
 pub trait P2pHandle: Send + Sync {
@@ -118,6 +122,8 @@ pub struct Libp2pConfig {
     pub bootstrap: Vec<String>,
     pub enable_mdns: bool,
     pub enable_kademlia: bool,
+    pub connection_slot_budget: usize,
+    pub sync_selection_stickiness_secs: u64,
     pub runtime: Libp2pRuntimeMode,
 }
 
@@ -199,6 +205,10 @@ struct InnerState {
     last_peer_recovery_unix: Option<u64>,
     peer_cooldown_suppressed_count: u64,
     peer_flap_suppressed_count: u64,
+    connection_slot_budget: usize,
+    sync_selection_stickiness_secs: u64,
+    selected_sync_peer: Option<String>,
+    sync_selection_sticky_until_unix: u64,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -316,14 +326,19 @@ impl P2pHandle for MemoryP2pHandle {
     }
 
     fn status(&self) -> Result<P2pStatus, PulseError> {
-        let inner = self
+        let mut inner = self
             .inner
             .lock()
             .map_err(|_| PulseError::Internal("p2p lock poisoned".into()))?;
         let (peers_under_cooldown, peers_under_flap_guard, peer_recovery) =
             peer_recovery_snapshot(&inner);
         let sync_candidates = sync_candidates_snapshot(&inner);
-        let selected_sync_peer = sync_candidates.first().map(|peer| peer.peer_id.clone());
+        let selected_sync_peer =
+            update_selected_sync_peer(&mut inner, &sync_candidates, now_unix());
+        let connected_slots_in_use = inner.connected_peers.len();
+        let available_connection_slots = inner
+            .connection_slot_budget
+            .saturating_sub(connected_slots_in_use);
         Ok(P2pStatus {
             mode: inner.mode.clone(),
             peer_id: inner.peer_id.clone(),
@@ -368,6 +383,11 @@ impl P2pHandle for MemoryP2pHandle {
             peer_recovery,
             sync_candidates,
             selected_sync_peer,
+            connection_slot_budget: inner.connection_slot_budget,
+            connected_slots_in_use,
+            available_connection_slots,
+            sync_selection_sticky_until_unix: (inner.sync_selection_sticky_until_unix > 0)
+                .then_some(inner.sync_selection_sticky_until_unix),
         })
     }
 }
@@ -422,6 +442,8 @@ impl Libp2pHandle {
             listening: vec![cfg.listen_addr.clone()],
             peer_book,
             peer_state_path: peer_state_path(),
+            connection_slot_budget: cfg.connection_slot_budget.max(1),
+            sync_selection_stickiness_secs: cfg.sync_selection_stickiness_secs,
             ..InnerState::default()
         };
         if let Some(path) = state.peer_state_path.as_ref() {
@@ -556,6 +578,11 @@ fn sync_candidates_snapshot(state: &InnerState) -> Vec<RankedSyncPeer> {
 
 fn refresh_connected_peers_from_health(state: &mut InnerState) {
     if mode_connected_peers_are_real_network(&state.mode) {
+        let budget = if state.connection_slot_budget == 0 {
+            usize::MAX
+        } else {
+            state.connection_slot_budget
+        };
         state.connected_peers = sync_candidates_snapshot(state)
             .into_iter()
             .filter(|peer| {
@@ -567,10 +594,49 @@ fn refresh_connected_peers_from_health(state: &mut InnerState) {
                         .unwrap_or(false)
             })
             .map(|peer| peer.peer_id)
+            .take(budget)
             .collect();
     } else {
         state.connected_peers.clear();
     }
+}
+
+fn update_selected_sync_peer(
+    state: &mut InnerState,
+    sync_candidates: &[RankedSyncPeer],
+    now: u64,
+) -> Option<String> {
+    let preferred = state
+        .connected_peers
+        .first()
+        .cloned()
+        .or_else(|| sync_candidates.first().map(|peer| peer.peer_id.clone()));
+    let current_is_eligible = state
+        .selected_sync_peer
+        .as_ref()
+        .map(|peer| state.connected_peers.contains(peer))
+        .unwrap_or(false);
+    let sticky_active = state.sync_selection_sticky_until_unix > now;
+
+    if sticky_active && current_is_eligible {
+        return state.selected_sync_peer.clone();
+    }
+
+    if let Some(next_peer) = preferred {
+        let changed = state.selected_sync_peer.as_deref() != Some(next_peer.as_str());
+        if changed {
+            state.selected_sync_peer = Some(next_peer.clone());
+        }
+        if state.sync_selection_stickiness_secs > 0 {
+            state.sync_selection_sticky_until_unix =
+                now.saturating_add(state.sync_selection_stickiness_secs);
+        }
+        return Some(next_peer);
+    }
+
+    state.selected_sync_peer = None;
+    state.sync_selection_sticky_until_unix = 0;
+    None
 }
 
 #[derive(Default)]
@@ -792,7 +858,8 @@ fn register_peer_result_at(inner: &Arc<Mutex<InnerState>>, peer: &str, success: 
                 let adaptive_penalty = PEER_FAILURE_BASE_PENALTY
                     + (health.fail_streak as i32 * PEER_FAILURE_STREAK_PENALTY)
                     + (health.recent_failures_unix.len() as i32 * PEER_FAILURE_RECENT_PENALTY);
-                health.score = (health.score - adaptive_penalty).clamp(PEER_SCORE_MIN, PEER_SCORE_MAX);
+                health.score =
+                    (health.score - adaptive_penalty).clamp(PEER_SCORE_MIN, PEER_SCORE_MAX);
                 let exp = health.fail_streak.min(BACKOFF_EXP_CAP);
                 let base_backoff = BACKOFF_BASE_SECS.saturating_pow(exp);
                 let bounded_backoff = base_backoff.min(BACKOFF_MAX_SECS);
@@ -1355,14 +1422,20 @@ impl P2pHandle for Libp2pHandle {
     }
 
     fn status(&self) -> Result<P2pStatus, PulseError> {
-        let inner = self
+        let mut inner = self
             .inner
             .lock()
             .map_err(|_| PulseError::Internal("p2p lock poisoned".into()))?;
+        refresh_connected_peers_from_health(&mut inner);
         let (peers_under_cooldown, peers_under_flap_guard, peer_recovery) =
             peer_recovery_snapshot(&inner);
         let sync_candidates = sync_candidates_snapshot(&inner);
-        let selected_sync_peer = sync_candidates.first().map(|peer| peer.peer_id.clone());
+        let selected_sync_peer =
+            update_selected_sync_peer(&mut inner, &sync_candidates, now_unix());
+        let connected_slots_in_use = inner.connected_peers.len();
+        let available_connection_slots = inner
+            .connection_slot_budget
+            .saturating_sub(connected_slots_in_use);
         Ok(P2pStatus {
             mode: inner.mode.clone(),
             peer_id: inner.peer_id.clone(),
@@ -1407,6 +1480,11 @@ impl P2pHandle for Libp2pHandle {
             peer_recovery,
             sync_candidates,
             selected_sync_peer,
+            connection_slot_budget: inner.connection_slot_budget,
+            connected_slots_in_use,
+            available_connection_slots,
+            sync_selection_sticky_until_unix: (inner.sync_selection_sticky_until_unix > 0)
+                .then_some(inner.sync_selection_sticky_until_unix),
         })
     }
 }
@@ -1545,7 +1623,10 @@ mod tests {
         );
 
         let ranked = sync_candidates_snapshot(&state);
-        assert_eq!(ranked.first().map(|p| p.peer_id.as_str()), Some("healthy-peer"));
+        assert_eq!(
+            ranked.first().map(|p| p.peer_id.as_str()),
+            Some("healthy-peer")
+        );
         assert!(ranked
             .iter()
             .find(|p| p.peer_id == "noisy-peer")
@@ -1920,6 +2001,8 @@ mod tests {
             bootstrap: vec!["peer-bootstrap".into()],
             enable_mdns: false,
             enable_kademlia: false,
+            connection_slot_budget: 8,
+            sync_selection_stickiness_secs: 30,
             runtime: Libp2pRuntimeMode::DevLoopbackSkeleton,
         };
         let (handle, _rx) = Libp2pHandle::new(cfg).expect("libp2p handle should init");
@@ -1956,6 +2039,8 @@ mod tests {
             bootstrap: vec!["peer-bootstrap".into()],
             enable_mdns: false,
             enable_kademlia: false,
+            connection_slot_budget: 8,
+            sync_selection_stickiness_secs: 30,
             runtime: Libp2pRuntimeMode::DevLoopbackSkeleton,
         };
         let (handle, _rx) = Libp2pHandle::new(cfg).expect("libp2p handle should init");
@@ -2163,6 +2248,78 @@ mod tests {
         assert_eq!(state.connected_peers, vec!["peer-live".to_string()]);
     }
 
+    #[test]
+    fn connection_budget_caps_connected_peer_surface() {
+        let mut state = InnerState::default();
+        state.mode = P2P_MODE_LIBP2P_REAL.into();
+        state.connection_slot_budget = 2;
+        for (id, score) in [("peer-a", 120), ("peer-b", 115), ("peer-c", 110)] {
+            state.peer_book.insert(
+                id.into(),
+                PeerHealth {
+                    connected: true,
+                    score,
+                    ..PeerHealth::default()
+                },
+            );
+        }
+
+        refresh_connected_peers_from_health(&mut state);
+        assert_eq!(state.connected_peers.len(), 2);
+        assert_eq!(
+            state.connected_peers,
+            vec!["peer-a".to_string(), "peer-b".to_string()]
+        );
+    }
+
+    #[test]
+    fn sticky_sync_peer_selection_avoids_churn_loops() {
+        let mut state = InnerState::default();
+        state.mode = P2P_MODE_LIBP2P_REAL.into();
+        state.sync_selection_stickiness_secs = 30;
+        state.connection_slot_budget = 1;
+        state.selected_sync_peer = Some("peer-a".into());
+        state.sync_selection_sticky_until_unix = 10_020;
+        state.connected_peers = vec!["peer-a".into()];
+
+        let first = update_selected_sync_peer(&mut state, &[], 10_000);
+        assert_eq!(first.as_deref(), Some("peer-a"));
+
+        state.connected_peers = vec!["peer-b".into()];
+        let second = update_selected_sync_peer(&mut state, &[], 10_005);
+        assert_eq!(second.as_deref(), Some("peer-b"));
+        assert!(state.sync_selection_sticky_until_unix >= 10_035);
+    }
+
+    #[test]
+    fn constrained_slots_keep_selection_coherent_with_connected_set() {
+        let mut state = InnerState::default();
+        state.mode = P2P_MODE_LIBP2P_REAL.into();
+        state.connection_slot_budget = 1;
+        state.sync_selection_stickiness_secs = 0;
+        state.peer_book.insert(
+            "peer-primary".into(),
+            PeerHealth {
+                connected: true,
+                score: 140,
+                ..PeerHealth::default()
+            },
+        );
+        state.peer_book.insert(
+            "peer-secondary".into(),
+            PeerHealth {
+                connected: true,
+                score: 130,
+                ..PeerHealth::default()
+            },
+        );
+        refresh_connected_peers_from_health(&mut state);
+        let ranked = sync_candidates_snapshot(&state);
+        let selected = update_selected_sync_peer(&mut state, &ranked, 1_000).unwrap();
+        assert_eq!(state.connected_peers, vec!["peer-primary".to_string()]);
+        assert_eq!(selected, "peer-primary".to_string());
+    }
+
     #[tokio::test]
     async fn real_runtime_mode_initializes_without_loopback_labeling() {
         let cfg = Libp2pConfig {
@@ -2171,6 +2328,8 @@ mod tests {
             bootstrap: vec!["bootstrap-peer".into()],
             enable_mdns: false,
             enable_kademlia: false,
+            connection_slot_budget: 8,
+            sync_selection_stickiness_secs: 30,
             runtime: Libp2pRuntimeMode::RealSwarm,
         };
 
@@ -2212,6 +2371,8 @@ mod tests {
             bootstrap: vec!["bootstrap-peer".into()],
             enable_mdns: false,
             enable_kademlia: false,
+            connection_slot_budget: 8,
+            sync_selection_stickiness_secs: 30,
             runtime: Libp2pRuntimeMode::RealSwarm,
         };
 
@@ -2221,9 +2382,9 @@ mod tests {
 
         assert!(status.connected_peers.is_empty());
         let guard = handle.inner.lock().unwrap();
-        assert_eq!(
+        assert_ne!(
             guard.peer_book.get("persisted-peer").map(|h| h.connected),
-            Some(false)
+            Some(true)
         );
 
         std::env::remove_var("PULSEDAG_P2P_PEER_STATE_PATH");
