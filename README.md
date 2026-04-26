@@ -31,6 +31,18 @@ cargo run -p pulsedagd
 cargo run -p pulsedag-miner -- --node http://127.0.0.1:8080 --miner-address YOUR_ADDRESS --threads 4 --loop --sleep-ms 1500 --max-tries 50000
 ```
 
+## RPC read-side enrichments (additive)
+The RPC data plane now includes additional read-only surfaces for explorer/indexer-style access, without changing consensus, miner placement, or pool scope:
+
+- `GET /blocks/:hash/overview`  
+  Returns block lineage and indexing metadata (`parent_hashes`, `child_hashes`, `txids`, `confirmations`, tip flags).
+- `GET /txs/:txid/lookup`  
+  Returns richer transaction lookup details for both mempool and confirmed transactions (`nonce`, raw input outpoints, outputs, confirmation depth when confirmed).
+- `GET /address/:address/summary`  
+  Returns confirmed UTXO balance plus mempool-aware pending movement (`pending_incoming`, `pending_outgoing`, `pending_net`, related mempool txids).
+
+All existing endpoints remain available and unchanged in behavior.
+
 ## Node configuration profiles (v2.2)
 `pulsedagd` supports profile-oriented defaults through `PULSEDAG_CONFIG_PROFILE`:
 
