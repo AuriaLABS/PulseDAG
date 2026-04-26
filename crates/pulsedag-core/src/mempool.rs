@@ -1,8 +1,5 @@
 use crate::{
-    errors::PulseError,
-    state::ChainState,
-    types::Transaction,
-    validation::validate_transaction,
+    errors::PulseError, state::ChainState, types::Transaction, validation::validate_transaction,
 };
 
 #[derive(Debug, Clone)]
@@ -749,6 +746,228 @@ mod tests {
         assert_eq!(state.mempool.counters.reconcile_removed_total, 1);
         assert_eq!(state.mempool.spent_outpoints.len(), 2);
         assert!(state.mempool.spent_outpoints.contains(&shared_input));
+    }
+
+    #[test]
+    fn package_dependency_set_is_admitted_and_reconciled_coherently() {
+        let mut state = init_chain_state("test".into());
+        state.mempool.max_transactions = 8;
+
+        let parent_key = signing_key(70);
+        let child_key = signing_key(71);
+        let parent_address = address_from_public_key(&public_key_hex(&parent_key));
+        let parent_input = fund_address(&mut state, "fund-package-parent", 0, parent_address, 100);
+
+        let parent = signed_tx(
+            &parent_key,
+            vec![parent_input.clone()],
+            vec![TxOutput {
+                address: address_from_public_key(&public_key_hex(&child_key)),
+                amount: 90,
+            }],
+            10,
+            1,
+        );
+        let child = signed_tx(
+            &child_key,
+            vec![OutPoint {
+                txid: parent.txid.clone(),
+                index: 0,
+            }],
+            vec![TxOutput {
+                address: "pulse1package-child-dest".into(),
+                amount: 80,
+            }],
+            10,
+            2,
+        );
+
+        accept_transaction(parent.clone(), &mut state, AcceptSource::Rpc).unwrap();
+        accept_transaction(child.clone(), &mut state, AcceptSource::Rpc).unwrap();
+        let reconcile = reconcile_mempool(&mut state);
+
+        assert!(reconcile.removed_txids.is_empty());
+        assert!(state.mempool.transactions.contains_key(&parent.txid));
+        assert!(state.mempool.transactions.contains_key(&child.txid));
+        assert!(state.mempool.spent_outpoints.contains(&parent_input));
+        assert!(state.mempool.spent_outpoints.contains(&OutPoint {
+            txid: parent.txid.clone(),
+            index: 0,
+        }));
+    }
+
+    #[test]
+    fn pressure_eviction_respects_dependency_package_threshold() {
+        let mut state = init_chain_state("test".into());
+        state.mempool.max_transactions = 2;
+
+        let parent_key = signing_key(72);
+        let child_key = signing_key(73);
+        let outsider_key = signing_key(74);
+        let parent_input = fund_address(
+            &mut state,
+            "fund-package-evict-parent",
+            0,
+            address_from_public_key(&public_key_hex(&parent_key)),
+            100,
+        );
+        let outsider_input = fund_address(
+            &mut state,
+            "fund-package-evict-outsider",
+            0,
+            address_from_public_key(&public_key_hex(&outsider_key)),
+            100,
+        );
+
+        let parent = signed_tx(
+            &parent_key,
+            vec![parent_input],
+            vec![TxOutput {
+                address: address_from_public_key(&public_key_hex(&child_key)),
+                amount: 98,
+            }],
+            2,
+            1,
+        );
+        let child = signed_tx(
+            &child_key,
+            vec![OutPoint {
+                txid: parent.txid.clone(),
+                index: 0,
+            }],
+            vec![TxOutput {
+                address: "pulse1package-evict-child".into(),
+                amount: 83,
+            }],
+            15,
+            2,
+        );
+        let outsider = signed_tx(
+            &outsider_key,
+            vec![outsider_input],
+            vec![TxOutput {
+                address: "pulse1package-evict-outsider".into(),
+                amount: 90,
+            }],
+            10,
+            3,
+        );
+
+        accept_transaction(parent.clone(), &mut state, AcceptSource::Rpc).unwrap();
+        accept_transaction(child.clone(), &mut state, AcceptSource::Rpc).unwrap();
+        let err = accept_transaction(outsider, &mut state, AcceptSource::Rpc)
+            .expect_err("outsider should not evict a higher-priority dependency package");
+        assert!(matches!(err, PulseError::InvalidTransaction(_)));
+        assert!(state.mempool.transactions.contains_key(&parent.txid));
+        assert!(state.mempool.transactions.contains_key(&child.txid));
+    }
+
+    #[test]
+    fn conflicting_child_spend_is_rejected_for_existing_dependency_set() {
+        let mut state = init_chain_state("test".into());
+
+        let parent_key = signing_key(75);
+        let child_a_key = signing_key(76);
+        let child_b_key = signing_key(77);
+        let parent_input = fund_address(
+            &mut state,
+            "fund-package-conflict-parent",
+            0,
+            address_from_public_key(&public_key_hex(&parent_key)),
+            100,
+        );
+
+        let parent = signed_tx(
+            &parent_key,
+            vec![parent_input],
+            vec![TxOutput {
+                address: address_from_public_key(&public_key_hex(&child_a_key)),
+                amount: 95,
+            }],
+            5,
+            1,
+        );
+        let child_a = signed_tx(
+            &child_a_key,
+            vec![OutPoint {
+                txid: parent.txid.clone(),
+                index: 0,
+            }],
+            vec![TxOutput {
+                address: "pulse1conflict-a".into(),
+                amount: 80,
+            }],
+            15,
+            2,
+        );
+        let child_b = signed_tx(
+            &child_b_key,
+            vec![OutPoint {
+                txid: parent.txid.clone(),
+                index: 0,
+            }],
+            vec![TxOutput {
+                address: "pulse1conflict-b".into(),
+                amount: 79,
+            }],
+            16,
+            3,
+        );
+
+        accept_transaction(parent, &mut state, AcceptSource::Rpc).unwrap();
+        accept_transaction(child_a.clone(), &mut state, AcceptSource::Rpc).unwrap();
+        let err = accept_transaction(child_b, &mut state, AcceptSource::Rpc)
+            .expect_err("conflicting spend must still be rejected");
+        assert!(matches!(err, PulseError::DoubleSpend));
+        assert!(state.mempool.transactions.contains_key(&child_a.txid));
+    }
+
+    #[test]
+    fn simple_independent_pressure_behavior_has_no_regression() {
+        let mut state = init_chain_state("test".into());
+        state.mempool.max_transactions = 1;
+
+        let low_key = signing_key(78);
+        let high_key = signing_key(79);
+        let low_input = fund_address(
+            &mut state,
+            "fund-ind-low",
+            0,
+            address_from_public_key(&public_key_hex(&low_key)),
+            100,
+        );
+        let high_input = fund_address(
+            &mut state,
+            "fund-ind-high",
+            0,
+            address_from_public_key(&public_key_hex(&high_key)),
+            100,
+        );
+        let low = signed_tx(
+            &low_key,
+            vec![low_input],
+            vec![TxOutput {
+                address: "pulse1ind-low".into(),
+                amount: 99,
+            }],
+            1,
+            1,
+        );
+        let high = signed_tx(
+            &high_key,
+            vec![high_input],
+            vec![TxOutput {
+                address: "pulse1ind-high".into(),
+                amount: 80,
+            }],
+            20,
+            2,
+        );
+
+        accept_transaction(low, &mut state, AcceptSource::Rpc).unwrap();
+        accept_transaction(high.clone(), &mut state, AcceptSource::Rpc).unwrap();
+        assert_eq!(state.mempool.transactions.len(), 1);
+        assert!(state.mempool.transactions.contains_key(&high.txid));
     }
 
     #[test]
