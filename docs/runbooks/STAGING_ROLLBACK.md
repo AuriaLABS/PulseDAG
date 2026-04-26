@@ -19,6 +19,15 @@ Initiate rollback if any of the following occurs after upgrade:
 - Previous known-good node artifact/configuration.
 - Snapshot and persisted block data directory backup.
 
+## Rollback package verification (before redeploy)
+1. Locate the previous known-good archive plus its `.sha256` sidecar.
+2. Re-verify integrity before restore:
+   ```bash
+   sha256sum -c pulsedagd-<previous-tag>-<target>.tar.gz.sha256
+   ```
+   (Use `.zip.sha256` on Windows artifacts.)
+3. Record verification output in rollback evidence.
+
 ## Rollback procedure
 1. Stop upgraded node process.
 2. Restore previous known-good artifact/configuration.

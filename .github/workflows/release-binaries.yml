@@ -26,17 +26,14 @@ jobs:
         include:
           - name: linux
             os: ubuntu-latest
-            output_name: pulsedagd-linux
             binary_path: target/release/pulsedagd
 
           - name: windows
             os: windows-latest
-            output_name: pulsedagd-windows.exe
             binary_path: target/release/pulsedagd.exe
 
           - name: macos
             os: macos-latest
-            output_name: pulsedagd-macos
             binary_path: target/release/pulsedagd
 
     steps:
@@ -57,26 +54,26 @@ jobs:
       - name: Build
         run: cargo build --release --locked --bin ${{ env.BIN_NAME }}
 
-      - name: Pack artifact (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force dist | Out-Null
-          Copy-Item "${{ matrix.binary_path }}" "dist/${{ matrix.output_name }}"
-
-      - name: Pack artifact (Linux/macOS)
-        if: runner.os != 'Windows'
+      - name: Package release assets
         shell: bash
         run: |
+          set -euo pipefail
           mkdir -p dist
-          cp "${{ matrix.binary_path }}" "dist/${{ matrix.output_name }}"
-          chmod +x "dist/${{ matrix.output_name }}"
+          python3 scripts/release/package_release_artifacts.py \
+            --binary "${{ matrix.binary_path }}" \
+            --output-dir dist \
+            --tag "${{ env.RELEASE_TAG }}" \
+            --bin-name "${{ env.BIN_NAME }}"
 
-      - name: Upload artifact
+      - name: Upload artifact bundle
         uses: actions/upload-artifact@v6
         with:
           name: ${{ matrix.name }}
-          path: dist/${{ matrix.output_name }}
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/*.sha256
+            dist/*.json
           if-no-files-found: error
 
   publish:
@@ -103,22 +100,41 @@ jobs:
           find artifacts -type f -exec cp "{}" final/ \;
           ls -lah final
 
-      - name: Validate release files
+      - name: Validate and build consolidated checksums
         shell: bash
         run: |
           set -euo pipefail
           shopt -s nullglob
-          files=(final/*)
 
-          if [ "${#files[@]}" -eq 0 ]; then
-            echo "::error::No release artifacts were downloaded. Expected files in ./final."
+          release_files=(final/*.tar.gz final/*.zip)
+          checksum_files=(final/*.sha256)
+
+          if [ "${#release_files[@]}" -eq 0 ]; then
+            echo "::error::No release archives found in ./final."
             exit 1
           fi
 
+          if [ "${#checksum_files[@]}" -eq 0 ]; then
+            echo "::error::No per-asset checksum files found in ./final."
+            exit 1
+          fi
+
+          for checksum in "${checksum_files[@]}"; do
+            (cd final && sha256sum -c "$(basename "$checksum")")
+          done
+
+          {
+            printf "# Consolidated checksums for %s\n" "${{ env.RELEASE_TAG }}"
+            for file in "${release_files[@]}"; do
+              (cd final && sha256sum "$(basename "$file")")
+            done
+          } > final/SHA256SUMS.txt
+
           echo "Release artifacts found:"
-          for file in "${files[@]}"; do
+          for file in "${release_files[@]}"; do
             printf ' - %s\n' "$(basename "$file")"
           done
+          echo "Consolidated checksums: SHA256SUMS.txt"
 
       - name: Publish to GitHub Release
         env:

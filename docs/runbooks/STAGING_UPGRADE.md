@@ -32,6 +32,15 @@ scripts/staging/validate_upgrade_rollback.sh baseline \
   --out artifacts/staging-upgrade/$(date -u +%Y%m%dT%H%M%SZ)
 ```
 
+## Upgrade package verification (before stop/deploy)
+1. Download the target release archive and matching `.sha256` sidecar.
+2. Verify archive integrity:
+   ```bash
+   sha256sum -c pulsedagd-<tag>-<target>.tar.gz.sha256
+   ```
+   (Use `.zip.sha256` on Windows artifacts.)
+3. Record archive filename + checksum in the staging evidence notes.
+
 ## Upgrade procedure
 1. **Freeze writes** in staging traffic tooling (if used) to reduce noisy mempool churn during package swap.
 2. Stop the node process cleanly.
