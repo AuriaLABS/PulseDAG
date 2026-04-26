@@ -44,6 +44,13 @@ pub struct RuntimeStatusData {
     pub tx_rebroadcast_skipped_no_peers: u64,
     pub last_tx_rebroadcast_unix: Option<u64>,
     pub last_tx_rebroadcast_error: Option<String>,
+    pub tx_inbound_counters_coherent: bool,
+    pub tx_inbound_counter_delta: i64,
+    pub tx_drop_reason_counters_coherent: bool,
+    pub tx_drop_reason_counter_delta: i64,
+    pub tx_rebroadcast_outcomes_coherent: bool,
+    pub tx_rebroadcast_outcome_counter_delta: i64,
+    pub tx_propagation_health: String,
     pub tx_inbound_total: u64,
     pub tx_inbound_accepted_total: u64,
     pub tx_inbound_rejected_total: u64,
@@ -159,8 +166,17 @@ pub struct RuntimeStatusData {
     pub p2p_peer_health_recovering: usize,
     pub p2p_tx_outbound_duplicates_suppressed: usize,
     pub p2p_tx_outbound_first_seen_relayed: usize,
+    pub p2p_tx_outbound_recovery_relayed: usize,
+    pub p2p_tx_outbound_priority_relayed: usize,
+    pub p2p_tx_outbound_budget_suppressed: usize,
     pub p2p_tx_relay_total_events: usize,
     pub p2p_tx_relay_duplicate_ratio_bps: u64,
+    pub p2p_tx_relay_budget_suppression_ratio_bps: u64,
+    pub p2p_block_outbound_duplicates_suppressed: usize,
+    pub p2p_block_outbound_first_seen_relayed: usize,
+    pub p2p_block_outbound_recovery_relayed: usize,
+    pub p2p_block_relay_total_events: usize,
+    pub p2p_block_relay_duplicate_ratio_bps: u64,
     pub p2p_inbound_duplicates_suppressed: usize,
     pub p2p_queued_block_messages: usize,
     pub p2p_queued_non_block_messages: usize,
@@ -189,6 +205,12 @@ struct RuntimeP2pRecoverySummary {
     peer_health_recovering: usize,
     tx_outbound_duplicates_suppressed: usize,
     tx_outbound_first_seen_relayed: usize,
+    tx_outbound_recovery_relayed: usize,
+    tx_outbound_priority_relayed: usize,
+    tx_outbound_budget_suppressed: usize,
+    block_outbound_duplicates_suppressed: usize,
+    block_outbound_first_seen_relayed: usize,
+    block_outbound_recovery_relayed: usize,
     inbound_duplicates_suppressed: usize,
     queued_block_messages: usize,
     queued_non_block_messages: usize,
@@ -353,6 +375,12 @@ pub async fn get_runtime_status<S: RpcStateLike>(
                 peer_health_recovering,
                 tx_outbound_duplicates_suppressed: status.tx_outbound_duplicates_suppressed,
                 tx_outbound_first_seen_relayed: status.tx_outbound_first_seen_relayed,
+                tx_outbound_recovery_relayed: status.tx_outbound_recovery_relayed,
+                tx_outbound_priority_relayed: status.tx_outbound_priority_relayed,
+                tx_outbound_budget_suppressed: status.tx_outbound_budget_suppressed,
+                block_outbound_duplicates_suppressed: status.block_outbound_duplicates_suppressed,
+                block_outbound_first_seen_relayed: status.block_outbound_first_seen_relayed,
+                block_outbound_recovery_relayed: status.block_outbound_recovery_relayed,
                 inbound_duplicates_suppressed: status.inbound_duplicates_suppressed,
                 queued_block_messages: status.queued_block_messages,
                 queued_non_block_messages: status.queued_non_block_messages,
@@ -391,7 +419,9 @@ pub async fn get_runtime_status<S: RpcStateLike>(
 
     let p2p_tx_relay_total_events = p2p_recovery
         .tx_outbound_duplicates_suppressed
-        .saturating_add(p2p_recovery.tx_outbound_first_seen_relayed);
+        .saturating_add(p2p_recovery.tx_outbound_first_seen_relayed)
+        .saturating_add(p2p_recovery.tx_outbound_recovery_relayed)
+        .saturating_add(p2p_recovery.tx_outbound_priority_relayed);
     let p2p_tx_relay_duplicate_ratio_bps = if p2p_tx_relay_total_events == 0 {
         0
     } else {
@@ -399,6 +429,59 @@ pub async fn get_runtime_status<S: RpcStateLike>(
             .saturating_mul(10_000)
             .saturating_div(p2p_tx_relay_total_events as u64)
             .min(10_000)
+    };
+    let p2p_tx_relay_budget_suppression_ratio_bps = if p2p_tx_relay_total_events == 0 {
+        0
+    } else {
+        (p2p_recovery.tx_outbound_budget_suppressed as u64)
+            .saturating_mul(10_000)
+            .saturating_div(p2p_tx_relay_total_events as u64)
+            .min(10_000)
+    };
+    let p2p_block_relay_total_events = p2p_recovery
+        .block_outbound_duplicates_suppressed
+        .saturating_add(p2p_recovery.block_outbound_first_seen_relayed)
+        .saturating_add(p2p_recovery.block_outbound_recovery_relayed);
+    let p2p_block_relay_duplicate_ratio_bps = if p2p_block_relay_total_events == 0 {
+        0
+    } else {
+        (p2p_recovery.block_outbound_duplicates_suppressed as u64)
+            .saturating_mul(10_000)
+            .saturating_div(p2p_block_relay_total_events as u64)
+            .min(10_000)
+    };
+    let tx_inbound_outcome_total = runtime
+        .tx_inbound_accepted_total
+        .saturating_add(runtime.tx_inbound_dropped_total);
+    let tx_inbound_counter_delta = i64::try_from(runtime.tx_inbound_total).unwrap_or(i64::MAX)
+        - i64::try_from(tx_inbound_outcome_total).unwrap_or(i64::MAX);
+    let tx_drop_reason_total = runtime
+        .dropped_p2p_txs_duplicate_mempool
+        .saturating_add(runtime.dropped_p2p_txs_duplicate_confirmed)
+        .saturating_add(runtime.dropped_p2p_txs_accept_failed)
+        .saturating_add(runtime.dropped_p2p_txs_persist_failed);
+    let tx_drop_reason_counter_delta = i64::try_from(runtime.dropped_p2p_txs).unwrap_or(i64::MAX)
+        - i64::try_from(tx_drop_reason_total).unwrap_or(i64::MAX);
+    let tx_rebroadcast_outcome_total = runtime
+        .tx_rebroadcast_success
+        .saturating_add(runtime.tx_rebroadcast_failed);
+    let tx_rebroadcast_outcome_counter_delta = i64::try_from(runtime.tx_rebroadcast_attempts)
+        .unwrap_or(i64::MAX)
+        - i64::try_from(tx_rebroadcast_outcome_total).unwrap_or(i64::MAX);
+    let tx_propagation_health = if tx_inbound_counter_delta != 0
+        || tx_drop_reason_counter_delta != 0
+        || tx_rebroadcast_outcome_counter_delta != 0
+    {
+        "counter_mismatch"
+    } else if runtime.tx_rebroadcast_attempts > 0 && runtime.tx_rebroadcast_success == 0 {
+        "rebroadcast_stalled"
+    } else if runtime.tx_rebroadcast_failed > 0
+        || runtime.tx_rebroadcast_skipped_no_p2p > 0
+        || runtime.tx_rebroadcast_skipped_no_peers > 0
+    {
+        "degraded"
+    } else {
+        "healthy"
     };
     Json(ApiResponse::ok(RuntimeStatusData {
         started_at_unix: runtime.started_at_unix,
@@ -426,6 +509,13 @@ pub async fn get_runtime_status<S: RpcStateLike>(
         tx_rebroadcast_skipped_no_peers: runtime.tx_rebroadcast_skipped_no_peers,
         last_tx_rebroadcast_unix: runtime.last_tx_rebroadcast_unix,
         last_tx_rebroadcast_error: runtime.last_tx_rebroadcast_error.clone(),
+        tx_inbound_counters_coherent: tx_inbound_counter_delta == 0,
+        tx_inbound_counter_delta,
+        tx_drop_reason_counters_coherent: tx_drop_reason_counter_delta == 0,
+        tx_drop_reason_counter_delta,
+        tx_rebroadcast_outcomes_coherent: tx_rebroadcast_outcome_counter_delta == 0,
+        tx_rebroadcast_outcome_counter_delta,
+        tx_propagation_health: tx_propagation_health.to_string(),
         tx_inbound_total: runtime.tx_inbound_total,
         tx_inbound_accepted_total: runtime.tx_inbound_accepted_total,
         tx_inbound_rejected_total: runtime.tx_inbound_rejected_total,
@@ -548,8 +638,17 @@ pub async fn get_runtime_status<S: RpcStateLike>(
         p2p_peer_health_recovering: p2p_recovery.peer_health_recovering,
         p2p_tx_outbound_duplicates_suppressed: p2p_recovery.tx_outbound_duplicates_suppressed,
         p2p_tx_outbound_first_seen_relayed: p2p_recovery.tx_outbound_first_seen_relayed,
+        p2p_tx_outbound_recovery_relayed: p2p_recovery.tx_outbound_recovery_relayed,
+        p2p_tx_outbound_priority_relayed: p2p_recovery.tx_outbound_priority_relayed,
+        p2p_tx_outbound_budget_suppressed: p2p_recovery.tx_outbound_budget_suppressed,
         p2p_tx_relay_total_events,
         p2p_tx_relay_duplicate_ratio_bps,
+        p2p_tx_relay_budget_suppression_ratio_bps,
+        p2p_block_outbound_duplicates_suppressed: p2p_recovery.block_outbound_duplicates_suppressed,
+        p2p_block_outbound_first_seen_relayed: p2p_recovery.block_outbound_first_seen_relayed,
+        p2p_block_outbound_recovery_relayed: p2p_recovery.block_outbound_recovery_relayed,
+        p2p_block_relay_total_events,
+        p2p_block_relay_duplicate_ratio_bps,
         p2p_inbound_duplicates_suppressed: p2p_recovery.inbound_duplicates_suppressed,
         p2p_queued_block_messages: p2p_recovery.queued_block_messages,
         p2p_queued_non_block_messages: p2p_recovery.queued_non_block_messages,
@@ -711,6 +810,12 @@ mod tests {
             inbound_duplicates_suppressed: 0,
             tx_outbound_duplicates_suppressed: 0,
             tx_outbound_first_seen_relayed: 0,
+            tx_outbound_recovery_relayed: 0,
+            tx_outbound_priority_relayed: 0,
+            tx_outbound_budget_suppressed: 0,
+            block_outbound_duplicates_suppressed: 0,
+            block_outbound_first_seen_relayed: 0,
+            block_outbound_recovery_relayed: 0,
             last_drop_reason: None,
             peer_reconnect_attempts: 5,
             peer_recovery_success_count: 1,
@@ -864,6 +969,12 @@ mod tests {
             inbound_duplicates_suppressed: 2,
             tx_outbound_duplicates_suppressed: 3,
             tx_outbound_first_seen_relayed: 9,
+            tx_outbound_recovery_relayed: 2,
+            tx_outbound_priority_relayed: 1,
+            tx_outbound_budget_suppressed: 3,
+            block_outbound_duplicates_suppressed: 2,
+            block_outbound_first_seen_relayed: 5,
+            block_outbound_recovery_relayed: 1,
             last_drop_reason: None,
             peer_reconnect_attempts: 0,
             peer_recovery_success_count: 0,
@@ -904,8 +1015,76 @@ mod tests {
         assert_eq!(data.mempool_orphan_promoted_total, 4);
         assert_eq!(data.mempool_orphan_dropped_total, 1);
         assert_eq!(data.mempool_orphan_pruned_total, 1);
-        assert_eq!(data.p2p_tx_relay_total_events, 12);
-        assert_eq!(data.p2p_tx_relay_duplicate_ratio_bps, 2_500);
+        assert_eq!(data.p2p_tx_relay_total_events, 15);
+        assert_eq!(data.p2p_tx_relay_duplicate_ratio_bps, 2_000);
+        assert_eq!(data.p2p_tx_relay_budget_suppression_ratio_bps, 2_000);
+        assert_eq!(data.p2p_block_relay_total_events, 8);
+        assert_eq!(data.p2p_block_relay_duplicate_ratio_bps, 2_500);
+    }
+
+    #[tokio::test]
+    async fn runtime_status_tx_propagation_coherence_and_reasons_are_explicit() {
+        let path = temp_db_path("runtime-tx-propagation-coherence");
+        let storage = Arc::new(Storage::open(path.to_str().expect("utf8 temp path")).unwrap());
+        let chain = storage
+            .load_or_init_genesis("testnet-dev".to_string())
+            .unwrap();
+        let mut runtime = NodeRuntimeStats::default();
+        runtime.tx_inbound_total = 8;
+        runtime.tx_inbound_accepted_total = 3;
+        runtime.tx_inbound_dropped_total = 5;
+        runtime.tx_inbound_rejected_total = 2;
+        runtime.dropped_p2p_txs = 5;
+        runtime.dropped_p2p_txs_duplicate_mempool = 2;
+        runtime.dropped_p2p_txs_duplicate_confirmed = 1;
+        runtime.dropped_p2p_txs_accept_failed = 1;
+        runtime.dropped_p2p_txs_persist_failed = 1;
+        runtime.tx_rebroadcast_attempts = 2;
+        runtime.tx_rebroadcast_success = 1;
+        runtime.tx_rebroadcast_failed = 1;
+        runtime.tx_drop_reasons = vec![
+            "txid=tx-a reason=duplicate_mempool".to_string(),
+            "txid=tx-b reason=accept_failed error=fee too low".to_string(),
+            "txid=tx-c reason=persist_failed error=io unavailable".to_string(),
+        ];
+        runtime.last_tx_drop_reason = Some("persist_failed".to_string());
+        runtime.last_tx_drop_txid = Some("tx-c".to_string());
+        runtime.last_tx_rebroadcast_error = Some("publish queue backpressure".to_string());
+
+        let state = TestState {
+            chain: Arc::new(RwLock::new(chain)),
+            storage,
+            runtime: Arc::new(RwLock::new(runtime)),
+            p2p: None,
+        };
+
+        let Json(resp) = get_runtime_status(State(state)).await;
+        let data = resp.data.expect("runtime status data");
+        assert!(data.tx_inbound_counters_coherent);
+        assert_eq!(data.tx_inbound_counter_delta, 0);
+        assert!(data.tx_drop_reason_counters_coherent);
+        assert_eq!(data.tx_drop_reason_counter_delta, 0);
+        assert!(data.tx_rebroadcast_outcomes_coherent);
+        assert_eq!(data.tx_rebroadcast_outcome_counter_delta, 0);
+        assert_eq!(data.tx_propagation_health, "degraded");
+        assert_eq!(data.last_tx_drop_reason.as_deref(), Some("persist_failed"));
+        assert_eq!(data.last_tx_drop_txid.as_deref(), Some("tx-c"));
+        assert_eq!(
+            data.last_tx_rebroadcast_error.as_deref(),
+            Some("publish queue backpressure")
+        );
+        assert!(data
+            .tx_drop_reasons
+            .iter()
+            .any(|entry| entry.contains("reason=duplicate_mempool")));
+        assert!(data
+            .tx_drop_reasons
+            .iter()
+            .any(|entry| entry.contains("reason=accept_failed")));
+        assert!(data
+            .tx_drop_reasons
+            .iter()
+            .any(|entry| entry.contains("reason=persist_failed")));
     }
 
     #[tokio::test]
