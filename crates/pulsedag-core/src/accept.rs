@@ -7,6 +7,7 @@ use crate::{
     types::{Block, Transaction},
     validation::{missing_transaction_inputs, validate_block, validate_transaction},
 };
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 #[derive(Debug, Clone, Copy)]
 pub enum AcceptSource {
@@ -27,6 +28,81 @@ fn lowest_priority_txid(state: &ChainState) -> Option<String> {
         .values()
         .min_by(|a, b| a.fee.cmp(&b.fee).then_with(|| b.txid.cmp(&a.txid)))
         .map(|tx| tx.txid.clone())
+}
+
+fn direct_mempool_parents(tx: &Transaction, state: &ChainState) -> Vec<String> {
+    tx.inputs
+        .iter()
+        .filter_map(|input| {
+            if state
+                .mempool
+                .transactions
+                .contains_key(&input.previous_output.txid)
+            {
+                Some(input.previous_output.txid.clone())
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+fn collect_ancestor_set(tx: &Transaction, state: &ChainState) -> HashSet<String> {
+    let mut ancestors = HashSet::new();
+    let mut stack = direct_mempool_parents(tx, state);
+
+    while let Some(txid) = stack.pop() {
+        if !ancestors.insert(txid.clone()) {
+            continue;
+        }
+        if let Some(parent) = state.mempool.transactions.get(&txid) {
+            stack.extend(direct_mempool_parents(parent, state));
+        }
+    }
+
+    ancestors
+}
+
+fn build_mempool_children(state: &ChainState) -> HashMap<String, Vec<String>> {
+    let mut children: HashMap<String, Vec<String>> = HashMap::new();
+    for tx in state.mempool.transactions.values() {
+        for parent_txid in direct_mempool_parents(tx, state) {
+            children
+                .entry(parent_txid)
+                .or_default()
+                .push(tx.txid.clone());
+        }
+    }
+    children
+}
+
+fn collect_eviction_package(
+    root_txid: &str,
+    children: &HashMap<String, Vec<String>>,
+) -> HashSet<String> {
+    let mut package = HashSet::new();
+    let mut stack = vec![root_txid.to_string()];
+
+    while let Some(txid) = stack.pop() {
+        if !package.insert(txid.clone()) {
+            continue;
+        }
+        if let Some(kids) = children.get(&txid) {
+            stack.extend(kids.iter().cloned());
+        }
+    }
+
+    package
+}
+
+fn select_package_threshold<'a>(
+    package: &HashSet<String>,
+    state: &'a ChainState,
+) -> Option<&'a Transaction> {
+    package
+        .iter()
+        .filter_map(|txid| state.mempool.transactions.get(txid))
+        .max_by(|a, b| a.fee.cmp(&b.fee).then_with(|| b.txid.cmp(&a.txid)))
 }
 
 fn prune_orphans(state: &mut ChainState) {
@@ -191,13 +267,58 @@ pub fn accept_transaction(
         let lowest_txid = lowest_priority_txid(state).ok_or_else(|| {
             PulseError::Internal("mempool pressure detected with no eviction candidate".into())
         })?;
-        let should_evict = state
+        let children = build_mempool_children(state);
+        let protected_ancestors = collect_ancestor_set(&tx, state);
+
+        let mut eviction_candidates = state
             .mempool
             .transactions
-            .get(&lowest_txid)
-            .map(|lowest| is_higher_priority(&tx, lowest))
-            .unwrap_or(false);
-        if !should_evict {
+            .values()
+            .map(|candidate| candidate.txid.clone())
+            .collect::<Vec<_>>();
+        eviction_candidates.sort_by(|a, b| {
+            let a_tx = state
+                .mempool
+                .transactions
+                .get(a)
+                .expect("sorted eviction candidate exists");
+            let b_tx = state
+                .mempool
+                .transactions
+                .get(b)
+                .expect("sorted eviction candidate exists");
+            a_tx.fee
+                .cmp(&b_tx.fee)
+                .then_with(|| b_tx.txid.cmp(&a_tx.txid))
+        });
+        if let Some(pos) = eviction_candidates
+            .iter()
+            .position(|txid| txid == &lowest_txid)
+        {
+            if pos != 0 {
+                eviction_candidates.swap(0, pos);
+            }
+        }
+
+        let mut selected_package: Option<HashSet<String>> = None;
+        for candidate_txid in eviction_candidates {
+            let package = collect_eviction_package(&candidate_txid, &children);
+            if package
+                .iter()
+                .any(|member| protected_ancestors.contains(member))
+            {
+                continue;
+            }
+            let Some(package_threshold) = select_package_threshold(&package, state) else {
+                continue;
+            };
+            if is_higher_priority(&tx, package_threshold) {
+                selected_package = Some(package);
+                break;
+            }
+        }
+
+        let Some(selected_package) = selected_package else {
             state.mempool.counters.rejected_total =
                 state.mempool.counters.rejected_total.saturating_add(1);
             state.mempool.counters.rejected_low_priority_total = state
@@ -208,15 +329,23 @@ pub fn accept_transaction(
             return Err(PulseError::InvalidTransaction(
                 "mempool under pressure: transaction priority below threshold".into(),
             ));
-        }
+        };
 
-        if let Some(evicted) = state.mempool.transactions.remove(&lowest_txid) {
-            for input in &evicted.inputs {
-                state.mempool.spent_outpoints.remove(&input.previous_output);
+        let mut evicted_count = 0_u64;
+        let sorted_package = selected_package.into_iter().collect::<BTreeSet<_>>();
+        for package_txid in sorted_package {
+            if let Some(evicted) = state.mempool.transactions.remove(&package_txid) {
+                for input in &evicted.inputs {
+                    state.mempool.spent_outpoints.remove(&input.previous_output);
+                }
+                evicted_count = evicted_count.saturating_add(1);
             }
-            state.mempool.counters.evicted_total =
-                state.mempool.counters.evicted_total.saturating_add(1);
         }
+        state.mempool.counters.evicted_total = state
+            .mempool
+            .counters
+            .evicted_total
+            .saturating_add(evicted_count);
     }
 
     for input in &tx.inputs {
