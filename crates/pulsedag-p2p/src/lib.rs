@@ -484,6 +484,15 @@ fn peer_jitter(peer: &str) -> u64 {
 
 const FLAP_WINDOW: StdDuration = StdDuration::from_secs(45);
 const FLAP_BASE_COOLDOWN: u64 = 30;
+const PEER_SCORE_MIN: i32 = -200;
+const PEER_SCORE_MAX: i32 = 200;
+const PEER_SUCCESS_BASE_BONUS: i32 = 8;
+const PEER_FAILURE_BASE_PENALTY: i32 = 12;
+const PEER_FAILURE_STREAK_PENALTY: i32 = 4;
+const PEER_FAILURE_RECENT_PENALTY: i32 = 2;
+const BACKOFF_BASE_SECS: u64 = 2;
+const BACKOFF_EXP_CAP: u32 = 8;
+const BACKOFF_MAX_SECS: u64 = 300;
 const MESSAGE_DEDUP_WINDOW_SECS: u64 = 120;
 const TX_OUTBOUND_DEDUP_WINDOW_SECS: u64 = 30;
 const BLOCK_OUTBOUND_DEDUP_WINDOW_SECS: u64 = 30;
@@ -752,7 +761,12 @@ fn register_peer_result_at(inner: &Arc<Mutex<InnerState>>, peer: &str, success: 
                 health.connected = true;
                 health.fail_streak = 0;
                 health.next_retry_unix = now;
-                health.score = (health.score + 8).min(200);
+                let success_bonus = if health.score < 0 {
+                    PEER_SUCCESS_BASE_BONUS + 4
+                } else {
+                    PEER_SUCCESS_BASE_BONUS
+                };
+                health.score = (health.score + success_bonus).clamp(PEER_SCORE_MIN, PEER_SCORE_MAX);
                 health.recovery_success_count = health.recovery_success_count.saturating_add(1);
                 health.last_recovery_unix = Some(now);
                 health.last_successful_connect_unix = Some(now);
@@ -775,10 +789,14 @@ fn register_peer_result_at(inner: &Arc<Mutex<InnerState>>, peer: &str, success: 
                 }
                 health.connected = false;
                 health.fail_streak = health.fail_streak.saturating_add(1);
-                health.score = (health.score - 16).max(-200);
-                let exp = health.fail_streak.min(6);
-                let backoff = 2u64.pow(exp);
-                let mut next_retry_unix = now.saturating_add(backoff + peer_jitter(peer));
+                let adaptive_penalty = PEER_FAILURE_BASE_PENALTY
+                    + (health.fail_streak as i32 * PEER_FAILURE_STREAK_PENALTY)
+                    + (health.recent_failures_unix.len() as i32 * PEER_FAILURE_RECENT_PENALTY);
+                health.score = (health.score - adaptive_penalty).clamp(PEER_SCORE_MIN, PEER_SCORE_MAX);
+                let exp = health.fail_streak.min(BACKOFF_EXP_CAP);
+                let base_backoff = BACKOFF_BASE_SECS.saturating_pow(exp);
+                let bounded_backoff = base_backoff.min(BACKOFF_MAX_SECS);
+                let mut next_retry_unix = now.saturating_add(bounded_backoff + peer_jitter(peer));
                 if health
                     .last_recovery_unix
                     .map(|last_ok| now.saturating_sub(last_ok) <= FLAP_WINDOW.as_secs())
@@ -1434,7 +1452,7 @@ mod tests {
             ..Default::default()
         }));
 
-        register_peer_result(&state, "peer-a", false);
+        register_peer_result_at(&state, "peer-a", false, 1_000);
         let first = state
             .lock()
             .unwrap()
@@ -1442,7 +1460,7 @@ mod tests {
             .get("peer-a")
             .cloned()
             .unwrap();
-        register_peer_result(&state, "peer-a", false);
+        register_peer_result_at(&state, "peer-a", false, 1_001);
         let second = state
             .lock()
             .unwrap()
@@ -1454,6 +1472,28 @@ mod tests {
         assert!(second.next_retry_unix >= first.next_retry_unix);
         assert!(second.score < first.score);
         assert!(!second.connected);
+    }
+
+    #[test]
+    fn peer_backoff_is_bounded_for_repeated_failures() {
+        let state = Arc::new(Mutex::new(InnerState {
+            peer_book: HashMap::from([("peer-a".to_string(), PeerHealth::default())]),
+            ..Default::default()
+        }));
+
+        for attempt in 0..20 {
+            register_peer_result_at(&state, "peer-a", false, 10_000 + attempt);
+        }
+
+        let health = state
+            .lock()
+            .unwrap()
+            .peer_book
+            .get("peer-a")
+            .cloned()
+            .unwrap();
+        let delay = health.next_retry_unix.saturating_sub(10_000 + 19);
+        assert!(delay <= BACKOFF_MAX_SECS + 2);
     }
 
     #[test]
@@ -1476,6 +1516,41 @@ mod tests {
         assert!(health.connected);
         assert_eq!(health.fail_streak, 0);
         assert!(health.score > 80);
+    }
+
+    #[test]
+    fn sync_candidates_prefer_healthy_peers_without_starving_them() {
+        let mut state = InnerState::default();
+        state.mode = P2P_MODE_LIBP2P_REAL.into();
+        state.peer_book.insert(
+            "healthy-peer".to_string(),
+            PeerHealth {
+                score: 110,
+                connected: true,
+                fail_streak: 0,
+                next_retry_unix: 0,
+                ..PeerHealth::default()
+            },
+        );
+        state.peer_book.insert(
+            "noisy-peer".to_string(),
+            PeerHealth {
+                score: 70,
+                connected: false,
+                fail_streak: 5,
+                next_retry_unix: now_unix().saturating_add(120),
+                recent_failures_unix: vec![now_unix().saturating_sub(1); 4],
+                ..PeerHealth::default()
+            },
+        );
+
+        let ranked = sync_candidates_snapshot(&state);
+        assert_eq!(ranked.first().map(|p| p.peer_id.as_str()), Some("healthy-peer"));
+        assert!(ranked
+            .iter()
+            .find(|p| p.peer_id == "noisy-peer")
+            .and_then(|p| p.excluded_until_unix)
+            .is_some());
     }
 
     #[test]
