@@ -315,6 +315,7 @@ impl P2pHandle for MemoryP2pHandle {
             inner.last_drop_reason = Some("tx_budget_suppressed".into());
             return Ok(());
         }
+        record_outbound_tx_relay(&mut inner, &tx_id, now_unix());
         inner.seen_message_ids.insert(tx_id);
         inner.publish_attempts += 1;
         inner.broadcasted_messages += 1;
@@ -1006,28 +1007,20 @@ fn should_relay_outbound_tx(state: &mut InnerState, id: &str, now: u64) -> bool 
     );
     match state.outbound_tx_seen_at_unix.get(id) {
         Some(last_seen) if now.saturating_sub(*last_seen) <= TX_OUTBOUND_DEDUP_WINDOW_SECS => {
-            if should_allow_recovery_rebroadcast(
-                &mut state.outbound_tx_recovery_relay_generation,
+            if can_allow_recovery_rebroadcast(
+                &state.outbound_tx_recovery_relay_generation,
                 state.recovery_rebroadcast_generation,
                 state.recovery_rebroadcast_until_unix,
                 id,
                 now,
             ) {
-                state.outbound_tx_seen_at_unix.insert(id.to_string(), now);
-                state.tx_outbound_recovery_relayed =
-                    state.tx_outbound_recovery_relayed.saturating_add(1);
                 return true;
             }
             state.tx_outbound_duplicates_suppressed =
                 state.tx_outbound_duplicates_suppressed.saturating_add(1);
             false
         }
-        _ => {
-            state.outbound_tx_seen_at_unix.insert(id.to_string(), now);
-            state.tx_outbound_first_seen_relayed =
-                state.tx_outbound_first_seen_relayed.saturating_add(1);
-            true
-        }
+        _ => true,
     }
 }
 
@@ -1049,6 +1042,27 @@ fn admit_tx_relay_under_budget(state: &mut InnerState, tx_id: &str, fee: u64, no
     }
     state.tx_outbound_budget_suppressed = state.tx_outbound_budget_suppressed.saturating_add(1);
     false
+}
+
+fn record_outbound_tx_relay(state: &mut InnerState, id: &str, now: u64) {
+    let within_window = state
+        .outbound_tx_seen_at_unix
+        .get(id)
+        .is_some_and(|last_seen| now.saturating_sub(*last_seen) <= TX_OUTBOUND_DEDUP_WINDOW_SECS);
+    if within_window {
+        if should_allow_recovery_rebroadcast(
+            &mut state.outbound_tx_recovery_relay_generation,
+            state.recovery_rebroadcast_generation,
+            state.recovery_rebroadcast_until_unix,
+            id,
+            now,
+        ) {
+            state.tx_outbound_recovery_relayed = state.tx_outbound_recovery_relayed.saturating_add(1);
+        }
+    } else {
+        state.tx_outbound_first_seen_relayed = state.tx_outbound_first_seen_relayed.saturating_add(1);
+    }
+    state.outbound_tx_seen_at_unix.insert(id.to_string(), now);
 }
 
 fn should_relay_outbound_block(state: &mut InnerState, id: &str, now: u64) -> bool {
@@ -1108,6 +1122,22 @@ fn should_allow_recovery_rebroadcast(
             true
         }
     }
+}
+
+fn can_allow_recovery_rebroadcast(
+    recovery_relays: &HashMap<String, u64>,
+    current_generation: u64,
+    recovery_until_unix: u64,
+    id: &str,
+    now: u64,
+) -> bool {
+    if current_generation == 0 || now > recovery_until_unix {
+        return false;
+    }
+    !matches!(
+        recovery_relays.get(id),
+        Some(previous_generation) if *previous_generation == current_generation
+    )
 }
 
 fn message_id_hash(id: &str) -> u64 {
@@ -1515,6 +1545,7 @@ impl P2pHandle for Libp2pHandle {
                 inner.last_drop_reason = Some("tx_budget_suppressed".into());
                 return Ok(());
             }
+            record_outbound_tx_relay(&mut inner, &tx_id, now_unix());
             inner.queued_messages += 1;
             inner.queued_non_block_messages += 1;
             track_queue_depth_on_enqueue(&mut inner);
@@ -1661,6 +1692,14 @@ mod tests {
             fee,
             nonce: 1,
         }
+    }
+
+    fn relay_outbound_tx_for_test(state: &mut InnerState, id: &str, now: u64) -> bool {
+        if !should_relay_outbound_tx(state, id, now) {
+            return false;
+        }
+        record_outbound_tx_relay(state, id, now);
+        true
     }
 
     #[test]
@@ -1895,7 +1934,7 @@ mod tests {
         let status = handle.status().expect("status should be available");
         assert_eq!(
             status.tx_outbound_first_seen_relayed,
-            TX_RELAY_BUDGET_PER_WINDOW + 2
+            TX_RELAY_BUDGET_PER_WINDOW + 1
         );
         assert_eq!(status.tx_outbound_priority_relayed, 1);
         assert_eq!(status.tx_outbound_budget_suppressed, 1);
@@ -1916,6 +1955,23 @@ mod tests {
         assert_eq!(status.publish_attempts, normal_traffic_count);
         assert_eq!(status.tx_outbound_budget_suppressed, 0);
         assert_eq!(status.tx_outbound_first_seen_relayed, normal_traffic_count);
+    }
+
+    #[test]
+    fn budget_suppressed_tx_is_not_marked_as_outbound_duplicate() {
+        let mut state = InnerState::default();
+        state.tx_budget_window_started_unix = 1_000;
+        state.tx_budget_window_relays = TX_RELAY_BUDGET_PER_WINDOW;
+        let tx_id = (0..1_000)
+            .map(|idx| format!("tx-budget-suppressed-first-attempt-{idx}"))
+            .find(|id| message_id_hash(id) % TX_RELAY_BUDGET_OVERFLOW_SAMPLE_EVERY != 0)
+            .expect("should find a tx id that does not pass overflow sampling");
+
+        assert!(should_relay_outbound_tx(&mut state, &tx_id, 1_000));
+        assert!(!admit_tx_relay_under_budget(&mut state, &tx_id, 1, 1_000));
+        assert!(should_relay_outbound_tx(&mut state, &tx_id, 1_001));
+        assert_eq!(state.tx_outbound_first_seen_relayed, 0);
+        assert_eq!(state.tx_outbound_duplicates_suppressed, 0);
     }
 
     #[test]
@@ -1954,9 +2010,9 @@ mod tests {
     #[test]
     fn outbound_dedup_is_windowed_and_allows_restart_relay() {
         let mut state = InnerState::default();
-        assert!(should_relay_outbound_tx(&mut state, "tx-windowed", 1_000));
-        assert!(!should_relay_outbound_tx(&mut state, "tx-windowed", 1_010));
-        assert!(should_relay_outbound_tx(
+        assert!(relay_outbound_tx_for_test(&mut state, "tx-windowed", 1_000));
+        assert!(!relay_outbound_tx_for_test(&mut state, "tx-windowed", 1_010));
+        assert!(relay_outbound_tx_for_test(
             &mut state,
             "tx-windowed",
             1_000 + TX_OUTBOUND_DEDUP_WINDOW_SECS + 1
@@ -1983,13 +2039,13 @@ mod tests {
     #[test]
     fn recovery_rebroadcast_allows_one_duplicate_per_rejoin_event() {
         let mut state = InnerState::default();
-        assert!(should_relay_outbound_tx(&mut state, "tx-recovery", 1_000));
+        assert!(relay_outbound_tx_for_test(&mut state, "tx-recovery", 1_000));
         assert!(should_relay_outbound_block(
             &mut state,
             "block-recovery",
             1_000
         ));
-        assert!(!should_relay_outbound_tx(&mut state, "tx-recovery", 1_001));
+        assert!(!relay_outbound_tx_for_test(&mut state, "tx-recovery", 1_001));
         assert!(!should_relay_outbound_block(
             &mut state,
             "block-recovery",
@@ -2000,13 +2056,13 @@ mod tests {
         register_peer_result_at(&shared, "peer-a", true, 1_002);
 
         let mut guard = shared.lock().unwrap();
-        assert!(should_relay_outbound_tx(&mut guard, "tx-recovery", 1_003));
+        assert!(relay_outbound_tx_for_test(&mut guard, "tx-recovery", 1_003));
         assert!(should_relay_outbound_block(
             &mut guard,
             "block-recovery",
             1_003
         ));
-        assert!(!should_relay_outbound_tx(&mut guard, "tx-recovery", 1_004));
+        assert!(!relay_outbound_tx_for_test(&mut guard, "tx-recovery", 1_004));
         assert!(!should_relay_outbound_block(
             &mut guard,
             "block-recovery",
@@ -2021,23 +2077,23 @@ mod tests {
         let shared = Arc::new(Mutex::new(InnerState::default()));
         {
             let mut guard = shared.lock().unwrap();
-            assert!(should_relay_outbound_tx(&mut guard, "tx-churn", 2_000));
-            assert!(!should_relay_outbound_tx(&mut guard, "tx-churn", 2_001));
+            assert!(relay_outbound_tx_for_test(&mut guard, "tx-churn", 2_000));
+            assert!(!relay_outbound_tx_for_test(&mut guard, "tx-churn", 2_001));
         }
 
         register_peer_result_at(&shared, "peer-a", false, 2_010);
         register_peer_result_at(&shared, "peer-a", true, 2_020);
         {
             let mut guard = shared.lock().unwrap();
-            assert!(should_relay_outbound_tx(&mut guard, "tx-churn", 2_021));
-            assert!(!should_relay_outbound_tx(&mut guard, "tx-churn", 2_022));
+            assert!(relay_outbound_tx_for_test(&mut guard, "tx-churn", 2_021));
+            assert!(!relay_outbound_tx_for_test(&mut guard, "tx-churn", 2_022));
         }
 
         register_peer_result_at(&shared, "peer-a", false, 2_030);
         register_peer_result_at(&shared, "peer-a", true, 2_040);
         let mut guard = shared.lock().unwrap();
-        assert!(should_relay_outbound_tx(&mut guard, "tx-churn", 2_041));
-        assert!(!should_relay_outbound_tx(&mut guard, "tx-churn", 2_042));
+        assert!(relay_outbound_tx_for_test(&mut guard, "tx-churn", 2_041));
+        assert!(!relay_outbound_tx_for_test(&mut guard, "tx-churn", 2_042));
         assert_eq!(guard.tx_outbound_recovery_relayed, 2);
         assert!(guard.tx_outbound_duplicates_suppressed >= 3);
     }
