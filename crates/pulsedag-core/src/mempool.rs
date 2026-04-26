@@ -48,10 +48,10 @@ pub fn reconcile_mempool(state: &mut ChainState) -> MempoolReconcileResult {
         };
     }
 
-    let mut txs = std::mem::take(&mut state.mempool.transactions)
+    let mut pending = std::mem::take(&mut state.mempool.transactions)
         .into_values()
         .collect::<Vec<_>>();
-    txs.sort_by(|a, b| a.txid.cmp(&b.txid));
+    pending.sort_by(|a, b| a.txid.cmp(&b.txid));
 
     let mut working = state.clone();
     working.mempool.transactions.clear();
@@ -60,15 +60,29 @@ pub fn reconcile_mempool(state: &mut ChainState) -> MempoolReconcileResult {
     let mut removed_txids = Vec::with_capacity(tx_count);
     let mut kept_txids = Vec::with_capacity(tx_count);
 
-    for tx in txs {
-        let txid = tx.txid.clone();
-        let valid = validate_transaction(&tx, &working).is_ok()
-            && simulate_mempool_accept(&tx, &mut working).is_ok();
-        if valid {
-            kept_txids.push(txid);
-        } else {
-            removed_txids.push(txid);
+    while !pending.is_empty() {
+        let mut next_pending = Vec::new();
+        let mut progressed = false;
+
+        for tx in pending {
+            let txid = tx.txid.clone();
+            let valid = validate_transaction(&tx, &working).is_ok()
+                && simulate_mempool_accept(&tx, &mut working).is_ok();
+            if valid {
+                kept_txids.push(txid);
+                progressed = true;
+            } else {
+                next_pending.push(tx);
+            }
         }
+
+        if !progressed {
+            next_pending.sort_by(|a, b| a.txid.cmp(&b.txid));
+            removed_txids.extend(next_pending.into_iter().map(|tx| tx.txid));
+            break;
+        }
+
+        pending = next_pending;
     }
 
     let mut rebuilt_mempool = working.mempool;
@@ -351,6 +365,70 @@ mod tests {
         let err = accept_transaction(conflicting_tx, &mut state, AcceptSource::Rpc)
             .expect_err("conflicting transaction should be rejected after reconcile");
         assert!(matches!(err, PulseError::DoubleSpend));
+    }
+
+    #[test]
+    fn reconcile_keeps_parent_child_chain_when_child_txid_sorts_first() {
+        let mut state = init_chain_state("test".into());
+
+        let key = signing_key(35);
+        let address = address_from_public_key(&public_key_hex(&key));
+        let input = fund_address(&mut state, "fund-parent-child", 0, address, 80);
+
+        let parent_tx = signed_tx(
+            &key,
+            vec![input.clone()],
+            vec![TxOutput {
+                address: address_from_public_key(&public_key_hex(&key)),
+                amount: 70,
+            }],
+            10,
+            1,
+        );
+
+        let parent_output = OutPoint {
+            txid: parent_tx.txid.clone(),
+            index: 0,
+        };
+
+        let mut child_nonce = 2;
+        let child_tx = loop {
+            let candidate = signed_tx(
+                &key,
+                vec![parent_output.clone()],
+                vec![TxOutput {
+                    address: "pulse1dest-child".into(),
+                    amount: 65,
+                }],
+                5,
+                child_nonce,
+            );
+            if candidate.txid < parent_tx.txid {
+                break candidate;
+            }
+            child_nonce = child_nonce.saturating_add(1);
+            assert!(child_nonce < 10_000, "failed to find child txid ordering");
+        };
+
+        state
+            .mempool
+            .transactions
+            .insert(parent_tx.txid.clone(), parent_tx.clone());
+        state
+            .mempool
+            .transactions
+            .insert(child_tx.txid.clone(), child_tx.clone());
+        state.mempool.spent_outpoints.clear();
+
+        let result = reconcile_mempool(&mut state);
+
+        assert!(result.removed_txids.is_empty());
+        assert_eq!(result.kept_txids.len(), 2);
+        assert!(state.mempool.transactions.contains_key(&parent_tx.txid));
+        assert!(state.mempool.transactions.contains_key(&child_tx.txid));
+        assert_eq!(state.mempool.spent_outpoints.len(), 2);
+        assert!(state.mempool.spent_outpoints.contains(&input));
+        assert!(state.mempool.spent_outpoints.contains(&parent_output));
     }
 
     #[test]
