@@ -264,6 +264,147 @@ struct StartupStatusView {
     fallback_reason: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct RuntimeSurfaceRollup {
+    pub startup_path: String,
+    pub startup_bootstrap_mode: String,
+    pub startup_status_summary: String,
+    pub startup_fastboot_used: bool,
+    pub startup_snapshot_detected: bool,
+    pub startup_snapshot_validated: bool,
+    pub startup_delta_applied: bool,
+    pub startup_replay_required: bool,
+    pub startup_fallback_reason: Option<String>,
+    pub sync_surface_health: String,
+    pub sync_counters_coherent: bool,
+    pub tx_propagation_health: String,
+    pub tx_inbound_counters_coherent: bool,
+    pub tx_drop_reason_counters_coherent: bool,
+    pub tx_rebroadcast_outcomes_coherent: bool,
+    pub external_mining_surface_health: String,
+    pub external_mining_submit_outcome_counters_coherent: bool,
+    pub external_mining_rejection_counters_coherent: bool,
+    pub node_runtime_surface_health: String,
+}
+
+fn sync_surface_health(runtime: &crate::api::NodeRuntimeStats) -> (String, bool) {
+    let sync_counters_coherent = runtime.sync_pipeline.counters.blocks_applied
+        <= runtime.sync_pipeline.counters.blocks_validated
+        && runtime.sync_pipeline.counters.blocks_validated
+            <= runtime.sync_pipeline.counters.blocks_acquired
+        && runtime.sync_pipeline.counters.blocks_acquired
+            <= runtime.sync_pipeline.counters.blocks_requested;
+    let sync_surface_health = if !sync_counters_coherent || runtime.sync_pipeline.last_error.is_some()
+    {
+        "degraded"
+    } else if runtime.sync_pipeline.phase == SyncPhase::Idle {
+        "idle"
+    } else {
+        "active"
+    };
+    (sync_surface_health.to_string(), sync_counters_coherent)
+}
+
+pub(crate) fn runtime_surface_rollup(runtime: &crate::api::NodeRuntimeStats) -> RuntimeSurfaceRollup {
+    let startup = startup_status_view(runtime);
+    let tx_inbound_outcome_total = runtime
+        .tx_inbound_accepted_total
+        .saturating_add(runtime.tx_inbound_dropped_total);
+    let tx_inbound_counter_delta = i64::try_from(runtime.tx_inbound_total).unwrap_or(i64::MAX)
+        - i64::try_from(tx_inbound_outcome_total).unwrap_or(i64::MAX);
+    let tx_drop_reason_total = runtime
+        .dropped_p2p_txs_duplicate_mempool
+        .saturating_add(runtime.dropped_p2p_txs_duplicate_confirmed)
+        .saturating_add(runtime.dropped_p2p_txs_accept_failed)
+        .saturating_add(runtime.dropped_p2p_txs_persist_failed);
+    let tx_drop_reason_counter_delta = i64::try_from(runtime.dropped_p2p_txs).unwrap_or(i64::MAX)
+        - i64::try_from(tx_drop_reason_total).unwrap_or(i64::MAX);
+    let tx_rebroadcast_outcome_total = runtime
+        .tx_rebroadcast_success
+        .saturating_add(runtime.tx_rebroadcast_failed);
+    let tx_rebroadcast_outcome_counter_delta = i64::try_from(runtime.tx_rebroadcast_attempts)
+        .unwrap_or(i64::MAX)
+        - i64::try_from(tx_rebroadcast_outcome_total).unwrap_or(i64::MAX);
+    let tx_propagation_health = if tx_inbound_counter_delta != 0
+        || tx_drop_reason_counter_delta != 0
+        || tx_rebroadcast_outcome_counter_delta != 0
+    {
+        "counter_mismatch"
+    } else if runtime.tx_rebroadcast_attempts > 0 && runtime.tx_rebroadcast_success == 0 {
+        "rebroadcast_stalled"
+    } else if runtime.tx_rebroadcast_failed > 0
+        || runtime.tx_rebroadcast_skipped_no_p2p > 0
+        || runtime.tx_rebroadcast_skipped_no_peers > 0
+    {
+        "degraded"
+    } else {
+        "healthy"
+    };
+    let external_mining_submit_total = runtime
+        .external_mining_submit_accepted
+        .saturating_add(runtime.external_mining_submit_rejected);
+    let external_mining_submit_outcome_total = runtime
+        .accepted_mined_blocks
+        .saturating_add(runtime.rejected_mined_blocks);
+    let external_mining_submit_outcome_counter_delta = i64::try_from(external_mining_submit_total)
+        .unwrap_or(i64::MAX)
+        - i64::try_from(external_mining_submit_outcome_total).unwrap_or(i64::MAX);
+    let external_mining_rejection_reason_total = runtime
+        .external_mining_rejected_invalid_pow
+        .saturating_add(runtime.external_mining_rejected_stale_template)
+        .saturating_add(runtime.external_mining_rejected_unknown_template)
+        .saturating_add(runtime.external_mining_rejected_submit_block_error)
+        .saturating_add(runtime.external_mining_rejected_storage_error);
+    let external_mining_rejection_counter_delta =
+        i64::try_from(runtime.external_mining_submit_rejected).unwrap_or(i64::MAX)
+            - i64::try_from(external_mining_rejection_reason_total).unwrap_or(i64::MAX);
+    let external_mining_surface_health = if external_mining_submit_outcome_counter_delta != 0
+        || external_mining_rejection_counter_delta != 0
+    {
+        "counter_mismatch"
+    } else if runtime.external_mining_submit_rejected > 0 {
+        "degraded"
+    } else {
+        "healthy"
+    };
+    let (sync_surface_health, sync_counters_coherent) = sync_surface_health(runtime);
+    let node_runtime_surface_health = if !runtime.active_alerts.is_empty()
+        || !runtime.last_self_audit_ok
+        || runtime.last_self_audit_issue_count > 0
+        || runtime.startup_consistency_issue_count > 0
+        || sync_surface_health == "degraded"
+        || external_mining_surface_health == "counter_mismatch"
+        || tx_propagation_health == "counter_mismatch"
+    {
+        "degraded"
+    } else {
+        "healthy"
+    };
+
+    RuntimeSurfaceRollup {
+        startup_path: startup.path,
+        startup_bootstrap_mode: startup.bootstrap_mode,
+        startup_status_summary: startup.status_summary,
+        startup_fastboot_used: startup.fastboot_used,
+        startup_snapshot_detected: startup.snapshot_detected,
+        startup_snapshot_validated: startup.snapshot_validated,
+        startup_delta_applied: startup.delta_applied,
+        startup_replay_required: startup.replay_required,
+        startup_fallback_reason: startup.fallback_reason,
+        sync_surface_health,
+        sync_counters_coherent,
+        tx_propagation_health: tx_propagation_health.to_string(),
+        tx_inbound_counters_coherent: tx_inbound_counter_delta == 0,
+        tx_drop_reason_counters_coherent: tx_drop_reason_counter_delta == 0,
+        tx_rebroadcast_outcomes_coherent: tx_rebroadcast_outcome_counter_delta == 0,
+        external_mining_surface_health: external_mining_surface_health.to_string(),
+        external_mining_submit_outcome_counters_coherent: external_mining_submit_outcome_counter_delta
+            == 0,
+        external_mining_rejection_counters_coherent: external_mining_rejection_counter_delta == 0,
+        node_runtime_surface_health: node_runtime_surface_health.to_string(),
+    }
+}
+
 fn startup_status_view(runtime: &crate::api::NodeRuntimeStats) -> StartupStatusView {
     let path = runtime.startup_path.clone();
     let bootstrap_mode = match path.as_str() {
@@ -323,7 +464,7 @@ pub async fn get_runtime_status<S: RpcStateLike>(
     let burn_in_remaining_days = burn_in_target_days.saturating_sub(burn_in_elapsed_days);
     let chain_handle = state.chain();
     let chain = chain_handle.read().await;
-    let startup = startup_status_view(&runtime);
+    let rollup = runtime_surface_rollup(&runtime);
     let snapshot = pulsedag_core::dev_difficulty_snapshot(&chain);
     let mempool_transactions = chain.mempool.transactions.len();
     let mempool_max_transactions = chain.mempool.max_transactions;
@@ -506,21 +647,6 @@ pub async fn get_runtime_status<S: RpcStateLike>(
     let tx_rebroadcast_outcome_counter_delta = i64::try_from(runtime.tx_rebroadcast_attempts)
         .unwrap_or(i64::MAX)
         - i64::try_from(tx_rebroadcast_outcome_total).unwrap_or(i64::MAX);
-    let tx_propagation_health = if tx_inbound_counter_delta != 0
-        || tx_drop_reason_counter_delta != 0
-        || tx_rebroadcast_outcome_counter_delta != 0
-    {
-        "counter_mismatch"
-    } else if runtime.tx_rebroadcast_attempts > 0 && runtime.tx_rebroadcast_success == 0 {
-        "rebroadcast_stalled"
-    } else if runtime.tx_rebroadcast_failed > 0
-        || runtime.tx_rebroadcast_skipped_no_p2p > 0
-        || runtime.tx_rebroadcast_skipped_no_peers > 0
-    {
-        "degraded"
-    } else {
-        "healthy"
-    };
     let sync_blocks_request_backlog = runtime
         .sync_pipeline
         .counters
@@ -531,20 +657,7 @@ pub async fn get_runtime_status<S: RpcStateLike>(
         .counters
         .blocks_acquired
         .saturating_sub(runtime.sync_pipeline.counters.blocks_applied);
-    let sync_counters_coherent = runtime.sync_pipeline.counters.blocks_applied
-        <= runtime.sync_pipeline.counters.blocks_validated
-        && runtime.sync_pipeline.counters.blocks_validated
-            <= runtime.sync_pipeline.counters.blocks_acquired
-        && runtime.sync_pipeline.counters.blocks_acquired
-            <= runtime.sync_pipeline.counters.blocks_requested;
-    let sync_surface_health =
-        if !sync_counters_coherent || runtime.sync_pipeline.last_error.is_some() {
-            "degraded"
-        } else if runtime.sync_pipeline.phase == SyncPhase::Idle {
-            "idle"
-        } else {
-            "active"
-        };
+    let sync_counters_coherent = rollup.sync_counters_coherent;
     let mempool_surface_health =
         if mempool_pressure_bps >= 9_500 || mempool_orphan_pressure_bps >= 9_500 {
             "saturated"
@@ -561,25 +674,13 @@ pub async fn get_runtime_status<S: RpcStateLike>(
     } else {
         "healthy"
     };
-    let node_runtime_surface_health = if !runtime.active_alerts.is_empty()
-        || !runtime.last_self_audit_ok
-        || runtime.last_self_audit_issue_count > 0
-        || runtime.startup_consistency_issue_count > 0
-        || sync_surface_health == "degraded"
-        || external_mining_surface_health == "counter_mismatch"
-        || tx_propagation_health == "counter_mismatch"
-    {
-        "degraded"
-    } else {
-        "healthy"
-    };
     Json(ApiResponse::ok(RuntimeStatusData {
         started_at_unix: runtime.started_at_unix,
         uptime_secs,
         burn_in_target_days,
         burn_in_elapsed_days,
         burn_in_remaining_days,
-        node_runtime_surface_health: node_runtime_surface_health.to_string(),
+        node_runtime_surface_health: rollup.node_runtime_surface_health.clone(),
         accepted_p2p_blocks: runtime.accepted_p2p_blocks,
         rejected_p2p_blocks: runtime.rejected_p2p_blocks,
         duplicate_p2p_blocks: runtime.duplicate_p2p_blocks,
@@ -606,7 +707,7 @@ pub async fn get_runtime_status<S: RpcStateLike>(
         tx_drop_reason_counter_delta,
         tx_rebroadcast_outcomes_coherent: tx_rebroadcast_outcome_counter_delta == 0,
         tx_rebroadcast_outcome_counter_delta,
-        tx_propagation_health: tx_propagation_health.to_string(),
+        tx_propagation_health: rollup.tx_propagation_health.clone(),
         tx_inbound_total: runtime.tx_inbound_total,
         tx_inbound_accepted_total: runtime.tx_inbound_accepted_total,
         tx_inbound_rejected_total: runtime.tx_inbound_rejected_total,
@@ -676,15 +777,15 @@ pub async fn get_runtime_status<S: RpcStateLike>(
         startup_consistency_issue_count: runtime.startup_consistency_issue_count,
         startup_recovery_mode: runtime.startup_recovery_mode.clone(),
         startup_rebuild_reason: runtime.startup_rebuild_reason.clone(),
-        startup_path: startup.path,
-        startup_bootstrap_mode: startup.bootstrap_mode,
-        startup_status_summary: startup.status_summary,
-        startup_fastboot_used: startup.fastboot_used,
-        startup_snapshot_detected: startup.snapshot_detected,
-        startup_snapshot_validated: startup.snapshot_validated,
-        startup_delta_applied: startup.delta_applied,
-        startup_replay_required: startup.replay_required,
-        startup_fallback_reason: startup.fallback_reason,
+        startup_path: rollup.startup_path.clone(),
+        startup_bootstrap_mode: rollup.startup_bootstrap_mode.clone(),
+        startup_status_summary: rollup.startup_status_summary.clone(),
+        startup_fastboot_used: rollup.startup_fastboot_used,
+        startup_snapshot_detected: rollup.startup_snapshot_detected,
+        startup_snapshot_validated: rollup.startup_snapshot_validated,
+        startup_delta_applied: rollup.startup_delta_applied,
+        startup_replay_required: rollup.startup_replay_required,
+        startup_fallback_reason: rollup.startup_fallback_reason.clone(),
         startup_duration_ms: runtime.startup_duration_ms,
         last_self_audit_unix: runtime.last_self_audit_unix,
         last_self_audit_ok: runtime.last_self_audit_ok,
@@ -703,7 +804,7 @@ pub async fn get_runtime_status<S: RpcStateLike>(
         last_prune_height: runtime.last_prune_height,
         last_prune_unix: runtime.last_prune_unix,
         sync_phase: runtime.sync_pipeline.phase,
-        sync_surface_health: sync_surface_health.to_string(),
+        sync_surface_health: rollup.sync_surface_health.clone(),
         sync_counters_coherent,
         sync_last_transition_unix: runtime.sync_pipeline.last_transition_unix,
         sync_completed_cycles: runtime.sync_pipeline.completed_cycles,
@@ -771,7 +872,10 @@ mod tests {
         time::{SystemTime, UNIX_EPOCH},
     };
 
-    use axum::{extract::State, Json};
+    use axum::{
+        extract::{Query, State},
+        Json,
+    };
     use pulsedag_core::types::Transaction;
     use pulsedag_core::{ChainState, SyncPhase};
     use pulsedag_p2p::{P2pHandle, P2pStatus, PeerRecoveryStatus, P2P_MODE_LIBP2P_REAL};
@@ -780,7 +884,7 @@ mod tests {
 
     use crate::api::{NodeRuntimeStats, RpcStateLike};
 
-    use super::get_runtime_status;
+    use super::{get_runtime_events_summary, get_runtime_status, RuntimeEventsQuery};
 
     #[derive(Clone)]
     struct TestState {
@@ -1374,6 +1478,51 @@ mod tests {
         assert_eq!(data.accepted_mined_blocks, 4);
         assert_eq!(data.rejected_mined_blocks, 1);
     }
+
+    #[tokio::test]
+    async fn runtime_events_summary_includes_runtime_rollup_without_regressing_counts() {
+        let path = temp_db_path("runtime-event-summary-rollup");
+        let storage = Arc::new(Storage::open(path.to_str().unwrap()).expect("storage"));
+        storage
+            .append_runtime_event("info", "sync_phase_change", "headers discovered")
+            .expect("append event");
+        storage
+            .append_runtime_event("warn", "mining_reject", "invalid_pow")
+            .expect("append event");
+        let chain = storage
+            .load_or_init_genesis("testnet-dev".to_string())
+            .expect("genesis");
+        let mut runtime = NodeRuntimeStats::default();
+        runtime.sync_pipeline.last_error = Some("peer timeout".to_string());
+        runtime.tx_rebroadcast_attempts = 1;
+        runtime.tx_rebroadcast_success = 0;
+        runtime.external_mining_submit_accepted = 1;
+        runtime.external_mining_submit_rejected = 1;
+        runtime.external_mining_rejected_invalid_pow = 1;
+
+        let state = TestState {
+            chain: Arc::new(RwLock::new(chain)),
+            storage,
+            runtime: Arc::new(RwLock::new(runtime)),
+            p2p: None,
+        };
+
+        let Json(resp) = get_runtime_events_summary(
+            State(state),
+            Query(RuntimeEventsQuery { limit: Some(50) }),
+        )
+        .await;
+        let data = resp.data.expect("runtime events summary");
+        assert_eq!(data.scanned_event_count, 2);
+        assert_eq!(data.by_kind.get("sync_phase_change").copied(), Some(1));
+        assert_eq!(data.by_level.get("warn").copied(), Some(1));
+        assert_eq!(data.runtime_surface_rollup.sync_surface_health, "degraded");
+        assert_eq!(data.runtime_surface_rollup.tx_propagation_health, "rebroadcast_stalled");
+        assert_eq!(
+            data.runtime_surface_rollup.external_mining_surface_health,
+            "degraded"
+        );
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -1414,6 +1563,7 @@ pub struct RuntimeEventsSummaryData {
     pub scanned_event_count: usize,
     pub by_kind: BTreeMap<String, usize>,
     pub by_level: BTreeMap<String, usize>,
+    pub runtime_surface_rollup: RuntimeSurfaceRollup,
 }
 
 pub async fn get_runtime_events_summary<S: RpcStateLike>(
@@ -1421,6 +1571,9 @@ pub async fn get_runtime_events_summary<S: RpcStateLike>(
     Query(query): Query<RuntimeEventsQuery>,
 ) -> Json<ApiResponse<RuntimeEventsSummaryData>> {
     let limit = query.limit.unwrap_or(200).min(2000);
+    let runtime_handle = state.runtime();
+    let runtime = runtime_handle.read().await;
+    let rollup = runtime_surface_rollup(&runtime);
     match state.storage().list_runtime_events(limit) {
         Ok(events) => {
             let mut by_kind = BTreeMap::new();
@@ -1433,6 +1586,7 @@ pub async fn get_runtime_events_summary<S: RpcStateLike>(
                 scanned_event_count: events.len(),
                 by_kind,
                 by_level,
+                runtime_surface_rollup: rollup,
             }))
         }
         Err(e) => Json(ApiResponse::err(

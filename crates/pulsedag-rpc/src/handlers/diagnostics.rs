@@ -1,6 +1,7 @@
 use crate::{
     api::ApiResponse,
     api::RpcStateLike,
+    handlers::runtime::{runtime_surface_rollup, RuntimeSurfaceRollup},
     handlers::release::{operator_stage, repo_version},
 };
 use axum::{extract::State, Json};
@@ -26,6 +27,7 @@ pub struct DiagnosticsData {
     pub startup_fastboot_used: bool,
     pub startup_replay_required: bool,
     pub startup_fallback_reason: Option<String>,
+    pub runtime_surface_rollup: RuntimeSurfaceRollup,
 }
 
 pub async fn get_diagnostics<S: RpcStateLike>(
@@ -53,6 +55,7 @@ pub async fn get_diagnostics<S: RpcStateLike>(
     let snapshot_exists = state.storage().snapshot_exists().unwrap_or(false);
     let runtime_handle = state.runtime();
     let runtime = runtime_handle.read().await;
+    let rollup = runtime_surface_rollup(&runtime);
     let (p2p_enabled, peer_count) = match state.p2p() {
         Some(p2p) => match p2p.status() {
             Ok(status) => (true, status.connected_peers.len()),
@@ -80,6 +83,7 @@ pub async fn get_diagnostics<S: RpcStateLike>(
         startup_fastboot_used: runtime.startup_fastboot_used,
         startup_replay_required: runtime.startup_replay_required,
         startup_fallback_reason: runtime.startup_fallback_reason.clone(),
+        runtime_surface_rollup: rollup,
     }))
 }
 
@@ -87,7 +91,8 @@ pub async fn get_diagnostics<S: RpcStateLike>(
 mod tests {
     use super::get_diagnostics;
     use crate::api::{NodeRuntimeStats, RpcStateLike};
-    use axum::extract::State;
+    use crate::handlers::runtime::{get_runtime_events_summary, get_runtime_status, RuntimeEventsQuery};
+    use axum::{extract::{Query, State}, Json};
     use pulsedag_core::genesis::init_chain_state;
     use pulsedag_storage::Storage;
     use std::{
@@ -153,5 +158,69 @@ mod tests {
         let data = response.0.data.expect("data");
         assert!(data.storage_audit_ok);
         assert_eq!(data.storage_audit_issue_count, 0);
+    }
+
+    #[tokio::test]
+    async fn diagnostics_and_event_summary_rollups_match_runtime_status() {
+        let path = temp_db_path("cross-surface-rollup");
+        let storage = Arc::new(Storage::open(path.to_str().expect("utf8")).expect("open"));
+        storage
+            .append_runtime_event("warn", "sync_phase_change", "sync stalled")
+            .expect("append event");
+        let chain = init_chain_state("testnet".to_string());
+        storage
+            .persist_chain_state(&chain)
+            .expect("persist healthy snapshot");
+        let mut runtime = NodeRuntimeStats::default();
+        runtime.sync_pipeline.counters.blocks_requested = 2;
+        runtime.sync_pipeline.counters.blocks_acquired = 1;
+        runtime.sync_pipeline.counters.blocks_validated = 2;
+        runtime.sync_pipeline.counters.blocks_applied = 2;
+        runtime.sync_pipeline.last_error = Some("validation mismatch".to_string());
+        runtime.external_mining_submit_accepted = 1;
+        runtime.external_mining_submit_rejected = 1;
+        runtime.external_mining_rejected_invalid_pow = 1;
+        runtime.tx_rebroadcast_attempts = 1;
+        runtime.tx_rebroadcast_success = 0;
+        runtime.active_alerts = vec!["sync stalled".to_string()];
+        let state = TestState {
+            chain: Arc::new(RwLock::new(chain)),
+            storage,
+            runtime: Arc::new(RwLock::new(runtime)),
+        };
+
+        let Json(runtime_resp) = get_runtime_status(State(state.clone())).await;
+        let runtime_data = runtime_resp.data.expect("runtime data");
+        let Json(diagnostics_resp) = get_diagnostics(State(state.clone())).await;
+        let diagnostics_data = diagnostics_resp.data.expect("diagnostics data");
+        let Json(summary_resp) = get_runtime_events_summary(
+            State(state),
+            Query(RuntimeEventsQuery { limit: Some(20) }),
+        )
+        .await;
+        let summary_data = summary_resp.data.expect("summary data");
+
+        assert_eq!(
+            diagnostics_data.runtime_surface_rollup.node_runtime_surface_health,
+            runtime_data.node_runtime_surface_health
+        );
+        assert_eq!(
+            summary_data.runtime_surface_rollup.sync_surface_health,
+            runtime_data.sync_surface_health
+        );
+        assert_eq!(
+            diagnostics_data.runtime_surface_rollup.tx_propagation_health,
+            runtime_data.tx_propagation_health
+        );
+        assert_eq!(
+            summary_data
+                .runtime_surface_rollup
+                .external_mining_surface_health,
+            runtime_data.external_mining_surface_health
+        );
+        assert_eq!(
+            diagnostics_data.runtime_surface_rollup.startup_status_summary,
+            runtime_data.startup_status_summary
+        );
     }
 }

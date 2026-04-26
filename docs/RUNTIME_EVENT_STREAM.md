@@ -55,3 +55,4 @@ Query params:
 - Existing polling endpoints remain available:
   - `GET /runtime/events`
   - `GET /runtime/events/summary`
+    - now includes `runtime_surface_rollup` so event counts can be interpreted against the same normalized runtime summaries used by `GET /runtime/status` and diagnostics.

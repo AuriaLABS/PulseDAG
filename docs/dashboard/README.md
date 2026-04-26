@@ -19,6 +19,8 @@ This folder documents the official v2.2 observability package.
 ## Data source grounding (real node surfaces)
 The package references only fields emitted by the node APIs:
 - `GET /runtime/status`
+- `GET /diagnostics`
+- `GET /runtime/events/summary`
 - `GET /status`
 - `GET /sync/status`
 - `GET /p2p/status`
@@ -97,6 +99,12 @@ The package references only fields emitted by the node APIs:
   - `external_mining_surface_health`
 
 These fields are strictly additive and designed for coherent dashboards: contradictory combinations are normalized into explicit degraded/counter-mismatch states instead of ambiguous operator signals.
+
+### Cross-surface runtime rollup normalization (v2.3)
+To reduce contradictory operator interpretations across endpoints:
+- `GET /diagnostics` now includes `runtime_surface_rollup` (startup/sync/tx/mining/node normalized health summary).
+- `GET /runtime/events/summary` now also includes `runtime_surface_rollup`.
+- Rollup values are computed from the same normalization logic used by `GET /runtime/status`, so dashboards can join these surfaces without conflicting status semantics.
 
 ## How operators use this package
 1. Wire your telemetry collector (Prometheus, OTEL collector, or Grafana JSON/Infinity datasource) to poll the API endpoints above.
