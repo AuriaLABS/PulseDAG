@@ -93,6 +93,8 @@ pub struct P2pStatus {
     pub tx_outbound_duplicates_suppressed: usize,
     pub tx_outbound_first_seen_relayed: usize,
     pub tx_outbound_recovery_relayed: usize,
+    pub tx_outbound_priority_relayed: usize,
+    pub tx_outbound_budget_suppressed: usize,
     pub block_outbound_duplicates_suppressed: usize,
     pub block_outbound_first_seen_relayed: usize,
     pub block_outbound_recovery_relayed: usize,
@@ -199,6 +201,8 @@ struct InnerState {
     tx_outbound_duplicates_suppressed: usize,
     tx_outbound_first_seen_relayed: usize,
     tx_outbound_recovery_relayed: usize,
+    tx_outbound_priority_relayed: usize,
+    tx_outbound_budget_suppressed: usize,
     block_outbound_duplicates_suppressed: usize,
     block_outbound_first_seen_relayed: usize,
     block_outbound_recovery_relayed: usize,
@@ -210,6 +214,8 @@ struct InnerState {
     outbound_block_recovery_relay_generation: HashMap<String, u64>,
     recovery_rebroadcast_generation: u64,
     recovery_rebroadcast_until_unix: u64,
+    tx_budget_window_started_unix: u64,
+    tx_budget_window_relays: usize,
     peer_book: HashMap<String, PeerHealth>,
     peer_state_path: Option<PathBuf>,
     peer_reconnect_attempts: u64,
@@ -305,6 +311,10 @@ impl P2pHandle for MemoryP2pHandle {
             inner.last_drop_reason = Some("duplicate_tx_outbound".into());
             return Ok(());
         }
+        if !admit_tx_relay_under_budget(&mut inner, &tx_id, tx.fee, now_unix()) {
+            inner.last_drop_reason = Some("tx_budget_suppressed".into());
+            return Ok(());
+        }
         inner.seen_message_ids.insert(tx_id);
         inner.publish_attempts += 1;
         inner.broadcasted_messages += 1;
@@ -385,6 +395,8 @@ impl P2pHandle for MemoryP2pHandle {
             tx_outbound_duplicates_suppressed: inner.tx_outbound_duplicates_suppressed,
             tx_outbound_first_seen_relayed: inner.tx_outbound_first_seen_relayed,
             tx_outbound_recovery_relayed: inner.tx_outbound_recovery_relayed,
+            tx_outbound_priority_relayed: inner.tx_outbound_priority_relayed,
+            tx_outbound_budget_suppressed: inner.tx_outbound_budget_suppressed,
             block_outbound_duplicates_suppressed: inner.block_outbound_duplicates_suppressed,
             block_outbound_first_seen_relayed: inner.block_outbound_first_seen_relayed,
             block_outbound_recovery_relayed: inner.block_outbound_recovery_relayed,
@@ -537,6 +549,10 @@ const BLOCK_OUTBOUND_DEDUP_WINDOW_SECS: u64 = 30;
 const RECOVERY_REBROADCAST_GRACE_SECS: u64 = 8;
 const MAX_DEDUP_TRACKED_IDS: usize = 16_384;
 const BLOCK_PRIORITY_BURST_LIMIT: usize = 8;
+const TX_PRIORITY_FEE_THRESHOLD: u64 = 1_000;
+const TX_RELAY_BUDGET_WINDOW_SECS: u64 = 1;
+const TX_RELAY_BUDGET_PER_WINDOW: usize = 256;
+const TX_RELAY_BUDGET_OVERFLOW_SAMPLE_EVERY: u64 = 8;
 
 fn peer_recovery_snapshot(state: &InnerState) -> (usize, usize, Vec<PeerRecoveryStatus>) {
     let now = now_unix();
@@ -1015,6 +1031,26 @@ fn should_relay_outbound_tx(state: &mut InnerState, id: &str, now: u64) -> bool 
     }
 }
 
+fn admit_tx_relay_under_budget(state: &mut InnerState, tx_id: &str, fee: u64, now: u64) -> bool {
+    if fee >= TX_PRIORITY_FEE_THRESHOLD {
+        state.tx_outbound_priority_relayed = state.tx_outbound_priority_relayed.saturating_add(1);
+        return true;
+    }
+    if now.saturating_sub(state.tx_budget_window_started_unix) >= TX_RELAY_BUDGET_WINDOW_SECS {
+        state.tx_budget_window_started_unix = now;
+        state.tx_budget_window_relays = 0;
+    }
+    if state.tx_budget_window_relays < TX_RELAY_BUDGET_PER_WINDOW {
+        state.tx_budget_window_relays = state.tx_budget_window_relays.saturating_add(1);
+        return true;
+    }
+    if message_id_hash(tx_id) % TX_RELAY_BUDGET_OVERFLOW_SAMPLE_EVERY == 0 {
+        return true;
+    }
+    state.tx_outbound_budget_suppressed = state.tx_outbound_budget_suppressed.saturating_add(1);
+    false
+}
+
 fn should_relay_outbound_block(state: &mut InnerState, id: &str, now: u64) -> bool {
     trim_old_entries(
         &mut state.outbound_block_seen_at_unix,
@@ -1072,6 +1108,12 @@ fn should_allow_recovery_rebroadcast(
             true
         }
     }
+}
+
+fn message_id_hash(id: &str) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    id.hash(&mut hasher);
+    hasher.finish()
 }
 
 fn note_swarm_event(inner: &Arc<Mutex<InnerState>>, label: impl Into<String>) {
@@ -1469,6 +1511,10 @@ impl P2pHandle for Libp2pHandle {
                 inner.last_drop_reason = Some("duplicate_tx_outbound".into());
                 return Ok(());
             }
+            if !admit_tx_relay_under_budget(&mut inner, &tx_id, tx.fee, now_unix()) {
+                inner.last_drop_reason = Some("tx_budget_suppressed".into());
+                return Ok(());
+            }
             inner.queued_messages += 1;
             inner.queued_non_block_messages += 1;
             track_queue_depth_on_enqueue(&mut inner);
@@ -1547,6 +1593,8 @@ impl P2pHandle for Libp2pHandle {
             tx_outbound_duplicates_suppressed: inner.tx_outbound_duplicates_suppressed,
             tx_outbound_first_seen_relayed: inner.tx_outbound_first_seen_relayed,
             tx_outbound_recovery_relayed: inner.tx_outbound_recovery_relayed,
+            tx_outbound_priority_relayed: inner.tx_outbound_priority_relayed,
+            tx_outbound_budget_suppressed: inner.tx_outbound_budget_suppressed,
             block_outbound_duplicates_suppressed: inner.block_outbound_duplicates_suppressed,
             block_outbound_first_seen_relayed: inner.block_outbound_first_seen_relayed,
             block_outbound_recovery_relayed: inner.block_outbound_recovery_relayed,
@@ -1600,6 +1648,17 @@ mod tests {
             inputs: vec![],
             outputs: vec![],
             fee: 10,
+            nonce: 1,
+        }
+    }
+
+    fn sample_tx_with_fee(txid: &str, fee: u64) -> Transaction {
+        Transaction {
+            txid: txid.into(),
+            version: 1,
+            inputs: vec![],
+            outputs: vec![],
+            fee,
             nonce: 1,
         }
     }
@@ -1811,6 +1870,52 @@ mod tests {
         assert_eq!(status.broadcasted_messages, 1);
         assert_eq!(status.tx_outbound_first_seen_relayed, 1);
         assert_eq!(status.tx_outbound_duplicates_suppressed, 9);
+    }
+
+    #[test]
+    fn higher_priority_tx_relay_bypasses_budget_pressure() {
+        let (handle, _inbound_rx) = MemoryP2pHandle::new("testnet".into(), vec!["peer-a".into()]);
+
+        for idx in 0..TX_RELAY_BUDGET_PER_WINDOW {
+            handle
+                .broadcast_transaction(&sample_tx_with_fee(&format!("tx-fill-{idx}"), 1))
+                .expect("budget-filling relay should not error");
+        }
+
+        handle
+            .broadcast_transaction(&sample_tx_with_fee("tx-budget-overflow", 1))
+            .expect("budget-overflow relay should not error");
+        handle
+            .broadcast_transaction(&sample_tx_with_fee(
+                "tx-priority",
+                TX_PRIORITY_FEE_THRESHOLD,
+            ))
+            .expect("priority relay should not error");
+
+        let status = handle.status().expect("status should be available");
+        assert_eq!(
+            status.tx_outbound_first_seen_relayed,
+            TX_RELAY_BUDGET_PER_WINDOW + 2
+        );
+        assert_eq!(status.tx_outbound_priority_relayed, 1);
+        assert_eq!(status.tx_outbound_budget_suppressed, 1);
+    }
+
+    #[test]
+    fn tx_relay_budget_preserves_normal_traffic_levels() {
+        let (handle, _inbound_rx) = MemoryP2pHandle::new("testnet".into(), vec!["peer-a".into()]);
+        let normal_traffic_count = TX_RELAY_BUDGET_PER_WINDOW / 4;
+
+        for idx in 0..normal_traffic_count {
+            handle
+                .broadcast_transaction(&sample_tx_with_fee(&format!("tx-normal-{idx}"), 5))
+                .expect("normal relay should not error");
+        }
+
+        let status = handle.status().expect("status should be available");
+        assert_eq!(status.publish_attempts, normal_traffic_count);
+        assert_eq!(status.tx_outbound_budget_suppressed, 0);
+        assert_eq!(status.tx_outbound_first_seen_relayed, normal_traffic_count);
     }
 
     #[test]
