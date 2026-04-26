@@ -82,6 +82,9 @@ These artifacts should be linked from `README.md` in the run directory:
    - Source: `.github/workflows/release-binaries.yml`
 6. **Mining telemetry summary**
    - Source: `docs/dashboard/README.md` (`GET /runtime/status` mining telemetry fields)
+7. **Restore/rebuild drill timing comparison**
+   - Source: `scripts/restore-drill-evidence.sh`, `docs/runbooks/SNAPSHOT_RESTORE.md`, `docs/runbooks/REBUILD_FROM_SNAPSHOT_AND_DELTA.md`
+   - Include at least one repeated-run timing capture that reports chain/tip/timestamp fields for side-by-side RTO comparison.
 
 ## v2.2.3 closeout evidence index
 Use `docs/checklists/V2_2_3_BURNIN_CLOSEOUT.md` as the release-manager closeout wrapper and verify each referenced surface resolves in-repo.

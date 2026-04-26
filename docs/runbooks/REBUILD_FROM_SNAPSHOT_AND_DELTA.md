@@ -49,5 +49,6 @@ scripts/restore-drill-evidence.sh
 This command runs targeted storage tests that assert:
 1. Snapshot + delta restore reproduces expected best state.
 2. Corrupt snapshot fallback is safe (or explicit fail when fallback is impossible).
-3. Prune + replay remains coherent post-restore.
-4. Restore timing/evidence is emitted in a reproducible report path.
+3. Rollback safety planning remains explicit (requested/effective/minimum keep window is validated).
+4. Prune + replay remains coherent post-restore.
+5. Restore timing/evidence is emitted in a reproducible report path, including repeat runs.

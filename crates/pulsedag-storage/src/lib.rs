@@ -43,10 +43,14 @@ pub struct PruneSafetyPlan {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RestoreDrillReport {
+    pub chain_id: String,
     pub used_snapshot: bool,
     pub fallback_to_full_rebuild: bool,
     pub persisted_block_count: usize,
     pub best_height: u64,
+    pub best_tip_hash: String,
+    pub started_at_unix: u64,
+    pub completed_at_unix: u64,
     pub restore_duration_ms: u128,
 }
 
@@ -467,25 +471,44 @@ impl Storage {
         chain_id: String,
     ) -> Result<RestoreDrillReport, PulseError> {
         let started = std::time::Instant::now();
+        let started_at_unix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
         let (snapshot, persisted_blocks) = self.validate_restore_inputs(Some(&chain_id))?;
         let persisted_block_count = persisted_blocks.len();
         let state = rebuild_state_from_snapshot_and_blocks(snapshot, persisted_blocks)?;
+        let best_tip_hash = state
+            .dag
+            .tips
+            .iter()
+            .min()
+            .cloned()
+            .unwrap_or_else(|| state.dag.genesis_hash.clone());
 
         self.persist_chain_state(&state)?;
         let restore_duration_ms = started.elapsed().as_millis();
+        let completed_at_unix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(started_at_unix);
         let _ = self.append_runtime_event(
             "info",
             "restore_drill_completed",
             &format!(
-                "restore drill completed in {} ms (used_snapshot={}, fallback_to_full_rebuild={}, best_height={})",
-                restore_duration_ms, true, false, state.dag.best_height
+                "restore drill completed in {} ms (chain_id={}, used_snapshot={}, fallback_to_full_rebuild={}, persisted_block_count={}, best_height={}, best_tip={})",
+                restore_duration_ms, chain_id, true, false, persisted_block_count, state.dag.best_height, best_tip_hash
             ),
         );
         Ok(RestoreDrillReport {
+            chain_id,
             used_snapshot: true,
             fallback_to_full_rebuild: false,
             persisted_block_count,
             best_height: state.dag.best_height,
+            best_tip_hash,
+            started_at_unix,
+            completed_at_unix,
             restore_duration_ms,
         })
     }
@@ -1230,7 +1253,10 @@ mod tests {
 
         assert!(report.used_snapshot);
         assert!(!report.fallback_to_full_rebuild);
+        assert_eq!(report.chain_id, "testnet");
         assert_eq!(report.best_height, 6);
+        assert_eq!(report.best_tip_hash, best_tip_hash(&state));
+        assert!(report.completed_at_unix >= report.started_at_unix);
         assert_eq!(best_tip_hash(&rebuilt), best_tip_hash(&state));
         assert!(report.restore_duration_ms < 30_000);
 
@@ -1340,6 +1366,63 @@ mod tests {
         let restarted = storage
             .replay_blocks_or_init("testnet".to_string())
             .expect("normal recovery entrypoint should remain coherent after restore");
+        assert_eq!(restarted.dag.best_height, state.dag.best_height);
+        assert_eq!(best_tip_hash(&restarted), best_tip_hash(&state));
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn restore_drill_repeated_runs_produce_coherent_timing_evidence() {
+        let path = temp_db_path("restore-drill-repeatability");
+        let storage = Storage::open(&path).expect("open storage");
+        let state = build_linear_chain("testnet", 7);
+        let mut blocks: Vec<_> = state.dag.blocks.values().cloned().collect();
+        blocks.sort_by_key(|b| b.header.height);
+        for block in &blocks {
+            storage.persist_block(block).expect("persist block");
+        }
+        storage
+            .persist_chain_state(&state)
+            .expect("persist baseline snapshot");
+        storage
+            .prune_blocks_below_height(6)
+            .expect("retain snapshot plus compact rollback/delta window");
+
+        let mut reports = Vec::new();
+        for _ in 0..3 {
+            let report = storage
+                .restore_drill_snapshot_and_delta("testnet".to_string())
+                .expect("repeat restore drill run should succeed");
+            reports.push(report);
+        }
+
+        assert_eq!(reports.len(), 3);
+        for report in &reports {
+            assert_eq!(report.chain_id, "testnet");
+            assert!(report.used_snapshot);
+            assert!(!report.fallback_to_full_rebuild);
+            assert_eq!(report.best_height, state.dag.best_height);
+            assert_eq!(report.best_tip_hash, best_tip_hash(&state));
+            assert!(report.completed_at_unix >= report.started_at_unix);
+            assert!(report.restore_duration_ms < 30_000);
+        }
+        assert!(reports
+            .windows(2)
+            .all(|w| w[1].started_at_unix >= w[0].started_at_unix));
+
+        let events = storage.list_runtime_events(50).expect("runtime events");
+        let drill_events = events
+            .iter()
+            .filter(|e| e.kind == "restore_drill_completed")
+            .count();
+        assert!(
+            drill_events >= 3,
+            "expected one completion event per repeated drill run"
+        );
+
+        let restarted = storage
+            .replay_blocks_or_init("testnet".to_string())
+            .expect("recovery entrypoint should remain coherent after repeated drill runs");
         assert_eq!(restarted.dag.best_height, state.dag.best_height);
         assert_eq!(best_tip_hash(&restarted), best_tip_hash(&state));
         let _ = std::fs::remove_dir_all(path);
@@ -1564,6 +1647,49 @@ mod tests {
             .prune_blocks_below_height(plan.effective_keep_from_height)
             .expect("prune with unmodified keep_from");
         assert!(removed > 0);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn prune_safety_plan_explicitly_caps_to_rollback_window_floor() {
+        let path = temp_db_path("prune-safety-explicit-rollback-cap");
+        let storage = Storage::open(&path).expect("open storage");
+        let state = build_linear_chain("testnet", 18);
+        let mut blocks: Vec<_> = state.dag.blocks.values().cloned().collect();
+        blocks.sort_by_key(|b| b.header.height);
+        for block in &blocks {
+            storage.persist_block(block).expect("persist block");
+        }
+        storage
+            .persist_chain_state(&state)
+            .expect("persist baseline snapshot");
+
+        let requested_keep_from_height = 17;
+        let min_rollback_blocks = 6;
+        let plan = storage
+            .plan_prune_with_safety(
+                requested_keep_from_height,
+                state.dag.best_height,
+                min_rollback_blocks,
+            )
+            .expect("build prune safety plan");
+
+        assert!(plan.can_prune);
+        assert!(plan.safe_restore_anchor_present);
+        assert_eq!(plan.requested_keep_from_height, requested_keep_from_height);
+        assert_eq!(plan.best_height, state.dag.best_height);
+        assert_eq!(
+            plan.minimum_safe_keep_from_height,
+            state
+                .dag
+                .best_height
+                .saturating_sub(min_rollback_blocks.saturating_sub(1))
+        );
+        assert_eq!(
+            plan.effective_keep_from_height, plan.minimum_safe_keep_from_height,
+            "effective keep_from should be explicitly bounded to preserve rollback floor"
+        );
+        assert_eq!(plan.reason, None);
         let _ = std::fs::remove_dir_all(path);
     }
 
