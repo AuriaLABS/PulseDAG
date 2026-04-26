@@ -19,6 +19,10 @@ jobs:
   build:
     name: Build ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
 
     strategy:
       fail-fast: false
@@ -63,12 +67,52 @@ jobs:
             --binary "${{ matrix.binary_path }}" \
             --output-dir dist \
             --tag "${{ env.RELEASE_TAG }}" \
-            --bin-name "${{ env.BIN_NAME }}"
+            --bin-name "${{ env.BIN_NAME }}" \
+            --repository "${{ github.repository }}" \
+            --commit "${{ github.sha }}" \
+            --run-id "${{ github.run_id }}" \
+            --run-attempt "${{ github.run_attempt }}"
+
+      - name: Validate per-asset metadata coherence
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib
+          import json
+          from pathlib import Path
+
+          dist = Path("dist")
+          manifests = sorted(dist.glob("*.json"))
+          if not manifests:
+              raise SystemExit("No manifest files were generated in dist/.")
+
+          for manifest_path in manifests:
+              manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+              archive = dist / manifest["archive"]
+              if not archive.exists():
+                  raise SystemExit(f"Missing archive referenced by {manifest_path.name}: {archive.name}")
+
+              digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+              if digest != manifest["archive_sha256"]:
+                  raise SystemExit(f"Digest mismatch for {archive.name}")
+
+              if archive.stat().st_size != manifest["archive_size_bytes"]:
+                  raise SystemExit(f"Size mismatch for {archive.name}")
+          PY
+
+      - name: Attest release archives
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            dist/*.tar.gz
+            dist/*.zip
 
       - name: Upload artifact bundle
         uses: actions/upload-artifact@v6
         with:
           name: ${{ matrix.name }}
+          retention-days: 14
           path: |
             dist/*.tar.gz
             dist/*.zip
@@ -98,6 +142,12 @@ jobs:
           set -euo pipefail
           mkdir -p final
           find artifacts -type f -exec cp "{}" final/ \;
+          duplicate_names=$(find artifacts -type f -printf '%f\n' | sort | uniq -d)
+          if [ -n "${duplicate_names}" ]; then
+            echo "::error::Duplicate artifact filenames detected across matrix builds:"
+            echo "${duplicate_names}"
+            exit 1
+          fi
           ls -lah final
 
       - name: Validate and build consolidated checksums
@@ -130,11 +180,32 @@ jobs:
             done
           } > final/SHA256SUMS.txt
 
+          python3 - <<'PY'
+          import glob
+          import json
+          from pathlib import Path
+
+          manifests = []
+          for path in sorted(glob.glob("final/*.json")):
+              with open(path, "r", encoding="utf-8") as handle:
+                  manifests.append(json.load(handle))
+
+          out = {
+              "release_tag": "${{ env.RELEASE_TAG }}",
+              "artifacts": manifests,
+          }
+          Path("final/release-provenance.json").write_text(
+              json.dumps(out, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          PY
+
           echo "Release artifacts found:"
           for file in "${release_files[@]}"; do
             printf ' - %s\n' "$(basename "$file")"
           done
           echo "Consolidated checksums: SHA256SUMS.txt"
+          echo "Release provenance summary: release-provenance.json"
 
       - name: Publish to GitHub Release
         env:
