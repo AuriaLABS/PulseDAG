@@ -4,18 +4,19 @@ set -euo pipefail
 usage() {
   cat <<USAGE
 Usage:
-  scripts/chaos/run-validation-suite.sh --run-id <id> [--base-dir <path>] [--node-urls <csv>] [--yes]
+  scripts/chaos/run-validation-suite.sh --run-id <id> [--base-dir <path>] [--node-urls <csv>] [--scenario-manifest <path>] [--yes]
 
 Description:
   Guided crash/restart/churn/recovery validation suite for operator evidence collection.
-  This script records timestamps, endpoint snapshots, and scenario outcomes without
-  changing consensus rules, miner behavior, or introducing pool logic.
+  The suite captures repeatable pre/post endpoint snapshots and writes reviewer-friendly
+  evidence outputs without changing consensus rules, miner behavior, or introducing pool logic.
 USAGE
 }
 
 RUN_ID=""
 BASE_DIR=""
 NODE_URLS="http://127.0.0.1:8080,http://127.0.0.1:8081,http://127.0.0.1:8082"
+SCENARIO_MANIFEST="scripts/chaos/scenarios.csv"
 ASSUME_YES=0
 
 while [[ $# -gt 0 ]]; do
@@ -30,6 +31,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --node-urls)
       NODE_URLS="${2:-}"
+      shift 2
+      ;;
+    --scenario-manifest)
+      SCENARIO_MANIFEST="${2:-}"
       shift 2
       ;;
     --yes)
@@ -54,6 +59,11 @@ if [[ -z "$RUN_ID" ]]; then
   exit 1
 fi
 
+if [[ ! -f "$SCENARIO_MANIFEST" ]]; then
+  echo "scenario manifest not found: $SCENARIO_MANIFEST" >&2
+  exit 1
+fi
+
 if [[ -z "$BASE_DIR" ]]; then
   BASE_DIR="artifacts/release-evidence/${RUN_ID}/chaos-suite"
 fi
@@ -64,38 +74,43 @@ mkdir -p "$RAW_DIR"
 MANIFEST_CSV="${BASE_DIR}/manifest.csv"
 EVENTS_CSV="${BASE_DIR}/events.csv"
 SUMMARY_MD="${BASE_DIR}/summary.md"
+OUTCOMES_CSV="${BASE_DIR}/scenario-outcomes.csv"
+RUN_INFO_JSON="${BASE_DIR}/run-info.json"
 
-if [[ ! -f "$MANIFEST_CSV" ]]; then
-  cat > "$MANIFEST_CSV" <<'MANIFEST'
-scenario_id,priority,target_slo_seconds,description
-crash-restart-node-b,P0,300,Crash node B then restart and reconverge tip/sync metrics
-graceful-restart-seed-a,P0,300,Restart a seed node without prolonged sync drift
-external-miner-churn,P1,1200,Detach an external miner and recover submit acceptance rate
-peer-churn-isolate-rejoin,P0,900,Network isolate non-seed node and rejoin cleanly
-recovery-snapshot-restore,P0,1800,Run snapshot restore/rebuild and recover healthy participation
-MANIFEST
-fi
+cp "$SCENARIO_MANIFEST" "$MANIFEST_CSV"
 
-if [[ ! -f "$EVENTS_CSV" ]]; then
-  cat > "$EVENTS_CSV" <<'EVENTS'
+cat > "$EVENTS_CSV" <<'EVENTS'
 timestamp_utc,scenario_id,phase,node_url,endpoint,result,details
 EVENTS
-fi
 
-if [[ ! -f "$SUMMARY_MD" ]]; then
-  cat > "$SUMMARY_MD" <<SUMMARY
+cat > "$OUTCOMES_CSV" <<'OUTCOMES'
+scenario_id,priority,target_slo_seconds,outcome,duration_seconds,slo_met,started_utc,ended_utc,notes
+OUTCOMES
+
+cat > "$SUMMARY_MD" <<SUMMARY
 # Chaos validation summary
 
 - Run ID: ${RUN_ID}
 - Started (UTC): $(date -u +%Y-%m-%dT%H:%M:%SZ)
 - Node URLs: ${NODE_URLS}
+- Scenario manifest: ${SCENARIO_MANIFEST}
 
 ## Scenario outcomes
 
-| Scenario | Outcome | Started (UTC) | Ended (UTC) | Notes |
-|---|---|---|---|---|
+| Scenario | Priority | Outcome | Duration (s) | SLO target (s) | SLO met | Started (UTC) | Ended (UTC) | Notes |
+|---|---|---|---:|---:|---|---|---|---|
 SUMMARY
-fi
+
+cat > "$RUN_INFO_JSON" <<JSON
+{
+  "run_id": "${RUN_ID}",
+  "started_utc": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+  "node_urls": "${NODE_URLS}",
+  "scenario_manifest": "${SCENARIO_MANIFEST}",
+  "base_dir": "${BASE_DIR}",
+  "mode": "$( [[ "$ASSUME_YES" -eq 1 ]] && echo dryrun || echo operator )"
+}
+JSON
 
 IFS=',' read -r -a NODE_ARRAY <<< "$NODE_URLS"
 
@@ -141,12 +156,13 @@ wait_for_operator() {
 }
 
 run_scenario() {
-  local scenario_id="$1" description="$2" action_text="$3" notes_text="$4"
-  local start_ts end_ts outcome notes
+  local scenario_id="$1" priority="$2" target_slo_seconds="$3" description="$4" action_text="$5" notes_hint="$6"
+  local start_epoch end_epoch start_ts end_ts outcome notes duration_seconds slo_met
 
   start_ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  start_epoch="$(date -u +%s)"
   echo
-  echo "=== Scenario: ${scenario_id} ==="
+  echo "=== Scenario: ${scenario_id} (${priority}) ==="
   echo "$description"
 
   capture_baseline "$scenario_id" "pre"
@@ -155,44 +171,51 @@ run_scenario() {
 
   if [[ "$ASSUME_YES" -eq 1 ]]; then
     outcome="pass"
-    notes="$notes_text"
+    notes="${notes_hint} [dryrun-auto]"
   else
     read -r -p "Outcome for ${scenario_id} (pass/fail): " outcome
     read -r -p "Short notes for ${scenario_id}: " notes
   fi
 
   end_ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  printf '| %s | %s | %s | %s | %s |\n' "$scenario_id" "$outcome" "$start_ts" "$end_ts" "$notes" >> "$SUMMARY_MD"
+  end_epoch="$(date -u +%s)"
+  duration_seconds="$((end_epoch - start_epoch))"
+
+  if [[ "$duration_seconds" -le "$target_slo_seconds" ]]; then
+    slo_met="yes"
+  else
+    slo_met="no"
+  fi
+
+  printf '| %s | %s | %s | %s | %s | %s | %s | %s | %s |\n' \
+    "$scenario_id" "$priority" "$outcome" "$duration_seconds" "$target_slo_seconds" "$slo_met" "$start_ts" "$end_ts" "$notes" >> "$SUMMARY_MD"
+
+  printf '%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
+    "$scenario_id" "$priority" "$target_slo_seconds" "$outcome" "$duration_seconds" "$slo_met" "$start_ts" "$end_ts" "$notes" >> "$OUTCOMES_CSV"
 }
 
-run_scenario \
-  "crash-restart-node-b" \
-  "Crash a validator process and ensure restart + rejoin succeeds." \
-  "Terminate node B abruptly (SIGKILL or container stop), restart it with standard operator procedure, then confirm health endpoints recover." \
-  "Verify sync lag returns to baseline and no unresolved Sev-1 incidents."
+while IFS=$'\t' read -r scenario_id priority target_slo_seconds description action_text notes_hint; do
+  run_scenario "$scenario_id" "$priority" "$target_slo_seconds" "$description" "$action_text" "$notes_hint"
+done < <(
+  python3 - "$MANIFEST_CSV" <<'PY'
+import csv
+import sys
 
-run_scenario \
-  "graceful-restart-seed-a" \
-  "Gracefully restart one seed node and check topology recovery." \
-  "Stop seed A gracefully, restart it, and confirm peers reconnect without prolonged lag." \
-  "Ensure peer counts and sync status reconverge across the cluster."
-
-run_scenario \
-  "external-miner-churn" \
-  "Detach one external miner for 15 minutes, then reattach to the same endpoint." \
-  "Stop one external miner process, wait 15 minutes, restart it, and verify template/submit loop resumes." \
-  "Confirm submit acceptance recovers and rejection spikes are explained."
-
-run_scenario \
-  "peer-churn-isolate-rejoin" \
-  "Simulate peer churn by isolating one non-seed node, then rejoin it." \
-  "Isolate node C from peers for 10 minutes (network ACL/firewall), then remove isolation and verify clean rejoin." \
-  "Confirm no persistent desync/fork remains after rejoin."
-
-run_scenario \
-  "recovery-snapshot-restore" \
-  "Run snapshot restore/rebuild drill and validate full recovery." \
-  "Follow docs/runbooks/RECOVERY_ORCHESTRATION.md to execute restore or rebuild for one node, then validate healthy participation." \
-  "Attach command logs and final status snapshots to release evidence bundle."
+with open(sys.argv[1], newline="", encoding="utf-8") as f:
+    reader = csv.DictReader(f)
+    for row in reader:
+        print("\t".join([
+            row["scenario_id"],
+            row["priority"],
+            row["target_slo_seconds"],
+            row["description"],
+            row["operator_action"],
+            row["notes_hint"],
+        ]))
+PY
+)
 
 printf "\nChaos validation suite complete. Evidence written to: %s\n" "${BASE_DIR}"
+echo "Next steps:"
+echo "  1) scripts/chaos/validate-evidence.sh --run-id ${RUN_ID}"
+echo "  2) scripts/chaos/archive-evidence.sh --run-id ${RUN_ID}"

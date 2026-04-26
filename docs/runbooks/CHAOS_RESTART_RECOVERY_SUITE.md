@@ -43,15 +43,17 @@ P1 scenario (should pass):
 ```bash
 scripts/chaos/run-validation-suite.sh \
   --run-id v2.2.3-chaos-YYYYMMDD \
-  --node-urls http://127.0.0.1:8080,http://127.0.0.1:8081,http://127.0.0.1:8082
+  --node-urls http://127.0.0.1:8080,http://127.0.0.1:8081,http://127.0.0.1:8082 \
+  --scenario-manifest scripts/chaos/scenarios.csv
 ```
 
 What this script does:
 - Creates `artifacts/release-evidence/<run_id>/chaos-suite/`.
-- Emits fixed `manifest.csv` and append-only `events.csv`.
+- Copies a fixed scenario catalog (`scripts/chaos/scenarios.csv`) into `manifest.csv`.
 - Captures pre/post snapshots of `/health`, `/sync/status`, and `/runtime/status` for each node.
 - Prompts operator for each real-world action (crash, restart, isolate, recover).
-- Produces `summary.md` with pass/fail + timestamped outcomes.
+- Produces both `summary.md` and `scenario-outcomes.csv` with pass/fail, duration, and SLO met/not-met flags.
+- Writes `run-info.json` so auditors can reconstruct run parameters exactly.
 
 ### Non-interactive mode (lab rehearsal)
 
@@ -64,13 +66,24 @@ Use `--yes` only for dry rehearsal of evidence wiring; do not treat as productio
 ## 5) Validate evidence completeness
 
 ```bash
-scripts/chaos/validate-evidence.sh v2.2.3-chaos-YYYYMMDD
+scripts/chaos/validate-evidence.sh --run-id v2.2.3-chaos-YYYYMMDD
 ```
 
 The evidence check fails if:
 - required files are missing,
 - scenario manifest is empty,
 - summary outcomes do not cover all listed scenarios.
+- endpoint capture count is lower than expected for scenarios × nodes × endpoints × pre/post.
+
+Then create an immutable archive payload for release evidence transfer:
+
+```bash
+scripts/chaos/archive-evidence.sh --run-id v2.2.3-chaos-YYYYMMDD
+```
+
+This emits:
+- `chaos-suite-<run_id>.tar.gz`
+- `chaos-suite-<run_id>.tar.gz.sha256`
 
 ## 6) Required artifacts for release closeout
 
@@ -81,6 +94,8 @@ artifacts/release-evidence/<run_id>/chaos-suite/
   manifest.csv
   events.csv
   summary.md
+  scenario-outcomes.csv
+  run-info.json
   raw/*.json
 ```
 
