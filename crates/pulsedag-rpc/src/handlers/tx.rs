@@ -60,6 +60,19 @@ pub struct TxDetailData {
     pub block_height: Option<u64>,
 }
 
+#[derive(Debug, serde::Serialize)]
+pub struct TxLookupData {
+    pub txid: String,
+    pub status: String,
+    pub fee: u64,
+    pub nonce: u64,
+    pub block_hash: Option<String>,
+    pub block_height: Option<u64>,
+    pub confirmations: Option<u64>,
+    pub inputs: Vec<pulsedag_core::types::OutPoint>,
+    pub outputs: Vec<pulsedag_core::types::TxOutput>,
+}
+
 pub async fn get_txs_recent<S: RpcStateLike>(
     State(state): State<S>,
     Query(query): Query<TxsQuery>,
@@ -276,4 +289,222 @@ pub async fn get_txs_page<S: RpcStateLike>(
         count: transactions.len(),
         transactions,
     }))
+}
+
+pub async fn get_tx_lookup<S: RpcStateLike>(
+    State(state): State<S>,
+    Path(txid): Path<String>,
+) -> Json<ApiResponse<TxLookupData>> {
+    let chain_handle = state.chain();
+    let chain = chain_handle.read().await;
+
+    if let Some(tx) = chain.mempool.transactions.get(&txid) {
+        return Json(ApiResponse::ok(TxLookupData {
+            txid: tx.txid.clone(),
+            status: "mempool".into(),
+            fee: tx.fee,
+            nonce: tx.nonce,
+            block_hash: None,
+            block_height: None,
+            confirmations: None,
+            inputs: tx
+                .inputs
+                .iter()
+                .map(|i| i.previous_output.clone())
+                .collect(),
+            outputs: tx.outputs.clone(),
+        }));
+    }
+
+    for block in chain.dag.blocks.values() {
+        if let Some(tx) = block.transactions.iter().find(|t| t.txid == txid) {
+            return Json(ApiResponse::ok(TxLookupData {
+                txid: tx.txid.clone(),
+                status: "confirmed".into(),
+                fee: tx.fee,
+                nonce: tx.nonce,
+                block_hash: Some(block.hash.clone()),
+                block_height: Some(block.header.height),
+                confirmations: Some(chain.dag.best_height.saturating_sub(block.header.height) + 1),
+                inputs: tx
+                    .inputs
+                    .iter()
+                    .map(|i| i.previous_output.clone())
+                    .collect(),
+                outputs: tx.outputs.clone(),
+            }));
+        }
+    }
+
+    Json(ApiResponse::err(
+        "TX_NOT_FOUND",
+        format!("transaction {txid} not found"),
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{get_tx, get_tx_lookup, get_txs, TxListData};
+    use crate::api::{NodeRuntimeStats, RpcStateLike};
+    use axum::extract::{Path, State};
+    use pulsedag_core::types::{
+        Block, BlockHeader, OutPoint, Transaction, TxInput, TxOutput, Utxo,
+    };
+    use pulsedag_core::ChainState;
+    use pulsedag_storage::Storage;
+    use std::{
+        path::PathBuf,
+        sync::Arc,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+    use tokio::sync::RwLock;
+
+    #[derive(Clone)]
+    struct TestState {
+        chain: Arc<RwLock<ChainState>>,
+        storage: Arc<Storage>,
+        runtime: Arc<RwLock<NodeRuntimeStats>>,
+    }
+
+    impl RpcStateLike for TestState {
+        fn chain(&self) -> Arc<RwLock<ChainState>> {
+            self.chain.clone()
+        }
+        fn p2p(&self) -> Option<Arc<dyn pulsedag_p2p::P2pHandle>> {
+            None
+        }
+        fn storage(&self) -> Arc<Storage> {
+            self.storage.clone()
+        }
+        fn runtime(&self) -> Arc<RwLock<NodeRuntimeStats>> {
+            self.runtime.clone()
+        }
+    }
+
+    fn temp_db_path(name: &str) -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        std::env::temp_dir().join(format!("pulsedag-{name}-{unique}"))
+    }
+
+    async fn mk_state() -> TestState {
+        let path = temp_db_path("tx-handler");
+        let storage = Arc::new(Storage::open(path.to_str().expect("utf8 temp path")).unwrap());
+        let mut chain = storage
+            .load_or_init_genesis("testnet-dev".to_string())
+            .unwrap();
+        let outpoint = OutPoint {
+            txid: "funding".into(),
+            index: 0,
+        };
+        chain.utxo.utxos.insert(
+            outpoint.clone(),
+            Utxo {
+                outpoint: outpoint.clone(),
+                address: "alice".into(),
+                amount: 50,
+                coinbase: false,
+                height: 1,
+            },
+        );
+        chain
+            .utxo
+            .address_index
+            .insert("alice".into(), vec![outpoint.clone()]);
+
+        let mempool_tx = Transaction {
+            txid: "tx-mempool".into(),
+            version: 1,
+            inputs: vec![TxInput {
+                previous_output: outpoint,
+                public_key: "pk".into(),
+                signature: "sig".into(),
+            }],
+            outputs: vec![TxOutput {
+                address: "bob".into(),
+                amount: 45,
+            }],
+            fee: 5,
+            nonce: 7,
+        };
+        chain
+            .mempool
+            .transactions
+            .insert(mempool_tx.txid.clone(), mempool_tx.clone());
+
+        let confirmed_tx = Transaction {
+            txid: "tx-confirmed".into(),
+            version: 1,
+            inputs: vec![],
+            outputs: vec![TxOutput {
+                address: "alice".into(),
+                amount: 10,
+            }],
+            fee: 0,
+            nonce: 9,
+        };
+        let genesis = chain.dag.genesis_hash.clone();
+        let block = Block {
+            hash: "block-1".into(),
+            header: BlockHeader {
+                version: 1,
+                parents: vec![genesis.clone()],
+                timestamp: 3,
+                difficulty: 1,
+                nonce: 1,
+                merkle_root: "m".into(),
+                state_root: "s".into(),
+                blue_score: 1,
+                height: 1,
+            },
+            transactions: vec![confirmed_tx],
+        };
+        chain
+            .dag
+            .children
+            .entry(genesis.clone())
+            .or_default()
+            .push(block.hash.clone());
+        chain.dag.tips.remove(&genesis);
+        chain.dag.tips.insert(block.hash.clone());
+        chain.dag.best_height = 1;
+        chain.dag.blocks.insert(block.hash.clone(), block);
+
+        TestState {
+            chain: Arc::new(RwLock::new(chain)),
+            storage,
+            runtime: Arc::new(RwLock::new(NodeRuntimeStats::default())),
+        }
+    }
+
+    #[tokio::test]
+    async fn tx_lookup_reports_mempool_and_confirmed_sources() {
+        let state = mk_state().await;
+        let axum::Json(mem_resp) =
+            get_tx_lookup(State(state.clone()), Path("tx-mempool".to_string())).await;
+        let mem = mem_resp.data.expect("mempool tx lookup");
+        assert_eq!(mem.status, "mempool");
+        assert!(mem.block_hash.is_none());
+
+        let axum::Json(conf_resp) =
+            get_tx_lookup(State(state), Path("tx-confirmed".to_string())).await;
+        let conf = conf_resp.data.expect("confirmed tx lookup");
+        assert_eq!(conf.status, "confirmed");
+        assert_eq!(conf.confirmations, Some(1));
+    }
+
+    #[tokio::test]
+    async fn existing_tx_surfaces_remain_compatible() {
+        let state = mk_state().await;
+        let axum::Json(list_resp) = get_txs(State(state.clone())).await;
+        let list: TxListData = list_resp.data.expect("tx list");
+        assert_eq!(list.count, 1);
+
+        let axum::Json(detail_resp) = get_tx(State(state), Path("tx-confirmed".to_string())).await;
+        let detail = detail_resp.data.expect("tx detail");
+        assert_eq!(detail.status, "confirmed");
+        assert_eq!(detail.block_height, Some(1));
+    }
 }
