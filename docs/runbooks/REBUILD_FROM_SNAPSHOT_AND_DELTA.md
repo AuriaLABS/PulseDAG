@@ -17,6 +17,7 @@ Recover chain state by replaying retained blocks on top of the latest validated 
    - `curl -s -X POST http://127.0.0.1:8080/snapshot/create | jq`
 3. Optional prune (after snapshot validation):
    - `curl -s -X POST http://127.0.0.1:8080/prune -H 'content-type: application/json' -d '{"keep_recent_blocks":64}' | jq`
+   - Safety note: prune is now bounded by deterministic retention rules (minimum 16 rollback blocks + validated snapshot anchor); if preconditions are missing, prune is rejected/deferred.
 4. Execute rebuild using snapshot + delta path:
    - `curl -s -X POST http://127.0.0.1:8080/sync/rebuild -H 'content-type: application/json' -d '{"force":true,"allow_partial_replay":false,"persist_after_rebuild":true,"reconcile_mempool":true}' | jq`
 5. Validate post-rebuild coherence:
