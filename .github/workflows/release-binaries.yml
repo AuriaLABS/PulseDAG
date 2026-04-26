@@ -56,7 +56,7 @@ jobs:
           cargo --version
 
       - name: Build
-        run: cargo build --release --locked --bin ${{ env.BIN_NAME }}
+        run: cargo build --release --bin ${{ env.BIN_NAME }}
 
       - name: Package release assets
         shell: bash
