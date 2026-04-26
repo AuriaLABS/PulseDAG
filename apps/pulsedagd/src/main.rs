@@ -734,7 +734,9 @@ async fn main() -> Result<()> {
 
                         match storage.prune_blocks_below_height(keep_from_height) {
                             Ok(pruned) => {
-                                match storage.replay_from_validated_snapshot_and_delta() {
+                                match storage
+                                    .replay_from_validated_snapshot_and_delta(Some(&cfg.chain_id))
+                                {
                                     Ok(rebuilt) => {
                                         {
                                             let mut chain_guard = chain.write().await;
