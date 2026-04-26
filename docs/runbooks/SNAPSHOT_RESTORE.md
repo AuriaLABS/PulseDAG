@@ -40,17 +40,19 @@ Validate that a node can restore state from a validated snapshot plus retained d
 - Snapshot+delta replay failure before/after prune: prune endpoint returns explicit error and does not report success.
 
 ## Measured RTO (v2.2 evidence baseline)
-Measurement source: automated storage restore drill test (`restore_drill_snapshot_and_delta_reports_timing_and_preserves_coherence`) executed on April 22, 2026 (UTC) in CI-like container conditions.
+Measurement source: automated storage restore drill tests (`restore_drill_snapshot_and_delta_reports_timing_and_preserves_coherence` and `restore_drill_repeated_runs_produce_coherent_timing_evidence`) executed in CI-like container conditions.
 
 | Scenario | Retained delta window | Best height | Observed restore duration |
 |---|---:|---:|---:|
 | Snapshot + delta restore drill | heights >= 5 | 6 | **0-1 ms** |
+| Snapshot + delta restore drill (3 repeated runs) | heights >= 6 | 7 | **0-5 ms per run** |
 
 Operational RTO target for this drill profile: **<= 5 seconds** (headroom above measured baseline for non-containerized disks and larger snapshots).
 
 ## Evidence capture
 - Runtime event emitted at completion: `restore_drill_completed`
 - Runtime warning event emitted on fallback: `restore_drill_snapshot_decode_failed_fallback_full` or `restore_drill_snapshot_delta_failed_fallback_full`
+- Drill report includes explicit chain/tip/timing fields: `chain_id`, `best_tip_hash`, `started_at_unix`, `completed_at_unix`, `restore_duration_ms`
 - Repeatable command: `scripts/restore-drill-evidence.sh`
 
 ## Related workflows
