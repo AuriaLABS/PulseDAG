@@ -640,20 +640,56 @@ fn update_selected_sync_peer(
     sync_candidates: &[RankedSyncPeer],
     now: u64,
 ) -> Option<String> {
+    const SYNC_SELECTION_SWITCH_MARGIN: i64 = 20;
+    const SYNC_SELECTION_MIN_HOLD_SECS: u64 = 12;
+
+    let rank_score_for = |peer_id: &str| -> i64 {
+        sync_candidates
+            .iter()
+            .find(|peer| peer.peer_id == peer_id)
+            .map(|peer| peer.rank_score)
+            .unwrap_or(i64::MIN / 2)
+    };
     let preferred = state
         .connected_peers
         .first()
         .cloned()
         .or_else(|| sync_candidates.first().map(|peer| peer.peer_id.clone()));
+    let preferred_rank_score = preferred
+        .as_deref()
+        .map(rank_score_for)
+        .unwrap_or(i64::MIN / 2);
     let current_is_eligible = state
         .selected_sync_peer
         .as_ref()
-        .map(|peer| state.connected_peers.contains(peer))
+        .map(|peer| {
+            state.connected_peers.contains(peer)
+                || sync_candidates.iter().any(|candidate| {
+                    candidate.peer_id == *peer && candidate.excluded_until_unix.is_none()
+                })
+        })
         .unwrap_or(false);
     let sticky_active = state.sync_selection_sticky_until_unix > now;
 
     if sticky_active && current_is_eligible {
         return state.selected_sync_peer.clone();
+    }
+
+    if let (Some(current_peer), Some(next_peer)) =
+        (state.selected_sync_peer.as_deref(), preferred.as_deref())
+    {
+        if current_peer != next_peer && current_is_eligible {
+            let current_rank_score = rank_score_for(current_peer);
+            let switch_delta = preferred_rank_score.saturating_sub(current_rank_score);
+            if switch_delta < SYNC_SELECTION_SWITCH_MARGIN {
+                state.sync_selection_sticky_until_unix = now.saturating_add(
+                    state
+                        .sync_selection_stickiness_secs
+                        .max(SYNC_SELECTION_MIN_HOLD_SECS),
+                );
+                return state.selected_sync_peer.clone();
+            }
+        }
     }
 
     if let Some(next_peer) = preferred {
@@ -1057,10 +1093,12 @@ fn record_outbound_tx_relay(state: &mut InnerState, id: &str, now: u64) {
             id,
             now,
         ) {
-            state.tx_outbound_recovery_relayed = state.tx_outbound_recovery_relayed.saturating_add(1);
+            state.tx_outbound_recovery_relayed =
+                state.tx_outbound_recovery_relayed.saturating_add(1);
         }
     } else {
-        state.tx_outbound_first_seen_relayed = state.tx_outbound_first_seen_relayed.saturating_add(1);
+        state.tx_outbound_first_seen_relayed =
+            state.tx_outbound_first_seen_relayed.saturating_add(1);
     }
     state.outbound_tx_seen_at_unix.insert(id.to_string(), now);
 }
@@ -2011,7 +2049,11 @@ mod tests {
     fn outbound_dedup_is_windowed_and_allows_restart_relay() {
         let mut state = InnerState::default();
         assert!(relay_outbound_tx_for_test(&mut state, "tx-windowed", 1_000));
-        assert!(!relay_outbound_tx_for_test(&mut state, "tx-windowed", 1_010));
+        assert!(!relay_outbound_tx_for_test(
+            &mut state,
+            "tx-windowed",
+            1_010
+        ));
         assert!(relay_outbound_tx_for_test(
             &mut state,
             "tx-windowed",
@@ -2045,7 +2087,11 @@ mod tests {
             "block-recovery",
             1_000
         ));
-        assert!(!relay_outbound_tx_for_test(&mut state, "tx-recovery", 1_001));
+        assert!(!relay_outbound_tx_for_test(
+            &mut state,
+            "tx-recovery",
+            1_001
+        ));
         assert!(!should_relay_outbound_block(
             &mut state,
             "block-recovery",
@@ -2062,7 +2108,11 @@ mod tests {
             "block-recovery",
             1_003
         ));
-        assert!(!relay_outbound_tx_for_test(&mut guard, "tx-recovery", 1_004));
+        assert!(!relay_outbound_tx_for_test(
+            &mut guard,
+            "tx-recovery",
+            1_004
+        ));
         assert!(!should_relay_outbound_block(
             &mut guard,
             "block-recovery",
@@ -2625,6 +2675,107 @@ mod tests {
         let selected = update_selected_sync_peer(&mut state, &ranked, 1_000).unwrap();
         assert_eq!(state.connected_peers, vec!["peer-primary".to_string()]);
         assert_eq!(selected, "peer-primary".to_string());
+    }
+
+    #[test]
+    fn selected_sync_peer_does_not_flap_on_small_rank_advantage_during_churn() {
+        let mut state = InnerState::default();
+        state.mode = P2P_MODE_LIBP2P_REAL.into();
+        state.sync_selection_stickiness_secs = 0;
+        state.selected_sync_peer = Some("peer-a".into());
+        state.connected_peers = vec!["peer-b".into()];
+        let ranked = vec![
+            RankedSyncPeer {
+                peer_id: "peer-b".into(),
+                rank_score: 115,
+                excluded_until_unix: None,
+            },
+            RankedSyncPeer {
+                peer_id: "peer-a".into(),
+                rank_score: 108,
+                excluded_until_unix: None,
+            },
+        ];
+
+        let selected = update_selected_sync_peer(&mut state, &ranked, 100).unwrap();
+        assert_eq!(selected, "peer-a");
+    }
+
+    #[test]
+    fn rejoin_convergence_switches_deterministically_after_sticky_window() {
+        let mut state = InnerState::default();
+        state.mode = P2P_MODE_LIBP2P_REAL.into();
+        state.sync_selection_stickiness_secs = 20;
+        state.selected_sync_peer = Some("peer-a".into());
+        state.connected_peers = vec!["peer-b".into()];
+
+        let ranked = vec![
+            RankedSyncPeer {
+                peer_id: "peer-b".into(),
+                rank_score: 180,
+                excluded_until_unix: None,
+            },
+            RankedSyncPeer {
+                peer_id: "peer-a".into(),
+                rank_score: 110,
+                excluded_until_unix: None,
+            },
+        ];
+        let during_churn = update_selected_sync_peer(&mut state, &ranked, 1_000).unwrap();
+        assert_eq!(during_churn, "peer-b");
+        let sticky_until = state.sync_selection_sticky_until_unix;
+
+        state.connected_peers = vec!["peer-a".into()];
+        let rejoined_ranked = vec![
+            RankedSyncPeer {
+                peer_id: "peer-a".into(),
+                rank_score: 190,
+                excluded_until_unix: None,
+            },
+            RankedSyncPeer {
+                peer_id: "peer-b".into(),
+                rank_score: 120,
+                excluded_until_unix: None,
+            },
+        ];
+        let still_sticky =
+            update_selected_sync_peer(&mut state, &rejoined_ranked, sticky_until - 1).unwrap();
+        assert_eq!(still_sticky, "peer-b");
+
+        let converged =
+            update_selected_sync_peer(&mut state, &rejoined_ranked, sticky_until + 1).unwrap();
+        assert_eq!(converged, "peer-a");
+    }
+
+    #[test]
+    fn selection_respects_health_and_budget_constraints_under_hysteresis() {
+        let mut state = InnerState::default();
+        state.mode = P2P_MODE_LIBP2P_REAL.into();
+        state.connection_slot_budget = 1;
+        state.sync_selection_stickiness_secs = 0;
+        state.peer_book.insert(
+            "peer-healthy".into(),
+            PeerHealth {
+                connected: true,
+                score: 90,
+                ..PeerHealth::default()
+            },
+        );
+        state.peer_book.insert(
+            "peer-suppressed".into(),
+            PeerHealth {
+                connected: true,
+                score: 200,
+                suppressed_until_unix: u64::MAX,
+                ..PeerHealth::default()
+            },
+        );
+        refresh_connected_peers_from_health(&mut state);
+        let ranked = sync_candidates_snapshot(&state);
+
+        let selected = update_selected_sync_peer(&mut state, &ranked, 10_000).unwrap();
+        assert_eq!(state.connected_peers, vec!["peer-healthy".to_string()]);
+        assert_eq!(selected, "peer-healthy");
     }
 
     #[tokio::test]
