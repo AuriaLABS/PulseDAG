@@ -24,6 +24,7 @@ pub struct RuntimeStatusData {
     pub burn_in_target_days: u64,
     pub burn_in_elapsed_days: u64,
     pub burn_in_remaining_days: u64,
+    pub node_runtime_surface_health: String,
     pub accepted_p2p_blocks: u64,
     pub rejected_p2p_blocks: u64,
     pub duplicate_p2p_blocks: u64,
@@ -66,7 +67,10 @@ pub struct RuntimeStatusData {
     pub mempool_orphan_transactions: usize,
     pub mempool_max_orphans: usize,
     pub mempool_pending_transactions: usize,
+    pub mempool_capacity_remaining_transactions: usize,
     pub mempool_pressure_bps: u64,
+    pub mempool_orphan_pressure_bps: u64,
+    pub mempool_surface_health: String,
     pub mempool_admitted_total: u64,
     pub mempool_rejected_total: u64,
     pub mempool_rejected_low_priority_total: u64,
@@ -103,6 +107,7 @@ pub struct RuntimeStatusData {
     pub external_mining_rejection_counter_delta: i64,
     pub external_mining_stale_work_submit_rejections: u64,
     pub external_mining_stale_work_template_invalidations: u64,
+    pub external_mining_surface_health: String,
     pub startup_snapshot_exists: bool,
     pub startup_persisted_block_count: usize,
     pub startup_persisted_max_height: u64,
@@ -136,6 +141,8 @@ pub struct RuntimeStatusData {
     pub last_prune_height: Option<u64>,
     pub last_prune_unix: Option<u64>,
     pub sync_phase: SyncPhase,
+    pub sync_surface_health: String,
+    pub sync_counters_coherent: bool,
     pub sync_last_transition_unix: Option<u64>,
     pub sync_completed_cycles: u64,
     pub sync_restart_count: u64,
@@ -147,6 +154,8 @@ pub struct RuntimeStatusData {
     pub sync_last_fallback_reason: Option<String>,
     pub sync_last_fallback_peer: Option<String>,
     pub sync_counters: SyncProgressCounters,
+    pub sync_blocks_request_backlog: u64,
+    pub sync_blocks_validation_backlog: u64,
     pub target_block_interval_secs: u64,
     pub window_size: usize,
     pub retarget_multiplier_bps: u64,
@@ -164,6 +173,9 @@ pub struct RuntimeStatusData {
     pub p2p_peer_health_healthy: usize,
     pub p2p_peer_health_degraded: usize,
     pub p2p_peer_health_recovering: usize,
+    pub p2p_peer_health_total: usize,
+    pub p2p_peer_health_counters_coherent: bool,
+    pub p2p_surface_health: String,
     pub p2p_tx_outbound_duplicates_suppressed: usize,
     pub p2p_tx_outbound_first_seen_relayed: usize,
     pub p2p_tx_outbound_recovery_relayed: usize,
@@ -319,12 +331,22 @@ pub async fn get_runtime_status<S: RpcStateLike>(
     let mempool_max_orphans = chain.mempool.max_orphans;
     let mempool_pending_transactions =
         mempool_transactions.saturating_add(mempool_orphan_transactions);
+    let mempool_capacity_remaining_transactions =
+        mempool_max_transactions.saturating_sub(mempool_transactions);
     let mempool_pressure_bps = if mempool_max_transactions == 0 {
         0
     } else {
         (mempool_transactions as u64)
             .saturating_mul(10_000)
             .saturating_div(mempool_max_transactions as u64)
+            .min(10_000)
+    };
+    let mempool_orphan_pressure_bps = if mempool_max_orphans == 0 {
+        0
+    } else {
+        (mempool_orphan_transactions as u64)
+            .saturating_mul(10_000)
+            .saturating_div(mempool_max_orphans as u64)
             .min(10_000)
     };
     let p2p_recovery = state
@@ -416,6 +438,15 @@ pub async fn get_runtime_status<S: RpcStateLike>(
     let external_mining_stale_work_template_invalidations = runtime
         .external_mining_stale_work_detected
         .saturating_sub(external_mining_stale_work_submit_rejections);
+    let external_mining_surface_health = if external_mining_submit_outcome_counter_delta != 0
+        || external_mining_rejection_counter_delta != 0
+    {
+        "counter_mismatch"
+    } else if runtime.external_mining_submit_rejected > 0 {
+        "degraded"
+    } else {
+        "healthy"
+    };
 
     let p2p_tx_relay_total_events = p2p_recovery
         .tx_outbound_duplicates_suppressed
@@ -450,6 +481,13 @@ pub async fn get_runtime_status<S: RpcStateLike>(
             .saturating_div(p2p_block_relay_total_events as u64)
             .min(10_000)
     };
+    let p2p_peer_health_total = p2p_recovery
+        .peer_health_healthy
+        .saturating_add(p2p_recovery.peer_health_degraded)
+        .saturating_add(p2p_recovery.peer_health_recovering);
+    let p2p_peer_health_counters_coherent = p2p_peer_health_total
+        >= p2p_recovery.peers_under_cooldown
+        && p2p_peer_health_total >= p2p_recovery.peers_under_flap_guard;
     let tx_inbound_outcome_total = runtime
         .tx_inbound_accepted_total
         .saturating_add(runtime.tx_inbound_dropped_total);
@@ -483,12 +521,65 @@ pub async fn get_runtime_status<S: RpcStateLike>(
     } else {
         "healthy"
     };
+    let sync_blocks_request_backlog = runtime
+        .sync_pipeline
+        .counters
+        .blocks_requested
+        .saturating_sub(runtime.sync_pipeline.counters.blocks_acquired);
+    let sync_blocks_validation_backlog = runtime
+        .sync_pipeline
+        .counters
+        .blocks_acquired
+        .saturating_sub(runtime.sync_pipeline.counters.blocks_applied);
+    let sync_counters_coherent = runtime.sync_pipeline.counters.blocks_applied
+        <= runtime.sync_pipeline.counters.blocks_validated
+        && runtime.sync_pipeline.counters.blocks_validated
+            <= runtime.sync_pipeline.counters.blocks_acquired
+        && runtime.sync_pipeline.counters.blocks_acquired
+            <= runtime.sync_pipeline.counters.blocks_requested;
+    let sync_surface_health =
+        if !sync_counters_coherent || runtime.sync_pipeline.last_error.is_some() {
+            "degraded"
+        } else if runtime.sync_pipeline.phase == SyncPhase::Idle {
+            "idle"
+        } else {
+            "active"
+        };
+    let mempool_surface_health =
+        if mempool_pressure_bps >= 9_500 || mempool_orphan_pressure_bps >= 9_500 {
+            "saturated"
+        } else if mempool_pressure_bps >= 8_000 || mempool_orphan_pressure_bps >= 8_000 {
+            "high_pressure"
+        } else {
+            "normal"
+        };
+    let p2p_surface_health = if !p2p_peer_health_counters_coherent {
+        "counter_mismatch"
+    } else if p2p_recovery.peers_with_recent_failures > 0 || p2p_recovery.peer_health_recovering > 0
+    {
+        "degraded"
+    } else {
+        "healthy"
+    };
+    let node_runtime_surface_health = if !runtime.active_alerts.is_empty()
+        || !runtime.last_self_audit_ok
+        || runtime.last_self_audit_issue_count > 0
+        || runtime.startup_consistency_issue_count > 0
+        || sync_surface_health == "degraded"
+        || external_mining_surface_health == "counter_mismatch"
+        || tx_propagation_health == "counter_mismatch"
+    {
+        "degraded"
+    } else {
+        "healthy"
+    };
     Json(ApiResponse::ok(RuntimeStatusData {
         started_at_unix: runtime.started_at_unix,
         uptime_secs,
         burn_in_target_days,
         burn_in_elapsed_days,
         burn_in_remaining_days,
+        node_runtime_surface_health: node_runtime_surface_health.to_string(),
         accepted_p2p_blocks: runtime.accepted_p2p_blocks,
         rejected_p2p_blocks: runtime.rejected_p2p_blocks,
         duplicate_p2p_blocks: runtime.duplicate_p2p_blocks,
@@ -531,7 +622,10 @@ pub async fn get_runtime_status<S: RpcStateLike>(
         mempool_orphan_transactions,
         mempool_max_orphans,
         mempool_pending_transactions,
+        mempool_capacity_remaining_transactions,
         mempool_pressure_bps,
+        mempool_orphan_pressure_bps,
+        mempool_surface_health: mempool_surface_health.to_string(),
         mempool_admitted_total: chain.mempool.counters.accepted_total,
         mempool_rejected_total: chain.mempool.counters.rejected_total,
         mempool_rejected_low_priority_total: chain.mempool.counters.rejected_low_priority_total,
@@ -575,6 +669,7 @@ pub async fn get_runtime_status<S: RpcStateLike>(
         external_mining_rejection_counter_delta,
         external_mining_stale_work_submit_rejections,
         external_mining_stale_work_template_invalidations,
+        external_mining_surface_health: external_mining_surface_health.to_string(),
         startup_snapshot_exists: runtime.startup_snapshot_exists,
         startup_persisted_block_count: runtime.startup_persisted_block_count,
         startup_persisted_max_height: runtime.startup_persisted_max_height,
@@ -608,6 +703,8 @@ pub async fn get_runtime_status<S: RpcStateLike>(
         last_prune_height: runtime.last_prune_height,
         last_prune_unix: runtime.last_prune_unix,
         sync_phase: runtime.sync_pipeline.phase,
+        sync_surface_health: sync_surface_health.to_string(),
+        sync_counters_coherent,
         sync_last_transition_unix: runtime.sync_pipeline.last_transition_unix,
         sync_completed_cycles: runtime.sync_pipeline.completed_cycles,
         sync_restart_count: runtime.sync_pipeline.restart_count,
@@ -619,6 +716,8 @@ pub async fn get_runtime_status<S: RpcStateLike>(
         sync_last_fallback_reason: runtime.sync_pipeline.last_fallback_reason.clone(),
         sync_last_fallback_peer: runtime.sync_pipeline.last_fallback_peer.clone(),
         sync_counters: runtime.sync_pipeline.counters.clone(),
+        sync_blocks_request_backlog,
+        sync_blocks_validation_backlog,
         target_block_interval_secs: snapshot.policy.target_block_interval_secs,
         window_size: snapshot.policy.window_size,
         retarget_multiplier_bps: snapshot.retarget_multiplier_bps,
@@ -636,6 +735,9 @@ pub async fn get_runtime_status<S: RpcStateLike>(
         p2p_peer_health_healthy: p2p_recovery.peer_health_healthy,
         p2p_peer_health_degraded: p2p_recovery.peer_health_degraded,
         p2p_peer_health_recovering: p2p_recovery.peer_health_recovering,
+        p2p_peer_health_total,
+        p2p_peer_health_counters_coherent,
+        p2p_surface_health: p2p_surface_health.to_string(),
         p2p_tx_outbound_duplicates_suppressed: p2p_recovery.tx_outbound_duplicates_suppressed,
         p2p_tx_outbound_first_seen_relayed: p2p_recovery.tx_outbound_first_seen_relayed,
         p2p_tx_outbound_recovery_relayed: p2p_recovery.tx_outbound_recovery_relayed,
@@ -761,9 +863,13 @@ mod tests {
         assert!(resp.ok);
         let data = resp.data.expect("runtime status payload");
         assert_eq!(data.sync_phase, SyncPhase::ValidationApplication);
+        assert_eq!(data.sync_surface_health, "active");
+        assert!(data.sync_counters_coherent);
         assert_eq!(data.sync_counters.headers_discovered, 5);
         assert_eq!(data.sync_counters.blocks_requested, 5);
         assert_eq!(data.sync_counters.blocks_applied, 2);
+        assert_eq!(data.sync_blocks_request_backlog, 5);
+        assert_eq!(data.sync_blocks_validation_backlog, 0);
     }
 
     #[tokio::test]
@@ -880,6 +986,9 @@ mod tests {
         assert_eq!(data.p2p_peer_health_healthy, 1);
         assert_eq!(data.p2p_peer_health_degraded, 0);
         assert_eq!(data.p2p_peer_health_recovering, 1);
+        assert_eq!(data.p2p_peer_health_total, 2);
+        assert!(data.p2p_peer_health_counters_coherent);
+        assert_eq!(data.p2p_surface_health, "degraded");
     }
 
     #[tokio::test]
@@ -1003,7 +1112,10 @@ mod tests {
         assert_eq!(data.mempool_transactions, 2);
         assert_eq!(data.mempool_orphan_transactions, 1);
         assert_eq!(data.mempool_pending_transactions, 3);
+        assert_eq!(data.mempool_capacity_remaining_transactions, 2);
         assert_eq!(data.mempool_pressure_bps, 5_000);
+        assert_eq!(data.mempool_orphan_pressure_bps, 3_333);
+        assert_eq!(data.mempool_surface_health, "normal");
         assert_eq!(data.mempool_admitted_total, 7);
         assert_eq!(data.mempool_rejected_total, 3);
         assert_eq!(data.mempool_rejected_low_priority_total, 2);
@@ -1067,6 +1179,7 @@ mod tests {
         assert!(data.tx_rebroadcast_outcomes_coherent);
         assert_eq!(data.tx_rebroadcast_outcome_counter_delta, 0);
         assert_eq!(data.tx_propagation_health, "degraded");
+        assert_eq!(data.node_runtime_surface_health, "healthy");
         assert_eq!(data.last_tx_drop_reason.as_deref(), Some("persist_failed"));
         assert_eq!(data.last_tx_drop_txid.as_deref(), Some("tx-c"));
         assert_eq!(
@@ -1141,6 +1254,7 @@ mod tests {
         assert_eq!(data.external_mining_rejection_counter_delta, 0);
         assert_eq!(data.external_mining_stale_work_submit_rejections, 1);
         assert_eq!(data.external_mining_stale_work_template_invalidations, 4);
+        assert_eq!(data.external_mining_surface_health, "degraded");
         assert_eq!(
             data.external_mining_last_template_id.as_deref(),
             Some("tpl-007")
@@ -1194,6 +1308,71 @@ mod tests {
         assert_eq!(data.external_mining_submit_outcome_counter_delta, -2);
         assert_eq!(data.external_mining_rejection_reason_total, 1);
         assert!(data.external_mining_rejection_counters_coherent);
+        assert_eq!(data.external_mining_surface_health, "counter_mismatch");
+    }
+
+    #[tokio::test]
+    async fn runtime_status_normalizes_contradictory_sync_and_node_signals() {
+        let path = temp_db_path("runtime-sync-node-normalization");
+        let storage = Arc::new(Storage::open(path.to_str().unwrap()).expect("storage"));
+        let chain = storage
+            .load_or_init_genesis("testnet-dev".to_string())
+            .expect("genesis");
+        let mut runtime = NodeRuntimeStats::default();
+        runtime.sync_pipeline.phase = SyncPhase::ValidationApplication;
+        runtime.sync_pipeline.counters.blocks_requested = 3;
+        runtime.sync_pipeline.counters.blocks_acquired = 1;
+        runtime.sync_pipeline.counters.blocks_validated = 4;
+        runtime.sync_pipeline.counters.blocks_applied = 4;
+        runtime.sync_pipeline.last_error = Some("validation mismatch".to_string());
+        runtime.active_alerts = vec!["sync stalled".to_string()];
+        runtime.last_self_audit_ok = false;
+        runtime.last_self_audit_issue_count = 1;
+
+        let state = TestState {
+            chain: Arc::new(RwLock::new(chain)),
+            storage,
+            runtime: Arc::new(RwLock::new(runtime)),
+            p2p: None,
+        };
+
+        let Json(resp) = get_runtime_status(State(state)).await;
+        let data = resp.data.expect("runtime status data");
+        assert!(!data.sync_counters_coherent);
+        assert_eq!(data.sync_surface_health, "degraded");
+        assert_eq!(data.sync_blocks_request_backlog, 2);
+        assert_eq!(data.sync_blocks_validation_backlog, 0);
+        assert_eq!(data.node_runtime_surface_health, "degraded");
+    }
+
+    #[tokio::test]
+    async fn runtime_status_keeps_existing_runtime_fields_stable() {
+        let path = temp_db_path("runtime-existing-fields-stable");
+        let storage = Arc::new(Storage::open(path.to_str().unwrap()).expect("storage"));
+        let chain = storage
+            .load_or_init_genesis("testnet-dev".to_string())
+            .expect("genesis");
+        let mut runtime = NodeRuntimeStats::default();
+        runtime.accepted_p2p_blocks = 9;
+        runtime.rejected_p2p_blocks = 2;
+        runtime.duplicate_p2p_blocks = 1;
+        runtime.accepted_mined_blocks = 4;
+        runtime.rejected_mined_blocks = 1;
+
+        let state = TestState {
+            chain: Arc::new(RwLock::new(chain)),
+            storage,
+            runtime: Arc::new(RwLock::new(runtime)),
+            p2p: None,
+        };
+
+        let Json(resp) = get_runtime_status(State(state)).await;
+        let data = resp.data.expect("runtime status data");
+        assert_eq!(data.accepted_p2p_blocks, 9);
+        assert_eq!(data.rejected_p2p_blocks, 2);
+        assert_eq!(data.duplicate_p2p_blocks, 1);
+        assert_eq!(data.accepted_mined_blocks, 4);
+        assert_eq!(data.rejected_mined_blocks, 1);
     }
 }
 
