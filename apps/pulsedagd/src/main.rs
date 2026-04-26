@@ -402,6 +402,13 @@ async fn main() -> Result<()> {
                                                 "no_real_network_connectivity_in_current_mode"
                                             };
                                             rt.tx_rebroadcast_skipped_no_peers += 1;
+                                            warn!(
+                                                txid = %txid,
+                                                reason = skip_reason,
+                                                mode = %status.mode,
+                                                connected_peers = status.connected_peers.len(),
+                                                "skipping transaction rebroadcast"
+                                            );
                                             let _ = storage.append_runtime_event(
                                                 "warn",
                                                 "tx_rebroadcast_skipped",
@@ -416,7 +423,10 @@ async fn main() -> Result<()> {
                                     match tx_for_rebroadcast.as_ref() {
                                         Some(tx_to_rebroadcast) => {
                                             match p2p.broadcast_transaction(tx_to_rebroadcast) {
-                                                Ok(_) => rt.tx_rebroadcast_success += 1,
+                                                Ok(_) => {
+                                                    rt.tx_rebroadcast_success += 1;
+                                                    info!(txid = %txid, "rebroadcasted accepted inbound p2p transaction");
+                                                }
                                                 Err(e) => {
                                                     rt.tx_rebroadcast_failed += 1;
                                                     rt.last_tx_rebroadcast_error =
@@ -439,6 +449,7 @@ async fn main() -> Result<()> {
                                     }
                                 } else {
                                     rt.tx_rebroadcast_skipped_no_p2p += 1;
+                                    info!(txid = %txid, "skipping transaction rebroadcast because p2p is disabled");
                                     let _ = storage.append_runtime_event(
                                         "info",
                                         "tx_rebroadcast_skipped",

@@ -138,8 +138,9 @@ mod tests {
         let genesis = chain
             .dag
             .blocks
-            .get(&chain.dag.best_hash)
-            .expect("genesis")
+            .values()
+            .find(|block| block.header.height == chain.dag.best_height)
+            .expect("best-height block")
             .clone();
         storage.persist_block(&genesis).expect("persist genesis");
         let state = TestState {
