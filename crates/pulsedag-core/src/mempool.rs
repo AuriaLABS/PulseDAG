@@ -558,6 +558,57 @@ mod tests {
     }
 
     #[test]
+    fn equal_fee_pressure_eviction_is_deterministic_by_txid() {
+        let mut state = init_chain_state("test".into());
+        state.mempool.max_transactions = 1;
+
+        let key_a = signing_key(66);
+        let key_b = signing_key(67);
+        let input_a = fund_address(
+            &mut state,
+            "fund-equal-a",
+            0,
+            address_from_public_key(&public_key_hex(&key_a)),
+            100,
+        );
+        let input_b = fund_address(
+            &mut state,
+            "fund-equal-b",
+            0,
+            address_from_public_key(&public_key_hex(&key_b)),
+            100,
+        );
+
+        let first = signed_tx(
+            &key_a,
+            vec![input_a],
+            vec![TxOutput {
+                address: "pulse1equal-a".into(),
+                amount: 95,
+            }],
+            5,
+            1,
+        );
+        let second = signed_tx(
+            &key_b,
+            vec![input_b],
+            vec![TxOutput {
+                address: "pulse1equal-b".into(),
+                amount: 95,
+            }],
+            5,
+            2,
+        );
+
+        accept_transaction(first.clone(), &mut state, AcceptSource::Rpc).unwrap();
+        let _ = accept_transaction(second.clone(), &mut state, AcceptSource::Rpc);
+
+        let expected = std::cmp::min(first.txid.clone(), second.txid.clone());
+        assert_eq!(state.mempool.transactions.len(), 1);
+        assert!(state.mempool.transactions.contains_key(&expected));
+    }
+
+    #[test]
     fn reconcile_and_restart_like_rebuild_preserve_mempool_counters_coherently() {
         let mut state = init_chain_state("test".into());
         state.mempool.max_transactions = 1;
@@ -631,6 +682,73 @@ mod tests {
         assert_eq!(restored.mempool.counters.reconcile_removed_total, 0);
         assert_eq!(restored.mempool.transactions.len(), 1);
         assert!(restored.mempool.transactions.contains_key(&second.txid));
+    }
+
+    #[test]
+    fn restart_like_spent_index_loss_is_reconciled_before_pressure_admission() {
+        let mut state = init_chain_state("test".into());
+        state.mempool.max_transactions = 2;
+
+        let key = signing_key(68);
+        let address = address_from_public_key(&public_key_hex(&key));
+        let shared_input = fund_address(&mut state, "fund-restart-pressure", 0, address, 60);
+
+        let tx_a = signed_tx(
+            &key,
+            vec![shared_input.clone()],
+            vec![TxOutput {
+                address: "pulse1restart-a".into(),
+                amount: 50,
+            }],
+            10,
+            1,
+        );
+        let tx_b = signed_tx(
+            &key,
+            vec![shared_input.clone()],
+            vec![TxOutput {
+                address: "pulse1restart-b".into(),
+                amount: 49,
+            }],
+            11,
+            2,
+        );
+
+        state
+            .mempool
+            .transactions
+            .insert(tx_a.txid.clone(), tx_a.clone());
+        state
+            .mempool
+            .transactions
+            .insert(tx_b.txid.clone(), tx_b.clone());
+        state.mempool.spent_outpoints.clear();
+
+        let outsider_key = signing_key(69);
+        let outsider_input = fund_address(
+            &mut state,
+            "fund-restart-outsider",
+            0,
+            address_from_public_key(&public_key_hex(&outsider_key)),
+            100,
+        );
+        let outsider_tx = signed_tx(
+            &outsider_key,
+            vec![outsider_input],
+            vec![TxOutput {
+                address: "pulse1restart-outsider".into(),
+                amount: 80,
+            }],
+            20,
+            3,
+        );
+
+        accept_transaction(outsider_tx, &mut state, AcceptSource::Rpc).unwrap();
+        assert_eq!(state.mempool.transactions.len(), 2);
+        assert_eq!(state.mempool.counters.reconcile_runs_total, 1);
+        assert_eq!(state.mempool.counters.reconcile_removed_total, 1);
+        assert_eq!(state.mempool.spent_outpoints.len(), 2);
+        assert!(state.mempool.spent_outpoints.contains(&shared_input));
     }
 
     #[test]

@@ -1,6 +1,7 @@
 use crate::{
     apply::apply_block,
     errors::PulseError,
+    mempool::reconcile_mempool,
     pow_evaluate, selected_pow_name,
     state::ChainState,
     types::{Block, Transaction},
@@ -142,11 +143,27 @@ fn promote_ready_orphans(state: &mut ChainState, source: AcceptSource) {
     }
 }
 
+fn mempool_needs_reconcile(state: &ChainState) -> bool {
+    let mut expected_spent = std::collections::HashSet::new();
+    for tx in state.mempool.transactions.values() {
+        for input in &tx.inputs {
+            if !expected_spent.insert(input.previous_output.clone()) {
+                return true;
+            }
+        }
+    }
+    expected_spent != state.mempool.spent_outpoints
+}
+
 pub fn accept_transaction(
     tx: Transaction,
     state: &mut ChainState,
     source: AcceptSource,
 ) -> Result<(), PulseError> {
+    if mempool_needs_reconcile(state) {
+        reconcile_mempool(state);
+    }
+
     if state.mempool.transactions.contains_key(&tx.txid)
         || state.mempool.orphan_transactions.contains_key(&tx.txid)
     {
