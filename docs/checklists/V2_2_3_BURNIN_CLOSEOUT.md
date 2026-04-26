@@ -1,6 +1,6 @@
 # v2.2.3 burn-in closeout checklist
 
-Use this checklist after the 14-day burn-in to decide whether to tag `v2.2.3`.
+Use this checklist after the 14-day burn-in to formally close out `v2.2.3` release readiness.
 
 ## Scope guardrail (must all be true)
 - [ ] No consensus changes in this closeout PR.
@@ -31,7 +31,7 @@ Run folder: `artifacts/release-evidence/<run_id>/`
 2. **Any unresolved Sev-1 tied to consensus/sync safety?** If yes, **NO-GO**.
 3. **Restart/recovery/snapshot checks successful and documented?** If no, **NO-GO**.
 4. **Mining telemetry free of unresolved rejection regressions?** If no, **NO-GO**.
-5. **Release + ops sign-off captured?** If yes, **GO** to tag `v2.2.3`.
+5. **Release + ops sign-off captured?** If yes, **GO** to finalize `v2.2.3` closeout.
 
 ## Closeout sign-off
 - Release owner: ____________________  Date (UTC): __________
