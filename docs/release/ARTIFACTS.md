@@ -14,8 +14,8 @@ The `release-binaries` workflow publishes archives named:
 - `pulsedagd-<tag>-<target>.zip` (Windows)
 
 Examples:
-- `pulsedagd-v2.2.2-x86_64-unknown-linux-gnu.tar.gz`
-- `pulsedagd-v2.2.2-x86_64-pc-windows-msvc.zip`
+- `pulsedagd-v2.2.3-x86_64-unknown-linux-gnu.tar.gz`
+- `pulsedagd-v2.2.3-x86_64-pc-windows-msvc.zip`
 
 Each archive contains a single top-level folder matching the archive stem, with the `pulsedagd` binary inside.
 
@@ -41,7 +41,7 @@ Per-archive JSON manifests now include:
 From a release download directory:
 
 ```bash
-sha256sum -c pulsedagd-v2.2.2-x86_64-unknown-linux-gnu.tar.gz.sha256
+sha256sum -c pulsedagd-v2.2.3-x86_64-unknown-linux-gnu.tar.gz.sha256
 sha256sum -c SHA256SUMS.txt --ignore-missing
 ```
 
@@ -54,8 +54,8 @@ jq '.artifacts[] | {archive, archive_sha256, provenance}' release-provenance.jso
 Then unpack and stage:
 
 ```bash
-tar -xzf pulsedagd-v2.2.2-x86_64-unknown-linux-gnu.tar.gz
-./pulsedagd-v2.2.2-x86_64-unknown-linux-gnu/pulsedagd --version
+tar -xzf pulsedagd-v2.2.3-x86_64-unknown-linux-gnu.tar.gz
+./pulsedagd-v2.2.3-x86_64-unknown-linux-gnu/pulsedagd --version
 ```
 
 ## Rollback packaging guidance
