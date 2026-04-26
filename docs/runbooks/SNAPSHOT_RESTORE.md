@@ -8,11 +8,13 @@ Validate that a node can restore state from a validated snapshot plus retained d
 - This drill does **not** modify miner behavior.
 - Run on staging/testnet first.
 - Keep `data/` backups before destructive actions.
+- Prune safety is deterministic: the node always retains at least a 16-block rollback window even if a smaller `keep_recent_blocks` value is requested.
 
 ## Preconditions
 1. Node has persisted blocks and runtime APIs available.
 2. Snapshot exists (`GET /snapshot` -> `snapshot_exists: true`).
 3. Snapshot height is at or above prune base (`snapshot_height >= recommended_keep_from_height`).
+4. Snapshot restore anchor metadata exists (`snapshot_captured_at_unix` present in storage metadata).
 
 ## Drill workflow
 1. Capture baseline:

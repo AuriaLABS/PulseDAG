@@ -6,6 +6,8 @@ use serde::Deserialize;
 
 use crate::{api::ApiResponse, api::RpcStateLike};
 
+const MIN_SAFE_ROLLBACK_BLOCKS: u64 = 16;
+
 #[derive(Debug, Deserialize)]
 pub struct PruneRequest {
     pub keep_recent_blocks: Option<u64>,
@@ -36,39 +38,40 @@ pub async fn post_prune_chain<S: RpcStateLike>(
     let chain_handle = state.chain();
     let chain_guard = chain_handle.read().await;
     let best_height = chain_guard.dag.best_height;
-    let keep_from_height = best_height.saturating_sub(prune_keep_recent_blocks.saturating_sub(1));
+    let requested_keep_from_height =
+        best_height.saturating_sub(prune_keep_recent_blocks.saturating_sub(1));
     drop(chain_guard);
 
-    let snapshot = match state.storage().load_chain_state() {
-        Ok(Some(snapshot)) => snapshot,
-        Ok(None) => {
-            let reason = format!(
-                "snapshot required for prune base is missing (keep_from_height={})",
-                keep_from_height
-            );
-            let _ = state
-                .storage()
-                .append_runtime_event("warn", "prune_rejected", &reason);
-            return Json(ApiResponse::err("PRUNE_REQUIRES_VALID_SNAPSHOT", reason));
-        }
+    let safety_plan = match state.storage().plan_prune_with_safety(
+        requested_keep_from_height,
+        best_height,
+        MIN_SAFE_ROLLBACK_BLOCKS,
+    ) {
+        Ok(plan) => plan,
         Err(e) => return Json(ApiResponse::err("SNAPSHOT_READ_ERROR", e.to_string())),
     };
-    let snapshot_validated = snapshot.dag.best_height >= keep_from_height;
-    let snapshot_height = Some(snapshot.dag.best_height);
 
-    if !snapshot_validated {
-        let reason = match snapshot_height {
-            Some(h) => format!(
-                "snapshot height {} below required keep_from_height {}",
-                h, keep_from_height
-            ),
-            None => "snapshot missing".to_string(),
-        };
+    let keep_from_height = safety_plan.effective_keep_from_height;
+    if !safety_plan.can_prune {
+        let reason = safety_plan
+            .reason
+            .unwrap_or_else(|| "prune safety preconditions not met".to_string());
         let _ = state
             .storage()
             .append_runtime_event("warn", "prune_rejected", &reason);
         return Json(ApiResponse::err("PRUNE_REQUIRES_VALID_SNAPSHOT", reason));
     }
+    let snapshot = match state.storage().load_chain_state() {
+        Ok(Some(snapshot)) => snapshot,
+        Ok(None) => {
+            return Json(ApiResponse::err(
+                "SNAPSHOT_READ_ERROR",
+                "snapshot disappeared during prune planning".to_string(),
+            ))
+        }
+        Err(e) => return Json(ApiResponse::err("SNAPSHOT_READ_ERROR", e.to_string())),
+    };
+    let snapshot_validated = true;
 
     let pre_prune_blocks = match state.storage().list_blocks() {
         Ok(v) => v,
@@ -163,8 +166,14 @@ pub async fn post_prune_chain<S: RpcStateLike>(
         "info",
         "prune_manual",
         &format!(
-            "manual prune removed {} blocks below {}; snapshot+delta verified at height {} (snapshot_height={})",
-            pruned_block_count, keep_from_height, rebuilt.dag.best_height, snapshot.dag.best_height
+            "manual prune removed {} blocks below {}; requested_keep_from={} minimum_safe_keep_from={} min_safe_rollback_blocks={} snapshot+delta verified at height {} (snapshot_height={})",
+            pruned_block_count,
+            keep_from_height,
+            safety_plan.requested_keep_from_height,
+            safety_plan.minimum_safe_keep_from_height,
+            MIN_SAFE_ROLLBACK_BLOCKS,
+            rebuilt.dag.best_height,
+            snapshot.dag.best_height
         ),
     );
 

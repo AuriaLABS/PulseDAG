@@ -29,6 +29,18 @@ pub struct Storage {
     pub db: Arc<DB>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PruneSafetyPlan {
+    pub requested_keep_from_height: u64,
+    pub effective_keep_from_height: u64,
+    pub minimum_safe_keep_from_height: u64,
+    pub best_height: u64,
+    pub snapshot_best_height: Option<u64>,
+    pub safe_restore_anchor_present: bool,
+    pub can_prune: bool,
+    pub reason: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RestoreDrillReport {
     pub used_snapshot: bool,
@@ -58,6 +70,77 @@ pub struct StorageAuditReport {
 }
 
 impl Storage {
+    pub fn plan_prune_with_safety(
+        &self,
+        requested_keep_from_height: u64,
+        best_height: u64,
+        min_rollback_blocks: u64,
+    ) -> Result<PruneSafetyPlan, PulseError> {
+        let min_rollback_blocks = min_rollback_blocks.max(1);
+        let minimum_safe_keep_from_height =
+            best_height.saturating_sub(min_rollback_blocks.saturating_sub(1));
+        let effective_keep_from_height =
+            requested_keep_from_height.min(minimum_safe_keep_from_height);
+
+        let snapshot = self.load_chain_state()?;
+        let snapshot_best_height = snapshot.as_ref().map(|s| s.dag.best_height);
+        let snapshot_anchor_present = self.snapshot_captured_at_unix()?.is_some();
+
+        if snapshot.is_none() {
+            return Ok(PruneSafetyPlan {
+                requested_keep_from_height,
+                effective_keep_from_height,
+                minimum_safe_keep_from_height,
+                best_height,
+                snapshot_best_height,
+                safe_restore_anchor_present: false,
+                can_prune: false,
+                reason: Some("validated snapshot missing".to_string()),
+            });
+        }
+
+        if !snapshot_anchor_present {
+            return Ok(PruneSafetyPlan {
+                requested_keep_from_height,
+                effective_keep_from_height,
+                minimum_safe_keep_from_height,
+                best_height,
+                snapshot_best_height,
+                safe_restore_anchor_present: false,
+                can_prune: false,
+                reason: Some("snapshot restore anchor metadata missing".to_string()),
+            });
+        }
+
+        let snapshot_best_height = snapshot_best_height.unwrap_or(0);
+        if snapshot_best_height < effective_keep_from_height {
+            return Ok(PruneSafetyPlan {
+                requested_keep_from_height,
+                effective_keep_from_height,
+                minimum_safe_keep_from_height,
+                best_height,
+                snapshot_best_height: Some(snapshot_best_height),
+                safe_restore_anchor_present: true,
+                can_prune: false,
+                reason: Some(format!(
+                    "snapshot height {} below effective keep_from_height {}",
+                    snapshot_best_height, effective_keep_from_height
+                )),
+            });
+        }
+
+        Ok(PruneSafetyPlan {
+            requested_keep_from_height,
+            effective_keep_from_height,
+            minimum_safe_keep_from_height,
+            best_height,
+            snapshot_best_height: Some(snapshot_best_height),
+            safe_restore_anchor_present: true,
+            can_prune: true,
+            reason: None,
+        })
+    }
+
     fn validate_restore_inputs(
         &self,
         expected_chain_id: Option<&str>,
@@ -1364,6 +1447,123 @@ mod tests {
         assert_eq!(before_blocks.len(), after_blocks.len());
         assert_eq!(before_snapshot_ts, after_snapshot_ts);
 
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn prune_safety_plan_preserves_minimum_rollback_window() {
+        let path = temp_db_path("prune-safety-min-window");
+        let storage = Storage::open(&path).expect("open storage");
+        let state = build_linear_chain("testnet", 20);
+        let mut blocks: Vec<_> = state.dag.blocks.values().cloned().collect();
+        blocks.sort_by_key(|b| b.header.height);
+        for block in &blocks {
+            storage.persist_block(block).expect("persist block");
+        }
+        storage
+            .persist_chain_state(&state)
+            .expect("persist baseline snapshot");
+
+        let plan = storage
+            .plan_prune_with_safety(19, state.dag.best_height, 8)
+            .expect("build prune safety plan");
+        assert!(plan.can_prune);
+        assert_eq!(plan.minimum_safe_keep_from_height, 13);
+        assert_eq!(plan.effective_keep_from_height, 13);
+
+        let removed = storage
+            .prune_blocks_below_height(plan.effective_keep_from_height)
+            .expect("apply safe prune");
+        assert!(removed > 0);
+        let remaining = storage.list_blocks().expect("list remaining blocks");
+        assert!(remaining
+            .iter()
+            .all(|b| b.header.height >= plan.effective_keep_from_height));
+        assert!(remaining
+            .iter()
+            .any(|b| b.header.height == state.dag.best_height));
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn prune_safety_plan_refuses_when_snapshot_anchor_missing() {
+        let path = temp_db_path("prune-safety-missing-anchor");
+        let storage = Storage::open(&path).expect("open storage");
+        let state = build_linear_chain("testnet", 6);
+        let mut blocks: Vec<_> = state.dag.blocks.values().cloned().collect();
+        blocks.sort_by_key(|b| b.header.height);
+        for block in &blocks {
+            storage.persist_block(block).expect("persist block");
+        }
+        let plan = storage
+            .plan_prune_with_safety(5, state.dag.best_height, 4)
+            .expect("build prune safety plan");
+
+        assert!(!plan.can_prune);
+        assert!(!plan.safe_restore_anchor_present);
+        assert_eq!(
+            plan.reason.as_deref(),
+            Some("validated snapshot missing"),
+            "prune should be deferred until snapshot+anchor exists"
+        );
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn prune_safety_retains_recovery_viability_after_cleanup() {
+        let path = temp_db_path("prune-safety-recovery-viable");
+        let storage = Storage::open(&path).expect("open storage");
+        let state = build_linear_chain("testnet", 12);
+        let mut blocks: Vec<_> = state.dag.blocks.values().cloned().collect();
+        blocks.sort_by_key(|b| b.header.height);
+        for block in &blocks {
+            storage.persist_block(block).expect("persist block");
+        }
+        storage
+            .persist_chain_state(&state)
+            .expect("persist baseline snapshot");
+
+        let plan = storage
+            .plan_prune_with_safety(11, state.dag.best_height, 6)
+            .expect("build prune safety plan");
+        assert!(plan.can_prune);
+        storage
+            .prune_blocks_below_height(plan.effective_keep_from_height)
+            .expect("prune safely");
+
+        let recovered = storage
+            .replay_from_validated_snapshot_and_delta(Some("testnet"))
+            .expect("snapshot+delta recovery should stay viable");
+        assert_eq!(recovered.dag.best_height, state.dag.best_height);
+        assert_eq!(best_tip_hash(&recovered), best_tip_hash(&state));
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn prune_safety_plan_has_no_regression_for_normal_prune_flow() {
+        let path = temp_db_path("prune-safety-normal-flow");
+        let storage = Storage::open(&path).expect("open storage");
+        let state = build_linear_chain("testnet", 10);
+        let mut blocks: Vec<_> = state.dag.blocks.values().cloned().collect();
+        blocks.sort_by_key(|b| b.header.height);
+        for block in &blocks {
+            storage.persist_block(block).expect("persist block");
+        }
+        storage
+            .persist_chain_state(&state)
+            .expect("persist baseline snapshot");
+
+        let requested_keep_from = 5;
+        let plan = storage
+            .plan_prune_with_safety(requested_keep_from, state.dag.best_height, 4)
+            .expect("build prune safety plan");
+        assert!(plan.can_prune);
+        assert_eq!(plan.effective_keep_from_height, requested_keep_from);
+
+        let removed = storage
+            .prune_blocks_below_height(plan.effective_keep_from_height)
+            .expect("prune with unmodified keep_from");
+        assert!(removed > 0);
         let _ = std::fs::remove_dir_all(path);
     }
 
