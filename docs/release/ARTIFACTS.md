@@ -8,16 +8,20 @@ This guide is limited to release engineering and operator packaging workflow.
 - No pool logic is introduced.
 
 ## Asset naming convention
-The `release-binaries` workflow publishes archives named:
+The `release-binaries` workflow publishes two standalone binary families per target:
 
-- `pulsedagd-<tag>-<target>.tar.gz` (Linux/macOS)
-- `pulsedagd-<tag>-<target>.zip` (Windows)
+- Node: `pulsedagd-<tag>-<target>.tar.gz` (Linux/macOS) or `.zip` (Windows)
+- External miner: `pulsedag-miner-<tag>-<target>.tar.gz` (Linux/macOS) or `.zip` (Windows)
 
 Examples:
 - `pulsedagd-v2.2.3-x86_64-unknown-linux-gnu.tar.gz`
+- `pulsedag-miner-v2.2.3-x86_64-unknown-linux-gnu.tar.gz`
 - `pulsedagd-v2.2.3-x86_64-pc-windows-msvc.zip`
+- `pulsedag-miner-v2.2.3-x86_64-pc-windows-msvc.zip`
 
-Each archive contains a single top-level folder matching the archive stem, with the `pulsedagd` binary inside.
+Each archive contains a single top-level folder matching the archive stem, with exactly one binary inside (`pulsedagd` or `pulsedag-miner`).
+
+`pulsedag-miner` remains external and standalone; release packaging does not introduce any pool behavior or pool-facing interfaces.
 
 ## Checksum outputs
 For every archive the workflow emits:
@@ -42,6 +46,7 @@ From a release download directory:
 
 ```bash
 sha256sum -c pulsedagd-v2.2.3-x86_64-unknown-linux-gnu.tar.gz.sha256
+sha256sum -c pulsedag-miner-v2.2.3-x86_64-unknown-linux-gnu.tar.gz.sha256
 sha256sum -c SHA256SUMS.txt --ignore-missing
 ```
 
@@ -56,6 +61,9 @@ Then unpack and stage:
 ```bash
 tar -xzf pulsedagd-v2.2.3-x86_64-unknown-linux-gnu.tar.gz
 ./pulsedagd-v2.2.3-x86_64-unknown-linux-gnu/pulsedagd --version
+
+tar -xzf pulsedag-miner-v2.2.3-x86_64-unknown-linux-gnu.tar.gz
+./pulsedag-miner-v2.2.3-x86_64-unknown-linux-gnu/pulsedag-miner --help
 ```
 
 ## Rollback packaging guidance

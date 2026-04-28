@@ -12,7 +12,6 @@ on:
         type: string
 
 env:
-  BIN_NAME: pulsedagd
   RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref_name }}
 
 jobs:
@@ -30,15 +29,12 @@ jobs:
         include:
           - name: linux
             os: ubuntu-latest
-            binary_path: target/release/pulsedagd
 
           - name: windows
             os: windows-latest
-            binary_path: target/release/pulsedagd.exe
 
           - name: macos
             os: macos-latest
-            binary_path: target/release/pulsedagd
 
     steps:
       - name: Checkout
@@ -55,19 +51,43 @@ jobs:
           rustc --version
           cargo --version
 
-      - name: Build
-        run: cargo build --release --bin ${{ env.BIN_NAME }}
+      - name: Build node and standalone miner
+        run: cargo build --release --bin pulsedagd --bin pulsedag-miner
 
-      - name: Package release assets
+      - name: Package release assets (node + standalone miner)
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p dist
+
+          is_windows="false"
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            is_windows="true"
+          fi
+
+          if [ "${is_windows}" = "true" ]; then
+            node_binary="target/release/pulsedagd.exe"
+            miner_binary="target/release/pulsedag-miner.exe"
+          else
+            node_binary="target/release/pulsedagd"
+            miner_binary="target/release/pulsedag-miner"
+          fi
+
           python3 scripts/release/package_release_artifacts.py \
-            --binary "${{ matrix.binary_path }}" \
+            --binary "${node_binary}" \
             --output-dir dist \
             --tag "${{ env.RELEASE_TAG }}" \
-            --bin-name "${{ env.BIN_NAME }}" \
+            --bin-name "pulsedagd" \
+            --repository "${{ github.repository }}" \
+            --commit "${{ github.sha }}" \
+            --run-id "${{ github.run_id }}" \
+            --run-attempt "${{ github.run_attempt }}"
+
+          python3 scripts/release/package_release_artifacts.py \
+            --binary "${miner_binary}" \
+            --output-dir dist \
+            --tag "${{ env.RELEASE_TAG }}" \
+            --bin-name "pulsedag-miner" \
             --repository "${{ github.repository }}" \
             --commit "${{ github.sha }}" \
             --run-id "${{ github.run_id }}" \
