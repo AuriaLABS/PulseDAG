@@ -42,6 +42,27 @@ Con multi-thread explícito:
 cargo run -p pulsedag-miner -- --node http://127.0.0.1:8080 --miner-address TU_DIRECCION --threads 4 --max-tries 500000 --loop --sleep-ms 1000
 ```
 
+## Uso como binario standalone de release
+
+Después de descargar el artefacto oficial del release (`pulsedag-miner-<tag>-<target>.*`):
+
+```bash
+tar -xzf pulsedag-miner-v2.2.4-x86_64-unknown-linux-gnu.tar.gz
+./pulsedag-miner-v2.2.4-x86_64-unknown-linux-gnu/pulsedag-miner --help
+./pulsedag-miner-v2.2.4-x86_64-unknown-linux-gnu/pulsedag-miner \
+  --node http://127.0.0.1:8080 \
+  --miner-address TU_DIRECCION \
+  --threads 4 \
+  --max-tries 50000 \
+  --loop \
+  --sleep-ms 1500
+```
+
+Notas de operador:
+- El binario se puede ejecutar de forma independiente del árbol de código (`cargo` no es requerido para operación en release).
+- El flujo oficial sigue siendo template -> PoW -> submit contra el nodo.
+- No existe soporte de pool en este binario.
+
 ## Flags soportadas
 
 - `--node`
@@ -68,3 +89,13 @@ cargo run -p pulsedag-miner -- --node http://127.0.0.1:8080 --miner-address TU_D
 ## Benchmark y baseline de operador
 
 Para ejecutar benchmarks repetibles y revisar baseline CPU/hilos, ver `docs/POW_OPERATOR_BASELINES.md` y `scripts/pow-bench.sh`.
+
+## Smoke flow de operador (node + miner standalone)
+
+Para un smoke reproducible de empaquetado + flujo externo:
+
+```bash
+scripts/release/standalone_operator_smoke.sh --miner-address TU_DIRECCION
+```
+
+Este helper valida artefactos standalone y corre un smoke corto de nodo + minero externo, sin introducir lógica de pool.

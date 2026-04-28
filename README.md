@@ -91,6 +91,7 @@ See `docs/OPERATIONS_P2P.md` for operational guidance.
 
 ## Release artifact packaging and verification (v2.2)
 - Release asset naming + checksum policy for both standalone binaries (`pulsedagd` and external `pulsedag-miner`): `docs/release/ARTIFACTS.md`
+- Repeatable standalone operator smoke helper (external miner flow): `scripts/release/standalone_operator_smoke.sh`
 - Staging upgrade runbook: `docs/runbooks/STAGING_UPGRADE.md`
 - Staging rollback runbook: `docs/runbooks/STAGING_ROLLBACK.md`
 

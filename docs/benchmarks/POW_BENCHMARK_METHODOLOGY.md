@@ -35,6 +35,26 @@ cargo bench -p pulsedag-core --bench pow_core -- --sample-size 20 --warm-up-time
 cargo run -p pulsedag-core --release --example pow_thread_baseline
 ```
 
+## Practical operator run guidance
+
+Use benchmark output to choose an initial miner runtime profile, then validate with external-miner smoke:
+
+1. Run `scripts/pow-bench.sh` on target hardware.
+2. Pick a conservative starting thread count (`--threads`) based on stable throughput and host contention.
+3. Run standalone operator smoke:
+
+```bash
+scripts/release/standalone_operator_smoke.sh --miner-address YOUR_ADDRESS
+```
+
+4. Move to sustained loop mode only after smoke success:
+
+```bash
+cargo run -p pulsedag-miner -- --node http://127.0.0.1:8080 --miner-address YOUR_ADDRESS --threads 4 --max-tries 50000 --loop --sleep-ms 1500
+```
+
+This keeps miner operation practical and repeatable while preserving current architecture boundaries (external miner, pool-free flow).
+
 ## Capture hygiene
 
 - Record CPU and virtualization details (`lscpu` excerpt).
