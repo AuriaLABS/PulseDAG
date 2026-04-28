@@ -79,6 +79,8 @@ pub struct P2pStatus {
     pub dequeued_block_messages: usize,
     pub dequeued_non_block_messages: usize,
     pub queue_block_priority_picks: usize,
+    pub queue_priority_tx_lane_picks: usize,
+    pub queue_standard_tx_lane_picks: usize,
     pub queue_non_block_fair_picks: usize,
     pub queue_starvation_relief_picks: usize,
     pub inbound_messages: usize,
@@ -97,6 +99,7 @@ pub struct P2pStatus {
     pub tx_outbound_recovery_relayed: usize,
     pub tx_outbound_priority_relayed: usize,
     pub tx_outbound_budget_suppressed: usize,
+    pub tx_outbound_recovery_budget_suppressed: usize,
     pub block_outbound_duplicates_suppressed: usize,
     pub block_outbound_first_seen_relayed: usize,
     pub block_outbound_recovery_relayed: usize,
@@ -193,6 +196,8 @@ struct InnerState {
     dequeued_block_messages: usize,
     dequeued_non_block_messages: usize,
     queue_block_priority_picks: usize,
+    queue_priority_tx_lane_picks: usize,
+    queue_standard_tx_lane_picks: usize,
     queue_non_block_fair_picks: usize,
     queue_starvation_relief_picks: usize,
     topics: Vec<String>,
@@ -216,6 +221,7 @@ struct InnerState {
     tx_outbound_recovery_relayed: usize,
     tx_outbound_priority_relayed: usize,
     tx_outbound_budget_suppressed: usize,
+    tx_outbound_recovery_budget_suppressed: usize,
     block_outbound_duplicates_suppressed: usize,
     block_outbound_first_seen_relayed: usize,
     block_outbound_recovery_relayed: usize,
@@ -227,6 +233,8 @@ struct InnerState {
     outbound_block_recovery_relay_generation: HashMap<String, u64>,
     recovery_rebroadcast_generation: u64,
     recovery_rebroadcast_until_unix: u64,
+    recovery_rebroadcast_budget_window_started_unix: u64,
+    recovery_rebroadcast_budget_used: usize,
     tx_budget_window_started_unix: u64,
     tx_budget_window_relays: usize,
     peer_book: HashMap<String, PeerHealth>,
@@ -408,6 +416,8 @@ impl P2pHandle for MemoryP2pHandle {
             dequeued_block_messages: inner.dequeued_block_messages,
             dequeued_non_block_messages: inner.dequeued_non_block_messages,
             queue_block_priority_picks: inner.queue_block_priority_picks,
+            queue_priority_tx_lane_picks: inner.queue_priority_tx_lane_picks,
+            queue_standard_tx_lane_picks: inner.queue_standard_tx_lane_picks,
             queue_non_block_fair_picks: inner.queue_non_block_fair_picks,
             queue_starvation_relief_picks: inner.queue_starvation_relief_picks,
             inbound_messages: inner.inbound_messages,
@@ -426,6 +436,7 @@ impl P2pHandle for MemoryP2pHandle {
             tx_outbound_recovery_relayed: inner.tx_outbound_recovery_relayed,
             tx_outbound_priority_relayed: inner.tx_outbound_priority_relayed,
             tx_outbound_budget_suppressed: inner.tx_outbound_budget_suppressed,
+            tx_outbound_recovery_budget_suppressed: inner.tx_outbound_recovery_budget_suppressed,
             block_outbound_duplicates_suppressed: inner.block_outbound_duplicates_suppressed,
             block_outbound_first_seen_relayed: inner.block_outbound_first_seen_relayed,
             block_outbound_recovery_relayed: inner.block_outbound_recovery_relayed,
@@ -587,12 +598,16 @@ const MESSAGE_DEDUP_WINDOW_SECS: u64 = 120;
 const TX_OUTBOUND_DEDUP_WINDOW_SECS: u64 = 30;
 const BLOCK_OUTBOUND_DEDUP_WINDOW_SECS: u64 = 30;
 const RECOVERY_REBROADCAST_GRACE_SECS: u64 = 8;
+const RECOVERY_REBROADCAST_BUDGET_WINDOW_SECS: u64 = 8;
+const RECOVERY_REBROADCAST_BUDGET_PER_WINDOW: usize = 256;
 const MAX_DEDUP_TRACKED_IDS: usize = 16_384;
 const BLOCK_PRIORITY_BURST_LIMIT: usize = 8;
+const PRIORITY_TX_BURST_LIMIT: usize = 3;
 const TX_PRIORITY_FEE_THRESHOLD: u64 = 1_000;
 const TX_RELAY_BUDGET_WINDOW_SECS: u64 = 1;
 const TX_RELAY_BUDGET_PER_WINDOW: usize = 256;
 const TX_RELAY_BUDGET_OVERFLOW_SAMPLE_EVERY: u64 = 8;
+const TX_BUDGET_LOAD_SHED_QUEUE_DEPTH_THRESHOLD: usize = 512;
 const CONNECTION_SHAPING_DEGRADED_CAP_DIVISOR: usize = 3;
 const CONNECTION_SHAPING_MIN_HEALTHY_SLOTS: usize = 1;
 const TOPOLOGY_BUCKET_COUNT: usize = 8;
@@ -925,8 +940,10 @@ fn update_selected_sync_peer(
 #[derive(Default)]
 struct OutboundPriorityQueue {
     blocks: std::collections::VecDeque<OutboundMessage>,
-    non_blocks: std::collections::VecDeque<OutboundMessage>,
+    priority_txs: std::collections::VecDeque<OutboundMessage>,
+    standard_txs: std::collections::VecDeque<OutboundMessage>,
     consecutive_block_picks: usize,
+    consecutive_priority_tx_picks: usize,
 }
 
 fn track_queue_depth_on_enqueue(state: &mut InnerState) {
@@ -943,7 +960,15 @@ fn enqueue_outbound_message(
             queue.blocks.push_back(OutboundMessage::Block(block));
         }
         OutboundMessage::Transaction(tx) => {
-            queue.non_blocks.push_back(OutboundMessage::Transaction(tx));
+            if tx.fee >= TX_PRIORITY_FEE_THRESHOLD {
+                queue
+                    .priority_txs
+                    .push_back(OutboundMessage::Transaction(tx));
+            } else {
+                queue
+                    .standard_txs
+                    .push_back(OutboundMessage::Transaction(tx));
+            }
         }
     }
 }
@@ -953,22 +978,38 @@ fn pop_outbound_message(
     queue: &mut OutboundPriorityQueue,
 ) -> Option<OutboundMessage> {
     let blocks_waiting = !queue.blocks.is_empty();
-    let non_blocks_waiting = !queue.non_blocks.is_empty();
-    if !blocks_waiting && !non_blocks_waiting {
+    let priority_waiting = !queue.priority_txs.is_empty();
+    let standard_waiting = !queue.standard_txs.is_empty();
+    if !blocks_waiting && !priority_waiting && !standard_waiting {
         return None;
     }
-    let take_non_block_for_fairness = blocks_waiting
-        && non_blocks_waiting
-        && queue.consecutive_block_picks >= BLOCK_PRIORITY_BURST_LIMIT;
-    let picked = if take_non_block_for_fairness {
+    let tx_waiting = priority_waiting || standard_waiting;
+    let take_tx_for_fairness =
+        blocks_waiting && tx_waiting && queue.consecutive_block_picks >= BLOCK_PRIORITY_BURST_LIMIT;
+    let pick_priority_lane = priority_waiting
+        && (!standard_waiting || queue.consecutive_priority_tx_picks < PRIORITY_TX_BURST_LIMIT);
+    let picked = if take_tx_for_fairness {
         queue.consecutive_block_picks = 0;
-        queue.non_blocks.pop_front()
+        if pick_priority_lane {
+            queue.consecutive_priority_tx_picks =
+                queue.consecutive_priority_tx_picks.saturating_add(1);
+            queue.priority_txs.pop_front()
+        } else {
+            queue.consecutive_priority_tx_picks = 0;
+            queue.standard_txs.pop_front()
+        }
     } else if blocks_waiting {
         queue.consecutive_block_picks = queue.consecutive_block_picks.saturating_add(1);
+        queue.consecutive_priority_tx_picks = 0;
         queue.blocks.pop_front()
+    } else if pick_priority_lane {
+        queue.consecutive_block_picks = 0;
+        queue.consecutive_priority_tx_picks = queue.consecutive_priority_tx_picks.saturating_add(1);
+        queue.priority_txs.pop_front()
     } else {
         queue.consecutive_block_picks = 0;
-        queue.non_blocks.pop_front()
+        queue.consecutive_priority_tx_picks = 0;
+        queue.standard_txs.pop_front()
     };
     if let (Some(msg), Ok(mut guard)) = (picked.as_ref(), inner.lock()) {
         guard.queued_messages = guard.queued_messages.saturating_sub(1);
@@ -985,9 +1026,16 @@ fn pop_outbound_message(
                     guard.dequeued_non_block_messages.saturating_add(1);
                 guard.queue_non_block_fair_picks =
                     guard.queue_non_block_fair_picks.saturating_add(1);
-                if blocks_waiting {
+                if blocks_waiting || priority_waiting {
                     guard.queue_starvation_relief_picks =
                         guard.queue_starvation_relief_picks.saturating_add(1);
+                }
+                if pick_priority_lane {
+                    guard.queue_priority_tx_lane_picks =
+                        guard.queue_priority_tx_lane_picks.saturating_add(1);
+                } else {
+                    guard.queue_standard_tx_lane_picks =
+                        guard.queue_standard_tx_lane_picks.saturating_add(1);
                 }
             }
         }
@@ -1256,13 +1304,18 @@ fn should_relay_outbound_tx(state: &mut InnerState, id: &str, now: u64) -> bool 
     );
     match state.outbound_tx_seen_at_unix.get(id) {
         Some(last_seen) if now.saturating_sub(*last_seen) <= TX_OUTBOUND_DEDUP_WINDOW_SECS => {
-            if can_allow_recovery_rebroadcast(
-                &state.outbound_tx_recovery_relay_generation,
+            let mut recovery_relays =
+                std::mem::take(&mut state.outbound_tx_recovery_relay_generation);
+            let allow = should_allow_recovery_rebroadcast(
+                state,
+                &mut recovery_relays,
                 state.recovery_rebroadcast_generation,
                 state.recovery_rebroadcast_until_unix,
                 id,
                 now,
-            ) {
+            );
+            state.outbound_tx_recovery_relay_generation = recovery_relays;
+            if allow {
                 return true;
             }
             state.tx_outbound_duplicates_suppressed =
@@ -1276,6 +1329,10 @@ fn should_relay_outbound_tx(state: &mut InnerState, id: &str, now: u64) -> bool 
 fn admit_tx_relay_under_budget(state: &mut InnerState, tx_id: &str, fee: u64, now: u64) -> bool {
     if fee >= TX_PRIORITY_FEE_THRESHOLD {
         state.tx_outbound_priority_relayed = state.tx_outbound_priority_relayed.saturating_add(1);
+        return true;
+    }
+    let under_load = state.queued_messages >= TX_BUDGET_LOAD_SHED_QUEUE_DEPTH_THRESHOLD;
+    if !under_load {
         return true;
     }
     if now.saturating_sub(state.tx_budget_window_started_unix) >= TX_RELAY_BUDGET_WINDOW_SECS {
@@ -1299,13 +1356,13 @@ fn record_outbound_tx_relay(state: &mut InnerState, id: &str, now: u64) {
         .get(id)
         .is_some_and(|last_seen| now.saturating_sub(*last_seen) <= TX_OUTBOUND_DEDUP_WINDOW_SECS);
     if within_window {
-        if should_allow_recovery_rebroadcast(
-            &mut state.outbound_tx_recovery_relay_generation,
-            state.recovery_rebroadcast_generation,
-            state.recovery_rebroadcast_until_unix,
-            id,
-            now,
-        ) {
+        if now <= state.recovery_rebroadcast_until_unix
+            && state.recovery_rebroadcast_generation > 0
+            && matches!(
+                state.outbound_tx_recovery_relay_generation.get(id),
+                Some(generation) if *generation == state.recovery_rebroadcast_generation
+            )
+        {
             state.tx_outbound_recovery_relayed =
                 state.tx_outbound_recovery_relayed.saturating_add(1);
         }
@@ -1324,8 +1381,11 @@ fn should_relay_outbound_block(state: &mut InnerState, id: &str, now: u64) -> bo
     );
     match state.outbound_block_seen_at_unix.get(id) {
         Some(last_seen) if now.saturating_sub(*last_seen) <= BLOCK_OUTBOUND_DEDUP_WINDOW_SECS => {
+            let mut recovery_relays =
+                std::mem::take(&mut state.outbound_block_recovery_relay_generation);
             if should_allow_recovery_rebroadcast(
-                &mut state.outbound_block_recovery_relay_generation,
+                state,
+                &mut recovery_relays,
                 state.recovery_rebroadcast_generation,
                 state.recovery_rebroadcast_until_unix,
                 id,
@@ -1336,8 +1396,10 @@ fn should_relay_outbound_block(state: &mut InnerState, id: &str, now: u64) -> bo
                     .insert(id.to_string(), now);
                 state.block_outbound_recovery_relayed =
                     state.block_outbound_recovery_relayed.saturating_add(1);
+                state.outbound_block_recovery_relay_generation = recovery_relays;
                 return true;
             }
+            state.outbound_block_recovery_relay_generation = recovery_relays;
             state.block_outbound_duplicates_suppressed =
                 state.block_outbound_duplicates_suppressed.saturating_add(1);
             false
@@ -1354,6 +1416,7 @@ fn should_relay_outbound_block(state: &mut InnerState, id: &str, now: u64) -> bo
 }
 
 fn should_allow_recovery_rebroadcast(
+    state: &mut InnerState,
     recovery_relays: &mut HashMap<String, u64>,
     current_generation: u64,
     recovery_until_unix: u64,
@@ -1363,6 +1426,18 @@ fn should_allow_recovery_rebroadcast(
     if current_generation == 0 || now > recovery_until_unix {
         return false;
     }
+    if now.saturating_sub(state.recovery_rebroadcast_budget_window_started_unix)
+        >= RECOVERY_REBROADCAST_BUDGET_WINDOW_SECS
+    {
+        state.recovery_rebroadcast_budget_window_started_unix = now;
+        state.recovery_rebroadcast_budget_used = 0;
+    }
+    if state.recovery_rebroadcast_budget_used >= RECOVERY_REBROADCAST_BUDGET_PER_WINDOW {
+        state.tx_outbound_recovery_budget_suppressed = state
+            .tx_outbound_recovery_budget_suppressed
+            .saturating_add(1);
+        return false;
+    }
     if recovery_relays.len() > MAX_DEDUP_TRACKED_IDS {
         recovery_relays.retain(|_, generation| *generation == current_generation);
     }
@@ -1370,25 +1445,11 @@ fn should_allow_recovery_rebroadcast(
         Some(previous_generation) if *previous_generation == current_generation => false,
         _ => {
             recovery_relays.insert(id.to_string(), current_generation);
+            state.recovery_rebroadcast_budget_used =
+                state.recovery_rebroadcast_budget_used.saturating_add(1);
             true
         }
     }
-}
-
-fn can_allow_recovery_rebroadcast(
-    recovery_relays: &HashMap<String, u64>,
-    current_generation: u64,
-    recovery_until_unix: u64,
-    id: &str,
-    now: u64,
-) -> bool {
-    if current_generation == 0 || now > recovery_until_unix {
-        return false;
-    }
-    !matches!(
-        recovery_relays.get(id),
-        Some(previous_generation) if *previous_generation == current_generation
-    )
 }
 
 fn message_id_hash(id: &str) -> u64 {
@@ -1874,6 +1935,8 @@ impl P2pHandle for Libp2pHandle {
             dequeued_block_messages: inner.dequeued_block_messages,
             dequeued_non_block_messages: inner.dequeued_non_block_messages,
             queue_block_priority_picks: inner.queue_block_priority_picks,
+            queue_priority_tx_lane_picks: inner.queue_priority_tx_lane_picks,
+            queue_standard_tx_lane_picks: inner.queue_standard_tx_lane_picks,
             queue_non_block_fair_picks: inner.queue_non_block_fair_picks,
             queue_starvation_relief_picks: inner.queue_starvation_relief_picks,
             inbound_messages: inner.inbound_messages,
@@ -1892,6 +1955,7 @@ impl P2pHandle for Libp2pHandle {
             tx_outbound_recovery_relayed: inner.tx_outbound_recovery_relayed,
             tx_outbound_priority_relayed: inner.tx_outbound_priority_relayed,
             tx_outbound_budget_suppressed: inner.tx_outbound_budget_suppressed,
+            tx_outbound_recovery_budget_suppressed: inner.tx_outbound_recovery_budget_suppressed,
             block_outbound_duplicates_suppressed: inner.block_outbound_duplicates_suppressed,
             block_outbound_first_seen_relayed: inner.block_outbound_first_seen_relayed,
             block_outbound_recovery_relayed: inner.block_outbound_recovery_relayed,
@@ -2204,6 +2268,10 @@ mod tests {
     #[test]
     fn higher_priority_tx_relay_bypasses_budget_pressure() {
         let (handle, _inbound_rx) = MemoryP2pHandle::new("testnet".into(), vec!["peer-a".into()]);
+        {
+            let mut guard = handle.inner.lock().unwrap();
+            guard.queued_messages = TX_BUDGET_LOAD_SHED_QUEUE_DEPTH_THRESHOLD;
+        }
 
         for idx in 0..TX_RELAY_BUDGET_PER_WINDOW {
             handle
@@ -2252,6 +2320,7 @@ mod tests {
         let mut state = InnerState::default();
         state.tx_budget_window_started_unix = 1_000;
         state.tx_budget_window_relays = TX_RELAY_BUDGET_PER_WINDOW;
+        state.queued_messages = TX_BUDGET_LOAD_SHED_QUEUE_DEPTH_THRESHOLD;
         let tx_id = (0..1_000)
             .map(|idx| format!("tx-budget-suppressed-first-attempt-{idx}"))
             .find(|id| message_id_hash(id) % TX_RELAY_BUDGET_OVERFLOW_SAMPLE_EVERY != 0)
@@ -2526,6 +2595,119 @@ mod tests {
         assert!(tx_seen >= 1);
         let status = inner.lock().unwrap();
         assert!(status.queue_starvation_relief_picks >= 1);
+    }
+
+    #[test]
+    fn relay_lanes_keep_priority_txs_moving_without_starving_standard_lane() {
+        let inner = Arc::new(Mutex::new(InnerState {
+            queued_messages: 12,
+            queued_block_messages: 8,
+            queued_non_block_messages: 4,
+            ..Default::default()
+        }));
+        let mut queue = OutboundPriorityQueue::default();
+        for idx in 0..8 {
+            enqueue_outbound_message(
+                &inner,
+                &mut queue,
+                OutboundMessage::Block(Block {
+                    hash: format!("lane-block-{idx}"),
+                    header: pulsedag_core::types::BlockHeader {
+                        version: 1,
+                        parents: vec![],
+                        timestamp: 1,
+                        difficulty: 1,
+                        nonce: 1,
+                        merkle_root: "mr".into(),
+                        state_root: "sr".into(),
+                        blue_score: 1,
+                        height: idx + 1,
+                    },
+                    transactions: vec![],
+                }),
+            );
+        }
+        for idx in 0..3 {
+            enqueue_outbound_message(
+                &inner,
+                &mut queue,
+                OutboundMessage::Transaction(sample_tx_with_fee(
+                    &format!("lane-priority-{idx}"),
+                    TX_PRIORITY_FEE_THRESHOLD,
+                )),
+            );
+        }
+        enqueue_outbound_message(
+            &inner,
+            &mut queue,
+            OutboundMessage::Transaction(sample_tx_with_fee("lane-standard", 1)),
+        );
+
+        let mut saw_standard = false;
+        let mut priority_picks = 0;
+        for _ in 0..12 {
+            if let Some(OutboundMessage::Transaction(tx)) = pop_outbound_message(&inner, &mut queue)
+            {
+                if tx.fee >= TX_PRIORITY_FEE_THRESHOLD {
+                    priority_picks += 1;
+                } else {
+                    saw_standard = true;
+                }
+            }
+        }
+        assert!(saw_standard);
+        assert!(priority_picks >= 2);
+        let status = inner.lock().unwrap();
+        assert!(status.queue_priority_tx_lane_picks >= 2);
+        assert!(status.queue_standard_tx_lane_picks >= 1);
+    }
+
+    #[test]
+    fn recovery_rebroadcast_budget_is_bounded_during_rejoin_storms() {
+        let mut state = InnerState::default();
+        state.recovery_rebroadcast_generation = 1;
+        state.recovery_rebroadcast_until_unix = 1_200;
+        state.recovery_rebroadcast_budget_window_started_unix = 1_000;
+        state.recovery_rebroadcast_budget_used = RECOVERY_REBROADCAST_BUDGET_PER_WINDOW;
+        state
+            .outbound_tx_seen_at_unix
+            .insert("tx-recovery-budget".into(), 1_005);
+
+        assert!(!relay_outbound_tx_for_test(
+            &mut state,
+            "tx-recovery-budget",
+            1_006
+        ));
+        assert_eq!(state.tx_outbound_recovery_budget_suppressed, 1);
+        assert_eq!(state.tx_outbound_recovery_relayed, 0);
+    }
+
+    #[test]
+    fn anti_spam_budget_only_activates_under_load_and_preserves_healthy_flow() {
+        let mut state = InnerState::default();
+        state.tx_budget_window_started_unix = 1_000;
+        state.tx_budget_window_relays = TX_RELAY_BUDGET_PER_WINDOW;
+
+        assert!(admit_tx_relay_under_budget(
+            &mut state,
+            "tx-healthy-not-loaded",
+            1,
+            1_000
+        ));
+        assert_eq!(state.tx_outbound_budget_suppressed, 0);
+
+        state.queued_messages = TX_BUDGET_LOAD_SHED_QUEUE_DEPTH_THRESHOLD;
+        let blocked_id = (0..1_000)
+            .map(|idx| format!("tx-loaded-budget-suppressed-{idx}"))
+            .find(|id| message_id_hash(id) % TX_RELAY_BUDGET_OVERFLOW_SAMPLE_EVERY != 0)
+            .expect("need deterministic blocked id");
+        assert!(!admit_tx_relay_under_budget(
+            &mut state,
+            &blocked_id,
+            1,
+            1_000
+        ));
+        assert_eq!(state.tx_outbound_budget_suppressed, 1);
     }
 
     #[test]
