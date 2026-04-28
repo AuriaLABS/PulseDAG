@@ -50,7 +50,15 @@ The package references only fields emitted by the node APIs:
   - `external_mining_rejected_stale_template`
   - `external_mining_rejected_unknown_template`
   - `external_mining_rejected_submit_block_error`
+  - `external_mining_rejected_duplicate_block`
+  - `external_mining_rejected_invalid_block`
+  - `external_mining_rejected_chain_id_mismatch`
+  - `external_mining_rejected_internal_error`
   - `external_mining_rejected_storage_error`
+  - template-health rollups grounded in submit outcomes:
+    - `external_mining_template_health` (`healthy`, `watch`, `stale_dominant`, `idle`, `counter_mismatch`)
+    - `external_mining_template_stale_submit_ratio_bps`
+    - `external_mining_template_rollup`
 
 ### Propagation diagnostics fields (v2.2)
 `GET /runtime/status` also exposes compact propagation diagnostics for operator triage:

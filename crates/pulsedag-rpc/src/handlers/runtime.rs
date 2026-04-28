@@ -100,6 +100,10 @@ pub struct RuntimeStatusData {
     pub external_mining_rejected_stale_template: u64,
     pub external_mining_rejected_unknown_template: u64,
     pub external_mining_rejected_submit_block_error: u64,
+    pub external_mining_rejected_duplicate_block: u64,
+    pub external_mining_rejected_invalid_block: u64,
+    pub external_mining_rejected_chain_id_mismatch: u64,
+    pub external_mining_rejected_internal_error: u64,
     pub external_mining_rejected_storage_error: u64,
     pub external_mining_last_template_id: Option<String>,
     pub external_mining_last_rejection_kind: Option<String>,
@@ -114,6 +118,9 @@ pub struct RuntimeStatusData {
     pub external_mining_rejection_counter_delta: i64,
     pub external_mining_stale_work_submit_rejections: u64,
     pub external_mining_stale_work_template_invalidations: u64,
+    pub external_mining_template_health: String,
+    pub external_mining_template_stale_submit_ratio_bps: u64,
+    pub external_mining_template_rollup: String,
     pub external_mining_surface_health: String,
     pub startup_snapshot_exists: bool,
     pub startup_persisted_block_count: usize,
@@ -388,6 +395,7 @@ pub struct RuntimeSurfaceRollup {
     pub tx_drop_reason_counters_coherent: bool,
     pub tx_rebroadcast_outcomes_coherent: bool,
     pub external_mining_surface_health: String,
+    pub external_mining_template_health: String,
     pub external_mining_submit_outcome_counters_coherent: bool,
     pub external_mining_rejection_counters_coherent: bool,
     pub node_runtime_surface_health: String,
@@ -462,6 +470,10 @@ pub(crate) fn runtime_surface_rollup(
         .saturating_add(runtime.external_mining_rejected_stale_template)
         .saturating_add(runtime.external_mining_rejected_unknown_template)
         .saturating_add(runtime.external_mining_rejected_submit_block_error)
+        .saturating_add(runtime.external_mining_rejected_duplicate_block)
+        .saturating_add(runtime.external_mining_rejected_invalid_block)
+        .saturating_add(runtime.external_mining_rejected_chain_id_mismatch)
+        .saturating_add(runtime.external_mining_rejected_internal_error)
         .saturating_add(runtime.external_mining_rejected_storage_error);
     let external_mining_rejection_counter_delta =
         i64::try_from(runtime.external_mining_submit_rejected).unwrap_or(i64::MAX)
@@ -472,6 +484,28 @@ pub(crate) fn runtime_surface_rollup(
         "counter_mismatch"
     } else if runtime.external_mining_submit_rejected > 0 {
         "degraded"
+    } else {
+        "healthy"
+    };
+    let external_mining_template_stale_submit_ratio_bps = if external_mining_submit_total == 0 {
+        0
+    } else {
+        runtime
+            .external_mining_rejected_stale_template
+            .saturating_mul(10_000)
+            .saturating_div(external_mining_submit_total)
+            .min(10_000)
+    };
+    let external_mining_template_health = if external_mining_submit_outcome_counter_delta != 0
+        || external_mining_rejection_counter_delta != 0
+    {
+        "counter_mismatch"
+    } else if external_mining_submit_total == 0 {
+        "idle"
+    } else if external_mining_template_stale_submit_ratio_bps >= 5_000 {
+        "stale_dominant"
+    } else if runtime.external_mining_rejected_stale_template > 0 {
+        "watch"
     } else {
         "healthy"
     };
@@ -506,6 +540,7 @@ pub(crate) fn runtime_surface_rollup(
         tx_drop_reason_counters_coherent: tx_drop_reason_counter_delta == 0,
         tx_rebroadcast_outcomes_coherent: tx_rebroadcast_outcome_counter_delta == 0,
         external_mining_surface_health: external_mining_surface_health.to_string(),
+        external_mining_template_health: external_mining_template_health.to_string(),
         external_mining_submit_outcome_counters_coherent:
             external_mining_submit_outcome_counter_delta == 0,
         external_mining_rejection_counters_coherent: external_mining_rejection_counter_delta == 0,
@@ -673,6 +708,10 @@ pub async fn get_runtime_status<S: RpcStateLike>(
         .saturating_add(runtime.external_mining_rejected_stale_template)
         .saturating_add(runtime.external_mining_rejected_unknown_template)
         .saturating_add(runtime.external_mining_rejected_submit_block_error)
+        .saturating_add(runtime.external_mining_rejected_duplicate_block)
+        .saturating_add(runtime.external_mining_rejected_invalid_block)
+        .saturating_add(runtime.external_mining_rejected_chain_id_mismatch)
+        .saturating_add(runtime.external_mining_rejected_internal_error)
         .saturating_add(runtime.external_mining_rejected_storage_error);
     let external_mining_rejection_counter_delta =
         i64::try_from(runtime.external_mining_submit_rejected).unwrap_or(i64::MAX)
@@ -682,6 +721,35 @@ pub async fn get_runtime_status<S: RpcStateLike>(
     let external_mining_stale_work_template_invalidations = runtime
         .external_mining_stale_work_detected
         .saturating_sub(external_mining_stale_work_submit_rejections);
+    let external_mining_template_stale_submit_ratio_bps = if external_mining_submit_total == 0 {
+        0
+    } else {
+        external_mining_stale_work_submit_rejections
+            .saturating_mul(10_000)
+            .saturating_div(external_mining_submit_total)
+            .min(10_000)
+    };
+    let external_mining_template_health = if external_mining_submit_outcome_counter_delta != 0
+        || external_mining_rejection_counter_delta != 0
+    {
+        "counter_mismatch"
+    } else if external_mining_submit_total == 0 {
+        "idle"
+    } else if external_mining_template_stale_submit_ratio_bps >= 5_000 {
+        "stale_dominant"
+    } else if external_mining_stale_work_submit_rejections > 0 {
+        "watch"
+    } else {
+        "healthy"
+    };
+    let external_mining_template_rollup = format!(
+        "template_health={} stale_submit_rejections={} stale_template_invalidations={} stale_submit_ratio_bps={} submit_total={}",
+        external_mining_template_health,
+        external_mining_stale_work_submit_rejections,
+        external_mining_stale_work_template_invalidations,
+        external_mining_template_stale_submit_ratio_bps,
+        external_mining_submit_total
+    );
     let external_mining_surface_health = if external_mining_submit_outcome_counter_delta != 0
         || external_mining_rejection_counter_delta != 0
     {
@@ -852,6 +920,11 @@ pub async fn get_runtime_status<S: RpcStateLike>(
             .external_mining_rejected_unknown_template,
         external_mining_rejected_submit_block_error: runtime
             .external_mining_rejected_submit_block_error,
+        external_mining_rejected_duplicate_block: runtime.external_mining_rejected_duplicate_block,
+        external_mining_rejected_invalid_block: runtime.external_mining_rejected_invalid_block,
+        external_mining_rejected_chain_id_mismatch: runtime
+            .external_mining_rejected_chain_id_mismatch,
+        external_mining_rejected_internal_error: runtime.external_mining_rejected_internal_error,
         external_mining_rejected_storage_error: runtime.external_mining_rejected_storage_error,
         external_mining_last_template_id: runtime.external_mining_last_template_id.clone(),
         external_mining_last_rejection_kind: runtime.external_mining_last_rejection_kind.clone(),
@@ -871,6 +944,9 @@ pub async fn get_runtime_status<S: RpcStateLike>(
         external_mining_rejection_counter_delta,
         external_mining_stale_work_submit_rejections,
         external_mining_stale_work_template_invalidations,
+        external_mining_template_health: external_mining_template_health.to_string(),
+        external_mining_template_stale_submit_ratio_bps,
+        external_mining_template_rollup,
         external_mining_surface_health: external_mining_surface_health.to_string(),
         startup_snapshot_exists: runtime.startup_snapshot_exists,
         startup_persisted_block_count: runtime.startup_persisted_block_count,
@@ -1596,6 +1672,10 @@ mod tests {
         runtime.external_mining_rejected_stale_template = 1;
         runtime.external_mining_rejected_unknown_template = 0;
         runtime.external_mining_rejected_submit_block_error = 0;
+        runtime.external_mining_rejected_duplicate_block = 0;
+        runtime.external_mining_rejected_invalid_block = 0;
+        runtime.external_mining_rejected_chain_id_mismatch = 0;
+        runtime.external_mining_rejected_internal_error = 0;
         runtime.external_mining_rejected_storage_error = 0;
         runtime.external_mining_last_template_id = Some("tpl-007".to_string());
         runtime.external_mining_last_rejection_kind = Some("invalid_pow".to_string());
@@ -1626,11 +1706,20 @@ mod tests {
         assert_eq!(data.external_mining_submit_outcome_counter_delta, 0);
         assert_eq!(data.external_mining_rejected_invalid_pow, 2);
         assert_eq!(data.external_mining_rejected_stale_template, 1);
+        assert_eq!(data.external_mining_rejected_duplicate_block, 0);
+        assert_eq!(data.external_mining_rejected_invalid_block, 0);
+        assert_eq!(data.external_mining_rejected_chain_id_mismatch, 0);
+        assert_eq!(data.external_mining_rejected_internal_error, 0);
         assert_eq!(data.external_mining_rejection_reason_total, 3);
         assert!(data.external_mining_rejection_counters_coherent);
         assert_eq!(data.external_mining_rejection_counter_delta, 0);
         assert_eq!(data.external_mining_stale_work_submit_rejections, 1);
         assert_eq!(data.external_mining_stale_work_template_invalidations, 4);
+        assert_eq!(data.external_mining_template_health, "watch");
+        assert_eq!(data.external_mining_template_stale_submit_ratio_bps, 1428);
+        assert!(data
+            .external_mining_template_rollup
+            .contains("template_health=watch"));
         assert_eq!(data.external_mining_surface_health, "degraded");
         assert_eq!(
             data.external_mining_last_template_id.as_deref(),
@@ -1667,6 +1756,10 @@ mod tests {
         runtime.external_mining_rejected_stale_template = 0;
         runtime.external_mining_rejected_unknown_template = 0;
         runtime.external_mining_rejected_submit_block_error = 0;
+        runtime.external_mining_rejected_duplicate_block = 0;
+        runtime.external_mining_rejected_invalid_block = 0;
+        runtime.external_mining_rejected_chain_id_mismatch = 0;
+        runtime.external_mining_rejected_internal_error = 0;
         runtime.external_mining_rejected_storage_error = 0;
         runtime.external_mining_stale_work_detected = 0;
 
@@ -1686,6 +1779,7 @@ mod tests {
         assert_eq!(data.external_mining_rejection_reason_total, 1);
         assert!(data.external_mining_rejection_counters_coherent);
         assert_eq!(data.external_mining_surface_health, "counter_mismatch");
+        assert_eq!(data.external_mining_template_health, "counter_mismatch");
     }
 
     #[tokio::test]
@@ -1795,6 +1889,10 @@ mod tests {
         );
         assert_eq!(
             data.runtime_surface_rollup.external_mining_surface_health,
+            "counter_mismatch"
+        );
+        assert_eq!(
+            data.runtime_surface_rollup.external_mining_template_health,
             "counter_mismatch"
         );
     }

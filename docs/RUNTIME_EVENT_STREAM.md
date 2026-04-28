@@ -67,6 +67,12 @@ Query params:
   - `sync_lag_band` buckets lag into bounded bands (`aligned`, `near_tip`, `catching_up`, `lagging`, `severely_lagging`).
   - `sync_catchup_progress_bps` is bounded to `0..=10000` for deterministic dashboard gauges.
   - `sync_recovery_reason` is populated when sync is degraded, stalled, or still catching up, so operators have explicit recovery context instead of implicit inference.
+- External mining submit observability includes explicit rejection classes and template-health rollups:
+  - rejection classes now distinguish `invalid_pow`, `stale_template`, `unknown_template`, `duplicate_block`, `invalid_block`, `chain_id_mismatch`, `internal_error`, `storage_error`.
+  - template rollups are outcome-grounded:
+    - `external_mining_template_health`
+    - `external_mining_template_stale_submit_ratio_bps`
+    - `external_mining_template_rollup`
 - Existing polling endpoints remain available:
   - `GET /runtime/events`
   - `GET /runtime/events/summary`
