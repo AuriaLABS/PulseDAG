@@ -46,6 +46,11 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
       - name: Show Rust version
         run: |
           rustc --version
@@ -73,7 +78,7 @@ jobs:
             miner_binary="target/release/pulsedag-miner"
           fi
 
-          python3 scripts/release/package_release_artifacts.py \
+          python scripts/release/package_release_artifacts.py \
             --binary "${node_binary}" \
             --output-dir dist \
             --tag "${{ env.RELEASE_TAG }}" \
@@ -83,7 +88,7 @@ jobs:
             --run-id "${{ github.run_id }}" \
             --run-attempt "${{ github.run_attempt }}"
 
-          python3 scripts/release/package_release_artifacts.py \
+          python scripts/release/package_release_artifacts.py \
             --binary "${miner_binary}" \
             --output-dir dist \
             --tag "${{ env.RELEASE_TAG }}" \
@@ -93,33 +98,15 @@ jobs:
             --run-id "${{ github.run_id }}" \
             --run-attempt "${{ github.run_attempt }}"
 
-      - name: Validate per-asset metadata coherence
+      - name: Verify packaged assets end-to-end (unpack + smoke)
         shell: bash
         run: |
           set -euo pipefail
-          python3 - <<'PY'
-          import hashlib
-          import json
-          from pathlib import Path
-
-          dist = Path("dist")
-          manifests = sorted(dist.glob("*.json"))
-          if not manifests:
-              raise SystemExit("No manifest files were generated in dist/.")
-
-          for manifest_path in manifests:
-              manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-              archive = dist / manifest["archive"]
-              if not archive.exists():
-                  raise SystemExit(f"Missing archive referenced by {manifest_path.name}: {archive.name}")
-
-              digest = hashlib.sha256(archive.read_bytes()).hexdigest()
-              if digest != manifest["archive_sha256"]:
-                  raise SystemExit(f"Digest mismatch for {archive.name}")
-
-              if archive.stat().st_size != manifest["archive_size_bytes"]:
-                  raise SystemExit(f"Size mismatch for {archive.name}")
-          PY
+          python scripts/release/verify_release_artifacts.py \
+            --artifacts-dir dist \
+            --expected-tag "${{ env.RELEASE_TAG }}" \
+            --smoke \
+            --expect-binaries pulsedagd pulsedag-miner
 
       - name: Attest release archives
         uses: actions/attest-build-provenance@v2
@@ -150,6 +137,11 @@ jobs:
     steps:
       - name: Checkout (required for gh release create context)
         uses: actions/checkout@v4
+
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
 
       - name: Download artifacts
         uses: actions/download-artifact@v6
@@ -200,7 +192,7 @@ jobs:
             done
           } > final/SHA256SUMS.txt
 
-          python3 - <<'PY'
+          python - <<'PY'
           import glob
           import json
           from pathlib import Path
@@ -226,6 +218,18 @@ jobs:
           done
           echo "Consolidated checksums: SHA256SUMS.txt"
           echo "Release provenance summary: release-provenance.json"
+
+      - name: Verify final release bundle end-to-end
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/release/verify_release_artifacts.py \
+            --artifacts-dir final \
+            --expected-tag "${{ env.RELEASE_TAG }}" \
+            --smoke \
+            --expect-binaries pulsedagd pulsedag-miner \
+            --consolidated-checksums final/SHA256SUMS.txt \
+            --provenance-summary final/release-provenance.json
 
       - name: Publish to GitHub Release
         env:

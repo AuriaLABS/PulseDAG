@@ -32,6 +32,7 @@ For every archive the workflow emits:
 - Consolidated provenance summary: `release-provenance.json`
 
 In addition, each platform archive is attested in GitHub artifact attestations using the release workflow identity (OIDC-backed provenance).
+The workflow now performs end-to-end verification in both jobs: it validates every archive, checksum sidecar, and manifest; unpacks each archive; and runs a basic smoke command on the unpacked `pulsedagd` and `pulsedag-miner` binaries before publish.
 
 Per-archive JSON manifests now include:
 - `archive_sha256`
@@ -40,6 +41,23 @@ Per-archive JSON manifests now include:
 - `provenance.commit`
 - `provenance.github_run_id`
 - `provenance.github_run_attempt`
+
+## CI end-to-end verification flow
+`release-binaries` validates packaged assets twice:
+
+1. **Build job (`dist/`)**
+   - Verifies `<archive>.sha256` matches archive bytes.
+   - Verifies `<archive>.json` metadata (`archive`, digest, size, tag, provenance).
+   - Unpacks each archive and checks the expected single-binary layout.
+   - Runs a binary smoke check:
+     - `pulsedagd --version`
+     - `pulsedag-miner --help`
+
+2. **Publish job (`final/`)**
+   - Re-verifies per-archive checksums and manifests after artifact download/flattening.
+   - Builds and validates `SHA256SUMS.txt`.
+   - Builds and validates `release-provenance.json` against all per-archive manifests.
+   - Repeats unpack + smoke checks for node and miner release assets.
 
 ## Operator verification before upgrade
 From a release download directory:
