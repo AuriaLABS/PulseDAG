@@ -1,5 +1,4 @@
 use anyhow::{bail, Result};
-use std::sync::{Mutex, OnceLock};
 
 #[derive(Debug, Clone)]
 pub struct Config {
