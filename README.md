@@ -36,14 +36,20 @@ The RPC data plane now includes additional read-only surfaces for explorer/index
 
 - `GET /blocks/:hash/overview`  
   Returns block lineage and indexing metadata (`parent_hashes`, `child_hashes`, `txids`, `confirmations`, tip flags).
+- `GET /blocks/:hash/transactions`  
+  Returns deterministic paged transactions scoped to a confirmed block with explicit context flags per entry (`context`, `is_confirmed`, `is_mempool`).
 - `GET /blocks`, `/blocks/recent`, `/blocks/page`  
   Now share a stable sort order and common pagination metadata (`total`, `limit`, `offset`, `has_more`) to make indexer paging deterministic.
 - `GET /txs/:txid/lookup`  
   Returns richer transaction lookup details for both mempool and confirmed transactions (`nonce`, raw input outpoints, outputs, confirmation depth when confirmed), including explicit `is_mempool`/`is_confirmed` flags.
+- `GET /txs/activity`  
+  Returns a deterministic mixed activity stream across mempool + confirmed transactions with explicit context metadata and block linkage for confirmed entries.
 - `GET /txs`, `/txs/recent`, `/txs/page`  
   Now share stable fee/txid ordering and common pagination metadata (`total`, `limit`, `offset`, `has_more`) for predictable bounded lookups.
 - `GET /address/:address/summary`  
   Returns confirmed UTXO balance plus mempool-aware pending movement (`pending_incoming`, `pending_outgoing`, `pending_net`, related mempool txids`) with explicit mempool accounting marker.
+- `GET /address/:address/activity`  
+  Returns deterministic address-level movement entries across mempool and confirmed contexts with explicit `direction`, net value, and context flags for explorer timelines.
 
 All existing endpoints remain available and unchanged in behavior.
 

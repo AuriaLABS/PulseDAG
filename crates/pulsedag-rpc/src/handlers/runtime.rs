@@ -2488,16 +2488,14 @@ pub async fn get_runtime_events_summary<S: RpcStateLike>(
                 .map(|d| d.as_secs())
                 .unwrap_or(0);
             let trend_windows = build_runtime_trend_windows(&events, &rollup, now_unix);
+            let incident_snapshot =
+                runtime_incident_snapshot(&rollup, warn_or_error_count, events.len());
             Json(ApiResponse::ok(RuntimeEventsSummaryData {
                 scanned_event_count: events.len(),
                 by_kind,
                 by_level,
                 runtime_surface_rollup: rollup,
-                incident_snapshot: runtime_incident_snapshot(
-                    &rollup,
-                    warn_or_error_count,
-                    events.len(),
-                ),
+                incident_snapshot,
                 trend_windows,
             }))
         }

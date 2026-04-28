@@ -6,10 +6,13 @@ use axum::{
 use crate::{
     api::RpcStateLike,
     handlers::{
-        address::{get_address, get_address_summary, get_address_utxos, get_utxos},
+        address::{
+            get_address, get_address_activity, get_address_summary, get_address_utxos, get_utxos,
+        },
         block_validate::post_block_validate,
         blocks::{
-            get_block_overview, get_blocks, get_blocks_latest, get_blocks_page, get_blocks_recent,
+            get_block_overview, get_block_transactions, get_blocks, get_blocks_latest,
+            get_blocks_page, get_blocks_recent,
         },
         bootstrap::get_bootstrap_status,
         checks::get_node_checks,
@@ -62,8 +65,8 @@ use crate::{
         topology::get_topology,
         transactions::get_confirmed_transactions,
         tx::{
-            get_mempool, get_tx, get_tx_lookup, get_txs, get_txs_page, get_txs_recent,
-            post_tx_build, post_tx_submit,
+            get_mempool, get_tx, get_tx_lookup, get_txs, get_txs_activity, get_txs_page,
+            get_txs_recent, post_tx_build, post_tx_submit,
         },
         wallet::{post_wallet_new, post_wallet_sign, post_wallet_transfer},
     },
@@ -86,14 +89,20 @@ where
         .route("/blocks/recent", get(get_blocks_recent::<S>))
         .route("/blocks/page", get(get_blocks_page::<S>))
         .route("/blocks/:hash/overview", get(get_block_overview::<S>))
+        .route(
+            "/blocks/:hash/transactions",
+            get(get_block_transactions::<S>),
+        )
         .route("/blocks/:hash", get(get_block::<S>))
         .route("/utxos", get(get_utxos::<S>))
         .route("/address/:address", get(get_address::<S>))
         .route("/address/:address/summary", get(get_address_summary::<S>))
+        .route("/address/:address/activity", get(get_address_activity::<S>))
         .route("/address/:address/utxos", get(get_address_utxos::<S>))
         .route("/txs", get(get_txs::<S>))
         .route("/txs/recent", get(get_txs_recent::<S>))
         .route("/txs/page", get(get_txs_page::<S>))
+        .route("/txs/activity", get(get_txs_activity::<S>))
         .route("/txs/:txid/lookup", get(get_tx_lookup::<S>))
         .route("/transactions", get(get_confirmed_transactions::<S>))
         .route("/mempool", get(get_mempool::<S>))
