@@ -524,7 +524,8 @@ async fn main() -> Result<()> {
                             let adopted =
                                 pulsedag_core::adopt_ready_orphans(&mut guard, AcceptSource::P2p);
                             let accepted_height = guard.dag.best_height;
-                            let accepted_tip = guard.dag.best_tip.clone();
+                            let accepted_tip = pulsedag_core::preferred_tip_hash(&guard)
+                                .unwrap_or_else(|| guard.dag.genesis_hash.clone());
                             {
                                 let mut rt = runtime.write().await;
                                 rt.sync_pipeline.validate_and_apply_blocks(1, now_unix());
@@ -582,7 +583,8 @@ async fn main() -> Result<()> {
                     (
                         pulsedag_core::dag_consistency_issues(&guard).len(),
                         guard.dag.best_height,
-                        guard.dag.best_tip.clone(),
+                        pulsedag_core::preferred_tip_hash(&guard)
+                            .unwrap_or_else(|| guard.dag.genesis_hash.clone()),
                         guard.orphan_blocks.len(),
                         guard.mempool.transactions.len(),
                     )
