@@ -17,12 +17,15 @@ pub struct AddressData {
     pub address: String,
     pub balance: u64,
     pub utxo_count: usize,
+    pub confirmed_balance: u64,
+    pub confirmed_utxo_count: usize,
     pub largest_utxo: u64,
     pub outpoints: Vec<AddressOutpointData>,
 }
 #[derive(Debug, serde::Serialize)]
 pub struct AddressUtxosData {
     pub address: String,
+    pub count: usize,
     pub utxos: Vec<Utxo>,
 }
 #[derive(Debug, serde::Serialize)]
@@ -40,6 +43,26 @@ pub struct AddressSummaryData {
     pub pending_net: i64,
     pub mempool_tx_count: usize,
     pub mempool_txids: Vec<String>,
+    pub mempool_explicit: bool,
+}
+
+fn sorted_address_utxos(chain: &pulsedag_core::ChainState, address: &str) -> Vec<Utxo> {
+    let mut utxos = chain
+        .utxo
+        .address_index
+        .get(address)
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|op| chain.utxo.utxos.get(&op).cloned())
+        .collect::<Vec<_>>();
+    utxos.sort_by(|a, b| {
+        a.outpoint
+            .txid
+            .cmp(&b.outpoint.txid)
+            .then_with(|| a.outpoint.index.cmp(&b.outpoint.index))
+    });
+    utxos
 }
 
 pub async fn get_address<S: RpcStateLike>(
@@ -48,15 +71,7 @@ pub async fn get_address<S: RpcStateLike>(
 ) -> Json<ApiResponse<AddressData>> {
     let chain_handle = state.chain();
     let chain = chain_handle.read().await;
-    let utxos = chain
-        .utxo
-        .address_index
-        .get(&address)
-        .cloned()
-        .unwrap_or_default()
-        .into_iter()
-        .filter_map(|op| chain.utxo.utxos.get(&op).cloned())
-        .collect::<Vec<_>>();
+    let utxos = sorted_address_utxos(&chain, &address);
     let balance = utxos.iter().map(|u| u.amount).sum();
     let largest_utxo = utxos.iter().map(|u| u.amount).max().unwrap_or(0);
     let outpoints = utxos
@@ -71,6 +86,8 @@ pub async fn get_address<S: RpcStateLike>(
         address,
         balance,
         utxo_count: utxos.len(),
+        confirmed_balance: balance,
+        confirmed_utxo_count: utxos.len(),
         largest_utxo,
         outpoints,
     }))
@@ -82,22 +99,24 @@ pub async fn get_address_utxos<S: RpcStateLike>(
 ) -> Json<ApiResponse<AddressUtxosData>> {
     let chain_handle = state.chain();
     let chain = chain_handle.read().await;
-    let utxos = chain
-        .utxo
-        .address_index
-        .get(&address)
-        .cloned()
-        .unwrap_or_default()
-        .into_iter()
-        .filter_map(|op| chain.utxo.utxos.get(&op).cloned())
-        .collect::<Vec<_>>();
-    Json(ApiResponse::ok(AddressUtxosData { address, utxos }))
+    let utxos = sorted_address_utxos(&chain, &address);
+    Json(ApiResponse::ok(AddressUtxosData {
+        address,
+        count: utxos.len(),
+        utxos,
+    }))
 }
 
 pub async fn get_utxos<S: RpcStateLike>(State(state): State<S>) -> Json<ApiResponse<UtxoListData>> {
     let chain_handle = state.chain();
     let chain = chain_handle.read().await;
-    let utxos = chain.utxo.utxos.values().cloned().collect::<Vec<_>>();
+    let mut utxos = chain.utxo.utxos.values().cloned().collect::<Vec<_>>();
+    utxos.sort_by(|a, b| {
+        a.outpoint
+            .txid
+            .cmp(&b.outpoint.txid)
+            .then_with(|| a.outpoint.index.cmp(&b.outpoint.index))
+    });
     Json(ApiResponse::ok(UtxoListData {
         count: utxos.len(),
         utxos,
@@ -110,15 +129,7 @@ pub async fn get_address_summary<S: RpcStateLike>(
 ) -> Json<ApiResponse<AddressSummaryData>> {
     let chain_handle = state.chain();
     let chain = chain_handle.read().await;
-    let utxos = chain
-        .utxo
-        .address_index
-        .get(&address)
-        .cloned()
-        .unwrap_or_default()
-        .into_iter()
-        .filter_map(|op| chain.utxo.utxos.get(&op).cloned())
-        .collect::<Vec<_>>();
+    let utxos = sorted_address_utxos(&chain, &address);
     let confirmed_balance = utxos.iter().map(|u| u.amount).sum();
 
     let mut pending_incoming = 0u64;
@@ -156,12 +167,13 @@ pub async fn get_address_summary<S: RpcStateLike>(
         pending_net: pending_incoming as i64 - pending_outgoing as i64,
         mempool_tx_count: mempool_txids.len(),
         mempool_txids,
+        mempool_explicit: true,
     }))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{get_address, get_address_summary};
+    use super::{get_address, get_address_summary, get_address_utxos};
     use crate::api::{NodeRuntimeStats, RpcStateLike};
     use axum::extract::{Path, State};
     use pulsedag_core::types::{OutPoint, Transaction, TxInput, TxOutput, Utxo};
@@ -278,5 +290,26 @@ mod tests {
         let data = resp.data.expect("address data");
         assert_eq!(data.balance, 50);
         assert_eq!(data.utxo_count, 1);
+        assert_eq!(data.confirmed_balance, 50);
+        assert_eq!(data.confirmed_utxo_count, 1);
+    }
+
+    #[tokio::test]
+    async fn address_surfaces_are_coherent_for_confirmed_view() {
+        let state = mk_state().await;
+        let axum::Json(address_resp) =
+            get_address(State(state.clone()), Path("alice".to_string())).await;
+        let address = address_resp.data.expect("address");
+        let axum::Json(summary_resp) =
+            get_address_summary(State(state.clone()), Path("alice".to_string())).await;
+        let summary = summary_resp.data.expect("summary");
+        let axum::Json(utxos_resp) =
+            get_address_utxos(State(state), Path("alice".to_string())).await;
+        let utxos = utxos_resp.data.expect("utxos");
+
+        assert_eq!(address.confirmed_balance, summary.confirmed_balance);
+        assert_eq!(address.confirmed_utxo_count, summary.confirmed_utxo_count);
+        assert_eq!(utxos.count, summary.confirmed_utxo_count);
+        assert!(summary.mempool_explicit);
     }
 }
