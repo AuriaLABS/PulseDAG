@@ -2,6 +2,52 @@ use crate::{
     errors::PulseError, state::ChainState, types::Transaction, validation::validate_transaction,
 };
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum MempoolPressureTier {
+    Normal,
+    Elevated,
+    High,
+    Saturated,
+}
+
+impl MempoolPressureTier {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Normal => "normal",
+            Self::Elevated => "elevated",
+            Self::High => "high_pressure",
+            Self::Saturated => "saturated",
+        }
+    }
+}
+
+pub fn mempool_pressure_bps(used: usize, capacity: usize) -> u64 {
+    if capacity == 0 {
+        0
+    } else {
+        (used as u64)
+            .saturating_mul(10_000)
+            .saturating_div(capacity as u64)
+            .min(10_000)
+    }
+}
+
+pub fn pressure_tier_from_bps(pressure_bps: u64) -> MempoolPressureTier {
+    match pressure_bps {
+        0..=5_999 => MempoolPressureTier::Normal,
+        6_000..=7_999 => MempoolPressureTier::Elevated,
+        8_000..=9_499 => MempoolPressureTier::High,
+        _ => MempoolPressureTier::Saturated,
+    }
+}
+
+pub fn combined_pressure_tier(
+    mempool_pressure_bps: u64,
+    orphan_pressure_bps: u64,
+) -> MempoolPressureTier {
+    pressure_tier_from_bps(mempool_pressure_bps).max(pressure_tier_from_bps(orphan_pressure_bps))
+}
+
 #[derive(Debug, Clone)]
 pub struct MempoolReconcileResult {
     pub removed_txids: Vec<String>,
@@ -85,7 +131,7 @@ pub fn reconcile_mempool(state: &mut ChainState) -> MempoolReconcileResult {
 
 #[cfg(test)]
 mod tests {
-    use super::reconcile_mempool;
+    use super::{combined_pressure_tier, pressure_tier_from_bps, reconcile_mempool};
     use crate::{
         accept::{accept_transaction, AcceptSource},
         errors::PulseError,
@@ -95,6 +141,23 @@ mod tests {
     };
     use ed25519_dalek::{Signer, SigningKey};
     use proptest::prelude::*;
+
+    #[test]
+    fn pressure_tiers_are_coherent_across_thresholds() {
+        assert_eq!(pressure_tier_from_bps(0).as_str(), "normal");
+        assert_eq!(pressure_tier_from_bps(5_999).as_str(), "normal");
+        assert_eq!(pressure_tier_from_bps(6_000).as_str(), "elevated");
+        assert_eq!(pressure_tier_from_bps(7_999).as_str(), "elevated");
+        assert_eq!(pressure_tier_from_bps(8_000).as_str(), "high_pressure");
+        assert_eq!(pressure_tier_from_bps(9_499).as_str(), "high_pressure");
+        assert_eq!(pressure_tier_from_bps(9_500).as_str(), "saturated");
+        assert_eq!(pressure_tier_from_bps(10_000).as_str(), "saturated");
+        assert_eq!(combined_pressure_tier(6_100, 9_500).as_str(), "saturated");
+        assert_eq!(
+            combined_pressure_tier(7_200, 8_800).as_str(),
+            "high_pressure"
+        );
+    }
 
     fn signing_key(seed: u8) -> SigningKey {
         SigningKey::from_bytes(&[seed; 32])
@@ -606,6 +669,61 @@ mod tests {
     }
 
     #[test]
+    fn pressure_rejection_message_exposes_explicit_backpressure_signal() {
+        let mut state = init_chain_state("test".into());
+        state.mempool.max_transactions = 1;
+        state.mempool.max_orphans = 1;
+
+        let key_a = signing_key(80);
+        let key_b = signing_key(81);
+        let input_a = fund_address(
+            &mut state,
+            "fund-backpressure-a",
+            0,
+            address_from_public_key(&public_key_hex(&key_a)),
+            100,
+        );
+        let input_b = fund_address(
+            &mut state,
+            "fund-backpressure-b",
+            0,
+            address_from_public_key(&public_key_hex(&key_b)),
+            100,
+        );
+        let admitted = signed_tx(
+            &key_a,
+            vec![input_a],
+            vec![TxOutput {
+                address: "pulse1backpressure-a".into(),
+                amount: 85,
+            }],
+            15,
+            1,
+        );
+        let rejected = signed_tx(
+            &key_b,
+            vec![input_b],
+            vec![TxOutput {
+                address: "pulse1backpressure-b".into(),
+                amount: 99,
+            }],
+            1,
+            2,
+        );
+        accept_transaction(admitted, &mut state, AcceptSource::Rpc).unwrap();
+        let err = accept_transaction(rejected, &mut state, AcceptSource::Rpc)
+            .expect_err("lower priority tx should be rejected with explicit backpressure signal");
+        let msg = match err {
+            PulseError::InvalidTransaction(msg) => msg,
+            other => panic!("unexpected error variant: {other:?}"),
+        };
+        assert!(msg.contains("mempool backpressure active"));
+        assert!(msg.contains("tier=saturated"));
+        assert!(msg.contains("tx_pressure_bps=10000"));
+        assert!(msg.contains("orphan_pressure_bps=0"));
+    }
+
+    #[test]
     fn reconcile_and_restart_like_rebuild_preserve_mempool_counters_coherently() {
         let mut state = init_chain_state("test".into());
         state.mempool.max_transactions = 1;
@@ -679,6 +797,78 @@ mod tests {
         assert_eq!(restored.mempool.counters.reconcile_removed_total, 0);
         assert_eq!(restored.mempool.transactions.len(), 1);
         assert!(restored.mempool.transactions.contains_key(&second.txid));
+    }
+
+    #[test]
+    fn restart_like_eviction_decision_stays_deterministic() {
+        let mut baseline = init_chain_state("test".into());
+        baseline.mempool.max_transactions = 1;
+        let key_a = signing_key(82);
+        let key_b = signing_key(83);
+        let input_a = fund_address(
+            &mut baseline,
+            "fund-restart-evict-a",
+            0,
+            address_from_public_key(&public_key_hex(&key_a)),
+            100,
+        );
+        let input_b = fund_address(
+            &mut baseline,
+            "fund-restart-evict-b",
+            0,
+            address_from_public_key(&public_key_hex(&key_b)),
+            100,
+        );
+        let first = signed_tx(
+            &key_a,
+            vec![input_a],
+            vec![TxOutput {
+                address: "pulse1restart-evict-a".into(),
+                amount: 95,
+            }],
+            5,
+            1,
+        );
+        let second = signed_tx(
+            &key_b,
+            vec![input_b],
+            vec![TxOutput {
+                address: "pulse1restart-evict-b".into(),
+                amount: 95,
+            }],
+            5,
+            2,
+        );
+
+        let mut restored = baseline.clone();
+        accept_transaction(first.clone(), &mut baseline, AcceptSource::Rpc).unwrap();
+        accept_transaction(first, &mut restored, AcceptSource::Rpc).unwrap();
+
+        let _ = accept_transaction(second.clone(), &mut baseline, AcceptSource::Rpc);
+        restored.mempool.spent_outpoints.clear();
+        let _ = accept_transaction(second, &mut restored, AcceptSource::Rpc);
+
+        let baseline_txids = baseline
+            .mempool
+            .transactions
+            .keys()
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>();
+        let restored_txids = restored
+            .mempool
+            .transactions
+            .keys()
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(baseline_txids, restored_txids);
+        assert_eq!(
+            baseline.mempool.spent_outpoints,
+            restored.mempool.spent_outpoints
+        );
+        assert_eq!(
+            baseline.mempool.counters.evicted_total,
+            restored.mempool.counters.evicted_total
+        );
     }
 
     #[test]

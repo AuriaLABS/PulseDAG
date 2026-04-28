@@ -1,7 +1,7 @@
 use crate::{
     apply::apply_block,
     errors::PulseError,
-    mempool::reconcile_mempool,
+    mempool::{combined_pressure_tier, mempool_pressure_bps, reconcile_mempool},
     pow_evaluate, selected_pow_name,
     state::ChainState,
     types::{Block, Transaction},
@@ -404,6 +404,15 @@ pub fn accept_transaction(
         }
 
         let Some(selected_package) = selected_package else {
+            let tx_pressure_bps = mempool_pressure_bps(
+                state.mempool.transactions.len(),
+                state.mempool.max_transactions,
+            );
+            let orphan_pressure_bps = mempool_pressure_bps(
+                state.mempool.orphan_transactions.len(),
+                state.mempool.max_orphans,
+            );
+            let pressure_tier = combined_pressure_tier(tx_pressure_bps, orphan_pressure_bps);
             state.mempool.counters.rejected_total =
                 state.mempool.counters.rejected_total.saturating_add(1);
             state.mempool.counters.rejected_low_priority_total = state
@@ -411,9 +420,12 @@ pub fn accept_transaction(
                 .counters
                 .rejected_low_priority_total
                 .saturating_add(1);
-            return Err(PulseError::InvalidTransaction(
-                "mempool under pressure: transaction priority below threshold".into(),
-            ));
+            return Err(PulseError::InvalidTransaction(format!(
+                "mempool backpressure active (tier={} tx_pressure_bps={} orphan_pressure_bps={}): transaction priority below threshold",
+                pressure_tier.as_str(),
+                tx_pressure_bps,
+                orphan_pressure_bps
+            )));
         };
 
         let mut evicted_count = 0_u64;
