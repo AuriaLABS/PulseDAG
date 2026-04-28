@@ -167,6 +167,10 @@ pub struct RuntimeStatusData {
     pub p2p_peer_flap_suppressed_count: u64,
     pub p2p_peers_under_cooldown: usize,
     pub p2p_peers_under_flap_guard: usize,
+    pub p2p_peer_lifecycle_watch: usize,
+    pub p2p_peer_lifecycle_cooldown: usize,
+    pub p2p_degraded_mode: String,
+    pub p2p_connection_shaping_active: bool,
     pub p2p_last_peer_seen_unix: Option<u64>,
     pub p2p_peers_with_recent_failures: usize,
     pub p2p_connected_peers_are_real_network: bool,
@@ -209,6 +213,10 @@ struct RuntimeP2pRecoverySummary {
     flap_suppressed_count: u64,
     peers_under_cooldown: usize,
     peers_under_flap_guard: usize,
+    peer_lifecycle_watch: usize,
+    peer_lifecycle_cooldown: usize,
+    degraded_mode: String,
+    connection_shaping_active: bool,
     last_peer_seen_unix: Option<u64>,
     peers_with_recent_failures: usize,
     connected_peers_are_real_network: bool,
@@ -232,23 +240,6 @@ struct RuntimeP2pRecoverySummary {
     queue_block_priority_picks: usize,
     queue_non_block_fair_picks: usize,
     queue_starvation_relief_picks: usize,
-}
-
-fn is_peer_recovering(peer: &PeerRecoveryStatus, now_unix: u64) -> bool {
-    if !peer.connected || peer.fail_streak > 0 {
-        return true;
-    }
-    if peer
-        .suppression_until_unix
-        .is_some_and(|until| until > now_unix)
-    {
-        return true;
-    }
-    peer.next_retry_unix > now_unix
-}
-
-fn is_peer_degraded(peer: &PeerRecoveryStatus) -> bool {
-    peer.score < 80 || peer.flap_events > 0 || !peer.recent_failures_unix.is_empty()
 }
 
 #[derive(Debug, Clone)]
@@ -506,22 +497,6 @@ pub async fn get_runtime_status<S: RpcStateLike>(
                 .iter()
                 .filter(|peer| !peer.recent_failures_unix.is_empty())
                 .count();
-            let now_unix = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map(|d| d.as_secs())
-                .unwrap_or(0);
-            let mut peer_health_healthy = 0usize;
-            let mut peer_health_degraded = 0usize;
-            let mut peer_health_recovering = 0usize;
-            for peer in &status.peer_recovery {
-                if is_peer_recovering(peer, now_unix) {
-                    peer_health_recovering = peer_health_recovering.saturating_add(1);
-                } else if is_peer_degraded(peer) {
-                    peer_health_degraded = peer_health_degraded.saturating_add(1);
-                } else {
-                    peer_health_healthy = peer_health_healthy.saturating_add(1);
-                }
-            }
             RuntimeP2pRecoverySummary {
                 reconnect_attempts: status.peer_reconnect_attempts,
                 recovery_success_count: status.peer_recovery_success_count,
@@ -535,9 +510,13 @@ pub async fn get_runtime_status<S: RpcStateLike>(
                 connected_peers_are_real_network: mode_connected_peers_are_real_network(
                     &status.mode,
                 ),
-                peer_health_healthy,
-                peer_health_degraded,
-                peer_health_recovering,
+                peer_health_healthy: status.peer_lifecycle_healthy,
+                peer_health_degraded: status.peer_lifecycle_degraded,
+                peer_health_recovering: status.peer_lifecycle_recovering,
+                peer_lifecycle_watch: status.peer_lifecycle_watch,
+                peer_lifecycle_cooldown: status.peer_lifecycle_cooldown,
+                degraded_mode: status.degraded_mode,
+                connection_shaping_active: status.connection_shaping_active,
                 tx_outbound_duplicates_suppressed: status.tx_outbound_duplicates_suppressed,
                 tx_outbound_first_seen_relayed: status.tx_outbound_first_seen_relayed,
                 tx_outbound_recovery_relayed: status.tx_outbound_recovery_relayed,
@@ -832,6 +811,10 @@ pub async fn get_runtime_status<S: RpcStateLike>(
         p2p_peer_flap_suppressed_count: p2p_recovery.flap_suppressed_count,
         p2p_peers_under_cooldown: p2p_recovery.peers_under_cooldown,
         p2p_peers_under_flap_guard: p2p_recovery.peers_under_flap_guard,
+        p2p_peer_lifecycle_watch: p2p_recovery.peer_lifecycle_watch,
+        p2p_peer_lifecycle_cooldown: p2p_recovery.peer_lifecycle_cooldown,
+        p2p_degraded_mode: p2p_recovery.degraded_mode.clone(),
+        p2p_connection_shaping_active: p2p_recovery.connection_shaping_active,
         p2p_last_peer_seen_unix: p2p_recovery.last_peer_seen_unix,
         p2p_peers_with_recent_failures: p2p_recovery.peers_with_recent_failures,
         p2p_connected_peers_are_real_network: p2p_recovery.connected_peers_are_real_network,
