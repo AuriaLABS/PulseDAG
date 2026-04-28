@@ -106,6 +106,11 @@ The package references only fields emitted by the node APIs:
 - mempool pressure rollup:
   - `mempool_capacity_remaining_transactions`
   - `mempool_orphan_pressure_bps`
+  - `mempool_pressure_tier` (`normal`, `elevated`, `high_pressure`, `saturated`)
+  - `mempool_orphan_pressure_tier` (`normal`, `elevated`, `high_pressure`, `saturated`)
+  - explicit backpressure signaling:
+    - `mempool_backpressure_active`
+    - `mempool_backpressure_signal` (`none`, `mempool_high_pressure`, `orphan_high_pressure`, `mempool_saturated`, `orphan_saturated`, `at_capacity`)
   - `mempool_surface_health`
 - external mining rollup:
   - `external_mining_surface_health`

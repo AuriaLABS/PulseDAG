@@ -14,7 +14,10 @@ use axum::{
 use serde::{Deserialize, Serialize};
 
 use crate::api::{ApiResponse, RpcStateLike};
-use pulsedag_core::{SyncPhase, SyncProgressCounters};
+use pulsedag_core::{
+    combined_pressure_tier, mempool_pressure_bps, pressure_tier_from_bps, SyncPhase,
+    SyncProgressCounters,
+};
 use pulsedag_p2p::mode_connected_peers_are_real_network;
 
 #[derive(Debug, serde::Serialize)]
@@ -70,6 +73,10 @@ pub struct RuntimeStatusData {
     pub mempool_capacity_remaining_transactions: usize,
     pub mempool_pressure_bps: u64,
     pub mempool_orphan_pressure_bps: u64,
+    pub mempool_pressure_tier: String,
+    pub mempool_orphan_pressure_tier: String,
+    pub mempool_backpressure_active: bool,
+    pub mempool_backpressure_signal: String,
     pub mempool_surface_health: String,
     pub mempool_admitted_total: u64,
     pub mempool_rejected_total: u64,
@@ -575,21 +582,28 @@ pub async fn get_runtime_status<S: RpcStateLike>(
         mempool_transactions.saturating_add(mempool_orphan_transactions);
     let mempool_capacity_remaining_transactions =
         mempool_max_transactions.saturating_sub(mempool_transactions);
-    let mempool_pressure_bps = if mempool_max_transactions == 0 {
-        0
+    let mempool_pressure_bps = mempool_pressure_bps(mempool_transactions, mempool_max_transactions);
+    let mempool_orphan_pressure_bps =
+        mempool_pressure_bps(mempool_orphan_transactions, mempool_max_orphans);
+    let mempool_pressure_tier = pressure_tier_from_bps(mempool_pressure_bps);
+    let mempool_orphan_pressure_tier = pressure_tier_from_bps(mempool_orphan_pressure_bps);
+    let mempool_combined_pressure_tier =
+        combined_pressure_tier(mempool_pressure_bps, mempool_orphan_pressure_bps);
+    let mempool_backpressure_active = mempool_pressure_bps >= 8_000
+        || mempool_orphan_pressure_bps >= 8_000
+        || mempool_capacity_remaining_transactions == 0;
+    let mempool_backpressure_signal = if mempool_capacity_remaining_transactions == 0 {
+        "at_capacity"
+    } else if mempool_orphan_pressure_bps >= 9_500 {
+        "orphan_saturated"
+    } else if mempool_pressure_bps >= 9_500 {
+        "mempool_saturated"
+    } else if mempool_orphan_pressure_bps >= 8_000 {
+        "orphan_high_pressure"
+    } else if mempool_pressure_bps >= 8_000 {
+        "mempool_high_pressure"
     } else {
-        (mempool_transactions as u64)
-            .saturating_mul(10_000)
-            .saturating_div(mempool_max_transactions as u64)
-            .min(10_000)
-    };
-    let mempool_orphan_pressure_bps = if mempool_max_orphans == 0 {
-        0
-    } else {
-        (mempool_orphan_transactions as u64)
-            .saturating_mul(10_000)
-            .saturating_div(mempool_max_orphans as u64)
-            .min(10_000)
+        "none"
     };
     let p2p_recovery = state
         .p2p()
@@ -748,14 +762,7 @@ pub async fn get_runtime_status<S: RpcStateLike>(
         .saturating_sub(runtime.sync_pipeline.counters.blocks_applied);
     let sync_catchup = sync_catchup_view(&runtime, now);
     let sync_counters_coherent = rollup.sync_counters_coherent;
-    let mempool_surface_health =
-        if mempool_pressure_bps >= 9_500 || mempool_orphan_pressure_bps >= 9_500 {
-            "saturated"
-        } else if mempool_pressure_bps >= 8_000 || mempool_orphan_pressure_bps >= 8_000 {
-            "high_pressure"
-        } else {
-            "normal"
-        };
+    let mempool_surface_health = mempool_combined_pressure_tier.as_str();
     let p2p_surface_health = if !p2p_peer_health_counters_coherent {
         "counter_mismatch"
     } else if p2p_recovery.peers_with_recent_failures > 0 || p2p_recovery.peer_health_recovering > 0
@@ -816,6 +823,10 @@ pub async fn get_runtime_status<S: RpcStateLike>(
         mempool_capacity_remaining_transactions,
         mempool_pressure_bps,
         mempool_orphan_pressure_bps,
+        mempool_pressure_tier: mempool_pressure_tier.as_str().to_string(),
+        mempool_orphan_pressure_tier: mempool_orphan_pressure_tier.as_str().to_string(),
+        mempool_backpressure_active,
+        mempool_backpressure_signal: mempool_backpressure_signal.to_string(),
         mempool_surface_health: mempool_surface_health.to_string(),
         mempool_admitted_total: chain.mempool.counters.accepted_total,
         mempool_rejected_total: chain.mempool.counters.rejected_total,
@@ -1421,6 +1432,10 @@ mod tests {
         assert_eq!(data.mempool_capacity_remaining_transactions, 2);
         assert_eq!(data.mempool_pressure_bps, 5_000);
         assert_eq!(data.mempool_orphan_pressure_bps, 3_333);
+        assert_eq!(data.mempool_pressure_tier, "normal");
+        assert_eq!(data.mempool_orphan_pressure_tier, "normal");
+        assert!(!data.mempool_backpressure_active);
+        assert_eq!(data.mempool_backpressure_signal, "none");
         assert_eq!(data.mempool_surface_health, "normal");
         assert_eq!(data.mempool_admitted_total, 7);
         assert_eq!(data.mempool_rejected_total, 3);
@@ -1438,6 +1453,61 @@ mod tests {
         assert_eq!(data.p2p_tx_relay_budget_suppression_ratio_bps, 2_000);
         assert_eq!(data.p2p_block_relay_total_events, 8);
         assert_eq!(data.p2p_block_relay_duplicate_ratio_bps, 2_500);
+    }
+
+    #[tokio::test]
+    async fn runtime_status_mempool_backpressure_signals_are_explicit_and_stable() {
+        let path = temp_db_path("runtime-mempool-backpressure-signals");
+        let storage = Arc::new(Storage::open(path.to_str().expect("utf8 temp path")).unwrap());
+        let mut chain = storage
+            .load_or_init_genesis("testnet-dev".to_string())
+            .unwrap();
+        chain.mempool.max_transactions = 4;
+        chain.mempool.max_orphans = 2;
+        for i in 0..4 {
+            let txid = format!("tx-{i}");
+            chain.mempool.transactions.insert(
+                txid.clone(),
+                Transaction {
+                    txid,
+                    version: 1,
+                    inputs: vec![],
+                    outputs: vec![],
+                    fee: i as u64,
+                    nonce: i as u64,
+                },
+            );
+        }
+        chain.mempool.orphan_transactions.insert(
+            "orphan-1".into(),
+            Transaction {
+                txid: "orphan-1".into(),
+                version: 1,
+                inputs: vec![],
+                outputs: vec![],
+                fee: 0,
+                nonce: 9,
+            },
+        );
+        let state = TestState {
+            chain: Arc::new(RwLock::new(chain)),
+            storage,
+            runtime: Arc::new(RwLock::new(NodeRuntimeStats::default())),
+            p2p: None,
+        };
+
+        let Json(resp_a) = get_runtime_status(State(state.clone())).await;
+        let a = resp_a.data.expect("runtime status data");
+        let Json(resp_b) = get_runtime_status(State(state)).await;
+        let b = resp_b.data.expect("runtime status data");
+
+        assert_eq!(a.mempool_pressure_tier, "saturated");
+        assert_eq!(a.mempool_orphan_pressure_tier, "elevated");
+        assert_eq!(a.mempool_surface_health, "saturated");
+        assert!(a.mempool_backpressure_active);
+        assert_eq!(a.mempool_backpressure_signal, "at_capacity");
+        assert_eq!(a.mempool_backpressure_signal, b.mempool_backpressure_signal);
+        assert_eq!(a.mempool_backpressure_active, b.mempool_backpressure_active);
     }
 
     #[tokio::test]

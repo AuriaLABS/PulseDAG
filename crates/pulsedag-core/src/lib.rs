@@ -44,7 +44,10 @@ pub use pow::{
     PowEvaluation, PowHeaderPreimage, POW_HEADER_PREIMAGE_VERSION,
 };
 
-pub use mempool::{reconcile_mempool, MempoolReconcileResult};
+pub use mempool::{
+    combined_pressure_tier, mempool_pressure_bps, pressure_tier_from_bps, reconcile_mempool,
+    MempoolPressureTier, MempoolReconcileResult,
+};
 
 pub use selection::{preferred_tip_hash, sorted_tip_hashes};
 
