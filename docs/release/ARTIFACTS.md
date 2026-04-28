@@ -1,4 +1,4 @@
-# Release artifacts and checksums (v2.2.3)
+# Release artifacts and checksums (v2.2.4)
 
 ## Scope guardrails
 This guide is limited to release engineering and operator packaging workflow.
@@ -33,10 +33,10 @@ The `release-binaries` workflow publishes two standalone binary families per tar
 - External miner: `pulsedag-miner-<tag>-<target>.tar.gz` (Linux/macOS) or `.zip` (Windows)
 
 Examples:
-- `pulsedagd-v2.2.3-x86_64-unknown-linux-gnu.tar.gz`
-- `pulsedag-miner-v2.2.3-x86_64-unknown-linux-gnu.tar.gz`
-- `pulsedagd-v2.2.3-x86_64-pc-windows-msvc.zip`
-- `pulsedag-miner-v2.2.3-x86_64-pc-windows-msvc.zip`
+- `pulsedagd-v2.2.4-x86_64-unknown-linux-gnu.tar.gz`
+- `pulsedag-miner-v2.2.4-x86_64-unknown-linux-gnu.tar.gz`
+- `pulsedagd-v2.2.4-x86_64-pc-windows-msvc.zip`
+- `pulsedag-miner-v2.2.4-x86_64-pc-windows-msvc.zip`
 
 Each archive contains a single top-level folder matching the archive stem, with exactly one binary inside (`pulsedagd` or `pulsedag-miner`).
 
@@ -82,8 +82,8 @@ Per-archive JSON manifests now include:
 From a release download directory:
 
 ```bash
-sha256sum -c pulsedagd-v2.2.3-x86_64-unknown-linux-gnu.tar.gz.sha256
-sha256sum -c pulsedag-miner-v2.2.3-x86_64-unknown-linux-gnu.tar.gz.sha256
+sha256sum -c pulsedagd-v2.2.4-x86_64-unknown-linux-gnu.tar.gz.sha256
+sha256sum -c pulsedag-miner-v2.2.4-x86_64-unknown-linux-gnu.tar.gz.sha256
 sha256sum -c SHA256SUMS.txt --ignore-missing
 ```
 
@@ -96,11 +96,11 @@ jq '.artifacts[] | {archive, archive_sha256, provenance}' release-provenance.jso
 Then unpack and stage:
 
 ```bash
-tar -xzf pulsedagd-v2.2.3-x86_64-unknown-linux-gnu.tar.gz
-./pulsedagd-v2.2.3-x86_64-unknown-linux-gnu/pulsedagd --version
+tar -xzf pulsedagd-v2.2.4-x86_64-unknown-linux-gnu.tar.gz
+./pulsedagd-v2.2.4-x86_64-unknown-linux-gnu/pulsedagd --version
 
-tar -xzf pulsedag-miner-v2.2.3-x86_64-unknown-linux-gnu.tar.gz
-./pulsedag-miner-v2.2.3-x86_64-unknown-linux-gnu/pulsedag-miner --help
+tar -xzf pulsedag-miner-v2.2.4-x86_64-unknown-linux-gnu.tar.gz
+./pulsedag-miner-v2.2.4-x86_64-unknown-linux-gnu/pulsedag-miner --help
 ```
 
 ## Rollback packaging guidance

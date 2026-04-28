@@ -1,4 +1,4 @@
-# Chaos restart/recovery validation suite (v2.2.3 closeout)
+# Chaos restart/recovery validation suite (v2.2.4 closeout)
 
 This runbook defines a **repeatable operator validation suite** for crash, restart, recovery, and churn.
 
@@ -10,7 +10,7 @@ Design constraints for this suite:
 
 ## 1) Why this suite exists
 
-Before closing v2.2.3, operators need a practical way to validate the highest-value failure modes repeatedly and attach evidence to release closeout.
+Before closing v2.2.4, operators need a practical way to validate the highest-value failure modes repeatedly and attach evidence to release closeout.
 
 This suite provides:
 1. A fixed scenario manifest (priority + SLO targets).
@@ -31,7 +31,7 @@ P1 scenario (should pass):
 ## 3) Prerequisites
 
 1. Stable multi-node environment (minimum: 3 nodes, 1+ external miner).
-2. Run ID chosen for evidence package (example: `v2.2.3-chaos-2026-04-26`).
+2. Run ID chosen for evidence package (example: `v2.2.4-chaos-2026-04-26`).
 3. Operator access to process/network controls needed for crash/churn actions.
 4. Runbook familiarity:
    - `docs/runbooks/RECOVERY_ORCHESTRATION.md`
@@ -42,7 +42,7 @@ P1 scenario (should pass):
 
 ```bash
 scripts/chaos/run-validation-suite.sh \
-  --run-id v2.2.3-chaos-YYYYMMDD \
+  --run-id v2.2.4-chaos-YYYYMMDD \
   --node-urls http://127.0.0.1:8080,http://127.0.0.1:8081,http://127.0.0.1:8082 \
   --scenario-manifest scripts/chaos/scenarios.csv
 ```
@@ -66,7 +66,7 @@ Use `--yes` only for dry rehearsal of evidence wiring; do not treat as productio
 ## 5) Validate evidence completeness
 
 ```bash
-scripts/chaos/validate-evidence.sh --run-id v2.2.3-chaos-YYYYMMDD
+scripts/chaos/validate-evidence.sh --run-id v2.2.4-chaos-YYYYMMDD
 ```
 
 The evidence check fails if:
@@ -78,7 +78,7 @@ The evidence check fails if:
 Then create an immutable archive payload for release evidence transfer:
 
 ```bash
-scripts/chaos/archive-evidence.sh --run-id v2.2.3-chaos-YYYYMMDD
+scripts/chaos/archive-evidence.sh --run-id v2.2.4-chaos-YYYYMMDD
 ```
 
 This emits:
