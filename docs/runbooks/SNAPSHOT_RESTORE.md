@@ -56,6 +56,11 @@ Operational RTO target for this drill profile: **<= 5 seconds** (headroom above 
 - Runtime event emitted at completion: `restore_drill_completed`
 - Runtime warning event emitted on fallback: `restore_drill_snapshot_decode_failed_fallback_full` or `restore_drill_snapshot_delta_failed_fallback_full`
 - Drill report includes explicit chain/tip/timing fields: `chain_id`, `best_tip_hash`, `started_at_unix`, `completed_at_unix`, `restore_duration_ms`
+- Storage audit confidence surfaces are explicit and non-misleading:
+  - `recovery_confidence` is `low|medium|high`.
+  - `confidence_reason` explains *why* confidence is at that level.
+  - `restore_drill_confirms_recovery=true` is required for `high` confidence.
+  - Missing snapshot anchor metadata forces `recovery_confidence=low`.
 - Repeatable command: `scripts/restore-drill-evidence.sh`
 - Productized snapshot workflow command: `scripts/snapshot-productization-evidence.sh` (export/import + verification + restore coherence checks)
 

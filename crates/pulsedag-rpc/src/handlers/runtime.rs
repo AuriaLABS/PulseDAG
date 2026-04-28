@@ -153,6 +153,9 @@ pub struct RuntimeStatusData {
     pub last_self_audit_ok: bool,
     pub last_self_audit_issue_count: usize,
     pub last_self_audit_message: Option<String>,
+    pub recovery_confidence: String,
+    pub recovery_confidence_reason: String,
+    pub recovery_confidence_non_misleading: bool,
     pub last_observed_best_height: u64,
     pub last_height_change_unix: Option<u64>,
     pub active_alerts: Vec<String>,
@@ -442,6 +445,9 @@ pub struct RuntimeSurfaceRollup {
     pub mempool_health_slo_bps: u64,
     pub mining_health_slo_bps: u64,
     pub runtime_health_slo_bps: u64,
+    pub recovery_confidence: String,
+    pub recovery_confidence_reason: String,
+    pub recovery_confidence_non_misleading: bool,
 }
 
 fn degraded_penalty_bps(health: &str, counter_coherent: bool) -> u64 {
@@ -692,6 +698,31 @@ pub(crate) fn runtime_surface_rollup(
         runtime_alert_classes.len(),
         runtime_health_slo_bps
     );
+    let recovery_confidence_non_misleading = !runtime.startup_replay_required
+        || runtime.startup_fallback_reason.is_some()
+        || runtime.startup_consistency_issue_count == 0;
+    let (recovery_confidence, recovery_confidence_reason) = if !runtime.last_self_audit_ok
+        || runtime.last_self_audit_issue_count > 0
+        || runtime.startup_consistency_issue_count > 0
+    {
+        (
+            "low".to_string(),
+            "self-audit or startup consistency checks report unresolved issues".to_string(),
+        )
+    } else if runtime.startup_fastboot_used
+        && runtime.startup_snapshot_detected
+        && runtime.startup_snapshot_validated
+    {
+        (
+            "high".to_string(),
+            "startup snapshot validation and self-audit signals are both healthy".to_string(),
+        )
+    } else {
+        (
+            "medium".to_string(),
+            "runtime is healthy but snapshot-assisted startup evidence is incomplete".to_string(),
+        )
+    };
 
     RuntimeSurfaceRollup {
         startup_path: startup.path,
@@ -725,6 +756,9 @@ pub(crate) fn runtime_surface_rollup(
         mempool_health_slo_bps,
         mining_health_slo_bps,
         runtime_health_slo_bps,
+        recovery_confidence,
+        recovery_confidence_reason,
+        recovery_confidence_non_misleading,
     }
 }
 
@@ -1240,6 +1274,9 @@ pub async fn get_runtime_status<S: RpcStateLike>(
         last_self_audit_ok: runtime.last_self_audit_ok,
         last_self_audit_issue_count: runtime.last_self_audit_issue_count,
         last_self_audit_message: runtime.last_self_audit_message.clone(),
+        recovery_confidence: rollup.recovery_confidence.clone(),
+        recovery_confidence_reason: rollup.recovery_confidence_reason.clone(),
+        recovery_confidence_non_misleading: rollup.recovery_confidence_non_misleading,
         last_observed_best_height: runtime.last_observed_best_height,
         last_height_change_unix: runtime.last_height_change_unix,
         active_alerts: runtime.active_alerts.clone(),
@@ -2103,6 +2140,37 @@ mod tests {
         assert_eq!(data.sync_blocks_request_backlog, 2);
         assert_eq!(data.sync_blocks_validation_backlog, 0);
         assert_eq!(data.node_runtime_surface_health, "degraded");
+        assert_eq!(data.recovery_confidence, "low");
+        assert!(data.recovery_confidence_non_misleading);
+    }
+
+    #[tokio::test]
+    async fn runtime_status_surfaces_recovery_confidence_coherently() {
+        let path = temp_db_path("runtime-recovery-confidence");
+        let storage = Arc::new(Storage::open(path.to_str().unwrap()).expect("storage"));
+        let chain = storage
+            .load_or_init_genesis("testnet-dev".to_string())
+            .expect("genesis");
+        let mut runtime = NodeRuntimeStats::default();
+        runtime.last_self_audit_ok = true;
+        runtime.startup_fastboot_used = true;
+        runtime.startup_snapshot_detected = true;
+        runtime.startup_snapshot_validated = true;
+
+        let state = TestState {
+            chain: Arc::new(RwLock::new(chain)),
+            storage,
+            runtime: Arc::new(RwLock::new(runtime)),
+            p2p: None,
+        };
+
+        let Json(resp) = get_runtime_status(State(state)).await;
+        let data = resp.data.expect("runtime status data");
+        assert_eq!(data.recovery_confidence, "high");
+        assert!(data
+            .recovery_confidence_reason
+            .contains("snapshot validation"));
+        assert!(data.recovery_confidence_non_misleading);
     }
 
     #[tokio::test]

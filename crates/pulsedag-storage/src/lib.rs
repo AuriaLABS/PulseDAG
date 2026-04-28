@@ -77,9 +77,12 @@ pub struct SnapshotVerificationReport {
     pub snapshot_best_height: u64,
     pub persisted_block_count: usize,
     pub snapshot_anchor_present: bool,
+    pub lineage_coherent: bool,
     pub chain_id_matches_expected: bool,
     pub replay_viable: bool,
     pub restore_guarantees_explicit: bool,
+    pub recovery_confidence: String,
+    pub confidence_reason: String,
     pub issue_count: usize,
     pub issues: Vec<SnapshotVerificationIssue>,
 }
@@ -96,14 +99,53 @@ pub struct StorageAuditReport {
     pub read_only: bool,
     pub deep_check_performed: bool,
     pub snapshot_exists: bool,
+    pub snapshot_anchor_present: bool,
     pub snapshot_best_height: Option<u64>,
     pub persisted_block_count: usize,
     pub persisted_best_height: Option<u64>,
+    pub lineage_coherent: bool,
+    pub deep_replay_viable: Option<bool>,
+    pub restore_drill_confirms_recovery: bool,
+    pub recovery_confidence: String,
+    pub confidence_reason: String,
     pub issue_count: usize,
     pub issues: Vec<StorageAuditIssue>,
 }
 
 impl Storage {
+    fn detect_lineage_issues(
+        snapshot_hashes: &std::collections::BTreeSet<String>,
+        persisted_hashes: &std::collections::BTreeSet<String>,
+        persisted_blocks: &[Block],
+        snapshot_best_height: u64,
+    ) -> Vec<(String, String)> {
+        let mut issues = Vec::new();
+        for block in persisted_blocks {
+            if block.header.height <= snapshot_best_height && !snapshot_hashes.contains(&block.hash)
+            {
+                issues.push((
+                    "DELTA_NOT_IN_SNAPSHOT".to_string(),
+                    format!(
+                        "persisted block {} at height {} is not present in snapshot",
+                        block.hash, block.header.height
+                    ),
+                ));
+            }
+            for parent in &block.header.parents {
+                if !snapshot_hashes.contains(parent) && !persisted_hashes.contains(parent) {
+                    issues.push((
+                        "MISSING_PARENT".to_string(),
+                        format!(
+                            "persisted block {} references missing parent {}",
+                            block.hash, parent
+                        ),
+                    ));
+                }
+            }
+        }
+        issues
+    }
+
     pub fn plan_prune_with_safety(
         &self,
         requested_keep_from_height: u64,
@@ -219,23 +261,14 @@ impl Storage {
             .iter()
             .map(|b| b.hash.clone())
             .collect::<std::collections::BTreeSet<_>>();
-        for block in &blocks {
-            if block.header.height <= snapshot.dag.best_height
-                && !snapshot_hashes.contains(&block.hash)
-            {
-                return Err(PulseError::StorageError(format!(
-                    "persisted block {} at height {} is not present in validated snapshot",
-                    block.hash, block.header.height
-                )));
-            }
-            for parent in &block.header.parents {
-                if !snapshot_hashes.contains(parent) && !persisted_hashes.contains(parent) {
-                    return Err(PulseError::StorageError(format!(
-                        "persisted block {} references missing parent {}",
-                        block.hash, parent
-                    )));
-                }
-            }
+        let lineage_issues = Self::detect_lineage_issues(
+            &snapshot_hashes,
+            &persisted_hashes,
+            &blocks,
+            snapshot.dag.best_height,
+        );
+        if let Some((_, message)) = lineage_issues.first() {
+            return Err(PulseError::StorageError(message.clone()));
         }
         Ok((snapshot, blocks))
     }
@@ -567,29 +600,17 @@ impl Storage {
             .iter()
             .map(|b| b.hash.clone())
             .collect::<std::collections::BTreeSet<_>>();
-        for block in &bundle.persisted_blocks {
-            if block.header.height <= bundle.snapshot.dag.best_height
-                && !snapshot_hashes.contains(&block.hash)
-            {
-                issues.push(SnapshotVerificationIssue {
-                    code: "SNAPSHOT_BUNDLE_DELTA_NOT_IN_SNAPSHOT".to_string(),
-                    message: format!(
-                        "persisted block {} at height {} is not present in snapshot",
-                        block.hash, block.header.height
-                    ),
-                });
-            }
-            for parent in &block.header.parents {
-                if !snapshot_hashes.contains(parent) && !persisted_hashes.contains(parent) {
-                    issues.push(SnapshotVerificationIssue {
-                        code: "SNAPSHOT_BUNDLE_MISSING_PARENT".to_string(),
-                        message: format!(
-                            "persisted block {} references missing parent {}",
-                            block.hash, parent
-                        ),
-                    });
-                }
-            }
+        let lineage_issues = Self::detect_lineage_issues(
+            &snapshot_hashes,
+            &persisted_hashes,
+            &bundle.persisted_blocks,
+            bundle.snapshot.dag.best_height,
+        );
+        for (code, message) in lineage_issues {
+            issues.push(SnapshotVerificationIssue {
+                code: format!("SNAPSHOT_BUNDLE_{code}"),
+                message,
+            });
         }
 
         let replay_viable = rebuild_state_from_snapshot_and_blocks(
@@ -610,6 +631,27 @@ impl Storage {
                 message: "snapshot restore anchor metadata missing from bundle".to_string(),
             });
         }
+        let lineage_coherent = !issues.iter().any(|issue| {
+            issue.code == "SNAPSHOT_BUNDLE_DELTA_NOT_IN_SNAPSHOT"
+                || issue.code == "SNAPSHOT_BUNDLE_MISSING_PARENT"
+        });
+        let (recovery_confidence, confidence_reason) =
+            if !snapshot_anchor_present || !lineage_coherent || !replay_viable {
+                (
+                    "low".to_string(),
+                    "snapshot lineage or replay evidence is incomplete".to_string(),
+                )
+            } else if chain_id_matches_expected {
+                (
+                    "high".to_string(),
+                    "snapshot anchor, lineage, and replay checks all passed".to_string(),
+                )
+            } else {
+                (
+                    "medium".to_string(),
+                    "replay is viable but chain_id mismatch blocks operator trust".to_string(),
+                )
+            };
         let restore_guarantees_explicit = issues.is_empty();
         let issue_count = issues.len();
         SnapshotVerificationReport {
@@ -619,9 +661,12 @@ impl Storage {
             snapshot_best_height: bundle.snapshot.dag.best_height,
             persisted_block_count: bundle.persisted_blocks.len(),
             snapshot_anchor_present,
+            lineage_coherent,
             chain_id_matches_expected,
             replay_viable,
             restore_guarantees_explicit,
+            recovery_confidence,
+            confidence_reason,
             issue_count,
             issues,
         }
@@ -703,7 +748,9 @@ impl Storage {
             &mut batch,
             &meta_cf,
             &bundle.snapshot,
-            bundle.snapshot_captured_at_unix.unwrap_or(bundle.exported_at_unix),
+            bundle
+                .snapshot_captured_at_unix
+                .unwrap_or(bundle.exported_at_unix),
         )?;
         self.db
             .write(batch)
@@ -783,6 +830,7 @@ impl Storage {
         let blocks = self.list_blocks()?;
         let persisted_block_count = blocks.len();
         let persisted_best_height = blocks.iter().map(|b| b.header.height).max();
+        let snapshot_anchor_present = self.snapshot_captured_at_unix()?.is_some();
         let block_hashes = blocks
             .iter()
             .map(|b| b.hash.clone())
@@ -790,6 +838,7 @@ impl Storage {
 
         let mut snapshot_exists = false;
         let mut snapshot_best_height = None;
+        let mut deep_replay_viable = None;
         match snapshot {
             Ok(Some(state)) => {
                 snapshot_exists = true;
@@ -844,15 +893,18 @@ impl Storage {
 
         if deep_check {
             if let Ok(Some(snapshot_state)) = self.load_chain_state() {
+                deep_replay_viable = Some(true);
                 if let Err(err) =
                     rebuild_state_from_snapshot_and_blocks(snapshot_state, blocks.clone())
                 {
+                    deep_replay_viable = Some(false);
                     issues.push(StorageAuditIssue {
                         code: "DEEP_REPLAY_FAILED".to_string(),
                         message: err.to_string(),
                     });
                 }
             } else if !blocks.is_empty() {
+                deep_replay_viable = Some(false);
                 if let Some(chain_id) = expected_chain_id {
                     if let Err(err) =
                         rebuild_state_from_blocks(chain_id.to_string(), blocks.clone())
@@ -865,6 +917,56 @@ impl Storage {
                 }
             }
         }
+        let lineage_coherent = {
+            if let Ok(Some(snapshot_state)) = self.load_chain_state() {
+                let snapshot_hashes = snapshot_state
+                    .dag
+                    .blocks
+                    .keys()
+                    .cloned()
+                    .collect::<std::collections::BTreeSet<_>>();
+                Self::detect_lineage_issues(
+                    &snapshot_hashes,
+                    &block_hashes,
+                    &blocks,
+                    snapshot_state.dag.best_height,
+                )
+                .is_empty()
+            } else {
+                issues
+                    .iter()
+                    .all(|i| i.code != "BLOCK_PARENT_MISSING_IN_STORAGE")
+            }
+        };
+        let restore_drill_confirms_recovery = self
+            .list_runtime_events(100)?
+            .into_iter()
+            .any(|e| e.kind == "restore_drill_completed");
+        let (recovery_confidence, confidence_reason) =
+            if !snapshot_exists || !snapshot_anchor_present {
+                (
+                    "low".to_string(),
+                    "validated snapshot and anchor metadata are both required".to_string(),
+                )
+            } else if !lineage_coherent || deep_replay_viable == Some(false) {
+                (
+                    "low".to_string(),
+                    "lineage or deep replay checks failed, so recovery confidence remains low"
+                        .to_string(),
+                )
+            } else if restore_drill_confirms_recovery {
+                (
+                    "high".to_string(),
+                    "snapshot lineage, deep replay, and recent restore drill evidence are coherent"
+                        .to_string(),
+                )
+            } else {
+                (
+                "medium".to_string(),
+                "snapshot lineage and replay checks passed without recent restore drill evidence"
+                    .to_string(),
+            )
+            };
 
         let issue_count = issues.len();
         Ok(StorageAuditReport {
@@ -872,9 +974,15 @@ impl Storage {
             read_only: true,
             deep_check_performed: deep_check,
             snapshot_exists,
+            snapshot_anchor_present,
             snapshot_best_height,
             persisted_block_count,
             persisted_best_height,
+            lineage_coherent,
+            deep_replay_viable,
+            restore_drill_confirms_recovery,
+            recovery_confidence,
+            confidence_reason,
             issue_count,
             issues,
         })
@@ -1754,6 +1862,38 @@ mod tests {
     }
 
     #[test]
+    fn audit_confidence_surfaces_align_with_restore_drill_outcome() {
+        let path = temp_db_path("audit-confidence-aligns-with-drill");
+        let storage = Storage::open(&path).expect("open storage");
+        let state = build_linear_chain("testnet", 6);
+        let mut blocks: Vec<_> = state.dag.blocks.values().cloned().collect();
+        blocks.sort_by_key(|b| b.header.height);
+        for block in &blocks {
+            storage.persist_block(block).expect("persist block");
+        }
+        storage
+            .persist_chain_state(&state)
+            .expect("persist baseline snapshot");
+
+        let pre_drill = storage
+            .audit_state_integrity(Some("testnet"), true)
+            .expect("audit before drill");
+        assert_eq!(pre_drill.recovery_confidence, "medium");
+        assert!(!pre_drill.restore_drill_confirms_recovery);
+
+        storage
+            .restore_drill_snapshot_and_delta("testnet".to_string())
+            .expect("restore drill should succeed");
+
+        let post_drill = storage
+            .audit_state_integrity(Some("testnet"), true)
+            .expect("audit after drill");
+        assert_eq!(post_drill.recovery_confidence, "high");
+        assert!(post_drill.restore_drill_confirms_recovery);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
     fn replay_blocks_or_init_normal_startup_path_has_no_regression_without_snapshot() {
         let path = temp_db_path("normal-startup-no-regression");
         let storage = Storage::open(&path).expect("open storage");
@@ -1822,6 +1962,33 @@ mod tests {
             .expect("run audit");
         assert!(report.ok, "issues: {:?}", report.issues);
         assert!(report.issue_count == 0);
+        assert!(report.lineage_coherent);
+        assert_eq!(report.deep_replay_viable, Some(true));
+        assert_eq!(report.recovery_confidence, "medium");
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn snapshot_bundle_lineage_checks_remain_coherent() {
+        let path = temp_db_path("snapshot-bundle-lineage-coherent");
+        let storage = Storage::open(&path).expect("open storage");
+        let state = build_linear_chain("testnet", 5);
+        let mut blocks: Vec<_> = state.dag.blocks.values().cloned().collect();
+        blocks.sort_by_key(|b| b.header.height);
+        for block in &blocks {
+            storage.persist_block(block).expect("persist block");
+        }
+        storage
+            .persist_chain_state(&state)
+            .expect("persist snapshot");
+
+        let (_bundle, report) = storage
+            .export_snapshot_bundle(Some("testnet"))
+            .expect("snapshot export should pass lineage checks");
+        assert!(report.lineage_coherent);
+        assert!(report.replay_viable);
+        assert_eq!(report.recovery_confidence, "high");
+        assert!(report.restore_guarantees_explicit);
         let _ = std::fs::remove_dir_all(path);
     }
 
@@ -1848,6 +2015,8 @@ mod tests {
             .audit_state_integrity(Some("testnet"), false)
             .expect("run read-only audit");
         assert!(report.read_only);
+        assert_eq!(report.deep_replay_viable, None);
+        assert_eq!(report.recovery_confidence, "medium");
         let after_blocks = storage.list_blocks().expect("list after");
         let after_snapshot_ts = storage
             .snapshot_captured_at_unix()
@@ -1855,6 +2024,40 @@ mod tests {
         assert_eq!(before_blocks.len(), after_blocks.len());
         assert_eq!(before_snapshot_ts, after_snapshot_ts);
 
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn audit_surfaces_reflect_missing_snapshot_anchor_state() {
+        let path = temp_db_path("audit-missing-anchor-surface");
+        let storage = Storage::open(&path).expect("open storage");
+        let state = build_linear_chain("testnet", 3);
+        let mut blocks: Vec<_> = state.dag.blocks.values().cloned().collect();
+        blocks.sort_by_key(|b| b.header.height);
+        for block in &blocks {
+            storage.persist_block(block).expect("persist block");
+        }
+        storage
+            .persist_chain_state(&state)
+            .expect("persist snapshot");
+        let meta_cf = storage.db.cf_handle("meta").expect("meta cf");
+        storage
+            .db
+            .delete_cf(&meta_cf, SNAPSHOT_CAPTURED_AT_UNIX_KEY)
+            .expect("clear snapshot anchor metadata");
+
+        let report = storage
+            .audit_state_integrity(Some("testnet"), true)
+            .expect("run audit");
+        assert!(report.snapshot_exists);
+        assert!(!report.snapshot_anchor_present);
+        assert_eq!(report.recovery_confidence, "low");
+        assert!(
+            report
+                .confidence_reason
+                .contains("snapshot and anchor metadata"),
+            "reason should describe missing anchor constraint"
+        );
         let _ = std::fs::remove_dir_all(path);
     }
 
