@@ -2,6 +2,8 @@
 
 Use this checklist after the 14-day burn-in to formally close out `v2.2.3` release readiness.
 
+> **Superseded:** v2.2.3 closeout is historical. For active release closeout, use `docs/checklists/V2_2_4_BURNIN_CLOSEOUT.md`.
+
 ## Scope guardrail (must all be true)
 - [ ] No consensus changes in this closeout PR.
 - [ ] No miner behavior changes in this closeout PR.
