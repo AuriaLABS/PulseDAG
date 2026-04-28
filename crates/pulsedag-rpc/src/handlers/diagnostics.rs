@@ -1,8 +1,8 @@
 use crate::{
     api::ApiResponse,
     api::RpcStateLike,
-    handlers::runtime::{runtime_surface_rollup, RuntimeSurfaceRollup},
     handlers::release::{operator_stage, repo_version},
+    handlers::runtime::{runtime_surface_rollup, RuntimeSurfaceRollup},
 };
 use axum::{extract::State, Json};
 use pulsedag_storage::StorageAuditReport;
@@ -28,6 +28,9 @@ pub struct DiagnosticsData {
     pub startup_replay_required: bool,
     pub startup_fallback_reason: Option<String>,
     pub runtime_surface_rollup: RuntimeSurfaceRollup,
+    pub incident_primary_surface: String,
+    pub incident_summary: String,
+    pub incident_indicators: Vec<String>,
 }
 
 pub async fn get_diagnostics<S: RpcStateLike>(
@@ -64,6 +67,9 @@ pub async fn get_diagnostics<S: RpcStateLike>(
         None => (false, 0),
     };
 
+    let incident_primary_surface = rollup.incident_primary_surface.clone();
+    let incident_summary = rollup.incident_summary.clone();
+    let incident_indicators = rollup.incident_indicators.clone();
     Json(ApiResponse::ok(DiagnosticsData {
         version: repo_version(),
         stage: operator_stage(),
@@ -84,6 +90,9 @@ pub async fn get_diagnostics<S: RpcStateLike>(
         startup_replay_required: runtime.startup_replay_required,
         startup_fallback_reason: runtime.startup_fallback_reason.clone(),
         runtime_surface_rollup: rollup,
+        incident_primary_surface,
+        incident_summary,
+        incident_indicators,
     }))
 }
 
@@ -91,8 +100,13 @@ pub async fn get_diagnostics<S: RpcStateLike>(
 mod tests {
     use super::get_diagnostics;
     use crate::api::{NodeRuntimeStats, RpcStateLike};
-    use crate::handlers::runtime::{get_runtime_events_summary, get_runtime_status, RuntimeEventsQuery};
-    use axum::{extract::{Query, State}, Json};
+    use crate::handlers::runtime::{
+        get_runtime_events_summary, get_runtime_status, RuntimeEventsQuery,
+    };
+    use axum::{
+        extract::{Query, State},
+        Json,
+    };
     use pulsedag_core::genesis::init_chain_state;
     use pulsedag_storage::Storage;
     use std::{
@@ -193,15 +207,15 @@ mod tests {
         let runtime_data = runtime_resp.data.expect("runtime data");
         let Json(diagnostics_resp) = get_diagnostics(State(state.clone())).await;
         let diagnostics_data = diagnostics_resp.data.expect("diagnostics data");
-        let Json(summary_resp) = get_runtime_events_summary(
-            State(state),
-            Query(RuntimeEventsQuery { limit: Some(20) }),
-        )
-        .await;
+        let Json(summary_resp) =
+            get_runtime_events_summary(State(state), Query(RuntimeEventsQuery { limit: Some(20) }))
+                .await;
         let summary_data = summary_resp.data.expect("summary data");
 
         assert_eq!(
-            diagnostics_data.runtime_surface_rollup.node_runtime_surface_health,
+            diagnostics_data
+                .runtime_surface_rollup
+                .node_runtime_surface_health,
             runtime_data.node_runtime_surface_health
         );
         assert_eq!(
@@ -209,7 +223,9 @@ mod tests {
             runtime_data.sync_surface_health
         );
         assert_eq!(
-            diagnostics_data.runtime_surface_rollup.tx_propagation_health,
+            diagnostics_data
+                .runtime_surface_rollup
+                .tx_propagation_health,
             runtime_data.tx_propagation_health
         );
         assert_eq!(
@@ -219,8 +235,26 @@ mod tests {
             runtime_data.external_mining_surface_health
         );
         assert_eq!(
-            diagnostics_data.runtime_surface_rollup.startup_status_summary,
+            diagnostics_data
+                .runtime_surface_rollup
+                .startup_status_summary,
             runtime_data.startup_status_summary
+        );
+        assert_eq!(
+            diagnostics_data.incident_primary_surface,
+            runtime_data.incident_primary_surface
+        );
+        assert_eq!(
+            diagnostics_data.incident_summary,
+            runtime_data.incident_summary
+        );
+        assert_eq!(
+            summary_data.runtime_surface_rollup.incident_summary,
+            diagnostics_data.incident_summary
+        );
+        assert_eq!(
+            summary_data.runtime_surface_rollup.runtime_alert_classes,
+            runtime_data.runtime_alert_classes
         );
     }
 }

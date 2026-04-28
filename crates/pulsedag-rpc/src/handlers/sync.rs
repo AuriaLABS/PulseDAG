@@ -98,9 +98,11 @@ pub async fn get_sync_status<S: RpcStateLike>(
     } else {
         match runtime.sync_pipeline.phase {
             pulsedag_core::SyncPhase::Idle => "recovering",
+            pulsedag_core::SyncPhase::PeerSelection => "discovering",
             pulsedag_core::SyncPhase::HeaderDiscovery => "discovering",
-            pulsedag_core::SyncPhase::BlockDownload => "acquiring",
+            pulsedag_core::SyncPhase::BlockAcquisition => "acquiring",
             pulsedag_core::SyncPhase::ValidationApplication => "validating",
+            pulsedag_core::SyncPhase::CatchUpCompletion => "steady",
         }
     }
     .to_string();
@@ -311,7 +313,7 @@ mod tests {
             .load_or_init_genesis("testnet-dev".to_string())
             .unwrap();
         let mut runtime = NodeRuntimeStats::default();
-        runtime.sync_pipeline.phase = SyncPhase::BlockDownload;
+        runtime.sync_pipeline.phase = SyncPhase::BlockAcquisition;
         runtime.sync_pipeline.counters.blocks_requested = 20;
         runtime.sync_pipeline.counters.blocks_acquired = 10;
         runtime.sync_pipeline.counters.blocks_validated = 8;

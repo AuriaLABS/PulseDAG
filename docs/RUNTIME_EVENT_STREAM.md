@@ -77,3 +77,8 @@ Query params:
   - `GET /runtime/events`
   - `GET /runtime/events/summary`
     - now includes `runtime_surface_rollup` so event counts can be interpreted against the same normalized runtime summaries used by `GET /runtime/status` and diagnostics.
+    - runtime rollup now also carries:
+      - explicit `runtime_alert_classes`
+      - incident triage fields (`incident_primary_surface`, `incident_summary`, `incident_indicators`)
+      - SLO-style health rollups in bps (`node_health_slo_bps`, `sync_health_slo_bps`, `p2p_health_slo_bps`, `mempool_health_slo_bps`, `mining_health_slo_bps`, `runtime_health_slo_bps`)
+    - `GET /diagnostics` mirrors the same incident diagnostics, keeping status/event/diagnostics views coherent during incident response.
