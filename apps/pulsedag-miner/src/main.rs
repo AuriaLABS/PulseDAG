@@ -17,6 +17,10 @@ struct TemplateRequest {
 #[derive(Debug, Deserialize)]
 struct TemplateData {
     template_id: String,
+    created_at_unix: u64,
+    expires_at_unix: u64,
+    freshness_ttl_secs: u64,
+    freshness_grace_secs: u64,
     block: Block,
 }
 
@@ -163,8 +167,15 @@ async fn mine_once(client: &Client, cfg: &Config) -> Result<()> {
     block.header = mining.header;
 
     println!(
-        "template received: id={} height={} hash={} difficulty={}",
-        template_id, block.header.height, block.hash, block.header.difficulty
+        "template received: id={} height={} hash={} difficulty={} created_at={} expires_at={} ttl={}s grace={}s",
+        template_id,
+        block.header.height,
+        block.hash,
+        block.header.difficulty,
+        template.created_at_unix,
+        template.expires_at_unix,
+        template.freshness_ttl_secs,
+        template.freshness_grace_secs
     );
     println!(
         "mined externally: accepted={} tries={} nonce={} hash={}",
@@ -189,6 +200,11 @@ async fn mine_once(client: &Client, cfg: &Config) -> Result<()> {
             data.accepted, data.block_hash, data.height, data.pow_accepted_dev, data.stale_template
         );
     } else if let Some(err) = submit_api.error {
+        if err.code == "STALE_TEMPLATE" {
+            println!("stale work rejected by node: {}", err.message);
+            println!("action: refresh template and retry mining on latest work");
+            return Ok(());
+        }
         return Err(anyhow!("submit rejected: {} - {}", err.code, err.message));
     }
 

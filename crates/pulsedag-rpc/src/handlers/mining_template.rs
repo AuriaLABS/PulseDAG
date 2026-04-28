@@ -44,6 +44,8 @@ pub struct MiningTemplateData {
     pub selected_tip: Option<String>,
     pub created_at_unix: u64,
     pub expires_at_unix: u64,
+    pub freshness_ttl_secs: u64,
+    pub freshness_grace_secs: u64,
     pub block: pulsedag_core::types::Block,
     pub target_u64: u64,
     pub mempool_tx_count: usize,
@@ -66,7 +68,53 @@ pub(crate) struct TemplateLifecycleState {
 }
 
 pub(crate) const TEMPLATE_TTL_SECS: u64 = 30;
+pub(crate) const TEMPLATE_FRESHNESS_GRACE_SECS: u64 = 2;
 const POW_NONCE_OFFSET: usize = 1 + 4;
+
+pub(crate) fn template_freshness_window(
+    created_at_unix: u64,
+    expires_at_unix: u64,
+) -> (u64, u64, u64) {
+    let expiry = if expires_at_unix == 0 {
+        created_at_unix.saturating_add(TEMPLATE_TTL_SECS)
+    } else {
+        expires_at_unix
+    };
+    let hard_expiry = expiry.saturating_add(TEMPLATE_FRESHNESS_GRACE_SECS);
+    (created_at_unix, expiry, hard_expiry)
+}
+
+fn invalidation_reason_codes(
+    previous: &StoredMiningTemplate,
+    lifecycle: &TemplateLifecycleState,
+    now_unix: u64,
+) -> Vec<&'static str> {
+    let mut reasons = Vec::new();
+    if previous.height != lifecycle.height {
+        reasons.push("height_advanced");
+    }
+    if previous.parent_hashes != lifecycle.parent_hashes {
+        reasons.push("parent_set_changed");
+    }
+    if previous.selected_tip != lifecycle.selected_tip {
+        reasons.push("selected_tip_changed");
+    }
+    if previous.difficulty != lifecycle.difficulty || previous.target_u64 != lifecycle.target_u64 {
+        reasons.push("difficulty_or_target_changed");
+    }
+    if previous.mempool_fingerprint != lifecycle.mempool_fingerprint {
+        reasons.push("mempool_fingerprint_changed");
+    }
+    let (_, _, hard_expiry) =
+        template_freshness_window(previous.created_at_unix, previous.expires_at_unix);
+    if now_unix > hard_expiry {
+        reasons.push("freshness_window_elapsed");
+    }
+    if reasons.is_empty() {
+        reasons.push("lifecycle_changed");
+    }
+    reasons
+}
 
 fn template_ordered_transactions(chain: &ChainState) -> Vec<pulsedag_core::types::Transaction> {
     let mut txs = chain
@@ -257,6 +305,13 @@ pub async fn post_mining_template<S: RpcStateLike>(
             .as_ref()
             .is_some_and(|last| last != &template_id)
         {
+            let previous_template_id = runtime
+                .external_mining_last_template_id
+                .clone()
+                .unwrap_or_default();
+            let reason_codes = load_template(&previous_template_id)
+                .map(|stored| invalidation_reason_codes(&stored, &lifecycle, created_at_unix))
+                .unwrap_or_else(|| vec!["previous_template_unavailable"]);
             runtime.external_mining_templates_invalidated = runtime
                 .external_mining_templates_invalidated
                 .saturating_add(1);
@@ -267,12 +322,10 @@ pub async fn post_mining_template<S: RpcStateLike>(
                 "warn",
                 "external_mining_template_invalidated",
                 &format!(
-                    "previous={} current={}",
-                    runtime
-                        .external_mining_last_template_id
-                        .clone()
-                        .unwrap_or_default(),
-                    template_id
+                    "previous={} current={} reason_codes={}",
+                    previous_template_id,
+                    template_id,
+                    reason_codes.join(",")
                 ),
             );
         }
@@ -308,6 +361,8 @@ pub async fn post_mining_template<S: RpcStateLike>(
         selected_tip,
         created_at_unix,
         expires_at_unix,
+        freshness_ttl_secs: TEMPLATE_TTL_SECS,
+        freshness_grace_secs: TEMPLATE_FRESHNESS_GRACE_SECS,
         block,
         target_u64,
         mempool_tx_count: lifecycle.mempool_tx_count,
@@ -321,7 +376,10 @@ pub async fn post_mining_template<S: RpcStateLike>(
 
 #[cfg(test)]
 mod tests {
-    use super::{current_template_state, template_id_for_state, template_ordered_transactions};
+    use super::{
+        current_template_state, template_freshness_window, template_id_for_state,
+        template_ordered_transactions, TEMPLATE_FRESHNESS_GRACE_SECS, TEMPLATE_TTL_SECS,
+    };
     use pulsedag_core::{
         genesis::init_chain_state,
         types::{OutPoint, Transaction, TxInput},
@@ -390,5 +448,23 @@ mod tests {
             .map(|tx| tx.txid)
             .collect::<Vec<_>>();
         assert_eq!(ordered, vec![parent.txid, child.txid]);
+    }
+
+    #[test]
+    fn template_freshness_windows_are_coherent() {
+        let created = 1_700_000_000;
+        let (not_before, expiry, hard_expiry) = template_freshness_window(created, 0);
+        assert_eq!(not_before, created);
+        assert_eq!(expiry, created + TEMPLATE_TTL_SECS);
+        assert_eq!(hard_expiry, expiry + TEMPLATE_FRESHNESS_GRACE_SECS);
+
+        let explicit_expiry = created + 5;
+        let (_, expiry_explicit, hard_expiry_explicit) =
+            template_freshness_window(created, explicit_expiry);
+        assert_eq!(expiry_explicit, explicit_expiry);
+        assert_eq!(
+            hard_expiry_explicit,
+            explicit_expiry + TEMPLATE_FRESHNESS_GRACE_SECS
+        );
     }
 }

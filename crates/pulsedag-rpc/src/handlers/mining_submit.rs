@@ -1,5 +1,5 @@
 use super::mining_template::{
-    current_template_state, load_template, template_id_for_state, TEMPLATE_TTL_SECS,
+    current_template_state, load_template, template_freshness_window, template_id_for_state,
 };
 use crate::api::{ApiResponse, RpcStateLike, SubmitMinedBlockRequest};
 use axum::{extract::State, Json};
@@ -49,6 +49,56 @@ enum ExternalMiningRejectKind {
     UnknownTemplate,
     SubmitBlockError,
     StorageError,
+}
+
+#[derive(Clone, Copy)]
+enum StaleTemplateReason {
+    ChainHeightAdvanced,
+    TemplateHeightStale,
+    TemplateParentsMismatch,
+    TemplateSelectedTipMismatch,
+    TemplateDifficultyTargetMismatch,
+    TemplateMempoolChanged,
+    TemplateExpired,
+    TemplateFutureClockSkew,
+    TemplateLifecycleChanged,
+    SubmittedDifficultyMismatch,
+    SubmittedTransactionsMismatch,
+    SubmittedParentsMismatch,
+}
+
+impl StaleTemplateReason {
+    fn code(self) -> &'static str {
+        match self {
+            Self::ChainHeightAdvanced => "chain_height_advanced",
+            Self::TemplateHeightStale => "template_height_stale",
+            Self::TemplateParentsMismatch => "template_parents_mismatch",
+            Self::TemplateSelectedTipMismatch => "template_selected_tip_mismatch",
+            Self::TemplateDifficultyTargetMismatch => "template_difficulty_target_mismatch",
+            Self::TemplateMempoolChanged => "template_mempool_changed",
+            Self::TemplateExpired => "template_expired",
+            Self::TemplateFutureClockSkew => "template_future_clock_skew",
+            Self::TemplateLifecycleChanged => "template_lifecycle_changed",
+            Self::SubmittedDifficultyMismatch => "submitted_difficulty_mismatch",
+            Self::SubmittedTransactionsMismatch => "submitted_transactions_mismatch",
+            Self::SubmittedParentsMismatch => "submitted_parents_mismatch",
+        }
+    }
+}
+
+fn stale_template_error(
+    reason: StaleTemplateReason,
+    detail: impl Into<String>,
+) -> ApiResponse<MiningSubmitData> {
+    let detail = detail.into();
+    ApiResponse::err(
+        "STALE_TEMPLATE",
+        format!(
+            "reason_code={}; template is stale; {}",
+            reason.code(),
+            detail
+        ),
+    )
 }
 
 async fn record_external_mining_rejection<S: RpcStateLike>(
@@ -164,19 +214,18 @@ pub async fn post_mining_submit<S: RpcStateLike>(
     }
 
     if height <= chain.dag.best_height {
-        record_external_mining_rejection(
-            &state,
-            ExternalMiningRejectKind::StaleTemplate,
-            &format!(
-                "stale template: current best height is {} and submitted block height is {}",
-                chain.dag.best_height, height
-            ),
-        )
-        .await;
-        return Json(ApiResponse::err(
-            "STALE_TEMPLATE",
+        let msg = format!(
+            "reason_code={}; current best height is {} and submitted block height is {}",
+            StaleTemplateReason::ChainHeightAdvanced.code(),
+            chain.dag.best_height,
+            height
+        );
+        record_external_mining_rejection(&state, ExternalMiningRejectKind::StaleTemplate, &msg)
+            .await;
+        return Json(stale_template_error(
+            StaleTemplateReason::ChainHeightAdvanced,
             format!(
-                "stale template: current best height is {} and submitted block height is {}",
+                "current best height is {} and submitted block height is {}",
                 chain.dag.best_height, height
             ),
         ));
@@ -194,14 +243,18 @@ pub async fn post_mining_submit<S: RpcStateLike>(
     if let Some(template_id) = req.template_id.as_ref() {
         if let Some(stored) = load_template(template_id) {
             if stored.height != chain.dag.best_height + 1 {
+                let msg = format!(
+                    "reason_code={}; template height stale for current next height",
+                    StaleTemplateReason::TemplateHeightStale.code()
+                );
                 record_external_mining_rejection(
                     &state,
                     ExternalMiningRejectKind::StaleTemplate,
-                    "template height stale for current next height",
+                    &msg,
                 )
                 .await;
-                return Json(ApiResponse::err(
-                    "STALE_TEMPLATE",
+                return Json(stale_template_error(
+                    StaleTemplateReason::TemplateHeightStale,
                     format!(
                         "template height {} is stale; current next height is {}",
                         stored.height,
@@ -210,96 +263,137 @@ pub async fn post_mining_submit<S: RpcStateLike>(
                 ));
             }
             if stored.parent_hashes != current_parents {
+                let msg = format!(
+                    "reason_code={}; template parents mismatch current tips",
+                    StaleTemplateReason::TemplateParentsMismatch.code()
+                );
                 record_external_mining_rejection(
                     &state,
                     ExternalMiningRejectKind::StaleTemplate,
-                    "template parents mismatch current tips",
+                    &msg,
                 )
                 .await;
-                return Json(ApiResponse::err(
-                    "STALE_TEMPLATE",
+                return Json(stale_template_error(
+                    StaleTemplateReason::TemplateParentsMismatch,
                     "template parents no longer match current tips",
                 ));
             }
             if stored.selected_tip != current_selected_tip {
+                let msg = format!(
+                    "reason_code={}; template selected_tip mismatch current preferred tip",
+                    StaleTemplateReason::TemplateSelectedTipMismatch.code()
+                );
                 record_external_mining_rejection(
                     &state,
                     ExternalMiningRejectKind::StaleTemplate,
-                    "template selected_tip mismatch current preferred tip",
+                    &msg,
                 )
                 .await;
-                return Json(ApiResponse::err(
-                    "STALE_TEMPLATE",
+                return Json(stale_template_error(
+                    StaleTemplateReason::TemplateSelectedTipMismatch,
                     "template selected_tip no longer matches current preferred tip",
                 ));
             }
             if stored.difficulty != lifecycle.difficulty
                 || stored.target_u64 != lifecycle.target_u64
             {
+                let msg = format!(
+                    "reason_code={}; template difficulty/target mismatch node state",
+                    StaleTemplateReason::TemplateDifficultyTargetMismatch.code()
+                );
                 record_external_mining_rejection(
                     &state,
                     ExternalMiningRejectKind::StaleTemplate,
-                    "template difficulty/target mismatch node state",
+                    &msg,
                 )
                 .await;
-                return Json(ApiResponse::err(
-                    "STALE_TEMPLATE",
+                return Json(stale_template_error(
+                    StaleTemplateReason::TemplateDifficultyTargetMismatch,
                     "template difficulty/target no longer matches node state",
                 ));
             }
             if stored.mempool_fingerprint != lifecycle.mempool_fingerprint {
+                let msg = format!(
+                    "reason_code={}; template mempool view changed",
+                    StaleTemplateReason::TemplateMempoolChanged.code()
+                );
                 record_external_mining_rejection(
                     &state,
                     ExternalMiningRejectKind::StaleTemplate,
-                    "template mempool view changed",
+                    &msg,
                 )
                 .await;
-                return Json(ApiResponse::err(
-                    "STALE_TEMPLATE",
+                return Json(stale_template_error(
+                    StaleTemplateReason::TemplateMempoolChanged,
                     "template mempool view changed; refresh template",
                 ));
             }
-            let expires_at_unix = if stored.expires_at_unix == 0 {
-                stored.created_at_unix.saturating_add(TEMPLATE_TTL_SECS)
-            } else {
-                stored.expires_at_unix
-            };
-            if now_unix > expires_at_unix {
+            let (not_before, _expiry, hard_expiry) =
+                template_freshness_window(stored.created_at_unix, stored.expires_at_unix);
+            if stored.created_at_unix != 0 && now_unix.saturating_add(1) < not_before {
+                let msg = format!(
+                    "reason_code={}; template created_at is in the future",
+                    StaleTemplateReason::TemplateFutureClockSkew.code()
+                );
                 record_external_mining_rejection(
                     &state,
                     ExternalMiningRejectKind::StaleTemplate,
-                    "template ttl expired",
+                    &msg,
                 )
                 .await;
-                return Json(ApiResponse::err(
-                    "STALE_TEMPLATE",
+                return Json(stale_template_error(
+                    StaleTemplateReason::TemplateFutureClockSkew,
+                    "template appears to be from the future; check node/miner clocks and refresh",
+                ));
+            }
+            if now_unix > hard_expiry {
+                let msg = format!(
+                    "reason_code={}; template freshness window elapsed",
+                    StaleTemplateReason::TemplateExpired.code()
+                );
+                record_external_mining_rejection(
+                    &state,
+                    ExternalMiningRejectKind::StaleTemplate,
+                    &msg,
+                )
+                .await;
+                return Json(stale_template_error(
+                    StaleTemplateReason::TemplateExpired,
                     format!(
-                        "template expired after {}s ttl; refresh and retry",
-                        TEMPLATE_TTL_SECS
+                        "template freshness window elapsed at {}; refresh and retry",
+                        hard_expiry
                     ),
                 ));
             }
             if template_id != &expected_template_id {
+                let msg = format!(
+                    "reason_code={}; template lifecycle state changed",
+                    StaleTemplateReason::TemplateLifecycleChanged.code()
+                );
                 record_external_mining_rejection(
                     &state,
                     ExternalMiningRejectKind::StaleTemplate,
-                    "template lifecycle state changed",
+                    &msg,
                 )
                 .await;
-                return Json(ApiResponse::err(
-                    "STALE_TEMPLATE",
+                return Json(stale_template_error(
+                    StaleTemplateReason::TemplateLifecycleChanged,
                     "template no longer matches current lifecycle state",
                 ));
             }
             if req.block.header.difficulty != stored.difficulty {
+                let msg = format!(
+                    "reason_code={}; submitted header difficulty differs from template difficulty",
+                    StaleTemplateReason::SubmittedDifficultyMismatch.code()
+                );
                 record_external_mining_rejection(
                     &state,
                     ExternalMiningRejectKind::StaleTemplate,
-                    "submitted header difficulty differs from template difficulty",
+                    &msg,
                 )
                 .await;
-                return Json(ApiResponse::err(
-                    "STALE_TEMPLATE",
+                return Json(stale_template_error(
+                    StaleTemplateReason::SubmittedDifficultyMismatch,
                     format!(
                         "submitted difficulty {} does not match template difficulty {}",
                         req.block.header.difficulty, stored.difficulty
@@ -319,14 +413,18 @@ pub async fn post_mining_submit<S: RpcStateLike>(
                     .map(|txid| txid.as_str())
                     .collect::<Vec<_>>();
                 if submitted_txids != expected_txids {
+                    let msg = format!(
+                        "reason_code={}; submitted transaction list differs from template transaction list",
+                        StaleTemplateReason::SubmittedTransactionsMismatch.code()
+                    );
                     record_external_mining_rejection(
                         &state,
                         ExternalMiningRejectKind::StaleTemplate,
-                        "submitted transaction list differs from template transaction list",
+                        &msg,
                     )
                     .await;
-                    return Json(ApiResponse::err(
-                        "STALE_TEMPLATE",
+                    return Json(stale_template_error(
+                        StaleTemplateReason::SubmittedTransactionsMismatch,
                         "submitted transactions differ from template; refresh template and retry",
                     ));
                 }
@@ -348,14 +446,14 @@ pub async fn post_mining_submit<S: RpcStateLike>(
     let mut submitted_parents = req.block.header.parents.clone();
     submitted_parents.sort();
     if submitted_parents != current_parents {
-        record_external_mining_rejection(
-            &state,
-            ExternalMiningRejectKind::StaleTemplate,
-            "submitted block parents mismatch current tips",
-        )
-        .await;
-        return Json(ApiResponse::err(
-            "STALE_TEMPLATE",
+        let msg = format!(
+            "reason_code={}; submitted block parents mismatch current tips",
+            StaleTemplateReason::SubmittedParentsMismatch.code()
+        );
+        record_external_mining_rejection(&state, ExternalMiningRejectKind::StaleTemplate, &msg)
+            .await;
+        return Json(stale_template_error(
+            StaleTemplateReason::SubmittedParentsMismatch,
             "submitted block parents no longer match current tip set",
         ));
     }
@@ -761,6 +859,7 @@ mod tests {
         assert!(!submit_response.ok);
         let err = submit_response.error.expect("error expected");
         assert_eq!(err.code, "STALE_TEMPLATE");
+        assert!(err.message.contains("reason_code=template_mempool_changed"));
         assert!(err.message.contains("mempool view changed"));
         let runtime = state.runtime.read().await;
         assert_eq!(runtime.rejected_mined_blocks, 0);
@@ -791,6 +890,9 @@ mod tests {
         assert!(!submit_response.ok);
         let err = submit_response.error.expect("error expected");
         assert_eq!(err.code, "STALE_TEMPLATE");
+        assert!(err
+            .message
+            .contains("reason_code=submitted_parents_mismatch"));
         assert!(err.message.contains("parents"));
     }
 
@@ -895,10 +997,47 @@ mod tests {
         assert!(!submit_response.ok);
         let err = submit_response.error.expect("error expected");
         assert_eq!(err.code, "STALE_TEMPLATE");
-        assert!(err.message.contains("expired"));
+        assert!(err.message.contains("reason_code=template_expired"));
+        assert!(err.message.contains("freshness window elapsed"));
         let runtime = state.runtime.read().await;
         assert_eq!(runtime.external_mining_submit_rejected, 1);
         assert_eq!(runtime.external_mining_rejected_stale_template, 1);
+    }
+
+    #[tokio::test]
+    async fn stale_template_reason_codes_are_explicit_and_stable() {
+        let (state, _fake_p2p) = build_state_with_fake_p2p();
+        let (template_id, mut block) = build_mined_template_block(&state).await;
+        block.transactions.push(build_coinbase_transaction(
+            "kaspa:qptest-extra",
+            1,
+            block.header.height,
+        ));
+
+        let Json(submit_response) = post_mining_submit(
+            State(state.clone()),
+            Json(SubmitMinedBlockRequest {
+                template_id: Some(template_id),
+                block,
+            }),
+        )
+        .await;
+
+        assert!(!submit_response.ok);
+        let err = submit_response.error.expect("error expected");
+        assert_eq!(err.code, "STALE_TEMPLATE");
+        assert!(err
+            .message
+            .contains("reason_code=submitted_transactions_mismatch"));
+        let runtime = state.runtime.read().await;
+        assert_eq!(
+            runtime.external_mining_last_rejection_kind.as_deref(),
+            Some("stale_template")
+        );
+        assert!(runtime
+            .external_mining_last_rejection_reason
+            .as_deref()
+            .is_some_and(|msg| msg.contains("reason_code=submitted_transactions_mismatch")));
     }
 
     #[tokio::test]
