@@ -99,42 +99,128 @@ pub async fn get_p2p_status<S: RpcStateLike>(
                         })
                     })
                     .collect::<Vec<_>>();
-                Json(ApiResponse::ok(serde_json::json!({
-                    "mode": status.mode,
-                    "connected_peers_are_real_network": mode_connected_peers_are_real_network(&status.mode),
-                    "connected_peers_semantics": connected_peers_semantics(&status.mode),
-                    "peer_id": status.peer_id,
-                    "listening": status.listening,
-                    "connected_peers": status.connected_peers,
-                    "topics": status.topics,
-                    "mdns": status.mdns,
-                    "kademlia": status.kademlia,
-                    "broadcasted_messages": status.broadcasted_messages,
-                    "publish_attempts": status.publish_attempts,
-                    "seen_message_ids": status.seen_message_ids,
-                    "queued_messages": status.queued_messages,
-                    "inbound_messages": status.inbound_messages,
-                    "runtime_started": status.runtime_started,
-                    "runtime_mode_detail": status.runtime_mode_detail,
-                    "swarm_events_seen": status.swarm_events_seen,
-                    "subscriptions_active": status.subscriptions_active,
-                    "last_message_kind": status.last_message_kind,
-                    "last_swarm_event": status.last_swarm_event,
-                    "per_topic_publishes": status.per_topic_publishes,
-                    "inbound_decode_failed": status.inbound_decode_failed,
-                    "inbound_chain_mismatch_dropped": status.inbound_chain_mismatch_dropped,
-                    "inbound_duplicates_suppressed": status.inbound_duplicates_suppressed,
-                    "last_drop_reason": status.last_drop_reason,
-                    "peer_reconnect_attempts": status.peer_reconnect_attempts,
-                    "peer_recovery_success_count": status.peer_recovery_success_count,
-                    "last_peer_recovery_unix": status.last_peer_recovery_unix,
-                    "peer_cooldown_suppressed_count": status.peer_cooldown_suppressed_count,
-                    "peer_flap_suppressed_count": status.peer_flap_suppressed_count,
-                    "peers_under_cooldown": status.peers_under_cooldown,
-                    "peers_under_flap_guard": status.peers_under_flap_guard,
-                    "degraded_mode": status.degraded_mode,
-                    "connection_shaping_active": status.connection_shaping_active,
-                    "peer_state_summary": {
+                let mut payload = serde_json::Map::new();
+                payload.insert("mode".into(), serde_json::json!(status.mode));
+                payload.insert(
+                    "connected_peers_are_real_network".into(),
+                    serde_json::json!(mode_connected_peers_are_real_network(&status.mode)),
+                );
+                payload.insert(
+                    "connected_peers_semantics".into(),
+                    serde_json::json!(connected_peers_semantics(&status.mode)),
+                );
+                payload.insert("peer_id".into(), serde_json::json!(status.peer_id));
+                payload.insert("listening".into(), serde_json::json!(status.listening));
+                payload.insert(
+                    "connected_peers".into(),
+                    serde_json::json!(status.connected_peers),
+                );
+                payload.insert("topics".into(), serde_json::json!(status.topics));
+                payload.insert("mdns".into(), serde_json::json!(status.mdns));
+                payload.insert("kademlia".into(), serde_json::json!(status.kademlia));
+                payload.insert(
+                    "broadcasted_messages".into(),
+                    serde_json::json!(status.broadcasted_messages),
+                );
+                payload.insert(
+                    "publish_attempts".into(),
+                    serde_json::json!(status.publish_attempts),
+                );
+                payload.insert(
+                    "seen_message_ids".into(),
+                    serde_json::json!(status.seen_message_ids),
+                );
+                payload.insert(
+                    "queued_messages".into(),
+                    serde_json::json!(status.queued_messages),
+                );
+                payload.insert(
+                    "inbound_messages".into(),
+                    serde_json::json!(status.inbound_messages),
+                );
+                payload.insert(
+                    "runtime_started".into(),
+                    serde_json::json!(status.runtime_started),
+                );
+                payload.insert(
+                    "runtime_mode_detail".into(),
+                    serde_json::json!(status.runtime_mode_detail),
+                );
+                payload.insert(
+                    "swarm_events_seen".into(),
+                    serde_json::json!(status.swarm_events_seen),
+                );
+                payload.insert(
+                    "subscriptions_active".into(),
+                    serde_json::json!(status.subscriptions_active),
+                );
+                payload.insert(
+                    "last_message_kind".into(),
+                    serde_json::json!(status.last_message_kind),
+                );
+                payload.insert(
+                    "last_swarm_event".into(),
+                    serde_json::json!(status.last_swarm_event),
+                );
+                payload.insert(
+                    "per_topic_publishes".into(),
+                    serde_json::json!(status.per_topic_publishes),
+                );
+                payload.insert(
+                    "inbound_decode_failed".into(),
+                    serde_json::json!(status.inbound_decode_failed),
+                );
+                payload.insert(
+                    "inbound_chain_mismatch_dropped".into(),
+                    serde_json::json!(status.inbound_chain_mismatch_dropped),
+                );
+                payload.insert(
+                    "inbound_duplicates_suppressed".into(),
+                    serde_json::json!(status.inbound_duplicates_suppressed),
+                );
+                payload.insert(
+                    "last_drop_reason".into(),
+                    serde_json::json!(status.last_drop_reason),
+                );
+                payload.insert(
+                    "peer_reconnect_attempts".into(),
+                    serde_json::json!(status.peer_reconnect_attempts),
+                );
+                payload.insert(
+                    "peer_recovery_success_count".into(),
+                    serde_json::json!(status.peer_recovery_success_count),
+                );
+                payload.insert(
+                    "last_peer_recovery_unix".into(),
+                    serde_json::json!(status.last_peer_recovery_unix),
+                );
+                payload.insert(
+                    "peer_cooldown_suppressed_count".into(),
+                    serde_json::json!(status.peer_cooldown_suppressed_count),
+                );
+                payload.insert(
+                    "peer_flap_suppressed_count".into(),
+                    serde_json::json!(status.peer_flap_suppressed_count),
+                );
+                payload.insert(
+                    "peers_under_cooldown".into(),
+                    serde_json::json!(status.peers_under_cooldown),
+                );
+                payload.insert(
+                    "peers_under_flap_guard".into(),
+                    serde_json::json!(status.peers_under_flap_guard),
+                );
+                payload.insert(
+                    "degraded_mode".into(),
+                    serde_json::json!(status.degraded_mode),
+                );
+                payload.insert(
+                    "connection_shaping_active".into(),
+                    serde_json::json!(status.connection_shaping_active),
+                );
+                payload.insert(
+                    "peer_state_summary".into(),
+                    serde_json::json!({
                         "total": status.peer_recovery.len(),
                         "healthy": status.peer_lifecycle_healthy,
                         "watch": status.peer_lifecycle_watch,
@@ -145,8 +231,11 @@ pub async fn get_p2p_status<S: RpcStateLike>(
                         "derived_degraded_legacy": degraded_count,
                         "derived_recovering_legacy": recovering_count,
                         "peers_with_recent_failures": peers_with_recent_failures
-                    },
-                    "recovery_activity_summary": {
+                    }),
+                );
+                payload.insert(
+                    "recovery_activity_summary".into(),
+                    serde_json::json!({
                         "reconnect_attempts": status.peer_reconnect_attempts,
                         "recovery_success_count": status.peer_recovery_success_count,
                         "last_recovery_unix": status.last_peer_recovery_unix,
@@ -154,15 +243,47 @@ pub async fn get_p2p_status<S: RpcStateLike>(
                         "flap_suppressed_count": status.peer_flap_suppressed_count,
                         "peers_under_cooldown": status.peers_under_cooldown,
                         "peers_under_flap_guard": status.peers_under_flap_guard
-                    },
-                    "selected_sync_peer": status.selected_sync_peer,
-                    "connection_slot_budget": status.connection_slot_budget,
-                    "connected_slots_in_use": status.connected_slots_in_use,
-                    "available_connection_slots": status.available_connection_slots,
-                    "sync_selection_sticky_until_unix": status.sync_selection_sticky_until_unix,
-                    "sync_candidates": sync_candidates,
-                    "peer_recovery": peer_recovery
-                })))
+                    }),
+                );
+                payload.insert(
+                    "selected_sync_peer".into(),
+                    serde_json::json!(status.selected_sync_peer),
+                );
+                payload.insert(
+                    "connection_slot_budget".into(),
+                    serde_json::json!(status.connection_slot_budget),
+                );
+                payload.insert(
+                    "connected_slots_in_use".into(),
+                    serde_json::json!(status.connected_slots_in_use),
+                );
+                payload.insert(
+                    "available_connection_slots".into(),
+                    serde_json::json!(status.available_connection_slots),
+                );
+                payload.insert(
+                    "sync_selection_sticky_until_unix".into(),
+                    serde_json::json!(status.sync_selection_sticky_until_unix),
+                );
+                payload.insert(
+                    "topology_bucket_count".into(),
+                    serde_json::json!(status.topology_bucket_count),
+                );
+                payload.insert(
+                    "topology_distinct_buckets".into(),
+                    serde_json::json!(status.topology_distinct_buckets),
+                );
+                payload.insert(
+                    "topology_dominant_bucket_share_bps".into(),
+                    serde_json::json!(status.topology_dominant_bucket_share_bps),
+                );
+                payload.insert(
+                    "topology_diversity_score_bps".into(),
+                    serde_json::json!(status.topology_diversity_score_bps),
+                );
+                payload.insert("sync_candidates".into(), serde_json::json!(sync_candidates));
+                payload.insert("peer_recovery".into(), serde_json::json!(peer_recovery));
+                Json(ApiResponse::ok(serde_json::Value::Object(payload)))
             }
             Err(e) => Json(ApiResponse::err("P2P_ERROR", e.to_string())),
         },
@@ -371,11 +492,20 @@ mod tests {
             peer_flap_suppressed_count: 1,
             peers_under_cooldown: 1,
             peers_under_flap_guard: 1,
+            peer_lifecycle_healthy: 1,
+            peer_lifecycle_watch: 0,
+            peer_lifecycle_degraded: 0,
+            peer_lifecycle_cooldown: 0,
+            peer_lifecycle_recovering: 1,
+            degraded_mode: "normal".into(),
+            connection_shaping_active: false,
             peer_recovery: vec![
                 PeerRecoveryStatus {
                     peer_id: "healthy".into(),
                     score: 100,
                     fail_streak: 0,
+                    lifecycle_tier: "healthy".into(),
+                    recovery_tier: "steady".into(),
                     connected: true,
                     last_seen_unix: Some(now),
                     last_successful_connect_unix: Some(now),
@@ -393,6 +523,8 @@ mod tests {
                     peer_id: "recovering".into(),
                     score: 65,
                     fail_streak: 1,
+                    lifecycle_tier: "recovering".into(),
+                    recovery_tier: "assisted".into(),
                     connected: false,
                     last_seen_unix: Some(now.saturating_sub(60)),
                     last_successful_connect_unix: Some(now.saturating_sub(120)),
@@ -413,6 +545,10 @@ mod tests {
             connected_slots_in_use: 2,
             available_connection_slots: 6,
             sync_selection_sticky_until_unix: Some(now.saturating_add(30)),
+            topology_bucket_count: 8,
+            topology_distinct_buckets: 1,
+            topology_dominant_bucket_share_bps: 10_000,
+            topology_diversity_score_bps: 625,
         };
 
         let Json(resp) = get_p2p_status(State(mk_state(status))).await;
