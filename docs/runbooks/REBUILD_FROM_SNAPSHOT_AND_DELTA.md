@@ -44,6 +44,7 @@ Use:
 
 ```bash
 scripts/restore-drill-evidence.sh
+scripts/snapshot-productization-evidence.sh
 ```
 
 This command runs targeted storage tests that assert:
@@ -52,3 +53,4 @@ This command runs targeted storage tests that assert:
 3. Rollback safety planning remains explicit (requested/effective/minimum keep window is validated).
 4. Prune + replay remains coherent post-restore.
 5. Restore timing/evidence is emitted in a reproducible report path, including repeat runs.
+6. Snapshot export/import bundle verification surfaces are explicit and operator-practical (format/version, chain-id match, anchor presence, replay viability).

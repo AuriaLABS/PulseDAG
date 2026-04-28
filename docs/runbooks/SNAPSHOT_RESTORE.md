@@ -33,6 +33,9 @@ Validate that a node can restore state from a validated snapshot plus retained d
    - `GET /readiness`
    - `GET /status` (best height/tip stable)
    - `GET /runtime/events?limit=50` (look for restore/fallback warnings)
+6. Operator-grade export/import verification loop (offline confidence check):
+   - Run `scripts/snapshot-productization-evidence.sh`.
+   - This validates snapshot export/import bundle coherence, explicit verification signals, and restore repeatability.
 
 ## Failure handling expectations
 - Corrupt snapshot with retained blocks: restore falls back to full persisted-block replay safely.
@@ -54,6 +57,7 @@ Operational RTO target for this drill profile: **<= 5 seconds** (headroom above 
 - Runtime warning event emitted on fallback: `restore_drill_snapshot_decode_failed_fallback_full` or `restore_drill_snapshot_delta_failed_fallback_full`
 - Drill report includes explicit chain/tip/timing fields: `chain_id`, `best_tip_hash`, `started_at_unix`, `completed_at_unix`, `restore_duration_ms`
 - Repeatable command: `scripts/restore-drill-evidence.sh`
+- Productized snapshot workflow command: `scripts/snapshot-productization-evidence.sh` (export/import + verification + restore coherence checks)
 
 ## Related workflows
 - Recovery triage: `docs/runbooks/RECOVERY_ORCHESTRATION.md`

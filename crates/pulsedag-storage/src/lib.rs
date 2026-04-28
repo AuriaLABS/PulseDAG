@@ -54,6 +54,36 @@ pub struct RestoreDrillReport {
     pub restore_duration_ms: u128,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SnapshotExportBundle {
+    pub format_version: u32,
+    pub exported_at_unix: u64,
+    pub snapshot_captured_at_unix: Option<u64>,
+    pub snapshot: ChainState,
+    pub persisted_blocks: Vec<Block>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SnapshotVerificationIssue {
+    pub code: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SnapshotVerificationReport {
+    pub format_version: u32,
+    pub chain_id: String,
+    pub expected_chain_id: Option<String>,
+    pub snapshot_best_height: u64,
+    pub persisted_block_count: usize,
+    pub snapshot_anchor_present: bool,
+    pub chain_id_matches_expected: bool,
+    pub replay_viable: bool,
+    pub restore_guarantees_explicit: bool,
+    pub issue_count: usize,
+    pub issues: Vec<SnapshotVerificationIssue>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct StorageAuditIssue {
     pub code: String,
@@ -356,12 +386,22 @@ impl Storage {
         meta_cf: &impl rocksdb::AsColumnFamilyRef,
         state: &ChainState,
     ) -> Result<(), PulseError> {
-        let value =
-            bincode::serialize(state).map_err(|e| PulseError::StorageError(e.to_string()))?;
         let captured_at_unix = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0);
+        self.stage_chain_state_snapshot_with_captured_at(batch, meta_cf, state, captured_at_unix)
+    }
+
+    fn stage_chain_state_snapshot_with_captured_at(
+        &self,
+        batch: &mut WriteBatch,
+        meta_cf: &impl rocksdb::AsColumnFamilyRef,
+        state: &ChainState,
+        captured_at_unix: u64,
+    ) -> Result<(), PulseError> {
+        let value =
+            bincode::serialize(state).map_err(|e| PulseError::StorageError(e.to_string()))?;
         batch.put_cf(meta_cf, CHAIN_STATE_KEY, value);
         batch.put_cf(
             meta_cf,
@@ -454,6 +494,222 @@ impl Storage {
         let state = rebuild_state_from_blocks(chain_id, blocks)?;
         self.persist_chain_state(&state)?;
         Ok(state)
+    }
+
+    pub fn verify_snapshot_bundle(
+        &self,
+        bundle: &SnapshotExportBundle,
+        expected_chain_id: Option<&str>,
+    ) -> SnapshotVerificationReport {
+        let mut issues = Vec::new();
+        if bundle.format_version != 1 {
+            issues.push(SnapshotVerificationIssue {
+                code: "SNAPSHOT_BUNDLE_UNSUPPORTED_FORMAT".to_string(),
+                message: format!(
+                    "snapshot bundle format_version={} is unsupported (expected 1)",
+                    bundle.format_version
+                ),
+            });
+        }
+        let expected_chain_id_owned = expected_chain_id.map(|v| v.to_string());
+        let chain_id_matches_expected = expected_chain_id
+            .map(|v| bundle.snapshot.chain_id == v)
+            .unwrap_or(true);
+        if !chain_id_matches_expected {
+            issues.push(SnapshotVerificationIssue {
+                code: "SNAPSHOT_BUNDLE_CHAIN_ID_MISMATCH".to_string(),
+                message: format!(
+                    "bundle chain_id={} does not match expected {}",
+                    bundle.snapshot.chain_id,
+                    expected_chain_id.unwrap_or_default()
+                ),
+            });
+        }
+        if !bundle
+            .snapshot
+            .dag
+            .blocks
+            .contains_key(&bundle.snapshot.dag.genesis_hash)
+        {
+            issues.push(SnapshotVerificationIssue {
+                code: "SNAPSHOT_BUNDLE_MISSING_GENESIS".to_string(),
+                message: "snapshot in bundle is missing genesis block".to_string(),
+            });
+        }
+
+        let snapshot_max_height = bundle
+            .snapshot
+            .dag
+            .blocks
+            .values()
+            .map(|b| b.header.height)
+            .max()
+            .unwrap_or(0);
+        if snapshot_max_height != bundle.snapshot.dag.best_height {
+            issues.push(SnapshotVerificationIssue {
+                code: "SNAPSHOT_BUNDLE_BEST_HEIGHT_INCOHERENT".to_string(),
+                message: format!(
+                    "snapshot best_height {} does not match max DAG height {}",
+                    bundle.snapshot.dag.best_height, snapshot_max_height
+                ),
+            });
+        }
+
+        let snapshot_hashes = bundle
+            .snapshot
+            .dag
+            .blocks
+            .keys()
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>();
+        let persisted_hashes = bundle
+            .persisted_blocks
+            .iter()
+            .map(|b| b.hash.clone())
+            .collect::<std::collections::BTreeSet<_>>();
+        for block in &bundle.persisted_blocks {
+            if block.header.height <= bundle.snapshot.dag.best_height
+                && !snapshot_hashes.contains(&block.hash)
+            {
+                issues.push(SnapshotVerificationIssue {
+                    code: "SNAPSHOT_BUNDLE_DELTA_NOT_IN_SNAPSHOT".to_string(),
+                    message: format!(
+                        "persisted block {} at height {} is not present in snapshot",
+                        block.hash, block.header.height
+                    ),
+                });
+            }
+            for parent in &block.header.parents {
+                if !snapshot_hashes.contains(parent) && !persisted_hashes.contains(parent) {
+                    issues.push(SnapshotVerificationIssue {
+                        code: "SNAPSHOT_BUNDLE_MISSING_PARENT".to_string(),
+                        message: format!(
+                            "persisted block {} references missing parent {}",
+                            block.hash, parent
+                        ),
+                    });
+                }
+            }
+        }
+
+        let replay_viable = rebuild_state_from_snapshot_and_blocks(
+            bundle.snapshot.clone(),
+            bundle.persisted_blocks.clone(),
+        )
+        .is_ok();
+        if !replay_viable {
+            issues.push(SnapshotVerificationIssue {
+                code: "SNAPSHOT_BUNDLE_REPLAY_FAILED".to_string(),
+                message: "snapshot+delta replay validation failed".to_string(),
+            });
+        }
+        let snapshot_anchor_present = bundle.snapshot_captured_at_unix.is_some();
+        if !snapshot_anchor_present {
+            issues.push(SnapshotVerificationIssue {
+                code: "SNAPSHOT_BUNDLE_ANCHOR_MISSING".to_string(),
+                message: "snapshot restore anchor metadata missing from bundle".to_string(),
+            });
+        }
+        let restore_guarantees_explicit = issues.is_empty();
+        let issue_count = issues.len();
+        SnapshotVerificationReport {
+            format_version: bundle.format_version,
+            chain_id: bundle.snapshot.chain_id.clone(),
+            expected_chain_id: expected_chain_id_owned,
+            snapshot_best_height: bundle.snapshot.dag.best_height,
+            persisted_block_count: bundle.persisted_blocks.len(),
+            snapshot_anchor_present,
+            chain_id_matches_expected,
+            replay_viable,
+            restore_guarantees_explicit,
+            issue_count,
+            issues,
+        }
+    }
+
+    pub fn export_snapshot_bundle(
+        &self,
+        expected_chain_id: Option<&str>,
+    ) -> Result<(SnapshotExportBundle, SnapshotVerificationReport), PulseError> {
+        let snapshot = self
+            .load_chain_state()?
+            .ok_or_else(|| PulseError::StorageError("validated snapshot missing".to_string()))?;
+        let persisted_blocks = self.list_blocks()?;
+        let exported_at_unix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let bundle = SnapshotExportBundle {
+            format_version: 1,
+            exported_at_unix,
+            snapshot_captured_at_unix: self.snapshot_captured_at_unix()?,
+            snapshot,
+            persisted_blocks,
+        };
+        let report = self.verify_snapshot_bundle(&bundle, expected_chain_id);
+        if !report.restore_guarantees_explicit {
+            return Err(PulseError::StorageError(format!(
+                "snapshot export verification failed: {}",
+                report
+                    .issues
+                    .iter()
+                    .map(|issue| format!("{}={}", issue.code, issue.message))
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            )));
+        }
+        Ok((bundle, report))
+    }
+
+    pub fn import_snapshot_bundle(
+        &self,
+        bundle: SnapshotExportBundle,
+        expected_chain_id: Option<&str>,
+    ) -> Result<SnapshotVerificationReport, PulseError> {
+        let report = self.verify_snapshot_bundle(&bundle, expected_chain_id);
+        if !report.restore_guarantees_explicit {
+            return Err(PulseError::StorageError(format!(
+                "snapshot import verification failed: {}",
+                report
+                    .issues
+                    .iter()
+                    .map(|issue| format!("{}={}", issue.code, issue.message))
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            )));
+        }
+
+        let blocks_cf = self
+            .db
+            .cf_handle("blocks")
+            .ok_or_else(|| PulseError::StorageError("missing cf blocks".into()))?;
+        let meta_cf = self
+            .db
+            .cf_handle("meta")
+            .ok_or_else(|| PulseError::StorageError("missing cf meta".into()))?;
+        let existing_blocks = self.list_blocks()?;
+        let mut batch = WriteBatch::default();
+        for block in existing_blocks {
+            batch.delete_cf(&blocks_cf, block.hash.as_bytes());
+        }
+        for block in &bundle.persisted_blocks {
+            batch.put_cf(
+                &blocks_cf,
+                block.hash.as_bytes(),
+                serde_json::to_vec(block).map_err(|e| PulseError::StorageError(e.to_string()))?,
+            );
+        }
+        self.stage_chain_state_snapshot_with_captured_at(
+            &mut batch,
+            &meta_cf,
+            &bundle.snapshot,
+            bundle.snapshot_captured_at_unix.unwrap_or(bundle.exported_at_unix),
+        )?;
+        self.db
+            .write(batch)
+            .map_err(|e| PulseError::StorageError(e.to_string()))?;
+
+        Ok(report)
     }
 
     pub fn replay_from_validated_snapshot_and_delta(
@@ -758,7 +1014,7 @@ impl Storage {
 
 #[cfg(test)]
 mod tests {
-    use super::{Storage, CHAIN_STATE_KEY};
+    use super::{SnapshotExportBundle, Storage, CHAIN_STATE_KEY};
     use proptest::prelude::*;
     use pulsedag_core::{
         accept::{accept_block, AcceptSource},
@@ -1337,6 +1593,75 @@ mod tests {
             snapshot_after.dag.best_height, state.dag.best_height,
             "failed restore must not advance stored snapshot"
         );
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn export_import_snapshot_bundle_round_trip_is_coherent() {
+        let source_path = temp_db_path("snapshot-export-source");
+        let source = Storage::open(&source_path).expect("open source storage");
+        let state = build_linear_chain("testnet", 6);
+        let mut blocks: Vec<_> = state.dag.blocks.values().cloned().collect();
+        blocks.sort_by_key(|b| b.header.height);
+        for block in &blocks {
+            source.persist_block(block).expect("persist block");
+        }
+        source
+            .persist_chain_state(&state)
+            .expect("persist source snapshot");
+        source
+            .prune_blocks_below_height(5)
+            .expect("prune source history");
+
+        let (bundle, export_report) = source
+            .export_snapshot_bundle(Some("testnet"))
+            .expect("snapshot export should verify");
+        assert!(export_report.restore_guarantees_explicit);
+        assert!(export_report.replay_viable);
+
+        let target_path = temp_db_path("snapshot-export-target");
+        let target = Storage::open(&target_path).expect("open target storage");
+        let import_report = target
+            .import_snapshot_bundle(bundle.clone(), Some("testnet"))
+            .expect("snapshot import should verify");
+        assert!(import_report.restore_guarantees_explicit);
+
+        let restored = target
+            .replay_from_validated_snapshot_and_delta(Some("testnet"))
+            .expect("imported snapshot should be restorable");
+        assert_eq!(restored.dag.best_height, state.dag.best_height);
+        assert_eq!(best_tip_hash(&restored), best_tip_hash(&state));
+        assert_eq!(
+            target
+                .snapshot_captured_at_unix()
+                .expect("imported anchor timestamp"),
+            bundle.snapshot_captured_at_unix
+        );
+
+        let _ = std::fs::remove_dir_all(source_path);
+        let _ = std::fs::remove_dir_all(target_path);
+    }
+
+    #[test]
+    fn verify_snapshot_bundle_signals_missing_anchor_explicitly() {
+        let path = temp_db_path("snapshot-verify-anchor-missing");
+        let storage = Storage::open(&path).expect("open storage");
+        let state = build_linear_chain("testnet", 3);
+        let bundle = SnapshotExportBundle {
+            format_version: 1,
+            exported_at_unix: 1,
+            snapshot_captured_at_unix: None,
+            snapshot: state.clone(),
+            persisted_blocks: state.dag.blocks.values().cloned().collect(),
+        };
+
+        let report = storage.verify_snapshot_bundle(&bundle, Some("testnet"));
+        assert!(!report.restore_guarantees_explicit);
+        assert!(!report.snapshot_anchor_present);
+        assert!(report
+            .issues
+            .iter()
+            .any(|i| i.code == "SNAPSHOT_BUNDLE_ANCHOR_MISSING"));
         let _ = std::fs::remove_dir_all(path);
     }
 

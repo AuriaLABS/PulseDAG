@@ -80,6 +80,7 @@ Evidence must explicitly map to these active validation paths:
 - **Release E2E verification:** `release-packaging/verification.md` aligned with `docs/release/ARTIFACTS.md`.
 - **Chaos/restart/recovery drills:** `chaos-suite/*` and `restart-log.md` aligned with `docs/runbooks/CHAOS_RESTART_RECOVERY_SUITE.md`.
 - **Restore/rebuild timing evidence:** `restore-timing.csv` aligned with `docs/runbooks/SNAPSHOT_RESTORE.md` and `docs/runbooks/REBUILD_FROM_SNAPSHOT_AND_DELTA.md`.
+- **Snapshot productization checks:** include output/log pointers from `scripts/snapshot-productization-evidence.sh` proving export/import coherence, explicit verification signals, and repeatable restore behavior.
 - **Deterministic release hygiene:** record lockfile + commit/tag provenance checks performed under locked builds.
 
 ## Final PoW dry-run evidence (public testnet gate)
