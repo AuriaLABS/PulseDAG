@@ -7,6 +7,25 @@ This guide is limited to release engineering and operator packaging workflow.
 - Miner remains external and standalone.
 - No pool logic is introduced.
 
+## Cargo.lock policy for CI and release builds
+Release engineering now uses an explicit lockfile policy:
+
+- `Cargo.lock` is a committed release input and must be up to date with workspace manifests.
+- CI/release workflows run an early fail-fast lock validation (`cargo metadata --locked`) before build/test packaging work.
+- Release builds run with `cargo build --locked` to prevent silent lockfile mutation.
+
+This keeps release dependency resolution deterministic and reproducible across reruns and platforms.
+
+### Intentional dependency change procedure
+If dependency resolution must change, do it as a deliberate source change:
+
+1. Update manifests as needed.
+2. Regenerate/update lockfile (`cargo generate-lockfile` or targeted `cargo update`).
+3. Commit the `Cargo.lock` diff in the same PR.
+4. Let CI validate the updated lockfile in locked mode.
+
+Follow-up policy decision (if needed): whether to also enforce `--locked` in all non-release build/test jobs. Current policy enforces fail-fast lock drift checks broadly and strict locked mode in release builds.
+
 ## Asset naming convention
 The `release-binaries` workflow publishes two standalone binary families per target:
 

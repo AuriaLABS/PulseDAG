@@ -56,8 +56,19 @@ jobs:
           rustc --version
           cargo --version
 
+      - name: Validate Cargo.lock policy (release deterministic mode)
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! cargo metadata --locked --format-version 1 >/dev/null; then
+            echo "::error::Cargo.lock is out of sync with Cargo.toml/Cargo.toml workspace metadata."
+            echo "::error::Release builds require a committed, up-to-date lockfile and do not allow silent lockfile mutation."
+            echo "::error::Run 'cargo generate-lockfile' (or 'cargo update' when intentional), commit Cargo.lock, and rerun release."
+            exit 1
+          fi
+
       - name: Build node and standalone miner
-        run: cargo build --release --bin pulsedagd --bin pulsedag-miner
+        run: cargo build --locked --release --bin pulsedagd --bin pulsedag-miner
 
       - name: Package release assets (node + standalone miner)
         shell: bash
