@@ -49,10 +49,17 @@ def unpack_archive(archive: Path, destination: Path) -> None:
 
 def run_smoke(binary: Path, binary_name: str) -> None:
     args = [str(binary), "--version"]
+    allow_usage_exit_one = False
     if binary_name == "pulsedag-miner":
         args = [str(binary), "--help"]
+        allow_usage_exit_one = True
 
     result = subprocess.run(args, check=False, capture_output=True, text=True)
+    if allow_usage_exit_one and result.returncode == 1:
+        output = f"{result.stdout}\n{result.stderr}".lower()
+        if "usage:" in output and "pulsedag-miner" in output:
+            return
+
     if result.returncode != 0:
         raise SystemExit(
             f"Smoke command failed for {binary_name} ({' '.join(args)}):\n"
