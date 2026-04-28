@@ -165,8 +165,35 @@ def run_endpoint_latency(base_url: str, endpoints: list[str], iterations: int, t
     return rows
 
 
+def read_sync_stabilization_state(base_url: str, timeout_seconds: float) -> tuple[str | None, int]:
+    base = base_url.rstrip("/")
+
+    runtime_status, runtime_payload, _ = request_json(f"{base}/runtime/status", timeout_seconds)
+    selected_peer = None
+    if 200 <= runtime_status < 300:
+        selected_peer = pick_first_key(runtime_payload, ["sync_selected_peer", "syncSelectedPeer"])
+
+    lag_status, lag_payload, _ = request_json(f"{base}/sync/lag", timeout_seconds)
+    lag = None
+    if 200 <= lag_status < 300:
+        lag = pick_first_key(lag_payload, ["sync_lag_blocks", "syncLagBlocks", "lag"])
+
+    sync_status, sync_payload, _ = request_json(f"{base}/sync/status", timeout_seconds)
+    if 200 <= sync_status < 300:
+        if selected_peer in (None, ""):
+            selected_peer = pick_first_key(sync_payload, ["selected_tip", "selectedTip", "selected_peer", "selectedPeer", "selected"])
+        if lag is None:
+            lag = pick_first_key(sync_payload, ["replay_gap", "lag", "sync_lag", "block_lag", "height_lag"])
+
+    try:
+        lag_int = abs(int(lag)) if lag is not None else 0
+    except (TypeError, ValueError):
+        lag_int = 0
+
+    return selected_peer, lag_int
+
+
 def run_sync_stabilization(base_url: str, timeout_seconds: float, poll_seconds: float, stable_polls: int, max_wait_seconds: float, lag_threshold: int) -> dict[str, Any]:
-    url = f"{base_url.rstrip('/')}/sync/status"
     started = time.perf_counter()
     last_peer = None
     stable_count = 0
@@ -174,16 +201,7 @@ def run_sync_stabilization(base_url: str, timeout_seconds: float, poll_seconds: 
 
     while True:
         polls += 1
-        status, payload, err = request_json(url, timeout_seconds)
-        if status < 200 or status >= 300:
-            raise RuntimeError(f"sync/status request failed with status={status} err={err}")
-
-        selected_peer = pick_first_key(payload, ["selected_peer", "selectedPeer", "selected"])
-        lag = pick_first_key(payload, ["lag", "sync_lag", "block_lag", "height_lag"])
-        try:
-            lag_int = int(lag) if lag is not None else 0
-        except (TypeError, ValueError):
-            lag_int = 0
+        selected_peer, lag_int = read_sync_stabilization_state(base_url, timeout_seconds)
 
         if selected_peer == last_peer and selected_peer not in (None, ""):
             stable_count += 1
