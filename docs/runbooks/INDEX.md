@@ -28,7 +28,7 @@ This index consolidates the v2.2 operator package for recovery, rebuild, restore
 - `docs/runbooks/FINAL_POW_PUBLIC_TESTNET_DRY_RUN.md` — final multi-node, multi-miner dry-run and go/no-go gate before public testnet open.
 
 ## Evidence and operations support docs
-- `docs/checklists/V2_2_3_BURNIN_CLOSEOUT.md` — final v2.2.3 burn-in closeout checklist and evidence index.
+- `docs/checklists/V2_2_4_BURNIN_CLOSEOUT.md` — final v2.2.4 burn-in closeout checklist and evidence index.
 - `docs/RELEASE_EVIDENCE.md` — release evidence bundle requirements.
 - `docs/BURN_IN_14D.md` — 14-day burn-in requirements.
 - `docs/dashboard/README.md` — operator dashboard package.
