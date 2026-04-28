@@ -157,6 +157,18 @@ To reduce contradictory operator interpretations across endpoints:
   - diagnostics now mirrors `incident_primary_surface`, `incident_summary`, and `incident_indicators`.
   - `runtime_surface_rollup` now carries alert classes and SLO-style bps rollups so status, diagnostics, and event-summary surfaces remain aligned during incidents.
 
+### Operator trend windows + incident snapshots (v2.5)
+To make troubleshooting/burn-in dashboards more actionable without changing consensus behavior:
+- `GET /runtime/status` now includes `incident_snapshot` (bounded incident state built from the same rollup as top-level incident fields).
+- `GET /runtime/events/summary` now includes:
+  - `incident_snapshot`
+  - `trend_windows` with bounded windows:
+    - `last_5m` (300s)
+    - `last_30m` (1800s)
+    - `last_2h` (7200s)
+  - each window carries `event_count`, `warn_or_error_count`, `dominant_kind`, and an incident snapshot that is normalized to avoid contradictory summaries.
+- `GET /diagnostics` mirrors both `incident_snapshot` and `trend_windows` so dashboards can join runtime/diagnostics/event surfaces with coherent incident semantics.
+
 ## How operators use this package
 1. Wire your telemetry collector (Prometheus, OTEL collector, or Grafana JSON/Infinity datasource) to poll the API endpoints above.
 2. Import/translate dashboard panels in `ops/dashboard/v2.2/official-dashboards.json` into your Grafana dashboard objects.

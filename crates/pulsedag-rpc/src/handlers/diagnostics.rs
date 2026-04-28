@@ -2,10 +2,14 @@ use crate::{
     api::ApiResponse,
     api::RpcStateLike,
     handlers::release::{operator_stage, repo_version},
-    handlers::runtime::{runtime_surface_rollup, RuntimeSurfaceRollup},
+    handlers::runtime::{
+        build_runtime_trend_windows, runtime_incident_snapshot, runtime_surface_rollup,
+        RuntimeIncidentSnapshot, RuntimeSurfaceRollup, RuntimeTrendWindow,
+    },
 };
 use axum::{extract::State, Json};
 use pulsedag_storage::StorageAuditReport;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, serde::Serialize)]
 pub struct DiagnosticsData {
@@ -31,6 +35,8 @@ pub struct DiagnosticsData {
     pub incident_primary_surface: String,
     pub incident_summary: String,
     pub incident_indicators: Vec<String>,
+    pub incident_snapshot: RuntimeIncidentSnapshot,
+    pub trend_windows: Vec<RuntimeTrendWindow>,
 }
 
 pub async fn get_diagnostics<S: RpcStateLike>(
@@ -70,6 +76,21 @@ pub async fn get_diagnostics<S: RpcStateLike>(
     let incident_primary_surface = rollup.incident_primary_surface.clone();
     let incident_summary = rollup.incident_summary.clone();
     let incident_indicators = rollup.incident_indicators.clone();
+    let trend_events = state
+        .storage()
+        .list_runtime_events(2_000)
+        .unwrap_or_default();
+    let now_unix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let trend_windows = build_runtime_trend_windows(&trend_events, &rollup, now_unix);
+    let warn_or_error_count = trend_events
+        .iter()
+        .filter(|event| matches!(event.level.as_str(), "warn" | "error"))
+        .count();
+    let incident_snapshot =
+        runtime_incident_snapshot(&rollup, warn_or_error_count, trend_events.len());
     Json(ApiResponse::ok(DiagnosticsData {
         version: repo_version(),
         stage: operator_stage(),
@@ -93,6 +114,8 @@ pub async fn get_diagnostics<S: RpcStateLike>(
         incident_primary_surface,
         incident_summary,
         incident_indicators,
+        incident_snapshot,
+        trend_windows,
     }))
 }
 
@@ -256,5 +279,24 @@ mod tests {
             summary_data.runtime_surface_rollup.runtime_alert_classes,
             runtime_data.runtime_alert_classes
         );
+        assert_eq!(
+            diagnostics_data.incident_snapshot.primary_surface,
+            runtime_data.incident_primary_surface
+        );
+        assert_eq!(
+            diagnostics_data.incident_snapshot.runtime_health_slo_bps,
+            runtime_data.runtime_health_slo_bps
+        );
+        assert_eq!(diagnostics_data.trend_windows.len(), 3);
+        assert!(diagnostics_data.trend_windows.iter().all(|window| window
+            .incident_snapshot
+            .indicators
+            .len()
+            <= 5));
+        assert!(diagnostics_data.trend_windows.iter().all(|window| window
+            .incident_snapshot
+            .summary
+            .len()
+            < 220));
     }
 }

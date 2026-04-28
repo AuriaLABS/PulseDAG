@@ -32,6 +32,7 @@ pub struct RuntimeStatusData {
     pub incident_primary_surface: String,
     pub incident_summary: String,
     pub incident_indicators: Vec<String>,
+    pub incident_snapshot: RuntimeIncidentSnapshot,
     pub node_health_slo_bps: u64,
     pub sync_health_slo_bps: u64,
     pub p2p_health_slo_bps: u64,
@@ -232,6 +233,26 @@ pub struct RuntimeStatusData {
     pub p2p_queue_block_priority_picks: usize,
     pub p2p_queue_non_block_fair_picks: usize,
     pub p2p_queue_starvation_relief_picks: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct RuntimeIncidentSnapshot {
+    pub primary_surface: String,
+    pub status: String,
+    pub summary: String,
+    pub indicators: Vec<String>,
+    pub alert_class_count: usize,
+    pub runtime_health_slo_bps: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct RuntimeTrendWindow {
+    pub label: String,
+    pub span_secs: u64,
+    pub event_count: usize,
+    pub warn_or_error_count: usize,
+    pub dominant_kind: Option<String>,
+    pub incident_snapshot: RuntimeIncidentSnapshot,
 }
 
 #[derive(Debug, Clone)]
@@ -707,6 +728,84 @@ pub(crate) fn runtime_surface_rollup(
     }
 }
 
+pub(crate) fn runtime_incident_snapshot(
+    rollup: &RuntimeSurfaceRollup,
+    warn_or_error_count: usize,
+    event_count: usize,
+) -> RuntimeIncidentSnapshot {
+    let status = if rollup.node_runtime_surface_health == "degraded" || warn_or_error_count > 0 {
+        "active"
+    } else if event_count > 0 {
+        "monitoring"
+    } else {
+        "quiet"
+    };
+    let mut indicators = rollup.incident_indicators.clone();
+    indicators.truncate(5);
+    RuntimeIncidentSnapshot {
+        primary_surface: rollup.incident_primary_surface.clone(),
+        status: status.to_string(),
+        summary: format!(
+            "{} status={} events={} warn_or_error={} runtime_health_slo_bps={}",
+            rollup.incident_summary,
+            status,
+            event_count,
+            warn_or_error_count,
+            rollup.runtime_health_slo_bps
+        ),
+        indicators,
+        alert_class_count: rollup.runtime_alert_classes.len(),
+        runtime_health_slo_bps: rollup.runtime_health_slo_bps,
+    }
+}
+
+pub(crate) fn build_runtime_trend_windows(
+    events: &[pulsedag_storage::RuntimeEvent],
+    rollup: &RuntimeSurfaceRollup,
+    now_unix: u64,
+) -> Vec<RuntimeTrendWindow> {
+    let anchor_unix = events
+        .iter()
+        .map(|event| event.timestamp_unix)
+        .max()
+        .unwrap_or(now_unix)
+        .max(now_unix);
+    [
+        ("last_5m", 300u64),
+        ("last_30m", 1_800u64),
+        ("last_2h", 7_200u64),
+    ]
+    .into_iter()
+    .map(|(label, span_secs)| {
+        let mut by_kind: BTreeMap<String, usize> = BTreeMap::new();
+        let mut warn_or_error_count = 0usize;
+        let mut event_count = 0usize;
+        for event in events
+            .iter()
+            .filter(|event| anchor_unix.saturating_sub(event.timestamp_unix) <= span_secs)
+        {
+            event_count += 1;
+            if matches!(event.level.as_str(), "warn" | "error") {
+                warn_or_error_count += 1;
+            }
+            *by_kind.entry(event.kind.clone()).or_insert(0) += 1;
+        }
+        let dominant_kind = by_kind
+            .into_iter()
+            .max_by(|a, b| a.1.cmp(&b.1).then_with(|| b.0.cmp(&a.0)))
+            .map(|(kind, _)| kind);
+        RuntimeTrendWindow {
+            label: label.to_string(),
+            span_secs,
+            event_count,
+            warn_or_error_count,
+            dominant_kind,
+            incident_snapshot: runtime_incident_snapshot(rollup, warn_or_error_count, event_count),
+        }
+    })
+    .collect()
+}
+
 fn startup_status_view(runtime: &crate::api::NodeRuntimeStats) -> StartupStatusView {
     let path = runtime.startup_path.clone();
     let bootstrap_mode = match path.as_str() {
@@ -1012,6 +1111,7 @@ pub async fn get_runtime_status<S: RpcStateLike>(
         incident_primary_surface: rollup.incident_primary_surface.clone(),
         incident_summary: rollup.incident_summary.clone(),
         incident_indicators: rollup.incident_indicators.clone(),
+        incident_snapshot: runtime_incident_snapshot(&rollup, 0, 0),
         node_health_slo_bps: rollup.node_health_slo_bps,
         sync_health_slo_bps: rollup.sync_health_slo_bps,
         p2p_health_slo_bps: rollup.p2p_health_slo_bps,
@@ -2178,6 +2278,79 @@ mod tests {
             data.runtime_surface_rollup.external_mining_template_health,
             "counter_mismatch"
         );
+        assert_eq!(
+            data.incident_snapshot.primary_surface,
+            data.runtime_surface_rollup.incident_primary_surface
+        );
+        assert_eq!(data.trend_windows.len(), 3);
+        assert!(data
+            .trend_windows
+            .iter()
+            .all(|window| window.event_count <= data.scanned_event_count));
+    }
+
+    #[tokio::test]
+    async fn runtime_events_trend_windows_and_incident_snapshots_stay_coherent_and_bounded() {
+        let path = temp_db_path("runtime-event-summary-trend-windows");
+        let storage = Arc::new(Storage::open(path.to_str().unwrap()).expect("storage"));
+        storage
+            .append_runtime_event("warn", "sync_phase_change", "sync slowed")
+            .expect("append event");
+        storage
+            .append_runtime_event("error", "mempool_pressure", "mempool saturated")
+            .expect("append event");
+        storage
+            .append_runtime_event("info", "snapshot", "snapshot captured")
+            .expect("append event");
+        let chain = storage
+            .load_or_init_genesis("testnet-dev".to_string())
+            .expect("genesis");
+        let mut runtime = NodeRuntimeStats::default();
+        runtime.last_self_audit_ok = true;
+        runtime.sync_pipeline.last_error = Some("peer timeout".to_string());
+        runtime.active_alerts = vec!["sync stalled".to_string()];
+
+        let state = TestState {
+            chain: Arc::new(RwLock::new(chain)),
+            storage,
+            runtime: Arc::new(RwLock::new(runtime)),
+            p2p: None,
+        };
+
+        let Json(resp) =
+            get_runtime_events_summary(State(state), Query(RuntimeEventsQuery { limit: Some(50) }))
+                .await;
+        let data = resp.data.expect("runtime events summary");
+        assert_eq!(data.scanned_event_count, 3);
+        assert_eq!(data.trend_windows.len(), 3);
+        assert!(data
+            .trend_windows
+            .windows(2)
+            .all(|pair| pair[0].event_count <= pair[1].event_count));
+        assert!(data
+            .trend_windows
+            .iter()
+            .all(|window| window.event_count <= 3));
+        assert!(data
+            .trend_windows
+            .iter()
+            .all(|window| window.warn_or_error_count <= window.event_count));
+        assert!(data
+            .trend_windows
+            .iter()
+            .all(|window| window.incident_snapshot.summary.len() < 220));
+        assert!(data
+            .trend_windows
+            .iter()
+            .all(|window| window.incident_snapshot.indicators.len() <= 5));
+        assert_eq!(
+            data.incident_snapshot.primary_surface,
+            data.runtime_surface_rollup.incident_primary_surface
+        );
+        assert_eq!(
+            data.incident_snapshot.runtime_health_slo_bps,
+            data.runtime_surface_rollup.runtime_health_slo_bps
+        );
     }
 }
 
@@ -2220,6 +2393,8 @@ pub struct RuntimeEventsSummaryData {
     pub by_kind: BTreeMap<String, usize>,
     pub by_level: BTreeMap<String, usize>,
     pub runtime_surface_rollup: RuntimeSurfaceRollup,
+    pub incident_snapshot: RuntimeIncidentSnapshot,
+    pub trend_windows: Vec<RuntimeTrendWindow>,
 }
 
 pub async fn get_runtime_events_summary<S: RpcStateLike>(
@@ -2238,11 +2413,24 @@ pub async fn get_runtime_events_summary<S: RpcStateLike>(
                 *by_kind.entry(event.kind.clone()).or_insert(0) += 1;
                 *by_level.entry(event.level.clone()).or_insert(0) += 1;
             }
+            let warn_or_error_count = by_level.get("warn").copied().unwrap_or(0)
+                + by_level.get("error").copied().unwrap_or(0);
+            let now_unix = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            let trend_windows = build_runtime_trend_windows(&events, &rollup, now_unix);
             Json(ApiResponse::ok(RuntimeEventsSummaryData {
                 scanned_event_count: events.len(),
                 by_kind,
                 by_level,
                 runtime_surface_rollup: rollup,
+                incident_snapshot: runtime_incident_snapshot(
+                    &rollup,
+                    warn_or_error_count,
+                    events.len(),
+                ),
+                trend_windows,
             }))
         }
         Err(e) => Json(ApiResponse::err(
