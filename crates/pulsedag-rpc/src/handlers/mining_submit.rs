@@ -5,7 +5,7 @@ use crate::api::{ApiResponse, RpcStateLike, SubmitMinedBlockRequest};
 use axum::{extract::State, Json};
 use pulsedag_core::{
     accept_block, adopt_ready_orphans, dev_hash_score_u64, dev_pow_accepts, dev_target_u64,
-    preferred_tip_hash, AcceptSource,
+    errors::PulseError, preferred_tip_hash, AcceptSource,
 };
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -48,6 +48,10 @@ enum ExternalMiningRejectKind {
     StaleTemplate,
     UnknownTemplate,
     SubmitBlockError,
+    DuplicateBlock,
+    InvalidBlock,
+    ChainIdMismatch,
+    InternalError,
     StorageError,
 }
 
@@ -116,6 +120,10 @@ async fn record_external_mining_rejection<S: RpcStateLike>(
             ExternalMiningRejectKind::StaleTemplate => "stale_template",
             ExternalMiningRejectKind::UnknownTemplate => "unknown_template",
             ExternalMiningRejectKind::SubmitBlockError => "submit_block_error",
+            ExternalMiningRejectKind::DuplicateBlock => "duplicate_block",
+            ExternalMiningRejectKind::InvalidBlock => "invalid_block",
+            ExternalMiningRejectKind::ChainIdMismatch => "chain_id_mismatch",
+            ExternalMiningRejectKind::InternalError => "internal_error",
             ExternalMiningRejectKind::StorageError => "storage_error",
         }
         .to_string(),
@@ -146,6 +154,26 @@ async fn record_external_mining_rejection<S: RpcStateLike>(
                 .external_mining_rejected_submit_block_error
                 .saturating_add(1);
         }
+        ExternalMiningRejectKind::DuplicateBlock => {
+            runtime.external_mining_rejected_duplicate_block = runtime
+                .external_mining_rejected_duplicate_block
+                .saturating_add(1);
+        }
+        ExternalMiningRejectKind::InvalidBlock => {
+            runtime.external_mining_rejected_invalid_block = runtime
+                .external_mining_rejected_invalid_block
+                .saturating_add(1);
+        }
+        ExternalMiningRejectKind::ChainIdMismatch => {
+            runtime.external_mining_rejected_chain_id_mismatch = runtime
+                .external_mining_rejected_chain_id_mismatch
+                .saturating_add(1);
+        }
+        ExternalMiningRejectKind::InternalError => {
+            runtime.external_mining_rejected_internal_error = runtime
+                .external_mining_rejected_internal_error
+                .saturating_add(1);
+        }
         ExternalMiningRejectKind::StorageError => {
             runtime.external_mining_rejected_storage_error = runtime
                 .external_mining_rejected_storage_error
@@ -159,6 +187,10 @@ async fn record_external_mining_rejection<S: RpcStateLike>(
         ExternalMiningRejectKind::StaleTemplate => "stale_template",
         ExternalMiningRejectKind::UnknownTemplate => "unknown_template",
         ExternalMiningRejectKind::SubmitBlockError => "submit_block_error",
+        ExternalMiningRejectKind::DuplicateBlock => "duplicate_block",
+        ExternalMiningRejectKind::InvalidBlock => "invalid_block",
+        ExternalMiningRejectKind::ChainIdMismatch => "chain_id_mismatch",
+        ExternalMiningRejectKind::InternalError => "internal_error",
         ExternalMiningRejectKind::StorageError => "storage_error",
     };
     let _ = state.storage().append_runtime_event(
@@ -520,12 +552,15 @@ pub async fn post_mining_submit<S: RpcStateLike>(
             let mut runtime = runtime_handle.write().await;
             runtime.rejected_mined_blocks += 1;
             drop(runtime);
-            record_external_mining_rejection(
-                &state,
-                ExternalMiningRejectKind::SubmitBlockError,
-                &e.to_string(),
-            )
-            .await;
+            let rejection_kind = match &e {
+                PulseError::BlockAlreadyExists => ExternalMiningRejectKind::DuplicateBlock,
+                PulseError::InvalidBlock(_) => ExternalMiningRejectKind::InvalidBlock,
+                PulseError::ChainIdMismatch => ExternalMiningRejectKind::ChainIdMismatch,
+                PulseError::StorageError(_) => ExternalMiningRejectKind::StorageError,
+                PulseError::Internal(_) => ExternalMiningRejectKind::InternalError,
+                _ => ExternalMiningRejectKind::SubmitBlockError,
+            };
+            record_external_mining_rejection(&state, rejection_kind, &e.to_string()).await;
             Json(ApiResponse::err("SUBMIT_BLOCK_ERROR", e.to_string()))
         }
     }
@@ -1038,6 +1073,35 @@ mod tests {
             .external_mining_last_rejection_reason
             .as_deref()
             .is_some_and(|msg| msg.contains("reason_code=submitted_transactions_mismatch")));
+    }
+
+    #[tokio::test]
+    async fn submit_rejection_classifies_invalid_block_explicitly() {
+        let (state, _fake_p2p) = build_state_with_fake_p2p();
+        let mut block = build_mined_block(&state).await;
+        block.transactions.clear();
+
+        let Json(submit_response) = post_mining_submit(
+            State(state.clone()),
+            Json(SubmitMinedBlockRequest {
+                template_id: None,
+                block,
+            }),
+        )
+        .await;
+
+        assert!(!submit_response.ok);
+        let err = submit_response.error.expect("error expected");
+        assert_eq!(err.code, "SUBMIT_BLOCK_ERROR");
+        assert!(err.message.contains("invalid block"));
+        let runtime = state.runtime.read().await;
+        assert_eq!(runtime.rejected_mined_blocks, 1);
+        assert_eq!(runtime.external_mining_submit_rejected, 1);
+        assert_eq!(runtime.external_mining_rejected_invalid_block, 1);
+        assert_eq!(
+            runtime.external_mining_last_rejection_kind.as_deref(),
+            Some("invalid_block")
+        );
     }
 
     #[tokio::test]
