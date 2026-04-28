@@ -169,8 +169,8 @@ mod tests {
             Query(MaintenanceReportQuery { deep: Some(true) }),
         )
         .await;
-        let data = response.0.data.expect("data");
-        assert!(!data.state_audit.ok);
-        assert!(!data.recommended_action.is_empty());
+        assert!(!response.0.ok);
+        let err = response.0.error.expect("error");
+        assert_eq!(err.code, "STORAGE_ERROR");
     }
 }

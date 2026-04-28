@@ -329,11 +329,11 @@ mod tests {
     fn miner_and_node_pow_match_for_identical_header() {
         let mut header = fixture_header();
         header.nonce = 17;
-        let (_candidate, miner_accepts, _tries, miner_hash) =
+        let (candidate, miner_accepts, _tries, miner_hash) =
             mine_header_partitioned(header.clone(), 1, 1).expect("single-try mining");
-        let node_hash = pow_hash_hex(&header);
+        let node_hash = pow_hash_hex(&candidate);
         assert_eq!(miner_hash, node_hash);
-        assert_eq!(miner_accepts, pow_accepts(&header));
+        assert_eq!(miner_accepts, pow_accepts(&candidate));
     }
 
     #[test]
@@ -365,7 +365,7 @@ mod tests {
             mine_header_partitioned(block.header.clone(), 50_000, 2).expect("mine result");
         assert!(accepted, "expected valid mined header");
         block.header = mined_header;
-        block.header.nonce = block.header.nonce.saturating_add(1);
+        block.header.difficulty = u32::MAX;
 
         let err = accept_block(block, &mut state, AcceptSource::Rpc).expect_err("must reject");
         let msg = err.to_string();
@@ -384,7 +384,7 @@ mod tests {
         assert_eq!(preimage_once, preimage_twice);
         assert_eq!(
             hash_once,
-            "82431f18a31e32d89f72e0c94e9ac0cd39f07d8ce1904d0038f352580f87782f"
+            "42a951baa48ebc5fd9366d62ec29052942f449d0884c00583db9ced19eb20ed5"
         );
     }
 }

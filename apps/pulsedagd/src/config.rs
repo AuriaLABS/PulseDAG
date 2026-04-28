@@ -234,6 +234,7 @@ fn read_env_usize_positive(key: &str, default: usize, min: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, OnceLock};
 
     fn env_lock() -> &'static Mutex<()> {
         static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();

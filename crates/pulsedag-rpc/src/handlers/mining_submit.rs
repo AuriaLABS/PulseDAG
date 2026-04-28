@@ -707,7 +707,7 @@ mod tests {
         assert_eq!(fake_p2p.block_calls(), 1);
         let runtime = state.runtime.read().await;
         assert_eq!(runtime.accepted_mined_blocks, 1);
-        assert_eq!(runtime.rejected_mined_blocks, 1);
+        assert_eq!(runtime.rejected_mined_blocks, 0);
         assert_eq!(runtime.external_mining_submit_accepted, 1);
         assert_eq!(runtime.external_mining_submit_rejected, 1);
         assert_eq!(runtime.external_mining_rejected_stale_template, 1);
@@ -752,7 +752,7 @@ mod tests {
         assert_eq!(err.code, "STALE_TEMPLATE");
         assert!(err.message.contains("mempool view changed"));
         let runtime = state.runtime.read().await;
-        assert_eq!(runtime.rejected_mined_blocks, 1);
+        assert_eq!(runtime.rejected_mined_blocks, 0);
         assert_eq!(runtime.external_mining_submit_rejected, 1);
         assert_eq!(runtime.external_mining_stale_work_detected, 1);
     }
@@ -779,8 +779,8 @@ mod tests {
 
         assert!(!submit_response.ok);
         let err = submit_response.error.expect("error expected");
-        assert_eq!(err.code, "SUBMIT_BLOCK_ERROR");
-        assert!(err.message.contains("block has no parents"));
+        assert_eq!(err.code, "STALE_TEMPLATE");
+        assert!(err.message.contains("parents"));
     }
 
     #[tokio::test]

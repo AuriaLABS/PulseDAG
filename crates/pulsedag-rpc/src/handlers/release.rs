@@ -83,12 +83,12 @@ mod tests {
     fn runbook_index_covers_operator_topics() {
         let index = include_str!("../../../../docs/runbooks/INDEX.md");
         for required in [
-            "Snapshot Restore",
-            "Rebuild from Snapshot + Delta",
-            "Burn-in Evidence",
-            "P2P Recovery / Partition Rejoin",
-            "Staging Upgrade",
-            "Staging Rollback",
+            "SNAPSHOT_RESTORE.md",
+            "REBUILD_FROM_SNAPSHOT_AND_DELTA.md",
+            "RELEASE_EVIDENCE.md",
+            "P2P_RECOVERY.md",
+            "STAGING_UPGRADE.md",
+            "STAGING_ROLLBACK.md",
         ] {
             assert!(
                 index.contains(required),
