@@ -103,6 +103,23 @@ tar -xzf pulsedag-miner-v2.2.4-x86_64-unknown-linux-gnu.tar.gz
 ./pulsedag-miner-v2.2.4-x86_64-unknown-linux-gnu/pulsedag-miner --help
 ```
 
+## Repeatable standalone operator smoke flow (node + miner)
+For a practical standalone operator flow (without introducing pool semantics):
+
+1. Verify release sidecars and manifests as above.
+2. Run a short local smoke using external miner behavior only:
+
+```bash
+scripts/release/standalone_operator_smoke.sh --miner-address YOUR_ADDRESS
+```
+
+What this smoke does:
+- confirms standalone binary surfaces are callable (`pulsedagd --version`, `pulsedag-miner --help`);
+- starts a local node and waits for `/status`;
+- runs one external miner probe (`template -> nonce search -> submit`) with bounded tries.
+
+This flow is intentionally operator-focused: miner stays external/standalone, and no pool logic or consensus changes are introduced.
+
 ## Rollback packaging guidance
 Keep the previously known-good archive and its `.sha256` file in the same artifact store used for staging evidence.
 If rollback is required, verify checksum again before redeploying the old binary.
