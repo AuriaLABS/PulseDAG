@@ -9,7 +9,8 @@ use std::{
 
 use anyhow::Result;
 use app_state::{
-    build_startup_lifecycle_events, derive_startup_path_report, new_runtime_stats, AppState,
+    build_operator_console_rollup, build_startup_lifecycle_events, derive_startup_path_report,
+    new_runtime_stats, short_hash, AppState, OperatorConsoleInputs,
 };
 use axum::Router;
 use config::Config;
@@ -522,6 +523,8 @@ async fn main() -> Result<()> {
                         } else {
                             let adopted =
                                 pulsedag_core::adopt_ready_orphans(&mut guard, AcceptSource::P2p);
+                            let accepted_height = guard.dag.best_height;
+                            let accepted_tip = guard.dag.best_tip.clone();
                             {
                                 let mut rt = runtime.write().await;
                                 rt.sync_pipeline.validate_and_apply_blocks(1, now_unix());
@@ -536,6 +539,20 @@ async fn main() -> Result<()> {
                                     "adopted ready orphan blocks after inbound block"
                                 );
                             }
+                            info!(
+                                accepted_height,
+                                accepted_tip = %short_hash(&accepted_tip),
+                                "accepted inbound p2p block"
+                            );
+                            let _ = storage.append_runtime_event(
+                                "info",
+                                "block_accepted",
+                                &format!(
+                                    "source=p2p height={} tip={}",
+                                    accepted_height,
+                                    short_hash(&accepted_tip)
+                                ),
+                            );
                             if let Err(e) = storage.persist_block_and_chain_state(&block, &guard) {
                                 warn!(error = %e, "failed persisting chain state after inbound block");
                             }
@@ -553,14 +570,19 @@ async fn main() -> Result<()> {
         let chain = app_state.chain.clone();
         let runtime = app_state.runtime.clone();
         let storage = app_state.storage.clone();
+        let p2p = app_state.p2p.clone();
         tokio::spawn(async move {
+            let mut previous_best_height = 0u64;
+            let mut previous_accepted_p2p_blocks = 0u64;
+            let mut previous_accepted_mined_blocks = 0u64;
             loop {
-                sleep(Duration::from_secs(60)).await;
-                let (issue_count, best_height, orphan_count, mempool_size) = {
+                sleep(Duration::from_secs(15)).await;
+                let (issue_count, best_height, best_tip_hash, orphan_count, mempool_size) = {
                     let guard = chain.read().await;
                     (
                         pulsedag_core::dag_consistency_issues(&guard).len(),
                         guard.dag.best_height,
+                        guard.dag.best_tip.clone(),
                         guard.orphan_blocks.len(),
                         guard.mempool.transactions.len(),
                     )
@@ -638,6 +660,96 @@ async fn main() -> Result<()> {
                         ),
                     );
                 }
+
+                let p2p_status = if let Some(ref p2p_handle) = p2p {
+                    p2p_handle.status().ok()
+                } else {
+                    None
+                };
+                let connected_peers = p2p_status
+                    .as_ref()
+                    .map(|status| status.connected_peers.len())
+                    .unwrap_or(0);
+                let connected_peers_semantics = p2p_status
+                    .as_ref()
+                    .map(|status| pulsedag_p2p::connected_peers_semantics(&status.mode).to_string())
+                    .unwrap_or_else(|| "p2p disabled".to_string());
+                let sync_health = if rt.sync_pipeline.last_error.is_some() {
+                    "degraded".to_string()
+                } else if rt.sync_pipeline.phase == pulsedag_core::SyncPhase::Idle {
+                    "idle".to_string()
+                } else {
+                    "active".to_string()
+                };
+                let snapshot_status = if let Some(h) = rt.last_snapshot_height {
+                    format!(
+                        "last_snapshot_height={} last_snapshot_unix={:?}",
+                        h, rt.last_snapshot_unix
+                    )
+                } else {
+                    "last_snapshot_height=none".to_string()
+                };
+                let prune_status = format!(
+                    "auto_prune={} every_blocks={} keep_recent={} last_prune_height={:?}",
+                    rt.auto_prune_enabled,
+                    rt.auto_prune_every_blocks,
+                    rt.prune_keep_recent_blocks,
+                    rt.last_prune_height
+                );
+                let rollup = build_operator_console_rollup(
+                    &OperatorConsoleInputs {
+                        best_height,
+                        best_tip_hash,
+                        startup_path: rt.startup_path.clone(),
+                        startup_summary: rt.startup_status_summary.clone(),
+                        sync_phase: format!("{:?}", rt.sync_pipeline.phase),
+                        sync_health,
+                        connected_peers,
+                        connected_peers_semantics,
+                        mempool_size,
+                        orphan_count,
+                        active_alerts: rt.active_alerts.clone(),
+                        last_height_change_unix: rt.last_height_change_unix,
+                        now_unix: now,
+                        accepted_p2p_blocks: rt.accepted_p2p_blocks,
+                        accepted_mined_blocks: rt.accepted_mined_blocks,
+                        snapshot_status,
+                        prune_status,
+                    },
+                    previous_best_height,
+                    previous_accepted_p2p_blocks,
+                    previous_accepted_mined_blocks,
+                );
+                info!("{}", rollup.line);
+                if rollup.height_changed {
+                    info!(
+                        best_height,
+                        tip = %rollup.tip_hash_short,
+                        "operator signal: chain height advanced"
+                    );
+                }
+                if rollup.accepted_p2p_blocks_delta > 0 {
+                    info!(
+                        accepted_inbound_blocks_delta = rollup.accepted_p2p_blocks_delta,
+                        "operator signal: new inbound blocks accepted"
+                    );
+                }
+                if rollup.accepted_mined_blocks_delta > 0 {
+                    info!(
+                        accepted_mined_blocks_delta = rollup.accepted_mined_blocks_delta,
+                        "operator signal: locally mined block accepted"
+                    );
+                }
+                if rollup.stagnation_secs >= 600 {
+                    warn!(
+                        stagnation_secs = rollup.stagnation_secs,
+                        best_height, "operator signal: height stagnation detected"
+                    );
+                }
+
+                previous_best_height = best_height;
+                previous_accepted_p2p_blocks = rt.accepted_p2p_blocks;
+                previous_accepted_mined_blocks = rt.accepted_mined_blocks;
             }
         });
     }

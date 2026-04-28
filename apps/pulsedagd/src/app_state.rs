@@ -30,6 +30,92 @@ pub struct StartupLifecycleEvent {
     pub message: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct OperatorConsoleInputs {
+    pub best_height: u64,
+    pub best_tip_hash: String,
+    pub startup_path: String,
+    pub startup_summary: String,
+    pub sync_phase: String,
+    pub sync_health: String,
+    pub connected_peers: usize,
+    pub connected_peers_semantics: String,
+    pub mempool_size: usize,
+    pub orphan_count: usize,
+    pub active_alerts: Vec<String>,
+    pub last_height_change_unix: Option<u64>,
+    pub now_unix: u64,
+    pub accepted_p2p_blocks: u64,
+    pub accepted_mined_blocks: u64,
+    pub snapshot_status: String,
+    pub prune_status: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct OperatorConsoleRollup {
+    pub tip_hash_short: String,
+    pub stagnation_secs: u64,
+    pub height_changed: bool,
+    pub accepted_p2p_blocks_delta: u64,
+    pub accepted_mined_blocks_delta: u64,
+    pub line: String,
+}
+
+pub fn short_hash(hash: &str) -> String {
+    hash.chars().take(12).collect()
+}
+
+pub fn build_operator_console_rollup(
+    inputs: &OperatorConsoleInputs,
+    previous_best_height: u64,
+    previous_accepted_p2p_blocks: u64,
+    previous_accepted_mined_blocks: u64,
+) -> OperatorConsoleRollup {
+    let tip_hash_short = short_hash(&inputs.best_tip_hash);
+    let stagnation_secs = inputs
+        .last_height_change_unix
+        .map(|ts| inputs.now_unix.saturating_sub(ts))
+        .unwrap_or(0);
+    let accepted_p2p_blocks_delta = inputs
+        .accepted_p2p_blocks
+        .saturating_sub(previous_accepted_p2p_blocks);
+    let accepted_mined_blocks_delta = inputs
+        .accepted_mined_blocks
+        .saturating_sub(previous_accepted_mined_blocks);
+    let alerts = if inputs.active_alerts.is_empty() {
+        "none".to_string()
+    } else {
+        inputs.active_alerts.join(" | ")
+    };
+    let line = format!(
+        "operator_rollup height={} tip={} startup_path={} startup_summary=\"{}\" sync_phase={} sync_health={} peers={} ({}) mempool={} orphans={} alerts=\"{}\" stagnation_secs={} accepted_inbound_blocks_delta={} accepted_mined_blocks_delta={} snapshot_status=\"{}\" prune_status=\"{}\"",
+        inputs.best_height,
+        tip_hash_short,
+        inputs.startup_path,
+        inputs.startup_summary,
+        inputs.sync_phase,
+        inputs.sync_health,
+        inputs.connected_peers,
+        inputs.connected_peers_semantics,
+        inputs.mempool_size,
+        inputs.orphan_count,
+        alerts,
+        stagnation_secs,
+        accepted_p2p_blocks_delta,
+        accepted_mined_blocks_delta,
+        inputs.snapshot_status,
+        inputs.prune_status
+    );
+    OperatorConsoleRollup {
+        tip_hash_short,
+        stagnation_secs,
+        height_changed: inputs.best_height > previous_best_height,
+        accepted_p2p_blocks_delta,
+        accepted_mined_blocks_delta,
+        line,
+    }
+}
+
 pub fn build_startup_lifecycle_events(
     _startup_recovery_mode: &str,
     startup_report: &StartupPathReport,
@@ -321,7 +407,10 @@ impl RpcStateLike for AppState {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_startup_lifecycle_events, derive_startup_path_report};
+    use super::{
+        build_operator_console_rollup, build_startup_lifecycle_events, derive_startup_path_report,
+        short_hash, OperatorConsoleInputs,
+    };
 
     #[test]
     fn valid_snapshot_path_reports_fastboot_usage_correctly() {
@@ -569,5 +658,73 @@ mod tests {
         assert!(report
             .startup_status_summary
             .contains("contradictory input mode=snapshot"));
+    }
+
+    #[test]
+    fn operator_rollup_surfaces_height_change_and_block_acceptance_deltas() {
+        let input = OperatorConsoleInputs {
+            best_height: 44,
+            best_tip_hash: "abcdef1234567890".to_string(),
+            startup_path: "fast_boot".to_string(),
+            startup_summary: "snapshot_assisted startup via fast_boot".to_string(),
+            sync_phase: "Idle".to_string(),
+            sync_health: "idle".to_string(),
+            connected_peers: 3,
+            connected_peers_semantics: "real network peers".to_string(),
+            mempool_size: 7,
+            orphan_count: 1,
+            active_alerts: vec![],
+            last_height_change_unix: Some(120),
+            now_unix: 150,
+            accepted_p2p_blocks: 12,
+            accepted_mined_blocks: 4,
+            snapshot_status: "last_snapshot_height=44".to_string(),
+            prune_status: "auto_prune=on".to_string(),
+        };
+        let rollup = build_operator_console_rollup(&input, 43, 10, 3);
+        assert!(rollup.height_changed);
+        assert_eq!(rollup.accepted_p2p_blocks_delta, 2);
+        assert_eq!(rollup.accepted_mined_blocks_delta, 1);
+        assert_eq!(rollup.tip_hash_short, "abcdef123456");
+        assert!(rollup.line.contains("height=44"));
+    }
+
+    #[test]
+    fn operator_rollup_reports_stagnation_and_alerts_consistently() {
+        let input = OperatorConsoleInputs {
+            best_height: 88,
+            best_tip_hash: "0011223344556677".to_string(),
+            startup_path: "full_replay".to_string(),
+            startup_summary: "replay startup via full_replay".to_string(),
+            sync_phase: "BlockDownload".to_string(),
+            sync_health: "active".to_string(),
+            connected_peers: 0,
+            connected_peers_semantics: "simulated peers (not external network connectivity)"
+                .to_string(),
+            mempool_size: 600,
+            orphan_count: 40,
+            active_alerts: vec![
+                "high mempool size: 600".to_string(),
+                "high orphan count: 40".to_string(),
+            ],
+            last_height_change_unix: Some(1_000),
+            now_unix: 1_900,
+            accepted_p2p_blocks: 3,
+            accepted_mined_blocks: 0,
+            snapshot_status: "last_snapshot_height=none".to_string(),
+            prune_status: "auto_prune=off".to_string(),
+        };
+        let rollup = build_operator_console_rollup(&input, 88, 3, 0);
+        assert!(!rollup.height_changed);
+        assert_eq!(rollup.stagnation_secs, 900);
+        assert!(rollup
+            .line
+            .contains("alerts=\"high mempool size: 600 | high orphan count: 40\""));
+        assert!(rollup.line.contains("stagnation_secs=900"));
+    }
+
+    #[test]
+    fn short_hash_truncates_without_noise() {
+        assert_eq!(short_hash("1234567890abcdef"), "1234567890ab");
     }
 }

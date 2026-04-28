@@ -45,6 +45,16 @@ Query params:
 ## Operational Notes
 
 - This stream is incremental and focused on operator visibility.
+- `pulsedagd` also emits a local operator console rollup log line every 15 seconds (`operator_rollup ...`) with:
+  - current `height` and short `tip`
+  - startup path/summary
+  - sync phase/health
+  - connected peer count + semantics
+  - mempool and orphan counts
+  - active alerts
+  - height stagnation seconds
+  - inbound/local accepted block deltas
+  - snapshot and auto-prune status
 - Typical high-value `kind` values include reconnect/recovery, sync phase changes, snapshot/rebuild lifecycle, and mining accept/reject signals, when those events are appended to runtime events.
 - Startup observability fields in `GET /runtime/status` are intended to be non-contradictory:
   - `startup_bootstrap_mode=normal` means genesis-style startup (`startup_path=genesis_init`).
