@@ -971,6 +971,73 @@ mod tests {
     }
 
     #[test]
+    fn package_aware_pressure_uses_ancestor_plus_child_fee_signal() {
+        let mut state = init_chain_state("test".into());
+        state.mempool.max_transactions = 2;
+
+        let parent_key = signing_key(120);
+        let child_key = signing_key(121);
+        let outsider_key = signing_key(122);
+
+        let parent_input = fund_address(
+            &mut state,
+            "fund-package-signal-parent",
+            0,
+            address_from_public_key(&public_key_hex(&parent_key)),
+            100,
+        );
+        let outsider_input = fund_address(
+            &mut state,
+            "fund-package-signal-outsider",
+            0,
+            address_from_public_key(&public_key_hex(&outsider_key)),
+            100,
+        );
+
+        let parent = signed_tx(
+            &parent_key,
+            vec![parent_input],
+            vec![TxOutput {
+                address: address_from_public_key(&public_key_hex(&child_key)),
+                amount: 70,
+            }],
+            30,
+            1,
+        );
+        let child = signed_tx(
+            &child_key,
+            vec![OutPoint {
+                txid: parent.txid.clone(),
+                index: 0,
+            }],
+            vec![TxOutput {
+                address: "pulse1pkg-signal-child".into(),
+                amount: 69,
+            }],
+            1,
+            2,
+        );
+        let outsider = signed_tx(
+            &outsider_key,
+            vec![outsider_input],
+            vec![TxOutput {
+                address: "pulse1pkg-signal-outsider".into(),
+                amount: 80,
+            }],
+            10,
+            3,
+        );
+
+        accept_transaction(parent.clone(), &mut state, AcceptSource::Rpc).unwrap();
+        accept_transaction(outsider, &mut state, AcceptSource::Rpc).unwrap();
+        accept_transaction(child.clone(), &mut state, AcceptSource::Rpc).unwrap();
+
+        assert!(state.mempool.transactions.contains_key(&parent.txid));
+        assert!(state.mempool.transactions.contains_key(&child.txid));
+        assert_eq!(state.mempool.transactions.len(), 2);
+    }
+
+    #[test]
     fn orphan_tx_is_stored_in_orphan_pool() {
         let mut state = init_chain_state("test".into());
         state.mempool.max_orphans = 8;

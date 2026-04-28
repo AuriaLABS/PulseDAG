@@ -7,6 +7,7 @@ use crate::{
     types::{Block, Transaction},
     validation::{missing_transaction_inputs, validate_block, validate_transaction},
 };
+use std::cmp::Ordering;
 use std::collections::{BTreeSet, HashMap, HashSet};
 
 #[derive(Debug, Clone, Copy)]
@@ -19,6 +20,57 @@ pub enum AcceptSource {
 fn is_higher_priority(candidate: &Transaction, existing: &Transaction) -> bool {
     candidate.fee > existing.fee
         || (candidate.fee == existing.fee && candidate.txid < existing.txid)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PackageScore {
+    total_fee: u128,
+    tx_count: usize,
+    max_member_fee: u64,
+    canonical_txid: String,
+}
+
+fn package_score_for_ids<'a, I>(txids: I, state: &'a ChainState) -> Option<PackageScore>
+where
+    I: IntoIterator<Item = &'a String>,
+{
+    let mut total_fee = 0_u128;
+    let mut tx_count = 0usize;
+    let mut max_member_fee = 0u64;
+    let mut canonical: Option<&str> = None;
+    for txid in txids {
+        let tx = state.mempool.transactions.get(txid)?;
+        total_fee = total_fee.saturating_add(tx.fee as u128);
+        tx_count = tx_count.saturating_add(1);
+        max_member_fee = max_member_fee.max(tx.fee);
+        canonical = Some(match canonical {
+            Some(existing) => {
+                if tx.txid.as_str() < existing {
+                    tx.txid.as_str()
+                } else {
+                    existing
+                }
+            }
+            None => tx.txid.as_str(),
+        });
+    }
+    let canonical_txid = canonical.unwrap_or("-").to_string();
+    Some(PackageScore {
+        total_fee,
+        tx_count,
+        max_member_fee,
+        canonical_txid,
+    })
+}
+
+fn score_cmp(a: &PackageScore, b: &PackageScore) -> Ordering {
+    let a_weighted = a.total_fee.saturating_mul(b.tx_count as u128);
+    let b_weighted = b.total_fee.saturating_mul(a.tx_count as u128);
+    a_weighted
+        .cmp(&b_weighted)
+        .then_with(|| a.total_fee.cmp(&b.total_fee))
+        .then_with(|| a.max_member_fee.cmp(&b.max_member_fee))
+        .then_with(|| b.canonical_txid.cmp(&a.canonical_txid))
 }
 
 fn lowest_priority_txid(state: &ChainState) -> Option<String> {
@@ -61,6 +113,32 @@ fn collect_ancestor_set(tx: &Transaction, state: &ChainState) -> HashSet<String>
     }
 
     ancestors
+}
+
+fn incoming_package_score(tx: &Transaction, state: &ChainState) -> PackageScore {
+    let ancestors = collect_ancestor_set(tx, state);
+    let ancestor_score = package_score_for_ids(ancestors.iter(), state).unwrap_or(PackageScore {
+        total_fee: 0,
+        tx_count: 0,
+        max_member_fee: 0,
+        canonical_txid: "-".to_string(),
+    });
+    let canonical = if ancestors.is_empty() {
+        tx.txid.as_str()
+    } else {
+        ancestors
+            .iter()
+            .map(|s| s.as_str())
+            .chain(std::iter::once(tx.txid.as_str()))
+            .min()
+            .unwrap_or(tx.txid.as_str())
+    };
+    PackageScore {
+        total_fee: ancestor_score.total_fee.saturating_add(tx.fee as u128),
+        tx_count: ancestor_score.tx_count.saturating_add(1),
+        max_member_fee: ancestor_score.max_member_fee.max(tx.fee),
+        canonical_txid: canonical.to_string(),
+    }
 }
 
 fn build_mempool_children(state: &ChainState) -> HashMap<String, Vec<String>> {
@@ -269,6 +347,7 @@ pub fn accept_transaction(
         })?;
         let children = build_mempool_children(state);
         let protected_ancestors = collect_ancestor_set(&tx, state);
+        let candidate_score = incoming_package_score(&tx, state);
 
         let mut eviction_candidates = state
             .mempool
@@ -312,7 +391,13 @@ pub fn accept_transaction(
             let Some(package_threshold) = select_package_threshold(&package, state) else {
                 continue;
             };
-            if is_higher_priority(&tx, package_threshold) {
+            let Some(package_score) = package_score_for_ids(package.iter(), state) else {
+                continue;
+            };
+            let candidate_beats_package = score_cmp(&candidate_score, &package_score).is_gt()
+                || (score_cmp(&candidate_score, &package_score).is_eq()
+                    && is_higher_priority(&tx, package_threshold));
+            if candidate_beats_package {
                 selected_package = Some(package);
                 break;
             }
