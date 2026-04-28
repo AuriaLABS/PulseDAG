@@ -178,8 +178,27 @@ def run_sync_stabilization(base_url: str, timeout_seconds: float, poll_seconds: 
         if status < 200 or status >= 300:
             raise RuntimeError(f"sync/status request failed with status={status} err={err}")
 
-        selected_peer = pick_first_key(payload, ["selected_peer", "selectedPeer", "selected"])
-        lag = pick_first_key(payload, ["lag", "sync_lag", "block_lag", "height_lag"])
+        selected_peer = pick_first_key(
+            payload,
+            [
+                "selected_tip",
+                "selectedTip",
+                "selected_peer",
+                "selectedPeer",
+                "selected",
+            ],
+        )
+        lag = pick_first_key(
+            payload,
+            [
+                "replay_gap",
+                "replayGap",
+                "lag",
+                "sync_lag",
+                "block_lag",
+                "height_lag",
+            ],
+        )
         try:
             lag_int = int(lag) if lag is not None else 0
         except (TypeError, ValueError):
