@@ -78,3 +78,8 @@ Raw benchmark transcript: `docs/benchmarks/POW_BENCHMARK_OUTPUT_2026-04-24.md`.
 - Record 1/2/4/8-thread H/s values and choose the best sustained setting.
 - Keep miner external and point it to node `POST /mining/template` + `POST /mining/submit` flow.
 - Re-run the baseline after hardware, kernel, container, or compiler upgrades.
+
+
+## Related non-PoW operator baselines (v2.2.4)
+
+For p2p churn recovery, sync convergence, runtime/status responsiveness, and read-side RPC latency baselines, see `docs/benchmarks/V2_2_4_P2P_SYNC_RPC_BASELINE_METHODOLOGY.md` and `scripts/p2p-sync-rpc-baseline.sh`.

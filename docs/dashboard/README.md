@@ -123,3 +123,14 @@ To reduce contradictory operator interpretations across endpoints:
 - `docs/runbooks/SNAPSHOT_RESTORE.md`
 
 - `docs/dashboard/ALERTS.md`
+
+
+## Performance baseline companion (v2.2.4)
+
+For operator baseline capture across p2p churn recovery, sync convergence, runtime/status responsiveness, and read-side RPC latency, use:
+
+```bash
+scripts/p2p-sync-rpc-baseline.sh http://127.0.0.1:8080
+```
+
+Methodology and artifact format are documented in `docs/benchmarks/V2_2_4_P2P_SYNC_RPC_BASELINE_METHODOLOGY.md`.
