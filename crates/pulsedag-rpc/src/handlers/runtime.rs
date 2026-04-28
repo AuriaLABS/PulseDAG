@@ -28,6 +28,16 @@ pub struct RuntimeStatusData {
     pub burn_in_elapsed_days: u64,
     pub burn_in_remaining_days: u64,
     pub node_runtime_surface_health: String,
+    pub runtime_alert_classes: Vec<String>,
+    pub incident_primary_surface: String,
+    pub incident_summary: String,
+    pub incident_indicators: Vec<String>,
+    pub node_health_slo_bps: u64,
+    pub sync_health_slo_bps: u64,
+    pub p2p_health_slo_bps: u64,
+    pub mempool_health_slo_bps: u64,
+    pub mining_health_slo_bps: u64,
+    pub runtime_health_slo_bps: u64,
     pub accepted_p2p_blocks: u64,
     pub rejected_p2p_blocks: u64,
     pub duplicate_p2p_blocks: u64,
@@ -284,9 +294,11 @@ fn sync_catchup_view(runtime: &crate::api::NodeRuntimeStats, now_unix: u64) -> S
         match runtime.sync_pipeline.phase {
             SyncPhase::Idle if lag_blocks == 0 => "steady",
             SyncPhase::Idle => "recovering",
+            SyncPhase::PeerSelection => "discovering",
             SyncPhase::HeaderDiscovery => "discovering",
-            SyncPhase::BlockDownload => "acquiring",
+            SyncPhase::BlockAcquisition => "acquiring",
             SyncPhase::ValidationApplication => "validating",
+            SyncPhase::CatchUpCompletion => "steady",
         }
     }
     .to_string();
@@ -399,6 +411,31 @@ pub struct RuntimeSurfaceRollup {
     pub external_mining_submit_outcome_counters_coherent: bool,
     pub external_mining_rejection_counters_coherent: bool,
     pub node_runtime_surface_health: String,
+    pub runtime_alert_classes: Vec<String>,
+    pub incident_primary_surface: String,
+    pub incident_summary: String,
+    pub incident_indicators: Vec<String>,
+    pub node_health_slo_bps: u64,
+    pub sync_health_slo_bps: u64,
+    pub p2p_health_slo_bps: u64,
+    pub mempool_health_slo_bps: u64,
+    pub mining_health_slo_bps: u64,
+    pub runtime_health_slo_bps: u64,
+}
+
+fn degraded_penalty_bps(health: &str, counter_coherent: bool) -> u64 {
+    if !counter_coherent || health == "counter_mismatch" {
+        10_000
+    } else if matches!(
+        health,
+        "degraded" | "stale_dominant" | "rebroadcast_stalled" | "saturated"
+    ) {
+        5_000
+    } else if matches!(health, "watch" | "elevated" | "high_pressure") {
+        2_000
+    } else {
+        0
+    }
 }
 
 fn sync_surface_health(runtime: &crate::api::NodeRuntimeStats) -> (String, bool) {
@@ -510,6 +547,24 @@ pub(crate) fn runtime_surface_rollup(
         "healthy"
     };
     let (sync_surface_health, sync_counters_coherent) = sync_surface_health(runtime);
+    let mempool_surface_health = if runtime.active_alerts.iter().any(|alert| {
+        alert.contains("[mempool_pressure]")
+            || alert.contains("high mempool size")
+            || alert.contains("high orphan count")
+    }) {
+        "elevated"
+    } else {
+        "normal"
+    };
+    let p2p_surface_health = if runtime
+        .active_alerts
+        .iter()
+        .any(|alert| alert.contains("peer") || alert.contains("p2p"))
+    {
+        "degraded"
+    } else {
+        "healthy"
+    };
     let node_runtime_surface_health = if !runtime.active_alerts.is_empty()
         || !runtime.last_self_audit_ok
         || runtime.last_self_audit_issue_count > 0
@@ -522,6 +577,100 @@ pub(crate) fn runtime_surface_rollup(
     } else {
         "healthy"
     };
+    let mut runtime_alert_classes = BTreeMap::new();
+    if !runtime.last_self_audit_ok
+        || runtime.last_self_audit_issue_count > 0
+        || runtime.startup_consistency_issue_count > 0
+    {
+        runtime_alert_classes.insert("node_integrity".to_string(), 1usize);
+    }
+    if sync_surface_health == "degraded" {
+        runtime_alert_classes.insert("sync_pipeline".to_string(), 1usize);
+    }
+    if tx_propagation_health != "healthy" {
+        runtime_alert_classes.insert("tx_propagation".to_string(), 1usize);
+    }
+    if mempool_surface_health != "normal" {
+        runtime_alert_classes.insert("mempool_pressure".to_string(), 1usize);
+    }
+    if p2p_surface_health != "healthy" {
+        runtime_alert_classes.insert("p2p_recovery".to_string(), 1usize);
+    }
+    if external_mining_surface_health != "healthy" || external_mining_template_health != "healthy" {
+        runtime_alert_classes.insert("mining_submissions".to_string(), 1usize);
+    }
+    if runtime
+        .active_alerts
+        .iter()
+        .any(|alert| alert.contains("[tip_stagnation]") || alert.contains("stagnant"))
+    {
+        runtime_alert_classes.insert("tip_stagnation".to_string(), 1usize);
+    }
+    let runtime_alert_classes: Vec<String> = runtime_alert_classes.into_keys().collect();
+    let node_health_slo_bps = 10_000u64.saturating_sub(degraded_penalty_bps(
+        node_runtime_surface_health,
+        runtime.last_self_audit_ok && runtime.last_self_audit_issue_count == 0,
+    ));
+    let sync_health_slo_bps = 10_000u64.saturating_sub(degraded_penalty_bps(
+        &sync_surface_health,
+        sync_counters_coherent,
+    ));
+    let p2p_health_slo_bps = 10_000u64.saturating_sub(degraded_penalty_bps(
+        p2p_surface_health,
+        p2p_surface_health != "counter_mismatch",
+    ));
+    let mempool_health_slo_bps =
+        10_000u64.saturating_sub(degraded_penalty_bps(mempool_surface_health, true));
+    let mining_health_slo_bps = 10_000u64.saturating_sub(degraded_penalty_bps(
+        external_mining_template_health,
+        external_mining_submit_outcome_counter_delta == 0
+            && external_mining_rejection_counter_delta == 0,
+    ));
+    let runtime_health_slo_bps = (node_health_slo_bps
+        .saturating_add(sync_health_slo_bps)
+        .saturating_add(p2p_health_slo_bps)
+        .saturating_add(mempool_health_slo_bps)
+        .saturating_add(mining_health_slo_bps))
+        / 5;
+    let incident_primary_surface = runtime_alert_classes
+        .first()
+        .cloned()
+        .unwrap_or_else(|| "none".to_string());
+    let mut incident_indicators = Vec::new();
+    if !runtime.active_alerts.is_empty() {
+        incident_indicators.push(format!(
+            "active_alerts={}",
+            runtime.active_alerts.join(" | ")
+        ));
+    }
+    if sync_surface_health == "degraded" {
+        incident_indicators.push(format!(
+            "sync_degraded last_error={}",
+            runtime
+                .sync_pipeline
+                .last_error
+                .clone()
+                .unwrap_or_else(|| "none".to_string())
+        ));
+    }
+    if tx_propagation_health != "healthy" {
+        incident_indicators.push(format!("tx_propagation={tx_propagation_health}"));
+    }
+    if external_mining_surface_health != "healthy" {
+        incident_indicators.push(format!(
+            "mining_surface={} template={}",
+            external_mining_surface_health, external_mining_template_health
+        ));
+    }
+    if incident_indicators.is_empty() {
+        incident_indicators.push("no incident indicators".to_string());
+    }
+    let incident_summary = format!(
+        "primary_surface={} classes={} runtime_health_slo_bps={}",
+        incident_primary_surface,
+        runtime_alert_classes.len(),
+        runtime_health_slo_bps
+    );
 
     RuntimeSurfaceRollup {
         startup_path: startup.path,
@@ -545,6 +694,16 @@ pub(crate) fn runtime_surface_rollup(
             external_mining_submit_outcome_counter_delta == 0,
         external_mining_rejection_counters_coherent: external_mining_rejection_counter_delta == 0,
         node_runtime_surface_health: node_runtime_surface_health.to_string(),
+        runtime_alert_classes,
+        incident_primary_surface,
+        incident_summary,
+        incident_indicators,
+        node_health_slo_bps,
+        sync_health_slo_bps,
+        p2p_health_slo_bps,
+        mempool_health_slo_bps,
+        mining_health_slo_bps,
+        runtime_health_slo_bps,
     }
 }
 
@@ -617,25 +776,28 @@ pub async fn get_runtime_status<S: RpcStateLike>(
         mempool_transactions.saturating_add(mempool_orphan_transactions);
     let mempool_capacity_remaining_transactions =
         mempool_max_transactions.saturating_sub(mempool_transactions);
-    let mempool_pressure_bps = mempool_pressure_bps(mempool_transactions, mempool_max_transactions);
-    let mempool_orphan_pressure_bps =
+    let mempool_pressure_bps_value =
+        mempool_pressure_bps(mempool_transactions, mempool_max_transactions);
+    let mempool_orphan_pressure_bps_value =
         mempool_pressure_bps(mempool_orphan_transactions, mempool_max_orphans);
-    let mempool_pressure_tier = pressure_tier_from_bps(mempool_pressure_bps);
-    let mempool_orphan_pressure_tier = pressure_tier_from_bps(mempool_orphan_pressure_bps);
-    let mempool_combined_pressure_tier =
-        combined_pressure_tier(mempool_pressure_bps, mempool_orphan_pressure_bps);
-    let mempool_backpressure_active = mempool_pressure_bps >= 8_000
-        || mempool_orphan_pressure_bps >= 8_000
+    let mempool_pressure_tier = pressure_tier_from_bps(mempool_pressure_bps_value);
+    let mempool_orphan_pressure_tier = pressure_tier_from_bps(mempool_orphan_pressure_bps_value);
+    let mempool_combined_pressure_tier = combined_pressure_tier(
+        mempool_pressure_bps_value,
+        mempool_orphan_pressure_bps_value,
+    );
+    let mempool_backpressure_active = mempool_pressure_bps_value >= 8_000
+        || mempool_orphan_pressure_bps_value >= 8_000
         || mempool_capacity_remaining_transactions == 0;
     let mempool_backpressure_signal = if mempool_capacity_remaining_transactions == 0 {
         "at_capacity"
-    } else if mempool_orphan_pressure_bps >= 9_500 {
+    } else if mempool_orphan_pressure_bps_value >= 9_500 {
         "orphan_saturated"
-    } else if mempool_pressure_bps >= 9_500 {
+    } else if mempool_pressure_bps_value >= 9_500 {
         "mempool_saturated"
-    } else if mempool_orphan_pressure_bps >= 8_000 {
+    } else if mempool_orphan_pressure_bps_value >= 8_000 {
         "orphan_high_pressure"
-    } else if mempool_pressure_bps >= 8_000 {
+    } else if mempool_pressure_bps_value >= 8_000 {
         "mempool_high_pressure"
     } else {
         "none"
@@ -846,6 +1008,16 @@ pub async fn get_runtime_status<S: RpcStateLike>(
         burn_in_elapsed_days,
         burn_in_remaining_days,
         node_runtime_surface_health: rollup.node_runtime_surface_health.clone(),
+        runtime_alert_classes: rollup.runtime_alert_classes.clone(),
+        incident_primary_surface: rollup.incident_primary_surface.clone(),
+        incident_summary: rollup.incident_summary.clone(),
+        incident_indicators: rollup.incident_indicators.clone(),
+        node_health_slo_bps: rollup.node_health_slo_bps,
+        sync_health_slo_bps: rollup.sync_health_slo_bps,
+        p2p_health_slo_bps: rollup.p2p_health_slo_bps,
+        mempool_health_slo_bps: rollup.mempool_health_slo_bps,
+        mining_health_slo_bps: rollup.mining_health_slo_bps,
+        runtime_health_slo_bps: rollup.runtime_health_slo_bps,
         accepted_p2p_blocks: runtime.accepted_p2p_blocks,
         rejected_p2p_blocks: runtime.rejected_p2p_blocks,
         duplicate_p2p_blocks: runtime.duplicate_p2p_blocks,
@@ -889,8 +1061,8 @@ pub async fn get_runtime_status<S: RpcStateLike>(
         mempool_max_orphans,
         mempool_pending_transactions,
         mempool_capacity_remaining_transactions,
-        mempool_pressure_bps,
-        mempool_orphan_pressure_bps,
+        mempool_pressure_bps: mempool_pressure_bps_value,
+        mempool_orphan_pressure_bps: mempool_orphan_pressure_bps_value,
         mempool_pressure_tier: mempool_pressure_tier.as_str().to_string(),
         mempool_orphan_pressure_tier: mempool_orphan_pressure_tier.as_str().to_string(),
         mempool_backpressure_active,
@@ -1215,7 +1387,7 @@ mod tests {
             .as_secs();
         let mut runtime = NodeRuntimeStats::default();
         runtime.last_self_audit_ok = true;
-        runtime.sync_pipeline.phase = SyncPhase::BlockDownload;
+        runtime.sync_pipeline.phase = SyncPhase::BlockAcquisition;
         runtime.sync_pipeline.counters.blocks_requested = 10;
         runtime.sync_pipeline.counters.blocks_acquired = 2;
         runtime.sync_pipeline.counters.blocks_validated = 2;
@@ -1268,6 +1440,8 @@ mod tests {
             dequeued_block_messages: 0,
             dequeued_non_block_messages: 0,
             queue_block_priority_picks: 0,
+            queue_priority_tx_lane_picks: 0,
+            queue_standard_tx_lane_picks: 0,
             queue_non_block_fair_picks: 0,
             queue_starvation_relief_picks: 0,
             inbound_messages: 0,
@@ -1286,6 +1460,7 @@ mod tests {
             tx_outbound_recovery_relayed: 0,
             tx_outbound_priority_relayed: 0,
             tx_outbound_budget_suppressed: 0,
+            tx_outbound_recovery_budget_suppressed: 0,
             block_outbound_duplicates_suppressed: 0,
             block_outbound_first_seen_relayed: 0,
             block_outbound_recovery_relayed: 0,
@@ -1445,6 +1620,8 @@ mod tests {
             dequeued_block_messages: 0,
             dequeued_non_block_messages: 0,
             queue_block_priority_picks: 0,
+            queue_priority_tx_lane_picks: 0,
+            queue_standard_tx_lane_picks: 0,
             queue_non_block_fair_picks: 0,
             queue_starvation_relief_picks: 0,
             inbound_messages: 0,
@@ -1463,6 +1640,7 @@ mod tests {
             tx_outbound_recovery_relayed: 2,
             tx_outbound_priority_relayed: 1,
             tx_outbound_budget_suppressed: 3,
+            tx_outbound_recovery_budget_suppressed: 0,
             block_outbound_duplicates_suppressed: 2,
             block_outbound_first_seen_relayed: 5,
             block_outbound_recovery_relayed: 1,
@@ -1539,7 +1717,7 @@ mod tests {
             .load_or_init_genesis("testnet-dev".to_string())
             .unwrap();
         chain.mempool.max_transactions = 4;
-        chain.mempool.max_orphans = 2;
+        chain.mempool.max_orphans = 3;
         for i in 0..4 {
             let txid = format!("tx-{i}");
             chain.mempool.transactions.insert(
@@ -1563,6 +1741,17 @@ mod tests {
                 outputs: vec![],
                 fee: 0,
                 nonce: 9,
+            },
+        );
+        chain.mempool.orphan_transactions.insert(
+            "orphan-2".into(),
+            Transaction {
+                txid: "orphan-2".into(),
+                version: 1,
+                inputs: vec![],
+                outputs: vec![],
+                fee: 0,
+                nonce: 10,
             },
         );
         let state = TestState {
@@ -1814,6 +2003,100 @@ mod tests {
         assert_eq!(data.sync_blocks_request_backlog, 2);
         assert_eq!(data.sync_blocks_validation_backlog, 0);
         assert_eq!(data.node_runtime_surface_health, "degraded");
+    }
+
+    #[tokio::test]
+    async fn runtime_status_alert_classes_remain_coherent_under_mixed_degraded_states() {
+        let path = temp_db_path("runtime-alert-classes-mixed-degraded");
+        let storage = Arc::new(Storage::open(path.to_str().unwrap()).expect("storage"));
+        let chain = storage
+            .load_or_init_genesis("testnet-dev".to_string())
+            .expect("genesis");
+        let mut runtime = NodeRuntimeStats::default();
+        runtime.last_self_audit_ok = false;
+        runtime.last_self_audit_issue_count = 2;
+        runtime.sync_pipeline.last_error = Some("peer timeout".to_string());
+        runtime.tx_rebroadcast_attempts = 1;
+        runtime.tx_rebroadcast_success = 0;
+        runtime.external_mining_submit_accepted = 1;
+        runtime.external_mining_submit_rejected = 1;
+        runtime.external_mining_rejected_stale_template = 1;
+        runtime.active_alerts = vec![
+            "high mempool size: 999".to_string(),
+            "height stagnant for 900 seconds".to_string(),
+        ];
+
+        let state = TestState {
+            chain: Arc::new(RwLock::new(chain)),
+            storage,
+            runtime: Arc::new(RwLock::new(runtime)),
+            p2p: None,
+        };
+
+        let Json(resp) = get_runtime_status(State(state)).await;
+        let data = resp.data.expect("runtime status data");
+        assert_eq!(data.node_runtime_surface_health, "degraded");
+        assert!(data
+            .runtime_alert_classes
+            .contains(&"node_integrity".to_string()));
+        assert!(data
+            .runtime_alert_classes
+            .contains(&"sync_pipeline".to_string()));
+        assert!(data
+            .runtime_alert_classes
+            .contains(&"mempool_pressure".to_string()));
+        assert!(data
+            .runtime_alert_classes
+            .contains(&"mining_submissions".to_string()));
+        assert!(data
+            .runtime_alert_classes
+            .contains(&"tip_stagnation".to_string()));
+        assert_ne!(data.incident_primary_surface, "none");
+        assert!(data.incident_summary.contains("runtime_health_slo_bps="));
+    }
+
+    #[tokio::test]
+    async fn runtime_status_slo_style_rollups_align_with_counter_health() {
+        let path = temp_db_path("runtime-slo-rollup-alignment");
+        let storage = Arc::new(Storage::open(path.to_str().unwrap()).expect("storage"));
+        let chain = storage
+            .load_or_init_genesis("testnet-dev".to_string())
+            .expect("genesis");
+        let mut runtime = NodeRuntimeStats::default();
+        runtime.last_self_audit_ok = true;
+        runtime.sync_pipeline.phase = SyncPhase::HeaderDiscovery;
+        runtime.sync_pipeline.counters.blocks_requested = 2;
+        runtime.sync_pipeline.counters.blocks_acquired = 2;
+        runtime.sync_pipeline.counters.blocks_validated = 2;
+        runtime.sync_pipeline.counters.blocks_applied = 2;
+        runtime.tx_inbound_total = 4;
+        runtime.tx_inbound_accepted_total = 3;
+        runtime.tx_inbound_dropped_total = 1;
+        runtime.dropped_p2p_txs = 1;
+        runtime.dropped_p2p_txs_duplicate_mempool = 1;
+        runtime.tx_rebroadcast_attempts = 1;
+        runtime.tx_rebroadcast_success = 1;
+        runtime.external_mining_submit_accepted = 2;
+        runtime.external_mining_submit_rejected = 0;
+        runtime.accepted_mined_blocks = 2;
+        runtime.rejected_mined_blocks = 0;
+
+        let state = TestState {
+            chain: Arc::new(RwLock::new(chain)),
+            storage,
+            runtime: Arc::new(RwLock::new(runtime)),
+            p2p: None,
+        };
+
+        let Json(resp) = get_runtime_status(State(state)).await;
+        let data = resp.data.expect("runtime status data");
+        assert_eq!(data.tx_inbound_counter_delta, 0);
+        assert!(data.tx_inbound_counters_coherent);
+        assert_eq!(data.sync_surface_health, "active");
+        assert_eq!(data.external_mining_surface_health, "healthy");
+        assert_eq!(data.sync_health_slo_bps, 10_000);
+        assert_eq!(data.mining_health_slo_bps, 10_000);
+        assert!(data.runtime_health_slo_bps >= 9_000);
     }
 
     #[tokio::test]

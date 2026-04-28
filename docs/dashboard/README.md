@@ -122,6 +122,20 @@ The package references only fields emitted by the node APIs:
   - `mempool_surface_health`
 - external mining rollup:
   - `external_mining_surface_health`
+- operator alert classes + incident diagnostics (v2.4):
+  - `runtime_alert_classes` (explicit classes such as `node_integrity`, `sync_pipeline`, `mempool_pressure`, `p2p_recovery`, `mining_submissions`, `tip_stagnation`)
+  - incident triage helpers:
+    - `incident_primary_surface`
+    - `incident_summary`
+    - `incident_indicators`
+- SLO-style health rollups (v2.4):
+  - `node_health_slo_bps`
+  - `sync_health_slo_bps`
+  - `p2p_health_slo_bps`
+  - `mempool_health_slo_bps`
+  - `mining_health_slo_bps`
+  - `runtime_health_slo_bps`
+  - all values are bounded `0..=10000` and derived from explicit coherence/degraded states (counter mismatches incur the strongest penalty).
 
 These fields are strictly additive and designed for coherent dashboards: contradictory combinations are normalized into explicit degraded/counter-mismatch states instead of ambiguous operator signals.
 
@@ -139,6 +153,9 @@ To reduce contradictory operator interpretations across endpoints:
 - `GET /diagnostics` now includes `runtime_surface_rollup` (startup/sync/tx/mining/node normalized health summary).
 - `GET /runtime/events/summary` now also includes `runtime_surface_rollup`.
 - Rollup values are computed from the same normalization logic used by `GET /runtime/status`, so dashboards can join these surfaces without conflicting status semantics.
+- v2.4 extends this with incident-facing consistency:
+  - diagnostics now mirrors `incident_primary_surface`, `incident_summary`, and `incident_indicators`.
+  - `runtime_surface_rollup` now carries alert classes and SLO-style bps rollups so status, diagnostics, and event-summary surfaces remain aligned during incidents.
 
 ## How operators use this package
 1. Wire your telemetry collector (Prometheus, OTEL collector, or Grafana JSON/Infinity datasource) to poll the API endpoints above.

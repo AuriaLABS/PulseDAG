@@ -600,17 +600,26 @@ async fn main() -> Result<()> {
                 }
                 let mut active_alerts = Vec::new();
                 if orphan_count >= 32 {
-                    active_alerts.push(format!("high orphan count: {}", orphan_count));
+                    active_alerts.push(format!(
+                        "[mempool_pressure] high orphan count: {}",
+                        orphan_count
+                    ));
                 }
                 if mempool_size >= 512 {
-                    active_alerts.push(format!("high mempool size: {}", mempool_size));
+                    active_alerts.push(format!(
+                        "[mempool_pressure] high mempool size: {}",
+                        mempool_size
+                    ));
                 }
                 let stagnation_secs = rt
                     .last_height_change_unix
                     .map(|ts| now.saturating_sub(ts))
                     .unwrap_or(0);
                 if stagnation_secs >= 600 {
-                    active_alerts.push(format!("height stagnant for {} seconds", stagnation_secs));
+                    active_alerts.push(format!(
+                        "[tip_stagnation] height stagnant for {} seconds",
+                        stagnation_secs
+                    ));
                 }
                 rt.active_alerts = active_alerts.clone();
                 rt.last_self_audit_unix = Some(now);
