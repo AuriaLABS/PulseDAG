@@ -1,4 +1,5 @@
 use std::{
+    collections::{BTreeSet, HashMap},
     fs,
     path::PathBuf,
     time::{SystemTime, UNIX_EPOCH},
@@ -66,6 +67,66 @@ pub(crate) struct TemplateLifecycleState {
 
 pub(crate) const TEMPLATE_TTL_SECS: u64 = 30;
 const POW_NONCE_OFFSET: usize = 1 + 4;
+
+fn template_ordered_transactions(chain: &ChainState) -> Vec<pulsedag_core::types::Transaction> {
+    let mut txs = chain
+        .mempool
+        .transactions
+        .iter()
+        .map(|(txid, tx)| (txid.clone(), tx.clone()))
+        .collect::<HashMap<_, _>>();
+    let mut remaining_parents = HashMap::<String, usize>::new();
+    let mut children = HashMap::<String, Vec<String>>::new();
+
+    for (txid, tx) in &txs {
+        let mut parent_count = 0usize;
+        for input in &tx.inputs {
+            if txs.contains_key(&input.previous_output.txid) {
+                parent_count = parent_count.saturating_add(1);
+                children
+                    .entry(input.previous_output.txid.clone())
+                    .or_default()
+                    .push(txid.clone());
+            }
+        }
+        remaining_parents.insert(txid.clone(), parent_count);
+    }
+
+    let mut ready = BTreeSet::<(u64, String)>::new();
+    for (txid, count) in &remaining_parents {
+        if *count == 0 {
+            let fee = txs.get(txid).map(|tx| tx.fee).unwrap_or(0);
+            ready.insert((u64::MAX.saturating_sub(fee), txid.clone()));
+        }
+    }
+
+    let mut ordered = Vec::with_capacity(txs.len());
+    while let Some((_, txid)) = ready.pop_first() {
+        let Some(tx) = txs.remove(&txid) else {
+            continue;
+        };
+        ordered.push(tx);
+        if let Some(kids) = children.get(&txid) {
+            for child in kids {
+                if let Some(parent_count) = remaining_parents.get_mut(child) {
+                    *parent_count = parent_count.saturating_sub(1);
+                    if *parent_count == 0 {
+                        let fee = txs.get(child).map(|tx| tx.fee).unwrap_or(0);
+                        ready.insert((u64::MAX.saturating_sub(fee), child.clone()));
+                    }
+                }
+            }
+        }
+    }
+
+    if !txs.is_empty() {
+        let mut fallback = txs.into_values().collect::<Vec<_>>();
+        fallback.sort_by(|a, b| b.fee.cmp(&a.fee).then_with(|| a.txid.cmp(&b.txid)));
+        ordered.extend(fallback);
+    }
+
+    ordered
+}
 
 pub(crate) fn current_template_state(chain: &ChainState) -> TemplateLifecycleState {
     let height = chain.dag.best_height + 1;
@@ -161,14 +222,7 @@ pub async fn post_mining_template<S: RpcStateLike>(
         reward,
         height,
     )];
-    let mut mempool_txs = chain
-        .mempool
-        .transactions
-        .values()
-        .cloned()
-        .collect::<Vec<_>>();
-    mempool_txs.sort_by(|a, b| a.txid.cmp(&b.txid));
-    txs.extend(mempool_txs);
+    txs.extend(template_ordered_transactions(&chain));
     let header_difficulty = lifecycle.difficulty;
     let block = build_candidate_block(parents.clone(), height, header_difficulty, txs);
     let target_u64 = lifecycle.target_u64;
@@ -267,8 +321,11 @@ pub async fn post_mining_template<S: RpcStateLike>(
 
 #[cfg(test)]
 mod tests {
-    use super::{current_template_state, template_id_for_state};
-    use pulsedag_core::genesis::init_chain_state;
+    use super::{current_template_state, template_id_for_state, template_ordered_transactions};
+    use pulsedag_core::{
+        genesis::init_chain_state,
+        types::{OutPoint, Transaction, TxInput},
+    };
 
     #[test]
     fn template_id_changes_when_mempool_changes() {
@@ -283,5 +340,55 @@ mod tests {
 
         assert_ne!(before, after);
         assert_eq!(state_after.mempool_tx_count, 1);
+    }
+
+    #[test]
+    fn template_ordering_keeps_parent_before_child_even_when_child_fee_is_higher() {
+        let mut chain = init_chain_state("testnet-dev".to_string());
+        let parent = Transaction {
+            txid: "parent".to_string(),
+            version: 1,
+            inputs: vec![TxInput {
+                previous_output: OutPoint {
+                    txid: "utxo-parent".to_string(),
+                    index: 0,
+                },
+                public_key: "pk".to_string(),
+                signature: "sig".to_string(),
+            }],
+            outputs: vec![],
+            fee: 1,
+            nonce: 1,
+        };
+        let child = Transaction {
+            txid: "child".to_string(),
+            version: 1,
+            inputs: vec![TxInput {
+                previous_output: OutPoint {
+                    txid: parent.txid.clone(),
+                    index: 0,
+                },
+                public_key: "pk".to_string(),
+                signature: "sig".to_string(),
+            }],
+            outputs: vec![],
+            fee: 100,
+            nonce: 2,
+        };
+
+        chain
+            .mempool
+            .transactions
+            .insert(child.txid.clone(), child.clone());
+        chain
+            .mempool
+            .transactions
+            .insert(parent.txid.clone(), parent.clone());
+
+        let ordered = template_ordered_transactions(&chain)
+            .into_iter()
+            .map(|tx| tx.txid)
+            .collect::<Vec<_>>();
+        assert_eq!(ordered, vec![parent.txid, child.txid]);
     }
 }
