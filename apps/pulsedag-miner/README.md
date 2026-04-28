@@ -14,6 +14,10 @@ Solo hace tres cosas:
 2. resolver PoW fuera del nodo
 3. enviar el bloque resuelto al nodo
 
+## Empaquetado de release
+
+En los releases oficiales, este binario se publica como artefacto **standalone** separado de `pulsedagd`, con nombre `pulsedag-miner-<tag>-<target>.*`, checksum `.sha256` y manifiesto `.json` por artefacto.
+
 ## Uso
 
 ```bash
