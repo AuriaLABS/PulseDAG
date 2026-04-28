@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::api::{ApiResponse, RpcStateLike};
 use pulsedag_core::{SyncPhase, SyncProgressCounters};
-use pulsedag_p2p::{mode_connected_peers_are_real_network, PeerRecoveryStatus};
+use pulsedag_p2p::mode_connected_peers_are_real_network;
 
 #[derive(Debug, serde::Serialize)]
 pub struct RuntimeStatusData {
@@ -1021,11 +1021,20 @@ mod tests {
             peer_flap_suppressed_count: 1,
             peers_under_cooldown: 1,
             peers_under_flap_guard: 1,
+            peer_lifecycle_healthy: 1,
+            peer_lifecycle_watch: 0,
+            peer_lifecycle_degraded: 0,
+            peer_lifecycle_cooldown: 0,
+            peer_lifecycle_recovering: 1,
+            degraded_mode: "normal".into(),
+            connection_shaping_active: true,
             peer_recovery: vec![
                 PeerRecoveryStatus {
                     peer_id: "healthy".into(),
                     score: 100,
                     fail_streak: 0,
+                    lifecycle_tier: "healthy".into(),
+                    recovery_tier: "steady".into(),
                     connected: true,
                     last_seen_unix: Some(now),
                     last_successful_connect_unix: Some(now),
@@ -1043,6 +1052,8 @@ mod tests {
                     peer_id: "recovering".into(),
                     score: 60,
                     fail_streak: 1,
+                    lifecycle_tier: "recovering".into(),
+                    recovery_tier: "assisted".into(),
                     connected: false,
                     last_seen_unix: Some(now.saturating_sub(100)),
                     last_successful_connect_unix: Some(now.saturating_sub(200)),
@@ -1063,6 +1074,10 @@ mod tests {
             connected_slots_in_use: 1,
             available_connection_slots: 7,
             sync_selection_sticky_until_unix: Some(now.saturating_add(30)),
+            topology_bucket_count: 8,
+            topology_distinct_buckets: 1,
+            topology_dominant_bucket_share_bps: 10_000,
+            topology_diversity_score_bps: 625,
         };
         let state = TestState {
             chain: Arc::new(RwLock::new(chain)),
@@ -1183,6 +1198,13 @@ mod tests {
             peer_flap_suppressed_count: 0,
             peers_under_cooldown: 0,
             peers_under_flap_guard: 0,
+            peer_lifecycle_healthy: 0,
+            peer_lifecycle_watch: 0,
+            peer_lifecycle_degraded: 0,
+            peer_lifecycle_cooldown: 0,
+            peer_lifecycle_recovering: 0,
+            degraded_mode: "unknown".into(),
+            connection_shaping_active: true,
             peer_recovery: vec![],
             sync_candidates: vec![],
             selected_sync_peer: None,
@@ -1190,6 +1212,10 @@ mod tests {
             connected_slots_in_use: 0,
             available_connection_slots: 8,
             sync_selection_sticky_until_unix: None,
+            topology_bucket_count: 8,
+            topology_distinct_buckets: 1,
+            topology_dominant_bucket_share_bps: 10_000,
+            topology_diversity_score_bps: 625,
         };
         let state = TestState {
             chain: Arc::new(RwLock::new(chain)),

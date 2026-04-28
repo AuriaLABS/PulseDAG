@@ -536,6 +536,13 @@ mod tests {
                 peer_flap_suppressed_count: 0,
                 peers_under_cooldown: 0,
                 peers_under_flap_guard: 0,
+                peer_lifecycle_healthy: 0,
+                peer_lifecycle_watch: 0,
+                peer_lifecycle_degraded: 0,
+                peer_lifecycle_cooldown: 0,
+                peer_lifecycle_recovering: 0,
+                degraded_mode: "unknown".into(),
+                connection_shaping_active: false,
                 peer_recovery: vec![],
                 sync_candidates: vec![],
                 selected_sync_peer: None,
@@ -543,6 +550,10 @@ mod tests {
                 connected_slots_in_use: 0,
                 available_connection_slots: 0,
                 sync_selection_sticky_until_unix: None,
+                topology_bucket_count: 8,
+                topology_distinct_buckets: 0,
+                topology_dominant_bucket_share_bps: 0,
+                topology_diversity_score_bps: 0,
             })
         }
     }

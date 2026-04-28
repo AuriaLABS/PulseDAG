@@ -122,6 +122,10 @@ pub struct P2pStatus {
     pub connected_slots_in_use: usize,
     pub available_connection_slots: usize,
     pub sync_selection_sticky_until_unix: Option<u64>,
+    pub topology_bucket_count: usize,
+    pub topology_distinct_buckets: usize,
+    pub topology_dominant_bucket_share_bps: u16,
+    pub topology_diversity_score_bps: u16,
 }
 
 pub trait P2pHandle: Send + Sync {
@@ -380,6 +384,12 @@ impl P2pHandle for MemoryP2pHandle {
         let available_connection_slots = inner
             .connection_slot_budget
             .saturating_sub(connected_slots_in_use);
+        let (
+            topology_bucket_count,
+            topology_distinct_buckets,
+            topology_dominant_bucket_share_bps,
+            topology_diversity_score_bps,
+        ) = topology_stats_for_connected_peers(&inner.connected_peers);
         Ok(P2pStatus {
             mode: inner.mode.clone(),
             peer_id: inner.peer_id.clone(),
@@ -442,6 +452,10 @@ impl P2pHandle for MemoryP2pHandle {
             available_connection_slots,
             sync_selection_sticky_until_unix: (inner.sync_selection_sticky_until_unix > 0)
                 .then_some(inner.sync_selection_sticky_until_unix),
+            topology_bucket_count,
+            topology_distinct_buckets,
+            topology_dominant_bucket_share_bps,
+            topology_diversity_score_bps,
         })
     }
 }
@@ -581,6 +595,8 @@ const TX_RELAY_BUDGET_PER_WINDOW: usize = 256;
 const TX_RELAY_BUDGET_OVERFLOW_SAMPLE_EVERY: u64 = 8;
 const CONNECTION_SHAPING_DEGRADED_CAP_DIVISOR: usize = 3;
 const CONNECTION_SHAPING_MIN_HEALTHY_SLOTS: usize = 1;
+const TOPOLOGY_BUCKET_COUNT: usize = 8;
+const TOPOLOGY_BUCKET_SOFT_CAP_DIVISOR: usize = 2;
 const DEGRADED_MODE_DEGRADED_BPS_THRESHOLD: usize = 4_000;
 
 fn peer_lifecycle_tier(health: &PeerHealth, now: u64) -> &'static str {
@@ -722,6 +738,35 @@ fn sync_candidates_snapshot(state: &InnerState) -> Vec<RankedSyncPeer> {
     rank_sync_candidates(&candidates, now)
 }
 
+fn topology_bucket_for_peer(peer_id: &str) -> usize {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    peer_id.hash(&mut hasher);
+    (hasher.finish() as usize) % TOPOLOGY_BUCKET_COUNT.max(1)
+}
+
+fn topology_stats_for_connected_peers(peers: &[String]) -> (usize, usize, u16, u16) {
+    if peers.is_empty() {
+        return (TOPOLOGY_BUCKET_COUNT, 0, 0, 0);
+    }
+    let mut counts: HashMap<usize, usize> = HashMap::new();
+    for peer in peers {
+        *counts.entry(topology_bucket_for_peer(peer)).or_insert(0) += 1;
+    }
+    let total = peers.len().max(1);
+    let dominant = counts.values().copied().max().unwrap_or(0);
+    let distinct = counts.len();
+    let dominant_share_bps = ((dominant * 10_000) / total).min(10_000) as u16;
+    let bucket_coverage_bps = ((distinct * 10_000) / TOPOLOGY_BUCKET_COUNT.max(1)).min(10_000);
+    let dominance_penalty_bps = 10_000usize.saturating_sub(dominant_share_bps as usize);
+    let diversity_score_bps = ((bucket_coverage_bps + dominance_penalty_bps) / 2).min(10_000);
+    (
+        TOPOLOGY_BUCKET_COUNT,
+        distinct,
+        dominant_share_bps,
+        diversity_score_bps as u16,
+    )
+}
+
 fn refresh_connected_peers_from_health(state: &mut InnerState) {
     if mode_connected_peers_are_real_network(&state.mode) {
         let budget = if state.connection_slot_budget == 0 {
@@ -775,7 +820,29 @@ fn refresh_connected_peers_from_health(state: &mut InnerState) {
             .max(1);
             shaped.extend(degraded.into_iter().take(remaining.min(degraded_cap)));
         }
-        state.connected_peers = shaped.into_iter().take(budget).collect();
+        let topology_soft_cap = std::cmp::max(1, budget.div_ceil(TOPOLOGY_BUCKET_SOFT_CAP_DIVISOR));
+        let mut bucket_counts: HashMap<usize, usize> = HashMap::new();
+        let mut selected = Vec::with_capacity(std::cmp::min(shaped.len(), budget));
+        let mut deferred = Vec::new();
+        for peer_id in shaped {
+            if selected.len() >= budget {
+                break;
+            }
+            let bucket = topology_bucket_for_peer(&peer_id);
+            if bucket_counts.get(&bucket).copied().unwrap_or(0) < topology_soft_cap {
+                *bucket_counts.entry(bucket).or_insert(0) += 1;
+                selected.push(peer_id);
+            } else {
+                deferred.push(peer_id);
+            }
+        }
+        for peer_id in deferred {
+            if selected.len() >= budget {
+                break;
+            }
+            selected.push(peer_id);
+        }
+        state.connected_peers = selected;
     } else {
         state.connected_peers.clear();
     }
@@ -1783,6 +1850,12 @@ impl P2pHandle for Libp2pHandle {
         let available_connection_slots = inner
             .connection_slot_budget
             .saturating_sub(connected_slots_in_use);
+        let (
+            topology_bucket_count,
+            topology_distinct_buckets,
+            topology_dominant_bucket_share_bps,
+            topology_diversity_score_bps,
+        ) = topology_stats_for_connected_peers(&inner.connected_peers);
         Ok(P2pStatus {
             mode: inner.mode.clone(),
             peer_id: inner.peer_id.clone(),
@@ -1845,6 +1918,10 @@ impl P2pHandle for Libp2pHandle {
             available_connection_slots,
             sync_selection_sticky_until_unix: (inner.sync_selection_sticky_until_unix > 0)
                 .then_some(inner.sync_selection_sticky_until_unix),
+            topology_bucket_count,
+            topology_distinct_buckets,
+            topology_dominant_bucket_share_bps,
+            topology_diversity_score_bps,
         })
     }
 }
@@ -1871,6 +1948,19 @@ pub fn build_p2p_stack(mode: P2pMode) -> Result<P2pStack, PulseError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn peers_for_bucket(bucket: usize, count: usize) -> Vec<String> {
+        let mut peers = Vec::new();
+        let mut idx = 0usize;
+        while peers.len() < count {
+            let candidate = format!("bucket-{bucket}-peer-{idx}");
+            if topology_bucket_for_peer(&candidate) == bucket {
+                peers.push(candidate);
+            }
+            idx = idx.saturating_add(1);
+        }
+        peers
+    }
 
     fn sample_tx(txid: &str) -> Transaction {
         Transaction {
@@ -2874,6 +2964,103 @@ mod tests {
             state.connected_peers,
             vec!["peer-a".to_string(), "peer-b".to_string()]
         );
+    }
+
+    #[test]
+    fn topology_diversity_prevents_slot_collapse_when_alternatives_exist() {
+        let mut state = InnerState::default();
+        state.mode = P2P_MODE_LIBP2P_REAL.into();
+        state.connection_slot_budget = 4;
+        let peers_bucket_0 = peers_for_bucket(0, 6);
+        let peers_bucket_1 = peers_for_bucket(1, 3);
+        for peer in peers_bucket_0.iter().chain(peers_bucket_1.iter()) {
+            state.peer_book.insert(
+                peer.clone(),
+                PeerHealth {
+                    connected: true,
+                    score: 120,
+                    ..PeerHealth::default()
+                },
+            );
+        }
+
+        refresh_connected_peers_from_health(&mut state);
+
+        let bucket_0_selected = state
+            .connected_peers
+            .iter()
+            .filter(|peer| topology_bucket_for_peer(peer) == 0)
+            .count();
+        let bucket_1_selected = state
+            .connected_peers
+            .iter()
+            .filter(|peer| topology_bucket_for_peer(peer) == 1)
+            .count();
+        assert_eq!(state.connected_peers.len(), 4);
+        assert!(bucket_0_selected <= 2);
+        assert!(bucket_1_selected >= 1);
+    }
+
+    #[test]
+    fn topology_diversity_metrics_are_bounded_and_deterministic() {
+        let peers = vec![
+            "peer-alpha".to_string(),
+            "peer-beta".to_string(),
+            "peer-gamma".to_string(),
+            "peer-delta".to_string(),
+        ];
+
+        let first = topology_stats_for_connected_peers(&peers);
+        let second = topology_stats_for_connected_peers(&peers);
+
+        assert_eq!(first, second);
+        assert_eq!(first.0, TOPOLOGY_BUCKET_COUNT);
+        assert!(first.1 <= TOPOLOGY_BUCKET_COUNT);
+        assert!(first.2 <= 10_000);
+        assert!(first.3 <= 10_000);
+    }
+
+    #[test]
+    fn topology_aware_shaping_still_respects_health_and_budget_constraints() {
+        let mut state = InnerState::default();
+        state.mode = P2P_MODE_LIBP2P_REAL.into();
+        state.connection_slot_budget = 2;
+        state.peer_book.insert(
+            "healthy-a".into(),
+            PeerHealth {
+                connected: true,
+                score: 130,
+                ..PeerHealth::default()
+            },
+        );
+        state.peer_book.insert(
+            "healthy-b".into(),
+            PeerHealth {
+                connected: true,
+                score: 120,
+                ..PeerHealth::default()
+            },
+        );
+        state.peer_book.insert(
+            "suppressed-high-score".into(),
+            PeerHealth {
+                connected: true,
+                score: 200,
+                suppressed_until_unix: u64::MAX,
+                ..PeerHealth::default()
+            },
+        );
+
+        refresh_connected_peers_from_health(&mut state);
+        let ranked = sync_candidates_snapshot(&state);
+        let selected = update_selected_sync_peer(&mut state, &ranked, 42).unwrap();
+
+        assert_eq!(state.connected_peers.len(), 2);
+        assert!(!state
+            .connected_peers
+            .iter()
+            .any(|p| p == "suppressed-high-score"));
+        assert!(state.connected_peers.iter().any(|p| p == &selected));
     }
 
     #[test]
