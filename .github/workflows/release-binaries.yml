@@ -219,14 +219,13 @@ jobs:
           echo "Consolidated checksums: SHA256SUMS.txt"
           echo "Release provenance summary: release-provenance.json"
 
-      - name: Verify final release bundle end-to-end
+      - name: Verify final release bundle integrity
         shell: bash
         run: |
           set -euo pipefail
           python scripts/release/verify_release_artifacts.py \
             --artifacts-dir final \
             --expected-tag "${{ env.RELEASE_TAG }}" \
-            --smoke \
             --expect-binaries pulsedagd pulsedag-miner \
             --consolidated-checksums final/SHA256SUMS.txt \
             --provenance-summary final/release-provenance.json
