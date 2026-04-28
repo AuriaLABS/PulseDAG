@@ -81,6 +81,29 @@ pub struct TxLookupData {
     pub outputs: Vec<pulsedag_core::types::TxOutput>,
 }
 
+#[derive(Debug, serde::Serialize)]
+pub struct TxActivityItem {
+    pub txid: String,
+    pub fee: u64,
+    pub inputs: usize,
+    pub outputs: usize,
+    pub context: String,
+    pub is_mempool: bool,
+    pub is_confirmed: bool,
+    pub block_hash: Option<String>,
+    pub block_height: Option<u64>,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct TxActivityData {
+    pub count: usize,
+    pub total: usize,
+    pub limit: usize,
+    pub offset: usize,
+    pub has_more: bool,
+    pub transactions: Vec<TxActivityItem>,
+}
+
 fn sorted_mempool_transactions(chain: &pulsedag_core::ChainState) -> Vec<TxListItem> {
     let mut transactions = chain
         .mempool
@@ -95,6 +118,48 @@ fn sorted_mempool_transactions(chain: &pulsedag_core::ChainState) -> Vec<TxListI
         .collect::<Vec<_>>();
     transactions.sort_by(|a, b| b.fee.cmp(&a.fee).then_with(|| a.txid.cmp(&b.txid)));
     transactions
+}
+
+fn sorted_tx_activity(chain: &pulsedag_core::ChainState) -> Vec<TxActivityItem> {
+    let mut activity = chain
+        .mempool
+        .transactions
+        .values()
+        .map(|tx| TxActivityItem {
+            txid: tx.txid.clone(),
+            fee: tx.fee,
+            inputs: tx.inputs.len(),
+            outputs: tx.outputs.len(),
+            context: "mempool".to_string(),
+            is_mempool: true,
+            is_confirmed: false,
+            block_hash: None,
+            block_height: None,
+        })
+        .collect::<Vec<_>>();
+    for block in chain.dag.blocks.values() {
+        for tx in &block.transactions {
+            activity.push(TxActivityItem {
+                txid: tx.txid.clone(),
+                fee: tx.fee,
+                inputs: tx.inputs.len(),
+                outputs: tx.outputs.len(),
+                context: "confirmed".to_string(),
+                is_mempool: false,
+                is_confirmed: true,
+                block_hash: Some(block.hash.clone()),
+                block_height: Some(block.header.height),
+            });
+        }
+    }
+    activity.sort_by(|a, b| {
+        b.is_mempool
+            .cmp(&a.is_mempool)
+            .then_with(|| b.block_height.cmp(&a.block_height))
+            .then_with(|| b.fee.cmp(&a.fee))
+            .then_with(|| a.txid.cmp(&b.txid))
+    });
+    activity
 }
 
 fn paged_txs(all: Vec<TxListItem>, limit: usize, offset: usize) -> TxListData {
@@ -350,9 +415,34 @@ pub async fn get_tx_lookup<S: RpcStateLike>(
     ))
 }
 
+pub async fn get_txs_activity<S: RpcStateLike>(
+    State(state): State<S>,
+    Query(query): Query<TxsPageQuery>,
+) -> Json<ApiResponse<TxActivityData>> {
+    let limit = query.limit.unwrap_or(20).min(100);
+    let offset = query.offset.unwrap_or(0);
+    let chain_handle = state.chain();
+    let chain = chain_handle.read().await;
+    let all = sorted_tx_activity(&chain);
+    let total = all.len();
+    let transactions = all.into_iter().skip(offset).take(limit).collect::<Vec<_>>();
+    let count = transactions.len();
+    let has_more = offset.saturating_add(count) < total;
+    Json(ApiResponse::ok(TxActivityData {
+        count,
+        total,
+        limit,
+        offset,
+        has_more,
+        transactions,
+    }))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{get_tx, get_tx_lookup, get_txs, get_txs_page, TxListData, TxsPageQuery};
+    use super::{
+        get_tx, get_tx_lookup, get_txs, get_txs_activity, get_txs_page, TxListData, TxsPageQuery,
+    };
     use crate::api::{NodeRuntimeStats, RpcStateLike};
     use axum::extract::{Path, State};
     use pulsedag_core::types::{
@@ -540,5 +630,48 @@ mod tests {
         assert_eq!(data.limit, 1);
         assert_eq!(data.offset, 0);
         assert!(!data.has_more);
+    }
+
+    #[tokio::test]
+    async fn tx_activity_is_deterministic_and_context_explicit() {
+        let state = mk_state().await;
+        let query = axum::extract::Query(TxsPageQuery {
+            limit: Some(10),
+            offset: Some(0),
+        });
+        let axum::Json(first_resp) = get_txs_activity(State(state.clone()), query).await;
+        let first = first_resp.data.expect("first activity page");
+        let axum::Json(second_resp) = get_txs_activity(
+            State(state),
+            axum::extract::Query(TxsPageQuery {
+                limit: Some(10),
+                offset: Some(0),
+            }),
+        )
+        .await;
+        let second = second_resp.data.expect("second activity page");
+
+        assert!(first.count >= 2);
+        assert_eq!(first.total, first.transactions.len());
+        assert!(first.transactions.len() >= 2);
+        assert_eq!(
+            first
+                .transactions
+                .iter()
+                .map(|t| t.txid.clone())
+                .collect::<Vec<_>>(),
+            second
+                .transactions
+                .iter()
+                .map(|t| t.txid.clone())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(first.transactions[0].context, "mempool");
+        assert!(first.transactions[0].is_mempool);
+        assert!(!first.transactions[0].is_confirmed);
+        assert!(first
+            .transactions
+            .iter()
+            .any(|tx| { tx.context == "confirmed" && !tx.is_mempool && tx.is_confirmed }));
     }
 }

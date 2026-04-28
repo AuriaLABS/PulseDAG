@@ -50,8 +50,56 @@ pub struct BlockOverviewData {
     pub confirmations: u64,
 }
 
+#[derive(Debug, serde::Serialize)]
+pub struct BlockTxListItem {
+    pub txid: String,
+    pub fee: u64,
+    pub inputs: usize,
+    pub outputs: usize,
+    pub context: String,
+    pub is_confirmed: bool,
+    pub is_mempool: bool,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct BlockTransactionsData {
+    pub block_hash: String,
+    pub block_height: u64,
+    pub count: usize,
+    pub total: usize,
+    pub limit: usize,
+    pub offset: usize,
+    pub has_more: bool,
+    pub context: String,
+    pub transactions: Vec<BlockTxListItem>,
+}
+
 fn bounded_limit(limit: Option<usize>, default: usize, max: usize) -> usize {
     limit.unwrap_or(default).min(max)
+}
+
+fn paged_block_transactions(
+    block_hash: String,
+    block_height: u64,
+    all: Vec<BlockTxListItem>,
+    limit: usize,
+    offset: usize,
+) -> BlockTransactionsData {
+    let total = all.len();
+    let transactions = all.into_iter().skip(offset).take(limit).collect::<Vec<_>>();
+    let count = transactions.len();
+    let has_more = offset.saturating_add(count) < total;
+    BlockTransactionsData {
+        block_hash,
+        block_height,
+        count,
+        total,
+        limit,
+        offset,
+        has_more,
+        context: "confirmed".to_string(),
+        transactions,
+    }
 }
 
 fn block_sort_key(a: &BlockListItem, b: &BlockListItem) -> std::cmp::Ordering {
@@ -211,11 +259,48 @@ pub async fn get_block_overview<S: RpcStateLike>(
     }
 }
 
+pub async fn get_block_transactions<S: RpcStateLike>(
+    State(state): State<S>,
+    Path(hash): Path<String>,
+    Query(query): Query<PageQuery>,
+) -> Json<ApiResponse<BlockTransactionsData>> {
+    let limit = bounded_limit(query.limit, 20, 100);
+    let offset = query.offset.unwrap_or(0);
+    let chain_handle = state.chain();
+    let chain = chain_handle.read().await;
+    match chain.dag.blocks.get(&hash) {
+        Some(block) => {
+            let mut transactions = block
+                .transactions
+                .iter()
+                .map(|tx| BlockTxListItem {
+                    txid: tx.txid.clone(),
+                    fee: tx.fee,
+                    inputs: tx.inputs.len(),
+                    outputs: tx.outputs.len(),
+                    context: "confirmed".to_string(),
+                    is_confirmed: true,
+                    is_mempool: false,
+                })
+                .collect::<Vec<_>>();
+            transactions.sort_by(|a, b| b.fee.cmp(&a.fee).then_with(|| a.txid.cmp(&b.txid)));
+            Json(ApiResponse::ok(paged_block_transactions(
+                block.hash.clone(),
+                block.header.height,
+                transactions,
+                limit,
+                offset,
+            )))
+        }
+        None => Json(ApiResponse::err("NOT_FOUND", "block not found")),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        bounded_limit, get_block_overview, get_blocks, get_blocks_page, get_blocks_recent,
-        PageQuery,
+        bounded_limit, get_block_overview, get_block_transactions, get_blocks, get_blocks_page,
+        get_blocks_recent, PageQuery,
     };
     use crate::api::{NodeRuntimeStats, RpcStateLike};
     use axum::extract::{Path, Query, State};
@@ -371,5 +456,28 @@ mod tests {
         assert_eq!(page.offset, 0);
         assert_eq!(page.total, 2);
         assert!(page.has_more);
+    }
+
+    #[tokio::test]
+    async fn block_transactions_are_explicitly_confirmed_and_paged() {
+        let state = mk_state().await;
+        let axum::Json(resp) = get_block_transactions(
+            State(state),
+            Path("block-1".to_string()),
+            Query(PageQuery {
+                limit: Some(10),
+                offset: Some(0),
+            }),
+        )
+        .await;
+        let data = resp.data.expect("block tx page");
+        assert_eq!(data.context, "confirmed");
+        assert_eq!(data.block_hash, "block-1");
+        assert_eq!(data.block_height, 1);
+        assert_eq!(data.count, 1);
+        assert_eq!(data.total, 1);
+        assert_eq!(data.transactions[0].context, "confirmed");
+        assert!(data.transactions[0].is_confirmed);
+        assert!(!data.transactions[0].is_mempool);
     }
 }

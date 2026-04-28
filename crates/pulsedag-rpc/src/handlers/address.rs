@@ -1,6 +1,6 @@
 use crate::{api::ApiResponse, api::RpcStateLike};
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     Json,
 };
 use pulsedag_core::types::Utxo;
@@ -44,6 +44,37 @@ pub struct AddressSummaryData {
     pub mempool_tx_count: usize,
     pub mempool_txids: Vec<String>,
     pub mempool_explicit: bool,
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub struct AddressActivityQuery {
+    pub limit: Option<usize>,
+    pub offset: Option<usize>,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct AddressActivityItem {
+    pub txid: String,
+    pub direction: String,
+    pub incoming: u64,
+    pub outgoing: u64,
+    pub net: i64,
+    pub context: String,
+    pub is_mempool: bool,
+    pub is_confirmed: bool,
+    pub block_hash: Option<String>,
+    pub block_height: Option<u64>,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct AddressActivityData {
+    pub address: String,
+    pub count: usize,
+    pub total: usize,
+    pub limit: usize,
+    pub offset: usize,
+    pub has_more: bool,
+    pub activity: Vec<AddressActivityItem>,
 }
 
 fn sorted_address_utxos(chain: &pulsedag_core::ChainState, address: &str) -> Vec<Utxo> {
@@ -171,11 +202,123 @@ pub async fn get_address_summary<S: RpcStateLike>(
     }))
 }
 
+pub async fn get_address_activity<S: RpcStateLike>(
+    State(state): State<S>,
+    Path(address): Path<String>,
+    Query(query): Query<AddressActivityQuery>,
+) -> Json<ApiResponse<AddressActivityData>> {
+    let limit = query.limit.unwrap_or(20).min(100);
+    let offset = query.offset.unwrap_or(0);
+    let chain_handle = state.chain();
+    let chain = chain_handle.read().await;
+
+    let mut activity = Vec::new();
+    for tx in chain.mempool.transactions.values() {
+        let incoming = tx
+            .outputs
+            .iter()
+            .filter(|out| out.address == address)
+            .map(|out| out.amount)
+            .sum::<u64>();
+        let outgoing = tx
+            .inputs
+            .iter()
+            .filter_map(|input| chain.utxo.utxos.get(&input.previous_output))
+            .filter(|spent| spent.address == address)
+            .map(|spent| spent.amount)
+            .sum::<u64>();
+        if incoming > 0 || outgoing > 0 {
+            let net = incoming as i64 - outgoing as i64;
+            let direction = if net > 0 {
+                "incoming"
+            } else if net < 0 {
+                "outgoing"
+            } else {
+                "self"
+            };
+            activity.push(AddressActivityItem {
+                txid: tx.txid.clone(),
+                direction: direction.to_string(),
+                incoming,
+                outgoing,
+                net,
+                context: "mempool".to_string(),
+                is_mempool: true,
+                is_confirmed: false,
+                block_hash: None,
+                block_height: None,
+            });
+        }
+    }
+    for block in chain.dag.blocks.values() {
+        for tx in &block.transactions {
+            let incoming = tx
+                .outputs
+                .iter()
+                .filter(|out| out.address == address)
+                .map(|out| out.amount)
+                .sum::<u64>();
+            let outgoing = tx
+                .inputs
+                .iter()
+                .filter_map(|input| chain.utxo.utxos.get(&input.previous_output))
+                .filter(|spent| spent.address == address)
+                .map(|spent| spent.amount)
+                .sum::<u64>();
+            if incoming > 0 || outgoing > 0 {
+                let net = incoming as i64 - outgoing as i64;
+                let direction = if net > 0 {
+                    "incoming"
+                } else if net < 0 {
+                    "outgoing"
+                } else {
+                    "self"
+                };
+                activity.push(AddressActivityItem {
+                    txid: tx.txid.clone(),
+                    direction: direction.to_string(),
+                    incoming,
+                    outgoing,
+                    net,
+                    context: "confirmed".to_string(),
+                    is_mempool: false,
+                    is_confirmed: true,
+                    block_hash: Some(block.hash.clone()),
+                    block_height: Some(block.header.height),
+                });
+            }
+        }
+    }
+    activity.sort_by(|a, b| {
+        b.is_mempool
+            .cmp(&a.is_mempool)
+            .then_with(|| b.block_height.cmp(&a.block_height))
+            .then_with(|| a.txid.cmp(&b.txid))
+    });
+    let total = activity.len();
+    let activity = activity
+        .into_iter()
+        .skip(offset)
+        .take(limit)
+        .collect::<Vec<_>>();
+    let count = activity.len();
+    let has_more = offset.saturating_add(count) < total;
+    Json(ApiResponse::ok(AddressActivityData {
+        address,
+        count,
+        total,
+        limit,
+        offset,
+        has_more,
+        activity,
+    }))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{get_address, get_address_summary, get_address_utxos};
+    use super::{get_address, get_address_activity, get_address_summary, get_address_utxos};
     use crate::api::{NodeRuntimeStats, RpcStateLike};
-    use axum::extract::{Path, State};
+    use axum::extract::{Path, Query, State};
     use pulsedag_core::types::{OutPoint, Transaction, TxInput, TxOutput, Utxo};
     use pulsedag_core::ChainState;
     use pulsedag_storage::Storage;
@@ -311,5 +454,36 @@ mod tests {
         assert_eq!(address.confirmed_utxo_count, summary.confirmed_utxo_count);
         assert_eq!(utxos.count, summary.confirmed_utxo_count);
         assert!(summary.mempool_explicit);
+    }
+
+    #[tokio::test]
+    async fn address_activity_is_deterministic_and_context_explicit() {
+        let state = mk_state().await;
+        let query = Query(super::AddressActivityQuery {
+            limit: Some(10),
+            offset: Some(0),
+        });
+        let axum::Json(first_resp) =
+            get_address_activity(State(state.clone()), Path("alice".to_string()), query).await;
+        let first = first_resp.data.expect("first activity");
+        let axum::Json(second_resp) = get_address_activity(
+            State(state),
+            Path("alice".to_string()),
+            Query(super::AddressActivityQuery {
+                limit: Some(10),
+                offset: Some(0),
+            }),
+        )
+        .await;
+        let second = second_resp.data.expect("second activity");
+        assert_eq!(
+            first.activity.iter().map(|a| &a.txid).collect::<Vec<_>>(),
+            second.activity.iter().map(|a| &a.txid).collect::<Vec<_>>()
+        );
+        assert_eq!(first.count, 1);
+        assert_eq!(first.total, 1);
+        assert_eq!(first.activity[0].context, "mempool");
+        assert!(first.activity[0].is_mempool);
+        assert!(!first.activity[0].is_confirmed);
     }
 }
