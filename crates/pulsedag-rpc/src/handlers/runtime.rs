@@ -294,18 +294,20 @@ fn sync_surface_health(runtime: &crate::api::NodeRuntimeStats) -> (String, bool)
             <= runtime.sync_pipeline.counters.blocks_acquired
         && runtime.sync_pipeline.counters.blocks_acquired
             <= runtime.sync_pipeline.counters.blocks_requested;
-    let sync_surface_health = if !sync_counters_coherent || runtime.sync_pipeline.last_error.is_some()
-    {
-        "degraded"
-    } else if runtime.sync_pipeline.phase == SyncPhase::Idle {
-        "idle"
-    } else {
-        "active"
-    };
+    let sync_surface_health =
+        if !sync_counters_coherent || runtime.sync_pipeline.last_error.is_some() {
+            "degraded"
+        } else if runtime.sync_pipeline.phase == SyncPhase::Idle {
+            "idle"
+        } else {
+            "active"
+        };
     (sync_surface_health.to_string(), sync_counters_coherent)
 }
 
-pub(crate) fn runtime_surface_rollup(runtime: &crate::api::NodeRuntimeStats) -> RuntimeSurfaceRollup {
+pub(crate) fn runtime_surface_rollup(
+    runtime: &crate::api::NodeRuntimeStats,
+) -> RuntimeSurfaceRollup {
     let startup = startup_status_view(runtime);
     let tx_inbound_outcome_total = runtime
         .tx_inbound_accepted_total
@@ -398,8 +400,8 @@ pub(crate) fn runtime_surface_rollup(runtime: &crate::api::NodeRuntimeStats) -> 
         tx_drop_reason_counters_coherent: tx_drop_reason_counter_delta == 0,
         tx_rebroadcast_outcomes_coherent: tx_rebroadcast_outcome_counter_delta == 0,
         external_mining_surface_health: external_mining_surface_health.to_string(),
-        external_mining_submit_outcome_counters_coherent: external_mining_submit_outcome_counter_delta
-            == 0,
+        external_mining_submit_outcome_counters_coherent:
+            external_mining_submit_outcome_counter_delta == 0,
         external_mining_rejection_counters_coherent: external_mining_rejection_counter_delta == 0,
         node_runtime_surface_health: node_runtime_surface_health.to_string(),
     }
@@ -951,9 +953,11 @@ mod tests {
             .load_or_init_genesis("testnet-dev".to_string())
             .unwrap();
         let mut runtime = NodeRuntimeStats::default();
+        runtime.last_self_audit_ok = true;
         runtime.sync_pipeline.begin_cycle(100);
         runtime.sync_pipeline.observe_headers(5, 101);
         runtime.sync_pipeline.request_blocks(5, 102);
+        runtime.sync_pipeline.acquire_blocks(5);
         runtime.sync_pipeline.validate_and_apply_blocks(2, 103);
 
         let state = TestState {
@@ -972,8 +976,8 @@ mod tests {
         assert_eq!(data.sync_counters.headers_discovered, 5);
         assert_eq!(data.sync_counters.blocks_requested, 5);
         assert_eq!(data.sync_counters.blocks_applied, 2);
-        assert_eq!(data.sync_blocks_request_backlog, 5);
-        assert_eq!(data.sync_blocks_validation_backlog, 0);
+        assert_eq!(data.sync_blocks_request_backlog, 0);
+        assert_eq!(data.sync_blocks_validation_backlog, 3);
     }
 
     #[tokio::test]
@@ -1246,6 +1250,7 @@ mod tests {
             .load_or_init_genesis("testnet-dev".to_string())
             .unwrap();
         let mut runtime = NodeRuntimeStats::default();
+        runtime.last_self_audit_ok = true;
         runtime.tx_inbound_total = 8;
         runtime.tx_inbound_accepted_total = 3;
         runtime.tx_inbound_dropped_total = 5;
@@ -1493,6 +1498,7 @@ mod tests {
             .load_or_init_genesis("testnet-dev".to_string())
             .expect("genesis");
         let mut runtime = NodeRuntimeStats::default();
+        runtime.last_self_audit_ok = true;
         runtime.sync_pipeline.last_error = Some("peer timeout".to_string());
         runtime.tx_rebroadcast_attempts = 1;
         runtime.tx_rebroadcast_success = 0;
@@ -1507,20 +1513,21 @@ mod tests {
             p2p: None,
         };
 
-        let Json(resp) = get_runtime_events_summary(
-            State(state),
-            Query(RuntimeEventsQuery { limit: Some(50) }),
-        )
-        .await;
+        let Json(resp) =
+            get_runtime_events_summary(State(state), Query(RuntimeEventsQuery { limit: Some(50) }))
+                .await;
         let data = resp.data.expect("runtime events summary");
         assert_eq!(data.scanned_event_count, 2);
         assert_eq!(data.by_kind.get("sync_phase_change").copied(), Some(1));
         assert_eq!(data.by_level.get("warn").copied(), Some(1));
         assert_eq!(data.runtime_surface_rollup.sync_surface_health, "degraded");
-        assert_eq!(data.runtime_surface_rollup.tx_propagation_health, "rebroadcast_stalled");
+        assert_eq!(
+            data.runtime_surface_rollup.tx_propagation_health,
+            "counter_mismatch"
+        );
         assert_eq!(
             data.runtime_surface_rollup.external_mining_surface_health,
-            "degraded"
+            "counter_mismatch"
         );
     }
 }
