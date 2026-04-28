@@ -19,6 +19,12 @@ pub struct SyncStatusData {
     pub rebuild_recommended: bool,
     pub consistency_ok: bool,
     pub consistency_issue_count: usize,
+    pub catchup_stage: String,
+    pub lag_blocks: u64,
+    pub lag_band: String,
+    pub catchup_progress_bps: u64,
+    pub catchup_summary: String,
+    pub recovery_reason: Option<String>,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -44,7 +50,9 @@ pub struct SyncRebuildData {
     pub skipped_hashes: Vec<String>,
 }
 
-pub async fn get_sync_status<S: RpcStateLike>(State(state): State<S>) -> Json<ApiResponse<SyncStatusData>> {
+pub async fn get_sync_status<S: RpcStateLike>(
+    State(state): State<S>,
+) -> Json<ApiResponse<SyncStatusData>> {
     let snapshot_exists = match state.storage().snapshot_exists() {
         Ok(v) => v,
         Err(e) => return Json(ApiResponse::err("STORAGE_ERROR", e.to_string())),
@@ -57,7 +65,60 @@ pub async fn get_sync_status<S: RpcStateLike>(State(state): State<S>) -> Json<Ap
 
     let chain_handle = state.chain();
     let chain = chain_handle.read().await;
+    let runtime_handle = state.runtime();
+    let runtime = runtime_handle.read().await;
     let consistency_issues = pulsedag_core::dag_consistency_issues(&chain);
+    let lag_blocks = (persisted_blocks.len() as u64).saturating_sub(chain.dag.blocks.len() as u64);
+    let lag_band = match lag_blocks {
+        0 => "aligned",
+        1..=2 => "near_tip",
+        3..=10 => "catching_up",
+        11..=100 => "lagging",
+        _ => "severely_lagging",
+    }
+    .to_string();
+    let catchup_progress_bps = if persisted_blocks.is_empty() {
+        10_000
+    } else {
+        (chain.dag.blocks.len() as u64)
+            .saturating_mul(10_000)
+            .saturating_div(persisted_blocks.len() as u64)
+            .min(10_000)
+    };
+    let counters_coherent = runtime.sync_pipeline.counters.blocks_applied
+        <= runtime.sync_pipeline.counters.blocks_validated
+        && runtime.sync_pipeline.counters.blocks_validated
+            <= runtime.sync_pipeline.counters.blocks_acquired
+        && runtime.sync_pipeline.counters.blocks_acquired
+            <= runtime.sync_pipeline.counters.blocks_requested;
+    let catchup_stage = if runtime.sync_pipeline.last_error.is_some() || !counters_coherent {
+        "degraded"
+    } else if lag_blocks == 0 {
+        "steady"
+    } else {
+        match runtime.sync_pipeline.phase {
+            pulsedag_core::SyncPhase::Idle => "recovering",
+            pulsedag_core::SyncPhase::HeaderDiscovery => "discovering",
+            pulsedag_core::SyncPhase::BlockDownload => "acquiring",
+            pulsedag_core::SyncPhase::ValidationApplication => "validating",
+        }
+    }
+    .to_string();
+    let recovery_reason = if let Some(err) = runtime.sync_pipeline.last_error.clone() {
+        Some(format!("sync error: {err}"))
+    } else if !counters_coherent {
+        Some("sync counter incoherence detected; verify sync pipeline accounting".to_string())
+    } else if lag_blocks > 0 {
+        Some(format!(
+            "catch-up in progress: stage={catchup_stage}, lag_band={lag_band}, replay_gap={}",
+            persisted_blocks.len() as i64 - chain.dag.blocks.len() as i64
+        ))
+    } else {
+        None
+    };
+    let catchup_summary = format!(
+        "stage={catchup_stage} lag_blocks={lag_blocks} lag_band={lag_band} progress_bps={catchup_progress_bps}"
+    );
     Json(ApiResponse::ok(SyncStatusData {
         chain_id: chain.chain_id.clone(),
         snapshot_exists,
@@ -73,10 +134,19 @@ pub async fn get_sync_status<S: RpcStateLike>(State(state): State<S>) -> Json<Ap
         rebuild_recommended: !snapshot_exists || persisted_blocks.len() > chain.dag.blocks.len(),
         consistency_ok: consistency_issues.is_empty(),
         consistency_issue_count: consistency_issues.len(),
+        catchup_stage,
+        lag_blocks,
+        lag_band,
+        catchup_progress_bps,
+        catchup_summary,
+        recovery_reason,
     }))
 }
 
-pub async fn post_sync_rebuild<S: RpcStateLike>(State(state): State<S>, Json(req): Json<SyncRebuildRequest>) -> Json<ApiResponse<SyncRebuildData>> {
+pub async fn post_sync_rebuild<S: RpcStateLike>(
+    State(state): State<S>,
+    Json(req): Json<SyncRebuildRequest>,
+) -> Json<ApiResponse<SyncRebuildData>> {
     let current_chain_id = {
         let chain_handle = state.chain();
         let chain = chain_handle.read().await;
@@ -84,28 +154,41 @@ pub async fn post_sync_rebuild<S: RpcStateLike>(State(state): State<S>, Json(req
     };
 
     if !req.force {
-        return Json(ApiResponse::err("REBUILD_REQUIRES_FORCE", "set force=true to rebuild state from persisted blocks"));
+        return Json(ApiResponse::err(
+            "REBUILD_REQUIRES_FORCE",
+            "set force=true to rebuild state from persisted blocks",
+        ));
     }
 
     let allow_partial_replay = req.allow_partial_replay.unwrap_or(false);
     let persist_after_rebuild = req.persist_after_rebuild.unwrap_or(true);
     let reconcile_mempool_after = req.reconcile_mempool.unwrap_or(true);
 
-    let (mut rebuilt, partial_replay_used, accepted_blocks, skipped_blocks, skipped_hashes) = if allow_partial_replay {
-        let persisted_blocks = match state.storage().list_blocks() {
-            Ok(v) => v,
-            Err(e) => return Json(ApiResponse::err("STORAGE_ERROR", e.to_string())),
+    let (mut rebuilt, partial_replay_used, accepted_blocks, skipped_blocks, skipped_hashes) =
+        if allow_partial_replay {
+            let persisted_blocks = match state.storage().list_blocks() {
+                Ok(v) => v,
+                Err(e) => return Json(ApiResponse::err("STORAGE_ERROR", e.to_string())),
+            };
+            let report = pulsedag_core::rebuild_state_from_blocks_defensive(
+                current_chain_id,
+                persisted_blocks,
+            );
+            (
+                report.state,
+                true,
+                report.accepted_blocks,
+                report.skipped_blocks,
+                report.skipped_hashes,
+            )
+        } else {
+            let rebuilt = match state.storage().replay_blocks_or_init(current_chain_id) {
+                Ok(v) => v,
+                Err(e) => return Json(ApiResponse::err("REBUILD_ERROR", e.to_string())),
+            };
+            let accepted_blocks = rebuilt.dag.blocks.len().saturating_sub(1);
+            (rebuilt, false, accepted_blocks, 0, Vec::new())
         };
-        let report = pulsedag_core::rebuild_state_from_blocks_defensive(current_chain_id, persisted_blocks);
-        (report.state, true, report.accepted_blocks, report.skipped_blocks, report.skipped_hashes)
-    } else {
-        let rebuilt = match state.storage().replay_blocks_or_init(current_chain_id) {
-            Ok(v) => v,
-            Err(e) => return Json(ApiResponse::err("REBUILD_ERROR", e.to_string())),
-        };
-        let accepted_blocks = rebuilt.dag.blocks.len().saturating_sub(1);
-        (rebuilt, false, accepted_blocks, 0, Vec::new())
-    };
 
     let mempool_reconciled = if reconcile_mempool_after {
         let _ = reconcile_mempool(&mut rebuilt);
@@ -150,8 +233,9 @@ pub async fn post_sync_rebuild<S: RpcStateLike>(State(state): State<S>, Json(req
     }))
 }
 
-
-pub async fn post_sync_reconcile_mempool<S: RpcStateLike>(State(state): State<S>) -> Json<ApiResponse<SyncReconcileMempoolData>> {
+pub async fn post_sync_reconcile_mempool<S: RpcStateLike>(
+    State(state): State<S>,
+) -> Json<ApiResponse<SyncReconcileMempoolData>> {
     let chain_handle = state.chain();
     let mut chain = chain_handle.write().await;
     let result = reconcile_mempool(&mut chain);
@@ -167,4 +251,114 @@ pub async fn post_sync_reconcile_mempool<S: RpcStateLike>(State(state): State<S>
         kept_count: result.kept_txids.len(),
         removed_txids: result.removed_txids,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        path::PathBuf,
+        sync::Arc,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    use axum::{extract::State, Json};
+    use pulsedag_core::{ChainState, SyncPhase};
+    use pulsedag_storage::Storage;
+    use tokio::sync::RwLock;
+
+    use crate::api::{NodeRuntimeStats, RpcStateLike};
+
+    use super::get_sync_status;
+
+    #[derive(Clone)]
+    struct TestState {
+        chain: Arc<RwLock<ChainState>>,
+        storage: Arc<Storage>,
+        runtime: Arc<RwLock<NodeRuntimeStats>>,
+    }
+
+    impl RpcStateLike for TestState {
+        fn chain(&self) -> Arc<RwLock<ChainState>> {
+            self.chain.clone()
+        }
+
+        fn p2p(&self) -> Option<Arc<dyn pulsedag_p2p::P2pHandle>> {
+            None
+        }
+
+        fn storage(&self) -> Arc<Storage> {
+            self.storage.clone()
+        }
+
+        fn runtime(&self) -> Arc<RwLock<NodeRuntimeStats>> {
+            self.runtime.clone()
+        }
+    }
+
+    fn temp_db_path(name: &str) -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        std::env::temp_dir().join(format!("pulsedag-{name}-{unique}"))
+    }
+
+    #[tokio::test]
+    async fn sync_status_derives_catchup_stage_and_recovery_reason_coherently() {
+        let path = temp_db_path("sync-status-stage");
+        let storage = Arc::new(Storage::open(path.to_str().expect("utf8 temp path")).unwrap());
+        let chain = storage
+            .load_or_init_genesis("testnet-dev".to_string())
+            .unwrap();
+        let mut runtime = NodeRuntimeStats::default();
+        runtime.sync_pipeline.phase = SyncPhase::BlockDownload;
+        runtime.sync_pipeline.counters.blocks_requested = 20;
+        runtime.sync_pipeline.counters.blocks_acquired = 10;
+        runtime.sync_pipeline.counters.blocks_validated = 8;
+        runtime.sync_pipeline.counters.blocks_applied = 6;
+
+        let state = TestState {
+            chain: Arc::new(RwLock::new(chain)),
+            storage,
+            runtime: Arc::new(RwLock::new(runtime)),
+        };
+
+        let Json(resp) = get_sync_status(State(state)).await;
+        assert!(resp.ok);
+        let data = resp.data.expect("sync status payload");
+        assert_eq!(data.catchup_stage, "recovering");
+        assert!(data.recovery_reason.is_some());
+        assert_eq!(data.lag_band, "aligned");
+        assert_eq!(data.catchup_progress_bps, 10_000);
+    }
+
+    #[tokio::test]
+    async fn sync_status_lag_band_and_progress_are_bounded_and_deterministic() {
+        let path = temp_db_path("sync-status-bounds");
+        let storage = Arc::new(Storage::open(path.to_str().expect("utf8 temp path")).unwrap());
+        let chain = storage
+            .load_or_init_genesis("testnet-dev".to_string())
+            .unwrap();
+        let mut runtime = NodeRuntimeStats::default();
+        runtime.sync_pipeline.phase = SyncPhase::ValidationApplication;
+        runtime.sync_pipeline.counters.blocks_requested = 1;
+        runtime.sync_pipeline.counters.blocks_acquired = 1;
+        runtime.sync_pipeline.counters.blocks_validated = 1;
+        runtime.sync_pipeline.counters.blocks_applied = 5;
+
+        let state = TestState {
+            chain: Arc::new(RwLock::new(chain)),
+            storage,
+            runtime: Arc::new(RwLock::new(runtime)),
+        };
+
+        let Json(resp1) = get_sync_status(State(state.clone())).await;
+        let Json(resp2) = get_sync_status(State(state)).await;
+        let data1 = resp1.data.expect("sync status payload #1");
+        let data2 = resp2.data.expect("sync status payload #2");
+        assert_eq!(data1.lag_blocks, 0);
+        assert_eq!(data1.lag_band, "aligned");
+        assert_eq!(data1.catchup_progress_bps, 10_000);
+        assert_eq!(data1.catchup_summary, data2.catchup_summary);
+    }
 }

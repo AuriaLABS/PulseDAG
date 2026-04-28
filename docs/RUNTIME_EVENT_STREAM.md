@@ -62,6 +62,11 @@ Query params:
   - `startup_bootstrap_mode=recovery_fallback` means replay due to startup fallback (`startup_path=fallback_full_replay` and a non-empty `startup_fallback_reason`).
   - `startup_bootstrap_mode=snapshot_assisted` means validated snapshot-assisted startup (`startup_path=fast_boot`, `startup_snapshot_validated=true`, `startup_delta_applied=true`).
   - `startup_status_summary` provides a compact operator-facing sentence that aligns with the structured flags above.
+- Sync catch-up observability in `GET /runtime/status` is also normalized for operator explainability:
+  - `sync_catchup_stage` provides one explicit stage (`steady`, `discovering`, `acquiring`, `validating`, `recovering`, `degraded`).
+  - `sync_lag_band` buckets lag into bounded bands (`aligned`, `near_tip`, `catching_up`, `lagging`, `severely_lagging`).
+  - `sync_catchup_progress_bps` is bounded to `0..=10000` for deterministic dashboard gauges.
+  - `sync_recovery_reason` is populated when sync is degraded, stalled, or still catching up, so operators have explicit recovery context instead of implicit inference.
 - Existing polling endpoints remain available:
   - `GET /runtime/events`
   - `GET /runtime/events/summary`
