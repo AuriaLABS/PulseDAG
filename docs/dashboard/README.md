@@ -91,6 +91,11 @@ The package references only fields emitted by the node APIs:
   - `p2p_peer_health_total`
   - `p2p_peer_health_counters_coherent`
   - `p2p_surface_health`
+  - explicit peer lifecycle and shaping signals:
+    - `p2p_peer_lifecycle_watch`
+    - `p2p_peer_lifecycle_cooldown`
+    - `p2p_degraded_mode`
+    - `p2p_connection_shaping_active`
 - mempool pressure rollup:
   - `mempool_capacity_remaining_transactions`
   - `mempool_orphan_pressure_bps`
