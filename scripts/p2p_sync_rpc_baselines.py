@@ -201,7 +201,35 @@ def run_sync_stabilization(base_url: str, timeout_seconds: float, poll_seconds: 
 
     while True:
         polls += 1
-        selected_peer, lag_int = read_sync_stabilization_state(base_url, timeout_seconds)
+        status, payload, err = request_json(url, timeout_seconds)
+        if status < 200 or status >= 300:
+            raise RuntimeError(f"sync/status request failed with status={status} err={err}")
+
+        selected_peer = pick_first_key(
+            payload,
+            [
+                "selected_tip",
+                "selectedTip",
+                "selected_peer",
+                "selectedPeer",
+                "selected",
+            ],
+        )
+        lag = pick_first_key(
+            payload,
+            [
+                "replay_gap",
+                "replayGap",
+                "lag",
+                "sync_lag",
+                "block_lag",
+                "height_lag",
+            ],
+        )
+        try:
+            lag_int = int(lag) if lag is not None else 0
+        except (TypeError, ValueError):
+            lag_int = 0
 
         if selected_peer == last_peer and selected_peer not in (None, ""):
             stable_count += 1
