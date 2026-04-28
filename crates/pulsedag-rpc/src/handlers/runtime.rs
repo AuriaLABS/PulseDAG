@@ -156,6 +156,12 @@ pub struct RuntimeStatusData {
     pub sync_counters: SyncProgressCounters,
     pub sync_blocks_request_backlog: u64,
     pub sync_blocks_validation_backlog: u64,
+    pub sync_catchup_stage: String,
+    pub sync_lag_blocks: u64,
+    pub sync_lag_band: String,
+    pub sync_catchup_progress_bps: u64,
+    pub sync_catchup_summary: String,
+    pub sync_recovery_reason: Option<String>,
     pub target_block_interval_secs: u64,
     pub window_size: usize,
     pub retarget_multiplier_bps: u64,
@@ -202,6 +208,108 @@ pub struct RuntimeStatusData {
     pub p2p_queue_block_priority_picks: usize,
     pub p2p_queue_non_block_fair_picks: usize,
     pub p2p_queue_starvation_relief_picks: usize,
+}
+
+#[derive(Debug, Clone)]
+struct SyncCatchupView {
+    stage: String,
+    lag_blocks: u64,
+    lag_band: String,
+    progress_bps: u64,
+    summary: String,
+    recovery_reason: Option<String>,
+}
+
+fn lag_band(lag_blocks: u64) -> &'static str {
+    match lag_blocks {
+        0 => "aligned",
+        1..=2 => "near_tip",
+        3..=10 => "catching_up",
+        11..=100 => "lagging",
+        _ => "severely_lagging",
+    }
+}
+
+fn sync_catchup_view(runtime: &crate::api::NodeRuntimeStats, now_unix: u64) -> SyncCatchupView {
+    let request_backlog = runtime
+        .sync_pipeline
+        .counters
+        .blocks_requested
+        .saturating_sub(runtime.sync_pipeline.counters.blocks_acquired);
+    let validation_backlog = runtime
+        .sync_pipeline
+        .counters
+        .blocks_acquired
+        .saturating_sub(runtime.sync_pipeline.counters.blocks_applied);
+    let lag_blocks = request_backlog.max(validation_backlog);
+    let lag_band = lag_band(lag_blocks).to_string();
+    let progress_bps = if runtime.sync_pipeline.counters.blocks_requested == 0 {
+        if lag_blocks == 0 {
+            10_000
+        } else {
+            0
+        }
+    } else {
+        runtime
+            .sync_pipeline
+            .counters
+            .blocks_applied
+            .saturating_mul(10_000)
+            .saturating_div(runtime.sync_pipeline.counters.blocks_requested)
+            .min(10_000)
+    };
+    let sync_counters_coherent = runtime.sync_pipeline.counters.blocks_applied
+        <= runtime.sync_pipeline.counters.blocks_validated
+        && runtime.sync_pipeline.counters.blocks_validated
+            <= runtime.sync_pipeline.counters.blocks_acquired
+        && runtime.sync_pipeline.counters.blocks_acquired
+            <= runtime.sync_pipeline.counters.blocks_requested;
+    let stage = if runtime.sync_pipeline.last_error.is_some() || !sync_counters_coherent {
+        "degraded"
+    } else {
+        match runtime.sync_pipeline.phase {
+            SyncPhase::Idle if lag_blocks == 0 => "steady",
+            SyncPhase::Idle => "recovering",
+            SyncPhase::HeaderDiscovery => "discovering",
+            SyncPhase::BlockDownload => "acquiring",
+            SyncPhase::ValidationApplication => "validating",
+        }
+    }
+    .to_string();
+    let stalled = runtime.sync_pipeline.phase != SyncPhase::Idle
+        && lag_blocks > 0
+        && runtime
+            .sync_pipeline
+            .last_transition_unix
+            .map(|ts| now_unix.saturating_sub(ts) > 120)
+            .unwrap_or(false);
+    let recovery_reason = if let Some(err) = runtime.sync_pipeline.last_error.clone() {
+        Some(format!("sync error: {err}"))
+    } else if !sync_counters_coherent {
+        Some("sync counter incoherence detected; verify sync pipeline accounting".to_string())
+    } else if stalled {
+        Some(format!(
+            "sync stalled in {:?} with lag_band={lag_band}; last transition over 120s ago",
+            runtime.sync_pipeline.phase
+        ))
+    } else if lag_blocks > 0 {
+        Some(format!(
+            "catch-up in progress: stage={stage}, lag_band={lag_band}, request_backlog={request_backlog}, validation_backlog={validation_backlog}"
+        ))
+    } else {
+        None
+    };
+    let summary = format!(
+        "stage={stage} lag_blocks={lag_blocks} lag_band={lag_band} progress_bps={progress_bps} request_backlog={request_backlog} validation_backlog={validation_backlog}"
+    );
+    SyncCatchupView {
+        stage,
+        lag_blocks,
+        lag_band,
+        progress_bps,
+        summary,
+        recovery_reason,
+    }
 }
 
 #[derive(Default)]
@@ -638,6 +746,7 @@ pub async fn get_runtime_status<S: RpcStateLike>(
         .counters
         .blocks_acquired
         .saturating_sub(runtime.sync_pipeline.counters.blocks_applied);
+    let sync_catchup = sync_catchup_view(&runtime, now);
     let sync_counters_coherent = rollup.sync_counters_coherent;
     let mempool_surface_health =
         if mempool_pressure_bps >= 9_500 || mempool_orphan_pressure_bps >= 9_500 {
@@ -800,6 +909,12 @@ pub async fn get_runtime_status<S: RpcStateLike>(
         sync_counters: runtime.sync_pipeline.counters.clone(),
         sync_blocks_request_backlog,
         sync_blocks_validation_backlog,
+        sync_catchup_stage: sync_catchup.stage,
+        sync_lag_blocks: sync_catchup.lag_blocks,
+        sync_lag_band: sync_catchup.lag_band,
+        sync_catchup_progress_bps: sync_catchup.progress_bps,
+        sync_catchup_summary: sync_catchup.summary,
+        sync_recovery_reason: sync_catchup.recovery_reason,
         target_block_interval_secs: snapshot.policy.target_block_interval_secs,
         window_size: snapshot.policy.window_size,
         retarget_multiplier_bps: snapshot.retarget_multiplier_bps,
@@ -961,6 +1076,80 @@ mod tests {
         assert_eq!(data.sync_counters.blocks_applied, 2);
         assert_eq!(data.sync_blocks_request_backlog, 0);
         assert_eq!(data.sync_blocks_validation_backlog, 3);
+        assert_eq!(data.sync_catchup_stage, "validating");
+        assert_eq!(data.sync_lag_blocks, 3);
+        assert_eq!(data.sync_lag_band, "catching_up");
+        assert_eq!(data.sync_catchup_progress_bps, 4_000);
+        assert!(data.sync_catchup_summary.contains("stage=validating"));
+        assert!(data.sync_recovery_reason.is_some());
+    }
+
+    #[tokio::test]
+    async fn runtime_status_bounds_sync_lag_progress_and_stage_deterministically() {
+        let path = temp_db_path("runtime-sync-bounds");
+        let storage = Arc::new(Storage::open(path.to_str().expect("utf8 temp path")).unwrap());
+        let chain = storage
+            .load_or_init_genesis("testnet-dev".to_string())
+            .unwrap();
+        let mut runtime = NodeRuntimeStats::default();
+        runtime.last_self_audit_ok = true;
+        runtime.sync_pipeline.phase = SyncPhase::ValidationApplication;
+        runtime.sync_pipeline.counters.blocks_requested = 1;
+        runtime.sync_pipeline.counters.blocks_acquired = 1;
+        runtime.sync_pipeline.counters.blocks_validated = 1;
+        runtime.sync_pipeline.counters.blocks_applied = 99;
+
+        let state = TestState {
+            chain: Arc::new(RwLock::new(chain)),
+            storage,
+            runtime: Arc::new(RwLock::new(runtime)),
+            p2p: None,
+        };
+        let Json(resp_a) = get_runtime_status(State(state.clone())).await;
+        let Json(resp_b) = get_runtime_status(State(state)).await;
+        let data_a = resp_a.data.expect("runtime status payload A");
+        let data_b = resp_b.data.expect("runtime status payload B");
+        assert_eq!(data_a.sync_catchup_progress_bps, 10_000);
+        assert_eq!(data_a.sync_lag_blocks, 0);
+        assert_eq!(data_a.sync_lag_band, "aligned");
+        assert_eq!(data_a.sync_catchup_summary, data_b.sync_catchup_summary);
+    }
+
+    #[tokio::test]
+    async fn runtime_status_exposes_explicit_recovery_reason_when_sync_is_degraded_or_stalled() {
+        let path = temp_db_path("runtime-sync-recovery-reason");
+        let storage = Arc::new(Storage::open(path.to_str().expect("utf8 temp path")).unwrap());
+        let chain = storage
+            .load_or_init_genesis("testnet-dev".to_string())
+            .unwrap();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let mut runtime = NodeRuntimeStats::default();
+        runtime.last_self_audit_ok = true;
+        runtime.sync_pipeline.phase = SyncPhase::BlockDownload;
+        runtime.sync_pipeline.counters.blocks_requested = 10;
+        runtime.sync_pipeline.counters.blocks_acquired = 2;
+        runtime.sync_pipeline.counters.blocks_validated = 2;
+        runtime.sync_pipeline.counters.blocks_applied = 1;
+        runtime.sync_pipeline.last_transition_unix = Some(now.saturating_sub(300));
+        runtime.sync_pipeline.last_error = Some("peer timeout".to_string());
+
+        let state = TestState {
+            chain: Arc::new(RwLock::new(chain)),
+            storage,
+            runtime: Arc::new(RwLock::new(runtime)),
+            p2p: None,
+        };
+        let Json(resp) = get_runtime_status(State(state)).await;
+        let data = resp.data.expect("runtime status payload");
+        assert_eq!(data.sync_catchup_stage, "degraded");
+        assert_eq!(data.sync_surface_health, "degraded");
+        assert_eq!(
+            data.sync_recovery_reason.as_deref(),
+            Some("sync error: peer timeout")
+        );
     }
 
     #[tokio::test]

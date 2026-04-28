@@ -87,6 +87,13 @@ The package references only fields emitted by the node APIs:
   - `sync_counters_coherent`
   - `sync_blocks_request_backlog`
   - `sync_blocks_validation_backlog`
+  - catch-up progress modeling:
+    - `sync_catchup_stage` (`steady`, `discovering`, `acquiring`, `validating`, `recovering`, `degraded`)
+    - `sync_lag_blocks`
+    - `sync_lag_band` (`aligned`, `near_tip`, `catching_up`, `lagging`, `severely_lagging`)
+    - `sync_catchup_progress_bps` (bounded `0..=10000`)
+    - `sync_catchup_summary`
+    - `sync_recovery_reason` (explicit degraded/stalled/catch-up explanation)
 - p2p health rollup:
   - `p2p_peer_health_total`
   - `p2p_peer_health_counters_coherent`
@@ -104,6 +111,15 @@ The package references only fields emitted by the node APIs:
   - `external_mining_surface_health`
 
 These fields are strictly additive and designed for coherent dashboards: contradictory combinations are normalized into explicit degraded/counter-mismatch states instead of ambiguous operator signals.
+
+### Sync status catch-up extensions (v2.3)
+`GET /sync/status` now mirrors bounded operator catch-up visibility:
+- `catchup_stage`
+- `lag_blocks`
+- `lag_band`
+- `catchup_progress_bps` (bounded `0..=10000`)
+- `catchup_summary`
+- `recovery_reason`
 
 ### Cross-surface runtime rollup normalization (v2.3)
 To reduce contradictory operator interpretations across endpoints:
