@@ -15,6 +15,10 @@ pub struct TxListItem {
 #[derive(Debug, serde::Serialize)]
 pub struct TxListData {
     pub count: usize,
+    pub total: usize,
+    pub limit: usize,
+    pub offset: usize,
+    pub has_more: bool,
     pub transactions: Vec<TxListItem>,
 }
 
@@ -56,6 +60,8 @@ pub struct TxDetailData {
     pub inputs: usize,
     pub outputs: usize,
     pub status: String,
+    pub is_mempool: bool,
+    pub is_confirmed: bool,
     pub block_hash: Option<String>,
     pub block_height: Option<u64>,
 }
@@ -64,6 +70,8 @@ pub struct TxDetailData {
 pub struct TxLookupData {
     pub txid: String,
     pub status: String,
+    pub is_mempool: bool,
+    pub is_confirmed: bool,
     pub fee: u64,
     pub nonce: u64,
     pub block_hash: Option<String>,
@@ -73,13 +81,7 @@ pub struct TxLookupData {
     pub outputs: Vec<pulsedag_core::types::TxOutput>,
 }
 
-pub async fn get_txs_recent<S: RpcStateLike>(
-    State(state): State<S>,
-    Query(query): Query<TxsQuery>,
-) -> Json<ApiResponse<TxListData>> {
-    let limit = query.limit.unwrap_or(10).min(100);
-    let chain_handle = state.chain();
-    let chain = chain_handle.read().await;
+fn sorted_mempool_transactions(chain: &pulsedag_core::ChainState) -> Vec<TxListItem> {
     let mut transactions = chain
         .mempool
         .transactions
@@ -92,29 +94,46 @@ pub async fn get_txs_recent<S: RpcStateLike>(
         })
         .collect::<Vec<_>>();
     transactions.sort_by(|a, b| b.fee.cmp(&a.fee).then_with(|| a.txid.cmp(&b.txid)));
-    transactions.truncate(limit);
-    Json(ApiResponse::ok(TxListData {
-        count: transactions.len(),
+    transactions
+}
+
+fn paged_txs(all: Vec<TxListItem>, limit: usize, offset: usize) -> TxListData {
+    let total = all.len();
+    let transactions = all.into_iter().skip(offset).take(limit).collect::<Vec<_>>();
+    let count = transactions.len();
+    let has_more = offset.saturating_add(count) < total;
+    TxListData {
+        count,
+        total,
+        limit,
+        offset,
+        has_more,
         transactions,
-    }))
+    }
+}
+
+pub async fn get_txs_recent<S: RpcStateLike>(
+    State(state): State<S>,
+    Query(query): Query<TxsQuery>,
+) -> Json<ApiResponse<TxListData>> {
+    let limit = query.limit.unwrap_or(10).min(100);
+    let chain_handle = state.chain();
+    let chain = chain_handle.read().await;
+    let transactions = sorted_mempool_transactions(&chain);
+    Json(ApiResponse::ok(paged_txs(transactions, limit, 0)))
 }
 
 pub async fn get_txs<S: RpcStateLike>(State(state): State<S>) -> Json<ApiResponse<TxListData>> {
     let chain_handle = state.chain();
     let chain = chain_handle.read().await;
-    let transactions = chain
-        .mempool
-        .transactions
-        .values()
-        .map(|tx| TxListItem {
-            txid: tx.txid.clone(),
-            fee: tx.fee,
-            inputs: tx.inputs.len(),
-            outputs: tx.outputs.len(),
-        })
-        .collect::<Vec<_>>();
+    let transactions = sorted_mempool_transactions(&chain);
+    let total = transactions.len();
     Json(ApiResponse::ok(TxListData {
-        count: transactions.len(),
+        count: total,
+        total,
+        limit: total,
+        offset: 0,
+        has_more: false,
         transactions,
     }))
 }
@@ -158,6 +177,8 @@ pub async fn get_tx<S: RpcStateLike>(
             inputs: tx.inputs.len(),
             outputs: tx.outputs.len(),
             status: "mempool".into(),
+            is_mempool: true,
+            is_confirmed: false,
             block_hash: None,
             block_height: None,
         }));
@@ -171,6 +192,8 @@ pub async fn get_tx<S: RpcStateLike>(
                 inputs: tx.inputs.len(),
                 outputs: tx.outputs.len(),
                 status: "confirmed".into(),
+                is_mempool: false,
+                is_confirmed: true,
                 block_hash: Some(block.hash.clone()),
                 block_height: Some(block.header.height),
             }));
@@ -268,27 +291,8 @@ pub async fn get_txs_page<S: RpcStateLike>(
     let offset = query.offset.unwrap_or(0);
     let chain_handle = state.chain();
     let chain = chain_handle.read().await;
-    let mut transactions = chain
-        .mempool
-        .transactions
-        .values()
-        .map(|tx| TxListItem {
-            txid: tx.txid.clone(),
-            fee: tx.fee,
-            inputs: tx.inputs.len(),
-            outputs: tx.outputs.len(),
-        })
-        .collect::<Vec<_>>();
-    transactions.sort_by(|a, b| b.fee.cmp(&a.fee).then_with(|| a.txid.cmp(&b.txid)));
-    let transactions = transactions
-        .into_iter()
-        .skip(offset)
-        .take(limit)
-        .collect::<Vec<_>>();
-    Json(ApiResponse::ok(TxListData {
-        count: transactions.len(),
-        transactions,
-    }))
+    let transactions = sorted_mempool_transactions(&chain);
+    Json(ApiResponse::ok(paged_txs(transactions, limit, offset)))
 }
 
 pub async fn get_tx_lookup<S: RpcStateLike>(
@@ -302,6 +306,8 @@ pub async fn get_tx_lookup<S: RpcStateLike>(
         return Json(ApiResponse::ok(TxLookupData {
             txid: tx.txid.clone(),
             status: "mempool".into(),
+            is_mempool: true,
+            is_confirmed: false,
             fee: tx.fee,
             nonce: tx.nonce,
             block_hash: None,
@@ -321,6 +327,8 @@ pub async fn get_tx_lookup<S: RpcStateLike>(
             return Json(ApiResponse::ok(TxLookupData {
                 txid: tx.txid.clone(),
                 status: "confirmed".into(),
+                is_mempool: false,
+                is_confirmed: true,
                 fee: tx.fee,
                 nonce: tx.nonce,
                 block_hash: Some(block.hash.clone()),
@@ -344,7 +352,7 @@ pub async fn get_tx_lookup<S: RpcStateLike>(
 
 #[cfg(test)]
 mod tests {
-    use super::{get_tx, get_tx_lookup, get_txs, TxListData};
+    use super::{get_tx, get_tx_lookup, get_txs, get_txs_page, TxListData, TxsPageQuery};
     use crate::api::{NodeRuntimeStats, RpcStateLike};
     use axum::extract::{Path, State};
     use pulsedag_core::types::{
@@ -486,12 +494,16 @@ mod tests {
             get_tx_lookup(State(state.clone()), Path("tx-mempool".to_string())).await;
         let mem = mem_resp.data.expect("mempool tx lookup");
         assert_eq!(mem.status, "mempool");
+        assert!(mem.is_mempool);
+        assert!(!mem.is_confirmed);
         assert!(mem.block_hash.is_none());
 
         let axum::Json(conf_resp) =
             get_tx_lookup(State(state), Path("tx-confirmed".to_string())).await;
         let conf = conf_resp.data.expect("confirmed tx lookup");
         assert_eq!(conf.status, "confirmed");
+        assert!(!conf.is_mempool);
+        assert!(conf.is_confirmed);
         assert_eq!(conf.confirmations, Some(1));
     }
 
@@ -501,10 +513,32 @@ mod tests {
         let axum::Json(list_resp) = get_txs(State(state.clone())).await;
         let list: TxListData = list_resp.data.expect("tx list");
         assert_eq!(list.count, 1);
+        assert_eq!(list.total, 1);
 
         let axum::Json(detail_resp) = get_tx(State(state), Path("tx-confirmed".to_string())).await;
         let detail = detail_resp.data.expect("tx detail");
         assert_eq!(detail.status, "confirmed");
+        assert!(detail.is_confirmed);
+        assert!(!detail.is_mempool);
         assert_eq!(detail.block_height, Some(1));
+    }
+
+    #[tokio::test]
+    async fn tx_page_metadata_is_deterministic() {
+        let state = mk_state().await;
+        let axum::Json(resp) = get_txs_page(
+            State(state),
+            axum::extract::Query(TxsPageQuery {
+                limit: Some(1),
+                offset: Some(0),
+            }),
+        )
+        .await;
+        let data = resp.data.expect("tx page");
+        assert_eq!(data.count, 1);
+        assert_eq!(data.total, 1);
+        assert_eq!(data.limit, 1);
+        assert_eq!(data.offset, 0);
+        assert!(!data.has_more);
     }
 }

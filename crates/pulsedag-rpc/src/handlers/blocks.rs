@@ -28,6 +28,10 @@ pub struct PageQuery {
 #[derive(Debug, serde::Serialize)]
 pub struct BlocksData {
     pub count: usize,
+    pub total: usize,
+    pub limit: usize,
+    pub offset: usize,
+    pub has_more: bool,
     pub blocks: Vec<BlockListItem>,
 }
 
@@ -50,6 +54,28 @@ fn bounded_limit(limit: Option<usize>, default: usize, max: usize) -> usize {
     limit.unwrap_or(default).min(max)
 }
 
+fn block_sort_key(a: &BlockListItem, b: &BlockListItem) -> std::cmp::Ordering {
+    b.height
+        .cmp(&a.height)
+        .then_with(|| b.timestamp.cmp(&a.timestamp))
+        .then_with(|| a.hash.cmp(&b.hash))
+}
+
+fn paged_blocks(all: Vec<BlockListItem>, limit: usize, offset: usize) -> BlocksData {
+    let total = all.len();
+    let blocks = all.into_iter().skip(offset).take(limit).collect::<Vec<_>>();
+    let count = blocks.len();
+    let has_more = offset.saturating_add(count) < total;
+    BlocksData {
+        count,
+        total,
+        limit,
+        offset,
+        has_more,
+        blocks,
+    }
+}
+
 pub async fn get_blocks<S: RpcStateLike>(State(state): State<S>) -> Json<ApiResponse<BlocksData>> {
     let chain_handle = state.chain();
     let chain = chain_handle.read().await;
@@ -66,13 +92,14 @@ pub async fn get_blocks<S: RpcStateLike>(State(state): State<S>) -> Json<ApiResp
             parent_count: b.header.parents.len(),
         })
         .collect::<Vec<_>>();
-    blocks.sort_by(|a, b| {
-        b.height
-            .cmp(&a.height)
-            .then_with(|| b.timestamp.cmp(&a.timestamp))
-    });
+    blocks.sort_by(block_sort_key);
+    let total = blocks.len();
     Json(ApiResponse::ok(BlocksData {
-        count: blocks.len(),
+        count: total,
+        total,
+        limit: total,
+        offset: 0,
+        has_more: false,
         blocks,
     }))
 }
@@ -120,16 +147,8 @@ pub async fn get_blocks_recent<S: RpcStateLike>(
             parent_count: b.header.parents.len(),
         })
         .collect::<Vec<_>>();
-    blocks.sort_by(|a, b| {
-        b.height
-            .cmp(&a.height)
-            .then_with(|| b.timestamp.cmp(&a.timestamp))
-    });
-    blocks.truncate(limit);
-    Json(ApiResponse::ok(BlocksData {
-        count: blocks.len(),
-        blocks,
-    }))
+    blocks.sort_by(block_sort_key);
+    Json(ApiResponse::ok(paged_blocks(blocks, limit, 0)))
 }
 
 pub async fn get_blocks_page<S: RpcStateLike>(
@@ -153,20 +172,8 @@ pub async fn get_blocks_page<S: RpcStateLike>(
             parent_count: b.header.parents.len(),
         })
         .collect::<Vec<_>>();
-    blocks.sort_by(|a, b| {
-        b.height
-            .cmp(&a.height)
-            .then_with(|| b.timestamp.cmp(&a.timestamp))
-    });
-    let blocks = blocks
-        .into_iter()
-        .skip(offset)
-        .take(limit)
-        .collect::<Vec<_>>();
-    Json(ApiResponse::ok(BlocksData {
-        count: blocks.len(),
-        blocks,
-    }))
+    blocks.sort_by(block_sort_key);
+    Json(ApiResponse::ok(paged_blocks(blocks, limit, offset)))
 }
 
 pub async fn get_block_overview<S: RpcStateLike>(
@@ -206,7 +213,10 @@ pub async fn get_block_overview<S: RpcStateLike>(
 
 #[cfg(test)]
 mod tests {
-    use super::{bounded_limit, get_block_overview, get_blocks, get_blocks_recent};
+    use super::{
+        bounded_limit, get_block_overview, get_blocks, get_blocks_page, get_blocks_recent,
+        PageQuery,
+    };
     use crate::api::{NodeRuntimeStats, RpcStateLike};
     use axum::extract::{Path, Query, State};
     use proptest::prelude::*;
@@ -331,11 +341,35 @@ mod tests {
         let state = mk_state().await;
         let axum::Json(all_resp) = get_blocks(State(state.clone())).await;
         assert!(all_resp.ok);
-        assert!(all_resp.data.expect("blocks data").count >= 2);
+        let all_data = all_resp.data.expect("blocks data");
+        assert!(all_data.count >= 2);
+        assert_eq!(all_data.count, all_data.total);
+        assert!(!all_data.has_more);
 
         let axum::Json(recent_resp) =
             get_blocks_recent(State(state), Query(super::ListQuery { limit: Some(1) })).await;
         let recent = recent_resp.data.expect("recent blocks");
         assert_eq!(recent.count, 1);
+        assert_eq!(recent.total, all_data.total);
+        assert!(recent.has_more);
+    }
+
+    #[tokio::test]
+    async fn block_pagination_metadata_is_deterministic() {
+        let state = mk_state().await;
+        let axum::Json(page_resp) = get_blocks_page(
+            State(state),
+            Query(PageQuery {
+                limit: Some(1),
+                offset: Some(0),
+            }),
+        )
+        .await;
+        let page = page_resp.data.expect("block page data");
+        assert_eq!(page.count, 1);
+        assert_eq!(page.limit, 1);
+        assert_eq!(page.offset, 0);
+        assert_eq!(page.total, 2);
+        assert!(page.has_more);
     }
 }
