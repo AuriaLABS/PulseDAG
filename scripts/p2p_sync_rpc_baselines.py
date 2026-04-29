@@ -37,6 +37,14 @@ DEFAULT_ENDPOINTS = [
     "/address/ping",
 ]
 
+HOT_PATH_GROUPS: dict[str, list[str]] = {
+    "sync": ["/sync/status", "/sync/lag", "/runtime/status"],
+    "relay": ["/p2p/status", "/runtime/status"],
+    "mempool": ["/tx/mempool", "/runtime/status"],
+    "mining": ["/pow/health", "/runtime/status"],
+    "recovery": ["/status", "/sync/status", "/runtime/status"],
+}
+
 
 @dataclass
 class EndpointSample:
@@ -201,6 +209,7 @@ def run_sync_stabilization(base_url: str, timeout_seconds: float, poll_seconds: 
 
     while True:
         polls += 1
+        url = f"{base_url.rstrip('/')}/sync/status"
         status, payload, err = request_json(url, timeout_seconds)
         if status < 200 or status >= 300:
             raise RuntimeError(f"sync/status request failed with status={status} err={err}")
@@ -330,12 +339,24 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sync-max-wait-seconds", type=float, default=180.0)
     parser.add_argument("--sync-lag-threshold", type=int, default=0)
     parser.add_argument("--drill-command", action="append", default=[], help="optional command to time; repeatable")
+    parser.add_argument(
+        "--hot-path",
+        action="append",
+        choices=sorted(HOT_PATH_GROUPS.keys()),
+        default=[],
+        help="hot-path endpoint group to include (repeatable)",
+    )
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
-    endpoints = args.endpoints if args.endpoints else DEFAULT_ENDPOINTS
+    endpoints = args.endpoints if args.endpoints else list(DEFAULT_ENDPOINTS)
+    selected_hot_paths = sorted(set(args.hot_path))
+    for hot_path in selected_hot_paths:
+        for endpoint in HOT_PATH_GROUPS[hot_path]:
+            if endpoint not in endpoints:
+                endpoints.append(endpoint)
 
     run_id = sanitize_slug(datetime.now(timezone.utc).strftime("v2_2_4_%Y%m%dT%H%M%SZ"))
     out_dir = Path(args.output_dir) / run_id
@@ -375,6 +396,7 @@ def main() -> int:
         "base_url": args.base_url,
         "iterations": args.iterations,
         "endpoints": endpoints,
+        "hot_paths": selected_hot_paths,
     }
 
     (out_dir / "run_meta.json").write_text(json.dumps(run_meta, indent=2) + "\n", encoding="utf-8")

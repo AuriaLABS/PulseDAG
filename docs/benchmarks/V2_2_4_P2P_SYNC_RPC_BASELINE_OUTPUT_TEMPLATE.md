@@ -8,6 +8,7 @@ Use this template to compare startup/restart/churn runs side-by-side.
 - Run B ID:
 - Run C ID:
 - Node URL:
+- Hot paths captured (`sync`, `relay`, `mempool`, `mining`, `recovery`):
 - Topology notes:
 - Date captured (UTC):
 
