@@ -878,11 +878,16 @@ fn update_selected_sync_peer(
             .map(|peer| peer.rank_score)
             .unwrap_or(i64::MIN / 2)
     };
-    let preferred = state
-        .connected_peers
-        .first()
-        .cloned()
-        .or_else(|| sync_candidates.first().map(|peer| peer.peer_id.clone()));
+    let preferred = sync_candidates
+        .iter()
+        .filter(|candidate| candidate.excluded_until_unix.is_none())
+        .max_by(|a, b| {
+            a.rank_score
+                .cmp(&b.rank_score)
+                .then_with(|| b.peer_id.cmp(&a.peer_id))
+        })
+        .map(|candidate| candidate.peer_id.clone())
+        .or_else(|| state.connected_peers.iter().min().cloned());
     let preferred_rank_score = preferred
         .as_deref()
         .map(rank_score_for)
@@ -3361,6 +3366,50 @@ mod tests {
         let converged =
             update_selected_sync_peer(&mut state, &rejoined_ranked, sticky_until + 1).unwrap();
         assert_eq!(converged, "peer-a");
+    }
+
+    #[test]
+    fn selected_sync_peer_prefers_highest_ranked_candidate_over_connected_order() {
+        let mut state = InnerState::default();
+        state.mode = P2P_MODE_LIBP2P_REAL.into();
+        state.connected_peers = vec!["peer-z".into(), "peer-a".into()];
+        let ranked = vec![
+            RankedSyncPeer {
+                peer_id: "peer-a".into(),
+                rank_score: 200,
+                excluded_until_unix: None,
+            },
+            RankedSyncPeer {
+                peer_id: "peer-z".into(),
+                rank_score: 90,
+                excluded_until_unix: None,
+            },
+        ];
+
+        let selected = update_selected_sync_peer(&mut state, &ranked, 42).unwrap();
+        assert_eq!(selected, "peer-a");
+    }
+
+    #[test]
+    fn selected_sync_peer_tie_break_is_lexicographically_stable() {
+        let mut state = InnerState::default();
+        state.mode = P2P_MODE_LIBP2P_REAL.into();
+        let ranked = vec![
+            RankedSyncPeer {
+                peer_id: "peer-b".into(),
+                rank_score: 120,
+                excluded_until_unix: None,
+            },
+            RankedSyncPeer {
+                peer_id: "peer-a".into(),
+                rank_score: 120,
+                excluded_until_unix: None,
+            },
+        ];
+        let selected_first = update_selected_sync_peer(&mut state, &ranked, 100).unwrap();
+        let selected_second = update_selected_sync_peer(&mut state, &ranked, 101).unwrap();
+        assert_eq!(selected_first, "peer-a");
+        assert_eq!(selected_second, "peer-a");
     }
 
     #[test]
