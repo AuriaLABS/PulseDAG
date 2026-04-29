@@ -21,6 +21,10 @@ impl MempoolPressureTier {
     }
 }
 
+pub const MEMPOOL_PRESSURE_ELEVATED_BPS: u64 = 6_000;
+pub const MEMPOOL_PRESSURE_HIGH_BPS: u64 = 8_000;
+pub const MEMPOOL_PRESSURE_SATURATED_BPS: u64 = 9_500;
+
 pub fn mempool_pressure_bps(used: usize, capacity: usize) -> u64 {
     if capacity == 0 {
         0
@@ -35,8 +39,8 @@ pub fn mempool_pressure_bps(used: usize, capacity: usize) -> u64 {
 pub fn pressure_tier_from_bps(pressure_bps: u64) -> MempoolPressureTier {
     match pressure_bps {
         0..=5_999 => MempoolPressureTier::Normal,
-        6_000..=7_999 => MempoolPressureTier::Elevated,
-        8_000..=9_499 => MempoolPressureTier::High,
+        MEMPOOL_PRESSURE_ELEVATED_BPS..=7_999 => MempoolPressureTier::Elevated,
+        MEMPOOL_PRESSURE_HIGH_BPS..=9_499 => MempoolPressureTier::High,
         _ => MempoolPressureTier::Saturated,
     }
 }
@@ -721,6 +725,8 @@ mod tests {
         assert!(msg.contains("tier=saturated"));
         assert!(msg.contains("tx_pressure_bps=10000"));
         assert!(msg.contains("orphan_pressure_bps=0"));
+        assert!(msg.contains("high_bps=8000"));
+        assert!(msg.contains("saturated_bps=9500"));
     }
 
     #[test]

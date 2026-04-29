@@ -124,6 +124,11 @@ The package references only fields emitted by the node APIs:
   - explicit backpressure signaling:
     - `mempool_backpressure_active`
     - `mempool_backpressure_signal` (`none`, `mempool_high_pressure`, `orphan_high_pressure`, `mempool_saturated`, `orphan_saturated`, `at_capacity`)
+
+  - explicit pressure ceilings (bounded and deterministic):
+    - high-pressure ceiling: `8000` bps (`mempool_high_pressure` / `orphan_high_pressure`)
+    - saturated ceiling: `9500` bps (`mempool_saturated` / `orphan_saturated`)
+    - hard-capacity ceiling: `at_capacity` when `mempool_capacity_remaining_transactions == 0`
   - `mempool_surface_health`
 - external mining rollup:
   - `external_mining_surface_health`

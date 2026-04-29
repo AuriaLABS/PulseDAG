@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use crate::api::{ApiResponse, RpcStateLike};
 use pulsedag_core::{
     combined_pressure_tier, mempool_pressure_bps, pressure_tier_from_bps, SyncPhase,
-    SyncProgressCounters,
+    SyncProgressCounters, MEMPOOL_PRESSURE_HIGH_BPS, MEMPOOL_PRESSURE_SATURATED_BPS,
 };
 use pulsedag_p2p::mode_connected_peers_are_real_network;
 
@@ -928,18 +928,18 @@ pub async fn get_runtime_status<S: RpcStateLike>(
         mempool_pressure_bps_value,
         mempool_orphan_pressure_bps_value,
     );
-    let mempool_backpressure_active = mempool_pressure_bps_value >= 8_000
-        || mempool_orphan_pressure_bps_value >= 8_000
+    let mempool_backpressure_active = mempool_pressure_bps_value >= MEMPOOL_PRESSURE_HIGH_BPS
+        || mempool_orphan_pressure_bps_value >= MEMPOOL_PRESSURE_HIGH_BPS
         || mempool_capacity_remaining_transactions == 0;
     let mempool_backpressure_signal = if mempool_capacity_remaining_transactions == 0 {
         "at_capacity"
-    } else if mempool_orphan_pressure_bps_value >= 9_500 {
+    } else if mempool_orphan_pressure_bps_value >= MEMPOOL_PRESSURE_SATURATED_BPS {
         "orphan_saturated"
-    } else if mempool_pressure_bps_value >= 9_500 {
+    } else if mempool_pressure_bps_value >= MEMPOOL_PRESSURE_SATURATED_BPS {
         "mempool_saturated"
-    } else if mempool_orphan_pressure_bps_value >= 8_000 {
+    } else if mempool_orphan_pressure_bps_value >= MEMPOOL_PRESSURE_HIGH_BPS {
         "orphan_high_pressure"
-    } else if mempool_pressure_bps_value >= 8_000 {
+    } else if mempool_pressure_bps_value >= MEMPOOL_PRESSURE_HIGH_BPS {
         "mempool_high_pressure"
     } else {
         "none"
@@ -1049,9 +1049,7 @@ pub async fn get_runtime_status<S: RpcStateLike>(
     let external_mining_hashrate_hps = if uptime_secs == 0 {
         0
     } else {
-        runtime
-            .accepted_mined_blocks
-            .saturating_div(uptime_secs)
+        runtime.accepted_mined_blocks.saturating_div(uptime_secs)
     };
     let external_mining_worker_efficiency_bps = if external_mining_submit_total == 0 {
         0
@@ -1062,16 +1060,16 @@ pub async fn get_runtime_status<S: RpcStateLike>(
             .saturating_div(external_mining_submit_total)
             .min(10_000)
     };
-    let external_mining_stale_efficiency_bps =
-        if runtime.external_mining_stale_work_detected == 0 {
-            10_000
-        } else {
-            external_mining_stale_work_template_invalidations
-                .saturating_mul(10_000)
-                .saturating_div(runtime.external_mining_stale_work_detected)
-                .min(10_000)
-        };
-    let external_mining_template_usefulness_bps = if runtime.external_mining_templates_emitted == 0 {
+    let external_mining_stale_efficiency_bps = if runtime.external_mining_stale_work_detected == 0 {
+        10_000
+    } else {
+        external_mining_stale_work_template_invalidations
+            .saturating_mul(10_000)
+            .saturating_div(runtime.external_mining_stale_work_detected)
+            .min(10_000)
+    };
+    let external_mining_template_usefulness_bps = if runtime.external_mining_templates_emitted == 0
+    {
         0
     } else {
         runtime

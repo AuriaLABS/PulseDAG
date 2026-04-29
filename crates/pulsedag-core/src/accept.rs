@@ -1,7 +1,10 @@
 use crate::{
     apply::apply_block,
     errors::PulseError,
-    mempool::{combined_pressure_tier, mempool_pressure_bps, reconcile_mempool},
+    mempool::{
+        combined_pressure_tier, mempool_pressure_bps, reconcile_mempool, MEMPOOL_PRESSURE_HIGH_BPS,
+        MEMPOOL_PRESSURE_SATURATED_BPS,
+    },
     pow_evaluate, selected_pow_name,
     state::ChainState,
     types::{Block, Transaction},
@@ -421,10 +424,12 @@ pub fn accept_transaction(
                 .rejected_low_priority_total
                 .saturating_add(1);
             return Err(PulseError::InvalidTransaction(format!(
-                "mempool backpressure active (tier={} tx_pressure_bps={} orphan_pressure_bps={}): transaction priority below threshold",
+                "mempool backpressure active (tier={} tx_pressure_bps={} orphan_pressure_bps={} high_bps={} saturated_bps={}): transaction priority below threshold",
                 pressure_tier.as_str(),
                 tx_pressure_bps,
-                orphan_pressure_bps
+                orphan_pressure_bps,
+                MEMPOOL_PRESSURE_HIGH_BPS,
+                MEMPOOL_PRESSURE_SATURATED_BPS
             )));
         };
 
