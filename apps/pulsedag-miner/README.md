@@ -47,9 +47,9 @@ cargo run -p pulsedag-miner -- --node http://127.0.0.1:8080 --miner-address TU_D
 Después de descargar el artefacto oficial del release (`pulsedag-miner-<tag>-<target>.*`):
 
 ```bash
-tar -xzf pulsedag-miner-v2.2.4-x86_64-unknown-linux-gnu.tar.gz
-./pulsedag-miner-v2.2.4-x86_64-unknown-linux-gnu/pulsedag-miner --help
-./pulsedag-miner-v2.2.4-x86_64-unknown-linux-gnu/pulsedag-miner \
+tar -xzf pulsedag-miner-v2.2.5-x86_64-unknown-linux-gnu.tar.gz
+./pulsedag-miner-v2.2.5-x86_64-unknown-linux-gnu/pulsedag-miner --help
+./pulsedag-miner-v2.2.5-x86_64-unknown-linux-gnu/pulsedag-miner \
   --node http://127.0.0.1:8080 \
   --miner-address TU_DIRECCION \
   --threads 4 \
