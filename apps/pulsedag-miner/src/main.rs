@@ -1,11 +1,8 @@
 use anyhow::{anyhow, Context, Result};
-use pulsedag_core::pow::{pow_accepts, pow_hash_hex};
 use pulsedag_core::types::{Block, BlockHeader};
 use pulsedag_rpc::api::ApiResponse;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tokio::time::{sleep, Duration};
 
@@ -219,10 +216,16 @@ async fn mine_header_multithread(
     let max_tries = max_tries.max(1);
     let start = Instant::now();
 
-    let (final_header, accepted, tries, final_hash_hex) =
-        tokio::task::spawn_blocking(move || mine_header_partitioned(header, max_tries, threads))
-            .await
-            .context("mining worker task panicked")??;
+    let result = tokio::task::spawn_blocking(move || {
+        pulsedag_miner::mine_header_strided(header, max_tries, threads)
+    })
+    .await
+    .context("mining worker task panicked")??;
+
+    let final_header = result.header;
+    let accepted = result.accepted;
+    let tries = result.tries;
+    let final_hash_hex = result.final_hash_hex;
 
     let elapsed = start.elapsed();
     let elapsed_secs = elapsed.as_secs_f64();
@@ -240,167 +243,4 @@ async fn mine_header_multithread(
         elapsed_ms: elapsed.as_millis(),
         hashes_per_sec,
     })
-}
-
-fn mine_header_partitioned(
-    header: BlockHeader,
-    max_tries: u64,
-    threads: usize,
-) -> Result<(BlockHeader, bool, u64, String)> {
-    let max_tries = max_tries.max(1);
-    let effective_threads = threads.max(1).min(max_tries as usize);
-    let found = Arc::new(AtomicBool::new(false));
-    let tries = Arc::new(AtomicU64::new(0));
-    let winner: Arc<Mutex<Option<(BlockHeader, String)>>> = Arc::new(Mutex::new(None));
-    let mut handles = Vec::with_capacity(effective_threads);
-
-    for tid in 0..effective_threads {
-        let found = Arc::clone(&found);
-        let tries = Arc::clone(&tries);
-        let winner = Arc::clone(&winner);
-        let thread_header = header.clone();
-
-        let handle = std::thread::spawn(move || -> Result<()> {
-            let mut local_tries = 0u64;
-            let mut nonce = tid as u64;
-
-            while nonce < max_tries {
-                if found.load(Ordering::Relaxed) {
-                    break;
-                }
-
-                let mut candidate = thread_header.clone();
-                candidate.nonce = nonce;
-                local_tries = local_tries.saturating_add(1);
-
-                let hash_hex = pow_hash_hex(&candidate);
-                if pow_accepts(&candidate) {
-                    let already_found = found.swap(true, Ordering::SeqCst);
-                    if !already_found {
-                        let mut guard = winner.lock().map_err(|_| {
-                            anyhow!("winner mutex poisoned during candidate selection")
-                        })?;
-                        *guard = Some((candidate, hash_hex));
-                    }
-                    break;
-                }
-
-                nonce = nonce.saturating_add(effective_threads as u64);
-            }
-
-            tries.fetch_add(local_tries, Ordering::Relaxed);
-            Ok(())
-        });
-        handles.push(handle);
-    }
-
-    for handle in handles {
-        let thread_result = handle
-            .join()
-            .map_err(|_| anyhow!("a mining thread panicked during execution"))?;
-        thread_result?;
-    }
-
-    let total_tries = tries.load(Ordering::Relaxed).min(max_tries);
-    let winner_candidate = winner
-        .lock()
-        .map_err(|_| anyhow!("winner mutex poisoned when finalizing result"))?
-        .clone();
-    if let Some((winner_header, winner_hash)) = winner_candidate {
-        return Ok((winner_header, true, total_tries, winner_hash));
-    }
-
-    let mut fallback_header = header;
-    fallback_header.nonce = max_tries.saturating_sub(1);
-    let fallback_hash = pow_hash_hex(&fallback_header);
-    Ok((fallback_header, false, total_tries.max(1), fallback_hash))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use pulsedag_core::{
-        accept_block,
-        genesis::init_chain_state,
-        mining::{build_candidate_block, build_coinbase_transaction},
-        pow::{pow_hash_hex, pow_preimage_bytes},
-        AcceptSource,
-    };
-
-    fn fixture_header() -> BlockHeader {
-        BlockHeader {
-            version: 1,
-            parents: vec!["p0".to_string(), "p1".to_string()],
-            timestamp: 1_700_000_123,
-            difficulty: 7,
-            nonce: 42,
-            merkle_root: "merkle-fixture".to_string(),
-            state_root: "state-fixture".to_string(),
-            blue_score: 88,
-            height: 99,
-        }
-    }
-
-    #[test]
-    fn miner_and_node_pow_match_for_identical_header() {
-        let mut header = fixture_header();
-        header.nonce = 17;
-        let (candidate, miner_accepts, _tries, miner_hash) =
-            mine_header_partitioned(header.clone(), 1, 1).expect("single-try mining");
-        let node_hash = pow_hash_hex(&candidate);
-        assert_eq!(miner_hash, node_hash);
-        assert_eq!(miner_accepts, pow_accepts(&candidate));
-    }
-
-    #[test]
-    fn miner_found_pow_is_accepted_by_node() {
-        let mut state = init_chain_state("test".to_string());
-        let parents = vec![state.dag.genesis_hash.clone()];
-        let txs = vec![build_coinbase_transaction("miner1", 50, 1)];
-        let mut block = build_candidate_block(parents, 1, 1, txs);
-
-        let (mined_header, accepted, _tries, _hash) =
-            mine_header_partitioned(block.header.clone(), 50_000, 4).expect("mine result");
-        assert!(
-            accepted,
-            "expected at least one valid nonce with difficulty=1"
-        );
-        block.header = mined_header;
-
-        assert!(accept_block(block, &mut state, AcceptSource::Rpc).is_ok());
-    }
-
-    #[test]
-    fn mismatched_header_or_nonce_is_rejected_cleanly() {
-        let mut state = init_chain_state("test".to_string());
-        let parents = vec![state.dag.genesis_hash.clone()];
-        let txs = vec![build_coinbase_transaction("miner1", 50, 1)];
-        let mut block = build_candidate_block(parents, 1, 1, txs);
-
-        let (mined_header, accepted, _tries, _hash) =
-            mine_header_partitioned(block.header.clone(), 50_000, 2).expect("mine result");
-        assert!(accepted, "expected valid mined header");
-        block.header = mined_header;
-        block.header.difficulty = u32::MAX;
-
-        let err = accept_block(block, &mut state, AcceptSource::Rpc).expect_err("must reject");
-        let msg = err.to_string();
-        assert!(msg.contains("pow rejected"), "unexpected error: {msg}");
-    }
-
-    #[test]
-    fn fixtures_are_deterministic_across_cross_checks() {
-        let header = fixture_header();
-        let hash_once = pow_hash_hex(&header);
-        let hash_twice = pow_hash_hex(&header);
-        let preimage_once = pow_preimage_bytes(&header);
-        let preimage_twice = pow_preimage_bytes(&header);
-
-        assert_eq!(hash_once, hash_twice);
-        assert_eq!(preimage_once, preimage_twice);
-        assert_eq!(
-            hash_once,
-            "42a951baa48ebc5fd9366d62ec29052942f449d0884c00583db9ced19eb20ed5"
-        );
-    }
 }

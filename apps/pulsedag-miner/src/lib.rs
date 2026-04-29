@@ -28,6 +28,10 @@ pub fn miner_pow_accepts(header: &BlockHeader) -> bool {
     pow_accepts(header)
 }
 
+fn nonce_for_attempt(thread_id: usize, stride: usize, iteration: u64) -> u64 {
+    thread_id as u64 + (stride as u64 * iteration)
+}
+
 pub fn mine_header_strided(
     header: BlockHeader,
     max_tries: u64,
@@ -40,7 +44,7 @@ pub fn mine_header_strided(
     let winner: Arc<Mutex<Option<(BlockHeader, String)>>> = Arc::new(Mutex::new(None));
     let mut handles = Vec::with_capacity(effective_threads);
 
-    for tid in 0..effective_threads {
+    for thread_id in 0..effective_threads {
         let found = Arc::clone(&found);
         let tries = Arc::clone(&tries);
         let winner = Arc::clone(&winner);
@@ -48,9 +52,14 @@ pub fn mine_header_strided(
 
         let handle = std::thread::spawn(move || -> Result<()> {
             let mut local_tries = 0u64;
-            let mut nonce = tid as u64;
+            let mut iteration = 0u64;
 
-            while nonce < max_tries {
+            loop {
+                let nonce = nonce_for_attempt(thread_id, effective_threads, iteration);
+                if nonce >= max_tries {
+                    break;
+                }
+
                 if found.load(Ordering::Relaxed) {
                     break;
                 }
@@ -71,7 +80,7 @@ pub fn mine_header_strided(
                     break;
                 }
 
-                nonce = nonce.saturating_add(effective_threads as u64);
+                iteration = iteration.saturating_add(1);
             }
 
             tries.fetch_add(local_tries, Ordering::Relaxed);
@@ -110,4 +119,32 @@ pub fn mine_header_strided(
         tries: total_tries.max(1),
         final_hash_hex: fallback_hash,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::nonce_for_attempt;
+
+    #[test]
+    fn worker_partitioning_is_non_overlapping_for_prefix_space() {
+        let threads = 6usize;
+        let samples_per_thread = 30u64;
+        let mut seen = std::collections::BTreeSet::new();
+
+        for tid in 0..threads {
+            for i in 0..samples_per_thread {
+                let n = nonce_for_attempt(tid, threads, i);
+                assert!(seen.insert(n), "duplicate nonce generated in schedule: {n}");
+            }
+        }
+
+        assert_eq!(seen.len(), (threads as u64 * samples_per_thread) as usize);
+    }
+
+    #[test]
+    fn strided_schedule_is_deterministic_per_worker() {
+        let threads = 4usize;
+        let worker_two: Vec<u64> = (0..8).map(|i| nonce_for_attempt(2, threads, i)).collect();
+        assert_eq!(worker_two, vec![2, 6, 10, 14, 18, 22, 26, 30]);
+    }
 }
