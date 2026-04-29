@@ -1135,7 +1135,9 @@ impl Storage {
 
 #[cfg(test)]
 mod tests {
-    use super::{SnapshotExportBundle, Storage, CHAIN_STATE_KEY};
+    use super::{
+        SnapshotExportBundle, Storage, CHAIN_STATE_KEY, SNAPSHOT_CAPTURED_AT_UNIX_KEY,
+    };
     use proptest::prelude::*;
     use pulsedag_core::{
         accept::{accept_block, AcceptSource},
