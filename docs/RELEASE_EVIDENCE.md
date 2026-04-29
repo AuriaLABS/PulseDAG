@@ -34,6 +34,7 @@ Evidence must explicitly map to active validation paths:
 - External miner freshness, stale-work controls, and rejection taxonomy.
 - Runtime alert classes, SLO-style rollups, dashboard trend windows, incident snapshots.
 - Snapshot export/import/verification/restore productization.
+- Pruning + snapshot integration evidence path (coherence + repeatability across rebuild/restore workflows).
 - Snapshot lineage/state audit/recovery confidence surfaces.
 - Explorer/indexer activity surfaces and operator query pack.
 - Release matrix v2 and install verification (`docs/release/ARTIFACTS.md`).

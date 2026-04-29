@@ -45,6 +45,7 @@ Use:
 ```bash
 scripts/restore-drill-evidence.sh
 scripts/snapshot-productization-evidence.sh
+scripts/pruning-snapshot-integration-evidence.sh
 ```
 
 This command runs targeted storage tests that assert:
