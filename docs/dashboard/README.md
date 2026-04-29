@@ -101,12 +101,13 @@ The package references only fields emitted by the node APIs:
   - `sync_blocks_request_backlog`
   - `sync_blocks_validation_backlog`
   - catch-up progress modeling:
-    - `sync_catchup_stage` (`steady`, `discovering`, `acquiring`, `validating`, `recovering`, `degraded`)
+    - `sync_catchup_stage` (`steady`, `discovering`, `acquiring`, `validating`, `recovering`, `stalled`, `degraded`)
     - `sync_lag_blocks`
     - `sync_lag_band` (`aligned`, `near_tip`, `catching_up`, `lagging`, `severely_lagging`)
     - `sync_catchup_progress_bps` (bounded `0..=10000`)
     - `sync_catchup_summary`
     - `sync_recovery_reason` (explicit degraded/stalled/catch-up explanation)
+    - stalled/no-progress explanations include bounded remediation counters (`fallbacks`, `timeouts`, `restarts`) for operator-visible escalation context.
 - p2p health rollup:
   - `p2p_peer_health_total`
   - `p2p_peer_health_counters_coherent`

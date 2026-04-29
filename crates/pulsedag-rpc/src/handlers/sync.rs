@@ -91,8 +91,21 @@ pub async fn get_sync_status<S: RpcStateLike>(
             <= runtime.sync_pipeline.counters.blocks_acquired
         && runtime.sync_pipeline.counters.blocks_acquired
             <= runtime.sync_pipeline.counters.blocks_requested;
+    let now_unix = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let stalled = runtime.sync_pipeline.phase != pulsedag_core::SyncPhase::Idle
+        && lag_blocks > 0
+        && runtime
+            .sync_pipeline
+            .last_transition_unix
+            .map(|ts| now_unix.saturating_sub(ts) > 120)
+            .unwrap_or(false);
     let catchup_stage = if runtime.sync_pipeline.last_error.is_some() || !counters_coherent {
         "degraded"
+    } else if stalled {
+        "stalled"
     } else {
         match runtime.sync_pipeline.phase {
             pulsedag_core::SyncPhase::Idle if lag_blocks == 0 => "steady",
@@ -109,6 +122,14 @@ pub async fn get_sync_status<S: RpcStateLike>(
         Some(format!("sync error: {err}"))
     } else if !counters_coherent {
         Some("sync counter incoherence detected; verify sync pipeline accounting".to_string())
+    } else if stalled {
+        Some(format!(
+            "no-progress escalation: sync stalled in {:?} with lag_band={lag_band}; bounded remediation active (fallbacks={}, timeouts={}, restarts={})",
+            runtime.sync_pipeline.phase,
+            runtime.sync_pipeline.fallback_count,
+            runtime.sync_pipeline.timeout_fallback_count,
+            runtime.sync_pipeline.restart_count
+        ))
     } else if catchup_stage != "steady" {
         Some(format!(
             "catch-up in progress: stage={catchup_stage}, lag_band={lag_band}, replay_gap={}",
@@ -361,5 +382,44 @@ mod tests {
         assert_eq!(data1.lag_band, "aligned");
         assert_eq!(data1.catchup_progress_bps, 10_000);
         assert_eq!(data1.catchup_summary, data2.catchup_summary);
+    }
+
+    #[tokio::test]
+    async fn sync_status_no_progress_escalation_is_explicit_and_bounded() {
+        let path = temp_db_path("sync-status-no-progress");
+        let storage = Arc::new(Storage::open(path.to_str().expect("utf8 temp path")).unwrap());
+        let chain = storage
+            .load_or_init_genesis("testnet-dev".to_string())
+            .unwrap();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let mut runtime = NodeRuntimeStats::default();
+        runtime.sync_pipeline.phase = SyncPhase::ValidationApplication;
+        runtime.sync_pipeline.counters.blocks_requested = 30;
+        runtime.sync_pipeline.counters.blocks_acquired = 20;
+        runtime.sync_pipeline.counters.blocks_validated = 20;
+        runtime.sync_pipeline.counters.blocks_applied = 10;
+        runtime.sync_pipeline.last_transition_unix = Some(now.saturating_sub(240));
+        runtime.sync_pipeline.fallback_count = 2;
+        runtime.sync_pipeline.timeout_fallback_count = 1;
+        runtime.sync_pipeline.restart_count = 1;
+
+        let state = TestState {
+            chain: Arc::new(RwLock::new(chain)),
+            storage,
+            runtime: Arc::new(RwLock::new(runtime)),
+        };
+
+        let Json(resp) = get_sync_status(State(state)).await;
+        let data = resp.data.expect("sync status payload");
+        assert_eq!(data.catchup_stage, "stalled");
+        let reason = data.recovery_reason.expect("recovery reason");
+        assert!(reason.contains("no-progress escalation"));
+        assert!(reason.contains("bounded remediation active"));
+        assert!(reason.contains("fallbacks=2"));
+        assert!(reason.contains("timeouts=1"));
+        assert!(reason.contains("restarts=1"));
     }
 }
