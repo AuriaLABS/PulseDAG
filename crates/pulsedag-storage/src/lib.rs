@@ -369,12 +369,24 @@ impl Storage {
     }
 
     pub fn persist_chain_state(&self, state: &ChainState) -> Result<(), PulseError> {
+        let captured_at_unix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        self.persist_chain_state_with_captured_at(state, captured_at_unix)
+    }
+
+    fn persist_chain_state_with_captured_at(
+        &self,
+        state: &ChainState,
+        captured_at_unix: u64,
+    ) -> Result<(), PulseError> {
         let cf = self
             .db
             .cf_handle("meta")
             .ok_or_else(|| PulseError::StorageError("missing cf meta".into()))?;
         let mut batch = WriteBatch::default();
-        self.stage_chain_state_snapshot(&mut batch, &cf, state)?;
+        self.stage_chain_state_snapshot_with_captured_at(&mut batch, &cf, state, captured_at_unix)?;
         self.db
             .write(batch)
             .map_err(|e| PulseError::StorageError(e.to_string()))
@@ -770,7 +782,15 @@ impl Storage {
     ) -> Result<ChainState, PulseError> {
         let (snapshot, blocks) = self.validate_restore_inputs(expected_chain_id)?;
         let state = rebuild_state_from_snapshot_and_blocks(snapshot, blocks)?;
-        self.persist_chain_state(&state)?;
+        let captured_at_unix = self
+            .snapshot_captured_at_unix()?
+            .unwrap_or_else(|| {
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0)
+            });
+        self.persist_chain_state_with_captured_at(&state, captured_at_unix)?;
         Ok(state)
     }
 
