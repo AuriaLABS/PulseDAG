@@ -1,4 +1,13 @@
-# Testnet public checklist
+# Testnet public checklist (readiness preparation)
+
+## Preparation framing
+- [ ] this checklist is used for readiness preparation and decision support, not launch execution
+- [ ] scope remains ops/release focused (no runtime behavior changes)
+- [ ] no consensus changes were introduced in this prep PR
+- [ ] miner remains external and standalone
+- [ ] no pool logic introduced
+- [ ] readiness criteria audited against `docs/checklists/PUBLIC_TESTNET_READINESS_CRITERIA.md`
+- [ ] operator entry expectations audited against `docs/checklists/PUBLIC_TESTNET_OPERATOR_ENTRY_CHECKLIST.md`
 
 ## Mandatory
 - [ ] final PoW dry-run completed via `docs/runbooks/FINAL_POW_PUBLIC_TESTNET_DRY_RUN.md`

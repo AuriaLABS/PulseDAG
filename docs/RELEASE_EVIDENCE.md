@@ -84,6 +84,11 @@ Evidence must explicitly map to these active validation paths:
 - **Recovery confidence evidence:** include audit outputs that capture `recovery_confidence`, `confidence_reason`, and restore-drill alignment (`restore_drill_confirms_recovery`) so operator confidence is explicit and non-misleading.
 - **Deterministic release hygiene:** record lockfile + commit/tag provenance checks performed under locked builds.
 
+## Public-testnet readiness preparation references
+- Readiness criteria source: `docs/checklists/PUBLIC_TESTNET_READINESS_CRITERIA.md`
+- Operator entry expectations source: `docs/checklists/PUBLIC_TESTNET_OPERATOR_ENTRY_CHECKLIST.md`
+- Dry-run procedure source: `docs/runbooks/FINAL_POW_PUBLIC_TESTNET_DRY_RUN.md`
+
 ## Final PoW dry-run evidence (public testnet gate)
 Execution and acceptance policy source:
 - `docs/runbooks/FINAL_POW_PUBLIC_TESTNET_DRY_RUN.md`
