@@ -81,7 +81,7 @@ Evidence must explicitly map to these active validation paths:
 - **Chaos/restart/recovery drills:** `chaos-suite/*` and `restart-log.md` aligned with `docs/runbooks/CHAOS_RESTART_RECOVERY_SUITE.md`.
 - **Restore/rebuild timing evidence:** `restore-timing.csv` aligned with `docs/runbooks/SNAPSHOT_RESTORE.md` and `docs/runbooks/REBUILD_FROM_SNAPSHOT_AND_DELTA.md`.
 - **Snapshot productization checks:** include output/log pointers from `scripts/snapshot-productization-evidence.sh` proving export/import coherence, explicit verification signals, and repeatable restore behavior.
-- **Recovery confidence evidence:** include audit outputs that capture `recovery_confidence`, `confidence_reason`, and restore-drill alignment (`restore_drill_confirms_recovery`) so operator confidence is explicit and non-misleading.
+- **Recovery confidence evidence:** include audit outputs that capture `recovery_confidence`, `confidence_reason`, `confidence_evidence_path`, `recovery_confidence_non_misleading`, and restore-drill alignment (`restore_drill_confirms_recovery`) so operator confidence is explicit and non-misleading.
 - **Deterministic release hygiene:** record lockfile + commit/tag provenance checks performed under locked builds.
 
 ## Public-testnet readiness preparation references
