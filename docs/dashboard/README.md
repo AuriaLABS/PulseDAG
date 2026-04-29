@@ -123,6 +123,13 @@ The package references only fields emitted by the node APIs:
   - `mempool_surface_health`
 - external mining rollup:
   - `external_mining_surface_health`
+ - PoW retarget diagnostics:
+  - `retarget_multiplier_bps`
+  - `retarget_min_bps`
+  - `retarget_max_bps`
+  - `retarget_was_clamped`
+  - `retarget_rationale`
+  - `retarget_signal_quality`
 - operator alert classes + incident diagnostics (v2.4):
   - `runtime_alert_classes` (explicit classes such as `node_integrity`, `sync_pipeline`, `mempool_pressure`, `p2p_recovery`, `mining_submissions`, `tip_stagnation`)
   - incident triage helpers:

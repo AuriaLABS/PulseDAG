@@ -56,6 +56,22 @@ This is the operational anti-stale-work boundary used by node/miner integration 
 - No pool coordinator/accounting/share/payout behavior is part of official miner scope.
 - Public RPC payloads expose legacy/dev-oriented naming (for example `pow_accepted_dev`) that should be interpreted as current active-path status, not a separate algorithm.
 
+### Retarget control and diagnostics notes (v1 granularity update)
+
+- Retarget remains bounded and conservative (no broad consensus redesign):
+  - deadband defaults to ±8% around neutral (`10000` bps),
+  - damped response defaults to half of raw deviation,
+  - hard clamp defaults to `[8000, 12500]` bps.
+- Operators can tune bounds/damping with environment variables:
+  - `PULSEDAG_RETARGET_DEADBAND_BPS`
+  - `PULSEDAG_RETARGET_DAMPING_DIVISOR`
+  - `PULSEDAG_RETARGET_MIN_BPS`
+  - `PULSEDAG_RETARGET_MAX_BPS`
+- `GET /runtime/status` now exposes explicit retarget diagnostics:
+  - `retarget_min_bps`, `retarget_max_bps`, `retarget_was_clamped`
+  - `retarget_rationale` (`insufficient_signal`, `within_deadband`, `clamped_to_min`, `clamped_to_max`, `damped_increase`, `damped_decrease`)
+  - `retarget_signal_quality` (`low` when too little interval history is present)
+
 ## 5) Provisional/dev-oriented surfaces (what they mean)
 
 Several APIs/functions are named with `dev_*` because this public testnet path was staged incrementally. Today these names are compatibility surfaces, not alternate consensus rules.
