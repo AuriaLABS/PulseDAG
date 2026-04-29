@@ -18,7 +18,7 @@ use crate::{
         checks::get_node_checks,
         dag::{get_block, get_dag, get_dag_consistency, get_genesis, get_health, get_tips},
         dashboard::get_dashboard,
-        diagnostics::get_diagnostics,
+        diagnostics::{get_diagnostics, get_operator_query_pack},
         errors::get_error_catalog,
         incremental_sync::get_incremental_sync_plan,
         maintenance::get_maintenance_report,
@@ -142,6 +142,7 @@ where
             get(get_runtime_events_summary::<S>),
         )
         .route("/diagnostics", get(get_diagnostics::<S>))
+        .route("/operator/query-pack", get(get_operator_query_pack::<S>))
         .route("/errors", get(get_error_catalog))
         .route("/status", get(get_status::<S>))
         .route("/checks", get(get_node_checks::<S>))
