@@ -245,6 +245,7 @@ pub struct RuntimeStatusData {
     pub p2p_queue_block_priority_picks: usize,
     pub p2p_queue_non_block_fair_picks: usize,
     pub p2p_queue_starvation_relief_picks: usize,
+    pub p2p_queue_backpressure_drops: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -407,6 +408,7 @@ struct RuntimeP2pRecoverySummary {
     queue_block_priority_picks: usize,
     queue_non_block_fair_picks: usize,
     queue_starvation_relief_picks: usize,
+    queue_backpressure_drops: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -995,6 +997,7 @@ pub async fn get_runtime_status<S: RpcStateLike>(
                 queue_block_priority_picks: status.queue_block_priority_picks,
                 queue_non_block_fair_picks: status.queue_non_block_fair_picks,
                 queue_starvation_relief_picks: status.queue_starvation_relief_picks,
+                queue_backpressure_drops: status.queue_backpressure_drops,
             }
         })
         .unwrap_or_default();
@@ -1411,6 +1414,7 @@ pub async fn get_runtime_status<S: RpcStateLike>(
         p2p_queue_block_priority_picks: p2p_recovery.queue_block_priority_picks,
         p2p_queue_non_block_fair_picks: p2p_recovery.queue_non_block_fair_picks,
         p2p_queue_starvation_relief_picks: p2p_recovery.queue_starvation_relief_picks,
+        p2p_queue_backpressure_drops: p2p_recovery.queue_backpressure_drops,
     }))
 }
 
@@ -1635,6 +1639,7 @@ mod tests {
             queue_standard_tx_lane_picks: 0,
             queue_non_block_fair_picks: 0,
             queue_starvation_relief_picks: 0,
+            queue_backpressure_drops: 0,
             inbound_messages: 0,
             runtime_started: true,
             runtime_mode_detail: "swarm-poll-loop-real".into(),
@@ -1815,6 +1820,7 @@ mod tests {
             queue_standard_tx_lane_picks: 0,
             queue_non_block_fair_picks: 0,
             queue_starvation_relief_picks: 0,
+            queue_backpressure_drops: 0,
             inbound_messages: 0,
             runtime_started: true,
             runtime_mode_detail: "swarm-poll-loop-real".into(),
