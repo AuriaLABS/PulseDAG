@@ -1751,6 +1751,78 @@ mod tests {
     }
 
     #[test]
+    fn export_import_workflow_is_repeatable_across_multiple_targets() {
+        let source_path = temp_db_path("snapshot-repeatable-source");
+        let source = Storage::open(&source_path).expect("open source storage");
+        let state = build_linear_chain("testnet", 6);
+        let mut blocks: Vec<_> = state.dag.blocks.values().cloned().collect();
+        blocks.sort_by_key(|b| b.header.height);
+        for block in &blocks {
+            source.persist_block(block).expect("persist block");
+        }
+        source
+            .persist_chain_state(&state)
+            .expect("persist source snapshot");
+        source
+            .prune_blocks_below_height(5)
+            .expect("prune source history");
+
+        let (bundle, report) = source
+            .export_snapshot_bundle(Some("testnet"))
+            .expect("export snapshot bundle");
+        assert!(report.restore_guarantees_explicit);
+
+        for run in 0..2 {
+            let target_path = temp_db_path(&format!("snapshot-repeatable-target-{run}"));
+            let target = Storage::open(&target_path).expect("open target storage");
+            let import_report = target
+                .import_snapshot_bundle(bundle.clone(), Some("testnet"))
+                .expect("import snapshot bundle");
+            assert!(import_report.restore_guarantees_explicit);
+            assert!(import_report.replay_viable);
+
+            let restored = target
+                .replay_from_validated_snapshot_and_delta(Some("testnet"))
+                .expect("restored from imported snapshot");
+            assert_eq!(restored.dag.best_height, state.dag.best_height);
+            assert_eq!(best_tip_hash(&restored), best_tip_hash(&state));
+            assert_eq!(
+                target
+                    .snapshot_captured_at_unix()
+                    .expect("imported anchor timestamp"),
+                bundle.snapshot_captured_at_unix
+            );
+            let _ = std::fs::remove_dir_all(target_path);
+        }
+
+        let _ = std::fs::remove_dir_all(source_path);
+    }
+
+    #[test]
+    fn verification_signals_are_explicit_for_chain_mismatch() {
+        let path = temp_db_path("snapshot-verify-chain-mismatch");
+        let storage = Storage::open(&path).expect("open storage");
+        let state = build_linear_chain("testnet", 3);
+        let bundle = SnapshotExportBundle {
+            format_version: 1,
+            exported_at_unix: 1,
+            snapshot_captured_at_unix: Some(1),
+            snapshot: state.clone(),
+            persisted_blocks: state.dag.blocks.values().cloned().collect(),
+        };
+
+        let report = storage.verify_snapshot_bundle(&bundle, Some("stagingnet"));
+        assert!(!report.restore_guarantees_explicit);
+        assert!(!report.chain_id_matches_expected);
+        assert_eq!(report.recovery_confidence, "low");
+        assert_eq!(report.issue_count, report.issues.len());
+        assert!(report
+            .issues
+            .iter()
+            .any(|i| i.code == "SNAPSHOT_BUNDLE_CHAIN_ID_MISMATCH"));
+        let _ = std::fs::remove_dir_all(path);
+    }
+    #[test]
     fn verify_snapshot_bundle_signals_missing_anchor_explicitly() {
         let path = temp_db_path("snapshot-verify-anchor-missing");
         let storage = Storage::open(&path).expect("open storage");
