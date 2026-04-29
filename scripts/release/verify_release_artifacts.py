@@ -167,6 +167,7 @@ def main() -> None:
     parser.add_argument("--expected-tag", required=True)
     parser.add_argument("--smoke", action="store_true", help="Run extracted binaries with basic smoke commands")
     parser.add_argument("--expect-binaries", nargs="*", default=["pulsedagd", "pulsedag-miner"])
+    parser.add_argument("--expect-targets", nargs="*", default=[])
     parser.add_argument("--consolidated-checksums", type=Path)
     parser.add_argument("--provenance-summary", type=Path)
     args = parser.parse_args()
@@ -185,6 +186,12 @@ def main() -> None:
     missing = sorted(set(args.expect_binaries) - found)
     if missing:
         raise SystemExit(f"Missing expected binary artifacts: {', '.join(missing)}")
+
+    if args.expect_targets:
+        found_targets = {manifest["target"] for manifest in manifests}
+        missing_targets = sorted(set(args.expect_targets) - found_targets)
+        if missing_targets:
+            raise SystemExit(f"Missing expected target artifacts: {', '.join(missing_targets)}")
 
     if args.consolidated_checksums:
         validate_consolidated_checksums(archives, args.consolidated_checksums.resolve())
