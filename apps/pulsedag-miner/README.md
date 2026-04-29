@@ -78,7 +78,6 @@ Notas de operador:
 - shares
 - payouts
 - accounting
-- coordinación de workers
 - lógica de servidor
 
 ## Algoritmo PoW
@@ -99,3 +98,13 @@ scripts/release/standalone_operator_smoke.sh --miner-address TU_DIRECCION
 ```
 
 Este helper valida artefactos standalone y corre un smoke corto de nodo + minero externo, sin introducir lógica de pool.
+
+## Coordinación multithread (determinística)
+
+La búsqueda de nonce usa una programación *strided* por worker:
+
+- worker `t` explora `nonce = t, t + T, t + 2T, ...` (siendo `T = --threads` efectivo)
+- esto reduce solapamiento obvio de búsqueda entre hilos
+- conserva comportamiento repetible para smoke/benchmark cuando no hay solución (mismo fallback al último nonce intentado)
+
+El flujo operativo no cambia: **template -> mine -> submit**.

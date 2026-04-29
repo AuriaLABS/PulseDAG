@@ -61,3 +61,7 @@ This keeps miner operation practical and repeatable while preserving current arc
 - Keep benchmark input fixture constant between runs.
 - Re-run after changes to compiler version, CPU quota, thread pinning, or host class.
 - Treat these values as baselines for planning, not guarantees of real network solve cadence.
+
+## Multithread scheduling note
+
+The standalone miner uses deterministic strided worker partitioning (`nonce = tid + k * threads`) so thread work is partitioned with minimal overlap and benchmark sweeps are easier to reproduce run-to-run.
