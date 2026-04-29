@@ -76,6 +76,17 @@ Produced files:
 - `sync_stabilization.json` — selected peer stabilization result and elapsed seconds.
 - `drill_command_results.json` — timed command results for restore/rebuild drills.
 - `BASELINE_REPORT.md` — operator-facing markdown summary table.
+- `run_meta.json` additionally includes `hot_paths` when `--hot-path` is used.
+
+## Hot-path extension
+
+For focused capture on optimization-critical paths (`sync`, `relay`, `mempool`, `mining`, `recovery`), run:
+
+```bash
+scripts/hot-path-baseline.sh http://127.0.0.1:8080
+```
+
+Detailed guidance is in `docs/benchmarks/HOT_PATH_MEASUREMENT_METHODOLOGY.md`.
 
 ## Baseline hygiene
 

@@ -198,6 +198,14 @@ scripts/p2p-sync-rpc-baseline.sh http://127.0.0.1:8080
 ```
 
 Methodology and artifact format are documented in `docs/benchmarks/V2_2_4_P2P_SYNC_RPC_BASELINE_METHODOLOGY.md`.
+
+For explicit hot-path coverage (sync, relay, mempool, mining, recovery), use:
+
+```bash
+scripts/hot-path-baseline.sh http://127.0.0.1:8080
+```
+
+Methodology is documented in `docs/benchmarks/HOT_PATH_MEASUREMENT_METHODOLOGY.md`.
 ### Operator query pack (v2.5)
 `GET /operator/query-pack` provides an explicit, read-only incident/audit bundle for operators:
 - `incident_view` and `runtime_rollup` mirrors diagnostics/runtime normalization.
