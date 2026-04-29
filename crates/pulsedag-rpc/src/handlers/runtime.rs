@@ -131,6 +131,10 @@ pub struct RuntimeStatusData {
     pub external_mining_stale_work_template_invalidations: u64,
     pub external_mining_template_health: String,
     pub external_mining_template_stale_submit_ratio_bps: u64,
+    pub external_mining_hashrate_hps: u64,
+    pub external_mining_worker_efficiency_bps: u64,
+    pub external_mining_stale_efficiency_bps: u64,
+    pub external_mining_template_usefulness_bps: u64,
     pub external_mining_template_rollup: String,
     pub external_mining_surface_health: String,
     pub startup_snapshot_exists: bool,
@@ -1042,12 +1046,50 @@ pub async fn get_runtime_status<S: RpcStateLike>(
     } else {
         "healthy"
     };
+    let external_mining_hashrate_hps = if uptime_secs == 0 {
+        0
+    } else {
+        runtime
+            .accepted_mined_blocks
+            .saturating_div(uptime_secs)
+    };
+    let external_mining_worker_efficiency_bps = if external_mining_submit_total == 0 {
+        0
+    } else {
+        runtime
+            .external_mining_submit_accepted
+            .saturating_mul(10_000)
+            .saturating_div(external_mining_submit_total)
+            .min(10_000)
+    };
+    let external_mining_stale_efficiency_bps =
+        if runtime.external_mining_stale_work_detected == 0 {
+            10_000
+        } else {
+            external_mining_stale_work_template_invalidations
+                .saturating_mul(10_000)
+                .saturating_div(runtime.external_mining_stale_work_detected)
+                .min(10_000)
+        };
+    let external_mining_template_usefulness_bps = if runtime.external_mining_templates_emitted == 0 {
+        0
+    } else {
+        runtime
+            .external_mining_submit_accepted
+            .saturating_mul(10_000)
+            .saturating_div(runtime.external_mining_templates_emitted)
+            .min(10_000)
+    };
     let external_mining_template_rollup = format!(
-        "template_health={} stale_submit_rejections={} stale_template_invalidations={} stale_submit_ratio_bps={} submit_total={}",
+        "template_health={} stale_submit_rejections={} stale_template_invalidations={} stale_submit_ratio_bps={} worker_efficiency_bps={} stale_efficiency_bps={} template_usefulness_bps={} hashrate_hps={} submit_total={}",
         external_mining_template_health,
         external_mining_stale_work_submit_rejections,
         external_mining_stale_work_template_invalidations,
         external_mining_template_stale_submit_ratio_bps,
+        external_mining_worker_efficiency_bps,
+        external_mining_stale_efficiency_bps,
+        external_mining_template_usefulness_bps,
+        external_mining_hashrate_hps,
         external_mining_submit_total
     );
     let external_mining_surface_health = if external_mining_submit_outcome_counter_delta != 0
@@ -1257,6 +1299,10 @@ pub async fn get_runtime_status<S: RpcStateLike>(
         external_mining_stale_work_template_invalidations,
         external_mining_template_health: external_mining_template_health.to_string(),
         external_mining_template_stale_submit_ratio_bps,
+        external_mining_hashrate_hps,
+        external_mining_worker_efficiency_bps,
+        external_mining_stale_efficiency_bps,
+        external_mining_template_usefulness_bps,
         external_mining_template_rollup,
         external_mining_surface_health: external_mining_surface_health.to_string(),
         startup_snapshot_exists: runtime.startup_snapshot_exists,
@@ -2053,9 +2099,15 @@ mod tests {
         assert_eq!(data.external_mining_stale_work_template_invalidations, 4);
         assert_eq!(data.external_mining_template_health, "watch");
         assert_eq!(data.external_mining_template_stale_submit_ratio_bps, 1428);
+        assert_eq!(data.external_mining_worker_efficiency_bps, 5714);
+        assert_eq!(data.external_mining_stale_efficiency_bps, 8000);
+        assert_eq!(data.external_mining_template_usefulness_bps, 5714);
         assert!(data
             .external_mining_template_rollup
             .contains("template_health=watch"));
+        assert!(data
+            .external_mining_template_rollup
+            .contains("worker_efficiency_bps=5714"));
         assert_eq!(data.external_mining_surface_health, "degraded");
         assert_eq!(
             data.external_mining_last_template_id.as_deref(),
@@ -2116,6 +2168,42 @@ mod tests {
         assert!(data.external_mining_rejection_counters_coherent);
         assert_eq!(data.external_mining_surface_health, "counter_mismatch");
         assert_eq!(data.external_mining_template_health, "counter_mismatch");
+    }
+
+    #[tokio::test]
+    async fn runtime_status_external_mining_efficiency_rollups_stay_bounded_and_coherent() {
+        let path = temp_db_path("runtime-mining-efficiency-bounds");
+        let storage = Arc::new(Storage::open(path.to_str().unwrap()).expect("storage"));
+        let chain = storage
+            .load_or_init_genesis("testnet-dev".to_string())
+            .expect("genesis");
+
+        let mut runtime = NodeRuntimeStats::default();
+        runtime.external_mining_stale_work_detected = 2;
+        runtime.external_mining_rejected_stale_template = 5;
+        runtime.external_mining_submit_accepted = 0;
+        runtime.external_mining_submit_rejected = 5;
+        runtime.accepted_mined_blocks = 0;
+        runtime.rejected_mined_blocks = 5;
+        runtime.external_mining_templates_emitted = 0;
+
+        let state = TestState {
+            chain: Arc::new(RwLock::new(chain)),
+            storage,
+            runtime: Arc::new(RwLock::new(runtime)),
+            p2p: None,
+        };
+
+        let Json(resp) = get_runtime_status(State(state)).await;
+        let data = resp.data.expect("runtime status payload");
+        assert_eq!(data.external_mining_worker_efficiency_bps, 0);
+        assert_eq!(data.external_mining_stale_efficiency_bps, 0);
+        assert_eq!(data.external_mining_template_usefulness_bps, 0);
+        assert!(data.external_mining_stale_efficiency_bps <= 10_000);
+        assert!(data.external_mining_template_usefulness_bps <= 10_000);
+        assert!(data
+            .external_mining_template_rollup
+            .contains("stale_efficiency_bps=0"));
     }
 
     #[tokio::test]
