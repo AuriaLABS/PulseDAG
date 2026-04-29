@@ -54,6 +54,11 @@ pub struct DevDifficultySnapshot {
     pub suggested_difficulty: u64,
     pub target_u64: u64,
     pub retarget_multiplier_bps: u64,
+    pub retarget_min_bps: u64,
+    pub retarget_max_bps: u64,
+    pub retarget_was_clamped: bool,
+    pub retarget_rationale: String,
+    pub retarget_signal_quality: String,
     pub policy: DevDifficultyPolicy,
 }
 
@@ -287,6 +292,31 @@ const DEV_RETARGET_DEADBAND_BPS: u64 = 800;
 const DEV_RETARGET_DAMPING_DIVISOR: u64 = 2;
 const DEV_RETARGET_MIN_BPS: u64 = 8_000;
 const DEV_RETARGET_MAX_BPS: u64 = 12_500;
+const DEV_RETARGET_MIN_BPS_FLOOR: u64 = 1_000;
+const DEV_RETARGET_MAX_BPS_CEIL: u64 = 20_000;
+
+pub fn dev_retarget_deadband_bps() -> u64 {
+    read_env_u64("PULSEDAG_RETARGET_DEADBAND_BPS", DEV_RETARGET_DEADBAND_BPS).min(9_999)
+}
+
+pub fn dev_retarget_damping_divisor() -> u64 {
+    read_env_u64(
+        "PULSEDAG_RETARGET_DAMPING_DIVISOR",
+        DEV_RETARGET_DAMPING_DIVISOR,
+    )
+}
+
+pub fn dev_retarget_min_bps() -> u64 {
+    read_env_u64("PULSEDAG_RETARGET_MIN_BPS", DEV_RETARGET_MIN_BPS)
+        .clamp(DEV_RETARGET_MIN_BPS_FLOOR, 10_000)
+}
+
+pub fn dev_retarget_max_bps() -> u64 {
+    let min_bps = dev_retarget_min_bps();
+    read_env_u64("PULSEDAG_RETARGET_MAX_BPS", DEV_RETARGET_MAX_BPS)
+        .clamp(10_000, DEV_RETARGET_MAX_BPS_CEIL)
+        .max(min_bps)
+}
 
 pub fn dev_target_block_interval_secs() -> u64 {
     read_env_u64(
@@ -327,15 +357,16 @@ pub fn dev_retarget_multiplier_bps(avg_block_interval_secs: u64) -> u64 {
     }
     let target = dev_target_block_interval_secs().max(1);
     let raw = target.saturating_mul(10_000) / avg_block_interval_secs.max(1);
-    let lower_bound = 10_000u64.saturating_sub(DEV_RETARGET_DEADBAND_BPS);
-    let upper_bound = 10_000u64.saturating_add(DEV_RETARGET_DEADBAND_BPS);
+    let deadband = dev_retarget_deadband_bps();
+    let lower_bound = 10_000u64.saturating_sub(deadband);
+    let upper_bound = 10_000u64.saturating_add(deadband);
     if (lower_bound..=upper_bound).contains(&raw) {
         return 10_000;
     }
 
     let deviation = raw as i64 - 10_000;
-    let damped = 10_000i64 + (deviation / DEV_RETARGET_DAMPING_DIVISOR as i64);
-    (damped as u64).clamp(DEV_RETARGET_MIN_BPS, DEV_RETARGET_MAX_BPS)
+    let damped = 10_000i64 + (deviation / dev_retarget_damping_divisor() as i64);
+    (damped as u64).clamp(dev_retarget_min_bps(), dev_retarget_max_bps())
 }
 
 pub fn dev_adjust_difficulty_for_interval(current: u64, avg_block_interval_secs: u64) -> u64 {
@@ -443,9 +474,37 @@ pub fn dev_difficulty_snapshot(state: &ChainState) -> DevDifficultySnapshot {
         interval
     };
     let current_difficulty = dev_current_difficulty_for_chain(state);
+    let retarget_min_bps = dev_retarget_min_bps();
+    let retarget_max_bps = dev_retarget_max_bps();
     let retarget_multiplier_bps = dev_retarget_multiplier_bps(avg_block_interval_secs);
+    let raw_multiplier_bps = policy
+        .target_block_interval_secs
+        .saturating_mul(10_000)
+        .checked_div(avg_block_interval_secs.max(1))
+        .unwrap_or(10_000);
     let suggested_difficulty =
         dev_adjust_difficulty_for_interval(current_difficulty, avg_block_interval_secs);
+    let observed_intervals = observed_block_count.saturating_sub(1);
+    let retarget_signal_quality = if observed_intervals < 2 {
+        "low".to_string()
+    } else {
+        "normal".to_string()
+    };
+    let retarget_rationale = if observed_intervals < 2 {
+        "insufficient_signal".to_string()
+    } else if retarget_multiplier_bps == 10_000 {
+        "within_deadband".to_string()
+    } else if retarget_multiplier_bps == retarget_min_bps {
+        "clamped_to_min".to_string()
+    } else if retarget_multiplier_bps == retarget_max_bps {
+        "clamped_to_max".to_string()
+    } else if raw_multiplier_bps > 10_000 {
+        "damped_increase".to_string()
+    } else {
+        "damped_decrease".to_string()
+    };
+    let retarget_was_clamped = retarget_multiplier_bps == retarget_min_bps
+        || retarget_multiplier_bps == retarget_max_bps;
 
     DevDifficultySnapshot {
         algorithm: selected_pow_name(),
@@ -456,6 +515,11 @@ pub fn dev_difficulty_snapshot(state: &ChainState) -> DevDifficultySnapshot {
         suggested_difficulty,
         target_u64: pow_target_u64(suggested_difficulty),
         retarget_multiplier_bps,
+        retarget_min_bps,
+        retarget_max_bps,
+        retarget_was_clamped,
+        retarget_rationale,
+        retarget_signal_quality,
         policy,
     }
 }
@@ -670,5 +734,26 @@ mod tests {
         let max = *observed.iter().max().unwrap();
         assert!(max <= 130, "expected bounded upside, got {max}");
         assert!(min >= 80, "expected bounded downside, got {min}");
+    }
+
+    #[test]
+    fn retarget_bounds_and_determinism_hold() {
+        let chain = build_chain_with_intervals(&vec![10; 20], 200);
+        let first = dev_difficulty_snapshot(&chain);
+        let second = dev_difficulty_snapshot(&chain);
+        assert_eq!(first.retarget_multiplier_bps, second.retarget_multiplier_bps);
+        assert_eq!(first.suggested_difficulty, second.suggested_difficulty);
+        assert!(first.retarget_multiplier_bps >= first.retarget_min_bps);
+        assert!(first.retarget_multiplier_bps <= first.retarget_max_bps);
+    }
+
+    #[test]
+    fn low_signal_snapshot_uses_explicit_diagnostics() {
+        let chain = build_chain_with_intervals(&[60], 100);
+        let snapshot = dev_difficulty_snapshot(&chain);
+        assert_eq!(snapshot.retarget_signal_quality, "low");
+        assert_eq!(snapshot.retarget_rationale, "insufficient_signal");
+        assert_eq!(snapshot.retarget_multiplier_bps, 10_000);
+        assert!(!snapshot.retarget_was_clamped);
     }
 }

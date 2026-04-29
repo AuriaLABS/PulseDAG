@@ -70,6 +70,26 @@ Beyond PoW acceptance itself, node submit handling currently rejects stale/inval
 
 See `docs/POW_CURRENT_PATH.md` for the step-by-step request/validation flow and code pointers.
 
+## 6.1 Difficulty retarget controls and diagnostics (operator-facing)
+
+The consensus direction remains unchanged: bounded, explainable retargeting using the same target-interval framing.
+
+- Default retarget controls:
+  - deadband: `±800 bps` around neutral (`10000` bps),
+  - damping divisor: `2`,
+  - multiplier clamp: `[8000, 12500]` bps.
+- Optional runtime controls (env):
+  - `PULSEDAG_RETARGET_DEADBAND_BPS`
+  - `PULSEDAG_RETARGET_DAMPING_DIVISOR`
+  - `PULSEDAG_RETARGET_MIN_BPS`
+  - `PULSEDAG_RETARGET_MAX_BPS`
+- Runtime diagnostics now include:
+  - movement/bounds: `retarget_multiplier_bps`, `retarget_min_bps`, `retarget_max_bps`, `retarget_was_clamped`
+  - rationale tags: `retarget_rationale`
+  - signal-quality tag: `retarget_signal_quality`
+
+Low-signal windows are labeled explicitly (`retarget_signal_quality=low`, `retarget_rationale=insufficient_signal`) to avoid misleading operator interpretation.
+
 ## 7) Current vs provisional/dev-oriented surfaces
 
 The following names are retained for compatibility and operator visibility, but do not represent an alternate consensus PoW algorithm:
