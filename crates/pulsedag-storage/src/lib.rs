@@ -80,6 +80,7 @@ pub struct SnapshotVerificationReport {
     pub lineage_coherent: bool,
     pub chain_id_matches_expected: bool,
     pub replay_viable: bool,
+    pub lineage_issue_count: usize,
     pub restore_guarantees_explicit: bool,
     pub recovery_confidence: String,
     pub confidence_reason: String,
@@ -106,6 +107,8 @@ pub struct StorageAuditReport {
     pub lineage_coherent: bool,
     pub deep_replay_viable: Option<bool>,
     pub restore_drill_confirms_recovery: bool,
+    pub recovery_confidence_non_misleading: bool,
+    pub confidence_evidence_path: String,
     pub recovery_confidence: String,
     pub confidence_reason: String,
     pub issue_count: usize,
@@ -606,6 +609,7 @@ impl Storage {
             &bundle.persisted_blocks,
             bundle.snapshot.dag.best_height,
         );
+        let lineage_issue_count = lineage_issues.len();
         for (code, message) in lineage_issues {
             issues.push(SnapshotVerificationIssue {
                 code: format!("SNAPSHOT_BUNDLE_{code}"),
@@ -664,6 +668,7 @@ impl Storage {
             lineage_coherent,
             chain_id_matches_expected,
             replay_viable,
+            lineage_issue_count,
             restore_guarantees_explicit,
             recovery_confidence,
             confidence_reason,
@@ -942,31 +947,37 @@ impl Storage {
             .list_runtime_events(100)?
             .into_iter()
             .any(|e| e.kind == "restore_drill_completed");
-        let (recovery_confidence, confidence_reason) =
+        let (recovery_confidence, confidence_reason, confidence_evidence_path) =
             if !snapshot_exists || !snapshot_anchor_present {
                 (
                     "low".to_string(),
                     "validated snapshot and anchor metadata are both required".to_string(),
+                    "snapshot+anchor".to_string(),
                 )
             } else if !lineage_coherent || deep_replay_viable == Some(false) {
                 (
                     "low".to_string(),
                     "lineage or deep replay checks failed, so recovery confidence remains low"
                         .to_string(),
+                    "lineage+deep_replay".to_string(),
                 )
             } else if restore_drill_confirms_recovery {
                 (
                     "high".to_string(),
                     "snapshot lineage, deep replay, and recent restore drill evidence are coherent"
                         .to_string(),
+                    "lineage+deep_replay+restore_drill".to_string(),
                 )
             } else {
                 (
                 "medium".to_string(),
                 "snapshot lineage and replay checks passed without recent restore drill evidence"
                     .to_string(),
+                "lineage+deep_replay".to_string(),
             )
             };
+        let recovery_confidence_non_misleading =
+            recovery_confidence != "high" || restore_drill_confirms_recovery;
 
         let issue_count = issues.len();
         Ok(StorageAuditReport {
@@ -981,6 +992,8 @@ impl Storage {
             lineage_coherent,
             deep_replay_viable,
             restore_drill_confirms_recovery,
+            recovery_confidence_non_misleading,
+            confidence_evidence_path,
             recovery_confidence,
             confidence_reason,
             issue_count,
@@ -1952,6 +1965,8 @@ mod tests {
             .expect("audit before drill");
         assert_eq!(pre_drill.recovery_confidence, "medium");
         assert!(!pre_drill.restore_drill_confirms_recovery);
+        assert!(pre_drill.recovery_confidence_non_misleading);
+        assert_eq!(pre_drill.confidence_evidence_path, "lineage+deep_replay");
 
         storage
             .restore_drill_snapshot_and_delta("testnet".to_string())
@@ -1962,6 +1977,11 @@ mod tests {
             .expect("audit after drill");
         assert_eq!(post_drill.recovery_confidence, "high");
         assert!(post_drill.restore_drill_confirms_recovery);
+        assert!(post_drill.recovery_confidence_non_misleading);
+        assert_eq!(
+            post_drill.confidence_evidence_path,
+            "lineage+deep_replay+restore_drill"
+        );
         let _ = std::fs::remove_dir_all(path);
     }
 
@@ -2037,6 +2057,7 @@ mod tests {
         assert!(report.lineage_coherent);
         assert_eq!(report.deep_replay_viable, Some(true));
         assert_eq!(report.recovery_confidence, "medium");
+        assert!(report.recovery_confidence_non_misleading);
         let _ = std::fs::remove_dir_all(path);
     }
 
@@ -2059,6 +2080,7 @@ mod tests {
             .expect("snapshot export should pass lineage checks");
         assert!(report.lineage_coherent);
         assert!(report.replay_viable);
+        assert_eq!(report.lineage_issue_count, 0);
         assert_eq!(report.recovery_confidence, "high");
         assert!(report.restore_guarantees_explicit);
         let _ = std::fs::remove_dir_all(path);
@@ -2089,6 +2111,7 @@ mod tests {
         assert!(report.read_only);
         assert_eq!(report.deep_replay_viable, None);
         assert_eq!(report.recovery_confidence, "medium");
+        assert!(report.recovery_confidence_non_misleading);
         let after_blocks = storage.list_blocks().expect("list after");
         let after_snapshot_ts = storage
             .snapshot_captured_at_unix()
@@ -2124,6 +2147,7 @@ mod tests {
         assert!(report.snapshot_exists);
         assert!(!report.snapshot_anchor_present);
         assert_eq!(report.recovery_confidence, "low");
+        assert_eq!(report.confidence_evidence_path, "snapshot+anchor");
         assert!(
             report
                 .confidence_reason
