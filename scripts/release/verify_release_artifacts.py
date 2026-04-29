@@ -48,25 +48,28 @@ def unpack_archive(archive: Path, destination: Path) -> None:
 
 
 def run_smoke(binary: Path, binary_name: str) -> None:
-    args = [str(binary), "--version"]
-    allow_usage_exit_one = False
-    if binary_name == "pulsedag-miner":
-        args = [str(binary), "--help"]
-        allow_usage_exit_one = True
+    smoke_commands = [
+        [str(binary), "--help"],
+        [str(binary), "--version"],
+    ]
 
-    with tempfile.TemporaryDirectory(prefix="release-smoke-") as smoke_dir:
-        result = subprocess.run(args, check=False, capture_output=True, text=True, cwd=smoke_dir)
-    if allow_usage_exit_one and result.returncode == 1:
-        output = f"{result.stdout}\n{result.stderr}".lower()
-        if "usage:" in output and "pulsedag-miner" in output:
+    for args in smoke_commands:
+        with tempfile.TemporaryDirectory(prefix="release-smoke-") as smoke_dir:
+            result = subprocess.run(args, check=False, capture_output=True, text=True, cwd=smoke_dir)
+
+        if result.returncode == 0:
             return
 
-    if result.returncode != 0:
-        raise SystemExit(
-            f"Smoke command failed for {binary_name} ({' '.join(args)}):\n"
-            f"stdout:\n{result.stdout}\n"
-            f"stderr:\n{result.stderr}"
-        )
+        if result.returncode == 1:
+            output = f"{result.stdout}\n{result.stderr}".lower()
+            if "usage:" in output and binary_name in output:
+                return
+
+    raise SystemExit(
+        f"Smoke command failed for {binary_name} ({' '.join(smoke_commands[0])} or {' '.join(smoke_commands[1])}):\n"
+        f"stdout:\n{result.stdout}\n"
+        f"stderr:\n{result.stderr}"
+    )
 
 
 def validate_archive_artifact(archive: Path, expected_tag: str, smoke: bool) -> dict:
