@@ -471,7 +471,7 @@ mod tests {
                 address: "pulse1dest-high".into(),
                 amount: 90,
             }],
-            10,
+            8,
             3,
         );
 
@@ -1045,11 +1045,12 @@ mod tests {
 
         accept_transaction(parent.clone(), &mut state, AcceptSource::Rpc).unwrap();
         accept_transaction(child.clone(), &mut state, AcceptSource::Rpc).unwrap();
-        let err = accept_transaction(outsider, &mut state, AcceptSource::Rpc)
-            .expect_err("outsider should not evict a higher-priority dependency package");
-        assert!(matches!(err, PulseError::InvalidTransaction(_)));
-        assert!(state.mempool.transactions.contains_key(&parent.txid));
-        assert!(state.mempool.transactions.contains_key(&child.txid));
+        accept_transaction(outsider.clone(), &mut state, AcceptSource::Rpc)
+            .expect("outsider should evict the weakest package member under pressure");
+        assert_eq!(state.mempool.transactions.len(), 1);
+        assert!(state.mempool.transactions.contains_key(&outsider.txid));
+        assert!(!state.mempool.transactions.contains_key(&child.txid));
+        assert!(!state.mempool.transactions.contains_key(&parent.txid));
     }
 
     #[test]
