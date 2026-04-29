@@ -72,6 +72,10 @@ Query params:
   - template rollups are outcome-grounded:
     - `external_mining_template_health`
     - `external_mining_template_stale_submit_ratio_bps`
+    - `external_mining_hashrate_hps` (accepted mined blocks / node uptime seconds)
+    - `external_mining_worker_efficiency_bps` (accepted submit ratio, bounded `0..=10000`)
+    - `external_mining_stale_efficiency_bps` (stale detections converted to template invalidations, bounded `0..=10000`)
+    - `external_mining_template_usefulness_bps` (accepted submits per emitted templates, bounded `0..=10000`)
     - `external_mining_template_rollup`
 - Existing polling endpoints remain available:
   - `GET /runtime/events`
