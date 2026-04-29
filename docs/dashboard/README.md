@@ -230,3 +230,5 @@ Methodology is documented in `docs/benchmarks/HOT_PATH_MEASUREMENT_METHODOLOGY.m
 - `mining_audit_view` for external mining submission/template health and rejection coherence.
 - `startup_recovery_view` for startup path/fallback and replay requirements.
 - `deterministic_notes` for explicit audit semantics (`operator_read_only_surface`, etc.).
+
+- queue pressure counters now include `p2p_queue_backpressure_drops` to make relay backpressure explicit under load.

@@ -83,6 +83,7 @@ pub struct P2pStatus {
     pub queue_standard_tx_lane_picks: usize,
     pub queue_non_block_fair_picks: usize,
     pub queue_starvation_relief_picks: usize,
+    pub queue_backpressure_drops: usize,
     pub inbound_messages: usize,
     pub runtime_started: bool,
     pub runtime_mode_detail: String,
@@ -200,6 +201,7 @@ struct InnerState {
     queue_standard_tx_lane_picks: usize,
     queue_non_block_fair_picks: usize,
     queue_starvation_relief_picks: usize,
+    queue_backpressure_drops: usize,
     topics: Vec<String>,
     mode: String,
     peer_id: String,
@@ -420,6 +422,7 @@ impl P2pHandle for MemoryP2pHandle {
             queue_standard_tx_lane_picks: inner.queue_standard_tx_lane_picks,
             queue_non_block_fair_picks: inner.queue_non_block_fair_picks,
             queue_starvation_relief_picks: inner.queue_starvation_relief_picks,
+            queue_backpressure_drops: inner.queue_backpressure_drops,
             inbound_messages: inner.inbound_messages,
             runtime_started: inner.runtime_started,
             runtime_mode_detail: inner.runtime_mode_detail.clone(),
@@ -608,6 +611,7 @@ const TX_RELAY_BUDGET_WINDOW_SECS: u64 = 1;
 const TX_RELAY_BUDGET_PER_WINDOW: usize = 256;
 const TX_RELAY_BUDGET_OVERFLOW_SAMPLE_EVERY: u64 = 8;
 const TX_BUDGET_LOAD_SHED_QUEUE_DEPTH_THRESHOLD: usize = 512;
+const OUTBOUND_QUEUE_SOFT_CAP: usize = 1024;
 const CONNECTION_SHAPING_DEGRADED_CAP_DIVISOR: usize = 3;
 const CONNECTION_SHAPING_MIN_HEALTHY_SLOTS: usize = 1;
 const TOPOLOGY_BUCKET_COUNT: usize = 8;
@@ -949,10 +953,20 @@ struct OutboundPriorityQueue {
     standard_txs: std::collections::VecDeque<OutboundMessage>,
     consecutive_block_picks: usize,
     consecutive_priority_tx_picks: usize,
+    tx_recovery_credit: usize,
 }
 
 fn track_queue_depth_on_enqueue(state: &mut InnerState) {
     state.queue_max_depth = state.queue_max_depth.max(state.queued_messages);
+}
+
+fn queue_backpressure_reject(state: &mut InnerState, reason: &str) -> bool {
+    if state.queued_messages >= OUTBOUND_QUEUE_SOFT_CAP {
+        state.queue_backpressure_drops = state.queue_backpressure_drops.saturating_add(1);
+        state.last_drop_reason = Some(reason.to_string());
+        return true;
+    }
+    false
 }
 
 fn enqueue_outbound_message(
@@ -993,7 +1007,11 @@ fn pop_outbound_message(
         blocks_waiting && tx_waiting && queue.consecutive_block_picks >= BLOCK_PRIORITY_BURST_LIMIT;
     let pick_priority_lane = priority_waiting
         && (!standard_waiting || queue.consecutive_priority_tx_picks < PRIORITY_TX_BURST_LIMIT);
-    let picked = if take_tx_for_fairness {
+    if blocks_waiting && tx_waiting && queue.consecutive_block_picks >= BLOCK_PRIORITY_BURST_LIMIT {
+        queue.tx_recovery_credit = queue.tx_recovery_credit.saturating_add(2);
+    }
+    let force_tx_recovery = tx_waiting && queue.tx_recovery_credit > 0;
+    let picked = if take_tx_for_fairness || force_tx_recovery {
         queue.consecutive_block_picks = 0;
         if pick_priority_lane {
             queue.consecutive_priority_tx_picks =
@@ -1016,6 +1034,9 @@ fn pop_outbound_message(
         queue.consecutive_priority_tx_picks = 0;
         queue.standard_txs.pop_front()
     };
+    if let Some(OutboundMessage::Transaction(_)) = picked.as_ref() {
+        queue.tx_recovery_credit = queue.tx_recovery_credit.saturating_sub(1);
+    }
     if let (Some(msg), Ok(mut guard)) = (picked.as_ref(), inner.lock()) {
         guard.queued_messages = guard.queued_messages.saturating_sub(1);
         match msg {
@@ -1862,6 +1883,9 @@ impl P2pHandle for Libp2pHandle {
                 inner.last_drop_reason = Some("tx_budget_suppressed".into());
                 return Ok(());
             }
+            if queue_backpressure_reject(&mut inner, "outbound_queue_backpressure_tx") {
+                return Ok(());
+            }
             record_outbound_tx_relay(&mut inner, &tx_id, now_unix());
             inner.queued_messages += 1;
             inner.queued_non_block_messages += 1;
@@ -1944,6 +1968,7 @@ impl P2pHandle for Libp2pHandle {
             queue_standard_tx_lane_picks: inner.queue_standard_tx_lane_picks,
             queue_non_block_fair_picks: inner.queue_non_block_fair_picks,
             queue_starvation_relief_picks: inner.queue_starvation_relief_picks,
+            queue_backpressure_drops: inner.queue_backpressure_drops,
             inbound_messages: inner.inbound_messages,
             runtime_started: inner.runtime_started,
             runtime_mode_detail: inner.runtime_mode_detail.clone(),
@@ -2050,6 +2075,24 @@ mod tests {
             outputs: vec![],
             fee,
             nonce: 1,
+        }
+    }
+
+    fn sample_block(hash: &str, height: usize) -> Block {
+        Block {
+            hash: hash.into(),
+            header: pulsedag_core::types::BlockHeader {
+                version: 1,
+                parents: vec![],
+                timestamp: 1,
+                difficulty: 1,
+                nonce: 1,
+                merkle_root: "mr".into(),
+                state_root: "sr".into(),
+                blue_score: 1,
+                height: height as u64,
+            },
+            transactions: vec![],
         }
     }
 
@@ -2713,6 +2756,98 @@ mod tests {
             1_000
         ));
         assert_eq!(state.tx_outbound_budget_suppressed, 1);
+    }
+
+    #[test]
+    fn outbound_backpressure_is_bounded_and_explicit() {
+        let mut state = InnerState {
+            queued_messages: OUTBOUND_QUEUE_SOFT_CAP,
+            ..Default::default()
+        };
+        assert!(queue_backpressure_reject(
+            &mut state,
+            "outbound_queue_backpressure_tx"
+        ));
+        assert_eq!(state.queue_backpressure_drops, 1);
+        assert_eq!(
+            state.last_drop_reason.as_deref(),
+            Some("outbound_queue_backpressure_tx")
+        );
+    }
+
+    #[test]
+    fn burst_heavy_mix_preserves_standard_lane_fairness() {
+        let inner = Arc::new(Mutex::new(InnerState {
+            queued_messages: 40,
+            queued_block_messages: 30,
+            queued_non_block_messages: 10,
+            ..Default::default()
+        }));
+        let mut queue = OutboundPriorityQueue::default();
+        for idx in 0..30 {
+            enqueue_outbound_message(
+                &inner,
+                &mut queue,
+                OutboundMessage::Block(sample_block(&format!("burst-block-{idx}"), idx + 1)),
+            );
+        }
+        for idx in 0..8 {
+            enqueue_outbound_message(
+                &inner,
+                &mut queue,
+                OutboundMessage::Transaction(sample_tx_with_fee(
+                    &format!("burst-prio-{idx}"),
+                    TX_PRIORITY_FEE_THRESHOLD,
+                )),
+            );
+        }
+        for idx in 0..2 {
+            enqueue_outbound_message(
+                &inner,
+                &mut queue,
+                OutboundMessage::Transaction(sample_tx_with_fee(&format!("burst-std-{idx}"), 1)),
+            );
+        }
+
+        let mut std_picks = 0;
+        for _ in 0..40 {
+            if let Some(OutboundMessage::Transaction(tx)) = pop_outbound_message(&inner, &mut queue)
+            {
+                if tx.fee < TX_PRIORITY_FEE_THRESHOLD {
+                    std_picks += 1;
+                }
+            }
+        }
+        assert!(std_picks >= 1);
+    }
+
+    #[test]
+    fn tx_recovery_credit_drains_after_burst_and_reconverges() {
+        let inner = Arc::new(Mutex::new(InnerState {
+            queued_messages: 12,
+            queued_block_messages: 8,
+            queued_non_block_messages: 4,
+            ..Default::default()
+        }));
+        let mut queue = OutboundPriorityQueue::default();
+        for idx in 0..8 {
+            enqueue_outbound_message(
+                &inner,
+                &mut queue,
+                OutboundMessage::Block(sample_block(&format!("recovery-block-{idx}"), idx + 1)),
+            );
+        }
+        for idx in 0..4 {
+            enqueue_outbound_message(
+                &inner,
+                &mut queue,
+                OutboundMessage::Transaction(sample_tx_with_fee(&format!("recovery-tx-{idx}"), 1)),
+            );
+        }
+        for _ in 0..12 {
+            let _ = pop_outbound_message(&inner, &mut queue);
+        }
+        assert_eq!(queue.tx_recovery_credit, 0);
     }
 
     #[test]
