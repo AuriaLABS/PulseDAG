@@ -63,10 +63,11 @@ Query params:
   - `startup_bootstrap_mode=snapshot_assisted` means validated snapshot-assisted startup (`startup_path=fast_boot`, `startup_snapshot_validated=true`, `startup_delta_applied=true`).
   - `startup_status_summary` provides a compact operator-facing sentence that aligns with the structured flags above.
 - Sync catch-up observability in `GET /runtime/status` is also normalized for operator explainability:
-  - `sync_catchup_stage` provides one explicit stage (`steady`, `discovering`, `acquiring`, `validating`, `recovering`, `degraded`).
+  - `sync_catchup_stage` provides one explicit stage (`steady`, `discovering`, `acquiring`, `validating`, `recovering`, `stalled`, `degraded`).
   - `sync_lag_band` buckets lag into bounded bands (`aligned`, `near_tip`, `catching_up`, `lagging`, `severely_lagging`).
   - `sync_catchup_progress_bps` is bounded to `0..=10000` for deterministic dashboard gauges.
   - `sync_recovery_reason` is populated when sync is degraded, stalled, or still catching up, so operators have explicit recovery context instead of implicit inference.
+  - stalled/no-progress reasons explicitly include bounded remediation counters (`fallbacks`, `timeouts`, `restarts`) to avoid ambiguous retry-heavy interpretation.
 - External mining submit observability includes explicit rejection classes and template-health rollups:
   - rejection classes now distinguish `invalid_pow`, `stale_template`, `unknown_template`, `duplicate_block`, `invalid_block`, `chain_id_mismatch`, `internal_error`, `storage_error`.
   - template rollups are outcome-grounded:

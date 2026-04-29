@@ -324,6 +324,8 @@ fn sync_catchup_view(runtime: &crate::api::NodeRuntimeStats, now_unix: u64) -> S
             <= runtime.sync_pipeline.counters.blocks_requested;
     let stage = if runtime.sync_pipeline.last_error.is_some() || !sync_counters_coherent {
         "degraded"
+    } else if stalled {
+        "stalled"
     } else {
         match runtime.sync_pipeline.phase {
             SyncPhase::Idle if lag_blocks == 0 => "steady",
@@ -349,8 +351,11 @@ fn sync_catchup_view(runtime: &crate::api::NodeRuntimeStats, now_unix: u64) -> S
         Some("sync counter incoherence detected; verify sync pipeline accounting".to_string())
     } else if stalled {
         Some(format!(
-            "sync stalled in {:?} with lag_band={lag_band}; last transition over 120s ago",
-            runtime.sync_pipeline.phase
+            "no-progress escalation: sync stalled in {:?} with lag_band={lag_band}; bounded remediation active (fallbacks={}, timeouts={}, restarts={})",
+            runtime.sync_pipeline.phase,
+            runtime.sync_pipeline.fallback_count,
+            runtime.sync_pipeline.timeout_fallback_count,
+            runtime.sync_pipeline.restart_count
         ))
     } else if lag_blocks > 0 {
         Some(format!(
