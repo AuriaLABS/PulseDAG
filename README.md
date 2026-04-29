@@ -1,6 +1,6 @@
-# PulseDAG v2.2.4 closeout package
+# PulseDAG v2.2.5 closeout package
 
-Consolidated v2.2.4 operator-readiness and release-closeout package for operational recovery, rebuild, restore, and maintenance workflows.
+Consolidated v2.2.5 operator-readiness and release-closeout package for operational recovery, rebuild, restore, and maintenance workflows.
 
 ## Frozen decisions
 - Miner remains an external standalone application.
@@ -102,13 +102,13 @@ See `docs/OPERATIONS_P2P.md` for operational guidance.
 - Staging upgrade runbook: `docs/runbooks/STAGING_UPGRADE.md`
 - Staging rollback runbook: `docs/runbooks/STAGING_ROLLBACK.md`
 
-## Burn-in and evidence for v2.2.4
+## Burn-in and evidence for v2.2.5
 - The CI workflow `Soak Smoke (short CI signal)` is intentionally a short regression signal, not a release burn-in claim.
-- Real release burn-in for v2.2.4 requires an operated run with evidence collection per release policy.
+- Real release burn-in for v2.2.5 requires an operated run with evidence collection per release policy.
 - See `docs/BURN_IN_14D.md` and `docs/RELEASE_EVIDENCE.md` for process and required artifacts.
 
-## v2.2.4 closeout package (release hygiene only)
-- Final release closeout checklist: `docs/checklists/V2_2_4_BURNIN_CLOSEOUT.md`
+## v2.2.5 closeout package (release hygiene only)
+- Final release closeout checklist: `docs/checklists/V2_2_5_BURNIN_CLOSEOUT.md`
 - Burn-in execution guide: `docs/BURN_IN_14D.md`
 - Evidence bundle/index: `docs/RELEASE_EVIDENCE.md`
 - Runbook index: `docs/runbooks/INDEX.md`
