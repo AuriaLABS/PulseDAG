@@ -1,14 +1,20 @@
+use crate::api::{ApiResponse, RpcStateLike, WalletSignRequest, WalletTransferRequest};
 use axum::{extract::State, Json};
 use ed25519_dalek::SigningKey;
-use pulsedag_crypto::{generate_keypair, sign_message};
 use pulsedag_core::compute_txid;
+use pulsedag_crypto::{generate_keypair, sign_message};
 use pulsedag_wallet::build_transaction;
-use crate::{api::{ApiResponse, RpcStateLike, WalletSignRequest, WalletTransferRequest}};
 
 #[derive(Debug, serde::Serialize)]
-pub struct NewWalletData { pub address: String, pub public_key: String, pub private_key: String }
+pub struct NewWalletData {
+    pub address: String,
+    pub public_key: String,
+    pub private_key: String,
+}
 #[derive(Debug, serde::Serialize)]
-pub struct WalletSignData { pub signature: String }
+pub struct WalletSignData {
+    pub signature: String,
+}
 #[derive(Debug, serde::Serialize)]
 pub struct WalletTransferData {
     pub accepted: bool,
@@ -22,12 +28,21 @@ pub struct WalletTransferData {
     pub mempool_size: usize,
 }
 
-pub async fn post_wallet_new<S: RpcStateLike>(State(_state): State<S>) -> Json<ApiResponse<NewWalletData>> {
+pub async fn post_wallet_new<S: RpcStateLike>(
+    State(_state): State<S>,
+) -> Json<ApiResponse<NewWalletData>> {
     let (private_key, public_key, address) = generate_keypair();
-    Json(ApiResponse::ok(NewWalletData { address, public_key, private_key }))
+    Json(ApiResponse::ok(NewWalletData {
+        address,
+        public_key,
+        private_key,
+    }))
 }
 
-pub async fn post_wallet_sign<S: RpcStateLike>(State(_state): State<S>, Json(req): Json<WalletSignRequest>) -> Json<ApiResponse<WalletSignData>> {
+pub async fn post_wallet_sign<S: RpcStateLike>(
+    State(_state): State<S>,
+    Json(req): Json<WalletSignRequest>,
+) -> Json<ApiResponse<WalletSignData>> {
     let msg_bytes = hex::decode(&req.message).unwrap_or_else(|_| req.message.as_bytes().to_vec());
     match sign_message(&req.private_key, &msg_bytes) {
         Ok(signature) => Json(ApiResponse::ok(WalletSignData { signature })),
@@ -35,10 +50,21 @@ pub async fn post_wallet_sign<S: RpcStateLike>(State(_state): State<S>, Json(req
     }
 }
 
-pub async fn post_wallet_transfer<S: RpcStateLike>(State(state): State<S>, Json(req): Json<WalletTransferRequest>) -> Json<ApiResponse<WalletTransferData>> {
+pub async fn post_wallet_transfer<S: RpcStateLike>(
+    State(state): State<S>,
+    Json(req): Json<WalletTransferRequest>,
+) -> Json<ApiResponse<WalletTransferData>> {
     let chain_handle = state.chain();
     let mut chain = chain_handle.write().await;
-    let available = chain.utxo.address_index.get(&req.from).cloned().unwrap_or_default().into_iter().filter_map(|op| chain.utxo.utxos.get(&op).cloned()).collect::<Vec<_>>();
+    let available = chain
+        .utxo
+        .address_index
+        .get(&req.from)
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|op| chain.utxo.utxos.get(&op).cloned())
+        .collect::<Vec<_>>();
     let built = match build_transaction(&req.from, &req.to, req.amount, req.fee, &available, 1) {
         Ok(v) => v,
         Err(e) => return Json(ApiResponse::err("BUILD_ERROR", e.to_string())),
@@ -66,7 +92,11 @@ pub async fn post_wallet_transfer<S: RpcStateLike>(State(state): State<S>, Json(
         input.signature = signature.clone();
     }
     tx.txid = compute_txid(&tx);
-    match pulsedag_core::accept_transaction(tx.clone(), &mut chain, pulsedag_core::AcceptSource::Rpc) {
+    match pulsedag_core::accept_transaction(
+        tx.clone(),
+        &mut chain,
+        pulsedag_core::AcceptSource::Rpc,
+    ) {
         Ok(_) => {
             let mempool_size = chain.mempool.transactions.len();
             let snapshot = chain.clone();
@@ -74,7 +104,9 @@ pub async fn post_wallet_transfer<S: RpcStateLike>(State(state): State<S>, Json(
             if let Err(e) = state.storage().persist_chain_state(&snapshot) {
                 return Json(ApiResponse::err("STORAGE_ERROR", e.to_string()));
             }
-            if let Some(p2p) = state.p2p() { let _ = p2p.broadcast_transaction(&tx); }
+            if let Some(p2p) = state.p2p() {
+                let _ = p2p.broadcast_transaction(&tx);
+            }
             Json(ApiResponse::ok(WalletTransferData {
                 accepted: true,
                 txid: tx.txid,

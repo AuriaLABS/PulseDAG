@@ -1,5 +1,5 @@
-use axum::{extract::State, Json};
 use crate::{api::ApiResponse, api::RpcStateLike};
+use axum::{extract::State, Json};
 
 #[derive(Debug, serde::Serialize)]
 pub struct ContractsStatusData {
@@ -16,7 +16,9 @@ pub struct ContractsStatusData {
     pub max_storage_value_bytes: u32,
 }
 
-pub async fn get_contracts_status<S: RpcStateLike>(State(state): State<S>) -> Json<ApiResponse<ContractsStatusData>> {
+pub async fn get_contracts_status<S: RpcStateLike>(
+    State(state): State<S>,
+) -> Json<ApiResponse<ContractsStatusData>> {
     let chain_handle = state.chain();
     let chain = chain_handle.read().await;
     let cfg = &chain.contracts.config;
@@ -25,7 +27,11 @@ pub async fn get_contracts_status<S: RpcStateLike>(State(state): State<S>) -> Js
         prepared: state.storage().contract_namespaces_ready(),
         enabled: cfg.enabled,
         vm_version: cfg.vm_version.clone(),
-        execution_mode: if cfg.enabled { "enabled".into() } else { "disabled-prepared".into() },
+        execution_mode: if cfg.enabled {
+            "enabled".into()
+        } else {
+            "disabled-prepared".into()
+        },
         contract_count: chain.contracts.contract_count,
         storage_slots: chain.contracts.storage_slots,
         receipt_count: chain.contracts.receipt_count,

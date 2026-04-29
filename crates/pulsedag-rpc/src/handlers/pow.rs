@@ -1,5 +1,5 @@
-use axum::Json;
 use crate::api::ApiResponse;
+use axum::Json;
 
 #[derive(Debug, serde::Serialize)]
 pub struct PowInfoData {

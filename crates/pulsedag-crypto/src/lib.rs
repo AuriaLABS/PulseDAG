@@ -11,8 +11,11 @@ pub fn generate_keypair() -> (String, String, Address) {
 }
 
 pub fn sign_message(private_key_hex: &str, message: &[u8]) -> Result<String, PulseError> {
-    let bytes = hex::decode(private_key_hex).map_err(|e| PulseError::Internal(format!("private key decode error: {e}")))?;
-    let key_bytes: [u8; 32] = bytes.try_into().map_err(|_| PulseError::Internal("invalid private key length".into()))?;
+    let bytes = hex::decode(private_key_hex)
+        .map_err(|e| PulseError::Internal(format!("private key decode error: {e}")))?;
+    let key_bytes: [u8; 32] = bytes
+        .try_into()
+        .map_err(|_| PulseError::Internal("invalid private key length".into()))?;
     let signing_key = SigningKey::from_bytes(&key_bytes);
     Ok(hex::encode(signing_key.sign(message).to_bytes()))
 }

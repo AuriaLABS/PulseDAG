@@ -1,7 +1,9 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::{
-    state::{ChainState, ContractRuntimeConfig, ContractRuntimeState, DagState, Mempool, UtxoState},
+    state::{
+        ChainState, ContractRuntimeConfig, ContractRuntimeState, DagState, Mempool, UtxoState,
+    },
     types::{Block, BlockHeader, OutPoint, Transaction, TxOutput, Utxo},
 };
 
@@ -43,7 +45,10 @@ pub fn genesis_block() -> Block {
 pub fn init_chain_state(chain_id: String) -> ChainState {
     let genesis = genesis_block();
     let tx = genesis.transactions[0].clone();
-    let outpoint = OutPoint { txid: tx.txid.clone(), index: 0 };
+    let outpoint = OutPoint {
+        txid: tx.txid.clone(),
+        index: 0,
+    };
     let utxo = Utxo {
         outpoint: outpoint.clone(),
         address: GENESIS_TREASURY.into(),
@@ -73,7 +78,10 @@ pub fn init_chain_state(chain_id: String) -> ChainState {
             genesis_hash: genesis.hash,
             best_height: 0,
         },
-        utxo: UtxoState { utxos, address_index },
+        utxo: UtxoState {
+            utxos,
+            address_index,
+        },
         mempool: Mempool::default(),
         contracts: ContractRuntimeState {
             config: ContractRuntimeConfig {

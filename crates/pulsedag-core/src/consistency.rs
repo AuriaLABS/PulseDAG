@@ -11,7 +11,10 @@ pub fn dag_consistency_issues(state: &ChainState) -> Vec<String> {
         .max()
         .unwrap_or(0);
     if state.dag.best_height != max_height {
-        issues.push(format!("best_height {} does not match max block height {}", state.dag.best_height, max_height));
+        issues.push(format!(
+            "best_height {} does not match max block height {}",
+            state.dag.best_height, max_height
+        ));
     }
 
     for tip in &state.dag.tips {
@@ -22,7 +25,10 @@ pub fn dag_consistency_issues(state: &ChainState) -> Vec<String> {
 
     if let Some(selected_tip) = preferred_tip_hash(state) {
         if !state.dag.tips.contains(&selected_tip) {
-            issues.push(format!("selected_tip {} is not present in tip set", selected_tip));
+            issues.push(format!(
+                "selected_tip {} is not present in tip set",
+                selected_tip
+            ));
         }
     } else if !state.dag.blocks.is_empty() {
         issues.push("no selected_tip could be derived while blocks exist".to_string());
@@ -33,11 +39,17 @@ pub fn dag_consistency_issues(state: &ChainState) -> Vec<String> {
             continue;
         }
         if block.header.parents.is_empty() {
-            issues.push(format!("block {} at height {} has no parents", block.hash, block.header.height));
+            issues.push(format!(
+                "block {} at height {} has no parents",
+                block.hash, block.header.height
+            ));
         }
         for parent in &block.header.parents {
             if !state.dag.blocks.contains_key(parent) {
-                issues.push(format!("block {} references missing parent {}", block.hash, parent));
+                issues.push(format!(
+                    "block {} references missing parent {}",
+                    block.hash, parent
+                ));
             }
         }
     }

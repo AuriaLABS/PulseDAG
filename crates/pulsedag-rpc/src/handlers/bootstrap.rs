@@ -1,5 +1,5 @@
-use axum::{extract::State, Json};
 use crate::{api::ApiResponse, api::RpcStateLike};
+use axum::{extract::State, Json};
 
 #[derive(Debug, serde::Serialize)]
 pub struct BootstrapData {
@@ -12,7 +12,9 @@ pub struct BootstrapData {
     pub notes: Vec<String>,
 }
 
-pub async fn get_bootstrap_status<S: RpcStateLike>(State(state): State<S>) -> Json<ApiResponse<BootstrapData>> {
+pub async fn get_bootstrap_status<S: RpcStateLike>(
+    State(state): State<S>,
+) -> Json<ApiResponse<BootstrapData>> {
     let persisted_block_count = match state.storage().list_blocks() {
         Ok(v) => v.len(),
         Err(e) => return Json(ApiResponse::err("STORAGE_ERROR", e.to_string())),

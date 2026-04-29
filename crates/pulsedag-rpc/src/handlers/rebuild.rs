@@ -1,5 +1,5 @@
-use axum::{extract::State, Json};
 use crate::{api::ApiResponse, api::RpcStateLike};
+use axum::{extract::State, Json};
 
 #[derive(Debug, serde::Serialize)]
 pub struct RebuildPreviewData {
@@ -10,7 +10,9 @@ pub struct RebuildPreviewData {
     pub reasons: Vec<String>,
 }
 
-pub async fn get_rebuild_preview<S: RpcStateLike>(State(state): State<S>) -> Json<ApiResponse<RebuildPreviewData>> {
+pub async fn get_rebuild_preview<S: RpcStateLike>(
+    State(state): State<S>,
+) -> Json<ApiResponse<RebuildPreviewData>> {
     let persisted_blocks = match state.storage().list_blocks() {
         Ok(v) => v,
         Err(e) => return Json(ApiResponse::err("STORAGE_ERROR", e.to_string())),

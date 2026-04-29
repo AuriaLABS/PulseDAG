@@ -1,6 +1,9 @@
 use std::cmp::Ordering;
 
-use crate::{state::ChainState, types::{Block, Hash}};
+use crate::{
+    state::ChainState,
+    types::{Block, Hash},
+};
 
 fn compare_tip_blocks(a: &Block, b: &Block) -> Ordering {
     a.header
@@ -16,7 +19,13 @@ pub fn sorted_tip_hashes(state: &ChainState) -> Vec<Hash> {
         .dag
         .tips
         .iter()
-        .filter_map(|hash| state.dag.blocks.get(hash).map(|block| (hash.clone(), block)))
+        .filter_map(|hash| {
+            state
+                .dag
+                .blocks
+                .get(hash)
+                .map(|block| (hash.clone(), block))
+        })
         .collect::<Vec<_>>();
     tips.sort_by(|(_, a), (_, b)| compare_tip_blocks(b, a));
     tips.into_iter().map(|(hash, _)| hash).collect()
