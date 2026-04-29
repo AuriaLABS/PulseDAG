@@ -54,7 +54,8 @@ def run_smoke(binary: Path, binary_name: str) -> None:
         args = [str(binary), "--help"]
         allow_usage_exit_one = True
 
-    result = subprocess.run(args, check=False, capture_output=True, text=True)
+    with tempfile.TemporaryDirectory(prefix="release-smoke-") as smoke_dir:
+        result = subprocess.run(args, check=False, capture_output=True, text=True, cwd=smoke_dir)
     if allow_usage_exit_one and result.returncode == 1:
         output = f"{result.stdout}\n{result.stderr}".lower()
         if "usage:" in output and "pulsedag-miner" in output:
