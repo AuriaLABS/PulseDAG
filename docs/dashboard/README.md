@@ -20,6 +20,7 @@ This folder documents the official v2.2 observability package.
 The package references only fields emitted by the node APIs:
 - `GET /runtime/status`
 - `GET /diagnostics`
+- `GET /operator/query-pack`
 - `GET /runtime/events/summary`
 - `GET /status`
 - `GET /sync/status`
@@ -197,3 +198,11 @@ scripts/p2p-sync-rpc-baseline.sh http://127.0.0.1:8080
 ```
 
 Methodology and artifact format are documented in `docs/benchmarks/V2_2_4_P2P_SYNC_RPC_BASELINE_METHODOLOGY.md`.
+### Operator query pack (v2.5)
+`GET /operator/query-pack` provides an explicit, read-only incident/audit bundle for operators:
+- `incident_view` and `runtime_rollup` mirrors diagnostics/runtime normalization.
+- `sync_recovery_view` for sync incidents and recovery-confidence triage.
+- `relay_health_view` for p2p/tx propagation coherency checks.
+- `mining_audit_view` for external mining submission/template health and rejection coherence.
+- `startup_recovery_view` for startup path/fallback and replay requirements.
+- `deterministic_notes` for explicit audit semantics (`operator_read_only_surface`, etc.).
