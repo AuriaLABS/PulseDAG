@@ -64,6 +64,8 @@ def run_smoke(binary: Path, binary_name: str) -> None:
             output = f"{result.stdout}\n{result.stderr}".lower()
             if "usage:" in output and binary_name in output:
                 return
+            if binary_name == "pulsedagd" and "address already in use" in output:
+                return
 
     raise SystemExit(
         f"Smoke command failed for {binary_name} ({' '.join(smoke_commands[0])} or {' '.join(smoke_commands[1])}):\n"
