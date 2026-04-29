@@ -1,5 +1,5 @@
-use axum::Json;
 use crate::api::ApiResponse;
+use axum::Json;
 
 #[derive(Debug, serde::Deserialize)]
 pub struct PowMineHeaderRequest {
@@ -18,9 +18,12 @@ pub struct PowMineHeaderData {
     pub target_u64: u64,
 }
 
-pub async fn post_pow_mine_header(Json(req): Json<PowMineHeaderRequest>) -> Json<ApiResponse<PowMineHeaderData>> {
+pub async fn post_pow_mine_header(
+    Json(req): Json<PowMineHeaderRequest>,
+) -> Json<ApiResponse<PowMineHeaderData>> {
     let max_tries = req.max_tries.unwrap_or(10_000).min(1_000_000);
-    let (header, accepted, tries, final_hash_hex) = pulsedag_core::dev_mine_header(req.header, max_tries);
+    let (header, accepted, tries, final_hash_hex) =
+        pulsedag_core::dev_mine_header(req.header, max_tries);
     let target_u64 = pulsedag_core::dev_target_u64(header.difficulty as u64);
 
     Json(ApiResponse::ok(PowMineHeaderData {

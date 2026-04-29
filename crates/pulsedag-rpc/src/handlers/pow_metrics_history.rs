@@ -1,6 +1,6 @@
-use std::fs;
-use axum::Json;
 use crate::api::ApiResponse;
+use axum::Json;
+use std::fs;
 
 #[derive(Debug, serde::Serialize)]
 pub struct PowMetricsHistoryItem {
@@ -19,8 +19,11 @@ pub async fn get_pow_metrics_history() -> Json<ApiResponse<PowMetricsHistoryData
         for entry in entries.flatten() {
             let path = entry.path();
             if let Some(name) = path.file_name().and_then(|s| s.to_str()) {
-                if name.starts_with("pow-") && name.ends_with(".json") && name != "pow-latest.json" {
-                    items.push(PowMetricsHistoryItem { path: path.to_string_lossy().to_string() });
+                if name.starts_with("pow-") && name.ends_with(".json") && name != "pow-latest.json"
+                {
+                    items.push(PowMetricsHistoryItem {
+                        path: path.to_string_lossy().to_string(),
+                    });
                 }
             }
         }

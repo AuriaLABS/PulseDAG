@@ -1,6 +1,10 @@
-use std::{fs, path::PathBuf, time::{SystemTime, UNIX_EPOCH}};
-use axum::{extract::Path, Json};
 use crate::api::ApiResponse;
+use axum::{extract::Path, Json};
+use std::{
+    fs,
+    path::PathBuf,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone, Default)]
 pub struct WorkerAccountingRecord {
@@ -34,10 +38,15 @@ pub async fn get_mining_accounting() -> Json<ApiResponse<MiningAccountingData>> 
     }))
 }
 
-pub async fn get_mining_accounting_worker(Path(worker_id): Path<String>) -> Json<ApiResponse<WorkerAccountingRecord>> {
+pub async fn get_mining_accounting_worker(
+    Path(worker_id): Path<String>,
+) -> Json<ApiResponse<WorkerAccountingRecord>> {
     match load_record(&worker_id) {
         Some(record) => Json(ApiResponse::ok(record)),
-        None => Json(ApiResponse::err("ACCOUNT_NOT_FOUND", format!("worker accounting not found: {}", worker_id))),
+        None => Json(ApiResponse::err(
+            "ACCOUNT_NOT_FOUND",
+            format!("worker accounting not found: {}", worker_id),
+        )),
     }
 }
 
@@ -91,7 +100,10 @@ fn load_record(worker_id: &str) -> Option<WorkerAccountingRecord> {
 fn persist_record(record: &WorkerAccountingRecord) -> std::io::Result<()> {
     let dir = accounting_dir();
     fs::create_dir_all(&dir)?;
-    fs::write(dir.join(format!("{}.json", sanitize(&record.worker_id))), serde_json::to_vec_pretty(record).unwrap_or_default())
+    fs::write(
+        dir.join(format!("{}.json", sanitize(&record.worker_id))),
+        serde_json::to_vec_pretty(record).unwrap_or_default(),
+    )
 }
 
 fn accounting_dir() -> PathBuf {
@@ -99,11 +111,22 @@ fn accounting_dir() -> PathBuf {
 }
 
 fn sanitize(s: &str) -> String {
-    s.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' }).collect()
+    s.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
 }
 
 fn unix_now() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 pub fn load_all_records_public() -> Vec<WorkerAccountingRecord> {

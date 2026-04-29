@@ -1,6 +1,6 @@
-use std::fs;
-use axum::Json;
 use crate::api::ApiResponse;
+use axum::Json;
+use std::fs;
 
 #[derive(Debug, serde::Serialize)]
 pub struct PowExportData {
@@ -20,8 +20,14 @@ pub async fn get_pow_export() -> Json<ApiResponse<PowExportData>> {
 
     if let Ok(bytes) = fs::read(&latest_snapshot_path) {
         if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) {
-            latest_suggested_difficulty = value.get("suggested_difficulty").and_then(|v| v.as_u64()).unwrap_or(0);
-            latest_avg_block_interval_secs = value.get("avg_block_interval_secs").and_then(|v| v.as_u64()).unwrap_or(0);
+            latest_suggested_difficulty = value
+                .get("suggested_difficulty")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            latest_avg_block_interval_secs = value
+                .get("avg_block_interval_secs")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
         }
     } else {
         health_status = "degraded".to_string();
@@ -31,14 +37,17 @@ pub async fn get_pow_export() -> Json<ApiResponse<PowExportData>> {
         for entry in entries.flatten() {
             let path = entry.path();
             if let Some(name) = path.file_name().and_then(|s| s.to_str()) {
-                if name.starts_with("pow-") && name.ends_with(".json") && name != "pow-latest.json" {
+                if name.starts_with("pow-") && name.ends_with(".json") && name != "pow-latest.json"
+                {
                     history_count += 1;
                 }
             }
         }
     }
 
-    if latest_avg_block_interval_secs > 90 || (latest_avg_block_interval_secs > 0 && latest_avg_block_interval_secs < 30) {
+    if latest_avg_block_interval_secs > 90
+        || (latest_avg_block_interval_secs > 0 && latest_avg_block_interval_secs < 30)
+    {
         health_status = "warn".to_string();
     }
 

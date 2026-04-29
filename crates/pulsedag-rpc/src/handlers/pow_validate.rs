@@ -1,5 +1,5 @@
-use axum::Json;
 use crate::api::ApiResponse;
+use axum::Json;
 
 #[derive(Debug, serde::Deserialize)]
 pub struct PowValidateHeaderRequest {
@@ -17,7 +17,9 @@ pub struct PowValidateHeaderData {
     pub reasons: Vec<String>,
 }
 
-pub async fn post_pow_validate_header(Json(req): Json<PowValidateHeaderRequest>) -> Json<ApiResponse<PowValidateHeaderData>> {
+pub async fn post_pow_validate_header(
+    Json(req): Json<PowValidateHeaderRequest>,
+) -> Json<ApiResponse<PowValidateHeaderData>> {
     let header = req.header;
     let mut reasons = Vec::new();
 
@@ -41,7 +43,10 @@ pub async fn post_pow_validate_header(Json(req): Json<PowValidateHeaderRequest>)
     } else {
         let now = pulsedag_core::mining::current_ts();
         if header.timestamp > now.saturating_add(max_future_drift_secs) {
-            reasons.push(format!("timestamp is too far in the future for current policy (max drift {}s)", max_future_drift_secs));
+            reasons.push(format!(
+                "timestamp is too far in the future for current policy (max drift {}s)",
+                max_future_drift_secs
+            ));
         }
     }
 

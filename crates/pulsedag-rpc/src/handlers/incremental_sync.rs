@@ -1,5 +1,5 @@
-use axum::{extract::State, Json};
 use crate::{api::ApiResponse, api::RpcStateLike};
+use axum::{extract::State, Json};
 
 #[derive(Debug, serde::Serialize)]
 pub struct IncrementalSyncData {
@@ -12,7 +12,9 @@ pub struct IncrementalSyncData {
     pub can_incremental_sync: bool,
 }
 
-pub async fn get_incremental_sync_plan<S: RpcStateLike>(State(state): State<S>) -> Json<ApiResponse<IncrementalSyncData>> {
+pub async fn get_incremental_sync_plan<S: RpcStateLike>(
+    State(state): State<S>,
+) -> Json<ApiResponse<IncrementalSyncData>> {
     let chain_handle = state.chain();
     let chain = chain_handle.read().await;
     let local_best_height = chain.dag.best_height;
@@ -31,7 +33,9 @@ pub async fn get_incremental_sync_plan<S: RpcStateLike>(State(state): State<S>) 
     let highest_persisted_height = persisted_blocks.iter().map(|b| b.header.height).max();
 
     let start_height = snapshot_height.unwrap_or(0).max(local_best_height);
-    let target_height = highest_persisted_height.unwrap_or(local_best_height).max(local_best_height);
+    let target_height = highest_persisted_height
+        .unwrap_or(local_best_height)
+        .max(local_best_height);
     let gap = target_height.saturating_sub(start_height);
     let can_incremental_sync = highest_persisted_height.is_some() || state.p2p().is_some();
 

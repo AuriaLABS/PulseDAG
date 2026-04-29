@@ -1,6 +1,6 @@
-use std::fs;
-use axum::Json;
 use crate::api::ApiResponse;
+use axum::Json;
+use std::fs;
 
 #[derive(Debug, serde::Serialize)]
 pub struct PowHealthData {
@@ -19,8 +19,14 @@ pub async fn get_pow_health() -> Json<ApiResponse<PowHealthData>> {
 
     if let Ok(bytes) = fs::read("./data/metrics/pow-latest.json") {
         if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) {
-            latest_suggested_difficulty = value.get("suggested_difficulty").and_then(|v| v.as_u64()).unwrap_or(0);
-            latest_avg_block_interval_secs = value.get("avg_block_interval_secs").and_then(|v| v.as_u64()).unwrap_or(0);
+            latest_suggested_difficulty = value
+                .get("suggested_difficulty")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            latest_avg_block_interval_secs = value
+                .get("avg_block_interval_secs")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
         }
     } else {
         alerts.push("missing latest PoW metrics snapshot".to_string());
@@ -50,7 +56,14 @@ pub async fn get_pow_health() -> Json<ApiResponse<PowHealthData>> {
         alerts.push("difficulty suggestion unavailable".to_string());
     }
 
-    let status = if alerts.is_empty() { "ok" } else if snapshot_count == 0 { "degraded" } else { "warn" }.to_string();
+    let status = if alerts.is_empty() {
+        "ok"
+    } else if snapshot_count == 0 {
+        "degraded"
+    } else {
+        "warn"
+    }
+    .to_string();
 
     Json(ApiResponse::ok(PowHealthData {
         status,

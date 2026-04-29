@@ -461,7 +461,9 @@ fn recovery_slo_evidence_from_mixed_instability_matrix() {
     ));
 
     assert!(
-        observed_recoveries.iter().all(|ticks| *ticks <= RECOVERY_SLO_TICKS),
+        observed_recoveries
+            .iter()
+            .all(|ticks| *ticks <= RECOVERY_SLO_TICKS),
         "all recovery points must satisfy SLO: {observed_recoveries:?}"
     );
     assert!(

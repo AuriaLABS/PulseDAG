@@ -1,6 +1,6 @@
-use std::collections::BTreeSet;
-use axum::{extract::State, Json};
 use crate::{api::ApiResponse, api::RpcStateLike};
+use axum::{extract::State, Json};
+use std::collections::BTreeSet;
 
 #[derive(Debug, serde::Serialize)]
 pub struct ReadinessData {
@@ -9,7 +9,9 @@ pub struct ReadinessData {
     pub warnings: Vec<String>,
 }
 
-pub async fn get_readiness<S: RpcStateLike>(State(state): State<S>) -> Json<ApiResponse<ReadinessData>> {
+pub async fn get_readiness<S: RpcStateLike>(
+    State(state): State<S>,
+) -> Json<ApiResponse<ReadinessData>> {
     let mut blockers = Vec::new();
     let mut warnings = Vec::new();
 
@@ -22,7 +24,10 @@ pub async fn get_readiness<S: RpcStateLike>(State(state): State<S>) -> Json<ApiR
         Ok(v) => v,
         Err(e) => return Json(ApiResponse::err("STORAGE_ERROR", e.to_string())),
     };
-    let persisted_hashes = persisted_blocks.iter().map(|b| b.hash.clone()).collect::<BTreeSet<_>>();
+    let persisted_hashes = persisted_blocks
+        .iter()
+        .map(|b| b.hash.clone())
+        .collect::<BTreeSet<_>>();
 
     let chain_handle = state.chain();
     let chain = chain_handle.read().await;
@@ -48,5 +53,9 @@ pub async fn get_readiness<S: RpcStateLike>(State(state): State<S>) -> Json<ApiR
     }
 
     let ready_for_release = blockers.is_empty();
-    Json(ApiResponse::ok(ReadinessData { ready_for_release, blockers, warnings }))
+    Json(ApiResponse::ok(ReadinessData {
+        ready_for_release,
+        blockers,
+        warnings,
+    }))
 }

@@ -1,5 +1,5 @@
-use axum::{extract::State, Json};
 use crate::{api::ApiResponse, api::RpcStateLike};
+use axum::{extract::State, Json};
 
 #[derive(Debug, serde::Serialize)]
 pub struct ConfirmedTxListItem {
@@ -18,7 +18,9 @@ pub struct ConfirmedTxsData {
     pub transactions: Vec<ConfirmedTxListItem>,
 }
 
-pub async fn get_confirmed_transactions<S: RpcStateLike>(State(state): State<S>) -> Json<ApiResponse<ConfirmedTxsData>> {
+pub async fn get_confirmed_transactions<S: RpcStateLike>(
+    State(state): State<S>,
+) -> Json<ApiResponse<ConfirmedTxsData>> {
     let chain_handle = state.chain();
     let chain = chain_handle.read().await;
 

@@ -1,5 +1,5 @@
-use axum::Json;
 use crate::api::ApiResponse;
+use axum::Json;
 
 #[derive(Debug, serde::Deserialize)]
 pub struct PowHashHeaderRequest {
@@ -15,7 +15,9 @@ pub struct PowHashHeaderData {
     pub notes: Vec<String>,
 }
 
-pub async fn post_pow_hash_header(Json(req): Json<PowHashHeaderRequest>) -> Json<ApiResponse<PowHashHeaderData>> {
+pub async fn post_pow_hash_header(
+    Json(req): Json<PowHashHeaderRequest>,
+) -> Json<ApiResponse<PowHashHeaderData>> {
     let preimage = pulsedag_core::pow_preimage_string(&req.header);
     let hash_hex = pulsedag_core::dev_surrogate_pow_hash(&req.header);
     Json(ApiResponse::ok(PowHashHeaderData {

@@ -1,6 +1,10 @@
-use std::{fs, path::PathBuf, time::{SystemTime, UNIX_EPOCH}};
-use axum::Json;
 use crate::{api::ApiResponse, handlers::mining_accounting::load_all_records_public};
+use axum::Json;
+use std::{
+    fs,
+    path::PathBuf,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
 pub struct PayoutRecord {
@@ -50,25 +54,40 @@ pub async fn post_run_payouts() -> Json<ApiResponse<RunPayoutsData>> {
         let _ = persist_payout(&payout);
         payouts.push(payout);
     }
-    Json(ApiResponse::ok(RunPayoutsData { payout_count: payouts.len(), total_amount_units, payouts }))
+    Json(ApiResponse::ok(RunPayoutsData {
+        payout_count: payouts.len(),
+        total_amount_units,
+        payouts,
+    }))
 }
 
 pub async fn get_payout_history() -> Json<ApiResponse<PayoutHistoryData>> {
     let mut payouts = load_all_payouts();
     payouts.sort_by(|a, b| b.created_at_unix.cmp(&a.created_at_unix));
-    Json(ApiResponse::ok(PayoutHistoryData { payout_count: payouts.len(), payouts }))
+    Json(ApiResponse::ok(PayoutHistoryData {
+        payout_count: payouts.len(),
+        payouts,
+    }))
 }
 
-fn persist_accounting_record(record: &crate::handlers::mining_accounting::WorkerAccountingRecord) -> std::io::Result<()> {
+fn persist_accounting_record(
+    record: &crate::handlers::mining_accounting::WorkerAccountingRecord,
+) -> std::io::Result<()> {
     let dir = PathBuf::from("./data/mining-accounting");
     fs::create_dir_all(&dir)?;
-    fs::write(dir.join(format!("{}.json", sanitize(&record.worker_id))), serde_json::to_vec_pretty(record).unwrap_or_default())
+    fs::write(
+        dir.join(format!("{}.json", sanitize(&record.worker_id))),
+        serde_json::to_vec_pretty(record).unwrap_or_default(),
+    )
 }
 
 fn persist_payout(record: &PayoutRecord) -> std::io::Result<()> {
     let dir = PathBuf::from("./data/mining-payouts");
     fs::create_dir_all(&dir)?;
-    fs::write(dir.join(format!("{}.json", sanitize(&record.payout_id))), serde_json::to_vec_pretty(record).unwrap_or_default())
+    fs::write(
+        dir.join(format!("{}.json", sanitize(&record.payout_id))),
+        serde_json::to_vec_pretty(record).unwrap_or_default(),
+    )
 }
 
 fn load_all_payouts() -> Vec<PayoutRecord> {
@@ -87,9 +106,20 @@ fn load_all_payouts() -> Vec<PayoutRecord> {
 }
 
 fn sanitize(s: &str) -> String {
-    s.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' }).collect()
+    s.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
 }
 
 fn unix_now() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }

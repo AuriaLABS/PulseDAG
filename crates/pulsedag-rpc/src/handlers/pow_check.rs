@@ -1,5 +1,5 @@
-use axum::Json;
 use crate::api::ApiResponse;
+use axum::Json;
 
 #[derive(Debug, serde::Deserialize)]
 pub struct PowCheckHeaderRequest {
@@ -17,7 +17,9 @@ pub struct PowCheckHeaderData {
     pub notes: Vec<String>,
 }
 
-pub async fn post_pow_check_header(Json(req): Json<PowCheckHeaderRequest>) -> Json<ApiResponse<PowCheckHeaderData>> {
+pub async fn post_pow_check_header(
+    Json(req): Json<PowCheckHeaderRequest>,
+) -> Json<ApiResponse<PowCheckHeaderData>> {
     let hash_hex = pulsedag_core::dev_surrogate_pow_hash(&req.header);
     let score_u64 = pulsedag_core::dev_hash_score_u64(&req.header);
     let target_u64 = pulsedag_core::dev_target_u64(req.header.difficulty as u64);

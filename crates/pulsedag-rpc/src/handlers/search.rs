@@ -1,5 +1,8 @@
-use axum::{extract::{Path, State}, Json};
 use crate::{api::ApiResponse, api::RpcStateLike};
+use axum::{
+    extract::{Path, State},
+    Json,
+};
 
 #[derive(Debug, serde::Serialize)]
 pub struct SearchResultData {
@@ -12,7 +15,10 @@ pub struct SearchResultData {
     pub status: Option<String>,
 }
 
-pub async fn get_search<S: RpcStateLike>(State(state): State<S>, Path(query): Path<String>) -> Json<ApiResponse<SearchResultData>> {
+pub async fn get_search<S: RpcStateLike>(
+    State(state): State<S>,
+    Path(query): Path<String>,
+) -> Json<ApiResponse<SearchResultData>> {
     let chain_handle = state.chain();
     let chain = chain_handle.read().await;
 

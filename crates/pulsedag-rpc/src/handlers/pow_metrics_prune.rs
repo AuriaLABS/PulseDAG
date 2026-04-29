@@ -1,6 +1,6 @@
-use std::fs;
-use axum::Json;
 use crate::api::ApiResponse;
+use axum::Json;
+use std::fs;
 
 #[derive(Debug, serde::Deserialize)]
 pub struct PowMetricsPruneRequest {
@@ -14,7 +14,9 @@ pub struct PowMetricsPruneData {
     pub keep_last: usize,
 }
 
-pub async fn post_pow_metrics_prune(Json(req): Json<PowMetricsPruneRequest>) -> Json<ApiResponse<PowMetricsPruneData>> {
+pub async fn post_pow_metrics_prune(
+    Json(req): Json<PowMetricsPruneRequest>,
+) -> Json<ApiResponse<PowMetricsPruneData>> {
     let keep_last = req.keep_last.unwrap_or(20).max(1);
     let mut items = Vec::new();
 
@@ -22,7 +24,8 @@ pub async fn post_pow_metrics_prune(Json(req): Json<PowMetricsPruneRequest>) -> 
         for entry in entries.flatten() {
             let path = entry.path();
             if let Some(name) = path.file_name().and_then(|s| s.to_str()) {
-                if name.starts_with("pow-") && name.ends_with(".json") && name != "pow-latest.json" {
+                if name.starts_with("pow-") && name.ends_with(".json") && name != "pow-latest.json"
+                {
                     items.push(path);
                 }
             }

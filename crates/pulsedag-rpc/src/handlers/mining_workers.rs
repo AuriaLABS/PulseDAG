@@ -1,6 +1,10 @@
-use std::{fs, path::PathBuf, time::{SystemTime, UNIX_EPOCH}};
-use axum::Json;
 use crate::api::{ApiResponse, MiningWorkerHeartbeatRequest};
+use axum::Json;
+use std::{
+    fs,
+    path::PathBuf,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
 pub struct MiningWorkerRecord {
@@ -21,10 +25,15 @@ pub struct MiningWorkersStatsData {
     pub workers: Vec<MiningWorkerRecord>,
 }
 
-pub async fn post_mining_worker_heartbeat(Json(req): Json<MiningWorkerHeartbeatRequest>) -> Json<ApiResponse<MiningWorkerRecord>> {
+pub async fn post_mining_worker_heartbeat(
+    Json(req): Json<MiningWorkerHeartbeatRequest>,
+) -> Json<ApiResponse<MiningWorkerRecord>> {
     let dir = PathBuf::from("./data/miners");
     let _ = fs::create_dir_all(&dir);
-    let now = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
     let record = MiningWorkerRecord {
         worker_id: req.worker_id.clone(),
         miner_address: req.miner_address,
@@ -55,9 +64,20 @@ pub async fn get_mining_workers_stats() -> Json<ApiResponse<MiningWorkersStatsDa
     }
     workers.sort_by(|a, b| b.last_seen_unix.cmp(&a.last_seen_unix));
     let worker_count = workers.len();
-    Json(ApiResponse::ok(MiningWorkersStatsData { worker_count, workers }))
+    Json(ApiResponse::ok(MiningWorkersStatsData {
+        worker_count,
+        workers,
+    }))
 }
 
 fn sanitize(s: &str) -> String {
-    s.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' }).collect()
+    s.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
 }

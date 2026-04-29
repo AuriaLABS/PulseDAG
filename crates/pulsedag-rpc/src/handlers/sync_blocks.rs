@@ -1,5 +1,5 @@
-use axum::{extract::State, Json};
 use crate::{api::ApiResponse, api::RpcStateLike};
+use axum::{extract::State, Json};
 
 #[derive(Debug, serde::Serialize)]
 pub struct PersistedBlockItem {
@@ -15,7 +15,9 @@ pub struct PersistedBlocksData {
     pub blocks: Vec<PersistedBlockItem>,
 }
 
-pub async fn get_sync_blocks<S: RpcStateLike>(State(state): State<S>) -> Json<ApiResponse<PersistedBlocksData>> {
+pub async fn get_sync_blocks<S: RpcStateLike>(
+    State(state): State<S>,
+) -> Json<ApiResponse<PersistedBlocksData>> {
     let blocks = match state.storage().list_blocks() {
         Ok(v) => v,
         Err(e) => return Json(ApiResponse::err("STORAGE_ERROR", e.to_string())),
@@ -30,7 +32,11 @@ pub async fn get_sync_blocks<S: RpcStateLike>(State(state): State<S>) -> Json<Ap
             timestamp: b.header.timestamp,
         })
         .collect::<Vec<_>>();
-    items.sort_by(|a, b| b.height.cmp(&a.height).then_with(|| b.timestamp.cmp(&a.timestamp)));
+    items.sort_by(|a, b| {
+        b.height
+            .cmp(&a.height)
+            .then_with(|| b.timestamp.cmp(&a.timestamp))
+    });
 
     Json(ApiResponse::ok(PersistedBlocksData {
         count: items.len(),
