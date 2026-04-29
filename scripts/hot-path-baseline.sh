@@ -1,10 +1,19 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-BASE_URL="${1:-http://127.0.0.1:8080}"
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+  exec python3 scripts/p2p_sync_rpc_baselines.py --help
+fi
 
-python3 scripts/p2p_sync_rpc_baselines.py \
-  --base-url "${BASE_URL}" \
+args=()
+if [[ "${1:-}" != "" && "${1:-}" != --* ]]; then
+  base_url="$1"
+  shift
+  args+=(--base-url "$base_url")
+fi
+
+exec python3 scripts/p2p_sync_rpc_baselines.py \
+  "${args[@]}" \
   --iterations 30 \
   --sync-stable-polls 5 \
   --sync-max-wait-seconds 180 \
@@ -16,4 +25,5 @@ python3 scripts/p2p_sync_rpc_baselines.py \
   --hot-path recovery \
   --drill-command "cargo test -p pulsedag-storage restore_drill_snapshot_and_delta_reports_timing_and_preserves_coherence -- --nocapture" \
   --drill-command "cargo test -p pulsedag-storage restore_drill_repeated_runs_produce_coherent_timing_evidence -- --nocapture" \
-  --drill-command "cargo test -p pulsedag-storage replay_blocks_or_init_uses_snapshot_plus_delta_after_prune -- --nocapture"
+  --drill-command "cargo test -p pulsedag-storage replay_blocks_or_init_uses_snapshot_plus_delta_after_prune -- --nocapture" \
+  "$@"
