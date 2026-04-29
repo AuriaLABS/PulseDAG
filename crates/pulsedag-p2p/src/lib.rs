@@ -614,6 +614,9 @@ const TX_BUDGET_LOAD_SHED_QUEUE_DEPTH_THRESHOLD: usize = 512;
 const OUTBOUND_QUEUE_SOFT_CAP: usize = 1024;
 const CONNECTION_SHAPING_DEGRADED_CAP_DIVISOR: usize = 3;
 const CONNECTION_SHAPING_MIN_HEALTHY_SLOTS: usize = 1;
+const CONNECTION_PRESSURE_DEGRADED_BPS_THRESHOLD: usize = 4_500;
+const CONNECTION_PRESSURE_MIN_BUDGET_DIVISOR: usize = 2;
+const CONNECTION_PRESSURE_RECOVERY_BOOST_BPS: usize = 2_500;
 const TOPOLOGY_BUCKET_COUNT: usize = 8;
 const TOPOLOGY_BUCKET_SOFT_CAP_DIVISOR: usize = 2;
 const DEGRADED_MODE_DEGRADED_BPS_THRESHOLD: usize = 4_000;
@@ -788,11 +791,7 @@ fn topology_stats_for_connected_peers(peers: &[String]) -> (usize, usize, u16, u
 
 fn refresh_connected_peers_from_health(state: &mut InnerState) {
     if mode_connected_peers_are_real_network(&state.mode) {
-        let budget = if state.connection_slot_budget == 0 {
-            usize::MAX
-        } else {
-            state.connection_slot_budget
-        };
+        let budget = adaptive_connection_slot_budget(state, now_unix());
         let now = now_unix();
         let eligible = sync_candidates_snapshot(state)
             .into_iter()
@@ -865,6 +864,50 @@ fn refresh_connected_peers_from_health(state: &mut InnerState) {
     } else {
         state.connected_peers.clear();
     }
+}
+
+fn adaptive_connection_slot_budget(state: &InnerState, now: u64) -> usize {
+    if state.connection_slot_budget == 0 {
+        return usize::MAX;
+    }
+    let total = state
+        .peer_book
+        .values()
+        .filter(|health| health.connected)
+        .count();
+    if total == 0 {
+        return state.connection_slot_budget;
+    }
+    let degraded = state
+        .peer_book
+        .values()
+        .filter(|health| health.connected)
+        .filter(|health| matches!(peer_lifecycle_tier(health, now), "degraded" | "cooldown"))
+        .count();
+    let recovery = state
+        .peer_book
+        .values()
+        .filter(|health| health.connected)
+        .filter(|health| peer_lifecycle_tier(health, now) == "recovering")
+        .count();
+    let degraded_share_bps = (degraded * 10_000) / total.max(1);
+    let mut budget = state.connection_slot_budget;
+    if degraded_share_bps >= CONNECTION_PRESSURE_DEGRADED_BPS_THRESHOLD {
+        let min_budget = std::cmp::max(
+            CONNECTION_SHAPING_MIN_HEALTHY_SLOTS,
+            state.connection_slot_budget / CONNECTION_PRESSURE_MIN_BUDGET_DIVISOR.max(1),
+        );
+        budget = budget.max(1).saturating_sub(1).max(min_budget);
+    }
+    if recovery > 0 {
+        let boost = ((state.connection_slot_budget * CONNECTION_PRESSURE_RECOVERY_BOOST_BPS)
+            / 10_000)
+            .max(1);
+        budget = budget
+            .saturating_add(boost.min(recovery))
+            .min(state.connection_slot_budget);
+    }
+    budget.max(1)
 }
 
 fn update_selected_sync_peer(
@@ -3202,6 +3245,60 @@ mod tests {
         state.connected_peers = vec!["peer-b".into()];
         let second = update_selected_sync_peer(&mut state, &ranked, 20_010).unwrap();
         assert_eq!(first, second);
+    }
+
+    #[test]
+    fn adaptive_budgeting_is_deterministic_within_bounded_conditions() {
+        let mut state = InnerState::default();
+        state.mode = P2P_MODE_LIBP2P_REAL.into();
+        state.connection_slot_budget = 6;
+        for peer in ["peer-h1", "peer-h2", "peer-h3"] {
+            state.peer_book.insert(
+                peer.into(),
+                PeerHealth {
+                    connected: true,
+                    score: 100,
+                    ..PeerHealth::default()
+                },
+            );
+        }
+        for peer in ["peer-d1", "peer-d2", "peer-d3"] {
+            state.peer_book.insert(
+                peer.into(),
+                PeerHealth {
+                    connected: true,
+                    score: 20,
+                    fail_streak: 4,
+                    ..PeerHealth::default()
+                },
+            );
+        }
+        let first = adaptive_connection_slot_budget(&state, 42_000);
+        let second = adaptive_connection_slot_budget(&state, 42_000);
+        assert_eq!(first, second);
+        assert!((state.connection_slot_budget / 2..=state.connection_slot_budget).contains(&first));
+    }
+
+    #[test]
+    fn adaptive_pressure_controls_reduce_reconnect_churn_when_degraded() {
+        let mut state = InnerState::default();
+        state.mode = P2P_MODE_LIBP2P_REAL.into();
+        state.connection_slot_budget = 8;
+        for idx in 0..8 {
+            state.peer_book.insert(
+                format!("peer-{idx}"),
+                PeerHealth {
+                    connected: true,
+                    score: 30,
+                    fail_streak: 5,
+                    ..PeerHealth::default()
+                },
+            );
+        }
+        let reduced = adaptive_connection_slot_budget(&state, 99_000);
+        assert!(reduced < state.connection_slot_budget);
+        refresh_connected_peers_from_health(&mut state);
+        assert!(state.connected_peers.len() <= reduced);
     }
 
     #[test]
