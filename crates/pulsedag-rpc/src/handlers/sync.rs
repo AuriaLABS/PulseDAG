@@ -93,14 +93,13 @@ pub async fn get_sync_status<S: RpcStateLike>(
             <= runtime.sync_pipeline.counters.blocks_requested;
     let catchup_stage = if runtime.sync_pipeline.last_error.is_some() || !counters_coherent {
         "degraded"
-    } else if lag_blocks == 0 {
-        "steady"
     } else {
         match runtime.sync_pipeline.phase {
+            pulsedag_core::SyncPhase::Idle if lag_blocks == 0 => "steady",
             pulsedag_core::SyncPhase::Idle => "recovering",
             pulsedag_core::SyncPhase::PeerSelection => "discovering",
             pulsedag_core::SyncPhase::HeaderDiscovery => "discovering",
-            pulsedag_core::SyncPhase::BlockAcquisition => "acquiring",
+            pulsedag_core::SyncPhase::BlockAcquisition => "recovering",
             pulsedag_core::SyncPhase::ValidationApplication => "validating",
             pulsedag_core::SyncPhase::CatchUpCompletion => "steady",
         }
@@ -110,7 +109,7 @@ pub async fn get_sync_status<S: RpcStateLike>(
         Some(format!("sync error: {err}"))
     } else if !counters_coherent {
         Some("sync counter incoherence detected; verify sync pipeline accounting".to_string())
-    } else if lag_blocks > 0 {
+    } else if catchup_stage != "steady" {
         Some(format!(
             "catch-up in progress: stage={catchup_stage}, lag_band={lag_band}, replay_gap={}",
             persisted_blocks.len() as i64 - chain.dag.blocks.len() as i64
