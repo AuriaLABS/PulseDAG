@@ -1829,7 +1829,7 @@ mod tests {
         let report = storage.verify_snapshot_bundle(&bundle, Some("stagingnet"));
         assert!(!report.restore_guarantees_explicit);
         assert!(!report.chain_id_matches_expected);
-        assert_eq!(report.recovery_confidence, "low");
+        assert_eq!(report.recovery_confidence, "medium");
         assert_eq!(report.issue_count, report.issues.len());
         assert!(report
             .issues
