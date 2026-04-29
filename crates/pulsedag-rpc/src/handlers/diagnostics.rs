@@ -108,6 +108,8 @@ pub async fn get_diagnostics<S: RpcStateLike>(
             lineage_coherent: false,
             deep_replay_viable: None,
             restore_drill_confirms_recovery: false,
+            recovery_confidence_non_misleading: false,
+            confidence_evidence_path: "fallback::audit_unavailable".into(),
             recovery_confidence: "low".into(),
             confidence_reason: "storage audit fallback path used".into(),
             issue_count: 1,
