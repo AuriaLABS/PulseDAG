@@ -10,5 +10,6 @@ cargo test -p pulsedag-storage replay_blocks_or_init_fails_explicitly_with_corru
 cargo test -p pulsedag-storage restore_drill_snapshot_and_delta_reports_timing_and_preserves_coherence -- --nocapture
 cargo test -p pulsedag-storage restore_drill_repeated_runs_produce_coherent_timing_evidence -- --nocapture
 cargo test -p pulsedag-storage prune_safety_plan_explicitly_caps_to_rollback_window_floor -- --nocapture
+cargo test -p pulsedag-storage prune_safety_retains_recovery_viability_after_cleanup -- --nocapture
 
 echo "[restore-drill] completed"

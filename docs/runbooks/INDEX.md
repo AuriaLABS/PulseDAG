@@ -10,6 +10,7 @@ This index consolidates the v2.2.5 operator package for recovery, rebuild, resto
 5. **Need restore drill and RTO evidence?** Use `docs/runbooks/SNAPSHOT_RESTORE.md`.
 6. **Need crash/restart/churn validation evidence?** Use `docs/runbooks/CHAOS_RESTART_RECOVERY_SUITE.md`.
 7. **Need startup-mode interpretation and fallback counters?** Use `docs/runbooks/FAST_BOOT_AND_FALLBACK.md`.
+8. **Need prune/snapshot integration validation command?** Use `scripts/pruning-snapshot-integration-evidence.sh`.
 
 ## Core runbooks
 - `docs/runbooks/MAINTENANCE_SELF_CHECK.md` — routine operator self-check, drift checks, and pre-maintenance safety gates.

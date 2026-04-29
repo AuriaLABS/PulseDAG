@@ -63,6 +63,7 @@ Operational RTO target for this drill profile: **<= 5 seconds** (headroom above 
   - Missing snapshot anchor metadata forces `recovery_confidence=low`.
 - Repeatable command: `scripts/restore-drill-evidence.sh`
 - Productized snapshot workflow command: `scripts/snapshot-productization-evidence.sh` (export/import + verification + restore coherence checks)
+- Pruning/snapshot integration command: `scripts/pruning-snapshot-integration-evidence.sh` (coherence + repeatability checks across prune/restore/rebuild flows)
 
 ## Related workflows
 - Recovery triage: `docs/runbooks/RECOVERY_ORCHESTRATION.md`
