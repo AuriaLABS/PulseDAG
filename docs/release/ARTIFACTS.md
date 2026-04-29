@@ -49,6 +49,7 @@ For every archive the workflow emits:
 - Per-asset manifest metadata: `<archive>.json`
 - Consolidated checksum list across all archives: `SHA256SUMS.txt`
 - Consolidated provenance summary: `release-provenance.json`
+- Generated operator install verification guide: `INSTALL-VERIFY.md`
 
 In addition, each platform archive is attested in GitHub artifact attestations using the release workflow identity (OIDC-backed provenance).
 The workflow now performs end-to-end verification in both jobs: it validates every archive, checksum sidecar, and manifest; unpacks each archive; and runs a basic smoke command on the unpacked `pulsedagd` and `pulsedag-miner` binaries before publish.
@@ -76,6 +77,7 @@ Per-archive JSON manifests now include:
    - Re-verifies per-archive checksums and manifests after artifact download/flattening.
    - Builds and validates `SHA256SUMS.txt`.
    - Builds and validates `release-provenance.json` against all per-archive manifests.
+   - Generates `INSTALL-VERIFY.md` from manifest metadata so operator verification snippets always match shipped archives.
    - Repeats unpack + smoke checks for node and miner release assets.
 
 ## Operator verification before upgrade
@@ -91,6 +93,12 @@ Optional provenance spot-check:
 
 ```bash
 jq '.artifacts[] | {archive, archive_sha256, provenance}' release-provenance.json
+```
+
+Install verification guide (release-generated):
+
+```bash
+cat INSTALL-VERIFY.md
 ```
 
 Then unpack and stage:

@@ -27,14 +27,17 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: linux
+          - name: linux-x86_64
             os: ubuntu-latest
+            expected_target: x86_64-unknown-linux-gnu
 
-          - name: windows
+          - name: windows-x86_64
             os: windows-latest
+            expected_target: x86_64-pc-windows-msvc
 
-          - name: macos
+          - name: macos-x86_64
             os: macos-latest
+            expected_target: x86_64-apple-darwin
 
     steps:
       - name: Checkout
@@ -117,7 +120,8 @@ jobs:
             --artifacts-dir dist \
             --expected-tag "${{ env.RELEASE_TAG }}" \
             --smoke \
-            --expect-binaries pulsedagd pulsedag-miner
+            --expect-binaries pulsedagd pulsedag-miner \
+            --expect-targets "${{ matrix.expected_target }}"
 
       - name: Attest release archives
         uses: actions/attest-build-provenance@v2
@@ -181,6 +185,7 @@ jobs:
 
           release_files=(final/*.tar.gz final/*.zip)
           checksum_files=(final/*.sha256)
+          manifest_files=(final/*.json)
 
           if [ "${#release_files[@]}" -eq 0 ]; then
             echo "::error::No release archives found in ./final."
@@ -189,6 +194,11 @@ jobs:
 
           if [ "${#checksum_files[@]}" -eq 0 ]; then
             echo "::error::No per-asset checksum files found in ./final."
+            exit 1
+          fi
+
+          if [ "${#manifest_files[@]}" -eq 0 ]; then
+            echo "::error::No per-asset manifest files found in ./final."
             exit 1
           fi
 
@@ -230,6 +240,15 @@ jobs:
           echo "Consolidated checksums: SHA256SUMS.txt"
           echo "Release provenance summary: release-provenance.json"
 
+      - name: Generate install verification guide
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/release/render_install_guide.py \
+            --artifacts-dir final \
+            --expected-tag "${{ env.RELEASE_TAG }}" \
+            --output final/INSTALL-VERIFY.md
+
       - name: Verify final release bundle end-to-end
         shell: bash
         run: |
@@ -239,6 +258,7 @@ jobs:
             --expected-tag "${{ env.RELEASE_TAG }}" \
             --smoke \
             --expect-binaries pulsedagd pulsedag-miner \
+            --expect-targets x86_64-unknown-linux-gnu x86_64-pc-windows-msvc x86_64-apple-darwin \
             --consolidated-checksums final/SHA256SUMS.txt \
             --provenance-summary final/release-provenance.json
 
