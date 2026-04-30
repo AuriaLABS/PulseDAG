@@ -210,10 +210,16 @@ pub trait PowEngine {
         }
     }
     fn evaluate_header(&self, header: &BlockHeader) -> PowEvaluation {
-        self.evaluate_preimage(
-            &PowHeaderPreimage::from_header(header).to_bytes(),
-            header.difficulty as u64,
-        )
+        match PowHeaderPreimage::from_header(header).to_bytes_checked() {
+            Ok(preimage) => self.evaluate_preimage(&preimage, header.difficulty as u64),
+            Err(_) => PowEvaluation {
+                algorithm: self.algorithm(),
+                hash_hex: String::new(),
+                score_u64: u64::MAX,
+                target_u64: self.target_u64(header.difficulty as u64),
+                accepted: false,
+            },
+        }
     }
 }
 
@@ -326,7 +332,9 @@ pub fn pow_validation_result(header: &BlockHeader) -> PowValidationResult {
 /// 10) header.blue_score (`u64`, little-endian)
 /// 11) header.height (`u64`, little-endian)
 pub fn pow_preimage_bytes(header: &BlockHeader) -> Vec<u8> {
-    PowHeaderPreimage::from_header(header).to_bytes()
+    PowHeaderPreimage::from_header(header)
+        .to_bytes_checked()
+        .unwrap_or_default()
 }
 
 /// Debug-oriented helper string that mirrors canonical field order.
@@ -726,6 +734,59 @@ mod tests {
         let from_header = engine.evaluate_header(&h);
         let from_preimage = engine.evaluate_preimage(&preimage, h.difficulty as u64);
         assert_eq!(from_header, from_preimage);
+    }
+
+    #[test]
+    fn oversized_parent_count_rejected_without_panic() {
+        let mut h = sample_header();
+        h.parents = vec!["p".to_string(); (u16::MAX as usize) + 1];
+        let result = pow_validation_result(&h);
+        assert!(!result.accepted);
+        assert_eq!(
+            result.rejection_reason,
+            Some(PowRejectReason::ParentCountTooLarge)
+        );
+        assert!(pow_preimage_bytes(&h).is_empty());
+        assert!(!pow_accepts(&h));
+    }
+
+    #[test]
+    fn oversized_parent_hash_rejected_without_panic() {
+        let mut h = sample_header();
+        h.parents = vec!["x".repeat((u16::MAX as usize) + 1)];
+        let result = pow_validation_result(&h);
+        assert!(!result.accepted);
+        assert_eq!(
+            result.rejection_reason,
+            Some(PowRejectReason::ParentHashTooLong)
+        );
+        assert!(pow_preimage_bytes(&h).is_empty());
+    }
+
+    #[test]
+    fn oversized_merkle_root_rejected_without_panic() {
+        let mut h = sample_header();
+        h.merkle_root = "m".repeat((u16::MAX as usize) + 1);
+        let result = pow_validation_result(&h);
+        assert!(!result.accepted);
+        assert_eq!(
+            result.rejection_reason,
+            Some(PowRejectReason::MerkleRootTooLong)
+        );
+        assert!(pow_preimage_bytes(&h).is_empty());
+    }
+
+    #[test]
+    fn oversized_state_root_rejected_without_panic() {
+        let mut h = sample_header();
+        h.state_root = "s".repeat((u16::MAX as usize) + 1);
+        let result = pow_validation_result(&h);
+        assert!(!result.accepted);
+        assert_eq!(
+            result.rejection_reason,
+            Some(PowRejectReason::StateRootTooLong)
+        );
+        assert!(pow_preimage_bytes(&h).is_empty());
     }
 
     fn append_block(

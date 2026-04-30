@@ -1,6 +1,6 @@
 use crate::api::{ApiResponse, RpcStateLike, SubmitBlockRequest};
 use axum::{extract::State, Json};
-use pulsedag_core::{dev_pow_accepts, dev_surrogate_pow_hash, dev_target_u64};
+use pulsedag_core::pow_validation_result;
 
 #[derive(Debug, serde::Serialize)]
 pub struct BlockValidateData {
@@ -26,9 +26,10 @@ pub async fn post_block_validate<S: RpcStateLike>(
     let block_hash = req.block.hash.clone();
     let height = req.block.header.height;
     let parent_count = req.block.header.parents.len();
-    let pow_hash = dev_surrogate_pow_hash(&req.block.header);
-    let pow_target_u64 = dev_target_u64(req.block.header.difficulty as u64);
-    let pow_accepted_dev = dev_pow_accepts(&req.block.header);
+    let pow = pow_validation_result(&req.block.header);
+    let pow_hash = pow.hash_hex.unwrap_or_default();
+    let pow_target_u64 = pow.target_u64;
+    let pow_accepted_dev = pow.accepted;
 
     match pulsedag_core::accept_block(
         req.block.clone(),

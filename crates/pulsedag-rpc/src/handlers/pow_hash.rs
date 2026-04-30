@@ -19,7 +19,8 @@ pub async fn post_pow_hash_header(
     Json(req): Json<PowHashHeaderRequest>,
 ) -> Json<ApiResponse<PowHashHeaderData>> {
     let preimage = pulsedag_core::pow_preimage_string(&req.header);
-    let hash_hex = pulsedag_core::dev_surrogate_pow_hash(&req.header);
+    let pow = pulsedag_core::pow_validation_result(&req.header);
+    let hash_hex = pow.hash_hex.unwrap_or_default();
     Json(ApiResponse::ok(PowHashHeaderData {
         declared_algorithm: pulsedag_core::selected_pow_name().to_string(),
         effective_hash_mode: "dev-surrogate-blake3".to_string(),
