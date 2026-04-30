@@ -3,7 +3,7 @@ use crate::{
     handlers::{mining_accounting::credit_share, mining_jobs::load_job},
 };
 use axum::Json;
-use pulsedag_core::{dev_hash_score_u64, dev_target_u64};
+use pulsedag_core::{dev_target_u64, pow_validation_result, BlockHeader};
 use std::{
     fs,
     path::PathBuf,
@@ -47,9 +47,8 @@ pub async fn post_submit_mining_share(
         share_difficulty: 1,
         updated_at_unix: unix_now(),
     });
-    let hash_score_u64 = dev_hash_score_u64(&req.header);
-    let share_target_u64 = dev_target_u64(cfg.share_difficulty);
-    let accepted = hash_score_u64 <= share_target_u64;
+    let (hash_score_u64, share_target_u64, accepted) =
+        evaluate_share_submission(&req.header, cfg.share_difficulty);
     if accepted {
         let _ = persist_share(
             &req.worker_id,
@@ -71,6 +70,13 @@ pub async fn post_submit_mining_share(
     }))
 }
 
+fn evaluate_share_submission(header: &BlockHeader, share_difficulty: u64) -> (u64, u64, bool) {
+    let share_target_u64 = dev_target_u64(share_difficulty);
+    let pow = pow_validation_result(header);
+    let hash_score_u64 = pow.score_u64.unwrap_or(u64::MAX);
+    let accepted = pow.accepted && hash_score_u64 <= share_target_u64;
+    (hash_score_u64, share_target_u64, accepted)
+}
 pub fn load_worker_config(worker_id: &str) -> Option<MiningWorkerConfigRecord> {
     let path = worker_config_dir().join(format!("{}.json", sanitize(worker_id)));
     let bytes = fs::read(path).ok()?;
@@ -134,4 +140,43 @@ fn unix_now() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::evaluate_share_submission;
+    use pulsedag_core::BlockHeader;
+
+    fn sample_header() -> BlockHeader {
+        BlockHeader {
+            version: 1,
+            height: 1,
+            prev_hash: "00".to_string(),
+            merkle_root: "11".to_string(),
+            state_root: "22".to_string(),
+            tx_root: "33".to_string(),
+            receipts_root: "44".to_string(),
+            difficulty: 1,
+            timestamp: 1,
+            nonce: 1,
+            miner: "miner".to_string(),
+            extra_data: String::new(),
+            parents: vec!["aa".to_string()],
+            pow_hash: String::new(),
+            gas_used: 0,
+            gas_limit: 0,
+        }
+    }
+
+    #[test]
+    fn malformed_header_is_not_accepted_even_at_diff_one() {
+        let mut header = sample_header();
+        header.merkle_root = "m".repeat((u16::MAX as usize) + 1);
+
+        let (score, target, accepted) = evaluate_share_submission(&header, 1);
+
+        assert_eq!(score, u64::MAX);
+        assert_eq!(target, u64::MAX);
+        assert!(!accepted);
+    }
 }
