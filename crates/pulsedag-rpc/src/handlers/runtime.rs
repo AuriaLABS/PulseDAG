@@ -33,6 +33,9 @@ pub struct RuntimeStatusData {
     pub incident_summary: String,
     pub incident_indicators: Vec<String>,
     pub incident_snapshot: RuntimeIncidentSnapshot,
+    pub remediation_summary: String,
+    pub no_go_escalation: bool,
+    pub no_go_reasons: Vec<String>,
     pub node_health_slo_bps: u64,
     pub sync_health_slo_bps: u64,
     pub p2p_health_slo_bps: u64,
@@ -254,6 +257,9 @@ pub struct RuntimeIncidentSnapshot {
     pub status: String,
     pub summary: String,
     pub indicators: Vec<String>,
+    pub remediation_summary: String,
+    pub no_go_escalation: bool,
+    pub no_go_reasons: Vec<String>,
     pub alert_class_count: usize,
     pub runtime_health_slo_bps: u64,
 }
@@ -455,6 +461,9 @@ pub struct RuntimeSurfaceRollup {
     pub incident_primary_surface: String,
     pub incident_summary: String,
     pub incident_indicators: Vec<String>,
+    pub remediation_summary: String,
+    pub no_go_escalation: bool,
+    pub no_go_reasons: Vec<String>,
     pub node_health_slo_bps: u64,
     pub sync_health_slo_bps: u64,
     pub p2p_health_slo_bps: u64,
@@ -708,6 +717,64 @@ pub(crate) fn runtime_surface_rollup(
     if incident_indicators.is_empty() {
         incident_indicators.push("no incident indicators".to_string());
     }
+    let mut remediation_hints = Vec::new();
+    if sync_surface_health == "degraded" {
+        remediation_hints.push(format!(
+            "sync remediation: inspect /sync/status and bounded counters fallback_count={} timeout_fallback_count={} restart_count={}",
+            runtime.sync_pipeline.fallback_count,
+            runtime.sync_pipeline.timeout_fallback_count,
+            runtime.sync_pipeline.restart_count
+        ));
+    }
+    if tx_propagation_health != "healthy" {
+        remediation_hints.push(format!(
+            "relay remediation: verify inbound/rebroadcast counter coherence (inbound_delta={} drop_delta={} rebroadcast_delta={})",
+            tx_inbound_counter_delta,
+            tx_drop_reason_counter_delta,
+            tx_rebroadcast_outcome_counter_delta
+        ));
+    }
+    if external_mining_surface_health != "healthy" || external_mining_template_health != "healthy" {
+        remediation_hints.push(format!(
+            "mining remediation: audit template/submit counters (submit_outcome_delta={} rejection_delta={} stale_ratio_bps={})",
+            external_mining_submit_outcome_counter_delta,
+            external_mining_rejection_counter_delta,
+            external_mining_template_stale_submit_ratio_bps
+        ));
+    }
+    if !runtime.last_self_audit_ok
+        || runtime.last_self_audit_issue_count > 0
+        || runtime.startup_consistency_issue_count > 0
+    {
+        remediation_hints.push("node remediation: run maintenance self-check and startup integrity runbooks before restart loops".to_string());
+    }
+    if remediation_hints.is_empty() {
+        remediation_hints
+            .push("no remediation required: runtime surfaces are coherent".to_string());
+    }
+    let remediation_summary = remediation_hints.join(" | ");
+    let mut no_go_reasons = Vec::new();
+    if !runtime.last_self_audit_ok
+        || runtime.last_self_audit_issue_count > 0
+        || runtime.startup_consistency_issue_count > 0
+    {
+        no_go_reasons.push("node_integrity_unresolved".to_string());
+    }
+    if !sync_counters_coherent || runtime.sync_pipeline.last_error.is_some() {
+        no_go_reasons.push("sync_pipeline_incoherent_or_error".to_string());
+    }
+    if tx_inbound_counter_delta != 0
+        || tx_drop_reason_counter_delta != 0
+        || tx_rebroadcast_outcome_counter_delta != 0
+    {
+        no_go_reasons.push("tx_propagation_counter_mismatch".to_string());
+    }
+    if external_mining_submit_outcome_counter_delta != 0
+        || external_mining_rejection_counter_delta != 0
+    {
+        no_go_reasons.push("mining_counter_mismatch".to_string());
+    }
+    let no_go_escalation = !no_go_reasons.is_empty();
     let incident_summary = format!(
         "primary_surface={} classes={} runtime_health_slo_bps={}",
         incident_primary_surface,
@@ -766,6 +833,9 @@ pub(crate) fn runtime_surface_rollup(
         incident_primary_surface,
         incident_summary,
         incident_indicators,
+        remediation_summary,
+        no_go_escalation,
+        no_go_reasons,
         node_health_slo_bps,
         sync_health_slo_bps,
         p2p_health_slo_bps,
@@ -804,6 +874,9 @@ pub(crate) fn runtime_incident_snapshot(
             rollup.runtime_health_slo_bps
         ),
         indicators,
+        remediation_summary: rollup.remediation_summary.clone(),
+        no_go_escalation: rollup.no_go_escalation,
+        no_go_reasons: rollup.no_go_reasons.clone(),
         alert_class_count: rollup.runtime_alert_classes.len(),
         runtime_health_slo_bps: rollup.runtime_health_slo_bps,
     }
@@ -1199,6 +1272,9 @@ pub async fn get_runtime_status<S: RpcStateLike>(
         incident_summary: rollup.incident_summary.clone(),
         incident_indicators: rollup.incident_indicators.clone(),
         incident_snapshot: runtime_incident_snapshot(&rollup, 0, 0),
+        remediation_summary: rollup.remediation_summary.clone(),
+        no_go_escalation: rollup.no_go_escalation,
+        no_go_reasons: rollup.no_go_reasons.clone(),
         node_health_slo_bps: rollup.node_health_slo_bps,
         sync_health_slo_bps: rollup.sync_health_slo_bps,
         p2p_health_slo_bps: rollup.p2p_health_slo_bps,
@@ -2328,6 +2404,9 @@ mod tests {
             .contains(&"tip_stagnation".to_string()));
         assert_ne!(data.incident_primary_surface, "none");
         assert!(data.incident_summary.contains("runtime_health_slo_bps="));
+        assert!(data.no_go_escalation);
+        assert!(!data.no_go_reasons.is_empty());
+        assert!(data.remediation_summary.contains("remediation:"));
     }
 
     #[tokio::test]
@@ -2372,6 +2451,8 @@ mod tests {
         assert_eq!(data.sync_health_slo_bps, 10_000);
         assert_eq!(data.mining_health_slo_bps, 10_000);
         assert!(data.runtime_health_slo_bps >= 9_000);
+        assert!(!data.no_go_escalation);
+        assert!(data.no_go_reasons.is_empty());
     }
 
     #[tokio::test]
@@ -2525,6 +2606,14 @@ mod tests {
         assert_eq!(
             data.incident_snapshot.runtime_health_slo_bps,
             data.runtime_surface_rollup.runtime_health_slo_bps
+        );
+        assert_eq!(
+            data.incident_snapshot.no_go_escalation,
+            data.runtime_surface_rollup.no_go_escalation
+        );
+        assert_eq!(
+            data.incident_snapshot.no_go_reasons,
+            data.runtime_surface_rollup.no_go_reasons
         );
     }
 }
