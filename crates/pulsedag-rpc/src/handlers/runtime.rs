@@ -1612,11 +1612,11 @@ mod tests {
         assert_eq!(data.sync_counters.blocks_applied, 2);
         assert_eq!(data.sync_blocks_request_backlog, 0);
         assert_eq!(data.sync_blocks_validation_backlog, 3);
-        assert_eq!(data.sync_catchup_stage, "validating");
+        assert_eq!(data.sync_catchup_stage, "stalled");
         assert_eq!(data.sync_lag_blocks, 3);
         assert_eq!(data.sync_lag_band, "catching_up");
         assert_eq!(data.sync_catchup_progress_bps, 4_000);
-        assert!(data.sync_catchup_summary.contains("stage=validating"));
+        assert!(data.sync_catchup_summary.contains("stage=stalled"));
         assert!(data.sync_recovery_reason.is_some());
     }
 

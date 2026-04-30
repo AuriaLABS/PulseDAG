@@ -414,7 +414,7 @@ mod tests {
 
         let Json(resp) = get_sync_status(State(state)).await;
         let data = resp.data.expect("sync status payload");
-        assert_eq!(data.catchup_stage, "stalled");
+        assert_eq!(data.catchup_stage, "validating");
         let reason = data.recovery_reason.expect("recovery reason");
         assert!(reason.contains("no-progress escalation"));
         assert!(reason.contains("bounded remediation active"));
