@@ -467,6 +467,7 @@ mod tests {
             queue_standard_tx_lane_picks: 0,
             queue_non_block_fair_picks: 3,
             queue_starvation_relief_picks: 1,
+            queue_backpressure_drops: 0,
             inbound_messages: 8,
             runtime_started: true,
             runtime_mode_detail: "in-process-dispatch".into(),

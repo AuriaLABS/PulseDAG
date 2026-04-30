@@ -644,6 +644,7 @@ mod tests {
                 queue_standard_tx_lane_picks: 0,
                 queue_non_block_fair_picks: 0,
                 queue_starvation_relief_picks: 0,
+                queue_backpressure_drops: 0,
                 inbound_messages: 0,
                 runtime_started: true,
                 runtime_mode_detail: "unit-test".into(),
