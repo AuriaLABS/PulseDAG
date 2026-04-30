@@ -1,6 +1,12 @@
-# v2.2.5 release evidence bundle
+# v2.2.6 release evidence bundle
 
-This document defines the standard evidence package for v2.2.5 burn-in and release readiness.
+This document defines the standard evidence package for v2.2.6 burn-in and release readiness.
+
+## v2.2.6 scope notes
+This release intentionally keeps scope narrow around standalone miner ergonomics and external-miner architecture boundaries:
+- Shared transport-type extraction to reduce duplicated transport wiring across node/miner integration points.
+- Miner decoupling from node/storage build surface so miner-only builds avoid unnecessary node/storage coupling.
+- Miner-only verification improvements to make targeted miner validation clearer and easier to automate.
 
 ## Evidence bundle generation
 Generate the base structure with:
@@ -27,7 +33,7 @@ Run folder: `artifacts/release-evidence/<run_id>/`
 - `dry-run/go-no-go.md`: explicit auditable final go/no-go rationale with sign-offs.
 - `chaos-suite/*`: scenario manifest, event timeline, and machine-readable outcomes.
 
-## Validation path mapping (v2.2.5)
+## Validation path mapping (v2.2.6)
 Evidence must explicitly map to active validation paths:
 - Peer lifecycle / topology-awareness / relay lanes.
 - Sync catch-up explainability + restart/rejoin hardening.
@@ -63,8 +69,8 @@ A `GO` decision is allowed only if all are true:
 
 If any check is missing/failed, decision is `NO-GO`; blockers must be listed in `CHECKLIST.md` and `dry-run/go-no-go.md`.
 
-## v2.2.5 closeout evidence index
-Use `docs/checklists/V2_2_5_BURNIN_CLOSEOUT.md` as the release-manager closeout wrapper.
+## v2.2.6 closeout evidence index
+Use `docs/checklists/V2_2_6_BURNIN_CLOSEOUT.md` as the release-manager closeout wrapper.
 
 ## Runtime remediation/no-go surfaces
 Operator evidence should include `remediation_summary`, `no_go_escalation`, and `no_go_reasons` from `/runtime/status` or `/operator/query-pack` as bounded escalation artifacts linked to the incident timeline.
