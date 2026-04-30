@@ -11,6 +11,7 @@ This index consolidates the v2.2.6 operator package for recovery, rebuild, resto
 6. **Need crash/restart/churn validation evidence?** Use `docs/runbooks/CHAOS_RESTART_RECOVERY_SUITE.md`.
 7. **Need startup-mode interpretation and fallback counters?** Use `docs/runbooks/FAST_BOOT_AND_FALLBACK.md`.
 8. **Need prune/snapshot integration validation command?** Use `scripts/pruning-snapshot-integration-evidence.sh`.
+9. **Need private-testnet drill prep wrappers?** Use `docs/runbooks/SNAPSHOT_PRUNE_RESTORE_DRILL.md`.
 
 ## Core runbooks
 - `docs/runbooks/MAINTENANCE_SELF_CHECK.md` — routine operator self-check, drift checks, and pre-maintenance safety gates.
@@ -18,6 +19,7 @@ This index consolidates the v2.2.6 operator package for recovery, rebuild, resto
 - `docs/runbooks/RECOVERY_ORCHESTRATION.md` — recovery triage matrix (recovery vs rebuild vs restore).
 - `docs/runbooks/REBUILD_FROM_SNAPSHOT_AND_DELTA.md` — snapshot + delta rebuild workflow and post-checks.
 - `docs/runbooks/SNAPSHOT_RESTORE.md` — restore drill procedure, fallback expectations, and RTO evidence.
+- `docs/runbooks/SNAPSHOT_PRUNE_RESTORE_DRILL.md` — private-testnet prep and guarded wrappers for snapshot/prune/restore drills.
 - `docs/runbooks/CHAOS_RESTART_RECOVERY_SUITE.md` — repeatable crash/restart/churn/recovery validation suite and evidence workflow.
 - `docs/runbooks/FAST_BOOT_AND_FALLBACK.md` — fast-boot behavior, fallback signals, and when to escalate.
 
