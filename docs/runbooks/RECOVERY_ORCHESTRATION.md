@@ -35,3 +35,6 @@ Escalate to rebuild/restore path if either is true:
 - `/status.best_height` progresses as expected.
 - P2P peer behavior stable for observed interval.
 - Incident notes include endpoint snapshots and selected recovery path.
+
+## Runtime no-go escalation mapping
+When runtime surfaces `no_go_escalation=true`, treat listed `no_go_reasons` as blockers until remediated and evidenced via operator query-pack snapshots.

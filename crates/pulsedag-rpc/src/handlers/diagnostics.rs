@@ -35,6 +35,9 @@ pub struct DiagnosticsData {
     pub incident_primary_surface: String,
     pub incident_summary: String,
     pub incident_indicators: Vec<String>,
+    pub remediation_summary: String,
+    pub no_go_escalation: bool,
+    pub no_go_reasons: Vec<String>,
     pub incident_snapshot: RuntimeIncidentSnapshot,
     pub trend_windows: Vec<RuntimeTrendWindow>,
 }
@@ -49,6 +52,9 @@ pub struct OperatorQueryPackData {
     pub relay_health_view: OperatorRelayHealthView,
     pub mining_audit_view: OperatorMiningAuditView,
     pub startup_recovery_view: OperatorStartupRecoveryView,
+    pub no_go_escalation: bool,
+    pub no_go_reasons: Vec<String>,
+    pub remediation_summary: String,
     pub deterministic_notes: Vec<String>,
 }
 
@@ -171,6 +177,9 @@ pub async fn get_diagnostics<S: RpcStateLike>(
         incident_primary_surface,
         incident_summary,
         incident_indicators,
+        remediation_summary: rollup.remediation_summary.clone(),
+        no_go_escalation: rollup.no_go_escalation,
+        no_go_reasons: rollup.no_go_reasons.clone(),
         incident_snapshot,
         trend_windows,
     }))
@@ -234,6 +243,9 @@ pub async fn get_operator_query_pack<S: RpcStateLike>(
             startup_replay_required: data.startup_replay_required,
             startup_fallback_reason: data.startup_fallback_reason,
         },
+        no_go_escalation: data.no_go_escalation,
+        no_go_reasons: data.no_go_reasons.clone(),
+        remediation_summary: data.remediation_summary.clone(),
         deterministic_notes: vec![
             "derived_from_runtime_surface_rollup".to_string(),
             "no_consensus_mutation".to_string(),
@@ -454,6 +466,9 @@ mod tests {
         let pack = pack_resp.data.expect("pack");
 
         assert_eq!(pack.runtime_rollup.incident_summary, diag.incident_summary);
+        assert_eq!(pack.no_go_escalation, diag.no_go_escalation);
+        assert_eq!(pack.no_go_reasons, diag.no_go_reasons);
+        assert_eq!(pack.remediation_summary, diag.remediation_summary);
         assert_eq!(
             pack.runtime_rollup.node_runtime_surface_health,
             runtime_data.node_runtime_surface_health
@@ -488,5 +503,6 @@ mod tests {
             .deterministic_notes
             .contains(&"operator_read_only_surface".to_string()));
         assert_eq!(pack.deterministic_notes.len(), 3);
+        assert!(!pack.remediation_summary.is_empty());
     }
 }

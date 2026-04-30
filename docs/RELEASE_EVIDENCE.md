@@ -62,3 +62,6 @@ If any check is missing/failed, decision is `NO-GO`; blockers must be listed in 
 
 ## v2.2.5 closeout evidence index
 Use `docs/checklists/V2_2_5_BURNIN_CLOSEOUT.md` as the release-manager closeout wrapper.
+
+## Runtime remediation/no-go surfaces
+Operator evidence should include `remediation_summary`, `no_go_escalation`, and `no_go_reasons` from `/runtime/status` or `/operator/query-pack` as bounded escalation artifacts linked to the incident timeline.

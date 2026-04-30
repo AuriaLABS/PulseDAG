@@ -234,3 +234,11 @@ Methodology is documented in `docs/benchmarks/HOT_PATH_MEASUREMENT_METHODOLOGY.m
 - `deterministic_notes` for explicit audit semantics (`operator_read_only_surface`, etc.).
 
 - queue pressure counters now include `p2p_queue_backpressure_drops` to make relay backpressure explicit under load.
+
+### Guided remediation + no-go escalation (v2)
+`GET /runtime/status`, `GET /diagnostics`, and `GET /operator/query-pack` now include:
+- `remediation_summary`: bounded, explicit remediation hints tied to observed counter/state signals.
+- `no_go_escalation`: explicit boolean for operator go/no-go gating.
+- `no_go_reasons`: bounded machine-readable blockers (for example `sync_pipeline_incoherent_or_error`, `mining_counter_mismatch`).
+
+These are additive read-only operator surfaces aligned with runbook escalation and release evidence collection.
