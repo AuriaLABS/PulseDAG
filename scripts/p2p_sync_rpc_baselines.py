@@ -45,6 +45,8 @@ HOT_PATH_GROUPS: dict[str, list[str]] = {
     "recovery": ["/status", "/sync/status", "/runtime/status"],
 }
 
+DEFAULT_THRESHOLD_PROFILE = "docs/benchmarks/burnin_regression_thresholds_v1.json"
+
 
 @dataclass
 class EndpointSample:
@@ -285,7 +287,67 @@ def run_command_timed(command: str, cwd: Path) -> dict[str, Any]:
     }
 
 
-def write_markdown_report(path: Path, run_meta: dict[str, Any], endpoint_summary: list[dict[str, Any]], sync_summary: dict[str, Any], command_results: list[dict[str, Any]]) -> None:
+def load_threshold_profile(path: Path) -> dict[str, Any]:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError("threshold profile must be a JSON object")
+    return payload
+
+
+def classify_thresholds(
+    endpoint_summary: list[dict[str, Any]],
+    sync_summary: dict[str, Any],
+    profile: dict[str, Any],
+) -> dict[str, Any]:
+    endpoint_thresholds = profile.get("endpoint_thresholds", {})
+    endpoint_results: list[dict[str, Any]] = []
+    for row in endpoint_summary:
+        endpoint = row["endpoint"]
+        threshold = endpoint_thresholds.get(endpoint)
+        if threshold is None:
+            continue
+        p95_limit = float(threshold.get("p95_ms_max", 0.0))
+        max_limit = float(threshold.get("max_ms_max", 0.0))
+        success_min = float(threshold.get("success_rate_pct_min", 0.0))
+        p95_ok = row["p95_ms"] <= p95_limit
+        max_ok = row["max_ms"] <= max_limit
+        success_ok = row["success_rate_pct"] >= success_min
+        passed = p95_ok and max_ok and success_ok
+        endpoint_results.append({
+            "endpoint": endpoint,
+            "passed": passed,
+            "p95_ms": row["p95_ms"],
+            "p95_ms_max": p95_limit,
+            "max_ms": row["max_ms"],
+            "max_ms_max": max_limit,
+            "success_rate_pct": row["success_rate_pct"],
+            "success_rate_pct_min": success_min,
+        })
+
+    sync_thresholds = profile.get("sync_thresholds", {})
+    sync_elapsed_max = float(sync_thresholds.get("elapsed_seconds_max", 0.0))
+    sync_polls_max = int(sync_thresholds.get("polls_max", 0))
+    sync_result_ok = sync_summary.get("result") == "stabilized"
+    sync_elapsed_ok = float(sync_summary.get("elapsed_seconds", 0.0)) <= sync_elapsed_max
+    sync_polls_ok = int(sync_summary.get("polls", 0)) <= sync_polls_max
+    sync_passed = sync_result_ok and sync_elapsed_ok and sync_polls_ok
+
+    overall_passed = sync_passed and all(r["passed"] for r in endpoint_results)
+    return {
+        "overall_passed": overall_passed,
+        "endpoint_results": endpoint_results,
+        "sync_result": {
+            "passed": sync_passed,
+            "result": sync_summary.get("result"),
+            "elapsed_seconds": sync_summary.get("elapsed_seconds"),
+            "elapsed_seconds_max": sync_elapsed_max,
+            "polls": sync_summary.get("polls"),
+            "polls_max": sync_polls_max,
+        },
+    }
+
+
+def write_markdown_report(path: Path, run_meta: dict[str, Any], endpoint_summary: list[dict[str, Any]], sync_summary: dict[str, Any], command_results: list[dict[str, Any],], threshold_summary: dict[str, Any] | None,) -> None:
     lines = [
         f"# v2.2.4 p2p/sync/runtime/rpc baseline run ({run_meta['run_id']})",
         "",
@@ -322,6 +384,21 @@ def write_markdown_report(path: Path, run_meta: dict[str, Any], endpoint_summary
                 f"| `{result['command']}` | {result['return_code']} | {result['elapsed_seconds']:.3f} |"
             )
 
+    if threshold_summary:
+        lines.extend(["", "## Pre-burn-in regression threshold classification", ""])
+        lines.append(f"- Overall gate result: **{'pass' if threshold_summary.get('overall_passed') else 'fail'}**")
+        lines.extend(["", "| Surface | Result | Measured | Threshold |", "| --- | --- | ---: | ---: |"])
+        for row in threshold_summary.get("endpoint_results", []):
+            status = "pass" if row["passed"] else "fail"
+            lines.append(
+                f"| `{row['endpoint']}` (p95) | {status} | {row['p95_ms']:.3f} ms | <= {row['p95_ms_max']:.3f} ms |"
+            )
+        sync_row = threshold_summary.get("sync_result", {})
+        sync_status = "pass" if sync_row.get("passed") else "fail"
+        lines.append(
+            f"| `sync_stabilization` (elapsed) | {sync_status} | {sync_row.get('elapsed_seconds', 0)} s | <= {sync_row.get('elapsed_seconds_max', 0)} s |"
+        )
+
     lines.append("")
     path.write_text("\n".join(lines), encoding="utf-8")
 
@@ -345,6 +422,16 @@ def parse_args() -> argparse.Namespace:
         choices=sorted(HOT_PATH_GROUPS.keys()),
         default=[],
         help="hot-path endpoint group to include (repeatable)",
+    )
+    parser.add_argument(
+        "--threshold-profile",
+        default=DEFAULT_THRESHOLD_PROFILE,
+        help="JSON threshold profile for pre-burn-in regression classification",
+    )
+    parser.add_argument(
+        "--skip-threshold-check",
+        action="store_true",
+        help="capture measurements only without threshold classification",
     )
     return parser.parse_args()
 
@@ -404,8 +491,15 @@ def main() -> int:
     (out_dir / "sync_stabilization.json").write_text(json.dumps(sync_summary, indent=2) + "\n", encoding="utf-8")
     (out_dir / "drill_command_results.json").write_text(json.dumps(command_results, indent=2) + "\n", encoding="utf-8")
 
+    threshold_summary: dict[str, Any] | None = None
+    if not args.skip_threshold_check:
+        threshold_profile_path = Path(args.threshold_profile)
+        profile = load_threshold_profile(threshold_profile_path)
+        threshold_summary = classify_thresholds(endpoint_summary, sync_summary, profile)
+        (out_dir / "regression_thresholds.json").write_text(json.dumps(threshold_summary, indent=2) + "\n", encoding="utf-8")
+
     markdown_report = out_dir / "BASELINE_REPORT.md"
-    write_markdown_report(markdown_report, run_meta, endpoint_summary, sync_summary, command_results)
+    write_markdown_report(markdown_report, run_meta, endpoint_summary, sync_summary, command_results, threshold_summary)
 
     print(f"[baseline] artifacts written to {out_dir}")
     print(f"[baseline] markdown summary: {markdown_report}")

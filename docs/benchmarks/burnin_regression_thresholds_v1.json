@@ -1,0 +1,16 @@
+{
+  "version": "v1",
+  "purpose": "pre-burn-in regression classification for hot paths",
+  "endpoint_thresholds": {
+    "/runtime/status": {"p95_ms_max": 250.0, "max_ms_max": 700.0, "success_rate_pct_min": 99.0},
+    "/sync/status": {"p95_ms_max": 300.0, "max_ms_max": 850.0, "success_rate_pct_min": 99.0},
+    "/sync/lag": {"p95_ms_max": 300.0, "max_ms_max": 850.0, "success_rate_pct_min": 99.0},
+    "/p2p/status": {"p95_ms_max": 300.0, "max_ms_max": 850.0, "success_rate_pct_min": 99.0},
+    "/tx/mempool": {"p95_ms_max": 350.0, "max_ms_max": 900.0, "success_rate_pct_min": 99.0},
+    "/pow/health": {"p95_ms_max": 350.0, "max_ms_max": 900.0, "success_rate_pct_min": 99.0}
+  },
+  "sync_thresholds": {
+    "elapsed_seconds_max": 180.0,
+    "polls_max": 240
+  }
+}

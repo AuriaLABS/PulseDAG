@@ -242,3 +242,11 @@ Methodology is documented in `docs/benchmarks/HOT_PATH_MEASUREMENT_METHODOLOGY.m
 - `no_go_reasons`: bounded machine-readable blockers (for example `sync_pipeline_incoherent_or_error`, `mining_counter_mismatch`).
 
 These are additive read-only operator surfaces aligned with runbook escalation and release evidence collection.
+
+
+## Pre-burn-in operator flow gating
+
+For pre-burn-in readiness, pair this observability package with hot-path threshold evidence:
+- run `scripts/hot-path-baseline.sh` (or `scripts/p2p_sync_rpc_baselines.py`) before extended burn-in,
+- review the threshold classification section in `BASELINE_REPORT.md`,
+- archive `regression_thresholds.json` with release evidence for operator go/no-go triage.

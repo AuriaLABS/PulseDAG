@@ -71,3 +71,31 @@ Comparison-critical outputs:
 - `BASELINE_REPORT.md`
 
 Use `docs/benchmarks/V2_2_4_P2P_SYNC_RPC_BASELINE_OUTPUT_TEMPLATE.md` for side-by-side A/B/C run reviews.
+
+
+## Pre-burn-in regression thresholds (v1)
+
+Hot-path capture now doubles as a pre-burn-in regression gate using operator-facing thresholds in:
+
+- `docs/benchmarks/burnin_regression_thresholds_v1.json`
+
+Default behavior classifies each run and writes `regression_thresholds.json` plus a threshold section in `BASELINE_REPORT.md`.
+
+Use defaults:
+
+```bash
+scripts/hot-path-baseline.sh http://127.0.0.1:8080
+```
+
+Override or capture-only mode:
+
+```bash
+python3 scripts/p2p_sync_rpc_baselines.py   --base-url http://127.0.0.1:8080   --hot-path sync --hot-path relay --hot-path mempool --hot-path mining   --threshold-profile docs/benchmarks/burnin_regression_thresholds_v1.json
+
+python3 scripts/p2p_sync_rpc_baselines.py   --base-url http://127.0.0.1:8080   --skip-threshold-check
+```
+
+Classification intent:
+1. flag hard regressions before long burn-in runs,
+2. separate endpoint-latency regressions from sync-stabilization regressions,
+3. preserve run-to-run comparability (same artifact layout, additive threshold outputs).

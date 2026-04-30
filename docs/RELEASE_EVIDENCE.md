@@ -18,6 +18,7 @@ Run folder: `artifacts/release-evidence/<run_id>/`
 - `pruning-cadence/pruning-events.csv`: prune cadence and reclaimed bytes trend.
 - `p2p-recovery/recovery-events.csv`: peer lifecycle/rejoin/relay-lane recovery timing evidence.
 - `baselines/daily-baseline.md`: daily pass/fail notes for p2p/sync/mempool/mining/query-pack surfaces.
+- `baselines/regression-thresholds.json`: threshold classification output from `scripts/p2p_sync_rpc_baselines.py` for pre-burn-in gating.
 - `baselines/rpc-consistency.csv`: read-side consistency checks and outcomes.
 - `restore-rebuild/restore-timing.csv`: restore/rebuild timing, repeated-run comparisons, lineage references.
 - `mining-telemetry/daily-summary.csv`: external miner freshness/reject taxonomy/stale-invalid trends.
@@ -67,3 +68,13 @@ Use `docs/checklists/V2_2_5_BURNIN_CLOSEOUT.md` as the release-manager closeout 
 
 ## Runtime remediation/no-go surfaces
 Operator evidence should include `remediation_summary`, `no_go_escalation`, and `no_go_reasons` from `/runtime/status` or `/operator/query-pack` as bounded escalation artifacts linked to the incident timeline.
+
+
+### Pre-burn-in threshold discipline
+Before entering long burn-in windows, include one hot-path baseline run with threshold classification enabled (default behavior) and archive:
+- `rpc_latency_summary.json`
+- `sync_stabilization.json`
+- `regression_thresholds.json`
+- `BASELINE_REPORT.md`
+
+Treat threshold failures as pre-burn-in blockers until classified (environmental vs code/config regression) and recorded in `dry-run/go-no-go.md`.
