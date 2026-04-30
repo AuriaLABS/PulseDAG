@@ -2644,6 +2644,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "pulsedag-api"
+version = "2.2.5"
+dependencies = [
+ "pulsedag-core",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "pulsedag-core"
 version = "2.2.5"
 dependencies = [
@@ -2674,8 +2683,8 @@ version = "2.2.5"
 dependencies = [
  "anyhow",
  "hex",
+ "pulsedag-api",
  "pulsedag-core",
- "pulsedag-rpc",
  "reqwest",
  "serde",
  "serde_json",
@@ -2703,6 +2712,7 @@ dependencies = [
  "futures-core",
  "hex",
  "proptest",
+ "pulsedag-api",
  "pulsedag-core",
  "pulsedag-crypto",
  "pulsedag-p2p",
