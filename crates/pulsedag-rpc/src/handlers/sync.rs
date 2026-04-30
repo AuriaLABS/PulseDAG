@@ -96,7 +96,9 @@ pub async fn get_sync_status<S: RpcStateLike>(
         .map(|d| d.as_secs())
         .unwrap_or(0);
     let stalled = runtime.sync_pipeline.phase != pulsedag_core::SyncPhase::Idle
-        && lag_blocks > 0
+        && (lag_blocks > 0
+            || runtime.sync_pipeline.counters.blocks_requested
+                > runtime.sync_pipeline.counters.blocks_applied)
         && runtime
             .sync_pipeline
             .last_transition_unix
