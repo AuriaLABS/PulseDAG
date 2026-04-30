@@ -54,6 +54,16 @@ Use this matrix daily. Keep entries short and evidence-linked.
 9. Complete release matrix v2 verification for standalone node + external miner artifacts.
 10. Record final explicit go/no-go decision with release + ops sign-off.
 
+
+## Public-testnet decision readiness overlay (ops gate, not launch)
+For public-testnet decision review, apply stricter gate overlays in addition to the 14-day run:
+- Minimum dry-run topology proof: 5 nodes + 4 external miners for >=24 contiguous UTC hours.
+- At least 4 perturbation events with measured reconvergence back to baseline band.
+- Required drill scoring (0/1/2) across bootstrap, restart, miner churn, peer isolation, restore/rebuild; aggregate >=8/10 with no zero scores.
+- Hard-stop NO-GO on unresolved Sev-1 consensus/sync, incomplete evidence metadata, or unresolved miner degradation.
+
+Record overlays in `dry-run/go-no-go.md` and cross-link evidence from `docs/checklists/PUBLIC_TESTNET_READINESS_CRITERIA.md`.
+
 ## Pass/fail criteria for release managers
 A v2.2.5 burn-in is complete only when all of the following are true:
 - 14 full days completed with no unresolved Sev-1 incident tied to consensus/sync safety.
