@@ -1,6 +1,14 @@
-# PulseDAG v2.2.5 closeout package
+# PulseDAG v2.2.6 current status
 
-Consolidated v2.2.5 operator-readiness and release-closeout package for operational recovery, rebuild, restore, and maintenance workflows.
+Consolidated v2.2.6 operator-readiness status for operational recovery, rebuild, restore, and maintenance workflows, with v2.2.5 closeout preserved as historical release evidence.
+
+
+## Current v2.2.6 status
+- Repository workspace status is aligned to **v2.2.6** documentation state.
+- Scope remains docs/release-operations synchronization only (no consensus, miner, API, storage, or P2P behavior changes in this PR).
+- External miner architecture remains unchanged; pool/accounting/payout logic stays out of scope.
+- Smart contracts remain disabled until **30 stable testnet burn-in days** are completed.
+- Current chain target remains **60 seconds per block**.
 
 ## Frozen decisions
 - Miner remains an external standalone application.
@@ -102,13 +110,14 @@ See `docs/OPERATIONS_P2P.md` for operational guidance.
 - Staging upgrade runbook: `docs/runbooks/STAGING_UPGRADE.md`
 - Staging rollback runbook: `docs/runbooks/STAGING_ROLLBACK.md`
 
-## Burn-in and evidence for v2.2.5
+## Burn-in and evidence (historical v2.2.5 + current v2.2.6)
 - The CI workflow `Soak Smoke (short CI signal)` is intentionally a short regression signal, not a release burn-in claim.
 - Real release burn-in for v2.2.5 requires an operated run with evidence collection per release policy.
 - See `docs/BURN_IN_14D.md` and `docs/RELEASE_EVIDENCE.md` for process and required artifacts.
 
-## v2.2.5 closeout package (release hygiene only)
-- Final release closeout checklist: `docs/checklists/V2_2_5_BURNIN_CLOSEOUT.md`
+## Historical v2.2.5 closeout package (release hygiene evidence)
+- v2.2.6 closeout checklist: `docs/checklists/V2_2_6_BURNIN_CLOSEOUT.md`
+- v2.2.5 closeout checklist (historical evidence): `docs/checklists/V2_2_5_BURNIN_CLOSEOUT.md`
 - Burn-in execution guide: `docs/BURN_IN_14D.md`
 - Evidence bundle/index: `docs/RELEASE_EVIDENCE.md`
 - Runbook index: `docs/runbooks/INDEX.md`
