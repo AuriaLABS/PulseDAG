@@ -3,7 +3,7 @@
 This document defines the standard evidence package for v2.2.6 burn-in and release readiness.
 
 ## v2.2.6 scope notes
-This release intentionally keeps scope narrow around standalone miner ergonomics and external-miner architecture boundaries:
+This release intentionally keeps scope narrow around pre-burn-in maturity closure and external-miner architecture boundaries:
 - Shared transport-type extraction to reduce duplicated transport wiring across node/miner integration points.
 - Miner decoupling from node/storage build surface so miner-only builds avoid unnecessary node/storage coupling.
 - Miner-only verification improvements to make targeted miner validation clearer and easier to automate.
@@ -28,6 +28,10 @@ Run folder: `artifacts/release-evidence/<run_id>/`
 - `baselines/rpc-consistency.csv`: read-side consistency checks and outcomes.
 - `restore-rebuild/restore-timing.csv`: restore/rebuild timing, repeated-run comparisons, lineage references.
 - `mining-telemetry/daily-summary.csv`: external miner freshness/reject taxonomy/stale-invalid trends.
+- `mining-telemetry/multithread-summary.csv`: miner multithread behavior captures (thread utilization/hashrate/stale-work by thread bucket).
+- `mining-telemetry/retarget-diagnostics.csv`: retarget diagnostics with target-delta and timestamp-window notes.
+- `mempool-pressure/mempool-bounds.csv`: bounded mempool evidence (queue bounds, evictions, rejection taxonomy).
+- `p2p-recovery/relay-backpressure.csv`: relay/backpressure behavior and reconvergence timing.
 - `release-packaging/verification.md`: node+miner release matrix v2 and install verification evidence.
 - `restart-recovery-notes/restart-log.md`: restart cause, startup mode, recovery duration, and rejoin outcome.
 - `dry-run/go-no-go.md`: explicit auditable final go/no-go rationale with sign-offs.
@@ -55,6 +59,7 @@ Evidence must explicitly map to active validation paths:
 5. Start-of-run and closeout release matrix/install verification for standalone node + external miner.
 6. Final `GO`/`NO-GO` record with release + ops owner sign-offs.
 7. Drill scoring table (0/1/2 per required drill) and final aggregate score in `dry-run/go-no-go.md`.
+8. Verification-gate record for checksums, manifests, provenance, and install verification must be attached in `release-packaging/verification.md`.
 
 ## Go / no-go evidence expectations
 A `GO` decision is allowed only if all are true:

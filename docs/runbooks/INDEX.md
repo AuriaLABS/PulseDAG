@@ -1,6 +1,6 @@
 # PulseDAG v2.2 Runbook Index
 
-This index consolidates the v2.2.5 operator package for recovery, rebuild, restore, maintenance, and staging safety workflows.
+This index consolidates the v2.2.6 operator package for recovery, rebuild, restore, maintenance, and staging safety workflows.
 
 ## Start here (decision flow)
 1. **Node unhealthy or degraded?** Start with `docs/runbooks/MAINTENANCE_SELF_CHECK.md`.
@@ -29,7 +29,7 @@ This index consolidates the v2.2.5 operator package for recovery, rebuild, resto
 - `docs/runbooks/FINAL_POW_PUBLIC_TESTNET_DRY_RUN.md` — final multi-node, multi-miner dry-run and go/no-go gate before public testnet open.
 
 ## Evidence and operations support docs
-- `docs/checklists/V2_2_5_BURNIN_CLOSEOUT.md` — final v2.2.5 burn-in closeout checklist and evidence index.
+- `docs/checklists/V2_2_6_BURNIN_CLOSEOUT.md` — final v2.2.6 burn-in closeout checklist and evidence index.
 - `docs/RELEASE_EVIDENCE.md` — release evidence bundle requirements.
 - `docs/BURN_IN_14D.md` — 14-day burn-in requirements.
 - `docs/dashboard/README.md` — operator dashboard package.

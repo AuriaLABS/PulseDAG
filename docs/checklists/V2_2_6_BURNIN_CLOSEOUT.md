@@ -18,8 +18,12 @@ Run folder: `artifacts/release-evidence/<run_id>/`
 - [ ] `p2p-recovery/recovery-events.csv` includes peer lifecycle/topology-awareness/relay-lane recovery evidence.
 - [ ] `baselines/daily-baseline.md` and `baselines/rpc-consistency.csv` record p2p/sync/mempool/query-pack outcomes.
 - [ ] `mining-telemetry/daily-summary.csv` captures external miner freshness/stale-work/rejection taxonomy trends.
+- [ ] `mining-telemetry/multithread-summary.csv` captures miner multithread behavior and contention outcomes.
+- [ ] `mining-telemetry/retarget-diagnostics.csv` captures target-shift and convergence diagnostics.
+- [ ] `mempool-pressure/mempool-bounds.csv` captures bounded mempool behavior and eviction outcomes.
+- [ ] `p2p-recovery/relay-backpressure.csv` captures relay/backpressure behavior and recovery timing.
 - [ ] `snapshot-cadence/snapshot-events.csv` and `restore-rebuild/restore-timing.csv` capture export/import/verify/restore evidence plus repeated-run timing.
-- [ ] `release-packaging/verification.md` includes release matrix v2 + install verification for standalone node+miner.
+- [ ] `release-packaging/verification.md` includes release matrix v2 + checksum/manifest/provenance/install verification for standalone node+miner.
 - [ ] `restart-recovery-notes/restart-log.md` includes restart reason, startup mode, rejoin behavior, and recovery duration.
 - [ ] `dry-run/go-no-go.md` exists and includes final decision rationale with release + ops signatures.
 
