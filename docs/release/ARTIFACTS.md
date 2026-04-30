@@ -52,7 +52,9 @@ For every archive the workflow emits:
 - Generated operator install verification guide: `INSTALL-VERIFY.md`
 
 In addition, each platform archive is attested in GitHub artifact attestations using the release workflow identity (OIDC-backed provenance).
-The workflow now performs end-to-end verification in both jobs: it validates every archive, checksum sidecar, and manifest; unpacks each archive; and runs a basic smoke command on the unpacked `pulsedagd` and `pulsedag-miner` binaries before publish.
+The workflow now performs end-to-end verification in both jobs: it validates every archive, checksum sidecar, and manifest; unpacks each archive; and runs basic smoke commands on unpacked `pulsedagd` and `pulsedag-miner` binaries before publish.
+
+Release CI also includes a miner-only verification path (`cargo check -p pulsedag-miner` plus packaged-miner smoke validation) so standalone miner changes are validated independently from full node packaging.
 
 Per-archive JSON manifests now include:
 - `archive_sha256`
@@ -66,12 +68,13 @@ Per-archive JSON manifests now include:
 `release-binaries` validates packaged assets twice:
 
 1. **Build job (`dist/`)**
+   - Runs miner-only compile verification: `cargo check --locked -p pulsedag-miner`.
+   - Builds both binaries for release packaging: `cargo build --locked --release --bin pulsedagd --bin pulsedag-miner`.
    - Verifies `<archive>.sha256` matches archive bytes.
    - Verifies `<archive>.json` metadata (`archive`, digest, size, tag, provenance).
-   - Unpacks each archive and checks the expected single-binary layout.
-   - Runs a binary smoke check:
-     - `pulsedagd --version`
-     - `pulsedag-miner --help`
+   - Runs miner-only packaged verification (`--expect-binaries pulsedag-miner`) with unpack + smoke.
+   - Runs node+miner packaged verification (`--expect-binaries pulsedagd pulsedag-miner`) with unpack + smoke.
+   - Node expectations still include the RocksDB-backed storage compile path as part of full node build/package validation.
 
 2. **Publish job (`final/`)**
    - Re-verifies per-archive checksums and manifests after artifact download/flattening.

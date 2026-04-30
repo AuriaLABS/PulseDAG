@@ -70,6 +70,9 @@ jobs:
             exit 1
           fi
 
+      - name: Verify standalone miner crate build surface
+        run: cargo check --locked -p pulsedag-miner
+
       - name: Build node and standalone miner
         run: cargo build --locked --release --bin pulsedagd --bin pulsedag-miner
 
@@ -112,7 +115,18 @@ jobs:
             --run-id "${{ github.run_id }}" \
             --run-attempt "${{ github.run_attempt }}"
 
-      - name: Verify packaged assets end-to-end (unpack + smoke)
+      - name: Verify packaged standalone miner assets (unpack + smoke)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/release/verify_release_artifacts.py \
+            --artifacts-dir dist \
+            --expected-tag "${{ env.RELEASE_TAG }}" \
+            --smoke \
+            --expect-binaries pulsedag-miner \
+            --expect-targets "${{ matrix.expected_target }}"
+
+      - name: Verify packaged node+miner assets end-to-end (unpack + smoke)
         shell: bash
         run: |
           set -euo pipefail

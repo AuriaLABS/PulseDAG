@@ -48,6 +48,9 @@ jobs:
       - name: Verify pulsedag-p2p tests
         run: cargo test -p pulsedag-p2p
 
+      - name: Verify standalone miner crate build surface
+        run: cargo check --locked -p pulsedag-miner
+
       - name: Build release binaries (node + standalone miner)
         run: cargo build --locked --release --bin pulsedagd --bin pulsedag-miner
 
@@ -109,7 +112,16 @@ jobs:
             --run-id "${GITHUB_RUN_ID}" \
             --run-attempt "${GITHUB_RUN_ATTEMPT}"
 
-      - name: Verify packaged artifacts and smoke wiring
+      - name: Verify packaged standalone miner artifact and smoke wiring
+        run: |
+          set -euo pipefail
+          python scripts/release/verify_release_artifacts.py \
+            --artifacts-dir dist \
+            --expected-tag "${RELEASE_TAG}" \
+            --smoke \
+            --expect-binaries pulsedag-miner
+
+      - name: Verify packaged node+miner artifacts and smoke wiring
         run: |
           set -euo pipefail
           python scripts/release/verify_release_artifacts.py \
