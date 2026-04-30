@@ -5,7 +5,7 @@ use crate::{
         combined_pressure_tier, mempool_pressure_bps, reconcile_mempool, MEMPOOL_PRESSURE_HIGH_BPS,
         MEMPOOL_PRESSURE_SATURATED_BPS,
     },
-    pow_evaluate, selected_pow_name,
+    pow_validation_result, selected_pow_name,
     state::ChainState,
     types::{Block, Transaction},
     validation::{missing_transaction_inputs, validate_block, validate_transaction},
@@ -473,11 +473,22 @@ pub fn accept_block(
         source,
         AcceptSource::Rpc | AcceptSource::P2p | AcceptSource::LocalMining
     );
-    let pow = pow_evaluate(&block.header);
+    let pow = pow_validation_result(&block.header);
     if enforce_pow && !pow.accepted {
+        let score = pow
+            .score_u64
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| "none".to_string());
+        let code = pow.rejection_code.unwrap_or("score_above_target");
         return Err(PulseError::InvalidBlock(format!(
-            "pow rejected by current {} policy",
-            selected_pow_name()
+            "pow rejected by current {} policy: reason_code={} score={} target={} difficulty={} height={} nonce={}",
+            selected_pow_name(),
+            code,
+            score,
+            pow.target_u64,
+            block.header.difficulty,
+            block.header.height,
+            block.header.nonce
         )));
     }
 
