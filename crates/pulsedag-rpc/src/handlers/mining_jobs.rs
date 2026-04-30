@@ -7,7 +7,7 @@ use crate::{
 use axum::{extract::State, Json};
 use pulsedag_core::{
     accept_block, build_candidate_block, build_coinbase_transaction, dev_difficulty_snapshot,
-    dev_pow_accepts, AcceptSource,
+    pow_validation_result, AcceptSource,
 };
 use std::{
     fs,
@@ -147,7 +147,7 @@ pub async fn post_submit_mining_job<S: RpcStateLike>(
             "job expired before submission".to_string(),
         ));
     }
-    if !dev_pow_accepts(&req.block.header) {
+    if !pow_validation_result(&req.block.header).accepted {
         return Json(ApiResponse::err(
             "INVALID_POW",
             "submitted block does not satisfy current dev pow check".to_string(),

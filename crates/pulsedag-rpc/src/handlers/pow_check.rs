@@ -20,10 +20,11 @@ pub struct PowCheckHeaderData {
 pub async fn post_pow_check_header(
     Json(req): Json<PowCheckHeaderRequest>,
 ) -> Json<ApiResponse<PowCheckHeaderData>> {
-    let hash_hex = pulsedag_core::dev_surrogate_pow_hash(&req.header);
-    let score_u64 = pulsedag_core::dev_hash_score_u64(&req.header);
-    let target_u64 = pulsedag_core::dev_target_u64(req.header.difficulty as u64);
-    let accepted = pulsedag_core::dev_pow_accepts(&req.header);
+    let pow = pulsedag_core::pow_validation_result(&req.header);
+    let hash_hex = pow.hash_hex.unwrap_or_default();
+    let score_u64 = pow.score_u64.unwrap_or(0);
+    let target_u64 = pow.target_u64;
+    let accepted = pow.accepted;
 
     Json(ApiResponse::ok(PowCheckHeaderData {
         declared_algorithm: pulsedag_core::selected_pow_name().to_string(),
