@@ -40,23 +40,25 @@ Evidence must explicitly map to active validation paths:
 - Release matrix v2 and install verification (`docs/release/ARTIFACTS.md`).
 - Public-testnet readiness docs and hot-path measurements.
 
-## Evidence minimums (explicit)
+## Evidence minimums (explicit, stricter for public-testnet decision readiness)
 1. At least 14 UTC days of runtime, alert, and status-rollup evidence.
-2. At least 3 restart/churn/rejoin drills across the run window.
-3. At least 2 snapshot restore/rebuild timing captures including repeated-run comparison.
-4. Daily external miner telemetry entries with rejection taxonomy.
+2. At least **4 perturbation drills** (restart/churn/isolation mix) with event timestamps and reconvergence timing.
+3. At least 2 snapshot restore/rebuild timing captures including repeated-run comparison and lineage reference.
+4. Daily external miner telemetry entries with rejection taxonomy and drill-window annotations.
 5. Start-of-run and closeout release matrix/install verification for standalone node + external miner.
 6. Final `GO`/`NO-GO` record with release + ops owner sign-offs.
+7. Drill scoring table (0/1/2 per required drill) and final aggregate score in `dry-run/go-no-go.md`.
 
 ## Go / no-go evidence expectations
 A `GO` decision is allowed only if all are true:
 1. Evidence completeness for all required categories and all 14 UTC days.
 2. No unresolved Sev-1 tied to consensus/sync safety.
-3. Recovery readiness proven: restart/churn/rejoin + snapshot restore/rebuild checks passed.
+3. Recovery readiness proven: restart/churn/rejoin + snapshot restore/rebuild checks passed within declared thresholds.
 4. External miner health: no unresolved rejection/stale-work regression.
 5. Packaging assurance: standalone node+miner release matrix/install verification complete.
 6. Recovery confidence and lineage/state-audit surfaces captured and non-misleading.
-7. Release owner + ops owner sign-offs present with UTC timestamp.
+7. Required drill scoring aggregate is >= 8/10, with no drill scored 0.
+8. Release owner + ops owner sign-offs present with UTC timestamp.
 
 If any check is missing/failed, decision is `NO-GO`; blockers must be listed in `CHECKLIST.md` and `dry-run/go-no-go.md`.
 

@@ -32,3 +32,10 @@ This checklist is preparation-only and does **not** authorize launch by itself.
 - [ ] Operator can maintain `dry-run/incident-log.md` with mitigations and residual risk.
 - [ ] Operator can map collected evidence to `docs/RELEASE_EVIDENCE.md` required paths.
 - [ ] Operator understands this checklist is an entry prerequisite, not a launch signal.
+
+
+## 6) Public-testnet gating evidence minimums (operator attestation)
+- [ ] Operator can provide UTC-bounded proof of at least 24 contiguous hours at 5 nodes + 4 external miners.
+- [ ] Operator can produce at least 4 perturbation events with reconvergence timing notes and pass/fail outcomes.
+- [ ] Operator can produce per-drill 0/1/2 scores with rationale, waiver owner (if conditional), and re-test links.
+- [ ] Operator can document hard-stop NO-GO triggers without ambiguity in `dry-run/go-no-go.md`.
