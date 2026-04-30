@@ -165,7 +165,8 @@ mod tests {
     use axum::{extract::State, Json};
     use pulsedag_core::ChainState;
     use pulsedag_p2p::{
-        P2pHandle, P2pStatus, PeerRecoveryStatus, P2P_MODE_LIBP2P_REAL, P2P_MODE_MEMORY_SIMULATED,
+        P2pHandle, P2pStatus, PeerRecoveryStatus, P2P_MODE_LIBP2P_DEV_LOOPBACK_SKELETON,
+        P2P_MODE_LIBP2P_REAL, P2P_MODE_MEMORY_SIMULATED,
     };
     use pulsedag_storage::Storage;
     use std::{
@@ -388,25 +389,28 @@ mod tests {
 
     #[tokio::test]
     async fn topology_mode_distinctions_remain_truthful() {
-        let mut real_status = base_status(P2P_MODE_LIBP2P_REAL);
-        real_status.peer_recovery = vec![peer("r", true, 0, 100, 0, 0, None, vec![])];
-        let Json(real_resp) = get_topology(State(mk_state(real_status))).await;
-        let real_data = real_resp.data.unwrap();
-        assert!(real_data.connected_peers_are_real_network);
-        assert_eq!(
-            real_data.connected_peers_semantics,
-            "real-network-connected-peers"
-        );
-
-        let mut dev_status = base_status(P2P_MODE_MEMORY_SIMULATED);
-        dev_status.peer_recovery = vec![peer("d", true, 0, 100, 0, 0, None, vec![])];
-        let Json(dev_resp) = get_topology(State(mk_state(dev_status))).await;
-        let dev_data = dev_resp.data.unwrap();
-        assert!(!dev_data.connected_peers_are_real_network);
-        assert_eq!(
-            dev_data.connected_peers_semantics,
-            "simulated-or-internal-peer-observations"
-        );
+        for (mode, expect_real, expect_semantics) in [
+            (
+                P2P_MODE_MEMORY_SIMULATED,
+                false,
+                "simulated-or-internal-peer-observations",
+            ),
+            (
+                P2P_MODE_LIBP2P_DEV_LOOPBACK_SKELETON,
+                false,
+                "simulated-or-internal-peer-observations",
+            ),
+            (P2P_MODE_LIBP2P_REAL, true, "real-network-connected-peers"),
+        ] {
+            let mut status = base_status(mode);
+            status.peer_recovery = vec![peer("p", true, 0, 100, 0, 0, None, vec![])];
+            let Json(resp) = get_topology(State(mk_state(status))).await;
+            let data = resp.data.expect("topology data");
+            assert_eq!(data.mode.as_deref(), Some(mode));
+            assert_eq!(data.runtime_mode_detail.as_deref(), Some("detail"));
+            assert_eq!(data.connected_peers_are_real_network, expect_real);
+            assert_eq!(data.connected_peers_semantics, expect_semantics);
+        }
     }
 
     #[tokio::test]
