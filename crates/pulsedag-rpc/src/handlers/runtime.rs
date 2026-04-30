@@ -16,8 +16,9 @@ use serde::{Deserialize, Serialize};
 use crate::api::{ApiResponse, RpcStateLike};
 use pulsedag_core::{
     combined_pressure_tier, mempool_pressure_bps, pressure_tier_from_bps, SyncPhase,
-    SyncProgressCounters, MEMPOOL_PRESSURE_HIGH_BPS, MEMPOOL_PRESSURE_SATURATED_BPS,
+    SyncProgressCounters,
 };
+use pulsedag_core::mempool::{MEMPOOL_PRESSURE_HIGH_BPS, MEMPOOL_PRESSURE_SATURATED_BPS};
 use pulsedag_p2p::mode_connected_peers_are_real_network;
 
 #[derive(Debug, serde::Serialize)]
@@ -328,6 +329,13 @@ fn sync_catchup_view(runtime: &crate::api::NodeRuntimeStats, now_unix: u64) -> S
             <= runtime.sync_pipeline.counters.blocks_acquired
         && runtime.sync_pipeline.counters.blocks_acquired
             <= runtime.sync_pipeline.counters.blocks_requested;
+    let stalled = runtime.sync_pipeline.phase != SyncPhase::Idle
+        && lag_blocks > 0
+        && runtime
+            .sync_pipeline
+            .last_transition_unix
+            .map(|ts| now_unix.saturating_sub(ts) > 120)
+            .unwrap_or(false);
     let stage = if runtime.sync_pipeline.last_error.is_some() || !sync_counters_coherent {
         "degraded"
     } else if stalled {
@@ -344,13 +352,6 @@ fn sync_catchup_view(runtime: &crate::api::NodeRuntimeStats, now_unix: u64) -> S
         }
     }
     .to_string();
-    let stalled = runtime.sync_pipeline.phase != SyncPhase::Idle
-        && lag_blocks > 0
-        && runtime
-            .sync_pipeline
-            .last_transition_unix
-            .map(|ts| now_unix.saturating_sub(ts) > 120)
-            .unwrap_or(false);
     let recovery_reason = if let Some(err) = runtime.sync_pipeline.last_error.clone() {
         Some(format!("sync error: {err}"))
     } else if !sync_counters_coherent {
