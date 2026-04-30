@@ -361,7 +361,10 @@ mod tests {
     use crate::api::{NodeRuntimeStats, RpcStateLike};
     use axum::{extract::State, Json};
     use pulsedag_core::ChainState;
-    use pulsedag_p2p::{P2pHandle, P2pStatus, PeerRecoveryStatus, P2P_MODE_MEMORY_SIMULATED};
+    use pulsedag_p2p::{
+        P2pHandle, P2pStatus, PeerRecoveryStatus, P2P_MODE_LIBP2P_DEV_LOOPBACK_SKELETON,
+        P2P_MODE_LIBP2P_REAL, P2P_MODE_MEMORY_SIMULATED,
+    };
     use pulsedag_storage::Storage;
     use std::{
         collections::HashMap,
@@ -568,5 +571,103 @@ mod tests {
         assert_eq!(data["peer_state_summary"]["recovering"], 1);
         assert_eq!(data["recovery_activity_summary"]["reconnect_attempts"], 12);
         assert!(data["recovery_activity_summary"]["last_recovery_unix"].is_number());
+    }
+
+    #[tokio::test]
+    async fn p2p_status_mode_semantics_guardrails_cover_simulated_dev_and_real_modes() {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        for (mode, expect_real, expect_semantics) in [
+            (
+                P2P_MODE_MEMORY_SIMULATED,
+                false,
+                "simulated-or-internal-peer-observations",
+            ),
+            (
+                P2P_MODE_LIBP2P_DEV_LOOPBACK_SKELETON,
+                false,
+                "simulated-or-internal-peer-observations",
+            ),
+            (P2P_MODE_LIBP2P_REAL, true, "real-network-connected-peers"),
+        ] {
+            let mut status = P2pStatus {
+                mode: mode.to_string(),
+                peer_id: "self".into(),
+                listening: vec!["memory://local".into()],
+                connected_peers: vec!["peer-a".into()],
+                topics: vec!["blocks".into()],
+                mdns: false,
+                kademlia: false,
+                broadcasted_messages: 0,
+                publish_attempts: 0,
+                seen_message_ids: 0,
+                queued_messages: 0,
+                queued_block_messages: 0,
+                queued_non_block_messages: 0,
+                queue_max_depth: 0,
+                dequeued_block_messages: 0,
+                dequeued_non_block_messages: 0,
+                queue_block_priority_picks: 0,
+                queue_priority_tx_lane_picks: 0,
+                queue_standard_tx_lane_picks: 0,
+                queue_non_block_fair_picks: 0,
+                queue_starvation_relief_picks: 0,
+                queue_backpressure_drops: 0,
+                inbound_messages: 0,
+                runtime_started: true,
+                runtime_mode_detail: "detail".into(),
+                swarm_events_seen: 0,
+                subscriptions_active: 0,
+                last_message_kind: None,
+                last_swarm_event: None,
+                per_topic_publishes: HashMap::new(),
+                inbound_decode_failed: 0,
+                inbound_chain_mismatch_dropped: 0,
+                inbound_duplicates_suppressed: 0,
+                tx_outbound_duplicates_suppressed: 0,
+                tx_outbound_first_seen_relayed: 0,
+                tx_outbound_recovery_relayed: 0,
+                tx_outbound_priority_relayed: 0,
+                tx_outbound_budget_suppressed: 0,
+                tx_outbound_recovery_budget_suppressed: 0,
+                block_outbound_duplicates_suppressed: 0,
+                block_outbound_first_seen_relayed: 0,
+                block_outbound_recovery_relayed: 0,
+                last_drop_reason: None,
+                peer_reconnect_attempts: 0,
+                peer_recovery_success_count: 0,
+                last_peer_recovery_unix: Some(now),
+                peer_cooldown_suppressed_count: 0,
+                peer_flap_suppressed_count: 0,
+                peers_under_cooldown: 0,
+                peers_under_flap_guard: 0,
+                peer_lifecycle_healthy: 0,
+                peer_lifecycle_watch: 0,
+                peer_lifecycle_degraded: 0,
+                peer_lifecycle_cooldown: 0,
+                peer_lifecycle_recovering: 0,
+                degraded_mode: "unknown".into(),
+                connection_shaping_active: false,
+                peer_recovery: vec![],
+                sync_candidates: vec![],
+                selected_sync_peer: None,
+                connection_slot_budget: 0,
+                connected_slots_in_use: 0,
+                available_connection_slots: 0,
+                sync_selection_sticky_until_unix: None,
+                topology_bucket_count: 8,
+                topology_distinct_buckets: 0,
+                topology_dominant_bucket_share_bps: 0,
+                topology_diversity_score_bps: 0,
+            };
+            let Json(resp) = get_p2p_status(State(mk_state(status.clone()))).await;
+            let data = resp.data.expect("p2p status data");
+            assert_eq!(data["mode"], mode);
+            assert_eq!(data["runtime_mode_detail"], status.runtime_mode_detail);
+            assert_eq!(data["connected_peers_are_real_network"], expect_real);
+            assert_eq!(data["connected_peers_semantics"], expect_semantics);
+        }
     }
 }
