@@ -3,7 +3,7 @@ use pulsedag_api::ApiResponse;
 use pulsedag_core::types::{Block, BlockHeader};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use std::time::Instant;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tokio::time::{sleep, Duration};
 
 #[derive(Debug, Serialize)]
@@ -43,6 +43,7 @@ struct Config {
     threads: usize,
     loop_mode: bool,
     sleep_ms: u64,
+    refresh_before_expiry_ms: u64,
 }
 
 struct MiningResult {
@@ -80,6 +81,7 @@ fn parse_args() -> Result<Config> {
         .unwrap_or(1);
     let mut loop_mode = false;
     let mut sleep_ms = 1500u64;
+    let mut refresh_before_expiry_ms = 1000u64;
 
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -116,13 +118,20 @@ fn parse_args() -> Result<Config> {
                     .parse()
                     .context("invalid --sleep-ms")?
             }
+            "--refresh-before-expiry-ms" => {
+                refresh_before_expiry_ms = args
+                    .next()
+                    .ok_or_else(|| anyhow!("missing value for --refresh-before-expiry-ms"))?
+                    .parse()
+                    .context("invalid --refresh-before-expiry-ms")?
+            }
             _ => {}
         }
     }
 
     if miner_address.trim().is_empty() {
         return Err(anyhow!(
-            "usage: pulsedag-miner --miner-address <address> [--node http://127.0.0.1:8080] [--max-tries 50000] [--threads N] [--loop] [--sleep-ms 1500]"
+            "usage: pulsedag-miner --miner-address <address> [--node http://127.0.0.1:8080] [--max-tries 50000] [--threads N] [--loop] [--sleep-ms 1500] [--refresh-before-expiry-ms 1000]"
         ));
     }
 
@@ -137,7 +146,34 @@ fn parse_args() -> Result<Config> {
         threads,
         loop_mode,
         sleep_ms,
+        refresh_before_expiry_ms,
     })
+}
+
+fn should_skip_stale_submit(
+    now_unix: u64,
+    expires_at_unix: u64,
+    refresh_before_expiry_ms: u64,
+) -> Option<String> {
+    let now_ms = now_unix.saturating_mul(1000);
+    let expiry_ms = expires_at_unix.saturating_mul(1000);
+
+    if now_ms >= expiry_ms {
+        return Some(format!(
+            "template already expired (now_unix={} expires_at_unix={})",
+            now_unix, expires_at_unix
+        ));
+    }
+
+    let remaining_ms = expiry_ms.saturating_sub(now_ms);
+    if remaining_ms <= refresh_before_expiry_ms {
+        return Some(format!(
+            "template too close to expiry (remaining_ms={} threshold_ms={} now_unix={} expires_at_unix={})",
+            remaining_ms, refresh_before_expiry_ms, now_unix, expires_at_unix
+        ));
+    }
+
+    None
 }
 
 async fn mine_once(client: &Client, cfg: &Config) -> Result<()> {
@@ -182,6 +218,20 @@ async fn mine_once(client: &Client, cfg: &Config) -> Result<()> {
         "metrics: elapsed_ms={} hashes_per_sec={:.2} threads={} tries={}",
         mining.elapsed_ms, mining.hashes_per_sec, cfg.threads, mining.tries
     );
+
+    let now_unix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .context("system clock is before UNIX_EPOCH")?
+        .as_secs();
+    if let Some(reason) = should_skip_stale_submit(
+        now_unix,
+        template.expires_at_unix,
+        cfg.refresh_before_expiry_ms,
+    ) {
+        println!("stale-template safety: skip submit: {}", reason);
+        println!("action: refresh template and retry mining on latest work");
+        return Ok(());
+    }
 
     let submit_resp = client
         .post(&submit_url)
@@ -243,4 +293,28 @@ async fn mine_header_multithread(
         elapsed_ms: elapsed.as_millis(),
         hashes_per_sec,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_skip_stale_submit;
+
+    #[test]
+    fn skips_when_template_already_expired() {
+        let reason = should_skip_stale_submit(100, 99, 1000).expect("must skip expired template");
+        assert!(reason.contains("already expired"));
+    }
+
+    #[test]
+    fn skips_when_template_within_refresh_threshold() {
+        let reason = should_skip_stale_submit(100, 101, 1500)
+            .expect("must skip template too close to expiry");
+        assert!(reason.contains("too close to expiry"));
+    }
+
+    #[test]
+    fn allows_submit_when_template_is_fresh_enough() {
+        let reason = should_skip_stale_submit(100, 105, 1000);
+        assert!(reason.is_none());
+    }
 }

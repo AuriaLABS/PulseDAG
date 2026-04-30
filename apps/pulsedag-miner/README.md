@@ -27,7 +27,8 @@ cargo run -p pulsedag-miner -- --miner-address TU_DIRECCION
 Modo bucle:
 
 ```bash
-cargo run -p pulsedag-miner -- --miner-address TU_DIRECCION --loop --sleep-ms 1500
+cargo run -p pulsedag-miner -- --miner-address TU_DIRECCION --loop --sleep-ms 1500 \
+  --refresh-before-expiry-ms 1000
 ```
 
 Con nodo explícito:
@@ -39,7 +40,7 @@ cargo run -p pulsedag-miner -- --node http://127.0.0.1:8080 --miner-address TU_D
 Con multi-thread explícito:
 
 ```bash
-cargo run -p pulsedag-miner -- --node http://127.0.0.1:8080 --miner-address TU_DIRECCION --threads 4 --max-tries 500000 --loop --sleep-ms 1000
+cargo run -p pulsedag-miner -- --node http://127.0.0.1:8080 --miner-address TU_DIRECCION --threads 4 --max-tries 500000 --loop --sleep-ms 1000 --refresh-before-expiry-ms 1000
 ```
 
 ## Uso como binario standalone de release
@@ -55,7 +56,8 @@ tar -xzf pulsedag-miner-v2.2.5-x86_64-unknown-linux-gnu.tar.gz
   --threads 4 \
   --max-tries 50000 \
   --loop \
-  --sleep-ms 1500
+  --sleep-ms 1500 \
+  --refresh-before-expiry-ms 1000
 ```
 
 Notas de operador:
@@ -71,6 +73,7 @@ Notas de operador:
 - `--loop`
 - `--sleep-ms`
 - `--threads`
+- `--refresh-before-expiry-ms`
 
 ## Fuera de alcance
 
