@@ -39,9 +39,10 @@ pub use pow::{
     dev_recommended_difficulty, dev_recommended_difficulty_for_chain, dev_retarget_multiplier_bps,
     dev_surrogate_pow_hash, dev_target_block_interval_secs, dev_target_u64, mine_header,
     pow_accepts, pow_evaluate, pow_hash_hex, pow_hash_score_u64, pow_preimage_bytes,
-    pow_preimage_string, pow_target_u64, selected_pow_algorithm, selected_pow_name,
-    CanonicalPowEngine, DevDifficultyPolicy, DevDifficultySnapshot, PowAlgorithm, PowEngine,
-    PowEvaluation, PowHeaderPreimage, POW_HEADER_PREIMAGE_VERSION,
+    pow_preimage_string, pow_target_u64, pow_validation_result, selected_pow_algorithm,
+    selected_pow_name, validate_pow_header, validate_pow_preimage_encoding, CanonicalPowEngine,
+    DevDifficultyPolicy, DevDifficultySnapshot, PowAlgorithm, PowEngine, PowEvaluation,
+    PowHeaderPreimage, PowRejectReason, PowValidationResult, POW_HEADER_PREIMAGE_VERSION,
 };
 
 pub use mempool::{

@@ -4,8 +4,8 @@ use super::mining_template::{
 use crate::api::{ApiResponse, RpcStateLike, SubmitMinedBlockRequest};
 use axum::{extract::State, Json};
 use pulsedag_core::{
-    accept_block, adopt_ready_orphans, dev_hash_score_u64, dev_pow_accepts, dev_target_u64,
-    errors::PulseError, preferred_tip_hash, AcceptSource,
+    accept_block, adopt_ready_orphans, errors::PulseError, pow_validation_result,
+    preferred_tip_hash, AcceptSource,
 };
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -15,12 +15,14 @@ pub struct MiningSubmitData {
     pub block_hash: String,
     pub height: u64,
     pub pow_algorithm: String,
+    pub pow_accepted: bool,
     pub pow_accepted_dev: bool,
     pub target_u64: u64,
     pub stale_template: bool,
     pub selected_tip: Option<String>,
     pub adopted_orphans: usize,
     pub pow_hash_score_u64: u64,
+    pub pow_rejection_code: Option<String>,
     pub pow_rejection_reason: Option<String>,
 }
 
@@ -206,13 +208,14 @@ pub async fn post_mining_submit<S: RpcStateLike>(
 ) -> Json<ApiResponse<MiningSubmitData>> {
     let chain_handle = state.chain();
     let mut chain = chain_handle.write().await;
-    let pow_accepted_dev = dev_pow_accepts(&req.block.header);
-    let target_u64 = dev_target_u64(req.block.header.difficulty as u64);
-    let pow_hash_score_u64 = dev_hash_score_u64(&req.block.header);
+    let pow = pow_validation_result(&req.block.header);
+    let pow_accepted_dev = pow.accepted;
+    let target_u64 = pow.target_u64;
+    let pow_hash_score_u64 = pow.score_u64.unwrap_or(0);
     let block_hash = req.block.hash.clone();
     let height = req.block.header.height;
 
-    if !pow_accepted_dev {
+    if !pow.accepted {
         let runtime_handle = state.runtime();
         let mut runtime = runtime_handle.write().await;
         runtime.rejected_mined_blocks += 1;
@@ -221,8 +224,9 @@ pub async fn post_mining_submit<S: RpcStateLike>(
             &state,
             ExternalMiningRejectKind::InvalidPow,
             &format!(
-                "submitted block does not satisfy {} policy: score={} target={} difficulty={} height={} nonce={}",
+                "submitted block does not satisfy {} policy: reason_code={} score={} target={} difficulty={} height={} nonce={}",
                 pulsedag_core::selected_pow_name(),
+                pow.rejection_code.unwrap_or("score_above_target"),
                 pow_hash_score_u64,
                 target_u64,
                 req.block.header.difficulty,
@@ -234,8 +238,9 @@ pub async fn post_mining_submit<S: RpcStateLike>(
         return Json(ApiResponse::err(
             "INVALID_POW",
             format!(
-                "submitted block does not satisfy {} policy: score={} target={} difficulty={} height={} nonce={}",
+                "submitted block does not satisfy {} policy: reason_code={} score={} target={} difficulty={} height={} nonce={}",
                 pulsedag_core::selected_pow_name(),
+                pow.rejection_code.unwrap_or("score_above_target"),
                 pow_hash_score_u64,
                 target_u64,
                 req.block.header.difficulty,
@@ -537,13 +542,15 @@ pub async fn post_mining_submit<S: RpcStateLike>(
                 accepted: true,
                 block_hash,
                 height,
-                pow_algorithm: pulsedag_core::selected_pow_name().to_string(),
+                pow_algorithm: pow.algorithm.to_string(),
+                pow_accepted: pow.accepted,
                 pow_accepted_dev,
                 target_u64,
                 stale_template: false,
                 selected_tip: preferred_tip_hash(&chain),
                 adopted_orphans,
                 pow_hash_score_u64,
+                pow_rejection_code: pow.rejection_code.map(|v| v.to_string()),
                 pow_rejection_reason: None,
             }))
         }

@@ -104,6 +104,12 @@ impl<'a> PowHeaderPreimage<'a> {
     }
 
     pub fn to_bytes(&self) -> Vec<u8> {
+        self.to_bytes_checked()
+            .expect("validated PoW preimage encoding")
+    }
+
+    pub fn to_bytes_checked(&self) -> Result<Vec<u8>, PowRejectReason> {
+        validate_pow_preimage_encoding_view(self)?;
         let mut out = Vec::with_capacity(256);
         out.push(POW_HEADER_PREIMAGE_VERSION);
         out.extend_from_slice(&self.version.to_le_bytes());
@@ -121,7 +127,7 @@ impl<'a> PowHeaderPreimage<'a> {
         encode_len_prefixed_utf8(&mut out, self.state_root);
         out.extend_from_slice(&self.blue_score.to_le_bytes());
         out.extend_from_slice(&self.height.to_le_bytes());
-        out
+        Ok(out)
     }
 
     pub fn to_debug_string(&self) -> String {
@@ -148,6 +154,39 @@ pub struct PowEvaluation {
     pub score_u64: u64,
     pub target_u64: u64,
     pub accepted: bool,
+}
+
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub enum PowRejectReason {
+    ParentCountTooLarge,
+    ParentHashTooLong,
+    MerkleRootTooLong,
+    StateRootTooLong,
+    ScoreAboveTarget,
+}
+
+impl PowRejectReason {
+    pub fn code(self) -> &'static str {
+        match self {
+            Self::ParentCountTooLarge => "parent_count_too_large",
+            Self::ParentHashTooLong => "parent_hash_too_long",
+            Self::MerkleRootTooLong => "merkle_root_too_long",
+            Self::StateRootTooLong => "state_root_too_long",
+            Self::ScoreAboveTarget => "score_above_target",
+        }
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct PowValidationResult {
+    pub algorithm: &'static str,
+    pub accepted: bool,
+    pub hash_hex: Option<String>,
+    pub score_u64: Option<u64>,
+    pub target_u64: u64,
+    pub difficulty: u32,
+    pub rejection_code: Option<&'static str>,
+    pub rejection_reason: Option<PowRejectReason>,
 }
 
 pub trait PowEngine {
@@ -208,6 +247,70 @@ fn encode_len_prefixed_utf8(out: &mut Vec<u8>, value: &str) {
     out.extend_from_slice(value.as_bytes());
 }
 
+fn validate_pow_preimage_encoding_view(
+    header: &PowHeaderPreimage<'_>,
+) -> Result<(), PowRejectReason> {
+    if header.parents.len() > u16::MAX as usize {
+        return Err(PowRejectReason::ParentCountTooLarge);
+    }
+    if header.parents.iter().any(|p| p.len() > u16::MAX as usize) {
+        return Err(PowRejectReason::ParentHashTooLong);
+    }
+    if header.merkle_root.len() > u16::MAX as usize {
+        return Err(PowRejectReason::MerkleRootTooLong);
+    }
+    if header.state_root.len() > u16::MAX as usize {
+        return Err(PowRejectReason::StateRootTooLong);
+    }
+    Ok(())
+}
+
+pub fn validate_pow_preimage_encoding(header: &BlockHeader) -> Result<(), PowRejectReason> {
+    validate_pow_preimage_encoding_view(&PowHeaderPreimage::from_header(header))
+}
+
+pub fn validate_pow_header(header: &BlockHeader) -> Result<(), PowRejectReason> {
+    let result = pow_validation_result(header);
+    if result.accepted {
+        Ok(())
+    } else {
+        Err(result
+            .rejection_reason
+            .unwrap_or(PowRejectReason::ScoreAboveTarget))
+    }
+}
+
+pub fn pow_validation_result(header: &BlockHeader) -> PowValidationResult {
+    let target_u64 = pow_target_u64(header.difficulty as u64);
+    if let Err(reason) = validate_pow_preimage_encoding(header) {
+        return PowValidationResult {
+            algorithm: selected_pow_name(),
+            accepted: false,
+            hash_hex: None,
+            score_u64: None,
+            target_u64,
+            difficulty: header.difficulty,
+            rejection_code: Some(reason.code()),
+            rejection_reason: Some(reason),
+        };
+    }
+    let evaluation = pow_evaluate(header);
+    let rejection_reason = if evaluation.accepted {
+        None
+    } else {
+        Some(PowRejectReason::ScoreAboveTarget)
+    };
+    PowValidationResult {
+        algorithm: selected_pow_name(),
+        accepted: evaluation.accepted,
+        hash_hex: Some(evaluation.hash_hex),
+        score_u64: Some(evaluation.score_u64),
+        target_u64: evaluation.target_u64,
+        difficulty: header.difficulty,
+        rejection_code: rejection_reason.map(|r| r.code()),
+        rejection_reason,
+    }
+}
 /// Canonical PoW header preimage bytes used by both nodes and external miners.
 ///
 /// Field order and encoding are frozen for public testnet:
@@ -503,8 +606,8 @@ pub fn dev_difficulty_snapshot(state: &ChainState) -> DevDifficultySnapshot {
     } else {
         "damped_decrease".to_string()
     };
-    let retarget_was_clamped = retarget_multiplier_bps == retarget_min_bps
-        || retarget_multiplier_bps == retarget_max_bps;
+    let retarget_was_clamped =
+        retarget_multiplier_bps == retarget_min_bps || retarget_multiplier_bps == retarget_max_bps;
 
     DevDifficultySnapshot {
         algorithm: selected_pow_name(),
@@ -741,7 +844,10 @@ mod tests {
         let chain = build_chain_with_intervals(&vec![10; 20], 200);
         let first = dev_difficulty_snapshot(&chain);
         let second = dev_difficulty_snapshot(&chain);
-        assert_eq!(first.retarget_multiplier_bps, second.retarget_multiplier_bps);
+        assert_eq!(
+            first.retarget_multiplier_bps,
+            second.retarget_multiplier_bps
+        );
         assert_eq!(first.suggested_difficulty, second.suggested_difficulty);
         assert!(first.retarget_multiplier_bps >= first.retarget_min_bps);
         assert!(first.retarget_multiplier_bps <= first.retarget_max_bps);

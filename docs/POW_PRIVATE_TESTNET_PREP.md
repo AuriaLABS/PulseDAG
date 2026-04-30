@@ -75,3 +75,6 @@ Current vectors demonstrate:
 - PoW implementation and vectors are already checked in and exercised by workspace tests.
 - Private testnet nodes/miners should use these exact semantics with no local divergences.
 - Any future changes to preimage schema or scoring semantics must be versioned and treated as consensus-impacting.
+
+
+- [x] canonical PoW validation/evidence complete for Private Testnet V1
