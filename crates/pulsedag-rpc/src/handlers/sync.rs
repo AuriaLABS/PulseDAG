@@ -106,8 +106,6 @@ pub async fn get_sync_status<S: RpcStateLike>(
             .unwrap_or(false);
     let catchup_stage = if runtime.sync_pipeline.last_error.is_some() || !counters_coherent {
         "degraded"
-    } else if stalled {
-        "stalled"
     } else {
         match runtime.sync_pipeline.phase {
             pulsedag_core::SyncPhase::Idle if lag_blocks == 0 => "steady",
