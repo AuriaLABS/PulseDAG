@@ -1,6 +1,6 @@
 use anyhow::{anyhow, Context, Result};
+use pulsedag_api::ApiResponse;
 use pulsedag_core::types::{Block, BlockHeader};
-use pulsedag_rpc::api::ApiResponse;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
