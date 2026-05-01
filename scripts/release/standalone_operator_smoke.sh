@@ -84,21 +84,25 @@ echo "== Standalone packaging smoke checks =="
 
 echo "== Launch local node =="
 NODE_LOG="$(mktemp -t pulsedag-node-smoke.XXXXXX.log)"
+NODE_DATA_ROOT="$(mktemp -d -t pulsedag-node-data.XXXXXX)"
+NODE_ROCKSDB_PATH="${NODE_DATA_ROOT}/rocksdb"
 cleanup() {
   if [[ -n "${NODE_PID:-}" ]] && kill -0 "${NODE_PID}" 2>/dev/null; then
     kill "${NODE_PID}" || true
     wait "${NODE_PID}" 2>/dev/null || true
   fi
+  rm -rf "${NODE_DATA_ROOT}"
   echo "Node log: ${NODE_LOG}"
 }
 trap cleanup EXIT
 
 (
   cd "${ROOT_DIR}"
-  cargo run --quiet -p pulsedagd
+  PULSEDAG_ROCKSDB_PATH="${NODE_ROCKSDB_PATH}" cargo run --quiet -p pulsedagd
 ) >"${NODE_LOG}" 2>&1 &
 NODE_PID=$!
 
+echo "Using temporary RocksDB path: ${NODE_ROCKSDB_PATH}"
 echo "Waiting for ${NODE_URL}/status (timeout ${WAIT_SECONDS}s)..."
 for _ in $(seq 1 "${WAIT_SECONDS}"); do
   if curl -fsS "${NODE_URL}/status" >/dev/null 2>&1; then
