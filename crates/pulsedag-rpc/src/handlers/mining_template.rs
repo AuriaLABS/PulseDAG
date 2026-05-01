@@ -380,7 +380,7 @@ pub async fn post_mining_template<S: RpcStateLike>(
         block,
         target_u64,
         compact_target,
-        network_id: chain.network_id.clone(),
+        network_id: chain.chain_id.clone(),
         nonce_range: "0..=18446744073709551615".to_string(),
         timestamp_min_unix: created_at_unix.saturating_sub(1),
         timestamp_max_unix: expires_at_unix.saturating_add(TEMPLATE_FRESHNESS_GRACE_SECS),

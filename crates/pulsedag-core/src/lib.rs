@@ -15,7 +15,9 @@ pub mod tx;
 pub mod types;
 pub mod validation;
 
-pub use accept::{accept_block, accept_transaction, AcceptSource};
+pub use accept::{
+    accept_block, accept_block_with_result, accept_transaction, AcceptSource, BlockAcceptanceResult,
+};
 pub use errors::PulseError;
 pub use state::{
     ChainState, ContractRuntimeConfig, ContractRuntimeState, DagState, Mempool, UtxoState,
