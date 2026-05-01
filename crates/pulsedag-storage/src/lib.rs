@@ -782,14 +782,12 @@ impl Storage {
     ) -> Result<ChainState, PulseError> {
         let (snapshot, blocks) = self.validate_restore_inputs(expected_chain_id)?;
         let state = rebuild_state_from_snapshot_and_blocks(snapshot, blocks)?;
-        let captured_at_unix = self
-            .snapshot_captured_at_unix()?
-            .unwrap_or_else(|| {
-                SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .map(|d| d.as_secs())
-                    .unwrap_or(0)
-            });
+        let captured_at_unix = self.snapshot_captured_at_unix()?.unwrap_or_else(|| {
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0)
+        });
         self.persist_chain_state_with_captured_at(&state, captured_at_unix)?;
         Ok(state)
     }
@@ -1155,9 +1153,7 @@ impl Storage {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        SnapshotExportBundle, Storage, CHAIN_STATE_KEY, SNAPSHOT_CAPTURED_AT_UNIX_KEY,
-    };
+    use super::{SnapshotExportBundle, Storage, CHAIN_STATE_KEY, SNAPSHOT_CAPTURED_AT_UNIX_KEY};
     use proptest::prelude::*;
     use pulsedag_core::{
         accept::{accept_block, AcceptSource},
