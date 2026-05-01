@@ -14,6 +14,7 @@ use pulsedag_core::{
     build_candidate_block, build_coinbase_transaction, dev_difficulty_snapshot, pow_preimage_bytes,
     preferred_tip_hash, state::ChainState,
 };
+use tracing::info;
 
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
 pub struct StoredMiningTemplate {
@@ -339,7 +340,10 @@ pub async fn post_mining_template<S: RpcStateLike>(
             );
         }
         runtime.external_mining_last_template_id = Some(template_id.clone());
+        runtime.pulsedag_mining_templates_total =
+            runtime.pulsedag_mining_templates_total.saturating_add(1);
     }
+    info!(template_id = %template_id, height, selected_tip = ?selected_tip, tx_count = template_txids.len(), "mining template created");
     let _ = state.storage().append_runtime_event(
         "info",
         "external_mining_template_emitted",
