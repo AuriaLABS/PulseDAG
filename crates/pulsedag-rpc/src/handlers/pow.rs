@@ -12,12 +12,12 @@ pub struct PowInfoData {
 pub async fn get_pow_info() -> Json<ApiResponse<PowInfoData>> {
     Json(ApiResponse::ok(PowInfoData {
         algorithm: pulsedag_core::selected_pow_name().to_string(),
-        status: "scaffold".to_string(),
+        status: "pre-private-testnet-hardening".to_string(),
         target_model: "hash <= target".to_string(),
         notes: vec![
-            "PulseDAG now declares kHeavyHash as the intended PoW algorithm".to_string(),
-            "This release adds the architectural scaffold, not a fully compatible Kaspa consensus implementation".to_string(),
-            "Header preimage preparation is separated to ease future mining/validation integration".to_string(),
+            "Intended algorithm remains kHeavyHash, with deterministic PoW validation and canonical preimage foundations in v2.2.8.".to_string(),
+            "Implementation status: deterministic-devnet-engine suitable for dev/private-testnet rehearsal, not production readiness.".to_string(),
+            "Final algorithm compatibility is not yet declared production/final and remains part of v2.3.0 closure.".to_string(),
         ],
     }))
 }

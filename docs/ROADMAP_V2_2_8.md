@@ -188,3 +188,24 @@ v2.3.0 still owns:
 - Each workstream is either completed or moved with explicit rationale to v2.3.0 backlog.
 - Smoke and observability checks are run at least once on multi-node local lab.
 - Closure notes clearly state: **v2.2.8 hardens preconditions; v2.3.0 is official private testnet milestone**.
+
+
+## Closure status update
+
+### Completed or mostly completed in v2.2.8
+- PoW hardening and canonical preimage foundations.
+- Unified acceptance-path hardening.
+- Mining RPC hardening for external miner flows.
+- P2P inventory announcement and deduplication baseline.
+- Orphan and missing-parent handling baseline.
+- Private/local/operator profile usability.
+- Local multi-node lab process availability.
+- Observability uplift for release-closure diagnostics.
+
+### Deferred to v2.3.0
+- Final PoW production-compatibility closure (if still incomplete).
+- Real multi-machine private testnet.
+- Longer burn-in and failure-mode recovery depth.
+- Full P2P recovery robustness under extended failures.
+- Expanded operator dashboards/runbooks where still incomplete.
+- Production-grade bootstrap/discovery confidence.

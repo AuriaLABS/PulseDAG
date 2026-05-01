@@ -1,0 +1,21 @@
+# PulseDAG v2.2.8 Closing Checklist
+
+- [ ] `VERSION` is `v2.2.8`.
+- [ ] `Cargo.toml` workspace version is `2.2.8`.
+- [ ] `/status` reports `v2.2.8`.
+- [ ] `/release` reports `v2.2.8`.
+- [ ] `/pow` no longer reports `scaffold` unless intentionally true.
+- [ ] `cargo fmt --check` passes.
+- [ ] `cargo test --workspace` passes.
+- [ ] `cargo build --workspace` passes.
+- [ ] Optional (if clean): `cargo clippy --workspace --all-targets -- -D warnings`.
+- [ ] Single-node smoke test completed.
+- [ ] Mining template request works.
+- [ ] Mining submit accepted for valid work.
+- [ ] Mining submit rejected for invalid work.
+- [ ] Basic P2P/private profile startup validated.
+- [ ] Local multi-node lab reviewed.
+- [ ] No smart contracts added.
+- [ ] No pool logic added inside miner.
+- [ ] Miner remains external.
+- [ ] v2.3.0 handoff remains explicit.

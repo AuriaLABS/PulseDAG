@@ -249,15 +249,26 @@ impl Config {
     where
         I: IntoIterator<Item = String>,
     {
+        let args: Vec<String> = args.into_iter().collect();
+
+        let mut iter = args.iter();
+        while let Some(arg) = iter.next() {
+            if arg == "--network" {
+                let value = iter
+                    .next()
+                    .ok_or_else(|| anyhow::anyhow!("--network requires a value"))?;
+                let profile = ConfigProfile::from_env_value(value)?;
+                *self = Config::defaults_for_profile(profile);
+            }
+        }
+
         let mut iter = args.into_iter();
         while let Some(arg) = iter.next() {
             match arg.as_str() {
                 "--network" => {
-                    let value = iter
+                    let _ = iter
                         .next()
                         .ok_or_else(|| anyhow::anyhow!("--network requires a value"))?;
-                    let profile = ConfigProfile::from_env_value(&value)?;
-                    *self = Config::defaults_for_profile(profile);
                 }
                 "--p2p-listen" => {
                     self.p2p_listen = iter
@@ -422,6 +433,62 @@ mod tests {
         assert_eq!(cfg.p2p_connection_slot_budget, 5);
         assert_eq!(cfg.chain_id, "custom-chain");
         assert!(!cfg.auto_prune_enabled);
+    }
+
+    #[test]
+    fn cli_network_then_rpc_override_is_preserved() {
+        let mut cfg = Config::defaults_for_profile(ConfigProfile::Dev);
+        cfg.apply_cli_args(vec![
+            "--network".to_string(),
+            "private".to_string(),
+            "--rpc-listen".to_string(),
+            "127.0.0.1:18080".to_string(),
+        ])
+        .expect("apply cli args");
+        assert_eq!(cfg.network_profile, "private");
+        assert_eq!(cfg.rpc_bind, "127.0.0.1:18080");
+    }
+
+    #[test]
+    fn cli_rpc_then_network_override_is_preserved() {
+        let mut cfg = Config::defaults_for_profile(ConfigProfile::Dev);
+        cfg.apply_cli_args(vec![
+            "--rpc-listen".to_string(),
+            "127.0.0.1:18080".to_string(),
+            "--network".to_string(),
+            "private".to_string(),
+        ])
+        .expect("apply cli args");
+        assert_eq!(cfg.network_profile, "private");
+        assert_eq!(cfg.rpc_bind, "127.0.0.1:18080");
+    }
+
+    #[test]
+    fn cli_private_profile_keeps_p2p_and_bootnode_overrides() {
+        let mut cfg = Config::defaults_for_profile(ConfigProfile::Dev);
+        cfg.apply_cli_args(vec![
+            "--network".to_string(),
+            "private".to_string(),
+            "--p2p-listen".to_string(),
+            "0.0.0.0:18181".to_string(),
+            "--bootnode".to_string(),
+            "/ip4/127.0.0.1/tcp/19000".to_string(),
+        ])
+        .expect("apply cli args");
+        assert_eq!(cfg.p2p_listen, "0.0.0.0:18181");
+        assert_eq!(
+            cfg.p2p_bootstrap,
+            vec!["/ip4/127.0.0.1/tcp/19000".to_string()]
+        );
+    }
+
+    #[test]
+    fn cli_profile_defaults_apply_without_overrides() {
+        let mut cfg = Config::defaults_for_profile(ConfigProfile::Dev);
+        cfg.apply_cli_args(vec!["--network".to_string(), "private".to_string()])
+            .expect("apply cli args");
+        assert_eq!(cfg.rpc_bind, "0.0.0.0:8280");
+        assert_eq!(cfg.p2p_listen, "/ip4/0.0.0.0/tcp/33800");
     }
 
     #[test]
