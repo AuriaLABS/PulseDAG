@@ -14,11 +14,11 @@ use axum::{
 use serde::{Deserialize, Serialize};
 
 use crate::api::{ApiResponse, RpcStateLike};
+use pulsedag_core::mempool::{MEMPOOL_PRESSURE_HIGH_BPS, MEMPOOL_PRESSURE_SATURATED_BPS};
 use pulsedag_core::{
     combined_pressure_tier, mempool_pressure_bps, pressure_tier_from_bps, SyncPhase,
     SyncProgressCounters,
 };
-use pulsedag_core::mempool::{MEMPOOL_PRESSURE_HIGH_BPS, MEMPOOL_PRESSURE_SATURATED_BPS};
 use pulsedag_p2p::mode_connected_peers_are_real_network;
 
 #[derive(Debug, serde::Serialize)]

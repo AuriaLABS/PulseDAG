@@ -2,7 +2,7 @@
 
 ## Positioning in the release sequence
 
-- **v2.2.7 is preparation only.** It is not the private testnet release.
+- **v2.2.7 is the foundation-closing predecessor.** It finalizes PoW/mining/P2P groundwork and prepares repository boundaries for real private-testnet execution.
 - **v2.3.0 is the first real private testnet readiness release.**
 - **Smart contracts remain out of scope** for this phase.
 - **No public testnet claim yet.** v2.3.0 is explicitly private testnet only.
@@ -31,13 +31,14 @@ v2.3.0 defines the minimum complete operational baseline required to run a real 
 - Ensure all consensus-critical PoW checks are enforced at block acceptance.
 - Produce operator-verifiable evidence artifacts/logs demonstrating validation decisions.
 
-### 4) Core network data propagation
+### 4) Multi-node PoW operation and network data propagation
 
+- Run **active PoW across multiple nodes** through the external miner + node RPC path.
 - Implement and validate **block propagation** across multi-node topology.
 - Implement and validate **transaction propagation** across multi-node topology.
 - Define measurable propagation expectations and failure diagnostics.
 
-### 5) Node convergence and recovery
+### 5) Node convergence, sync, and recovery
 
 - Implement and validate **sync/catch-up between nodes** (including lagging/offline node recovery).
 - Ensure deterministic catch-up behavior after temporary partition or delayed startup.
@@ -56,7 +57,7 @@ v2.3.0 defines the minimum complete operational baseline required to run a real 
 ### 8) Testnet operations enablement
 
 - Provide **private testnet scripts** for bootstrap, node lifecycle, and standard drills.
-- Provide **metrics and operator runbooks** for health checks, troubleshooting, and incident response.
+- Provide **metrics, dashboards, and operator runbooks** for health checks, troubleshooting, and incident response.
 
 ## Exit criteria for v2.3.0
 
