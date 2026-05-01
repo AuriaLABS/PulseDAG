@@ -2,6 +2,7 @@ use anyhow::{bail, Result};
 
 #[derive(Debug, Clone)]
 pub struct Config {
+    pub network_profile: String,
     pub chain_id: String,
     pub rpc_bind: String,
     pub p2p_enabled: bool,
@@ -28,6 +29,8 @@ pub struct Config {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ConfigProfile {
     Dev,
+    Local,
+    Private,
     Testnet,
     Operator,
 }
@@ -36,10 +39,12 @@ impl ConfigProfile {
     fn from_env_value(raw: &str) -> Result<Self> {
         match raw.trim().to_ascii_lowercase().as_str() {
             "dev" | "development" => Ok(Self::Dev),
+            "local" => Ok(Self::Local),
+            "private" | "private-testnet" => Ok(Self::Private),
             "testnet" => Ok(Self::Testnet),
             "operator" | "staging" => Ok(Self::Operator),
             other => bail!(
-                "invalid PULSEDAG_CONFIG_PROFILE value '{other}'. Supported values: dev, testnet, operator (alias: staging)"
+                "invalid PULSEDAG_CONFIG_PROFILE value '{other}'. Supported values: dev, local, private, testnet, operator (alias: staging)"
             ),
         }
     }
@@ -60,6 +65,7 @@ impl Config {
     fn defaults_for_profile(profile: ConfigProfile) -> Self {
         match profile {
             ConfigProfile::Dev => Self {
+                network_profile: "dev".into(),
                 chain_id: "pulsedag-devnet".into(),
                 rpc_bind: "127.0.0.1:8080".into(),
                 p2p_enabled: false,
@@ -82,7 +88,56 @@ impl Config {
                 prune_keep_recent_blocks: 300,
                 prune_require_snapshot: true,
             },
+            ConfigProfile::Local => Self {
+                network_profile: "local".into(),
+                chain_id: "pulsedag-localnet".into(),
+                rpc_bind: "127.0.0.1:8180".into(),
+                p2p_enabled: true,
+                p2p_mode: "libp2p-dev".into(),
+                p2p_listen: "/ip4/127.0.0.1/tcp/31333".into(),
+                p2p_bootstrap: Vec::new(),
+                p2p_mdns: true,
+                p2p_kademlia: true,
+                p2p_connection_slot_budget: 12,
+                rocksdb_path: "./data/local/rocksdb".into(),
+                simulated_peers: Vec::new(),
+                auto_rebuild_on_start: true,
+                persist_snapshot_on_start: true,
+                target_block_interval_secs: 30,
+                difficulty_window: 10,
+                max_future_drift_secs: 90,
+                snapshot_auto_every_blocks: 25,
+                auto_prune_enabled: false,
+                auto_prune_every_blocks: 100,
+                prune_keep_recent_blocks: 300,
+                prune_require_snapshot: true,
+            },
+            ConfigProfile::Private => Self {
+                network_profile: "private".into(),
+                chain_id: "pulsedag-private-v2-2-8-pre".into(),
+                rpc_bind: "0.0.0.0:8280".into(),
+                p2p_enabled: true,
+                p2p_mode: "libp2p-real".into(),
+                p2p_listen: "/ip4/0.0.0.0/tcp/32333".into(),
+                p2p_bootstrap: Vec::new(),
+                p2p_mdns: false,
+                p2p_kademlia: true,
+                p2p_connection_slot_budget: 32,
+                rocksdb_path: "./data/private/rocksdb".into(),
+                simulated_peers: Vec::new(),
+                auto_rebuild_on_start: true,
+                persist_snapshot_on_start: true,
+                target_block_interval_secs: 45,
+                difficulty_window: 20,
+                max_future_drift_secs: 120,
+                snapshot_auto_every_blocks: 25,
+                auto_prune_enabled: true,
+                auto_prune_every_blocks: 100,
+                prune_keep_recent_blocks: 800,
+                prune_require_snapshot: true,
+            },
             ConfigProfile::Testnet => Self {
+                network_profile: "testnet".into(),
                 chain_id: "pulsedag-testnet".into(),
                 rpc_bind: "0.0.0.0:8080".into(),
                 p2p_enabled: true,
@@ -106,6 +161,7 @@ impl Config {
                 prune_require_snapshot: true,
             },
             ConfigProfile::Operator => Self {
+                network_profile: "operator".into(),
                 chain_id: "pulsedag-testnet".into(),
                 rpc_bind: "0.0.0.0:8080".into(),
                 p2p_enabled: true,
@@ -132,6 +188,7 @@ impl Config {
     }
 
     fn apply_env_overrides(&mut self) {
+        self.network_profile = read_env_string("PULSEDAG_NETWORK_PROFILE", &self.network_profile);
         self.chain_id = read_env_string("PULSEDAG_CHAIN_ID", &self.chain_id);
         self.rpc_bind = read_env_string("PULSEDAG_RPC_BIND", &self.rpc_bind);
         self.p2p_enabled = read_env_bool("PULSEDAG_P2P_ENABLED", self.p2p_enabled);
@@ -184,6 +241,47 @@ impl Config {
             "PULSEDAG_PRUNE_REQUIRE_SNAPSHOT",
             self.prune_require_snapshot,
         );
+    }
+}
+
+impl Config {
+    pub fn apply_cli_args<I>(&mut self, args: I) -> Result<()>
+    where
+        I: IntoIterator<Item = String>,
+    {
+        let mut iter = args.into_iter();
+        while let Some(arg) = iter.next() {
+            match arg.as_str() {
+                "--network" => {
+                    let value = iter
+                        .next()
+                        .ok_or_else(|| anyhow::anyhow!("--network requires a value"))?;
+                    let profile = ConfigProfile::from_env_value(&value)?;
+                    *self = Config::defaults_for_profile(profile);
+                }
+                "--p2p-listen" => {
+                    self.p2p_listen = iter
+                        .next()
+                        .ok_or_else(|| anyhow::anyhow!("--p2p-listen requires a value"))?;
+                    self.p2p_enabled = true;
+                }
+                "--rpc-listen" => {
+                    self.rpc_bind = iter
+                        .next()
+                        .ok_or_else(|| anyhow::anyhow!("--rpc-listen requires a value"))?;
+                }
+                "--bootnode" | "--peer" => {
+                    self.p2p_bootstrap
+                        .push(iter.next().ok_or_else(|| {
+                            anyhow::anyhow!("--bootnode/--peer requires a value")
+                        })?);
+                    self.p2p_enabled = true;
+                }
+                _ => {}
+            }
+        }
+        self.apply_env_overrides();
+        Ok(())
     }
 }
 
@@ -244,6 +342,7 @@ mod tests {
     fn clear_test_env() {
         for key in [
             "PULSEDAG_CONFIG_PROFILE",
+            "PULSEDAG_NETWORK_PROFILE",
             "PULSEDAG_CHAIN_ID",
             "PULSEDAG_RPC_BIND",
             "PULSEDAG_P2P_ENABLED",
@@ -282,6 +381,17 @@ mod tests {
         assert_eq!(cfg.p2p_connection_slot_budget, 24);
         assert!(cfg.auto_prune_enabled);
         assert_eq!(cfg.prune_keep_recent_blocks, 500);
+    }
+
+    #[test]
+    fn loads_private_profile_defaults() {
+        let _guard = env_lock().lock().expect("env lock");
+        clear_test_env();
+        std::env::set_var("PULSEDAG_CONFIG_PROFILE", "private");
+        let cfg = Config::from_env().expect("config");
+        assert_eq!(cfg.network_profile, "private");
+        assert_eq!(cfg.chain_id, "pulsedag-private-v2-2-8-pre");
+        assert_eq!(cfg.rpc_bind, "0.0.0.0:8280");
     }
 
     #[test]
