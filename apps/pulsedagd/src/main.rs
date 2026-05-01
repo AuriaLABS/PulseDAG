@@ -14,7 +14,7 @@ use app_state::{
 };
 use axum::Router;
 use config::Config;
-use pulsedag_core::accept::{accept_block, accept_transaction, AcceptSource};
+use pulsedag_core::accept::{accept_transaction, AcceptSource};
 use pulsedag_core::reconcile_mempool;
 use pulsedag_p2p::{
     build_p2p_stack, InboundEvent, Libp2pConfig, Libp2pRuntimeMode, P2pHandle, P2pMode,
@@ -468,14 +468,6 @@ async fn main() -> Result<()> {
                             rt.sync_pipeline.observe_peer_candidate(now);
                         }
                         let mut guard = chain.write().await;
-                        if guard.dag.blocks.contains_key(&block.hash)
-                            || guard.orphan_blocks.contains_key(&block.hash)
-                        {
-                            let mut rt = runtime.write().await;
-                            rt.duplicate_p2p_blocks += 1;
-                            info!(block = %block.hash, "ignored duplicate inbound p2p block");
-                            continue;
-                        }
                         {
                             let mut rt = runtime.write().await;
                             let now = now_unix();
@@ -483,8 +475,17 @@ async fn main() -> Result<()> {
                             rt.sync_pipeline.request_blocks(1, now);
                             rt.sync_pipeline.acquire_blocks(1);
                         }
-                        let missing_parents = pulsedag_core::missing_block_parents(&block, &guard);
-                        if !missing_parents.is_empty() {
+                        let acceptance = pulsedag_core::accept_block_with_result(
+                            block.clone(),
+                            &mut guard,
+                            AcceptSource::P2p,
+                        );
+                        if matches!(
+                            acceptance,
+                            pulsedag_core::BlockAcceptanceResult::UnknownParent
+                        ) {
+                            let missing_parents =
+                                pulsedag_core::missing_block_parents(&block, &guard);
                             pulsedag_core::queue_orphan_block(
                                 &mut guard,
                                 block.clone(),
@@ -510,16 +511,19 @@ async fn main() -> Result<()> {
                             if let Err(e) = storage.persist_block_and_chain_state(&block, &guard) {
                                 warn!(error = %e, "failed persisting chain state after orphan queue");
                             }
-                        } else if let Err(e) =
-                            accept_block(block.clone(), &mut guard, AcceptSource::P2p)
-                        {
+                        } else if !acceptance.is_accepted() {
                             let mut rt = runtime.write().await;
-                            rt.rejected_p2p_blocks += 1;
+                            if matches!(acceptance, pulsedag_core::BlockAcceptanceResult::Duplicate)
+                            {
+                                rt.duplicate_p2p_blocks += 1;
+                            } else {
+                                rt.rejected_p2p_blocks += 1;
+                            }
                             rt.sync_pipeline.fallback_after_failure(
-                                format!("block {} validation failed: {}", block.hash, e),
+                                format!("block {} validation failed: {:?}", block.hash, acceptance),
                                 now_unix(),
                             );
-                            warn!(error = %e, "rejected inbound p2p block");
+                            warn!(outcome = ?acceptance, "rejected inbound p2p block");
                         } else {
                             let adopted =
                                 pulsedag_core::adopt_ready_orphans(&mut guard, AcceptSource::P2p);

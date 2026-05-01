@@ -4,8 +4,8 @@ use super::mining_template::{
 use crate::api::{ApiResponse, RpcStateLike, SubmitMinedBlockRequest};
 use axum::{extract::State, Json};
 use pulsedag_core::{
-    accept_block, adopt_ready_orphans, errors::PulseError, pow_validation_result,
-    preferred_tip_hash, AcceptSource,
+    accept_block_with_result, adopt_ready_orphans, pow_validation_result, preferred_tip_hash,
+    AcceptSource,
 };
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -495,8 +495,8 @@ pub async fn post_mining_submit<S: RpcStateLike>(
         ));
     }
 
-    match accept_block(req.block.clone(), &mut chain, AcceptSource::Rpc) {
-        Ok(_) => {
+    match accept_block_with_result(req.block.clone(), &mut chain, AcceptSource::Rpc) {
+        pulsedag_core::BlockAcceptanceResult::Accepted => {
             let adopted_orphans = adopt_ready_orphans(&mut chain, AcceptSource::Rpc);
 
             if let Err(e) = persist_then_broadcast_mined_block(
@@ -554,21 +554,40 @@ pub async fn post_mining_submit<S: RpcStateLike>(
                 pow_rejection_reason: None,
             }))
         }
-        Err(e) => {
+        outcome => {
             let runtime_handle = state.runtime();
             let mut runtime = runtime_handle.write().await;
             runtime.rejected_mined_blocks += 1;
             drop(runtime);
-            let rejection_kind = match &e {
-                PulseError::BlockAlreadyExists => ExternalMiningRejectKind::DuplicateBlock,
-                PulseError::InvalidBlock(_) => ExternalMiningRejectKind::InvalidBlock,
-                PulseError::ChainIdMismatch => ExternalMiningRejectKind::ChainIdMismatch,
-                PulseError::StorageError(_) => ExternalMiningRejectKind::StorageError,
-                PulseError::Internal(_) => ExternalMiningRejectKind::InternalError,
-                _ => ExternalMiningRejectKind::SubmitBlockError,
+            let rejection_kind = match outcome {
+                pulsedag_core::BlockAcceptanceResult::Duplicate => {
+                    ExternalMiningRejectKind::DuplicateBlock
+                }
+                pulsedag_core::BlockAcceptanceResult::InvalidPow => {
+                    ExternalMiningRejectKind::InvalidPow
+                }
+                pulsedag_core::BlockAcceptanceResult::UnknownParent
+                | pulsedag_core::BlockAcceptanceResult::InvalidTimestamp
+                | pulsedag_core::BlockAcceptanceResult::InvalidStructure => {
+                    ExternalMiningRejectKind::InvalidBlock
+                }
+                pulsedag_core::BlockAcceptanceResult::Rejected(_) => {
+                    ExternalMiningRejectKind::SubmitBlockError
+                }
+                pulsedag_core::BlockAcceptanceResult::Accepted => {
+                    ExternalMiningRejectKind::InternalError
+                }
             };
-            record_external_mining_rejection(&state, rejection_kind, &e.to_string()).await;
-            Json(ApiResponse::err("SUBMIT_BLOCK_ERROR", e.to_string()))
+            record_external_mining_rejection(
+                &state,
+                rejection_kind,
+                &format!("block acceptance outcome: {:?}", outcome),
+            )
+            .await;
+            Json(ApiResponse::err(
+                "SUBMIT_BLOCK_ERROR",
+                format!("block acceptance outcome: {:?}", outcome),
+            ))
         }
     }
 }
