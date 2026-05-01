@@ -2,10 +2,20 @@
 
 ## Positioning in the release sequence
 
-- **v2.2.7 is the foundation-closing predecessor.** It finalizes PoW/mining/P2P groundwork and prepares repository boundaries for real private-testnet execution.
+- **v2.2.7 is the clean foundation-closing predecessor.** It aligns the repository version and finalizes the PoW/mining/P2P groundwork without claiming full private-testnet completion.
 - **v2.3.0 is the first real private testnet readiness release.**
 - **Smart contracts remain out of scope** for this phase.
 - **No public testnet claim yet.** v2.3.0 is explicitly private testnet only.
+
+## Dependency on v2.2.7
+
+v2.3.0 builds on the v2.2.7 baseline:
+
+- Workspace and release documentation are aligned to v2.2.7 before v2.3.0 begins.
+- PoW/mining acceptance foundations are treated as the starting point, not the final production form.
+- The external miner boundary remains mandatory.
+- No pool logic is added inside the miner.
+- Any remaining multi-node propagation, sync/recovery, and operator-readiness work belongs in v2.3.0 or later hardening milestones.
 
 ## Goal
 
