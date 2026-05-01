@@ -319,6 +319,9 @@ pub fn pow_validation_result(header: &BlockHeader) -> PowValidationResult {
 }
 /// Canonical PoW header preimage bytes used by both nodes and external miners.
 ///
+/// v2.2.8 PoW hardening note: this freezes deterministic hashing inputs only;
+/// it is not a final production difficulty-adjustment scheme.
+///
 /// Field order and encoding are frozen for public testnet:
 /// 1) preimage version (`u8`)
 /// 2) header.version (`u32`, little-endian)
@@ -342,12 +345,34 @@ pub fn pow_preimage_string(header: &BlockHeader) -> String {
     PowHeaderPreimage::from_header(header).to_debug_string()
 }
 
+pub fn pow_hash(header: &BlockHeader) -> [u8; 32] {
+    blake3::hash(&pow_preimage_bytes(header)).into()
+}
+
 pub fn pow_hash_hex(header: &BlockHeader) -> String {
     canonical_pow_engine().evaluate_header(header).hash_hex
 }
 
+pub fn target_from_compact(compact_difficulty: u32) -> u64 {
+    pow_target_u64(compact_difficulty as u64)
+}
+
+pub fn compact_from_target(target_u64: u64) -> u32 {
+    if target_u64 == 0 {
+        return u32::MAX;
+    }
+    let difficulty = (u64::MAX / target_u64).max(1);
+    difficulty.min(u32::MAX as u64) as u32
+}
+
 pub fn pow_target_u64(difficulty: u64) -> u64 {
     canonical_pow_engine().target_u64(difficulty)
+}
+
+pub fn verify_work(header: &BlockHeader) -> bool {
+    let score = pow_hash_score_u64(header);
+    let target = target_from_compact(header.difficulty);
+    score <= target
 }
 
 pub fn pow_hash_score_u64(header: &BlockHeader) -> u64 {
@@ -922,5 +947,74 @@ mod tests {
         assert_eq!(snapshot.retarget_rationale, "insufficient_signal");
         assert_eq!(snapshot.retarget_multiplier_bps, 10_000);
         assert!(!snapshot.retarget_was_clamped);
+    }
+
+    #[test]
+    fn valid_nonce_passes_and_invalid_nonce_fails() {
+        let mut h = sample_header();
+        h.difficulty = 10_000;
+        let mut found = None;
+        for nonce in 0..500_000u64 {
+            h.nonce = nonce;
+            if verify_work(&h) {
+                let mut next = h.clone();
+                next.nonce = nonce.saturating_add(1);
+                if !verify_work(&next) {
+                    found = Some((h.clone(), next));
+                    break;
+                }
+            }
+        }
+        let (valid, invalid) = found.expect("must find valid nonce with invalid successor");
+        assert!(verify_work(&valid));
+        assert!(!verify_work(&invalid));
+    }
+
+    #[test]
+    fn mutating_header_after_mining_invalidates_pow() {
+        let mut mined = sample_header();
+        mined.difficulty = 10_000;
+        let mut found = None;
+        for nonce in 0..500_000u64 {
+            mined.nonce = nonce;
+            if verify_work(&mined) {
+                found = Some(mined.clone());
+                break;
+            }
+        }
+        let mined = found.expect("must find valid work");
+        assert!(verify_work(&mined));
+
+        let mut mutated = mined.clone();
+        mutated.merkle_root.push_str("-tampered");
+        assert!(!verify_work(&mutated));
+    }
+
+    #[test]
+    fn verify_work_matches_boundary_semantics() {
+        let h = sample_header();
+        let score = pow_hash_score_u64(&h);
+        let exact = compact_from_target(score);
+
+        let mut pass = h.clone();
+        pass.difficulty = exact;
+        assert!(verify_work(&pass));
+
+        if exact > 1 {
+            let mut fail = h;
+            fail.difficulty = exact.saturating_add(1);
+            assert!(!verify_work(&fail));
+        }
+    }
+
+    #[test]
+    fn different_nonce_changes_pow_hash_bytes() {
+        let mut h1 = sample_header();
+        let mut h2 = sample_header();
+        h2.nonce = h1.nonce.saturating_add(77);
+        assert_ne!(pow_hash(&h1), pow_hash(&h2));
+
+        h1.nonce = h2.nonce;
+        assert_eq!(pow_hash(&h1), pow_hash(&h2));
     }
 }
