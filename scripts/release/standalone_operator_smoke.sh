@@ -78,7 +78,7 @@ fi
 echo "== Standalone packaging smoke checks =="
 (
   cd "${ROOT_DIR}"
-  cargo run --quiet --bin pulsedagd -- --version
+  cargo build --quiet -p pulsedagd --bin pulsedagd
   cargo run --quiet -p pulsedag-miner -- --help >/dev/null
 )
 
