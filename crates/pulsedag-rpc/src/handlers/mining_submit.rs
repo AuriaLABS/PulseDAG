@@ -12,13 +12,15 @@ use std::time::{SystemTime, UNIX_EPOCH};
 #[derive(Debug, serde::Serialize)]
 pub struct MiningSubmitData {
     pub accepted: bool,
-    pub block_hash: String,
-    pub height: u64,
+    pub block_hash: Option<String>,
+    pub block_id: Option<String>,
+    pub height: Option<u64>,
     pub pow_algorithm: String,
     pub pow_accepted: bool,
     pub pow_accepted_dev: bool,
     pub target_u64: u64,
     pub stale_template: bool,
+    pub reason_code: String,
     pub selected_tip: Option<String>,
     pub adopted_orphans: usize,
     pub pow_hash_score_u64: u64,
@@ -96,15 +98,43 @@ fn stale_template_error(
     reason: StaleTemplateReason,
     detail: impl Into<String>,
 ) -> ApiResponse<MiningSubmitData> {
-    let detail = detail.into();
-    ApiResponse::err(
-        "STALE_TEMPLATE",
+    rejection_submit_response(
+        "stale_template",
         format!(
             "reason_code={}; template is stale; {}",
             reason.code(),
-            detail
+            detail.into()
         ),
+        None,
+        None,
+        true,
     )
+}
+
+fn rejection_submit_response(
+    reason_code: impl Into<String>,
+    detail: impl Into<String>,
+    block_hash: Option<String>,
+    height: Option<u64>,
+    stale_template: bool,
+) -> ApiResponse<MiningSubmitData> {
+    ApiResponse::ok(MiningSubmitData {
+        accepted: false,
+        block_hash,
+        block_id: None,
+        height,
+        pow_algorithm: pulsedag_core::selected_pow_name().to_string(),
+        pow_accepted: false,
+        pow_accepted_dev: false,
+        target_u64: 0,
+        stale_template,
+        reason_code: reason_code.into(),
+        selected_tip: None,
+        adopted_orphans: 0,
+        pow_hash_score_u64: 0,
+        pow_rejection_code: None,
+        pow_rejection_reason: Some(detail.into()),
+    })
 }
 
 async fn record_external_mining_rejection<S: RpcStateLike>(
@@ -235,8 +265,8 @@ pub async fn post_mining_submit<S: RpcStateLike>(
             ),
         )
         .await;
-        return Json(ApiResponse::err(
-            "INVALID_POW",
+        return Json(rejection_submit_response(
+            "invalid_pow",
             format!(
                 "submitted block does not satisfy {} policy: reason_code={} score={} target={} difficulty={} height={} nonce={}",
                 pulsedag_core::selected_pow_name(),
@@ -247,6 +277,9 @@ pub async fn post_mining_submit<S: RpcStateLike>(
                 req.block.header.height,
                 req.block.header.nonce
             ),
+            Some(block_hash),
+            Some(height),
+            false,
         ));
     }
 
@@ -473,9 +506,12 @@ pub async fn post_mining_submit<S: RpcStateLike>(
                 &format!("template_id {} not found", template_id),
             )
             .await;
-            return Json(ApiResponse::err(
-                "UNKNOWN_TEMPLATE",
+            return Json(rejection_submit_response(
+                "stale_template",
                 format!("template_id {} not found", template_id),
+                None,
+                Some(height),
+                true,
             ));
         }
     }
@@ -515,7 +551,13 @@ pub async fn post_mining_submit<S: RpcStateLike>(
                     &e.to_string(),
                 )
                 .await;
-                return Json(ApiResponse::err("STORAGE_ERROR", e.to_string()));
+                return Json(rejection_submit_response(
+                    "block_rejected",
+                    e.to_string(),
+                    Some(block_hash.clone()),
+                    Some(height),
+                    false,
+                ));
             }
 
             {
@@ -540,13 +582,15 @@ pub async fn post_mining_submit<S: RpcStateLike>(
 
             Json(ApiResponse::ok(MiningSubmitData {
                 accepted: true,
-                block_hash,
-                height,
+                block_hash: Some(block_hash.clone()),
+                block_id: Some(block_hash),
+                height: Some(height),
                 pow_algorithm: pow.algorithm.to_string(),
                 pow_accepted: pow.accepted,
                 pow_accepted_dev,
                 target_u64,
                 stale_template: false,
+                reason_code: "accepted".to_string(),
                 selected_tip: preferred_tip_hash(&chain),
                 adopted_orphans,
                 pow_hash_score_u64,
@@ -568,7 +612,21 @@ pub async fn post_mining_submit<S: RpcStateLike>(
                 _ => ExternalMiningRejectKind::SubmitBlockError,
             };
             record_external_mining_rejection(&state, rejection_kind, &e.to_string()).await;
-            Json(ApiResponse::err("SUBMIT_BLOCK_ERROR", e.to_string()))
+            let reason = match rejection_kind {
+                ExternalMiningRejectKind::DuplicateBlock => "duplicate_block",
+                ExternalMiningRejectKind::InvalidPow => "invalid_pow",
+                ExternalMiningRejectKind::StaleTemplate => "stale_template",
+                ExternalMiningRejectKind::UnknownTemplate => "stale_template",
+                ExternalMiningRejectKind::InvalidBlock => "invalid_request",
+                _ => "block_rejected",
+            };
+            Json(rejection_submit_response(
+                reason,
+                e.to_string(),
+                Some(block_hash),
+                Some(height),
+                false,
+            ))
         }
     }
 }
