@@ -1,11 +1,11 @@
-# PulseDAG v2.2.6 current status
+# PulseDAG v2.2.7 current status
 
-Consolidated v2.2.6 operator-readiness status for operational recovery, rebuild, restore, and maintenance workflows, with v2.2.5 closeout preserved as historical release evidence.
+Consolidated v2.2.7 foundation-closeout status for the PoW/mining/P2P groundwork that precedes the full private-testnet milestone in v2.3.0.
 
-
-## Current v2.2.6 status
-- Repository workspace status is aligned to **v2.2.6** documentation state.
-- Scope remains docs/release-operations synchronization only (no consensus, miner, API, storage, or P2P behavior changes in this PR).
+## Current v2.2.7 status
+- Repository workspace version is aligned to **v2.2.7**.
+- Workspace crates and apps inherit the workspace package version through `version.workspace = true`.
+- v2.2.7 closes the current PoW/mining/P2P foundation and keeps the full private-testnet milestone assigned to **v2.3.0**.
 - External miner architecture remains unchanged; pool/accounting/payout logic stays out of scope.
 - Smart contracts remain disabled until **30 stable testnet burn-in days** are completed.
 - Current chain target remains **60 seconds per block**.
@@ -22,15 +22,16 @@ Consolidated v2.2.6 operator-readiness status for operational recovery, rebuild,
 - Canonical PoW spec for current public testnet: `docs/POW_SPEC_FINAL.md`.
 
 ## Current priority order
-1. pruning + snapshot
-2. miner multi-thread
-3. fine-grained difficulty retarget
-4. bounded mempool
-5. P2P optimization
-6. pre-burn-in hardening
-7. public testnet checklist
-8. 30-day burn-in
-9. only then contracts
+1. Close v2.2.7 release hygiene and evidence.
+2. Validate the external miner template/submit smoke path.
+3. Harden the real P2P path for private-testnet execution.
+4. Validate multi-node block and transaction propagation.
+5. Validate sync/catch-up and delayed node recovery.
+6. Enforce bounded mempool behavior under burst conditions.
+7. Run snapshot, prune, restore, and recovery drills.
+8. Prepare private-testnet scripts, dashboards, and operator runbooks.
+9. Complete private-testnet burn-in evidence.
+10. Only then move toward contracts.
 
 ## Quick start
 ```powershell
@@ -110,16 +111,17 @@ See `docs/OPERATIONS_P2P.md` for operational guidance.
 - Staging upgrade runbook: `docs/runbooks/STAGING_UPGRADE.md`
 - Staging rollback runbook: `docs/runbooks/STAGING_ROLLBACK.md`
 
-## Burn-in and evidence (historical v2.2.5 + current v2.2.6)
+## Burn-in and evidence (historical v2.2.5/v2.2.6 + current v2.2.7)
 - The CI workflow `Soak Smoke (short CI signal)` is intentionally a short regression signal, not a release burn-in claim.
-- Real release burn-in for v2.2.5 requires an operated run with evidence collection per release policy.
+- Real release burn-in requires an operated run with evidence collection per release policy.
 - See `docs/BURN_IN_14D.md` and `docs/RELEASE_EVIDENCE.md` for process and required artifacts.
 
-## Historical v2.2.5 closeout package (release hygiene evidence)
+## Historical and current closeout package
+- v2.2.7 closeout checklist: `docs/checklists/V2_2_7_CLOSEOUT.md`
 - v2.2.6 closeout checklist: `docs/checklists/V2_2_6_BURNIN_CLOSEOUT.md`
 - v2.2.5 closeout checklist (historical evidence): `docs/checklists/V2_2_5_BURNIN_CLOSEOUT.md`
 - Burn-in execution guide: `docs/BURN_IN_14D.md`
 - Evidence bundle/index: `docs/RELEASE_EVIDENCE.md`
 - Runbook index: `docs/runbooks/INDEX.md`
 
-This closeout package is explicitly limited to release hygiene and evidence organization (no consensus/miner/pool feature scope changes).
+This closeout package is explicitly limited to release hygiene and evidence organization. Full private-testnet execution remains scoped to v2.3.0.
