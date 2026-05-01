@@ -501,10 +501,6 @@ pub fn accept_block_with_result(
     state: &mut ChainState,
     source: AcceptSource,
 ) -> BlockAcceptanceResult {
-    if let Err(err) = validate_block(&block, state) {
-        return classify_block_validation_error(err);
-    }
-
     let enforce_pow = matches!(
         source,
         AcceptSource::Rpc | AcceptSource::P2p | AcceptSource::LocalMining
@@ -512,6 +508,10 @@ pub fn accept_block_with_result(
     let pow = pow_validation_result(&block.header);
     if enforce_pow && !pow.accepted {
         return BlockAcceptanceResult::InvalidPow;
+    }
+
+    if let Err(err) = validate_block(&block, state) {
+        return classify_block_validation_error(err);
     }
 
     if let Err(err) = apply_block(&block, state) {
