@@ -488,7 +488,7 @@ mod tests {
         cfg.apply_cli_args(vec!["--network".to_string(), "private".to_string()])
             .expect("apply cli args");
         assert_eq!(cfg.rpc_bind, "0.0.0.0:8280");
-        assert_eq!(cfg.p2p_listen, "/ip4/0.0.0.0/tcp/33800");
+        assert_eq!(cfg.p2p_listen, "/ip4/0.0.0.0/tcp/32333");
     }
 
     #[test]
