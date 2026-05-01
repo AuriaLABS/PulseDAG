@@ -1,0 +1,4 @@
+[env]
+# Workaround for GCC 14+/newer toolchains where RocksDB headers in librocksdb-sys
+# rely on transitive includes and may miss fixed-width integer typedefs.
+CXXFLAGS = "-include cstdint"
