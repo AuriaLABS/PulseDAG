@@ -8,6 +8,7 @@ use pulsedag_core::{
     AcceptSource,
 };
 use std::time::{SystemTime, UNIX_EPOCH};
+use tracing::{info, warn};
 
 #[derive(Debug, serde::Serialize)]
 pub struct MiningSubmitData {
@@ -244,12 +245,22 @@ pub async fn post_mining_submit<S: RpcStateLike>(
     let pow_hash_score_u64 = pow.score_u64.unwrap_or(0);
     let block_hash = req.block.hash.clone();
     let height = req.block.header.height;
+    {
+        let runtime_handle = state.runtime();
+        let mut runtime = runtime_handle.write().await;
+        runtime.pulsedag_mining_submits_total =
+            runtime.pulsedag_mining_submits_total.saturating_add(1);
+    }
 
     if !pow.accepted {
         let runtime_handle = state.runtime();
         let mut runtime = runtime_handle.write().await;
         runtime.rejected_mined_blocks += 1;
+        runtime.pulsedag_invalid_pow_total = runtime.pulsedag_invalid_pow_total.saturating_add(1);
+        runtime.pulsedag_blocks_rejected_total =
+            runtime.pulsedag_blocks_rejected_total.saturating_add(1);
         drop(runtime);
+        warn!(block_hash = %block_hash, height, "mining submit rejected: invalid PoW");
         record_external_mining_rejection(
             &state,
             ExternalMiningRejectKind::InvalidPow,
@@ -564,10 +575,13 @@ pub async fn post_mining_submit<S: RpcStateLike>(
                 let runtime_handle = state.runtime();
                 let mut runtime = runtime_handle.write().await;
                 runtime.accepted_mined_blocks += 1;
+                runtime.pulsedag_blocks_accepted_total =
+                    runtime.pulsedag_blocks_accepted_total.saturating_add(1);
                 runtime.external_mining_submit_accepted =
                     runtime.external_mining_submit_accepted.saturating_add(1);
                 runtime.adopted_orphan_blocks += adopted_orphans as u64;
             }
+            info!(block_hash = %block_hash, height, adopted_orphans, "mining submit accepted");
             let _ = state.storage().append_runtime_event(
                 "info",
                 "external_mining_submit_accepted",
@@ -602,7 +616,10 @@ pub async fn post_mining_submit<S: RpcStateLike>(
             let runtime_handle = state.runtime();
             let mut runtime = runtime_handle.write().await;
             runtime.rejected_mined_blocks += 1;
+            runtime.pulsedag_blocks_rejected_total =
+                runtime.pulsedag_blocks_rejected_total.saturating_add(1);
             drop(runtime);
+            warn!(block_hash = %block_hash, height, outcome = ?outcome, "mining submit rejected");
             let rejection_kind = match outcome {
                 pulsedag_core::BlockAcceptanceResult::Duplicate => {
                     ExternalMiningRejectKind::DuplicateBlock

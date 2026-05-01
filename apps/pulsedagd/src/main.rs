@@ -314,6 +314,11 @@ async fn main() -> Result<()> {
                             rt.tx_inbound_total += 1;
                         }
                         let mut guard = chain.write().await;
+                        {
+                            let mut rt = runtime.write().await;
+                            rt.pulsedag_p2p_blocks_received_total =
+                                rt.pulsedag_p2p_blocks_received_total.saturating_add(1);
+                        }
                         let already_in_mempool = guard.mempool.transactions.contains_key(&txid);
                         let already_confirmed =
                             guard.dag.blocks.values().any(|block| {
@@ -538,6 +543,11 @@ async fn main() -> Result<()> {
                             {
                                 let mut rt = runtime.write().await;
                                 rt.queued_orphan_blocks += 1;
+                                rt.pulsedag_blocks_rejected_total =
+                                    rt.pulsedag_blocks_rejected_total.saturating_add(1);
+                                rt.pulsedag_sync_missing_parents_total = rt
+                                    .pulsedag_sync_missing_parents_total
+                                    .saturating_add(missing_parents.len() as u64);
                                 rt.sync_pipeline.fallback_after_failure(
                                     format!(
                                         "orphaned block {} missing parents {:?}",
@@ -557,6 +567,15 @@ async fn main() -> Result<()> {
                                 rt.duplicate_p2p_blocks += 1;
                             } else {
                                 rt.rejected_p2p_blocks += 1;
+                                rt.pulsedag_blocks_rejected_total =
+                                    rt.pulsedag_blocks_rejected_total.saturating_add(1);
+                                if matches!(
+                                    acceptance,
+                                    pulsedag_core::BlockAcceptanceResult::InvalidPow
+                                ) {
+                                    rt.pulsedag_invalid_pow_total =
+                                        rt.pulsedag_invalid_pow_total.saturating_add(1);
+                                }
                             }
                             rt.sync_pipeline.fallback_after_failure(
                                 format!("block {} validation failed: {:?}", block.hash, acceptance),
@@ -573,6 +592,8 @@ async fn main() -> Result<()> {
                                 let mut rt = runtime.write().await;
                                 rt.sync_pipeline.validate_and_apply_blocks(1, now_unix());
                                 rt.accepted_p2p_blocks += 1;
+                                rt.pulsedag_blocks_accepted_total =
+                                    rt.pulsedag_blocks_accepted_total.saturating_add(1);
                                 rt.adopted_orphan_blocks += adopted as u64;
                                 rt.sync_pipeline.complete_cycle(now_unix());
                             }
@@ -603,7 +624,10 @@ async fn main() -> Result<()> {
                         }
                     }
                     InboundEvent::PeerConnected(peer) => {
-                        info!(peer = %peer, "p2p peer connected or runtime event");
+                        let peers_connected = p2p
+                            .as_ref()
+                            .and_then(|h| h.status().ok().map(|s| s.connected_peers));
+                        info!(peer = %peer, peers_connected = ?peers_connected, "p2p peer connected");
                     }
                 }
             }
