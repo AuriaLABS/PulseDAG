@@ -20,6 +20,40 @@ pub enum AcceptSource {
     LocalMining,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "status", content = "reason", rename_all = "snake_case")]
+pub enum BlockAcceptanceResult {
+    Accepted,
+    Duplicate,
+    UnknownParent,
+    InvalidTimestamp,
+    InvalidPow,
+    InvalidStructure,
+    Rejected(String),
+}
+
+impl BlockAcceptanceResult {
+    pub fn is_accepted(&self) -> bool {
+        matches!(self, Self::Accepted)
+    }
+}
+
+fn classify_block_validation_error(err: PulseError) -> BlockAcceptanceResult {
+    match err {
+        PulseError::BlockAlreadyExists => BlockAcceptanceResult::Duplicate,
+        PulseError::InvalidBlock(msg) => {
+            if msg.contains("missing parent") {
+                BlockAcceptanceResult::UnknownParent
+            } else if msg.contains("timestamp") {
+                BlockAcceptanceResult::InvalidTimestamp
+            } else {
+                BlockAcceptanceResult::InvalidStructure
+            }
+        }
+        other => BlockAcceptanceResult::Rejected(other.to_string()),
+    }
+}
+
 fn is_higher_priority(candidate: &Transaction, existing: &Transaction) -> bool {
     candidate.fee > existing.fee
         || (candidate.fee == existing.fee && candidate.txid < existing.txid)
@@ -462,12 +496,14 @@ pub fn accept_transaction(
     Ok(())
 }
 
-pub fn accept_block(
+pub fn accept_block_with_result(
     block: Block,
     state: &mut ChainState,
     source: AcceptSource,
-) -> Result<(), PulseError> {
-    validate_block(&block, state)?;
+) -> BlockAcceptanceResult {
+    if let Err(err) = validate_block(&block, state) {
+        return classify_block_validation_error(err);
+    }
 
     let enforce_pow = matches!(
         source,
@@ -475,25 +511,38 @@ pub fn accept_block(
     );
     let pow = pow_validation_result(&block.header);
     if enforce_pow && !pow.accepted {
-        let score = pow
-            .score_u64
-            .map(|v| v.to_string())
-            .unwrap_or_else(|| "none".to_string());
-        let code = pow.rejection_code.unwrap_or("score_above_target");
-        return Err(PulseError::InvalidBlock(format!(
-            "pow rejected by current {} policy: reason_code={} score={} target={} difficulty={} height={} nonce={}",
-            selected_pow_name(),
-            code,
-            score,
-            pow.target_u64,
-            block.header.difficulty,
-            block.header.height,
-            block.header.nonce
-        )));
+        return BlockAcceptanceResult::InvalidPow;
     }
 
-    apply_block(&block, state)?;
-    Ok(())
+    if let Err(err) = apply_block(&block, state) {
+        return BlockAcceptanceResult::Rejected(err.to_string());
+    }
+    BlockAcceptanceResult::Accepted
+}
+
+pub fn accept_block(
+    block: Block,
+    state: &mut ChainState,
+    source: AcceptSource,
+) -> Result<(), PulseError> {
+    match accept_block_with_result(block, state, source) {
+        BlockAcceptanceResult::Accepted => Ok(()),
+        BlockAcceptanceResult::Duplicate => Err(PulseError::BlockAlreadyExists),
+        BlockAcceptanceResult::UnknownParent => {
+            Err(PulseError::InvalidBlock("missing parent".to_string()))
+        }
+        BlockAcceptanceResult::InvalidTimestamp => {
+            Err(PulseError::InvalidBlock("invalid timestamp".to_string()))
+        }
+        BlockAcceptanceResult::InvalidPow => Err(PulseError::InvalidBlock(format!(
+            "pow rejected by current {} policy",
+            selected_pow_name()
+        ))),
+        BlockAcceptanceResult::InvalidStructure => Err(PulseError::InvalidBlock(
+            "invalid block structure".to_string(),
+        )),
+        BlockAcceptanceResult::Rejected(reason) => Err(PulseError::InvalidBlock(reason)),
+    }
 }
 
 #[cfg(test)]
@@ -513,8 +562,8 @@ mod tests {
         block.hash = "bad-pow".to_string();
         block.header.nonce = 0;
 
-        let err = accept_block(block, &mut state, AcceptSource::P2p).unwrap_err();
-        assert!(matches!(err, PulseError::InvalidBlock(msg) if msg.contains("pow rejected")));
+        let outcome = accept_block_with_result(block, &mut state, AcceptSource::P2p);
+        assert_eq!(outcome, BlockAcceptanceResult::InvalidPow);
     }
 
     #[test]
@@ -527,5 +576,47 @@ mod tests {
         block.header.nonce = 0;
 
         assert!(accept_block(block, &mut state, AcceptSource::P2p).is_ok());
+    }
+
+    #[test]
+    fn duplicate_block_returns_duplicate_outcome() {
+        let mut state = init_chain_state("test".to_string());
+        let parents = vec![state.dag.genesis_hash.clone()];
+        let txs = vec![build_coinbase_transaction("miner1", 50, 1)];
+        let mut block = build_candidate_block(parents, 1, 1, txs);
+        block.hash = "dup-block".to_string();
+        assert!(accept_block(block.clone(), &mut state, AcceptSource::P2p).is_ok());
+        let outcome = accept_block_with_result(block, &mut state, AcceptSource::P2p);
+        assert_eq!(outcome, BlockAcceptanceResult::Duplicate);
+    }
+
+    #[test]
+    fn unknown_parent_returns_unknown_parent_outcome() {
+        let mut state = init_chain_state("test".to_string());
+        let txs = vec![build_coinbase_transaction("miner1", 50, 1)];
+        let mut block = build_candidate_block(vec!["missing-parent".into()], 1, 1, txs);
+        block.hash = "orphan-block".to_string();
+        let outcome = accept_block_with_result(block, &mut state, AcceptSource::P2p);
+        assert_eq!(outcome, BlockAcceptanceResult::UnknownParent);
+    }
+
+    #[test]
+    fn acceptance_result_is_machine_readable() {
+        let encoded = serde_json::to_string(&BlockAcceptanceResult::InvalidStructure).unwrap();
+        assert_eq!(encoded, "{\"status\":\"invalid_structure\"}");
+    }
+
+    #[test]
+    fn mutated_block_returns_invalid_structure() {
+        let mut state = init_chain_state("test".to_string());
+        let parents = vec![state.dag.genesis_hash.clone()];
+        let mut txs = vec![build_coinbase_transaction("miner1", 50, 1)];
+        let mut spend = txs[0].clone();
+        spend.txid = "mutated".to_string();
+        txs.push(spend);
+        let mut block = build_candidate_block(parents, 1, 1, txs);
+        block.hash = "mutated-block".to_string();
+        let outcome = accept_block_with_result(block, &mut state, AcceptSource::P2p);
+        assert_eq!(outcome, BlockAcceptanceResult::InvalidStructure);
     }
 }
