@@ -42,12 +42,20 @@ pub struct MiningTemplateData {
     pub miner_address: String,
     pub template_id: String,
     pub selected_tip: Option<String>,
+    pub parent_tips: Vec<String>,
     pub created_at_unix: u64,
     pub expires_at_unix: u64,
     pub freshness_ttl_secs: u64,
     pub freshness_grace_secs: u64,
     pub block: pulsedag_core::types::Block,
     pub target_u64: u64,
+    pub compact_target: u32,
+    pub network_id: String,
+    pub nonce_range: String,
+    pub timestamp_min_unix: u64,
+    pub timestamp_max_unix: u64,
+    pub next_height: u64,
+    pub blue_score: u64,
     pub mempool_tx_count: usize,
     pub metrics_hint: PowMetricsData,
     pub pow_preimage_hex: String,
@@ -274,6 +282,7 @@ pub async fn post_mining_template<S: RpcStateLike>(
     let header_difficulty = lifecycle.difficulty;
     let block = build_candidate_block(parents.clone(), height, header_difficulty, txs);
     let target_u64 = lifecycle.target_u64;
+    let compact_target = header_difficulty;
     let template_txids = block
         .transactions
         .iter()
@@ -359,12 +368,20 @@ pub async fn post_mining_template<S: RpcStateLike>(
         miner_address: req.miner_address,
         template_id,
         selected_tip,
+        parent_tips: block.header.parents.clone(),
         created_at_unix,
         expires_at_unix,
         freshness_ttl_secs: TEMPLATE_TTL_SECS,
         freshness_grace_secs: TEMPLATE_FRESHNESS_GRACE_SECS,
         block,
         target_u64,
+        compact_target,
+        network_id: chain.network_id.clone(),
+        nonce_range: "0..=18446744073709551615".to_string(),
+        timestamp_min_unix: created_at_unix.saturating_sub(1),
+        timestamp_max_unix: expires_at_unix.saturating_add(TEMPLATE_FRESHNESS_GRACE_SECS),
+        next_height: height,
+        blue_score: block.header.blue_score,
         mempool_tx_count: lifecycle.mempool_tx_count,
         metrics_hint,
         pow_preimage_hex,
