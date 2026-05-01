@@ -40,7 +40,8 @@ async fn main() -> Result<()> {
         .with_env_filter(EnvFilter::from_default_env())
         .init();
 
-    let cfg = Config::from_env()?;
+    let mut cfg = Config::from_env()?;
+    cfg.apply_cli_args(std::env::args().skip(1))?;
     let storage = Arc::new(Storage::open(&cfg.rocksdb_path)?);
 
     let snapshot_exists = storage.snapshot_exists().unwrap_or(false);
@@ -94,6 +95,27 @@ async fn main() -> Result<()> {
             chain_state = storage.replay_blocks_or_init(cfg.chain_id.clone())?;
         }
     }
+
+    let genesis_hash = chain_state
+        .dag
+        .blocks
+        .values()
+        .find(|b| b.header.height == 0)
+        .map(|b| b.hash.clone())
+        .unwrap_or_else(|| "unknown".to_string());
+
+    info!(
+        version = env!("CARGO_PKG_VERSION"),
+        network_profile = %cfg.network_profile,
+        chain_id = %cfg.chain_id,
+        p2p_enabled = cfg.p2p_enabled,
+        p2p_mode = %cfg.p2p_mode,
+        p2p_bind = %cfg.p2p_listen,
+        rpc_bind = %cfg.rpc_bind,
+        data_dir = %cfg.rocksdb_path,
+        genesis_hash = %genesis_hash,
+        "node startup identity"
+    );
 
     let reconcile_result = reconcile_mempool(&mut chain_state);
     if !reconcile_result.removed_txids.is_empty() {
