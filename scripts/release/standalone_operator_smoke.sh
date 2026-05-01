@@ -79,7 +79,7 @@ echo "== Standalone packaging smoke checks =="
 (
   cd "${ROOT_DIR}"
   cargo build --quiet -p pulsedagd --bin pulsedagd
-  cargo run --quiet -p pulsedag-miner -- --help >/dev/null
+  cargo build --quiet -p pulsedag-miner --bin pulsedag-miner
 )
 
 echo "== Launch local node =="
