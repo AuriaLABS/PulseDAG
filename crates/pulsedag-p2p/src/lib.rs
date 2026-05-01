@@ -169,6 +169,7 @@ pub enum P2pMode {
 pub enum InboundEvent {
     Transaction(Transaction),
     Block(Block),
+    BlockAnnouncement { hash: String },
     PeerConnected(String),
 }
 
@@ -1576,7 +1577,8 @@ fn dispatch_network_message(
             }
             let _ = inbound_tx.send(InboundEvent::Transaction(transaction));
         }
-        NetworkMessage::NewBlock { chain_id, block } => {
+        NetworkMessage::NewBlock { chain_id, block }
+        | NetworkMessage::Block { chain_id, block } => {
             if chain_id != expected_chain_id {
                 if let Ok(mut guard) = inner.lock() {
                     guard.inbound_chain_mismatch_dropped += 1;
@@ -1595,6 +1597,49 @@ fn dispatch_network_message(
                 guard.last_message_kind = Some("block-inbound".into());
             }
             let _ = inbound_tx.send(InboundEvent::Block(block));
+        }
+        NetworkMessage::BlockAnnounce { chain_id, hash }
+        | NetworkMessage::NewBlockHash { chain_id, hash } => {
+            if chain_id != expected_chain_id {
+                if let Ok(mut guard) = inner.lock() {
+                    guard.inbound_chain_mismatch_dropped += 1;
+                    guard.last_drop_reason = Some("chain_mismatch_block_announce".into());
+                }
+                return;
+            }
+            let id = format!("block-announce:{}", hash);
+            if let Ok(mut guard) = inner.lock() {
+                if !mark_inbound_id_seen(&mut guard, id, now_unix()) {
+                    guard.inbound_duplicates_suppressed += 1;
+                    guard.last_drop_reason = Some("duplicate_block_announce".into());
+                    return;
+                }
+                guard.inbound_messages += 1;
+                guard.last_message_kind = Some("block-announce".into());
+            }
+            let _ = inbound_tx.send(InboundEvent::BlockAnnouncement { hash });
+        }
+        NetworkMessage::InvBlock { chain_id, hashes } => {
+            if chain_id != expected_chain_id {
+                return;
+            }
+            for hash in hashes {
+                let id = format!("block-announce:{}", hash);
+                let mut accepted = false;
+                if let Ok(mut guard) = inner.lock() {
+                    if mark_inbound_id_seen(&mut guard, id, now_unix()) {
+                        guard.inbound_messages += 1;
+                        guard.last_message_kind = Some("inv-block".into());
+                        accepted = true;
+                    } else {
+                        guard.inbound_duplicates_suppressed += 1;
+                        guard.last_drop_reason = Some("duplicate_inv_block".into());
+                    }
+                }
+                if accepted {
+                    let _ = inbound_tx.send(InboundEvent::BlockAnnouncement { hash });
+                }
+            }
         }
         NetworkMessage::GetTips { chain_id } => {
             if chain_id == expected_chain_id {
@@ -1640,6 +1685,14 @@ fn dispatch_network_message(
                     guard.last_message_kind = Some("block-data".into());
                 }
                 let _ = inbound_tx.send(InboundEvent::Block(block));
+            }
+        }
+        NetworkMessage::Reject { chain_id, .. } | NetworkMessage::Error { chain_id, .. } => {
+            if chain_id == expected_chain_id {
+                if let Ok(mut guard) = inner.lock() {
+                    guard.inbound_messages += 1;
+                    guard.last_message_kind = Some("peer-reject-or-error".into());
+                }
             }
         }
     }
@@ -3744,5 +3797,48 @@ mod tests {
 
         std::env::remove_var("PULSEDAG_P2P_PEER_STATE_PATH");
         let _ = fs::remove_file(path);
+    }
+}
+
+#[cfg(test)]
+mod inventory_tests {
+    use super::*;
+
+    #[test]
+    fn block_inventory_messages_roundtrip() {
+        let msg = NetworkMessage::InvBlock {
+            chain_id: "testnet".into(),
+            hashes: vec!["h1".into(), "h2".into()],
+        };
+        let bytes = serde_json::to_vec(&msg).expect("serialize inventory message");
+        let decoded: NetworkMessage =
+            serde_json::from_slice(&bytes).expect("deserialize inventory message");
+        match decoded {
+            NetworkMessage::InvBlock { chain_id, hashes } => {
+                assert_eq!(chain_id, "testnet");
+                assert_eq!(hashes, vec!["h1".to_string(), "h2".to_string()]);
+            }
+            _ => panic!("unexpected variant"),
+        }
+    }
+
+    #[test]
+    fn duplicate_block_announcement_is_ignored() {
+        let inner = Arc::new(Mutex::new(InnerState::default()));
+        let (inbound_tx, mut inbound_rx) = mpsc::unbounded_channel();
+        let wire = serde_json::to_vec(&NetworkMessage::NewBlockHash {
+            chain_id: "testnet".into(),
+            hash: "block-x".into(),
+        })
+        .expect("serialize block announcement");
+
+        dispatch_network_message("testnet", &wire, &inner, &inbound_tx);
+        dispatch_network_message("testnet", &wire, &inner, &inbound_tx);
+
+        assert!(matches!(
+            inbound_rx.try_recv(),
+            Ok(InboundEvent::BlockAnnouncement { .. })
+        ));
+        assert!(inbound_rx.try_recv().is_err());
     }
 }

@@ -460,6 +460,23 @@ async fn main() -> Result<()> {
                             }
                         }
                     }
+                    InboundEvent::BlockAnnouncement { hash } => {
+                        info!(block_hash = %hash, "block announced by peer");
+                        let known = {
+                            let guard = chain.read().await;
+                            guard.dag.blocks.contains_key(&hash)
+                        };
+                        if known {
+                            info!(block_hash = %hash, "duplicate block announcement ignored");
+                        } else {
+                            info!(block_hash = %hash, "unknown block announced; requesting block from peers");
+                            let _ = storage.append_runtime_event(
+                                "info",
+                                "block_requested",
+                                &format!("hash={}", hash),
+                            );
+                        }
+                    }
                     InboundEvent::Block(block) => {
                         {
                             let mut rt = runtime.write().await;

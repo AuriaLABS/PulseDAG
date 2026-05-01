@@ -13,6 +13,18 @@ pub enum NetworkMessage {
         chain_id: String,
         block: Block,
     },
+    BlockAnnounce {
+        chain_id: String,
+        hash: Hash,
+    },
+    NewBlockHash {
+        chain_id: String,
+        hash: Hash,
+    },
+    InvBlock {
+        chain_id: String,
+        hashes: Vec<Hash>,
+    },
     GetTips {
         chain_id: String,
     },
@@ -27,6 +39,18 @@ pub enum NetworkMessage {
     BlockData {
         chain_id: String,
         block: Option<Block>,
+    },
+    Block {
+        chain_id: String,
+        block: Block,
+    },
+    Reject {
+        chain_id: String,
+        reason: String,
+    },
+    Error {
+        chain_id: String,
+        message: String,
     },
 }
 
