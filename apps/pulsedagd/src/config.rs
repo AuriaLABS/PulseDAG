@@ -249,15 +249,24 @@ impl Config {
     where
         I: IntoIterator<Item = String>,
     {
-        let mut iter = args.into_iter();
+        let argv: Vec<String> = args.into_iter().collect();
+        let mut iter = argv.iter();
+        while let Some(arg) = iter.next() {
+            if arg == "--network" {
+                let value = iter
+                    .next()
+                    .ok_or_else(|| anyhow::anyhow!("--network requires a value"))?;
+                let profile = ConfigProfile::from_env_value(value)?;
+                *self = Config::defaults_for_profile(profile);
+            }
+        }
+
+        let mut iter = argv.into_iter();
         while let Some(arg) = iter.next() {
             match arg.as_str() {
                 "--network" => {
-                    let value = iter
-                        .next()
+                    iter.next()
                         .ok_or_else(|| anyhow::anyhow!("--network requires a value"))?;
-                    let profile = ConfigProfile::from_env_value(&value)?;
-                    *self = Config::defaults_for_profile(profile);
                 }
                 "--p2p-listen" => {
                     self.p2p_listen = iter
@@ -435,5 +444,45 @@ mod tests {
                 .contains("invalid PULSEDAG_CONFIG_PROFILE value"),
             "unexpected error: {err}"
         );
+    }
+
+    #[test]
+    fn cli_overrides_are_order_independent_with_network_profile() {
+        let _guard = env_lock().lock().expect("env lock");
+        clear_test_env();
+
+        let mut cfg_before_network = Config::defaults_for_profile(ConfigProfile::Dev);
+        cfg_before_network
+            .apply_cli_args(vec![
+                "--bootnode".to_string(),
+                "/ip4/127.0.0.1/tcp/9301/p2p/12D3KooWbefore".to_string(),
+                "--p2p-listen".to_string(),
+                "/ip4/0.0.0.0/tcp/9320".to_string(),
+                "--rpc-listen".to_string(),
+                "0.0.0.0:8320".to_string(),
+                "--network".to_string(),
+                "private".to_string(),
+            ])
+            .expect("apply args");
+
+        let mut cfg_after_network = Config::defaults_for_profile(ConfigProfile::Dev);
+        cfg_after_network
+            .apply_cli_args(vec![
+                "--network".to_string(),
+                "private".to_string(),
+                "--bootnode".to_string(),
+                "/ip4/127.0.0.1/tcp/9301/p2p/12D3KooWbefore".to_string(),
+                "--p2p-listen".to_string(),
+                "/ip4/0.0.0.0/tcp/9320".to_string(),
+                "--rpc-listen".to_string(),
+                "0.0.0.0:8320".to_string(),
+            ])
+            .expect("apply args");
+
+        assert_eq!(cfg_before_network.network_profile, "private");
+        assert_eq!(cfg_before_network.chain_id, "pulsedag-private-v2-2-8-pre");
+        assert_eq!(cfg_before_network.p2p_bootstrap, cfg_after_network.p2p_bootstrap);
+        assert_eq!(cfg_before_network.p2p_listen, cfg_after_network.p2p_listen);
+        assert_eq!(cfg_before_network.rpc_bind, cfg_after_network.rpc_bind);
     }
 }
