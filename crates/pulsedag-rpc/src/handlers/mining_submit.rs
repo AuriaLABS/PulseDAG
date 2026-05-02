@@ -1183,12 +1183,9 @@ mod tests {
         .await;
 
         assert!(!submit_response.ok);
-        assert_eq!(submit_response.error_code.as_deref(), Some("SUBMIT_BLOCK_ERROR"));
-        let message = submit_response
-            .error
-            .as_deref()
-            .expect("error message expected");
-        assert!(message.contains("InvalidStructure"));
+        let error = submit_response.error.expect("error payload expected");
+        assert_eq!(error.code, "SUBMIT_BLOCK_ERROR");
+        assert!(error.message.contains("InvalidStructure"));
         let runtime = state.runtime.read().await;
         assert_eq!(runtime.rejected_mined_blocks, 1);
         assert_eq!(runtime.external_mining_submit_rejected, 1);
