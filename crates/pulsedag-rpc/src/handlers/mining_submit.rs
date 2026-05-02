@@ -1182,12 +1182,13 @@ mod tests {
         )
         .await;
 
-        assert!(submit_response.ok);
-        let data = submit_response.data.expect("submit data expected");
-        assert!(!data.accepted);
-        assert_eq!(data.reason_code, "submit_block_error");
-        let reason = data.pow_rejection_reason.expect("rejection reason expected");
-        assert!(reason.contains("InvalidStructure"));
+        assert!(!submit_response.ok);
+        assert_eq!(submit_response.error_code.as_deref(), Some("SUBMIT_BLOCK_ERROR"));
+        let message = submit_response
+            .error
+            .as_deref()
+            .expect("error message expected");
+        assert!(message.contains("InvalidStructure"));
         let runtime = state.runtime.read().await;
         assert_eq!(runtime.rejected_mined_blocks, 1);
         assert_eq!(runtime.external_mining_submit_rejected, 1);
