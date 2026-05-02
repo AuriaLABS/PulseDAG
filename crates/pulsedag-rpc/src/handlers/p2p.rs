@@ -592,7 +592,7 @@ mod tests {
             ),
             (P2P_MODE_LIBP2P_REAL, true, "real-network-connected-peers"),
         ] {
-            let mut status = P2pStatus {
+            let status = P2pStatus {
                 mode: mode.to_string(),
                 peer_id: "self".into(),
                 listening: vec!["memory://local".into()],
