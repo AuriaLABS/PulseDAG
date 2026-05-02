@@ -55,7 +55,6 @@ enum ExternalMiningRejectKind {
     SubmitBlockError,
     DuplicateBlock,
     InvalidBlock,
-    ChainIdMismatch,
     InternalError,
     StorageError,
 }
@@ -155,7 +154,6 @@ async fn record_external_mining_rejection<S: RpcStateLike>(
             ExternalMiningRejectKind::SubmitBlockError => "submit_block_error",
             ExternalMiningRejectKind::DuplicateBlock => "duplicate_block",
             ExternalMiningRejectKind::InvalidBlock => "invalid_block",
-            ExternalMiningRejectKind::ChainIdMismatch => "chain_id_mismatch",
             ExternalMiningRejectKind::InternalError => "internal_error",
             ExternalMiningRejectKind::StorageError => "storage_error",
         }
@@ -197,11 +195,6 @@ async fn record_external_mining_rejection<S: RpcStateLike>(
                 .external_mining_rejected_invalid_block
                 .saturating_add(1);
         }
-        ExternalMiningRejectKind::ChainIdMismatch => {
-            runtime.external_mining_rejected_chain_id_mismatch = runtime
-                .external_mining_rejected_chain_id_mismatch
-                .saturating_add(1);
-        }
         ExternalMiningRejectKind::InternalError => {
             runtime.external_mining_rejected_internal_error = runtime
                 .external_mining_rejected_internal_error
@@ -222,7 +215,6 @@ async fn record_external_mining_rejection<S: RpcStateLike>(
         ExternalMiningRejectKind::SubmitBlockError => "submit_block_error",
         ExternalMiningRejectKind::DuplicateBlock => "duplicate_block",
         ExternalMiningRejectKind::InvalidBlock => "invalid_block",
-        ExternalMiningRejectKind::ChainIdMismatch => "chain_id_mismatch",
         ExternalMiningRejectKind::InternalError => "internal_error",
         ExternalMiningRejectKind::StorageError => "storage_error",
     };
