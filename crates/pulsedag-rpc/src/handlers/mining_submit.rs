@@ -930,7 +930,10 @@ mod tests {
         )
         .await;
 
-        assert!(!second_response.ok);
+        assert!(second_response.ok);
+        let second_data = second_response.data.expect("submit data expected");
+        assert!(!second_data.accepted);
+        assert_eq!(second_data.reason_code, "stale_template");
         assert_eq!(fake_p2p.block_calls(), 1);
         let runtime = state.runtime.read().await;
         assert_eq!(runtime.accepted_mined_blocks, 1);
@@ -974,11 +977,13 @@ mod tests {
         )
         .await;
 
-        assert!(!submit_response.ok);
-        let err = submit_response.error.expect("error expected");
-        assert_eq!(err.code, "STALE_TEMPLATE");
-        assert!(err.message.contains("reason_code=template_mempool_changed"));
-        assert!(err.message.contains("mempool view changed"));
+        assert!(submit_response.ok);
+        let data = submit_response.data.expect("submit data expected");
+        assert!(!data.accepted);
+        assert_eq!(data.reason_code, "stale_template");
+        let reason = data.pow_rejection_reason.expect("rejection reason expected");
+        assert!(reason.contains("reason_code=template_mempool_changed"));
+        assert!(reason.contains("mempool view changed"));
         let runtime = state.runtime.read().await;
         assert_eq!(runtime.rejected_mined_blocks, 0);
         assert_eq!(runtime.external_mining_submit_rejected, 1);
@@ -1005,13 +1010,13 @@ mod tests {
         )
         .await;
 
-        assert!(!submit_response.ok);
-        let err = submit_response.error.expect("error expected");
-        assert_eq!(err.code, "STALE_TEMPLATE");
-        assert!(err
-            .message
-            .contains("reason_code=submitted_parents_mismatch"));
-        assert!(err.message.contains("parents"));
+        assert!(submit_response.ok);
+        let data = submit_response.data.expect("submit data expected");
+        assert!(!data.accepted);
+        assert_eq!(data.reason_code, "stale_template");
+        let reason = data.pow_rejection_reason.expect("rejection reason expected");
+        assert!(reason.contains("reason_code=submitted_parents_mismatch"));
+        assert!(reason.contains("parents"));
     }
 
     #[tokio::test]
@@ -1030,11 +1035,13 @@ mod tests {
         )
         .await;
 
-        assert!(!submit_response.ok);
-        let err = submit_response.error.expect("error expected");
-        assert_eq!(err.code, "INVALID_POW");
-        assert!(err.message.contains("score="));
-        assert!(err.message.contains("target="));
+        assert!(submit_response.ok);
+        let data = submit_response.data.expect("submit data expected");
+        assert!(!data.accepted);
+        assert_eq!(data.reason_code, "invalid_pow");
+        let reason = data.pow_rejection_reason.expect("rejection reason expected");
+        assert!(reason.contains("score="));
+        assert!(reason.contains("target="));
         let runtime = state.runtime.read().await;
         assert_eq!(runtime.rejected_mined_blocks, 1);
         assert_eq!(runtime.external_mining_rejected_invalid_pow, 1);
@@ -1112,11 +1119,13 @@ mod tests {
         )
         .await;
 
-        assert!(!submit_response.ok);
-        let err = submit_response.error.expect("error expected");
-        assert_eq!(err.code, "STALE_TEMPLATE");
-        assert!(err.message.contains("reason_code=template_expired"));
-        assert!(err.message.contains("freshness window elapsed"));
+        assert!(submit_response.ok);
+        let data = submit_response.data.expect("submit data expected");
+        assert!(!data.accepted);
+        assert_eq!(data.reason_code, "stale_template");
+        let reason = data.pow_rejection_reason.expect("rejection reason expected");
+        assert!(reason.contains("reason_code=template_expired"));
+        assert!(reason.contains("freshness window elapsed"));
         let runtime = state.runtime.read().await;
         assert_eq!(runtime.external_mining_submit_rejected, 1);
         assert_eq!(runtime.external_mining_rejected_stale_template, 1);
@@ -1141,12 +1150,12 @@ mod tests {
         )
         .await;
 
-        assert!(!submit_response.ok);
-        let err = submit_response.error.expect("error expected");
-        assert_eq!(err.code, "STALE_TEMPLATE");
-        assert!(err
-            .message
-            .contains("reason_code=submitted_transactions_mismatch"));
+        assert!(submit_response.ok);
+        let data = submit_response.data.expect("submit data expected");
+        assert!(!data.accepted);
+        assert_eq!(data.reason_code, "stale_template");
+        let reason = data.pow_rejection_reason.expect("rejection reason expected");
+        assert!(reason.contains("reason_code=submitted_transactions_mismatch"));
         let runtime = state.runtime.read().await;
         assert_eq!(
             runtime.external_mining_last_rejection_kind.as_deref(),
@@ -1173,10 +1182,12 @@ mod tests {
         )
         .await;
 
-        assert!(!submit_response.ok);
-        let err = submit_response.error.expect("error expected");
-        assert_eq!(err.code, "SUBMIT_BLOCK_ERROR");
-        assert!(err.message.contains("invalid block"));
+        assert!(submit_response.ok);
+        let data = submit_response.data.expect("submit data expected");
+        assert!(!data.accepted);
+        assert_eq!(data.reason_code, "submit_block_error");
+        let reason = data.pow_rejection_reason.expect("rejection reason expected");
+        assert!(reason.contains("InvalidStructure"));
         let runtime = state.runtime.read().await;
         assert_eq!(runtime.rejected_mined_blocks, 1);
         assert_eq!(runtime.external_mining_submit_rejected, 1);
