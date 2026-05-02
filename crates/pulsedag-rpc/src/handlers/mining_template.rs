@@ -366,6 +366,8 @@ pub async fn post_mining_template<S: RpcStateLike>(
         notes: vec!["Mining template uses centralized runtime retarget policy".to_string()],
     };
 
+    let blue_score = block.header.blue_score;
+
     Json(ApiResponse::ok(MiningTemplateData {
         mode: "external-miner-template".to_string(),
         algorithm: pulsedag_core::selected_pow_name().to_string(),
@@ -385,7 +387,7 @@ pub async fn post_mining_template<S: RpcStateLike>(
         timestamp_min_unix: created_at_unix.saturating_sub(1),
         timestamp_max_unix: expires_at_unix.saturating_add(TEMPLATE_FRESHNESS_GRACE_SECS),
         next_height: height,
-        blue_score: block.header.blue_score,
+        blue_score,
         mempool_tx_count: lifecycle.mempool_tx_count,
         metrics_hint,
         pow_preimage_hex,
