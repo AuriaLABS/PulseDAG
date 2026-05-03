@@ -3841,4 +3841,55 @@ mod inventory_tests {
         ));
         assert!(inbound_rx.try_recv().is_err());
     }
+
+    #[test]
+    fn unknown_block_announcement_can_be_observed_for_get_block_flow() {
+        let inner = Arc::new(Mutex::new(InnerState::default()));
+        let (inbound_tx, mut inbound_rx) = mpsc::unbounded_channel();
+        let wire = serde_json::to_vec(&NetworkMessage::BlockAnnounce {
+            chain_id: "testnet".into(),
+            hash: "unknown-block".into(),
+        })
+        .expect("serialize block announce");
+
+        dispatch_network_message("testnet", &wire, &inner, &inbound_tx);
+
+        assert!(matches!(
+            inbound_rx.try_recv(),
+            Ok(InboundEvent::BlockAnnouncement { hash }) if hash == "unknown-block"
+        ));
+    }
+
+    #[test]
+    fn block_data_message_delivers_full_block_to_acceptance_path() {
+        let inner = Arc::new(Mutex::new(InnerState::default()));
+        let (inbound_tx, mut inbound_rx) = mpsc::unbounded_channel();
+        let block = Block {
+            hash: "block-data-1".into(),
+            header: pulsedag_core::types::BlockHeader {
+                version: 1,
+                parents: vec![],
+                timestamp: 1,
+                difficulty: 1,
+                nonce: 1,
+                merkle_root: "mr".into(),
+                state_root: "sr".into(),
+                blue_score: 1,
+                height: 1,
+            },
+            transactions: vec![],
+        };
+        let wire = serde_json::to_vec(&NetworkMessage::BlockData {
+            chain_id: "testnet".into(),
+            block: Some(block.clone()),
+        })
+        .expect("serialize block data");
+
+        dispatch_network_message("testnet", &wire, &inner, &inbound_tx);
+
+        assert!(matches!(
+            inbound_rx.try_recv(),
+            Ok(InboundEvent::Block(received)) if received.hash == block.hash
+        ));
+    }
 }
