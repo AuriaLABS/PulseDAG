@@ -1,6 +1,7 @@
 use crate::{api::ApiResponse, api::RpcStateLike};
 use axum::{extract::State, Json};
 use pulsedag_p2p::{connected_peers_semantics, mode_connected_peers_are_real_network};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, serde::Serialize)]
 pub struct NodeStatusData {
@@ -8,8 +9,11 @@ pub struct NodeStatusData {
     pub version: String,
     pub chain_id: String,
     pub best_height: u64,
+    pub uptime_secs: u64,
     pub block_count: usize,
+    pub selected_tip: Option<String>,
     pub tip_count: usize,
+    pub orphan_count: usize,
     pub mempool_size: usize,
     pub utxo_count: usize,
     pub address_count: usize,
@@ -24,6 +28,7 @@ pub struct NodeStatusData {
     pub connected_peers_are_real_network: bool,
     pub connected_peers_semantics: String,
     pub peer_count: usize,
+    pub storage_backend: String,
     pub last_block_hash: Option<String>,
     pub contracts_prepared: bool,
     pub contracts_enabled: bool,
@@ -57,6 +62,11 @@ pub async fn get_status<S: RpcStateLike>(
     let runtime_handle = state.runtime();
     let runtime = runtime_handle.read().await;
     let keep_recent = runtime.prune_keep_recent_blocks.max(1);
+    let uptime_secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+        .saturating_sub(runtime.started_at_unix);
     let recommended_keep_from_height = chain
         .dag
         .best_height
@@ -92,14 +102,24 @@ pub async fn get_status<S: RpcStateLike>(
         .values()
         .max_by_key(|b| b.header.height)
         .map(|b| b.hash.clone());
+    let selected_tip = chain
+        .dag
+        .tips
+        .iter()
+        .filter_map(|tip| chain.dag.blocks.get(tip))
+        .max_by_key(|b| b.header.height)
+        .map(|b| b.hash.clone());
 
     Json(ApiResponse::ok(NodeStatusData {
         service: "pulsedagd".into(),
         version: repo_version(),
         chain_id: chain.chain_id.clone(),
         best_height: chain.dag.best_height,
+        uptime_secs,
         block_count: chain.dag.blocks.len(),
+        selected_tip,
         tip_count: chain.dag.tips.len(),
+        orphan_count: chain.dag.orphans.len(),
         mempool_size: chain.mempool.transactions.len(),
         utxo_count: chain.utxo.utxos.len(),
         address_count: chain.utxo.address_index.len(),
@@ -126,6 +146,7 @@ pub async fn get_status<S: RpcStateLike>(
         connected_peers_are_real_network,
         connected_peers_semantics,
         peer_count,
+        storage_backend: "rocksdb".to_string(),
         last_block_hash,
         contracts_prepared,
         contracts_enabled: chain.contracts.config.enabled,
