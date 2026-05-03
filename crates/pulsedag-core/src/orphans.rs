@@ -75,13 +75,16 @@ pub fn queue_orphan_block(
     missing_parents: Vec<Hash>,
 ) -> bool {
     let hash = block.hash.clone();
-    let inserted = state.orphan_blocks.insert(hash.clone(), block).is_none();
+    if state.orphan_blocks.contains_key(&hash) {
+        return false;
+    }
+    state.orphan_blocks.insert(hash.clone(), block);
     state
         .orphan_missing_parents
         .insert(hash.clone(), missing_parents);
     state.orphan_received_at_ms.insert(hash, now_ms());
     let _ = prune_orphans(state, DEFAULT_ORPHAN_MAX_COUNT, DEFAULT_ORPHAN_MAX_AGE_MS);
-    inserted
+    true
 }
 
 pub fn adopt_ready_orphans(state: &mut ChainState, source: AcceptSource) -> usize {
@@ -206,5 +209,29 @@ mod tests {
         assert!(!state.orphan_blocks.contains_key("orphan-0"));
         assert!(state.orphan_blocks.contains_key("orphan-1"));
         assert!(state.orphan_blocks.contains_key("orphan-2"));
+    }
+
+    #[test]
+    fn duplicate_orphan_is_ignored() {
+        let mut state = init_chain_state("test".into());
+        let mut orphan = build_candidate_block(
+            vec!["missing-parent".into()],
+            1,
+            1,
+            vec![build_coinbase_transaction("miner", 50, 1)],
+        );
+        orphan.hash = "dup-orphan".into();
+
+        assert!(queue_orphan_block(
+            &mut state,
+            orphan.clone(),
+            vec!["missing-parent".into()]
+        ));
+        assert!(!queue_orphan_block(
+            &mut state,
+            orphan,
+            vec!["missing-parent".into()]
+        ));
+        assert_eq!(state.orphan_blocks.len(), 1);
     }
 }

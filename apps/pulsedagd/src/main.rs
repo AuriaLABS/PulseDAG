@@ -521,6 +521,7 @@ async fn main() -> Result<()> {
                             rt.sync_pipeline.request_blocks(1, now);
                             rt.sync_pipeline.acquire_blocks(1);
                         }
+                        info!(event = "block_received", block_hash = %block.hash, parent_count = block.header.parents.len(), "received inbound p2p block payload");
                         let acceptance = pulsedag_core::accept_block_with_result(
                             block.clone(),
                             &mut guard,
@@ -558,7 +559,18 @@ async fn main() -> Result<()> {
                                     now_unix(),
                                 );
                             }
-                            info!(event = "missing_parent_detected", block = %block.hash, missing_parents = ?missing_parents, orphan_count = guard.orphan_blocks.len(), pruned, "queued inbound p2p orphan block");
+                            info!(event = "orphan_stored", block = %block.hash, missing_parents = ?missing_parents, orphan_count = guard.orphan_blocks.len(), "queued inbound p2p orphan block");
+                            for parent in &missing_parents {
+                                info!(event = "missing_block_requested", missing_parent = %parent, child = %block.hash, "missing parent discovered; request intent emitted where protocol supports it");
+                            }
+                            if pruned > 0 {
+                                warn!(
+                                    event = "orphan_evicted",
+                                    evicted = pruned,
+                                    orphan_count = guard.orphan_blocks.len(),
+                                    "orphan pool bounded; evicted oldest/expired entries"
+                                );
+                            }
                             if let Err(e) = storage.persist_block_and_chain_state(&block, &guard) {
                                 warn!(error = %e, "failed persisting chain state after orphan queue");
                             }
@@ -601,9 +613,16 @@ async fn main() -> Result<()> {
                             }
                             if adopted > 0 {
                                 info!(
+                                    event = "orphan_retried",
                                     adopted,
                                     remaining_orphans = guard.orphan_blocks.len(),
-                                    "adopted ready orphan blocks after inbound block"
+                                    "retried ready orphan blocks after parent acceptance"
+                                );
+                                info!(
+                                    event = "orphan_accepted",
+                                    adopted,
+                                    remaining_orphans = guard.orphan_blocks.len(),
+                                    "orphan blocks accepted after retry"
                                 );
                             }
                             info!(
