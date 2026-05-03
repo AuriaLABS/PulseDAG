@@ -3823,6 +3823,24 @@ mod inventory_tests {
     }
 
     #[test]
+    fn get_block_message_roundtrip() {
+        let msg = NetworkMessage::GetBlock {
+            chain_id: "testnet".into(),
+            hash: "h-request".into(),
+        };
+        let bytes = serde_json::to_vec(&msg).expect("serialize get_block message");
+        let decoded: NetworkMessage =
+            serde_json::from_slice(&bytes).expect("deserialize get_block message");
+        match decoded {
+            NetworkMessage::GetBlock { chain_id, hash } => {
+                assert_eq!(chain_id, "testnet");
+                assert_eq!(hash, "h-request");
+            }
+            _ => panic!("unexpected variant"),
+        }
+    }
+
+    #[test]
     fn duplicate_block_announcement_is_ignored() {
         let inner = Arc::new(Mutex::new(InnerState::default()));
         let (inbound_tx, mut inbound_rx) = mpsc::unbounded_channel();
