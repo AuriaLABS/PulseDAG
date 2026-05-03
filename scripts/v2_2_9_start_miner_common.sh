@@ -11,6 +11,11 @@ PULSEDAG_MINER_THREADS="${PULSEDAG_MINER_THREADS:-$(nproc)}"
 PULSEDAG_MINER_MAX_TRIES="${PULSEDAG_MINER_MAX_TRIES:-0}"
 PULSEDAG_MINER_SLEEP_MS="${PULSEDAG_MINER_SLEEP_MS:-250}"
 
+if [[ -z "${PULSEDAG_MINER_ADDRESS// }" ]]; then
+  echo "[error] PULSEDAG_MINER_ADDRESS cannot be empty"
+  exit 1
+fi
+
 if [[ ! -x "$MINER_BIN" ]]; then
   echo "[error] Missing external miner binary: $MINER_BIN"
   echo "[hint] Build it first: cargo build --release -p pulsedag-miner"
