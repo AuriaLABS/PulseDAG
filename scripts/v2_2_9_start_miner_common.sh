@@ -38,8 +38,8 @@ echo "       sleep-ms=$PULSEDAG_MINER_SLEEP_MS"
 echo "       loop=true"
 
 exec "$MINER_BIN" \
-  --node-rpc "$PULSEDAG_NODE_RPC" \
-  --address "$PULSEDAG_MINER_ADDRESS" \
+  --node "$PULSEDAG_NODE_RPC" \
+  --miner-address "$PULSEDAG_MINER_ADDRESS" \
   --threads "$PULSEDAG_MINER_THREADS" \
   --max-tries "$PULSEDAG_MINER_MAX_TRIES" \
   --sleep-ms "$PULSEDAG_MINER_SLEEP_MS" \
