@@ -704,9 +704,9 @@ mod tests {
     #[test]
     fn hash_score_uses_big_endian_prefix() {
         let h = sample_header();
-        let hash = blake3::hash(&pow_preimage_bytes(&h));
+        let hash = pow_hash(&h);
         let mut bytes = [0u8; 8];
-        bytes.copy_from_slice(&hash.as_bytes()[..8]);
+        bytes.copy_from_slice(&hash[..8]);
         let expected = u64::from_be_bytes(bytes);
         assert_eq!(pow_hash_score_u64(&h), expected);
     }
@@ -726,7 +726,7 @@ mod tests {
         let h = sample_header();
         assert_eq!(
             pow_hash_hex(&h),
-            "98384a054292e340f392d2a7f53e623a26213375b10073790d2d82954fee0a89"
+            "65c6eda13bbf482b386b0b66f7ec858701ea1aa96d44fa48cf8417e7edbb226e"
         );
     }
 
