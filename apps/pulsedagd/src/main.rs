@@ -489,18 +489,19 @@ async fn main() -> Result<()> {
                         }
                     }
                     InboundEvent::BlockAnnouncement { hash } => {
-                        info!(block_hash = %hash, "block announced by peer");
+                        info!(event = "block_announced", block_hash = %hash, "block announced by peer");
                         let known = {
                             let guard = chain.read().await;
                             guard.dag.blocks.contains_key(&hash)
                         };
                         if known {
-                            info!(block_hash = %hash, "duplicate block announcement ignored");
+                            info!(event = "duplicate_block_ignored", block_hash = %hash, "duplicate block announcement ignored");
                         } else {
-                            info!(block_hash = %hash, "unknown block announced; requesting block from peers");
+                            info!(event = "unknown_block_announced", block_hash = %hash, "unknown block announced; requesting block from peers");
+                            info!(event = "block_request_sent", block_hash = %hash, "issuing GetBlock request intent for unknown block");
                             let _ = storage.append_runtime_event(
                                 "info",
-                                "block_requested",
+                                "block_request_sent",
                                 &format!("hash={}", hash),
                             );
                         }
@@ -557,7 +558,7 @@ async fn main() -> Result<()> {
                                     now_unix(),
                                 );
                             }
-                            info!(block = %block.hash, missing_parents = ?missing_parents, orphan_count = guard.orphan_blocks.len(), pruned, "queued inbound p2p orphan block");
+                            info!(event = "missing_parent_detected", block = %block.hash, missing_parents = ?missing_parents, orphan_count = guard.orphan_blocks.len(), pruned, "queued inbound p2p orphan block");
                             if let Err(e) = storage.persist_block_and_chain_state(&block, &guard) {
                                 warn!(error = %e, "failed persisting chain state after orphan queue");
                             }
@@ -582,7 +583,7 @@ async fn main() -> Result<()> {
                                 format!("block {} validation failed: {:?}", block.hash, acceptance),
                                 now_unix(),
                             );
-                            warn!(outcome = ?acceptance, "rejected inbound p2p block");
+                            warn!(event = "block_rejected_from_peer", outcome = ?acceptance, block_hash = %block.hash, "rejected inbound p2p block");
                         } else {
                             let adopted =
                                 pulsedag_core::adopt_ready_orphans(&mut guard, AcceptSource::P2p);
@@ -606,6 +607,8 @@ async fn main() -> Result<()> {
                                 );
                             }
                             info!(
+                                event = "block_accepted_from_peer",
+                                block_hash = %block.hash,
                                 accepted_height,
                                 accepted_tip = %short_hash(&accepted_tip),
                                 "accepted inbound p2p block"
