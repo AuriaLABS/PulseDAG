@@ -157,3 +157,10 @@ v2.3.0 still owns:
 - Rehearsal scope is clearly defined as pre-v2.3.0 readiness validation.
 - Workstreams are split into PR-sized sections with acceptance criteria.
 - Closure notes explicitly state: **v2.2.9 is private-testnet rehearsal; v2.3.0 is official readiness milestone**.
+
+
+## Closure status (v2.2.9)
+
+- **Completed in v2.2.9:** multi-node rehearsal profiles and docs, start/stop/status rehearsal scripts, external miner rehearsal flow, block propagation rehearsal, sync/restart/catch-up rehearsal, network status/runtime visibility rehearsals, acceptance tests/runbooks, and external server rehearsal documentation.
+- **Deferred to v2.3.0:** official private-testnet readiness sign-off, extended burn-in confidence, and any launch-gate outcomes.
+- **Still excluded in v2.2.9:** public testnet claim, production-readiness claim, smart contracts, in-miner pool logic, and long burn-in claim.

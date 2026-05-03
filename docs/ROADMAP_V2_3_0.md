@@ -7,11 +7,11 @@
 - **Smart contracts remain out of scope** for this phase.
 - **No public testnet claim yet.** v2.3.0 is explicitly private testnet only.
 
-## Dependency on v2.2.7
+## Dependency on v2.2.9 rehearsal
 
-v2.3.0 builds on the v2.2.7 baseline:
+v2.3.0 builds on the v2.2.9 rehearsal baseline (including v2.2.7/v2.2.8 foundations):
 
-- Workspace and release documentation are aligned to v2.2.7 before v2.3.0 begins.
+- Workspace and release documentation are aligned through v2.2.9 before v2.3.0 finalization.
 - PoW/mining acceptance foundations are treated as the starting point, not the final production form.
 - The external miner boundary remains mandatory.
 - No pool logic is added inside the miner.
