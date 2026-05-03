@@ -33,6 +33,9 @@ enum ConfigProfile {
     Private,
     Testnet,
     Operator,
+    RehearsalA,
+    RehearsalB,
+    RehearsalC,
 }
 
 impl ConfigProfile {
@@ -43,8 +46,11 @@ impl ConfigProfile {
             "private" | "private-testnet" => Ok(Self::Private),
             "testnet" => Ok(Self::Testnet),
             "operator" | "staging" => Ok(Self::Operator),
+            "rehearsal-a" => Ok(Self::RehearsalA),
+            "rehearsal-b" => Ok(Self::RehearsalB),
+            "rehearsal-c" => Ok(Self::RehearsalC),
             other => bail!(
-                "invalid PULSEDAG_CONFIG_PROFILE value '{other}'. Supported values: dev, local, private, testnet, operator (alias: staging)"
+                "invalid PULSEDAG_CONFIG_PROFILE value '{other}'. Supported values: dev, local, private, testnet, operator (alias: staging), rehearsal-a, rehearsal-b, rehearsal-c"
             ),
         }
     }
@@ -158,6 +164,81 @@ impl Config {
                 auto_prune_enabled: true,
                 auto_prune_every_blocks: 100,
                 prune_keep_recent_blocks: 500,
+                prune_require_snapshot: true,
+            },
+            ConfigProfile::RehearsalA => Self {
+                network_profile: "rehearsal-a".into(),
+                chain_id: "pulsedag-rehearsal".into(),
+                rpc_bind: "127.0.0.1:18080".into(),
+                p2p_enabled: true,
+                p2p_mode: "libp2p-real".into(),
+                p2p_listen: "/ip4/0.0.0.0/tcp/18181".into(),
+                p2p_bootstrap: Vec::new(),
+                p2p_mdns: false,
+                p2p_kademlia: true,
+                p2p_connection_slot_budget: 32,
+                rocksdb_path: "./data/rehearsal-a/rocksdb".into(),
+                simulated_peers: Vec::new(),
+                auto_rebuild_on_start: true,
+                persist_snapshot_on_start: true,
+                target_block_interval_secs: 45,
+                difficulty_window: 20,
+                max_future_drift_secs: 120,
+                snapshot_auto_every_blocks: 25,
+                auto_prune_enabled: true,
+                auto_prune_every_blocks: 100,
+                prune_keep_recent_blocks: 800,
+                prune_require_snapshot: true,
+            },
+            ConfigProfile::RehearsalB => Self {
+                network_profile: "rehearsal-b".into(),
+                chain_id: "pulsedag-rehearsal".into(),
+                rpc_bind: "127.0.0.1:18081".into(),
+                p2p_enabled: true,
+                p2p_mode: "libp2p-real".into(),
+                p2p_listen: "/ip4/0.0.0.0/tcp/18182".into(),
+                p2p_bootstrap: vec!["/ip4/127.0.0.1/tcp/18181".into()],
+                p2p_mdns: false,
+                p2p_kademlia: true,
+                p2p_connection_slot_budget: 32,
+                rocksdb_path: "./data/rehearsal-b/rocksdb".into(),
+                simulated_peers: Vec::new(),
+                auto_rebuild_on_start: true,
+                persist_snapshot_on_start: true,
+                target_block_interval_secs: 45,
+                difficulty_window: 20,
+                max_future_drift_secs: 120,
+                snapshot_auto_every_blocks: 25,
+                auto_prune_enabled: true,
+                auto_prune_every_blocks: 100,
+                prune_keep_recent_blocks: 800,
+                prune_require_snapshot: true,
+            },
+            ConfigProfile::RehearsalC => Self {
+                network_profile: "rehearsal-c".into(),
+                chain_id: "pulsedag-rehearsal".into(),
+                rpc_bind: "127.0.0.1:18082".into(),
+                p2p_enabled: true,
+                p2p_mode: "libp2p-real".into(),
+                p2p_listen: "/ip4/0.0.0.0/tcp/18183".into(),
+                p2p_bootstrap: vec![
+                    "/ip4/127.0.0.1/tcp/18181".into(),
+                    "/ip4/127.0.0.1/tcp/18182".into(),
+                ],
+                p2p_mdns: false,
+                p2p_kademlia: true,
+                p2p_connection_slot_budget: 32,
+                rocksdb_path: "./data/rehearsal-c/rocksdb".into(),
+                simulated_peers: Vec::new(),
+                auto_rebuild_on_start: true,
+                persist_snapshot_on_start: true,
+                target_block_interval_secs: 45,
+                difficulty_window: 20,
+                max_future_drift_secs: 120,
+                snapshot_auto_every_blocks: 25,
+                auto_prune_enabled: true,
+                auto_prune_every_blocks: 100,
+                prune_keep_recent_blocks: 800,
                 prune_require_snapshot: true,
             },
             ConfigProfile::Operator => Self {
@@ -488,7 +569,77 @@ mod tests {
         cfg.apply_cli_args(vec!["--network".to_string(), "private".to_string()])
             .expect("apply cli args");
         assert_eq!(cfg.rpc_bind, "0.0.0.0:8280");
-        assert_eq!(cfg.p2p_listen, "/ip4/0.0.0.0/tcp/33800");
+        assert_eq!(cfg.p2p_listen, "/ip4/0.0.0.0/tcp/32333");
+    }
+
+    #[test]
+    fn rehearsal_profiles_load_expected_defaults() {
+        let rehearsal_a = Config::defaults_for_profile(ConfigProfile::RehearsalA);
+        assert_eq!(rehearsal_a.network_profile, "rehearsal-a");
+        assert_eq!(rehearsal_a.chain_id, "pulsedag-rehearsal");
+        assert_eq!(rehearsal_a.rpc_bind, "127.0.0.1:18080");
+        assert_eq!(rehearsal_a.p2p_listen, "/ip4/0.0.0.0/tcp/18181");
+        assert_eq!(rehearsal_a.rocksdb_path, "./data/rehearsal-a/rocksdb");
+        assert!(rehearsal_a.p2p_bootstrap.is_empty());
+
+        let rehearsal_b = Config::defaults_for_profile(ConfigProfile::RehearsalB);
+        assert_eq!(rehearsal_b.network_profile, "rehearsal-b");
+        assert_eq!(rehearsal_b.chain_id, "pulsedag-rehearsal");
+        assert_eq!(rehearsal_b.rpc_bind, "127.0.0.1:18081");
+        assert_eq!(rehearsal_b.p2p_listen, "/ip4/0.0.0.0/tcp/18182");
+        assert_eq!(rehearsal_b.rocksdb_path, "./data/rehearsal-b/rocksdb");
+        assert_eq!(rehearsal_b.p2p_bootstrap, vec!["/ip4/127.0.0.1/tcp/18181"]);
+
+        let rehearsal_c = Config::defaults_for_profile(ConfigProfile::RehearsalC);
+        assert_eq!(rehearsal_c.network_profile, "rehearsal-c");
+        assert_eq!(rehearsal_c.chain_id, "pulsedag-rehearsal");
+        assert_eq!(rehearsal_c.rpc_bind, "127.0.0.1:18082");
+        assert_eq!(rehearsal_c.p2p_listen, "/ip4/0.0.0.0/tcp/18183");
+        assert_eq!(rehearsal_c.rocksdb_path, "./data/rehearsal-c/rocksdb");
+        assert_eq!(
+            rehearsal_c.p2p_bootstrap,
+            vec!["/ip4/127.0.0.1/tcp/18181", "/ip4/127.0.0.1/tcp/18182"]
+        );
+    }
+
+    #[test]
+    fn rehearsal_profiles_share_chain_and_separate_data_dirs() {
+        let rehearsal_a = Config::defaults_for_profile(ConfigProfile::RehearsalA);
+        let rehearsal_b = Config::defaults_for_profile(ConfigProfile::RehearsalB);
+        let rehearsal_c = Config::defaults_for_profile(ConfigProfile::RehearsalC);
+
+        assert_eq!(rehearsal_a.chain_id, rehearsal_b.chain_id);
+        assert_eq!(rehearsal_b.chain_id, rehearsal_c.chain_id);
+        assert_ne!(rehearsal_a.rocksdb_path, rehearsal_b.rocksdb_path);
+        assert_ne!(rehearsal_b.rocksdb_path, rehearsal_c.rocksdb_path);
+        assert_ne!(rehearsal_a.rocksdb_path, rehearsal_c.rocksdb_path);
+    }
+
+    #[test]
+    fn rehearsal_cli_overrides_preserve_explicit_values() {
+        let mut cfg = Config::defaults_for_profile(ConfigProfile::Dev);
+        cfg.apply_cli_args(vec![
+            "--network".to_string(),
+            "rehearsal-b".to_string(),
+            "--rpc-listen".to_string(),
+            "127.0.0.1:28081".to_string(),
+            "--p2p-listen".to_string(),
+            "/ip4/0.0.0.0/tcp/28182".to_string(),
+            "--bootnode".to_string(),
+            "/ip4/10.0.0.1/tcp/29000".to_string(),
+        ])
+        .expect("apply cli args");
+
+        assert_eq!(cfg.network_profile, "rehearsal-b");
+        assert_eq!(cfg.rpc_bind, "127.0.0.1:28081");
+        assert_eq!(cfg.p2p_listen, "/ip4/0.0.0.0/tcp/28182");
+        assert_eq!(
+            cfg.p2p_bootstrap,
+            vec![
+                "/ip4/127.0.0.1/tcp/18181".to_string(),
+                "/ip4/10.0.0.1/tcp/29000".to_string()
+            ]
+        );
     }
 
     #[test]
