@@ -981,7 +981,9 @@ mod tests {
         let data = submit_response.data.expect("submit data expected");
         assert!(!data.accepted);
         assert_eq!(data.reason_code, "stale_template");
-        let reason = data.pow_rejection_reason.expect("rejection reason expected");
+        let reason = data
+            .pow_rejection_reason
+            .expect("rejection reason expected");
         assert!(reason.contains("reason_code=template_mempool_changed"));
         assert!(reason.contains("mempool view changed"));
         let runtime = state.runtime.read().await;
@@ -1014,7 +1016,9 @@ mod tests {
         let data = submit_response.data.expect("submit data expected");
         assert!(!data.accepted);
         assert_eq!(data.reason_code, "stale_template");
-        let reason = data.pow_rejection_reason.expect("rejection reason expected");
+        let reason = data
+            .pow_rejection_reason
+            .expect("rejection reason expected");
         assert!(reason.contains("reason_code=submitted_parents_mismatch"));
         assert!(reason.contains("parents"));
     }
@@ -1039,7 +1043,9 @@ mod tests {
         let data = submit_response.data.expect("submit data expected");
         assert!(!data.accepted);
         assert_eq!(data.reason_code, "invalid_pow");
-        let reason = data.pow_rejection_reason.expect("rejection reason expected");
+        let reason = data
+            .pow_rejection_reason
+            .expect("rejection reason expected");
         assert!(reason.contains("score="));
         assert!(reason.contains("target="));
         let runtime = state.runtime.read().await;
@@ -1123,7 +1129,9 @@ mod tests {
         let data = submit_response.data.expect("submit data expected");
         assert!(!data.accepted);
         assert_eq!(data.reason_code, "stale_template");
-        let reason = data.pow_rejection_reason.expect("rejection reason expected");
+        let reason = data
+            .pow_rejection_reason
+            .expect("rejection reason expected");
         assert!(reason.contains("reason_code=template_expired"));
         assert!(reason.contains("freshness window elapsed"));
         let runtime = state.runtime.read().await;
@@ -1154,7 +1162,9 @@ mod tests {
         let data = submit_response.data.expect("submit data expected");
         assert!(!data.accepted);
         assert_eq!(data.reason_code, "stale_template");
-        let reason = data.pow_rejection_reason.expect("rejection reason expected");
+        let reason = data
+            .pow_rejection_reason
+            .expect("rejection reason expected");
         assert!(reason.contains("reason_code=submitted_transactions_mismatch"));
         let runtime = state.runtime.read().await;
         assert_eq!(

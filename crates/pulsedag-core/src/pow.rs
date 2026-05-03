@@ -1,4 +1,5 @@
 use crate::{state::ChainState, types::BlockHeader};
+use sha3::Digest;
 
 fn read_env_u64(name: &str, default: u64) -> u64 {
     std::env::var(name)
@@ -232,13 +233,13 @@ impl PowEngine for CanonicalPowEngine {
     }
 
     fn hash_preimage_hex(&self, preimage: &[u8]) -> String {
-        blake3::hash(preimage).to_hex().to_string()
+        hex::encode(sha3::Keccak256::digest(preimage))
     }
 
     fn score_preimage_u64(&self, preimage: &[u8]) -> u64 {
-        let hash = blake3::hash(preimage);
+        let digest = sha3::Keccak256::digest(preimage);
         let mut prefix = [0u8; 8];
-        prefix.copy_from_slice(&hash.as_bytes()[..8]);
+        prefix.copy_from_slice(&digest[..8]);
         u64::from_be_bytes(prefix)
     }
 }
@@ -346,7 +347,7 @@ pub fn pow_preimage_string(header: &BlockHeader) -> String {
 }
 
 pub fn pow_hash(header: &BlockHeader) -> [u8; 32] {
-    blake3::hash(&pow_preimage_bytes(header)).into()
+    sha3::Keccak256::digest(pow_preimage_bytes(header)).into()
 }
 
 pub fn pow_hash_hex(header: &BlockHeader) -> String {
