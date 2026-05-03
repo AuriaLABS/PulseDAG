@@ -113,6 +113,7 @@ async fn main() -> Result<()> {
         p2p_bind = %cfg.p2p_listen,
         rpc_bind = %cfg.rpc_bind,
         data_dir = %cfg.rocksdb_path,
+        p2p_bootstrap = ?cfg.p2p_bootstrap,
         genesis_hash = %genesis_hash,
         "node startup identity"
     );
