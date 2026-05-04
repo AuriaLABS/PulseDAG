@@ -25,10 +25,9 @@ pub enum AcceptSource {
 pub enum BlockAcceptanceResult {
     Accepted,
     Duplicate,
-    UnknownParent,
-    InvalidTimestamp,
+    MissingParent,
     InvalidPow,
-    InvalidStructure,
+    Malformed,
     Rejected(String),
 }
 
@@ -43,11 +42,9 @@ fn classify_block_validation_error(err: PulseError) -> BlockAcceptanceResult {
         PulseError::BlockAlreadyExists => BlockAcceptanceResult::Duplicate,
         PulseError::InvalidBlock(msg) => {
             if msg.contains("missing parent") {
-                BlockAcceptanceResult::UnknownParent
-            } else if msg.contains("timestamp") {
-                BlockAcceptanceResult::InvalidTimestamp
+                BlockAcceptanceResult::MissingParent
             } else {
-                BlockAcceptanceResult::InvalidStructure
+                BlockAcceptanceResult::Malformed
             }
         }
         other => BlockAcceptanceResult::Rejected(other.to_string()),
@@ -528,18 +525,15 @@ pub fn accept_block(
     match accept_block_with_result(block, state, source) {
         BlockAcceptanceResult::Accepted => Ok(()),
         BlockAcceptanceResult::Duplicate => Err(PulseError::BlockAlreadyExists),
-        BlockAcceptanceResult::UnknownParent => {
+        BlockAcceptanceResult::MissingParent => {
             Err(PulseError::InvalidBlock("missing parent".to_string()))
-        }
-        BlockAcceptanceResult::InvalidTimestamp => {
-            Err(PulseError::InvalidBlock("invalid timestamp".to_string()))
         }
         BlockAcceptanceResult::InvalidPow => Err(PulseError::InvalidBlock(format!(
             "pow rejected by current {} policy",
             selected_pow_name()
         ))),
-        BlockAcceptanceResult::InvalidStructure => Err(PulseError::InvalidBlock(
-            "invalid block structure".to_string(),
+        BlockAcceptanceResult::Malformed => Err(PulseError::InvalidBlock(
+            "malformed block".to_string(),
         )),
         BlockAcceptanceResult::Rejected(reason) => Err(PulseError::InvalidBlock(reason)),
     }
@@ -597,13 +591,13 @@ mod tests {
         let mut block = build_candidate_block(vec!["missing-parent".into()], 1, 1, txs);
         block.hash = "orphan-block".to_string();
         let outcome = accept_block_with_result(block, &mut state, AcceptSource::P2p);
-        assert_eq!(outcome, BlockAcceptanceResult::UnknownParent);
+        assert_eq!(outcome, BlockAcceptanceResult::MissingParent);
     }
 
     #[test]
     fn acceptance_result_is_machine_readable() {
-        let encoded = serde_json::to_string(&BlockAcceptanceResult::InvalidStructure).unwrap();
-        assert_eq!(encoded, "{\"status\":\"invalid_structure\"}");
+        let encoded = serde_json::to_string(&BlockAcceptanceResult::Malformed).unwrap();
+        assert_eq!(encoded, "{\"status\":\"malformed\"}");
     }
 
     #[test]
@@ -617,6 +611,6 @@ mod tests {
         let mut block = build_candidate_block(parents, 1, 1, txs);
         block.hash = "mutated-block".to_string();
         let outcome = accept_block_with_result(block, &mut state, AcceptSource::P2p);
-        assert_eq!(outcome, BlockAcceptanceResult::InvalidStructure);
+        assert_eq!(outcome, BlockAcceptanceResult::Malformed);
     }
 }

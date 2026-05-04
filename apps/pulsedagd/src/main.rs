@@ -529,7 +529,7 @@ async fn main() -> Result<()> {
                         );
                         if matches!(
                             acceptance,
-                            pulsedag_core::BlockAcceptanceResult::UnknownParent
+                            pulsedag_core::BlockAcceptanceResult::MissingParent
                         ) {
                             let missing_parents =
                                 pulsedag_core::missing_block_parents(&block, &guard);
