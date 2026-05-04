@@ -1,4 +1,6 @@
 use crate::{state::ChainState, types::BlockHeader};
+use kaspa_hashes::{Hash as KaspaHash, PowHash};
+use kaspa_pow::matrix::Matrix;
 use sha3::Digest;
 
 fn read_env_u64(name: &str, default: u64) -> u64 {
@@ -225,27 +227,46 @@ pub trait PowEngine {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct CanonicalPowEngine;
+pub struct KaspaKHeavyHashEngine;
+pub type CanonicalPowEngine = KaspaKHeavyHashEngine;
 
-impl PowEngine for CanonicalPowEngine {
+impl KaspaKHeavyHashEngine {
+    pub fn algorithm_name(&self) -> &'static str {
+        "kHeavyHash"
+    }
+
+    pub fn engine_name(&self) -> &'static str {
+        "kaspa-kheavyhash"
+    }
+}
+
+impl PowEngine for KaspaKHeavyHashEngine {
     fn algorithm(&self) -> PowAlgorithm {
         PowAlgorithm::KHeavyHash
     }
 
     fn hash_preimage_hex(&self, preimage: &[u8]) -> String {
-        hex::encode(sha3::Keccak256::digest(preimage))
+        hex::encode(kheavyhash_digest(preimage))
     }
 
     fn score_preimage_u64(&self, preimage: &[u8]) -> u64 {
-        let digest = sha3::Keccak256::digest(preimage);
+        let digest = kheavyhash_digest(preimage);
         let mut prefix = [0u8; 8];
-        prefix.copy_from_slice(&digest[..8]);
+        prefix.copy_from_slice(&digest.as_bytes()[..8]);
         u64::from_be_bytes(prefix)
     }
 }
 
-pub fn canonical_pow_engine() -> CanonicalPowEngine {
-    CanonicalPowEngine
+pub fn canonical_pow_engine() -> KaspaKHeavyHashEngine {
+    KaspaKHeavyHashEngine
+}
+
+fn kheavyhash_digest(preimage: &[u8]) -> KaspaHash {
+    let pre_pow_hash = KaspaHash::from_bytes(sha3::Keccak256::digest(preimage).into());
+    let hasher = PowHash::new(pre_pow_hash, 0);
+    let initial_hash = hasher.finalize_with_nonce(0);
+    let matrix = Matrix::generate(pre_pow_hash);
+    matrix.heavy_hash(initial_hash)
 }
 
 fn encode_len_prefixed_utf8(out: &mut Vec<u8>, value: &str) {
@@ -347,7 +368,14 @@ pub fn pow_preimage_string(header: &BlockHeader) -> String {
 }
 
 pub fn pow_hash(header: &BlockHeader) -> [u8; 32] {
-    sha3::Keccak256::digest(pow_preimage_bytes(header)).into()
+    let hash_hex = canonical_pow_engine().evaluate_header(header).hash_hex;
+    let mut out = [0u8; 32];
+    if let Ok(bytes) = hex::decode(hash_hex) {
+        if bytes.len() == 32 {
+            out.copy_from_slice(&bytes);
+        }
+    }
+    out
 }
 
 pub fn pow_hash_hex(header: &BlockHeader) -> String {
@@ -726,7 +754,7 @@ mod tests {
         let h = sample_header();
         assert_eq!(
             pow_hash_hex(&h),
-            "98384a054292e340f392d2a7f53e623a26213375b10073790d2d82954fee0a89"
+            "5284e54730a2551c81c0672329993e9c45769f52d9fea711a2875e25f12c5509"
         );
     }
 
