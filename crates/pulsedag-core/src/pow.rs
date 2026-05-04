@@ -517,6 +517,9 @@ pub fn pow_target_u64(difficulty: u64) -> u64 {
 }
 
 pub fn verify_work(header: &BlockHeader) -> bool {
+    if validate_pow_preimage_encoding(header).is_err() {
+        return false;
+    }
     let hash = pow_hash(header);
     let target = target_from_bits(header.difficulty);
     compare_pow_hash_to_target(&hash, &target)
@@ -1160,6 +1163,14 @@ mod tests {
         assert!(!verify_work(&parents_mutated));
     }
 
+    #[test]
+    fn verify_work_rejects_malformed_preimage_header() {
+        let mut h = sample_header();
+        h.difficulty = 0x207fffff;
+        h.merkle_root = "m".repeat((u16::MAX as usize) + 1);
+        assert!(pow_hash(&h).iter().all(|&b| b == 0));
+        assert!(!verify_work(&h));
+    }
     #[test]
     fn verify_work_matches_boundary_semantics() {
         let h = sample_header();
