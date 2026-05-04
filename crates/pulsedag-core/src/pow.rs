@@ -84,7 +84,6 @@ pub struct PowHeaderPreimage<'a> {
     pub parents: &'a [String],
     pub timestamp: u64,
     pub difficulty: u32,
-    pub nonce: u64,
     pub merkle_root: &'a str,
     pub state_root: &'a str,
     pub blue_score: u64,
@@ -98,7 +97,6 @@ impl<'a> PowHeaderPreimage<'a> {
             parents: &header.parents,
             timestamp: header.timestamp,
             difficulty: header.difficulty,
-            nonce: header.nonce,
             merkle_root: &header.merkle_root,
             state_root: &header.state_root,
             blue_score: header.blue_score,
@@ -119,13 +117,14 @@ impl<'a> PowHeaderPreimage<'a> {
 
         let parent_count = self.parents.len() as u16;
         out.extend_from_slice(&parent_count.to_le_bytes());
-        for parent in self.parents {
+        let mut parents = self.parents.to_vec();
+        parents.sort_unstable();
+        for parent in &parents {
             encode_len_prefixed_utf8(&mut out, parent);
         }
 
         out.extend_from_slice(&self.timestamp.to_le_bytes());
         out.extend_from_slice(&self.difficulty.to_le_bytes());
-        out.extend_from_slice(&self.nonce.to_le_bytes());
         encode_len_prefixed_utf8(&mut out, self.merkle_root);
         encode_len_prefixed_utf8(&mut out, self.state_root);
         out.extend_from_slice(&self.blue_score.to_le_bytes());
@@ -135,13 +134,16 @@ impl<'a> PowHeaderPreimage<'a> {
 
     pub fn to_debug_string(&self) -> String {
         format!(
-            "pv={}|v={}|parents={}|ts={}|difficulty={}|nonce={}|merkle={}|state={}|blue={}|height={}",
+            "pv={}|v={}|parents={}|ts={}|difficulty={}|merkle={}|state={}|blue={}|height={}",
             POW_HEADER_PREIMAGE_VERSION,
             self.version,
-            self.parents.join(","),
+            {
+                let mut parents = self.parents.to_vec();
+                parents.sort_unstable();
+                parents.join(",")
+            },
             self.timestamp,
             self.difficulty,
-            self.nonce,
             self.merkle_root,
             self.state_root,
             self.blue_score,
@@ -206,7 +208,7 @@ pub trait PowEngine {
         u64::MAX / difficulty
     }
     fn evaluate_preimage(&self, preimage: &[u8], difficulty: u64) -> PowEvaluation {
-        let digest = kheavyhash_digest(preimage);
+        let digest = kheavyhash_digest(preimage, 0);
         let mut hash = [0u8; 32];
         hash.copy_from_slice(&digest.as_bytes());
         let hash_hex = hex::encode(hash);
@@ -226,7 +228,27 @@ pub trait PowEngine {
     }
     fn evaluate_header(&self, header: &BlockHeader) -> PowEvaluation {
         match PowHeaderPreimage::from_header(header).to_bytes_checked() {
-            Ok(preimage) => self.evaluate_preimage(&preimage, header.difficulty as u64),
+            Ok(pre_pow_bytes) => {
+                let digest = kheavyhash_digest(&pre_pow_bytes, header.nonce);
+                let mut hash = [0u8; 32];
+                hash.copy_from_slice(&digest.as_bytes());
+                let hash_hex = hex::encode(hash);
+                let mut prefix = [0u8; 8];
+                prefix.copy_from_slice(&hash[..8]);
+                let score_u64 = u64::from_be_bytes(prefix);
+                let target = target_from_bits(header.difficulty);
+                let target_u64 = leading_u64(&target);
+                let target_hex = target_hex(&target);
+                PowEvaluation {
+                    algorithm: self.algorithm(),
+                    hash_hex,
+                    hash,
+                    score_u64,
+                    target_u64,
+                    target_hex,
+                    accepted: compare_pow_hash_to_target(&hash, &target),
+                }
+            }
             Err(_) => PowEvaluation {
                 algorithm: self.algorithm(),
                 hash_hex: String::new(),
@@ -260,11 +282,11 @@ impl PowEngine for KaspaKHeavyHashEngine {
     }
 
     fn hash_preimage_hex(&self, preimage: &[u8]) -> String {
-        hex::encode(kheavyhash_digest(preimage))
+        hex::encode(kheavyhash_digest(preimage, 0))
     }
 
     fn score_preimage_u64(&self, preimage: &[u8]) -> u64 {
-        let digest = kheavyhash_digest(preimage);
+        let digest = kheavyhash_digest(preimage, 0);
         let mut prefix = [0u8; 8];
         prefix.copy_from_slice(&digest.as_bytes()[..8]);
         u64::from_be_bytes(prefix)
@@ -275,10 +297,10 @@ pub fn canonical_pow_engine() -> KaspaKHeavyHashEngine {
     KaspaKHeavyHashEngine
 }
 
-fn kheavyhash_digest(preimage: &[u8]) -> KaspaHash {
-    let pre_pow_hash = KaspaHash::from_bytes(sha3::Keccak256::digest(preimage).into());
+fn kheavyhash_digest(pre_pow_bytes: &[u8], nonce: u64) -> KaspaHash {
+    let pre_pow_hash = KaspaHash::from_bytes(sha3::Keccak256::digest(pre_pow_bytes).into());
     let hasher = PowHash::new(pre_pow_hash, 0);
-    let initial_hash = hasher.finalize_with_nonce(0);
+    let initial_hash = hasher.finalize_with_nonce(nonce);
     let matrix = Matrix::generate(pre_pow_hash);
     matrix.heavy_hash(initial_hash)
 }
@@ -369,11 +391,14 @@ pub fn pow_validation_result(header: &BlockHeader) -> PowValidationResult {
 /// 4) each parent hash string as (`u16` byte length LE + UTF-8 bytes)
 /// 5) header.timestamp (`u64`, little-endian)
 /// 6) header.difficulty (`u32`, little-endian)
-/// 7) header.nonce (`u64`, little-endian)
-/// 8) header.merkle_root (`u16` length LE + UTF-8 bytes)
-/// 9) header.state_root (`u16` length LE + UTF-8 bytes)
-/// 10) header.blue_score (`u64`, little-endian)
-/// 11) header.height (`u64`, little-endian)
+/// 7) header.merkle_root (`u16` length LE + UTF-8 bytes)
+/// 8) header.state_root (`u16` length LE + UTF-8 bytes)
+/// 9) header.blue_score (`u64`, little-endian)
+/// 10) header.height (`u64`, little-endian)
+///
+/// PulseDAG headers are not Kaspa headers. This is PulseDAG's canonical
+/// adapter for pre-PoW bytes, while nonce finalization is applied separately
+/// by the Kaspa-based kHeavyHash engine.
 pub fn pow_preimage_bytes(header: &BlockHeader) -> Vec<u8> {
     PowHeaderPreimage::from_header(header)
         .to_bytes_checked()
@@ -809,17 +834,26 @@ mod tests {
     }
 
     #[test]
-    fn preimage_is_stable_and_nonce_sensitive() {
+    fn preimage_is_stable_and_nonce_excluded() {
         let mut h1 = sample_header();
         let mut h2 = sample_header();
         h2.nonce = h1.nonce + 1;
 
         let p1 = pow_preimage_bytes(&h1);
         let p2 = pow_preimage_bytes(&h2);
-        assert_ne!(p1, p2, "nonce must change preimage");
+        assert_eq!(p1, p2, "nonce must not change pre-pow bytes");
 
         h1.nonce = h2.nonce;
         assert_eq!(pow_preimage_bytes(&h1), p2, "same header => same preimage");
+    }
+
+    #[test]
+    fn parent_order_is_canonical_and_stable() {
+        let mut h1 = sample_header();
+        h1.parents = vec!["bb".to_string(), "aa".to_string()];
+        let mut h2 = sample_header();
+        h2.parents = vec!["aa".to_string(), "bb".to_string()];
+        assert_eq!(pow_preimage_bytes(&h1), pow_preimage_bytes(&h2));
     }
 
     #[test]
@@ -848,7 +882,7 @@ mod tests {
         let h = sample_header();
         assert_eq!(
             pow_hash_hex(&h),
-            "5284e54730a2551c81c0672329993e9c45769f52d9fea711a2875e25f12c5509"
+            "28a64b48f3086c6f6672ebf1cd037ab11f268efad8251a96cd06c92e9340b2c6"
         );
     }
 
@@ -862,7 +896,7 @@ mod tests {
     #[test]
     fn target_rejects_when_score_is_above_threshold() {
         let mut h = sample_header();
-        h.difficulty = u32::MAX;
+        h.difficulty = 0x01000000;
         assert!(!pow_accepts(&h));
     }
 
@@ -876,7 +910,8 @@ mod tests {
 
     #[test]
     fn preimage_evaluation_matches_header_evaluation() {
-        let h = sample_header();
+        let mut h = sample_header();
+        h.nonce = 0;
         let engine = canonical_pow_engine();
         let preimage = PowHeaderPreimage::from_header(&h).to_bytes();
         let from_header = engine.evaluate_header(&h);
@@ -1111,6 +1146,18 @@ mod tests {
         let mut mutated = mined.clone();
         mutated.merkle_root.push_str("-tampered");
         assert!(!verify_work(&mutated));
+
+        let mut state_mutated = mined.clone();
+        state_mutated.state_root.push_str("-tampered");
+        assert!(!verify_work(&state_mutated));
+
+        let mut ts_mutated = mined.clone();
+        ts_mutated.timestamp = ts_mutated.timestamp.saturating_add(1);
+        assert!(!verify_work(&ts_mutated));
+
+        let mut parents_mutated = mined.clone();
+        parents_mutated.parents.push("cc".to_string());
+        assert!(!verify_work(&parents_mutated));
     }
 
     #[test]

@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "algorithm": "kHeavyHash",
+  "notes": "PulseDAG canonical header adapter vectors (pre-PoW bytes exclude nonce; nonce finalized separately).",
+  "vectors": [
+    {
+      "id": "sample-header-v2_2_10",
+      "header": {
+        "version": 1,
+        "parents": ["aa", "bb"],
+        "timestamp": 1700000000,
+        "difficulty": 4,
+        "nonce": 42,
+        "merkle_root": "merkle-10",
+        "state_root": "state-10",
+        "blue_score": 10,
+        "height": 10
+      },
+      "expected": {
+        "pre_pow_hex": "01010000000200020061610200626200f15365000000000400000009006d65726b6c652d3130080073746174652d31300a000000000000000a00000000000000"
+      }
+    }
+  ]
+}
