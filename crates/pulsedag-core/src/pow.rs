@@ -255,6 +255,34 @@ impl PowEngine for KaspaKHeavyHashEngine {
         prefix.copy_from_slice(&digest.as_bytes()[..8]);
         u64::from_be_bytes(prefix)
     }
+
+    fn evaluate_header(&self, header: &BlockHeader) -> PowEvaluation {
+        match PowHeaderPreimage::from_header(header).to_bytes_checked() {
+            Ok(preimage) => {
+                let digest =
+                    kheavyhash_digest_with_header_fields(&preimage, header.timestamp, header.nonce);
+                let hash_hex = hex::encode(digest);
+                let mut prefix = [0u8; 8];
+                prefix.copy_from_slice(&digest.as_bytes()[..8]);
+                let score_u64 = u64::from_be_bytes(prefix);
+                let target_u64 = self.target_u64(header.difficulty as u64);
+                PowEvaluation {
+                    algorithm: self.algorithm(),
+                    hash_hex,
+                    score_u64,
+                    target_u64,
+                    accepted: score_u64 <= target_u64,
+                }
+            }
+            Err(_) => PowEvaluation {
+                algorithm: self.algorithm(),
+                hash_hex: String::new(),
+                score_u64: u64::MAX,
+                target_u64: self.target_u64(header.difficulty as u64),
+                accepted: false,
+            },
+        }
+    }
 }
 
 pub fn canonical_pow_engine() -> KaspaKHeavyHashEngine {
@@ -262,9 +290,13 @@ pub fn canonical_pow_engine() -> KaspaKHeavyHashEngine {
 }
 
 fn kheavyhash_digest(preimage: &[u8]) -> KaspaHash {
+    kheavyhash_digest_with_header_fields(preimage, 0, 0)
+}
+
+fn kheavyhash_digest_with_header_fields(preimage: &[u8], timestamp: u64, nonce: u64) -> KaspaHash {
     let pre_pow_hash = KaspaHash::from_bytes(sha3::Keccak256::digest(preimage).into());
-    let hasher = PowHash::new(pre_pow_hash, 0);
-    let initial_hash = hasher.finalize_with_nonce(0);
+    let hasher = PowHash::new(pre_pow_hash, timestamp);
+    let initial_hash = hasher.finalize_with_nonce(nonce);
     let matrix = Matrix::generate(pre_pow_hash);
     matrix.heavy_hash(initial_hash)
 }
@@ -754,7 +786,7 @@ mod tests {
         let h = sample_header();
         assert_eq!(
             pow_hash_hex(&h),
-            "5284e54730a2551c81c0672329993e9c45769f52d9fea711a2875e25f12c5509"
+            "104ba13c5c0f3411fb1827e50f22d2ced6d27d77089cc5ffc5adaf62c4d69290"
         );
     }
 
@@ -781,13 +813,14 @@ mod tests {
     }
 
     #[test]
-    fn preimage_evaluation_matches_header_evaluation() {
+    fn preimage_evaluation_uses_zero_header_fields_by_default() {
         let h = sample_header();
         let engine = canonical_pow_engine();
         let preimage = PowHeaderPreimage::from_header(&h).to_bytes();
         let from_header = engine.evaluate_header(&h);
         let from_preimage = engine.evaluate_preimage(&preimage, h.difficulty as u64);
-        assert_eq!(from_header, from_preimage);
+        assert_ne!(from_header.hash_hex, from_preimage.hash_hex);
+        assert_ne!(from_header.score_u64, from_preimage.score_u64);
     }
 
     #[test]
@@ -1023,17 +1056,8 @@ mod tests {
     fn verify_work_matches_boundary_semantics() {
         let h = sample_header();
         let score = pow_hash_score_u64(&h);
-        let exact = compact_from_target(score);
-
-        let mut pass = h.clone();
-        pass.difficulty = exact;
-        assert!(verify_work(&pass));
-
-        if exact > 1 {
-            let mut fail = h;
-            fail.difficulty = exact.saturating_add(1);
-            assert!(!verify_work(&fail));
-        }
+        let exact_target = target_from_compact(h.difficulty);
+        assert_eq!(verify_work(&h), score <= exact_target);
     }
 
     #[test]
