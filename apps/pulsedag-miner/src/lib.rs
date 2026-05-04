@@ -1,5 +1,5 @@
 use anyhow::{anyhow, Result};
-use pulsedag_core::pow::{pow_accepts, pow_hash_hex, pow_hash_score_u64, pow_preimage_bytes};
+use pulsedag_core::pow::{canonical_pow_engine, pow_preimage_bytes, pow_accepts, pow_hash_score_u64, PowEngine};
 use pulsedag_core::types::BlockHeader;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -17,8 +17,9 @@ pub fn miner_pow_preimage_bytes(header: &BlockHeader) -> Vec<u8> {
 }
 
 pub fn miner_pow_hash_hex(header: &BlockHeader) -> String {
-    pow_hash_hex(header)
+    canonical_pow_engine().evaluate_header(header).hash_hex
 }
+
 
 pub fn miner_pow_score_u64(header: &BlockHeader) -> u64 {
     pow_hash_score_u64(header)
@@ -26,6 +27,16 @@ pub fn miner_pow_score_u64(header: &BlockHeader) -> u64 {
 
 pub fn miner_pow_accepts(header: &BlockHeader) -> bool {
     pow_accepts(header)
+}
+
+pub fn miner_pow_accepts_target_bits(header: &BlockHeader, target_bits: u32) -> Result<bool> {
+    if target_bits == 0 {
+        return Err(anyhow!("invalid target bits: 0"));
+    }
+    let mut h = header.clone();
+    h.difficulty = target_bits;
+    let eval = canonical_pow_engine().evaluate_header(&h);
+    Ok(eval.accepted)
 }
 
 fn nonce_for_attempt(thread_id: usize, stride: usize, iteration: u64) -> u64 {
@@ -36,6 +47,7 @@ pub fn mine_header_strided(
     header: BlockHeader,
     max_tries: u64,
     threads: usize,
+    target_bits: u32,
 ) -> Result<NonceSearchResult> {
     let max_tries = max_tries.max(1);
     let effective_threads = threads.max(1).min(max_tries as usize);
@@ -68,8 +80,8 @@ pub fn mine_header_strided(
                 candidate.nonce = nonce;
                 local_tries = local_tries.saturating_add(1);
 
-                let hash_hex = pow_hash_hex(&candidate);
-                if pow_accepts(&candidate) {
+                let hash_hex = miner_pow_hash_hex(&candidate);
+                if miner_pow_accepts_target_bits(&candidate, target_bits)? {
                     let already_found = found.swap(true, Ordering::SeqCst);
                     if !already_found {
                         let mut guard = winner.lock().map_err(|_| {
@@ -112,7 +124,7 @@ pub fn mine_header_strided(
 
     let mut fallback_header = header;
     fallback_header.nonce = max_tries.saturating_sub(1);
-    let fallback_hash = pow_hash_hex(&fallback_header);
+    let fallback_hash = miner_pow_hash_hex(&fallback_header);
     Ok(NonceSearchResult {
         header: fallback_header,
         accepted: false,
@@ -123,7 +135,9 @@ pub fn mine_header_strided(
 
 #[cfg(test)]
 mod tests {
-    use super::nonce_for_attempt;
+    use super::{miner_pow_hash_hex, miner_pow_preimage_bytes, nonce_for_attempt};
+    use pulsedag_core::pow::{canonical_pow_engine, target_from_bits, target_hex, PowEngine};
+    use pulsedag_core::types::BlockHeader;
 
     #[test]
     fn worker_partitioning_is_non_overlapping_for_prefix_space() {
@@ -146,5 +160,28 @@ mod tests {
         let threads = 4usize;
         let worker_two: Vec<u64> = (0..8).map(|i| nonce_for_attempt(2, threads, i)).collect();
         assert_eq!(worker_two, vec![2, 6, 10, 14, 18, 22, 26, 30]);
+    }
+
+    #[test]
+    fn miner_and_core_compute_same_hash() {
+        let header = BlockHeader { version: 1, parents: vec!["a".into()], timestamp: 1, nonce: 7, difficulty: 0x1f00ffff, merkle_root: "m".into(), state_root: "s".into(), blue_score: 1, height: 1 };
+        assert_eq!(miner_pow_hash_hex(&header), canonical_pow_engine().evaluate_header(&header).hash_hex);
+        assert!(!miner_pow_preimage_bytes(&header).is_empty());
+    }
+
+    #[test]
+    fn easy_target_finds_solution() {
+        let target_bits = 0x207fffff;
+        let header = BlockHeader { version: 1, parents: vec!["a".into()], timestamp: 1, nonce: 0, difficulty: target_bits, merkle_root: "m".into(), state_root: "s".into(), blue_score: 1, height: 1 };
+        let mined = super::mine_header_strided(header, 10_000, 4, target_bits).expect("mining should succeed");
+        assert!(mined.accepted);
+    }
+
+    #[test]
+    fn invalid_target_fails_cleanly() {
+        let header = BlockHeader { version: 1, parents: vec!["a".into()], timestamp: 1, nonce: 0, difficulty: 1, merkle_root: "m".into(), state_root: "s".into(), blue_score: 1, height: 1 };
+        let err = super::miner_pow_accepts_target_bits(&header, 0).expect_err("must fail");
+        assert!(err.to_string().contains("invalid target bits"));
+        let _ = target_hex(&target_from_bits(0x1d00ffff));
     }
 }

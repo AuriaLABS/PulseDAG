@@ -13,12 +13,14 @@ struct TemplateRequest {
 
 #[derive(Debug, Deserialize)]
 struct TemplateData {
+    algorithm: String,
     template_id: String,
     created_at_unix: u64,
     expires_at_unix: u64,
     freshness_ttl_secs: u64,
     freshness_grace_secs: u64,
     block: Block,
+    compact_target: u32,
 }
 
 #[derive(Debug, Serialize)]
@@ -53,6 +55,7 @@ struct MiningResult {
     final_hash_hex: String,
     elapsed_ms: u128,
     hashes_per_sec: f64,
+    target_hex: String,
 }
 
 #[tokio::main]
@@ -196,7 +199,8 @@ async fn mine_once(client: &Client, cfg: &Config) -> Result<()> {
     let template_id = template.template_id;
     let mut block = template.block;
 
-    let mining = mine_header_multithread(block.header.clone(), cfg.max_tries, cfg.threads).await?;
+    let target_bits = if template.compact_target == 0 { block.header.difficulty } else { template.compact_target };
+    let mining = mine_header_multithread(block.header.clone(), cfg.max_tries, cfg.threads, target_bits).await?;
     block.header = mining.header;
 
     println!(
@@ -210,14 +214,8 @@ async fn mine_once(client: &Client, cfg: &Config) -> Result<()> {
         template.freshness_ttl_secs,
         template.freshness_grace_secs
     );
-    println!(
-        "mined externally: accepted={} tries={} nonce={} hash={}",
-        mining.accepted, mining.tries, block.header.nonce, mining.final_hash_hex
-    );
-    println!(
-        "metrics: elapsed_ms={} hashes_per_sec={:.2} threads={} tries={}",
-        mining.elapsed_ms, mining.hashes_per_sec, cfg.threads, mining.tries
-    );
+    println!("mining: algorithm={} pow_engine=canonical_core template_id={} height={} target_hex={} nonce={} pow_hash={} attempts={} hashes_per_sec={:.2} accepted={} elapsed_ms={}",
+        template.algorithm, template_id, block.header.height, mining.target_hex, block.header.nonce, mining.final_hash_hex, mining.tries, mining.hashes_per_sec, mining.accepted, mining.elapsed_ms);
 
     let now_unix = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -242,10 +240,7 @@ async fn mine_once(client: &Client, cfg: &Config) -> Result<()> {
     let submit_api: ApiResponse<SubmitData> = submit_resp.json().await?;
 
     if let Some(data) = submit_api.data {
-        println!(
-            "submitted: accepted={} block_hash={} height={} pow_accepted_dev={} stale_template={}",
-            data.accepted, data.block_hash, data.height, data.pow_accepted_dev, data.stale_template
-        );
+        println!("submit_result: accepted={} rejected={} block_hash={} height={} pow_accepted_dev={} stale_template={}",data.accepted,!data.accepted,data.block_hash,data.height,data.pow_accepted_dev,data.stale_template);
     } else if let Some(err) = submit_api.error {
         if err.code == "STALE_TEMPLATE" {
             println!("stale work rejected by node: {}", err.message);
@@ -262,12 +257,13 @@ async fn mine_header_multithread(
     header: BlockHeader,
     max_tries: u64,
     threads: usize,
+    target_bits: u32,
 ) -> Result<MiningResult> {
     let max_tries = max_tries.max(1);
     let start = Instant::now();
 
     let result = tokio::task::spawn_blocking(move || {
-        pulsedag_miner::mine_header_strided(header, max_tries, threads)
+        pulsedag_miner::mine_header_strided(header, max_tries, threads, target_bits)
     })
     .await
     .context("mining worker task panicked")??;
@@ -292,12 +288,13 @@ async fn mine_header_multithread(
         final_hash_hex,
         elapsed_ms: elapsed.as_millis(),
         hashes_per_sec,
+        target_hex: format!("{:08x}", target_bits),
     })
 }
 
 #[cfg(test)]
 mod tests {
-    use super::should_skip_stale_submit;
+    use super::{should_skip_stale_submit, Block, BlockHeader, SubmitRequest};
 
     #[test]
     fn skips_when_template_already_expired() {
@@ -317,4 +314,20 @@ mod tests {
         let reason = should_skip_stale_submit(100, 105, 1000);
         assert!(reason.is_none());
     }
+
+    #[test]
+    fn submit_payload_serializes_with_template_id_and_block() {
+        let block = Block {
+            header: BlockHeader {
+                version: 1, parents: vec!["p".into()], timestamp: 1, nonce: 1, difficulty: 1, merkle_root: "m".into(), state_root: "s".into(), blue_score: 1, height: 1
+            },
+            transactions: vec![],
+            hash: "h".into(),
+        };
+        let req = SubmitRequest { template_id: "tpl-1".into(), block };
+        let v = serde_json::to_value(&req).expect("serialize");
+        assert_eq!(v["template_id"], "tpl-1");
+        assert!(v["block"].is_object());
+    }
+
 }

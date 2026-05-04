@@ -25,8 +25,8 @@ fn multithread_fallback_is_repeatable_for_benchmark_runs() {
     let max_tries = 50_000;
     let difficulty = u32::MAX;
 
-    let r1 = mine_header_strided(fixture_header(difficulty), max_tries, 8).expect("first run");
-    let r2 = mine_header_strided(fixture_header(difficulty), max_tries, 8).expect("second run");
+    let r1 = mine_header_strided(fixture_header(difficulty), max_tries, 8, difficulty).expect("first run");
+    let r2 = mine_header_strided(fixture_header(difficulty), max_tries, 8, difficulty).expect("second run");
 
     assert!(!r1.accepted);
     assert!(!r2.accepted);
