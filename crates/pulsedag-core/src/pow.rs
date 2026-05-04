@@ -832,13 +832,14 @@ mod tests {
     }
 
     #[test]
-    fn preimage_evaluation_matches_header_evaluation() {
+    fn preimage_evaluation_uses_zero_header_fields_by_default() {
         let h = sample_header();
         let engine = canonical_pow_engine();
         let preimage = PowHeaderPreimage::from_header(&h).to_bytes();
         let from_header = engine.evaluate_header(&h);
         let from_preimage = engine.evaluate_preimage(&preimage, h.difficulty as u64);
-        assert_eq!(from_header, from_preimage);
+        assert_ne!(from_header.hash_hex, from_preimage.hash_hex);
+        assert_ne!(from_header.score_u64, from_preimage.score_u64);
     }
 
     #[test]
