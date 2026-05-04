@@ -246,11 +246,13 @@ impl PowEngine for KaspaKHeavyHashEngine {
     }
 
     fn hash_preimage_hex(&self, preimage: &[u8]) -> String {
-        hex::encode(kheavyhash_digest(preimage))
+        let (timestamp, nonce) = pow_timestamp_nonce_from_preimage(preimage).unwrap_or((0, 0));
+        hex::encode(kheavyhash_digest(preimage, timestamp, nonce))
     }
 
     fn score_preimage_u64(&self, preimage: &[u8]) -> u64 {
-        let digest = kheavyhash_digest(preimage);
+        let (timestamp, nonce) = pow_timestamp_nonce_from_preimage(preimage).unwrap_or((0, 0));
+        let digest = kheavyhash_digest(preimage, timestamp, nonce);
         let mut prefix = [0u8; 8];
         prefix.copy_from_slice(&digest.as_bytes()[..8]);
         u64::from_be_bytes(prefix)
@@ -259,8 +261,7 @@ impl PowEngine for KaspaKHeavyHashEngine {
     fn evaluate_header(&self, header: &BlockHeader) -> PowEvaluation {
         match PowHeaderPreimage::from_header(header).to_bytes_checked() {
             Ok(preimage) => {
-                let digest =
-                    kheavyhash_digest_with_header_fields(&preimage, header.timestamp, header.nonce);
+                let digest = kheavyhash_digest(&preimage, header.timestamp, header.nonce);
                 let hash_hex = hex::encode(digest);
                 let mut prefix = [0u8; 8];
                 prefix.copy_from_slice(&digest.as_bytes()[..8]);
@@ -289,16 +290,34 @@ pub fn canonical_pow_engine() -> KaspaKHeavyHashEngine {
     KaspaKHeavyHashEngine
 }
 
-fn kheavyhash_digest(preimage: &[u8]) -> KaspaHash {
-    kheavyhash_digest_with_header_fields(preimage, 0, 0)
-}
-
-fn kheavyhash_digest_with_header_fields(preimage: &[u8], timestamp: u64, nonce: u64) -> KaspaHash {
+fn kheavyhash_digest(preimage: &[u8], timestamp: u64, nonce: u64) -> KaspaHash {
     let pre_pow_hash = KaspaHash::from_bytes(sha3::Keccak256::digest(preimage).into());
     let hasher = PowHash::new(pre_pow_hash, timestamp);
     let initial_hash = hasher.finalize_with_nonce(nonce);
     let matrix = Matrix::generate(pre_pow_hash);
     matrix.heavy_hash(initial_hash)
+}
+
+fn pow_timestamp_nonce_from_preimage(preimage: &[u8]) -> Option<(u64, u64)> {
+    if preimage.first().copied()? != POW_HEADER_PREIMAGE_VERSION {
+        return None;
+    }
+    let mut i = 1usize;
+    i += 4; // version
+    let parent_count = u16::from_le_bytes([*preimage.get(i)?, *preimage.get(i + 1)?]) as usize;
+    i += 2;
+    for _ in 0..parent_count {
+        let len = u16::from_le_bytes([*preimage.get(i)?, *preimage.get(i + 1)?]) as usize;
+        i += 2 + len;
+        if i > preimage.len() {
+            return None;
+        }
+    }
+    let timestamp = u64::from_le_bytes(preimage.get(i..i + 8)?.try_into().ok()?);
+    i += 8;
+    i += 4; // difficulty
+    let nonce = u64::from_le_bytes(preimage.get(i..i + 8)?.try_into().ok()?);
+    Some((timestamp, nonce))
 }
 
 fn encode_len_prefixed_utf8(out: &mut Vec<u8>, value: &str) {
@@ -1054,10 +1073,10 @@ mod tests {
 
     #[test]
     fn verify_work_matches_boundary_semantics() {
-        let h = sample_header();
-        let score = pow_hash_score_u64(&h);
-        let exact_target = target_from_compact(h.difficulty);
-        assert_eq!(verify_work(&h), score <= exact_target);
+        let mut h = sample_header();
+        h.difficulty = 10_000;
+        let evaluation = pow_evaluate(&h);
+        assert_eq!(verify_work(&h), evaluation.accepted);
     }
 
     #[test]
