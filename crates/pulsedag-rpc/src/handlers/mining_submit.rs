@@ -13,6 +13,7 @@ use tracing::{info, warn};
 #[derive(Debug, serde::Serialize)]
 pub struct MiningSubmitData {
     pub accepted: bool,
+    pub reason: String,
     pub block_hash: Option<String>,
     pub block_id: Option<String>,
     pub height: Option<u64>,
@@ -20,6 +21,12 @@ pub struct MiningSubmitData {
     pub pow_accepted: bool,
     pub pow_accepted_dev: bool,
     pub target_u64: u64,
+    pub target_hex: String,
+    pub pow_hash: Option<String>,
+    pub template_id: Option<String>,
+    pub invalid_pow: bool,
+    pub stale: bool,
+    pub duplicate: bool,
     pub stale_template: bool,
     pub reason_code: String,
     pub selected_tip: Option<String>,
@@ -118,8 +125,11 @@ fn rejection_submit_response(
     height: Option<u64>,
     stale_template: bool,
 ) -> ApiResponse<MiningSubmitData> {
+    let reason_code = reason_code.into();
+    let reason_detail = detail.into();
     ApiResponse::ok(MiningSubmitData {
         accepted: false,
+        reason: reason_detail.clone(),
         block_hash,
         block_id: None,
         height,
@@ -127,13 +137,19 @@ fn rejection_submit_response(
         pow_accepted: false,
         pow_accepted_dev: false,
         target_u64: 0,
+        target_hex: format!("{:064x}", 0u64),
+        pow_hash: None,
+        template_id: None,
+        invalid_pow: reason_code == "invalid_pow",
+        stale: stale_template,
+        duplicate: false,
         stale_template,
-        reason_code: reason_code.into(),
+        reason_code,
         selected_tip: None,
         adopted_orphans: 0,
         pow_hash_score_u64: 0,
         pow_rejection_code: None,
-        pow_rejection_reason: Some(detail.into()),
+        pow_rejection_reason: Some(reason_detail),
     })
 }
 
@@ -588,6 +604,7 @@ pub async fn post_mining_submit<S: RpcStateLike>(
 
             Json(ApiResponse::ok(MiningSubmitData {
                 accepted: true,
+                reason: "accepted".to_string(),
                 block_hash: Some(block_hash.clone()),
                 block_id: Some(block_hash),
                 height: Some(height),
@@ -595,6 +612,12 @@ pub async fn post_mining_submit<S: RpcStateLike>(
                 pow_accepted: pow.accepted,
                 pow_accepted_dev,
                 target_u64,
+                target_hex: format!("{:064x}", target_u64),
+                pow_hash: Some(format!("{:016x}", pow_hash_score_u64)),
+                template_id: req.template_id.clone(),
+                invalid_pow: false,
+                stale: false,
+                duplicate: false,
                 stale_template: false,
                 reason_code: "accepted".to_string(),
                 selected_tip: preferred_tip_hash(&chain),
@@ -900,8 +923,25 @@ mod tests {
         assert!(submit_response.ok);
         let data = submit_response.data.expect("submit data expected");
         assert!(data.accepted);
+        assert_eq!(data.reason, "accepted");
+        assert!(data.pow_hash.is_some());
         assert!(data.pow_accepted_dev);
         assert!(data.pow_hash_score_u64 <= data.target_u64);
+    }
+
+    #[tokio::test]
+    async fn template_includes_target_hex() {
+        let (state, _fake_p2p) = build_state_with_fake_p2p();
+        let Json(template_response) = post_mining_template(
+            State(state.clone()),
+            Json(GetBlockTemplateRequest {
+                miner_address: "kaspa:qptestminer".to_string(),
+            }),
+        )
+        .await;
+        assert!(template_response.ok);
+        let template = template_response.data.expect("template expected");
+        assert_eq!(template.target_hex.len(), 64);
     }
 
     #[tokio::test]
@@ -1042,6 +1082,8 @@ mod tests {
         let data = submit_response.data.expect("submit data expected");
         assert!(!data.accepted);
         assert_eq!(data.reason_code, "invalid_pow");
+        assert!(data.invalid_pow);
+        assert!(!data.stale);
         let reason = data
             .pow_rejection_reason
             .expect("rejection reason expected");
