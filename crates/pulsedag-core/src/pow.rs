@@ -154,8 +154,10 @@ impl<'a> PowHeaderPreimage<'a> {
 pub struct PowEvaluation {
     pub algorithm: PowAlgorithm,
     pub hash_hex: String,
+    pub hash: [u8; 32],
     pub score_u64: u64,
     pub target_u64: u64,
+    pub target_hex: String,
     pub accepted: bool,
 }
 
@@ -188,9 +190,12 @@ pub struct PowValidationResult {
     pub score_u64: Option<u64>,
     pub target_u64: u64,
     pub difficulty: u32,
+    pub target_hex: String,
     pub rejection_code: Option<&'static str>,
     pub rejection_reason: Option<PowRejectReason>,
 }
+
+pub type PowTarget = [u8; 32];
 
 pub trait PowEngine {
     fn algorithm(&self) -> PowAlgorithm;
@@ -201,15 +206,22 @@ pub trait PowEngine {
         u64::MAX / difficulty
     }
     fn evaluate_preimage(&self, preimage: &[u8], difficulty: u64) -> PowEvaluation {
-        let hash_hex = self.hash_preimage_hex(preimage);
+        let digest = kheavyhash_digest(preimage);
+        let mut hash = [0u8; 32];
+        hash.copy_from_slice(&digest.as_bytes());
+        let hash_hex = hex::encode(hash);
         let score_u64 = self.score_preimage_u64(preimage);
-        let target_u64 = self.target_u64(difficulty);
+        let target = target_from_bits(difficulty as u32);
+        let target_u64 = leading_u64(&target);
+        let target_hex = target_hex(&target);
         PowEvaluation {
             algorithm: self.algorithm(),
             hash_hex,
+            hash,
             score_u64,
             target_u64,
-            accepted: score_u64 <= target_u64,
+            target_hex,
+            accepted: compare_pow_hash_to_target(&hash, &target),
         }
     }
     fn evaluate_header(&self, header: &BlockHeader) -> PowEvaluation {
@@ -218,8 +230,10 @@ pub trait PowEngine {
             Err(_) => PowEvaluation {
                 algorithm: self.algorithm(),
                 hash_hex: String::new(),
+                hash: [0u8; 32],
                 score_u64: u64::MAX,
-                target_u64: self.target_u64(header.difficulty as u64),
+                target_u64: leading_u64(&target_from_bits(header.difficulty)),
+                target_hex: target_hex(&target_from_bits(header.difficulty)),
                 accepted: false,
             },
         }
@@ -309,7 +323,9 @@ pub fn validate_pow_header(header: &BlockHeader) -> Result<(), PowRejectReason> 
 }
 
 pub fn pow_validation_result(header: &BlockHeader) -> PowValidationResult {
-    let target_u64 = pow_target_u64(header.difficulty as u64);
+    let target = target_from_bits(header.difficulty);
+    let target_u64 = leading_u64(&target);
+    let target_hex = target_hex(&target);
     if let Err(reason) = validate_pow_preimage_encoding(header) {
         return PowValidationResult {
             algorithm: selected_pow_name(),
@@ -318,6 +334,7 @@ pub fn pow_validation_result(header: &BlockHeader) -> PowValidationResult {
             score_u64: None,
             target_u64,
             difficulty: header.difficulty,
+            target_hex,
             rejection_code: Some(reason.code()),
             rejection_reason: Some(reason),
         };
@@ -335,6 +352,7 @@ pub fn pow_validation_result(header: &BlockHeader) -> PowValidationResult {
         score_u64: Some(evaluation.score_u64),
         target_u64: evaluation.target_u64,
         difficulty: header.difficulty,
+        target_hex: evaluation.target_hex,
         rejection_code: rejection_reason.map(|r| r.code()),
         rejection_reason,
     }
@@ -382,26 +400,101 @@ pub fn pow_hash_hex(header: &BlockHeader) -> String {
     canonical_pow_engine().evaluate_header(header).hash_hex
 }
 
+pub fn target_from_bits(bits: u32) -> PowTarget {
+    if (bits >> 24) == 0 {
+        let difficulty = u64::from(bits).max(1);
+        let legacy = u64::MAX / difficulty;
+        let mut out = [0xffu8; 32];
+        out[..8].copy_from_slice(&legacy.to_be_bytes());
+        return out;
+    }
+    let exponent = ((bits >> 24) & 0xff) as usize;
+    let mantissa = bits & 0x007f_ffff;
+    if exponent == 0 || mantissa == 0 {
+        return [0u8; 32];
+    }
+    let mut out = [0u8; 32];
+    let mantissa_bytes = [
+        ((mantissa >> 16) & 0xff) as u8,
+        ((mantissa >> 8) & 0xff) as u8,
+        (mantissa & 0xff) as u8,
+    ];
+    if exponent <= 3 {
+        let shifted = mantissa >> (8 * (3 - exponent));
+        out[29] = ((shifted >> 16) & 0xff) as u8;
+        out[30] = ((shifted >> 8) & 0xff) as u8;
+        out[31] = (shifted & 0xff) as u8;
+        return out;
+    }
+    let start = 32usize.saturating_sub(exponent);
+    if start >= 32 || start + 3 > 32 {
+        return [0xff; 32];
+    }
+    out[start..start + 3].copy_from_slice(&mantissa_bytes);
+    out
+}
+
+pub fn bits_from_target(target: &PowTarget) -> u32 {
+    let Some(first_nonzero) = target.iter().position(|&b| b != 0) else {
+        return 0;
+    };
+    let mut exponent = (32 - first_nonzero) as u32;
+    let mantissa: u32 = if target[first_nonzero] > 0x7f {
+        exponent += 1;
+        let mut m = (target[first_nonzero] as u32) << 8;
+        if first_nonzero + 1 < 32 {
+            m |= target[first_nonzero + 1] as u32;
+        }
+        m
+    } else {
+        let mut m = (target[first_nonzero] as u32) << 16;
+        if first_nonzero + 1 < 32 {
+            m |= (target[first_nonzero + 1] as u32) << 8;
+        }
+        if first_nonzero + 2 < 32 {
+            m |= target[first_nonzero + 2] as u32;
+        }
+        m
+    };
+    (exponent << 24) | (mantissa & 0x007f_ffff)
+}
+
+pub fn target_hex(target: &PowTarget) -> String {
+    hex::encode(target)
+}
+
+pub fn compare_pow_hash_to_target(hash: &[u8; 32], target: &PowTarget) -> bool {
+    hash <= target
+}
+
+fn leading_u64(target: &PowTarget) -> u64 {
+    let mut bytes = [0u8; 8];
+    bytes.copy_from_slice(&target[..8]);
+    u64::from_be_bytes(bytes)
+}
+
+fn u64_to_target(value: u64) -> PowTarget {
+    let mut out = [0u8; 32];
+    out[..8].copy_from_slice(&value.to_be_bytes());
+    out
+}
+
 pub fn target_from_compact(compact_difficulty: u32) -> u64 {
-    pow_target_u64(compact_difficulty as u64)
+    leading_u64(&target_from_bits(compact_difficulty))
 }
 
 pub fn compact_from_target(target_u64: u64) -> u32 {
-    if target_u64 == 0 {
-        return u32::MAX;
-    }
-    let difficulty = (u64::MAX / target_u64).max(1);
-    difficulty.min(u32::MAX as u64) as u32
+    bits_from_target(&u64_to_target(target_u64))
 }
 
 pub fn pow_target_u64(difficulty: u64) -> u64 {
-    canonical_pow_engine().target_u64(difficulty)
+    leading_u64(&target_from_bits(difficulty as u32))
 }
 
 pub fn verify_work(header: &BlockHeader) -> bool {
-    let score = pow_hash_score_u64(header);
-    let target = target_from_compact(header.difficulty);
-    score <= target
+    let hash = pow_hash(header);
+    let target = target_from_bits(header.difficulty);
+    compare_pow_hash_to_target(&hash, &target)
 }
 
 pub fn pow_hash_score_u64(header: &BlockHeader) -> u64 {
@@ -743,9 +836,10 @@ mod tests {
     fn acceptance_rule_matches_target_rule() {
         let h = sample_header();
         let evaluation = pow_evaluate(&h);
+        let target = target_from_bits(h.difficulty);
         assert_eq!(
             pow_accepts(&h),
-            evaluation.score_u64 <= evaluation.target_u64
+            compare_pow_hash_to_target(&evaluation.hash, &target)
         );
     }
 
@@ -1022,18 +1116,53 @@ mod tests {
     #[test]
     fn verify_work_matches_boundary_semantics() {
         let h = sample_header();
-        let score = pow_hash_score_u64(&h);
-        let exact = compact_from_target(score);
+        let hash = pow_hash(&h);
+        assert!(compare_pow_hash_to_target(&hash, &hash));
+        let mut tighter = hash;
+        tighter[31] = tighter[31].saturating_sub(1);
+        assert!(!compare_pow_hash_to_target(&hash, &tighter));
+    }
 
-        let mut pass = h.clone();
-        pass.difficulty = exact;
-        assert!(verify_work(&pass));
-
-        if exact > 1 {
-            let mut fail = h;
-            fail.difficulty = exact.saturating_add(1);
-            assert!(!verify_work(&fail));
+    #[test]
+    fn easiest_target_accepts_many_hashes() {
+        let mut h = sample_header();
+        h.difficulty = 0x207fffff;
+        let mut accepted = 0usize;
+        for nonce in 0..64u64 {
+            h.nonce = nonce;
+            if verify_work(&h) {
+                accepted += 1;
+            }
         }
+        assert!(accepted > 8, "expected many accepts at easiest target");
+    }
+
+    #[test]
+    fn impossible_target_rejects() {
+        let mut h = sample_header();
+        h.difficulty = 0x01000000;
+        assert!(!verify_work(&h));
+    }
+
+    #[test]
+    fn compare_boundaries_equal_above_below() {
+        let target = target_from_bits(0x1d00ffff);
+        let equal = target;
+        assert!(compare_pow_hash_to_target(&equal, &target));
+        let mut above = target;
+        above[31] = above[31].saturating_add(1);
+        assert!(!compare_pow_hash_to_target(&above, &target));
+        let mut below = target;
+        below[31] = below[31].saturating_sub(1);
+        assert!(compare_pow_hash_to_target(&below, &target));
+    }
+
+    #[test]
+    fn target_hex_and_bits_roundtrip_stable() {
+        let bits = 0x1d00ffffu32;
+        let target = target_from_bits(bits);
+        assert_eq!(target_hex(&target).len(), 64);
+        assert_eq!(bits_from_target(&target), bits);
     }
 
     #[test]
