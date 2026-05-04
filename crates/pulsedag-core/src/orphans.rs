@@ -144,7 +144,7 @@ mod tests {
 
         assert_eq!(
             accept_block_with_result(child.clone(), &mut state, AcceptSource::P2p),
-            crate::accept::BlockAcceptanceResult::UnknownParent
+            crate::accept::BlockAcceptanceResult::MissingParent
         );
         let missing = missing_block_parents(&child, &state);
         assert_eq!(missing, vec![parent.hash.clone()]);

@@ -619,9 +619,8 @@ pub async fn post_mining_submit<S: RpcStateLike>(
                 pulsedag_core::BlockAcceptanceResult::InvalidPow => {
                     ExternalMiningRejectKind::InvalidPow
                 }
-                pulsedag_core::BlockAcceptanceResult::UnknownParent
-                | pulsedag_core::BlockAcceptanceResult::InvalidTimestamp
-                | pulsedag_core::BlockAcceptanceResult::InvalidStructure => {
+                pulsedag_core::BlockAcceptanceResult::MissingParent
+                | pulsedag_core::BlockAcceptanceResult::Malformed => {
                     ExternalMiningRejectKind::InvalidBlock
                 }
                 pulsedag_core::BlockAcceptanceResult::Rejected(_) => {
@@ -1195,7 +1194,7 @@ mod tests {
         assert!(!submit_response.ok);
         let error = submit_response.error.expect("error payload expected");
         assert_eq!(error.code, "SUBMIT_BLOCK_ERROR");
-        assert!(error.message.contains("InvalidStructure"));
+        assert!(error.message.contains("Malformed"));
         let runtime = state.runtime.read().await;
         assert_eq!(runtime.rejected_mined_blocks, 1);
         assert_eq!(runtime.external_mining_submit_rejected, 1);
