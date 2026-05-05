@@ -119,7 +119,7 @@ pub async fn get_status<S: RpcStateLike>(
         block_count: chain.dag.blocks.len(),
         selected_tip,
         tip_count: chain.dag.tips.len(),
-        orphan_count: chain.dag.orphans.len(),
+        orphan_count: chain.orphan_blocks.len(),
         mempool_size: chain.mempool.transactions.len(),
         utxo_count: chain.utxo.utxos.len(),
         address_count: chain.utxo.address_index.len(),
