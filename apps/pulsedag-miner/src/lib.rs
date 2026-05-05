@@ -29,14 +29,18 @@ pub fn miner_pow_accepts(header: &BlockHeader) -> bool {
     pow_accepts(header)
 }
 
-pub fn miner_pow_accepts_target_bits(header: &BlockHeader, target_bits: u32) -> Result<bool> {
+fn miner_pow_eval_at_target_bits(header: &BlockHeader, target_bits: u32) -> Result<(bool, String)> {
     if target_bits == 0 {
         return Err(anyhow!("invalid target bits: 0"));
     }
     let mut h = header.clone();
     h.difficulty = target_bits;
     let eval = canonical_pow_engine().evaluate_header(&h);
-    Ok(eval.accepted)
+    Ok((eval.accepted, eval.hash_hex))
+}
+
+pub fn miner_pow_accepts_target_bits(header: &BlockHeader, target_bits: u32) -> Result<bool> {
+    Ok(miner_pow_eval_at_target_bits(header, target_bits)?.0)
 }
 
 fn nonce_for_attempt(thread_id: usize, stride: usize, iteration: u64) -> u64 {
@@ -80,8 +84,8 @@ pub fn mine_header_strided(
                 candidate.nonce = nonce;
                 local_tries = local_tries.saturating_add(1);
 
-                let hash_hex = miner_pow_hash_hex(&candidate);
-                if miner_pow_accepts_target_bits(&candidate, target_bits)? {
+                let (accepted, hash_hex) = miner_pow_eval_at_target_bits(&candidate, target_bits)?;
+                if accepted {
                     let already_found = found.swap(true, Ordering::SeqCst);
                     if !already_found {
                         let mut guard = winner.lock().map_err(|_| {
@@ -124,7 +128,7 @@ pub fn mine_header_strided(
 
     let mut fallback_header = header;
     fallback_header.nonce = max_tries.saturating_sub(1);
-    let fallback_hash = miner_pow_hash_hex(&fallback_header);
+    let (_, fallback_hash) = miner_pow_eval_at_target_bits(&fallback_header, target_bits)?;
     Ok(NonceSearchResult {
         header: fallback_header,
         accepted: false,
