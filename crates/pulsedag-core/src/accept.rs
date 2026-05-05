@@ -532,9 +532,9 @@ pub fn accept_block(
             "pow rejected by current {} policy",
             selected_pow_name()
         ))),
-        BlockAcceptanceResult::Malformed => Err(PulseError::InvalidBlock(
-            "malformed block".to_string(),
-        )),
+        BlockAcceptanceResult::Malformed => {
+            Err(PulseError::InvalidBlock("malformed block".to_string()))
+        }
         BlockAcceptanceResult::Rejected(reason) => Err(PulseError::InvalidBlock(reason)),
     }
 }

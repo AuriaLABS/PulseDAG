@@ -91,8 +91,13 @@ fn node_and_miner_nonce_search_determinism_matches() {
         let max_tries = 8192;
         let (node_header, node_accepted, node_tries, node_hash) =
             mine_header(vector.header.clone(), max_tries);
-        let miner_result = pulsedag_miner::mine_header_strided(vector.header.clone(), max_tries, 1, vector.header.difficulty)
-            .expect("miner strided search must succeed");
+        let miner_result = pulsedag_miner::mine_header_strided(
+            vector.header.clone(),
+            max_tries,
+            1,
+            vector.header.difficulty,
+        )
+        .expect("miner strided search must succeed");
 
         assert_eq!(
             miner_result.header.nonce, node_header.nonce,

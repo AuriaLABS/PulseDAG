@@ -32,8 +32,9 @@ fn pow_thread_scaling_baseline() {
 
     for threads in [1usize, 2usize, 4usize, 8usize] {
         let start = Instant::now();
-        let result = mine_header_strided(fixture_header(difficulty), max_tries, threads, difficulty)
-            .expect("threaded nonce search should complete");
+        let result =
+            mine_header_strided(fixture_header(difficulty), max_tries, threads, difficulty)
+                .expect("threaded nonce search should complete");
         let elapsed = start.elapsed();
         let seconds = elapsed.as_secs_f64();
         let hps = result.tries as f64 / seconds;

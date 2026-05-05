@@ -1,4 +1,6 @@
-use pulsedag_core::pow::{pow_accepts, pow_hash_hex, pow_preimage_bytes, target_from_bits, verify_work};
+use pulsedag_core::pow::{
+    pow_accepts, pow_hash_hex, pow_preimage_bytes, target_from_bits, verify_work,
+};
 use pulsedag_core::types::BlockHeader;
 use serde::Deserialize;
 

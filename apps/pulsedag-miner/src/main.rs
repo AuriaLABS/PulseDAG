@@ -199,8 +199,18 @@ async fn mine_once(client: &Client, cfg: &Config) -> Result<()> {
     let template_id = template.template_id;
     let mut block = template.block;
 
-    let target_bits = if template.compact_target == 0 { block.header.difficulty } else { template.compact_target };
-    let mining = mine_header_multithread(block.header.clone(), cfg.max_tries, cfg.threads, target_bits).await?;
+    let target_bits = if template.compact_target == 0 {
+        block.header.difficulty
+    } else {
+        template.compact_target
+    };
+    let mining = mine_header_multithread(
+        block.header.clone(),
+        cfg.max_tries,
+        cfg.threads,
+        target_bits,
+    )
+    .await?;
     block.header = mining.header;
 
     println!(
@@ -319,15 +329,25 @@ mod tests {
     fn submit_payload_serializes_with_template_id_and_block() {
         let block = Block {
             header: BlockHeader {
-                version: 1, parents: vec!["p".into()], timestamp: 1, nonce: 1, difficulty: 1, merkle_root: "m".into(), state_root: "s".into(), blue_score: 1, height: 1
+                version: 1,
+                parents: vec!["p".into()],
+                timestamp: 1,
+                nonce: 1,
+                difficulty: 1,
+                merkle_root: "m".into(),
+                state_root: "s".into(),
+                blue_score: 1,
+                height: 1,
             },
             transactions: vec![],
             hash: "h".into(),
         };
-        let req = SubmitRequest { template_id: "tpl-1".into(), block };
+        let req = SubmitRequest {
+            template_id: "tpl-1".into(),
+            block,
+        };
         let v = serde_json::to_value(&req).expect("serialize");
         assert_eq!(v["template_id"], "tpl-1");
         assert!(v["block"].is_object());
     }
-
 }

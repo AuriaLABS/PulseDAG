@@ -1,9 +1,9 @@
+use pulsedag_core::genesis::init_chain_state;
+use pulsedag_core::pow::{compare_pow_hash_to_target, target_from_bits};
 use pulsedag_core::{
     accept_block, mine_header, pow_accepts, pow_hash_hex, pow_target_u64, verify_work,
     AcceptSource, BlockHeader,
 };
-use pulsedag_core::genesis::init_chain_state;
-use pulsedag_core::pow::{compare_pow_hash_to_target, target_from_bits};
 use pulsedag_core::{build_candidate_block, build_coinbase_transaction};
 
 fn sample_header() -> BlockHeader {
