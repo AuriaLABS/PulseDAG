@@ -1,4 +1,5 @@
 mod app_state;
+mod block_request;
 mod config;
 
 use std::{
@@ -13,6 +14,7 @@ use app_state::{
     new_runtime_stats, short_hash, AppState, OperatorConsoleInputs,
 };
 use axum::Router;
+use block_request::BlockRequestTracker;
 use config::Config;
 use pulsedag_core::accept::{accept_transaction, AcceptSource};
 use pulsedag_core::reconcile_mempool;
@@ -306,7 +308,15 @@ async fn main() -> Result<()> {
         let runtime = app_state.runtime.clone();
         let p2p = app_state.p2p.clone();
         tokio::spawn(async move {
+            let mut block_requests = BlockRequestTracker::new(15, 3);
             while let Some(event) = rx.recv().await {
+                let timed_out = block_requests.collect_timeouts(now_unix());
+                if !timed_out.is_empty() {
+                    let mut rt = runtime.write().await;
+                    rt.block_request_timeouts = rt
+                        .block_request_timeouts
+                        .saturating_add(timed_out.len() as u64);
+                }
                 match event {
                     InboundEvent::Transaction(tx) => {
                         let txid = tx.txid.clone();
@@ -494,11 +504,16 @@ async fn main() -> Result<()> {
                             let guard = chain.read().await;
                             guard.dag.blocks.contains_key(&hash)
                         };
+                        let mut rt = runtime.write().await;
+                        rt.block_announces_received = rt.block_announces_received.saturating_add(1);
+                        drop(rt);
                         if known {
                             info!(event = "duplicate_block_ignored", block_hash = %hash, "duplicate block announcement ignored");
-                        } else {
+                        } else if block_requests.should_issue_getblock(&hash, now_unix()) {
                             info!(event = "unknown_block_announced", block_hash = %hash, "unknown block announced; requesting block from peers");
                             info!(event = "block_request_sent", block_hash = %hash, "issuing GetBlock request intent for unknown block");
+                            let mut rt = runtime.write().await;
+                            rt.getblock_sent = rt.getblock_sent.saturating_add(1);
                             let _ = storage.append_runtime_event(
                                 "info",
                                 "block_request_sent",
@@ -531,6 +546,11 @@ async fn main() -> Result<()> {
                             acceptance,
                             pulsedag_core::BlockAcceptanceResult::MissingParent
                         ) {
+                            let mut rt = runtime.write().await;
+                            rt.blockdata_received = rt.blockdata_received.saturating_add(1);
+                            rt.blockdata_missing_parent =
+                                rt.blockdata_missing_parent.saturating_add(1);
+                            drop(rt);
                             let missing_parents =
                                 pulsedag_core::missing_block_parents(&block, &guard);
                             pulsedag_core::queue_orphan_block(
@@ -571,14 +591,17 @@ async fn main() -> Result<()> {
                                     "orphan pool bounded; evicted oldest/expired entries"
                                 );
                             }
+                            block_requests.resolve(&block.hash);
                             if let Err(e) = storage.persist_block_and_chain_state(&block, &guard) {
                                 warn!(error = %e, "failed persisting chain state after orphan queue");
                             }
                         } else if !acceptance.is_accepted() {
                             let mut rt = runtime.write().await;
+                            rt.blockdata_received = rt.blockdata_received.saturating_add(1);
                             if matches!(acceptance, pulsedag_core::BlockAcceptanceResult::Duplicate)
                             {
                                 rt.duplicate_p2p_blocks += 1;
+                                rt.blockdata_duplicate = rt.blockdata_duplicate.saturating_add(1);
                             } else {
                                 rt.rejected_p2p_blocks += 1;
                                 rt.pulsedag_blocks_rejected_total =
@@ -589,6 +612,8 @@ async fn main() -> Result<()> {
                                 ) {
                                     rt.pulsedag_invalid_pow_total =
                                         rt.pulsedag_invalid_pow_total.saturating_add(1);
+                                    rt.blockdata_invalid_pow =
+                                        rt.blockdata_invalid_pow.saturating_add(1);
                                 }
                             }
                             rt.sync_pipeline.fallback_after_failure(
@@ -606,6 +631,8 @@ async fn main() -> Result<()> {
                                 let mut rt = runtime.write().await;
                                 rt.sync_pipeline.validate_and_apply_blocks(1, now_unix());
                                 rt.accepted_p2p_blocks += 1;
+                                rt.blockdata_received = rt.blockdata_received.saturating_add(1);
+                                rt.blockdata_accepted = rt.blockdata_accepted.saturating_add(1);
                                 rt.pulsedag_blocks_accepted_total =
                                     rt.pulsedag_blocks_accepted_total.saturating_add(1);
                                 rt.adopted_orphan_blocks += adopted as u64;
@@ -641,6 +668,7 @@ async fn main() -> Result<()> {
                                     short_hash(&accepted_tip)
                                 ),
                             );
+                            block_requests.resolve(&block.hash);
                             if let Err(e) = storage.persist_block_and_chain_state(&block, &guard) {
                                 warn!(error = %e, "failed persisting chain state after inbound block");
                             }
