@@ -71,7 +71,7 @@ pub async fn get_metrics<S: RpcStateLike>(
         mining_submits_total: runtime.pulsedag_mining_submits_total,
         p2p_blocks_received_total: runtime.pulsedag_p2p_blocks_received_total,
         sync_missing_parents_total: runtime.pulsedag_sync_missing_parents_total,
-        orphan_current_count: chain.dag.orphans.len(),
+        orphan_current_count: chain.orphan_blocks.len(),
         peer_count,
         limitations: vec![
             "Counters reset on node restart.".to_string(),

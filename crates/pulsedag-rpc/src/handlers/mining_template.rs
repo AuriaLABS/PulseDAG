@@ -14,6 +14,7 @@ use pulsedag_core::{
     build_candidate_block, build_coinbase_transaction, dev_difficulty_snapshot, pow_preimage_bytes,
     preferred_tip_hash, state::ChainState,
 };
+use sha3::{Digest, Keccak256};
 use tracing::info;
 
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
@@ -294,7 +295,9 @@ pub async fn post_mining_template<S: RpcStateLike>(
         .iter()
         .map(|tx| tx.txid.clone())
         .collect::<Vec<_>>();
-    let pow_preimage_hex = hex::encode(pow_preimage_bytes(&block.header));
+    let pow_preimage = pow_preimage_bytes(&block.header);
+    let pow_preimage_hex = hex::encode(&pow_preimage);
+    let pre_pow_hash = hex::encode(Keccak256::digest(&pow_preimage));
 
     store_template(&StoredMiningTemplate {
         template_id: template_id.clone(),
@@ -400,7 +403,7 @@ pub async fn post_mining_template<S: RpcStateLike>(
         mempool_tx_count: lifecycle.mempool_tx_count,
         metrics_hint,
         pow_preimage_hex,
-        pre_pow_hash: block.header.hash_for_pow(),
+        pre_pow_hash,
         pow_preimage_nonce_offset: POW_NONCE_OFFSET,
         pow_header_preimage_version: pulsedag_core::POW_HEADER_PREIMAGE_VERSION,
         mutable_header_fields: vec!["nonce".to_string()],
