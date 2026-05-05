@@ -1,128 +1,69 @@
-# PulseDAG Public Testnet PoW Specification (Current Canonical Path)
+# PulseDAG Final PoW Spec — v2.2.10
 
-Status: **CURRENT / CANONICAL FOR PUBLIC TESTNET**
+Status: **FINAL / CANONICAL FOR v2.2.10**
 
-This document defines the PoW behavior that nodes validate **today** on public testnet, and marks which nearby surfaces are provisional/dev-oriented.
+## 1) Active PoW (single consensus truth)
 
-## 1) Scope and architecture boundaries
+PulseDAG v2.2.10 has one active PoW identity and path:
 
-- The **node** validates blocks and headers, serves mining templates, and accepts/rejects submitted mined blocks.
-- The **miner** remains **external and standalone**. It fetches templates, searches nonce space, and submits candidate blocks.
-- **Pool logic is not part of the official miner flow** in this phase.
-- There is **one active PoW path** for validation (`kHeavyHash` identity; §2 + §5).
-- This document does **not** change contract/smart-contract activation scope.
+- Algorithm: **kHeavyHash**
+- Engine lineage: **Kaspa-based PoW engine integration** (adapted for PulseDAG header model)
+- Acceptance primitive: **256-bit hash vs 256-bit target comparison**
+- Input mapping: **PulseDAG canonical header adapter** (deterministic serialization into PoW preimage)
 
-## 2) Algorithm identity (what nodes enforce today)
+There is no second active PoW path for consensus validation.
 
-- Active algorithm name: **`kHeavyHash`**.
-- Current concrete definition:
-  1. Build canonical header preimage bytes exactly as in §3.
-  2. Compute `BLAKE3(preimage_bytes)` (32 bytes).
-  3. Evaluate acceptance with §5 (`score_u64 <= target_u64`).
+## 2) Canonical header adapter
 
-No alternate hashing path is valid for the node validation path.
+The node and miner must construct the exact same preimage bytes from the PulseDAG block header fields. The adapter is deterministic and versioned so header mutation, field re-ordering, or encoding drift cannot silently pass validation.
 
-## 3) Canonical header preimage (exact bytes)
+Consensus-relevant requirement:
 
-### 3.1 Field order (MUST match exactly)
+- Any mismatch in canonical header byte construction between miner and node can produce `invalid_pow` or `mutated header` rejection.
 
-1. `preimage_version` (`u8`) = `1`
-2. `header.version` (`u32`, little-endian)
-3. `parent_count` (`u16`, little-endian)
-4. each `parent` string in list order as:
-   - `parent_len` (`u16`, little-endian, byte length)
-   - UTF-8 bytes of parent string
-5. `header.timestamp` (`u64`, little-endian)
-6. `header.difficulty` (`u32`, little-endian)
-7. `header.nonce` (`u64`, little-endian)
-8. `header.merkle_root` as (`u16` little-endian length + UTF-8 bytes)
-9. `header.state_root` as (`u16` little-endian length + UTF-8 bytes)
-10. `header.blue_score` (`u64`, little-endian)
-11. `header.height` (`u64`, little-endian)
+## 3) Target and acceptance rule
 
-### 3.2 Serialization rules
+v2.2.10 PoW validation uses full-width comparison:
 
-- Strings are serialized as raw UTF-8 bytes with 16-bit little-endian byte lengths.
-- No JSON canonicalization, separators, whitespace normalization, or null terminators are used.
-- Parent list order is consensus-relevant because it is hashed as-provided.
+- Compute candidate PoW hash (`hash256`).
+- Decode/derive the consensus target (`target256`).
+- Accept block iff `hash256 <= target256` using canonical 256-bit ordering.
 
-## 4) Nonce handling
+`u64` shortcut scoring is not the acceptance rule for final v2.2.10 consensus.
 
-- Nonce width is `u64`.
-- Miner mutates `header.nonce` while searching.
-- Node validates the submitted nonce via PoW acceptance.
-- Reference miner thread partitioning: worker `tid` starts at nonce `tid` and steps by `thread_count`.
+## 4) Node/miner integration contract
 
-## 5) Target encoding and acceptance rule
+Mining APIs and client behavior:
 
-Let `D = max(header.difficulty, 1)`.
+1. Miner reads node metadata from `GET /pow`.
+2. Miner requests work via `POST /mining/template`.
+3. Miner solves template with canonical kHeavyHash path.
+4. Miner submits via `POST /mining/submit`.
+5. Node validates template lifecycle + PoW + block acceptance.
 
-- `target_u64 = floor((2^64 - 1) / D)`
-- `hash32 = BLAKE3(preimage_bytes)`
-- `score_u64 = big_endian_u64(hash32[0..8])`
-- Accepted iff `score_u64 <= target_u64`
+All PoW-critical behavior is shared/compatible across node and external miner expectations.
 
-`difficulty = 0` is normalized to `1` for PoW arithmetic.
+## 5) Explicit non-claims / boundaries
 
-## 6) What the node validates today on `/mining/submit`
+PulseDAG v2.2.10 does **not** claim:
 
-Beyond PoW acceptance itself, node submit handling currently rejects stale/invalid work if template lifecycle state no longer matches (height, parents, preferred tip, difficulty/target, mempool fingerprint, TTL, and template transaction set), and then runs normal block acceptance.
+- Full Kaspa consensus compatibility.
+- Production-ready public network status.
+- Smart-contract support.
+- Embedded pool coordination/accounting/payout logic in `pulsedag-miner`.
 
-See `docs/POW_CURRENT_PATH.md` for the step-by-step request/validation flow and code pointers.
+## 6) Error taxonomy (submit path)
 
-## 6.1 Difficulty retarget controls and diagnostics (operator-facing)
+Operationally relevant rejection classes include:
 
-The consensus direction remains unchanged: bounded, explainable retargeting using the same target-interval framing.
+- `invalid_pow`
+- `stale_template`
+- `duplicate`
+- target mismatch (`hash > target`)
+- mutated header / serialization mismatch
+- miner/node version mismatch affecting PoW semantics
 
-- Default retarget controls:
-  - deadband: `±800 bps` around neutral (`10000` bps),
-  - damping divisor: `2`,
-  - multiplier clamp: `[8000, 12500]` bps.
-- Optional runtime controls (env):
-  - `PULSEDAG_RETARGET_DEADBAND_BPS`
-  - `PULSEDAG_RETARGET_DAMPING_DIVISOR`
-  - `PULSEDAG_RETARGET_MIN_BPS`
-  - `PULSEDAG_RETARGET_MAX_BPS`
-- Runtime diagnostics now include:
-  - movement/bounds: `retarget_multiplier_bps`, `retarget_min_bps`, `retarget_max_bps`, `retarget_was_clamped`
-  - rationale tags: `retarget_rationale`
-  - signal-quality tag: `retarget_signal_quality`
+## 7) Milestone handoff
 
-Low-signal windows are labeled explicitly (`retarget_signal_quality=low`, `retarget_rationale=insufficient_signal`) to avoid misleading operator interpretation.
-
-## 7) Current vs provisional/dev-oriented surfaces
-
-The following names are retained for compatibility and operator visibility, but do not represent an alternate consensus PoW algorithm:
-
-- helper function aliases prefixed with `dev_*` that currently delegate to the active PoW path,
-- response fields such as `pow_accepted_dev`.
-
-Interpretation: these are **naming/operational surfaces**, not a second PoW rule.
-
-## 8) Upgrade boundaries for future final-PoW changes
-
-To avoid node/miner divergence, future PoW upgrades should be introduced only through explicit, coordinated changes to:
-
-1. canonical preimage versioning and serialization in `pow.rs`,
-2. deterministic vectors in `fixtures/pow/official_vectors.json`,
-3. miner implementation consuming the same preimage/acceptance rules,
-4. any RPC schema changes (if ever needed) behind explicit versioning/migration notes.
-
-Until such a coordinated upgrade lands, implementers should treat §2–§5 as normative behavior.
-
-## 9) Canonical references
-
-- PoW serialization/hash/acceptance: `crates/pulsedag-core/src/pow.rs`
-- Header fields: `crates/pulsedag-core/src/types.rs`
-- Template flow: `crates/pulsedag-rpc/src/handlers/mining_template.rs`
-- Submit validation path: `crates/pulsedag-rpc/src/handlers/mining_submit.rs`
-- External miner: `apps/pulsedag-miner/src/main.rs`
-- Flow explainer: `docs/POW_CURRENT_PATH.md`
-
-## 10) Deterministic test vectors
-
-Canonical PoW vectors:
-
-- `fixtures/pow/official_vectors.json`
-
-Extension rule: append vectors without mutating existing vector IDs/expected outputs.
+- **v2.2.10 closes PoW completion** (single finalized PoW truth).
+- **v2.2.11 starts P2P completion** as the next milestone.
