@@ -6,8 +6,8 @@ This matrix keeps release positioning clear across the v2.2.x and v2.3.x line.
 
 | Area | Current value |
 | --- | --- |
-| Workspace release | `2.2.9` |
-| Current milestone | v2.2.9 private-testnet rehearsal |
+| Workspace release | `2.2.10` |
+| Current milestone | v2.2.10 real PoW completion |
 | Next major milestone | v2.3.0 official complete private-testnet readiness |
 | Miner architecture | External standalone miner |
 | Smart contracts | Out of scope |
@@ -20,6 +20,7 @@ This matrix keeps release positioning clear across the v2.2.x and v2.3.x line.
 | v2.2.7 | Clean foundation closure | Foundation only; manual/partial smoke checks |
 | v2.2.8 | Ambitious hardening baseline closure | Pre-private-testnet hardening baseline |
 | v2.2.9 | Private-testnet rehearsal closure | Rehearsal only; not official readiness |
+| v2.2.10 | Real PoW completion closure | Consensus PoW completion; not P2P completion |
 | v2.3.0 | Official complete private-testnet readiness milestone | Target for official private testnet readiness decision |
 
 ## Guardrails

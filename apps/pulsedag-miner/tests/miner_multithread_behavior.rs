@@ -25,8 +25,10 @@ fn multithread_search_returns_self_consistent_results() {
     let max_tries = 50_000;
     let difficulty = 1;
 
-    let r1 = mine_header_strided(fixture_header(difficulty), max_tries, 8, difficulty).expect("first run");
-    let r2 = mine_header_strided(fixture_header(difficulty), max_tries, 8, difficulty).expect("second run");
+    let r1 = mine_header_strided(fixture_header(difficulty), max_tries, 8, difficulty)
+        .expect("first run");
+    let r2 = mine_header_strided(fixture_header(difficulty), max_tries, 8, difficulty)
+        .expect("second run");
 
     for r in [r1, r2] {
         assert!(r.tries >= 1 && r.tries <= max_tries);

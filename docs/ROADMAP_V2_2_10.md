@@ -100,3 +100,10 @@ This document satisfies the roadmap acceptance requirements by ensuring:
 - v2.2.10 is clearly scoped as real PoW completion.
 - v2.2.11 is clearly scoped as P2P completion.
 - v2.3.0 remains the official private testnet milestone.
+
+
+## Closure status (v2.2.10)
+
+- Version alignment finalized at `v2.2.10` / `2.2.10`.
+- Release notes, closing checklist, and smoke test docs are published for v2.2.10 closeout.
+- PoW closure scope remains limited to consensus/path coherence; P2P completion stays in v2.2.11.

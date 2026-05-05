@@ -1,6 +1,7 @@
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use pulsedag_core::pow::{
-    bits_from_target, mine_header, pow_accepts, pow_evaluate, pow_hash, pow_preimage_bytes, target_from_bits,
+    bits_from_target, mine_header, pow_accepts, pow_evaluate, pow_hash, pow_preimage_bytes,
+    target_from_bits,
 };
 use pulsedag_core::types::BlockHeader;
 
@@ -51,14 +52,18 @@ fn bench_pow_core(c: &mut Criterion) {
 
     // Target conversion cost in compact->target and target->compact directions.
     for bits in [0x1d00ffffu32, 0x1e0ffff0u32, 0x1f07ffffu32] {
-        group.bench_with_input(BenchmarkId::new("target_from_bits", bits), &bits, |b, input| {
-            b.iter(|| black_box(target_from_bits(black_box(*input))))
-        });
+        group.bench_with_input(
+            BenchmarkId::new("target_from_bits", bits),
+            &bits,
+            |b, input| b.iter(|| black_box(target_from_bits(black_box(*input)))),
+        );
 
         let target = target_from_bits(bits);
-        group.bench_with_input(BenchmarkId::new("bits_from_target", bits), &target, |b, input| {
-            b.iter(|| black_box(bits_from_target(black_box(input))))
-        });
+        group.bench_with_input(
+            BenchmarkId::new("bits_from_target", bits),
+            &target,
+            |b, input| b.iter(|| black_box(bits_from_target(black_box(input)))),
+        );
     }
 
     // External mining-loop attempt cost using an easy target to ensure quick hit.
@@ -66,7 +71,8 @@ fn bench_pow_core(c: &mut Criterion) {
     easy.difficulty = 1;
     group.bench_function("mining_loop_easy_target", |b| {
         b.iter(|| {
-            let (found_header, found, attempts, hash_hex) = mine_header(black_box(easy.clone()), 128);
+            let (found_header, found, attempts, hash_hex) =
+                mine_header(black_box(easy.clone()), 128);
             black_box((found_header, found, attempts, hash_hex))
         })
     });
