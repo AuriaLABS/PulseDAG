@@ -1,7 +1,14 @@
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use pulsedag_core::pow::{pow_accepts, pow_hash_score_u64, pow_preimage_bytes};
+use pulsedag_core::pow::{
+    bits_from_target, mine_header, pow_accepts, pow_evaluate, pow_hash, pow_preimage_bytes, target_from_bits,
+};
 use pulsedag_core::types::BlockHeader;
 
+/// Run with:
+///   cargo bench -p pulsedag-core --bench pow_core
+///
+/// Focus: v2.2.10 kHeavyHash hashing/validation cost, target conversion,
+/// canonical header adapter serialization, and mining attempt throughput.
 fn fixture_header() -> BlockHeader {
     BlockHeader {
         version: 1,
@@ -21,31 +28,101 @@ fn fixture_header() -> BlockHeader {
 
 fn bench_pow_core(c: &mut Criterion) {
     let header = fixture_header();
-    let preimage_len = pow_preimage_bytes(&header).len() as u64;
+    let preimage = pow_preimage_bytes(&header);
 
-    let mut group = c.benchmark_group("pow_core");
-    group.throughput(Throughput::Bytes(preimage_len));
-    group.bench_function("pow_preimage_bytes", |b| {
+    let mut group = c.benchmark_group("pow_v2_2_10_core");
+
+    // Header adapter serialization (canonical preimage path).
+    group.throughput(Throughput::Bytes(preimage.len() as u64));
+    group.bench_function("header_adapter_serialization", |b| {
         b.iter(|| black_box(pow_preimage_bytes(black_box(&header))))
     });
 
+    // Single kHeavyHash PoW hash cost.
     group.throughput(Throughput::Elements(1));
-    group.bench_function("pow_hash_score_u64", |b| {
-        b.iter(|| black_box(pow_hash_score_u64(black_box(&header))))
+    group.bench_function("pow_hash_single", |b| {
+        b.iter(|| black_box(pow_hash(black_box(&header))))
     });
 
-    for difficulty in [1u32, 64u32, 512u32] {
-        let mut case = header.clone();
-        case.difficulty = difficulty;
-        group.bench_with_input(
-            BenchmarkId::new("pow_accepts", difficulty),
-            &case,
-            |b, input| b.iter(|| black_box(pow_accepts(black_box(input)))),
-        );
+    // Full validation path (hash + target check) as a check_pow equivalent.
+    group.bench_function("check_pow_validate", |b| {
+        b.iter(|| black_box(pow_accepts(black_box(&header))))
+    });
+
+    // Target conversion cost in compact->target and target->compact directions.
+    for bits in [0x1d00ffffu32, 0x1e0ffff0u32, 0x1f07ffffu32] {
+        group.bench_with_input(BenchmarkId::new("target_from_bits", bits), &bits, |b, input| {
+            b.iter(|| black_box(target_from_bits(black_box(*input))))
+        });
+
+        let target = target_from_bits(bits);
+        group.bench_with_input(BenchmarkId::new("bits_from_target", bits), &target, |b, input| {
+            b.iter(|| black_box(bits_from_target(black_box(input))))
+        });
     }
+
+    // External mining-loop attempt cost using an easy target to ensure quick hit.
+    let mut easy = header.clone();
+    easy.difficulty = 1;
+    group.bench_function("mining_loop_easy_target", |b| {
+        b.iter(|| {
+            let (found_header, found, attempts, hash_hex) = mine_header(black_box(easy.clone()), 128);
+            black_box((found_header, found, attempts, hash_hex))
+        })
+    });
 
     group.finish();
 }
 
-criterion_group!(benches, bench_pow_core);
+fn bench_optional_miner_style(c: &mut Criterion) {
+    let mut header = fixture_header();
+    header.difficulty = 1;
+
+    let mut group = c.benchmark_group("pow_v2_2_10_miner_style");
+    group.throughput(Throughput::Elements(1));
+
+    // One-thread fixed nonce range probe.
+    group.bench_function("single_thread_fixed_nonce_range", |b| {
+        b.iter(|| {
+            let mut winning_nonce = None;
+            for nonce in 0u64..10_000 {
+                header.nonce = nonce;
+                if pow_evaluate(&header).accepted {
+                    winning_nonce = Some(nonce);
+                    break;
+                }
+            }
+            black_box(winning_nonce)
+        })
+    });
+
+    // Multi-thread fixed nonce range probe (split into static shards).
+    group.bench_function("multi_thread_fixed_nonce_range_4", |b| {
+        b.iter(|| {
+            let workers = 4u64;
+            let range = 40_000u64;
+            let mut found = false;
+            for worker in 0..workers {
+                let mut local = header.clone();
+                let mut nonce = worker;
+                while nonce < range {
+                    local.nonce = nonce;
+                    if pow_evaluate(&local).accepted {
+                        found = true;
+                        break;
+                    }
+                    nonce += workers;
+                }
+                if found {
+                    break;
+                }
+            }
+            black_box(found)
+        })
+    });
+
+    group.finish();
+}
+
+criterion_group!(benches, bench_pow_core, bench_optional_miner_style);
 criterion_main!(benches);
