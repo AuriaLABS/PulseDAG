@@ -6,6 +6,8 @@ use pulsedag_core::reconcile_mempool;
 #[derive(Debug, serde::Serialize)]
 pub struct SyncStatusData {
     pub chain_id: String,
+    pub p2p_enabled: bool,
+    pub p2p_mode: String,
     pub snapshot_exists: bool,
     pub persisted_block_count: usize,
     pub in_memory_block_count: usize,
@@ -14,6 +16,8 @@ pub struct SyncStatusData {
     pub tip_count: usize,
     pub mempool_size: usize,
     pub orphan_count: usize,
+    pub pending_block_requests: usize,
+    pub pending_missing_parents: usize,
     pub can_replay_from_blocks: bool,
     pub replay_gap: i64,
     pub rebuild_recommended: bool,
@@ -25,6 +29,12 @@ pub struct SyncStatusData {
     pub catchup_progress_bps: u64,
     pub catchup_summary: String,
     pub recovery_reason: Option<String>,
+    pub sync_state: String,
+    pub selected_sync_peer: Option<String>,
+    pub last_accepted_peer_block: Option<String>,
+    pub last_rejected_peer_block_reason: Option<String>,
+    pub p2p_ready_for_private_rehearsal: bool,
+    pub readiness_reasons: Vec<String>,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -118,6 +128,46 @@ pub async fn get_sync_status<S: RpcStateLike>(
         }
     }
     .to_string();
+    let p2p_status = state.p2p().and_then(|p2p| p2p.status().ok());
+    let p2p_enabled = p2p_status.is_some();
+    let p2p_mode = p2p_status
+        .as_ref()
+        .map(|status| status.mode.clone())
+        .unwrap_or_else(|| "disabled".to_string());
+    let pending_missing_parents = chain
+        .orphan_missing_parents
+        .values()
+        .map(Vec::len)
+        .sum::<usize>();
+    let mut readiness_reasons = Vec::new();
+    if !p2p_enabled {
+        readiness_reasons.push("p2p is disabled".to_string());
+    }
+    if p2p_status
+        .as_ref()
+        .is_some_and(|status| status.connected_peers.is_empty())
+    {
+        readiness_reasons.push("no connected peers".to_string());
+    }
+    if runtime.pending_block_requests > 0 {
+        readiness_reasons.push(format!(
+            "{} pending block request(s)",
+            runtime.pending_block_requests
+        ));
+    }
+    if pending_missing_parents > 0 {
+        readiness_reasons.push(format!(
+            "{} pending missing parent(s)",
+            pending_missing_parents
+        ));
+    }
+    if !chain.orphan_blocks.is_empty() {
+        readiness_reasons.push(format!(
+            "{} orphan block(s) queued",
+            chain.orphan_blocks.len()
+        ));
+    }
+
     let recovery_reason = if let Some(err) = runtime.sync_pipeline.last_error.clone() {
         Some(format!("sync error: {err}"))
     } else if !counters_coherent {
@@ -143,6 +193,8 @@ pub async fn get_sync_status<S: RpcStateLike>(
     );
     Json(ApiResponse::ok(SyncStatusData {
         chain_id: chain.chain_id.clone(),
+        p2p_enabled,
+        p2p_mode,
         snapshot_exists,
         persisted_block_count: persisted_blocks.len(),
         in_memory_block_count: chain.dag.blocks.len(),
@@ -151,6 +203,8 @@ pub async fn get_sync_status<S: RpcStateLike>(
         tip_count: chain.dag.tips.len(),
         mempool_size: chain.mempool.transactions.len(),
         orphan_count: chain.orphan_blocks.len(),
+        pending_block_requests: runtime.pending_block_requests,
+        pending_missing_parents,
         can_replay_from_blocks: !persisted_blocks.is_empty(),
         replay_gap: persisted_blocks.len() as i64 - chain.dag.blocks.len() as i64,
         rebuild_recommended: !snapshot_exists || persisted_blocks.len() > chain.dag.blocks.len(),
@@ -162,6 +216,63 @@ pub async fn get_sync_status<S: RpcStateLike>(
         catchup_progress_bps,
         catchup_summary,
         recovery_reason,
+        sync_state: runtime.sync_state.clone(),
+        selected_sync_peer: runtime.sync_pipeline.selected_peer.clone().or_else(|| {
+            p2p_status
+                .as_ref()
+                .and_then(|status| status.selected_sync_peer.clone())
+        }),
+        last_accepted_peer_block: runtime.last_accepted_peer_block.clone(),
+        last_rejected_peer_block_reason: runtime.last_rejected_peer_block_reason.clone(),
+        p2p_ready_for_private_rehearsal: readiness_reasons.is_empty(),
+        readiness_reasons,
+    }))
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct MissingBlockEntry {
+    pub hash: String,
+    pub missing_parents: Vec<String>,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct SyncMissingData {
+    pub pending_block_requests: usize,
+    pub pending_missing_parents: usize,
+    pub orphan_count: usize,
+    pub orphans: Vec<MissingBlockEntry>,
+}
+
+pub async fn get_sync_missing<S: RpcStateLike>(
+    State(state): State<S>,
+) -> Json<ApiResponse<SyncMissingData>> {
+    let chain_handle = state.chain();
+    let chain = chain_handle.read().await;
+    let runtime_handle = state.runtime();
+    let runtime = runtime_handle.read().await;
+    let mut orphan_hashes = chain.orphan_blocks.keys().cloned().collect::<Vec<_>>();
+    orphan_hashes.sort();
+    let orphans = orphan_hashes
+        .into_iter()
+        .map(|hash| MissingBlockEntry {
+            missing_parents: chain
+                .orphan_missing_parents
+                .get(&hash)
+                .cloned()
+                .unwrap_or_default(),
+            hash,
+        })
+        .collect::<Vec<_>>();
+    let pending_missing_parents = chain
+        .orphan_missing_parents
+        .values()
+        .map(Vec::len)
+        .sum::<usize>();
+    Json(ApiResponse::ok(SyncMissingData {
+        pending_block_requests: runtime.pending_block_requests,
+        pending_missing_parents,
+        orphan_count: chain.orphan_blocks.len(),
+        orphans,
     }))
 }
 
@@ -290,7 +401,7 @@ mod tests {
 
     use crate::api::{NodeRuntimeStats, RpcStateLike};
 
-    use super::get_sync_status;
+    use super::{get_sync_missing, get_sync_status};
 
     #[derive(Clone)]
     struct TestState {
@@ -352,6 +463,45 @@ mod tests {
         assert!(data.recovery_reason.is_some());
         assert_eq!(data.lag_band, "aligned");
         assert_eq!(data.catchup_progress_bps, 10_000);
+        assert!(!data.p2p_enabled);
+        assert_eq!(data.p2p_mode, "disabled");
+        assert_eq!(data.pending_block_requests, 0);
+        assert_eq!(data.pending_missing_parents, 0);
+        assert_eq!(data.sync_state, "");
+        assert!(data
+            .readiness_reasons
+            .iter()
+            .any(|reason| reason == "p2p is disabled"));
+    }
+
+    #[tokio::test]
+    async fn sync_missing_returns_orphan_and_pending_request_state() {
+        let path = temp_db_path("sync-missing");
+        let storage = Arc::new(Storage::open(path.to_str().expect("utf8 temp path")).unwrap());
+        let mut chain = storage
+            .load_or_init_genesis("testnet-dev".to_string())
+            .unwrap();
+        chain.orphan_missing_parents.insert(
+            "child-block".to_string(),
+            vec![
+                "missing-parent-a".to_string(),
+                "missing-parent-b".to_string(),
+            ],
+        );
+        let mut runtime = NodeRuntimeStats::default();
+        runtime.pending_block_requests = 3;
+        let state = TestState {
+            chain: Arc::new(RwLock::new(chain)),
+            storage,
+            runtime: Arc::new(RwLock::new(runtime)),
+        };
+
+        let Json(resp) = get_sync_missing(State(state)).await;
+        assert!(resp.ok);
+        let data = resp.data.expect("sync missing payload");
+        assert_eq!(data.pending_block_requests, 3);
+        assert_eq!(data.pending_missing_parents, 2);
+        assert_eq!(data.orphans.len(), 0);
     }
 
     #[tokio::test]

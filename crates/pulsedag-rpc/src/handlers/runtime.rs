@@ -266,6 +266,19 @@ pub struct RuntimeStatusData {
     pub p2p_queue_non_block_fair_picks: usize,
     pub p2p_queue_starvation_relief_picks: usize,
     pub p2p_queue_backpressure_drops: usize,
+    pub p2p_enabled: bool,
+    pub p2p_mode: String,
+    pub p2p_peer_count: usize,
+    pub p2p_listening_addresses: Vec<String>,
+    pub p2p_topics: Vec<String>,
+    pub pending_block_requests: usize,
+    pub pending_missing_parents: usize,
+    pub sync_state: String,
+    pub selected_sync_peer: Option<String>,
+    pub last_accepted_peer_block: Option<String>,
+    pub last_rejected_peer_block_reason: Option<String>,
+    pub p2p_ready_for_private_rehearsal: bool,
+    pub readiness_reasons: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -402,6 +415,12 @@ fn sync_catchup_view(runtime: &crate::api::NodeRuntimeStats, now_unix: u64) -> S
 
 #[derive(Default)]
 struct RuntimeP2pRecoverySummary {
+    enabled: bool,
+    mode: String,
+    peer_count: usize,
+    listening_addresses: Vec<String>,
+    topics: Vec<String>,
+    selected_sync_peer: Option<String>,
     reconnect_attempts: u64,
     recovery_success_count: u64,
     last_recovery_unix: Option<u64>,
@@ -571,6 +590,43 @@ pub(crate) fn runtime_surface_rollup(
     } else {
         "healthy"
     };
+    let pending_missing_parents = chain
+        .orphan_missing_parents
+        .values()
+        .map(Vec::len)
+        .sum::<usize>();
+    let mut readiness_reasons = Vec::new();
+    if !p2p_recovery.enabled {
+        readiness_reasons.push("p2p is disabled".to_string());
+    }
+    if p2p_recovery.enabled && p2p_recovery.peer_count == 0 {
+        readiness_reasons.push("no connected peers".to_string());
+    }
+    if p2p_recovery.enabled && p2p_recovery.listening_addresses.is_empty() {
+        readiness_reasons.push("no listening addresses reported".to_string());
+    }
+    if runtime.pending_block_requests > 0 {
+        readiness_reasons.push(format!(
+            "{} pending block request(s)",
+            runtime.pending_block_requests
+        ));
+    }
+    if pending_missing_parents > 0 {
+        readiness_reasons.push(format!(
+            "{} pending missing parent(s)",
+            pending_missing_parents
+        ));
+    }
+    if !chain.orphan_blocks.is_empty() {
+        readiness_reasons.push(format!(
+            "{} orphan block(s) queued",
+            chain.orphan_blocks.len()
+        ));
+    }
+    if runtime.sync_pipeline.last_error.is_some() || runtime.sync_state == "degraded" {
+        readiness_reasons.push("sync pipeline reports degraded state".to_string());
+    }
+
     let external_mining_submit_total = runtime
         .external_mining_submit_accepted
         .saturating_add(runtime.external_mining_submit_rejected);
@@ -1065,6 +1121,12 @@ pub async fn get_runtime_status<S: RpcStateLike>(
                 .filter(|peer| !peer.recent_failures_unix.is_empty())
                 .count();
             RuntimeP2pRecoverySummary {
+                enabled: true,
+                mode: status.mode.clone(),
+                peer_count: status.connected_peers.len(),
+                listening_addresses: status.listening.clone(),
+                topics: status.topics.clone(),
+                selected_sync_peer: status.selected_sync_peer.clone(),
                 reconnect_attempts: status.peer_reconnect_attempts,
                 recovery_success_count: status.peer_recovery_success_count,
                 last_recovery_unix: status.last_peer_recovery_unix,
@@ -1547,6 +1609,27 @@ pub async fn get_runtime_status<S: RpcStateLike>(
         p2p_queue_non_block_fair_picks: p2p_recovery.queue_non_block_fair_picks,
         p2p_queue_starvation_relief_picks: p2p_recovery.queue_starvation_relief_picks,
         p2p_queue_backpressure_drops: p2p_recovery.queue_backpressure_drops,
+        p2p_enabled: p2p_recovery.enabled,
+        p2p_mode: if p2p_recovery.enabled {
+            p2p_recovery.mode.clone()
+        } else {
+            "disabled".to_string()
+        },
+        p2p_peer_count: p2p_recovery.peer_count,
+        p2p_listening_addresses: p2p_recovery.listening_addresses.clone(),
+        p2p_topics: p2p_recovery.topics.clone(),
+        pending_block_requests: runtime.pending_block_requests,
+        pending_missing_parents,
+        sync_state: runtime.sync_state.clone(),
+        selected_sync_peer: runtime
+            .sync_pipeline
+            .selected_peer
+            .clone()
+            .or_else(|| p2p_recovery.selected_sync_peer.clone()),
+        last_accepted_peer_block: runtime.last_accepted_peer_block.clone(),
+        last_rejected_peer_block_reason: runtime.last_rejected_peer_block_reason.clone(),
+        p2p_ready_for_private_rehearsal: readiness_reasons.is_empty(),
+        readiness_reasons,
     }))
 }
 
