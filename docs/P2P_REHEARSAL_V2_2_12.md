@@ -81,18 +81,15 @@ Create one evidence directory per rehearsal attempt and include:
 - Notes on failures, remediations, and runbook changes.
 - A completed copy of `docs/CLOSING_CHECKLIST_V2_2_12.md`.
 
-Recommended endpoint capture loop:
+Use the rehearsal evidence collector for closeout capture:
 
 ```bash
-for port in 18080 18081 18082; do
-  curl -fsS "http://127.0.0.1:${port}/health"
-  curl -fsS "http://127.0.0.1:${port}/status"
-  curl -fsS "http://127.0.0.1:${port}/p2p/status"
-  curl -fsS "http://127.0.0.1:${port}/p2p/propagation"
-  curl -fsS "http://127.0.0.1:${port}/sync/status"
-  curl -fsS "http://127.0.0.1:${port}/sync/missing"
-done
+scripts/v2_2_12_collect_evidence.sh
 ```
+
+The collector writes an evidence directory under the v2.2.12 rehearsal state path, captures required A/B/C `/health`, `/status`, `/p2p/status`, and `/sync/status` responses, attempts optional `/sync/missing`, `/p2p/propagation`, `/p2p/peers`, and `/p2p/topics` responses, copies node/miner logs from the rehearsal log directory, saves the chain id, RPC/P2P addresses, bootnode value, binary paths, and git commit, then creates a final `tar.gz` archive. Treat a non-zero collector exit as a closeout blocker because at least one required endpoint could not be captured.
+
+The collector inherits the same overrides as the v2.2.12 launch scripts, including `PULSEDAG_REHEARSAL_STATE_DIR`, `PULSEDAG_REHEARSAL_LOG_DIR`, `PULSEDAG_NODE_A_RPC`, `PULSEDAG_NODE_B_RPC`, `PULSEDAG_NODE_C_RPC`, and binary path overrides.
 
 ## Pass criteria
 
