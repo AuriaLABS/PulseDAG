@@ -1,6 +1,6 @@
 use axum::{extract::State, Json};
 use pulsedag_p2p::{
-    connected_peers_semantics, mode_connected_peers_are_real_network, PeerRecoveryStatus,
+    connected_peers_semantics, mode_connected_peers_are_real_network, P2pStatus, PeerRecoveryStatus,
 };
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -30,6 +30,80 @@ fn is_peer_degraded(peer: &PeerRecoveryStatus) -> bool {
     peer.score < 80 || peer.flap_events > 0 || !peer.recent_failures_unix.is_empty()
 }
 
+fn p2p_readiness_reasons(
+    enabled: bool,
+    status: Option<&P2pStatus>,
+    runtime: &crate::api::NodeRuntimeStats,
+    orphan_count: usize,
+) -> Vec<String> {
+    let mut reasons = Vec::new();
+    if !enabled {
+        reasons.push("p2p is disabled".to_string());
+        return reasons;
+    }
+    let Some(status) = status else {
+        reasons.push("p2p status unavailable".to_string());
+        return reasons;
+    };
+    if !mode_connected_peers_are_real_network(&status.mode) {
+        reasons.push(format!(
+            "p2p mode {} does not represent real network peers",
+            status.mode
+        ));
+    }
+    if status.connected_peers.is_empty() {
+        reasons.push("no connected peers".to_string());
+    }
+    if status.listening.is_empty() {
+        reasons.push("no listening addresses reported".to_string());
+    }
+    if runtime.pending_block_requests > 0 {
+        reasons.push(format!(
+            "{} pending block request(s)",
+            runtime.pending_block_requests
+        ));
+    }
+    if runtime.pending_missing_parents > 0 {
+        reasons.push(format!(
+            "{} pending missing parent(s)",
+            runtime.pending_missing_parents
+        ));
+    }
+    if orphan_count > 0 {
+        reasons.push(format!("{} orphan block(s) queued", orphan_count));
+    }
+    if runtime.sync_pipeline.last_error.is_some() || runtime.sync_state == "degraded" {
+        reasons.push("sync pipeline reports degraded state".to_string());
+    }
+    reasons
+}
+
+fn disabled_p2p_payload(
+    runtime: &crate::api::NodeRuntimeStats,
+    orphan_count: usize,
+) -> serde_json::Value {
+    let reasons = p2p_readiness_reasons(false, None, runtime, orphan_count);
+    serde_json::json!({
+        "p2p_enabled": false,
+        "p2p_mode": "disabled",
+        "mode": "disabled",
+        "peer_count": 0,
+        "connected_peers": [],
+        "listening_addresses": [],
+        "listening": [],
+        "topics": [],
+        "pending_block_requests": runtime.pending_block_requests,
+        "pending_missing_parents": runtime.pending_missing_parents,
+        "orphan_count": orphan_count,
+        "sync_state": runtime.sync_state,
+        "selected_sync_peer": runtime.sync_pipeline.selected_peer,
+        "last_accepted_peer_block": runtime.last_accepted_peer_block,
+        "last_rejected_peer_block_reason": runtime.last_rejected_peer_block_reason,
+        "p2p_ready_for_private_rehearsal": false,
+        "readiness_reasons": reasons
+    })
+}
+
 fn peer_health_counts(
     peer_recovery: &[PeerRecoveryStatus],
     now_unix: u64,
@@ -53,281 +127,367 @@ pub async fn get_p2p_status<S: RpcStateLike>(
     State(state): State<S>,
 ) -> Json<ApiResponse<serde_json::Value>> {
     match state.p2p() {
-        Some(p2p) => match p2p.status() {
-            Ok(status) => {
-                let now_unix = unix_now_secs();
-                let (healthy_count, degraded_count, recovering_count) =
-                    peer_health_counts(&status.peer_recovery, now_unix);
-                let peers_with_recent_failures = status
-                    .peer_recovery
-                    .iter()
-                    .filter(|peer| !peer.recent_failures_unix.is_empty())
-                    .count();
-                let sync_candidates = status
-                    .sync_candidates
-                    .iter()
-                    .map(|candidate| {
-                        serde_json::json!({
-                            "peer_id": candidate.peer_id,
-                            "rank_score": candidate.rank_score,
-                            "excluded_until_unix": candidate.excluded_until_unix
+        Some(p2p) => {
+            match p2p.status() {
+                Ok(status) => {
+                    let now_unix = unix_now_secs();
+                    let (healthy_count, degraded_count, recovering_count) =
+                        peer_health_counts(&status.peer_recovery, now_unix);
+                    let peers_with_recent_failures = status
+                        .peer_recovery
+                        .iter()
+                        .filter(|peer| !peer.recent_failures_unix.is_empty())
+                        .count();
+                    let sync_candidates = status
+                        .sync_candidates
+                        .iter()
+                        .map(|candidate| {
+                            serde_json::json!({
+                                "peer_id": candidate.peer_id,
+                                "rank_score": candidate.rank_score,
+                                "excluded_until_unix": candidate.excluded_until_unix
+                            })
                         })
-                    })
-                    .collect::<Vec<_>>();
-                let peer_recovery = status
-                    .peer_recovery
-                    .iter()
-                    .map(|peer| {
-                        serde_json::json!({
-                            "peer_id": peer.peer_id,
-                            "score": peer.score,
-                            "fail_streak": peer.fail_streak,
-                            "lifecycle_tier": peer.lifecycle_tier,
-                            "recovery_tier": peer.recovery_tier,
-                            "connected": peer.connected,
-                            "last_seen_unix": peer.last_seen_unix,
-                            "last_successful_connect_unix": peer.last_successful_connect_unix,
-                            "next_retry_unix": peer.next_retry_unix,
-                            "reconnect_attempts": peer.reconnect_attempts,
-                            "recovery_success_count": peer.recovery_success_count,
-                            "last_recovery_unix": peer.last_recovery_unix,
-                            "recent_failures_unix": peer.recent_failures_unix,
-                            "cooldown_suppressed_count": peer.cooldown_suppressed_count,
-                            "flap_suppressed_count": peer.flap_suppressed_count,
-                            "flap_events": peer.flap_events,
-                            "suppression_until_unix": peer.suppression_until_unix
+                        .collect::<Vec<_>>();
+                    let peer_recovery = status
+                        .peer_recovery
+                        .iter()
+                        .map(|peer| {
+                            serde_json::json!({
+                                "peer_id": peer.peer_id,
+                                "score": peer.score,
+                                "fail_streak": peer.fail_streak,
+                                "lifecycle_tier": peer.lifecycle_tier,
+                                "recovery_tier": peer.recovery_tier,
+                                "connected": peer.connected,
+                                "last_seen_unix": peer.last_seen_unix,
+                                "last_successful_connect_unix": peer.last_successful_connect_unix,
+                                "next_retry_unix": peer.next_retry_unix,
+                                "reconnect_attempts": peer.reconnect_attempts,
+                                "recovery_success_count": peer.recovery_success_count,
+                                "last_recovery_unix": peer.last_recovery_unix,
+                                "recent_failures_unix": peer.recent_failures_unix,
+                                "cooldown_suppressed_count": peer.cooldown_suppressed_count,
+                                "flap_suppressed_count": peer.flap_suppressed_count,
+                                "flap_events": peer.flap_events,
+                                "suppression_until_unix": peer.suppression_until_unix
+                            })
                         })
-                    })
-                    .collect::<Vec<_>>();
-                let mut payload = serde_json::Map::new();
-                payload.insert("mode".into(), serde_json::json!(status.mode));
-                payload.insert(
-                    "connected_peers_are_real_network".into(),
-                    serde_json::json!(mode_connected_peers_are_real_network(&status.mode)),
-                );
-                payload.insert(
-                    "connected_peers_semantics".into(),
-                    serde_json::json!(connected_peers_semantics(&status.mode)),
-                );
-                payload.insert("peer_id".into(), serde_json::json!(status.peer_id));
-                payload.insert("listening".into(), serde_json::json!(status.listening));
-                payload.insert(
-                    "connected_peers".into(),
-                    serde_json::json!(status.connected_peers),
-                );
-                payload.insert("topics".into(), serde_json::json!(status.topics));
-                payload.insert("mdns".into(), serde_json::json!(status.mdns));
-                payload.insert("kademlia".into(), serde_json::json!(status.kademlia));
-                payload.insert(
-                    "broadcasted_messages".into(),
-                    serde_json::json!(status.broadcasted_messages),
-                );
-                payload.insert(
-                    "publish_attempts".into(),
-                    serde_json::json!(status.publish_attempts),
-                );
-                payload.insert(
-                    "seen_message_ids".into(),
-                    serde_json::json!(status.seen_message_ids),
-                );
-                payload.insert(
-                    "queued_messages".into(),
-                    serde_json::json!(status.queued_messages),
-                );
-                payload.insert(
-                    "inbound_messages".into(),
-                    serde_json::json!(status.inbound_messages),
-                );
-                payload.insert(
-                    "runtime_started".into(),
-                    serde_json::json!(status.runtime_started),
-                );
-                payload.insert(
-                    "runtime_mode_detail".into(),
-                    serde_json::json!(status.runtime_mode_detail),
-                );
-                payload.insert(
-                    "swarm_events_seen".into(),
-                    serde_json::json!(status.swarm_events_seen),
-                );
-                payload.insert(
-                    "subscriptions_active".into(),
-                    serde_json::json!(status.subscriptions_active),
-                );
-                payload.insert(
-                    "last_message_kind".into(),
-                    serde_json::json!(status.last_message_kind),
-                );
-                payload.insert(
-                    "last_swarm_event".into(),
-                    serde_json::json!(status.last_swarm_event),
-                );
-                payload.insert(
-                    "per_topic_publishes".into(),
-                    serde_json::json!(status.per_topic_publishes),
-                );
-                payload.insert(
-                    "inbound_decode_failed".into(),
-                    serde_json::json!(status.inbound_decode_failed),
-                );
-                payload.insert(
-                    "inbound_chain_mismatch_dropped".into(),
-                    serde_json::json!(status.inbound_chain_mismatch_dropped),
-                );
-                payload.insert(
-                    "inbound_duplicates_suppressed".into(),
-                    serde_json::json!(status.inbound_duplicates_suppressed),
-                );
-                payload.insert(
-                    "outbound_duplicates_suppressed".into(),
-                    serde_json::json!(status.outbound_duplicates_suppressed),
-                );
-                payload.insert(
-                    "inv_blocks_received".into(),
-                    serde_json::json!(status.inv_blocks_received),
-                );
-                payload.insert(
-                    "inv_hashes_known".into(),
-                    serde_json::json!(status.inv_hashes_known),
-                );
-                payload.insert(
-                    "inv_hashes_requested".into(),
-                    serde_json::json!(status.inv_hashes_requested),
-                );
-                payload.insert(
-                    "relay_loop_prevented".into(),
-                    serde_json::json!(status.relay_loop_prevented),
-                );
-                payload.insert(
-                    "relay_settings".into(),
-                    serde_json::json!({
-                        "seen_cache_ttl_secs": status.seen_cache_ttl_secs,
-                        "recovery_rebroadcast_ttl_secs": status.recovery_rebroadcast_ttl_secs,
-                        "max_inventory_length": status.max_inventory_length,
-                        "max_request_fanout": status.max_request_fanout
-                    }),
-                );
-                payload.insert(
-                    "last_drop_reason".into(),
-                    serde_json::json!(status.last_drop_reason),
-                );
-                payload.insert(
-                    "peer_reconnect_attempts".into(),
-                    serde_json::json!(status.peer_reconnect_attempts),
-                );
-                payload.insert(
-                    "peer_recovery_success_count".into(),
-                    serde_json::json!(status.peer_recovery_success_count),
-                );
-                payload.insert(
-                    "last_peer_recovery_unix".into(),
-                    serde_json::json!(status.last_peer_recovery_unix),
-                );
-                payload.insert(
-                    "peer_cooldown_suppressed_count".into(),
-                    serde_json::json!(status.peer_cooldown_suppressed_count),
-                );
-                payload.insert(
-                    "peer_flap_suppressed_count".into(),
-                    serde_json::json!(status.peer_flap_suppressed_count),
-                );
-                payload.insert(
-                    "peer_message_rate_limited_count".into(),
-                    serde_json::json!(status.peer_message_rate_limited_count),
-                );
-                payload.insert(
-                    "peer_suppressed_dial_count".into(),
-                    serde_json::json!(status.peer_suppressed_dial_count),
-                );
-                payload.insert(
-                    "peers_under_cooldown".into(),
-                    serde_json::json!(status.peers_under_cooldown),
-                );
-                payload.insert(
-                    "peers_under_flap_guard".into(),
-                    serde_json::json!(status.peers_under_flap_guard),
-                );
-                payload.insert(
-                    "degraded_mode".into(),
-                    serde_json::json!(status.degraded_mode),
-                );
-                payload.insert(
-                    "connection_shaping_active".into(),
-                    serde_json::json!(status.connection_shaping_active),
-                );
-                payload.insert(
-                    "peer_state_summary".into(),
-                    serde_json::json!({
-                        "total": status.peer_recovery.len(),
-                        "healthy": status.peer_lifecycle_healthy,
-                        "watch": status.peer_lifecycle_watch,
-                        "degraded": status.peer_lifecycle_degraded,
-                        "cooldown": status.peer_lifecycle_cooldown,
-                        "recovering": status.peer_lifecycle_recovering,
-                        "derived_healthy_legacy": healthy_count,
-                        "derived_degraded_legacy": degraded_count,
-                        "derived_recovering_legacy": recovering_count,
-                        "peers_with_recent_failures": peers_with_recent_failures
-                    }),
-                );
-                payload.insert(
-                    "recovery_activity_summary".into(),
-                    serde_json::json!({
-                        "reconnect_attempts": status.peer_reconnect_attempts,
-                        "recovery_success_count": status.peer_recovery_success_count,
-                        "last_recovery_unix": status.last_peer_recovery_unix,
-                        "cooldown_suppressed_count": status.peer_cooldown_suppressed_count,
-                        "flap_suppressed_count": status.peer_flap_suppressed_count,
-                        "message_rate_limited_count": status.peer_message_rate_limited_count,
-                        "suppressed_dial_count": status.peer_suppressed_dial_count,
-                        "suppressed_dials": status.peer_suppressed_dial_count,
-                        "peers_under_cooldown": status.peers_under_cooldown,
-                        "peers_under_flap_guard": status.peers_under_flap_guard
-                    }),
-                );
-                payload.insert(
-                    "selected_sync_peer".into(),
-                    serde_json::json!(status.selected_sync_peer),
-                );
-                payload.insert(
-                    "connection_slot_budget".into(),
-                    serde_json::json!(status.connection_slot_budget),
-                );
-                payload.insert(
-                    "connected_slots_in_use".into(),
-                    serde_json::json!(status.connected_slots_in_use),
-                );
-                payload.insert(
-                    "available_connection_slots".into(),
-                    serde_json::json!(status.available_connection_slots),
-                );
-                payload.insert(
-                    "sync_selection_sticky_until_unix".into(),
-                    serde_json::json!(status.sync_selection_sticky_until_unix),
-                );
-                payload.insert(
-                    "topology_bucket_count".into(),
-                    serde_json::json!(status.topology_bucket_count),
-                );
-                payload.insert(
-                    "topology_distinct_buckets".into(),
-                    serde_json::json!(status.topology_distinct_buckets),
-                );
-                payload.insert(
-                    "topology_dominant_bucket_share_bps".into(),
-                    serde_json::json!(status.topology_dominant_bucket_share_bps),
-                );
-                payload.insert(
-                    "topology_diversity_score_bps".into(),
-                    serde_json::json!(status.topology_diversity_score_bps),
-                );
-                payload.insert("sync_candidates".into(), serde_json::json!(sync_candidates));
-                payload.insert("peer_recovery".into(), serde_json::json!(peer_recovery));
-                Json(ApiResponse::ok(serde_json::Value::Object(payload)))
+                        .collect::<Vec<_>>();
+                    let mut payload = serde_json::Map::new();
+                    payload.insert("mode".into(), serde_json::json!(status.mode));
+                    payload.insert(
+                        "connected_peers_are_real_network".into(),
+                        serde_json::json!(mode_connected_peers_are_real_network(&status.mode)),
+                    );
+                    payload.insert(
+                        "connected_peers_semantics".into(),
+                        serde_json::json!(connected_peers_semantics(&status.mode)),
+                    );
+                    payload.insert("peer_id".into(), serde_json::json!(status.peer_id));
+                    payload.insert("listening".into(), serde_json::json!(status.listening));
+                    payload.insert(
+                        "connected_peers".into(),
+                        serde_json::json!(status.connected_peers),
+                    );
+                    payload.insert("topics".into(), serde_json::json!(status.topics));
+                    payload.insert("mdns".into(), serde_json::json!(status.mdns));
+                    payload.insert("kademlia".into(), serde_json::json!(status.kademlia));
+                    payload.insert(
+                        "broadcasted_messages".into(),
+                        serde_json::json!(status.broadcasted_messages),
+                    );
+                    payload.insert(
+                        "publish_attempts".into(),
+                        serde_json::json!(status.publish_attempts),
+                    );
+                    payload.insert(
+                        "seen_message_ids".into(),
+                        serde_json::json!(status.seen_message_ids),
+                    );
+                    payload.insert(
+                        "queued_messages".into(),
+                        serde_json::json!(status.queued_messages),
+                    );
+                    payload.insert(
+                        "inbound_messages".into(),
+                        serde_json::json!(status.inbound_messages),
+                    );
+                    payload.insert(
+                        "runtime_started".into(),
+                        serde_json::json!(status.runtime_started),
+                    );
+                    payload.insert(
+                        "runtime_mode_detail".into(),
+                        serde_json::json!(status.runtime_mode_detail),
+                    );
+                    payload.insert(
+                        "swarm_events_seen".into(),
+                        serde_json::json!(status.swarm_events_seen),
+                    );
+                    payload.insert(
+                        "subscriptions_active".into(),
+                        serde_json::json!(status.subscriptions_active),
+                    );
+                    payload.insert(
+                        "last_message_kind".into(),
+                        serde_json::json!(status.last_message_kind),
+                    );
+                    payload.insert(
+                        "last_swarm_event".into(),
+                        serde_json::json!(status.last_swarm_event),
+                    );
+                    payload.insert(
+                        "per_topic_publishes".into(),
+                        serde_json::json!(status.per_topic_publishes),
+                    );
+                    payload.insert(
+                        "inbound_decode_failed".into(),
+                        serde_json::json!(status.inbound_decode_failed),
+                    );
+                    payload.insert(
+                        "inbound_chain_mismatch_dropped".into(),
+                        serde_json::json!(status.inbound_chain_mismatch_dropped),
+                    );
+                    payload.insert(
+                        "inbound_duplicates_suppressed".into(),
+                        serde_json::json!(status.inbound_duplicates_suppressed),
+                    );
+                    payload.insert(
+                        "outbound_duplicates_suppressed".into(),
+                        serde_json::json!(status.outbound_duplicates_suppressed),
+                    );
+                    payload.insert(
+                        "inv_blocks_received".into(),
+                        serde_json::json!(status.inv_blocks_received),
+                    );
+                    payload.insert(
+                        "inv_hashes_known".into(),
+                        serde_json::json!(status.inv_hashes_known),
+                    );
+                    payload.insert(
+                        "inv_hashes_requested".into(),
+                        serde_json::json!(status.inv_hashes_requested),
+                    );
+                    payload.insert(
+                        "relay_loop_prevented".into(),
+                        serde_json::json!(status.relay_loop_prevented),
+                    );
+                    payload.insert(
+                        "relay_settings".into(),
+                        serde_json::json!({
+                            "seen_cache_ttl_secs": status.seen_cache_ttl_secs,
+                            "recovery_rebroadcast_ttl_secs": status.recovery_rebroadcast_ttl_secs,
+                            "max_inventory_length": status.max_inventory_length,
+                            "max_request_fanout": status.max_request_fanout
+                        }),
+                    );
+                    payload.insert(
+                        "last_drop_reason".into(),
+                        serde_json::json!(status.last_drop_reason),
+                    );
+                    payload.insert(
+                        "peer_reconnect_attempts".into(),
+                        serde_json::json!(status.peer_reconnect_attempts),
+                    );
+                    payload.insert(
+                        "peer_recovery_success_count".into(),
+                        serde_json::json!(status.peer_recovery_success_count),
+                    );
+                    payload.insert(
+                        "last_peer_recovery_unix".into(),
+                        serde_json::json!(status.last_peer_recovery_unix),
+                    );
+                    payload.insert(
+                        "peer_cooldown_suppressed_count".into(),
+                        serde_json::json!(status.peer_cooldown_suppressed_count),
+                    );
+                    payload.insert(
+                        "peer_flap_suppressed_count".into(),
+                        serde_json::json!(status.peer_flap_suppressed_count),
+                    );
+                    payload.insert(
+                        "peer_message_rate_limited_count".into(),
+                        serde_json::json!(status.peer_message_rate_limited_count),
+                    );
+                    payload.insert(
+                        "peer_suppressed_dial_count".into(),
+                        serde_json::json!(status.peer_suppressed_dial_count),
+                    );
+                    payload.insert(
+                        "peers_under_cooldown".into(),
+                        serde_json::json!(status.peers_under_cooldown),
+                    );
+                    payload.insert(
+                        "peers_under_flap_guard".into(),
+                        serde_json::json!(status.peers_under_flap_guard),
+                    );
+                    payload.insert(
+                        "degraded_mode".into(),
+                        serde_json::json!(status.degraded_mode),
+                    );
+                    payload.insert(
+                        "connection_shaping_active".into(),
+                        serde_json::json!(status.connection_shaping_active),
+                    );
+                    payload.insert(
+                        "peer_state_summary".into(),
+                        serde_json::json!({
+                            "total": status.peer_recovery.len(),
+                            "healthy": status.peer_lifecycle_healthy,
+                            "watch": status.peer_lifecycle_watch,
+                            "degraded": status.peer_lifecycle_degraded,
+                            "cooldown": status.peer_lifecycle_cooldown,
+                            "recovering": status.peer_lifecycle_recovering,
+                            "derived_healthy_legacy": healthy_count,
+                            "derived_degraded_legacy": degraded_count,
+                            "derived_recovering_legacy": recovering_count,
+                            "peers_with_recent_failures": peers_with_recent_failures
+                        }),
+                    );
+                    payload.insert(
+                        "recovery_activity_summary".into(),
+                        serde_json::json!({
+                            "reconnect_attempts": status.peer_reconnect_attempts,
+                            "recovery_success_count": status.peer_recovery_success_count,
+                            "last_recovery_unix": status.last_peer_recovery_unix,
+                            "cooldown_suppressed_count": status.peer_cooldown_suppressed_count,
+                            "flap_suppressed_count": status.peer_flap_suppressed_count,
+                            "message_rate_limited_count": status.peer_message_rate_limited_count,
+                            "suppressed_dial_count": status.peer_suppressed_dial_count,
+                            "suppressed_dials": status.peer_suppressed_dial_count,
+                            "peers_under_cooldown": status.peers_under_cooldown,
+                            "peers_under_flap_guard": status.peers_under_flap_guard
+                        }),
+                    );
+                    payload.insert(
+                        "selected_sync_peer".into(),
+                        serde_json::json!(status.selected_sync_peer),
+                    );
+                    payload.insert(
+                        "connection_slot_budget".into(),
+                        serde_json::json!(status.connection_slot_budget),
+                    );
+                    payload.insert(
+                        "connected_slots_in_use".into(),
+                        serde_json::json!(status.connected_slots_in_use),
+                    );
+                    payload.insert(
+                        "available_connection_slots".into(),
+                        serde_json::json!(status.available_connection_slots),
+                    );
+                    payload.insert(
+                        "sync_selection_sticky_until_unix".into(),
+                        serde_json::json!(status.sync_selection_sticky_until_unix),
+                    );
+                    payload.insert(
+                        "topology_bucket_count".into(),
+                        serde_json::json!(status.topology_bucket_count),
+                    );
+                    payload.insert(
+                        "topology_distinct_buckets".into(),
+                        serde_json::json!(status.topology_distinct_buckets),
+                    );
+                    payload.insert(
+                        "topology_dominant_bucket_share_bps".into(),
+                        serde_json::json!(status.topology_dominant_bucket_share_bps),
+                    );
+                    payload.insert(
+                        "topology_diversity_score_bps".into(),
+                        serde_json::json!(status.topology_diversity_score_bps),
+                    );
+                    let runtime_handle = state.runtime();
+                    let runtime = runtime_handle.read().await;
+                    let chain_handle = state.chain();
+                    let chain = chain_handle.read().await;
+                    let orphan_count = chain.orphan_blocks.len();
+                    let readiness_reasons =
+                        p2p_readiness_reasons(true, Some(&status), &runtime, orphan_count);
+                    payload.insert("p2p_enabled".into(), serde_json::json!(true));
+                    payload.insert("p2p_mode".into(), serde_json::json!(status.mode));
+                    payload.insert(
+                        "peer_count".into(),
+                        serde_json::json!(status.connected_peers.len()),
+                    );
+                    payload.insert(
+                        "listening_addresses".into(),
+                        serde_json::json!(status.listening),
+                    );
+                    payload.insert(
+                        "pending_block_requests".into(),
+                        serde_json::json!(runtime.pending_block_requests),
+                    );
+                    payload.insert(
+                        "pending_missing_parents".into(),
+                        serde_json::json!(runtime.pending_missing_parents),
+                    );
+                    payload.insert("orphan_count".into(), serde_json::json!(orphan_count));
+                    payload.insert("sync_state".into(), serde_json::json!(runtime.sync_state));
+                    payload.insert(
+                        "last_accepted_peer_block".into(),
+                        serde_json::json!(runtime.last_accepted_peer_block),
+                    );
+                    payload.insert(
+                        "last_rejected_peer_block_reason".into(),
+                        serde_json::json!(runtime.last_rejected_peer_block_reason),
+                    );
+                    payload.insert("tx_propagation_counters".into(), serde_json::json!({
+                    "inbound_received": runtime.tx_inbound_received,
+                    "inbound_accepted": runtime.tx_inbound_accepted,
+                    "inbound_duplicate": runtime.tx_inbound_duplicate,
+                    "inbound_invalid": runtime.tx_inbound_invalid,
+                    "relayed": runtime.tx_relayed,
+                    "relay_suppressed_budget": runtime.tx_relay_suppressed_budget,
+                    "relay_suppressed_duplicate": runtime.tx_relay_suppressed_duplicate,
+                    "outbound_duplicates_suppressed": status.tx_outbound_duplicates_suppressed
+                }));
+                    payload.insert("block_propagation_counters".into(), serde_json::json!({
+                    "announces_received": runtime.block_announces_received,
+                    "getblock_sent": runtime.getblock_sent,
+                    "getblock_received": runtime.getblock_received,
+                    "blockdata_sent": runtime.blockdata_sent,
+                    "blockdata_received": runtime.blockdata_received,
+                    "blockdata_accepted": runtime.blockdata_accepted,
+                    "blockdata_duplicate": runtime.blockdata_duplicate,
+                    "blockdata_missing_parent": runtime.blockdata_missing_parent,
+                    "outbound_duplicates_suppressed": status.block_outbound_duplicates_suppressed
+                }));
+                    payload.insert(
+                        "duplicate_suppression_counters".into(),
+                        serde_json::json!({
+                            "p2p_blocks": runtime.duplicate_p2p_blocks,
+                            "p2p_txs": runtime.duplicate_p2p_txs,
+                            "inbound_messages": status.inbound_duplicates_suppressed,
+                            "outbound_messages": status.outbound_duplicates_suppressed,
+                            "tx_outbound": status.tx_outbound_duplicates_suppressed,
+                            "block_outbound": status.block_outbound_duplicates_suppressed
+                        }),
+                    );
+                    payload.insert(
+                        "p2p_ready_for_private_rehearsal".into(),
+                        serde_json::json!(readiness_reasons.is_empty()),
+                    );
+                    payload.insert(
+                        "readiness_reasons".into(),
+                        serde_json::json!(readiness_reasons),
+                    );
+                    payload.insert("sync_candidates".into(), serde_json::json!(sync_candidates));
+                    payload.insert("peer_recovery".into(), serde_json::json!(peer_recovery));
+                    Json(ApiResponse::ok(serde_json::Value::Object(payload)))
+                }
+                Err(e) => Json(ApiResponse::err("P2P_ERROR", e.to_string())),
             }
-            Err(e) => Json(ApiResponse::err("P2P_ERROR", e.to_string())),
-        },
-        None => Json(ApiResponse::err("P2P_DISABLED", "p2p is disabled")),
+        }
+        None => {
+            let runtime_handle = state.runtime();
+            let runtime = runtime_handle.read().await;
+            let chain_handle = state.chain();
+            let chain = chain_handle.read().await;
+            Json(ApiResponse::ok(disabled_p2p_payload(
+                &runtime,
+                chain.orphan_blocks.len(),
+            )))
+        }
     }
 }
 
@@ -375,7 +535,10 @@ pub async fn get_p2p_peers<S: RpcStateLike>(
             }
             Err(e) => Json(ApiResponse::err("P2P_ERROR", e.to_string())),
         },
-        None => Json(ApiResponse::err("P2P_DISABLED", "p2p is disabled")),
+        None => Json(ApiResponse::ok(P2pPeersData {
+            count: 0,
+            peers: Vec::new(),
+        })),
     }
 }
 
@@ -391,13 +554,71 @@ pub async fn get_p2p_topics<S: RpcStateLike>(
             })),
             Err(e) => Json(ApiResponse::err("P2P_ERROR", e.to_string())),
         },
-        None => Json(ApiResponse::err("P2P_DISABLED", "p2p is disabled")),
+        None => Json(ApiResponse::ok(P2pTopicsData {
+            count: 0,
+            topics: Vec::new(),
+            per_topic_publishes: std::collections::HashMap::new(),
+        })),
     }
+}
+
+pub async fn get_p2p_propagation<S: RpcStateLike>(
+    State(state): State<S>,
+) -> Json<ApiResponse<serde_json::Value>> {
+    let runtime_handle = state.runtime();
+    let runtime = runtime_handle.read().await;
+    let mut payload = serde_json::json!({
+        "p2p_enabled": false,
+        "p2p_mode": "disabled",
+        "peer_count": 0,
+        "tx_propagation_counters": {
+            "inbound_received": runtime.tx_inbound_received,
+            "inbound_accepted": runtime.tx_inbound_accepted,
+            "inbound_duplicate": runtime.tx_inbound_duplicate,
+            "inbound_invalid": runtime.tx_inbound_invalid,
+            "relayed": runtime.tx_relayed,
+            "relay_suppressed_budget": runtime.tx_relay_suppressed_budget,
+            "relay_suppressed_duplicate": runtime.tx_relay_suppressed_duplicate,
+            "rebroadcast_attempts": runtime.tx_rebroadcast_attempts,
+            "rebroadcast_success": runtime.tx_rebroadcast_success,
+            "rebroadcast_failed": runtime.tx_rebroadcast_failed
+        },
+        "block_propagation_counters": {
+            "announces_received": runtime.block_announces_received,
+            "getblock_sent": runtime.getblock_sent,
+            "getblock_received": runtime.getblock_received,
+            "blockdata_sent": runtime.blockdata_sent,
+            "blockdata_received": runtime.blockdata_received,
+            "blockdata_accepted": runtime.blockdata_accepted,
+            "blockdata_duplicate": runtime.blockdata_duplicate,
+            "blockdata_missing_parent": runtime.blockdata_missing_parent,
+            "block_request_timeouts": runtime.block_request_timeouts,
+            "pending_block_requests": runtime.pending_block_requests
+        },
+        "duplicate_suppression_counters": {
+            "p2p_blocks": runtime.duplicate_p2p_blocks,
+            "p2p_txs": runtime.duplicate_p2p_txs
+        }
+    });
+    if let Some(status) = state.p2p().and_then(|p2p| p2p.status().ok()) {
+        payload["p2p_enabled"] = serde_json::json!(true);
+        payload["p2p_mode"] = serde_json::json!(status.mode);
+        payload["peer_count"] = serde_json::json!(status.connected_peers.len());
+        payload["duplicate_suppression_counters"]["inbound_messages"] =
+            serde_json::json!(status.inbound_duplicates_suppressed);
+        payload["duplicate_suppression_counters"]["outbound_messages"] =
+            serde_json::json!(status.outbound_duplicates_suppressed);
+        payload["duplicate_suppression_counters"]["tx_outbound"] =
+            serde_json::json!(status.tx_outbound_duplicates_suppressed);
+        payload["duplicate_suppression_counters"]["block_outbound"] =
+            serde_json::json!(status.block_outbound_duplicates_suppressed);
+    }
+    Json(ApiResponse::ok(payload))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::get_p2p_status;
+    use super::{get_p2p_propagation, get_p2p_status};
     use crate::api::{NodeRuntimeStats, RpcStateLike};
     use axum::{extract::State, Json};
     use pulsedag_core::ChainState;
@@ -466,6 +687,20 @@ mod tests {
             .map(|d| d.as_nanos())
             .unwrap_or(0);
         std::env::temp_dir().join(format!("pulsedag-{name}-{unique}"))
+    }
+
+    fn mk_state_without_p2p() -> TestState {
+        let path = temp_db_path("p2p-disabled");
+        let storage = Arc::new(Storage::open(path.to_str().expect("utf8 temp path")).unwrap());
+        let chain = storage
+            .load_or_init_genesis("testnet-dev".to_string())
+            .unwrap();
+        TestState {
+            chain: Arc::new(RwLock::new(chain)),
+            storage,
+            runtime: Arc::new(RwLock::new(NodeRuntimeStats::default())),
+            p2p: None,
+        }
     }
 
     fn mk_state(status: P2pStatus) -> TestState {
@@ -629,6 +864,45 @@ mod tests {
         assert_eq!(data["peer_state_summary"]["recovering"], 1);
         assert_eq!(data["recovery_activity_summary"]["reconnect_attempts"], 12);
         assert!(data["recovery_activity_summary"]["last_recovery_unix"].is_number());
+        assert_eq!(data["p2p_enabled"], true);
+        assert_eq!(data["p2p_mode"], P2P_MODE_MEMORY_SIMULATED);
+        assert_eq!(data["peer_count"], 1);
+        assert!(data["tx_propagation_counters"].is_object());
+        assert!(data["block_propagation_counters"].is_object());
+        assert!(data["duplicate_suppression_counters"].is_object());
+        assert!(data["p2p_ready_for_private_rehearsal"].is_boolean());
+        let text = serde_json::to_string(&data).unwrap();
+        assert!(!text.contains("private_key"));
+        assert!(!text.contains("secret"));
+    }
+
+    #[tokio::test]
+    async fn p2p_disabled_mode_reports_structured_diagnostics() {
+        let Json(resp) = get_p2p_status(State(mk_state_without_p2p())).await;
+        assert!(resp.ok);
+        let data = resp.data.expect("disabled p2p status data");
+        assert_eq!(data["p2p_enabled"], false);
+        assert_eq!(data["p2p_mode"], "disabled");
+        assert_eq!(data["peer_count"], 0);
+        assert_eq!(data["p2p_ready_for_private_rehearsal"], false);
+        assert!(data["readiness_reasons"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|reason| reason == "p2p is disabled"));
+    }
+
+    #[tokio::test]
+    async fn p2p_propagation_returns_structured_counters_without_secrets() {
+        let Json(resp) = get_p2p_propagation(State(mk_state_without_p2p())).await;
+        assert!(resp.ok);
+        let data = resp.data.expect("propagation data");
+        assert!(data["tx_propagation_counters"].is_object());
+        assert!(data["block_propagation_counters"].is_object());
+        assert!(data["duplicate_suppression_counters"].is_object());
+        let text = serde_json::to_string(&data).unwrap();
+        assert!(!text.contains("private_key"));
+        assert!(!text.contains("secret"));
     }
 
     #[tokio::test]

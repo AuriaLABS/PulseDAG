@@ -29,7 +29,7 @@ use crate::{
         mining_template::post_mining_template,
         mining_workers::{get_mining_workers_stats, post_mining_worker_heartbeat},
         orphans::get_orphans,
-        p2p::{get_p2p_peers, get_p2p_status, get_p2p_topics},
+        p2p::{get_p2p_peers, get_p2p_propagation, get_p2p_status, get_p2p_topics},
         policy::get_policy,
         pow::get_pow_info,
         pow_auto_run::post_pow_auto_run,
@@ -59,7 +59,7 @@ use crate::{
         search::get_search,
         snapshot::{get_snapshot_info, post_snapshot_create},
         status::get_status,
-        sync::{get_sync_status, post_sync_rebuild, post_sync_reconcile_mempool},
+        sync::{get_sync_missing, get_sync_status, post_sync_rebuild, post_sync_reconcile_mempool},
         sync_blocks::get_sync_blocks,
         sync_verify::get_sync_verify,
         topology::get_topology,
@@ -126,6 +126,7 @@ where
         .route("/mine/preview", post(post_mine_preview::<S>))
         .route("/p2p/status", get(get_p2p_status::<S>))
         .route("/p2p/peers", get(get_p2p_peers::<S>))
+        .route("/p2p/propagation", get(get_p2p_propagation::<S>))
         .route("/p2p/topics", get(get_p2p_topics::<S>))
         .route("/p2p/topology", get(get_topology::<S>))
         .route("/search/:query", get(get_search::<S>))
@@ -168,6 +169,7 @@ where
         .route("/pow/mine-and-capture", post(post_pow_mine_capture::<S>))
         .route("/pow/auto/run", post(post_pow_auto_run::<S>))
         .route("/sync/status", get(get_sync_status::<S>))
+        .route("/sync/missing", get(get_sync_missing::<S>))
         .route("/sync/replay-plan", get(get_replay_plan::<S>))
         .route(
             "/sync/incremental-plan",

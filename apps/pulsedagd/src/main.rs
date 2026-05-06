@@ -318,6 +318,7 @@ async fn main() -> Result<()> {
                     rt.block_request_timeouts = rt
                         .block_request_timeouts
                         .saturating_add(timed_out.len() as u64);
+                    rt.pending_block_requests = block_requests.pending.len();
                 }
                 match event {
                     InboundEvent::Transaction(tx) => {
@@ -573,6 +574,7 @@ async fn main() -> Result<()> {
                             let mut rt = runtime.write().await;
                             rt.sync_state = "requesting_blocks".to_string();
                             rt.getblock_sent = rt.getblock_sent.saturating_add(1);
+                            rt.pending_block_requests = block_requests.pending.len();
                             let _ = storage.append_runtime_event(
                                 "info",
                                 "block_request_sent",
@@ -637,6 +639,12 @@ async fn main() -> Result<()> {
                                 rt.pulsedag_sync_missing_parents_total = rt
                                     .pulsedag_sync_missing_parents_total
                                     .saturating_add(missing_parents.len() as u64);
+                                rt.pending_missing_parents =
+                                    guard.orphan_missing_parents.values().map(Vec::len).sum();
+                                rt.last_rejected_peer_block_reason = Some(format!(
+                                    "missing parents for {}: {:?}",
+                                    block.hash, missing_parents
+                                ));
                                 rt.sync_pipeline.fallback_after_failure(
                                     format!(
                                         "orphaned block {} missing parents {:?}",
@@ -665,6 +673,7 @@ async fn main() -> Result<()> {
                                     rt.getblock_sent = rt.getblock_sent.saturating_add(1);
                                     rt.missing_parent_requests_sent =
                                         rt.missing_parent_requests_sent.saturating_add(1);
+                                    rt.pending_block_requests = block_requests.pending.len();
                                 }
                                 info!(event = "missing_block_requested", missing_parent = %parent, child = %block.hash, "missing parent discovered; GetBlock request emitted");
                             }
@@ -677,6 +686,12 @@ async fn main() -> Result<()> {
                                 );
                             }
                             block_requests.resolve(&block.hash);
+                            {
+                                let mut rt = runtime.write().await;
+                                rt.pending_block_requests = block_requests.pending.len();
+                                rt.pending_missing_parents =
+                                    guard.orphan_missing_parents.values().map(Vec::len).sum();
+                            }
                             if let Err(e) = storage.persist_chain_state(&guard) {
                                 warn!(error = %e, "failed persisting chain state after orphan queue");
                             }
@@ -690,6 +705,8 @@ async fn main() -> Result<()> {
                                 rt.sync_state = "degraded".to_string();
                                 rt.sync_failures = rt.sync_failures.saturating_add(1);
                                 rt.rejected_p2p_blocks += 1;
+                                rt.last_rejected_peer_block_reason =
+                                    Some(format!("{}: {:?}", block.hash, acceptance));
                                 rt.pulsedag_blocks_rejected_total =
                                     rt.pulsedag_blocks_rejected_total.saturating_add(1);
                                 if matches!(acceptance, BlockAcceptanceResult::InvalidPow) {
@@ -738,6 +755,9 @@ async fn main() -> Result<()> {
                                 rt.adopted_orphan_blocks += adopted as u64;
                                 rt.orphan_blocks_resolved =
                                     rt.orphan_blocks_resolved.saturating_add(adopted as u64);
+                                rt.last_accepted_peer_block = Some(block.hash.clone());
+                                rt.pending_missing_parents =
+                                    guard.orphan_missing_parents.values().map(Vec::len).sum();
                                 rt.sync_state = if guard.orphan_blocks.is_empty() {
                                     "synced"
                                 } else {
@@ -782,6 +802,10 @@ async fn main() -> Result<()> {
                                 ),
                             );
                             block_requests.resolve(&block.hash);
+                            {
+                                let mut rt = runtime.write().await;
+                                rt.pending_block_requests = block_requests.pending.len();
+                            }
                             if let Err(e) = storage.persist_block_and_chain_state(&block, &guard) {
                                 warn!(error = %e, "failed persisting chain state after inbound block");
                             } else if let Some(ref p2p) = p2p {
@@ -841,6 +865,7 @@ async fn main() -> Result<()> {
                                 }
                                 let mut rt = runtime.write().await;
                                 rt.getblock_sent = rt.getblock_sent.saturating_add(1);
+                                rt.pending_block_requests = block_requests.pending.len();
                             }
                         }
                     }
