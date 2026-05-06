@@ -14,7 +14,7 @@ use libp2p::{identity, Multiaddr, PeerId, SwarmBuilder};
 use pulsedag_core::{
     errors::PulseError,
     rank_sync_candidates,
-    types::{Block, Transaction},
+    types::{Block, Hash as PulseHash, Transaction},
     RankedSyncPeer, SyncPeerCandidate,
 };
 use tokio::sync::mpsc;
@@ -142,6 +142,18 @@ pub struct P2pStatus {
 pub trait P2pHandle: Send + Sync {
     fn broadcast_transaction(&self, tx: &Transaction) -> Result<(), PulseError>;
     fn broadcast_block(&self, block: &Block) -> Result<(), PulseError>;
+    fn request_tips(&self) -> Result<(), PulseError> {
+        Ok(())
+    }
+    fn send_tips(&self, _tips: &[PulseHash]) -> Result<(), PulseError> {
+        Ok(())
+    }
+    fn request_block(&self, _hash: &PulseHash) -> Result<(), PulseError> {
+        Ok(())
+    }
+    fn send_block_data(&self, _block: Option<&Block>) -> Result<(), PulseError> {
+        Ok(())
+    }
     fn status(&self) -> Result<P2pStatus, PulseError>;
 }
 
@@ -177,6 +189,10 @@ pub enum InboundEvent {
     Transaction(Transaction),
     Block(Block),
     BlockAnnouncement { hash: String },
+    GetTips,
+    Tips { tips: Vec<PulseHash> },
+    GetBlock { hash: PulseHash },
+    BlockDataMissing { hash: Option<PulseHash> },
     PeerConnected(String),
 }
 
@@ -184,6 +200,10 @@ pub enum InboundEvent {
 enum OutboundMessage {
     Transaction(Transaction),
     Block(Block),
+    GetTips,
+    Tips(Vec<PulseHash>),
+    GetBlock(PulseHash),
+    BlockData(Option<Block>),
 }
 
 pub struct P2pStack {
@@ -382,6 +402,50 @@ impl P2pHandle for MemoryP2pHandle {
             .per_topic_publishes
             .entry("memory-blocks".into())
             .or_insert(0) += 1;
+        Ok(())
+    }
+
+    fn request_tips(&self) -> Result<(), PulseError> {
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| PulseError::Internal("p2p lock poisoned".into()))?;
+        inner.publish_attempts += 1;
+        inner.broadcasted_messages += 1;
+        inner.last_message_kind = Some("get-tips".into());
+        Ok(())
+    }
+
+    fn send_tips(&self, _tips: &[PulseHash]) -> Result<(), PulseError> {
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| PulseError::Internal("p2p lock poisoned".into()))?;
+        inner.publish_attempts += 1;
+        inner.broadcasted_messages += 1;
+        inner.last_message_kind = Some("tips".into());
+        Ok(())
+    }
+
+    fn request_block(&self, _hash: &PulseHash) -> Result<(), PulseError> {
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| PulseError::Internal("p2p lock poisoned".into()))?;
+        inner.publish_attempts += 1;
+        inner.broadcasted_messages += 1;
+        inner.last_message_kind = Some("get-block".into());
+        Ok(())
+    }
+
+    fn send_block_data(&self, _block: Option<&Block>) -> Result<(), PulseError> {
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| PulseError::Internal("p2p lock poisoned".into()))?;
+        inner.publish_attempts += 1;
+        inner.broadcasted_messages += 1;
+        inner.last_message_kind = Some("block-data".into());
         Ok(())
     }
 
@@ -1048,6 +1112,18 @@ fn enqueue_outbound_message(
         OutboundMessage::Block(block) => {
             queue.blocks.push_back(OutboundMessage::Block(block));
         }
+        OutboundMessage::GetBlock(hash) => {
+            queue.blocks.push_back(OutboundMessage::GetBlock(hash));
+        }
+        OutboundMessage::BlockData(block) => {
+            queue.blocks.push_back(OutboundMessage::BlockData(block));
+        }
+        OutboundMessage::GetTips => {
+            queue.standard_txs.push_back(OutboundMessage::GetTips);
+        }
+        OutboundMessage::Tips(tips) => {
+            queue.standard_txs.push_back(OutboundMessage::Tips(tips));
+        }
         OutboundMessage::Transaction(tx) => {
             if tx.fee >= TX_PRIORITY_FEE_THRESHOLD {
                 queue
@@ -1110,13 +1186,17 @@ fn pop_outbound_message(
     if let (Some(msg), Ok(mut guard)) = (picked.as_ref(), inner.lock()) {
         guard.queued_messages = guard.queued_messages.saturating_sub(1);
         match msg {
-            OutboundMessage::Block(_) => {
+            OutboundMessage::Block(_)
+            | OutboundMessage::GetBlock(_)
+            | OutboundMessage::BlockData(_) => {
                 guard.queued_block_messages = guard.queued_block_messages.saturating_sub(1);
                 guard.dequeued_block_messages = guard.dequeued_block_messages.saturating_add(1);
                 guard.queue_block_priority_picks =
                     guard.queue_block_priority_picks.saturating_add(1);
             }
-            OutboundMessage::Transaction(_) => {
+            OutboundMessage::Transaction(_)
+            | OutboundMessage::GetTips
+            | OutboundMessage::Tips(_) => {
                 guard.queued_non_block_messages = guard.queued_non_block_messages.saturating_sub(1);
                 guard.dequeued_non_block_messages =
                     guard.dequeued_non_block_messages.saturating_add(1);
@@ -1718,22 +1798,25 @@ fn dispatch_network_message(
                     guard.inbound_messages += 1;
                     guard.last_message_kind = Some("get-tips".into());
                 }
+                let _ = inbound_tx.send(InboundEvent::GetTips);
             }
         }
-        NetworkMessage::Tips { chain_id, .. } => {
+        NetworkMessage::Tips { chain_id, tips } => {
             if chain_id == expected_chain_id {
                 if let Ok(mut guard) = inner.lock() {
                     guard.inbound_messages += 1;
                     guard.last_message_kind = Some("tips".into());
                 }
+                let _ = inbound_tx.send(InboundEvent::Tips { tips });
             }
         }
-        NetworkMessage::GetBlock { chain_id, .. } => {
+        NetworkMessage::GetBlock { chain_id, hash } => {
             if chain_id == expected_chain_id {
                 if let Ok(mut guard) = inner.lock() {
                     guard.inbound_messages += 1;
                     guard.last_message_kind = Some("get-block".into());
                 }
+                let _ = inbound_tx.send(InboundEvent::GetBlock { hash });
             }
         }
         NetworkMessage::BlockData { chain_id, block } => {
@@ -1756,6 +1839,12 @@ fn dispatch_network_message(
                     guard.last_message_kind = Some("block-data".into());
                 }
                 let _ = inbound_tx.send(InboundEvent::Block(block));
+            } else {
+                if let Ok(mut guard) = inner.lock() {
+                    guard.inbound_messages += 1;
+                    guard.last_message_kind = Some("block-data-missing".into());
+                }
+                let _ = inbound_tx.send(InboundEvent::BlockDataMissing { hash: None });
             }
         }
         NetworkMessage::Reject { chain_id, .. } | NetworkMessage::Error { chain_id, .. } => {
@@ -1827,6 +1916,29 @@ async fn run_libp2p_runtime(
                         });
                         let message_id = message_id_for_block(&block);
                         (wire, topic_name, "block", message_id)
+                    }
+                    OutboundMessage::GetTips => {
+                        let topic_name = format!("{}-sync", cfg.chain_id);
+                        let wire = serde_json::to_vec(&NetworkMessage::GetTips { chain_id: cfg.chain_id.clone() });
+                        (wire, topic_name, "get-tips", "sync:get-tips".to_string())
+                    }
+                    OutboundMessage::Tips(tips) => {
+                        let topic_name = format!("{}-sync", cfg.chain_id);
+                        let message_id = format!("sync:tips:{}", tips.join(","));
+                        let wire = serde_json::to_vec(&NetworkMessage::Tips { chain_id: cfg.chain_id.clone(), tips });
+                        (wire, topic_name, "tips", message_id)
+                    }
+                    OutboundMessage::GetBlock(hash) => {
+                        let topic_name = format!("{}-sync", cfg.chain_id);
+                        let message_id = format!("sync:get-block:{hash}");
+                        let wire = serde_json::to_vec(&NetworkMessage::GetBlock { chain_id: cfg.chain_id.clone(), hash });
+                        (wire, topic_name, "get-block", message_id)
+                    }
+                    OutboundMessage::BlockData(block) => {
+                        let topic_name = format!("{}-sync", cfg.chain_id);
+                        let message_id = block.as_ref().map(message_id_for_block).unwrap_or_else(|| "sync:block-data:none".to_string());
+                        let wire = serde_json::to_vec(&NetworkMessage::BlockData { chain_id: cfg.chain_id.clone(), block });
+                        (wire, topic_name, "block-data", message_id)
                     }
                 };
 
@@ -1972,6 +2084,29 @@ async fn run_libp2p_real_runtime(
                         let message_id = message_id_for_block(&block);
                         (wire, topic_name, "block", message_id)
                     }
+                    OutboundMessage::GetTips => {
+                        let topic_name = format!("{}-sync", cfg.chain_id);
+                        let wire = serde_json::to_vec(&NetworkMessage::GetTips { chain_id: cfg.chain_id.clone() });
+                        (wire, topic_name, "get-tips", "sync:get-tips".to_string())
+                    }
+                    OutboundMessage::Tips(tips) => {
+                        let topic_name = format!("{}-sync", cfg.chain_id);
+                        let message_id = format!("sync:tips:{}", tips.join(","));
+                        let wire = serde_json::to_vec(&NetworkMessage::Tips { chain_id: cfg.chain_id.clone(), tips });
+                        (wire, topic_name, "tips", message_id)
+                    }
+                    OutboundMessage::GetBlock(hash) => {
+                        let topic_name = format!("{}-sync", cfg.chain_id);
+                        let message_id = format!("sync:get-block:{hash}");
+                        let wire = serde_json::to_vec(&NetworkMessage::GetBlock { chain_id: cfg.chain_id.clone(), hash });
+                        (wire, topic_name, "get-block", message_id)
+                    }
+                    OutboundMessage::BlockData(block) => {
+                        let topic_name = format!("{}-sync", cfg.chain_id);
+                        let message_id = block.as_ref().map(message_id_for_block).unwrap_or_else(|| "sync:block-data:none".to_string());
+                        let wire = serde_json::to_vec(&NetworkMessage::BlockData { chain_id: cfg.chain_id.clone(), block });
+                        (wire, topic_name, "block-data", message_id)
+                    }
                 };
 
                     note_swarm_event(&inner, format!("publish-attempt:{topic_name}"));
@@ -2034,6 +2169,32 @@ async fn run_libp2p_skeleton_runtime(
     run_libp2p_runtime(cfg, local_peer_id, topics, inner, outbound_rx, inbound_tx).await;
 }
 
+impl Libp2pHandle {
+    fn queue_sync_message(&self, msg: OutboundMessage, kind: &str) -> Result<(), PulseError> {
+        {
+            let mut inner = self
+                .inner
+                .lock()
+                .map_err(|_| PulseError::Internal("p2p lock poisoned".into()))?;
+            if queue_backpressure_reject(&mut inner, "outbound_queue_backpressure_sync") {
+                return Ok(());
+            }
+            inner.queued_messages += 1;
+            match &msg {
+                OutboundMessage::GetBlock(_) | OutboundMessage::BlockData(_) => {
+                    inner.queued_block_messages += 1;
+                }
+                _ => inner.queued_non_block_messages += 1,
+            }
+            inner.last_message_kind = Some(kind.to_string());
+            track_queue_depth_on_enqueue(&mut inner);
+        }
+        self.outbound_tx
+            .send(msg)
+            .map_err(|e| PulseError::Internal(format!("p2p send failed: {e}")))
+    }
+}
+
 impl P2pHandle for Libp2pHandle {
     fn broadcast_transaction(&self, tx: &Transaction) -> Result<(), PulseError> {
         {
@@ -2081,6 +2242,22 @@ impl P2pHandle for Libp2pHandle {
         self.outbound_tx
             .send(OutboundMessage::Block(block.clone()))
             .map_err(|e| PulseError::Internal(format!("p2p send failed: {e}")))
+    }
+
+    fn request_tips(&self) -> Result<(), PulseError> {
+        self.queue_sync_message(OutboundMessage::GetTips, "get-tips")
+    }
+
+    fn send_tips(&self, tips: &[PulseHash]) -> Result<(), PulseError> {
+        self.queue_sync_message(OutboundMessage::Tips(tips.to_vec()), "tips")
+    }
+
+    fn request_block(&self, hash: &PulseHash) -> Result<(), PulseError> {
+        self.queue_sync_message(OutboundMessage::GetBlock(hash.clone()), "get-block")
+    }
+
+    fn send_block_data(&self, block: Option<&Block>) -> Result<(), PulseError> {
+        self.queue_sync_message(OutboundMessage::BlockData(block.cloned()), "block-data")
     }
 
     fn status(&self) -> Result<P2pStatus, PulseError> {
@@ -4064,6 +4241,42 @@ mod inventory_tests {
         assert!(matches!(
             inbound_rx.try_recv(),
             Ok(InboundEvent::Block(received)) if received.hash == block.hash
+        ));
+    }
+
+    #[test]
+    fn tips_message_delivers_remote_tips_for_catchup_requests() {
+        let inner = Arc::new(Mutex::new(InnerState::default()));
+        let (inbound_tx, mut inbound_rx) = mpsc::unbounded_channel();
+        let wire = serde_json::to_vec(&NetworkMessage::Tips {
+            chain_id: "testnet".into(),
+            tips: vec!["remote-tip-1".into(), "remote-tip-2".into()],
+        })
+        .expect("serialize tips");
+
+        dispatch_network_message("testnet", &wire, &inner, &inbound_tx);
+
+        assert!(matches!(
+            inbound_rx.try_recv(),
+            Ok(InboundEvent::Tips { tips }) if tips == vec!["remote-tip-1".to_string(), "remote-tip-2".to_string()]
+        ));
+    }
+
+    #[test]
+    fn getblock_message_delivers_missing_block_request() {
+        let inner = Arc::new(Mutex::new(InnerState::default()));
+        let (inbound_tx, mut inbound_rx) = mpsc::unbounded_channel();
+        let wire = serde_json::to_vec(&NetworkMessage::GetBlock {
+            chain_id: "testnet".into(),
+            hash: "missing-block".into(),
+        })
+        .expect("serialize getblock");
+
+        dispatch_network_message("testnet", &wire, &inner, &inbound_tx);
+
+        assert!(matches!(
+            inbound_rx.try_recv(),
+            Ok(InboundEvent::GetBlock { hash }) if hash == "missing-block"
         ));
     }
 }
