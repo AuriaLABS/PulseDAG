@@ -16,7 +16,8 @@ pub mod types;
 pub mod validation;
 
 pub use accept::{
-    accept_block, accept_block_with_result, accept_transaction, AcceptSource, BlockAcceptanceResult,
+    accept_block, accept_block_with_result, accept_transaction, accept_transaction_with_result,
+    AcceptSource, BlockAcceptanceResult, TxAcceptanceResult,
 };
 pub use errors::PulseError;
 pub use state::{

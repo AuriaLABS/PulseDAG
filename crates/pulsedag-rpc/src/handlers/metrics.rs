@@ -23,6 +23,13 @@ pub struct MetricsData {
     pub mining_templates_total: u64,
     pub mining_submits_total: u64,
     pub p2p_blocks_received_total: u64,
+    pub tx_inbound_received: u64,
+    pub tx_inbound_accepted: u64,
+    pub tx_inbound_duplicate: u64,
+    pub tx_inbound_invalid: u64,
+    pub tx_relayed: u64,
+    pub tx_relay_suppressed_budget: u64,
+    pub tx_relay_suppressed_duplicate: u64,
     pub sync_missing_parents_total: u64,
     pub orphan_current_count: usize,
     pub peer_count: usize,
@@ -37,9 +44,9 @@ pub async fn get_metrics<S: RpcStateLike>(
     let snapshot = pulsedag_core::dev_difficulty_snapshot(&chain);
     let runtime = state.runtime();
     let runtime = runtime.read().await;
-    let peer_count = state
-        .p2p()
-        .and_then(|p| p.status().ok())
+    let p2p_status = state.p2p().and_then(|p| p.status().ok());
+    let peer_count = p2p_status
+        .as_ref()
         .map(|s| s.connected_peers.len())
         .unwrap_or(0);
     let circulating_supply = chain.utxo.utxos.values().map(|u| u.amount).sum();
@@ -70,6 +77,28 @@ pub async fn get_metrics<S: RpcStateLike>(
         mining_templates_total: runtime.pulsedag_mining_templates_total,
         mining_submits_total: runtime.pulsedag_mining_submits_total,
         p2p_blocks_received_total: runtime.pulsedag_p2p_blocks_received_total,
+        tx_inbound_received: runtime.tx_inbound_received,
+        tx_inbound_accepted: runtime.tx_inbound_accepted,
+        tx_inbound_duplicate: runtime.tx_inbound_duplicate,
+        tx_inbound_invalid: runtime.tx_inbound_invalid,
+        tx_relayed: runtime.tx_relayed.saturating_add(
+            p2p_status
+                .as_ref()
+                .map(|s| s.tx_relayed as u64)
+                .unwrap_or(0),
+        ),
+        tx_relay_suppressed_budget: runtime.tx_relay_suppressed_budget.saturating_add(
+            p2p_status
+                .as_ref()
+                .map(|s| s.tx_relay_suppressed_budget as u64)
+                .unwrap_or(0),
+        ),
+        tx_relay_suppressed_duplicate: runtime.tx_relay_suppressed_duplicate.saturating_add(
+            p2p_status
+                .as_ref()
+                .map(|s| s.tx_relay_suppressed_duplicate as u64)
+                .unwrap_or(0),
+        ),
         sync_missing_parents_total: runtime.pulsedag_sync_missing_parents_total,
         orphan_current_count: chain.orphan_blocks.len(),
         peer_count,

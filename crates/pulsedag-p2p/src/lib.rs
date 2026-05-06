@@ -95,6 +95,13 @@ pub struct P2pStatus {
     pub inbound_decode_failed: usize,
     pub inbound_chain_mismatch_dropped: usize,
     pub inbound_duplicates_suppressed: usize,
+    pub tx_inbound_received: usize,
+    pub tx_inbound_accepted: usize,
+    pub tx_inbound_duplicate: usize,
+    pub tx_inbound_invalid: usize,
+    pub tx_relayed: usize,
+    pub tx_relay_suppressed_budget: usize,
+    pub tx_relay_suppressed_duplicate: usize,
     pub tx_outbound_duplicates_suppressed: usize,
     pub tx_outbound_first_seen_relayed: usize,
     pub tx_outbound_recovery_relayed: usize,
@@ -219,6 +226,12 @@ struct InnerState {
     inbound_decode_failed: usize,
     inbound_chain_mismatch_dropped: usize,
     inbound_duplicates_suppressed: usize,
+    tx_inbound_received: usize,
+    tx_inbound_accepted: usize,
+    tx_inbound_duplicate: usize,
+    tx_inbound_invalid: usize,
+    tx_inbound_rate_window_started_unix: u64,
+    tx_inbound_rate_window_count: usize,
     tx_outbound_duplicates_suppressed: usize,
     tx_outbound_first_seen_relayed: usize,
     tx_outbound_recovery_relayed: usize,
@@ -435,6 +448,15 @@ impl P2pHandle for MemoryP2pHandle {
             inbound_decode_failed: inner.inbound_decode_failed,
             inbound_chain_mismatch_dropped: inner.inbound_chain_mismatch_dropped,
             inbound_duplicates_suppressed: inner.inbound_duplicates_suppressed,
+            tx_inbound_received: inner.tx_inbound_received,
+            tx_inbound_accepted: inner.tx_inbound_accepted,
+            tx_inbound_duplicate: inner.tx_inbound_duplicate,
+            tx_inbound_invalid: inner.tx_inbound_invalid,
+            tx_relayed: inner
+                .tx_outbound_first_seen_relayed
+                .saturating_add(inner.tx_outbound_recovery_relayed),
+            tx_relay_suppressed_budget: inner.tx_outbound_budget_suppressed,
+            tx_relay_suppressed_duplicate: inner.tx_outbound_duplicates_suppressed,
             tx_outbound_duplicates_suppressed: inner.tx_outbound_duplicates_suppressed,
             tx_outbound_first_seen_relayed: inner.tx_outbound_first_seen_relayed,
             tx_outbound_recovery_relayed: inner.tx_outbound_recovery_relayed,
@@ -599,7 +621,11 @@ const BACKOFF_BASE_SECS: u64 = 2;
 const BACKOFF_EXP_CAP: u32 = 8;
 const BACKOFF_MAX_SECS: u64 = 300;
 const MESSAGE_DEDUP_WINDOW_SECS: u64 = 120;
+const TX_INBOUND_DEDUP_WINDOW_SECS: u64 = 120;
 const TX_OUTBOUND_DEDUP_WINDOW_SECS: u64 = 30;
+const MAX_TX_MESSAGE_BYTES: usize = 64 * 1024;
+const TX_INBOUND_RATE_WINDOW_SECS: u64 = 1;
+const TX_INBOUND_SOFT_MAX_PER_WINDOW: usize = 128;
 const BLOCK_OUTBOUND_DEDUP_WINDOW_SECS: u64 = 30;
 const RECOVERY_REBROADCAST_GRACE_SECS: u64 = 8;
 const RECOVERY_REBROADCAST_BUDGET_WINDOW_SECS: u64 = 8;
@@ -1366,6 +1392,35 @@ fn mark_inbound_id_seen(state: &mut InnerState, id: String, now: u64) -> bool {
     }
 }
 
+fn mark_inbound_tx_seen(state: &mut InnerState, id: String, now: u64) -> bool {
+    trim_old_entries(
+        &mut state.inbound_seen_at_unix,
+        now,
+        TX_INBOUND_DEDUP_WINDOW_SECS,
+    );
+    match state.inbound_seen_at_unix.get(&id) {
+        Some(last_seen) if now.saturating_sub(*last_seen) <= TX_INBOUND_DEDUP_WINDOW_SECS => false,
+        _ => {
+            state.inbound_seen_at_unix.insert(id.clone(), now);
+            state.seen_message_ids.insert(id);
+            true
+        }
+    }
+}
+
+fn admit_inbound_tx_rate(state: &mut InnerState, now: u64) -> bool {
+    if now.saturating_sub(state.tx_inbound_rate_window_started_unix) >= TX_INBOUND_RATE_WINDOW_SECS
+    {
+        state.tx_inbound_rate_window_started_unix = now;
+        state.tx_inbound_rate_window_count = 0;
+    }
+    if state.tx_inbound_rate_window_count < TX_INBOUND_SOFT_MAX_PER_WINDOW {
+        state.tx_inbound_rate_window_count = state.tx_inbound_rate_window_count.saturating_add(1);
+        return true;
+    }
+    false
+}
+
 fn should_relay_outbound_tx(state: &mut InnerState, id: &str, now: u64) -> bool {
     trim_old_entries(
         &mut state.outbound_tx_seen_at_unix,
@@ -1565,14 +1620,30 @@ fn dispatch_network_message(
                 }
                 return;
             }
+            if bytes.len() > MAX_TX_MESSAGE_BYTES {
+                if let Ok(mut guard) = inner.lock() {
+                    guard.tx_inbound_received = guard.tx_inbound_received.saturating_add(1);
+                    guard.tx_inbound_invalid = guard.tx_inbound_invalid.saturating_add(1);
+                    guard.last_drop_reason = Some("tx_message_too_large".into());
+                }
+                return;
+            }
             let id = message_id_for_tx(&transaction);
             if let Ok(mut guard) = inner.lock() {
-                if !mark_inbound_id_seen(&mut guard, id, now_unix()) {
+                guard.tx_inbound_received = guard.tx_inbound_received.saturating_add(1);
+                if !admit_inbound_tx_rate(&mut guard, now_unix()) {
+                    guard.tx_inbound_invalid = guard.tx_inbound_invalid.saturating_add(1);
+                    guard.last_drop_reason = Some("tx_inbound_rate_limited".into());
+                    return;
+                }
+                if !mark_inbound_tx_seen(&mut guard, id, now_unix()) {
                     guard.inbound_duplicates_suppressed += 1;
+                    guard.tx_inbound_duplicate = guard.tx_inbound_duplicate.saturating_add(1);
                     guard.last_drop_reason = Some("duplicate_tx".into());
                     return;
                 }
                 guard.inbound_messages += 1;
+                guard.tx_inbound_accepted = guard.tx_inbound_accepted.saturating_add(1);
                 guard.last_message_kind = Some("tx-inbound".into());
             }
             let _ = inbound_tx.send(InboundEvent::Transaction(transaction));
@@ -2076,6 +2147,15 @@ impl P2pHandle for Libp2pHandle {
             inbound_decode_failed: inner.inbound_decode_failed,
             inbound_chain_mismatch_dropped: inner.inbound_chain_mismatch_dropped,
             inbound_duplicates_suppressed: inner.inbound_duplicates_suppressed,
+            tx_inbound_received: inner.tx_inbound_received,
+            tx_inbound_accepted: inner.tx_inbound_accepted,
+            tx_inbound_duplicate: inner.tx_inbound_duplicate,
+            tx_inbound_invalid: inner.tx_inbound_invalid,
+            tx_relayed: inner
+                .tx_outbound_first_seen_relayed
+                .saturating_add(inner.tx_outbound_recovery_relayed),
+            tx_relay_suppressed_budget: inner.tx_outbound_budget_suppressed,
+            tx_relay_suppressed_duplicate: inner.tx_outbound_duplicates_suppressed,
             tx_outbound_duplicates_suppressed: inner.tx_outbound_duplicates_suppressed,
             tx_outbound_first_seen_relayed: inner.tx_outbound_first_seen_relayed,
             tx_outbound_recovery_relayed: inner.tx_outbound_recovery_relayed,
@@ -2349,6 +2429,82 @@ mod tests {
         assert_eq!(status.per_topic_publishes.get("memory-blocks"), Some(&1));
         assert_eq!(status.peer_reconnect_attempts, 0);
         assert_eq!(status.peer_recovery_success_count, 0);
+    }
+
+    #[test]
+    fn chain_id_mismatch_drops_inbound_tx() {
+        let inner = Arc::new(Mutex::new(InnerState::default()));
+        let (inbound_tx, mut inbound_rx) = mpsc::unbounded_channel();
+        let wire = serde_json::to_vec(&NetworkMessage::NewTransaction {
+            chain_id: "wrongnet".into(),
+            transaction: sample_tx("tx-wrong-chain"),
+        })
+        .expect("serialize tx announcement");
+
+        dispatch_network_message("testnet", &wire, &inner, &inbound_tx);
+
+        assert!(inbound_rx.try_recv().is_err());
+        let guard = inner.lock().unwrap();
+        assert_eq!(guard.inbound_chain_mismatch_dropped, 1);
+        assert_eq!(guard.tx_inbound_received, 0);
+    }
+
+    #[test]
+    fn oversized_inbound_tx_message_is_rejected() {
+        let inner = Arc::new(Mutex::new(InnerState::default()));
+        let (inbound_tx, mut inbound_rx) = mpsc::unbounded_channel();
+        let mut tx = sample_tx("tx-too-large");
+        tx.outputs.push(pulsedag_core::types::TxOutput {
+            address: "a".repeat(MAX_TX_MESSAGE_BYTES),
+            amount: 1,
+        });
+        let wire = serde_json::to_vec(&NetworkMessage::NewTransaction {
+            chain_id: "testnet".into(),
+            transaction: tx,
+        })
+        .expect("serialize tx announcement");
+
+        dispatch_network_message("testnet", &wire, &inner, &inbound_tx);
+
+        assert!(inbound_rx.try_recv().is_err());
+        let guard = inner.lock().unwrap();
+        assert_eq!(guard.tx_inbound_received, 1);
+        assert_eq!(guard.tx_inbound_invalid, 1);
+        assert_eq!(
+            guard.last_drop_reason.as_deref(),
+            Some("tx_message_too_large")
+        );
+    }
+
+    #[test]
+    fn inbound_tx_rate_guard_suppresses_spam() {
+        let inner = Arc::new(Mutex::new(InnerState::default()));
+        let (inbound_tx, mut inbound_rx) = mpsc::unbounded_channel();
+
+        for idx in 0..=TX_INBOUND_SOFT_MAX_PER_WINDOW {
+            let wire = serde_json::to_vec(&NetworkMessage::NewTransaction {
+                chain_id: "testnet".into(),
+                transaction: sample_tx(&format!("tx-rate-{idx}")),
+            })
+            .expect("serialize tx announcement");
+            dispatch_network_message("testnet", &wire, &inner, &inbound_tx);
+        }
+
+        let mut delivered = 0;
+        while inbound_rx.try_recv().is_ok() {
+            delivered += 1;
+        }
+        let guard = inner.lock().unwrap();
+        assert_eq!(delivered, TX_INBOUND_SOFT_MAX_PER_WINDOW);
+        assert_eq!(
+            guard.tx_inbound_received,
+            TX_INBOUND_SOFT_MAX_PER_WINDOW + 1
+        );
+        assert_eq!(guard.tx_inbound_invalid, 1);
+        assert_eq!(
+            guard.last_drop_reason.as_deref(),
+            Some("tx_inbound_rate_limited")
+        );
     }
 
     #[test]
