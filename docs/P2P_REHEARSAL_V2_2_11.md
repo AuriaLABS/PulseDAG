@@ -21,14 +21,14 @@ The smoke script performs the following sequence:
 
 ## Files
 
-| File | Purpose |
-| --- | --- |
-| `scripts/v2_2_11_common.sh` | Shared defaults, process management, endpoint helpers, and real binary invocations. |
-| `scripts/v2_2_11_start_node_a.sh` | Starts node A. |
-| `scripts/v2_2_11_start_node_b.sh` | Starts node B and passes node A as bootnode. |
-| `scripts/v2_2_11_start_node_c.sh` | Starts node C and passes node A as bootnode. |
-| `scripts/v2_2_11_start_miner_a.sh` | Starts external miner against node A RPC. |
-| `scripts/v2_2_11_smoke_p2p.sh` | End-to-end three-node rehearsal smoke test. |
+| File                               | Purpose                                                                             |
+| ---------------------------------- | ----------------------------------------------------------------------------------- |
+| `scripts/v2_2_11_common.sh`        | Shared defaults, process management, endpoint helpers, and real binary invocations. |
+| `scripts/v2_2_11_start_node_a.sh`  | Starts node A.                                                                      |
+| `scripts/v2_2_11_start_node_b.sh`  | Starts node B and passes node A as bootnode.                                        |
+| `scripts/v2_2_11_start_node_c.sh`  | Starts node C and passes node A as bootnode.                                        |
+| `scripts/v2_2_11_start_miner_a.sh` | Starts external miner against node A RPC.                                           |
+| `scripts/v2_2_11_smoke_p2p.sh`     | End-to-end three-node rehearsal smoke test.                                         |
 
 ## Real CLI flags used
 
@@ -106,23 +106,23 @@ curl -fsS http://127.0.0.1:18082/health
 
 All defaults can be overridden without editing scripts:
 
-| Variable | Default | Meaning |
-| --- | --- | --- |
-| `PULSEDAGD_BIN` | `target/release/pulsedagd` | Node binary path. |
-| `PULSEDAG_MINER_BIN` | `target/release/pulsedag-miner` | Miner binary path. |
-| `PULSEDAG_REHEARSAL_STATE_DIR` | `.pulsedag-v2_2_11-rehearsal` | PID, logs, and data root. |
-| `PULSEDAG_REHEARSAL_CHAIN_ID` | `pulsedag-rehearsal-v2-2-11` | Shared chain id for A/B/C. |
-| `PULSEDAG_NODE_A_RPC` | `127.0.0.1:18080` | Node A RPC bind address. |
-| `PULSEDAG_NODE_B_RPC` | `127.0.0.1:18081` | Node B RPC bind address. |
-| `PULSEDAG_NODE_C_RPC` | `127.0.0.1:18082` | Node C RPC bind address. |
-| `PULSEDAG_NODE_A_P2P` | `/ip4/0.0.0.0/tcp/18181` | Node A P2P listen multiaddr. |
-| `PULSEDAG_NODE_B_P2P` | `/ip4/0.0.0.0/tcp/18182` | Node B P2P listen multiaddr. |
-| `PULSEDAG_NODE_C_P2P` | `/ip4/0.0.0.0/tcp/18183` | Node C P2P listen multiaddr. |
-| `PULSEDAG_NODE_A_BOOTNODE` | `/ip4/127.0.0.1/tcp/18181` | Bootnode multiaddr supplied to B/C. |
-| `PULSEDAG_MINER_ADDRESS` | `pulsedag-rehearsal-miner-a` | Miner payout/address string sent to node A. |
-| `PULSEDAG_MINER_THREADS` | `2` | External miner thread count. |
-| `PULSEDAG_MINER_MAX_TRIES` | `500000` | External miner max tries per template. |
-| `PULSEDAG_REHEARSAL_KEEP_RUNNING` | `0` | Keep processes running after smoke if set to `1` or `true`. |
+| Variable                          | Default                         | Meaning                                                     |
+| --------------------------------- | ------------------------------- | ----------------------------------------------------------- |
+| `PULSEDAGD_BIN`                   | `target/release/pulsedagd`      | Node binary path.                                           |
+| `PULSEDAG_MINER_BIN`              | `target/release/pulsedag-miner` | Miner binary path.                                          |
+| `PULSEDAG_REHEARSAL_STATE_DIR`    | `.pulsedag-v2_2_11-rehearsal`   | PID, logs, and data root.                                   |
+| `PULSEDAG_REHEARSAL_CHAIN_ID`     | `pulsedag-rehearsal-v2-2-11`    | Shared chain id for A/B/C.                                  |
+| `PULSEDAG_NODE_A_RPC`             | `127.0.0.1:18080`               | Node A RPC bind address.                                    |
+| `PULSEDAG_NODE_B_RPC`             | `127.0.0.1:18081`               | Node B RPC bind address.                                    |
+| `PULSEDAG_NODE_C_RPC`             | `127.0.0.1:18082`               | Node C RPC bind address.                                    |
+| `PULSEDAG_NODE_A_P2P`             | `/ip4/0.0.0.0/tcp/18181`        | Node A P2P listen multiaddr.                                |
+| `PULSEDAG_NODE_B_P2P`             | `/ip4/0.0.0.0/tcp/18182`        | Node B P2P listen multiaddr.                                |
+| `PULSEDAG_NODE_C_P2P`             | `/ip4/0.0.0.0/tcp/18183`        | Node C P2P listen multiaddr.                                |
+| `PULSEDAG_NODE_A_BOOTNODE`        | `/ip4/127.0.0.1/tcp/18181`      | Bootnode multiaddr supplied to B/C.                         |
+| `PULSEDAG_MINER_ADDRESS`          | `pulsedag-rehearsal-miner-a`    | Miner payout/address string sent to node A.                 |
+| `PULSEDAG_MINER_THREADS`          | `2`                             | External miner thread count.                                |
+| `PULSEDAG_MINER_MAX_TRIES`        | `500000`                        | External miner max tries per template.                      |
+| `PULSEDAG_REHEARSAL_KEEP_RUNNING` | `0`                             | Keep processes running after smoke if set to `1` or `true`. |
 
 ## External-server usage
 
@@ -188,3 +188,35 @@ rm -rf .pulsedag-v2_2_11-rehearsal
 - If `/p2p/status` reports a mode other than `libp2p-real`, check `PULSEDAG_P2P_MODE` overrides in your environment.
 - If B/C do not connect, verify `PULSEDAG_NODE_A_BOOTNODE` is reachable from those hosts and that firewalls allow node A's P2P TCP port.
 - If mining does not advance height, increase `PULSEDAG_MINER_MAX_TRIES`, `PULSEDAG_REHEARSAL_MINE_WAIT_SECS`, or `PULSEDAG_MINER_THREADS` for slower hosts.
+- If block propagation is visible but heights do not converge, inspect `/sync/status`, `/sync/missing`, `/orphans`, and `/p2p/propagation` on the lagging node.
+
+## Height convergence verification
+
+The rehearsal is successful when all nodes report the same chain id and converge to the same height after mining and restart catch-up:
+
+```bash
+for port in 18080 18081 18082; do
+  echo "== $port /sync/status =="
+  curl -fsS "http://127.0.0.1:${port}/sync/status"
+  echo
+  echo "== $port /p2p/status =="
+  curl -fsS "http://127.0.0.1:${port}/p2p/status"
+  echo
+done
+```
+
+Minimum expected steady-state signals:
+
+- `chain_id` matches on A/B/C.
+- `/p2p/status.mode` is `libp2p-real`.
+- Each node has at least one `connected_peers` entry or a recent recovery observation in the scripted smoke output.
+- `/sync/status.best_height` converges across A/B/C.
+- `/sync/status.pending_block_requests=0` after catch-up.
+- `/sync/status.pending_missing_parents=0` after catch-up.
+- `/sync/status.orphan_count=0` after catch-up.
+
+## Related P2P documents
+
+- Final protocol specification: `docs/P2P_SPEC_V2_2_11.md`.
+- Sync recovery and troubleshooting guide: `docs/SYNC_RECOVERY_V2_2_11.md`.
+- Version positioning and guardrails: `docs/VERSION_MATRIX.md`.
