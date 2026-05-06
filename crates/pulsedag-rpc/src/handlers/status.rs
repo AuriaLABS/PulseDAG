@@ -4,6 +4,17 @@ use pulsedag_p2p::{connected_peers_semantics, mode_connected_peers_are_real_netw
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, serde::Serialize)]
+pub struct P2pPeerHealthSummary {
+    pub healthy: usize,
+    pub degraded: usize,
+    pub cooldown: usize,
+    pub recovering: usize,
+    pub reconnect_attempts: u64,
+    pub recovery_successes: u64,
+    pub suppressed_dials: u64,
+}
+
+#[derive(Debug, serde::Serialize)]
 pub struct NodeStatusData {
     pub service: String,
     pub version: String,
@@ -28,6 +39,7 @@ pub struct NodeStatusData {
     pub connected_peers_are_real_network: bool,
     pub connected_peers_semantics: String,
     pub peer_count: usize,
+    pub p2p_peer_health: Option<P2pPeerHealthSummary>,
     pub sync_state: String,
     pub storage_backend: String,
     pub last_block_hash: Option<String>,
@@ -75,12 +87,22 @@ pub async fn get_status<S: RpcStateLike>(
     let p2p_status = state.p2p().and_then(|p| p.status().ok()).map(|s| {
         let peers_are_real = mode_connected_peers_are_real_network(&s.mode);
         let mode = s.mode.clone();
+        let peer_health = P2pPeerHealthSummary {
+            healthy: s.peer_lifecycle_healthy,
+            degraded: s.peer_lifecycle_degraded,
+            cooldown: s.peer_lifecycle_cooldown,
+            recovering: s.peer_lifecycle_recovering,
+            reconnect_attempts: s.peer_reconnect_attempts,
+            recovery_successes: s.peer_recovery_success_count,
+            suppressed_dials: s.peer_suppressed_dial_count,
+        };
         (
             mode.clone(),
             s.runtime_mode_detail,
             peers_are_real,
             connected_peers_semantics(&mode).to_string(),
             s.connected_peers.len(),
+            peer_health,
         )
     });
     let (
@@ -89,12 +111,22 @@ pub async fn get_status<S: RpcStateLike>(
         connected_peers_are_real_network,
         connected_peers_semantics,
         peer_count,
+        p2p_peer_health,
     ) = p2p_status.unwrap_or((
         String::new(),
         String::new(),
         false,
         connected_peers_semantics("").to_string(),
         0,
+        P2pPeerHealthSummary {
+            healthy: 0,
+            degraded: 0,
+            cooldown: 0,
+            recovering: 0,
+            reconnect_attempts: 0,
+            recovery_successes: 0,
+            suppressed_dials: 0,
+        },
     ));
     let p2p_enabled = state.p2p().is_some();
     let last_block_hash = chain
@@ -147,6 +179,7 @@ pub async fn get_status<S: RpcStateLike>(
         connected_peers_are_real_network,
         connected_peers_semantics,
         peer_count,
+        p2p_peer_health: p2p_enabled.then_some(p2p_peer_health),
         sync_state: runtime.sync_state.clone(),
         storage_backend: "rocksdb".to_string(),
         last_block_hash,
@@ -300,6 +333,8 @@ mod tests {
             last_peer_recovery_unix: None,
             peer_cooldown_suppressed_count: 0,
             peer_flap_suppressed_count: 0,
+            peer_message_rate_limited_count: 0,
+            peer_suppressed_dial_count: 0,
             peers_under_cooldown: 0,
             peers_under_flap_guard: 0,
             peer_lifecycle_healthy: 0,

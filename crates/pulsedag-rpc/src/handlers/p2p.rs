@@ -203,6 +203,14 @@ pub async fn get_p2p_status<S: RpcStateLike>(
                     serde_json::json!(status.peer_flap_suppressed_count),
                 );
                 payload.insert(
+                    "peer_message_rate_limited_count".into(),
+                    serde_json::json!(status.peer_message_rate_limited_count),
+                );
+                payload.insert(
+                    "peer_suppressed_dial_count".into(),
+                    serde_json::json!(status.peer_suppressed_dial_count),
+                );
+                payload.insert(
                     "peers_under_cooldown".into(),
                     serde_json::json!(status.peers_under_cooldown),
                 );
@@ -241,6 +249,9 @@ pub async fn get_p2p_status<S: RpcStateLike>(
                         "last_recovery_unix": status.last_peer_recovery_unix,
                         "cooldown_suppressed_count": status.peer_cooldown_suppressed_count,
                         "flap_suppressed_count": status.peer_flap_suppressed_count,
+                        "message_rate_limited_count": status.peer_message_rate_limited_count,
+                        "suppressed_dial_count": status.peer_suppressed_dial_count,
+                        "suppressed_dials": status.peer_suppressed_dial_count,
                         "peers_under_cooldown": status.peers_under_cooldown,
                         "peers_under_flap_guard": status.peers_under_flap_guard
                     }),
@@ -504,6 +515,8 @@ mod tests {
             last_peer_recovery_unix: Some(now.saturating_sub(10)),
             peer_cooldown_suppressed_count: 2,
             peer_flap_suppressed_count: 1,
+            peer_message_rate_limited_count: 2,
+            peer_suppressed_dial_count: 1,
             peers_under_cooldown: 1,
             peers_under_flap_guard: 1,
             peer_lifecycle_healthy: 1,
@@ -655,6 +668,8 @@ mod tests {
                 last_peer_recovery_unix: Some(now),
                 peer_cooldown_suppressed_count: 0,
                 peer_flap_suppressed_count: 0,
+                peer_message_rate_limited_count: 0,
+                peer_suppressed_dial_count: 0,
                 peers_under_cooldown: 0,
                 peers_under_flap_guard: 0,
                 peer_lifecycle_healthy: 0,

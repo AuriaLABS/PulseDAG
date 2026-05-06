@@ -302,6 +302,8 @@ mod tests {
             last_peer_recovery_unix: Some(1_700_000_000),
             peer_cooldown_suppressed_count: 3,
             peer_flap_suppressed_count: 1,
+            peer_message_rate_limited_count: 0,
+            peer_suppressed_dial_count: 0,
             peers_under_cooldown: 1,
             peers_under_flap_guard: 1,
             peer_lifecycle_healthy: 0,
