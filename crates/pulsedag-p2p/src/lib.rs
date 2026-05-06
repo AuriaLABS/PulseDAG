@@ -5044,3 +5044,210 @@ mod inventory_tests {
         ));
     }
 }
+
+#[cfg(test)]
+mod deterministic_p2p_sync_coverage_tests {
+    use super::*;
+
+    fn sample_tx(txid: &str) -> Transaction {
+        Transaction {
+            txid: txid.into(),
+            version: 1,
+            inputs: vec![],
+            outputs: vec![],
+            fee: 10,
+            nonce: 1,
+        }
+    }
+
+    fn sample_block(hash: &str, parent: &str, height: u64) -> Block {
+        Block {
+            hash: hash.into(),
+            header: pulsedag_core::types::BlockHeader {
+                version: 1,
+                parents: vec![parent.into()],
+                timestamp: height.max(1),
+                difficulty: 1,
+                nonce: 1,
+                merkle_root: "mr".into(),
+                state_root: "sr".into(),
+                blue_score: height,
+                height,
+            },
+            transactions: vec![],
+        }
+    }
+
+    #[test]
+    fn getblock_known_and_unknown_drive_deterministic_blockdata_responses() {
+        let known = sample_block("known-block-data", "genesis", 1);
+        let (handle, _rx) = MemoryP2pHandle::new("testnet".into(), vec!["peer-b".into()]);
+        let inner = Arc::new(Mutex::new(InnerState::default()));
+        let (inbound_tx, mut inbound_rx) = mpsc::unbounded_channel();
+
+        for requested_hash in [&known.hash, "missing-block-data"] {
+            let wire = serde_json::to_vec(&NetworkMessage::GetBlock {
+                chain_id: "testnet".into(),
+                hash: requested_hash.to_string(),
+            })
+            .expect("serialize getblock");
+            dispatch_network_message("testnet", &wire, Some("peer-b"), &inner, &inbound_tx);
+            match inbound_rx.try_recv() {
+                Ok(InboundEvent::GetBlock { hash }) if hash == known.hash => handle
+                    .send_block_data(Some(&known))
+                    .expect("known block response is sent"),
+                Ok(InboundEvent::GetBlock { hash }) if hash == "missing-block-data" => handle
+                    .send_block_data(None)
+                    .expect("missing block response is sent"),
+                other => panic!("unexpected getblock flow event: {other:?}"),
+            }
+        }
+
+        let status = handle.status().expect("status");
+        assert_eq!(status.publish_attempts, 2);
+        assert_eq!(status.broadcasted_messages, 2);
+        assert_eq!(status.last_message_kind.as_deref(), Some("block-data"));
+    }
+
+    #[test]
+    fn tips_exchange_requests_only_unknown_remote_tips() {
+        let inner = Arc::new(Mutex::new(InnerState::default()));
+        {
+            inner
+                .lock()
+                .unwrap()
+                .known_block_hashes
+                .insert("local-tip".into());
+        }
+        let (handle, _rx) = MemoryP2pHandle::new("testnet".into(), vec!["peer-sync".into()]);
+        handle.request_tips().expect("gettips broadcast");
+        let (inbound_tx, mut inbound_rx) = mpsc::unbounded_channel();
+        let wire = serde_json::to_vec(&NetworkMessage::Tips {
+            chain_id: "testnet".into(),
+            tips: vec!["local-tip".into(), "remote-tip".into()],
+        })
+        .expect("serialize tips");
+
+        dispatch_network_message("testnet", &wire, Some("peer-sync"), &inner, &inbound_tx);
+
+        let mut requested = Vec::new();
+        if let Ok(InboundEvent::Tips { tips }) = inbound_rx.try_recv() {
+            let known = inner.lock().unwrap().known_block_hashes.clone();
+            for tip in tips {
+                if !known.contains(&tip) {
+                    handle.request_block(&tip).expect("request unknown tip");
+                    requested.push(tip);
+                }
+            }
+        }
+
+        assert_eq!(requested, vec!["remote-tip".to_string()]);
+        let status = handle.status().expect("status");
+        assert_eq!(status.publish_attempts, 2);
+        assert_eq!(status.last_message_kind.as_deref(), Some("get-block"));
+    }
+
+    #[test]
+    fn inbound_transaction_is_relayed_once_after_acceptance_and_duplicates_are_suppressed() {
+        let inner = Arc::new(Mutex::new(InnerState::default()));
+        let (handle, _rx) = MemoryP2pHandle::new("testnet".into(), vec!["peer-a".into()]);
+        let (inbound_tx, mut inbound_rx) = mpsc::unbounded_channel();
+        let tx = sample_tx("relay-once-tx");
+        let wire = serde_json::to_vec(&NetworkMessage::NewTransaction {
+            chain_id: "testnet".into(),
+            transaction: tx.clone(),
+        })
+        .expect("serialize tx");
+
+        dispatch_network_message("testnet", &wire, Some("peer-a"), &inner, &inbound_tx);
+        if let Ok(InboundEvent::Transaction(accepted)) = inbound_rx.try_recv() {
+            handle
+                .broadcast_transaction(&accepted)
+                .expect("accepted transaction relays");
+        } else {
+            panic!("valid transaction was not accepted by p2p dispatch");
+        }
+        dispatch_network_message("testnet", &wire, Some("peer-b"), &inner, &inbound_tx);
+
+        assert!(inbound_rx.try_recv().is_err());
+        let inbound_status = inner.lock().unwrap();
+        assert_eq!(inbound_status.tx_inbound_accepted, 1);
+        assert_eq!(inbound_status.tx_inbound_duplicate, 1);
+        assert_eq!(inbound_status.inbound_duplicates_suppressed, 1);
+        drop(inbound_status);
+
+        let status = handle.status().expect("status");
+        assert_eq!(status.tx_relayed, 1);
+        assert_eq!(status.tx_outbound_duplicates_suppressed, 0);
+    }
+
+    #[test]
+    fn malformed_and_wrong_chain_messages_are_rejected_before_flow_events() {
+        let inner = Arc::new(Mutex::new(InnerState::default()));
+        let (inbound_tx, mut inbound_rx) = mpsc::unbounded_channel();
+        dispatch_network_message(
+            "testnet",
+            b"not-json",
+            Some("peer-bad"),
+            &inner,
+            &inbound_tx,
+        );
+        let wrong_chain = serde_json::to_vec(&NetworkMessage::BlockAnnounce {
+            chain_id: "wrongnet".into(),
+            hash: "foreign-block".into(),
+        })
+        .expect("serialize wrong chain block announce");
+        dispatch_network_message(
+            "testnet",
+            &wrong_chain,
+            Some("peer-bad"),
+            &inner,
+            &inbound_tx,
+        );
+
+        assert!(inbound_rx.try_recv().is_err());
+        let status = inner.lock().unwrap();
+        assert_eq!(status.inbound_decode_failed, 1);
+        assert_eq!(status.inbound_chain_mismatch_dropped, 1);
+        assert_eq!(
+            status.last_drop_reason.as_deref(),
+            Some("chain_mismatch_block_announce")
+        );
+        assert!(status.peer_book.get("peer-bad").expect("peer health").score < PEER_SCORE_MAX);
+    }
+
+    #[test]
+    fn connection_slot_budget_snapshot_is_deterministic() {
+        let mut state = InnerState::default();
+        state.mode = P2P_MODE_LIBP2P_REAL.into();
+        state.connection_slot_budget = 2;
+        state.peer_book.insert(
+            "peer-a".into(),
+            PeerHealth {
+                connected: true,
+                ..PeerHealth::default()
+            },
+        );
+        state.peer_book.insert(
+            "peer-b".into(),
+            PeerHealth {
+                connected: true,
+                ..PeerHealth::default()
+            },
+        );
+        state.peer_book.insert(
+            "peer-c".into(),
+            PeerHealth {
+                connected: true,
+                ..PeerHealth::default()
+            },
+        );
+
+        refresh_connected_peers_from_health(&mut state);
+        assert_eq!(state.connected_peers.len(), 2);
+        assert!(state
+            .connected_peers
+            .iter()
+            .all(|peer| { ["peer-a", "peer-b", "peer-c"].contains(&peer.as_str()) }));
+    }
+}
