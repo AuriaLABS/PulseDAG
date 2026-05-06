@@ -563,7 +563,13 @@ async fn main() -> Result<()> {
                         } else if block_requests.should_issue_getblock(&hash, now_unix()) {
                             info!(event = "unknown_block_announced", block_hash = %hash, "unknown block announced; requesting block from peers");
                             info!(event = "block_request_sent", block_hash = %hash, "issuing GetBlock request intent for unknown block");
+                            if let Some(ref p2p) = p2p {
+                                if let Err(e) = p2p.request_block(&hash) {
+                                    warn!(error = %e, block_hash = %hash, "failed issuing GetBlock request");
+                                }
+                            }
                             let mut rt = runtime.write().await;
+                            rt.sync_state = "requesting_blocks".to_string();
                             rt.getblock_sent = rt.getblock_sent.saturating_add(1);
                             let _ = storage.append_runtime_event(
                                 "info",
@@ -616,7 +622,12 @@ async fn main() -> Result<()> {
                             );
                             {
                                 let mut rt = runtime.write().await;
+                                rt.sync_state = "catching_up".to_string();
                                 rt.queued_orphan_blocks += 1;
+                                rt.orphan_blocks_queued = rt.orphan_blocks_queued.saturating_add(1);
+                                rt.missing_parents_detected = rt
+                                    .missing_parents_detected
+                                    .saturating_add(missing_parents.len() as u64);
                                 rt.pulsedag_blocks_rejected_total =
                                     rt.pulsedag_blocks_rejected_total.saturating_add(1);
                                 rt.pulsedag_sync_missing_parents_total = rt
@@ -632,7 +643,18 @@ async fn main() -> Result<()> {
                             }
                             info!(event = "orphan_stored", block = %block.hash, missing_parents = ?missing_parents, orphan_count = guard.orphan_blocks.len(), "queued inbound p2p orphan block");
                             for parent in &missing_parents {
-                                info!(event = "missing_block_requested", missing_parent = %parent, child = %block.hash, "missing parent discovered; request intent emitted where protocol supports it");
+                                if block_requests.should_issue_getblock(parent, now_unix()) {
+                                    if let Some(ref p2p) = p2p {
+                                        if let Err(e) = p2p.request_block(parent) {
+                                            warn!(error = %e, missing_parent = %parent, "failed issuing missing-parent GetBlock request");
+                                        }
+                                    }
+                                    let mut rt = runtime.write().await;
+                                    rt.getblock_sent = rt.getblock_sent.saturating_add(1);
+                                    rt.missing_parent_requests_sent =
+                                        rt.missing_parent_requests_sent.saturating_add(1);
+                                }
+                                info!(event = "missing_block_requested", missing_parent = %parent, child = %block.hash, "missing parent discovered; GetBlock request emitted");
                             }
                             if pruned > 0 {
                                 warn!(
@@ -654,6 +676,8 @@ async fn main() -> Result<()> {
                                 rt.duplicate_p2p_blocks += 1;
                                 rt.blockdata_duplicate = rt.blockdata_duplicate.saturating_add(1);
                             } else {
+                                rt.sync_state = "degraded".to_string();
+                                rt.sync_failures = rt.sync_failures.saturating_add(1);
                                 rt.rejected_p2p_blocks += 1;
                                 rt.pulsedag_blocks_rejected_total =
                                     rt.pulsedag_blocks_rejected_total.saturating_add(1);
@@ -687,6 +711,18 @@ async fn main() -> Result<()> {
                                 rt.pulsedag_blocks_accepted_total =
                                     rt.pulsedag_blocks_accepted_total.saturating_add(1);
                                 rt.adopted_orphan_blocks += adopted as u64;
+                                rt.orphan_blocks_resolved =
+                                    rt.orphan_blocks_resolved.saturating_add(adopted as u64);
+                                rt.sync_state = if guard.orphan_blocks.is_empty() {
+                                    "synced"
+                                } else {
+                                    "catching_up"
+                                }
+                                .to_string();
+                                if guard.orphan_blocks.is_empty() {
+                                    rt.sync_catchup_completed =
+                                        rt.sync_catchup_completed.saturating_add(1);
+                                }
                                 rt.sync_pipeline.complete_cycle(now_unix());
                             }
                             if adopted > 0 {
@@ -725,11 +761,83 @@ async fn main() -> Result<()> {
                             }
                         }
                     }
+                    InboundEvent::GetTips => {
+                        let tips = {
+                            let guard = chain.read().await;
+                            guard.dag.tips.iter().cloned().collect::<Vec<_>>()
+                        };
+                        if let Some(ref p2p) = p2p {
+                            if let Err(e) = p2p.send_tips(&tips) {
+                                warn!(error = %e, "failed sending Tips response");
+                            }
+                        }
+                    }
+                    InboundEvent::Tips { tips } => {
+                        let unknown_tips = {
+                            let guard = chain.read().await;
+                            tips.into_iter()
+                                .filter(|tip| !guard.dag.blocks.contains_key(tip))
+                                .collect::<Vec<_>>()
+                        };
+                        {
+                            let mut rt = runtime.write().await;
+                            rt.tips_received = rt.tips_received.saturating_add(1);
+                            rt.unknown_tips_seen = rt
+                                .unknown_tips_seen
+                                .saturating_add(unknown_tips.len() as u64);
+                            rt.sync_state = if unknown_tips.is_empty() {
+                                "synced"
+                            } else {
+                                "requesting_blocks"
+                            }
+                            .to_string();
+                        }
+                        for tip in unknown_tips {
+                            if block_requests.should_issue_getblock(&tip, now_unix()) {
+                                if let Some(ref p2p) = p2p {
+                                    if let Err(e) = p2p.request_block(&tip) {
+                                        warn!(error = %e, block_hash = %tip, "failed requesting unknown remote tip");
+                                    }
+                                }
+                                let mut rt = runtime.write().await;
+                                rt.getblock_sent = rt.getblock_sent.saturating_add(1);
+                            }
+                        }
+                    }
+                    InboundEvent::GetBlock { hash } => {
+                        let block = {
+                            let guard = chain.read().await;
+                            guard.dag.blocks.get(&hash).cloned()
+                        };
+                        if let Some(ref p2p) = p2p {
+                            if let Err(e) = p2p.send_block_data(block.as_ref()) {
+                                warn!(error = %e, block_hash = %hash, "failed sending BlockData response");
+                            }
+                        }
+                        let mut rt = runtime.write().await;
+                        rt.getblock_received = rt.getblock_received.saturating_add(1);
+                        rt.blockdata_sent = rt.blockdata_sent.saturating_add(1);
+                    }
+                    InboundEvent::BlockDataMissing { hash } => {
+                        let mut rt = runtime.write().await;
+                        rt.sync_state = "degraded".to_string();
+                        rt.sync_failures = rt.sync_failures.saturating_add(1);
+                        warn!(requested_hash = ?hash, "peer returned empty BlockData for requested block");
+                    }
                     InboundEvent::PeerConnected(peer) => {
                         let peers_connected = p2p
                             .as_ref()
                             .and_then(|h| h.status().ok().map(|s| s.connected_peers));
-                        info!(peer = %peer, peers_connected = ?peers_connected, "p2p peer connected");
+                        if let Some(ref p2p) = p2p {
+                            if let Err(e) = p2p.request_tips() {
+                                warn!(error = %e, peer = %peer, "failed issuing GetTips on peer connect");
+                            }
+                        }
+                        let mut rt = runtime.write().await;
+                        rt.sync_state = "requesting_tips".to_string();
+                        rt.tips_requested = rt.tips_requested.saturating_add(1);
+                        drop(rt);
+                        info!(peer = %peer, peers_connected = ?peers_connected, "p2p peer connected; requested tips");
                     }
                 }
             }
