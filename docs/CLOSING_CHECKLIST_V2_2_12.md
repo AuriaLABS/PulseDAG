@@ -25,6 +25,7 @@ Use this checklist to close v2.2.12 only after the rehearsal documentation, oper
 - [ ] `cargo test --workspace` passes when code changes are included.
 - [ ] `cargo build --workspace --release` passes for rehearsal binaries.
 - [ ] The v2.2.11 baseline smoke script or an equivalent v2.2.12 rehearsal path passes.
+- [ ] `bash -n scripts/v2_2_12_collect_evidence.sh` passes before closeout.
 
 ## Baseline three-node evidence
 
@@ -48,8 +49,10 @@ Use this checklist to close v2.2.12 only after the rehearsal documentation, oper
 - [ ] Invalid peer block rejection and chain-id mismatch dropping are verified through tests, counters, logs, or targeted rehearsal evidence.
 - [ ] Missing parent and orphan diagnostics are reviewed and explained.
 - [ ] Peer scoring, cooldown, reconnect, and backoff diagnostics remain useful to operators.
-- [ ] Final evidence includes `/health`, `/status`, `/p2p/status`, `/p2p/peers`, `/p2p/propagation`, `/sync/status`, and `/sync/missing` from participating nodes.
-- [ ] Logs from all nodes and the external miner are archived.
+- [ ] Run `scripts/v2_2_12_collect_evidence.sh` against the live rehearsal before stopping nodes.
+- [ ] Final evidence includes the collector output for `/health`, `/status`, `/p2p/status`, `/p2p/peers`, `/p2p/propagation`, `/sync/status`, `/sync/missing`, and `/p2p/topics` from participating nodes where available.
+- [ ] Logs from all nodes and the external miner are archived in the collector tarball.
+- [ ] The collector tarball path and checksum are recorded in closeout notes.
 - [ ] Failures, recoveries, unresolved risks, and runbook changes are summarized.
 
 ## Release guardrails
