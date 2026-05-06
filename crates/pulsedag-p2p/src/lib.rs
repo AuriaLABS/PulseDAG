@@ -61,6 +61,16 @@ pub struct PeerRecoveryStatus {
 }
 
 #[derive(Debug, Clone)]
+pub struct SeenCacheEntry {
+    pub message_id: String,
+    pub block_hash: Option<String>,
+    pub txid: Option<String>,
+    pub first_seen_unix: u64,
+    pub last_seen_unix: u64,
+    pub peer_source: Option<String>,
+}
+
+#[derive(Debug, Clone)]
 pub struct P2pStatus {
     pub mode: String,
     pub peer_id: String,
@@ -95,6 +105,15 @@ pub struct P2pStatus {
     pub inbound_decode_failed: usize,
     pub inbound_chain_mismatch_dropped: usize,
     pub inbound_duplicates_suppressed: usize,
+    pub outbound_duplicates_suppressed: usize,
+    pub inv_blocks_received: usize,
+    pub inv_hashes_known: usize,
+    pub inv_hashes_requested: usize,
+    pub relay_loop_prevented: usize,
+    pub seen_cache_ttl_secs: u64,
+    pub recovery_rebroadcast_ttl_secs: u64,
+    pub max_inventory_length: usize,
+    pub max_request_fanout: usize,
     pub tx_inbound_received: usize,
     pub tx_inbound_accepted: usize,
     pub tx_inbound_duplicate: usize,
@@ -248,6 +267,11 @@ struct InnerState {
     inbound_decode_failed: usize,
     inbound_chain_mismatch_dropped: usize,
     inbound_duplicates_suppressed: usize,
+    outbound_duplicates_suppressed: usize,
+    inv_blocks_received: usize,
+    inv_hashes_known: usize,
+    inv_hashes_requested: usize,
+    relay_loop_prevented: usize,
     tx_inbound_received: usize,
     tx_inbound_accepted: usize,
     tx_inbound_duplicate: usize,
@@ -265,6 +289,9 @@ struct InnerState {
     block_outbound_recovery_relayed: usize,
     last_drop_reason: Option<String>,
     inbound_seen_at_unix: HashMap<String, u64>,
+    inbound_seen_cache: HashMap<String, SeenCacheEntry>,
+    known_block_hashes: HashSet<String>,
+    known_txids: HashSet<String>,
     outbound_tx_seen_at_unix: HashMap<String, u64>,
     outbound_block_seen_at_unix: HashMap<String, u64>,
     outbound_tx_recovery_relay_generation: HashMap<String, u64>,
@@ -387,6 +414,7 @@ impl P2pHandle for MemoryP2pHandle {
             return Ok(());
         }
         record_outbound_tx_relay(&mut inner, &tx_id, now_unix());
+        inner.known_txids.insert(tx.txid.clone());
         inner.seen_message_ids.insert(tx_id);
         inner.publish_attempts += 1;
         inner.broadcasted_messages += 1;
@@ -408,6 +436,7 @@ impl P2pHandle for MemoryP2pHandle {
             inner.last_drop_reason = Some("duplicate_block_outbound".into());
             return Ok(());
         }
+        inner.known_block_hashes.insert(block.hash.clone());
         inner.seen_message_ids.insert(block_id);
         inner.publish_attempts += 1;
         inner.broadcasted_messages += 1;
@@ -526,6 +555,15 @@ impl P2pHandle for MemoryP2pHandle {
             inbound_decode_failed: inner.inbound_decode_failed,
             inbound_chain_mismatch_dropped: inner.inbound_chain_mismatch_dropped,
             inbound_duplicates_suppressed: inner.inbound_duplicates_suppressed,
+            outbound_duplicates_suppressed: inner.outbound_duplicates_suppressed,
+            inv_blocks_received: inner.inv_blocks_received,
+            inv_hashes_known: inner.inv_hashes_known,
+            inv_hashes_requested: inner.inv_hashes_requested,
+            relay_loop_prevented: inner.relay_loop_prevented,
+            seen_cache_ttl_secs: MESSAGE_DEDUP_WINDOW_SECS,
+            recovery_rebroadcast_ttl_secs: RECOVERY_REBROADCAST_GRACE_SECS,
+            max_inventory_length: MAX_INV_BLOCK_HASHES,
+            max_request_fanout: MAX_INV_BLOCK_REQUEST_FANOUT,
             tx_inbound_received: inner.tx_inbound_received,
             tx_inbound_accepted: inner.tx_inbound_accepted,
             tx_inbound_duplicate: inner.tx_inbound_duplicate,
@@ -701,6 +739,8 @@ const BACKOFF_BASE_SECS: u64 = 2;
 const BACKOFF_EXP_CAP: u32 = 8;
 const BACKOFF_MAX_SECS: u64 = 300;
 const MESSAGE_DEDUP_WINDOW_SECS: u64 = 120;
+const MAX_INV_BLOCK_HASHES: usize = 512;
+const MAX_INV_BLOCK_REQUEST_FANOUT: usize = 64;
 const TX_INBOUND_DEDUP_WINDOW_SECS: u64 = 120;
 const TX_OUTBOUND_DEDUP_WINDOW_SECS: u64 = 30;
 const MAX_TX_MESSAGE_BYTES: usize = 64 * 1024;
@@ -1509,36 +1549,110 @@ fn trim_old_entries(seen: &mut HashMap<String, u64>, now: u64, window_secs: u64)
     }
 }
 
-fn mark_inbound_id_seen(state: &mut InnerState, id: String, now: u64) -> bool {
-    trim_old_entries(
-        &mut state.inbound_seen_at_unix,
-        now,
-        MESSAGE_DEDUP_WINDOW_SECS,
-    );
-    match state.inbound_seen_at_unix.get(&id) {
-        Some(last_seen) if now.saturating_sub(*last_seen) <= MESSAGE_DEDUP_WINDOW_SECS => false,
+fn trim_inbound_seen_cache(state: &mut InnerState, now: u64, ttl_secs: u64) {
+    state
+        .inbound_seen_cache
+        .retain(|_, entry| now.saturating_sub(entry.last_seen_unix) <= ttl_secs);
+    if state.inbound_seen_cache.len() > MAX_DEDUP_TRACKED_IDS {
+        let mut entries = state
+            .inbound_seen_cache
+            .iter()
+            .map(|(id, entry)| (id.clone(), entry.last_seen_unix))
+            .collect::<Vec<_>>();
+        entries.sort_by_key(|(_, last_seen)| *last_seen);
+        let remove_count = state
+            .inbound_seen_cache
+            .len()
+            .saturating_sub(MAX_DEDUP_TRACKED_IDS);
+        for (id, _) in entries.into_iter().take(remove_count) {
+            state.inbound_seen_cache.remove(&id);
+        }
+    }
+}
+
+fn mark_inbound_seen_with_metadata(
+    state: &mut InnerState,
+    id: String,
+    block_hash: Option<String>,
+    txid: Option<String>,
+    peer_source: Option<&str>,
+    ttl_secs: u64,
+    now: u64,
+) -> bool {
+    trim_old_entries(&mut state.inbound_seen_at_unix, now, ttl_secs);
+    trim_inbound_seen_cache(state, now, ttl_secs);
+    match state.inbound_seen_cache.get_mut(&id) {
+        Some(entry) if now.saturating_sub(entry.last_seen_unix) <= ttl_secs => {
+            entry.last_seen_unix = now;
+            if entry.peer_source.is_none() {
+                entry.peer_source = peer_source.map(str::to_string);
+            }
+            state.inbound_seen_at_unix.insert(id, now);
+            false
+        }
         _ => {
             state.inbound_seen_at_unix.insert(id.clone(), now);
-            state.seen_message_ids.insert(id);
+            state.seen_message_ids.insert(id.clone());
+            if let Some(hash) = block_hash.as_ref() {
+                state.known_block_hashes.insert(hash.clone());
+            }
+            if let Some(tx) = txid.as_ref() {
+                state.known_txids.insert(tx.clone());
+            }
+            state.inbound_seen_cache.insert(
+                id.clone(),
+                SeenCacheEntry {
+                    message_id: id,
+                    block_hash,
+                    txid,
+                    first_seen_unix: now,
+                    last_seen_unix: now,
+                    peer_source: peer_source.map(str::to_string),
+                },
+            );
             true
         }
     }
 }
 
-fn mark_inbound_tx_seen(state: &mut InnerState, id: String, now: u64) -> bool {
-    trim_old_entries(
-        &mut state.inbound_seen_at_unix,
+fn mark_inbound_id_seen(state: &mut InnerState, id: String, now: u64) -> bool {
+    mark_inbound_seen_with_metadata(state, id, None, None, None, MESSAGE_DEDUP_WINDOW_SECS, now)
+}
+
+fn mark_inbound_block_seen(
+    state: &mut InnerState,
+    id: String,
+    block_hash: String,
+    peer_source: Option<&str>,
+    now: u64,
+) -> bool {
+    mark_inbound_seen_with_metadata(
+        state,
+        id,
+        Some(block_hash),
+        None,
+        peer_source,
+        MESSAGE_DEDUP_WINDOW_SECS,
         now,
+    )
+}
+
+fn mark_inbound_tx_seen(
+    state: &mut InnerState,
+    id: String,
+    txid: String,
+    peer_source: Option<&str>,
+    now: u64,
+) -> bool {
+    mark_inbound_seen_with_metadata(
+        state,
+        id,
+        None,
+        Some(txid),
+        peer_source,
         TX_INBOUND_DEDUP_WINDOW_SECS,
-    );
-    match state.inbound_seen_at_unix.get(&id) {
-        Some(last_seen) if now.saturating_sub(*last_seen) <= TX_INBOUND_DEDUP_WINDOW_SECS => false,
-        _ => {
-            state.inbound_seen_at_unix.insert(id.clone(), now);
-            state.seen_message_ids.insert(id);
-            true
-        }
-    }
+        now,
+    )
 }
 
 fn admit_inbound_tx_rate(state: &mut InnerState, now: u64) -> bool {
@@ -1578,6 +1692,9 @@ fn should_relay_outbound_tx(state: &mut InnerState, id: &str, now: u64) -> bool 
             }
             state.tx_outbound_duplicates_suppressed =
                 state.tx_outbound_duplicates_suppressed.saturating_add(1);
+            state.outbound_duplicates_suppressed =
+                state.outbound_duplicates_suppressed.saturating_add(1);
+            state.relay_loop_prevented = state.relay_loop_prevented.saturating_add(1);
             false
         }
         _ => true,
@@ -1660,6 +1777,9 @@ fn should_relay_outbound_block(state: &mut InnerState, id: &str, now: u64) -> bo
             state.outbound_block_recovery_relay_generation = recovery_relays;
             state.block_outbound_duplicates_suppressed =
                 state.block_outbound_duplicates_suppressed.saturating_add(1);
+            state.outbound_duplicates_suppressed =
+                state.outbound_duplicates_suppressed.saturating_add(1);
+            state.relay_loop_prevented = state.relay_loop_prevented.saturating_add(1);
             false
         }
         _ => {
@@ -1897,7 +2017,13 @@ fn dispatch_network_message(
                     guard.last_drop_reason = Some("tx_inbound_rate_limited".into());
                     return;
                 }
-                if !mark_inbound_tx_seen(&mut guard, id, now_unix()) {
+                if !mark_inbound_tx_seen(
+                    &mut guard,
+                    id,
+                    transaction.txid.clone(),
+                    source_peer,
+                    now_unix(),
+                ) {
                     guard.inbound_duplicates_suppressed += 1;
                     guard.tx_inbound_duplicate = guard.tx_inbound_duplicate.saturating_add(1);
                     guard.last_drop_reason = Some("duplicate_tx".into());
@@ -1938,7 +2064,13 @@ fn dispatch_network_message(
             }
             let id = message_id_for_block(&block);
             if let Ok(mut guard) = inner.lock() {
-                if !mark_inbound_id_seen(&mut guard, id, now_unix()) {
+                if !mark_inbound_block_seen(
+                    &mut guard,
+                    id,
+                    block.hash.clone(),
+                    source_peer,
+                    now_unix(),
+                ) {
                     guard.inbound_duplicates_suppressed += 1;
                     guard.last_drop_reason = Some("duplicate_block".into());
                     return;
@@ -2013,30 +2145,63 @@ fn dispatch_network_message(
                 }
                 return;
             }
-            for hash in hashes {
-                let id = format!("block-announce:{}", hash);
-                let mut accepted = false;
-                if let Ok(mut guard) = inner.lock() {
-                    if mark_inbound_id_seen(&mut guard, id, now_unix()) {
-                        guard.inbound_messages += 1;
-                        guard.last_message_kind = Some("inv-block".into());
-                        if let Some(peer) = source_peer {
-                            score_peer_message_outcome(
-                                &mut guard,
-                                peer,
-                                PeerMessageOutcome::ValidRelay,
-                                now_unix(),
-                            );
-                        }
-                        accepted = true;
+            let oversized = hashes.len() > MAX_INV_BLOCK_HASHES;
+            let capped_hashes = hashes
+                .into_iter()
+                .take(MAX_INV_BLOCK_HASHES)
+                .collect::<Vec<_>>();
+            let mut requested = Vec::new();
+            if let Ok(mut guard) = inner.lock() {
+                guard.inv_blocks_received = guard.inv_blocks_received.saturating_add(1);
+                guard.inbound_messages += 1;
+                guard.last_message_kind = Some("inv-block".into());
+                if oversized {
+                    guard.last_drop_reason = Some("inv_block_oversized_capped".into());
+                }
+                for hash in capped_hashes {
+                    let id = format!("block-inv:{}", hash);
+                    let known = guard.known_block_hashes.contains(&hash)
+                        || guard
+                            .inbound_seen_cache
+                            .values()
+                            .any(|entry| entry.block_hash.as_deref() == Some(hash.as_str()))
+                        || guard.inbound_seen_at_unix.contains_key(&id);
+                    if known {
+                        guard.inv_hashes_known = guard.inv_hashes_known.saturating_add(1);
+                        guard.inbound_duplicates_suppressed =
+                            guard.inbound_duplicates_suppressed.saturating_add(1);
+                        continue;
+                    }
+                    if requested.len() >= MAX_INV_BLOCK_REQUEST_FANOUT {
+                        guard.last_drop_reason = Some("inv_block_request_fanout_capped".into());
+                        continue;
+                    }
+                    if mark_inbound_block_seen(
+                        &mut guard,
+                        id,
+                        hash.clone(),
+                        source_peer,
+                        now_unix(),
+                    ) {
+                        guard.inv_hashes_requested = guard.inv_hashes_requested.saturating_add(1);
+                        requested.push(hash);
                     } else {
-                        guard.inbound_duplicates_suppressed += 1;
-                        guard.last_drop_reason = Some("duplicate_inv_block".into());
+                        guard.inv_hashes_known = guard.inv_hashes_known.saturating_add(1);
+                        guard.inbound_duplicates_suppressed =
+                            guard.inbound_duplicates_suppressed.saturating_add(1);
                     }
                 }
-                if accepted {
-                    let _ = inbound_tx.send(InboundEvent::BlockAnnouncement { hash });
+                if let Some(peer) = source_peer {
+                    score_peer_message_outcome(
+                        &mut guard,
+                        peer,
+                        PeerMessageOutcome::ValidRelay,
+                        now_unix(),
+                    );
                 }
+            }
+            for hash in requested {
+                let _ = inbound_tx.send(InboundEvent::GetBlock { hash });
             }
         }
         NetworkMessage::GetTips { chain_id } => {
@@ -2087,7 +2252,13 @@ fn dispatch_network_message(
             if let Some(block) = block {
                 let id = message_id_for_block(&block);
                 if let Ok(mut guard) = inner.lock() {
-                    if !mark_inbound_id_seen(&mut guard, id, now_unix()) {
+                    if !mark_inbound_block_seen(
+                        &mut guard,
+                        id,
+                        block.hash.clone(),
+                        source_peer,
+                        now_unix(),
+                    ) {
                         guard.inbound_duplicates_suppressed += 1;
                         guard.last_drop_reason = Some("duplicate_block_data".into());
                         return;
@@ -2481,6 +2652,7 @@ impl P2pHandle for Libp2pHandle {
                 return Ok(());
             }
             record_outbound_tx_relay(&mut inner, &tx_id, now_unix());
+            inner.known_txids.insert(tx.txid.clone());
             inner.queued_messages += 1;
             inner.queued_non_block_messages += 1;
             track_queue_depth_on_enqueue(&mut inner);
@@ -2501,6 +2673,7 @@ impl P2pHandle for Libp2pHandle {
                 inner.last_drop_reason = Some("duplicate_block_outbound".into());
                 return Ok(());
             }
+            inner.known_block_hashes.insert(block.hash.clone());
             inner.queued_messages += 1;
             inner.queued_block_messages += 1;
             track_queue_depth_on_enqueue(&mut inner);
@@ -2590,6 +2763,15 @@ impl P2pHandle for Libp2pHandle {
             inbound_decode_failed: inner.inbound_decode_failed,
             inbound_chain_mismatch_dropped: inner.inbound_chain_mismatch_dropped,
             inbound_duplicates_suppressed: inner.inbound_duplicates_suppressed,
+            outbound_duplicates_suppressed: inner.outbound_duplicates_suppressed,
+            inv_blocks_received: inner.inv_blocks_received,
+            inv_hashes_known: inner.inv_hashes_known,
+            inv_hashes_requested: inner.inv_hashes_requested,
+            relay_loop_prevented: inner.relay_loop_prevented,
+            seen_cache_ttl_secs: MESSAGE_DEDUP_WINDOW_SECS,
+            recovery_rebroadcast_ttl_secs: RECOVERY_REBROADCAST_GRACE_SECS,
+            max_inventory_length: MAX_INV_BLOCK_HASHES,
+            max_request_fanout: MAX_INV_BLOCK_REQUEST_FANOUT,
             tx_inbound_received: inner.tx_inbound_received,
             tx_inbound_accepted: inner.tx_inbound_accepted,
             tx_inbound_duplicate: inner.tx_inbound_duplicate,
@@ -4405,6 +4587,35 @@ mod tests {
 mod inventory_tests {
     use super::*;
 
+    fn sample_tx(txid: &str) -> Transaction {
+        Transaction {
+            txid: txid.into(),
+            version: 1,
+            inputs: vec![],
+            outputs: vec![],
+            fee: 10,
+            nonce: 1,
+        }
+    }
+
+    fn sample_block(hash: &str) -> Block {
+        Block {
+            hash: hash.into(),
+            header: pulsedag_core::types::BlockHeader {
+                version: 1,
+                parents: vec![],
+                timestamp: 1,
+                difficulty: 1,
+                nonce: 1,
+                merkle_root: "mr".into(),
+                state_root: "sr".into(),
+                blue_score: 1,
+                height: 1,
+            },
+            transactions: vec![],
+        }
+    }
+
     #[test]
     fn block_inventory_messages_roundtrip() {
         let msg = NetworkMessage::InvBlock {
@@ -4439,6 +4650,137 @@ mod inventory_tests {
             }
             _ => panic!("unexpected variant"),
         }
+    }
+
+    #[test]
+    fn same_block_from_two_peers_is_accepted_once() {
+        let inner = Arc::new(Mutex::new(InnerState::default()));
+        let (inbound_tx, mut inbound_rx) = mpsc::unbounded_channel();
+        let block = sample_block("dedupe-block");
+        let wire = serde_json::to_vec(&NetworkMessage::NewBlock {
+            chain_id: "testnet".into(),
+            block: block.clone(),
+        })
+        .expect("serialize block");
+
+        dispatch_network_message("testnet", &wire, Some("peer-a"), &inner, &inbound_tx);
+        dispatch_network_message("testnet", &wire, Some("peer-b"), &inner, &inbound_tx);
+
+        assert!(matches!(
+            inbound_rx.try_recv(),
+            Ok(InboundEvent::Block(received)) if received.hash == block.hash
+        ));
+        assert!(inbound_rx.try_recv().is_err());
+        let guard = inner.lock().unwrap();
+        assert_eq!(guard.inbound_duplicates_suppressed, 1);
+        let entry = guard.inbound_seen_cache.get("block:dedupe-block").unwrap();
+        assert_eq!(entry.block_hash.as_deref(), Some("dedupe-block"));
+        assert_eq!(entry.peer_source.as_deref(), Some("peer-a"));
+    }
+
+    #[test]
+    fn same_tx_from_two_peers_is_accepted_once() {
+        let inner = Arc::new(Mutex::new(InnerState::default()));
+        let (inbound_tx, mut inbound_rx) = mpsc::unbounded_channel();
+        let tx = sample_tx("dedupe-tx");
+        let wire = serde_json::to_vec(&NetworkMessage::NewTransaction {
+            chain_id: "testnet".into(),
+            transaction: tx.clone(),
+        })
+        .expect("serialize tx");
+
+        dispatch_network_message("testnet", &wire, Some("peer-a"), &inner, &inbound_tx);
+        dispatch_network_message("testnet", &wire, Some("peer-b"), &inner, &inbound_tx);
+
+        assert!(matches!(
+            inbound_rx.try_recv(),
+            Ok(InboundEvent::Transaction(received)) if received.txid == tx.txid
+        ));
+        assert!(inbound_rx.try_recv().is_err());
+        let guard = inner.lock().unwrap();
+        assert_eq!(guard.tx_inbound_accepted, 1);
+        assert_eq!(guard.tx_inbound_duplicate, 1);
+        let entry = guard.inbound_seen_cache.get("tx:dedupe-tx").unwrap();
+        assert_eq!(entry.txid.as_deref(), Some("dedupe-tx"));
+    }
+
+    #[test]
+    fn rebroadcast_does_not_loop_forever() {
+        let (handle, _inbound_rx) = MemoryP2pHandle::new("testnet".into(), vec!["peer-a".into()]);
+        let block = sample_block("loop-block");
+
+        for _ in 0..32 {
+            handle
+                .broadcast_block(&block)
+                .expect("broadcast should not fail");
+        }
+
+        let status = handle.status().expect("status should be available");
+        assert_eq!(status.broadcasted_messages, 1);
+        assert_eq!(status.outbound_duplicates_suppressed, 31);
+        assert_eq!(status.relay_loop_prevented, 31);
+    }
+
+    #[test]
+    fn inventory_requests_only_unknown_hashes() {
+        let inner = Arc::new(Mutex::new(InnerState::default()));
+        let (inbound_tx, mut inbound_rx) = mpsc::unbounded_channel();
+        {
+            let mut guard = inner.lock().unwrap();
+            guard.known_block_hashes.insert("known-block".into());
+        }
+        let wire = serde_json::to_vec(&NetworkMessage::InvBlock {
+            chain_id: "testnet".into(),
+            hashes: vec![
+                "known-block".into(),
+                "new-block".into(),
+                "new-block-2".into(),
+            ],
+        })
+        .expect("serialize inventory");
+
+        dispatch_network_message("testnet", &wire, Some("peer-inv"), &inner, &inbound_tx);
+
+        let mut requested = Vec::new();
+        while let Ok(InboundEvent::GetBlock { hash }) = inbound_rx.try_recv() {
+            requested.push(hash);
+        }
+        assert_eq!(
+            requested,
+            vec!["new-block".to_string(), "new-block-2".to_string()]
+        );
+        let guard = inner.lock().unwrap();
+        assert_eq!(guard.inv_blocks_received, 1);
+        assert_eq!(guard.inv_hashes_known, 1);
+        assert_eq!(guard.inv_hashes_requested, 2);
+    }
+
+    #[test]
+    fn oversized_inventory_is_capped() {
+        let inner = Arc::new(Mutex::new(InnerState::default()));
+        let (inbound_tx, mut inbound_rx) = mpsc::unbounded_channel();
+        let hashes = (0..MAX_INV_BLOCK_HASHES + 10)
+            .map(|idx| format!("inv-{idx}"))
+            .collect::<Vec<_>>();
+        let wire = serde_json::to_vec(&NetworkMessage::InvBlock {
+            chain_id: "testnet".into(),
+            hashes,
+        })
+        .expect("serialize inventory");
+
+        dispatch_network_message("testnet", &wire, Some("peer-inv"), &inner, &inbound_tx);
+
+        let mut requested = 0;
+        while let Ok(InboundEvent::GetBlock { .. }) = inbound_rx.try_recv() {
+            requested += 1;
+        }
+        assert_eq!(requested, MAX_INV_BLOCK_REQUEST_FANOUT);
+        let guard = inner.lock().unwrap();
+        assert_eq!(guard.inv_hashes_requested, MAX_INV_BLOCK_REQUEST_FANOUT);
+        assert_eq!(
+            guard.last_drop_reason.as_deref(),
+            Some("inv_block_request_fanout_capped")
+        );
     }
 
     #[test]

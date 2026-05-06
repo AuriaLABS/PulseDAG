@@ -179,6 +179,35 @@ pub async fn get_p2p_status<S: RpcStateLike>(
                     serde_json::json!(status.inbound_duplicates_suppressed),
                 );
                 payload.insert(
+                    "outbound_duplicates_suppressed".into(),
+                    serde_json::json!(status.outbound_duplicates_suppressed),
+                );
+                payload.insert(
+                    "inv_blocks_received".into(),
+                    serde_json::json!(status.inv_blocks_received),
+                );
+                payload.insert(
+                    "inv_hashes_known".into(),
+                    serde_json::json!(status.inv_hashes_known),
+                );
+                payload.insert(
+                    "inv_hashes_requested".into(),
+                    serde_json::json!(status.inv_hashes_requested),
+                );
+                payload.insert(
+                    "relay_loop_prevented".into(),
+                    serde_json::json!(status.relay_loop_prevented),
+                );
+                payload.insert(
+                    "relay_settings".into(),
+                    serde_json::json!({
+                        "seen_cache_ttl_secs": status.seen_cache_ttl_secs,
+                        "recovery_rebroadcast_ttl_secs": status.recovery_rebroadcast_ttl_secs,
+                        "max_inventory_length": status.max_inventory_length,
+                        "max_request_fanout": status.max_request_fanout
+                    }),
+                );
+                payload.insert(
                     "last_drop_reason".into(),
                     serde_json::json!(status.last_drop_reason),
                 );
@@ -493,6 +522,15 @@ mod tests {
             inbound_decode_failed: 0,
             inbound_chain_mismatch_dropped: 0,
             inbound_duplicates_suppressed: 0,
+            outbound_duplicates_suppressed: 0,
+            inv_blocks_received: 0,
+            inv_hashes_known: 0,
+            inv_hashes_requested: 0,
+            relay_loop_prevented: 0,
+            seen_cache_ttl_secs: 120,
+            recovery_rebroadcast_ttl_secs: 8,
+            max_inventory_length: 512,
+            max_request_fanout: 64,
             tx_inbound_received: 0,
             tx_inbound_accepted: 0,
             tx_inbound_duplicate: 0,
@@ -646,6 +684,15 @@ mod tests {
                 inbound_decode_failed: 0,
                 inbound_chain_mismatch_dropped: 0,
                 inbound_duplicates_suppressed: 0,
+                outbound_duplicates_suppressed: 0,
+                inv_blocks_received: 0,
+                inv_hashes_known: 0,
+                inv_hashes_requested: 0,
+                relay_loop_prevented: 0,
+                seen_cache_ttl_secs: 120,
+                recovery_rebroadcast_ttl_secs: 8,
+                max_inventory_length: 512,
+                max_request_fanout: 64,
                 tx_inbound_received: 0,
                 tx_inbound_accepted: 0,
                 tx_inbound_duplicate: 0,
