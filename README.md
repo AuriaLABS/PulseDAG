@@ -1,67 +1,35 @@
-# PulseDAG v2.2.11 P2P completion docs
+# PulseDAG v2.2.11 current status
 
-This repository's documentation is aligned to the **v2.2.11 P2P completion** milestone for multi-node private-testnet preparation. Cargo workspace package metadata remains at `2.2.10` until a dedicated release/version-bump PR changes it.
+This repository is aligned to the **v2.2.11 P2P completion milestone**.
 
 ## Current status
 
 - Active PoW identity: **kHeavyHash**.
 - PoW engine framing: **Kaspa-based integration path** adapted for PulseDAG canonical headers.
 - Acceptance semantics: **256-bit hash vs 256-bit target comparison**.
+- P2P milestone: **block announce/request/data flow, tx relay, tip exchange, missing parent recovery, orphan handling, peer scoring/backoff, duplicate suppression, and diagnostics are documented for v2.2.11 closeout**.
 - Miner architecture: external `pulsedag-miner` (no embedded pool logic).
 - P2P architecture: real `libp2p-real` mode with chain-id isolated block, tx, and sync topics.
 - v2.2.11 scope: P2P completion docs, three-node rehearsal runbook, and sync troubleshooting for private-testnet preparation.
 - Smart contracts: out of scope in v2.2.x.
-- Public mainnet readiness: not claimed.
-- v2.3.0 readiness: not claimed; v2.3.0 remains the future private-testnet readiness decision milestone.
+- v2.2.11 closes P2P completion; **v2.2.12 is the full private-testnet rehearsal and hardening handoff**.
+- v2.3.0 remains the private-testnet readiness decision milestone.
 
-## P2P operator quick start
+## P2P completion flow (operator summary)
 
-Build release binaries:
+1. Build the workspace release binaries.
+2. Start node A in real `libp2p-real` mode.
+3. Start nodes B and C connected to A.
+4. Verify peer connectivity with `/p2p/status` and node state with `/status`.
+5. Run the external `pulsedag-miner` against node A.
+6. Wait for node A height to increase.
+7. Verify B/C receive or sync the block.
+8. Restart B and verify it catches up.
+9. Collect `/health`, `/status`, `/p2p/status`, and `/sync/status` from A/B/C.
 
-```bash
-cargo build --workspace --release
-```
-
-Run the local three-node rehearsal:
-
-```bash
-scripts/v2_2_11_smoke_p2p.sh
-```
-
-Or start nodes manually:
-
-```bash
-scripts/v2_2_11_start_node_a.sh --clean
-scripts/v2_2_11_start_node_b.sh --clean
-scripts/v2_2_11_start_node_c.sh --clean
-scripts/v2_2_11_start_miner_a.sh
-```
-
-Core checks:
-
-```bash
-curl -fsS http://127.0.0.1:18080/p2p/status
-curl -fsS http://127.0.0.1:18080/sync/status
-curl -fsS http://127.0.0.1:18081/sync/status
-curl -fsS http://127.0.0.1:18082/sync/status
-```
-
-The rehearsal is healthy when all nodes share the same `chain_id`, run `libp2p-real`, connect to peers, and converge on `best_height` after the external miner advances node A.
-
-## Mining flow (operator summary)
-
-1. Start node.
-2. Check `GET /pow`.
-3. Request `POST /mining/template`.
-4. Run external `pulsedag-miner`.
-5. Submit via `POST /mining/submit` (miner does this automatically).
-6. Verify chain movement with `/status`, `/p2p/status`, and `/sync/status`.
-
-## Documentation
-
-- P2P specification: `docs/P2P_SPEC_V2_2_11.md`.
-- Three-node P2P rehearsal runbook: `docs/P2P_REHEARSAL_V2_2_11.md`.
-- Sync recovery and troubleshooting: `docs/SYNC_RECOVERY_V2_2_11.md`.
-- Final PoW spec: `docs/POW_SPEC_FINAL.md`.
-- Mining rehearsal: `docs/MINING_REHEARSAL_V2_2_10.md`.
-- Version positioning: `docs/VERSION_MATRIX.md`.
+Three-node rehearsal: `docs/P2P_REHEARSAL_V2_2_11.md`.
+Smoke test: `docs/SMOKE_TEST_V2_2_11.md`.
+Release notes: `docs/RELEASE_NOTES_V2_2_11.md`.
+Closing checklist: `docs/CLOSING_CHECKLIST_V2_2_11.md`.
+Version positioning: `docs/VERSION_MATRIX.md`.
+Final PoW spec: `docs/POW_SPEC_FINAL.md`.

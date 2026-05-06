@@ -390,6 +390,9 @@ pub fn accept_transaction(
     match accept_transaction_with_result(tx, state, source) {
         TxAcceptanceResult::Accepted | TxAcceptanceResult::Orphan => Ok(()),
         TxAcceptanceResult::Duplicate => Err(PulseError::TxAlreadyExists),
+        TxAcceptanceResult::Invalid(reason) if reason == "double spend" => {
+            Err(PulseError::DoubleSpend)
+        }
         TxAcceptanceResult::Invalid(reason) => Err(PulseError::InvalidTransaction(reason)),
         TxAcceptanceResult::Rejected(reason) => Err(PulseError::InvalidTransaction(reason)),
     }
