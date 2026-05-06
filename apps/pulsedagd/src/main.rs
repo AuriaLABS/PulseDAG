@@ -16,7 +16,9 @@ use app_state::{
 use axum::Router;
 use block_request::BlockRequestTracker;
 use config::Config;
-use pulsedag_core::accept::{accept_transaction_with_result, AcceptSource, TxAcceptanceResult};
+use pulsedag_core::accept::{
+    accept_transaction_with_result, AcceptSource, BlockAcceptanceResult, TxAcceptanceResult,
+};
 use pulsedag_core::reconcile_mempool;
 use pulsedag_p2p::{
     build_p2p_stack, InboundEvent, Libp2pConfig, Libp2pRuntimeMode, P2pHandle, P2pMode,
@@ -593,16 +595,18 @@ async fn main() -> Result<()> {
                             rt.sync_pipeline.request_blocks(1, now);
                             rt.sync_pipeline.acquire_blocks(1);
                         }
-                        info!(event = "block_received", block_hash = %block.hash, parent_count = block.header.parents.len(), "received inbound p2p block payload");
+                        info!(event = "peer_block_received", block_hash = %block.hash, parent_count = block.header.parents.len(), "received inbound p2p block payload");
+                        let _ = storage.append_runtime_event(
+                            "info",
+                            "peer_block_received",
+                            &format!("hash={} parents={}", block.hash, block.header.parents.len()),
+                        );
                         let acceptance = pulsedag_core::accept_block_with_result(
                             block.clone(),
                             &mut guard,
                             AcceptSource::P2p,
                         );
-                        if matches!(
-                            acceptance,
-                            pulsedag_core::BlockAcceptanceResult::MissingParent
-                        ) {
+                        if matches!(acceptance, BlockAcceptanceResult::MissingParent) {
                             let mut rt = runtime.write().await;
                             rt.blockdata_received = rt.blockdata_received.saturating_add(1);
                             rt.blockdata_missing_parent =
@@ -641,7 +645,15 @@ async fn main() -> Result<()> {
                                     now_unix(),
                                 );
                             }
-                            info!(event = "orphan_stored", block = %block.hash, missing_parents = ?missing_parents, orphan_count = guard.orphan_blocks.len(), "queued inbound p2p orphan block");
+                            info!(event = "peer_block_missing_parent", block_hash = %block.hash, missing_parents = ?missing_parents, orphan_count = guard.orphan_blocks.len(), "queued inbound p2p orphan block");
+                            let _ = storage.append_runtime_event(
+                                "warn",
+                                "peer_block_missing_parent",
+                                &format!(
+                                    "hash={} missing_parents={:?}",
+                                    block.hash, missing_parents
+                                ),
+                            );
                             for parent in &missing_parents {
                                 if block_requests.should_issue_getblock(parent, now_unix()) {
                                     if let Some(ref p2p) = p2p {
@@ -665,14 +677,13 @@ async fn main() -> Result<()> {
                                 );
                             }
                             block_requests.resolve(&block.hash);
-                            if let Err(e) = storage.persist_block_and_chain_state(&block, &guard) {
+                            if let Err(e) = storage.persist_chain_state(&guard) {
                                 warn!(error = %e, "failed persisting chain state after orphan queue");
                             }
                         } else if !acceptance.is_accepted() {
                             let mut rt = runtime.write().await;
                             rt.blockdata_received = rt.blockdata_received.saturating_add(1);
-                            if matches!(acceptance, pulsedag_core::BlockAcceptanceResult::Duplicate)
-                            {
+                            if matches!(acceptance, BlockAcceptanceResult::Duplicate) {
                                 rt.duplicate_p2p_blocks += 1;
                                 rt.blockdata_duplicate = rt.blockdata_duplicate.saturating_add(1);
                             } else {
@@ -681,10 +692,7 @@ async fn main() -> Result<()> {
                                 rt.rejected_p2p_blocks += 1;
                                 rt.pulsedag_blocks_rejected_total =
                                     rt.pulsedag_blocks_rejected_total.saturating_add(1);
-                                if matches!(
-                                    acceptance,
-                                    pulsedag_core::BlockAcceptanceResult::InvalidPow
-                                ) {
+                                if matches!(acceptance, BlockAcceptanceResult::InvalidPow) {
                                     rt.pulsedag_invalid_pow_total =
                                         rt.pulsedag_invalid_pow_total.saturating_add(1);
                                     rt.blockdata_invalid_pow =
@@ -695,7 +703,24 @@ async fn main() -> Result<()> {
                                 format!("block {} validation failed: {:?}", block.hash, acceptance),
                                 now_unix(),
                             );
-                            warn!(event = "block_rejected_from_peer", outcome = ?acceptance, block_hash = %block.hash, "rejected inbound p2p block");
+                            match acceptance {
+                                BlockAcceptanceResult::Duplicate => {
+                                    info!(event = "peer_block_duplicate", block_hash = %block.hash, "suppressed duplicate inbound p2p block");
+                                    let _ = storage.append_runtime_event(
+                                        "info",
+                                        "peer_block_duplicate",
+                                        &format!("hash={}", block.hash),
+                                    );
+                                }
+                                _ => {
+                                    warn!(event = "peer_block_rejected", outcome = ?acceptance, block_hash = %block.hash, "rejected inbound p2p block");
+                                    let _ = storage.append_runtime_event(
+                                        "warn",
+                                        "peer_block_rejected",
+                                        &format!("hash={} outcome={:?}", block.hash, acceptance),
+                                    );
+                                }
+                            }
                         } else {
                             let adopted =
                                 pulsedag_core::adopt_ready_orphans(&mut guard, AcceptSource::P2p);
@@ -740,7 +765,7 @@ async fn main() -> Result<()> {
                                 );
                             }
                             info!(
-                                event = "block_accepted_from_peer",
+                                event = "peer_block_accepted",
                                 block_hash = %block.hash,
                                 accepted_height,
                                 accepted_tip = %short_hash(&accepted_tip),
@@ -748,9 +773,10 @@ async fn main() -> Result<()> {
                             );
                             let _ = storage.append_runtime_event(
                                 "info",
-                                "block_accepted",
+                                "peer_block_accepted",
                                 &format!(
-                                    "source=p2p height={} tip={}",
+                                    "source=p2p hash={} height={} tip={}",
+                                    block.hash,
                                     accepted_height,
                                     short_hash(&accepted_tip)
                                 ),
@@ -758,6 +784,20 @@ async fn main() -> Result<()> {
                             block_requests.resolve(&block.hash);
                             if let Err(e) = storage.persist_block_and_chain_state(&block, &guard) {
                                 warn!(error = %e, "failed persisting chain state after inbound block");
+                            } else if let Some(ref p2p) = p2p {
+                                match p2p.broadcast_block(&block) {
+                                    Ok(()) => {
+                                        info!(event = "peer_block_rebroadcast", block_hash = %block.hash, "rebroadcasted accepted first-seen inbound p2p block");
+                                        let _ = storage.append_runtime_event(
+                                            "info",
+                                            "peer_block_rebroadcast",
+                                            &format!("hash={}", block.hash),
+                                        );
+                                    }
+                                    Err(e) => {
+                                        warn!(error = %e, block_hash = %block.hash, "failed rebroadcasting accepted inbound p2p block");
+                                    }
+                                }
                             }
                         }
                     }

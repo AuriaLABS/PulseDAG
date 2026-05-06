@@ -4245,6 +4245,42 @@ mod inventory_tests {
     }
 
     #[test]
+    fn block_data_chain_id_mismatch_is_dropped_before_node_acceptance() {
+        let inner = Arc::new(Mutex::new(InnerState::default()));
+        let (inbound_tx, mut inbound_rx) = mpsc::unbounded_channel();
+        let block = Block {
+            hash: "wrong-chain-block".into(),
+            header: pulsedag_core::types::BlockHeader {
+                version: 1,
+                parents: vec![],
+                timestamp: 1,
+                difficulty: 1,
+                nonce: 1,
+                merkle_root: "mr".into(),
+                state_root: "sr".into(),
+                blue_score: 1,
+                height: 1,
+            },
+            transactions: vec![],
+        };
+        let wire = serde_json::to_vec(&NetworkMessage::BlockData {
+            chain_id: "wrongnet".into(),
+            block: Some(block),
+        })
+        .expect("serialize block data");
+
+        dispatch_network_message("testnet", &wire, &inner, &inbound_tx);
+
+        assert!(inbound_rx.try_recv().is_err());
+        let guard = inner.lock().unwrap();
+        assert_eq!(guard.inbound_chain_mismatch_dropped, 1);
+        assert_eq!(
+            guard.last_drop_reason.as_deref(),
+            Some("chain_mismatch_block_data")
+        );
+    }
+
+    #[test]
     fn tips_message_delivers_remote_tips_for_catchup_requests() {
         let inner = Arc::new(Mutex::new(InnerState::default()));
         let (inbound_tx, mut inbound_rx) = mpsc::unbounded_channel();
