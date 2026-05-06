@@ -117,6 +117,8 @@ pub struct P2pStatus {
     pub last_peer_recovery_unix: Option<u64>,
     pub peer_cooldown_suppressed_count: u64,
     pub peer_flap_suppressed_count: u64,
+    pub peer_message_rate_limited_count: u64,
+    pub peer_suppressed_dial_count: u64,
     pub peers_under_cooldown: usize,
     pub peers_under_flap_guard: usize,
     pub peer_lifecycle_healthy: usize,
@@ -280,6 +282,8 @@ struct InnerState {
     last_peer_recovery_unix: Option<u64>,
     peer_cooldown_suppressed_count: u64,
     peer_flap_suppressed_count: u64,
+    peer_message_rate_limited_count: u64,
+    peer_suppressed_dial_count: u64,
     connection_slot_budget: usize,
     sync_selection_stickiness_secs: u64,
     selected_sync_peer: Option<String>,
@@ -304,6 +308,11 @@ struct PeerHealth {
     suppressed_until_unix: u64,
     cooldown_suppressed_count: u64,
     flap_suppressed_count: u64,
+    chain_mismatch_streak: u32,
+    inbound_window_started_unix: u64,
+    inbound_window_count: usize,
+    dial_window_started_unix: u64,
+    dial_attempts_in_window: usize,
 }
 
 impl Default for PeerHealth {
@@ -324,6 +333,11 @@ impl Default for PeerHealth {
             suppressed_until_unix: 0,
             cooldown_suppressed_count: 0,
             flap_suppressed_count: 0,
+            chain_mismatch_streak: 0,
+            inbound_window_started_unix: 0,
+            inbound_window_count: 0,
+            dial_window_started_unix: 0,
+            dial_attempts_in_window: 0,
         }
     }
 }
@@ -536,6 +550,8 @@ impl P2pHandle for MemoryP2pHandle {
             last_peer_recovery_unix: inner.last_peer_recovery_unix,
             peer_cooldown_suppressed_count: inner.peer_cooldown_suppressed_count,
             peer_flap_suppressed_count: inner.peer_flap_suppressed_count,
+            peer_message_rate_limited_count: inner.peer_message_rate_limited_count,
+            peer_suppressed_dial_count: inner.peer_suppressed_dial_count,
             peers_under_cooldown,
             peers_under_flap_guard,
             peer_lifecycle_healthy,
@@ -690,6 +706,14 @@ const TX_OUTBOUND_DEDUP_WINDOW_SECS: u64 = 30;
 const MAX_TX_MESSAGE_BYTES: usize = 64 * 1024;
 const TX_INBOUND_RATE_WINDOW_SECS: u64 = 1;
 const TX_INBOUND_SOFT_MAX_PER_WINDOW: usize = 128;
+const PEER_INBOUND_RATE_WINDOW_SECS: u64 = 1;
+const PEER_MAX_INBOUND_MESSAGES_PER_WINDOW: usize = 192;
+const PEER_DIAL_ATTEMPT_WINDOW_SECS: u64 = 60;
+const PEER_MAX_DIAL_ATTEMPTS_PER_WINDOW: usize = 8;
+const PEER_VALID_RELAY_BONUS: i32 = 2;
+const PEER_MALFORMED_MESSAGE_PENALTY: i32 = 18;
+const PEER_CHAIN_MISMATCH_PENALTY: i32 = 10;
+const PEER_RATE_LIMIT_PENALTY: i32 = 8;
 const BLOCK_OUTBOUND_DEDUP_WINDOW_SECS: u64 = 30;
 const RECOVERY_REBROADCAST_GRACE_SECS: u64 = 8;
 const RECOVERY_REBROADCAST_BUDGET_WINDOW_SECS: u64 = 8;
@@ -1327,77 +1351,106 @@ fn register_peer_result_at(inner: &Arc<Mutex<InnerState>>, peer: &str, success: 
         let mut counted_cooldown_suppression = false;
         let mut counted_flap_suppression = false;
         let mut trigger_rebroadcast_window = false;
+        let mut suppressed_dial = false;
         {
             let health = guard.peer_book.entry(peer.to_string()).or_default();
-            health.reconnect_attempts = health.reconnect_attempts.saturating_add(1);
-            health.last_seen_unix = Some(now);
-            if success {
-                health.connected = true;
-                health.fail_streak = 0;
-                health.next_retry_unix = now;
-                trigger_rebroadcast_window = true;
-                let success_bonus = if health.score < 0 {
-                    PEER_SUCCESS_BASE_BONUS + 4
-                } else {
-                    PEER_SUCCESS_BASE_BONUS
-                };
-                health.score = (health.score + success_bonus).clamp(PEER_SCORE_MIN, PEER_SCORE_MAX);
-                health.recovery_success_count = health.recovery_success_count.saturating_add(1);
-                health.last_recovery_unix = Some(now);
-                health.last_successful_connect_unix = Some(now);
-                if health
-                    .last_failure_unix
-                    .map(|last_fail| now.saturating_sub(last_fail) <= FLAP_WINDOW.as_secs())
-                    .unwrap_or(false)
-                {
-                    health.flap_events = health.flap_events.saturating_add(1);
-                } else {
-                    health.flap_events = 0;
-                }
-                health.suppressed_until_unix = 0;
-            } else {
-                let previous_next_retry_unix = health.next_retry_unix;
-                if health.next_retry_unix > now {
-                    health.cooldown_suppressed_count =
-                        health.cooldown_suppressed_count.saturating_add(1);
-                    counted_cooldown_suppression = true;
-                }
-                health.connected = false;
-                health.fail_streak = health.fail_streak.saturating_add(1);
-                let adaptive_penalty = PEER_FAILURE_BASE_PENALTY
-                    + (health.fail_streak as i32 * PEER_FAILURE_STREAK_PENALTY)
-                    + (health.recent_failures_unix.len() as i32 * PEER_FAILURE_RECENT_PENALTY);
-                health.score =
-                    (health.score - adaptive_penalty).clamp(PEER_SCORE_MIN, PEER_SCORE_MAX);
-                let exp = health.fail_streak.min(BACKOFF_EXP_CAP);
-                let base_backoff = BACKOFF_BASE_SECS.saturating_pow(exp);
-                let bounded_backoff = base_backoff.min(BACKOFF_MAX_SECS);
-                let mut next_retry_unix = now.saturating_add(bounded_backoff + peer_jitter(peer));
-                if health
-                    .last_recovery_unix
-                    .map(|last_ok| now.saturating_sub(last_ok) <= FLAP_WINDOW.as_secs())
-                    .unwrap_or(false)
-                {
-                    health.flap_events = health.flap_events.saturating_add(1);
-                } else {
-                    health.flap_events = 0;
-                }
-                if health.flap_events >= 2 {
-                    let flap_cooldown =
-                        FLAP_BASE_COOLDOWN.saturating_mul(health.flap_events as u64);
-                    health.suppressed_until_unix = now.saturating_add(flap_cooldown);
-                    next_retry_unix = next_retry_unix.max(health.suppressed_until_unix);
-                    health.flap_suppressed_count = health.flap_suppressed_count.saturating_add(1);
-                    counted_flap_suppression = true;
-                }
-                health.last_failure_unix = Some(now);
-                health.recent_failures_unix.push(now);
-                if health.recent_failures_unix.len() > RECENT_FAILURES_KEEP {
-                    let keep_from = health.recent_failures_unix.len() - RECENT_FAILURES_KEEP;
-                    health.recent_failures_unix = health.recent_failures_unix.split_off(keep_from);
-                }
-                health.next_retry_unix = next_retry_unix.max(previous_next_retry_unix);
+            if now.saturating_sub(health.dial_window_started_unix) >= PEER_DIAL_ATTEMPT_WINDOW_SECS
+            {
+                health.dial_window_started_unix = now;
+                health.dial_attempts_in_window = 0;
             }
+            health.dial_attempts_in_window = health.dial_attempts_in_window.saturating_add(1);
+            if !success && health.dial_attempts_in_window > PEER_MAX_DIAL_ATTEMPTS_PER_WINDOW {
+                health.cooldown_suppressed_count =
+                    health.cooldown_suppressed_count.saturating_add(1);
+                health.next_retry_unix = health
+                    .next_retry_unix
+                    .max(now.saturating_add(BACKOFF_MAX_SECS));
+                health.suppressed_until_unix =
+                    health.suppressed_until_unix.max(health.next_retry_unix);
+                counted_cooldown_suppression = true;
+                suppressed_dial = true;
+            }
+            if suppressed_dial {
+                health.last_seen_unix = Some(now);
+            } else {
+                health.reconnect_attempts = health.reconnect_attempts.saturating_add(1);
+                health.last_seen_unix = Some(now);
+                if success {
+                    health.connected = true;
+                    health.fail_streak = 0;
+                    health.next_retry_unix = now;
+                    trigger_rebroadcast_window = true;
+                    let success_bonus = if health.score < 0 {
+                        PEER_SUCCESS_BASE_BONUS + 4
+                    } else {
+                        PEER_SUCCESS_BASE_BONUS
+                    };
+                    health.score =
+                        (health.score + success_bonus).clamp(PEER_SCORE_MIN, PEER_SCORE_MAX);
+                    health.recovery_success_count = health.recovery_success_count.saturating_add(1);
+                    health.last_recovery_unix = Some(now);
+                    health.last_successful_connect_unix = Some(now);
+                    if health
+                        .last_failure_unix
+                        .map(|last_fail| now.saturating_sub(last_fail) <= FLAP_WINDOW.as_secs())
+                        .unwrap_or(false)
+                    {
+                        health.flap_events = health.flap_events.saturating_add(1);
+                    } else {
+                        health.flap_events = 0;
+                    }
+                    health.suppressed_until_unix = 0;
+                } else {
+                    let previous_next_retry_unix = health.next_retry_unix;
+                    if health.next_retry_unix > now {
+                        health.cooldown_suppressed_count =
+                            health.cooldown_suppressed_count.saturating_add(1);
+                        counted_cooldown_suppression = true;
+                    }
+                    health.connected = false;
+                    health.fail_streak = health.fail_streak.saturating_add(1);
+                    let adaptive_penalty = PEER_FAILURE_BASE_PENALTY
+                        + (health.fail_streak as i32 * PEER_FAILURE_STREAK_PENALTY)
+                        + (health.recent_failures_unix.len() as i32 * PEER_FAILURE_RECENT_PENALTY);
+                    health.score =
+                        (health.score - adaptive_penalty).clamp(PEER_SCORE_MIN, PEER_SCORE_MAX);
+                    let exp = health.fail_streak.min(BACKOFF_EXP_CAP);
+                    let base_backoff = BACKOFF_BASE_SECS.saturating_pow(exp);
+                    let bounded_backoff = base_backoff.min(BACKOFF_MAX_SECS);
+                    let mut next_retry_unix =
+                        now.saturating_add(bounded_backoff + peer_jitter(peer));
+                    if health
+                        .last_recovery_unix
+                        .map(|last_ok| now.saturating_sub(last_ok) <= FLAP_WINDOW.as_secs())
+                        .unwrap_or(false)
+                    {
+                        health.flap_events = health.flap_events.saturating_add(1);
+                    } else {
+                        health.flap_events = 0;
+                    }
+                    if health.flap_events >= 2 {
+                        let flap_cooldown =
+                            FLAP_BASE_COOLDOWN.saturating_mul(health.flap_events as u64);
+                        health.suppressed_until_unix = now.saturating_add(flap_cooldown);
+                        next_retry_unix = next_retry_unix.max(health.suppressed_until_unix);
+                        health.flap_suppressed_count =
+                            health.flap_suppressed_count.saturating_add(1);
+                        counted_flap_suppression = true;
+                    }
+                    health.last_failure_unix = Some(now);
+                    health.recent_failures_unix.push(now);
+                    if health.recent_failures_unix.len() > RECENT_FAILURES_KEEP {
+                        let keep_from = health.recent_failures_unix.len() - RECENT_FAILURES_KEEP;
+                        health.recent_failures_unix =
+                            health.recent_failures_unix.split_off(keep_from);
+                    }
+                    health.next_retry_unix = next_retry_unix.max(previous_next_retry_unix);
+                }
+            }
+        }
+        if suppressed_dial {
+            guard.peer_suppressed_dial_count = guard.peer_suppressed_dial_count.saturating_add(1);
         }
         if trigger_rebroadcast_window {
             guard.recovery_rebroadcast_generation =
@@ -1670,9 +1723,98 @@ fn note_swarm_event(inner: &Arc<Mutex<InnerState>>, label: impl Into<String>) {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+enum PeerMessageOutcome {
+    ValidRelay,
+    Malformed,
+    ChainMismatch,
+    RateLimited,
+}
+
+fn score_peer_message_outcome(
+    state: &mut InnerState,
+    peer: &str,
+    outcome: PeerMessageOutcome,
+    now: u64,
+) {
+    let health = state.peer_book.entry(peer.to_string()).or_default();
+    health.last_seen_unix = Some(now);
+    match outcome {
+        PeerMessageOutcome::ValidRelay => {
+            health.chain_mismatch_streak = 0;
+            health.score =
+                (health.score + PEER_VALID_RELAY_BONUS).clamp(PEER_SCORE_MIN, PEER_SCORE_MAX);
+            if health.fail_streak > 0 && health.score >= 80 {
+                health.fail_streak = health.fail_streak.saturating_sub(1);
+            }
+        }
+        PeerMessageOutcome::Malformed => {
+            health.chain_mismatch_streak = 0;
+            health.score = (health.score - PEER_MALFORMED_MESSAGE_PENALTY)
+                .clamp(PEER_SCORE_MIN, PEER_SCORE_MAX);
+            health.fail_streak = health.fail_streak.saturating_add(1);
+            health.last_failure_unix = Some(now);
+        }
+        PeerMessageOutcome::ChainMismatch => {
+            health.chain_mismatch_streak = health.chain_mismatch_streak.saturating_add(1);
+            let penalty = PEER_CHAIN_MISMATCH_PENALTY
+                + (health.chain_mismatch_streak.saturating_sub(1) as i32 * 4);
+            health.score = (health.score - penalty).clamp(PEER_SCORE_MIN, PEER_SCORE_MAX);
+            health.fail_streak = health.fail_streak.saturating_add(1);
+            health.last_failure_unix = Some(now);
+            if health.chain_mismatch_streak >= 3 {
+                let cooldown =
+                    FLAP_BASE_COOLDOWN.saturating_mul(health.chain_mismatch_streak as u64);
+                health.suppressed_until_unix = health
+                    .suppressed_until_unix
+                    .max(now.saturating_add(cooldown));
+                health.next_retry_unix = health.next_retry_unix.max(health.suppressed_until_unix);
+            }
+        }
+        PeerMessageOutcome::RateLimited => {
+            health.score =
+                (health.score - PEER_RATE_LIMIT_PENALTY).clamp(PEER_SCORE_MIN, PEER_SCORE_MAX);
+            health.fail_streak = health.fail_streak.saturating_add(1);
+            health.last_failure_unix = Some(now);
+        }
+    }
+    if !matches!(outcome, PeerMessageOutcome::ValidRelay) {
+        health.recent_failures_unix.push(now);
+        if health.recent_failures_unix.len() > RECENT_FAILURES_KEEP {
+            let keep_from = health.recent_failures_unix.len() - RECENT_FAILURES_KEEP;
+            health.recent_failures_unix = health.recent_failures_unix.split_off(keep_from);
+        }
+        if health.score < 40 || health.fail_streak >= 5 {
+            health.connected = false;
+            health.next_retry_unix = health
+                .next_retry_unix
+                .max(now.saturating_add(BACKOFF_MAX_SECS / 2));
+        }
+    }
+}
+
+fn admit_peer_inbound_message(state: &mut InnerState, peer: Option<&str>, now: u64) -> bool {
+    let Some(peer) = peer else {
+        return true;
+    };
+    let health = state.peer_book.entry(peer.to_string()).or_default();
+    if now.saturating_sub(health.inbound_window_started_unix) >= PEER_INBOUND_RATE_WINDOW_SECS {
+        health.inbound_window_started_unix = now;
+        health.inbound_window_count = 0;
+    }
+    health.inbound_window_count = health.inbound_window_count.saturating_add(1);
+    if health.inbound_window_count <= PEER_MAX_INBOUND_MESSAGES_PER_WINDOW {
+        return true;
+    }
+    state.peer_message_rate_limited_count = state.peer_message_rate_limited_count.saturating_add(1);
+    score_peer_message_outcome(state, peer, PeerMessageOutcome::RateLimited, now);
+    false
+}
+
 fn dispatch_network_message(
     expected_chain_id: &str,
     bytes: &[u8],
+    source_peer: Option<&str>,
     inner: &Arc<Mutex<InnerState>>,
     inbound_tx: &mpsc::UnboundedSender<InboundEvent>,
 ) {
@@ -1683,10 +1825,29 @@ fn dispatch_network_message(
             if let Ok(mut guard) = inner.lock() {
                 guard.inbound_decode_failed += 1;
                 guard.last_drop_reason = Some("decode_failed".into());
+                if let Some(peer) = source_peer {
+                    score_peer_message_outcome(
+                        &mut guard,
+                        peer,
+                        PeerMessageOutcome::Malformed,
+                        now_unix(),
+                    );
+                    refresh_connected_peers_from_health(&mut guard);
+                    persist_peer_state_if_configured(&guard);
+                }
             }
             return;
         }
     };
+
+    if let Ok(mut guard) = inner.lock() {
+        if !admit_peer_inbound_message(&mut guard, source_peer, now_unix()) {
+            guard.last_drop_reason = Some("peer_inbound_rate_limited".into());
+            refresh_connected_peers_from_health(&mut guard);
+            persist_peer_state_if_configured(&guard);
+            return;
+        }
+    }
 
     match msg {
         NetworkMessage::NewTransaction {
@@ -1697,6 +1858,16 @@ fn dispatch_network_message(
                 if let Ok(mut guard) = inner.lock() {
                     guard.inbound_chain_mismatch_dropped += 1;
                     guard.last_drop_reason = Some("chain_mismatch_tx".into());
+                    if let Some(peer) = source_peer {
+                        score_peer_message_outcome(
+                            &mut guard,
+                            peer,
+                            PeerMessageOutcome::ChainMismatch,
+                            now_unix(),
+                        );
+                        refresh_connected_peers_from_health(&mut guard);
+                        persist_peer_state_if_configured(&guard);
+                    }
                 }
                 return;
             }
@@ -1705,6 +1876,16 @@ fn dispatch_network_message(
                     guard.tx_inbound_received = guard.tx_inbound_received.saturating_add(1);
                     guard.tx_inbound_invalid = guard.tx_inbound_invalid.saturating_add(1);
                     guard.last_drop_reason = Some("tx_message_too_large".into());
+                    if let Some(peer) = source_peer {
+                        score_peer_message_outcome(
+                            &mut guard,
+                            peer,
+                            PeerMessageOutcome::Malformed,
+                            now_unix(),
+                        );
+                        refresh_connected_peers_from_health(&mut guard);
+                        persist_peer_state_if_configured(&guard);
+                    }
                 }
                 return;
             }
@@ -1725,6 +1906,14 @@ fn dispatch_network_message(
                 guard.inbound_messages += 1;
                 guard.tx_inbound_accepted = guard.tx_inbound_accepted.saturating_add(1);
                 guard.last_message_kind = Some("tx-inbound".into());
+                if let Some(peer) = source_peer {
+                    score_peer_message_outcome(
+                        &mut guard,
+                        peer,
+                        PeerMessageOutcome::ValidRelay,
+                        now_unix(),
+                    );
+                }
             }
             let _ = inbound_tx.send(InboundEvent::Transaction(transaction));
         }
@@ -1734,6 +1923,16 @@ fn dispatch_network_message(
                 if let Ok(mut guard) = inner.lock() {
                     guard.inbound_chain_mismatch_dropped += 1;
                     guard.last_drop_reason = Some("chain_mismatch_block".into());
+                    if let Some(peer) = source_peer {
+                        score_peer_message_outcome(
+                            &mut guard,
+                            peer,
+                            PeerMessageOutcome::ChainMismatch,
+                            now_unix(),
+                        );
+                        refresh_connected_peers_from_health(&mut guard);
+                        persist_peer_state_if_configured(&guard);
+                    }
                 }
                 return;
             }
@@ -1746,6 +1945,14 @@ fn dispatch_network_message(
                 }
                 guard.inbound_messages += 1;
                 guard.last_message_kind = Some("block-inbound".into());
+                if let Some(peer) = source_peer {
+                    score_peer_message_outcome(
+                        &mut guard,
+                        peer,
+                        PeerMessageOutcome::ValidRelay,
+                        now_unix(),
+                    );
+                }
             }
             let _ = inbound_tx.send(InboundEvent::Block(block));
         }
@@ -1755,6 +1962,16 @@ fn dispatch_network_message(
                 if let Ok(mut guard) = inner.lock() {
                     guard.inbound_chain_mismatch_dropped += 1;
                     guard.last_drop_reason = Some("chain_mismatch_block_announce".into());
+                    if let Some(peer) = source_peer {
+                        score_peer_message_outcome(
+                            &mut guard,
+                            peer,
+                            PeerMessageOutcome::ChainMismatch,
+                            now_unix(),
+                        );
+                        refresh_connected_peers_from_health(&mut guard);
+                        persist_peer_state_if_configured(&guard);
+                    }
                 }
                 return;
             }
@@ -1767,11 +1984,33 @@ fn dispatch_network_message(
                 }
                 guard.inbound_messages += 1;
                 guard.last_message_kind = Some("block-announce".into());
+                if let Some(peer) = source_peer {
+                    score_peer_message_outcome(
+                        &mut guard,
+                        peer,
+                        PeerMessageOutcome::ValidRelay,
+                        now_unix(),
+                    );
+                }
             }
             let _ = inbound_tx.send(InboundEvent::BlockAnnouncement { hash });
         }
         NetworkMessage::InvBlock { chain_id, hashes } => {
             if chain_id != expected_chain_id {
+                if let Ok(mut guard) = inner.lock() {
+                    guard.inbound_chain_mismatch_dropped += 1;
+                    guard.last_drop_reason = Some("chain_mismatch_inv_block".into());
+                    if let Some(peer) = source_peer {
+                        score_peer_message_outcome(
+                            &mut guard,
+                            peer,
+                            PeerMessageOutcome::ChainMismatch,
+                            now_unix(),
+                        );
+                        refresh_connected_peers_from_health(&mut guard);
+                        persist_peer_state_if_configured(&guard);
+                    }
+                }
                 return;
             }
             for hash in hashes {
@@ -1781,6 +2020,14 @@ fn dispatch_network_message(
                     if mark_inbound_id_seen(&mut guard, id, now_unix()) {
                         guard.inbound_messages += 1;
                         guard.last_message_kind = Some("inv-block".into());
+                        if let Some(peer) = source_peer {
+                            score_peer_message_outcome(
+                                &mut guard,
+                                peer,
+                                PeerMessageOutcome::ValidRelay,
+                                now_unix(),
+                            );
+                        }
                         accepted = true;
                     } else {
                         guard.inbound_duplicates_suppressed += 1;
@@ -1824,6 +2071,16 @@ fn dispatch_network_message(
                 if let Ok(mut guard) = inner.lock() {
                     guard.inbound_chain_mismatch_dropped += 1;
                     guard.last_drop_reason = Some("chain_mismatch_block_data".into());
+                    if let Some(peer) = source_peer {
+                        score_peer_message_outcome(
+                            &mut guard,
+                            peer,
+                            PeerMessageOutcome::ChainMismatch,
+                            now_unix(),
+                        );
+                        refresh_connected_peers_from_health(&mut guard);
+                        persist_peer_state_if_configured(&guard);
+                    }
                 }
                 return;
             }
@@ -1837,6 +2094,14 @@ fn dispatch_network_message(
                     }
                     guard.inbound_messages += 1;
                     guard.last_message_kind = Some("block-data".into());
+                    if let Some(peer) = source_peer {
+                        score_peer_message_outcome(
+                            &mut guard,
+                            peer,
+                            PeerMessageOutcome::ValidRelay,
+                            now_unix(),
+                        );
+                    }
                 }
                 let _ = inbound_tx.send(InboundEvent::Block(block));
             } else {
@@ -1949,7 +2214,7 @@ async fn run_libp2p_runtime(
                         // v0.6.9 keeps one canonical wire path while the actual Swarm
                         // publish/poll code is staged. The bytes are decoded through the
                         // same dispatcher that the live Swarm loop will use.
-                        dispatch_network_message(&cfg.chain_id, &bytes, &inner, &inbound_tx);
+                        dispatch_network_message(&cfg.chain_id, &bytes, None, &inner, &inbound_tx);
                     }
 
                     let _ = &topics; // reserved for real gossipsub publish bindings
@@ -1961,7 +2226,7 @@ async fn run_libp2p_runtime(
                 });
                 note_swarm_event(&inner, "heartbeat:get-tips");
                 if let Ok(bytes) = heartbeat {
-                    dispatch_network_message(&cfg.chain_id, &bytes, &inner, &inbound_tx);
+                    dispatch_network_message(&cfg.chain_id, &bytes, None, &inner, &inbound_tx);
                 }
             }
             _ = sleep(Duration::from_secs(13)) => {
@@ -2123,7 +2388,8 @@ async fn run_libp2p_real_runtime(
             event = swarm.select_next_some() => {
                 match event {
                     SwarmEvent::Behaviour(PulseBehaviourEvent::Gossipsub(gossipsub::Event::Message { message, .. })) => {
-                        dispatch_network_message(&cfg.chain_id, &message.data, &inner, &inbound_tx);
+                        let source_peer = message.source.as_ref().map(|peer| peer.to_string());
+                        dispatch_network_message(&cfg.chain_id, &message.data, source_peer.as_deref(), &inner, &inbound_tx);
                     }
                     SwarmEvent::ConnectionEstablished { peer_id, .. } => {
                         note_swarm_event(&inner, format!("peer-connected:{peer_id}"));
@@ -2348,6 +2614,8 @@ impl P2pHandle for Libp2pHandle {
             last_peer_recovery_unix: inner.last_peer_recovery_unix,
             peer_cooldown_suppressed_count: inner.peer_cooldown_suppressed_count,
             peer_flap_suppressed_count: inner.peer_flap_suppressed_count,
+            peer_message_rate_limited_count: inner.peer_message_rate_limited_count,
+            peer_suppressed_dial_count: inner.peer_suppressed_dial_count,
             peers_under_cooldown,
             peers_under_flap_guard,
             peer_lifecycle_healthy,
@@ -2618,7 +2886,7 @@ mod tests {
         })
         .expect("serialize tx announcement");
 
-        dispatch_network_message("testnet", &wire, &inner, &inbound_tx);
+        dispatch_network_message("testnet", &wire, None, &inner, &inbound_tx);
 
         assert!(inbound_rx.try_recv().is_err());
         let guard = inner.lock().unwrap();
@@ -2641,7 +2909,7 @@ mod tests {
         })
         .expect("serialize tx announcement");
 
-        dispatch_network_message("testnet", &wire, &inner, &inbound_tx);
+        dispatch_network_message("testnet", &wire, None, &inner, &inbound_tx);
 
         assert!(inbound_rx.try_recv().is_err());
         let guard = inner.lock().unwrap();
@@ -2664,7 +2932,7 @@ mod tests {
                 transaction: sample_tx(&format!("tx-rate-{idx}")),
             })
             .expect("serialize tx announcement");
-            dispatch_network_message("testnet", &wire, &inner, &inbound_tx);
+            dispatch_network_message("testnet", &wire, None, &inner, &inbound_tx);
         }
 
         let mut delivered = 0;
@@ -2695,8 +2963,8 @@ mod tests {
         })
         .expect("serialize tx announcement");
 
-        dispatch_network_message("testnet", &wire, &inner, &inbound_tx);
-        dispatch_network_message("testnet", &wire, &inner, &inbound_tx);
+        dispatch_network_message("testnet", &wire, None, &inner, &inbound_tx);
+        dispatch_network_message("testnet", &wire, None, &inner, &inbound_tx);
 
         assert!(matches!(
             inbound_rx.try_recv(),
@@ -4174,6 +4442,124 @@ mod inventory_tests {
     }
 
     #[test]
+    fn peer_score_decreases_on_invalid_message() {
+        let inner = Arc::new(Mutex::new(InnerState::default()));
+        let (inbound_tx, _inbound_rx) = mpsc::unbounded_channel();
+
+        dispatch_network_message(
+            "testnet",
+            b"not-json",
+            Some("peer-invalid"),
+            &inner,
+            &inbound_tx,
+        );
+
+        let guard = inner.lock().unwrap();
+        let health = guard.peer_book.get("peer-invalid").expect("peer health");
+        assert!(health.score < 100);
+        assert_eq!(health.fail_streak, 1);
+        assert_eq!(guard.inbound_decode_failed, 1);
+    }
+
+    #[test]
+    fn peer_score_recovers_after_good_behavior() {
+        let inner = Arc::new(Mutex::new(InnerState::default()));
+        let (inbound_tx, _inbound_rx) = mpsc::unbounded_channel();
+        dispatch_network_message(
+            "testnet",
+            b"not-json",
+            Some("peer-recover"),
+            &inner,
+            &inbound_tx,
+        );
+        let after_bad = inner
+            .lock()
+            .unwrap()
+            .peer_book
+            .get("peer-recover")
+            .unwrap()
+            .score;
+        let wire = serde_json::to_vec(&NetworkMessage::NewTransaction {
+            chain_id: "testnet".into(),
+            transaction: Transaction {
+                txid: "recover-tx".into(),
+                version: 1,
+                inputs: vec![],
+                outputs: vec![],
+                fee: 10,
+                nonce: 1,
+            },
+        })
+        .expect("serialize tx");
+
+        dispatch_network_message("testnet", &wire, Some("peer-recover"), &inner, &inbound_tx);
+
+        let guard = inner.lock().unwrap();
+        let health = guard.peer_book.get("peer-recover").expect("peer health");
+        assert!(health.score > after_bad);
+        assert_eq!(guard.tx_inbound_accepted, 1);
+    }
+
+    #[test]
+    fn repeated_chain_id_mismatch_suppresses_peer() {
+        let inner = Arc::new(Mutex::new(InnerState::default()));
+        let (inbound_tx, _inbound_rx) = mpsc::unbounded_channel();
+        let wire = serde_json::to_vec(&NetworkMessage::NewTransaction {
+            chain_id: "wrongnet".into(),
+            transaction: Transaction {
+                txid: "wrong-chain-tx".into(),
+                version: 1,
+                inputs: vec![],
+                outputs: vec![],
+                fee: 10,
+                nonce: 1,
+            },
+        })
+        .expect("serialize tx");
+
+        for _ in 0..3 {
+            dispatch_network_message(
+                "testnet",
+                &wire,
+                Some("peer-wrong-chain"),
+                &inner,
+                &inbound_tx,
+            );
+        }
+
+        let guard = inner.lock().unwrap();
+        let health = guard
+            .peer_book
+            .get("peer-wrong-chain")
+            .expect("peer health");
+        assert!(health.score < 100);
+        assert!(health.suppressed_until_unix > now_unix());
+        assert_eq!(health.chain_mismatch_streak, 3);
+    }
+
+    #[test]
+    fn per_peer_inbound_message_budget_rate_limits_noisy_peer() {
+        let inner = Arc::new(Mutex::new(InnerState::default()));
+        let (inbound_tx, _inbound_rx) = mpsc::unbounded_channel();
+        let wire = serde_json::to_vec(&NetworkMessage::GetTips {
+            chain_id: "testnet".into(),
+        })
+        .expect("serialize get tips");
+
+        for _ in 0..=PEER_MAX_INBOUND_MESSAGES_PER_WINDOW {
+            dispatch_network_message("testnet", &wire, Some("peer-noisy"), &inner, &inbound_tx);
+        }
+
+        let guard = inner.lock().unwrap();
+        assert!(guard.peer_message_rate_limited_count >= 1);
+        assert_eq!(
+            guard.last_drop_reason.as_deref(),
+            Some("peer_inbound_rate_limited")
+        );
+        assert!(guard.peer_book.get("peer-noisy").unwrap().score < PEER_SCORE_MAX);
+    }
+
+    #[test]
     fn duplicate_block_announcement_is_ignored() {
         let inner = Arc::new(Mutex::new(InnerState::default()));
         let (inbound_tx, mut inbound_rx) = mpsc::unbounded_channel();
@@ -4183,8 +4569,8 @@ mod inventory_tests {
         })
         .expect("serialize block announcement");
 
-        dispatch_network_message("testnet", &wire, &inner, &inbound_tx);
-        dispatch_network_message("testnet", &wire, &inner, &inbound_tx);
+        dispatch_network_message("testnet", &wire, None, &inner, &inbound_tx);
+        dispatch_network_message("testnet", &wire, None, &inner, &inbound_tx);
 
         assert!(matches!(
             inbound_rx.try_recv(),
@@ -4203,7 +4589,7 @@ mod inventory_tests {
         })
         .expect("serialize block announce");
 
-        dispatch_network_message("testnet", &wire, &inner, &inbound_tx);
+        dispatch_network_message("testnet", &wire, None, &inner, &inbound_tx);
 
         assert!(matches!(
             inbound_rx.try_recv(),
@@ -4236,7 +4622,7 @@ mod inventory_tests {
         })
         .expect("serialize block data");
 
-        dispatch_network_message("testnet", &wire, &inner, &inbound_tx);
+        dispatch_network_message("testnet", &wire, None, &inner, &inbound_tx);
 
         assert!(matches!(
             inbound_rx.try_recv(),
@@ -4269,7 +4655,7 @@ mod inventory_tests {
         })
         .expect("serialize block data");
 
-        dispatch_network_message("testnet", &wire, &inner, &inbound_tx);
+        dispatch_network_message("testnet", &wire, None, &inner, &inbound_tx);
 
         assert!(inbound_rx.try_recv().is_err());
         let guard = inner.lock().unwrap();
@@ -4290,7 +4676,7 @@ mod inventory_tests {
         })
         .expect("serialize tips");
 
-        dispatch_network_message("testnet", &wire, &inner, &inbound_tx);
+        dispatch_network_message("testnet", &wire, None, &inner, &inbound_tx);
 
         assert!(matches!(
             inbound_rx.try_recv(),
@@ -4308,7 +4694,7 @@ mod inventory_tests {
         })
         .expect("serialize getblock");
 
-        dispatch_network_message("testnet", &wire, &inner, &inbound_tx);
+        dispatch_network_message("testnet", &wire, None, &inner, &inbound_tx);
 
         assert!(matches!(
             inbound_rx.try_recv(),

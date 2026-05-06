@@ -780,6 +780,8 @@ mod tests {
                 last_peer_recovery_unix: None,
                 peer_cooldown_suppressed_count: 0,
                 peer_flap_suppressed_count: 0,
+                peer_message_rate_limited_count: 0,
+                peer_suppressed_dial_count: 0,
                 peers_under_cooldown: 0,
                 peers_under_flap_guard: 0,
                 peer_lifecycle_healthy: 0,
