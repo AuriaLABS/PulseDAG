@@ -590,43 +590,6 @@ pub(crate) fn runtime_surface_rollup(
     } else {
         "healthy"
     };
-    let pending_missing_parents = chain
-        .orphan_missing_parents
-        .values()
-        .map(Vec::len)
-        .sum::<usize>();
-    let mut readiness_reasons = Vec::new();
-    if !p2p_recovery.enabled {
-        readiness_reasons.push("p2p is disabled".to_string());
-    }
-    if p2p_recovery.enabled && p2p_recovery.peer_count == 0 {
-        readiness_reasons.push("no connected peers".to_string());
-    }
-    if p2p_recovery.enabled && p2p_recovery.listening_addresses.is_empty() {
-        readiness_reasons.push("no listening addresses reported".to_string());
-    }
-    if runtime.pending_block_requests > 0 {
-        readiness_reasons.push(format!(
-            "{} pending block request(s)",
-            runtime.pending_block_requests
-        ));
-    }
-    if pending_missing_parents > 0 {
-        readiness_reasons.push(format!(
-            "{} pending missing parent(s)",
-            pending_missing_parents
-        ));
-    }
-    if !chain.orphan_blocks.is_empty() {
-        readiness_reasons.push(format!(
-            "{} orphan block(s) queued",
-            chain.orphan_blocks.len()
-        ));
-    }
-    if runtime.sync_pipeline.last_error.is_some() || runtime.sync_state == "degraded" {
-        readiness_reasons.push("sync pipeline reports degraded state".to_string());
-    }
-
     let external_mining_submit_total = runtime
         .external_mining_submit_accepted
         .saturating_add(runtime.external_mining_submit_rejected);
@@ -1357,6 +1320,44 @@ pub async fn get_runtime_status<S: RpcStateLike>(
     } else {
         "healthy"
     };
+
+    let pending_missing_parents = chain
+        .orphan_missing_parents
+        .values()
+        .map(Vec::len)
+        .sum::<usize>();
+    let mut readiness_reasons = Vec::new();
+    if !p2p_recovery.enabled {
+        readiness_reasons.push("p2p is disabled".to_string());
+    }
+    if p2p_recovery.enabled && p2p_recovery.peer_count == 0 {
+        readiness_reasons.push("no connected peers".to_string());
+    }
+    if p2p_recovery.enabled && p2p_recovery.listening_addresses.is_empty() {
+        readiness_reasons.push("no listening addresses reported".to_string());
+    }
+    if runtime.pending_block_requests > 0 {
+        readiness_reasons.push(format!(
+            "{} pending block request(s)",
+            runtime.pending_block_requests
+        ));
+    }
+    if pending_missing_parents > 0 {
+        readiness_reasons.push(format!(
+            "{} pending missing parent(s)",
+            pending_missing_parents
+        ));
+    }
+    if !chain.orphan_blocks.is_empty() {
+        readiness_reasons.push(format!(
+            "{} orphan block(s) queued",
+            chain.orphan_blocks.len()
+        ));
+    }
+    if runtime.sync_pipeline.last_error.is_some() || runtime.sync_state == "degraded" {
+        readiness_reasons.push("sync pipeline reports degraded state".to_string());
+    }
+
     Json(ApiResponse::ok(RuntimeStatusData {
         started_at_unix: runtime.started_at_unix,
         uptime_secs,
