@@ -22,6 +22,38 @@ pub enum AcceptSource {
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "status", content = "reason", rename_all = "snake_case")]
+pub enum TxAcceptanceResult {
+    Accepted,
+    Duplicate,
+    Invalid(String),
+    Orphan,
+    Rejected(String),
+}
+
+impl TxAcceptanceResult {
+    pub fn is_accepted(&self) -> bool {
+        matches!(self, Self::Accepted)
+    }
+}
+
+fn classify_tx_validation_error(err: PulseError) -> TxAcceptanceResult {
+    match err {
+        PulseError::TxAlreadyExists => TxAcceptanceResult::Duplicate,
+        PulseError::InvalidTransaction(msg) if msg.contains("mempool backpressure") => {
+            TxAcceptanceResult::Rejected(msg)
+        }
+        PulseError::InvalidTransaction(msg) => TxAcceptanceResult::Invalid(msg),
+        PulseError::InvalidTxid => TxAcceptanceResult::Invalid("invalid txid".into()),
+        PulseError::InvalidSignature => TxAcceptanceResult::Invalid("invalid signature".into()),
+        PulseError::DoubleSpend => TxAcceptanceResult::Invalid("double spend".into()),
+        PulseError::InsufficientFunds => TxAcceptanceResult::Invalid("insufficient funds".into()),
+        PulseError::UtxoNotFound => TxAcceptanceResult::Orphan,
+        other => TxAcceptanceResult::Rejected(other.to_string()),
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "status", content = "reason", rename_all = "snake_case")]
 pub enum BlockAcceptanceResult {
     Accepted,
     Duplicate,
@@ -348,6 +380,19 @@ pub fn accept_transaction(
     state: &mut ChainState,
     source: AcceptSource,
 ) -> Result<(), PulseError> {
+    match accept_transaction_with_result(tx, state, source) {
+        TxAcceptanceResult::Accepted | TxAcceptanceResult::Orphan => Ok(()),
+        TxAcceptanceResult::Duplicate => Err(PulseError::TxAlreadyExists),
+        TxAcceptanceResult::Invalid(reason) => Err(PulseError::InvalidTransaction(reason)),
+        TxAcceptanceResult::Rejected(reason) => Err(PulseError::InvalidTransaction(reason)),
+    }
+}
+
+pub fn accept_transaction_with_result(
+    tx: Transaction,
+    state: &mut ChainState,
+    source: AcceptSource,
+) -> TxAcceptanceResult {
     if mempool_needs_reconcile(state) {
         reconcile_mempool(state);
     }
@@ -357,17 +402,17 @@ pub fn accept_transaction(
     {
         state.mempool.counters.rejected_total =
             state.mempool.counters.rejected_total.saturating_add(1);
-        return Err(PulseError::TxAlreadyExists);
+        return TxAcceptanceResult::Duplicate;
     }
 
     if let Err(err) = validate_transaction(&tx, state) {
         if matches!(err, PulseError::UtxoNotFound) {
             store_orphan_transaction(tx, state);
-            return Ok(());
+            return TxAcceptanceResult::Orphan;
         }
         state.mempool.counters.rejected_total =
             state.mempool.counters.rejected_total.saturating_add(1);
-        return Err(err);
+        return classify_tx_validation_error(err);
     }
     if state.mempool.transactions.len() >= state.mempool.max_transactions {
         state.mempool.counters.pressure_events_total = state
@@ -376,9 +421,11 @@ pub fn accept_transaction(
             .pressure_events_total
             .saturating_add(1);
 
-        let lowest_txid = lowest_priority_txid(state).ok_or_else(|| {
-            PulseError::Internal("mempool pressure detected with no eviction candidate".into())
-        })?;
+        let Some(lowest_txid) = lowest_priority_txid(state) else {
+            return TxAcceptanceResult::Rejected(
+                "mempool pressure detected with no eviction candidate".into(),
+            );
+        };
         let children = build_mempool_children(state);
         let protected_ancestors = collect_ancestor_set(&tx, state);
         let candidate_score = incoming_package_score(&tx, state);
@@ -454,14 +501,14 @@ pub fn accept_transaction(
                 .counters
                 .rejected_low_priority_total
                 .saturating_add(1);
-            return Err(PulseError::InvalidTransaction(format!(
+            return TxAcceptanceResult::Rejected(format!(
                 "mempool backpressure active (tier={} tx_pressure_bps={} orphan_pressure_bps={} high_bps={} saturated_bps={}): transaction priority below threshold",
                 pressure_tier.as_str(),
                 tx_pressure_bps,
                 orphan_pressure_bps,
                 MEMPOOL_PRESSURE_HIGH_BPS,
                 MEMPOOL_PRESSURE_SATURATED_BPS
-            )));
+            ));
         };
 
         let mut evicted_count = 0_u64;
@@ -490,7 +537,7 @@ pub fn accept_transaction(
     state.mempool.transactions.insert(tx.txid.clone(), tx);
     state.mempool.counters.accepted_total = state.mempool.counters.accepted_total.saturating_add(1);
     promote_ready_orphans(state, source);
-    Ok(())
+    TxAcceptanceResult::Accepted
 }
 
 pub fn accept_block_with_result(
@@ -612,5 +659,125 @@ mod tests {
         block.hash = "mutated-block".to_string();
         let outcome = accept_block_with_result(block, &mut state, AcceptSource::P2p);
         assert_eq!(outcome, BlockAcceptanceResult::Malformed);
+    }
+}
+
+#[cfg(test)]
+mod tx_acceptance_result_tests {
+    use super::*;
+    use crate::{
+        genesis::init_chain_state,
+        tx::{address_from_public_key, compute_txid, signing_message},
+        types::{OutPoint, Transaction, TxInput, TxOutput, Utxo},
+    };
+    use ed25519_dalek::{Signer, SigningKey};
+
+    fn signing_key(seed: u8) -> SigningKey {
+        SigningKey::from_bytes(&[seed; 32])
+    }
+
+    fn public_key_hex(signing_key: &SigningKey) -> String {
+        hex::encode(signing_key.verifying_key().to_bytes())
+    }
+
+    fn fund_address(state: &mut ChainState, txid: &str, address: String, amount: u64) -> OutPoint {
+        let outpoint = OutPoint {
+            txid: txid.to_string(),
+            index: 0,
+        };
+        state.utxo.utxos.insert(
+            outpoint.clone(),
+            Utxo {
+                outpoint: outpoint.clone(),
+                address: address.clone(),
+                amount,
+                coinbase: false,
+                height: 1,
+            },
+        );
+        state
+            .utxo
+            .address_index
+            .entry(address)
+            .or_default()
+            .push(outpoint.clone());
+        outpoint
+    }
+
+    fn signed_tx(signing_key: &SigningKey, previous_output: OutPoint, nonce: u64) -> Transaction {
+        let public_key = public_key_hex(signing_key);
+        let mut tx = Transaction {
+            txid: String::new(),
+            version: 1,
+            inputs: vec![TxInput {
+                previous_output,
+                public_key: public_key.clone(),
+                signature: String::new(),
+            }],
+            outputs: vec![TxOutput {
+                address: address_from_public_key(&public_key),
+                amount: 9,
+            }],
+            fee: 1,
+            nonce,
+        };
+        let signature = signing_key.sign(&signing_message(&tx));
+        tx.inputs[0].signature = hex::encode(signature.to_bytes());
+        tx.txid = compute_txid(&tx);
+        tx
+    }
+
+    #[test]
+    fn valid_p2p_tx_reaches_mempool_and_duplicate_is_classified() {
+        let mut state = init_chain_state("testnet".into());
+        let key = signing_key(42);
+        let outpoint = fund_address(
+            &mut state,
+            "funding",
+            address_from_public_key(&public_key_hex(&key)),
+            10,
+        );
+        let tx = signed_tx(&key, outpoint, 1);
+        let txid = tx.txid.clone();
+
+        assert_eq!(
+            accept_transaction_with_result(tx.clone(), &mut state, AcceptSource::P2p),
+            TxAcceptanceResult::Accepted
+        );
+        assert!(state.mempool.transactions.contains_key(&txid));
+        assert_eq!(
+            accept_transaction_with_result(tx, &mut state, AcceptSource::P2p),
+            TxAcceptanceResult::Duplicate
+        );
+    }
+
+    #[test]
+    fn invalid_and_orphan_p2p_txs_are_classified_without_mempool_acceptance() {
+        let mut state = init_chain_state("testnet".into());
+        let key = signing_key(7);
+        let missing_outpoint = OutPoint {
+            txid: "missing".into(),
+            index: 0,
+        };
+        let orphan = signed_tx(&key, missing_outpoint, 1);
+        let orphan_txid = orphan.txid.clone();
+        assert_eq!(
+            accept_transaction_with_result(orphan, &mut state, AcceptSource::P2p),
+            TxAcceptanceResult::Orphan
+        );
+        assert!(state.mempool.orphan_transactions.contains_key(&orphan_txid));
+
+        let invalid = Transaction {
+            txid: "invalid".into(),
+            version: 1,
+            inputs: vec![],
+            outputs: vec![],
+            fee: 0,
+            nonce: 0,
+        };
+        assert!(matches!(
+            accept_transaction_with_result(invalid, &mut state, AcceptSource::P2p),
+            TxAcceptanceResult::Invalid(_)
+        ));
     }
 }
