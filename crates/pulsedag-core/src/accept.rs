@@ -57,8 +57,9 @@ fn classify_tx_validation_error(err: PulseError) -> TxAcceptanceResult {
 pub enum BlockAcceptanceResult {
     Accepted,
     Duplicate,
-    MissingParent,
     InvalidPow,
+    MissingParent,
+    InvalidTransaction,
     Malformed,
     Rejected(String),
 }
@@ -79,6 +80,12 @@ fn classify_block_validation_error(err: PulseError) -> BlockAcceptanceResult {
                 BlockAcceptanceResult::Malformed
             }
         }
+        PulseError::InvalidTransaction(_)
+        | PulseError::InvalidTxid
+        | PulseError::InvalidSignature
+        | PulseError::DoubleSpend
+        | PulseError::InsufficientFunds
+        | PulseError::UtxoNotFound => BlockAcceptanceResult::InvalidTransaction,
         other => BlockAcceptanceResult::Rejected(other.to_string()),
     }
 }
@@ -559,7 +566,7 @@ pub fn accept_block_with_result(
     }
 
     if let Err(err) = apply_block(&block, state) {
-        return BlockAcceptanceResult::Rejected(err.to_string());
+        return classify_block_validation_error(err);
     }
     BlockAcceptanceResult::Accepted
 }
@@ -579,6 +586,9 @@ pub fn accept_block(
             "pow rejected by current {} policy",
             selected_pow_name()
         ))),
+        BlockAcceptanceResult::InvalidTransaction => Err(PulseError::InvalidBlock(
+            "invalid transaction in block".to_string(),
+        )),
         BlockAcceptanceResult::Malformed => {
             Err(PulseError::InvalidBlock("malformed block".to_string()))
         }
@@ -599,7 +609,7 @@ mod tests {
         let mut state = init_chain_state("test".to_string());
         let parents = vec![state.dag.genesis_hash.clone()];
         let txs = vec![build_coinbase_transaction("miner1", 50, 1)];
-        let mut block = build_candidate_block(parents, 1, u32::MAX, txs);
+        let mut block = build_candidate_block(parents, 1, 0x01000000, txs);
         block.hash = "bad-pow".to_string();
         block.header.nonce = 0;
 
@@ -642,9 +652,60 @@ mod tests {
     }
 
     #[test]
+    fn invalid_transaction_in_peer_block_returns_invalid_transaction_outcome() {
+        let mut state = init_chain_state("test".to_string());
+        let parents = vec![state.dag.genesis_hash.clone()];
+        let coinbase = build_coinbase_transaction("miner1", 50, 1);
+        let mut invalid_spend = crate::types::Transaction {
+            txid: String::new(),
+            version: 1,
+            inputs: vec![crate::types::TxInput {
+                previous_output: crate::types::OutPoint {
+                    txid: "missing-utxo".to_string(),
+                    index: 0,
+                },
+                public_key: "not-a-valid-public-key".to_string(),
+                signature: "not-a-valid-signature".to_string(),
+            }],
+            outputs: vec![crate::types::TxOutput {
+                address: "receiver".to_string(),
+                amount: 1,
+            }],
+            fee: 0,
+            nonce: 1,
+        };
+        invalid_spend.txid = crate::tx::compute_txid(&invalid_spend);
+        let mut block = build_candidate_block(parents, 1, 1, vec![coinbase, invalid_spend]);
+        block.hash = "invalid-tx-block".to_string();
+
+        let outcome = accept_block_with_result(block, &mut state, AcceptSource::P2p);
+        assert_eq!(outcome, BlockAcceptanceResult::InvalidTransaction);
+    }
+
+    #[test]
+    fn peer_block_and_mining_submit_share_canonical_acceptance_outcomes() {
+        let parents = vec![init_chain_state("agreement".to_string()).dag.genesis_hash];
+        let txs = vec![build_coinbase_transaction("miner1", 50, 1)];
+        let mut peer_state = init_chain_state("agreement".to_string());
+        let mut mining_state = init_chain_state("agreement".to_string());
+        let mut block = build_candidate_block(parents, 1, 1, txs);
+        block.hash = "canonical-agreement".to_string();
+
+        let peer_outcome =
+            accept_block_with_result(block.clone(), &mut peer_state, AcceptSource::P2p);
+        let mining_outcome =
+            accept_block_with_result(block, &mut mining_state, AcceptSource::LocalMining);
+
+        assert_eq!(peer_outcome, BlockAcceptanceResult::Accepted);
+        assert_eq!(peer_outcome, mining_outcome);
+        assert!(peer_state.dag.blocks.contains_key("canonical-agreement"));
+        assert!(mining_state.dag.blocks.contains_key("canonical-agreement"));
+    }
+
+    #[test]
     fn acceptance_result_is_machine_readable() {
-        let encoded = serde_json::to_string(&BlockAcceptanceResult::Malformed).unwrap();
-        assert_eq!(encoded, "{\"status\":\"malformed\"}");
+        let encoded = serde_json::to_string(&BlockAcceptanceResult::InvalidTransaction).unwrap();
+        assert_eq!(encoded, "{\"status\":\"invalid_transaction\"}");
     }
 
     #[test]

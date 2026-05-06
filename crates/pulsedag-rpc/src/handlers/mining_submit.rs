@@ -643,6 +643,7 @@ pub async fn post_mining_submit<S: RpcStateLike>(
                     ExternalMiningRejectKind::InvalidPow
                 }
                 pulsedag_core::BlockAcceptanceResult::MissingParent
+                | pulsedag_core::BlockAcceptanceResult::InvalidTransaction
                 | pulsedag_core::BlockAcceptanceResult::Malformed => {
                     ExternalMiningRejectKind::InvalidBlock
                 }
