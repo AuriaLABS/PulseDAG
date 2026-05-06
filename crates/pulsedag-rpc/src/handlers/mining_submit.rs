@@ -1085,7 +1085,10 @@ mod tests {
     async fn invalid_pow_submit_returns_diagnostic() {
         let (state, _fake_p2p) = build_state_with_fake_p2p();
         let (_template_id, mut block) = build_mined_template_block(&state).await;
-        block.header.difficulty = u32::MAX;
+        // Use a compact difficulty with a zero mantissa so the target is exactly
+        // zero. This makes nonce 0 deterministically invalid instead of relying
+        // on a high compact value that can randomly admit roughly half of hashes.
+        block.header.difficulty = 0x0100_0000;
         block.header.nonce = 0;
 
         let Json(submit_response) = post_mining_submit(
