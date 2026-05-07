@@ -5009,6 +5009,99 @@ mod inventory_tests {
     }
 
     #[test]
+    fn v2_2_12_block_chain_id_mismatches_are_dropped_and_counted() {
+        let inner = Arc::new(Mutex::new(InnerState::default()));
+        let (inbound_tx, mut inbound_rx) = mpsc::unbounded_channel();
+        let block = Block {
+            hash: "foreign-block".into(),
+            header: pulsedag_core::types::BlockHeader {
+                version: 1,
+                parents: vec!["genesis".into()],
+                timestamp: 1,
+                difficulty: 1,
+                nonce: 1,
+                merkle_root: "mr".into(),
+                state_root: "sr".into(),
+                blue_score: 1,
+                height: 1,
+            },
+            transactions: vec![],
+        };
+        let messages = [
+            serde_json::to_vec(&NetworkMessage::NewBlock {
+                chain_id: "wrongnet".into(),
+                block: block.clone(),
+            })
+            .expect("serialize wrong-chain block"),
+            serde_json::to_vec(&NetworkMessage::BlockAnnounce {
+                chain_id: "wrongnet".into(),
+                hash: block.hash.clone(),
+            })
+            .expect("serialize wrong-chain announce"),
+            serde_json::to_vec(&NetworkMessage::BlockData {
+                chain_id: "wrongnet".into(),
+                block: Some(block),
+            })
+            .expect("serialize wrong-chain blockdata"),
+        ];
+
+        for wire in messages {
+            dispatch_network_message("testnet", &wire, Some("peer-wrong"), &inner, &inbound_tx);
+        }
+
+        assert!(inbound_rx.try_recv().is_err());
+        let guard = inner.lock().unwrap();
+        assert_eq!(guard.inbound_chain_mismatch_dropped, 3);
+        assert_eq!(guard.inbound_messages, 0);
+        assert_eq!(
+            guard.last_drop_reason.as_deref(),
+            Some("chain_mismatch_block_data")
+        );
+    }
+
+    #[test]
+    fn v2_2_12_duplicate_blockdata_is_delivered_once_and_counted() {
+        let inner = Arc::new(Mutex::new(InnerState::default()));
+        let (inbound_tx, mut inbound_rx) = mpsc::unbounded_channel();
+        let block = Block {
+            hash: "duplicate-blockdata".into(),
+            header: pulsedag_core::types::BlockHeader {
+                version: 1,
+                parents: vec!["genesis".into()],
+                timestamp: 1,
+                difficulty: 1,
+                nonce: 1,
+                merkle_root: "mr".into(),
+                state_root: "sr".into(),
+                blue_score: 1,
+                height: 1,
+            },
+            transactions: vec![],
+        };
+        let wire = serde_json::to_vec(&NetworkMessage::BlockData {
+            chain_id: "testnet".into(),
+            block: Some(block.clone()),
+        })
+        .expect("serialize block data");
+
+        dispatch_network_message("testnet", &wire, Some("peer-a"), &inner, &inbound_tx);
+        dispatch_network_message("testnet", &wire, Some("peer-b"), &inner, &inbound_tx);
+
+        assert!(matches!(
+            inbound_rx.try_recv(),
+            Ok(InboundEvent::Block(received)) if received.hash == block.hash
+        ));
+        assert!(inbound_rx.try_recv().is_err());
+        let guard = inner.lock().unwrap();
+        assert_eq!(guard.inbound_messages, 1);
+        assert_eq!(guard.inbound_duplicates_suppressed, 1);
+        assert_eq!(
+            guard.last_drop_reason.as_deref(),
+            Some("duplicate_block_data")
+        );
+    }
+
+    #[test]
     fn tips_message_delivers_remote_tips_for_catchup_requests() {
         let inner = Arc::new(Mutex::new(InnerState::default()));
         let (inbound_tx, mut inbound_rx) = mpsc::unbounded_channel();

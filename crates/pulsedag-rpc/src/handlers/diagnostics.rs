@@ -31,6 +31,7 @@ pub struct DiagnosticsData {
     pub startup_fastboot_used: bool,
     pub startup_replay_required: bool,
     pub startup_fallback_reason: Option<String>,
+    pub last_rejected_peer_block_reason: Option<String>,
     pub runtime_surface_rollup: RuntimeSurfaceRollup,
     pub incident_primary_surface: String,
     pub incident_summary: String,
@@ -173,6 +174,7 @@ pub async fn get_diagnostics<S: RpcStateLike>(
         startup_fastboot_used: runtime.startup_fastboot_used,
         startup_replay_required: runtime.startup_replay_required,
         startup_fallback_reason: runtime.startup_fallback_reason.clone(),
+        last_rejected_peer_block_reason: runtime.last_rejected_peer_block_reason.clone(),
         remediation_summary: rollup.remediation_summary.clone(),
         no_go_escalation: rollup.no_go_escalation,
         no_go_reasons: rollup.no_go_reasons.clone(),
@@ -433,6 +435,33 @@ mod tests {
             .summary
             .len()
             < 220));
+    }
+
+    #[tokio::test]
+    async fn diagnostics_surfaces_last_rejected_peer_block_reason() {
+        let path = temp_db_path("last-peer-reject-reason");
+        let storage = Arc::new(Storage::open(path.to_str().expect("utf8")).expect("open"));
+        let chain = init_chain_state("testnet".to_string());
+        storage
+            .persist_chain_state(&chain)
+            .expect("persist healthy snapshot");
+        let mut runtime = NodeRuntimeStats::default();
+        runtime.rejected_p2p_blocks = 1;
+        runtime.blockdata_invalid_pow = 1;
+        runtime.last_rejected_peer_block_reason = Some("bad-peer-block: InvalidPow".to_string());
+        let state = TestState {
+            chain: Arc::new(RwLock::new(chain)),
+            storage,
+            runtime: Arc::new(RwLock::new(runtime)),
+        };
+
+        let Json(diag_resp) = get_diagnostics(State(state)).await;
+        let diag = diag_resp.data.expect("diag");
+
+        assert_eq!(
+            diag.last_rejected_peer_block_reason.as_deref(),
+            Some("bad-peer-block: InvalidPow")
+        );
     }
 
     #[tokio::test]

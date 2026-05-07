@@ -196,6 +196,59 @@ sudo ufw status verbose
 Do not expose RPC publicly unless it is explicitly protected by host firewalling, VPN, or another access-control layer.
 
 
+## Negative-path diagnosis for v2.2.12
+
+Use these checks only as targeted negative-path rehearsals. Do not hand-edit the normal happy-path smoke test, do not change consensus rules, and do not relax PoW validation to manufacture outcomes.
+
+### Chain-id mismatch drops
+
+Expected behavior: block announcements, block payloads, and block-data responses with a foreign `chain_id` are dropped before node acceptance. Operators should see no new accepted block and should see mismatch counters increase.
+
+Evidence to capture:
+
+- Unit check: `cargo test -p pulsedag-p2p v2_2_12_block_chain_id_mismatches_are_dropped_and_counted`.
+- Live endpoints when rehearsed: `/p2p/status.inbound_chain_mismatch_dropped`, `/p2p/status.last_drop_reason`, and `/sync/status.chain_id_mismatch_drops`.
+- Expected `last_drop_reason` examples include `chain_mismatch_block`, `chain_mismatch_block_announce`, or `chain_mismatch_block_data`.
+
+Diagnosis:
+
+- If mismatch counters stay flat, confirm the negative-path payload actually used a different chain id than `/status.chain_id`.
+- If peer counts are zero, first solve connectivity; a mismatch rehearsal cannot prove inbound dropping if no inbound traffic arrives.
+- If a wrong-chain payload reaches block acceptance, treat it as a release blocker.
+
+### Duplicate block announcement and block-data suppression
+
+Expected behavior: duplicate block announcements or duplicate block-data payloads are suppressed, not accepted repeatedly, and not repeatedly relayed.
+
+Evidence to capture:
+
+- Unit check: `cargo test -p pulsedag-p2p v2_2_12_duplicate_blockdata_is_delivered_once_and_counted`.
+- Unit check: `cargo test -p pulsedag-p2p repeated_block_relay_storm_is_deduped_without_counter_inflation`.
+- Live endpoints: `/p2p/status.duplicate_suppression_counters`, `/p2p/status.block_propagation_counters`, `/sync/status.duplicate_suppression_counters`, and `/sync/status.last_accepted_peer_block`.
+
+Diagnosis:
+
+- `inbound_duplicates_suppressed` should rise for repeated inbound duplicates.
+- Outbound block publish counters should show first-seen relay only once for the same block hash; duplicate-suppression counters should absorb repeats.
+- `accepted_p2p_blocks` and `blockdata_accepted` should not increase once per duplicate payload.
+
+### Invalid peer block rejection
+
+Expected behavior: invalid peer blocks are rejected by the normal block acceptance path. PoW failures remain `InvalidPow`; invalid transactions remain `InvalidTransaction`; missing parents are queued as orphan recovery pressure rather than accepted.
+
+Evidence to capture:
+
+- Unit check: `cargo test -p pulsedag-core rejects_block_with_invalid_pow`.
+- Unit check: `cargo test -p pulsedag-core invalid_transaction_in_peer_block_returns_invalid_transaction_outcome`.
+- Live endpoints when applicable: `/sync/status.last_rejected_peer_block_reason`, `/p2p/status.last_rejected_peer_block_reason`, and `/diagnostics.last_rejected_peer_block_reason`.
+- Logs should include `peer_block_rejected` for validation failures or `peer_block_missing_parent` for orphan queuing.
+
+Diagnosis:
+
+- If `last_rejected_peer_block_reason` is empty, confirm an invalid peer block was actually received after node startup and after the runtime counters were reset.
+- If `blockdata_invalid_pow` or `pulsedag_invalid_pow_total` rises, the peer supplied a payload failing the active PoW policy; do not lower difficulty or bypass validation to clear the test.
+- If only missing-parent counters rise, use `/sync/missing` to identify missing parent hashes and allow normal catch-up to request them.
+
 ## Final diagnostic fields for v2.2.12 rehearsal
 
 Operators should capture these fields from every node when comparing before/after sync recovery evidence. Fields are diagnostic only and do not change consensus rules.
