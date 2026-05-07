@@ -33,6 +33,8 @@ pub struct SyncStatusData {
     pub selected_sync_peer: Option<String>,
     pub last_accepted_peer_block: Option<String>,
     pub last_rejected_peer_block_reason: Option<String>,
+    pub chain_id_mismatch_drops: usize,
+    pub duplicate_suppression_counters: SyncDuplicateSuppressionCounters,
     pub p2p_ready_for_private_rehearsal: bool,
     pub readiness_reasons: Vec<String>,
 }
@@ -42,6 +44,14 @@ pub struct SyncReconcileMempoolData {
     pub removed_count: usize,
     pub kept_count: usize,
     pub removed_txids: Vec<String>,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct SyncDuplicateSuppressionCounters {
+    pub inbound_messages: usize,
+    pub outbound_messages: usize,
+    pub tx_outbound: usize,
+    pub block_outbound: usize,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -224,6 +234,28 @@ pub async fn get_sync_status<S: RpcStateLike>(
         }),
         last_accepted_peer_block: runtime.last_accepted_peer_block.clone(),
         last_rejected_peer_block_reason: runtime.last_rejected_peer_block_reason.clone(),
+        chain_id_mismatch_drops: p2p_status
+            .as_ref()
+            .map(|status| status.inbound_chain_mismatch_dropped)
+            .unwrap_or(0),
+        duplicate_suppression_counters: SyncDuplicateSuppressionCounters {
+            inbound_messages: p2p_status
+                .as_ref()
+                .map(|status| status.inbound_duplicates_suppressed)
+                .unwrap_or(0),
+            outbound_messages: p2p_status
+                .as_ref()
+                .map(|status| status.outbound_duplicates_suppressed)
+                .unwrap_or(0),
+            tx_outbound: p2p_status
+                .as_ref()
+                .map(|status| status.tx_outbound_duplicates_suppressed)
+                .unwrap_or(0),
+            block_outbound: p2p_status
+                .as_ref()
+                .map(|status| status.block_outbound_duplicates_suppressed)
+                .unwrap_or(0),
+        },
         p2p_ready_for_private_rehearsal: readiness_reasons.is_empty(),
         readiness_reasons,
     }))
@@ -468,6 +500,11 @@ mod tests {
         assert_eq!(data.pending_block_requests, 0);
         assert_eq!(data.pending_missing_parents, 0);
         assert_eq!(data.sync_state, "");
+        assert_eq!(data.chain_id_mismatch_drops, 0);
+        assert_eq!(data.duplicate_suppression_counters.inbound_messages, 0);
+        assert_eq!(data.duplicate_suppression_counters.outbound_messages, 0);
+        assert_eq!(data.duplicate_suppression_counters.tx_outbound, 0);
+        assert_eq!(data.duplicate_suppression_counters.block_outbound, 0);
         assert!(data
             .readiness_reasons
             .iter()

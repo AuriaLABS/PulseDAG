@@ -34,6 +34,7 @@ fn p2p_readiness_reasons(
     enabled: bool,
     status: Option<&P2pStatus>,
     runtime: &crate::api::NodeRuntimeStats,
+    pending_missing_parents: usize,
     orphan_count: usize,
 ) -> Vec<String> {
     let mut reasons = Vec::new();
@@ -63,10 +64,10 @@ fn p2p_readiness_reasons(
             runtime.pending_block_requests
         ));
     }
-    if runtime.pending_missing_parents > 0 {
+    if pending_missing_parents > 0 {
         reasons.push(format!(
             "{} pending missing parent(s)",
-            runtime.pending_missing_parents
+            pending_missing_parents
         ));
     }
     if orphan_count > 0 {
@@ -80,9 +81,11 @@ fn p2p_readiness_reasons(
 
 fn disabled_p2p_payload(
     runtime: &crate::api::NodeRuntimeStats,
+    pending_missing_parents: usize,
     orphan_count: usize,
 ) -> serde_json::Value {
-    let reasons = p2p_readiness_reasons(false, None, runtime, orphan_count);
+    let reasons =
+        p2p_readiness_reasons(false, None, runtime, pending_missing_parents, orphan_count);
     serde_json::json!({
         "p2p_enabled": false,
         "p2p_mode": "disabled",
@@ -93,12 +96,45 @@ fn disabled_p2p_payload(
         "listening": [],
         "topics": [],
         "pending_block_requests": runtime.pending_block_requests,
-        "pending_missing_parents": runtime.pending_missing_parents,
+        "pending_missing_parents": pending_missing_parents,
         "orphan_count": orphan_count,
         "sync_state": runtime.sync_state,
         "selected_sync_peer": runtime.sync_pipeline.selected_peer,
         "last_accepted_peer_block": runtime.last_accepted_peer_block,
         "last_rejected_peer_block_reason": runtime.last_rejected_peer_block_reason,
+        "inbound_chain_mismatch_dropped": 0,
+        "last_drop_reason": null,
+        "duplicate_suppression_counters": {
+            "p2p_blocks": runtime.duplicate_p2p_blocks,
+            "p2p_txs": runtime.duplicate_p2p_txs,
+            "inbound_messages": 0,
+            "outbound_messages": 0,
+            "tx_outbound": 0,
+            "block_outbound": 0
+        },
+        "peer_state_summary": {
+            "total": 0,
+            "healthy": 0,
+            "watch": 0,
+            "degraded": 0,
+            "cooldown": 0,
+            "recovering": 0,
+            "peers_with_recent_failures": 0
+        },
+        "recovery_activity_summary": {
+            "reconnect_attempts": 0,
+            "recovery_success_count": 0,
+            "last_recovery_unix": null,
+            "cooldown_suppressed_count": 0,
+            "flap_suppressed_count": 0,
+            "message_rate_limited_count": 0,
+            "suppressed_dial_count": 0,
+            "suppressed_dials": 0,
+            "peers_under_cooldown": 0,
+            "peers_under_flap_guard": 0
+        },
+        "sync_candidates": [],
+        "peer_recovery": [],
         "p2p_ready_for_private_rehearsal": false,
         "readiness_reasons": reasons
     })
@@ -401,8 +437,18 @@ pub async fn get_p2p_status<S: RpcStateLike>(
                     let chain_handle = state.chain();
                     let chain = chain_handle.read().await;
                     let orphan_count = chain.orphan_blocks.len();
-                    let readiness_reasons =
-                        p2p_readiness_reasons(true, Some(&status), &runtime, orphan_count);
+                    let pending_missing_parents = chain
+                        .orphan_missing_parents
+                        .values()
+                        .map(Vec::len)
+                        .sum::<usize>();
+                    let readiness_reasons = p2p_readiness_reasons(
+                        true,
+                        Some(&status),
+                        &runtime,
+                        pending_missing_parents,
+                        orphan_count,
+                    );
                     payload.insert("p2p_enabled".into(), serde_json::json!(true));
                     payload.insert("p2p_mode".into(), serde_json::json!(status.mode));
                     payload.insert(
@@ -419,7 +465,7 @@ pub async fn get_p2p_status<S: RpcStateLike>(
                     );
                     payload.insert(
                         "pending_missing_parents".into(),
-                        serde_json::json!(runtime.pending_missing_parents),
+                        serde_json::json!(pending_missing_parents),
                     );
                     payload.insert("orphan_count".into(), serde_json::json!(orphan_count));
                     payload.insert("sync_state".into(), serde_json::json!(runtime.sync_state));
@@ -450,6 +496,9 @@ pub async fn get_p2p_status<S: RpcStateLike>(
                     "blockdata_accepted": runtime.blockdata_accepted,
                     "blockdata_duplicate": runtime.blockdata_duplicate,
                     "blockdata_missing_parent": runtime.blockdata_missing_parent,
+                    "block_request_timeouts": runtime.block_request_timeouts,
+                    "pending_block_requests": runtime.pending_block_requests,
+                    "pending_missing_parents": pending_missing_parents,
                     "outbound_duplicates_suppressed": status.block_outbound_duplicates_suppressed
                 }));
                     payload.insert(
@@ -485,6 +534,7 @@ pub async fn get_p2p_status<S: RpcStateLike>(
             let chain = chain_handle.read().await;
             Json(ApiResponse::ok(disabled_p2p_payload(
                 &runtime,
+                chain.orphan_missing_parents.values().map(Vec::len).sum(),
                 chain.orphan_blocks.len(),
             )))
         }
@@ -870,6 +920,10 @@ mod tests {
         assert!(data["tx_propagation_counters"].is_object());
         assert!(data["block_propagation_counters"].is_object());
         assert!(data["duplicate_suppression_counters"].is_object());
+        assert!(data["sync_candidates"].is_array());
+        assert!(data["peer_recovery"].is_array());
+        assert!(data["block_propagation_counters"]["pending_block_requests"].is_number());
+        assert!(data["block_propagation_counters"]["pending_missing_parents"].is_number());
         assert!(data["p2p_ready_for_private_rehearsal"].is_boolean());
         let text = serde_json::to_string(&data).unwrap();
         assert!(!text.contains("private_key"));
@@ -885,6 +939,12 @@ mod tests {
         assert_eq!(data["p2p_mode"], "disabled");
         assert_eq!(data["peer_count"], 0);
         assert_eq!(data["p2p_ready_for_private_rehearsal"], false);
+        assert_eq!(data["inbound_chain_mismatch_dropped"], 0);
+        assert!(data["duplicate_suppression_counters"].is_object());
+        assert!(data["peer_state_summary"].is_object());
+        assert!(data["recovery_activity_summary"].is_object());
+        assert!(data["sync_candidates"].is_array());
+        assert!(data["peer_recovery"].is_array());
         assert!(data["readiness_reasons"]
             .as_array()
             .unwrap()

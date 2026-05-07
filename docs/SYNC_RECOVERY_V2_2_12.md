@@ -195,6 +195,40 @@ sudo ufw status verbose
 
 Do not expose RPC publicly unless it is explicitly protected by host firewalling, VPN, or another access-control layer.
 
+
+## Final diagnostic fields for v2.2.12 rehearsal
+
+Operators should capture these fields from every node when comparing before/after sync recovery evidence. Fields are diagnostic only and do not change consensus rules.
+
+### `/sync/status`
+
+- `chain_id`, `p2p_enabled`, and `p2p_mode` identify the network namespace and whether sync has a P2P source.
+- `selected_sync_peer` reports the chosen sync peer when the P2P selector has one available.
+- `catchup_stage`, `lag_blocks`, `lag_band`, `catchup_progress_bps`, and `catchup_summary` describe the local catch-up phase and lag severity.
+- `recovery_reason` explains why the node is recovering, degraded, or under bounded no-progress remediation.
+- `pending_block_requests`, `pending_missing_parents`, and `orphan_count` expose outstanding block fetches, missing parent pressure, and queued orphans.
+- `last_accepted_peer_block` and `last_rejected_peer_block_reason` show the most recent peer block outcome when available.
+- `chain_id_mismatch_drops` mirrors P2P chain-id mismatch drops for quick cross-checks from the sync view.
+- `duplicate_suppression_counters` mirrors P2P duplicate suppression totals for inbound messages, outbound messages, outbound transactions, and outbound blocks.
+- `readiness_reasons` lists operator-actionable blockers; `p2p_ready_for_private_rehearsal` is true only when the readiness list is empty.
+
+### `/p2p/status`
+
+- `p2p_enabled`, `p2p_mode`, `mode`, `connected_peers_are_real_network`, and `connected_peers_semantics` describe whether peer counts represent real libp2p connections or simulated/internal observations.
+- `peer_id`, `listening_addresses`, `connected_peers`, `peer_count`, `topics`, `mdns`, and `kademlia` describe local identity, reachability, and topic membership.
+- `selected_sync_peer`, `sync_candidates`, and `sync_selection_sticky_until_unix` expose peer selection and anti-flap state.
+- `pending_block_requests`, `pending_missing_parents`, `orphan_count`, `sync_state`, `last_accepted_peer_block`, and `last_rejected_peer_block_reason` mirror sync runtime pressure from the P2P view.
+- `inbound_chain_mismatch_dropped` and `last_drop_reason` identify chain-id mismatch drops and the most recent inbound/outbound suppression reason.
+- `duplicate_suppression_counters`, `inbound_duplicates_suppressed`, `outbound_duplicates_suppressed`, `tx_propagation_counters`, and `block_propagation_counters` expose duplicate suppression and propagation health.
+- `peer_state_summary`, `recovery_activity_summary`, and `peer_recovery` describe lifecycle tiers, cooldown/backoff, reconnect attempts, suppression, recent failures, and recovery success state per peer.
+- `connection_slot_budget`, `connected_slots_in_use`, `available_connection_slots`, `topology_*`, `degraded_mode`, and `connection_shaping_active` help diagnose topology pressure and connection shaping.
+- `readiness_reasons` and `p2p_ready_for_private_rehearsal` provide the operator-facing rehearsal gate summary.
+
+### `/sync/missing`
+
+- `pending_block_requests`, `pending_missing_parents`, and `orphan_count` summarize outstanding recovery pressure.
+- `orphans[].hash` and `orphans[].missing_parents` list child blocks blocked on missing parents.
+
 ## Recovery success criteria
 
 A recovery is complete when:
