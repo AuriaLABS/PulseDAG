@@ -169,14 +169,200 @@ mod tests {
     use crate::{
         genesis::init_chain_state,
         mining::{build_candidate_block, build_coinbase_transaction},
+        types::{TxInput, TxOutput},
     };
+
+    fn coinbase(nonce: u64) -> Transaction {
+        build_coinbase_transaction("miner1", 50, nonce)
+    }
+
+    fn structurally_valid_block(state: &ChainState) -> Block {
+        let parents = vec![state.dag.genesis_hash.clone()];
+        let mut block = build_candidate_block(parents, 1, 1, vec![coinbase(1)]);
+        block.hash = "candidate-block".to_string();
+        block
+    }
+
+    fn non_coinbase_tx(txid: &str) -> Transaction {
+        Transaction {
+            txid: txid.to_string(),
+            version: 1,
+            inputs: vec![TxInput {
+                previous_output: OutPoint {
+                    txid: "missing-input".to_string(),
+                    index: 0,
+                },
+                public_key: "not-a-public-key".to_string(),
+                signature: "not-a-signature".to_string(),
+            }],
+            outputs: vec![TxOutput {
+                address: "receiver".to_string(),
+                amount: 1,
+            }],
+            fee: 0,
+            nonce: 0,
+        }
+    }
+
+    fn assert_invalid_block_contains(result: Result<(), PulseError>, expected: &str) {
+        match result {
+            Err(PulseError::InvalidBlock(message)) => assert!(
+                message.contains(expected),
+                "expected invalid block message containing '{expected}', got '{message}'"
+            ),
+            other => panic!("expected InvalidBlock containing '{expected}', got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn validate_block_rejects_block_with_no_parents() {
+        let state = init_chain_state("test".to_string());
+        let mut block = structurally_valid_block(&state);
+        block.header.parents.clear();
+
+        assert_invalid_block_contains(validate_block(&block, &state), "no parents");
+    }
+
+    #[test]
+    fn validate_block_rejects_duplicate_parent() {
+        let state = init_chain_state("test".to_string());
+        let mut block = structurally_valid_block(&state);
+        block.header.parents.push(state.dag.genesis_hash.clone());
+
+        assert_invalid_block_contains(validate_block(&block, &state), "duplicate parent");
+    }
+
+    #[test]
+    fn validate_block_rejects_missing_parent() {
+        let state = init_chain_state("test".to_string());
+        let mut block = structurally_valid_block(&state);
+        block.header.parents = vec!["missing-parent".to_string()];
+
+        assert_invalid_block_contains(
+            validate_block(&block, &state),
+            "missing parent missing-parent",
+        );
+    }
+
+    #[test]
+    fn validate_block_rejects_invalid_height() {
+        let state = init_chain_state("test".to_string());
+        let mut block = structurally_valid_block(&state);
+        block.header.height = 2;
+
+        assert_invalid_block_contains(
+            validate_block(&block, &state),
+            "invalid height 2, expected 1",
+        );
+    }
+
+    #[test]
+    fn validate_block_rejects_zero_timestamp() {
+        let state = init_chain_state("test".to_string());
+        let mut block = structurally_valid_block(&state);
+        block.header.timestamp = 0;
+
+        assert_invalid_block_contains(
+            validate_block(&block, &state),
+            "timestamp must be greater than zero",
+        );
+    }
+
+    #[test]
+    fn validate_block_rejects_timestamp_older_than_newest_parent() {
+        let mut state = init_chain_state("test".to_string());
+        let mut parent = structurally_valid_block(&state);
+        parent.hash = "parent-block".to_string();
+        parent.header.timestamp = 100;
+        state.dag.blocks.insert(parent.hash.clone(), parent.clone());
+
+        let mut block = build_candidate_block(vec![parent.hash], 2, 1, vec![coinbase(2)]);
+        block.hash = "older-than-parent".to_string();
+        block.header.timestamp = 99;
+
+        assert_invalid_block_contains(
+            validate_block(&block, &state),
+            "older than newest parent 100",
+        );
+    }
+
+    #[test]
+    fn validate_block_rejects_timestamp_too_far_in_future() {
+        let state = init_chain_state("test".to_string());
+        let mut block = structurally_valid_block(&state);
+        block.header.timestamp = current_ts()
+            .saturating_add(crate::dev_max_future_drift_secs())
+            .saturating_add(1);
+
+        assert_invalid_block_contains(
+            validate_block(&block, &state),
+            "timestamp too far in the future",
+        );
+    }
+
+    #[test]
+    fn validate_block_rejects_empty_block() {
+        let state = init_chain_state("test".to_string());
+        let mut block = structurally_valid_block(&state);
+        block.transactions.clear();
+
+        assert_invalid_block_contains(validate_block(&block, &state), "empty block");
+    }
+
+    #[test]
+    fn validate_block_rejects_when_first_transaction_is_not_coinbase() {
+        let state = init_chain_state("test".to_string());
+        let mut block = structurally_valid_block(&state);
+        block.transactions = vec![non_coinbase_tx("regular-tx")];
+
+        assert_invalid_block_contains(validate_block(&block, &state), "first tx must be coinbase");
+    }
+
+    #[test]
+    fn validate_block_rejects_multiple_coinbase_transactions() {
+        let state = init_chain_state("test".to_string());
+        let mut block = structurally_valid_block(&state);
+        block.transactions = vec![coinbase(1), coinbase(2)];
+
+        assert_invalid_block_contains(
+            validate_block(&block, &state),
+            "multiple coinbase transactions",
+        );
+    }
+
+    #[test]
+    fn validate_block_rejects_duplicate_transaction_in_block() {
+        let state = init_chain_state("test".to_string());
+        let mut block = structurally_valid_block(&state);
+        let duplicated_txid = block.transactions[0].txid.clone();
+        block.transactions.push(non_coinbase_tx(&duplicated_txid));
+
+        assert_invalid_block_contains(
+            validate_block(&block, &state),
+            "duplicate transaction in block",
+        );
+    }
+
+    #[test]
+    fn validate_block_accepts_valid_multi_parent_block() {
+        let mut state = init_chain_state("test".to_string());
+        let mut parent = structurally_valid_block(&state);
+        parent.hash = "parent-block".to_string();
+        parent.header.timestamp = current_ts();
+        state.dag.blocks.insert(parent.hash.clone(), parent.clone());
+
+        let parents = vec![state.dag.genesis_hash.clone(), parent.hash.clone()];
+        let mut block = build_candidate_block(parents, 2, 1, vec![coinbase(2)]);
+        block.hash = "multi-parent-block".to_string();
+        block.header.timestamp = parent.header.timestamp;
+
+        assert!(validate_block(&block, &state).is_ok());
+    }
 
     #[test]
     fn validate_block_accepts_well_formed_coinbase_block() {
         let state = init_chain_state("test".to_string());
-        let parents = vec![state.dag.genesis_hash.clone()];
-        let txs = vec![build_coinbase_transaction("miner1", 50, 1)];
-        let mut block = build_candidate_block(parents, 1, 1, txs);
+        let mut block = structurally_valid_block(&state);
         block.hash = "block-1".to_string();
 
         assert!(validate_block(&block, &state).is_ok());
