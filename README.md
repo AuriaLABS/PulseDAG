@@ -28,9 +28,10 @@ This repository is aligned to the **v2.2.12 full private-testnet rehearsal and h
 9. Collect `/health`, `/status`, `/p2p/status`, and `/sync/status` from A/B/C.
 
 v2.2.12 roadmap: `docs/ROADMAP_V2_2_12.md`.
-v2.2.11 P2P baseline rehearsal: `docs/P2P_REHEARSAL_V2_2_11.md`.
-v2.2.11 smoke test baseline: `docs/SMOKE_TEST_V2_2_11.md`.
-v2.2.11 release notes baseline: `docs/RELEASE_NOTES_V2_2_11.md`.
-v2.2.11 closing checklist baseline: `docs/CLOSING_CHECKLIST_V2_2_11.md`.
+v2.2.12 P2P rehearsal: `docs/P2P_REHEARSAL_V2_2_12.md`.
+v2.2.12 smoke test: `docs/SMOKE_TEST_V2_2_12.md`.
+v2.2.12 sync recovery rehearsal: `docs/SYNC_RECOVERY_V2_2_12.md`.
+v2.2.12 release notes: `docs/RELEASE_NOTES_V2_2_12.md`.
+v2.2.12 closing checklist: `docs/CLOSING_CHECKLIST_V2_2_12.md`.
 Version positioning: `docs/VERSION_MATRIX.md`.
 Final PoW spec: `docs/POW_SPEC_FINAL.md`.

@@ -4,11 +4,11 @@ Use this checklist to close v2.2.12 only after the rehearsal documentation, oper
 
 ## Version alignment
 
-- [ ] `VERSION` is `v2.2.12` when the release is cut.
-- [ ] `Cargo.toml` workspace version is `2.2.12` when the release is cut.
+- [ ] `VERSION` is `v2.2.12`.
+- [ ] `Cargo.toml` workspace version is `2.2.12`.
 - [ ] `Cargo.lock` is updated for local PulseDAG packages if needed.
-- [ ] `GET /status` reports `version: "v2.2.12"` for release binaries.
-- [ ] `GET /release` reports `version: "v2.2.12"` where available.
+- [ ] `/status` reports `version: "v2.2.12"`.
+- [ ] `/release` reports `version: "v2.2.12"`.
 
 ## Documentation and runbook checks
 
@@ -18,13 +18,14 @@ Use this checklist to close v2.2.12 only after the rehearsal documentation, oper
 - [ ] `docs/RELEASE_NOTES_V2_2_12.md` preserves the v2.2.12 scope and guardrails.
 - [ ] All markdown filenames and cross-references use the `V2_2_12` suffix consistently.
 - [ ] Operator ambiguities discovered during rehearsal are converted into runbook updates or follow-up issues.
+- [ ] Referenced v2.2.12 docs and scripts exist before publishing closeout notes.
 
 ## Required local checks
 
-- [ ] `cargo fmt --check` passes when code changes are included.
-- [ ] `cargo test --workspace` passes when code changes are included.
-- [ ] `cargo build --workspace --release` passes for rehearsal binaries.
-- [ ] The v2.2.11 baseline smoke script or an equivalent v2.2.12 rehearsal path passes.
+- [ ] `cargo fmt --check` passes.
+- [ ] `cargo test --workspace` passes.
+- [ ] `cargo build --workspace` passes.
+- [ ] The v2.2.12 smoke script (`scripts/v2_2_12_smoke_p2p.sh`) passes.
 - [ ] `bash -n scripts/v2_2_12_collect_evidence.sh` passes before closeout.
 
 ## Baseline three-node evidence
@@ -36,14 +37,14 @@ Use this checklist to close v2.2.12 only after the rehearsal documentation, oper
 - [ ] Node B receives or syncs the block.
 - [ ] Node C receives or syncs the block.
 - [ ] Restart node B and verify it catches up to node A height.
-- [ ] Collect `/health`, `/status`, `/p2p/status`, and `/sync/status` from A/B/C at closeout.
+- [ ] A/B/C diagnostics are collected at closeout: `/health`, `/status`, `/release`, `/p2p/status`, `/p2p/peers`, `/p2p/propagation`, `/sync/status`, and `/sync/missing` where available.
 
 ## Full rehearsal and hardening evidence
 
 - [ ] Rehearsal includes multi-node validation beyond a one-shot local smoke command, or documents why the selected topology is constrained.
 - [ ] Rehearsal includes multi-operator execution, review, or role-played handoff notes.
-- [ ] Rehearsal runs long enough to observe repeated mining, propagation, and sync convergence cycles.
-- [ ] Restart/rejoin behavior is tested for B and at least one additional node when topology allows.
+- [ ] Sustained rehearsal evidence is captured from a run long enough to observe repeated mining, propagation, and sync convergence cycles.
+- [ ] Restart/rejoin rehearsal passes for B and at least one additional node when topology allows.
 - [ ] Sync convergence is measured after mining, restart, temporary lag, and peer churn.
 - [ ] Duplicate suppression is reviewed and does not cause repeated acceptance or relay storms.
   - Expected evidence: `cargo test -p pulsedag-p2p v2_2_12_duplicate_blockdata_is_delivered_once_and_counted` shows duplicate `BlockData` produces one inbound block event, `inbound_messages=1`, and `inbound_duplicates_suppressed=1`.
