@@ -167,10 +167,13 @@ pub fn validate_block(block: &Block, state: &ChainState) -> Result<(), PulseErro
 mod tests {
     use super::*;
     use crate::{
+        accept::{accept_transaction_with_result, AcceptSource, TxAcceptanceResult},
         genesis::init_chain_state,
         mining::{build_candidate_block, build_coinbase_transaction},
-        types::{TxInput, TxOutput},
+        tx::{address_from_public_key, compute_txid, signing_message},
+        types::{TxInput, TxOutput, Utxo},
     };
+    use ed25519_dalek::{Signer, SigningKey};
 
     fn coinbase(nonce: u64) -> Transaction {
         build_coinbase_transaction("miner1", 50, nonce)
@@ -204,6 +207,113 @@ mod tests {
         }
     }
 
+    fn signing_key(seed: u8) -> SigningKey {
+        SigningKey::from_bytes(&[seed; 32])
+    }
+
+    fn public_key_hex(signing_key: &SigningKey) -> String {
+        hex::encode(signing_key.verifying_key().to_bytes())
+    }
+
+    fn fund_address(
+        state: &mut ChainState,
+        txid: &str,
+        index: u32,
+        address: String,
+        amount: u64,
+    ) -> OutPoint {
+        let outpoint = OutPoint {
+            txid: txid.to_string(),
+            index,
+        };
+        let utxo = Utxo {
+            outpoint: outpoint.clone(),
+            address: address.clone(),
+            amount,
+            coinbase: false,
+            height: 1,
+        };
+        state.utxo.utxos.insert(outpoint.clone(), utxo);
+        state
+            .utxo
+            .address_index
+            .entry(address)
+            .or_default()
+            .push(outpoint.clone());
+        outpoint
+    }
+
+    fn fund_signing_key(
+        state: &mut ChainState,
+        seed: u8,
+        txid: &str,
+        index: u32,
+        amount: u64,
+    ) -> (SigningKey, OutPoint) {
+        let key = signing_key(seed);
+        let address = address_from_public_key(&public_key_hex(&key));
+        let outpoint = fund_address(state, txid, index, address, amount);
+        (key, outpoint)
+    }
+
+    fn signed_tx(
+        signing_key: &SigningKey,
+        previous_outputs: Vec<OutPoint>,
+        outputs: Vec<TxOutput>,
+        fee: u64,
+        nonce: u64,
+    ) -> Transaction {
+        let public_key = public_key_hex(signing_key);
+        let mut tx = Transaction {
+            txid: String::new(),
+            version: 1,
+            inputs: previous_outputs
+                .into_iter()
+                .map(|previous_output| TxInput {
+                    previous_output,
+                    public_key: public_key.clone(),
+                    signature: String::new(),
+                })
+                .collect(),
+            outputs,
+            fee,
+            nonce,
+        };
+
+        let message = signing_message(&tx);
+        let signature = signing_key.sign(&message);
+        let signature_hex = hex::encode(signature.to_bytes());
+        for input in &mut tx.inputs {
+            input.signature = signature_hex.clone();
+        }
+        tx.txid = compute_txid(&tx);
+        tx
+    }
+
+    fn output(address: &str, amount: u64) -> TxOutput {
+        TxOutput {
+            address: address.to_string(),
+            amount,
+        }
+    }
+
+    fn assert_invalid_transaction_contains(result: Result<(), PulseError>, expected: &str) {
+        match result {
+            Err(PulseError::InvalidTransaction(message)) => assert!(
+                message.contains(expected),
+                "expected invalid transaction message containing '{expected}', got '{message}'"
+            ),
+            other => panic!("expected InvalidTransaction containing '{expected}', got {other:?}"),
+        }
+    }
+
+    fn assert_validation_error(result: Result<(), PulseError>, expected: fn(&PulseError) -> bool) {
+        match result {
+            Err(err) if expected(&err) => {}
+            other => panic!("unexpected validation result: {other:?}"),
+        }
+    }
+
     fn assert_invalid_block_contains(result: Result<(), PulseError>, expected: &str) {
         match result {
             Err(PulseError::InvalidBlock(message)) => assert!(
@@ -212,6 +322,255 @@ mod tests {
             ),
             other => panic!("expected InvalidBlock containing '{expected}', got {other:?}"),
         }
+    }
+
+    #[test]
+    fn transaction_validation_rejects_transaction_with_no_outputs() {
+        let mut state = init_chain_state("test".to_string());
+        let (key, outpoint) = fund_signing_key(&mut state, 1, "fund-no-outputs", 0, 10);
+        let tx = signed_tx(&key, vec![outpoint], vec![], 0, 1);
+
+        assert_invalid_transaction_contains(validate_transaction(&tx, &state), "no outputs");
+    }
+
+    #[test]
+    fn transaction_validation_rejects_transaction_with_no_inputs() {
+        let state = init_chain_state("test".to_string());
+        let mut tx = Transaction {
+            txid: String::new(),
+            version: 1,
+            inputs: vec![],
+            outputs: vec![output("receiver", 1)],
+            fee: 0,
+            nonce: 1,
+        };
+        tx.txid = compute_txid(&tx);
+
+        assert_invalid_transaction_contains(validate_transaction(&tx, &state), "no inputs");
+    }
+
+    #[test]
+    fn transaction_validation_rejects_zero_value_output() {
+        let mut state = init_chain_state("test".to_string());
+        let (key, outpoint) = fund_signing_key(&mut state, 2, "fund-zero-output", 0, 10);
+        let tx = signed_tx(&key, vec![outpoint], vec![output("receiver", 0)], 0, 1);
+
+        assert_invalid_transaction_contains(validate_transaction(&tx, &state), "zero-value output");
+    }
+
+    #[test]
+    fn transaction_validation_rejects_duplicate_input() {
+        let mut state = init_chain_state("test".to_string());
+        let (key, outpoint) = fund_signing_key(&mut state, 3, "fund-duplicate-input", 0, 10);
+        let tx = signed_tx(
+            &key,
+            vec![outpoint.clone(), outpoint],
+            vec![output("receiver", 5)],
+            0,
+            1,
+        );
+
+        assert_invalid_transaction_contains(validate_transaction(&tx, &state), "duplicate input");
+    }
+
+    #[test]
+    fn transaction_validation_rejects_invalid_txid() {
+        let mut state = init_chain_state("test".to_string());
+        let (key, outpoint) = fund_signing_key(&mut state, 4, "fund-invalid-txid", 0, 10);
+        let mut tx = signed_tx(&key, vec![outpoint], vec![output("receiver", 5)], 0, 1);
+        tx.txid = "not-the-canonical-txid".to_string();
+
+        assert_validation_error(validate_transaction(&tx, &state), |err| {
+            matches!(err, PulseError::InvalidTxid)
+        });
+    }
+
+    #[test]
+    fn transaction_validation_classifies_missing_utxo_as_orphan_missing_input() {
+        let mut state = init_chain_state("test".to_string());
+        let key = signing_key(5);
+        let missing = OutPoint {
+            txid: "missing-parent-tx".to_string(),
+            index: 7,
+        };
+        let tx = signed_tx(
+            &key,
+            vec![missing.clone()],
+            vec![output("receiver", 1)],
+            0,
+            1,
+        );
+        let txid = tx.txid.clone();
+
+        assert_validation_error(validate_transaction(&tx, &state), |err| {
+            matches!(err, PulseError::UtxoNotFound)
+        });
+        assert_eq!(
+            accept_transaction_with_result(tx, &mut state, AcceptSource::P2p),
+            TxAcceptanceResult::Orphan
+        );
+        assert_eq!(
+            state.mempool.orphan_missing_outpoints.get(&txid),
+            Some(&vec![missing])
+        );
+    }
+
+    #[test]
+    fn transaction_validation_rejects_double_spend_against_mempool_spent_outpoints() {
+        let mut state = init_chain_state("test".to_string());
+        let (key, outpoint) = fund_signing_key(&mut state, 6, "fund-double-spend", 0, 10);
+        state.mempool.spent_outpoints.insert(outpoint.clone());
+        let tx = signed_tx(&key, vec![outpoint], vec![output("receiver", 5)], 0, 1);
+
+        assert_validation_error(validate_transaction(&tx, &state), |err| {
+            matches!(err, PulseError::DoubleSpend)
+        });
+    }
+
+    #[test]
+    fn transaction_validation_rejects_insufficient_funds() {
+        let mut state = init_chain_state("test".to_string());
+        let (key, outpoint) = fund_signing_key(&mut state, 7, "fund-insufficient", 0, 10);
+        let tx = signed_tx(&key, vec![outpoint], vec![output("receiver", 11)], 0, 1);
+
+        assert_validation_error(validate_transaction(&tx, &state), |err| {
+            matches!(err, PulseError::InsufficientFunds)
+        });
+    }
+
+    #[test]
+    fn transaction_validation_rejects_input_overflow() {
+        let mut state = init_chain_state("test".to_string());
+        let key = signing_key(8);
+        let address = address_from_public_key(&public_key_hex(&key));
+        let first = fund_address(
+            &mut state,
+            "fund-input-overflow-a",
+            0,
+            address.clone(),
+            u64::MAX,
+        );
+        let second = fund_address(&mut state, "fund-input-overflow-b", 0, address, u64::MAX);
+        let tx = signed_tx(&key, vec![first, second], vec![output("receiver", 1)], 0, 1);
+
+        assert_invalid_transaction_contains(validate_transaction(&tx, &state), "input overflow");
+    }
+
+    #[test]
+    fn transaction_validation_rejects_output_plus_fee_overflow() {
+        let mut state = init_chain_state("test".to_string());
+        let (key, outpoint) = fund_signing_key(&mut state, 9, "fund-output-overflow", 0, u64::MAX);
+        let tx = signed_tx(
+            &key,
+            vec![outpoint],
+            vec![output("receiver", u64::MAX)],
+            1,
+            1,
+        );
+
+        assert_invalid_transaction_contains(validate_transaction(&tx, &state), "output overflow");
+    }
+
+    #[test]
+    fn transaction_validation_rejects_invalid_signature() {
+        let mut state = init_chain_state("test".to_string());
+        let (key, outpoint) = fund_signing_key(&mut state, 10, "fund-invalid-signature", 0, 10);
+        let mut tx = signed_tx(&key, vec![outpoint], vec![output("receiver", 5)], 0, 1);
+        tx.inputs[0].signature = hex::encode([0_u8; 64]);
+        tx.txid = compute_txid(&tx);
+
+        assert_validation_error(validate_transaction(&tx, &state), |err| {
+            matches!(err, PulseError::InvalidSignature)
+        });
+    }
+
+    #[test]
+    fn transaction_validation_accepts_valid_signed_transaction() {
+        let mut state = init_chain_state("test".to_string());
+        let (key, outpoint) = fund_signing_key(&mut state, 11, "fund-valid", 0, 10);
+        let tx = signed_tx(&key, vec![outpoint], vec![output("receiver", 9)], 1, 1);
+        let txid = tx.txid.clone();
+
+        assert!(validate_transaction(&tx, &state).is_ok());
+        assert_eq!(
+            accept_transaction_with_result(tx, &mut state, AcceptSource::Rpc),
+            TxAcceptanceResult::Accepted
+        );
+        assert!(state.mempool.transactions.contains_key(&txid));
+    }
+
+    #[test]
+    fn transaction_validation_missing_transaction_inputs_returns_exact_missing_outpoints() {
+        let mut state = init_chain_state("test".to_string());
+        let (_key, present) = fund_signing_key(&mut state, 12, "fund-present", 0, 10);
+        let missing_a = OutPoint {
+            txid: "missing-a".to_string(),
+            index: 0,
+        };
+        let missing_b = OutPoint {
+            txid: "missing-b".to_string(),
+            index: 2,
+        };
+        let tx = Transaction {
+            txid: "irrelevant".to_string(),
+            version: 1,
+            inputs: vec![present, missing_a.clone(), missing_b.clone()]
+                .into_iter()
+                .map(|previous_output| TxInput {
+                    previous_output,
+                    public_key: String::new(),
+                    signature: String::new(),
+                })
+                .collect(),
+            outputs: vec![output("receiver", 1)],
+            fee: 0,
+            nonce: 1,
+        };
+
+        assert_eq!(
+            missing_transaction_inputs(&tx, &state),
+            vec![missing_a, missing_b]
+        );
+    }
+
+    #[test]
+    fn transaction_validation_tx_output_amount_resolves_utxo_and_mempool_parent_outputs() {
+        let mut state = init_chain_state("test".to_string());
+        let (key, parent_input) = fund_signing_key(&mut state, 13, "fund-parent", 0, 50);
+        let parent = signed_tx(
+            &key,
+            vec![parent_input.clone()],
+            vec![output("child-spendable", 30), output("change", 19)],
+            1,
+            1,
+        );
+        let parent_txid = parent.txid.clone();
+        state
+            .mempool
+            .transactions
+            .insert(parent_txid.clone(), parent);
+
+        assert_eq!(tx_output_amount(&state, &parent_input), Some(50));
+        assert_eq!(
+            tx_output_amount(
+                &state,
+                &OutPoint {
+                    txid: parent_txid.clone(),
+                    index: 0,
+                },
+            ),
+            Some(30)
+        );
+        assert_eq!(
+            tx_output_amount(
+                &state,
+                &OutPoint {
+                    txid: parent_txid,
+                    index: 1,
+                },
+            ),
+            Some(19)
+        );
     }
 
     #[test]
