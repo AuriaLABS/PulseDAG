@@ -46,7 +46,14 @@ Use this checklist to close v2.2.12 only after the rehearsal documentation, oper
 - [ ] Restart/rejoin behavior is tested for B and at least one additional node when topology allows.
 - [ ] Sync convergence is measured after mining, restart, temporary lag, and peer churn.
 - [ ] Duplicate suppression is reviewed and does not cause repeated acceptance or relay storms.
+  - Expected evidence: `cargo test -p pulsedag-p2p v2_2_12_duplicate_blockdata_is_delivered_once_and_counted` shows duplicate `BlockData` produces one inbound block event, `inbound_messages=1`, and `inbound_duplicates_suppressed=1`.
+  - Expected evidence: `cargo test -p pulsedag-p2p repeated_block_relay_storm_is_deduped_without_counter_inflation` shows repeated outbound block relay attempts publish once and increment `block_outbound_duplicates_suppressed` for duplicates.
+  - Expected evidence: `/p2p/status.duplicate_suppression_counters` and `block_propagation_counters` from the live rehearsal do not increase accepted/published counts once per duplicate.
 - [ ] Invalid peer block rejection and chain-id mismatch dropping are verified through tests, counters, logs, or targeted rehearsal evidence.
+  - Expected evidence: `cargo test -p pulsedag-p2p v2_2_12_block_chain_id_mismatches_are_dropped_and_counted` shows wrong-chain block, announce, and block-data messages produce no flow events and increment `inbound_chain_mismatch_dropped`.
+  - Expected evidence: `cargo test -p pulsedag-core rejects_block_with_invalid_pow` and `cargo test -p pulsedag-core invalid_transaction_in_peer_block_returns_invalid_transaction_outcome` show invalid peer blocks are rejected without weakening PoW or consensus validation.
+  - Expected evidence: `/sync/status.chain_id_mismatch_drops` and `/p2p/status.inbound_chain_mismatch_dropped` are captured when a mismatch rehearsal is run, with `last_drop_reason` identifying the message family.
+  - Expected evidence: `cargo test -p pulsedag-rpc diagnostics_surfaces_last_rejected_peer_block_reason` shows `/diagnostics.last_rejected_peer_block_reason` carries the last peer block rejection reason when runtime has one.
 - [ ] Missing parent and orphan diagnostics are reviewed and explained.
 - [ ] Peer scoring, cooldown, reconnect, and backoff diagnostics remain useful to operators.
 - [ ] Run `scripts/v2_2_12_collect_evidence.sh` against the live rehearsal before stopping nodes.
