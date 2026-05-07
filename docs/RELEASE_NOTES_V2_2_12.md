@@ -1,12 +1,12 @@
 # Release Notes v2.2.12 — Full Private-Testnet Rehearsal and Hardening
 
-PulseDAG v2.2.12 is the documentation and operations milestone after v2.2.11 P2P completion. It packages the plan for a full private-testnet rehearsal and hardening pass across multi-node, multi-operator, longer-running, restart/rejoin, sync convergence, diagnostics review, runbook hardening, and evidence capture work.
+PulseDAG v2.2.12 is the full private-testnet rehearsal and hardening milestone after v2.2.11 P2P completion. It packages operator rehearsal, diagnostics, evidence capture, restart/rejoin, sustained validation, runbook hardening, and release closeout evidence for the later readiness decision.
 
-This release does **not** declare official private-testnet readiness. v2.3.0 remains the readiness decision milestone.
+This release is **not** v2.3.0 readiness and does **not** declare official private-testnet readiness. v2.3.0 remains the readiness decision milestone.
 
 ## Rehearsal and hardening scope
 
-v2.2.12 focuses on turning the completed v2.2.11 P2P path into an operator-ready rehearsal model:
+v2.2.12 focuses on turning the completed v2.2.11 P2P path into an operator-ready rehearsal model and improves operator rehearsal, diagnostics, evidence capture, restart/rejoin, and sustained validation:
 
 - Full private-testnet rehearsal planning without readiness claims.
 - Multi-node and multi-operator validation beyond the local three-node smoke path.
