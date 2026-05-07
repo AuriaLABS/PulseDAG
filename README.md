@@ -13,6 +13,7 @@ This repository is aligned to the **v2.2.12 full private-testnet rehearsal and h
 - v2.2.12 scope: full private-testnet rehearsal, sustained multi-node/operator validation, runbook hardening, and release evidence capture.
 - Smart contracts: out of scope in v2.2.x.
 - v2.2.12 rehearses and hardens the completed P2P path; **it does not claim official private-testnet readiness**.
+- v2.2.13 is the intermediate consensus/DAG safety audit before the readiness decision.
 - v2.3.0 remains the private-testnet readiness decision milestone.
 
 ## Full private-testnet rehearsal flow (operator summary)
@@ -33,5 +34,7 @@ v2.2.12 smoke test: `docs/SMOKE_TEST_V2_2_12.md`.
 v2.2.12 sync recovery rehearsal: `docs/SYNC_RECOVERY_V2_2_12.md`.
 v2.2.12 release notes: `docs/RELEASE_NOTES_V2_2_12.md`.
 v2.2.12 closing checklist: `docs/CLOSING_CHECKLIST_V2_2_12.md`.
+v2.2.13 release notes: `docs/RELEASE_NOTES_V2_2_13.md`.
+v2.2.13 closing checklist: `docs/CLOSING_CHECKLIST_V2_2_13.md`.
 Version positioning: `docs/VERSION_MATRIX.md`.
 Final PoW spec: `docs/POW_SPEC_FINAL.md`.
