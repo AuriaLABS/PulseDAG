@@ -14,3 +14,4 @@ members = [
 
 [workspace.package]
 version = "2.2.12"
+license = "ISC"
