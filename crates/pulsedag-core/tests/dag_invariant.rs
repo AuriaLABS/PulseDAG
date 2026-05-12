@@ -3,8 +3,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use pulsedag_core::genesis::init_chain_state;
 use pulsedag_core::{
     accept_block_with_result, build_candidate_block, build_coinbase_transaction,
-    refresh_block_consensus_ids, sorted_tip_hashes, AcceptSource, Block, BlockAcceptanceResult,
-    ChainState, Hash,
+    refresh_block_consensus_ids_with_state, sorted_tip_hashes, AcceptSource, Block,
+    BlockAcceptanceResult, ChainState, Hash,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -103,7 +103,13 @@ fn assert_dag_invariants(state: &ChainState) {
     );
 }
 
-fn test_block(hash: &str, parents: Vec<Hash>, height: u64, timestamp: u64) -> Block {
+fn test_block(
+    state: &ChainState,
+    hash: &str,
+    parents: Vec<Hash>,
+    height: u64,
+    timestamp: u64,
+) -> Block {
     let txs = vec![build_coinbase_transaction(
         &format!("miner-{hash}"),
         50,
@@ -112,8 +118,7 @@ fn test_block(hash: &str, parents: Vec<Hash>, height: u64, timestamp: u64) -> Bl
     let mut block = build_candidate_block(parents, height, 1, txs);
     block.header.timestamp = timestamp;
     block.header.blue_score = height;
-    block.header.state_root = format!("state-{hash}");
-    refresh_block_consensus_ids(&mut block);
+    refresh_block_consensus_ids_with_state(&mut block, state).unwrap();
     block
 }
 
@@ -136,6 +141,7 @@ fn dag_invariant_genesis_exists_in_blocks() {
 fn dag_invariant_duplicate_block_acceptance_does_not_mutate_dag_state() {
     let mut state = init_chain_state("dag-invariant-duplicate".to_string());
     let block = test_block(
+        &state,
         "duplicate-child",
         vec![state.dag.genesis_hash.clone()],
         1,
@@ -155,12 +161,12 @@ fn dag_invariant_duplicate_block_acceptance_does_not_mutate_dag_state() {
 fn dag_invariant_accepting_siblings_preserves_blocks_and_deterministic_tips() {
     let mut state = init_chain_state("dag-invariant-siblings".to_string());
     let genesis = state.dag.genesis_hash.clone();
-    let sibling_a = test_block("sibling-a", vec![genesis.clone()], 1, 1);
+    let sibling_a = test_block(&state, "sibling-a", vec![genesis.clone()], 1, 1);
     let sibling_a_hash = sibling_a.hash.clone();
-    let sibling_b = test_block("sibling-b", vec![genesis], 1, 1);
-    let sibling_b_hash = sibling_b.hash.clone();
-
+    let mut sibling_b = test_block(&state, "sibling-b", vec![genesis], 1, 1);
     accept_test_block(&mut state, sibling_a);
+    refresh_block_consensus_ids_with_state(&mut sibling_b, &state).unwrap();
+    let sibling_b_hash = sibling_b.hash.clone();
     accept_test_block(&mut state, sibling_b);
 
     assert!(state.dag.blocks.contains_key(&sibling_a_hash));
@@ -175,12 +181,18 @@ fn dag_invariant_accepting_siblings_preserves_blocks_and_deterministic_tips() {
 #[test]
 fn dag_invariant_accepting_child_removes_parent_from_tips_when_appropriate() {
     let mut state = init_chain_state("dag-invariant-child-tip".to_string());
-    let parent = test_block("parent-tip", vec![state.dag.genesis_hash.clone()], 1, 1);
+    let parent = test_block(
+        &state,
+        "parent-tip",
+        vec![state.dag.genesis_hash.clone()],
+        1,
+        1,
+    );
     let parent_hash = parent.hash.clone();
     accept_test_block(&mut state, parent);
     assert_eq!(sorted_tip_hashes(&state), vec![parent_hash.clone()]);
 
-    let child = test_block("child-tip", vec![parent_hash.clone()], 2, 2);
+    let child = test_block(&state, "child-tip", vec![parent_hash.clone()], 2, 2);
     let child_hash = child.hash.clone();
     accept_test_block(&mut state, child);
 
@@ -193,7 +205,13 @@ fn dag_invariant_accepting_child_removes_parent_from_tips_when_appropriate() {
 fn dag_invariant_invalid_blocks_do_not_mutate_dag_state() {
     let mut state = init_chain_state("dag-invariant-invalid".to_string());
     let before_invalid = dag_snapshot(&state);
-    let invalid_height = test_block("invalid-height", vec![state.dag.genesis_hash.clone()], 2, 1);
+    let invalid_height = test_block(
+        &state,
+        "invalid-height",
+        vec![state.dag.genesis_hash.clone()],
+        2,
+        1,
+    );
 
     let outcome = accept_block_with_result(invalid_height, &mut state, AcceptSource::P2p);
 

@@ -3,7 +3,9 @@ use axum::{extract::State, Json};
 use pulsedag_core::{
     accept_block, dev_mine_header, dev_pow_accepts, dev_recommended_difficulty_for_chain,
     dev_target_u64,
-    mining::{build_candidate_block, build_coinbase_transaction},
+    mining::{
+        build_candidate_block, build_coinbase_transaction, refresh_block_consensus_ids_with_state,
+    },
     AcceptSource,
 };
 use std::{
@@ -61,6 +63,9 @@ pub async fn post_pow_auto_run<S: RpcStateLike>(
             height,
         )];
         let mut block = build_candidate_block(parents, height, difficulty as u32, txs);
+        if let Err(e) = refresh_block_consensus_ids_with_state(&mut block, &chain) {
+            return Json(ApiResponse::err("STATE_ROOT_ERROR", e.to_string()));
+        }
         let (mined_header, _accepted, pow_tries, _pow_hash) =
             dev_mine_header(block.header.clone(), max_tries);
         block.header = mined_header;

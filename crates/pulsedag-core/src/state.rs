@@ -1,8 +1,12 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
-use crate::types::{Address, Block, Hash, OutPoint, Transaction, Utxo};
+use crate::{
+    errors::PulseError,
+    types::{Address, Block, Hash, OutPoint, StateRoot, Transaction, Utxo},
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ContractRuntimeConfig {
@@ -36,6 +40,108 @@ pub struct DagState {
 pub struct UtxoState {
     pub utxos: HashMap<OutPoint, Utxo>,
     pub address_index: HashMap<Address, Vec<OutPoint>>,
+}
+
+const UTXO_STATE_ROOT_DOMAIN: &[u8] = b"PulseDAG:utxo-state-root:v1";
+
+fn encode_len_prefixed_bytes(out: &mut Vec<u8>, bytes: &[u8]) {
+    let len = u32::try_from(bytes.len()).expect("canonical field length exceeds u32::MAX");
+    out.extend_from_slice(&len.to_le_bytes());
+    out.extend_from_slice(bytes);
+}
+
+fn encode_len_prefixed_str(out: &mut Vec<u8>, value: &str) {
+    encode_len_prefixed_bytes(out, value.as_bytes());
+}
+
+fn outpoint_label(outpoint: &OutPoint) -> String {
+    format!("{}:{}", outpoint.txid, outpoint.index)
+}
+
+impl UtxoState {
+    pub fn validate_deterministic_indexes(&self) -> Result<(), PulseError> {
+        let mut indexed = BTreeMap::<OutPoint, Address>::new();
+        for (address, outpoints) in &self.address_index {
+            let mut seen_for_address = BTreeSet::new();
+            for outpoint in outpoints {
+                if !seen_for_address.insert(outpoint.clone()) {
+                    return Err(PulseError::NonDeterministicState(format!(
+                        "duplicate address index entry {} for address {}",
+                        outpoint_label(outpoint),
+                        address
+                    )));
+                }
+                if indexed.insert(outpoint.clone(), address.clone()).is_some() {
+                    return Err(PulseError::NonDeterministicState(format!(
+                        "outpoint {} appears under multiple addresses",
+                        outpoint_label(outpoint)
+                    )));
+                }
+            }
+        }
+
+        for (outpoint, utxo) in &self.utxos {
+            if &utxo.outpoint != outpoint {
+                return Err(PulseError::NonDeterministicState(format!(
+                    "utxo key {} does not match embedded outpoint {}",
+                    outpoint_label(outpoint),
+                    outpoint_label(&utxo.outpoint)
+                )));
+            }
+            match indexed.get(outpoint) {
+                Some(address) if address == &utxo.address => {}
+                Some(address) => {
+                    return Err(PulseError::NonDeterministicState(format!(
+                        "address index maps {} to {}, expected {}",
+                        outpoint_label(outpoint),
+                        address,
+                        utxo.address
+                    )));
+                }
+                None => {
+                    return Err(PulseError::NonDeterministicState(format!(
+                        "missing address index entry for {}",
+                        outpoint_label(outpoint)
+                    )));
+                }
+            }
+        }
+
+        for outpoint in indexed.keys() {
+            if !self.utxos.contains_key(outpoint) {
+                return Err(PulseError::NonDeterministicState(format!(
+                    "address index references missing outpoint {}",
+                    outpoint_label(outpoint)
+                )));
+            }
+        }
+
+        Ok(())
+    }
+
+    pub fn compute_state_root(&self) -> Result<StateRoot, PulseError> {
+        self.validate_deterministic_indexes()?;
+
+        let mut ordered = BTreeMap::new();
+        for (outpoint, utxo) in &self.utxos {
+            ordered.insert(outpoint.clone(), utxo);
+        }
+
+        let mut bytes = Vec::new();
+        encode_len_prefixed_bytes(&mut bytes, UTXO_STATE_ROOT_DOMAIN);
+        let count = u64::try_from(ordered.len()).expect("utxo set length exceeds u64::MAX");
+        bytes.extend_from_slice(&count.to_le_bytes());
+        for (outpoint, utxo) in ordered {
+            encode_len_prefixed_str(&mut bytes, &outpoint.txid);
+            bytes.extend_from_slice(&outpoint.index.to_le_bytes());
+            encode_len_prefixed_str(&mut bytes, &utxo.address);
+            bytes.extend_from_slice(&utxo.amount.to_le_bytes());
+            bytes.push(u8::from(utxo.coinbase));
+            bytes.extend_from_slice(&utxo.height.to_le_bytes());
+        }
+
+        Ok(hex::encode(Sha256::digest(bytes)))
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -110,4 +216,81 @@ pub struct ChainState {
     pub orphan_missing_parents: HashMap<Hash, Vec<Hash>>,
     #[serde(default)]
     pub orphan_received_at_ms: HashMap<Hash, u64>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn utxo(txid: &str, index: u32, address: &str, amount: u64, height: u64) -> (OutPoint, Utxo) {
+        let outpoint = OutPoint {
+            txid: txid.to_string(),
+            index,
+        };
+        let utxo = Utxo {
+            outpoint: outpoint.clone(),
+            address: address.to_string(),
+            amount,
+            coinbase: false,
+            height,
+        };
+        (outpoint, utxo)
+    }
+
+    fn insert_utxo(state: &mut UtxoState, outpoint: OutPoint, utxo: Utxo) {
+        state
+            .address_index
+            .entry(utxo.address.clone())
+            .or_default()
+            .push(outpoint.clone());
+        state.utxos.insert(outpoint, utxo);
+    }
+
+    #[test]
+    fn state_root_is_independent_of_hashmap_insertion_order() {
+        let entries = vec![
+            utxo("tx-b", 1, "bob", 25, 2),
+            utxo("tx-a", 0, "alice", 10, 1),
+            utxo("tx-b", 0, "carol", 30, 2),
+        ];
+        let mut forward = UtxoState::default();
+        let mut reverse = UtxoState::default();
+
+        for (outpoint, utxo) in entries.clone() {
+            insert_utxo(&mut forward, outpoint, utxo);
+        }
+        for (outpoint, utxo) in entries.into_iter().rev() {
+            insert_utxo(&mut reverse, outpoint, utxo);
+        }
+
+        assert_eq!(
+            forward.compute_state_root().unwrap(),
+            reverse.compute_state_root().unwrap()
+        );
+    }
+
+    #[test]
+    fn state_root_changes_when_utxo_state_changes() {
+        let (outpoint, utxo) = utxo("tx-a", 0, "alice", 10, 1);
+        let mut state = UtxoState::default();
+        insert_utxo(&mut state, outpoint.clone(), utxo);
+        let before = state.compute_state_root().unwrap();
+
+        state.utxos.get_mut(&outpoint).unwrap().amount = 11;
+
+        assert_ne!(before, state.compute_state_root().unwrap());
+    }
+
+    #[test]
+    fn non_deterministic_address_index_is_rejected() {
+        let (outpoint, utxo) = utxo("tx-a", 0, "alice", 10, 1);
+        let mut state = UtxoState::default();
+        insert_utxo(&mut state, outpoint.clone(), utxo);
+        state.address_index.get_mut("alice").unwrap().push(outpoint);
+
+        assert!(matches!(
+            state.compute_state_root(),
+            Err(PulseError::NonDeterministicState(_))
+        ));
+    }
 }

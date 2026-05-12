@@ -1,6 +1,9 @@
 use crate::{
+    errors::PulseError,
+    state::ChainState,
     tx::compute_txid,
     types::{compute_block_hash, compute_merkle_root, Block, BlockHeader, Transaction, TxOutput},
+    validation::compute_post_state_root,
 };
 
 pub fn current_ts() -> u64 {
@@ -58,4 +61,14 @@ pub fn build_candidate_block(
 pub fn refresh_block_consensus_ids(block: &mut Block) {
     block.header.merkle_root = compute_merkle_root(&block.transactions);
     block.hash = compute_block_hash(&block.header);
+}
+
+pub fn refresh_block_consensus_ids_with_state(
+    block: &mut Block,
+    state: &ChainState,
+) -> Result<(), PulseError> {
+    block.header.merkle_root = compute_merkle_root(&block.transactions);
+    block.header.state_root = compute_post_state_root(block, state)?;
+    block.hash = compute_block_hash(&block.header);
+    Ok(())
 }

@@ -2,7 +2,9 @@ use crate::api::{ApiResponse, MineRequest, RpcStateLike};
 use axum::{extract::State, Json};
 use pulsedag_core::{
     accept_block, dev_difficulty_snapshot, dev_mine_header, dev_pow_accepts, dev_target_u64,
-    mining::{build_candidate_block, build_coinbase_transaction},
+    mining::{
+        build_candidate_block, build_coinbase_transaction, refresh_block_consensus_ids_with_state,
+    },
     AcceptSource,
 };
 
@@ -50,7 +52,7 @@ pub async fn post_mine_preview<S: RpcStateLike>(
     let snapshot = dev_difficulty_snapshot(&chain);
     let difficulty = snapshot.suggested_difficulty;
     let header_difficulty = u32::try_from(difficulty).unwrap_or(u32::MAX);
-    let candidate = build_candidate_block(
+    let mut candidate = build_candidate_block(
         parent_hashes.clone(),
         next_height,
         header_difficulty,
@@ -60,6 +62,9 @@ pub async fn post_mine_preview<S: RpcStateLike>(
             next_height,
         )],
     );
+    if let Err(e) = refresh_block_consensus_ids_with_state(&mut candidate, &chain) {
+        return Json(ApiResponse::err("STATE_ROOT_ERROR", e.to_string()));
+    }
     let max_tries = req.pow_max_tries.unwrap_or(10_000).min(1_000_000);
     let (mined_header, _accepted, pow_tries, pow_hash) =
         dev_mine_header(candidate.header.clone(), max_tries);
@@ -109,6 +114,9 @@ pub async fn post_mine<S: RpcStateLike>(
     txs.extend(mempool_txs);
     let header_difficulty = u32::try_from(difficulty).unwrap_or(u32::MAX);
     let mut block = build_candidate_block(parents.clone(), height, header_difficulty, txs);
+    if let Err(e) = refresh_block_consensus_ids_with_state(&mut block, &chain) {
+        return Json(ApiResponse::err("STATE_ROOT_ERROR", e.to_string()));
+    }
     let max_tries = req.pow_max_tries.unwrap_or(10_000).min(1_000_000);
     let (mined_header, _accepted, pow_tries, pow_hash) =
         dev_mine_header(block.header.clone(), max_tries);

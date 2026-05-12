@@ -12,7 +12,7 @@ use crate::{
 use axum::{extract::State, Json};
 use pulsedag_core::{
     build_candidate_block, build_coinbase_transaction, dev_difficulty_snapshot, pow_preimage_bytes,
-    preferred_tip_hash, state::ChainState,
+    preferred_tip_hash, refresh_block_consensus_ids_with_state, state::ChainState,
 };
 use sha3::{Digest, Keccak256};
 use tracing::info;
@@ -287,7 +287,10 @@ pub async fn post_mining_template<S: RpcStateLike>(
     )];
     txs.extend(template_ordered_transactions(&chain));
     let header_difficulty = lifecycle.difficulty;
-    let block = build_candidate_block(parents.clone(), height, header_difficulty, txs);
+    let mut block = build_candidate_block(parents.clone(), height, header_difficulty, txs);
+    if let Err(e) = refresh_block_consensus_ids_with_state(&mut block, &chain) {
+        return Json(ApiResponse::err("STATE_ROOT_ERROR", e.to_string()));
+    }
     let target_u64 = lifecycle.target_u64;
     let compact_target = header_difficulty;
     let template_txids = block

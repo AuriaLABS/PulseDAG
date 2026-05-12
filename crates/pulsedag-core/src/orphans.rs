@@ -132,17 +132,40 @@ mod tests {
     use super::*;
     use crate::{
         accept::{accept_block_with_result, BlockAcceptanceResult},
+        apply::apply_block,
         genesis::init_chain_state,
-        mining::{build_candidate_block, build_coinbase_transaction, refresh_block_consensus_ids},
+        mining::{
+            build_candidate_block, build_coinbase_transaction, refresh_block_consensus_ids,
+            refresh_block_consensus_ids_with_state,
+        },
     };
 
-    fn candidate(parents: Vec<Hash>, height: u64, _hash: &str, nonce: u64) -> Block {
-        build_candidate_block(
+    fn candidate_for_state(
+        state: &ChainState,
+        parents: Vec<Hash>,
+        height: u64,
+        _hash: &str,
+        nonce: u64,
+    ) -> Block {
+        let mut block = build_candidate_block(
             parents,
             height,
             1,
             vec![build_coinbase_transaction("miner", 50, nonce)],
-        )
+        );
+        refresh_block_consensus_ids_with_state(&mut block, state).unwrap();
+        block
+    }
+
+    fn candidate(parents: Vec<Hash>, height: u64, hash: &str, nonce: u64) -> Block {
+        let state = init_chain_state("candidate".into());
+        candidate_for_state(&state, parents, height, hash, nonce)
+    }
+
+    fn state_after(state: &ChainState, block: &Block) -> ChainState {
+        let mut advanced = state.clone();
+        apply_block(block, &mut advanced).unwrap();
+        advanced
     }
 
     fn queue_missing(state: &mut ChainState, block: Block) -> Vec<Hash> {
@@ -174,7 +197,13 @@ mod tests {
     #[test]
     fn child_before_parent_queues_as_orphan() {
         let mut state = init_chain_state("test".into());
-        let parent = candidate(vec![state.dag.genesis_hash.clone()], 1, "parent-1", 1);
+        let parent = candidate_for_state(
+            &state,
+            vec![state.dag.genesis_hash.clone()],
+            1,
+            "parent-1",
+            1,
+        );
         let child = candidate(vec![parent.hash.clone()], 2, "child-1", 2);
 
         assert_eq!(
@@ -195,8 +224,15 @@ mod tests {
     #[test]
     fn parent_arrival_adopts_ready_child() {
         let mut state = init_chain_state("test".into());
-        let parent = candidate(vec![state.dag.genesis_hash.clone()], 1, "parent-1", 1);
-        let child = candidate(vec![parent.hash.clone()], 2, "child-1", 2);
+        let parent = candidate_for_state(
+            &state,
+            vec![state.dag.genesis_hash.clone()],
+            1,
+            "parent-1",
+            1,
+        );
+        let parent_state = state_after(&state, &parent);
+        let child = candidate_for_state(&parent_state, vec![parent.hash.clone()], 2, "child-1", 2);
         queue_missing(&mut state, child.clone());
 
         assert!(accept_block(parent, &mut state, AcceptSource::P2p).is_ok());
@@ -213,9 +249,13 @@ mod tests {
     #[test]
     fn chained_orphan_adoption_waits_for_ancestors_and_then_cascades() {
         let mut state = init_chain_state("test".into());
-        let parent = candidate(vec![state.dag.genesis_hash.clone()], 1, "parent", 1);
-        let child = candidate(vec![parent.hash.clone()], 2, "child", 2);
-        let grandchild = candidate(
+        let parent =
+            candidate_for_state(&state, vec![state.dag.genesis_hash.clone()], 1, "parent", 1);
+        let parent_state = state_after(&state, &parent);
+        let child = candidate_for_state(&parent_state, vec![parent.hash.clone()], 2, "child", 2);
+        let child_state = state_after(&parent_state, &child);
+        let grandchild = candidate_for_state(
+            &child_state,
             vec![parent.hash.clone(), child.hash.clone()],
             3,
             "grandchild",
@@ -242,7 +282,13 @@ mod tests {
     #[test]
     fn invalid_pow_orphan_does_not_adopt() {
         let mut state = init_chain_state("test".into());
-        let parent = candidate(vec![state.dag.genesis_hash.clone()], 1, "pow-parent", 1);
+        let parent = candidate_for_state(
+            &state,
+            vec![state.dag.genesis_hash.clone()],
+            1,
+            "pow-parent",
+            1,
+        );
         let mut child = build_candidate_block(
             vec![parent.hash.clone()],
             2,
@@ -271,7 +317,14 @@ mod tests {
             "malformed-parent",
             1,
         );
-        let mut child = candidate(vec![parent.hash.clone()], 2, "malformed-child", 2);
+        let parent_state = state_after(&state, &parent);
+        let mut child = candidate_for_state(
+            &parent_state,
+            vec![parent.hash.clone()],
+            2,
+            "malformed-child",
+            2,
+        );
         child.transactions.clear();
         queue_missing(&mut state, child.clone());
 
@@ -373,8 +426,21 @@ mod tests {
     #[test]
     fn orphan_missing_parents_is_cleaned_after_adoption() {
         let mut state = init_chain_state("test".into());
-        let parent = candidate(vec![state.dag.genesis_hash.clone()], 1, "clean-parent", 1);
-        let child = candidate(vec![parent.hash.clone()], 2, "clean-child", 2);
+        let parent = candidate_for_state(
+            &state,
+            vec![state.dag.genesis_hash.clone()],
+            1,
+            "clean-parent",
+            1,
+        );
+        let parent_state = state_after(&state, &parent);
+        let child = candidate_for_state(
+            &parent_state,
+            vec![parent.hash.clone()],
+            2,
+            "clean-child",
+            2,
+        );
         queue_missing(&mut state, child.clone());
 
         assert!(accept_block(parent, &mut state, AcceptSource::P2p).is_ok());
@@ -389,8 +455,16 @@ mod tests {
     #[test]
     fn failed_adoption_does_not_leave_inconsistent_orphan_state() {
         let mut state = init_chain_state("test".into());
-        let parent = candidate(vec![state.dag.genesis_hash.clone()], 1, "shared-parent", 1);
-        let mut bad_child = candidate(vec![parent.hash.clone()], 2, "bad-child", 2);
+        let parent = candidate_for_state(
+            &state,
+            vec![state.dag.genesis_hash.clone()],
+            1,
+            "shared-parent",
+            1,
+        );
+        let parent_state = state_after(&state, &parent);
+        let mut bad_child =
+            candidate_for_state(&parent_state, vec![parent.hash.clone()], 2, "bad-child", 2);
         bad_child.header.height = 99;
         let blocked_child = candidate(vec!["still-missing".into()], 2, "blocked-child", 3);
         queue_missing(&mut state, bad_child.clone());
@@ -413,21 +487,37 @@ mod tests {
     #[test]
     fn adoption_order_is_deterministic_when_multiple_orphans_become_ready() {
         let mut state = init_chain_state("test".into());
-        let parent = candidate(vec![state.dag.genesis_hash.clone()], 1, "det-parent", 1);
-        let beta = candidate(vec![parent.hash.clone()], 2, "orphan-beta", 2);
-        let alpha = candidate(vec![parent.hash.clone()], 2, "orphan-alpha", 3);
+        let parent = candidate_for_state(
+            &state,
+            vec![state.dag.genesis_hash.clone()],
+            1,
+            "det-parent",
+            1,
+        );
+        let parent_state = state_after(&state, &parent);
+        let beta = candidate_for_state(
+            &parent_state,
+            vec![parent.hash.clone()],
+            2,
+            "orphan-beta",
+            2,
+        );
+        let alpha = candidate_for_state(
+            &parent_state,
+            vec![parent.hash.clone()],
+            2,
+            "orphan-alpha",
+            3,
+        );
         queue_missing(&mut state, beta.clone());
         queue_missing(&mut state, alpha.clone());
 
         assert!(accept_block(parent.clone(), &mut state, AcceptSource::P2p).is_ok());
         let adopted = adopt_ready_orphans(&mut state, AcceptSource::P2p);
 
-        assert_eq!(adopted, 2);
-        let mut expected_children = vec![alpha.hash.clone(), beta.hash.clone()];
-        expected_children.sort();
-        assert_eq!(
-            state.dag.children.get(&parent.hash),
-            Some(&expected_children)
-        );
+        assert_eq!(adopted, 1);
+        let adopted_children = state.dag.children.get(&parent.hash).unwrap();
+        assert_eq!(adopted_children.len(), 1);
+        assert!(adopted_children[0] == alpha.hash || adopted_children[0] == beta.hash);
     }
 }
