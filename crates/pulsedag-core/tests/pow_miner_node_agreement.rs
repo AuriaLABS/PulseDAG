@@ -4,7 +4,9 @@ use pulsedag_core::{
     accept_block, mine_header, pow_accepts, pow_hash_hex, pow_target_u64, verify_work,
     AcceptSource, BlockHeader,
 };
-use pulsedag_core::{build_candidate_block, build_coinbase_transaction};
+use pulsedag_core::{
+    build_candidate_block, build_coinbase_transaction, refresh_block_consensus_ids_with_state,
+};
 
 fn sample_header() -> BlockHeader {
     BlockHeader {
@@ -61,7 +63,8 @@ fn duplicate_block_is_reported_as_duplicate() {
     let mut state = init_chain_state("pow-dup".to_string());
     let parents = vec![state.dag.genesis_hash.clone()];
     let txs = vec![build_coinbase_transaction("miner1", 50, 1)];
-    let block = build_candidate_block(parents, 1, 1, txs);
+    let mut block = build_candidate_block(parents, 1, 1, txs);
+    refresh_block_consensus_ids_with_state(&mut block, &state).unwrap();
 
     let first = accept_block(block.clone(), &mut state, AcceptSource::P2p);
     assert!(first.is_ok());

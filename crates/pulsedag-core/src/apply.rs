@@ -3,7 +3,12 @@ use crate::{
     mining::is_coinbase,
     state::ChainState,
     types::{Block, OutPoint, Transaction, Utxo},
+    validation::validate_block,
 };
+
+fn outpoint_label(outpoint: &OutPoint) -> String {
+    format!("{}:{}", outpoint.txid, outpoint.index)
+}
 
 pub fn apply_transaction(
     tx: &Transaction,
@@ -28,6 +33,9 @@ pub fn apply_transaction(
             txid: tx.txid.clone(),
             index: index as u32,
         };
+        if state.utxo.utxos.contains_key(&outpoint) {
+            return Err(PulseError::DuplicateOutpoint(outpoint_label(&outpoint)));
+        }
         let utxo = Utxo {
             outpoint: outpoint.clone(),
             address: output.address.clone(),
@@ -52,7 +60,7 @@ pub fn apply_transaction(
     Ok(())
 }
 
-pub fn apply_block(block: &Block, state: &mut ChainState) -> Result<(), PulseError> {
+pub fn commit_block_to_state(block: &Block, state: &mut ChainState) -> Result<(), PulseError> {
     let height = block.header.height;
     for tx in &block.transactions {
         apply_transaction(tx, state, height)?;
@@ -69,5 +77,14 @@ pub fn apply_block(block: &Block, state: &mut ChainState) -> Result<(), PulseErr
     state.dag.tips.insert(block.hash.clone());
     state.dag.best_height = state.dag.best_height.max(height);
     state.dag.blocks.insert(block.hash.clone(), block.clone());
+    Ok(())
+}
+
+pub fn apply_block(block: &Block, state: &mut ChainState) -> Result<(), PulseError> {
+    validate_block(block, state)?;
+
+    let mut working = state.clone();
+    commit_block_to_state(block, &mut working)?;
+    *state = working;
     Ok(())
 }

@@ -32,6 +32,29 @@ pub fn genesis_transaction() -> Transaction {
 
 pub fn genesis_block() -> Block {
     let txs = vec![genesis_transaction()];
+    let tx = &txs[0];
+    let outpoint = OutPoint {
+        txid: tx.txid.clone(),
+        index: 0,
+    };
+    let utxo = Utxo {
+        outpoint: outpoint.clone(),
+        address: GENESIS_TREASURY.into(),
+        amount: GENESIS_SUPPLY,
+        coinbase: false,
+        height: 0,
+    };
+    let mut utxos = HashMap::new();
+    utxos.insert(outpoint.clone(), utxo);
+    let mut address_index = HashMap::new();
+    address_index.insert(GENESIS_TREASURY.into(), vec![outpoint]);
+    let state_root = UtxoState {
+        utxos,
+        address_index,
+    }
+    .compute_state_root()
+    .expect("genesis UTXO state must be deterministic");
+
     let mut block = Block {
         hash: String::new(),
         header: BlockHeader {
@@ -41,7 +64,7 @@ pub fn genesis_block() -> Block {
             difficulty: 1,
             nonce: 0,
             merkle_root: compute_merkle_root(&txs),
-            state_root: "genesis-state".into(),
+            state_root,
             blue_score: 0,
             height: 0,
         },

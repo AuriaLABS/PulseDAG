@@ -604,7 +604,10 @@ mod tests {
     use super::*;
     use crate::{
         genesis::init_chain_state,
-        mining::{build_candidate_block, build_coinbase_transaction, refresh_block_consensus_ids},
+        mining::{
+            build_candidate_block, build_coinbase_transaction, refresh_block_consensus_ids,
+            refresh_block_consensus_ids_with_state,
+        },
     };
     use std::collections::{BTreeMap, BTreeSet};
 
@@ -672,7 +675,9 @@ mod tests {
     fn valid_acceptance_block(state: &ChainState, _hash: &str, coinbase_nonce: u64) -> Block {
         let parents = vec![state.dag.genesis_hash.clone()];
         let txs = vec![build_coinbase_transaction("miner1", 50, coinbase_nonce)];
-        build_candidate_block(parents, 1, 1, txs)
+        let mut block = build_candidate_block(parents, 1, 1, txs);
+        refresh_block_consensus_ids_with_state(&mut block, state).unwrap();
+        block
     }
 
     fn invalid_pow_acceptance_block(state: &ChainState) -> Block {
@@ -954,7 +959,8 @@ mod tests {
         let mut state = init_chain_state("test".to_string());
         let parents = vec![state.dag.genesis_hash.clone()];
         let txs = vec![build_coinbase_transaction("miner1", 50, 1)];
-        let block = build_candidate_block(parents, 1, 1, txs);
+        let mut block = build_candidate_block(parents, 1, 1, txs);
+        refresh_block_consensus_ids_with_state(&mut block, &state).unwrap();
 
         assert!(accept_block(block, &mut state, AcceptSource::P2p).is_ok());
     }
@@ -964,7 +970,8 @@ mod tests {
         let mut state = init_chain_state("test".to_string());
         let parents = vec![state.dag.genesis_hash.clone()];
         let txs = vec![build_coinbase_transaction("miner1", 50, 1)];
-        let block = build_candidate_block(parents, 1, 1, txs);
+        let mut block = build_candidate_block(parents, 1, 1, txs);
+        refresh_block_consensus_ids_with_state(&mut block, &state).unwrap();
         assert!(accept_block(block.clone(), &mut state, AcceptSource::P2p).is_ok());
         let outcome = accept_block_with_result(block, &mut state, AcceptSource::P2p);
         assert_eq!(outcome, BlockAcceptanceResult::Duplicate);
@@ -1015,7 +1022,8 @@ mod tests {
         let txs = vec![build_coinbase_transaction("miner1", 50, 1)];
         let mut peer_state = init_chain_state("agreement".to_string());
         let mut mining_state = init_chain_state("agreement".to_string());
-        let block = build_candidate_block(parents, 1, 1, txs);
+        let mut block = build_candidate_block(parents, 1, 1, txs);
+        refresh_block_consensus_ids_with_state(&mut block, &peer_state).unwrap();
 
         let peer_outcome =
             accept_block_with_result(block.clone(), &mut peer_state, AcceptSource::P2p);

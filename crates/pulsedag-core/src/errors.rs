@@ -20,6 +20,12 @@ pub enum PulseError {
     InvalidTransaction(String),
     #[error("invalid txid")]
     InvalidTxid,
+    #[error("invalid state root: supplied {supplied}, computed {computed}")]
+    InvalidStateRoot { supplied: String, computed: String },
+    #[error("duplicate UTXO outpoint: {0}")]
+    DuplicateOutpoint(String),
+    #[error("non-deterministic state: {0}")]
+    NonDeterministicState(String),
     #[error("chain id mismatch")]
     ChainIdMismatch,
     #[error("storage error: {0}")]

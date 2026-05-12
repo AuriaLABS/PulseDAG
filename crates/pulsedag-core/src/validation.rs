@@ -171,15 +171,31 @@ pub fn validate_block(block: &Block, state: &ChainState) -> Result<(), PulseErro
         }
     }
 
+    let computed_state_root = compute_post_state_root(block, state)?;
+    if computed_state_root != block.header.state_root {
+        return Err(PulseError::InvalidStateRoot {
+            supplied: block.header.state_root.clone(),
+            computed: computed_state_root,
+        });
+    }
+    Ok(())
+}
+
+pub fn compute_post_state_root(block: &Block, state: &ChainState) -> Result<String, PulseError> {
     let mut working = state.clone();
     working.mempool.transactions.clear();
     working.mempool.spent_outpoints.clear();
+
+    let Some(coinbase) = block.transactions.first() else {
+        return Err(PulseError::InvalidBlock("empty block".into()));
+    };
+    apply_transaction(coinbase, &mut working, block.header.height)?;
 
     for tx in block.transactions.iter().skip(1) {
         validate_transaction(tx, &working)?;
         apply_transaction(tx, &mut working, block.header.height)?;
     }
-    Ok(())
+    working.utxo.compute_state_root()
 }
 
 #[cfg(test)]
@@ -187,8 +203,12 @@ mod tests {
     use super::*;
     use crate::{
         accept::{accept_transaction_with_result, AcceptSource, TxAcceptanceResult},
-        genesis::init_chain_state,
-        mining::{build_candidate_block, build_coinbase_transaction, refresh_block_consensus_ids},
+        apply::apply_block,
+        genesis::{genesis_transaction, init_chain_state},
+        mining::{
+            build_candidate_block, build_coinbase_transaction, refresh_block_consensus_ids,
+            refresh_block_consensus_ids_with_state,
+        },
         tx::{address_from_public_key, compute_txid, signing_message},
         types::{TxInput, TxOutput, Utxo},
     };
@@ -200,7 +220,9 @@ mod tests {
 
     fn structurally_valid_block(state: &ChainState) -> Block {
         let parents = vec![state.dag.genesis_hash.clone()];
-        build_candidate_block(parents, 1, 1, vec![coinbase(1)])
+        let mut block = build_candidate_block(parents, 1, 1, vec![coinbase(1)]);
+        refresh_block_consensus_ids_with_state(&mut block, state).unwrap();
+        block
     }
 
     fn non_coinbase_tx(txid: &str) -> Transaction {
@@ -751,6 +773,50 @@ mod tests {
     }
 
     #[test]
+    fn validate_block_rejects_wrong_state_root() {
+        let state = init_chain_state("test".to_string());
+        let mut block = structurally_valid_block(&state);
+        block.header.state_root = "wrong-state-root".to_string();
+        refresh_block_consensus_ids(&mut block);
+
+        assert_validation_error(validate_block(&block, &state), |err| {
+            matches!(err, PulseError::InvalidStateRoot { .. })
+        });
+    }
+
+    #[test]
+    fn failed_block_application_leaves_state_unchanged() {
+        let mut state = init_chain_state("test".to_string());
+        let before_root = state.utxo.compute_state_root().unwrap();
+        let before_tips = state.dag.tips.clone();
+        let before_block_count = state.dag.blocks.len();
+        let mut block = structurally_valid_block(&state);
+        block.header.state_root = "wrong-state-root".to_string();
+        refresh_block_consensus_ids(&mut block);
+
+        assert!(matches!(
+            apply_block(&block, &mut state),
+            Err(PulseError::InvalidStateRoot { .. })
+        ));
+
+        assert_eq!(before_root, state.utxo.compute_state_root().unwrap());
+        assert_eq!(before_tips, state.dag.tips);
+        assert_eq!(before_block_count, state.dag.blocks.len());
+    }
+
+    #[test]
+    fn validate_block_rejects_duplicate_outpoint_outputs() {
+        let state = init_chain_state("test".to_string());
+        let parents = vec![state.dag.genesis_hash.clone()];
+        let mut block = build_candidate_block(parents, 1, 1, vec![genesis_transaction()]);
+        refresh_block_consensus_ids(&mut block);
+
+        assert_validation_error(validate_block(&block, &state), |err| {
+            matches!(err, PulseError::DuplicateOutpoint(_))
+        });
+    }
+
+    #[test]
     fn validate_block_accepts_valid_multi_parent_block() {
         let mut state = init_chain_state("test".to_string());
         let mut parent = structurally_valid_block(&state);
@@ -761,7 +827,7 @@ mod tests {
         let parents = vec![state.dag.genesis_hash.clone(), parent.hash.clone()];
         let mut block = build_candidate_block(parents, 2, 1, vec![coinbase(2)]);
         block.header.timestamp = parent.header.timestamp;
-        refresh_block_consensus_ids(&mut block);
+        refresh_block_consensus_ids_with_state(&mut block, &state).unwrap();
 
         assert!(validate_block(&block, &state).is_ok());
     }
@@ -781,7 +847,7 @@ mod tests {
         let txs = vec![build_coinbase_transaction("miner1", 50, 1)];
         let mut block = build_candidate_block(parents, 1, u32::MAX, txs);
         block.header.nonce = 0;
-        refresh_block_consensus_ids(&mut block);
+        refresh_block_consensus_ids_with_state(&mut block, &state).unwrap();
 
         assert!(
             validate_block(&block, &state).is_ok(),

@@ -7,7 +7,7 @@ use crate::{
 use axum::{extract::State, Json};
 use pulsedag_core::{
     accept_block, build_candidate_block, build_coinbase_transaction, dev_difficulty_snapshot,
-    pow_validation_result, AcceptSource,
+    pow_validation_result, refresh_block_consensus_ids_with_state, AcceptSource,
 };
 use std::{
     fs,
@@ -75,7 +75,10 @@ pub async fn post_claim_mining_job<S: RpcStateLike>(
     )];
     txs.extend(chain.mempool.transactions.values().cloned());
     let header_difficulty = u32::try_from(difficulty).unwrap_or(u32::MAX);
-    let block = build_candidate_block(parents, height, header_difficulty, txs);
+    let mut block = build_candidate_block(parents, height, header_difficulty, txs);
+    if let Err(e) = refresh_block_consensus_ids_with_state(&mut block, &chain) {
+        return Json(ApiResponse::err("STATE_ROOT_ERROR", e.to_string()));
+    }
     let now = unix_now();
     let job_id = format!("job-{}-{}", req.worker_id, now);
     let expires_at_unix = now + 30;

@@ -680,7 +680,7 @@ mod tests {
         build_candidate_block, build_coinbase_transaction, dev_difficulty_snapshot,
         dev_mine_header, dev_target_u64,
         errors::PulseError,
-        preferred_tip_hash,
+        preferred_tip_hash, refresh_block_consensus_ids_with_state,
         state::ChainState,
         types::{Block, Transaction},
     };
@@ -874,6 +874,7 @@ mod tests {
             u32::try_from(dev_difficulty_snapshot(&chain).suggested_difficulty).unwrap_or(u32::MAX);
         let txs = vec![build_coinbase_transaction("kaspa:qptestminer", 50, height)];
         let mut block = build_candidate_block(parents, height, difficulty, txs);
+        refresh_block_consensus_ids_with_state(&mut block, &chain).unwrap();
         let (mined_header, mined, _, _) = dev_mine_header(block.header.clone(), 100_000);
         assert!(mined, "expected test block to satisfy dev pow");
         block.header = mined_header;
@@ -1318,7 +1319,8 @@ mod tests {
         let difficulty =
             u32::try_from(dev_difficulty_snapshot(&chain).suggested_difficulty).unwrap_or(u32::MAX);
         let txs = vec![build_coinbase_transaction("kaspa:qptestminer", 50, height)];
-        let block = build_candidate_block(parents, height, difficulty, txs);
+        let mut block = build_candidate_block(parents, height, difficulty, txs);
+        refresh_block_consensus_ids_with_state(&mut block, &chain).unwrap();
         let broadcasts = Arc::new(AtomicUsize::new(0));
         let broadcast_counter = broadcasts.clone();
 

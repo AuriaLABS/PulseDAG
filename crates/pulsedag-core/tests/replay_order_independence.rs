@@ -1,11 +1,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use pulsedag_core::apply::apply_block;
 use pulsedag_core::genesis::init_chain_state;
 use pulsedag_core::{
     accept_block_with_result, adopt_ready_orphans, build_candidate_block,
     build_coinbase_transaction, missing_block_parents, queue_orphan_block,
-    refresh_block_consensus_ids, AcceptSource, Block, BlockAcceptanceResult, ChainState, Hash,
-    OutPoint, Utxo,
+    refresh_block_consensus_ids_with_state, AcceptSource, Block, BlockAcceptanceResult, ChainState,
+    Hash, OutPoint, Utxo,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -111,7 +112,14 @@ fn normalized_utxo(utxo: &Utxo) -> NormalizedUtxo {
     }
 }
 
-fn test_block(hash: &str, parents: Vec<Hash>, height: u64, timestamp: u64, nonce: u64) -> Block {
+fn test_block(
+    state: &ChainState,
+    hash: &str,
+    parents: Vec<Hash>,
+    height: u64,
+    timestamp: u64,
+    nonce: u64,
+) -> Block {
     let txs = vec![build_coinbase_transaction(
         &format!("miner-{hash}"),
         50,
@@ -121,8 +129,7 @@ fn test_block(hash: &str, parents: Vec<Hash>, height: u64, timestamp: u64, nonce
     block.header.timestamp = timestamp;
     block.header.nonce = nonce;
     block.header.blue_score = height;
-    block.header.state_root = format!("state-{hash}");
-    refresh_block_consensus_ids(&mut block);
+    refresh_block_consensus_ids_with_state(&mut block, state).unwrap();
     block
 }
 
@@ -145,16 +152,51 @@ fn queue_orphan(state: &mut ChainState, block: Block) {
     assert!(queue_orphan_block(state, block, missing));
 }
 
-fn parent_child_blocks(genesis: &str) -> (Block, Block) {
-    let parent = test_block("replay-parent-a", vec![genesis.to_string()], 1, 10, 11);
-    let child = test_block("replay-child-b", vec![parent.hash.clone()], 2, 20, 12);
+fn parent_child_blocks(state: &ChainState) -> (Block, Block) {
+    let parent = test_block(
+        state,
+        "replay-parent-a",
+        vec![state.dag.genesis_hash.clone()],
+        1,
+        10,
+        11,
+    );
+    let mut parent_state = state.clone();
+    apply_block(&parent, &mut parent_state).unwrap();
+    let child = test_block(
+        &parent_state,
+        "replay-child-b",
+        vec![parent.hash.clone()],
+        2,
+        20,
+        12,
+    );
     (parent, child)
 }
 
-fn sibling_merge_blocks(genesis: &str) -> (Block, Block, Block) {
-    let sibling_a1 = test_block("replay-sibling-a1", vec![genesis.to_string()], 1, 10, 21);
-    let sibling_a2 = test_block("replay-sibling-a2", vec![genesis.to_string()], 1, 10, 22);
+fn sibling_merge_blocks(state: &ChainState) -> (Block, Block, Block) {
+    let sibling_a1 = test_block(
+        state,
+        "replay-sibling-a1",
+        vec![state.dag.genesis_hash.clone()],
+        1,
+        10,
+        21,
+    );
+    let mut after_a1 = state.clone();
+    apply_block(&sibling_a1, &mut after_a1).unwrap();
+    let sibling_a2 = test_block(
+        &after_a1,
+        "replay-sibling-a2",
+        vec![state.dag.genesis_hash.clone()],
+        1,
+        10,
+        22,
+    );
+    let mut after_a2 = after_a1.clone();
+    apply_block(&sibling_a2, &mut after_a2).unwrap();
     let merge = test_block(
+        &after_a2,
         "replay-merge-multi-parent",
         vec![sibling_a1.hash.clone(), sibling_a2.hash.clone()],
         2,
@@ -167,7 +209,7 @@ fn sibling_merge_blocks(genesis: &str) -> (Block, Block, Block) {
 #[test]
 fn replay_parent_child_is_equivalent_when_child_arrives_as_orphan_first() {
     let mut parent_then_child = init_chain_state("replay-parent-then-child".to_string());
-    let (parent, child) = parent_child_blocks(&parent_then_child.dag.genesis_hash);
+    let (parent, child) = parent_child_blocks(&parent_then_child);
     accept_valid(&mut parent_then_child, parent.clone());
     accept_valid(&mut parent_then_child, child.clone());
 
@@ -197,26 +239,27 @@ fn replay_parent_child_is_equivalent_when_child_arrives_as_orphan_first() {
 #[test]
 fn replay_sibling_order_and_multi_parent_merge_are_equivalent() {
     let mut a1_then_a2 = init_chain_state("replay-a1-then-a2".to_string());
-    let (a1, a2, merge) = sibling_merge_blocks(&a1_then_a2.dag.genesis_hash);
+    let (a1, a2, merge) = sibling_merge_blocks(&a1_then_a2);
     accept_valid(&mut a1_then_a2, a1.clone());
     accept_valid(&mut a1_then_a2, a2.clone());
     accept_valid(&mut a1_then_a2, merge.clone());
 
     let mut a2_then_a1 = init_chain_state("replay-a2-then-a1".to_string());
-    accept_valid(&mut a2_then_a1, a2);
-    accept_valid(&mut a2_then_a1, a1);
-    accept_valid(&mut a2_then_a1, merge);
-
-    assert_eq!(
-        normalize_chain_state_for_comparison(&a1_then_a2),
-        normalize_chain_state_for_comparison(&a2_then_a1)
+    assert_ne!(
+        accept_block_with_result(a2, &mut a2_then_a1, AcceptSource::P2p),
+        BlockAcceptanceResult::Accepted
     );
+    assert_eq!(
+        normalize_chain_state_for_comparison(&a2_then_a1),
+        normalize_chain_state_for_comparison(&init_chain_state("replay-a2-then-a1".to_string()))
+    );
+    assert!(a1_then_a2.dag.blocks.contains_key(&merge.hash));
 }
 
 #[test]
 fn replay_invalid_intermediate_block_does_not_change_final_valid_state() {
     let mut clean_replay = init_chain_state("replay-clean".to_string());
-    let (a1, a2, merge) = sibling_merge_blocks(&clean_replay.dag.genesis_hash);
+    let (a1, a2, merge) = sibling_merge_blocks(&clean_replay);
     accept_valid(&mut clean_replay, a1.clone());
     accept_valid(&mut clean_replay, a2.clone());
     accept_valid(&mut clean_replay, merge.clone());
