@@ -4,15 +4,19 @@ use crate::{
     state::{
         ChainState, ContractRuntimeConfig, ContractRuntimeState, DagState, Mempool, UtxoState,
     },
-    types::{Block, BlockHeader, OutPoint, Transaction, TxOutput, Utxo},
+    tx::compute_txid,
+    types::{
+        compute_block_hash, compute_merkle_root, Block, BlockHeader, OutPoint, Transaction,
+        TxOutput, Utxo,
+    },
 };
 
 pub const GENESIS_TREASURY: &str = "genesis-treasury";
 pub const GENESIS_SUPPLY: u64 = 1_000_000_000;
 
 pub fn genesis_transaction() -> Transaction {
-    Transaction {
-        txid: "genesis-tx".into(),
+    let mut tx = Transaction {
+        txid: String::new(),
         version: 1,
         inputs: vec![],
         outputs: vec![TxOutput {
@@ -21,25 +25,30 @@ pub fn genesis_transaction() -> Transaction {
         }],
         fee: 0,
         nonce: 0,
-    }
+    };
+    tx.txid = compute_txid(&tx);
+    tx
 }
 
 pub fn genesis_block() -> Block {
-    Block {
-        hash: "genesis-block".into(),
+    let txs = vec![genesis_transaction()];
+    let mut block = Block {
+        hash: String::new(),
         header: BlockHeader {
             version: 1,
             parents: vec![],
             timestamp: 0,
             difficulty: 1,
             nonce: 0,
-            merkle_root: "genesis-merkle".into(),
+            merkle_root: compute_merkle_root(&txs),
             state_root: "genesis-state".into(),
             blue_score: 0,
             height: 0,
         },
-        transactions: vec![genesis_transaction()],
-    }
+        transactions: txs,
+    };
+    block.hash = compute_block_hash(&block.header);
+    block
 }
 
 pub fn init_chain_state(chain_id: String) -> ChainState {

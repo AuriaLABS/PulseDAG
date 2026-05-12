@@ -6,7 +6,7 @@ use crate::{
     mining::{current_ts, is_coinbase},
     state::ChainState,
     tx::{compute_txid, verify_transaction_signatures},
-    types::{Block, OutPoint, Transaction},
+    types::{compute_block_hash, compute_merkle_root, Block, OutPoint, Transaction},
 };
 
 pub fn tx_output_amount(state: &ChainState, outpoint: &OutPoint) -> Option<u64> {
@@ -143,12 +143,31 @@ pub fn validate_block(block: &Block, state: &ChainState) -> Result<(), PulseErro
             "multiple coinbase transactions".into(),
         ));
     }
+    let computed_hash = compute_block_hash(&block.header);
+    if computed_hash != block.hash {
+        return Err(PulseError::InvalidBlock(format!(
+            "block hash mismatch: supplied {}, computed {}",
+            block.hash, computed_hash
+        )));
+    }
     let mut seen_txids = BTreeSet::new();
     for tx in &block.transactions {
         if !seen_txids.insert(tx.txid.clone()) {
             return Err(PulseError::InvalidBlock(
                 "duplicate transaction in block".into(),
             ));
+        }
+    }
+    let computed_merkle_root = compute_merkle_root(&block.transactions);
+    if computed_merkle_root != block.header.merkle_root {
+        return Err(PulseError::InvalidBlock(format!(
+            "merkle root mismatch: supplied {}, computed {}",
+            block.header.merkle_root, computed_merkle_root
+        )));
+    }
+    for tx in &block.transactions {
+        if compute_txid(tx) != tx.txid {
+            return Err(PulseError::InvalidTxid);
         }
     }
 
@@ -169,7 +188,7 @@ mod tests {
     use crate::{
         accept::{accept_transaction_with_result, AcceptSource, TxAcceptanceResult},
         genesis::init_chain_state,
-        mining::{build_candidate_block, build_coinbase_transaction},
+        mining::{build_candidate_block, build_coinbase_transaction, refresh_block_consensus_ids},
         tx::{address_from_public_key, compute_txid, signing_message},
         types::{TxInput, TxOutput, Utxo},
     };
@@ -181,9 +200,7 @@ mod tests {
 
     fn structurally_valid_block(state: &ChainState) -> Block {
         let parents = vec![state.dag.genesis_hash.clone()];
-        let mut block = build_candidate_block(parents, 1, 1, vec![coinbase(1)]);
-        block.hash = "candidate-block".to_string();
-        block
+        build_candidate_block(parents, 1, 1, vec![coinbase(1)])
     }
 
     fn non_coinbase_tx(txid: &str) -> Transaction {
@@ -703,6 +720,37 @@ mod tests {
     }
 
     #[test]
+    fn validate_block_rejects_fake_block_hash() {
+        let state = init_chain_state("test".to_string());
+        let mut block = structurally_valid_block(&state);
+        block.hash = "not-the-canonical-block-hash".to_string();
+
+        assert_invalid_block_contains(validate_block(&block, &state), "block hash mismatch");
+    }
+
+    #[test]
+    fn validate_block_rejects_fake_merkle_root() {
+        let state = init_chain_state("test".to_string());
+        let mut block = structurally_valid_block(&state);
+        block.header.merkle_root = "not-the-canonical-merkle-root".to_string();
+        block.hash = compute_block_hash(&block.header);
+
+        assert_invalid_block_contains(validate_block(&block, &state), "merkle root mismatch");
+    }
+
+    #[test]
+    fn validate_block_rejects_fake_coinbase_txid() {
+        let state = init_chain_state("test".to_string());
+        let mut block = structurally_valid_block(&state);
+        block.transactions[0].txid = "not-the-canonical-txid".to_string();
+        refresh_block_consensus_ids(&mut block);
+
+        assert_validation_error(validate_block(&block, &state), |err| {
+            matches!(err, PulseError::InvalidTxid)
+        });
+    }
+
+    #[test]
     fn validate_block_accepts_valid_multi_parent_block() {
         let mut state = init_chain_state("test".to_string());
         let mut parent = structurally_valid_block(&state);
@@ -712,8 +760,8 @@ mod tests {
 
         let parents = vec![state.dag.genesis_hash.clone(), parent.hash.clone()];
         let mut block = build_candidate_block(parents, 2, 1, vec![coinbase(2)]);
-        block.hash = "multi-parent-block".to_string();
         block.header.timestamp = parent.header.timestamp;
+        refresh_block_consensus_ids(&mut block);
 
         assert!(validate_block(&block, &state).is_ok());
     }
@@ -721,8 +769,7 @@ mod tests {
     #[test]
     fn validate_block_accepts_well_formed_coinbase_block() {
         let state = init_chain_state("test".to_string());
-        let mut block = structurally_valid_block(&state);
-        block.hash = "block-1".to_string();
+        let block = structurally_valid_block(&state);
 
         assert!(validate_block(&block, &state).is_ok());
     }
@@ -733,8 +780,8 @@ mod tests {
         let parents = vec![state.dag.genesis_hash.clone()];
         let txs = vec![build_coinbase_transaction("miner1", 50, 1)];
         let mut block = build_candidate_block(parents, 1, u32::MAX, txs);
-        block.hash = "pow-agnostic-structural-check".to_string();
         block.header.nonce = 0;
+        refresh_block_consensus_ids(&mut block);
 
         assert!(
             validate_block(&block, &state).is_ok(),

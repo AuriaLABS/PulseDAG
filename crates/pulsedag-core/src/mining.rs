@@ -1,4 +1,7 @@
-use crate::types::{Block, BlockHeader, Transaction, TxOutput};
+use crate::{
+    tx::compute_txid,
+    types::{compute_block_hash, compute_merkle_root, Block, BlockHeader, Transaction, TxOutput},
+};
 
 pub fn current_ts() -> u64 {
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -12,8 +15,8 @@ pub fn is_coinbase(tx: &Transaction) -> bool {
 }
 
 pub fn build_coinbase_transaction(miner_address: &str, reward: u64, nonce: u64) -> Transaction {
-    Transaction {
-        txid: format!("coinbase-{miner_address}-{nonce}"),
+    let mut tx = Transaction {
+        txid: String::new(),
         version: 1,
         inputs: vec![],
         outputs: vec![TxOutput {
@@ -22,7 +25,9 @@ pub fn build_coinbase_transaction(miner_address: &str, reward: u64, nonce: u64) 
         }],
         fee: 0,
         nonce,
-    }
+    };
+    tx.txid = compute_txid(&tx);
+    tx
 }
 
 pub fn build_candidate_block(
@@ -31,19 +36,26 @@ pub fn build_candidate_block(
     difficulty: u32,
     txs: Vec<Transaction>,
 ) -> Block {
-    Block {
-        hash: format!("block-{height}"),
+    let mut block = Block {
+        hash: String::new(),
         header: BlockHeader {
             version: 1,
             parents,
             timestamp: current_ts(),
             difficulty,
             nonce: 0,
-            merkle_root: format!("merkle-{height}"),
+            merkle_root: compute_merkle_root(&txs),
             state_root: format!("state-{height}"),
             blue_score: height,
             height,
         },
         transactions: txs,
-    }
+    };
+    block.hash = compute_block_hash(&block.header);
+    block
+}
+
+pub fn refresh_block_consensus_ids(block: &mut Block) {
+    block.header.merkle_root = compute_merkle_root(&block.transactions);
+    block.hash = compute_block_hash(&block.header);
 }
