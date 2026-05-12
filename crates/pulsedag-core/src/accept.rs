@@ -620,6 +620,7 @@ mod tests {
         mempool_spent_outpoints: BTreeSet<String>,
         orphan_blocks: BTreeSet<String>,
         orphan_missing_parents: BTreeMap<String, Vec<String>>,
+        orphan_received_at_ms: BTreeMap<String, u64>,
     }
 
     fn outpoint_key(outpoint: &crate::types::OutPoint) -> String {
@@ -664,6 +665,7 @@ mod tests {
                 .collect(),
             orphan_blocks: state.orphan_blocks.keys().cloned().collect(),
             orphan_missing_parents,
+            orphan_received_at_ms: state.orphan_received_at_ms.clone().into_iter().collect(),
         }
     }
 
