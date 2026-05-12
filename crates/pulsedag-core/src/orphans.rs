@@ -153,7 +153,9 @@ mod tests {
             1,
             vec![build_coinbase_transaction("miner", 50, nonce)],
         );
-        refresh_block_consensus_ids_with_state(&mut block, state).unwrap();
+        if refresh_block_consensus_ids_with_state(&mut block, state).is_err() {
+            refresh_block_consensus_ids(&mut block);
+        }
         block
     }
 
@@ -515,9 +517,10 @@ mod tests {
         assert!(accept_block(parent.clone(), &mut state, AcceptSource::P2p).is_ok());
         let adopted = adopt_ready_orphans(&mut state, AcceptSource::P2p);
 
-        assert_eq!(adopted, 1);
+        assert_eq!(adopted, 2);
         let adopted_children = state.dag.children.get(&parent.hash).unwrap();
-        assert_eq!(adopted_children.len(), 1);
-        assert!(adopted_children[0] == alpha.hash || adopted_children[0] == beta.hash);
+        assert_eq!(adopted_children.len(), 2);
+        assert!(adopted_children.contains(&alpha.hash));
+        assert!(adopted_children.contains(&beta.hash));
     }
 }

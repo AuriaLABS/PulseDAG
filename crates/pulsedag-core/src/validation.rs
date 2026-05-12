@@ -4,9 +4,9 @@ use crate::{
     apply::apply_transaction,
     errors::PulseError,
     mining::{current_ts, is_coinbase},
-    state::ChainState,
+    state::{ChainState, UtxoState},
     tx::{compute_txid, verify_transaction_signatures},
-    types::{compute_block_hash, compute_merkle_root, Block, OutPoint, Transaction},
+    types::{compute_block_hash, compute_merkle_root, Block, OutPoint, Transaction, Utxo},
 };
 
 pub fn tx_output_amount(state: &ChainState, outpoint: &OutPoint) -> Option<u64> {
@@ -182,9 +182,7 @@ pub fn validate_block(block: &Block, state: &ChainState) -> Result<(), PulseErro
 }
 
 pub fn compute_post_state_root(block: &Block, state: &ChainState) -> Result<String, PulseError> {
-    let mut working = state.clone();
-    working.mempool.transactions.clear();
-    working.mempool.spent_outpoints.clear();
+    let mut working = state_at_parent_set(block, state)?;
 
     let Some(coinbase) = block.transactions.first() else {
         return Err(PulseError::InvalidBlock("empty block".into()));
@@ -196,6 +194,101 @@ pub fn compute_post_state_root(block: &Block, state: &ChainState) -> Result<Stri
         apply_transaction(tx, &mut working, block.header.height)?;
     }
     working.utxo.compute_state_root()
+}
+
+fn state_at_parent_set(block: &Block, state: &ChainState) -> Result<ChainState, PulseError> {
+    let mut working = state.clone();
+    working.utxo = genesis_utxo_state(state)?;
+    working.mempool.transactions.clear();
+    working.mempool.spent_outpoints.clear();
+
+    let mut ancestor_hashes = BTreeSet::new();
+    for parent in &block.header.parents {
+        collect_ancestors_inclusive(parent, state, &mut ancestor_hashes)?;
+    }
+
+    let genesis_hash = &state.dag.genesis_hash;
+    let mut ancestors = ancestor_hashes
+        .into_iter()
+        .filter(|hash| hash != genesis_hash)
+        .map(|hash| {
+            let ancestor = state
+                .dag
+                .blocks
+                .get(&hash)
+                .ok_or_else(|| PulseError::InvalidBlock(format!("missing ancestor {hash}")))?;
+            Ok((ancestor.header.height, hash, ancestor))
+        })
+        .collect::<Result<Vec<_>, PulseError>>()?;
+    ancestors.sort_by(
+        |(left_height, left_hash, _), (right_height, right_hash, _)| {
+            left_height
+                .cmp(right_height)
+                .then_with(|| left_hash.cmp(right_hash))
+        },
+    );
+
+    for (_, _, ancestor) in ancestors {
+        for tx in &ancestor.transactions {
+            apply_transaction(tx, &mut working, ancestor.header.height)?;
+        }
+    }
+
+    Ok(working)
+}
+
+fn collect_ancestors_inclusive(
+    hash: &str,
+    state: &ChainState,
+    ancestors: &mut BTreeSet<String>,
+) -> Result<(), PulseError> {
+    if !ancestors.insert(hash.to_string()) {
+        return Ok(());
+    }
+
+    let block = state
+        .dag
+        .blocks
+        .get(hash)
+        .ok_or_else(|| PulseError::InvalidBlock(format!("missing parent {hash}")))?;
+    for parent in &block.header.parents {
+        collect_ancestors_inclusive(parent, state, ancestors)?;
+    }
+    Ok(())
+}
+
+fn genesis_utxo_state(state: &ChainState) -> Result<UtxoState, PulseError> {
+    let genesis = state
+        .dag
+        .blocks
+        .get(&state.dag.genesis_hash)
+        .ok_or_else(|| PulseError::InvalidBlock("missing genesis block".into()))?;
+    let Some(tx) = genesis.transactions.first() else {
+        return Err(PulseError::InvalidBlock(
+            "genesis block has no transactions".into(),
+        ));
+    };
+
+    let mut utxo = UtxoState::default();
+    for (index, output) in tx.outputs.iter().enumerate() {
+        let outpoint = OutPoint {
+            txid: tx.txid.clone(),
+            index: index as u32,
+        };
+        let entry = Utxo {
+            outpoint: outpoint.clone(),
+            address: output.address.clone(),
+            amount: output.amount,
+            coinbase: false,
+            height: genesis.header.height,
+        };
+        utxo.utxos.insert(outpoint.clone(), entry);
+        utxo.address_index
+            .entry(output.address.clone())
+            .or_default()
+            .push(outpoint);
+    }
+    Ok(utxo)
 }
 
 #[cfg(test)]
@@ -814,6 +907,28 @@ mod tests {
         assert_validation_error(validate_block(&block, &state), |err| {
             matches!(err, PulseError::DuplicateOutpoint(_))
         });
+    }
+
+    #[test]
+    fn validate_block_uses_declared_parent_state_for_siblings() {
+        let mut state = init_chain_state("test".to_string());
+        let parents = vec![state.dag.genesis_hash.clone()];
+
+        let mut first_sibling = build_candidate_block(parents.clone(), 1, 1, vec![coinbase(1)]);
+        refresh_block_consensus_ids_with_state(&mut first_sibling, &state).unwrap();
+        let mut second_sibling = build_candidate_block(parents, 1, 1, vec![coinbase(2)]);
+        refresh_block_consensus_ids_with_state(&mut second_sibling, &state).unwrap();
+        let expected_second_root = second_sibling.header.state_root.clone();
+
+        apply_block(&first_sibling, &mut state).unwrap();
+
+        assert_eq!(
+            compute_post_state_root(&second_sibling, &state).unwrap(),
+            expected_second_root,
+            "sibling post-state root must be derived from the declared parent set, not the mutable local tip state"
+        );
+        assert!(validate_block(&second_sibling, &state).is_ok());
+        assert!(apply_block(&second_sibling, &mut state).is_ok());
     }
 
     #[test]

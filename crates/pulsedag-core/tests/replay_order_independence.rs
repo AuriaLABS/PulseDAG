@@ -245,13 +245,13 @@ fn replay_sibling_order_and_multi_parent_merge_are_equivalent() {
     accept_valid(&mut a1_then_a2, merge.clone());
 
     let mut a2_then_a1 = init_chain_state("replay-a2-then-a1".to_string());
-    assert_ne!(
-        accept_block_with_result(a2, &mut a2_then_a1, AcceptSource::P2p),
-        BlockAcceptanceResult::Accepted
-    );
+    accept_valid(&mut a2_then_a1, a2);
+    accept_valid(&mut a2_then_a1, a1);
+    accept_valid(&mut a2_then_a1, merge.clone());
+
     assert_eq!(
-        normalize_chain_state_for_comparison(&a2_then_a1),
-        normalize_chain_state_for_comparison(&init_chain_state("replay-a2-then-a1".to_string()))
+        normalize_chain_state_for_comparison(&a1_then_a2),
+        normalize_chain_state_for_comparison(&a2_then_a1)
     );
     assert!(a1_then_a2.dag.blocks.contains_key(&merge.hash));
 }
