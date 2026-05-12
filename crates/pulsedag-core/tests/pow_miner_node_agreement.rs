@@ -61,8 +61,7 @@ fn duplicate_block_is_reported_as_duplicate() {
     let mut state = init_chain_state("pow-dup".to_string());
     let parents = vec![state.dag.genesis_hash.clone()];
     let txs = vec![build_coinbase_transaction("miner1", 50, 1)];
-    let mut block = build_candidate_block(parents, 1, 1, txs);
-    block.hash = "dup-check".into();
+    let block = build_candidate_block(parents, 1, 1, txs);
 
     let first = accept_block(block.clone(), &mut state, AcceptSource::P2p);
     assert!(first.is_ok());

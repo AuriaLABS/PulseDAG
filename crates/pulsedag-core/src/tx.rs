@@ -1,5 +1,4 @@
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
-use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 use crate::{
@@ -27,69 +26,84 @@ pub fn address_from_public_key(public_key_hex: &str) -> Address {
     format!("pulse1{}", hex::encode(&digest[..20]))
 }
 
-pub fn signing_message(tx: &Transaction) -> Vec<u8> {
-    #[derive(Serialize)]
-    struct UnsignedTx<'a> {
-        version: u32,
-        inputs: Vec<&'a OutPoint>,
-        outputs: &'a [TxOutput],
-        fee: u64,
-        nonce: u64,
+fn encode_len_prefixed_bytes(out: &mut Vec<u8>, bytes: &[u8]) {
+    let len = u32::try_from(bytes.len()).expect("canonical field length exceeds u32::MAX");
+    out.extend_from_slice(&len.to_le_bytes());
+    out.extend_from_slice(bytes);
+}
+
+fn encode_len_prefixed_str(out: &mut Vec<u8>, value: &str) {
+    encode_len_prefixed_bytes(out, value.as_bytes());
+}
+
+pub fn canonical_outpoint_bytes(outpoint: &OutPoint) -> Vec<u8> {
+    let mut out = Vec::new();
+    encode_len_prefixed_str(&mut out, &outpoint.txid);
+    out.extend_from_slice(&outpoint.index.to_le_bytes());
+    out
+}
+
+pub fn canonical_tx_input_bytes(input: &crate::types::TxInput) -> Vec<u8> {
+    let mut out = canonical_outpoint_bytes(&input.previous_output);
+    encode_len_prefixed_str(&mut out, &input.public_key);
+    encode_len_prefixed_str(&mut out, &input.signature);
+    out
+}
+
+pub fn canonical_tx_output_bytes(output: &TxOutput) -> Vec<u8> {
+    let mut out = Vec::new();
+    encode_len_prefixed_str(&mut out, &output.address);
+    out.extend_from_slice(&output.amount.to_le_bytes());
+    out
+}
+
+/// Canonical signing message excludes signatures and the transaction id.
+pub fn canonical_unsigned_transaction_bytes(tx: &Transaction) -> Vec<u8> {
+    let mut out = Vec::with_capacity(256);
+    encode_len_prefixed_bytes(&mut out, b"PulseDAG:unsigned-tx:v1");
+    out.extend_from_slice(&tx.version.to_le_bytes());
+    let input_count = u32::try_from(tx.inputs.len()).expect("input count exceeds u32::MAX");
+    out.extend_from_slice(&input_count.to_le_bytes());
+    for input in &tx.inputs {
+        out.extend_from_slice(&canonical_outpoint_bytes(&input.previous_output));
+        encode_len_prefixed_str(&mut out, &input.public_key);
     }
+    let output_count = u32::try_from(tx.outputs.len()).expect("output count exceeds u32::MAX");
+    out.extend_from_slice(&output_count.to_le_bytes());
+    for output in &tx.outputs {
+        out.extend_from_slice(&canonical_tx_output_bytes(output));
+    }
+    out.extend_from_slice(&tx.fee.to_le_bytes());
+    out.extend_from_slice(&tx.nonce.to_le_bytes());
+    out
+}
 
-    let inputs = tx
-        .inputs
-        .iter()
-        .map(|i| &i.previous_output)
-        .collect::<Vec<_>>();
-    let unsigned = UnsignedTx {
-        version: tx.version,
-        inputs,
-        outputs: &tx.outputs,
-        fee: tx.fee,
-        nonce: tx.nonce,
-    };
+/// Canonical consensus serialization for a transaction excludes `txid`.
+pub fn canonical_transaction_bytes(tx: &Transaction) -> Vec<u8> {
+    let mut out = Vec::with_capacity(256);
+    encode_len_prefixed_bytes(&mut out, b"PulseDAG:tx:v1");
+    out.extend_from_slice(&tx.version.to_le_bytes());
+    let input_count = u32::try_from(tx.inputs.len()).expect("input count exceeds u32::MAX");
+    out.extend_from_slice(&input_count.to_le_bytes());
+    for input in &tx.inputs {
+        out.extend_from_slice(&canonical_tx_input_bytes(input));
+    }
+    let output_count = u32::try_from(tx.outputs.len()).expect("output count exceeds u32::MAX");
+    out.extend_from_slice(&output_count.to_le_bytes());
+    for output in &tx.outputs {
+        out.extend_from_slice(&canonical_tx_output_bytes(output));
+    }
+    out.extend_from_slice(&tx.fee.to_le_bytes());
+    out.extend_from_slice(&tx.nonce.to_le_bytes());
+    out
+}
 
-    serde_json::to_vec(&unsigned).unwrap_or_default()
+pub fn signing_message(tx: &Transaction) -> Vec<u8> {
+    canonical_unsigned_transaction_bytes(tx)
 }
 
 pub fn compute_txid(tx: &Transaction) -> String {
-    #[derive(Serialize)]
-    struct CanonicalInput<'a> {
-        previous_output: &'a OutPoint,
-        public_key: &'a str,
-        signature: &'a str,
-    }
-
-    #[derive(Serialize)]
-    struct CanonicalTx<'a> {
-        version: u32,
-        inputs: Vec<CanonicalInput<'a>>,
-        outputs: &'a [TxOutput],
-        fee: u64,
-        nonce: u64,
-    }
-
-    let inputs = tx
-        .inputs
-        .iter()
-        .map(|i| CanonicalInput {
-            previous_output: &i.previous_output,
-            public_key: &i.public_key,
-            signature: &i.signature,
-        })
-        .collect::<Vec<_>>();
-
-    let canonical = CanonicalTx {
-        version: tx.version,
-        inputs,
-        outputs: &tx.outputs,
-        fee: tx.fee,
-        nonce: tx.nonce,
-    };
-
-    let bytes = serde_json::to_vec(&canonical).unwrap_or_default();
-    let digest = Sha256::digest(bytes);
+    let digest = Sha256::digest(canonical_transaction_bytes(tx));
     hex::encode(digest)
 }
 

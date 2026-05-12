@@ -63,7 +63,10 @@ pub use orphans::{
     DEFAULT_ORPHAN_MAX_AGE_MS, DEFAULT_ORPHAN_MAX_COUNT,
 };
 
-pub use mining::{build_candidate_block, build_coinbase_transaction, current_ts, is_coinbase};
+pub use mining::{
+    build_candidate_block, build_coinbase_transaction, current_ts, is_coinbase,
+    refresh_block_consensus_ids,
+};
 pub use sync_pipeline::{
     rank_sync_candidates, RankedSyncPeer, SyncPeerCandidate, SyncPhase, SyncPipelineStatus,
     SyncProgressCounters,

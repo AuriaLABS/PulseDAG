@@ -107,15 +107,32 @@ pub fn reconcile_mempool(state: &mut ChainState) -> MempoolReconcileResult {
     let mut removed_txids = Vec::with_capacity(tx_count);
     let mut kept_txids = Vec::with_capacity(tx_count);
 
-    for tx in txs {
-        let txid = tx.txid.clone();
-        let valid = validate_transaction(&tx, &working).is_ok()
-            && simulate_mempool_accept(&tx, &mut working).is_ok();
-        if valid {
-            kept_txids.push(txid);
-        } else {
-            removed_txids.push(txid);
+    let mut pending = txs;
+    while !pending.is_empty() {
+        let mut next_pending = Vec::new();
+        let mut progressed = false;
+
+        for tx in pending {
+            let txid = tx.txid.clone();
+            match validate_transaction(&tx, &working) {
+                Ok(()) => {
+                    if simulate_mempool_accept(&tx, &mut working).is_ok() {
+                        kept_txids.push(txid);
+                        progressed = true;
+                    } else {
+                        removed_txids.push(txid);
+                    }
+                }
+                Err(PulseError::UtxoNotFound) => next_pending.push(tx),
+                Err(_) => removed_txids.push(txid),
+            }
         }
+
+        if !progressed {
+            removed_txids.extend(next_pending.into_iter().map(|tx| tx.txid));
+            break;
+        }
+        pending = next_pending;
     }
 
     let mut rebuilt_mempool = working.mempool;

@@ -604,7 +604,7 @@ mod tests {
     use super::*;
     use crate::{
         genesis::init_chain_state,
-        mining::{build_candidate_block, build_coinbase_transaction},
+        mining::{build_candidate_block, build_coinbase_transaction, refresh_block_consensus_ids},
     };
     use std::collections::{BTreeMap, BTreeSet};
 
@@ -669,26 +669,23 @@ mod tests {
         }
     }
 
-    fn valid_acceptance_block(state: &ChainState, hash: &str, coinbase_nonce: u64) -> Block {
+    fn valid_acceptance_block(state: &ChainState, _hash: &str, coinbase_nonce: u64) -> Block {
         let parents = vec![state.dag.genesis_hash.clone()];
         let txs = vec![build_coinbase_transaction("miner1", 50, coinbase_nonce)];
-        let mut block = build_candidate_block(parents, 1, 1, txs);
-        block.hash = hash.to_string();
-        block
+        build_candidate_block(parents, 1, 1, txs)
     }
 
     fn invalid_pow_acceptance_block(state: &ChainState) -> Block {
         let mut block = valid_acceptance_block(state, "taxonomy-invalid-pow", 11);
         block.header.difficulty = 0x0100_0000;
         block.header.nonce = 0;
+        refresh_block_consensus_ids(&mut block);
         block
     }
 
     fn missing_parent_acceptance_block() -> Block {
         let txs = vec![build_coinbase_transaction("miner1", 50, 12)];
-        let mut block = build_candidate_block(vec!["missing-parent".into()], 1, 1, txs);
-        block.hash = "taxonomy-missing-parent".to_string();
-        block
+        build_candidate_block(vec!["missing-parent".into()], 1, 1, txs)
     }
 
     fn invalid_transaction_acceptance_block(state: &ChainState) -> Block {
@@ -713,9 +710,7 @@ mod tests {
         };
         invalid_spend.txid = crate::tx::compute_txid(&invalid_spend);
         let parents = vec![state.dag.genesis_hash.clone()];
-        let mut block = build_candidate_block(parents, 1, 1, vec![coinbase, invalid_spend]);
-        block.hash = "taxonomy-invalid-transaction".to_string();
-        block
+        build_candidate_block(parents, 1, 1, vec![coinbase, invalid_spend])
     }
 
     fn malformed_acceptance_block(state: &ChainState) -> Block {
@@ -948,7 +943,6 @@ mod tests {
         let parents = vec![state.dag.genesis_hash.clone()];
         let txs = vec![build_coinbase_transaction("miner1", 50, 1)];
         let mut block = build_candidate_block(parents, 1, 0x01000000, txs);
-        block.hash = "bad-pow".to_string();
         block.header.nonce = 0;
 
         let outcome = accept_block_with_result(block, &mut state, AcceptSource::P2p);
@@ -960,9 +954,7 @@ mod tests {
         let mut state = init_chain_state("test".to_string());
         let parents = vec![state.dag.genesis_hash.clone()];
         let txs = vec![build_coinbase_transaction("miner1", 50, 1)];
-        let mut block = build_candidate_block(parents, 1, 1, txs);
-        block.hash = "good-pow".to_string();
-        block.header.nonce = 0;
+        let block = build_candidate_block(parents, 1, 1, txs);
 
         assert!(accept_block(block, &mut state, AcceptSource::P2p).is_ok());
     }
@@ -972,8 +964,7 @@ mod tests {
         let mut state = init_chain_state("test".to_string());
         let parents = vec![state.dag.genesis_hash.clone()];
         let txs = vec![build_coinbase_transaction("miner1", 50, 1)];
-        let mut block = build_candidate_block(parents, 1, 1, txs);
-        block.hash = "dup-block".to_string();
+        let block = build_candidate_block(parents, 1, 1, txs);
         assert!(accept_block(block.clone(), &mut state, AcceptSource::P2p).is_ok());
         let outcome = accept_block_with_result(block, &mut state, AcceptSource::P2p);
         assert_eq!(outcome, BlockAcceptanceResult::Duplicate);
@@ -983,8 +974,7 @@ mod tests {
     fn unknown_parent_returns_unknown_parent_outcome() {
         let mut state = init_chain_state("test".to_string());
         let txs = vec![build_coinbase_transaction("miner1", 50, 1)];
-        let mut block = build_candidate_block(vec!["missing-parent".into()], 1, 1, txs);
-        block.hash = "orphan-block".to_string();
+        let block = build_candidate_block(vec!["missing-parent".into()], 1, 1, txs);
         let outcome = accept_block_with_result(block, &mut state, AcceptSource::P2p);
         assert_eq!(outcome, BlockAcceptanceResult::MissingParent);
     }
@@ -1013,8 +1003,7 @@ mod tests {
             nonce: 1,
         };
         invalid_spend.txid = crate::tx::compute_txid(&invalid_spend);
-        let mut block = build_candidate_block(parents, 1, 1, vec![coinbase, invalid_spend]);
-        block.hash = "invalid-tx-block".to_string();
+        let block = build_candidate_block(parents, 1, 1, vec![coinbase, invalid_spend]);
 
         let outcome = accept_block_with_result(block, &mut state, AcceptSource::P2p);
         assert_eq!(outcome, BlockAcceptanceResult::InvalidTransaction);
@@ -1026,8 +1015,7 @@ mod tests {
         let txs = vec![build_coinbase_transaction("miner1", 50, 1)];
         let mut peer_state = init_chain_state("agreement".to_string());
         let mut mining_state = init_chain_state("agreement".to_string());
-        let mut block = build_candidate_block(parents, 1, 1, txs);
-        block.hash = "canonical-agreement".to_string();
+        let block = build_candidate_block(parents, 1, 1, txs);
 
         let peer_outcome =
             accept_block_with_result(block.clone(), &mut peer_state, AcceptSource::P2p);
@@ -1036,8 +1024,14 @@ mod tests {
 
         assert_eq!(peer_outcome, BlockAcceptanceResult::Accepted);
         assert_eq!(peer_outcome, mining_outcome);
-        assert!(peer_state.dag.blocks.contains_key("canonical-agreement"));
-        assert!(mining_state.dag.blocks.contains_key("canonical-agreement"));
+        assert!(peer_state
+            .dag
+            .blocks
+            .contains_key(&peer_state.dag.tips.iter().next().unwrap().clone()));
+        assert!(mining_state
+            .dag
+            .blocks
+            .contains_key(&mining_state.dag.tips.iter().next().unwrap().clone()));
     }
 
     #[test]

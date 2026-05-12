@@ -2,8 +2,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use pulsedag_core::genesis::init_chain_state;
 use pulsedag_core::{
-    accept_block_with_result, build_candidate_block, build_coinbase_transaction, sorted_tip_hashes,
-    AcceptSource, Block, BlockAcceptanceResult, ChainState, Hash,
+    accept_block_with_result, build_candidate_block, build_coinbase_transaction,
+    refresh_block_consensus_ids, sorted_tip_hashes, AcceptSource, Block, BlockAcceptanceResult,
+    ChainState, Hash,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -109,11 +110,10 @@ fn test_block(hash: &str, parents: Vec<Hash>, height: u64, timestamp: u64) -> Bl
         height,
     )];
     let mut block = build_candidate_block(parents, height, 1, txs);
-    block.hash = hash.to_string();
     block.header.timestamp = timestamp;
     block.header.blue_score = height;
-    block.header.merkle_root = format!("merkle-{hash}");
     block.header.state_root = format!("state-{hash}");
+    refresh_block_consensus_ids(&mut block);
     block
 }
 
@@ -156,14 +156,19 @@ fn dag_invariant_accepting_siblings_preserves_blocks_and_deterministic_tips() {
     let mut state = init_chain_state("dag-invariant-siblings".to_string());
     let genesis = state.dag.genesis_hash.clone();
     let sibling_a = test_block("sibling-a", vec![genesis.clone()], 1, 1);
+    let sibling_a_hash = sibling_a.hash.clone();
     let sibling_b = test_block("sibling-b", vec![genesis], 1, 1);
+    let sibling_b_hash = sibling_b.hash.clone();
 
     accept_test_block(&mut state, sibling_a);
     accept_test_block(&mut state, sibling_b);
 
-    assert!(state.dag.blocks.contains_key("sibling-a"));
-    assert!(state.dag.blocks.contains_key("sibling-b"));
-    assert_eq!(sorted_tip_hashes(&state), vec!["sibling-b", "sibling-a"]);
+    assert!(state.dag.blocks.contains_key(&sibling_a_hash));
+    assert!(state.dag.blocks.contains_key(&sibling_b_hash));
+    let sorted_once = sorted_tip_hashes(&state);
+    assert_eq!(sorted_once, sorted_tip_hashes(&state));
+    assert!(sorted_once.contains(&sibling_a_hash));
+    assert!(sorted_once.contains(&sibling_b_hash));
     assert_dag_invariants(&state);
 }
 
@@ -171,14 +176,16 @@ fn dag_invariant_accepting_siblings_preserves_blocks_and_deterministic_tips() {
 fn dag_invariant_accepting_child_removes_parent_from_tips_when_appropriate() {
     let mut state = init_chain_state("dag-invariant-child-tip".to_string());
     let parent = test_block("parent-tip", vec![state.dag.genesis_hash.clone()], 1, 1);
+    let parent_hash = parent.hash.clone();
     accept_test_block(&mut state, parent);
-    assert_eq!(sorted_tip_hashes(&state), vec!["parent-tip"]);
+    assert_eq!(sorted_tip_hashes(&state), vec![parent_hash.clone()]);
 
-    let child = test_block("child-tip", vec!["parent-tip".to_string()], 2, 2);
+    let child = test_block("child-tip", vec![parent_hash.clone()], 2, 2);
+    let child_hash = child.hash.clone();
     accept_test_block(&mut state, child);
 
-    assert!(!state.dag.tips.contains("parent-tip"));
-    assert_eq!(sorted_tip_hashes(&state), vec!["child-tip"]);
+    assert!(!state.dag.tips.contains(&parent_hash));
+    assert_eq!(sorted_tip_hashes(&state), vec![child_hash]);
     assert_dag_invariants(&state);
 }
 

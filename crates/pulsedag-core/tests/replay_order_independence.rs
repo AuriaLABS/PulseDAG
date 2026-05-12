@@ -3,8 +3,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use pulsedag_core::genesis::init_chain_state;
 use pulsedag_core::{
     accept_block_with_result, adopt_ready_orphans, build_candidate_block,
-    build_coinbase_transaction, missing_block_parents, queue_orphan_block, AcceptSource, Block,
-    BlockAcceptanceResult, ChainState, Hash, OutPoint, Utxo,
+    build_coinbase_transaction, missing_block_parents, queue_orphan_block,
+    refresh_block_consensus_ids, AcceptSource, Block, BlockAcceptanceResult, ChainState, Hash,
+    OutPoint, Utxo,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -117,12 +118,11 @@ fn test_block(hash: &str, parents: Vec<Hash>, height: u64, timestamp: u64, nonce
         nonce,
     )];
     let mut block = build_candidate_block(parents, height, 1, txs);
-    block.hash = hash.to_string();
     block.header.timestamp = timestamp;
     block.header.nonce = nonce;
     block.header.blue_score = height;
-    block.header.merkle_root = format!("merkle-{hash}");
     block.header.state_root = format!("state-{hash}");
+    refresh_block_consensus_ids(&mut block);
     block
 }
 

@@ -133,18 +133,16 @@ mod tests {
     use crate::{
         accept::{accept_block_with_result, BlockAcceptanceResult},
         genesis::init_chain_state,
-        mining::{build_candidate_block, build_coinbase_transaction},
+        mining::{build_candidate_block, build_coinbase_transaction, refresh_block_consensus_ids},
     };
 
-    fn candidate(parents: Vec<Hash>, height: u64, hash: &str, nonce: u64) -> Block {
-        let mut block = build_candidate_block(
+    fn candidate(parents: Vec<Hash>, height: u64, _hash: &str, nonce: u64) -> Block {
+        build_candidate_block(
             parents,
             height,
             1,
             vec![build_coinbase_transaction("miner", 50, nonce)],
-        );
-        block.hash = hash.into();
-        block
+        )
     }
 
     fn queue_missing(state: &mut ChainState, block: Block) -> Vec<Hash> {
@@ -251,8 +249,8 @@ mod tests {
             0x01000000,
             vec![build_coinbase_transaction("miner", 50, 2)],
         );
-        child.hash = "pow-child-invalid".into();
         child.header.nonce = 0;
+        refresh_block_consensus_ids(&mut child);
         queue_missing(&mut state, child.clone());
 
         assert!(accept_block(parent, &mut state, AcceptSource::P2p).is_ok());
@@ -310,6 +308,7 @@ mod tests {
     fn orphan_capacity_pruning_removes_oldest_entries() {
         let mut state = init_chain_state("test".into());
 
+        let mut orphan_hashes = Vec::new();
         for i in 0..4 {
             let orphan = candidate(
                 vec![format!("missing-parent-{i}")],
@@ -317,25 +316,26 @@ mod tests {
                 &format!("orphan-{i}"),
                 i + 1,
             );
+            orphan_hashes.push(orphan.hash.clone());
             assert!(queue_orphan_block(
                 &mut state,
                 orphan,
                 vec![format!("missing-parent-{i}")]
             ));
         }
-        for i in 0..4 {
+        for (i, hash) in orphan_hashes.iter().enumerate() {
             state
                 .orphan_received_at_ms
-                .insert(format!("orphan-{i}"), 1_000 + i);
+                .insert(hash.clone(), 1_000 + i as u64);
         }
 
         let removed = prune_orphans(&mut state, 2, u64::MAX);
 
         assert_eq!(removed, 2);
-        assert!(!state.orphan_blocks.contains_key("orphan-0"));
-        assert!(!state.orphan_blocks.contains_key("orphan-1"));
-        assert!(state.orphan_blocks.contains_key("orphan-2"));
-        assert!(state.orphan_blocks.contains_key("orphan-3"));
+        assert!(!state.orphan_blocks.contains_key(&orphan_hashes[0]));
+        assert!(!state.orphan_blocks.contains_key(&orphan_hashes[1]));
+        assert!(state.orphan_blocks.contains_key(&orphan_hashes[2]));
+        assert!(state.orphan_blocks.contains_key(&orphan_hashes[3]));
         assert_orphan_indexes_consistent(&state);
     }
 
@@ -343,7 +343,9 @@ mod tests {
     fn orphan_age_pruning_removes_expired_entries() {
         let mut state = init_chain_state("test".into());
         let fresh = candidate(vec!["missing-fresh".into()], 1, "fresh-orphan", 1);
+        let fresh_hash = fresh.hash.clone();
         let expired = candidate(vec!["missing-expired".into()], 1, "expired-orphan", 2);
+        let expired_hash = expired.hash.clone();
         assert!(queue_orphan_block(
             &mut state,
             fresh,
@@ -355,18 +357,16 @@ mod tests {
             vec!["missing-expired".into()]
         ));
         let now = now_ms();
+        state.orphan_received_at_ms.insert(fresh_hash.clone(), now);
         state
             .orphan_received_at_ms
-            .insert("fresh-orphan".into(), now);
-        state
-            .orphan_received_at_ms
-            .insert("expired-orphan".into(), now.saturating_sub(10_000));
+            .insert(expired_hash.clone(), now.saturating_sub(10_000));
 
         let removed = prune_orphans(&mut state, 10, 1_000);
 
         assert_eq!(removed, 1);
-        assert!(state.orphan_blocks.contains_key("fresh-orphan"));
-        assert!(!state.orphan_blocks.contains_key("expired-orphan"));
+        assert!(state.orphan_blocks.contains_key(&fresh_hash));
+        assert!(!state.orphan_blocks.contains_key(&expired_hash));
         assert_orphan_indexes_consistent(&state);
     }
 
@@ -423,9 +423,11 @@ mod tests {
         let adopted = adopt_ready_orphans(&mut state, AcceptSource::P2p);
 
         assert_eq!(adopted, 2);
+        let mut expected_children = vec![alpha.hash.clone(), beta.hash.clone()];
+        expected_children.sort();
         assert_eq!(
             state.dag.children.get(&parent.hash),
-            Some(&vec![alpha.hash.clone(), beta.hash.clone()])
+            Some(&expected_children)
         );
     }
 }

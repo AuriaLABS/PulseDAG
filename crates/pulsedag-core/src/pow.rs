@@ -1,4 +1,7 @@
-use crate::{state::ChainState, types::BlockHeader};
+use crate::{
+    state::ChainState,
+    types::{canonical_mining_preimage_bytes, BlockHeader},
+};
 use kaspa_hashes::{Hash as KaspaHash, PowHash};
 use kaspa_pow::matrix::Matrix;
 use sha3::Digest;
@@ -111,25 +114,18 @@ impl<'a> PowHeaderPreimage<'a> {
 
     pub fn to_bytes_checked(&self) -> Result<Vec<u8>, PowRejectReason> {
         validate_pow_preimage_encoding_view(self)?;
-        let mut out = Vec::with_capacity(256);
-        out.push(POW_HEADER_PREIMAGE_VERSION);
-        out.extend_from_slice(&self.version.to_le_bytes());
-
-        let parent_count = self.parents.len() as u16;
-        out.extend_from_slice(&parent_count.to_le_bytes());
-        let mut parents = self.parents.to_vec();
-        parents.sort_unstable();
-        for parent in &parents {
-            encode_len_prefixed_utf8(&mut out, parent);
-        }
-
-        out.extend_from_slice(&self.timestamp.to_le_bytes());
-        out.extend_from_slice(&self.difficulty.to_le_bytes());
-        encode_len_prefixed_utf8(&mut out, self.merkle_root);
-        encode_len_prefixed_utf8(&mut out, self.state_root);
-        out.extend_from_slice(&self.blue_score.to_le_bytes());
-        out.extend_from_slice(&self.height.to_le_bytes());
-        Ok(out)
+        let header = BlockHeader {
+            version: self.version,
+            parents: self.parents.to_vec(),
+            timestamp: self.timestamp,
+            difficulty: self.difficulty,
+            nonce: 0,
+            merkle_root: self.merkle_root.to_string(),
+            state_root: self.state_root.to_string(),
+            blue_score: self.blue_score,
+            height: self.height,
+        };
+        Ok(canonical_mining_preimage_bytes(&header))
     }
 
     pub fn to_debug_string(&self) -> String {
@@ -303,12 +299,6 @@ fn kheavyhash_digest(pre_pow_bytes: &[u8], nonce: u64) -> KaspaHash {
     let initial_hash = hasher.finalize_with_nonce(nonce);
     let matrix = Matrix::generate(pre_pow_hash);
     matrix.heavy_hash(initial_hash)
-}
-
-fn encode_len_prefixed_utf8(out: &mut Vec<u8>, value: &str) {
-    let len = value.len() as u16;
-    out.extend_from_slice(&len.to_le_bytes());
-    out.extend_from_slice(value.as_bytes());
 }
 
 fn validate_pow_preimage_encoding_view(

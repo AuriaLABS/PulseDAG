@@ -1159,6 +1159,7 @@ mod tests {
         accept::{accept_block, AcceptSource},
         build_candidate_block, build_coinbase_transaction, dev_mine_header,
         genesis::init_chain_state,
+        refresh_block_consensus_ids,
     };
 
     fn best_tip_hash(state: &pulsedag_core::ChainState) -> String {
@@ -1195,7 +1196,7 @@ mod tests {
             let (header, mined, _, _) = dev_mine_header(block.header.clone(), 25_000);
             assert!(mined, "failed to mine test block at height {}", i);
             block.header = header;
-            block.hash = format!("block-{}-{}", i, block.header.nonce);
+            refresh_block_consensus_ids(&mut block);
             accept_block(block, &mut state, AcceptSource::LocalMining).expect("accept mined block");
         }
         state
@@ -1262,7 +1263,7 @@ mod tests {
         let (header, mined, _, _) = dev_mine_header(block.header.clone(), 25_000);
         assert!(mined, "failed to mine test block");
         block.header = header;
-        block.hash = format!("accepted-coherent-{}", block.header.nonce);
+        refresh_block_consensus_ids(&mut block);
         accept_block(block.clone(), &mut state, AcceptSource::LocalMining).expect("accept block");
 
         storage
@@ -1311,7 +1312,7 @@ mod tests {
         let (header, mined, _, _) = dev_mine_header(block.header.clone(), 25_000);
         assert!(mined, "failed to mine test block");
         block.header = header;
-        block.hash = format!("atomic-interruption-{}", block.header.nonce);
+        refresh_block_consensus_ids(&mut block);
         accept_block(block.clone(), &mut state, AcceptSource::LocalMining).expect("accept block");
 
         let err = storage
@@ -1372,7 +1373,7 @@ mod tests {
         let (header, mined, _, _) = dev_mine_header(block.header.clone(), 25_000);
         assert!(mined, "failed to mine test block");
         block.header = header;
-        block.hash = format!("restart-recovers-{}", block.header.nonce);
+        refresh_block_consensus_ids(&mut block);
         accept_block(block.clone(), &mut state, AcceptSource::LocalMining).expect("accept block");
 
         storage
@@ -1418,7 +1419,7 @@ mod tests {
             let (header, mined, _, _) = dev_mine_header(block.header.clone(), 25_000);
             assert!(mined, "failed to mine test block at height {}", height);
             block.header = header;
-            block.hash = format!("atomic-path-regression-{}-{}", height, block.header.nonce);
+            refresh_block_consensus_ids(&mut block);
             accept_block(block.clone(), &mut state, AcceptSource::LocalMining)
                 .expect("accept block");
             storage
@@ -1712,7 +1713,7 @@ mod tests {
         let (header, mined, _, _) = dev_mine_header(invalid_block.header.clone(), 25_000);
         assert!(mined, "failed to mine invalid test block");
         invalid_block.header = header;
-        invalid_block.hash = format!("incomplete-restore-{}", invalid_block.header.nonce);
+        refresh_block_consensus_ids(&mut invalid_block);
         storage
             .persist_block(&invalid_block)
             .expect("persist invalid delta block");
