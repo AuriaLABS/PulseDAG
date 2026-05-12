@@ -19,9 +19,11 @@ v2.2.13 focuses on tests, review notes, and safety documentation for:
 - Replay and order-independence tests where practical.
 - Documentation that clearly describes PulseDAG's current DAG model and compatibility limits.
 
+The detailed audit document is [DAG Safety Invariants v2.2.13](DAG_SAFETY_INVARIANTS_V2_2_13.md).
+
 ## Compatibility boundary
 
-PulseDAG does **not** claim full Kaspa or GHOSTDAG compatibility in v2.2.13. The PoW integration path and DAG terminology may be Kaspa-informed, but v2.2.13 is an audit of PulseDAG's current consensus/DAG behavior, not a declaration that the implementation is consensus-compatible with Kaspa, GHOSTDAG, or any external network.
+PulseDAG does **not** claim full Kaspa or GHOSTDAG compatibility in v2.2.13. The PoW integration path and DAG terminology may be Kaspa-informed, but v2.2.13 is an audit of PulseDAG's current consensus/DAG behavior, not a declaration that the implementation is consensus-compatible with Kaspa, GHOSTDAG, or any external network. kHeavyHash/PoW alignment does not imply consensus compatibility. PulseDAG currently uses a DAG structure and deterministic local tip policy, not full GHOSTDAG.
 
 Any compatibility statements must remain limited to explicitly documented PulseDAG behavior and tested repository fixtures.
 
@@ -43,6 +45,7 @@ A v2.2.13 closeout package should include:
 - Test output or review notes for missing-parent/orphan adoption safety.
 - Replay/order-independence evidence where practical, including any documented constraints.
 - A clear statement of any unresolved consensus/DAG safety risks that must inform the v2.3.0 decision.
+- Link and filename verification for the v2.2.13 DAG safety document and related release documents.
 
 ## Relationship to v2.2.12 and v2.3.0
 
