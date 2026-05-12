@@ -6,10 +6,10 @@ This matrix keeps release positioning clear across the current v2.2.x hardening 
 
 | Area | Current value |
 | --- | --- |
-| Workspace release | `2.2.12` |
-| Current milestone | v2.2.12 full private-testnet rehearsal and hardening |
-| Next milestone | v2.2.13 consensus/DAG safety audit |
-| Following milestone | v2.2.14 storage/replay/snapshot/restore/pruning hardening |
+| Workspace release | `2.2.12` until a release-version bump is made; v2.2.13 closeout must verify `v2.2.13`/`2.2.13` if the repository and workspace versions are bumped |
+| Current milestone | v2.2.13 consensus/DAG safety audit closeout |
+| Next milestone | v2.2.14 storage/replay/snapshot/restore/pruning hardening |
+| Following milestone | v2.2.15 sustained P2P multi-node rehearsal |
 | Private-testnet readiness decision | v2.3.0 |
 | Private-testnet stable line | v2.4.x |
 | Public-testnet preparation | v2.5.x |
@@ -30,7 +30,7 @@ This matrix keeps release positioning clear across the current v2.2.x hardening 
 | v2.2.10 | Final PoW completion | PoW finalized, P2P not yet complete |
 | v2.2.11 | P2P completion | Networking/sync completion closure; not official readiness |
 | v2.2.12 | Full private-testnet rehearsal and hardening | Multi-node/operator rehearsal, sustained validation, runbook hardening, and evidence capture |
-| v2.2.13 | Consensus/DAG safety audit | DAG invariant checks, deterministic tip selection tests, parent/height/timestamp validation tests, missing-parent/orphan adoption safety tests, replay/order-independence evidence where practical, [DAG safety invariants](DAG_SAFETY_INVARIANTS_V2_2_13.md), and compatibility-claim review |
+| v2.2.13 | Consensus/DAG safety audit | Closeout checklist for DAG invariant tests, block structural validation tests, transaction validation negative-path tests, orphan adoption tests, tip selection tests, replay/order-independence tests, block acceptance taxonomy tests, required Cargo checks, [DAG safety invariants](DAG_SAFETY_INVARIANTS_V2_2_13.md), and compatibility-claim review |
 | v2.2.14 | Storage/replay/snapshot/restore/pruning hardening | Durable replay validation, migration policy, snapshot/restore evidence, pruning policy, and corrupted/partial-state recovery notes |
 | v2.2.15 | Sustained P2P multi-node rehearsal | Long-running P2P churn, restart/rejoin, lag recovery, convergence, peer diagnostics, and chain-id isolation evidence |
 | v2.2.16 | Miner/node contract hardening | Stable external miner/node RPC contract, submission semantics, diagnostics, and optional GPU backlog only if canonical |
@@ -54,7 +54,7 @@ v2.2.12 consumes the v2.2.11 P2P completion outputs and performs the full privat
 
 ## v2.2.13 consensus/DAG safety audit
 
-v2.2.13 follows v2.2.12 as an intermediate consensus/DAG safety audit before the v2.3.0 readiness decision. It should audit DAG invariant checks, deterministic tip selection, parent/height/timestamp validation, missing-parent and orphan adoption safety, and replay/order independence where practical. The detailed audit document is [DAG Safety Invariants v2.2.13](DAG_SAFETY_INVARIANTS_V2_2_13.md). It must clearly document that PulseDAG currently has a DAG structure and deterministic tip policy, but is not claiming full Kaspa or GHOSTDAG compatibility; kHeavyHash/PoW alignment does not imply consensus compatibility.
+v2.2.13 follows v2.2.12 as an intermediate consensus/DAG safety audit before the v2.3.0 readiness decision. Its closeout checklist requires DAG invariant tests, block structural validation tests, transaction validation negative-path tests, orphan adoption tests, tip selection tests, replay/order-independence tests, block acceptance taxonomy tests, `cargo fmt --check`, `cargo test -p pulsedag-core`, `cargo test --workspace`, and `cargo build --workspace`. If this release bumps versions, `VERSION` must be `v2.2.13` and `[workspace.package].version` must be `2.2.13`. The detailed audit document is [DAG Safety Invariants v2.2.13](DAG_SAFETY_INVARIANTS_V2_2_13.md), and the closeout checklist is [Closing Checklist v2.2.13](CLOSING_CHECKLIST_V2_2_13.md). It must clearly document that PulseDAG currently has a DAG structure and deterministic tip policy, but is not claiming full Kaspa or GHOSTDAG compatibility; kHeavyHash/PoW alignment does not imply consensus compatibility. No smart contracts or pool logic are added, and the miner remains external.
 
 ## v2.2.14 through v2.2.18 hardening path
 
