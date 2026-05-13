@@ -367,6 +367,7 @@ pub fn new_runtime_stats() -> NodeRuntimeStats {
         external_mining_last_invalid_pow_reason: None,
         pulsedag_blocks_accepted_total: 0,
         pulsedag_blocks_rejected_total: 0,
+        rejected_blocks_by_reason: std::collections::BTreeMap::new(),
         pulsedag_invalid_pow_total: 0,
         pulsedag_mining_templates_total: 0,
         pulsedag_mining_submits_total: 0,

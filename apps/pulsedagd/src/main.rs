@@ -654,6 +654,7 @@ async fn main() -> Result<()> {
                                     .saturating_add(missing_parents.len() as u64);
                                 rt.pulsedag_blocks_rejected_total =
                                     rt.pulsedag_blocks_rejected_total.saturating_add(1);
+                                rt.record_rejected_block_reason("missing_parent");
                                 rt.pulsedag_sync_missing_parents_total = rt
                                     .pulsedag_sync_missing_parents_total
                                     .saturating_add(missing_parents.len() as u64);
@@ -727,6 +728,7 @@ async fn main() -> Result<()> {
                                     Some(format!("{}: {:?}", block.hash, acceptance));
                                 rt.pulsedag_blocks_rejected_total =
                                     rt.pulsedag_blocks_rejected_total.saturating_add(1);
+                                rt.record_rejected_block_reason(format!("{:?}", acceptance));
                                 if matches!(acceptance, BlockAcceptanceResult::InvalidPow) {
                                     rt.pulsedag_invalid_pow_total =
                                         rt.pulsedag_invalid_pow_total.saturating_add(1);
