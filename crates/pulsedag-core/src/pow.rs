@@ -595,10 +595,7 @@ pub fn dev_retarget_max_bps() -> u64 {
 }
 
 pub fn dev_target_block_interval_secs() -> u64 {
-    read_env_u64(
-        "PULSEDAG_TARGET_BLOCK_INTERVAL_SECS",
-        DEV_TARGET_BLOCK_INTERVAL_SECS,
-    )
+    DEV_TARGET_BLOCK_INTERVAL_SECS
 }
 
 pub fn dev_difficulty_window() -> usize {

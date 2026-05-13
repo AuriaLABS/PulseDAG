@@ -3,10 +3,12 @@ use std::collections::BTreeSet;
 use crate::{
     apply::apply_transaction,
     errors::PulseError,
+    expected_difficulty,
     mining::{current_ts, is_coinbase},
     state::ChainState,
     tx::{compute_txid, verify_transaction_signatures},
     types::{compute_block_hash, compute_merkle_root, Block, OutPoint, Transaction},
+    validate_pow_header,
 };
 
 pub fn tx_output_amount(state: &ChainState, outpoint: &OutPoint) -> Option<u64> {
@@ -126,6 +128,20 @@ pub fn validate_block(block: &Block, state: &ChainState) -> Result<(), PulseErro
             block.header.height, expected_height
         )));
     }
+    let expected_difficulty = expected_difficulty(state);
+    if block.header.difficulty != expected_difficulty {
+        return Err(PulseError::InvalidBlock(format!(
+            "invalid consensus difficulty {}, expected {}",
+            block.header.difficulty, expected_difficulty
+        )));
+    }
+    validate_pow_header(&block.header).map_err(|reason| {
+        PulseError::InvalidBlock(format!(
+            "invalid proof of work for expected difficulty {}: {}",
+            expected_difficulty,
+            reason.code()
+        ))
+    })?;
     if block.header.timestamp < newest_parent_timestamp {
         return Err(PulseError::InvalidBlock(format!(
             "timestamp {} is older than newest parent {}",
@@ -222,6 +238,66 @@ mod tests {
         let parents = vec![state.dag.genesis_hash.clone()];
         let mut block = build_candidate_block(parents, 1, 1, vec![coinbase(1)]);
         refresh_block_consensus_ids_with_state(&mut block, state).unwrap();
+        block
+    }
+
+    fn append_header_only_block(
+        state: &mut ChainState,
+        height: u64,
+        timestamp: u64,
+        difficulty: u32,
+    ) {
+        let parent = if height == 1 {
+            state.dag.genesis_hash.clone()
+        } else {
+            format!("consensus-parent-{}", height - 1)
+        };
+        let hash = format!("consensus-parent-{height}");
+        state.dag.blocks.insert(
+            hash.clone(),
+            Block {
+                hash: hash.clone(),
+                header: crate::types::BlockHeader {
+                    version: 1,
+                    parents: vec![parent],
+                    timestamp,
+                    difficulty,
+                    nonce: 0,
+                    merkle_root: format!("merkle-{height}"),
+                    state_root: format!("state-{height}"),
+                    blue_score: height,
+                    height,
+                },
+                transactions: Vec::new(),
+            },
+        );
+        state.dag.best_height = height;
+        state.dag.tips.clear();
+        state.dag.tips.insert(hash);
+    }
+
+    fn state_with_tip_difficulty(difficulty: u32) -> ChainState {
+        let mut state = init_chain_state("test".to_string());
+        let start = current_ts().saturating_sub(30 * 60);
+        for height in 1..=25 {
+            append_header_only_block(&mut state, height, start + height * 60, difficulty);
+        }
+        state
+    }
+
+    fn mined_next_block(state: &ChainState, difficulty: u32, nonce: u64) -> Block {
+        let mut parents = state.dag.tips.iter().cloned().collect::<Vec<_>>();
+        parents.sort();
+        let height = state.dag.best_height + 1;
+        let mut block = build_candidate_block(parents, height, difficulty, vec![coinbase(nonce)]);
+        refresh_block_consensus_ids_with_state(&mut block, state).unwrap();
+        let (header, mined, _, _) = crate::dev_mine_header(block.header.clone(), 200_000);
+        assert!(
+            mined,
+            "expected test block to mine at difficulty {difficulty}"
+        );
+        block.header = header;
+        refresh_block_consensus_ids(&mut block);
         block
     }
 
@@ -613,6 +689,38 @@ mod tests {
     }
 
     #[test]
+    fn validate_block_accepts_expected_consensus_difficulty() {
+        let state = state_with_tip_difficulty(2);
+        assert_eq!(crate::expected_difficulty(&state), 2);
+        let block = mined_next_block(&state, 2, 90);
+
+        validate_block(&block, &state).expect("expected consensus difficulty block to validate");
+    }
+
+    #[test]
+    fn validate_block_rejects_lower_than_expected_difficulty() {
+        let state = state_with_tip_difficulty(2);
+        let block = mined_next_block(&state, 1, 91);
+
+        assert_invalid_block_contains(
+            validate_block(&block, &state),
+            "invalid consensus difficulty 1, expected 2",
+        );
+    }
+
+    #[test]
+    fn validate_block_rejects_stale_template_difficulty() {
+        let state = state_with_tip_difficulty(4);
+        let stale_template_difficulty = 2;
+        let block = mined_next_block(&state, stale_template_difficulty, 92);
+
+        assert_invalid_block_contains(
+            validate_block(&block, &state),
+            "invalid consensus difficulty 2, expected 4",
+        );
+    }
+
+    #[test]
     fn validate_block_rejects_block_with_no_parents() {
         let state = init_chain_state("test".to_string());
         let mut block = structurally_valid_block(&state);
@@ -841,17 +949,20 @@ mod tests {
     }
 
     #[test]
-    fn validate_block_keeps_pow_checks_outside_structural_validation() {
+    fn validate_block_rejects_pow_target_failure_in_consensus() {
         let state = init_chain_state("test".to_string());
         let parents = vec![state.dag.genesis_hash.clone()];
         let txs = vec![build_coinbase_transaction("miner1", 50, 1)];
-        let mut block = build_candidate_block(parents, 1, u32::MAX, txs);
+        let mut block = build_candidate_block(parents, 1, 1, txs);
+        block.header.difficulty = crate::expected_difficulty(&state);
         block.header.nonce = 0;
         refresh_block_consensus_ids_with_state(&mut block, &state).unwrap();
+        block.header.difficulty = 0x0100_0000;
+        refresh_block_consensus_ids(&mut block);
 
-        assert!(
-            validate_block(&block, &state).is_ok(),
-            "structural validation should remain independent from PoW engine evaluation"
+        assert_invalid_block_contains(
+            validate_block(&block, &state),
+            "invalid consensus difficulty",
         );
     }
 }

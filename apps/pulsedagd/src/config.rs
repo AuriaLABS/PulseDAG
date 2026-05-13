@@ -109,7 +109,7 @@ impl Config {
                 simulated_peers: Vec::new(),
                 auto_rebuild_on_start: true,
                 persist_snapshot_on_start: true,
-                target_block_interval_secs: 30,
+                target_block_interval_secs: 60,
                 difficulty_window: 10,
                 max_future_drift_secs: 90,
                 snapshot_auto_every_blocks: 25,
@@ -133,7 +133,7 @@ impl Config {
                 simulated_peers: Vec::new(),
                 auto_rebuild_on_start: true,
                 persist_snapshot_on_start: true,
-                target_block_interval_secs: 45,
+                target_block_interval_secs: 60,
                 difficulty_window: 20,
                 max_future_drift_secs: 120,
                 snapshot_auto_every_blocks: 25,
@@ -181,7 +181,7 @@ impl Config {
                 simulated_peers: Vec::new(),
                 auto_rebuild_on_start: true,
                 persist_snapshot_on_start: true,
-                target_block_interval_secs: 45,
+                target_block_interval_secs: 60,
                 difficulty_window: 20,
                 max_future_drift_secs: 120,
                 snapshot_auto_every_blocks: 25,
@@ -205,7 +205,7 @@ impl Config {
                 simulated_peers: Vec::new(),
                 auto_rebuild_on_start: true,
                 persist_snapshot_on_start: true,
-                target_block_interval_secs: 45,
+                target_block_interval_secs: 60,
                 difficulty_window: 20,
                 max_future_drift_secs: 120,
                 snapshot_auto_every_blocks: 25,
@@ -232,7 +232,7 @@ impl Config {
                 simulated_peers: Vec::new(),
                 auto_rebuild_on_start: true,
                 persist_snapshot_on_start: true,
-                target_block_interval_secs: 45,
+                target_block_interval_secs: 60,
                 difficulty_window: 20,
                 max_future_drift_secs: 120,
                 snapshot_auto_every_blocks: 25,
@@ -291,11 +291,12 @@ impl Config {
             "PULSEDAG_PERSIST_SNAPSHOT_ON_START",
             self.persist_snapshot_on_start,
         );
-        self.target_block_interval_secs = read_env_u64_positive(
-            "PULSEDAG_TARGET_BLOCK_INTERVAL_SECS",
-            self.target_block_interval_secs,
-            1,
-        );
+        self.target_block_interval_secs =
+            guarded_target_block_interval_secs(read_env_u64_positive(
+                "PULSEDAG_TARGET_BLOCK_INTERVAL_SECS",
+                self.target_block_interval_secs,
+                1,
+            ));
         self.difficulty_window =
             read_env_usize_positive("PULSEDAG_DIFFICULTY_WINDOW", self.difficulty_window, 2);
         self.max_future_drift_secs = read_env_u64_positive(
@@ -398,6 +399,14 @@ fn read_env_bool(key: &str, default: bool) -> bool {
         .unwrap_or(default)
 }
 
+fn guarded_target_block_interval_secs(candidate: u64) -> u64 {
+    if candidate == pulsedag_core::CONSENSUS_TARGET_BLOCK_INTERVAL_SECS {
+        candidate
+    } else {
+        pulsedag_core::CONSENSUS_TARGET_BLOCK_INTERVAL_SECS
+    }
+}
+
 fn read_env_u64(key: &str, default: u64) -> u64 {
     std::env::var(key)
         .ok()
@@ -443,6 +452,7 @@ mod tests {
             "PULSEDAG_P2P_MDNS",
             "PULSEDAG_AUTO_PRUNE_ENABLED",
             "PULSEDAG_PRUNE_KEEP_RECENT_BLOCKS",
+            "PULSEDAG_TARGET_BLOCK_INTERVAL_SECS",
         ] {
             std::env::remove_var(key);
         }
@@ -459,6 +469,19 @@ mod tests {
         assert_eq!(cfg.p2p_mode, "memory");
         assert_eq!(cfg.p2p_connection_slot_budget, 8);
         assert!(!cfg.auto_prune_enabled);
+    }
+
+    #[test]
+    fn target_block_interval_is_guarded_to_consensus_sixty_seconds() {
+        let _guard = env_lock().lock().expect("env lock");
+        clear_test_env();
+        std::env::set_var("PULSEDAG_CONFIG_PROFILE", "local");
+        std::env::set_var("PULSEDAG_TARGET_BLOCK_INTERVAL_SECS", "30");
+        let cfg = Config::from_env().expect("config");
+        assert_eq!(
+            cfg.target_block_interval_secs,
+            pulsedag_core::CONSENSUS_TARGET_BLOCK_INTERVAL_SECS
+        );
     }
 
     #[test]

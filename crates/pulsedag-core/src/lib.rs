@@ -8,6 +8,7 @@ pub mod mining;
 pub mod orphans;
 pub mod pow;
 pub mod replay;
+pub mod retarget;
 pub mod selection;
 pub mod state;
 pub mod sync_pipeline;
@@ -27,6 +28,11 @@ pub use tx::{
     address_from_public_key, compute_txid, signing_message, verify_transaction_signatures,
 };
 pub use types::*;
+
+pub use retarget::{
+    consensus_difficulty_snapshot, expected_difficulty, expected_target_u64,
+    ConsensusDifficultySnapshot, CONSENSUS_TARGET_BLOCK_INTERVAL_SECS,
+};
 
 pub use replay::{
     rebuild_state_from_blocks, rebuild_state_from_blocks_defensive,
