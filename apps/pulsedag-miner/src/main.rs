@@ -13,6 +13,7 @@ struct TemplateRequest {
 
 #[derive(Debug, Deserialize)]
 struct TemplateData {
+    protocol_version: u32,
     algorithm: String,
     template_id: String,
     created_at_unix: u64,
@@ -20,6 +21,7 @@ struct TemplateData {
     freshness_ttl_secs: u64,
     freshness_grace_secs: u64,
     block: Block,
+    target_hex: String,
     compact_target: u32,
 }
 
@@ -214,7 +216,8 @@ async fn mine_once(client: &Client, cfg: &Config) -> Result<()> {
     block.header = mining.header;
 
     println!(
-        "template received: id={} height={} hash={} difficulty={} created_at={} expires_at={} ttl={}s grace={}s",
+        "template received: protocol_version={} id={} height={} hash={} difficulty={} created_at={} expires_at={} ttl={}s grace={}s target_hex={}",
+        template.protocol_version,
         template_id,
         block.header.height,
         block.hash,
@@ -222,7 +225,8 @@ async fn mine_once(client: &Client, cfg: &Config) -> Result<()> {
         template.created_at_unix,
         template.expires_at_unix,
         template.freshness_ttl_secs,
-        template.freshness_grace_secs
+        template.freshness_grace_secs,
+        template.target_hex
     );
     println!("mining: algorithm={} pow_engine=canonical_core template_id={} height={} target_hex={} nonce={} pow_hash={} attempts={} hashes_per_sec={:.2} accepted={} elapsed_ms={}",
         template.algorithm, template_id, block.header.height, mining.target_hex, block.header.nonce, mining.final_hash_hex, mining.tries, mining.hashes_per_sec, mining.accepted, mining.elapsed_ms);
@@ -298,7 +302,9 @@ async fn mine_header_multithread(
         final_hash_hex,
         elapsed_ms: elapsed.as_millis(),
         hashes_per_sec,
-        target_hex: format!("{:08x}", target_bits),
+        target_hex: pulsedag_core::pow::target_hex(&pulsedag_core::pow::target_from_bits(
+            target_bits,
+        )),
     })
 }
 
