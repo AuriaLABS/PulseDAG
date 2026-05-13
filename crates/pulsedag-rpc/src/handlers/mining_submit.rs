@@ -209,6 +209,18 @@ async fn record_external_mining_rejection<S: RpcStateLike>(
         .to_string(),
     );
     runtime.external_mining_last_rejection_reason = Some(message.to_string());
+    let reason_label = match kind {
+        ExternalMiningRejectKind::InvalidPow => "invalid_pow",
+        ExternalMiningRejectKind::StaleTemplate => "stale_template",
+        ExternalMiningRejectKind::MissingTemplateId => "missing_template_id",
+        ExternalMiningRejectKind::UnknownTemplate => "unknown_template",
+        ExternalMiningRejectKind::SubmitBlockError => "submit_block_error",
+        ExternalMiningRejectKind::DuplicateBlock => "duplicate_block",
+        ExternalMiningRejectKind::InvalidBlock => "invalid_block",
+        ExternalMiningRejectKind::InternalError => "internal_error",
+        ExternalMiningRejectKind::StorageError => "storage_error",
+    };
+    runtime.record_rejected_block_reason(reason_label);
     match kind {
         ExternalMiningRejectKind::InvalidPow => {
             runtime.external_mining_rejected_invalid_pow = runtime

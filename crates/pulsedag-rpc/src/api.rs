@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{collections::BTreeMap, sync::Arc};
 
 use pulsedag_core::state::ChainState;
 use pulsedag_core::SyncPipelineStatus;
@@ -98,6 +98,8 @@ pub struct NodeRuntimeStats {
     pub external_mining_last_invalid_pow_reason: Option<String>,
     pub pulsedag_blocks_accepted_total: u64,
     pub pulsedag_blocks_rejected_total: u64,
+    #[serde(default)]
+    pub rejected_blocks_by_reason: BTreeMap<String, u64>,
     pub pulsedag_invalid_pow_total: u64,
     pub pulsedag_mining_templates_total: u64,
     pub pulsedag_mining_submits_total: u64,
@@ -160,6 +162,37 @@ pub struct NodeRuntimeStats {
     pub last_prune_height: Option<u64>,
     pub last_prune_unix: Option<u64>,
     pub sync_pipeline: SyncPipelineStatus,
+}
+
+impl NodeRuntimeStats {
+    pub fn record_rejected_block_reason(&mut self, reason: impl Into<String>) {
+        let reason = reason.into();
+        let normalized = reason.trim();
+        let reason = if normalized.is_empty() {
+            "unknown".to_string()
+        } else {
+            let mut out = String::new();
+            let mut previous_was_separator = false;
+            for (index, ch) in normalized.chars().enumerate() {
+                if ch.is_ascii_uppercase() {
+                    if index > 0 && !previous_was_separator {
+                        out.push('_');
+                    }
+                    out.push(ch.to_ascii_lowercase());
+                    previous_was_separator = false;
+                } else if ch.is_ascii_alphanumeric() {
+                    out.push(ch.to_ascii_lowercase());
+                    previous_was_separator = false;
+                } else if !previous_was_separator {
+                    out.push('_');
+                    previous_was_separator = true;
+                }
+            }
+            out.trim_matches('_').to_string()
+        };
+        let count = self.rejected_blocks_by_reason.entry(reason).or_insert(0);
+        *count = count.saturating_add(1);
+    }
 }
 
 pub trait RpcStateLike: Clone + Send + Sync + 'static {
