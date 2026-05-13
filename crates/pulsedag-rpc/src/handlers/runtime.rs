@@ -1959,6 +1959,12 @@ mod tests {
             topology_distinct_buckets: 1,
             topology_dominant_bucket_share_bps: 10_000,
             topology_diversity_score_bps: 625,
+            blocks_requested: 0,
+            blocks_received: 0,
+            invalid_blocks_received: 0,
+            orphan_blocks_received: 0,
+            duplicate_blocks_received: 0,
+            peer_penalties: 0,
         };
         let state = TestState {
             chain: Arc::new(RwLock::new(chain)),
@@ -2119,6 +2125,12 @@ mod tests {
             topology_distinct_buckets: 1,
             topology_dominant_bucket_share_bps: 10_000,
             topology_diversity_score_bps: 625,
+            blocks_requested: 0,
+            blocks_received: 0,
+            invalid_blocks_received: 0,
+            orphan_blocks_received: 0,
+            duplicate_blocks_received: 0,
+            peer_penalties: 0,
         };
         let state = TestState {
             chain: Arc::new(RwLock::new(chain)),

@@ -24,6 +24,7 @@ pub struct Config {
     pub auto_prune_every_blocks: u64,
     pub prune_keep_recent_blocks: u64,
     pub prune_require_snapshot: bool,
+    pub admin_enabled: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -93,6 +94,7 @@ impl Config {
                 auto_prune_every_blocks: 100,
                 prune_keep_recent_blocks: 300,
                 prune_require_snapshot: true,
+                admin_enabled: true,
             },
             ConfigProfile::Local => Self {
                 network_profile: "local".into(),
@@ -117,6 +119,7 @@ impl Config {
                 auto_prune_every_blocks: 100,
                 prune_keep_recent_blocks: 300,
                 prune_require_snapshot: true,
+                admin_enabled: true,
             },
             ConfigProfile::Private => Self {
                 network_profile: "private".into(),
@@ -141,6 +144,7 @@ impl Config {
                 auto_prune_every_blocks: 100,
                 prune_keep_recent_blocks: 800,
                 prune_require_snapshot: true,
+                admin_enabled: false,
             },
             ConfigProfile::Testnet => Self {
                 network_profile: "testnet".into(),
@@ -165,6 +169,7 @@ impl Config {
                 auto_prune_every_blocks: 100,
                 prune_keep_recent_blocks: 500,
                 prune_require_snapshot: true,
+                admin_enabled: false,
             },
             ConfigProfile::RehearsalA => Self {
                 network_profile: "rehearsal-a".into(),
@@ -189,6 +194,7 @@ impl Config {
                 auto_prune_every_blocks: 100,
                 prune_keep_recent_blocks: 800,
                 prune_require_snapshot: true,
+                admin_enabled: true,
             },
             ConfigProfile::RehearsalB => Self {
                 network_profile: "rehearsal-b".into(),
@@ -213,6 +219,7 @@ impl Config {
                 auto_prune_every_blocks: 100,
                 prune_keep_recent_blocks: 800,
                 prune_require_snapshot: true,
+                admin_enabled: true,
             },
             ConfigProfile::RehearsalC => Self {
                 network_profile: "rehearsal-c".into(),
@@ -240,6 +247,7 @@ impl Config {
                 auto_prune_every_blocks: 100,
                 prune_keep_recent_blocks: 800,
                 prune_require_snapshot: true,
+                admin_enabled: true,
             },
             ConfigProfile::Operator => Self {
                 network_profile: "operator".into(),
@@ -264,6 +272,7 @@ impl Config {
                 auto_prune_every_blocks: 100,
                 prune_keep_recent_blocks: 1000,
                 prune_require_snapshot: true,
+                admin_enabled: false,
             },
         }
     }
@@ -323,10 +332,17 @@ impl Config {
             "PULSEDAG_PRUNE_REQUIRE_SNAPSHOT",
             self.prune_require_snapshot,
         );
+        self.apply_admin_default_or_env_override();
     }
 }
 
 impl Config {
+    fn apply_admin_default_or_env_override(&mut self) {
+        self.admin_enabled = std::env::var("PULSEDAG_ADMIN_ENABLED")
+            .map(|v| parse_env_bool_value(&v))
+            .unwrap_or_else(|_| default_admin_enabled(&self.network_profile, &self.rpc_bind));
+    }
+
     pub fn apply_cli_args<I>(&mut self, args: I) -> Result<()>
     where
         I: IntoIterator<Item = String>,
@@ -374,6 +390,7 @@ impl Config {
             }
         }
         self.apply_env_overrides();
+        self.apply_admin_default_or_env_override();
         Ok(())
     }
 }
@@ -393,9 +410,32 @@ fn read_env_list(key: &str, default: &[String]) -> Vec<String> {
         .unwrap_or_else(|_| default.to_vec())
 }
 
+fn default_admin_enabled(network_profile: &str, rpc_bind: &str) -> bool {
+    let profile_is_dev =
+        matches!(network_profile, "dev" | "local") || network_profile.starts_with("rehearsal-");
+    profile_is_dev || is_local_rpc_bind(rpc_bind)
+}
+
+fn is_local_rpc_bind(rpc_bind: &str) -> bool {
+    let raw = rpc_bind.trim();
+    if matches!(raw, "::1" | "[::1]") {
+        return true;
+    }
+    let host = raw
+        .rsplit_once(':')
+        .map(|(host, _)| host.trim_matches(['[', ']']))
+        .unwrap_or(raw)
+        .trim();
+    matches!(host, "127.0.0.1" | "localhost" | "::1")
+}
+
+fn parse_env_bool_value(value: &str) -> bool {
+    value == "1" || value.eq_ignore_ascii_case("true")
+}
+
 fn read_env_bool(key: &str, default: bool) -> bool {
     std::env::var(key)
-        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .map(|v| parse_env_bool_value(&v))
         .unwrap_or(default)
 }
 
@@ -453,6 +493,7 @@ mod tests {
             "PULSEDAG_AUTO_PRUNE_ENABLED",
             "PULSEDAG_PRUNE_KEEP_RECENT_BLOCKS",
             "PULSEDAG_TARGET_BLOCK_INTERVAL_SECS",
+            "PULSEDAG_ADMIN_ENABLED",
         ] {
             std::env::remove_var(key);
         }
@@ -469,6 +510,7 @@ mod tests {
         assert_eq!(cfg.p2p_mode, "memory");
         assert_eq!(cfg.p2p_connection_slot_budget, 8);
         assert!(!cfg.auto_prune_enabled);
+        assert!(cfg.admin_enabled);
     }
 
     #[test]
@@ -496,6 +538,7 @@ mod tests {
         assert_eq!(cfg.p2p_connection_slot_budget, 24);
         assert!(cfg.auto_prune_enabled);
         assert_eq!(cfg.prune_keep_recent_blocks, 500);
+        assert!(!cfg.admin_enabled);
     }
 
     #[test]
@@ -507,6 +550,7 @@ mod tests {
         assert_eq!(cfg.network_profile, "private");
         assert_eq!(cfg.chain_id, "pulsedag-private-v2-2-8-pre");
         assert_eq!(cfg.rpc_bind, "0.0.0.0:8280");
+        assert!(!cfg.admin_enabled);
     }
 
     #[test]
@@ -521,6 +565,7 @@ mod tests {
         assert_eq!(cfg.p2p_connection_slot_budget, 32);
         assert!(!cfg.p2p_mdns);
         assert_eq!(cfg.prune_keep_recent_blocks, 1000);
+        assert!(!cfg.admin_enabled);
     }
 
     #[test]
@@ -541,6 +586,8 @@ mod tests {
 
     #[test]
     fn cli_network_then_rpc_override_is_preserved() {
+        let _guard = env_lock().lock().expect("env lock");
+        clear_test_env();
         let mut cfg = Config::defaults_for_profile(ConfigProfile::Dev);
         cfg.apply_cli_args(vec![
             "--network".to_string(),
@@ -555,6 +602,8 @@ mod tests {
 
     #[test]
     fn cli_rpc_then_network_override_is_preserved() {
+        let _guard = env_lock().lock().expect("env lock");
+        clear_test_env();
         let mut cfg = Config::defaults_for_profile(ConfigProfile::Dev);
         cfg.apply_cli_args(vec![
             "--rpc-listen".to_string(),
@@ -569,6 +618,8 @@ mod tests {
 
     #[test]
     fn cli_private_profile_keeps_p2p_and_bootnode_overrides() {
+        let _guard = env_lock().lock().expect("env lock");
+        clear_test_env();
         let mut cfg = Config::defaults_for_profile(ConfigProfile::Dev);
         cfg.apply_cli_args(vec![
             "--network".to_string(),
@@ -588,6 +639,8 @@ mod tests {
 
     #[test]
     fn cli_profile_defaults_apply_without_overrides() {
+        let _guard = env_lock().lock().expect("env lock");
+        clear_test_env();
         let mut cfg = Config::defaults_for_profile(ConfigProfile::Dev);
         cfg.apply_cli_args(vec!["--network".to_string(), "private".to_string()])
             .expect("apply cli args");
@@ -597,6 +650,8 @@ mod tests {
 
     #[test]
     fn rehearsal_profiles_load_expected_defaults() {
+        let _guard = env_lock().lock().expect("env lock");
+        clear_test_env();
         let rehearsal_a = Config::defaults_for_profile(ConfigProfile::RehearsalA);
         assert_eq!(rehearsal_a.network_profile, "rehearsal-a");
         assert_eq!(rehearsal_a.chain_id, "pulsedag-rehearsal");
@@ -627,6 +682,8 @@ mod tests {
 
     #[test]
     fn rehearsal_profiles_share_chain_and_separate_data_dirs() {
+        let _guard = env_lock().lock().expect("env lock");
+        clear_test_env();
         let rehearsal_a = Config::defaults_for_profile(ConfigProfile::RehearsalA);
         let rehearsal_b = Config::defaults_for_profile(ConfigProfile::RehearsalB);
         let rehearsal_c = Config::defaults_for_profile(ConfigProfile::RehearsalC);
@@ -640,6 +697,8 @@ mod tests {
 
     #[test]
     fn rehearsal_cli_overrides_preserve_explicit_values() {
+        let _guard = env_lock().lock().expect("env lock");
+        clear_test_env();
         let mut cfg = Config::defaults_for_profile(ConfigProfile::Dev);
         cfg.apply_cli_args(vec![
             "--network".to_string(),
@@ -676,5 +735,43 @@ mod tests {
                 .contains("invalid PULSEDAG_CONFIG_PROFILE value"),
             "unexpected error: {err}"
         );
+    }
+
+    #[test]
+    fn admin_defaults_follow_bind_safety() {
+        let _guard = env_lock().lock().expect("env lock");
+        clear_test_env();
+        std::env::set_var("PULSEDAG_CONFIG_PROFILE", "dev");
+        std::env::set_var("PULSEDAG_RPC_BIND", "0.0.0.0:8080");
+        let cfg = Config::from_env().expect("config");
+        assert!(cfg.admin_enabled);
+
+        clear_test_env();
+        std::env::set_var("PULSEDAG_CONFIG_PROFILE", "operator");
+        let cfg = Config::from_env().expect("config");
+        assert!(!cfg.admin_enabled);
+
+        clear_test_env();
+        std::env::set_var("PULSEDAG_CONFIG_PROFILE", "operator");
+        std::env::set_var("PULSEDAG_RPC_BIND", "127.0.0.1:8080");
+        let cfg = Config::from_env().expect("config");
+        assert!(cfg.admin_enabled);
+    }
+
+    #[test]
+    fn admin_env_override_takes_precedence() {
+        let _guard = env_lock().lock().expect("env lock");
+        clear_test_env();
+        std::env::set_var("PULSEDAG_CONFIG_PROFILE", "operator");
+        std::env::set_var("PULSEDAG_ADMIN_ENABLED", "true");
+        let cfg = Config::from_env().expect("config");
+        assert!(cfg.admin_enabled);
+
+        clear_test_env();
+        std::env::set_var("PULSEDAG_CONFIG_PROFILE", "dev");
+        std::env::set_var("PULSEDAG_ADMIN_ENABLED", "false");
+        let cfg = Config::from_env().expect("config");
+        assert!(!cfg.admin_enabled);
+        clear_test_env();
     }
 }
