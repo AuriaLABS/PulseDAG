@@ -11,8 +11,9 @@ use crate::{
 };
 use axum::{extract::State, Json};
 use pulsedag_core::{
-    build_candidate_block, build_coinbase_transaction, dev_difficulty_snapshot, pow_preimage_bytes,
-    preferred_tip_hash, refresh_block_consensus_ids_with_state, state::ChainState,
+    build_candidate_block, build_coinbase_transaction, consensus_difficulty_snapshot,
+    pow_preimage_bytes, preferred_tip_hash, refresh_block_consensus_ids_with_state,
+    state::ChainState,
 };
 use sha3::{Digest, Keccak256};
 use tracing::info;
@@ -196,9 +197,9 @@ pub(crate) fn current_template_state(chain: &ChainState) -> TemplateLifecycleSta
     let mut parent_hashes = chain.dag.tips.iter().cloned().collect::<Vec<_>>();
     parent_hashes.sort();
     let selected_tip = preferred_tip_hash(chain);
-    let snapshot = dev_difficulty_snapshot(chain);
-    let difficulty = u32::try_from(snapshot.suggested_difficulty).unwrap_or(u32::MAX);
-    let target_u64 = snapshot.target_u64;
+    let snapshot = consensus_difficulty_snapshot(chain);
+    let difficulty = snapshot.expected_difficulty;
+    let target_u64 = snapshot.expected_target_u64;
     let mut tx_ids = chain
         .mempool
         .transactions
@@ -267,7 +268,7 @@ pub async fn post_mining_template<S: RpcStateLike>(
 ) -> Json<ApiResponse<MiningTemplateData>> {
     let chain_handle = state.chain();
     let chain = chain_handle.read().await;
-    let snapshot = dev_difficulty_snapshot(&chain);
+    let snapshot = consensus_difficulty_snapshot(&chain);
     let lifecycle = current_template_state(&chain);
     let height = lifecycle.height;
     let parents = lifecycle.parent_hashes.clone();
@@ -370,9 +371,9 @@ pub async fn post_mining_template<S: RpcStateLike>(
         window_size: snapshot.policy.window_size,
         observed_block_count: snapshot.observed_block_count,
         avg_block_interval_secs: snapshot.avg_block_interval_secs,
-        suggested_difficulty: snapshot.suggested_difficulty,
+        suggested_difficulty: u64::from(snapshot.expected_difficulty),
         target_u64,
-        target_block_interval_secs: snapshot.policy.target_block_interval_secs,
+        target_block_interval_secs: snapshot.target_block_interval_secs,
         retarget_multiplier_bps: snapshot.retarget_multiplier_bps,
         notes: vec!["Mining template uses centralized runtime retarget policy".to_string()],
     };

@@ -74,7 +74,9 @@ fn classify_block_validation_error(err: PulseError) -> BlockAcceptanceResult {
     match err {
         PulseError::BlockAlreadyExists => BlockAcceptanceResult::Duplicate,
         PulseError::InvalidBlock(msg) => {
-            if msg.contains("missing parent") {
+            if msg.contains("consensus difficulty") || msg.contains("proof of work") {
+                BlockAcceptanceResult::InvalidPow
+            } else if msg.contains("missing parent") {
                 BlockAcceptanceResult::MissingParent
             } else {
                 BlockAcceptanceResult::Malformed

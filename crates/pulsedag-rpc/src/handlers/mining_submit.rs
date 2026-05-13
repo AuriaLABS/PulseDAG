@@ -4,8 +4,8 @@ use super::mining_template::{
 use crate::api::{ApiResponse, RpcStateLike, SubmitMinedBlockRequest};
 use axum::{extract::State, Json};
 use pulsedag_core::{
-    accept_block_with_result, adopt_ready_orphans, pow_validation_result, preferred_tip_hash,
-    AcceptSource,
+    accept_block_with_result, adopt_ready_orphans, expected_difficulty, pow_validation_result,
+    preferred_tip_hash, AcceptSource,
 };
 use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{info, warn};
@@ -258,6 +258,35 @@ pub async fn post_mining_submit<S: RpcStateLike>(
         let mut runtime = runtime_handle.write().await;
         runtime.pulsedag_mining_submits_total =
             runtime.pulsedag_mining_submits_total.saturating_add(1);
+    }
+
+    let expected_difficulty = expected_difficulty(&chain);
+    if req.block.header.difficulty != expected_difficulty {
+        let detail = format!(
+            "submitted difficulty {} does not match expected consensus difficulty {}; score={} target={} height={} nonce={}",
+            req.block.header.difficulty,
+            expected_difficulty,
+            pow_hash_score_u64,
+            target_u64,
+            req.block.header.height,
+            req.block.header.nonce
+        );
+        {
+            let runtime_handle = state.runtime();
+            let mut runtime = runtime_handle.write().await;
+            runtime.rejected_mined_blocks = runtime.rejected_mined_blocks.saturating_add(1);
+            runtime.pulsedag_blocks_rejected_total =
+                runtime.pulsedag_blocks_rejected_total.saturating_add(1);
+        }
+        record_external_mining_rejection(&state, ExternalMiningRejectKind::InvalidPow, &detail)
+            .await;
+        return Json(rejection_submit_response(
+            "invalid_pow",
+            detail,
+            Some(block_hash),
+            Some(height),
+            false,
+        ));
     }
 
     if !pow.accepted {
@@ -677,12 +706,13 @@ mod tests {
     };
     use axum::{extract::State, Json};
     use pulsedag_core::{
-        build_candidate_block, build_coinbase_transaction, dev_difficulty_snapshot,
+        build_candidate_block, build_coinbase_transaction, consensus_difficulty_snapshot,
         dev_mine_header, dev_target_u64,
         errors::PulseError,
         preferred_tip_hash, refresh_block_consensus_ids_with_state,
         state::ChainState,
         types::{Block, Transaction},
+        AcceptSource, BlockAcceptanceResult,
     };
     use pulsedag_p2p::{P2pHandle, P2pStatus};
     use pulsedag_storage::Storage;
@@ -870,8 +900,7 @@ mod tests {
         let height = chain.dag.best_height + 1;
         let mut parents = chain.dag.tips.iter().cloned().collect::<Vec<_>>();
         parents.sort();
-        let difficulty =
-            u32::try_from(dev_difficulty_snapshot(&chain).suggested_difficulty).unwrap_or(u32::MAX);
+        let difficulty = consensus_difficulty_snapshot(&chain).expected_difficulty;
         let txs = vec![build_coinbase_transaction("kaspa:qptestminer", 50, height)];
         let mut block = build_candidate_block(parents, height, difficulty, txs);
         refresh_block_consensus_ids_with_state(&mut block, &chain).unwrap();
@@ -1281,11 +1310,17 @@ mod tests {
         )
         .await;
         assert!(first.ok);
+        let block = build_mined_block(&state).await;
         {
             let mut chain = state.chain.write().await;
-            let tx =
-                build_coinbase_transaction("kaspa:qptestmempool", 1, chain.dag.best_height + 1);
-            chain.mempool.transactions.insert(tx.txid.clone(), tx);
+            assert_eq!(
+                pulsedag_core::accept_block_with_result(
+                    block,
+                    &mut chain,
+                    AcceptSource::LocalMining
+                ),
+                BlockAcceptanceResult::Accepted
+            );
         }
         let Json(second) = post_mining_template(
             State(state.clone()),
@@ -1316,8 +1351,7 @@ mod tests {
         let height = chain.dag.best_height + 1;
         let mut parents = chain.dag.tips.iter().cloned().collect::<Vec<_>>();
         parents.sort();
-        let difficulty =
-            u32::try_from(dev_difficulty_snapshot(&chain).suggested_difficulty).unwrap_or(u32::MAX);
+        let difficulty = consensus_difficulty_snapshot(&chain).expected_difficulty;
         let txs = vec![build_coinbase_transaction("kaspa:qptestminer", 50, height)];
         let mut block = build_candidate_block(parents, height, difficulty, txs);
         refresh_block_consensus_ids_with_state(&mut block, &chain).unwrap();
