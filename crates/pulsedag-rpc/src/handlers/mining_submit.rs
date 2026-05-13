@@ -611,7 +611,32 @@ pub async fn post_mining_submit<S: RpcStateLike>(
 
     match acceptance {
         pulsedag_core::BlockAcceptanceResult::Accepted => {
-            let adopted_orphans = adopt_ready_orphans(&mut chain, AcceptSource::Rpc);
+            let adopted_orphans = {
+                let mut adopted_chain = chain.clone();
+                let adopted = adopt_ready_orphans(&mut adopted_chain, AcceptSource::Rpc);
+                if adopted > 0 {
+                    match state.storage().persist_chain_state(&adopted_chain) {
+                        Ok(()) => {
+                            *chain = adopted_chain;
+                            adopted
+                        }
+                        Err(e) => {
+                            warn!(error = %e, block_hash = %block_hash, adopted, "failed persisting chain state after mining orphan adoption; keeping orphans queued in memory");
+                            let _ = state.storage().append_runtime_event(
+                                "warn",
+                                "external_mining_orphan_adoption_persist_failed",
+                                &format!(
+                                    "block_hash={} adopted_orphans={} error={}",
+                                    block_hash, adopted, e
+                                ),
+                            );
+                            0
+                        }
+                    }
+                } else {
+                    0
+                }
+            };
 
             {
                 let runtime_handle = state.runtime();
