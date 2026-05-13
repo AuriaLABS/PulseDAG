@@ -18,7 +18,6 @@ use pulsedag_core::{
     RankedSyncPeer, SyncPeerCandidate,
 };
 use tokio::sync::mpsc;
-use tokio::sync::mpsc::error::TryRecvError;
 use tokio::time::{sleep, Duration};
 
 use crate::messages::{message_id_for_block, message_id_for_tx, topic_names, NetworkMessage};
@@ -1312,11 +1311,8 @@ fn drain_outbound_rx_to_priority_queue(
     outbound_rx: &mut mpsc::UnboundedReceiver<OutboundMessage>,
     queue: &mut OutboundPriorityQueue,
 ) {
-    loop {
-        match outbound_rx.try_recv() {
-            Ok(msg) => enqueue_outbound_message(inner, queue, msg),
-            Err(TryRecvError::Empty) | Err(TryRecvError::Disconnected) => break,
-        }
+    while let Ok(msg) = outbound_rx.try_recv() {
+        enqueue_outbound_message(inner, queue, msg);
     }
 }
 
@@ -1742,7 +1738,7 @@ fn admit_tx_relay_under_budget(state: &mut InnerState, tx_id: &str, fee: u64, no
         state.tx_budget_window_relays = state.tx_budget_window_relays.saturating_add(1);
         return true;
     }
-    if message_id_hash(tx_id) % TX_RELAY_BUDGET_OVERFLOW_SAMPLE_EVERY == 0 {
+    if message_id_hash(tx_id).is_multiple_of(TX_RELAY_BUDGET_OVERFLOW_SAMPLE_EVERY) {
         return true;
     }
     state.tx_outbound_budget_suppressed = state.tx_outbound_budget_suppressed.saturating_add(1);
@@ -3006,6 +3002,8 @@ pub fn build_p2p_stack(mode: P2pMode) -> Result<P2pStack, PulseError> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::field_reassign_with_default)]
+
     use super::*;
 
     fn peers_for_bucket(bucket: usize, count: usize) -> Vec<String> {
@@ -3412,7 +3410,7 @@ mod tests {
         state.queued_messages = TX_BUDGET_LOAD_SHED_QUEUE_DEPTH_THRESHOLD;
         let tx_id = (0..1_000)
             .map(|idx| format!("tx-budget-suppressed-first-attempt-{idx}"))
-            .find(|id| message_id_hash(id) % TX_RELAY_BUDGET_OVERFLOW_SAMPLE_EVERY != 0)
+            .find(|id| !message_id_hash(id).is_multiple_of(TX_RELAY_BUDGET_OVERFLOW_SAMPLE_EVERY))
             .expect("should find a tx id that does not pass overflow sampling");
 
         assert!(should_relay_outbound_tx(&mut state, &tx_id, 1_000));
@@ -3788,7 +3786,7 @@ mod tests {
         state.queued_messages = TX_BUDGET_LOAD_SHED_QUEUE_DEPTH_THRESHOLD;
         let blocked_id = (0..1_000)
             .map(|idx| format!("tx-loaded-budget-suppressed-{idx}"))
-            .find(|id| message_id_hash(id) % TX_RELAY_BUDGET_OVERFLOW_SAMPLE_EVERY != 0)
+            .find(|id| !message_id_hash(id).is_multiple_of(TX_RELAY_BUDGET_OVERFLOW_SAMPLE_EVERY))
             .expect("need deterministic blocked id");
         assert!(!admit_tx_relay_under_budget(
             &mut state,
@@ -4747,6 +4745,8 @@ mod tests {
 
 #[cfg(test)]
 mod inventory_tests {
+    #![allow(clippy::field_reassign_with_default)]
+
     use super::*;
 
     fn sample_tx(txid: &str) -> Transaction {
@@ -5302,6 +5302,8 @@ mod inventory_tests {
 
 #[cfg(test)]
 mod deterministic_p2p_sync_coverage_tests {
+    #![allow(clippy::field_reassign_with_default)]
+
     use super::*;
 
     fn sample_tx(txid: &str) -> Transaction {
