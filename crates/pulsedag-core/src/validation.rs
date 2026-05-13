@@ -11,6 +11,90 @@ use crate::{
     validate_pow_header,
 };
 
+pub const INITIAL_BLOCK_SUBSIDY: u64 = 50;
+pub const SUBSIDY_HALVING_INTERVAL: u64 = 210_000;
+
+pub fn block_subsidy(height: u64) -> u64 {
+    let halvings = height / SUBSIDY_HALVING_INTERVAL;
+    if halvings >= u64::BITS as u64 {
+        0
+    } else {
+        INITIAL_BLOCK_SUBSIDY >> halvings
+    }
+}
+
+pub fn transaction_output_sum(tx: &Transaction) -> Result<u64, PulseError> {
+    tx.outputs.iter().try_fold(0_u64, |acc, output| {
+        acc.checked_add(output.amount)
+            .ok_or(PulseError::RewardOverflow)
+    })
+}
+
+pub fn total_block_fees(block: &Block) -> Result<u64, PulseError> {
+    block
+        .transactions
+        .iter()
+        .filter(|tx| !is_coinbase(tx))
+        .try_fold(0_u64, |acc, tx| {
+            acc.checked_add(tx.fee).ok_or(PulseError::RewardOverflow)
+        })
+}
+
+fn validate_coinbase_position(block: &Block) -> Result<(), PulseError> {
+    let coinbase_positions = block
+        .transactions
+        .iter()
+        .enumerate()
+        .filter_map(|(index, tx)| is_coinbase(tx).then_some(index))
+        .collect::<Vec<_>>();
+
+    match coinbase_positions.as_slice() {
+        [] => Err(PulseError::MissingCoinbase),
+        [0] => Ok(()),
+        [_] => Err(PulseError::CoinbaseNotFirst),
+        _ => Err(PulseError::MultipleCoinbase),
+    }
+}
+
+fn outpoint_label(outpoint: &OutPoint) -> String {
+    format!("{}:{}", outpoint.txid, outpoint.index)
+}
+
+pub fn validate_created_utxo_outpoints(
+    block: &Block,
+    state: &ChainState,
+) -> Result<(), PulseError> {
+    let mut created = BTreeSet::new();
+    for tx in &block.transactions {
+        for (index, _) in tx.outputs.iter().enumerate() {
+            let outpoint = OutPoint {
+                txid: tx.txid.clone(),
+                index: index as u32,
+            };
+            if state.utxo.utxos.contains_key(&outpoint) || !created.insert(outpoint.clone()) {
+                return Err(PulseError::DuplicateUtxoOutpoint(outpoint_label(&outpoint)));
+            }
+        }
+    }
+    Ok(())
+}
+
+pub fn validate_coinbase_reward(block: &Block) -> Result<(), PulseError> {
+    let coinbase = block
+        .transactions
+        .first()
+        .ok_or(PulseError::MissingCoinbase)?;
+    let coinbase_outputs = transaction_output_sum(coinbase)?;
+    let fees = total_block_fees(block)?;
+    let max_reward = block_subsidy(block.header.height)
+        .checked_add(fees)
+        .ok_or(PulseError::RewardOverflow)?;
+    if coinbase_outputs > max_reward {
+        return Err(PulseError::ExcessiveCoinbaseReward);
+    }
+    Ok(())
+}
+
 pub fn tx_output_amount(state: &ChainState, outpoint: &OutPoint) -> Option<u64> {
     if let Some(utxo) = state.utxo.utxos.get(outpoint) {
         return Some(utxo.amount);
@@ -148,17 +232,7 @@ pub fn validate_block(block: &Block, state: &ChainState) -> Result<(), PulseErro
             block.header.timestamp, newest_parent_timestamp
         )));
     }
-    if block.transactions.is_empty() {
-        return Err(PulseError::InvalidBlock("empty block".into()));
-    }
-    if !is_coinbase(&block.transactions[0]) {
-        return Err(PulseError::InvalidBlock("first tx must be coinbase".into()));
-    }
-    if block.transactions.iter().skip(1).any(is_coinbase) {
-        return Err(PulseError::InvalidBlock(
-            "multiple coinbase transactions".into(),
-        ));
-    }
+    validate_coinbase_position(block)?;
     let computed_hash = compute_block_hash(&block.header);
     if computed_hash != block.hash {
         return Err(PulseError::InvalidBlock(format!(
@@ -186,6 +260,8 @@ pub fn validate_block(block: &Block, state: &ChainState) -> Result<(), PulseErro
             return Err(PulseError::InvalidTxid);
         }
     }
+    validate_created_utxo_outpoints(block, state)?;
+    validate_coinbase_reward(block)?;
 
     let computed_state_root = compute_post_state_root(block, state)?;
     if computed_state_root != block.header.state_root {
@@ -807,21 +883,36 @@ mod tests {
     }
 
     #[test]
-    fn validate_block_rejects_empty_block() {
-        let state = init_chain_state("test".to_string());
-        let mut block = structurally_valid_block(&state);
-        block.transactions.clear();
-
-        assert_invalid_block_contains(validate_block(&block, &state), "empty block");
-    }
-
-    #[test]
-    fn validate_block_rejects_when_first_transaction_is_not_coinbase() {
+    fn validate_block_rejects_missing_coinbase() {
         let state = init_chain_state("test".to_string());
         let mut block = structurally_valid_block(&state);
         block.transactions = vec![non_coinbase_tx("regular-tx")];
 
-        assert_invalid_block_contains(validate_block(&block, &state), "first tx must be coinbase");
+        assert_validation_error(validate_block(&block, &state), |err| {
+            matches!(err, PulseError::MissingCoinbase)
+        });
+    }
+
+    #[test]
+    fn validate_block_rejects_empty_block_as_missing_coinbase() {
+        let state = init_chain_state("test".to_string());
+        let mut block = structurally_valid_block(&state);
+        block.transactions.clear();
+
+        assert_validation_error(validate_block(&block, &state), |err| {
+            matches!(err, PulseError::MissingCoinbase)
+        });
+    }
+
+    #[test]
+    fn validate_block_rejects_when_coinbase_is_not_first() {
+        let state = init_chain_state("test".to_string());
+        let mut block = structurally_valid_block(&state);
+        block.transactions = vec![non_coinbase_tx("regular-tx"), coinbase(2)];
+
+        assert_validation_error(validate_block(&block, &state), |err| {
+            matches!(err, PulseError::CoinbaseNotFirst)
+        });
     }
 
     #[test]
@@ -830,10 +921,9 @@ mod tests {
         let mut block = structurally_valid_block(&state);
         block.transactions = vec![coinbase(1), coinbase(2)];
 
-        assert_invalid_block_contains(
-            validate_block(&block, &state),
-            "multiple coinbase transactions",
-        );
+        assert_validation_error(validate_block(&block, &state), |err| {
+            matches!(err, PulseError::MultipleCoinbase)
+        });
     }
 
     #[test]
@@ -920,8 +1010,124 @@ mod tests {
         refresh_block_consensus_ids(&mut block);
 
         assert_validation_error(validate_block(&block, &state), |err| {
-            matches!(err, PulseError::DuplicateOutpoint(_))
+            matches!(err, PulseError::DuplicateUtxoOutpoint(_))
         });
+    }
+
+    #[test]
+    fn validate_block_rejects_excessive_coinbase_reward() {
+        let state = init_chain_state("test".to_string());
+        let parents = vec![state.dag.genesis_hash.clone()];
+        let mut block = build_candidate_block(
+            parents,
+            1,
+            1,
+            vec![build_coinbase_transaction(
+                "miner1",
+                block_subsidy(1) + 1,
+                101,
+            )],
+        );
+        refresh_block_consensus_ids_with_state(&mut block, &state).unwrap();
+
+        assert_validation_error(validate_block(&block, &state), |err| {
+            matches!(err, PulseError::ExcessiveCoinbaseReward)
+        });
+    }
+
+    #[test]
+    fn validate_block_accepts_coinbase_reward_with_fees() {
+        let mut state = init_chain_state("test".to_string());
+        let (key, outpoint) = fund_signing_key(&mut state, 14, "fund-fee-reward", 0, 100);
+        let fee_tx = signed_tx(&key, vec![outpoint], vec![output("receiver", 80)], 20, 1);
+        let parents = vec![state.dag.genesis_hash.clone()];
+        let mut block = build_candidate_block(
+            parents,
+            1,
+            1,
+            vec![
+                build_coinbase_transaction("miner1", block_subsidy(1) + 20, 102),
+                fee_tx,
+            ],
+        );
+        refresh_block_consensus_ids_with_state(&mut block, &state).unwrap();
+
+        validate_block(&block, &state).expect("fee-inclusive reward should validate");
+    }
+
+    #[test]
+    fn validate_block_rejects_coinbase_reward_above_subsidy_plus_fees() {
+        let mut state = init_chain_state("test".to_string());
+        let (key, outpoint) = fund_signing_key(&mut state, 15, "fund-excess-fee-reward", 0, 100);
+        let fee_tx = signed_tx(&key, vec![outpoint], vec![output("receiver", 80)], 20, 1);
+        let parents = vec![state.dag.genesis_hash.clone()];
+        let mut block = build_candidate_block(
+            parents,
+            1,
+            1,
+            vec![
+                build_coinbase_transaction("miner1", block_subsidy(1) + 21, 103),
+                fee_tx,
+            ],
+        );
+        refresh_block_consensus_ids_with_state(&mut block, &state).unwrap();
+
+        assert_validation_error(validate_block(&block, &state), |err| {
+            matches!(err, PulseError::ExcessiveCoinbaseReward)
+        });
+    }
+
+    #[test]
+    fn validate_block_rejects_coinbase_output_sum_overflow() {
+        let state = init_chain_state("test".to_string());
+        let mut overflowing_coinbase = Transaction {
+            txid: String::new(),
+            version: 1,
+            inputs: vec![],
+            outputs: vec![output("miner-a", u64::MAX), output("miner-b", 1)],
+            fee: 0,
+            nonce: 104,
+        };
+        overflowing_coinbase.txid = compute_txid(&overflowing_coinbase);
+        let parents = vec![state.dag.genesis_hash.clone()];
+        let mut block = build_candidate_block(parents, 1, 1, vec![overflowing_coinbase]);
+        refresh_block_consensus_ids_with_state(&mut block, &state).unwrap();
+
+        assert_validation_error(validate_block(&block, &state), |err| {
+            matches!(err, PulseError::RewardOverflow)
+        });
+    }
+
+    #[test]
+    fn validate_block_rejects_total_fee_overflow() {
+        let state = init_chain_state("test".to_string());
+        let mut high_fee = non_coinbase_tx("placeholder-high-fee");
+        high_fee.fee = u64::MAX;
+        high_fee.txid = compute_txid(&high_fee);
+        let mut overflow_fee = non_coinbase_tx("placeholder-overflow-fee");
+        overflow_fee.fee = 1;
+        overflow_fee.nonce = 1;
+        overflow_fee.txid = compute_txid(&overflow_fee);
+        let parents = vec![state.dag.genesis_hash.clone()];
+        let mut block =
+            build_candidate_block(parents, 1, 1, vec![coinbase(105), high_fee, overflow_fee]);
+        refresh_block_consensus_ids(&mut block);
+
+        assert_validation_error(validate_block(&block, &state), |err| {
+            matches!(err, PulseError::RewardOverflow)
+        });
+    }
+
+    #[test]
+    fn apply_transaction_rejects_utxo_overwrite_without_mutating_state() {
+        let mut state = init_chain_state("test".to_string());
+        let before_root = state.utxo.compute_state_root().unwrap();
+        let duplicate = genesis_transaction();
+
+        assert_validation_error(apply_transaction(&duplicate, &mut state, 1), |err| {
+            matches!(err, PulseError::DuplicateUtxoOutpoint(_))
+        });
+        assert_eq!(before_root, state.utxo.compute_state_root().unwrap());
     }
 
     #[test]

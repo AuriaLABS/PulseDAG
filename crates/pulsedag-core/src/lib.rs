@@ -77,3 +77,7 @@ pub use sync_pipeline::{
     rank_sync_candidates, RankedSyncPeer, SyncPeerCandidate, SyncPhase, SyncPipelineStatus,
     SyncProgressCounters,
 };
+pub use validation::{
+    block_subsidy, total_block_fees, validate_coinbase_reward, validate_created_utxo_outpoints,
+    INITIAL_BLOCK_SUBSIDY, SUBSIDY_HALVING_INTERVAL,
+};
