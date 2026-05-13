@@ -84,12 +84,10 @@ pub fn commit_block_to_state(block: &Block, state: &mut ChainState) -> Result<()
     }
     for parent in &block.header.parents {
         state.dag.tips.remove(parent);
-        state
-            .dag
-            .children
-            .entry(parent.clone())
-            .or_default()
-            .push(block.hash.clone());
+        let children = state.dag.children.entry(parent.clone()).or_default();
+        children.push(block.hash.clone());
+        children.sort();
+        children.dedup();
     }
     state.dag.tips.insert(block.hash.clone());
     state.dag.best_height = state.dag.best_height.max(height);

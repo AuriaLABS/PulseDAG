@@ -1,4 +1,7 @@
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::{
+    collections::BTreeSet,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use crate::{
     accept::{accept_block, AcceptSource},
@@ -23,6 +26,8 @@ pub fn missing_block_parents(block: &Block, state: &ChainState) -> Vec<Hash> {
         .iter()
         .filter(|parent| !state.dag.blocks.contains_key(*parent))
         .cloned()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
         .collect()
 }
 
