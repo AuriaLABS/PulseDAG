@@ -9,6 +9,8 @@ pub struct SnapshotInfoData {
     pub snapshot_exists: bool,
     pub snapshot_height: Option<u64>,
     pub captured_at_unix: Option<u64>,
+    pub schema_version: u32,
+    pub snapshot_metadata: Option<pulsedag_storage::SnapshotMetadata>,
     pub best_height: u64,
     pub recommended_keep_from_height: u64,
     pub chain_id: Option<String>,
@@ -51,6 +53,15 @@ pub async fn get_snapshot_info<S: RpcStateLike>(
     let recommended_keep_from_height = best_height.saturating_sub(keep_recent.saturating_sub(1));
     drop(runtime);
 
+    let schema_version = match state.storage().storage_schema_metadata() {
+        Ok(v) => v.schema_version,
+        Err(e) => return Json(ApiResponse::err("STORAGE_SCHEMA_ERROR", e.to_string())),
+    };
+    let snapshot_metadata = match state.storage().snapshot_metadata() {
+        Ok(v) => v,
+        Err(e) => return Json(ApiResponse::err("SNAPSHOT_METADATA_ERROR", e.to_string())),
+    };
+
     let captured_at_unix = match state.storage().snapshot_captured_at_unix() {
         Ok(v) => v,
         Err(e) => return Json(ApiResponse::err("STORAGE_ERROR", e.to_string())),
@@ -61,6 +72,8 @@ pub async fn get_snapshot_info<S: RpcStateLike>(
             snapshot_exists: true,
             snapshot_height: Some(snapshot.dag.best_height),
             captured_at_unix,
+            schema_version,
+            snapshot_metadata: snapshot_metadata.clone(),
             best_height: snapshot.dag.best_height.max(best_height),
             recommended_keep_from_height,
             chain_id: Some(snapshot.chain_id),
@@ -78,6 +91,8 @@ pub async fn get_snapshot_info<S: RpcStateLike>(
             snapshot_exists: false,
             snapshot_height: None,
             captured_at_unix,
+            schema_version,
+            snapshot_metadata,
             best_height,
             recommended_keep_from_height,
             chain_id: None,
@@ -103,6 +118,15 @@ pub async fn post_snapshot_create<S: RpcStateLike>(
     if let Err(e) = state.storage().persist_chain_state(&chain) {
         return Json(ApiResponse::err("SNAPSHOT_PERSIST_ERROR", e.to_string()));
     }
+
+    let schema_version = match state.storage().storage_schema_metadata() {
+        Ok(v) => v.schema_version,
+        Err(e) => return Json(ApiResponse::err("STORAGE_SCHEMA_ERROR", e.to_string())),
+    };
+    let snapshot_metadata = match state.storage().snapshot_metadata() {
+        Ok(v) => v,
+        Err(e) => return Json(ApiResponse::err("SNAPSHOT_METADATA_ERROR", e.to_string())),
+    };
 
     let captured_at_unix = match state.storage().snapshot_captured_at_unix() {
         Ok(Some(v)) => v,

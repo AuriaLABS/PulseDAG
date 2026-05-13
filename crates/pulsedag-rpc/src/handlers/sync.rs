@@ -35,6 +35,12 @@ pub struct SyncStatusData {
     pub last_rejected_peer_block_reason: Option<String>,
     pub chain_id_mismatch_drops: usize,
     pub duplicate_suppression_counters: SyncDuplicateSuppressionCounters,
+    pub blocks_requested: u64,
+    pub blocks_received: u64,
+    pub invalid_blocks_received: u64,
+    pub orphan_blocks_received: u64,
+    pub duplicate_blocks_received: u64,
+    pub peer_penalties: u64,
     pub p2p_ready_for_private_rehearsal: bool,
     pub readiness_reasons: Vec<String>,
 }
@@ -256,6 +262,40 @@ pub async fn get_sync_status<S: RpcStateLike>(
                 .map(|status| status.block_outbound_duplicates_suppressed)
                 .unwrap_or(0),
         },
+        blocks_requested: runtime
+            .sync_pipeline
+            .counters
+            .blocks_requested
+            .max(runtime.getblock_sent)
+            .max(
+                p2p_status
+                    .as_ref()
+                    .map(|status| status.blocks_requested)
+                    .unwrap_or(0),
+            ),
+        blocks_received: runtime.blockdata_received.max(
+            p2p_status
+                .as_ref()
+                .map(|status| status.blocks_received)
+                .unwrap_or(0),
+        ),
+        invalid_blocks_received: runtime.rejected_p2p_blocks.max(
+            p2p_status
+                .as_ref()
+                .map(|status| status.invalid_blocks_received)
+                .unwrap_or(0),
+        ),
+        orphan_blocks_received: runtime.blockdata_missing_parent,
+        duplicate_blocks_received: runtime.duplicate_p2p_blocks.max(
+            p2p_status
+                .as_ref()
+                .map(|status| status.duplicate_blocks_received)
+                .unwrap_or(0),
+        ),
+        peer_penalties: p2p_status
+            .as_ref()
+            .map(|status| status.peer_penalties)
+            .unwrap_or(0),
         p2p_ready_for_private_rehearsal: readiness_reasons.is_empty(),
         readiness_reasons,
     }))

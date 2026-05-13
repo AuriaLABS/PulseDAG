@@ -14,7 +14,11 @@ use rocksdb::{ColumnFamilyDescriptor, WriteBatch, DB};
 use serde::{Deserialize, Serialize};
 
 const CHAIN_STATE_KEY: &[u8] = b"chain_state";
+pub const STORAGE_SCHEMA_VERSION: u32 = 1;
+const STORAGE_SCHEMA_VERSION_KEY: &[u8] = b"storage_schema_version";
+const CHAIN_ID_KEY: &[u8] = b"chain_id";
 const SNAPSHOT_CAPTURED_AT_UNIX_KEY: &[u8] = b"snapshot_captured_at_unix";
+const SNAPSHOT_METADATA_KEY: &[u8] = b"snapshot_metadata";
 const RUNTIME_EVENT_PREFIX: &str = "runtime_event:";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -27,6 +31,22 @@ pub struct RuntimeEvent {
 
 pub struct Storage {
     pub db: Arc<DB>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StorageSchemaMetadata {
+    pub schema_version: u32,
+    pub compatible: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SnapshotMetadata {
+    pub chain_id: String,
+    pub schema_version: u32,
+    pub best_height: u64,
+    pub selected_tip: String,
+    pub state_root: String,
+    pub created_at: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -59,6 +79,7 @@ pub struct SnapshotExportBundle {
     pub format_version: u32,
     pub exported_at_unix: u64,
     pub snapshot_captured_at_unix: Option<u64>,
+    pub snapshot_metadata: SnapshotMetadata,
     pub snapshot: ChainState,
     pub persisted_blocks: Vec<Block>,
 }
@@ -227,14 +248,11 @@ impl Storage {
         let snapshot = self
             .load_chain_state()?
             .ok_or_else(|| PulseError::StorageError("validated snapshot missing".to_string()))?;
-        if let Some(chain_id) = expected_chain_id {
-            if snapshot.chain_id != chain_id {
-                return Err(PulseError::StorageError(format!(
-                    "validated snapshot chain_id={} does not match expected {}",
-                    snapshot.chain_id, chain_id
-                )));
-            }
-        }
+        Self::verify_snapshot_metadata_for_state(
+            self.snapshot_metadata()?,
+            &snapshot,
+            expected_chain_id,
+        )?;
         if !snapshot.dag.blocks.contains_key(&snapshot.dag.genesis_hash) {
             return Err(PulseError::StorageError(
                 "validated snapshot missing genesis block".to_string(),
@@ -288,9 +306,74 @@ impl Storage {
         let mut opts = rocksdb::Options::default();
         opts.create_if_missing(true);
         opts.create_missing_column_families(true);
-        let db = DB::open_cf_descriptors(&opts, path, cfs)
+        let storage = Self {
+            db: Arc::new(
+                DB::open_cf_descriptors(&opts, path, cfs)
+                    .map_err(|e| PulseError::StorageError(e.to_string()))?,
+            ),
+        };
+        storage.ensure_schema_compatible()?;
+        Ok(storage)
+    }
+
+    pub fn storage_schema_metadata(&self) -> Result<StorageSchemaMetadata, PulseError> {
+        let cf = self
+            .db
+            .cf_handle("meta")
+            .ok_or_else(|| PulseError::StorageError("missing cf meta".into()))?;
+        let schema_version = match self
+            .db
+            .get_cf(&cf, STORAGE_SCHEMA_VERSION_KEY)
+            .map_err(|e| PulseError::StorageError(e.to_string()))?
+        {
+            Some(bytes) => std::str::from_utf8(&bytes)
+                .ok()
+                .and_then(|raw| raw.parse::<u32>().ok())
+                .unwrap_or(0),
+            None => 0,
+        };
+        Ok(StorageSchemaMetadata {
+            schema_version,
+            compatible: schema_version == STORAGE_SCHEMA_VERSION,
+        })
+    }
+
+    pub fn ensure_schema_compatible(&self) -> Result<(), PulseError> {
+        let cf = self
+            .db
+            .cf_handle("meta")
+            .ok_or_else(|| PulseError::StorageError("missing cf meta".into()))?;
+        let raw = self
+            .db
+            .get_cf(&cf, STORAGE_SCHEMA_VERSION_KEY)
             .map_err(|e| PulseError::StorageError(e.to_string()))?;
-        Ok(Self { db: Arc::new(db) })
+        match raw {
+            Some(bytes) => {
+                let version = std::str::from_utf8(&bytes)
+                    .ok()
+                    .and_then(|raw| raw.parse::<u32>().ok())
+                    .ok_or_else(|| {
+                        PulseError::StorageError(
+                            "storage schema version metadata is invalid".into(),
+                        )
+                    })?;
+                if version != STORAGE_SCHEMA_VERSION {
+                    return Err(PulseError::StorageError(format!(
+                        "storage schema version {version} is not compatible with node schema {STORAGE_SCHEMA_VERSION}"
+                    )));
+                }
+            }
+            None => {
+                self.db
+                    .put_cf(
+                        &cf,
+                        STORAGE_SCHEMA_VERSION_KEY,
+                        STORAGE_SCHEMA_VERSION.to_string(),
+                    )
+                    .map_err(|e| PulseError::StorageError(e.to_string()))?;
+            }
+        }
+        Ok(())
     }
 
     pub fn persist_block(&self, block: &Block) -> Result<(), PulseError> {
@@ -428,6 +511,96 @@ impl Storage {
         write_batch(&self.db, batch)
     }
 
+    fn snapshot_metadata_for_state(state: &ChainState, created_at: u64) -> SnapshotMetadata {
+        let selected_tip = state
+            .dag
+            .tips
+            .iter()
+            .min()
+            .cloned()
+            .unwrap_or_else(|| state.dag.genesis_hash.clone());
+        let state_root = state
+            .dag
+            .blocks
+            .get(&selected_tip)
+            .map(|block| block.header.state_root.clone())
+            .unwrap_or_else(|| "unknown".to_string());
+        SnapshotMetadata {
+            chain_id: state.chain_id.clone(),
+            schema_version: STORAGE_SCHEMA_VERSION,
+            best_height: state.dag.best_height,
+            selected_tip,
+            state_root,
+            created_at,
+        }
+    }
+
+    pub fn snapshot_metadata(&self) -> Result<Option<SnapshotMetadata>, PulseError> {
+        let cf = self
+            .db
+            .cf_handle("meta")
+            .ok_or_else(|| PulseError::StorageError("missing cf meta".into()))?;
+        match self
+            .db
+            .get_cf(cf, SNAPSHOT_METADATA_KEY)
+            .map_err(|e| PulseError::StorageError(e.to_string()))?
+        {
+            Some(bytes) => Ok(Some(
+                serde_json::from_slice(&bytes)
+                    .map_err(|e| PulseError::StorageError(e.to_string()))?,
+            )),
+            None => Ok(None),
+        }
+    }
+
+    fn verify_snapshot_metadata_for_state(
+        metadata: Option<SnapshotMetadata>,
+        state: &ChainState,
+        expected_chain_id: Option<&str>,
+    ) -> Result<(), PulseError> {
+        if let Some(chain_id) = expected_chain_id {
+            if state.chain_id != chain_id {
+                return Err(PulseError::StorageError(format!(
+                    "snapshot chain_id={} does not match expected {}",
+                    state.chain_id, chain_id
+                )));
+            }
+        }
+        let Some(metadata) = metadata else {
+            return Err(PulseError::StorageError(
+                "snapshot metadata missing; restore gate requires metadata".to_string(),
+            ));
+        };
+        if metadata.chain_id != state.chain_id {
+            return Err(PulseError::StorageError(format!(
+                "snapshot metadata chain_id={} does not match state chain_id={}",
+                metadata.chain_id, state.chain_id
+            )));
+        }
+        if metadata.schema_version != STORAGE_SCHEMA_VERSION {
+            return Err(PulseError::StorageError(format!(
+                "snapshot schema_version={} is not compatible with node schema {}",
+                metadata.schema_version, STORAGE_SCHEMA_VERSION
+            )));
+        }
+        let computed = Self::snapshot_metadata_for_state(state, metadata.created_at);
+        if metadata.best_height != computed.best_height
+            || metadata.selected_tip != computed.selected_tip
+            || metadata.state_root != computed.state_root
+        {
+            return Err(PulseError::StorageError(format!(
+                "snapshot metadata mismatch: expected height={} tip={} state_root={}, got height={} tip={} state_root={}",
+                computed.best_height,
+                computed.selected_tip,
+                computed.state_root,
+                metadata.best_height,
+                metadata.selected_tip,
+                metadata.state_root
+            )));
+        }
+        Ok(())
+    }
+
     fn stage_chain_state_snapshot(
         &self,
         batch: &mut WriteBatch,
@@ -450,7 +623,19 @@ impl Storage {
     ) -> Result<(), PulseError> {
         let value =
             bincode::serialize(state).map_err(|e| PulseError::StorageError(e.to_string()))?;
+        let metadata = Self::snapshot_metadata_for_state(state, captured_at_unix);
         batch.put_cf(meta_cf, CHAIN_STATE_KEY, value);
+        batch.put_cf(
+            meta_cf,
+            STORAGE_SCHEMA_VERSION_KEY,
+            STORAGE_SCHEMA_VERSION.to_string(),
+        );
+        batch.put_cf(meta_cf, CHAIN_ID_KEY, state.chain_id.as_bytes());
+        batch.put_cf(
+            meta_cf,
+            SNAPSHOT_METADATA_KEY,
+            serde_json::to_vec(&metadata).map_err(|e| PulseError::StorageError(e.to_string()))?,
+        );
         batch.put_cf(
             meta_cf,
             SNAPSHOT_CAPTURED_AT_UNIX_KEY,
@@ -641,6 +826,45 @@ impl Storage {
             });
         }
         let snapshot_anchor_present = bundle.snapshot_captured_at_unix.is_some();
+        let expected_metadata = Self::snapshot_metadata_for_state(
+            &bundle.snapshot,
+            bundle.snapshot_metadata.created_at,
+        );
+        if bundle.snapshot_metadata.chain_id != expected_metadata.chain_id {
+            issues.push(SnapshotVerificationIssue {
+                code: "SNAPSHOT_BUNDLE_METADATA_CHAIN_ID_MISMATCH".to_string(),
+                message: format!(
+                    "snapshot metadata chain_id={} does not match state chain_id={}",
+                    bundle.snapshot_metadata.chain_id, expected_metadata.chain_id
+                ),
+            });
+        }
+        if bundle.snapshot_metadata.schema_version != STORAGE_SCHEMA_VERSION {
+            issues.push(SnapshotVerificationIssue {
+                code: "SNAPSHOT_BUNDLE_SCHEMA_VERSION_MISMATCH".to_string(),
+                message: format!(
+                    "snapshot schema_version={} is unsupported (expected {})",
+                    bundle.snapshot_metadata.schema_version, STORAGE_SCHEMA_VERSION
+                ),
+            });
+        }
+        if bundle.snapshot_metadata.best_height != expected_metadata.best_height
+            || bundle.snapshot_metadata.selected_tip != expected_metadata.selected_tip
+            || bundle.snapshot_metadata.state_root != expected_metadata.state_root
+        {
+            issues.push(SnapshotVerificationIssue {
+                code: "SNAPSHOT_BUNDLE_METADATA_STATE_ROOT_MISMATCH".to_string(),
+                message: format!(
+                    "snapshot metadata does not match state: expected height={} tip={} state_root={}, got height={} tip={} state_root={}",
+                    expected_metadata.best_height,
+                    expected_metadata.selected_tip,
+                    expected_metadata.state_root,
+                    bundle.snapshot_metadata.best_height,
+                    bundle.snapshot_metadata.selected_tip,
+                    bundle.snapshot_metadata.state_root
+                ),
+            });
+        }
         if !snapshot_anchor_present {
             issues.push(SnapshotVerificationIssue {
                 code: "SNAPSHOT_BUNDLE_ANCHOR_MISSING".to_string(),
@@ -705,6 +929,9 @@ impl Storage {
             format_version: 1,
             exported_at_unix,
             snapshot_captured_at_unix: self.snapshot_captured_at_unix()?,
+            snapshot_metadata: self
+                .snapshot_metadata()?
+                .unwrap_or_else(|| Self::snapshot_metadata_for_state(&snapshot, exported_at_unix)),
             snapshot,
             persisted_blocks,
         };
