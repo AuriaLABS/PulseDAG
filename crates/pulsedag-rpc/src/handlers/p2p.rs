@@ -899,6 +899,12 @@ mod tests {
             topology_distinct_buckets: 1,
             topology_dominant_bucket_share_bps: 10_000,
             topology_diversity_score_bps: 625,
+            blocks_requested: 0,
+            blocks_received: 0,
+            invalid_blocks_received: 0,
+            orphan_blocks_received: 0,
+            duplicate_blocks_received: 0,
+            peer_penalties: 0,
         };
 
         let Json(resp) = get_p2p_status(State(mk_state(status))).await;
@@ -1071,6 +1077,12 @@ mod tests {
                 topology_distinct_buckets: 0,
                 topology_dominant_bucket_share_bps: 0,
                 topology_diversity_score_bps: 0,
+                blocks_requested: 0,
+                blocks_received: 0,
+                invalid_blocks_received: 0,
+                orphan_blocks_received: 0,
+                duplicate_blocks_received: 0,
+                peer_penalties: 0,
             };
             let Json(resp) = get_p2p_status(State(mk_state(status.clone()))).await;
             let data = resp.data.expect("p2p status data");

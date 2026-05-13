@@ -1,10 +1,10 @@
 use axum::{
     routing::{get, post},
-    Router,
+    Json, Router,
 };
 
 use crate::{
-    api::RpcStateLike,
+    api::{ApiResponse, RpcStateLike},
     handlers::{
         address::{
             get_address, get_address_activity, get_address_summary, get_address_utxos, get_utxos,
@@ -50,7 +50,7 @@ use crate::{
         pruning::post_prune_chain,
         readiness::get_readiness,
         rebuild::get_rebuild_preview,
-        release::get_release_info,
+        release::{get_release_info, operator_stage, repo_version},
         replay::get_replay_plan,
         runtime::{
             get_runtime_events, get_runtime_events_stream, get_runtime_events_summary,
@@ -72,7 +72,64 @@ use crate::{
     },
 };
 
+#[derive(Debug, serde::Serialize)]
+pub struct ApiVersionData {
+    pub api_version: String,
+    pub stable_prefix: String,
+    pub release_version: String,
+    pub stage: String,
+}
+
+pub async fn get_api_version() -> Json<ApiResponse<ApiVersionData>> {
+    Json(ApiResponse::ok(ApiVersionData {
+        api_version: "v1".to_string(),
+        stable_prefix: "/api/v1".to_string(),
+        release_version: repo_version(),
+        stage: operator_stage(),
+    }))
+}
+
 pub fn router<S>() -> Router<S>
+where
+    S: RpcStateLike,
+{
+    router_with_admin(true)
+}
+
+pub fn router_with_admin<S>(admin_enabled: bool) -> Router<S>
+where
+    S: RpcStateLike,
+{
+    let mut app = Router::new()
+        .nest("/api/v1", public_api_v1_router::<S>())
+        .merge(public_compatibility_router::<S>());
+
+    if admin_enabled {
+        app = app
+            .nest("/admin", admin_router::<S>())
+            .merge(admin_compatibility_router::<S>());
+    }
+
+    app
+}
+
+fn public_api_v1_router<S>() -> Router<S>
+where
+    S: RpcStateLike,
+{
+    public_routes::<S>()
+        .route("/", get(get_api_version))
+        .route("/version", get(get_api_version))
+}
+
+fn public_compatibility_router<S>() -> Router<S>
+where
+    S: RpcStateLike,
+{
+    public_routes::<S>()
+}
+
+fn public_routes<S>() -> Router<S>
 where
     S: RpcStateLike,
 {
@@ -81,7 +138,6 @@ where
         .route("/bootstrap", get(get_bootstrap_status::<S>))
         .route("/genesis", get(get_genesis::<S>))
         .route("/dag", get(get_dag::<S>))
-        .route("/dag/consistency", get(get_dag_consistency::<S>))
         .route("/tips", get(get_tips::<S>))
         .route("/blocks", get(get_blocks::<S>))
         .route("/blocks/validate", post(post_block_validate::<S>))
@@ -109,9 +165,6 @@ where
         .route("/txs/:txid", get(get_tx::<S>))
         .route("/tx/build", post(post_tx_build::<S>))
         .route("/tx/submit", post(post_tx_submit::<S>))
-        .route("/wallet/new", post(post_wallet_new::<S>))
-        .route("/wallet/sign", post(post_wallet_sign::<S>))
-        .route("/wallet/transfer", post(post_wallet_transfer::<S>))
         .route("/mine", post(post_mine::<S>))
         .route("/mining/template", post(post_mining_template::<S>))
         .route("/mining/submit", post(post_mining_submit::<S>))
@@ -122,7 +175,6 @@ where
         .route("/mining/workers/stats", get(get_mining_workers_stats))
         .route("/mining/jobs/claim", post(post_claim_mining_job::<S>))
         .route("/mining/jobs/submit", post(post_submit_mining_job::<S>))
-        .route("/mining/jobs/cleanup", post(post_cleanup_mining_jobs))
         .route("/mine/preview", post(post_mine_preview::<S>))
         .route("/p2p/status", get(get_p2p_status::<S>))
         .route("/p2p/peers", get(get_p2p_peers::<S>))
@@ -133,6 +185,56 @@ where
         .route("/metrics", get(get_metrics::<S>))
         .route("/orphans", get(get_orphans::<S>))
         .route("/dashboard", get(get_dashboard::<S>))
+        .route("/errors", get(get_error_catalog))
+        .route("/status", get(get_status::<S>))
+        .route("/checks", get(get_node_checks::<S>))
+        .route("/readiness", get(get_readiness::<S>))
+        .route("/release", get(get_release_info))
+        .route("/policy", get(get_policy::<S>))
+        .route("/pow", get(get_pow_info))
+        .route("/pow/validate-header", post(post_pow_validate_header))
+        .route("/pow/hash-header", post(post_pow_hash_header))
+        .route("/pow/check-header", post(post_pow_check_header))
+        .route("/pow/mine-header", post(post_pow_mine_header))
+        .route("/pow/policy", get(get_pow_policy::<S>))
+        .route("/pow/metrics", get(get_pow_metrics::<S>))
+        .route("/pow/metrics/history", get(get_pow_metrics_history))
+        .route("/pow/metrics/summary", get(get_pow_metrics_summary))
+        .route("/pow/health", get(get_pow_health))
+        .route("/pow/export", get(get_pow_export))
+        .route("/pow/dashboard", get(get_pow_dashboard::<S>))
+        .route("/sync/status", get(get_sync_status::<S>))
+        .route("/sync/missing", get(get_sync_missing::<S>))
+        .route("/sync/blocks", get(get_sync_blocks::<S>))
+        .route("/sync/verify", get(get_sync_verify::<S>))
+        .route("/snapshot", get(get_snapshot_info::<S>))
+}
+
+fn admin_router<S>() -> Router<S>
+where
+    S: RpcStateLike,
+{
+    admin_routes::<S>()
+}
+
+fn admin_compatibility_router<S>() -> Router<S>
+where
+    S: RpcStateLike,
+{
+    admin_routes::<S>()
+}
+
+fn admin_routes<S>() -> Router<S>
+where
+    S: RpcStateLike,
+{
+    Router::new()
+        .route("/dag/consistency", get(get_dag_consistency::<S>))
+        .route("/wallet/new", post(post_wallet_new::<S>))
+        .route("/wallet/sign", post(post_wallet_sign::<S>))
+        .route("/wallet/transfer", post(post_wallet_transfer::<S>))
+        .route("/mining/jobs/cleanup", post(post_cleanup_mining_jobs))
+        .route("/runtime", get(get_runtime_status::<S>))
         .route("/runtime/events", get(get_runtime_events::<S>))
         .route(
             "/runtime/events/stream",
@@ -144,40 +246,16 @@ where
         )
         .route("/diagnostics", get(get_diagnostics::<S>))
         .route("/operator/query-pack", get(get_operator_query_pack::<S>))
-        .route("/errors", get(get_error_catalog))
-        .route("/status", get(get_status::<S>))
-        .route("/checks", get(get_node_checks::<S>))
         .route("/maintenance/report", get(get_maintenance_report::<S>))
-        .route("/readiness", get(get_readiness::<S>))
-        .route("/runtime", get(get_runtime_status::<S>))
-        .route("/release", get(get_release_info))
-        .route("/policy", get(get_policy::<S>))
-        .route("/pow", get(get_pow_info))
-        .route("/pow/validate-header", post(post_pow_validate_header))
-        .route("/pow/hash-header", post(post_pow_hash_header))
-        .route("/pow/check-header", post(post_pow_check_header))
-        .route("/pow/mine-header", post(post_pow_mine_header))
-        .route("/pow/policy", get(get_pow_policy::<S>))
-        .route("/pow/metrics", get(get_pow_metrics::<S>))
         .route("/pow/metrics/capture", post(post_pow_metrics_capture::<S>))
-        .route("/pow/metrics/history", get(get_pow_metrics_history))
-        .route("/pow/metrics/summary", get(get_pow_metrics_summary))
-        .route("/pow/health", get(get_pow_health))
         .route("/pow/metrics/prune", post(post_pow_metrics_prune))
-        .route("/pow/export", get(get_pow_export))
-        .route("/pow/dashboard", get(get_pow_dashboard::<S>))
         .route("/pow/mine-and-capture", post(post_pow_mine_capture::<S>))
         .route("/pow/auto/run", post(post_pow_auto_run::<S>))
-        .route("/sync/status", get(get_sync_status::<S>))
-        .route("/sync/missing", get(get_sync_missing::<S>))
         .route("/sync/replay-plan", get(get_replay_plan::<S>))
         .route(
             "/sync/incremental-plan",
             get(get_incremental_sync_plan::<S>),
         )
-        .route("/sync/blocks", get(get_sync_blocks::<S>))
-        .route("/sync/verify", get(get_sync_verify::<S>))
-        .route("/snapshot", get(get_snapshot_info::<S>))
         .route("/snapshot/create", post(post_snapshot_create::<S>))
         .route("/prune", post(post_prune_chain::<S>))
         .route("/sync/rebuild", post(post_sync_rebuild::<S>))

@@ -23,7 +23,7 @@ use pulsedag_core::reconcile_mempool;
 use pulsedag_p2p::{
     build_p2p_stack, InboundEvent, Libp2pConfig, Libp2pRuntimeMode, P2pHandle, P2pMode,
 };
-use pulsedag_rpc::routes::router;
+use pulsedag_rpc::routes::router_with_admin;
 use pulsedag_storage::Storage;
 use tokio::net::TcpListener;
 use tokio::time::{sleep, Duration};
@@ -1305,11 +1305,11 @@ async fn main() -> Result<()> {
         });
     }
 
-    let app: Router = router().with_state(app_state);
+    let app: Router = router_with_admin(cfg.admin_enabled).with_state(app_state);
     let addr: SocketAddr = cfg.rpc_bind.parse()?;
     let listener = TcpListener::bind(addr).await?;
 
-    info!(p2p_enabled = cfg.p2p_enabled, p2p_mode = %cfg.p2p_mode, auto_rebuild_on_start = cfg.auto_rebuild_on_start, persist_snapshot_on_start = cfg.persist_snapshot_on_start, snapshot_auto_every_blocks = cfg.snapshot_auto_every_blocks, auto_prune_enabled = cfg.auto_prune_enabled, auto_prune_every_blocks = cfg.auto_prune_every_blocks, prune_keep_recent_blocks = cfg.prune_keep_recent_blocks, prune_require_snapshot = cfg.prune_require_snapshot, target_block_interval_secs = cfg.target_block_interval_secs, difficulty_window = cfg.difficulty_window, max_future_drift_secs = cfg.max_future_drift_secs, "pulsedagd RPC listening on {}", addr);
+    info!(p2p_enabled = cfg.p2p_enabled, p2p_mode = %cfg.p2p_mode, admin_enabled = cfg.admin_enabled, auto_rebuild_on_start = cfg.auto_rebuild_on_start, persist_snapshot_on_start = cfg.persist_snapshot_on_start, snapshot_auto_every_blocks = cfg.snapshot_auto_every_blocks, auto_prune_enabled = cfg.auto_prune_enabled, auto_prune_every_blocks = cfg.auto_prune_every_blocks, prune_keep_recent_blocks = cfg.prune_keep_recent_blocks, prune_require_snapshot = cfg.prune_require_snapshot, target_block_interval_secs = cfg.target_block_interval_secs, difficulty_window = cfg.difficulty_window, max_future_drift_secs = cfg.max_future_drift_secs, "pulsedagd RPC listening on {}", addr);
     axum::serve(listener, app).await?;
     Ok(())
 }

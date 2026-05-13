@@ -2078,6 +2078,7 @@ mod tests {
             format_version: 1,
             exported_at_unix: 1,
             snapshot_captured_at_unix: Some(1),
+            snapshot_metadata: Storage::snapshot_metadata_for_state(&state, 1),
             snapshot: state.clone(),
             persisted_blocks: state.dag.blocks.values().cloned().collect(),
         };
@@ -2102,6 +2103,7 @@ mod tests {
             format_version: 1,
             exported_at_unix: 1,
             snapshot_captured_at_unix: None,
+            snapshot_metadata: Storage::snapshot_metadata_for_state(&state, 1),
             snapshot: state.clone(),
             persisted_blocks: state.dag.blocks.values().cloned().collect(),
         };
