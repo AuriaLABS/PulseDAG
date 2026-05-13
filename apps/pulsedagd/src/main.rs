@@ -757,8 +757,35 @@ async fn main() -> Result<()> {
                                 }
                             }
                         } else {
-                            let adopted =
-                                pulsedag_core::adopt_ready_orphans(&mut guard, AcceptSource::P2p);
+                            let adopted = {
+                                let mut adopted_guard = guard.clone();
+                                let adopted = pulsedag_core::adopt_ready_orphans(
+                                    &mut adopted_guard,
+                                    AcceptSource::P2p,
+                                );
+                                if adopted > 0 {
+                                    match storage.persist_chain_state(&adopted_guard) {
+                                        Ok(()) => {
+                                            *guard = adopted_guard;
+                                            adopted
+                                        }
+                                        Err(e) => {
+                                            warn!(error = %e, block_hash = %block.hash, adopted, "failed persisting chain state after inbound orphan adoption; keeping orphans queued in memory");
+                                            let _ = storage.append_runtime_event(
+                                                "warn",
+                                                "peer_orphan_adoption_persist_failed",
+                                                &format!(
+                                                    "hash={} adopted_orphans={} error={}",
+                                                    block.hash, adopted, e
+                                                ),
+                                            );
+                                            0
+                                        }
+                                    }
+                                } else {
+                                    0
+                                }
+                            };
                             let accepted_height = guard.dag.best_height;
                             let accepted_tip = pulsedag_core::preferred_tip_hash(&guard)
                                 .unwrap_or_else(|| guard.dag.genesis_hash.clone());
