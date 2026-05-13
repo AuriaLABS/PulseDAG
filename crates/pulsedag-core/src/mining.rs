@@ -14,7 +14,7 @@ pub fn current_ts() -> u64 {
 }
 
 pub fn is_coinbase(tx: &Transaction) -> bool {
-    tx.inputs.is_empty() && tx.outputs.len() == 1 && tx.fee == 0
+    tx.inputs.is_empty() && !tx.outputs.is_empty() && tx.fee == 0
 }
 
 pub fn build_coinbase_transaction(miner_address: &str, reward: u64, nonce: u64) -> Transaction {

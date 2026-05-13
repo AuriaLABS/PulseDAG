@@ -1,3 +1,5 @@
+use std::collections::{hash_map::Entry, BTreeSet};
+
 use crate::{
     errors::PulseError,
     mining::is_coinbase,
@@ -15,6 +17,21 @@ pub fn apply_transaction(
     state: &mut ChainState,
     height: u64,
 ) -> Result<(), PulseError> {
+    let mut created_outpoints = Vec::with_capacity(tx.outputs.len());
+    let mut seen_created_outpoints = BTreeSet::new();
+    for (index, _) in tx.outputs.iter().enumerate() {
+        let outpoint = OutPoint {
+            txid: tx.txid.clone(),
+            index: index as u32,
+        };
+        if !seen_created_outpoints.insert(outpoint.clone())
+            || state.utxo.utxos.contains_key(&outpoint)
+        {
+            return Err(PulseError::DuplicateUtxoOutpoint(outpoint_label(&outpoint)));
+        }
+        created_outpoints.push(outpoint);
+    }
+
     if !is_coinbase(tx) {
         for input in &tx.inputs {
             let spent = state
@@ -28,14 +45,7 @@ pub fn apply_transaction(
         }
     }
 
-    for (index, output) in tx.outputs.iter().enumerate() {
-        let outpoint = OutPoint {
-            txid: tx.txid.clone(),
-            index: index as u32,
-        };
-        if state.utxo.utxos.contains_key(&outpoint) {
-            return Err(PulseError::DuplicateOutpoint(outpoint_label(&outpoint)));
-        }
+    for (outpoint, output) in created_outpoints.into_iter().zip(&tx.outputs) {
         let utxo = Utxo {
             outpoint: outpoint.clone(),
             address: output.address.clone(),
@@ -43,7 +53,14 @@ pub fn apply_transaction(
             coinbase: is_coinbase(tx),
             height,
         };
-        state.utxo.utxos.insert(outpoint.clone(), utxo);
+        match state.utxo.utxos.entry(outpoint.clone()) {
+            Entry::Vacant(entry) => {
+                entry.insert(utxo);
+            }
+            Entry::Occupied(_) => {
+                return Err(PulseError::DuplicateUtxoOutpoint(outpoint_label(&outpoint)));
+            }
+        }
         state
             .utxo
             .address_index

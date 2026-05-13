@@ -22,6 +22,18 @@ pub enum PulseError {
     InvalidTxid,
     #[error("invalid state root: supplied {supplied}, computed {computed}")]
     InvalidStateRoot { supplied: String, computed: String },
+    #[error("missing coinbase transaction")]
+    MissingCoinbase,
+    #[error("multiple coinbase transactions")]
+    MultipleCoinbase,
+    #[error("coinbase transaction is not first")]
+    CoinbaseNotFirst,
+    #[error("excessive coinbase reward")]
+    ExcessiveCoinbaseReward,
+    #[error("duplicate UTXO outpoint: {0}")]
+    DuplicateUtxoOutpoint(String),
+    #[error("reward overflow")]
+    RewardOverflow,
     #[error("duplicate UTXO outpoint: {0}")]
     DuplicateOutpoint(String),
     #[error("non-deterministic state: {0}")]

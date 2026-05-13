@@ -88,6 +88,12 @@ fn classify_block_validation_error(err: PulseError) -> BlockAcceptanceResult {
         | PulseError::DoubleSpend
         | PulseError::InsufficientFunds
         | PulseError::UtxoNotFound => BlockAcceptanceResult::InvalidTransaction,
+        PulseError::MissingCoinbase
+        | PulseError::MultipleCoinbase
+        | PulseError::CoinbaseNotFirst
+        | PulseError::ExcessiveCoinbaseReward
+        | PulseError::DuplicateUtxoOutpoint(_)
+        | PulseError::RewardOverflow => BlockAcceptanceResult::Malformed,
         other => BlockAcceptanceResult::Rejected(other.to_string()),
     }
 }

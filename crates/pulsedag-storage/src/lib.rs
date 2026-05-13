@@ -1159,7 +1159,7 @@ mod tests {
         accept::{accept_block, AcceptSource},
         build_candidate_block, build_coinbase_transaction, dev_mine_header,
         genesis::init_chain_state,
-        refresh_block_consensus_ids,
+        refresh_block_consensus_ids, refresh_block_consensus_ids_with_state,
     };
 
     fn best_tip_hash(state: &pulsedag_core::ChainState) -> String {
@@ -1193,6 +1193,8 @@ mod tests {
                 1,
                 vec![build_coinbase_transaction("miner", 50, i as u64)],
             );
+            refresh_block_consensus_ids_with_state(&mut block, &state)
+                .expect("prepare state root for test block");
             let (header, mined, _, _) = dev_mine_header(block.header.clone(), 25_000);
             assert!(mined, "failed to mine test block at height {}", i);
             block.header = header;
@@ -1260,6 +1262,8 @@ mod tests {
             1,
             vec![build_coinbase_transaction("miner", 50, 1)],
         );
+        refresh_block_consensus_ids_with_state(&mut block, &state)
+            .expect("prepare state root for test block");
         let (header, mined, _, _) = dev_mine_header(block.header.clone(), 25_000);
         assert!(mined, "failed to mine test block");
         block.header = header;
@@ -1309,6 +1313,8 @@ mod tests {
             1,
             vec![build_coinbase_transaction("miner", 50, 1)],
         );
+        refresh_block_consensus_ids_with_state(&mut block, &state)
+            .expect("prepare state root for test block");
         let (header, mined, _, _) = dev_mine_header(block.header.clone(), 25_000);
         assert!(mined, "failed to mine test block");
         block.header = header;
@@ -1370,6 +1376,8 @@ mod tests {
             1,
             vec![build_coinbase_transaction("miner", 50, 1)],
         );
+        refresh_block_consensus_ids_with_state(&mut block, &state)
+            .expect("prepare state root for test block");
         let (header, mined, _, _) = dev_mine_header(block.header.clone(), 25_000);
         assert!(mined, "failed to mine test block");
         block.header = header;
@@ -1416,6 +1424,8 @@ mod tests {
                 1,
                 vec![build_coinbase_transaction("miner", 50, height)],
             );
+            refresh_block_consensus_ids_with_state(&mut block, &state)
+                .expect("prepare state root for test block");
             let (header, mined, _, _) = dev_mine_header(block.header.clone(), 25_000);
             assert!(mined, "failed to mine test block at height {}", height);
             block.header = header;
@@ -1710,6 +1720,8 @@ mod tests {
                 state.dag.best_height + 1,
             )],
         );
+        refresh_block_consensus_ids_with_state(&mut invalid_block, &state)
+            .expect("prepare state root for invalid delta block");
         let (header, mined, _, _) = dev_mine_header(invalid_block.header.clone(), 25_000);
         assert!(mined, "failed to mine invalid test block");
         invalid_block.header = header;

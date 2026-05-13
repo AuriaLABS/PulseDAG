@@ -13,5 +13,5 @@ members = [
 ]
 
 [workspace.package]
-version = "2.2.12"
+version = "2.2.14"
 license = "ISC"
