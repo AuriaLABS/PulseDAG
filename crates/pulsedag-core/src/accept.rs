@@ -1,5 +1,5 @@
 use crate::{
-    apply::apply_block,
+    apply::{apply_block, prepare_block_state},
     errors::PulseError,
     mempool::{
         combined_pressure_tier, mempool_pressure_bps, reconcile_mempool, MEMPOOL_PRESSURE_HIGH_BPS,
@@ -67,6 +67,25 @@ pub enum BlockAcceptanceResult {
 impl BlockAcceptanceResult {
     pub fn is_accepted(&self) -> bool {
         matches!(self, Self::Accepted)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AtomicBlockAcceptance {
+    pub result: BlockAcceptanceResult,
+    pub persisted: bool,
+    pub committed: bool,
+    pub broadcast: bool,
+}
+
+impl AtomicBlockAcceptance {
+    pub fn rejected(result: BlockAcceptanceResult) -> Self {
+        Self {
+            result,
+            persisted: false,
+            committed: false,
+            broadcast: false,
+        }
     }
 }
 
@@ -556,6 +575,48 @@ pub fn accept_transaction_with_result(
     state.mempool.counters.accepted_total = state.mempool.counters.accepted_total.saturating_add(1);
     promote_ready_orphans(state, source);
     TxAcceptanceResult::Accepted
+}
+
+pub fn accept_block_atomically<FPersist, FBroadcast>(
+    block: Block,
+    state: &mut ChainState,
+    source: AcceptSource,
+    persist: FPersist,
+    broadcast: FBroadcast,
+) -> Result<AtomicBlockAcceptance, PulseError>
+where
+    FPersist: FnOnce(&Block, &ChainState) -> Result<(), PulseError>,
+    FBroadcast: FnOnce(&Block) -> Result<(), PulseError>,
+{
+    let enforce_pow = matches!(
+        source,
+        AcceptSource::Rpc | AcceptSource::P2p | AcceptSource::LocalMining
+    );
+    let pow = pow_validation_result(&block.header);
+    if enforce_pow && !pow.accepted {
+        return Ok(AtomicBlockAcceptance::rejected(
+            BlockAcceptanceResult::InvalidPow,
+        ));
+    }
+
+    let working = match prepare_block_state(&block, state) {
+        Ok(working) => working,
+        Err(err) => {
+            return Ok(AtomicBlockAcceptance::rejected(
+                classify_block_validation_error(err),
+            ))
+        }
+    };
+
+    persist(&block, &working)?;
+    *state = working;
+    broadcast(&block)?;
+    Ok(AtomicBlockAcceptance {
+        result: BlockAcceptanceResult::Accepted,
+        persisted: true,
+        committed: true,
+        broadcast: true,
+    })
 }
 
 pub fn accept_block_with_result(
@@ -1068,6 +1129,66 @@ mod tests {
         block.hash = "mutated-block".to_string();
         let outcome = accept_block_with_result(block, &mut state, AcceptSource::P2p);
         assert_eq!(outcome, BlockAcceptanceResult::Malformed);
+    }
+
+    #[test]
+    fn atomic_block_acceptance_storage_failure_leaves_live_state_unchanged_and_unbroadcast() {
+        let mut state = init_chain_state("testnet".into());
+        let before = snapshot_state(&state);
+        let block = valid_acceptance_block(&state, "atomic-storage-fail", 77);
+        let mut persisted = false;
+        let mut broadcast = false;
+
+        let err = accept_block_atomically(
+            block,
+            &mut state,
+            AcceptSource::P2p,
+            |_block, _working| {
+                persisted = true;
+                Err(PulseError::StorageError("forced storage failure".into()))
+            },
+            |_block| {
+                broadcast = true;
+                Ok(())
+            },
+        )
+        .expect_err("storage failure bubbles out");
+
+        assert!(matches!(err, PulseError::StorageError(_)));
+        assert!(persisted, "acceptance reached durable persistence phase");
+        assert!(!broadcast, "broadcast must not run before durable commit");
+        assert_eq!(snapshot_state(&state), before);
+    }
+
+    #[test]
+    fn atomic_block_acceptance_persists_before_commit_and_broadcast() {
+        let mut state = init_chain_state("testnet".into());
+        let block = valid_acceptance_block(&state, "atomic-success", 78);
+        let block_hash = block.hash.clone();
+        let order = std::cell::RefCell::new(Vec::new());
+
+        let acceptance = accept_block_atomically(
+            block,
+            &mut state,
+            AcceptSource::P2p,
+            |block, working| {
+                assert!(working.dag.blocks.contains_key(&block.hash));
+                order.borrow_mut().push("persist");
+                Ok(())
+            },
+            |_block| {
+                order.borrow_mut().push("broadcast");
+                Ok(())
+            },
+        )
+        .expect("atomic acceptance succeeds");
+
+        assert!(acceptance.result.is_accepted());
+        assert!(acceptance.persisted);
+        assert!(acceptance.committed);
+        assert!(acceptance.broadcast);
+        assert_eq!(*order.borrow(), vec!["persist", "broadcast"]);
+        assert!(state.dag.blocks.contains_key(&block_hash));
     }
 }
 

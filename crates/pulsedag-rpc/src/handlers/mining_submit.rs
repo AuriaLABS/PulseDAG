@@ -4,7 +4,7 @@ use super::mining_template::{
 use crate::api::{ApiResponse, RpcStateLike, SubmitMinedBlockRequest};
 use axum::{extract::State, Json};
 use pulsedag_core::{
-    accept_block_with_result, adopt_ready_orphans, expected_difficulty, pow_validation_result,
+    accept_block_atomically, adopt_ready_orphans, expected_difficulty, pow_validation_result,
     preferred_tip_hash, AcceptSource,
 };
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -579,34 +579,39 @@ pub async fn post_mining_submit<S: RpcStateLike>(
         ));
     }
 
-    match accept_block_with_result(req.block.clone(), &mut chain, AcceptSource::Rpc) {
+    let acceptance = match accept_block_atomically(
+        req.block.clone(),
+        &mut chain,
+        AcceptSource::Rpc,
+        |block, chain| state.storage().persist_block_and_chain_state(block, chain),
+        |block| {
+            if let Some(p2p) = state.p2p() {
+                let _ = p2p.broadcast_block(block);
+            }
+            Ok(())
+        },
+    ) {
+        Ok(acceptance) => acceptance.result,
+        Err(e) => {
+            record_external_mining_rejection(
+                &state,
+                ExternalMiningRejectKind::StorageError,
+                &e.to_string(),
+            )
+            .await;
+            return Json(rejection_submit_response(
+                "block_rejected",
+                e.to_string(),
+                Some(block_hash.clone()),
+                Some(height),
+                false,
+            ));
+        }
+    };
+
+    match acceptance {
         pulsedag_core::BlockAcceptanceResult::Accepted => {
             let adopted_orphans = adopt_ready_orphans(&mut chain, AcceptSource::Rpc);
-
-            if let Err(e) = persist_then_broadcast_mined_block(
-                &req.block,
-                &chain,
-                |block, chain| state.storage().persist_block_and_chain_state(block, chain),
-                |block| {
-                    if let Some(p2p) = state.p2p() {
-                        let _ = p2p.broadcast_block(block);
-                    }
-                },
-            ) {
-                record_external_mining_rejection(
-                    &state,
-                    ExternalMiningRejectKind::StorageError,
-                    &e.to_string(),
-                )
-                .await;
-                return Json(rejection_submit_response(
-                    "block_rejected",
-                    e.to_string(),
-                    Some(block_hash.clone()),
-                    Some(height),
-                    false,
-                ));
-            }
 
             {
                 let runtime_handle = state.runtime();

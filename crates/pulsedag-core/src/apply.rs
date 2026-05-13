@@ -95,11 +95,16 @@ pub fn commit_block_to_state(block: &Block, state: &mut ChainState) -> Result<()
     Ok(())
 }
 
-pub fn apply_block(block: &Block, state: &mut ChainState) -> Result<(), PulseError> {
+pub fn prepare_block_state(block: &Block, state: &ChainState) -> Result<ChainState, PulseError> {
     validate_block(block, state)?;
 
     let mut working = state.clone();
     commit_block_to_state(block, &mut working)?;
+    Ok(working)
+}
+
+pub fn apply_block(block: &Block, state: &mut ChainState) -> Result<(), PulseError> {
+    let working = prepare_block_state(block, state)?;
     *state = working;
     Ok(())
 }
