@@ -12,6 +12,7 @@ use crate::{
 use axum::{extract::State, Json};
 use pulsedag_core::{
     build_candidate_block, build_coinbase_transaction, consensus_difficulty_snapshot,
+    pow::{target_from_bits, target_hex},
     pow_preimage_bytes, preferred_tip_hash, refresh_block_consensus_ids_with_state,
     state::ChainState,
 };
@@ -20,6 +21,8 @@ use tracing::info;
 
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
 pub struct StoredMiningTemplate {
+    #[serde(default = "default_mining_protocol_version")]
+    pub protocol_version: u32,
     pub template_id: String,
     pub miner_address: String,
     pub selected_tip: Option<String>,
@@ -36,10 +39,13 @@ pub struct StoredMiningTemplate {
     pub expires_at_unix: u64,
     #[serde(default)]
     pub template_txids: Vec<String>,
+    #[serde(default)]
+    pub merkle_root: String,
 }
 
 #[derive(Debug, serde::Serialize)]
 pub struct MiningTemplateData {
+    pub protocol_version: u32,
     pub mode: String,
     pub algorithm: String,
     pub pow_engine: String,
@@ -83,6 +89,11 @@ pub(crate) struct TemplateLifecycleState {
     pub mempool_tx_count: usize,
 }
 
+pub(crate) const MINING_PROTOCOL_VERSION: u32 = 1;
+
+fn default_mining_protocol_version() -> u32 {
+    MINING_PROTOCOL_VERSION
+}
 pub(crate) const TEMPLATE_TTL_SECS: u64 = 30;
 pub(crate) const TEMPLATE_FRESHNESS_GRACE_SECS: u64 = 2;
 const POW_NONCE_OFFSET: usize = 1 + 4;
@@ -293,6 +304,7 @@ pub async fn post_mining_template<S: RpcStateLike>(
         return Json(ApiResponse::err("STATE_ROOT_ERROR", e.to_string()));
     }
     let target_u64 = lifecycle.target_u64;
+    let canonical_target_hex = target_hex(&target_from_bits(header_difficulty));
     let compact_target = header_difficulty;
     let template_txids = block
         .transactions
@@ -304,6 +316,7 @@ pub async fn post_mining_template<S: RpcStateLike>(
     let pre_pow_hash = hex::encode(Keccak256::digest(&pow_preimage));
 
     store_template(&StoredMiningTemplate {
+        protocol_version: MINING_PROTOCOL_VERSION,
         template_id: template_id.clone(),
         miner_address: req.miner_address.clone(),
         selected_tip: selected_tip.clone(),
@@ -316,6 +329,7 @@ pub async fn post_mining_template<S: RpcStateLike>(
         mempool_tx_count: lifecycle.mempool_tx_count,
         expires_at_unix,
         template_txids: template_txids.clone(),
+        merkle_root: block.header.merkle_root.clone(),
     });
     {
         let runtime_handle = state.runtime();
@@ -381,6 +395,7 @@ pub async fn post_mining_template<S: RpcStateLike>(
     let blue_score = block.header.blue_score;
 
     Json(ApiResponse::ok(MiningTemplateData {
+        protocol_version: MINING_PROTOCOL_VERSION,
         mode: "external-miner-template".to_string(),
         algorithm: "kHeavyHash".to_string(),
         pow_engine: "kaspa-kheavyhash".to_string(),
@@ -394,7 +409,7 @@ pub async fn post_mining_template<S: RpcStateLike>(
         freshness_grace_secs: TEMPLATE_FRESHNESS_GRACE_SECS,
         block,
         target_u64,
-        target_hex: format!("{:064x}", target_u64),
+        target_hex: canonical_target_hex,
         bits: compact_target,
         difficulty: header_difficulty,
         compact_target,
