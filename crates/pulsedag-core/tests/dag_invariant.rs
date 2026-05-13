@@ -2,7 +2,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use pulsedag_core::genesis::init_chain_state;
 use pulsedag_core::{
-    accept_block_with_result, build_candidate_block, build_coinbase_transaction,
+    accept_block_with_result, assert_dag_consistent_for_tests, build_candidate_block,
+    build_coinbase_transaction, current_ts, dev_max_future_drift_secs, refresh_block_consensus_ids,
     refresh_block_consensus_ids_with_state, sorted_tip_hashes, AcceptSource, Block,
     BlockAcceptanceResult, ChainState, Hash,
 };
@@ -101,6 +102,7 @@ fn assert_dag_invariants(state: &ChainState) {
         state.dag.best_height, max_height,
         "best_height must equal max accepted block height"
     );
+    assert_dag_consistent_for_tests(state);
 }
 
 fn test_block(
@@ -217,5 +219,66 @@ fn dag_invariant_invalid_blocks_do_not_mutate_dag_state() {
 
     assert_ne!(outcome, BlockAcceptanceResult::Accepted);
     assert_eq!(dag_snapshot(&state), before_invalid);
+    assert_dag_invariants(&state);
+}
+
+#[test]
+fn dag_invariant_duplicate_parents_are_rejected_without_mutation() {
+    let mut state = init_chain_state("dag-invariant-duplicate-parents".to_string());
+    let before = dag_snapshot(&state);
+    let genesis = state.dag.genesis_hash.clone();
+    let duplicate_parent = test_block(
+        &state,
+        "duplicate-parent",
+        vec![genesis.clone(), genesis],
+        1,
+        1,
+    );
+
+    let outcome = accept_block_with_result(duplicate_parent, &mut state, AcceptSource::P2p);
+
+    assert_eq!(outcome, BlockAcceptanceResult::Malformed);
+    assert_eq!(dag_snapshot(&state), before);
+    assert_dag_invariants(&state);
+}
+
+#[test]
+fn dag_invariant_missing_parent_becomes_orphan_candidate_without_mutation() {
+    let mut state = init_chain_state("dag-invariant-missing-parent".to_string());
+    let before = dag_snapshot(&state);
+    let missing_parent = test_block(
+        &state,
+        "missing-parent-child",
+        vec!["missing-parent".to_string()],
+        1,
+        1,
+    );
+
+    let outcome = accept_block_with_result(missing_parent, &mut state, AcceptSource::P2p);
+
+    assert_eq!(outcome, BlockAcceptanceResult::MissingParent);
+    assert_eq!(dag_snapshot(&state), before);
+    assert_dag_invariants(&state);
+}
+
+#[test]
+fn dag_invariant_future_timestamp_is_rejected_without_mutation() {
+    let mut state = init_chain_state("dag-invariant-future-timestamp".to_string());
+    let before = dag_snapshot(&state);
+    let mut future = test_block(
+        &state,
+        "future-timestamp",
+        vec![state.dag.genesis_hash.clone()],
+        1,
+        current_ts()
+            .saturating_add(dev_max_future_drift_secs())
+            .saturating_add(1),
+    );
+    refresh_block_consensus_ids(&mut future);
+
+    let outcome = accept_block_with_result(future, &mut state, AcceptSource::P2p);
+
+    assert_eq!(outcome, BlockAcceptanceResult::Malformed);
+    assert_eq!(dag_snapshot(&state), before);
     assert_dag_invariants(&state);
 }

@@ -3,10 +3,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use pulsedag_core::apply::apply_block;
 use pulsedag_core::genesis::init_chain_state;
 use pulsedag_core::{
-    accept_block_with_result, adopt_ready_orphans, build_candidate_block,
-    build_coinbase_transaction, missing_block_parents, queue_orphan_block,
-    refresh_block_consensus_ids_with_state, AcceptSource, Block, BlockAcceptanceResult, ChainState,
-    Hash, OutPoint, Utxo,
+    accept_block_with_result, adopt_ready_orphans, assert_dag_consistent_for_tests,
+    build_candidate_block, build_coinbase_transaction, missing_block_parents, preferred_tip_hash,
+    queue_orphan_block, rebuild_state_from_blocks, refresh_block_consensus_ids_with_state,
+    AcceptSource, Block, BlockAcceptanceResult, ChainState, Hash, OutPoint, Utxo,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -140,6 +140,7 @@ fn accept_valid(state: &mut ChainState, block: Block) {
         BlockAcceptanceResult::Accepted,
         "accepting {hash}"
     );
+    assert_dag_consistent_for_tests(state);
 }
 
 fn queue_orphan(state: &mut ChainState, block: Block) {
@@ -231,9 +232,15 @@ fn replay_parent_child_is_equivalent_when_child_arrives_as_orphan_first() {
     );
 
     assert_eq!(
+        preferred_tip_hash(&parent_then_child),
+        preferred_tip_hash(&child_orphan_then_parent)
+    );
+    assert_eq!(
         normalize_chain_state_for_comparison(&parent_then_child),
         normalize_chain_state_for_comparison(&child_orphan_then_parent)
     );
+    assert_dag_consistent_for_tests(&parent_then_child);
+    assert_dag_consistent_for_tests(&child_orphan_then_parent);
 }
 
 #[test]
@@ -254,6 +261,9 @@ fn replay_sibling_order_and_multi_parent_merge_are_equivalent() {
         normalize_chain_state_for_comparison(&init_chain_state("replay-a2-then-a1".to_string()))
     );
     assert!(a1_then_a2.dag.blocks.contains_key(&merge.hash));
+    assert_eq!(preferred_tip_hash(&a1_then_a2), Some(merge.hash.clone()));
+    assert_dag_consistent_for_tests(&a1_then_a2);
+    assert_dag_consistent_for_tests(&a2_then_a1);
 }
 
 #[test]
@@ -283,7 +293,41 @@ fn replay_invalid_intermediate_block_does_not_change_final_valid_state() {
     accept_valid(&mut invalid_then_valid, merge);
 
     assert_eq!(
+        preferred_tip_hash(&clean_replay),
+        preferred_tip_hash(&invalid_then_valid)
+    );
+    assert_eq!(
         normalize_chain_state_for_comparison(&clean_replay),
         normalize_chain_state_for_comparison(&invalid_then_valid)
     );
+    assert_dag_consistent_for_tests(&clean_replay);
+    assert_dag_consistent_for_tests(&invalid_then_valid);
+}
+
+#[test]
+fn replay_rebuild_sorts_child_before_parent_input_into_same_selected_tip() {
+    let state = init_chain_state("replay-rebuild-order".to_string());
+    let (parent, child) = parent_child_blocks(&state);
+
+    let parent_first = rebuild_state_from_blocks(
+        "replay-rebuild-parent-first".to_string(),
+        vec![parent.clone(), child.clone()],
+    )
+    .unwrap();
+    let child_first = rebuild_state_from_blocks(
+        "replay-rebuild-child-first".to_string(),
+        vec![child, parent],
+    )
+    .unwrap();
+
+    assert_eq!(
+        preferred_tip_hash(&parent_first),
+        preferred_tip_hash(&child_first)
+    );
+    assert_eq!(
+        normalize_chain_state_for_comparison(&parent_first),
+        normalize_chain_state_for_comparison(&child_first)
+    );
+    assert_dag_consistent_for_tests(&parent_first);
+    assert_dag_consistent_for_tests(&child_first);
 }

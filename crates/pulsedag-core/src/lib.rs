@@ -62,7 +62,7 @@ pub use mempool::{
 
 pub use selection::{preferred_tip_hash, sorted_tip_hashes};
 
-pub use consistency::dag_consistency_issues;
+pub use consistency::{assert_dag_consistent_for_tests, dag_consistency_issues};
 
 pub use orphans::{
     adopt_ready_orphans, missing_block_parents, prune_orphans, queue_orphan_block,
