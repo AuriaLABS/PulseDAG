@@ -14,7 +14,7 @@ use libp2p::{identity, Multiaddr, PeerId, SwarmBuilder};
 use pulsedag_core::{
     errors::PulseError,
     rank_sync_candidates,
-    types::{Block, Hash as PulseHash, Transaction},
+    types::{compute_block_hash, compute_merkle_root, Block, Hash as PulseHash, Transaction},
     RankedSyncPeer, SyncPeerCandidate,
 };
 use tokio::sync::mpsc;
@@ -158,6 +158,12 @@ pub struct P2pStatus {
     pub topology_distinct_buckets: usize,
     pub topology_dominant_bucket_share_bps: u16,
     pub topology_diversity_score_bps: u16,
+    pub blocks_requested: u64,
+    pub blocks_received: u64,
+    pub invalid_blocks_received: u64,
+    pub orphan_blocks_received: u64,
+    pub duplicate_blocks_received: u64,
+    pub peer_penalties: u64,
 }
 
 pub trait P2pHandle: Send + Sync {
@@ -278,6 +284,12 @@ struct InnerState {
     tx_inbound_invalid: usize,
     tx_inbound_rate_window_started_unix: u64,
     tx_inbound_rate_window_count: usize,
+    blocks_requested: u64,
+    blocks_received: u64,
+    invalid_blocks_received: u64,
+    orphan_blocks_received: u64,
+    duplicate_blocks_received: u64,
+    peer_penalties: u64,
     tx_outbound_duplicates_suppressed: usize,
     tx_outbound_first_seen_relayed: usize,
     tx_outbound_recovery_relayed: usize,
@@ -336,6 +348,7 @@ struct PeerHealth {
     cooldown_suppressed_count: u64,
     flap_suppressed_count: u64,
     chain_mismatch_streak: u32,
+    invalid_block_announce_streak: u32,
     inbound_window_started_unix: u64,
     inbound_window_count: usize,
     dial_window_started_unix: u64,
@@ -361,6 +374,7 @@ impl Default for PeerHealth {
             cooldown_suppressed_count: 0,
             flap_suppressed_count: 0,
             chain_mismatch_streak: 0,
+            invalid_block_announce_streak: 0,
             inbound_window_started_unix: 0,
             inbound_window_count: 0,
             dial_window_started_unix: 0,
@@ -611,6 +625,12 @@ impl P2pHandle for MemoryP2pHandle {
             topology_distinct_buckets,
             topology_dominant_bucket_share_bps,
             topology_diversity_score_bps,
+            blocks_requested: inner.blocks_requested,
+            blocks_received: inner.blocks_received,
+            invalid_blocks_received: inner.invalid_blocks_received,
+            orphan_blocks_received: inner.orphan_blocks_received,
+            duplicate_blocks_received: inner.duplicate_blocks_received,
+            peer_penalties: inner.peer_penalties,
         })
     }
 }
@@ -754,6 +774,10 @@ const PEER_VALID_RELAY_BONUS: i32 = 2;
 const PEER_MALFORMED_MESSAGE_PENALTY: i32 = 18;
 const PEER_CHAIN_MISMATCH_PENALTY: i32 = 10;
 const PEER_RATE_LIMIT_PENALTY: i32 = 8;
+const PEER_INVALID_BLOCK_PENALTY: i32 = 24;
+const PEER_INVALID_ANNOUNCEMENT_PENALTY: i32 = 12;
+const PEER_INVALID_BLOCK_ANNOUNCE_COOLDOWN_THRESHOLD: u32 = 3;
+const PEER_INVALID_BLOCK_ANNOUNCE_COOLDOWN_SECS: u64 = 90;
 const BLOCK_OUTBOUND_DEDUP_WINDOW_SECS: u64 = 30;
 const RECOVERY_REBROADCAST_GRACE_SECS: u64 = 8;
 const RECOVERY_REBROADCAST_BUDGET_WINDOW_SECS: u64 = 8;
@@ -1849,6 +1873,8 @@ enum PeerMessageOutcome {
     Malformed,
     ChainMismatch,
     RateLimited,
+    InvalidBlock,
+    InvalidAnnouncement,
 }
 
 fn score_peer_message_outcome(
@@ -1897,8 +1923,42 @@ fn score_peer_message_outcome(
             health.fail_streak = health.fail_streak.saturating_add(1);
             health.last_failure_unix = Some(now);
         }
+        PeerMessageOutcome::InvalidBlock => {
+            health.chain_mismatch_streak = 0;
+            health.score =
+                (health.score - PEER_INVALID_BLOCK_PENALTY).clamp(PEER_SCORE_MIN, PEER_SCORE_MAX);
+            health.fail_streak = health.fail_streak.saturating_add(1);
+            health.invalid_block_announce_streak =
+                health.invalid_block_announce_streak.saturating_add(1);
+            health.last_failure_unix = Some(now);
+            if health.invalid_block_announce_streak
+                >= PEER_INVALID_BLOCK_ANNOUNCE_COOLDOWN_THRESHOLD
+            {
+                health.suppressed_until_unix = health
+                    .suppressed_until_unix
+                    .max(now.saturating_add(PEER_INVALID_BLOCK_ANNOUNCE_COOLDOWN_SECS));
+                health.next_retry_unix = health.next_retry_unix.max(health.suppressed_until_unix);
+            }
+        }
+        PeerMessageOutcome::InvalidAnnouncement => {
+            health.score = (health.score - PEER_INVALID_ANNOUNCEMENT_PENALTY)
+                .clamp(PEER_SCORE_MIN, PEER_SCORE_MAX);
+            health.fail_streak = health.fail_streak.saturating_add(1);
+            health.invalid_block_announce_streak =
+                health.invalid_block_announce_streak.saturating_add(1);
+            health.last_failure_unix = Some(now);
+            if health.invalid_block_announce_streak
+                >= PEER_INVALID_BLOCK_ANNOUNCE_COOLDOWN_THRESHOLD
+            {
+                health.suppressed_until_unix = health
+                    .suppressed_until_unix
+                    .max(now.saturating_add(PEER_INVALID_BLOCK_ANNOUNCE_COOLDOWN_SECS));
+                health.next_retry_unix = health.next_retry_unix.max(health.suppressed_until_unix);
+            }
+        }
     }
     if !matches!(outcome, PeerMessageOutcome::ValidRelay) {
+        state.peer_penalties = state.peer_penalties.saturating_add(1);
         health.recent_failures_unix.push(now);
         if health.recent_failures_unix.len() > RECENT_FAILURES_KEEP {
             let keep_from = health.recent_failures_unix.len() - RECENT_FAILURES_KEEP;
@@ -1929,6 +1989,39 @@ fn admit_peer_inbound_message(state: &mut InnerState, peer: Option<&str>, now: u
     state.peer_message_rate_limited_count = state.peer_message_rate_limited_count.saturating_add(1);
     score_peer_message_outcome(state, peer, PeerMessageOutcome::RateLimited, now);
     false
+}
+
+fn validate_inbound_block_shape(block: &Block) -> Result<(), &'static str> {
+    if block.hash.is_empty() {
+        return Err("empty_block_hash");
+    }
+    let mut parents = HashSet::new();
+    for parent in &block.header.parents {
+        if parent.is_empty() || !parents.insert(parent) {
+            return Err("invalid_parent_set");
+        }
+    }
+    let looks_canonical_hash =
+        block.hash.len() == 64 && block.hash.chars().all(|ch| ch.is_ascii_hexdigit());
+    if looks_canonical_hash && compute_block_hash(&block.header) != block.hash {
+        return Err("block_hash_mismatch");
+    }
+    let looks_canonical_merkle = block.header.merkle_root.len() == 64
+        && block
+            .header
+            .merkle_root
+            .chars()
+            .all(|ch| ch.is_ascii_hexdigit());
+    if looks_canonical_merkle
+        && compute_merkle_root(&block.transactions) != block.header.merkle_root
+    {
+        return Err("merkle_root_mismatch");
+    }
+    Ok(())
+}
+
+fn validate_block_announcement_hash(hash: &str) -> bool {
+    !hash.trim().is_empty() && hash.len() <= 128
 }
 
 fn dispatch_network_message(
@@ -2062,8 +2155,27 @@ fn dispatch_network_message(
                 }
                 return;
             }
+            if let Err(reason) = validate_inbound_block_shape(&block) {
+                if let Ok(mut guard) = inner.lock() {
+                    guard.blocks_received = guard.blocks_received.saturating_add(1);
+                    guard.invalid_blocks_received = guard.invalid_blocks_received.saturating_add(1);
+                    guard.last_drop_reason = Some(format!("invalid_block_{reason}"));
+                    if let Some(peer) = source_peer {
+                        score_peer_message_outcome(
+                            &mut guard,
+                            peer,
+                            PeerMessageOutcome::InvalidBlock,
+                            now_unix(),
+                        );
+                        refresh_connected_peers_from_health(&mut guard);
+                        persist_peer_state_if_configured(&guard);
+                    }
+                }
+                return;
+            }
             let id = message_id_for_block(&block);
             if let Ok(mut guard) = inner.lock() {
+                guard.blocks_received = guard.blocks_received.saturating_add(1);
                 if !mark_inbound_block_seen(
                     &mut guard,
                     id,
@@ -2072,6 +2184,8 @@ fn dispatch_network_message(
                     now_unix(),
                 ) {
                     guard.inbound_duplicates_suppressed += 1;
+                    guard.duplicate_blocks_received =
+                        guard.duplicate_blocks_received.saturating_add(1);
                     guard.last_drop_reason = Some("duplicate_block".into());
                     return;
                 }
@@ -2107,10 +2221,29 @@ fn dispatch_network_message(
                 }
                 return;
             }
+            if !validate_block_announcement_hash(&hash) {
+                if let Ok(mut guard) = inner.lock() {
+                    guard.invalid_blocks_received = guard.invalid_blocks_received.saturating_add(1);
+                    guard.last_drop_reason = Some("invalid_block_announce_hash".into());
+                    if let Some(peer) = source_peer {
+                        score_peer_message_outcome(
+                            &mut guard,
+                            peer,
+                            PeerMessageOutcome::InvalidAnnouncement,
+                            now_unix(),
+                        );
+                        refresh_connected_peers_from_health(&mut guard);
+                        persist_peer_state_if_configured(&guard);
+                    }
+                }
+                return;
+            }
             let id = format!("block-announce:{}", hash);
             if let Ok(mut guard) = inner.lock() {
                 if !mark_inbound_id_seen(&mut guard, id, now_unix()) {
                     guard.inbound_duplicates_suppressed += 1;
+                    guard.duplicate_blocks_received =
+                        guard.duplicate_blocks_received.saturating_add(1);
                     guard.last_drop_reason = Some("duplicate_block_announce".into());
                     return;
                 }
@@ -2226,6 +2359,7 @@ fn dispatch_network_message(
             if chain_id == expected_chain_id {
                 if let Ok(mut guard) = inner.lock() {
                     guard.inbound_messages += 1;
+                    guard.blocks_requested = guard.blocks_requested.saturating_add(1);
                     guard.last_message_kind = Some("get-block".into());
                 }
                 let _ = inbound_tx.send(InboundEvent::GetBlock { hash });
@@ -2250,8 +2384,28 @@ fn dispatch_network_message(
                 return;
             }
             if let Some(block) = block {
+                if let Err(reason) = validate_inbound_block_shape(&block) {
+                    if let Ok(mut guard) = inner.lock() {
+                        guard.blocks_received = guard.blocks_received.saturating_add(1);
+                        guard.invalid_blocks_received =
+                            guard.invalid_blocks_received.saturating_add(1);
+                        guard.last_drop_reason = Some(format!("invalid_block_data_{reason}"));
+                        if let Some(peer) = source_peer {
+                            score_peer_message_outcome(
+                                &mut guard,
+                                peer,
+                                PeerMessageOutcome::InvalidBlock,
+                                now_unix(),
+                            );
+                            refresh_connected_peers_from_health(&mut guard);
+                            persist_peer_state_if_configured(&guard);
+                        }
+                    }
+                    return;
+                }
                 let id = message_id_for_block(&block);
                 if let Ok(mut guard) = inner.lock() {
+                    guard.blocks_received = guard.blocks_received.saturating_add(1);
                     if !mark_inbound_block_seen(
                         &mut guard,
                         id,
@@ -2260,6 +2414,8 @@ fn dispatch_network_message(
                         now_unix(),
                     ) {
                         guard.inbound_duplicates_suppressed += 1;
+                        guard.duplicate_blocks_received =
+                            guard.duplicate_blocks_received.saturating_add(1);
                         guard.last_drop_reason = Some("duplicate_block_data".into());
                         return;
                     }
@@ -2819,6 +2975,12 @@ impl P2pHandle for Libp2pHandle {
             topology_distinct_buckets,
             topology_dominant_bucket_share_bps,
             topology_diversity_score_bps,
+            blocks_requested: inner.blocks_requested,
+            blocks_received: inner.blocks_received,
+            invalid_blocks_received: inner.invalid_blocks_received,
+            orphan_blocks_received: inner.orphan_blocks_received,
+            duplicate_blocks_received: inner.duplicate_blocks_received,
+            peer_penalties: inner.peer_penalties,
         })
     }
 }
