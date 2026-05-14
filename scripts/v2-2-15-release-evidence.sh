@@ -27,11 +27,11 @@ run_section() {
 
 run_optional_script() {
   local script="$1" name="$2"
-  if [[ -x "$ROOT_DIR/$script" ]]; then
+  if [[ -f "$ROOT_DIR/$script" ]]; then
     run_section "$name" bash "$script"
   else
-    echo "SKIP: $name ($script not available or not executable)"
-    RESULTS+=("SKIP|$name||$script not available or not executable")
+    echo "SKIP: $name ($script not found)"
+    RESULTS+=("SKIP|$name||$script not found")
   fi
 }
 
@@ -40,8 +40,8 @@ run_section "cargo fmt" cargo fmt --all -- --check
 run_section "cargo test" cargo test --workspace
 run_section "cargo build" cargo build --workspace
 run_optional_script "scripts/v2-2-15-p2p-3node-rehearsal.sh" "v2.2.15 3-node rehearsal"
-run_optional_script "scripts/v2-2-15-p2p-churn-rejoin.sh" "v2.2.15 churn/rejoin rehearsal"
-run_optional_script "scripts/v2-2-15-p2p-lag-recovery.sh" "v2.2.15 lag recovery rehearsal"
+run_optional_script "scripts/v2-2-15-p2p-churn-rejoin-evidence.sh" "v2.2.15 churn/rejoin rehearsal"
+run_optional_script "scripts/v2-2-15-p2p-lag-recovery-evidence.sh" "v2.2.15 lag recovery rehearsal"
 run_optional_script "scripts/v2-2-15-chain-id-isolation-evidence.sh" "v2.2.15 chain-id isolation"
 
 {
@@ -63,7 +63,7 @@ run_optional_script "scripts/v2-2-15-chain-id-isolation-evidence.sh" "v2.2.15 ch
   echo "## Known limitations"
   echo
   echo "- v2.2.15 is a P2P rehearsal/hardening evidence gate, not v2.3.0 readiness."
-  echo "- Optional churn/rejoin and lag-recovery scripts are recorded as SKIP until their dedicated scripts exist."
+  echo "- Any SKIP, FAIL, or environment-specific rehearsal limitation must be triaged in the v2.2.15 closeout checklist before moving to v2.2.16."
 } >"$SUMMARY"
 
 echo
