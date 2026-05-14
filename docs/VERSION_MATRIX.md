@@ -7,9 +7,9 @@ This matrix keeps release positioning clear across the current v2.2.x hardening 
 | Area | Current value |
 | --- | --- |
 | Workspace release | `2.2.12` until a release-version bump is made; v2.2.13 closeout must verify `v2.2.13`/`2.2.13` if the repository and workspace versions are bumped |
-| Current milestone | v2.2.13 consensus/DAG safety audit closeout |
-| Next milestone | v2.2.14 storage/replay/snapshot/restore/pruning hardening |
-| Following milestone | v2.2.15 sustained P2P multi-node rehearsal |
+| Current milestone | v2.2.14 v3 foundation hardening |
+| Next milestone | v2.2.15 sustained P2P multi-node rehearsal |
+| Following milestone | v2.2.16 miner/node contract hardening |
 | Private-testnet readiness decision | v2.3.0 |
 | Private-testnet stable line | v2.4.x |
 | Public-testnet preparation | v2.5.x |
@@ -18,7 +18,7 @@ This matrix keeps release positioning clear across the current v2.2.x hardening 
 | v3.0 release candidates | v2.8.x |
 | Long-lived functional core | v3.0.0 |
 | Miner architecture | External standalone miner |
-| Smart contracts | Out of scope until the stable core is proven |
+| Smart contracts | Out of scope until after a 30-day stable testnet burn-in |
 | Pool logic in miner | Out of scope / not allowed |
 
 ## Release boundaries
@@ -31,7 +31,7 @@ This matrix keeps release positioning clear across the current v2.2.x hardening 
 | v2.2.11 | P2P completion | Networking/sync completion closure; not official readiness |
 | v2.2.12 | Full private-testnet rehearsal and hardening | Multi-node/operator rehearsal, sustained validation, runbook hardening, and evidence capture |
 | v2.2.13 | Consensus/DAG safety audit | Closeout checklist for DAG invariant tests, block structural validation tests, transaction validation negative-path tests, orphan adoption tests, tip selection tests, replay/order-independence tests, block acceptance taxonomy tests, required Cargo checks, [DAG safety invariants](DAG_SAFETY_INVARIANTS_V2_2_13.md), and compatibility-claim review |
-| v2.2.14 | Storage/replay/snapshot/restore/pruning hardening | Durable replay validation, migration policy, snapshot/restore evidence, pruning policy, and corrupted/partial-state recovery notes |
+| v2.2.14 | v3 foundation hardening | Defines v2.3.0/v3.0.0 gates; requires release checklist evidence for Cargo checks, three-node rehearsal, mining template/submit validation, snapshot export/import, replay/order-independence, 14-day burn-in readiness, 30-day stable-testnet smart-contract gate, external miner boundary, and no pool logic in miner |
 | v2.2.15 | Sustained P2P multi-node rehearsal | Long-running P2P churn, restart/rejoin, lag recovery, convergence, peer diagnostics, and chain-id isolation evidence |
 | v2.2.16 | Miner/node contract hardening | Stable external miner/node RPC contract, submission semantics, diagnostics, and optional GPU backlog only if canonical |
 | v2.2.17 | API/operator/security hardening | Public/operator/dev RPC boundary documentation, safe defaults, auth/rate-limit expectations, and operator incident workflows |
@@ -60,7 +60,7 @@ v2.2.13 follows v2.2.12 as an intermediate consensus/DAG safety audit before the
 
 v2.2.14 through v2.2.18 extend the hardening line before the v2.3.0 readiness decision:
 
-- v2.2.14 hardens storage, replay, snapshot, restore, pruning, and storage migration policy.
+- v2.2.14 is the v3 foundation hardening release: it defines the v2.3.0 and v3.0.0 gates, requires evidence for Cargo checks, three-node rehearsal, mining template/submit validation, snapshot export/import, replay/order-independence, 14-day readiness burn-in, and the 30-day stable-testnet smart-contract gate.
 - v2.2.15 proves sustained P2P multi-node operation under churn, restart/rejoin, lag, and recovery scenarios.
 - v2.2.16 stabilizes the external miner/node contract and keeps optional GPU work as backlog unless it is canonical and evidence-backed.
 - v2.2.17 hardens API, operator, and security boundaries, including public/operator/dev RPC separation.
@@ -68,7 +68,7 @@ v2.2.14 through v2.2.18 extend the hardening line before the v2.3.0 readiness de
 
 ## v2.3.0 readiness decision
 
-v2.3.0 remains the private-testnet readiness decision milestone. Evidence gathered during v2.2.12 through v2.2.18 can inform that decision, but v2.3.0 is not an automatic public launch and must publish known limitations, operator requirements, rollback plan, and an evidence index.
+v2.3.0 remains the private-testnet readiness decision milestone. Evidence gathered during v2.2.12 through v2.2.18 can inform that decision, but v2.3.0 is not an automatic public launch and must publish known limitations, operator requirements, rollback plan, and an evidence index. The v2.2.14 checklist explicitly requires `cargo fmt --check`, `cargo test --workspace`, a three-node rehearsal, mining template/submit validation, snapshot export/import validation, replay/order-independence evidence, and a 14-day burn-in gate before private-testnet readiness is claimed.
 
 ## v2.4.x through v2.8.x path to v3.0
 
@@ -78,14 +78,14 @@ v2.3.0 remains the private-testnet readiness decision milestone. Evidence gather
 - v2.7.x freezes protocol, storage, pruning, miner contract, and RPC boundaries except for documented safety fixes.
 - v2.8.x produces v3.0 release candidates with reproducible artifacts, migration rehearsals, snapshot/restore evidence, multi-node/multi-miner evidence, and final operator sign-off.
 
-## v3.0.0 long-lived functional core gates
+## v3.0.0 stable network target gates
 
-v3.0.0 is not a marketing milestone. It is the first long-lived functional PulseDAG core that can run for years with stable node, PoW, external miner, P2P, sync, storage, snapshots, pruning policy, operator RPC, release evidence, and upgrade policy.
+v3.0.0 is not a marketing milestone. It is the stable network target for the long-lived PulseDAG core, capable of running for years with stable node, PoW, external miner, P2P, sync, storage, snapshots, pruning policy, operator RPC, release evidence, and upgrade policy.
 
 v3.0.0 must require:
 
 - No unresolved Sev-1 consensus or sync incident.
-- Completed 30-day stable testnet burn-in.
+- Completed 30-day stable testnet burn-in before smart contract implementation begins.
 - Reproducible release artifacts.
 - Documented upgrade and rollback policy.
 - Documented storage migration policy.
@@ -93,15 +93,15 @@ v3.0.0 must require:
 - Multi-node and multi-miner evidence.
 - Public, operator, and development RPC boundary documentation.
 
-The detailed long-lived core roadmap is [Roadmap v3.0 — Long-Lived Functional Core](ROADMAP_V3_0_LONG_LIVED_CORE.md).
+The detailed gate roadmap is [PulseDAG v3.0.0 roadmap and gates](ROADMAP_V3_0_0.md). The earlier long-lived core roadmap remains available as [Roadmap v3.0 — Long-Lived Functional Core](ROADMAP_V3_0_LONG_LIVED_CORE.md).
 
 ## Guardrails
 
-- Do not add smart contracts before the stable core is proven.
+- Do not add smart contracts before the 30-day stable testnet burn-in is complete.
 - Do not add pool coordination logic inside `pulsedag-miner`.
 - Keep miner external and standalone.
 - Do not claim official private-testnet readiness before v2.3.0.
 - Do not claim full Kaspa or GHOSTDAG compatibility unless that compatibility is explicitly implemented, tested, and documented.
-- Avoid consensus rule changes in v2.2.13 unless they fix a clear safety bug and include documented test evidence.
+- Avoid consensus rule changes in v2.2.x unless they fix a clear safety bug and include documented test evidence.
 - v2.3.0 is a readiness decision, not an automatic public launch.
 - v3.0 must prefer durability, migration safety, reproducibility, and operator evidence over feature expansion.
