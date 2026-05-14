@@ -2,98 +2,114 @@
 
 v2.2.15 closes only when PulseDAG has sustained P2P multi-node rehearsal evidence. This checklist is a release gate for v2.2.15 and is not a v2.3.0 readiness claim.
 
+## Closeout status
+
+**Decision:** GO to move to v2.2.16 miner/node contract hardening.
+
+**Evidence bundle:** PASS on Ubuntu/WSL at commit `aacbec8a4ad366cb258f7b6f9ff47890a44023d1`.
+
+**Operator:** `senorbac`
+
+**Date (UTC):** `2026-05-14T18:38:06Z`
+
+**Evidence directory:** `evidence/v2.2.15/`
+
 ## Version and scope gate
 
-- [ ] `VERSION` is `v2.2.15`.
-- [ ] Cargo workspace version is `2.2.15`.
-- [ ] Cargo workspace license metadata remains `ISC`.
-- [ ] `README.md` and `docs/VERSION_MATRIX.md` describe v2.2.15 as the current milestone.
-- [ ] v2.2.14 is described as storage/replay hardening closure, not the current milestone.
-- [ ] v2.2.16 remains miner/node contract hardening.
-- [ ] v2.3.0 remains a readiness decision only, not an automatic launch.
-- [ ] No smart contracts are added.
-- [ ] No contract runtime is enabled.
-- [ ] No pool logic is added.
-- [ ] The miner remains a standalone external application.
-- [ ] No consensus-rule change is included unless it fixes a documented safety bug with tests.
+- [x] `VERSION` is `v2.2.15`.
+- [x] Cargo workspace version is `2.2.15`.
+- [x] Cargo workspace license metadata remains `ISC`.
+- [x] `README.md` and `docs/VERSION_MATRIX.md` describe v2.2.15 as the current sustained P2P milestone.
+- [x] v2.2.14 is described as storage/replay hardening closure, not the current milestone.
+- [x] v2.2.16 remains miner/node contract hardening.
+- [x] v2.3.0 remains a readiness decision only, not an automatic launch.
+- [x] No smart contracts are added.
+- [x] No contract runtime is enabled.
+- [x] No pool logic is added.
+- [x] The miner remains a standalone external application.
+- [x] No consensus-rule change is included unless it fixes a documented safety bug with tests.
 
 ## Required command gate
 
-Run these commands from the repository root and attach output or CI links:
+Commands executed from the repository root as part of `bash scripts/v2-2-15-release-evidence.sh`:
 
 ```bash
 cargo fmt --all -- --check
 cargo test --workspace
 cargo build --workspace
+bash scripts/v2-2-15-p2p-3node-rehearsal.sh
 bash scripts/v2-2-15-p2p-churn-rejoin-evidence.sh
 bash scripts/v2-2-15-p2p-lag-recovery-evidence.sh
+bash scripts/v2-2-15-chain-id-isolation-evidence.sh
 ```
 
-- [ ] `cargo fmt --all -- --check` passes.
-- [ ] `cargo test --workspace` passes.
-- [ ] `cargo build --workspace` passes.
-- [ ] `bash scripts/v2-2-15-p2p-churn-rejoin-evidence.sh` passes and writes evidence under `evidence/v2.2.15/`.
-- [ ] `bash scripts/v2-2-15-p2p-lag-recovery-evidence.sh` passes and writes evidence under `evidence/v2.2.15/`.
+- [x] `cargo fmt --all -- --check` passes.
+- [x] `cargo test --workspace` passes.
+- [x] `cargo build --workspace` passes.
+- [x] `bash scripts/v2-2-15-p2p-3node-rehearsal.sh` passes and writes evidence under `evidence/v2.2.15/`.
+- [x] `bash scripts/v2-2-15-p2p-churn-rejoin-evidence.sh` passes and writes evidence under `evidence/v2.2.15/`.
+- [x] `bash scripts/v2-2-15-p2p-lag-recovery-evidence.sh` passes and writes evidence under `evidence/v2.2.15/`.
+- [x] `bash scripts/v2-2-15-chain-id-isolation-evidence.sh` passes and writes evidence under `evidence/v2.2.15/`.
 
 ## Release evidence script gate
 
-Run the v2.2.15 release evidence bundle from the repository root and attach the transcript plus `evidence/v2.2.15/summary.md`. v2.2.15 can close only after this bundle is green or every failure is explicitly recorded as blocking/not-go with an owner and follow-up.
+The v2.2.15 release evidence bundle passed:
 
 ```bash
 bash scripts/v2-2-15-release-evidence.sh
 ```
 
-Record the closeout metadata:
+Closeout metadata:
 
-- [ ] Commit SHA: ______________________________
-- [ ] Date (UTC): ______________________________
-- [ ] Operator: ________________________________
-- [ ] Scripts executed: _________________________
-- [ ] Overall pass/fail status: _________________
-- [ ] Known limitations: ________________________
-- [ ] Go/no-go decision for moving to v2.2.16: __
+- [x] Commit SHA: `aacbec8a4ad366cb258f7b6f9ff47890a44023d1`
+- [x] Date (UTC): `2026-05-14T18:38:06Z`
+- [x] Operator: `senorbac`
+- [x] Scripts executed: `cargo fmt`, `cargo test`, `cargo build`, 3-node rehearsal, churn/rejoin rehearsal, lag recovery rehearsal, chain-id isolation rehearsal.
+- [x] Overall pass/fail status: `PASS`
+- [x] Known limitations: v2.2.15 is a P2P rehearsal/hardening evidence gate, not v2.3.0 readiness; five-node rehearsal was not part of the mandatory bundle and remains optional/follow-up when practical.
+- [x] Go/no-go decision for moving to v2.2.16: `GO`
 
-- [ ] Release evidence script output is captured under `evidence/v2.2.15/`.
-- [ ] `evidence/v2.2.15/summary.md` is attached or linked.
-- [ ] Any release evidence script failure is triaged as blocking or explicitly waived with owner, reason, and follow-up.
+- [x] Release evidence script output is captured under `evidence/v2.2.15/`.
+- [x] `evidence/v2.2.15/summary.md` was generated by the passing evidence bundle.
+- [x] Any release evidence script failure is triaged as blocking or explicitly waived with owner, reason, and follow-up.
 
 ## Sustained P2P rehearsal gate
 
 Use `docs/P2P_REHEARSAL_PLAN_V2_2_15.md` as the operator plan.
 
-- [ ] 3-node local rehearsal passes.
+- [x] 3-node local rehearsal passes.
 - [ ] 5-node local rehearsal passes, if practical.
-- [ ] If the 5-node local rehearsal is not practical, the reason and follow-up are recorded.
-- [ ] All rehearsal nodes use real `libp2p-real` networking.
-- [ ] All nodes in the same rehearsal use the same intended chain id, except for the explicit chain-id isolation test.
-- [ ] Mining, if used to create new blocks, is performed through external `pulsedag-miner` or equivalent external RPC client behavior, not embedded node mining.
+- [x] If the 5-node local rehearsal is not practical, the reason and follow-up are recorded: not included in the mandatory closeout bundle; keep as optional follow-up for operator capacity or later RC evidence.
+- [x] All rehearsal nodes use real `libp2p-real` networking.
+- [x] All nodes in the same rehearsal use the same intended chain id, except for the explicit chain-id isolation test.
+- [x] Mining, if used to create new blocks, is performed through external `pulsedag-miner` or equivalent external RPC client behavior, not embedded node mining.
 
 ## Required P2P evidence
 
 Attach logs, endpoint snapshots, command transcripts, and operator notes for each item:
 
-- [ ] Node restart/rejoin evidence from `scripts/v2-2-15-p2p-churn-rejoin-evidence.sh`.
-- [ ] Lagging node recovery evidence from `scripts/v2-2-15-p2p-lag-recovery-evidence.sh`.
-- [ ] Peer churn evidence.
-- [ ] Chain-id isolation evidence from `bash scripts/v2-2-15-chain-id-isolation-evidence.sh`.
-- [ ] Sync convergence evidence.
-- [ ] Peer diagnostics evidence from `/p2p/status` and `/p2p/peers` when available, including local peer id, peer count, connected peer ids, real-network semantics, and recovery counters.
-- [ ] Propagation or topic diagnostics from `/p2p/propagation`, `/p2p/topics`, or available replacement endpoints when practical.
-- [ ] Sync diagnostics from `/sync/status` and `/sync/missing` when available.
-- [ ] Current height, selected tip, chain id, and persisted block count snapshots prove the rejoining or lagging node recovered without manual database deletion.
-- [ ] Final `/health` and `/status` snapshots for every node.
+- [x] Node restart/rejoin evidence from `scripts/v2-2-15-p2p-churn-rejoin-evidence.sh`.
+- [x] Lagging node recovery evidence from `scripts/v2-2-15-p2p-lag-recovery-evidence.sh`.
+- [x] Peer churn evidence.
+- [x] Chain-id isolation evidence from `bash scripts/v2-2-15-chain-id-isolation-evidence.sh`.
+- [x] Sync convergence evidence.
+- [x] Peer diagnostics evidence from `/p2p/status` and `/p2p/peers` when available, including local peer id, peer count, connected peer ids, real-network semantics, and recovery counters.
+- [x] Propagation or topic diagnostics from `/p2p/propagation`, `/p2p/topics`, or available replacement endpoints when practical.
+- [x] Sync diagnostics from `/sync/status` and `/sync/missing` when available.
+- [x] Current height, selected tip, chain id, and persisted block count snapshots prove the rejoining or lagging node recovered without manual database deletion.
+- [x] Final `/health` and `/status` snapshots for every node.
 
 ## Defect gate
 
-- [ ] No unresolved Sev-1 consensus defect remains open.
-- [ ] No unresolved Sev-1 sync defect remains open.
-- [ ] Any unresolved Sev-2 P2P, sync, storage, or operator defect is documented with impact, owner, and follow-up milestone.
-- [ ] Any rehearsal failure is either fixed and rerun or recorded as a blocking release issue.
+- [x] No unresolved Sev-1 consensus defect remains open.
+- [x] No unresolved Sev-1 sync defect remains open.
+- [x] Any unresolved Sev-2 P2P, sync, storage, or operator defect is documented with impact, owner, and follow-up milestone.
+- [x] Any rehearsal failure is either fixed and rerun or recorded as a blocking release issue.
 
 ## Closeout decision
 
-- [ ] Release notes are updated in `docs/RELEASE_NOTES_V2_2_15.md`.
-- [ ] Roadmap scope is updated in `docs/ROADMAP_V2_2_15.md`.
-- [ ] Rehearsal plan is updated in `docs/P2P_REHEARSAL_PLAN_V2_2_15.md`.
-- [ ] Evidence links are collected in the release issue, PR, or release artifact index.
-- [ ] The closeout summary explicitly states that v2.2.15 provides sustained P2P rehearsal evidence and does not claim v2.3.0 readiness by itself.
+- [x] Release notes are updated in `docs/RELEASE_NOTES_V2_2_15.md`.
+- [x] Roadmap scope is updated in `docs/ROADMAP_V2_2_15.md`.
+- [x] Rehearsal plan is updated in `docs/P2P_REHEARSAL_PLAN_V2_2_15.md`.
+- [x] Evidence links are collected in the release issue, PR, or release artifact index.
+- [x] The closeout summary explicitly states that v2.2.15 provides sustained P2P rehearsal evidence and does not claim v2.3.0 readiness by itself.
