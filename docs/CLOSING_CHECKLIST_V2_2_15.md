@@ -25,11 +25,15 @@ Run these commands from the repository root and attach output or CI links:
 cargo fmt --all -- --check
 cargo test --workspace
 cargo build --workspace
+bash scripts/v2-2-15-p2p-churn-rejoin-evidence.sh
+bash scripts/v2-2-15-p2p-lag-recovery-evidence.sh
 ```
 
 - [ ] `cargo fmt --all -- --check` passes.
 - [ ] `cargo test --workspace` passes.
 - [ ] `cargo build --workspace` passes.
+- [ ] `bash scripts/v2-2-15-p2p-churn-rejoin-evidence.sh` passes and writes evidence under `evidence/v2.2.15/`.
+- [ ] `bash scripts/v2-2-15-p2p-lag-recovery-evidence.sh` passes and writes evidence under `evidence/v2.2.15/`.
 
 ## Release evidence script gate
 
@@ -57,14 +61,15 @@ Use `docs/P2P_REHEARSAL_PLAN_V2_2_15.md` as the operator plan.
 
 Attach logs, endpoint snapshots, command transcripts, and operator notes for each item:
 
-- [ ] Node restart/rejoin evidence.
-- [ ] Lagging node recovery evidence.
+- [ ] Node restart/rejoin evidence from `scripts/v2-2-15-p2p-churn-rejoin-evidence.sh`.
+- [ ] Lagging node recovery evidence from `scripts/v2-2-15-p2p-lag-recovery-evidence.sh`.
 - [ ] Peer churn evidence.
 - [ ] Chain-id isolation evidence.
 - [ ] Sync convergence evidence.
-- [ ] Peer diagnostics evidence from `/p2p/status` and `/p2p/peers` when available.
+- [ ] Peer diagnostics evidence from `/p2p/status` and `/p2p/peers` when available, including local peer id, peer count, connected peer ids, real-network semantics, and recovery counters.
 - [ ] Propagation or topic diagnostics from `/p2p/propagation`, `/p2p/topics`, or available replacement endpoints when practical.
 - [ ] Sync diagnostics from `/sync/status` and `/sync/missing` when available.
+- [ ] Current height, selected tip, chain id, and persisted block count snapshots prove the rejoining or lagging node recovered without manual database deletion.
 - [ ] Final `/health` and `/status` snapshots for every node.
 
 ## Defect gate
