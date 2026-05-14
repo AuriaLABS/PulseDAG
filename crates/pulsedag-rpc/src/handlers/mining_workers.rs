@@ -62,7 +62,7 @@ pub async fn get_mining_workers_stats() -> Json<ApiResponse<MiningWorkersStatsDa
             }
         }
     }
-    workers.sort_by(|a, b| b.last_seen_unix.cmp(&a.last_seen_unix));
+    workers.sort_by_key(|worker| std::cmp::Reverse(worker.last_seen_unix));
     let worker_count = workers.len();
     Json(ApiResponse::ok(MiningWorkersStatsData {
         worker_count,

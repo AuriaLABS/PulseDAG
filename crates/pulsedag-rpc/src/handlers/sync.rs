@@ -459,6 +459,7 @@ pub async fn post_sync_reconcile_mempool<S: RpcStateLike>(
 }
 
 #[cfg(test)]
+#[allow(clippy::field_reassign_with_default)]
 mod tests {
     use std::{
         path::PathBuf,

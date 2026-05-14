@@ -63,7 +63,7 @@ pub async fn post_run_payouts() -> Json<ApiResponse<RunPayoutsData>> {
 
 pub async fn get_payout_history() -> Json<ApiResponse<PayoutHistoryData>> {
     let mut payouts = load_all_payouts();
-    payouts.sort_by(|a, b| b.created_at_unix.cmp(&a.created_at_unix));
+    payouts.sort_by_key(|payout| std::cmp::Reverse(payout.created_at_unix));
     Json(ApiResponse::ok(PayoutHistoryData {
         payout_count: payouts.len(),
         payouts,

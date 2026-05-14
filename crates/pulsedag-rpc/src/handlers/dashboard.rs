@@ -71,7 +71,7 @@ pub async fn get_dashboard<S: RpcStateLike>(
             outputs: tx.outputs.len(),
         })
         .collect::<Vec<_>>();
-    mempool_transactions.sort_by(|a, b| b.fee.cmp(&a.fee));
+    mempool_transactions.sort_by_key(|tx| std::cmp::Reverse(tx.fee));
 
     Json(ApiResponse::ok(DashboardData {
         summary: DashboardSummary {

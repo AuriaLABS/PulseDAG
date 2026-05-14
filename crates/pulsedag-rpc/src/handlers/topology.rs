@@ -159,6 +159,7 @@ pub async fn get_topology<S: RpcStateLike>(
 }
 
 #[cfg(test)]
+#[allow(clippy::too_many_arguments)]
 mod tests {
     use super::get_topology;
     use crate::api::{NodeRuntimeStats, RpcStateLike};

@@ -257,6 +257,7 @@ pub async fn get_operator_query_pack<S: RpcStateLike>(
 }
 
 #[cfg(test)]
+#[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::{get_diagnostics, get_operator_query_pack};
     use crate::api::{NodeRuntimeStats, RpcStateLike};

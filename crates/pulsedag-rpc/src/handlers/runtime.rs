@@ -1635,6 +1635,7 @@ pub async fn get_runtime_status<S: RpcStateLike>(
 }
 
 #[cfg(test)]
+#[allow(clippy::field_reassign_with_default, clippy::useless_vec)]
 mod tests {
     use std::{
         path::PathBuf,
@@ -2830,7 +2831,7 @@ pub async fn get_runtime_events<S: RpcStateLike>(
             count: events.len(),
             events,
         })),
-        Err(e) => Json(ApiResponse::err("RUNTIME_EVENTS_ERROR", &e.to_string())),
+        Err(e) => Json(ApiResponse::err("RUNTIME_EVENTS_ERROR", e.to_string())),
     }
 }
 
@@ -2880,7 +2881,7 @@ pub async fn get_runtime_events_summary<S: RpcStateLike>(
         }
         Err(e) => Json(ApiResponse::err(
             "RUNTIME_EVENTS_SUMMARY_ERROR",
-            &e.to_string(),
+            e.to_string(),
         )),
     }
 }
@@ -3003,6 +3004,7 @@ fn build_runtime_events_stream(
 }
 
 #[cfg(test)]
+#[allow(clippy::useless_vec)]
 mod stream_tests {
     use std::{sync::Arc, time::Duration};
 

@@ -245,11 +245,9 @@ pub async fn get_readiness<S: RpcStateLike>(
         ),
     );
 
-    let mempool_pressure = if chain.mempool.max_transactions == 0 {
-        0
-    } else {
-        chain.mempool.transactions.len() * 100 / chain.mempool.max_transactions
-    };
+    let mempool_pressure = (chain.mempool.transactions.len() * 100)
+        .checked_div(chain.mempool.max_transactions)
+        .unwrap_or(0);
     categories.insert(
         "mempool".to_string(),
         status_reasons(
