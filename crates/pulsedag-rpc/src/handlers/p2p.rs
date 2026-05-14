@@ -88,8 +88,10 @@ fn disabled_p2p_payload(
         p2p_readiness_reasons(false, None, runtime, pending_missing_parents, orphan_count);
     serde_json::json!({
         "p2p_enabled": false,
+        "chain_id": null,
         "p2p_mode": "disabled",
         "mode": "disabled",
+        "local_node_id": null,
         "peer_count": 0,
         "connected_peers": [],
         "listening_addresses": [],
@@ -191,6 +193,9 @@ pub async fn get_p2p_status<S: RpcStateLike>(
                         .map(|peer| {
                             serde_json::json!({
                                 "peer_id": peer.peer_id,
+                                "chain_id": peer.chain_id,
+                                "chain_id_compatible": peer.chain_id_compatible,
+                                "last_activity_unix": peer.last_activity_unix,
                                 "score": peer.score,
                                 "fail_streak": peer.fail_streak,
                                 "lifecycle_tier": peer.lifecycle_tier,
@@ -211,6 +216,7 @@ pub async fn get_p2p_status<S: RpcStateLike>(
                         })
                         .collect::<Vec<_>>();
                     let mut payload = serde_json::Map::new();
+                    payload.insert("chain_id".into(), serde_json::json!(status.chain_id));
                     payload.insert("mode".into(), serde_json::json!(status.mode));
                     payload.insert(
                         "connected_peers_are_real_network".into(),
@@ -221,6 +227,7 @@ pub async fn get_p2p_status<S: RpcStateLike>(
                         serde_json::json!(connected_peers_semantics(&status.mode)),
                     );
                     payload.insert("peer_id".into(), serde_json::json!(status.peer_id));
+                    payload.insert("local_node_id".into(), serde_json::json!(status.peer_id));
                     payload.insert("listening".into(), serde_json::json!(status.listening));
                     payload.insert(
                         "connected_peers".into(),
@@ -370,6 +377,8 @@ pub async fn get_p2p_status<S: RpcStateLike>(
                         "peer_state_summary".into(),
                         serde_json::json!({
                             "total": status.peer_recovery.len(),
+                            "chain_compatible": status.peer_recovery.iter().filter(|peer| peer.chain_id_compatible).count(),
+                            "chain_incompatible_or_unknown": status.peer_recovery.iter().filter(|peer| !peer.chain_id_compatible).count(),
                             "healthy": status.peer_lifecycle_healthy,
                             "watch": status.peer_lifecycle_watch,
                             "degraded": status.peer_lifecycle_degraded,
@@ -774,6 +783,7 @@ mod tests {
             .unwrap()
             .as_secs();
         let status = P2pStatus {
+            chain_id: "testnet-dev".into(),
             mode: P2P_MODE_MEMORY_SIMULATED.to_string(),
             peer_id: "self".into(),
             listening: vec!["memory://local".into()],
@@ -851,6 +861,9 @@ mod tests {
             connection_shaping_active: false,
             peer_recovery: vec![
                 PeerRecoveryStatus {
+                    chain_id: Some("testnet-dev".into()),
+                    chain_id_compatible: true,
+                    last_activity_unix: Some(now),
                     peer_id: "healthy".into(),
                     score: 100,
                     fail_streak: 0,
@@ -870,6 +883,9 @@ mod tests {
                     suppression_until_unix: None,
                 },
                 PeerRecoveryStatus {
+                    chain_id: Some("testnet-dev".into()),
+                    chain_id_compatible: true,
+                    last_activity_unix: Some(now),
                     peer_id: "recovering".into(),
                     score: 65,
                     fail_streak: 1,
@@ -991,6 +1007,7 @@ mod tests {
             (P2P_MODE_LIBP2P_REAL, true, "real-network-connected-peers"),
         ] {
             let status = P2pStatus {
+                chain_id: "testnet-dev".into(),
                 mode: mode.to_string(),
                 peer_id: "self".into(),
                 listening: vec!["memory://local".into()],

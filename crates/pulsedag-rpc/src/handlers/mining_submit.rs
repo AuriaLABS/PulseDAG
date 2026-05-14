@@ -817,6 +817,7 @@ mod tests {
 
         fn status(&self) -> Result<P2pStatus, PulseError> {
             Ok(P2pStatus {
+                chain_id: "testnet-dev".into(),
                 mode: "test".into(),
                 peer_id: "fake".into(),
                 listening: vec![],

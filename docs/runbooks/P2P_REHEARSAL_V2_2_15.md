@@ -143,6 +143,30 @@ Inspect final P2P status:
 python3 -m json.tool evidence/v2.2.15/p2p-rehearsal/<run-id>/node-01/final/p2p-status.json
 ```
 
+The P2P status payload should give operators enough context to identify the local node and diagnose discovery or compatibility failures. Confirm these fields are present when troubleshooting: `chain_id`, `p2p_mode`, `local_node_id`, `peer_count`, `connected_peers`, `peer_recovery[].connected`, `peer_recovery[].chain_id_compatible`, `peer_recovery[].last_activity_unix`, `inbound_chain_mismatch_dropped`, `sync_state`, `selected_sync_peer`, and `sync_candidates`.
+
+## Run chain-id isolation evidence
+
+The chain-id isolation harness starts two nodes on the main rehearsal chain id and one node on a different chain id while pointing the foreign node at the main bootnode:
+
+```bash
+cargo build --workspace
+bash scripts/v2-2-15-chain-id-isolation-evidence.sh
+```
+
+A passing run demonstrates that the foreign node reports its own `chain_id`, does not become a compatible peer in the main rehearsal network, and writes logs/status evidence under:
+
+```text
+evidence/v2.2.15/chain-id-isolation/<run-id>/
+```
+
+Expected operator findings:
+
+- `main-a` and `main-b` report the same configured main `chain_id`.
+- `foreign-c` reports the configured foreign `chain_id`.
+- incompatible or unproven peers are not counted as healthy compatible peers in `peer_count`.
+- chain-id mismatch drops, if any mismatched messages are observed, are visible through `inbound_chain_mismatch_dropped` and `last_drop_reason`.
+
 ## Confirm all nodes converge
 
 A passing run requires the final convergence checks to confirm that every node reports:

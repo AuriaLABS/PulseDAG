@@ -13,6 +13,8 @@ PulseDAG v2.2.15 opens as the sustained P2P multi-node rehearsal release after t
 
 ## Scope
 
+v2.2.15 is P2P rehearsal and hardening. It is not v2.3.0 private-testnet readiness and should not be presented as a launch/readiness decision by itself. v2.2.16 follows with miner/node contract hardening.
+
 v2.2.15 focuses on evidence for:
 
 - 3-node local P2P rehearsal.
@@ -20,7 +22,7 @@ v2.2.15 focuses on evidence for:
 - Node restart/rejoin behavior.
 - Lagging-node recovery.
 - Peer churn.
-- Chain-id isolation.
+- Chain-id isolation, including explicit evidence that mismatched `chain_id` peers do not become healthy compatible peers.
 - Sync convergence.
 - Peer diagnostics and operator endpoint quality.
 - No unresolved Sev-1 consensus or sync defects at closeout.
@@ -33,6 +35,8 @@ v2.2.15 focuses on evidence for:
 - The miner remains a standalone external application.
 - Consensus-rule changes remain out of scope unless they fix a documented safety bug and include tests.
 - v2.2.15 is not a v2.3.0 readiness claim.
+- Smart contracts remain out of scope.
+- Pool logic in the miner remains out of scope.
 
 ## Required validation
 
@@ -42,10 +46,11 @@ Before closing v2.2.15, collect output for:
 cargo fmt --all -- --check
 cargo test --workspace
 cargo build --workspace
-./scripts/v2-2-14-release-evidence.sh
+bash scripts/v2-2-15-chain-id-isolation-evidence.sh
+bash scripts/v2-2-15-release-evidence.sh
 ```
 
-If the v2.2.14 release evidence script is still the latest evidence script, label its output as the inherited baseline for v2.2.15 and attach any additional P2P rehearsal evidence separately.
+The release evidence bundle writes section logs and `evidence/v2.2.15/summary.md`; v2.2.15 should close only after the evidence bundle is green or the closeout decision is explicitly no-go with limitations recorded.
 
 ## Operator documents
 

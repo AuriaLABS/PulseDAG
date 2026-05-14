@@ -278,6 +278,7 @@ mod tests {
 
     fn base_status(mode: &str) -> P2pStatus {
         P2pStatus {
+            chain_id: "testnet-dev".into(),
             mode: mode.to_string(),
             peer_id: "self".into(),
             listening: vec![],

@@ -33,13 +33,24 @@ cargo build --workspace
 
 ## Release evidence script gate
 
-Run the current release evidence script from the repository root and attach the transcript. If `scripts/v2-2-14-release-evidence.sh` is still the latest script, label the output as the inherited v2.2.14 evidence baseline used for v2.2.15 opening.
+Run the v2.2.15 release evidence bundle from the repository root and attach the transcript plus `evidence/v2.2.15/summary.md`. v2.2.15 can close only after this bundle is green or every failure is explicitly recorded as blocking/not-go with an owner and follow-up.
 
 ```bash
-./scripts/v2-2-14-release-evidence.sh
+bash scripts/v2-2-15-release-evidence.sh
 ```
 
-- [ ] Release evidence script output is captured.
+Record the closeout metadata:
+
+- [ ] Commit SHA: ______________________________
+- [ ] Date (UTC): ______________________________
+- [ ] Operator: ________________________________
+- [ ] Scripts executed: _________________________
+- [ ] Overall pass/fail status: _________________
+- [ ] Known limitations: ________________________
+- [ ] Go/no-go decision for moving to v2.2.16: __
+
+- [ ] Release evidence script output is captured under `evidence/v2.2.15/`.
+- [ ] `evidence/v2.2.15/summary.md` is attached or linked.
 - [ ] Any release evidence script failure is triaged as blocking or explicitly waived with owner, reason, and follow-up.
 
 ## Sustained P2P rehearsal gate
@@ -60,9 +71,9 @@ Attach logs, endpoint snapshots, command transcripts, and operator notes for eac
 - [ ] Node restart/rejoin evidence.
 - [ ] Lagging node recovery evidence.
 - [ ] Peer churn evidence.
-- [ ] Chain-id isolation evidence.
+- [ ] Chain-id isolation evidence from `bash scripts/v2-2-15-chain-id-isolation-evidence.sh`.
 - [ ] Sync convergence evidence.
-- [ ] Peer diagnostics evidence from `/p2p/status` and `/p2p/peers` when available.
+- [ ] Peer diagnostics evidence from `/p2p/status` and `/p2p/peers`, including peer count, peer ids, connection state, chain id, P2P mode, local node id, last known peer activity when available, and sync/tip summary.
 - [ ] Propagation or topic diagnostics from `/p2p/propagation`, `/p2p/topics`, or available replacement endpoints when practical.
 - [ ] Sync diagnostics from `/sync/status` and `/sync/missing` when available.
 - [ ] Final `/health` and `/status` snapshots for every node.

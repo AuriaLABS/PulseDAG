@@ -1835,6 +1835,7 @@ mod tests {
             .unwrap()
             .as_secs();
         let p2p_status = P2pStatus {
+            chain_id: "testnet-dev".into(),
             mode: P2P_MODE_LIBP2P_REAL.to_string(),
             peer_id: "self".into(),
             listening: vec![],
@@ -1912,6 +1913,9 @@ mod tests {
             connection_shaping_active: true,
             peer_recovery: vec![
                 PeerRecoveryStatus {
+                    chain_id: Some("testnet-dev".into()),
+                    chain_id_compatible: true,
+                    last_activity_unix: Some(now),
                     peer_id: "healthy".into(),
                     score: 100,
                     fail_streak: 0,
@@ -1931,6 +1935,9 @@ mod tests {
                     suppression_until_unix: None,
                 },
                 PeerRecoveryStatus {
+                    chain_id: Some("testnet-dev".into()),
+                    chain_id_compatible: true,
+                    last_activity_unix: Some(now),
                     peer_id: "recovering".into(),
                     score: 60,
                     fail_streak: 1,
@@ -2040,6 +2047,7 @@ mod tests {
         chain.mempool.counters.orphan_pruned_total = 1;
 
         let p2p_status = P2pStatus {
+            chain_id: "testnet-dev".into(),
             mode: P2P_MODE_LIBP2P_REAL.to_string(),
             peer_id: "self".into(),
             listening: vec![],
