@@ -6,9 +6,9 @@ This matrix keeps release positioning clear across the current v2.2.x hardening 
 
 | Area | Current value |
 | --- | --- |
-| Workspace release | `VERSION` is `v2.2.14`; Cargo workspace version is `2.2.14`; license metadata remains `ISC` |
-| Current milestone | v2.2.14 storage/replay/snapshot/restore/pruning/migration-policy hardening |
-| Next milestone | v2.2.15 sustained P2P multi-node rehearsal |
+| Workspace release | `VERSION` is `v2.2.15`; Cargo workspace version is `2.2.15`; license metadata remains `ISC` |
+| Current milestone | v2.2.15 sustained P2P multi-node rehearsal |
+| Previous milestone | v2.2.14 storage/replay/snapshot/restore/pruning/migration-policy hardening closure |
 | Following milestone | v2.2.16 miner/node contract hardening |
 | Private-testnet readiness decision | v2.3.0 |
 | Private-testnet stable line | v2.4.x |
@@ -48,7 +48,7 @@ This matrix keeps release positioning clear across the current v2.2.x hardening 
 
 v2.2.11 closed the P2P completion path for block announce/request/data flow, transaction relay, tip exchange, missing parent recovery, orphan handling, peer scoring/backoff, duplicate suppression, P2P diagnostics, and the reproducible three-node rehearsal scripts.
 
-## v2.2.12 current scope
+## v2.2.12 rehearsal scope
 
 v2.2.12 consumes the v2.2.11 P2P completion outputs and performs the full private-testnet rehearsal and hardening pass. It should validate longer-running multi-node and multi-operator scenarios, restart/rejoin behavior, sync convergence, diagnostics quality, operational runbooks, and release evidence without claiming v2.3.0 readiness early.
 
@@ -58,17 +58,17 @@ v2.2.13 follows v2.2.12 as an intermediate consensus/DAG safety audit before the
 
 ## v2.2.14 through v2.2.18 hardening path
 
-v2.2.14 through v2.2.18 extend the hardening line before the v2.3.0 readiness decision:
+v2.2.14 through v2.2.18 extend the hardening line before the v2.3.0 readiness decision. v2.2.14 is now the storage/replay closure and v2.2.15 is the current sustained P2P rehearsal milestone:
 
 - v2.2.14 is the storage/replay hardening release: it closes deterministic persisted-block replay ordering, snapshot/restore/pruning safety, storage schema migration policy, testnet real-libp2p defaults, and repeatable evidence scripting while preserving the external miner boundary and the no-contract/no-pool guardrails.
-- v2.2.15 proves sustained P2P multi-node operation under churn, restart/rejoin, lag, and recovery scenarios.
+- v2.2.15 is the current sustained P2P multi-node rehearsal release: it proves operation under churn, restart/rejoin, lag recovery, convergence, peer diagnostics, and chain-id isolation scenarios.
 - v2.2.16 stabilizes the external miner/node contract and keeps optional GPU work as backlog unless it is canonical and evidence-backed.
 - v2.2.17 hardens API, operator, and security boundaries, including public/operator/dev RPC separation.
 - v2.2.18 packages the private-testnet RC evidence bundle and go/no-go checklist.
 
 ## v2.3.0 readiness decision
 
-v2.3.0 remains the private-testnet readiness decision milestone. Evidence gathered during v2.2.12 through v2.2.18 can inform that decision, but v2.3.0 is not an automatic public launch and must publish known limitations, operator requirements, rollback plan, and an evidence index. The v2.2.14 checklist explicitly requires `cargo fmt --check`, `cargo test --workspace`, a three-node rehearsal, mining template/submit validation, snapshot export/import validation, replay/order-independence evidence, and a 14-day burn-in gate before private-testnet readiness is claimed.
+v2.3.0 remains the private-testnet readiness decision milestone. Evidence gathered during v2.2.12 through v2.2.18 can inform that decision, but v2.3.0 is not an automatic public launch and must publish known limitations, operator requirements, rollback plan, and an evidence index. The v2.2.15 checklist explicitly requires `cargo fmt --all -- --check`, `cargo test --workspace`, `cargo build --workspace`, release evidence script output, a three-node local rehearsal, a five-node local rehearsal when practical, restart/rejoin evidence, lagging-node recovery evidence, peer churn evidence, chain-id isolation evidence, sync convergence evidence, and no unresolved Sev-1 consensus or sync defect before closeout.
 
 ## v2.4.x through v2.8.x path to v3.0
 
