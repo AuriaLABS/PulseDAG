@@ -254,10 +254,11 @@ fn cleanup_expired_jobs() -> usize {
         for entry in entries.flatten() {
             if let Ok(bytes) = fs::read(entry.path()) {
                 if let Ok(record) = serde_json::from_slice::<MiningJobRecord>(&bytes) {
-                    if !record.submitted && unix_now() > record.expires_at_unix {
-                        if fs::remove_file(entry.path()).is_ok() {
-                            removed += 1;
-                        }
+                    if !record.submitted
+                        && unix_now() > record.expires_at_unix
+                        && fs::remove_file(entry.path()).is_ok()
+                    {
+                        removed += 1;
                     }
                 }
             }

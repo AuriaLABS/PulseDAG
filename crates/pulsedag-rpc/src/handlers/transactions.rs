@@ -26,7 +26,7 @@ pub async fn get_confirmed_transactions<S: RpcStateLike>(
 
     let mut transactions = Vec::new();
     let mut blocks = chain.dag.blocks.values().collect::<Vec<_>>();
-    blocks.sort_by(|a, b| b.header.height.cmp(&a.header.height));
+    blocks.sort_by_key(|block| std::cmp::Reverse(block.header.height));
 
     for block in blocks {
         for tx in &block.transactions {

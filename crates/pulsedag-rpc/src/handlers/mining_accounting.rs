@@ -27,7 +27,7 @@ pub struct MiningAccountingData {
 
 pub async fn get_mining_accounting() -> Json<ApiResponse<MiningAccountingData>> {
     let mut workers = load_all_records();
-    workers.sort_by(|a, b| b.pending_balance_units.cmp(&a.pending_balance_units));
+    workers.sort_by_key(|worker| std::cmp::Reverse(worker.pending_balance_units));
     let total_pending_balance_units = workers.iter().map(|w| w.pending_balance_units).sum();
     let total_paid_balance_units = workers.iter().map(|w| w.paid_balance_units).sum();
     Json(ApiResponse::ok(MiningAccountingData {
