@@ -5,8 +5,9 @@ use pulsedag_core::genesis::init_chain_state;
 use pulsedag_core::{
     accept_block_with_result, adopt_ready_orphans, assert_dag_consistent_for_tests,
     build_candidate_block, build_coinbase_transaction, missing_block_parents, preferred_tip_hash,
-    queue_orphan_block, rebuild_state_from_blocks, refresh_block_consensus_ids_with_state,
-    AcceptSource, Block, BlockAcceptanceResult, ChainState, Hash, OutPoint, Utxo,
+    queue_orphan_block, rebuild_state_from_blocks, rebuild_state_from_snapshot_and_blocks,
+    refresh_block_consensus_ids_with_state, AcceptSource, Block, BlockAcceptanceResult, ChainState,
+    Hash, OutPoint, Utxo,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -207,6 +208,37 @@ fn sibling_merge_blocks(state: &ChainState) -> (Block, Block, Block) {
     (sibling_a1, sibling_a2, merge)
 }
 
+fn deterministic_equal_height_siblings(state: &ChainState) -> (Block, Block) {
+    for first_nonce in 100..160 {
+        let first = test_block(
+            state,
+            "replay-equal-height-first",
+            vec![state.dag.genesis_hash.clone()],
+            1,
+            30,
+            first_nonce,
+        );
+        let mut after_first = state.clone();
+        if apply_block(&first, &mut after_first).is_err() {
+            continue;
+        }
+        for second_nonce in 200..260 {
+            let second = test_block(
+                &after_first,
+                "replay-equal-height-second",
+                vec![state.dag.genesis_hash.clone()],
+                1,
+                30,
+                second_nonce,
+            );
+            if first.hash < second.hash {
+                return (first, second);
+            }
+        }
+    }
+    panic!("could not build deterministically ordered equal-height siblings");
+}
+
 #[test]
 fn replay_parent_child_is_equivalent_when_child_arrives_as_orphan_first() {
     let mut parent_then_child = init_chain_state("replay-parent-then-child".to_string());
@@ -302,6 +334,57 @@ fn replay_invalid_intermediate_block_does_not_change_final_valid_state() {
     );
     assert_dag_consistent_for_tests(&clean_replay);
     assert_dag_consistent_for_tests(&invalid_then_valid);
+}
+
+#[test]
+fn replay_rebuild_equal_height_blocks_is_independent_of_input_order() {
+    let state = init_chain_state("replay-equal-height-order".to_string());
+    let (first, second) = deterministic_equal_height_siblings(&state);
+
+    let sorted_input = rebuild_state_from_blocks(
+        "replay-equal-height-order".to_string(),
+        vec![first.clone(), second.clone()],
+    )
+    .unwrap();
+    let reversed_input =
+        rebuild_state_from_blocks("replay-equal-height-order".to_string(), vec![second, first])
+            .unwrap();
+
+    assert_eq!(
+        preferred_tip_hash(&sorted_input),
+        preferred_tip_hash(&reversed_input)
+    );
+    assert_eq!(
+        normalize_chain_state_for_comparison(&sorted_input),
+        normalize_chain_state_for_comparison(&reversed_input)
+    );
+    assert_dag_consistent_for_tests(&sorted_input);
+    assert_dag_consistent_for_tests(&reversed_input);
+}
+
+#[test]
+fn snapshot_delta_rebuild_equal_height_blocks_is_independent_of_input_order() {
+    let snapshot = init_chain_state("replay-equal-height-snapshot".to_string());
+    let (first, second) = deterministic_equal_height_siblings(&snapshot);
+
+    let sorted_input = rebuild_state_from_snapshot_and_blocks(
+        snapshot.clone(),
+        vec![first.clone(), second.clone()],
+    )
+    .unwrap();
+    let reversed_input =
+        rebuild_state_from_snapshot_and_blocks(snapshot, vec![second, first]).unwrap();
+
+    assert_eq!(
+        preferred_tip_hash(&sorted_input),
+        preferred_tip_hash(&reversed_input)
+    );
+    assert_eq!(
+        normalize_chain_state_for_comparison(&sorted_input),
+        normalize_chain_state_for_comparison(&reversed_input)
+    );
+    assert_dag_consistent_for_tests(&sorted_input);
+    assert_dag_consistent_for_tests(&reversed_input);
 }
 
 #[test]

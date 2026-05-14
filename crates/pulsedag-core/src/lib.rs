@@ -37,7 +37,8 @@ pub use retarget::{
 
 pub use replay::{
     rebuild_state_from_blocks, rebuild_state_from_blocks_defensive,
-    rebuild_state_from_snapshot_and_blocks, ReplayDefensiveReport,
+    rebuild_state_from_snapshot_and_blocks, sort_blocks_for_deterministic_replay,
+    ReplayDefensiveReport,
 };
 
 pub use pow::{

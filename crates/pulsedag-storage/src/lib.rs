@@ -7,6 +7,7 @@ use pulsedag_core::{
     errors::PulseError,
     genesis::init_chain_state,
     rebuild_state_from_blocks, rebuild_state_from_snapshot_and_blocks,
+    sort_blocks_for_deterministic_replay,
     state::ChainState,
     types::{Block, Hash, OutPoint, Utxo},
 };
@@ -327,9 +328,17 @@ impl Storage {
             .map_err(|e| PulseError::StorageError(e.to_string()))?
         {
             Some(bytes) => std::str::from_utf8(&bytes)
-                .ok()
-                .and_then(|raw| raw.parse::<u32>().ok())
-                .unwrap_or(0),
+                .map_err(|_| {
+                    PulseError::StorageError(
+                        "storage schema version metadata is corrupt or not utf-8".into(),
+                    )
+                })?
+                .parse::<u32>()
+                .map_err(|_| {
+                    PulseError::StorageError(
+                        "storage schema version metadata is corrupt or not a number".into(),
+                    )
+                })?,
             None => 0,
         };
         Ok(StorageSchemaMetadata {
@@ -354,12 +363,17 @@ impl Storage {
                     .and_then(|raw| raw.parse::<u32>().ok())
                     .ok_or_else(|| {
                         PulseError::StorageError(
-                            "storage schema version metadata is invalid".into(),
+                            "storage schema version metadata is corrupt or invalid; export/snapshot the database before attempting manual repair".into(),
                         )
                     })?;
-                if version != STORAGE_SCHEMA_VERSION {
+                if version > STORAGE_SCHEMA_VERSION {
                     return Err(PulseError::StorageError(format!(
-                        "storage schema version {version} is not compatible with node schema {STORAGE_SCHEMA_VERSION}"
+                        "unsupported future storage schema version {version}; this node supports schema {STORAGE_SCHEMA_VERSION}. Start with a newer PulseDAG binary or restore from a compatible snapshot/export."
+                    )));
+                }
+                if version < STORAGE_SCHEMA_VERSION {
+                    return Err(PulseError::StorageError(format!(
+                        "storage schema version {version} is older than node schema {STORAGE_SCHEMA_VERSION}; no automatic migration is available in v2.2.14. Export/snapshot before migrating."
                     )));
                 }
             }
@@ -403,7 +417,7 @@ impl Storage {
                 .map_err(|e| PulseError::StorageError(e.to_string()))?;
             blocks.push(block);
         }
-        blocks.sort_by_key(|b| b.header.height);
+        sort_blocks_for_deterministic_replay(&mut blocks);
         Ok(blocks)
     }
 
@@ -1380,7 +1394,10 @@ impl Storage {
 
 #[cfg(test)]
 mod tests {
-    use super::{SnapshotExportBundle, Storage, CHAIN_STATE_KEY, SNAPSHOT_CAPTURED_AT_UNIX_KEY};
+    use super::{
+        SnapshotExportBundle, Storage, CHAIN_STATE_KEY, SNAPSHOT_CAPTURED_AT_UNIX_KEY,
+        STORAGE_SCHEMA_VERSION, STORAGE_SCHEMA_VERSION_KEY,
+    };
     use proptest::prelude::*;
     use pulsedag_core::{
         accept::{accept_block, AcceptSource},
@@ -1408,6 +1425,144 @@ mod tests {
             .join(format!("pulsedag-storage-{}-{}", test_name, unique))
             .to_string_lossy()
             .into_owned()
+    }
+
+    fn write_schema_version(storage: &Storage, value: &[u8]) {
+        let meta_cf = storage.db.cf_handle("meta").expect("meta cf");
+        storage
+            .db
+            .put_cf(&meta_cf, STORAGE_SCHEMA_VERSION_KEY, value)
+            .expect("write schema metadata");
+    }
+
+    #[test]
+    fn storage_schema_metadata_missing_is_initialized_on_open() {
+        let path = temp_db_path("schema-missing");
+        let storage = Storage::open(&path).expect("open storage with missing schema metadata");
+        let metadata = storage
+            .storage_schema_metadata()
+            .expect("read schema metadata");
+
+        assert_eq!(metadata.schema_version, STORAGE_SCHEMA_VERSION);
+        assert!(metadata.compatible);
+
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn storage_schema_metadata_valid_is_accepted() {
+        let path = temp_db_path("schema-valid");
+        {
+            let storage = Storage::open(&path).expect("open storage");
+            write_schema_version(&storage, STORAGE_SCHEMA_VERSION.to_string().as_bytes());
+        }
+
+        let reopened = Storage::open(&path).expect("valid schema metadata must open");
+        let metadata = reopened
+            .storage_schema_metadata()
+            .expect("read schema metadata");
+        assert_eq!(metadata.schema_version, STORAGE_SCHEMA_VERSION);
+        assert!(metadata.compatible);
+
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn storage_schema_metadata_future_version_is_rejected() {
+        let path = temp_db_path("schema-future");
+        {
+            let storage = Storage::open(&path).expect("open storage");
+            write_schema_version(
+                &storage,
+                (STORAGE_SCHEMA_VERSION + 1).to_string().as_bytes(),
+            );
+        }
+
+        let err = Storage::open(&path)
+            .err()
+            .expect("future schema must be rejected");
+        let message = err.to_string();
+        assert!(
+            message.contains("unsupported future storage schema version"),
+            "unexpected error: {message}"
+        );
+        assert!(
+            message.contains("newer PulseDAG binary") || message.contains("compatible snapshot"),
+            "error should guide operators: {message}"
+        );
+
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn storage_schema_metadata_corrupt_version_is_rejected() {
+        let path = temp_db_path("schema-corrupt");
+        {
+            let storage = Storage::open(&path).expect("open storage");
+            write_schema_version(&storage, b"not-a-version");
+        }
+
+        let err = Storage::open(&path)
+            .err()
+            .expect("corrupt schema must be rejected");
+        let message = err.to_string();
+        assert!(
+            message.contains("schema version metadata is corrupt"),
+            "unexpected error: {message}"
+        );
+
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn list_blocks_orders_equal_height_by_timestamp_then_hash() {
+        let path = temp_db_path("list-equal-height-order");
+        let storage = Storage::open(&path).expect("open storage");
+        let state = init_chain_state("testnet".to_string());
+        let parent = best_tip_hash(&state);
+        let mut later_low_hash = build_candidate_block(
+            vec![parent.clone()],
+            1,
+            1,
+            vec![build_coinbase_transaction("miner-later-low", 50, 101)],
+        );
+        later_low_hash.header.timestamp = 50;
+        later_low_hash.hash = "000-later-low".to_string();
+        let mut earlier_high_hash = build_candidate_block(
+            vec![parent.clone()],
+            1,
+            1,
+            vec![build_coinbase_transaction("miner-earlier", 50, 102)],
+        );
+        earlier_high_hash.header.timestamp = 40;
+        earlier_high_hash.hash = "999-earlier-high".to_string();
+        let mut same_time_low_hash = build_candidate_block(
+            vec![parent],
+            1,
+            1,
+            vec![build_coinbase_transaction("miner-same-low", 50, 103)],
+        );
+        same_time_low_hash.header.timestamp = 50;
+        same_time_low_hash.hash = "001-same-time-low".to_string();
+
+        storage
+            .persist_block(&later_low_hash)
+            .expect("persist later low hash first");
+        storage
+            .persist_block(&same_time_low_hash)
+            .expect("persist same timestamp second");
+        storage
+            .persist_block(&earlier_high_hash)
+            .expect("persist earlier high hash last");
+
+        let ordered = storage.list_blocks().expect("list blocks");
+        let ordered_hashes = ordered.iter().map(|b| b.hash.as_str()).collect::<Vec<_>>();
+        assert_eq!(
+            ordered_hashes,
+            vec!["999-earlier-high", "000-later-low", "001-same-time-low"]
+        );
+
+        let _ = std::fs::remove_dir_all(path);
     }
 
     fn build_linear_chain(chain_id: &str, blocks_to_add: usize) -> pulsedag_core::ChainState {

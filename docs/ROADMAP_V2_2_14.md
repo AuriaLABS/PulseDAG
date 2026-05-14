@@ -1,10 +1,10 @@
-# PulseDAG v2.2.14 roadmap: v3 foundation hardening
+# PulseDAG v2.2.14 roadmap: storage/replay hardening
 
-v2.2.14 is a foundation hardening release for the path to v3.0.0. It is intentionally not a feature-random release: every change and release note should strengthen the evidence needed for v2.3.0 private testnet readiness and the later v3.0.0 stable network target.
+v2.2.14 is a storage, replay, snapshot, restore, pruning, and migration-policy hardening release for the path to v3.0.0. It is intentionally not a feature-random release: every change and release note should strengthen the evidence needed for v2.3.0 private testnet readiness and the later v3.0.0 stable network target.
 
 ## Release intent
 
-v2.2.14 should make the existing node easier to trust, rehearse, recover, and evaluate. The release is successful when operators can point to reproducible evidence for storage/replay behavior, snapshot export/import, mining-template validation, multi-node operation, and readiness burn-in criteria.
+v2.2.14 should make the existing node easier to trust, rehearse, recover, and evaluate. The release is successful when operators can point to reproducible evidence for deterministic storage/replay behavior, snapshot export/import, restore drills, pruning safety, schema compatibility policy, real-libp2p testnet configuration, multi-node operation, and readiness burn-in criteria.
 
 This release does not claim that PulseDAG is ready for v2.3.0 or v3.0.0 by itself. It defines the gates that later releases must satisfy before those milestones can be claimed.
 
@@ -13,9 +13,11 @@ This release does not claim that PulseDAG is ready for v2.3.0 or v3.0.0 by itsel
 - Document and rehearse the hardening evidence required before the v2.3.0 private testnet readiness decision.
 - Validate `cargo fmt --check` and `cargo test --workspace` as required release checks.
 - Rehearse a three-node topology with restart/rejoin, propagation, and convergence notes.
-- Validate mining template issuance and submit semantics against the external miner/node contract.
+- Validate deterministic persisted-block ordering by height, timestamp, and hash.
+- Validate storage schema compatibility behavior for missing, valid, future, and corrupt metadata.
 - Validate snapshot export/import, including restart and restore observations.
-- Validate replay and order-independence behavior after restart and from persisted state.
+- Validate restore drills, pruning safety, and replay/order-independence behavior after restart and from persisted state.
+- Validate testnet uses real `libp2p-real` networking rather than the dev loopback/skeleton runtime.
 - Capture readiness evidence for a 14-day private-testnet burn-in gate.
 - Capture the policy that smart contracts wait until after a stable testnet has completed a 30-day stable period.
 - Keep the miner as an external standalone process and keep pool behavior outside the miner.
@@ -67,7 +69,9 @@ Smart contracts are intentionally deferred. No smart contract runtime, VM, preco
 
 v2.2.14 should leave behind:
 
-- A completed release checklist in `RELEASE_CHECKLIST_V2_2_14.md`.
+- A completed closing checklist in `CLOSING_CHECKLIST_V2_2_14.md`.
 - Updated version positioning in `VERSION_MATRIX.md`.
+- Storage migration policy in `STORAGE_MIGRATION_POLICY_V2_2_14.md`.
+- Automated release evidence script at `scripts/v2-2-14-release-evidence.sh`.
 - v3 gate documentation in `ROADMAP_V3_0_0.md`.
 - Evidence links or notes for the required checks, rehearsals, snapshot/replay drills, mining validation, and burn-in status.
