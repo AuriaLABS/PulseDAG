@@ -248,6 +248,7 @@ mod tests {
 
     fn base_status(mode: &str) -> P2pStatus {
         P2pStatus {
+            chain_id: "testnet-dev".into(),
             mode: mode.to_string(),
             peer_id: "self".into(),
             listening: vec![],
@@ -354,6 +355,9 @@ mod tests {
         recent_failures_unix: Vec<u64>,
     ) -> PeerRecoveryStatus {
         PeerRecoveryStatus {
+            chain_id: Some("testnet-dev".into()),
+            chain_id_compatible: true,
+            last_activity_unix: None,
             peer_id: peer_id.to_string(),
             score,
             fail_streak,

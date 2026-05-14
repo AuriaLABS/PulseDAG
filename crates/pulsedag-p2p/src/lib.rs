@@ -41,6 +41,9 @@ pub fn connected_peers_semantics(mode: &str) -> &'static str {
 #[derive(Debug, Clone)]
 pub struct PeerRecoveryStatus {
     pub peer_id: String,
+    pub chain_id: Option<String>,
+    pub chain_id_compatible: bool,
+    pub last_activity_unix: Option<u64>,
     pub score: i32,
     pub fail_streak: u32,
     pub lifecycle_tier: String,
@@ -71,6 +74,7 @@ pub struct SeenCacheEntry {
 
 #[derive(Debug, Clone)]
 pub struct P2pStatus {
+    pub chain_id: String,
     pub mode: String,
     pub peer_id: String,
     pub listening: Vec<String>,
@@ -242,6 +246,7 @@ struct InnerState {
     broadcasted_messages: usize,
     publish_attempts: usize,
     inbound_messages: usize,
+    chain_id: String,
     connected_peers: Vec<String>,
     seen_message_ids: HashSet<String>,
     queued_messages: usize,
@@ -336,6 +341,8 @@ struct PeerHealth {
     next_retry_unix: u64,
     connected: bool,
     last_seen_unix: Option<u64>,
+    remote_chain_id: Option<String>,
+    chain_id_compatible: bool,
     last_successful_connect_unix: Option<u64>,
     reconnect_attempts: u64,
     recovery_success_count: u64,
@@ -362,6 +369,8 @@ impl Default for PeerHealth {
             next_retry_unix: 0,
             connected: true,
             last_seen_unix: None,
+            remote_chain_id: None,
+            chain_id_compatible: true,
             last_successful_connect_unix: None,
             reconnect_attempts: 0,
             recovery_success_count: 0,
@@ -394,6 +403,7 @@ impl MemoryP2pHandle {
     ) -> (Self, mpsc::UnboundedReceiver<InboundEvent>) {
         let (_inbound_tx, inbound_rx) = mpsc::unbounded_channel();
         let mut state = InnerState::default();
+        state.chain_id = chain_id.clone();
         state.mode = P2P_MODE_MEMORY_SIMULATED.into();
         state.runtime_mode_detail = "in-process-dispatch".into();
         state.peer_id = "memory".into();
@@ -535,6 +545,7 @@ impl P2pHandle for MemoryP2pHandle {
             topology_diversity_score_bps,
         ) = topology_stats_for_connected_peers(&inner.connected_peers);
         Ok(P2pStatus {
+            chain_id: inner.chain_id.clone(),
             mode: inner.mode.clone(),
             peer_id: inner.peer_id.clone(),
             listening: inner.listening.clone(),
@@ -678,6 +689,7 @@ impl Libp2pHandle {
             })
             .collect();
         let mut state = InnerState {
+            chain_id: cfg.chain_id.clone(),
             mode,
             runtime_mode_detail,
             peer_id: peer_id.to_string(),
@@ -845,6 +857,13 @@ fn peer_recovery_snapshot(
         .iter()
         .map(|(peer_id, health)| PeerRecoveryStatus {
             peer_id: peer_id.clone(),
+            chain_id: health.remote_chain_id.clone(),
+            chain_id_compatible: health.chain_id_compatible,
+            last_activity_unix: health
+                .last_seen_unix
+                .or(health.last_successful_connect_unix)
+                .or(health.last_failure_unix)
+                .or(health.last_recovery_unix),
             score: health.score,
             fail_streak: health.fail_streak,
             lifecycle_tier: peer_lifecycle_tier(health, now).to_string(),
@@ -978,7 +997,7 @@ fn refresh_connected_peers_from_health(state: &mut InnerState) {
                     && state
                         .peer_book
                         .get(&peer.peer_id)
-                        .map(|health| health.connected)
+                        .map(|health| health.connected && health.chain_id_compatible)
                         .unwrap_or(false)
             })
             .map(|peer| peer.peer_id)
@@ -1413,6 +1432,8 @@ fn register_peer_result_at(inner: &Arc<Mutex<InnerState>>, peer: &str, success: 
         let mut trigger_rebroadcast_window = false;
         let mut suppressed_dial = false;
         {
+            let local_chain_id = guard.chain_id.clone();
+            let mode = guard.mode.clone();
             let health = guard.peer_book.entry(peer.to_string()).or_default();
             if now.saturating_sub(health.dial_window_started_unix) >= PEER_DIAL_ATTEMPT_WINDOW_SECS
             {
@@ -1437,7 +1458,10 @@ fn register_peer_result_at(inner: &Arc<Mutex<InnerState>>, peer: &str, success: 
                 health.reconnect_attempts = health.reconnect_attempts.saturating_add(1);
                 health.last_seen_unix = Some(now);
                 if success {
-                    health.connected = true;
+                    let requires_message_compatibility =
+                        mode_connected_peers_are_real_network(&mode)
+                            && health.remote_chain_id.as_deref() != Some(local_chain_id.as_str());
+                    health.connected = !requires_message_compatibility;
                     health.fail_streak = 0;
                     health.next_retry_unix = now;
                     trigger_rebroadcast_window = true;
@@ -1451,6 +1475,9 @@ fn register_peer_result_at(inner: &Arc<Mutex<InnerState>>, peer: &str, success: 
                     health.recovery_success_count = health.recovery_success_count.saturating_add(1);
                     health.last_recovery_unix = Some(now);
                     health.last_successful_connect_unix = Some(now);
+                    if requires_message_compatibility {
+                        health.chain_id_compatible = false;
+                    }
                     if health
                         .last_failure_unix
                         .map(|last_fail| now.saturating_sub(last_fail) <= FLAP_WINDOW.as_secs())
@@ -1879,10 +1906,13 @@ fn score_peer_message_outcome(
     outcome: PeerMessageOutcome,
     now: u64,
 ) {
+    let local_chain_id = state.chain_id.clone();
     let health = state.peer_book.entry(peer.to_string()).or_default();
     health.last_seen_unix = Some(now);
     match outcome {
         PeerMessageOutcome::ValidRelay => {
+            health.remote_chain_id = Some(local_chain_id);
+            health.chain_id_compatible = true;
             health.chain_mismatch_streak = 0;
             health.score =
                 (health.score + PEER_VALID_RELAY_BONUS).clamp(PEER_SCORE_MIN, PEER_SCORE_MAX);
@@ -1898,6 +1928,9 @@ fn score_peer_message_outcome(
             health.last_failure_unix = Some(now);
         }
         PeerMessageOutcome::ChainMismatch => {
+            health.remote_chain_id = None;
+            health.chain_id_compatible = false;
+            health.connected = false;
             health.chain_mismatch_streak = health.chain_mismatch_streak.saturating_add(1);
             let penalty = PEER_CHAIN_MISMATCH_PENALTY
                 + (health.chain_mismatch_streak.saturating_sub(1) as i32 * 4);
@@ -2334,32 +2367,101 @@ fn dispatch_network_message(
             }
         }
         NetworkMessage::GetTips { chain_id } => {
-            if chain_id == expected_chain_id {
+            if chain_id != expected_chain_id {
                 if let Ok(mut guard) = inner.lock() {
-                    guard.inbound_messages += 1;
-                    guard.last_message_kind = Some("get-tips".into());
+                    guard.inbound_chain_mismatch_dropped += 1;
+                    guard.last_drop_reason = Some("chain_mismatch_get_tips".into());
+                    if let Some(peer) = source_peer {
+                        score_peer_message_outcome(
+                            &mut guard,
+                            peer,
+                            PeerMessageOutcome::ChainMismatch,
+                            now_unix(),
+                        );
+                        refresh_connected_peers_from_health(&mut guard);
+                        persist_peer_state_if_configured(&guard);
+                    }
                 }
-                let _ = inbound_tx.send(InboundEvent::GetTips);
+                return;
             }
+            if let Ok(mut guard) = inner.lock() {
+                guard.inbound_messages += 1;
+                guard.last_message_kind = Some("get-tips".into());
+                if let Some(peer) = source_peer {
+                    score_peer_message_outcome(
+                        &mut guard,
+                        peer,
+                        PeerMessageOutcome::ValidRelay,
+                        now_unix(),
+                    );
+                }
+            }
+            let _ = inbound_tx.send(InboundEvent::GetTips);
         }
         NetworkMessage::Tips { chain_id, tips } => {
-            if chain_id == expected_chain_id {
+            if chain_id != expected_chain_id {
                 if let Ok(mut guard) = inner.lock() {
-                    guard.inbound_messages += 1;
-                    guard.last_message_kind = Some("tips".into());
+                    guard.inbound_chain_mismatch_dropped += 1;
+                    guard.last_drop_reason = Some("chain_mismatch_tips".into());
+                    if let Some(peer) = source_peer {
+                        score_peer_message_outcome(
+                            &mut guard,
+                            peer,
+                            PeerMessageOutcome::ChainMismatch,
+                            now_unix(),
+                        );
+                        refresh_connected_peers_from_health(&mut guard);
+                        persist_peer_state_if_configured(&guard);
+                    }
                 }
-                let _ = inbound_tx.send(InboundEvent::Tips { tips });
+                return;
             }
+            if let Ok(mut guard) = inner.lock() {
+                guard.inbound_messages += 1;
+                guard.last_message_kind = Some("tips".into());
+                if let Some(peer) = source_peer {
+                    score_peer_message_outcome(
+                        &mut guard,
+                        peer,
+                        PeerMessageOutcome::ValidRelay,
+                        now_unix(),
+                    );
+                }
+            }
+            let _ = inbound_tx.send(InboundEvent::Tips { tips });
         }
         NetworkMessage::GetBlock { chain_id, hash } => {
-            if chain_id == expected_chain_id {
+            if chain_id != expected_chain_id {
                 if let Ok(mut guard) = inner.lock() {
-                    guard.inbound_messages += 1;
-                    guard.blocks_requested = guard.blocks_requested.saturating_add(1);
-                    guard.last_message_kind = Some("get-block".into());
+                    guard.inbound_chain_mismatch_dropped += 1;
+                    guard.last_drop_reason = Some("chain_mismatch_get_block".into());
+                    if let Some(peer) = source_peer {
+                        score_peer_message_outcome(
+                            &mut guard,
+                            peer,
+                            PeerMessageOutcome::ChainMismatch,
+                            now_unix(),
+                        );
+                        refresh_connected_peers_from_health(&mut guard);
+                        persist_peer_state_if_configured(&guard);
+                    }
                 }
-                let _ = inbound_tx.send(InboundEvent::GetBlock { hash });
+                return;
             }
+            if let Ok(mut guard) = inner.lock() {
+                guard.inbound_messages += 1;
+                guard.blocks_requested = guard.blocks_requested.saturating_add(1);
+                guard.last_message_kind = Some("get-block".into());
+                if let Some(peer) = source_peer {
+                    score_peer_message_outcome(
+                        &mut guard,
+                        peer,
+                        PeerMessageOutcome::ValidRelay,
+                        now_unix(),
+                    );
+                }
+            }
+            let _ = inbound_tx.send(InboundEvent::GetBlock { hash });
         }
         NetworkMessage::BlockData { chain_id, block } => {
             if chain_id != expected_chain_id {
@@ -2882,6 +2984,7 @@ impl P2pHandle for Libp2pHandle {
             topology_diversity_score_bps,
         ) = topology_stats_for_connected_peers(&inner.connected_peers);
         Ok(P2pStatus {
+            chain_id: inner.chain_id.clone(),
             mode: inner.mode.clone(),
             peer_id: inner.peer_id.clone(),
             listening: inner.listening.clone(),
@@ -5037,8 +5140,44 @@ mod inventory_tests {
             .get("peer-wrong-chain")
             .expect("peer health");
         assert!(health.score < 100);
+        assert!(!health.connected);
+        assert!(!health.chain_id_compatible);
         assert!(health.suppressed_until_unix > now_unix());
         assert_eq!(health.chain_mismatch_streak, 3);
+    }
+
+    #[test]
+    fn compatible_connected_peers_exclude_chain_mismatch_peers() {
+        let mut state = InnerState {
+            mode: P2P_MODE_LIBP2P_REAL.into(),
+            chain_id: "testnet".into(),
+            connection_slot_budget: 8,
+            ..InnerState::default()
+        };
+        state.peer_book.insert(
+            "peer-compatible".into(),
+            PeerHealth {
+                connected: true,
+                remote_chain_id: Some("testnet".into()),
+                chain_id_compatible: true,
+                last_seen_unix: Some(now_unix()),
+                ..PeerHealth::default()
+            },
+        );
+        state.peer_book.insert(
+            "peer-wrong-chain".into(),
+            PeerHealth {
+                connected: true,
+                remote_chain_id: Some("wrongnet".into()),
+                chain_id_compatible: false,
+                last_seen_unix: Some(now_unix()),
+                ..PeerHealth::default()
+            },
+        );
+
+        refresh_connected_peers_from_health(&mut state);
+
+        assert_eq!(state.connected_peers, vec!["peer-compatible".to_string()]);
     }
 
     #[test]

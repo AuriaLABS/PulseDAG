@@ -54,6 +54,21 @@ The v1 namespace exposes read-mostly public chain, explorer, wallet-broadcast, m
 
 No smart-contract endpoints are part of API v1 yet.
 
+### P2P diagnostics payload additions (v2.2.15)
+
+`GET /api/v1/p2p/status` / `GET /p2p/status` remains a public, read-only diagnostic endpoint. In v2.2.15 it includes additional operator fields for chain-id isolation and peer troubleshooting without moving admin-only data onto the public surface:
+
+- `chain_id`: local chain id used for P2P topics and message validation.
+- `p2p_mode` / `mode`: configured P2P mode, for example `libp2p-real`.
+- `peer_id` and `local_node_id`: the local libp2p node id.
+- `peer_count` and `connected_peers`: currently compatible connected peer count and peer ids.
+- `peer_recovery[]`: per-peer connection state with `peer_id`, `connected`, score/tier fields, `last_seen_unix`, `last_activity_unix`, optional peer `chain_id`, and `chain_id_compatible`.
+- `peer_state_summary.chain_compatible` and `peer_state_summary.chain_incompatible_or_unknown`: summary counters to separate compatible peers from peers that have not proven the local chain id.
+- `inbound_chain_mismatch_dropped` and `last_drop_reason`: counters/reason strings for messages rejected because their embedded `chain_id` did not match the local node.
+- Sync/tip context such as `selected_sync_peer`, `sync_candidates`, `sync_state`, and propagation counters already exposed by the P2P status surface.
+
+Peers that send messages for a different `chain_id` are penalized and are not counted as healthy compatible peers. Admin boundaries are unchanged; sensitive diagnostics remain under `/admin`.
+
 ## Admin/operator endpoints
 
 Operator routes are mounted under `/admin` when admin routing is enabled. Their historical top-level aliases are also only registered when admin routing is enabled.
