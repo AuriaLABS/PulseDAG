@@ -1,2 +1,8 @@
 /target
 /data
+
+/evidence/v2.2.15/p2p-rehearsal/*/runtime/
+/evidence/v2.2.15/p2p-rehearsal/*/logs/
+/evidence/v2.2.15/p2p-rehearsal/*/node-*/
+/evidence/v2.2.15/p2p-rehearsal/*/summary.txt
+/evidence/v2.2.15/p2p-rehearsal/*/rehearsal-config.json
