@@ -108,7 +108,10 @@ wait_for_endpoint() {
 }
 
 collect_node_evidence() {
-  local node="$1" phase="$2" dir="$RUN_DIR/$(node_name "$node")/$phase" endpoint file
+  local node="$1"
+  local phase="$2"
+  local dir="$RUN_DIR/$(node_name "$node")/$phase"
+  local endpoint file
   mkdir -p "$dir"
   for endpoint in health status p2p/status p2p/peers sync/status; do
     file="${endpoint//\//-}.json"
