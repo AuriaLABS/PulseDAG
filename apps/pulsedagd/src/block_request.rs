@@ -57,10 +57,10 @@ impl BlockRequestTracker {
     pub fn collect_timeouts(&self, now_unix: u64) -> Vec<String> {
         self.pending
             .iter()
-            .filter_map(|(hash, req)| {
-                (now_unix.saturating_sub(req.last_requested_at_unix) >= self.timeout_secs)
-                    .then(|| hash.clone())
+            .filter(|(_, req)| {
+                now_unix.saturating_sub(req.last_requested_at_unix) >= self.timeout_secs
             })
+            .map(|(hash, _)| hash.clone())
             .collect()
     }
 }
