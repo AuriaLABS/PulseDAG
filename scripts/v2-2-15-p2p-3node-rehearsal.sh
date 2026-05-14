@@ -16,7 +16,14 @@ P2P_MODE="${PULSEDAG_REHEARSAL_P2P_MODE:-libp2p-real}"
 EVIDENCE_ROOT="${PULSEDAG_REHEARSAL_EVIDENCE_ROOT:-$ROOT_DIR/evidence/v2.2.15/p2p-rehearsal}"
 RUN_ID="${PULSEDAG_REHEARSAL_RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)-${NODE_COUNT}node}"
 RUN_DIR="$EVIDENCE_ROOT/$RUN_ID"
-RUNTIME_ROOT="${PULSEDAG_REHEARSAL_RUNTIME_ROOT:-$RUN_DIR/runtime}"
+RUNTIME_ROOT_OVERRIDE="${PULSEDAG_REHEARSAL_RUNTIME_ROOT:-}"
+if [[ -n "$RUNTIME_ROOT_OVERRIDE" ]]; then
+  RUNTIME_ROOT_NAME="pulsedag-${VERSION}-p2p-rehearsal-${RUN_ID}-runtime"
+  RUNTIME_ROOT_NAME="${RUNTIME_ROOT_NAME//\//_}"
+  RUNTIME_ROOT="${RUNTIME_ROOT_OVERRIDE%/}/$RUNTIME_ROOT_NAME"
+else
+  RUNTIME_ROOT="$RUN_DIR/runtime"
+fi
 DATA_ROOT="$RUNTIME_ROOT/data"
 LOG_DIR="$RUN_DIR/logs"
 NODE_BIN="${PULSEDAGD_BIN:-}"
@@ -113,7 +120,9 @@ prepare_dirs() {
   "peer_wait_secs": $PEER_WAIT_SECS,
   "duration_secs": $DURATION_SECS,
   "node_binary": "$NODE_BIN",
-  "run_id": "$RUN_ID"
+  "run_id": "$RUN_ID",
+  "runtime_root": "$RUNTIME_ROOT",
+  "runtime_root_override": "$RUNTIME_ROOT_OVERRIDE"
 }
 JSON
 }

@@ -41,7 +41,11 @@ clean_runtime_root() {
 }
 
 if [[ -n "$RUNTIME_ROOT_OVERRIDE" ]]; then
-  clean_runtime_root "$RUNTIME_ROOT_OVERRIDE"
+  if [[ -d "$RUNTIME_ROOT_OVERRIDE" ]]; then
+    find "$RUNTIME_ROOT_OVERRIDE" -mindepth 2 -maxdepth 2 -name '.pulsedag-v2-2-15-rehearsal-root' -type f -print | while read -r marker; do
+      clean_runtime_root "$(dirname "$marker")"
+    done
+  fi
 else
   if [[ -d "$EVIDENCE_ROOT" ]]; then
     find "$EVIDENCE_ROOT" -path '*/runtime/.pulsedag-v2-2-15-rehearsal-root' -type f -print | while read -r marker; do

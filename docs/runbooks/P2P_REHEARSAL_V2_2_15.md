@@ -11,7 +11,8 @@ The rehearsal harness is operational only:
 - It does **not** change consensus rules.
 - It starts local `pulsedagd` processes with `PULSEDAG_P2P_MODE=libp2p-real`.
 - It does not use skeleton, memory, simulated, or dev-loopback P2P mode for the main rehearsal.
-- It writes data under `evidence/v2.2.15/p2p-rehearsal/` by default and marks runtime directories before the cleanup script can remove them.
+- It writes data under `evidence/v2.2.15/p2p-rehearsal/` by default and marks only harness-owned runtime directories before the cleanup script can remove them.
+- If `PULSEDAG_REHEARSAL_RUNTIME_ROOT` is set to an existing shared directory, the harness creates and marks a run-specific child directory instead of marking the shared directory itself.
 
 ## Prerequisites
 
@@ -79,6 +80,7 @@ All overrides are optional:
 | `PULSEDAG_REHEARSAL_P2P_BASE_PORT` | `19180` | First P2P port; later nodes increment by 1. |
 | `PULSEDAG_REHEARSAL_DURATION_SECS` | `60` | Sustained observation window after startup evidence. |
 | `PULSEDAG_REHEARSAL_EVIDENCE_ROOT` | `evidence/v2.2.15/p2p-rehearsal` | Evidence output root. |
+| `PULSEDAG_REHEARSAL_RUNTIME_ROOT` | `<run-dir>/runtime` | Optional runtime parent. When set, the harness creates a run-specific child under this path and cleanup removes only marked child directories. |
 | `PULSEDAG_REHEARSAL_KEEP_RUNNING` | `0` | Set to `1` to leave nodes running after the script exits. |
 
 Example longer run:
@@ -173,7 +175,7 @@ To stop any recorded rehearsal processes and remove only marked v2.2.15 runtime 
 bash scripts/v2-2-15-p2p-clean-rehearsal-data.sh
 ```
 
-The cleanup script intentionally skips unmarked directories. It does not remove `summary.txt`, JSON evidence, or copied logs from completed runs; it removes the marked `runtime/` directory that contains node data and PID files.
+The cleanup script intentionally skips unmarked directories. It does not remove `summary.txt`, JSON evidence, or copied logs from completed runs; it removes the marked `runtime/` directory that contains node data and PID files. When `PULSEDAG_REHEARSAL_RUNTIME_ROOT` points at a shared directory, cleanup searches for marked run-specific children below that directory and does not remove the shared directory itself.
 
 ## Known limitations
 
