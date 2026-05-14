@@ -119,14 +119,12 @@ pub async fn post_snapshot_create<S: RpcStateLike>(
         return Json(ApiResponse::err("SNAPSHOT_PERSIST_ERROR", e.to_string()));
     }
 
-    let schema_version = match state.storage().storage_schema_metadata() {
-        Ok(v) => v.schema_version,
-        Err(e) => return Json(ApiResponse::err("STORAGE_SCHEMA_ERROR", e.to_string())),
-    };
-    let snapshot_metadata = match state.storage().snapshot_metadata() {
-        Ok(v) => v,
-        Err(e) => return Json(ApiResponse::err("SNAPSHOT_METADATA_ERROR", e.to_string())),
-    };
+    if let Err(e) = state.storage().storage_schema_metadata() {
+        return Json(ApiResponse::err("STORAGE_SCHEMA_ERROR", e.to_string()));
+    }
+    if let Err(e) = state.storage().snapshot_metadata() {
+        return Json(ApiResponse::err("SNAPSHOT_METADATA_ERROR", e.to_string()));
+    }
 
     let captured_at_unix = match state.storage().snapshot_captured_at_unix() {
         Ok(Some(v)) => v,

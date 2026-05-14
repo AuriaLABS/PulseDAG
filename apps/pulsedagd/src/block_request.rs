@@ -1,22 +1,7 @@
 use std::collections::HashMap;
 
-#[derive(Debug, Clone, Default)]
-pub struct BlockRequestCounters {
-    pub block_announces_received: u64,
-    pub getblock_sent: u64,
-    pub getblock_received: u64,
-    pub blockdata_sent: u64,
-    pub blockdata_received: u64,
-    pub blockdata_accepted: u64,
-    pub blockdata_duplicate: u64,
-    pub blockdata_missing_parent: u64,
-    pub blockdata_invalid_pow: u64,
-    pub block_request_timeouts: u64,
-}
-
 #[derive(Debug, Clone)]
 pub struct PendingBlockRequest {
-    pub first_requested_at_unix: u64,
     pub last_requested_at_unix: u64,
     pub retry_count: u8,
 }
@@ -56,7 +41,6 @@ impl BlockRequestTracker {
                 self.pending.insert(
                     hash.to_string(),
                     PendingBlockRequest {
-                        first_requested_at_unix: now_unix,
                         last_requested_at_unix: now_unix,
                         retry_count: 0,
                     },
