@@ -680,6 +680,12 @@ mod tests {
     };
     use std::collections::{BTreeMap, BTreeSet};
 
+    type InvalidBlockCase = (
+        &'static str,
+        Box<dyn Fn(&ChainState) -> Block>,
+        BlockAcceptanceResult,
+    );
+
     #[derive(Debug, PartialEq, Eq)]
     struct DagMutationSnapshot {
         blocks: BTreeSet<String>,
@@ -972,11 +978,7 @@ mod tests {
 
     #[test]
     fn block_acceptance_invalid_blocks_do_not_mutate_dag_state() {
-        let cases: Vec<(
-            &str,
-            Box<dyn Fn(&ChainState) -> Block>,
-            BlockAcceptanceResult,
-        )> = vec![
+        let cases: Vec<InvalidBlockCase> = vec![
             (
                 "invalid pow",
                 Box::new(invalid_pow_acceptance_block),

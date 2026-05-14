@@ -1047,13 +1047,13 @@ mod tests {
 
     #[test]
     fn stable_regime_stays_near_current_difficulty() {
-        let chain = build_chain_with_intervals(&vec![60; 20], 100);
+        let chain = build_chain_with_intervals(&[60; 20], 100);
         assert_eq!(dev_recommended_difficulty_for_chain(&chain), 100);
 
-        let near_target_fast = build_chain_with_intervals(&vec![56; 20], 100);
+        let near_target_fast = build_chain_with_intervals(&[56; 20], 100);
         assert_eq!(dev_recommended_difficulty_for_chain(&near_target_fast), 100);
 
-        let near_target_slow = build_chain_with_intervals(&vec![64; 20], 100);
+        let near_target_slow = build_chain_with_intervals(&[64; 20], 100);
         assert_eq!(dev_recommended_difficulty_for_chain(&near_target_slow), 100);
     }
 
@@ -1075,7 +1075,7 @@ mod tests {
 
     #[test]
     fn retarget_bounds_and_determinism_hold() {
-        let chain = build_chain_with_intervals(&vec![10; 20], 200);
+        let chain = build_chain_with_intervals(&[10; 20], 200);
         let first = dev_difficulty_snapshot(&chain);
         let second = dev_difficulty_snapshot(&chain);
         assert_eq!(
