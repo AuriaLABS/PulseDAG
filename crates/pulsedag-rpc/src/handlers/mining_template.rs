@@ -2,6 +2,7 @@ use std::{
     collections::{BTreeSet, HashMap},
     fs,
     path::PathBuf,
+    sync::atomic::{AtomicU64, Ordering},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -97,6 +98,7 @@ fn default_mining_protocol_version() -> u32 {
 pub(crate) const TEMPLATE_TTL_SECS: u64 = 30;
 pub(crate) const TEMPLATE_FRESHNESS_GRACE_SECS: u64 = 2;
 const POW_NONCE_OFFSET: usize = 1 + 4;
+static TEMPLATE_STORE_TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 pub(crate) fn template_freshness_window(
     created_at_unix: u64,
@@ -250,8 +252,20 @@ pub(crate) fn template_id_for_state(state: &TemplateLifecycleState) -> String {
 pub(crate) fn store_template(record: &StoredMiningTemplate) {
     let dir = PathBuf::from("./data/mining_templates");
     let _ = fs::create_dir_all(&dir);
-    let path = dir.join(format!("{}.json", sanitize(&record.template_id)));
-    let _ = fs::write(path, serde_json::to_vec_pretty(record).unwrap_or_default());
+    let filename = format!("{}.json", sanitize(&record.template_id));
+    let path = dir.join(&filename);
+    let unique = TEMPLATE_STORE_TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let tmp_path = dir.join(format!(".{filename}.{}.{}.tmp", std::process::id(), unique));
+
+    let bytes = serde_json::to_vec_pretty(record).unwrap_or_default();
+    if fs::write(&tmp_path, bytes).is_ok() {
+        if fs::rename(&tmp_path, &path).is_err() {
+            let _ = fs::remove_file(&path);
+            let _ = fs::rename(&tmp_path, &path);
+        }
+    } else {
+        let _ = fs::remove_file(&tmp_path);
+    }
 }
 
 pub(crate) fn load_template(template_id: &str) -> Option<StoredMiningTemplate> {
