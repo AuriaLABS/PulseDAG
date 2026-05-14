@@ -12,6 +12,16 @@ pub struct ReplayDefensiveReport {
     pub skipped_reasons: Vec<String>,
 }
 
+pub fn sort_blocks_for_deterministic_replay(blocks: &mut [Block]) {
+    blocks.sort_by(|a, b| {
+        a.header
+            .height
+            .cmp(&b.header.height)
+            .then_with(|| a.header.timestamp.cmp(&b.header.timestamp))
+            .then_with(|| a.hash.cmp(&b.hash))
+    });
+}
+
 pub fn rebuild_state_from_blocks(
     chain_id: String,
     mut blocks: Vec<Block>,
@@ -20,7 +30,7 @@ pub fn rebuild_state_from_blocks(
         return Ok(init_chain_state(chain_id));
     }
 
-    blocks.sort_by_key(|b| b.header.height);
+    sort_blocks_for_deterministic_replay(&mut blocks);
     let mut state = init_chain_state(chain_id);
 
     for block in blocks.into_iter() {
@@ -42,13 +52,7 @@ pub fn rebuild_state_from_snapshot_and_blocks(
         return Ok(snapshot);
     }
 
-    blocks.sort_by(|a, b| {
-        a.header
-            .height
-            .cmp(&b.header.height)
-            .then_with(|| a.header.timestamp.cmp(&b.header.timestamp))
-            .then_with(|| a.hash.cmp(&b.hash))
-    });
+    sort_blocks_for_deterministic_replay(&mut blocks);
 
     let snapshot_height = snapshot.dag.best_height;
     let mut state = snapshot;
@@ -84,13 +88,7 @@ pub fn rebuild_state_from_blocks_defensive(
         };
     }
 
-    blocks.sort_by(|a, b| {
-        a.header
-            .height
-            .cmp(&b.header.height)
-            .then_with(|| a.header.timestamp.cmp(&b.header.timestamp))
-            .then_with(|| a.hash.cmp(&b.hash))
-    });
+    sort_blocks_for_deterministic_replay(&mut blocks);
     let mut state = init_chain_state(chain_id);
     let mut accepted_blocks = 0usize;
     let mut skipped_hashes = Vec::new();

@@ -6,8 +6,8 @@ This matrix keeps release positioning clear across the current v2.2.x hardening 
 
 | Area | Current value |
 | --- | --- |
-| Workspace release | `2.2.12` until a release-version bump is made; v2.2.13 closeout must verify `v2.2.13`/`2.2.13` if the repository and workspace versions are bumped |
-| Current milestone | v2.2.14 v3 foundation hardening |
+| Workspace release | `VERSION` is `v2.2.14`; Cargo workspace version is `2.2.14`; license metadata remains `ISC` |
+| Current milestone | v2.2.14 storage/replay/snapshot/restore/pruning/migration-policy hardening |
 | Next milestone | v2.2.15 sustained P2P multi-node rehearsal |
 | Following milestone | v2.2.16 miner/node contract hardening |
 | Private-testnet readiness decision | v2.3.0 |
@@ -31,7 +31,7 @@ This matrix keeps release positioning clear across the current v2.2.x hardening 
 | v2.2.11 | P2P completion | Networking/sync completion closure; not official readiness |
 | v2.2.12 | Full private-testnet rehearsal and hardening | Multi-node/operator rehearsal, sustained validation, runbook hardening, and evidence capture |
 | v2.2.13 | Consensus/DAG safety audit | Closeout checklist for DAG invariant tests, block structural validation tests, transaction validation negative-path tests, orphan adoption tests, tip selection tests, replay/order-independence tests, block acceptance taxonomy tests, required Cargo checks, [DAG safety invariants](DAG_SAFETY_INVARIANTS_V2_2_13.md), and compatibility-claim review |
-| v2.2.14 | v3 foundation hardening | Defines v2.3.0/v3.0.0 gates; requires release checklist evidence for Cargo checks, three-node rehearsal, mining template/submit validation, snapshot export/import, replay/order-independence, 14-day burn-in readiness, 30-day stable-testnet smart-contract gate, external miner boundary, and no pool logic in miner |
+| v2.2.14 | Storage/replay hardening | Closes deterministic replay ordering, snapshot/restore/pruning safety, explicit storage schema policy, migration compatibility errors, testnet real-libp2p defaults, release evidence scripting, external miner boundary, no contract runtime, and no pool logic in miner |
 | v2.2.15 | Sustained P2P multi-node rehearsal | Long-running P2P churn, restart/rejoin, lag recovery, convergence, peer diagnostics, and chain-id isolation evidence |
 | v2.2.16 | Miner/node contract hardening | Stable external miner/node RPC contract, submission semantics, diagnostics, and optional GPU backlog only if canonical |
 | v2.2.17 | API/operator/security hardening | Public/operator/dev RPC boundary documentation, safe defaults, auth/rate-limit expectations, and operator incident workflows |
@@ -60,7 +60,7 @@ v2.2.13 follows v2.2.12 as an intermediate consensus/DAG safety audit before the
 
 v2.2.14 through v2.2.18 extend the hardening line before the v2.3.0 readiness decision:
 
-- v2.2.14 is the v3 foundation hardening release: it defines the v2.3.0 and v3.0.0 gates, requires evidence for Cargo checks, three-node rehearsal, mining template/submit validation, snapshot export/import, replay/order-independence, 14-day readiness burn-in, and the 30-day stable-testnet smart-contract gate.
+- v2.2.14 is the storage/replay hardening release: it closes deterministic persisted-block replay ordering, snapshot/restore/pruning safety, storage schema migration policy, testnet real-libp2p defaults, and repeatable evidence scripting while preserving the external miner boundary and the no-contract/no-pool guardrails.
 - v2.2.15 proves sustained P2P multi-node operation under churn, restart/rejoin, lag, and recovery scenarios.
 - v2.2.16 stabilizes the external miner/node contract and keeps optional GPU work as backlog unless it is canonical and evidence-backed.
 - v2.2.17 hardens API, operator, and security boundaries, including public/operator/dev RPC separation.

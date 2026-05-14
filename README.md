@@ -1,6 +1,6 @@
-# PulseDAG v2.2.13 current status
+# PulseDAG v2.2.14 current status
 
-This repository is aligned to the **v2.2.13 consensus/DAG safety audit milestone** and the long-term path to **v3.0 as the first long-lived functional PulseDAG core**.
+This repository is aligned to the **v2.2.14 storage/replay hardening milestone** and the long-term path to **v3.0 as the first long-lived functional PulseDAG core**.
 
 ## Current status
 
@@ -12,9 +12,10 @@ This repository is aligned to the **v2.2.13 consensus/DAG safety audit milestone
 - P2P architecture: real `libp2p-real` mode with chain-id isolated block, tx, and sync topics.
 - v2.2.12 scope: full private-testnet rehearsal, sustained multi-node/operator validation, runbook hardening, and release evidence capture.
 - v2.2.13 scope: consensus/DAG safety audit, invariant and validation evidence, orphan adoption checks, deterministic tip selection, replay/order-independence review, and compatibility-claim guardrails.
+- v2.2.14 scope: storage, deterministic replay ordering, snapshot/restore, pruning safety, migration-policy hardening, testnet profile correctness, and release evidence scripting.
 - Smart contracts: out of scope in v2.2.x.
 - v2.2.12 rehearsed and hardened the completed P2P path; **it did not claim official private-testnet readiness**.
-- v2.2.13 is the current intermediate consensus/DAG safety audit before the readiness decision; **it does not claim v2.3.0 readiness**.
+- v2.2.14 is the current storage/replay hardening release before the readiness decision; **it does not claim v2.3.0 readiness**.
 - v2.3.0 remains the private-testnet readiness decision milestone; it is not an automatic public launch.
 - Long-term v3.0 goal: a durable core that can run for years with stable node, PoW, external miner, P2P, sync, storage, snapshots, pruning policy, operator RPC, release evidence, and upgrade policy.
 
@@ -40,5 +41,9 @@ v2.2.12 closing checklist: `docs/CLOSING_CHECKLIST_V2_2_12.md`.
 v2.2.13 release notes: `docs/RELEASE_NOTES_V2_2_13.md`.
 v2.2.13 DAG safety invariants: `docs/DAG_SAFETY_INVARIANTS_V2_2_13.md`.
 v2.2.13 closing checklist: `docs/CLOSING_CHECKLIST_V2_2_13.md`.
+v2.2.14 roadmap: `docs/ROADMAP_V2_2_14.md`.
+v2.2.14 release notes: `docs/RELEASE_NOTES_V2_2_14.md`.
+v2.2.14 closing checklist: `docs/CLOSING_CHECKLIST_V2_2_14.md`.
+v2.2.14 storage migration policy: `docs/STORAGE_MIGRATION_POLICY_V2_2_14.md`.
 Version positioning: [docs/VERSION_MATRIX.md](docs/VERSION_MATRIX.md).
 Final PoW spec: `docs/POW_SPEC_FINAL.md`.
