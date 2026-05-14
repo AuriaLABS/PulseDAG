@@ -7,7 +7,7 @@ This matrix keeps release positioning clear across the current v2.2.x hardening 
 | Area | Current value |
 | --- | --- |
 | Workspace release | `VERSION` is `v2.2.15`; Cargo workspace version is `2.2.15`; license metadata remains `ISC` |
-| Current milestone | v2.2.15 sustained P2P multi-node rehearsal |
+| Current milestone | v2.2.15 sustained P2P multi-node rehearsal, evidence bundle passed |
 | Previous milestone | v2.2.14 storage/replay/snapshot/restore/pruning/migration-policy hardening closure |
 | Following milestone | v2.2.16 miner/node contract hardening |
 | Private-testnet readiness decision | v2.3.0 |
@@ -32,7 +32,7 @@ This matrix keeps release positioning clear across the current v2.2.x hardening 
 | v2.2.12 | Full private-testnet rehearsal and hardening | Multi-node/operator rehearsal, sustained validation, runbook hardening, and evidence capture |
 | v2.2.13 | Consensus/DAG safety audit | Closeout checklist for DAG invariant tests, block structural validation tests, transaction validation negative-path tests, orphan adoption tests, tip selection tests, replay/order-independence tests, block acceptance taxonomy tests, required Cargo checks, [DAG safety invariants](DAG_SAFETY_INVARIANTS_V2_2_13.md), and compatibility-claim review |
 | v2.2.14 | Storage/replay hardening | Closes deterministic replay ordering, snapshot/restore/pruning safety, explicit storage schema policy, migration compatibility errors, testnet real-libp2p defaults, release evidence scripting, external miner boundary, no contract runtime, and no pool logic in miner |
-| v2.2.15 | Sustained P2P multi-node rehearsal | Long-running P2P churn, restart/rejoin, lag recovery, convergence, peer diagnostics, and chain-id isolation evidence |
+| v2.2.15 | Sustained P2P multi-node rehearsal | Evidence bundle passed for cargo checks, 3-node rehearsal, churn/rejoin, lag recovery, convergence, peer diagnostics, and chain-id isolation |
 | v2.2.16 | Miner/node contract hardening | Stable external miner/node RPC contract, submission semantics, diagnostics, and optional GPU backlog only if canonical |
 | v2.2.17 | API/operator/security hardening | Public/operator/dev RPC boundary documentation, safe defaults, auth/rate-limit expectations, and operator incident workflows |
 | v2.2.18 | Private-testnet RC | Release-candidate evidence bundle and go/no-go checklist for the v2.3.0 readiness decision |
@@ -58,17 +58,17 @@ v2.2.13 follows v2.2.12 as an intermediate consensus/DAG safety audit before the
 
 ## v2.2.14 through v2.2.18 hardening path
 
-v2.2.14 through v2.2.18 extend the hardening line before the v2.3.0 readiness decision. v2.2.14 is now the storage/replay closure and v2.2.15 is the current sustained P2P rehearsal milestone:
+v2.2.14 through v2.2.18 extend the hardening line before the v2.3.0 readiness decision. v2.2.14 is now the storage/replay closure and v2.2.15 has passed sustained P2P rehearsal evidence:
 
 - v2.2.14 is the storage/replay hardening release: it closes deterministic persisted-block replay ordering, snapshot/restore/pruning safety, storage schema migration policy, testnet real-libp2p defaults, and repeatable evidence scripting while preserving the external miner boundary and the no-contract/no-pool guardrails.
-- v2.2.15 is the current sustained P2P multi-node rehearsal release: it proves operation under churn, restart/rejoin, lag recovery, convergence, peer diagnostics, and chain-id isolation scenarios.
+- v2.2.15 is the sustained P2P multi-node rehearsal release: its evidence bundle passed `cargo fmt`, `cargo test`, `cargo build`, 3-node rehearsal, churn/rejoin, lag recovery, convergence, peer diagnostics, and chain-id isolation. It is not a v2.3.0 readiness claim by itself.
 - v2.2.16 stabilizes the external miner/node contract and keeps optional GPU work as backlog unless it is canonical and evidence-backed.
 - v2.2.17 hardens API, operator, and security boundaries, including public/operator/dev RPC separation.
 - v2.2.18 packages the private-testnet RC evidence bundle and go/no-go checklist.
 
 ## v2.3.0 readiness decision
 
-v2.3.0 remains the private-testnet readiness decision milestone. Evidence gathered during v2.2.12 through v2.2.18 can inform that decision, but v2.3.0 is not an automatic public launch and must publish known limitations, operator requirements, rollback plan, and an evidence index. The v2.2.15 checklist explicitly requires `cargo fmt --all -- --check`, `cargo test --workspace`, `cargo build --workspace`, release evidence script output, a three-node local rehearsal, a five-node local rehearsal when practical, restart/rejoin evidence, lagging-node recovery evidence, peer churn evidence, chain-id isolation evidence, sync convergence evidence, and no unresolved Sev-1 consensus or sync defect before closeout.
+v2.3.0 remains the private-testnet readiness decision milestone. Evidence gathered during v2.2.12 through v2.2.18 can inform that decision, but v2.3.0 is not an automatic public launch and must publish known limitations, operator requirements, rollback plan, and an evidence index. The v2.2.15 checklist required `cargo fmt --all -- --check`, `cargo test --workspace`, `cargo build --workspace`, release evidence script output, a three-node local rehearsal, restart/rejoin evidence, lagging-node recovery evidence, peer churn evidence, chain-id isolation evidence, sync convergence evidence, and no unresolved Sev-1 consensus or sync defect before closeout. The optional five-node rehearsal remains a practical follow-up or v2.2.18 RC evidence item.
 
 ## v2.4.x through v2.8.x path to v3.0
 
