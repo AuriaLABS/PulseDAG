@@ -1,12 +1,35 @@
 # PulseDAG v2.2.15 release notes
 
-PulseDAG v2.2.15 opens as the sustained P2P multi-node rehearsal release after the v2.2.14 storage/replay hardening milestone.
+PulseDAG v2.2.15 closes as the sustained P2P multi-node rehearsal release after the v2.2.14 storage/replay hardening milestone.
+
+## Closeout status
+
+v2.2.15 release evidence passed on Ubuntu/WSL at commit `aacbec8a4ad366cb258f7b6f9ff47890a44023d1`.
+
+Evidence bundle result:
+
+```text
+Overall status: PASS
+```
+
+Passed sections:
+
+- `cargo fmt --all -- --check`
+- `cargo test --workspace`
+- `cargo build --workspace`
+- `bash scripts/v2-2-15-p2p-3node-rehearsal.sh`
+- `bash scripts/v2-2-15-p2p-churn-rejoin-evidence.sh`
+- `bash scripts/v2-2-15-p2p-lag-recovery-evidence.sh`
+- `bash scripts/v2-2-15-chain-id-isolation-evidence.sh`
+
+The evidence summary is generated at `evidence/v2.2.15/summary.md` by `bash scripts/v2-2-15-release-evidence.sh`.
 
 ## Highlights
 
 - Bumps repository version metadata to `v2.2.15` and Cargo workspace version metadata to `2.2.15` while keeping license metadata as `ISC`.
-- Positions v2.2.15 as the current milestone for sustained P2P operation across multiple nodes.
+- Positions v2.2.15 as the current sustained P2P operation milestone.
 - Adds release documentation for three-node and optional five-node rehearsals, restart/rejoin, lag recovery, churn, convergence, peer diagnostics, and chain-id isolation.
+- Adds a passing release evidence bundle for P2P rehearsal closeout.
 - Keeps v2.2.14 as the storage/replay hardening closure.
 - Keeps v2.2.16 as miner/node contract hardening.
 - Keeps v2.3.0 as a readiness decision only, not an automatic launch.
@@ -40,17 +63,24 @@ v2.2.15 focuses on evidence for:
 
 ## Required validation
 
-Before closing v2.2.15, collect output for:
+v2.2.15 closeout evidence passed with:
 
 ```bash
 cargo fmt --all -- --check
 cargo test --workspace
 cargo build --workspace
+bash scripts/v2-2-15-p2p-3node-rehearsal.sh
+bash scripts/v2-2-15-p2p-churn-rejoin-evidence.sh
+bash scripts/v2-2-15-p2p-lag-recovery-evidence.sh
 bash scripts/v2-2-15-chain-id-isolation-evidence.sh
 bash scripts/v2-2-15-release-evidence.sh
 ```
 
-The release evidence bundle writes section logs and `evidence/v2.2.15/summary.md`; v2.2.15 should close only after the evidence bundle is green or the closeout decision is explicitly no-go with limitations recorded.
+## Known limitations and follow-up
+
+- v2.2.15 is a P2P rehearsal/hardening evidence gate, not v2.3.0 readiness.
+- The optional five-node local rehearsal remains a follow-up when practical or can be repeated during v2.2.18 private-testnet RC evidence.
+- The next milestone is v2.2.16 miner/node contract hardening.
 
 ## Operator documents
 
