@@ -76,6 +76,29 @@ Pass criteria: A/B/C remain connected or recover, blocks converge, restart/rejoi
 
 Pass criteria: at least five nodes can be started and observed, churn or restart does not cause permanent divergence, and lagging nodes recover. If local resources make this impractical, record CPU, memory, port, or time constraints and keep the three-node evidence as the required baseline.
 
+## Automated churn and lag recovery scripts
+
+Two repository scripts provide the required restart/rejoin and lag recovery evidence under `evidence/v2.2.15/`:
+
+```bash
+bash scripts/v2-2-15-p2p-churn-rejoin-evidence.sh
+bash scripts/v2-2-15-p2p-lag-recovery-evidence.sh
+```
+
+Both scripts start local `libp2p-real` rehearsal nodes, use unique default port ranges, write per-node logs plus endpoint snapshots, emit explicit `PASS:`/`FAIL:` lines, and preserve the stopped node data directory between stop and restart. The scripts mine blocks only through the public RPC endpoint as an external operator/client action; they do not embed miner behavior in the node and do not change consensus rules.
+
+The churn/rejoin script records `/health`, `/status`, `/p2p/status`, `/p2p/peers`, `/p2p/propagation`, `/p2p/topics`, `/p2p/topology`, `/sync/status`, `/sync/missing`, `/tips`, `/dag`, `/orphans`, and `/admin/dag/consistency` snapshots for initial, stopped-node, and rejoined phases. The lag recovery script records the same diagnostics for initial, lagging-offline, and recovered phases. The `/status` and `/p2p/status` outputs include the diagnostics needed for this release gate: local peer id, chain id, peer count, connected peer ids, selected tip, current height, persisted block count, P2P mode, real-network peer semantics, peer recovery counters, and sync selection details.
+
+Key environment overrides:
+
+- `PULSEDAGD_BIN` points the scripts at a prebuilt `pulsedagd` binary.
+- `PULSEDAG_REHEARSAL_EVIDENCE_ROOT` changes the evidence root.
+- `PULSEDAG_REHEARSAL_RUNTIME_ROOT` changes runtime data location.
+- `PULSEDAG_REHEARSAL_RPC_BASE_PORT` and `PULSEDAG_REHEARSAL_P2P_BASE_PORT` change port ranges.
+- `PULSEDAG_REHEARSAL_REJOIN_NODE` selects the non-bootstrap node for churn/rejoin.
+- `PULSEDAG_REHEARSAL_CHURN_ADVANCE_BLOCKS` optionally produces blocks through the external RPC path during the churn window; the default `0` keeps the baseline restart/rejoin drill focused on process and peer recovery in environments where local libp2p propagation is still being qualified.
+- `PULSEDAG_REHEARSAL_LAG_NODE` and `PULSEDAG_REHEARSAL_LAG_ADVANCE_BLOCKS` select the lagging node and the optional number of blocks produced while it is offline; the default `0` captures no-DB-reset lag/recovery mechanics, while setting it above zero turns the script into a stricter block catch-up rehearsal.
+
 ## Phase 3: peer churn evidence
 
 Exercise at least two churn events:
@@ -85,7 +108,7 @@ Exercise at least two churn events:
 - Temporarily stop multiple peers while retaining at least one connected path.
 - Restart the bootnode after peers have discovered each other, if practical.
 
-For each event, capture pre-event and post-event peer lists, P2P status, sync status, logs, and convergence notes.
+For each event, capture pre-event and post-event peer lists, P2P status, sync status, logs, and convergence notes. At minimum, run `bash scripts/v2-2-15-p2p-churn-rejoin-evidence.sh` to automate the required non-bootstrap restart/rejoin evidence.
 
 ## Phase 4: lagging-node recovery evidence
 
@@ -95,7 +118,7 @@ For each event, capture pre-event and post-event peer lists, P2P status, sync st
 4. Confirm node C requests, receives, or otherwise recovers missing data.
 5. Capture `/sync/status`, `/sync/missing`, peer diagnostics, and final convergence snapshots.
 
-Pass criteria: the lagging node catches up or the diagnostics clearly identify a release-blocking recovery issue.
+Pass criteria: the lagging node catches up or the diagnostics clearly identify a release-blocking recovery issue. At minimum, run `bash scripts/v2-2-15-p2p-lag-recovery-evidence.sh` to automate the required offline lag and no-DB-reset recovery evidence.
 
 ## Phase 5: chain-id isolation evidence
 
