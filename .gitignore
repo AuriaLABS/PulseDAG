@@ -1,8 +1,33 @@
-/target
-/data
+# Rust build output
+/target/
+**/*.rs.bk
 
-/evidence/v2.2.15/p2p-rehearsal/*/runtime/
-/evidence/v2.2.15/p2p-rehearsal/*/logs/
-/evidence/v2.2.15/p2p-rehearsal/*/node-*/
-/evidence/v2.2.15/p2p-rehearsal/*/summary.txt
-/evidence/v2.2.15/p2p-rehearsal/*/rehearsal-config.json
+# PulseDAG local runtime data
+/data/
+
+# Local env files
+.env
+.env.*
+!.env.example
+
+# Generated release/rehearsal evidence artifacts
+# Keep curated Markdown evidence and summaries tracked; ignore bulky runtime/log output.
+/evidence/**/logs/
+/evidence/**/runtime/
+/evidence/**/node-*/
+/evidence/**/p2p-rehearsal/*/logs/
+/evidence/**/p2p-rehearsal/*/runtime/
+/evidence/**/p2p-rehearsal/*/node-*/
+/evidence/**/p2p-rehearsal/*/summary.txt
+/evidence/**/p2p-rehearsal/*/rehearsal-config.json
+/evidence/**/*.log
+/evidence/**/*.tmp
+
+# Editor and OS noise
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
