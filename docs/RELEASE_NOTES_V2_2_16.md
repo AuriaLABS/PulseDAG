@@ -34,6 +34,26 @@ v2.2.16 focuses on:
 - v2.2.16 is not a v2.3.0 readiness claim and does not claim public-testnet readiness.
 - kHeavyHash/PoW alignment must not be presented as full Kaspa or GHOSTDAG compatibility.
 
+## Mining submit rejection taxonomy
+
+`POST /mining/submit` responses are machine-readable for miner clients. The response payload keeps `ok=true` for validation outcomes and uses `data.accepted` plus stable `data.reason_code` values so miners can branch without parsing human text. v2.2.16 stabilizes these submit classes:
+
+| `reason_code` | Meaning | Miner action |
+| --- | --- | --- |
+| `accepted` | Block was accepted. | Continue with fresh work. |
+| `stale_template` | Template, parents, selected tip, mempool view, or freshness window no longer matches node state. | Refresh template and retry. |
+| `invalid_pow` | Header does not satisfy current PoW/target validation. | Discard nonce/header and verify target comparison. |
+| `malformed_block` | Block failed structural validation. | Rebuild from a fresh template. |
+| `invalid_height` | Submitted height does not match the template/node expectation. | Refresh template. |
+| `invalid_parent` | Submitted parent set is invalid when block acceptance runs. | Refresh template. |
+| `duplicate_block` | Block hash already exists in the node DAG. | Stop resubmitting that block and fetch fresh work. |
+| `invalid_coinbase` | Reserved stable class for coinbase-specific submit failures when surfaced separately. | Check miner address/coinbase construction. |
+| `invalid_transaction` | Template transaction set or block transactions are invalid. | Refresh template. |
+| `chain_id_mismatch` | Reserved for chain/network mismatch when submit carries chain identity. | Check miner node/network configuration. |
+| `internal_error` | Storage or unexpected node-side failure while processing a submit. | Check node logs and retry after recovery. |
+
+Legacy template-specific classes such as `missing_template_id` and `unknown_template` remain machine-readable and are treated as refresh-template outcomes. Detailed stale-template subreasons remain in `pow_rejection_reason` as `reason_code=<subreason>` text for operators, while the top-level stable class remains `stale_template`.
+
 ## Required validation before closeout
 
 Before closing v2.2.16, collect output for:
