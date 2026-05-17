@@ -9,8 +9,8 @@ This repository is aligned to the **v2.2.16 miner/node contract hardening milest
 - Acceptance semantics: **256-bit hash vs 256-bit target comparison**.
 - Current milestone: **v2.2.16 miner/node contract hardening**, building on v2.2.15 sustained P2P rehearsal evidence.
 - Miner architecture: external `pulsedag-miner` only; no embedded node miner and no pool logic.
-- v2.2.16 scope: canonical miner/node template contract, submit validation, stale template handling, target/difficulty checks, error taxonomy, miner diagnostics, external miner integration evidence, CPU miner hardening, and optional experimental GPU miner work only if feature-gated and non-blocking.
-- GPU mining: allowed only inside the standalone external miner, optional, experimental, CPU-verified before submit, and not required for default builds or v2.2.16 closeout when no GPU is available.
+- v2.2.16 scope: external miner/node contract hardening, mining template freshness and expiry behavior, stable submit rejection taxonomy, miner telemetry and worker metrics, multi-miner rehearsal, CPU miner hardening, and optional experimental GPU backend planning only after the canonical PoW adapter exists.
+- GPU mining: allowed only inside the standalone external miner, optional, experimental, gated behind the canonical PoW adapter, CPU-verified for every GPU-found nonce before submit, and not required for default builds or v2.2.16 closeout when no GPU is available.
 - P2P architecture: real `libp2p-real` mode with chain-id isolated block, tx, and sync topics.
 - Smart contracts: out of scope in v2.2.x.
 - v2.2.15 is the sustained P2P rehearsal evidence release before miner/node contract hardening; **it does not claim v2.3.0 readiness**.
@@ -29,7 +29,7 @@ This repository is aligned to the **v2.2.16 miner/node contract hardening milest
 7. Verify B/C receive or sync the block.
 8. Restart B and verify it catches up.
 9. Add churn, lagging-node recovery, chain-id isolation, and convergence checks for v2.2.15 evidence.
-10. In v2.2.16, verify miner template fetch, submit validation, stale template rejection, miner restart/reconnect, CPU miner evidence, and optional GPU smoke evidence when available.
+10. In v2.2.16, verify miner template fetch, template freshness/expiry behavior, submit validation, stable rejection codes, miner restart/reconnect, CPU miner evidence, telemetry and worker metrics, multi-miner rehearsal, and optional GPU smoke evidence only when the canonical PoW adapter and host GPU support are available.
 11. Collect `/health`, `/status`, `/p2p/status`, `/p2p/peers`, `/p2p/propagation`, `/sync/status`, and mining diagnostics when available.
 
 ## Key documents
