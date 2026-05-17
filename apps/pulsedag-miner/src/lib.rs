@@ -1,6 +1,6 @@
 use anyhow::{anyhow, Result};
 use pulsedag_core::pow::{
-    canonical_pow_engine, pow_accepts, pow_hash_score_u64, pow_preimage_bytes, PowEngine,
+    canonical_pow_adapter, pow_accepts, pow_hash_score_u64, pow_preimage_bytes,
 };
 use pulsedag_core::types::BlockHeader;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -19,7 +19,10 @@ pub fn miner_pow_preimage_bytes(header: &BlockHeader) -> Vec<u8> {
 }
 
 pub fn miner_pow_hash_hex(header: &BlockHeader) -> String {
-    canonical_pow_engine().evaluate_header(header).hash_hex
+    canonical_pow_adapter()
+        .evaluate_header(header)
+        .map(|attempt| attempt.final_hash.hash_hex)
+        .unwrap_or_default()
 }
 
 pub fn miner_pow_score_u64(header: &BlockHeader) -> u64 {
@@ -36,8 +39,10 @@ fn miner_pow_eval_at_target_bits(header: &BlockHeader, target_bits: u32) -> Resu
     }
     let mut h = header.clone();
     h.difficulty = target_bits;
-    let eval = canonical_pow_engine().evaluate_header(&h);
-    Ok((eval.accepted, eval.hash_hex))
+    let attempt = canonical_pow_adapter()
+        .evaluate_header(&h)
+        .map_err(|reason| anyhow!("invalid PoW header material: {}", reason.code()))?;
+    Ok((attempt.comparison.accepted(), attempt.final_hash.hash_hex))
 }
 
 pub fn miner_pow_accepts_target_bits(header: &BlockHeader, target_bits: u32) -> Result<bool> {
@@ -140,8 +145,13 @@ pub fn mine_header_strided(
 
 #[cfg(test)]
 mod tests {
-    use super::{miner_pow_hash_hex, miner_pow_preimage_bytes, nonce_for_attempt};
-    use pulsedag_core::pow::{canonical_pow_engine, target_from_bits, target_hex, PowEngine};
+    use super::{
+        miner_pow_accepts, miner_pow_hash_hex, miner_pow_preimage_bytes, miner_pow_score_u64,
+        nonce_for_attempt,
+    };
+    use pulsedag_core::pow::{
+        canonical_pow_adapter, canonical_pow_engine, target_from_bits, target_hex, PowEngine,
+    };
     use pulsedag_core::types::BlockHeader;
 
     #[test]
@@ -185,6 +195,31 @@ mod tests {
             canonical_pow_engine().evaluate_header(&header).hash_hex
         );
         assert!(!miner_pow_preimage_bytes(&header).is_empty());
+    }
+
+    #[test]
+    fn cpu_miner_and_canonical_adapter_evaluate_same_nonce() {
+        let header = BlockHeader {
+            version: 1,
+            parents: vec!["b".into(), "a".into()],
+            timestamp: 2,
+            nonce: 11,
+            difficulty: 0x207fffff,
+            merkle_root: "m".into(),
+            state_root: "s".into(),
+            blue_score: 2,
+            height: 2,
+        };
+        let adapter = canonical_pow_adapter();
+        let attempt = adapter.evaluate_header(&header).expect("adapter attempt");
+
+        assert_eq!(miner_pow_hash_hex(&header), attempt.final_hash.hash_hex);
+        assert_eq!(miner_pow_score_u64(&header), attempt.final_hash.score_u64);
+        assert_eq!(miner_pow_accepts(&header), attempt.comparison.accepted());
+        assert_eq!(
+            miner_pow_preimage_bytes(&header),
+            attempt.material.pre_pow_bytes
+        );
     }
 
     #[test]

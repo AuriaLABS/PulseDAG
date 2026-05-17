@@ -159,6 +159,74 @@ pub struct PowEvaluation {
     pub accepted: bool,
 }
 
+/// Canonical target comparison outcome shared by node validation and miner backends.
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub enum PowTargetComparison {
+    /// The final 32-byte PoW hash is lexicographically less than or equal to the
+    /// canonical 256-bit target.
+    MeetsTarget,
+    /// The final 32-byte PoW hash is above the canonical 256-bit target.
+    AboveTarget,
+}
+
+impl PowTargetComparison {
+    pub fn accepted(self) -> bool {
+        matches!(self, Self::MeetsTarget)
+    }
+}
+
+/// Canonical compact target expansion exposed to miner backends.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CanonicalPowTarget {
+    /// Compact target/difficulty bits exactly as carried by `BlockHeader`.
+    pub bits: u32,
+    /// Expanded canonical 256-bit target in big-endian byte order.
+    pub target: PowTarget,
+    /// Hex representation of `target`.
+    pub target_hex: String,
+    /// Big-endian leading u64 projection retained for legacy telemetry.
+    pub target_u64: u64,
+    /// True when compact expansion produces the all-zero target. This is a safe
+    /// fail-closed target for ordinary PoW comparison, not a miner override.
+    pub is_zero: bool,
+}
+
+/// Nonce-independent canonical material that external backends must hash.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CanonicalPowMaterial {
+    /// Canonical pre-PoW bytes from `canonical_mining_preimage_bytes`; nonce is
+    /// deliberately excluded and must be supplied separately.
+    pub pre_pow_bytes: Vec<u8>,
+    /// Deterministically sorted parents as encoded in `pre_pow_bytes`.
+    pub sorted_parents: Vec<String>,
+    /// Header nonce captured for convenience; backends may test any u64 nonce.
+    pub header_nonce: u64,
+    /// Compact target and expanded 256-bit target for this header.
+    pub target: CanonicalPowTarget,
+}
+
+/// Final canonical PoW hash representation for a specific nonce.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CanonicalPowHash {
+    /// Miner-controlled nonce used for this finalization.
+    pub nonce: u64,
+    /// Final kHeavyHash output in big-endian byte order.
+    pub hash: [u8; 32],
+    /// Hex representation of `hash`.
+    pub hash_hex: String,
+    /// Big-endian leading u64 projection retained for legacy telemetry.
+    pub score_u64: u64,
+}
+
+/// Complete canonical adapter result for one nonce attempt.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CanonicalPowAttempt {
+    pub algorithm: PowAlgorithm,
+    pub material: CanonicalPowMaterial,
+    pub final_hash: CanonicalPowHash,
+    pub comparison: PowTargetComparison,
+}
+
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub enum PowRejectReason {
     ParentCountTooLarge,
@@ -203,6 +271,35 @@ pub trait PowEngine {
         let difficulty = difficulty.max(1);
         u64::MAX / difficulty
     }
+    /// Evaluate already-canonical pre-PoW bytes with an explicit nonce and
+    /// compact target. This is the single finalization path used by validation
+    /// and by the public miner adapter.
+    fn evaluate_pre_pow_bytes_with_nonce(
+        &self,
+        pre_pow_bytes: &[u8],
+        nonce: u64,
+        target_bits: u32,
+    ) -> PowEvaluation {
+        let digest = kheavyhash_digest(pre_pow_bytes, nonce);
+        let mut hash = [0u8; 32];
+        hash.copy_from_slice(&digest.as_bytes());
+        let hash_hex = hex::encode(hash);
+        let mut prefix = [0u8; 8];
+        prefix.copy_from_slice(&hash[..8]);
+        let score_u64 = u64::from_be_bytes(prefix);
+        let target = target_from_bits(target_bits);
+        let target_u64 = leading_u64(&target);
+        let target_hex = target_hex(&target);
+        PowEvaluation {
+            algorithm: self.algorithm(),
+            hash_hex,
+            hash,
+            score_u64,
+            target_u64,
+            target_hex,
+            accepted: compare_pow_hash_to_target(&hash, &target),
+        }
+    }
     fn evaluate_preimage(&self, preimage: &[u8], difficulty: u64) -> PowEvaluation {
         let digest = kheavyhash_digest(preimage, 0);
         let mut hash = [0u8; 32];
@@ -224,27 +321,11 @@ pub trait PowEngine {
     }
     fn evaluate_header(&self, header: &BlockHeader) -> PowEvaluation {
         match PowHeaderPreimage::from_header(header).to_bytes_checked() {
-            Ok(pre_pow_bytes) => {
-                let digest = kheavyhash_digest(&pre_pow_bytes, header.nonce);
-                let mut hash = [0u8; 32];
-                hash.copy_from_slice(&digest.as_bytes());
-                let hash_hex = hex::encode(hash);
-                let mut prefix = [0u8; 8];
-                prefix.copy_from_slice(&hash[..8]);
-                let score_u64 = u64::from_be_bytes(prefix);
-                let target = target_from_bits(header.difficulty);
-                let target_u64 = leading_u64(&target);
-                let target_hex = target_hex(&target);
-                PowEvaluation {
-                    algorithm: self.algorithm(),
-                    hash_hex,
-                    hash,
-                    score_u64,
-                    target_u64,
-                    target_hex,
-                    accepted: compare_pow_hash_to_target(&hash, &target),
-                }
-            }
+            Ok(pre_pow_bytes) => self.evaluate_pre_pow_bytes_with_nonce(
+                &pre_pow_bytes,
+                header.nonce,
+                header.difficulty,
+            ),
             Err(_) => PowEvaluation {
                 algorithm: self.algorithm(),
                 hash_hex: String::new(),
@@ -291,6 +372,125 @@ impl PowEngine for KaspaKHeavyHashEngine {
 
 pub fn canonical_pow_engine() -> KaspaKHeavyHashEngine {
     KaspaKHeavyHashEngine
+}
+
+/// Miner-safe adapter for CPU, GPU, and future external backends.
+///
+/// The adapter exposes the same nonce-independent pre-PoW bytes, compact target
+/// expansion, final hash bytes/hex, and comparison semantics used by core block
+/// validation. It never invents a fixed-size header format and delegates all
+/// consensus-critical preimage encoding to `PowHeaderPreimage`, which delegates
+/// to `canonical_mining_preimage_bytes`.
+#[derive(Debug, Clone, Copy)]
+pub struct CanonicalPowAdapter {
+    engine: CanonicalPowEngine,
+}
+
+impl Default for CanonicalPowAdapter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl CanonicalPowAdapter {
+    pub fn new() -> Self {
+        Self {
+            engine: canonical_pow_engine(),
+        }
+    }
+
+    pub fn algorithm(&self) -> PowAlgorithm {
+        self.engine.algorithm()
+    }
+
+    pub fn algorithm_name(&self) -> &'static str {
+        self.engine.algorithm_name()
+    }
+
+    pub fn engine_name(&self) -> &'static str {
+        self.engine.engine_name()
+    }
+
+    /// Expand compact header target bits exactly like node validation.
+    pub fn target_from_compact_bits(&self, bits: u32) -> CanonicalPowTarget {
+        let target = target_from_bits(bits);
+        CanonicalPowTarget {
+            bits,
+            target,
+            target_hex: target_hex(&target),
+            target_u64: leading_u64(&target),
+            is_zero: target.iter().all(|&b| b == 0),
+        }
+    }
+
+    /// Return nonce-independent canonical pre-PoW material for a header.
+    pub fn pre_pow_material(
+        &self,
+        header: &BlockHeader,
+    ) -> Result<CanonicalPowMaterial, PowRejectReason> {
+        let preimage = PowHeaderPreimage::from_header(header);
+        let pre_pow_bytes = preimage.to_bytes_checked()?;
+        let mut sorted_parents = header.parents.clone();
+        sorted_parents.sort_unstable();
+        Ok(CanonicalPowMaterial {
+            pre_pow_bytes,
+            sorted_parents,
+            header_nonce: header.nonce,
+            target: self.target_from_compact_bits(header.difficulty),
+        })
+    }
+
+    /// Evaluate a pre-PoW material snapshot with an explicit u64 nonce.
+    pub fn evaluate_material_with_nonce(
+        &self,
+        material: &CanonicalPowMaterial,
+        nonce: u64,
+    ) -> CanonicalPowAttempt {
+        let evaluation = self.engine.evaluate_pre_pow_bytes_with_nonce(
+            &material.pre_pow_bytes,
+            nonce,
+            material.target.bits,
+        );
+        let comparison = if evaluation.accepted {
+            PowTargetComparison::MeetsTarget
+        } else {
+            PowTargetComparison::AboveTarget
+        };
+        CanonicalPowAttempt {
+            algorithm: evaluation.algorithm,
+            material: material.clone(),
+            final_hash: CanonicalPowHash {
+                nonce,
+                hash: evaluation.hash,
+                hash_hex: evaluation.hash_hex,
+                score_u64: evaluation.score_u64,
+            },
+            comparison,
+        }
+    }
+
+    /// Evaluate the header's own nonce using canonical node-validation behavior.
+    pub fn evaluate_header(
+        &self,
+        header: &BlockHeader,
+    ) -> Result<CanonicalPowAttempt, PowRejectReason> {
+        let material = self.pre_pow_material(header)?;
+        Ok(self.evaluate_material_with_nonce(&material, header.nonce))
+    }
+
+    /// Compare a final 32-byte hash to a compact target using canonical rules.
+    pub fn compare_hash_to_target_bits(&self, hash: &[u8; 32], bits: u32) -> PowTargetComparison {
+        let target = target_from_bits(bits);
+        if compare_pow_hash_to_target(hash, &target) {
+            PowTargetComparison::MeetsTarget
+        } else {
+            PowTargetComparison::AboveTarget
+        }
+    }
+}
+
+pub fn canonical_pow_adapter() -> CanonicalPowAdapter {
+    CanonicalPowAdapter::new()
 }
 
 fn kheavyhash_digest(pre_pow_bytes: &[u8], nonce: u64) -> KaspaHash {
@@ -907,6 +1107,91 @@ mod tests {
         let from_header = engine.evaluate_header(&h);
         let from_preimage = engine.evaluate_preimage(&preimage, h.difficulty as u64);
         assert_eq!(from_header, from_preimage);
+    }
+
+    #[test]
+    fn canonical_adapter_matches_core_validation_for_same_header_and_nonce() {
+        let h = sample_header();
+        let adapter = canonical_pow_adapter();
+        let attempt = adapter.evaluate_header(&h).expect("canonical header");
+        let core = pow_evaluate(&h);
+
+        assert_eq!(attempt.algorithm, core.algorithm);
+        assert_eq!(attempt.final_hash.hash, core.hash);
+        assert_eq!(attempt.final_hash.hash_hex, core.hash_hex);
+        assert_eq!(attempt.final_hash.score_u64, core.score_u64);
+        assert_eq!(
+            attempt.material.target.target,
+            target_from_bits(h.difficulty)
+        );
+        assert_eq!(attempt.material.target.target_hex, core.target_hex);
+        assert_eq!(attempt.comparison.accepted(), core.accepted);
+        assert_eq!(verify_work(&h), attempt.comparison.accepted());
+    }
+
+    #[test]
+    fn canonical_adapter_parent_ordering_is_deterministic() {
+        let mut left = sample_header();
+        left.parents = vec!["cc".into(), "aa".into(), "bb".into()];
+        let mut right = left.clone();
+        right.parents = vec!["bb".into(), "cc".into(), "aa".into()];
+
+        let adapter = canonical_pow_adapter();
+        let left_material = adapter.pre_pow_material(&left).expect("left material");
+        let right_material = adapter.pre_pow_material(&right).expect("right material");
+
+        assert_eq!(left_material.sorted_parents, vec!["aa", "bb", "cc"]);
+        assert_eq!(left_material.sorted_parents, right_material.sorted_parents);
+        assert_eq!(left_material.pre_pow_bytes, right_material.pre_pow_bytes);
+    }
+
+    #[test]
+    fn canonical_adapter_nonce_only_changes_final_pow_result() {
+        let mut h = sample_header();
+        h.nonce = 7;
+        let adapter = canonical_pow_adapter();
+        let material = adapter.pre_pow_material(&h).expect("material");
+        let first = adapter.evaluate_material_with_nonce(&material, 7);
+        let second = adapter.evaluate_material_with_nonce(&material, 8);
+
+        assert_eq!(first.material.pre_pow_bytes, second.material.pre_pow_bytes);
+        assert_eq!(first.material.target, second.material.target);
+        assert_eq!(first.final_hash.nonce, 7);
+        assert_eq!(second.final_hash.nonce, 8);
+        assert_ne!(first.final_hash.hash, second.final_hash.hash);
+    }
+
+    #[test]
+    fn canonical_adapter_target_comparison_matches_core_rule() {
+        let h = sample_header();
+        let adapter = canonical_pow_adapter();
+        let attempt = adapter.evaluate_header(&h).expect("attempt");
+        assert_eq!(
+            adapter.compare_hash_to_target_bits(&attempt.final_hash.hash, h.difficulty),
+            attempt.comparison
+        );
+        assert_eq!(
+            attempt.comparison.accepted(),
+            compare_pow_hash_to_target(&attempt.final_hash.hash, &target_from_bits(h.difficulty))
+        );
+    }
+
+    #[test]
+    fn canonical_adapter_handles_invalid_cases_safely() {
+        let adapter = canonical_pow_adapter();
+        let zero_target = adapter.target_from_compact_bits(0x01000000);
+        assert!(zero_target.is_zero);
+        assert_eq!(
+            adapter.compare_hash_to_target_bits(&[1u8; 32], 0x01000000),
+            PowTargetComparison::AboveTarget
+        );
+
+        let mut malformed = sample_header();
+        malformed.state_root = "s".repeat((u16::MAX as usize) + 1);
+        assert_eq!(
+            adapter.evaluate_header(&malformed),
+            Err(PowRejectReason::StateRootTooLong)
+        );
     }
 
     #[test]
