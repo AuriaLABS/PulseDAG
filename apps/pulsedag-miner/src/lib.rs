@@ -14,6 +14,42 @@ pub struct NonceSearchResult {
     pub final_hash_hex: String,
 }
 
+/// Internal abstraction for mining backends.
+///
+/// The default implementation is [`CpuMiningBackend`], which intentionally
+/// delegates to the existing strided CPU mining path so current miner behavior
+/// stays unchanged while leaving room for future backends.
+pub trait MiningBackend: Send + Sync {
+    fn name(&self) -> &'static str;
+
+    fn mine_header(
+        &self,
+        header: BlockHeader,
+        max_tries: u64,
+        threads: usize,
+        target_bits: u32,
+    ) -> Result<NonceSearchResult>;
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+pub struct CpuMiningBackend;
+
+impl MiningBackend for CpuMiningBackend {
+    fn name(&self) -> &'static str {
+        "cpu"
+    }
+
+    fn mine_header(
+        &self,
+        header: BlockHeader,
+        max_tries: u64,
+        threads: usize,
+        target_bits: u32,
+    ) -> Result<NonceSearchResult> {
+        mine_header_strided(header, max_tries, threads, target_bits)
+    }
+}
+
 pub fn miner_pow_preimage_bytes(header: &BlockHeader) -> Vec<u8> {
     pow_preimage_bytes(header)
 }
@@ -147,7 +183,7 @@ pub fn mine_header_strided(
 mod tests {
     use super::{
         miner_pow_accepts, miner_pow_hash_hex, miner_pow_preimage_bytes, miner_pow_score_u64,
-        nonce_for_attempt,
+        nonce_for_attempt, CpuMiningBackend, MiningBackend,
     };
     use pulsedag_core::pow::{
         canonical_pow_adapter, canonical_pow_engine, target_from_bits, target_hex, PowEngine,
@@ -239,6 +275,58 @@ mod tests {
         let mined = super::mine_header_strided(header, 10_000, 4, target_bits)
             .expect("mining should succeed");
         assert!(mined.accepted);
+    }
+
+    #[test]
+    fn cpu_backend_uses_strided_cpu_path() {
+        let target_bits = 1;
+        let header = BlockHeader {
+            version: 1,
+            parents: vec!["a".into()],
+            timestamp: 1,
+            nonce: 0,
+            difficulty: target_bits,
+            merkle_root: "m".into(),
+            state_root: "s".into(),
+            blue_score: 1,
+            height: 1,
+        };
+        let backend = CpuMiningBackend;
+
+        let via_backend = backend
+            .mine_header(header.clone(), 16, 1, target_bits)
+            .expect("backend mining should run");
+        let direct = super::mine_header_strided(header, 16, 1, target_bits)
+            .expect("direct CPU mining should run");
+
+        assert_eq!(backend.name(), "cpu");
+        assert_eq!(via_backend.accepted, direct.accepted);
+        assert_eq!(via_backend.tries, direct.tries);
+        assert_eq!(via_backend.header.nonce, direct.header.nonce);
+        assert_eq!(via_backend.final_hash_hex, direct.final_hash_hex);
+    }
+
+    #[test]
+    fn cpu_backend_preserves_max_tries_floor() {
+        let target_bits = 1;
+        let header = BlockHeader {
+            version: 1,
+            parents: vec!["a".into()],
+            timestamp: 1,
+            nonce: 0,
+            difficulty: target_bits,
+            merkle_root: "m".into(),
+            state_root: "s".into(),
+            blue_score: 1,
+            height: 1,
+        };
+
+        let mined = CpuMiningBackend
+            .mine_header(header, 0, 4, target_bits)
+            .expect("backend should normalize max_tries like CPU path");
+
+        assert_eq!(mined.tries, 1);
+        assert_eq!(mined.header.nonce, 0);
     }
 
     #[test]
