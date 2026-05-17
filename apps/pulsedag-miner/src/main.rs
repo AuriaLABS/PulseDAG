@@ -65,6 +65,48 @@ struct MiningResult {
     target_hex: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MineOnceOutcome {
+    Submitted,
+    SkippedStaleTemplate,
+    NodeRejectedStaleTemplate,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TemplateSkipReason {
+    Expired,
+    NearExpiry,
+}
+
+impl TemplateSkipReason {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Expired => "expired",
+            Self::NearExpiry => "near_expiry",
+        }
+    }
+
+    fn message(self) -> &'static str {
+        match self {
+            Self::Expired => "template already expired",
+            Self::NearExpiry => "template too close to expiry",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TemplateFreshness {
+    now_unix: u64,
+    expires_at_unix: u64,
+    remaining_ms: u64,
+    skip_reason: Option<TemplateSkipReason>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LoopRefreshDecision {
+    RefreshWork,
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cfg = parse_args()?;
@@ -73,13 +115,17 @@ async fn main() -> Result<()> {
 
     if cfg.loop_mode {
         loop {
-            if let Err(e) = mine_once(&client, &cfg, Arc::clone(&backend)).await {
-                eprintln!("mine loop error: {e}");
+            match mine_once(&client, &cfg, Arc::clone(&backend)).await {
+                Ok(outcome) => {
+                    let _decision = loop_refresh_decision_after_outcome(outcome);
+                }
+                Err(e) => eprintln!("mine loop error: {e}"),
             }
             sleep(Duration::from_millis(cfg.sleep_ms)).await;
         }
     } else {
-        mine_once(&client, &cfg, backend).await
+        mine_once(&client, &cfg, backend).await?;
+        Ok(())
     }
 }
 
@@ -191,33 +237,63 @@ fn submit_rejection_action(reason_code: &str) -> &'static str {
     }
 }
 
+fn evaluate_template_freshness(
+    now_unix: u64,
+    expires_at_unix: u64,
+    refresh_before_expiry_ms: u64,
+) -> TemplateFreshness {
+    let now_ms = now_unix.saturating_mul(1000);
+    let expiry_ms = expires_at_unix.saturating_mul(1000);
+    let remaining_ms = expiry_ms.saturating_sub(now_ms);
+
+    let skip_reason = if now_ms >= expiry_ms {
+        Some(TemplateSkipReason::Expired)
+    } else if remaining_ms <= refresh_before_expiry_ms {
+        Some(TemplateSkipReason::NearExpiry)
+    } else {
+        None
+    };
+
+    TemplateFreshness {
+        now_unix,
+        expires_at_unix,
+        remaining_ms,
+        skip_reason,
+    }
+}
+
+#[cfg(test)]
 fn should_skip_stale_submit(
     now_unix: u64,
     expires_at_unix: u64,
     refresh_before_expiry_ms: u64,
 ) -> Option<String> {
-    let now_ms = now_unix.saturating_mul(1000);
-    let expiry_ms = expires_at_unix.saturating_mul(1000);
-
-    if now_ms >= expiry_ms {
-        return Some(format!(
-            "template already expired (now_unix={} expires_at_unix={})",
-            now_unix, expires_at_unix
-        ));
-    }
-
-    let remaining_ms = expiry_ms.saturating_sub(now_ms);
-    if remaining_ms <= refresh_before_expiry_ms {
-        return Some(format!(
-            "template too close to expiry (remaining_ms={} threshold_ms={} now_unix={} expires_at_unix={})",
-            remaining_ms, refresh_before_expiry_ms, now_unix, expires_at_unix
-        ));
-    }
-
-    None
+    let freshness =
+        evaluate_template_freshness(now_unix, expires_at_unix, refresh_before_expiry_ms);
+    freshness.skip_reason.map(|reason| {
+        format!(
+            "{} (skip_reason={} remaining_ms={} threshold_ms={} now_unix={} expires_at_unix={})",
+            reason.message(),
+            reason.as_str(),
+            freshness.remaining_ms,
+            refresh_before_expiry_ms,
+            freshness.now_unix,
+            freshness.expires_at_unix
+        )
+    })
 }
 
-async fn mine_once(client: &Client, cfg: &Config, backend: Arc<dyn MiningBackend>) -> Result<()> {
+fn loop_refresh_decision_after_outcome(_outcome: MineOnceOutcome) -> LoopRefreshDecision {
+    // Loop mode deliberately returns to /mining/template after every iteration. This keeps
+    // stale-template rejections retryable without resubmitting the same stale work.
+    LoopRefreshDecision::RefreshWork
+}
+
+async fn mine_once(
+    client: &Client,
+    cfg: &Config,
+    backend: Arc<dyn MiningBackend>,
+) -> Result<MineOnceOutcome> {
     let template_url = format!("{}/mining/template", cfg.node.trim_end_matches('/'));
     let submit_url = format!("{}/mining/submit", cfg.node.trim_end_matches('/'));
 
@@ -272,14 +348,25 @@ async fn mine_once(client: &Client, cfg: &Config, backend: Arc<dyn MiningBackend
         .duration_since(UNIX_EPOCH)
         .context("system clock is before UNIX_EPOCH")?
         .as_secs();
-    if let Some(reason) = should_skip_stale_submit(
+    let freshness = evaluate_template_freshness(
         now_unix,
         template.expires_at_unix,
         cfg.refresh_before_expiry_ms,
-    ) {
-        println!("stale-template safety: skip submit: {}", reason);
+    );
+    if let Some(skip_reason) = freshness.skip_reason {
+        println!(
+            "stale-template safety: skip submit: template_id={} height={} created_at_unix={} expires_at_unix={} remaining_ms={} skip_reason={} reason={} threshold_ms={}",
+            template_id,
+            block.header.height,
+            template.created_at_unix,
+            template.expires_at_unix,
+            freshness.remaining_ms,
+            skip_reason.as_str(),
+            skip_reason.message(),
+            cfg.refresh_before_expiry_ms
+        );
         println!("action: refresh template and retry mining on latest work");
-        return Ok(());
+        return Ok(MineOnceOutcome::SkippedStaleTemplate);
     }
 
     let submit_resp = client
@@ -314,6 +401,9 @@ async fn mine_once(client: &Client, cfg: &Config, backend: Arc<dyn MiningBackend
                 "action: {}",
                 submit_rejection_action(data.reason_code.as_str())
             );
+            if data.reason_code == "stale_template" || data.stale_template {
+                return Ok(MineOnceOutcome::NodeRejectedStaleTemplate);
+            }
         }
     } else if let Some(err) = submit_api.error {
         let reason_code = err.code.to_ascii_lowercase();
@@ -323,12 +413,12 @@ async fn mine_once(client: &Client, cfg: &Config, backend: Arc<dyn MiningBackend
         );
         println!("action: {}", submit_rejection_action(reason_code.as_str()));
         if reason_code == "stale_template" {
-            return Ok(());
+            return Ok(MineOnceOutcome::NodeRejectedStaleTemplate);
         }
         return Err(anyhow!("submit rejected: {} - {}", err.code, err.message));
     }
 
-    Ok(())
+    Ok(MineOnceOutcome::Submitted)
 }
 
 async fn mine_header_with_backend(
@@ -376,27 +466,70 @@ async fn mine_header_with_backend(
 #[cfg(test)]
 mod tests {
     use super::{
-        parse_args_from, should_skip_stale_submit, submit_rejection_action, Block, BlockHeader,
-        SubmitRequest,
+        evaluate_template_freshness, loop_refresh_decision_after_outcome, parse_args_from,
+        should_skip_stale_submit, submit_rejection_action, Block, BlockHeader, LoopRefreshDecision,
+        MineOnceOutcome, SubmitRequest, TemplateSkipReason,
     };
 
     #[test]
-    fn skips_when_template_already_expired() {
+    fn stale_expired_template_skip_includes_reason_and_timing() {
+        let freshness = evaluate_template_freshness(100, 99, 1000);
+
+        assert!(freshness.skip_reason.is_some());
+        assert_eq!(freshness.skip_reason, Some(TemplateSkipReason::Expired));
+        assert_eq!(freshness.remaining_ms, 0);
+
         let reason = should_skip_stale_submit(100, 99, 1000).expect("must skip expired template");
-        assert!(reason.contains("already expired"));
+        assert!(reason.contains("template already expired"));
+        assert!(reason.contains("skip_reason=expired"));
+        assert!(reason.contains("remaining_ms=0"));
+        assert!(reason.contains("expires_at_unix=99"));
     }
 
     #[test]
-    fn skips_when_template_within_refresh_threshold() {
+    fn stale_near_expiry_template_skip_includes_reason_and_remaining_ms() {
+        let freshness = evaluate_template_freshness(100, 101, 1500);
+
+        assert!(freshness.skip_reason.is_some());
+        assert_eq!(freshness.skip_reason, Some(TemplateSkipReason::NearExpiry));
+        assert_eq!(freshness.remaining_ms, 1000);
+
         let reason = should_skip_stale_submit(100, 101, 1500)
             .expect("must skip template too close to expiry");
-        assert!(reason.contains("too close to expiry"));
+        assert!(reason.contains("template too close to expiry"));
+        assert!(reason.contains("skip_reason=near_expiry"));
+        assert!(reason.contains("remaining_ms=1000"));
+        assert!(reason.contains("threshold_ms=1500"));
     }
 
     #[test]
-    fn allows_submit_when_template_is_fresh_enough() {
-        let reason = should_skip_stale_submit(100, 105, 1000);
-        assert!(reason.is_none());
+    fn stale_fresh_template_allowed_when_outside_refresh_window() {
+        let freshness = evaluate_template_freshness(100, 105, 1000);
+
+        assert!(freshness.skip_reason.is_none());
+        assert_eq!(freshness.skip_reason, None);
+        assert_eq!(freshness.remaining_ms, 5000);
+        assert!(should_skip_stale_submit(100, 105, 1000).is_none());
+    }
+
+    #[test]
+    fn stale_node_side_rejection_is_retryable() {
+        let action = submit_rejection_action("stale_template");
+
+        assert!(action.contains("refresh template"));
+        assert!(action.contains("retry mining"));
+    }
+
+    #[test]
+    fn stale_loop_mode_refreshes_work_after_stale() {
+        assert_eq!(
+            loop_refresh_decision_after_outcome(MineOnceOutcome::NodeRejectedStaleTemplate),
+            LoopRefreshDecision::RefreshWork
+        );
+        assert_eq!(
+            loop_refresh_decision_after_outcome(MineOnceOutcome::SkippedStaleTemplate),
+            LoopRefreshDecision::RefreshWork
+        );
     }
 
     #[test]
