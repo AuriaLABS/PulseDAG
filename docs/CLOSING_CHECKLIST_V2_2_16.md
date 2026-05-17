@@ -14,24 +14,25 @@ v2.2.16 closes only when the external miner/node contract is canonical, tested, 
 - [ ] v2.3.0 remains a readiness decision only, not an automatic launch.
 - [ ] No smart contracts are added.
 - [ ] No contract runtime is enabled.
-- [ ] No pool logic is added.
+- [ ] No pool coordination logic is added inside `pulsedag-miner`.
 - [ ] The miner remains a standalone external application.
-- [ ] No consensus-rule change is included unless it fixes a documented safety bug with tests.
-- [ ] GPU work, if present, is optional, feature-gated, external-miner only, and non-blocking when no GPU is available.
+- [ ] No consensus-rule change is included.
+- [ ] No PoW semantic change is included.
+- [ ] No full Kaspa/GHOSTDAG compatibility claim is made.
+- [ ] No v3.0 or public-testnet readiness claim is made.
+- [ ] GPU work, if present, is optional, feature-gated, external-miner only, gated on the canonical PoW adapter, and non-blocking when no GPU is available.
 
 ## Required command gate
 
 Run these commands from the repository root and attach output or CI links:
 
 ```bash
-cargo fmt --all -- --check
+cargo fmt --check
 cargo test --workspace
-cargo build --workspace
 ```
 
-- [ ] `cargo fmt --all -- --check` passes.
+- [ ] `cargo fmt --check` passes.
 - [ ] `cargo test --workspace` passes.
-- [ ] `cargo build --workspace` passes.
 
 ## Miner/node contract gate
 
@@ -45,6 +46,7 @@ cargo build --workspace
 - [ ] Timestamp and timestamp bounds are documented.
 - [ ] `chain_id` behavior is documented.
 - [ ] `template_id` behavior is documented.
+- [ ] Template freshness and expiry behavior are documented.
 - [ ] Stale template behavior is documented.
 - [ ] Target/difficulty representation is documented.
 - [ ] Compatibility notes for existing miner clients are documented.
@@ -87,7 +89,9 @@ Stable error codes should be documented, including where applicable:
 - [ ] External miner constructs the canonical preimage.
 - [ ] External miner submits at least one valid block or test-profile proof.
 - [ ] Stale template rejection is evidenced.
+- [ ] Template expiry rejection is evidenced.
 - [ ] Miner restart/reconnect is evidenced.
+- [ ] Multi-miner rehearsal is evidenced without adding pool coordination logic.
 - [ ] Node restart recovery is evidenced when practical.
 - [ ] Evidence is written under `evidence/v2.2.16/`.
 - [ ] The integration uses `pulsedag-miner` or equivalent external miner behavior, not embedded node mining.
@@ -101,17 +105,18 @@ Stable error codes should be documented, including where applicable:
 - [ ] Worker nonce ranges do not overlap.
 - [ ] CPU miner refreshes stale templates.
 - [ ] CPU miner handles submit responses deterministically.
-- [ ] CPU miner logs hashrate, worker count, accepted submits, rejected submits, stale submits, current template id, and last error.
+- [ ] CPU miner logs hashrate, worker count, per-worker nonce ranges or progress, accepted submits, rejected submits, stale submits, current template id, and last error.
 
 ## Optional GPU gate
 
 GPU mining is optional and experimental in v2.2.16.
 
+- [ ] GPU backend is considered only after the canonical PoW adapter exists.
 - [ ] GPU backend is feature-gated if implemented.
 - [ ] Default build does not require GPU dependencies.
 - [ ] Machines without GPU can still build and pass mandatory v2.2.16 evidence.
 - [ ] CPU fallback remains available.
-- [ ] GPU-found nonce/result is CPU-verified before submit.
+- [ ] Every GPU-found nonce/result is CPU-verified before submit.
 - [ ] GPU smoke evidence is `PASS`, `SKIP`, or `NOT_REQUESTED` with reason.
 - [ ] GPU code does not add pool logic.
 - [ ] GPU code does not change consensus rules.
@@ -120,7 +125,7 @@ GPU mining is optional and experimental in v2.2.16.
 
 - [ ] Mining diagnostics are documented in `docs/MINER_NODE_CONTRACT_V2_2_16.md` or `docs/API_V1.md`.
 - [ ] Node-side mining diagnostics include current template id, target/difficulty, chain id, current tip, accepted submit count, rejected submit count, stale submit count, invalid PoW count, duplicate submit count, last submit error, and last accepted block where practical.
-- [ ] Miner-side diagnostics include backend, hashrate, workers, template id, accepted/rejected/stale submits, reconnect count, last node error, and last submit time where practical.
+- [ ] Miner-side diagnostics include backend, aggregate hashrate, worker count, per-worker metrics where practical, template id, accepted/rejected/stale submits, reconnect count, last node error, and last submit time where practical.
 - [ ] Diagnostics are read-only unless explicitly documented as admin-only.
 
 ## Release evidence script gate

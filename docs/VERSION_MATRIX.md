@@ -19,9 +19,9 @@ This matrix keeps release positioning clear across the current v2.2.x hardening 
 | v3.0 release candidates | v2.8.x |
 | Long-lived functional core | v3.0.0 |
 | Miner architecture | External standalone miner |
-| GPU mining | Optional experimental external-miner work only; non-blocking and CPU-verified before submit |
+| GPU mining | Optional experimental external-miner backend only after the canonical PoW adapter exists; non-blocking and every GPU-found nonce/result CPU-verified before submit |
 | Smart contracts | Out of scope until after a 30-day stable testnet burn-in |
-| Pool logic in miner | Out of scope / not allowed |
+| Pool logic in miner | Pool coordination logic inside `pulsedag-miner` is out of scope / not allowed |
 
 ## Release boundaries
 
@@ -35,7 +35,7 @@ This matrix keeps release positioning clear across the current v2.2.x hardening 
 | v2.2.13 | Consensus/DAG safety audit | Closeout checklist for DAG invariant tests, block structural validation tests, transaction validation negative-path tests, orphan adoption tests, tip selection tests, replay/order-independence tests, block acceptance taxonomy tests, required Cargo checks, [DAG safety invariants](DAG_SAFETY_INVARIANTS_V2_2_13.md), and compatibility-claim review |
 | v2.2.14 | Storage/replay hardening | Closes deterministic replay ordering, snapshot/restore/pruning safety, explicit storage schema policy, migration compatibility errors, testnet real-libp2p defaults, release evidence scripting, external miner boundary, no contract runtime, and no pool logic in miner |
 | v2.2.15 | Sustained P2P multi-node rehearsal | Evidence bundle passed for cargo checks, 3-node rehearsal, churn/rejoin, lag recovery, convergence, peer diagnostics, and chain-id isolation |
-| v2.2.16 | Miner/node contract hardening | Current milestone: stable external miner/node RPC contract, template/preimage semantics, submission validation, diagnostics, CPU miner evidence, and optional experimental GPU backlog only if canonical |
+| v2.2.16 | Miner/node contract hardening | Current milestone: external miner/node contract hardening, mining template freshness/expiry behavior, stable submit rejection taxonomy, miner telemetry and worker metrics, multi-miner rehearsal, CPU miner evidence, and optional GPU backend planning only after the canonical PoW adapter exists |
 | v2.2.17 | API/operator/security hardening | Public/operator/dev RPC boundary documentation, safe defaults, auth/rate-limit expectations, and operator incident workflows |
 | v2.2.18 | Private-testnet RC | Release-candidate evidence bundle and go/no-go checklist for the v2.3.0 readiness decision |
 | v2.3.0 | Private-testnet readiness decision only | Decision milestone; not an automatic public launch |
