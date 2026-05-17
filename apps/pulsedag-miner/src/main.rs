@@ -1,8 +1,10 @@
 use anyhow::{anyhow, Context, Result};
 use pulsedag_api::ApiResponse;
 use pulsedag_core::types::{Block, BlockHeader};
+use pulsedag_miner::{CpuMiningBackend, MiningBackend};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tokio::time::{sleep, Duration};
 
@@ -40,6 +42,7 @@ struct SubmitData {
     stale_template: bool,
 }
 
+#[derive(Debug)]
 struct Config {
     node: String,
     miner_address: String,
@@ -64,20 +67,29 @@ struct MiningResult {
 async fn main() -> Result<()> {
     let cfg = parse_args()?;
     let client = Client::builder().build()?;
+    let backend: Arc<dyn MiningBackend> = Arc::new(CpuMiningBackend);
 
     if cfg.loop_mode {
         loop {
-            if let Err(e) = mine_once(&client, &cfg).await {
+            if let Err(e) = mine_once(&client, &cfg, Arc::clone(&backend)).await {
                 eprintln!("mine loop error: {e}");
             }
             sleep(Duration::from_millis(cfg.sleep_ms)).await;
         }
     } else {
-        mine_once(&client, &cfg).await
+        mine_once(&client, &cfg, backend).await
     }
 }
 
 fn parse_args() -> Result<Config> {
+    parse_args_from(std::env::args().skip(1))
+}
+
+fn parse_args_from<I, S>(args: I) -> Result<Config>
+where
+    I: IntoIterator<Item = S>,
+    S: Into<String>,
+{
     let mut node = "http://127.0.0.1:8080".to_string();
     let mut miner_address = String::new();
     let mut max_tries = 50_000u64;
@@ -88,7 +100,7 @@ fn parse_args() -> Result<Config> {
     let mut sleep_ms = 1500u64;
     let mut refresh_before_expiry_ms = 1000u64;
 
-    let mut args = std::env::args().skip(1);
+    let mut args = args.into_iter().map(Into::into);
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--node" => {
@@ -181,7 +193,7 @@ fn should_skip_stale_submit(
     None
 }
 
-async fn mine_once(client: &Client, cfg: &Config) -> Result<()> {
+async fn mine_once(client: &Client, cfg: &Config, backend: Arc<dyn MiningBackend>) -> Result<()> {
     let template_url = format!("{}/mining/template", cfg.node.trim_end_matches('/'));
     let submit_url = format!("{}/mining/submit", cfg.node.trim_end_matches('/'));
 
@@ -206,7 +218,8 @@ async fn mine_once(client: &Client, cfg: &Config) -> Result<()> {
     } else {
         template.compact_target
     };
-    let mining = mine_header_multithread(
+    let mining = mine_header_with_backend(
+        backend,
         block.header.clone(),
         cfg.max_tries,
         cfg.threads,
@@ -267,7 +280,8 @@ async fn mine_once(client: &Client, cfg: &Config) -> Result<()> {
     Ok(())
 }
 
-async fn mine_header_multithread(
+async fn mine_header_with_backend(
+    backend: Arc<dyn MiningBackend>,
     header: BlockHeader,
     max_tries: u64,
     threads: usize,
@@ -277,7 +291,7 @@ async fn mine_header_multithread(
     let start = Instant::now();
 
     let result = tokio::task::spawn_blocking(move || {
-        pulsedag_miner::mine_header_strided(header, max_tries, threads, target_bits)
+        backend.mine_header(header, max_tries, threads, target_bits)
     })
     .await
     .context("mining worker task panicked")??;
@@ -310,7 +324,7 @@ async fn mine_header_multithread(
 
 #[cfg(test)]
 mod tests {
-    use super::{should_skip_stale_submit, Block, BlockHeader, SubmitRequest};
+    use super::{parse_args_from, should_skip_stale_submit, Block, BlockHeader, SubmitRequest};
 
     #[test]
     fn skips_when_template_already_expired() {
@@ -329,6 +343,32 @@ mod tests {
     fn allows_submit_when_template_is_fresh_enough() {
         let reason = should_skip_stale_submit(100, 105, 1000);
         assert!(reason.is_none());
+    }
+
+    #[test]
+    fn parser_keeps_threads_validation() {
+        let err = parse_args_from(["--miner-address", "addr", "--threads", "0"])
+            .expect_err("zero threads must be rejected");
+
+        assert!(err.to_string().contains("--threads must be >= 1"));
+    }
+
+    #[test]
+    fn parser_keeps_loop_and_max_tries_options() {
+        let cfg = parse_args_from([
+            "--miner-address",
+            "addr",
+            "--max-tries",
+            "7",
+            "--threads",
+            "2",
+            "--loop",
+        ])
+        .expect("valid manual args should parse");
+
+        assert_eq!(cfg.max_tries, 7);
+        assert_eq!(cfg.threads, 2);
+        assert!(cfg.loop_mode);
     }
 
     #[test]
