@@ -36,10 +36,12 @@ struct SubmitRequest {
 #[derive(Debug, Deserialize)]
 struct SubmitData {
     accepted: bool,
-    block_hash: String,
-    height: u64,
+    reason: Option<String>,
+    block_hash: Option<String>,
+    height: Option<u64>,
     pow_accepted_dev: bool,
     stale_template: bool,
+    reason_code: String,
 }
 
 #[derive(Debug)]
@@ -167,6 +169,28 @@ where
     })
 }
 
+fn submit_rejection_action(reason_code: &str) -> &'static str {
+    match reason_code {
+        "accepted" => "no action needed",
+        "stale_template" => "refresh template and retry mining on latest work",
+        "invalid_pow" => "discard nonce/header and verify miner target comparison before retry",
+        "malformed_block" => "rebuild the block from a fresh template before retry",
+        "invalid_height" => "refresh template; submitted height does not match node state",
+        "invalid_parent" => "refresh template; submitted parent set is no longer valid",
+        "duplicate_block" => "stop resubmitting this block hash and fetch fresh work",
+        "invalid_coinbase" => {
+            "check miner address/coinbase construction and fetch a fresh template"
+        }
+        "invalid_transaction" => "refresh template; included transaction set is no longer valid",
+        "chain_id_mismatch" => "check miner --node target and network/chain configuration",
+        "internal_error" => "check node logs and retry after the node recovers",
+        "missing_template_id" | "unknown_template" => {
+            "refresh template and submit with the returned template_id"
+        }
+        _ => "inspect node rejection reason and refresh template before retry",
+    }
+}
+
 fn should_skip_stale_submit(
     now_unix: u64,
     expires_at_unix: u64,
@@ -267,11 +291,38 @@ async fn mine_once(client: &Client, cfg: &Config, backend: Arc<dyn MiningBackend
     let submit_api: ApiResponse<SubmitData> = submit_resp.json().await?;
 
     if let Some(data) = submit_api.data {
-        println!("submit_result: accepted={} rejected={} block_hash={} height={} pow_accepted_dev={} stale_template={}",data.accepted,!data.accepted,data.block_hash,data.height,data.pow_accepted_dev,data.stale_template);
+        println!(
+            "submit_result: accepted={} rejected={} reason_code={} block_hash={} height={} pow_accepted_dev={} stale_template={}",
+            data.accepted,
+            !data.accepted,
+            data.reason_code,
+            data.block_hash.as_deref().unwrap_or("-"),
+            data.height
+                .map(|height| height.to_string())
+                .unwrap_or_else(|| "-".to_string()),
+            data.pow_accepted_dev,
+            data.stale_template
+        );
+        if !data.accepted {
+            if let Some(reason) = data.reason.as_deref() {
+                println!(
+                    "submit_rejected: reason_code={} reason={}",
+                    data.reason_code, reason
+                );
+            }
+            println!(
+                "action: {}",
+                submit_rejection_action(data.reason_code.as_str())
+            );
+        }
     } else if let Some(err) = submit_api.error {
-        if err.code == "STALE_TEMPLATE" {
-            println!("stale work rejected by node: {}", err.message);
-            println!("action: refresh template and retry mining on latest work");
+        let reason_code = err.code.to_ascii_lowercase();
+        println!(
+            "submit_rejected: reason_code={} reason={}",
+            reason_code, err.message
+        );
+        println!("action: {}", submit_rejection_action(reason_code.as_str()));
+        if reason_code == "stale_template" {
             return Ok(());
         }
         return Err(anyhow!("submit rejected: {} - {}", err.code, err.message));
@@ -324,7 +375,10 @@ async fn mine_header_with_backend(
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_args_from, should_skip_stale_submit, Block, BlockHeader, SubmitRequest};
+    use super::{
+        parse_args_from, should_skip_stale_submit, submit_rejection_action, Block, BlockHeader,
+        SubmitRequest,
+    };
 
     #[test]
     fn skips_when_template_already_expired() {
@@ -369,6 +423,26 @@ mod tests {
         assert_eq!(cfg.max_tries, 7);
         assert_eq!(cfg.threads, 2);
         assert!(cfg.loop_mode);
+    }
+
+    #[test]
+    fn known_submit_rejection_classes_have_actionable_text() {
+        for code in [
+            "stale_template",
+            "invalid_pow",
+            "malformed_block",
+            "invalid_height",
+            "invalid_parent",
+            "duplicate_block",
+            "invalid_coinbase",
+            "invalid_transaction",
+            "chain_id_mismatch",
+            "internal_error",
+        ] {
+            let action = submit_rejection_action(code);
+            assert!(!action.is_empty());
+            assert_ne!(action, "no action needed");
+        }
     }
 
     #[test]

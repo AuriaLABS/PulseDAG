@@ -70,18 +70,26 @@ Tests or evidence cover:
 - [ ] Oversized payload rejected.
 - [ ] Unsupported template version rejected.
 
-Stable error codes should be documented, including where applicable:
+Stable `data.reason_code` classes are documented and remain lower-snake-case for miner branching:
 
-- `TEMPLATE_STALE`
-- `TEMPLATE_UNKNOWN`
-- `INVALID_CHAIN_ID`
-- `INVALID_TARGET`
-- `POW_TOO_HIGH`
-- `INVALID_NONCE`
-- `INVALID_TIMESTAMP`
-- `DUPLICATE_BLOCK`
-- `MALFORMED_SUBMIT`
-- `INTERNAL_ERROR`
+- `accepted`
+- `stale_template`
+- `invalid_pow`
+- `malformed_block`
+- `invalid_height`
+- `invalid_parent`
+- `duplicate_block`
+- `invalid_coinbase`
+- `invalid_transaction`
+- `chain_id_mismatch` when submit carries chain identity
+- `internal_error`
+- legacy template refresh classes: `missing_template_id`, `unknown_template`
+
+Machine-readable response requirements:
+
+- [ ] Validation outcomes return `data.accepted` and `data.reason_code`.
+- [ ] Miners do not need to parse human-readable `reason` text to classify known outcomes.
+- [ ] Node logs and diagnostics preserve specific validation failures instead of generic submit errors.
 
 ## External miner integration gate
 

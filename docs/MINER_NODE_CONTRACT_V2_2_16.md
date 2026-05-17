@@ -66,23 +66,25 @@ The CPU miner should be treated as the reference implementation for template par
 
 The node should return stable results for:
 
-| Condition | Expected class |
+| Condition | Stable `data.reason_code` class |
 | --- | --- |
-| Valid submit | accepted |
-| Missing template id | rejected |
-| Unknown template id | `TEMPLATE_UNKNOWN` |
-| Stale template id | `TEMPLATE_STALE` |
-| Wrong chain id | `INVALID_CHAIN_ID` |
-| Wrong parent/tip | rejected |
-| Invalid nonce | `INVALID_NONCE` |
-| Invalid timestamp | `INVALID_TIMESTAMP` |
-| Invalid target | `INVALID_TARGET` |
-| PoW hash above target | `POW_TOO_HIGH` |
-| Duplicate block | `DUPLICATE_BLOCK` |
-| Malformed payload | `MALFORMED_SUBMIT` |
-| Oversized payload | `MALFORMED_SUBMIT` or documented equivalent |
-| Unsupported template version | rejected with documented code |
-| Internal failure | `INTERNAL_ERROR` |
+| Valid submit | `accepted` |
+| Missing template id | `missing_template_id` |
+| Unknown template id | `unknown_template` |
+| Stale template id, expired work, changed tip/parents/mempool, or stale height | `stale_template` |
+| Wrong chain id | `chain_id_mismatch` when submit carries chain identity |
+| Wrong parent/tip at template freshness checks | `stale_template` |
+| Invalid parent at block acceptance | `invalid_parent` |
+| Invalid nonce / PoW hash above target / invalid target comparison | `invalid_pow` |
+| Invalid timestamp | `malformed_block` until timestamp-specific validation is surfaced |
+| Submitted height does not match template | `invalid_height` |
+| Duplicate block | `duplicate_block` |
+| Invalid coinbase | `invalid_coinbase` when surfaced separately; otherwise `malformed_block` |
+| Invalid transaction | `invalid_transaction` |
+| Malformed block/payload that reaches submit validation | `malformed_block` |
+| Oversized or syntactically malformed HTTP JSON payload | HTTP/JSON extractor rejection before handler; clients should treat as malformed submit transport failure |
+| Unsupported template version | `malformed_block` or documented version-specific class when added |
+| Internal/storage failure | `internal_error` |
 
 ## Miner diagnostics target
 
