@@ -3,6 +3,10 @@ name = "pulsedag-miner"
 version.workspace = true
 edition = "2021"
 
+[features]
+default = []
+gpu = []
+
 [dependencies]
 anyhow = "1"
 tokio = { version = "1", features = ["full"] }

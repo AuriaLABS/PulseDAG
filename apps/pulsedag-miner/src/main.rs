@@ -1,6 +1,8 @@
 use anyhow::{anyhow, Context, Result};
 use pulsedag_api::ApiResponse;
 use pulsedag_core::types::{Block, BlockHeader};
+#[cfg(feature = "gpu")]
+use pulsedag_miner::GpuMiningBackend;
 use pulsedag_miner::{CpuMiningBackend, MiningBackend};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -48,6 +50,7 @@ struct SubmitData {
 struct Config {
     node: String,
     miner_address: String,
+    backend: BackendKind,
     max_tries: u64,
     threads: usize,
     loop_mode: bool,
@@ -55,6 +58,26 @@ struct Config {
     refresh_before_expiry_ms: u64,
     heartbeat: bool,
     worker_id: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BackendKind {
+    Cpu,
+    Gpu,
+}
+
+impl std::str::FromStr for BackendKind {
+    type Err = anyhow::Error;
+
+    fn from_str(value: &str) -> Result<Self> {
+        match value {
+            "cpu" => Ok(Self::Cpu),
+            "gpu" => Ok(Self::Gpu),
+            _ => Err(anyhow!(
+                "invalid --backend: {value}; expected 'cpu' or 'gpu'"
+            )),
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -236,7 +259,7 @@ enum LoopRefreshDecision {
 async fn main() -> Result<()> {
     let cfg = parse_args()?;
     let client = Client::builder().build()?;
-    let backend: Arc<dyn MiningBackend> = Arc::new(CpuMiningBackend);
+    let backend = mining_backend(cfg.backend)?;
     let mut telemetry = MinerTelemetry::new(backend.name(), cfg.threads);
     telemetry.log("miner_start");
 
@@ -267,6 +290,7 @@ where
 {
     let mut node = "http://127.0.0.1:8080".to_string();
     let mut miner_address = String::new();
+    let mut backend = BackendKind::Cpu;
     let mut max_tries = 50_000u64;
     let mut threads = std::thread::available_parallelism()
         .map(|n| n.get())
@@ -289,6 +313,12 @@ where
                 miner_address = args
                     .next()
                     .ok_or_else(|| anyhow!("missing value for --miner-address"))?
+            }
+            "--backend" => {
+                backend = args
+                    .next()
+                    .ok_or_else(|| anyhow!("missing value for --backend"))?
+                    .parse()?
             }
             "--max-tries" => {
                 max_tries = args
@@ -326,14 +356,13 @@ where
                     .next()
                     .ok_or_else(|| anyhow!("missing value for --worker-id"))?
             }
+            "--help" | "-h" => return Err(anyhow!(usage())),
             _ => {}
         }
     }
 
     if miner_address.trim().is_empty() {
-        return Err(anyhow!(
-            "usage: pulsedag-miner --miner-address <address> [--node http://127.0.0.1:8080] [--max-tries 50000] [--threads N] [--loop] [--sleep-ms 1500] [--refresh-before-expiry-ms 1000] [--worker-id ID] [--no-heartbeat]"
-        ));
+        return Err(anyhow!(usage()));
     }
 
     if threads == 0 {
@@ -347,6 +376,7 @@ where
     Ok(Config {
         node,
         miner_address,
+        backend,
         max_tries,
         threads,
         loop_mode,
@@ -355,6 +385,31 @@ where
         heartbeat,
         worker_id,
     })
+}
+
+fn usage() -> &'static str {
+    "usage: pulsedag-miner --miner-address <address> [--node http://127.0.0.1:8080] [--backend cpu|gpu] [--max-tries 50000] [--threads N] [--loop] [--sleep-ms 1500] [--refresh-before-expiry-ms 1000] [--worker-id ID] [--no-heartbeat]
+
+Mining backend defaults to cpu. The gpu backend is optional and requires building pulsedag-miner with the gpu feature; the GPU kernel/backend is not implemented yet."
+}
+
+fn mining_backend(kind: BackendKind) -> Result<Arc<dyn MiningBackend>> {
+    match kind {
+        BackendKind::Cpu => Ok(Arc::new(CpuMiningBackend)),
+        BackendKind::Gpu => gpu_mining_backend(),
+    }
+}
+
+#[cfg(not(feature = "gpu"))]
+fn gpu_mining_backend() -> Result<Arc<dyn MiningBackend>> {
+    Err(anyhow!(
+        "GPU backend requested but pulsedag-miner was built without the gpu feature."
+    ))
+}
+
+#[cfg(feature = "gpu")]
+fn gpu_mining_backend() -> Result<Arc<dyn MiningBackend>> {
+    Ok(Arc::new(GpuMiningBackend))
 }
 
 fn default_worker_id(miner_address: &str) -> String {
@@ -681,15 +736,16 @@ async fn mine_header_with_backend(
 mod tests {
     use super::{
         default_worker_id, evaluate_template_freshness, loop_refresh_decision_after_outcome,
-        parse_args_from, should_skip_stale_submit, submit_rejection_action, Block, BlockHeader,
-        Config, LoopRefreshDecision, MineOnceOutcome, MinerTelemetry, SubmitRequest,
-        TemplateSkipReason,
+        mining_backend, parse_args_from, should_skip_stale_submit, submit_rejection_action, usage,
+        BackendKind, Block, BlockHeader, Config, LoopRefreshDecision, MineOnceOutcome,
+        MinerTelemetry, SubmitRequest, TemplateSkipReason,
     };
 
     fn telemetry_test_config() -> Config {
         Config {
             node: "http://127.0.0.1:8080".to_string(),
             miner_address: "addr".to_string(),
+            backend: BackendKind::Cpu,
             max_tries: 1,
             threads: 2,
             loop_mode: false,
@@ -698,6 +754,75 @@ mod tests {
             heartbeat: true,
             worker_id: "worker-1".to_string(),
         }
+    }
+
+    #[test]
+    fn parser_defaults_backend_to_cpu() {
+        let cfg = parse_args_from(["--miner-address", "addr"]).expect("valid args should parse");
+
+        assert_eq!(cfg.backend, BackendKind::Cpu);
+    }
+
+    #[test]
+    fn parser_accepts_explicit_cpu_backend() {
+        let cfg = parse_args_from(["--miner-address", "addr", "--backend", "cpu"])
+            .expect("explicit cpu backend should parse");
+
+        assert_eq!(cfg.backend, BackendKind::Cpu);
+    }
+
+    #[test]
+    fn parser_accepts_explicit_gpu_backend() {
+        let cfg = parse_args_from(["--miner-address", "addr", "--backend", "gpu"])
+            .expect("explicit gpu backend should parse");
+
+        assert_eq!(cfg.backend, BackendKind::Gpu);
+    }
+
+    #[test]
+    fn usage_mentions_optional_gpu_backend() {
+        let text = usage();
+
+        assert!(text.contains("--backend cpu|gpu"));
+        assert!(text.contains("gpu backend is optional"));
+        assert!(text.contains("gpu feature"));
+    }
+
+    #[cfg(not(feature = "gpu"))]
+    #[test]
+    fn gpu_backend_without_feature_fails_clearly() {
+        let err = match mining_backend(BackendKind::Gpu) {
+            Ok(_) => panic!("gpu without feature must fail"),
+            Err(err) => err,
+        };
+
+        assert_eq!(
+            err.to_string(),
+            "GPU backend requested but pulsedag-miner was built without the gpu feature."
+        );
+    }
+
+    #[cfg(feature = "gpu")]
+    #[test]
+    fn gpu_backend_with_feature_is_not_implemented() {
+        let backend = mining_backend(BackendKind::Gpu).expect("gpu backend should be selectable");
+        let header = BlockHeader {
+            version: 1,
+            parents: vec!["p".into()],
+            timestamp: 1,
+            nonce: 0,
+            difficulty: 1,
+            merkle_root: "m".into(),
+            state_root: "s".into(),
+            blue_score: 1,
+            height: 1,
+        };
+
+        let err = backend
+            .mine_header(header, 1, 1, 1)
+            .expect_err("gpu backend scaffold must not mine yet");
+
+        assert_eq!(err.to_string(), "GPU backend is not implemented yet.");
     }
 
     #[test]
