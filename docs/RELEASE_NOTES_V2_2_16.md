@@ -70,23 +70,27 @@ The release evidence bundle should write section logs and `evidence/v2.2.16/summ
 
 GPU mining is optional and experimental in v2.2.16, and it is only eligible after the canonical PoW adapter exists. When implemented and available on the host, collect smoke evidence with the GPU feature enabled and CPU-verify every GPU-found nonce before submit. When unavailable, the release evidence should record `SKIP` or `NOT_REQUESTED`, not fail the mandatory CPU miner/node contract gate.
 
-Example future commands:
+Example optional GPU commands:
 
 ```bash
-cargo build --workspace --features gpu
+cargo build -p pulsedag-miner --release --features gpu
+./target/release/pulsedag-miner --node http://127.0.0.1:18080 --miner-address <addr> --backend gpu --loop
 bash scripts/v2-2-16-gpu-miner-smoke.sh
 ```
+
+Operator-facing GPU notes live in `apps/pulsedag-miner/GPU.md`. The GPU path remains standalone and external: no pool logic, no shares, and no payouts are introduced.
 
 ## Known limitations at opening
 
 - v2.2.16 starts as a contract-hardening milestone; release evidence is not yet collected.
-- GPU mining is allowed only as experimental external-miner work and should not block closeout when no GPU exists.
+- GPU mining is allowed only as experimental external-miner work and should not block closeout when no GPU exists. CPU mining remains the default backend.
 - v2.3.0 remains a later private-testnet readiness decision.
 
 ## Operator documents
 
 - Roadmap: `docs/ROADMAP_V2_2_16.md`.
 - Closing checklist: `docs/CLOSING_CHECKLIST_V2_2_16.md`.
+- Optional GPU miner guide: `apps/pulsedag-miner/GPU.md`.
 - Miner/node contract: `docs/MINER_NODE_CONTRACT_V2_2_16.md`.
 - GPU backlog: `docs/MINER_GPU_BACKLOG_V2_2_16.md`.
 - Version positioning: `docs/VERSION_MATRIX.md`.

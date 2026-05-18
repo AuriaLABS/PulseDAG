@@ -64,6 +64,29 @@ Notas de operador:
 - El binario se puede ejecutar de forma independiente del árbol de código (`cargo` no es requerido para operación en release).
 - El flujo oficial sigue siendo template -> PoW -> submit contra el nodo.
 - No existe soporte de pool en este binario.
+- El backend CPU es el predeterminado; el backend GPU opcional se documenta en [`GPU.md`](GPU.md).
+
+## Minería GPU opcional
+
+La minería GPU es **opcional**. La minería CPU sigue siendo el backend predeterminado y la referencia obligatoria para operación normal y evidencia de v2.2.16.
+
+El backend GPU es experimental hasta completar la evidencia de cierre de v2.2.16, está protegido por feature flag y solo vive en el minero externo standalone. No agrega lógica de pool, shares ni payouts.
+
+Documentación completa: [`GPU.md`](GPU.md).
+
+Build experimental con GPU:
+
+```bash
+cargo build -p pulsedag-miner --release --features gpu
+```
+
+Ejemplo de ejecución con GPU:
+
+```bash
+./target/release/pulsedag-miner --node http://127.0.0.1:18080 --miner-address <addr> --backend gpu --loop
+```
+
+Regla de seguridad: cada nonce encontrado por GPU debe verificarse por la ruta PoW canónica CPU/core antes de enviarse al nodo.
 
 ## Flags soportadas
 
@@ -74,6 +97,10 @@ Notas de operador:
 - `--sleep-ms`
 - `--threads`
 - `--refresh-before-expiry-ms`
+- `--backend` (`cpu` por defecto; `gpu` requiere `--features gpu`)
+- `--gpu-device` (solo para backend GPU)
+- `--heartbeat` / `--no-heartbeat`
+- `--worker-id`
 
 ## Fuera de alcance
 
