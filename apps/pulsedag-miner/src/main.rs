@@ -3,7 +3,7 @@ use pulsedag_api::ApiResponse;
 use pulsedag_core::types::{Block, BlockHeader};
 #[cfg(feature = "gpu")]
 use pulsedag_miner::GpuMiningBackend;
-use pulsedag_miner::{CpuMiningBackend, MiningBackend};
+use pulsedag_miner::{verify_backend_result_with_core, CpuMiningBackend, MiningBackend};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -108,6 +108,7 @@ struct MinerTelemetry {
     last_accepted_height: Option<u64>,
     node_stale_rejections: u64,
     invalid_pow_rejections: u64,
+    backend_verification_failures: u64,
 }
 
 impl MinerTelemetry {
@@ -127,6 +128,7 @@ impl MinerTelemetry {
             last_accepted_height: None,
             node_stale_rejections: 0,
             invalid_pow_rejections: 0,
+            backend_verification_failures: 0,
         }
     }
 
@@ -164,6 +166,12 @@ impl MinerTelemetry {
         self.last_reject_code = Some(reason_code);
     }
 
+    fn record_backend_verification_failed(&mut self) {
+        self.backend_verification_failures = self.backend_verification_failures.saturating_add(1);
+        self.invalid_pow_rejections = self.invalid_pow_rejections.saturating_add(1);
+        self.last_reject_code = Some("backend_verification_failed".to_string());
+    }
+
     fn heartbeat_payload(&self, cfg: &Config) -> WorkerHeartbeatRequest {
         WorkerHeartbeatRequest {
             worker_id: cfg.worker_id.clone(),
@@ -181,7 +189,7 @@ impl MinerTelemetry {
 
     fn log(&self, event: &str) {
         println!(
-            "miner_telemetry event={} backend={} workers={} attempts={} hashes_per_sec={:.2} templates_received={} templates_skipped_stale={} submits_total={} submits_accepted={} submits_rejected={} last_reject_code={} last_template_height={} last_accepted_height={}",
+            "miner_telemetry event={} backend={} workers={} attempts={} hashes_per_sec={:.2} templates_received={} templates_skipped_stale={} submits_total={} submits_accepted={} submits_rejected={} backend_verification_failures={} last_reject_code={} last_template_height={} last_accepted_height={}",
             event,
             self.backend,
             self.workers,
@@ -192,6 +200,7 @@ impl MinerTelemetry {
             self.submits_total,
             self.submits_accepted,
             self.submits_rejected,
+            self.backend_verification_failures,
             self.last_reject_code.as_deref().unwrap_or("-"),
             self.last_template_height
                 .map(|height| height.to_string())
@@ -205,9 +214,7 @@ impl MinerTelemetry {
 
 struct MiningResult {
     header: BlockHeader,
-    accepted: bool,
     tries: u64,
-    final_hash_hex: String,
     elapsed_ms: u128,
     hashes_per_sec: f64,
     target_hex: String,
@@ -218,6 +225,7 @@ enum MineOnceOutcome {
     Submitted,
     SkippedStaleTemplate,
     NodeRejectedStaleTemplate,
+    BackendVerificationRejected,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -532,6 +540,7 @@ async fn mine_once(
     } else {
         template.compact_target
     };
+    let backend_name = backend.name();
     let mining = mine_header_with_backend(
         backend,
         block.header.clone(),
@@ -540,9 +549,35 @@ async fn mine_once(
         target_bits,
     )
     .await?;
-    block.header = mining.header;
+    let mut verified_header = block.header.clone();
+    verified_header.nonce = mining.header.nonce;
+    block.header = verified_header;
     telemetry.record_mining_result(mining.tries, mining.hashes_per_sec);
     telemetry.log("mining_result");
+
+    let verification = match verify_backend_result_with_core(&block.header, target_bits) {
+        Ok(verification) => verification,
+        Err(err) => {
+            println!(
+                "backend_verification_failed: backend={} nonce={} reason={}",
+                backend_name, block.header.nonce, err
+            );
+            telemetry.record_backend_verification_failed();
+            telemetry.log("backend_verification_failed");
+            send_worker_heartbeat(client, cfg, telemetry).await;
+            return Ok(MineOnceOutcome::BackendVerificationRejected);
+        }
+    };
+    if !verification.accepted {
+        println!(
+            "backend_verification_failed: backend={} nonce={} pow_hash={} target_hex={} reason=hash_above_target",
+            backend_name, block.header.nonce, verification.final_hash_hex, verification.target_hex
+        );
+        telemetry.record_backend_verification_failed();
+        telemetry.log("backend_verification_failed");
+        send_worker_heartbeat(client, cfg, telemetry).await;
+        return Ok(MineOnceOutcome::BackendVerificationRejected);
+    }
 
     println!(
         "template received: protocol_version={} id={} height={} hash={} difficulty={} created_at={} expires_at={} ttl={}s grace={}s target_hex={}",
@@ -558,7 +593,7 @@ async fn mine_once(
         template.target_hex
     );
     println!("mining: algorithm={} pow_engine=canonical_core template_id={} height={} target_hex={} nonce={} pow_hash={} attempts={} hashes_per_sec={:.2} accepted={} elapsed_ms={}",
-        template.algorithm, template_id, block.header.height, mining.target_hex, block.header.nonce, mining.final_hash_hex, mining.tries, mining.hashes_per_sec, mining.accepted, mining.elapsed_ms);
+        template.algorithm, template_id, block.header.height, mining.target_hex, block.header.nonce, verification.final_hash_hex, mining.tries, mining.hashes_per_sec, verification.accepted, mining.elapsed_ms);
 
     let now_unix = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -707,9 +742,7 @@ async fn mine_header_with_backend(
     .context("mining worker task panicked")??;
 
     let final_header = result.header;
-    let accepted = result.accepted;
     let tries = result.tries;
-    let final_hash_hex = result.final_hash_hex;
 
     let elapsed = start.elapsed();
     let elapsed_secs = elapsed.as_secs_f64();
@@ -721,9 +754,7 @@ async fn mine_header_with_backend(
 
     Ok(MiningResult {
         header: final_header,
-        accepted,
         tries,
-        final_hash_hex,
         elapsed_ms: elapsed.as_millis(),
         hashes_per_sec,
         target_hex: pulsedag_core::pow::target_hex(&pulsedag_core::pow::target_from_bits(
@@ -865,6 +896,33 @@ mod tests {
     }
 
     #[test]
+    fn backend_verification_failure_increments_local_telemetry_counter() {
+        let mut telemetry = MinerTelemetry::new("gpu", 2);
+
+        telemetry.record_backend_verification_failed();
+
+        assert_eq!(telemetry.backend_verification_failures, 1);
+        assert_eq!(telemetry.invalid_pow_rejections, 1);
+        assert_eq!(telemetry.submits_total, 0);
+        assert_eq!(
+            telemetry.last_reject_code.as_deref(),
+            Some("backend_verification_failed")
+        );
+    }
+
+    #[test]
+    fn backend_verification_failure_does_not_count_as_submit() {
+        let mut telemetry = MinerTelemetry::new("gpu", 2);
+
+        telemetry.record_backend_verification_failed();
+
+        let payload = telemetry.heartbeat_payload(&telemetry_test_config());
+        assert_eq!(payload.blocks_submitted, 0);
+        assert_eq!(payload.accepted_blocks, 0);
+        assert_eq!(payload.invalid_pow_rejections, 1);
+    }
+
+    #[test]
     fn stale_skip_increments_stale_counter() {
         let mut telemetry = MinerTelemetry::new("cpu", 2);
 
@@ -963,6 +1021,10 @@ mod tests {
         );
         assert_eq!(
             loop_refresh_decision_after_outcome(MineOnceOutcome::SkippedStaleTemplate),
+            LoopRefreshDecision::RefreshWork
+        );
+        assert_eq!(
+            loop_refresh_decision_after_outcome(MineOnceOutcome::BackendVerificationRejected),
             LoopRefreshDecision::RefreshWork
         );
     }
