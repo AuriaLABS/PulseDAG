@@ -14,6 +14,13 @@ pub struct NonceSearchResult {
     pub final_hash_hex: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BackendVerification {
+    pub accepted: bool,
+    pub final_hash_hex: String,
+    pub target_hex: String,
+}
+
 /// Internal abstraction for mining backends.
 ///
 /// The default implementation is [`CpuMiningBackend`], which intentionally
@@ -91,19 +98,42 @@ pub fn miner_pow_accepts(header: &BlockHeader) -> bool {
 }
 
 fn miner_pow_eval_at_target_bits(header: &BlockHeader, target_bits: u32) -> Result<(bool, String)> {
+    let verification = verify_backend_result_with_core(header, target_bits)?;
+    Ok((verification.accepted, verification.final_hash_hex))
+}
+
+pub fn miner_pow_accepts_target_bits(header: &BlockHeader, target_bits: u32) -> Result<bool> {
+    Ok(verify_backend_result_with_core(header, target_bits)?.accepted)
+}
+
+/// Verifies a backend-proposed final header through the canonical CPU/core PoW adapter.
+///
+/// All mining backends, including future GPU implementations, must pass through
+/// this gate before the miner submits a block to a node. The supplied
+/// `target_bits` are applied to a verification clone so compact targets from
+/// mining templates are checked consistently with the CPU/core adapter without
+/// mutating the caller's header.
+pub fn verify_backend_result_with_core(
+    header: &BlockHeader,
+    target_bits: u32,
+) -> Result<BackendVerification> {
     if target_bits == 0 {
         return Err(anyhow!("invalid target bits: 0"));
     }
+
     let mut h = header.clone();
     h.difficulty = target_bits;
     let attempt = canonical_pow_adapter()
         .evaluate_header(&h)
         .map_err(|reason| anyhow!("invalid PoW header material: {}", reason.code()))?;
-    Ok((attempt.comparison.accepted(), attempt.final_hash.hash_hex))
-}
 
-pub fn miner_pow_accepts_target_bits(header: &BlockHeader, target_bits: u32) -> Result<bool> {
-    Ok(miner_pow_eval_at_target_bits(header, target_bits)?.0)
+    Ok(BackendVerification {
+        accepted: attempt.comparison.accepted(),
+        final_hash_hex: attempt.final_hash.hash_hex,
+        target_hex: pulsedag_core::pow::target_hex(&pulsedag_core::pow::target_from_bits(
+            target_bits,
+        )),
+    })
 }
 
 fn nonce_for_attempt(thread_id: usize, stride: usize, iteration: u64) -> u64 {
@@ -204,7 +234,7 @@ pub fn mine_header_strided(
 mod tests {
     use super::{
         miner_pow_accepts, miner_pow_hash_hex, miner_pow_preimage_bytes, miner_pow_score_u64,
-        nonce_for_attempt, CpuMiningBackend, MiningBackend,
+        nonce_for_attempt, verify_backend_result_with_core, CpuMiningBackend, MiningBackend,
     };
     use pulsedag_core::pow::{
         canonical_pow_adapter, canonical_pow_engine, target_from_bits, target_hex, PowEngine,
@@ -300,7 +330,7 @@ mod tests {
 
     #[test]
     fn cpu_backend_uses_strided_cpu_path() {
-        let target_bits = 1;
+        let target_bits = 0x01000001;
         let header = BlockHeader {
             version: 1,
             parents: vec!["a".into()],
@@ -348,6 +378,53 @@ mod tests {
 
         assert_eq!(mined.tries, 1);
         assert_eq!(mined.header.nonce, 0);
+    }
+
+    #[test]
+    fn backend_verification_cpu_found_nonce_passes() {
+        let target_bits = 0x207fffff;
+        let header = BlockHeader {
+            version: 1,
+            parents: vec!["a".into()],
+            timestamp: 1,
+            nonce: 0,
+            difficulty: target_bits,
+            merkle_root: "m".into(),
+            state_root: "s".into(),
+            blue_score: 1,
+            height: 1,
+        };
+        let mined = CpuMiningBackend
+            .mine_header(header, 10_000, 4, target_bits)
+            .expect("CPU backend should find an easy-target nonce");
+
+        let verification = verify_backend_result_with_core(&mined.header, target_bits)
+            .expect("canonical verification should run");
+
+        assert!(mined.accepted);
+        assert!(verification.accepted);
+        assert_eq!(verification.final_hash_hex, mined.final_hash_hex);
+    }
+
+    #[test]
+    fn backend_verification_fake_backend_nonce_is_rejected() {
+        let target_bits = 0x01000001;
+        let header = BlockHeader {
+            version: 1,
+            parents: vec!["a".into()],
+            timestamp: 1,
+            nonce: 0,
+            difficulty: target_bits,
+            merkle_root: "m".into(),
+            state_root: "s".into(),
+            blue_score: 1,
+            height: 1,
+        };
+
+        let verification = verify_backend_result_with_core(&header, target_bits)
+            .expect("canonical verification should run");
+
+        assert!(!verification.accepted);
     }
 
     #[test]
