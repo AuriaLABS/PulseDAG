@@ -3904,6 +3904,7 @@ version = "2.2.16"
 dependencies = [
  "anyhow",
  "hex",
+ "libloading",
  "pulsedag-api",
  "pulsedag-core",
  "reqwest",

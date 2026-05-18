@@ -5,7 +5,7 @@ edition = "2021"
 
 [features]
 default = []
-gpu = []
+gpu = ["dep:libloading"]
 
 [dependencies]
 anyhow = "1"
@@ -15,6 +15,7 @@ serde_json = "1"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 pulsedag-core = { path = "../../crates/pulsedag-core" }
 pulsedag-api = { path = "../../crates/pulsedag-api" }
+libloading = { version = "0.8", optional = true }
 
 [dev-dependencies]
 hex = "0.4"
