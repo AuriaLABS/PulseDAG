@@ -50,6 +50,27 @@ impl MiningBackend for CpuMiningBackend {
     }
 }
 
+#[cfg(feature = "gpu")]
+#[derive(Debug, Default, Clone, Copy)]
+pub struct GpuMiningBackend;
+
+#[cfg(feature = "gpu")]
+impl MiningBackend for GpuMiningBackend {
+    fn name(&self) -> &'static str {
+        "gpu"
+    }
+
+    fn mine_header(
+        &self,
+        _header: BlockHeader,
+        _max_tries: u64,
+        _threads: usize,
+        _target_bits: u32,
+    ) -> Result<NonceSearchResult> {
+        Err(anyhow!("GPU backend is not implemented yet."))
+    }
+}
+
 pub fn miner_pow_preimage_bytes(header: &BlockHeader) -> Vec<u8> {
     pow_preimage_bytes(header)
 }
