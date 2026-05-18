@@ -24,3 +24,5 @@ pulsedag-api = { path = "../pulsedag-api" }
 
 [dev-dependencies]
 proptest = "1"
+pulsedag-miner = { path = "../../apps/pulsedag-miner" }
+tower = { version = "0.5", features = ["util"] }

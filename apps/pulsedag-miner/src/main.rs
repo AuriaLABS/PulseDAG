@@ -450,7 +450,7 @@ fn submit_rejection_action(reason_code: &str) -> &'static str {
     match reason_code {
         "accepted" => "no action needed",
         "stale_template" => "refresh template and retry mining on latest work",
-        "invalid_pow" => "discard nonce/header and verify miner target comparison before retry",
+        "invalid_pow" => "hard warning: backend/canonical mismatch; discard nonce/header and verify miner target comparison before retry",
         "malformed_block" => "rebuild the block from a fresh template before retry",
         "invalid_height" => "refresh template; submitted height does not match node state",
         "invalid_parent" => "refresh template; submitted parent set is no longer valid",
@@ -1048,6 +1048,15 @@ mod tests {
 
         assert!(action.contains("refresh template"));
         assert!(action.contains("retry mining"));
+    }
+
+    #[test]
+    fn invalid_pow_rejection_is_hard_backend_canonical_warning() {
+        let action = submit_rejection_action("invalid_pow");
+
+        assert!(action.contains("hard warning"));
+        assert!(action.contains("backend/canonical mismatch"));
+        assert!(action.contains("discard nonce/header"));
     }
 
     #[test]
