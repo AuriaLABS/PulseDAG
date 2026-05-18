@@ -1,9 +1,9 @@
 use anyhow::{anyhow, Context, Result};
 use pulsedag_api::ApiResponse;
 use pulsedag_core::types::{Block, BlockHeader};
-#[cfg(feature = "gpu")]
-use pulsedag_miner::GpuMiningBackend;
 use pulsedag_miner::{verify_backend_result_with_core, CpuMiningBackend, MiningBackend};
+#[cfg(feature = "gpu")]
+use pulsedag_miner::{GpuBackendConfig, GpuMiningBackend};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -58,6 +58,7 @@ struct Config {
     refresh_before_expiry_ms: u64,
     heartbeat: bool,
     worker_id: String,
+    gpu_device: Option<usize>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -267,7 +268,7 @@ enum LoopRefreshDecision {
 async fn main() -> Result<()> {
     let cfg = parse_args()?;
     let client = Client::builder().build()?;
-    let backend = mining_backend(cfg.backend)?;
+    let backend = mining_backend(&cfg)?;
     let mut telemetry = MinerTelemetry::new(backend.name(), cfg.threads);
     telemetry.log("miner_start");
 
@@ -308,6 +309,7 @@ where
     let mut refresh_before_expiry_ms = 1000u64;
     let mut heartbeat = true;
     let mut worker_id = String::new();
+    let mut gpu_device = None;
 
     let mut args = args.into_iter().map(Into::into);
     while let Some(arg) = args.next() {
@@ -364,6 +366,14 @@ where
                     .next()
                     .ok_or_else(|| anyhow!("missing value for --worker-id"))?
             }
+            "--gpu-device" => {
+                gpu_device = Some(
+                    args.next()
+                        .ok_or_else(|| anyhow!("missing value for --gpu-device"))?
+                        .parse()
+                        .context("invalid --gpu-device")?,
+                )
+            }
             "--help" | "-h" => return Err(anyhow!(usage())),
             _ => {}
         }
@@ -392,32 +402,34 @@ where
         refresh_before_expiry_ms,
         heartbeat,
         worker_id,
+        gpu_device,
     })
 }
 
 fn usage() -> &'static str {
-    "usage: pulsedag-miner --miner-address <address> [--node http://127.0.0.1:8080] [--backend cpu|gpu] [--max-tries 50000] [--threads N] [--loop] [--sleep-ms 1500] [--refresh-before-expiry-ms 1000] [--worker-id ID] [--no-heartbeat]
+    "usage: pulsedag-miner --miner-address <address> [--node http://127.0.0.1:8080] [--backend cpu|gpu] [--gpu-device INDEX] [--max-tries 50000] [--threads N] [--loop] [--sleep-ms 1500] [--refresh-before-expiry-ms 1000] [--worker-id ID] [--no-heartbeat]
 
-Mining backend defaults to cpu. The gpu backend is optional and requires building pulsedag-miner with the gpu feature; the GPU kernel/backend is not implemented yet."
+Mining backend defaults to cpu. The gpu backend is optional and requires building pulsedag-miner with the gpu feature. GPU device selection uses --gpu-device <index>, with conservative OpenCL batch/work defaults overrideable via PULSEDAG_MINER_GPU_BATCH_SIZE and PULSEDAG_MINER_GPU_WORK_SIZE. The canonical kHeavyHash OpenCL kernel is not implemented yet, so the gpu backend refuses to mine rather than using a non-canonical hash path."
 }
 
-fn mining_backend(kind: BackendKind) -> Result<Arc<dyn MiningBackend>> {
-    match kind {
+fn mining_backend(cfg: &Config) -> Result<Arc<dyn MiningBackend>> {
+    match cfg.backend {
         BackendKind::Cpu => Ok(Arc::new(CpuMiningBackend)),
-        BackendKind::Gpu => gpu_mining_backend(),
+        BackendKind::Gpu => gpu_mining_backend(cfg.gpu_device),
     }
 }
 
 #[cfg(not(feature = "gpu"))]
-fn gpu_mining_backend() -> Result<Arc<dyn MiningBackend>> {
+fn gpu_mining_backend(_device_index: Option<usize>) -> Result<Arc<dyn MiningBackend>> {
     Err(anyhow!(
         "GPU backend requested but pulsedag-miner was built without the gpu feature."
     ))
 }
 
 #[cfg(feature = "gpu")]
-fn gpu_mining_backend() -> Result<Arc<dyn MiningBackend>> {
-    Ok(Arc::new(GpuMiningBackend))
+fn gpu_mining_backend(device_index: Option<usize>) -> Result<Arc<dyn MiningBackend>> {
+    let config = GpuBackendConfig::default().with_device_index(device_index);
+    Ok(Arc::new(GpuMiningBackend::new(config)?))
 }
 
 fn default_worker_id(miner_address: &str) -> String {
@@ -784,6 +796,7 @@ mod tests {
             refresh_before_expiry_ms: 1000,
             heartbeat: true,
             worker_id: "worker-1".to_string(),
+            gpu_device: None,
         }
     }
 
@@ -811,6 +824,22 @@ mod tests {
     }
 
     #[test]
+    fn parser_accepts_gpu_device_index() {
+        let cfg = parse_args_from([
+            "--miner-address",
+            "addr",
+            "--backend",
+            "gpu",
+            "--gpu-device",
+            "2",
+        ])
+        .expect("explicit gpu device should parse");
+
+        assert_eq!(cfg.backend, BackendKind::Gpu);
+        assert_eq!(cfg.gpu_device, Some(2));
+    }
+
+    #[test]
     fn usage_mentions_optional_gpu_backend() {
         let text = usage();
 
@@ -822,7 +851,10 @@ mod tests {
     #[cfg(not(feature = "gpu"))]
     #[test]
     fn gpu_backend_without_feature_fails_clearly() {
-        let err = match mining_backend(BackendKind::Gpu) {
+        let err = match mining_backend(&Config {
+            backend: BackendKind::Gpu,
+            ..telemetry_test_config()
+        }) {
             Ok(_) => panic!("gpu without feature must fail"),
             Err(err) => err,
         };
@@ -835,8 +867,13 @@ mod tests {
 
     #[cfg(feature = "gpu")]
     #[test]
+    #[ignore = "requires an OpenCL runtime and GPU device; the canonical kernel is intentionally not implemented yet"]
     fn gpu_backend_with_feature_is_not_implemented() {
-        let backend = mining_backend(BackendKind::Gpu).expect("gpu backend should be selectable");
+        let backend = mining_backend(&Config {
+            backend: BackendKind::Gpu,
+            ..telemetry_test_config()
+        })
+        .expect("gpu backend should be selectable");
         let header = BlockHeader {
             version: 1,
             parents: vec!["p".into()],
