@@ -21,6 +21,7 @@ v2.2.16 focuses on:
 - external miner restart/reconnect evidence and multi-miner rehearsal evidence.
 - CPU miner correctness as the default reference backend.
 - optional experimental GPU mining backend work only after the canonical PoW adapter exists, with every GPU-found nonce/result CPU-verified before submit.
+- optional miner performance evidence collection for CPU hashes/sec, GPU hashes/sec when available, accepted/rejected submits, stale skips, and average template age at submit.
 
 ## Guardrails
 
@@ -54,6 +55,12 @@ v2.2.16 focuses on:
 
 Legacy template-specific classes such as `missing_template_id` and `unknown_template` remain machine-readable and are treated as refresh-template outcomes. Detailed stale-template subreasons remain in `pow_rejection_reason` as `reason_code=<subreason>` text for operators, while the top-level stable class remains `stale_template`.
 
+## Miner performance evidence harness
+
+The optional v2.2.16 miner benchmark harness is documented in `docs/MINER_BENCHMARK_V2_2_16.md` and implemented as `scripts/v2_2_16_miner_benchmark.sh`. It writes JSON, CSV, logs, and a Markdown summary under `artifacts/v2.2.16/miner-benchmark/<UTC timestamp>/`. The harness is bounded by default for local and VPS runs, keeps CPU as the default backend, does not require GPU, and does not add pool/share logic or protocol changes.
+
+Collected fields include CPU backend hashes/sec, GPU backend hashes/sec when compiled and available, accepted submits, rejected submits, stale skips, and average template age at submit. GPU evidence may be recorded as skipped when the optional feature, driver/runtime, or canonical implementation is unavailable.
+
 ## Required validation before closeout
 
 Before closing v2.2.16, collect output for:
@@ -61,6 +68,9 @@ Before closing v2.2.16, collect output for:
 ```bash
 cargo fmt --check
 cargo test --workspace
+cargo build --workspace --release
+bash -n scripts/v2_2_16_miner_benchmark.sh
+cargo build -p pulsedag-miner --release
 bash scripts/v2-2-16-release-evidence.sh
 ```
 
@@ -92,5 +102,6 @@ Operator-facing GPU notes live in `apps/pulsedag-miner/GPU.md`. The GPU path rem
 - Closing checklist: `docs/CLOSING_CHECKLIST_V2_2_16.md`.
 - Optional GPU miner guide: `apps/pulsedag-miner/GPU.md`.
 - Miner/node contract: `docs/MINER_NODE_CONTRACT_V2_2_16.md`.
+- Miner benchmark harness: `docs/MINER_BENCHMARK_V2_2_16.md`.
 - GPU backlog: `docs/MINER_GPU_BACKLOG_V2_2_16.md`.
 - Version positioning: `docs/VERSION_MATRIX.md`.

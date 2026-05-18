@@ -19,7 +19,7 @@ This matrix keeps release positioning clear across the current v2.2.x hardening 
 | v3.0 release candidates | v2.8.x |
 | Long-lived functional core | v3.0.0 |
 | Miner architecture | External standalone miner |
-| GPU mining | Optional experimental external-miner backend only after the canonical PoW adapter exists; non-blocking and every GPU-found nonce/result CPU-verified before submit |
+| GPU mining | Optional experimental external-miner backend only after the canonical PoW adapter exists; non-blocking, feature-gated if present, and every GPU-found nonce/result CPU-verified before submit |
 | Smart contracts | Out of scope until after a 30-day stable testnet burn-in |
 | Pool logic in miner | Pool coordination logic inside `pulsedag-miner` is out of scope / not allowed |
 
@@ -35,7 +35,7 @@ This matrix keeps release positioning clear across the current v2.2.x hardening 
 | v2.2.13 | Consensus/DAG safety audit | Closeout checklist for DAG invariant tests, block structural validation tests, transaction validation negative-path tests, orphan adoption tests, tip selection tests, replay/order-independence tests, block acceptance taxonomy tests, required Cargo checks, [DAG safety invariants](DAG_SAFETY_INVARIANTS_V2_2_13.md), and compatibility-claim review |
 | v2.2.14 | Storage/replay hardening | Closes deterministic replay ordering, snapshot/restore/pruning safety, explicit storage schema policy, migration compatibility errors, testnet real-libp2p defaults, release evidence scripting, external miner boundary, no contract runtime, and no pool logic in miner |
 | v2.2.15 | Sustained P2P multi-node rehearsal | Evidence bundle passed for cargo checks, 3-node rehearsal, churn/rejoin, lag recovery, convergence, peer diagnostics, and chain-id isolation |
-| v2.2.16 | Miner/node contract hardening | Current milestone: external miner/node contract hardening, mining template freshness/expiry behavior, stable submit rejection taxonomy, miner telemetry and worker metrics, multi-miner rehearsal, CPU miner evidence, and optional GPU backend planning only after the canonical PoW adapter exists |
+| v2.2.16 | Miner/node contract hardening | Current milestone: external miner/node contract hardening, mining template freshness/expiry behavior, stable submit rejection taxonomy, miner telemetry and worker metrics, multi-miner rehearsal, CPU miner evidence, optional miner performance JSON/CSV evidence, and optional GPU backend planning only after the canonical PoW adapter exists |
 | v2.2.17 | API/operator/security hardening | Public/operator/dev RPC boundary documentation, safe defaults, auth/rate-limit expectations, and operator incident workflows |
 | v2.2.18 | Private-testnet RC | Release-candidate evidence bundle and go/no-go checklist for the v2.3.0 readiness decision |
 | v2.3.0 | Private-testnet readiness decision only | Decision milestone; not an automatic public launch |
@@ -64,7 +64,7 @@ v2.2.14 through v2.2.18 extend the hardening line before the v2.3.0 readiness de
 
 - v2.2.14 is the storage/replay hardening release: it closes deterministic persisted-block replay ordering, snapshot/restore/pruning safety, storage schema migration policy, testnet real-libp2p defaults, and repeatable evidence scripting while preserving the external miner boundary and the no-contract/no-pool guardrails.
 - v2.2.15 is the sustained P2P multi-node rehearsal release: its evidence bundle passed `cargo fmt`, `cargo test`, `cargo build`, 3-node rehearsal, churn/rejoin, lag recovery, convergence, peer diagnostics, and chain-id isolation. It is not a v2.3.0 readiness claim by itself.
-- v2.2.16 stabilizes the external miner/node contract, canonical mining template semantics, submit validation, miner diagnostics, CPU miner behavior, restart/reconnect evidence, and optional GPU work as external-miner-only backlog unless it is canonical and evidence-backed.
+- v2.2.16 stabilizes the external miner/node contract, canonical mining template semantics, submit validation, miner diagnostics, CPU miner behavior, restart/reconnect evidence, optional performance evidence under `artifacts/`, and optional GPU work as external-miner-only backlog unless it is canonical and evidence-backed.
 - v2.2.17 hardens API, operator, and security boundaries, including public/operator/dev RPC separation.
 - v2.2.18 packages the private-testnet RC evidence bundle and go/no-go checklist.
 
@@ -102,7 +102,7 @@ The detailed gate roadmap is [PulseDAG v3.0.0 roadmap and gates](ROADMAP_V3_0_0.
 - Do not add smart contracts before the 30-day stable testnet burn-in is complete.
 - Do not add pool coordination logic inside `pulsedag-miner`.
 - Keep miner external and standalone.
-- GPU mining, if implemented, must be optional external-miner functionality and must not be required for default builds or mandatory evidence when no GPU is present.
+- GPU mining, if implemented, must be optional external-miner functionality, feature-gated, CPU-verified before submit, and not required for default builds or mandatory evidence when no GPU is present.
 - Do not claim official private-testnet readiness before v2.3.0.
 - Do not claim full Kaspa or GHOSTDAG compatibility unless that compatibility is explicitly implemented, tested, and documented.
 - Avoid consensus rule changes in v2.2.x unless they fix a clear safety bug and include documented test evidence.

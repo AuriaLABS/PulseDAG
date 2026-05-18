@@ -15,7 +15,8 @@ v2.2.16 closes only when the external miner/node contract is canonical, tested, 
 - [ ] No smart contracts are added.
 - [ ] No contract runtime is enabled.
 - [ ] No pool coordination logic is added inside `pulsedag-miner`.
-- [ ] The miner remains a standalone external application.
+- [ ] CPU miner remains the default backend.
+- [ ] The miner remains external and standalone.
 - [ ] No consensus-rule change is included.
 - [ ] No PoW semantic change is included.
 - [ ] No full Kaspa/GHOSTDAG compatibility claim is made.
@@ -29,14 +30,23 @@ Run these commands from the repository root and attach output or CI links:
 ```bash
 cargo fmt --check
 cargo test --workspace
+cargo build --workspace --release
+bash -n scripts/v2_2_16_miner_benchmark.sh
+cargo build -p pulsedag-miner --release
+# Optional only if the gpu feature exists and host/toolchain support is available:
+cargo build -p pulsedag-miner --features gpu
 ```
 
 - [ ] `cargo fmt --check` passes.
 - [ ] `cargo test --workspace` passes.
+- [ ] `cargo build --workspace --release` passes.
+- [ ] `bash -n scripts/v2_2_16_miner_benchmark.sh` passes.
+- [ ] `cargo build -p pulsedag-miner --release` passes.
+- [ ] `cargo build -p pulsedag-miner --features gpu` passes if the `gpu` feature exists; otherwise record `NOT_APPLICABLE` with reason.
 
 ## Miner/node contract gate
 
-- [ ] `docs/MINER_NODE_CONTRACT_V2_2_16.md` documents the canonical template fields.
+- [ ] `docs/MINER_NODE_CONTRACT_V2_2_16.md` documents the `/mining/template` contract and canonical template fields.
 - [ ] Template field order and serialization are documented.
 - [ ] PoW preimage fields are documented.
 - [ ] Endianness and byte encoding are documented.
@@ -70,7 +80,7 @@ Tests or evidence cover:
 - [ ] Oversized payload rejected.
 - [ ] Unsupported template version rejected.
 
-Stable `data.reason_code` classes are documented and remain lower-snake-case for miner branching:
+`/mining/submit` rejection taxonomy is documented. Stable `data.reason_code` classes remain lower-snake-case for miner branching:
 
 - `accepted`
 - `stale_template`
@@ -99,7 +109,7 @@ Machine-readable response requirements:
 - [ ] Stale template rejection is evidenced.
 - [ ] Template expiry rejection is evidenced.
 - [ ] Miner restart/reconnect is evidenced.
-- [ ] Multi-miner rehearsal is evidenced without adding pool coordination logic.
+- [ ] Multi-miner rehearsal evidence is captured without adding pool coordination logic.
 - [ ] Node restart recovery is evidenced when practical.
 - [ ] Evidence is written under `evidence/v2.2.16/`.
 - [ ] The integration uses `pulsedag-miner` or equivalent external miner behavior, not embedded node mining.
@@ -111,8 +121,10 @@ Machine-readable response requirements:
 - [ ] CPU miner uses the canonical preimage path.
 - [ ] CPU miner uses the same target comparison as the node.
 - [ ] Worker nonce ranges do not overlap.
+- [ ] Stale template behavior is tested.
 - [ ] CPU miner refreshes stale templates.
 - [ ] CPU miner handles submit responses deterministically.
+- [ ] Miner telemetry is tested.
 - [ ] CPU miner logs hashrate, worker count, per-worker nonce ranges or progress, accepted submits, rejected submits, stale submits, current template id, and last error.
 
 ## Optional GPU gate
@@ -120,7 +132,7 @@ Machine-readable response requirements:
 GPU mining is optional and experimental in v2.2.16.
 
 - [ ] GPU backend is considered only after the canonical PoW adapter exists.
-- [ ] GPU backend is feature-gated if implemented.
+- [ ] GPU backend is optional and feature-gated if present.
 - [ ] Optional GPU miner documentation exists at `apps/pulsedag-miner/GPU.md`.
 - [ ] GPU build command is documented as `cargo build -p pulsedag-miner --release --features gpu`.
 - [ ] GPU runtime example with `--backend gpu` is documented.
@@ -129,6 +141,7 @@ GPU mining is optional and experimental in v2.2.16.
 - [ ] Machines without GPU can still build and pass mandatory v2.2.16 evidence.
 - [ ] CPU fallback remains available.
 - [ ] Every GPU-found nonce/result is CPU-verified before submit.
+- [ ] GPU backend, if not fully canonical, remains disabled or explicitly not implemented.
 - [ ] GPU smoke evidence is `PASS`, `SKIP`, or `NOT_REQUESTED` with reason.
 - [ ] GPU code does not add pool logic.
 - [ ] GPU code does not add shares.
@@ -149,6 +162,7 @@ Before closing v2.2.16, run the v2.2.16 release evidence bundle from the reposit
 
 ```bash
 bash scripts/v2-2-16-release-evidence.sh
+bash scripts/v2_2_16_miner_benchmark.sh
 ```
 
 Record closeout metadata:
@@ -178,5 +192,6 @@ Record closeout metadata:
 - [ ] GPU status/backlog is updated in `docs/MINER_GPU_BACKLOG_V2_2_16.md`.
 - [ ] Optional GPU miner docs are updated in `apps/pulsedag-miner/GPU.md`.
 - [ ] Markdown links in updated GPU/miner/release docs are verified.
+- [ ] Miner benchmark JSON/CSV artifacts from `scripts/v2_2_16_miner_benchmark.sh` are collected when performance evidence is requested.
 - [ ] Evidence links are collected in the release issue, PR, or release artifact index.
 - [ ] The closeout summary explicitly states that v2.2.16 provides miner/node contract hardening evidence and does not claim v2.3.0 readiness by itself.
