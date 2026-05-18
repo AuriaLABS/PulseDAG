@@ -53,6 +53,131 @@ struct Config {
     loop_mode: bool,
     sleep_ms: u64,
     refresh_before_expiry_ms: u64,
+    heartbeat: bool,
+    worker_id: String,
+}
+
+#[derive(Debug, Serialize)]
+struct WorkerHeartbeatRequest {
+    worker_id: String,
+    miner_address: String,
+    templates_requested: u64,
+    blocks_submitted: u64,
+    accepted_blocks: u64,
+    stale_rejections: u64,
+    invalid_pow_rejections: u64,
+    accepted_shares: u64,
+}
+
+#[derive(Debug, Clone)]
+struct MinerTelemetry {
+    backend: &'static str,
+    workers: usize,
+    attempts: u64,
+    hashes_per_sec: f64,
+    templates_received: u64,
+    templates_skipped_stale: u64,
+    submits_total: u64,
+    submits_accepted: u64,
+    submits_rejected: u64,
+    last_reject_code: Option<String>,
+    last_template_height: Option<u64>,
+    last_accepted_height: Option<u64>,
+    node_stale_rejections: u64,
+    invalid_pow_rejections: u64,
+}
+
+impl MinerTelemetry {
+    fn new(backend: &'static str, workers: usize) -> Self {
+        Self {
+            backend,
+            workers,
+            attempts: 0,
+            hashes_per_sec: 0.0,
+            templates_received: 0,
+            templates_skipped_stale: 0,
+            submits_total: 0,
+            submits_accepted: 0,
+            submits_rejected: 0,
+            last_reject_code: None,
+            last_template_height: None,
+            last_accepted_height: None,
+            node_stale_rejections: 0,
+            invalid_pow_rejections: 0,
+        }
+    }
+
+    fn record_template_received(&mut self, height: u64) {
+        self.templates_received = self.templates_received.saturating_add(1);
+        self.last_template_height = Some(height);
+    }
+
+    fn record_mining_result(&mut self, attempts: u64, hashes_per_sec: f64) {
+        self.attempts = self.attempts.saturating_add(attempts);
+        self.hashes_per_sec = hashes_per_sec;
+    }
+
+    fn record_stale_skip(&mut self) {
+        self.templates_skipped_stale = self.templates_skipped_stale.saturating_add(1);
+    }
+
+    fn record_submit_accepted(&mut self, height: Option<u64>) {
+        self.submits_total = self.submits_total.saturating_add(1);
+        self.submits_accepted = self.submits_accepted.saturating_add(1);
+        self.last_reject_code = None;
+        self.last_accepted_height = height;
+    }
+
+    fn record_submit_rejected(&mut self, reason_code: impl Into<String>, stale_template: bool) {
+        let reason_code = reason_code.into();
+        self.submits_total = self.submits_total.saturating_add(1);
+        self.submits_rejected = self.submits_rejected.saturating_add(1);
+        if reason_code == "invalid_pow" {
+            self.invalid_pow_rejections = self.invalid_pow_rejections.saturating_add(1);
+        }
+        if reason_code == "stale_template" || stale_template {
+            self.node_stale_rejections = self.node_stale_rejections.saturating_add(1);
+        }
+        self.last_reject_code = Some(reason_code);
+    }
+
+    fn heartbeat_payload(&self, cfg: &Config) -> WorkerHeartbeatRequest {
+        WorkerHeartbeatRequest {
+            worker_id: cfg.worker_id.clone(),
+            miner_address: cfg.miner_address.clone(),
+            templates_requested: self.templates_received,
+            blocks_submitted: self.submits_total,
+            accepted_blocks: self.submits_accepted,
+            stale_rejections: self
+                .templates_skipped_stale
+                .saturating_add(self.node_stale_rejections),
+            invalid_pow_rejections: self.invalid_pow_rejections,
+            accepted_shares: 0,
+        }
+    }
+
+    fn log(&self, event: &str) {
+        println!(
+            "miner_telemetry event={} backend={} workers={} attempts={} hashes_per_sec={:.2} templates_received={} templates_skipped_stale={} submits_total={} submits_accepted={} submits_rejected={} last_reject_code={} last_template_height={} last_accepted_height={}",
+            event,
+            self.backend,
+            self.workers,
+            self.attempts,
+            self.hashes_per_sec,
+            self.templates_received,
+            self.templates_skipped_stale,
+            self.submits_total,
+            self.submits_accepted,
+            self.submits_rejected,
+            self.last_reject_code.as_deref().unwrap_or("-"),
+            self.last_template_height
+                .map(|height| height.to_string())
+                .unwrap_or_else(|| "-".to_string()),
+            self.last_accepted_height
+                .map(|height| height.to_string())
+                .unwrap_or_else(|| "-".to_string()),
+        );
+    }
 }
 
 struct MiningResult {
@@ -112,10 +237,12 @@ async fn main() -> Result<()> {
     let cfg = parse_args()?;
     let client = Client::builder().build()?;
     let backend: Arc<dyn MiningBackend> = Arc::new(CpuMiningBackend);
+    let mut telemetry = MinerTelemetry::new(backend.name(), cfg.threads);
+    telemetry.log("miner_start");
 
     if cfg.loop_mode {
         loop {
-            match mine_once(&client, &cfg, Arc::clone(&backend)).await {
+            match mine_once(&client, &cfg, Arc::clone(&backend), &mut telemetry).await {
                 Ok(outcome) => {
                     let _decision = loop_refresh_decision_after_outcome(outcome);
                 }
@@ -124,7 +251,7 @@ async fn main() -> Result<()> {
             sleep(Duration::from_millis(cfg.sleep_ms)).await;
         }
     } else {
-        mine_once(&client, &cfg, backend).await?;
+        mine_once(&client, &cfg, backend, &mut telemetry).await?;
         Ok(())
     }
 }
@@ -147,6 +274,8 @@ where
     let mut loop_mode = false;
     let mut sleep_ms = 1500u64;
     let mut refresh_before_expiry_ms = 1000u64;
+    let mut heartbeat = true;
+    let mut worker_id = String::new();
 
     let mut args = args.into_iter().map(Into::into);
     while let Some(arg) = args.next() {
@@ -190,18 +319,29 @@ where
                     .parse()
                     .context("invalid --refresh-before-expiry-ms")?
             }
+            "--heartbeat" => heartbeat = true,
+            "--no-heartbeat" => heartbeat = false,
+            "--worker-id" => {
+                worker_id = args
+                    .next()
+                    .ok_or_else(|| anyhow!("missing value for --worker-id"))?
+            }
             _ => {}
         }
     }
 
     if miner_address.trim().is_empty() {
         return Err(anyhow!(
-            "usage: pulsedag-miner --miner-address <address> [--node http://127.0.0.1:8080] [--max-tries 50000] [--threads N] [--loop] [--sleep-ms 1500] [--refresh-before-expiry-ms 1000]"
+            "usage: pulsedag-miner --miner-address <address> [--node http://127.0.0.1:8080] [--max-tries 50000] [--threads N] [--loop] [--sleep-ms 1500] [--refresh-before-expiry-ms 1000] [--worker-id ID] [--no-heartbeat]"
         ));
     }
 
     if threads == 0 {
         return Err(anyhow!("--threads must be >= 1"));
+    }
+
+    if worker_id.trim().is_empty() {
+        worker_id = default_worker_id(&miner_address);
     }
 
     Ok(Config {
@@ -212,7 +352,23 @@ where
         loop_mode,
         sleep_ms,
         refresh_before_expiry_ms,
+        heartbeat,
+        worker_id,
     })
+}
+
+fn default_worker_id(miner_address: &str) -> String {
+    let sanitized: String = miner_address
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    format!("miner-{}-{}", sanitized, std::process::id())
 }
 
 fn submit_rejection_action(reason_code: &str) -> &'static str {
@@ -293,6 +449,7 @@ async fn mine_once(
     client: &Client,
     cfg: &Config,
     backend: Arc<dyn MiningBackend>,
+    telemetry: &mut MinerTelemetry,
 ) -> Result<MineOnceOutcome> {
     let template_url = format!("{}/mining/template", cfg.node.trim_end_matches('/'));
     let submit_url = format!("{}/mining/submit", cfg.node.trim_end_matches('/'));
@@ -312,6 +469,8 @@ async fn mine_once(
 
     let template_id = template.template_id;
     let mut block = template.block;
+    telemetry.record_template_received(block.header.height);
+    telemetry.log("template_received");
 
     let target_bits = if template.compact_target == 0 {
         block.header.difficulty
@@ -327,6 +486,8 @@ async fn mine_once(
     )
     .await?;
     block.header = mining.header;
+    telemetry.record_mining_result(mining.tries, mining.hashes_per_sec);
+    telemetry.log("mining_result");
 
     println!(
         "template received: protocol_version={} id={} height={} hash={} difficulty={} created_at={} expires_at={} ttl={}s grace={}s target_hex={}",
@@ -366,6 +527,9 @@ async fn mine_once(
             cfg.refresh_before_expiry_ms
         );
         println!("action: refresh template and retry mining on latest work");
+        telemetry.record_stale_skip();
+        telemetry.log("template_skipped_stale");
+        send_worker_heartbeat(client, cfg, telemetry).await;
         return Ok(MineOnceOutcome::SkippedStaleTemplate);
     }
 
@@ -390,6 +554,14 @@ async fn mine_once(
             data.pow_accepted_dev,
             data.stale_template
         );
+        if data.accepted {
+            telemetry.record_submit_accepted(data.height);
+            telemetry.log("submit_accepted");
+        } else {
+            telemetry.record_submit_rejected(data.reason_code.clone(), data.stale_template);
+            telemetry.log("submit_rejected");
+        }
+        send_worker_heartbeat(client, cfg, telemetry).await;
         if !data.accepted {
             if let Some(reason) = data.reason.as_deref() {
                 println!(
@@ -412,6 +584,9 @@ async fn mine_once(
             reason_code, err.message
         );
         println!("action: {}", submit_rejection_action(reason_code.as_str()));
+        telemetry.record_submit_rejected(reason_code.clone(), reason_code == "stale_template");
+        telemetry.log("submit_rejected");
+        send_worker_heartbeat(client, cfg, telemetry).await;
         if reason_code == "stale_template" {
             return Ok(MineOnceOutcome::NodeRejectedStaleTemplate);
         }
@@ -419,6 +594,45 @@ async fn mine_once(
     }
 
     Ok(MineOnceOutcome::Submitted)
+}
+
+async fn send_worker_heartbeat(client: &Client, cfg: &Config, telemetry: &MinerTelemetry) {
+    if !cfg.heartbeat {
+        return;
+    }
+
+    let heartbeat_url = format!(
+        "{}/mining/workers/heartbeat",
+        cfg.node.trim_end_matches('/')
+    );
+    let payload = telemetry.heartbeat_payload(cfg);
+    match client
+        .post(&heartbeat_url)
+        .timeout(Duration::from_millis(500))
+        .json(&payload)
+        .send()
+        .await
+    {
+        Ok(resp) if resp.status().is_success() => {
+            telemetry.log("heartbeat_sent");
+        }
+        Ok(resp) => {
+            println!(
+                "miner_telemetry event=heartbeat_skipped backend={} workers={} status={} reason=endpoint_unavailable",
+                telemetry.backend,
+                telemetry.workers,
+                resp.status()
+            );
+        }
+        Err(err) => {
+            println!(
+                "miner_telemetry event=heartbeat_skipped backend={} workers={} reason=endpoint_unavailable error={}",
+                telemetry.backend,
+                telemetry.workers,
+                err
+            );
+        }
+    }
 }
 
 async fn mine_header_with_backend(
@@ -466,10 +680,106 @@ async fn mine_header_with_backend(
 #[cfg(test)]
 mod tests {
     use super::{
-        evaluate_template_freshness, loop_refresh_decision_after_outcome, parse_args_from,
-        should_skip_stale_submit, submit_rejection_action, Block, BlockHeader, LoopRefreshDecision,
-        MineOnceOutcome, SubmitRequest, TemplateSkipReason,
+        default_worker_id, evaluate_template_freshness, loop_refresh_decision_after_outcome,
+        parse_args_from, should_skip_stale_submit, submit_rejection_action, Block, BlockHeader,
+        Config, LoopRefreshDecision, MineOnceOutcome, MinerTelemetry, SubmitRequest,
+        TemplateSkipReason,
     };
+
+    fn telemetry_test_config() -> Config {
+        Config {
+            node: "http://127.0.0.1:8080".to_string(),
+            miner_address: "addr".to_string(),
+            max_tries: 1,
+            threads: 2,
+            loop_mode: false,
+            sleep_ms: 1,
+            refresh_before_expiry_ms: 1000,
+            heartbeat: true,
+            worker_id: "worker-1".to_string(),
+        }
+    }
+
+    #[test]
+    fn telemetry_counters_increment_correctly() {
+        let mut telemetry = MinerTelemetry::new("cpu", 2);
+
+        telemetry.record_template_received(11);
+        telemetry.record_mining_result(42, 2100.0);
+
+        assert_eq!(telemetry.templates_received, 1);
+        assert_eq!(telemetry.last_template_height, Some(11));
+        assert_eq!(telemetry.attempts, 42);
+        assert_eq!(telemetry.hashes_per_sec, 2100.0);
+    }
+
+    #[test]
+    fn accepted_submit_updates_accepted_counters() {
+        let mut telemetry = MinerTelemetry::new("cpu", 2);
+
+        telemetry.record_submit_accepted(Some(12));
+
+        assert_eq!(telemetry.submits_total, 1);
+        assert_eq!(telemetry.submits_accepted, 1);
+        assert_eq!(telemetry.submits_rejected, 0);
+        assert_eq!(telemetry.last_reject_code, None);
+        assert_eq!(telemetry.last_accepted_height, Some(12));
+    }
+
+    #[test]
+    fn rejected_submit_updates_rejection_counters() {
+        let mut telemetry = MinerTelemetry::new("cpu", 2);
+
+        telemetry.record_submit_rejected("invalid_pow", false);
+
+        assert_eq!(telemetry.submits_total, 1);
+        assert_eq!(telemetry.submits_accepted, 0);
+        assert_eq!(telemetry.submits_rejected, 1);
+        assert_eq!(telemetry.last_reject_code.as_deref(), Some("invalid_pow"));
+        assert_eq!(telemetry.invalid_pow_rejections, 1);
+    }
+
+    #[test]
+    fn stale_skip_increments_stale_counter() {
+        let mut telemetry = MinerTelemetry::new("cpu", 2);
+
+        telemetry.record_stale_skip();
+
+        assert_eq!(telemetry.templates_skipped_stale, 1);
+        let payload = telemetry.heartbeat_payload(&telemetry_test_config());
+        assert_eq!(payload.stale_rejections, 1);
+    }
+
+    #[test]
+    fn cpu_backend_reports_backend_cpu() {
+        let telemetry = MinerTelemetry::new("cpu", 4);
+
+        assert_eq!(telemetry.backend, "cpu");
+        assert_eq!(telemetry.workers, 4);
+    }
+
+    #[test]
+    fn heartbeat_payload_keeps_miner_standalone_without_shares() {
+        let mut telemetry = MinerTelemetry::new("cpu", 2);
+        telemetry.record_template_received(10);
+        telemetry.record_submit_accepted(Some(10));
+
+        let payload = telemetry.heartbeat_payload(&telemetry_test_config());
+
+        assert_eq!(payload.worker_id, "worker-1");
+        assert_eq!(payload.miner_address, "addr");
+        assert_eq!(payload.templates_requested, 1);
+        assert_eq!(payload.blocks_submitted, 1);
+        assert_eq!(payload.accepted_blocks, 1);
+        assert_eq!(payload.accepted_shares, 0);
+    }
+
+    #[test]
+    fn default_worker_id_is_endpoint_safe() {
+        let worker_id = default_worker_id("addr/with spaces");
+
+        assert!(worker_id.starts_with("miner-addr_with_spaces-"));
+    }
 
     #[test]
     fn stale_expired_template_skip_includes_reason_and_timing() {
