@@ -121,12 +121,19 @@ GPU mining is optional and experimental in v2.2.16.
 
 - [ ] GPU backend is considered only after the canonical PoW adapter exists.
 - [ ] GPU backend is feature-gated if implemented.
+- [ ] Optional GPU miner documentation exists at `apps/pulsedag-miner/GPU.md`.
+- [ ] GPU build command is documented as `cargo build -p pulsedag-miner --release --features gpu`.
+- [ ] GPU runtime example with `--backend gpu` is documented.
+- [ ] Driver/OpenCL requirements and troubleshooting are documented.
 - [ ] Default build does not require GPU dependencies.
 - [ ] Machines without GPU can still build and pass mandatory v2.2.16 evidence.
 - [ ] CPU fallback remains available.
 - [ ] Every GPU-found nonce/result is CPU-verified before submit.
 - [ ] GPU smoke evidence is `PASS`, `SKIP`, or `NOT_REQUESTED` with reason.
 - [ ] GPU code does not add pool logic.
+- [ ] GPU code does not add shares.
+- [ ] GPU code does not add payouts.
+- [ ] GPU code keeps the miner as a standalone external app.
 - [ ] GPU code does not change consensus rules.
 
 ## Diagnostics gate
@@ -169,5 +176,7 @@ Record closeout metadata:
 - [ ] Roadmap scope is updated in `docs/ROADMAP_V2_2_16.md`.
 - [ ] Miner/node contract docs are updated in `docs/MINER_NODE_CONTRACT_V2_2_16.md`.
 - [ ] GPU status/backlog is updated in `docs/MINER_GPU_BACKLOG_V2_2_16.md`.
+- [ ] Optional GPU miner docs are updated in `apps/pulsedag-miner/GPU.md`.
+- [ ] Markdown links in updated GPU/miner/release docs are verified.
 - [ ] Evidence links are collected in the release issue, PR, or release artifact index.
 - [ ] The closeout summary explicitly states that v2.2.16 provides miner/node contract hardening evidence and does not claim v2.3.0 readiness by itself.
