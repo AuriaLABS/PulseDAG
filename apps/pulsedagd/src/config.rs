@@ -98,6 +98,7 @@ impl Config {
         }
         cfg.validate_api_exposure()?;
         cfg.validate_cors_policy()?;
+        cfg.validate_security_hardening()?;
         Ok(cfg)
     }
 
@@ -506,6 +507,7 @@ impl Config {
         self.apply_admin_default_or_env_override();
         self.validate_api_exposure()?;
         self.validate_cors_policy()?;
+        self.validate_security_hardening()?;
         Ok(())
     }
 
@@ -544,6 +546,91 @@ impl Config {
         }
         Ok(())
     }
+
+    fn validate_security_hardening(&self) -> Result<()> {
+        if self.chain_id.trim().is_empty() {
+            bail!(
+                "invalid config: PULSEDAG_CHAIN_ID is required and cannot be empty; set a stable chain id (for example: pulsedag-testnet)"
+            );
+        }
+        if let Some(token) = &self.operator_auth_token {
+            if token.len() < 16 {
+                bail!(
+                    "invalid config: PULSEDAG_OPERATOR_AUTH_TOKEN is too short ({} chars). Use at least 16 characters.",
+                    token.len()
+                );
+            }
+        }
+        if self.api_profile == ApiExposureProfile::PublicSafe
+            && self.rpc_rate_limit_requests_per_minute == 0
+        {
+            let unsafe_override = std::env::var("PULSEDAG_RPC_RATE_LIMIT_UNSAFE_ALLOW_DISABLED")
+                .map(|v| parse_env_bool_value(&v))
+                .unwrap_or(false);
+            if !unsafe_override {
+                bail!("invalid config: public_safe profile cannot disable RPC rate limiting. Set PULSEDAG_RPC_RATE_LIMIT_REQUESTS_PER_MINUTE to a non-zero value or explicitly acknowledge risk with PULSEDAG_RPC_RATE_LIMIT_UNSAFE_ALLOW_DISABLED=true");
+            }
+        }
+        Ok(())
+    }
+
+    pub fn config_safety_summary(&self) -> String {
+        let mut warnings = Vec::new();
+        if self.rpc_bind.trim().starts_with("0.0.0.0:")
+            && std::env::var("PULSEDAG_API_PROFILE").is_err()
+        {
+            warnings.push("RPC bound to 0.0.0.0 without explicit PULSEDAG_API_PROFILE".to_string());
+        }
+        if matches!(self.api_profile, ApiExposureProfile::LocalDev)
+            && !is_local_rpc_bind(&self.rpc_bind)
+        {
+            warnings.push("local_dev API profile is used with non-local bind".to_string());
+        }
+        if let Some(dup) = detect_duplicate_local_profile_ports() {
+            warnings.push(dup);
+        }
+        if warnings.is_empty() {
+            "config safety: OK".to_string()
+        } else {
+            format!(
+                "config safety: {} warning(s): {}",
+                warnings.len(),
+                warnings.join("; ")
+            )
+        }
+    }
+}
+
+fn detect_duplicate_local_profile_ports() -> Option<String> {
+    use std::collections::HashMap;
+    let profiles = [
+        ConfigProfile::Dev,
+        ConfigProfile::Local,
+        ConfigProfile::RehearsalA,
+        ConfigProfile::RehearsalB,
+        ConfigProfile::RehearsalC,
+    ];
+    let mut seen: HashMap<u16, String> = HashMap::new();
+    for profile in profiles {
+        let cfg = Config::defaults_for_profile(profile);
+        for bind in [cfg.rpc_bind.as_str(), cfg.p2p_listen.as_str()] {
+            if let Some(port) = extract_port(bind) {
+                let label = format!("{} ({})", cfg.network_profile, bind);
+                if let Some(existing) = seen.insert(port, label.clone()) {
+                    return Some(format!(
+                        "duplicate local profile port {} between {} and {}",
+                        port, existing, label
+                    ));
+                }
+            }
+        }
+    }
+    None
+}
+
+fn extract_port(bind: &str) -> Option<u16> {
+    let tail = bind.rsplit('/').next().unwrap_or(bind);
+    tail.rsplit_once(':')?.1.parse::<u16>().ok()
 }
 
 fn read_env_optional_nonempty(key: &str) -> Option<String> {
@@ -675,6 +762,8 @@ mod tests {
             "PULSEDAG_RPC_RATE_LIMIT_PER_IP",
             "PULSEDAG_RPC_CORS_ALLOWLIST",
             "PULSEDAG_RPC_CORS_UNSAFE_ALLOW_WILDCARD_WITH_ADMIN",
+            "PULSEDAG_RPC_RATE_LIMIT_UNSAFE_ALLOW_DISABLED",
+            "PULSEDAG_OPERATOR_AUTH_TOKEN",
         ] {
             std::env::remove_var(key);
         }
@@ -1015,5 +1104,48 @@ mod tests {
         let cfg = Config::from_env().expect("config");
         assert!(!cfg.admin_enabled);
         clear_test_env();
+    }
+
+    #[test]
+    fn missing_chain_id_is_rejected() {
+        let _guard = env_lock().lock().expect("env lock");
+        clear_test_env();
+        std::env::set_var("PULSEDAG_CONFIG_PROFILE", "dev");
+        std::env::set_var("PULSEDAG_CHAIN_ID", "   ");
+        let err = Config::from_env().expect_err("missing chain id should fail");
+        assert!(err.to_string().contains("PULSEDAG_CHAIN_ID is required"));
+    }
+
+    #[test]
+    fn short_auth_token_is_rejected() {
+        let _guard = env_lock().lock().expect("env lock");
+        clear_test_env();
+        std::env::set_var("PULSEDAG_CONFIG_PROFILE", "operator");
+        std::env::set_var("PULSEDAG_OPERATOR_AUTH_TOKEN", "short-token");
+        let err = Config::from_env().expect_err("short token should fail");
+        assert!(err.to_string().contains("too short"));
+    }
+
+    #[test]
+    fn public_safe_rate_limit_disabled_requires_explicit_override() {
+        let _guard = env_lock().lock().expect("env lock");
+        clear_test_env();
+        std::env::set_var("PULSEDAG_CONFIG_PROFILE", "operator");
+        std::env::set_var("PULSEDAG_API_PROFILE", "public_safe");
+        std::env::set_var("PULSEDAG_RPC_RATE_LIMIT_REQUESTS_PER_MINUTE", "0");
+        let err = Config::from_env().expect_err("public_safe should require rate limit");
+        assert!(err
+            .to_string()
+            .contains("PULSEDAG_RPC_RATE_LIMIT_UNSAFE_ALLOW_DISABLED=true"));
+    }
+
+    #[test]
+    fn config_safety_summary_reports_warning_for_public_bind_without_explicit_profile() {
+        let _guard = env_lock().lock().expect("env lock");
+        clear_test_env();
+        let cfg = Config::defaults_for_profile(ConfigProfile::Operator);
+        let summary = cfg.config_safety_summary();
+        assert!(summary.contains("warning"));
+        assert!(summary.contains("0.0.0.0"));
     }
 }

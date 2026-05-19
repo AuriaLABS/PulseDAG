@@ -50,6 +50,12 @@ async fn main() -> Result<()> {
 
     let mut cfg = Config::from_env()?;
     cfg.apply_cli_args(std::env::args().skip(1))?;
+    let config_safety_summary = cfg.config_safety_summary();
+    if config_safety_summary.contains("warning") {
+        warn!(summary = %config_safety_summary, "config safety summary");
+    } else {
+        info!(summary = %config_safety_summary, "config safety summary");
+    }
     let storage = Arc::new(Storage::open(&cfg.rocksdb_path)?);
 
     let snapshot_exists = storage.snapshot_exists().unwrap_or(false);
