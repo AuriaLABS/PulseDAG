@@ -109,6 +109,13 @@ pub async fn get_readiness<S: RpcStateLike>(
     let runtime_handle = state.runtime();
     let runtime = runtime_handle.read().await;
     let p2p_status = state.p2p().and_then(|p| p.status().ok());
+    let p2p_mode = std::env::var("PULSEDAG_P2P_MODE").unwrap_or_else(|_| "unknown".to_string());
+    let rpc_bind =
+        std::env::var("PULSEDAG_RPC_BIND").unwrap_or_else(|_| "127.0.0.1:8080".to_string());
+    let api_profile =
+        std::env::var("PULSEDAG_API_PROFILE").unwrap_or_else(|_| "local_dev".to_string());
+    let admin_enabled =
+        std::env::var("PULSEDAG_ADMIN_ENABLED").unwrap_or_else(|_| "false".to_string()) == "true";
     let p2p_peer_count = p2p_status
         .as_ref()
         .map(|status| status.connected_peers.len())
@@ -218,6 +225,45 @@ pub async fn get_readiness<S: RpcStateLike>(
         },
     );
 
+    categories.insert(
+        "api_profile_safety".to_string(),
+        if (rpc_bind.starts_with("0.0.0.0:") || !rpc_bind.starts_with("127.0.0.1:"))
+            && api_profile == "local_dev"
+        {
+            category(
+                ReadinessStatus::Fail,
+                vec!["API profile local_dev is unsafe for non-local RPC bind".to_string()],
+            )
+        } else {
+            category(
+                ReadinessStatus::Pass,
+                vec![format!("api_profile={api_profile} rpc_bind={rpc_bind}")],
+            )
+        },
+    );
+
+    categories.insert(
+        "admin_exposure".to_string(),
+        if admin_enabled
+            && (rpc_bind.starts_with("0.0.0.0:") || !rpc_bind.starts_with("127.0.0.1:"))
+        {
+            category(
+                ReadinessStatus::Fail,
+                vec!["admin is exposed on non-local RPC bind".to_string()],
+            )
+        } else if admin_enabled {
+            category(
+                ReadinessStatus::Warn,
+                vec!["admin endpoints are enabled".to_string()],
+            )
+        } else {
+            category(
+                ReadinessStatus::Pass,
+                vec!["admin endpoints disabled".to_string()],
+            )
+        },
+    );
+
     let mut storage_fail = Vec::new();
     let mut storage_warn = Vec::new();
     if memory_hashes != persisted_hashes {
@@ -320,6 +366,70 @@ pub async fn get_readiness<S: RpcStateLike>(
             "startup replay and self-audit indicators are clean",
         ),
     );
+
+    categories.insert(
+        "sync_status".to_string(),
+        if runtime.sync_state == "degraded"
+            || runtime.sync_pipeline.last_error.is_some()
+            || runtime.sync_pipeline.counters.phase_failures > 5
+        {
+            category(
+                ReadinessStatus::Fail,
+                vec![format!(
+                    "sync degraded: state={} last_error={} phase_failures={}",
+                    runtime.sync_state,
+                    runtime
+                        .sync_pipeline
+                        .last_error
+                        .clone()
+                        .unwrap_or_else(|| "none".to_string()),
+                    runtime.sync_pipeline.counters.phase_failures
+                )],
+            )
+        } else {
+            category(
+                ReadinessStatus::Pass,
+                vec![format!(
+                    "sync state healthy: {} (p2p_mode={})",
+                    runtime.sync_state, p2p_mode
+                )],
+            )
+        },
+    );
+
+    if runtime.external_mining_rejected_chain_id_mismatch > 0 {
+        categories.insert(
+            "chain_id".to_string(),
+            category(
+                ReadinessStatus::Fail,
+                vec![format!(
+                    "chain id mismatch detected {} time(s)",
+                    runtime.external_mining_rejected_chain_id_mismatch
+                )],
+            ),
+        );
+    } else {
+        categories.insert(
+            "chain_id".to_string(),
+            category(
+                ReadinessStatus::Pass,
+                vec!["no chain id mismatch observed".to_string()],
+            ),
+        );
+    }
+
+    if !runtime.last_self_audit_ok || runtime.last_self_audit_issue_count > 0 {
+        categories.insert(
+            "critical_warnings".to_string(),
+            category(
+                ReadinessStatus::Fail,
+                vec![format!(
+                    "unresolved critical warnings: self-audit issue_count={}",
+                    runtime.last_self_audit_issue_count
+                )],
+            ),
+        );
+    }
 
     let overall_status = overall_status(&categories);
     let blockers = categories
