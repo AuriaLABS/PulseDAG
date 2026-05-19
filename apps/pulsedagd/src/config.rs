@@ -27,6 +27,9 @@ pub struct Config {
     pub admin_enabled: bool,
     pub operator_auth_token: Option<String>,
     pub api_profile: ApiExposureProfile,
+    pub rpc_request_body_limit_bytes: usize,
+    pub rpc_rate_limit_requests_per_minute: u32,
+    pub rpc_rate_limit_per_ip: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -123,6 +126,9 @@ impl Config {
                 admin_enabled: false,
                 operator_auth_token: None,
                 api_profile: ApiExposureProfile::LocalDev,
+                rpc_request_body_limit_bytes: 1024 * 1024,
+                rpc_rate_limit_requests_per_minute: 0,
+                rpc_rate_limit_per_ip: true,
             },
             ConfigProfile::Local => Self {
                 network_profile: "local".into(),
@@ -150,6 +156,9 @@ impl Config {
                 admin_enabled: false,
                 operator_auth_token: None,
                 api_profile: ApiExposureProfile::LocalDev,
+                rpc_request_body_limit_bytes: 1024 * 1024,
+                rpc_rate_limit_requests_per_minute: 0,
+                rpc_rate_limit_per_ip: true,
             },
             ConfigProfile::Private => Self {
                 network_profile: "private".into(),
@@ -177,6 +186,9 @@ impl Config {
                 admin_enabled: false,
                 operator_auth_token: None,
                 api_profile: ApiExposureProfile::PrivateOperator,
+                rpc_request_body_limit_bytes: 512 * 1024,
+                rpc_rate_limit_requests_per_minute: 120,
+                rpc_rate_limit_per_ip: true,
             },
             ConfigProfile::Testnet => Self {
                 network_profile: "testnet".into(),
@@ -204,6 +216,9 @@ impl Config {
                 admin_enabled: false,
                 operator_auth_token: None,
                 api_profile: ApiExposureProfile::PrivateOperator,
+                rpc_request_body_limit_bytes: 512 * 1024,
+                rpc_rate_limit_requests_per_minute: 120,
+                rpc_rate_limit_per_ip: true,
             },
             ConfigProfile::RehearsalA => Self {
                 network_profile: "rehearsal-a".into(),
@@ -231,6 +246,9 @@ impl Config {
                 admin_enabled: false,
                 operator_auth_token: None,
                 api_profile: ApiExposureProfile::LocalDev,
+                rpc_request_body_limit_bytes: 1024 * 1024,
+                rpc_rate_limit_requests_per_minute: 0,
+                rpc_rate_limit_per_ip: true,
             },
             ConfigProfile::RehearsalB => Self {
                 network_profile: "rehearsal-b".into(),
@@ -258,6 +276,9 @@ impl Config {
                 admin_enabled: false,
                 operator_auth_token: None,
                 api_profile: ApiExposureProfile::LocalDev,
+                rpc_request_body_limit_bytes: 1024 * 1024,
+                rpc_rate_limit_requests_per_minute: 0,
+                rpc_rate_limit_per_ip: true,
             },
             ConfigProfile::RehearsalC => Self {
                 network_profile: "rehearsal-c".into(),
@@ -288,6 +309,9 @@ impl Config {
                 admin_enabled: false,
                 operator_auth_token: None,
                 api_profile: ApiExposureProfile::LocalDev,
+                rpc_request_body_limit_bytes: 1024 * 1024,
+                rpc_rate_limit_requests_per_minute: 0,
+                rpc_rate_limit_per_ip: true,
             },
             ConfigProfile::Operator => Self {
                 network_profile: "operator".into(),
@@ -315,6 +339,9 @@ impl Config {
                 admin_enabled: false,
                 operator_auth_token: None,
                 api_profile: ApiExposureProfile::PrivateOperator,
+                rpc_request_body_limit_bytes: 512 * 1024,
+                rpc_rate_limit_requests_per_minute: 120,
+                rpc_rate_limit_per_ip: true,
             },
         }
     }
@@ -323,6 +350,16 @@ impl Config {
         self.network_profile = read_env_string("PULSEDAG_NETWORK_PROFILE", &self.network_profile);
         self.chain_id = read_env_string("PULSEDAG_CHAIN_ID", &self.chain_id);
         self.rpc_bind = read_env_string("PULSEDAG_RPC_BIND", &self.rpc_bind);
+        self.rpc_request_body_limit_bytes = read_env_usize(
+            "PULSEDAG_RPC_REQUEST_BODY_LIMIT_BYTES",
+            self.rpc_request_body_limit_bytes,
+        );
+        self.rpc_rate_limit_requests_per_minute = read_env_u32(
+            "PULSEDAG_RPC_RATE_LIMIT_REQUESTS_PER_MINUTE",
+            self.rpc_rate_limit_requests_per_minute,
+        );
+        self.rpc_rate_limit_per_ip =
+            read_env_bool("PULSEDAG_RPC_RATE_LIMIT_PER_IP", self.rpc_rate_limit_per_ip);
         self.p2p_enabled = read_env_bool("PULSEDAG_P2P_ENABLED", self.p2p_enabled);
         self.p2p_mode = read_env_string("PULSEDAG_P2P_MODE", &self.p2p_mode);
         self.p2p_listen = read_env_string("PULSEDAG_P2P_LISTEN", &self.p2p_listen);
@@ -533,6 +570,20 @@ fn guarded_target_block_interval_secs(candidate: u64) -> u64 {
     }
 }
 
+fn read_env_usize(key: &str, default: usize) -> usize {
+    std::env::var(key)
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(default)
+}
+
+fn read_env_u32(key: &str, default: u32) -> u32 {
+    std::env::var(key)
+        .ok()
+        .and_then(|v| v.parse::<u32>().ok())
+        .unwrap_or(default)
+}
+
 fn read_env_u64(key: &str, default: u64) -> u64 {
     std::env::var(key)
         .ok()
@@ -582,6 +633,9 @@ mod tests {
             "PULSEDAG_ADMIN_ENABLED",
             "PULSEDAG_ADMIN_UNSAFE_ALLOW_REMOTE_NOAUTH",
             "PULSEDAG_API_PROFILE",
+            "PULSEDAG_RPC_REQUEST_BODY_LIMIT_BYTES",
+            "PULSEDAG_RPC_RATE_LIMIT_REQUESTS_PER_MINUTE",
+            "PULSEDAG_RPC_RATE_LIMIT_PER_IP",
         ] {
             std::env::remove_var(key);
         }

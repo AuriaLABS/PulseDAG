@@ -23,7 +23,10 @@ use pulsedag_core::reconcile_mempool;
 use pulsedag_p2p::{
     build_p2p_stack, InboundEvent, Libp2pConfig, Libp2pRuntimeMode, P2pHandle, P2pMode,
 };
-use pulsedag_rpc::routes::{router_with_profile, ApiExposureProfile as RpcApiExposureProfile};
+use pulsedag_rpc::routes::{
+    router_with_profile, ApiExposureProfile as RpcApiExposureProfile, RateLimitConfig,
+    RpcHardeningLimits,
+};
 use pulsedag_storage::Storage;
 use tokio::net::TcpListener;
 use tokio::time::{sleep, Duration};
@@ -1313,10 +1316,23 @@ async fn main() -> Result<()> {
         config::ApiExposureProfile::PublicSafe => RpcApiExposureProfile::PublicSafe,
         config::ApiExposureProfile::DisabledAdmin => RpcApiExposureProfile::DisabledAdmin,
     };
+    let hardening_limits = RpcHardeningLimits {
+        request_body_limit_bytes: cfg.rpc_request_body_limit_bytes,
+        rate_limit: if cfg.rpc_rate_limit_requests_per_minute == 0 {
+            None
+        } else {
+            Some(RateLimitConfig {
+                requests_per_window: cfg.rpc_rate_limit_requests_per_minute,
+                window_secs: 60,
+                per_ip: cfg.rpc_rate_limit_per_ip,
+            })
+        },
+    };
     let app: Router = router_with_profile(
         rpc_profile,
         cfg.admin_enabled,
         cfg.operator_auth_token.clone(),
+        Some(hardening_limits),
     )
     .with_state(app_state);
     let addr: SocketAddr = cfg.rpc_bind.parse()?;

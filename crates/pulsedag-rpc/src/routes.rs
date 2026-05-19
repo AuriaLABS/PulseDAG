@@ -6,6 +6,13 @@ use axum::{
     routing::{any, get, post},
     Json, Router,
 };
+use std::{
+    collections::HashMap,
+    net::IpAddr,
+    sync::Arc,
+    time::{Duration, Instant},
+};
+use tokio::sync::Mutex;
 
 use crate::{
     api::{ApiResponse, RpcStateLike},
@@ -97,7 +104,7 @@ pub fn router<S>() -> Router<S>
 where
     S: RpcStateLike,
 {
-    router_with_admin(true, None)
+    router_with_profile(ApiExposureProfile::PrivateOperator, true, None, None)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -108,24 +115,161 @@ pub enum ApiExposureProfile {
     DisabledAdmin,
 }
 
+#[derive(Debug, Clone)]
+pub struct RpcHardeningLimits {
+    pub request_body_limit_bytes: usize,
+    pub rate_limit: Option<RateLimitConfig>,
+}
+
+#[derive(Debug, Clone)]
+pub struct RateLimitConfig {
+    pub requests_per_window: u32,
+    pub window_secs: u64,
+    pub per_ip: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum RateKey {
+    Global,
+    Ip(IpAddr),
+}
+
+#[derive(Debug, Default)]
+struct RateLimiter {
+    windows: HashMap<RateKey, (Instant, u32)>,
+}
+
+impl RpcHardeningLimits {
+    pub fn for_profile(profile: ApiExposureProfile) -> Self {
+        match profile {
+            ApiExposureProfile::PublicSafe => Self {
+                request_body_limit_bytes: 128 * 1024,
+                rate_limit: Some(RateLimitConfig {
+                    requests_per_window: 30,
+                    window_secs: 60,
+                    per_ip: true,
+                }),
+            },
+            ApiExposureProfile::PrivateOperator => Self {
+                request_body_limit_bytes: 512 * 1024,
+                rate_limit: Some(RateLimitConfig {
+                    requests_per_window: 120,
+                    window_secs: 60,
+                    per_ip: true,
+                }),
+            },
+            ApiExposureProfile::LocalDev | ApiExposureProfile::DisabledAdmin => Self {
+                request_body_limit_bytes: 1024 * 1024,
+                rate_limit: None,
+            },
+        }
+    }
+}
+
 pub fn router_with_profile<S>(
     profile: ApiExposureProfile,
     admin_enabled: bool,
     operator_auth_token: Option<String>,
+    limits: Option<RpcHardeningLimits>,
 ) -> Router<S>
 where
     S: RpcStateLike,
 {
     let auth = operator_auth_token;
+    let limits = limits.unwrap_or_else(|| RpcHardeningLimits::for_profile(profile));
     match profile {
         ApiExposureProfile::PublicSafe => Router::new()
             .nest("/api/v1", public_safe_api_v1_router::<S>())
-            .merge(public_safe_compatibility_router::<S>()),
-        ApiExposureProfile::DisabledAdmin => router_with_admin(false, auth),
+            .merge(public_safe_compatibility_router::<S>())
+            .layer(from_fn(move |req, next| {
+                hardening_middleware(req, next, limits.clone())
+            })),
+        ApiExposureProfile::DisabledAdmin => {
+            router_with_admin(false, auth).layer(from_fn(move |req, next| {
+                hardening_middleware(req, next, limits.clone())
+            }))
+        }
         ApiExposureProfile::LocalDev | ApiExposureProfile::PrivateOperator => {
-            router_with_admin(admin_enabled, auth)
+            router_with_admin(admin_enabled, auth).layer(from_fn(move |req, next| {
+                hardening_middleware(req, next, limits.clone())
+            }))
         }
     }
+}
+
+async fn hardening_middleware(req: Request, next: Next, limits: RpcHardeningLimits) -> Response {
+    let path = req.uri().path();
+    let is_guarded = matches!(
+        path,
+        "/tx/submit"
+            | "/api/v1/tx/submit"
+            | "/mining/submit"
+            | "/api/v1/mining/submit"
+            | "/snapshot/create"
+            | "/admin/snapshot/create"
+            | "/prune"
+            | "/admin/prune"
+            | "/sync/rebuild"
+            | "/admin/sync/rebuild"
+            | "/sync/reconcile-mempool"
+            | "/admin/sync/reconcile-mempool"
+            | "/diagnostics"
+            | "/admin/diagnostics"
+            | "/operator/query-pack"
+            | "/admin/operator/query-pack"
+    );
+    if !is_guarded {
+        return next.run(req).await;
+    }
+    if let Some(len) = req
+        .headers()
+        .get(axum::http::header::CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse::<usize>().ok())
+    {
+        if len > limits.request_body_limit_bytes {
+            return (
+                StatusCode::PAYLOAD_TOO_LARGE,
+                Json(ApiResponse::<serde_json::Value>::err(
+                    "request_too_large",
+                    "request body exceeds configured limit",
+                )),
+            )
+                .into_response();
+        }
+    }
+    if let Some(cfg) = &limits.rate_limit {
+        static LIMITER: std::sync::OnceLock<Arc<Mutex<RateLimiter>>> = std::sync::OnceLock::new();
+        let limiter = LIMITER
+            .get_or_init(|| Arc::new(Mutex::new(RateLimiter::default())))
+            .clone();
+        let key = if cfg.per_ip {
+            req.extensions()
+                .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+                .map(|c| RateKey::Ip(c.0.ip()))
+                .unwrap_or(RateKey::Global)
+        } else {
+            RateKey::Global
+        };
+        let mut guard = limiter.lock().await;
+        let now = Instant::now();
+        let entry = guard.windows.entry(key).or_insert((now, 0));
+        if now.duration_since(entry.0) >= Duration::from_secs(cfg.window_secs) {
+            *entry = (now, 0);
+        }
+        if entry.1 >= cfg.requests_per_window {
+            return (
+                StatusCode::TOO_MANY_REQUESTS,
+                Json(ApiResponse::<serde_json::Value>::err(
+                    "rate_limited",
+                    "request rate exceeded configured limit",
+                )),
+            )
+                .into_response();
+        }
+        entry.1 = entry.1.saturating_add(1);
+    }
+    next.run(req).await
 }
 
 pub fn router_with_admin<S>(admin_enabled: bool, operator_auth_token: Option<String>) -> Router<S>
@@ -153,7 +297,10 @@ where
 async fn disabled_admin_endpoint() -> (StatusCode, Json<ApiResponse<serde_json::Value>>) {
     (
         StatusCode::FORBIDDEN,
-        Json(ApiResponse::err("FORBIDDEN", "admin endpoints are disabled")),
+        Json(ApiResponse::err(
+            "FORBIDDEN",
+            "admin endpoints are disabled",
+        )),
     )
 }
 
