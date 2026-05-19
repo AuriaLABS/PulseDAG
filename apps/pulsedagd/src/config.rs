@@ -25,6 +25,7 @@ pub struct Config {
     pub prune_keep_recent_blocks: u64,
     pub prune_require_snapshot: bool,
     pub admin_enabled: bool,
+    pub operator_auth_token: Option<String>,
     pub api_profile: ApiExposureProfile,
 }
 
@@ -120,6 +121,7 @@ impl Config {
                 prune_keep_recent_blocks: 300,
                 prune_require_snapshot: true,
                 admin_enabled: false,
+                operator_auth_token: None,
                 api_profile: ApiExposureProfile::LocalDev,
             },
             ConfigProfile::Local => Self {
@@ -146,6 +148,7 @@ impl Config {
                 prune_keep_recent_blocks: 300,
                 prune_require_snapshot: true,
                 admin_enabled: false,
+                operator_auth_token: None,
                 api_profile: ApiExposureProfile::LocalDev,
             },
             ConfigProfile::Private => Self {
@@ -172,6 +175,7 @@ impl Config {
                 prune_keep_recent_blocks: 800,
                 prune_require_snapshot: true,
                 admin_enabled: false,
+                operator_auth_token: None,
                 api_profile: ApiExposureProfile::PrivateOperator,
             },
             ConfigProfile::Testnet => Self {
@@ -198,6 +202,7 @@ impl Config {
                 prune_keep_recent_blocks: 500,
                 prune_require_snapshot: true,
                 admin_enabled: false,
+                operator_auth_token: None,
                 api_profile: ApiExposureProfile::PrivateOperator,
             },
             ConfigProfile::RehearsalA => Self {
@@ -224,6 +229,7 @@ impl Config {
                 prune_keep_recent_blocks: 800,
                 prune_require_snapshot: true,
                 admin_enabled: false,
+                operator_auth_token: None,
                 api_profile: ApiExposureProfile::LocalDev,
             },
             ConfigProfile::RehearsalB => Self {
@@ -250,6 +256,7 @@ impl Config {
                 prune_keep_recent_blocks: 800,
                 prune_require_snapshot: true,
                 admin_enabled: false,
+                operator_auth_token: None,
                 api_profile: ApiExposureProfile::LocalDev,
             },
             ConfigProfile::RehearsalC => Self {
@@ -279,6 +286,7 @@ impl Config {
                 prune_keep_recent_blocks: 800,
                 prune_require_snapshot: true,
                 admin_enabled: false,
+                operator_auth_token: None,
                 api_profile: ApiExposureProfile::LocalDev,
             },
             ConfigProfile::Operator => Self {
@@ -305,6 +313,7 @@ impl Config {
                 prune_keep_recent_blocks: 1000,
                 prune_require_snapshot: true,
                 admin_enabled: false,
+                operator_auth_token: None,
                 api_profile: ApiExposureProfile::PrivateOperator,
             },
         }
@@ -365,6 +374,7 @@ impl Config {
             "PULSEDAG_PRUNE_REQUIRE_SNAPSHOT",
             self.prune_require_snapshot,
         );
+        self.operator_auth_token = read_env_optional_nonempty("PULSEDAG_OPERATOR_AUTH_TOKEN");
         self.apply_admin_default_or_env_override();
     }
 }
@@ -447,7 +457,10 @@ impl Config {
                 self.api_profile
             );
         }
-        if self.admin_enabled && !is_local_rpc_bind(&self.rpc_bind) {
+        if self.admin_enabled
+            && !is_local_rpc_bind(&self.rpc_bind)
+            && self.operator_auth_token.is_none()
+        {
             let unsafe_override = std::env::var("PULSEDAG_ADMIN_UNSAFE_ALLOW_REMOTE_NOAUTH")
                 .map(|v| parse_env_bool_value(&v))
                 .unwrap_or(false);
@@ -457,6 +470,17 @@ impl Config {
         }
         Ok(())
     }
+}
+
+fn read_env_optional_nonempty(key: &str) -> Option<String> {
+    std::env::var(key).ok().and_then(|v| {
+        let trimmed = v.trim().to_string();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed)
+        }
+    })
 }
 
 fn read_env_string(key: &str, default: &str) -> String {

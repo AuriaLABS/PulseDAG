@@ -1,5 +1,8 @@
 use axum::{
+    extract::Request,
     http::StatusCode,
+    middleware::{from_fn, Next},
+    response::{IntoResponse, Response},
     routing::{any, get, post},
     Json, Router,
 };
@@ -94,7 +97,7 @@ pub fn router<S>() -> Router<S>
 where
     S: RpcStateLike,
 {
-    router_with_admin(true)
+    router_with_admin(true, None)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -105,22 +108,27 @@ pub enum ApiExposureProfile {
     DisabledAdmin,
 }
 
-pub fn router_with_profile<S>(profile: ApiExposureProfile, admin_enabled: bool) -> Router<S>
+pub fn router_with_profile<S>(
+    profile: ApiExposureProfile,
+    admin_enabled: bool,
+    operator_auth_token: Option<String>,
+) -> Router<S>
 where
     S: RpcStateLike,
 {
+    let auth = operator_auth_token;
     match profile {
         ApiExposureProfile::PublicSafe => Router::new()
             .nest("/api/v1", public_safe_api_v1_router::<S>())
             .merge(public_safe_compatibility_router::<S>()),
-        ApiExposureProfile::DisabledAdmin => router_with_admin(false),
+        ApiExposureProfile::DisabledAdmin => router_with_admin(false, auth),
         ApiExposureProfile::LocalDev | ApiExposureProfile::PrivateOperator => {
-            router_with_admin(admin_enabled)
+            router_with_admin(admin_enabled, auth)
         }
     }
 }
 
-pub fn router_with_admin<S>(admin_enabled: bool) -> Router<S>
+pub fn router_with_admin<S>(admin_enabled: bool, operator_auth_token: Option<String>) -> Router<S>
 where
     S: RpcStateLike,
 {
@@ -130,8 +138,8 @@ where
 
     if admin_enabled {
         app = app
-            .nest("/admin", admin_router::<S>())
-            .merge(admin_compatibility_router::<S>());
+            .nest("/admin", admin_router::<S>(operator_auth_token.clone()))
+            .merge(admin_compatibility_router::<S>(operator_auth_token));
     } else {
         app = app
             .nest("/admin", disabled_admin_router::<S>())
@@ -314,25 +322,25 @@ where
         .route("/snapshot", get(get_snapshot_info::<S>))
 }
 
-fn admin_router<S>() -> Router<S>
+fn admin_router<S>(operator_auth_token: Option<String>) -> Router<S>
 where
     S: RpcStateLike,
 {
-    admin_routes::<S>()
+    admin_routes::<S>(operator_auth_token)
 }
 
-fn admin_compatibility_router<S>() -> Router<S>
+fn admin_compatibility_router<S>(operator_auth_token: Option<String>) -> Router<S>
 where
     S: RpcStateLike,
 {
-    admin_routes::<S>()
+    admin_routes::<S>(operator_auth_token)
 }
 
-fn admin_routes<S>() -> Router<S>
+fn admin_routes<S>(operator_auth_token: Option<String>) -> Router<S>
 where
     S: RpcStateLike,
 {
-    Router::new()
+    let router = Router::new()
         .route("/dag/consistency", get(get_dag_consistency::<S>))
         .route("/wallet/new", post(post_wallet_new::<S>))
         .route("/wallet/sign", post(post_wallet_sign::<S>))
@@ -367,5 +375,41 @@ where
             "/sync/reconcile-mempool",
             post(post_sync_reconcile_mempool::<S>),
         )
-        .route("/sync/rebuild-preview", get(get_rebuild_preview::<S>))
+        .route("/sync/rebuild-preview", get(get_rebuild_preview::<S>));
+    if let Some(token) = operator_auth_token {
+        router.layer(from_fn(move |req, next| {
+            operator_auth_middleware(req, next, token.clone())
+        }))
+    } else {
+        router
+    }
+}
+
+async fn operator_auth_middleware(req: Request, next: Next, token: String) -> Response {
+    let auth = req
+        .headers()
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok());
+    let Some(auth) = auth else {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(ApiResponse::<serde_json::Value>::err("missing_auth")),
+        )
+            .into_response();
+    };
+    let Some(presented) = auth.strip_prefix("Bearer ") else {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(ApiResponse::<serde_json::Value>::err("auth_required")),
+        )
+            .into_response();
+    };
+    if presented != token {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(ApiResponse::<serde_json::Value>::err("invalid_auth")),
+        )
+            .into_response();
+    }
+    next.run(req).await
 }
