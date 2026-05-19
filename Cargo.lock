@@ -3946,6 +3946,7 @@ dependencies = [
  "sha3",
  "tokio",
  "tower",
+ "tower-http",
  "tracing",
 ]
 
@@ -3982,6 +3983,7 @@ dependencies = [
  "pulsedag-rpc",
  "pulsedag-storage",
  "tokio",
+ "tower-http",
  "tracing",
  "tracing-subscriber",
 ]

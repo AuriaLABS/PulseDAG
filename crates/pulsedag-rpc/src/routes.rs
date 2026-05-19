@@ -540,21 +540,30 @@ async fn operator_auth_middleware(req: Request, next: Next, token: String) -> Re
     let Some(auth) = auth else {
         return (
             StatusCode::UNAUTHORIZED,
-            Json(ApiResponse::<serde_json::Value>::err("missing_auth")),
+            Json(ApiResponse::<serde_json::Value>::err(
+                "missing_auth",
+                "authorization header is required",
+            )),
         )
             .into_response();
     };
     let Some(presented) = auth.strip_prefix("Bearer ") else {
         return (
             StatusCode::UNAUTHORIZED,
-            Json(ApiResponse::<serde_json::Value>::err("auth_required")),
+            Json(ApiResponse::<serde_json::Value>::err(
+                "auth_required",
+                "bearer token is required",
+            )),
         )
             .into_response();
     };
     if presented != token {
         return (
             StatusCode::FORBIDDEN,
-            Json(ApiResponse::<serde_json::Value>::err("invalid_auth")),
+            Json(ApiResponse::<serde_json::Value>::err(
+                "invalid_auth",
+                "invalid bearer token",
+            )),
         )
             .into_response();
     }

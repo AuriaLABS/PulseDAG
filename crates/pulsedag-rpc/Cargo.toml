@@ -26,3 +26,4 @@ pulsedag-api = { path = "../pulsedag-api" }
 proptest = "1"
 pulsedag-miner = { path = "../../apps/pulsedag-miner" }
 tower = { version = "0.5", features = ["util"] }
+tower-http = { version = "0.6", features = ["cors"] }
