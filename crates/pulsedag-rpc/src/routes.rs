@@ -96,6 +96,29 @@ where
     router_with_admin(true)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApiExposureProfile {
+    LocalDev,
+    PrivateOperator,
+    PublicSafe,
+    DisabledAdmin,
+}
+
+pub fn router_with_profile<S>(profile: ApiExposureProfile, admin_enabled: bool) -> Router<S>
+where
+    S: RpcStateLike,
+{
+    match profile {
+        ApiExposureProfile::PublicSafe => Router::new()
+            .nest("/api/v1", public_safe_api_v1_router::<S>())
+            .merge(public_safe_compatibility_router::<S>()),
+        ApiExposureProfile::DisabledAdmin => router_with_admin(false),
+        ApiExposureProfile::LocalDev | ApiExposureProfile::PrivateOperator => {
+            router_with_admin(admin_enabled)
+        }
+    }
+}
+
 pub fn router_with_admin<S>(admin_enabled: bool) -> Router<S>
 where
     S: RpcStateLike,
@@ -127,6 +150,67 @@ where
     S: RpcStateLike,
 {
     public_routes::<S>()
+}
+
+fn public_safe_api_v1_router<S>() -> Router<S>
+where
+    S: RpcStateLike,
+{
+    public_safe_routes::<S>()
+        .route("/", get(get_api_version))
+        .route("/version", get(get_api_version))
+}
+
+fn public_safe_compatibility_router<S>() -> Router<S>
+where
+    S: RpcStateLike,
+{
+    public_safe_routes::<S>()
+}
+
+fn public_safe_routes<S>() -> Router<S>
+where
+    S: RpcStateLike,
+{
+    Router::new()
+        .route("/health", get(get_health::<S>))
+        .route("/bootstrap", get(get_bootstrap_status::<S>))
+        .route("/genesis", get(get_genesis::<S>))
+        .route("/dag", get(get_dag::<S>))
+        .route("/tips", get(get_tips::<S>))
+        .route("/blocks", get(get_blocks::<S>))
+        .route("/blocks/latest", get(get_blocks_latest::<S>))
+        .route("/blocks/recent", get(get_blocks_recent::<S>))
+        .route("/blocks/page", get(get_blocks_page::<S>))
+        .route("/blocks/:hash/overview", get(get_block_overview::<S>))
+        .route(
+            "/blocks/:hash/transactions",
+            get(get_block_transactions::<S>),
+        )
+        .route("/blocks/:hash", get(get_block::<S>))
+        .route("/utxos", get(get_utxos::<S>))
+        .route("/address/:address", get(get_address::<S>))
+        .route("/address/:address/summary", get(get_address_summary::<S>))
+        .route("/address/:address/activity", get(get_address_activity::<S>))
+        .route("/address/:address/utxos", get(get_address_utxos::<S>))
+        .route("/txs", get(get_txs::<S>))
+        .route("/txs/recent", get(get_txs_recent::<S>))
+        .route("/txs/page", get(get_txs_page::<S>))
+        .route("/txs/activity", get(get_txs_activity::<S>))
+        .route("/txs/:txid/lookup", get(get_tx_lookup::<S>))
+        .route("/transactions", get(get_confirmed_transactions::<S>))
+        .route("/mempool", get(get_mempool::<S>))
+        .route("/txs/:txid", get(get_tx::<S>))
+        .route("/search/:query", get(get_search::<S>))
+        .route("/metrics", get(get_metrics::<S>))
+        .route("/orphans", get(get_orphans::<S>))
+        .route("/dashboard", get(get_dashboard::<S>))
+        .route("/errors", get(get_error_catalog))
+        .route("/status", get(get_status::<S>))
+        .route("/checks", get(get_node_checks::<S>))
+        .route("/readiness", get(get_readiness::<S>))
+        .route("/release", get(get_release_info))
+        .route("/policy", get(get_policy::<S>))
 }
 
 fn public_routes<S>() -> Router<S>
