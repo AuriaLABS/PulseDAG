@@ -1,5 +1,6 @@
 use axum::{
-    routing::{get, post},
+    http::StatusCode,
+    routing::{any, get, post},
     Json, Router,
 };
 
@@ -131,9 +132,28 @@ where
         app = app
             .nest("/admin", admin_router::<S>())
             .merge(admin_compatibility_router::<S>());
+    } else {
+        app = app
+            .nest("/admin", disabled_admin_router::<S>())
+            .route("/admin", any(disabled_admin_endpoint))
+            .route("/admin/{*path}", any(disabled_admin_endpoint));
     }
 
     app
+}
+
+async fn disabled_admin_endpoint() -> (StatusCode, Json<ApiResponse<serde_json::Value>>) {
+    (
+        StatusCode::FORBIDDEN,
+        Json(ApiResponse::err("admin endpoints are disabled")),
+    )
+}
+
+fn disabled_admin_router<S>() -> Router<S>
+where
+    S: RpcStateLike,
+{
+    Router::new().fallback(any(disabled_admin_endpoint))
 }
 
 fn public_api_v1_router<S>() -> Router<S>

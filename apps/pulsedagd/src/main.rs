@@ -1317,6 +1317,10 @@ async fn main() -> Result<()> {
     let addr: SocketAddr = cfg.rpc_bind.parse()?;
     let listener = TcpListener::bind(addr).await?;
 
+    if cfg.admin_enabled {
+        warn!(rpc_bind = %cfg.rpc_bind, api_profile = ?cfg.api_profile, "admin RPC endpoints are ENABLED; restrict access and avoid unauthenticated exposure");
+    }
+
     info!(p2p_enabled = cfg.p2p_enabled, p2p_mode = %cfg.p2p_mode, admin_enabled = cfg.admin_enabled, api_profile = ?cfg.api_profile, auto_rebuild_on_start = cfg.auto_rebuild_on_start, persist_snapshot_on_start = cfg.persist_snapshot_on_start, snapshot_auto_every_blocks = cfg.snapshot_auto_every_blocks, auto_prune_enabled = cfg.auto_prune_enabled, auto_prune_every_blocks = cfg.auto_prune_every_blocks, prune_keep_recent_blocks = cfg.prune_keep_recent_blocks, prune_require_snapshot = cfg.prune_require_snapshot, target_block_interval_secs = cfg.target_block_interval_secs, difficulty_window = cfg.difficulty_window, max_future_drift_secs = cfg.max_future_drift_secs, "pulsedagd RPC listening on {}", addr);
     axum::serve(listener, app).await?;
     Ok(())
