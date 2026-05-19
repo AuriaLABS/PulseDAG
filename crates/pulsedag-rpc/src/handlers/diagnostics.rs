@@ -6,6 +6,7 @@ use crate::{
         build_runtime_trend_windows, runtime_incident_snapshot, runtime_surface_rollup,
         RuntimeIncidentSnapshot, RuntimeSurfaceRollup, RuntimeTrendWindow,
     },
+    redaction::{redact_if_sensitive_key_value, redact_path},
 };
 use axum::{extract::State, Json};
 use pulsedag_storage::StorageAuditReport;
@@ -126,6 +127,8 @@ pub async fn get_diagnostics<S: RpcStateLike>(
             }],
         });
     let snapshot_exists = state.storage().snapshot_exists().unwrap_or(false);
+    let mut storage_audit = storage_audit;
+    storage_audit.confidence_evidence_path = redact_path(&storage_audit.confidence_evidence_path);
     let runtime_handle = state.runtime();
     let runtime = runtime_handle.read().await;
     let rollup = runtime_surface_rollup(&runtime);
@@ -170,10 +173,13 @@ pub async fn get_diagnostics<S: RpcStateLike>(
         storage_audit_ok: storage_audit.ok,
         storage_audit_issue_count: storage_audit.issue_count,
         storage_audit_summary: storage_audit,
-        startup_path: runtime.startup_path.clone(),
+        startup_path: redact_path(&runtime.startup_path),
         startup_fastboot_used: runtime.startup_fastboot_used,
         startup_replay_required: runtime.startup_replay_required,
-        startup_fallback_reason: runtime.startup_fallback_reason.clone(),
+        startup_fallback_reason: runtime
+            .startup_fallback_reason
+            .as_ref()
+            .map(|v| redact_if_sensitive_key_value("startup_fallback_reason", v)),
         last_rejected_peer_block_reason: runtime.last_rejected_peer_block_reason.clone(),
         remediation_summary: rollup.remediation_summary.clone(),
         no_go_escalation: rollup.no_go_escalation,
@@ -465,6 +471,28 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn diagnostics_redacts_sensitive_fixture_values() {
+        let path = temp_db_path("diag-redaction");
+        let storage = Arc::new(Storage::open(path.to_str().expect("utf8")).expect("open"));
+        let chain = init_chain_state("testnet".to_string());
+        storage.persist_chain_state(&chain).expect("persist");
+        let mut runtime = NodeRuntimeStats::default();
+        runtime.startup_path = "/tmp/secret-wallet-path".to_string();
+        runtime.startup_fallback_reason = Some("seed phrase leaked".to_string());
+        let state = TestState {
+            chain: Arc::new(RwLock::new(chain)),
+            storage,
+            runtime: Arc::new(RwLock::new(runtime)),
+        };
+
+        let Json(diag_resp) = get_diagnostics(State(state)).await;
+        let diag = diag_resp.data.expect("diag");
+        let text = serde_json::to_string(&diag).expect("serialize");
+        assert!(!text.contains("secret-wallet-path"));
+        assert!(!text.contains("seed phrase leaked"));
+        assert!(text.contains("<redacted>"));
+    }
     #[tokio::test]
     async fn operator_query_pack_remains_coherent_with_runtime_and_diagnostics() {
         let path = temp_db_path("operator-query-pack-coherence");

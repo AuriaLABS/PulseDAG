@@ -925,7 +925,9 @@ mod tests {
         std::env::set_var("PULSEDAG_CONFIG_PROFILE", "dev");
         std::env::set_var("PULSEDAG_RPC_BIND", "0.0.0.0:8080");
         let err = Config::from_env().expect_err("public bind should require explicit api profile");
-        assert!(err.to_string().contains("requires explicit PULSEDAG_API_PROFILE"));
+        assert!(err
+            .to_string()
+            .contains("requires explicit PULSEDAG_API_PROFILE"));
 
         clear_test_env();
         std::env::set_var("PULSEDAG_CONFIG_PROFILE", "operator");

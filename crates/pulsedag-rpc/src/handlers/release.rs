@@ -1,4 +1,4 @@
-use crate::api::ApiResponse;
+use crate::{api::ApiResponse, redaction::redact_if_sensitive_key_value};
 use axum::Json;
 
 #[derive(Debug, serde::Serialize)]
@@ -58,7 +58,10 @@ pub async fn get_release_info() -> Json<ApiResponse<ReleaseInfoData>> {
             "/checks".into(),
             "/readiness".into(),
         ],
-        api_profile: std::env::var("PULSEDAG_API_PROFILE").unwrap_or_else(|_| "local_dev".into()),
+        api_profile: redact_if_sensitive_key_value(
+            "PULSEDAG_API_PROFILE",
+            &std::env::var("PULSEDAG_API_PROFILE").unwrap_or_else(|_| "local_dev".into()),
+        ),
     }))
 }
 
