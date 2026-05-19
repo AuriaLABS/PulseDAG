@@ -119,7 +119,7 @@ impl Config {
                 auto_prune_every_blocks: 100,
                 prune_keep_recent_blocks: 300,
                 prune_require_snapshot: true,
-                admin_enabled: true,
+                admin_enabled: false,
                 api_profile: ApiExposureProfile::LocalDev,
             },
             ConfigProfile::Local => Self {
@@ -145,7 +145,7 @@ impl Config {
                 auto_prune_every_blocks: 100,
                 prune_keep_recent_blocks: 300,
                 prune_require_snapshot: true,
-                admin_enabled: true,
+                admin_enabled: false,
                 api_profile: ApiExposureProfile::LocalDev,
             },
             ConfigProfile::Private => Self {
@@ -223,7 +223,7 @@ impl Config {
                 auto_prune_every_blocks: 100,
                 prune_keep_recent_blocks: 800,
                 prune_require_snapshot: true,
-                admin_enabled: true,
+                admin_enabled: false,
                 api_profile: ApiExposureProfile::LocalDev,
             },
             ConfigProfile::RehearsalB => Self {
@@ -249,7 +249,7 @@ impl Config {
                 auto_prune_every_blocks: 100,
                 prune_keep_recent_blocks: 800,
                 prune_require_snapshot: true,
-                admin_enabled: true,
+                admin_enabled: false,
                 api_profile: ApiExposureProfile::LocalDev,
             },
             ConfigProfile::RehearsalC => Self {
@@ -278,7 +278,7 @@ impl Config {
                 auto_prune_every_blocks: 100,
                 prune_keep_recent_blocks: 800,
                 prune_require_snapshot: true,
-                admin_enabled: true,
+                admin_enabled: false,
                 api_profile: ApiExposureProfile::LocalDev,
             },
             ConfigProfile::Operator => Self {
@@ -447,11 +447,13 @@ impl Config {
                 self.api_profile
             );
         }
-        if self.api_profile == ApiExposureProfile::LocalDev
-            && self.admin_enabled
-            && !is_local_rpc_bind(&self.rpc_bind)
-        {
-            bail!("invalid API exposure: local_dev with admin enabled requires localhost RPC bind");
+        if self.admin_enabled && !is_local_rpc_bind(&self.rpc_bind) {
+            let unsafe_override = std::env::var("PULSEDAG_ADMIN_UNSAFE_ALLOW_REMOTE_NOAUTH")
+                .map(|v| parse_env_bool_value(&v))
+                .unwrap_or(false);
+            if !unsafe_override {
+                bail!("invalid API exposure: admin enabled on non-local RPC bind requires PULSEDAG_ADMIN_UNSAFE_ALLOW_REMOTE_NOAUTH=true");
+            }
         }
         Ok(())
     }
@@ -472,10 +474,8 @@ fn read_env_list(key: &str, default: &[String]) -> Vec<String> {
         .unwrap_or_else(|_| default.to_vec())
 }
 
-fn default_admin_enabled(network_profile: &str, rpc_bind: &str) -> bool {
-    let profile_is_dev =
-        matches!(network_profile, "dev" | "local") || network_profile.starts_with("rehearsal-");
-    profile_is_dev || is_local_rpc_bind(rpc_bind)
+fn default_admin_enabled(_network_profile: &str, _rpc_bind: &str) -> bool {
+    false
 }
 
 fn is_local_rpc_bind(rpc_bind: &str) -> bool {
@@ -556,6 +556,7 @@ mod tests {
             "PULSEDAG_PRUNE_KEEP_RECENT_BLOCKS",
             "PULSEDAG_TARGET_BLOCK_INTERVAL_SECS",
             "PULSEDAG_ADMIN_ENABLED",
+            "PULSEDAG_ADMIN_UNSAFE_ALLOW_REMOTE_NOAUTH",
             "PULSEDAG_API_PROFILE",
         ] {
             std::env::remove_var(key);
@@ -573,7 +574,7 @@ mod tests {
         assert_eq!(cfg.p2p_mode, "memory");
         assert_eq!(cfg.p2p_connection_slot_budget, 8);
         assert!(!cfg.auto_prune_enabled);
-        assert!(cfg.admin_enabled);
+        assert!(!cfg.admin_enabled);
     }
 
     #[test]
@@ -801,13 +802,13 @@ mod tests {
     }
 
     #[test]
-    fn admin_defaults_follow_bind_safety() {
+    fn admin_defaults_disabled_by_default() {
         let _guard = env_lock().lock().expect("env lock");
         clear_test_env();
         std::env::set_var("PULSEDAG_CONFIG_PROFILE", "dev");
         std::env::set_var("PULSEDAG_RPC_BIND", "0.0.0.0:8080");
         let cfg = Config::from_env().expect("config");
-        assert!(cfg.admin_enabled);
+        assert!(!cfg.admin_enabled);
 
         clear_test_env();
         std::env::set_var("PULSEDAG_CONFIG_PROFILE", "operator");
@@ -818,6 +819,25 @@ mod tests {
         std::env::set_var("PULSEDAG_CONFIG_PROFILE", "operator");
         std::env::set_var("PULSEDAG_RPC_BIND", "127.0.0.1:8080");
         let cfg = Config::from_env().expect("config");
+        assert!(!cfg.admin_enabled);
+    }
+
+    #[test]
+    fn admin_remote_bind_requires_unsafe_override() {
+        let _guard = env_lock().lock().expect("env lock");
+        clear_test_env();
+        std::env::set_var("PULSEDAG_CONFIG_PROFILE", "operator");
+        std::env::set_var("PULSEDAG_ADMIN_ENABLED", "true");
+        let err = Config::from_env().expect_err("remote admin without override should fail");
+        assert!(err
+            .to_string()
+            .contains("PULSEDAG_ADMIN_UNSAFE_ALLOW_REMOTE_NOAUTH=true"));
+
+        clear_test_env();
+        std::env::set_var("PULSEDAG_CONFIG_PROFILE", "operator");
+        std::env::set_var("PULSEDAG_ADMIN_ENABLED", "true");
+        std::env::set_var("PULSEDAG_ADMIN_UNSAFE_ALLOW_REMOTE_NOAUTH", "true");
+        let cfg = Config::from_env().expect("override allows startup");
         assert!(cfg.admin_enabled);
     }
 
