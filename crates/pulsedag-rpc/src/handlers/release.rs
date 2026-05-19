@@ -7,6 +7,7 @@ pub struct ReleaseInfoData {
     pub stage: String,
     pub capabilities: Vec<String>,
     pub core_endpoints: Vec<String>,
+    pub api_profile: String,
 }
 
 pub fn repo_version() -> String {
@@ -57,6 +58,7 @@ pub async fn get_release_info() -> Json<ApiResponse<ReleaseInfoData>> {
             "/checks".into(),
             "/readiness".into(),
         ],
+        api_profile: std::env::var("PULSEDAG_API_PROFILE").unwrap_or_else(|_| "local_dev".into()),
     }))
 }
 

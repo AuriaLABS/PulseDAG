@@ -25,6 +25,27 @@ pub struct Config {
     pub prune_keep_recent_blocks: u64,
     pub prune_require_snapshot: bool,
     pub admin_enabled: bool,
+    pub api_profile: ApiExposureProfile,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApiExposureProfile {
+    LocalDev,
+    PrivateOperator,
+    PublicSafe,
+    DisabledAdmin,
+}
+
+impl ApiExposureProfile {
+    fn from_env_value(raw: &str) -> Result<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "local_dev" => Ok(Self::LocalDev),
+            "private_operator" => Ok(Self::PrivateOperator),
+            "public_safe" => Ok(Self::PublicSafe),
+            "disabled_admin" => Ok(Self::DisabledAdmin),
+            other => bail!("invalid PULSEDAG_API_PROFILE value '{other}'. Supported values: local_dev, private_operator, public_safe, disabled_admin"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -66,6 +87,10 @@ impl Config {
             .unwrap_or(ConfigProfile::Dev);
         let mut cfg = Self::defaults_for_profile(profile);
         cfg.apply_env_overrides();
+        if let Ok(v) = std::env::var("PULSEDAG_API_PROFILE") {
+            cfg.api_profile = ApiExposureProfile::from_env_value(&v)?;
+        }
+        cfg.validate_api_exposure()?;
         Ok(cfg)
     }
 
@@ -95,6 +120,7 @@ impl Config {
                 prune_keep_recent_blocks: 300,
                 prune_require_snapshot: true,
                 admin_enabled: true,
+                api_profile: ApiExposureProfile::LocalDev,
             },
             ConfigProfile::Local => Self {
                 network_profile: "local".into(),
@@ -120,6 +146,7 @@ impl Config {
                 prune_keep_recent_blocks: 300,
                 prune_require_snapshot: true,
                 admin_enabled: true,
+                api_profile: ApiExposureProfile::LocalDev,
             },
             ConfigProfile::Private => Self {
                 network_profile: "private".into(),
@@ -145,6 +172,7 @@ impl Config {
                 prune_keep_recent_blocks: 800,
                 prune_require_snapshot: true,
                 admin_enabled: false,
+                api_profile: ApiExposureProfile::PrivateOperator,
             },
             ConfigProfile::Testnet => Self {
                 network_profile: "testnet".into(),
@@ -170,6 +198,7 @@ impl Config {
                 prune_keep_recent_blocks: 500,
                 prune_require_snapshot: true,
                 admin_enabled: false,
+                api_profile: ApiExposureProfile::PrivateOperator,
             },
             ConfigProfile::RehearsalA => Self {
                 network_profile: "rehearsal-a".into(),
@@ -195,6 +224,7 @@ impl Config {
                 prune_keep_recent_blocks: 800,
                 prune_require_snapshot: true,
                 admin_enabled: true,
+                api_profile: ApiExposureProfile::LocalDev,
             },
             ConfigProfile::RehearsalB => Self {
                 network_profile: "rehearsal-b".into(),
@@ -220,6 +250,7 @@ impl Config {
                 prune_keep_recent_blocks: 800,
                 prune_require_snapshot: true,
                 admin_enabled: true,
+                api_profile: ApiExposureProfile::LocalDev,
             },
             ConfigProfile::RehearsalC => Self {
                 network_profile: "rehearsal-c".into(),
@@ -248,6 +279,7 @@ impl Config {
                 prune_keep_recent_blocks: 800,
                 prune_require_snapshot: true,
                 admin_enabled: true,
+                api_profile: ApiExposureProfile::LocalDev,
             },
             ConfigProfile::Operator => Self {
                 network_profile: "operator".into(),
@@ -273,6 +305,7 @@ impl Config {
                 prune_keep_recent_blocks: 1000,
                 prune_require_snapshot: true,
                 admin_enabled: false,
+                api_profile: ApiExposureProfile::PrivateOperator,
             },
         }
     }
@@ -338,6 +371,11 @@ impl Config {
 
 impl Config {
     fn apply_admin_default_or_env_override(&mut self) {
+        if let Ok(v) = std::env::var("PULSEDAG_API_PROFILE") {
+            if let Ok(profile) = ApiExposureProfile::from_env_value(&v) {
+                self.api_profile = profile;
+            }
+        }
         self.admin_enabled = std::env::var("PULSEDAG_ADMIN_ENABLED")
             .map(|v| parse_env_bool_value(&v))
             .unwrap_or_else(|_| default_admin_enabled(&self.network_profile, &self.rpc_bind));
@@ -390,7 +428,31 @@ impl Config {
             }
         }
         self.apply_env_overrides();
+        if let Ok(v) = std::env::var("PULSEDAG_API_PROFILE") {
+            self.api_profile = ApiExposureProfile::from_env_value(&v)?;
+        }
         self.apply_admin_default_or_env_override();
+        self.validate_api_exposure()?;
+        Ok(())
+    }
+
+    fn validate_api_exposure(&self) -> Result<()> {
+        if matches!(
+            self.api_profile,
+            ApiExposureProfile::PublicSafe | ApiExposureProfile::DisabledAdmin
+        ) && self.admin_enabled
+        {
+            bail!(
+                "invalid API exposure: admin endpoints cannot be enabled for {:?} profile",
+                self.api_profile
+            );
+        }
+        if self.api_profile == ApiExposureProfile::LocalDev
+            && self.admin_enabled
+            && !is_local_rpc_bind(&self.rpc_bind)
+        {
+            bail!("invalid API exposure: local_dev with admin enabled requires localhost RPC bind");
+        }
         Ok(())
     }
 }
@@ -494,6 +556,7 @@ mod tests {
             "PULSEDAG_PRUNE_KEEP_RECENT_BLOCKS",
             "PULSEDAG_TARGET_BLOCK_INTERVAL_SECS",
             "PULSEDAG_ADMIN_ENABLED",
+            "PULSEDAG_API_PROFILE",
         ] {
             std::env::remove_var(key);
         }
