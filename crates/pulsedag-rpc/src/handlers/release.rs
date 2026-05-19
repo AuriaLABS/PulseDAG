@@ -4,10 +4,14 @@ use axum::Json;
 #[derive(Debug, serde::Serialize)]
 pub struct ReleaseInfoData {
     pub version: String,
-    pub stage: String,
+    pub git_commit: Option<String>,
+    pub build_profile: Option<String>,
     pub capabilities: Vec<String>,
     pub core_endpoints: Vec<String>,
     pub api_profile: String,
+    pub pow_algorithm: String,
+    pub miner_mode: String,
+    pub smart_contracts: String,
 }
 
 pub fn repo_version() -> String {
@@ -25,7 +29,8 @@ pub fn operator_stage() -> String {
 pub async fn get_release_info() -> Json<ApiResponse<ReleaseInfoData>> {
     Json(ApiResponse::ok(ReleaseInfoData {
         version: repo_version(),
-        stage: operator_stage(),
+        git_commit: std::option_env!("GIT_COMMIT").map(|v| v.to_string()),
+        build_profile: std::option_env!("PROFILE").map(|v| v.to_string()),
         capabilities: vec![
             "wallets".into(),
             "external_miner_protocol".into(),
@@ -62,6 +67,9 @@ pub async fn get_release_info() -> Json<ApiResponse<ReleaseInfoData>> {
             "PULSEDAG_API_PROFILE",
             &std::env::var("PULSEDAG_API_PROFILE").unwrap_or_else(|_| "local_dev".into()),
         ),
+        pow_algorithm: "sha256d".into(),
+        miner_mode: "external".into(),
+        smart_contracts: "disabled (v2.2.x)".into(),
     }))
 }
 
