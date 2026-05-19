@@ -30,6 +30,8 @@ pub struct Config {
     pub rpc_request_body_limit_bytes: usize,
     pub rpc_rate_limit_requests_per_minute: u32,
     pub rpc_rate_limit_per_ip: bool,
+    pub rpc_cors_allowlist: Vec<String>,
+    pub rpc_cors_unsafe_allow_wildcard_with_admin: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -95,6 +97,7 @@ impl Config {
             cfg.api_profile = ApiExposureProfile::from_env_value(&v)?;
         }
         cfg.validate_api_exposure()?;
+        cfg.validate_cors_policy()?;
         Ok(cfg)
     }
 
@@ -129,6 +132,8 @@ impl Config {
                 rpc_request_body_limit_bytes: 1024 * 1024,
                 rpc_rate_limit_requests_per_minute: 0,
                 rpc_rate_limit_per_ip: true,
+                rpc_cors_allowlist: vec!["http://localhost".into(), "http://127.0.0.1".into()],
+                rpc_cors_unsafe_allow_wildcard_with_admin: false,
             },
             ConfigProfile::Local => Self {
                 network_profile: "local".into(),
@@ -159,6 +164,8 @@ impl Config {
                 rpc_request_body_limit_bytes: 1024 * 1024,
                 rpc_rate_limit_requests_per_minute: 0,
                 rpc_rate_limit_per_ip: true,
+                rpc_cors_allowlist: vec!["http://localhost".into(), "http://127.0.0.1".into()],
+                rpc_cors_unsafe_allow_wildcard_with_admin: false,
             },
             ConfigProfile::Private => Self {
                 network_profile: "private".into(),
@@ -189,6 +196,8 @@ impl Config {
                 rpc_request_body_limit_bytes: 512 * 1024,
                 rpc_rate_limit_requests_per_minute: 120,
                 rpc_rate_limit_per_ip: true,
+                rpc_cors_allowlist: vec!["http://localhost".into(), "http://127.0.0.1".into()],
+                rpc_cors_unsafe_allow_wildcard_with_admin: false,
             },
             ConfigProfile::Testnet => Self {
                 network_profile: "testnet".into(),
@@ -219,6 +228,8 @@ impl Config {
                 rpc_request_body_limit_bytes: 512 * 1024,
                 rpc_rate_limit_requests_per_minute: 120,
                 rpc_rate_limit_per_ip: true,
+                rpc_cors_allowlist: vec!["http://localhost".into(), "http://127.0.0.1".into()],
+                rpc_cors_unsafe_allow_wildcard_with_admin: false,
             },
             ConfigProfile::RehearsalA => Self {
                 network_profile: "rehearsal-a".into(),
@@ -249,6 +260,8 @@ impl Config {
                 rpc_request_body_limit_bytes: 1024 * 1024,
                 rpc_rate_limit_requests_per_minute: 0,
                 rpc_rate_limit_per_ip: true,
+                rpc_cors_allowlist: vec!["http://localhost".into(), "http://127.0.0.1".into()],
+                rpc_cors_unsafe_allow_wildcard_with_admin: false,
             },
             ConfigProfile::RehearsalB => Self {
                 network_profile: "rehearsal-b".into(),
@@ -279,6 +292,8 @@ impl Config {
                 rpc_request_body_limit_bytes: 1024 * 1024,
                 rpc_rate_limit_requests_per_minute: 0,
                 rpc_rate_limit_per_ip: true,
+                rpc_cors_allowlist: vec!["http://localhost".into(), "http://127.0.0.1".into()],
+                rpc_cors_unsafe_allow_wildcard_with_admin: false,
             },
             ConfigProfile::RehearsalC => Self {
                 network_profile: "rehearsal-c".into(),
@@ -312,6 +327,8 @@ impl Config {
                 rpc_request_body_limit_bytes: 1024 * 1024,
                 rpc_rate_limit_requests_per_minute: 0,
                 rpc_rate_limit_per_ip: true,
+                rpc_cors_allowlist: vec!["http://localhost".into(), "http://127.0.0.1".into()],
+                rpc_cors_unsafe_allow_wildcard_with_admin: false,
             },
             ConfigProfile::Operator => Self {
                 network_profile: "operator".into(),
@@ -342,6 +359,8 @@ impl Config {
                 rpc_request_body_limit_bytes: 512 * 1024,
                 rpc_rate_limit_requests_per_minute: 120,
                 rpc_rate_limit_per_ip: true,
+                rpc_cors_allowlist: vec!["http://localhost".into(), "http://127.0.0.1".into()],
+                rpc_cors_unsafe_allow_wildcard_with_admin: false,
             },
         }
     }
@@ -360,6 +379,12 @@ impl Config {
         );
         self.rpc_rate_limit_per_ip =
             read_env_bool("PULSEDAG_RPC_RATE_LIMIT_PER_IP", self.rpc_rate_limit_per_ip);
+        self.rpc_cors_allowlist =
+            read_env_list("PULSEDAG_RPC_CORS_ALLOWLIST", &self.rpc_cors_allowlist);
+        self.rpc_cors_unsafe_allow_wildcard_with_admin = read_env_bool(
+            "PULSEDAG_RPC_CORS_UNSAFE_ALLOW_WILDCARD_WITH_ADMIN",
+            self.rpc_cors_unsafe_allow_wildcard_with_admin,
+        );
         self.p2p_enabled = read_env_bool("PULSEDAG_P2P_ENABLED", self.p2p_enabled);
         self.p2p_mode = read_env_string("PULSEDAG_P2P_MODE", &self.p2p_mode);
         self.p2p_listen = read_env_string("PULSEDAG_P2P_LISTEN", &self.p2p_listen);
@@ -480,6 +505,7 @@ impl Config {
         }
         self.apply_admin_default_or_env_override();
         self.validate_api_exposure()?;
+        self.validate_cors_policy()?;
         Ok(())
     }
 
@@ -494,6 +520,9 @@ impl Config {
                 self.api_profile
             );
         }
+        if !is_local_rpc_bind(&self.rpc_bind) && self.api_profile == ApiExposureProfile::LocalDev {
+            bail!("invalid API exposure: non-local RPC bind requires explicit PULSEDAG_API_PROFILE (private_operator/public_safe/disabled_admin)");
+        }
         if self.admin_enabled
             && !is_local_rpc_bind(&self.rpc_bind)
             && self.operator_auth_token.is_none()
@@ -504,6 +533,14 @@ impl Config {
             if !unsafe_override {
                 bail!("invalid API exposure: admin enabled on non-local RPC bind requires PULSEDAG_ADMIN_UNSAFE_ALLOW_REMOTE_NOAUTH=true");
             }
+        }
+        Ok(())
+    }
+
+    fn validate_cors_policy(&self) -> Result<()> {
+        let has_wildcard = self.rpc_cors_allowlist.iter().any(|o| o.trim() == "*");
+        if has_wildcard && self.admin_enabled && !self.rpc_cors_unsafe_allow_wildcard_with_admin {
+            bail!("invalid CORS policy: wildcard origin cannot be used when admin endpoints are enabled unless PULSEDAG_RPC_CORS_UNSAFE_ALLOW_WILDCARD_WITH_ADMIN=true");
         }
         Ok(())
     }
@@ -539,7 +576,7 @@ fn default_admin_enabled(_network_profile: &str, _rpc_bind: &str) -> bool {
     false
 }
 
-fn is_local_rpc_bind(rpc_bind: &str) -> bool {
+pub fn is_local_rpc_bind(rpc_bind: &str) -> bool {
     let raw = rpc_bind.trim();
     if matches!(raw, "::1" | "[::1]") {
         return true;
@@ -636,6 +673,8 @@ mod tests {
             "PULSEDAG_RPC_REQUEST_BODY_LIMIT_BYTES",
             "PULSEDAG_RPC_RATE_LIMIT_REQUESTS_PER_MINUTE",
             "PULSEDAG_RPC_RATE_LIMIT_PER_IP",
+            "PULSEDAG_RPC_CORS_ALLOWLIST",
+            "PULSEDAG_RPC_CORS_UNSAFE_ALLOW_WILDCARD_WITH_ADMIN",
         ] {
             std::env::remove_var(key);
         }
@@ -885,8 +924,8 @@ mod tests {
         clear_test_env();
         std::env::set_var("PULSEDAG_CONFIG_PROFILE", "dev");
         std::env::set_var("PULSEDAG_RPC_BIND", "0.0.0.0:8080");
-        let cfg = Config::from_env().expect("config");
-        assert!(!cfg.admin_enabled);
+        let err = Config::from_env().expect_err("public bind should require explicit api profile");
+        assert!(err.to_string().contains("requires explicit PULSEDAG_API_PROFILE"));
 
         clear_test_env();
         std::env::set_var("PULSEDAG_CONFIG_PROFILE", "operator");
@@ -920,10 +959,50 @@ mod tests {
     }
 
     #[test]
+    fn default_bind_is_localhost_safe() {
+        let _guard = env_lock().lock().expect("env lock");
+        clear_test_env();
+        std::env::set_var("PULSEDAG_CONFIG_PROFILE", "dev");
+        let cfg = Config::from_env().expect("config");
+        assert!(is_local_rpc_bind(&cfg.rpc_bind));
+    }
+
+    #[test]
+    fn public_bind_requires_explicit_api_profile() {
+        let _guard = env_lock().lock().expect("env lock");
+        clear_test_env();
+        std::env::set_var("PULSEDAG_CONFIG_PROFILE", "dev");
+        std::env::set_var("PULSEDAG_RPC_BIND", "0.0.0.0:8080");
+        let err = Config::from_env().expect_err("public bind should require explicit api profile");
+        assert!(err
+            .to_string()
+            .contains("requires explicit PULSEDAG_API_PROFILE"));
+
+        clear_test_env();
+        std::env::set_var("PULSEDAG_CONFIG_PROFILE", "dev");
+        std::env::set_var("PULSEDAG_RPC_BIND", "0.0.0.0:8080");
+        std::env::set_var("PULSEDAG_API_PROFILE", "private_operator");
+        Config::from_env().expect("explicit profile should allow public bind");
+    }
+
+    #[test]
+    fn wildcard_cors_and_admin_requires_unsafe_override() {
+        let _guard = env_lock().lock().expect("env lock");
+        clear_test_env();
+        std::env::set_var("PULSEDAG_CONFIG_PROFILE", "dev");
+        std::env::set_var("PULSEDAG_ADMIN_ENABLED", "true");
+        std::env::set_var("PULSEDAG_RPC_CORS_ALLOWLIST", "*");
+        let err = Config::from_env().expect_err("wildcard cors with admin should fail");
+        assert!(err
+            .to_string()
+            .contains("PULSEDAG_RPC_CORS_UNSAFE_ALLOW_WILDCARD_WITH_ADMIN=true"));
+    }
+    #[test]
     fn admin_env_override_takes_precedence() {
         let _guard = env_lock().lock().expect("env lock");
         clear_test_env();
         std::env::set_var("PULSEDAG_CONFIG_PROFILE", "operator");
+        std::env::set_var("PULSEDAG_RPC_BIND", "127.0.0.1:8080");
         std::env::set_var("PULSEDAG_ADMIN_ENABLED", "true");
         let cfg = Config::from_env().expect("config");
         assert!(cfg.admin_enabled);

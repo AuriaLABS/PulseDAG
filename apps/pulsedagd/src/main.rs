@@ -30,6 +30,7 @@ use pulsedag_rpc::routes::{
 use pulsedag_storage::Storage;
 use tokio::net::TcpListener;
 use tokio::time::{sleep, Duration};
+use tower_http::cors::{AllowOrigin, CorsLayer};
 use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
@@ -1152,6 +1153,7 @@ async fn main() -> Result<()> {
         let chain = app_state.chain.clone();
         let runtime = app_state.runtime.clone();
         let storage = app_state.storage.clone();
+        let chain_id = cfg.chain_id.clone();
         tokio::spawn(async move {
             loop {
                 sleep(Duration::from_secs(5)).await;
@@ -1256,7 +1258,7 @@ async fn main() -> Result<()> {
                         match storage.prune_blocks_below_height(keep_from_height) {
                             Ok(pruned) => {
                                 match storage
-                                    .replay_from_validated_snapshot_and_delta(Some(&cfg.chain_id))
+                                    .replay_from_validated_snapshot_and_delta(Some(&chain_id))
                                 {
                                     Ok(rebuilt) => {
                                         {
@@ -1328,12 +1330,14 @@ async fn main() -> Result<()> {
             })
         },
     };
+    let cors_layer = build_cors_layer(&cfg)?;
     let app: Router = router_with_profile(
         rpc_profile,
         cfg.admin_enabled,
         cfg.operator_auth_token.clone(),
         Some(hardening_limits),
     )
+    .layer(cors_layer)
     .with_state(app_state);
     let addr: SocketAddr = cfg.rpc_bind.parse()?;
     let listener = TcpListener::bind(addr).await?;
@@ -1341,8 +1345,24 @@ async fn main() -> Result<()> {
     if cfg.admin_enabled {
         warn!(rpc_bind = %cfg.rpc_bind, api_profile = ?cfg.api_profile, "admin RPC endpoints are ENABLED; restrict access and avoid unauthenticated exposure");
     }
+    if !config::is_local_rpc_bind(&cfg.rpc_bind) || cfg.rpc_bind.starts_with("0.0.0.0:") {
+        warn!(rpc_bind = %cfg.rpc_bind, "RPC is bound beyond localhost; verify firewall rules, auth controls, and API profile before exposing this port");
+    }
 
     info!(p2p_enabled = cfg.p2p_enabled, p2p_mode = %cfg.p2p_mode, admin_enabled = cfg.admin_enabled, operator_auth_configured = cfg.operator_auth_token.is_some(), api_profile = ?cfg.api_profile, auto_rebuild_on_start = cfg.auto_rebuild_on_start, persist_snapshot_on_start = cfg.persist_snapshot_on_start, snapshot_auto_every_blocks = cfg.snapshot_auto_every_blocks, auto_prune_enabled = cfg.auto_prune_enabled, auto_prune_every_blocks = cfg.auto_prune_every_blocks, prune_keep_recent_blocks = cfg.prune_keep_recent_blocks, prune_require_snapshot = cfg.prune_require_snapshot, target_block_interval_secs = cfg.target_block_interval_secs, difficulty_window = cfg.difficulty_window, max_future_drift_secs = cfg.max_future_drift_secs, "pulsedagd RPC listening on {}", addr);
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+fn build_cors_layer(cfg: &Config) -> Result<CorsLayer> {
+    let any = cfg.rpc_cors_allowlist.iter().any(|o| o.trim() == "*");
+    if any {
+        return Ok(CorsLayer::new().allow_origin(AllowOrigin::any()));
+    }
+    let origins = cfg
+        .rpc_cors_allowlist
+        .iter()
+        .filter_map(|origin| origin.parse().ok())
+        .collect::<Vec<_>>();
+    Ok(CorsLayer::new().allow_origin(AllowOrigin::list(origins)))
 }
