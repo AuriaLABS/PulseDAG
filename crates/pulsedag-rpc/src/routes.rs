@@ -145,7 +145,7 @@ where
 async fn disabled_admin_endpoint() -> (StatusCode, Json<ApiResponse<serde_json::Value>>) {
     (
         StatusCode::FORBIDDEN,
-        Json(ApiResponse::err("admin endpoints are disabled")),
+        Json(ApiResponse::err("FORBIDDEN", "admin endpoints are disabled")),
     )
 }
 
