@@ -39,6 +39,14 @@ pub async fn get_error_catalog() -> Json<ApiResponse<ErrorCatalogData>> {
             code: "BAD_REQUEST".into(),
             description: "request body or parameters are invalid".into(),
         },
+        ErrorCatalogItem {
+            code: "request_too_large".into(),
+            description: "request body exceeded configured size limit".into(),
+        },
+        ErrorCatalogItem {
+            code: "rate_limited".into(),
+            description: "request rejected by configured RPC rate limiter".into(),
+        },
     ];
 
     Json(ApiResponse::ok(ErrorCatalogData {
