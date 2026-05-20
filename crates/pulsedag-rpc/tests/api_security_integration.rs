@@ -212,7 +212,7 @@ async fn api_security_coverage_v2_2_17() {
     .await;
     assert_eq!(release_status, StatusCode::OK);
     assert!(!release_body.contains(token));
-    assert!(release_body.contains("private_operator"));
+    assert!(release_body.contains("local_dev"));
 
     unsafe {
         std::env::remove_var("PULSEDAG_RPC_BIND");
