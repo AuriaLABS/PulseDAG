@@ -13,11 +13,28 @@ emit() { echo "$*"; }
 emit "== Tracked generated/runtime junk =="
 git ls-files | rg '\.(log|tmp|bak|old|orig|swp|swo|zip|tar\.gz)$|(^|/)(target|logs|run|artifacts)/|\.DS_Store|Thumbs\.db|desktop\.ini' || true
 
-emit "\n== Old version docs in docs/ root (v2.2.x + v2.3/v3 readiness) =="
-find docs -maxdepth 1 -type f | rg 'V2_2_|V2_3|V3_READINESS' || true
+emit "\n== Old docs still in docs/ root =="
+find docs -maxdepth 1 -type f | rg 'RELEASE_NOTES_V2_2_([0-9]|1[0-6])\.md|CLOSING_CHECKLIST_V2_2_([0-9]|1[0-6])\.md|ROADMAP_V2_2_([0-9]|1[0-6])\.md|SMOKE_TEST_V2_2_([0-9]|1[0-2])\.md|ROADMAP_V2_3_0\.md|V3_READINESS\.md' || true
 
 emit "\n== Candidate stale scripts =="
 find scripts -maxdepth 1 -type f | rg '(old|legacy|backup|copy|tmp|smoke_v2_2_7|v2_2_9_)' || true
+
+emit "\n== PowerShell scripts classification hint =="
+if [[ -f docs/CLEANUP_AUDIT_V2_2_18_FINAL.md ]]; then
+  while IFS= read -r ps1; do
+    [[ -z "$ps1" ]] && continue
+    if rg -q "\| ${ps1//./\.} \| KEEP_CURRENT \|" docs/CLEANUP_AUDIT_V2_2_18_FINAL.md; then
+      echo "KEEP_CURRENT: $ps1"
+    elif [[ "$ps1" == scripts/archive/* ]]; then
+      echo "MOVE_ARCHIVE: $ps1"
+    else
+      echo "UNCLASSIFIED: $ps1"
+    fi
+  done < <(git ls-files '*.ps1' || true)
+else
+  echo "Final audit missing: docs/CLEANUP_AUDIT_V2_2_18_FINAL.md"
+  git ls-files '*.ps1' || true
+fi
 
 emit "\n== Broken markdown local links (quick pass) =="
 python3 - <<'PY'
@@ -37,8 +54,11 @@ for md in root.rglob('*.md'):
         if not p.exists(): print(f"{md}: {t}")
 PY
 
-emit "\n== Keyword hits (obsolete/deprecated/legacy/stale/old/backup/copy) =="
-rg -n -i 'obsolete|deprecated|legacy|stale|\bold\b|backup|\bcopy\b' docs scripts .github README.md || true
+emit "\n== Stale references to archived files/scripts from current docs/workflows =="
+rg -n 'docs/archive/|scripts/archive/' docs .github README.md --glob '!docs/archive/**' || true
+
+emit "\n== Forbidden readiness claims in root docs =="
+rg -n -i 'ready for v2\.3\.0|ready for v3\.0|v2\.3\.0 is current|v3\.0 is current' README.md docs/VERSION_MATRIX.md docs/RELEASE_EVIDENCE.md || true
 } | {
   if [[ -n "$out_file" ]]; then tee "$out_file"; else cat; fi
 }

@@ -45,12 +45,13 @@
 - Version drift gate no longer depends on one exact sentence in `docs/VERSION_MATRIX.md`.
 
 ## Files pending maintainer review
-- PowerShell legacy helper scripts (`scripts/*.ps1`).
+- Pass 2 intentionally left PowerShell legacy helper scripts (`scripts/*.ps1`) as pending review.
+- Resolution completed in final pass: see `docs/CLEANUP_AUDIT_V2_2_18_FINAL.md`.
 
 ## Validation results
 - `bash -n scripts/*.sh` -> pass
 - `bash scripts/list_cleanup_candidates.sh` -> pass
-- `bash scripts/validate_repo_cleanup.sh --strict --allow-pending-review` -> pass
+- `bash scripts/validate_repo_cleanup.sh --strict --allow-pending-review` -> pass (pass-2 state)
 - `cargo fmt --check` -> pass
 - `cargo test --workspace` -> pass
 - `cargo build --workspace --release` -> pass
