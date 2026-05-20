@@ -421,7 +421,7 @@ mod opencl {
     }
 
     fn c_string_from_buf(buf: &[u8]) -> Result<String> {
-        let cstr = CStr::from_bytes_until_nul(buf).or_else(|_| CStr::from_bytes_with_nul(b"\0"))?;
+        let cstr = CStr::from_bytes_until_nul(buf).unwrap_or(c"");
         Ok(cstr.to_string_lossy().into_owned())
     }
 }
