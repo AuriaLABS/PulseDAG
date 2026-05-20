@@ -55,3 +55,5 @@ Cleanup-only repository audit ahead of v2.2.18 private-testnet RC preparation. N
 
 ## v2.3.0 readiness note
 This cleanup audit does **not** claim v2.3.0 readiness; it only records repository hygiene actions and checks.
+
+- Cleanup pass 2 archive completed; see `docs/CLEANUP_AUDIT_V2_2_18_PASS2.md` and `docs/archive/`.

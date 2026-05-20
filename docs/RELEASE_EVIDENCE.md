@@ -31,3 +31,5 @@
 ## Known missing evidence (current repo state)
 - Runtime outputs are not committed in this documentation PR.
 - Therefore v2.2.17 remains **PENDING EVIDENCE** until operators run required commands and attach artifacts.
+
+- Cleanup pass 2 moved stale v2.2 historical docs into `docs/archive/v2_2_history/`.
