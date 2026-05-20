@@ -195,8 +195,8 @@ async fn api_security_coverage_v2_2_17() {
     .await;
     assert_eq!(readiness_status, StatusCode::OK);
     assert!(
-        readiness_body.contains("\"status\":\"degraded\"")
-            || readiness_body.contains("\"status\":\"blocked\"")
+        readiness_body.contains("\"overall_status\":\"warn\"")
+            || readiness_body.contains("\"overall_status\":\"fail\"")
     );
     assert!(readiness_body.contains("api_profile_safety"));
     assert!(!readiness_body.contains(token));
