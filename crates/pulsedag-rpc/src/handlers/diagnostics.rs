@@ -131,7 +131,13 @@ pub async fn get_diagnostics<S: RpcStateLike>(
     storage_audit.confidence_evidence_path = redact_path(&storage_audit.confidence_evidence_path);
     let runtime_handle = state.runtime();
     let runtime = runtime_handle.read().await;
-    let rollup = runtime_surface_rollup(&runtime);
+    let mut runtime_for_diagnostics = runtime.clone();
+    runtime_for_diagnostics.startup_path = redact_path(&runtime.startup_path);
+    runtime_for_diagnostics.startup_fallback_reason = runtime
+        .startup_fallback_reason
+        .as_ref()
+        .map(|v| redact_if_sensitive_key_value("startup_fallback_reason", v));
+    let rollup = runtime_surface_rollup(&runtime_for_diagnostics);
     let (p2p_enabled, peer_count) = match state.p2p() {
         Some(p2p) => match p2p.status() {
             Ok(status) => (true, status.connected_peers.len()),
@@ -173,13 +179,10 @@ pub async fn get_diagnostics<S: RpcStateLike>(
         storage_audit_ok: storage_audit.ok,
         storage_audit_issue_count: storage_audit.issue_count,
         storage_audit_summary: storage_audit,
-        startup_path: redact_path(&runtime.startup_path),
+        startup_path: runtime_for_diagnostics.startup_path.clone(),
         startup_fastboot_used: runtime.startup_fastboot_used,
         startup_replay_required: runtime.startup_replay_required,
-        startup_fallback_reason: runtime
-            .startup_fallback_reason
-            .as_ref()
-            .map(|v| redact_if_sensitive_key_value("startup_fallback_reason", v)),
+        startup_fallback_reason: runtime_for_diagnostics.startup_fallback_reason.clone(),
         last_rejected_peer_block_reason: runtime.last_rejected_peer_block_reason.clone(),
         remediation_summary: rollup.remediation_summary.clone(),
         no_go_escalation: rollup.no_go_escalation,
