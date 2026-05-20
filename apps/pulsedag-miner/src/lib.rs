@@ -245,7 +245,7 @@ mod opencl {
                 .unwrap_or_else(|_| "<unknown platform>".to_string());
             let devices = api.gpu_devices(platform)?;
             for (platform_device_index, device) in devices.iter().copied().enumerate() {
-                if requested_device_index.map_or(true, |idx| idx == global_device_index) {
+                if requested_device_index.is_none_or(|idx| idx == global_device_index) {
                     let device_name = api
                         .device_info_string(device, CL_DEVICE_NAME)
                         .unwrap_or_else(|_| "<unknown GPU device>".to_string());
@@ -421,7 +421,7 @@ mod opencl {
     }
 
     fn c_string_from_buf(buf: &[u8]) -> Result<String> {
-        let cstr = CStr::from_bytes_until_nul(buf).or_else(|_| CStr::from_bytes_with_nul(b"\0"))?;
+        let cstr = CStr::from_bytes_until_nul(buf).or_else(|_| CStr::from_bytes_with_nul(c"".to_bytes_with_nul()))?;
         Ok(cstr.to_string_lossy().into_owned())
     }
 }
