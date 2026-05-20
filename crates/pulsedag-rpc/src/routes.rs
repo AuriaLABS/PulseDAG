@@ -288,7 +288,7 @@ where
         app = app
             .nest("/admin", disabled_admin_router::<S>())
             .route("/admin", any(disabled_admin_endpoint))
-            .route("/admin/{*path}", any(disabled_admin_endpoint));
+            .route("/admin/*path", any(disabled_admin_endpoint));
     }
 
     app
