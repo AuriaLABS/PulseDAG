@@ -1,72 +1,39 @@
-# PulseDAG v2.2.17 closing checklist
+# v2.2.17 Closing Checklist (API/operator/security)
 
-v2.2.17 closes only when API/operator/security boundaries are documented, defaults are hardened, and release evidence is captured. This checklist is a **release gate** for v2.2.17 and is **not** a v2.3.0 or v3.0 readiness claim.
+> Rule: mark PASS only when evidence file/path/output exists. Otherwise keep PENDING and include exact command.
 
-## Version and scope gate
+## Version consistency
+- [ ] PASS / [x] PENDING: VERSION=`v2.2.17`, Cargo=`2.2.17`, README status, version matrix baseline, release notes, and this checklist are mutually consistent.  
+  Evidence: repo files review.
 
-- [ ] VERSION/Cargo workspace aligned to v2.2.17 **if release bump is included** (`VERSION=v2.2.17`, workspace `version=2.2.17`).
-- [ ] `README.md` and `docs/VERSION_MATRIX.md` describe v2.2.17 as the API/operator/security hardening milestone.
-- [ ] RPC endpoint inventory complete.
-- [ ] API profiles documented and tested (`public` / `operator` / `admin`).
-- [ ] admin disabled by default.
-- [ ] unsafe admin exposure blocked.
-- [ ] optional operator auth tested.
-- [ ] rate/request size limits tested.
-- [ ] CORS/bind-address policy tested.
-- [ ] diagnostics redaction tested.
-- [ ] `/release` hardened.
-- [ ] `/readiness` hardened.
-- [ ] secure operator runbook complete.
-- [ ] RPC security smoke script passes.
-- [ ] API security evidence bundle generated.
-- [ ] no smart contracts added.
-- [ ] no pool logic added.
-- [ ] miner remains external.
-- [ ] no consensus rule changes.
-- [ ] no PoW semantic changes.
-- [ ] no GPU kernel changes in v2.2.17.
-- [ ] no v2.3.0 readiness claim.
-- [ ] no v3.0 readiness claim.
+## Required command evidence
+- [ ] PASS / [x] PENDING: `cargo fmt --check`  
+  Run: `cargo fmt --check` and store output in `artifacts/v2_2_17_api_security/<run_id>/checks/cargo_fmt_check.txt`.
+- [ ] PASS / [x] PENDING: `cargo test --workspace`  
+  Run: `cargo test --workspace` and store output in `.../checks/cargo_test_workspace.txt`.
+- [ ] PASS / [x] PENDING: `cargo build --workspace --release`  
+  Run: `cargo build --workspace --release` and store output in `.../checks/cargo_build_release.txt`.
 
-## Required command gate
+## API/operator/security closeout evidence
+- [ ] PASS / [x] PENDING: API endpoint inventory complete (`docs/RPC_ENDPOINT_INVENTORY_V2_2_17.md`).
+- [ ] PASS / [x] PENDING: API exposure profiles documented (public_safe/operator/admin/dev).
+- [ ] PASS / [x] PENDING: admin endpoints disabled by default (capture `/admin/*` probe results).
+- [ ] PASS / [x] PENDING: unsafe admin exposure blocked.
+- [ ] PASS / [x] PENDING: optional operator auth tested.
+- [ ] PASS / [x] PENDING: request body limits tested.
+- [ ] PASS / [x] PENDING: rate limits tested or explicitly documented pending.
+- [ ] PASS / [x] PENDING: CORS/bind-address policy tested.
+- [ ] PASS / [x] PENDING: diagnostics redaction tested.
+- [ ] PASS / [x] PENDING: `/release` endpoint checked.
+- [ ] PASS / [x] PENDING: `/readiness` endpoint checked.
+- [ ] PASS / [x] PENDING: RPC security smoke script executed (`scripts/v2_2_17_rpc_security_smoke.sh`).
+- [ ] PASS / [x] PENDING: evidence bundle generated (`scripts/v2_2_17_collect_api_security_evidence.sh`).
 
-Run from repo root and attach output or CI links:
-
-```bash
-cargo fmt --check
-cargo test --workspace
-cargo build --workspace --release
-```
-
-- [ ] cargo fmt --check passes.
-- [ ] cargo test --workspace passes.
-- [ ] cargo build --workspace --release passes.
-
-## Evidence and closeout gate
-
-- [ ] Evidence location is defined (for example `evidence/v2.2.17/`).
-- [ ] API inventory table (method/path/profile/owner/default exposure/auth) attached.
-- [ ] Admin lockdown verification notes attached.
-- [ ] Operator auth test notes attached (enabled/disabled/misconfigured).
-- [ ] Rate-limit/request-size/CORS/bind-address validation notes attached.
-- [ ] `/release` and `/readiness` disclosure-hardening validation attached.
-- [ ] Diagnostics redaction validation attached.
-- [ ] Secure operator runbook link/update reference attached.
-- [ ] RPC security smoke script output attached.
-- [ ] API security evidence bundle index attached.
-- [ ] Markdown links in updated release/security/operator docs are verified.
-
-## Boundary assertions for v2.2.17
-
-- [ ] Documentation-only unless version/status files are touched.
-- [ ] No smart contracts, pool logic, or embedded miner scope expansion.
-- [ ] No consensus/PoW semantic changes under this closeout.
-- [ ] No claim that v2.2.17 itself grants v2.3.0 or v3.0 readiness.
-
-## Closeout decision
-
-- [ ] `docs/RELEASE_NOTES_V2_2_17.md` updated to finalized closeout framing.
-- [ ] `docs/CLOSING_CHECKLIST_V2_2_17.md` updated and checked.
-- [ ] `docs/VERSION_MATRIX.md` updated with v2.2.17 closeout position.
-- [ ] `README.md` updated with v2.2.17 closeout status summary.
-- [ ] Release issue/PR links all evidence artifacts and command outputs.
+## Guardrail assertions
+- [ ] PASS / [x] PENDING: no smart contracts added.
+- [ ] PASS / [x] PENDING: no pool logic added.
+- [ ] PASS / [x] PENDING: no consensus rule changes.
+- [ ] PASS / [x] PENDING: no PoW semantic changes.
+- [ ] PASS / [x] PENDING: no GPU kernel changes in v2.2.17.
+- [ ] PASS / [x] PENDING: no v2.3.0 readiness claim.
+- [ ] PASS / [x] PENDING: no v3.0 readiness claim.
