@@ -4,6 +4,9 @@
 
 # PulseDAG local runtime data
 /data/
+/logs/
+/run/
+/artifacts/
 
 # Local env files
 .env
@@ -15,6 +18,7 @@
 /evidence/**/logs/
 /evidence/**/runtime/
 /evidence/**/node-*/
+/evidence/**/tmp/
 /evidence/**/p2p-rehearsal/*/logs/
 /evidence/**/p2p-rehearsal/*/runtime/
 /evidence/**/p2p-rehearsal/*/node-*/
@@ -23,11 +27,21 @@
 /evidence/**/*.log
 /evidence/**/*.tmp
 
+# Global temporary/runtime artifacts
+*.log
+*.tmp
+*.bak
+*.old
+*.orig
+*.swp
+*.swo
+*.zip
+*.tar.gz
+*~
+
 # Editor and OS noise
 .DS_Store
 Thumbs.db
-*.swp
-*.swo
-*~
+desktop.ini
 .idea/
 .vscode/
