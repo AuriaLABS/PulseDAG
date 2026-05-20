@@ -54,7 +54,7 @@ python3 scripts/p2p_sync_rpc_baselines.py \
 Use normal operator actions (or existing node start/stop scripts) while running the baseline harness before and after churn:
 
 1. Capture pre-churn baseline.
-2. Induce churn/restart (example: stop node B and bring it back with `scripts/start-node-b.ps1`).
+2. Induce churn/restart (example: stop node B and bring it back with the current testnet node-B start procedure for your platform).
 3. Re-run baseline capture.
 4. Compare artifacts for stabilization time and latency drift.
 
