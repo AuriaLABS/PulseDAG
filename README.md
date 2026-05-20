@@ -1,13 +1,13 @@
 # PulseDAG v2.2.17 current status
 
-This repository is aligned to the **v2.2.17 API/operator/security hardening milestone** and the long-term path to **v3.0 as the first long-lived functional PulseDAG core**.
+This repository is aligned to the **v2.2.17 API/operator/security hardening closeout** and the long-term path to **v3.0 as the first long-lived functional PulseDAG core**.
 
 ## Current status
 
 - Active PoW identity: **kHeavyHash**.
 - PoW engine framing: **Kaspa-based integration path** adapted for PulseDAG canonical headers.
 - Acceptance semantics: **256-bit hash vs 256-bit target comparison**.
-- Current milestone: **v2.2.17 API/operator/security hardening**, building on v2.2.16 miner/node contract hardening evidence.
+- Current milestone: **v2.2.17 API/operator/security hardening (finalized closeout)**, building on v2.2.16 miner/node contract hardening evidence.
 - Miner architecture: external `pulsedag-miner` only; no embedded node miner and no pool logic.
 - v2.2.17 scope: RPC/API surface audit, public/operator/admin endpoint classification, admin endpoint lockdown, local-only defaults, optional operator auth, rate limiting, request size limits, CORS policy, safe config validation, diagnostics redaction, readiness/release endpoint hardening, operator runbook updates, and API/security hardening evidence collection.
 - GPU mining: allowed only inside the standalone external miner, optional, experimental, gated behind the canonical PoW adapter, CPU-verified for every GPU-found nonce before submit, and not required for default builds or v2.2.16 closeout when no GPU is available.

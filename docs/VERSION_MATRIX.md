@@ -7,7 +7,7 @@ This matrix keeps release positioning clear across the current v2.2.x hardening 
 | Area | Current value |
 | --- | --- |
 | Workspace release | `VERSION` is `v2.2.17`; Cargo workspace version is `2.2.17`; license metadata remains `ISC` |
-| Current milestone | v2.2.17 API/operator/security hardening |
+| Current milestone | v2.2.17 API/operator/security hardening closeout |
 | Previous milestone | v2.2.16 miner/node contract hardening, evidence bundle passed |
 | Following milestone | v2.2.18 private-testnet RC |
 | Private-testnet RC | v2.2.18 |
@@ -36,7 +36,7 @@ This matrix keeps release positioning clear across the current v2.2.x hardening 
 | v2.2.14 | Storage/replay hardening | Closes deterministic replay ordering, snapshot/restore/pruning safety, explicit storage schema policy, migration compatibility errors, testnet real-libp2p defaults, release evidence scripting, external miner boundary, no contract runtime, and no pool logic in miner |
 | v2.2.15 | Sustained P2P multi-node rehearsal | Evidence bundle passed for cargo checks, 3-node rehearsal, churn/rejoin, lag recovery, convergence, peer diagnostics, and chain-id isolation |
 | v2.2.16 | Miner/node contract hardening | Completed milestone feeding API/operator/security hardening scope and evidence baseline |
-| v2.2.17 | API/operator/security hardening | Current milestone: RPC/API surface audit, public/operator/admin endpoint classification, admin endpoint lockdown, local-only defaults, optional operator auth, rate limits, request-size limits, CORS posture, safe config validation, diagnostics redaction, readiness/release endpoint hardening, operator runbook updates, and evidence collection |
+| v2.2.17 | API/operator/security hardening | Finalized closeout: RPC endpoint inventory, public/operator/admin profiles, admin-disabled defaults, unsafe exposure blocking, optional operator auth tests, rate/request-size tests, CORS/bind-address tests, diagnostics redaction tests, `/release` and `/readiness` hardening, secure runbook completion, smoke validation, and evidence bundle generation |
 | v2.2.18 | Private-testnet RC | Release-candidate evidence bundle and go/no-go checklist for the v2.3.0 readiness decision |
 | v2.3.0 | Private-testnet readiness decision only | Decision milestone; not an automatic public launch |
 | v2.4.x | Private-testnet stable line | Conservative stability and evidence-driven bug-fix line for the private testnet |
@@ -60,7 +60,7 @@ v2.2.13 follows v2.2.12 as an intermediate consensus/DAG safety audit before the
 
 ## v2.2.14 through v2.2.18 hardening path
 
-v2.2.14 through v2.2.18 extend the hardening line before the v2.3.0 readiness decision. v2.2.14 is the storage/replay closure, v2.2.15 passed sustained P2P rehearsal evidence, v2.2.16 closed miner/node contract hardening, and v2.2.17 is now the active API/operator/security hardening milestone:
+v2.2.14 through v2.2.18 extend the hardening line before the v2.3.0 readiness decision. v2.2.14 is the storage/replay closure, v2.2.15 passed sustained P2P rehearsal evidence, v2.2.16 closed miner/node contract hardening, and v2.2.17 is finalized as the API/operator/security hardening closeout:
 
 - v2.2.14 is the storage/replay hardening release: it closes deterministic persisted-block replay ordering, snapshot/restore/pruning safety, storage schema migration policy, testnet real-libp2p defaults, and repeatable evidence scripting while preserving the external miner boundary and the no-contract/no-pool guardrails.
 - v2.2.15 is the sustained P2P multi-node rehearsal release: its evidence bundle passed `cargo fmt`, `cargo test`, `cargo build`, 3-node rehearsal, churn/rejoin, lag recovery, convergence, peer diagnostics, and chain-id isolation. It is not a v2.3.0 readiness claim by itself.
