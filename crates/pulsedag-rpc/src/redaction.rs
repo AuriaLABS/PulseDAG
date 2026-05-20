@@ -28,8 +28,12 @@ fn is_sensitive_key(key: &str) -> bool {
 fn looks_sensitive_value(value: &str) -> bool {
     let normalized = value.to_ascii_lowercase();
     normalized.contains("-----begin")
+        || normalized.contains("seed phrase")
+        || normalized.contains("mnemonic")
+        || normalized.contains("private key")
+        || normalized.contains("auth token")
+        || normalized.contains("bearer ")
         || normalized.split_whitespace().count() >= 12
-        || value.len() >= 24
 }
 
 #[cfg(test)]
