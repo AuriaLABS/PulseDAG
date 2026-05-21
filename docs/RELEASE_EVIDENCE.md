@@ -1,35 +1,38 @@
-# Release Evidence Policy (v2.2.17)
+# Release Evidence Policy (v2.2.18 private-testnet RC preparation)
+
+## Status gate
+- Current status: **PLANNED / BLOCKED BY v2.2.17 EVIDENCE**.
+- No v2.2.18 rehearsal execution evidence is expected until v2.2.17 evidence is complete.
 
 ## Expected artifact directory
-- Preferred: `artifacts/v2_2_17_api_security/<run_id>/`
-- Alternate: `evidence/v2.2.17/<run_id>/`
+- Preferred: `artifacts/v2_2_18_private_testnet_rc/<run_id>/`
+- Alternate: `evidence/v2.2.18/<run_id>/`
 
-## Required commands
-1. `cargo fmt --check`
-2. `cargo test --workspace`
-3. `cargo build --workspace --release`
-4. `bash scripts/v2_2_17_rpc_security_smoke.sh`
-5. `bash scripts/v2_2_17_collect_api_security_evidence.sh`
-
-## Expected outputs
-- Command logs under `checks/`.
-- Endpoint captures for `/health`, `/status`, `/release`, `/readiness` (+ optional `/metrics`, `/p2p/status`, `/sync/status`).
-- `summary.md` and `evidence.tar.gz` in run directory.
+## Required evidence groups (when unblocked)
+1. Topology manifest (`topology/manifest.yaml`) for 5-node / 4-miner layout.
+2. Deterministic startup/shutdown logs (`orchestration/startup.log`, `orchestration/shutdown.log`).
+3. Sync convergence outputs (`sync/convergence_summary.md`, raw samples).
+4. Miner acceptance/rejection telemetry (`miners/accept_reject_summary.md`, per-miner logs).
+5. Snapshot/restore drill outputs (`snapshot/restore_timing.csv`, notes).
+6. Perturbation drill outputs (`perturbation/*.md`, timestamps and recovery metrics).
+7. RPC security verification outputs reusing v2.2.17 controls/scripts.
+8. `summary.md` + `go_no_go_report.md` + compressed bundle.
 
 ## Pass/fail table template
 | Item | Evidence path | Status |
 |---|---|---|
-| cargo fmt --check | `checks/cargo_fmt_check.txt` | PENDING |
-| cargo test --workspace | `checks/cargo_test_workspace.txt` | PENDING |
-| cargo build --workspace --release | `checks/cargo_build_release.txt` | PENDING |
-| RPC smoke script | `artifacts/v2_2_17_rpc_security_smoke/<run_id>/summary.md` | PENDING |
-| Evidence collector | `summary.md` + `evidence.tar.gz` | PENDING |
+| v2.2.17 gate complete | `docs/CLOSING_CHECKLIST_V2_2_17.md` + artifact links | PENDING |
+| Topology manifest | `topology/manifest.yaml` | PENDING |
+| Deterministic startup/shutdown | `orchestration/startup.log`, `orchestration/shutdown.log` | PENDING |
+| Sync convergence | `sync/convergence_summary.md` | PENDING |
+| Miner acceptance/rejection | `miners/accept_reject_summary.md` | PENDING |
+| Snapshot/restore drill | `snapshot/restore_timing.csv` | PENDING |
+| Perturbation drills | `perturbation/summary.md` | PENDING |
+| RPC security verification reuse | `security/rpc_security_reuse_summary.md` | PENDING |
+| Go/no-go report | `go_no_go_report.md` | PENDING |
 
 ## Evidence bundle naming
-- `v2_2_17_api_security_evidence_<run_id>.tar.gz` (or generated `evidence.tar.gz` inside run directory).
+- `v2_2_18_private_testnet_rc_evidence_<run_id>.tar.gz`
 
-## Known missing evidence (current repo state)
-- Runtime outputs are not committed in this documentation PR.
-- Therefore v2.2.17 remains **PENDING EVIDENCE** until operators run required commands and attach artifacts.
-
-- Cleanup pass 2 moved stale v2.2 historical docs into `docs/archive/v2_2_history/`.
+## Guardrail note
+- v2.2.18 evidence package must not claim consensus/PoW changes, smart contracts, pool logic additions, or v2.3.0 readiness.
