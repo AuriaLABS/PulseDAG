@@ -4046,7 +4046,6 @@ mod tests {
         );
     }
 
-
     fn unique_peer_state_path(prefix: &str) -> PathBuf {
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
