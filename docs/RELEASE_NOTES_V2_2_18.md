@@ -16,8 +16,3 @@ v2.2.18 is a **private-testnet RC preparation** release.
 - GPU is optional/scaffold only unless canonical kernel evidence exists.
 - v2.3.0 remains a future readiness decision.
 - No v3.0 readiness claim.
-
-## CI/release reliability
-- Hardened release artifact smoke verification with per-command timeouts (`--smoke-timeout-secs`, default 10s) to prevent indefinite hangs.
-- Added immediate-exit CLI handling for `pulsedagd --help/-h` and `pulsedagd --version/-V` so smoke checks do not start daemon services.
-- Improved `pulsedag-miner --version/-V` and made `--help/-h` exit cleanly for deterministic CI smoke checks.

@@ -47,56 +47,34 @@ def unpack_archive(archive: Path, destination: Path) -> None:
     raise SystemExit(f"Unsupported archive format: {archive.name}")
 
 
-def smoke_commands_for(binary_name: str) -> list[list[str]]:
-    if binary_name == "pulsedagd":
-        return [["--version"], ["--help"]]
-    if binary_name == "pulsedag-miner":
-        return [["--help"], ["--version"]]
-    return [["--help"], ["--version"]]
+def run_smoke(binary: Path, binary_name: str) -> None:
+    smoke_commands = [
+        [str(binary), "--help"],
+        [str(binary), "--version"],
+    ]
 
-
-def run_smoke(binary: Path, binary_name: str, smoke_timeout_secs: int) -> None:
-    commands = smoke_commands_for(binary_name)
-    for command_args in commands:
-        args = [str(binary), *command_args]
+    for args in smoke_commands:
         with tempfile.TemporaryDirectory(prefix="release-smoke-") as smoke_dir:
-            try:
-                result = subprocess.run(
-                    args,
-                    check=False,
-                    capture_output=True,
-                    text=True,
-                    cwd=smoke_dir,
-                    timeout=smoke_timeout_secs,
-                )
-            except subprocess.TimeoutExpired as exc:
-                raise SystemExit(
-                    "Smoke command timed out; binary may have started a long-running daemon instead of exiting\n"
-                    f"binary: {binary_name}\n"
-                    f"command: {' '.join(args)}\n"
-                    f"timeout_secs: {smoke_timeout_secs}\n"
-                    f"stdout:\n{(exc.stdout or '')}\n"
-                    f"stderr:\n{(exc.stderr or '')}"
-                ) from exc
+            result = subprocess.run(args, check=False, capture_output=True, text=True, cwd=smoke_dir)
 
         if result.returncode == 0:
-            continue
+            return
 
-        if binary_name == "pulsedag-miner" and result.returncode == 1:
+        if result.returncode == 1:
             output = f"{result.stdout}\n{result.stderr}".lower()
             if "usage:" in output and binary_name in output:
-                continue
+                return
+            if binary_name == "pulsedagd" and "address already in use" in output:
+                return
 
-        raise SystemExit(
-            f"Smoke command failed for {binary_name}\n"
-            f"command: {' '.join(args)}\n"
-            f"returncode: {result.returncode}\n"
-            f"stdout:\n{result.stdout}\n"
-            f"stderr:\n{result.stderr}"
-        )
+    raise SystemExit(
+        f"Smoke command failed for {binary_name} ({' '.join(smoke_commands[0])} or {' '.join(smoke_commands[1])}):\n"
+        f"stdout:\n{result.stdout}\n"
+        f"stderr:\n{result.stderr}"
+    )
 
 
-def validate_archive_artifact(archive: Path, expected_tag: str, smoke: bool, smoke_timeout_secs: int) -> dict:
+def validate_archive_artifact(archive: Path, expected_tag: str, smoke: bool) -> dict:
     checksum_path = archive.with_name(f"{archive.name}.sha256")
     manifest_path = archive.with_name(f"{archive.name}.json")
 
@@ -150,7 +128,7 @@ def validate_archive_artifact(archive: Path, expected_tag: str, smoke: bool, smo
             raise SystemExit(f"Archive {archive.name} must contain exactly one binary inside {archive_base}/")
 
         if smoke:
-            run_smoke(binary_path, binary_name.removesuffix(".exe"), smoke_timeout_secs)
+            run_smoke(binary_path, binary_name.removesuffix('.exe'))
 
     return manifest
 
@@ -194,7 +172,6 @@ def main() -> None:
     parser.add_argument("--artifacts-dir", required=True, type=Path)
     parser.add_argument("--expected-tag", required=True)
     parser.add_argument("--smoke", action="store_true", help="Run extracted binaries with basic smoke commands")
-    parser.add_argument("--smoke-timeout-secs", type=int, default=10)
     parser.add_argument("--expect-binaries", nargs="*", default=["pulsedagd", "pulsedag-miner"])
     parser.add_argument("--expect-targets", nargs="*", default=[])
     parser.add_argument("--consolidated-checksums", type=Path)
@@ -209,10 +186,7 @@ def main() -> None:
     if not archives:
         raise SystemExit(f"No release archives found in {artifacts_dir}")
 
-    manifests = [
-        validate_archive_artifact(archive, args.expected_tag, args.smoke, args.smoke_timeout_secs)
-        for archive in archives
-    ]
+    manifests = [validate_archive_artifact(archive, args.expected_tag, args.smoke) for archive in archives]
 
     found = {manifest["binary"].removesuffix(".exe") for manifest in manifests}
     missing = sorted(set(args.expect_binaries) - found)

@@ -41,43 +41,15 @@ fn now_unix() -> u64 {
         .unwrap_or(0)
 }
 
-fn usage() -> &'static str {
-    "usage: pulsedagd [--network dev|testnet|mainnet] [--rpc-listen HOST:PORT] [--p2p-listen MULTIADDR] [--bootnode MULTIADDR] [--peer MULTIADDR] [--help] [--version]"
-}
-
-fn print_help_and_exit() {
-    println!("{}", usage());
-}
-
-fn print_version_and_exit() {
-    println!("{} {}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
-}
-
 #[tokio::main]
 async fn main() -> Result<()> {
-    let cli_args: Vec<String> = std::env::args().skip(1).collect();
-    if cli_args
-        .iter()
-        .any(|arg| matches!(arg.as_str(), "--help" | "-h"))
-    {
-        print_help_and_exit();
-        return Ok(());
-    }
-    if cli_args
-        .iter()
-        .any(|arg| matches!(arg.as_str(), "--version" | "-V"))
-    {
-        print_version_and_exit();
-        return Ok(());
-    }
-
     let startup_begin = std::time::Instant::now();
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::from_default_env())
         .init();
 
     let mut cfg = Config::from_env()?;
-    cfg.apply_cli_args(cli_args)?;
+    cfg.apply_cli_args(std::env::args().skip(1))?;
     let config_safety_summary = cfg.config_safety_summary();
     if config_safety_summary.contains("warning") {
         warn!(summary = %config_safety_summary, "config safety summary");
