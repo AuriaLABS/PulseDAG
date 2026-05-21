@@ -12,6 +12,8 @@ pub struct ReleaseInfoData {
     pub pow_algorithm: String,
     pub miner_mode: String,
     pub smart_contracts: String,
+    pub pow_engine: String,
+    pub pool_logic: String,
 }
 
 pub fn repo_version() -> String {
@@ -67,9 +69,11 @@ pub async fn get_release_info() -> Json<ApiResponse<ReleaseInfoData>> {
             "PULSEDAG_API_PROFILE",
             &std::env::var("PULSEDAG_API_PROFILE").unwrap_or_else(|_| "local_dev".into()),
         ),
-        pow_algorithm: "sha256d".into(),
+        pow_algorithm: "kHeavyHash".into(),
         miner_mode: "external".into(),
         smart_contracts: "disabled (v2.2.x)".into(),
+        pow_engine: "canonical_core".into(),
+        pool_logic: "disabled_not_in_node".into(),
     }))
 }
 

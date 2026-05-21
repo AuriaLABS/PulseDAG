@@ -159,6 +159,11 @@ async fn main() -> Result<()> {
         genesis_hash = %genesis_hash,
         "node startup identity"
     );
+    // Export resolved runtime settings so diagnostics/readiness report effective values
+    // even when config was provided by profile files or CLI flags.
+    std::env::set_var("PULSEDAG_EFFECTIVE_RPC_BIND", cfg.rpc_bind.clone());
+    std::env::set_var("PULSEDAG_RPC_BIND", cfg.rpc_bind.clone());
+    std::env::set_var("PULSEDAG_API_PROFILE", cfg.api_profile.to_string());
 
     let reconcile_result = reconcile_mempool(&mut chain_state);
     if !reconcile_result.removed_txids.is_empty() {

@@ -99,9 +99,11 @@ start_miner(){
   if [[ -f "$pid_file" ]] && is_running "$(cat "$pid_file")"; then info "miner $id already running"; return 0; fi
   target="$(jq -r --arg id "$id" '.miners[]|select(.id==$id)|.target_node' "$TOPOLOGY_MANIFEST")"
   url="$(node_rpc_url "$target")"
-  "$MINER_BIN" --node "$url" --backend cpu --loop >"$log_file" 2>&1 &
+  local run_id_safe="${RUN_ID//[^a-zA-Z0-9_-]/-}"
+  local miner_address="${MINER_ADDRESS_OVERRIDE:-${run_id_safe}-${id}}"
+  "$MINER_BIN" --node "$url" --miner-address "$miner_address" --backend cpu --loop >"$log_file" 2>&1 &
   echo "$!" > "$pid_file"
-  log_event "miner_started" "$id" "pid=$(cat "$pid_file") target=$target"
+  log_event "miner_started" "$id" "pid=$(cat "$pid_file") target=$target miner_address=$miner_address"
 }
 
 stop_one(){
