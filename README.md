@@ -34,3 +34,4 @@
 - `docs/CLOSING_CHECKLIST_V2_2_18.md`
 - `docs/VERSION_MATRIX.md`
 - `docs/RELEASE_EVIDENCE.md`
+- `docs/V2_3_0_READINESS_DECISION_INPUTS.md` (decision review input; not a readiness declaration)

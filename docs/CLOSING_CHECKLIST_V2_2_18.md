@@ -57,7 +57,11 @@
 - [ ] PASS / [x] PENDING: no v3.0 readiness claim.
 
 ## Final decision
-- [ ] PASS / [x] PENDING: v2.2.18 private RC closeout approved.
+- [ ] PASS / [x] PENDING: v2.2.18 private RC closeout approved and handed off to v2.3.0 decision review inputs.
 - Decision owner: `____________________`
 - Decision date (UTC): `____________________`
 - Decision evidence/report path: `____________________`
+
+## Handoff artifact (required before closeout PASS)
+- [ ] PASS / [x] PENDING: `docs/V2_3_0_READINESS_DECISION_INPUTS.md` exists and reflects current evidence state (PASS/PENDING/WAIVED with explicit rationale).
+  Evidence path: `docs/V2_3_0_READINESS_DECISION_INPUTS.md`

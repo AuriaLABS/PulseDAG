@@ -36,3 +36,8 @@
 
 ## Guardrail note
 - v2.2.18 evidence package must not claim consensus/PoW changes, smart contracts, pool logic additions, or v2.3.0 readiness.
+
+## v2.3.0 decision handoff note
+- v2.2.18 closeout must publish `docs/V2_3_0_READINESS_DECISION_INPUTS.md` as a decision-review input summary.
+- If evidence is missing, mark the corresponding item as **PENDING**.
+- Any unresolved Sev-1 consensus/sync issue requires a **NO-GO** recommendation.
