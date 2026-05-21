@@ -1,40 +1,63 @@
-# v2.2.18 Closing Checklist (private-testnet RC preparation)
+# v2.2.18 Private RC Closing Checklist
 
-> Rule: mark PASS only when evidence file/path/output exists. Otherwise keep PENDING and include exact command.
+> Rule: do **not** mark PASS without an evidence path (file path, command output path, or report section). If evidence is unavailable, keep PENDING or mark WAIVED with explicit approver/date/reason.
 
-## Milestone gate
-- [ ] PASS / [x] PENDING: v2.2.17 evidence is complete and reviewed. Until then v2.2.18 remains **PLANNED / BLOCKED BY v2.2.17 EVIDENCE**.
+## 1) Upstream prerequisite gate
+- [ ] PASS / [ ] WAIVED / [x] PENDING: v2.2.17 evidence is fully closed **or** explicitly waived.  
+  Evidence path: `____________________`
 
-## Version consistency
-- [ ] PASS / [x] PENDING: VERSION/Cargo/README/version matrix/release notes/checklist are mutually consistent for v2.2.18 planning state.
+## 2) Version and metadata alignment gate
+- [ ] PASS / [x] PENDING: `VERSION`, Cargo workspace version, `README.md`, and `docs/VERSION_MATRIX.md` are aligned for v2.2.18 RC closing state.  
+  Evidence path: `____________________`
 
-## Documentation deliverables
-- [ ] PASS / [x] PENDING: `docs/V2_2_18_PRIVATE_TESTNET_RC_PLAN.md` published.
-- [ ] PASS / [x] PENDING: topology manifest template included.
-- [ ] PASS / [x] PENDING: deterministic startup/shutdown procedure documented.
-- [ ] PASS / [x] PENDING: sync convergence measurement method documented.
-- [ ] PASS / [x] PENDING: miner acceptance/rejection telemetry method documented.
-- [ ] PASS / [x] PENDING: snapshot/restore drill procedure documented.
-- [ ] PASS / [x] PENDING: perturbation drill suite documented.
-- [ ] PASS / [x] PENDING: RPC security verification references v2.2.17 runbook/scripts.
-- [ ] PASS / [x] PENDING: evidence bundle and go/no-go report template documented.
+## 3) Build and test command gate
+- [ ] PASS / [x] PENDING: `cargo fmt --check` PASS.  
+  Evidence path: `____________________`
+- [ ] PASS / [x] PENDING: `cargo test --workspace` PASS.  
+  Evidence path: `____________________`
+- [ ] PASS / [x] PENDING: `cargo build --workspace --release` PASS.  
+  Evidence path: `____________________`
 
-## Rehearsal execution evidence (when unblocked)
-- [ ] PASS / [x] PENDING: Windows/WSL rehearsal evidence captured.
-- [ ] PASS / [x] PENDING: Ubuntu/VPS rehearsal evidence captured.
-- [ ] PASS / [x] PENDING: 5-node / 4-miner topology instantiated and logged.
-- [ ] PASS / [x] PENDING: deterministic startup/shutdown logs captured.
-- [ ] PASS / [x] PENDING: sync convergence timings recorded.
-- [ ] PASS / [x] PENDING: miner accepted/rejected share metrics captured.
-- [ ] PASS / [x] PENDING: snapshot/restore drill success evidence captured.
-- [ ] PASS / [x] PENDING: perturbation drill outcomes captured.
-- [ ] PASS / [x] PENDING: go/no-go report published with explicit decision.
+## 4) Rehearsal execution gate
+- [ ] PASS / [x] PENDING: local 3-node + 1-miner rehearsal PASS.  
+  Evidence path: `____________________`
+- [ ] PASS / [ ] PENDING: RC 5-node + 4-miner rehearsal attempted **or** explicitly marked pending with owner and target date.  
+  Evidence path: `____________________`
 
-## Guardrail assertions
-- [ ] PASS / [x] PENDING: no consensus rule changes.
+## 5) Required operational evidence gate
+- [ ] PASS / [x] PENDING: sync convergence evidence present.  
+  Evidence path: `____________________`
+- [ ] PASS / [x] PENDING: miner telemetry evidence present (accepted/rejected share behavior and node acceptance visibility).  
+  Evidence path: `____________________`
+- [ ] PASS / [x] PENDING: perturbation drills evidence present.  
+  Evidence path: `____________________`
+- [ ] PASS / [x] PENDING: snapshot/restore drill evidence present.  
+  Evidence path: `____________________`
+- [ ] PASS / [x] PENDING: RPC security smoke evidence present.  
+  Evidence path: `____________________`
+- [ ] PASS / [x] PENDING: release artifact dry run evidence present.  
+  Evidence path: `____________________`
+
+## 6) Reporting and risk gate
+- [ ] PASS / [x] PENDING: go/no-go report generated and archived.  
+  Evidence path: `____________________`
+- [ ] PASS / [x] PENDING: known limitations documented.  
+  Evidence path: `____________________`
+- [ ] PASS / [x] PENDING: risk register updated for residual v2.2.18 risks.  
+  Evidence path: `____________________`
+
+## 7) Guardrail assertions (must remain true)
+- [ ] PASS / [x] PENDING: no consensus changes.
 - [ ] PASS / [x] PENDING: no PoW semantic changes.
-- [ ] PASS / [x] PENDING: no smart contracts added.
-- [ ] PASS / [x] PENDING: no pool logic added.
-- [ ] PASS / [x] PENDING: miner remains external/standalone.
-- [ ] PASS / [x] PENDING: GPU optionality preserved.
+- [ ] PASS / [x] PENDING: no smart contracts.
+- [ ] PASS / [x] PENDING: no pool logic.
+- [ ] PASS / [x] PENDING: miner remains external.
+- [ ] PASS / [x] PENDING: GPU remains optional only.
 - [ ] PASS / [x] PENDING: no v2.3.0 readiness claim.
+- [ ] PASS / [x] PENDING: no v3.0 readiness claim.
+
+## Final decision
+- [ ] PASS / [x] PENDING: v2.2.18 private RC closeout approved.
+- Decision owner: `____________________`
+- Decision date (UTC): `____________________`
+- Decision evidence/report path: `____________________`
