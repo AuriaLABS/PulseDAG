@@ -4046,6 +4046,14 @@ mod tests {
         );
     }
 
+
+    fn peer_state_env_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+        LOCK.get_or_init(|| std::sync::Mutex::new(()))
+            .lock()
+            .expect("peer state env lock poisoned")
+    }
+
     fn unique_peer_state_path(prefix: &str) -> PathBuf {
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -4059,6 +4067,7 @@ mod tests {
 
     #[tokio::test]
     async fn restart_rehydrates_peer_health_without_claiming_real_connectivity() {
+        let _env_lock = peer_state_env_lock();
         let path = unique_peer_state_path("rehydrate");
         std::env::set_var("PULSEDAG_P2P_PEER_STATE_PATH", &path);
 
@@ -4112,6 +4121,7 @@ mod tests {
 
     #[tokio::test]
     async fn corrupt_peer_metadata_fails_safe_on_startup() {
+        let _env_lock = peer_state_env_lock();
         let path = unique_peer_state_path("corrupt");
         std::env::set_var("PULSEDAG_P2P_PEER_STATE_PATH", &path);
         fs::write(&path, b"{ definitely-not-json").expect("write corrupt peer snapshot");
@@ -4814,6 +4824,7 @@ mod tests {
 
     #[tokio::test]
     async fn real_runtime_clears_persisted_connected_flags_on_startup() {
+        let _env_lock = peer_state_env_lock();
         let path = unique_peer_state_path("real-runtime");
         std::env::set_var("PULSEDAG_P2P_PEER_STATE_PATH", &path);
 
