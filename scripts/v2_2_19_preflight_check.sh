@@ -17,6 +17,15 @@ check(){
   fi
 }
 
+search_text(){
+  local pattern="$1"; shift
+  if command -v rg >/dev/null 2>&1; then
+    rg -n "$pattern" "$@" >/dev/null
+  else
+    grep -En "$pattern" "$@" >/dev/null
+  fi
+}
+
 ver=$(cat VERSION 2>/dev/null || true)
 cargo_ver=$(awk '/^version\s*=/{print $3; exit}' Cargo.toml | tr -d '"')
 ref=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || git describe --all --always)
@@ -51,7 +60,7 @@ else
   echo "PASS: no v3.0 readiness claim detected"
 fi
 
-if rg -n "(public testnet is live|public testnet now live|public testnet readiness: yes|we are ready to launch public testnet)" README.md docs/VERSION_MATRIX.md docs/KNOWN_LIMITATIONS_V2_2_19.md >/dev/null; then
+if search_text "(public testnet is live|public testnet now live|public testnet readiness: yes|we are ready to launch public testnet)" README.md docs/VERSION_MATRIX.md docs/KNOWN_LIMITATIONS_V2_2_19.md; then
   echo "FAIL: public testnet launch claim detected"
   fail=1
 else
