@@ -4823,31 +4823,35 @@ mod tests {
 
     #[tokio::test]
     async fn real_runtime_clears_persisted_connected_flags_on_startup() {
-        let _env_lock = peer_state_env_lock();
         let path = unique_peer_state_path("real-runtime");
-        std::env::set_var("PULSEDAG_P2P_PEER_STATE_PATH", &path);
+        let (handle, _rx) = {
+            let _env_lock = peer_state_env_lock();
+            std::env::set_var("PULSEDAG_P2P_PEER_STATE_PATH", &path);
 
-        let persisted = HashMap::from([(
-            "persisted-peer".to_string(),
-            PeerHealth {
-                connected: true,
-                ..PeerHealth::default()
-            },
-        )]);
-        persist_peer_book(&path, &persisted);
+            let persisted = HashMap::from([(
+                "persisted-peer".to_string(),
+                PeerHealth {
+                    connected: true,
+                    ..PeerHealth::default()
+                },
+            )]);
+            persist_peer_book(&path, &persisted);
 
-        let cfg = Libp2pConfig {
-            chain_id: "testnet".into(),
-            listen_addr: "/ip4/127.0.0.1/tcp/0".into(),
-            bootstrap: vec!["bootstrap-peer".into()],
-            enable_mdns: false,
-            enable_kademlia: false,
-            connection_slot_budget: 8,
-            sync_selection_stickiness_secs: 30,
-            runtime: Libp2pRuntimeMode::RealSwarm,
+            let cfg = Libp2pConfig {
+                chain_id: "testnet".into(),
+                listen_addr: "/ip4/127.0.0.1/tcp/0".into(),
+                bootstrap: vec!["bootstrap-peer".into()],
+                enable_mdns: false,
+                enable_kademlia: false,
+                connection_slot_budget: 8,
+                sync_selection_stickiness_secs: 30,
+                runtime: Libp2pRuntimeMode::RealSwarm,
+            };
+
+            let handle = Libp2pHandle::new(cfg).expect("real swarm handle should init");
+            std::env::remove_var("PULSEDAG_P2P_PEER_STATE_PATH");
+            handle
         };
-
-        let (handle, _rx) = Libp2pHandle::new(cfg).expect("real swarm handle should init");
         tokio::time::sleep(Duration::from_millis(50)).await;
         let status = handle.status().expect("status should be available");
 
@@ -4858,7 +4862,6 @@ mod tests {
             Some(true)
         );
 
-        std::env::remove_var("PULSEDAG_P2P_PEER_STATE_PATH");
         let _ = fs::remove_file(path);
     }
 }
