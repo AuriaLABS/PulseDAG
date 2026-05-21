@@ -1,11 +1,11 @@
-# PulseDAG v2.2.18 private-testnet RC preparation
+# PulseDAG v2.2.19 active hardening / pre-public-testnet preparation
 
 ## Current milestone
-- **v2.2.18 private-testnet RC preparation / pending evidence**.
+- **v2.2.19 active hardening / pre-public-testnet preparation / pending evidence**.
 
 ## Execution gate
-- v2.2.18 execution evidence is allowed only when version files prove `v2.2.18` / `2.2.18`.
-- v2.2.18 can proceed only if v2.2.17 is **CLOSED_WITH_EVIDENCE** or **WAIVED_WITH_REASON**.
+- v2.2.19 execution evidence is allowed only when version files prove `v2.2.19` / `2.2.19`.
+- v2.2.19 can proceed only if v2.2.18 evidence is recorded and v2.2.17 is **CLOSED_WITH_EVIDENCE** or **WAIVED_WITH_REASON**.
 
 ## Guardrails
 - No consensus changes.
