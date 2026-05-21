@@ -1,39 +1,46 @@
-# PulseDAG v2.2.18 release notes (private-testnet RC preparation)
+# PulseDAG v2.2.18 release notes (private RC closeout)
 
 ## Scope statement
-v2.2.18 is a **private-testnet readiness rehearsal preparation** milestone for a 5-node / 4-miner environment.
+v2.2.18 is a **private RC closeout and rehearsal verification** milestone.
 
 ## Status gate
 - **Current status: PLANNED / BLOCKED BY v2.2.17 EVIDENCE**.
-- v2.2.18 execution and closeout begin only after v2.2.17 required evidence is complete.
+- v2.2.18 closeout cannot move to PASS until v2.2.17 evidence is closed or explicitly waived.
 
-## Planned rehearsal themes
-- 5-node / 4-miner rehearsal target.
-- Local Windows/WSL rehearsal path.
-- Ubuntu/VPS rehearsal path.
-- Topology manifest for deterministic role assignment.
-- Deterministic startup/shutdown procedure.
-- Sync convergence measurement.
-- Miner acceptance/rejection telemetry.
-- Snapshot/restore drill.
-- Perturbation drills.
-- RPC security verification reused from v2.2.17 controls.
-- Evidence bundle and go/no-go report template.
+## Required closeout checklist coverage
+Closeout requires evidence-backed PASS/PENDING/WAIVED tracking for:
+- v2.2.17 evidence closed or waived.
+- VERSION/Cargo/README/matrix alignment.
+- `cargo fmt --check` PASS.
+- `cargo test --workspace` PASS.
+- `cargo build --workspace --release` PASS.
+- local 3-node + 1-miner rehearsal PASS.
+- RC 5-node + 4-miner rehearsal attempted or pending with owner/date.
+- sync convergence evidence.
+- miner telemetry evidence.
+- perturbation drills evidence.
+- snapshot/restore drill evidence.
+- RPC security smoke evidence.
+- release artifact dry run evidence.
+- go/no-go report generation.
+- known limitations documentation.
+- risk register update.
 
-## Non-goals and explicit exclusions
-- v2.2.18 does **not** change consensus rules.
-- v2.2.18 does **not** change PoW semantics.
-- v2.2.18 does **not** add smart contracts.
-- v2.2.18 does **not** add pool logic.
-- v2.2.18 keeps miner external and standalone.
-- GPU remains optional and must not block v2.2.18.
+## Guardrails and non-goals
+- No consensus changes.
+- No PoW semantic changes.
+- No smart contracts.
+- No pool logic.
+- Miner remains external.
+- GPU is optional only.
+- No v2.3.0 readiness claim.
+- No v3.0 readiness claim.
 
-## Milestone positioning
-- v2.2.18 prepares a private-testnet RC rehearsal package.
-- v2.2.18 is **not** a v2.3.0 readiness claim.
+## Evidence rule
+Do not mark PASS without explicit evidence path.
 
-## Closeout condition
-This milestone is considered closed only with explicit evidence coverage per:
+## Closeout references
 - `docs/CLOSING_CHECKLIST_V2_2_18.md`
 - `docs/RELEASE_EVIDENCE.md`
-- `docs/V2_2_18_PRIVATE_TESTNET_RC_PLAN.md`
+- `docs/VERSION_MATRIX.md`
+- `README.md`
