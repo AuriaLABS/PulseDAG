@@ -41,6 +41,8 @@ required=(
   "docs/VERSION_MATRIX.md"
   "docs/KNOWN_LIMITATIONS_V2_2_19.md"
   "configs/private-testnet/v2_2_19/topology.local-3n-1m.json"
+  "configs/private-testnet/v2_2_19/topology.rc-5n-4m.json"
+  "scripts/v2_2_19_private_5n_4m_rehearsal.sh"
 )
 for f in "${required[@]}"; do
   check "exists: $f" test -f "$f"
