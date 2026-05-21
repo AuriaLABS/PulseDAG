@@ -1,5 +1,6 @@
 use std::{
     path::PathBuf,
+    sync::atomic::{AtomicU64, Ordering},
     sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -23,6 +24,8 @@ use pulsedag_storage::Storage;
 use serde_json::Value;
 use tokio::sync::RwLock;
 use tower::ServiceExt;
+
+static TEMP_DB_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone)]
 struct TestState {
@@ -54,7 +57,8 @@ fn temp_db_path(name: &str) -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    std::env::temp_dir().join(format!("pulsedag-{name}-{unique}"))
+    let counter = TEMP_DB_COUNTER.fetch_add(1, Ordering::Relaxed);
+    std::env::temp_dir().join(format!("pulsedag-{name}-{unique}-{counter}"))
 }
 
 fn test_state() -> TestState {
