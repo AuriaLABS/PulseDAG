@@ -1,16 +1,16 @@
-name: v2.2.18 preflight
+name: v2.2.19 preflight
 on: [push, pull_request]
 jobs:
   preflight:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: bash -n scripts/v2_2_18_preflight_check.sh
-      - run: bash -n scripts/v2_2_18_local_3n_1m_smoke.sh
-      - run: bash -n scripts/v2_2_18_collect_local_evidence.sh
-      - run: bash scripts/v2_2_18_preflight_check.sh
+      - run: bash -n scripts/v2_2_19_preflight_check.sh
+      - run: bash -n scripts/v2_2_19_local_3n_1m_smoke.sh
+      - run: bash -n scripts/v2_2_19_collect_local_evidence.sh
+      - run: bash scripts/v2_2_19_preflight_check.sh
       - run: |
-          if command -v jq >/dev/null 2>&1; then jq empty configs/private-testnet/v2_2_18/*.json; else echo "jq missing, skip"; fi
+          if command -v jq >/dev/null 2>&1; then jq empty configs/private-testnet/v2_2_19/*.json; else echo "jq missing, skip"; fi
       - run: cargo fmt --check
       - run: cargo test --workspace
       - run: cargo build --workspace --release
