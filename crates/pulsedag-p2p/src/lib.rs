@@ -4046,9 +4046,21 @@ mod tests {
         );
     }
 
+
+    fn unique_peer_state_path(prefix: &str) -> PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        std::env::temp_dir().join(format!(
+            "pulsedag-peer-state-{prefix}-{}-{nanos}.json",
+            std::process::id()
+        ))
+    }
+
     #[tokio::test]
     async fn restart_rehydrates_peer_health_without_claiming_real_connectivity() {
-        let path = std::env::temp_dir().join(format!("pulsedag-peer-state-{}.json", now_unix()));
+        let path = unique_peer_state_path("rehydrate");
         std::env::set_var("PULSEDAG_P2P_PEER_STATE_PATH", &path);
 
         let now = now_unix();
@@ -4101,8 +4113,7 @@ mod tests {
 
     #[tokio::test]
     async fn corrupt_peer_metadata_fails_safe_on_startup() {
-        let path =
-            std::env::temp_dir().join(format!("pulsedag-peer-state-corrupt-{}.json", now_unix()));
+        let path = unique_peer_state_path("corrupt");
         std::env::set_var("PULSEDAG_P2P_PEER_STATE_PATH", &path);
         fs::write(&path, b"{ definitely-not-json").expect("write corrupt peer snapshot");
 
@@ -4804,10 +4815,7 @@ mod tests {
 
     #[tokio::test]
     async fn real_runtime_clears_persisted_connected_flags_on_startup() {
-        let path = std::env::temp_dir().join(format!(
-            "pulsedag-peer-state-real-runtime-{}.json",
-            now_unix()
-        ));
+        let path = unique_peer_state_path("real-runtime");
         std::env::set_var("PULSEDAG_P2P_PEER_STATE_PATH", &path);
 
         let persisted = HashMap::from([(
