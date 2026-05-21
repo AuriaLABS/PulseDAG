@@ -9,6 +9,7 @@
 | Current milestone | v2.2.18 private RC closing checklist |
 | Current state | **PLANNED / BLOCKED BY v2.2.17 EVIDENCE** |
 | Readiness claims | No v2.3.0 readiness claim; no v3.0 readiness claim |
+| Handoff artifact | `docs/V2_3_0_READINESS_DECISION_INPUTS.md` (decision-review input only) |
 
 ## v2.2.x progression status
 

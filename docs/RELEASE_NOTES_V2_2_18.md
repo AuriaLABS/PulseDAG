@@ -1,4 +1,4 @@
-# PulseDAG v2.2.18 release notes (private RC closeout)
+# PulseDAG v2.2.18 release notes (private RC closeout / v2.3.0 decision handoff)
 
 ## Scope statement
 v2.2.18 is a **private RC closeout and rehearsal verification** milestone.
@@ -6,6 +6,7 @@ v2.2.18 is a **private RC closeout and rehearsal verification** milestone.
 ## Status gate
 - **Current status: PLANNED / BLOCKED BY v2.2.17 EVIDENCE**.
 - v2.2.18 closeout cannot move to PASS until v2.2.17 evidence is closed or explicitly waived.
+- v2.2.18 may recommend a **v2.3.0 decision review**, but must not declare v2.3.0 readiness unless decision evidence is complete.
 
 ## Required closeout checklist coverage
 Closeout requires evidence-backed PASS/PENDING/WAIVED tracking for:
@@ -35,6 +36,11 @@ Closeout requires evidence-backed PASS/PENDING/WAIVED tracking for:
 - GPU is optional only.
 - No v2.3.0 readiness claim.
 - No v3.0 readiness claim.
+
+## v2.3.0 decision handoff
+- Decision-input handoff document: `docs/V2_3_0_READINESS_DECISION_INPUTS.md`.
+- Any missing evidence remains **PENDING**.
+- Any unresolved Sev-1 consensus/sync issue forces **NO-GO**.
 
 ## Evidence rule
 Do not mark PASS without explicit evidence path.
