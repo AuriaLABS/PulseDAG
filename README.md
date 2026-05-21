@@ -1,37 +1,25 @@
-# PulseDAG v2.2.18 RC preparation status
+# PulseDAG v2.2.18 private-testnet RC preparation
 
 ## Current milestone
-- **v2.2.18 private RC closing checklist** (**PLANNED / BLOCKED BY v2.2.17 EVIDENCE**).
+- **v2.2.18 private-testnet RC preparation / pending evidence**.
 
 ## Execution gate
-- v2.2.18 closeout starts only after v2.2.17 required evidence is closed or explicitly waived.
+- v2.2.18 execution evidence is allowed only when version files prove `v2.2.18` / `2.2.18`.
+- v2.2.18 can proceed only if v2.2.17 is **CLOSED_WITH_EVIDENCE** or **WAIVED_WITH_REASON**.
 
-## Mandatory closeout evidence for v2.2.18
-- VERSION/Cargo/README/version matrix alignment.
-- `cargo fmt --check` PASS.
-- `cargo test --workspace` PASS.
-- `cargo build --workspace --release` PASS.
-- Local 3-node + 1-miner rehearsal PASS.
-- RC 5-node + 4-miner rehearsal attempted, or marked pending with owner/date.
-- Sync convergence, miner telemetry, perturbation drills, snapshot/restore, and RPC security smoke evidence.
-- Release artifact dry run evidence.
-- Go/no-go report generated.
-- Known limitations documented.
-- Risk register updated.
-
-## Guardrails reaffirmed for v2.2.18
+## Guardrails
 - No consensus changes.
 - No PoW semantic changes.
 - No smart contracts.
 - No pool logic.
 - Miner remains external.
-- GPU optional only.
+- GPU optional/scaffold only unless canonical kernel evidence exists.
 - No v2.3.0 readiness claim.
 - No v3.0 readiness claim.
 
-## Closeout references
-- `docs/RELEASE_NOTES_V2_2_18.md`
+## References
+- `docs/V2_2_18_PREFLIGHT.md`
 - `docs/CLOSING_CHECKLIST_V2_2_18.md`
-- `docs/VERSION_MATRIX.md`
+- `docs/RELEASE_NOTES_V2_2_18.md`
 - `docs/RELEASE_EVIDENCE.md`
-- `docs/V2_3_0_READINESS_DECISION_INPUTS.md` (decision review input; not a readiness declaration)
+- `docs/VERSION_MATRIX.md`
