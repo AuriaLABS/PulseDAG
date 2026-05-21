@@ -110,8 +110,9 @@ pub async fn get_readiness<S: RpcStateLike>(
     let runtime = runtime_handle.read().await;
     let p2p_status = state.p2p().and_then(|p| p.status().ok());
     let p2p_mode = std::env::var("PULSEDAG_P2P_MODE").unwrap_or_else(|_| "unknown".to_string());
-    let rpc_bind =
-        std::env::var("PULSEDAG_RPC_BIND").unwrap_or_else(|_| "127.0.0.1:8080".to_string());
+    let rpc_bind = std::env::var("PULSEDAG_EFFECTIVE_RPC_BIND")
+        .or_else(|_| std::env::var("PULSEDAG_RPC_BIND"))
+        .unwrap_or_else(|_| "127.0.0.1:8080".to_string());
     let api_profile =
         std::env::var("PULSEDAG_API_PROFILE").unwrap_or_else(|_| "local_dev".to_string());
     let admin_enabled =

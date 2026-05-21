@@ -37,7 +37,23 @@ for ep in /metrics /p2p/status /sync/status; do
 done
 
 secret_pattern='(PRIVATE KEY|BEGIN [A-Z ]*PRIVATE KEY|mnemonic|seed phrase|secret_key|api[_-]?key|token)'
-rg -i -n "$secret_pattern" "${OUT_DIR}" > "${OUT_DIR}/secret_scan_hits.txt" || true
+scanner=""
+if command -v rg >/dev/null 2>&1; then
+  scanner="rg"
+  rg -i -n "$secret_pattern" "${OUT_DIR}" > "${OUT_DIR}/secret_scan_hits.txt" || true
+elif command -v grep >/dev/null 2>&1; then
+  scanner="grep fallback"
+  grep -R -E -i -n "$secret_pattern" "${OUT_DIR}" > "${OUT_DIR}/secret_scan_hits.txt" || true
+else
+  echo "FAIL: neither rg nor grep available for secret scanning" >&2
+  exit 1
+fi
+
+if [[ -s "${OUT_DIR}/secret_scan_hits.txt" ]]; then
+  scan_result="FAIL"
+else
+  scan_result="PASS"
+fi
 
 cat > "${OUT_DIR}/summary.md" <<SUM
 # v2.2.17 RPC security smoke summary
@@ -48,6 +64,10 @@ cat > "${OUT_DIR}/summary.md" <<SUM
 - checked admin defaults: /admin/runtime /runtime /admin/diagnostics /diagnostics
 - checked protected endpoints: /metrics /p2p/status /sync/status
 - note: auth tokens are never printed or persisted by this script.
+- secret_scanner: ${scanner}
+- secret_scan: ${scan_result}
 SUM
 
+echo "RPC security smoke: ${scan_result}"
 echo "Smoke artifacts: ${OUT_DIR}"
+[[ "${scan_result}" == "PASS" ]] || exit 1

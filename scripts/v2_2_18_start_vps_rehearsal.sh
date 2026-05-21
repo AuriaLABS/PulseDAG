@@ -91,14 +91,16 @@ for ((m=0; m<MINER_COUNT; m++)); do
   miner_name="miner-$((m+1))"
   target_rpc_port=$((RPC_BASE_PORT + (m % NODE_COUNT)))
   log_file="${LOG_DIR}/${miner_name}.log"
+  miner_address="${RUN_ID}-${miner_name}"
 
   nohup target/debug/pulsedag-miner \
     --node "http://127.0.0.1:${target_rpc_port}" \
+    --miner-address "${miner_address}" \
     > "${log_file}" 2>&1 &
 
   pid=$!
   echo "${pid} ${miner_name} ${target_rpc_port}" >> "${RUN_DIR}/v2_2_18_vps_miners.pid"
-  echo "Started ${miner_name} pid=${pid} target_rpc=http://127.0.0.1:${target_rpc_port}"
+  echo "Started ${miner_name} pid=${pid} target_rpc=http://127.0.0.1:${target_rpc_port} miner_address=${miner_address}"
 done
 
 cat > "${ART_DIR}/summary.md" <<SUM

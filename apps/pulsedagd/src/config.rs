@@ -52,6 +52,15 @@ impl ApiExposureProfile {
             other => bail!("invalid PULSEDAG_API_PROFILE value '{other}'. Supported values: local_dev, private_operator, public_safe, disabled_admin"),
         }
     }
+
+    pub fn as_env_value(self) -> &'static str {
+        match self {
+            Self::LocalDev => "local_dev",
+            Self::PrivateOperator => "private_operator",
+            Self::PublicSafe => "public_safe",
+            Self::DisabledAdmin => "disabled_admin",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
