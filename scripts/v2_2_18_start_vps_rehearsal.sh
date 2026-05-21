@@ -2,10 +2,36 @@
 set -euo pipefail
 
 RUN_ID="${RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)}"
-NODE_SHAPE="${NODE_SHAPE:-3}"
-MINER_COUNT="${MINER_COUNT:-1}"
+REHEARSAL_MODE="${REHEARSAL_MODE:-local}"
+NODE_SHAPE="${NODE_SHAPE:-}"
+MINER_COUNT="${MINER_COUNT:-}"
 P2P_BASE_PORT="${P2P_BASE_PORT:-30333}"
 RPC_BASE_PORT="${RPC_BASE_PORT:-18080}"
+
+
+case "${REHEARSAL_MODE}" in
+  smoke)
+    : "${NODE_SHAPE:=3}"
+    : "${MINER_COUNT:=1}"
+    ;;
+  local)
+    : "${NODE_SHAPE:=3}"
+    : "${MINER_COUNT:=1}"
+    ;;
+  staging)
+    : "${NODE_SHAPE:=5}"
+    : "${MINER_COUNT:=2}"
+    ;;
+  rc-full)
+    : "${NODE_SHAPE:=5}"
+    : "${MINER_COUNT:=4}"
+    ;;
+  *)
+    echo "REHEARSAL_MODE must be one of: smoke, local, staging, rc-full"
+    exit 1
+    ;;
+esac
+
 
 if [[ "${NODE_SHAPE}" != "3" && "${NODE_SHAPE}" != "5" ]]; then
   echo "NODE_SHAPE must be 3 or 5"
@@ -34,6 +60,7 @@ cargo metadata --format-version 1 --no-deps > "${ART_DIR}/meta/cargo_metadata.js
 : > "${RUN_DIR}/v2_2_18_vps_miners.pid"
 
 echo "run_id=${RUN_ID}" > "${RUN_DIR}/v2_2_18_vps_rehearsal.env"
+echo "rehearsal_mode=${REHEARSAL_MODE}" >> "${RUN_DIR}/v2_2_18_vps_rehearsal.env"
 echo "node_shape=${NODE_SHAPE}" >> "${RUN_DIR}/v2_2_18_vps_rehearsal.env"
 echo "node_count=${NODE_COUNT}" >> "${RUN_DIR}/v2_2_18_vps_rehearsal.env"
 echo "artifact_dir=${ART_DIR}" >> "${RUN_DIR}/v2_2_18_vps_rehearsal.env"
@@ -77,6 +104,7 @@ done
 cat > "${ART_DIR}/summary.md" <<SUM
 # Ubuntu/VPS rehearsal start summary (v2.2.18)
 - run_id: ${RUN_ID}
+- rehearsal_mode: ${REHEARSAL_MODE}
 - node_shape: ${NODE_SHAPE}
 - node_count: ${NODE_COUNT}
 - miner_count: ${MINER_COUNT}
