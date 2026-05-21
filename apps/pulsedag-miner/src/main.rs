@@ -314,6 +314,10 @@ where
     let mut args = args.into_iter().map(Into::into);
     while let Some(arg) = args.next() {
         match arg.as_str() {
+            "--version" | "-V" => {
+                println!("{} {}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
+                std::process::exit(0);
+            }
             "--node" => {
                 node = args
                     .next()
@@ -374,7 +378,10 @@ where
                         .context("invalid --gpu-device")?,
                 )
             }
-            "--help" | "-h" => return Err(anyhow!(usage())),
+            "--help" | "-h" => {
+                println!("{}", usage());
+                std::process::exit(0);
+            }
             _ => {}
         }
     }
