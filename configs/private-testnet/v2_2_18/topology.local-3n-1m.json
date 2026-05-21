@@ -1,0 +1,79 @@
+{
+  "manifest_version": "v2.2.18",
+  "run_id": "ptn-v2_2_18-local-3n-1m",
+  "chain_id": "private-testnet-v2-2-18",
+  "expected_duration": "90m",
+  "evidence_directory": "./artifacts/private-testnet/v2_2_18/local-3n-1m",
+  "nodes": [
+    {
+      "id": "node-1",
+      "role": "bootstrap",
+      "rpc": {
+        "bind": "127.0.0.1",
+        "port": 18545,
+        "public": false
+      },
+      "p2p": {
+        "bind": "0.0.0.0",
+        "port": 31303
+      },
+      "bootstrap_peers": [],
+      "data_directory": "./data/private-testnet/v2_2_18/local/node-1"
+    },
+    {
+      "id": "node-2",
+      "role": "full",
+      "rpc": {
+        "bind": "127.0.0.1",
+        "port": 18546,
+        "public": false
+      },
+      "p2p": {
+        "bind": "0.0.0.0",
+        "port": 31304
+      },
+      "bootstrap_peers": [
+        "node-1@127.0.0.1:31303"
+      ],
+      "data_directory": "./data/private-testnet/v2_2_18/local/node-2"
+    },
+    {
+      "id": "node-3",
+      "role": "full",
+      "rpc": {
+        "bind": "127.0.0.1",
+        "port": 18547,
+        "public": false
+      },
+      "p2p": {
+        "bind": "0.0.0.0",
+        "port": 31305
+      },
+      "bootstrap_peers": [
+        "node-1@127.0.0.1:31303"
+      ],
+      "data_directory": "./data/private-testnet/v2_2_18/local/node-3"
+    }
+  ],
+  "miners": [
+    {
+      "id": "miner-local-1",
+      "target_node": "node-1",
+      "backend": "cpu"
+    }
+  ],
+  "perturbation_schedule": [
+    {
+      "at": "PT20M",
+      "action": "restart-node",
+      "target": "node-2",
+      "duration": "PT20S"
+    },
+    {
+      "at": "PT45M",
+      "action": "disconnect-peer",
+      "target": "node-3",
+      "duration": "PT60S"
+    }
+  ]
+}
