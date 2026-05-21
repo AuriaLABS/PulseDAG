@@ -8,6 +8,7 @@ MINER_BIN="${PULSEDAG_MINER_BIN:-$ROOT_DIR/target/debug/pulsedag-miner}"
 STATE_DIR="${SUPERVISOR_STATE_DIR:-$ROOT_DIR/.supervisor-v2_2_18}"
 HEALTH_INTERVAL_SECS="${SUPERVISOR_HEALTH_INTERVAL_SECS:-10}"
 HEALTH_TIMEOUT_SECS="${SUPERVISOR_HEALTH_TIMEOUT_SECS:-5}"
+REHEARSAL_MODE="${REHEARSAL_MODE:-unspecified}"
 
 RUN_ID=""
 EVIDENCE_DIR=""
@@ -39,7 +40,16 @@ load_manifest(){
   MINER_LOG_DIR="$EVIDENCE_DIR/logs/miners"
 }
 
-ensure_layout(){ mkdir -p "$EVIDENCE_DIR" "$SNAPSHOT_DIR" "$NODE_PID_DIR" "$MINER_PID_DIR" "$NODE_LOG_DIR" "$MINER_LOG_DIR"; [[ -f "$TIMELINE_FILE" ]] || echo "# Supervisor Timeline ($RUN_ID)" > "$TIMELINE_FILE"; }
+ensure_layout(){
+  mkdir -p "$EVIDENCE_DIR" "$SNAPSHOT_DIR" "$NODE_PID_DIR" "$MINER_PID_DIR" "$NODE_LOG_DIR" "$MINER_LOG_DIR"
+  if [[ ! -f "$TIMELINE_FILE" ]]; then
+    {
+      echo "# Supervisor Timeline ($RUN_ID)"
+      echo
+      echo "- rehearsal_mode: ${REHEARSAL_MODE}"
+    } > "$TIMELINE_FILE"
+  fi
+}
 
 log_event(){
   local event="$1" subject="$2" details="${3:-}"
@@ -58,6 +68,7 @@ capture_process_snapshot(){
   {
     echo "snapshot_utc=$ts"
     echo "tag=$tag"
+    echo "rehearsal_mode=$REHEARSAL_MODE"
     ps -eo pid,ppid,etime,stat,comm,args
   } > "$file"
   log_event "evidence_collected" "process_table" "snapshot=$file"
