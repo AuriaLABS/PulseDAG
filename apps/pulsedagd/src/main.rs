@@ -163,7 +163,7 @@ async fn main() -> Result<()> {
     // even when config was provided by profile files or CLI flags.
     std::env::set_var("PULSEDAG_EFFECTIVE_RPC_BIND", cfg.rpc_bind.clone());
     std::env::set_var("PULSEDAG_RPC_BIND", cfg.rpc_bind.clone());
-    std::env::set_var("PULSEDAG_API_PROFILE", cfg.api_profile.to_string());
+    std::env::set_var("PULSEDAG_API_PROFILE", cfg.api_profile.as_env_value());
 
     let reconcile_result = reconcile_mempool(&mut chain_state);
     if !reconcile_result.removed_txids.is_empty() {
