@@ -1,0 +1,128 @@
+name: v2.2.18 Private RC Verification Gate
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/v2_2_18_private_rc.yml'
+      - 'Cargo.toml'
+      - 'README.md'
+      - 'VERSION'
+      - 'docs/**'
+      - 'scripts/**'
+      - 'configs/private-testnet/v2_2_18/**'
+      - 'crates/**'
+      - 'apps/**'
+  workflow_dispatch:
+
+jobs:
+  verify-v2-2-18-private-rc:
+    runs-on: ubuntu-latest
+    env:
+      CARGO_TERM_COLOR: always
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: cargo fmt --check
+        run: cargo fmt --all -- --check
+
+      - name: cargo test --workspace
+        run: cargo test --workspace
+
+      - name: cargo build --workspace --release
+        run: cargo build --workspace --release
+
+      - name: bash -n scripts/v2_2_18_*.sh
+        run: |
+          set -euo pipefail
+          for f in scripts/v2_2_18_*.sh; do
+            [ -e "$f" ] || continue
+            bash -n "$f"
+          done
+
+      - name: validate topology JSON files
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          files = sorted(Path('configs/private-testnet/v2_2_18').glob('topology*.json'))
+          if not files:
+              raise SystemExit('no topology JSON files found for v2.2.18')
+
+          for path in files:
+              with path.open('r', encoding='utf-8') as fh:
+                  json.load(fh)
+
+          print(f'validated {len(files)} topology JSON files')
+          PY
+
+      - name: verify required v2.2.18 docs exist
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          required = [
+              Path('docs/V2_2_18_PRIVATE_TESTNET_RC_PLAN.md'),
+              Path('docs/CLOSING_CHECKLIST_V2_2_18.md'),
+              Path('docs/RELEASE_NOTES_V2_2_18.md'),
+              Path('docs/GO_NO_GO_V2_2_18.md'),
+              Path('docs/TOPOLOGY_MANIFEST_V2_2_18.md'),
+          ]
+
+          missing = [str(p) for p in required if not p.is_file()]
+          if missing:
+              raise SystemExit('missing required v2.2.18 docs:\n' + '\n'.join(missing))
+
+          print('required v2.2.18 docs are present')
+          PY
+
+      - name: verify README/VERSION/VERSION_MATRIX consistency
+        run: |
+          set -euo pipefail
+          version_file="$(tr -d '[:space:]' < VERSION)"
+          cargo_version="$(sed -n 's/^version = "\([0-9]\+\.[0-9]\+\.[0-9]\+\)"/\1/p' Cargo.toml | head -n1)"
+          expected_tag="v${cargo_version}"
+
+          if [ "${version_file}" != "${expected_tag}" ]; then
+            echo "VERSION/Cargo mismatch: VERSION=${version_file}, Cargo=${cargo_version}" >&2
+            exit 1
+          fi
+
+          if ! rg -q "${version_file}|${cargo_version}" README.md; then
+            echo "README missing current version reference" >&2
+            exit 1
+          fi
+
+          if ! rg -q "${version_file}|${cargo_version}" docs/VERSION_MATRIX.md; then
+            echo "VERSION_MATRIX missing current version reference" >&2
+            exit 1
+          fi
+
+          echo "README/VERSION/VERSION_MATRIX consistency checks passed"
+
+      - name: verify no v2.3.0 readiness claim
+        run: |
+          set -euo pipefail
+          if rg -n -i "v?2\.3\.0.{0,40}(ready|readiness)|\bready\b.{0,40}v?2\.3\.0" docs README.md; then
+            echo "Found prohibited v2.3.0 readiness claim" >&2
+            exit 1
+          fi
+          echo "No v2.3.0 readiness claim found"
+
+      - name: verify no v3.0 readiness claim
+        run: |
+          set -euo pipefail
+          if rg -n -i "v?3\.0(\.0)?.{0,40}(ready|readiness)|\bready\b.{0,40}v?3\.0(\.0)?" docs README.md; then
+            echo "Found prohibited v3.0 readiness claim" >&2
+            exit 1
+          fi
+          echo "No v3.0 readiness claim found"
