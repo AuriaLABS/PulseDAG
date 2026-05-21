@@ -55,8 +55,8 @@ This final pass resolves the PowerShell `PENDING_REVIEW` carry-over from pass 2.
 - `bash scripts/list_cleanup_candidates.sh` -> PASS
 - `bash scripts/validate_repo_cleanup.sh --strict` -> PASS (after final audit creation)
 - `cargo fmt --check` -> PASS
-- `cargo test --workspace` -> RUN STARTED (long compile in this environment; no final exit captured yet)
-- `cargo build --workspace --release` -> RUN STARTED (long compile in this environment; no final exit captured yet)
+- `cargo test --workspace` -> PENDING (run exceeded practical CI-agent time window after long dependency compile; no final exit captured)
+- `cargo build --workspace --release` -> PENDING (run exceeded practical CI-agent time window after long dependency compile; no final exit captured)
 
 ## Final strict status
 - Strict cleanup validation passes without `--allow-pending-review`: **YES**.
