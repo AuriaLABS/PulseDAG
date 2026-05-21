@@ -72,6 +72,8 @@ sample(){
 miner_templates=0
 miner_submits=0
 divergence=0
+tip_divergence=0
+readiness_phase="no_peers"
 
 end=$(( $(date +%s) + DURATION_SECS ))
 while (( $(date +%s) < end )); do
@@ -83,7 +85,10 @@ while (( $(date +%s) < end )); do
   ha=$(jq -r '.data.best_height // 0' "$OUT_DIR/endpoints/a-status.json" 2>/dev/null || echo 0)
   hb=$(jq -r '.data.best_height // 0' "$OUT_DIR/endpoints/b-status.json" 2>/dev/null || echo 0)
   hc=$(jq -r '.data.best_height // 0' "$OUT_DIR/endpoints/c-status.json" 2>/dev/null || echo 0)
-  echo "$(date -u +%FT%TZ),$ha,$hb,$hc" >> "$OUT_DIR/height-samples.csv"
+  ta=$(jq -r '.data.selected_tip // ""' "$OUT_DIR/endpoints/a-status.json" 2>/dev/null || echo "")
+  tb=$(jq -r '.data.selected_tip // ""' "$OUT_DIR/endpoints/b-status.json" 2>/dev/null || echo "")
+  tc=$(jq -r '.data.selected_tip // ""' "$OUT_DIR/endpoints/c-status.json" 2>/dev/null || echo "")
+  echo "$(date -u +%FT%TZ),$ha,$hb,$hc,$ta,$tb,$tc" >> "$OUT_DIR/height-samples.csv"
 
   if (( (ha == 0 || hb == 0 || hc == 0) && (ha > 0 || hb > 0 || hc > 0) )); then
     echo "FAIL node divergence: at least one node remains at height 0 while another advanced"
@@ -91,19 +96,33 @@ while (( $(date +%s) < end )); do
     break
   fi
 
+  if [[ "$ta" != "$tb" || "$tb" != "$tc" ]]; then tip_divergence=1; fi
+
+  pa=$(jq -r ".data.peer_count // .data.connected_peer_count // 0" "$OUT_DIR/endpoints/a-p2p_status.json" 2>/dev/null || echo 0)
+  pb=$(jq -r ".data.peer_count // .data.connected_peer_count // 0" "$OUT_DIR/endpoints/b-p2p_status.json" 2>/dev/null || echo 0)
+  pc=$(jq -r ".data.peer_count // .data.connected_peer_count // 0" "$OUT_DIR/endpoints/c-p2p_status.json" 2>/dev/null || echo 0)
+  inbound_blocks=$(( $(rg -c "peer_block_received|peer_block_accepted" "$OUT_DIR/logs/b.log" || echo 0) + $(rg -c "peer_block_received|peer_block_accepted" "$OUT_DIR/logs/c.log" || echo 0) ))
+  if (( pa + pb + pc == 0 )); then readiness_phase="no_peers";
+  elif (( inbound_blocks == 0 )); then readiness_phase="peers_connected_no_propagation";
+  elif (( ha>0 && hb>0 && hc>0 )) && [[ "$ta" == "$tb" && "$tb" == "$tc" ]]; then readiness_phase="converged";
+  else readiness_phase="propagation_active"; fi
+
   if rg -qi "template" "$OUT_DIR/logs/miner.log"; then miner_templates=1; fi
   if rg -qi "submit|accepted|reject" "$OUT_DIR/logs/miner.log"; then miner_submits=1; fi
   sleep 10
 done
 
 (( divergence == 0 )) || exit 1
+(( tip_divergence == 0 )) || { echo "FAIL selected tips diverged"; exit 1; }
+rg -q "peer_block_received|peer_block_accepted" "$OUT_DIR/logs/b.log" || { echo "FAIL node_b missing inbound p2p block activity"; exit 1; }
+rg -q "peer_block_received|peer_block_accepted" "$OUT_DIR/logs/c.log" || { echo "FAIL node_c missing inbound p2p block activity"; exit 1; }
 (( miner_templates == 1 )) || { echo "FAIL miner never receives templates"; exit 1; }
 (( miner_submits == 1 )) || { echo "FAIL miner never submits"; exit 1; }
 
-jq -n --arg run_id "$RUN_ID" --argjson heights "$(tail -n1 "$OUT_DIR/height-samples.csv" | awk -F, '{printf "{\"a\":%s,\"b\":%s,\"c\":%s}",$2,$3,$4}')" '{run_id:$run_id, final_heights:$heights}' > "$OUT_DIR/node-height-summary.json"
+jq -n --arg run_id "$RUN_ID" --arg phase "$readiness_phase" --argjson heights "$(tail -n1 "$OUT_DIR/height-samples.csv" | awk -F, '{printf "{\"a\":%s,\"b\":%s,\"c\":%s}",$2,$3,$4}')" '{run_id:$run_id, final_heights:$heights, readiness_phase:$phase}' > "$OUT_DIR/node-height-summary.json"
 jq -n --arg run_id "$RUN_ID" --arg templates "$miner_templates" --arg submits "$miner_submits" '{run_id:$run_id, templates_seen:($templates=="1"), submits_seen:($submits=="1")}' > "$OUT_DIR/miner-submit-summary.json"
 for n in a b c; do
-  jq -n --arg node "$n" --slurpfile d "$OUT_DIR/endpoints/${n}-readiness.json" '{node:$node, captured:(($d|length)>0)}' >> "$OUT_DIR/readiness-summary.json"
+  jq -n --arg node "$n" --arg phase "$readiness_phase" --slurpfile d "$OUT_DIR/endpoints/${n}-readiness.json" '{node:$node, captured:(($d|length)>0), readiness_phase:$phase}' >> "$OUT_DIR/readiness-summary.json"
   jq -n --arg node "$n" --slurpfile d "$OUT_DIR/endpoints/${n}-release.json" '{node:$node, captured:(($d|length)>0)}' >> "$OUT_DIR/release-summary.json"
 done
 
