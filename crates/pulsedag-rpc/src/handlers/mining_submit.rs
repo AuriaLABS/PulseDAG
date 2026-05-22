@@ -63,6 +63,7 @@ enum ExternalMiningRejectKind {
     StaleTemplate,
     MissingTemplateId,
     UnknownTemplate,
+    SubmitBlockError,
     DuplicateBlock,
     MissingParent,
     InvalidTimestamp,
@@ -725,7 +726,7 @@ pub async fn post_mining_submit<S: RpcStateLike>(
         Err(e) => {
             record_external_mining_rejection(
                 &state,
-                ExternalMiningRejectKind::StorageError,
+                ExternalMiningRejectKind::SubmitBlockError,
                 &e.to_string(),
             )
             .await;
