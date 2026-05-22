@@ -138,3 +138,12 @@ La búsqueda de nonce usa una programación *strided* por worker:
 - conserva comportamiento repetible para smoke/benchmark cuando no hay solución (mismo fallback al último nonce intentado)
 
 El flujo operativo no cambia: **template -> mine -> submit**.
+
+
+## Selección de backend de minería
+
+- `--backend cpu`: fuerza backend CPU (predeterminado y estable para v2.2.19).
+- `--backend gpu`: solicita backend GPU; si no está compilado/disponible falla con error claro y acción sugerida.
+- `--backend auto`: intenta GPU solo cuando está compilado y se inicializa correctamente; en otro caso activa fallback explícito a CPU.
+
+`v2.2.19` no declara minería GPU de producción: GPU permanece como scaffold/opcional hasta que exista kernel canónico verificado con evidencia reproducible.
