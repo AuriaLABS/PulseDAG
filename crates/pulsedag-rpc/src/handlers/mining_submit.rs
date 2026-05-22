@@ -826,7 +826,7 @@ pub async fn post_mining_submit<S: RpcStateLike>(
                 runtime.pulsedag_blocks_rejected_total.saturating_add(1);
             drop(runtime);
             warn!(block_hash = %block_hash, height, outcome = ?outcome, "mining submit rejected");
-            let (rejection_kind, reason_code) = match outcome {
+            let (rejection_kind, reason_code) = match &outcome {
                 pulsedag_core::BlockAcceptanceResult::Duplicate => {
                     (ExternalMiningRejectKind::DuplicateBlock, "duplicate_block")
                 }
