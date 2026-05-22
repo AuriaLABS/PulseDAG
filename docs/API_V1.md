@@ -104,3 +104,33 @@ Snapshot restore is currently documented as an operator runbook workflow rather 
 ## Compatibility guidance
 
 New integrations should use `/api/v1/...`. Existing clients can continue using top-level aliases for public endpoints during the v2.x compatibility window. Operators should migrate scripts from dangerous top-level aliases to `/admin/...` and keep admin routing disabled on public-facing RPC binds unless the endpoint is protected by network controls.
+
+## RPC security profiles (v2.2.19 hardening)
+
+PulseDAG now supports four explicit RPC exposure profiles for public-testnet readiness, without enabling public testnet by default:
+
+- `local_dev`: localhost-oriented development profile.
+- `private_operator`: private/local operator use; admin routes remain disabled unless explicitly enabled.
+- `public_safe`: public-read surface only; admin/operator/dangerous routes are not mounted.
+- `disabled_admin`: full public/private route set except admin routes are always disabled.
+
+### Public exposure warning
+
+Do not expose RPC directly to the public internet without network controls. Even in `public_safe`, place RPC behind firewall and rate controls.
+
+### Firewall examples
+
+- Allow only local subnet operators: `ufw allow from 10.0.0.0/8 to any port 8080 proto tcp`
+- Deny global inbound to RPC: `ufw deny 8080/tcp`
+- Allow loopback-only process binding: set `PULSEDAG_RPC_BIND=127.0.0.1:8080`
+
+### Recommended production profile
+
+Use `PULSEDAG_API_PROFILE=public_safe` for public readers and keep operator/admin flows on separate private infrastructure.
+
+### Public-safe endpoints
+
+Public-safe profile includes read-only explorer/health/status surfaces, for example:
+`/api/v1/health`, `/api/v1/status`, `/api/v1/blocks`, `/api/v1/txs`, `/api/v1/address/:address`, `/api/v1/readiness`, `/api/v1/release`, `/api/v1/policy`.
+
+Admin/operator paths such as `/admin/*`, `/snapshot/create`, `/prune`, `/sync/rebuild`, and `/operator/query-pack` are not available in `public_safe`.

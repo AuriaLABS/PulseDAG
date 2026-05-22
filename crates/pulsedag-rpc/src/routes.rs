@@ -104,7 +104,7 @@ pub fn router<S>() -> Router<S>
 where
     S: RpcStateLike,
 {
-    router_with_profile(ApiExposureProfile::PrivateOperator, true, None, None)
+    router_with_profile(ApiExposureProfile::PrivateOperator, false, None, None)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

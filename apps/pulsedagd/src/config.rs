@@ -142,7 +142,7 @@ impl Config {
                 rpc_request_body_limit_bytes: 1024 * 1024,
                 rpc_rate_limit_requests_per_minute: 0,
                 rpc_rate_limit_per_ip: true,
-                rpc_cors_allowlist: vec!["http://localhost".into(), "http://127.0.0.1".into()],
+                rpc_cors_allowlist: vec![],
                 rpc_cors_unsafe_allow_wildcard_with_admin: false,
             },
             ConfigProfile::Local => Self {
@@ -174,7 +174,7 @@ impl Config {
                 rpc_request_body_limit_bytes: 1024 * 1024,
                 rpc_rate_limit_requests_per_minute: 0,
                 rpc_rate_limit_per_ip: true,
-                rpc_cors_allowlist: vec!["http://localhost".into(), "http://127.0.0.1".into()],
+                rpc_cors_allowlist: vec![],
                 rpc_cors_unsafe_allow_wildcard_with_admin: false,
             },
             ConfigProfile::Private => Self {
@@ -206,7 +206,7 @@ impl Config {
                 rpc_request_body_limit_bytes: 512 * 1024,
                 rpc_rate_limit_requests_per_minute: 120,
                 rpc_rate_limit_per_ip: true,
-                rpc_cors_allowlist: vec!["http://localhost".into(), "http://127.0.0.1".into()],
+                rpc_cors_allowlist: vec![],
                 rpc_cors_unsafe_allow_wildcard_with_admin: false,
             },
             ConfigProfile::Testnet => Self {
@@ -238,7 +238,7 @@ impl Config {
                 rpc_request_body_limit_bytes: 512 * 1024,
                 rpc_rate_limit_requests_per_minute: 120,
                 rpc_rate_limit_per_ip: true,
-                rpc_cors_allowlist: vec!["http://localhost".into(), "http://127.0.0.1".into()],
+                rpc_cors_allowlist: vec![],
                 rpc_cors_unsafe_allow_wildcard_with_admin: false,
             },
             ConfigProfile::RehearsalA => Self {
@@ -270,7 +270,7 @@ impl Config {
                 rpc_request_body_limit_bytes: 1024 * 1024,
                 rpc_rate_limit_requests_per_minute: 0,
                 rpc_rate_limit_per_ip: true,
-                rpc_cors_allowlist: vec!["http://localhost".into(), "http://127.0.0.1".into()],
+                rpc_cors_allowlist: vec![],
                 rpc_cors_unsafe_allow_wildcard_with_admin: false,
             },
             ConfigProfile::RehearsalB => Self {
@@ -302,7 +302,7 @@ impl Config {
                 rpc_request_body_limit_bytes: 1024 * 1024,
                 rpc_rate_limit_requests_per_minute: 0,
                 rpc_rate_limit_per_ip: true,
-                rpc_cors_allowlist: vec!["http://localhost".into(), "http://127.0.0.1".into()],
+                rpc_cors_allowlist: vec![],
                 rpc_cors_unsafe_allow_wildcard_with_admin: false,
             },
             ConfigProfile::RehearsalC => Self {
@@ -337,7 +337,7 @@ impl Config {
                 rpc_request_body_limit_bytes: 1024 * 1024,
                 rpc_rate_limit_requests_per_minute: 0,
                 rpc_rate_limit_per_ip: true,
-                rpc_cors_allowlist: vec!["http://localhost".into(), "http://127.0.0.1".into()],
+                rpc_cors_allowlist: vec![],
                 rpc_cors_unsafe_allow_wildcard_with_admin: false,
             },
             ConfigProfile::Operator => Self {
@@ -369,7 +369,7 @@ impl Config {
                 rpc_request_body_limit_bytes: 512 * 1024,
                 rpc_rate_limit_requests_per_minute: 120,
                 rpc_rate_limit_per_ip: true,
-                rpc_cors_allowlist: vec!["http://localhost".into(), "http://127.0.0.1".into()],
+                rpc_cors_allowlist: vec![],
                 rpc_cors_unsafe_allow_wildcard_with_admin: false,
             },
         }
@@ -550,8 +550,8 @@ impl Config {
 
     fn validate_cors_policy(&self) -> Result<()> {
         let has_wildcard = self.rpc_cors_allowlist.iter().any(|o| o.trim() == "*");
-        if has_wildcard && self.admin_enabled && !self.rpc_cors_unsafe_allow_wildcard_with_admin {
-            bail!("invalid CORS policy: wildcard origin cannot be used when admin endpoints are enabled unless PULSEDAG_RPC_CORS_UNSAFE_ALLOW_WILDCARD_WITH_ADMIN=true");
+        if has_wildcard {
+            bail!("invalid CORS policy: wildcard origin is not allowed; use an explicit allowlist");
         }
         Ok(())
     }
