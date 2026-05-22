@@ -66,6 +66,7 @@ struct Config {
 enum BackendKind {
     Cpu,
     Gpu,
+    Auto,
 }
 
 impl std::str::FromStr for BackendKind {
@@ -75,8 +76,9 @@ impl std::str::FromStr for BackendKind {
         match value {
             "cpu" => Ok(Self::Cpu),
             "gpu" => Ok(Self::Gpu),
+            "auto" => Ok(Self::Auto),
             _ => Err(anyhow!(
-                "invalid --backend: {value}; expected 'cpu' or 'gpu'"
+                "invalid --backend: {value}; expected 'cpu', 'gpu', or 'auto'"
             )),
         }
     }
@@ -328,6 +330,10 @@ where
         match arg.as_str() {
             "--version" | "-V" => {
                 println!("{} {}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
+                println!(
+                    "backend_default=cpu backends=cpu,gpu,auto gpu_compiled={}",
+                    cfg!(feature = "gpu")
+                );
                 std::process::exit(0);
             }
             "--node" => {
@@ -426,15 +432,37 @@ where
 }
 
 fn usage() -> &'static str {
-    "usage: pulsedag-miner --miner-address <address> [--node http://127.0.0.1:8080] [--backend cpu|gpu] [--gpu-device INDEX] [--max-tries 50000] [--threads N] [--loop] [--sleep-ms 1500] [--refresh-before-expiry-ms 1000] [--worker-id ID] [--no-heartbeat]
+    "usage: pulsedag-miner --miner-address <address> [--node http://127.0.0.1:8080] [--backend cpu|gpu|auto] [--gpu-device INDEX] [--max-tries 50000] [--threads N] [--loop] [--sleep-ms 1500] [--refresh-before-expiry-ms 1000] [--worker-id ID] [--no-heartbeat]
 
-Mining backend defaults to cpu. The gpu backend is optional and requires building pulsedag-miner with the gpu feature. GPU device selection uses --gpu-device <index>, with conservative OpenCL batch/work defaults overrideable via PULSEDAG_MINER_GPU_BATCH_SIZE and PULSEDAG_MINER_GPU_WORK_SIZE. The canonical kHeavyHash OpenCL kernel is not implemented yet, so the gpu backend refuses to mine rather than using a non-canonical hash path."
+Mining backend defaults to cpu. The auto backend prefers GPU only when GPU is compiled and initialization succeeds; otherwise it falls back to CPU. The gpu backend is optional and requires building pulsedag-miner with the gpu feature. GPU device selection uses --gpu-device <index>, with conservative OpenCL batch/work defaults overrideable via PULSEDAG_MINER_GPU_BATCH_SIZE and PULSEDAG_MINER_GPU_WORK_SIZE. The canonical kHeavyHash OpenCL kernel is not implemented yet, so the gpu backend refuses to mine rather than using a non-canonical hash path."
 }
 
 fn mining_backend(cfg: &Config) -> Result<Arc<dyn MiningBackend>> {
     match cfg.backend {
-        BackendKind::Cpu => Ok(Arc::new(CpuMiningBackend)),
-        BackendKind::Gpu => gpu_mining_backend(cfg.gpu_device),
+        BackendKind::Cpu => {
+            println!("miner_backend requested=cpu active=cpu cpu_backend_available=true");
+            Ok(Arc::new(CpuMiningBackend))
+        }
+        BackendKind::Gpu => {
+            println!("miner_backend requested=gpu active=pending cpu_backend_available=true");
+            gpu_mining_backend(cfg.gpu_device)
+        }
+        BackendKind::Auto => {
+            println!("miner_backend requested=auto preference=gpu_if_available cpu_backend_available=true");
+            match gpu_mining_backend(cfg.gpu_device) {
+                Ok(backend) => {
+                    println!("miner_backend requested=auto gpu_backend_available=true cpu_fallback_active=false active=gpu");
+                    Ok(backend)
+                }
+                Err(err) => {
+                    println!(
+                        "miner_backend requested=auto gpu_backend_available=false cpu_fallback_active=true active=cpu reason={}",
+                        err
+                    );
+                    Ok(Arc::new(CpuMiningBackend))
+                }
+            }
+        }
     }
 }
 
@@ -846,6 +874,14 @@ mod tests {
     }
 
     #[test]
+    fn parser_accepts_auto_backend() {
+        let cfg = parse_args_from(["--miner-address", "addr", "--backend", "auto"])
+            .expect("auto backend should parse");
+
+        assert_eq!(cfg.backend, BackendKind::Auto);
+    }
+
+    #[test]
     fn parser_accepts_gpu_device_index() {
         let cfg = parse_args_from([
             "--miner-address",
@@ -865,9 +901,21 @@ mod tests {
     fn usage_mentions_optional_gpu_backend() {
         let text = usage();
 
-        assert!(text.contains("--backend cpu|gpu"));
+        assert!(text.contains("--backend cpu|gpu|auto"));
         assert!(text.contains("gpu backend is optional"));
         assert!(text.contains("gpu feature"));
+    }
+
+    #[cfg(not(feature = "gpu"))]
+    #[test]
+    fn auto_backend_without_gpu_feature_falls_back_to_cpu() {
+        let backend = mining_backend(&Config {
+            backend: BackendKind::Auto,
+            ..telemetry_test_config()
+        })
+        .expect("auto backend should always resolve");
+
+        assert_eq!(backend.name(), "cpu");
     }
 
     #[cfg(not(feature = "gpu"))]
