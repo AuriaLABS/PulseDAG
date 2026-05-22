@@ -1396,7 +1396,9 @@ async fn main() -> Result<()> {
 fn build_cors_layer(cfg: &Config) -> Result<CorsLayer> {
     let any = cfg.rpc_cors_allowlist.iter().any(|o| o.trim() == "*");
     if any {
-        return Ok(CorsLayer::new().allow_origin(AllowOrigin::any()));
+        return Err(anyhow::anyhow!(
+            "invalid CORS policy: wildcard origin is not allowed for RPC; use an explicit allowlist"
+        ));
     }
     let origins = cfg
         .rpc_cors_allowlist
