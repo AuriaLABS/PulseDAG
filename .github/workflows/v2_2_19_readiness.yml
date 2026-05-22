@@ -1,0 +1,97 @@
+name: v2.2.19 public-testnet readiness gate
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'VERSION'
+      - 'scripts/**'
+      - 'configs/private-testnet/v2_2_19/**'
+      - 'apps/**'
+      - 'crates/**'
+  workflow_dispatch:
+
+jobs:
+  shellcheck-bash-syntax:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Bash syntax checks
+        run: |
+          set -euo pipefail
+          bash -n scripts/v2_2_19_preflight_check.sh
+          bash -n scripts/v2_2_19_local_3n_1m_smoke.sh
+          bash -n scripts/v2_2_19_collect_local_evidence.sh
+          bash -n scripts/v2_2_19_rpc_security_smoke.sh
+          bash -n scripts/v2_2_19_snapshot_restore_drill.sh
+
+  json-config:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate v2.2.19 JSON configs
+        run: jq empty configs/private-testnet/v2_2_19/*.json
+
+  rust-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      CARGO_TERM_COLOR: always
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo fmt --check
+        run: cargo fmt --all -- --check
+      - name: cargo test --workspace
+        run: cargo test --workspace
+      - name: cargo build --workspace --release
+        run: cargo build --workspace --release
+      - name: cargo build pulsedag-miner with gpu feature
+        run: cargo build -p pulsedag-miner --features gpu
+
+  cli-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      CARGO_TERM_COLOR: always
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build release binaries for smoke
+        run: cargo build --workspace --release
+      - name: CLI smoke (version/help with timeout)
+        run: |
+          set -euo pipefail
+          timeout 20s target/release/pulsedagd --version
+          timeout 20s target/release/pulsedagd --help
+          timeout 20s target/release/pulsedag-miner --version
+          timeout 20s target/release/pulsedag-miner --help
+
+  preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run v2.2.19 preflight check
+        run: bash scripts/v2_2_19_preflight_check.sh
+
+  local-rehearsal-short:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Short local rehearsal (3n/1m, 180s)
+        run: DURATION_SECS=180 bash scripts/v2_2_19_local_3n_1m_smoke.sh
+      - name: Upload local rehearsal evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v2_2_19_local_3n_1m_evidence
+          path: artifacts/v2_2_19_public_testnet_readiness/local-3n-1m/
+          if-no-files-found: warn
