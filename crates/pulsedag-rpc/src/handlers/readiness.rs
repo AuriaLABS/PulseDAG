@@ -33,7 +33,6 @@ pub struct ReadinessMetrics {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReadinessData {
-    pub ready_for_v3: bool,
     pub effective_rpc_bind: String,
     pub effective_api_profile: String,
     pub admin_enabled: bool,
@@ -473,7 +472,6 @@ pub async fn get_readiness<S: RpcStateLike>(
         })
         .collect::<Vec<_>>();
 
-    let ready_for_v3 = overall_status == ReadinessStatus::Pass;
     let peer_health = if state.p2p().is_none() {
         "p2p_disabled".to_string()
     } else if p2p_peer_count == 0 {
@@ -482,7 +480,6 @@ pub async fn get_readiness<S: RpcStateLike>(
         "peers_connected".to_string()
     };
     Json(ApiResponse::ok(ReadinessData {
-        ready_for_v3,
         effective_rpc_bind: rpc_bind,
         effective_api_profile: api_profile,
         admin_enabled,
@@ -535,7 +532,6 @@ mod tests {
         let mut rejected_blocks_by_reason = BTreeMap::new();
         rejected_blocks_by_reason.insert("invalid_pow".to_string(), 2);
         let data = ReadinessData {
-            ready_for_v3: false,
             effective_rpc_bind: "127.0.0.1:8080".to_string(),
             effective_api_profile: "local_dev".to_string(),
             admin_enabled: false,
