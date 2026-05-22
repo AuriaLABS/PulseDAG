@@ -19,3 +19,8 @@
   - `storage_path_class` (class only, not raw private path)
   - `peer_health`
   - `mining_templates_available`
+
+
+## Required closeout evidence path
+- v2.2.19 closeout must be driven by `docs/CLOSING_CHECKLIST_V2_2_19_FINAL.md`.
+- This is a pre-public-testnet hardening closeout path only (no v2.3.0 or v3.0 readiness claim).
