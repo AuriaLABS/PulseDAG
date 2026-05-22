@@ -28,8 +28,14 @@ search_text(){
 
 ver=$(cat VERSION 2>/dev/null || true)
 cargo_ver=$(awk '/^version\s*=/{print $3; exit}' Cargo.toml | tr -d '"')
-ref=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || git describe --all --always)
-commit=$(git rev-parse HEAD)
+ref="unknown"
+commit="unknown"
+if command -v git >/dev/null 2>&1; then
+  if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    ref=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || git describe --all --always 2>/dev/null || echo "unknown")
+    commit=$(git rev-parse HEAD 2>/dev/null || echo "unknown")
+  fi
+fi
 
 echo "Git ref: $ref"
 echo "Git commit: $commit"
@@ -48,26 +54,19 @@ for f in "${required[@]}"; do
   check "exists: $f" test -f "$f"
 done
 
-if rg -n "(v2\\.3\\.0 is ready|ready for v2\\.3\\.0|v2\\.3\\.0 readiness: yes|v2\\.3\\.0 ready)" README.md docs/VERSION_MATRIX.md docs/KNOWN_LIMITATIONS_V2_2_19.md >/dev/null; then
-  echo "FAIL: v2.3.0 readiness claim text detected"
-  fail=1
-else
-  echo "PASS: no v2.3.0 readiness claim detected"
-fi
+check_no_claim(){
+  local pattern="$1"; shift
+  if search_text "$pattern" "$@"; then
+    return 1
+  fi
+  return 0
+}
 
-if rg -n "(v3\\.0(\\.0)? is ready|ready for v3\\.0(\\.0)?|v3\\.0 readiness: yes|v3\\.0 ready)" README.md docs/VERSION_MATRIX.md docs/KNOWN_LIMITATIONS_V2_2_19.md >/dev/null; then
-  echo "FAIL: v3.0 readiness claim text detected"
-  fail=1
-else
-  echo "PASS: no v3.0 readiness claim detected"
-fi
+check "no v2.3.0 readiness claim detected" check_no_claim "(v2\.3\.0 is ready|ready for v2\.3\.0|v2\.3\.0 readiness: yes|v2\.3\.0 ready)" README.md docs/VERSION_MATRIX.md docs/KNOWN_LIMITATIONS_V2_2_19.md
 
-if search_text "(public testnet is live|public testnet now live|public testnet readiness: yes|we are ready to launch public testnet)" README.md docs/VERSION_MATRIX.md docs/KNOWN_LIMITATIONS_V2_2_19.md; then
-  echo "FAIL: public testnet launch claim detected"
-  fail=1
-else
-  echo "PASS: no public testnet launch claim detected"
-fi
+check "no v3.0 readiness claim detected" check_no_claim "(v3\.0(\.0)? is ready|ready for v3\.0(\.0)?|v3\.0 readiness: yes|v3\.0 ready)" README.md docs/VERSION_MATRIX.md docs/KNOWN_LIMITATIONS_V2_2_19.md
+
+check "no public testnet launch claim detected" check_no_claim "(public testnet is live|public testnet now live|public testnet readiness: yes|we are ready to launch public testnet)" README.md docs/VERSION_MATRIX.md docs/KNOWN_LIMITATIONS_V2_2_19.md
 
 summary_result=$([[ $fail -eq 0 ]] && echo PASS || echo FAIL)
 echo "SUMMARY: ${summary_result} (${passes}/${checks} explicit checks passed)"
