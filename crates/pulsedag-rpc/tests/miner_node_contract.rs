@@ -229,5 +229,5 @@ async fn mining_contract_node_rejects_malformed_block_with_stable_code() {
     let submit = submit_block(&state, template_id(&template), block).await;
     assert_eq!(submit["ok"], true);
     assert_eq!(submit["data"]["accepted"], false);
-    assert_eq!(submit["data"]["reason_code"], "malformed_block");
+    assert_eq!(submit["data"]["reason_code"], "malformed_serialization");
 }
