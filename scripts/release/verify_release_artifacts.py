@@ -146,8 +146,13 @@ def validate_archive_artifact(archive: Path, expected_tag: str, smoke: bool, smo
             raise SystemExit(f"Archive {archive.name} missing binary {binary_name}")
 
         entries = [p for p in top_dir.iterdir()]
-        if len(entries) != 1 or entries[0].name != binary_name:
-            raise SystemExit(f"Archive {archive.name} must contain exactly one binary inside {archive_base}/")
+        entry_names = {p.name for p in entries}
+        if binary_name not in entry_names:
+            raise SystemExit(f"Archive {archive.name} missing required binary inside {archive_base}/")
+        included_files = manifest.get("included_files", [])
+        for included in included_files:
+            if included not in entry_names:
+                raise SystemExit(f"Archive {archive.name} missing included file declared in manifest: {included}")
 
         if smoke:
             run_smoke(binary_path, binary_name.removesuffix(".exe"), smoke_timeout_secs)
