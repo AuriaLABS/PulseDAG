@@ -18,3 +18,9 @@
 | v2.2.18 | Private-testnet RC preparation and evidence gates | Historical baseline |
 | v2.2.19 | Active hardening / pre-public-testnet preparation | **CURRENT ACTIVE HARDENING (NOT PUBLIC TESTNET)** |
 | v2.3.0 | Future readiness decision | **FUTURE DECISION ONLY (not readiness claim)** |
+
+## Evidence references
+
+| Item | Path |
+|---|---|
+| v2.2.19 final closeout evidence | `docs/CLOSING_CHECKLIST_V2_2_19_FINAL.md` |
