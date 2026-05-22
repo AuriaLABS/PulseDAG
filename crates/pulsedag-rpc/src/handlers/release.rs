@@ -151,7 +151,8 @@ mod tests {
     fn release_metadata_reports_kheavyhash_and_not_sha256d() {
         let release = include_str!("release.rs");
         assert!(release.contains("\"kHeavyHash\""));
-        assert!(!release.to_lowercase().contains("sha256d"));
+        assert!(!release.contains("\"sha256d\""));
+        assert!(!release.contains("\"SHA256D\""));
         assert!(release.contains("\"canonical_core\""));
         assert!(release.contains("\"external\""));
     }
