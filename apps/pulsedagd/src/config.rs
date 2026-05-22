@@ -1093,9 +1093,7 @@ mod tests {
         std::env::set_var("PULSEDAG_ADMIN_ENABLED", "true");
         std::env::set_var("PULSEDAG_RPC_CORS_ALLOWLIST", "*");
         let err = Config::from_env().expect_err("wildcard cors with admin should fail");
-        assert!(err
-            .to_string()
-            .contains("wildcard origin is not allowed"));
+        assert!(err.to_string().contains("wildcard origin is not allowed"));
     }
     #[test]
     fn admin_env_override_takes_precedence() {
