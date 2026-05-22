@@ -168,5 +168,9 @@ mod tests {
                 "diagnostics.rs still contains {stale}"
             );
         }
+
+        assert!(release.contains("\"kHeavyHash\""));
+        assert!(release.contains("\"canonical_core\""));
+        assert!(release.contains("\"external\""));
     }
 }
