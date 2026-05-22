@@ -124,7 +124,13 @@ pub async fn get_readiness<S: RpcStateLike>(
     let admin_enabled =
         std::env::var("PULSEDAG_ADMIN_ENABLED").unwrap_or_else(|_| "false".to_string()) == "true";
     let storage_path = std::env::var("PULSEDAG_STORAGE_PATH").unwrap_or_default();
-    let storage_path_class = if storage_path.is_empty() {"default".to_string()} else if storage_path.starts_with("/") {"absolute_configured".to_string()} else {"relative_configured".to_string()};
+    let storage_path_class = if storage_path.is_empty() {
+        "default".to_string()
+    } else if storage_path.starts_with("/") {
+        "absolute_configured".to_string()
+    } else {
+        "relative_configured".to_string()
+    };
     let p2p_peer_count = p2p_status
         .as_ref()
         .map(|status| status.connected_peers.len())
@@ -468,7 +474,13 @@ pub async fn get_readiness<S: RpcStateLike>(
         .collect::<Vec<_>>();
 
     let ready_for_v3 = overall_status == ReadinessStatus::Pass;
-    let peer_health = if state.p2p().is_none() {"p2p_disabled".to_string()} else if p2p_peer_count == 0 {"no_peers".to_string()} else {"peers_connected".to_string()};
+    let peer_health = if state.p2p().is_none() {
+        "p2p_disabled".to_string()
+    } else if p2p_peer_count == 0 {
+        "no_peers".to_string()
+    } else {
+        "peers_connected".to_string()
+    };
     Json(ApiResponse::ok(ReadinessData {
         ready_for_v3,
         effective_rpc_bind: rpc_bind,

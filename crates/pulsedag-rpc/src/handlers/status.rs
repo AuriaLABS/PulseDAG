@@ -145,7 +145,10 @@ pub async fn get_status<S: RpcStateLike>(
         .max_by_key(|b| b.header.height)
         .map(|b| b.hash.clone());
 
-    let peer_summary = format!("peer_count={} semantics={}", peer_count, connected_peers_semantics);
+    let peer_summary = format!(
+        "peer_count={} semantics={}",
+        peer_count, connected_peers_semantics
+    );
     Json(ApiResponse::ok(NodeStatusData {
         network_id: chain.chain_id.clone(),
         peer_summary,
