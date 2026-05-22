@@ -6,6 +6,7 @@ use pulsedag_miner::{verify_backend_result_with_core, CpuMiningBackend, MiningBa
 use pulsedag_miner::{GpuBackendConfig, GpuMiningBackend};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tokio::time::{sleep, Duration};
@@ -110,6 +111,7 @@ struct MinerTelemetry {
     node_stale_rejections: u64,
     invalid_pow_rejections: u64,
     backend_verification_failures: u64,
+    reject_breakdown: BTreeMap<String, u64>,
 }
 
 impl MinerTelemetry {
@@ -130,6 +132,7 @@ impl MinerTelemetry {
             node_stale_rejections: 0,
             invalid_pow_rejections: 0,
             backend_verification_failures: 0,
+            reject_breakdown: BTreeMap::new(),
         }
     }
 
@@ -164,12 +167,17 @@ impl MinerTelemetry {
         if reason_code == "stale_template" || stale_template {
             self.node_stale_rejections = self.node_stale_rejections.saturating_add(1);
         }
+        *self.reject_breakdown.entry(reason_code.clone()).or_insert(0) += 1;
         self.last_reject_code = Some(reason_code);
     }
 
     fn record_backend_verification_failed(&mut self) {
         self.backend_verification_failures = self.backend_verification_failures.saturating_add(1);
         self.invalid_pow_rejections = self.invalid_pow_rejections.saturating_add(1);
+        *self
+            .reject_breakdown
+            .entry("backend_verification_failed".to_string())
+            .or_insert(0) += 1;
         self.last_reject_code = Some("backend_verification_failed".to_string());
     }
 
@@ -190,7 +198,7 @@ impl MinerTelemetry {
 
     fn log(&self, event: &str) {
         println!(
-            "miner_telemetry event={} backend={} workers={} attempts={} hashes_per_sec={:.2} templates_received={} templates_skipped_stale={} submits_total={} submits_accepted={} submits_rejected={} backend_verification_failures={} last_reject_code={} last_template_height={} last_accepted_height={}",
+            "miner_telemetry event={} backend={} workers={} attempts={} hashes_per_sec={:.2} templates_received={} templates_skipped_stale={} submits_total={} submits_accepted={} submits_rejected={} backend_verification_failures={} last_reject_code={} reject_breakdown={:?} last_template_height={} last_accepted_height={}",
             event,
             self.backend,
             self.workers,
@@ -203,6 +211,7 @@ impl MinerTelemetry {
             self.submits_rejected,
             self.backend_verification_failures,
             self.last_reject_code.as_deref().unwrap_or("-"),
+            self.reject_breakdown,
             self.last_template_height
                 .map(|height| height.to_string())
                 .unwrap_or_else(|| "-".to_string()),
@@ -458,14 +467,17 @@ fn submit_rejection_action(reason_code: &str) -> &'static str {
         "accepted" => "no action needed",
         "stale_template" => "refresh template and retry mining on latest work",
         "invalid_pow" => "hard warning: backend/canonical mismatch; discard nonce/header and verify miner target comparison before retry",
-        "malformed_block" => "rebuild the block from a fresh template before retry",
-        "invalid_height" => "refresh template; submitted height does not match node state",
-        "invalid_parent" => "refresh template; submitted parent set is no longer valid",
+        "malformed_serialization" => "rebuild submit payload from a fresh template before retry",
+        "missing_parent" => "refresh template; submitted parent is no longer in active DAG",
+        "invalid_timestamp" => "refresh template and ensure system clocks are synchronized",
         "duplicate_block" => "stop resubmitting this block hash and fetch fresh work",
         "invalid_coinbase" => {
             "check miner address/coinbase construction and fetch a fresh template"
         }
-        "invalid_transaction" => "refresh template; included transaction set is no longer valid",
+        "invalid_merkle_or_payload" => {
+            "refresh template; included transaction/payload no longer matches node template"
+        }
+        "unknown_validation_error" => "inspect node validation diagnostics and refresh template",
         "chain_id_mismatch" => "check miner --node target and network/chain configuration",
         "internal_error" => "check node logs and retry after the node recovers",
         "missing_template_id" | "unknown_template" => {
@@ -1113,12 +1125,13 @@ mod tests {
         for code in [
             "stale_template",
             "invalid_pow",
-            "malformed_block",
-            "invalid_height",
-            "invalid_parent",
+            "malformed_serialization",
+            "missing_parent",
+            "invalid_timestamp",
             "duplicate_block",
             "invalid_coinbase",
-            "invalid_transaction",
+            "invalid_merkle_or_payload",
+            "unknown_validation_error",
             "chain_id_mismatch",
             "internal_error",
         ] {

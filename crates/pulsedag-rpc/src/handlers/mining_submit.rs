@@ -65,12 +65,42 @@ enum ExternalMiningRejectKind {
     UnknownTemplate,
     SubmitBlockError,
     DuplicateBlock,
-    MalformedBlock,
-    InvalidHeight,
-    InvalidParent,
-    InvalidTransaction,
+    MissingParent,
+    InvalidTimestamp,
+    InvalidCoinbase,
+    InvalidMerkleOrPayload,
+    MalformedSerialization,
+    UnknownValidationError,
     InternalError,
     StorageError,
+}
+
+fn classify_rejected_validation_message(message: &str) -> (&'static str, ExternalMiningRejectKind) {
+    let lower = message.to_ascii_lowercase();
+    if lower.contains("timestamp") {
+        ("invalid_timestamp", ExternalMiningRejectKind::InvalidTimestamp)
+    } else if lower.contains("coinbase") || lower.contains("reward") {
+        ("invalid_coinbase", ExternalMiningRejectKind::InvalidCoinbase)
+    } else if lower.contains("merkle")
+        || lower.contains("transaction")
+        || lower.contains("payload")
+        || lower.contains("txid")
+    {
+        (
+            "invalid_merkle_or_payload",
+            ExternalMiningRejectKind::InvalidMerkleOrPayload,
+        )
+    } else if lower.contains("deserialize") || lower.contains("serialization") {
+        (
+            "malformed_serialization",
+            ExternalMiningRejectKind::MalformedSerialization,
+        )
+    } else {
+        (
+            "unknown_validation_error",
+            ExternalMiningRejectKind::UnknownValidationError,
+        )
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -206,10 +236,12 @@ async fn record_external_mining_rejection<S: RpcStateLike>(
             ExternalMiningRejectKind::UnknownTemplate => "unknown_template",
             ExternalMiningRejectKind::SubmitBlockError => "submit_block_error",
             ExternalMiningRejectKind::DuplicateBlock => "duplicate_block",
-            ExternalMiningRejectKind::MalformedBlock => "malformed_block",
-            ExternalMiningRejectKind::InvalidHeight => "invalid_height",
-            ExternalMiningRejectKind::InvalidParent => "invalid_parent",
-            ExternalMiningRejectKind::InvalidTransaction => "invalid_transaction",
+            ExternalMiningRejectKind::MissingParent => "missing_parent",
+            ExternalMiningRejectKind::InvalidTimestamp => "invalid_timestamp",
+            ExternalMiningRejectKind::InvalidCoinbase => "invalid_coinbase",
+            ExternalMiningRejectKind::InvalidMerkleOrPayload => "invalid_merkle_or_payload",
+            ExternalMiningRejectKind::MalformedSerialization => "malformed_serialization",
+            ExternalMiningRejectKind::UnknownValidationError => "unknown_validation_error",
             ExternalMiningRejectKind::InternalError => "internal_error",
             ExternalMiningRejectKind::StorageError => "storage_error",
         }
@@ -223,10 +255,12 @@ async fn record_external_mining_rejection<S: RpcStateLike>(
         ExternalMiningRejectKind::UnknownTemplate => "unknown_template",
         ExternalMiningRejectKind::SubmitBlockError => "submit_block_error",
         ExternalMiningRejectKind::DuplicateBlock => "duplicate_block",
-        ExternalMiningRejectKind::MalformedBlock => "malformed_block",
-        ExternalMiningRejectKind::InvalidHeight => "invalid_height",
-        ExternalMiningRejectKind::InvalidParent => "invalid_parent",
-        ExternalMiningRejectKind::InvalidTransaction => "invalid_transaction",
+        ExternalMiningRejectKind::MissingParent => "missing_parent",
+        ExternalMiningRejectKind::InvalidTimestamp => "invalid_timestamp",
+        ExternalMiningRejectKind::InvalidCoinbase => "invalid_coinbase",
+        ExternalMiningRejectKind::InvalidMerkleOrPayload => "invalid_merkle_or_payload",
+        ExternalMiningRejectKind::MalformedSerialization => "malformed_serialization",
+        ExternalMiningRejectKind::UnknownValidationError => "unknown_validation_error",
         ExternalMiningRejectKind::InternalError => "internal_error",
         ExternalMiningRejectKind::StorageError => "storage_error",
     };
@@ -261,10 +295,12 @@ async fn record_external_mining_rejection<S: RpcStateLike>(
                 .external_mining_rejected_duplicate_block
                 .saturating_add(1);
         }
-        ExternalMiningRejectKind::MalformedBlock
-        | ExternalMiningRejectKind::InvalidHeight
-        | ExternalMiningRejectKind::InvalidParent
-        | ExternalMiningRejectKind::InvalidTransaction => {
+        ExternalMiningRejectKind::MissingParent
+        | ExternalMiningRejectKind::InvalidTimestamp
+        | ExternalMiningRejectKind::InvalidCoinbase
+        | ExternalMiningRejectKind::InvalidMerkleOrPayload
+        | ExternalMiningRejectKind::MalformedSerialization
+        | ExternalMiningRejectKind::UnknownValidationError => {
             runtime.external_mining_rejected_invalid_block = runtime
                 .external_mining_rejected_invalid_block
                 .saturating_add(1);
@@ -289,10 +325,12 @@ async fn record_external_mining_rejection<S: RpcStateLike>(
         ExternalMiningRejectKind::UnknownTemplate => "unknown_template",
         ExternalMiningRejectKind::SubmitBlockError => "submit_block_error",
         ExternalMiningRejectKind::DuplicateBlock => "duplicate_block",
-        ExternalMiningRejectKind::MalformedBlock => "malformed_block",
-        ExternalMiningRejectKind::InvalidHeight => "invalid_height",
-        ExternalMiningRejectKind::InvalidParent => "invalid_parent",
-        ExternalMiningRejectKind::InvalidTransaction => "invalid_transaction",
+        ExternalMiningRejectKind::MissingParent => "missing_parent",
+        ExternalMiningRejectKind::InvalidTimestamp => "invalid_timestamp",
+        ExternalMiningRejectKind::InvalidCoinbase => "invalid_coinbase",
+        ExternalMiningRejectKind::InvalidMerkleOrPayload => "invalid_merkle_or_payload",
+        ExternalMiningRejectKind::MalformedSerialization => "malformed_serialization",
+        ExternalMiningRejectKind::UnknownValidationError => "unknown_validation_error",
         ExternalMiningRejectKind::InternalError => "internal_error",
         ExternalMiningRejectKind::StorageError => "storage_error",
     };
@@ -394,18 +432,14 @@ pub async fn post_mining_submit<S: RpcStateLike>(
                 "submitted block height {} does not match template height {}; refresh template and retry",
                 req.block.header.height, stored.height
             );
-            record_external_mining_rejection(
-                &state,
-                ExternalMiningRejectKind::InvalidHeight,
-                &detail,
-            )
-            .await;
+            record_external_mining_rejection(&state, ExternalMiningRejectKind::StaleTemplate, &detail)
+                .await;
             return Json(rejection_submit_response(
-                "invalid_height",
+                "stale_template",
                 detail,
                 Some(block_hash.clone()),
                 Some(height),
-                false,
+                true,
             ));
         }
         if stored.height != chain.dag.best_height + 1 {
@@ -687,7 +721,7 @@ pub async fn post_mining_submit<S: RpcStateLike>(
             )
             .await;
             return Json(rejection_submit_response(
-                "internal_error",
+                "storage_rejected",
                 e.to_string(),
                 Some(block_hash.clone()),
                 Some(height),
@@ -789,18 +823,17 @@ pub async fn post_mining_submit<S: RpcStateLike>(
                 pulsedag_core::BlockAcceptanceResult::InvalidPow => {
                     (ExternalMiningRejectKind::InvalidPow, "invalid_pow")
                 }
-                pulsedag_core::BlockAcceptanceResult::MissingParent => {
-                    (ExternalMiningRejectKind::InvalidParent, "invalid_parent")
-                }
-                pulsedag_core::BlockAcceptanceResult::InvalidTransaction => (
-                    ExternalMiningRejectKind::InvalidTransaction,
-                    "invalid_transaction",
+                pulsedag_core::BlockAcceptanceResult::MissingParent =>
+                    (ExternalMiningRejectKind::MissingParent, "missing_parent"),
+                pulsedag_core::BlockAcceptanceResult::InvalidTransaction =>
+                    (ExternalMiningRejectKind::InvalidMerkleOrPayload, "invalid_merkle_or_payload"),
+                pulsedag_core::BlockAcceptanceResult::Malformed => (
+                    ExternalMiningRejectKind::MalformedSerialization,
+                    "malformed_serialization",
                 ),
-                pulsedag_core::BlockAcceptanceResult::Malformed => {
-                    (ExternalMiningRejectKind::MalformedBlock, "malformed_block")
-                }
-                pulsedag_core::BlockAcceptanceResult::Rejected(_) => {
-                    (ExternalMiningRejectKind::SubmitBlockError, "internal_error")
+                pulsedag_core::BlockAcceptanceResult::Rejected(message) => {
+                    let (reason_code, kind) = classify_rejected_validation_message(message);
+                    (kind, reason_code)
                 }
                 pulsedag_core::BlockAcceptanceResult::Accepted => {
                     (ExternalMiningRejectKind::InternalError, "internal_error")
@@ -1321,14 +1354,15 @@ mod tests {
         let stable_codes = [
             "accepted",
             "stale_template",
+            "missing_parent",
             "invalid_pow",
-            "malformed_block",
-            "invalid_height",
-            "invalid_parent",
-            "duplicate_block",
+            "invalid_timestamp",
             "invalid_coinbase",
-            "invalid_transaction",
-            "chain_id_mismatch",
+            "invalid_merkle_or_payload",
+            "malformed_serialization",
+            "duplicate_block",
+            "storage_rejected",
+            "unknown_validation_error",
             "internal_error",
         ];
 
@@ -1336,7 +1370,7 @@ mod tests {
         assert!(stable_codes.contains(&"stale_template"));
         assert!(stable_codes.contains(&"invalid_pow"));
         assert!(stable_codes.contains(&"duplicate_block"));
-        assert!(stable_codes.contains(&"malformed_block"));
+        assert!(stable_codes.contains(&"malformed_serialization"));
     }
 
     #[tokio::test]
