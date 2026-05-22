@@ -499,7 +499,7 @@ pub async fn get_readiness<S: RpcStateLike>(
         storage_path_class,
         peer_health,
         mining_templates_available: runtime.pulsedag_mining_templates_total > 0,
-        ready_for_release: private_testnet_ready,
+        ready_for_release: blockers.is_empty(),
         overall_status,
         categories,
         metrics,
@@ -582,9 +582,6 @@ mod tests {
     #[test]
     fn readiness_defaults_keep_public_testnet_disabled() {
         let data = ReadinessData {
-            node_ready: true,
-            private_testnet_ready: true,
-            public_testnet_ready: false,
             effective_rpc_bind: "127.0.0.1:8080".to_string(),
             effective_api_profile: "local_dev".to_string(),
             admin_enabled: false,
@@ -608,9 +605,7 @@ mod tests {
             warnings: vec!["public_testnet_evidence: public testnet readiness is gated by explicit evidence and remains disabled for v2.2.19".to_string()],
         };
         let value = serde_json::to_value(data).unwrap();
-        assert_eq!(value["public_testnet_ready"], false);
-        assert_eq!(value["private_testnet_ready"], true);
-        assert_eq!(value["node_ready"], true);
+        assert_eq!(value["ready_for_release"], false);
     }
 
     #[test]
