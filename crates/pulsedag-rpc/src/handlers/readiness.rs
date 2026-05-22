@@ -469,6 +469,8 @@ pub async fn get_readiness<S: RpcStateLike>(
         );
     }
 
+    let private_testnet_ready = blockers.is_empty();
+
     let warnings = categories
         .iter()
         .filter(|(_, category)| {
