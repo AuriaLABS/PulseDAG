@@ -26,3 +26,14 @@ Get-FileHash .\pulsedag-miner-v2.2.19-x86_64-pc-windows-msvc.zip -Algorithm SHA2
 scripts/release/verify_install_from_archive.sh --archive pulsedagd-v2.2.19-x86_64-unknown-linux-gnu.tar.gz --timeout-secs 10
 scripts/release/verify_install_from_archive.sh --archive pulsedag-miner-v2.2.19-x86_64-unknown-linux-gnu.tar.gz --timeout-secs 10
 ```
+
+## Included release assets
+Release bundles include both binaries:
+- `pulsedagd` (node)
+- `pulsedag-miner` (standalone miner)
+
+## Troubleshooting release-binaries.yml
+- **Cargo.lock mismatch**: if `cargo metadata --locked --format-version 1` fails, update and commit `Cargo.lock` before rerunning.
+- **Missing manifest**: each packaged archive must have a matching `.json` manifest; rerun packaging and ensure manifests are uploaded.
+- **Duplicate asset filename**: matrix artifacts must not produce colliding filenames across targets; fix naming collisions before publish.
+- **GitHub release permission failure**: verify workflow `contents: write` permission and that `GH_TOKEN` can create/upload release assets.
