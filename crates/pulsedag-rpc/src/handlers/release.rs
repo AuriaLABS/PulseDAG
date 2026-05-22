@@ -148,6 +148,16 @@ mod tests {
         assert!(datasource.contains("PulseDAG-Prometheus"));
     }
     #[test]
+
+    #[test]
+    fn release_metadata_reports_kheavyhash_and_not_sha256d() {
+        let release = include_str!("release.rs");
+        assert!(release.contains('"kHeavyHash"'));
+        assert!(!release.to_lowercase().contains("sha256d"));
+        assert!(release.contains('"canonical_core"'));
+        assert!(release.contains('"external"'));
+    }
+
     fn legacy_versions_are_not_used_in_operator_handlers() {
         let release = include_str!("release.rs");
         let policy = include_str!("policy.rs");
