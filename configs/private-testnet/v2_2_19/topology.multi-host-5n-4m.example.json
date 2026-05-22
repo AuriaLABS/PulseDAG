@@ -1,0 +1,25 @@
+{
+  "manifest_version": "v2.2.19",
+  "run_id": "ptn-v2_2_19-multi-host-5n-4m-example",
+  "chain_id": "private-testnet-v2-2-19",
+  "hosts": [
+    {"host_id": "host-a", "ssh_host": "node-a.example.net", "ssh_user": "pulsedag"},
+    {"host_id": "host-b", "ssh_host": "node-b.example.net", "ssh_user": "pulsedag"},
+    {"host_id": "host-c", "ssh_host": "node-c.example.net", "ssh_user": "pulsedag"},
+    {"host_id": "host-d", "ssh_host": "node-d.example.net", "ssh_user": "pulsedag"},
+    {"host_id": "host-e", "ssh_host": "node-e.example.net", "ssh_user": "pulsedag"}
+  ],
+  "nodes": [
+    {"id": "node-1", "host_id": "host-a", "role": "bootnode", "rpc_port": 28545, "p2p_port": 32303, "bootnodes": []},
+    {"id": "node-2", "host_id": "host-b", "role": "full", "rpc_port": 28546, "p2p_port": 32304, "bootnodes": ["bootnode-1"]},
+    {"id": "node-3", "host_id": "host-c", "role": "full", "rpc_port": 28547, "p2p_port": 32305, "bootnodes": ["bootnode-1"]},
+    {"id": "node-4", "host_id": "host-d", "role": "full", "rpc_port": 28548, "p2p_port": 32306, "bootnodes": ["bootnode-1"]},
+    {"id": "node-5", "host_id": "host-e", "role": "full", "rpc_port": 28549, "p2p_port": 32307, "bootnodes": ["bootnode-1"]}
+  ],
+  "miners": [
+    {"id": "miner-1", "host_id": "host-b", "target_node": "node-2"},
+    {"id": "miner-2", "host_id": "host-c", "target_node": "node-3"},
+    {"id": "miner-3", "host_id": "host-d", "target_node": "node-4"},
+    {"id": "miner-4", "host_id": "host-e", "target_node": "node-5"}
+  ]
+}

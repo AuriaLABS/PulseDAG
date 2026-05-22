@@ -1,0 +1,8 @@
+# Example only. Do not store production secrets in this file.
+[[bootnodes]]
+name = "bootnode-1"
+multiaddr = "/dns4/bootnode-1.example.net/tcp/32303/p2p/12D3KooWExampleBootnode1"
+
+[[bootnodes]]
+name = "bootnode-2"
+multiaddr = "/dns4/bootnode-2.example.net/tcp/32303/p2p/12D3KooWExampleBootnode2"
