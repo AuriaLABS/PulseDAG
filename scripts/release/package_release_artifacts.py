@@ -1,132 +1,49 @@
 #!/usr/bin/env python3
 """Package release artifacts and emit checksums with provenance metadata."""
-
 from __future__ import annotations
-
-import argparse
-import hashlib
-import json
-import os
-import platform
-import shutil
-import stat
-import tarfile
-import zipfile
+import argparse, hashlib, json, platform, shutil, stat, tarfile, zipfile
 from pathlib import Path
 
-
 def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
+    d=hashlib.sha256()
+    with path.open('rb') as h:
+        for c in iter(lambda:h.read(1024*1024), b''): d.update(c)
+    return d.hexdigest()
 
 def detect_target() -> str:
-    machine = platform.machine().lower()
-    system = platform.system().lower()
-
-    if machine in {"amd64", "x86_64", "x64"}:
-        arch = "x86_64"
-    elif machine in {"arm64", "aarch64"}:
-        arch = "aarch64"
-    else:
-        arch = machine or "unknown"
-
-    if system == "linux":
-        return f"{arch}-unknown-linux-gnu"
-    if system == "darwin":
-        return f"{arch}-apple-darwin"
-    if system == "windows":
-        return f"{arch}-pc-windows-msvc"
-    return f"{arch}-{system}"
-
+    m=platform.machine().lower(); s=platform.system().lower()
+    arch='x86_64' if m in {'amd64','x86_64','x64'} else ('aarch64' if m in {'arm64','aarch64'} else (m or 'unknown'))
+    return f"{arch}-unknown-linux-gnu" if s=='linux' else (f"{arch}-apple-darwin" if s=='darwin' else (f"{arch}-pc-windows-msvc" if s=='windows' else f"{arch}-{s}"))
 
 def ensure_executable(path: Path) -> None:
-    if platform.system().lower() == "windows":
-        return
-    mode = path.stat().st_mode
-    path.chmod(mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
-
+    if platform.system().lower()!='windows': path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--binary", required=True, type=Path)
-    parser.add_argument("--output-dir", required=True, type=Path)
-    parser.add_argument("--tag", required=True)
-    parser.add_argument("--bin-name", default="pulsedagd")
-    parser.add_argument("--repository", default="")
-    parser.add_argument("--commit", default="")
-    parser.add_argument("--run-id", default="")
-    parser.add_argument("--run-attempt", default="")
-    args = parser.parse_args()
-
-    binary_path = args.binary.resolve()
-    if not binary_path.exists():
-        raise SystemExit(f"Binary not found: {binary_path}")
-
-    output_dir = args.output_dir.resolve()
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    target = detect_target()
-    archive_base = f"{args.bin_name}-{args.tag}-{target}"
-    is_windows = platform.system().lower() == "windows"
-    staged_binary_name = f"{args.bin_name}.exe" if is_windows else args.bin_name
-
-    stage_dir = output_dir / archive_base
-    if stage_dir.exists():
-        shutil.rmtree(stage_dir)
-    stage_dir.mkdir(parents=True)
-
-    staged_binary = stage_dir / staged_binary_name
-    shutil.copy2(binary_path, staged_binary)
-    ensure_executable(staged_binary)
-
-    if is_windows:
-        archive_path = output_dir / f"{archive_base}.zip"
-        with zipfile.ZipFile(archive_path, mode="w", compression=zipfile.ZIP_DEFLATED) as ziph:
-            ziph.write(staged_binary, arcname=f"{archive_base}/{staged_binary_name}")
+    p=argparse.ArgumentParser()
+    p.add_argument('--binary', required=True, type=Path); p.add_argument('--output-dir', required=True, type=Path)
+    p.add_argument('--tag', required=True); p.add_argument('--bin-name', default='pulsedagd')
+    p.add_argument('--repository', default=''); p.add_argument('--commit', default=''); p.add_argument('--run-id', default=''); p.add_argument('--run-attempt', default='')
+    p.add_argument('--include-file', action='append', default=[], help='Extra repo file to include at archive root folder')
+    a=p.parse_args(); b=a.binary.resolve(); out=a.output_dir.resolve(); out.mkdir(parents=True, exist_ok=True)
+    if not b.exists(): raise SystemExit(f'Binary not found: {b}')
+    target=detect_target(); base=f"{a.bin_name}-{a.tag}-{target}"; win=platform.system().lower()=='windows'; bname=f"{a.bin_name}.exe" if win else a.bin_name
+    stage=out/base; shutil.rmtree(stage, ignore_errors=True); stage.mkdir(parents=True)
+    sb=stage/bname; shutil.copy2(b,sb); ensure_executable(sb)
+    included=[]
+    for rel in a.include_file:
+        src=Path(rel)
+        if not src.exists() or not src.is_file(): raise SystemExit(f'Included file not found: {rel}')
+        dst=stage/src.name; shutil.copy2(src,dst); included.append(src.name)
+    arc=out/f"{base}.zip" if win else out/f"{base}.tar.gz"
+    if win:
+        with zipfile.ZipFile(arc,'w',compression=zipfile.ZIP_DEFLATED) as z:
+            for f in sorted(stage.iterdir()): z.write(f, arcname=f"{base}/{f.name}")
     else:
-        archive_path = output_dir / f"{archive_base}.tar.gz"
-        with tarfile.open(archive_path, mode="w:gz") as tar:
-            tar.add(staged_binary, arcname=f"{archive_base}/{staged_binary_name}")
+        with tarfile.open(arc,'w:gz') as t:
+            for f in sorted(stage.iterdir()): t.add(f, arcname=f"{base}/{f.name}")
+    sha=sha256_file(arc); (out/f"{arc.name}.sha256").write_text(f"{sha}  {arc.name}\n",encoding='utf-8')
+    (out/f"{arc.name}.json").write_text(json.dumps({"tag":a.tag,"archive":arc.name,"archive_sha256":sha,"archive_size_bytes":arc.stat().st_size,"target":target,"binary":bname,"included_files":included,"provenance":{"repository":a.repository,"commit":a.commit,"github_run_id":a.run_id,"github_run_attempt":a.run_attempt}},indent=2,sort_keys=True)+"\n",encoding='utf-8')
+    shutil.rmtree(stage)
+    print(f'Packaged: {arc}')
 
-    checksum = sha256_file(archive_path)
-    checksum_file = output_dir / f"{archive_path.name}.sha256"
-    checksum_file.write_text(f"{checksum}  {archive_path.name}\n", encoding="utf-8")
-
-    manifest_file = output_dir / f"{archive_path.name}.json"
-    file_size_bytes = archive_path.stat().st_size
-    manifest_file.write_text(
-        json.dumps(
-            {
-                "tag": args.tag,
-                "archive": archive_path.name,
-                "archive_sha256": checksum,
-                "archive_size_bytes": file_size_bytes,
-                "target": target,
-                "binary": staged_binary_name,
-                "provenance": {
-                    "repository": args.repository,
-                    "commit": args.commit,
-                    "github_run_id": args.run_id,
-                    "github_run_attempt": args.run_attempt,
-                },
-            },
-            indent=2,
-            sort_keys=True,
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-
-    shutil.rmtree(stage_dir)
-
-    print(f"Packaged: {archive_path}")
-    print(f"Checksum: {checksum_file}")
-    print(f"Manifest: {manifest_file}")
-
-
-if __name__ == "__main__":
-    main()
+if __name__=='__main__': main()
