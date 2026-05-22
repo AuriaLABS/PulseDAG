@@ -616,9 +616,13 @@ mod tests {
     #[test]
     fn readiness_contract_does_not_claim_future_versions() {
         let source = include_str!("readiness.rs");
-        assert!(!source.contains("ready_for_v3"));
-        assert!(!source.contains("v2.3.0 readiness"));
-        assert!(!source.contains("v3.0 readiness"));
-        assert!(!source.contains("public testnet live"));
+        let future_flag = ["ready", "for", "v3"].join("_");
+        let v230_phrase = ["v2.3.0", "readiness"].join(" ");
+        let v300_phrase = ["v3.0", "readiness"].join(" ");
+        let public_testnet_live_phrase = ["public", "testnet", "live"].join(" ");
+        assert!(!source.contains(&future_flag));
+        assert!(!source.contains(&v230_phrase));
+        assert!(!source.contains(&v300_phrase));
+        assert!(!source.contains(&public_testnet_live_phrase));
     }
 }
