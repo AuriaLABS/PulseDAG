@@ -70,8 +70,8 @@ pub async fn get_release_info() -> Json<ApiResponse<ReleaseInfoData>> {
             &std::env::var("PULSEDAG_API_PROFILE").unwrap_or_else(|_| "local_dev".into()),
         ),
         pow_algorithm: "kHeavyHash".into(),
-        miner_mode: "external".into(),
-        smart_contracts: "disabled (v2.2.x)".into(),
+        miner_mode: "external_standalone_miner".into(),
+        smart_contracts: "disabled_not_included".into(),
         pow_engine: "canonical_core".into(),
         pool_logic: "disabled_not_in_node".into(),
     }))
@@ -154,7 +154,9 @@ mod tests {
         assert!(!release.contains("\"sha256d\""));
         assert!(!release.contains("\"SHA256D\""));
         assert!(release.contains("\"canonical_core\""));
-        assert!(release.contains("\"external\""));
+        assert!(release.contains("\"external_standalone_miner\""));
+        assert!(release.contains("\"disabled_not_included\""));
+        assert!(release.contains("\"disabled_not_in_node\""));
     }
 
     #[test]
@@ -181,6 +183,8 @@ mod tests {
 
         assert!(release.contains("\"kHeavyHash\""));
         assert!(release.contains("\"canonical_core\""));
-        assert!(release.contains("\"external\""));
+        assert!(release.contains("\"external_standalone_miner\""));
+        assert!(release.contains("\"disabled_not_included\""));
+        assert!(release.contains("\"disabled_not_in_node\""));
     }
 }
