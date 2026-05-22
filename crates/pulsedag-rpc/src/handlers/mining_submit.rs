@@ -78,9 +78,15 @@ enum ExternalMiningRejectKind {
 fn classify_rejected_validation_message(message: &str) -> (&'static str, ExternalMiningRejectKind) {
     let lower = message.to_ascii_lowercase();
     if lower.contains("timestamp") {
-        ("invalid_timestamp", ExternalMiningRejectKind::InvalidTimestamp)
+        (
+            "invalid_timestamp",
+            ExternalMiningRejectKind::InvalidTimestamp,
+        )
     } else if lower.contains("coinbase") || lower.contains("reward") {
-        ("invalid_coinbase", ExternalMiningRejectKind::InvalidCoinbase)
+        (
+            "invalid_coinbase",
+            ExternalMiningRejectKind::InvalidCoinbase,
+        )
     } else if lower.contains("merkle")
         || lower.contains("transaction")
         || lower.contains("payload")
@@ -432,8 +438,12 @@ pub async fn post_mining_submit<S: RpcStateLike>(
                 "submitted block height {} does not match template height {}; refresh template and retry",
                 req.block.header.height, stored.height
             );
-            record_external_mining_rejection(&state, ExternalMiningRejectKind::StaleTemplate, &detail)
-                .await;
+            record_external_mining_rejection(
+                &state,
+                ExternalMiningRejectKind::StaleTemplate,
+                &detail,
+            )
+            .await;
             return Json(rejection_submit_response(
                 "stale_template",
                 detail,
@@ -823,10 +833,13 @@ pub async fn post_mining_submit<S: RpcStateLike>(
                 pulsedag_core::BlockAcceptanceResult::InvalidPow => {
                     (ExternalMiningRejectKind::InvalidPow, "invalid_pow")
                 }
-                pulsedag_core::BlockAcceptanceResult::MissingParent =>
-                    (ExternalMiningRejectKind::MissingParent, "missing_parent"),
-                pulsedag_core::BlockAcceptanceResult::InvalidTransaction =>
-                    (ExternalMiningRejectKind::InvalidMerkleOrPayload, "invalid_merkle_or_payload"),
+                pulsedag_core::BlockAcceptanceResult::MissingParent => {
+                    (ExternalMiningRejectKind::MissingParent, "missing_parent")
+                }
+                pulsedag_core::BlockAcceptanceResult::InvalidTransaction => (
+                    ExternalMiningRejectKind::InvalidMerkleOrPayload,
+                    "invalid_merkle_or_payload",
+                ),
                 pulsedag_core::BlockAcceptanceResult::Malformed => (
                     ExternalMiningRejectKind::MalformedSerialization,
                     "malformed_serialization",

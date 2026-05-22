@@ -148,7 +148,6 @@ mod tests {
         assert!(datasource.contains("PulseDAG-Prometheus"));
     }
     #[test]
-
     #[test]
     fn release_metadata_reports_kheavyhash_and_not_sha256d() {
         let release = include_str!("release.rs");

@@ -167,7 +167,10 @@ impl MinerTelemetry {
         if reason_code == "stale_template" || stale_template {
             self.node_stale_rejections = self.node_stale_rejections.saturating_add(1);
         }
-        *self.reject_breakdown.entry(reason_code.clone()).or_insert(0) += 1;
+        *self
+            .reject_breakdown
+            .entry(reason_code.clone())
+            .or_insert(0) += 1;
         self.last_reject_code = Some(reason_code);
     }
 
