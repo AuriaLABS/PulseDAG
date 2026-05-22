@@ -5,14 +5,20 @@
   - `version: v2.2.19`
   - `pow_algorithm: kHeavyHash`
   - `pow_engine: canonical_core`
-  - `miner_mode: external`
-  - `smart_contracts: disabled`
+  - `miner_mode: external_standalone_miner`
+  - `smart_contracts: disabled_not_included`
   - `pool_logic: disabled_not_in_node`
-- Public release metadata removes stale `sha256d` references.
+- Release metadata intentionally avoids stale `sha256d` references.
 
 ## Status/readiness operator trust hardening
-- `/status` now includes explicit network/operator summary fields including `network_id` and `peer_summary` alongside existing `best_height`, `selected_tip`, `block_count`, `chain_id`, and `uptime_secs`.
-- `/readiness` now reports effective runtime-facing config values and operator-safe classifications:
+- `/readiness` now separates claims into explicit booleans:
+  - `node_ready`
+  - `private_testnet_ready`
+  - `public_testnet_ready`
+- `public_testnet_ready` is conservatively `false` by default for v2.2.19 unless explicit evidence gates are satisfied.
+- `/readiness` includes operator-safe diagnostics and conservative warning/blocker surfaces:
+  - `release_blockers`
+  - `warnings`
   - `effective_rpc_bind`
   - `effective_api_profile`
   - `admin_enabled`

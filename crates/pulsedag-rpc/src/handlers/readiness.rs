@@ -33,7 +33,9 @@ pub struct ReadinessMetrics {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReadinessData {
-    pub ready_for_v3: bool,
+    pub node_ready: bool,
+    pub private_testnet_ready: bool,
+    pub public_testnet_ready: bool,
     pub effective_rpc_bind: String,
     pub effective_api_profile: String,
     pub admin_enabled: bool,
@@ -44,7 +46,7 @@ pub struct ReadinessData {
     pub overall_status: ReadinessStatus,
     pub categories: BTreeMap<String, ReadinessCategory>,
     pub metrics: ReadinessMetrics,
-    pub blockers: Vec<String>,
+    pub release_blockers: Vec<String>,
     pub warnings: Vec<String>,
 }
 
@@ -457,6 +459,19 @@ pub async fn get_readiness<S: RpcStateLike>(
                 .map(move |reason| format!("{name}: {reason}"))
         })
         .collect::<Vec<_>>();
+    if !blockers
+        .iter()
+        .any(|b| b.contains("public_testnet_evidence"))
+    {
+        categories.insert(
+            "public_testnet_evidence".to_string(),
+            category(
+                ReadinessStatus::Warn,
+                vec!["public testnet readiness is gated by explicit evidence and remains disabled for v2.2.19".to_string()],
+            ),
+        );
+    }
+
     let warnings = categories
         .iter()
         .filter(|(_, category)| {
@@ -473,7 +488,9 @@ pub async fn get_readiness<S: RpcStateLike>(
         })
         .collect::<Vec<_>>();
 
-    let ready_for_v3 = overall_status == ReadinessStatus::Pass;
+    let node_ready = overall_status == ReadinessStatus::Pass;
+    let private_testnet_ready = blockers.is_empty();
+    let public_testnet_ready = false;
     let peer_health = if state.p2p().is_none() {
         "p2p_disabled".to_string()
     } else if p2p_peer_count == 0 {
@@ -482,18 +499,20 @@ pub async fn get_readiness<S: RpcStateLike>(
         "peers_connected".to_string()
     };
     Json(ApiResponse::ok(ReadinessData {
-        ready_for_v3,
+        node_ready,
+        private_testnet_ready,
+        public_testnet_ready,
         effective_rpc_bind: rpc_bind,
         effective_api_profile: api_profile,
         admin_enabled,
         storage_path_class,
         peer_health,
         mining_templates_available: runtime.pulsedag_mining_templates_total > 0,
-        ready_for_release: blockers.is_empty(),
+        ready_for_release: private_testnet_ready,
         overall_status,
         categories,
         metrics,
-        blockers,
+        release_blockers: blockers,
         warnings,
     }))
 }
@@ -535,7 +554,9 @@ mod tests {
         let mut rejected_blocks_by_reason = BTreeMap::new();
         rejected_blocks_by_reason.insert("invalid_pow".to_string(), 2);
         let data = ReadinessData {
-            ready_for_v3: false,
+            node_ready: false,
+            private_testnet_ready: false,
+            public_testnet_ready: false,
             effective_rpc_bind: "127.0.0.1:8080".to_string(),
             effective_api_profile: "local_dev".to_string(),
             admin_enabled: false,
@@ -555,7 +576,7 @@ mod tests {
                 storage_last_commit_height: Some(4),
                 state_root: Some("root".to_string()),
             },
-            blockers: Vec::new(),
+            release_blockers: Vec::new(),
             warnings: vec!["p2p: no peers".to_string()],
         };
 
@@ -568,5 +589,48 @@ mod tests {
             2
         );
         assert_eq!(value["metrics"]["selected_tip"], "tip");
+    }
+
+    #[test]
+    fn readiness_defaults_keep_public_testnet_disabled() {
+        let data = ReadinessData {
+            node_ready: true,
+            private_testnet_ready: true,
+            public_testnet_ready: false,
+            effective_rpc_bind: "127.0.0.1:8080".to_string(),
+            effective_api_profile: "local_dev".to_string(),
+            admin_enabled: false,
+            storage_path_class: "default".to_string(),
+            peer_health: "p2p_disabled".to_string(),
+            mining_templates_available: false,
+            ready_for_release: false,
+            overall_status: ReadinessStatus::Warn,
+            categories: BTreeMap::new(),
+            metrics: ReadinessMetrics {
+                accepted_blocks: 0,
+                rejected_blocks_by_reason: BTreeMap::new(),
+                orphan_count: 0,
+                selected_tip: None,
+                best_height: 0,
+                p2p_peer_count: 0,
+                storage_last_commit_height: None,
+                state_root: None,
+            },
+            release_blockers: vec!["public_testnet_evidence: missing explicit gate evidence".to_string()],
+            warnings: vec!["public_testnet_evidence: public testnet readiness is gated by explicit evidence and remains disabled for v2.2.19".to_string()],
+        };
+        let value = serde_json::to_value(data).unwrap();
+        assert_eq!(value["public_testnet_ready"], false);
+        assert_eq!(value["private_testnet_ready"], true);
+        assert_eq!(value["node_ready"], true);
+    }
+
+    #[test]
+    fn readiness_contract_does_not_claim_future_versions() {
+        let source = include_str!("readiness.rs");
+        assert!(!source.contains("ready_for_v3"));
+        assert!(!source.contains("v2.3.0 readiness"));
+        assert!(!source.contains("v3.0 readiness"));
+        assert!(!source.contains("public testnet live"));
     }
 }
