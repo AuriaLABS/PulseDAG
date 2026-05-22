@@ -43,3 +43,34 @@ cargo run -p pulsedag-miner -- --node http://127.0.0.1:8080 --miner-address YOUR
 - Machine-readable hardening errors:
   - `request_too_large`
   - `rate_limited`
+
+
+## Sample `/release` (v2.2.19)
+```json
+{
+  "ok": true,
+  "data": {
+    "version": "v2.2.19",
+    "pow_algorithm": "kHeavyHash",
+    "pow_engine": "canonical_core",
+    "miner_mode": "external",
+    "smart_contracts": "disabled",
+    "pool_logic": "disabled_not_in_node"
+  }
+}
+```
+
+## Sample `/readiness` (operator fields)
+```json
+{
+  "ok": true,
+  "data": {
+    "effective_rpc_bind": "127.0.0.1:8080",
+    "effective_api_profile": "local_dev",
+    "admin_enabled": false,
+    "storage_path_class": "default",
+    "peer_health": "peers_connected",
+    "mining_templates_available": true
+  }
+}
+```

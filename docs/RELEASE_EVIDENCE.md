@@ -26,3 +26,22 @@ Reference: `docs/CLOSING_CHECKLIST_V2_2_17.md`.
 - `scripts/release/verify_release_artifacts.py --smoke` now enforces bounded command runtime via `--smoke-timeout-secs` (default: 10s).
 - `pulsedagd --help/-h` and `pulsedagd --version/-V` are immediate-exit commands and are safe for release smoke checks.
 - `release-binaries` workflow now applies job-level timeouts and smoke-step command timeouts, so verification fails fast instead of hanging indefinitely.
+
+
+## v2.2.19 RPC metadata/readiness evidence checklist
+- Capture `/release` and verify:
+  - `pow_algorithm == "kHeavyHash"`
+  - `pow_engine == "canonical_core"`
+  - no `sha256d` string in payload
+- Capture `/readiness` and verify effective runtime values:
+  - `effective_rpc_bind`
+  - `effective_api_profile`
+  - `admin_enabled`
+  - `storage_path_class`
+  - `peer_health`
+  - `mining_templates_available`
+- Capture `/status` and verify:
+  - `best_height`, `selected_tip`, `block_count`
+  - `chain_id`/`network_id`
+  - `peer_summary`
+  - `uptime_secs`
