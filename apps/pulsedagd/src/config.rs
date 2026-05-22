@@ -1086,16 +1086,14 @@ mod tests {
     }
 
     #[test]
-    fn wildcard_cors_and_admin_requires_unsafe_override() {
+    fn wildcard_cors_is_rejected() {
         let _guard = env_lock().lock().expect("env lock");
         clear_test_env();
         std::env::set_var("PULSEDAG_CONFIG_PROFILE", "dev");
         std::env::set_var("PULSEDAG_ADMIN_ENABLED", "true");
         std::env::set_var("PULSEDAG_RPC_CORS_ALLOWLIST", "*");
         let err = Config::from_env().expect_err("wildcard cors with admin should fail");
-        assert!(err
-            .to_string()
-            .contains("PULSEDAG_RPC_CORS_UNSAFE_ALLOW_WILDCARD_WITH_ADMIN=true"));
+        assert!(err.to_string().contains("wildcard origin is not allowed"));
     }
     #[test]
     fn admin_env_override_takes_precedence() {

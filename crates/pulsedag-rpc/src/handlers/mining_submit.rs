@@ -72,7 +72,6 @@ enum ExternalMiningRejectKind {
     MalformedSerialization,
     UnknownValidationError,
     InternalError,
-    StorageError,
 }
 
 fn classify_rejected_validation_message(message: &str) -> (&'static str, ExternalMiningRejectKind) {
@@ -249,7 +248,6 @@ async fn record_external_mining_rejection<S: RpcStateLike>(
             ExternalMiningRejectKind::MalformedSerialization => "malformed_serialization",
             ExternalMiningRejectKind::UnknownValidationError => "unknown_validation_error",
             ExternalMiningRejectKind::InternalError => "internal_error",
-            ExternalMiningRejectKind::StorageError => "storage_error",
         }
         .to_string(),
     );
@@ -268,7 +266,6 @@ async fn record_external_mining_rejection<S: RpcStateLike>(
         ExternalMiningRejectKind::MalformedSerialization => "malformed_serialization",
         ExternalMiningRejectKind::UnknownValidationError => "unknown_validation_error",
         ExternalMiningRejectKind::InternalError => "internal_error",
-        ExternalMiningRejectKind::StorageError => "storage_error",
     };
     runtime.record_rejected_block_reason(reason_label);
     match kind {
@@ -316,11 +313,6 @@ async fn record_external_mining_rejection<S: RpcStateLike>(
                 .external_mining_rejected_internal_error
                 .saturating_add(1);
         }
-        ExternalMiningRejectKind::StorageError => {
-            runtime.external_mining_rejected_storage_error = runtime
-                .external_mining_rejected_storage_error
-                .saturating_add(1);
-        }
     }
     drop(runtime);
 
@@ -338,7 +330,6 @@ async fn record_external_mining_rejection<S: RpcStateLike>(
         ExternalMiningRejectKind::MalformedSerialization => "malformed_serialization",
         ExternalMiningRejectKind::UnknownValidationError => "unknown_validation_error",
         ExternalMiningRejectKind::InternalError => "internal_error",
-        ExternalMiningRejectKind::StorageError => "storage_error",
     };
     let _ = state.storage().append_runtime_event(
         "warn",
@@ -726,7 +717,7 @@ pub async fn post_mining_submit<S: RpcStateLike>(
         Err(e) => {
             record_external_mining_rejection(
                 &state,
-                ExternalMiningRejectKind::StorageError,
+                ExternalMiningRejectKind::SubmitBlockError,
                 &e.to_string(),
             )
             .await;
@@ -845,7 +836,7 @@ pub async fn post_mining_submit<S: RpcStateLike>(
                     "malformed_serialization",
                 ),
                 pulsedag_core::BlockAcceptanceResult::Rejected(message) => {
-                    let (reason_code, kind) = classify_rejected_validation_message(&message);
+                    let (reason_code, kind) = classify_rejected_validation_message(message);
                     (kind, reason_code)
                 }
                 pulsedag_core::BlockAcceptanceResult::Accepted => {
