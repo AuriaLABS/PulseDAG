@@ -63,7 +63,6 @@ enum ExternalMiningRejectKind {
     StaleTemplate,
     MissingTemplateId,
     UnknownTemplate,
-    SubmitBlockError,
     DuplicateBlock,
     MissingParent,
     InvalidTimestamp,
@@ -845,7 +844,7 @@ pub async fn post_mining_submit<S: RpcStateLike>(
                     "malformed_serialization",
                 ),
                 pulsedag_core::BlockAcceptanceResult::Rejected(message) => {
-                    let (reason_code, kind) = classify_rejected_validation_message(&message);
+                    let (reason_code, kind) = classify_rejected_validation_message(message);
                     (kind, reason_code)
                 }
                 pulsedag_core::BlockAcceptanceResult::Accepted => {
