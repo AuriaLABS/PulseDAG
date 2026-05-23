@@ -1,5 +1,12 @@
 # Release Notes v2.2.19
 
+## Release posture (scope guard)
+- `v2.2.19` is a **hardening / pre-public-testnet** milestone.
+- `v2.2.19` is **not** a public testnet launch declaration.
+- `v2.2.19` is **not** `v2.3.0` readiness.
+- `v2.2.19` is **not** `v3.0` readiness.
+- GPU execution remains **scaffold/optional** unless explicit canonical-kernel evidence is produced.
+
 ## RPC metadata and readiness correctness
 - `/release` metadata is aligned with effective node behavior:
   - `version: v2.2.19`
@@ -25,7 +32,6 @@
   - `storage_path_class` (class only, not raw private path)
   - `peer_health`
   - `mining_templates_available`
-
 
 ## Required closeout evidence path
 - v2.2.19 closeout must be driven by `docs/CLOSING_CHECKLIST_V2_2_19_FINAL.md`.
