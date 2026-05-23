@@ -9,7 +9,6 @@ use pulsedag_core::{
     BlockAcceptanceResult, ChainState, Hash,
 };
 
-
 static FUTURE_DRIFT_ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
 struct FutureDriftEnvRestore {
