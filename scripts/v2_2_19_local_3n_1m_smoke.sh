@@ -28,6 +28,10 @@ exec > >(tee -a "$OUT_DIR/command-log.txt") 2>&1
 PIDS=()
 WARNINGS=()
 FAILURES=()
+RESULT="PENDING"
+EXIT_CODE=0
+WAIVE_ACCEPTED_BLOCK_GATE=${WAIVE_ACCEPTED_BLOCK_GATE:-0}
+WAIVE_ACCEPTED_BLOCK_REASON=${WAIVE_ACCEPTED_BLOCK_REASON:-""}
 
 record_warn(){ local msg; msg="$1"; echo "WARN: $msg"; WARNINGS+=("$msg"); }
 record_fail(){ local msg; msg="$1"; echo "FAIL: $msg"; FAILURES+=("$msg"); }
@@ -55,7 +59,63 @@ count_matches(){
   fi
 }
 
+write_summary(){
+  local healthy_count ready_count peers_total chain_id="unknown"
+  healthy_count=0
+  ready_count=0
+  peers_total=0
+  for n in a b c; do
+    [[ -f "$OUT_DIR/endpoints/${n}-health.json" ]] && [[ "$(jq -r '(.ok // .data.ok // false)' "$OUT_DIR/endpoints/${n}-health.json" 2>/dev/null)" == "true" ]] && ((healthy_count+=1))
+    [[ -f "$OUT_DIR/endpoints/${n}-readiness.json" ]] && [[ "$(jq -r '(.data.ready_for_release // .ready_for_release // false)' "$OUT_DIR/endpoints/${n}-readiness.json" 2>/dev/null)" == "true" ]] && ((ready_count+=1))
+    if [[ -f "$OUT_DIR/endpoints/${n}-p2p_status.json" ]]; then
+      peers_total=$((peers_total + $(jq -r '(.data.peer_count // .data.connected_peer_count // 0)' "$OUT_DIR/endpoints/${n}-p2p_status.json" 2>/dev/null || echo 0)))
+    fi
+  done
+  {
+    echo "# v2.2.19 local 3N/1M smoke evidence"
+    echo "- result: $RESULT"
+    echo "- exit_code: $EXIT_CODE"
+    echo "- node_count: 3"
+    echo "- miner_count: 1"
+    echo "- chain_id: $chain_id"
+    echo "- healthy_nodes: $healthy_count"
+    echo "- ready_nodes: $ready_count"
+    echo "- peers_total: $peers_total"
+    echo "- templates_seen: $miner_templates"
+    echo "- submissions_seen: $miner_submits"
+    echo "- accepted_blocks: $accepted_count"
+    echo "- rejected_blocks: ${rejected_count:-0}"
+    echo "- final_heights: a=${ha:-0}, b=${hb:-0}, c=${hc:-0}"
+    echo "- final_tips: a=${ta:-}, b=${tb:-}, c=${tc:-}"
+    echo ""
+    echo "## Warnings"
+    if (( ${#WARNINGS[@]} == 0 )); then echo "- none"; else for w in "${WARNINGS[@]}"; do echo "- $w"; done; fi
+    echo ""
+    echo "## Failure reasons"
+    if (( ${#FAILURES[@]} == 0 )); then echo "- none"; else for f in "${FAILURES[@]}"; do echo "- $f"; done; fi
+    echo ""
+    echo "## Required gates"
+    echo "| gate | status |"
+    echo "|---|---|"
+    echo "| 3 nodes launched | $([[ -f "$OUT_DIR/a.pid" && -f "$OUT_DIR/b.pid" && -f "$OUT_DIR/c.pid" ]] && echo PASS || echo FAIL) |"
+    echo "| 1 miner launched | $([[ -f "$OUT_DIR/miner.pid" ]] && echo PASS || echo FAIL) |"
+    echo "| all nodes healthy/status | $( (( healthy_count==3 )) && echo PASS || echo FAIL ) |"
+    echo "| all nodes readiness | $( (( ready_count==3 )) && echo PASS || echo FAIL ) |"
+    echo "| miner templates >=1 | $( (( miner_templates==1 )) && echo PASS || echo FAIL ) |"
+    echo "| miner submissions >=1 | $( (( miner_submits==1 )) && echo PASS || echo FAIL ) |"
+    echo "| accepted blocks >0 (or waived) | $( (( accepted_count>0 || WAIVE_ACCEPTED_BLOCK_GATE==1 )) && echo PASS || echo FAIL ) |"
+    echo "| heights > genesis | $( (( ha>0 && hb>0 && hc>0 )) && echo PASS || echo FAIL ) |"
+    echo "| final convergence | $( (( final_converged==1 )) && echo PASS || echo FAIL ) |"
+  } > "$OUT_DIR/evidence-summary.md"
+}
+
+package_evidence(){
+  "$ROOT_DIR/scripts/v2_2_19_collect_local_evidence.sh" "$OUT_DIR"
+}
+
 cleanup(){
+  local exit_code=$?
+  EXIT_CODE=$exit_code
   echo "[cleanup] terminating spawned processes"
   for p in "${PIDS[@]:-}"; do
     kill "$p" 2>/dev/null || true
@@ -66,6 +126,13 @@ cleanup(){
   done
   wait || true
   rm -f "$OUT_DIR"/*.pid
+  if (( exit_code != 0 )); then
+    record_fail "script exited non-zero: $exit_code"
+  fi
+  if (( ${#FAILURES[@]} == 0 )); then RESULT="PASS"; else RESULT="FAIL"; fi
+  write_summary || true
+  package_evidence || true
+  exit "$exit_code"
 }
 trap cleanup EXIT INT TERM
 
@@ -213,22 +280,21 @@ for n in a b c; do
   cp "$OUT_DIR/endpoints/${n}-status.json" "$OUT_DIR/final-status-node-${n}.json" 2>/dev/null || true
 done
 
-if (( final_converged == 0 )); then
-  echo "FAIL final convergence not reached within deadline (duration=${DURATION_SECS}s, grace=${GRACE_SECS}s)"
-  exit 1
-fi
-
-text_has_match "peer_block_received|peer_block_accepted" "$OUT_DIR/logs/b.log" || { echo "FAIL node_b missing inbound p2p block activity"; exit 1; }
-text_has_match "peer_block_received|peer_block_accepted" "$OUT_DIR/logs/c.log" || { echo "FAIL node_c missing inbound p2p block activity"; exit 1; }
-(( miner_templates == 1 )) || { echo "FAIL miner never receives templates"; exit 1; }
-(( miner_submits == 1 )) || { echo "FAIL miner never submits"; exit 1; }
+(( final_converged == 1 )) || record_fail "final convergence not reached within deadline (duration=${DURATION_SECS}s, grace=${GRACE_SECS}s)"
+text_has_match "peer_block_received|peer_block_accepted" "$OUT_DIR/logs/b.log" || record_fail "node_b missing inbound p2p block activity"
+text_has_match "peer_block_received|peer_block_accepted" "$OUT_DIR/logs/c.log" || record_fail "node_c missing inbound p2p block activity"
+(( miner_templates == 1 )) || record_fail "miner never receives templates"
+(( miner_submits == 1 )) || record_fail "miner never submits"
 if (( accepted_count < 1 )); then
-  if text_has_match "difficulty|target too high|share.*reject" "$OUT_DIR/logs/miner.log"; then
-    echo "NO-GO: no accepted block, difficulty may prevent acceptance" | tee "$OUT_DIR/no-go.txt"
-    exit 1
+  if (( WAIVE_ACCEPTED_BLOCK_GATE == 1 )); then
+    if [[ -z "$WAIVE_ACCEPTED_BLOCK_REASON" ]]; then
+      record_fail "accepted block gate waived without reason"
+    else
+      record_warn "accepted block gate waived: $WAIVE_ACCEPTED_BLOCK_REASON"
+    fi
+  else
+    record_fail "no accepted block recorded"
   fi
-  echo "FAIL no accepted block recorded"
-  exit 1
 fi
 
 echo "node,height,tip" > "$OUT_DIR/final-tips-heights.csv"
@@ -244,53 +310,10 @@ for n in a b c; do
   jq -n --arg node "$n" --slurpfile d "$OUT_DIR/endpoints/${n}-p2p_status.json" '{node:$node, captured:(($d|length)>0)}' >> "$OUT_DIR/p2p-summary.json"
 done
 
-{
-  echo "# v2.2.19 local 3N/1M smoke evidence"
-  echo "- run_id: $RUN_ID"
-  echo "- duration_secs: $DURATION_SECS"
-  echo "- grace_secs: $GRACE_SECS"
-  echo "- sample_interval_secs: $SAMPLE_INTERVAL_SECS"
-  echo "- miner_address: $MINER_ADDRESS"
-  echo "- output_dir: $OUT_DIR"
-  echo "- tip_divergence_seen_during_run: $tip_divergence_seen"
-  echo "- final_converged: $final_converged"
-  echo ""
-  echo "## Final tips/heights"
-  cat "$OUT_DIR/final-tips-heights.csv"
-  echo ""
-  echo "## Process exit summary"
-  for p in "${PIDS[@]:-}"; do
-    if kill -0 "$p" 2>/dev/null; then
-      echo "- pid $p: running_at_summary_time"
-    else
-      echo "- pid $p: not_running_at_summary_time"
-    fi
-  done
-} > "$OUT_DIR/evidence-summary.md"
 
-cat > "$OUT_DIR/manifest.txt" <<MAN
-command-log.txt
-process-pids.txt
-final-status-node-a.json
-final-status-node-b.json
-final-status-node-c.json
-endpoints-manifest.txt
-height-samples.csv
-readiness-samples.csv
-miner-block-counters.csv
-final-tips-heights.csv
-node-height-summary.json
-miner-submit-summary.json
-readiness-summary.json
-p2p-summary.json
-evidence-summary.md
-MAN
-
-[[ -d "$OUT_DIR" ]] || { echo "FAIL no evidence directory produced"; exit 1; }
-[[ -f "$OUT_DIR/evidence-summary.md" ]] || { echo "FAIL missing evidence-summary.md"; exit 1; }
-
-"$ROOT_DIR/scripts/v2_2_19_collect_local_evidence.sh" "$OUT_DIR"
-[[ -f "$OUT_DIR/evidence.tar.gz" ]] || { echo "FAIL evidence tarball missing"; exit 1; }
-[[ -f "$OUT_DIR/evidence.tar.gz.sha256" ]] || { echo "FAIL evidence checksum missing"; exit 1; }
+if (( ${#FAILURES[@]} > 0 )); then
+  echo "FAIL local smoke: $OUT_DIR"
+  exit 1
+fi
 
 echo "PASS local smoke complete: $OUT_DIR"

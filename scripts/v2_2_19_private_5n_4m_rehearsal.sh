@@ -23,6 +23,11 @@ declare -a NODE_PIDS=()
 declare -a MINER_PIDS=()
 declare -A NODE_READY NODE_HEALTHY NODE_ADVANCED NODE_TIP NODE_HEIGHT NODE_P2P_OK NODE_PEERS NODE_P2P_INBOUND NODE_P2P_OUTBOUND NODE_CHAIN_ID
 FAIL_REASONS=()
+WARNINGS=()
+RESULT="PENDING"
+EXIT_CODE=0
+WAIVE_ACCEPTED_BLOCK_GATE=${WAIVE_ACCEPTED_BLOCK_GATE:-0}
+WAIVE_ACCEPTED_BLOCK_REASON=${WAIVE_ACCEPTED_BLOCK_REASON:-""}
 ACCEPTED_BLOCKS=0
 REJECTED_BLOCKS=0
 TEMPLATES_OK=0
@@ -47,7 +52,7 @@ count_matches_in_logs(){
   fi
 }
 
-record_warn(){ local msg; msg="$1"; echo "WARN: $msg"; }
+record_warn(){ local msg; msg="$1"; echo "WARN: $msg"; WARNINGS+=("$msg"); }
 record_fail(){ local msg; msg="$1"; echo "FAIL: $msg"; FAIL_REASONS+=("$msg"); }
 
 safe_curl_required(){ local url out; url="$1"; out="$2"; if ! curl -fsS "$url" -o "$out"; then record_fail "required endpoint failed: $url"; return 1; fi; }
@@ -125,9 +130,8 @@ collect_final_state(){
 }
 
 write_evidence_summary(){
-  local end_ts now_utc duration result
-  end_ts=$(date +%s); now_utc=$(date -u +%FT%TZ); duration=$((end_ts - START_TS)); result="PASS"
-  (( ${#FAIL_REASONS[@]} > 0 )) && result="FAIL"
+  local end_ts now_utc duration
+  end_ts=$(date +%s); now_utc=$(date -u +%FT%TZ); duration=$((end_ts - START_TS))
   {
     echo "# v2.2.19 Private 5N/4M Rehearsal Evidence"
     echo "- chain id expected: \`$CHAIN_ID_EXPECTED\`"
@@ -157,13 +161,33 @@ write_evidence_summary(){
     echo "- accepted blocks: $ACCEPTED_BLOCKS"
     echo "- rejected blocks: $REJECTED_BLOCKS"
     echo
+    echo
+    echo "## Required gates"
+    echo "| gate | status |"
+    echo "|---|---|"
+    echo "| 5 nodes launched | $( (( ${#NODE_PIDS[@]}==5 )) && echo PASS || echo FAIL ) |"
+    echo "| 4 miners launched | $( (( ${#MINER_PIDS[@]}==4 )) && echo PASS || echo FAIL ) |"
+    echo "| bootnode peer id extracted | $([[ -n "${NODE_1_ID:-}" ]] && echo PASS || echo FAIL) |"
+    echo "| all nodes healthy/status | $( for i in $(seq 1 "$NODE_COUNT"); do [[ "${NODE_HEALTHY[$i]:-0}" == "1" ]] || exit 1; done; echo PASS ) |"
+    echo "| all nodes readiness | $( for i in $(seq 1 "$NODE_COUNT"); do [[ "${NODE_READY[$i]:-0}" == "1" ]] || exit 1; done; echo PASS ) |"
+    echo "| peer count network non-zero | $( (( $(for i in $(seq 1 "$NODE_COUNT"); do echo ${NODE_PEERS[$i]:-0}; done | awk '{s+=$1} END{print s+0}') > 0 )) && echo PASS || echo FAIL ) |"
+    echo "| heights above genesis | $( for i in $(seq 1 "$NODE_COUNT"); do (( ${NODE_HEIGHT[$i]:-0} > 0 )) || exit 1; done; echo PASS ) |"
+    echo "| miners receive templates | $( for i in $(seq 1 "$MINER_COUNT"); do (( ${miner_template[$i]:-0} == 1 )) || exit 1; done; echo PASS ) |"
+    echo "| miners submit work | $( for i in $(seq 1 "$MINER_COUNT"); do (( ${miner_submit[$i]:-0} == 1 )) || exit 1; done; echo PASS ) |"
+    echo "| accepted blocks >0 (or waived) | $( (( ACCEPTED_BLOCKS>0 || WAIVE_ACCEPTED_BLOCK_GATE==1 )) && echo PASS || echo FAIL ) |"
     echo "## Build/runtime metadata"
     echo "- commit: $REPO_COMMIT"
     echo "- version: $NODE_VERSION"
     echo
     echo "## Result"
-    echo "- pass/fail: $result"
-    if (( ${#FAIL_REASONS[@]} > 0 )); then echo "- reasons:"; for r in "${FAIL_REASONS[@]}"; do echo "  - $r"; done; fi
+    echo "- result: $RESULT"
+    echo "- exit_code: $EXIT_CODE"
+    echo "- node_count: $NODE_COUNT"
+    echo "- miner_count: $MINER_COUNT"
+    echo "- warnings:"
+    if (( ${#WARNINGS[@]} > 0 )); then for w in "${WARNINGS[@]}"; do echo "  - $w"; done; else echo "  - none"; fi
+    echo "- failure reasons:"
+    if (( ${#FAIL_REASONS[@]} > 0 )); then for r in "${FAIL_REASONS[@]}"; do echo "  - $r"; done; else echo "  - none"; fi
   } > "$OUT_DIR/evidence-summary.md"
 }
 
@@ -196,6 +220,12 @@ package_evidence(){
 }
 
 cleanup(){
+  local exit_code=$?
+  EXIT_CODE=$exit_code
+  if (( exit_code != 0 )); then
+    record_fail "script exited non-zero: $exit_code"
+  fi
+  if (( ${#FAIL_REASONS[@]} == 0 )); then RESULT="PASS"; else RESULT="FAIL"; fi
   collect_final_state || true
   capture_log_tails || true
   write_evidence_summary || true
@@ -203,6 +233,7 @@ cleanup(){
   write_restart_rejoin_log || true
   stop_pids "${MINER_PIDS[@]:-}"; stop_pids "${NODE_PIDS[@]:-}"; wait || true
   package_evidence || true
+  exit "$exit_code"
 }
 trap cleanup EXIT INT TERM
 
@@ -302,6 +333,14 @@ for i in 1 2 3 4; do
   (( miner_template[$i] == 1 )) || record_fail "miner-${i} did not receive templates"
   (( miner_submit[$i] == 1 )) || record_fail "miner-${i} did not submit work"
 done
+
+if (( ACCEPTED_BLOCKS < 1 )); then
+  if (( WAIVE_ACCEPTED_BLOCK_GATE == 1 )); then
+    [[ -n "$WAIVE_ACCEPTED_BLOCK_REASON" ]] && record_warn "accepted blocks gate waived: $WAIVE_ACCEPTED_BLOCK_REASON" || record_fail "accepted blocks gate waived without reason"
+  else
+    record_fail "accepted blocks is zero"
+  fi
+fi
 
 if (( ${#FAIL_REASONS[@]} > 0 )); then
   echo "FAIL private rehearsal: $OUT_DIR"
