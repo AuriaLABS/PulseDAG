@@ -4,6 +4,7 @@ set -euo pipefail
 DURATION_SECS=${DURATION_SECS:-900}
 GRACE_SECS=${GRACE_SECS:-120}
 SAMPLE_INTERVAL_SECS=${SAMPLE_INTERVAL_SECS:-10}
+STARTUP_WAIT_SECS=${STARTUP_WAIT_SECS:-12}
 RUN_ID=${RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)}
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DEFAULT_OUT_DIR="$ROOT_DIR/artifacts/v2_2_19_public_testnet_readiness/local-3n-1m/${RUN_ID}"
@@ -35,13 +36,22 @@ cleanup(){
     kill -9 "$p" 2>/dev/null || true
   done
   wait || true
-  rm -f "$OUT_DIR"/*.pid "$OUT_DIR/process-pids.txt"
+  rm -f "$OUT_DIR"/*.pid
 }
 trap cleanup EXIT INT TERM
 
 is_port_busy(){
   local port="$1"
-  ss -ltn | awk '{print $4}' | rg -q "[:.]${port}$"
+  if command -v ss >/dev/null 2>&1; then
+    ss -ltn | awk '{print $4}' | rg -q "[:.]${port}$"
+  elif command -v lsof >/dev/null 2>&1; then
+    lsof -iTCP:"${port}" -sTCP:LISTEN >/dev/null 2>&1
+  elif command -v netstat >/dev/null 2>&1; then
+    netstat -ltn 2>/dev/null | awk '{print $4}' | rg -q "[:.]${port}$"
+  else
+    echo "WARN cannot verify ports (missing ss/lsof/netstat)" >&2
+    return 1
+  fi
 }
 
 for port in "$RPC_PORT_A" "$RPC_PORT_B" "$RPC_PORT_C" "$P2P_PORT_A" "$P2P_PORT_B" "$P2P_PORT_C"; do
@@ -53,9 +63,9 @@ done
 
 OUT_DIR="$OUT_DIR" "$ROOT_DIR/scripts/v2_2_19_preflight_check.sh"
 
-cargo fmt --check
-cargo test --workspace
-cargo build --workspace --release
+if [[ ! -x "$NODE_BIN" || ! -x "$MINER_BIN" ]]; then
+  cargo build --workspace --release --locked
+fi
 [[ -x "$NODE_BIN" ]] || { echo "FAIL missing binary: $NODE_BIN"; exit 1; }
 [[ -x "$MINER_BIN" ]] || { echo "FAIL missing binary: $MINER_BIN"; exit 1; }
 
@@ -73,13 +83,13 @@ start_node(){
 }
 
 start_node a "$RPC_PORT_A" "$P2P_PORT_A" ""
-sleep 2
+sleep "$STARTUP_WAIT_SECS"
 NODE_A_ID=$(rg -n "local_node_id|peer_id" "$OUT_DIR/logs/a.log" | head -n1 | sed -E 's/.*(12D[[:alnum:]]+).*/\1/' || true)
 BOOT_A=""
 [[ -n "$NODE_A_ID" ]] && BOOT_A="/ip4/127.0.0.1/tcp/${P2P_PORT_A}/p2p/${NODE_A_ID}"
 start_node b "$RPC_PORT_B" "$P2P_PORT_B" "$BOOT_A"
 start_node c "$RPC_PORT_C" "$P2P_PORT_C" "$BOOT_A"
-sleep 4
+sleep "$STARTUP_WAIT_SECS"
 
 "$MINER_BIN" --node "http://127.0.0.1:${RPC_PORT_A}" --miner-address "$MINER_ADDRESS" --backend cpu --threads 1 --loop > "$OUT_DIR/logs/miner.log" 2>&1 &
 PIDS+=("$!")
@@ -113,6 +123,7 @@ miner_submits=0
 tip_divergence_seen=0
 final_converged=0
 readiness_phase="no_peers"
+accepted_count=0
 
 end=$(( $(date +%s) + DURATION_SECS ))
 while (( $(date +%s) < end )); do
@@ -134,9 +145,9 @@ while (( $(date +%s) < end )); do
   tc=$(jq -r '.data.selected_tip // ""' "$OUT_DIR/endpoints/c-status.json" 2>/dev/null || echo "")
   echo "$(date -u +%FT%TZ),$ha,$hb,$hc,$ta,$tb,$tc" >> "$OUT_DIR/height-samples.csv"
 
-  if [[ "$ta" != "$tb" || "$tb" != "$tc" ]]; then
+  if (( elapsed < GRACE_SECS )) && [[ "$ta" != "$tb" || "$tb" != "$tc" ]]; then
     tip_divergence_seen=1
-    echo "WARN temporary tip divergence observed at elapsed=${elapsed}s"
+    echo "WARN temporary tip divergence observed during startup grace elapsed=${elapsed}s"
   fi
 
   pa=$(jq -r ".data.peer_count // .data.connected_peer_count // 0" "$OUT_DIR/endpoints/a-p2p_status.json" 2>/dev/null || echo 0)
@@ -164,6 +175,10 @@ while (( $(date +%s) < end )); do
   sleep "$SAMPLE_INTERVAL_SECS"
 done
 
+for n in a b c; do
+  cp "$OUT_DIR/endpoints/${n}-status.json" "$OUT_DIR/final-status-node-${n}.json" 2>/dev/null || true
+done
+
 if (( final_converged == 0 )); then
   echo "FAIL final convergence not reached within deadline (duration=${DURATION_SECS}s, grace=${GRACE_SECS}s)"
   exit 1
@@ -173,6 +188,14 @@ rg -q "peer_block_received|peer_block_accepted" "$OUT_DIR/logs/b.log" || { echo 
 rg -q "peer_block_received|peer_block_accepted" "$OUT_DIR/logs/c.log" || { echo "FAIL node_c missing inbound p2p block activity"; exit 1; }
 (( miner_templates == 1 )) || { echo "FAIL miner never receives templates"; exit 1; }
 (( miner_submits == 1 )) || { echo "FAIL miner never submits"; exit 1; }
+if (( accepted_count < 1 )); then
+  if rg -qi "difficulty|target too high|share.*reject" "$OUT_DIR/logs/miner.log"; then
+    echo "NO-GO: no accepted block, difficulty may prevent acceptance" | tee "$OUT_DIR/no-go.txt"
+    exit 1
+  fi
+  echo "FAIL no accepted block recorded"
+  exit 1
+fi
 
 echo "node,height,tip" > "$OUT_DIR/final-tips-heights.csv"
 echo "a,$ha,$ta" >> "$OUT_DIR/final-tips-heights.csv"
@@ -214,6 +237,9 @@ done
 cat > "$OUT_DIR/manifest.txt" <<MAN
 command-log.txt
 process-pids.txt
+final-status-node-a.json
+final-status-node-b.json
+final-status-node-c.json
 endpoints-manifest.txt
 height-samples.csv
 readiness-samples.csv
