@@ -1,7 +1,7 @@
 {
   "manifest_version": "v2.2.19",
   "run_id": "ptn-v2_2_19-rc-5n-4m",
-  "chain_id": "private-testnet-v2-2-19",
+  "chain_id": "pulsedag-private",
   "expected_duration": "4h",
   "evidence_directory": "./artifacts/private-testnet/v2_2_19/rc-5n-4m",
   "nodes": [

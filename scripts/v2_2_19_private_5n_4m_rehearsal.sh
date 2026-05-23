@@ -12,7 +12,7 @@ MINER_BIN="${MINER_BIN:-$ROOT_DIR/target/release/pulsedag-miner}"
 NODE_COUNT=5
 MINER_COUNT=4
 NETWORK_PROFILE="private"
-CHAIN_ID_EXPECTED="private-testnet-v2-2-19"
+CHAIN_ID_EXPECTED="pulsedag-private"
 BASE_RPC_PORT=28544
 BASE_P2P_PORT=32302
 
@@ -21,13 +21,27 @@ exec > >(tee -a "$OUT_DIR/command-log.txt") 2>&1
 
 declare -a NODE_PIDS=()
 declare -a MINER_PIDS=()
-declare -A NODE_READY NODE_HEALTHY NODE_ADVANCED NODE_TIP NODE_HEIGHT NODE_P2P_OK NODE_PEERS NODE_P2P_INBOUND NODE_P2P_OUTBOUND
+declare -A NODE_READY NODE_HEALTHY NODE_ADVANCED NODE_TIP NODE_HEIGHT NODE_P2P_OK NODE_PEERS NODE_P2P_INBOUND NODE_P2P_OUTBOUND NODE_CHAIN_ID
 FAIL_REASONS=()
 ACCEPTED_BLOCKS=0
 REJECTED_BLOCKS=0
 TEMPLATES_OK=0
 
 record_fail(){ echo "FAIL: $1"; FAIL_REASONS+=("$1"); }
+
+extract_chain_id(){
+  local status_file="$1" release_file="$2" p2p_file="$3"
+  jq -r '
+    .data.chain_id // .chain_id // empty
+  ' "$status_file" 2>/dev/null | head -n1 | awk 'NF {print; exit}' && return 0
+  jq -r '
+    .data.chain_id // .chain_id // .data.network_id // .network_id // empty
+  ' "$release_file" 2>/dev/null | head -n1 | awk 'NF {print; exit}' && return 0
+  jq -r '
+    .data.chain_id // .chain_id // empty
+  ' "$p2p_file" 2>/dev/null | head -n1 | awk 'NF {print; exit}' && return 0
+  return 1
+}
 
 port_in_use(){
   local p="$1"
@@ -63,6 +77,7 @@ collect_final_state(){
   for i in $(seq 1 "$NODE_COUNT"); do
     local rpc=$((BASE_RPC_PORT+i))
     curl -fsS "http://127.0.0.1:${rpc}/status" -o "$OUT_DIR/endpoints/n${i}-status-final.json" || true
+    curl -fsS "http://127.0.0.1:${rpc}/release" -o "$OUT_DIR/endpoints/n${i}-release-final.json" || true
     curl -fsS "http://127.0.0.1:${rpc}/readiness" -o "$OUT_DIR/endpoints/n${i}-readiness-final.json" || true
     curl -fsS "http://127.0.0.1:${rpc}/p2p/status" -o "$OUT_DIR/endpoints/n${i}-p2p-status-final.json" || true
     NODE_HEIGHT[$i]="$(jq -r '.data.best_height // 0' "$OUT_DIR/endpoints/n${i}-status-final.json" 2>/dev/null || echo 0)"
@@ -72,6 +87,7 @@ collect_final_state(){
     NODE_PEERS[$i]="$(jq -r '.data.peer_count // (.data.peers|length) // 0' "$OUT_DIR/endpoints/n${i}-p2p-status-final.json" 2>/dev/null || echo 0)"
     NODE_P2P_INBOUND[$i]="$(jq -r '.data.inbound_peer_count // 0' "$OUT_DIR/endpoints/n${i}-p2p-status-final.json" 2>/dev/null || echo 0)"
     NODE_P2P_OUTBOUND[$i]="$(jq -r '.data.outbound_peer_count // 0' "$OUT_DIR/endpoints/n${i}-p2p-status-final.json" 2>/dev/null || echo 0)"
+    NODE_CHAIN_ID[$i]="$(extract_chain_id "$OUT_DIR/endpoints/n${i}-status-final.json" "$OUT_DIR/endpoints/n${i}-release-final.json" "$OUT_DIR/endpoints/n${i}-p2p-status-final.json" || true)"
     NODE_P2P_OK[$i]=$(( NODE_PEERS[$i] > 0 ? 1 : 0 ))
   done
 }
@@ -93,6 +109,9 @@ write_evidence_summary(){
     echo
     echo "## P2P status per node"
     for i in $(seq 1 "$NODE_COUNT"); do echo "- n${i}: peers=${NODE_PEERS[$i]:-0} inbound=${NODE_P2P_INBOUND[$i]:-0} outbound=${NODE_P2P_OUTBOUND[$i]:-0} ok=${NODE_P2P_OK[$i]:-0}"; done
+    echo
+    echo "## Chain identity per node"
+    for i in $(seq 1 "$NODE_COUNT"); do echo "- n${i}: chain_id=${NODE_CHAIN_ID[$i]:-unknown}"; done
     echo
     echo "## Final convergence table"
     for i in $(seq 1 "$NODE_COUNT"); do echo "- n${i}: height=${NODE_HEIGHT[$i]:-0} tip=${NODE_TIP[$i]:-}"; done
@@ -198,6 +217,8 @@ for i in 1 2 3 4 5; do
   [[ "${NODE_READY[$i]:-0}" == "1" ]] || record_fail "node n${i} not ready enough"
   (( ${NODE_HEIGHT[$i]:-0} > 0 )) || record_fail "node n${i} did not advance"
   [[ "${NODE_P2P_OK[$i]:-0}" == "1" ]] || record_fail "node n${i} missing peers"
+  [[ -n "${NODE_CHAIN_ID[$i]:-}" ]] || record_fail "node n${i} chain_id missing (/status,/release,/p2p/status)"
+  [[ "${NODE_CHAIN_ID[$i]:-}" == "$CHAIN_ID_EXPECTED" ]] || record_fail "node n${i} chain_id mismatch: got=${NODE_CHAIN_ID[$i]:-unset} expected=$CHAIN_ID_EXPECTED"
 done
 
 final_tip="${NODE_TIP[1]:-}"

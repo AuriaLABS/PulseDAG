@@ -1,7 +1,7 @@
 {
   "manifest_version": "v2.2.18",
   "run_id": "ptn-v2_2_18-local-3n-1m",
-  "chain_id": "private-testnet-v2-2-18",
+  "chain_id": "pulsedag-private",
   "expected_duration": "90m",
   "evidence_directory": "./artifacts/private-testnet/v2_2_18/local-3n-1m",
   "nodes": [
