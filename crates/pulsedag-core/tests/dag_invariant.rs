@@ -28,7 +28,7 @@ impl Drop for FutureDriftEnvRestore {
     }
 }
 
-fn with_future_drift_override_zero<T>(f: impl FnOnce() -> T) -> T {
+fn with_future_drift_override_min_positive<T>(f: impl FnOnce() -> T) -> T {
     let _env_guard = FUTURE_DRIFT_ENV_LOCK
         .lock()
         .expect("future drift env lock should not be poisoned");
@@ -36,7 +36,7 @@ fn with_future_drift_override_zero<T>(f: impl FnOnce() -> T) -> T {
         previous: std::env::var("PULSEDAG_MAX_FUTURE_DRIFT_SECS").ok(),
     };
     unsafe {
-        std::env::set_var("PULSEDAG_MAX_FUTURE_DRIFT_SECS", "0");
+        std::env::set_var("PULSEDAG_MAX_FUTURE_DRIFT_SECS", "1");
     }
 
     f()
@@ -304,11 +304,15 @@ fn dag_invariant_future_timestamp_is_rejected_without_mutation() {
         "future-timestamp",
         vec![state.dag.genesis_hash.clone()],
         1,
-        u64::MAX,
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock should be after unix epoch")
+            .as_secs()
+            .saturating_add(2),
     );
     refresh_block_consensus_ids(&mut future);
 
-    let outcome = with_future_drift_override_zero(|| {
+    let outcome = with_future_drift_override_min_positive(|| {
         accept_block_with_result(future, &mut state, AcceptSource::P2p)
     });
 
