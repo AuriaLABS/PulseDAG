@@ -8,7 +8,7 @@
 | Cargo workspace version | `2.2.19` |
 | Current milestone | v2.2.19 active hardening / pre-public-testnet preparation |
 | Current state | **ACTIVE HARDENING / PRE-PUBLIC-TESTNET PREPARATION** |
-| Readiness claims | No v2.3.0 readiness claim; no v3.0 readiness claim; no public testnet live claim |
+| Readiness claims | No v2.3.0 readiness claim; no v3.0 readiness claim; no public testnet launch claim |
 
 ## v2.2.x progression status
 
