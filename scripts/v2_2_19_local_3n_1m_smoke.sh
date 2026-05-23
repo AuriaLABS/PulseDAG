@@ -6,6 +6,7 @@ GRACE_SECS=${GRACE_SECS:-120}
 SAMPLE_INTERVAL_SECS=${SAMPLE_INTERVAL_SECS:-10}
 STARTUP_WAIT_SECS=${STARTUP_WAIT_SECS:-12}
 RUN_ID=${RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)}
+START_TS=$(date +%s)
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DEFAULT_OUT_DIR="$ROOT_DIR/artifacts/v2_2_19/local_3n_1m_smoke/${RUN_ID}"
 OUT_DIR=${OUT_DIR:-$DEFAULT_OUT_DIR}
@@ -22,7 +23,7 @@ P2P_PORT_A=${P2P_PORT_A:-$P2P_BASE_PORT}
 P2P_PORT_B=${P2P_PORT_B:-$((P2P_BASE_PORT+1))}
 P2P_PORT_C=${P2P_PORT_C:-$((P2P_BASE_PORT+2))}
 
-mkdir -p "$OUT_DIR" "$OUT_DIR/endpoints" "$OUT_DIR/logs"
+mkdir -p "$OUT_DIR" "$OUT_DIR/endpoints" "$OUT_DIR/logs" "$OUT_DIR/miners" "$OUT_DIR/nodes" "$OUT_DIR/samples" "$OUT_DIR/summaries"
 exec > >(tee -a "$OUT_DIR/command-log.txt") 2>&1
 
 PIDS=()
@@ -109,9 +110,36 @@ write_summary(){
   } > "$OUT_DIR/evidence-summary.md"
 }
 
-package_evidence(){
-  "$ROOT_DIR/scripts/v2_2_19_collect_local_evidence.sh" "$OUT_DIR"
+write_metadata(){
+  {
+    echo "git_ref=$(git -C "$ROOT_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)"
+    echo "git_commit=$(git -C "$ROOT_DIR" rev-parse HEAD 2>/dev/null || echo unknown)"
+    echo "version=$(cat "$ROOT_DIR/VERSION" 2>/dev/null || echo unknown)"
+    echo "cargo_workspace_version=$(cargo metadata --format-version 1 --no-deps 2>/dev/null | jq -r '.packages[0].version // "unknown"' || echo unknown)"
+    echo "uname=$(uname -a 2>/dev/null || echo unknown)"
+    echo "rustc_version=$(rustc --version 2>/dev/null || echo unavailable)"
+    echo "cargo_version=$(cargo --version 2>/dev/null || echo unavailable)"
+    echo "start_utc=$RUN_ID"
+    echo "end_utc=$(date -u +%FT%TZ)"
+    echo "duration_seconds=$(( $(date +%s) - START_TS ))"
+    echo "exit_code=$EXIT_CODE"
+  } > "$OUT_DIR/summaries/package-metadata.txt"
 }
+
+package_evidence(){
+  write_metadata || true
+  cp "$OUT_DIR/logs/miner.log" "$OUT_DIR/miners/miner.log" 2>/dev/null || true
+  cp "$OUT_DIR/process-pids.txt" "$OUT_DIR/nodes/process-pids.txt" 2>/dev/null || true
+  cp "$OUT_DIR/evidence-summary.md" "$OUT_DIR/summaries/evidence-summary.md" 2>/dev/null || true
+  cp "$OUT_DIR/samples/height-samples.csv" "$OUT_DIR/final-convergence-table.txt" 2>/dev/null || true
+  local tar_tmp
+  tar_tmp=$(mktemp -p /tmp evidence.XXXXXX.tar.gz)
+  (cd "$OUT_DIR" && tar -czf "$tar_tmp" --exclude='evidence.tar.gz' --exclude='evidence.tar.gz.sha256' endpoints logs miners nodes samples summaries evidence-summary.md command-log.txt process-pids.txt final-convergence-table.txt 2>/dev/null || true)
+  mv "$tar_tmp" "$OUT_DIR/evidence.tar.gz"
+  (cd "$OUT_DIR" && sha256sum evidence.tar.gz > evidence.tar.gz.sha256)
+  (cd "$OUT_DIR" && test -s evidence.tar.gz && test -s evidence.tar.gz.sha256 && sha256sum -c evidence.tar.gz.sha256)
+}
+
 
 cleanup(){
   local exit_code=$?
@@ -131,6 +159,7 @@ cleanup(){
   fi
   if (( ${#FAILURES[@]} == 0 )); then RESULT="PASS"; else RESULT="FAIL"; fi
   write_summary || true
+  cp "$OUT_DIR/evidence-summary.md" "$OUT_DIR/summaries/evidence-summary.md" 2>/dev/null || true
   package_evidence || true
   exit "$exit_code"
 }
@@ -193,10 +222,10 @@ echo "$!" > "$OUT_DIR/miner.pid"
 echo "$! miner" >> "$OUT_DIR/process-pids.txt"
 
 eps=(health status readiness release p2p/status sync/status)
-printf "node,endpoint,path,status\n" > "$OUT_DIR/endpoints-manifest.txt"
-printf "timestamp,height_a,height_b,height_c,tip_a,tip_b,tip_c\n" > "$OUT_DIR/height-samples.csv"
-printf "timestamp,phase,peers_total,inbound_blocks\n" > "$OUT_DIR/readiness-samples.csv"
-printf "timestamp,accepted,rejected\n" > "$OUT_DIR/miner-block-counters.csv"
+printf "node,endpoint,path,status\n" > "$OUT_DIR/summaries/endpoints-manifest.txt"
+printf "timestamp,height_a,height_b,height_c,tip_a,tip_b,tip_c\n" > "$OUT_DIR/samples/height-samples.csv"
+printf "timestamp,phase,peers_total,inbound_blocks\n" > "$OUT_DIR/samples/readiness-samples.csv"
+printf "timestamp,accepted,rejected\n" > "$OUT_DIR/samples/miner-block-counters.csv"
 
 sample(){
   local node rpc ep path out
@@ -207,14 +236,14 @@ sample(){
   out="$OUT_DIR/endpoints/${node}-${ep//\//_}.json"
   if safe_curl_required "http://127.0.0.1:${rpc}${path}" "$out"; then
     cp "$out" "$OUT_DIR/endpoints/${node}-${ep//\//_}-$(date -u +%s).json"
-    echo "$node,$ep,$path,OK" >> "$OUT_DIR/endpoints-manifest.txt"
+    echo "$node,$ep,$path,OK" >> "$OUT_DIR/summaries/endpoints-manifest.txt"
   else
     if [[ "$ep" == "p2p/status" || "$ep" == "sync/status" ]]; then
       safe_curl_optional "http://127.0.0.1:${rpc}${path}" "$out" "$node:$ep" || true
       echo "SKIP" > "$OUT_DIR/endpoints/${node}-${ep//\//_}.skip"
-      echo "$node,$ep,$path,SKIP_OPTIONAL" >> "$OUT_DIR/endpoints-manifest.txt"
+      echo "$node,$ep,$path,SKIP_OPTIONAL" >> "$OUT_DIR/summaries/endpoints-manifest.txt"
     else
-      echo "$node,$ep,$path,FAIL" >> "$OUT_DIR/endpoints-manifest.txt"
+      echo "$node,$ep,$path,FAIL" >> "$OUT_DIR/summaries/endpoints-manifest.txt"
     fi
   fi
 }
@@ -244,7 +273,7 @@ while (( $(date +%s) < end )); do
   ta=$(jq -r '.data.selected_tip // ""' "$OUT_DIR/endpoints/a-status.json" 2>/dev/null || echo "")
   tb=$(jq -r '.data.selected_tip // ""' "$OUT_DIR/endpoints/b-status.json" 2>/dev/null || echo "")
   tc=$(jq -r '.data.selected_tip // ""' "$OUT_DIR/endpoints/c-status.json" 2>/dev/null || echo "")
-  echo "$(date -u +%FT%TZ),$ha,$hb,$hc,$ta,$tb,$tc" >> "$OUT_DIR/height-samples.csv"
+  echo "$(date -u +%FT%TZ),$ha,$hb,$hc,$ta,$tb,$tc" >> "$OUT_DIR/samples/height-samples.csv"
 
   if (( elapsed < GRACE_SECS )) && [[ "$ta" != "$tb" || "$tb" != "$tc" ]]; then
     tip_divergence_seen=1
@@ -255,7 +284,7 @@ while (( $(date +%s) < end )); do
   pb=$(jq -r ".data.peer_count // .data.connected_peer_count // 0" "$OUT_DIR/endpoints/b-p2p_status.json" 2>/dev/null || echo 0)
   pc=$(jq -r ".data.peer_count // .data.connected_peer_count // 0" "$OUT_DIR/endpoints/c-p2p_status.json" 2>/dev/null || echo 0)
   inbound_blocks=$(( $(count_matches "peer_block_received|peer_block_accepted" "$OUT_DIR/logs/b.log") + $(count_matches "peer_block_received|peer_block_accepted" "$OUT_DIR/logs/c.log") ))
-  echo "$(date -u +%FT%TZ),$readiness_phase,$((pa+pb+pc)),$inbound_blocks" >> "$OUT_DIR/readiness-samples.csv"
+  echo "$(date -u +%FT%TZ),$readiness_phase,$((pa+pb+pc)),$inbound_blocks" >> "$OUT_DIR/samples/readiness-samples.csv"
 
   if (( pa + pb + pc == 0 )); then readiness_phase="no_peers";
   elif (( inbound_blocks == 0 )); then readiness_phase="peers_connected_no_propagation";
@@ -264,7 +293,7 @@ while (( $(date +%s) < end )); do
 
   accepted_count=$(count_matches "[Aa]ccepted" "$OUT_DIR/logs/miner.log")
   rejected_count=$(count_matches "[Rr]eject|[Rr]ejected" "$OUT_DIR/logs/miner.log")
-  echo "$(date -u +%FT%TZ),$accepted_count,$rejected_count" >> "$OUT_DIR/miner-block-counters.csv"
+  echo "$(date -u +%FT%TZ),$accepted_count,$rejected_count" >> "$OUT_DIR/samples/miner-block-counters.csv"
 
   if text_has_match "template" "$OUT_DIR/logs/miner.log"; then miner_templates=1; fi
   if text_has_match "submit|accepted|reject" "$OUT_DIR/logs/miner.log"; then miner_submits=1; fi

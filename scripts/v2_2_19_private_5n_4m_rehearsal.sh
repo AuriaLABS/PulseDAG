@@ -16,10 +16,11 @@ CHAIN_ID_EXPECTED="pulsedag-private"
 BASE_RPC_PORT=28544
 BASE_P2P_PORT=32302
 
-mkdir -p "$OUT_DIR" "$OUT_DIR/endpoints" "$OUT_DIR/logs"
+mkdir -p "$OUT_DIR" "$OUT_DIR/endpoints" "$OUT_DIR/logs" "$OUT_DIR/miners" "$OUT_DIR/nodes" "$OUT_DIR/samples" "$OUT_DIR/summaries"
 exec > >(tee -a "$OUT_DIR/command-log.txt") 2>&1
 
 declare -a NODE_PIDS=()
+: > "$OUT_DIR/process-pids.txt"
 declare -a MINER_PIDS=()
 declare -A NODE_READY NODE_HEALTHY NODE_ADVANCED NODE_TIP NODE_HEIGHT NODE_P2P_OK NODE_PEERS NODE_P2P_INBOUND NODE_P2P_OUTBOUND NODE_CHAIN_ID
 FAIL_REASONS=()
@@ -214,10 +215,40 @@ write_restart_rejoin_log(){
   } > "$OUT_DIR/restart_rejoin.log"
 }
 
-package_evidence(){
-  (cd "$OUT_DIR/.." && tar -czf "$(basename "$OUT_DIR")/evidence.tar.gz" "$(basename "$OUT_DIR")")
-  (cd "$OUT_DIR" && sha256sum evidence.tar.gz > evidence.tar.gz.sha256)
+write_metadata(){
+  {
+    echo "git_ref=$(git -C "$ROOT_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)"
+    echo "git_commit=$(git -C "$ROOT_DIR" rev-parse HEAD 2>/dev/null || echo unknown)"
+    echo "version=$(cat "$ROOT_DIR/VERSION" 2>/dev/null || echo unknown)"
+    echo "cargo_workspace_version=$(cargo metadata --format-version 1 --no-deps 2>/dev/null | jq -r '.packages[0].version // "unknown"' || echo unknown)"
+    echo "uname=$(uname -a 2>/dev/null || echo unknown)"
+    echo "rustc_version=$(rustc --version 2>/dev/null || echo unavailable)"
+    echo "cargo_version=$(cargo --version 2>/dev/null || echo unavailable)"
+    echo "start_utc=$START_UTC"
+    echo "end_utc=$(date -u +%FT%TZ)"
+    echo "duration_seconds=$(( $(date +%s) - START_TS ))"
+    echo "exit_code=$EXIT_CODE"
+  } > "$OUT_DIR/summaries/package-metadata.txt"
 }
+
+package_evidence(){
+  write_metadata || true
+  cp "$OUT_DIR/p2p_convergence.json" "$OUT_DIR/final-convergence-table.json" 2>/dev/null || true
+  cp "$OUT_DIR/evidence-summary.md" "$OUT_DIR/summaries/evidence-summary.md" 2>/dev/null || true
+  for i in $(seq 1 "$NODE_COUNT"); do
+    cp "$OUT_DIR/logs/n${i}.log" "$OUT_DIR/nodes/n${i}.log" 2>/dev/null || true
+  done
+  for i in $(seq 1 "$MINER_COUNT"); do
+    cp "$OUT_DIR/logs/miner-${i}.log" "$OUT_DIR/miners/miner-${i}.log" 2>/dev/null || true
+  done
+  local tar_tmp
+  tar_tmp=$(mktemp -p /tmp evidence.XXXXXX.tar.gz)
+  (cd "$OUT_DIR" && tar -czf "$tar_tmp" --exclude='evidence.tar.gz' --exclude='evidence.tar.gz.sha256' endpoints logs miners nodes samples summaries evidence-summary.md command-log.txt process-pids.txt p2p_convergence.json final-convergence-table.json restart_rejoin.log 2>/dev/null || true)
+  mv "$tar_tmp" "$OUT_DIR/evidence.tar.gz"
+  (cd "$OUT_DIR" && sha256sum evidence.tar.gz > evidence.tar.gz.sha256)
+  (cd "$OUT_DIR" && test -s evidence.tar.gz && test -s evidence.tar.gz.sha256 && sha256sum -c evidence.tar.gz.sha256)
+}
+
 
 cleanup(){
   local exit_code=$?
@@ -254,6 +285,7 @@ start_node(){
   [[ -n "$bootnode" ]] && cmd+=(--bootnode "$bootnode")
   PULSEDAG_ROCKSDB_PATH="$data/rocksdb" "${cmd[@]}" > "$OUT_DIR/logs/${name}.log" 2>&1 &
   NODE_PIDS+=("$!")
+  echo "$! node-${name}" >> "$OUT_DIR/process-pids.txt"
 }
 
 wait_node_ready(){
@@ -285,9 +317,10 @@ for i in 1 2 3 4; do
   local_node="http://127.0.0.1:$((BASE_RPC_PORT+i))"
   "$MINER_BIN" --node "$local_node" --miner-address "v2219-${RUN_ID}-miner-${i}" --backend cpu --threads 1 --loop > "$OUT_DIR/logs/miner-${i}.log" 2>&1 &
   MINER_PIDS+=("$!")
+  echo "$! miner-${i}" >> "$OUT_DIR/process-pids.txt"
 done
 
-printf "timestamp,n1,n2,n3,n4,n5,tip_match\n" > "$OUT_DIR/height-samples.csv"
+printf "timestamp,n1,n2,n3,n4,n5,tip_match\n" > "$OUT_DIR/samples/height-samples.csv"
 declare -A miner_submit miner_accept miner_template
 for i in 1 2 3 4; do miner_submit[$i]=0; miner_accept[$i]=0; miner_template[$i]=0; done
 
@@ -302,7 +335,7 @@ while (( $(date +%s) < end )); do
     tips+=("$(jq -r '.data.selected_tip // ""' "$OUT_DIR/endpoints/n${i}-status.json" 2>/dev/null || echo '')")
   done
   tip_match=1; ref_tip="${tips[0]}"; for t in "${tips[@]}"; do [[ "$t" == "$ref_tip" ]] || tip_match=0; done
-  echo "$(date -u +%FT%TZ),${heights[0]},${heights[1]},${heights[2]},${heights[3]},${heights[4]},$tip_match" >> "$OUT_DIR/height-samples.csv"
+  echo "$(date -u +%FT%TZ),${heights[0]},${heights[1]},${heights[2]},${heights[3]},${heights[4]},$tip_match" >> "$OUT_DIR/samples/height-samples.csv"
 
   for i in 1 2 3 4; do
     text_has_match "template" "$OUT_DIR/logs/miner-${i}.log" && miner_template[$i]=1 || true
