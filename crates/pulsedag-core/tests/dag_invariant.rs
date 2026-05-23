@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::{LazyLock, Mutex};
 
 use pulsedag_core::genesis::init_chain_state;
 use pulsedag_core::{
@@ -7,6 +8,32 @@ use pulsedag_core::{
     refresh_block_consensus_ids_with_state, sorted_tip_hashes, AcceptSource, Block,
     BlockAcceptanceResult, ChainState, Hash,
 };
+
+
+static FUTURE_DRIFT_ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+
+fn with_future_drift_override_zero<T>(f: impl FnOnce() -> T) -> T {
+    let _env_guard = FUTURE_DRIFT_ENV_LOCK
+        .lock()
+        .expect("future drift env lock should not be poisoned");
+    let previous = std::env::var("PULSEDAG_MAX_FUTURE_DRIFT_SECS").ok();
+    unsafe {
+        std::env::set_var("PULSEDAG_MAX_FUTURE_DRIFT_SECS", "0");
+    }
+
+    let result = f();
+
+    match previous {
+        Some(value) => unsafe {
+            std::env::set_var("PULSEDAG_MAX_FUTURE_DRIFT_SECS", value);
+        },
+        None => unsafe {
+            std::env::remove_var("PULSEDAG_MAX_FUTURE_DRIFT_SECS");
+        },
+    }
+
+    result
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct DagSnapshot {
@@ -274,7 +301,9 @@ fn dag_invariant_future_timestamp_is_rejected_without_mutation() {
     );
     refresh_block_consensus_ids(&mut future);
 
-    let outcome = accept_block_with_result(future, &mut state, AcceptSource::P2p);
+    let outcome = with_future_drift_override_zero(|| {
+        accept_block_with_result(future, &mut state, AcceptSource::P2p)
+    });
 
     assert_eq!(outcome, BlockAcceptanceResult::Malformed);
     assert_eq!(dag_snapshot(&state), before);
