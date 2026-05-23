@@ -22,8 +22,8 @@ Use these exact evidence locations when creating closeout artifacts:
 
 ## Version sanity
 
-- [ ] PASS / [x] PENDING: `VERSION` is exactly `v2.2.19`. Evidence path: `artifacts/v2_2_19/preflight/version.txt`
-- [ ] PASS / [x] PENDING: workspace crate versions are exactly `2.2.19`. Evidence path: `artifacts/v2_2_19/preflight/cargo_workspace_versions.txt`
+- [x] PASS / [ ] PENDING: `VERSION` is exactly `v2.2.19`. Evidence: uploaded Ubuntu run reports `VERSION=v2.2.19` at commit `5bc26be416e358a7370741d949191b24173a9ca6`. Path target: `artifacts/v2_2_19/preflight/version.txt`
+- [x] PASS / [ ] PENDING: workspace crate versions are exactly `2.2.19`. Evidence: uploaded Ubuntu run reports Cargo workspace version `2.2.19`. Path target: `artifacts/v2_2_19/preflight/cargo_workspace_versions.txt`
 - [ ] PASS / [x] PENDING: `docs/VERSION_MATRIX.md` remains aligned with `v2.2.19` hardening status (no public-testnet readiness claim). Evidence path: `artifacts/v2_2_19/closeout_decision/version_matrix_alignment.md`
 
 ## Cargo.lock sanity
@@ -42,7 +42,7 @@ cargo test --workspace --locked
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 
-- [ ] PASS / [x] PENDING: format/check/test/clippy command logs attached. Evidence path: `artifacts/v2_2_19/validation/cargo_validation_suite.log`
+- [x] PASS / [ ] PENDING: required validation commands succeeded on Ubuntu evidence (`cargo check`, `cargo test`, `cargo clippy`; release build also PASS). Path target: `artifacts/v2_2_19/validation/cargo_validation_suite.log`
 
 ## Release workflow validation
 
@@ -61,8 +61,8 @@ printf "#!/usr/bin/env bash\nexit 127\n" > "$TMP_BIN/rg" && chmod +x "$TMP_BIN/r
 PATH="$TMP_BIN:$PATH" OUT_DIR=/tmp/pulsedag-v2-2-19-preflight-grep bash scripts/v2_2_19_preflight_check.sh
 ```
 
-- [ ] PASS / [x] PENDING: preflight script completes and artifacts are recorded. Evidence path: `artifacts/v2_2_19/preflight/preflight_check.log`
-- [ ] PASS / [x] PENDING: release binaries workflow output is captured and reproducible. Evidence path: `artifacts/v2_2_19/release_workflow/release_binaries_workflow.log`
+- [x] PASS / [ ] PENDING: preflight script result is PASS `12/12` in uploaded Ubuntu evidence. Path target: `artifacts/v2_2_19/preflight/preflight_check.log`
+- [ ] PASS / [x] PENDING: release binaries workflow output is captured and reproducible. **Current state: missing evidence** in uploaded Ubuntu package. Evidence path: `artifacts/v2_2_19/release_workflow/release_binaries_workflow.log`
 
 ## Local 3N/1M smoke evidence
 
@@ -72,7 +72,7 @@ Run and attach output/artifacts (`OUT_DIR` must be a real writable path):
 OUT_DIR=... bash scripts/v2_2_19_local_3n_1m_smoke.sh
 ```
 
-- [ ] PASS / [x] PENDING: local `3N/1M` smoke completes with evidence bundle. Evidence path: `artifacts/v2_2_19/local_3n_1m_smoke/local_3n_1m_smoke.log`
+- [ ] PASS / [x] PENDING: local `3N/1M` smoke completes with evidence bundle. **Current state: FAIL** due to runtime shell error `node: unbound variable`. Evidence path: `artifacts/v2_2_19/local_3n_1m_smoke/local_3n_1m_smoke.log`
 
 ## Private 5N/4M rehearsal evidence
 
@@ -82,12 +82,12 @@ Run and attach output/artifacts (`OUT_DIR` must be a real writable path):
 OUT_DIR=... bash scripts/v2_2_19_private_5n_4m_rehearsal.sh
 ```
 
-- [ ] PASS / [x] PENDING: private `5N/4M` rehearsal completes with evidence bundle. Evidence path: `artifacts/v2_2_19/private_5n_4m_rehearsal/private_5n_4m_rehearsal.log`
+- [ ] PASS / [x] PENDING: private `5N/4M` rehearsal completes with evidence bundle. **Current state: FAIL** due to runtime shell error `idx: unbound variable`. Evidence path: `artifacts/v2_2_19/private_5n_4m_rehearsal/private_5n_4m_rehearsal.log`
 
 ## Snapshot/restore evidence
 
-- [ ] PASS / [x] PENDING: snapshot creation evidence attached (command logs + artifact paths). Evidence path: `artifacts/v2_2_19/snapshot_restore/snapshot_create.log`
-- [ ] PASS / [x] PENDING: restore/rebuild drill evidence attached (expected post-restore checks included). Evidence path: `artifacts/v2_2_19/snapshot_restore/restore_rebuild_drill.log`
+- [ ] PASS / [x] PENDING: snapshot creation evidence attached (command logs + artifact paths). **Current state: missing evidence**. Evidence path: `artifacts/v2_2_19/snapshot_restore/snapshot_create.log`
+- [ ] PASS / [x] PENDING: restore/rebuild drill evidence attached (expected post-restore checks included). **Current state: missing evidence**. Evidence path: `artifacts/v2_2_19/snapshot_restore/restore_rebuild_drill.log`
 
 ## P2P convergence evidence
 
@@ -132,8 +132,8 @@ Record open blockers that must be closed before any `v2.3.0` public-testnet go/n
 
 ## Final sign-off
 
-- [ ] PASS / [x] PENDING: all required sections above are PASS with evidence links.
-- [ ] PASS / [x] PENDING: disposition recorded as one of `GO_TO_CLOSE_V2_2_19`, `NO_GO`, or `WAIVED_WITH_REASON` with rationale and evidence path.
+- [ ] PASS / [x] PENDING: all required sections above are PASS with evidence links. **Not satisfied; blockers remain.**
+- [x] PASS / [ ] PENDING: disposition recorded as `NO_GO` with rationale and evidence path.
 
 
 ## Automatic NO-GO rules (must remain enforced)
@@ -146,3 +146,14 @@ Record open blockers that must be closed before any `v2.3.0` public-testnet go/n
 - [ ] PASS / [x] PENDING: snapshot/restore evidence exists at `artifacts/v2_2_19/snapshot_restore/`, or explicit waiver is recorded with reason.
 - [ ] PASS / [x] PENDING: `public_testnet_ready=true` is **not** asserted for v2.2.19 scope; any true assertion is automatic **NO_GO**.
 - [ ] PASS / [x] PENDING: GPU is **not** claimed production-ready without canonical kernel evidence; unsupported claim is automatic **NO_GO**.
+- [ ] PASS / [x] PENDING: any shell error during runtime script execution is automatic **NO_GO** unless explicitly waived.
+- [ ] PASS / [x] PENDING: any required node with `healthy=0` is automatic **NO_GO** unless explicitly waived.
+- [ ] PASS / [x] PENDING: any required node with readiness `0` is automatic **NO_GO** unless explicitly waived.
+- [ ] PASS / [x] PENDING: all peers `=0` in private `5N/4M` evidence is automatic **NO_GO**.
+- [ ] PASS / [x] PENDING: all heights `=0` in rehearsal evidence is automatic **NO_GO**.
+- [ ] PASS / [x] PENDING: all miner templates `=0` in rehearsal evidence is automatic **NO_GO**.
+- [ ] PASS / [x] PENDING: accepted blocks `=0` without explicit waiver is automatic **NO_GO**.
+- [ ] PASS / [x] PENDING: `chain_id` unknown without explicit waiver is automatic **NO_GO**.
+- [ ] PASS / [x] PENDING: evidence archive `evidence.tar.gz` missing is automatic **NO_GO**.
+- [ ] PASS / [x] PENDING: evidence checksum file missing is automatic **NO_GO**.
+
