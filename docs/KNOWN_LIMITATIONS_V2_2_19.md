@@ -17,7 +17,7 @@ This document records **current known limitations** for `v2.2.19` and must be re
 ## Mining limitation
 
 - GPU mining is optional for `v2.2.19`.
-- GPU paths may be scaffold-only where no canonical kernel implementation is present.
+- GPU paths are scaffold-only whenever no canonical tested kHeavyHash GPU kernel implementation is present.
 - RC acceptance for `v2.2.19` must not depend on GPU availability unless a canonical kernel path and evidence are included in scope.
 
 ## RPC exposure limitation

@@ -30,3 +30,9 @@
 ## Required closeout evidence path
 - v2.2.19 closeout must be driven by `docs/CLOSING_CHECKLIST_V2_2_19_FINAL.md`.
 - This is a pre-public-testnet hardening closeout path only (no v2.3.0 or v3.0 readiness claim).
+
+## GPU mining closeout posture (honest scaffold)
+- `pulsedag-miner` closeout path for v2.2.19 is **CPU-required** (`--backend cpu` or `--backend auto` with CPU fallback).
+- `--backend auto` must fall back to CPU when GPU is not compiled/available and log the active backend.
+- `--backend gpu` must fail clearly when no canonical GPU backend is compiled/available.
+- v2.2.19 does **not** claim production GPU mining; GPU remains scaffold/optional until a canonical tested kHeavyHash GPU kernel exists with reproducible evidence.
