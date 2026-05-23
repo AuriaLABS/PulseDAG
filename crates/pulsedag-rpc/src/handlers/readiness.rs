@@ -39,6 +39,9 @@ pub struct ReadinessData {
     pub storage_path_class: String,
     pub peer_health: String,
     pub mining_templates_available: bool,
+    pub node_ready: bool,
+    pub private_testnet_ready: bool,
+    pub public_testnet_ready: bool,
     pub ready_for_release: bool,
     pub overall_status: ReadinessStatus,
     pub categories: BTreeMap<String, ReadinessCategory>,
@@ -445,7 +448,14 @@ pub async fn get_readiness<S: RpcStateLike>(
         );
     }
 
-    let overall_status = overall_status(&categories);
+    categories.insert(
+        "public_testnet_evidence".to_string(),
+        category(
+            ReadinessStatus::Warn,
+            vec!["public testnet readiness is gated by explicit evidence and remains disabled for v2.2.19".to_string()],
+        ),
+    );
+
     let blockers = categories
         .iter()
         .filter(|(_, category)| category.status == ReadinessStatus::Fail)
@@ -456,18 +466,10 @@ pub async fn get_readiness<S: RpcStateLike>(
                 .map(move |reason| format!("{name}: {reason}"))
         })
         .collect::<Vec<_>>();
-    if !blockers
-        .iter()
-        .any(|b| b.contains("public_testnet_evidence"))
-    {
-        categories.insert(
-            "public_testnet_evidence".to_string(),
-            category(
-                ReadinessStatus::Warn,
-                vec!["public testnet readiness is gated by explicit evidence and remains disabled for v2.2.19".to_string()],
-            ),
-        );
-    }
+
+    let node_ready = blockers.is_empty();
+    let private_testnet_ready = node_ready;
+    let public_testnet_ready = false;
 
     let warnings = categories
         .iter()
@@ -484,6 +486,7 @@ pub async fn get_readiness<S: RpcStateLike>(
                 .map(move |reason| format!("{name}: {reason}"))
         })
         .collect::<Vec<_>>();
+    let overall_status = overall_status(&categories);
 
     let peer_health = if state.p2p().is_none() {
         "p2p_disabled".to_string()
@@ -499,7 +502,10 @@ pub async fn get_readiness<S: RpcStateLike>(
         storage_path_class,
         peer_health,
         mining_templates_available: runtime.pulsedag_mining_templates_total > 0,
-        ready_for_release: blockers.is_empty(),
+        node_ready,
+        private_testnet_ready,
+        public_testnet_ready,
+        ready_for_release: private_testnet_ready,
         overall_status,
         categories,
         metrics,
@@ -551,6 +557,9 @@ mod tests {
             storage_path_class: "default".to_string(),
             peer_health: "p2p_disabled".to_string(),
             mining_templates_available: false,
+            node_ready: true,
+            private_testnet_ready: true,
+            public_testnet_ready: false,
             ready_for_release: true,
             overall_status: ReadinessStatus::Warn,
             categories,
@@ -588,6 +597,9 @@ mod tests {
             storage_path_class: "default".to_string(),
             peer_health: "p2p_disabled".to_string(),
             mining_templates_available: false,
+            node_ready: false,
+            private_testnet_ready: false,
+            public_testnet_ready: false,
             ready_for_release: false,
             overall_status: ReadinessStatus::Warn,
             categories: BTreeMap::new(),
@@ -606,6 +618,29 @@ mod tests {
         };
         let value = serde_json::to_value(data).unwrap();
         assert_eq!(value["ready_for_release"], false);
+        assert_eq!(value["public_testnet_ready"], false);
+    }
+
+    #[test]
+    fn readiness_overall_status_reflects_warnings_and_blockers() {
+        let mut categories = BTreeMap::new();
+        categories.insert(
+            "warn_only".to_string(),
+            ReadinessCategory {
+                status: ReadinessStatus::Warn,
+                reasons: vec!["warn".to_string()],
+            },
+        );
+        assert_eq!(super::overall_status(&categories), ReadinessStatus::Warn);
+
+        categories.insert(
+            "fail".to_string(),
+            ReadinessCategory {
+                status: ReadinessStatus::Fail,
+                reasons: vec!["fail".to_string()],
+            },
+        );
+        assert_eq!(super::overall_status(&categories), ReadinessStatus::Fail);
     }
 
     #[test]
