@@ -263,6 +263,11 @@ fn dag_invariant_missing_parent_becomes_orphan_candidate_without_mutation() {
 
 #[test]
 fn dag_invariant_future_timestamp_is_rejected_without_mutation() {
+    let prior_drift = std::env::var("PULSEDAG_MAX_FUTURE_DRIFT_SECS").ok();
+    unsafe {
+        std::env::set_var("PULSEDAG_MAX_FUTURE_DRIFT_SECS", "0");
+    }
+
     let mut state = init_chain_state("dag-invariant-future-timestamp".to_string());
     let before = dag_snapshot(&state);
     let mut future = test_block(
@@ -270,13 +275,16 @@ fn dag_invariant_future_timestamp_is_rejected_without_mutation() {
         "future-timestamp",
         vec![state.dag.genesis_hash.clone()],
         1,
-        current_ts()
-            .saturating_add(dev_max_future_drift_secs())
-            .saturating_add(1),
+        current_ts().saturating_add(dev_max_future_drift_secs()).saturating_add(1),
     );
     refresh_block_consensus_ids(&mut future);
 
     let outcome = accept_block_with_result(future, &mut state, AcceptSource::P2p);
+
+    match prior_drift {
+        Some(value) => unsafe { std::env::set_var("PULSEDAG_MAX_FUTURE_DRIFT_SECS", value) },
+        None => unsafe { std::env::remove_var("PULSEDAG_MAX_FUTURE_DRIFT_SECS") },
+    }
 
     assert_eq!(outcome, BlockAcceptanceResult::Malformed);
     assert_eq!(dag_snapshot(&state), before);
