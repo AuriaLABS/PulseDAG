@@ -488,16 +488,16 @@ impl Config {
                         .next()
                         .ok_or_else(|| anyhow::anyhow!("--network requires a value"))?;
                 }
-                "--p2p-listen" => {
+                "--p2p-listen" | "--p2p-bind" => {
                     self.p2p_listen = iter
                         .next()
-                        .ok_or_else(|| anyhow::anyhow!("--p2p-listen requires a value"))?;
+                        .ok_or_else(|| anyhow::anyhow!("{arg} requires a value"))?;
                     self.p2p_enabled = true;
                 }
-                "--rpc-listen" => {
+                "--rpc-listen" | "--rpc-bind" => {
                     self.rpc_bind = iter
                         .next()
-                        .ok_or_else(|| anyhow::anyhow!("--rpc-listen requires a value"))?;
+                        .ok_or_else(|| anyhow::anyhow!("{arg} requires a value"))?;
                 }
                 "--bootnode" | "--peer" => {
                     self.p2p_bootstrap
@@ -914,6 +914,22 @@ mod tests {
             cfg.p2p_bootstrap,
             vec!["/ip4/127.0.0.1/tcp/19000".to_string()]
         );
+    }
+
+    #[test]
+    fn cli_back_compat_bind_aliases_apply() {
+        let _guard = env_lock().lock().expect("env lock");
+        clear_test_env();
+        let mut cfg = Config::defaults_for_profile(ConfigProfile::Dev);
+        cfg.apply_cli_args(vec![
+            "--rpc-bind".to_string(),
+            "127.0.0.1:48080".to_string(),
+            "--p2p-bind".to_string(),
+            "/ip4/127.0.0.1/tcp/49090".to_string(),
+        ])
+        .expect("apply cli args");
+        assert_eq!(cfg.rpc_bind, "127.0.0.1:48080");
+        assert_eq!(cfg.p2p_listen, "/ip4/127.0.0.1/tcp/49090");
     }
 
     #[test]
