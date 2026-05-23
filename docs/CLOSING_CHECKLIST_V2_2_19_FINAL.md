@@ -12,18 +12,18 @@ Use these exact evidence locations when creating closeout artifacts:
 
 - Preflight: `artifacts/v2_2_19/preflight/`
 - Cargo check/test/clippy: `artifacts/v2_2_19/validation/`
-- Local 3N/1M smoke: `artifacts/v2_2_19/smoke_local_3n1m/`
-- Private 5N/4M rehearsal: `artifacts/v2_2_19/rehearsal_private_5n4m/`
+- Local 3N/1M smoke: `artifacts/v2_2_19/local_3n_1m_smoke/`
+- Private 5N/4M rehearsal: `artifacts/v2_2_19/private_5n_4m_rehearsal/`
 - Release binaries workflow: `artifacts/v2_2_19/release_workflow/`
 - GPU scaffold/fallback: `artifacts/v2_2_19/gpu_fallback/`
-- Readiness/release metadata: `artifacts/v2_2_19/readiness_release_metadata/`
+- Readiness/release metadata: `artifacts/v2_2_19/preflight/`
 - Snapshot/restore (if available): `artifacts/v2_2_19/snapshot_restore/`
 - Final decision record: `artifacts/v2_2_19/closeout_decision/`
 
 ## Version sanity
 
-- [ ] PASS / [x] PENDING: `VERSION` is exactly `v2.2.19`. Evidence path: `artifacts/v2_2_19/readiness_release_metadata/version.txt`
-- [ ] PASS / [x] PENDING: workspace crate versions are exactly `2.2.19`. Evidence path: `artifacts/v2_2_19/readiness_release_metadata/cargo_workspace_versions.txt`
+- [ ] PASS / [x] PENDING: `VERSION` is exactly `v2.2.19`. Evidence path: `artifacts/v2_2_19/preflight/version.txt`
+- [ ] PASS / [x] PENDING: workspace crate versions are exactly `2.2.19`. Evidence path: `artifacts/v2_2_19/preflight/cargo_workspace_versions.txt`
 - [ ] PASS / [x] PENDING: `docs/VERSION_MATRIX.md` remains aligned with `v2.2.19` hardening status (no public-testnet readiness claim). Evidence path: `artifacts/v2_2_19/closeout_decision/version_matrix_alignment.md`
 
 ## Cargo.lock sanity
@@ -72,7 +72,7 @@ Run and attach output/artifacts (`OUT_DIR` must be a real writable path):
 OUT_DIR=... bash scripts/v2_2_19_local_3n_1m_smoke.sh
 ```
 
-- [ ] PASS / [x] PENDING: local `3N/1M` smoke completes with evidence bundle. Evidence path: `artifacts/v2_2_19/smoke_local_3n1m/smoke_local_3n1m.log`
+- [ ] PASS / [x] PENDING: local `3N/1M` smoke completes with evidence bundle. Evidence path: `artifacts/v2_2_19/local_3n_1m_smoke/local_3n_1m_smoke.log`
 
 ## Private 5N/4M rehearsal evidence
 
@@ -82,7 +82,7 @@ Run and attach output/artifacts (`OUT_DIR` must be a real writable path):
 OUT_DIR=... bash scripts/v2_2_19_private_5n_4m_rehearsal.sh
 ```
 
-- [ ] PASS / [x] PENDING: private `5N/4M` rehearsal completes with evidence bundle. Evidence path: `artifacts/v2_2_19/rehearsal_private_5n4m/rehearsal_private_5n4m.log`
+- [ ] PASS / [x] PENDING: private `5N/4M` rehearsal completes with evidence bundle. Evidence path: `artifacts/v2_2_19/private_5n_4m_rehearsal/private_5n_4m_rehearsal.log`
 
 ## Snapshot/restore evidence
 
@@ -91,13 +91,13 @@ OUT_DIR=... bash scripts/v2_2_19_private_5n_4m_rehearsal.sh
 
 ## P2P convergence evidence
 
-- [ ] PASS / [x] PENDING: multi-node convergence evidence attached (peer visibility + selected tip convergence). Evidence path: `artifacts/v2_2_19/rehearsal_private_5n4m/p2p_convergence.json`
-- [ ] PASS / [x] PENDING: restart/rejoin behavior evidence attached for rehearsal topology. Evidence path: `artifacts/v2_2_19/rehearsal_private_5n4m/restart_rejoin.log`
+- [ ] PASS / [x] PENDING: multi-node convergence evidence attached (peer visibility + selected tip convergence). Evidence path: `artifacts/v2_2_19/private_5n_4m_rehearsal/p2p_convergence.json`
+- [ ] PASS / [x] PENDING: restart/rejoin behavior evidence attached for rehearsal topology. Evidence path: `artifacts/v2_2_19/private_5n_4m_rehearsal/restart_rejoin.log`
 
 ## Miner external protocol evidence
 
-- [ ] PASS / [x] PENDING: miner/node contract remains external-mode only for `v2.2.19`. Evidence path: `artifacts/v2_2_19/rehearsal_private_5n4m/miner_external_mode_contract.md`
-- [ ] PASS / [x] PENDING: mining protocol rehearsal evidence attached for declared topology. Evidence path: `artifacts/v2_2_19/rehearsal_private_5n4m/mining_protocol_rehearsal.log`
+- [ ] PASS / [x] PENDING: miner/node contract remains external-mode only for `v2.2.19`. Evidence path: `artifacts/v2_2_19/private_5n_4m_rehearsal/miner_external_mode_contract.md`
+- [ ] PASS / [x] PENDING: mining protocol rehearsal evidence attached for declared topology. Evidence path: `artifacts/v2_2_19/private_5n_4m_rehearsal/mining_protocol_rehearsal.log`
 
 ## GPU scaffold/fallback evidence
 
@@ -106,9 +106,9 @@ OUT_DIR=... bash scripts/v2_2_19_private_5n_4m_rehearsal.sh
 
 ## RPC readiness/release metadata evidence
 
-- [ ] PASS / [x] PENDING: `/release` metadata reflects `v2.2.19` runtime truths (no stale algorithm/engine fields). Evidence path: `artifacts/v2_2_19/readiness_release_metadata/release_endpoint.json`
-- [ ] PASS / [x] PENDING: `/status` and `/readiness` evidence attached for operator-facing fields in scope. Evidence path: `artifacts/v2_2_19/readiness_release_metadata/status_readiness.json`
-- [ ] PASS / [x] PENDING: RPC exposure posture remains private/localhost unless explicitly hardened and approved. Evidence path: `artifacts/v2_2_19/readiness_release_metadata/rpc_exposure_posture.md`
+- [ ] PASS / [x] PENDING: `/release` metadata reflects `v2.2.19` runtime truths (no stale algorithm/engine fields). Evidence path: `artifacts/v2_2_19/preflight/release_endpoint.json`
+- [ ] PASS / [x] PENDING: `/status` and `/readiness` evidence attached for operator-facing fields in scope. Evidence path: `artifacts/v2_2_19/preflight/status_readiness.json`
+- [ ] PASS / [x] PENDING: RPC exposure posture remains private/localhost unless explicitly hardened and approved. Evidence path: `artifacts/v2_2_19/preflight/rpc_exposure_posture.md`
 
 ## Known limitations accepted for v2.2.19
 
@@ -134,3 +134,15 @@ Record open blockers that must be closed before any `v2.3.0` public-testnet go/n
 
 - [ ] PASS / [x] PENDING: all required sections above are PASS with evidence links.
 - [ ] PASS / [x] PENDING: disposition recorded as one of `GO_TO_CLOSE_V2_2_19`, `NO_GO`, or `WAIVED_WITH_REASON` with rationale and evidence path.
+
+
+## Automatic NO-GO rules (must remain enforced)
+
+- [ ] PASS / [x] PENDING: `cargo check`, `cargo test`, and `cargo clippy` were all run and attached; otherwise automatic **NO_GO**.
+- [ ] PASS / [x] PENDING: preflight evidence exists at `artifacts/v2_2_19/preflight/`; missing evidence is automatic **NO_GO**.
+- [ ] PASS / [x] PENDING: local smoke evidence exists at `artifacts/v2_2_19/local_3n_1m_smoke/`; missing evidence is automatic **NO_GO**.
+- [ ] PASS / [x] PENDING: private rehearsal evidence exists at `artifacts/v2_2_19/private_5n_4m_rehearsal/`; missing evidence is automatic **NO_GO**.
+- [ ] PASS / [x] PENDING: release workflow evidence exists at `artifacts/v2_2_19/release_workflow/`; missing evidence is automatic **NO_GO**.
+- [ ] PASS / [x] PENDING: snapshot/restore evidence exists at `artifacts/v2_2_19/snapshot_restore/`, or explicit waiver is recorded with reason.
+- [ ] PASS / [x] PENDING: `public_testnet_ready=true` is **not** asserted for v2.2.19 scope; any true assertion is automatic **NO_GO**.
+- [ ] PASS / [x] PENDING: GPU is **not** claimed production-ready without canonical kernel evidence; unsupported claim is automatic **NO_GO**.

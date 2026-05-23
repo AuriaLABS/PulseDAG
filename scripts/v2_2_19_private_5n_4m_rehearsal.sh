@@ -6,7 +6,7 @@ RUN_ID=${RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)}
 START_TS=$(date +%s)
 START_UTC=$(date -u +%FT%TZ)
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-OUT_DIR="${OUT_DIR:-$ROOT_DIR/artifacts/private-testnet/v2_2_19/rc-5n-4m/${RUN_ID}}"
+OUT_DIR="${OUT_DIR:-$ROOT_DIR/artifacts/v2_2_19/private_5n_4m_rehearsal/${RUN_ID}}"
 NODE_BIN="${NODE_BIN:-$ROOT_DIR/target/release/pulsedagd}"
 MINER_BIN="${MINER_BIN:-$ROOT_DIR/target/release/pulsedag-miner}"
 NODE_COUNT=5
@@ -66,12 +66,12 @@ extract_chain_id(){
 port_in_use(){
   local p="$1"
   if command -v ss >/dev/null 2>&1; then
-    if command -v rg >/dev/null 2>&1; then ss -ltn "( sport = :$p )" | rg -q ":$p\b"; else ss -ltn "( sport = :$p )" | grep -Eq ":$p\\b"; fi
+    ss -ltn "( sport = :$p )" | grep -Eq ":$p\b"
     return $?
   fi
   if command -v lsof >/dev/null 2>&1; then lsof -nP -iTCP:"$p" -sTCP:LISTEN >/dev/null 2>&1; return $?; fi
   if command -v netstat >/dev/null 2>&1; then
-    if command -v rg >/dev/null 2>&1; then netstat -ltn 2>/dev/null | rg -q "[:.]$p[[:space:]]"; else netstat -ltn 2>/dev/null | grep -Eq "[:.]$p[[:space:]]"; fi
+    netstat -ltn 2>/dev/null | grep -Eq "[:.]$p[[:space:]]"
     return $?
   fi
   echo "WARN: no ss/lsof/netstat available for port check"
@@ -224,11 +224,7 @@ wait_node_ready(){
 }
 
 start_node 1 $((BASE_RPC_PORT+1)) $((BASE_P2P_PORT+1)) ""; sleep 3
-if command -v rg >/dev/null 2>&1; then
-  NODE_1_ID=$(rg -o "12D[[:alnum:]]+" "$OUT_DIR/logs/n1.log" | head -n1 || true)
-else
-  NODE_1_ID=$(grep -Eo "12D[[:alnum:]]+" "$OUT_DIR/logs/n1.log" | head -n1 || true)
-fi
+NODE_1_ID=$(grep -Eo "12D[[:alnum:]]+" "$OUT_DIR/logs/n1.log" | head -n1 || true)
 if [[ -z "$NODE_1_ID" ]]; then
   record_fail "failed to extract bootnode peer id from n1 log"
   echo "FATAL: unable to build bootnode multiaddr because peer id extraction failed"
