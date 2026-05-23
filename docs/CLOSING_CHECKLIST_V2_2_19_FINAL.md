@@ -36,6 +36,15 @@ Run and attach output:
 
 ```bash
 bash scripts/v2_2_19_preflight_check.sh
+OUT_DIR=/tmp/pulsedag-v2-2-19-preflight bash scripts/v2_2_19_preflight_check.sh
+```
+
+If `rg` is unavailable in your environment, force the grep fallback by shadowing `rg` in `PATH`:
+
+```bash
+TMP_BIN=$(mktemp -d)
+printf "#!/usr/bin/env bash\nexit 127\n" > "$TMP_BIN/rg" && chmod +x "$TMP_BIN/rg"
+PATH="$TMP_BIN:$PATH" OUT_DIR=/tmp/pulsedag-v2-2-19-preflight-grep bash scripts/v2_2_19_preflight_check.sh
 ```
 
 - [ ] PASS / [x] PENDING: preflight script completes and artifacts are recorded. Evidence path: `____________________`
