@@ -63,9 +63,9 @@ start_node(){
   local name="$1" rpc="$2" p2p="$3" bootnode="$4"
   local data="$OUT_DIR/data-$name"
   mkdir -p "$data"
-  local cmd=("$NODE_BIN" --rpc-bind "127.0.0.1:${rpc}" --p2p-bind "/ip4/127.0.0.1/tcp/${p2p}" --data-dir "$data" --network-profile "rehearsal-${name}")
+  local cmd=("$NODE_BIN" --network "private" --rpc-listen "127.0.0.1:${rpc}" --p2p-listen "/ip4/127.0.0.1/tcp/${p2p}")
   [[ -n "$bootnode" ]] && cmd+=(--bootnode "$bootnode")
-  "${cmd[@]}" > "$OUT_DIR/logs/${name}.log" 2>&1 &
+  PULSEDAG_ROCKSDB_PATH="$data/rocksdb" "${cmd[@]}" > "$OUT_DIR/logs/${name}.log" 2>&1 &
   local pid="$!"
   PIDS+=("$pid")
   echo "$pid" > "$OUT_DIR/${name}.pid"
