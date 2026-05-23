@@ -12,27 +12,35 @@ use pulsedag_core::{
 
 static FUTURE_DRIFT_ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
+struct FutureDriftEnvRestore {
+    previous: Option<String>,
+}
+
+impl Drop for FutureDriftEnvRestore {
+    fn drop(&mut self) {
+        match &self.previous {
+            Some(value) => unsafe {
+                std::env::set_var("PULSEDAG_MAX_FUTURE_DRIFT_SECS", value);
+            },
+            None => unsafe {
+                std::env::remove_var("PULSEDAG_MAX_FUTURE_DRIFT_SECS");
+            },
+        }
+    }
+}
+
 fn with_future_drift_override_zero<T>(f: impl FnOnce() -> T) -> T {
     let _env_guard = FUTURE_DRIFT_ENV_LOCK
         .lock()
         .expect("future drift env lock should not be poisoned");
-    let previous = std::env::var("PULSEDAG_MAX_FUTURE_DRIFT_SECS").ok();
+    let _restore = FutureDriftEnvRestore {
+        previous: std::env::var("PULSEDAG_MAX_FUTURE_DRIFT_SECS").ok(),
+    };
     unsafe {
         std::env::set_var("PULSEDAG_MAX_FUTURE_DRIFT_SECS", "0");
     }
 
-    let result = f();
-
-    match previous {
-        Some(value) => unsafe {
-            std::env::set_var("PULSEDAG_MAX_FUTURE_DRIFT_SECS", value);
-        },
-        None => unsafe {
-            std::env::remove_var("PULSEDAG_MAX_FUTURE_DRIFT_SECS");
-        },
-    }
-
-    result
+    f()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
