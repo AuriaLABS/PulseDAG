@@ -26,6 +26,15 @@ mkdir -p "$OUT_DIR" "$OUT_DIR/endpoints" "$OUT_DIR/logs"
 exec > >(tee -a "$OUT_DIR/command-log.txt") 2>&1
 
 PIDS=()
+WARNINGS=()
+FAILURES=()
+
+record_warn(){ local msg; msg="$1"; echo "WARN: $msg"; WARNINGS+=("$msg"); }
+record_fail(){ local msg; msg="$1"; echo "FAIL: $msg"; FAILURES+=("$msg"); }
+
+safe_curl_required(){ local url out; url="$1"; out="$2"; if ! curl -fsS "$url" -o "$out"; then record_fail "required endpoint failed: $url"; return 1; fi; }
+safe_curl_optional(){ local url out label; url="$1"; out="$2"; label="${3:-$url}"; if ! curl -fsS "$url" -o "$out"; then record_warn "optional endpoint failed: $label"; return 1; fi; }
+json_get_or_default(){ local expr file def; expr="$1"; file="$2"; def="$3"; jq -r "$expr // $def" "$file" 2>/dev/null || echo "$def"; }
 
 text_has_match(){
   local pattern="$1"
@@ -123,17 +132,22 @@ printf "timestamp,phase,peers_total,inbound_blocks\n" > "$OUT_DIR/readiness-samp
 printf "timestamp,accepted,rejected\n" > "$OUT_DIR/miner-block-counters.csv"
 
 sample(){
-  local node="$1" rpc="$2" ep="$3" path="/$3" out="$OUT_DIR/endpoints/${node}-${ep//\//_}.json"
-  if curl -fsS "http://127.0.0.1:${rpc}${path}" -o "$out"; then
+  local node rpc ep path out
+  node="$1"
+  rpc="$2"
+  ep="$3"
+  path="/$ep"
+  out="$OUT_DIR/endpoints/${node}-${ep//\//_}.json"
+  if safe_curl_required "http://127.0.0.1:${rpc}${path}" "$out"; then
     cp "$out" "$OUT_DIR/endpoints/${node}-${ep//\//_}-$(date -u +%s).json"
     echo "$node,$ep,$path,OK" >> "$OUT_DIR/endpoints-manifest.txt"
   else
     if [[ "$ep" == "p2p/status" || "$ep" == "sync/status" ]]; then
+      safe_curl_optional "http://127.0.0.1:${rpc}${path}" "$out" "$node:$ep" || true
       echo "SKIP" > "$OUT_DIR/endpoints/${node}-${ep//\//_}.skip"
       echo "$node,$ep,$path,SKIP_OPTIONAL" >> "$OUT_DIR/endpoints-manifest.txt"
     else
       echo "$node,$ep,$path,FAIL" >> "$OUT_DIR/endpoints-manifest.txt"
-      return 1
     fi
   fi
 }
@@ -157,9 +171,9 @@ while (( $(date +%s) < end )); do
     for ep in "${eps[@]}"; do sample "$n" "$rpc" "$ep" || true; done
   done
 
-  ha=$(jq -r '.data.best_height // 0' "$OUT_DIR/endpoints/a-status.json" 2>/dev/null || echo 0)
-  hb=$(jq -r '.data.best_height // 0' "$OUT_DIR/endpoints/b-status.json" 2>/dev/null || echo 0)
-  hc=$(jq -r '.data.best_height // 0' "$OUT_DIR/endpoints/c-status.json" 2>/dev/null || echo 0)
+  ha=$(json_get_or_default '.data.best_height' "$OUT_DIR/endpoints/a-status.json" '0')
+  hb=$(json_get_or_default '.data.best_height' "$OUT_DIR/endpoints/b-status.json" '0')
+  hc=$(json_get_or_default '.data.best_height' "$OUT_DIR/endpoints/c-status.json" '0')
   ta=$(jq -r '.data.selected_tip // ""' "$OUT_DIR/endpoints/a-status.json" 2>/dev/null || echo "")
   tb=$(jq -r '.data.selected_tip // ""' "$OUT_DIR/endpoints/b-status.json" 2>/dev/null || echo "")
   tc=$(jq -r '.data.selected_tip // ""' "$OUT_DIR/endpoints/c-status.json" 2>/dev/null || echo "")
