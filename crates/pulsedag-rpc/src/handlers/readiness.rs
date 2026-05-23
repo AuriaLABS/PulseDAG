@@ -469,7 +469,6 @@ pub async fn get_readiness<S: RpcStateLike>(
         );
     }
 
-
     let warnings = categories
         .iter()
         .filter(|(_, category)| {
