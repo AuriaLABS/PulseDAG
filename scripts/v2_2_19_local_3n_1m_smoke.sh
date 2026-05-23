@@ -7,7 +7,7 @@ SAMPLE_INTERVAL_SECS=${SAMPLE_INTERVAL_SECS:-10}
 STARTUP_WAIT_SECS=${STARTUP_WAIT_SECS:-12}
 RUN_ID=${RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)}
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-DEFAULT_OUT_DIR="$ROOT_DIR/artifacts/v2_2_19_public_testnet_readiness/local-3n-1m/${RUN_ID}"
+DEFAULT_OUT_DIR="$ROOT_DIR/artifacts/v2_2_19/local_3n_1m_smoke/${RUN_ID}"
 OUT_DIR=${OUT_DIR:-$DEFAULT_OUT_DIR}
 NODE_BIN="${NODE_BIN:-$ROOT_DIR/target/release/pulsedagd}"
 MINER_BIN="${MINER_BIN:-$ROOT_DIR/target/release/pulsedag-miner}"
@@ -26,6 +26,26 @@ mkdir -p "$OUT_DIR" "$OUT_DIR/endpoints" "$OUT_DIR/logs"
 exec > >(tee -a "$OUT_DIR/command-log.txt") 2>&1
 
 PIDS=()
+
+text_has_match(){
+  local pattern="$1"
+  shift
+  if command -v rg >/dev/null 2>&1; then
+    rg -qE -- "$pattern" "$@"
+  else
+    grep -qE -- "$pattern" "$@"
+  fi
+}
+
+count_matches(){
+  local pattern="$1" file="$2"
+  if command -v rg >/dev/null 2>&1; then
+    rg -cE -- "$pattern" "$file" 2>/dev/null || echo 0
+  else
+    grep -cE -- "$pattern" "$file" 2>/dev/null || echo 0
+  fi
+}
+
 cleanup(){
   echo "[cleanup] terminating spawned processes"
   for p in "${PIDS[@]:-}"; do
@@ -43,11 +63,11 @@ trap cleanup EXIT INT TERM
 is_port_busy(){
   local port="$1"
   if command -v ss >/dev/null 2>&1; then
-    ss -ltn | awk '{print $4}' | rg -q "[:.]${port}$"
+    ss -ltn | awk '{print $4}' | grep -Eq "[:.]${port}$"
   elif command -v lsof >/dev/null 2>&1; then
     lsof -iTCP:"${port}" -sTCP:LISTEN >/dev/null 2>&1
   elif command -v netstat >/dev/null 2>&1; then
-    netstat -ltn 2>/dev/null | awk '{print $4}' | rg -q "[:.]${port}$"
+    netstat -ltn 2>/dev/null | awk '{print $4}' | grep -Eq "[:.]${port}$"
   else
     echo "WARN cannot verify ports (missing ss/lsof/netstat)" >&2
     return 1
@@ -84,7 +104,7 @@ start_node(){
 
 start_node a "$RPC_PORT_A" "$P2P_PORT_A" ""
 sleep "$STARTUP_WAIT_SECS"
-NODE_A_ID=$(rg -n "local_node_id|peer_id" "$OUT_DIR/logs/a.log" | head -n1 | sed -E 's/.*(12D[[:alnum:]]+).*/\1/' || true)
+NODE_A_ID=$(grep -En "local_node_id|peer_id" "$OUT_DIR/logs/a.log" | head -n1 | sed -E 's/.*(12D[[:alnum:]]+).*/\1/' || true)
 BOOT_A=""
 [[ -n "$NODE_A_ID" ]] && BOOT_A="/ip4/127.0.0.1/tcp/${P2P_PORT_A}/p2p/${NODE_A_ID}"
 start_node b "$RPC_PORT_B" "$P2P_PORT_B" "$BOOT_A"
@@ -153,7 +173,7 @@ while (( $(date +%s) < end )); do
   pa=$(jq -r ".data.peer_count // .data.connected_peer_count // 0" "$OUT_DIR/endpoints/a-p2p_status.json" 2>/dev/null || echo 0)
   pb=$(jq -r ".data.peer_count // .data.connected_peer_count // 0" "$OUT_DIR/endpoints/b-p2p_status.json" 2>/dev/null || echo 0)
   pc=$(jq -r ".data.peer_count // .data.connected_peer_count // 0" "$OUT_DIR/endpoints/c-p2p_status.json" 2>/dev/null || echo 0)
-  inbound_blocks=$(( $(rg -c "peer_block_received|peer_block_accepted" "$OUT_DIR/logs/b.log" || echo 0) + $(rg -c "peer_block_received|peer_block_accepted" "$OUT_DIR/logs/c.log" || echo 0) ))
+  inbound_blocks=$(( $(count_matches "peer_block_received|peer_block_accepted" "$OUT_DIR/logs/b.log") + $(count_matches "peer_block_received|peer_block_accepted" "$OUT_DIR/logs/c.log") ))
   echo "$(date -u +%FT%TZ),$readiness_phase,$((pa+pb+pc)),$inbound_blocks" >> "$OUT_DIR/readiness-samples.csv"
 
   if (( pa + pb + pc == 0 )); then readiness_phase="no_peers";
@@ -161,12 +181,12 @@ while (( $(date +%s) < end )); do
   elif (( ha>0 && hb>0 && hc>0 )) && [[ "$ta" == "$tb" && "$tb" == "$tc" ]]; then readiness_phase="converged";
   else readiness_phase="propagation_active"; fi
 
-  accepted_count=$(rg -i -c "accepted" "$OUT_DIR/logs/miner.log" || echo 0)
-  rejected_count=$(rg -i -c "reject|rejected" "$OUT_DIR/logs/miner.log" || echo 0)
+  accepted_count=$(count_matches "[Aa]ccepted" "$OUT_DIR/logs/miner.log")
+  rejected_count=$(count_matches "[Rr]eject|[Rr]ejected" "$OUT_DIR/logs/miner.log")
   echo "$(date -u +%FT%TZ),$accepted_count,$rejected_count" >> "$OUT_DIR/miner-block-counters.csv"
 
-  if rg -qi "template" "$OUT_DIR/logs/miner.log"; then miner_templates=1; fi
-  if rg -qi "submit|accepted|reject" "$OUT_DIR/logs/miner.log"; then miner_submits=1; fi
+  if text_has_match "template" "$OUT_DIR/logs/miner.log"; then miner_templates=1; fi
+  if text_has_match "submit|accepted|reject" "$OUT_DIR/logs/miner.log"; then miner_submits=1; fi
 
   if (( elapsed >= GRACE_SECS )) && (( ha>0 && hb>0 && hc>0 )) && [[ "$ta" == "$tb" && "$tb" == "$tc" ]]; then
     final_converged=1
@@ -184,12 +204,12 @@ if (( final_converged == 0 )); then
   exit 1
 fi
 
-rg -q "peer_block_received|peer_block_accepted" "$OUT_DIR/logs/b.log" || { echo "FAIL node_b missing inbound p2p block activity"; exit 1; }
-rg -q "peer_block_received|peer_block_accepted" "$OUT_DIR/logs/c.log" || { echo "FAIL node_c missing inbound p2p block activity"; exit 1; }
+text_has_match "peer_block_received|peer_block_accepted" "$OUT_DIR/logs/b.log" || { echo "FAIL node_b missing inbound p2p block activity"; exit 1; }
+text_has_match "peer_block_received|peer_block_accepted" "$OUT_DIR/logs/c.log" || { echo "FAIL node_c missing inbound p2p block activity"; exit 1; }
 (( miner_templates == 1 )) || { echo "FAIL miner never receives templates"; exit 1; }
 (( miner_submits == 1 )) || { echo "FAIL miner never submits"; exit 1; }
 if (( accepted_count < 1 )); then
-  if rg -qi "difficulty|target too high|share.*reject" "$OUT_DIR/logs/miner.log"; then
+  if text_has_match "difficulty|target too high|share.*reject" "$OUT_DIR/logs/miner.log"; then
     echo "NO-GO: no accepted block, difficulty may prevent acceptance" | tee "$OUT_DIR/no-go.txt"
     exit 1
   fi
