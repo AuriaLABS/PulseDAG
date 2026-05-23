@@ -1,9 +1,9 @@
 {
-  "manifest_version": "v2.2.18",
-  "run_id": "ptn-v2_2_18-local-3n-1m",
-  "chain_id": "private-testnet-v2-2-18",
+  "manifest_version": "v2.2.19",
+  "run_id": "ptn-v2_2_19-local-3n-1m",
+  "chain_id": "private-testnet-v2-2-19",
   "expected_duration": "90m",
-  "evidence_directory": "./artifacts/private-testnet/v2_2_18/local-3n-1m",
+  "evidence_directory": "./artifacts/private-testnet/v2_2_19/local-3n-1m",
   "nodes": [
     {
       "id": "node-1",
@@ -18,7 +18,7 @@
         "port": 31303
       },
       "bootstrap_peers": [],
-      "data_directory": "./data/private-testnet/v2_2_18/local/node-1"
+      "data_directory": "./data/private-testnet/v2_2_19/local/node-1"
     },
     {
       "id": "node-2",
@@ -35,7 +35,7 @@
       "bootstrap_peers": [
         "node-1@127.0.0.1:31303"
       ],
-      "data_directory": "./data/private-testnet/v2_2_18/local/node-2"
+      "data_directory": "./data/private-testnet/v2_2_19/local/node-2"
     },
     {
       "id": "node-3",
@@ -52,7 +52,7 @@
       "bootstrap_peers": [
         "node-1@127.0.0.1:31303"
       ],
-      "data_directory": "./data/private-testnet/v2_2_18/local/node-3"
+      "data_directory": "./data/private-testnet/v2_2_19/local/node-3"
     }
   ],
   "miners": [
