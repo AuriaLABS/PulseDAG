@@ -26,6 +26,26 @@ FAIL_REASONS=()
 ACCEPTED_BLOCKS=0
 REJECTED_BLOCKS=0
 TEMPLATES_OK=0
+REPO_COMMIT="$(git -C "$ROOT_DIR" rev-parse --short=12 HEAD 2>/dev/null || echo unknown)"
+NODE_VERSION="$("$NODE_BIN" --version 2>/dev/null | head -n1 || echo unknown)"
+
+text_has_match(){
+  local pattern="$1" file="$2"
+  if command -v rg >/dev/null 2>&1; then
+    rg -qi -- "$pattern" "$file"
+  else
+    grep -Eqi -- "$pattern" "$file"
+  fi
+}
+
+count_matches_in_logs(){
+  local pattern="$1"
+  if command -v rg >/dev/null 2>&1; then
+    rg -ci -- "$pattern" "$OUT_DIR"/logs/miner-*.log 2>/dev/null | awk -F: '{s+=$2} END {print s+0}'
+  else
+    grep -Eih -c -- "$pattern" "$OUT_DIR"/logs/miner-*.log 2>/dev/null | awk '{s+=$1} END {print s+0}'
+  fi
+}
 
 record_fail(){ echo "FAIL: $1"; FAIL_REASONS+=("$1"); }
 
@@ -45,9 +65,15 @@ extract_chain_id(){
 
 port_in_use(){
   local p="$1"
-  if command -v ss >/dev/null 2>&1; then ss -ltn "( sport = :$p )" | rg -q ":$p\b"; return $?; fi
+  if command -v ss >/dev/null 2>&1; then
+    if command -v rg >/dev/null 2>&1; then ss -ltn "( sport = :$p )" | rg -q ":$p\b"; else ss -ltn "( sport = :$p )" | grep -Eq ":$p\\b"; fi
+    return $?
+  fi
   if command -v lsof >/dev/null 2>&1; then lsof -nP -iTCP:"$p" -sTCP:LISTEN >/dev/null 2>&1; return $?; fi
-  if command -v netstat >/dev/null 2>&1; then netstat -ltn 2>/dev/null | rg -q "[:.]$p[[:space:]]"; return $?; fi
+  if command -v netstat >/dev/null 2>&1; then
+    if command -v rg >/dev/null 2>&1; then netstat -ltn 2>/dev/null | rg -q "[:.]$p[[:space:]]"; else netstat -ltn 2>/dev/null | grep -Eq "[:.]$p[[:space:]]"; fi
+    return $?
+  fi
   echo "WARN: no ss/lsof/netstat available for port check"
   return 1
 }
@@ -125,10 +151,37 @@ write_evidence_summary(){
     echo "- accepted blocks: $ACCEPTED_BLOCKS"
     echo "- rejected blocks: $REJECTED_BLOCKS"
     echo
+    echo "## Build/runtime metadata"
+    echo "- commit: $REPO_COMMIT"
+    echo "- version: $NODE_VERSION"
+    echo
     echo "## Result"
     echo "- pass/fail: $result"
     if (( ${#FAIL_REASONS[@]} > 0 )); then echo "- reasons:"; for r in "${FAIL_REASONS[@]}"; do echo "  - $r"; done; fi
   } > "$OUT_DIR/evidence-summary.md"
+}
+
+write_p2p_convergence_json(){
+  jq -n \
+    --arg chain_id "$CHAIN_ID_EXPECTED" \
+    --arg version "$NODE_VERSION" \
+    --arg commit "$REPO_COMMIT" \
+    --arg tip "${NODE_TIP[1]:-}" \
+    --argjson accepted_blocks "${ACCEPTED_BLOCKS:-0}" \
+    --argjson rejected_blocks "${REJECTED_BLOCKS:-0}" \
+    --argjson nodes "$(for i in $(seq 1 "$NODE_COUNT"); do
+      jq -n --arg node "n$i" --arg chain_id "${NODE_CHAIN_ID[$i]:-}" --argjson height "${NODE_HEIGHT[$i]:-0}" --arg tip "${NODE_TIP[$i]:-}" --argjson peer_count "${NODE_PEERS[$i]:-0}" '{node:$node,chain_id:$chain_id,height:$height,tip:$tip,peer_count:$peer_count}'
+    done | jq -s '.')" \
+    '{chain_id:$chain_id,version:$version,commit:$commit,tip:$tip,accepted_blocks:$accepted_blocks,rejected_blocks:$rejected_blocks,nodes:$nodes}' \
+    > "$OUT_DIR/p2p_convergence.json"
+}
+
+write_restart_rejoin_log(){
+  {
+    echo "restart_rejoin_status=NOT_EXECUTED"
+    echo "note=this rehearsal validates steady-state convergence; restart/rejoin drill not invoked by this script"
+    echo "timestamp_utc=$(date -u +%FT%TZ)"
+  } > "$OUT_DIR/restart_rejoin.log"
 }
 
 package_evidence(){
@@ -140,6 +193,8 @@ cleanup(){
   collect_final_state || true
   capture_log_tails || true
   write_evidence_summary || true
+  write_p2p_convergence_json || true
+  write_restart_rejoin_log || true
   stop_pids "${MINER_PIDS[@]:-}"; stop_pids "${NODE_PIDS[@]:-}"; wait || true
   package_evidence || true
 }
@@ -169,7 +224,16 @@ wait_node_ready(){
 }
 
 start_node 1 $((BASE_RPC_PORT+1)) $((BASE_P2P_PORT+1)) ""; sleep 3
-NODE_1_ID=$(rg -o "12D[[:alnum:]]+" "$OUT_DIR/logs/n1.log" | head -n1 || true)
+if command -v rg >/dev/null 2>&1; then
+  NODE_1_ID=$(rg -o "12D[[:alnum:]]+" "$OUT_DIR/logs/n1.log" | head -n1 || true)
+else
+  NODE_1_ID=$(grep -Eo "12D[[:alnum:]]+" "$OUT_DIR/logs/n1.log" | head -n1 || true)
+fi
+if [[ -z "$NODE_1_ID" ]]; then
+  record_fail "failed to extract bootnode peer id from n1 log"
+  echo "FATAL: unable to build bootnode multiaddr because peer id extraction failed"
+  exit 1
+fi
 BOOT_1=""; [[ -n "$NODE_1_ID" ]] && BOOT_1="/ip4/127.0.0.1/tcp/$((BASE_P2P_PORT+1))/p2p/${NODE_1_ID}"
 for i in 2 3 4 5; do start_node "$i" $((BASE_RPC_PORT+i)) $((BASE_P2P_PORT+i)) "$BOOT_1"; done
 sleep 3
@@ -200,12 +264,12 @@ while (( $(date +%s) < end )); do
   echo "$(date -u +%FT%TZ),${heights[0]},${heights[1]},${heights[2]},${heights[3]},${heights[4]},$tip_match" >> "$OUT_DIR/height-samples.csv"
 
   for i in 1 2 3 4; do
-    rg -qi "template" "$OUT_DIR/logs/miner-${i}.log" && miner_template[$i]=1 || true
-    rg -qi "submit" "$OUT_DIR/logs/miner-${i}.log" && miner_submit[$i]=1 || true
-    rg -qi "accepted" "$OUT_DIR/logs/miner-${i}.log" && miner_accept[$i]=1 || true
+    text_has_match "template" "$OUT_DIR/logs/miner-${i}.log" && miner_template[$i]=1 || true
+    text_has_match "submit" "$OUT_DIR/logs/miner-${i}.log" && miner_submit[$i]=1 || true
+    text_has_match "accepted" "$OUT_DIR/logs/miner-${i}.log" && miner_accept[$i]=1 || true
   done
-  ACCEPTED_BLOCKS=$(rg -ci "accepted" "$OUT_DIR"/logs/miner-*.log 2>/dev/null | awk -F: '{s+=$2} END {print s+0}')
-  REJECTED_BLOCKS=$(rg -ci "reject" "$OUT_DIR"/logs/miner-*.log 2>/dev/null | awk -F: '{s+=$2} END {print s+0}')
+  ACCEPTED_BLOCKS=$(count_matches_in_logs "accepted")
+  REJECTED_BLOCKS=$(count_matches_in_logs "reject")
   (( ACCEPTED_BLOCKS > 0 )) && TEMPLATES_OK=1
   sleep 10
 done
@@ -231,7 +295,9 @@ done
 
 if (( ${#FAIL_REASONS[@]} > 0 )); then
   echo "FAIL private rehearsal: $OUT_DIR"
+  echo "FINAL_RESULT=FAIL"
   exit 1
 fi
 
 echo "PASS private rehearsal complete: $OUT_DIR"
+echo "FINAL_RESULT=PASS"
