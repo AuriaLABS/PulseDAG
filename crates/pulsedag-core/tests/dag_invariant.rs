@@ -1,12 +1,46 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::{LazyLock, Mutex};
 
 use pulsedag_core::genesis::init_chain_state;
 use pulsedag_core::{
     accept_block_with_result, assert_dag_consistent_for_tests, build_candidate_block,
-    build_coinbase_transaction, current_ts, dev_max_future_drift_secs, refresh_block_consensus_ids,
+    build_coinbase_transaction, refresh_block_consensus_ids,
     refresh_block_consensus_ids_with_state, sorted_tip_hashes, AcceptSource, Block,
     BlockAcceptanceResult, ChainState, Hash,
 };
+
+static FUTURE_DRIFT_ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+
+struct FutureDriftEnvRestore {
+    previous: Option<String>,
+}
+
+impl Drop for FutureDriftEnvRestore {
+    fn drop(&mut self) {
+        match &self.previous {
+            Some(value) => unsafe {
+                std::env::set_var("PULSEDAG_MAX_FUTURE_DRIFT_SECS", value);
+            },
+            None => unsafe {
+                std::env::remove_var("PULSEDAG_MAX_FUTURE_DRIFT_SECS");
+            },
+        }
+    }
+}
+
+fn with_future_drift_override_min_positive<T>(f: impl FnOnce() -> T) -> T {
+    let _env_guard = FUTURE_DRIFT_ENV_LOCK
+        .lock()
+        .expect("future drift env lock should not be poisoned");
+    let _restore = FutureDriftEnvRestore {
+        previous: std::env::var("PULSEDAG_MAX_FUTURE_DRIFT_SECS").ok(),
+    };
+    unsafe {
+        std::env::set_var("PULSEDAG_MAX_FUTURE_DRIFT_SECS", "1");
+    }
+
+    f()
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct DagSnapshot {
@@ -270,13 +304,17 @@ fn dag_invariant_future_timestamp_is_rejected_without_mutation() {
         "future-timestamp",
         vec![state.dag.genesis_hash.clone()],
         1,
-        current_ts()
-            .saturating_add(dev_max_future_drift_secs())
-            .saturating_add(1),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock should be after unix epoch")
+            .as_secs()
+            .saturating_add(2),
     );
     refresh_block_consensus_ids(&mut future);
 
-    let outcome = accept_block_with_result(future, &mut state, AcceptSource::P2p);
+    let outcome = with_future_drift_override_min_positive(|| {
+        accept_block_with_result(future, &mut state, AcceptSource::P2p)
+    });
 
     assert_eq!(outcome, BlockAcceptanceResult::Malformed);
     assert_eq!(dag_snapshot(&state), before);
