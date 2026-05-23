@@ -179,7 +179,7 @@ impl Config {
             },
             ConfigProfile::Private => Self {
                 network_profile: "private".into(),
-                chain_id: "pulsedag-private-v2-2-14".into(),
+                chain_id: "pulsedag-private".into(),
                 rpc_bind: "0.0.0.0:8280".into(),
                 p2p_enabled: true,
                 p2p_mode: "libp2p-real".into(),
@@ -827,7 +827,7 @@ mod tests {
         std::env::set_var("PULSEDAG_CONFIG_PROFILE", "private");
         let cfg = Config::from_env().expect("config");
         assert_eq!(cfg.network_profile, "private");
-        assert_eq!(cfg.chain_id, "pulsedag-private-v2-2-14");
+        assert_eq!(cfg.chain_id, "pulsedag-private");
         assert_eq!(cfg.rpc_bind, "0.0.0.0:8280");
         assert!(!cfg.admin_enabled);
     }

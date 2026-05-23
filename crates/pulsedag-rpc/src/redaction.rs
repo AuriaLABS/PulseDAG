@@ -59,8 +59,8 @@ mod tests {
     #[test]
     fn keeps_safe_fields_visible() {
         assert_eq!(
-            redact_if_sensitive_key_value("chain_id", "pulsedag-private-v2-2-14"),
-            "pulsedag-private-v2-2-14"
+            redact_if_sensitive_key_value("chain_id", "pulsedag-private"),
+            "pulsedag-private"
         );
     }
 

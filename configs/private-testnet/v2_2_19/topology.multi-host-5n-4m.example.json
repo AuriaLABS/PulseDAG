@@ -1,7 +1,7 @@
 {
   "manifest_version": "v2.2.19",
   "run_id": "ptn-v2_2_19-multi-host-5n-4m-example",
-  "chain_id": "private-testnet-v2-2-19",
+  "chain_id": "pulsedag-private",
   "hosts": [
     {"host_id": "host-a", "ssh_host": "node-a.example.net", "ssh_user": "pulsedag"},
     {"host_id": "host-b", "ssh_host": "node-b.example.net", "ssh_user": "pulsedag"},
