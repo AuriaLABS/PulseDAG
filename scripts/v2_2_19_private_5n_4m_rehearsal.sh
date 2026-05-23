@@ -47,7 +47,12 @@ count_matches_in_logs(){
   fi
 }
 
-record_fail(){ echo "FAIL: $1"; FAIL_REASONS+=("$1"); }
+record_warn(){ local msg; msg="$1"; echo "WARN: $msg"; }
+record_fail(){ local msg; msg="$1"; echo "FAIL: $msg"; FAIL_REASONS+=("$msg"); }
+
+safe_curl_required(){ local url out; url="$1"; out="$2"; if ! curl -fsS "$url" -o "$out"; then record_fail "required endpoint failed: $url"; return 1; fi; }
+safe_curl_optional(){ local url out label; url="$1"; out="$2"; label="${3:-$url}"; if ! curl -fsS "$url" -o "$out"; then record_warn "optional endpoint failed: $label"; return 1; fi; }
+json_get_or_default(){ local expr file def; expr="$1"; file="$2"; def="$3"; jq -r "$expr // $def" "$file" 2>/dev/null || echo "$def"; }
 
 extract_chain_id(){
   local status_file="$1" release_file="$2" p2p_file="$3"
@@ -101,11 +106,12 @@ capture_log_tails(){
 
 collect_final_state(){
   for i in $(seq 1 "$NODE_COUNT"); do
-    local rpc=$((BASE_RPC_PORT+i))
-    curl -fsS "http://127.0.0.1:${rpc}/status" -o "$OUT_DIR/endpoints/n${i}-status-final.json" || true
-    curl -fsS "http://127.0.0.1:${rpc}/release" -o "$OUT_DIR/endpoints/n${i}-release-final.json" || true
-    curl -fsS "http://127.0.0.1:${rpc}/readiness" -o "$OUT_DIR/endpoints/n${i}-readiness-final.json" || true
-    curl -fsS "http://127.0.0.1:${rpc}/p2p/status" -o "$OUT_DIR/endpoints/n${i}-p2p-status-final.json" || true
+    local rpc
+    rpc=$((BASE_RPC_PORT+i))
+    safe_curl_optional "http://127.0.0.1:${rpc}/status" "$OUT_DIR/endpoints/n${i}-status-final.json" "n${i}:/status final" || true
+    safe_curl_optional "http://127.0.0.1:${rpc}/release" "$OUT_DIR/endpoints/n${i}-release-final.json" "n${i}:/release final" || true
+    safe_curl_optional "http://127.0.0.1:${rpc}/readiness" "$OUT_DIR/endpoints/n${i}-readiness-final.json" "n${i}:/readiness final" || true
+    safe_curl_optional "http://127.0.0.1:${rpc}/p2p/status" "$OUT_DIR/endpoints/n${i}-p2p-status-final.json" "n${i}:/p2p/status final" || true
     NODE_HEIGHT[$i]="$(jq -r '.data.best_height // 0' "$OUT_DIR/endpoints/n${i}-status-final.json" 2>/dev/null || echo 0)"
     NODE_TIP[$i]="$(jq -r '.data.selected_tip // ""' "$OUT_DIR/endpoints/n${i}-status-final.json" 2>/dev/null || echo '')"
     NODE_READY[$i]="$(jq -r '.data.ready_for_release // .ready_for_release // 0' "$OUT_DIR/endpoints/n${i}-readiness-final.json" 2>/dev/null | sed 's/true/1/;s/false/0/' || echo 0)"
@@ -205,7 +211,13 @@ ensure_ports_free
 cargo build --workspace --release --locked
 
 start_node(){
-  local idx="$1" rpc="$2" p2p="$3" bootnode="$4" name="n${idx}" data="$OUT_DIR/data-${name}"
+  local idx rpc p2p bootnode name data
+  idx="$1"
+  rpc="$2"
+  p2p="$3"
+  bootnode="$4"
+  name="n${idx}"
+  data="$OUT_DIR/data-${name}"
   mkdir -p "$data"
   local cmd=("$NODE_BIN" --network "$NETWORK_PROFILE" --rpc-listen "127.0.0.1:${rpc}" --p2p-listen "/ip4/127.0.0.1/tcp/${p2p}")
   [[ -n "$bootnode" ]] && cmd+=(--bootnode "$bootnode")
@@ -214,9 +226,11 @@ start_node(){
 }
 
 wait_node_ready(){
-  local idx="$1" rpc=$((BASE_RPC_PORT+idx))
+  local idx rpc
+  idx="$1"
+  rpc=$((BASE_RPC_PORT+idx))
   for _ in $(seq 1 60); do
-    curl -fsS "http://127.0.0.1:${rpc}/status" -o "$OUT_DIR/endpoints/n${idx}-status-ready.json" && return 0
+    safe_curl_required "http://127.0.0.1:${rpc}/status" "$OUT_DIR/endpoints/n${idx}-status-ready.json" && return 0
     sleep 2
   done
   record_fail "node n${idx} failed readiness"
@@ -251,9 +265,9 @@ while (( $(date +%s) < end )); do
   heights=(); tips=()
   for i in 1 2 3 4 5; do
     rpc=$((BASE_RPC_PORT+i))
-    curl -fsS "http://127.0.0.1:${rpc}/status" -o "$OUT_DIR/endpoints/n${i}-status.json" || true
-    curl -fsS "http://127.0.0.1:${rpc}/p2p/status" -o "$OUT_DIR/endpoints/n${i}-p2p-status.json" || true
-    heights+=("$(jq -r '.data.best_height // 0' "$OUT_DIR/endpoints/n${i}-status.json" 2>/dev/null || echo 0)")
+    safe_curl_optional "http://127.0.0.1:${rpc}/status" "$OUT_DIR/endpoints/n${i}-status.json" "n${i}:/status" || true
+    safe_curl_optional "http://127.0.0.1:${rpc}/p2p/status" "$OUT_DIR/endpoints/n${i}-p2p-status.json" "n${i}:/p2p/status" || true
+    heights+=("$(json_get_or_default '.data.best_height' "$OUT_DIR/endpoints/n${i}-status.json" '0')")
     tips+=("$(jq -r '.data.selected_tip // ""' "$OUT_DIR/endpoints/n${i}-status.json" 2>/dev/null || echo '')")
   done
   tip_match=1; ref_tip="${tips[0]}"; for t in "${tips[@]}"; do [[ "$t" == "$ref_tip" ]] || tip_match=0; done
