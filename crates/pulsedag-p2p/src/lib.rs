@@ -319,6 +319,7 @@ struct InnerState {
     tx_budget_window_started_unix: u64,
     tx_budget_window_relays: usize,
     peer_book: HashMap<String, PeerHealth>,
+    active_connections: HashMap<String, usize>,
     peer_state_path: Option<PathBuf>,
     peer_reconnect_attempts: u64,
     peer_recovery_success_count: u64,
