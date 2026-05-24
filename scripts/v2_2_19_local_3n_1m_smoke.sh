@@ -49,6 +49,7 @@ ta=""
 tb=""
 tc=""
 final_converged=0
+final_peers_ok=0
 healthy_nodes=0
 ready_nodes=0
 peers_total=0
@@ -130,6 +131,7 @@ write_summary(){
     [[ -n "$miner_not_started_reason" ]] && echo "- miner_not_started_reason: $miner_not_started_reason"
     echo "- final_heights: a=${ha:-0}, b=${hb:-0}, c=${hc:-0}"
     echo "- final_tips: a=${ta:-}, b=${tb:-}, c=${tc:-}"
+    echo "- final_peer_counts: a=${pa:-0}, b=${pb:-0}, c=${pc:-0}"
     echo ""
     echo "## Warnings"
     if (( ${#WARNINGS[@]} == 0 )); then echo "- none"; else for w in "${WARNINGS[@]}"; do echo "- $w"; done; fi
@@ -148,6 +150,7 @@ write_summary(){
     echo "| miner submissions >=1 | $( (( miner_submits>=1 )) && echo PASS || echo FAIL ) |"
     echo "| accepted blocks >0 (or waived) | $( (( accepted_count>0 || WAIVE_ACCEPTED_BLOCK_GATE==1 )) && echo PASS || echo FAIL ) |"
     echo "| heights > genesis | $( (( ha>0 && hb>0 && hc>0 )) && echo PASS || echo FAIL ) |"
+    echo "| p2p peers sustained (a>=2,b>=1,c>=1) | $( (( final_peers_ok==1 )) && echo PASS || echo FAIL ) |"
     echo "| final convergence | $( (( final_converged==1 )) && echo PASS || echo FAIL ) |"
   } > "$OUT_DIR/evidence-summary.md"
 }
@@ -225,7 +228,7 @@ package_evidence(){
   (cd "$OUT_DIR" && sha256sum evidence.tar.gz > evidence.tar.gz.sha256)
   cp "$OUT_DIR/evidence.tar.gz" "$OUT_DIR_ROOT/evidence.tar.gz" 2>/dev/null || true
   cp "$OUT_DIR/evidence.tar.gz.sha256" "$OUT_DIR_ROOT/evidence.tar.gz.sha256" 2>/dev/null || true
-  (cd "$OUT_DIR_ROOT" && test -s evidence.tar.gz && sha256sum evidence.tar.gz > evidence.tar.gz.sha256 && sha256sum -c evidence.tar.gz.sha256)
+  (cd "$OUT_DIR_ROOT" && test -s evidence.tar.gz && test -s evidence.tar.gz.sha256 && sha256sum -c evidence.tar.gz.sha256)
   (cd "$OUT_DIR" && test -s evidence.tar.gz && test -s evidence.tar.gz.sha256 && sha256sum -c evidence.tar.gz.sha256)
 }
 
@@ -338,10 +341,17 @@ while (( $(date +%s) < peer_wait_deadline )); do
   pb=$(jq -r '.data.peer_count // (.data.connected_peers|length) // .data.connected_peer_count // 0' "$OUT_DIR/endpoints/b-p2p_status.pre_mining.json" 2>/dev/null || echo 0)
   pc=$(jq -r '.data.peer_count // (.data.connected_peers|length) // .data.connected_peer_count // 0' "$OUT_DIR/endpoints/c-p2p_status.pre_mining.json" 2>/dev/null || echo 0)
   peers_total=$((pa + pb + pc))
-  (( peers_total > 0 )) && break
+  if (( pa >= 2 && pb >= 1 && pc >= 1 )); then
+    break
+  fi
   sleep 2
 done
-(( peers_total > 0 )) || { miner_not_started_reason="pre-mining p2p peer gate failed"; capture_p2p_failure_evidence; record_fail "pre-mining p2p peers remained zero after ${P2P_CONNECT_WAIT_SECS}s"; exit 1; }
+if ! (( pa >= 2 && pb >= 1 && pc >= 1 )); then
+  miner_not_started_reason="pre-mining p2p peer gate failed"
+  capture_p2p_failure_evidence
+  record_fail "pre-mining p2p peer gate failed after ${P2P_CONNECT_WAIT_SECS}s (a=${pa}, b=${pb}, c=${pc})"
+  exit 1
+fi
 
 echo "launch miner: $MINER_BIN --node http://127.0.0.1:${RPC_PORT_A} --miner-address $MINER_ADDRESS --backend cpu --threads 1 --loop"
 "$MINER_BIN" --node "http://127.0.0.1:${RPC_PORT_A}" --miner-address "$MINER_ADDRESS" --backend cpu --threads 1 --loop > "$OUT_DIR/logs/miner.log" 2>&1 &
@@ -409,6 +419,7 @@ while (( $(date +%s) < end )); do
   pa=$(jq -r ".data.peer_count // .data.connected_peer_count // 0" "$OUT_DIR/endpoints/a-p2p_status.json" 2>/dev/null || echo 0)
   pb=$(jq -r ".data.peer_count // .data.connected_peer_count // 0" "$OUT_DIR/endpoints/b-p2p_status.json" 2>/dev/null || echo 0)
   pc=$(jq -r ".data.peer_count // .data.connected_peer_count // 0" "$OUT_DIR/endpoints/c-p2p_status.json" 2>/dev/null || echo 0)
+  if (( pa >= 2 && pb >= 1 && pc >= 1 )); then final_peers_ok=1; fi
   inbound_blocks=$(( $(count_matches "peer_block_received|peer_block_accepted" "$OUT_DIR/logs/b.log") + $(count_matches "peer_block_received|peer_block_accepted" "$OUT_DIR/logs/c.log") ))
   echo "$(date -u +%FT%TZ),$readiness_phase,$((pa+pb+pc)),$inbound_blocks" >> "$OUT_DIR/samples/readiness-samples.csv"
 
@@ -436,6 +447,7 @@ for n in a b c; do
 done
 
 (( final_converged == 1 )) || record_fail "final convergence not reached within deadline (duration=${DURATION_SECS}s, grace=${GRACE_SECS}s)"
+(( final_peers_ok == 1 )) || record_fail "final p2p topology gate not satisfied (need a>=2,b>=1,c>=1; got a=${pa},b=${pb},c=${pc})"
 text_has_match "peer_block_received|peer_block_accepted" "$OUT_DIR/logs/b.log" || record_fail "node_b missing inbound p2p block activity"
 text_has_match "peer_block_received|peer_block_accepted" "$OUT_DIR/logs/c.log" || record_fail "node_c missing inbound p2p block activity"
 (( miner_templates == 1 )) || record_fail "miner never receives templates"
