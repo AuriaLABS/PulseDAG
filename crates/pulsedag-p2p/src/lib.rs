@@ -694,6 +694,7 @@ impl Libp2pHandle {
             peer_id: peer_id.to_string(),
             listening: vec![cfg.listen_addr.clone()],
             peer_book,
+            active_connections: HashMap::new(),
             peer_state_path: peer_state_path(),
             connection_slot_budget: cfg.connection_slot_budget.max(1),
             sync_selection_stickiness_secs: cfg.sync_selection_stickiness_secs,
@@ -2860,18 +2861,39 @@ async fn run_libp2p_real_runtime(
                     }
                     SwarmEvent::ConnectionEstablished { peer_id, .. } => {
                         note_swarm_event(&inner, format!("peer-connected:{peer_id}"));
+                        if let Ok(mut guard) = inner.lock() {
+                            let count = guard.active_connections.entry(peer_id.to_string()).or_insert(0);
+                            *count = count.saturating_add(1);
+                        }
                         register_peer_result(&inner, &peer_id.to_string(), true);
                         let _ = inbound_tx.send(InboundEvent::PeerConnected(peer_id.to_string()));
                     }
                     SwarmEvent::ConnectionClosed { peer_id, num_established, .. } => {
                         note_swarm_event(&inner, format!("peer-disconnected:{peer_id}"));
-                        if num_established == 0 {
+                        let mut should_mark_disconnected = num_established == 0;
+                        if let Ok(mut guard) = inner.lock() {
+                            let entry = guard.active_connections.entry(peer_id.to_string()).or_insert(0);
+                            *entry = entry.saturating_sub(1);
+                            if *entry == 0 {
+                                guard.active_connections.remove(&peer_id.to_string());
+                                should_mark_disconnected = true;
+                            }
+                        }
+                        if should_mark_disconnected {
                             register_peer_result(&inner, &peer_id.to_string(), false);
                         }
                     }
                     SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => {
                         if let Some(peer_id) = peer_id {
-                            register_peer_result(&inner, &peer_id.to_string(), false);
+                            let should_mark_failed = inner
+                                .lock()
+                                .ok()
+                                .and_then(|guard| guard.active_connections.get(&peer_id.to_string()).copied())
+                                .unwrap_or(0)
+                                == 0;
+                            if should_mark_failed {
+                                register_peer_result(&inner, &peer_id.to_string(), false);
+                            }
                         }
                         note_swarm_event(&inner, format!("outgoing-connection-error:{error}"));
                     }
