@@ -167,6 +167,20 @@ pub struct P2pStatus {
     pub orphan_blocks_received: u64,
     pub duplicate_blocks_received: u64,
     pub peer_penalties: u64,
+    pub active_connections_by_peer: HashMap<String, usize>,
+    pub active_connection_total: usize,
+    pub last_connection_established_peer: Option<String>,
+    pub last_connection_closed_peer: Option<String>,
+    pub last_connection_closed_remaining_count: Option<usize>,
+    pub last_outgoing_connection_error_peer: Option<String>,
+    pub last_incoming_connection_error_peer: Option<String>,
+    pub last_dial_error: Option<String>,
+    pub last_disconnect_reason: Option<String>,
+    pub last_peer_state_transition: Option<String>,
+    pub bootstrap_dial_attempts: u64,
+    pub bootstrap_dial_successes: u64,
+    pub bootstrap_dial_failures: u64,
+    pub bootstrap_connected_peer_ids: Vec<String>,
 }
 
 pub trait P2pHandle: Send + Sync {
@@ -320,6 +334,18 @@ struct InnerState {
     tx_budget_window_relays: usize,
     peer_book: HashMap<String, PeerHealth>,
     active_connections: HashMap<String, usize>,
+    last_connection_established_peer: Option<String>,
+    last_connection_closed_peer: Option<String>,
+    last_connection_closed_remaining_count: Option<usize>,
+    last_outgoing_connection_error_peer: Option<String>,
+    last_incoming_connection_error_peer: Option<String>,
+    last_dial_error: Option<String>,
+    last_disconnect_reason: Option<String>,
+    last_peer_state_transition: Option<String>,
+    bootstrap_dial_attempts: u64,
+    bootstrap_dial_successes: u64,
+    bootstrap_dial_failures: u64,
+    bootstrap_connected_peer_ids: Vec<String>,
     peer_state_path: Option<PathBuf>,
     peer_reconnect_attempts: u64,
     peer_recovery_success_count: u64,
@@ -642,6 +668,20 @@ impl P2pHandle for MemoryP2pHandle {
             orphan_blocks_received: inner.orphan_blocks_received,
             duplicate_blocks_received: inner.duplicate_blocks_received,
             peer_penalties: inner.peer_penalties,
+            active_connections_by_peer: inner.active_connections.clone(),
+            active_connection_total: inner.active_connections.values().copied().sum(),
+            last_connection_established_peer: inner.last_connection_established_peer.clone(),
+            last_connection_closed_peer: inner.last_connection_closed_peer.clone(),
+            last_connection_closed_remaining_count: inner.last_connection_closed_remaining_count,
+            last_outgoing_connection_error_peer: inner.last_outgoing_connection_error_peer.clone(),
+            last_incoming_connection_error_peer: inner.last_incoming_connection_error_peer.clone(),
+            last_dial_error: inner.last_dial_error.clone(),
+            last_disconnect_reason: inner.last_disconnect_reason.clone(),
+            last_peer_state_transition: inner.last_peer_state_transition.clone(),
+            bootstrap_dial_attempts: inner.bootstrap_dial_attempts,
+            bootstrap_dial_successes: inner.bootstrap_dial_successes,
+            bootstrap_dial_failures: inner.bootstrap_dial_failures,
+            bootstrap_connected_peer_ids: inner.bootstrap_connected_peer_ids.clone(),
         })
     }
 }
@@ -696,6 +736,18 @@ impl Libp2pHandle {
             listening: vec![cfg.listen_addr.clone()],
             peer_book,
             active_connections: HashMap::new(),
+            last_connection_established_peer: None,
+            last_connection_closed_peer: None,
+            last_connection_closed_remaining_count: None,
+            last_outgoing_connection_error_peer: None,
+            last_incoming_connection_error_peer: None,
+            last_dial_error: None,
+            last_disconnect_reason: None,
+            last_peer_state_transition: None,
+            bootstrap_dial_attempts: 0,
+            bootstrap_dial_successes: 0,
+            bootstrap_dial_failures: 0,
+            bootstrap_connected_peer_ids: Vec::new(),
             peer_state_path: peer_state_path(),
             connection_slot_budget: cfg.connection_slot_budget.max(1),
             sync_selection_stickiness_secs: cfg.sync_selection_stickiness_secs,
@@ -2865,6 +2917,11 @@ async fn run_libp2p_real_runtime(
                         if let Ok(mut guard) = inner.lock() {
                             let count = guard.active_connections.entry(peer_id.to_string()).or_insert(0);
                             *count = count.saturating_add(1);
+                            guard.last_connection_established_peer = Some(peer_id.to_string());
+                            guard.last_peer_state_transition = Some(format!("{peer_id}:connected"));
+                            if !guard.bootstrap_connected_peer_ids.iter().any(|id| id == &peer_id.to_string()) {
+                                guard.bootstrap_connected_peer_ids.push(peer_id.to_string());
+                            }
                         }
                         register_peer_result(&inner, &peer_id.to_string(), true);
                         let _ = inbound_tx.send(InboundEvent::PeerConnected(peer_id.to_string()));
@@ -2873,10 +2930,21 @@ async fn run_libp2p_real_runtime(
                         note_swarm_event(&inner, format!("peer-disconnected:{peer_id}"));
                         let mut should_mark_disconnected = num_established == 0;
                         if let Ok(mut guard) = inner.lock() {
-                            let entry = guard.active_connections.entry(peer_id.to_string()).or_insert(0);
-                            *entry = entry.saturating_sub(1);
-                            if *entry == 0 {
-                                guard.active_connections.remove(&peer_id.to_string());
+                            let peer_key = peer_id.to_string();
+                            let remaining_count = {
+                                if let Some(entry) = guard.active_connections.get_mut(&peer_key) {
+                                    *entry = entry.saturating_sub(1);
+                                    *entry
+                                } else {
+                                    0
+                                }
+                            };
+                            guard.last_connection_closed_peer = Some(peer_key.clone());
+                            guard.last_connection_closed_remaining_count = Some(remaining_count);
+                            guard.last_disconnect_reason = Some("swarm-connection-closed".to_string());
+                            guard.last_peer_state_transition = Some(format!("{peer_key}:disconnected"));
+                            if remaining_count == 0 {
+                                guard.active_connections.remove(&peer_key);
                                 should_mark_disconnected = true;
                             }
                         }
@@ -2886,6 +2954,10 @@ async fn run_libp2p_real_runtime(
                     }
                     SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => {
                         if let Some(peer_id) = peer_id {
+                            if let Ok(mut guard) = inner.lock() {
+                                guard.last_outgoing_connection_error_peer = Some(peer_id.to_string());
+                                guard.last_dial_error = Some(error.to_string());
+                            }
                             let should_mark_failed = inner
                                 .lock()
                                 .ok()
@@ -2907,6 +2979,12 @@ async fn run_libp2p_real_runtime(
                         }
                     }
                     other => {
+                        if let SwarmEvent::IncomingConnectionError { send_back_addr, error, .. } = &other {
+                            if let Ok(mut guard) = inner.lock() {
+                                guard.last_incoming_connection_error_peer = Some(send_back_addr.to_string());
+                                guard.last_dial_error = Some(error.to_string());
+                            }
+                        }
                         note_swarm_event(&inner, format!("swarm:{other:?}"));
                     }
                 }
@@ -3147,6 +3225,20 @@ impl P2pHandle for Libp2pHandle {
             orphan_blocks_received: inner.orphan_blocks_received,
             duplicate_blocks_received: inner.duplicate_blocks_received,
             peer_penalties: inner.peer_penalties,
+            active_connections_by_peer: inner.active_connections.clone(),
+            active_connection_total: inner.active_connections.values().copied().sum(),
+            last_connection_established_peer: inner.last_connection_established_peer.clone(),
+            last_connection_closed_peer: inner.last_connection_closed_peer.clone(),
+            last_connection_closed_remaining_count: inner.last_connection_closed_remaining_count,
+            last_outgoing_connection_error_peer: inner.last_outgoing_connection_error_peer.clone(),
+            last_incoming_connection_error_peer: inner.last_incoming_connection_error_peer.clone(),
+            last_dial_error: inner.last_dial_error.clone(),
+            last_disconnect_reason: inner.last_disconnect_reason.clone(),
+            last_peer_state_transition: inner.last_peer_state_transition.clone(),
+            bootstrap_dial_attempts: inner.bootstrap_dial_attempts,
+            bootstrap_dial_successes: inner.bootstrap_dial_successes,
+            bootstrap_dial_failures: inner.bootstrap_dial_failures,
+            bootstrap_connected_peer_ids: inner.bootstrap_connected_peer_ids.clone(),
         })
     }
 }
