@@ -2830,13 +2830,20 @@ async fn run_libp2p_real_runtime(
                     SwarmEvent::ConnectionClosed { peer_id, num_established, .. } => {
                         note_swarm_event(&inner, format!("peer-disconnected:{peer_id}"));
                         let mut should_mark_disconnected = num_established == 0;
+                        let mut remaining = 0usize;
                         if let Ok(mut guard) = inner.lock() {
-                            let entry = guard.active_connections.entry(peer_id.to_string()).or_insert(0);
-                            *entry = entry.saturating_sub(1);
+                            {
+                                let entry = guard
+                                    .active_connections
+                                    .entry(peer_id.to_string())
+                                    .or_insert(0);
+                                *entry = entry.saturating_sub(1);
+                                remaining = *entry;
+                            }
                             guard.last_connection_closed_peer = Some(peer_id.to_string());
-                            guard.last_connection_closed_remaining_count = Some(*entry);
+                            guard.last_connection_closed_remaining_count = Some(remaining);
                             guard.last_disconnect_reason = Some("swarm-connection-closed".to_string());
-                            if *entry == 0 {
+                            if remaining == 0 {
                                 guard.active_connections.remove(&peer_id.to_string());
                                 should_mark_disconnected = true;
                             }
@@ -3121,6 +3128,8 @@ impl P2pHandle for Libp2pHandle {
             orphan_blocks_received: inner.orphan_blocks_received,
             duplicate_blocks_received: inner.duplicate_blocks_received,
             peer_penalties: inner.peer_penalties,
+            active_connections_by_peer: inner.active_connections.clone(),
+            active_connection_total: inner.active_connections.values().copied().sum(),
         })
     }
 }
