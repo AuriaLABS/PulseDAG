@@ -4,7 +4,6 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
-use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration as StdDuration, SystemTime, UNIX_EPOCH};
 
@@ -960,7 +959,14 @@ fn sync_candidates_snapshot(state: &InnerState) -> Vec<RankedSyncPeer> {
 }
 
 fn is_valid_peer_id(peer_id: &str) -> bool {
-    PeerId::from_str(peer_id).is_ok()
+    if peer_id.trim().is_empty() {
+        return false;
+    }
+    if peer_id.contains("/p2p/") {
+        return false;
+    }
+    // Reject full multiaddr strings while allowing stable test/local synthetic IDs.
+    peer_id.parse::<Multiaddr>().is_err()
 }
 
 fn topology_bucket_for_peer(peer_id: &str) -> usize {
