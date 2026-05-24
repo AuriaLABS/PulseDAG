@@ -65,8 +65,18 @@ rejected_count=0
 record_warn(){ local msg; msg="$1"; echo "WARN: $msg"; WARNINGS+=("$msg"); }
 record_fail(){ local msg; msg="$1"; echo "FAIL: $msg"; FAILURES+=("$msg"); }
 
-safe_curl_required(){ local url out; url="$1"; out="$2"; if ! curl -fsS "$url" -o "$out"; then record_fail "required endpoint failed: $url"; return 1; fi; }
-safe_curl_optional(){ local url out label; url="$1"; out="$2"; label="${3:-$url}"; if ! curl -fsS "$url" -o "$out"; then record_warn "optional endpoint failed: $label"; return 1; fi; }
+safe_curl_json(){
+  local url out label required rc
+  url="$1"; out="$2"; label="${3:-$url}"; required="${4:-0}"
+  if ! curl -fsS "$url" -o "$out"; then
+    rc=$?
+    jq -n --arg url "$url" --argjson exit_code "$rc" '{ok:false,error:"curl failed",url:$url,exit_code:$exit_code}' > "$out"
+    if (( required == 1 )); then record_fail "required endpoint failed: $url"; else record_warn "optional endpoint failed: $label"; fi
+    return 1
+  fi
+}
+safe_curl_required(){ safe_curl_json "$1" "$2" "${3:-$1}" 1; }
+safe_curl_optional(){ safe_curl_json "$1" "$2" "${3:-$1}" 0; }
 json_get_or_default(){ local expr file def; expr="$1"; file="$2"; def="$3"; jq -r "$expr // $def" "$file" 2>/dev/null || echo "$def"; }
 
 text_has_match(){
@@ -140,6 +150,45 @@ write_summary(){
     echo "| heights > genesis | $( (( ha>0 && hb>0 && hc>0 )) && echo PASS || echo FAIL ) |"
     echo "| final convergence | $( (( final_converged==1 )) && echo PASS || echo FAIL ) |"
   } > "$OUT_DIR/evidence-summary.md"
+}
+
+capture_node_endpoints_stable(){
+  local node="$1" rpc="$2" ep slug stable
+  for ep in health status readiness p2p/status sync/status; do
+    slug="${ep//\//_}"
+    stable="$OUT_DIR/endpoints/${node}-${slug}.json"
+    safe_curl_optional "http://127.0.0.1:${rpc}/${ep}" "$stable" "${node}:/${ep}" || true
+    cp "$stable" "$OUT_DIR/endpoints/${node}-${slug}-$(date -u +%s).json" 2>/dev/null || true
+  done
+}
+
+capture_p2p_failure_evidence(){
+  capture_node_endpoints_stable a "$RPC_PORT_A"
+  capture_node_endpoints_stable b "$RPC_PORT_B"
+  capture_node_endpoints_stable c "$RPC_PORT_C"
+  cp "$OUT_DIR/logs/a.log" "$OUT_DIR/logs/a.log" 2>/dev/null || true
+  cp "$OUT_DIR/logs/b.log" "$OUT_DIR/logs/b.log" 2>/dev/null || true
+  cp "$OUT_DIR/logs/c.log" "$OUT_DIR/logs/c.log" 2>/dev/null || true
+  {
+    echo "# p2p gate failure diagnostics"
+    echo "- bootnode: $(cat "$OUT_DIR/bootnode.txt" 2>/dev/null || echo unknown)"
+    echo "- command_a: $(rg -n \"launch node-a:\" "$OUT_DIR/command-log.txt" | tail -n1 | cut -d: -f2-)"
+    echo "- command_b: $(rg -n \"launch node-b:\" "$OUT_DIR/command-log.txt" | tail -n1 | cut -d: -f2-)"
+    echo "- command_c: $(rg -n \"launch node-c:\" "$OUT_DIR/command-log.txt" | tail -n1 | cut -d: -f2-)"
+    for n in a b c; do
+      f="$OUT_DIR/endpoints/${n}-p2p_status.json"
+      echo "- ${n}_peer_count: $(jq -r '.data.peer_count // (.data.connected_peers|length) // .data.connected_peer_count // 0' "$f" 2>/dev/null || echo 0)"
+      echo "- ${n}_connected_peers: $(jq -c '.data.connected_peers // .data.connected_peer_ids // []' "$f" 2>/dev/null || echo '[]')"
+      echo "- ${n}_last_swarm_event: $(jq -r '.data.last_swarm_event // "n/a"' "$f" 2>/dev/null || echo n/a)"
+      echo "- ${n}_last_connection_error: $(jq -r '.data.last_connection_error // "n/a"' "$f" 2>/dev/null || echo n/a)"
+      echo "- ${n}_last_disconnect_reason: $(jq -r '.data.last_disconnect_reason // "n/a"' "$f" 2>/dev/null || echo n/a)"
+    done
+    echo "## node log tails"
+    for n in a b c; do
+      echo "### node-${n}"
+      tail -n 80 "$OUT_DIR/logs/${n}.log" 2>/dev/null || true
+    done
+  } > "$OUT_DIR/p2p-gate-failure.md"
 }
 
 write_metadata(){
@@ -289,7 +338,7 @@ while (( $(date +%s) < peer_wait_deadline )); do
   (( peers_total > 0 )) && break
   sleep 2
 done
-(( peers_total > 0 )) || { miner_not_started_reason="pre-mining p2p peer gate failed"; record_fail "pre-mining p2p peers remained zero after ${P2P_CONNECT_WAIT_SECS}s"; exit 1; }
+(( peers_total > 0 )) || { miner_not_started_reason="pre-mining p2p peer gate failed"; capture_p2p_failure_evidence; record_fail "pre-mining p2p peers remained zero after ${P2P_CONNECT_WAIT_SECS}s"; exit 1; }
 
 echo "launch miner: $MINER_BIN --node http://127.0.0.1:${RPC_PORT_A} --miner-address $MINER_ADDRESS --backend cpu --threads 1 --loop"
 "$MINER_BIN" --node "http://127.0.0.1:${RPC_PORT_A}" --miner-address "$MINER_ADDRESS" --backend cpu --threads 1 --loop > "$OUT_DIR/logs/miner.log" 2>&1 &

@@ -62,8 +62,18 @@ count_matches_in_logs(){
 record_warn(){ local msg; msg="$1"; echo "WARN: $msg"; WARNINGS+=("$msg"); }
 record_fail(){ local msg; msg="$1"; echo "FAIL: $msg"; FAIL_REASONS+=("$msg"); }
 
-safe_curl_required(){ local url out; url="$1"; out="$2"; if ! curl -fsS "$url" -o "$out"; then record_fail "required endpoint failed: $url"; return 1; fi; }
-safe_curl_optional(){ local url out label; url="$1"; out="$2"; label="${3:-$url}"; if ! curl -fsS "$url" -o "$out"; then record_warn "optional endpoint failed: $label"; return 1; fi; }
+safe_curl_json(){
+  local url out label required rc
+  url="$1"; out="$2"; label="${3:-$url}"; required="${4:-0}"
+  if ! curl -fsS "$url" -o "$out"; then
+    rc=$?
+    jq -n --arg url "$url" --argjson exit_code "$rc" '{ok:false,error:"curl failed",url:$url,exit_code:$exit_code}' > "$out"
+    if (( required == 1 )); then record_fail "required endpoint failed: $url"; else record_warn "optional endpoint failed: $label"; fi
+    return 1
+  fi
+}
+safe_curl_required(){ safe_curl_json "$1" "$2" "${3:-$1}" 1; }
+safe_curl_optional(){ safe_curl_json "$1" "$2" "${3:-$1}" 0; }
 json_get_or_default(){ local expr file def; expr="$1"; file="$2"; def="$3"; jq -r "$expr // $def" "$file" 2>/dev/null || echo "$def"; }
 
 extract_chain_id(){
@@ -110,6 +120,24 @@ ensure_ports_free(){
 }
 
 stop_pids(){ for p in "$@"; do kill "$p" 2>/dev/null || true; done; sleep 1; for p in "$@"; do kill -0 "$p" 2>/dev/null && kill -9 "$p" 2>/dev/null || true; done; }
+capture_p2p_gate_failure(){
+  local i
+  for i in 1 2 3 4 5; do
+    rpc=$((BASE_RPC_PORT+i))
+    for ep in health status readiness p2p/status sync/status; do
+      safe_curl_optional "http://127.0.0.1:${rpc}/${ep}" "$OUT_DIR/endpoints/n${i}-${ep//\//_}.json" "n${i}:/${ep}" || true
+    done
+  done
+  {
+    echo "# p2p gate failure diagnostics"
+    echo "- bootnode: $(cat "$OUT_DIR/bootnode.txt" 2>/dev/null || echo unknown)"
+    for i in 1 2 3 4 5; do
+      f="$OUT_DIR/endpoints/n${i}-p2p_status.json"
+      echo "- n${i}.peer_count: $(jq -r '.data.peer_count // (.data.connected_peers|length) // .data.connected_peer_count // 0' "$f" 2>/dev/null || echo 0)"
+      echo "- n${i}.connected_peers: $(jq -c '.data.connected_peers // .data.connected_peer_ids // []' "$f" 2>/dev/null || echo '[]')"
+    done
+  } > "$OUT_DIR/p2p-gate-failure.md"
+}
 
 capture_log_tails(){
   for i in $(seq 1 "$NODE_COUNT"); do tail -n 120 "$OUT_DIR/logs/n${i}.log" > "$OUT_DIR/logs/n${i}-tail.log" 2>/dev/null || true; done
@@ -336,7 +364,7 @@ while (( $(date +%s) < peer_wait_deadline )); do
   (( peers_total > 0 )) && break
   sleep 2
 done
-(( peers_total > 0 )) || { record_fail "pre-mining p2p peers remained zero after ${P2P_CONNECT_WAIT_SECS}s"; exit 1; }
+(( peers_total > 0 )) || { capture_p2p_gate_failure; record_fail "pre-mining p2p peers remained zero after ${P2P_CONNECT_WAIT_SECS}s"; exit 1; }
 
 for i in 1 2 3 4; do
   local_node="http://127.0.0.1:$((BASE_RPC_PORT+i))"
