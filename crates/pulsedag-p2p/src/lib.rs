@@ -167,6 +167,20 @@ pub struct P2pStatus {
     pub orphan_blocks_received: u64,
     pub duplicate_blocks_received: u64,
     pub peer_penalties: u64,
+    pub active_connections_by_peer: HashMap<String, usize>,
+    pub active_connection_total: usize,
+    pub last_connection_established_peer: Option<String>,
+    pub last_connection_closed_peer: Option<String>,
+    pub last_connection_closed_remaining_count: Option<usize>,
+    pub last_outgoing_connection_error_peer: Option<String>,
+    pub last_incoming_connection_error_peer: Option<String>,
+    pub last_dial_error: Option<String>,
+    pub last_disconnect_reason: Option<String>,
+    pub last_peer_state_transition: Option<String>,
+    pub bootstrap_dial_attempts: u64,
+    pub bootstrap_dial_successes: u64,
+    pub bootstrap_dial_failures: u64,
+    pub bootstrap_connected_peer_ids: Vec<String>,
 }
 
 pub trait P2pHandle: Send + Sync {
@@ -332,6 +346,18 @@ struct InnerState {
     sync_selection_stickiness_secs: u64,
     selected_sync_peer: Option<String>,
     sync_selection_sticky_until_unix: u64,
+    last_connection_established_peer: Option<String>,
+    last_connection_closed_peer: Option<String>,
+    last_connection_closed_remaining_count: Option<usize>,
+    last_outgoing_connection_error_peer: Option<String>,
+    last_incoming_connection_error_peer: Option<String>,
+    last_dial_error: Option<String>,
+    last_disconnect_reason: Option<String>,
+    last_peer_state_transition: Option<String>,
+    bootstrap_dial_attempts: u64,
+    bootstrap_dial_successes: u64,
+    bootstrap_dial_failures: u64,
+    bootstrap_connected_peer_ids: HashSet<String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -536,6 +562,7 @@ impl P2pHandle for MemoryP2pHandle {
         let selected_sync_peer =
             update_selected_sync_peer(&mut inner, &sync_candidates, now_unix());
         let connected_slots_in_use = inner.connected_peers.len();
+        let active_connection_total = inner.active_connections.values().copied().sum::<usize>();
         let available_connection_slots = inner
             .connection_slot_budget
             .saturating_sub(connected_slots_in_use);
@@ -642,6 +669,24 @@ impl P2pHandle for MemoryP2pHandle {
             orphan_blocks_received: inner.orphan_blocks_received,
             duplicate_blocks_received: inner.duplicate_blocks_received,
             peer_penalties: inner.peer_penalties,
+            active_connections_by_peer: inner.active_connections.clone(),
+            active_connection_total,
+            last_connection_established_peer: inner.last_connection_established_peer.clone(),
+            last_connection_closed_peer: inner.last_connection_closed_peer.clone(),
+            last_connection_closed_remaining_count: inner.last_connection_closed_remaining_count,
+            last_outgoing_connection_error_peer: inner.last_outgoing_connection_error_peer.clone(),
+            last_incoming_connection_error_peer: inner.last_incoming_connection_error_peer.clone(),
+            last_dial_error: inner.last_dial_error.clone(),
+            last_disconnect_reason: inner.last_disconnect_reason.clone(),
+            last_peer_state_transition: inner.last_peer_state_transition.clone(),
+            bootstrap_dial_attempts: inner.bootstrap_dial_attempts,
+            bootstrap_dial_successes: inner.bootstrap_dial_successes,
+            bootstrap_dial_failures: inner.bootstrap_dial_failures,
+            bootstrap_connected_peer_ids: inner
+                .bootstrap_connected_peer_ids
+                .iter()
+                .cloned()
+                .collect(),
         })
     }
 }
@@ -1006,76 +1051,16 @@ fn topology_stats_for_connected_peers(peers: &[String]) -> (usize, usize, u16, u
 
 fn refresh_connected_peers_from_health(state: &mut InnerState) {
     if mode_connected_peers_are_real_network(&state.mode) {
-        let budget = adaptive_connection_slot_budget(state, now_unix());
-        let now = now_unix();
-        let eligible = sync_candidates_snapshot(state)
-            .into_iter()
-            .filter(|peer| {
-                peer.excluded_until_unix.is_none()
-                    && state
-                        .peer_book
-                        .get(&peer.peer_id)
-                        .map(|health| health.connected && health.chain_id_compatible)
-                        .unwrap_or(false)
-            })
-            .map(|peer| peer.peer_id)
-            .collect::<Vec<_>>();
-        let mut healthy = Vec::new();
-        let mut recovering = Vec::new();
-        let mut watch = Vec::new();
-        let mut degraded = Vec::new();
-        for peer_id in eligible {
-            let tier = state
-                .peer_book
-                .get(&peer_id)
-                .map(|health| peer_lifecycle_tier(health, now))
-                .unwrap_or("degraded");
-            match tier {
-                "healthy" => healthy.push(peer_id),
-                "recovering" => recovering.push(peer_id),
-                "watch" => watch.push(peer_id),
-                _ => degraded.push(peer_id),
-            }
+        for (peer_id, health) in &mut state.peer_book {
+            let count = state.active_connections.get(peer_id).copied().unwrap_or(0);
+            health.connected = count > 0;
         }
-        let mut shaped = Vec::new();
-        let min_healthy_slots = CONNECTION_SHAPING_MIN_HEALTHY_SLOTS.min(budget);
-        shaped.extend(healthy.iter().take(min_healthy_slots).cloned());
-        shaped.extend(healthy.iter().skip(min_healthy_slots).cloned());
-        shaped.extend(recovering);
-        shaped.extend(watch);
-        let remaining = budget.saturating_sub(shaped.len());
-        if remaining > 0 {
-            let degraded_cap = if !healthy.is_empty() {
-                budget.max(1) / CONNECTION_SHAPING_DEGRADED_CAP_DIVISOR.max(1)
-            } else {
-                remaining
-            }
-            .max(1);
-            shaped.extend(degraded.into_iter().take(remaining.min(degraded_cap)));
-        }
-        let topology_soft_cap = std::cmp::max(1, budget.div_ceil(TOPOLOGY_BUCKET_SOFT_CAP_DIVISOR));
-        let mut bucket_counts: HashMap<usize, usize> = HashMap::new();
-        let mut selected = Vec::with_capacity(std::cmp::min(shaped.len(), budget));
-        let mut deferred = Vec::new();
-        for peer_id in shaped {
-            if selected.len() >= budget {
-                break;
-            }
-            let bucket = topology_bucket_for_peer(&peer_id);
-            if bucket_counts.get(&bucket).copied().unwrap_or(0) < topology_soft_cap {
-                *bucket_counts.entry(bucket).or_insert(0) += 1;
-                selected.push(peer_id);
-            } else {
-                deferred.push(peer_id);
-            }
-        }
-        for peer_id in deferred {
-            if selected.len() >= budget {
-                break;
-            }
-            selected.push(peer_id);
-        }
-        state.connected_peers = selected;
+        state.connected_peers = state
+            .active_connections
+            .iter()
+            .filter_map(|(peer_id, count)| (*count > 0).then_some(peer_id.clone()))
+            .collect();
+        state.connected_peers.sort();
     } else {
         state.connected_peers.clear();
     }
@@ -2865,6 +2850,9 @@ async fn run_libp2p_real_runtime(
                         if let Ok(mut guard) = inner.lock() {
                             let count = guard.active_connections.entry(peer_id.to_string()).or_insert(0);
                             *count = count.saturating_add(1);
+                            guard.last_connection_established_peer = Some(peer_id.to_string());
+                            guard.bootstrap_dial_successes = guard.bootstrap_dial_successes.saturating_add(1);
+                            guard.bootstrap_connected_peer_ids.insert(peer_id.to_string());
                         }
                         register_peer_result(&inner, &peer_id.to_string(), true);
                         let _ = inbound_tx.send(InboundEvent::PeerConnected(peer_id.to_string()));
@@ -2873,14 +2861,22 @@ async fn run_libp2p_real_runtime(
                         note_swarm_event(&inner, format!("peer-disconnected:{peer_id}"));
                         let mut should_mark_disconnected = num_established == 0;
                         if let Ok(mut guard) = inner.lock() {
-                            let entry = guard.active_connections.entry(peer_id.to_string()).or_insert(0);
-                            *entry = entry.saturating_sub(1);
-                            if *entry == 0 {
-                                guard.active_connections.remove(&peer_id.to_string());
-                                should_mark_disconnected = true;
+                            if let Some(entry) = guard.active_connections.get_mut(&peer_id.to_string()) {
+                                *entry = entry.saturating_sub(1);
+                                guard.last_connection_closed_remaining_count = Some(*entry);
+                                if *entry == 0 {
+                                    guard.active_connections.remove(&peer_id.to_string());
+                                    should_mark_disconnected = true;
+                                }
+                            } else {
+                                guard.last_connection_closed_remaining_count = Some(0);
                             }
+                            guard.last_connection_closed_peer = Some(peer_id.to_string());
                         }
                         if should_mark_disconnected {
+                            if let Ok(mut guard) = inner.lock() {
+                                guard.last_disconnect_reason = Some("connection_closed".into());
+                            }
                             register_peer_result(&inner, &peer_id.to_string(), false);
                         }
                     }
@@ -2893,10 +2889,24 @@ async fn run_libp2p_real_runtime(
                                 .unwrap_or(0)
                                 == 0;
                             if should_mark_failed {
+                                if let Ok(mut guard) = inner.lock() {
+                                    guard.last_disconnect_reason = Some("outgoing_connection_error".into());
+                                }
                                 register_peer_result(&inner, &peer_id.to_string(), false);
                             }
+                            if let Ok(mut guard) = inner.lock() {
+                                guard.last_outgoing_connection_error_peer = Some(peer_id.to_string());
+                            }
                         }
+                        if let Ok(mut guard) = inner.lock() { guard.last_dial_error = Some(error.to_string()); }
                         note_swarm_event(&inner, format!("outgoing-connection-error:{error}"));
+                    }
+                    SwarmEvent::IncomingConnectionError { send_back_addr, error, .. } => {
+                        if let Ok(mut guard) = inner.lock() {
+                            guard.last_incoming_connection_error_peer = Some(send_back_addr.to_string());
+                            guard.last_dial_error = Some(error.to_string());
+                        }
+                        note_swarm_event(&inner, format!("incoming-connection-error:{error}"));
                     }
                     SwarmEvent::NewListenAddr { address, .. } => {
                         note_swarm_event(&inner, format!("listening:{address}"));
