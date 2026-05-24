@@ -1482,10 +1482,11 @@ fn register_peer_result_at(inner: &Arc<Mutex<InnerState>>, peer: &str, success: 
                 health.reconnect_attempts = health.reconnect_attempts.saturating_add(1);
                 health.last_seen_unix = Some(now);
                 if success {
-                    let requires_message_compatibility =
-                        mode_connected_peers_are_real_network(&mode)
-                            && health.remote_chain_id.as_deref() != Some(local_chain_id.as_str());
-                    health.connected = !requires_message_compatibility;
+                    let remote_chain_compatible = health
+                        .remote_chain_id
+                        .as_deref()
+                        .map_or(true, |remote| remote == local_chain_id.as_str());
+                    health.connected = true;
                     health.fail_streak = 0;
                     health.next_retry_unix = now;
                     trigger_rebroadcast_window = true;
@@ -1499,8 +1500,8 @@ fn register_peer_result_at(inner: &Arc<Mutex<InnerState>>, peer: &str, success: 
                     health.recovery_success_count = health.recovery_success_count.saturating_add(1);
                     health.last_recovery_unix = Some(now);
                     health.last_successful_connect_unix = Some(now);
-                    if requires_message_compatibility {
-                        health.chain_id_compatible = false;
+                    if mode_connected_peers_are_real_network(&mode) {
+                        health.chain_id_compatible = remote_chain_compatible;
                     }
                     if health
                         .last_failure_unix
@@ -2862,9 +2863,9 @@ async fn run_libp2p_real_runtime(
                         register_peer_result(&inner, &peer_id.to_string(), true);
                         let _ = inbound_tx.send(InboundEvent::PeerConnected(peer_id.to_string()));
                     }
-                    SwarmEvent::ConnectionClosed { peer_id, remaining_established, .. } => {
+                    SwarmEvent::ConnectionClosed { peer_id, num_established, .. } => {
                         note_swarm_event(&inner, format!("peer-disconnected:{peer_id}"));
-                        if remaining_established == 0 {
+                        if num_established == 0 {
                             register_peer_result(&inner, &peer_id.to_string(), false);
                         }
                     }
