@@ -7,7 +7,10 @@ RUN_ID=${RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)}
 START_TS=$(date +%s)
 START_UTC=$(date -u +%FT%TZ)
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-OUT_DIR="${OUT_DIR:-$ROOT_DIR/artifacts/v2_2_19/private_5n_4m_rehearsal/${RUN_ID}}"
+OUT_DIR_BASE="${OUT_DIR:-$ROOT_DIR/artifacts/v2_2_19/private_5n_4m_rehearsal}"
+RUN_DIR="$OUT_DIR_BASE/$RUN_ID"
+OUT_DIR_ROOT="$OUT_DIR_BASE"
+OUT_DIR="$RUN_DIR"
 NODE_BIN="${NODE_BIN:-$ROOT_DIR/target/release/pulsedagd}"
 MINER_BIN="${MINER_BIN:-$ROOT_DIR/target/release/pulsedag-miner}"
 NODE_COUNT=5
@@ -193,6 +196,9 @@ write_evidence_summary(){
     echo "- failure reasons:"
     if (( ${#FAIL_REASONS[@]} > 0 )); then for r in "${FAIL_REASONS[@]}"; do echo "  - $r"; done; else echo "  - none"; fi
   } > "$OUT_DIR/evidence-summary.md"
+  cp "$OUT_DIR/evidence-summary.md" "$OUT_DIR_ROOT/evidence-summary.md" 2>/dev/null || true
+  printf "%s
+" "$OUT_DIR" > "$OUT_DIR_ROOT/current-run-dir.txt"
 }
 
 write_p2p_convergence_json(){

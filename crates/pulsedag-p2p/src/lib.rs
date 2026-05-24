@@ -962,7 +962,7 @@ fn is_valid_peer_id(peer_id: &str) -> bool {
     if peer_id.trim().is_empty() {
         return false;
     }
-    if peer_id.contains("/p2p/") {
+    if peer_id.contains("/p2p/") || peer_id.contains("/ip4/") || peer_id.contains("/tcp/") {
         return false;
     }
     // Reject full multiaddr strings while allowing stable test/local synthetic IDs.
@@ -2688,10 +2688,21 @@ struct PulseBehaviour {
     gossipsub: gossipsub::Behaviour,
 }
 
-fn parse_bootstrap(bootstrap: &[String]) -> Vec<Multiaddr> {
+fn parse_bootnode_multiaddr(input: &str) -> Option<(PeerId, Multiaddr)> {
+    let address = input.parse::<Multiaddr>().ok()?;
+    let mut peer_id = None;
+    for protocol in address.iter() {
+        if let libp2p::multiaddr::Protocol::P2p(multihash) = protocol {
+            peer_id = PeerId::from_multihash(multihash).ok();
+        }
+    }
+    peer_id.map(|id| (id, address))
+}
+
+fn parse_bootstrap(bootstrap: &[String]) -> Vec<(PeerId, Multiaddr)> {
     bootstrap
         .iter()
-        .filter_map(|addr| addr.parse::<Multiaddr>().ok())
+        .filter_map(|addr| parse_bootnode_multiaddr(addr))
         .collect()
 }
 
@@ -2760,11 +2771,17 @@ async fn run_libp2p_real_runtime(
 
     note_swarm_event(&inner, "swarm-real-started");
     note_swarm_event(&inner, format!("listen-attempt:{listen_addr}"));
-    for addr in parse_bootstrap(&cfg.bootstrap) {
+    for (peer_id, addr) in parse_bootstrap(&cfg.bootstrap) {
+        if let Ok(mut guard) = inner.lock() {
+            guard.peer_book.entry(peer_id.to_string()).or_default();
+        }
         if let Err(e) = swarm.dial(addr.clone()) {
-            note_swarm_event(&inner, format!("bootstrap-dial-failed:{addr}:{e}"));
+            note_swarm_event(
+                &inner,
+                format!("bootstrap-dial-failed:{peer_id}:{addr}:{e}"),
+            );
         } else {
-            note_swarm_event(&inner, format!("bootstrap-dialing:{addr}"));
+            note_swarm_event(&inner, format!("bootstrap-dialing:{peer_id}:{addr}"));
         }
     }
     let mut outbound_queue = OutboundPriorityQueue::default();
@@ -5696,5 +5713,24 @@ mod deterministic_p2p_sync_coverage_tests {
             .connected_peers
             .iter()
             .all(|peer| { ["peer-a", "peer-b", "peer-c"].contains(&peer.as_str()) }));
+    }
+    #[test]
+    fn parse_bootnode_multiaddr_extracts_peer_id() {
+        let key = identity::Keypair::generate_ed25519();
+        let peer = PeerId::from(key.public());
+        let addr = format!("/ip4/127.0.0.1/tcp/19080/p2p/{peer}");
+        let parsed = parse_bootnode_multiaddr(&addr).expect("parse bootnode");
+        assert_eq!(parsed.0, peer);
+        assert_eq!(parsed.1.to_string(), addr);
+    }
+
+    #[test]
+    fn parse_bootnode_multiaddr_rejects_missing_peer_id() {
+        assert!(parse_bootnode_multiaddr("/ip4/127.0.0.1/tcp/19080").is_none());
+    }
+
+    #[test]
+    fn is_valid_peer_id_rejects_multiaddr_values() {
+        assert!(!is_valid_peer_id("/ip4/127.0.0.1/tcp/19080/p2p/12D3KooW"));
     }
 }

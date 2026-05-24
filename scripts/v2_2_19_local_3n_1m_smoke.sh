@@ -6,11 +6,15 @@ GRACE_SECS=${GRACE_SECS:-120}
 SAMPLE_INTERVAL_SECS=${SAMPLE_INTERVAL_SECS:-10}
 STARTUP_WAIT_SECS=${STARTUP_WAIT_SECS:-12}
 P2P_CONNECT_WAIT_SECS=${P2P_CONNECT_WAIT_SECS:-120}
-RUN_ID=${RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)}
+STAMP=${RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)}
+RUN_ID="$STAMP"
 START_TS=$(date +%s)
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-DEFAULT_OUT_DIR="$ROOT_DIR/artifacts/v2_2_19/local_3n_1m_smoke/${RUN_ID}"
+DEFAULT_OUT_DIR="$ROOT_DIR/artifacts/v2_2_19/local_3n_1m_smoke"
 OUT_DIR=${OUT_DIR:-$DEFAULT_OUT_DIR}
+RUN_DIR="$OUT_DIR/$STAMP"
+OUT_DIR_ROOT="$OUT_DIR"
+OUT_DIR="$RUN_DIR"
 NODE_BIN="${NODE_BIN:-$ROOT_DIR/target/release/pulsedagd}"
 MINER_BIN="${MINER_BIN:-$ROOT_DIR/target/release/pulsedag-miner}"
 MINER_ADDRESS="${MINER_ADDRESS:-v2219-${RUN_ID}-miner-a}"
@@ -38,11 +42,25 @@ RESULT="PENDING"
 EXIT_CODE=0
 WAIVE_ACCEPTED_BLOCK_GATE=${WAIVE_ACCEPTED_BLOCK_GATE:-0}
 WAIVE_ACCEPTED_BLOCK_REASON=${WAIVE_ACCEPTED_BLOCK_REASON:-""}
+ha=0
+hb=0
+hc=0
+ta=""
+tb=""
+tc=""
+final_converged=0
+healthy_nodes=0
+ready_nodes=0
+peers_total=0
 miner_templates=0
+miner_submissions=0
+miner_accepted=0
+miner_rejected=0
+miner_not_started_reason=""
+chain_id="unknown"
 miner_submits=0
 accepted_count=0
 rejected_count=0
-miner_not_started_reason=""
 
 record_warn(){ local msg; msg="$1"; echo "WARN: $msg"; WARNINGS+=("$msg"); }
 record_fail(){ local msg; msg="$1"; echo "FAIL: $msg"; FAILURES+=("$msg"); }
@@ -145,12 +163,17 @@ package_evidence(){
   cp "$OUT_DIR/logs/miner.log" "$OUT_DIR/miners/miner.log" 2>/dev/null || true
   cp "$OUT_DIR/process-pids.txt" "$OUT_DIR/nodes/process-pids.txt" 2>/dev/null || true
   cp "$OUT_DIR/evidence-summary.md" "$OUT_DIR/summaries/evidence-summary.md" 2>/dev/null || true
+  cp "$OUT_DIR/evidence-summary.md" "$OUT_DIR_ROOT/evidence-summary.md" 2>/dev/null || true
+  printf "%s
+" "$OUT_DIR" > "$OUT_DIR_ROOT/current-run-dir.txt"
   cp "$OUT_DIR/samples/height-samples.csv" "$OUT_DIR/final-convergence-table.txt" 2>/dev/null || true
   local tar_tmp
   tar_tmp=$(mktemp -p /tmp evidence.XXXXXX.tar.gz)
   (cd "$OUT_DIR" && tar -czf "$tar_tmp" --exclude='evidence.tar.gz' --exclude='evidence.tar.gz.sha256' endpoints logs miners nodes samples summaries evidence-summary.md command-log.txt process-pids.txt final-convergence-table.txt 2>/dev/null || true)
   mv "$tar_tmp" "$OUT_DIR/evidence.tar.gz"
   (cd "$OUT_DIR" && sha256sum evidence.tar.gz > evidence.tar.gz.sha256)
+  cp "$OUT_DIR/evidence.tar.gz" "$OUT_DIR_ROOT/evidence.tar.gz" 2>/dev/null || true
+  cp "$OUT_DIR/evidence.tar.gz.sha256" "$OUT_DIR_ROOT/evidence.tar.gz.sha256" 2>/dev/null || true
   (cd "$OUT_DIR" && test -s evidence.tar.gz && test -s evidence.tar.gz.sha256 && sha256sum -c evidence.tar.gz.sha256)
 }
 
@@ -174,6 +197,9 @@ cleanup(){
   if (( ${#FAILURES[@]} == 0 )); then RESULT="PASS"; else RESULT="FAIL"; fi
   write_summary || true
   cp "$OUT_DIR/evidence-summary.md" "$OUT_DIR/summaries/evidence-summary.md" 2>/dev/null || true
+  cp "$OUT_DIR/evidence-summary.md" "$OUT_DIR_ROOT/evidence-summary.md" 2>/dev/null || true
+  printf "%s
+" "$OUT_DIR" > "$OUT_DIR_ROOT/current-run-dir.txt"
   package_evidence || true
   exit "$exit_code"
 }
