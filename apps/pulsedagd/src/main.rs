@@ -779,10 +779,15 @@ async fn main() -> Result<()> {
                                         rt.blockdata_invalid_pow.saturating_add(1);
                                 }
                             }
-                            rt.sync_pipeline.fallback_after_failure(
-                                format!("block {} validation failed: {:?}", block.hash, acceptance),
-                                now_unix(),
-                            );
+                            if !matches!(acceptance, BlockAcceptanceResult::Duplicate) {
+                                rt.sync_pipeline.fallback_after_failure(
+                                    format!(
+                                        "block {} validation failed: {:?}",
+                                        block.hash, acceptance
+                                    ),
+                                    now_unix(),
+                                );
+                            }
                             match acceptance {
                                 BlockAcceptanceResult::Duplicate => {
                                     info!(event = "peer_block_duplicate", block_hash = %block.hash, "suppressed duplicate inbound p2p block");
