@@ -167,6 +167,8 @@ pub struct P2pStatus {
     pub orphan_blocks_received: u64,
     pub duplicate_blocks_received: u64,
     pub peer_penalties: u64,
+    pub active_connections_by_peer: HashMap<String, usize>,
+    pub active_connection_total: usize,
 }
 
 pub trait P2pHandle: Send + Sync {
@@ -332,6 +334,17 @@ struct InnerState {
     sync_selection_stickiness_secs: u64,
     selected_sync_peer: Option<String>,
     sync_selection_sticky_until_unix: u64,
+    last_connection_established_peer: Option<String>,
+    last_connection_closed_peer: Option<String>,
+    last_connection_closed_remaining_count: Option<usize>,
+    last_outgoing_connection_error_peer: Option<String>,
+    last_incoming_connection_error_peer: Option<String>,
+    last_dial_error: Option<String>,
+    last_disconnect_reason: Option<String>,
+    last_peer_state_transition: Option<String>,
+    bootstrap_dial_attempts: u64,
+    bootstrap_dial_successes: u64,
+    bootstrap_dial_failures: u64,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -642,6 +655,8 @@ impl P2pHandle for MemoryP2pHandle {
             orphan_blocks_received: inner.orphan_blocks_received,
             duplicate_blocks_received: inner.duplicate_blocks_received,
             peer_penalties: inner.peer_penalties,
+            active_connections_by_peer: inner.active_connections.clone(),
+            active_connection_total: inner.active_connections.values().copied().sum(),
         })
     }
 }
@@ -1006,76 +1021,17 @@ fn topology_stats_for_connected_peers(peers: &[String]) -> (usize, usize, u16, u
 
 fn refresh_connected_peers_from_health(state: &mut InnerState) {
     if mode_connected_peers_are_real_network(&state.mode) {
-        let budget = adaptive_connection_slot_budget(state, now_unix());
-        let now = now_unix();
-        let eligible = sync_candidates_snapshot(state)
-            .into_iter()
-            .filter(|peer| {
-                peer.excluded_until_unix.is_none()
-                    && state
-                        .peer_book
-                        .get(&peer.peer_id)
-                        .map(|health| health.connected && health.chain_id_compatible)
-                        .unwrap_or(false)
-            })
-            .map(|peer| peer.peer_id)
+        for (peer_id, health) in &mut state.peer_book {
+            health.connected = state.active_connections.get(peer_id).copied().unwrap_or(0) > 0;
+        }
+        let mut active = state
+            .active_connections
+            .iter()
+            .filter(|(_, count)| **count > 0)
+            .map(|(peer, _)| peer.clone())
             .collect::<Vec<_>>();
-        let mut healthy = Vec::new();
-        let mut recovering = Vec::new();
-        let mut watch = Vec::new();
-        let mut degraded = Vec::new();
-        for peer_id in eligible {
-            let tier = state
-                .peer_book
-                .get(&peer_id)
-                .map(|health| peer_lifecycle_tier(health, now))
-                .unwrap_or("degraded");
-            match tier {
-                "healthy" => healthy.push(peer_id),
-                "recovering" => recovering.push(peer_id),
-                "watch" => watch.push(peer_id),
-                _ => degraded.push(peer_id),
-            }
-        }
-        let mut shaped = Vec::new();
-        let min_healthy_slots = CONNECTION_SHAPING_MIN_HEALTHY_SLOTS.min(budget);
-        shaped.extend(healthy.iter().take(min_healthy_slots).cloned());
-        shaped.extend(healthy.iter().skip(min_healthy_slots).cloned());
-        shaped.extend(recovering);
-        shaped.extend(watch);
-        let remaining = budget.saturating_sub(shaped.len());
-        if remaining > 0 {
-            let degraded_cap = if !healthy.is_empty() {
-                budget.max(1) / CONNECTION_SHAPING_DEGRADED_CAP_DIVISOR.max(1)
-            } else {
-                remaining
-            }
-            .max(1);
-            shaped.extend(degraded.into_iter().take(remaining.min(degraded_cap)));
-        }
-        let topology_soft_cap = std::cmp::max(1, budget.div_ceil(TOPOLOGY_BUCKET_SOFT_CAP_DIVISOR));
-        let mut bucket_counts: HashMap<usize, usize> = HashMap::new();
-        let mut selected = Vec::with_capacity(std::cmp::min(shaped.len(), budget));
-        let mut deferred = Vec::new();
-        for peer_id in shaped {
-            if selected.len() >= budget {
-                break;
-            }
-            let bucket = topology_bucket_for_peer(&peer_id);
-            if bucket_counts.get(&bucket).copied().unwrap_or(0) < topology_soft_cap {
-                *bucket_counts.entry(bucket).or_insert(0) += 1;
-                selected.push(peer_id);
-            } else {
-                deferred.push(peer_id);
-            }
-        }
-        for peer_id in deferred {
-            if selected.len() >= budget {
-                break;
-            }
-            selected.push(peer_id);
-        }
-        state.connected_peers = selected;
+        active.sort();
+        state.connected_peers = active;
     } else {
         state.connected_peers.clear();
     }
@@ -2865,6 +2821,8 @@ async fn run_libp2p_real_runtime(
                         if let Ok(mut guard) = inner.lock() {
                             let count = guard.active_connections.entry(peer_id.to_string()).or_insert(0);
                             *count = count.saturating_add(1);
+                            guard.last_connection_established_peer = Some(peer_id.to_string());
+                            guard.last_peer_state_transition = Some(format!("{peer_id}:connected"));
                         }
                         register_peer_result(&inner, &peer_id.to_string(), true);
                         let _ = inbound_tx.send(InboundEvent::PeerConnected(peer_id.to_string()));
@@ -2875,6 +2833,9 @@ async fn run_libp2p_real_runtime(
                         if let Ok(mut guard) = inner.lock() {
                             let entry = guard.active_connections.entry(peer_id.to_string()).or_insert(0);
                             *entry = entry.saturating_sub(1);
+                            guard.last_connection_closed_peer = Some(peer_id.to_string());
+                            guard.last_connection_closed_remaining_count = Some(*entry);
+                            guard.last_disconnect_reason = Some("swarm-connection-closed".to_string());
                             if *entry == 0 {
                                 guard.active_connections.remove(&peer_id.to_string());
                                 should_mark_disconnected = true;
@@ -2886,6 +2847,12 @@ async fn run_libp2p_real_runtime(
                     }
                     SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => {
                         if let Some(peer_id) = peer_id {
+                            if let Ok(mut guard) = inner.lock() {
+                                guard.last_outgoing_connection_error_peer = Some(peer_id.to_string());
+                                guard.last_dial_error = Some(error.to_string());
+                                guard.bootstrap_dial_attempts = guard.bootstrap_dial_attempts.saturating_add(1);
+                                guard.bootstrap_dial_failures = guard.bootstrap_dial_failures.saturating_add(1);
+                            }
                             let should_mark_failed = inner
                                 .lock()
                                 .ok()
@@ -2897,6 +2864,13 @@ async fn run_libp2p_real_runtime(
                             }
                         }
                         note_swarm_event(&inner, format!("outgoing-connection-error:{error}"));
+                    }
+                    SwarmEvent::IncomingConnectionError { error, .. } => {
+                        if let Ok(mut guard) = inner.lock() {
+                            guard.last_incoming_connection_error_peer = None;
+                            guard.last_dial_error = Some(error.to_string());
+                        }
+                        note_swarm_event(&inner, format!("incoming-connection-error:{error}"));
                     }
                     SwarmEvent::NewListenAddr { address, .. } => {
                         note_swarm_event(&inner, format!("listening:{address}"));
@@ -5288,6 +5262,26 @@ mod inventory_tests {
         refresh_connected_peers_from_health(&mut state);
 
         assert_eq!(state.connected_peers, vec!["peer-compatible".to_string()]);
+    }
+
+    #[test]
+    fn real_mode_connected_peers_follow_active_connections() {
+        let mut state = InnerState {
+            mode: P2P_MODE_LIBP2P_REAL.to_string(),
+            ..InnerState::default()
+        };
+        state
+            .peer_book
+            .insert("peer-a".into(), PeerHealth::default());
+        state
+            .peer_book
+            .insert("peer-b".into(), PeerHealth::default());
+        state.active_connections.insert("peer-a".into(), 1);
+        state.active_connections.insert("peer-b".into(), 0);
+        refresh_connected_peers_from_health(&mut state);
+        assert_eq!(state.connected_peers, vec!["peer-a".to_string()]);
+        assert!(state.peer_book["peer-a"].connected);
+        assert!(!state.peer_book["peer-b"].connected);
     }
 
     #[test]
