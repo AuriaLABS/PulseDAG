@@ -2,6 +2,7 @@
 set -euo pipefail
 
 DURATION_SECS=${DURATION_SECS:-1800}
+P2P_CONNECT_WAIT_SECS=${P2P_CONNECT_WAIT_SECS:-120}
 RUN_ID=${RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)}
 START_TS=$(date +%s)
 START_UTC=$(date -u +%FT%TZ)
@@ -283,6 +284,7 @@ start_node(){
   mkdir -p "$data"
   local cmd=("$NODE_BIN" --network "$NETWORK_PROFILE" --rpc-listen "127.0.0.1:${rpc}" --p2p-listen "/ip4/127.0.0.1/tcp/${p2p}")
   [[ -n "$bootnode" ]] && cmd+=(--bootnode "$bootnode")
+  echo "launch node-${name}: PULSEDAG_ROCKSDB_PATH=$data/rocksdb ${cmd[*]}"
   PULSEDAG_ROCKSDB_PATH="$data/rocksdb" "${cmd[@]}" > "$OUT_DIR/logs/${name}.log" 2>&1 &
   NODE_PIDS+=("$!")
   echo "$! node-${name}" >> "$OUT_DIR/process-pids.txt"
@@ -301,20 +303,36 @@ wait_node_ready(){
 }
 
 start_node 1 $((BASE_RPC_PORT+1)) $((BASE_P2P_PORT+1)) ""; sleep 3
-NODE_1_ID=$(grep -Eo "12D[[:alnum:]]+" "$OUT_DIR/logs/n1.log" | head -n1 || true)
+safe_curl_required "http://127.0.0.1:$((BASE_RPC_PORT+1))/p2p/status" "$OUT_DIR/endpoints/n1-p2p-status-bootstrap.json"
+NODE_1_ID=$(jq -r '.data.peer_id // .data.local_node_id // empty' "$OUT_DIR/endpoints/n1-p2p-status-bootstrap.json" 2>/dev/null || true)
 if [[ -z "$NODE_1_ID" ]]; then
   record_fail "failed to extract bootnode peer id from n1 log"
   echo "FATAL: unable to build bootnode multiaddr because peer id extraction failed"
   exit 1
 fi
 BOOT_1=""; [[ -n "$NODE_1_ID" ]] && BOOT_1="/ip4/127.0.0.1/tcp/$((BASE_P2P_PORT+1))/p2p/${NODE_1_ID}"
+echo "$BOOT_1" > "$OUT_DIR/bootnode.txt"
 for i in 2 3 4 5; do start_node "$i" $((BASE_RPC_PORT+i)) $((BASE_P2P_PORT+i)) "$BOOT_1"; done
 sleep 3
 
 for i in 1 2 3 4 5; do wait_node_ready "$i" || true; done
 
+peer_wait_deadline=$(( $(date +%s) + P2P_CONNECT_WAIT_SECS ))
+peers_total=0
+while (( $(date +%s) < peer_wait_deadline )); do
+  peers_total=0
+  for i in 1 2 3 4 5; do
+    safe_curl_optional "http://127.0.0.1:$((BASE_RPC_PORT+i))/p2p/status" "$OUT_DIR/endpoints/n${i}-p2p-status-pre-mining.json" "n${i}:/p2p/status pre-mining" || true
+    peers_total=$((peers_total + $(jq -r '.data.peer_count // (.data.connected_peers|length) // .data.connected_peer_count // 0' "$OUT_DIR/endpoints/n${i}-p2p-status-pre-mining.json" 2>/dev/null || echo 0)))
+  done
+  (( peers_total > 0 )) && break
+  sleep 2
+done
+(( peers_total > 0 )) || { record_fail "pre-mining p2p peers remained zero after ${P2P_CONNECT_WAIT_SECS}s"; exit 1; }
+
 for i in 1 2 3 4; do
   local_node="http://127.0.0.1:$((BASE_RPC_PORT+i))"
+  echo "launch miner-${i}: $MINER_BIN --node $local_node --miner-address v2219-${RUN_ID}-miner-${i} --backend cpu --threads 1 --loop"
   "$MINER_BIN" --node "$local_node" --miner-address "v2219-${RUN_ID}-miner-${i}" --backend cpu --threads 1 --loop > "$OUT_DIR/logs/miner-${i}.log" 2>&1 &
   MINER_PIDS+=("$!")
   echo "$! miner-${i}" >> "$OUT_DIR/process-pids.txt"
