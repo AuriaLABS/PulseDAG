@@ -921,6 +921,20 @@ mod tests {
             orphan_blocks_received: 0,
             duplicate_blocks_received: 0,
             peer_penalties: 0,
+            active_connections_by_peer: std::collections::HashMap::new(),
+            active_connection_total: 0,
+            last_connection_established_peer: None,
+            last_connection_closed_peer: None,
+            last_connection_closed_remaining_count: None,
+            last_outgoing_connection_error_peer: None,
+            last_incoming_connection_error_peer: None,
+            last_dial_error: None,
+            last_disconnect_reason: None,
+            last_peer_state_transition: None,
+            bootstrap_dial_attempts: 0,
+            bootstrap_dial_successes: 0,
+            bootstrap_dial_failures: 0,
+            bootstrap_connected_peer_ids: vec![],
         };
 
         let Json(resp) = get_p2p_status(State(mk_state(status))).await;
@@ -1100,6 +1114,20 @@ mod tests {
                 orphan_blocks_received: 0,
                 duplicate_blocks_received: 0,
                 peer_penalties: 0,
+                active_connections_by_peer: std::collections::HashMap::new(),
+                active_connection_total: 0,
+                last_connection_established_peer: None,
+                last_connection_closed_peer: None,
+                last_connection_closed_remaining_count: None,
+                last_outgoing_connection_error_peer: None,
+                last_incoming_connection_error_peer: None,
+                last_dial_error: None,
+                last_disconnect_reason: None,
+                last_peer_state_transition: None,
+                bootstrap_dial_attempts: 0,
+                bootstrap_dial_successes: 0,
+                bootstrap_dial_failures: 0,
+                bootstrap_connected_peer_ids: vec![],
             };
             let Json(resp) = get_p2p_status(State(mk_state(status.clone()))).await;
             let data = resp.data.expect("p2p status data");
