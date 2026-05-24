@@ -62,6 +62,7 @@ chain_id="unknown"
 miner_submits=0
 accepted_count=0
 rejected_count=0
+duplicate_sync_degraded_blocker=0
 
 record_warn(){ local msg; msg="$1"; echo "WARN: $msg"; WARNINGS+=("$msg"); }
 record_fail(){ local msg; msg="$1"; echo "FAIL: $msg"; FAILURES+=("$msg"); }
@@ -132,6 +133,7 @@ write_summary(){
     echo "- final_heights: a=${ha:-0}, b=${hb:-0}, c=${hc:-0}"
     echo "- final_tips: a=${ta:-}, b=${tb:-}, c=${tc:-}"
     echo "- final_peer_counts: a=${pa:-0}, b=${pb:-0}, c=${pc:-0}"
+    echo "- duplicate_sync_degraded_blocker: $duplicate_sync_degraded_blocker"
     echo ""
     echo "## Warnings"
     if (( ${#WARNINGS[@]} == 0 )); then echo "- none"; else for w in "${WARNINGS[@]}"; do echo "- $w"; done; fi
@@ -151,6 +153,7 @@ write_summary(){
     echo "| accepted blocks >0 (or waived) | $( (( accepted_count>0 || WAIVE_ACCEPTED_BLOCK_GATE==1 )) && echo PASS || echo FAIL ) |"
     echo "| heights > genesis | $( (( ha>0 && hb>0 && hc>0 )) && echo PASS || echo FAIL ) |"
     echo "| p2p peers sustained (a>=2,b>=1,c>=1) | $( (( final_peers_ok==1 )) && echo PASS || echo FAIL ) |"
+    echo "| duplicate sync degraded false-blocker | $( (( duplicate_sync_degraded_blocker==0 )) && echo PASS || echo FAIL ) |"
     echo "| final convergence | $( (( final_converged==1 )) && echo PASS || echo FAIL ) |"
   } > "$OUT_DIR/evidence-summary.md"
 }
@@ -445,6 +448,25 @@ done
 for n in a b c; do
   cp "$OUT_DIR/endpoints/${n}-status.json" "$OUT_DIR/final-status-node-${n}.json" 2>/dev/null || true
 done
+
+check_duplicate_degraded_false_blocker(){
+  local node="$1" f stage reason lag consistent dup
+  f="$OUT_DIR/endpoints/${node}-sync_status.json"
+  [[ -f "$f" ]] || return 0
+  stage="$(jq -r '.data.catchup_stage // ""' "$f" 2>/dev/null || echo "")"
+  reason="$(jq -r '.data.recovery_reason // ""' "$f" 2>/dev/null || echo "")"
+  lag="$(jq -r '.data.lag_blocks // -1' "$f" 2>/dev/null || echo -1)"
+  consistent="$(jq -r '.data.consistency_ok // false' "$f" 2>/dev/null || echo false)"
+  dup="$(jq -r '.data.duplicate_blocks_received // 0' "$f" 2>/dev/null || echo 0)"
+  if [[ "$stage" == "degraded" && "$reason" =~ [Dd]uplicate && "$lag" == "0" && "$consistent" == "true" && "$dup" =~ ^[1-9][0-9]*$ ]]; then
+    duplicate_sync_degraded_blocker=1
+    record_fail "node_${node} sync degraded only due to duplicate while aligned (lag=0, consistency_ok=true, duplicate_blocks_received=${dup})"
+  fi
+}
+
+check_duplicate_degraded_false_blocker a
+check_duplicate_degraded_false_blocker b
+check_duplicate_degraded_false_blocker c
 
 (( final_converged == 1 )) || record_fail "final convergence not reached within deadline (duration=${DURATION_SECS}s, grace=${GRACE_SECS}s)"
 (( final_peers_ok == 1 )) || record_fail "final p2p topology gate not satisfied (need a>=2,b>=1,c>=1; got a=${pa},b=${pb},c=${pc})"
