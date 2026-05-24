@@ -943,6 +943,7 @@ fn sync_candidates_snapshot(state: &InnerState) -> Vec<RankedSyncPeer> {
     let candidates = state
         .peer_book
         .iter()
+        .filter(|(peer_id, _)| is_valid_peer_id(peer_id))
         .map(|(peer_id, health)| SyncPeerCandidate {
             peer_id: peer_id.clone(),
             score: health.score,
@@ -955,6 +956,17 @@ fn sync_candidates_snapshot(state: &InnerState) -> Vec<RankedSyncPeer> {
         })
         .collect::<Vec<_>>();
     rank_sync_candidates(&candidates, now)
+}
+
+fn is_valid_peer_id(peer_id: &str) -> bool {
+    if peer_id.trim().is_empty() {
+        return false;
+    }
+    if peer_id.contains("/p2p/") {
+        return false;
+    }
+    // Reject full multiaddr strings while allowing stable test/local synthetic IDs.
+    peer_id.parse::<Multiaddr>().is_err()
 }
 
 fn topology_bucket_for_peer(peer_id: &str) -> usize {
@@ -1124,6 +1136,7 @@ fn update_selected_sync_peer(
     };
     let preferred = sync_candidates
         .iter()
+        .filter(|candidate| is_valid_peer_id(&candidate.peer_id))
         .filter(|candidate| candidate.excluded_until_unix.is_none())
         .max_by(|a, b| {
             a.rank_score
@@ -1131,7 +1144,14 @@ fn update_selected_sync_peer(
                 .then_with(|| b.peer_id.cmp(&a.peer_id))
         })
         .map(|candidate| candidate.peer_id.clone())
-        .or_else(|| state.connected_peers.iter().min().cloned());
+        .or_else(|| {
+            state
+                .connected_peers
+                .iter()
+                .filter(|peer_id| is_valid_peer_id(peer_id))
+                .min()
+                .cloned()
+        });
     let preferred_rank_score = preferred
         .as_deref()
         .map(rank_score_for)
@@ -4760,6 +4780,17 @@ mod tests {
         let selected_second = update_selected_sync_peer(&mut state, &ranked, 101).unwrap();
         assert_eq!(selected_first, "peer-a");
         assert_eq!(selected_second, "peer-a");
+    }
+
+    #[test]
+    fn sync_candidates_reject_full_multiaddr_peer_ids() {
+        let mut state = InnerState::default();
+        state.peer_book.insert(
+            "/ip4/127.0.0.1/tcp/19080/p2p/12D3KooWBad".into(),
+            PeerHealth::default(),
+        );
+        let ranked = sync_candidates_snapshot(&state);
+        assert!(ranked.is_empty());
     }
 
     #[test]

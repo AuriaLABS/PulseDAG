@@ -33,6 +33,8 @@ WAIVE_ACCEPTED_BLOCK_REASON=${WAIVE_ACCEPTED_BLOCK_REASON:-""}
 ACCEPTED_BLOCKS=0
 REJECTED_BLOCKS=0
 TEMPLATES_OK=0
+declare -A miner_submit miner_accept miner_template
+for i in 1 2 3 4; do miner_submit[$i]=0; miner_accept[$i]=0; miner_template[$i]=0; done
 REPO_COMMIT="$(git -C "$ROOT_DIR" rev-parse --short=12 HEAD 2>/dev/null || echo unknown)"
 NODE_VERSION="$("$NODE_BIN" --version 2>/dev/null | head -n1 || echo unknown)"
 
@@ -339,8 +341,6 @@ for i in 1 2 3 4; do
 done
 
 printf "timestamp,n1,n2,n3,n4,n5,tip_match\n" > "$OUT_DIR/samples/height-samples.csv"
-declare -A miner_submit miner_accept miner_template
-for i in 1 2 3 4; do miner_submit[$i]=0; miner_accept[$i]=0; miner_template[$i]=0; done
 
 end=$(( $(date +%s) + DURATION_SECS ))
 while (( $(date +%s) < end )); do

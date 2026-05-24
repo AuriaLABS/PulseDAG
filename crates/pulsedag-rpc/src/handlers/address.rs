@@ -324,6 +324,7 @@ mod tests {
     use pulsedag_storage::Storage;
     use std::{
         path::PathBuf,
+        sync::atomic::{AtomicU64, Ordering},
         sync::Arc,
         time::{SystemTime, UNIX_EPOCH},
     };
@@ -351,12 +352,16 @@ mod tests {
         }
     }
 
+    static TEST_DB_COUNTER: AtomicU64 = AtomicU64::new(0);
+
     fn temp_db_path(name: &str) -> PathBuf {
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_nanos())
             .unwrap_or(0);
-        std::env::temp_dir().join(format!("pulsedag-{name}-{unique}"))
+        let seq = TEST_DB_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let pid = std::process::id();
+        std::env::temp_dir().join(format!("pulsedag-{name}-{pid}-{unique}-{seq}"))
     }
 
     async fn mk_state() -> TestState {
