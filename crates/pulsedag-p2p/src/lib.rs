@@ -2692,8 +2692,8 @@ fn parse_bootnode_multiaddr(input: &str) -> Option<(PeerId, Multiaddr)> {
     let address = input.parse::<Multiaddr>().ok()?;
     let mut peer_id = None;
     for protocol in address.iter() {
-        if let libp2p::multiaddr::Protocol::P2p(multihash) = protocol {
-            peer_id = PeerId::from_multihash(multihash).ok();
+        if let libp2p::multiaddr::Protocol::P2p(id) = protocol {
+            peer_id = Some(id);
         }
     }
     peer_id.map(|id| (id, address))
