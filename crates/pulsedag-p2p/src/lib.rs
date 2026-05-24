@@ -4131,10 +4131,13 @@ mod tests {
         )]);
         persist_peer_book(&path, &persisted);
 
+        let bootstrap_key = identity::Keypair::generate_ed25519();
+        let bootstrap_peer = PeerId::from(bootstrap_key.public());
+        let bootstrap_addr = format!("/ip4/127.0.0.1/tcp/19080/p2p/{bootstrap_peer}");
         let cfg = Libp2pConfig {
             chain_id: "testnet".into(),
             listen_addr: "/ip4/127.0.0.1/tcp/30333".into(),
-            bootstrap: vec!["peer-bootstrap".into()],
+            bootstrap: vec![bootstrap_addr],
             enable_mdns: false,
             enable_kademlia: false,
             connection_slot_budget: 8,
@@ -4169,10 +4172,13 @@ mod tests {
         std::env::set_var("PULSEDAG_P2P_PEER_STATE_PATH", &path);
         fs::write(&path, b"{ definitely-not-json").expect("write corrupt peer snapshot");
 
+        let bootstrap_key = identity::Keypair::generate_ed25519();
+        let bootstrap_peer = PeerId::from(bootstrap_key.public());
+        let bootstrap_addr = format!("/ip4/127.0.0.1/tcp/19080/p2p/{bootstrap_peer}");
         let cfg = Libp2pConfig {
             chain_id: "testnet".into(),
             listen_addr: "/ip4/127.0.0.1/tcp/30334".into(),
-            bootstrap: vec!["peer-bootstrap".into()],
+            bootstrap: vec![bootstrap_addr],
             enable_mdns: false,
             enable_kademlia: false,
             connection_slot_budget: 8,
@@ -4184,7 +4190,7 @@ mod tests {
         assert!(status
             .peer_recovery
             .iter()
-            .any(|peer| peer.peer_id == "peer-bootstrap"));
+            .any(|peer| peer.peer_id == bootstrap_peer.to_string()));
 
         std::env::remove_var("PULSEDAG_P2P_PEER_STATE_PATH");
         let _ = fs::remove_file(path);
@@ -4850,10 +4856,13 @@ mod tests {
 
     #[tokio::test]
     async fn real_runtime_mode_initializes_without_loopback_labeling() {
+        let bootstrap_key = identity::Keypair::generate_ed25519();
+        let bootstrap_peer = PeerId::from(bootstrap_key.public());
+        let bootstrap_addr = format!("/ip4/127.0.0.1/tcp/19080/p2p/{bootstrap_peer}");
         let cfg = Libp2pConfig {
             chain_id: "testnet".into(),
             listen_addr: "/ip4/127.0.0.1/tcp/0".into(),
-            bootstrap: vec!["bootstrap-peer".into()],
+            bootstrap: vec![bootstrap_addr],
             enable_mdns: false,
             enable_kademlia: false,
             connection_slot_budget: 8,
@@ -4871,7 +4880,10 @@ mod tests {
         assert!(status.connected_peers.is_empty());
         let guard = handle.inner.lock().unwrap();
         assert_eq!(
-            guard.peer_book.get("bootstrap-peer").map(|h| h.connected),
+            guard
+                .peer_book
+                .get(&bootstrap_peer.to_string())
+                .map(|h| h.connected),
             Some(false)
         );
     }
@@ -4895,7 +4907,7 @@ mod tests {
             let cfg = Libp2pConfig {
                 chain_id: "testnet".into(),
                 listen_addr: "/ip4/127.0.0.1/tcp/0".into(),
-                bootstrap: vec!["bootstrap-peer".into()],
+                bootstrap: vec![],
                 enable_mdns: false,
                 enable_kademlia: false,
                 connection_slot_budget: 8,
