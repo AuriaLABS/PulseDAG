@@ -677,15 +677,14 @@ impl Libp2pHandle {
                 "swarm-poll-loop-real".to_string(),
             ),
         };
-        let peer_book = cfg
-            .bootstrap
-            .iter()
-            .map(|peer| {
+        let peer_book = parse_bootstrap(&cfg.bootstrap)
+            .into_iter()
+            .map(|(peer_id, _)| {
                 let mut health = PeerHealth::default();
                 if real_network_connectivity {
                     health.connected = false;
                 }
-                (peer.clone(), health)
+                (peer_id.to_string(), health)
             })
             .collect();
         let mut state = InnerState {
@@ -962,7 +961,12 @@ fn is_valid_peer_id(peer_id: &str) -> bool {
     if peer_id.trim().is_empty() {
         return false;
     }
-    if peer_id.contains("/p2p/") || peer_id.contains("/ip4/") || peer_id.contains("/tcp/") {
+    if peer_id.contains("/p2p/")
+        || peer_id.contains("/ip4/")
+        || peer_id.contains("/ip6/")
+        || peer_id.contains("/tcp/")
+        || peer_id.contains("/udp/")
+    {
         return false;
     }
     // Reject full multiaddr strings while allowing stable test/local synthetic IDs.
@@ -2858,9 +2862,11 @@ async fn run_libp2p_real_runtime(
                         register_peer_result(&inner, &peer_id.to_string(), true);
                         let _ = inbound_tx.send(InboundEvent::PeerConnected(peer_id.to_string()));
                     }
-                    SwarmEvent::ConnectionClosed { peer_id, .. } => {
+                    SwarmEvent::ConnectionClosed { peer_id, remaining_established, .. } => {
                         note_swarm_event(&inner, format!("peer-disconnected:{peer_id}"));
-                        register_peer_result(&inner, &peer_id.to_string(), false);
+                        if remaining_established == 0 {
+                            register_peer_result(&inner, &peer_id.to_string(), false);
+                        }
                     }
                     SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => {
                         if let Some(peer_id) = peer_id {
