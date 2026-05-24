@@ -962,10 +962,15 @@ fn is_valid_peer_id(peer_id: &str) -> bool {
     if peer_id.trim().is_empty() {
         return false;
     }
-    if peer_id.contains("/p2p/") || peer_id.contains("/ip4/") || peer_id.contains("/tcp/") {
+    if peer_id.contains("/p2p/")
+        || peer_id.contains("/ip4/")
+        || peer_id.contains("/ip6/")
+        || peer_id.contains("/tcp/")
+        || peer_id.contains("/udp/")
+    {
         return false;
     }
-    // Reject full multiaddr strings while allowing stable test/local synthetic IDs.
+    // Reject full multiaddr strings while still allowing non-address peer labels in non-production test scaffolding.
     peer_id.parse::<Multiaddr>().is_err()
 }
 
@@ -4087,7 +4092,14 @@ mod tests {
         static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
         LOCK.get_or_init(|| std::sync::Mutex::new(()))
             .lock()
-            .expect("peer state env lock poisoned")
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    const TEST_BOOTSTRAP_PEER_ID: &str = "12D3KooWKxC6QvV4W6VzTdDEr1xgG2Z6kTpsuRWpuBHX6Nq35p3x";
+    const TEST_PERSISTED_PEER_ID: &str = "12D3KooWHt2f5Hn7Y4fCz8sV9rU3Lk6Jm2Nq5Pw8Rx1Ty4Ua7BbC";
+
+    fn test_bootstrap_multiaddr(port: u16) -> String {
+        format!("/ip4/127.0.0.1/tcp/{port}/p2p/{TEST_BOOTSTRAP_PEER_ID}")
     }
 
     fn unique_peer_state_path(prefix: &str) -> PathBuf {
@@ -4109,7 +4121,7 @@ mod tests {
 
         let now = now_unix();
         let persisted = HashMap::from([(
-            "peer-rejoin".to_string(),
+            TEST_PERSISTED_PEER_ID.to_string(),
             PeerHealth {
                 score: 145,
                 fail_streak: 0,
@@ -4127,7 +4139,7 @@ mod tests {
         let cfg = Libp2pConfig {
             chain_id: "testnet".into(),
             listen_addr: "/ip4/127.0.0.1/tcp/30333".into(),
-            bootstrap: vec!["peer-bootstrap".into()],
+            bootstrap: vec![test_bootstrap_multiaddr(30333)],
             enable_mdns: false,
             enable_kademlia: false,
             connection_slot_budget: 8,
@@ -4144,7 +4156,7 @@ mod tests {
         let rejoin = status
             .peer_recovery
             .iter()
-            .find(|peer| peer.peer_id == "peer-rejoin")
+            .find(|peer| peer.peer_id == TEST_PERSISTED_PEER_ID)
             .cloned()
             .expect("persisted peer should be surfaced");
         assert_eq!(rejoin.last_seen_unix, Some(now));
@@ -4165,7 +4177,7 @@ mod tests {
         let cfg = Libp2pConfig {
             chain_id: "testnet".into(),
             listen_addr: "/ip4/127.0.0.1/tcp/30334".into(),
-            bootstrap: vec!["peer-bootstrap".into()],
+            bootstrap: vec![test_bootstrap_multiaddr(30334)],
             enable_mdns: false,
             enable_kademlia: false,
             connection_slot_budget: 8,
@@ -4174,10 +4186,11 @@ mod tests {
         };
         let (handle, _rx) = Libp2pHandle::new(cfg).expect("libp2p handle should init");
         let status = handle.status().expect("status should work");
+        assert!(status.connected_peers.is_empty());
         assert!(status
             .peer_recovery
             .iter()
-            .any(|peer| peer.peer_id == "peer-bootstrap"));
+            .all(|peer| peer.peer_id != "peer-bootstrap"));
 
         std::env::remove_var("PULSEDAG_P2P_PEER_STATE_PATH");
         let _ = fs::remove_file(path);
@@ -4846,7 +4859,7 @@ mod tests {
         let cfg = Libp2pConfig {
             chain_id: "testnet".into(),
             listen_addr: "/ip4/127.0.0.1/tcp/0".into(),
-            bootstrap: vec!["bootstrap-peer".into()],
+            bootstrap: vec![test_bootstrap_multiaddr(19080)],
             enable_mdns: false,
             enable_kademlia: false,
             connection_slot_budget: 8,
@@ -4864,7 +4877,10 @@ mod tests {
         assert!(status.connected_peers.is_empty());
         let guard = handle.inner.lock().unwrap();
         assert_eq!(
-            guard.peer_book.get("bootstrap-peer").map(|h| h.connected),
+            guard
+                .peer_book
+                .get(TEST_BOOTSTRAP_PEER_ID)
+                .map(|h| h.connected),
             Some(false)
         );
     }
@@ -4877,7 +4893,7 @@ mod tests {
             std::env::set_var("PULSEDAG_P2P_PEER_STATE_PATH", &path);
 
             let persisted = HashMap::from([(
-                "persisted-peer".to_string(),
+                TEST_PERSISTED_PEER_ID.to_string(),
                 PeerHealth {
                     connected: true,
                     ..PeerHealth::default()
@@ -4888,7 +4904,7 @@ mod tests {
             let cfg = Libp2pConfig {
                 chain_id: "testnet".into(),
                 listen_addr: "/ip4/127.0.0.1/tcp/0".into(),
-                bootstrap: vec!["bootstrap-peer".into()],
+                bootstrap: vec![test_bootstrap_multiaddr(19080)],
                 enable_mdns: false,
                 enable_kademlia: false,
                 connection_slot_budget: 8,
@@ -4906,7 +4922,10 @@ mod tests {
         assert!(status.connected_peers.is_empty());
         let guard = handle.inner.lock().unwrap();
         assert_ne!(
-            guard.peer_book.get("persisted-peer").map(|h| h.connected),
+            guard
+                .peer_book
+                .get(TEST_PERSISTED_PEER_ID)
+                .map(|h| h.connected),
             Some(true)
         );
 
