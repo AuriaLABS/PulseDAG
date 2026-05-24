@@ -5,6 +5,7 @@ DURATION_SECS=${DURATION_SECS:-900}
 GRACE_SECS=${GRACE_SECS:-120}
 SAMPLE_INTERVAL_SECS=${SAMPLE_INTERVAL_SECS:-10}
 STARTUP_WAIT_SECS=${STARTUP_WAIT_SECS:-12}
+P2P_CONNECT_WAIT_SECS=${P2P_CONNECT_WAIT_SECS:-120}
 RUN_ID=${RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)}
 START_TS=$(date +%s)
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -27,6 +28,10 @@ mkdir -p "$OUT_DIR" "$OUT_DIR/endpoints" "$OUT_DIR/logs" "$OUT_DIR/miners" "$OUT
 exec > >(tee -a "$OUT_DIR/command-log.txt") 2>&1
 
 PIDS=()
+NODE_A_LAUNCHED=0
+NODE_B_LAUNCHED=0
+NODE_C_LAUNCHED=0
+MINER_LAUNCHED=0
 WARNINGS=()
 FAILURES=()
 RESULT="PENDING"
@@ -52,12 +57,15 @@ text_has_match(){
 }
 
 count_matches(){
-  local pattern="$1" file="$2"
+  local pattern="$1" file="$2" count="0"
+  [[ -f "$file" ]] || { echo 0; return 0; }
   if command -v rg >/dev/null 2>&1; then
-    rg -cE -- "$pattern" "$file" 2>/dev/null || echo 0
+    count=$(rg -cE -- "$pattern" "$file" 2>/dev/null | head -n1 | tr -d '[:space:]' || true)
   else
-    grep -cE -- "$pattern" "$file" 2>/dev/null || echo 0
+    count=$(grep -cE -- "$pattern" "$file" 2>/dev/null | head -n1 | tr -d '[:space:]' || true)
   fi
+  [[ "$count" =~ ^[0-9]+$ ]] || count=0
+  echo "$count"
 }
 
 write_summary(){
@@ -98,12 +106,12 @@ write_summary(){
     echo "## Required gates"
     echo "| gate | status |"
     echo "|---|---|"
-    echo "| 3 nodes launched | $([[ -f "$OUT_DIR/a.pid" && -f "$OUT_DIR/b.pid" && -f "$OUT_DIR/c.pid" ]] && echo PASS || echo FAIL) |"
-    echo "| 1 miner launched | $([[ -f "$OUT_DIR/miner.pid" ]] && echo PASS || echo FAIL) |"
+    echo "| 3 nodes launched | $( (( NODE_A_LAUNCHED==1 && NODE_B_LAUNCHED==1 && NODE_C_LAUNCHED==1 )) && echo PASS || echo FAIL ) |"
+    echo "| 1 miner launched | $( (( MINER_LAUNCHED==1 )) && echo PASS || echo FAIL ) |"
     echo "| all nodes healthy/status | $( (( healthy_count==3 )) && echo PASS || echo FAIL ) |"
     echo "| all nodes readiness | $( (( ready_count==3 )) && echo PASS || echo FAIL ) |"
-    echo "| miner templates >=1 | $( (( miner_templates==1 )) && echo PASS || echo FAIL ) |"
-    echo "| miner submissions >=1 | $( (( miner_submits==1 )) && echo PASS || echo FAIL ) |"
+    echo "| miner templates >=1 | $( (( miner_templates>=1 )) && echo PASS || echo FAIL ) |"
+    echo "| miner submissions >=1 | $( (( miner_submits>=1 )) && echo PASS || echo FAIL ) |"
     echo "| accepted blocks >0 (or waived) | $( (( accepted_count>0 || WAIVE_ACCEPTED_BLOCK_GATE==1 )) && echo PASS || echo FAIL ) |"
     echo "| heights > genesis | $( (( ha>0 && hb>0 && hc>0 )) && echo PASS || echo FAIL ) |"
     echo "| final convergence | $( (( final_converged==1 )) && echo PASS || echo FAIL ) |"
@@ -200,26 +208,63 @@ start_node(){
   mkdir -p "$data"
   local cmd=("$NODE_BIN" --network "private" --rpc-listen "127.0.0.1:${rpc}" --p2p-listen "/ip4/127.0.0.1/tcp/${p2p}")
   [[ -n "$bootnode" ]] && cmd+=(--bootnode "$bootnode")
+  echo "launch node-$name: PULSEDAG_ROCKSDB_PATH=$data/rocksdb ${cmd[*]}"
   PULSEDAG_ROCKSDB_PATH="$data/rocksdb" "${cmd[@]}" > "$OUT_DIR/logs/${name}.log" 2>&1 &
   local pid="$!"
   PIDS+=("$pid")
   echo "$pid" > "$OUT_DIR/${name}.pid"
   echo "$pid node-$name" >> "$OUT_DIR/process-pids.txt"
+  case "$name" in
+    a) NODE_A_LAUNCHED=1 ;;
+    b) NODE_B_LAUNCHED=1 ;;
+    c) NODE_C_LAUNCHED=1 ;;
+  esac
 }
 
+if ! "$NODE_BIN" --help | grep -q -- '--bootnode'; then
+  echo "FATAL: pulsedagd missing --bootnode support"
+  "$NODE_BIN" --help || true
+  exit 1
+fi
+
 start_node a "$RPC_PORT_A" "$P2P_PORT_A" ""
-sleep "$STARTUP_WAIT_SECS"
-NODE_A_ID=$(grep -En "local_node_id|peer_id" "$OUT_DIR/logs/a.log" | head -n1 | sed -E 's/.*(12D[[:alnum:]]+).*/\1/' || true)
-BOOT_A=""
-[[ -n "$NODE_A_ID" ]] && BOOT_A="/ip4/127.0.0.1/tcp/${P2P_PORT_A}/p2p/${NODE_A_ID}"
+for _ in $(seq 1 "$STARTUP_WAIT_SECS"); do
+  if curl -fsS "http://127.0.0.1:${RPC_PORT_A}/p2p/status" -o "$OUT_DIR/endpoints/a-p2p_status.bootstrap.json"; then break; fi
+  sleep 1
+done
+safe_curl_required "http://127.0.0.1:${RPC_PORT_A}/p2p/status" "$OUT_DIR/endpoints/a-p2p_status.bootstrap.json"
+NODE_A_ID=$(jq -r '.data.peer_id // .data.local_node_id // empty' "$OUT_DIR/endpoints/a-p2p_status.bootstrap.json")
+NODE_A_LISTENING=$(jq -r '.data.listening[0] // .data.listening_addresses[0] // empty' "$OUT_DIR/endpoints/a-p2p_status.bootstrap.json")
+[[ -n "$NODE_A_ID" ]] || { echo "FATAL: unable to resolve node A peer id"; exit 1; }
+BOOT_A="/ip4/127.0.0.1/tcp/${P2P_PORT_A}/p2p/${NODE_A_ID}"
+echo "$BOOT_A" > "$OUT_DIR/bootnode.txt"
+echo "$NODE_A_ID" > "$OUT_DIR/node-a-peer-id.txt"
+echo "$NODE_A_LISTENING" > "$OUT_DIR/node-a-listening.txt"
 start_node b "$RPC_PORT_B" "$P2P_PORT_B" "$BOOT_A"
 start_node c "$RPC_PORT_C" "$P2P_PORT_C" "$BOOT_A"
 sleep "$STARTUP_WAIT_SECS"
 
+peer_wait_deadline=$(( $(date +%s) + P2P_CONNECT_WAIT_SECS ))
+peers_total=0
+while (( $(date +%s) < peer_wait_deadline )); do
+  safe_curl_optional "http://127.0.0.1:${RPC_PORT_A}/p2p/status" "$OUT_DIR/endpoints/a-p2p_status.pre_mining.json" || true
+  safe_curl_optional "http://127.0.0.1:${RPC_PORT_B}/p2p/status" "$OUT_DIR/endpoints/b-p2p_status.pre_mining.json" || true
+  safe_curl_optional "http://127.0.0.1:${RPC_PORT_C}/p2p/status" "$OUT_DIR/endpoints/c-p2p_status.pre_mining.json" || true
+  pa=$(jq -r '.data.peer_count // (.data.connected_peers|length) // .data.connected_peer_count // 0' "$OUT_DIR/endpoints/a-p2p_status.pre_mining.json" 2>/dev/null || echo 0)
+  pb=$(jq -r '.data.peer_count // (.data.connected_peers|length) // .data.connected_peer_count // 0' "$OUT_DIR/endpoints/b-p2p_status.pre_mining.json" 2>/dev/null || echo 0)
+  pc=$(jq -r '.data.peer_count // (.data.connected_peers|length) // .data.connected_peer_count // 0' "$OUT_DIR/endpoints/c-p2p_status.pre_mining.json" 2>/dev/null || echo 0)
+  peers_total=$((pa + pb + pc))
+  (( peers_total > 0 )) && break
+  sleep 2
+done
+(( peers_total > 0 )) || { record_fail "pre-mining p2p peers remained zero after ${P2P_CONNECT_WAIT_SECS}s"; exit 1; }
+
+echo "launch miner: $MINER_BIN --node http://127.0.0.1:${RPC_PORT_A} --miner-address $MINER_ADDRESS --backend cpu --threads 1 --loop"
 "$MINER_BIN" --node "http://127.0.0.1:${RPC_PORT_A}" --miner-address "$MINER_ADDRESS" --backend cpu --threads 1 --loop > "$OUT_DIR/logs/miner.log" 2>&1 &
 PIDS+=("$!")
 echo "$!" > "$OUT_DIR/miner.pid"
 echo "$! miner" >> "$OUT_DIR/process-pids.txt"
+MINER_LAUNCHED=1
 
 eps=(health status readiness release p2p/status sync/status)
 printf "node,endpoint,path,status\n" > "$OUT_DIR/summaries/endpoints-manifest.txt"
@@ -295,8 +340,8 @@ while (( $(date +%s) < end )); do
   rejected_count=$(count_matches "[Rr]eject|[Rr]ejected" "$OUT_DIR/logs/miner.log")
   echo "$(date -u +%FT%TZ),$accepted_count,$rejected_count" >> "$OUT_DIR/samples/miner-block-counters.csv"
 
-  if text_has_match "template" "$OUT_DIR/logs/miner.log"; then miner_templates=1; fi
-  if text_has_match "submit|accepted|reject" "$OUT_DIR/logs/miner.log"; then miner_submits=1; fi
+  if text_has_match "template_received|template" "$OUT_DIR/logs/miner.log"; then miner_templates=1; fi
+  if text_has_match "submit_result accepted=true|submit_accepted|submit" "$OUT_DIR/logs/miner.log"; then miner_submits=1; fi
 
   if (( elapsed >= GRACE_SECS )) && (( ha>0 && hb>0 && hc>0 )) && [[ "$ta" == "$tb" && "$tb" == "$tc" ]]; then
     final_converged=1
