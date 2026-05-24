@@ -288,8 +288,8 @@ package_evidence(){
   mv "$tar_tmp" "$OUT_DIR/evidence.tar.gz"
   (cd "$OUT_DIR" && sha256sum evidence.tar.gz > evidence.tar.gz.sha256)
   cp "$OUT_DIR/evidence.tar.gz" "$OUT_DIR_ROOT/evidence.tar.gz" 2>/dev/null || true
-  (cd "$OUT_DIR_ROOT" && test -s evidence.tar.gz && sha256sum evidence.tar.gz > evidence.tar.gz.sha256 && sha256sum -c evidence.tar.gz.sha256)
   cp "$OUT_DIR/evidence.tar.gz.sha256" "$OUT_DIR_ROOT/evidence.tar.gz.sha256" 2>/dev/null || true
+  (cd "$OUT_DIR_ROOT" && test -s evidence.tar.gz && test -s evidence.tar.gz.sha256 && sha256sum -c evidence.tar.gz.sha256)
   (cd "$OUT_DIR" && test -s evidence.tar.gz && test -s evidence.tar.gz.sha256 && sha256sum -c evidence.tar.gz.sha256)
 }
 
