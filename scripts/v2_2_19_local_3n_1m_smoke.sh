@@ -38,6 +38,11 @@ RESULT="PENDING"
 EXIT_CODE=0
 WAIVE_ACCEPTED_BLOCK_GATE=${WAIVE_ACCEPTED_BLOCK_GATE:-0}
 WAIVE_ACCEPTED_BLOCK_REASON=${WAIVE_ACCEPTED_BLOCK_REASON:-""}
+miner_templates=0
+miner_submits=0
+accepted_count=0
+rejected_count=0
+miner_not_started_reason=""
 
 record_warn(){ local msg; msg="$1"; echo "WARN: $msg"; WARNINGS+=("$msg"); }
 record_fail(){ local msg; msg="$1"; echo "FAIL: $msg"; FAILURES+=("$msg"); }
@@ -94,6 +99,7 @@ write_summary(){
     echo "- submissions_seen: $miner_submits"
     echo "- accepted_blocks: $accepted_count"
     echo "- rejected_blocks: ${rejected_count:-0}"
+    [[ -n "$miner_not_started_reason" ]] && echo "- miner_not_started_reason: $miner_not_started_reason"
     echo "- final_heights: a=${ha:-0}, b=${hb:-0}, c=${hc:-0}"
     echo "- final_tips: a=${ta:-}, b=${tb:-}, c=${tc:-}"
     echo ""
@@ -257,7 +263,7 @@ while (( $(date +%s) < peer_wait_deadline )); do
   (( peers_total > 0 )) && break
   sleep 2
 done
-(( peers_total > 0 )) || { record_fail "pre-mining p2p peers remained zero after ${P2P_CONNECT_WAIT_SECS}s"; exit 1; }
+(( peers_total > 0 )) || { miner_not_started_reason="pre-mining p2p peer gate failed"; record_fail "pre-mining p2p peers remained zero after ${P2P_CONNECT_WAIT_SECS}s"; exit 1; }
 
 echo "launch miner: $MINER_BIN --node http://127.0.0.1:${RPC_PORT_A} --miner-address $MINER_ADDRESS --backend cpu --threads 1 --loop"
 "$MINER_BIN" --node "http://127.0.0.1:${RPC_PORT_A}" --miner-address "$MINER_ADDRESS" --backend cpu --threads 1 --loop > "$OUT_DIR/logs/miner.log" 2>&1 &
@@ -293,12 +299,9 @@ sample(){
   fi
 }
 
-miner_templates=0
-miner_submits=0
 tip_divergence_seen=0
 final_converged=0
 readiness_phase="no_peers"
-accepted_count=0
 
 end=$(( $(date +%s) + DURATION_SECS ))
 while (( $(date +%s) < end )); do
