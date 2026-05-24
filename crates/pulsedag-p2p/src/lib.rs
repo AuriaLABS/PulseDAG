@@ -1485,7 +1485,7 @@ fn register_peer_result_at(inner: &Arc<Mutex<InnerState>>, peer: &str, success: 
                     let remote_chain_compatible = health
                         .remote_chain_id
                         .as_deref()
-                        .map_or(true, |remote| remote == local_chain_id.as_str());
+                        .is_none_or(|remote| remote == local_chain_id.as_str());
                     health.connected = true;
                     health.fail_streak = 0;
                     health.next_retry_unix = now;
