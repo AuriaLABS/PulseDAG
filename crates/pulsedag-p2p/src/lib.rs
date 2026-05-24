@@ -677,15 +677,14 @@ impl Libp2pHandle {
                 "swarm-poll-loop-real".to_string(),
             ),
         };
-        let peer_book = cfg
-            .bootstrap
-            .iter()
-            .map(|peer| {
+        let peer_book = parse_bootstrap(&cfg.bootstrap)
+            .into_iter()
+            .map(|(peer_id, _)| {
                 let mut health = PeerHealth::default();
                 if real_network_connectivity {
                     health.connected = false;
                 }
-                (peer.clone(), health)
+                (peer_id.to_string(), health)
             })
             .collect();
         let mut state = InnerState {
@@ -962,7 +961,12 @@ fn is_valid_peer_id(peer_id: &str) -> bool {
     if peer_id.trim().is_empty() {
         return false;
     }
-    if peer_id.contains("/p2p/") || peer_id.contains("/ip4/") || peer_id.contains("/tcp/") {
+    if peer_id.contains("/p2p/")
+        || peer_id.contains("/ip4/")
+        || peer_id.contains("/ip6/")
+        || peer_id.contains("/tcp/")
+        || peer_id.contains("/udp/")
+    {
         return false;
     }
     // Reject full multiaddr strings while allowing stable test/local synthetic IDs.
@@ -1478,10 +1482,11 @@ fn register_peer_result_at(inner: &Arc<Mutex<InnerState>>, peer: &str, success: 
                 health.reconnect_attempts = health.reconnect_attempts.saturating_add(1);
                 health.last_seen_unix = Some(now);
                 if success {
-                    let requires_message_compatibility =
-                        mode_connected_peers_are_real_network(&mode)
-                            && health.remote_chain_id.as_deref() != Some(local_chain_id.as_str());
-                    health.connected = !requires_message_compatibility;
+                    let remote_chain_compatible = health
+                        .remote_chain_id
+                        .as_deref()
+                        .is_none_or(|remote| remote == local_chain_id.as_str());
+                    health.connected = true;
                     health.fail_streak = 0;
                     health.next_retry_unix = now;
                     trigger_rebroadcast_window = true;
@@ -1495,8 +1500,8 @@ fn register_peer_result_at(inner: &Arc<Mutex<InnerState>>, peer: &str, success: 
                     health.recovery_success_count = health.recovery_success_count.saturating_add(1);
                     health.last_recovery_unix = Some(now);
                     health.last_successful_connect_unix = Some(now);
-                    if requires_message_compatibility {
-                        health.chain_id_compatible = false;
+                    if mode_connected_peers_are_real_network(&mode) {
+                        health.chain_id_compatible = remote_chain_compatible;
                     }
                     if health
                         .last_failure_unix
@@ -2858,9 +2863,11 @@ async fn run_libp2p_real_runtime(
                         register_peer_result(&inner, &peer_id.to_string(), true);
                         let _ = inbound_tx.send(InboundEvent::PeerConnected(peer_id.to_string()));
                     }
-                    SwarmEvent::ConnectionClosed { peer_id, .. } => {
+                    SwarmEvent::ConnectionClosed { peer_id, num_established, .. } => {
                         note_swarm_event(&inner, format!("peer-disconnected:{peer_id}"));
-                        register_peer_result(&inner, &peer_id.to_string(), false);
+                        if num_established == 0 {
+                            register_peer_result(&inner, &peer_id.to_string(), false);
+                        }
                     }
                     SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => {
                         if let Some(peer_id) = peer_id {
@@ -4124,10 +4131,13 @@ mod tests {
         )]);
         persist_peer_book(&path, &persisted);
 
+        let bootstrap_key = identity::Keypair::generate_ed25519();
+        let bootstrap_peer = PeerId::from(bootstrap_key.public());
+        let bootstrap_addr = format!("/ip4/127.0.0.1/tcp/19080/p2p/{bootstrap_peer}");
         let cfg = Libp2pConfig {
             chain_id: "testnet".into(),
             listen_addr: "/ip4/127.0.0.1/tcp/30333".into(),
-            bootstrap: vec!["peer-bootstrap".into()],
+            bootstrap: vec![bootstrap_addr],
             enable_mdns: false,
             enable_kademlia: false,
             connection_slot_budget: 8,
@@ -4162,10 +4172,13 @@ mod tests {
         std::env::set_var("PULSEDAG_P2P_PEER_STATE_PATH", &path);
         fs::write(&path, b"{ definitely-not-json").expect("write corrupt peer snapshot");
 
+        let bootstrap_key = identity::Keypair::generate_ed25519();
+        let bootstrap_peer = PeerId::from(bootstrap_key.public());
+        let bootstrap_addr = format!("/ip4/127.0.0.1/tcp/19080/p2p/{bootstrap_peer}");
         let cfg = Libp2pConfig {
             chain_id: "testnet".into(),
             listen_addr: "/ip4/127.0.0.1/tcp/30334".into(),
-            bootstrap: vec!["peer-bootstrap".into()],
+            bootstrap: vec![bootstrap_addr],
             enable_mdns: false,
             enable_kademlia: false,
             connection_slot_budget: 8,
@@ -4177,7 +4190,7 @@ mod tests {
         assert!(status
             .peer_recovery
             .iter()
-            .any(|peer| peer.peer_id == "peer-bootstrap"));
+            .any(|peer| peer.peer_id == bootstrap_peer.to_string()));
 
         std::env::remove_var("PULSEDAG_P2P_PEER_STATE_PATH");
         let _ = fs::remove_file(path);
@@ -4843,10 +4856,13 @@ mod tests {
 
     #[tokio::test]
     async fn real_runtime_mode_initializes_without_loopback_labeling() {
+        let bootstrap_key = identity::Keypair::generate_ed25519();
+        let bootstrap_peer = PeerId::from(bootstrap_key.public());
+        let bootstrap_addr = format!("/ip4/127.0.0.1/tcp/19080/p2p/{bootstrap_peer}");
         let cfg = Libp2pConfig {
             chain_id: "testnet".into(),
             listen_addr: "/ip4/127.0.0.1/tcp/0".into(),
-            bootstrap: vec!["bootstrap-peer".into()],
+            bootstrap: vec![bootstrap_addr],
             enable_mdns: false,
             enable_kademlia: false,
             connection_slot_budget: 8,
@@ -4864,7 +4880,10 @@ mod tests {
         assert!(status.connected_peers.is_empty());
         let guard = handle.inner.lock().unwrap();
         assert_eq!(
-            guard.peer_book.get("bootstrap-peer").map(|h| h.connected),
+            guard
+                .peer_book
+                .get(&bootstrap_peer.to_string())
+                .map(|h| h.connected),
             Some(false)
         );
     }
@@ -4888,7 +4907,7 @@ mod tests {
             let cfg = Libp2pConfig {
                 chain_id: "testnet".into(),
                 listen_addr: "/ip4/127.0.0.1/tcp/0".into(),
-                bootstrap: vec!["bootstrap-peer".into()],
+                bootstrap: vec![],
                 enable_mdns: false,
                 enable_kademlia: false,
                 connection_slot_budget: 8,

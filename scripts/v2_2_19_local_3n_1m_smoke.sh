@@ -213,6 +213,8 @@ package_evidence(){
   cp "$OUT_DIR/process-pids.txt" "$OUT_DIR/nodes/process-pids.txt" 2>/dev/null || true
   cp "$OUT_DIR/evidence-summary.md" "$OUT_DIR/summaries/evidence-summary.md" 2>/dev/null || true
   cp "$OUT_DIR/evidence-summary.md" "$OUT_DIR_ROOT/evidence-summary.md" 2>/dev/null || true
+  cp "$OUT_DIR/command-log.txt" "$OUT_DIR_ROOT/command-log.txt" 2>/dev/null || true
+  cp "$OUT_DIR/bootnode.txt" "$OUT_DIR_ROOT/bootnode.txt" 2>/dev/null || true
   printf "%s
 " "$OUT_DIR" > "$OUT_DIR_ROOT/current-run-dir.txt"
   cp "$OUT_DIR/samples/height-samples.csv" "$OUT_DIR/final-convergence-table.txt" 2>/dev/null || true
@@ -223,6 +225,7 @@ package_evidence(){
   (cd "$OUT_DIR" && sha256sum evidence.tar.gz > evidence.tar.gz.sha256)
   cp "$OUT_DIR/evidence.tar.gz" "$OUT_DIR_ROOT/evidence.tar.gz" 2>/dev/null || true
   cp "$OUT_DIR/evidence.tar.gz.sha256" "$OUT_DIR_ROOT/evidence.tar.gz.sha256" 2>/dev/null || true
+  (cd "$OUT_DIR_ROOT" && test -s evidence.tar.gz && sha256sum evidence.tar.gz > evidence.tar.gz.sha256 && sha256sum -c evidence.tar.gz.sha256)
   (cd "$OUT_DIR" && test -s evidence.tar.gz && test -s evidence.tar.gz.sha256 && sha256sum -c evidence.tar.gz.sha256)
 }
 
