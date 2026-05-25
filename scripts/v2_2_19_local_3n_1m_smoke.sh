@@ -67,6 +67,20 @@ duplicate_sync_degraded_blocker=0
 required_failures=0
 evidence_collection_failed=0
 premining_timeline_missing_samples=0
+timeline_sample_count=0
+gate_3_nodes_launched=0
+gate_miner_launched=0
+gate_nodes_healthy=0
+gate_nodes_ready=0
+gate_templates_seen=0
+gate_submissions_seen=0
+gate_accepted_blocks=0
+gate_heights_gt_genesis=0
+gate_p2p_sustained=0
+gate_duplicate_sync=0
+gate_final_convergence=0
+gate_timeline_samples=0
+gate_evidence_collection=0
 
 record_warn(){ local msg; msg="$1"; echo "WARN: $msg"; WARNINGS+=("$msg"); }
 record_fail(){ local msg; msg="$1"; echo "FAIL: $msg"; FAILURES+=("$msg"); }
@@ -107,21 +121,62 @@ count_matches(){
   echo "$count"
 }
 
-write_summary(){
-  local healthy_count ready_count peers_total chain_id="unknown"
-  healthy_count=0
-  ready_count=0
+compute_summary_metrics(){
+  healthy_nodes=0
+  ready_nodes=0
   peers_total=0
   for n in a b c; do
-    [[ -f "$OUT_DIR/endpoints/${n}-health.json" ]] && [[ "$(jq -r '(.ok // .data.ok // false)' "$OUT_DIR/endpoints/${n}-health.json" 2>/dev/null)" == "true" ]] && ((healthy_count+=1))
+    [[ -f "$OUT_DIR/endpoints/${n}-health.json" ]] && [[ "$(jq -r '(.ok // .data.ok // false)' "$OUT_DIR/endpoints/${n}-health.json" 2>/dev/null)" == "true" ]] && ((healthy_nodes+=1))
     [[ -f "$OUT_DIR/endpoints/${n}-readiness.json" ]] \
       && [[ "$(jq -r '(.data.ready_for_release // .ready_for_release // false)' "$OUT_DIR/endpoints/${n}-readiness.json" 2>/dev/null)" == "true" ]] \
       && [[ "$(jq -r '(.data.p2p_ready_for_private_rehearsal // .p2p_ready_for_private_rehearsal // false)' "$OUT_DIR/endpoints/${n}-readiness.json" 2>/dev/null)" == "true" ]] \
-      && ((ready_count+=1))
+      && ((ready_nodes+=1))
     if [[ -f "$OUT_DIR/endpoints/${n}-p2p_status.json" ]]; then
       peers_total=$((peers_total + $(jq -r '(.data.peer_count // .data.connected_peer_count // 0)' "$OUT_DIR/endpoints/${n}-p2p_status.json" 2>/dev/null || echo 0)))
     fi
   done
+  timeline_sample_count=$(tail -n +2 "$OUT_DIR/samples/premining-topology-timeline.csv" 2>/dev/null | wc -l | tr -d '[:space:]')
+  [[ "$timeline_sample_count" =~ ^[0-9]+$ ]] || timeline_sample_count=0
+}
+
+evaluate_required_gates(){
+  required_failures=0
+  gate_3_nodes_launched=0
+  gate_miner_launched=0
+  gate_nodes_healthy=0
+  gate_nodes_ready=0
+  gate_templates_seen=0
+  gate_submissions_seen=0
+  gate_accepted_blocks=0
+  gate_heights_gt_genesis=0
+  gate_p2p_sustained=0
+  gate_duplicate_sync=0
+  gate_final_convergence=0
+  gate_timeline_samples=0
+  gate_evidence_collection=0
+  (( NODE_A_LAUNCHED==1 && NODE_B_LAUNCHED==1 && NODE_C_LAUNCHED==1 )) && gate_3_nodes_launched=1
+  (( MINER_LAUNCHED==1 )) && gate_miner_launched=1
+  (( healthy_nodes==3 )) && gate_nodes_healthy=1
+  (( ready_nodes==3 )) && gate_nodes_ready=1
+  (( miner_templates>=1 )) && gate_templates_seen=1
+  (( miner_submits>=1 )) && gate_submissions_seen=1
+  (( accepted_count>0 || WAIVE_ACCEPTED_BLOCK_GATE==1 )) && gate_accepted_blocks=1
+  (( ha>0 && hb>0 && hc>0 )) && gate_heights_gt_genesis=1
+  (( final_peers_ok==1 && pa>=2 && pb>=1 && pc>=1 )) && gate_p2p_sustained=1
+  (( duplicate_sync_degraded_blocker==0 )) && gate_duplicate_sync=1
+  (( final_converged==1 )) && gate_final_convergence=1
+  (( premining_timeline_missing_samples==0 && timeline_sample_count>=1 )) && gate_timeline_samples=1
+  (( evidence_collection_failed==0 )) && gate_evidence_collection=1
+  for gate in gate_3_nodes_launched gate_miner_launched gate_nodes_healthy gate_nodes_ready gate_templates_seen gate_submissions_seen gate_accepted_blocks gate_heights_gt_genesis gate_p2p_sustained gate_duplicate_sync gate_final_convergence gate_timeline_samples gate_evidence_collection; do
+    if (( ${!gate} != 1 )); then ((required_failures+=1)); fi
+  done
+}
+
+write_summary(){
+  local chain_id="unknown"
+  compute_summary_metrics
+  evaluate_required_gates
+  if (( required_failures > 0 || ${#FAILURES[@]} > 0 )); then RESULT="FAIL"; EXIT_CODE=1; else RESULT="PASS"; EXIT_CODE=0; fi
   {
     echo "# v2.2.19 local 3N/1M smoke evidence"
     echo "- result: $RESULT"
@@ -129,8 +184,8 @@ write_summary(){
     echo "- node_count: 3"
     echo "- miner_count: 1"
     echo "- chain_id: $chain_id"
-    echo "- healthy_nodes: $healthy_count"
-    echo "- ready_nodes: $ready_count"
+    echo "- healthy_nodes: $healthy_nodes"
+    echo "- ready_nodes: $ready_nodes"
     echo "- peers_total: $peers_total"
     echo "- templates_seen: $miner_templates"
     echo "- submissions_seen: $miner_submits"
@@ -141,6 +196,11 @@ write_summary(){
     echo "- final_tips: a=${ta:-}, b=${tb:-}, c=${tc:-}"
     echo "- final_peer_counts: a=${pa:-0}, b=${pb:-0}, c=${pc:-0}"
     echo "- duplicate_sync_degraded_blocker: $duplicate_sync_degraded_blocker"
+    echo "- required_failures: $required_failures"
+    echo "- evidence_collection_failed: $evidence_collection_failed"
+    echo "- premining_timeline_missing_samples: $premining_timeline_missing_samples"
+    echo "- timeline_sample_count: $timeline_sample_count"
+    echo "- result_source: gate-driven"
     echo ""
     echo "## Warnings"
     if (( ${#WARNINGS[@]} == 0 )); then echo "- none"; else for w in "${WARNINGS[@]}"; do echo "- $w"; done; fi
@@ -151,17 +211,19 @@ write_summary(){
     echo "## Required gates"
     echo "| gate | status |"
     echo "|---|---|"
-    echo "| 3 nodes launched | $( (( NODE_A_LAUNCHED==1 && NODE_B_LAUNCHED==1 && NODE_C_LAUNCHED==1 )) && echo PASS || echo FAIL ) |"
-    echo "| 1 miner launched | $( (( MINER_LAUNCHED==1 )) && echo PASS || echo FAIL ) |"
-    echo "| all nodes healthy/status | $( (( healthy_count==3 )) && echo PASS || echo FAIL ) |"
-    echo "| all nodes readiness | $( (( ready_count==3 )) && echo PASS || echo FAIL ) |"
-    echo "| miner templates >=1 | $( (( miner_templates>=1 )) && echo PASS || echo FAIL ) |"
-    echo "| miner submissions >=1 | $( (( miner_submits>=1 )) && echo PASS || echo FAIL ) |"
-    echo "| accepted blocks >0 (or waived) | $( (( accepted_count>0 || WAIVE_ACCEPTED_BLOCK_GATE==1 )) && echo PASS || echo FAIL ) |"
-    echo "| heights > genesis | $( (( ha>0 && hb>0 && hc>0 )) && echo PASS || echo FAIL ) |"
-    echo "| p2p peers sustained (a>=2,b>=1,c>=1) | $( (( final_peers_ok==1 )) && echo PASS || echo FAIL ) |"
-    echo "| duplicate sync degraded false-blocker | $( (( duplicate_sync_degraded_blocker==0 )) && echo PASS || echo FAIL ) |"
-    echo "| final convergence | $( (( final_converged==1 )) && echo PASS || echo FAIL ) |"
+    echo "| 3 nodes launched | $( (( gate_3_nodes_launched==1 )) && echo PASS || echo FAIL ) |"
+    echo "| 1 miner launched | $( (( gate_miner_launched==1 )) && echo PASS || echo FAIL ) |"
+    echo "| all nodes healthy/status | $( (( gate_nodes_healthy==1 )) && echo PASS || echo FAIL ) |"
+    echo "| all nodes readiness | $( (( gate_nodes_ready==1 )) && echo PASS || echo FAIL ) |"
+    echo "| miner templates >=1 | $( (( gate_templates_seen==1 )) && echo PASS || echo FAIL ) |"
+    echo "| miner submissions >=1 | $( (( gate_submissions_seen==1 )) && echo PASS || echo FAIL ) |"
+    echo "| accepted blocks >0 (or waived) | $( (( gate_accepted_blocks==1 )) && echo PASS || echo FAIL ) |"
+    echo "| heights > genesis | $( (( gate_heights_gt_genesis==1 )) && echo PASS || echo FAIL ) |"
+    echo "| p2p peers sustained (a>=2,b>=1,c>=1) | $( (( gate_p2p_sustained==1 )) && echo PASS || echo FAIL ) |"
+    echo "| duplicate sync degraded false-blocker | $( (( gate_duplicate_sync==1 )) && echo PASS || echo FAIL ) |"
+    echo "| final convergence | $( (( gate_final_convergence==1 )) && echo PASS || echo FAIL ) |"
+    echo "| pre-mining topology timeline has samples | $( (( gate_timeline_samples==1 )) && echo PASS || echo FAIL ) |"
+    echo "| evidence collection/package | $( (( gate_evidence_collection==1 )) && echo PASS || echo FAIL ) |"
   } > "$OUT_DIR/evidence-summary.md"
 }
 
@@ -263,14 +325,18 @@ cleanup(){
   if (( exit_code != 0 )); then
     record_fail "script exited non-zero: $exit_code"
   fi
-  if (( ${#FAILURES[@]} == 0 )); then RESULT="PASS"; else RESULT="FAIL"; fi
   write_summary || true
   cp "$OUT_DIR/evidence-summary.md" "$OUT_DIR/summaries/evidence-summary.md" 2>/dev/null || true
   cp "$OUT_DIR/evidence-summary.md" "$OUT_DIR_ROOT/evidence-summary.md" 2>/dev/null || true
   printf "%s
 " "$OUT_DIR" > "$OUT_DIR_ROOT/current-run-dir.txt"
-  package_evidence || true
-  exit "$exit_code"
+  if ! package_evidence; then
+    evidence_collection_failed=1
+    record_fail "evidence collection failed"
+    write_summary || true
+  fi
+  write_summary || true
+  exit "$EXIT_CODE"
 }
 trap cleanup EXIT INT TERM
 
@@ -363,7 +429,13 @@ while (( $(date +%s) < peer_wait_deadline )); do
   b_connected=$(jq -r '((.data.connected_peers // [])|length)' "$OUT_DIR/endpoints/b-p2p_status.pre_mining.json" 2>/dev/null || echo 0)
   c_connected=$(jq -r '((.data.connected_peers // [])|length)' "$OUT_DIR/endpoints/c-p2p_status.pre_mining.json" 2>/dev/null || echo 0)
   if (( now_ts - last_snapshot_ts >= SAMPLE_INTERVAL_SECS )); then
-    echo "$(date -u +%FT%TZ),$pa,$pb,$pc,$a_connected,$b_connected,$c_connected,\"a:$(jq -r '.data.last_swarm_event // "n/a"' "$OUT_DIR/endpoints/a-p2p_status.pre_mining.json" 2>/dev/null || echo n/a)|b:$(jq -r '.data.last_swarm_event // "n/a"' "$OUT_DIR/endpoints/b-p2p_status.pre_mining.json" 2>/dev/null || echo n/a)|c:$(jq -r '.data.last_swarm_event // "n/a"' "$OUT_DIR/endpoints/c-p2p_status.pre_mining.json" 2>/dev/null || echo n/a)\"" >> "$OUT_DIR/samples/premining-topology-timeline.csv"
+    a_active=$(jq -r '.data.active_connection_total // 0' "$OUT_DIR/endpoints/a-p2p_status.pre_mining.json" 2>/dev/null || echo 0)
+    b_active=$(jq -r '.data.active_connection_total // 0' "$OUT_DIR/endpoints/b-p2p_status.pre_mining.json" 2>/dev/null || echo 0)
+    c_active=$(jq -r '.data.active_connection_total // 0' "$OUT_DIR/endpoints/c-p2p_status.pre_mining.json" 2>/dev/null || echo 0)
+    a_last=$(jq -r '.data.last_swarm_event // "n/a"' "$OUT_DIR/endpoints/a-p2p_status.pre_mining.json" 2>/dev/null || echo n/a)
+    b_last=$(jq -r '.data.last_swarm_event // "n/a"' "$OUT_DIR/endpoints/b-p2p_status.pre_mining.json" 2>/dev/null || echo n/a)
+    c_last=$(jq -r '.data.last_swarm_event // "n/a"' "$OUT_DIR/endpoints/c-p2p_status.pre_mining.json" 2>/dev/null || echo n/a)
+    printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,"%s","%s","%s"\n' "$(date -u +%FT%TZ)" "$pa" "$pb" "$pc" "$a_connected" "$b_connected" "$c_connected" "$a_active" "$b_active" "$c_active" "$a_last" "$b_last" "$c_last" >> "$OUT_DIR/samples/premining-topology-timeline.csv"
     cp "$OUT_DIR/endpoints/a-p2p_status.pre_mining.json" "$OUT_DIR/samples/a-p2p-status-${now_ts}.json" 2>/dev/null || true
     cp "$OUT_DIR/endpoints/b-p2p_status.pre_mining.json" "$OUT_DIR/samples/b-p2p-status-${now_ts}.json" 2>/dev/null || true
     cp "$OUT_DIR/endpoints/c-p2p_status.pre_mining.json" "$OUT_DIR/samples/c-p2p-status-${now_ts}.json" 2>/dev/null || true
@@ -379,6 +451,11 @@ while (( $(date +%s) < peer_wait_deadline )); do
   fi
   sleep 2
 done
+timeline_rows=$(tail -n +2 "$OUT_DIR/samples/premining-topology-timeline.csv" 2>/dev/null | wc -l | tr -d ' ')
+if (( timeline_rows < 1 )); then
+  premining_timeline_missing_samples=1
+  record_fail "pre-mining topology timeline missing samples"
+fi
 if ! (( pa >= 2 && pb >= 1 && pc >= 1 )) || (( topology_ok_since == 0 )) || (( $(date +%s) - topology_ok_since < P2P_SUSTAIN_SECS )); then
   miner_not_started_reason="pre-mining p2p peer gate failed"
   capture_p2p_failure_evidence
