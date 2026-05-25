@@ -30,6 +30,8 @@ P2P_PORT_B=${P2P_PORT_B:-$((P2P_BASE_PORT+1))}
 P2P_PORT_C=${P2P_PORT_C:-$((P2P_BASE_PORT+2))}
 
 mkdir -p "$OUT_DIR" "$OUT_DIR/endpoints" "$OUT_DIR/logs" "$OUT_DIR/miners" "$OUT_DIR/nodes" "$OUT_DIR/samples" "$OUT_DIR/summaries"
+printf "%s\n" "$OUT_DIR" > "$OUT_DIR_ROOT/current-run-dir.txt"
+printf "%s\n" "$OUT_DIR" > "$OUT_DIR/current-run-dir.txt"
 exec > >(tee -a "$OUT_DIR/command-log.txt") 2>&1
 
 PIDS=()
@@ -87,6 +89,10 @@ gate_duplicate_sync=0
 gate_final_convergence=0
 gate_timeline_samples=0
 gate_evidence_collection=0
+cleanup_ran=0
+interrupted=0
+script_completed=0
+received_signal=""
 
 record_warn(){ local msg; msg="$1"; echo "WARN: $msg"; WARNINGS+=("$msg"); }
 record_fail(){ local msg; msg="$1"; echo "FAIL: $msg"; FAILURES+=("$msg"); }
@@ -160,6 +166,8 @@ evaluate_required_gates(){
   gate_final_convergence=0
   gate_timeline_samples=0
   gate_evidence_collection=0
+  gate_not_interrupted=0
+  gate_script_completed=0
   (( NODE_A_LAUNCHED==1 && NODE_B_LAUNCHED==1 && NODE_C_LAUNCHED==1 )) && gate_3_nodes_launched=1
   (( MINER_LAUNCHED==1 )) && gate_miner_launched=1
   (( healthy_nodes==3 )) && gate_nodes_healthy=1
@@ -173,7 +181,9 @@ evaluate_required_gates(){
   (( final_converged==1 )) && gate_final_convergence=1
   (( premining_timeline_missing_samples==0 && timeline_sample_count>=1 )) && gate_timeline_samples=1
   (( evidence_collection_failed==0 )) && gate_evidence_collection=1
-  for gate in gate_3_nodes_launched gate_miner_launched gate_nodes_healthy gate_nodes_ready gate_templates_seen gate_submissions_seen gate_accepted_blocks gate_heights_gt_genesis gate_p2p_sustained gate_duplicate_sync gate_final_convergence gate_timeline_samples gate_evidence_collection; do
+  (( interrupted==0 )) && gate_not_interrupted=1
+  (( script_completed==1 )) && gate_script_completed=1
+  for gate in gate_3_nodes_launched gate_miner_launched gate_nodes_healthy gate_nodes_ready gate_templates_seen gate_submissions_seen gate_accepted_blocks gate_heights_gt_genesis gate_p2p_sustained gate_duplicate_sync gate_final_convergence gate_timeline_samples gate_evidence_collection gate_not_interrupted gate_script_completed; do
     if (( ${!gate} != 1 )); then ((required_failures+=1)); fi
   done
 }
@@ -204,6 +214,9 @@ write_summary(){
     echo "- duplicate_sync_degraded_blocker: $duplicate_sync_degraded_blocker"
     echo "- required_failures: $required_failures"
     echo "- evidence_collection_failed: $evidence_collection_failed"
+    echo "- interrupted: $interrupted"
+    echo "- received_signal: ${received_signal:-}"
+    echo "- script_completed: $script_completed"
     echo "- premining_timeline_missing_samples: $premining_timeline_missing_samples"
     echo "- timeline_sample_count: $timeline_sample_count"
     echo "- result_source: gate-driven"
@@ -230,6 +243,8 @@ write_summary(){
     echo "| final convergence | $( (( gate_final_convergence==1 )) && echo PASS || echo FAIL ) |"
     echo "| pre-mining topology timeline has samples | $( (( gate_timeline_samples==1 )) && echo PASS || echo FAIL ) |"
     echo "| evidence collection/package | $( (( gate_evidence_collection==1 )) && echo PASS || echo FAIL ) |"
+    echo "| script not interrupted | $( (( gate_not_interrupted==1 )) && echo PASS || echo FAIL ) |"
+    echo "| script completed normally | $( (( gate_script_completed==1 )) && echo PASS || echo FAIL ) |"
   } > "$OUT_DIR/evidence-summary.md"
 }
 
@@ -300,8 +315,7 @@ package_evidence(){
   cp "$OUT_DIR/evidence-summary.md" "$OUT_DIR_ROOT/evidence-summary.md" 2>/dev/null || true
   cp "$OUT_DIR/command-log.txt" "$OUT_DIR_ROOT/command-log.txt" 2>/dev/null || true
   cp "$OUT_DIR/bootnode.txt" "$OUT_DIR_ROOT/bootnode.txt" 2>/dev/null || true
-  printf "%s
-" "$OUT_DIR" > "$OUT_DIR_ROOT/current-run-dir.txt"
+  printf "%s\n" "$OUT_DIR" > "$OUT_DIR_ROOT/current-run-dir.txt"
   cp "$OUT_DIR/samples/height-samples.csv" "$OUT_DIR/final-convergence-table.txt" 2>/dev/null || true
   local tar_tmp
   tar_tmp=$(mktemp -p /tmp evidence.XXXXXX.tar.gz)
@@ -317,6 +331,10 @@ package_evidence(){
 
 cleanup(){
   local exit_code=$?
+  if (( cleanup_ran == 1 )); then
+    exit "$EXIT_CODE"
+  fi
+  cleanup_ran=1
   EXIT_CODE=$exit_code
   echo "[cleanup] terminating spawned processes"
   for p in "${PIDS[@]:-}"; do
@@ -328,14 +346,13 @@ cleanup(){
   done
   wait || true
   rm -f "$OUT_DIR"/*.pid
-  if (( exit_code != 0 )); then
+  if (( exit_code != 0 && interrupted == 0 )); then
     record_fail "script exited non-zero: $exit_code"
   fi
   write_summary || true
   cp "$OUT_DIR/evidence-summary.md" "$OUT_DIR/summaries/evidence-summary.md" 2>/dev/null || true
   cp "$OUT_DIR/evidence-summary.md" "$OUT_DIR_ROOT/evidence-summary.md" 2>/dev/null || true
-  printf "%s
-" "$OUT_DIR" > "$OUT_DIR_ROOT/current-run-dir.txt"
+  printf "%s\n" "$OUT_DIR" > "$OUT_DIR_ROOT/current-run-dir.txt"
   if ! package_evidence; then
     evidence_collection_failed=1
     record_fail "evidence collection failed"
@@ -346,7 +363,17 @@ cleanup(){
   write_summary || true
   exit "$EXIT_CODE"
 }
-trap cleanup EXIT INT TERM
+on_signal(){
+  local sig="$1"
+  interrupted=1
+  received_signal="$sig"
+  record_fail "script interrupted or externally timed out: signal=${sig}"
+  exit 130
+}
+trap 'on_signal INT' INT
+trap 'on_signal TERM' TERM
+trap 'on_signal HUP' HUP
+trap cleanup EXIT
 
 is_port_busy(){
   local port="$1"
@@ -620,4 +647,5 @@ if (( ${#FAILURES[@]} > 0 )); then
   exit 1
 fi
 
+script_completed=1
 echo "PASS local smoke complete: $OUT_DIR"
