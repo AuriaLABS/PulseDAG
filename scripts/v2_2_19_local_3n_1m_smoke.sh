@@ -6,6 +6,7 @@ GRACE_SECS=${GRACE_SECS:-120}
 SAMPLE_INTERVAL_SECS=${SAMPLE_INTERVAL_SECS:-10}
 STARTUP_WAIT_SECS=${STARTUP_WAIT_SECS:-12}
 P2P_CONNECT_WAIT_SECS=${P2P_CONNECT_WAIT_SECS:-120}
+P2P_SUSTAIN_SECS=${P2P_SUSTAIN_SECS:-20}
 STAMP=${RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)}
 RUN_ID="$STAMP"
 START_TS=$(date +%s)
@@ -191,7 +192,11 @@ capture_p2p_failure_evidence(){
       echo "- ${n}_last_swarm_event: $(jq -r '.data.last_swarm_event // "n/a"' "$f" 2>/dev/null || echo n/a)"
       echo "- ${n}_last_connection_error: $(jq -r '.data.last_connection_error // "n/a"' "$f" 2>/dev/null || echo n/a)"
       echo "- ${n}_last_disconnect_reason: $(jq -r '.data.last_disconnect_reason // "n/a"' "$f" 2>/dev/null || echo n/a)"
+      echo "- ${n}_active_connection_total: $(jq -r '.data.active_connection_total // "n/a"' "$f" 2>/dev/null || echo n/a)"
+      echo "- ${n}_active_connections_by_peer: $(jq -c '.data.active_connections_by_peer // {}' "$f" 2>/dev/null || echo '{}')"
     done
+    echo "## topology timeline"
+    tail -n 40 "$OUT_DIR/samples/premining-topology-timeline.csv" 2>/dev/null || true
     echo "## node log tails"
     for n in a b c; do
       echo "### node-${n}"
@@ -339,7 +344,11 @@ sleep "$STARTUP_WAIT_SECS"
 
 peer_wait_deadline=$(( $(date +%s) + P2P_CONNECT_WAIT_SECS ))
 peers_total=0
+topology_ok_since=0
+last_snapshot_ts=0
+printf "timestamp,a_peers,b_peers,c_peers,a_connected,b_connected,c_connected,last_swarm_events\n" > "$OUT_DIR/samples/premining-topology-timeline.csv"
 while (( $(date +%s) < peer_wait_deadline )); do
+  now_ts=$(date +%s)
   safe_curl_optional "http://127.0.0.1:${RPC_PORT_A}/p2p/status" "$OUT_DIR/endpoints/a-p2p_status.pre_mining.json" || true
   safe_curl_optional "http://127.0.0.1:${RPC_PORT_B}/p2p/status" "$OUT_DIR/endpoints/b-p2p_status.pre_mining.json" || true
   safe_curl_optional "http://127.0.0.1:${RPC_PORT_C}/p2p/status" "$OUT_DIR/endpoints/c-p2p_status.pre_mining.json" || true
@@ -347,15 +356,30 @@ while (( $(date +%s) < peer_wait_deadline )); do
   pb=$(jq -r '.data.peer_count // (.data.connected_peers|length) // .data.connected_peer_count // 0' "$OUT_DIR/endpoints/b-p2p_status.pre_mining.json" 2>/dev/null || echo 0)
   pc=$(jq -r '.data.peer_count // (.data.connected_peers|length) // .data.connected_peer_count // 0' "$OUT_DIR/endpoints/c-p2p_status.pre_mining.json" 2>/dev/null || echo 0)
   peers_total=$((pa + pb + pc))
+  a_connected=$(jq -r '((.data.connected_peers // [])|length)' "$OUT_DIR/endpoints/a-p2p_status.pre_mining.json" 2>/dev/null || echo 0)
+  b_connected=$(jq -r '((.data.connected_peers // [])|length)' "$OUT_DIR/endpoints/b-p2p_status.pre_mining.json" 2>/dev/null || echo 0)
+  c_connected=$(jq -r '((.data.connected_peers // [])|length)' "$OUT_DIR/endpoints/c-p2p_status.pre_mining.json" 2>/dev/null || echo 0)
+  if (( now_ts - last_snapshot_ts >= SAMPLE_INTERVAL_SECS )); then
+    echo "$(date -u +%FT%TZ),$pa,$pb,$pc,$a_connected,$b_connected,$c_connected,\"a:$(jq -r '.data.last_swarm_event // "n/a"' "$OUT_DIR/endpoints/a-p2p_status.pre_mining.json" 2>/dev/null || echo n/a)|b:$(jq -r '.data.last_swarm_event // "n/a"' "$OUT_DIR/endpoints/b-p2p_status.pre_mining.json" 2>/dev/null || echo n/a)|c:$(jq -r '.data.last_swarm_event // "n/a"' "$OUT_DIR/endpoints/c-p2p_status.pre_mining.json" 2>/dev/null || echo n/a)\"" >> "$OUT_DIR/samples/premining-topology-timeline.csv"
+    cp "$OUT_DIR/endpoints/a-p2p_status.pre_mining.json" "$OUT_DIR/samples/a-p2p-status-${now_ts}.json" 2>/dev/null || true
+    cp "$OUT_DIR/endpoints/b-p2p_status.pre_mining.json" "$OUT_DIR/samples/b-p2p-status-${now_ts}.json" 2>/dev/null || true
+    cp "$OUT_DIR/endpoints/c-p2p_status.pre_mining.json" "$OUT_DIR/samples/c-p2p-status-${now_ts}.json" 2>/dev/null || true
+    last_snapshot_ts=$now_ts
+  fi
   if (( pa >= 2 && pb >= 1 && pc >= 1 )); then
-    break
+    (( topology_ok_since == 0 )) && topology_ok_since=$now_ts
+    if (( now_ts - topology_ok_since >= P2P_SUSTAIN_SECS )); then
+      break
+    fi
+  else
+    topology_ok_since=0
   fi
   sleep 2
 done
-if ! (( pa >= 2 && pb >= 1 && pc >= 1 )); then
+if ! (( pa >= 2 && pb >= 1 && pc >= 1 )) || (( topology_ok_since == 0 )) || (( $(date +%s) - topology_ok_since < P2P_SUSTAIN_SECS )); then
   miner_not_started_reason="pre-mining p2p peer gate failed"
   capture_p2p_failure_evidence
-  record_fail "pre-mining p2p peer gate failed after ${P2P_CONNECT_WAIT_SECS}s (a=${pa}, b=${pb}, c=${pc})"
+  record_fail "pre-mining p2p peer gate failed after ${P2P_CONNECT_WAIT_SECS}s with sustain ${P2P_SUSTAIN_SECS}s (a=${pa}, b=${pb}, c=${pc})"
   exit 1
 fi
 
