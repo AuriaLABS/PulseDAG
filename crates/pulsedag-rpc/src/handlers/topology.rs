@@ -355,6 +355,17 @@ mod tests {
             bootstrap_dial_successes: 0,
             bootstrap_dial_failures: 0,
             bootstrap_connected_peer_ids: vec![],
+            bootnodes_configured: Vec::new(),
+            bootnodes_connected: Vec::new(),
+            bootnode_redial_attempts: 0,
+            bootnode_redial_successes: 0,
+            bootnode_redial_failures: 0,
+            last_bootnode_dial_error: None,
+            gossipsub_peer_count: 0,
+            subscribed_topics: Vec::new(),
+            connection_established_total: 0,
+            connection_closed_total: 0,
+            last_connection_closed_reason: None,
         }
     }
 

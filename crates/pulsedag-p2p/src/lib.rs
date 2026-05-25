@@ -2698,6 +2698,7 @@ async fn run_libp2p_runtime(
 ) {
     fake_swarm_bootstrap_events(local_peer_id, &cfg, &inner, &inbound_tx);
     let mut outbound_queue = OutboundPriorityQueue::default();
+    let mut pending_bootnode_dials: HashSet<String> = HashSet::new();
 
     loop {
         tokio::select! {
@@ -2885,6 +2886,7 @@ async fn run_libp2p_real_runtime(
                 format!("bootstrap-dial-failed:{peer_id}:{addr}:{e}"),
             );
         } else {
+            pending_bootnode_dials.insert(peer_id.to_string());
             if let Ok(mut guard) = inner.lock() {
                 guard.bootstrap_dial_successes = guard.bootstrap_dial_successes.saturating_add(1);
             }
@@ -2962,6 +2964,7 @@ async fn run_libp2p_real_runtime(
                     }
                     SwarmEvent::ConnectionEstablished { peer_id, .. } => {
                         note_swarm_event(&inner, format!("peer-connected:{peer_id}"));
+                        pending_bootnode_dials.remove(&peer_id.to_string());
                         if let Ok(mut guard) = inner.lock() {
                             let count = guard.active_connections.entry(peer_id.to_string()).or_insert(0);
                             *count = count.saturating_add(1);
@@ -3005,6 +3008,7 @@ async fn run_libp2p_real_runtime(
                     }
                     SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => {
                         if let Some(peer_id) = peer_id {
+                            pending_bootnode_dials.remove(&peer_id.to_string());
                             if let Ok(mut guard) = inner.lock() {
                                 guard.last_outgoing_connection_error_peer = Some(peer_id.to_string());
                                 guard.last_dial_error = Some(error.to_string());
@@ -3046,6 +3050,10 @@ async fn run_libp2p_real_runtime(
             }
             _ = sleep(Duration::from_secs(3)) => {
                 for (peer_id, addr) in &bootstrap_peers {
+                    if pending_bootnode_dials.contains(&peer_id.to_string()) {
+                        note_swarm_event(&inner, format!("reconnect-skipped:bootnode-dial-pending:{peer_id}"));
+                        continue;
+                    }
                     let should_redial = inner.lock().ok().map(|guard| {
                         guard.active_connections.get(&peer_id.to_string()).copied().unwrap_or(0) == 0
                     }).unwrap_or(false);
@@ -3064,6 +3072,7 @@ async fn run_libp2p_real_runtime(
                         }
                         note_swarm_event(&inner, format!("dial-failure:redial:{peer_id}:{e}"));
                     } else if let Ok(mut guard) = inner.lock() {
+                        pending_bootnode_dials.insert(peer_id.to_string());
                         guard.bootnode_redial_successes = guard.bootnode_redial_successes.saturating_add(1);
                         note_swarm_event(&inner, format!("dial-success:redial:{peer_id}"));
                     }
