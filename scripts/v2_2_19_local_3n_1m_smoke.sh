@@ -64,6 +64,12 @@ miner_submits=0
 accepted_count=0
 rejected_count=0
 duplicate_sync_degraded_blocker=0
+pa=0
+pb=0
+pc=0
+a_connected=0
+b_connected=0
+c_connected=0
 required_failures=0
 evidence_collection_failed=0
 premining_timeline_missing_samples=0
@@ -299,7 +305,7 @@ package_evidence(){
   cp "$OUT_DIR/samples/height-samples.csv" "$OUT_DIR/final-convergence-table.txt" 2>/dev/null || true
   local tar_tmp
   tar_tmp=$(mktemp -p /tmp evidence.XXXXXX.tar.gz)
-  (cd "$OUT_DIR" && tar -czf "$tar_tmp" --exclude='evidence.tar.gz' --exclude='evidence.tar.gz.sha256' endpoints logs miners nodes samples summaries evidence-summary.md command-log.txt process-pids.txt final-convergence-table.txt 2>/dev/null || true)
+  (cd "$OUT_DIR" && tar -czf "$tar_tmp" --exclude='evidence.tar.gz' --exclude='evidence.tar.gz.sha256' endpoints logs miners nodes samples summaries evidence-summary.md command-log.txt process-pids.txt final-convergence-table.txt)
   mv "$tar_tmp" "$OUT_DIR/evidence.tar.gz"
   (cd "$OUT_DIR" && sha256sum evidence.tar.gz > evidence.tar.gz.sha256)
   cp "$OUT_DIR/evidence.tar.gz" "$OUT_DIR_ROOT/evidence.tar.gz" 2>/dev/null || true
@@ -334,6 +340,8 @@ cleanup(){
     evidence_collection_failed=1
     record_fail "evidence collection failed"
     write_summary || true
+    cp "$OUT_DIR/evidence-summary.md" "$OUT_DIR/summaries/evidence-summary.md" 2>/dev/null || true
+    cp "$OUT_DIR/evidence-summary.md" "$OUT_DIR_ROOT/evidence-summary.md" 2>/dev/null || true
   fi
   write_summary || true
   exit "$EXIT_CODE"
@@ -579,8 +587,8 @@ check_duplicate_degraded_false_blocker c
 (( final_peers_ok == 1 )) || record_fail "final p2p topology gate not satisfied (need a>=2,b>=1,c>=1; got a=${pa},b=${pb},c=${pc})"
 text_has_match "peer_block_received|peer_block_accepted" "$OUT_DIR/logs/b.log" || record_fail "node_b missing inbound p2p block activity"
 text_has_match "peer_block_received|peer_block_accepted" "$OUT_DIR/logs/c.log" || record_fail "node_c missing inbound p2p block activity"
-(( miner_templates == 1 )) || record_fail "miner never receives templates"
-(( miner_submits == 1 )) || record_fail "miner never submits"
+(( miner_templates >= 1 )) || record_fail "miner never receives templates"
+(( miner_submits >= 1 )) || record_fail "miner never submits"
 if (( accepted_count < 1 )); then
   if (( WAIVE_ACCEPTED_BLOCK_GATE == 1 )); then
     if [[ -z "$WAIVE_ACCEPTED_BLOCK_REASON" ]]; then
