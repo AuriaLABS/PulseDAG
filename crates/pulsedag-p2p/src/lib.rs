@@ -181,6 +181,17 @@ pub struct P2pStatus {
     pub bootstrap_dial_successes: u64,
     pub bootstrap_dial_failures: u64,
     pub bootstrap_connected_peer_ids: Vec<String>,
+    pub bootnodes_configured: Vec<String>,
+    pub bootnodes_connected: Vec<String>,
+    pub bootnode_redial_attempts: u64,
+    pub bootnode_redial_successes: u64,
+    pub bootnode_redial_failures: u64,
+    pub last_bootnode_dial_error: Option<String>,
+    pub gossipsub_peer_count: usize,
+    pub subscribed_topics: Vec<String>,
+    pub connection_established_total: u64,
+    pub connection_closed_total: u64,
+    pub last_connection_closed_reason: Option<String>,
 }
 
 pub trait P2pHandle: Send + Sync {
@@ -346,6 +357,14 @@ struct InnerState {
     bootstrap_dial_successes: u64,
     bootstrap_dial_failures: u64,
     bootstrap_connected_peer_ids: Vec<String>,
+    bootnodes_configured: Vec<String>,
+    bootnode_redial_attempts: u64,
+    bootnode_redial_successes: u64,
+    bootnode_redial_failures: u64,
+    last_bootnode_dial_error: Option<String>,
+    connection_established_total: u64,
+    connection_closed_total: u64,
+    last_connection_closed_reason: Option<String>,
     peer_state_path: Option<PathBuf>,
     peer_reconnect_attempts: u64,
     peer_recovery_success_count: u64,
@@ -682,6 +701,17 @@ impl P2pHandle for MemoryP2pHandle {
             bootstrap_dial_successes: inner.bootstrap_dial_successes,
             bootstrap_dial_failures: inner.bootstrap_dial_failures,
             bootstrap_connected_peer_ids: inner.bootstrap_connected_peer_ids.clone(),
+            bootnodes_configured: inner.bootnodes_configured.clone(),
+            bootnodes_connected: inner.bootstrap_connected_peer_ids.clone(),
+            bootnode_redial_attempts: inner.bootnode_redial_attempts,
+            bootnode_redial_successes: inner.bootnode_redial_successes,
+            bootnode_redial_failures: inner.bootnode_redial_failures,
+            last_bootnode_dial_error: inner.last_bootnode_dial_error.clone(),
+            gossipsub_peer_count: inner.active_connections.len(),
+            subscribed_topics: inner.topics.clone(),
+            connection_established_total: inner.connection_established_total,
+            connection_closed_total: inner.connection_closed_total,
+            last_connection_closed_reason: inner.last_connection_closed_reason.clone(),
         })
     }
 }
@@ -748,6 +778,14 @@ impl Libp2pHandle {
             bootstrap_dial_successes: 0,
             bootstrap_dial_failures: 0,
             bootstrap_connected_peer_ids: Vec::new(),
+            bootnodes_configured: cfg.bootstrap.clone(),
+            bootnode_redial_attempts: 0,
+            bootnode_redial_successes: 0,
+            bootnode_redial_failures: 0,
+            last_bootnode_dial_error: None,
+            connection_established_total: 0,
+            connection_closed_total: 0,
+            last_connection_closed_reason: None,
             peer_state_path: peer_state_path(),
             connection_slot_budget: cfg.connection_slot_budget.max(1),
             sync_selection_stickiness_secs: cfg.sync_selection_stickiness_secs,
@@ -2830,16 +2868,26 @@ async fn run_libp2p_real_runtime(
 
     note_swarm_event(&inner, "swarm-real-started");
     note_swarm_event(&inner, format!("listen-attempt:{listen_addr}"));
-    for (peer_id, addr) in parse_bootstrap(&cfg.bootstrap) {
+    let bootstrap_peers = parse_bootstrap(&cfg.bootstrap);
+    for (peer_id, addr) in &bootstrap_peers {
         if let Ok(mut guard) = inner.lock() {
             guard.peer_book.entry(peer_id.to_string()).or_default();
+            guard.bootstrap_dial_attempts = guard.bootstrap_dial_attempts.saturating_add(1);
         }
+        note_swarm_event(&inner, format!("dial-attempt:bootstrap:{peer_id}:{addr}"));
         if let Err(e) = swarm.dial(addr.clone()) {
+            if let Ok(mut guard) = inner.lock() {
+                guard.bootstrap_dial_failures = guard.bootstrap_dial_failures.saturating_add(1);
+                guard.last_bootnode_dial_error = Some(e.to_string());
+            }
             note_swarm_event(
                 &inner,
                 format!("bootstrap-dial-failed:{peer_id}:{addr}:{e}"),
             );
         } else {
+            if let Ok(mut guard) = inner.lock() {
+                guard.bootstrap_dial_successes = guard.bootstrap_dial_successes.saturating_add(1);
+            }
             note_swarm_event(&inner, format!("bootstrap-dialing:{peer_id}:{addr}"));
         }
     }
@@ -2917,6 +2965,7 @@ async fn run_libp2p_real_runtime(
                         if let Ok(mut guard) = inner.lock() {
                             let count = guard.active_connections.entry(peer_id.to_string()).or_insert(0);
                             *count = count.saturating_add(1);
+                            guard.connection_established_total = guard.connection_established_total.saturating_add(1);
                             guard.last_connection_established_peer = Some(peer_id.to_string());
                             guard.last_peer_state_transition = Some(format!("{peer_id}:connected"));
                             if !guard.bootstrap_connected_peer_ids.iter().any(|id| id == &peer_id.to_string()) {
@@ -2940,6 +2989,8 @@ async fn run_libp2p_real_runtime(
                                 }
                             };
                             guard.last_connection_closed_peer = Some(peer_key.clone());
+                            guard.connection_closed_total = guard.connection_closed_total.saturating_add(1);
+                            guard.last_connection_closed_reason = Some("swarm-connection-closed".to_string());
                             guard.last_connection_closed_remaining_count = Some(remaining_count);
                             guard.last_disconnect_reason = Some("swarm-connection-closed".to_string());
                             guard.last_peer_state_transition = Some(format!("{peer_key}:disconnected"));
@@ -2957,6 +3008,10 @@ async fn run_libp2p_real_runtime(
                             if let Ok(mut guard) = inner.lock() {
                                 guard.last_outgoing_connection_error_peer = Some(peer_id.to_string());
                                 guard.last_dial_error = Some(error.to_string());
+                                if guard.bootnodes_configured.iter().any(|addr| addr.contains(&peer_id.to_string())) {
+                                    guard.bootnode_redial_failures = guard.bootnode_redial_failures.saturating_add(1);
+                                    guard.last_bootnode_dial_error = Some(error.to_string());
+                                }
                             }
                             let should_mark_failed = inner
                                 .lock()
@@ -2986,6 +3041,31 @@ async fn run_libp2p_real_runtime(
                             }
                         }
                         note_swarm_event(&inner, format!("swarm:{other:?}"));
+                    }
+                }
+            }
+            _ = sleep(Duration::from_secs(3)) => {
+                for (peer_id, addr) in &bootstrap_peers {
+                    let should_redial = inner.lock().ok().map(|guard| {
+                        guard.active_connections.get(&peer_id.to_string()).copied().unwrap_or(0) == 0
+                    }).unwrap_or(false);
+                    if !should_redial {
+                        continue;
+                    }
+                    if let Ok(mut guard) = inner.lock() {
+                        guard.bootnode_redial_attempts = guard.bootnode_redial_attempts.saturating_add(1);
+                    }
+                    note_swarm_event(&inner, format!("reconnect-scheduled:bootnode:{peer_id}:{addr}"));
+                    note_swarm_event(&inner, format!("dial-attempt:redial:{peer_id}:{addr}"));
+                    if let Err(e) = swarm.dial(addr.clone()) {
+                        if let Ok(mut guard) = inner.lock() {
+                            guard.bootnode_redial_failures = guard.bootnode_redial_failures.saturating_add(1);
+                            guard.last_bootnode_dial_error = Some(e.to_string());
+                        }
+                        note_swarm_event(&inner, format!("dial-failure:redial:{peer_id}:{e}"));
+                    } else if let Ok(mut guard) = inner.lock() {
+                        guard.bootnode_redial_successes = guard.bootnode_redial_successes.saturating_add(1);
+                        note_swarm_event(&inner, format!("dial-success:redial:{peer_id}"));
                     }
                 }
             }
@@ -3239,6 +3319,17 @@ impl P2pHandle for Libp2pHandle {
             bootstrap_dial_successes: inner.bootstrap_dial_successes,
             bootstrap_dial_failures: inner.bootstrap_dial_failures,
             bootstrap_connected_peer_ids: inner.bootstrap_connected_peer_ids.clone(),
+            bootnodes_configured: inner.bootnodes_configured.clone(),
+            bootnodes_connected: inner.bootstrap_connected_peer_ids.clone(),
+            bootnode_redial_attempts: inner.bootnode_redial_attempts,
+            bootnode_redial_successes: inner.bootnode_redial_successes,
+            bootnode_redial_failures: inner.bootnode_redial_failures,
+            last_bootnode_dial_error: inner.last_bootnode_dial_error.clone(),
+            gossipsub_peer_count: inner.active_connections.len(),
+            subscribed_topics: inner.topics.clone(),
+            connection_established_total: inner.connection_established_total,
+            connection_closed_total: inner.connection_closed_total,
+            last_connection_closed_reason: inner.last_connection_closed_reason.clone(),
         })
     }
 }
