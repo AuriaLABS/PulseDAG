@@ -64,6 +64,9 @@ miner_submits=0
 accepted_count=0
 rejected_count=0
 duplicate_sync_degraded_blocker=0
+required_failures=0
+evidence_collection_failed=0
+premining_timeline_missing_samples=0
 
 record_warn(){ local msg; msg="$1"; echo "WARN: $msg"; WARNINGS+=("$msg"); }
 record_fail(){ local msg; msg="$1"; echo "FAIL: $msg"; FAILURES+=("$msg"); }
@@ -346,7 +349,7 @@ peer_wait_deadline=$(( $(date +%s) + P2P_CONNECT_WAIT_SECS ))
 peers_total=0
 topology_ok_since=0
 last_snapshot_ts=0
-printf "timestamp,a_peers,b_peers,c_peers,a_connected,b_connected,c_connected,last_swarm_events\n" > "$OUT_DIR/samples/premining-topology-timeline.csv"
+printf "timestamp,a_peers,b_peers,c_peers,a_connected,b_connected,c_connected,a_active_connection_total,b_active_connection_total,c_active_connection_total,a_last_swarm_event,b_last_swarm_event,c_last_swarm_event\n" > "$OUT_DIR/samples/premining-topology-timeline.csv"
 while (( $(date +%s) < peer_wait_deadline )); do
   now_ts=$(date +%s)
   safe_curl_optional "http://127.0.0.1:${RPC_PORT_A}/p2p/status" "$OUT_DIR/endpoints/a-p2p_status.pre_mining.json" || true
