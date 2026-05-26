@@ -2698,9 +2698,6 @@ async fn run_libp2p_runtime(
 ) {
     fake_swarm_bootstrap_events(local_peer_id, &cfg, &inner, &inbound_tx);
     let mut outbound_queue = OutboundPriorityQueue::default();
-    let mut bootnode_next_redial_at: HashMap<PeerId, u64> = HashMap::new();
-    let mut bootnode_redial_backoff_secs: HashMap<PeerId, u64> = HashMap::new();
-
     loop {
         tokio::select! {
             Some(msg) = outbound_rx.recv() => {
