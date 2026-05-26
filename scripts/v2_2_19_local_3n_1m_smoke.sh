@@ -7,10 +7,12 @@ SAMPLE_INTERVAL_SECS=${SAMPLE_INTERVAL_SECS:-10}
 STARTUP_WAIT_SECS=${STARTUP_WAIT_SECS:-12}
 P2P_CONNECT_WAIT_SECS=${P2P_CONNECT_WAIT_SECS:-120}
 P2P_SUSTAIN_SECS=${P2P_SUSTAIN_SECS:-20}
+SMOKE_TOTAL_DEADLINE_SECS=${SMOKE_TOTAL_DEADLINE_SECS:-$((P2P_CONNECT_WAIT_SECS + DURATION_SECS + 120))}
 LOCAL_SMOKE_TOPOLOGY=${LOCAL_SMOKE_TOPOLOGY:-hub}
 STAMP=${RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)}
 RUN_ID="$STAMP"
 START_TS=$(date +%s)
+SMOKE_DEADLINE_TS=$((START_TS + SMOKE_TOTAL_DEADLINE_SECS))
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DEFAULT_OUT_DIR="$ROOT_DIR/artifacts/v2_2_19/local_3n_1m_smoke"
 OUT_DIR=${OUT_DIR:-$DEFAULT_OUT_DIR}
@@ -101,11 +103,22 @@ record_fail(){ local msg; msg="$1"; echo "FAIL: $msg"; FAILURES+=("$msg"); }
 safe_curl_json(){
   local url out label required rc
   url="$1"; out="$2"; label="${3:-$url}"; required="${4:-0}"
-  if ! curl -fsS "$url" -o "$out"; then
+  if ! curl --max-time 3 -fsS "$url" -o "$out"; then
     rc=$?
     jq -n --arg url "$url" --argjson exit_code "$rc" '{ok:false,error:"curl failed",url:$url,exit_code:$exit_code}' > "$out"
     if (( required == 1 )); then record_fail "required endpoint failed: $url"; else record_warn "optional endpoint failed: $label"; fi
     return 1
+  fi
+}
+check_internal_deadline(){
+  if (( $(date +%s) > SMOKE_DEADLINE_TS )); then
+    interrupted=1
+    received_signal="internal-deadline"
+    script_completed=0
+    record_fail "internal smoke deadline exceeded"
+    write_summary || true
+    package_evidence || true
+    exit 1
   fi
 }
 safe_curl_required(){ safe_curl_json "$1" "$2" "${3:-$1}" 1; }
@@ -344,6 +357,23 @@ cleanup(){
   fi
   cleanup_ran=1
   EXIT_CODE=$exit_code
+  if (( exit_code != 0 && interrupted == 0 )); then
+    record_fail "script exited non-zero: $exit_code"
+  fi
+  compute_summary_metrics || true
+  write_summary || true
+  cp "$OUT_DIR/evidence-summary.md" "$OUT_DIR/summaries/evidence-summary.md" 2>/dev/null || true
+  cp "$OUT_DIR/evidence-summary.md" "$OUT_DIR_ROOT/evidence-summary.md" 2>/dev/null || true
+  cp "$OUT_DIR/current-run-dir.txt" "$OUT_DIR_ROOT/current-run-dir.txt" 2>/dev/null || true
+  printf "%s\n" "$OUT_DIR" > "$OUT_DIR_ROOT/current-run-dir.txt"
+  if ! package_evidence; then
+    evidence_collection_failed=1
+    record_fail "evidence collection failed"
+    write_summary || true
+    cp "$OUT_DIR/evidence-summary.md" "$OUT_DIR/summaries/evidence-summary.md" 2>/dev/null || true
+    cp "$OUT_DIR/evidence-summary.md" "$OUT_DIR_ROOT/evidence-summary.md" 2>/dev/null || true
+    cp "$OUT_DIR/command-log.txt" "$OUT_DIR_ROOT/command-log.txt" 2>/dev/null || true
+  fi
   echo "[cleanup] terminating spawned processes"
   for p in "${PIDS[@]:-}"; do
     kill "$p" 2>/dev/null || true
@@ -354,20 +384,6 @@ cleanup(){
   done
   wait || true
   rm -f "$OUT_DIR"/*.pid
-  if (( exit_code != 0 && interrupted == 0 )); then
-    record_fail "script exited non-zero: $exit_code"
-  fi
-  write_summary || true
-  cp "$OUT_DIR/evidence-summary.md" "$OUT_DIR/summaries/evidence-summary.md" 2>/dev/null || true
-  cp "$OUT_DIR/evidence-summary.md" "$OUT_DIR_ROOT/evidence-summary.md" 2>/dev/null || true
-  printf "%s\n" "$OUT_DIR" > "$OUT_DIR_ROOT/current-run-dir.txt"
-  if ! package_evidence; then
-    evidence_collection_failed=1
-    record_fail "evidence collection failed"
-    write_summary || true
-    cp "$OUT_DIR/evidence-summary.md" "$OUT_DIR/summaries/evidence-summary.md" 2>/dev/null || true
-    cp "$OUT_DIR/evidence-summary.md" "$OUT_DIR_ROOT/evidence-summary.md" 2>/dev/null || true
-  fi
   write_summary || true
   exit "$EXIT_CODE"
 }
@@ -453,7 +469,8 @@ printf "%s\n" "$LOCAL_SMOKE_TOPOLOGY" > "$OUT_DIR/topology-mode.txt"
 start_node a "$RPC_PORT_A" "$P2P_PORT_A"
 printf "none\n" > "$OUT_DIR/bootnodes-a.txt"
 for _ in $(seq 1 "$STARTUP_WAIT_SECS"); do
-  if curl -fsS "http://127.0.0.1:${RPC_PORT_A}/p2p/status" -o "$OUT_DIR/endpoints/a-p2p_status.bootstrap.json"; then break; fi
+  check_internal_deadline
+  if curl --max-time 3 -fsS "http://127.0.0.1:${RPC_PORT_A}/p2p/status" -o "$OUT_DIR/endpoints/a-p2p_status.bootstrap.json"; then break; fi
   sleep 1
 done
 safe_curl_required "http://127.0.0.1:${RPC_PORT_A}/p2p/status" "$OUT_DIR/endpoints/a-p2p_status.bootstrap.json"
@@ -467,10 +484,40 @@ echo "$NODE_A_LISTENING" > "$OUT_DIR/node-a-listening.txt"
 start_node b "$RPC_PORT_B" "$P2P_PORT_B" "$BOOT_A"
 printf "%s\n" "$BOOT_A" > "$OUT_DIR/bootnodes-b.txt"
 
+write_topology_sample(){
+  local suffix="$1" ts out_a out_b out_c
+  check_internal_deadline
+  ts=$(date +%s)
+  out_a="$OUT_DIR/endpoints/a-p2p_status.${suffix}.json"
+  out_b="$OUT_DIR/endpoints/b-p2p_status.${suffix}.json"
+  out_c="$OUT_DIR/endpoints/c-p2p_status.${suffix}.json"
+  safe_curl_optional "http://127.0.0.1:${RPC_PORT_A}/p2p/status" "$out_a" || true
+  safe_curl_optional "http://127.0.0.1:${RPC_PORT_B}/p2p/status" "$out_b" || true
+  safe_curl_optional "http://127.0.0.1:${RPC_PORT_C}/p2p/status" "$out_c" || true
+  pa=$(jq -r '.data.peer_count // (.data.connected_peers|length) // .data.connected_peer_count // 0' "$out_a" 2>/dev/null || echo 0)
+  pb=$(jq -r '.data.peer_count // (.data.connected_peers|length) // .data.connected_peer_count // 0' "$out_b" 2>/dev/null || echo 0)
+  pc=$(jq -r '.data.peer_count // (.data.connected_peers|length) // .data.connected_peer_count // 0' "$out_c" 2>/dev/null || echo 0)
+  a_connected=$(jq -r '((.data.connected_peers // [])|length)' "$out_a" 2>/dev/null || echo 0)
+  b_connected=$(jq -r '((.data.connected_peers // [])|length)' "$out_b" 2>/dev/null || echo 0)
+  c_connected=$(jq -r '((.data.connected_peers // [])|length)' "$out_c" 2>/dev/null || echo 0)
+  a_active=$(jq -r '.data.active_connection_total // 0' "$out_a" 2>/dev/null || echo 0)
+  b_active=$(jq -r '.data.active_connection_total // 0' "$out_b" 2>/dev/null || echo 0)
+  c_active=$(jq -r '.data.active_connection_total // 0' "$out_c" 2>/dev/null || echo 0)
+  a_last=$(jq -r '.data.last_swarm_event // "unavailable"' "$out_a" 2>/dev/null || echo unavailable)
+  b_last=$(jq -r '.data.last_swarm_event // "unavailable"' "$out_b" 2>/dev/null || echo unavailable)
+  c_last=$(jq -r '.data.last_swarm_event // "unavailable"' "$out_c" 2>/dev/null || echo unavailable)
+  printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,"%s","%s","%s"\n' "$(date -u +%FT%TZ)" "$pa" "$pb" "$pc" "$a_connected" "$b_connected" "$c_connected" "$a_active" "$b_active" "$c_active" "$a_last" "$b_last" "$c_last" >> "$OUT_DIR/samples/premining-topology-timeline.csv"
+  cp "$out_a" "$OUT_DIR/samples/a-p2p-status-${ts}.json" 2>/dev/null || true
+  cp "$out_b" "$OUT_DIR/samples/b-p2p-status-${ts}.json" 2>/dev/null || true
+  cp "$out_c" "$OUT_DIR/samples/c-p2p-status-${ts}.json" 2>/dev/null || true
+  timeline_sample_count=$((timeline_sample_count + 1))
+}
+
 NODE_B_ID=""
 if [[ "$LOCAL_SMOKE_TOPOLOGY" == "mesh" ]]; then
   for _ in $(seq 1 "$STARTUP_WAIT_SECS"); do
-    if curl -fsS "http://127.0.0.1:${RPC_PORT_B}/p2p/status" -o "$OUT_DIR/endpoints/b-p2p_status.bootstrap.json"; then break; fi
+    check_internal_deadline
+    if curl --max-time 3 -fsS "http://127.0.0.1:${RPC_PORT_B}/p2p/status" -o "$OUT_DIR/endpoints/b-p2p_status.bootstrap.json"; then break; fi
     sleep 1
   done
   safe_curl_required "http://127.0.0.1:${RPC_PORT_B}/p2p/status" "$OUT_DIR/endpoints/b-p2p_status.bootstrap.json"
@@ -490,31 +537,15 @@ peers_total=0
 topology_ok_since=0
 last_snapshot_ts=0
 printf "timestamp,a_peers,b_peers,c_peers,a_connected,b_connected,c_connected,a_active_connection_total,b_active_connection_total,c_active_connection_total,a_last_swarm_event,b_last_swarm_event,c_last_swarm_event\n" > "$OUT_DIR/samples/premining-topology-timeline.csv"
+write_topology_sample "pre_mining"
 while (( $(date +%s) < peer_wait_deadline )); do
+  check_internal_deadline
   now_ts=$(date +%s)
-  safe_curl_optional "http://127.0.0.1:${RPC_PORT_A}/p2p/status" "$OUT_DIR/endpoints/a-p2p_status.pre_mining.json" || true
-  safe_curl_optional "http://127.0.0.1:${RPC_PORT_B}/p2p/status" "$OUT_DIR/endpoints/b-p2p_status.pre_mining.json" || true
-  safe_curl_optional "http://127.0.0.1:${RPC_PORT_C}/p2p/status" "$OUT_DIR/endpoints/c-p2p_status.pre_mining.json" || true
-  pa=$(jq -r '.data.peer_count // (.data.connected_peers|length) // .data.connected_peer_count // 0' "$OUT_DIR/endpoints/a-p2p_status.pre_mining.json" 2>/dev/null || echo 0)
-  pb=$(jq -r '.data.peer_count // (.data.connected_peers|length) // .data.connected_peer_count // 0' "$OUT_DIR/endpoints/b-p2p_status.pre_mining.json" 2>/dev/null || echo 0)
-  pc=$(jq -r '.data.peer_count // (.data.connected_peers|length) // .data.connected_peer_count // 0' "$OUT_DIR/endpoints/c-p2p_status.pre_mining.json" 2>/dev/null || echo 0)
-  peers_total=$((pa + pb + pc))
-  a_connected=$(jq -r '((.data.connected_peers // [])|length)' "$OUT_DIR/endpoints/a-p2p_status.pre_mining.json" 2>/dev/null || echo 0)
-  b_connected=$(jq -r '((.data.connected_peers // [])|length)' "$OUT_DIR/endpoints/b-p2p_status.pre_mining.json" 2>/dev/null || echo 0)
-  c_connected=$(jq -r '((.data.connected_peers // [])|length)' "$OUT_DIR/endpoints/c-p2p_status.pre_mining.json" 2>/dev/null || echo 0)
   if (( now_ts - last_snapshot_ts >= SAMPLE_INTERVAL_SECS )); then
-    a_active=$(jq -r '.data.active_connection_total // 0' "$OUT_DIR/endpoints/a-p2p_status.pre_mining.json" 2>/dev/null || echo 0)
-    b_active=$(jq -r '.data.active_connection_total // 0' "$OUT_DIR/endpoints/b-p2p_status.pre_mining.json" 2>/dev/null || echo 0)
-    c_active=$(jq -r '.data.active_connection_total // 0' "$OUT_DIR/endpoints/c-p2p_status.pre_mining.json" 2>/dev/null || echo 0)
-    a_last=$(jq -r '.data.last_swarm_event // "n/a"' "$OUT_DIR/endpoints/a-p2p_status.pre_mining.json" 2>/dev/null || echo n/a)
-    b_last=$(jq -r '.data.last_swarm_event // "n/a"' "$OUT_DIR/endpoints/b-p2p_status.pre_mining.json" 2>/dev/null || echo n/a)
-    c_last=$(jq -r '.data.last_swarm_event // "n/a"' "$OUT_DIR/endpoints/c-p2p_status.pre_mining.json" 2>/dev/null || echo n/a)
-    printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,"%s","%s","%s"\n' "$(date -u +%FT%TZ)" "$pa" "$pb" "$pc" "$a_connected" "$b_connected" "$c_connected" "$a_active" "$b_active" "$c_active" "$a_last" "$b_last" "$c_last" >> "$OUT_DIR/samples/premining-topology-timeline.csv"
-    cp "$OUT_DIR/endpoints/a-p2p_status.pre_mining.json" "$OUT_DIR/samples/a-p2p-status-${now_ts}.json" 2>/dev/null || true
-    cp "$OUT_DIR/endpoints/b-p2p_status.pre_mining.json" "$OUT_DIR/samples/b-p2p-status-${now_ts}.json" 2>/dev/null || true
-    cp "$OUT_DIR/endpoints/c-p2p_status.pre_mining.json" "$OUT_DIR/samples/c-p2p-status-${now_ts}.json" 2>/dev/null || true
+    write_topology_sample "pre_mining"
     last_snapshot_ts=$now_ts
   fi
+  peers_total=$((pa + pb + pc))
   if (( pa >= 2 && pb >= 1 && pc >= 1 )); then
     (( topology_ok_since == 0 )) && topology_ok_since=$now_ts
     if (( now_ts - topology_ok_since >= P2P_SUSTAIN_SECS )); then
@@ -525,15 +556,16 @@ while (( $(date +%s) < peer_wait_deadline )); do
   fi
   sleep 2
 done
-timeline_rows=$(tail -n +2 "$OUT_DIR/samples/premining-topology-timeline.csv" 2>/dev/null | wc -l | tr -d ' ')
-if (( timeline_rows < 1 )); then
+if (( timeline_sample_count == 0 )); then
   premining_timeline_missing_samples=1
   record_fail "pre-mining topology timeline missing samples"
 fi
 if ! (( pa >= 2 && pb >= 1 && pc >= 1 )) || (( topology_ok_since == 0 )) || (( $(date +%s) - topology_ok_since < P2P_SUSTAIN_SECS )); then
   miner_not_started_reason="pre-mining p2p peer gate failed"
   capture_p2p_failure_evidence
-  record_fail "pre-mining p2p peer gate failed after ${P2P_CONNECT_WAIT_SECS}s with sustain ${P2P_SUSTAIN_SECS}s (a=${pa}, b=${pb}, c=${pc})"
+  record_fail "pre-mining p2p peer gate failed after ${P2P_CONNECT_WAIT_SECS}s (a=${pa}, b=${pb}, c=${pc})"
+  write_summary
+  package_evidence
   exit 1
 fi
 
@@ -577,6 +609,7 @@ readiness_phase="no_peers"
 
 end=$(( $(date +%s) + DURATION_SECS ))
 while (( $(date +%s) < end )); do
+  check_internal_deadline
   now_epoch=$(date +%s)
   elapsed=$(( now_epoch - (end - DURATION_SECS) ))
 

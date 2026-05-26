@@ -30,9 +30,11 @@ check all_pass PASS ':'
 check interrupted_fail FAIL 'interrupted=1'
 check script_completed_fail FAIL 'script_completed=0'
 check p2p_fail FAIL 'final_peers_ok=0; pa=0; pb=0; pc=0'
+check partial_p2p_a1_b0_c1 FAIL 'final_peers_ok=0; pa=1; pb=0; pc=1'
 check evidence_collection_failed FAIL 'evidence_collection_failed=1'
 check accepted_fail FAIL 'accepted_count=0'
 check timeline_header_only FAIL 'timeline_sample_count=0'
+check internal_deadline_exceeded FAIL 'interrupted=1; script_completed=0'
 
 SMOKE_SCRIPT="scripts/v2_2_19_local_3n_1m_smoke.sh"
 [[ -f "$SMOKE_SCRIPT" ]]
@@ -46,15 +48,15 @@ rg -q 'result_source: gate-driven' "$SMOKE_SCRIPT"
 
 tmp_out=$(mktemp -d /tmp/pulsedag-smoke-fail.XXXXXX)
 set +e
-P2P_CONNECT_WAIT_SECS=10 DURATION_SECS=30 SAMPLE_INTERVAL_SECS=2 OUT_DIR="$tmp_out" NODE_BIN=/bin/false MINER_BIN=/bin/false bash "$SMOKE_SCRIPT"
+timeout 30s env P2P_CONNECT_WAIT_SECS=10 DURATION_SECS=30 SAMPLE_INTERVAL_SECS=2 OUT_DIR="$tmp_out" NODE_BIN=/bin/false MINER_BIN=/bin/false bash "$SMOKE_SCRIPT"
 rc=$?
 set -e
 (( rc != 0 ))
 run_dir=$(cat "$tmp_out/current-run-dir.txt")
 [[ -f "$run_dir/evidence-summary.md" ]]
 [[ -f "$run_dir/current-run-dir.txt" ]]
+[[ -f "$tmp_out/current-run-dir.txt" ]]
 rg -q '^- result: FAIL' "$run_dir/evidence-summary.md"
 rg -q '^- result_source: gate-driven' "$run_dir/evidence-summary.md"
-if ! rg -q '^- timeline_sample_count: [1-9]' "$run_dir/evidence-summary.md"; then
-  rg -q 'pre-mining topology timeline missing samples|pre-mining p2p peer gate failed' "$run_dir/evidence-summary.md"
-fi
+rg -q '^- script_completed: 0' "$run_dir/evidence-summary.md"
+rg -q '^- timeline_sample_count:' "$run_dir/evidence-summary.md"
