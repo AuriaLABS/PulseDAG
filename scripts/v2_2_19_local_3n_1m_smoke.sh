@@ -7,6 +7,7 @@ SAMPLE_INTERVAL_SECS=${SAMPLE_INTERVAL_SECS:-10}
 STARTUP_WAIT_SECS=${STARTUP_WAIT_SECS:-12}
 P2P_CONNECT_WAIT_SECS=${P2P_CONNECT_WAIT_SECS:-120}
 P2P_SUSTAIN_SECS=${P2P_SUSTAIN_SECS:-20}
+LOCAL_SMOKE_TOPOLOGY=${LOCAL_SMOKE_TOPOLOGY:-hub}
 STAMP=${RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)}
 RUN_ID="$STAMP"
 START_TS=$(date +%s)
@@ -210,6 +211,10 @@ write_summary(){
     [[ -n "$miner_not_started_reason" ]] && echo "- miner_not_started_reason: $miner_not_started_reason"
     echo "- final_heights: a=${ha:-0}, b=${hb:-0}, c=${hc:-0}"
     echo "- final_tips: a=${ta:-}, b=${tb:-}, c=${tc:-}"
+    echo "- local_smoke_topology: ${LOCAL_SMOKE_TOPOLOGY}"
+    echo "- bootnodes_configured_a: $(paste -sd, "$OUT_DIR/bootnodes-a.txt" 2>/dev/null || echo none)"
+    echo "- bootnodes_configured_b: $(paste -sd, "$OUT_DIR/bootnodes-b.txt" 2>/dev/null || echo none)"
+    echo "- bootnodes_configured_c: $(paste -sd, "$OUT_DIR/bootnodes-c.txt" 2>/dev/null || echo none)"
     echo "- final_peer_counts: a=${pa:-0}, b=${pb:-0}, c=${pc:-0}"
     echo "- duplicate_sync_degraded_blocker: $duplicate_sync_degraded_blocker"
     echo "- required_failures: $required_failures"
@@ -267,7 +272,10 @@ capture_p2p_failure_evidence(){
   cp "$OUT_DIR/logs/c.log" "$OUT_DIR/logs/c.log" 2>/dev/null || true
   {
     echo "# p2p gate failure diagnostics"
-    echo "- bootnode: $(cat "$OUT_DIR/bootnode.txt" 2>/dev/null || echo unknown)"
+    echo "- local_smoke_topology: ${LOCAL_SMOKE_TOPOLOGY}"
+    echo "- bootnodes_a: $(paste -sd, "$OUT_DIR/bootnodes-a.txt" 2>/dev/null || echo none)"
+    echo "- bootnodes_b: $(paste -sd, "$OUT_DIR/bootnodes-b.txt" 2>/dev/null || echo none)"
+    echo "- bootnodes_c: $(paste -sd, "$OUT_DIR/bootnodes-c.txt" 2>/dev/null || echo none)"
     echo "- command_a: $(rg -n \"launch node-a:\" "$OUT_DIR/command-log.txt" | tail -n1 | cut -d: -f2-)"
     echo "- command_b: $(rg -n \"launch node-b:\" "$OUT_DIR/command-log.txt" | tail -n1 | cut -d: -f2-)"
     echo "- command_c: $(rg -n \"launch node-c:\" "$OUT_DIR/command-log.txt" | tail -n1 | cut -d: -f2-)"
@@ -405,11 +413,17 @@ fi
 [[ -x "$MINER_BIN" ]] || { echo "FAIL missing binary: $MINER_BIN"; exit 1; }
 
 start_node(){
-  local name="$1" rpc="$2" p2p="$3" bootnode="$4"
+  local name="$1" rpc="$2" p2p="$3"
+  shift 3
+  local bootnodes=("$@")
   local data="$OUT_DIR/data-$name"
   mkdir -p "$data"
   local cmd=("$NODE_BIN" --network "private" --rpc-listen "127.0.0.1:${rpc}" --p2p-listen "/ip4/127.0.0.1/tcp/${p2p}")
-  [[ -n "$bootnode" ]] && cmd+=(--bootnode "$bootnode")
+  local bootnode
+  for bootnode in "${bootnodes[@]:-}"; do
+    [[ -z "$bootnode" ]] && continue
+    cmd+=(--bootnode "$bootnode")
+  done
   echo "launch node-$name: PULSEDAG_ROCKSDB_PATH=$data/rocksdb ${cmd[*]}"
   PULSEDAG_ROCKSDB_PATH="$data/rocksdb" "${cmd[@]}" > "$OUT_DIR/logs/${name}.log" 2>&1 &
   local pid="$!"
@@ -423,13 +437,21 @@ start_node(){
   esac
 }
 
+if [[ "$LOCAL_SMOKE_TOPOLOGY" != "hub" && "$LOCAL_SMOKE_TOPOLOGY" != "mesh" ]]; then
+  echo "FATAL: invalid LOCAL_SMOKE_TOPOLOGY=${LOCAL_SMOKE_TOPOLOGY} (supported: hub, mesh)"
+  exit 1
+fi
+
 if ! "$NODE_BIN" --help | grep -q -- '--bootnode'; then
   echo "FATAL: pulsedagd missing --bootnode support"
   "$NODE_BIN" --help || true
   exit 1
 fi
 
-start_node a "$RPC_PORT_A" "$P2P_PORT_A" ""
+printf "%s\n" "$LOCAL_SMOKE_TOPOLOGY" > "$OUT_DIR/topology-mode.txt"
+
+start_node a "$RPC_PORT_A" "$P2P_PORT_A"
+printf "none\n" > "$OUT_DIR/bootnodes-a.txt"
 for _ in $(seq 1 "$STARTUP_WAIT_SECS"); do
   if curl -fsS "http://127.0.0.1:${RPC_PORT_A}/p2p/status" -o "$OUT_DIR/endpoints/a-p2p_status.bootstrap.json"; then break; fi
   sleep 1
@@ -443,7 +465,24 @@ echo "$BOOT_A" > "$OUT_DIR/bootnode.txt"
 echo "$NODE_A_ID" > "$OUT_DIR/node-a-peer-id.txt"
 echo "$NODE_A_LISTENING" > "$OUT_DIR/node-a-listening.txt"
 start_node b "$RPC_PORT_B" "$P2P_PORT_B" "$BOOT_A"
-start_node c "$RPC_PORT_C" "$P2P_PORT_C" "$BOOT_A"
+printf "%s\n" "$BOOT_A" > "$OUT_DIR/bootnodes-b.txt"
+
+NODE_B_ID=""
+if [[ "$LOCAL_SMOKE_TOPOLOGY" == "mesh" ]]; then
+  for _ in $(seq 1 "$STARTUP_WAIT_SECS"); do
+    if curl -fsS "http://127.0.0.1:${RPC_PORT_B}/p2p/status" -o "$OUT_DIR/endpoints/b-p2p_status.bootstrap.json"; then break; fi
+    sleep 1
+  done
+  safe_curl_required "http://127.0.0.1:${RPC_PORT_B}/p2p/status" "$OUT_DIR/endpoints/b-p2p_status.bootstrap.json"
+  NODE_B_ID=$(jq -r ".data.peer_id // .data.local_node_id // empty" "$OUT_DIR/endpoints/b-p2p_status.bootstrap.json")
+  [[ -n "$NODE_B_ID" ]] || { echo "FATAL: unable to resolve node B peer id in mesh mode"; exit 1; }
+  BOOT_B="/ip4/127.0.0.1/tcp/${P2P_PORT_B}/p2p/${NODE_B_ID}"
+  start_node c "$RPC_PORT_C" "$P2P_PORT_C" "$BOOT_A" "$BOOT_B"
+  printf "%s\n%s\n" "$BOOT_A" "$BOOT_B" > "$OUT_DIR/bootnodes-c.txt"
+else
+  start_node c "$RPC_PORT_C" "$P2P_PORT_C" "$BOOT_A"
+  printf "%s\n" "$BOOT_A" > "$OUT_DIR/bootnodes-c.txt"
+fi
 sleep "$STARTUP_WAIT_SECS"
 
 peer_wait_deadline=$(( $(date +%s) + P2P_CONNECT_WAIT_SECS ))
