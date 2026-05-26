@@ -500,10 +500,12 @@ impl Config {
                         .ok_or_else(|| anyhow::anyhow!("{arg} requires a value"))?;
                 }
                 "--bootnode" | "--peer" => {
-                    self.p2p_bootstrap
-                        .push(iter.next().ok_or_else(|| {
-                            anyhow::anyhow!("--bootnode/--peer requires a value")
-                        })?);
+                    let value = iter
+                        .next()
+                        .ok_or_else(|| anyhow::anyhow!("--bootnode/--peer requires a value"))?;
+                    for entry in value.split(',').map(str::trim).filter(|v| !v.is_empty()) {
+                        self.p2p_bootstrap.push(entry.to_string());
+                    }
                     self.p2p_enabled = true;
                 }
                 _ => {}
