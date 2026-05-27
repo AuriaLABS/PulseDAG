@@ -308,7 +308,7 @@ fn dag_invariant_future_timestamp_is_rejected_without_mutation() {
             .duration_since(std::time::UNIX_EPOCH)
             .expect("system clock should be after unix epoch")
             .as_secs()
-            .saturating_add(2),
+            .saturating_add(5),
     );
     refresh_block_consensus_ids(&mut future);
 
