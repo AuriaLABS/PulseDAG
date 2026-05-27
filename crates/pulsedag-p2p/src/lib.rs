@@ -9,6 +9,7 @@ use std::time::{Duration as StdDuration, SystemTime, UNIX_EPOCH};
 
 use libp2p::futures::StreamExt;
 use libp2p::gossipsub::{self, MessageAuthenticity, ValidationMode};
+use libp2p::ping;
 use libp2p::swarm::{NetworkBehaviour, SwarmEvent};
 use libp2p::{identity, Multiaddr, PeerId, SwarmBuilder};
 use pulsedag_core::{
@@ -2796,6 +2797,7 @@ async fn run_libp2p_runtime(
 #[derive(NetworkBehaviour)]
 struct PulseBehaviour {
     gossipsub: gossipsub::Behaviour,
+    ping: ping::Behaviour,
 }
 
 fn parse_bootnode_multiaddr(input: &str) -> Option<(PeerId, Multiaddr)> {
@@ -2951,6 +2953,8 @@ async fn run_libp2p_real_runtime(
         }
     };
 
+    let ping = ping::Behaviour::new(ping::Config::new());
+
     let mut swarm = match SwarmBuilder::with_existing_identity(local_key)
         .with_tokio()
         .with_tcp(
@@ -2958,7 +2962,10 @@ async fn run_libp2p_real_runtime(
             libp2p::noise::Config::new,
             libp2p::yamux::Config::default,
         ) {
-        Ok(builder) => match builder.with_behaviour(|_| PulseBehaviour { gossipsub: gossip }) {
+        Ok(builder) => match builder.with_behaviour(|_| PulseBehaviour {
+            gossipsub: gossip,
+            ping,
+        }) {
             Ok(builder) => builder.build(),
             Err(e) => {
                 note_swarm_event(&inner, format!("swarm-init-failed:behaviour:{e}"));
@@ -3095,6 +3102,9 @@ async fn run_libp2p_real_runtime(
                     SwarmEvent::Behaviour(PulseBehaviourEvent::Gossipsub(gossipsub::Event::Message { message, .. })) => {
                         let source_peer = message.source.as_ref().map(|peer| peer.to_string());
                         dispatch_network_message(&cfg.chain_id, &message.data, source_peer.as_deref(), &inner, &inbound_tx);
+                    }
+                    SwarmEvent::Behaviour(PulseBehaviourEvent::Ping(event)) => {
+                        note_swarm_event(&inner, format!("ping:{event:?}"));
                     }
                     SwarmEvent::ConnectionEstablished { peer_id, .. } => {
                         note_swarm_event(&inner, format!("peer-connected:{peer_id}"));
