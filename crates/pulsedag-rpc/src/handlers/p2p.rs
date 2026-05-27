@@ -1148,6 +1148,8 @@ mod tests {
                 bootnode_redial_attempts: 0,
                 bootnode_redial_successes: 0,
                 bootnode_redial_failures: 0,
+                bootnode_next_redial_at: std::collections::HashMap::new(),
+                bootnode_redial_backoff_secs: std::collections::HashMap::new(),
                 last_bootnode_dial_error: None,
                 gossipsub_peer_count: 0,
                 subscribed_topics: Vec::new(),
