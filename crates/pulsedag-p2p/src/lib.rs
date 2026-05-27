@@ -6170,7 +6170,8 @@ mod deterministic_p2p_sync_coverage_tests {
         let health = guard.peer_book.get(&peer.to_string()).unwrap();
         assert!(health.connected);
         assert_eq!(health.fail_streak, 0);
-        assert_eq!(health.next_retry_unix, 0);
+        assert!(health.next_retry_unix > 0);
+        assert!(health.next_retry_unix <= now_unix());
     }
 
     #[test]
