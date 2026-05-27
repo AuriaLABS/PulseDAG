@@ -708,7 +708,12 @@ impl P2pHandle for MemoryP2pHandle {
             bootstrap_dial_failures: inner.bootstrap_dial_failures,
             bootstrap_connected_peer_ids: inner.bootstrap_connected_peer_ids.clone(),
             bootnodes_configured: inner.bootnodes_configured.clone(),
-            bootnodes_connected: inner.bootstrap_connected_peer_ids.clone(),
+            bootnodes_connected: inner
+                .bootnodes_configured
+                .iter()
+                .filter_map(|addr| parse_bootnode_multiaddr(addr).map(|(peer, _)| peer.to_string()))
+                .filter(|peer| inner.active_connections.get(peer).copied().unwrap_or(0) > 0)
+                .collect(),
             pending_bootnode_dials: inner.pending_bootnode_dials.iter().cloned().collect(),
             bootnode_redial_attempts: inner.bootnode_redial_attempts,
             bootnode_redial_successes: inner.bootnode_redial_successes,
@@ -2811,18 +2816,29 @@ fn parse_bootstrap(bootstrap: &[String]) -> Vec<(PeerId, Multiaddr)> {
         .collect()
 }
 
+fn is_configured_bootnode_peer(guard: &InnerState, peer_id: &PeerId) -> bool {
+    let peer = peer_id.to_string();
+    guard
+        .bootnodes_configured
+        .iter()
+        .any(|addr| addr.contains(&peer))
+}
+
 fn handle_connection_established(
     inner: &Arc<Mutex<InnerState>>,
     pending_bootnode_dials: &mut HashSet<PeerId>,
     peer_id: &PeerId,
 ) {
-    pending_bootnode_dials.remove(peer_id);
     if let Ok(mut guard) = inner.lock() {
-        guard.pending_bootnode_dials.remove(&peer_id.to_string());
-        guard.bootnode_next_redial_at.remove(&peer_id.to_string());
-        guard
-            .bootnode_redial_backoff_secs
-            .insert(peer_id.to_string(), 1);
+        let is_bootnode = is_configured_bootnode_peer(&guard, peer_id);
+        if is_bootnode {
+            pending_bootnode_dials.remove(peer_id);
+            guard.pending_bootnode_dials.remove(&peer_id.to_string());
+            guard.bootnode_next_redial_at.remove(&peer_id.to_string());
+            guard
+                .bootnode_redial_backoff_secs
+                .insert(peer_id.to_string(), 1);
+        }
         let peer_key = peer_id.to_string();
         let count = guard
             .active_connections
@@ -2833,10 +2849,11 @@ fn handle_connection_established(
         guard.last_connection_established_peer = Some(peer_key.clone());
         guard.last_peer_state_transition = Some(format!("{peer_key}:connected"));
         guard.last_bootnode_dial_error = None;
-        if !guard
-            .bootstrap_connected_peer_ids
-            .iter()
-            .any(|id| id == &peer_key)
+        if is_bootnode
+            && !guard
+                .bootstrap_connected_peer_ids
+                .iter()
+                .any(|id| id == &peer_key)
         {
             guard.bootstrap_connected_peer_ids.push(peer_key);
         }
@@ -2880,23 +2897,30 @@ fn handle_outgoing_connection_error(
     peer_id: &PeerId,
     error: &str,
 ) -> bool {
-    pending_bootnode_dials.remove(peer_id);
     if let Ok(mut guard) = inner.lock() {
-        guard.pending_bootnode_dials.remove(&peer_id.to_string());
-        guard.bootnode_next_redial_at.remove(&peer_id.to_string());
-        guard
-            .bootnode_redial_backoff_secs
-            .insert(peer_id.to_string(), 1);
-        guard.last_outgoing_connection_error_peer = Some(peer_id.to_string());
-        guard.last_dial_error = Some(error.to_string());
-        if guard
-            .bootnodes_configured
-            .iter()
-            .any(|addr| addr.contains(&peer_id.to_string()))
-        {
+        let is_bootnode = is_configured_bootnode_peer(&guard, peer_id);
+        if is_bootnode {
+            pending_bootnode_dials.remove(peer_id);
+            guard.pending_bootnode_dials.remove(&peer_id.to_string());
+            let now = now_unix();
+            let current = guard
+                .bootnode_redial_backoff_secs
+                .get(&peer_id.to_string())
+                .copied()
+                .unwrap_or(1)
+                .max(1);
+            let next = (current.saturating_mul(2)).min(10);
+            guard
+                .bootnode_next_redial_at
+                .insert(peer_id.to_string(), now.saturating_add(current));
+            guard
+                .bootnode_redial_backoff_secs
+                .insert(peer_id.to_string(), next);
             guard.bootnode_redial_failures = guard.bootnode_redial_failures.saturating_add(1);
             guard.last_bootnode_dial_error = Some(error.to_string());
         }
+        guard.last_outgoing_connection_error_peer = Some(peer_id.to_string());
+        guard.last_dial_error = Some(error.to_string());
     }
     inner
         .lock()
@@ -3418,7 +3442,12 @@ impl P2pHandle for Libp2pHandle {
             bootstrap_dial_failures: inner.bootstrap_dial_failures,
             bootstrap_connected_peer_ids: inner.bootstrap_connected_peer_ids.clone(),
             bootnodes_configured: inner.bootnodes_configured.clone(),
-            bootnodes_connected: inner.bootstrap_connected_peer_ids.clone(),
+            bootnodes_connected: inner
+                .bootnodes_configured
+                .iter()
+                .filter_map(|addr| parse_bootnode_multiaddr(addr).map(|(peer, _)| peer.to_string()))
+                .filter(|peer| inner.active_connections.get(peer).copied().unwrap_or(0) > 0)
+                .collect(),
             pending_bootnode_dials: inner.pending_bootnode_dials.iter().cloned().collect(),
             bootnode_redial_attempts: inner.bootnode_redial_attempts,
             bootnode_redial_successes: inner.bootnode_redial_successes,
@@ -6045,11 +6074,16 @@ mod deterministic_p2p_sync_coverage_tests {
     fn connection_established_tracks_active_peer_and_pending_dial() {
         let inner = Arc::new(Mutex::new(InnerState {
             mode: P2P_MODE_LIBP2P_REAL.into(),
+            bootnodes_configured: vec![],
             ..InnerState::default()
         }));
         let mut pending = HashSet::new();
         let key = identity::Keypair::generate_ed25519();
         let peer = PeerId::from(key.public());
+        {
+            let mut guard = inner.lock().unwrap();
+            guard.bootnodes_configured = vec![format!("/ip4/127.0.0.1/tcp/1/p2p/{peer}")];
+        }
         pending.insert(peer);
         handle_connection_established(&inner, &mut pending, &peer);
         let guard = inner.lock().unwrap();
@@ -6189,6 +6223,7 @@ mod deterministic_p2p_sync_coverage_tests {
             .bootnode_next_redial_at
             .insert(peer.to_string(), now_unix().saturating_add(10));
         state.pending_bootnode_dials.insert(peer.to_string());
+        state.bootnodes_configured = vec![format!("/ip4/127.0.0.1/tcp/1/p2p/{peer}")];
         let inner = Arc::new(Mutex::new(state));
         let mut pending = HashSet::new();
         pending.insert(peer);
@@ -6207,6 +6242,32 @@ mod deterministic_p2p_sync_coverage_tests {
             .bootnode_next_redial_at
             .contains_key(&peer.to_string()));
         assert!(!guard.pending_bootnode_dials.contains(&peer.to_string()));
+    }
+
+    #[test]
+    fn non_bootnode_connection_established_does_not_mutate_bootnode_backoff_state() {
+        let key = identity::Keypair::generate_ed25519();
+        let peer = PeerId::from(key.public());
+        let mut state = InnerState {
+            mode: P2P_MODE_LIBP2P_REAL.into(),
+            ..InnerState::default()
+        };
+        state.bootnodes_configured = vec![];
+        let inner = Arc::new(Mutex::new(state));
+        let mut pending = HashSet::new();
+        pending.insert(peer);
+
+        handle_connection_established(&inner, &mut pending, &peer);
+
+        let guard = inner.lock().unwrap();
+        assert!(pending.contains(&peer));
+        assert!(!guard.pending_bootnode_dials.contains(&peer.to_string()));
+        assert!(!guard
+            .bootnode_redial_backoff_secs
+            .contains_key(&peer.to_string()));
+        assert!(!guard
+            .bootnode_next_redial_at
+            .contains_key(&peer.to_string()));
     }
     #[test]
     fn is_valid_peer_id_rejects_multiaddr_values() {
