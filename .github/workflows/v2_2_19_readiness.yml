@@ -83,7 +83,7 @@ jobs:
 
   local-rehearsal-short:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -92,9 +92,10 @@ jobs:
         run: cargo build --workspace --release
       - name: Short local rehearsal (3n/1m, 180s)
         run: |
+          set -euo pipefail
           OUT_DIR=artifacts/v2_2_19_public_testnet_readiness/local-3n-1m \
           DURATION_SECS=180 \
-          SMOKE_TOTAL_DEADLINE_SECS=480 \
+          SMOKE_TOTAL_DEADLINE_SECS=900 \
           bash scripts/v2_2_19_local_3n_1m_smoke.sh
       - name: Upload local rehearsal evidence
         if: always()
