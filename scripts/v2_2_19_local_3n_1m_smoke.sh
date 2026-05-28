@@ -486,24 +486,26 @@ echo "$NODE_A_LISTENING" > "$OUT_DIR/node-a-listening.txt"
 start_node b "$RPC_PORT_B" "$P2P_PORT_B" "$BOOT_A"
 printf "%s\n" "$BOOT_A" > "$OUT_DIR/bootnodes-b.txt"
 
-wait_for_rpc_health_gate(){
+wait_for_rpc_liveness_gate(){
   local deadline now ok_a ok_b ok_c
   deadline=$(( $(date +%s) + STARTUP_WAIT_SECS + 30 ))
   while true; do
     check_internal_deadline
-    safe_curl_optional "http://127.0.0.1:${RPC_PORT_A}/health" "$OUT_DIR/endpoints/a-health.pre_p2p_gate.json" || true
-    safe_curl_optional "http://127.0.0.1:${RPC_PORT_B}/health" "$OUT_DIR/endpoints/b-health.pre_p2p_gate.json" || true
-    safe_curl_optional "http://127.0.0.1:${RPC_PORT_C}/health" "$OUT_DIR/endpoints/c-health.pre_p2p_gate.json" || true
-    ok_a=$(jq -r '(.ok // .data.ok // false)' "$OUT_DIR/endpoints/a-health.pre_p2p_gate.json" 2>/dev/null || echo false)
-    ok_b=$(jq -r '(.ok // .data.ok // false)' "$OUT_DIR/endpoints/b-health.pre_p2p_gate.json" 2>/dev/null || echo false)
-    ok_c=$(jq -r '(.ok // .data.ok // false)' "$OUT_DIR/endpoints/c-health.pre_p2p_gate.json" 2>/dev/null || echo false)
+    safe_curl_optional "http://127.0.0.1:${RPC_PORT_A}/api/v1/version" "$OUT_DIR/endpoints/a-version.pre_p2p_gate.json" || true
+    safe_curl_optional "http://127.0.0.1:${RPC_PORT_B}/api/v1/version" "$OUT_DIR/endpoints/b-version.pre_p2p_gate.json" || true
+    safe_curl_optional "http://127.0.0.1:${RPC_PORT_C}/api/v1/version" "$OUT_DIR/endpoints/c-version.pre_p2p_gate.json" || true
+    ok_a=$(jq -r '(.ok // .data.ok // false)' "$OUT_DIR/endpoints/a-version.pre_p2p_gate.json" 2>/dev/null || echo false)
+    ok_b=$(jq -r '(.ok // .data.ok // false)' "$OUT_DIR/endpoints/b-version.pre_p2p_gate.json" 2>/dev/null || echo false)
+    ok_c=$(jq -r '(.ok // .data.ok // false)' "$OUT_DIR/endpoints/c-version.pre_p2p_gate.json" 2>/dev/null || echo false)
     if [[ "$ok_a" == "true" && "$ok_b" == "true" && "$ok_c" == "true" ]]; then
-      echo "rpc health gate passed for nodes a,b,c"
+      echo "rpc liveness gate passed for nodes a,b,c"
       return 0
     fi
     now=$(date +%s)
     if (( now >= deadline )); then
-      record_fail "rpc health gate failed before p2p gate (a=${ok_a}, b=${ok_b}, c=${ok_c})"
+      record_fail "rpc liveness gate failed before p2p gate (a=${ok_a}, b=${ok_b}, c=${ok_c})"
+      echo "rpc liveness gate failure: dumping node log tails"
+      tail -n 200 "$OUT_DIR/logs/a.log" "$OUT_DIR/logs/b.log" "$OUT_DIR/logs/c.log" || true
       return 1
     fi
     sleep 1
@@ -557,7 +559,7 @@ else
   printf "%s\n" "$BOOT_A" > "$OUT_DIR/bootnodes-c.txt"
 fi
 sleep "$STARTUP_WAIT_SECS"
-wait_for_rpc_health_gate || { write_summary; package_evidence; exit 1; }
+wait_for_rpc_liveness_gate || { write_summary; package_evidence; exit 1; }
 
 peer_wait_deadline=$(( $(date +%s) + P2P_CONNECT_WAIT_SECS ))
 peers_total=0
