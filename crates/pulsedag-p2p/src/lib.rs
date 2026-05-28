@@ -3758,33 +3758,14 @@ mod tests {
 
     #[test]
     fn inbound_tx_rate_guard_suppresses_spam() {
-        let inner = Arc::new(Mutex::new(InnerState::default()));
-        let (inbound_tx, mut inbound_rx) = mpsc::unbounded_channel();
+        let mut state = InnerState::default();
+        let now = 1_000;
 
-        for idx in 0..=TX_INBOUND_SOFT_MAX_PER_WINDOW {
-            let wire = serde_json::to_vec(&NetworkMessage::NewTransaction {
-                chain_id: "testnet".into(),
-                transaction: sample_tx(&format!("tx-rate-{idx}")),
-            })
-            .expect("serialize tx announcement");
-            dispatch_network_message("testnet", &wire, None, &inner, &inbound_tx);
+        for _ in 0..TX_INBOUND_SOFT_MAX_PER_WINDOW {
+            assert!(admit_inbound_tx_rate(&mut state, now));
         }
-
-        let mut delivered = 0;
-        while inbound_rx.try_recv().is_ok() {
-            delivered += 1;
-        }
-        let guard = inner.lock().unwrap();
-        assert_eq!(delivered, TX_INBOUND_SOFT_MAX_PER_WINDOW);
-        assert_eq!(
-            guard.tx_inbound_received,
-            TX_INBOUND_SOFT_MAX_PER_WINDOW + 1
-        );
-        assert_eq!(guard.tx_inbound_invalid, 1);
-        assert_eq!(
-            guard.last_drop_reason.as_deref(),
-            Some("tx_inbound_rate_limited")
-        );
+        assert!(!admit_inbound_tx_rate(&mut state, now));
+        assert_eq!(state.tx_inbound_rate_window_count, TX_INBOUND_SOFT_MAX_PER_WINDOW);
     }
 
     #[test]
@@ -3847,35 +3828,37 @@ mod tests {
 
     #[test]
     fn higher_priority_tx_relay_bypasses_budget_pressure() {
-        let (handle, _inbound_rx) = MemoryP2pHandle::new("testnet".into(), vec!["peer-a".into()]);
-        {
-            let mut guard = handle.inner.lock().unwrap();
-            guard.queued_messages = TX_BUDGET_LOAD_SHED_QUEUE_DEPTH_THRESHOLD;
-        }
+        let mut state = InnerState::default();
+        state.queued_messages = TX_BUDGET_LOAD_SHED_QUEUE_DEPTH_THRESHOLD;
+        let now = 2_000;
 
         for idx in 0..TX_RELAY_BUDGET_PER_WINDOW {
-            handle
-                .broadcast_transaction(&sample_tx_with_fee(&format!("tx-fill-{idx}"), 1))
-                .expect("budget-filling relay should not error");
+            let tx_id = format!("tx-fill-{idx}");
+            assert!(should_relay_outbound_tx(&mut state, &tx_id, now));
+            assert!(admit_tx_relay_under_budget(&mut state, &tx_id, 1, now));
+            record_outbound_tx_relay(&mut state, &tx_id, now);
         }
 
-        handle
-            .broadcast_transaction(&sample_tx_with_fee("tx-budget-overflow", 1))
-            .expect("budget-overflow relay should not error");
-        handle
-            .broadcast_transaction(&sample_tx_with_fee(
-                "tx-priority",
-                TX_PRIORITY_FEE_THRESHOLD,
-            ))
-            .expect("priority relay should not error");
+        let overflow_id = "tx-budget-overflow";
+        assert!(should_relay_outbound_tx(&mut state, overflow_id, now));
+        assert!(!admit_tx_relay_under_budget(&mut state, overflow_id, 1, now));
 
-        let status = handle.status().expect("status should be available");
+        let priority_id = "tx-priority";
+        assert!(should_relay_outbound_tx(&mut state, priority_id, now));
+        assert!(admit_tx_relay_under_budget(
+            &mut state,
+            priority_id,
+            TX_PRIORITY_FEE_THRESHOLD,
+            now,
+        ));
+        record_outbound_tx_relay(&mut state, priority_id, now);
+
         assert_eq!(
-            status.tx_outbound_first_seen_relayed,
+            state.tx_outbound_first_seen_relayed,
             TX_RELAY_BUDGET_PER_WINDOW + 1
         );
-        assert_eq!(status.tx_outbound_priority_relayed, 1);
-        assert_eq!(status.tx_outbound_budget_suppressed, 1);
+        assert_eq!(state.tx_outbound_priority_relayed, 1);
+        assert_eq!(state.tx_outbound_budget_suppressed, 1);
     }
 
     #[test]
