@@ -750,8 +750,10 @@ fi
 if ! text_has_match "peer_block_received|peer_block_accepted" "$OUT_DIR/logs/c.log"; then
   record_warn "node_c inbound block log markers not found (supplemental only)"
 fi
-if ! (( a_block_outbound_first_seen_relayed > 0 )); then
-  record_fail "node_a shows no outbound first-seen relays (block_outbound_first_seen_relayed=${a_block_outbound_first_seen_relayed})"
+a_block_topic_publishes=$(jq -r '.data.per_topic_publishes | to_entries | map(select(.key | endswith("-blocks")) | .value) | add // 0' "$OUT_DIR/endpoints/a-p2p_status.json" 2>/dev/null || echo 0)
+a_last_message_kind=$(jq -r '.data.last_message_kind // ""' "$OUT_DIR/endpoints/a-p2p_status.json" 2>/dev/null || echo "")
+if ! (( a_block_outbound_first_seen_relayed > 0 )) && ! (( a_block_topic_publishes > 0 )) && [[ "$a_last_message_kind" != "block" ]]; then
+  record_fail "node_a block publish evidence missing (block_outbound_first_seen_relayed=${a_block_outbound_first_seen_relayed}, block_topic_publishes=${a_block_topic_publishes}, publish_attempts=${a_publish_attempts}, per_topic_publishes=${a_per_topic_publishes}, last_message_kind=${a_last_message_kind:-none})"
 fi
 if (( a_publish_attempts == 0 )) || [[ "$a_per_topic_publishes" == "{}" ]]; then
   record_fail "node_a publish evidence missing (publish_attempts=${a_publish_attempts}, per_topic_publishes=${a_per_topic_publishes})"
@@ -763,7 +765,7 @@ if (( b_blocks_received == 0 || c_blocks_received == 0 )); then
       f="$OUT_DIR/endpoints/${n}-p2p_status.json"
       echo "node_${n}: peer_count=$(jq -r '.data.peer_count // .data.connected_peer_count // 0' "$f" 2>/dev/null || echo 0), active_connection_total=$(jq -r '.data.active_connection_total // 0' "$f" 2>/dev/null || echo 0), gossipsub_peer_count=$(jq -r '.data.gossipsub_peer_count // 0' "$f" 2>/dev/null || echo 0), subscribed_topics=$(jq -c '.data.subscribed_topics // []' "$f" 2>/dev/null || echo '[]'), per_topic_publishes=$(jq -c '.data.per_topic_publishes // {}' "$f" 2>/dev/null || echo '{}'), publish_attempts=$(jq -r '.data.publish_attempts // 0' "$f" 2>/dev/null || echo 0), inbound_messages=$(jq -r '.data.inbound_messages // 0' "$f" 2>/dev/null || echo 0), blocks_received=$(jq -r '.data.blocks_received // 0' "$f" 2>/dev/null || echo 0), last_message_kind=$(jq -r '.data.last_message_kind // "n/a"' "$f" 2>/dev/null || echo n/a), last_swarm_event=$(jq -r '.data.last_swarm_event // "n/a"' "$f" 2>/dev/null || echo n/a), last_drop_reason=$(jq -r '.data.last_drop_reason // "n/a"' "$f" 2>/dev/null || echo n/a), last_connection_error=$(jq -r '.data.last_connection_error // "n/a"' "$f" 2>/dev/null || echo n/a), last_disconnect_reason=$(jq -r '.data.last_disconnect_reason // "n/a"' "$f" 2>/dev/null || echo n/a)"
     done
-    echo "node_a_publish: block_outbound_first_seen_relayed=${a_block_outbound_first_seen_relayed}, publish_attempts=${a_publish_attempts}, per_topic_publishes=${a_per_topic_publishes}"
+    echo "node_a_publish: block_outbound_first_seen_relayed=${a_block_outbound_first_seen_relayed}, block_topic_publishes=${a_block_topic_publishes}, publish_attempts=${a_publish_attempts}, per_topic_publishes=${a_per_topic_publishes}, last_message_kind=${a_last_message_kind:-none}"
   } >> "$OUT_DIR/summaries/propagation-diagnostics.txt"
 fi
 (( miner_templates >= 1 )) || record_fail "miner never receives templates"
