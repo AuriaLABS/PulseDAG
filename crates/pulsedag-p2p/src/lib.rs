@@ -3765,7 +3765,10 @@ mod tests {
             assert!(admit_inbound_tx_rate(&mut state, now));
         }
         assert!(!admit_inbound_tx_rate(&mut state, now));
-        assert_eq!(state.tx_inbound_rate_window_count, TX_INBOUND_SOFT_MAX_PER_WINDOW);
+        assert_eq!(
+            state.tx_inbound_rate_window_count,
+            TX_INBOUND_SOFT_MAX_PER_WINDOW
+        );
     }
 
     #[test]
@@ -3841,7 +3844,12 @@ mod tests {
 
         let overflow_id = "tx-budget-overflow";
         assert!(should_relay_outbound_tx(&mut state, overflow_id, now));
-        assert!(!admit_tx_relay_under_budget(&mut state, overflow_id, 1, now));
+        assert!(!admit_tx_relay_under_budget(
+            &mut state,
+            overflow_id,
+            1,
+            now
+        ));
 
         let priority_id = "tx-priority";
         assert!(should_relay_outbound_tx(&mut state, priority_id, now));
