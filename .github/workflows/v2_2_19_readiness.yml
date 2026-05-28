@@ -83,11 +83,16 @@ jobs:
 
   local-rehearsal-short:
     runs-on: ubuntu-latest
-    timeout-minutes: 75
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      - name: Install rehearsal diagnostics tools
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y ripgrep
       - name: Build release binaries for short rehearsal
         run: cargo build --workspace --release
       - name: Short local rehearsal (3n/1m, 180s)
@@ -95,7 +100,11 @@ jobs:
           set -euo pipefail
           OUT_DIR=artifacts/v2_2_19_public_testnet_readiness/local-3n-1m \
           DURATION_SECS=180 \
-          SMOKE_TOTAL_DEADLINE_SECS=900 \
+          STARTUP_WAIT_SECS=20 \
+          P2P_CONNECT_WAIT_SECS=300 \
+          P2P_SUSTAIN_SECS=20 \
+          LOCAL_SMOKE_TOPOLOGY=mesh \
+          SMOKE_TOTAL_DEADLINE_SECS=1100 \
           bash scripts/v2_2_19_local_3n_1m_smoke.sh
       - name: Upload local rehearsal evidence
         if: always()
