@@ -339,6 +339,7 @@ package_evidence(){
   cp "$OUT_DIR/bootnode.txt" "$OUT_DIR_ROOT/bootnode.txt" 2>/dev/null || true
   printf "%s\n" "$OUT_DIR" > "$OUT_DIR_ROOT/current-run-dir.txt"
   cp "$OUT_DIR/samples/height-samples.csv" "$OUT_DIR/final-convergence-table.txt" 2>/dev/null || true
+  touch "$OUT_DIR/final-convergence-table.txt"
   local tar_tmp
   tar_tmp=$(mktemp -p /tmp evidence.XXXXXX.tar.gz)
   (cd "$OUT_DIR" && tar -czf "$tar_tmp" --exclude='evidence.tar.gz' --exclude='evidence.tar.gz.sha256' endpoints logs miners nodes samples summaries evidence-summary.md command-log.txt process-pids.txt final-convergence-table.txt)
@@ -459,7 +460,7 @@ if [[ "$LOCAL_SMOKE_TOPOLOGY" != "hub" && "$LOCAL_SMOKE_TOPOLOGY" != "mesh" ]]; 
   exit 1
 fi
 
-if ! "$NODE_BIN" --help | rg -q -- "--bootnode"; then
+if ! "$NODE_BIN" --help | grep -q -- "--bootnode"; then
   echo "FATAL: pulsedagd missing --bootnode support"
   "$NODE_BIN" --help || true
   exit 1
