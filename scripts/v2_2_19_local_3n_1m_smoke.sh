@@ -155,7 +155,7 @@ compute_summary_metrics(){
     [[ -f "$OUT_DIR/endpoints/${n}-health.json" ]] && [[ "$(jq -r '(.ok // .data.ok // false)' "$OUT_DIR/endpoints/${n}-health.json" 2>/dev/null)" == "true" ]] && ((healthy_nodes+=1))
     [[ -f "$OUT_DIR/endpoints/${n}-readiness.json" ]] \
       && [[ "$(jq -r '(.data.ready_for_release // .ready_for_release // false)' "$OUT_DIR/endpoints/${n}-readiness.json" 2>/dev/null)" == "true" ]] \
-      && [[ "$(jq -r '(.data.p2p_ready_for_private_rehearsal // .p2p_ready_for_private_rehearsal // false)' "$OUT_DIR/endpoints/${n}-readiness.json" 2>/dev/null)" == "true" ]] \
+      && [[ "$(jq -r '((.data.node_ready // .node_ready // false) and ((.data.private_testnet_ready // .private_testnet_ready // .data.p2p_ready_for_private_rehearsal // .p2p_ready_for_private_rehearsal // false)))' "$OUT_DIR/endpoints/${n}-readiness.json" 2>/dev/null)" == "true" ]] \
       && ((ready_nodes+=1))
     if [[ -f "$OUT_DIR/endpoints/${n}-p2p_status.json" ]]; then
       peers_total=$((peers_total + $(jq -r '(.data.peer_count // .data.connected_peer_count // 0)' "$OUT_DIR/endpoints/${n}-p2p_status.json" 2>/dev/null || echo 0)))
