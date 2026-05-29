@@ -108,8 +108,11 @@ jobs:
       - name: Short local rehearsal (3n/1m, 180s)
         run: |
           set -euo pipefail
-          timeout --foreground --kill-after=30s 30m bash -c '
-            OUT_DIR=artifacts/v2_2_19_public_testnet_readiness/local-3n-1m \
+          RUN_ROOT=artifacts/v2_2_19_public_testnet_readiness/local-3n-1m
+          mkdir -p "$RUN_ROOT"
+
+          (
+            OUT_DIR="$RUN_ROOT" \
             DURATION_SECS=180 \
             STARTUP_WAIT_SECS=20 \
             P2P_CONNECT_WAIT_SECS=240 \
@@ -117,7 +120,41 @@ jobs:
             LOCAL_SMOKE_TOPOLOGY=mesh \
             SMOKE_TOTAL_DEADLINE_SECS=900 \
             bash scripts/v2_2_19_local_3n_1m_smoke.sh
-          '
+          ) &
+          smoke_pid=$!
+          deadline=$((SECONDS + 1800))
+
+          while kill -0 "$smoke_pid" 2>/dev/null; do
+            run_dir="$(cat "$RUN_ROOT/current-run-dir.txt" 2>/dev/null || true)"
+            if [[ -n "$run_dir" ]]; then
+              summary="$run_dir/evidence-summary.md"
+              tarball="$run_dir/evidence.tar.gz"
+              shasum="$run_dir/evidence.tar.gz.sha256"
+              if [[ -f "$summary" && -s "$tarball" && -s "$shasum" ]] \
+                && grep -q '^- result: PASS$' "$summary" \
+                && grep -q '^- required_failures: 0$' "$summary" \
+                && grep -q '^- script_completed: 1$' "$summary"; then
+                echo "PASS local smoke evidence detected; stopping lingering rehearsal process"
+                kill "$smoke_pid" 2>/dev/null || true
+                sleep 2
+                kill -9 "$smoke_pid" 2>/dev/null || true
+                wait "$smoke_pid" 2>/dev/null || true
+                exit 0
+              fi
+            fi
+
+            if (( SECONDS >= deadline )); then
+              echo "FAIL: local rehearsal wrapper deadline exceeded"
+              kill "$smoke_pid" 2>/dev/null || true
+              sleep 2
+              kill -9 "$smoke_pid" 2>/dev/null || true
+              wait "$smoke_pid" 2>/dev/null || true
+              exit 124
+            fi
+            sleep 5
+          done
+
+          wait "$smoke_pid"
       - name: Upload local rehearsal evidence
         if: always()
         uses: actions/upload-artifact@v4
