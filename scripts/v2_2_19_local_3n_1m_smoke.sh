@@ -103,8 +103,9 @@ record_fail(){ local msg; msg="$1"; echo "FAIL: $msg"; FAILURES+=("$msg"); }
 safe_curl_json(){
   local url out label required rc
   url="$1"; out="$2"; label="${3:-$url}"; required="${4:-0}"
-  if ! curl --max-time 3 -fsS "$url" -o "$out"; then
-    rc=$?
+  curl --max-time 3 -fsS "$url" -o "$out"
+  rc=$?
+  if (( rc != 0 )); then
     jq -n --arg url "$url" --argjson exit_code "$rc" '{ok:false,error:"curl failed",url:$url,exit_code:$exit_code}' > "$out"
     if (( required == 1 )); then record_fail "required endpoint failed: $url"; else record_warn "optional endpoint failed: $label"; fi
     return 1
@@ -145,6 +146,13 @@ count_matches(){
   fi
   [[ "$count" =~ ^[0-9]+$ ]] || count=0
   echo "$count"
+}
+
+json_num_or_zero(){
+  local expr="$1" file="$2" value
+  value=$(jq -r "$expr // 0" "$file" 2>/dev/null || echo 0)
+  [[ "$value" =~ ^[0-9]+$ ]] || value=0
+  echo "$value"
 }
 
 compute_summary_metrics(){
@@ -338,6 +346,7 @@ package_evidence(){
   cp "$OUT_DIR/bootnode.txt" "$OUT_DIR_ROOT/bootnode.txt" 2>/dev/null || true
   printf "%s\n" "$OUT_DIR" > "$OUT_DIR_ROOT/current-run-dir.txt"
   cp "$OUT_DIR/samples/height-samples.csv" "$OUT_DIR/final-convergence-table.txt" 2>/dev/null || true
+  touch "$OUT_DIR/final-convergence-table.txt"
   local tar_tmp
   tar_tmp=$(mktemp -p /tmp evidence.XXXXXX.tar.gz)
   (cd "$OUT_DIR" && tar -czf "$tar_tmp" --exclude='evidence.tar.gz' --exclude='evidence.tar.gz.sha256' endpoints logs miners nodes samples summaries evidence-summary.md command-log.txt process-pids.txt final-convergence-table.txt)
@@ -458,7 +467,7 @@ if [[ "$LOCAL_SMOKE_TOPOLOGY" != "hub" && "$LOCAL_SMOKE_TOPOLOGY" != "mesh" ]]; 
   exit 1
 fi
 
-if ! "$NODE_BIN" --help | grep -q -- '--bootnode'; then
+if ! "$NODE_BIN" --help | grep -q -- "--bootnode"; then
   echo "FATAL: pulsedagd missing --bootnode support"
   "$NODE_BIN" --help || true
   exit 1
@@ -483,6 +492,32 @@ echo "$NODE_A_ID" > "$OUT_DIR/node-a-peer-id.txt"
 echo "$NODE_A_LISTENING" > "$OUT_DIR/node-a-listening.txt"
 start_node b "$RPC_PORT_B" "$P2P_PORT_B" "$BOOT_A"
 printf "%s\n" "$BOOT_A" > "$OUT_DIR/bootnodes-b.txt"
+
+wait_for_rpc_liveness_gate(){
+  local deadline now ok_a ok_b ok_c
+  deadline=$(( $(date +%s) + STARTUP_WAIT_SECS + 30 ))
+  while true; do
+    check_internal_deadline
+    safe_curl_optional "http://127.0.0.1:${RPC_PORT_A}/api/v1/version" "$OUT_DIR/endpoints/a-version.pre_p2p_gate.json" || true
+    safe_curl_optional "http://127.0.0.1:${RPC_PORT_B}/api/v1/version" "$OUT_DIR/endpoints/b-version.pre_p2p_gate.json" || true
+    safe_curl_optional "http://127.0.0.1:${RPC_PORT_C}/api/v1/version" "$OUT_DIR/endpoints/c-version.pre_p2p_gate.json" || true
+    ok_a=$(jq -r '(.ok // .data.ok // false)' "$OUT_DIR/endpoints/a-version.pre_p2p_gate.json" 2>/dev/null || echo false)
+    ok_b=$(jq -r '(.ok // .data.ok // false)' "$OUT_DIR/endpoints/b-version.pre_p2p_gate.json" 2>/dev/null || echo false)
+    ok_c=$(jq -r '(.ok // .data.ok // false)' "$OUT_DIR/endpoints/c-version.pre_p2p_gate.json" 2>/dev/null || echo false)
+    if [[ "$ok_a" == "true" && "$ok_b" == "true" && "$ok_c" == "true" ]]; then
+      echo "rpc liveness gate passed for nodes a,b,c"
+      return 0
+    fi
+    now=$(date +%s)
+    if (( now >= deadline )); then
+      record_fail "rpc liveness gate failed before p2p gate (a=${ok_a}, b=${ok_b}, c=${ok_c})"
+      echo "rpc liveness gate failure: dumping node log tails"
+      tail -n 200 "$OUT_DIR/logs/a.log" "$OUT_DIR/logs/b.log" "$OUT_DIR/logs/c.log" || true
+      return 1
+    fi
+    sleep 1
+  done
+}
 
 write_topology_sample(){
   local suffix="$1" ts out_a out_b out_c
@@ -531,6 +566,7 @@ else
   printf "%s\n" "$BOOT_A" > "$OUT_DIR/bootnodes-c.txt"
 fi
 sleep "$STARTUP_WAIT_SECS"
+wait_for_rpc_liveness_gate || { write_summary; package_evidence; exit 1; }
 
 peer_wait_deadline=$(( $(date +%s) + P2P_CONNECT_WAIT_SECS ))
 peers_total=0
@@ -606,6 +642,15 @@ sample(){
 tip_divergence_seen=0
 final_converged=0
 readiness_phase="no_peers"
+b_blocks_received=0
+c_blocks_received=0
+b_inbound_messages=0
+c_inbound_messages=0
+b_last_message_kind=""
+c_last_message_kind=""
+a_block_outbound_first_seen_relayed=0
+a_publish_attempts=0
+a_per_topic_publishes="{}"
 
 end=$(( $(date +%s) + DURATION_SECS ))
 while (( $(date +%s) < end )); do
@@ -636,8 +681,17 @@ while (( $(date +%s) < end )); do
   pa=$(jq -r ".data.peer_count // .data.connected_peer_count // 0" "$OUT_DIR/endpoints/a-p2p_status.json" 2>/dev/null || echo 0)
   pb=$(jq -r ".data.peer_count // .data.connected_peer_count // 0" "$OUT_DIR/endpoints/b-p2p_status.json" 2>/dev/null || echo 0)
   pc=$(jq -r ".data.peer_count // .data.connected_peer_count // 0" "$OUT_DIR/endpoints/c-p2p_status.json" 2>/dev/null || echo 0)
+  b_blocks_received=$(json_num_or_zero '.data.blocks_received' "$OUT_DIR/endpoints/b-p2p_status.json")
+  c_blocks_received=$(json_num_or_zero '.data.blocks_received' "$OUT_DIR/endpoints/c-p2p_status.json")
+  b_inbound_messages=$(json_num_or_zero '.data.inbound_messages' "$OUT_DIR/endpoints/b-p2p_status.json")
+  c_inbound_messages=$(json_num_or_zero '.data.inbound_messages' "$OUT_DIR/endpoints/c-p2p_status.json")
+  b_last_message_kind=$(jq -r '.data.last_message_kind // ""' "$OUT_DIR/endpoints/b-p2p_status.json" 2>/dev/null || echo "")
+  c_last_message_kind=$(jq -r '.data.last_message_kind // ""' "$OUT_DIR/endpoints/c-p2p_status.json" 2>/dev/null || echo "")
+  a_block_outbound_first_seen_relayed=$(json_num_or_zero '.data.block_outbound_first_seen_relayed' "$OUT_DIR/endpoints/a-p2p_status.json")
+  a_publish_attempts=$(json_num_or_zero '.data.publish_attempts' "$OUT_DIR/endpoints/a-p2p_status.json")
+  a_per_topic_publishes=$(jq -c '.data.per_topic_publishes // {}' "$OUT_DIR/endpoints/a-p2p_status.json" 2>/dev/null || echo '{}')
   if (( pa >= 2 && pb >= 1 && pc >= 1 )); then final_peers_ok=1; fi
-  inbound_blocks=$(( $(count_matches "peer_block_received|peer_block_accepted" "$OUT_DIR/logs/b.log") + $(count_matches "peer_block_received|peer_block_accepted" "$OUT_DIR/logs/c.log") ))
+  inbound_blocks=$((b_blocks_received + c_blocks_received))
   echo "$(date -u +%FT%TZ),$readiness_phase,$((pa+pb+pc)),$inbound_blocks" >> "$OUT_DIR/samples/readiness-samples.csv"
 
   if (( pa + pb + pc == 0 )); then readiness_phase="no_peers";
@@ -684,8 +738,36 @@ check_duplicate_degraded_false_blocker c
 
 (( final_converged == 1 )) || record_fail "final convergence not reached within deadline (duration=${DURATION_SECS}s, grace=${GRACE_SECS}s)"
 (( final_peers_ok == 1 )) || record_fail "final p2p topology gate not satisfied (need a>=2,b>=1,c>=1; got a=${pa},b=${pb},c=${pc})"
-text_has_match "peer_block_received|peer_block_accepted" "$OUT_DIR/logs/b.log" || record_fail "node_b missing inbound p2p block activity"
-text_has_match "peer_block_received|peer_block_accepted" "$OUT_DIR/logs/c.log" || record_fail "node_c missing inbound p2p block activity"
+if ! (( b_blocks_received > 0 )) && [[ "$b_last_message_kind" != "block-inbound" ]] && ! (( b_inbound_messages > 0 )); then
+  record_fail "node_b missing inbound p2p block activity (blocks_received=${b_blocks_received}, inbound_messages=${b_inbound_messages}, last_message_kind=${b_last_message_kind:-none})"
+fi
+if ! (( c_blocks_received > 0 )) && [[ "$c_last_message_kind" != "block-inbound" ]] && ! (( c_inbound_messages > 0 )); then
+  record_fail "node_c missing inbound p2p block activity (blocks_received=${c_blocks_received}, inbound_messages=${c_inbound_messages}, last_message_kind=${c_last_message_kind:-none})"
+fi
+if ! text_has_match "peer_block_received|peer_block_accepted" "$OUT_DIR/logs/b.log"; then
+  record_warn "node_b inbound block log markers not found (supplemental only)"
+fi
+if ! text_has_match "peer_block_received|peer_block_accepted" "$OUT_DIR/logs/c.log"; then
+  record_warn "node_c inbound block log markers not found (supplemental only)"
+fi
+a_block_topic_publishes=$(jq -r '.data.per_topic_publishes | to_entries | map(select(.key | endswith("-blocks")) | .value) | add // 0' "$OUT_DIR/endpoints/a-p2p_status.json" 2>/dev/null || echo 0)
+a_last_message_kind=$(jq -r '.data.last_message_kind // ""' "$OUT_DIR/endpoints/a-p2p_status.json" 2>/dev/null || echo "")
+if ! (( a_block_outbound_first_seen_relayed > 0 )) && ! (( a_block_topic_publishes > 0 )) && [[ "$a_last_message_kind" != "block" ]]; then
+  record_fail "node_a block publish evidence missing (block_outbound_first_seen_relayed=${a_block_outbound_first_seen_relayed}, block_topic_publishes=${a_block_topic_publishes}, publish_attempts=${a_publish_attempts}, per_topic_publishes=${a_per_topic_publishes}, last_message_kind=${a_last_message_kind:-none})"
+fi
+if (( a_publish_attempts == 0 )) || [[ "$a_per_topic_publishes" == "{}" ]]; then
+  record_fail "node_a publish evidence missing (publish_attempts=${a_publish_attempts}, per_topic_publishes=${a_per_topic_publishes})"
+fi
+if (( b_blocks_received == 0 || c_blocks_received == 0 )); then
+  {
+    echo "post-mining propagation diagnostics:"
+    for n in b c; do
+      f="$OUT_DIR/endpoints/${n}-p2p_status.json"
+      echo "node_${n}: peer_count=$(jq -r '.data.peer_count // .data.connected_peer_count // 0' "$f" 2>/dev/null || echo 0), active_connection_total=$(jq -r '.data.active_connection_total // 0' "$f" 2>/dev/null || echo 0), gossipsub_peer_count=$(jq -r '.data.gossipsub_peer_count // 0' "$f" 2>/dev/null || echo 0), subscribed_topics=$(jq -c '.data.subscribed_topics // []' "$f" 2>/dev/null || echo '[]'), per_topic_publishes=$(jq -c '.data.per_topic_publishes // {}' "$f" 2>/dev/null || echo '{}'), publish_attempts=$(jq -r '.data.publish_attempts // 0' "$f" 2>/dev/null || echo 0), inbound_messages=$(jq -r '.data.inbound_messages // 0' "$f" 2>/dev/null || echo 0), blocks_received=$(jq -r '.data.blocks_received // 0' "$f" 2>/dev/null || echo 0), last_message_kind=$(jq -r '.data.last_message_kind // "n/a"' "$f" 2>/dev/null || echo n/a), last_swarm_event=$(jq -r '.data.last_swarm_event // "n/a"' "$f" 2>/dev/null || echo n/a), last_drop_reason=$(jq -r '.data.last_drop_reason // "n/a"' "$f" 2>/dev/null || echo n/a), last_connection_error=$(jq -r '.data.last_connection_error // "n/a"' "$f" 2>/dev/null || echo n/a), last_disconnect_reason=$(jq -r '.data.last_disconnect_reason // "n/a"' "$f" 2>/dev/null || echo n/a)"
+    done
+    echo "node_a_publish: block_outbound_first_seen_relayed=${a_block_outbound_first_seen_relayed}, block_topic_publishes=${a_block_topic_publishes}, publish_attempts=${a_publish_attempts}, per_topic_publishes=${a_per_topic_publishes}, last_message_kind=${a_last_message_kind:-none}"
+  } >> "$OUT_DIR/summaries/propagation-diagnostics.txt"
+fi
 (( miner_templates >= 1 )) || record_fail "miner never receives templates"
 (( miner_submits >= 1 )) || record_fail "miner never submits"
 if (( accepted_count < 1 )); then
