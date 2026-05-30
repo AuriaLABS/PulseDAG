@@ -446,11 +446,8 @@ pub async fn get_p2p_status<S: RpcStateLike>(
                     let chain_handle = state.chain();
                     let chain = chain_handle.read().await;
                     let orphan_count = chain.orphan_blocks.len();
-                    let pending_missing_parents = chain
-                        .orphan_missing_parents
-                        .values()
-                        .map(Vec::len)
-                        .sum::<usize>();
+                    let pending_missing_parents =
+                        pulsedag_core::pending_missing_parent_count(&chain);
                     let readiness_reasons = p2p_readiness_reasons(
                         true,
                         Some(&status),
@@ -543,7 +540,7 @@ pub async fn get_p2p_status<S: RpcStateLike>(
             let chain = chain_handle.read().await;
             Json(ApiResponse::ok(disabled_p2p_payload(
                 &runtime,
-                chain.orphan_missing_parents.values().map(Vec::len).sum(),
+                pulsedag_core::pending_missing_parent_count(&chain),
                 chain.orphan_blocks.len(),
             )))
         }

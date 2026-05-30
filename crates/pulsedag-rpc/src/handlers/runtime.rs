@@ -1321,11 +1321,7 @@ pub async fn get_runtime_status<S: RpcStateLike>(
         "healthy"
     };
 
-    let pending_missing_parents = chain
-        .orphan_missing_parents
-        .values()
-        .map(Vec::len)
-        .sum::<usize>();
+    let pending_missing_parents = pulsedag_core::pending_missing_parent_count(&chain);
     let mut readiness_reasons = Vec::new();
     if !p2p_recovery.enabled {
         readiness_reasons.push("p2p is disabled".to_string());

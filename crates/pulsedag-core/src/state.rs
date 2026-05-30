@@ -215,6 +215,8 @@ pub struct ChainState {
     #[serde(default)]
     pub orphan_missing_parents: HashMap<Hash, Vec<Hash>>,
     #[serde(default)]
+    pub orphan_parent_index: HashMap<Hash, BTreeSet<Hash>>,
+    #[serde(default)]
     pub orphan_received_at_ms: HashMap<Hash, u64>,
 }
 

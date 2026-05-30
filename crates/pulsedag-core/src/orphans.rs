@@ -31,6 +31,66 @@ pub fn missing_block_parents(block: &Block, state: &ChainState) -> Vec<Hash> {
         .collect()
 }
 
+fn normalize_missing_parents(missing_parents: Vec<Hash>) -> Vec<Hash> {
+    missing_parents
+        .into_iter()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+fn unindex_orphan_missing_parents(state: &mut ChainState, orphan_hash: &Hash) {
+    if let Some(existing) = state.orphan_missing_parents.get(orphan_hash) {
+        for parent in existing {
+            if let Some(waiting) = state.orphan_parent_index.get_mut(parent) {
+                waiting.remove(orphan_hash);
+                if waiting.is_empty() {
+                    state.orphan_parent_index.remove(parent);
+                }
+            }
+        }
+    }
+}
+
+fn index_orphan_missing_parents(
+    state: &mut ChainState,
+    orphan_hash: Hash,
+    missing_parents: Vec<Hash>,
+) {
+    unindex_orphan_missing_parents(state, &orphan_hash);
+    let missing_parents = normalize_missing_parents(missing_parents);
+    for parent in &missing_parents {
+        state
+            .orphan_parent_index
+            .entry(parent.clone())
+            .or_default()
+            .insert(orphan_hash.clone());
+    }
+    state
+        .orphan_missing_parents
+        .insert(orphan_hash, missing_parents);
+}
+
+fn remove_queued_orphan(state: &mut ChainState, orphan_hash: &Hash) -> Option<Block> {
+    let block = state.orphan_blocks.remove(orphan_hash);
+    unindex_orphan_missing_parents(state, orphan_hash);
+    state.orphan_missing_parents.remove(orphan_hash);
+    state.orphan_received_at_ms.remove(orphan_hash);
+    block
+}
+
+pub fn orphan_children_waiting_for_parent(state: &ChainState, parent: &Hash) -> Vec<Hash> {
+    state
+        .orphan_parent_index
+        .get(parent)
+        .map(|children| children.iter().cloned().collect())
+        .unwrap_or_default()
+}
+
+pub fn pending_missing_parent_count(state: &ChainState) -> usize {
+    state.orphan_parent_index.len()
+}
+
 pub fn prune_orphans(state: &mut ChainState, max_count: usize, max_age_ms: u64) -> usize {
     let now = now_ms();
     let mut removed = 0usize;
@@ -47,11 +107,9 @@ pub fn prune_orphans(state: &mut ChainState, max_count: usize, max_age_ms: u64) 
         })
         .collect::<Vec<_>>();
     for hash in expired {
-        if state.orphan_blocks.remove(&hash).is_some() {
+        if remove_queued_orphan(state, &hash).is_some() {
             removed += 1;
         }
-        state.orphan_missing_parents.remove(&hash);
-        state.orphan_received_at_ms.remove(&hash);
     }
 
     if state.orphan_blocks.len() > max_count {
@@ -67,11 +125,9 @@ pub fn prune_orphans(state: &mut ChainState, max_count: usize, max_age_ms: u64) 
         });
         let overflow = state.orphan_blocks.len().saturating_sub(max_count);
         for (hash, _) in oldest.into_iter().take(overflow) {
-            if state.orphan_blocks.remove(&hash).is_some() {
+            if remove_queued_orphan(state, &hash).is_some() {
                 removed += 1;
             }
-            state.orphan_missing_parents.remove(&hash);
-            state.orphan_received_at_ms.remove(&hash);
         }
     }
 
@@ -88,9 +144,7 @@ pub fn queue_orphan_block(
         return false;
     }
     state.orphan_blocks.insert(hash.clone(), block);
-    state
-        .orphan_missing_parents
-        .insert(hash.clone(), missing_parents);
+    index_orphan_missing_parents(state, hash.clone(), missing_parents);
     state.orphan_received_at_ms.insert(hash, now_ms());
     let _ = prune_orphans(state, DEFAULT_ORPHAN_MAX_COUNT, DEFAULT_ORPHAN_MAX_AGE_MS);
     true
@@ -109,7 +163,7 @@ pub fn adopt_ready_orphans(state: &mut ChainState, source: AcceptSource) -> usiz
             if missing.is_empty() {
                 ready.push(hash);
             } else {
-                state.orphan_missing_parents.insert(hash, missing);
+                index_orphan_missing_parents(state, hash, missing);
             }
         }
         ready.sort();
@@ -119,11 +173,9 @@ pub fn adopt_ready_orphans(state: &mut ChainState, source: AcceptSource) -> usiz
         }
 
         for hash in ready {
-            let Some(block) = state.orphan_blocks.remove(&hash) else {
+            let Some(block) = remove_queued_orphan(state, &hash) else {
                 continue;
             };
-            state.orphan_missing_parents.remove(&hash);
-            state.orphan_received_at_ms.remove(&hash);
             if let Ok(()) = accept_block(block, state, source) {
                 adopted += 1;
             }
@@ -197,6 +249,17 @@ mod tests {
         received_hashes.sort();
         assert_eq!(missing_hashes, block_hashes);
         assert_eq!(received_hashes, block_hashes);
+
+        let mut rebuilt_parent_index = std::collections::HashMap::<Hash, BTreeSet<Hash>>::new();
+        for (orphan_hash, missing_parents) in &state.orphan_missing_parents {
+            for parent in missing_parents {
+                rebuilt_parent_index
+                    .entry(parent.clone())
+                    .or_default()
+                    .insert(orphan_hash.clone());
+            }
+        }
+        assert_eq!(state.orphan_parent_index, rebuilt_parent_index);
     }
 
     #[test]
@@ -223,6 +286,11 @@ mod tests {
             state.orphan_missing_parents.get(&child.hash),
             Some(&missing)
         );
+        assert_eq!(
+            orphan_children_waiting_for_parent(&state, &missing[0]),
+            vec![child.hash.clone()]
+        );
+        assert_eq!(pending_missing_parent_count(&state), 1);
         assert_orphan_indexes_consistent(&state);
     }
 
@@ -339,6 +407,55 @@ mod tests {
         assert_eq!(adopted, 0);
         assert!(!state.dag.blocks.contains_key(&child.hash));
         assert!(!state.orphan_blocks.contains_key(&child.hash));
+        assert_orphan_indexes_consistent(&state);
+    }
+
+    #[test]
+    fn missing_parent_index_updates_when_an_orphan_becomes_partially_ready() {
+        let mut state = init_chain_state("test".into());
+        let parent_a = candidate_for_state(
+            &state,
+            vec![state.dag.genesis_hash.clone()],
+            1,
+            "parent-a",
+            1,
+        );
+        let parent_b = candidate_for_state(
+            &state,
+            vec![state.dag.genesis_hash.clone()],
+            1,
+            "parent-b",
+            2,
+        );
+        let state_with_a = state_after(&state, &parent_a);
+        let child = candidate_for_state(
+            &state_with_a,
+            vec![parent_a.hash.clone(), parent_b.hash.clone()],
+            2,
+            "child-ab",
+            3,
+        );
+        queue_missing(&mut state, child.clone());
+
+        assert_eq!(pending_missing_parent_count(&state), 2);
+        assert_eq!(
+            orphan_children_waiting_for_parent(&state, &parent_a.hash),
+            vec![child.hash.clone()]
+        );
+        assert_eq!(
+            orphan_children_waiting_for_parent(&state, &parent_b.hash),
+            vec![child.hash.clone()]
+        );
+
+        assert!(accept_block(parent_a.clone(), &mut state, AcceptSource::P2p).is_ok());
+        assert_eq!(adopt_ready_orphans(&mut state, AcceptSource::P2p), 0);
+
+        assert!(orphan_children_waiting_for_parent(&state, &parent_a.hash).is_empty());
+        assert_eq!(
+            orphan_children_waiting_for_parent(&state, &parent_b.hash),
+            vec![child.hash.clone()]
+        );
+        assert_eq!(pending_missing_parent_count(&state), 1);
         assert_orphan_indexes_consistent(&state);
     }
 
