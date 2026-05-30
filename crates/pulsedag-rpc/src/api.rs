@@ -127,6 +127,8 @@ pub struct NodeRuntimeStats {
     pub missing_parent_requests_sent: u64,
     pub orphan_blocks_queued: u64,
     pub orphan_blocks_resolved: u64,
+    pub orphan_blocks_retried: u64,
+    pub orphan_blocks_evicted: u64,
     pub sync_catchup_completed: u64,
     pub sync_failures: u64,
     pub startup_snapshot_exists: bool,

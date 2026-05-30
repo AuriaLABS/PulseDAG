@@ -68,7 +68,9 @@ pub use selection::{preferred_tip_hash, sorted_tip_hashes};
 pub use consistency::{assert_dag_consistent_for_tests, dag_consistency_issues};
 
 pub use orphans::{
-    adopt_ready_orphans, missing_block_parents, prune_orphans, queue_orphan_block,
+    adopt_ready_orphans, adopt_ready_orphans_with_result, missing_block_parents,
+    orphans_waiting_for_parent, prune_orphans, queue_orphan_block, queue_orphan_block_bounded,
+    rebuild_missing_parent_index, OrphanAdoptionResult, OrphanQueueResult,
     DEFAULT_ORPHAN_MAX_AGE_MS, DEFAULT_ORPHAN_MAX_COUNT,
 };
 
