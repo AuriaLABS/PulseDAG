@@ -22,7 +22,7 @@ Make `scripts/v2_2_19_private_5n_4m_rehearsal.sh` deterministic, time-bounded, a
    - preserve `-fsS` behavior.
 
 2. Add a global deadline:
-   - env: `SMOKE_TOTAL_DEADLINE_SECS`, default no more than 1800 seconds.
+   - env: `SMOKE_TOTAL_DEADLINE_SECS`, default at least 2100 seconds so the default 1800-second mining window, 90-second quiescence phase, and peer/readiness setup can complete on the healthy path.
    - all peer/readiness/miner/convergence loops must exit when the deadline expires.
    - on deadline, package evidence and fail with a clear diagnostic, not hang.
 
