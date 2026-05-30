@@ -1,16 +1,29 @@
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeSet, HashSet},
     time::{SystemTime, UNIX_EPOCH},
 };
 
 use crate::{
-    accept::{accept_block, AcceptSource},
+    accept::{accept_block_with_result, AcceptSource, BlockAcceptanceResult},
     state::ChainState,
     types::{Block, Hash},
 };
 
 pub const DEFAULT_ORPHAN_MAX_COUNT: usize = 512;
 pub const DEFAULT_ORPHAN_MAX_AGE_MS: u64 = 15 * 60 * 1000;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OrphanQueueResult {
+    pub queued: bool,
+    pub evicted: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OrphanAdoptionResult {
+    pub accepted: usize,
+    pub rejected: usize,
+    pub retried: usize,
+}
 
 fn now_ms() -> u64 {
     SystemTime::now()
@@ -134,14 +147,19 @@ pub fn prune_orphans(state: &mut ChainState, max_count: usize, max_age_ms: u64) 
     removed
 }
 
-pub fn queue_orphan_block(
+pub fn queue_orphan_block_bounded(
     state: &mut ChainState,
     block: Block,
     missing_parents: Vec<Hash>,
-) -> bool {
+    max_count: usize,
+    max_age_ms: u64,
+) -> OrphanQueueResult {
     let hash = block.hash.clone();
     if state.orphan_blocks.contains_key(&hash) {
-        return false;
+        return OrphanQueueResult {
+            queued: false,
+            evicted: 0,
+        };
     }
     state.orphan_blocks.insert(hash.clone(), block);
     index_orphan_missing_parents(state, hash.clone(), missing_parents);
@@ -150,12 +168,39 @@ pub fn queue_orphan_block(
     true
 }
 
-pub fn adopt_ready_orphans(state: &mut ChainState, source: AcceptSource) -> usize {
-    let mut adopted = 0usize;
+pub fn queue_orphan_block(
+    state: &mut ChainState,
+    block: Block,
+    missing_parents: Vec<Hash>,
+) -> bool {
+    queue_orphan_block_bounded(
+        state,
+        block,
+        missing_parents,
+        DEFAULT_ORPHAN_MAX_COUNT,
+        DEFAULT_ORPHAN_MAX_AGE_MS,
+    )
+    .queued
+}
+
+pub fn adopt_ready_orphans_with_result(
+    state: &mut ChainState,
+    source: AcceptSource,
+    arrived_parent: Option<&Hash>,
+) -> OrphanAdoptionResult {
+    let mut accepted = 0usize;
+    let mut rejected = 0usize;
+    let mut retried = 0usize;
+    let mut candidates = arrived_parent
+        .map(|parent| orphans_waiting_for_parent(state, parent))
+        .unwrap_or_else(|| state.orphan_blocks.keys().cloned().collect::<Vec<_>>());
+
     loop {
+        candidates.sort();
+        candidates.dedup();
         let mut ready = Vec::new();
-        let hashes = state.orphan_blocks.keys().cloned().collect::<Vec<_>>();
-        for hash in hashes {
+        let mut still_missing = HashSet::new();
+        for hash in candidates.drain(..) {
             let Some(block) = state.orphan_blocks.get(&hash) else {
                 continue;
             };
@@ -166,7 +211,6 @@ pub fn adopt_ready_orphans(state: &mut ChainState, source: AcceptSource) -> usiz
                 index_orphan_missing_parents(state, hash, missing);
             }
         }
-        ready.sort();
 
         if ready.is_empty() {
             break;
@@ -181,14 +225,23 @@ pub fn adopt_ready_orphans(state: &mut ChainState, source: AcceptSource) -> usiz
             }
         }
     }
-    adopted
+
+    OrphanAdoptionResult {
+        accepted,
+        rejected,
+        retried,
+    }
+}
+
+pub fn adopt_ready_orphans(state: &mut ChainState, source: AcceptSource) -> usize {
+    adopt_ready_orphans_with_result(state, source, None).accepted
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::{
-        accept::{accept_block_with_result, BlockAcceptanceResult},
+        accept::{accept_block, BlockAcceptanceResult},
         apply::apply_block,
         genesis::init_chain_state,
         mining::{
@@ -244,9 +297,17 @@ mod tests {
             .keys()
             .cloned()
             .collect::<Vec<_>>();
+        let mut indexed_hashes = state
+            .orphan_missing_parent_index
+            .values()
+            .flatten()
+            .cloned()
+            .collect::<Vec<_>>();
         block_hashes.sort();
         missing_hashes.sort();
         received_hashes.sort();
+        indexed_hashes.sort();
+        indexed_hashes.dedup();
         assert_eq!(missing_hashes, block_hashes);
         assert_eq!(received_hashes, block_hashes);
 
