@@ -155,11 +155,7 @@ pub async fn get_sync_status<S: RpcStateLike>(
         .as_ref()
         .map(|status| status.mode.clone())
         .unwrap_or_else(|| "disabled".to_string());
-    let pending_missing_parents = chain
-        .orphan_missing_parents
-        .values()
-        .map(Vec::len)
-        .sum::<usize>();
+    let pending_missing_parents = pulsedag_core::pending_missing_parent_count(&chain);
     let mut readiness_reasons = Vec::new();
     if !p2p_enabled {
         readiness_reasons.push("p2p is disabled".to_string());
@@ -318,11 +314,18 @@ pub struct MissingBlockEntry {
 }
 
 #[derive(Debug, serde::Serialize)]
+pub struct MissingParentIndexEntry {
+    pub parent: String,
+    pub waiting_orphans: Vec<String>,
+}
+
+#[derive(Debug, serde::Serialize)]
 pub struct SyncMissingData {
     pub pending_block_requests: usize,
     pub pending_missing_parents: usize,
     pub orphan_count: usize,
     pub orphans: Vec<MissingBlockEntry>,
+    pub missing_parent_index: Vec<MissingParentIndexEntry>,
 }
 
 pub async fn get_sync_missing<S: RpcStateLike>(
@@ -345,16 +348,22 @@ pub async fn get_sync_missing<S: RpcStateLike>(
             hash,
         })
         .collect::<Vec<_>>();
-    let pending_missing_parents = chain
-        .orphan_missing_parents
-        .values()
-        .map(Vec::len)
-        .sum::<usize>();
+    let pending_missing_parents = pulsedag_core::pending_missing_parent_count(&chain);
+    let mut missing_parent_index = chain
+        .orphan_parent_index
+        .iter()
+        .map(|(parent, waiting)| MissingParentIndexEntry {
+            parent: parent.clone(),
+            waiting_orphans: waiting.iter().cloned().collect(),
+        })
+        .collect::<Vec<_>>();
+    missing_parent_index.sort_by(|left, right| left.parent.cmp(&right.parent));
     Json(ApiResponse::ok(SyncMissingData {
         pending_block_requests: runtime.pending_block_requests,
         pending_missing_parents,
         orphan_count: chain.orphan_blocks.len(),
         orphans,
+        missing_parent_index,
     }))
 }
 
@@ -569,13 +578,21 @@ mod tests {
         let mut chain = storage
             .load_or_init_genesis("testnet-dev".to_string())
             .unwrap();
-        chain.orphan_missing_parents.insert(
-            "child-block".to_string(),
-            vec![
-                "missing-parent-a".to_string(),
-                "missing-parent-b".to_string(),
-            ],
-        );
+        let child_block = "child-block".to_string();
+        let missing_parents = vec![
+            "missing-parent-a".to_string(),
+            "missing-parent-b".to_string(),
+        ];
+        chain
+            .orphan_missing_parents
+            .insert(child_block.clone(), missing_parents.clone());
+        for parent in missing_parents {
+            chain
+                .orphan_parent_index
+                .entry(parent)
+                .or_default()
+                .insert(child_block.clone());
+        }
         let mut runtime = NodeRuntimeStats::default();
         runtime.pending_block_requests = 3;
         let state = TestState {
@@ -590,6 +607,12 @@ mod tests {
         assert_eq!(data.pending_block_requests, 3);
         assert_eq!(data.pending_missing_parents, 2);
         assert_eq!(data.orphans.len(), 0);
+        assert_eq!(data.missing_parent_index.len(), 2);
+        assert_eq!(data.missing_parent_index[0].parent, "missing-parent-a");
+        assert_eq!(
+            data.missing_parent_index[0].waiting_orphans,
+            vec!["child-block".to_string()]
+        );
     }
 
     #[tokio::test]

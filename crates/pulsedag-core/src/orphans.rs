@@ -368,6 +368,11 @@ mod tests {
             state.orphan_missing_parents.get(&child.hash),
             Some(&missing)
         );
+        assert_eq!(
+            orphan_children_waiting_for_parent(&state, &missing[0]),
+            vec![child.hash.clone()]
+        );
+        assert_eq!(pending_missing_parent_count(&state), 1);
         assert_orphan_indexes_consistent(&state);
     }
 
@@ -484,6 +489,55 @@ mod tests {
         assert_eq!(adopted, 0);
         assert!(!state.dag.blocks.contains_key(&child.hash));
         assert!(!state.orphan_blocks.contains_key(&child.hash));
+        assert_orphan_indexes_consistent(&state);
+    }
+
+    #[test]
+    fn missing_parent_index_updates_when_an_orphan_becomes_partially_ready() {
+        let mut state = init_chain_state("test".into());
+        let parent_a = candidate_for_state(
+            &state,
+            vec![state.dag.genesis_hash.clone()],
+            1,
+            "parent-a",
+            1,
+        );
+        let parent_b = candidate_for_state(
+            &state,
+            vec![state.dag.genesis_hash.clone()],
+            1,
+            "parent-b",
+            2,
+        );
+        let state_with_a = state_after(&state, &parent_a);
+        let child = candidate_for_state(
+            &state_with_a,
+            vec![parent_a.hash.clone(), parent_b.hash.clone()],
+            2,
+            "child-ab",
+            3,
+        );
+        queue_missing(&mut state, child.clone());
+
+        assert_eq!(pending_missing_parent_count(&state), 2);
+        assert_eq!(
+            orphan_children_waiting_for_parent(&state, &parent_a.hash),
+            vec![child.hash.clone()]
+        );
+        assert_eq!(
+            orphan_children_waiting_for_parent(&state, &parent_b.hash),
+            vec![child.hash.clone()]
+        );
+
+        assert!(accept_block(parent_a.clone(), &mut state, AcceptSource::P2p).is_ok());
+        assert_eq!(adopt_ready_orphans(&mut state, AcceptSource::P2p), 0);
+
+        assert!(orphan_children_waiting_for_parent(&state, &parent_a.hash).is_empty());
+        assert_eq!(
+            orphan_children_waiting_for_parent(&state, &parent_b.hash),
+            vec![child.hash.clone()]
+        );
+        assert_eq!(pending_missing_parent_count(&state), 1);
         assert_orphan_indexes_consistent(&state);
     }
 

@@ -13,7 +13,10 @@ Use these exact evidence locations when creating closeout artifacts:
 - Preflight: `artifacts/v2_2_19/preflight/`
 - Cargo check/test/clippy: `artifacts/v2_2_19/validation/`
 - Local 3N/1M smoke: `artifacts/v2_2_19/local_3n_1m_smoke/`
-- Private 5N/4M rehearsal: `artifacts/v2_2_19/private_5n_4m_rehearsal/`
+- Private 5N/1M baseline rehearsal: `artifacts/v2_2_19/private_5n_1m_rehearsal/`
+- Private 5N/2M intermediate rehearsal: `artifacts/v2_2_19/private_5n_2m_rehearsal/`
+- Private 5N/4M stress rehearsal: `artifacts/v2_2_19/private_5n_4m_rehearsal/`
+- Staged convergence gate aggregate: `artifacts/v2_2_19/staged_convergence_gates/`
 - Release binaries workflow: `artifacts/v2_2_19/release_workflow/`
 - GPU scaffold/fallback: `artifacts/v2_2_19/gpu_fallback/`
 - Readiness/release metadata: `artifacts/v2_2_19/preflight/`
@@ -74,15 +77,22 @@ OUT_DIR=... bash scripts/v2_2_19_local_3n_1m_smoke.sh
 
 - [ ] PASS / [x] PENDING: local `3N/1M` smoke completes with evidence bundle. **Current state: FAIL** due to runtime shell error `node: unbound variable`. Evidence path: `artifacts/v2_2_19/local_3n_1m_smoke/local_3n_1m_smoke.log`
 
-## Private 5N/4M rehearsal evidence
+## Private staged convergence evidence
 
-Run and attach output/artifacts (`OUT_DIR` must be a real writable path):
+Run and attach output/artifacts (`OUT_DIR` must be a real writable path). The baseline is mandatory; the intermediate gate is mandatory unless a warning-only waiver is recorded; the 5N/4M stress gate is diagnostic until orphan recovery lands.
 
 ```bash
+OUT_DIR=... bash scripts/v2_2_19_private_5n_1m_rehearsal.sh
+OUT_DIR=... bash scripts/v2_2_19_private_5n_2m_rehearsal.sh
 OUT_DIR=... bash scripts/v2_2_19_private_5n_4m_rehearsal.sh
+# or run the orchestrated sequence
+OUT_DIR=... bash scripts/v2_2_19_staged_convergence_gates.sh
 ```
 
-- [ ] PASS / [x] PENDING: private `5N/4M` rehearsal completes with evidence bundle. **Current state: FAIL** due to runtime shell error `idx: unbound variable`. Evidence path: `artifacts/v2_2_19/private_5n_4m_rehearsal/private_5n_4m_rehearsal.log`
+- [ ] PASS / [x] PENDING: private `5N/1M baseline` rehearsal completes with evidence bundle and quiescence metrics. Evidence path: `artifacts/v2_2_19/private_5n_1m_rehearsal/evidence-summary.md`
+- [ ] PASS / [x] PENDING: private `5N/2M intermediate` rehearsal completes or has an explicit warning-only waiver with failure classification. Evidence path: `artifacts/v2_2_19/private_5n_2m_rehearsal/evidence-summary.md`
+- [ ] PASS / [x] PENDING: private `5N/4M stress` rehearsal completes without harness hang and classifies any divergence/orphan pressure. Evidence path: `artifacts/v2_2_19/private_5n_4m_rehearsal/evidence-summary.md`
+- [ ] PASS / [x] PENDING: each staged rehearsal includes `evidence.tar.gz` and `evidence.tar.gz.sha256` on both PASS and FAIL. Evidence path: `artifacts/v2_2_19/staged_convergence_gates/`
 
 ## Snapshot/restore evidence
 
@@ -91,7 +101,7 @@ OUT_DIR=... bash scripts/v2_2_19_private_5n_4m_rehearsal.sh
 
 ## P2P convergence evidence
 
-- [ ] PASS / [x] PENDING: multi-node convergence evidence attached (peer visibility + selected tip convergence). Evidence path: `artifacts/v2_2_19/private_5n_4m_rehearsal/p2p_convergence.json`
+- [ ] PASS / [x] PENDING: multi-node convergence evidence attached with pre/post-quiescence convergence, worst lag, distinct final tips, peer visibility, orphan count, and missing-parent count. Evidence paths: `artifacts/v2_2_19/private_5n_1m_rehearsal/p2p_convergence.json`, `artifacts/v2_2_19/private_5n_2m_rehearsal/p2p_convergence.json`, `artifacts/v2_2_19/private_5n_4m_rehearsal/p2p_convergence.json`
 - [ ] PASS / [x] PENDING: restart/rejoin behavior evidence attached for rehearsal topology. Evidence path: `artifacts/v2_2_19/private_5n_4m_rehearsal/restart_rejoin.log`
 
 ## Miner external protocol evidence
@@ -141,7 +151,9 @@ Record open blockers that must be closed before any `v2.3.0` public-testnet go/n
 - [ ] PASS / [x] PENDING: `cargo check`, `cargo test`, and `cargo clippy` were all run and attached; otherwise automatic **NO_GO**.
 - [ ] PASS / [x] PENDING: preflight evidence exists at `artifacts/v2_2_19/preflight/`; missing evidence is automatic **NO_GO**.
 - [ ] PASS / [x] PENDING: local smoke evidence exists at `artifacts/v2_2_19/local_3n_1m_smoke/`; missing evidence is automatic **NO_GO**.
-- [ ] PASS / [x] PENDING: private rehearsal evidence exists at `artifacts/v2_2_19/private_5n_4m_rehearsal/`; missing evidence is automatic **NO_GO**.
+- [ ] PASS / [x] PENDING: private `5N/1M baseline` evidence exists at `artifacts/v2_2_19/private_5n_1m_rehearsal/`; missing evidence is automatic **NO_GO**.
+- [ ] PASS / [x] PENDING: private `5N/2M intermediate` evidence exists at `artifacts/v2_2_19/private_5n_2m_rehearsal/`, or a warning-only waiver is recorded with reason.
+- [ ] PASS / [x] PENDING: private `5N/4M stress` evidence exists at `artifacts/v2_2_19/private_5n_4m_rehearsal/` with failure classification if it diverges; missing evidence is automatic **NO_GO**.
 - [ ] PASS / [x] PENDING: release workflow evidence exists at `artifacts/v2_2_19/release_workflow/`; missing evidence is automatic **NO_GO**.
 - [ ] PASS / [x] PENDING: snapshot/restore evidence exists at `artifacts/v2_2_19/snapshot_restore/`, or explicit waiver is recorded with reason.
 - [ ] PASS / [x] PENDING: `public_testnet_ready=true` is **not** asserted for v2.2.19 scope; any true assertion is automatic **NO_GO**.
