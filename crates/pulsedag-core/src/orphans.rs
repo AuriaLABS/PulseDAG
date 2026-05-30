@@ -101,11 +101,38 @@ pub fn rebuild_missing_parent_index(state: &mut ChainState) {
 }
 
 pub fn orphans_waiting_for_parent(state: &ChainState, parent_hash: &Hash) -> Vec<Hash> {
+    if let Some(waiting) = state.orphan_missing_parent_index.get(parent_hash) {
+        return waiting.clone();
+    }
+
     state
-        .orphan_missing_parent_index
-        .get(parent_hash)
-        .cloned()
-        .unwrap_or_default()
+        .orphan_missing_parents
+        .iter()
+        .filter_map(|(orphan_hash, missing_parents)| {
+            missing_parents
+                .contains(parent_hash)
+                .then(|| orphan_hash.clone())
+        })
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+pub fn orphan_children_waiting_for_parent(state: &ChainState, parent_hash: &Hash) -> Vec<Hash> {
+    orphans_waiting_for_parent(state, parent_hash)
+}
+
+pub fn pending_missing_parent_count(state: &ChainState) -> usize {
+    if !state.orphan_missing_parent_index.is_empty() {
+        return state.orphan_missing_parent_index.len();
+    }
+
+    state
+        .orphan_missing_parents
+        .values()
+        .flat_map(|missing_parents| missing_parents.iter().cloned())
+        .collect::<BTreeSet<_>>()
+        .len()
 }
 
 pub fn prune_orphans(state: &mut ChainState, max_count: usize, max_age_ms: u64) -> usize {
