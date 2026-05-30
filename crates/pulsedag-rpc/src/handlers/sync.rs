@@ -352,9 +352,13 @@ pub async fn get_sync_missing<S: RpcStateLike>(
     let mut missing_parent_index = chain
         .orphan_missing_parent_index
         .iter()
-        .map(|(parent, waiting)| MissingParentIndexEntry {
-            parent: parent.clone(),
-            waiting_orphans: waiting.iter().cloned().collect(),
+        .map(|(parent, waiting)| {
+            let mut waiting_orphans = waiting.clone();
+            waiting_orphans.sort();
+            MissingParentIndexEntry {
+                parent: parent.clone(),
+                waiting_orphans,
+            }
         })
         .collect::<Vec<_>>();
     missing_parent_index.sort_by(|left, right| left.parent.cmp(&right.parent));
