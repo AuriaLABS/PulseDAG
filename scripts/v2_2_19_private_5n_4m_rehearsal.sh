@@ -10,6 +10,7 @@ GLOBAL_DEADLINE_SECS=${GLOBAL_DEADLINE_SECS:-21600}
 MAX_GLOBAL_DEADLINE_SECS=21600
 RUN_ID=${RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)}
 START_TS=$(date +%s)
+SMOKE_DEADLINE_TS=$((START_TS + SMOKE_TOTAL_DEADLINE_SECS))
 START_UTC=$(date -u +%FT%TZ)
 if (( GLOBAL_DEADLINE_SECS > MAX_GLOBAL_DEADLINE_SECS )); then
   GLOBAL_DEADLINE_SECS=$MAX_GLOBAL_DEADLINE_SECS
@@ -54,7 +55,49 @@ GATE_5N_2M_INTERMEDIATE=FAIL
 GATE_5N_4M_STRESS=OBSERVE
 IN_CLEANUP=0
 declare -A miner_submit miner_accept miner_template
+CLEANUP_STARTED=0
+WATCHDOG_PID=""
 for i in 1 2 3 4; do miner_submit[$i]=0; miner_accept[$i]=0; miner_template[$i]=0; done
+
+phase_marker(){ echo "PHASE $(date -u +%FT%TZ) $*"; }
+
+seconds_remaining(){
+  local now
+  now=$(date +%s)
+  echo $((SMOKE_DEADLINE_TS - now))
+}
+
+deadline_expired(){ (( $(seconds_remaining) <= 0 )); }
+
+fail_deadline(){
+  local context="$1"
+  record_fail "global deadline expired during ${context} after ${SMOKE_TOTAL_DEADLINE_SECS}s"
+  echo "FATAL: global deadline expired during ${context}; packaging evidence before exit"
+  exit 124
+}
+
+check_deadline(){
+  local context="${1:-operation}"
+  deadline_expired && fail_deadline "$context"
+}
+
+sleep_with_deadline(){
+  local requested="$1" context="${2:-sleep}" remaining
+  remaining=$(seconds_remaining)
+  (( remaining <= 0 )) && fail_deadline "$context"
+  (( requested > remaining )) && requested=$remaining
+  sleep "$requested"
+}
+
+start_deadline_watchdog(){
+  local parent_pid="$$"
+  (
+    sleep "$SMOKE_TOTAL_DEADLINE_SECS"
+    echo "global deadline expired after ${SMOKE_TOTAL_DEADLINE_SECS}s" > "$OUT_DIR/deadline-expired.txt"
+    kill -TERM "$parent_pid" 2>/dev/null || true
+  ) &
+  WATCHDOG_PID=$!
+}
 REPO_COMMIT="$(git -C "$ROOT_DIR" rev-parse --short=12 HEAD 2>/dev/null || echo unknown)"
 NODE_VERSION="$("$NODE_BIN" --version 2>/dev/null | head -n1 || echo unknown)"
 
@@ -127,6 +170,10 @@ safe_curl_json(){
     if (( required == 1 )); then record_fail "required endpoint failed: $url"; else record_warn "optional endpoint failed: $label"; fi
     return 1
   fi
+  rc=$?
+  jq -n --arg url "$url" --argjson exit_code "$rc" '{ok:false,error:"curl failed",url:$url,exit_code:$exit_code}' > "$out"
+  if (( required == 1 )); then record_fail "required endpoint failed: $url"; else record_warn "optional endpoint failed: $label"; fi
+  return 1
 }
 safe_curl_required(){ safe_curl_json "$1" "$2" "${3:-$1}" 1; }
 safe_curl_optional(){ safe_curl_json "$1" "$2" "${3:-$1}" 0; }
@@ -379,7 +426,7 @@ package_evidence(){
   done
   local tar_tmp
   tar_tmp=$(mktemp -p /tmp evidence.XXXXXX.tar.gz)
-  (cd "$OUT_DIR" && tar -czf "$tar_tmp" --exclude='evidence.tar.gz' --exclude='evidence.tar.gz.sha256' endpoints logs miners nodes samples summaries evidence-summary.md command-log.txt process-pids.txt p2p_convergence.json final-convergence-table.json restart_rejoin.log 2>/dev/null || true)
+  (cd "$OUT_DIR" && tar -czf "$tar_tmp" --exclude='evidence.tar.gz' --exclude='evidence.tar.gz.sha256' endpoints logs miners nodes samples summaries evidence-summary.md command-log.txt process-pids.txt p2p_convergence.json final-convergence-table.json restart_rejoin.log deadline-expired.txt 2>/dev/null || true)
   mv "$tar_tmp" "$OUT_DIR/evidence.tar.gz"
   (cd "$OUT_DIR" && sha256sum evidence.tar.gz > evidence.tar.gz.sha256)
   cp "$OUT_DIR/evidence.tar.gz" "$OUT_DIR_ROOT/evidence.tar.gz" 2>/dev/null || true
@@ -393,6 +440,9 @@ cleanup(){
   local exit_code=$?
   IN_CLEANUP=1
   EXIT_CODE=$exit_code
+  if [[ -f "$OUT_DIR/deadline-expired.txt" ]]; then
+    record_fail "$(cat "$OUT_DIR/deadline-expired.txt")"
+  fi
   if (( exit_code != 0 )); then
     record_fail "script exited non-zero: $exit_code"
   fi
@@ -408,11 +458,16 @@ cleanup(){
   exit "$exit_code"
 }
 trap cleanup EXIT INT TERM
+start_deadline_watchdog
 
 start_global_deadline_watchdog
 OUT_DIR="$OUT_DIR" "$ROOT_DIR/scripts/v2_2_19_preflight_check.sh"
+phase_marker "preflight complete"
+check_deadline "port preflight"
 ensure_ports_free
+check_deadline "cargo build"
 cargo build --workspace --release --locked
+phase_marker "binaries built"
 
 start_node(){
   local idx rpc p2p bootnode name data
@@ -436,6 +491,7 @@ wait_node_ready(){
   idx="$1"
   rpc=$((BASE_RPC_PORT+idx))
   for _ in $(seq 1 60); do
+    check_deadline "pre-mining RPC gate"
     safe_curl_required "http://127.0.0.1:${rpc}/status" "$OUT_DIR/endpoints/n${idx}-status-ready.json" && return 0
     sleep_with_deadline 2
   done
@@ -457,10 +513,12 @@ for i in 2 3 4 5; do start_node "$i" $((BASE_RPC_PORT+i)) $((BASE_P2P_PORT+i)) "
 sleep_with_deadline 3
 
 for i in 1 2 3 4 5; do wait_node_ready "$i" || true; done
+phase_marker "pre-mining RPC gate"
 
 peer_wait_deadline=$(( $(date +%s) + P2P_CONNECT_WAIT_SECS ))
 peers_total=0
 while (( $(date +%s) < peer_wait_deadline )); do
+  check_deadline "pre-mining P2P gate"
   peers_total=0
   for i in 1 2 3 4 5; do
     safe_curl_optional "http://127.0.0.1:$((BASE_RPC_PORT+i))/p2p/status" "$OUT_DIR/endpoints/n${i}-p2p-status-pre-mining.json" "n${i}:/p2p/status pre-mining" || true
@@ -470,19 +528,24 @@ while (( $(date +%s) < peer_wait_deadline )); do
   sleep_with_deadline 2
 done
 (( peers_total > 0 )) || { capture_p2p_gate_failure; record_fail "pre-mining p2p peers remained zero after ${P2P_CONNECT_WAIT_SECS}s"; exit 1; }
+phase_marker "pre-mining P2P gate"
 
 for i in 1 2 3 4; do
+  check_deadline "miner launch"
   local_node="http://127.0.0.1:$((BASE_RPC_PORT+i))"
   echo "launch miner-${i}: $MINER_BIN --node $local_node --miner-address v2219-${RUN_ID}-miner-${i} --backend cpu --threads 1 --loop"
   "$MINER_BIN" --node "$local_node" --miner-address "v2219-${RUN_ID}-miner-${i}" --backend cpu --threads 1 --loop > "$OUT_DIR/logs/miner-${i}.log" 2>&1 &
   MINER_PIDS+=("$!")
   echo "$! miner-${i}" >> "$OUT_DIR/process-pids.txt"
 done
+phase_marker "miners launched"
 
 printf "timestamp,n1,n2,n3,n4,n5,tip_match\n" > "$OUT_DIR/samples/height-samples.csv"
 
+phase_marker "mining window start"
 end=$(( $(date +%s) + DURATION_SECS ))
 while (( $(date +%s) < end )); do
+  check_deadline "mining window"
   heights=(); tips=()
   for i in 1 2 3 4 5; do
     rpc=$((BASE_RPC_PORT+i))
