@@ -553,6 +553,7 @@ impl P2pHandle for MemoryP2pHandle {
             .map_err(|_| PulseError::Internal("p2p lock poisoned".into()))?;
         inner.publish_attempts += 1;
         inner.broadcasted_messages += 1;
+        inner.blocks_requested = inner.blocks_requested.saturating_add(1);
         inner.last_message_kind = Some("get-block".into());
         Ok(())
     }
@@ -3229,7 +3230,11 @@ impl Libp2pHandle {
             }
             inner.queued_messages += 1;
             match &msg {
-                OutboundMessage::GetBlock(_) | OutboundMessage::BlockData(_) => {
+                OutboundMessage::GetBlock(_) => {
+                    inner.queued_block_messages += 1;
+                    inner.blocks_requested = inner.blocks_requested.saturating_add(1);
+                }
+                OutboundMessage::BlockData(_) => {
                     inner.queued_block_messages += 1;
                 }
                 _ => inner.queued_non_block_messages += 1,
