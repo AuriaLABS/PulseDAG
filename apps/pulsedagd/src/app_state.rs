@@ -395,6 +395,8 @@ pub fn new_runtime_stats() -> NodeRuntimeStats {
         missing_parent_requests_sent: 0,
         orphan_blocks_queued: 0,
         orphan_blocks_resolved: 0,
+        orphan_blocks_retried: 0,
+        orphan_blocks_evicted: 0,
         sync_catchup_completed: 0,
         sync_failures: 0,
         startup_snapshot_exists: false,

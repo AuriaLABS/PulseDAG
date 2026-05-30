@@ -39,6 +39,11 @@ pub struct SyncStatusData {
     pub blocks_received: u64,
     pub invalid_blocks_received: u64,
     pub orphan_blocks_received: u64,
+    pub missing_parent_requests_sent: u64,
+    pub orphan_blocks_queued: u64,
+    pub orphan_blocks_retried: u64,
+    pub orphan_blocks_resolved: u64,
+    pub orphan_blocks_evicted: u64,
     pub duplicate_blocks_received: u64,
     pub peer_penalties: u64,
     pub p2p_ready_for_private_rehearsal: bool,
@@ -286,6 +291,11 @@ pub async fn get_sync_status<S: RpcStateLike>(
                 .unwrap_or(0),
         ),
         orphan_blocks_received: runtime.blockdata_missing_parent,
+        missing_parent_requests_sent: runtime.missing_parent_requests_sent,
+        orphan_blocks_queued: runtime.orphan_blocks_queued,
+        orphan_blocks_retried: runtime.orphan_blocks_retried,
+        orphan_blocks_resolved: runtime.orphan_blocks_resolved,
+        orphan_blocks_evicted: runtime.orphan_blocks_evicted,
         duplicate_blocks_received: runtime.duplicate_p2p_blocks.max(
             p2p_status
                 .as_ref()
