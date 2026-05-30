@@ -100,12 +100,62 @@ pub fn rebuild_missing_parent_index(state: &mut ChainState) {
     }
 }
 
+fn missing_parent_index_is_complete(state: &ChainState) -> bool {
+    for (orphan_hash, missing_parents) in &state.orphan_missing_parents {
+        if !state.orphan_blocks.contains_key(orphan_hash) {
+            continue;
+        }
+        for parent_hash in missing_parents {
+            if !state
+                .orphan_missing_parent_index
+                .get(parent_hash)
+                .is_some_and(|children| children.contains(orphan_hash))
+            {
+                return false;
+            }
+        }
+    }
+
+    true
+}
+
 pub fn orphans_waiting_for_parent(state: &ChainState, parent_hash: &Hash) -> Vec<Hash> {
-    state
+    let indexed = state
         .orphan_missing_parent_index
         .get(parent_hash)
         .cloned()
-        .unwrap_or_default()
+        .unwrap_or_default();
+
+    if missing_parent_index_is_complete(state) {
+        return indexed;
+    }
+
+    let mut waiting = indexed.into_iter().collect::<BTreeSet<_>>();
+    waiting.extend(state.orphan_missing_parents.iter().filter_map(
+        |(orphan_hash, missing_parents)| {
+            if state.orphan_blocks.contains_key(orphan_hash)
+                && missing_parents.contains(parent_hash)
+            {
+                Some(orphan_hash.clone())
+            } else {
+                None
+            }
+        },
+    ));
+    waiting.into_iter().collect()
+}
+
+pub fn orphan_children_waiting_for_parent(state: &ChainState, parent_hash: &Hash) -> Vec<Hash> {
+    orphans_waiting_for_parent(state, parent_hash)
+}
+
+pub fn pending_missing_parent_count(state: &ChainState) -> usize {
+    state
+        .orphan_missing_parents
+        .values()
+        .flat_map(|missing_parents| missing_parents.iter().cloned())
+        .collect::<BTreeSet<_>>()
+        .len()
 }
 
 pub fn prune_orphans(state: &mut ChainState, max_count: usize, max_age_ms: u64) -> usize {
@@ -195,7 +245,7 @@ pub fn adopt_ready_orphans_with_result(
     source: AcceptSource,
     arrived_parent: Option<&Hash>,
 ) -> OrphanAdoptionResult {
-    if state.orphan_missing_parent_index.is_empty() && !state.orphan_missing_parents.is_empty() {
+    if !missing_parent_index_is_complete(state) {
         rebuild_missing_parent_index(state);
     }
 

@@ -350,7 +350,7 @@ pub async fn get_sync_missing<S: RpcStateLike>(
         .collect::<Vec<_>>();
     let pending_missing_parents = pulsedag_core::pending_missing_parent_count(&chain);
     let mut missing_parent_index = chain
-        .orphan_parent_index
+        .orphan_missing_parent_index
         .iter()
         .map(|(parent, waiting)| MissingParentIndexEntry {
             parent: parent.clone(),
@@ -588,10 +588,10 @@ mod tests {
             .insert(child_block.clone(), missing_parents.clone());
         for parent in missing_parents {
             chain
-                .orphan_parent_index
+                .orphan_missing_parent_index
                 .entry(parent)
                 .or_default()
-                .insert(child_block.clone());
+                .push(child_block.clone());
         }
         let mut runtime = NodeRuntimeStats::default();
         runtime.pending_block_requests = 3;
