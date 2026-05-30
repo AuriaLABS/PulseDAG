@@ -3,8 +3,13 @@ set -euo pipefail
 
 DURATION_SECS=${DURATION_SECS:-1800}
 P2P_CONNECT_WAIT_SECS=${P2P_CONNECT_WAIT_SECS:-120}
+QUIESCENCE_SECS=${QUIESCENCE_SECS:-90}
+SMOKE_TOTAL_DEADLINE_SECS=${SMOKE_TOTAL_DEADLINE_SECS:-2100}
+PULSEDAG_CURL_CONNECT_TIMEOUT=${PULSEDAG_CURL_CONNECT_TIMEOUT:-2}
+PULSEDAG_CURL_MAX_TIME=${PULSEDAG_CURL_MAX_TIME:-5}
 RUN_ID=${RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)}
 START_TS=$(date +%s)
+SMOKE_DEADLINE_TS=$((START_TS + SMOKE_TOTAL_DEADLINE_SECS))
 START_UTC=$(date -u +%FT%TZ)
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OUT_DIR_BASE="${OUT_DIR:-$ROOT_DIR/artifacts/v2_2_19/private_5n_4m_rehearsal}"
@@ -37,7 +42,49 @@ ACCEPTED_BLOCKS=0
 REJECTED_BLOCKS=0
 TEMPLATES_OK=0
 declare -A miner_submit miner_accept miner_template
+CLEANUP_STARTED=0
+WATCHDOG_PID=""
 for i in 1 2 3 4; do miner_submit[$i]=0; miner_accept[$i]=0; miner_template[$i]=0; done
+
+phase_marker(){ echo "PHASE $(date -u +%FT%TZ) $*"; }
+
+seconds_remaining(){
+  local now
+  now=$(date +%s)
+  echo $((SMOKE_DEADLINE_TS - now))
+}
+
+deadline_expired(){ (( $(seconds_remaining) <= 0 )); }
+
+fail_deadline(){
+  local context="$1"
+  record_fail "global deadline expired during ${context} after ${SMOKE_TOTAL_DEADLINE_SECS}s"
+  echo "FATAL: global deadline expired during ${context}; packaging evidence before exit"
+  exit 124
+}
+
+check_deadline(){
+  local context="${1:-operation}"
+  deadline_expired && fail_deadline "$context"
+}
+
+sleep_with_deadline(){
+  local requested="$1" context="${2:-sleep}" remaining
+  remaining=$(seconds_remaining)
+  (( remaining <= 0 )) && fail_deadline "$context"
+  (( requested > remaining )) && requested=$remaining
+  sleep "$requested"
+}
+
+start_deadline_watchdog(){
+  local parent_pid="$$"
+  (
+    sleep "$SMOKE_TOTAL_DEADLINE_SECS"
+    echo "global deadline expired after ${SMOKE_TOTAL_DEADLINE_SECS}s" > "$OUT_DIR/deadline-expired.txt"
+    kill -TERM "$parent_pid" 2>/dev/null || true
+  ) &
+  WATCHDOG_PID=$!
+}
 REPO_COMMIT="$(git -C "$ROOT_DIR" rev-parse --short=12 HEAD 2>/dev/null || echo unknown)"
 NODE_VERSION="$("$NODE_BIN" --version 2>/dev/null | head -n1 || echo unknown)"
 
@@ -65,12 +112,13 @@ record_fail(){ local msg; msg="$1"; echo "FAIL: $msg"; FAIL_REASONS+=("$msg"); }
 safe_curl_json(){
   local url out label required rc
   url="$1"; out="$2"; label="${3:-$url}"; required="${4:-0}"
-  if ! curl -fsS "$url" -o "$out"; then
-    rc=$?
-    jq -n --arg url "$url" --argjson exit_code "$rc" '{ok:false,error:"curl failed",url:$url,exit_code:$exit_code}' > "$out"
-    if (( required == 1 )); then record_fail "required endpoint failed: $url"; else record_warn "optional endpoint failed: $label"; fi
-    return 1
+  if curl -fsS --connect-timeout "$PULSEDAG_CURL_CONNECT_TIMEOUT" --max-time "$PULSEDAG_CURL_MAX_TIME" "$url" -o "$out"; then
+    return 0
   fi
+  rc=$?
+  jq -n --arg url "$url" --argjson exit_code "$rc" '{ok:false,error:"curl failed",url:$url,exit_code:$exit_code}' > "$out"
+  if (( required == 1 )); then record_fail "required endpoint failed: $url"; else record_warn "optional endpoint failed: $label"; fi
+  return 1
 }
 safe_curl_required(){ safe_curl_json "$1" "$2" "${3:-$1}" 1; }
 safe_curl_optional(){ safe_curl_json "$1" "$2" "${3:-$1}" 0; }
@@ -119,7 +167,12 @@ ensure_ports_free(){
   done
 }
 
-stop_pids(){ for p in "$@"; do kill "$p" 2>/dev/null || true; done; sleep 1; for p in "$@"; do kill -0 "$p" 2>/dev/null && kill -9 "$p" 2>/dev/null || true; done; }
+stop_pids(){
+  (( $# == 0 )) && return 0
+  for p in "$@"; do [[ -n "$p" ]] && kill "$p" 2>/dev/null || true; done
+  sleep 1
+  for p in "$@"; do [[ -n "$p" ]] && kill -0 "$p" 2>/dev/null && kill -9 "$p" 2>/dev/null || true; done
+}
 capture_p2p_gate_failure(){
   local i
   for i in 1 2 3 4 5; do
@@ -151,6 +204,7 @@ collect_final_state(){
     safe_curl_optional "http://127.0.0.1:${rpc}/status" "$OUT_DIR/endpoints/n${i}-status-final.json" "n${i}:/status final" || true
     safe_curl_optional "http://127.0.0.1:${rpc}/release" "$OUT_DIR/endpoints/n${i}-release-final.json" "n${i}:/release final" || true
     safe_curl_optional "http://127.0.0.1:${rpc}/readiness" "$OUT_DIR/endpoints/n${i}-readiness-final.json" "n${i}:/readiness final" || true
+    safe_curl_optional "http://127.0.0.1:${rpc}/sync/status" "$OUT_DIR/endpoints/n${i}-sync-status-final.json" "n${i}:/sync/status final" || true
     safe_curl_optional "http://127.0.0.1:${rpc}/p2p/status" "$OUT_DIR/endpoints/n${i}-p2p-status-final.json" "n${i}:/p2p/status final" || true
     NODE_HEIGHT[$i]="$(jq -r '.data.best_height // 0' "$OUT_DIR/endpoints/n${i}-status-final.json" 2>/dev/null || echo 0)"
     NODE_TIP[$i]="$(jq -r '.data.selected_tip // ""' "$OUT_DIR/endpoints/n${i}-status-final.json" 2>/dev/null || echo '')"
@@ -284,7 +338,7 @@ package_evidence(){
   done
   local tar_tmp
   tar_tmp=$(mktemp -p /tmp evidence.XXXXXX.tar.gz)
-  (cd "$OUT_DIR" && tar -czf "$tar_tmp" --exclude='evidence.tar.gz' --exclude='evidence.tar.gz.sha256' endpoints logs miners nodes samples summaries evidence-summary.md command-log.txt process-pids.txt p2p_convergence.json final-convergence-table.json restart_rejoin.log 2>/dev/null || true)
+  (cd "$OUT_DIR" && tar -czf "$tar_tmp" --exclude='evidence.tar.gz' --exclude='evidence.tar.gz.sha256' endpoints logs miners nodes samples summaries evidence-summary.md command-log.txt process-pids.txt p2p_convergence.json final-convergence-table.json restart_rejoin.log deadline-expired.txt 2>/dev/null || true)
   mv "$tar_tmp" "$OUT_DIR/evidence.tar.gz"
   (cd "$OUT_DIR" && sha256sum evidence.tar.gz > evidence.tar.gz.sha256)
   cp "$OUT_DIR/evidence.tar.gz" "$OUT_DIR_ROOT/evidence.tar.gz" 2>/dev/null || true
@@ -296,25 +350,41 @@ package_evidence(){
 
 cleanup(){
   local exit_code=$?
+  trap - EXIT INT TERM
+  if (( CLEANUP_STARTED == 1 )); then
+    exit "$exit_code"
+  fi
+  CLEANUP_STARTED=1
   EXIT_CODE=$exit_code
+  if [[ -f "$OUT_DIR/deadline-expired.txt" ]]; then
+    record_fail "$(cat "$OUT_DIR/deadline-expired.txt")"
+  fi
   if (( exit_code != 0 )); then
     record_fail "script exited non-zero: $exit_code"
   fi
   if (( ${#FAIL_REASONS[@]} == 0 )); then RESULT="PASS"; else RESULT="FAIL"; fi
+  phase_marker "final evidence collection"
   collect_final_state || true
   capture_log_tails || true
   write_evidence_summary || true
   write_p2p_convergence_json || true
   write_restart_rejoin_log || true
+  [[ -n "$WATCHDOG_PID" ]] && kill "$WATCHDOG_PID" 2>/dev/null || true
   stop_pids "${MINER_PIDS[@]:-}"; stop_pids "${NODE_PIDS[@]:-}"; wait || true
   package_evidence || true
   exit "$exit_code"
 }
 trap cleanup EXIT INT TERM
+start_deadline_watchdog
 
+check_deadline "preflight"
 OUT_DIR="$OUT_DIR" "$ROOT_DIR/scripts/v2_2_19_preflight_check.sh"
+phase_marker "preflight complete"
+check_deadline "port preflight"
 ensure_ports_free
+check_deadline "cargo build"
 cargo build --workspace --release --locked
+phase_marker "binaries built"
 
 start_node(){
   local idx rpc p2p bootnode name data
@@ -338,14 +408,16 @@ wait_node_ready(){
   idx="$1"
   rpc=$((BASE_RPC_PORT+idx))
   for _ in $(seq 1 60); do
+    check_deadline "pre-mining RPC gate"
     safe_curl_required "http://127.0.0.1:${rpc}/status" "$OUT_DIR/endpoints/n${idx}-status-ready.json" && return 0
-    sleep 2
+    sleep_with_deadline 2 "pre-mining RPC gate"
   done
   record_fail "node n${idx} failed readiness"
   return 1
 }
 
-start_node 1 $((BASE_RPC_PORT+1)) $((BASE_P2P_PORT+1)) ""; sleep 3
+check_deadline "node launch"
+start_node 1 $((BASE_RPC_PORT+1)) $((BASE_P2P_PORT+1)) ""; sleep_with_deadline 3 "node launch"
 safe_curl_required "http://127.0.0.1:$((BASE_RPC_PORT+1))/p2p/status" "$OUT_DIR/endpoints/n1-p2p-status-bootstrap.json"
 NODE_1_ID=$(jq -r '.data.peer_id // .data.local_node_id // empty' "$OUT_DIR/endpoints/n1-p2p-status-bootstrap.json" 2>/dev/null || true)
 if [[ -z "$NODE_1_ID" ]]; then
@@ -355,36 +427,44 @@ if [[ -z "$NODE_1_ID" ]]; then
 fi
 BOOT_1=""; [[ -n "$NODE_1_ID" ]] && BOOT_1="/ip4/127.0.0.1/tcp/$((BASE_P2P_PORT+1))/p2p/${NODE_1_ID}"
 echo "$BOOT_1" > "$OUT_DIR/bootnode.txt"
-for i in 2 3 4 5; do start_node "$i" $((BASE_RPC_PORT+i)) $((BASE_P2P_PORT+i)) "$BOOT_1"; done
-sleep 3
+for i in 2 3 4 5; do check_deadline "node launch"; start_node "$i" $((BASE_RPC_PORT+i)) $((BASE_P2P_PORT+i)) "$BOOT_1"; done
+phase_marker "nodes launched"
+sleep_with_deadline 3 "node launch"
 
 for i in 1 2 3 4 5; do wait_node_ready "$i" || true; done
+phase_marker "pre-mining RPC gate"
 
 peer_wait_deadline=$(( $(date +%s) + P2P_CONNECT_WAIT_SECS ))
 peers_total=0
 while (( $(date +%s) < peer_wait_deadline )); do
+  check_deadline "pre-mining P2P gate"
   peers_total=0
   for i in 1 2 3 4 5; do
     safe_curl_optional "http://127.0.0.1:$((BASE_RPC_PORT+i))/p2p/status" "$OUT_DIR/endpoints/n${i}-p2p-status-pre-mining.json" "n${i}:/p2p/status pre-mining" || true
     peers_total=$((peers_total + $(jq -r '.data.peer_count // (.data.connected_peers|length) // .data.connected_peer_count // 0' "$OUT_DIR/endpoints/n${i}-p2p-status-pre-mining.json" 2>/dev/null || echo 0)))
   done
   (( peers_total > 0 )) && break
-  sleep 2
+  sleep_with_deadline 2 "pre-mining P2P gate"
 done
 (( peers_total > 0 )) || { capture_p2p_gate_failure; record_fail "pre-mining p2p peers remained zero after ${P2P_CONNECT_WAIT_SECS}s"; exit 1; }
+phase_marker "pre-mining P2P gate"
 
 for i in 1 2 3 4; do
+  check_deadline "miner launch"
   local_node="http://127.0.0.1:$((BASE_RPC_PORT+i))"
   echo "launch miner-${i}: $MINER_BIN --node $local_node --miner-address v2219-${RUN_ID}-miner-${i} --backend cpu --threads 1 --loop"
   "$MINER_BIN" --node "$local_node" --miner-address "v2219-${RUN_ID}-miner-${i}" --backend cpu --threads 1 --loop > "$OUT_DIR/logs/miner-${i}.log" 2>&1 &
   MINER_PIDS+=("$!")
   echo "$! miner-${i}" >> "$OUT_DIR/process-pids.txt"
 done
+phase_marker "miners launched"
 
 printf "timestamp,n1,n2,n3,n4,n5,tip_match\n" > "$OUT_DIR/samples/height-samples.csv"
 
+phase_marker "mining window start"
 end=$(( $(date +%s) + DURATION_SECS ))
 while (( $(date +%s) < end )); do
+  check_deadline "mining window"
   heights=(); tips=()
   for i in 1 2 3 4 5; do
     rpc=$((BASE_RPC_PORT+i))
@@ -404,9 +484,15 @@ while (( $(date +%s) < end )); do
   ACCEPTED_BLOCKS=$(count_matches_in_logs "accepted")
   REJECTED_BLOCKS=$(count_matches_in_logs "reject")
   (( ACCEPTED_BLOCKS > 0 )) && TEMPLATES_OK=1
-  sleep 10
+  sleep_with_deadline 10 "mining window"
 done
-
+phase_marker "mining window end"
+stop_pids "${MINER_PIDS[@]:-}"
+phase_marker "miners stopped"
+phase_marker "quiescence start"
+sleep_with_deadline "$QUIESCENCE_SECS" "quiescence"
+phase_marker "quiescence end"
+phase_marker "final evidence collection"
 collect_final_state
 
 for i in 1 2 3 4 5; do
