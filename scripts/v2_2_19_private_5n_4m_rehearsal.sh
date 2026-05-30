@@ -3,10 +3,21 @@ set -euo pipefail
 
 DURATION_SECS=${DURATION_SECS:-1800}
 P2P_CONNECT_WAIT_SECS=${P2P_CONNECT_WAIT_SECS:-120}
+CURL_CONNECT_TIMEOUT_SECS=${CURL_CONNECT_TIMEOUT_SECS:-3}
+CURL_MAX_TIME_SECS=${CURL_MAX_TIME_SECS:-10}
 QUIESCENCE_SECS=${QUIESCENCE_SECS:-90}
+GLOBAL_DEADLINE_SECS=${GLOBAL_DEADLINE_SECS:-21600}
+MAX_GLOBAL_DEADLINE_SECS=21600
 RUN_ID=${RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)}
 START_TS=$(date +%s)
 START_UTC=$(date -u +%FT%TZ)
+if (( GLOBAL_DEADLINE_SECS > MAX_GLOBAL_DEADLINE_SECS )); then
+  GLOBAL_DEADLINE_SECS=$MAX_GLOBAL_DEADLINE_SECS
+fi
+GLOBAL_DEADLINE_TS=$((START_TS + GLOBAL_DEADLINE_SECS))
+if (( DURATION_SECS >= GLOBAL_DEADLINE_SECS )); then
+  DURATION_SECS=$((GLOBAL_DEADLINE_SECS > 600 ? GLOBAL_DEADLINE_SECS - 600 : GLOBAL_DEADLINE_SECS / 2))
+fi
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 NODE_BIN="${NODE_BIN:-$ROOT_DIR/target/release/pulsedagd}"
 MINER_BIN="${MINER_BIN:-$ROOT_DIR/target/release/pulsedag-miner}"
@@ -36,7 +47,7 @@ declare -a NODE_PIDS=()
 declare -a MINER_PIDS=()
 : > "$OUT_DIR/process-pids.txt"
 
-declare -A NODE_READY NODE_HEALTHY NODE_TIP NODE_HEIGHT NODE_P2P_OK NODE_PEERS NODE_P2P_INBOUND NODE_P2P_OUTBOUND NODE_CHAIN_ID NODE_ORPHANS NODE_MISSING_PARENTS NODE_SYNC_STATE NODE_SYNC_STAGE NODE_READINESS_SCHEMA_OK NODE_RPC_OK
+declare -A NODE_READY NODE_HEALTHY NODE_TIP NODE_HEIGHT NODE_P2P_OK NODE_PEERS NODE_P2P_INBOUND NODE_P2P_OUTBOUND NODE_CHAIN_ID NODE_ORPHANS NODE_MISSING_PARENTS NODE_SYNC_STATE NODE_SYNC_STAGE NODE_READINESS_SCHEMA_OK NODE_RPC_OK NODE_INV_HASHES_REQUESTED NODE_PEER_RECOVERY_SUCCESS_COUNT NODE_MISSING_PARENTS_COUNT
 declare -A PRE_NODE_HEIGHT PRE_NODE_TIP PRE_NODE_ORPHANS PRE_NODE_MISSING_PARENTS PRE_NODE_SYNC_STATE PRE_NODE_PEERS
 declare -A miner_submit miner_accept miner_reject miner_template
 FAIL_REASONS=()
@@ -57,6 +68,8 @@ POST_DISTINCT_TIPS=0
 LAG_IMPROVED=0
 CLEANUP_STARTED=0
 QUIESCENCE_COMPLETED=0
+MINERS_STOPPED_FOR_QUIESCENCE=0
+IN_CLEANUP=0
 REPO_COMMIT="$(git -C "$ROOT_DIR" rev-parse --short=12 HEAD 2>/dev/null || echo unknown)"
 NODE_VERSION="$({ "$NODE_BIN" --version 2>/dev/null || true; } | head -n1)"
 NODE_VERSION=${NODE_VERSION:-unknown}
@@ -91,9 +104,48 @@ record_fail(){
   FAIL_REASONS+=("$class: $msg")
 }
 
+assert_global_deadline(){
+  (( ${IN_CLEANUP:-0} == 1 )) && return 0
+  if (( $(date +%s) >= GLOBAL_DEADLINE_TS )); then
+    echo "FATAL: global deadline exceeded after ${GLOBAL_DEADLINE_SECS}s"
+    exit 124
+  fi
+}
+
+sleep_with_deadline(){
+  local requested now remaining
+  requested="$1"
+  if (( ${IN_CLEANUP:-0} == 1 )); then
+    sleep "$requested"
+    return 0
+  fi
+  while (( requested > 0 )); do
+    assert_global_deadline
+    now=$(date +%s)
+    remaining=$((GLOBAL_DEADLINE_TS - now))
+    (( remaining > 0 )) || { echo "FATAL: global deadline exhausted before sleep"; exit 124; }
+    if (( requested < remaining )); then
+      sleep "$requested"
+      return 0
+    fi
+    sleep "$remaining"
+    requested=$((requested - remaining))
+  done
+}
+
+start_global_deadline_watchdog(){
+  (
+    sleep "$GLOBAL_DEADLINE_SECS"
+    echo "FATAL: private rehearsal global deadline ${GLOBAL_DEADLINE_SECS}s reached; terminating script" >&2
+    kill -TERM $$ 2>/dev/null || true
+  ) &
+  DEADLINE_WATCHDOG_PID=$!
+}
+
 safe_curl_json(){
   local url="$1" out="$2" label="${3:-$1}" required="${4:-0}" rc
-  if ! curl -fsS --max-time 10 "$url" -o "$out"; then
+  assert_global_deadline
+  if ! curl -fsS --connect-timeout "$CURL_CONNECT_TIMEOUT_SECS" --max-time "$CURL_MAX_TIME_SECS" "$url" -o "$out"; then
     rc=$?
     jq -n --arg url "$url" --arg label "$label" --argjson exit_code "$rc" '{ok:false,error:"curl failed",label:$label,url:$url,exit_code:$exit_code}' > "$out" 2>/dev/null || true
     if (( required == 1 )); then record_fail "RPC_UNAVAILABLE" "required endpoint failed: $label ($url)"; else record_warn "optional endpoint failed: $label"; fi
@@ -138,9 +190,9 @@ stop_pids(){
   local role="$1"; shift || true
   local p alive=0
   for p in "$@"; do [[ -n "${p:-}" ]] && kill "$p" 2>/dev/null || true; done
-  sleep 1
+  sleep_with_deadline 1
   for p in "$@"; do [[ -n "${p:-}" ]] && kill -0 "$p" 2>/dev/null && kill -9 "$p" 2>/dev/null || true; done
-  sleep 1
+  sleep_with_deadline 1
   for p in "$@"; do [[ -n "${p:-}" ]] && kill -0 "$p" 2>/dev/null && alive=1; done
   (( alive == 0 )) || record_fail "CLEANUP_HANG" "$role process cleanup did not terminate cleanly"
 }
@@ -149,7 +201,7 @@ capture_p2p_gate_failure(){
   local i rpc ep f
   for i in $(seq 1 "$NODE_COUNT"); do
     rpc=$((BASE_RPC_PORT+i))
-    for ep in health status readiness p2p/status sync/status; do
+    for ep in health status readiness p2p/status sync/status sync/missing orphans; do
       safe_curl_optional "http://127.0.0.1:${rpc}/${ep}" "$OUT_DIR/endpoints/n${i}-${ep//\//_}-p2p-gate.json" "n${i}:/${ep}" || true
     done
   done
@@ -194,6 +246,8 @@ collect_state(){
     safe_curl_optional "http://127.0.0.1:${rpc}/readiness" "$OUT_DIR/endpoints/n${i}-readiness-${suffix}.json" "n${i}:/readiness ${suffix}" || true
     safe_curl_optional "http://127.0.0.1:${rpc}/p2p/status" "$OUT_DIR/endpoints/n${i}-p2p-status-${suffix}.json" "n${i}:/p2p/status ${suffix}" || true
     safe_curl_optional "http://127.0.0.1:${rpc}/sync/status" "$OUT_DIR/endpoints/n${i}-sync-status-${suffix}.json" "n${i}:/sync/status ${suffix}" || true
+    safe_curl_optional "http://127.0.0.1:${rpc}/sync/missing" "$OUT_DIR/endpoints/n${i}-sync-missing-${suffix}.json" "n${i}:/sync/missing ${suffix}" || true
+    safe_curl_optional "http://127.0.0.1:${rpc}/orphans" "$OUT_DIR/endpoints/n${i}-orphans-${suffix}.json" "n${i}:/orphans ${suffix}" || true
     NODE_HEIGHT[$i]="$(jq -r '.data.best_height // 0' "$OUT_DIR/endpoints/n${i}-status-${suffix}.json" 2>/dev/null || echo 0)"
     NODE_TIP[$i]="$(jq -r '.data.selected_tip // ""' "$OUT_DIR/endpoints/n${i}-status-${suffix}.json" 2>/dev/null || echo '')"
     NODE_READY[$i]="$(jq -r '.data.ready_for_release // .ready_for_release // 0' "$OUT_DIR/endpoints/n${i}-readiness-${suffix}.json" 2>/dev/null | sed 's/true/1/;s/false/0/' || echo 0)"
@@ -202,8 +256,11 @@ collect_state(){
     NODE_P2P_INBOUND[$i]="$(jq -r '.data.inbound_peer_count // 0' "$OUT_DIR/endpoints/n${i}-p2p-status-${suffix}.json" 2>/dev/null || echo 0)"
     NODE_P2P_OUTBOUND[$i]="$(jq -r '.data.outbound_peer_count // 0' "$OUT_DIR/endpoints/n${i}-p2p-status-${suffix}.json" 2>/dev/null || echo 0)"
     NODE_CHAIN_ID[$i]="$(extract_chain_id "$OUT_DIR/endpoints/n${i}-status-${suffix}.json" "$OUT_DIR/endpoints/n${i}-release-${suffix}.json" "$OUT_DIR/endpoints/n${i}-p2p-status-${suffix}.json" || true)"
-    NODE_ORPHANS[$i]="$(jq -r '.data.orphan_count // 0' "$OUT_DIR/endpoints/n${i}-sync-status-${suffix}.json" 2>/dev/null || echo 0)"
-    NODE_MISSING_PARENTS[$i]="$(jq -r '.data.pending_missing_parents // 0' "$OUT_DIR/endpoints/n${i}-sync-status-${suffix}.json" 2>/dev/null || echo 0)"
+    NODE_ORPHANS[$i]="$(jq -r '.data.orphan_count // .orphan_count // (.data.orphans|length) // (.orphans|length) // 0' "$OUT_DIR/endpoints/n${i}-sync-status-${suffix}.json" "$OUT_DIR/endpoints/n${i}-orphans-${suffix}.json" 2>/dev/null | head -n1 || echo 0)"
+    NODE_MISSING_PARENTS[$i]="$(jq -r '.data.pending_missing_parents // .pending_missing_parents // 0' "$OUT_DIR/endpoints/n${i}-sync-status-${suffix}.json" "$OUT_DIR/endpoints/n${i}-sync-missing-${suffix}.json" 2>/dev/null | head -n1 || echo 0)"
+    NODE_INV_HASHES_REQUESTED[$i]="$(jq -r '.data.inv_hashes_requested // .inv_hashes_requested // 0' "$OUT_DIR/endpoints/n${i}-p2p-status-${suffix}.json" "$OUT_DIR/endpoints/n${i}-sync-status-${suffix}.json" 2>/dev/null | head -n1 || echo 0)"
+    NODE_PEER_RECOVERY_SUCCESS_COUNT[$i]="$(jq -r '.data.peer_recovery_success_count // .peer_recovery_success_count // 0' "$OUT_DIR/endpoints/n${i}-p2p-status-${suffix}.json" "$OUT_DIR/endpoints/n${i}-sync-status-${suffix}.json" 2>/dev/null | head -n1 || echo 0)"
+    NODE_MISSING_PARENTS_COUNT[$i]="$(jq -r '[.. | objects | .missing_parents? // empty | if type == "array" then length else 1 end] | add // 0' "$OUT_DIR/endpoints/n${i}-sync-status-${suffix}.json" "$OUT_DIR/endpoints/n${i}-sync-missing-${suffix}.json" "$OUT_DIR/endpoints/n${i}-orphans-${suffix}.json" 2>/dev/null | head -n1 || echo 0)"
     NODE_SYNC_STATE[$i]="$(jq -r '.data.sync_state // "unknown"' "$OUT_DIR/endpoints/n${i}-sync-status-${suffix}.json" 2>/dev/null || echo unknown)"
     NODE_SYNC_STAGE[$i]="$(jq -r '.data.catchup_stage // "unknown"' "$OUT_DIR/endpoints/n${i}-sync-status-${suffix}.json" 2>/dev/null || echo unknown)"
     NODE_P2P_OK[$i]=$(( NODE_PEERS[$i] > 0 ? 1 : 0 ))
@@ -284,6 +341,10 @@ write_evidence_summary(){
     echo "- runtime duration (s): $duration"
     echo "- mining duration target (s): $DURATION_SECS"
     echo "- quiescence duration target (s): $QUIESCENCE_SECS"
+    echo "- global deadline (s): $GLOBAL_DEADLINE_SECS"
+    echo "- curl connect timeout (s): $CURL_CONNECT_TIMEOUT_SECS"
+    echo "- curl max time (s): $CURL_MAX_TIME_SECS"
+    echo "- miners stopped for quiescence: $MINERS_STOPPED_FOR_QUIESCENCE"
     echo
     echo "## Status/readiness per node"
     for i in $(seq 1 "$NODE_COUNT"); do echo "- n${i}: healthy=${NODE_HEALTHY[$i]:-0} ready=${NODE_READY[$i]:-0} readiness_schema_ok=${NODE_READINESS_SCHEMA_OK[$i]:-0}"; done
@@ -292,7 +353,7 @@ write_evidence_summary(){
     for i in $(seq 1 "$NODE_COUNT"); do echo "- n${i}: peers=${NODE_PEERS[$i]:-0} inbound=${NODE_P2P_INBOUND[$i]:-0} outbound=${NODE_P2P_OUTBOUND[$i]:-0} ok=${NODE_P2P_OK[$i]:-0}"; done
     echo
     echo "## Sync/orphan status per node"
-    for i in $(seq 1 "$NODE_COUNT"); do echo "- n${i}: sync_state=${NODE_SYNC_STATE[$i]:-unknown} catchup_stage=${NODE_SYNC_STAGE[$i]:-unknown} orphan_count=${NODE_ORPHANS[$i]:-0} missing_parent_count=${NODE_MISSING_PARENTS[$i]:-0}"; done
+    for i in $(seq 1 "$NODE_COUNT"); do echo "- n${i}: sync_state=${NODE_SYNC_STATE[$i]:-unknown} catchup_stage=${NODE_SYNC_STAGE[$i]:-unknown} orphan_count=${NODE_ORPHANS[$i]:-0} pending_missing_parents=${NODE_MISSING_PARENTS[$i]:-0} missing_parent_entries=${NODE_MISSING_PARENTS_COUNT[$i]:-0} inv_hashes_requested=${NODE_INV_HASHES_REQUESTED[$i]:-0} peer_recovery_success_count=${NODE_PEER_RECOVERY_SUCCESS_COUNT[$i]:-0}"; done
     echo
     echo "## Chain identity per node"
     for i in $(seq 1 "$NODE_COUNT"); do echo "- n${i}: chain_id=${NODE_CHAIN_ID[$i]:-unknown}"; done
@@ -366,7 +427,7 @@ write_p2p_convergence_json(){
     --argjson post_worst_lag "$POST_WORST_LAG" \
     --argjson distinct_final_tips "$POST_DISTINCT_TIPS" \
     --argjson lag_improved "$LAG_IMPROVED" \
-    --argjson nodes "$(for i in $(seq 1 "$NODE_COUNT"); do jq -n --arg node "n$i" --arg chain_id "${NODE_CHAIN_ID[$i]:-}" --argjson height "${NODE_HEIGHT[$i]:-0}" --arg tip "${NODE_TIP[$i]:-}" --argjson peer_count "${NODE_PEERS[$i]:-0}" --argjson orphan_count "${NODE_ORPHANS[$i]:-0}" --argjson missing_parent_count "${NODE_MISSING_PARENTS[$i]:-0}" --arg sync_state "${NODE_SYNC_STATE[$i]:-unknown}" '{node:$node,chain_id:$chain_id,height:$height,tip:$tip,peer_count:$peer_count,orphan_count:$orphan_count,missing_parent_count:$missing_parent_count,sync_state:$sync_state}'; done | jq -s '.')" \
+    --argjson nodes "$(for i in $(seq 1 "$NODE_COUNT"); do jq -n --arg node "n$i" --arg chain_id "${NODE_CHAIN_ID[$i]:-}" --argjson height "${NODE_HEIGHT[$i]:-0}" --arg tip "${NODE_TIP[$i]:-}" --argjson peer_count "${NODE_PEERS[$i]:-0}" --argjson orphan_count "${NODE_ORPHANS[$i]:-0}" --argjson pending_missing_parents "${NODE_MISSING_PARENTS[$i]:-0}" --argjson missing_parents_entries "${NODE_MISSING_PARENTS_COUNT[$i]:-0}" --argjson inv_hashes_requested "${NODE_INV_HASHES_REQUESTED[$i]:-0}" --argjson peer_recovery_success_count "${NODE_PEER_RECOVERY_SUCCESS_COUNT[$i]:-0}" --arg sync_state "${NODE_SYNC_STATE[$i]:-unknown}" '{node:$node,chain_id:$chain_id,height:$height,tip:$tip,peer_count:$peer_count,orphan_count:$orphan_count,pending_missing_parents:$pending_missing_parents,missing_parents_entries:$missing_parents_entries,inv_hashes_requested:$inv_hashes_requested,peer_recovery_success_count:$peer_recovery_success_count,sync_state:$sync_state}'; done | jq -s '.')" \
     --argjson miners "$(for i in $(seq 1 "$MINER_COUNT"); do jq -n --arg miner "miner-$i" --argjson templates "${miner_template[$i]:-0}" --argjson submits "${miner_submit[$i]:-0}" --argjson accepted "${miner_accept[$i]:-0}" --argjson rejected "${miner_reject[$i]:-0}" '{miner:$miner,templates:$templates,submits:$submits,accepted:$accepted,rejected:$rejected}'; done | jq -s '.')" \
     '{stage:$stage,chain_id:$chain_id,version:$version,commit:$commit,tip:$tip,miner_count:$miner_count,accepted_blocks:$accepted_blocks,rejected_blocks:$rejected_blocks,convergence:{before_quiescence:($pre_converged==1),after_quiescence:($post_converged==1),pre_worst_lag_from_max_height:$pre_worst_lag,post_worst_lag_from_max_height:$post_worst_lag,distinct_final_tips:$distinct_final_tips,lag_improved_during_quiescence:($lag_improved==1)},nodes:$nodes,miners:$miners}' \
     > "$OUT_DIR/p2p_convergence.json"
@@ -394,6 +455,9 @@ write_metadata(){
     echo "end_utc=$(date -u +%FT%TZ)"
     echo "duration_seconds=$(( $(date +%s) - START_TS ))"
     echo "exit_code=$EXIT_CODE"
+    echo "global_deadline_seconds=$GLOBAL_DEADLINE_SECS"
+    echo "curl_connect_timeout_seconds=$CURL_CONNECT_TIMEOUT_SECS"
+    echo "curl_max_time_seconds=$CURL_MAX_TIME_SECS"
   } > "$OUT_DIR/summaries/package-metadata.txt"
 }
 
@@ -421,6 +485,7 @@ package_evidence(){
 cleanup(){
   local exit_code=$?
   EXIT_CODE=$exit_code
+  IN_CLEANUP=1
   CLEANUP_STARTED=1
   if (( exit_code != 0 && ${#FAIL_REASONS[@]} == 0 )); then record_fail "HARNESS_TIMEOUT" "script exited non-zero before classified failure: $exit_code"; fi
   collect_state "cleanup-final" || true
@@ -434,6 +499,7 @@ cleanup(){
   write_evidence_summary || true
   write_p2p_convergence_json || true
   write_restart_rejoin_log || true
+  [[ -n "${DEADLINE_WATCHDOG_PID:-}" ]] && kill "$DEADLINE_WATCHDOG_PID" 2>/dev/null || true
   stop_pids "miner" "${MINER_PIDS[@]:-}"
   stop_pids "node" "${NODE_PIDS[@]:-}"
   wait || true
@@ -442,6 +508,7 @@ cleanup(){
 }
 trap cleanup EXIT INT TERM
 
+start_global_deadline_watchdog
 OUT_DIR="$OUT_DIR" "$ROOT_DIR/scripts/v2_2_19_preflight_check.sh"
 ensure_ports_free
 cargo build --workspace --release --locked
@@ -464,14 +531,14 @@ wait_node_ready(){
   rpc=$((BASE_RPC_PORT+idx))
   for _ in $(seq 1 60); do
     safe_curl_json "http://127.0.0.1:${rpc}/status" "$OUT_DIR/endpoints/n${idx}-status-ready.json" "n${idx}:/status ready" 0 && return 0
-    sleep 2
+    sleep_with_deadline 2
   done
   record_fail "RPC_UNAVAILABLE" "node n${idx} failed status readiness polling"
   return 1
 }
 
 start_node 1 $((BASE_RPC_PORT+1)) $((BASE_P2P_PORT+1)) ""
-sleep 3
+sleep_with_deadline 3
 safe_curl_required "http://127.0.0.1:$((BASE_RPC_PORT+1))/p2p/status" "$OUT_DIR/endpoints/n1-p2p-status-bootstrap.json" "n1:/p2p/status bootstrap"
 NODE_1_ID=$(jq -r '.data.peer_id // .data.local_node_id // empty' "$OUT_DIR/endpoints/n1-p2p-status-bootstrap.json" 2>/dev/null || true)
 if [[ -z "$NODE_1_ID" ]]; then
@@ -482,7 +549,7 @@ fi
 BOOT_1="/ip4/127.0.0.1/tcp/$((BASE_P2P_PORT+1))/p2p/${NODE_1_ID}"
 echo "$BOOT_1" > "$OUT_DIR/bootnode.txt"
 for i in 2 3 4 5; do start_node "$i" $((BASE_RPC_PORT+i)) $((BASE_P2P_PORT+i)) "$BOOT_1"; done
-sleep 3
+sleep_with_deadline 3
 
 for i in $(seq 1 "$NODE_COUNT"); do wait_node_ready "$i" || true; done
 
@@ -495,7 +562,7 @@ while (( $(date +%s) < peer_wait_deadline )); do
     peers_total=$((peers_total + $(jq -r '.data.peer_count // (.data.connected_peers|length) // .data.connected_peer_count // 0' "$OUT_DIR/endpoints/n${i}-p2p-status-pre-mining.json" 2>/dev/null || echo 0)))
   done
   (( peers_total > 0 )) && break
-  sleep 2
+  sleep_with_deadline 2
 done
 (( peers_total > 0 )) || { capture_p2p_gate_failure; record_fail "P2P_NOT_CONNECTED" "pre-mining p2p peers remained zero after ${P2P_CONNECT_WAIT_SECS}s"; exit 1; }
 
@@ -515,7 +582,7 @@ while (( $(date +%s) < end )); do
   total_orphans=0; total_missing=0
   for i in $(seq 1 "$NODE_COUNT"); do total_orphans=$((total_orphans + ${NODE_ORPHANS[$i]:-0})); total_missing=$((total_missing + ${NODE_MISSING_PARENTS[$i]:-0})); done
   echo "$(date -u +%FT%TZ),${NODE_HEIGHT[1]:-0},${NODE_HEIGHT[2]:-0},${NODE_HEIGHT[3]:-0},${NODE_HEIGHT[4]:-0},${NODE_HEIGHT[5]:-0},$PRE_CONVERGED,$PRE_DISTINCT_TIPS,$total_orphans,$total_missing" >> "$OUT_DIR/samples/height-samples.csv"
-  sleep 10
+  sleep_with_deadline 10
 done
 
 collect_state "pre-quiescence"
@@ -523,8 +590,9 @@ snapshot_current_as_pre
 compute_metrics_from_current PRE
 stop_pids "miner" "${MINER_PIDS[@]:-}"
 MINER_PIDS=()
+MINERS_STOPPED_FOR_QUIESCENCE=1
 echo "miners stopped; waiting ${QUIESCENCE_SECS}s for quiescence"
-sleep "$QUIESCENCE_SECS"
+sleep_with_deadline "$QUIESCENCE_SECS"
 collect_state "final"
 compute_metrics_from_current POST
 write_quiescence_metrics
