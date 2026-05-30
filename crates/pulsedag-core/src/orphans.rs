@@ -101,11 +101,41 @@ pub fn rebuild_missing_parent_index(state: &mut ChainState) {
 }
 
 pub fn orphans_waiting_for_parent(state: &ChainState, parent_hash: &Hash) -> Vec<Hash> {
+    if let Some(children) = state.orphan_missing_parent_index.get(parent_hash) {
+        return children.clone();
+    }
+
+    let mut children = state
+        .orphan_missing_parents
+        .iter()
+        .filter_map(|(orphan_hash, missing_parents)| {
+            if state.orphan_blocks.contains_key(orphan_hash)
+                && missing_parents.iter().any(|parent| parent == parent_hash)
+            {
+                Some(orphan_hash.clone())
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+    children.sort();
+    children
+}
+
+/// Backward-compatible alias for callers that use the pre-index orphan API.
+pub fn orphan_children_waiting_for_parent(state: &ChainState, parent_hash: &Hash) -> Vec<Hash> {
+    orphans_waiting_for_parent(state, parent_hash)
+}
+
+/// Count distinct missing parent hashes currently blocking queued orphan blocks.
+pub fn pending_missing_parent_count(state: &ChainState) -> usize {
     state
-        .orphan_missing_parent_index
-        .get(parent_hash)
-        .cloned()
-        .unwrap_or_default()
+        .orphan_missing_parents
+        .iter()
+        .filter(|(orphan_hash, _)| state.orphan_blocks.contains_key(*orphan_hash))
+        .flat_map(|(_, missing_parents)| missing_parents.iter().cloned())
+        .collect::<BTreeSet<_>>()
+        .len()
 }
 
 pub fn prune_orphans(state: &mut ChainState, max_count: usize, max_age_ms: u64) -> usize {
