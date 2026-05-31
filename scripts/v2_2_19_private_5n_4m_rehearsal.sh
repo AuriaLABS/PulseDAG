@@ -45,7 +45,10 @@ exec > >(tee -a "$OUT_DIR/command-log.txt") 2>&1
 
 declare -a NODE_PIDS=()
 declare -a MINER_PIDS=()
-declare -A NODE_READY NODE_HEALTHY NODE_ADVANCED NODE_TIP NODE_HEIGHT NODE_P2P_OK NODE_PEERS NODE_P2P_INBOUND NODE_P2P_OUTBOUND NODE_CHAIN_ID NODE_ORPHAN_COUNT NODE_PENDING_MISSING_PARENTS NODE_INV_HASHES_REQUESTED NODE_PEER_RECOVERY_SUCCESS_COUNT NODE_MISSING_PARENTS_COUNT
+declare -A NODE_READY NODE_HEALTHY NODE_ADVANCED NODE_TIP NODE_HEIGHT NODE_P2P_OK NODE_PEERS NODE_P2P_INBOUND NODE_P2P_OUTBOUND NODE_CHAIN_ID
+declare -A NODE_ORPHAN_COUNT NODE_PENDING_MISSING_PARENTS NODE_INV_HASHES_REQUESTED NODE_PEER_RECOVERY_SUCCESS_COUNT NODE_MISSING_PARENTS_COUNT
+declare -A NODE_READINESS_SCHEMA_OK NODE_SYNC_STATE NODE_SYNC_STAGE
+declare -A PRE_NODE_HEIGHT PRE_NODE_TIP PRE_NODE_ORPHANS PRE_NODE_MISSING_PARENTS PRE_NODE_SYNC_STATE PRE_NODE_PEERS
 FAIL_REASONS=()
 FAIL_CLASSES=()
 WARNINGS=()
@@ -61,6 +64,15 @@ GATE_5N_1M_BASELINE=FAIL
 GATE_5N_2M_INTERMEDIATE=FAIL
 GATE_5N_4M_STRESS=OBSERVE
 IN_CLEANUP=0
+CLEANUP_STARTED=0
+QUIESCENCE_COMPLETED=0
+PRE_WORST_LAG=0
+PRE_DISTINCT_TIPS=0
+PRE_CONVERGED=0
+POST_WORST_LAG=0
+POST_DISTINCT_TIPS=0
+POST_CONVERGED=0
+LAG_IMPROVED=0
 declare -A miner_submit miner_accept miner_template
 for i in 1 2 3 4; do miner_submit[$i]=0; miner_accept[$i]=0; miner_template[$i]=0; done
 REPO_COMMIT="$(git -C "$ROOT_DIR" rev-parse --short=12 HEAD 2>/dev/null || echo unknown)"
@@ -135,54 +147,23 @@ start_global_deadline_watchdog(){
   DEADLINE_WATCHDOG_PID=$!
 }
 
-assert_global_deadline(){
-  (( ${IN_CLEANUP:-0} == 1 )) && return 0
-  if (( $(date +%s) >= GLOBAL_DEADLINE_TS )); then
-    echo "FATAL: global deadline exceeded after ${GLOBAL_DEADLINE_SECS}s"
-    exit 124
-  fi
-}
-
-sleep_with_deadline(){
-  local requested now remaining
-  requested="$1"
-  if (( ${IN_CLEANUP:-0} == 1 )); then
-    sleep "$requested"
-    return 0
-  fi
-  while (( requested > 0 )); do
-    assert_global_deadline
-    now=$(date +%s)
-    remaining=$((GLOBAL_DEADLINE_TS - now))
-    (( remaining > 0 )) || { echo "FATAL: global deadline exhausted before sleep"; exit 124; }
-    if (( requested < remaining )); then
-      sleep "$requested"
-      return 0
-    fi
-    sleep "$remaining"
-    requested=$((requested - remaining))
-  done
-}
-
-start_global_deadline_watchdog(){
-  (
-    sleep "$GLOBAL_DEADLINE_SECS"
-    echo "FATAL: private rehearsal global deadline ${GLOBAL_DEADLINE_SECS}s reached; terminating script" >&2
-    kill -TERM $$ 2>/dev/null || true
-  ) &
-  DEADLINE_WATCHDOG_PID=$!
-}
-
 safe_curl_json(){
-  local url out label required rc
+  local url out label required rc now remaining max_time
   url="$1"; out="$2"; label="${3:-$url}"; required="${4:-0}"
   assert_global_deadline
-  if ! curl -fsS --connect-timeout "$CURL_CONNECT_TIMEOUT_SECS" --max-time "$CURL_MAX_TIME_SECS" "$url" -o "$out"; then
-    rc=$?
-    jq -n --arg url "$url" --arg label "$label" --argjson exit_code "$rc" '{ok:false,error:"curl failed",label:$label,url:$url,exit_code:$exit_code}' > "$out" 2>/dev/null || true
-    if (( required == 1 )); then record_fail "RPC_UNAVAILABLE" "required endpoint failed: $label ($url)"; else record_warn "optional endpoint failed: $label"; fi
-    return 1
+  now=$(date +%s)
+  remaining=$((GLOBAL_DEADLINE_TS - now))
+  (( remaining > 0 )) || { echo "FATAL: global deadline exhausted before curl: $label"; exit 124; }
+  max_time=$CURL_MAX_TIME_SECS
+  (( max_time > remaining )) && max_time=$remaining
+  rc=0
+  curl -fsS --connect-timeout "$CURL_CONNECT_TIMEOUT_SECS" --max-time "$max_time" "$url" -o "$out" || rc=$?
+  if (( rc == 0 )); then
+    return 0
   fi
+  jq -n --arg url "$url" --arg label "$label" --argjson exit_code "$rc" '{ok:false,error:"curl failed",label:$label,url:$url,exit_code:$exit_code}' > "$out" 2>/dev/null || true
+  if (( required == 1 )); then record_fail "RPC_UNAVAILABLE" "required endpoint failed: $label ($url)"; else record_warn "optional endpoint failed: $label"; fi
+  return 1
 }
 safe_curl_required(){ safe_curl_json "$1" "$2" "${3:-$1}" 1; }
 safe_curl_optional(){ safe_curl_json "$1" "$2" "${3:-$1}" 0; }
@@ -218,7 +199,13 @@ ensure_ports_free(){
   done
 }
 
-stop_pids(){ for p in "$@"; do kill "$p" 2>/dev/null || true; done; sleep_with_deadline 1; for p in "$@"; do kill -0 "$p" 2>/dev/null && kill -9 "$p" 2>/dev/null || true; done; }
+stop_pids(){
+  local p
+  (( $# == 0 )) && return 0
+  for p in "$@"; do [[ -n "$p" ]] && kill "$p" 2>/dev/null || true; done
+  sleep_with_deadline 1
+  for p in "$@"; do [[ -n "$p" ]] && kill -0 "$p" 2>/dev/null && kill -9 "$p" 2>/dev/null || true; done
+}
 capture_p2p_gate_failure(){
   local i rpc ep f
   for i in $(seq 1 "$NODE_COUNT"); do
@@ -269,9 +256,13 @@ collect_final_state(){
     NODE_INV_HASHES_REQUESTED[$i]="$(jq -r '.data.inv_hashes_requested // .inv_hashes_requested // 0' "$OUT_DIR/endpoints/n${i}-p2p-status-final.json" "$OUT_DIR/endpoints/n${i}-sync-status-final.json" 2>/dev/null | head -n1 || echo 0)"
     NODE_PEER_RECOVERY_SUCCESS_COUNT[$i]="$(jq -r '.data.peer_recovery_success_count // .peer_recovery_success_count // 0' "$OUT_DIR/endpoints/n${i}-p2p-status-final.json" "$OUT_DIR/endpoints/n${i}-sync-status-final.json" 2>/dev/null | head -n1 || echo 0)"
     NODE_MISSING_PARENTS_COUNT[$i]="$(jq -r '[.. | objects | .missing_parents? // empty | if type == "array" then length else 1 end] | add // 0' "$OUT_DIR/endpoints/n${i}-sync-status-final.json" "$OUT_DIR/endpoints/n${i}-sync-missing-final.json" "$OUT_DIR/endpoints/n${i}-orphans-final.json" 2>/dev/null | head -n1 || echo 0)"
+    NODE_ORPHANS[$i]="${NODE_ORPHAN_COUNT[$i]:-0}"
+    NODE_MISSING_PARENTS[$i]="${NODE_PENDING_MISSING_PARENTS[$i]:-0}"
+    NODE_SYNC_STATE[$i]="$(jq -r '.data.sync_state // .sync_state // .data.state // "unknown"' "$OUT_DIR/endpoints/n${i}-sync-status-final.json" 2>/dev/null || echo unknown)"
+    NODE_SYNC_STAGE[$i]="$(jq -r '.data.catchup_stage // .catchup_stage // .data.stage // "unknown"' "$OUT_DIR/endpoints/n${i}-sync-status-final.json" 2>/dev/null || echo unknown)"
     NODE_P2P_OK[$i]=$(( NODE_PEERS[$i] > 0 ? 1 : 0 ))
-    readiness_has_ready=$(jq -e '(.data.ready_for_release? // .ready_for_release?) | type == "boolean"' "$OUT_DIR/endpoints/n${i}-readiness-${suffix}.json" >/dev/null 2>&1 && echo 1 || echo 0)
-    readiness_has_public=$(jq -e '(.data.public_testnet_ready? // .public_testnet_ready?) == false' "$OUT_DIR/endpoints/n${i}-readiness-${suffix}.json" >/dev/null 2>&1 && echo 1 || echo 0)
+    readiness_has_ready=$(jq -e '(.data.ready_for_release? // .ready_for_release?) | type == "boolean"' "$OUT_DIR/endpoints/n${i}-readiness-final.json" >/dev/null 2>&1 && echo 1 || echo 0)
+    readiness_has_public=$(jq -e '(.data.public_testnet_ready? // .public_testnet_ready?) == false' "$OUT_DIR/endpoints/n${i}-readiness-final.json" >/dev/null 2>&1 && echo 1 || echo 0)
     NODE_READINESS_SCHEMA_OK[$i]=$(( readiness_has_ready == 1 && readiness_has_public == 1 ? 1 : 0 ))
   done
   collect_miner_metrics
@@ -318,7 +309,7 @@ write_quiescence_metrics(){
   (( POST_WORST_LAG < PRE_WORST_LAG )) && LAG_IMPROVED=1 || LAG_IMPROVED=0
   jq -n \
     --arg stage "$STAGE_NAME" \
-    --argjson quiescence_secs "$QUIESCENCE_SECS" \
+    --argjson quiescence_secs "$QUIESCENCE_WAIT_SECS" \
     --argjson pre_converged "$PRE_CONVERGED" \
     --argjson post_converged "$POST_CONVERGED" \
     --argjson pre_worst_lag "$PRE_WORST_LAG" \
@@ -399,7 +390,7 @@ write_evidence_summary(){
     echo "| gate | status |"
     echo "|---|---|"
     echo "| 5 nodes launched | $( (( ${#NODE_PIDS[@]}==5 )) && echo PASS || echo FAIL ) |"
-    echo "| 4 miners launched | $( (( ${#MINER_PIDS[@]}>=4 || MINERS_STOPPED_FOR_QUIESCENCE==1 )) && echo PASS || echo FAIL ) |"
+    echo "| ${MINER_COUNT} miners launched | $( (( ${#MINER_PIDS[@]}>=MINER_COUNT || MINERS_STOPPED_FOR_QUIESCENCE==1 )) && echo PASS || echo FAIL ) |"
     echo "| bootnode peer id extracted | $([[ -n "${NODE_1_ID:-}" ]] && echo PASS || echo FAIL) |"
     echo "| all nodes healthy/status | $( for i in $(seq 1 "$NODE_COUNT"); do [[ "${NODE_HEALTHY[$i]:-0}" == "1" ]] || exit 1; done; echo PASS ) |"
     echo "| all nodes readiness (baseline/intermediate only) | $( for i in $(seq 1 "$NODE_COUNT"); do [[ "${NODE_READY[$i]:-0}" == "1" ]] || exit 1; done; echo PASS ) |"
@@ -407,8 +398,13 @@ write_evidence_summary(){
     echo "| heights above genesis | $( for i in $(seq 1 "$NODE_COUNT"); do (( ${NODE_HEIGHT[$i]:-0} > 0 )) || exit 1; done; echo PASS ) |"
     echo "| baseline miner receives templates | $( (( ${miner_template[1]:-0} == 1 )) && echo PASS || echo FAIL ) |"
     echo "| baseline miner submits work | $( (( ${miner_submit[1]:-0} == 1 )) && echo PASS || echo FAIL ) |"
-    echo "| intermediate miners receive templates | $( for i in 1 2; do (( ${miner_template[$i]:-0} == 1 )) || exit 1; done; echo PASS ) |"
-    echo "| intermediate miners submit work | $( for i in 1 2; do (( ${miner_submit[$i]:-0} == 1 )) || exit 1; done; echo PASS ) |"
+    if (( MINER_COUNT >= 2 )); then
+      echo "| intermediate miners receive templates | $( for i in 1 2; do (( ${miner_template[$i]:-0} == 1 )) || exit 1; done; echo PASS ) |"
+      echo "| intermediate miners submit work | $( for i in 1 2; do (( ${miner_submit[$i]:-0} == 1 )) || exit 1; done; echo PASS ) |"
+    else
+      echo "| intermediate miners receive templates | NOT_RUN |"
+      echo "| intermediate miners submit work | NOT_RUN |"
+    fi
     echo "| stress miners receive templates (evidence only) | $( for i in $(seq 1 "$MINER_COUNT"); do (( ${miner_template[$i]:-0} == 1 )) || exit 1; done; echo PASS ) |"
     echo "| stress miners submit work (evidence only) | $( for i in $(seq 1 "$MINER_COUNT"); do (( ${miner_submit[$i]:-0} == 1 )) || exit 1; done; echo PASS ) |"
     echo "| accepted blocks >0 (or waived) | $( (( ACCEPTED_BLOCKS>0 || WAIVE_ACCEPTED_BLOCK_GATE==1 )) && echo PASS || echo FAIL ) |"
@@ -506,21 +502,23 @@ package_evidence(){
 
 cleanup(){
   local exit_code=$?
+  if (( CLEANUP_STARTED == 1 )); then
+    exit "$exit_code"
+  fi
+  CLEANUP_STARTED=1
   IN_CLEANUP=1
   EXIT_CODE=$exit_code
-  IN_CLEANUP=1
-  CLEANUP_STARTED=1
+  trap - EXIT INT TERM
   if (( exit_code != 0 && ${#FAIL_REASONS[@]} == 0 )); then record_fail "HARNESS_TIMEOUT" "script exited non-zero before classified failure: $exit_code"; fi
-  collect_state "cleanup-final" || true
   if (( QUIESCENCE_COMPLETED == 0 )); then
+    collect_final_state cleanup-pre-quiescence || true
+    snapshot_current_as_pre || true
     compute_metrics_from_current PRE || true
     POST_CONVERGED=$PRE_CONVERGED; POST_WORST_LAG=$PRE_WORST_LAG; POST_DISTINCT_TIPS=$PRE_DISTINCT_TIPS; LAG_IMPROVED=0
     write_quiescence_metrics || true
   fi
   if (( ${#FAIL_REASONS[@]} == 0 )); then RESULT="PASS"; else RESULT="FAIL"; fi
-  collect_final_state cleanup || true
   capture_log_tails || true
-  if (( ${#FAIL_REASONS[@]} == 0 )); then RESULT="PASS"; else RESULT="FAIL"; fi
   write_evidence_summary || true
   write_p2p_convergence_json || true
   write_restart_rejoin_log || true
@@ -610,7 +608,7 @@ while (( $(date +%s) < end )); do
   tip_match=1; ref_tip="${tips[0]}"; for t in "${tips[@]}"; do [[ "$t" == "$ref_tip" ]] || tip_match=0; done
   echo "$(date -u +%FT%TZ),${heights[0]},${heights[1]},${heights[2]},${heights[3]},${heights[4]},$tip_match" >> "$OUT_DIR/samples/height-samples.csv"
 
-  for i in 1 2 3 4; do
+  for i in $(seq 1 "$MINER_COUNT"); do
     text_has_match "template" "$OUT_DIR/logs/miner-${i}.log" && miner_template[$i]=1 || true
     text_has_match "submit" "$OUT_DIR/logs/miner-${i}.log" && miner_submit[$i]=1 || true
     text_has_match "accepted" "$OUT_DIR/logs/miner-${i}.log" && miner_accept[$i]=1 || true
@@ -621,11 +619,19 @@ while (( $(date +%s) < end )); do
   sleep_with_deadline 10
 done
 
+echo "entering quiescence: collecting pre-quiescence sample before stopping miners"
+collect_final_state pre-quiescence
+snapshot_current_as_pre
+compute_metrics_from_current PRE
+
 echo "entering quiescence: stopping miners and waiting ${QUIESCENCE_WAIT_SECS}s before final tips/readiness sample"
 stop_pids "${MINER_PIDS[@]:-}"
 MINERS_STOPPED_FOR_QUIESCENCE=1
 sleep_with_deadline "$QUIESCENCE_WAIT_SECS"
 collect_final_state quiescent
+compute_metrics_from_current POST
+write_quiescence_metrics
+QUIESCENCE_COMPLETED=1
 
 BASELINE_OK=1
 INTERMEDIATE_OK=1
@@ -650,18 +656,28 @@ for i in 1 2; do
   (( ${miner_template[$i]:-0} == 1 )) || INTERMEDIATE_OK=0
   (( ${miner_submit[$i]:-0} == 1 )) || INTERMEDIATE_OK=0
 done
-for i in 1 2 3 4; do
+for i in $(seq 1 "$MINER_COUNT"); do
   (( ${miner_template[$i]:-0} == 1 )) || STRESS_OK=0
   (( ${miner_submit[$i]:-0} == 1 )) || STRESS_OK=0
 done
 
 (( BASELINE_OK == 1 )) && GATE_5N_1M_BASELINE=PASS || GATE_5N_1M_BASELINE=FAIL
-(( INTERMEDIATE_OK == 1 )) && GATE_5N_2M_INTERMEDIATE=PASS || GATE_5N_2M_INTERMEDIATE=FAIL
-(( STRESS_OK == 1 )) && GATE_5N_4M_STRESS=PASS || GATE_5N_4M_STRESS=OBSERVE_FAIL
+if (( MINER_COUNT >= 2 )); then
+  (( INTERMEDIATE_OK == 1 )) && GATE_5N_2M_INTERMEDIATE=PASS || GATE_5N_2M_INTERMEDIATE=FAIL
+else
+  GATE_5N_2M_INTERMEDIATE=NOT_RUN
+fi
+if (( MINER_COUNT >= 4 )); then
+  (( STRESS_OK == 1 )) && GATE_5N_4M_STRESS=PASS || GATE_5N_4M_STRESS=OBSERVE_FAIL
+else
+  GATE_5N_4M_STRESS=NOT_RUN
+fi
 
-[[ "$GATE_5N_1M_BASELINE" == "PASS" ]] || record_fail "5N/1M baseline gate failed after quiescence"
-[[ "$GATE_5N_2M_INTERMEDIATE" == "PASS" ]] || record_fail "5N/2M intermediate gate failed after quiescence"
-if [[ "$GATE_5N_4M_STRESS" != "PASS" ]]; then
+[[ "$GATE_5N_1M_BASELINE" == "PASS" ]] || record_fail "STAGED_GATE_5N_1M" "5N/1M baseline gate failed after quiescence"
+if (( MINER_COUNT >= 2 )); then
+  [[ "$GATE_5N_2M_INTERMEDIATE" == "PASS" ]] || record_fail "STAGED_GATE_5N_2M" "5N/2M intermediate gate failed after quiescence"
+fi
+if (( MINER_COUNT >= 4 )) && [[ "$GATE_5N_4M_STRESS" != "PASS" ]]; then
   record_warn "5N/4M stress gate did not pass; retained as non-mandatory readiness evidence for v2.2.19"
 fi
 
