@@ -362,6 +362,8 @@ async fn main() -> Result<()> {
                         .block_request_timeouts
                         .saturating_add(timed_out.len() as u64);
                     rt.pending_block_requests = block_requests.pending.len();
+                    rt.inflight_block_requests = block_requests.pending.len();
+                    rt.pending_block_request_hashes = block_requests.pending_hashes();
                 }
                 match event {
                     InboundEvent::Transaction(tx) => {
@@ -618,11 +620,20 @@ async fn main() -> Result<()> {
                             rt.sync_state = "requesting_blocks".to_string();
                             rt.getblock_sent = rt.getblock_sent.saturating_add(1);
                             rt.pending_block_requests = block_requests.pending.len();
+                            rt.inflight_block_requests = block_requests.pending.len();
+                            rt.pending_block_request_hashes = block_requests.pending_hashes();
                             let _ = storage.append_runtime_event(
                                 "info",
                                 "block_request_sent",
                                 &format!("hash={}", hash),
                             );
+                        } else {
+                            let mut rt = runtime.write().await;
+                            rt.duplicate_block_requests_suppressed =
+                                rt.duplicate_block_requests_suppressed.saturating_add(1);
+                            rt.pending_block_requests = block_requests.pending.len();
+                            rt.inflight_block_requests = block_requests.pending.len();
+                            rt.pending_block_request_hashes = block_requests.pending_hashes();
                         }
                     }
                     InboundEvent::Block(block) => {
@@ -739,8 +750,19 @@ async fn main() -> Result<()> {
                                     rt.missing_parent_requests_sent =
                                         rt.missing_parent_requests_sent.saturating_add(1);
                                     rt.pending_block_requests = block_requests.pending.len();
+                                    rt.inflight_block_requests = block_requests.pending.len();
+                                    rt.pending_block_request_hashes =
+                                        block_requests.pending_hashes();
+                                    info!(event = "missing_block_requested", missing_parent = %parent, child = %block.hash, "missing parent discovered; GetBlock request emitted");
+                                } else {
+                                    let mut rt = runtime.write().await;
+                                    rt.duplicate_block_requests_suppressed =
+                                        rt.duplicate_block_requests_suppressed.saturating_add(1);
+                                    rt.pending_block_requests = block_requests.pending.len();
+                                    rt.inflight_block_requests = block_requests.pending.len();
+                                    rt.pending_block_request_hashes =
+                                        block_requests.pending_hashes();
                                 }
-                                info!(event = "missing_block_requested", missing_parent = %parent, child = %block.hash, "missing parent discovered; GetBlock request emitted");
                             }
                             if pruned > 0 {
                                 warn!(
@@ -754,6 +776,8 @@ async fn main() -> Result<()> {
                             {
                                 let mut rt = runtime.write().await;
                                 rt.pending_block_requests = block_requests.pending.len();
+                                rt.inflight_block_requests = block_requests.pending.len();
+                                rt.pending_block_request_hashes = block_requests.pending_hashes();
                                 rt.pending_missing_parents =
                                     pulsedag_core::pending_missing_parent_count(&guard);
                             }
@@ -909,6 +933,8 @@ async fn main() -> Result<()> {
                             {
                                 let mut rt = runtime.write().await;
                                 rt.pending_block_requests = block_requests.pending.len();
+                                rt.inflight_block_requests = block_requests.pending.len();
+                                rt.pending_block_request_hashes = block_requests.pending_hashes();
                             }
                             if p2p.is_some() {
                                 info!(event = "peer_block_rebroadcast", block_hash = %block.hash, "rebroadcasted accepted first-seen inbound p2p block after durable commit");
@@ -961,6 +987,15 @@ async fn main() -> Result<()> {
                                 let mut rt = runtime.write().await;
                                 rt.getblock_sent = rt.getblock_sent.saturating_add(1);
                                 rt.pending_block_requests = block_requests.pending.len();
+                                rt.inflight_block_requests = block_requests.pending.len();
+                                rt.pending_block_request_hashes = block_requests.pending_hashes();
+                            } else {
+                                let mut rt = runtime.write().await;
+                                rt.duplicate_block_requests_suppressed =
+                                    rt.duplicate_block_requests_suppressed.saturating_add(1);
+                                rt.pending_block_requests = block_requests.pending.len();
+                                rt.inflight_block_requests = block_requests.pending.len();
+                                rt.pending_block_request_hashes = block_requests.pending_hashes();
                             }
                         }
                     }
