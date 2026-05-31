@@ -70,6 +70,36 @@ impl BlockRequestTracker {
         }
     }
 
+    fn missing_parents(
+        header: &BlockHeaderAnnouncement,
+        known_blocks: &HashSet<String>,
+    ) -> Vec<String> {
+        header
+            .header
+            .parents
+            .iter()
+            .filter(|parent| !known_blocks.contains(*parent))
+            .cloned()
+            .collect()
+    }
+
+    fn remove_deferred_child(&mut self, child: &str) {
+        self.deferred_by_missing_parent.retain(|_, children| {
+            children.remove(child);
+            !children.is_empty()
+        });
+    }
+
+    fn track_deferred_child(&mut self, child: &str, missing_parents: &[String]) {
+        self.remove_deferred_child(child);
+        for parent in missing_parents {
+            self.deferred_by_missing_parent
+                .entry(parent.clone())
+                .or_default()
+                .insert(child.to_string());
+        }
+    }
+
     pub fn schedule_header_fetches(
         &mut self,
         headers: &[BlockHeaderAnnouncement],
@@ -83,23 +113,24 @@ impl BlockRequestTracker {
                 schedule.duplicate_suppressed = schedule.duplicate_suppressed.saturating_add(1);
                 continue;
             }
-            let missing_parents = header
-                .header
-                .parents
-                .iter()
-                .filter(|parent| !known_blocks.contains(*parent))
-                .filter(|parent| !self.pending.contains_key(*parent))
-                .filter(|parent| self.known_headers.contains_key(*parent))
-                .cloned()
-                .collect::<Vec<_>>();
-            if let Some(parent) = missing_parents.first() {
-                self.deferred_by_missing_parent
-                    .entry(parent.clone())
-                    .or_default()
-                    .insert(header.hash.clone());
+            let missing_parents = Self::missing_parents(header, known_blocks);
+            if !missing_parents.is_empty() {
+                self.track_deferred_child(&header.hash, &missing_parents);
                 schedule.deferred.push(header.hash.clone());
+                for parent in missing_parents {
+                    if self.known_headers.contains_key(&parent) {
+                        continue;
+                    }
+                    if self.should_issue_getblock(&parent, now_unix) {
+                        schedule.ready.push(parent);
+                    } else {
+                        schedule.duplicate_suppressed =
+                            schedule.duplicate_suppressed.saturating_add(1);
+                    }
+                }
                 continue;
             }
+            self.remove_deferred_child(&header.hash);
             if self.should_issue_getblock(&header.hash, now_unix) {
                 schedule.ready.push(header.hash.clone());
             } else {
@@ -123,19 +154,18 @@ impl BlockRequestTracker {
             .into_iter()
             .collect::<Vec<_>>();
         for child in children {
-            let Some(header) = self.known_headers.get(&child) else {
+            let Some(header) = self.known_headers.get(&child).cloned() else {
                 continue;
             };
-            let missing_parent = header
-                .header
-                .parents
-                .iter()
-                .any(|parent| !known_blocks.contains(parent));
-            if missing_parent {
+            let missing_parents = Self::missing_parents(&header, known_blocks);
+            if !missing_parents.is_empty() {
+                self.track_deferred_child(&child, &missing_parents);
                 schedule.deferred.push(child);
             } else if self.should_issue_getblock(&child, now_unix) {
+                self.remove_deferred_child(&child);
                 schedule.ready.push(child);
             } else {
+                self.remove_deferred_child(&child);
                 schedule.duplicate_suppressed = schedule.duplicate_suppressed.saturating_add(1);
             }
         }
@@ -278,7 +308,26 @@ impl DependencyAwareFetchScheduler {
 #[cfg(test)]
 mod tests {
     use super::{BlockRequestTracker, DependencyAwareFetchScheduler, HeaderFetchCandidate};
+    use pulsedag_core::types::BlockHeader;
+    use pulsedag_p2p::messages::BlockHeaderAnnouncement;
     use std::collections::HashSet;
+
+    fn header(hash: &str, parents: &[&str], height: u64) -> BlockHeaderAnnouncement {
+        BlockHeaderAnnouncement {
+            hash: hash.to_string(),
+            header: BlockHeader {
+                version: 1,
+                parents: parents.iter().map(|parent| parent.to_string()).collect(),
+                timestamp: 0,
+                difficulty: 1,
+                nonce: 0,
+                merkle_root: "merkle".into(),
+                state_root: "state".into(),
+                blue_score: height,
+                height,
+            },
+        }
+    }
 
     #[test]
     fn dedupes_request_within_timeout() {
@@ -294,6 +343,58 @@ mod tests {
         assert!(tracker.should_issue_getblock("h1", 20));
         assert!(tracker.should_issue_getblock("h1", 30));
         assert!(!tracker.should_issue_getblock("h1", 40));
+    }
+
+    #[test]
+    fn defers_child_while_parent_request_is_in_flight() {
+        let mut tracker = BlockRequestTracker::new(10, 2);
+        let known = HashSet::new();
+        let schedule = tracker.schedule_header_fetches(
+            &[header("parent", &[], 1), header("child", &["parent"], 2)],
+            &known,
+            100,
+        );
+
+        assert_eq!(schedule.ready, vec!["parent"]);
+        assert_eq!(schedule.deferred, vec!["child"]);
+        assert_eq!(tracker.pending_hashes(), vec!["parent"]);
+    }
+
+    #[test]
+    fn requests_unknown_missing_parent_before_child() {
+        let mut tracker = BlockRequestTracker::new(10, 2);
+        let known = HashSet::new();
+        let schedule =
+            tracker.schedule_header_fetches(&[header("child", &["parent"], 2)], &known, 100);
+
+        assert_eq!(schedule.ready, vec!["parent"]);
+        assert_eq!(schedule.deferred, vec!["child"]);
+        assert_eq!(tracker.pending_hashes(), vec!["parent"]);
+    }
+
+    #[test]
+    fn re_tracks_deferred_child_until_all_missing_parents_resolve() {
+        let mut tracker = BlockRequestTracker::new(10, 2);
+        let known = HashSet::new();
+        let schedule = tracker.schedule_header_fetches(
+            &[header("child", &["parent-a", "parent-b"], 2)],
+            &known,
+            100,
+        );
+        assert_eq!(schedule.ready, vec!["parent-a", "parent-b"]);
+        assert_eq!(schedule.deferred, vec!["child"]);
+
+        tracker.resolve("parent-a");
+        let known = HashSet::from(["parent-a".to_string()]);
+        let still_deferred = tracker.unblock_after_resolve("parent-a", &known, 110);
+        assert!(still_deferred.ready.is_empty());
+        assert_eq!(still_deferred.deferred, vec!["child"]);
+
+        tracker.resolve("parent-b");
+        let known = HashSet::from(["parent-a".to_string(), "parent-b".to_string()]);
+        let unblocked = tracker.unblock_after_resolve("parent-b", &known, 120);
+        assert_eq!(unblocked.ready, vec!["child"]);
+        assert!(unblocked.deferred.is_empty());
     }
 
     #[test]
