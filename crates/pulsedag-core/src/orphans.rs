@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeSet, HashSet},
+    collections::BTreeSet,
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -163,9 +163,12 @@ pub fn queue_orphan_block_bounded(
     }
     state.orphan_blocks.insert(hash.clone(), block);
     index_orphan_missing_parents(state, hash.clone(), missing_parents);
-    state.orphan_received_at_ms.insert(hash, now_ms());
-    let _ = prune_orphans(state, DEFAULT_ORPHAN_MAX_COUNT, DEFAULT_ORPHAN_MAX_AGE_MS);
-    true
+    state.orphan_received_at_ms.insert(hash.clone(), now_ms());
+    let evicted = prune_orphans(state, max_count, max_age_ms);
+    OrphanQueueResult {
+        queued: state.orphan_blocks.contains_key(&hash),
+        evicted,
+    }
 }
 
 pub fn queue_orphan_block(
@@ -192,14 +195,13 @@ pub fn adopt_ready_orphans_with_result(
     let mut rejected = 0usize;
     let mut retried = 0usize;
     let mut candidates = arrived_parent
-        .map(|parent| orphans_waiting_for_parent(state, parent))
+        .map(|parent| orphan_children_waiting_for_parent(state, parent))
         .unwrap_or_else(|| state.orphan_blocks.keys().cloned().collect::<Vec<_>>());
 
     loop {
         candidates.sort();
         candidates.dedup();
         let mut ready = Vec::new();
-        let mut still_missing = HashSet::new();
         for hash in candidates.drain(..) {
             let Some(block) = state.orphan_blocks.get(&hash) else {
                 continue;
@@ -220,8 +222,26 @@ pub fn adopt_ready_orphans_with_result(
             let Some(block) = remove_queued_orphan(state, &hash) else {
                 continue;
             };
-            if let Ok(()) = accept_block(block, state, source) {
-                adopted += 1;
+            retried += 1;
+            let result = accept_block_with_result(block.clone(), state, source);
+            match result {
+                BlockAcceptanceResult::Accepted => {
+                    accepted += 1;
+                    candidates.extend(orphan_children_waiting_for_parent(state, &hash));
+                }
+                BlockAcceptanceResult::MissingParent => {
+                    let missing = missing_block_parents(&block, state);
+                    let _ = queue_orphan_block_bounded(
+                        state,
+                        block,
+                        missing,
+                        DEFAULT_ORPHAN_MAX_COUNT,
+                        DEFAULT_ORPHAN_MAX_AGE_MS,
+                    );
+                }
+                _ => {
+                    rejected += 1;
+                }
             }
         }
     }
@@ -298,7 +318,7 @@ mod tests {
             .cloned()
             .collect::<Vec<_>>();
         let mut indexed_hashes = state
-            .orphan_missing_parent_index
+            .orphan_parent_index
             .values()
             .flatten()
             .cloned()
