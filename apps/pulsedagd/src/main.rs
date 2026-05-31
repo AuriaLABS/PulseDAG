@@ -985,11 +985,35 @@ async fn main() -> Result<()> {
                                 ),
                             );
                             block_requests.resolve(&block.hash);
+                            let known_blocks =
+                                guard.dag.blocks.keys().cloned().collect::<HashSet<_>>();
+                            let unblocked = block_requests.unblock_after_resolve(
+                                &block.hash,
+                                &known_blocks,
+                                now_unix(),
+                            );
                             {
                                 let mut rt = runtime.write().await;
+                                rt.block_fetch_parent_deferred = rt
+                                    .block_fetch_parent_deferred
+                                    .saturating_add(unblocked.deferred.len() as u64);
+                                rt.block_fetch_duplicate_inflight_suppressed = rt
+                                    .block_fetch_duplicate_inflight_suppressed
+                                    .saturating_add(unblocked.duplicate_suppressed as u64);
                                 rt.pending_block_requests = block_requests.pending.len();
                                 rt.inflight_block_requests = block_requests.pending.len();
                                 rt.pending_block_request_hashes = block_requests.pending_hashes();
+                            }
+                            for child_hash in unblocked.ready {
+                                if let Some(ref p2p) = p2p {
+                                    if let Err(e) = p2p.request_block(&child_hash) {
+                                        warn!(error = %e, block_hash = %child_hash, "failed issuing unblocked child GetBlock request");
+                                    }
+                                }
+                                let mut rt = runtime.write().await;
+                                rt.getblock_sent = rt.getblock_sent.saturating_add(1);
+                                rt.pending_block_requests = block_requests.pending.len();
+                                rt.sync_pipeline.request_blocks(1, now_unix());
                             }
                             if p2p.is_some() {
                                 info!(event = "peer_block_rebroadcast", block_hash = %block.hash, "rebroadcasted accepted first-seen inbound p2p block after durable commit");
@@ -1156,6 +1180,82 @@ async fn main() -> Result<()> {
                                 rt.inflight_block_requests = block_requests.pending.len();
                                 rt.pending_block_request_hashes = block_requests.pending_hashes();
                             }
+                        }
+                    }
+
+                    InboundEvent::GetBlockHeaders { hashes } => {
+                        let headers = {
+                            let guard = chain.read().await;
+                            hashes
+                                .iter()
+                                .filter_map(|hash| {
+                                    guard.dag.blocks.get(hash).map(|block| {
+                                        pulsedag_p2p::messages::BlockHeaderAnnouncement {
+                                            hash: block.hash.clone(),
+                                            header: block.header.clone(),
+                                        }
+                                    })
+                                })
+                                .collect::<Vec<_>>()
+                        };
+                        if let Some(ref p2p) = p2p {
+                            if let Err(e) = p2p.send_block_headers(&headers) {
+                                warn!(error = %e, header_count = headers.len(), "failed sending BlockHeaders response");
+                            }
+                        }
+                        let mut rt = runtime.write().await;
+                        rt.block_header_requests_received =
+                            rt.block_header_requests_received.saturating_add(1);
+                        rt.block_headers_sent =
+                            rt.block_headers_sent.saturating_add(headers.len() as u64);
+                    }
+                    InboundEvent::BlockHeaders { headers } => {
+                        let known_blocks = {
+                            let guard = chain.read().await;
+                            guard.dag.blocks.keys().cloned().collect::<HashSet<_>>()
+                        };
+                        let schedule = block_requests.schedule_header_fetches(
+                            &headers,
+                            &known_blocks,
+                            now_unix(),
+                        );
+                        {
+                            let mut rt = runtime.write().await;
+                            rt.sync_pipeline
+                                .observe_headers(headers.len() as u64, now_unix());
+                            rt.block_header_batches_received =
+                                rt.block_header_batches_received.saturating_add(1);
+                            rt.block_headers_received = rt
+                                .block_headers_received
+                                .saturating_add(headers.len() as u64);
+                            rt.block_fetch_parent_deferred = rt
+                                .block_fetch_parent_deferred
+                                .saturating_add(schedule.deferred.len() as u64);
+                            rt.block_fetch_duplicate_inflight_suppressed = rt
+                                .block_fetch_duplicate_inflight_suppressed
+                                .saturating_add(schedule.duplicate_suppressed as u64);
+                            rt.sync_state = if schedule.ready.is_empty() {
+                                "headers_received"
+                            } else {
+                                "requesting_blocks"
+                            }
+                            .to_string();
+                        }
+                        for hash in schedule.ready {
+                            if let Some(ref p2p) = p2p {
+                                if let Err(e) = p2p.request_block(&hash) {
+                                    warn!(error = %e, block_hash = %hash, "failed issuing dependency-scheduled GetBlock request");
+                                }
+                            }
+                            let mut rt = runtime.write().await;
+                            rt.getblock_sent = rt.getblock_sent.saturating_add(1);
+                            rt.pending_block_requests = block_requests.pending.len();
+                            rt.sync_pipeline.request_blocks(1, now_unix());
+                            let _ = storage.append_runtime_event(
+                                "info",
+                                "block_request_sent",
+                                &format!("hash={} source=headers", hash),
+                            );
                         }
                     }
                     InboundEvent::GetBlock { hash } => {

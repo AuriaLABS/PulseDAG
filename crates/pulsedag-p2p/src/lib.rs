@@ -22,7 +22,8 @@ use tokio::sync::mpsc;
 use tokio::time::{sleep, Duration};
 
 use crate::messages::{
-    message_id_for_block, message_id_for_tx, topic_names, HeaderInventory, NetworkMessage,
+    message_id_for_block, message_id_for_tx, topic_names, BlockHeaderAnnouncement, HeaderInventory,
+    NetworkMessage,
 };
 
 pub const P2P_MODE_MEMORY_SIMULATED: &str = "memory-simulated";
@@ -216,6 +217,12 @@ pub trait P2pHandle: Send + Sync {
     fn send_tips(&self, _tips: &[PulseHash]) -> Result<(), PulseError> {
         Ok(())
     }
+    fn request_block_headers(&self, _hashes: &[PulseHash]) -> Result<(), PulseError> {
+        Ok(())
+    }
+    fn send_block_headers(&self, _headers: &[BlockHeaderAnnouncement]) -> Result<(), PulseError> {
+        Ok(())
+    }
     fn request_block(&self, _hash: &PulseHash) -> Result<(), PulseError> {
         Ok(())
     }
@@ -288,6 +295,12 @@ pub enum InboundEvent {
     Headers {
         headers: Vec<HeaderInventory>,
     },
+    GetBlockHeaders {
+        hashes: Vec<PulseHash>,
+    },
+    BlockHeaders {
+        headers: Vec<BlockHeaderAnnouncement>,
+    },
     GetBlock {
         hash: PulseHash,
     },
@@ -310,6 +323,8 @@ enum OutboundMessage {
         limit: usize,
     },
     Headers(Vec<HeaderInventory>),
+    GetBlockHeaders(Vec<PulseHash>),
+    BlockHeaders(Vec<BlockHeaderAnnouncement>),
     GetBlock(PulseHash),
     BlockData(Option<Block>),
 }
@@ -364,6 +379,9 @@ struct InnerState {
     headers_received: u64,
     headers_sent: u64,
     headers_announced: u64,
+    block_headers_requested: u64,
+    block_header_batches_received: u64,
+    block_headers_received: u64,
     dependency_fetches_scheduled: u64,
     parent_first_fetches: u64,
     relay_loop_prevented: usize,
@@ -599,6 +617,35 @@ impl P2pHandle for MemoryP2pHandle {
         inner.publish_attempts += 1;
         inner.broadcasted_messages += 1;
         inner.last_message_kind = Some("tips".into());
+        Ok(())
+    }
+
+    fn request_block_headers(&self, hashes: &[PulseHash]) -> Result<(), PulseError> {
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| PulseError::Internal("p2p lock poisoned".into()))?;
+        inner.publish_attempts += 1;
+        inner.broadcasted_messages += 1;
+        inner.block_headers_requested = inner
+            .block_headers_requested
+            .saturating_add(hashes.len() as u64);
+        inner.last_message_kind = Some("get-block-headers".into());
+        Ok(())
+    }
+
+    fn send_block_headers(&self, headers: &[BlockHeaderAnnouncement]) -> Result<(), PulseError> {
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| PulseError::Internal("p2p lock poisoned".into()))?;
+        inner.publish_attempts += 1;
+        inner.broadcasted_messages += 1;
+        inner.block_header_batches_received = inner.block_header_batches_received.saturating_add(1);
+        inner.block_headers_received = inner
+            .block_headers_received
+            .saturating_add(headers.len() as u64);
+        inner.last_message_kind = Some("block-headers".into());
         Ok(())
     }
 
@@ -1474,6 +1521,16 @@ fn enqueue_outbound_message(
         OutboundMessage::Headers(headers) => {
             queue.blocks.push_back(OutboundMessage::Headers(headers));
         }
+        OutboundMessage::GetBlockHeaders(hashes) => {
+            queue
+                .blocks
+                .push_back(OutboundMessage::GetBlockHeaders(hashes));
+        }
+        OutboundMessage::BlockHeaders(headers) => {
+            queue
+                .blocks
+                .push_back(OutboundMessage::BlockHeaders(headers));
+        }
         OutboundMessage::GetBlock(hash) => {
             queue.blocks.push_back(OutboundMessage::GetBlock(hash));
         }
@@ -1552,6 +1609,8 @@ fn pop_outbound_message(
             | OutboundMessage::InvBlock(_)
             | OutboundMessage::GetHeaders { .. }
             | OutboundMessage::Headers(_)
+            | OutboundMessage::GetBlockHeaders(_)
+            | OutboundMessage::BlockHeaders(_)
             | OutboundMessage::GetBlock(_)
             | OutboundMessage::BlockData(_) => {
                 guard.queued_block_messages = guard.queued_block_messages.saturating_sub(1);
@@ -2313,6 +2372,41 @@ fn validate_block_announcement_hash(hash: &str) -> bool {
     !hash.trim().is_empty() && hash.len() <= 128
 }
 
+fn validate_header_announcement(header: &BlockHeaderAnnouncement) -> bool {
+    validate_block_announcement_hash(&header.hash)
+        && header.header.height > 0
+        && !header.header.parents.is_empty()
+        && {
+            let mut parents = HashSet::new();
+            header
+                .header
+                .parents
+                .iter()
+                .all(|parent| !parent.is_empty() && parents.insert(parent))
+        }
+}
+
+fn sort_headers_parents_first(headers: &mut [BlockHeaderAnnouncement]) {
+    let heights = headers
+        .iter()
+        .map(|header| (header.hash.clone(), header.header.height))
+        .collect::<HashMap<_, _>>();
+    headers.sort_by(|a, b| {
+        let a_depends_on_b = a.header.parents.iter().any(|parent| parent == &b.hash);
+        let b_depends_on_a = b.header.parents.iter().any(|parent| parent == &a.hash);
+        match (a_depends_on_b, b_depends_on_a) {
+            (true, false) => std::cmp::Ordering::Greater,
+            (false, true) => std::cmp::Ordering::Less,
+            _ => a
+                .header
+                .height
+                .cmp(&b.header.height)
+                .then_with(|| heights.get(&a.hash).cmp(&heights.get(&b.hash)))
+                .then_with(|| a.hash.cmp(&b.hash)),
+        }
+    });
+}
+
 fn dispatch_network_message(
     expected_chain_id: &str,
     bytes: &[u8],
@@ -2794,6 +2888,98 @@ fn dispatch_network_message(
             }
             let _ = inbound_tx.send(InboundEvent::Tips { tips });
         }
+
+        NetworkMessage::GetBlockHeaders { chain_id, hashes } => {
+            if chain_id != expected_chain_id {
+                if let Ok(mut guard) = inner.lock() {
+                    guard.inbound_chain_mismatch_dropped += 1;
+                    guard.last_drop_reason = Some("chain_mismatch_get_block_headers".into());
+                    if let Some(peer) = source_peer {
+                        score_peer_message_outcome(
+                            &mut guard,
+                            peer,
+                            PeerMessageOutcome::ChainMismatch,
+                            now_unix(),
+                        );
+                        refresh_connected_peers_from_health(&mut guard);
+                        persist_peer_state_if_configured(&guard);
+                    }
+                }
+                return;
+            }
+            let oversized = hashes.len() > MAX_INV_BLOCK_HASHES;
+            let hashes = hashes
+                .into_iter()
+                .take(MAX_INV_BLOCK_HASHES)
+                .filter(|hash| validate_block_announcement_hash(hash))
+                .collect::<Vec<_>>();
+            if let Ok(mut guard) = inner.lock() {
+                guard.inbound_messages += 1;
+                guard.block_headers_requested = guard
+                    .block_headers_requested
+                    .saturating_add(hashes.len() as u64);
+                guard.last_message_kind = Some("get-block-headers".into());
+                if oversized {
+                    guard.last_drop_reason = Some("get_block_headers_oversized_capped".into());
+                }
+                if let Some(peer) = source_peer {
+                    score_peer_message_outcome(
+                        &mut guard,
+                        peer,
+                        PeerMessageOutcome::ValidRelay,
+                        now_unix(),
+                    );
+                }
+            }
+            let _ = inbound_tx.send(InboundEvent::GetBlockHeaders { hashes });
+        }
+        NetworkMessage::BlockHeaders { chain_id, headers } => {
+            if chain_id != expected_chain_id {
+                if let Ok(mut guard) = inner.lock() {
+                    guard.inbound_chain_mismatch_dropped += 1;
+                    guard.last_drop_reason = Some("chain_mismatch_block_headers".into());
+                    if let Some(peer) = source_peer {
+                        score_peer_message_outcome(
+                            &mut guard,
+                            peer,
+                            PeerMessageOutcome::ChainMismatch,
+                            now_unix(),
+                        );
+                        refresh_connected_peers_from_health(&mut guard);
+                        persist_peer_state_if_configured(&guard);
+                    }
+                }
+                return;
+            }
+            let oversized = headers.len() > MAX_INV_BLOCK_REQUEST_FANOUT;
+            let mut headers = headers
+                .into_iter()
+                .take(MAX_INV_BLOCK_REQUEST_FANOUT)
+                .filter(validate_header_announcement)
+                .collect::<Vec<_>>();
+            sort_headers_parents_first(&mut headers);
+            if let Ok(mut guard) = inner.lock() {
+                guard.inbound_messages += 1;
+                guard.block_header_batches_received =
+                    guard.block_header_batches_received.saturating_add(1);
+                guard.block_headers_received = guard
+                    .block_headers_received
+                    .saturating_add(headers.len() as u64);
+                guard.last_message_kind = Some("block-headers".into());
+                if oversized {
+                    guard.last_drop_reason = Some("block_headers_oversized_capped".into());
+                }
+                if let Some(peer) = source_peer {
+                    score_peer_message_outcome(
+                        &mut guard,
+                        peer,
+                        PeerMessageOutcome::ValidRelay,
+                        now_unix(),
+                    );
+                }
+            }
+            let _ = inbound_tx.send(InboundEvent::BlockHeaders { headers });
+        }
         NetworkMessage::GetBlock { chain_id, hash } => {
             if chain_id != expected_chain_id {
                 if let Ok(mut guard) = inner.lock() {
@@ -3000,6 +3186,18 @@ async fn run_libp2p_runtime(
                         let message_id = format!("sync:tips:{}", tips.join(","));
                         let wire = serde_json::to_vec(&NetworkMessage::Tips { chain_id: cfg.chain_id.clone(), tips });
                         (wire, topic_name, "tips", message_id)
+                    }
+                    OutboundMessage::GetBlockHeaders(hashes) => {
+                        let topic_name = format!("{}-sync", cfg.chain_id);
+                        let message_id = format!("sync:get-block-headers:{}", hashes.join(","));
+                        let wire = serde_json::to_vec(&NetworkMessage::GetBlockHeaders { chain_id: cfg.chain_id.clone(), hashes });
+                        (wire, topic_name, "get-block-headers", message_id)
+                    }
+                    OutboundMessage::BlockHeaders(headers) => {
+                        let topic_name = format!("{}-sync", cfg.chain_id);
+                        let message_id = format!("sync:block-headers:{}", headers.iter().map(|h| h.hash.as_str()).collect::<Vec<_>>().join(","));
+                        let wire = serde_json::to_vec(&NetworkMessage::BlockHeaders { chain_id: cfg.chain_id.clone(), headers });
+                        (wire, topic_name, "block-headers", message_id)
                     }
                     OutboundMessage::GetBlock(hash) => {
                         let topic_name = format!("{}-sync", cfg.chain_id);
@@ -3344,6 +3542,18 @@ async fn run_libp2p_real_runtime(
                         let wire = serde_json::to_vec(&NetworkMessage::Tips { chain_id: cfg.chain_id.clone(), tips });
                         (wire, topic_name, "tips", message_id)
                     }
+                    OutboundMessage::GetBlockHeaders(hashes) => {
+                        let topic_name = format!("{}-sync", cfg.chain_id);
+                        let message_id = format!("sync:get-block-headers:{}", hashes.join(","));
+                        let wire = serde_json::to_vec(&NetworkMessage::GetBlockHeaders { chain_id: cfg.chain_id.clone(), hashes });
+                        (wire, topic_name, "get-block-headers", message_id)
+                    }
+                    OutboundMessage::BlockHeaders(headers) => {
+                        let topic_name = format!("{}-sync", cfg.chain_id);
+                        let message_id = format!("sync:block-headers:{}", headers.iter().map(|h| h.hash.as_str()).collect::<Vec<_>>().join(","));
+                        let wire = serde_json::to_vec(&NetworkMessage::BlockHeaders { chain_id: cfg.chain_id.clone(), headers });
+                        (wire, topic_name, "block-headers", message_id)
+                    }
                     OutboundMessage::GetBlock(hash) => {
                         let topic_name = format!("{}-sync", cfg.chain_id);
                         let message_id = format!("sync:get-block:{hash}");
@@ -3504,6 +3714,8 @@ impl Libp2pHandle {
                 OutboundMessage::InvBlock(_)
                 | OutboundMessage::GetHeaders { .. }
                 | OutboundMessage::Headers(_)
+                | OutboundMessage::GetBlockHeaders(_)
+                | OutboundMessage::BlockHeaders(_)
                 | OutboundMessage::GetBlock(_)
                 | OutboundMessage::BlockData(_) => {
                     inner.queued_block_messages += 1;
@@ -3576,6 +3788,20 @@ impl P2pHandle for Libp2pHandle {
 
     fn send_tips(&self, tips: &[PulseHash]) -> Result<(), PulseError> {
         self.queue_sync_message(OutboundMessage::Tips(tips.to_vec()), "tips")
+    }
+
+    fn request_block_headers(&self, hashes: &[PulseHash]) -> Result<(), PulseError> {
+        self.queue_sync_message(
+            OutboundMessage::GetBlockHeaders(hashes.to_vec()),
+            "get-block-headers",
+        )
+    }
+
+    fn send_block_headers(&self, headers: &[BlockHeaderAnnouncement]) -> Result<(), PulseError> {
+        self.queue_sync_message(
+            OutboundMessage::BlockHeaders(headers.to_vec()),
+            "block-headers",
+        )
     }
 
     fn request_block(&self, hash: &PulseHash) -> Result<(), PulseError> {
