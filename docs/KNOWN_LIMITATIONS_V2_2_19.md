@@ -32,6 +32,14 @@ This document records **current known limitations** for `v2.2.19` and must be re
 - Restore/rebuild confidence depends on successful, repeatable drill evidence.
 - Long-run stability confidence requires sustained rehearsal evidence across time, not single-run outcomes.
 
+## Staged convergence limitation
+
+- A `3N/1M` local PASS is useful smoke evidence, but it is **not enough** for public-testnet readiness.
+- `5N/1M baseline` is the mandatory private convergence gate for v2.2.19 closeout evidence.
+- `5N/2M intermediate` records moderate fork pressure and may be treated as mandatory or warning evidence by the release manager.
+- `5N/4M stress` is diagnostic until orphan recovery work lands; divergence, orphan pressure, or missing-parent backlog must be classified rather than hidden or treated as a public-readiness signal.
+- Every staged run must preserve `public_testnet_ready=false` and attach evidence on both PASS and FAIL.
+
 ## Operator interpretation rule
 
 When in doubt, interpret `v2.2.19` outcomes as **readiness signals for additional private rehearsal work**, not as proof of production/public-network readiness.

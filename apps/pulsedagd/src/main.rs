@@ -741,21 +741,24 @@ async fn main() -> Result<()> {
                             drop(rt);
                             let missing_parents =
                                 pulsedag_core::missing_block_parents(&block, &guard);
-                            pulsedag_core::queue_orphan_block(
+                            let orphan_queue = pulsedag_core::queue_orphan_block_bounded(
                                 &mut guard,
                                 block.clone(),
                                 missing_parents.clone(),
-                            );
-                            let pruned = pulsedag_core::prune_orphans(
-                                &mut guard,
                                 pulsedag_core::DEFAULT_ORPHAN_MAX_COUNT,
                                 pulsedag_core::DEFAULT_ORPHAN_MAX_AGE_MS,
                             );
+                            let pruned = orphan_queue.evicted;
                             {
                                 let mut rt = runtime.write().await;
                                 rt.sync_state = "catching_up".to_string();
                                 rt.queued_orphan_blocks += 1;
-                                rt.orphan_blocks_queued = rt.orphan_blocks_queued.saturating_add(1);
+                                if orphan_queue.queued {
+                                    rt.orphan_blocks_queued =
+                                        rt.orphan_blocks_queued.saturating_add(1);
+                                }
+                                rt.orphan_blocks_evicted =
+                                    rt.orphan_blocks_evicted.saturating_add(pruned as u64);
                                 rt.missing_parents_detected = rt
                                     .missing_parents_detected
                                     .saturating_add(missing_parents.len() as u64);
@@ -766,7 +769,7 @@ async fn main() -> Result<()> {
                                     .pulsedag_sync_missing_parents_total
                                     .saturating_add(missing_parents.len() as u64);
                                 rt.pending_missing_parents =
-                                    guard.orphan_missing_parents.values().map(Vec::len).sum();
+                                    pulsedag_core::pending_missing_parent_count(&guard);
                                 rt.last_rejected_peer_block_reason = Some(format!(
                                     "missing parents for {}: {:?}",
                                     block.hash, missing_parents
@@ -816,7 +819,7 @@ async fn main() -> Result<()> {
                                 let mut rt = runtime.write().await;
                                 rt.pending_block_requests = block_requests.pending.len();
                                 rt.pending_missing_parents =
-                                    guard.orphan_missing_parents.values().map(Vec::len).sum();
+                                    pulsedag_core::pending_missing_parent_count(&guard);
                             }
                             if let Err(e) = storage.persist_chain_state(&guard) {
                                 warn!(error = %e, "failed persisting chain state after orphan queue");
@@ -871,17 +874,20 @@ async fn main() -> Result<()> {
                                 }
                             }
                         } else {
-                            let adopted = {
+                            let (adopted, retried_orphans) = {
                                 let mut adopted_guard = guard.clone();
-                                let adopted = pulsedag_core::adopt_ready_orphans(
+                                let adoption = pulsedag_core::adopt_ready_orphans_with_result(
                                     &mut adopted_guard,
                                     AcceptSource::P2p,
+                                    Some(&block.hash),
                                 );
-                                if adopted > 0 {
+                                let adopted = adoption.accepted;
+                                let retried = adoption.retried;
+                                if retried > 0 {
                                     match storage.persist_chain_state(&adopted_guard) {
                                         Ok(()) => {
                                             *guard = adopted_guard;
-                                            adopted
+                                            (adopted, retried)
                                         }
                                         Err(e) => {
                                             warn!(error = %e, block_hash = %block.hash, adopted, "failed persisting chain state after inbound orphan adoption; keeping orphans queued in memory");
@@ -893,11 +899,11 @@ async fn main() -> Result<()> {
                                                     block.hash, adopted, e
                                                 ),
                                             );
-                                            0
+                                            (0, 0)
                                         }
                                     }
                                 } else {
-                                    0
+                                    (0, 0)
                                 }
                             };
                             let accepted_height = guard.dag.best_height;
@@ -914,9 +920,12 @@ async fn main() -> Result<()> {
                                 rt.adopted_orphan_blocks += adopted as u64;
                                 rt.orphan_blocks_resolved =
                                     rt.orphan_blocks_resolved.saturating_add(adopted as u64);
+                                rt.orphan_blocks_retried = rt
+                                    .orphan_blocks_retried
+                                    .saturating_add(retried_orphans as u64);
                                 rt.last_accepted_peer_block = Some(block.hash.clone());
                                 rt.pending_missing_parents =
-                                    guard.orphan_missing_parents.values().map(Vec::len).sum();
+                                    pulsedag_core::pending_missing_parent_count(&guard);
                                 rt.sync_state = if guard.orphan_blocks.is_empty() {
                                     "synced"
                                 } else {

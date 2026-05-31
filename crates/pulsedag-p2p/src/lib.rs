@@ -609,6 +609,7 @@ impl P2pHandle for MemoryP2pHandle {
             .map_err(|_| PulseError::Internal("p2p lock poisoned".into()))?;
         inner.publish_attempts += 1;
         inner.broadcasted_messages += 1;
+        inner.blocks_requested = inner.blocks_requested.saturating_add(1);
         inner.last_message_kind = Some("get-block".into());
         Ok(())
     }

@@ -474,11 +474,8 @@ pub async fn get_p2p_status<S: RpcStateLike>(
                     let chain_handle = state.chain();
                     let chain = chain_handle.read().await;
                     let orphan_count = chain.orphan_blocks.len();
-                    let pending_missing_parents = chain
-                        .orphan_missing_parents
-                        .values()
-                        .map(Vec::len)
-                        .sum::<usize>();
+                    let pending_missing_parents =
+                        pulsedag_core::pending_missing_parent_count(&chain);
                     let readiness_reasons = p2p_readiness_reasons(
                         true,
                         Some(&status),
@@ -533,6 +530,11 @@ pub async fn get_p2p_status<S: RpcStateLike>(
                     "blockdata_accepted": runtime.blockdata_accepted,
                     "blockdata_duplicate": runtime.blockdata_duplicate,
                     "blockdata_missing_parent": runtime.blockdata_missing_parent,
+                    "missing_parent_requests_sent": runtime.missing_parent_requests_sent,
+                    "orphan_blocks_queued": runtime.orphan_blocks_queued,
+                    "orphan_blocks_retried": runtime.orphan_blocks_retried,
+                    "orphan_blocks_resolved": runtime.orphan_blocks_resolved,
+                    "orphan_blocks_evicted": runtime.orphan_blocks_evicted,
                     "block_request_timeouts": runtime.block_request_timeouts,
                     "pending_block_requests": runtime.pending_block_requests,
                     "pending_missing_parents": pending_missing_parents,
@@ -571,7 +573,7 @@ pub async fn get_p2p_status<S: RpcStateLike>(
             let chain = chain_handle.read().await;
             Json(ApiResponse::ok(disabled_p2p_payload(
                 &runtime,
-                chain.orphan_missing_parents.values().map(Vec::len).sum(),
+                pulsedag_core::pending_missing_parent_count(&chain),
                 chain.orphan_blocks.len(),
             )))
         }
@@ -679,6 +681,11 @@ pub async fn get_p2p_propagation<S: RpcStateLike>(
             "blockdata_accepted": runtime.blockdata_accepted,
             "blockdata_duplicate": runtime.blockdata_duplicate,
             "blockdata_missing_parent": runtime.blockdata_missing_parent,
+            "missing_parent_requests_sent": runtime.missing_parent_requests_sent,
+            "orphan_blocks_queued": runtime.orphan_blocks_queued,
+            "orphan_blocks_retried": runtime.orphan_blocks_retried,
+            "orphan_blocks_resolved": runtime.orphan_blocks_resolved,
+            "orphan_blocks_evicted": runtime.orphan_blocks_evicted,
             "block_request_timeouts": runtime.block_request_timeouts,
             "pending_block_requests": runtime.pending_block_requests
         },
