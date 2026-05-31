@@ -1,6 +1,12 @@
 use serde::{Deserialize, Serialize};
 
-use pulsedag_core::types::{Block, Hash, Transaction};
+use pulsedag_core::types::{Block, BlockHeader, Hash, Transaction};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BlockHeaderAnnouncement {
+    pub hash: Hash,
+    pub header: BlockHeader,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
@@ -31,6 +37,14 @@ pub enum NetworkMessage {
     Tips {
         chain_id: String,
         tips: Vec<Hash>,
+    },
+    GetBlockHeaders {
+        chain_id: String,
+        hashes: Vec<Hash>,
+    },
+    BlockHeaders {
+        chain_id: String,
+        headers: Vec<BlockHeaderAnnouncement>,
     },
     GetBlock {
         chain_id: String,
@@ -116,6 +130,8 @@ mod tests {
             | NetworkMessage::InvBlock { chain_id, .. }
             | NetworkMessage::GetTips { chain_id }
             | NetworkMessage::Tips { chain_id, .. }
+            | NetworkMessage::GetBlockHeaders { chain_id, .. }
+            | NetworkMessage::BlockHeaders { chain_id, .. }
             | NetworkMessage::GetBlock { chain_id, .. }
             | NetworkMessage::BlockData { chain_id, .. }
             | NetworkMessage::Block { chain_id, .. }
@@ -133,6 +149,8 @@ mod tests {
             NetworkMessage::InvBlock { .. } => "InvBlock",
             NetworkMessage::GetTips { .. } => "GetTips",
             NetworkMessage::Tips { .. } => "Tips",
+            NetworkMessage::GetBlockHeaders { .. } => "GetBlockHeaders",
+            NetworkMessage::BlockHeaders { .. } => "BlockHeaders",
             NetworkMessage::GetBlock { .. } => "GetBlock",
             NetworkMessage::BlockData { .. } => "BlockData",
             NetworkMessage::Block { .. } => "Block",
@@ -172,6 +190,17 @@ mod tests {
             NetworkMessage::Tips {
                 chain_id: "testnet".into(),
                 tips: vec![block.hash.clone()],
+            },
+            NetworkMessage::GetBlockHeaders {
+                chain_id: "testnet".into(),
+                hashes: vec![block.hash.clone()],
+            },
+            NetworkMessage::BlockHeaders {
+                chain_id: "testnet".into(),
+                headers: vec![BlockHeaderAnnouncement {
+                    hash: block.hash.clone(),
+                    header: block.header.clone(),
+                }],
             },
             NetworkMessage::GetBlock {
                 chain_id: "testnet".into(),
