@@ -3,6 +3,7 @@ mod block_request;
 mod config;
 
 use std::{
+    collections::HashSet,
     net::SocketAddr,
     sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
@@ -14,14 +15,15 @@ use app_state::{
     new_runtime_stats, short_hash, AppState, OperatorConsoleInputs,
 };
 use axum::Router;
-use block_request::BlockRequestTracker;
+use block_request::{BlockRequestTracker, DependencyAwareFetchScheduler, HeaderFetchCandidate};
 use config::Config;
 use pulsedag_core::accept::{
     accept_transaction_with_result, AcceptSource, BlockAcceptanceResult, TxAcceptanceResult,
 };
 use pulsedag_core::reconcile_mempool;
 use pulsedag_p2p::{
-    build_p2p_stack, InboundEvent, Libp2pConfig, Libp2pRuntimeMode, P2pHandle, P2pMode,
+    build_p2p_stack, messages::HeaderInventory, InboundEvent, Libp2pConfig, Libp2pRuntimeMode,
+    P2pHandle, P2pMode,
 };
 use pulsedag_rpc::routes::{
     router_with_profile, ApiExposureProfile as RpcApiExposureProfile, RateLimitConfig,
@@ -39,6 +41,49 @@ fn now_unix() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
+}
+
+fn headers_for_request(
+    chain: &pulsedag_core::state::ChainState,
+    locator: &[String],
+    stop_hash: Option<&String>,
+    limit: usize,
+) -> Vec<HeaderInventory> {
+    let limit = limit.clamp(1, 512);
+    let locator_heights = locator
+        .iter()
+        .filter_map(|hash| chain.dag.blocks.get(hash).map(|block| block.header.height))
+        .collect::<Vec<_>>();
+    let start_height = locator_heights.into_iter().max().unwrap_or(0);
+    let mut blocks = chain.dag.blocks.values().cloned().collect::<Vec<_>>();
+    blocks.sort_by(|a, b| {
+        a.header
+            .height
+            .cmp(&b.header.height)
+            .then_with(|| a.hash.cmp(&b.hash))
+    });
+    let mut headers = Vec::new();
+    for block in blocks {
+        if block.header.height <= start_height && !locator.is_empty() {
+            continue;
+        }
+        headers.push(HeaderInventory {
+            hash: block.hash.clone(),
+            header: block.header.clone(),
+        });
+        if Some(&block.hash) == stop_hash || headers.len() >= limit {
+            break;
+        }
+    }
+    headers
+}
+
+fn known_hashes_for_scheduler(chain: &pulsedag_core::state::ChainState) -> HashSet<String> {
+    chain.dag.blocks.keys().cloned().collect()
+}
+
+fn pending_hashes_for_scheduler(block_requests: &BlockRequestTracker) -> HashSet<String> {
+    block_requests.pending.keys().cloned().collect()
 }
 
 fn usage() -> &'static str {
@@ -354,6 +399,7 @@ async fn main() -> Result<()> {
         let p2p = app_state.p2p.clone();
         tokio::spawn(async move {
             let mut block_requests = BlockRequestTracker::new(15, 3);
+            let mut fetch_scheduler = DependencyAwareFetchScheduler::default();
             while let Some(event) = rx.recv().await {
                 let timed_out = block_requests.collect_timeouts(now_unix());
                 if !timed_out.is_empty() {
@@ -608,32 +654,41 @@ async fn main() -> Result<()> {
                         drop(rt);
                         if known {
                             info!(event = "duplicate_block_ignored", block_hash = %hash, "duplicate block announcement ignored");
-                        } else if block_requests.should_issue_getblock(&hash, now_unix()) {
-                            info!(event = "unknown_block_announced", block_hash = %hash, "unknown block announced; requesting block from peers");
-                            info!(event = "block_request_sent", block_hash = %hash, "issuing GetBlock request intent for unknown block");
+                        } else {
+                            fetch_scheduler.queue_inventory([hash.clone()]);
                             if let Some(ref p2p) = p2p {
-                                if let Err(e) = p2p.request_block(&hash) {
-                                    warn!(error = %e, block_hash = %hash, "failed issuing GetBlock request");
+                                if let Err(e) = p2p.request_headers(&[], Some(&hash), 128) {
+                                    warn!(error = %e, block_hash = %hash, "failed issuing GetHeaders request");
                                 }
                             }
-                            let mut rt = runtime.write().await;
-                            rt.sync_state = "requesting_blocks".to_string();
-                            rt.getblock_sent = rt.getblock_sent.saturating_add(1);
-                            rt.pending_block_requests = block_requests.pending.len();
-                            rt.inflight_block_requests = block_requests.pending.len();
-                            rt.pending_block_request_hashes = block_requests.pending_hashes();
-                            let _ = storage.append_runtime_event(
-                                "info",
-                                "block_request_sent",
-                                &format!("hash={}", hash),
-                            );
-                        } else {
-                            let mut rt = runtime.write().await;
-                            rt.duplicate_block_requests_suppressed =
-                                rt.duplicate_block_requests_suppressed.saturating_add(1);
-                            rt.pending_block_requests = block_requests.pending.len();
-                            rt.inflight_block_requests = block_requests.pending.len();
-                            rt.pending_block_request_hashes = block_requests.pending_hashes();
+                            let (known, pending) = {
+                                let guard = chain.read().await;
+                                (
+                                    known_hashes_for_scheduler(&guard),
+                                    pending_hashes_for_scheduler(&block_requests),
+                                )
+                            };
+                            let plan = fetch_scheduler.next_requests(&known, &pending, 8);
+                            for request_hash in plan.requests {
+                                if block_requests.should_issue_getblock(&request_hash, now_unix()) {
+                                    if let Some(ref p2p) = p2p {
+                                        if let Err(e) = p2p.request_block(&request_hash) {
+                                            warn!(error = %e, block_hash = %request_hash, "failed issuing dependency-aware GetBlock request");
+                                        }
+                                    }
+                                    let mut rt = runtime.write().await;
+                                    rt.sync_state = "requesting_blocks".to_string();
+                                    rt.getblock_sent = rt.getblock_sent.saturating_add(1);
+                                    rt.header_requests_sent =
+                                        rt.header_requests_sent.saturating_add(1);
+                                    rt.dependency_fetches_scheduled =
+                                        rt.dependency_fetches_scheduled.saturating_add(1);
+                                    rt.parent_first_fetches = rt
+                                        .parent_first_fetches
+                                        .saturating_add(plan.parent_first_requests as u64);
+                                    rt.pending_block_requests = block_requests.pending.len();
+                                }
+                            }
                         }
                     }
                     InboundEvent::Block(block) => {
@@ -945,6 +1000,110 @@ async fn main() -> Result<()> {
                                 );
                             }
                         }
+                    }
+                    InboundEvent::BlockInventory { hashes } => {
+                        fetch_scheduler.queue_inventory(hashes.clone());
+                        if let Some(ref p2p) = p2p {
+                            for hash in &hashes {
+                                if let Err(e) = p2p.request_headers(&[], Some(hash), 128) {
+                                    warn!(error = %e, block_hash = %hash, "failed issuing inventory GetHeaders request");
+                                }
+                            }
+                        }
+                        let (known, pending) = {
+                            let guard = chain.read().await;
+                            (
+                                known_hashes_for_scheduler(&guard),
+                                pending_hashes_for_scheduler(&block_requests),
+                            )
+                        };
+                        let plan = fetch_scheduler.next_requests(&known, &pending, 8);
+                        let mut issued_requests = 0u64;
+                        for hash in plan.requests {
+                            if block_requests.should_issue_getblock(&hash, now_unix()) {
+                                if let Some(ref p2p) = p2p {
+                                    if let Err(e) = p2p.request_block(&hash) {
+                                        warn!(error = %e, block_hash = %hash, "failed issuing inventory GetBlock request");
+                                    }
+                                }
+                                issued_requests = issued_requests.saturating_add(1);
+                                let mut rt = runtime.write().await;
+                                rt.getblock_sent = rt.getblock_sent.saturating_add(1);
+                                rt.pending_block_requests = block_requests.pending.len();
+                            }
+                        }
+                        let mut rt = runtime.write().await;
+                        rt.inventory_announces_received = rt
+                            .inventory_announces_received
+                            .saturating_add(hashes.len() as u64);
+                        rt.header_requests_sent =
+                            rt.header_requests_sent.saturating_add(hashes.len() as u64);
+                        rt.dependency_fetches_scheduled = rt
+                            .dependency_fetches_scheduled
+                            .saturating_add(issued_requests);
+                        rt.parent_first_fetches = rt
+                            .parent_first_fetches
+                            .saturating_add(plan.parent_first_requests as u64);
+                        rt.sync_state = "requesting_blocks".to_string();
+                    }
+                    InboundEvent::GetHeaders {
+                        locator,
+                        stop_hash,
+                        limit,
+                    } => {
+                        let headers = {
+                            let guard = chain.read().await;
+                            headers_for_request(&guard, &locator, stop_hash.as_ref(), limit)
+                        };
+                        if let Some(ref p2p) = p2p {
+                            if let Err(e) = p2p.send_headers(&headers) {
+                                warn!(error = %e, "failed sending Headers response");
+                            }
+                        }
+                        let mut rt = runtime.write().await;
+                        rt.header_requests_received = rt.header_requests_received.saturating_add(1);
+                        rt.headers_sent = rt.headers_sent.saturating_add(headers.len() as u64);
+                    }
+                    InboundEvent::Headers { headers } => {
+                        let candidates = headers
+                            .iter()
+                            .map(|item| HeaderFetchCandidate {
+                                hash: item.hash.clone(),
+                                parents: item.header.parents.clone(),
+                                height: item.header.height,
+                            })
+                            .collect::<Vec<_>>();
+                        fetch_scheduler.queue_headers(candidates);
+                        let (known, pending) = {
+                            let guard = chain.read().await;
+                            (
+                                known_hashes_for_scheduler(&guard),
+                                pending_hashes_for_scheduler(&block_requests),
+                            )
+                        };
+                        let plan = fetch_scheduler.next_requests(&known, &pending, 8);
+                        for hash in plan.requests {
+                            if block_requests.should_issue_getblock(&hash, now_unix()) {
+                                if let Some(ref p2p) = p2p {
+                                    if let Err(e) = p2p.request_block(&hash) {
+                                        warn!(error = %e, block_hash = %hash, "failed issuing header-driven GetBlock request");
+                                    }
+                                }
+                                let mut rt = runtime.write().await;
+                                rt.getblock_sent = rt.getblock_sent.saturating_add(1);
+                                rt.pending_block_requests = block_requests.pending.len();
+                            }
+                        }
+                        let mut rt = runtime.write().await;
+                        rt.headers_received =
+                            rt.headers_received.saturating_add(headers.len() as u64);
+                        rt.dependency_fetches_scheduled = rt
+                            .dependency_fetches_scheduled
+                            .saturating_add(headers.len() as u64);
+                        rt.parent_first_fetches = rt
+                            .parent_first_fetches
+                            .saturating_add(plan.parent_first_requests as u64);
+                        rt.sync_state = "requesting_blocks".to_string();
                     }
                     InboundEvent::GetTips => {
                         let tips = {
