@@ -24,6 +24,13 @@ pub struct ReadinessMetrics {
     pub accepted_blocks: u64,
     pub rejected_blocks_by_reason: BTreeMap<String, u64>,
     pub orphan_count: usize,
+    pub pending_missing_parents: usize,
+    pub pending_block_requests: usize,
+    pub inflight_block_requests: usize,
+    pub duplicate_block_requests_suppressed: u64,
+    pub missing_parent_requests_sent: u64,
+    pub orphan_blocks_retried: u64,
+    pub orphan_blocks_resolved: u64,
     pub selected_tip: Option<String>,
     pub best_height: u64,
     pub p2p_peer_count: usize,
@@ -150,6 +157,13 @@ pub async fn get_readiness<S: RpcStateLike>(
         accepted_blocks: runtime.pulsedag_blocks_accepted_total,
         rejected_blocks_by_reason: runtime.rejected_blocks_by_reason.clone(),
         orphan_count: chain.orphan_blocks.len(),
+        pending_missing_parents: pulsedag_core::pending_missing_parent_count(&chain),
+        pending_block_requests: runtime.pending_block_requests,
+        inflight_block_requests: runtime.inflight_block_requests,
+        duplicate_block_requests_suppressed: runtime.duplicate_block_requests_suppressed,
+        missing_parent_requests_sent: runtime.missing_parent_requests_sent,
+        orphan_blocks_retried: runtime.orphan_blocks_retried,
+        orphan_blocks_resolved: runtime.orphan_blocks_resolved,
         selected_tip: selected_tip.clone(),
         best_height: chain.dag.best_height,
         p2p_peer_count,
@@ -191,10 +205,18 @@ pub async fn get_readiness<S: RpcStateLike>(
     if chain.dag.tips.is_empty() {
         dag_fail.push("no active tips in dag".to_string());
     }
+    let pending_missing_parents = pulsedag_core::pending_missing_parent_count(&chain);
     if !chain.orphan_missing_parents.is_empty() {
         dag_warn.push(format!(
-            "{} orphan block(s) are waiting for missing parents",
-            chain.orphan_blocks.len()
+            "{} orphan block(s) are waiting for {} missing parent(s)",
+            chain.orphan_blocks.len(),
+            pending_missing_parents
+        ));
+    }
+    if runtime.pending_block_requests > 0 || runtime.inflight_block_requests > 0 {
+        dag_warn.push(format!(
+            "{} pending / {} inflight block request(s) remain",
+            runtime.pending_block_requests, runtime.inflight_block_requests
         ));
     }
     categories.insert(
@@ -567,6 +589,13 @@ mod tests {
                 accepted_blocks: 7,
                 rejected_blocks_by_reason,
                 orphan_count: 1,
+                pending_missing_parents: 1,
+                pending_block_requests: 2,
+                inflight_block_requests: 2,
+                duplicate_block_requests_suppressed: 3,
+                missing_parent_requests_sent: 4,
+                orphan_blocks_retried: 5,
+                orphan_blocks_resolved: 6,
                 selected_tip: Some("tip".to_string()),
                 best_height: 4,
                 p2p_peer_count: 3,
@@ -607,6 +636,13 @@ mod tests {
                 accepted_blocks: 0,
                 rejected_blocks_by_reason: BTreeMap::new(),
                 orphan_count: 0,
+                pending_missing_parents: 0,
+                pending_block_requests: 0,
+                inflight_block_requests: 0,
+                duplicate_block_requests_suppressed: 0,
+                missing_parent_requests_sent: 0,
+                orphan_blocks_retried: 0,
+                orphan_blocks_resolved: 0,
                 selected_tip: None,
                 best_height: 0,
                 p2p_peer_count: 0,

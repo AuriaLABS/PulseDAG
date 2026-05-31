@@ -98,6 +98,9 @@ fn disabled_p2p_payload(
         "listening": [],
         "topics": [],
         "pending_block_requests": runtime.pending_block_requests,
+        "inflight_block_requests": runtime.inflight_block_requests,
+        "pending_block_request_hashes": runtime.pending_block_request_hashes,
+        "duplicate_block_requests_suppressed": runtime.duplicate_block_requests_suppressed,
         "pending_missing_parents": pending_missing_parents,
         "orphan_count": orphan_count,
         "sync_state": runtime.sync_state,
@@ -498,6 +501,18 @@ pub async fn get_p2p_status<S: RpcStateLike>(
                         serde_json::json!(runtime.pending_block_requests),
                     );
                     payload.insert(
+                        "inflight_block_requests".into(),
+                        serde_json::json!(runtime.inflight_block_requests),
+                    );
+                    payload.insert(
+                        "pending_block_request_hashes".into(),
+                        serde_json::json!(runtime.pending_block_request_hashes),
+                    );
+                    payload.insert(
+                        "duplicate_block_requests_suppressed".into(),
+                        serde_json::json!(runtime.duplicate_block_requests_suppressed),
+                    );
+                    payload.insert(
                         "pending_missing_parents".into(),
                         serde_json::json!(pending_missing_parents),
                     );
@@ -536,7 +551,10 @@ pub async fn get_p2p_status<S: RpcStateLike>(
                     "orphan_blocks_resolved": runtime.orphan_blocks_resolved,
                     "orphan_blocks_evicted": runtime.orphan_blocks_evicted,
                     "block_request_timeouts": runtime.block_request_timeouts,
+                    "duplicate_block_requests_suppressed": runtime.duplicate_block_requests_suppressed,
                     "pending_block_requests": runtime.pending_block_requests,
+                    "inflight_block_requests": runtime.inflight_block_requests,
+                    "pending_block_request_hashes": runtime.pending_block_request_hashes,
                     "pending_missing_parents": pending_missing_parents,
                     "outbound_duplicates_suppressed": status.block_outbound_duplicates_suppressed
                 }));
@@ -687,7 +705,10 @@ pub async fn get_p2p_propagation<S: RpcStateLike>(
             "orphan_blocks_resolved": runtime.orphan_blocks_resolved,
             "orphan_blocks_evicted": runtime.orphan_blocks_evicted,
             "block_request_timeouts": runtime.block_request_timeouts,
-            "pending_block_requests": runtime.pending_block_requests
+            "duplicate_block_requests_suppressed": runtime.duplicate_block_requests_suppressed,
+            "pending_block_requests": runtime.pending_block_requests,
+            "inflight_block_requests": runtime.inflight_block_requests,
+            "pending_block_request_hashes": runtime.pending_block_request_hashes
         },
         "duplicate_suppression_counters": {
             "p2p_blocks": runtime.duplicate_p2p_blocks,

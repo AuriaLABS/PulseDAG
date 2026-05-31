@@ -54,6 +54,12 @@ impl BlockRequestTracker {
         self.pending.remove(hash);
     }
 
+    pub fn pending_hashes(&self) -> Vec<String> {
+        let mut hashes = self.pending.keys().cloned().collect::<Vec<_>>();
+        hashes.sort();
+        hashes
+    }
+
     pub fn collect_timeouts(&self, now_unix: u64) -> Vec<String> {
         self.pending
             .iter()

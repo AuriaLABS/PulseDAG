@@ -123,7 +123,11 @@ pub struct NodeRuntimeStats {
     pub blockdata_missing_parent: u64,
     pub blockdata_invalid_pow: u64,
     pub block_request_timeouts: u64,
+    pub duplicate_block_requests_suppressed: u64,
     pub pending_block_requests: usize,
+    pub inflight_block_requests: usize,
+    #[serde(default)]
+    pub pending_block_request_hashes: Vec<String>,
     pub pending_missing_parents: usize,
     pub last_accepted_peer_block: Option<String>,
     pub last_rejected_peer_block_reason: Option<String>,
