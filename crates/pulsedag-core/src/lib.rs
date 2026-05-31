@@ -70,8 +70,8 @@ pub use consistency::{assert_dag_consistent_for_tests, dag_consistency_issues};
 pub use orphans::{
     adopt_ready_orphans, adopt_ready_orphans_with_result, missing_block_parents,
     orphan_children_waiting_for_parent, pending_missing_parent_count, prune_orphans,
-    queue_orphan_block, queue_orphan_block_bounded, DEFAULT_ORPHAN_MAX_AGE_MS,
-    DEFAULT_ORPHAN_MAX_COUNT,
+    queue_orphan_block, queue_orphan_block_bounded, OrphanAdoptionResult, OrphanQueueResult,
+    DEFAULT_ORPHAN_MAX_AGE_MS, DEFAULT_ORPHAN_MAX_COUNT,
 };
 
 pub use mining::{

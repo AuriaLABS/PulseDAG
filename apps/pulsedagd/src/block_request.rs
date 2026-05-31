@@ -1,6 +1,4 @@
-use std::collections::{BTreeMap, HashMap, HashSet};
-
-use pulsedag_p2p::messages::BlockHeaderAnnouncement;
+use std::collections::{HashMap, HashSet, VecDeque};
 
 #[derive(Debug, Clone)]
 pub struct PendingBlockRequest {
@@ -146,6 +144,12 @@ impl BlockRequestTracker {
         self.pending.remove(hash);
     }
 
+    pub fn pending_hashes(&self) -> Vec<String> {
+        let mut hashes = self.pending.keys().cloned().collect::<Vec<_>>();
+        hashes.sort();
+        hashes
+    }
+
     pub fn collect_timeouts(&self, now_unix: u64) -> Vec<String> {
         self.pending
             .iter()
@@ -157,29 +161,122 @@ impl BlockRequestTracker {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HeaderFetchCandidate {
+    pub hash: String,
+    pub parents: Vec<String>,
+    pub height: u64,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct DependencyFetchPlan {
+    pub requests: Vec<String>,
+    pub deferred: Vec<String>,
+    pub parent_first_requests: usize,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct DependencyAwareFetchScheduler {
+    candidates: HashMap<String, HeaderFetchCandidate>,
+    inventory: VecDeque<String>,
+    queued: HashSet<String>,
+}
+
+impl DependencyAwareFetchScheduler {
+    pub fn queue_inventory<I, S>(&mut self, hashes: I) -> usize
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        let mut added = 0usize;
+        for hash in hashes {
+            let hash = hash.into();
+            if self.queued.insert(hash.clone()) {
+                self.inventory.push_back(hash);
+                added = added.saturating_add(1);
+            }
+        }
+        added
+    }
+
+    pub fn queue_headers<I>(&mut self, headers: I) -> usize
+    where
+        I: IntoIterator<Item = HeaderFetchCandidate>,
+    {
+        let mut added = 0usize;
+        let mut headers = headers.into_iter().collect::<Vec<_>>();
+        headers.sort_by(|a, b| a.height.cmp(&b.height).then_with(|| a.hash.cmp(&b.hash)));
+        for candidate in headers {
+            let hash = candidate.hash.clone();
+            if self.queued.insert(hash.clone()) {
+                self.inventory.push_back(hash.clone());
+                added = added.saturating_add(1);
+            }
+            self.candidates.insert(hash, candidate);
+        }
+        added
+    }
+
+    pub fn next_requests(
+        &mut self,
+        known_blocks: &HashSet<String>,
+        pending_blocks: &HashSet<String>,
+        max: usize,
+    ) -> DependencyFetchPlan {
+        let mut plan = DependencyFetchPlan::default();
+        if max == 0 {
+            return plan;
+        }
+        let mut deferred = VecDeque::new();
+        while let Some(hash) = self.inventory.pop_front() {
+            if plan.requests.len() >= max {
+                deferred.push_back(hash);
+                continue;
+            }
+            if known_blocks.contains(&hash) || pending_blocks.contains(&hash) {
+                self.queued.remove(&hash);
+                continue;
+            }
+            let missing_parents = self
+                .candidates
+                .get(&hash)
+                .map(|candidate| {
+                    candidate
+                        .parents
+                        .iter()
+                        .filter(|parent| {
+                            !known_blocks.contains(*parent) && !pending_blocks.contains(*parent)
+                        })
+                        .cloned()
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            if missing_parents.is_empty() {
+                self.queued.remove(&hash);
+                plan.requests.push(hash);
+                continue;
+            }
+            for parent in missing_parents {
+                if plan.requests.len() >= max {
+                    break;
+                }
+                if self.queued.insert(parent.clone()) {
+                    plan.parent_first_requests = plan.parent_first_requests.saturating_add(1);
+                    plan.requests.push(parent);
+                }
+            }
+            plan.deferred.push(hash.clone());
+            deferred.push_back(hash);
+        }
+        self.inventory = deferred;
+        plan
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::BlockRequestTracker;
-    use pulsedag_core::types::BlockHeader;
-    use pulsedag_p2p::messages::BlockHeaderAnnouncement;
+    use super::{BlockRequestTracker, DependencyAwareFetchScheduler, HeaderFetchCandidate};
     use std::collections::HashSet;
-
-    fn header(hash: &str, parents: &[&str], height: u64) -> BlockHeaderAnnouncement {
-        BlockHeaderAnnouncement {
-            hash: hash.to_string(),
-            header: BlockHeader {
-                version: 1,
-                parents: parents.iter().map(|parent| parent.to_string()).collect(),
-                timestamp: height,
-                difficulty: 1,
-                nonce: 1,
-                merkle_root: format!("mr-{hash}"),
-                state_root: format!("sr-{hash}"),
-                blue_score: height,
-                height,
-            },
-        }
-    }
 
     #[test]
     fn dedupes_request_within_timeout() {
@@ -198,35 +295,33 @@ mod tests {
     }
 
     #[test]
-    fn schedules_parents_before_children_and_suppresses_inflight_duplicates() {
-        let mut tracker = BlockRequestTracker::new(10, 2);
-        let known = HashSet::from(["genesis".to_string()]);
-        let headers = vec![
-            header("child", &["parent"], 2),
-            header("parent", &["genesis"], 1),
-        ];
-
-        let schedule = tracker.schedule_header_fetches(&headers, &known, 100);
-        assert_eq!(schedule.ready, vec!["parent".to_string()]);
-        assert_eq!(schedule.deferred, vec!["child".to_string()]);
-
-        let duplicate = tracker.schedule_header_fetches(&headers[1..], &known, 101);
-        assert_eq!(duplicate.duplicate_suppressed, 1);
+    fn schedules_parents_before_children_from_headers() {
+        let mut scheduler = DependencyAwareFetchScheduler::default();
+        scheduler.queue_headers([HeaderFetchCandidate {
+            hash: "child".into(),
+            parents: vec!["parent".into()],
+            height: 2,
+        }]);
+        let known = HashSet::new();
+        let pending = HashSet::new();
+        let plan = scheduler.next_requests(&known, &pending, 4);
+        assert_eq!(plan.requests, vec!["parent"]);
+        assert_eq!(plan.deferred, vec!["child"]);
+        assert_eq!(plan.parent_first_requests, 1);
     }
 
     #[test]
-    fn unblocks_children_after_parent_resolves() {
-        let mut tracker = BlockRequestTracker::new(10, 2);
-        let known = HashSet::from(["genesis".to_string()]);
-        let headers = vec![
-            header("child", &["parent"], 2),
-            header("parent", &["genesis"], 1),
-        ];
-        let _ = tracker.schedule_header_fetches(&headers, &known, 100);
-
-        let known = HashSet::from(["genesis".to_string(), "parent".to_string()]);
-        tracker.resolve("parent");
-        let schedule = tracker.unblock_after_resolve("parent", &known, 110);
-        assert_eq!(schedule.ready, vec!["child".to_string()]);
+    fn requests_child_after_parent_is_known() {
+        let mut scheduler = DependencyAwareFetchScheduler::default();
+        scheduler.queue_headers([HeaderFetchCandidate {
+            hash: "child".into(),
+            parents: vec!["parent".into()],
+            height: 2,
+        }]);
+        let known = HashSet::from(["parent".to_string()]);
+        let pending = HashSet::new();
+        let plan = scheduler.next_requests(&known, &pending, 4);
+        assert_eq!(plan.requests, vec!["child"]);
+        assert!(plan.deferred.is_empty());
     }
 }

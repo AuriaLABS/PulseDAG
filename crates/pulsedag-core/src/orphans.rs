@@ -163,10 +163,10 @@ pub fn queue_orphan_block_bounded(
     }
     state.orphan_blocks.insert(hash.clone(), block);
     index_orphan_missing_parents(state, hash.clone(), missing_parents);
-    state.orphan_received_at_ms.insert(hash, now_ms());
+    state.orphan_received_at_ms.insert(hash.clone(), now_ms());
     let evicted = prune_orphans(state, max_count, max_age_ms);
     OrphanQueueResult {
-        queued: true,
+        queued: state.orphan_blocks.contains_key(&hash),
         evicted,
     }
 }
@@ -222,19 +222,25 @@ pub fn adopt_ready_orphans_with_result(
             let Some(block) = remove_queued_orphan(state, &hash) else {
                 continue;
             };
-            retried = retried.saturating_add(1);
-            match accept_block_with_result(block.clone(), state, source) {
-                BlockAcceptanceResult::Accepted | BlockAcceptanceResult::Duplicate => {
-                    accepted = accepted.saturating_add(1);
+            retried += 1;
+            let result = accept_block_with_result(block.clone(), state, source);
+            match result {
+                BlockAcceptanceResult::Accepted => {
+                    accepted += 1;
                     candidates.extend(orphan_children_waiting_for_parent(state, &hash));
                 }
                 BlockAcceptanceResult::MissingParent => {
                     let missing = missing_block_parents(&block, state);
-                    state.orphan_blocks.insert(hash.clone(), block);
-                    index_orphan_missing_parents(state, hash, missing);
+                    let _ = queue_orphan_block_bounded(
+                        state,
+                        block,
+                        missing,
+                        DEFAULT_ORPHAN_MAX_COUNT,
+                        DEFAULT_ORPHAN_MAX_AGE_MS,
+                    );
                 }
                 _ => {
-                    rejected = rejected.saturating_add(1);
+                    rejected += 1;
                 }
             }
         }
