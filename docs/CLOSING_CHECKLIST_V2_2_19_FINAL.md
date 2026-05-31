@@ -125,6 +125,39 @@ OUT_DIR=... bash scripts/v2_2_19_staged_convergence_gates.sh
 - [ ] PASS / [x] PENDING: limitations acceptance is explicitly aligned with `docs/KNOWN_LIMITATIONS_V2_2_19.md`. Evidence path: `artifacts/v2_2_19/closeout_decision/limitations_acceptance.md`
 - [ ] PASS / [x] PENDING: closeout record states `v2.2.19` is private-testnet hardening and not a public launch declaration. Evidence path: `artifacts/v2_2_19/closeout_decision/closeout_scope_statement.md`
 
+## Final v2.3.0 start checklist
+
+Record these gates before opening formal `v2.3.0` readiness work. Passing this checklist does **not** bump `VERSION` and does **not** change `public_testnet_ready=false`. The detailed checklist lives in `docs/V2_3_0_START_CHECKLIST.md`.
+
+- [ ] PASS / [x] PENDING: dependency ordering is confirmed: `#545`, `#546`, and `#547` are merged, and `#548` is merged or explicitly deferred with rationale. Evidence path: `artifacts/v2_2_19/closeout_decision/dependency_ordering.md`
+- [ ] PASS / [x] PENDING: version guard confirms `VERSION=v2.2.19` and Cargo workspace `2.2.19`; no version bump is included. Evidence path: `artifacts/v2_2_19/closeout_decision/version_guard.md`
+- [ ] PASS / [x] PENDING: build/test gate is PASS for fmt, check, test, and clippy. Evidence path: `artifacts/v2_2_19/validation/cargo_validation_suite.log`
+- [ ] PASS / [x] PENDING: `3N/1M`, `5N/1M`, and `5N/2M` gates are PASS with evidence bundles, archives, and checksums. Evidence path: `artifacts/v2_2_19/staged_convergence_gates/`
+- [ ] PASS / [x] PENDING: `5N/4M` stress is PASS or accepted as a non-blocking limitation with metrics, owner, expiry, and exit criteria. Evidence path: `artifacts/v2_2_19/private_5n_4m_rehearsal/evidence-summary.md`
+- [ ] PASS / [x] PENDING: known limitations are mapped into accepted limitations and blockers for the v2.3.0 start decision. Evidence path: `artifacts/v2_2_19/closeout_decision/v2_3_0_known_limitations_mapping.md`
+- [ ] PASS / [x] PENDING: incident and waiver ledger is complete, with no unresolved Sev-1 consensus/sync/security blocker. Evidence path: `artifacts/v2_2_19/closeout_decision/incident_waiver_ledger.md`
+- [ ] PASS / [x] PENDING: final start decision is recorded as `GO_TO_START_V2_3_0_REVIEW`, `NO_GO`, or `WAIVED_WITH_REASON`. Evidence path: `artifacts/v2_2_19/closeout_decision/v2_3_0_start_decision.md`
+
+## Public-testnet readiness evidence requirements
+
+Public-testnet readiness remains blocked until all launch evidence is attached and reviewed. `public_testnet_ready` must remain `false` while any item is PENDING.
+
+- [ ] PASS / [x] PENDING: RPC exposure, authentication/authorization posture, firewall/listener configuration, secret redaction, and operator approval are attached. Evidence path: `artifacts/public_testnet/readiness/security_rpc_posture.md`
+- [ ] PASS / [x] PENDING: bootnodes, chain ID, peer admission policy, restart/rejoin behavior, NAT/firewall assumptions, and chain-isolation evidence are attached. Evidence path: `artifacts/public_testnet/readiness/network_posture.md`
+- [ ] PASS / [x] PENDING: deployment, rollback, incident response, snapshot/restore, monitoring, and evidence-collection runbooks are attached. Evidence path: `artifacts/public_testnet/readiness/operator_runbooks.md`
+- [ ] PASS / [x] PENDING: release artifacts, checksums, install verification, `/release` metadata, and rollback target artifacts are attached. Evidence path: `artifacts/public_testnet/readiness/release_artifacts.md`
+- [ ] PASS / [x] PENDING: `/readiness` captures for every required node show no public-testnet blockers, and the aggregate report proves the gate. Evidence path: `artifacts/public_testnet/readiness/readiness_aggregate.md`
+- [ ] PASS / [x] PENDING: accepted limitations are explicitly non-blocking for public testnet and include owners, expiry, and exit criteria. Evidence path: `artifacts/public_testnet/readiness/accepted_limitations.md`
+
+## 30-day burn-in evidence requirements
+
+The 30-day burn-in clock starts only after public-testnet launch evidence collection is explicitly authorized. Burn-in completion is **NO-GO** if any unresolved Sev-1 consensus/sync/security incident remains.
+
+- [ ] PASS / [x] PENDING: at least 30 consecutive UTC daily evidence bundles are present. Evidence path: `artifacts/public_testnet/burn_in_30d/daily/`
+- [ ] PASS / [x] PENDING: daily health/readiness, uptime, restart, incident, peer, convergence, orphan/missing-parent, miner, RPC, storage, snapshot/restore, and security metrics are aggregated. Evidence path: `artifacts/public_testnet/burn_in_30d/aggregate_metrics.md`
+- [ ] PASS / [x] PENDING: waiver and incident ledgers are updated with closeout status for every burn-in issue. Evidence path: `artifacts/public_testnet/burn_in_30d/incident_waiver_closeout.md`
+- [ ] PASS / [x] PENDING: final burn-in report links daily bundles and aggregate metrics and records PASS, NO_GO, or WAIVED_WITH_REASON. Evidence path: `artifacts/public_testnet/burn_in_30d/final_report.md`
+
 ## Blockers before 2.3.0 public testnet
 
 Record open blockers that must be closed before any `v2.3.0` public-testnet go/no-go:
@@ -132,6 +165,7 @@ Record open blockers that must be closed before any `v2.3.0` public-testnet go/n
 - [ ] PASS / [x] PENDING: public-testnet launch checklist gates are satisfied and evidenced. Evidence path: `artifacts/v2_2_19/closeout_decision/public_testnet_blockers.md`
 - [ ] PASS / [x] PENDING: unresolved private rehearsal issues are tracked with owners and due dates. Evidence path: `artifacts/v2_2_19/closeout_decision/private_rehearsal_issue_register.md`
 - [ ] PASS / [x] PENDING: no closeout text makes readiness claims beyond `v2.2.19` scope. Evidence path: `artifacts/v2_2_19/closeout_decision/scope_compliance_review.md`
+- [ ] PASS / [x] PENDING: `public_testnet_ready=true` is not asserted before the public-testnet go/no-go passes. Evidence path: `artifacts/v2_2_19/closeout_decision/public_testnet_signal_guard.md`
 
 ## Final closeout decision
 

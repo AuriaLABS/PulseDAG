@@ -16,6 +16,8 @@
 - GPU optional/scaffold only unless canonical kernel evidence exists.
 - No v2.3.0 readiness claim.
 - No v3.0 readiness claim.
+- Keep `public_testnet_ready=false` until explicit public-testnet gates pass.
+- Do not bump `VERSION` unless explicit maintainer approval is recorded after gate evidence.
 
 ## References
 - `docs/V2_2_18_PREFLIGHT.md`
@@ -23,3 +25,5 @@
 - `docs/RELEASE_NOTES_V2_2_18.md`
 - `docs/RELEASE_EVIDENCE.md`
 - `docs/VERSION_MATRIX.md`
+- `docs/V2_3_0_START_CHECKLIST.md`
+- `docs/V2_3_0_READINESS_DECISION_INPUTS.md`
