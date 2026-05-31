@@ -22,7 +22,8 @@ use tokio::sync::mpsc;
 use tokio::time::{sleep, Duration};
 
 use crate::messages::{
-    message_id_for_block, message_id_for_tx, topic_names, HeaderInventory, NetworkMessage,
+    message_id_for_block, message_id_for_tx, topic_names, BlockHeaderAnnouncement, HeaderInventory,
+    NetworkMessage,
 };
 
 pub const P2P_MODE_MEMORY_SIMULATED: &str = "memory-simulated";
@@ -294,6 +295,12 @@ pub enum InboundEvent {
     Headers {
         headers: Vec<HeaderInventory>,
     },
+    GetBlockHeaders {
+        hashes: Vec<PulseHash>,
+    },
+    BlockHeaders {
+        headers: Vec<BlockHeaderAnnouncement>,
+    },
     GetBlock {
         hash: PulseHash,
     },
@@ -316,6 +323,8 @@ enum OutboundMessage {
         limit: usize,
     },
     Headers(Vec<HeaderInventory>),
+    GetBlockHeaders(Vec<PulseHash>),
+    BlockHeaders(Vec<BlockHeaderAnnouncement>),
     GetBlock(PulseHash),
     BlockData(Option<Block>),
 }
@@ -370,6 +379,9 @@ struct InnerState {
     headers_received: u64,
     headers_sent: u64,
     headers_announced: u64,
+    block_headers_requested: u64,
+    block_header_batches_received: u64,
+    block_headers_received: u64,
     dependency_fetches_scheduled: u64,
     parent_first_fetches: u64,
     relay_loop_prevented: usize,
@@ -615,7 +627,9 @@ impl P2pHandle for MemoryP2pHandle {
             .map_err(|_| PulseError::Internal("p2p lock poisoned".into()))?;
         inner.publish_attempts += 1;
         inner.broadcasted_messages += 1;
-        inner.block_headers_requested = inner.block_headers_requested.saturating_add(hashes.len());
+        inner.block_headers_requested = inner
+            .block_headers_requested
+            .saturating_add(hashes.len() as u64);
         inner.last_message_kind = Some("get-block-headers".into());
         Ok(())
     }
@@ -628,7 +642,9 @@ impl P2pHandle for MemoryP2pHandle {
         inner.publish_attempts += 1;
         inner.broadcasted_messages += 1;
         inner.block_header_batches_received = inner.block_header_batches_received.saturating_add(1);
-        inner.block_headers_received = inner.block_headers_received.saturating_add(headers.len());
+        inner.block_headers_received = inner
+            .block_headers_received
+            .saturating_add(headers.len() as u64);
         inner.last_message_kind = Some("block-headers".into());
         Ok(())
     }
@@ -1505,6 +1521,16 @@ fn enqueue_outbound_message(
         OutboundMessage::Headers(headers) => {
             queue.blocks.push_back(OutboundMessage::Headers(headers));
         }
+        OutboundMessage::GetBlockHeaders(hashes) => {
+            queue
+                .blocks
+                .push_back(OutboundMessage::GetBlockHeaders(hashes));
+        }
+        OutboundMessage::BlockHeaders(headers) => {
+            queue
+                .blocks
+                .push_back(OutboundMessage::BlockHeaders(headers));
+        }
         OutboundMessage::GetBlock(hash) => {
             queue.blocks.push_back(OutboundMessage::GetBlock(hash));
         }
@@ -1583,6 +1609,8 @@ fn pop_outbound_message(
             | OutboundMessage::InvBlock(_)
             | OutboundMessage::GetHeaders { .. }
             | OutboundMessage::Headers(_)
+            | OutboundMessage::GetBlockHeaders(_)
+            | OutboundMessage::BlockHeaders(_)
             | OutboundMessage::GetBlock(_)
             | OutboundMessage::BlockData(_) => {
                 guard.queued_block_messages = guard.queued_block_messages.saturating_sub(1);
@@ -2887,8 +2915,9 @@ fn dispatch_network_message(
                 .collect::<Vec<_>>();
             if let Ok(mut guard) = inner.lock() {
                 guard.inbound_messages += 1;
-                guard.block_headers_requested =
-                    guard.block_headers_requested.saturating_add(hashes.len());
+                guard.block_headers_requested = guard
+                    .block_headers_requested
+                    .saturating_add(hashes.len() as u64);
                 guard.last_message_kind = Some("get-block-headers".into());
                 if oversized {
                     guard.last_drop_reason = Some("get_block_headers_oversized_capped".into());
@@ -2933,8 +2962,9 @@ fn dispatch_network_message(
                 guard.inbound_messages += 1;
                 guard.block_header_batches_received =
                     guard.block_header_batches_received.saturating_add(1);
-                guard.block_headers_received =
-                    guard.block_headers_received.saturating_add(headers.len());
+                guard.block_headers_received = guard
+                    .block_headers_received
+                    .saturating_add(headers.len() as u64);
                 guard.last_message_kind = Some("block-headers".into());
                 if oversized {
                     guard.last_drop_reason = Some("block_headers_oversized_capped".into());
@@ -3684,6 +3714,8 @@ impl Libp2pHandle {
                 OutboundMessage::InvBlock(_)
                 | OutboundMessage::GetHeaders { .. }
                 | OutboundMessage::Headers(_)
+                | OutboundMessage::GetBlockHeaders(_)
+                | OutboundMessage::BlockHeaders(_)
                 | OutboundMessage::GetBlock(_)
                 | OutboundMessage::BlockData(_) => {
                     inner.queued_block_messages += 1;

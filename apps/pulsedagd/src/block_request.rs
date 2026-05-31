@@ -1,4 +1,6 @@
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+
+use pulsedag_p2p::messages::BlockHeaderAnnouncement;
 
 #[derive(Debug, Clone)]
 pub struct PendingBlockRequest {

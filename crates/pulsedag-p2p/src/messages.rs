@@ -9,6 +9,12 @@ pub struct HeaderInventory {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BlockHeaderAnnouncement {
+    pub hash: Hash,
+    pub header: BlockHeader,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum NetworkMessage {
     NewTransaction {
