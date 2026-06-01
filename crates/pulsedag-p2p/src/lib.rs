@@ -3086,9 +3086,7 @@ fn dispatch_network_message(
                         guard.duplicate_blocks_received =
                             guard.duplicate_blocks_received.saturating_add(1);
                         guard.last_drop_reason = Some("duplicate_block_data".into());
-                        if request_hash.is_none() {
-                            return;
-                        }
+                        return;
                     }
                     guard.inbound_messages += 1;
                     guard.last_message_kind = Some("block-data".into());

@@ -545,7 +545,10 @@ pub async fn get_p2p_status<S: RpcStateLike>(
                     "blockdata_accepted": runtime.blockdata_accepted,
                     "blockdata_duplicate": runtime.blockdata_duplicate,
                     "blockdata_missing_parent": runtime.blockdata_missing_parent,
+                    "blockdata_not_found": runtime.blockdata_not_found,
                     "missing_parent_requests_sent": runtime.missing_parent_requests_sent,
+                    "block_request_retries": runtime.block_request_retries,
+                    "block_request_fallbacks": runtime.block_request_fallbacks,
                     "orphan_blocks_queued": runtime.orphan_blocks_queued,
                     "orphan_blocks_retried": runtime.orphan_blocks_retried,
                     "orphan_blocks_resolved": runtime.orphan_blocks_resolved,
@@ -555,7 +558,14 @@ pub async fn get_p2p_status<S: RpcStateLike>(
                     "pending_block_requests": runtime.pending_block_requests,
                     "inflight_block_requests": runtime.inflight_block_requests,
                     "pending_block_request_hashes": runtime.pending_block_request_hashes,
+                    "scheduler_queue_depth": runtime.block_fetch_scheduler_queue_depth,
+                    "inflight_by_peer": runtime.block_fetch_scheduler_inflight_by_peer,
                     "pending_missing_parents": pending_missing_parents,
+                    "max_orphan_age_secs": runtime.max_orphan_age_secs,
+                    "oldest_missing_parent_age_secs": runtime.oldest_missing_parent_age_secs,
+                    "orphan_reprocess_attempts": runtime.orphan_reprocess_attempts,
+                    "orphan_reprocess_success": runtime.orphan_reprocess_success,
+                    "orphan_reprocess_failed_missing_parent": runtime.orphan_reprocess_failed_missing_parent,
                     "outbound_duplicates_suppressed": status.block_outbound_duplicates_suppressed
                 }));
                     payload.insert(
@@ -699,7 +709,10 @@ pub async fn get_p2p_propagation<S: RpcStateLike>(
             "blockdata_accepted": runtime.blockdata_accepted,
             "blockdata_duplicate": runtime.blockdata_duplicate,
             "blockdata_missing_parent": runtime.blockdata_missing_parent,
+            "blockdata_not_found": runtime.blockdata_not_found,
             "missing_parent_requests_sent": runtime.missing_parent_requests_sent,
+            "block_request_retries": runtime.block_request_retries,
+            "block_request_fallbacks": runtime.block_request_fallbacks,
             "orphan_blocks_queued": runtime.orphan_blocks_queued,
             "orphan_blocks_retried": runtime.orphan_blocks_retried,
             "orphan_blocks_resolved": runtime.orphan_blocks_resolved,
@@ -708,7 +721,14 @@ pub async fn get_p2p_propagation<S: RpcStateLike>(
             "duplicate_block_requests_suppressed": runtime.duplicate_block_requests_suppressed,
             "pending_block_requests": runtime.pending_block_requests,
             "inflight_block_requests": runtime.inflight_block_requests,
-            "pending_block_request_hashes": runtime.pending_block_request_hashes
+            "pending_block_request_hashes": runtime.pending_block_request_hashes,
+            "scheduler_queue_depth": runtime.block_fetch_scheduler_queue_depth,
+            "inflight_by_peer": runtime.block_fetch_scheduler_inflight_by_peer,
+            "max_orphan_age_secs": runtime.max_orphan_age_secs,
+            "oldest_missing_parent_age_secs": runtime.oldest_missing_parent_age_secs,
+            "orphan_reprocess_attempts": runtime.orphan_reprocess_attempts,
+            "orphan_reprocess_success": runtime.orphan_reprocess_success,
+            "orphan_reprocess_failed_missing_parent": runtime.orphan_reprocess_failed_missing_parent
         },
         "duplicate_suppression_counters": {
             "p2p_blocks": runtime.duplicate_p2p_blocks,

@@ -4,6 +4,7 @@ use pulsedag_p2p::messages::BlockHeaderAnnouncement;
 
 #[derive(Debug, Clone)]
 pub struct PendingBlockRequest {
+    pub first_requested_at_unix: u64,
     pub last_requested_at_unix: u64,
     pub retry_count: u8,
 }
@@ -60,6 +61,7 @@ impl BlockRequestTracker {
                 self.pending.insert(
                     hash.to_string(),
                     PendingBlockRequest {
+                        first_requested_at_unix: now_unix,
                         last_requested_at_unix: now_unix,
                         retry_count: 0,
                     },
@@ -188,6 +190,14 @@ impl BlockRequestTracker {
         hashes
     }
 
+    pub fn oldest_pending_age_secs(&self, now_unix: u64) -> u64 {
+        self.pending
+            .values()
+            .map(|req| now_unix.saturating_sub(req.first_requested_at_unix))
+            .max()
+            .unwrap_or(0)
+    }
+
     pub fn collect_timeouts(&self, now_unix: u64) -> Vec<String> {
         self.pending
             .iter()
@@ -242,6 +252,10 @@ pub struct DependencyAwareFetchScheduler {
 }
 
 impl DependencyAwareFetchScheduler {
+    pub fn queue_depth(&self) -> usize {
+        self.inventory.len()
+    }
+
     pub fn queue_inventory<I, S>(&mut self, hashes: I) -> usize
     where
         I: IntoIterator<Item = S>,
