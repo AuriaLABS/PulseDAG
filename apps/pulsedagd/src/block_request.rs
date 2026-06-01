@@ -9,6 +9,12 @@ pub struct PendingBlockRequest {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BlockRequestTimeouts {
+    pub retryable: Vec<String>,
+    pub expired: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct FetchSchedule {
     pub ready: Vec<String>,
     pub deferred: Vec<String>,
@@ -191,6 +197,27 @@ impl BlockRequestTracker {
             .map(|(hash, _)| hash.clone())
             .collect()
     }
+
+    pub fn drain_timeouts(&mut self, now_unix: u64) -> BlockRequestTimeouts {
+        let timed_out = self.collect_timeouts(now_unix);
+        let mut result = BlockRequestTimeouts::default();
+        for hash in timed_out {
+            let Some(req) = self.pending.get_mut(&hash) else {
+                continue;
+            };
+            if req.retry_count >= self.retry_limit {
+                self.pending.remove(&hash);
+                result.expired.push(hash);
+            } else {
+                req.retry_count = req.retry_count.saturating_add(1);
+                req.last_requested_at_unix = now_unix;
+                result.retryable.push(hash);
+            }
+        }
+        result.retryable.sort();
+        result.expired.sort();
+        result
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -343,6 +370,22 @@ mod tests {
         assert!(tracker.should_issue_getblock("h1", 20));
         assert!(tracker.should_issue_getblock("h1", 30));
         assert!(!tracker.should_issue_getblock("h1", 40));
+    }
+
+    #[test]
+    fn drains_timeouts_with_retry_then_expiry() {
+        let mut tracker = BlockRequestTracker::new(5, 1);
+        assert!(tracker.should_issue_getblock("h1", 10));
+
+        let first = tracker.drain_timeouts(16);
+        assert_eq!(first.retryable, vec!["h1"]);
+        assert!(first.expired.is_empty());
+        assert_eq!(tracker.pending_hashes(), vec!["h1"]);
+
+        let second = tracker.drain_timeouts(22);
+        assert!(second.retryable.is_empty());
+        assert_eq!(second.expired, vec!["h1"]);
+        assert!(tracker.pending_hashes().is_empty());
     }
 
     #[test]

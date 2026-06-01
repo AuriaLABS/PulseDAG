@@ -240,7 +240,11 @@ pub trait P2pHandle: Send + Sync {
     fn send_headers(&self, _headers: &[HeaderInventory]) -> Result<(), PulseError> {
         Ok(())
     }
-    fn send_block_data(&self, _block: Option<&Block>) -> Result<(), PulseError> {
+    fn send_block_data(
+        &self,
+        _request_hash: Option<&PulseHash>,
+        _block: Option<&Block>,
+    ) -> Result<(), PulseError> {
         Ok(())
     }
     fn status(&self) -> Result<P2pStatus, PulseError>;
@@ -326,7 +330,10 @@ enum OutboundMessage {
     GetBlockHeaders(Vec<PulseHash>),
     BlockHeaders(Vec<BlockHeaderAnnouncement>),
     GetBlock(PulseHash),
-    BlockData(Option<Block>),
+    BlockData {
+        block: Option<Block>,
+        request_hash: Option<PulseHash>,
+    },
 }
 
 pub struct P2pStack {
@@ -705,7 +712,11 @@ impl P2pHandle for MemoryP2pHandle {
         Ok(())
     }
 
-    fn send_block_data(&self, _block: Option<&Block>) -> Result<(), PulseError> {
+    fn send_block_data(
+        &self,
+        _request_hash: Option<&PulseHash>,
+        _block: Option<&Block>,
+    ) -> Result<(), PulseError> {
         let mut inner = self
             .inner
             .lock()
@@ -1534,8 +1545,14 @@ fn enqueue_outbound_message(
         OutboundMessage::GetBlock(hash) => {
             queue.blocks.push_back(OutboundMessage::GetBlock(hash));
         }
-        OutboundMessage::BlockData(block) => {
-            queue.blocks.push_back(OutboundMessage::BlockData(block));
+        OutboundMessage::BlockData {
+            block,
+            request_hash,
+        } => {
+            queue.blocks.push_back(OutboundMessage::BlockData {
+                block,
+                request_hash,
+            });
         }
         OutboundMessage::GetTips => {
             queue.standard_txs.push_back(OutboundMessage::GetTips);
@@ -1612,7 +1629,7 @@ fn pop_outbound_message(
             | OutboundMessage::GetBlockHeaders(_)
             | OutboundMessage::BlockHeaders(_)
             | OutboundMessage::GetBlock(_)
-            | OutboundMessage::BlockData(_) => {
+            | OutboundMessage::BlockData { .. } => {
                 guard.queued_block_messages = guard.queued_block_messages.saturating_sub(1);
                 guard.dequeued_block_messages = guard.dequeued_block_messages.saturating_add(1);
                 guard.queue_block_priority_picks =
@@ -3013,7 +3030,11 @@ fn dispatch_network_message(
             }
             let _ = inbound_tx.send(InboundEvent::GetBlock { hash });
         }
-        NetworkMessage::BlockData { chain_id, block } => {
+        NetworkMessage::BlockData {
+            chain_id,
+            block,
+            request_hash,
+        } => {
             if chain_id != expected_chain_id {
                 if let Ok(mut guard) = inner.lock() {
                     guard.inbound_chain_mismatch_dropped += 1;
@@ -3065,7 +3086,9 @@ fn dispatch_network_message(
                         guard.duplicate_blocks_received =
                             guard.duplicate_blocks_received.saturating_add(1);
                         guard.last_drop_reason = Some("duplicate_block_data".into());
-                        return;
+                        if request_hash.is_none() {
+                            return;
+                        }
                     }
                     guard.inbound_messages += 1;
                     guard.last_message_kind = Some("block-data".into());
@@ -3084,7 +3107,7 @@ fn dispatch_network_message(
                     guard.inbound_messages += 1;
                     guard.last_message_kind = Some("block-data-missing".into());
                 }
-                let _ = inbound_tx.send(InboundEvent::BlockDataMissing { hash: None });
+                let _ = inbound_tx.send(InboundEvent::BlockDataMissing { hash: request_hash });
             }
         }
         NetworkMessage::Reject { chain_id, .. } | NetworkMessage::Error { chain_id, .. } => {
@@ -3205,10 +3228,15 @@ async fn run_libp2p_runtime(
                         let wire = serde_json::to_vec(&NetworkMessage::GetBlock { chain_id: cfg.chain_id.clone(), hash });
                         (wire, topic_name, "get-block", message_id)
                     }
-                    OutboundMessage::BlockData(block) => {
+                    OutboundMessage::BlockData { block, request_hash } => {
                         let topic_name = format!("{}-sync", cfg.chain_id);
-                        let message_id = block.as_ref().map(message_id_for_block).unwrap_or_else(|| "sync:block-data:none".to_string());
-                        let wire = serde_json::to_vec(&NetworkMessage::BlockData { chain_id: cfg.chain_id.clone(), block });
+                        let message_id = block.as_ref().map(message_id_for_block).unwrap_or_else(|| {
+                            request_hash
+                                .as_ref()
+                                .map(|hash| format!("sync:block-data-missing:{hash}"))
+                                .unwrap_or_else(|| "sync:block-data:none".to_string())
+                        });
+                        let wire = serde_json::to_vec(&NetworkMessage::BlockData { chain_id: cfg.chain_id.clone(), block, request_hash });
                         (wire, topic_name, "block-data", message_id)
                     }
                 };
@@ -3560,10 +3588,15 @@ async fn run_libp2p_real_runtime(
                         let wire = serde_json::to_vec(&NetworkMessage::GetBlock { chain_id: cfg.chain_id.clone(), hash });
                         (wire, topic_name, "get-block", message_id)
                     }
-                    OutboundMessage::BlockData(block) => {
+                    OutboundMessage::BlockData { block, request_hash } => {
                         let topic_name = format!("{}-sync", cfg.chain_id);
-                        let message_id = block.as_ref().map(message_id_for_block).unwrap_or_else(|| "sync:block-data:none".to_string());
-                        let wire = serde_json::to_vec(&NetworkMessage::BlockData { chain_id: cfg.chain_id.clone(), block });
+                        let message_id = block.as_ref().map(message_id_for_block).unwrap_or_else(|| {
+                            request_hash
+                                .as_ref()
+                                .map(|hash| format!("sync:block-data-missing:{hash}"))
+                                .unwrap_or_else(|| "sync:block-data:none".to_string())
+                        });
+                        let wire = serde_json::to_vec(&NetworkMessage::BlockData { chain_id: cfg.chain_id.clone(), block, request_hash });
                         (wire, topic_name, "block-data", message_id)
                     }
                 };
@@ -3717,7 +3750,7 @@ impl Libp2pHandle {
                 | OutboundMessage::GetBlockHeaders(_)
                 | OutboundMessage::BlockHeaders(_)
                 | OutboundMessage::GetBlock(_)
-                | OutboundMessage::BlockData(_) => {
+                | OutboundMessage::BlockData { .. } => {
                     inner.queued_block_messages += 1;
                 }
                 _ => inner.queued_non_block_messages += 1,
@@ -3856,8 +3889,20 @@ impl P2pHandle for Libp2pHandle {
         self.queue_sync_message(OutboundMessage::Headers(headers.to_vec()), "headers")
     }
 
-    fn send_block_data(&self, block: Option<&Block>) -> Result<(), PulseError> {
-        self.queue_sync_message(OutboundMessage::BlockData(block.cloned()), "block-data")
+    fn send_block_data(
+        &self,
+        request_hash: Option<&PulseHash>,
+        block: Option<&Block>,
+    ) -> Result<(), PulseError> {
+        self.queue_sync_message(
+            OutboundMessage::BlockData {
+                block: block.cloned(),
+                request_hash: request_hash
+                    .cloned()
+                    .or_else(|| block.map(|block| block.hash.clone())),
+            },
+            "block-data",
+        )
     }
 
     fn status(&self) -> Result<P2pStatus, PulseError> {
@@ -6240,6 +6285,7 @@ mod inventory_tests {
         let wire = serde_json::to_vec(&NetworkMessage::BlockData {
             chain_id: "testnet".into(),
             block: Some(block.clone()),
+            request_hash: Some(block.hash.clone()),
         })
         .expect("serialize block data");
 
@@ -6273,6 +6319,7 @@ mod inventory_tests {
         let wire = serde_json::to_vec(&NetworkMessage::BlockData {
             chain_id: "wrongnet".into(),
             block: Some(block),
+            request_hash: None,
         })
         .expect("serialize block data");
 
@@ -6320,6 +6367,7 @@ mod inventory_tests {
             serde_json::to_vec(&NetworkMessage::BlockData {
                 chain_id: "wrongnet".into(),
                 block: Some(block),
+                request_hash: None,
             })
             .expect("serialize wrong-chain blockdata"),
         ];
@@ -6360,6 +6408,7 @@ mod inventory_tests {
         let wire = serde_json::to_vec(&NetworkMessage::BlockData {
             chain_id: "testnet".into(),
             block: Some(block.clone()),
+            request_hash: Some(block.hash.clone()),
         })
         .expect("serialize block data");
 
@@ -6468,10 +6517,10 @@ mod deterministic_p2p_sync_coverage_tests {
             dispatch_network_message("testnet", &wire, Some("peer-b"), &inner, &inbound_tx);
             match inbound_rx.try_recv() {
                 Ok(InboundEvent::GetBlock { hash }) if hash == known.hash => handle
-                    .send_block_data(Some(&known))
+                    .send_block_data(Some(&known.hash), Some(&known))
                     .expect("known block response is sent"),
                 Ok(InboundEvent::GetBlock { hash }) if hash == "missing-block-data" => handle
-                    .send_block_data(None)
+                    .send_block_data(Some(&"missing-block-data".to_string()), None)
                     .expect("missing block response is sent"),
                 other => panic!("unexpected getblock flow event: {other:?}"),
             }

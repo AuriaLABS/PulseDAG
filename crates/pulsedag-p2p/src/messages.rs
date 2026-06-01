@@ -69,6 +69,8 @@ pub enum NetworkMessage {
     BlockData {
         chain_id: String,
         block: Option<Block>,
+        #[serde(default)]
+        request_hash: Option<Hash>,
     },
     Block {
         chain_id: String,
@@ -242,10 +244,12 @@ mod tests {
             NetworkMessage::BlockData {
                 chain_id: "testnet".into(),
                 block: Some(block.clone()),
+                request_hash: Some(block.hash.clone()),
             },
             NetworkMessage::BlockData {
                 chain_id: "testnet".into(),
                 block: None,
+                request_hash: None,
             },
             NetworkMessage::Block {
                 chain_id: "testnet".into(),

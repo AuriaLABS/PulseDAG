@@ -400,17 +400,71 @@ async fn main() -> Result<()> {
         tokio::spawn(async move {
             let mut block_requests = BlockRequestTracker::new(15, 3);
             let mut fetch_scheduler = DependencyAwareFetchScheduler::default();
-            while let Some(event) = rx.recv().await {
-                let timed_out = block_requests.collect_timeouts(now_unix());
-                if !timed_out.is_empty() {
-                    let mut rt = runtime.write().await;
-                    rt.block_request_timeouts = rt
-                        .block_request_timeouts
-                        .saturating_add(timed_out.len() as u64);
-                    rt.pending_block_requests = block_requests.pending.len();
-                    rt.inflight_block_requests = block_requests.pending.len();
-                    rt.pending_block_request_hashes = block_requests.pending_hashes();
+            loop {
+                let maybe_event =
+                    match tokio::time::timeout(Duration::from_secs(1), rx.recv()).await {
+                        Ok(Some(event)) => Some(event),
+                        Ok(None) => break,
+                        Err(_) => None,
+                    };
+                let timed_out = block_requests.drain_timeouts(now_unix());
+                let timed_out_count = timed_out
+                    .retryable
+                    .len()
+                    .saturating_add(timed_out.expired.len());
+                if timed_out_count > 0 {
+                    {
+                        let mut rt = runtime.write().await;
+                        rt.block_request_timeouts = rt
+                            .block_request_timeouts
+                            .saturating_add(timed_out_count as u64);
+                        rt.pending_block_requests = block_requests.pending.len();
+                        rt.inflight_block_requests = block_requests.pending.len();
+                        rt.pending_block_request_hashes = block_requests.pending_hashes();
+                    }
+                    for hash in timed_out.retryable {
+                        if let Some(ref p2p) = p2p {
+                            if let Err(e) = p2p.request_block(&hash) {
+                                warn!(error = %e, block_hash = %hash, "failed retrying timed-out GetBlock request");
+                            }
+                        }
+                        let mut rt = runtime.write().await;
+                        rt.getblock_sent = rt.getblock_sent.saturating_add(1);
+                        rt.missing_parent_requests_sent =
+                            rt.missing_parent_requests_sent.saturating_add(1);
+                        rt.pending_block_requests = block_requests.pending.len();
+                        rt.inflight_block_requests = block_requests.pending.len();
+                        rt.pending_block_request_hashes = block_requests.pending_hashes();
+                    }
+                    for hash in timed_out.expired {
+                        let missing_parent_still_needed = {
+                            let guard = chain.read().await;
+                            guard.orphan_parent_index.contains_key(&hash)
+                                && !guard.dag.blocks.contains_key(&hash)
+                        };
+                        if missing_parent_still_needed
+                            && block_requests.should_issue_getblock(&hash, now_unix())
+                        {
+                            if let Some(ref p2p) = p2p {
+                                if let Err(e) = p2p.request_block(&hash) {
+                                    warn!(error = %e, block_hash = %hash, "failed restarting expired missing-parent GetBlock request");
+                                }
+                            }
+                            let mut rt = runtime.write().await;
+                            rt.getblock_sent = rt.getblock_sent.saturating_add(1);
+                            rt.missing_parent_requests_sent =
+                                rt.missing_parent_requests_sent.saturating_add(1);
+                            rt.pending_block_requests = block_requests.pending.len();
+                            rt.inflight_block_requests = block_requests.pending.len();
+                            rt.pending_block_request_hashes = block_requests.pending_hashes();
+                        } else {
+                            warn!(block_hash = %hash, "GetBlock request expired after retry limit; clearing inflight state");
+                        }
+                    }
                 }
+                let Some(event) = maybe_event else {
+                    continue;
+                };
                 match event {
                     InboundEvent::Transaction(tx) => {
                         let txid = tx.txid.clone();
@@ -889,7 +943,7 @@ async fn main() -> Result<()> {
                                 }
                             }
                         } else {
-                            let (adopted, retried_orphans) = {
+                            let (adopted, retried_orphans, adopted_hashes) = {
                                 let mut adopted_guard = guard.clone();
                                 let adoption = pulsedag_core::adopt_ready_orphans_with_result(
                                     &mut adopted_guard,
@@ -898,11 +952,12 @@ async fn main() -> Result<()> {
                                 );
                                 let adopted = adoption.accepted;
                                 let retried = adoption.retried;
+                                let adopted_hashes = adoption.accepted_hashes;
                                 if retried > 0 {
                                     match storage.persist_chain_state(&adopted_guard) {
                                         Ok(()) => {
                                             *guard = adopted_guard;
-                                            (adopted, retried)
+                                            (adopted, retried, adopted_hashes)
                                         }
                                         Err(e) => {
                                             warn!(error = %e, block_hash = %block.hash, adopted, "failed persisting chain state after inbound orphan adoption; keeping orphans queued in memory");
@@ -914,11 +969,11 @@ async fn main() -> Result<()> {
                                                     block.hash, adopted, e
                                                 ),
                                             );
-                                            (0, 0)
+                                            (0, 0, Vec::new())
                                         }
                                     }
                                 } else {
-                                    (0, 0)
+                                    (0, 0, Vec::new())
                                 }
                             };
                             let accepted_height = guard.dag.best_height;
@@ -985,6 +1040,9 @@ async fn main() -> Result<()> {
                                 ),
                             );
                             block_requests.resolve(&block.hash);
+                            for adopted_hash in &adopted_hashes {
+                                block_requests.resolve(adopted_hash);
+                            }
                             let known_blocks =
                                 guard.dag.blocks.keys().cloned().collect::<HashSet<_>>();
                             let unblocked = block_requests.unblock_after_resolve(
@@ -1264,7 +1322,7 @@ async fn main() -> Result<()> {
                             guard.dag.blocks.get(&hash).cloned()
                         };
                         if let Some(ref p2p) = p2p {
-                            if let Err(e) = p2p.send_block_data(block.as_ref()) {
+                            if let Err(e) = p2p.send_block_data(Some(&hash), block.as_ref()) {
                                 warn!(error = %e, block_hash = %hash, "failed sending BlockData response");
                             }
                         }
@@ -1273,10 +1331,16 @@ async fn main() -> Result<()> {
                         rt.blockdata_sent = rt.blockdata_sent.saturating_add(1);
                     }
                     InboundEvent::BlockDataMissing { hash } => {
+                        if let Some(hash) = hash.as_ref() {
+                            block_requests.resolve(hash);
+                        }
                         let mut rt = runtime.write().await;
                         rt.sync_state = "degraded".to_string();
                         rt.sync_failures = rt.sync_failures.saturating_add(1);
-                        warn!(requested_hash = ?hash, "peer returned empty BlockData for requested block");
+                        rt.pending_block_requests = block_requests.pending.len();
+                        rt.inflight_block_requests = block_requests.pending.len();
+                        rt.pending_block_request_hashes = block_requests.pending_hashes();
+                        warn!(requested_hash = ?hash, "peer returned empty BlockData for requested block; cleared inflight state");
                     }
                     InboundEvent::PeerConnected(peer) => {
                         let peers_connected = p2p
