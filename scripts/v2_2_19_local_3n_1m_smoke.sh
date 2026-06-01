@@ -126,24 +126,42 @@ safe_curl_required(){ safe_curl_json "$1" "$2" "${3:-$1}" 1; }
 safe_curl_optional(){ safe_curl_json "$1" "$2" "${3:-$1}" 0; }
 json_get_or_default(){ local expr file def; expr="$1"; file="$2"; def="$3"; jq -r "$expr // $def" "$file" 2>/dev/null || echo "$def"; }
 
+search_text(){
+  local mode="$1" pattern="$2"
+  shift 2
+  if command -v rg >/dev/null 2>&1; then
+    case "$mode" in
+      quiet) rg -q -- "$pattern" "$@" ;;
+      numbered) rg -n -- "$pattern" "$@" ;;
+      count) rg -c -- "$pattern" "$@" ;;
+      *) return 2 ;;
+    esac
+  else
+    case "$mode" in
+      quiet) grep -qE -- "$pattern" "$@" ;;
+      numbered) grep -En -- "$pattern" "$@" ;;
+      count) grep -cE -- "$pattern" "$@" ;;
+      *) return 2 ;;
+    esac
+  fi
+}
+
 text_has_match(){
   local pattern="$1"
   shift
-  if command -v rg >/dev/null 2>&1; then
-    rg -qE -- "$pattern" "$@"
-  else
-    grep -qE -- "$pattern" "$@"
-  fi
+  search_text quiet "$pattern" "$@"
+}
+
+last_matching_line(){
+  local pattern="$1"
+  shift
+  search_text numbered "$pattern" "$@" 2>/dev/null | tail -n1 | cut -d: -f2- || true
 }
 
 count_matches(){
   local pattern="$1" file="$2" count="0"
   [[ -f "$file" ]] || { echo 0; return 0; }
-  if command -v rg >/dev/null 2>&1; then
-    count=$(rg -cE -- "$pattern" "$file" 2>/dev/null | head -n1 | tr -d '[:space:]' || true)
-  else
-    count=$(grep -cE -- "$pattern" "$file" 2>/dev/null | head -n1 | tr -d '[:space:]' || true)
-  fi
+  count=$(search_text count "$pattern" "$file" 2>/dev/null | head -n1 | tr -d '[:space:]' || true)
   [[ "$count" =~ ^[0-9]+$ ]] || count=0
   echo "$count"
 }
@@ -297,9 +315,9 @@ capture_p2p_failure_evidence(){
     echo "- bootnodes_a: $(paste -sd, "$OUT_DIR/bootnodes-a.txt" 2>/dev/null || echo none)"
     echo "- bootnodes_b: $(paste -sd, "$OUT_DIR/bootnodes-b.txt" 2>/dev/null || echo none)"
     echo "- bootnodes_c: $(paste -sd, "$OUT_DIR/bootnodes-c.txt" 2>/dev/null || echo none)"
-    echo "- command_a: $(rg -n \"launch node-a:\" "$OUT_DIR/command-log.txt" | tail -n1 | cut -d: -f2-)"
-    echo "- command_b: $(rg -n \"launch node-b:\" "$OUT_DIR/command-log.txt" | tail -n1 | cut -d: -f2-)"
-    echo "- command_c: $(rg -n \"launch node-c:\" "$OUT_DIR/command-log.txt" | tail -n1 | cut -d: -f2-)"
+    echo "- command_a: $(last_matching_line "launch node-a:" "$OUT_DIR/command-log.txt")"
+    echo "- command_b: $(last_matching_line "launch node-b:" "$OUT_DIR/command-log.txt")"
+    echo "- command_c: $(last_matching_line "launch node-c:" "$OUT_DIR/command-log.txt")"
     for n in a b c; do
       f="$OUT_DIR/endpoints/${n}-p2p_status.json"
       echo "- ${n}_peer_count: $(jq -r '.data.peer_count // (.data.connected_peers|length) // .data.connected_peer_count // 0' "$f" 2>/dev/null || echo 0)"
