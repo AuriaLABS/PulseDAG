@@ -1045,8 +1045,10 @@ async fn main() -> Result<()> {
                             }
                             let known_blocks =
                                 guard.dag.blocks.keys().cloned().collect::<HashSet<_>>();
-                            let unblocked = block_requests.unblock_after_resolve(
-                                &block.hash,
+                            let resolved_hashes = std::iter::once(block.hash.as_str())
+                                .chain(adopted_hashes.iter().map(String::as_str));
+                            let unblocked = block_requests.unblock_after_resolves(
+                                resolved_hashes,
                                 &known_blocks,
                                 now_unix(),
                             );
@@ -1331,16 +1333,13 @@ async fn main() -> Result<()> {
                         rt.blockdata_sent = rt.blockdata_sent.saturating_add(1);
                     }
                     InboundEvent::BlockDataMissing { hash } => {
-                        if let Some(hash) = hash.as_ref() {
-                            block_requests.resolve(hash);
-                        }
                         let mut rt = runtime.write().await;
                         rt.sync_state = "degraded".to_string();
                         rt.sync_failures = rt.sync_failures.saturating_add(1);
                         rt.pending_block_requests = block_requests.pending.len();
                         rt.inflight_block_requests = block_requests.pending.len();
                         rt.pending_block_request_hashes = block_requests.pending_hashes();
-                        warn!(requested_hash = ?hash, "peer returned empty BlockData for requested block; cleared inflight state");
+                        warn!(requested_hash = ?hash, "peer returned empty BlockData for requested block; keeping inflight state for timeout retry");
                     }
                     InboundEvent::PeerConnected(peer) => {
                         let peers_connected = p2p

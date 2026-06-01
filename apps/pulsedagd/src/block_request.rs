@@ -178,6 +178,28 @@ impl BlockRequestTracker {
         schedule
     }
 
+    pub fn unblock_after_resolves<I, S>(
+        &mut self,
+        hashes: I,
+        known_blocks: &HashSet<String>,
+        now_unix: u64,
+    ) -> FetchSchedule
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let mut combined = FetchSchedule::default();
+        for hash in hashes {
+            let schedule = self.unblock_after_resolve(hash.as_ref(), known_blocks, now_unix);
+            combined.ready.extend(schedule.ready);
+            combined.deferred.extend(schedule.deferred);
+            combined.duplicate_suppressed = combined
+                .duplicate_suppressed
+                .saturating_add(schedule.duplicate_suppressed);
+        }
+        combined
+    }
+
     pub fn resolve(&mut self, hash: &str) {
         self.pending.remove(hash);
     }
@@ -437,6 +459,31 @@ mod tests {
         let known = HashSet::from(["parent-a".to_string(), "parent-b".to_string()]);
         let unblocked = tracker.unblock_after_resolve("parent-b", &known, 120);
         assert_eq!(unblocked.ready, vec!["child"]);
+        assert!(unblocked.deferred.is_empty());
+    }
+
+    #[test]
+    fn unblocks_descendants_for_multiple_resolved_parents() {
+        let mut tracker = BlockRequestTracker::new(10, 2);
+        let known = HashSet::new();
+        let schedule = tracker.schedule_header_fetches(
+            &[
+                header("parent", &[], 1),
+                header("child", &["parent"], 2),
+                header("grandchild", &["child"], 3),
+            ],
+            &known,
+            100,
+        );
+        assert_eq!(schedule.ready, vec!["parent"]);
+        assert_eq!(schedule.deferred, vec!["child", "grandchild"]);
+
+        tracker.resolve("parent");
+        tracker.resolve("child");
+        let known = HashSet::from(["parent".to_string(), "child".to_string()]);
+        let unblocked = tracker.unblock_after_resolves(["parent", "child"], &known, 110);
+
+        assert_eq!(unblocked.ready, vec!["child", "grandchild"]);
         assert!(unblocked.deferred.is_empty());
     }
 
