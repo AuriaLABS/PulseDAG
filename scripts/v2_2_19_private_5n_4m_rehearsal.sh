@@ -73,8 +73,8 @@ POST_WORST_LAG=0
 POST_DISTINCT_TIPS=0
 POST_CONVERGED=0
 LAG_IMPROVED=0
-declare -A miner_submit miner_accept miner_template
-for i in 1 2 3 4; do miner_submit[$i]=0; miner_accept[$i]=0; miner_template[$i]=0; done
+declare -A miner_submit miner_accept miner_reject miner_template
+for i in 1 2 3 4; do miner_submit[$i]=0; miner_accept[$i]=0; miner_reject[$i]=0; miner_template[$i]=0; done
 REPO_COMMIT="$(git -C "$ROOT_DIR" rev-parse --short=12 HEAD 2>/dev/null || echo unknown)"
 NODE_VERSION="$({ "$NODE_BIN" --version 2>/dev/null || true; } | head -n1)"
 NODE_VERSION=${NODE_VERSION:-unknown}
@@ -99,6 +99,49 @@ count_matches_in_logs(){
     total=$((total + c))
   done
   echo "$total"
+}
+
+miner_log_has_accepted(){
+  local file="$1"
+  [[ -f "$file" ]] || return 1
+  awk '{ line=tolower($0); if (line ~ /submit_result accepted=false|reject|rejected/) next; if (line ~ /submit_result accepted=true|submit_accepted|accepted/) found=1 } END { exit(found ? 0 : 1) }' "$file" 2>/dev/null
+}
+
+count_accepted_file(){
+  local file="$1"
+  [[ -f "$file" ]] || { echo 0; return 0; }
+  awk '{ line=tolower($0); if (line ~ /submit_result accepted=false|reject|rejected/) next; if (line ~ /submit_result accepted=true|submit_accepted|accepted/) count++ } END { print count + 0 }' "$file" 2>/dev/null || echo 0
+}
+
+count_rejected_file(){
+  local file="$1"
+  [[ -f "$file" ]] || { echo 0; return 0; }
+  awk '{ line=tolower($0); if (line ~ /submit_result accepted=false|reject|rejected/) count++ } END { print count + 0 }' "$file" 2>/dev/null || echo 0
+}
+
+collect_miner_metrics(){
+  local i log accepted_total=0 rejected_total=0 c
+  for i in $(seq 1 "$MINER_COUNT"); do
+    log="$OUT_DIR/logs/miner-${i}.log"
+    text_has_match "template_received|template" "$log" && miner_template[$i]=1 || true
+    text_has_match "submit_result|submit_accepted|submit" "$log" && miner_submit[$i]=1 || true
+    miner_log_has_accepted "$log" && miner_accept[$i]=1 || true
+    text_has_match "submit_result accepted=false|[Rr]eject|[Rr]ejected" "$log" && miner_reject[$i]=1 || true
+    c=$(count_accepted_file "$log")
+    accepted_total=$((accepted_total + c))
+    c=$(count_rejected_file "$log")
+    rejected_total=$((rejected_total + c))
+  done
+  ACCEPTED_BLOCKS=$accepted_total
+  REJECTED_BLOCKS=$rejected_total
+  TEMPLATES_OK=0
+  for i in $(seq 1 "$MINER_COUNT"); do
+    if (( ${miner_template[$i]:-0} == 1 )); then
+      TEMPLATES_OK=1
+      break
+    fi
+  done
+  return 0
 }
 
 record_warn(){ local msg="$1"; echo "WARN: $msg"; WARNINGS+=("$msg"); }
@@ -608,14 +651,7 @@ while (( $(date +%s) < end )); do
   tip_match=1; ref_tip="${tips[0]}"; for t in "${tips[@]}"; do [[ "$t" == "$ref_tip" ]] || tip_match=0; done
   echo "$(date -u +%FT%TZ),${heights[0]},${heights[1]},${heights[2]},${heights[3]},${heights[4]},$tip_match" >> "$OUT_DIR/samples/height-samples.csv"
 
-  for i in $(seq 1 "$MINER_COUNT"); do
-    text_has_match "template" "$OUT_DIR/logs/miner-${i}.log" && miner_template[$i]=1 || true
-    text_has_match "submit" "$OUT_DIR/logs/miner-${i}.log" && miner_submit[$i]=1 || true
-    text_has_match "accepted" "$OUT_DIR/logs/miner-${i}.log" && miner_accept[$i]=1 || true
-  done
-  ACCEPTED_BLOCKS=$(count_matches_in_logs "accepted")
-  REJECTED_BLOCKS=$(count_matches_in_logs "reject")
-  (( ACCEPTED_BLOCKS > 0 )) && TEMPLATES_OK=1
+  collect_miner_metrics
   sleep_with_deadline 10
 done
 
