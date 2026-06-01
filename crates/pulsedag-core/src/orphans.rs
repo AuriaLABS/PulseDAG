@@ -23,6 +23,7 @@ pub struct OrphanAdoptionResult {
     pub accepted: usize,
     pub rejected: usize,
     pub retried: usize,
+    pub accepted_hashes: Vec<Hash>,
 }
 
 fn now_ms() -> u64 {
@@ -101,7 +102,16 @@ pub fn orphan_children_waiting_for_parent(state: &ChainState, parent: &Hash) -> 
 }
 
 pub fn pending_missing_parent_count(state: &ChainState) -> usize {
-    state.orphan_parent_index.len()
+    let indexed = state.orphan_parent_index.len();
+    if indexed > 0 {
+        return indexed;
+    }
+    state
+        .orphan_missing_parents
+        .values()
+        .flat_map(|parents| parents.iter().cloned())
+        .collect::<BTreeSet<_>>()
+        .len()
 }
 
 pub fn prune_orphans(state: &mut ChainState, max_count: usize, max_age_ms: u64) -> usize {
@@ -194,6 +204,7 @@ pub fn adopt_ready_orphans_with_result(
     let mut accepted = 0usize;
     let mut rejected = 0usize;
     let mut retried = 0usize;
+    let mut accepted_hashes = Vec::new();
     let mut candidates = arrived_parent
         .map(|parent| orphan_children_waiting_for_parent(state, parent))
         .unwrap_or_else(|| state.orphan_blocks.keys().cloned().collect::<Vec<_>>());
@@ -227,6 +238,7 @@ pub fn adopt_ready_orphans_with_result(
             match result {
                 BlockAcceptanceResult::Accepted => {
                     accepted += 1;
+                    accepted_hashes.push(hash.clone());
                     candidates.extend(orphan_children_waiting_for_parent(state, &hash));
                 }
                 BlockAcceptanceResult::MissingParent => {
@@ -250,6 +262,7 @@ pub fn adopt_ready_orphans_with_result(
         accepted,
         rejected,
         retried,
+        accepted_hashes,
     }
 }
 
