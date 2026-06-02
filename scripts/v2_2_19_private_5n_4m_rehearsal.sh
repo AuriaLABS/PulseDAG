@@ -40,7 +40,9 @@ RUN_DIR="$OUT_DIR_BASE/$RUN_ID"
 OUT_DIR_ROOT="$OUT_DIR_BASE"
 OUT_DIR="$RUN_DIR"
 
-mkdir -p "$OUT_DIR" "$OUT_DIR/endpoints" "$OUT_DIR/logs" "$OUT_DIR/miners" "$OUT_DIR/nodes" "$OUT_DIR/samples" "$OUT_DIR/summaries"
+mkdir -p "$OUT_DIR_ROOT" "$OUT_DIR" "$OUT_DIR/endpoints" "$OUT_DIR/logs" "$OUT_DIR/miners" "$OUT_DIR/nodes" "$OUT_DIR/samples" "$OUT_DIR/summaries"
+printf "%s\n" "$OUT_DIR" > "$OUT_DIR_ROOT/current-run-dir.txt"
+printf "%s\n" "$OUT_DIR" > "$OUT_DIR/current-run-dir.txt"
 exec > >(tee -a "$OUT_DIR/command-log.txt") 2>&1
 
 declare -a NODE_PIDS=()
@@ -195,21 +197,57 @@ start_global_deadline_watchdog(){
   DEADLINE_WATCHDOG_PID=$!
 }
 
+stop_global_deadline_watchdog(){
+  if [[ -n "${DEADLINE_WATCHDOG_PID:-}" ]]; then
+    kill "$DEADLINE_WATCHDOG_PID" 2>/dev/null || true
+    wait "$DEADLINE_WATCHDOG_PID" 2>/dev/null || true
+    DEADLINE_WATCHDOG_PID=""
+  fi
+}
+
+write_curl_failure_stub(){
+  local out="$1" url="$2" label="$3" rc="$4" error="$5"
+  mkdir -p "$(dirname "$out")" 2>/dev/null || true
+  if command -v jq >/dev/null 2>&1; then
+    jq -n \
+      --arg url "$url" \
+      --arg label "$label" \
+      --arg error "$error" \
+      --argjson exit_code "$rc" \
+      '{ok:false,error:$error,label:$label,url:$url,exit_code:$exit_code}' \
+      > "$out" 2>/dev/null || true
+  fi
+  if [[ ! -s "$out" ]]; then
+    printf '{"ok":false,"error":"%s","label":"%s","url":"%s","exit_code":%s}\n' \
+      "$error" "$label" "$url" "$rc" > "$out" 2>/dev/null || true
+  fi
+}
+
 safe_curl_json(){
   local url out label required rc now remaining max_time
   url="$1"; out="$2"; label="${3:-$url}"; required="${4:-0}"
-  assert_global_deadline
   now=$(date +%s)
-  remaining=$((GLOBAL_DEADLINE_TS - now))
-  (( remaining > 0 )) || { echo "FATAL: global deadline exhausted before curl: $label"; record_fail "GLOBAL_DEADLINE_TIMEOUT" "global deadline exhausted before curl: $label"; exit 124; }
+  if (( ${IN_CLEANUP:-0} != 1 )); then
+    assert_global_deadline
+    remaining=$((GLOBAL_DEADLINE_TS - now))
+    (( remaining > 0 )) || { echo "FATAL: global deadline exhausted before curl: $label"; record_fail "GLOBAL_DEADLINE_TIMEOUT" "global deadline exhausted before curl: $label"; exit 124; }
+  else
+    remaining=$((GLOBAL_DEADLINE_TS - now))
+    if (( remaining <= 0 )); then
+      write_curl_failure_stub "$out" "$url" "$label" 124 "global deadline exhausted; skipped curl during cleanup"
+      record_warn "skipped endpoint capture during cleanup after deadline: $label"
+      return 1
+    fi
+  fi
   max_time=$CURL_MAX_TIME_SECS
   (( max_time > remaining )) && max_time=$remaining
+  (( max_time < 1 )) && max_time=1
   rc=0
   curl -fsS --connect-timeout "$CURL_CONNECT_TIMEOUT_SECS" --max-time "$max_time" "$url" -o "$out" || rc=$?
   if (( rc == 0 )); then
     return 0
   fi
-  jq -n --arg url "$url" --arg label "$label" --argjson exit_code "$rc" '{ok:false,error:"curl failed",label:$label,url:$url,exit_code:$exit_code}' > "$out" 2>/dev/null || true
+  write_curl_failure_stub "$out" "$url" "$label" "$rc" "curl failed"
   capture_rpc_failure_diagnostics "$label" "$url" "$rc" || true
   if (( required == 1 )); then record_fail "RPC_UNAVAILABLE" "required endpoint failed: $label ($url)"; else record_warn "optional endpoint failed: $label"; fi
   return 1
@@ -581,30 +619,32 @@ write_metadata(){
 write_checksum_file(){
   local file="$1" out="$2" digest
   if command -v sha256sum >/dev/null 2>&1; then
-    (cd "$(dirname "$file")" && sha256sum "$(basename "$file")") > "$out"
+    sha256sum "$file" > "$out"
   elif command -v shasum >/dev/null 2>&1; then
-    (cd "$(dirname "$file")" && shasum -a 256 "$(basename "$file")") > "$out"
+    shasum -a 256 "$file" > "$out"
   elif command -v openssl >/dev/null 2>&1; then
     digest=$(openssl dgst -sha256 -r "$file" | awk '{print $1}')
-    printf '%s  %s\n' "$digest" "$(basename "$file")" > "$out"
+    printf '%s  %s\n' "$digest" "$file" > "$out"
   else
     record_warn "no sha256sum/shasum/openssl available; writing unavailable checksum marker"
-    printf 'UNAVAILABLE  %s\n' "$(basename "$file")" > "$out"
+    printf 'UNAVAILABLE  %s\n' "$file" > "$out"
   fi
 }
 
 verify_checksum_file(){
-  local dir="$1" checksum_file="$2" expected file actual
-  [[ -s "$dir/$checksum_file" ]] || return 1
-  expected=$(awk '{print $1; exit}' "$dir/$checksum_file" 2>/dev/null || true)
-  file=$(awk '{print $2; exit}' "$dir/$checksum_file" 2>/dev/null || true)
-  [[ "$expected" != "UNAVAILABLE" && -n "$expected" && -n "$file" && -s "$dir/$file" ]] || return 0
+  local dir="$1" checksum_file="$2" checksum_path expected file file_path actual
+  checksum_path="$dir/$checksum_file"
+  [[ -s "$checksum_path" ]] || return 1
+  expected=$(awk '{print $1; exit}' "$checksum_path" 2>/dev/null || true)
+  file=$(awk '{print $2; exit}' "$checksum_path" 2>/dev/null || true)
+  if [[ "$file" == */* ]]; then file_path="$file"; else file_path="$dir/$file"; fi
+  [[ "$expected" != "UNAVAILABLE" && -n "$expected" && -n "$file" && -s "$file_path" ]] || return 0
   if command -v sha256sum >/dev/null 2>&1; then
-    (cd "$dir" && sha256sum -c "$checksum_file")
+    sha256sum -c "$checksum_path"
   elif command -v shasum >/dev/null 2>&1; then
-    (cd "$dir" && shasum -a 256 -c "$checksum_file")
+    shasum -a 256 -c "$checksum_path"
   elif command -v openssl >/dev/null 2>&1; then
-    actual=$(openssl dgst -sha256 -r "$dir/$file" | awk '{print $1}')
+    actual=$(openssl dgst -sha256 -r "$file_path" | awk '{print $1}')
     [[ "$actual" == "$expected" ]]
   else
     return 0
@@ -618,25 +658,30 @@ package_evidence(){
   cp "$OUT_DIR/evidence-summary.md" "$OUT_DIR_ROOT/evidence-summary.md" 2>/dev/null || true
   cp "$OUT_DIR/command-log.txt" "$OUT_DIR_ROOT/command-log.txt" 2>/dev/null || true
   cp "$OUT_DIR/bootnode.txt" "$OUT_DIR_ROOT/bootnode.txt" 2>/dev/null || true
-  printf "%s\n" "$OUT_DIR" > "$OUT_DIR_ROOT/current-run-dir.txt"
+  printf "%s\n" "$OUT_DIR" > "$OUT_DIR_ROOT/current-run-dir.txt" 2>/dev/null || true
+  printf "%s\n" "$OUT_DIR" > "$OUT_DIR/current-run-dir.txt" 2>/dev/null || true
   for i in $(seq 1 "$NODE_COUNT"); do cp "$OUT_DIR/logs/n${i}.log" "$OUT_DIR/nodes/n${i}.log" 2>/dev/null || true; done
   for i in $(seq 1 "$MINER_COUNT"); do cp "$OUT_DIR/logs/miner-${i}.log" "$OUT_DIR/miners/miner-${i}.log" 2>/dev/null || true; done
-  local tar_tmp manifest item
-  tar_tmp=$(mktemp -p /tmp evidence.XXXXXX.tar.gz)
-  manifest=$(mktemp -p /tmp evidence-manifest.XXXXXX)
-  for item in endpoints logs miners nodes samples summaries evidence-summary.md command-log.txt process-pids.txt p2p_convergence.json final-convergence-table.json quiescence-metrics.json restart_rejoin.log global-watchdog-timeout.txt; do
+  local tar_tmp manifest item tar_rc=0
+  tar_tmp=$(mktemp -p /tmp evidence.XXXXXX.tar.gz) || return 1
+  manifest=$(mktemp -p /tmp evidence-manifest.XXXXXX) || { rm -f "$tar_tmp"; return 1; }
+  for item in endpoints logs miners nodes samples summaries evidence-summary.md command-log.txt process-pids.txt p2p_convergence.json final-convergence-table.json quiescence-metrics.json restart_rejoin.log global-watchdog-timeout.txt current-run-dir.txt; do
     [[ -e "$OUT_DIR/$item" ]] && printf '%s\n' "$item" >> "$manifest"
   done
   if [[ -s "$manifest" ]]; then
-    (cd "$OUT_DIR" && tar -czf "$tar_tmp" --exclude='evidence.tar.gz' --exclude='evidence.tar.gz.sha256' -T "$manifest") || record_warn "tar returned non-zero while packaging available evidence"
+    (cd "$OUT_DIR" && tar -czf "$tar_tmp" --exclude='evidence.tar.gz' --exclude='evidence.tar.gz.sha256' -T "$manifest") || tar_rc=$?
   else
-    (cd "$OUT_DIR" && tar -czf "$tar_tmp" --files-from /dev/null) || record_warn "tar returned non-zero while packaging empty evidence manifest"
+    (cd "$OUT_DIR" && tar -czf "$tar_tmp" --files-from /dev/null) || tar_rc=$?
+  fi
+  if (( tar_rc != 0 )); then
+    record_warn "tar returned non-zero while packaging available evidence; retrying with empty evidence archive"
+    (cd "$OUT_DIR" && tar -czf "$tar_tmp" --files-from /dev/null) || { rm -f "$manifest" "$tar_tmp"; return 1; }
   fi
   rm -f "$manifest"
-  mv "$tar_tmp" "$OUT_DIR/evidence.tar.gz"
+  mv "$tar_tmp" "$OUT_DIR/evidence.tar.gz" || { rm -f "$tar_tmp"; return 1; }
   write_checksum_file "$OUT_DIR/evidence.tar.gz" "$OUT_DIR/evidence.tar.gz.sha256" || record_warn "failed to write evidence checksum"
   cp "$OUT_DIR/evidence.tar.gz" "$OUT_DIR_ROOT/evidence.tar.gz" 2>/dev/null || true
-  cp "$OUT_DIR/evidence.tar.gz.sha256" "$OUT_DIR_ROOT/evidence.tar.gz.sha256" 2>/dev/null || true
+  write_checksum_file "$OUT_DIR_ROOT/evidence.tar.gz" "$OUT_DIR_ROOT/evidence.tar.gz.sha256" || cp "$OUT_DIR/evidence.tar.gz.sha256" "$OUT_DIR_ROOT/evidence.tar.gz.sha256" 2>/dev/null || true
   verify_checksum_file "$OUT_DIR_ROOT" evidence.tar.gz.sha256 || record_warn "root evidence checksum verification failed"
   verify_checksum_file "$OUT_DIR" evidence.tar.gz.sha256 || record_warn "run evidence checksum verification failed"
   [[ -s "$OUT_DIR/evidence.tar.gz" ]] || return 1
@@ -645,6 +690,10 @@ package_evidence(){
 
 on_signal(){
   local signal_name="$1" exit_code="$2" class msg
+  if (( CLEANUP_STARTED == 1 )); then
+    return 0
+  fi
+  IN_CLEANUP=1
   class="SIGNAL_${signal_name}"
   msg="received SIG${signal_name}; finalizing evidence before exit"
   if [[ "$signal_name" == "TERM" && -f "$OUT_DIR/global-watchdog-timeout.txt" ]]; then
@@ -658,12 +707,14 @@ on_signal(){
 cleanup(){
   local exit_code=${1:-$?} package_rc=0
   if (( CLEANUP_STARTED == 1 )); then
-    exit "$exit_code"
+    return 0
   fi
   CLEANUP_STARTED=1
   IN_CLEANUP=1
   EXIT_CODE=$exit_code
-  trap - EXIT INT TERM
+  trap - EXIT
+  trap '' INT TERM
+  stop_global_deadline_watchdog
   if (( exit_code == 124 )); then
     if (( ${#FAIL_REASONS[@]} == 0 )); then record_fail "GLOBAL_DEADLINE_TIMEOUT" "script exited with timeout status 124 before classified failure"; fi
   elif (( exit_code != 0 && ${#FAIL_REASONS[@]} == 0 )); then
@@ -681,7 +732,6 @@ cleanup(){
   write_evidence_summary || true
   write_p2p_convergence_json || true
   write_restart_rejoin_log || true
-  [[ -n "${DEADLINE_WATCHDOG_PID:-}" ]] && kill "$DEADLINE_WATCHDOG_PID" 2>/dev/null || true
   stop_pids "${MINER_PIDS[@]:-}"
   stop_pids "${NODE_PIDS[@]:-}"
   package_evidence || package_rc=$?
