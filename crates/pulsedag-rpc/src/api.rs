@@ -6,7 +6,7 @@ use pulsedag_p2p::{P2pHandle, P2pStatus};
 use pulsedag_storage::Storage;
 use serde::{Deserialize, Serialize};
 use tokio::{
-    sync::{RwLock, RwLockReadGuard},
+    sync::{RwLock, RwLockReadGuard, Semaphore},
     time::{timeout, Duration},
 };
 
@@ -241,6 +241,7 @@ impl NodeRuntimeStats {
 }
 
 const RPC_STATE_LOCK_TIMEOUT: Duration = Duration::from_millis(750);
+static P2P_STATUS_SNAPSHOT_PERMITS: Semaphore = Semaphore::const_new(1);
 
 pub async fn read_chain_for_rpc(
     chain: &Arc<RwLock<ChainState>>,
@@ -278,9 +279,19 @@ pub async fn p2p_status_for_rpc(
         return Ok(None);
     };
 
+    let permit = P2P_STATUS_SNAPSHOT_PERMITS.try_acquire().map_err(|_| {
+        format!(
+            "{endpoint} skipped p2p status snapshot because a prior snapshot is still running; p2p shared state is busy and peer-collapse diagnostics should inspect long-running p2p critical sections"
+        )
+    })?;
+
     timeout(
         RPC_STATE_LOCK_TIMEOUT,
-        tokio::task::spawn_blocking(move || p2p.status()),
+        tokio::task::spawn_blocking(move || {
+            let status = p2p.status();
+            drop(permit);
+            status
+        }),
     )
     .await
     .map_err(|_| {

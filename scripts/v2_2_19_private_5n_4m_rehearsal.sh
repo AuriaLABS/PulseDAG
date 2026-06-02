@@ -237,7 +237,7 @@ capture_rpc_failure_diagnostics(){
     if (( idx >= 1 && idx <= NODE_COUNT )); then node="n${idx}"; fi
   fi
   [[ -n "$node" ]] || node="unknown"
-  pid="$(node_pid_for_label "$label" 2>/dev/null || true)"
+  pid="$(node_pid_for_label "$node" 2>/dev/null || true)"
   diag="$OUT_DIR/endpoints/${node}-rpc-failure-diagnostics.jsonl"
   alive=0; listening=0; class="RPC_TIMEOUT_UNCLASSIFIED"
   if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then alive=1; fi

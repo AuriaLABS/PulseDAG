@@ -695,7 +695,13 @@ pub async fn get_p2p_propagation<S: RpcStateLike>(
     State(state): State<S>,
 ) -> Json<ApiResponse<serde_json::Value>> {
     let runtime_handle = state.runtime();
-    let runtime = runtime_handle.read().await;
+    let runtime = read_runtime_for_rpc(&runtime_handle, "/p2p/propagation")
+        .await
+        .map_err(|e| Json(ApiResponse::err("STATE_LOCK_BUSY", e)));
+    let runtime = match runtime {
+        Ok(runtime) => runtime,
+        Err(response) => return response,
+    };
     let mut payload = serde_json::json!({
         "p2p_enabled": false,
         "p2p_mode": "disabled",
@@ -747,7 +753,8 @@ pub async fn get_p2p_propagation<S: RpcStateLike>(
             "p2p_txs": runtime.duplicate_p2p_txs
         }
     });
-    match p2p_status_for_rpc(state.p2p(), "/p2p/status").await {
+    drop(runtime);
+    match p2p_status_for_rpc(state.p2p(), "/p2p/propagation").await {
         Ok(Some(status)) => {
             payload["p2p_enabled"] = serde_json::json!(true);
             payload["p2p_mode"] = serde_json::json!(status.mode);
@@ -762,7 +769,10 @@ pub async fn get_p2p_propagation<S: RpcStateLike>(
                 serde_json::json!(status.block_outbound_duplicates_suppressed);
         }
         Ok(None) => {}
-        Err(e) => return Json(ApiResponse::err("P2P_STATUS_BUSY", e)),
+        Err(e) => {
+            payload["p2p_status_busy"] = serde_json::json!(true);
+            payload["p2p_status_error"] = serde_json::json!(e);
+        }
     }
     Json(ApiResponse::ok(payload))
 }
