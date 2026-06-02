@@ -3,7 +3,7 @@ mod block_request;
 mod config;
 
 use std::{
-    collections::HashSet,
+    collections::{BTreeMap, HashSet},
     net::SocketAddr,
     sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
@@ -84,6 +84,36 @@ fn known_hashes_for_scheduler(chain: &pulsedag_core::state::ChainState) -> HashS
 
 fn pending_hashes_for_scheduler(block_requests: &BlockRequestTracker) -> HashSet<String> {
     block_requests.pending.keys().cloned().collect()
+}
+
+fn orphan_age_metrics(chain: &pulsedag_core::state::ChainState, now_unix: u64) -> (u64, u64) {
+    let now_ms = now_unix.saturating_mul(1_000);
+    let max_orphan_age_secs = chain
+        .orphan_received_at_ms
+        .values()
+        .map(|received_ms| now_ms.saturating_sub(*received_ms) / 1_000)
+        .max()
+        .unwrap_or(0);
+    let oldest_missing_parent_age_secs = chain
+        .orphan_parent_index
+        .values()
+        .filter_map(|waiting| {
+            waiting
+                .iter()
+                .filter_map(|orphan| chain.orphan_received_at_ms.get(orphan))
+                .map(|received_ms| now_ms.saturating_sub(*received_ms) / 1_000)
+                .max()
+        })
+        .max()
+        .unwrap_or(0);
+    (max_orphan_age_secs, oldest_missing_parent_age_secs)
+}
+
+fn inflight_by_peer(p2p: &Option<Arc<dyn P2pHandle>>) -> BTreeMap<String, usize> {
+    p2p.as_ref()
+        .and_then(|handle| handle.status().ok())
+        .map(|status| status.active_connections_by_peer.into_iter().collect())
+        .unwrap_or_default()
 }
 
 fn usage() -> &'static str {
@@ -398,8 +428,9 @@ async fn main() -> Result<()> {
         let runtime = app_state.runtime.clone();
         let p2p = app_state.p2p.clone();
         tokio::spawn(async move {
-            let mut block_requests = BlockRequestTracker::new(15, 3);
+            let mut block_requests = BlockRequestTracker::new(8, 2);
             let mut fetch_scheduler = DependencyAwareFetchScheduler::default();
+            let mut recovery_tick: u64 = 0;
             loop {
                 let maybe_event =
                     match tokio::time::timeout(Duration::from_secs(1), rx.recv()).await {
@@ -407,7 +438,8 @@ async fn main() -> Result<()> {
                         Ok(None) => break,
                         Err(_) => None,
                     };
-                let timed_out = block_requests.drain_timeouts(now_unix());
+                let now = now_unix();
+                let timed_out = block_requests.drain_timeouts(now);
                 let timed_out_count = timed_out
                     .retryable
                     .len()
@@ -418,9 +450,17 @@ async fn main() -> Result<()> {
                         rt.block_request_timeouts = rt
                             .block_request_timeouts
                             .saturating_add(timed_out_count as u64);
+                        rt.block_request_retries = rt
+                            .block_request_retries
+                            .saturating_add(timed_out.retryable.len() as u64);
+                        rt.block_request_fallbacks = rt
+                            .block_request_fallbacks
+                            .saturating_add(timed_out.expired.len() as u64);
                         rt.pending_block_requests = block_requests.pending.len();
                         rt.inflight_block_requests = block_requests.pending.len();
                         rt.pending_block_request_hashes = block_requests.pending_hashes();
+                        rt.block_fetch_scheduler_queue_depth = fetch_scheduler.queue_depth();
+                        rt.block_fetch_scheduler_inflight_by_peer = inflight_by_peer(&p2p);
                     }
                     for hash in timed_out.retryable {
                         if let Some(ref p2p) = p2p {
@@ -459,6 +499,114 @@ async fn main() -> Result<()> {
                             rt.pending_block_request_hashes = block_requests.pending_hashes();
                         } else {
                             warn!(block_hash = %hash, "GetBlock request expired after retry limit; clearing inflight state");
+                        }
+                    }
+                }
+                recovery_tick = recovery_tick.saturating_add(1);
+                if recovery_tick.is_multiple_of(5) {
+                    let (
+                        stale_missing_parents,
+                        adopted,
+                        retried,
+                        orphan_count,
+                        pending_missing,
+                        ages,
+                        persist_failed,
+                    ) = {
+                        let mut guard = chain.write().await;
+                        let known = guard.dag.blocks.keys().cloned().collect::<HashSet<_>>();
+                        let mut missing = guard
+                            .orphan_parent_index
+                            .keys()
+                            .filter(|parent| !known.contains(*parent))
+                            .cloned()
+                            .collect::<Vec<_>>();
+                        missing.sort();
+                        missing.truncate(16);
+                        let mut adopted_hashes = Vec::new();
+                        let adoption = pulsedag_core::adopt_ready_orphans_with_result(
+                            &mut guard,
+                            AcceptSource::P2p,
+                            None,
+                        );
+                        let adopted = adoption.accepted;
+                        let retried = adoption.retried;
+                        adopted_hashes.extend(adoption.accepted_hashes);
+                        let persist_failed = if retried > 0 {
+                            match storage.persist_chain_state(&guard) {
+                                Ok(()) => false,
+                                Err(e) => {
+                                    warn!(error = %e, retried, adopted, "failed persisting chain state after recovery orphan reprocess");
+                                    true
+                                }
+                            }
+                        } else {
+                            false
+                        };
+                        for hash in adopted_hashes {
+                            block_requests.resolve(&hash);
+                        }
+                        let ages = orphan_age_metrics(&guard, now_unix());
+                        (
+                            missing,
+                            adopted,
+                            retried,
+                            guard.orphan_blocks.len(),
+                            pulsedag_core::pending_missing_parent_count(&guard),
+                            ages,
+                            persist_failed,
+                        )
+                    };
+                    if retried > 0 || !stale_missing_parents.is_empty() {
+                        let mut rt = runtime.write().await;
+                        rt.orphan_reprocess_attempts =
+                            rt.orphan_reprocess_attempts.saturating_add(retried as u64);
+                        rt.orphan_reprocess_success =
+                            rt.orphan_reprocess_success.saturating_add(adopted as u64);
+                        rt.orphan_reprocess_failed_missing_parent = rt
+                            .orphan_reprocess_failed_missing_parent
+                            .saturating_add(retried.saturating_sub(adopted) as u64);
+                        rt.orphan_blocks_retried =
+                            rt.orphan_blocks_retried.saturating_add(retried as u64);
+                        rt.orphan_blocks_resolved =
+                            rt.orphan_blocks_resolved.saturating_add(adopted as u64);
+                        if persist_failed {
+                            rt.orphan_reprocess_failed_persist =
+                                rt.orphan_reprocess_failed_persist.saturating_add(1);
+                        }
+                        rt.pending_missing_parents = pending_missing;
+                        rt.max_orphan_age_secs = ages.0;
+                        rt.oldest_missing_parent_age_secs = ages
+                            .1
+                            .max(block_requests.oldest_pending_age_secs(now_unix()));
+                        rt.pending_block_requests = block_requests.pending.len();
+                        rt.inflight_block_requests = block_requests.pending.len();
+                        rt.pending_block_request_hashes = block_requests.pending_hashes();
+                        rt.block_fetch_scheduler_queue_depth = fetch_scheduler.queue_depth();
+                        rt.block_fetch_scheduler_inflight_by_peer = inflight_by_peer(&p2p);
+                        rt.sync_state = if orphan_count == 0 {
+                            "synced"
+                        } else {
+                            "catching_up"
+                        }
+                        .to_string();
+                    }
+                    for parent in stale_missing_parents {
+                        if block_requests.should_issue_getblock(&parent, now_unix()) {
+                            if let Some(ref p2p) = p2p {
+                                if let Err(e) = p2p.request_block(&parent) {
+                                    warn!(error = %e, missing_parent = %parent, "failed issuing recovery-tick missing-parent GetBlock request");
+                                }
+                            }
+                            let mut rt = runtime.write().await;
+                            rt.getblock_sent = rt.getblock_sent.saturating_add(1);
+                            rt.missing_parent_requests_sent =
+                                rt.missing_parent_requests_sent.saturating_add(1);
+                            rt.block_request_fallbacks =
+                                rt.block_request_fallbacks.saturating_add(1);
+                            rt.pending_block_requests = block_requests.pending.len();
+                            rt.inflight_block_requests = block_requests.pending.len();
+                            rt.pending_block_request_hashes = block_requests.pending_hashes();
                         }
                     }
                 }
@@ -1112,9 +1260,13 @@ async fn main() -> Result<()> {
                                 let mut rt = runtime.write().await;
                                 rt.getblock_sent = rt.getblock_sent.saturating_add(1);
                                 rt.pending_block_requests = block_requests.pending.len();
+                                rt.inflight_block_requests = block_requests.pending.len();
+                                rt.pending_block_request_hashes = block_requests.pending_hashes();
                             }
                         }
                         let mut rt = runtime.write().await;
+                        rt.block_fetch_scheduler_queue_depth = fetch_scheduler.queue_depth();
+                        rt.block_fetch_scheduler_inflight_by_peer = inflight_by_peer(&p2p);
                         rt.inventory_announces_received = rt
                             .inventory_announces_received
                             .saturating_add(hashes.len() as u64);
@@ -1174,9 +1326,13 @@ async fn main() -> Result<()> {
                                 let mut rt = runtime.write().await;
                                 rt.getblock_sent = rt.getblock_sent.saturating_add(1);
                                 rt.pending_block_requests = block_requests.pending.len();
+                                rt.inflight_block_requests = block_requests.pending.len();
+                                rt.pending_block_request_hashes = block_requests.pending_hashes();
                             }
                         }
                         let mut rt = runtime.write().await;
+                        rt.block_fetch_scheduler_queue_depth = fetch_scheduler.queue_depth();
+                        rt.block_fetch_scheduler_inflight_by_peer = inflight_by_peer(&p2p);
                         rt.headers_received =
                             rt.headers_received.saturating_add(headers.len() as u64);
                         rt.dependency_fetches_scheduled = rt
@@ -1333,14 +1489,32 @@ async fn main() -> Result<()> {
                     InboundEvent::BlockDataMissing { hash } => {
                         if let Some(hash) = hash.as_ref() {
                             block_requests.resolve(hash);
+                            if let Some(ref p2p) = p2p {
+                                if let Err(e) = p2p.request_headers(&[], Some(hash), 128) {
+                                    warn!(error = %e, block_hash = %hash, "failed issuing fallback headers after BlockData not-found");
+                                }
+                                if let Err(e) = p2p.request_block(hash) {
+                                    warn!(error = %e, block_hash = %hash, "failed issuing fallback GetBlock after BlockData not-found");
+                                } else {
+                                    let _ = block_requests.should_issue_getblock(hash, now_unix());
+                                }
+                            }
                         }
                         let mut rt = runtime.write().await;
                         rt.sync_state = "degraded".to_string();
                         rt.sync_failures = rt.sync_failures.saturating_add(1);
+                        rt.blockdata_not_found = rt.blockdata_not_found.saturating_add(1);
+                        rt.block_request_fallbacks = rt.block_request_fallbacks.saturating_add(1);
+                        if hash.is_some() {
+                            rt.getblock_sent = rt.getblock_sent.saturating_add(1);
+                            rt.header_requests_sent = rt.header_requests_sent.saturating_add(1);
+                        }
                         rt.pending_block_requests = block_requests.pending.len();
                         rt.inflight_block_requests = block_requests.pending.len();
                         rt.pending_block_request_hashes = block_requests.pending_hashes();
-                        warn!(requested_hash = ?hash, "peer returned empty BlockData for requested block; cleared inflight state");
+                        rt.block_fetch_scheduler_queue_depth = fetch_scheduler.queue_depth();
+                        rt.block_fetch_scheduler_inflight_by_peer = inflight_by_peer(&p2p);
+                        warn!(requested_hash = ?hash, "peer returned empty BlockData; cleared inflight and issued fallback request");
                     }
                     InboundEvent::PeerConnected(peer) => {
                         let peers_connected = p2p

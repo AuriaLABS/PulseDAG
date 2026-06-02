@@ -128,10 +128,20 @@ pub struct NodeRuntimeStats {
     pub blockdata_duplicate: u64,
     pub blockdata_missing_parent: u64,
     pub blockdata_invalid_pow: u64,
+    #[serde(default)]
+    pub blockdata_not_found: u64,
     pub block_request_timeouts: u64,
+    #[serde(default)]
+    pub block_request_retries: u64,
+    #[serde(default)]
+    pub block_request_fallbacks: u64,
     pub duplicate_block_requests_suppressed: u64,
     pub pending_block_requests: usize,
     pub inflight_block_requests: usize,
+    #[serde(default)]
+    pub block_fetch_scheduler_queue_depth: usize,
+    #[serde(default)]
+    pub block_fetch_scheduler_inflight_by_peer: BTreeMap<String, usize>,
     #[serde(default)]
     pub pending_block_request_hashes: Vec<String>,
     pub pending_missing_parents: usize,
@@ -146,7 +156,19 @@ pub struct NodeRuntimeStats {
     pub orphan_blocks_queued: u64,
     pub orphan_blocks_resolved: u64,
     pub orphan_blocks_retried: u64,
+    #[serde(default)]
+    pub orphan_reprocess_attempts: u64,
+    #[serde(default)]
+    pub orphan_reprocess_success: u64,
+    #[serde(default)]
+    pub orphan_reprocess_failed_missing_parent: u64,
+    #[serde(default)]
+    pub orphan_reprocess_failed_persist: u64,
     pub orphan_blocks_evicted: u64,
+    #[serde(default)]
+    pub max_orphan_age_secs: u64,
+    #[serde(default)]
+    pub oldest_missing_parent_age_secs: u64,
     pub sync_catchup_completed: u64,
     pub sync_failures: u64,
     pub startup_snapshot_exists: bool,
