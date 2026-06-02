@@ -1,6 +1,6 @@
 use axum::{extract::State, Json};
 
-use crate::{api::ApiResponse, api::RpcStateLike};
+use crate::{api::read_chain_for_rpc, api::ApiResponse, api::RpcStateLike};
 
 #[derive(Debug, serde::Serialize)]
 pub struct OrphanEntry {
@@ -19,7 +19,10 @@ pub async fn get_orphans<S: RpcStateLike>(
     State(state): State<S>,
 ) -> Json<ApiResponse<OrphanStatusData>> {
     let chain_handle = state.chain();
-    let chain = chain_handle.read().await;
+    let chain = match read_chain_for_rpc(&chain_handle, "/orphans").await {
+        Ok(chain) => chain,
+        Err(e) => return Json(ApiResponse::err("STATE_LOCK_BUSY", e)),
+    };
     let mut orphans = chain.orphan_blocks.keys().cloned().collect::<Vec<_>>();
     orphans.sort();
     let orphans = orphans

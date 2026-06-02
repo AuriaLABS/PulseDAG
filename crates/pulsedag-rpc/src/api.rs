@@ -2,10 +2,13 @@ use std::{collections::BTreeMap, sync::Arc};
 
 use pulsedag_core::state::ChainState;
 use pulsedag_core::SyncPipelineStatus;
-use pulsedag_p2p::P2pHandle;
+use pulsedag_p2p::{P2pHandle, P2pStatus};
 use pulsedag_storage::Storage;
 use serde::{Deserialize, Serialize};
-use tokio::sync::RwLock;
+use tokio::{
+    sync::{RwLock, RwLockReadGuard, Semaphore},
+    time::{timeout, Duration},
+};
 
 pub use pulsedag_api::{
     ApiError, ApiMeta, ApiResponse, GetBlockTemplateRequest, MineRequest, SubmitMinedBlockRequest,
@@ -235,6 +238,71 @@ impl NodeRuntimeStats {
         let count = self.rejected_blocks_by_reason.entry(reason).or_insert(0);
         *count = count.saturating_add(1);
     }
+}
+
+const RPC_STATE_LOCK_TIMEOUT: Duration = Duration::from_millis(750);
+static P2P_STATUS_SNAPSHOT_PERMITS: Semaphore = Semaphore::const_new(1);
+
+pub async fn read_chain_for_rpc<'a>(
+    chain: &'a Arc<RwLock<ChainState>>,
+    endpoint: &str,
+) -> Result<RwLockReadGuard<'a, ChainState>, String> {
+    timeout(RPC_STATE_LOCK_TIMEOUT, chain.read())
+        .await
+        .map_err(|_| {
+            format!(
+                "{endpoint} could not acquire chain read lock within {}ms; shared state is busy and RPC starvation diagnostics should inspect long-running writers",
+                RPC_STATE_LOCK_TIMEOUT.as_millis()
+            )
+        })
+}
+
+pub async fn read_runtime_for_rpc<'a>(
+    runtime: &'a Arc<RwLock<NodeRuntimeStats>>,
+    endpoint: &str,
+) -> Result<RwLockReadGuard<'a, NodeRuntimeStats>, String> {
+    timeout(RPC_STATE_LOCK_TIMEOUT, runtime.read())
+        .await
+        .map_err(|_| {
+            format!(
+                "{endpoint} could not acquire runtime read lock within {}ms; shared state is busy and RPC starvation diagnostics should inspect long-running writers",
+                RPC_STATE_LOCK_TIMEOUT.as_millis()
+            )
+        })
+}
+
+pub async fn p2p_status_for_rpc(
+    p2p: Option<Arc<dyn P2pHandle>>,
+    endpoint: &str,
+) -> Result<Option<P2pStatus>, String> {
+    let Some(p2p) = p2p else {
+        return Ok(None);
+    };
+
+    let permit = P2P_STATUS_SNAPSHOT_PERMITS.try_acquire().map_err(|_| {
+        format!(
+            "{endpoint} skipped p2p status snapshot because a prior snapshot is still running; p2p shared state is busy and peer-collapse diagnostics should inspect long-running p2p critical sections"
+        )
+    })?;
+
+    timeout(
+        RPC_STATE_LOCK_TIMEOUT,
+        tokio::task::spawn_blocking(move || {
+            let status = p2p.status();
+            drop(permit);
+            status
+        }),
+    )
+    .await
+    .map_err(|_| {
+        format!(
+            "{endpoint} could not complete p2p status snapshot within {}ms; p2p shared state is busy and peer-collapse diagnostics should inspect long-running p2p critical sections",
+            RPC_STATE_LOCK_TIMEOUT.as_millis()
+        )
+    })?
+    .map_err(|e| format!("{endpoint} p2p status snapshot task failed: {e}"))?
+    .map(Some)
+    .map_err(|e| format!("{endpoint} p2p status failed: {e}"))
 }
 
 pub trait RpcStateLike: Clone + Send + Sync + 'static {

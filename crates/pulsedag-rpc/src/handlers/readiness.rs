@@ -1,4 +1,7 @@
-use crate::{api::ApiResponse, api::RpcStateLike};
+use crate::{
+    api::p2p_status_for_rpc, api::read_chain_for_rpc, api::read_runtime_for_rpc, api::ApiResponse,
+    api::RpcStateLike,
+};
 use axum::{extract::State, Json};
 use pulsedag_core::preferred_tip_hash;
 use serde::{Deserialize, Serialize};
@@ -109,21 +112,40 @@ pub async fn get_readiness<S: RpcStateLike>(
         Err(e) => return Json(ApiResponse::err("STORAGE_ERROR", e.to_string())),
     };
 
-    let persisted_blocks = match state.storage().list_blocks() {
+    let persisted_block_count = match state.storage().block_count() {
         Ok(v) => v,
         Err(e) => return Json(ApiResponse::err("STORAGE_ERROR", e.to_string())),
     };
-    let persisted_hashes = persisted_blocks
-        .iter()
-        .map(|b| b.hash.clone())
-        .collect::<BTreeSet<_>>();
-    let persisted_best_height = persisted_blocks.iter().map(|b| b.header.height).max();
 
+    let persisted_block_hashes = if persisted_block_count == 0 {
+        Some(BTreeSet::new())
+    } else {
+        match state.storage().list_blocks() {
+            Ok(blocks) if blocks.len() == persisted_block_count => Some(
+                blocks
+                    .into_iter()
+                    .map(|block| block.hash)
+                    .collect::<BTreeSet<_>>(),
+            ),
+            Ok(_) => None,
+            Err(e) => return Json(ApiResponse::err("STORAGE_ERROR", e.to_string())),
+        }
+    };
+
+    let p2p_status = match p2p_status_for_rpc(state.p2p(), "/readiness").await {
+        Ok(status) => status,
+        Err(e) => return Json(ApiResponse::err("P2P_STATUS_BUSY", e)),
+    };
     let chain_handle = state.chain();
-    let chain = chain_handle.read().await;
+    let chain = match read_chain_for_rpc(&chain_handle, "/readiness").await {
+        Ok(chain) => chain,
+        Err(e) => return Json(ApiResponse::err("STATE_LOCK_BUSY", e)),
+    };
     let runtime_handle = state.runtime();
-    let runtime = runtime_handle.read().await;
-    let p2p_status = state.p2p().and_then(|p| p.status().ok());
+    let runtime = match read_runtime_for_rpc(&runtime_handle, "/readiness").await {
+        Ok(runtime) => runtime,
+        Err(e) => return Json(ApiResponse::err("STATE_LOCK_BUSY", e)),
+    };
     let p2p_mode = std::env::var("PULSEDAG_P2P_MODE").unwrap_or_else(|_| "unknown".to_string());
     let rpc_bind = std::env::var("PULSEDAG_EFFECTIVE_RPC_BIND")
         .or_else(|_| std::env::var("PULSEDAG_RPC_BIND"))
@@ -145,13 +167,11 @@ pub async fn get_readiness<S: RpcStateLike>(
         .map(|status| status.connected_peers.len())
         .unwrap_or(0);
 
-    let memory_hashes = chain.dag.blocks.keys().cloned().collect::<BTreeSet<_>>();
     let selected_tip = preferred_tip_hash(&chain);
     let state_root = chain.utxo.compute_state_root().ok();
     let storage_last_commit_height = snapshot_metadata
         .as_ref()
-        .map(|metadata| metadata.best_height)
-        .or(persisted_best_height);
+        .map(|metadata| metadata.best_height);
 
     let metrics = ReadinessMetrics {
         accepted_blocks: runtime.pulsedag_blocks_accepted_total,
@@ -199,8 +219,21 @@ pub async fn get_readiness<S: RpcStateLike>(
 
     let mut dag_fail = Vec::new();
     let mut dag_warn = Vec::new();
-    if memory_hashes != persisted_hashes {
-        dag_fail.push("memory and persisted blocks are not aligned".to_string());
+    let memory_block_hashes = chain.dag.blocks.keys().cloned().collect::<BTreeSet<_>>();
+    let block_hashes_aligned = persisted_block_hashes
+        .as_ref()
+        .is_some_and(|persisted_hashes| persisted_hashes == &memory_block_hashes);
+    if persisted_block_count != chain.dag.blocks.len() {
+        dag_fail.push(format!(
+            "memory block count ({}) and persisted block count ({}) are not aligned",
+            chain.dag.blocks.len(),
+            persisted_block_count
+        ));
+    } else if !block_hashes_aligned {
+        dag_fail.push(
+            "memory and persisted block hash sets are not aligned despite matching counts"
+                .to_string(),
+        );
     }
     if chain.dag.tips.is_empty() {
         dag_fail.push("no active tips in dag".to_string());
@@ -305,8 +338,16 @@ pub async fn get_readiness<S: RpcStateLike>(
 
     let mut storage_fail = Vec::new();
     let mut storage_warn = Vec::new();
-    if memory_hashes != persisted_hashes {
-        storage_fail.push("persisted block set does not match in-memory DAG".to_string());
+    if persisted_block_count != chain.dag.blocks.len() {
+        storage_fail.push(format!(
+            "persisted block count ({persisted_block_count}) does not match in-memory DAG block count ({})",
+            chain.dag.blocks.len()
+        ));
+    } else if !block_hashes_aligned {
+        storage_fail.push(
+            "persisted block hashes do not match in-memory DAG block hashes despite matching counts"
+                .to_string(),
+        );
     }
     if !snapshot_exists {
         storage_warn.push("snapshot is missing".to_string());

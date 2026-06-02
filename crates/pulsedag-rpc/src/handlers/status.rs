@@ -1,5 +1,9 @@
-use crate::{api::ApiResponse, api::RpcStateLike};
+use crate::{
+    api::p2p_status_for_rpc, api::read_chain_for_rpc, api::read_runtime_for_rpc, api::ApiResponse,
+    api::RpcStateLike,
+};
 use axum::{extract::State, Json};
+use pulsedag_core::state::ChainState;
 use pulsedag_p2p::{connected_peers_semantics, mode_connected_peers_are_real_network};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -54,15 +58,56 @@ fn repo_version() -> String {
     include_str!("../../../../VERSION").trim().to_string()
 }
 
+struct StatusStateSnapshot {
+    chain_id: String,
+    best_height: u64,
+    block_count: usize,
+    selected_tip: Option<String>,
+    tip_count: usize,
+    orphan_count: usize,
+    mempool_size: usize,
+    utxo_count: usize,
+    address_count: usize,
+    last_block_hash: Option<String>,
+    contracts_enabled: bool,
+    contracts_vm_version: String,
+}
+
+fn snapshot_chain(chain: &ChainState) -> StatusStateSnapshot {
+    let last_block_hash = chain
+        .dag
+        .blocks
+        .values()
+        .max_by_key(|b| b.header.height)
+        .map(|b| b.hash.clone());
+    let selected_tip = chain
+        .dag
+        .tips
+        .iter()
+        .filter_map(|tip| chain.dag.blocks.get(tip))
+        .max_by_key(|b| b.header.height)
+        .map(|b| b.hash.clone());
+
+    StatusStateSnapshot {
+        chain_id: chain.chain_id.clone(),
+        best_height: chain.dag.best_height,
+        block_count: chain.dag.blocks.len(),
+        selected_tip,
+        tip_count: chain.dag.tips.len(),
+        orphan_count: chain.orphan_blocks.len(),
+        mempool_size: chain.mempool.transactions.len(),
+        utxo_count: chain.utxo.utxos.len(),
+        address_count: chain.utxo.address_index.len(),
+        last_block_hash,
+        contracts_enabled: chain.contracts.config.enabled,
+        contracts_vm_version: chain.contracts.config.vm_version.clone(),
+    }
+}
+
 pub async fn get_status<S: RpcStateLike>(
     State(state): State<S>,
 ) -> Json<ApiResponse<NodeStatusData>> {
     let snapshot_exists = match state.storage().snapshot_exists() {
-        Ok(v) => v,
-        Err(e) => return Json(ApiResponse::err("STORAGE_ERROR", e.to_string())),
-    };
-
-    let persisted_blocks = match state.storage().list_blocks() {
         Ok(v) => v,
         Err(e) => return Json(ApiResponse::err("STORAGE_ERROR", e.to_string())),
     };
@@ -72,41 +117,35 @@ pub async fn get_status<S: RpcStateLike>(
         Ok(v) => v,
         Err(e) => return Json(ApiResponse::err("STORAGE_ERROR", e.to_string())),
     };
-    let chain_handle = state.chain();
-    let chain = chain_handle.read().await;
-    let runtime_handle = state.runtime();
-    let runtime = runtime_handle.read().await;
-    let keep_recent = runtime.prune_keep_recent_blocks.max(1);
-    let uptime_secs = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
-        .saturating_sub(runtime.started_at_unix);
-    let recommended_keep_from_height = chain
-        .dag
-        .best_height
-        .saturating_sub(keep_recent.saturating_sub(1));
-    let p2p_status = state.p2p().and_then(|p| p.status().ok()).map(|s| {
-        let peers_are_real = mode_connected_peers_are_real_network(&s.mode);
-        let mode = s.mode.clone();
-        let peer_health = P2pPeerHealthSummary {
-            healthy: s.peer_lifecycle_healthy,
-            degraded: s.peer_lifecycle_degraded,
-            cooldown: s.peer_lifecycle_cooldown,
-            recovering: s.peer_lifecycle_recovering,
-            reconnect_attempts: s.peer_reconnect_attempts,
-            recovery_successes: s.peer_recovery_success_count,
-            suppressed_dials: s.peer_suppressed_dial_count,
-        };
-        (
-            mode.clone(),
-            s.runtime_mode_detail,
-            peers_are_real,
-            connected_peers_semantics(&mode).to_string(),
-            s.connected_peers.len(),
-            peer_health,
-        )
-    });
+    let persisted_block_count = match state.storage().block_count() {
+        Ok(v) => v,
+        Err(e) => return Json(ApiResponse::err("STORAGE_ERROR", e.to_string())),
+    };
+
+    let p2p_status = match p2p_status_for_rpc(state.p2p(), "/status").await {
+        Ok(status) => status.map(|s| {
+            let peers_are_real = mode_connected_peers_are_real_network(&s.mode);
+            let mode = s.mode.clone();
+            let peer_health = P2pPeerHealthSummary {
+                healthy: s.peer_lifecycle_healthy,
+                degraded: s.peer_lifecycle_degraded,
+                cooldown: s.peer_lifecycle_cooldown,
+                recovering: s.peer_lifecycle_recovering,
+                reconnect_attempts: s.peer_reconnect_attempts,
+                recovery_successes: s.peer_recovery_success_count,
+                suppressed_dials: s.peer_suppressed_dial_count,
+            };
+            (
+                mode.clone(),
+                s.runtime_mode_detail,
+                peers_are_real,
+                connected_peers_semantics(&mode).to_string(),
+                s.connected_peers.len(),
+                peer_health,
+            )
+        }),
+        Err(e) => return Json(ApiResponse::err("P2P_STATUS_BUSY", e)),
+    };
     let (
         p2p_mode,
         p2p_runtime_mode_detail,
@@ -131,47 +170,60 @@ pub async fn get_status<S: RpcStateLike>(
         },
     ));
     let p2p_enabled = state.p2p().is_some();
-    let last_block_hash = chain
-        .dag
-        .blocks
-        .values()
-        .max_by_key(|b| b.header.height)
-        .map(|b| b.hash.clone());
-    let selected_tip = chain
-        .dag
-        .tips
-        .iter()
-        .filter_map(|tip| chain.dag.blocks.get(tip))
-        .max_by_key(|b| b.header.height)
-        .map(|b| b.hash.clone());
+
+    let chain_handle = state.chain();
+    let chain_snapshot = {
+        let chain = match read_chain_for_rpc(&chain_handle, "/status").await {
+            Ok(chain) => chain,
+            Err(e) => return Json(ApiResponse::err("STATE_LOCK_BUSY", e)),
+        };
+        snapshot_chain(&chain)
+    };
+    let runtime_handle = state.runtime();
+    let (keep_recent, uptime_secs, sync_state) = {
+        let runtime = match read_runtime_for_rpc(&runtime_handle, "/status").await {
+            Ok(runtime) => runtime,
+            Err(e) => return Json(ApiResponse::err("STATE_LOCK_BUSY", e)),
+        };
+        let keep_recent = runtime.prune_keep_recent_blocks.max(1);
+        let uptime_secs = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0)
+            .saturating_sub(runtime.started_at_unix);
+        (keep_recent, uptime_secs, runtime.sync_state.clone())
+    };
+    let recommended_keep_from_height = chain_snapshot
+        .best_height
+        .saturating_sub(keep_recent.saturating_sub(1));
 
     let peer_summary = format!(
         "peer_count={} semantics={}",
         peer_count, connected_peers_semantics
     );
     Json(ApiResponse::ok(NodeStatusData {
-        network_id: chain.chain_id.clone(),
+        network_id: chain_snapshot.chain_id.clone(),
         peer_summary,
         service: "pulsedagd".into(),
         version: repo_version(),
-        chain_id: chain.chain_id.clone(),
-        best_height: chain.dag.best_height,
+        chain_id: chain_snapshot.chain_id,
+        best_height: chain_snapshot.best_height,
         uptime_secs,
-        block_count: chain.dag.blocks.len(),
-        selected_tip,
-        tip_count: chain.dag.tips.len(),
-        orphan_count: chain.orphan_blocks.len(),
-        mempool_size: chain.mempool.transactions.len(),
-        utxo_count: chain.utxo.utxos.len(),
-        address_count: chain.utxo.address_index.len(),
+        block_count: chain_snapshot.block_count,
+        selected_tip: chain_snapshot.selected_tip,
+        tip_count: chain_snapshot.tip_count,
+        orphan_count: chain_snapshot.orphan_count,
+        mempool_size: chain_snapshot.mempool_size,
+        utxo_count: chain_snapshot.utxo_count,
+        address_count: chain_snapshot.address_count,
         snapshot_exists,
         snapshot_height: if snapshot_exists {
-            Some(chain.dag.best_height)
+            Some(chain_snapshot.best_height)
         } else {
             None
         },
         captured_at_unix,
-        persisted_block_count: persisted_blocks.len(),
+        persisted_block_count,
         recommended_keep_from_height,
         p2p_enabled,
         p2p_mode: if p2p_enabled && !p2p_mode.is_empty() {
@@ -188,12 +240,12 @@ pub async fn get_status<S: RpcStateLike>(
         connected_peers_semantics,
         peer_count,
         p2p_peer_health: p2p_enabled.then_some(p2p_peer_health),
-        sync_state: runtime.sync_state.clone(),
+        sync_state,
         storage_backend: "rocksdb".to_string(),
-        last_block_hash,
+        last_block_hash: chain_snapshot.last_block_hash,
         contracts_prepared,
-        contracts_enabled: chain.contracts.config.enabled,
-        contracts_vm_version: chain.contracts.config.vm_version.clone(),
+        contracts_enabled: chain_snapshot.contracts_enabled,
+        contracts_vm_version: chain_snapshot.contracts_vm_version,
     }))
 }
 

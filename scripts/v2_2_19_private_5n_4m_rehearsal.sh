@@ -205,6 +205,7 @@ safe_curl_json(){
     return 0
   fi
   jq -n --arg url "$url" --arg label "$label" --argjson exit_code "$rc" '{ok:false,error:"curl failed",label:$label,url:$url,exit_code:$exit_code}' > "$out" 2>/dev/null || true
+  capture_rpc_failure_diagnostics "$label" "$url" "$rc" || true
   if (( required == 1 )); then record_fail "RPC_UNAVAILABLE" "required endpoint failed: $label ($url)"; else record_warn "optional endpoint failed: $label"; fi
   return 1
 }
@@ -218,6 +219,56 @@ extract_chain_id(){
   jq -r '.data.chain_id // .chain_id // .data.network_id // .network_id // empty' "$release_file" 2>/dev/null | head -n1 | awk 'NF {print; exit}' && return 0
   jq -r '.data.chain_id // .chain_id // empty' "$p2p_file" 2>/dev/null | head -n1 | awk 'NF {print; exit}' && return 0
   return 1
+}
+
+node_pid_for_label(){
+  local label="$1" node
+  node="$(printf '%s' "$label" | sed -n 's/.*\(n[0-9][0-9]*\):.*/\1/p' | head -n1)"
+  [[ -n "$node" && -f "$OUT_DIR/process-pids.txt" ]] || return 1
+  awk -v node="node-${node}" '$2 == node {print $1; exit}' "$OUT_DIR/process-pids.txt"
+}
+
+capture_rpc_failure_diagnostics(){
+  local label="$1" url="$2" rc="$3" pid port node diag class alive listening
+  node="$(printf '%s' "$label" | sed -n 's/.*\(n[0-9][0-9]*\):.*/\1/p' | head -n1)"
+  port="$(printf '%s' "$url" | sed -n 's#.*127\.0\.0\.1:\([0-9][0-9]*\).*#\1#p' | head -n1)"
+  if [[ -z "$node" && -n "$port" ]]; then
+    local idx=$((port - BASE_RPC_PORT))
+    if (( idx >= 1 && idx <= NODE_COUNT )); then node="n${idx}"; fi
+  fi
+  [[ -n "$node" ]] || node="unknown"
+  pid="$(node_pid_for_label "$node" 2>/dev/null || true)"
+  diag="$OUT_DIR/endpoints/${node}-rpc-failure-diagnostics.jsonl"
+  alive=0; listening=0; class="RPC_TIMEOUT_UNCLASSIFIED"
+  if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then alive=1; fi
+  if [[ -n "$port" ]] && port_in_use "$port"; then listening=1; fi
+  if (( alive == 0 )); then
+    class="RPC_PROCESS_EXITED"
+  elif (( listening == 0 )); then
+    class="RPC_LISTENER_DOWN"
+  elif [[ "$rc" == "28" ]]; then
+    class="RPC_ALIVE_LISTENER_TIMEOUT"
+  else
+    class="RPC_CURL_FAILURE_WITH_ALIVE_LISTENER"
+  fi
+  {
+    jq -n \
+      --arg ts "$(date -u +%FT%TZ)" \
+      --arg label "$label" \
+      --arg url "$url" \
+      --arg node "$node" \
+      --arg port "${port:-unknown}" \
+      --arg pid "${pid:-unknown}" \
+      --arg class "$class" \
+      --argjson exit_code "$rc" \
+      --argjson process_alive "$alive" \
+      --argjson listener_present "$listening" \
+      '{timestamp_utc:$ts,label:$label,url:$url,node:$node,port:$port,pid:$pid,exit_code:$exit_code,class:$class,process_alive:$process_alive,listener_present:$listener_present}'
+  } >> "$diag" 2>/dev/null || true
+  if [[ -n "$pid" ]]; then ps -p "$pid" -o pid,ppid,stat,etime,pcpu,pmem,comm > "$OUT_DIR/endpoints/${node}-rpc-failure-ps.txt" 2>/dev/null || true; fi
+  if [[ -n "$port" ]] && command -v ss >/dev/null 2>&1; then ss -ltnp "( sport = :$port )" > "$OUT_DIR/endpoints/${node}-rpc-failure-listener.txt" 2>/dev/null || true; fi
+  if [[ "$node" != "unknown" ]]; then tail -n 200 "$OUT_DIR/logs/${node}.log" > "$OUT_DIR/logs/${node}-rpc-failure-tail.log" 2>/dev/null || true; fi
+  echo "RPC_DIAGNOSTIC[$class]: label=$label node=$node pid=${pid:-unknown} alive=$alive listener=$listening curl_exit=$rc"
 }
 
 port_in_use(){
