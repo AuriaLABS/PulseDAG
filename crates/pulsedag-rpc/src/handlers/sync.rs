@@ -1,6 +1,8 @@
 use axum::{extract::State, Json};
 
-use crate::api::{ApiResponse, RpcStateLike, SyncRebuildRequest};
+use crate::api::{
+    read_chain_for_rpc, read_runtime_for_rpc, ApiResponse, RpcStateLike, SyncRebuildRequest,
+};
 use pulsedag_core::reconcile_mempool;
 
 #[derive(Debug, serde::Serialize)]
@@ -107,9 +109,15 @@ pub async fn get_sync_status<S: RpcStateLike>(
     };
 
     let chain_handle = state.chain();
-    let chain = chain_handle.read().await;
+    let chain = match read_chain_for_rpc(&chain_handle, "/sync/status").await {
+        Ok(chain) => chain,
+        Err(e) => return Json(ApiResponse::err("STATE_LOCK_BUSY", e)),
+    };
     let runtime_handle = state.runtime();
-    let runtime = runtime_handle.read().await;
+    let runtime = match read_runtime_for_rpc(&runtime_handle, "/sync/status").await {
+        Ok(runtime) => runtime,
+        Err(e) => return Json(ApiResponse::err("STATE_LOCK_BUSY", e)),
+    };
     let consistency_issues = pulsedag_core::dag_consistency_issues(&chain);
     let lag_blocks = (persisted_blocks.len() as u64).saturating_sub(chain.dag.blocks.len() as u64);
     let lag_band = match lag_blocks {
@@ -356,9 +364,15 @@ pub async fn get_sync_missing<S: RpcStateLike>(
     State(state): State<S>,
 ) -> Json<ApiResponse<SyncMissingData>> {
     let chain_handle = state.chain();
-    let chain = chain_handle.read().await;
+    let chain = match read_chain_for_rpc(&chain_handle, "/sync/missing").await {
+        Ok(chain) => chain,
+        Err(e) => return Json(ApiResponse::err("STATE_LOCK_BUSY", e)),
+    };
     let runtime_handle = state.runtime();
-    let runtime = runtime_handle.read().await;
+    let runtime = match read_runtime_for_rpc(&runtime_handle, "/sync/missing").await {
+        Ok(runtime) => runtime,
+        Err(e) => return Json(ApiResponse::err("STATE_LOCK_BUSY", e)),
+    };
     let mut orphan_hashes = chain.orphan_blocks.keys().cloned().collect::<Vec<_>>();
     orphan_hashes.sort();
     let orphans = orphan_hashes

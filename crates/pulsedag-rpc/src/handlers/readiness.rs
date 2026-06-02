@@ -1,4 +1,6 @@
-use crate::{api::ApiResponse, api::RpcStateLike};
+use crate::{
+    api::read_chain_for_rpc, api::read_runtime_for_rpc, api::ApiResponse, api::RpcStateLike,
+};
 use axum::{extract::State, Json};
 use pulsedag_core::preferred_tip_hash;
 use serde::{Deserialize, Serialize};
@@ -120,9 +122,15 @@ pub async fn get_readiness<S: RpcStateLike>(
     let persisted_best_height = persisted_blocks.iter().map(|b| b.header.height).max();
 
     let chain_handle = state.chain();
-    let chain = chain_handle.read().await;
+    let chain = match read_chain_for_rpc(&chain_handle, "/readiness").await {
+        Ok(chain) => chain,
+        Err(e) => return Json(ApiResponse::err("STATE_LOCK_BUSY", e)),
+    };
     let runtime_handle = state.runtime();
-    let runtime = runtime_handle.read().await;
+    let runtime = match read_runtime_for_rpc(&runtime_handle, "/readiness").await {
+        Ok(runtime) => runtime,
+        Err(e) => return Json(ApiResponse::err("STATE_LOCK_BUSY", e)),
+    };
     let p2p_status = state.p2p().and_then(|p| p.status().ok());
     let p2p_mode = std::env::var("PULSEDAG_P2P_MODE").unwrap_or_else(|_| "unknown".to_string());
     let rpc_bind = std::env::var("PULSEDAG_EFFECTIVE_RPC_BIND")

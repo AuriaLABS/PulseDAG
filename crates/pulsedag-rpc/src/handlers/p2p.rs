@@ -4,7 +4,7 @@ use pulsedag_p2p::{
 };
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::api::{ApiResponse, RpcStateLike};
+use crate::api::{read_chain_for_rpc, read_runtime_for_rpc, ApiResponse, RpcStateLike};
 
 fn unix_now_secs() -> u64 {
     SystemTime::now()
@@ -473,9 +473,15 @@ pub async fn get_p2p_status<S: RpcStateLike>(
                         serde_json::json!(status.topology_diversity_score_bps),
                     );
                     let runtime_handle = state.runtime();
-                    let runtime = runtime_handle.read().await;
+                    let runtime = match read_runtime_for_rpc(&runtime_handle, "/p2p/status").await {
+                        Ok(runtime) => runtime,
+                        Err(e) => return Json(ApiResponse::err("STATE_LOCK_BUSY", e)),
+                    };
                     let chain_handle = state.chain();
-                    let chain = chain_handle.read().await;
+                    let chain = match read_chain_for_rpc(&chain_handle, "/p2p/status").await {
+                        Ok(chain) => chain,
+                        Err(e) => return Json(ApiResponse::err("STATE_LOCK_BUSY", e)),
+                    };
                     let orphan_count = chain.orphan_blocks.len();
                     let pending_missing_parents =
                         pulsedag_core::pending_missing_parent_count(&chain);
@@ -596,9 +602,15 @@ pub async fn get_p2p_status<S: RpcStateLike>(
         }
         None => {
             let runtime_handle = state.runtime();
-            let runtime = runtime_handle.read().await;
+            let runtime = match read_runtime_for_rpc(&runtime_handle, "/p2p/status").await {
+                Ok(runtime) => runtime,
+                Err(e) => return Json(ApiResponse::err("STATE_LOCK_BUSY", e)),
+            };
             let chain_handle = state.chain();
-            let chain = chain_handle.read().await;
+            let chain = match read_chain_for_rpc(&chain_handle, "/p2p/status").await {
+                Ok(chain) => chain,
+                Err(e) => return Json(ApiResponse::err("STATE_LOCK_BUSY", e)),
+            };
             Json(ApiResponse::ok(disabled_p2p_payload(
                 &runtime,
                 pulsedag_core::pending_missing_parent_count(&chain),

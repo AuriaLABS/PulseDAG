@@ -1,4 +1,6 @@
-use crate::{api::ApiResponse, api::RpcStateLike};
+use crate::{
+    api::read_chain_for_rpc, api::read_runtime_for_rpc, api::ApiResponse, api::RpcStateLike,
+};
 use axum::{extract::State, Json};
 use pulsedag_p2p::{connected_peers_semantics, mode_connected_peers_are_real_network};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -62,20 +64,21 @@ pub async fn get_status<S: RpcStateLike>(
         Err(e) => return Json(ApiResponse::err("STORAGE_ERROR", e.to_string())),
     };
 
-    let persisted_blocks = match state.storage().list_blocks() {
-        Ok(v) => v,
-        Err(e) => return Json(ApiResponse::err("STORAGE_ERROR", e.to_string())),
-    };
-
     let contracts_prepared = state.storage().contract_namespaces_ready();
     let captured_at_unix = match state.storage().snapshot_captured_at_unix() {
         Ok(v) => v,
         Err(e) => return Json(ApiResponse::err("STORAGE_ERROR", e.to_string())),
     };
     let chain_handle = state.chain();
-    let chain = chain_handle.read().await;
+    let chain = match read_chain_for_rpc(&chain_handle, "/status").await {
+        Ok(chain) => chain,
+        Err(e) => return Json(ApiResponse::err("STATE_LOCK_BUSY", e)),
+    };
     let runtime_handle = state.runtime();
-    let runtime = runtime_handle.read().await;
+    let runtime = match read_runtime_for_rpc(&runtime_handle, "/status").await {
+        Ok(runtime) => runtime,
+        Err(e) => return Json(ApiResponse::err("STATE_LOCK_BUSY", e)),
+    };
     let keep_recent = runtime.prune_keep_recent_blocks.max(1);
     let uptime_secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -171,7 +174,7 @@ pub async fn get_status<S: RpcStateLike>(
             None
         },
         captured_at_unix,
-        persisted_block_count: persisted_blocks.len(),
+        persisted_block_count: chain.dag.blocks.len(),
         recommended_keep_from_height,
         p2p_enabled,
         p2p_mode: if p2p_enabled && !p2p_mode.is_empty() {

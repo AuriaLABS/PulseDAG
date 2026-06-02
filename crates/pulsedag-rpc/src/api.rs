@@ -5,7 +5,10 @@ use pulsedag_core::SyncPipelineStatus;
 use pulsedag_p2p::P2pHandle;
 use pulsedag_storage::Storage;
 use serde::{Deserialize, Serialize};
-use tokio::sync::RwLock;
+use tokio::{
+    sync::{RwLock, RwLockReadGuard},
+    time::{timeout, Duration},
+};
 
 pub use pulsedag_api::{
     ApiError, ApiMeta, ApiResponse, GetBlockTemplateRequest, MineRequest, SubmitMinedBlockRequest,
@@ -235,6 +238,36 @@ impl NodeRuntimeStats {
         let count = self.rejected_blocks_by_reason.entry(reason).or_insert(0);
         *count = count.saturating_add(1);
     }
+}
+
+const RPC_STATE_LOCK_TIMEOUT: Duration = Duration::from_millis(750);
+
+pub async fn read_chain_for_rpc(
+    chain: &Arc<RwLock<ChainState>>,
+    endpoint: &str,
+) -> Result<RwLockReadGuard<'_, ChainState>, String> {
+    timeout(RPC_STATE_LOCK_TIMEOUT, chain.read())
+        .await
+        .map_err(|_| {
+            format!(
+                "{endpoint} could not acquire chain read lock within {}ms; shared state is busy and RPC starvation diagnostics should inspect long-running writers",
+                RPC_STATE_LOCK_TIMEOUT.as_millis()
+            )
+        })
+}
+
+pub async fn read_runtime_for_rpc(
+    runtime: &Arc<RwLock<NodeRuntimeStats>>,
+    endpoint: &str,
+) -> Result<RwLockReadGuard<'_, NodeRuntimeStats>, String> {
+    timeout(RPC_STATE_LOCK_TIMEOUT, runtime.read())
+        .await
+        .map_err(|_| {
+            format!(
+                "{endpoint} could not acquire runtime read lock within {}ms; shared state is busy and RPC starvation diagnostics should inspect long-running writers",
+                RPC_STATE_LOCK_TIMEOUT.as_millis()
+            )
+        })
 }
 
 pub trait RpcStateLike: Clone + Send + Sync + 'static {
