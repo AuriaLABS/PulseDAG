@@ -243,10 +243,10 @@ impl NodeRuntimeStats {
 const RPC_STATE_LOCK_TIMEOUT: Duration = Duration::from_millis(750);
 static P2P_STATUS_SNAPSHOT_PERMITS: Semaphore = Semaphore::const_new(1);
 
-pub async fn read_chain_for_rpc(
-    chain: &Arc<RwLock<ChainState>>,
+pub async fn read_chain_for_rpc<'a>(
+    chain: &'a Arc<RwLock<ChainState>>,
     endpoint: &str,
-) -> Result<RwLockReadGuard<'_, ChainState>, String> {
+) -> Result<RwLockReadGuard<'a, ChainState>, String> {
     timeout(RPC_STATE_LOCK_TIMEOUT, chain.read())
         .await
         .map_err(|_| {
@@ -257,10 +257,10 @@ pub async fn read_chain_for_rpc(
         })
 }
 
-pub async fn read_runtime_for_rpc(
-    runtime: &Arc<RwLock<NodeRuntimeStats>>,
+pub async fn read_runtime_for_rpc<'a>(
+    runtime: &'a Arc<RwLock<NodeRuntimeStats>>,
     endpoint: &str,
-) -> Result<RwLockReadGuard<'_, NodeRuntimeStats>, String> {
+) -> Result<RwLockReadGuard<'a, NodeRuntimeStats>, String> {
     timeout(RPC_STATE_LOCK_TIMEOUT, runtime.read())
         .await
         .map_err(|_| {
