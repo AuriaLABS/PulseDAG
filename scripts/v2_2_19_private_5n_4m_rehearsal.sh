@@ -156,6 +156,7 @@ assert_global_deadline(){
   (( ${IN_CLEANUP:-0} == 1 )) && return 0
   if (( $(date +%s) >= GLOBAL_DEADLINE_TS )); then
     echo "FATAL: global deadline exceeded after ${GLOBAL_DEADLINE_SECS}s"
+    record_fail "GLOBAL_DEADLINE_TIMEOUT" "global deadline exceeded after ${GLOBAL_DEADLINE_SECS}s"
     exit 124
   fi
 }
@@ -171,7 +172,7 @@ sleep_with_deadline(){
     assert_global_deadline
     now=$(date +%s)
     remaining=$((GLOBAL_DEADLINE_TS - now))
-    (( remaining > 0 )) || { echo "FATAL: global deadline exhausted before sleep"; exit 124; }
+    (( remaining > 0 )) || { echo "FATAL: global deadline exhausted before sleep"; record_fail "GLOBAL_DEADLINE_TIMEOUT" "global deadline exhausted before sleep"; exit 124; }
     if (( requested < remaining )); then
       sleep "$requested"
       return 0
@@ -185,6 +186,10 @@ start_global_deadline_watchdog(){
   (
     sleep "$GLOBAL_DEADLINE_SECS"
     echo "FATAL: private rehearsal global deadline ${GLOBAL_DEADLINE_SECS}s reached; terminating script" >&2
+    {
+      echo "timestamp_utc=$(date -u +%FT%TZ)"
+      echo "deadline_seconds=$GLOBAL_DEADLINE_SECS"
+    } > "$OUT_DIR/global-watchdog-timeout.txt" 2>/dev/null || true
     kill -TERM $$ 2>/dev/null || true
   ) &
   DEADLINE_WATCHDOG_PID=$!
@@ -196,7 +201,7 @@ safe_curl_json(){
   assert_global_deadline
   now=$(date +%s)
   remaining=$((GLOBAL_DEADLINE_TS - now))
-  (( remaining > 0 )) || { echo "FATAL: global deadline exhausted before curl: $label"; exit 124; }
+  (( remaining > 0 )) || { echo "FATAL: global deadline exhausted before curl: $label"; record_fail "GLOBAL_DEADLINE_TIMEOUT" "global deadline exhausted before curl: $label"; exit 124; }
   max_time=$CURL_MAX_TIME_SECS
   (( max_time > remaining )) && max_time=$remaining
   rc=0
@@ -276,7 +281,7 @@ port_in_use(){
   if command -v ss >/dev/null 2>&1; then ss -ltn "( sport = :$p )" | grep -Eq ":$p\b"; return $?; fi
   if command -v lsof >/dev/null 2>&1; then lsof -nP -iTCP:"$p" -sTCP:LISTEN >/dev/null 2>&1; return $?; fi
   if command -v netstat >/dev/null 2>&1; then netstat -ltn 2>/dev/null | grep -Eq "[:.]$p[[:space:]]"; return $?; fi
-  record_warn "no ss/lsof/netstat available for port check"
+  (exec 3<>"/dev/tcp/127.0.0.1/$p") >/dev/null 2>&1 && { exec 3<&- 3>&-; return 0; }
   return 1
 }
 
@@ -573,6 +578,39 @@ write_metadata(){
   } > "$OUT_DIR/summaries/package-metadata.txt"
 }
 
+write_checksum_file(){
+  local file="$1" out="$2" digest
+  if command -v sha256sum >/dev/null 2>&1; then
+    (cd "$(dirname "$file")" && sha256sum "$(basename "$file")") > "$out"
+  elif command -v shasum >/dev/null 2>&1; then
+    (cd "$(dirname "$file")" && shasum -a 256 "$(basename "$file")") > "$out"
+  elif command -v openssl >/dev/null 2>&1; then
+    digest=$(openssl dgst -sha256 -r "$file" | awk '{print $1}')
+    printf '%s  %s\n' "$digest" "$(basename "$file")" > "$out"
+  else
+    record_warn "no sha256sum/shasum/openssl available; writing unavailable checksum marker"
+    printf 'UNAVAILABLE  %s\n' "$(basename "$file")" > "$out"
+  fi
+}
+
+verify_checksum_file(){
+  local dir="$1" checksum_file="$2" expected file actual
+  [[ -s "$dir/$checksum_file" ]] || return 1
+  expected=$(awk '{print $1; exit}' "$dir/$checksum_file" 2>/dev/null || true)
+  file=$(awk '{print $2; exit}' "$dir/$checksum_file" 2>/dev/null || true)
+  [[ "$expected" != "UNAVAILABLE" && -n "$expected" && -n "$file" && -s "$dir/$file" ]] || return 0
+  if command -v sha256sum >/dev/null 2>&1; then
+    (cd "$dir" && sha256sum -c "$checksum_file")
+  elif command -v shasum >/dev/null 2>&1; then
+    (cd "$dir" && shasum -a 256 -c "$checksum_file")
+  elif command -v openssl >/dev/null 2>&1; then
+    actual=$(openssl dgst -sha256 -r "$dir/$file" | awk '{print $1}')
+    [[ "$actual" == "$expected" ]]
+  else
+    return 0
+  fi
+}
+
 package_evidence(){
   write_metadata || true
   cp "$OUT_DIR/p2p_convergence.json" "$OUT_DIR/final-convergence-table.json" 2>/dev/null || true
@@ -583,19 +621,42 @@ package_evidence(){
   printf "%s\n" "$OUT_DIR" > "$OUT_DIR_ROOT/current-run-dir.txt"
   for i in $(seq 1 "$NODE_COUNT"); do cp "$OUT_DIR/logs/n${i}.log" "$OUT_DIR/nodes/n${i}.log" 2>/dev/null || true; done
   for i in $(seq 1 "$MINER_COUNT"); do cp "$OUT_DIR/logs/miner-${i}.log" "$OUT_DIR/miners/miner-${i}.log" 2>/dev/null || true; done
-  local tar_tmp
+  local tar_tmp manifest item
   tar_tmp=$(mktemp -p /tmp evidence.XXXXXX.tar.gz)
-  (cd "$OUT_DIR" && tar -czf "$tar_tmp" --exclude='evidence.tar.gz' --exclude='evidence.tar.gz.sha256' endpoints logs miners nodes samples summaries evidence-summary.md command-log.txt process-pids.txt p2p_convergence.json final-convergence-table.json quiescence-metrics.json restart_rejoin.log 2>/dev/null || true)
+  manifest=$(mktemp -p /tmp evidence-manifest.XXXXXX)
+  for item in endpoints logs miners nodes samples summaries evidence-summary.md command-log.txt process-pids.txt p2p_convergence.json final-convergence-table.json quiescence-metrics.json restart_rejoin.log global-watchdog-timeout.txt; do
+    [[ -e "$OUT_DIR/$item" ]] && printf '%s\n' "$item" >> "$manifest"
+  done
+  if [[ -s "$manifest" ]]; then
+    (cd "$OUT_DIR" && tar -czf "$tar_tmp" --exclude='evidence.tar.gz' --exclude='evidence.tar.gz.sha256' -T "$manifest") || record_warn "tar returned non-zero while packaging available evidence"
+  else
+    (cd "$OUT_DIR" && tar -czf "$tar_tmp" --files-from /dev/null) || record_warn "tar returned non-zero while packaging empty evidence manifest"
+  fi
+  rm -f "$manifest"
   mv "$tar_tmp" "$OUT_DIR/evidence.tar.gz"
-  (cd "$OUT_DIR" && sha256sum evidence.tar.gz > evidence.tar.gz.sha256)
+  write_checksum_file "$OUT_DIR/evidence.tar.gz" "$OUT_DIR/evidence.tar.gz.sha256" || record_warn "failed to write evidence checksum"
   cp "$OUT_DIR/evidence.tar.gz" "$OUT_DIR_ROOT/evidence.tar.gz" 2>/dev/null || true
   cp "$OUT_DIR/evidence.tar.gz.sha256" "$OUT_DIR_ROOT/evidence.tar.gz.sha256" 2>/dev/null || true
-  (cd "$OUT_DIR_ROOT" && test -s evidence.tar.gz && test -s evidence.tar.gz.sha256 && sha256sum -c evidence.tar.gz.sha256)
-  (cd "$OUT_DIR" && test -s evidence.tar.gz && test -s evidence.tar.gz.sha256 && sha256sum -c evidence.tar.gz.sha256)
+  verify_checksum_file "$OUT_DIR_ROOT" evidence.tar.gz.sha256 || record_warn "root evidence checksum verification failed"
+  verify_checksum_file "$OUT_DIR" evidence.tar.gz.sha256 || record_warn "run evidence checksum verification failed"
+  [[ -s "$OUT_DIR/evidence.tar.gz" ]] || return 1
+  [[ -s "$OUT_DIR/evidence.tar.gz.sha256" ]] || return 1
+}
+
+on_signal(){
+  local signal_name="$1" exit_code="$2" class msg
+  class="SIGNAL_${signal_name}"
+  msg="received SIG${signal_name}; finalizing evidence before exit"
+  if [[ "$signal_name" == "TERM" && -f "$OUT_DIR/global-watchdog-timeout.txt" ]]; then
+    class="GLOBAL_WATCHDOG_TIMEOUT"
+    msg="global watchdog timeout after ${GLOBAL_DEADLINE_SECS}s"
+  fi
+  record_fail "$class" "$msg"
+  exit "$exit_code"
 }
 
 cleanup(){
-  local exit_code=$?
+  local exit_code=${1:-$?} package_rc=0
   if (( CLEANUP_STARTED == 1 )); then
     exit "$exit_code"
   fi
@@ -603,7 +664,11 @@ cleanup(){
   IN_CLEANUP=1
   EXIT_CODE=$exit_code
   trap - EXIT INT TERM
-  if (( exit_code != 0 && ${#FAIL_REASONS[@]} == 0 )); then record_fail "HARNESS_TIMEOUT" "script exited non-zero before classified failure: $exit_code"; fi
+  if (( exit_code == 124 )); then
+    if (( ${#FAIL_REASONS[@]} == 0 )); then record_fail "GLOBAL_DEADLINE_TIMEOUT" "script exited with timeout status 124 before classified failure"; fi
+  elif (( exit_code != 0 && ${#FAIL_REASONS[@]} == 0 )); then
+    record_fail "HARNESS_ERROR" "script exited non-zero before classified failure: $exit_code"
+  fi
   if (( QUIESCENCE_COMPLETED == 0 )); then
     collect_final_state cleanup-pre-quiescence || true
     snapshot_current_as_pre || true
@@ -617,11 +682,25 @@ cleanup(){
   write_p2p_convergence_json || true
   write_restart_rejoin_log || true
   [[ -n "${DEADLINE_WATCHDOG_PID:-}" ]] && kill "$DEADLINE_WATCHDOG_PID" 2>/dev/null || true
-  stop_pids "${MINER_PIDS[@]:-}"; stop_pids "${NODE_PIDS[@]:-}"; wait || true
-  package_evidence || true
+  stop_pids "${MINER_PIDS[@]:-}"
+  stop_pids "${NODE_PIDS[@]:-}"
+  package_evidence || package_rc=$?
+  if (( package_rc != 0 )); then
+    echo "FATAL: evidence packaging failed for $OUT_DIR (rc=$package_rc)"
+    exit_code=1
+    EXIT_CODE=$exit_code
+    record_fail "EVIDENCE_PACKAGING_FAILED" "evidence packaging failed with rc=$package_rc"
+    RESULT="FAIL"
+    write_evidence_summary || true
+  fi
+  echo "RUN_DIR=$OUT_DIR"
+  echo "FINAL_EXIT_CODE=$exit_code"
+  echo "FINAL_RESULT=$RESULT"
   exit "$exit_code"
 }
-trap cleanup EXIT INT TERM
+trap 'cleanup $?' EXIT
+trap 'on_signal INT 130' INT
+trap 'on_signal TERM 143' TERM
 
 start_global_deadline_watchdog
 OUT_DIR="$OUT_DIR" "$ROOT_DIR/scripts/v2_2_19_preflight_check.sh"
