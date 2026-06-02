@@ -421,6 +421,20 @@ impl Storage {
         Ok(blocks)
     }
 
+    pub fn block_count(&self) -> Result<usize, PulseError> {
+        let cf = self
+            .db
+            .cf_handle("blocks")
+            .ok_or_else(|| PulseError::StorageError("missing cf blocks".into()))?;
+        let iter = self.db.iterator_cf(cf, rocksdb::IteratorMode::Start);
+        let mut count = 0usize;
+        for item in iter {
+            item.map_err(|e| PulseError::StorageError(e.to_string()))?;
+            count = count.saturating_add(1);
+        }
+        Ok(count)
+    }
+
     pub fn persist_utxo(&self, outpoint: &OutPoint, utxo: &Utxo) -> Result<(), PulseError> {
         let cf = self
             .db

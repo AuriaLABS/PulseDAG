@@ -1,5 +1,6 @@
 use crate::{
-    api::read_chain_for_rpc, api::read_runtime_for_rpc, api::ApiResponse, api::RpcStateLike,
+    api::p2p_status_for_rpc, api::read_chain_for_rpc, api::read_runtime_for_rpc, api::ApiResponse,
+    api::RpcStateLike,
 };
 use axum::{extract::State, Json};
 use pulsedag_p2p::{connected_peers_semantics, mode_connected_peers_are_real_network};
@@ -89,27 +90,30 @@ pub async fn get_status<S: RpcStateLike>(
         .dag
         .best_height
         .saturating_sub(keep_recent.saturating_sub(1));
-    let p2p_status = state.p2p().and_then(|p| p.status().ok()).map(|s| {
-        let peers_are_real = mode_connected_peers_are_real_network(&s.mode);
-        let mode = s.mode.clone();
-        let peer_health = P2pPeerHealthSummary {
-            healthy: s.peer_lifecycle_healthy,
-            degraded: s.peer_lifecycle_degraded,
-            cooldown: s.peer_lifecycle_cooldown,
-            recovering: s.peer_lifecycle_recovering,
-            reconnect_attempts: s.peer_reconnect_attempts,
-            recovery_successes: s.peer_recovery_success_count,
-            suppressed_dials: s.peer_suppressed_dial_count,
-        };
-        (
-            mode.clone(),
-            s.runtime_mode_detail,
-            peers_are_real,
-            connected_peers_semantics(&mode).to_string(),
-            s.connected_peers.len(),
-            peer_health,
-        )
-    });
+    let p2p_status = match p2p_status_for_rpc(state.p2p(), "/status").await {
+        Ok(status) => status.map(|s| {
+            let peers_are_real = mode_connected_peers_are_real_network(&s.mode);
+            let mode = s.mode.clone();
+            let peer_health = P2pPeerHealthSummary {
+                healthy: s.peer_lifecycle_healthy,
+                degraded: s.peer_lifecycle_degraded,
+                cooldown: s.peer_lifecycle_cooldown,
+                recovering: s.peer_lifecycle_recovering,
+                reconnect_attempts: s.peer_reconnect_attempts,
+                recovery_successes: s.peer_recovery_success_count,
+                suppressed_dials: s.peer_suppressed_dial_count,
+            };
+            (
+                mode.clone(),
+                s.runtime_mode_detail,
+                peers_are_real,
+                connected_peers_semantics(&mode).to_string(),
+                s.connected_peers.len(),
+                peer_health,
+            )
+        }),
+        Err(e) => return Json(ApiResponse::err("P2P_STATUS_BUSY", e)),
+    };
     let (
         p2p_mode,
         p2p_runtime_mode_detail,

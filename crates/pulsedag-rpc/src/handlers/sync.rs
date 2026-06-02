@@ -1,7 +1,8 @@
 use axum::{extract::State, Json};
 
 use crate::api::{
-    read_chain_for_rpc, read_runtime_for_rpc, ApiResponse, RpcStateLike, SyncRebuildRequest,
+    p2p_status_for_rpc, read_chain_for_rpc, read_runtime_for_rpc, ApiResponse, RpcStateLike,
+    SyncRebuildRequest,
 };
 use pulsedag_core::reconcile_mempool;
 
@@ -103,7 +104,7 @@ pub async fn get_sync_status<S: RpcStateLike>(
         Err(e) => return Json(ApiResponse::err("STORAGE_ERROR", e.to_string())),
     };
 
-    let persisted_blocks = match state.storage().list_blocks() {
+    let persisted_block_count = match state.storage().block_count() {
         Ok(v) => v,
         Err(e) => return Json(ApiResponse::err("STORAGE_ERROR", e.to_string())),
     };
@@ -119,7 +120,7 @@ pub async fn get_sync_status<S: RpcStateLike>(
         Err(e) => return Json(ApiResponse::err("STATE_LOCK_BUSY", e)),
     };
     let consistency_issues = pulsedag_core::dag_consistency_issues(&chain);
-    let lag_blocks = (persisted_blocks.len() as u64).saturating_sub(chain.dag.blocks.len() as u64);
+    let lag_blocks = (persisted_block_count as u64).saturating_sub(chain.dag.blocks.len() as u64);
     let lag_band = match lag_blocks {
         0 => "aligned",
         1..=2 => "near_tip",
@@ -128,12 +129,12 @@ pub async fn get_sync_status<S: RpcStateLike>(
         _ => "severely_lagging",
     }
     .to_string();
-    let catchup_progress_bps = if persisted_blocks.is_empty() {
+    let catchup_progress_bps = if persisted_block_count == 0 {
         10_000
     } else {
         (chain.dag.blocks.len() as u64)
             .saturating_mul(10_000)
-            .saturating_div(persisted_blocks.len() as u64)
+            .saturating_div(persisted_block_count as u64)
             .min(10_000)
     };
     let counters_coherent = runtime.sync_pipeline.counters.blocks_applied
@@ -169,7 +170,10 @@ pub async fn get_sync_status<S: RpcStateLike>(
         }
     }
     .to_string();
-    let p2p_status = state.p2p().and_then(|p2p| p2p.status().ok());
+    let p2p_status = match p2p_status_for_rpc(state.p2p(), "/sync/status").await {
+        Ok(status) => status,
+        Err(e) => return Json(ApiResponse::err("P2P_STATUS_BUSY", e)),
+    };
     let p2p_enabled = p2p_status.is_some();
     let p2p_mode = p2p_status
         .as_ref()
@@ -220,7 +224,7 @@ pub async fn get_sync_status<S: RpcStateLike>(
     } else if catchup_stage != "steady" {
         Some(format!(
             "catch-up in progress: stage={catchup_stage}, lag_band={lag_band}, replay_gap={}",
-            persisted_blocks.len() as i64 - chain.dag.blocks.len() as i64
+            persisted_block_count as i64 - chain.dag.blocks.len() as i64
         ))
     } else {
         None
@@ -233,7 +237,7 @@ pub async fn get_sync_status<S: RpcStateLike>(
         p2p_enabled,
         p2p_mode,
         snapshot_exists,
-        persisted_block_count: persisted_blocks.len(),
+        persisted_block_count,
         in_memory_block_count: chain.dag.blocks.len(),
         best_height: chain.dag.best_height,
         selected_tip: pulsedag_core::preferred_tip_hash(&chain),
@@ -245,9 +249,9 @@ pub async fn get_sync_status<S: RpcStateLike>(
         pending_block_request_hashes: runtime.pending_block_request_hashes.clone(),
         duplicate_block_requests_suppressed: runtime.duplicate_block_requests_suppressed,
         pending_missing_parents,
-        can_replay_from_blocks: !persisted_blocks.is_empty(),
-        replay_gap: persisted_blocks.len() as i64 - chain.dag.blocks.len() as i64,
-        rebuild_recommended: !snapshot_exists || persisted_blocks.len() > chain.dag.blocks.len(),
+        can_replay_from_blocks: persisted_block_count > 0,
+        replay_gap: persisted_block_count as i64 - chain.dag.blocks.len() as i64,
+        rebuild_recommended: !snapshot_exists || persisted_block_count > chain.dag.blocks.len(),
         consistency_ok: consistency_issues.is_empty(),
         consistency_issue_count: consistency_issues.len(),
         catchup_stage,

@@ -2,7 +2,7 @@ use std::{collections::BTreeMap, sync::Arc};
 
 use pulsedag_core::state::ChainState;
 use pulsedag_core::SyncPipelineStatus;
-use pulsedag_p2p::P2pHandle;
+use pulsedag_p2p::{P2pHandle, P2pStatus};
 use pulsedag_storage::Storage;
 use serde::{Deserialize, Serialize};
 use tokio::{
@@ -268,6 +268,30 @@ pub async fn read_runtime_for_rpc(
                 RPC_STATE_LOCK_TIMEOUT.as_millis()
             )
         })
+}
+
+pub async fn p2p_status_for_rpc(
+    p2p: Option<Arc<dyn P2pHandle>>,
+    endpoint: &str,
+) -> Result<Option<P2pStatus>, String> {
+    let Some(p2p) = p2p else {
+        return Ok(None);
+    };
+
+    timeout(
+        RPC_STATE_LOCK_TIMEOUT,
+        tokio::task::spawn_blocking(move || p2p.status()),
+    )
+    .await
+    .map_err(|_| {
+        format!(
+            "{endpoint} could not complete p2p status snapshot within {}ms; p2p shared state is busy and peer-collapse diagnostics should inspect long-running p2p critical sections",
+            RPC_STATE_LOCK_TIMEOUT.as_millis()
+        )
+    })?
+    .map_err(|e| format!("{endpoint} p2p status snapshot task failed: {e}"))?
+    .map(Some)
+    .map_err(|e| format!("{endpoint} p2p status failed: {e}"))
 }
 
 pub trait RpcStateLike: Clone + Send + Sync + 'static {

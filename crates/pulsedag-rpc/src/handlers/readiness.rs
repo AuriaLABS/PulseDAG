@@ -1,10 +1,11 @@
 use crate::{
-    api::read_chain_for_rpc, api::read_runtime_for_rpc, api::ApiResponse, api::RpcStateLike,
+    api::p2p_status_for_rpc, api::read_chain_for_rpc, api::read_runtime_for_rpc, api::ApiResponse,
+    api::RpcStateLike,
 };
 use axum::{extract::State, Json};
 use pulsedag_core::preferred_tip_hash;
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -111,15 +112,10 @@ pub async fn get_readiness<S: RpcStateLike>(
         Err(e) => return Json(ApiResponse::err("STORAGE_ERROR", e.to_string())),
     };
 
-    let persisted_blocks = match state.storage().list_blocks() {
+    let persisted_block_count = match state.storage().block_count() {
         Ok(v) => v,
         Err(e) => return Json(ApiResponse::err("STORAGE_ERROR", e.to_string())),
     };
-    let persisted_hashes = persisted_blocks
-        .iter()
-        .map(|b| b.hash.clone())
-        .collect::<BTreeSet<_>>();
-    let persisted_best_height = persisted_blocks.iter().map(|b| b.header.height).max();
 
     let chain_handle = state.chain();
     let chain = match read_chain_for_rpc(&chain_handle, "/readiness").await {
@@ -131,7 +127,10 @@ pub async fn get_readiness<S: RpcStateLike>(
         Ok(runtime) => runtime,
         Err(e) => return Json(ApiResponse::err("STATE_LOCK_BUSY", e)),
     };
-    let p2p_status = state.p2p().and_then(|p| p.status().ok());
+    let p2p_status = match p2p_status_for_rpc(state.p2p(), "/readiness").await {
+        Ok(status) => status,
+        Err(e) => return Json(ApiResponse::err("P2P_STATUS_BUSY", e)),
+    };
     let p2p_mode = std::env::var("PULSEDAG_P2P_MODE").unwrap_or_else(|_| "unknown".to_string());
     let rpc_bind = std::env::var("PULSEDAG_EFFECTIVE_RPC_BIND")
         .or_else(|_| std::env::var("PULSEDAG_RPC_BIND"))
@@ -153,13 +152,11 @@ pub async fn get_readiness<S: RpcStateLike>(
         .map(|status| status.connected_peers.len())
         .unwrap_or(0);
 
-    let memory_hashes = chain.dag.blocks.keys().cloned().collect::<BTreeSet<_>>();
     let selected_tip = preferred_tip_hash(&chain);
     let state_root = chain.utxo.compute_state_root().ok();
     let storage_last_commit_height = snapshot_metadata
         .as_ref()
-        .map(|metadata| metadata.best_height)
-        .or(persisted_best_height);
+        .map(|metadata| metadata.best_height);
 
     let metrics = ReadinessMetrics {
         accepted_blocks: runtime.pulsedag_blocks_accepted_total,
@@ -207,8 +204,12 @@ pub async fn get_readiness<S: RpcStateLike>(
 
     let mut dag_fail = Vec::new();
     let mut dag_warn = Vec::new();
-    if memory_hashes != persisted_hashes {
-        dag_fail.push("memory and persisted blocks are not aligned".to_string());
+    if persisted_block_count != chain.dag.blocks.len() {
+        dag_fail.push(format!(
+            "memory block count ({}) and persisted block count ({}) are not aligned",
+            chain.dag.blocks.len(),
+            persisted_block_count
+        ));
     }
     if chain.dag.tips.is_empty() {
         dag_fail.push("no active tips in dag".to_string());
@@ -313,8 +314,11 @@ pub async fn get_readiness<S: RpcStateLike>(
 
     let mut storage_fail = Vec::new();
     let mut storage_warn = Vec::new();
-    if memory_hashes != persisted_hashes {
-        storage_fail.push("persisted block set does not match in-memory DAG".to_string());
+    if persisted_block_count != chain.dag.blocks.len() {
+        storage_fail.push(format!(
+            "persisted block count ({persisted_block_count}) does not match in-memory DAG block count ({})",
+            chain.dag.blocks.len()
+        ));
     }
     if !snapshot_exists {
         storage_warn.push("snapshot is missing".to_string());
