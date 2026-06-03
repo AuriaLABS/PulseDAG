@@ -5,12 +5,20 @@ DURATION_SECS=${DURATION_SECS:-1800}
 P2P_CONNECT_WAIT_SECS=${P2P_CONNECT_WAIT_SECS:-120}
 CURL_CONNECT_TIMEOUT_SECS=${CURL_CONNECT_TIMEOUT_SECS:-3}
 CURL_MAX_TIME_SECS=${CURL_MAX_TIME_SECS:-10}
+CLEANUP_CURL_CONNECT_TIMEOUT_SECS=${CLEANUP_CURL_CONNECT_TIMEOUT_SECS:-1}
+CLEANUP_CURL_MAX_TIME_SECS=${CLEANUP_CURL_MAX_TIME_SECS:-2}
+FINAL_CAPTURE_BUDGET_SECS=${FINAL_CAPTURE_BUDGET_SECS:-45}
+CLEANUP_KILL_GRACE_SECS=${CLEANUP_KILL_GRACE_SECS:-3}
+CLEANUP_PORT_WAIT_SECS=${CLEANUP_PORT_WAIT_SECS:-10}
 QUIESCENCE_WAIT_SECS=${QUIESCENCE_WAIT_SECS:-90}
 GLOBAL_DEADLINE_SECS=${GLOBAL_DEADLINE_SECS:-21600}
 MAX_GLOBAL_DEADLINE_SECS=21600
 RUN_ID=${RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)}
 START_TS=$(date +%s)
 START_UTC=$(date -u +%FT%TZ)
+LAST_PROGRESS_TS=$START_TS
+CLEANUP_DEADLINE_TS=0
+HARD_KILL_WATCHDOG_PID=
 if (( GLOBAL_DEADLINE_SECS > MAX_GLOBAL_DEADLINE_SECS )); then
   GLOBAL_DEADLINE_SECS=$MAX_GLOBAL_DEADLINE_SECS
 fi
@@ -154,6 +162,44 @@ record_fail(){
   FAIL_REASONS+=("$class: $msg")
 }
 
+mark_progress(){
+  local label="${1:-progress}"
+  LAST_PROGRESS_TS=$(date +%s)
+  printf '%s %s\n' "$(date -u +%FT%TZ)" "$label" >> "$OUT_DIR/progress.log" 2>/dev/null || true
+}
+
+cleanup_budget_remaining(){
+  local now
+  if (( ${IN_CLEANUP:-0} != 1 || ${CLEANUP_DEADLINE_TS:-0} <= 0 )); then
+    echo 999999
+    return 0
+  fi
+  now=$(date +%s)
+  echo $((CLEANUP_DEADLINE_TS - now))
+}
+
+cleanup_budget_exhausted(){
+  (( ${IN_CLEANUP:-0} == 1 && ${CLEANUP_DEADLINE_TS:-0} > 0 && $(date +%s) >= CLEANUP_DEADLINE_TS ))
+}
+
+run_with_global_timeout(){
+  local label="$1" remaining rc=0
+  shift
+  assert_global_deadline
+  remaining=$((GLOBAL_DEADLINE_TS - $(date +%s)))
+  (( remaining > 0 )) || { record_fail "GLOBAL_DEADLINE_TIMEOUT" "global deadline exhausted before ${label}"; exit 124; }
+  if command -v timeout >/dev/null 2>&1; then
+    timeout --kill-after=10s "${remaining}s" "$@" || rc=$?
+  else
+    "$@" || rc=$?
+  fi
+  if (( rc == 124 || rc == 137 )); then
+    record_fail "GLOBAL_DEADLINE_TIMEOUT" "${label} exceeded remaining global deadline budget (${remaining}s)"
+    exit 124
+  fi
+  return "$rc"
+}
+
 assert_global_deadline(){
   (( ${IN_CLEANUP:-0} == 1 )) && return 0
   if (( $(date +%s) >= GLOBAL_DEADLINE_TS )); then
@@ -185,14 +231,21 @@ sleep_with_deadline(){
 }
 
 start_global_deadline_watchdog(){
+  local watchdog_delay
+  watchdog_delay=$((GLOBAL_DEADLINE_TS - $(date +%s)))
+  (( watchdog_delay < 1 )) && watchdog_delay=1
   (
-    sleep "$GLOBAL_DEADLINE_SECS"
+    sleep "$watchdog_delay"
     echo "FATAL: private rehearsal global deadline ${GLOBAL_DEADLINE_SECS}s reached; terminating script" >&2
     {
       echo "timestamp_utc=$(date -u +%FT%TZ)"
       echo "deadline_seconds=$GLOBAL_DEADLINE_SECS"
+      echo "last_progress_utc=$(date -u -d @${LAST_PROGRESS_TS:-$START_TS} +%FT%TZ 2>/dev/null || echo unknown)"
+      echo "reason=HARNESS_STALL_TIMEOUT"
     } > "$OUT_DIR/global-watchdog-timeout.txt" 2>/dev/null || true
     kill -TERM $$ 2>/dev/null || true
+    sleep $((FINAL_CAPTURE_BUDGET_SECS + CLEANUP_KILL_GRACE_SECS + CLEANUP_PORT_WAIT_SECS + 30))
+    kill -KILL $$ 2>/dev/null || true
   ) &
   DEADLINE_WATCHDOG_PID=$!
 }
@@ -224,7 +277,7 @@ write_curl_failure_stub(){
 }
 
 safe_curl_json(){
-  local url out label required rc now remaining max_time
+  local url out label required rc now remaining max_time connect_time
   url="$1"; out="$2"; label="${3:-$url}"; required="${4:-0}"
   now=$(date +%s)
   if (( ${IN_CLEANUP:-0} != 1 )); then
@@ -232,18 +285,24 @@ safe_curl_json(){
     remaining=$((GLOBAL_DEADLINE_TS - now))
     (( remaining > 0 )) || { echo "FATAL: global deadline exhausted before curl: $label"; record_fail "GLOBAL_DEADLINE_TIMEOUT" "global deadline exhausted before curl: $label"; exit 124; }
   else
-    remaining=$((GLOBAL_DEADLINE_TS - now))
-    if (( remaining <= 0 )); then
-      write_curl_failure_stub "$out" "$url" "$label" 124 "global deadline exhausted; skipped curl during cleanup"
-      record_warn "skipped endpoint capture during cleanup after deadline: $label"
+    if cleanup_budget_exhausted; then
+      write_curl_failure_stub "$out" "$url" "$label" 124 "final capture budget exhausted; skipped curl during cleanup"
+      record_warn "skipped endpoint capture after final capture budget exhausted: $label"
       return 1
     fi
+    remaining=$(cleanup_budget_remaining)
   fi
-  max_time=$CURL_MAX_TIME_SECS
+  if (( ${IN_CLEANUP:-0} == 1 )); then
+    max_time=$CLEANUP_CURL_MAX_TIME_SECS
+    connect_time=$CLEANUP_CURL_CONNECT_TIMEOUT_SECS
+  else
+    max_time=$CURL_MAX_TIME_SECS
+    connect_time=$CURL_CONNECT_TIMEOUT_SECS
+  fi
   (( max_time > remaining )) && max_time=$remaining
   (( max_time < 1 )) && max_time=1
   rc=0
-  curl -fsS --connect-timeout "$CURL_CONNECT_TIMEOUT_SECS" --max-time "$max_time" "$url" -o "$out" || rc=$?
+  curl -fsS --connect-timeout "$connect_time" --max-time "$max_time" "$url" -o "$out" || rc=$?
   if (( rc == 0 )); then
     return 0
   fi
@@ -337,11 +396,78 @@ ensure_ports_free(){
 }
 
 stop_pids(){
-  local p
+  local label p deadline alive_before alive_after_term alive_after_kill
+  if [[ "${1:-}" == --label=* ]]; then
+    label="${1#--label=}"
+    shift
+  else
+    label="process"
+  fi
   (( $# == 0 )) && return 0
-  for p in "$@"; do [[ -n "$p" ]] && kill "$p" 2>/dev/null || true; done
-  sleep_with_deadline 1
-  for p in "$@"; do [[ -n "$p" ]] && kill -0 "$p" 2>/dev/null && kill -9 "$p" 2>/dev/null || true; done
+  mkdir -p "$OUT_DIR/summaries" 2>/dev/null || true
+  for p in "$@"; do
+    [[ -n "$p" ]] || continue
+    alive_before=0
+    kill -0 "$p" 2>/dev/null && alive_before=1
+    printf '%s label=%s pid=%s phase=before_sigterm alive=%s\n' "$(date -u +%FT%TZ)" "$label" "$p" "$alive_before" >> "$OUT_DIR/summaries/process-kill-audit.log" 2>/dev/null || true
+    (( alive_before == 1 )) && kill -TERM "$p" 2>/dev/null || true
+  done
+  deadline=$(( $(date +%s) + CLEANUP_KILL_GRACE_SECS ))
+  while (( $(date +%s) < deadline )); do
+    local any_alive=0
+    for p in "$@"; do [[ -n "$p" ]] && kill -0 "$p" 2>/dev/null && any_alive=1; done
+    (( any_alive == 0 )) && break
+    sleep 1
+  done
+  for p in "$@"; do
+    [[ -n "$p" ]] || continue
+    alive_after_term=0; alive_after_kill=0
+    kill -0 "$p" 2>/dev/null && alive_after_term=1
+    if (( alive_after_term == 1 )); then kill -KILL "$p" 2>/dev/null || true; fi
+    sleep 0.2 2>/dev/null || true
+    kill -0 "$p" 2>/dev/null && alive_after_kill=1
+    printf '%s label=%s pid=%s phase=after_sigterm alive=%s phase2=after_sigkill alive2=%s\n' "$(date -u +%FT%TZ)" "$label" "$p" "$alive_after_term" "$alive_after_kill" >> "$OUT_DIR/summaries/process-kill-audit.log" 2>/dev/null || true
+  done
+}
+
+kill_processes_on_test_ports(){
+  local p pid
+  command -v ss >/dev/null 2>&1 || return 0
+  for i in $(seq 1 "$NODE_COUNT"); do
+    for p in "$((BASE_RPC_PORT+i))" "$((BASE_P2P_PORT+i))"; do
+      while read -r pid; do
+        [[ -n "$pid" ]] || continue
+        echo "cleanup: killing leftover listener pid=$pid on port=$p"
+        kill -TERM "$pid" 2>/dev/null || true
+        sleep 1
+        kill -0 "$pid" 2>/dev/null && kill -KILL "$pid" 2>/dev/null || true
+      done < <(ss -ltnp "( sport = :$p )" 2>/dev/null | sed -n 's/.*pid=\([0-9][0-9]*\).*/\1/p' | sort -u)
+    done
+  done
+}
+
+wait_for_ports_clean(){
+  local deadline p dirty=0
+  deadline=$(( $(date +%s) + CLEANUP_PORT_WAIT_SECS ))
+  while (( $(date +%s) < deadline )); do
+    dirty=0
+    for i in $(seq 1 "$NODE_COUNT"); do
+      for p in "$((BASE_RPC_PORT+i))" "$((BASE_P2P_PORT+i))"; do
+        port_in_use "$p" && dirty=1
+      done
+    done
+    (( dirty == 0 )) && return 0
+    sleep 1
+  done
+  for i in $(seq 1 "$NODE_COUNT"); do
+    for p in "$((BASE_RPC_PORT+i))" "$((BASE_P2P_PORT+i))"; do
+      if port_in_use "$p"; then
+        record_fail "HARNESS_PORT_LEAK" "test port $p still in use after cleanup"
+        command -v ss >/dev/null 2>&1 && ss -ltnp "( sport = :$p )" >> "$OUT_DIR/summaries/port-leak-listeners.txt" 2>/dev/null || true
+      fi
+    done
+  done
+  return 1
 }
 capture_p2p_gate_failure(){
   local i rpc ep f
@@ -362,6 +488,28 @@ capture_p2p_gate_failure(){
   } > "$OUT_DIR/p2p-gate-failure.md"
 }
 
+capture_hard_stop_diagnostics(){
+  {
+    echo "timestamp_utc=$(date -u +%FT%TZ)"
+    echo "run_dir=$OUT_DIR"
+    echo "global_deadline_seconds=$GLOBAL_DEADLINE_SECS"
+    echo "final_capture_budget_seconds=$FINAL_CAPTURE_BUDGET_SECS"
+    echo "last_progress_ts=${LAST_PROGRESS_TS:-unknown}"
+    echo "last_progress_utc=$(date -u -d @${LAST_PROGRESS_TS:-$START_TS} +%FT%TZ 2>/dev/null || echo unknown)"
+    echo
+    echo "## processes"
+    ps -eo pid,ppid,pgid,stat,etime,pcpu,pmem,comm,args 2>/dev/null | awk 'NR==1 || /pulsedagd|pulsedag-miner/' || true
+    if command -v ss >/dev/null 2>&1; then
+      echo
+      echo "## listening sockets"
+      ss -ltnp 2>/dev/null || true
+    fi
+    echo
+    echo "## command-log tail"
+    tail -n 200 "$OUT_DIR/command-log.txt" 2>/dev/null || true
+  } > "$OUT_DIR/hard-stop-diagnostics.txt" 2>/dev/null || true
+}
+
 capture_log_tails(){
   local i
   for i in $(seq 1 "$NODE_COUNT"); do tail -n 120 "$OUT_DIR/logs/n${i}.log" > "$OUT_DIR/logs/n${i}-tail.log" 2>/dev/null || true; done
@@ -369,9 +517,14 @@ capture_log_tails(){
 }
 
 collect_final_state(){
-  local phase
+  local phase skipped_budget=0
   phase="${1:-final}"
   for i in $(seq 1 "$NODE_COUNT"); do
+    if cleanup_budget_exhausted; then
+      skipped_budget=1
+      record_warn "final endpoint capture budget exhausted before n${i}; skipping remaining endpoints for phase ${phase}"
+      break
+    fi
     rpc=$((BASE_RPC_PORT+i))
     safe_curl_optional "http://127.0.0.1:${rpc}/status" "$OUT_DIR/endpoints/n${i}-status-final.json" "n${i}:/status final" || true
     safe_curl_optional "http://127.0.0.1:${rpc}/release" "$OUT_DIR/endpoints/n${i}-release-final.json" "n${i}:/release final" || true
@@ -403,6 +556,7 @@ collect_final_state(){
     NODE_READINESS_SCHEMA_OK[$i]=$(( readiness_has_ready == 1 && readiness_has_public == 1 ? 1 : 0 ))
   done
   collect_miner_metrics
+  (( skipped_budget == 0 )) || return 0
 }
 
 snapshot_current_as_pre(){
@@ -476,6 +630,9 @@ write_evidence_summary(){
     echo "- global deadline (s): $GLOBAL_DEADLINE_SECS"
     echo "- curl connect timeout (s): $CURL_CONNECT_TIMEOUT_SECS"
     echo "- curl max time (s): $CURL_MAX_TIME_SECS"
+    echo "- cleanup curl connect timeout (s): $CLEANUP_CURL_CONNECT_TIMEOUT_SECS"
+    echo "- cleanup curl max time (s): $CLEANUP_CURL_MAX_TIME_SECS"
+    echo "- final capture budget (s): $FINAL_CAPTURE_BUDGET_SECS"
     echo "- quiescence wait (s): $QUIESCENCE_WAIT_SECS"
     echo "- miners stopped for quiescence: $MINERS_STOPPED_FOR_QUIESCENCE"
     echo
@@ -612,6 +769,9 @@ write_metadata(){
     echo "global_deadline_seconds=$GLOBAL_DEADLINE_SECS"
     echo "curl_connect_timeout_seconds=$CURL_CONNECT_TIMEOUT_SECS"
     echo "curl_max_time_seconds=$CURL_MAX_TIME_SECS"
+    echo "cleanup_curl_connect_timeout_seconds=$CLEANUP_CURL_CONNECT_TIMEOUT_SECS"
+    echo "cleanup_curl_max_time_seconds=$CLEANUP_CURL_MAX_TIME_SECS"
+    echo "final_capture_budget_seconds=$FINAL_CAPTURE_BUDGET_SECS"
     echo "quiescence_wait_seconds=$QUIESCENCE_WAIT_SECS"
   } > "$OUT_DIR/summaries/package-metadata.txt"
 }
@@ -665,7 +825,7 @@ package_evidence(){
   local tar_tmp manifest item tar_rc=0
   tar_tmp=$(mktemp -p /tmp evidence.XXXXXX.tar.gz) || return 1
   manifest=$(mktemp -p /tmp evidence-manifest.XXXXXX) || { rm -f "$tar_tmp"; return 1; }
-  for item in endpoints logs miners nodes samples summaries evidence-summary.md command-log.txt process-pids.txt p2p_convergence.json final-convergence-table.json quiescence-metrics.json restart_rejoin.log global-watchdog-timeout.txt current-run-dir.txt; do
+  for item in endpoints logs miners nodes samples summaries evidence-summary.md command-log.txt process-pids.txt p2p_convergence.json final-convergence-table.json quiescence-metrics.json restart_rejoin.log global-watchdog-timeout.txt hard-stop-diagnostics.txt progress.log current-run-dir.txt; do
     [[ -e "$OUT_DIR/$item" ]] && printf '%s\n' "$item" >> "$manifest"
   done
   if [[ -s "$manifest" ]]; then
@@ -697,8 +857,9 @@ on_signal(){
   class="SIGNAL_${signal_name}"
   msg="received SIG${signal_name}; finalizing evidence before exit"
   if [[ "$signal_name" == "TERM" && -f "$OUT_DIR/global-watchdog-timeout.txt" ]]; then
-    class="GLOBAL_WATCHDOG_TIMEOUT"
-    msg="global watchdog timeout after ${GLOBAL_DEADLINE_SECS}s"
+    class="HARNESS_STALL_TIMEOUT"
+    msg="global watchdog timeout after ${GLOBAL_DEADLINE_SECS}s; last_progress_ts=${LAST_PROGRESS_TS:-unknown}"
+    record_fail "GLOBAL_DEADLINE_TIMEOUT" "global deadline reached after ${GLOBAL_DEADLINE_SECS}s"
   fi
   record_fail "$class" "$msg"
   exit "$exit_code"
@@ -711,9 +872,13 @@ cleanup(){
   fi
   CLEANUP_STARTED=1
   IN_CLEANUP=1
+  CLEANUP_DEADLINE_TS=$(( $(date +%s) + FINAL_CAPTURE_BUDGET_SECS ))
   EXIT_CODE=$exit_code
   trap - EXIT
   trap '' INT TERM
+  # Keep cleanup bounded independently from normal cleanup paths.
+  ( sleep $((FINAL_CAPTURE_BUDGET_SECS + CLEANUP_KILL_GRACE_SECS + CLEANUP_PORT_WAIT_SECS + 20)); echo "FATAL: cleanup hard-stop exceeded" >&2; kill -KILL $$ 2>/dev/null || true ) &
+  HARD_KILL_WATCHDOG_PID=$!
   stop_global_deadline_watchdog
   if (( exit_code == 124 )); then
     if (( ${#FAIL_REASONS[@]} == 0 )); then record_fail "GLOBAL_DEADLINE_TIMEOUT" "script exited with timeout status 124 before classified failure"; fi
@@ -728,12 +893,15 @@ cleanup(){
     write_quiescence_metrics || true
   fi
   if (( ${#FAIL_REASONS[@]} == 0 )); then RESULT="PASS"; else RESULT="FAIL"; fi
+  capture_hard_stop_diagnostics || true
   capture_log_tails || true
   write_evidence_summary || true
   write_p2p_convergence_json || true
   write_restart_rejoin_log || true
-  stop_pids "${MINER_PIDS[@]:-}"
-  stop_pids "${NODE_PIDS[@]:-}"
+  stop_pids --label=miner "${MINER_PIDS[@]:-}"
+  stop_pids --label=node "${NODE_PIDS[@]:-}"
+  kill_processes_on_test_ports || true
+  wait_for_ports_clean || true
   package_evidence || package_rc=$?
   if (( package_rc != 0 )); then
     echo "FATAL: evidence packaging failed for $OUT_DIR (rc=$package_rc)"
@@ -743,6 +911,7 @@ cleanup(){
     RESULT="FAIL"
     write_evidence_summary || true
   fi
+  [[ -n "${HARD_KILL_WATCHDOG_PID:-}" ]] && kill "$HARD_KILL_WATCHDOG_PID" 2>/dev/null || true
   echo "RUN_DIR=$OUT_DIR"
   echo "FINAL_EXIT_CODE=$exit_code"
   echo "FINAL_RESULT=$RESULT"
@@ -752,10 +921,14 @@ trap 'cleanup $?' EXIT
 trap 'on_signal INT 130' INT
 trap 'on_signal TERM 143' TERM
 
-start_global_deadline_watchdog
-OUT_DIR="$OUT_DIR" "$ROOT_DIR/scripts/v2_2_19_preflight_check.sh"
+mark_progress "preflight_start"
+OUT_DIR="$OUT_DIR" run_with_global_timeout preflight "$ROOT_DIR/scripts/v2_2_19_preflight_check.sh"
+mark_progress "preflight_complete"
 ensure_ports_free
-cargo build --workspace --release --locked
+mark_progress "cargo_build_start"
+run_with_global_timeout cargo_build cargo build --workspace --release --locked
+mark_progress "cargo_build_complete"
+start_global_deadline_watchdog
 
 start_node(){
   local idx="$1" rpc="$2" p2p="$3" bootnode="$4" name data
@@ -768,6 +941,7 @@ start_node(){
   PULSEDAG_ROCKSDB_PATH="$data/rocksdb" "${cmd[@]}" > "$OUT_DIR/logs/${name}.log" 2>&1 &
   NODE_PIDS+=("$!")
   echo "$! node-${name}" >> "$OUT_DIR/process-pids.txt"
+  mark_progress "node_${name}_started"
 }
 
 wait_node_ready(){
@@ -815,6 +989,7 @@ for i in $(seq 1 "$MINER_COUNT"); do
   "$MINER_BIN" --node "$local_node" --miner-address "v2219-${RUN_ID}-miner-${i}" --backend cpu --threads 1 --loop > "$OUT_DIR/logs/miner-${i}.log" 2>&1 &
   MINER_PIDS+=("$!")
   echo "$! miner-${i}" >> "$OUT_DIR/process-pids.txt"
+  mark_progress "miner_${i}_started"
 done
 
 printf "timestamp,n1_height,n2_height,n3_height,n4_height,n5_height,tip_match,distinct_tips,total_orphans,total_missing_parents\n" > "$OUT_DIR/samples/height-samples.csv"
@@ -832,6 +1007,7 @@ while (( $(date +%s) < end )); do
   echo "$(date -u +%FT%TZ),${heights[0]},${heights[1]},${heights[2]},${heights[3]},${heights[4]},$tip_match" >> "$OUT_DIR/samples/height-samples.csv"
 
   collect_miner_metrics
+  mark_progress "mining_sample"
   sleep_with_deadline 10
 done
 
@@ -841,7 +1017,7 @@ snapshot_current_as_pre
 compute_metrics_from_current PRE
 
 echo "entering quiescence: stopping miners and waiting ${QUIESCENCE_WAIT_SECS}s before final tips/readiness sample"
-stop_pids "${MINER_PIDS[@]:-}"
+stop_pids --label=miner "${MINER_PIDS[@]:-}"
 MINERS_STOPPED_FOR_QUIESCENCE=1
 sleep_with_deadline "$QUIESCENCE_WAIT_SECS"
 collect_final_state quiescent
