@@ -1,4 +1,10 @@
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::BTreeMap,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc, Mutex, OnceLock,
+    },
+};
 
 use pulsedag_core::state::ChainState;
 use pulsedag_core::SyncPipelineStatus;
@@ -242,6 +248,80 @@ impl NodeRuntimeStats {
 
 const RPC_STATE_LOCK_TIMEOUT: Duration = Duration::from_millis(750);
 static P2P_STATUS_SNAPSHOT_PERMITS: Semaphore = Semaphore::const_new(1);
+static P2P_STATUS_CACHE: OnceLock<Mutex<Option<CachedP2pStatus>>> = OnceLock::new();
+static P2P_STATUS_SNAPSHOT_LIVE_TOTAL: AtomicU64 = AtomicU64::new(0);
+static P2P_STATUS_SNAPSHOT_BUSY_TOTAL: AtomicU64 = AtomicU64::new(0);
+static P2P_STATUS_SNAPSHOT_TIMEOUT_TOTAL: AtomicU64 = AtomicU64::new(0);
+static P2P_STATUS_SNAPSHOT_STALE_TOTAL: AtomicU64 = AtomicU64::new(0);
+
+#[derive(Debug, Clone)]
+struct CachedP2pStatus {
+    status: P2pStatus,
+    captured_at_unix: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct P2pStatusSnapshot {
+    pub status: P2pStatus,
+    pub stale: bool,
+    pub degraded_reason: Option<String>,
+    pub captured_at_unix: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct P2pStatusSnapshotMetrics {
+    pub live_total: u64,
+    pub busy_total: u64,
+    pub timeout_total: u64,
+    pub stale_total: u64,
+}
+
+pub fn p2p_status_snapshot_metrics() -> P2pStatusSnapshotMetrics {
+    P2pStatusSnapshotMetrics {
+        live_total: P2P_STATUS_SNAPSHOT_LIVE_TOTAL.load(Ordering::Relaxed),
+        busy_total: P2P_STATUS_SNAPSHOT_BUSY_TOTAL.load(Ordering::Relaxed),
+        timeout_total: P2P_STATUS_SNAPSHOT_TIMEOUT_TOTAL.load(Ordering::Relaxed),
+        stale_total: P2P_STATUS_SNAPSHOT_STALE_TOTAL.load(Ordering::Relaxed),
+    }
+}
+
+fn unix_now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+fn cached_p2p_status() -> Option<CachedP2pStatus> {
+    P2P_STATUS_CACHE
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .ok()
+        .and_then(|cache| cache.clone())
+}
+
+fn update_cached_p2p_status(status: &P2pStatus) {
+    if let Ok(mut cache) = P2P_STATUS_CACHE.get_or_init(|| Mutex::new(None)).lock() {
+        *cache = Some(CachedP2pStatus {
+            status: status.clone(),
+            captured_at_unix: unix_now_secs(),
+        });
+    }
+}
+
+fn stale_p2p_status(reason: String) -> Result<Option<P2pStatusSnapshot>, String> {
+    if let Some(cached) = cached_p2p_status() {
+        P2P_STATUS_SNAPSHOT_STALE_TOTAL.fetch_add(1, Ordering::Relaxed);
+        Ok(Some(P2pStatusSnapshot {
+            status: cached.status,
+            stale: true,
+            degraded_reason: Some(reason),
+            captured_at_unix: Some(cached.captured_at_unix),
+        }))
+    } else {
+        Err(reason)
+    }
+}
 
 pub async fn read_chain_for_rpc<'a>(
     chain: &'a Arc<RwLock<ChainState>>,
@@ -274,18 +354,22 @@ pub async fn read_runtime_for_rpc<'a>(
 pub async fn p2p_status_for_rpc(
     p2p: Option<Arc<dyn P2pHandle>>,
     endpoint: &str,
-) -> Result<Option<P2pStatus>, String> {
+) -> Result<Option<P2pStatusSnapshot>, String> {
     let Some(p2p) = p2p else {
         return Ok(None);
     };
 
-    let permit = P2P_STATUS_SNAPSHOT_PERMITS.try_acquire().map_err(|_| {
-        format!(
-            "{endpoint} skipped p2p status snapshot because a prior snapshot is still running; p2p shared state is busy and peer-collapse diagnostics should inspect long-running p2p critical sections"
-        )
-    })?;
+    let permit = match P2P_STATUS_SNAPSHOT_PERMITS.try_acquire() {
+        Ok(permit) => permit,
+        Err(_) => {
+            P2P_STATUS_SNAPSHOT_BUSY_TOTAL.fetch_add(1, Ordering::Relaxed);
+            return stale_p2p_status(format!(
+                "{endpoint} skipped p2p status snapshot because a prior snapshot is still running; returning the last-known p2p snapshot when available"
+            ));
+        }
+    };
 
-    timeout(
+    let status = match timeout(
         RPC_STATE_LOCK_TIMEOUT,
         tokio::task::spawn_blocking(move || {
             let status = p2p.status();
@@ -294,15 +378,27 @@ pub async fn p2p_status_for_rpc(
         }),
     )
     .await
-    .map_err(|_| {
-        format!(
-            "{endpoint} could not complete p2p status snapshot within {}ms; p2p shared state is busy and peer-collapse diagnostics should inspect long-running p2p critical sections",
-            RPC_STATE_LOCK_TIMEOUT.as_millis()
-        )
-    })?
-    .map_err(|e| format!("{endpoint} p2p status snapshot task failed: {e}"))?
-    .map(Some)
-    .map_err(|e| format!("{endpoint} p2p status failed: {e}"))
+    {
+        Ok(joined) => joined
+            .map_err(|e| format!("{endpoint} p2p status snapshot task failed: {e}"))?
+            .map_err(|e| format!("{endpoint} p2p status failed: {e}"))?,
+        Err(_) => {
+            P2P_STATUS_SNAPSHOT_TIMEOUT_TOTAL.fetch_add(1, Ordering::Relaxed);
+            return stale_p2p_status(format!(
+                "{endpoint} could not complete p2p status snapshot within {}ms; returning the last-known p2p snapshot when available",
+                RPC_STATE_LOCK_TIMEOUT.as_millis()
+            ));
+        }
+    };
+
+    P2P_STATUS_SNAPSHOT_LIVE_TOTAL.fetch_add(1, Ordering::Relaxed);
+    update_cached_p2p_status(&status);
+    Ok(Some(P2pStatusSnapshot {
+        status,
+        stale: false,
+        degraded_reason: None,
+        captured_at_unix: Some(unix_now_secs()),
+    }))
 }
 
 pub trait RpcStateLike: Clone + Send + Sync + 'static {

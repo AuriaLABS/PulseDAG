@@ -46,6 +46,10 @@ pub struct NodeStatusData {
     pub connected_peers_semantics: String,
     pub peer_count: usize,
     pub p2p_peer_health: Option<P2pPeerHealthSummary>,
+    pub p2p_status_stale: bool,
+    pub p2p_status_degraded: bool,
+    pub p2p_status_degraded_reason: Option<String>,
+    pub p2p_status_captured_at_unix: Option<u64>,
     pub sync_state: String,
     pub storage_backend: String,
     pub last_block_hash: Option<String>,
@@ -122,8 +126,15 @@ pub async fn get_status<S: RpcStateLike>(
         Err(e) => return Json(ApiResponse::err("STORAGE_ERROR", e.to_string())),
     };
 
+    let mut p2p_status_stale = false;
+    let mut p2p_status_degraded_reason = None;
+    let mut p2p_status_captured_at_unix = None;
     let p2p_status = match p2p_status_for_rpc(state.p2p(), "/status").await {
-        Ok(status) => status.map(|s| {
+        Ok(status) => status.map(|snapshot| {
+            p2p_status_stale = snapshot.stale;
+            p2p_status_degraded_reason = snapshot.degraded_reason.clone();
+            p2p_status_captured_at_unix = snapshot.captured_at_unix;
+            let s = snapshot.status;
             let peers_are_real = mode_connected_peers_are_real_network(&s.mode);
             let mode = s.mode.clone();
             let peer_health = P2pPeerHealthSummary {
@@ -144,7 +155,11 @@ pub async fn get_status<S: RpcStateLike>(
                 peer_health,
             )
         }),
-        Err(e) => return Json(ApiResponse::err("P2P_STATUS_BUSY", e)),
+        Err(e) => {
+            p2p_status_stale = true;
+            p2p_status_degraded_reason = Some(e);
+            None
+        }
     };
     let (
         p2p_mode,
@@ -169,6 +184,7 @@ pub async fn get_status<S: RpcStateLike>(
             suppressed_dials: 0,
         },
     ));
+    let p2p_status_degraded = p2p_status_stale || p2p_status_degraded_reason.is_some();
     let p2p_enabled = state.p2p().is_some();
 
     let chain_handle = state.chain();
@@ -240,6 +256,10 @@ pub async fn get_status<S: RpcStateLike>(
         connected_peers_semantics,
         peer_count,
         p2p_peer_health: p2p_enabled.then_some(p2p_peer_health),
+        p2p_status_stale,
+        p2p_status_degraded,
+        p2p_status_degraded_reason,
+        p2p_status_captured_at_unix,
         sync_state,
         storage_backend: "rocksdb".to_string(),
         last_block_hash: chain_snapshot.last_block_hash,

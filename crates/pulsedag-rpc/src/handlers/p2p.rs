@@ -170,7 +170,11 @@ pub async fn get_p2p_status<S: RpcStateLike>(
     State(state): State<S>,
 ) -> Json<ApiResponse<serde_json::Value>> {
     match p2p_status_for_rpc(state.p2p(), "/p2p/status").await {
-        Ok(Some(status)) => {
+        Ok(Some(snapshot)) => {
+            let status = snapshot.status;
+            let p2p_status_stale = snapshot.stale;
+            let p2p_status_degraded_reason = snapshot.degraded_reason;
+            let p2p_status_captured_at_unix = snapshot.captured_at_unix;
             let now_unix = unix_now_secs();
             let (healthy_count, degraded_count, recovering_count) =
                 peer_health_counts(&status.peer_recovery, now_unix);
@@ -220,6 +224,22 @@ pub async fn get_p2p_status<S: RpcStateLike>(
                 .collect::<Vec<_>>();
             let mut payload = serde_json::Map::new();
             payload.insert("chain_id".into(), serde_json::json!(status.chain_id));
+            payload.insert(
+                "p2p_status_stale".into(),
+                serde_json::json!(p2p_status_stale),
+            );
+            payload.insert(
+                "p2p_status_degraded".into(),
+                serde_json::json!(p2p_status_stale || p2p_status_degraded_reason.is_some()),
+            );
+            payload.insert(
+                "p2p_status_degraded_reason".into(),
+                serde_json::json!(p2p_status_degraded_reason),
+            );
+            payload.insert(
+                "p2p_status_captured_at_unix".into(),
+                serde_json::json!(p2p_status_captured_at_unix),
+            );
             payload.insert("mode".into(), serde_json::json!(status.mode));
             payload.insert(
                 "connected_peers_are_real_network".into(),
@@ -483,7 +503,13 @@ pub async fn get_p2p_status<S: RpcStateLike>(
                 Err(e) => return Json(ApiResponse::err("STATE_LOCK_BUSY", e)),
             };
             let orphan_count = chain.orphan_blocks.len();
+            let missing_parent_entry_count = chain.orphan_missing_parents.len();
+            let missing_parent_index_entry_count = chain.orphan_parent_index.len();
             let pending_missing_parents = pulsedag_core::pending_missing_parent_count(&chain);
+            let missing_parent_index_mismatch = orphan_count > 0
+                && pending_missing_parents > 0
+                && missing_parent_entry_count == 0
+                && missing_parent_index_entry_count == 0;
             let readiness_reasons = p2p_readiness_reasons(
                 true,
                 Some(&status),
@@ -520,6 +546,18 @@ pub async fn get_p2p_status<S: RpcStateLike>(
             payload.insert(
                 "pending_missing_parents".into(),
                 serde_json::json!(pending_missing_parents),
+            );
+            payload.insert(
+                "missing_parent_entry_count".into(),
+                serde_json::json!(missing_parent_entry_count),
+            );
+            payload.insert(
+                "missing_parent_index_entry_count".into(),
+                serde_json::json!(missing_parent_index_entry_count),
+            );
+            payload.insert(
+                "missing_parent_index_mismatch".into(),
+                serde_json::json!(missing_parent_index_mismatch),
             );
             payload.insert("orphan_count".into(), serde_json::json!(orphan_count));
             payload.insert("sync_state".into(), serde_json::json!(runtime.sync_state));
@@ -569,6 +607,9 @@ pub async fn get_p2p_status<S: RpcStateLike>(
                     "scheduler_queue_depth": runtime.block_fetch_scheduler_queue_depth,
                     "inflight_by_peer": runtime.block_fetch_scheduler_inflight_by_peer,
                     "pending_missing_parents": pending_missing_parents,
+                    "missing_parent_entry_count": missing_parent_entry_count,
+                    "missing_parent_index_entry_count": missing_parent_index_entry_count,
+                    "missing_parent_index_mismatch": missing_parent_index_mismatch,
                     "max_orphan_age_secs": runtime.max_orphan_age_secs,
                     "oldest_missing_parent_age_secs": runtime.oldest_missing_parent_age_secs,
                     "orphan_reprocess_attempts": runtime.orphan_reprocess_attempts,
@@ -755,10 +796,16 @@ pub async fn get_p2p_propagation<S: RpcStateLike>(
     });
     drop(runtime);
     match p2p_status_for_rpc(state.p2p(), "/p2p/propagation").await {
-        Ok(Some(status)) => {
+        Ok(Some(snapshot)) => {
+            let status = snapshot.status;
             payload["p2p_enabled"] = serde_json::json!(true);
             payload["p2p_mode"] = serde_json::json!(status.mode);
             payload["peer_count"] = serde_json::json!(status.connected_peers.len());
+            payload["p2p_status_stale"] = serde_json::json!(snapshot.stale);
+            payload["p2p_status_degraded"] =
+                serde_json::json!(snapshot.stale || snapshot.degraded_reason.is_some());
+            payload["p2p_status_degraded_reason"] = serde_json::json!(snapshot.degraded_reason);
+            payload["p2p_status_captured_at_unix"] = serde_json::json!(snapshot.captured_at_unix);
             payload["duplicate_suppression_counters"]["inbound_messages"] =
                 serde_json::json!(status.inbound_duplicates_suppressed);
             payload["duplicate_suppression_counters"]["outbound_messages"] =

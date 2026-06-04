@@ -164,7 +164,7 @@ pub async fn get_readiness<S: RpcStateLike>(
     };
     let p2p_peer_count = p2p_status
         .as_ref()
-        .map(|status| status.connected_peers.len())
+        .map(|snapshot| snapshot.status.connected_peers.len())
         .unwrap_or(0);
 
     let selected_tip = preferred_tip_hash(&chain);
