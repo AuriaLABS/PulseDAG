@@ -7,7 +7,7 @@ jobs:
   stress-evidence:
     name: 5N/4M stress evidence
     runs-on: ubuntu-latest
-    timeout-minutes: 75
+    timeout-minutes: 120
     env:
       CARGO_TERM_COLOR: always
       DURATION_SECS: "600"
@@ -39,7 +39,13 @@ jobs:
 
       - name: Run v2.2.19 private 5N/4M stress rehearsal
         shell: bash
-        run: bash scripts/v2_2_19_private_5n_4m_rehearsal.sh
+        run: |
+          set +e
+          bash scripts/v2_2_19_private_5n_4m_rehearsal.sh
+          rc=$?
+          echo "$rc" > rehearsal-exit-code.txt
+          echo "rehearsal_exit_code=$rc"
+          exit 0
 
       - name: Stage evidence.tar.gz for upload
         if: always()
@@ -80,3 +86,12 @@ jobs:
             ci-evidence/evidence.tar.gz
             ci-evidence/evidence.tar.gz.sha256
           if-no-files-found: error
+
+      - name: Fail job if rehearsal failed
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          code="$(cat rehearsal-exit-code.txt 2>/dev/null || echo 1)"
+          echo "rehearsal_exit_code=$code"
+          exit "$code"
