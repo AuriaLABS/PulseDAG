@@ -1,6 +1,9 @@
 use axum::{extract::State, Json};
 
-use crate::{api::ApiResponse, api::RpcStateLike};
+use crate::{
+    api::RpcStateLike,
+    api::{p2p_status_for_rpc, p2p_status_snapshot_metrics, ApiResponse, P2pStatusSnapshotMetrics},
+};
 
 #[derive(Debug, serde::Serialize)]
 pub struct MetricsData {
@@ -33,6 +36,7 @@ pub struct MetricsData {
     pub sync_missing_parents_total: u64,
     pub orphan_current_count: usize,
     pub peer_count: usize,
+    pub p2p_status_snapshot: P2pStatusSnapshotMetrics,
     pub limitations: Vec<String>,
 }
 
@@ -44,10 +48,13 @@ pub async fn get_metrics<S: RpcStateLike>(
     let snapshot = pulsedag_core::dev_difficulty_snapshot(&chain);
     let runtime = state.runtime();
     let runtime = runtime.read().await;
-    let p2p_status = state.p2p().and_then(|p| p.status().ok());
+    let p2p_status = p2p_status_for_rpc(state.p2p(), "/metrics")
+        .await
+        .ok()
+        .flatten();
     let peer_count = p2p_status
         .as_ref()
-        .map(|s| s.connected_peers.len())
+        .map(|snapshot| snapshot.status.connected_peers.len())
         .unwrap_or(0);
     let circulating_supply = chain.utxo.utxos.values().map(|u| u.amount).sum();
     let last_block_hash = chain
@@ -84,24 +91,25 @@ pub async fn get_metrics<S: RpcStateLike>(
         tx_relayed: runtime.tx_relayed.saturating_add(
             p2p_status
                 .as_ref()
-                .map(|s| s.tx_relayed as u64)
+                .map(|snapshot| snapshot.status.tx_relayed as u64)
                 .unwrap_or(0),
         ),
         tx_relay_suppressed_budget: runtime.tx_relay_suppressed_budget.saturating_add(
             p2p_status
                 .as_ref()
-                .map(|s| s.tx_relay_suppressed_budget as u64)
+                .map(|snapshot| snapshot.status.tx_relay_suppressed_budget as u64)
                 .unwrap_or(0),
         ),
         tx_relay_suppressed_duplicate: runtime.tx_relay_suppressed_duplicate.saturating_add(
             p2p_status
                 .as_ref()
-                .map(|s| s.tx_relay_suppressed_duplicate as u64)
+                .map(|snapshot| snapshot.status.tx_relay_suppressed_duplicate as u64)
                 .unwrap_or(0),
         ),
         sync_missing_parents_total: runtime.pulsedag_sync_missing_parents_total,
         orphan_current_count: chain.orphan_blocks.len(),
         peer_count,
+        p2p_status_snapshot: p2p_status_snapshot_metrics(),
         limitations: vec![
             "Counters reset on node restart.".to_string(),
             "Peer and orphan counts are point-in-time snapshots.".to_string(),

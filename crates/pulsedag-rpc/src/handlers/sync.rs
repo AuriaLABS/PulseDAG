@@ -177,7 +177,7 @@ pub async fn get_sync_status<S: RpcStateLike>(
     let p2p_enabled = p2p_status.is_some();
     let p2p_mode = p2p_status
         .as_ref()
-        .map(|status| status.mode.clone())
+        .map(|snapshot| snapshot.status.mode.clone())
         .unwrap_or_else(|| "disabled".to_string());
     let pending_missing_parents = pulsedag_core::pending_missing_parent_count(&chain);
     let mut readiness_reasons = Vec::new();
@@ -186,7 +186,7 @@ pub async fn get_sync_status<S: RpcStateLike>(
     }
     if p2p_status
         .as_ref()
-        .is_some_and(|status| status.connected_peers.is_empty())
+        .is_some_and(|snapshot| snapshot.status.connected_peers.is_empty())
     {
         readiness_reasons.push("no connected peers".to_string());
     }
@@ -264,30 +264,30 @@ pub async fn get_sync_status<S: RpcStateLike>(
         selected_sync_peer: runtime.sync_pipeline.selected_peer.clone().or_else(|| {
             p2p_status
                 .as_ref()
-                .and_then(|status| status.selected_sync_peer.clone())
+                .and_then(|snapshot| snapshot.status.selected_sync_peer.clone())
         }),
         last_accepted_peer_block: runtime.last_accepted_peer_block.clone(),
         last_rejected_peer_block_reason: runtime.last_rejected_peer_block_reason.clone(),
         chain_id_mismatch_drops: p2p_status
             .as_ref()
-            .map(|status| status.inbound_chain_mismatch_dropped)
+            .map(|snapshot| snapshot.status.inbound_chain_mismatch_dropped)
             .unwrap_or(0),
         duplicate_suppression_counters: SyncDuplicateSuppressionCounters {
             inbound_messages: p2p_status
                 .as_ref()
-                .map(|status| status.inbound_duplicates_suppressed)
+                .map(|snapshot| snapshot.status.inbound_duplicates_suppressed)
                 .unwrap_or(0),
             outbound_messages: p2p_status
                 .as_ref()
-                .map(|status| status.outbound_duplicates_suppressed)
+                .map(|snapshot| snapshot.status.outbound_duplicates_suppressed)
                 .unwrap_or(0),
             tx_outbound: p2p_status
                 .as_ref()
-                .map(|status| status.tx_outbound_duplicates_suppressed)
+                .map(|snapshot| snapshot.status.tx_outbound_duplicates_suppressed)
                 .unwrap_or(0),
             block_outbound: p2p_status
                 .as_ref()
-                .map(|status| status.block_outbound_duplicates_suppressed)
+                .map(|snapshot| snapshot.status.block_outbound_duplicates_suppressed)
                 .unwrap_or(0),
         },
         blocks_requested: runtime
@@ -298,19 +298,19 @@ pub async fn get_sync_status<S: RpcStateLike>(
             .max(
                 p2p_status
                     .as_ref()
-                    .map(|status| status.blocks_requested)
+                    .map(|snapshot| snapshot.status.blocks_requested)
                     .unwrap_or(0),
             ),
         blocks_received: runtime.blockdata_received.max(
             p2p_status
                 .as_ref()
-                .map(|status| status.blocks_received)
+                .map(|snapshot| snapshot.status.blocks_received)
                 .unwrap_or(0),
         ),
         invalid_blocks_received: runtime.rejected_p2p_blocks.max(
             p2p_status
                 .as_ref()
-                .map(|status| status.invalid_blocks_received)
+                .map(|snapshot| snapshot.status.invalid_blocks_received)
                 .unwrap_or(0),
         ),
         orphan_blocks_received: runtime.blockdata_missing_parent,
@@ -331,12 +331,12 @@ pub async fn get_sync_status<S: RpcStateLike>(
         duplicate_blocks_received: runtime.duplicate_p2p_blocks.max(
             p2p_status
                 .as_ref()
-                .map(|status| status.duplicate_blocks_received)
+                .map(|snapshot| snapshot.status.duplicate_blocks_received)
                 .unwrap_or(0),
         ),
         peer_penalties: p2p_status
             .as_ref()
-            .map(|status| status.peer_penalties)
+            .map(|snapshot| snapshot.status.peer_penalties)
             .unwrap_or(0),
         p2p_ready_for_private_rehearsal: readiness_reasons.is_empty(),
         readiness_reasons,
