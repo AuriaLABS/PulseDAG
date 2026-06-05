@@ -7,7 +7,7 @@ This document records **current known limitations** for `v2.2.19` and must be re
 - `v2.2.19` is a **private hardening / pre-public-testnet preparation** milestone.
 - `v2.2.19` is **not** a `v2.3.0` readiness declaration.
 - `v2.2.19` is **not** a public testnet launch.
-- `v2.2.19` closeout accepts Docker-reproducible `5N/1M` and `5N/2M` staged convergence evidence while keeping `5N/4M` as observe-only stress evidence.
+- `v2.2.19` closeout can rely on Docker-reproducible staged convergence evidence only when the referenced evidence bundles are committed, checksummed, and reproducible from the evaluated tree; `5N/4M` remains stress evidence and does not override automatic NO-GO guardrails.
 
 ## Consensus/DAG limitation
 
@@ -39,9 +39,16 @@ This document records **current known limitations** for `v2.2.19` and must be re
 - A `3N/1M` local PASS is useful smoke evidence, but it is **not enough** for public-testnet readiness.
 - `5N/1M baseline` is mandatory staged convergence evidence for v2.2.19 closeout.
 - `5N/2M intermediate` is mandatory staged convergence evidence for v2.2.19 closeout.
-- Docker closeout evidence records `5N/1M baseline` PASS and `5N/2M intermediate` PASS at commit `c058c2e1b5bf9e5224d61cfa1695428b4bb38c2a`.
-- `5N/4M stress` is diagnostic/observe-only for v2.2.19. Its observe failure is accepted as non-blocking for v2.2.19 closeout and must be tracked as v2.2.20 hardening work.
-- The accepted `5N/4M` stress limitation includes peer drop-to-zero, divergent final tips, and orphan/pending-missing-parent backlog reaching `512` on multiple nodes under 4-miner pressure.
+- `5N/1M baseline` and `5N/2M intermediate` PASS claims are valid for v2.2.19 closeout only when their evidence bundles are present under `artifacts/v2_2_19/private_5n_1m_rehearsal/` and `artifacts/v2_2_19/private_5n_2m_rehearsal/`, include `evidence.tar.gz` plus checksum files, and reference a commit object resolvable in this repository.
+- `5N/4M stress` is diagnostic/observe-only for v2.2.19, but observe-only status does **not** waive evidence integrity checks or automatic NO-GO signals.
+- A non-PASS `5N/4M` stress result can be treated as a non-blocking limitation only when an explicit waiver records metrics, owner, UTC approval date, scope, expiry, and exit criteria.
+- The current `5N/4M` stress limitation scope includes peer drop-to-zero, divergent final tips, and orphan/pending-missing-parent backlog reaching `512` on multiple nodes under 4-miner pressure.
+- `5N/4M` waiver metadata for v2.2.19 closeout:
+  - owner: `v2.2.20 hardening owner / release manager`;
+  - UTC approval date: not yet recorded in this tree; the limitation is not accepted until a closeout decision records the approval date;
+  - scope: private `5N/4M` Docker stress only; it is non-blocking for v2.2.19 private hardening closeout only when all automatic NO-GO checks remain clear;
+  - expiry: `2026-06-30T00:00:00Z` or before any `v2.3.0` start decision, whichever comes first;
+  - exit criteria: a committed private `5N/4M` evidence bundle with archive and checksum showing no all-zero peer collapse, convergent or explicitly bounded final tips, bounded orphan/missing-parent backlog with recovery behavior, non-zero miner templates, and accepted-block metrics reviewed against `docs/V2_3_0_START_CHECKLIST.md`.
 - Every staged run must preserve `public_testnet_ready=false` and attach evidence on both PASS and FAIL.
 
 ## Operator interpretation rule
@@ -62,9 +69,10 @@ When in doubt, interpret `v2.2.19` outcomes as **readiness signals for additiona
 
 ## Current staged-gate limitation
 
-- Docker evidence for `5N/1M` and `5N/2M` may support v2.2.19 private hardening closeout.
-- `5N/4M` stress must be PASS or explicitly accepted as a non-blocking limitation with metrics; for v2.2.19 it is accepted as observe-only and tracked forward to v2.2.20.
-- Missing archives, missing checksums, all-zero peer counts, all-zero heights, all-zero miner templates, accepted blocks equal to zero without waiver, unknown `chain_id`, required unhealthy nodes, or required unreadiness remain automatic **NO-GO** signals for mandatory gates.
+- Docker evidence for `5N/1M` and `5N/2M` may support v2.2.19 private hardening closeout only after the required evidence directories, archives, checksums, and resolvable commit metadata are present in the evaluated tree.
+- `5N/4M` stress must be PASS or explicitly accepted as a non-blocking limitation with metrics and waiver metadata; for v2.2.19 it is tracked forward to v2.2.20 only after that metadata is recorded.
+- Missing archives, missing checksums, all-zero peer counts, all-zero heights, all-zero miner templates, accepted blocks equal to zero without waiver, unknown `chain_id`, required unhealthy nodes, or required unreadiness remain automatic **NO-GO** signals for all staged/private gates, including observe-only `5N/4M` stress.
+- Specifically, all peers equal to `0` in private `5N/4M` evidence is an automatic **NO-GO** signal and must not be treated as accepted observe-only stress evidence.
 
 ## Public-testnet readiness limitation
 
