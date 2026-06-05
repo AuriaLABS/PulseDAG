@@ -27,16 +27,22 @@ pub struct BlockRequestTracker {
     pub pending: HashMap<String, PendingBlockRequest>,
     pub timeout_secs: u64,
     pub retry_limit: u8,
+    pub max_pending: usize,
     known_headers: BTreeMap<String, BlockHeaderAnnouncement>,
     deferred_by_missing_parent: HashMap<String, HashSet<String>>,
 }
 
 impl BlockRequestTracker {
     pub fn new(timeout_secs: u64, retry_limit: u8) -> Self {
+        Self::with_limit(timeout_secs, retry_limit, 128)
+    }
+
+    pub fn with_limit(timeout_secs: u64, retry_limit: u8, max_pending: usize) -> Self {
         Self {
             pending: HashMap::new(),
             timeout_secs,
             retry_limit,
+            max_pending: max_pending.max(1),
             known_headers: BTreeMap::new(),
             deferred_by_missing_parent: HashMap::new(),
         }
@@ -57,7 +63,7 @@ impl BlockRequestTracker {
                 req.last_requested_at_unix = now_unix;
                 true
             }
-            None => {
+            None if self.pending.len() < self.max_pending => {
                 self.pending.insert(
                     hash.to_string(),
                     PendingBlockRequest {
@@ -68,7 +74,12 @@ impl BlockRequestTracker {
                 );
                 true
             }
+            None => false,
         }
+    }
+
+    pub fn pending_capacity_remaining(&self) -> usize {
+        self.max_pending.saturating_sub(self.pending.len())
     }
 
     pub fn note_headers(&mut self, headers: &[BlockHeaderAnnouncement]) {
@@ -244,14 +255,30 @@ pub struct DependencyFetchPlan {
     pub parent_first_requests: usize,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct DependencyAwareFetchScheduler {
     candidates: HashMap<String, HeaderFetchCandidate>,
     inventory: VecDeque<String>,
     queued: HashSet<String>,
+    max_queue_depth: usize,
+}
+
+impl Default for DependencyAwareFetchScheduler {
+    fn default() -> Self {
+        Self::with_limit(512)
+    }
 }
 
 impl DependencyAwareFetchScheduler {
+    pub fn with_limit(max_queue_depth: usize) -> Self {
+        Self {
+            candidates: HashMap::new(),
+            inventory: VecDeque::new(),
+            queued: HashSet::new(),
+            max_queue_depth: max_queue_depth.max(1),
+        }
+    }
+
     pub fn queue_depth(&self) -> usize {
         self.inventory.len()
     }
@@ -264,6 +291,9 @@ impl DependencyAwareFetchScheduler {
         let mut added = 0usize;
         for hash in hashes {
             let hash = hash.into();
+            if self.inventory.len() >= self.max_queue_depth {
+                break;
+            }
             if self.queued.insert(hash.clone()) {
                 self.inventory.push_back(hash);
                 added = added.saturating_add(1);
@@ -281,11 +311,11 @@ impl DependencyAwareFetchScheduler {
         headers.sort_by(|a, b| a.height.cmp(&b.height).then_with(|| a.hash.cmp(&b.hash)));
         for candidate in headers {
             let hash = candidate.hash.clone();
-            if self.queued.insert(hash.clone()) {
+            if self.inventory.len() < self.max_queue_depth && self.queued.insert(hash.clone()) {
                 self.inventory.push_back(hash.clone());
                 added = added.saturating_add(1);
+                self.candidates.insert(hash, candidate);
             }
-            self.candidates.insert(hash, candidate);
         }
         added
     }
@@ -468,6 +498,25 @@ mod tests {
         assert_eq!(plan.requests, vec!["parent"]);
         assert_eq!(plan.deferred, vec!["child"]);
         assert_eq!(plan.parent_first_requests, 1);
+    }
+
+    #[test]
+    fn pending_limit_prevents_unbounded_inflight_growth() {
+        let mut tracker = BlockRequestTracker::with_limit(10, 2, 2);
+
+        assert!(tracker.should_issue_getblock("h1", 100));
+        assert!(tracker.should_issue_getblock("h2", 100));
+        assert!(!tracker.should_issue_getblock("h3", 100));
+        assert_eq!(tracker.pending_capacity_remaining(), 0);
+    }
+
+    #[test]
+    fn scheduler_queue_limit_bounds_inventory_backlog() {
+        let mut scheduler = DependencyAwareFetchScheduler::with_limit(2);
+        let added = scheduler.queue_inventory(["a", "b", "c"]);
+
+        assert_eq!(added, 2);
+        assert_eq!(scheduler.queue_depth(), 2);
     }
 
     #[test]
