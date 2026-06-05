@@ -162,6 +162,14 @@ pub struct NodeRuntimeStats {
     pub unknown_tips_seen: u64,
     pub missing_parents_detected: u64,
     pub missing_parent_requests_sent: u64,
+    #[serde(default)]
+    pub missing_parent_responses_received: u64,
+    #[serde(default)]
+    pub missing_parent_request_timeouts: u64,
+    #[serde(default)]
+    pub missing_parent_request_retries: u64,
+    #[serde(default)]
+    pub missing_parent_request_fallbacks: u64,
     pub orphan_blocks_queued: u64,
     pub orphan_blocks_resolved: u64,
     pub orphan_blocks_retried: u64,
