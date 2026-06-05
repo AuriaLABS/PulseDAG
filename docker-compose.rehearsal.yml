@@ -1,0 +1,16 @@
+services:
+  rehearsal:
+    build:
+      context: .
+      dockerfile: Dockerfile.rehearsal
+    image: pulsedag:v2.2.19-rehearsal
+    environment:
+      REHEARSAL_GATE: ${REHEARSAL_GATE:-5n1m}
+      DURATION_SECS: ${DURATION_SECS:-600}
+      QUIESCENCE_WAIT_SECS: ${QUIESCENCE_WAIT_SECS:-180}
+      GLOBAL_DEADLINE_SECS: ${GLOBAL_DEADLINE_SECS:-2700}
+      OUT_DIR: /workspace/artifacts/v2_2_19/${REHEARSAL_OUT_DIR:-docker_rehearsal}
+      RUST_BACKTRACE: ${RUST_BACKTRACE:-1}
+    volumes:
+      - ./artifacts:/workspace/artifacts
+    command: ["${REHEARSAL_GATE:-5n1m}"]
