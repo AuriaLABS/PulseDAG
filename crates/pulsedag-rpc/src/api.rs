@@ -359,7 +359,7 @@ pub async fn p2p_status_for_rpc(
         return Ok(None);
     };
 
-    let permit = match P2P_STATUS_SNAPSHOT_PERMITS.try_acquire() {
+    let _permit = match P2P_STATUS_SNAPSHOT_PERMITS.try_acquire() {
         Ok(permit) => permit,
         Err(_) => {
             P2P_STATUS_SNAPSHOT_BUSY_TOTAL.fetch_add(1, Ordering::Relaxed);
@@ -371,11 +371,7 @@ pub async fn p2p_status_for_rpc(
 
     let status = match timeout(
         RPC_STATE_LOCK_TIMEOUT,
-        tokio::task::spawn_blocking(move || {
-            let status = p2p.status();
-            drop(permit);
-            status
-        }),
+        tokio::task::spawn_blocking(move || p2p.status()),
     )
     .await
     {
@@ -399,6 +395,136 @@ pub async fn p2p_status_for_rpc(
         degraded_reason: None,
         captured_at_unix: Some(unix_now_secs()),
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pulsedag_core::{
+        errors::PulseError,
+        types::{Block, Transaction},
+    };
+    use pulsedag_p2p::MemoryP2pHandle;
+    use std::sync::{
+        atomic::{AtomicBool, Ordering as AtomicOrdering},
+        Condvar,
+    };
+
+    struct BlockingP2pHandle {
+        status: P2pStatus,
+        started: Arc<AtomicBool>,
+        release: Arc<(Mutex<bool>, Condvar)>,
+    }
+
+    struct ReleaseOnDrop(Arc<(Mutex<bool>, Condvar)>);
+
+    impl Drop for ReleaseOnDrop {
+        fn drop(&mut self) {
+            let (lock, cvar) = &*self.0;
+            if let Ok(mut released) = lock.lock() {
+                *released = true;
+                cvar.notify_all();
+            }
+        }
+    }
+
+    impl P2pHandle for BlockingP2pHandle {
+        fn broadcast_transaction(&self, _tx: &Transaction) -> Result<(), PulseError> {
+            Ok(())
+        }
+
+        fn broadcast_block(&self, _block: &Block) -> Result<(), PulseError> {
+            Ok(())
+        }
+
+        fn status(&self) -> Result<P2pStatus, PulseError> {
+            self.started.store(true, AtomicOrdering::SeqCst);
+            let (lock, cvar) = &*self.release;
+            let released = lock
+                .lock()
+                .map_err(|_| PulseError::Internal("test lock poisoned".into()))?;
+            let _released = cvar
+                .wait_while(released, |released| !*released)
+                .map_err(|_| PulseError::Internal("test condvar poisoned".into()))?;
+            Ok(self.status.clone())
+        }
+    }
+
+    fn memory_status(chain_id: &str, peers: Vec<String>) -> P2pStatus {
+        let (handle, _inbound_rx) = MemoryP2pHandle::new(chain_id.into(), peers);
+        handle.status().expect("memory p2p status")
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn p2p_status_timeout_releases_snapshot_permit() {
+        let cached_status = memory_status("cache", vec!["peer-cache".into()]);
+        let live_status = memory_status("live", vec!["peer-live".into()]);
+
+        p2p_status_for_rpc(
+            Some(Arc::new(
+                MemoryP2pHandle::new("cache".into(), vec!["peer-cache".into()]).0,
+            )),
+            "/test/cache",
+        )
+        .await
+        .expect("cache seed succeeds");
+
+        let started = Arc::new(AtomicBool::new(false));
+        let release = Arc::new((Mutex::new(false), Condvar::new()));
+        let _release_on_drop = ReleaseOnDrop(Arc::clone(&release));
+        let blocking = Arc::new(BlockingP2pHandle {
+            status: cached_status,
+            started: Arc::clone(&started),
+            release: Arc::clone(&release),
+        });
+        let before = p2p_status_snapshot_metrics();
+
+        let stale = p2p_status_for_rpc(Some(blocking), "/test/timeout")
+            .await
+            .expect("timeout returns stale cached status")
+            .expect("cached status exists");
+        assert!(stale.stale, "timeout should return a stale cached status");
+        assert!(
+            started.load(AtomicOrdering::SeqCst),
+            "blocking status task should have started"
+        );
+
+        let live = p2p_status_for_rpc(
+            Some(Arc::new(StaticP2pHandle {
+                status: live_status.clone(),
+            })),
+            "/test/live-after-timeout",
+        )
+        .await
+        .expect("permit should be available after timeout")
+        .expect("live status exists");
+
+        assert!(!live.stale, "next snapshot should be live, not busy/stale");
+        assert_eq!(live.status.chain_id, live_status.chain_id);
+        let after = p2p_status_snapshot_metrics();
+        assert_eq!(
+            after.busy_total, before.busy_total,
+            "timed-out blocking task must not keep the snapshot permit busy"
+        );
+    }
+
+    struct StaticP2pHandle {
+        status: P2pStatus,
+    }
+
+    impl P2pHandle for StaticP2pHandle {
+        fn broadcast_transaction(&self, _tx: &Transaction) -> Result<(), PulseError> {
+            Ok(())
+        }
+
+        fn broadcast_block(&self, _block: &Block) -> Result<(), PulseError> {
+            Ok(())
+        }
+
+        fn status(&self) -> Result<P2pStatus, PulseError> {
+            Ok(self.status.clone())
+        }
+    }
 }
 
 pub trait RpcStateLike: Clone + Send + Sync + 'static {
