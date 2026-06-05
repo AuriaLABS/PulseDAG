@@ -359,12 +359,23 @@ pub async fn p2p_status_for_rpc(
         return Ok(None);
     };
 
-    let _permit = match P2P_STATUS_SNAPSHOT_PERMITS.try_acquire() {
-        Ok(permit) => permit,
+    let _permit = match timeout(
+        RPC_STATE_LOCK_TIMEOUT,
+        P2P_STATUS_SNAPSHOT_PERMITS.acquire(),
+    )
+    .await
+    {
+        Ok(Ok(permit)) => permit,
+        Ok(Err(_)) => {
+            return Err(format!(
+                "{endpoint} could not acquire p2p status snapshot permit because the limiter was closed"
+            ));
+        }
         Err(_) => {
             P2P_STATUS_SNAPSHOT_BUSY_TOTAL.fetch_add(1, Ordering::Relaxed);
             return stale_p2p_status(format!(
-                "{endpoint} skipped p2p status snapshot because a prior snapshot is still running; returning the last-known p2p snapshot when available"
+                "{endpoint} could not acquire p2p status snapshot permit within {}ms because a prior snapshot is still running; returning the last-known p2p snapshot when available",
+                RPC_STATE_LOCK_TIMEOUT.as_millis()
             ));
         }
     };
