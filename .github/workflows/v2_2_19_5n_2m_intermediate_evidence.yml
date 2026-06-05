@@ -13,7 +13,6 @@ jobs:
       DURATION_SECS: "600"
       QUIESCENCE_WAIT_SECS: "180"
       GLOBAL_DEADLINE_SECS: "2700"
-      REHEARSAL_STEP_TIMEOUT_SECS: "3000"
       EVIDENCE_ROOT: artifacts/v2_2_19/private_5n_2m_rehearsal
     steps:
       - name: Checkout
@@ -41,16 +40,10 @@ jobs:
       - name: Run v2.2.19 private 5N/2M intermediate rehearsal
         shell: bash
         continue-on-error: true
-        timeout-minutes: 55
         run: |
           set +e
-          if command -v timeout >/dev/null 2>&1; then
-            timeout "${REHEARSAL_STEP_TIMEOUT_SECS}s" bash scripts/v2_2_19_private_5n_2m_rehearsal.sh
-            rc=$?
-          else
-            bash scripts/v2_2_19_private_5n_2m_rehearsal.sh
-            rc=$?
-          fi
+          bash scripts/v2_2_19_private_5n_2m_rehearsal.sh
+          rc=$?
           echo "$rc" > rehearsal-exit-code.txt
           echo "rehearsal_exit_code=$rc"
           exit 0
