@@ -1125,6 +1125,9 @@ mod tests {
                     flap_suppressed_count: 0,
                     flap_events: 0,
                     suppression_until_unix: None,
+                    last_error: None,
+                    last_error_unix: None,
+                    last_error_source: None,
                 },
                 PeerRecoveryStatus {
                     chain_id: Some("testnet-dev".into()),
@@ -1147,6 +1150,9 @@ mod tests {
                     flap_suppressed_count: 1,
                     flap_events: 2,
                     suppression_until_unix: Some(now.saturating_add(10)),
+                    last_error: None,
+                    last_error_unix: None,
+                    last_error_source: None,
                 },
             ],
             sync_candidates: vec![],
@@ -1193,6 +1199,11 @@ mod tests {
             connection_established_total: 0,
             connection_closed_total: 0,
             last_connection_closed_reason: None,
+            disconnect_reason_counts: std::collections::HashMap::new(),
+            peer_lifecycle_event_counters: std::collections::HashMap::new(),
+            last_error_by_peer: std::collections::HashMap::new(),
+            inbound_peer_final_state: Vec::new(),
+            outbound_peer_final_state: Vec::new(),
         };
 
         let Json(resp) = get_p2p_status(State(mk_state(status))).await;
@@ -1407,6 +1418,11 @@ mod tests {
                 connection_established_total: 0,
                 connection_closed_total: 0,
                 last_connection_closed_reason: None,
+                disconnect_reason_counts: std::collections::HashMap::new(),
+                peer_lifecycle_event_counters: std::collections::HashMap::new(),
+                last_error_by_peer: std::collections::HashMap::new(),
+                inbound_peer_final_state: Vec::new(),
+                outbound_peer_final_state: Vec::new(),
             };
             let Json(resp) = get_p2p_status(State(mk_state(status.clone()))).await;
             let data = resp.data.expect("p2p status data");
