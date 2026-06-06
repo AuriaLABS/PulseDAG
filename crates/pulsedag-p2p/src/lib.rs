@@ -761,6 +761,7 @@ impl P2pHandle for MemoryP2pHandle {
             .inner
             .lock()
             .map_err(|_| PulseError::Internal("p2p lock poisoned".into()))?;
+        refresh_connected_peers_from_health(&mut inner);
         let (
             peers_under_cooldown,
             peers_under_flap_guard,
@@ -1364,17 +1365,31 @@ fn topology_stats_for_connected_peers(peers: &[String]) -> (usize, usize, u16, u
 
 fn refresh_connected_peers_from_health(state: &mut InnerState) {
     if mode_connected_peers_are_real_network(&state.mode) {
+        let mut active = state
+            .active_connections
+            .iter()
+            .filter_map(|(peer_id, connections)| {
+                (*connections > 0 && is_valid_peer_id(peer_id)).then_some(peer_id.clone())
+            })
+            .collect::<Vec<_>>();
+        active.sort();
+        let active_set = active.iter().cloned().collect::<HashSet<_>>();
+        let has_active_connections = !active_set.is_empty();
         let budget = adaptive_connection_slot_budget(state, now_unix());
         let now = now_unix();
         let eligible = sync_candidates_snapshot(state)
             .into_iter()
             .filter(|peer| {
                 peer.excluded_until_unix.is_none()
-                    && state
-                        .peer_book
-                        .get(&peer.peer_id)
-                        .map(|health| health.connected && health.chain_id_compatible)
-                        .unwrap_or(false)
+                    && if has_active_connections {
+                        active_set.contains(&peer.peer_id)
+                    } else {
+                        state
+                            .peer_book
+                            .get(&peer.peer_id)
+                            .map(|health| health.connected && health.chain_id_compatible)
+                            .unwrap_or(false)
+                    }
             })
             .map(|peer| peer.peer_id)
             .collect::<Vec<_>>();
@@ -1413,10 +1428,14 @@ fn refresh_connected_peers_from_health(state: &mut InnerState) {
         }
         let topology_soft_cap = std::cmp::max(1, budget.div_ceil(TOPOLOGY_BUCKET_SOFT_CAP_DIVISOR));
         let mut bucket_counts: HashMap<usize, usize> = HashMap::new();
-        let mut selected = Vec::with_capacity(std::cmp::min(shaped.len(), budget));
+        let mut selected = Vec::with_capacity(if has_active_connections {
+            active.len()
+        } else {
+            std::cmp::min(shaped.len(), budget)
+        });
         let mut deferred = Vec::new();
         for peer_id in shaped {
-            if selected.len() >= budget {
+            if !has_active_connections && selected.len() >= budget {
                 break;
             }
             let bucket = topology_bucket_for_peer(&peer_id);
@@ -1428,10 +1447,20 @@ fn refresh_connected_peers_from_health(state: &mut InnerState) {
             }
         }
         for peer_id in deferred {
-            if selected.len() >= budget {
+            if !has_active_connections && selected.len() >= budget {
                 break;
             }
             selected.push(peer_id);
+        }
+        if has_active_connections {
+            for peer_id in active {
+                if !selected
+                    .iter()
+                    .any(|selected_peer| selected_peer == &peer_id)
+                {
+                    selected.push(peer_id);
+                }
+            }
         }
         state.connected_peers = selected;
     } else {
@@ -2330,97 +2359,132 @@ fn score_peer_message_outcome(
     now: u64,
 ) {
     let local_chain_id = state.chain_id.clone();
-    let health = state.peer_book.entry(peer.to_string()).or_default();
-    health.last_seen_unix = Some(now);
-    match outcome {
-        PeerMessageOutcome::ValidRelay => {
-            health.remote_chain_id = Some(local_chain_id);
-            health.chain_id_compatible = true;
-            health.chain_mismatch_streak = 0;
-            health.score =
-                (health.score + PEER_VALID_RELAY_BONUS).clamp(PEER_SCORE_MIN, PEER_SCORE_MAX);
-            if health.fail_streak > 0 && health.score >= 80 {
-                health.fail_streak = health.fail_streak.saturating_sub(1);
+    let outcome_reason = match outcome {
+        PeerMessageOutcome::ValidRelay => None,
+        PeerMessageOutcome::Malformed => Some("malformed_message"),
+        PeerMessageOutcome::ChainMismatch => Some("chain_mismatch"),
+        PeerMessageOutcome::RateLimited => Some("rate_limited"),
+        PeerMessageOutcome::InvalidBlock => Some("invalid_block"),
+        PeerMessageOutcome::InvalidAnnouncement => Some("invalid_announcement"),
+    };
+    let mut entered_recovery = false;
+    {
+        let health = state.peer_book.entry(peer.to_string()).or_default();
+        health.last_seen_unix = Some(now);
+        if let Some(reason) = outcome_reason {
+            health.last_error = Some(reason.to_string());
+            health.last_error_unix = Some(now);
+            health.last_error_source = Some("peer_message_outcome".to_string());
+        }
+        match outcome {
+            PeerMessageOutcome::ValidRelay => {
+                health.remote_chain_id = Some(local_chain_id);
+                health.chain_id_compatible = true;
+                health.chain_mismatch_streak = 0;
+                health.score =
+                    (health.score + PEER_VALID_RELAY_BONUS).clamp(PEER_SCORE_MIN, PEER_SCORE_MAX);
+                if health.fail_streak > 0 && health.score >= 80 {
+                    health.fail_streak = health.fail_streak.saturating_sub(1);
+                }
+            }
+            PeerMessageOutcome::Malformed => {
+                health.chain_mismatch_streak = 0;
+                health.score = (health.score - PEER_MALFORMED_MESSAGE_PENALTY)
+                    .clamp(PEER_SCORE_MIN, PEER_SCORE_MAX);
+                health.fail_streak = health.fail_streak.saturating_add(1);
+                health.last_failure_unix = Some(now);
+            }
+            PeerMessageOutcome::ChainMismatch => {
+                health.remote_chain_id = None;
+                health.chain_id_compatible = false;
+                health.connected = false;
+                health.chain_mismatch_streak = health.chain_mismatch_streak.saturating_add(1);
+                let penalty = PEER_CHAIN_MISMATCH_PENALTY
+                    + (health.chain_mismatch_streak.saturating_sub(1) as i32 * 4);
+                health.score = (health.score - penalty).clamp(PEER_SCORE_MIN, PEER_SCORE_MAX);
+                health.fail_streak = health.fail_streak.saturating_add(1);
+                health.last_failure_unix = Some(now);
+                if health.chain_mismatch_streak >= 3 {
+                    let cooldown =
+                        FLAP_BASE_COOLDOWN.saturating_mul(health.chain_mismatch_streak as u64);
+                    health.suppressed_until_unix = health
+                        .suppressed_until_unix
+                        .max(now.saturating_add(cooldown));
+                    health.next_retry_unix =
+                        health.next_retry_unix.max(health.suppressed_until_unix);
+                }
+            }
+            PeerMessageOutcome::RateLimited => {
+                health.score =
+                    (health.score - PEER_RATE_LIMIT_PENALTY).clamp(PEER_SCORE_MIN, PEER_SCORE_MAX);
+                health.fail_streak = health.fail_streak.saturating_add(1);
+                health.last_failure_unix = Some(now);
+            }
+            PeerMessageOutcome::InvalidBlock => {
+                health.chain_mismatch_streak = 0;
+                health.score = (health.score - PEER_INVALID_BLOCK_PENALTY)
+                    .clamp(PEER_SCORE_MIN, PEER_SCORE_MAX);
+                health.fail_streak = health.fail_streak.saturating_add(1);
+                health.invalid_block_announce_streak =
+                    health.invalid_block_announce_streak.saturating_add(1);
+                health.last_failure_unix = Some(now);
+                if health.invalid_block_announce_streak
+                    >= PEER_INVALID_BLOCK_ANNOUNCE_COOLDOWN_THRESHOLD
+                {
+                    health.suppressed_until_unix = health
+                        .suppressed_until_unix
+                        .max(now.saturating_add(PEER_INVALID_BLOCK_ANNOUNCE_COOLDOWN_SECS));
+                    health.next_retry_unix =
+                        health.next_retry_unix.max(health.suppressed_until_unix);
+                }
+            }
+            PeerMessageOutcome::InvalidAnnouncement => {
+                health.score = (health.score - PEER_INVALID_ANNOUNCEMENT_PENALTY)
+                    .clamp(PEER_SCORE_MIN, PEER_SCORE_MAX);
+                health.fail_streak = health.fail_streak.saturating_add(1);
+                health.invalid_block_announce_streak =
+                    health.invalid_block_announce_streak.saturating_add(1);
+                health.last_failure_unix = Some(now);
+                if health.invalid_block_announce_streak
+                    >= PEER_INVALID_BLOCK_ANNOUNCE_COOLDOWN_THRESHOLD
+                {
+                    health.suppressed_until_unix = health
+                        .suppressed_until_unix
+                        .max(now.saturating_add(PEER_INVALID_BLOCK_ANNOUNCE_COOLDOWN_SECS));
+                    health.next_retry_unix =
+                        health.next_retry_unix.max(health.suppressed_until_unix);
+                }
             }
         }
-        PeerMessageOutcome::Malformed => {
-            health.chain_mismatch_streak = 0;
-            health.score = (health.score - PEER_MALFORMED_MESSAGE_PENALTY)
-                .clamp(PEER_SCORE_MIN, PEER_SCORE_MAX);
-            health.fail_streak = health.fail_streak.saturating_add(1);
-            health.last_failure_unix = Some(now);
-        }
-        PeerMessageOutcome::ChainMismatch => {
-            health.remote_chain_id = None;
-            health.chain_id_compatible = false;
-            health.connected = false;
-            health.chain_mismatch_streak = health.chain_mismatch_streak.saturating_add(1);
-            let penalty = PEER_CHAIN_MISMATCH_PENALTY
-                + (health.chain_mismatch_streak.saturating_sub(1) as i32 * 4);
-            health.score = (health.score - penalty).clamp(PEER_SCORE_MIN, PEER_SCORE_MAX);
-            health.fail_streak = health.fail_streak.saturating_add(1);
-            health.last_failure_unix = Some(now);
-            if health.chain_mismatch_streak >= 3 {
-                let cooldown =
-                    FLAP_BASE_COOLDOWN.saturating_mul(health.chain_mismatch_streak as u64);
-                health.suppressed_until_unix = health
-                    .suppressed_until_unix
-                    .max(now.saturating_add(cooldown));
-                health.next_retry_unix = health.next_retry_unix.max(health.suppressed_until_unix);
+        if outcome_reason.is_some() {
+            health.recent_failures_unix.push(now);
+            if health.recent_failures_unix.len() > RECENT_FAILURES_KEEP {
+                let keep_from = health.recent_failures_unix.len() - RECENT_FAILURES_KEEP;
+                health.recent_failures_unix = health.recent_failures_unix.split_off(keep_from);
             }
-        }
-        PeerMessageOutcome::RateLimited => {
-            health.score =
-                (health.score - PEER_RATE_LIMIT_PENALTY).clamp(PEER_SCORE_MIN, PEER_SCORE_MAX);
-            health.fail_streak = health.fail_streak.saturating_add(1);
-            health.last_failure_unix = Some(now);
-        }
-        PeerMessageOutcome::InvalidBlock => {
-            health.chain_mismatch_streak = 0;
-            health.score =
-                (health.score - PEER_INVALID_BLOCK_PENALTY).clamp(PEER_SCORE_MIN, PEER_SCORE_MAX);
-            health.fail_streak = health.fail_streak.saturating_add(1);
-            health.invalid_block_announce_streak =
-                health.invalid_block_announce_streak.saturating_add(1);
-            health.last_failure_unix = Some(now);
-            if health.invalid_block_announce_streak
-                >= PEER_INVALID_BLOCK_ANNOUNCE_COOLDOWN_THRESHOLD
-            {
-                health.suppressed_until_unix = health
-                    .suppressed_until_unix
-                    .max(now.saturating_add(PEER_INVALID_BLOCK_ANNOUNCE_COOLDOWN_SECS));
-                health.next_retry_unix = health.next_retry_unix.max(health.suppressed_until_unix);
+            if health.score < 40 || health.fail_streak >= 5 {
+                health.connected = false;
+                health.next_retry_unix = health
+                    .next_retry_unix
+                    .max(now.saturating_add(BACKOFF_MAX_SECS / 2));
             }
-        }
-        PeerMessageOutcome::InvalidAnnouncement => {
-            health.score = (health.score - PEER_INVALID_ANNOUNCEMENT_PENALTY)
-                .clamp(PEER_SCORE_MIN, PEER_SCORE_MAX);
-            health.fail_streak = health.fail_streak.saturating_add(1);
-            health.invalid_block_announce_streak =
-                health.invalid_block_announce_streak.saturating_add(1);
-            health.last_failure_unix = Some(now);
-            if health.invalid_block_announce_streak
-                >= PEER_INVALID_BLOCK_ANNOUNCE_COOLDOWN_THRESHOLD
-            {
-                health.suppressed_until_unix = health
-                    .suppressed_until_unix
-                    .max(now.saturating_add(PEER_INVALID_BLOCK_ANNOUNCE_COOLDOWN_SECS));
-                health.next_retry_unix = health.next_retry_unix.max(health.suppressed_until_unix);
-            }
+            entered_recovery = !health.connected
+                || health.next_retry_unix > now
+                || health.suppressed_until_unix > now;
         }
     }
-    if !matches!(outcome, PeerMessageOutcome::ValidRelay) {
+    if let Some(reason) = outcome_reason {
+        state
+            .last_error_by_peer
+            .insert(peer.to_string(), reason.to_string());
         state.peer_penalties = state.peer_penalties.saturating_add(1);
-        health.recent_failures_unix.push(now);
-        if health.recent_failures_unix.len() > RECENT_FAILURES_KEEP {
-            let keep_from = health.recent_failures_unix.len() - RECENT_FAILURES_KEEP;
-            health.recent_failures_unix = health.recent_failures_unix.split_off(keep_from);
-        }
-        if health.score < 40 || health.fail_streak >= 5 {
-            health.connected = false;
-            health.next_retry_unix = health
-                .next_retry_unix
-                .max(now.saturating_add(BACKOFF_MAX_SECS / 2));
+        if entered_recovery {
+            let disconnect_reason = format!("peer_health:{reason}");
+            *state
+                .disconnect_reason_counts
+                .entry(disconnect_reason)
+                .or_insert(0) += 1;
+            record_peer_lifecycle_event(state, "peer_health_recovery");
         }
     }
 }
@@ -6992,6 +7056,29 @@ mod deterministic_p2p_sync_coverage_tests {
         refresh_connected_peers_from_health(&mut state);
         assert!(state.connected_peers.is_empty());
         assert_eq!(state.active_connections.values().copied().sum::<usize>(), 0);
+    }
+
+    #[test]
+    fn active_connections_remain_visible_during_peer_recovery() {
+        let mut state = InnerState {
+            mode: P2P_MODE_LIBP2P_REAL.into(),
+            ..InnerState::default()
+        };
+        state.active_connections.insert("peer-recovering".into(), 1);
+        state.peer_book.insert(
+            "peer-recovering".into(),
+            PeerHealth {
+                connected: false,
+                fail_streak: 2,
+                next_retry_unix: now_unix().saturating_add(60),
+                chain_id_compatible: true,
+                ..PeerHealth::default()
+            },
+        );
+
+        refresh_connected_peers_from_health(&mut state);
+
+        assert_eq!(state.connected_peers, vec!["peer-recovering".to_string()]);
     }
 
     #[test]
