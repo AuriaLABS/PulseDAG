@@ -15,7 +15,10 @@ use app_state::{
     new_runtime_stats, short_hash, AppState, OperatorConsoleInputs,
 };
 use axum::Router;
-use block_request::{BlockRequestTracker, DependencyAwareFetchScheduler, HeaderFetchCandidate};
+use block_request::{
+    BlockRequestTracker, DependencyAwareFetchScheduler, HeaderFetchCandidate,
+    DEFAULT_MAX_PENDING_BLOCK_REQUESTS,
+};
 use config::Config;
 use pulsedag_core::accept::{
     accept_transaction_with_result, AcceptSource, BlockAcceptanceResult, TxAcceptanceResult,
@@ -430,6 +433,11 @@ async fn main() -> Result<()> {
         tokio::spawn(async move {
             let mut block_requests = BlockRequestTracker::new(8, 2);
             let mut fetch_scheduler = DependencyAwareFetchScheduler::default();
+            info!(
+                max_pending_block_requests = block_requests.max_pending(),
+                default_max_pending_block_requests = DEFAULT_MAX_PENDING_BLOCK_REQUESTS,
+                "bounded block fetch tracker initialized"
+            );
             let mut recovery_tick: u64 = 0;
             loop {
                 let maybe_event =
@@ -611,6 +619,25 @@ async fn main() -> Result<()> {
                     }
                 }
                 let Some(event) = maybe_event else {
+                    let suppressed = block_requests.take_backpressure_suppressed();
+                    if suppressed > 0 {
+                        let mut rt = runtime.write().await;
+                        rt.block_request_backpressure_suppressed = rt
+                            .block_request_backpressure_suppressed
+                            .saturating_add(suppressed);
+                        rt.block_fetch_duplicate_inflight_suppressed = rt
+                            .block_fetch_duplicate_inflight_suppressed
+                            .saturating_add(suppressed);
+                        rt.pending_block_requests = block_requests.pending.len();
+                        rt.inflight_block_requests = block_requests.pending.len();
+                        rt.pending_block_request_hashes = block_requests.pending_hashes();
+                        warn!(
+                            suppressed,
+                            max_pending_block_requests = block_requests.max_pending(),
+                            pending_block_requests = block_requests.pending.len(),
+                            "suppressed GetBlock requests due to bounded inflight backpressure"
+                        );
+                    }
                     continue;
                 };
                 match event {
@@ -1531,6 +1558,25 @@ async fn main() -> Result<()> {
                         drop(rt);
                         info!(peer = %peer, peers_connected = ?peers_connected, "p2p peer connected; requested tips");
                     }
+                }
+                let suppressed = block_requests.take_backpressure_suppressed();
+                if suppressed > 0 {
+                    let mut rt = runtime.write().await;
+                    rt.block_request_backpressure_suppressed = rt
+                        .block_request_backpressure_suppressed
+                        .saturating_add(suppressed);
+                    rt.block_fetch_duplicate_inflight_suppressed = rt
+                        .block_fetch_duplicate_inflight_suppressed
+                        .saturating_add(suppressed);
+                    rt.pending_block_requests = block_requests.pending.len();
+                    rt.inflight_block_requests = block_requests.pending.len();
+                    rt.pending_block_request_hashes = block_requests.pending_hashes();
+                    warn!(
+                        suppressed,
+                        max_pending_block_requests = block_requests.max_pending(),
+                        pending_block_requests = block_requests.pending.len(),
+                        "suppressed GetBlock requests due to bounded inflight backpressure"
+                    );
                 }
             }
         });
