@@ -5,7 +5,10 @@ use crate::{
 use axum::{extract::State, Json};
 use pulsedag_core::preferred_tip_hash;
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::{Mutex, OnceLock},
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -99,6 +102,42 @@ fn status_reasons(
     }
 }
 
+static READINESS_RESPONSE_CACHE: OnceLock<Mutex<Option<ReadinessData>>> = OnceLock::new();
+
+fn cached_readiness_response(reason: String) -> Option<ReadinessData> {
+    READINESS_RESPONSE_CACHE
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .ok()
+        .and_then(|cache| cache.clone())
+        .map(|mut data| {
+            data.overall_status = ReadinessStatus::Warn;
+            data.node_ready = false;
+            data.private_testnet_ready = false;
+            data.ready_for_release = false;
+            data.warnings.push(format!(
+                "rpc_degraded_response: returning stale readiness because {reason}"
+            ));
+            data.categories.insert(
+                "rpc_capture".to_string(),
+                category(
+                    ReadinessStatus::Warn,
+                    vec![format!("stale degraded readiness fallback: {reason}")],
+                ),
+            );
+            data
+        })
+}
+
+fn cache_readiness_response(data: &ReadinessData) {
+    if let Ok(mut cache) = READINESS_RESPONSE_CACHE
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+    {
+        *cache = Some(data.clone());
+    }
+}
+
 pub async fn get_readiness<S: RpcStateLike>(
     State(state): State<S>,
 ) -> Json<ApiResponse<ReadinessData>> {
@@ -134,17 +173,32 @@ pub async fn get_readiness<S: RpcStateLike>(
 
     let p2p_status = match p2p_status_for_rpc(state.p2p(), "/readiness").await {
         Ok(status) => status,
-        Err(e) => return Json(ApiResponse::err("P2P_STATUS_BUSY", e)),
+        Err(e) => {
+            if let Some(data) = cached_readiness_response(e.clone()) {
+                return Json(ApiResponse::ok(data));
+            }
+            return Json(ApiResponse::err("P2P_STATUS_BUSY", e));
+        }
     };
     let chain_handle = state.chain();
     let chain = match read_chain_for_rpc(&chain_handle, "/readiness").await {
         Ok(chain) => chain,
-        Err(e) => return Json(ApiResponse::err("STATE_LOCK_BUSY", e)),
+        Err(e) => {
+            if let Some(data) = cached_readiness_response(e.clone()) {
+                return Json(ApiResponse::ok(data));
+            }
+            return Json(ApiResponse::err("STATE_LOCK_BUSY", e));
+        }
     };
     let runtime_handle = state.runtime();
     let runtime = match read_runtime_for_rpc(&runtime_handle, "/readiness").await {
         Ok(runtime) => runtime,
-        Err(e) => return Json(ApiResponse::err("STATE_LOCK_BUSY", e)),
+        Err(e) => {
+            if let Some(data) = cached_readiness_response(e.clone()) {
+                return Json(ApiResponse::ok(data));
+            }
+            return Json(ApiResponse::err("STATE_LOCK_BUSY", e));
+        }
     };
     let p2p_mode = std::env::var("PULSEDAG_P2P_MODE").unwrap_or_else(|_| "unknown".to_string());
     let rpc_bind = std::env::var("PULSEDAG_EFFECTIVE_RPC_BIND")
@@ -558,7 +612,7 @@ pub async fn get_readiness<S: RpcStateLike>(
     } else {
         "peers_connected".to_string()
     };
-    Json(ApiResponse::ok(ReadinessData {
+    let data = ReadinessData {
         effective_rpc_bind: rpc_bind,
         effective_api_profile: api_profile,
         admin_enabled,
@@ -574,7 +628,9 @@ pub async fn get_readiness<S: RpcStateLike>(
         metrics,
         release_blockers: blockers,
         warnings,
-    }))
+    };
+    cache_readiness_response(&data);
+    Json(ApiResponse::ok(data))
 }
 
 #[cfg(test)]

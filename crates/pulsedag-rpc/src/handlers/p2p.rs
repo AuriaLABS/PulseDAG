@@ -505,12 +505,28 @@ pub async fn get_p2p_status<S: RpcStateLike>(
             let runtime_handle = state.runtime();
             let runtime = match read_runtime_for_rpc(&runtime_handle, "/p2p/status").await {
                 Ok(runtime) => runtime,
-                Err(e) => return Json(ApiResponse::err("STATE_LOCK_BUSY", e)),
+                Err(e) => {
+                    payload.insert("p2p_status_degraded".into(), serde_json::json!(true));
+                    payload.insert("p2p_status_degraded_reason".into(), serde_json::json!(e));
+                    payload.insert(
+                        "readiness_reasons".into(),
+                        serde_json::json!(["runtime lock busy during degraded status capture"]),
+                    );
+                    return Json(ApiResponse::ok(serde_json::Value::Object(payload)));
+                }
             };
             let chain_handle = state.chain();
             let chain = match read_chain_for_rpc(&chain_handle, "/p2p/status").await {
                 Ok(chain) => chain,
-                Err(e) => return Json(ApiResponse::err("STATE_LOCK_BUSY", e)),
+                Err(e) => {
+                    payload.insert("p2p_status_degraded".into(), serde_json::json!(true));
+                    payload.insert("p2p_status_degraded_reason".into(), serde_json::json!(e));
+                    payload.insert(
+                        "readiness_reasons".into(),
+                        serde_json::json!(["chain lock busy during degraded status capture"]),
+                    );
+                    return Json(ApiResponse::ok(serde_json::Value::Object(payload)));
+                }
             };
             let orphan_count = chain.orphan_blocks.len();
             let missing_parent_entry_count = chain.orphan_missing_parents.len();
@@ -724,12 +740,30 @@ pub async fn get_p2p_status<S: RpcStateLike>(
             let runtime_handle = state.runtime();
             let runtime = match read_runtime_for_rpc(&runtime_handle, "/p2p/status").await {
                 Ok(runtime) => runtime,
-                Err(e) => return Json(ApiResponse::err("STATE_LOCK_BUSY", e)),
+                Err(e) => {
+                    return Json(ApiResponse::ok(serde_json::json!({
+                        "enabled": false,
+                        "mode": "disabled",
+                        "p2p_status_degraded": true,
+                        "p2p_status_stale": false,
+                        "p2p_status_degraded_reason": e,
+                        "readiness_reasons": ["p2p is disabled", "runtime lock busy during degraded status capture"]
+                    })))
+                }
             };
             let chain_handle = state.chain();
             let chain = match read_chain_for_rpc(&chain_handle, "/p2p/status").await {
                 Ok(chain) => chain,
-                Err(e) => return Json(ApiResponse::err("STATE_LOCK_BUSY", e)),
+                Err(e) => {
+                    return Json(ApiResponse::ok(serde_json::json!({
+                        "enabled": false,
+                        "mode": "disabled",
+                        "p2p_status_degraded": true,
+                        "p2p_status_stale": false,
+                        "p2p_status_degraded_reason": e,
+                        "readiness_reasons": ["p2p is disabled", "chain lock busy during degraded status capture"]
+                    })))
+                }
             };
             Json(ApiResponse::ok(disabled_p2p_payload(
                 &runtime,
@@ -737,7 +771,17 @@ pub async fn get_p2p_status<S: RpcStateLike>(
                 chain.orphan_blocks.len(),
             )))
         }
-        Err(e) => Json(ApiResponse::err("P2P_STATUS_BUSY", e)),
+        Err(e) => Json(ApiResponse::ok(serde_json::json!({
+            "enabled": true,
+            "mode": "unknown",
+            "p2p_status_degraded": true,
+            "p2p_status_stale": false,
+            "p2p_status_degraded_reason": e,
+            "connected_peers": [],
+            "connected_peers_are_real_network": false,
+            "connected_peers_semantics": "unknown",
+            "readiness_reasons": ["p2p status unavailable during degraded capture"]
+        }))),
     }
 }
 

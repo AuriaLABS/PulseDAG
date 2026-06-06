@@ -46,6 +46,7 @@ pub struct MetricsData {
     pub last_orphan_reprocess_failure_reason: Option<String>,
     pub peer_count: usize,
     pub p2p_status_snapshot: P2pStatusSnapshotMetrics,
+    pub rpc_degraded_response_total: u64,
     pub limitations: Vec<String>,
 }
 
@@ -61,6 +62,7 @@ pub async fn get_metrics<S: RpcStateLike>(
         .await
         .ok()
         .flatten();
+    let snapshot_metrics = p2p_status_snapshot_metrics();
     let peer_count = p2p_status
         .as_ref()
         .map(|snapshot| snapshot.status.connected_peers.len())
@@ -126,7 +128,8 @@ pub async fn get_metrics<S: RpcStateLike>(
         orphan_reprocess_failures_by_reason: runtime.orphan_reprocess_failures_by_reason.clone(),
         last_orphan_reprocess_failure_reason: runtime.last_orphan_reprocess_failure_reason.clone(),
         peer_count,
-        p2p_status_snapshot: p2p_status_snapshot_metrics(),
+        p2p_status_snapshot: snapshot_metrics,
+        rpc_degraded_response_total: snapshot_metrics.rpc_degraded_response_total,
         limitations: vec![
             "Counters reset on node restart.".to_string(),
             "Peer and orphan counts are point-in-time snapshots.".to_string(),
