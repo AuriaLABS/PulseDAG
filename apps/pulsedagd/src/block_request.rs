@@ -565,6 +565,7 @@ impl DependencyAwareFetchScheduler {
 }
 
 #[cfg(test)]
+#[allow(dead_code, unused_variables)]
 mod tests {
     use super::{BlockRequestTracker, DependencyAwareFetchScheduler, HeaderFetchCandidate};
     use pulsedag_core::types::BlockHeader;
