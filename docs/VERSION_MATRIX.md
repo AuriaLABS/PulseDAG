@@ -76,5 +76,6 @@ A burn-in pass requires at least 30 consecutive UTC days of public-testnet evide
 | v2.2.19 final closeout evidence checklist | `docs/CLOSING_CHECKLIST_V2_2_19_FINAL.md` |
 | v2.2.19 closeout decision | `docs/V2_2_19_CLOSEOUT_DECISION.md` |
 | v2.2.20 start plan | `docs/V2_2_20_START.md` |
+| v2.2.20 Docker rehearsals | `docs/DOCKER_REHEARSALS_V2_2_20.md` |
 | v2.3.0 start checklist | `docs/V2_3_0_START_CHECKLIST.md` |
 | public-testnet burn-in evidence root (expected after launch approval) | `artifacts/public_testnet/burn_in_30d/` |

@@ -20,6 +20,8 @@
 - Do not bump `VERSION` unless explicit maintainer approval is recorded after gate evidence.
 
 ## References
+- `docs/DOCKER_REHEARSALS_V2_2_20.md`
+- `docs/V2_2_20_START.md`
 - `docs/V2_2_19_PREFLIGHT.md`
 - `docs/CLOSING_CHECKLIST_V2_2_19.md`
 - `docs/RELEASE_NOTES_V2_2_19.md`

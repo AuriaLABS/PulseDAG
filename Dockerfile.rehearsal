@@ -22,8 +22,8 @@ RUN apt-get update \
 WORKDIR /workspace
 COPY . .
 
-RUN chmod +x /workspace/scripts/docker_v2_2_19_rehearsal.sh \
+RUN chmod +x /workspace/scripts/docker_v2_2_20_rehearsal.sh \
     && cargo build --workspace --release --locked
 
-ENTRYPOINT ["/workspace/scripts/docker_v2_2_19_rehearsal.sh"]
+ENTRYPOINT ["/workspace/scripts/docker_v2_2_20_rehearsal.sh"]
 CMD ["5n1m"]
