@@ -28,7 +28,7 @@
 - `5N/1M baseline`: PASS
 - `5N/2M intermediate`: PASS
 - `5N/4M stress`: OBSERVE_FAIL, accepted as a tracked non-blocking limitation for v2.2.19 and the first hardening target for v2.2.20
-- First v2.2.20 post-PR stress record: `PENDING_EVIDENCE`; new metrics are documented, but no committed v2.2.20 `5N/4M` runtime bundle is present yet, so no improvement claim is made. See `docs/V2_2_20_FIRST_STRESS_EVIDENCE.md`.
+- First v2.2.20 post-PR stress record: `OBSERVE_FAIL`; measured `5N/4M` evidence exists for commit `6633962c07bb1ccfc8c9e15b8763faf0402f45a6`, with peer visibility still collapsed to zero, orphan and pending-missing-parent backlogs saturated at `512` per node, and final tips still divergent. See `docs/V2_2_20_FIRST_STRESS_EVIDENCE.md`.
 
 Primary objective: make `5N/4M` stress bounded, diagnosable, and recoverable without changing consensus semantics.
 
@@ -78,5 +78,6 @@ A burn-in pass requires at least 30 consecutive UTC days of public-testnet evide
 | v2.2.19 closeout decision | `docs/V2_2_19_CLOSEOUT_DECISION.md` |
 | v2.2.20 start plan | `docs/V2_2_20_START.md` |
 | v2.2.20 Docker rehearsals | `docs/DOCKER_REHEARSALS_V2_2_20.md` |
+| v2.2.20 first 5N/4M stress evidence | `docs/V2_2_20_FIRST_STRESS_EVIDENCE.md` |
 | v2.3.0 start checklist | `docs/V2_3_0_START_CHECKLIST.md` |
 | public-testnet burn-in evidence root (expected after launch approval) | `artifacts/public_testnet/burn_in_30d/` |
