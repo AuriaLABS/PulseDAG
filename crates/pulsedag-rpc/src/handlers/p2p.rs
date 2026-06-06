@@ -625,10 +625,14 @@ pub async fn get_p2p_status<S: RpcStateLike>(
                     "missing_parent_index_entry_count": missing_parent_index_entry_count,
                     "missing_parent_index_mismatch": missing_parent_index_mismatch,
                     "max_orphan_age_secs": runtime.max_orphan_age_secs,
+                    "oldest_orphan_age_secs": runtime.oldest_orphan_age_secs,
                     "oldest_missing_parent_age_secs": runtime.oldest_missing_parent_age_secs,
                     "orphan_reprocess_attempts": runtime.orphan_reprocess_attempts,
                     "orphan_reprocess_success": runtime.orphan_reprocess_success,
                     "orphan_reprocess_failed_missing_parent": runtime.orphan_reprocess_failed_missing_parent,
+                    "orphan_reprocess_failed_persist": runtime.orphan_reprocess_failed_persist,
+                    "orphan_reprocess_failures_by_reason": runtime.orphan_reprocess_failures_by_reason,
+                    "last_orphan_reprocess_failure_reason": runtime.last_orphan_reprocess_failure_reason,
                     "outbound_duplicates_suppressed": status.block_outbound_duplicates_suppressed
                 }));
             payload.insert(
@@ -864,10 +868,14 @@ pub async fn get_p2p_propagation<S: RpcStateLike>(
             "scheduler_queue_depth": runtime.block_fetch_scheduler_queue_depth,
             "inflight_by_peer": runtime.block_fetch_scheduler_inflight_by_peer,
             "max_orphan_age_secs": runtime.max_orphan_age_secs,
+            "oldest_orphan_age_secs": runtime.oldest_orphan_age_secs,
             "oldest_missing_parent_age_secs": runtime.oldest_missing_parent_age_secs,
             "orphan_reprocess_attempts": runtime.orphan_reprocess_attempts,
             "orphan_reprocess_success": runtime.orphan_reprocess_success,
-            "orphan_reprocess_failed_missing_parent": runtime.orphan_reprocess_failed_missing_parent
+            "orphan_reprocess_failed_missing_parent": runtime.orphan_reprocess_failed_missing_parent,
+            "orphan_reprocess_failed_persist": runtime.orphan_reprocess_failed_persist,
+            "orphan_reprocess_failures_by_reason": runtime.orphan_reprocess_failures_by_reason,
+            "last_orphan_reprocess_failure_reason": runtime.last_orphan_reprocess_failure_reason
         },
         "duplicate_suppression_counters": {
             "p2p_blocks": runtime.duplicate_p2p_blocks,
