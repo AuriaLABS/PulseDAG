@@ -187,9 +187,15 @@ pub struct NodeRuntimeStats {
     pub orphan_reprocess_failed_missing_parent: u64,
     #[serde(default)]
     pub orphan_reprocess_failed_persist: u64,
+    #[serde(default)]
+    pub orphan_reprocess_failures_by_reason: BTreeMap<String, u64>,
+    #[serde(default)]
+    pub last_orphan_reprocess_failure_reason: Option<String>,
     pub orphan_blocks_evicted: u64,
     #[serde(default)]
     pub max_orphan_age_secs: u64,
+    #[serde(default)]
+    pub oldest_orphan_age_secs: u64,
     #[serde(default)]
     pub oldest_missing_parent_age_secs: u64,
     pub sync_catchup_completed: u64,

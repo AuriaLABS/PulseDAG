@@ -113,6 +113,20 @@ fn orphan_age_metrics(chain: &pulsedag_core::state::ChainState, now_unix: u64) -
     (max_orphan_age_secs, oldest_missing_parent_age_secs)
 }
 
+fn record_orphan_reprocess_failures(
+    runtime: &mut pulsedag_rpc::api::NodeRuntimeStats,
+    failure_reasons: &std::collections::BTreeMap<String, usize>,
+) {
+    for (reason, count) in failure_reasons {
+        let entry = runtime
+            .orphan_reprocess_failures_by_reason
+            .entry(reason.clone())
+            .or_insert(0);
+        *entry = entry.saturating_add(*count as u64);
+        runtime.last_orphan_reprocess_failure_reason = Some(reason.clone());
+    }
+}
+
 fn active_peer_ids(p2p: &Option<Arc<dyn P2pHandle>>) -> Vec<String> {
     p2p.as_ref()
         .map(active_peer_ids_from_handle)
@@ -547,6 +561,7 @@ async fn main() -> Result<()> {
                         pending_missing,
                         ages,
                         persist_failed,
+                        failure_reasons,
                     ) = {
                         let mut guard = chain.write().await;
                         let known = guard.dag.blocks.keys().cloned().collect::<HashSet<_>>();
@@ -566,6 +581,7 @@ async fn main() -> Result<()> {
                         );
                         let adopted = adoption.accepted;
                         let retried = adoption.retried;
+                        let failure_reasons = adoption.failure_reasons;
                         adopted_hashes.extend(adoption.accepted_hashes);
                         let persist_failed = if retried > 0 {
                             match storage.persist_chain_state(&guard) {
@@ -590,6 +606,7 @@ async fn main() -> Result<()> {
                             pulsedag_core::pending_missing_parent_count(&guard),
                             ages,
                             persist_failed,
+                            failure_reasons,
                         )
                     };
                     if retried > 0 || !stale_missing_parents.is_empty() {
@@ -598,9 +615,11 @@ async fn main() -> Result<()> {
                             rt.orphan_reprocess_attempts.saturating_add(retried as u64);
                         rt.orphan_reprocess_success =
                             rt.orphan_reprocess_success.saturating_add(adopted as u64);
-                        rt.orphan_reprocess_failed_missing_parent = rt
-                            .orphan_reprocess_failed_missing_parent
-                            .saturating_add(retried.saturating_sub(adopted) as u64);
+                        rt.orphan_reprocess_failed_missing_parent =
+                            rt.orphan_reprocess_failed_missing_parent.saturating_add(
+                                failure_reasons.get("missing_parent").copied().unwrap_or(0) as u64,
+                            );
+                        record_orphan_reprocess_failures(&mut rt, &failure_reasons);
                         rt.orphan_blocks_retried =
                             rt.orphan_blocks_retried.saturating_add(retried as u64);
                         rt.orphan_blocks_resolved =
@@ -611,6 +630,7 @@ async fn main() -> Result<()> {
                         }
                         rt.pending_missing_parents = pending_missing;
                         rt.max_orphan_age_secs = ages.0;
+                        rt.oldest_orphan_age_secs = ages.0;
                         rt.oldest_missing_parent_age_secs = ages
                             .1
                             .max(block_requests.oldest_pending_age_secs(now_unix()));
@@ -1034,6 +1054,7 @@ async fn main() -> Result<()> {
                                 pulsedag_core::DEFAULT_ORPHAN_MAX_AGE_MS,
                             );
                             let pruned = orphan_queue.evicted;
+                            let ages = orphan_age_metrics(&guard, now_unix());
                             {
                                 let mut rt = runtime.write().await;
                                 rt.sync_state = "catching_up".to_string();
@@ -1055,6 +1076,11 @@ async fn main() -> Result<()> {
                                     .saturating_add(missing_parents.len() as u64);
                                 rt.pending_missing_parents =
                                     pulsedag_core::pending_missing_parent_count(&guard);
+                                rt.max_orphan_age_secs = ages.0;
+                                rt.oldest_orphan_age_secs = ages.0;
+                                rt.oldest_missing_parent_age_secs = ages
+                                    .1
+                                    .max(block_requests.oldest_pending_age_secs(now_unix()));
                                 rt.last_rejected_peer_block_reason = Some(format!(
                                     "missing parents for {}: {:?}",
                                     block.hash, missing_parents
@@ -1176,7 +1202,7 @@ async fn main() -> Result<()> {
                                 }
                             }
                         } else {
-                            let (adopted, retried_orphans, adopted_hashes) = {
+                            let (adopted, retried_orphans, adopted_hashes, failure_reasons) = {
                                 let mut adopted_guard = guard.clone();
                                 let adoption = pulsedag_core::adopt_ready_orphans_with_result(
                                     &mut adopted_guard,
@@ -1185,12 +1211,13 @@ async fn main() -> Result<()> {
                                 );
                                 let adopted = adoption.accepted;
                                 let retried = adoption.retried;
+                                let failure_reasons = adoption.failure_reasons;
                                 let adopted_hashes = adoption.accepted_hashes;
                                 if retried > 0 {
                                     match storage.persist_chain_state(&adopted_guard) {
                                         Ok(()) => {
                                             *guard = adopted_guard;
-                                            (adopted, retried, adopted_hashes)
+                                            (adopted, retried, adopted_hashes, failure_reasons)
                                         }
                                         Err(e) => {
                                             warn!(error = %e, block_hash = %block.hash, adopted, "failed persisting chain state after inbound orphan adoption; keeping orphans queued in memory");
@@ -1202,13 +1229,14 @@ async fn main() -> Result<()> {
                                                     block.hash, adopted, e
                                                 ),
                                             );
-                                            (0, 0, Vec::new())
+                                            (0, 0, Vec::new(), failure_reasons)
                                         }
                                     }
                                 } else {
-                                    (0, 0, Vec::new())
+                                    (0, 0, Vec::new(), failure_reasons)
                                 }
                             };
+                            let ages = orphan_age_metrics(&guard, now_unix());
                             let accepted_height = guard.dag.best_height;
                             let accepted_tip = pulsedag_core::preferred_tip_hash(&guard)
                                 .unwrap_or_else(|| guard.dag.genesis_hash.clone());
@@ -1226,9 +1254,25 @@ async fn main() -> Result<()> {
                                 rt.orphan_blocks_retried = rt
                                     .orphan_blocks_retried
                                     .saturating_add(retried_orphans as u64);
+                                rt.orphan_reprocess_attempts = rt
+                                    .orphan_reprocess_attempts
+                                    .saturating_add(retried_orphans as u64);
+                                rt.orphan_reprocess_success =
+                                    rt.orphan_reprocess_success.saturating_add(adopted as u64);
+                                rt.orphan_reprocess_failed_missing_parent =
+                                    rt.orphan_reprocess_failed_missing_parent.saturating_add(
+                                        failure_reasons.get("missing_parent").copied().unwrap_or(0)
+                                            as u64,
+                                    );
+                                record_orphan_reprocess_failures(&mut rt, &failure_reasons);
                                 rt.last_accepted_peer_block = Some(block.hash.clone());
                                 rt.pending_missing_parents =
                                     pulsedag_core::pending_missing_parent_count(&guard);
+                                rt.max_orphan_age_secs = ages.0;
+                                rt.oldest_orphan_age_secs = ages.0;
+                                rt.oldest_missing_parent_age_secs = ages
+                                    .1
+                                    .max(block_requests.oldest_pending_age_secs(now_unix()));
                                 rt.sync_state = if guard.orphan_blocks.is_empty() {
                                     "synced"
                                 } else {

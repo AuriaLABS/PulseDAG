@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -24,6 +24,41 @@ pub struct OrphanAdoptionResult {
     pub rejected: usize,
     pub retried: usize,
     pub accepted_hashes: Vec<Hash>,
+    pub failure_reasons: BTreeMap<String, usize>,
+}
+
+fn reprocess_failure_reason(result: &BlockAcceptanceResult) -> String {
+    match result {
+        BlockAcceptanceResult::MissingParent => "missing_parent".to_string(),
+        BlockAcceptanceResult::Duplicate => "duplicate".to_string(),
+        BlockAcceptanceResult::InvalidPow => "invalid_pow".to_string(),
+        BlockAcceptanceResult::InvalidTransaction => "invalid_transaction".to_string(),
+        BlockAcceptanceResult::Malformed => "malformed".to_string(),
+        BlockAcceptanceResult::Rejected(message) => {
+            let normalized = message.trim().to_ascii_lowercase();
+            if normalized.is_empty() {
+                "rejected".to_string()
+            } else {
+                normalized
+                    .chars()
+                    .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '_' })
+                    .collect::<String>()
+                    .split('_')
+                    .filter(|part| !part.is_empty())
+                    .collect::<Vec<_>>()
+                    .join("_")
+            }
+        }
+        BlockAcceptanceResult::Accepted => "accepted".to_string(),
+    }
+}
+
+fn record_reprocess_failure(
+    failure_reasons: &mut BTreeMap<String, usize>,
+    result: &BlockAcceptanceResult,
+) {
+    let reason = reprocess_failure_reason(result);
+    *failure_reasons.entry(reason).or_insert(0) += 1;
 }
 
 fn now_ms() -> u64 {
@@ -205,6 +240,7 @@ pub fn adopt_ready_orphans_with_result(
     let mut rejected = 0usize;
     let mut retried = 0usize;
     let mut accepted_hashes = Vec::new();
+    let mut failure_reasons = BTreeMap::new();
     let mut candidates = arrived_parent
         .map(|parent| orphan_children_waiting_for_parent(state, parent))
         .unwrap_or_else(|| state.orphan_blocks.keys().cloned().collect::<Vec<_>>());
@@ -242,6 +278,7 @@ pub fn adopt_ready_orphans_with_result(
                     candidates.extend(orphan_children_waiting_for_parent(state, &hash));
                 }
                 BlockAcceptanceResult::MissingParent => {
+                    record_reprocess_failure(&mut failure_reasons, &result);
                     let missing = missing_block_parents(&block, state);
                     let _ = queue_orphan_block_bounded(
                         state,
@@ -253,6 +290,7 @@ pub fn adopt_ready_orphans_with_result(
                 }
                 _ => {
                     rejected += 1;
+                    record_reprocess_failure(&mut failure_reasons, &result);
                 }
             }
         }
@@ -263,6 +301,7 @@ pub fn adopt_ready_orphans_with_result(
         rejected,
         retried,
         accepted_hashes,
+        failure_reasons,
     }
 }
 
@@ -467,9 +506,11 @@ mod tests {
         queue_missing(&mut state, child.clone());
 
         assert!(accept_block(parent, &mut state, AcceptSource::P2p).is_ok());
-        let adopted = adopt_ready_orphans(&mut state, AcceptSource::P2p);
+        let adoption = adopt_ready_orphans_with_result(&mut state, AcceptSource::P2p, None);
 
-        assert_eq!(adopted, 0);
+        assert_eq!(adoption.accepted, 0);
+        assert_eq!(adoption.retried, 1);
+        assert_eq!(adoption.failure_reasons.values().sum::<usize>(), 1);
         assert!(!state.dag.blocks.contains_key(&child.hash));
         assert!(!state.orphan_blocks.contains_key(&child.hash));
         assert_orphan_indexes_consistent(&state);
@@ -496,9 +537,11 @@ mod tests {
         queue_missing(&mut state, child.clone());
 
         assert!(accept_block(parent, &mut state, AcceptSource::P2p).is_ok());
-        let adopted = adopt_ready_orphans(&mut state, AcceptSource::P2p);
+        let adoption = adopt_ready_orphans_with_result(&mut state, AcceptSource::P2p, None);
 
-        assert_eq!(adopted, 0);
+        assert_eq!(adoption.accepted, 0);
+        assert_eq!(adoption.retried, 1);
+        assert_eq!(adoption.failure_reasons.values().sum::<usize>(), 1);
         assert!(!state.dag.blocks.contains_key(&child.hash));
         assert!(!state.orphan_blocks.contains_key(&child.hash));
         assert_orphan_indexes_consistent(&state);
@@ -687,9 +730,11 @@ mod tests {
         queue_missing(&mut state, blocked_child.clone());
 
         assert!(accept_block(parent, &mut state, AcceptSource::P2p).is_ok());
-        let adopted = adopt_ready_orphans(&mut state, AcceptSource::P2p);
+        let adoption = adopt_ready_orphans_with_result(&mut state, AcceptSource::P2p, None);
 
-        assert_eq!(adopted, 0);
+        assert_eq!(adoption.accepted, 0);
+        assert_eq!(adoption.retried, 1);
+        assert_eq!(adoption.failure_reasons.values().sum::<usize>(), 1);
         assert!(!state.dag.blocks.contains_key(&bad_child.hash));
         assert!(!state.orphan_blocks.contains_key(&bad_child.hash));
         assert!(state.orphan_blocks.contains_key(&blocked_child.hash));

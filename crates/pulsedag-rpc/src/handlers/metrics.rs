@@ -1,4 +1,5 @@
 use axum::{extract::State, Json};
+use std::collections::BTreeMap;
 
 use crate::{
     api::RpcStateLike,
@@ -35,6 +36,14 @@ pub struct MetricsData {
     pub tx_relay_suppressed_duplicate: u64,
     pub sync_missing_parents_total: u64,
     pub orphan_current_count: usize,
+    pub oldest_orphan_age_secs: u64,
+    pub oldest_missing_parent_age_secs: u64,
+    pub orphan_reprocess_attempts: u64,
+    pub orphan_reprocess_success: u64,
+    pub orphan_reprocess_failed_missing_parent: u64,
+    pub orphan_reprocess_failed_persist: u64,
+    pub orphan_reprocess_failures_by_reason: BTreeMap<String, u64>,
+    pub last_orphan_reprocess_failure_reason: Option<String>,
     pub peer_count: usize,
     pub p2p_status_snapshot: P2pStatusSnapshotMetrics,
     pub limitations: Vec<String>,
@@ -108,6 +117,14 @@ pub async fn get_metrics<S: RpcStateLike>(
         ),
         sync_missing_parents_total: runtime.pulsedag_sync_missing_parents_total,
         orphan_current_count: chain.orphan_blocks.len(),
+        oldest_orphan_age_secs: runtime.oldest_orphan_age_secs,
+        oldest_missing_parent_age_secs: runtime.oldest_missing_parent_age_secs,
+        orphan_reprocess_attempts: runtime.orphan_reprocess_attempts,
+        orphan_reprocess_success: runtime.orphan_reprocess_success,
+        orphan_reprocess_failed_missing_parent: runtime.orphan_reprocess_failed_missing_parent,
+        orphan_reprocess_failed_persist: runtime.orphan_reprocess_failed_persist,
+        orphan_reprocess_failures_by_reason: runtime.orphan_reprocess_failures_by_reason.clone(),
+        last_orphan_reprocess_failure_reason: runtime.last_orphan_reprocess_failure_reason.clone(),
         peer_count,
         p2p_status_snapshot: p2p_status_snapshot_metrics(),
         limitations: vec![

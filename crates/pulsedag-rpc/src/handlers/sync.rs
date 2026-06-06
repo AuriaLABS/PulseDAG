@@ -1,4 +1,5 @@
 use axum::{extract::State, Json};
+use std::collections::BTreeMap;
 
 use crate::api::{
     p2p_status_for_rpc, read_chain_for_rpc, read_runtime_for_rpc, ApiResponse, RpcStateLike,
@@ -62,10 +63,14 @@ pub struct SyncStatusData {
     pub block_request_fetches_dropped: u64,
     pub scheduler_queue_depth: usize,
     pub max_orphan_age_secs: u64,
+    pub oldest_orphan_age_secs: u64,
     pub oldest_missing_parent_age_secs: u64,
     pub orphan_reprocess_attempts: u64,
     pub orphan_reprocess_success: u64,
     pub orphan_reprocess_failed_missing_parent: u64,
+    pub orphan_reprocess_failed_persist: u64,
+    pub orphan_reprocess_failures_by_reason: BTreeMap<String, u64>,
+    pub last_orphan_reprocess_failure_reason: Option<String>,
     pub duplicate_blocks_received: u64,
     pub peer_penalties: u64,
     pub p2p_ready_for_private_rehearsal: bool,
@@ -338,10 +343,14 @@ pub async fn get_sync_status<S: RpcStateLike>(
         block_request_fetches_dropped: runtime.block_request_fetches_dropped,
         scheduler_queue_depth: runtime.block_fetch_scheduler_queue_depth,
         max_orphan_age_secs: runtime.max_orphan_age_secs,
+        oldest_orphan_age_secs: runtime.oldest_orphan_age_secs,
         oldest_missing_parent_age_secs: runtime.oldest_missing_parent_age_secs,
         orphan_reprocess_attempts: runtime.orphan_reprocess_attempts,
         orphan_reprocess_success: runtime.orphan_reprocess_success,
         orphan_reprocess_failed_missing_parent: runtime.orphan_reprocess_failed_missing_parent,
+        orphan_reprocess_failed_persist: runtime.orphan_reprocess_failed_persist,
+        orphan_reprocess_failures_by_reason: runtime.orphan_reprocess_failures_by_reason.clone(),
+        last_orphan_reprocess_failure_reason: runtime.last_orphan_reprocess_failure_reason.clone(),
         duplicate_blocks_received: runtime.duplicate_p2p_blocks.max(
             p2p_status
                 .as_ref()
@@ -597,6 +606,16 @@ mod tests {
         runtime.sync_pipeline.counters.blocks_acquired = 10;
         runtime.sync_pipeline.counters.blocks_validated = 8;
         runtime.sync_pipeline.counters.blocks_applied = 6;
+        runtime.oldest_orphan_age_secs = 42;
+        runtime.oldest_missing_parent_age_secs = 41;
+        runtime.orphan_reprocess_attempts = 7;
+        runtime.orphan_reprocess_success = 5;
+        runtime.orphan_reprocess_failed_missing_parent = 2;
+        runtime.orphan_reprocess_failed_persist = 1;
+        runtime
+            .orphan_reprocess_failures_by_reason
+            .insert("missing_parent".to_string(), 2);
+        runtime.last_orphan_reprocess_failure_reason = Some("missing_parent".to_string());
 
         let state = TestState {
             chain: Arc::new(RwLock::new(chain)),
@@ -615,6 +634,21 @@ mod tests {
         assert_eq!(data.p2p_mode, "disabled");
         assert_eq!(data.pending_block_requests, 0);
         assert_eq!(data.pending_missing_parents, 0);
+        assert_eq!(data.oldest_orphan_age_secs, 42);
+        assert_eq!(data.oldest_missing_parent_age_secs, 41);
+        assert_eq!(data.orphan_reprocess_attempts, 7);
+        assert_eq!(data.orphan_reprocess_success, 5);
+        assert_eq!(data.orphan_reprocess_failed_missing_parent, 2);
+        assert_eq!(data.orphan_reprocess_failed_persist, 1);
+        assert_eq!(
+            data.orphan_reprocess_failures_by_reason
+                .get("missing_parent"),
+            Some(&2)
+        );
+        assert_eq!(
+            data.last_orphan_reprocess_failure_reason.as_deref(),
+            Some("missing_parent")
+        );
         assert_eq!(data.sync_state, "");
         assert_eq!(data.chain_id_mismatch_drops, 0);
         assert_eq!(data.duplicate_suppression_counters.inbound_messages, 0);
