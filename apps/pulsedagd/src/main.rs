@@ -3,7 +3,7 @@ mod block_request;
 mod config;
 
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::HashSet,
     net::SocketAddr,
     sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
@@ -15,10 +15,7 @@ use app_state::{
     new_runtime_stats, short_hash, AppState, OperatorConsoleInputs,
 };
 use axum::Router;
-use block_request::{
-    BlockRequestTracker, DependencyAwareFetchScheduler, HeaderFetchCandidate,
-    DEFAULT_MAX_PENDING_BLOCK_REQUESTS,
-};
+use block_request::{BlockRequestTracker, DependencyAwareFetchScheduler, HeaderFetchCandidate};
 use config::Config;
 use pulsedag_core::accept::{
     accept_transaction_with_result, AcceptSource, BlockAcceptanceResult, TxAcceptanceResult,
@@ -37,6 +34,7 @@ use tokio::net::TcpListener;
 use tokio::time::{sleep, Duration};
 
 const MAX_INFLIGHT_BLOCK_REQUESTS: usize = 64;
+const MAX_INFLIGHT_BLOCK_REQUESTS_PER_PEER: usize = 16;
 const MAX_FETCH_SCHEDULER_QUEUE_DEPTH: usize = 512;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tracing::{info, warn};
@@ -115,10 +113,21 @@ fn orphan_age_metrics(chain: &pulsedag_core::state::ChainState, now_unix: u64) -
     (max_orphan_age_secs, oldest_missing_parent_age_secs)
 }
 
-fn inflight_by_peer(p2p: &Option<Arc<dyn P2pHandle>>) -> BTreeMap<String, usize> {
+fn active_peer_ids(p2p: &Option<Arc<dyn P2pHandle>>) -> Vec<String> {
     p2p.as_ref()
-        .and_then(|handle| handle.status().ok())
-        .map(|status| status.active_connections_by_peer.into_iter().collect())
+        .map(active_peer_ids_from_handle)
+        .unwrap_or_default()
+}
+
+fn active_peer_ids_from_handle(p2p: &Arc<dyn P2pHandle>) -> Vec<String> {
+    p2p.status()
+        .map(|status| {
+            status
+                .active_connections_by_peer
+                .into_iter()
+                .filter_map(|(peer, connections)| (connections > 0).then_some(peer))
+                .collect()
+        })
         .unwrap_or_default()
 }
 
@@ -434,8 +443,12 @@ async fn main() -> Result<()> {
         let runtime = app_state.runtime.clone();
         let p2p = app_state.p2p.clone();
         tokio::spawn(async move {
-            let mut block_requests =
-                BlockRequestTracker::with_limit(8, 2, MAX_INFLIGHT_BLOCK_REQUESTS);
+            let mut block_requests = BlockRequestTracker::with_limits(
+                8,
+                2,
+                MAX_INFLIGHT_BLOCK_REQUESTS,
+                MAX_INFLIGHT_BLOCK_REQUESTS_PER_PEER,
+            );
             let mut fetch_scheduler =
                 DependencyAwareFetchScheduler::with_limit(MAX_FETCH_SCHEDULER_QUEUE_DEPTH);
             let mut recovery_tick: u64 = 0;
@@ -477,7 +490,8 @@ async fn main() -> Result<()> {
                         rt.inflight_block_requests = block_requests.pending.len();
                         rt.pending_block_request_hashes = block_requests.pending_hashes();
                         rt.block_fetch_scheduler_queue_depth = fetch_scheduler.queue_depth();
-                        rt.block_fetch_scheduler_inflight_by_peer = inflight_by_peer(&p2p);
+                        rt.block_fetch_scheduler_inflight_by_peer =
+                            block_requests.inflight_by_peer();
                     }
                     for hash in timed_out.retryable {
                         if let Some(ref p2p) = p2p {
@@ -500,7 +514,11 @@ async fn main() -> Result<()> {
                                 && !guard.dag.blocks.contains_key(&hash)
                         };
                         if missing_parent_still_needed
-                            && block_requests.should_issue_getblock(&hash, now_unix())
+                            && block_requests.should_issue_getblock_for_peers(
+                                &hash,
+                                now_unix(),
+                                active_peer_ids(&p2p),
+                            )
                         {
                             if let Some(ref p2p) = p2p {
                                 if let Err(e) = p2p.request_block(&hash) {
@@ -600,7 +618,8 @@ async fn main() -> Result<()> {
                         rt.inflight_block_requests = block_requests.pending.len();
                         rt.pending_block_request_hashes = block_requests.pending_hashes();
                         rt.block_fetch_scheduler_queue_depth = fetch_scheduler.queue_depth();
-                        rt.block_fetch_scheduler_inflight_by_peer = inflight_by_peer(&p2p);
+                        rt.block_fetch_scheduler_inflight_by_peer =
+                            block_requests.inflight_by_peer();
                         rt.sync_state = if orphan_count == 0 {
                             "synced"
                         } else {
@@ -609,7 +628,11 @@ async fn main() -> Result<()> {
                         .to_string();
                     }
                     for parent in stale_missing_parents {
-                        if block_requests.should_issue_getblock(&parent, now_unix()) {
+                        if block_requests.should_issue_getblock_for_peers(
+                            &parent,
+                            now_unix(),
+                            active_peer_ids(&p2p),
+                        ) {
                             if let Some(ref p2p) = p2p {
                                 if let Err(e) = p2p.request_block(&parent) {
                                     warn!(error = %e, missing_parent = %parent, "failed issuing recovery-tick missing-parent GetBlock request");
@@ -630,21 +653,31 @@ async fn main() -> Result<()> {
                     }
                 }
                 let Some(event) = maybe_event else {
-                    let suppressed = block_requests.take_backpressure_suppressed();
-                    if suppressed > 0 {
+                    let counters = block_requests.take_fetch_counters();
+                    if counters.suppressed > 0 || counters.queued > 0 || counters.dropped > 0 {
                         let mut rt = runtime.write().await;
                         rt.block_request_backpressure_suppressed = rt
                             .block_request_backpressure_suppressed
-                            .saturating_add(suppressed);
+                            .saturating_add(counters.suppressed);
+                        rt.block_request_fetches_queued = rt
+                            .block_request_fetches_queued
+                            .saturating_add(counters.queued);
+                        rt.block_request_fetches_dropped = rt
+                            .block_request_fetches_dropped
+                            .saturating_add(counters.dropped);
                         rt.block_fetch_duplicate_inflight_suppressed = rt
                             .block_fetch_duplicate_inflight_suppressed
-                            .saturating_add(suppressed);
+                            .saturating_add(counters.suppressed);
                         rt.pending_block_requests = block_requests.pending.len();
                         rt.inflight_block_requests = block_requests.pending.len();
                         rt.pending_block_request_hashes = block_requests.pending_hashes();
                         warn!(
-                            suppressed,
+                            suppressed = counters.suppressed,
+                            queued = counters.queued,
+                            dropped = counters.dropped,
                             max_pending_block_requests = block_requests.max_pending(),
+                            max_pending_block_requests_per_peer =
+                                block_requests.max_pending_per_peer(),
                             pending_block_requests = block_requests.pending.len(),
                             "suppressed GetBlock requests due to bounded inflight backpressure"
                         );
@@ -910,7 +943,11 @@ async fn main() -> Result<()> {
                             };
                             let plan = fetch_scheduler.next_requests(&known, &pending, 8);
                             for request_hash in plan.requests {
-                                if block_requests.should_issue_getblock(&request_hash, now_unix()) {
+                                if block_requests.should_issue_getblock_for_peers(
+                                    &request_hash,
+                                    now_unix(),
+                                    active_peer_ids(&p2p),
+                                ) {
                                     if let Some(ref p2p) = p2p {
                                         if let Err(e) = p2p.request_block(&request_hash) {
                                             warn!(error = %e, block_hash = %request_hash, "failed issuing dependency-aware GetBlock request");
@@ -1040,7 +1077,11 @@ async fn main() -> Result<()> {
                                 ),
                             );
                             for parent in &missing_parents {
-                                if block_requests.should_issue_getblock(parent, now_unix()) {
+                                if block_requests.should_issue_getblock_for_peers(
+                                    parent,
+                                    now_unix(),
+                                    active_peer_ids(&p2p),
+                                ) {
                                     if let Some(ref p2p) = p2p {
                                         if let Err(e) = p2p.request_block(parent) {
                                             warn!(error = %e, missing_parent = %parent, "failed issuing missing-parent GetBlock request");
@@ -1294,7 +1335,11 @@ async fn main() -> Result<()> {
                         let plan = fetch_scheduler.next_requests(&known, &pending, 8);
                         let mut issued_requests = 0u64;
                         for hash in plan.requests {
-                            if block_requests.should_issue_getblock(&hash, now_unix()) {
+                            if block_requests.should_issue_getblock_for_peers(
+                                &hash,
+                                now_unix(),
+                                active_peer_ids(&p2p),
+                            ) {
                                 if let Some(ref p2p) = p2p {
                                     if let Err(e) = p2p.request_block(&hash) {
                                         warn!(error = %e, block_hash = %hash, "failed issuing inventory GetBlock request");
@@ -1310,7 +1355,8 @@ async fn main() -> Result<()> {
                         }
                         let mut rt = runtime.write().await;
                         rt.block_fetch_scheduler_queue_depth = fetch_scheduler.queue_depth();
-                        rt.block_fetch_scheduler_inflight_by_peer = inflight_by_peer(&p2p);
+                        rt.block_fetch_scheduler_inflight_by_peer =
+                            block_requests.inflight_by_peer();
                         rt.inventory_announces_received = rt
                             .inventory_announces_received
                             .saturating_add(hashes.len() as u64);
@@ -1361,7 +1407,11 @@ async fn main() -> Result<()> {
                         };
                         let plan = fetch_scheduler.next_requests(&known, &pending, 8);
                         for hash in plan.requests {
-                            if block_requests.should_issue_getblock(&hash, now_unix()) {
+                            if block_requests.should_issue_getblock_for_peers(
+                                &hash,
+                                now_unix(),
+                                active_peer_ids(&p2p),
+                            ) {
                                 if let Some(ref p2p) = p2p {
                                     if let Err(e) = p2p.request_block(&hash) {
                                         warn!(error = %e, block_hash = %hash, "failed issuing header-driven GetBlock request");
@@ -1376,7 +1426,8 @@ async fn main() -> Result<()> {
                         }
                         let mut rt = runtime.write().await;
                         rt.block_fetch_scheduler_queue_depth = fetch_scheduler.queue_depth();
-                        rt.block_fetch_scheduler_inflight_by_peer = inflight_by_peer(&p2p);
+                        rt.block_fetch_scheduler_inflight_by_peer =
+                            block_requests.inflight_by_peer();
                         rt.headers_received =
                             rt.headers_received.saturating_add(headers.len() as u64);
                         rt.dependency_fetches_scheduled = rt
@@ -1419,7 +1470,11 @@ async fn main() -> Result<()> {
                             .to_string();
                         }
                         for tip in unknown_tips {
-                            if block_requests.should_issue_getblock(&tip, now_unix()) {
+                            if block_requests.should_issue_getblock_for_peers(
+                                &tip,
+                                now_unix(),
+                                active_peer_ids(&p2p),
+                            ) {
                                 if let Some(ref p2p) = p2p {
                                     if let Err(e) = p2p.request_block(&tip) {
                                         warn!(error = %e, block_hash = %tip, "failed requesting unknown remote tip");
@@ -1531,16 +1586,24 @@ async fn main() -> Result<()> {
                         rt.blockdata_sent = rt.blockdata_sent.saturating_add(1);
                     }
                     InboundEvent::BlockDataMissing { hash } => {
+                        let mut fallback_getblock_sent = false;
                         if let Some(hash) = hash.as_ref() {
-                            block_requests.resolve(hash);
+                            let now = now_unix();
+                            block_requests.note_not_found(hash, now);
                             if let Some(ref p2p) = p2p {
                                 if let Err(e) = p2p.request_headers(&[], Some(hash), 128) {
                                     warn!(error = %e, block_hash = %hash, "failed issuing fallback headers after BlockData not-found");
                                 }
-                                if let Err(e) = p2p.request_block(hash) {
-                                    warn!(error = %e, block_hash = %hash, "failed issuing fallback GetBlock after BlockData not-found");
-                                } else {
-                                    let _ = block_requests.should_issue_getblock(hash, now_unix());
+                                if block_requests.should_issue_getblock_for_peers(
+                                    hash,
+                                    now,
+                                    active_peer_ids_from_handle(p2p),
+                                ) {
+                                    if let Err(e) = p2p.request_block(hash) {
+                                        warn!(error = %e, block_hash = %hash, "failed issuing fallback GetBlock after BlockData not-found");
+                                    } else {
+                                        fallback_getblock_sent = true;
+                                    }
                                 }
                             }
                         }
@@ -1551,15 +1614,18 @@ async fn main() -> Result<()> {
                         rt.block_request_fallbacks = rt.block_request_fallbacks.saturating_add(1);
                         rt.missing_parent_request_fallbacks =
                             rt.missing_parent_request_fallbacks.saturating_add(1);
-                        if hash.is_some() {
+                        if fallback_getblock_sent {
                             rt.getblock_sent = rt.getblock_sent.saturating_add(1);
+                        }
+                        if hash.is_some() {
                             rt.header_requests_sent = rt.header_requests_sent.saturating_add(1);
                         }
                         rt.pending_block_requests = block_requests.pending.len();
                         rt.inflight_block_requests = block_requests.pending.len();
                         rt.pending_block_request_hashes = block_requests.pending_hashes();
                         rt.block_fetch_scheduler_queue_depth = fetch_scheduler.queue_depth();
-                        rt.block_fetch_scheduler_inflight_by_peer = inflight_by_peer(&p2p);
+                        rt.block_fetch_scheduler_inflight_by_peer =
+                            block_requests.inflight_by_peer();
                         warn!(requested_hash = ?hash, "peer returned empty BlockData; cleared inflight and issued fallback request");
                     }
                     InboundEvent::PeerConnected(peer) => {
@@ -1578,23 +1644,32 @@ async fn main() -> Result<()> {
                         info!(peer = %peer, peers_connected = ?peers_connected, "p2p peer connected; requested tips");
                     }
                 }
-                let suppressed = block_requests.take_backpressure_suppressed();
-                if suppressed > 0 {
+                let counters = block_requests.take_fetch_counters();
+                if counters.suppressed > 0 || counters.queued > 0 || counters.dropped > 0 {
                     let mut rt = runtime.write().await;
                     rt.block_request_backpressure_suppressed = rt
                         .block_request_backpressure_suppressed
-                        .saturating_add(suppressed);
+                        .saturating_add(counters.suppressed);
+                    rt.block_request_fetches_queued = rt
+                        .block_request_fetches_queued
+                        .saturating_add(counters.queued);
+                    rt.block_request_fetches_dropped = rt
+                        .block_request_fetches_dropped
+                        .saturating_add(counters.dropped);
                     rt.block_fetch_duplicate_inflight_suppressed = rt
                         .block_fetch_duplicate_inflight_suppressed
-                        .saturating_add(suppressed);
+                        .saturating_add(counters.suppressed);
                     rt.pending_block_requests = block_requests.pending.len();
                     rt.inflight_block_requests = block_requests.pending.len();
                     rt.pending_block_request_hashes = block_requests.pending_hashes();
                     warn!(
-                        suppressed,
+                        suppressed = counters.suppressed,
+                        queued = counters.queued,
+                        dropped = counters.dropped,
                         max_pending_block_requests = block_requests.max_pending(),
+                        max_pending_block_requests_per_peer = block_requests.max_pending_per_peer(),
                         pending_block_requests = block_requests.pending.len(),
-                        "suppressed GetBlock requests due to bounded inflight backpressure"
+                        "observed bounded GetBlock fetch counters"
                     );
                 }
             }

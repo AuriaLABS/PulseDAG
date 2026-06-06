@@ -146,6 +146,10 @@ pub struct NodeRuntimeStats {
     pub block_request_fallbacks: u64,
     #[serde(default)]
     pub block_request_backpressure_suppressed: u64,
+    #[serde(default)]
+    pub block_request_fetches_queued: u64,
+    #[serde(default)]
+    pub block_request_fetches_dropped: u64,
     pub duplicate_block_requests_suppressed: u64,
     pub pending_block_requests: usize,
     pub inflight_block_requests: usize,
