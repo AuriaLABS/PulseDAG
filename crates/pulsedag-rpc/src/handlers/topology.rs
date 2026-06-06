@@ -376,6 +376,11 @@ mod tests {
             connection_established_total: 0,
             connection_closed_total: 0,
             last_connection_closed_reason: None,
+            disconnect_reason_counts: std::collections::HashMap::new(),
+            peer_lifecycle_event_counters: std::collections::HashMap::new(),
+            last_error_by_peer: std::collections::HashMap::new(),
+            inbound_peer_final_state: Vec::new(),
+            outbound_peer_final_state: Vec::new(),
         }
     }
 
@@ -410,6 +415,9 @@ mod tests {
             flap_suppressed_count: 0,
             flap_events,
             suppression_until_unix,
+            last_error: None,
+            last_error_unix: None,
+            last_error_source: None,
         }
     }
 
