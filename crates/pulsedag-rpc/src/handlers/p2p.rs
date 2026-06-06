@@ -96,6 +96,8 @@ fn disabled_p2p_payload(
         "local_node_id": null,
         "peer_count": 0,
         "connected_peers": [],
+        "inbound_peer_count": 0,
+        "outbound_peer_count": 0,
         "listening_addresses": [],
         "listening": [],
         "topics": [],
@@ -140,6 +142,11 @@ fn disabled_p2p_payload(
             "peers_under_cooldown": 0,
             "peers_under_flap_guard": 0
         },
+        "disconnect_reason_counts": {},
+        "peer_lifecycle_event_counters": {},
+        "last_error_by_peer": {},
+        "inbound_peer_final_state": [],
+        "outbound_peer_final_state": [],
         "sync_candidates": [],
         "peer_recovery": [],
         "p2p_ready_for_private_rehearsal": false,
@@ -218,7 +225,10 @@ pub async fn get_p2p_status<S: RpcStateLike>(
                         "cooldown_suppressed_count": peer.cooldown_suppressed_count,
                         "flap_suppressed_count": peer.flap_suppressed_count,
                         "flap_events": peer.flap_events,
-                        "suppression_until_unix": peer.suppression_until_unix
+                        "suppression_until_unix": peer.suppression_until_unix,
+                        "last_error": peer.last_error,
+                        "last_error_unix": peer.last_error_unix,
+                        "last_error_source": peer.last_error_source
                     })
                 })
                 .collect::<Vec<_>>();
@@ -635,6 +645,68 @@ pub async fn get_p2p_status<S: RpcStateLike>(
             payload.insert(
                 "readiness_reasons".into(),
                 serde_json::json!(readiness_reasons),
+            );
+            payload.insert(
+                "disconnect_reason_counts".into(),
+                serde_json::json!(status.disconnect_reason_counts),
+            );
+            payload.insert(
+                "peer_lifecycle_event_counters".into(),
+                serde_json::json!(status.peer_lifecycle_event_counters),
+            );
+            payload.insert(
+                "last_error_by_peer".into(),
+                serde_json::json!(status.last_error_by_peer),
+            );
+            payload.insert(
+                "inbound_peer_final_state".into(),
+                serde_json::json!(status
+                    .inbound_peer_final_state
+                    .iter()
+                    .map(|peer| serde_json::json!({
+                        "peer_id": peer.peer_id,
+                        "direction": peer.direction,
+                        "state": peer.state,
+                        "active_connections": peer.active_connections,
+                        "last_event_unix": peer.last_event_unix,
+                        "last_error": peer.last_error,
+                        "last_disconnect_reason": peer.last_disconnect_reason
+                    }))
+                    .collect::<Vec<_>>()),
+            );
+            let inbound_peer_count = status
+                .inbound_peer_final_state
+                .iter()
+                .filter(|peer| peer.state == "connected" && peer.active_connections > 0)
+                .count();
+            let outbound_peer_count = status
+                .outbound_peer_final_state
+                .iter()
+                .filter(|peer| peer.state == "connected" && peer.active_connections > 0)
+                .count();
+            payload.insert(
+                "inbound_peer_count".into(),
+                serde_json::json!(inbound_peer_count),
+            );
+            payload.insert(
+                "outbound_peer_count".into(),
+                serde_json::json!(outbound_peer_count),
+            );
+            payload.insert(
+                "outbound_peer_final_state".into(),
+                serde_json::json!(status
+                    .outbound_peer_final_state
+                    .iter()
+                    .map(|peer| serde_json::json!({
+                        "peer_id": peer.peer_id,
+                        "direction": peer.direction,
+                        "state": peer.state,
+                        "active_connections": peer.active_connections,
+                        "last_event_unix": peer.last_event_unix,
+                        "last_error": peer.last_error,
+                        "last_disconnect_reason": peer.last_disconnect_reason
+                    }))
+                    .collect::<Vec<_>>()),
             );
             payload.insert("sync_candidates".into(), serde_json::json!(sync_candidates));
             payload.insert("peer_recovery".into(), serde_json::json!(peer_recovery));

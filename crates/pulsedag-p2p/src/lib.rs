@@ -64,6 +64,20 @@ pub struct PeerRecoveryStatus {
     pub flap_suppressed_count: u64,
     pub flap_events: u32,
     pub suppression_until_unix: Option<u64>,
+    pub last_error: Option<String>,
+    pub last_error_unix: Option<u64>,
+    pub last_error_source: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PeerConnectionFinalState {
+    pub peer_id: String,
+    pub direction: String,
+    pub state: String,
+    pub active_connections: usize,
+    pub last_event_unix: Option<u64>,
+    pub last_error: Option<String>,
+    pub last_disconnect_reason: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -206,6 +220,11 @@ pub struct P2pStatus {
     pub connection_established_total: u64,
     pub connection_closed_total: u64,
     pub last_connection_closed_reason: Option<String>,
+    pub disconnect_reason_counts: HashMap<String, u64>,
+    pub peer_lifecycle_event_counters: HashMap<String, u64>,
+    pub last_error_by_peer: HashMap<String, String>,
+    pub inbound_peer_final_state: Vec<PeerConnectionFinalState>,
+    pub outbound_peer_final_state: Vec<PeerConnectionFinalState>,
 }
 
 pub trait P2pHandle: Send + Sync {
@@ -453,6 +472,10 @@ struct InnerState {
     connection_established_total: u64,
     connection_closed_total: u64,
     last_connection_closed_reason: Option<String>,
+    disconnect_reason_counts: HashMap<String, u64>,
+    peer_lifecycle_event_counters: HashMap<String, u64>,
+    last_error_by_peer: HashMap<String, String>,
+    peer_connection_final_state: HashMap<String, PeerConnectionFinalState>,
     peer_state_path: Option<PathBuf>,
     peer_reconnect_attempts: u64,
     peer_recovery_success_count: u64,
@@ -487,6 +510,9 @@ struct PeerHealth {
     suppressed_until_unix: u64,
     cooldown_suppressed_count: u64,
     flap_suppressed_count: u64,
+    last_error: Option<String>,
+    last_error_unix: Option<u64>,
+    last_error_source: Option<String>,
     chain_mismatch_streak: u32,
     invalid_block_announce_streak: u32,
     inbound_window_started_unix: u64,
@@ -515,6 +541,9 @@ impl Default for PeerHealth {
             suppressed_until_unix: 0,
             cooldown_suppressed_count: 0,
             flap_suppressed_count: 0,
+            last_error: None,
+            last_error_unix: None,
+            last_error_source: None,
             chain_mismatch_streak: 0,
             invalid_block_announce_streak: 0,
             inbound_window_started_unix: 0,
@@ -756,6 +785,8 @@ impl P2pHandle for MemoryP2pHandle {
             topology_dominant_bucket_share_bps,
             topology_diversity_score_bps,
         ) = topology_stats_for_connected_peers(&inner.connected_peers);
+        let (inbound_peer_final_state, outbound_peer_final_state) =
+            peer_final_state_snapshots(&inner);
         Ok(P2pStatus {
             chain_id: inner.chain_id.clone(),
             mode: inner.mode.clone(),
@@ -893,6 +924,11 @@ impl P2pHandle for MemoryP2pHandle {
             connection_established_total: inner.connection_established_total,
             connection_closed_total: inner.connection_closed_total,
             last_connection_closed_reason: inner.last_connection_closed_reason.clone(),
+            disconnect_reason_counts: inner.disconnect_reason_counts.clone(),
+            peer_lifecycle_event_counters: inner.peer_lifecycle_event_counters.clone(),
+            last_error_by_peer: inner.last_error_by_peer.clone(),
+            inbound_peer_final_state,
+            outbound_peer_final_state,
         })
     }
 }
@@ -967,6 +1003,10 @@ impl Libp2pHandle {
             connection_established_total: 0,
             connection_closed_total: 0,
             last_connection_closed_reason: None,
+            disconnect_reason_counts: HashMap::new(),
+            peer_lifecycle_event_counters: HashMap::new(),
+            last_error_by_peer: HashMap::new(),
+            peer_connection_final_state: HashMap::new(),
             peer_state_path: peer_state_path(),
             connection_slot_budget: cfg.connection_slot_budget.max(1),
             sync_selection_stickiness_secs: cfg.sync_selection_stickiness_secs,
@@ -1153,6 +1193,9 @@ fn peer_recovery_snapshot(
             flap_events: health.flap_events,
             suppression_until_unix: (health.suppressed_until_unix > now)
                 .then_some(health.suppressed_until_unix),
+            last_error: health.last_error.clone(),
+            last_error_unix: health.last_error_unix,
+            last_error_source: health.last_error_source.clone(),
         })
         .collect::<Vec<_>>();
     peer_recovery.sort_by(|a, b| a.peer_id.cmp(&b.peer_id));
@@ -1208,6 +1251,50 @@ fn peer_recovery_snapshot(
         degraded_mode.to_string(),
         peer_recovery,
     )
+}
+
+fn peer_final_state_snapshots(
+    state: &InnerState,
+) -> (Vec<PeerConnectionFinalState>, Vec<PeerConnectionFinalState>) {
+    let mut inbound = Vec::new();
+    let mut outbound = Vec::new();
+    for final_state in state.peer_connection_final_state.values() {
+        match final_state.direction.as_str() {
+            "inbound" => inbound.push(final_state.clone()),
+            "outbound" => outbound.push(final_state.clone()),
+            _ => {}
+        }
+    }
+    inbound.sort_by(|a, b| a.peer_id.cmp(&b.peer_id));
+    outbound.sort_by(|a, b| a.peer_id.cmp(&b.peer_id));
+    (inbound, outbound)
+}
+
+fn record_peer_lifecycle_event(state: &mut InnerState, event: &str) {
+    *state
+        .peer_lifecycle_event_counters
+        .entry(event.to_string())
+        .or_insert(0) += 1;
+}
+
+fn record_peer_error(state: &mut InnerState, peer: &str, source: &str, error: String, now: u64) {
+    state
+        .last_error_by_peer
+        .insert(peer.to_string(), error.clone());
+    let health = state.peer_book.entry(peer.to_string()).or_default();
+    health.last_error = Some(error);
+    health.last_error_unix = Some(now);
+    health.last_error_source = Some(source.to_string());
+}
+
+fn connection_direction_from_endpoint_debug(endpoint: &str) -> &'static str {
+    if endpoint.contains("Dialer") {
+        "outbound"
+    } else if endpoint.contains("Listener") {
+        "inbound"
+    } else {
+        "unknown"
+    }
 }
 
 fn sync_candidates_snapshot(state: &InnerState) -> Vec<RankedSyncPeer> {
@@ -3306,6 +3393,7 @@ fn handle_connection_established(
     inner: &Arc<Mutex<InnerState>>,
     pending_bootnode_dials: &mut HashSet<PeerId>,
     peer_id: &PeerId,
+    direction: &str,
 ) {
     if let Ok(mut guard) = inner.lock() {
         let is_bootnode = is_configured_bootnode_peer(&guard, peer_id);
@@ -3323,9 +3411,24 @@ fn handle_connection_established(
             .entry(peer_key.clone())
             .or_insert(0);
         *count = count.saturating_add(1);
+        let active_count = *count;
         guard.connection_established_total = guard.connection_established_total.saturating_add(1);
+        record_peer_lifecycle_event(&mut guard, "connection_established");
+        record_peer_lifecycle_event(&mut guard, &format!("{direction}_connected"));
         guard.last_connection_established_peer = Some(peer_key.clone());
         guard.last_peer_state_transition = Some(format!("{peer_key}:connected"));
+        guard.peer_connection_final_state.insert(
+            peer_key.clone(),
+            PeerConnectionFinalState {
+                peer_id: peer_key.clone(),
+                direction: direction.to_string(),
+                state: "connected".to_string(),
+                active_connections: active_count,
+                last_event_unix: Some(now_unix()),
+                last_error: None,
+                last_disconnect_reason: None,
+            },
+        );
         guard.last_bootnode_dial_error = None;
         if is_bootnode
             && !guard
@@ -3343,6 +3446,7 @@ fn handle_connection_closed(
     inner: &Arc<Mutex<InnerState>>,
     peer_id: &PeerId,
     reason: String,
+    direction: &str,
 ) -> bool {
     let mut should_mark_disconnected = false;
     if let Ok(mut guard) = inner.lock() {
@@ -3357,9 +3461,32 @@ fn handle_connection_closed(
         };
         guard.last_connection_closed_peer = Some(peer_key.clone());
         guard.connection_closed_total = guard.connection_closed_total.saturating_add(1);
+        record_peer_lifecycle_event(&mut guard, "connection_closed");
+        record_peer_lifecycle_event(&mut guard, &format!("{direction}_disconnected"));
+        *guard
+            .disconnect_reason_counts
+            .entry(reason.clone())
+            .or_insert(0) += 1;
         guard.last_connection_closed_reason = Some(reason.clone());
         guard.last_connection_closed_remaining_count = Some(remaining_count);
-        guard.last_disconnect_reason = Some(reason);
+        guard.last_disconnect_reason = Some(reason.clone());
+        guard.peer_connection_final_state.insert(
+            peer_key.clone(),
+            PeerConnectionFinalState {
+                peer_id: peer_key.clone(),
+                direction: direction.to_string(),
+                state: if remaining_count == 0 {
+                    "disconnected"
+                } else {
+                    "connected"
+                }
+                .to_string(),
+                active_connections: remaining_count,
+                last_event_unix: Some(now_unix()),
+                last_error: None,
+                last_disconnect_reason: Some(reason),
+            },
+        );
         if remaining_count == 0 {
             guard.last_peer_state_transition = Some(format!("{peer_key}:disconnected"));
             guard.active_connections.remove(&peer_key);
@@ -3397,8 +3524,34 @@ fn handle_outgoing_connection_error(
             guard.bootnode_redial_failures = guard.bootnode_redial_failures.saturating_add(1);
             guard.last_bootnode_dial_error = Some(error.to_string());
         }
-        guard.last_outgoing_connection_error_peer = Some(peer_id.to_string());
+        let peer_key = peer_id.to_string();
+        guard.last_outgoing_connection_error_peer = Some(peer_key.clone());
         guard.last_dial_error = Some(error.to_string());
+        record_peer_lifecycle_event(&mut guard, "outgoing_connection_error");
+        record_peer_error(
+            &mut guard,
+            &peer_key,
+            "outgoing_connection_error",
+            error.to_string(),
+            now_unix(),
+        );
+        let active_connections = guard
+            .active_connections
+            .get(&peer_key)
+            .copied()
+            .unwrap_or(0);
+        guard.peer_connection_final_state.insert(
+            peer_key.clone(),
+            PeerConnectionFinalState {
+                peer_id: peer_key.clone(),
+                direction: "outbound".to_string(),
+                state: "error".to_string(),
+                active_connections,
+                last_event_unix: Some(now_unix()),
+                last_error: Some(error.to_string()),
+                last_disconnect_reason: None,
+            },
+        );
     }
     inner
         .lock()
@@ -3619,15 +3772,17 @@ async fn run_libp2p_real_runtime(
                     SwarmEvent::Behaviour(PulseBehaviourEvent::Ping(event)) => {
                         note_swarm_event(&inner, format!("ping:{event:?}"));
                     }
-                    SwarmEvent::ConnectionEstablished { peer_id, .. } => {
-                        note_swarm_event(&inner, format!("peer-connected:{peer_id}"));
-                        handle_connection_established(&inner, &mut pending_bootnode_dials, &peer_id);
+                    SwarmEvent::ConnectionEstablished { peer_id, endpoint, .. } => {
+                        let direction = connection_direction_from_endpoint_debug(&format!("{endpoint:?}"));
+                        note_swarm_event(&inner, format!("peer-connected:{direction}:{peer_id}"));
+                        handle_connection_established(&inner, &mut pending_bootnode_dials, &peer_id, direction);
                         let _ = inbound_tx.send(InboundEvent::PeerConnected(peer_id.to_string()));
                     }
-                    SwarmEvent::ConnectionClosed { peer_id, cause, .. } => {
-                        note_swarm_event(&inner, format!("peer-disconnected:{peer_id}"));
+                    SwarmEvent::ConnectionClosed { peer_id, endpoint, cause, .. } => {
+                        let direction = connection_direction_from_endpoint_debug(&format!("{endpoint:?}"));
+                        note_swarm_event(&inner, format!("peer-disconnected:{direction}:{peer_id}"));
                         let reason = format!("swarm-connection-closed:{cause:?}");
-                        let should_mark_disconnected = handle_connection_closed(&inner, &peer_id, reason);
+                        let should_mark_disconnected = handle_connection_closed(&inner, &peer_id, reason, direction);
                         if should_mark_disconnected {
                             register_peer_result(&inner, &peer_id.to_string(), false);
                         }
@@ -3657,8 +3812,23 @@ async fn run_libp2p_real_runtime(
                     other => {
                         if let SwarmEvent::IncomingConnectionError { send_back_addr, error, .. } = &other {
                             if let Ok(mut guard) = inner.lock() {
-                                guard.last_incoming_connection_error_peer = Some(send_back_addr.to_string());
+                                let peer_key = send_back_addr.to_string();
+                                guard.last_incoming_connection_error_peer = Some(peer_key.clone());
                                 guard.last_dial_error = Some(error.to_string());
+                                record_peer_lifecycle_event(&mut guard, "incoming_connection_error");
+                                record_peer_error(&mut guard, &peer_key, "incoming_connection_error", error.to_string(), now_unix());
+                                guard.peer_connection_final_state.insert(
+                                    peer_key.clone(),
+                                    PeerConnectionFinalState {
+                                        peer_id: peer_key.clone(),
+                                        direction: "inbound".to_string(),
+                                        state: "error".to_string(),
+                                        active_connections: 0,
+                                        last_event_unix: Some(now_unix()),
+                                        last_error: Some(error.to_string()),
+                                        last_disconnect_reason: None,
+                                    },
+                                );
                             }
                         }
                         note_swarm_event(&inner, format!("swarm:{other:?}"));
@@ -3933,6 +4103,8 @@ impl P2pHandle for Libp2pHandle {
             topology_dominant_bucket_share_bps,
             topology_diversity_score_bps,
         ) = topology_stats_for_connected_peers(&inner.connected_peers);
+        let (inbound_peer_final_state, outbound_peer_final_state) =
+            peer_final_state_snapshots(&inner);
         Ok(P2pStatus {
             chain_id: inner.chain_id.clone(),
             mode: inner.mode.clone(),
@@ -4070,6 +4242,11 @@ impl P2pHandle for Libp2pHandle {
             connection_established_total: inner.connection_established_total,
             connection_closed_total: inner.connection_closed_total,
             last_connection_closed_reason: inner.last_connection_closed_reason.clone(),
+            disconnect_reason_counts: inner.disconnect_reason_counts.clone(),
+            peer_lifecycle_event_counters: inner.peer_lifecycle_event_counters.clone(),
+            last_error_by_peer: inner.last_error_by_peer.clone(),
+            inbound_peer_final_state,
+            outbound_peer_final_state,
         })
     }
 }
@@ -6687,7 +6864,7 @@ mod deterministic_p2p_sync_coverage_tests {
             guard.bootnodes_configured = vec![format!("/ip4/127.0.0.1/tcp/1/p2p/{peer}")];
         }
         pending.insert(peer);
-        handle_connection_established(&inner, &mut pending, &peer);
+        handle_connection_established(&inner, &mut pending, &peer, "outbound");
         let guard = inner.lock().unwrap();
         assert!(!pending.contains(&peer));
         assert_eq!(
@@ -6695,6 +6872,20 @@ mod deterministic_p2p_sync_coverage_tests {
             Some(1)
         );
         assert_eq!(guard.connection_established_total, 1);
+        assert_eq!(
+            guard
+                .peer_lifecycle_event_counters
+                .get("outbound_connected")
+                .copied(),
+            Some(1)
+        );
+        assert_eq!(
+            guard
+                .peer_connection_final_state
+                .get(&peer.to_string())
+                .map(|state| state.state.as_str()),
+            Some("connected")
+        );
     }
 
     #[test]
@@ -6711,7 +6902,12 @@ mod deterministic_p2p_sync_coverage_tests {
         state.active_connections.insert(peer_b.to_string(), 1);
         let inner = Arc::new(Mutex::new(state));
 
-        assert!(!handle_connection_closed(&inner, &peer_a, "closed".into()));
+        assert!(!handle_connection_closed(
+            &inner,
+            &peer_a,
+            "closed".into(),
+            "outbound"
+        ));
         {
             let guard = inner.lock().unwrap();
             assert_eq!(
@@ -6723,12 +6919,28 @@ mod deterministic_p2p_sync_coverage_tests {
                 Some(1)
             );
         }
-        assert!(handle_connection_closed(&inner, &peer_a, "closed".into()));
+        assert!(handle_connection_closed(
+            &inner,
+            &peer_a,
+            "closed".into(),
+            "outbound"
+        ));
         let guard = inner.lock().unwrap();
         assert!(!guard.active_connections.contains_key(&peer_a.to_string()));
         assert_eq!(
             guard.active_connections.get(&peer_b.to_string()).copied(),
             Some(1)
+        );
+        assert_eq!(
+            guard.disconnect_reason_counts.get("closed").copied(),
+            Some(2)
+        );
+        assert_eq!(
+            guard
+                .peer_connection_final_state
+                .get(&peer_a.to_string())
+                .map(|state| state.state.as_str()),
+            Some("disconnected")
         );
     }
 
@@ -6749,8 +6961,22 @@ mod deterministic_p2p_sync_coverage_tests {
         let should_mark_failed =
             handle_outgoing_connection_error(&inner, &mut pending, &peer, "boom");
         assert!(!should_mark_failed);
-        assert!(!pending.contains(&peer));
         let guard = inner.lock().unwrap();
+        assert_eq!(
+            guard
+                .last_error_by_peer
+                .get(&peer.to_string())
+                .map(String::as_str),
+            Some("boom")
+        );
+        assert_eq!(
+            guard
+                .peer_connection_final_state
+                .get(&peer.to_string())
+                .map(|state| state.state.as_str()),
+            Some("error")
+        );
+        assert!(!pending.contains(&peer));
         assert_eq!(guard.bootnode_redial_failures, 1);
         assert_eq!(
             guard.active_connections.get(&peer.to_string()).copied(),
@@ -6800,7 +7026,7 @@ mod deterministic_p2p_sync_coverage_tests {
         let mut pending = HashSet::new();
         pending.insert(peer);
 
-        handle_connection_established(&inner, &mut pending, &peer);
+        handle_connection_established(&inner, &mut pending, &peer, "outbound");
 
         let guard = inner.lock().unwrap();
         let health = guard.peer_book.get(&peer.to_string()).unwrap();
@@ -6830,7 +7056,7 @@ mod deterministic_p2p_sync_coverage_tests {
         let mut pending = HashSet::new();
         pending.insert(peer);
 
-        handle_connection_established(&inner, &mut pending, &peer);
+        handle_connection_established(&inner, &mut pending, &peer, "outbound");
 
         let guard = inner.lock().unwrap();
         assert_eq!(
@@ -6859,7 +7085,7 @@ mod deterministic_p2p_sync_coverage_tests {
         let mut pending = HashSet::new();
         pending.insert(peer);
 
-        handle_connection_established(&inner, &mut pending, &peer);
+        handle_connection_established(&inner, &mut pending, &peer, "outbound");
 
         let guard = inner.lock().unwrap();
         assert!(pending.contains(&peer));

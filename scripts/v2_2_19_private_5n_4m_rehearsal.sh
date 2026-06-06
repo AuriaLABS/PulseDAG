@@ -627,6 +627,41 @@ write_quiescence_metrics(){
     > "$OUT_DIR/quiescence-metrics.json"
 }
 
+
+print_p2p_disconnect_diagnostics(){
+  local i f
+  echo "## P2P disconnect diagnostics"
+  echo "| node | disconnect_reason_counts | lifecycle_event_counters | last_error_by_peer | inbound_final_state | outbound_final_state |"
+  echo "|---|---|---|---|---|---|"
+  for i in $(seq 1 "$NODE_COUNT"); do
+    f="$OUT_DIR/endpoints/n${i}-p2p-status-final.json"
+    if [[ -f "$f" ]]; then
+      jq -r --arg node "n${i}" '
+        def compact_json(x): (x // {} | tojson);
+        def compact_array(x): (x // [] | tojson);
+        .data as $d |
+        [
+          $node,
+          compact_json($d.disconnect_reason_counts),
+          compact_json($d.peer_lifecycle_event_counters),
+          compact_json($d.last_error_by_peer),
+          compact_array($d.inbound_peer_final_state),
+          compact_array($d.outbound_peer_final_state)
+        ] | @tsv
+      ' "$f" 2>/dev/null | awk -F '\t' '{ printf "| %s | `%s` | `%s` | `%s` | `%s` | `%s` |\n", $1, $2, $3, $4, $5, $6 }' || echo "| n${i} | `{}` | `{}` | `{}` | `[]` | `[]` |"
+    else
+      echo "| n${i} | `{}` | `{}` | `{}` | `[]` | `[]` |"
+    fi
+  done
+  echo
+  echo "### P2P peer recovery last errors"
+  for i in $(seq 1 "$NODE_COUNT"); do
+    f="$OUT_DIR/endpoints/n${i}-p2p-status-final.json"
+    echo "- n${i}: $(jq -c '.data.peer_recovery // [] | map({peer_id,last_error,last_error_unix,last_error_source,connected,lifecycle_tier})' "$f" 2>/dev/null || echo '[]')"
+  done
+  echo
+}
+
 write_evidence_summary(){
   local end_ts now_utc duration i unique_classes
   end_ts=$(date +%s); now_utc=$(date -u +%FT%TZ); duration=$((end_ts - START_TS))
@@ -653,6 +688,7 @@ write_evidence_summary(){
     echo "## P2P status per node"
     for i in $(seq 1 "$NODE_COUNT"); do echo "- n${i}: peers=${NODE_PEERS[$i]:-0} inbound=${NODE_P2P_INBOUND[$i]:-0} outbound=${NODE_P2P_OUTBOUND[$i]:-0} ok=${NODE_P2P_OK[$i]:-0}"; done
     echo
+    print_p2p_disconnect_diagnostics
     echo "## Sync/orphan status per node"
     for i in $(seq 1 "$NODE_COUNT"); do echo "- n${i}: sync_state=${NODE_SYNC_STATE[$i]:-unknown} catchup_stage=${NODE_SYNC_STAGE[$i]:-unknown} orphan_count=${NODE_ORPHANS[$i]:-0} pending_missing_parents=${NODE_MISSING_PARENTS[$i]:-0} missing_parent_entries=${NODE_MISSING_PARENTS_COUNT[$i]:-0} inv_hashes_requested=${NODE_INV_HASHES_REQUESTED[$i]:-0} peer_recovery_success_count=${NODE_PEER_RECOVERY_SUCCESS_COUNT[$i]:-0}"; done
     echo
