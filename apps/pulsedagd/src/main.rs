@@ -611,8 +611,10 @@ async fn main() -> Result<()> {
                     };
                     if retried > 0 || !stale_missing_parents.is_empty() || pending_missing > 0 {
                         let mut rt = runtime.write().await;
-                        rt.orphan_reprocess_attempts =
-                            rt.orphan_reprocess_attempts.saturating_add(retried as u64);
+                        let reprocess_attempts = if retried > 0 { retried as u64 } else { 1 };
+                        rt.orphan_reprocess_attempts = rt
+                            .orphan_reprocess_attempts
+                            .saturating_add(reprocess_attempts);
                         rt.orphan_reprocess_success =
                             rt.orphan_reprocess_success.saturating_add(adopted as u64);
                         rt.orphan_reprocess_failed_missing_parent =

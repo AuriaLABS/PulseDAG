@@ -2,7 +2,9 @@ use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 
 use pulsedag_p2p::messages::BlockHeaderAnnouncement;
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub const DEFAULT_MAX_PENDING_BLOCK_REQUESTS: usize = 128;
+#[cfg_attr(not(test), allow(dead_code))]
 pub const DEFAULT_MAX_PENDING_BLOCK_REQUESTS_PER_PEER: usize = 16;
 pub const DEFAULT_BLOCK_REQUEST_BACKOFF_SECS: u64 = 8;
 pub const MAX_BLOCK_REQUEST_BACKOFF_SECS: u64 = 120;
@@ -60,6 +62,7 @@ pub struct BlockRequestTracker {
 }
 
 impl BlockRequestTracker {
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn new(timeout_secs: u64, retry_limit: u8) -> Self {
         Self::with_limit(
             timeout_secs,
@@ -68,6 +71,7 @@ impl BlockRequestTracker {
         )
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn with_limit(timeout_secs: u64, retry_limit: u8, max_pending: usize) -> Self {
         Self::with_limits(
             timeout_secs,
@@ -77,6 +81,7 @@ impl BlockRequestTracker {
         )
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn with_max_pending(timeout_secs: u64, retry_limit: u8, max_pending: usize) -> Self {
         Self::with_limit(timeout_secs, retry_limit, max_pending)
     }
@@ -123,6 +128,7 @@ impl BlockRequestTracker {
         counters
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn take_backpressure_suppressed(&mut self) -> u64 {
         let suppressed = self.backpressure_suppressed;
         self.backpressure_suppressed = 0;
@@ -254,6 +260,7 @@ impl BlockRequestTracker {
         self.note_request_dropped(hash, now_unix);
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn pending_capacity_remaining(&self) -> usize {
         self.max_pending.saturating_sub(self.pending.len())
     }
