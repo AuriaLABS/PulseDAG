@@ -3884,7 +3884,7 @@ dependencies = [
 
 [[package]]
 name = "pulsedag-api"
-version = "2.2.19"
+version = "2.2.20"
 dependencies = [
  "pulsedag-core",
  "serde",
@@ -3893,7 +3893,7 @@ dependencies = [
 
 [[package]]
 name = "pulsedag-core"
-version = "2.2.19"
+version = "2.2.20"
 dependencies = [
  "criterion",
  "ed25519-dalek",
@@ -3910,7 +3910,7 @@ dependencies = [
 
 [[package]]
 name = "pulsedag-crypto"
-version = "2.2.19"
+version = "2.2.20"
 dependencies = [
  "ed25519-dalek",
  "hex",
@@ -3920,7 +3920,7 @@ dependencies = [
 
 [[package]]
 name = "pulsedag-miner"
-version = "2.2.19"
+version = "2.2.20"
 dependencies = [
  "anyhow",
  "hex",
@@ -3935,7 +3935,7 @@ dependencies = [
 
 [[package]]
 name = "pulsedag-p2p"
-version = "2.2.19"
+version = "2.2.20"
 dependencies = [
  "libp2p",
  "pulsedag-core",
@@ -3946,7 +3946,7 @@ dependencies = [
 
 [[package]]
 name = "pulsedag-rpc"
-version = "2.2.19"
+version = "2.2.20"
 dependencies = [
  "async-stream",
  "axum",
@@ -3972,7 +3972,7 @@ dependencies = [
 
 [[package]]
 name = "pulsedag-storage"
-version = "2.2.19"
+version = "2.2.20"
 dependencies = [
  "bincode",
  "proptest",
@@ -3984,7 +3984,7 @@ dependencies = [
 
 [[package]]
 name = "pulsedag-wallet"
-version = "2.2.19"
+version = "2.2.20"
 dependencies = [
  "hex",
  "pulsedag-core",
@@ -3994,7 +3994,7 @@ dependencies = [
 
 [[package]]
 name = "pulsedagd"
-version = "2.2.19"
+version = "2.2.20"
 dependencies = [
  "anyhow",
  "axum",

@@ -35,6 +35,9 @@ use pulsedag_rpc::routes::{
 use pulsedag_storage::Storage;
 use tokio::net::TcpListener;
 use tokio::time::{sleep, Duration};
+
+const MAX_INFLIGHT_BLOCK_REQUESTS: usize = 64;
+const MAX_FETCH_SCHEDULER_QUEUE_DEPTH: usize = 512;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
@@ -431,13 +434,10 @@ async fn main() -> Result<()> {
         let runtime = app_state.runtime.clone();
         let p2p = app_state.p2p.clone();
         tokio::spawn(async move {
-            let mut block_requests = BlockRequestTracker::new(8, 2);
-            let mut fetch_scheduler = DependencyAwareFetchScheduler::default();
-            info!(
-                max_pending_block_requests = block_requests.max_pending(),
-                default_max_pending_block_requests = DEFAULT_MAX_PENDING_BLOCK_REQUESTS,
-                "bounded block fetch tracker initialized"
-            );
+            let mut block_requests =
+                BlockRequestTracker::with_limit(8, 2, MAX_INFLIGHT_BLOCK_REQUESTS);
+            let mut fetch_scheduler =
+                DependencyAwareFetchScheduler::with_limit(MAX_FETCH_SCHEDULER_QUEUE_DEPTH);
             let mut recovery_tick: u64 = 0;
             loop {
                 let maybe_event =
@@ -458,11 +458,20 @@ async fn main() -> Result<()> {
                         rt.block_request_timeouts = rt
                             .block_request_timeouts
                             .saturating_add(timed_out_count as u64);
+                        rt.missing_parent_request_timeouts = rt
+                            .missing_parent_request_timeouts
+                            .saturating_add(timed_out_count as u64);
                         rt.block_request_retries = rt
                             .block_request_retries
                             .saturating_add(timed_out.retryable.len() as u64);
+                        rt.missing_parent_request_retries = rt
+                            .missing_parent_request_retries
+                            .saturating_add(timed_out.retryable.len() as u64);
                         rt.block_request_fallbacks = rt
                             .block_request_fallbacks
+                            .saturating_add(timed_out.expired.len() as u64);
+                        rt.missing_parent_request_fallbacks = rt
+                            .missing_parent_request_fallbacks
                             .saturating_add(timed_out.expired.len() as u64);
                         rt.pending_block_requests = block_requests.pending.len();
                         rt.inflight_block_requests = block_requests.pending.len();
@@ -612,6 +621,8 @@ async fn main() -> Result<()> {
                                 rt.missing_parent_requests_sent.saturating_add(1);
                             rt.block_request_fallbacks =
                                 rt.block_request_fallbacks.saturating_add(1);
+                            rt.missing_parent_request_fallbacks =
+                                rt.missing_parent_request_fallbacks.saturating_add(1);
                             rt.pending_block_requests = block_requests.pending.len();
                             rt.inflight_block_requests = block_requests.pending.len();
                             rt.pending_block_request_hashes = block_requests.pending_hashes();
@@ -921,6 +932,8 @@ async fn main() -> Result<()> {
                         }
                     }
                     InboundEvent::Block(block) => {
+                        let fulfilled_missing_parent_request =
+                            block_requests.pending.contains_key(&block.hash);
                         {
                             let mut rt = runtime.write().await;
                             let now = now_unix();
@@ -934,6 +947,10 @@ async fn main() -> Result<()> {
                             rt.sync_pipeline.observe_headers(1, now);
                             rt.sync_pipeline.request_blocks(1, now);
                             rt.sync_pipeline.acquire_blocks(1);
+                            if fulfilled_missing_parent_request {
+                                rt.missing_parent_responses_received =
+                                    rt.missing_parent_responses_received.saturating_add(1);
+                            }
                         }
                         info!(event = "peer_block_received", block_hash = %block.hash, parent_count = block.header.parents.len(), "received inbound p2p block payload");
                         let _ = storage.append_runtime_event(
@@ -1532,6 +1549,8 @@ async fn main() -> Result<()> {
                         rt.sync_failures = rt.sync_failures.saturating_add(1);
                         rt.blockdata_not_found = rt.blockdata_not_found.saturating_add(1);
                         rt.block_request_fallbacks = rt.block_request_fallbacks.saturating_add(1);
+                        rt.missing_parent_request_fallbacks =
+                            rt.missing_parent_request_fallbacks.saturating_add(1);
                         if hash.is_some() {
                             rt.getblock_sent = rt.getblock_sent.saturating_add(1);
                             rt.header_requests_sent = rt.header_requests_sent.saturating_add(1);
