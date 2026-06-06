@@ -2,6 +2,8 @@ use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 
 use pulsedag_p2p::messages::BlockHeaderAnnouncement;
 
+pub const DEFAULT_MAX_PENDING_BLOCK_REQUESTS: usize = 128;
+
 #[derive(Debug, Clone)]
 pub struct PendingBlockRequest {
     pub first_requested_at_unix: u64,
@@ -46,6 +48,16 @@ impl BlockRequestTracker {
             known_headers: BTreeMap::new(),
             deferred_by_missing_parent: HashMap::new(),
         }
+    }
+
+    pub fn max_pending(&self) -> usize {
+        self.max_pending
+    }
+
+    pub fn take_backpressure_suppressed(&mut self) -> u64 {
+        let suppressed = self.backpressure_suppressed;
+        self.backpressure_suppressed = 0;
+        suppressed
     }
 
     pub fn should_issue_getblock(&mut self, hash: &str, now_unix: u64) -> bool {
@@ -381,6 +393,7 @@ mod tests {
     use super::{BlockRequestTracker, DependencyAwareFetchScheduler, HeaderFetchCandidate};
     use pulsedag_core::types::BlockHeader;
     use pulsedag_p2p::messages::BlockHeaderAnnouncement;
+
     use std::collections::HashSet;
 
     fn header(hash: &str, parents: &[&str], height: u64) -> BlockHeaderAnnouncement {
@@ -482,6 +495,19 @@ mod tests {
         let unblocked = tracker.unblock_after_resolve("parent-b", &known, 120);
         assert_eq!(unblocked.ready, vec!["child"]);
         assert!(unblocked.deferred.is_empty());
+    }
+
+    #[test]
+    fn caps_pending_requests_and_reports_backpressure() {
+        let mut tracker = BlockRequestTracker::with_max_pending(10, 2, 2);
+
+        assert!(tracker.should_issue_getblock("h1", 100));
+        assert!(tracker.should_issue_getblock("h2", 100));
+        assert!(!tracker.should_issue_getblock("h3", 100));
+
+        assert_eq!(tracker.pending_hashes(), vec!["h1", "h2"]);
+        assert_eq!(tracker.take_backpressure_suppressed(), 1);
+        assert_eq!(tracker.take_backpressure_suppressed(), 0);
     }
 
     #[test]
