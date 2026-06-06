@@ -52,6 +52,7 @@ pub struct PeerRecoveryStatus {
     pub fail_streak: u32,
     pub lifecycle_tier: String,
     pub recovery_tier: String,
+    pub recovery_reason: Option<String>,
     pub connected: bool,
     pub last_seen_unix: Option<u64>,
     pub last_successful_connect_unix: Option<u64>,
@@ -1146,9 +1147,55 @@ fn peer_recovery_tier(health: &PeerHealth, now: u64) -> &'static str {
         "quarantine"
     } else if health.next_retry_unix > now || health.fail_streak >= 2 {
         "assisted"
+    } else if peer_lifecycle_tier(health, now) == "recovering" {
+        "recovering"
     } else {
         "steady"
     }
+}
+
+fn peer_recovery_reason(health: &PeerHealth, now: u64) -> Option<String> {
+    if let Some(error) = health
+        .last_error
+        .as_ref()
+        .filter(|error| !error.trim().is_empty())
+    {
+        return Some(format!("last_error: {error}"));
+    }
+    if health.suppressed_until_unix > now {
+        return Some(format!(
+            "flap guard active until {}",
+            health.suppressed_until_unix
+        ));
+    }
+    if health.next_retry_unix > now {
+        return Some(format!("retry cooldown until {}", health.next_retry_unix));
+    }
+    if !health.connected {
+        return Some("peer is disconnected".to_string());
+    }
+    if health.fail_streak > 0 {
+        return Some(format!("{} consecutive failure(s)", health.fail_streak));
+    }
+    if health.flap_events > 0 {
+        return Some(format!(
+            "{} flap event(s) in recovery window",
+            health.flap_events
+        ));
+    }
+    if !health.recent_failures_unix.is_empty() {
+        return Some(format!(
+            "{} recent failure(s) still in recovery window",
+            health.recent_failures_unix.len()
+        ));
+    }
+    if health.score < 90 {
+        return Some(format!(
+            "peer score below healthy threshold: {}",
+            health.score
+        ));
+    }
+    None
 }
 
 fn peer_recovery_snapshot(
@@ -1181,6 +1228,7 @@ fn peer_recovery_snapshot(
             fail_streak: health.fail_streak,
             lifecycle_tier: peer_lifecycle_tier(health, now).to_string(),
             recovery_tier: peer_recovery_tier(health, now).to_string(),
+            recovery_reason: peer_recovery_reason(health, now),
             connected: health.connected,
             last_seen_unix: health.last_seen_unix,
             last_successful_connect_unix: health.last_successful_connect_unix,
@@ -1377,22 +1425,40 @@ fn refresh_connected_peers_from_health(state: &mut InnerState) {
         let has_active_connections = !active_set.is_empty();
         let budget = adaptive_connection_slot_budget(state, now_unix());
         let now = now_unix();
-        let eligible = sync_candidates_snapshot(state)
+        let mut active_peer_ids = state
+            .active_connections
+            .iter()
+            .filter_map(|(peer_id, connections)| (*connections > 0).then_some(peer_id.clone()))
+            .collect::<HashSet<_>>();
+        let mut eligible = Vec::new();
+        for peer in sync_candidates_snapshot(state) {
+            let is_eligible = state
+                .peer_book
+                .get(&peer.peer_id)
+                .map(|health| {
+                    health.connected
+                        && health.chain_id_compatible
+                        && (peer.excluded_until_unix.is_none()
+                            || active_peer_ids.contains(&peer.peer_id))
+                })
+                .unwrap_or(false);
+            if is_eligible {
+                active_peer_ids.remove(&peer.peer_id);
+                eligible.push(peer.peer_id);
+            }
+        }
+        let mut active_remainder = active_peer_ids
             .into_iter()
-            .filter(|peer| {
-                peer.excluded_until_unix.is_none()
-                    && if has_active_connections {
-                        active_set.contains(&peer.peer_id)
-                    } else {
-                        state
-                            .peer_book
-                            .get(&peer.peer_id)
-                            .map(|health| health.connected && health.chain_id_compatible)
-                            .unwrap_or(false)
-                    }
+            .filter(|peer_id| {
+                state
+                    .peer_book
+                    .get(peer_id)
+                    .map(|health| health.connected && health.chain_id_compatible)
+                    .unwrap_or(false)
             })
-            .map(|peer| peer.peer_id)
             .collect::<Vec<_>>();
+        active_remainder.sort();
+        eligible.extend(active_remainder);
         let mut healthy = Vec::new();
         let mut recovering = Vec::new();
         let mut watch = Vec::new();
@@ -5527,7 +5593,7 @@ mod tests {
         let guard = state.lock().unwrap();
         let health = guard.peer_book.get("peer-a").unwrap();
         assert_eq!(peer_lifecycle_tier(health, 10_201), "recovering");
-        assert_eq!(peer_recovery_tier(health, 10_201), "steady");
+        assert_eq!(peer_recovery_tier(health, 10_201), "recovering");
     }
 
     #[test]

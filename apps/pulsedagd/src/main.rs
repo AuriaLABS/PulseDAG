@@ -609,7 +609,7 @@ async fn main() -> Result<()> {
                             failure_reasons,
                         )
                     };
-                    if orphan_count > 0 || retried > 0 || !stale_missing_parents.is_empty() {
+                    if retried > 0 || !stale_missing_parents.is_empty() || pending_missing > 0 {
                         let mut rt = runtime.write().await;
                         let reprocess_attempts = if retried > 0 { retried as u64 } else { 1 };
                         rt.orphan_reprocess_attempts = rt
@@ -617,23 +617,19 @@ async fn main() -> Result<()> {
                             .saturating_add(reprocess_attempts);
                         rt.orphan_reprocess_success =
                             rt.orphan_reprocess_success.saturating_add(adopted as u64);
-                        let missing_parent_failures = failure_reasons
-                            .get("missing_parent")
-                            .copied()
-                            .unwrap_or_else(|| (orphan_count > 0 && pending_missing > 0) as usize);
-                        rt.orphan_reprocess_failed_missing_parent = rt
-                            .orphan_reprocess_failed_missing_parent
-                            .saturating_add(missing_parent_failures as u64);
-                        if failure_reasons.is_empty() && orphan_count > 0 && pending_missing > 0 {
+                        rt.orphan_reprocess_failed_missing_parent =
+                            rt.orphan_reprocess_failed_missing_parent.saturating_add(
+                                failure_reasons.get("missing_parent").copied().unwrap_or(0) as u64,
+                            );
+                        record_orphan_reprocess_failures(&mut rt, &failure_reasons);
+                        if retried == 0 && pending_missing > 0 {
                             let entry = rt
                                 .orphan_reprocess_failures_by_reason
-                                .entry("waiting_for_missing_parent".to_string())
+                                .entry("waiting_missing_parent".to_string())
                                 .or_insert(0);
-                            *entry = entry.saturating_add(1);
+                            *entry = entry.saturating_add(pending_missing as u64);
                             rt.last_orphan_reprocess_failure_reason =
-                                Some("waiting_for_missing_parent".to_string());
-                        } else {
-                            record_orphan_reprocess_failures(&mut rt, &failure_reasons);
+                                Some("waiting_missing_parent".to_string());
                         }
                         rt.orphan_blocks_retried =
                             rt.orphan_blocks_retried.saturating_add(retried as u64);

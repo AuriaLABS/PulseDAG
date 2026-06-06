@@ -403,6 +403,7 @@ mod tests {
             fail_streak,
             lifecycle_tier: "watch".into(),
             recovery_tier: "assisted".into(),
+            recovery_reason: None,
             connected,
             last_seen_unix: None,
             last_successful_connect_unix: None,
