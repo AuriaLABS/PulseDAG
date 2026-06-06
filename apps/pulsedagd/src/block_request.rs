@@ -3,12 +3,16 @@ use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use pulsedag_p2p::messages::BlockHeaderAnnouncement;
 
 pub const DEFAULT_MAX_PENDING_BLOCK_REQUESTS: usize = 128;
+pub const DEFAULT_MAX_PENDING_BLOCK_REQUESTS_PER_PEER: usize = 16;
+pub const DEFAULT_BLOCK_REQUEST_BACKOFF_SECS: u64 = 8;
+pub const MAX_BLOCK_REQUEST_BACKOFF_SECS: u64 = 120;
 
 #[derive(Debug, Clone)]
 pub struct PendingBlockRequest {
     pub first_requested_at_unix: u64,
     pub last_requested_at_unix: u64,
     pub retry_count: u8,
+    pub peer: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -22,6 +26,21 @@ pub struct FetchSchedule {
     pub ready: Vec<String>,
     pub deferred: Vec<String>,
     pub duplicate_suppressed: usize,
+    pub queued: usize,
+    pub dropped: usize,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FetchBackpressureCounters {
+    pub suppressed: u64,
+    pub queued: u64,
+    pub dropped: u64,
+}
+
+#[derive(Debug, Clone)]
+struct RequestBackoff {
+    retry_after_unix: u64,
+    failures: u8,
 }
 
 #[derive(Debug, Clone)]
@@ -30,28 +49,78 @@ pub struct BlockRequestTracker {
     pub timeout_secs: u64,
     pub retry_limit: u8,
     pub max_pending: usize,
+    pub max_pending_per_peer: usize,
     known_headers: BTreeMap<String, BlockHeaderAnnouncement>,
     deferred_by_missing_parent: HashMap<String, HashSet<String>>,
+    backpressure_suppressed: u64,
+    fetch_queued: u64,
+    fetch_dropped: u64,
+    backoff_by_hash: HashMap<String, RequestBackoff>,
+    next_peer_index: usize,
 }
 
 impl BlockRequestTracker {
     pub fn new(timeout_secs: u64, retry_limit: u8) -> Self {
-        Self::with_limit(timeout_secs, retry_limit, 128)
+        Self::with_limit(
+            timeout_secs,
+            retry_limit,
+            DEFAULT_MAX_PENDING_BLOCK_REQUESTS,
+        )
     }
 
     pub fn with_limit(timeout_secs: u64, retry_limit: u8, max_pending: usize) -> Self {
+        Self::with_limits(
+            timeout_secs,
+            retry_limit,
+            max_pending,
+            DEFAULT_MAX_PENDING_BLOCK_REQUESTS_PER_PEER,
+        )
+    }
+
+    pub fn with_max_pending(timeout_secs: u64, retry_limit: u8, max_pending: usize) -> Self {
+        Self::with_limit(timeout_secs, retry_limit, max_pending)
+    }
+
+    pub fn with_limits(
+        timeout_secs: u64,
+        retry_limit: u8,
+        max_pending: usize,
+        max_pending_per_peer: usize,
+    ) -> Self {
         Self {
             pending: HashMap::new(),
             timeout_secs,
             retry_limit,
             max_pending: max_pending.max(1),
+            max_pending_per_peer: max_pending_per_peer.max(1),
             known_headers: BTreeMap::new(),
             deferred_by_missing_parent: HashMap::new(),
+            backpressure_suppressed: 0,
+            fetch_queued: 0,
+            fetch_dropped: 0,
+            backoff_by_hash: HashMap::new(),
+            next_peer_index: 0,
         }
     }
 
     pub fn max_pending(&self) -> usize {
         self.max_pending
+    }
+
+    pub fn max_pending_per_peer(&self) -> usize {
+        self.max_pending_per_peer
+    }
+
+    pub fn take_fetch_counters(&mut self) -> FetchBackpressureCounters {
+        let counters = FetchBackpressureCounters {
+            suppressed: self.backpressure_suppressed,
+            queued: self.fetch_queued,
+            dropped: self.fetch_dropped,
+        };
+        self.backpressure_suppressed = 0;
+        self.fetch_queued = 0;
+        self.fetch_dropped = 0;
+        counters
     }
 
     pub fn take_backpressure_suppressed(&mut self) -> u64 {
@@ -61,33 +130,128 @@ impl BlockRequestTracker {
     }
 
     pub fn should_issue_getblock(&mut self, hash: &str, now_unix: u64) -> bool {
-        match self.pending.get_mut(hash) {
-            Some(req)
-                if now_unix.saturating_sub(req.last_requested_at_unix) < self.timeout_secs =>
+        self.should_issue_getblock_for_peers(hash, now_unix, std::iter::empty::<String>())
+    }
+
+    pub fn should_issue_getblock_for_peers<I, S>(
+        &mut self,
+        hash: &str,
+        now_unix: u64,
+        peers: I,
+    ) -> bool
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        let peers = peers.into_iter().map(Into::into).collect::<Vec<_>>();
+        if self.is_backing_off(hash, now_unix) {
+            self.backpressure_suppressed = self.backpressure_suppressed.saturating_add(1);
+            return false;
+        }
+
+        if let Some(req) = self.pending.get_mut(hash) {
+            if now_unix.saturating_sub(req.last_requested_at_unix)
+                < Self::retry_backoff_secs(self.timeout_secs, req.retry_count)
             {
+                self.backpressure_suppressed = self.backpressure_suppressed.saturating_add(1);
+                return false;
+            }
+            if req.retry_count >= self.retry_limit {
+                self.note_request_dropped(hash, now_unix);
+                return false;
+            }
+            req.retry_count = req.retry_count.saturating_add(1);
+            req.last_requested_at_unix = now_unix;
+            self.fetch_queued = self.fetch_queued.saturating_add(1);
+            return true;
+        }
+
+        if self.pending.len() >= self.max_pending {
+            self.backpressure_suppressed = self.backpressure_suppressed.saturating_add(1);
+            return false;
+        }
+
+        let peer = self.select_available_peer(&peers);
+        if !peers.is_empty() && peer.is_none() {
+            self.backpressure_suppressed = self.backpressure_suppressed.saturating_add(1);
+            return false;
+        }
+        self.pending.insert(
+            hash.to_string(),
+            PendingBlockRequest {
+                first_requested_at_unix: now_unix,
+                last_requested_at_unix: now_unix,
+                retry_count: 0,
+                peer,
+            },
+        );
+        self.backoff_by_hash.remove(hash);
+        self.fetch_queued = self.fetch_queued.saturating_add(1);
+        true
+    }
+
+    fn retry_backoff_secs(timeout_secs: u64, retry_count: u8) -> u64 {
+        let shift = retry_count.min(6) as u32;
+        timeout_secs
+            .saturating_mul(1u64 << shift)
+            .clamp(timeout_secs.max(1), MAX_BLOCK_REQUEST_BACKOFF_SECS)
+    }
+
+    fn is_backing_off(&mut self, hash: &str, now_unix: u64) -> bool {
+        match self.backoff_by_hash.get(hash) {
+            Some(backoff) if now_unix < backoff.retry_after_unix => true,
+            Some(_) => {
+                self.backoff_by_hash.remove(hash);
                 false
-            }
-            Some(req) => {
-                if req.retry_count >= self.retry_limit {
-                    return false;
-                }
-                req.retry_count = req.retry_count.saturating_add(1);
-                req.last_requested_at_unix = now_unix;
-                true
-            }
-            None if self.pending.len() < self.max_pending => {
-                self.pending.insert(
-                    hash.to_string(),
-                    PendingBlockRequest {
-                        first_requested_at_unix: now_unix,
-                        last_requested_at_unix: now_unix,
-                        retry_count: 0,
-                    },
-                );
-                true
             }
             None => false,
         }
+    }
+
+    fn select_available_peer(&mut self, peers: &[String]) -> Option<String> {
+        if peers.is_empty() {
+            return None;
+        }
+        let mut counts: HashMap<&str, usize> = HashMap::new();
+        for req in self.pending.values() {
+            if let Some(peer) = req.peer.as_deref() {
+                *counts.entry(peer).or_default() += 1;
+            }
+        }
+        for offset in 0..peers.len() {
+            let idx = (self.next_peer_index + offset) % peers.len();
+            let peer = &peers[idx];
+            if counts.get(peer.as_str()).copied().unwrap_or(0) < self.max_pending_per_peer {
+                self.next_peer_index = (idx + 1) % peers.len();
+                return Some(peer.clone());
+            }
+        }
+        None
+    }
+
+    fn note_request_dropped(&mut self, hash: &str, now_unix: u64) {
+        let failures = self
+            .backoff_by_hash
+            .get(hash)
+            .map(|backoff| backoff.failures.saturating_add(1))
+            .unwrap_or(1);
+        let delay = DEFAULT_BLOCK_REQUEST_BACKOFF_SECS
+            .saturating_mul(1u64 << failures.min(6))
+            .min(MAX_BLOCK_REQUEST_BACKOFF_SECS);
+        self.backoff_by_hash.insert(
+            hash.to_string(),
+            RequestBackoff {
+                retry_after_unix: now_unix.saturating_add(delay),
+                failures,
+            },
+        );
+        self.fetch_dropped = self.fetch_dropped.saturating_add(1);
+        self.backpressure_suppressed = self.backpressure_suppressed.saturating_add(1);
+    }
+
+    pub fn note_not_found(&mut self, hash: &str, now_unix: u64) {
+        self.pending.remove(hash);
+        self.note_request_dropped(hash, now_unix);
     }
 
     pub fn pending_capacity_remaining(&self) -> usize {
@@ -205,12 +369,23 @@ impl BlockRequestTracker {
 
     pub fn resolve(&mut self, hash: &str) {
         self.pending.remove(hash);
+        self.backoff_by_hash.remove(hash);
     }
 
     pub fn pending_hashes(&self) -> Vec<String> {
         let mut hashes = self.pending.keys().cloned().collect::<Vec<_>>();
         hashes.sort();
         hashes
+    }
+
+    pub fn inflight_by_peer(&self) -> BTreeMap<String, usize> {
+        let mut counts = BTreeMap::new();
+        for req in self.pending.values() {
+            if let Some(peer) = req.peer.as_deref() {
+                *counts.entry(peer.to_string()).or_default() += 1;
+            }
+        }
+        counts
     }
 
     pub fn oldest_pending_age_secs(&self, now_unix: u64) -> u64 {
@@ -225,7 +400,8 @@ impl BlockRequestTracker {
         self.pending
             .iter()
             .filter(|(_, req)| {
-                now_unix.saturating_sub(req.last_requested_at_unix) >= self.timeout_secs
+                now_unix.saturating_sub(req.last_requested_at_unix)
+                    >= Self::retry_backoff_secs(self.timeout_secs, req.retry_count)
             })
             .map(|(hash, _)| hash.clone())
             .collect()
@@ -439,7 +615,7 @@ mod tests {
         assert!(first.expired.is_empty());
         assert_eq!(tracker.pending_hashes(), vec!["h1"]);
 
-        let second = tracker.drain_timeouts(22);
+        let second = tracker.drain_timeouts(27);
         assert!(second.retryable.is_empty());
         assert_eq!(second.expired, vec!["h1"]);
         assert!(tracker.pending_hashes().is_empty());
@@ -508,6 +684,32 @@ mod tests {
         assert_eq!(tracker.pending_hashes(), vec!["h1", "h2"]);
         assert_eq!(tracker.take_backpressure_suppressed(), 1);
         assert_eq!(tracker.take_backpressure_suppressed(), 0);
+    }
+
+    #[test]
+    fn per_peer_limit_suppresses_when_all_peers_are_saturated() {
+        let mut tracker = BlockRequestTracker::with_limits(10, 2, 10, 1);
+        assert!(tracker.should_issue_getblock_for_peers("h1", 100, ["peer-a"]));
+        assert!(tracker.should_issue_getblock_for_peers("h2", 100, ["peer-b"]));
+        assert!(!tracker.should_issue_getblock_for_peers("h3", 100, ["peer-a", "peer-b"]));
+
+        let by_peer = tracker.inflight_by_peer();
+        assert_eq!(by_peer.get("peer-a"), Some(&1));
+        assert_eq!(by_peer.get("peer-b"), Some(&1));
+        assert_eq!(tracker.take_fetch_counters().suppressed, 1);
+    }
+
+    #[test]
+    fn not_found_hash_enters_backoff_before_reissue() {
+        let mut tracker = BlockRequestTracker::with_limit(5, 1, 2);
+        assert!(tracker.should_issue_getblock("parent", 100));
+        tracker.note_not_found("parent", 101);
+        assert!(!tracker.should_issue_getblock("parent", 102));
+        assert!(tracker.should_issue_getblock("parent", 130));
+
+        let counters = tracker.take_fetch_counters();
+        assert_eq!(counters.dropped, 1);
+        assert!(counters.suppressed >= 1);
     }
 
     #[test]
