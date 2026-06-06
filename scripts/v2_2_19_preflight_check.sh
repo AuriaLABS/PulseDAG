@@ -40,6 +40,25 @@ check_no_claim(){
   return 0
 }
 
+
+version_is_v2_2_hardening_at_least_19(){
+  local value="$1"
+  local normalized="${value#v}"
+  local patch
+
+  case "$normalized" in
+    2.2.*) ;;
+    *) return 1 ;;
+  esac
+
+  patch="${normalized#2.2.}"
+  case "$patch" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+
+  [[ "$patch" -ge 19 ]]
+}
+
 production_gpu_backend_ready(){
   local marker="docs/PRODUCTION_GPU_BACKEND_READY_V2_2_19.md"
   local required_test="scripts/tests/test_gpu_backend_production_readiness.sh"
@@ -96,8 +115,8 @@ fi
 echo "Git ref: $ref"
 echo "Git commit: $commit"
 
-check "VERSION == v2.2.19" test "$ver" = "v2.2.19"
-check "Cargo workspace version == 2.2.19" test "$cargo_ver" = "2.2.19"
+check "VERSION is v2.2.x hardening >= v2.2.19" version_is_v2_2_hardening_at_least_19 "$ver"
+check "Cargo workspace version is 2.2.x hardening >= 2.2.19" version_is_v2_2_hardening_at_least_19 "$cargo_ver"
 
 required_docs=(
   "docs/VERSION_MATRIX.md"
