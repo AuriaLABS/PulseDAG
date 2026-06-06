@@ -5,9 +5,12 @@ use crate::{
 use axum::{extract::State, Json};
 use pulsedag_core::state::ChainState;
 use pulsedag_p2p::{connected_peers_semantics, mode_connected_peers_are_real_network};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::{
+    sync::{Mutex, OnceLock},
+    time::{SystemTime, UNIX_EPOCH},
+};
 
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct P2pPeerHealthSummary {
     pub healthy: usize,
     pub degraded: usize,
@@ -18,8 +21,11 @@ pub struct P2pPeerHealthSummary {
     pub suppressed_dials: u64,
 }
 
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct NodeStatusData {
+    pub rpc_response_degraded: bool,
+    pub rpc_response_stale: bool,
+    pub rpc_response_degraded_reason: Option<String>,
     pub network_id: String,
     pub peer_summary: String,
     pub service: String,
@@ -56,6 +62,31 @@ pub struct NodeStatusData {
     pub contracts_prepared: bool,
     pub contracts_enabled: bool,
     pub contracts_vm_version: String,
+}
+
+static STATUS_RESPONSE_CACHE: OnceLock<Mutex<Option<NodeStatusData>>> = OnceLock::new();
+
+fn cached_status_response(reason: String) -> Option<NodeStatusData> {
+    STATUS_RESPONSE_CACHE
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .ok()
+        .and_then(|cache| cache.clone())
+        .map(|mut data| {
+            data.rpc_response_degraded = true;
+            data.rpc_response_stale = true;
+            data.rpc_response_degraded_reason = Some(reason);
+            data
+        })
+}
+
+fn cache_status_response(data: &NodeStatusData) {
+    if let Ok(mut cache) = STATUS_RESPONSE_CACHE
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+    {
+        *cache = Some(data.clone());
+    }
 }
 
 fn repo_version() -> String {
@@ -191,7 +222,12 @@ pub async fn get_status<S: RpcStateLike>(
     let chain_snapshot = {
         let chain = match read_chain_for_rpc(&chain_handle, "/status").await {
             Ok(chain) => chain,
-            Err(e) => return Json(ApiResponse::err("STATE_LOCK_BUSY", e)),
+            Err(e) => {
+                if let Some(data) = cached_status_response(e.clone()) {
+                    return Json(ApiResponse::ok(data));
+                }
+                return Json(ApiResponse::err("STATE_LOCK_BUSY", e));
+            }
         };
         snapshot_chain(&chain)
     };
@@ -199,7 +235,12 @@ pub async fn get_status<S: RpcStateLike>(
     let (keep_recent, uptime_secs, sync_state) = {
         let runtime = match read_runtime_for_rpc(&runtime_handle, "/status").await {
             Ok(runtime) => runtime,
-            Err(e) => return Json(ApiResponse::err("STATE_LOCK_BUSY", e)),
+            Err(e) => {
+                if let Some(data) = cached_status_response(e.clone()) {
+                    return Json(ApiResponse::ok(data));
+                }
+                return Json(ApiResponse::err("STATE_LOCK_BUSY", e));
+            }
         };
         let keep_recent = runtime.prune_keep_recent_blocks.max(1);
         let uptime_secs = SystemTime::now()
@@ -217,7 +258,10 @@ pub async fn get_status<S: RpcStateLike>(
         "peer_count={} semantics={}",
         peer_count, connected_peers_semantics
     );
-    Json(ApiResponse::ok(NodeStatusData {
+    let data = NodeStatusData {
+        rpc_response_degraded: false,
+        rpc_response_stale: false,
+        rpc_response_degraded_reason: None,
         network_id: chain_snapshot.chain_id.clone(),
         peer_summary,
         service: "pulsedagd".into(),
@@ -266,7 +310,9 @@ pub async fn get_status<S: RpcStateLike>(
         contracts_prepared,
         contracts_enabled: chain_snapshot.contracts_enabled,
         contracts_vm_version: chain_snapshot.contracts_vm_version,
-    }))
+    };
+    cache_status_response(&data);
+    Json(ApiResponse::ok(data))
 }
 
 #[cfg(test)]

@@ -266,13 +266,14 @@ impl NodeRuntimeStats {
     }
 }
 
-const RPC_STATE_LOCK_TIMEOUT: Duration = Duration::from_millis(750);
+const RPC_STATE_LOCK_TIMEOUT: Duration = Duration::from_millis(100);
 static P2P_STATUS_SNAPSHOT_PERMITS: Semaphore = Semaphore::const_new(1);
 static P2P_STATUS_CACHE: OnceLock<Mutex<Option<CachedP2pStatus>>> = OnceLock::new();
 static P2P_STATUS_SNAPSHOT_LIVE_TOTAL: AtomicU64 = AtomicU64::new(0);
 static P2P_STATUS_SNAPSHOT_BUSY_TOTAL: AtomicU64 = AtomicU64::new(0);
 static P2P_STATUS_SNAPSHOT_TIMEOUT_TOTAL: AtomicU64 = AtomicU64::new(0);
 static P2P_STATUS_SNAPSHOT_STALE_TOTAL: AtomicU64 = AtomicU64::new(0);
+static RPC_DEGRADED_RESPONSE_TOTAL: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone)]
 struct CachedP2pStatus {
@@ -294,6 +295,7 @@ pub struct P2pStatusSnapshotMetrics {
     pub busy_total: u64,
     pub timeout_total: u64,
     pub stale_total: u64,
+    pub rpc_degraded_response_total: u64,
 }
 
 pub fn p2p_status_snapshot_metrics() -> P2pStatusSnapshotMetrics {
@@ -302,6 +304,7 @@ pub fn p2p_status_snapshot_metrics() -> P2pStatusSnapshotMetrics {
         busy_total: P2P_STATUS_SNAPSHOT_BUSY_TOTAL.load(Ordering::Relaxed),
         timeout_total: P2P_STATUS_SNAPSHOT_TIMEOUT_TOTAL.load(Ordering::Relaxed),
         stale_total: P2P_STATUS_SNAPSHOT_STALE_TOTAL.load(Ordering::Relaxed),
+        rpc_degraded_response_total: RPC_DEGRADED_RESPONSE_TOTAL.load(Ordering::Relaxed),
     }
 }
 
@@ -332,6 +335,7 @@ fn update_cached_p2p_status(status: &P2pStatus) {
 fn stale_p2p_status(reason: String) -> Result<Option<P2pStatusSnapshot>, String> {
     if let Some(cached) = cached_p2p_status() {
         P2P_STATUS_SNAPSHOT_STALE_TOTAL.fetch_add(1, Ordering::Relaxed);
+        record_rpc_degraded_response();
         Ok(Some(P2pStatusSnapshot {
             status: cached.status,
             stale: true,
@@ -339,8 +343,13 @@ fn stale_p2p_status(reason: String) -> Result<Option<P2pStatusSnapshot>, String>
             captured_at_unix: Some(cached.captured_at_unix),
         }))
     } else {
+        record_rpc_degraded_response();
         Err(reason)
     }
+}
+
+pub fn record_rpc_degraded_response() {
+    RPC_DEGRADED_RESPONSE_TOTAL.fetch_add(1, Ordering::Relaxed);
 }
 
 pub async fn read_chain_for_rpc<'a>(
@@ -350,6 +359,7 @@ pub async fn read_chain_for_rpc<'a>(
     timeout(RPC_STATE_LOCK_TIMEOUT, chain.read())
         .await
         .map_err(|_| {
+            record_rpc_degraded_response();
             format!(
                 "{endpoint} could not acquire chain read lock within {}ms; shared state is busy and RPC starvation diagnostics should inspect long-running writers",
                 RPC_STATE_LOCK_TIMEOUT.as_millis()
@@ -364,6 +374,7 @@ pub async fn read_runtime_for_rpc<'a>(
     timeout(RPC_STATE_LOCK_TIMEOUT, runtime.read())
         .await
         .map_err(|_| {
+            record_rpc_degraded_response();
             format!(
                 "{endpoint} could not acquire runtime read lock within {}ms; shared state is busy and RPC starvation diagnostics should inspect long-running writers",
                 RPC_STATE_LOCK_TIMEOUT.as_millis()

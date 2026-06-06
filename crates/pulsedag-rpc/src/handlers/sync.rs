@@ -1,5 +1,8 @@
 use axum::{extract::State, Json};
-use std::collections::BTreeMap;
+use std::{
+    collections::BTreeMap,
+    sync::{Mutex, OnceLock},
+};
 
 use crate::api::{
     p2p_status_for_rpc, read_chain_for_rpc, read_runtime_for_rpc, ApiResponse, RpcStateLike,
@@ -7,8 +10,11 @@ use crate::api::{
 };
 use pulsedag_core::reconcile_mempool;
 
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct SyncStatusData {
+    pub rpc_response_degraded: bool,
+    pub rpc_response_stale: bool,
+    pub rpc_response_degraded_reason: Option<String>,
     pub chain_id: String,
     pub p2p_enabled: bool,
     pub p2p_mode: String,
@@ -84,7 +90,7 @@ pub struct SyncReconcileMempoolData {
     pub removed_txids: Vec<String>,
 }
 
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct SyncDuplicateSuppressionCounters {
     pub inbound_messages: usize,
     pub outbound_messages: usize,
@@ -108,6 +114,55 @@ pub struct SyncRebuildData {
     pub skipped_hashes: Vec<String>,
 }
 
+static SYNC_STATUS_RESPONSE_CACHE: OnceLock<Mutex<Option<SyncStatusData>>> = OnceLock::new();
+static SYNC_MISSING_RESPONSE_CACHE: OnceLock<Mutex<Option<SyncMissingData>>> = OnceLock::new();
+
+fn cached_sync_status_response(reason: String) -> Option<SyncStatusData> {
+    SYNC_STATUS_RESPONSE_CACHE
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .ok()
+        .and_then(|cache| cache.clone())
+        .map(|mut data| {
+            data.rpc_response_degraded = true;
+            data.rpc_response_stale = true;
+            data.rpc_response_degraded_reason = Some(reason);
+            data
+        })
+}
+
+fn cache_sync_status_response(data: &SyncStatusData) {
+    if let Ok(mut cache) = SYNC_STATUS_RESPONSE_CACHE
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+    {
+        *cache = Some(data.clone());
+    }
+}
+
+fn cached_sync_missing_response(reason: String) -> Option<SyncMissingData> {
+    SYNC_MISSING_RESPONSE_CACHE
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .ok()
+        .and_then(|cache| cache.clone())
+        .map(|mut data| {
+            data.rpc_response_degraded = true;
+            data.rpc_response_stale = true;
+            data.rpc_response_degraded_reason = Some(reason);
+            data
+        })
+}
+
+fn cache_sync_missing_response(data: &SyncMissingData) {
+    if let Ok(mut cache) = SYNC_MISSING_RESPONSE_CACHE
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+    {
+        *cache = Some(data.clone());
+    }
+}
+
 pub async fn get_sync_status<S: RpcStateLike>(
     State(state): State<S>,
 ) -> Json<ApiResponse<SyncStatusData>> {
@@ -124,12 +179,22 @@ pub async fn get_sync_status<S: RpcStateLike>(
     let chain_handle = state.chain();
     let chain = match read_chain_for_rpc(&chain_handle, "/sync/status").await {
         Ok(chain) => chain,
-        Err(e) => return Json(ApiResponse::err("STATE_LOCK_BUSY", e)),
+        Err(e) => {
+            if let Some(data) = cached_sync_status_response(e.clone()) {
+                return Json(ApiResponse::ok(data));
+            }
+            return Json(ApiResponse::err("STATE_LOCK_BUSY", e));
+        }
     };
     let runtime_handle = state.runtime();
     let runtime = match read_runtime_for_rpc(&runtime_handle, "/sync/status").await {
         Ok(runtime) => runtime,
-        Err(e) => return Json(ApiResponse::err("STATE_LOCK_BUSY", e)),
+        Err(e) => {
+            if let Some(data) = cached_sync_status_response(e.clone()) {
+                return Json(ApiResponse::ok(data));
+            }
+            return Json(ApiResponse::err("STATE_LOCK_BUSY", e));
+        }
     };
     let consistency_issues = pulsedag_core::dag_consistency_issues(&chain);
     let lag_blocks = (persisted_block_count as u64).saturating_sub(chain.dag.blocks.len() as u64);
@@ -184,7 +249,12 @@ pub async fn get_sync_status<S: RpcStateLike>(
     .to_string();
     let p2p_status = match p2p_status_for_rpc(state.p2p(), "/sync/status").await {
         Ok(status) => status,
-        Err(e) => return Json(ApiResponse::err("P2P_STATUS_BUSY", e)),
+        Err(e) => {
+            if let Some(data) = cached_sync_status_response(e.clone()) {
+                return Json(ApiResponse::ok(data));
+            }
+            return Json(ApiResponse::err("P2P_STATUS_BUSY", e));
+        }
     };
     let p2p_enabled = p2p_status.is_some();
     let p2p_mode = p2p_status
@@ -244,7 +314,10 @@ pub async fn get_sync_status<S: RpcStateLike>(
     let catchup_summary = format!(
         "stage={catchup_stage} lag_blocks={lag_blocks} lag_band={lag_band} progress_bps={catchup_progress_bps}"
     );
-    Json(ApiResponse::ok(SyncStatusData {
+    let data = SyncStatusData {
+        rpc_response_degraded: false,
+        rpc_response_stale: false,
+        rpc_response_degraded_reason: None,
         chain_id: chain.chain_id.clone(),
         p2p_enabled,
         p2p_mode,
@@ -363,23 +436,28 @@ pub async fn get_sync_status<S: RpcStateLike>(
             .unwrap_or(0),
         p2p_ready_for_private_rehearsal: readiness_reasons.is_empty(),
         readiness_reasons,
-    }))
+    };
+    cache_sync_status_response(&data);
+    Json(ApiResponse::ok(data))
 }
 
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct MissingBlockEntry {
     pub hash: String,
     pub missing_parents: Vec<String>,
 }
 
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct MissingParentIndexEntry {
     pub parent: String,
     pub waiting_orphans: Vec<String>,
 }
 
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct SyncMissingData {
+    pub rpc_response_degraded: bool,
+    pub rpc_response_stale: bool,
+    pub rpc_response_degraded_reason: Option<String>,
     pub pending_block_requests: usize,
     pub pending_missing_parents: usize,
     pub orphan_count: usize,
@@ -393,12 +471,22 @@ pub async fn get_sync_missing<S: RpcStateLike>(
     let chain_handle = state.chain();
     let chain = match read_chain_for_rpc(&chain_handle, "/sync/missing").await {
         Ok(chain) => chain,
-        Err(e) => return Json(ApiResponse::err("STATE_LOCK_BUSY", e)),
+        Err(e) => {
+            if let Some(data) = cached_sync_missing_response(e.clone()) {
+                return Json(ApiResponse::ok(data));
+            }
+            return Json(ApiResponse::err("STATE_LOCK_BUSY", e));
+        }
     };
     let runtime_handle = state.runtime();
     let runtime = match read_runtime_for_rpc(&runtime_handle, "/sync/missing").await {
         Ok(runtime) => runtime,
-        Err(e) => return Json(ApiResponse::err("STATE_LOCK_BUSY", e)),
+        Err(e) => {
+            if let Some(data) = cached_sync_missing_response(e.clone()) {
+                return Json(ApiResponse::ok(data));
+            }
+            return Json(ApiResponse::err("STATE_LOCK_BUSY", e));
+        }
     };
     let mut orphan_hashes = chain.orphan_blocks.keys().cloned().collect::<Vec<_>>();
     orphan_hashes.sort();
@@ -423,13 +511,18 @@ pub async fn get_sync_missing<S: RpcStateLike>(
         })
         .collect::<Vec<_>>();
     missing_parent_index.sort_by(|left, right| left.parent.cmp(&right.parent));
-    Json(ApiResponse::ok(SyncMissingData {
+    let data = SyncMissingData {
+        rpc_response_degraded: false,
+        rpc_response_stale: false,
+        rpc_response_degraded_reason: None,
         pending_block_requests: runtime.pending_block_requests,
         pending_missing_parents,
         orphan_count: chain.orphan_blocks.len(),
         orphans,
         missing_parent_index,
-    }))
+    };
+    cache_sync_missing_response(&data);
+    Json(ApiResponse::ok(data))
 }
 
 pub async fn post_sync_rebuild<S: RpcStateLike>(
