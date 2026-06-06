@@ -214,6 +214,7 @@ pub async fn get_p2p_status<S: RpcStateLike>(
                         "fail_streak": peer.fail_streak,
                         "lifecycle_tier": peer.lifecycle_tier,
                         "recovery_tier": peer.recovery_tier,
+                        "recovery_reason": peer.recovery_reason,
                         "connected": peer.connected,
                         "last_seen_unix": peer.last_seen_unix,
                         "last_successful_connect_unix": peer.last_successful_connect_unix,
@@ -716,6 +717,29 @@ pub async fn get_p2p_status<S: RpcStateLike>(
                 "outbound_peer_count".into(),
                 serde_json::json!(outbound_peer_count),
             );
+            let lifecycle_connected_peer_count = status
+                .active_connections_by_peer
+                .values()
+                .filter(|connections| **connections > 0)
+                .count();
+            let peer_count_explanation = if lifecycle_connected_peer_count > 0
+                && status.connected_peers.is_empty()
+            {
+                "lifecycle connections exist, but no peers are eligible for connected_peers because they are incompatible, disconnected in health, or suppressed by recovery accounting"
+            } else {
+                "peer_count reports eligible real-network connected peers after lifecycle, chain-compatibility, and recovery accounting"
+            };
+            payload.insert(
+                "peer_accounting".into(),
+                serde_json::json!({
+                    "peer_count_source": "eligible_connected_peers",
+                    "peer_count": status.connected_peers.len(),
+                    "lifecycle_connected_peer_count": lifecycle_connected_peer_count,
+                    "inbound_peer_count": inbound_peer_count,
+                    "outbound_peer_count": outbound_peer_count,
+                    "explanation": peer_count_explanation
+                }),
+            );
             payload.insert(
                 "outbound_peer_final_state".into(),
                 serde_json::json!(status
@@ -1157,6 +1181,7 @@ mod tests {
                     fail_streak: 0,
                     lifecycle_tier: "healthy".into(),
                     recovery_tier: "steady".into(),
+                    recovery_reason: None,
                     connected: true,
                     last_seen_unix: Some(now),
                     last_successful_connect_unix: Some(now),
@@ -1182,6 +1207,7 @@ mod tests {
                     fail_streak: 1,
                     lifecycle_tier: "recovering".into(),
                     recovery_tier: "assisted".into(),
+                    recovery_reason: Some("peer is disconnected".into()),
                     connected: false,
                     last_seen_unix: Some(now.saturating_sub(60)),
                     last_successful_connect_unix: Some(now.saturating_sub(120)),

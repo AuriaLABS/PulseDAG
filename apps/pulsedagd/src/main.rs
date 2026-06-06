@@ -609,7 +609,7 @@ async fn main() -> Result<()> {
                             failure_reasons,
                         )
                     };
-                    if retried > 0 || !stale_missing_parents.is_empty() {
+                    if retried > 0 || !stale_missing_parents.is_empty() || pending_missing > 0 {
                         let mut rt = runtime.write().await;
                         rt.orphan_reprocess_attempts =
                             rt.orphan_reprocess_attempts.saturating_add(retried as u64);
@@ -620,6 +620,15 @@ async fn main() -> Result<()> {
                                 failure_reasons.get("missing_parent").copied().unwrap_or(0) as u64,
                             );
                         record_orphan_reprocess_failures(&mut rt, &failure_reasons);
+                        if retried == 0 && pending_missing > 0 {
+                            let entry = rt
+                                .orphan_reprocess_failures_by_reason
+                                .entry("waiting_missing_parent".to_string())
+                                .or_insert(0);
+                            *entry = entry.saturating_add(pending_missing as u64);
+                            rt.last_orphan_reprocess_failure_reason =
+                                Some("waiting_missing_parent".to_string());
+                        }
                         rt.orphan_blocks_retried =
                             rt.orphan_blocks_retried.saturating_add(retried as u64);
                         rt.orphan_blocks_resolved =

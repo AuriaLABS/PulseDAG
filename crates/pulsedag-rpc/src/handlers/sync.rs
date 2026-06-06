@@ -2,6 +2,7 @@ use axum::{extract::State, Json};
 use std::{
     collections::BTreeMap,
     sync::{Mutex, OnceLock},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use crate::api::{
@@ -233,8 +234,12 @@ pub async fn get_sync_status<S: RpcStateLike>(
             .last_transition_unix
             .map(|ts| now_unix.saturating_sub(ts) > 120)
             .unwrap_or(false);
+    let pending_missing_parents = pulsedag_core::pending_missing_parent_count(&chain);
+    let has_orphan_backlog = pending_missing_parents > 0 || !chain.orphan_blocks.is_empty();
     let catchup_stage = if runtime.sync_pipeline.last_error.is_some() || !counters_coherent {
         "degraded"
+    } else if has_orphan_backlog {
+        "recovering"
     } else {
         match runtime.sync_pipeline.phase {
             pulsedag_core::SyncPhase::Idle if lag_blocks == 0 => "steady",
@@ -261,7 +266,6 @@ pub async fn get_sync_status<S: RpcStateLike>(
         .as_ref()
         .map(|snapshot| snapshot.status.mode.clone())
         .unwrap_or_else(|| "disabled".to_string());
-    let pending_missing_parents = pulsedag_core::pending_missing_parent_count(&chain);
     let mut readiness_reasons = Vec::new();
     if !p2p_enabled {
         readiness_reasons.push("p2p is disabled".to_string());
@@ -302,6 +306,11 @@ pub async fn get_sync_status<S: RpcStateLike>(
             runtime.sync_pipeline.fallback_count,
             runtime.sync_pipeline.timeout_fallback_count,
             runtime.sync_pipeline.restart_count
+        ))
+    } else if pending_missing_parents > 0 {
+        Some(format!(
+            "orphan recovery pending: {} missing parent(s) still queued for reprocess",
+            pending_missing_parents
         ))
     } else if catchup_stage != "steady" {
         Some(format!(
@@ -445,6 +454,12 @@ pub async fn get_sync_status<S: RpcStateLike>(
 pub struct MissingBlockEntry {
     pub hash: String,
     pub missing_parents: Vec<String>,
+    pub age_secs: Option<u64>,
+    pub status: String,
+    pub actionable: bool,
+    pub stale: bool,
+    pub waiting: bool,
+    pub evicted: bool,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -461,6 +476,7 @@ pub struct SyncMissingData {
     pub pending_block_requests: usize,
     pub pending_missing_parents: usize,
     pub orphan_count: usize,
+    pub saturated: bool,
     pub orphans: Vec<MissingBlockEntry>,
     pub missing_parent_index: Vec<MissingParentIndexEntry>,
 }
@@ -490,15 +506,45 @@ pub async fn get_sync_missing<S: RpcStateLike>(
     };
     let mut orphan_hashes = chain.orphan_blocks.keys().cloned().collect::<Vec<_>>();
     orphan_hashes.sort();
+    let now_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
     let orphans = orphan_hashes
         .into_iter()
-        .map(|hash| MissingBlockEntry {
-            missing_parents: chain
+        .map(|hash| {
+            let missing_parents = chain
                 .orphan_missing_parents
                 .get(&hash)
                 .cloned()
-                .unwrap_or_default(),
-            hash,
+                .unwrap_or_default();
+            let received_at_ms = chain.orphan_received_at_ms.get(&hash).copied();
+            let age_secs = received_at_ms.map(|received| now_ms.saturating_sub(received) / 1_000);
+            let stale = received_at_ms
+                .map(|received| {
+                    now_ms.saturating_sub(received) >= pulsedag_core::DEFAULT_ORPHAN_MAX_AGE_MS
+                })
+                .unwrap_or(false);
+            let waiting = !missing_parents.is_empty();
+            let actionable = !waiting && !stale;
+            let status = if stale {
+                "stale"
+            } else if actionable {
+                "actionable"
+            } else {
+                "waiting"
+            }
+            .to_string();
+            MissingBlockEntry {
+                missing_parents,
+                age_secs,
+                status,
+                actionable,
+                stale,
+                waiting,
+                evicted: false,
+                hash,
+            }
         })
         .collect::<Vec<_>>();
     let pending_missing_parents = pulsedag_core::pending_missing_parent_count(&chain);
@@ -518,6 +564,7 @@ pub async fn get_sync_missing<S: RpcStateLike>(
         pending_block_requests: runtime.pending_block_requests,
         pending_missing_parents,
         orphan_count: chain.orphan_blocks.len(),
+        saturated: chain.orphan_blocks.len() >= pulsedag_core::DEFAULT_ORPHAN_MAX_COUNT,
         orphans,
         missing_parent_index,
     };
