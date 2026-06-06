@@ -47,11 +47,12 @@ Make `5N/4M` stress bounded, recoverable, and diagnostically complete without ch
 
 ### 5. Docker evidence continuity
 
-- Keep Docker rehearsals as the reproducible local evidence path.
+- Keep Docker rehearsals as the reproducible local evidence path through `docs/DOCKER_REHEARSALS_V2_2_20.md`, `docker-compose.rehearsal.yml`, and `scripts/docker_v2_2_20_rehearsal.sh`.
 - Mandatory regression checks remain:
   - `5N/1M baseline`: PASS
   - `5N/2M intermediate`: PASS
 - `5N/4M stress` should improve from `OBSERVE_FAIL` toward bounded failure or PASS.
+- CI evidence workflows must upload `evidence.tar.gz` and `evidence.tar.gz.sha256` for `5N/1M`, `5N/2M`, and observe-only `5N/4M` runs.
 
 ## Exit criteria
 

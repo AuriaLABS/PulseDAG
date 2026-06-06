@@ -1,0 +1,106 @@
+name: v2.2.20 5N/4M stress observe evidence
+
+on:
+  workflow_dispatch:
+
+jobs:
+  stress-observe-evidence:
+    name: 5N/4M stress observe evidence
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    env:
+      CARGO_TERM_COLOR: always
+      DURATION_SECS: "600"
+      QUIESCENCE_WAIT_SECS: "180"
+      GLOBAL_DEADLINE_SECS: "2700"
+      REHEARSAL_STEP_TIMEOUT_SECS: "3000"
+      EVIDENCE_ROOT: artifacts/v2_2_20/private_5n_4m_rehearsal
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: WSL compatibility note (non-blocking)
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -r /proc/version ]] && grep -qiE 'microsoft|wsl' /proc/version; then
+            echo "Detected WSL-like kernel; continuing because WSL must not block evidence capture."
+          else
+            echo "No WSL-like kernel detected."
+          fi
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: cargo build --release --locked
+        run: cargo build --release --locked
+
+      - name: Run v2.2.20 private 5N/4M stress observe rehearsal
+        shell: bash
+        continue-on-error: true
+        timeout-minutes: 55
+        run: |
+          set +e
+          if command -v timeout >/dev/null 2>&1; then
+            timeout "${REHEARSAL_STEP_TIMEOUT_SECS}s" bash scripts/v2_2_20_private_5n_4m_rehearsal.sh
+            rc=$?
+          else
+            bash scripts/v2_2_20_private_5n_4m_rehearsal.sh
+            rc=$?
+          fi
+          echo "$rc" > rehearsal-exit-code.txt
+          echo "rehearsal_exit_code=$rc"
+          exit 0
+
+      - name: Stage evidence.tar.gz for upload
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ci-evidence
+
+          root_tar="${EVIDENCE_ROOT}/evidence.tar.gz"
+          current_run="$(cat "${EVIDENCE_ROOT}/current-run-dir.txt" 2>/dev/null || true)"
+          run_tar="${current_run}/evidence.tar.gz"
+
+          if [[ -s "$root_tar" ]]; then
+            cp "$root_tar" ci-evidence/evidence.tar.gz
+            cp "${EVIDENCE_ROOT}/evidence.tar.gz.sha256" ci-evidence/evidence.tar.gz.sha256 2>/dev/null || true
+          elif [[ -n "$current_run" && -s "$run_tar" ]]; then
+            cp "$run_tar" ci-evidence/evidence.tar.gz
+            cp "${run_tar}.sha256" ci-evidence/evidence.tar.gz.sha256 2>/dev/null || true
+          elif [[ -n "$current_run" && -d "$current_run" ]]; then
+            echo "Packaged evidence.tar.gz was not found; archiving current run directory instead."
+            tar -czf ci-evidence/evidence.tar.gz -C "$current_run" .
+          elif [[ -d "$EVIDENCE_ROOT" ]]; then
+            echo "Packaged evidence.tar.gz was not found; archiving evidence root instead."
+            tar -czf ci-evidence/evidence.tar.gz -C "$EVIDENCE_ROOT" .
+          else
+            echo "No evidence directory exists; creating an empty evidence archive."
+            tar -czf ci-evidence/evidence.tar.gz --files-from /dev/null
+          fi
+
+          sha256sum ci-evidence/evidence.tar.gz > ci-evidence/evidence.tar.gz.sha256
+
+      - name: Upload evidence.tar.gz
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: v2_2_20_5n_4m_stress_observe_evidence
+          path: |
+            ci-evidence/evidence.tar.gz
+            ci-evidence/evidence.tar.gz.sha256
+          if-no-files-found: error
+
+      - name: Record stress observe result
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          code="$(cat rehearsal-exit-code.txt 2>/dev/null || echo 1)"
+          echo "rehearsal_exit_code=$code"
+          echo "5N/4M is observe-only evidence for v2.2.20; non-zero rehearsal exit does not fail this diagnostic workflow."
+          exit 0
