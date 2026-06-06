@@ -28,6 +28,7 @@
 - `5N/1M baseline`: PASS
 - `5N/2M intermediate`: PASS
 - `5N/4M stress`: OBSERVE_FAIL, accepted as a tracked non-blocking limitation for v2.2.19 and the first hardening target for v2.2.20
+- First v2.2.20 post-PR stress record: `PENDING_EVIDENCE`; new metrics are documented, but no committed v2.2.20 `5N/4M` runtime bundle is present yet, so no improvement claim is made. See `docs/V2_2_20_FIRST_STRESS_EVIDENCE.md`.
 
 Primary objective: make `5N/4M` stress bounded, diagnosable, and recoverable without changing consensus semantics.
 
