@@ -8,8 +8,11 @@ use pulsedag_core::{
     accept_block_atomically, adopt_ready_orphans, expected_difficulty, pow_validation_result,
     preferred_tip_hash, AcceptSource,
 };
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use tokio::time::timeout;
+use std::{
+    sync::{Arc, OnceLock},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+};
+use tokio::{sync::Semaphore, time::timeout};
 use tracing::{info, warn};
 
 #[derive(Debug, serde::Serialize)]
@@ -61,6 +64,14 @@ where
 const SUBMIT_CHAIN_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 const SUBMIT_ORPHAN_ADOPTION_CHAIN_WRITE_TIMEOUT: Duration = Duration::from_millis(100);
 const SUBMIT_POST_ACCEPT_TIMEOUT: Duration = Duration::from_secs(10);
+const SUBMIT_MAX_INFLIGHT_REQUESTS: usize = 1;
+
+fn mining_submit_semaphore() -> Arc<Semaphore> {
+    static SEMAPHORE: OnceLock<Arc<Semaphore>> = OnceLock::new();
+    SEMAPHORE
+        .get_or_init(|| Arc::new(Semaphore::new(SUBMIT_MAX_INFLIGHT_REQUESTS)))
+        .clone()
+}
 
 fn elapsed_ms(started: Instant) -> u64 {
     started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64
@@ -393,14 +404,51 @@ pub async fn post_mining_submit<S: RpcStateLike>(
     Json(req): Json<SubmitMinedBlockRequest>,
 ) -> Json<ApiResponse<MiningSubmitData>> {
     let submit_started = Instant::now();
+    let block_hash = req.block.hash.clone();
+    let height = req.block.header.height;
+
     record_submit_started(&state).await;
+    let submit_permit = match mining_submit_semaphore().try_acquire_owned() {
+        Ok(permit) => permit,
+        Err(_) => {
+            let detail = format!(
+                "mining submit rejected because another submit is already in flight; max_inflight={}",
+                SUBMIT_MAX_INFLIGHT_REQUESTS
+            );
+            record_submit_phase(&state, "busy").await;
+            {
+                let runtime_handle = state.runtime();
+                let mut runtime = runtime_handle.write().await;
+                runtime.external_mining_submit_rejected =
+                    runtime.external_mining_submit_rejected.saturating_add(1);
+                runtime.external_mining_rejected_internal_error =
+                    runtime.external_mining_rejected_internal_error.saturating_add(1);
+                runtime.external_mining_last_rejection_kind = Some("submit_busy".to_string());
+                runtime.external_mining_last_rejection_reason = Some(detail.clone());
+                runtime.record_rejected_block_reason("submit_busy");
+            }
+            let _ = state.storage().append_runtime_event(
+                "warn",
+                "external_mining_submit_busy",
+                &format!("block_hash={} height={} {}", block_hash, height, detail),
+            );
+            record_submit_completed(&state, submit_started, "busy").await;
+            return Json(rejection_submit_response(
+                "submit_busy",
+                detail,
+                Some(block_hash),
+                Some(height),
+                false,
+            ));
+        }
+    };
+    let _submit_permit = submit_permit;
+
     record_submit_phase(&state, "precheck").await;
     let pow = pow_validation_result(&req.block.header);
     let pow_accepted_dev = pow.accepted;
     let target_u64 = pow.target_u64;
     let pow_hash_score_u64 = pow.score_u64.unwrap_or(0);
-    let block_hash = req.block.hash.clone();
-    let height = req.block.header.height;
     {
         let runtime_handle = state.runtime();
         let mut runtime = runtime_handle.write().await;
@@ -549,7 +597,8 @@ pub async fn post_mining_submit<S: RpcStateLike>(
                 StaleTemplateReason::TemplateHeightStale,
                 format!(
                     "template height {} is stale; current next height is {}",
-                    stored.height, current_next_height
+                    stored.height,
+                    current_next_height
                 ),
             ));
         }
@@ -702,18 +751,17 @@ pub async fn post_mining_submit<S: RpcStateLike>(
             }
         }
     } else {
-        let detail = format!("template_id {} not found", template_id);
         drop(chain);
         record_external_mining_rejection(
             &state,
             ExternalMiningRejectKind::UnknownTemplate,
-            &detail,
+            &format!("template_id {} not found", template_id),
         )
         .await;
         record_submit_completed(&state, submit_started, "rejected").await;
         return Json(rejection_submit_response(
             "unknown_template",
-            detail,
+            format!("template_id {} not found", template_id),
             None,
             Some(height),
             true,
@@ -1077,7 +1125,7 @@ mod tests {
             atomic::{AtomicUsize, Ordering},
             Arc,
         },
-        time::{Instant, SystemTime, UNIX_EPOCH},
+        time::{SystemTime, UNIX_EPOCH},
     };
     use tokio::sync::RwLock;
 
