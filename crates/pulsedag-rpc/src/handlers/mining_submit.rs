@@ -421,8 +421,9 @@ pub async fn post_mining_submit<S: RpcStateLike>(
                 let mut runtime = runtime_handle.write().await;
                 runtime.external_mining_submit_rejected =
                     runtime.external_mining_submit_rejected.saturating_add(1);
-                runtime.external_mining_rejected_internal_error =
-                    runtime.external_mining_rejected_internal_error.saturating_add(1);
+                runtime.external_mining_rejected_internal_error = runtime
+                    .external_mining_rejected_internal_error
+                    .saturating_add(1);
                 runtime.external_mining_last_rejection_kind = Some("submit_busy".to_string());
                 runtime.external_mining_last_rejection_reason = Some(detail.clone());
                 runtime.record_rejected_block_reason("submit_busy");
@@ -597,8 +598,7 @@ pub async fn post_mining_submit<S: RpcStateLike>(
                 StaleTemplateReason::TemplateHeightStale,
                 format!(
                     "template height {} is stale; current next height is {}",
-                    stored.height,
-                    current_next_height
+                    stored.height, current_next_height
                 ),
             ));
         }
@@ -1125,7 +1125,7 @@ mod tests {
             atomic::{AtomicUsize, Ordering},
             Arc,
         },
-        time::{SystemTime, UNIX_EPOCH},
+        time::{Instant, SystemTime, UNIX_EPOCH},
     };
     use tokio::sync::RwLock;
 

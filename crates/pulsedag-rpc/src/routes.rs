@@ -13,6 +13,7 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio::sync::Mutex;
+use tokio::time::timeout;
 
 use crate::{
     api::{ApiResponse, RpcStateLike},
@@ -197,8 +198,40 @@ where
     }
 }
 
+const RPC_LIVENESS_TIMEOUT: Duration = Duration::from_secs(2);
+
+fn is_liveness_endpoint(path: &str) -> bool {
+    matches!(
+        path,
+        "/status"
+            | "/api/v1/status"
+            | "/readiness"
+            | "/api/v1/readiness"
+            | "/p2p/status"
+            | "/api/v1/p2p/status"
+            | "/sync/status"
+            | "/api/v1/sync/status"
+            | "/sync/missing"
+            | "/api/v1/sync/missing"
+            | "/orphans"
+            | "/api/v1/orphans"
+    )
+}
+
+fn rpc_liveness_timeout_response() -> Response {
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        Json(ApiResponse::<serde_json::Value>::err(
+            "rpc_liveness_timeout",
+            "liveness endpoint exceeded bounded response timeout",
+        )),
+    )
+        .into_response()
+}
+
 async fn hardening_middleware(req: Request, next: Next, limits: RpcHardeningLimits) -> Response {
     let path = req.uri().path();
+    let is_liveness = is_liveness_endpoint(path);
     let is_guarded = matches!(
         path,
         "/tx/submit"
@@ -219,6 +252,13 @@ async fn hardening_middleware(req: Request, next: Next, limits: RpcHardeningLimi
             | "/admin/operator/query-pack"
     );
     if !is_guarded {
+        if is_liveness {
+            return match timeout(RPC_LIVENESS_TIMEOUT, next.run(req)).await {
+                Ok(response) => response,
+                Err(_) => rpc_liveness_timeout_response(),
+            };
+        }
+
         return next.run(req).await;
     }
     if let Some(len) = req
@@ -269,7 +309,14 @@ async fn hardening_middleware(req: Request, next: Next, limits: RpcHardeningLimi
         }
         entry.1 = entry.1.saturating_add(1);
     }
-    next.run(req).await
+    if is_liveness {
+        match timeout(RPC_LIVENESS_TIMEOUT, next.run(req)).await {
+            Ok(response) => response,
+            Err(_) => rpc_liveness_timeout_response(),
+        }
+    } else {
+        next.run(req).await
+    }
 }
 
 pub fn router_with_admin<S>(admin_enabled: bool, operator_auth_token: Option<String>) -> Router<S>
