@@ -492,7 +492,6 @@ pub async fn post_mining_submit<S: RpcStateLike>(
             height
         );
         drop(chain);
-        drop(chain);
         record_external_mining_rejection(&state, ExternalMiningRejectKind::StaleTemplate, &msg)
             .await;
         record_submit_completed(&state, submit_started, "rejected").await;
@@ -520,13 +519,13 @@ pub async fn post_mining_submit<S: RpcStateLike>(
                 "submitted block height {} does not match template height {}; refresh template and retry",
                 req.block.header.height, stored.height
             );
+            drop(chain);
             record_external_mining_rejection(
                 &state,
                 ExternalMiningRejectKind::StaleTemplate,
                 &detail,
             )
             .await;
-            drop(chain);
             record_submit_completed(&state, submit_started, "rejected").await;
             return Json(rejection_submit_response(
                 "stale_template",
@@ -559,9 +558,9 @@ pub async fn post_mining_submit<S: RpcStateLike>(
                 "reason_code={}; template parents mismatch current tips",
                 StaleTemplateReason::TemplateParentsMismatch.code()
             );
+            drop(chain);
             record_external_mining_rejection(&state, ExternalMiningRejectKind::StaleTemplate, &msg)
                 .await;
-            drop(chain);
             record_submit_completed(&state, submit_started, "rejected").await;
             return Json(stale_template_error(
                 StaleTemplateReason::TemplateParentsMismatch,
@@ -573,9 +572,9 @@ pub async fn post_mining_submit<S: RpcStateLike>(
                 "reason_code={}; template selected_tip mismatch current preferred tip",
                 StaleTemplateReason::TemplateSelectedTipMismatch.code()
             );
+            drop(chain);
             record_external_mining_rejection(&state, ExternalMiningRejectKind::StaleTemplate, &msg)
                 .await;
-            drop(chain);
             record_submit_completed(&state, submit_started, "rejected").await;
             return Json(stale_template_error(
                 StaleTemplateReason::TemplateSelectedTipMismatch,
@@ -587,9 +586,9 @@ pub async fn post_mining_submit<S: RpcStateLike>(
                 "reason_code={}; template difficulty/target mismatch node state",
                 StaleTemplateReason::TemplateDifficultyTargetMismatch.code()
             );
+            drop(chain);
             record_external_mining_rejection(&state, ExternalMiningRejectKind::StaleTemplate, &msg)
                 .await;
-            drop(chain);
             record_submit_completed(&state, submit_started, "rejected").await;
             return Json(stale_template_error(
                 StaleTemplateReason::TemplateDifficultyTargetMismatch,
@@ -601,9 +600,9 @@ pub async fn post_mining_submit<S: RpcStateLike>(
                 "reason_code={}; template mempool view changed",
                 StaleTemplateReason::TemplateMempoolChanged.code()
             );
+            drop(chain);
             record_external_mining_rejection(&state, ExternalMiningRejectKind::StaleTemplate, &msg)
                 .await;
-            drop(chain);
             record_submit_completed(&state, submit_started, "rejected").await;
             return Json(stale_template_error(
                 StaleTemplateReason::TemplateMempoolChanged,
@@ -617,9 +616,9 @@ pub async fn post_mining_submit<S: RpcStateLike>(
                 "reason_code={}; template created_at is in the future",
                 StaleTemplateReason::TemplateFutureClockSkew.code()
             );
+            drop(chain);
             record_external_mining_rejection(&state, ExternalMiningRejectKind::StaleTemplate, &msg)
                 .await;
-            drop(chain);
             record_submit_completed(&state, submit_started, "rejected").await;
             return Json(stale_template_error(
                 StaleTemplateReason::TemplateFutureClockSkew,
@@ -631,9 +630,9 @@ pub async fn post_mining_submit<S: RpcStateLike>(
                 "reason_code={}; template freshness window elapsed",
                 StaleTemplateReason::TemplateExpired.code()
             );
+            drop(chain);
             record_external_mining_rejection(&state, ExternalMiningRejectKind::StaleTemplate, &msg)
                 .await;
-            drop(chain);
             record_submit_completed(&state, submit_started, "rejected").await;
             return Json(stale_template_error(
                 StaleTemplateReason::TemplateExpired,
@@ -648,9 +647,9 @@ pub async fn post_mining_submit<S: RpcStateLike>(
                 "reason_code={}; template lifecycle state changed",
                 StaleTemplateReason::TemplateLifecycleChanged.code()
             );
+            drop(chain);
             record_external_mining_rejection(&state, ExternalMiningRejectKind::StaleTemplate, &msg)
                 .await;
-            drop(chain);
             record_submit_completed(&state, submit_started, "rejected").await;
             return Json(stale_template_error(
                 StaleTemplateReason::TemplateLifecycleChanged,
@@ -662,9 +661,9 @@ pub async fn post_mining_submit<S: RpcStateLike>(
                 "reason_code={}; submitted header merkle root differs from template merkle root",
                 StaleTemplateReason::SubmittedMerkleRootMismatch.code()
             );
+            drop(chain);
             record_external_mining_rejection(&state, ExternalMiningRejectKind::StaleTemplate, &msg)
                 .await;
-            drop(chain);
             record_submit_completed(&state, submit_started, "rejected").await;
             return Json(stale_template_error(
                 StaleTemplateReason::SubmittedMerkleRootMismatch,
@@ -688,13 +687,13 @@ pub async fn post_mining_submit<S: RpcStateLike>(
                         "reason_code={}; submitted transaction list differs from template transaction list",
                         StaleTemplateReason::SubmittedTransactionsMismatch.code()
                     );
+                drop(chain);
                 record_external_mining_rejection(
                     &state,
                     ExternalMiningRejectKind::StaleTemplate,
                     &msg,
                 )
                 .await;
-                drop(chain);
                 record_submit_completed(&state, submit_started, "rejected").await;
                 return Json(stale_template_error(
                     StaleTemplateReason::SubmittedTransactionsMismatch,
@@ -703,16 +702,18 @@ pub async fn post_mining_submit<S: RpcStateLike>(
             }
         }
     } else {
+        let detail = format!("template_id {} not found", template_id);
+        drop(chain);
         record_external_mining_rejection(
             &state,
             ExternalMiningRejectKind::UnknownTemplate,
-            &format!("template_id {} not found", template_id),
+            &detail,
         )
         .await;
         record_submit_completed(&state, submit_started, "rejected").await;
         return Json(rejection_submit_response(
             "unknown_template",
-            format!("template_id {} not found", template_id),
+            detail,
             None,
             Some(height),
             true,
