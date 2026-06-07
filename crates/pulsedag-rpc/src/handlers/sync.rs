@@ -32,6 +32,10 @@ pub struct SyncStatusData {
     pub pending_block_request_hashes: Vec<String>,
     pub duplicate_block_requests_suppressed: u64,
     pub pending_missing_parents: usize,
+    pub orphan_backlog_retryable_ready: usize,
+    pub orphan_backlog_waiting_missing_parent: usize,
+    pub orphan_backlog_stale_missing_parent_entries: usize,
+    pub orphan_backlog_unindexed_missing_parent_entries: usize,
     pub can_replay_from_blocks: bool,
     pub replay_gap: i64,
     pub rebuild_recommended: bool,
@@ -235,6 +239,7 @@ pub async fn get_sync_status<S: RpcStateLike>(
             .map(|ts| now_unix.saturating_sub(ts) > 120)
             .unwrap_or(false);
     let pending_missing_parents = pulsedag_core::pending_missing_parent_count(&chain);
+    let orphan_backlog = pulsedag_core::classify_orphan_backlog(&chain);
     let has_orphan_backlog = pending_missing_parents > 0 || !chain.orphan_blocks.is_empty();
     let catchup_stage = if runtime.sync_pipeline.last_error.is_some() || !counters_coherent {
         "degraded"
@@ -343,6 +348,11 @@ pub async fn get_sync_status<S: RpcStateLike>(
         pending_block_request_hashes: runtime.pending_block_request_hashes.clone(),
         duplicate_block_requests_suppressed: runtime.duplicate_block_requests_suppressed,
         pending_missing_parents,
+        orphan_backlog_retryable_ready: orphan_backlog.retryable_ready,
+        orphan_backlog_waiting_missing_parent: orphan_backlog.waiting_missing_parent,
+        orphan_backlog_stale_missing_parent_entries: orphan_backlog.stale_missing_parent_entries,
+        orphan_backlog_unindexed_missing_parent_entries: orphan_backlog
+            .unindexed_missing_parent_entries,
         can_replay_from_blocks: persisted_block_count > 0,
         replay_gap: persisted_block_count as i64 - chain.dag.blocks.len() as i64,
         rebuild_recommended: !snapshot_exists || persisted_block_count > chain.dag.blocks.len(),

@@ -27,6 +27,14 @@ pub struct OrphanAdoptionResult {
     pub failure_reasons: BTreeMap<String, usize>,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct OrphanBacklogClassification {
+    pub retryable_ready: usize,
+    pub waiting_missing_parent: usize,
+    pub stale_missing_parent_entries: usize,
+    pub unindexed_missing_parent_entries: usize,
+}
+
 fn reprocess_failure_reason(result: &BlockAcceptanceResult) -> String {
     match result {
         BlockAcceptanceResult::MissingParent => "missing_parent".to_string(),
@@ -134,6 +142,42 @@ pub fn orphan_children_waiting_for_parent(state: &ChainState, parent: &Hash) -> 
         .get(parent)
         .map(|children| children.iter().cloned().collect())
         .unwrap_or_default()
+}
+
+pub fn classify_orphan_backlog(state: &ChainState) -> OrphanBacklogClassification {
+    let mut classification = OrphanBacklogClassification::default();
+    for (hash, block) in &state.orphan_blocks {
+        let actual_missing = missing_block_parents(block, state);
+        let recorded_missing = state
+            .orphan_missing_parents
+            .get(hash)
+            .cloned()
+            .unwrap_or_default();
+        if actual_missing.is_empty() {
+            classification.retryable_ready = classification.retryable_ready.saturating_add(1);
+        } else {
+            classification.waiting_missing_parent =
+                classification.waiting_missing_parent.saturating_add(1);
+        }
+        if normalize_missing_parents(recorded_missing) != actual_missing {
+            classification.stale_missing_parent_entries = classification
+                .stale_missing_parent_entries
+                .saturating_add(1);
+        }
+        for parent in actual_missing {
+            if !state
+                .orphan_parent_index
+                .get(&parent)
+                .map(|waiting| waiting.contains(hash))
+                .unwrap_or(false)
+            {
+                classification.unindexed_missing_parent_entries = classification
+                    .unindexed_missing_parent_entries
+                    .saturating_add(1);
+            }
+        }
+    }
+    classification
 }
 
 pub fn pending_missing_parent_count(state: &ChainState) -> usize {
@@ -393,6 +437,56 @@ mod tests {
             }
         }
         assert_eq!(state.orphan_parent_index, rebuilt_parent_index);
+    }
+
+    #[test]
+    fn classifies_ready_and_stale_orphan_backlog() {
+        let mut state = init_chain_state("test".into());
+        let parent = candidate_for_state(
+            &state,
+            vec![state.dag.genesis_hash.clone()],
+            1,
+            "parent-1",
+            1,
+        );
+        let child = candidate(vec![parent.hash.clone()], 2, "child-1", 2);
+        let missing = queue_missing(&mut state, child.clone());
+        assert_eq!(missing, vec![parent.hash.clone()]);
+
+        let waiting = classify_orphan_backlog(&state);
+        assert_eq!(waiting.retryable_ready, 0);
+        assert_eq!(waiting.waiting_missing_parent, 1);
+        assert_eq!(waiting.stale_missing_parent_entries, 0);
+        assert_eq!(waiting.unindexed_missing_parent_entries, 0);
+
+        apply_block(&parent, &mut state).unwrap();
+        let ready = classify_orphan_backlog(&state);
+        assert_eq!(ready.retryable_ready, 1);
+        assert_eq!(ready.waiting_missing_parent, 0);
+        assert_eq!(ready.stale_missing_parent_entries, 1);
+        assert_eq!(ready.unindexed_missing_parent_entries, 0);
+    }
+
+    #[test]
+    fn classifies_unindexed_missing_parent_entries() {
+        let mut state = init_chain_state("test".into());
+        let parent = candidate_for_state(
+            &state,
+            vec![state.dag.genesis_hash.clone()],
+            1,
+            "parent-1",
+            1,
+        );
+        let child = candidate(vec![parent.hash.clone()], 2, "child-1", 2);
+        queue_missing(&mut state, child);
+        state.orphan_parent_index.clear();
+
+        let classification = classify_orphan_backlog(&state);
+        assert_eq!(classification.retryable_ready, 0);
+        assert_eq!(classification.waiting_missing_parent, 1);
+        assert_eq!(classification.stale_missing_parent_entries, 0);
+        assert_eq!(classification.unindexed_missing_parent_entries, 1);
+        assert_eq!(pending_missing_parent_count(&state), 1);
     }
 
     #[test]

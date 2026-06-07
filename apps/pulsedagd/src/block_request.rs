@@ -260,6 +260,10 @@ impl BlockRequestTracker {
         self.note_request_dropped(hash, now_unix);
     }
 
+    pub fn reset_backoff(&mut self, hash: &str) -> bool {
+        self.backoff_by_hash.remove(hash).is_some()
+    }
+
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn pending_capacity_remaining(&self) -> usize {
         self.max_pending.saturating_sub(self.pending.len())
@@ -718,6 +722,18 @@ mod tests {
         let counters = tracker.take_fetch_counters();
         assert_eq!(counters.dropped, 1);
         assert!(counters.suppressed >= 1);
+    }
+
+    #[test]
+    fn reset_backoff_allows_bounded_recovery_reissue() {
+        let mut tracker = BlockRequestTracker::with_limit(5, 1, 2);
+        assert!(tracker.should_issue_getblock("parent", 100));
+        tracker.note_not_found("parent", 101);
+        assert!(!tracker.should_issue_getblock("parent", 102));
+
+        assert!(tracker.reset_backoff("parent"));
+        assert!(tracker.should_issue_getblock("parent", 103));
+        assert!(!tracker.reset_backoff("parent"));
     }
 
     #[test]
