@@ -8,7 +8,8 @@ use pulsedag_core::{
     accept_block_atomically, adopt_ready_orphans, expected_difficulty, pow_validation_result,
     preferred_tip_hash, AcceptSource,
 };
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use tokio::time::timeout;
 use tracing::{info, warn};
 
 #[derive(Debug, serde::Serialize)]
@@ -55,6 +56,55 @@ where
     persist(block, chain)?;
     broadcast(block);
     Ok(())
+}
+
+const SUBMIT_CHAIN_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
+const SUBMIT_ORPHAN_ADOPTION_CHAIN_WRITE_TIMEOUT: Duration = Duration::from_millis(100);
+const SUBMIT_POST_ACCEPT_TIMEOUT: Duration = Duration::from_secs(10);
+
+fn elapsed_ms(started: Instant) -> u64 {
+    started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64
+}
+
+async fn record_submit_phase<S: RpcStateLike>(state: &S, phase: &'static str) {
+    let runtime_handle = state.runtime();
+    let mut runtime = runtime_handle.write().await;
+    runtime.external_mining_last_submit_phase = Some(phase.to_string());
+}
+
+async fn record_submit_started<S: RpcStateLike>(state: &S) {
+    let runtime_handle = state.runtime();
+    let mut runtime = runtime_handle.write().await;
+    runtime.external_mining_submit_started_total = runtime
+        .external_mining_submit_started_total
+        .saturating_add(1);
+    runtime.external_mining_last_submit_phase = Some("received".to_string());
+}
+
+async fn record_submit_inflight<S: RpcStateLike>(state: &S) {
+    let runtime_handle = state.runtime();
+    let mut runtime = runtime_handle.write().await;
+    runtime.external_mining_submit_inflight =
+        runtime.external_mining_submit_inflight.saturating_add(1);
+}
+
+async fn record_submit_completed<S: RpcStateLike>(
+    state: &S,
+    started: Instant,
+    phase: &'static str,
+) {
+    let duration = elapsed_ms(started);
+    let runtime_handle = state.runtime();
+    let mut runtime = runtime_handle.write().await;
+    runtime.external_mining_submit_inflight =
+        runtime.external_mining_submit_inflight.saturating_sub(1);
+    runtime.external_mining_submit_completed_total = runtime
+        .external_mining_submit_completed_total
+        .saturating_add(1);
+    runtime.external_mining_last_submit_phase = Some(phase.to_string());
+    runtime.external_mining_last_submit_duration_ms = duration;
+    runtime.external_mining_max_submit_duration_ms =
+        runtime.external_mining_max_submit_duration_ms.max(duration);
 }
 
 #[derive(Clone, Copy)]
@@ -342,8 +392,9 @@ pub async fn post_mining_submit<S: RpcStateLike>(
     State(state): State<S>,
     Json(req): Json<SubmitMinedBlockRequest>,
 ) -> Json<ApiResponse<MiningSubmitData>> {
-    let chain_handle = state.chain();
-    let mut chain = chain_handle.write().await;
+    let submit_started = Instant::now();
+    record_submit_started(&state).await;
+    record_submit_phase(&state, "precheck").await;
     let pow = pow_validation_result(&req.block.header);
     let pow_accepted_dev = pow.accepted;
     let target_u64 = pow.target_u64;
@@ -356,14 +407,48 @@ pub async fn post_mining_submit<S: RpcStateLike>(
         runtime.pulsedag_mining_submits_total =
             runtime.pulsedag_mining_submits_total.saturating_add(1);
     }
+    let chain_handle = state.chain();
+    record_submit_phase(&state, "waiting_chain_write").await;
+    record_submit_inflight(&state).await;
+    let lock_wait = Instant::now();
+    let mut chain = match timeout(SUBMIT_CHAIN_WRITE_TIMEOUT, chain_handle.write()).await {
+        Ok(chain) => {
+            let runtime_handle = state.runtime();
+            let mut runtime = runtime_handle.write().await;
+            runtime.external_mining_submit_lock_wait_ms = elapsed_ms(lock_wait);
+            chain
+        }
+        Err(_) => {
+            let runtime_handle = state.runtime();
+            let mut runtime = runtime_handle.write().await;
+            runtime.external_mining_submit_timeout_total = runtime
+                .external_mining_submit_timeout_total
+                .saturating_add(1);
+            runtime.external_mining_last_submit_phase = Some("timeout".to_string());
+            drop(runtime);
+            record_submit_completed(&state, submit_started, "timeout").await;
+            return Json(rejection_submit_response(
+                "submit_timeout_before_acceptance",
+                format!(
+                    "submit_block could not acquire chain write lock within {}ms before acceptance",
+                    SUBMIT_CHAIN_WRITE_TIMEOUT.as_millis()
+                ),
+                Some(block_hash),
+                Some(height),
+                false,
+            ));
+        }
+    };
 
     if chain.dag.blocks.contains_key(&block_hash) {
         let detail = format!(
             "duplicate block submit: block_hash={} height={}",
             block_hash, height
         );
+        drop(chain);
         record_external_mining_rejection(&state, ExternalMiningRejectKind::DuplicateBlock, &detail)
             .await;
+        record_submit_completed(&state, submit_started, "rejected").await;
         return Json(rejection_submit_response_with_pow(
             "duplicate_block",
             detail,
@@ -381,12 +466,14 @@ pub async fn post_mining_submit<S: RpcStateLike>(
     let Some(template_id) = req.template_id.as_ref() else {
         let detail =
             "submit request missing required template_id; refresh template and retry".to_string();
+        drop(chain);
         record_external_mining_rejection(
             &state,
             ExternalMiningRejectKind::MissingTemplateId,
             &detail,
         )
         .await;
+        record_submit_completed(&state, submit_started, "rejected").await;
         return Json(rejection_submit_response(
             "missing_template_id",
             detail,
@@ -397,19 +484,22 @@ pub async fn post_mining_submit<S: RpcStateLike>(
     };
 
     if height <= chain.dag.best_height {
+        let best_height = chain.dag.best_height;
         let msg = format!(
             "reason_code={}; current best height is {} and submitted block height is {}",
             StaleTemplateReason::ChainHeightAdvanced.code(),
-            chain.dag.best_height,
+            best_height,
             height
         );
+        drop(chain);
         record_external_mining_rejection(&state, ExternalMiningRejectKind::StaleTemplate, &msg)
             .await;
+        record_submit_completed(&state, submit_started, "rejected").await;
         return Json(stale_template_error(
             StaleTemplateReason::ChainHeightAdvanced,
             format!(
                 "current best height is {} and submitted block height is {}",
-                chain.dag.best_height, height
+                best_height, height
             ),
         ));
     }
@@ -429,12 +519,14 @@ pub async fn post_mining_submit<S: RpcStateLike>(
                 "submitted block height {} does not match template height {}; refresh template and retry",
                 req.block.header.height, stored.height
             );
+            drop(chain);
             record_external_mining_rejection(
                 &state,
                 ExternalMiningRejectKind::StaleTemplate,
                 &detail,
             )
             .await;
+            record_submit_completed(&state, submit_started, "rejected").await;
             return Json(rejection_submit_response(
                 "stale_template",
                 detail,
@@ -443,19 +535,21 @@ pub async fn post_mining_submit<S: RpcStateLike>(
                 true,
             ));
         }
-        if stored.height != chain.dag.best_height + 1 {
+        let current_next_height = chain.dag.best_height + 1;
+        if stored.height != current_next_height {
             let msg = format!(
                 "reason_code={}; template height stale for current next height",
                 StaleTemplateReason::TemplateHeightStale.code()
             );
+            drop(chain);
             record_external_mining_rejection(&state, ExternalMiningRejectKind::StaleTemplate, &msg)
                 .await;
+            record_submit_completed(&state, submit_started, "rejected").await;
             return Json(stale_template_error(
                 StaleTemplateReason::TemplateHeightStale,
                 format!(
                     "template height {} is stale; current next height is {}",
-                    stored.height,
-                    chain.dag.best_height + 1
+                    stored.height, current_next_height
                 ),
             ));
         }
@@ -464,8 +558,10 @@ pub async fn post_mining_submit<S: RpcStateLike>(
                 "reason_code={}; template parents mismatch current tips",
                 StaleTemplateReason::TemplateParentsMismatch.code()
             );
+            drop(chain);
             record_external_mining_rejection(&state, ExternalMiningRejectKind::StaleTemplate, &msg)
                 .await;
+            record_submit_completed(&state, submit_started, "rejected").await;
             return Json(stale_template_error(
                 StaleTemplateReason::TemplateParentsMismatch,
                 "template parents no longer match current tips",
@@ -476,8 +572,10 @@ pub async fn post_mining_submit<S: RpcStateLike>(
                 "reason_code={}; template selected_tip mismatch current preferred tip",
                 StaleTemplateReason::TemplateSelectedTipMismatch.code()
             );
+            drop(chain);
             record_external_mining_rejection(&state, ExternalMiningRejectKind::StaleTemplate, &msg)
                 .await;
+            record_submit_completed(&state, submit_started, "rejected").await;
             return Json(stale_template_error(
                 StaleTemplateReason::TemplateSelectedTipMismatch,
                 "template selected_tip no longer matches current preferred tip",
@@ -488,8 +586,10 @@ pub async fn post_mining_submit<S: RpcStateLike>(
                 "reason_code={}; template difficulty/target mismatch node state",
                 StaleTemplateReason::TemplateDifficultyTargetMismatch.code()
             );
+            drop(chain);
             record_external_mining_rejection(&state, ExternalMiningRejectKind::StaleTemplate, &msg)
                 .await;
+            record_submit_completed(&state, submit_started, "rejected").await;
             return Json(stale_template_error(
                 StaleTemplateReason::TemplateDifficultyTargetMismatch,
                 "template difficulty/target no longer matches node state",
@@ -500,8 +600,10 @@ pub async fn post_mining_submit<S: RpcStateLike>(
                 "reason_code={}; template mempool view changed",
                 StaleTemplateReason::TemplateMempoolChanged.code()
             );
+            drop(chain);
             record_external_mining_rejection(&state, ExternalMiningRejectKind::StaleTemplate, &msg)
                 .await;
+            record_submit_completed(&state, submit_started, "rejected").await;
             return Json(stale_template_error(
                 StaleTemplateReason::TemplateMempoolChanged,
                 "template mempool view changed; refresh template",
@@ -514,8 +616,10 @@ pub async fn post_mining_submit<S: RpcStateLike>(
                 "reason_code={}; template created_at is in the future",
                 StaleTemplateReason::TemplateFutureClockSkew.code()
             );
+            drop(chain);
             record_external_mining_rejection(&state, ExternalMiningRejectKind::StaleTemplate, &msg)
                 .await;
+            record_submit_completed(&state, submit_started, "rejected").await;
             return Json(stale_template_error(
                 StaleTemplateReason::TemplateFutureClockSkew,
                 "template appears to be from the future; check node/miner clocks and refresh",
@@ -526,8 +630,10 @@ pub async fn post_mining_submit<S: RpcStateLike>(
                 "reason_code={}; template freshness window elapsed",
                 StaleTemplateReason::TemplateExpired.code()
             );
+            drop(chain);
             record_external_mining_rejection(&state, ExternalMiningRejectKind::StaleTemplate, &msg)
                 .await;
+            record_submit_completed(&state, submit_started, "rejected").await;
             return Json(stale_template_error(
                 StaleTemplateReason::TemplateExpired,
                 format!(
@@ -541,8 +647,10 @@ pub async fn post_mining_submit<S: RpcStateLike>(
                 "reason_code={}; template lifecycle state changed",
                 StaleTemplateReason::TemplateLifecycleChanged.code()
             );
+            drop(chain);
             record_external_mining_rejection(&state, ExternalMiningRejectKind::StaleTemplate, &msg)
                 .await;
+            record_submit_completed(&state, submit_started, "rejected").await;
             return Json(stale_template_error(
                 StaleTemplateReason::TemplateLifecycleChanged,
                 "template no longer matches current lifecycle state",
@@ -553,8 +661,10 @@ pub async fn post_mining_submit<S: RpcStateLike>(
                 "reason_code={}; submitted header merkle root differs from template merkle root",
                 StaleTemplateReason::SubmittedMerkleRootMismatch.code()
             );
+            drop(chain);
             record_external_mining_rejection(&state, ExternalMiningRejectKind::StaleTemplate, &msg)
                 .await;
+            record_submit_completed(&state, submit_started, "rejected").await;
             return Json(stale_template_error(
                 StaleTemplateReason::SubmittedMerkleRootMismatch,
                 "submitted merkle root does not match template merkle root",
@@ -577,12 +687,14 @@ pub async fn post_mining_submit<S: RpcStateLike>(
                         "reason_code={}; submitted transaction list differs from template transaction list",
                         StaleTemplateReason::SubmittedTransactionsMismatch.code()
                     );
+                drop(chain);
                 record_external_mining_rejection(
                     &state,
                     ExternalMiningRejectKind::StaleTemplate,
                     &msg,
                 )
                 .await;
+                record_submit_completed(&state, submit_started, "rejected").await;
                 return Json(stale_template_error(
                     StaleTemplateReason::SubmittedTransactionsMismatch,
                     "submitted transactions differ from template; refresh template and retry",
@@ -590,15 +702,18 @@ pub async fn post_mining_submit<S: RpcStateLike>(
             }
         }
     } else {
+        let detail = format!("template_id {} not found", template_id);
+        drop(chain);
         record_external_mining_rejection(
             &state,
             ExternalMiningRejectKind::UnknownTemplate,
-            &format!("template_id {} not found", template_id),
+            &detail,
         )
         .await;
+        record_submit_completed(&state, submit_started, "rejected").await;
         return Json(rejection_submit_response(
             "unknown_template",
-            format!("template_id {} not found", template_id),
+            detail,
             None,
             Some(height),
             true,
@@ -612,8 +727,10 @@ pub async fn post_mining_submit<S: RpcStateLike>(
             "reason_code={}; submitted block parents mismatch current tips",
             StaleTemplateReason::SubmittedParentsMismatch.code()
         );
+        drop(chain);
         record_external_mining_rejection(&state, ExternalMiningRejectKind::StaleTemplate, &msg)
             .await;
+        record_submit_completed(&state, submit_started, "rejected").await;
         return Json(stale_template_error(
             StaleTemplateReason::SubmittedParentsMismatch,
             "submitted block parents no longer match current tip set",
@@ -631,6 +748,7 @@ pub async fn post_mining_submit<S: RpcStateLike>(
             req.block.header.height,
             req.block.header.nonce
         );
+        drop(chain);
         {
             let runtime_handle = state.runtime();
             let mut runtime = runtime_handle.write().await;
@@ -640,6 +758,7 @@ pub async fn post_mining_submit<S: RpcStateLike>(
         }
         record_external_mining_rejection(&state, ExternalMiningRejectKind::InvalidPow, &detail)
             .await;
+        record_submit_completed(&state, submit_started, "rejected").await;
         return Json(rejection_submit_response_with_pow(
             "invalid_pow",
             detail,
@@ -655,6 +774,7 @@ pub async fn post_mining_submit<S: RpcStateLike>(
     }
 
     if !pow.accepted {
+        drop(chain);
         let runtime_handle = state.runtime();
         let mut runtime = runtime_handle.write().await;
         runtime.rejected_mined_blocks += 1;
@@ -678,6 +798,7 @@ pub async fn post_mining_submit<S: RpcStateLike>(
             ),
         )
         .await;
+        record_submit_completed(&state, submit_started, "rejected").await;
         return Json(rejection_submit_response_with_pow(
             "invalid_pow",
             format!(
@@ -701,26 +822,28 @@ pub async fn post_mining_submit<S: RpcStateLike>(
         ));
     }
 
+    let accept_started = Instant::now();
+    let accept_ms;
     let acceptance = match accept_block_atomically(
         req.block.clone(),
         &mut chain,
         AcceptSource::Rpc,
         |block, chain| state.storage().persist_block_and_chain_state(block, chain),
-        |block| {
-            if let Some(p2p) = state.p2p() {
-                let _ = p2p.broadcast_block(block);
-            }
-            Ok(())
-        },
+        |_block| Ok(()),
     ) {
-        Ok(acceptance) => acceptance.result,
+        Ok(acceptance) => {
+            accept_ms = elapsed_ms(accept_started);
+            acceptance.result
+        }
         Err(e) => {
+            drop(chain);
             record_external_mining_rejection(
                 &state,
                 ExternalMiningRejectKind::SubmitBlockError,
                 &e.to_string(),
             )
             .await;
+            record_submit_completed(&state, submit_started, "error").await;
             return Json(rejection_submit_response(
                 "storage_rejected",
                 e.to_string(),
@@ -733,32 +856,40 @@ pub async fn post_mining_submit<S: RpcStateLike>(
 
     match acceptance {
         pulsedag_core::BlockAcceptanceResult::Accepted => {
-            let adopted_orphans = {
-                let mut adopted_chain = chain.clone();
-                let adopted = adopt_ready_orphans(&mut adopted_chain, AcceptSource::Rpc);
-                if adopted > 0 {
-                    match state.storage().persist_chain_state(&adopted_chain) {
-                        Ok(()) => {
-                            *chain = adopted_chain;
-                            adopted
-                        }
-                        Err(e) => {
-                            warn!(error = %e, block_hash = %block_hash, adopted, "failed persisting chain state after mining orphan adoption; keeping orphans queued in memory");
-                            let _ = state.storage().append_runtime_event(
-                                "warn",
-                                "external_mining_orphan_adoption_persist_failed",
-                                &format!(
-                                    "block_hash={} adopted_orphans={} error={}",
-                                    block_hash, adopted, e
-                                ),
-                            );
-                            0
-                        }
-                    }
-                } else {
+            let selected_tip = preferred_tip_hash(&chain);
+            drop(chain);
+
+            record_submit_phase(&state, "accepted").await;
+            let post_accept_started = Instant::now();
+            record_submit_phase(&state, "orphan_adoption").await;
+
+            // Bounded post-accept orphan adoption phase with its own short write-lock attempt.
+            let adopted_orphans = match timeout(
+                SUBMIT_POST_ACCEPT_TIMEOUT,
+                perform_orphan_adoption(&state, &block_hash),
+            )
+            .await
+            {
+                Ok(result) => result,
+                Err(_) => {
+                    warn!(
+                        block_hash = %block_hash,
+                        "orphan adoption exceeded timeout; proceeding without adoption"
+                    );
                     0
                 }
             };
+
+            record_submit_phase(&state, "broadcasting").await;
+            if let Some(p2p) = state.p2p() {
+                let _ = p2p.broadcast_block(&req.block);
+            }
+            {
+                let runtime_handle = state.runtime();
+                let mut runtime = runtime_handle.write().await;
+                runtime.external_mining_submit_accept_ms = accept_ms;
+                runtime.external_mining_submit_post_accept_ms = elapsed_ms(post_accept_started);
+            }
 
             {
                 let runtime_handle = state.runtime();
@@ -783,6 +914,8 @@ pub async fn post_mining_submit<S: RpcStateLike>(
                 ),
             );
 
+            record_submit_phase(&state, "responding").await;
+            record_submit_completed(&state, submit_started, "completed").await;
             Json(ApiResponse::ok(MiningSubmitData {
                 accepted: true,
                 reason: "accepted".to_string(),
@@ -802,7 +935,7 @@ pub async fn post_mining_submit<S: RpcStateLike>(
                 duplicate: false,
                 stale_template: false,
                 reason_code: "accepted".to_string(),
-                selected_tip: preferred_tip_hash(&chain),
+                selected_tip,
                 adopted_orphans,
                 pow_hash_score_u64,
                 pow_rejection_code: pow.rejection_code.map(|v| v.to_string()),
@@ -810,6 +943,7 @@ pub async fn post_mining_submit<S: RpcStateLike>(
             }))
         }
         outcome => {
+            drop(chain);
             let runtime_handle = state.runtime();
             let mut runtime = runtime_handle.write().await;
             runtime.rejected_mined_blocks += 1;
@@ -845,6 +979,7 @@ pub async fn post_mining_submit<S: RpcStateLike>(
             };
             let detail = format!("block acceptance outcome: {:?}", outcome);
             record_external_mining_rejection(&state, rejection_kind, &detail).await;
+            record_submit_completed(&state, submit_started, "rejected").await;
             Json(rejection_submit_response_with_pow(
                 reason_code,
                 detail,
@@ -861,9 +996,65 @@ pub async fn post_mining_submit<S: RpcStateLike>(
     }
 }
 
+async fn perform_orphan_adoption<S: RpcStateLike>(state: &S, block_hash: &str) -> usize {
+    let chain_handle = state.chain();
+    let mut chain = match timeout(
+        SUBMIT_ORPHAN_ADOPTION_CHAIN_WRITE_TIMEOUT,
+        chain_handle.write(),
+    )
+    .await
+    {
+        Ok(chain) => chain,
+        Err(_) => {
+            warn!(
+                block_hash = %block_hash,
+                "skipping mining orphan adoption because chain write lock was busy"
+            );
+            let _ = state.storage().append_runtime_event(
+                "warn",
+                "external_mining_orphan_adoption_skipped_busy_chain",
+                &format!(
+                    "block_hash={} lock_timeout_ms={}",
+                    block_hash,
+                    SUBMIT_ORPHAN_ADOPTION_CHAIN_WRITE_TIMEOUT.as_millis()
+                ),
+            );
+            return 0;
+        }
+    };
+
+    let mut adopted_chain = chain.clone();
+    let adopted = adopt_ready_orphans(&mut adopted_chain, AcceptSource::Rpc);
+    if adopted > 0 {
+        match state.storage().persist_chain_state(&adopted_chain) {
+            Ok(()) => {
+                *chain = adopted_chain;
+                adopted
+            }
+            Err(e) => {
+                warn!(error = %e, block_hash = %block_hash, adopted, "failed persisting chain state after mining orphan adoption; keeping orphans queued in memory");
+                let _ = state.storage().append_runtime_event(
+                    "warn",
+                    "external_mining_orphan_adoption_persist_failed",
+                    &format!(
+                        "block_hash={} adopted_orphans={} error={}",
+                        block_hash, adopted, e
+                    ),
+                );
+                0
+            }
+        }
+    } else {
+        0
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{persist_then_broadcast_mined_block, post_mining_submit};
+    use super::{
+        persist_then_broadcast_mined_block, post_mining_submit, record_submit_completed,
+        record_submit_inflight, record_submit_phase, record_submit_started,
+    };
     use crate::{
         api::{GetBlockTemplateRequest, NodeRuntimeStats, RpcStateLike, SubmitMinedBlockRequest},
         handlers::mining_template::{post_mining_template, store_template, StoredMiningTemplate},
@@ -1138,6 +1329,26 @@ mod tests {
         (template.template_id, block)
     }
 
+    #[tokio::test]
+    async fn submit_metrics_phase_progression_records_bounded_fields() {
+        let (state, _fake) = build_state_with_fake_p2p();
+        let started = Instant::now();
+
+        record_submit_started(&state).await;
+        record_submit_phase(&state, "precheck").await;
+        record_submit_inflight(&state).await;
+        record_submit_phase(&state, "accepting").await;
+        record_submit_completed(&state, started, "completed").await;
+
+        let runtime = state.runtime.read().await;
+        assert_eq!(runtime.external_mining_submit_started_total, 1);
+        assert_eq!(runtime.external_mining_submit_completed_total, 1);
+        assert_eq!(runtime.external_mining_submit_inflight, 0);
+        assert_eq!(
+            runtime.external_mining_last_submit_phase.as_deref(),
+            Some("completed")
+        );
+    }
     #[tokio::test]
     async fn accepted_block_broadcasts_to_p2p() {
         let (state, fake_p2p) = build_state_with_fake_p2p();
