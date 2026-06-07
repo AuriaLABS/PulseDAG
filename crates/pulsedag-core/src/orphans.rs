@@ -144,6 +144,63 @@ pub fn orphan_children_waiting_for_parent(state: &ChainState, parent: &Hash) -> 
         .unwrap_or_default()
 }
 
+/// Return the missing external roots that must be fetched before `orphan_hash` can be adopted.
+///
+/// If an orphan is missing a parent that is itself already queued as an orphan, the search walks
+/// through that queued parent and returns the first missing ancestors that are not available in the
+/// DAG or the orphan pool. This mirrors Kaspa-style orphan-root recovery: ask for the earliest
+/// unknown frontier instead of repeatedly requesting already-queued descendants.
+pub fn orphan_missing_roots(state: &ChainState, orphan_hash: &Hash) -> Vec<Hash> {
+    let Some(orphan) = state.orphan_blocks.get(orphan_hash) else {
+        return Vec::new();
+    };
+
+    let mut roots = BTreeSet::new();
+    let mut visited = BTreeSet::new();
+    let mut stack = orphan.header.parents.clone();
+    stack.sort();
+
+    while let Some(parent) = stack.pop() {
+        if state.dag.blocks.contains_key(&parent) || !visited.insert(parent.clone()) {
+            continue;
+        }
+        if let Some(queued_parent) = state.orphan_blocks.get(&parent) {
+            for ancestor in queued_parent.header.parents.iter().rev() {
+                if !state.dag.blocks.contains_key(ancestor) {
+                    stack.push(ancestor.clone());
+                }
+            }
+        } else {
+            roots.insert(parent);
+        }
+    }
+
+    roots.into_iter().collect()
+}
+
+/// Rebuild orphan missing-parent indexes from the currently queued orphan blocks.
+///
+/// This is intentionally derived from each block's real parents rather than existing orphan index
+/// metadata, so it can repair states where `orphan_blocks` survived but `orphan_parent_index` or
+/// `orphan_missing_parents` was empty/stale. The returned classification describes the rebuilt
+/// backlog in retryable/waiting/stale/unindexed buckets.
+pub fn rebuild_orphan_parent_index(state: &mut ChainState) -> OrphanBacklogClassification {
+    state.orphan_missing_parents.clear();
+    state.orphan_parent_index.clear();
+
+    let mut orphan_hashes = state.orphan_blocks.keys().cloned().collect::<Vec<_>>();
+    orphan_hashes.sort();
+    for orphan_hash in orphan_hashes {
+        let Some(block) = state.orphan_blocks.get(&orphan_hash) else {
+            continue;
+        };
+        let missing = missing_block_parents(block, state);
+        index_orphan_missing_parents(state, orphan_hash, missing);
+    }
+
+    classify_orphan_backlog(state)
+}
+
 pub fn classify_orphan_backlog(state: &ChainState) -> OrphanBacklogClassification {
     let mut classification = OrphanBacklogClassification::default();
     for (hash, block) in &state.orphan_blocks {
@@ -185,10 +242,19 @@ pub fn pending_missing_parent_count(state: &ChainState) -> usize {
     if indexed > 0 {
         return indexed;
     }
-    state
+    let recorded = state
         .orphan_missing_parents
         .values()
         .flat_map(|parents| parents.iter().cloned())
+        .collect::<BTreeSet<_>>()
+        .len();
+    if recorded > 0 {
+        return recorded;
+    }
+    state
+        .orphan_blocks
+        .keys()
+        .flat_map(|hash| orphan_missing_roots(state, hash))
         .collect::<BTreeSet<_>>()
         .len()
 }
@@ -437,6 +503,60 @@ mod tests {
             }
         }
         assert_eq!(state.orphan_parent_index, rebuilt_parent_index);
+    }
+
+    #[test]
+    fn orphan_missing_roots_walks_queued_orphan_ancestors() {
+        let mut state = init_chain_state("test".into());
+        let root = candidate_for_state(&state, vec![state.dag.genesis_hash.clone()], 1, "root", 1);
+        let root_state = state_after(&state, &root);
+        let parent = candidate_for_state(&root_state, vec![root.hash.clone()], 2, "parent", 2);
+        let parent_state = state_after(&root_state, &parent);
+        let child = candidate_for_state(&parent_state, vec![parent.hash.clone()], 3, "child", 3);
+
+        assert!(queue_orphan_block(
+            &mut state,
+            parent.clone(),
+            vec![root.hash.clone()]
+        ));
+        assert!(queue_orphan_block(
+            &mut state,
+            child.clone(),
+            vec![parent.hash.clone()]
+        ));
+
+        assert_eq!(orphan_missing_roots(&state, &child.hash), vec![root.hash]);
+    }
+
+    #[test]
+    fn rebuild_orphan_parent_index_repairs_empty_indexes_from_real_parents() {
+        let mut state = init_chain_state("test".into());
+        let parent = candidate_for_state(
+            &state,
+            vec![state.dag.genesis_hash.clone()],
+            1,
+            "rebuild-parent",
+            1,
+        );
+        let child = candidate(vec![parent.hash.clone()], 2, "rebuild-child", 2);
+        queue_missing(&mut state, child.clone());
+        state.orphan_missing_parents.clear();
+        state.orphan_parent_index.clear();
+
+        assert_eq!(pending_missing_parent_count(&state), 1);
+        let classification = rebuild_orphan_parent_index(&mut state);
+
+        assert_eq!(classification.waiting_missing_parent, 1);
+        assert_eq!(classification.unindexed_missing_parent_entries, 0);
+        assert_eq!(
+            state.orphan_missing_parents.get(&child.hash),
+            Some(&vec![parent.hash.clone()])
+        );
+        assert_eq!(
+            orphan_children_waiting_for_parent(&state, &parent.hash),
+            vec![child.hash]
+        );
+        assert_orphan_indexes_consistent(&state);
     }
 
     #[test]

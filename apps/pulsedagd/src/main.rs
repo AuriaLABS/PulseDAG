@@ -573,7 +573,7 @@ async fn main() -> Result<()> {
                 recovery_tick = recovery_tick.saturating_add(1);
                 if recovery_tick.is_multiple_of(5) {
                     let (
-                        stale_missing_parents,
+                        missing_roots,
                         adopted,
                         retried,
                         orphan_count,
@@ -584,15 +584,18 @@ async fn main() -> Result<()> {
                         orphan_backlog,
                     ) = {
                         let mut guard = chain.write().await;
-                        let known = guard.dag.blocks.keys().cloned().collect::<HashSet<_>>();
-                        let mut missing = guard
-                            .orphan_parent_index
-                            .keys()
-                            .filter(|parent| !known.contains(*parent))
-                            .cloned()
-                            .collect::<Vec<_>>();
-                        missing.sort();
-                        missing.truncate(16);
+                        if guard.orphan_parent_index.is_empty() && !guard.orphan_blocks.is_empty() {
+                            let rebuilt = pulsedag_core::rebuild_orphan_parent_index(&mut guard);
+                            info!(
+                                event = "orphan_parent_index_rebuilt",
+                                retryable_ready = rebuilt.retryable_ready,
+                                waiting_missing_parent = rebuilt.waiting_missing_parent,
+                                stale_missing_parent_entries = rebuilt.stale_missing_parent_entries,
+                                unindexed_missing_parent_entries =
+                                    rebuilt.unindexed_missing_parent_entries,
+                                "rebuilt orphan parent index from queued orphan block parents"
+                            );
+                        }
                         let mut adopted_hashes = Vec::new();
                         let adoption = pulsedag_core::adopt_ready_orphans_with_result(
                             &mut guard,
@@ -617,9 +620,19 @@ async fn main() -> Result<()> {
                         for hash in adopted_hashes {
                             block_requests.resolve(&hash);
                         }
+                        let known = guard.dag.blocks.keys().cloned().collect::<HashSet<_>>();
+                        let mut roots = guard
+                            .orphan_blocks
+                            .keys()
+                            .flat_map(|hash| pulsedag_core::orphan_missing_roots(&guard, hash))
+                            .filter(|root| !known.contains(root))
+                            .collect::<Vec<_>>();
+                        roots.sort();
+                        roots.dedup();
+                        roots.truncate(16);
                         let ages = orphan_age_metrics(&guard, now_unix());
                         (
-                            missing,
+                            roots,
                             adopted,
                             retried,
                             guard.orphan_blocks.len(),
@@ -630,7 +643,7 @@ async fn main() -> Result<()> {
                             pulsedag_core::classify_orphan_backlog(&guard),
                         )
                     };
-                    if retried > 0 || !stale_missing_parents.is_empty() || pending_missing > 0 {
+                    if retried > 0 || !missing_roots.is_empty() || pending_missing > 0 {
                         let mut rt = runtime.write().await;
                         let reprocess_attempts = if retried > 0 { retried as u64 } else { 1 };
                         rt.orphan_reprocess_attempts = rt
@@ -686,7 +699,7 @@ async fn main() -> Result<()> {
                         }
                         .to_string();
                     }
-                    for parent in stale_missing_parents {
+                    for parent in missing_roots {
                         let active_peers = active_peer_ids(&p2p);
                         if !active_peers.is_empty() {
                             block_requests.reset_backoff(&parent);
@@ -698,7 +711,7 @@ async fn main() -> Result<()> {
                         ) {
                             if let Some(ref p2p) = p2p {
                                 if let Err(e) = p2p.request_block(&parent) {
-                                    warn!(error = %e, missing_parent = %parent, "failed issuing recovery-tick missing-parent GetBlock request");
+                                    warn!(error = %e, missing_parent = %parent, "failed issuing recovery-tick orphan-root GetBlock request");
                                 }
                             }
                             let mut rt = runtime.write().await;
@@ -1247,17 +1260,48 @@ async fn main() -> Result<()> {
                                 }
                             }
                         } else {
+                            block_requests.resolve(&block.hash);
                             let (adopted, retried_orphans, adopted_hashes, failure_reasons) = {
                                 let mut adopted_guard = guard.clone();
-                                let adoption = pulsedag_core::adopt_ready_orphans_with_result(
+                                if adopted_guard.orphan_parent_index.is_empty()
+                                    && !adopted_guard.orphan_blocks.is_empty()
+                                {
+                                    let rebuilt = pulsedag_core::rebuild_orphan_parent_index(
+                                        &mut adopted_guard,
+                                    );
+                                    info!(
+                                        event = "orphan_parent_index_rebuilt",
+                                        accepted_parent = %block.hash,
+                                        retryable_ready = rebuilt.retryable_ready,
+                                        waiting_missing_parent = rebuilt.waiting_missing_parent,
+                                        stale_missing_parent_entries = rebuilt.stale_missing_parent_entries,
+                                        unindexed_missing_parent_entries = rebuilt.unindexed_missing_parent_entries,
+                                        "rebuilt orphan parent index before inbound orphan adoption"
+                                    );
+                                }
+                                let targeted = pulsedag_core::adopt_ready_orphans_with_result(
                                     &mut adopted_guard,
                                     AcceptSource::P2p,
                                     Some(&block.hash),
                                 );
-                                let adopted = adoption.accepted;
-                                let retried = adoption.retried;
-                                let failure_reasons = adoption.failure_reasons;
-                                let adopted_hashes = adoption.accepted_hashes;
+                                let mut adopted = targeted.accepted;
+                                let mut retried = targeted.retried;
+                                let mut failure_reasons = targeted.failure_reasons;
+                                let mut adopted_hashes = targeted.accepted_hashes;
+                                if !adopted_guard.orphan_blocks.is_empty() {
+                                    let bounded = pulsedag_core::adopt_ready_orphans_with_result(
+                                        &mut adopted_guard,
+                                        AcceptSource::P2p,
+                                        None,
+                                    );
+                                    adopted = adopted.saturating_add(bounded.accepted);
+                                    retried = retried.saturating_add(bounded.retried);
+                                    adopted_hashes.extend(bounded.accepted_hashes);
+                                    for (reason, count) in bounded.failure_reasons {
+                                        let entry = failure_reasons.entry(reason).or_insert(0);
+                                        *entry = entry.saturating_add(count);
+                                    }
+                                }
                                 if retried > 0 {
                                     match storage.persist_chain_state(&adopted_guard) {
                                         Ok(()) => {
@@ -1362,7 +1406,6 @@ async fn main() -> Result<()> {
                                     short_hash(&accepted_tip)
                                 ),
                             );
-                            block_requests.resolve(&block.hash);
                             for adopted_hash in &adopted_hashes {
                                 block_requests.resolve(adopted_hash);
                             }
