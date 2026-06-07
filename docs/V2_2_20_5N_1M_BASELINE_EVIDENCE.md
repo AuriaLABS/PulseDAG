@@ -12,19 +12,21 @@ This evidence does **not** declare public-testnet readiness, does **not** start 
 
 Uploaded artifact:
 
-- `v2_2_20_5n_1m_baseline_evidence (2).zip`
+- `v2_2_20_5n_1m_baseline_evidence (3).zip`
 
 Archive verification:
 
 - inner archive: `evidence.tar.gz`
-- sha256: `1df31d49f11172c3495aa36f3eac7483ffda2cb35668e589a6ceb5cb3c3273ed`
+- sha256: `4de50edfba42e11bd75abac0ae242baf1d9239fbfe6aa6104d5c325fa2f18c6e`
+
+This supersedes the earlier successful `5N/1M` evidence at commit `6633962c07bb1ccfc8c9e15b8763faf0402f45a6` and confirms that the baseline still passes on the later v2.2.20 hardening commit below.
 
 ## Runtime metadata
 
 - stage: `5N/1M baseline`
 - git ref: `main`
-- commit: `6633962c07bb1ccfc8c9e15b8763faf0402f45a6`
-- short commit: `6633962c07bb`
+- commit: `85c3b521cb79da7bddb9f0cc52dbbac52f3730ba`
+- short commit: `85c3b521cb79`
 - version: `pulsedagd 2.2.20`
 - `VERSION`: `v2.2.20`
 - Cargo workspace version: `2.2.20`
@@ -32,7 +34,6 @@ Archive verification:
 - exit code: `0`
 - failure classification: `none`
 - runtime: `840s`
-- package duration: `841s`
 - global deadline: `2700s`
 - quiescence wait: `180s`
 
@@ -68,18 +69,21 @@ All nodes ended healthy, ready, connected, and converged.
 
 | Node | Height | Peer count | Orphans | Pending missing parents | Tip |
 |---|---:|---:|---:|---:|---|
-| n1 | 400 | 4 | 0 | 0 | `3d53d88fc9a914c4b7dea54a9a53d3f622eb7eb64705fb64c788d655987d6df4` |
-| n2 | 400 | 4 | 0 | 0 | `3d53d88fc9a914c4b7dea54a9a53d3f622eb7eb64705fb64c788d655987d6df4` |
-| n3 | 400 | 4 | 0 | 0 | `3d53d88fc9a914c4b7dea54a9a53d3f622eb7eb64705fb64c788d655987d6df4` |
-| n4 | 400 | 4 | 0 | 0 | `3d53d88fc9a914c4b7dea54a9a53d3f622eb7eb64705fb64c788d655987d6df4` |
-| n5 | 400 | 4 | 0 | 0 | `3d53d88fc9a914c4b7dea54a9a53d3f622eb7eb64705fb64c788d655987d6df4` |
+| n1 | 400 | 4 | 0 | 0 | `099e3265fa9d44849ae7a613c95eac90c98869cd062b6e1c49f90299fca8a163` |
+| n2 | 400 | 4 | 0 | 0 | `099e3265fa9d44849ae7a613c95eac90c98869cd062b6e1c49f90299fca8a163` |
+| n3 | 400 | 4 | 0 | 0 | `099e3265fa9d44849ae7a613c95eac90c98869cd062b6e1c49f90299fca8a163` |
+| n4 | 400 | 4 | 0 | 0 | `099e3265fa9d44849ae7a613c95eac90c98869cd062b6e1c49f90299fca8a163` |
+| n5 | 400 | 4 | 0 | 0 | `099e3265fa9d44849ae7a613c95eac90c98869cd062b6e1c49f90299fca8a163` |
 
 Final convergence:
 
 - distinct final tips after quiescence: `1`
-- worst lag after quiescence: `0`
+- worst lag before quiescence from max height: `1`
+- worst lag after quiescence from max height: `0`
+- lag improved during quiescence: `true`
 - total orphan count after quiescence: `0`
 - total pending missing parents after quiescence: `0`
+- convergence before quiescence: `FAIL`
 - convergence after quiescence: `PASS`
 
 ## Miner summary
@@ -97,7 +101,17 @@ Final convergence:
 
 ## Recovery / diagnostics
 
-The run captured the new v2.2.20 diagnostic fields.
+The run captured the v2.2.20 diagnostic fields and confirms healthy peer lifecycle semantics under the baseline load.
+
+P2P status:
+
+| Node | Peer count | Inbound | Outbound |
+|---|---:|---:|---:|
+| n1 | 4 | 4 | 0 |
+| n2 | 4 | 0 | 1 |
+| n3 | 4 | 0 | 1 |
+| n4 | 4 | 0 | 1 |
+| n5 | 4 | 0 | 1 |
 
 P2P diagnostics:
 
@@ -115,19 +129,13 @@ Sync recovery counters after quiescence:
 | n4 | 0 | 0 | 0 | 0 | 1 |
 | n5 | 0 | 0 | 0 | 0 | 1 |
 
-## Warnings
-
-The release build completed successfully but emitted dead-code warnings in `apps/pulsedagd/src/block_request.rs` for backpressure constants/helpers. These warnings did not block this rehearsal because this build path did not run with `-D warnings`.
-
-Follow-up exists for strict warning cleanup before relying on CI paths that promote warnings to errors.
-
 ## Gate status
 
 | Gate | Status |
 |---|---|
 | 5N/1M baseline | PASS |
-| 5N/2M intermediate | NOT_RUN |
-| 5N/4M stress | NOT_RUN |
+| 5N/2M intermediate | NOT_RUN in this artifact |
+| 5N/4M stress | NOT_RUN in this artifact |
 
 ## Guardrails preserved
 
@@ -141,6 +149,7 @@ Follow-up exists for strict warning cleanup before relying on CI paths that prom
 
 ## Next steps
 
-1. Fix/close strict warning cleanup for `apps/pulsedagd/src/block_request.rs` so all CI paths can pass with `-D warnings`.
-2. Run and record `v2.2.20 5N/2M intermediate` evidence.
-3. Run and record `v2.2.20 5N/4M stress` observe evidence.
+1. Keep this `5N/1M` result as the baseline regression guard for v2.2.20.
+2. Fix/close strict warning cleanup for `apps/pulsedagd/src/block_request.rs` so all CI paths can pass with `-D warnings`.
+3. Recover `v2.2.20 5N/2M intermediate` to PASS.
+4. Re-run `v2.2.20 5N/4M stress` after the 5N/2M recovery fix.
