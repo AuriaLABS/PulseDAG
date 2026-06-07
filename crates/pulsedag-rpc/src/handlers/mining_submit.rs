@@ -1077,7 +1077,7 @@ mod tests {
             atomic::{AtomicUsize, Ordering},
             Arc,
         },
-        time::{SystemTime, UNIX_EPOCH},
+        time::{Instant, SystemTime, UNIX_EPOCH},
     };
     use tokio::sync::RwLock;
 
