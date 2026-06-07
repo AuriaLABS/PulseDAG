@@ -136,13 +136,32 @@ fn active_peer_ids(p2p: &Option<Arc<dyn P2pHandle>>) -> Vec<String> {
 fn active_peer_ids_from_handle(p2p: &Arc<dyn P2pHandle>) -> Vec<String> {
     p2p.status()
         .map(|status| {
-            status
+            let mut peers = status
                 .active_connections_by_peer
                 .into_iter()
                 .filter_map(|(peer, connections)| (connections > 0).then_some(peer))
-                .collect()
+                .collect::<Vec<_>>();
+            if peers.is_empty() {
+                peers = status.connected_peers;
+            }
+            peers.sort();
+            peers.dedup();
+            peers
         })
         .unwrap_or_default()
+}
+
+fn update_orphan_backlog_classification(
+    runtime: &mut pulsedag_rpc::api::NodeRuntimeStats,
+    chain: &pulsedag_core::ChainState,
+) {
+    let classification = pulsedag_core::classify_orphan_backlog(chain);
+    runtime.orphan_backlog_retryable_ready = classification.retryable_ready;
+    runtime.orphan_backlog_waiting_missing_parent = classification.waiting_missing_parent;
+    runtime.orphan_backlog_stale_missing_parent_entries =
+        classification.stale_missing_parent_entries;
+    runtime.orphan_backlog_unindexed_missing_parent_entries =
+        classification.unindexed_missing_parent_entries;
 }
 
 fn usage() -> &'static str {
@@ -562,6 +581,7 @@ async fn main() -> Result<()> {
                         ages,
                         persist_failed,
                         failure_reasons,
+                        orphan_backlog,
                     ) = {
                         let mut guard = chain.write().await;
                         let known = guard.dag.blocks.keys().cloned().collect::<HashSet<_>>();
@@ -607,6 +627,7 @@ async fn main() -> Result<()> {
                             ages,
                             persist_failed,
                             failure_reasons,
+                            pulsedag_core::classify_orphan_backlog(&guard),
                         )
                     };
                     if retried > 0 || !stale_missing_parents.is_empty() || pending_missing > 0 {
@@ -640,6 +661,13 @@ async fn main() -> Result<()> {
                                 rt.orphan_reprocess_failed_persist.saturating_add(1);
                         }
                         rt.pending_missing_parents = pending_missing;
+                        rt.orphan_backlog_retryable_ready = orphan_backlog.retryable_ready;
+                        rt.orphan_backlog_waiting_missing_parent =
+                            orphan_backlog.waiting_missing_parent;
+                        rt.orphan_backlog_stale_missing_parent_entries =
+                            orphan_backlog.stale_missing_parent_entries;
+                        rt.orphan_backlog_unindexed_missing_parent_entries =
+                            orphan_backlog.unindexed_missing_parent_entries;
                         rt.max_orphan_age_secs = ages.0;
                         rt.oldest_orphan_age_secs = ages.0;
                         rt.oldest_missing_parent_age_secs = ages
@@ -659,10 +687,14 @@ async fn main() -> Result<()> {
                         .to_string();
                     }
                     for parent in stale_missing_parents {
+                        let active_peers = active_peer_ids(&p2p);
+                        if !active_peers.is_empty() {
+                            block_requests.reset_backoff(&parent);
+                        }
                         if block_requests.should_issue_getblock_for_peers(
                             &parent,
                             now_unix(),
-                            active_peer_ids(&p2p),
+                            active_peers,
                         ) {
                             if let Some(ref p2p) = p2p {
                                 if let Err(e) = p2p.request_block(&parent) {
@@ -1087,6 +1119,7 @@ async fn main() -> Result<()> {
                                     .saturating_add(missing_parents.len() as u64);
                                 rt.pending_missing_parents =
                                     pulsedag_core::pending_missing_parent_count(&guard);
+                                update_orphan_backlog_classification(&mut rt, &guard);
                                 rt.max_orphan_age_secs = ages.0;
                                 rt.oldest_orphan_age_secs = ages.0;
                                 rt.oldest_missing_parent_age_secs = ages
@@ -1159,6 +1192,7 @@ async fn main() -> Result<()> {
                                 rt.pending_block_request_hashes = block_requests.pending_hashes();
                                 rt.pending_missing_parents =
                                     pulsedag_core::pending_missing_parent_count(&guard);
+                                update_orphan_backlog_classification(&mut rt, &guard);
                             }
                             if let Err(e) = storage.persist_chain_state(&guard) {
                                 warn!(error = %e, "failed persisting chain state after orphan queue");
@@ -1279,6 +1313,7 @@ async fn main() -> Result<()> {
                                 rt.last_accepted_peer_block = Some(block.hash.clone());
                                 rt.pending_missing_parents =
                                     pulsedag_core::pending_missing_parent_count(&guard);
+                                update_orphan_backlog_classification(&mut rt, &guard);
                                 rt.max_orphan_age_secs = ages.0;
                                 rt.oldest_orphan_age_secs = ages.0;
                                 rt.oldest_missing_parent_age_secs = ages

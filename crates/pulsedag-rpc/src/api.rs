@@ -160,6 +160,14 @@ pub struct NodeRuntimeStats {
     #[serde(default)]
     pub pending_block_request_hashes: Vec<String>,
     pub pending_missing_parents: usize,
+    #[serde(default)]
+    pub orphan_backlog_retryable_ready: usize,
+    #[serde(default)]
+    pub orphan_backlog_waiting_missing_parent: usize,
+    #[serde(default)]
+    pub orphan_backlog_stale_missing_parent_entries: usize,
+    #[serde(default)]
+    pub orphan_backlog_unindexed_missing_parent_entries: usize,
     pub last_accepted_peer_block: Option<String>,
     pub last_rejected_peer_block_reason: Option<String>,
     pub sync_state: String,
