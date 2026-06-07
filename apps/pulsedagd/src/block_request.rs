@@ -3,9 +3,9 @@ use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use pulsedag_p2p::messages::BlockHeaderAnnouncement;
 
 #[cfg_attr(not(test), allow(dead_code))]
-pub const DEFAULT_MAX_PENDING_BLOCK_REQUESTS: usize = 128;
+pub const DEFAULT_MAX_PENDING_BLOCK_REQUESTS: usize = 512;
 #[cfg_attr(not(test), allow(dead_code))]
-pub const DEFAULT_MAX_PENDING_BLOCK_REQUESTS_PER_PEER: usize = 16;
+pub const DEFAULT_MAX_PENDING_BLOCK_REQUESTS_PER_PEER: usize = 128;
 pub const DEFAULT_BLOCK_REQUEST_BACKOFF_SECS: u64 = 8;
 pub const MAX_BLOCK_REQUEST_BACKOFF_SECS: u64 = 120;
 
@@ -179,8 +179,12 @@ impl BlockRequestTracker {
 
         let peer = self.select_available_peer(&peers);
         if !peers.is_empty() && peer.is_none() {
+            // The request_block API is not peer-addressed at this layer. When all
+            // visible peers have reached their accounting cap but global capacity
+            // remains, keep orphan-root recovery moving with an unassigned request
+            // instead of suppressing the fetch entirely. The global max_pending cap
+            // still bounds total in-flight work.
             self.backpressure_suppressed = self.backpressure_suppressed.saturating_add(1);
-            return false;
         }
         self.pending.insert(
             hash.to_string(),
@@ -699,15 +703,22 @@ mod tests {
     }
 
     #[test]
-    fn per_peer_limit_suppresses_when_all_peers_are_saturated() {
+    fn peer_saturation_falls_back_to_unassigned_request() {
         let mut tracker = BlockRequestTracker::with_limits(10, 2, 10, 1);
         assert!(tracker.should_issue_getblock_for_peers("h1", 100, ["peer-a"]));
         assert!(tracker.should_issue_getblock_for_peers("h2", 100, ["peer-b"]));
-        assert!(!tracker.should_issue_getblock_for_peers("h3", 100, ["peer-a", "peer-b"]));
+        assert!(tracker.should_issue_getblock_for_peers("h3", 100, ["peer-a", "peer-b"]));
 
         let by_peer = tracker.inflight_by_peer();
         assert_eq!(by_peer.get("peer-a"), Some(&1));
         assert_eq!(by_peer.get("peer-b"), Some(&1));
+        assert_eq!(
+            tracker
+                .pending
+                .get("h3")
+                .and_then(|req| req.peer.as_deref()),
+            None
+        );
         assert_eq!(tracker.take_fetch_counters().suppressed, 1);
     }
 
