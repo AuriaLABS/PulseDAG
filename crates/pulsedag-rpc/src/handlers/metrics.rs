@@ -29,6 +29,10 @@ pub struct MetricsData {
     pub invalid_pow_total: u64,
     pub mining_templates_total: u64,
     pub mining_submits_total: u64,
+    pub external_mining_submit_actor_queue_len: u64,
+    pub external_mining_submit_actor_queue_full_total: u64,
+    pub external_mining_submit_actor_timeout_total: u64,
+    pub external_mining_submit_actor_completed_total: u64,
     pub p2p_blocks_received_total: u64,
     pub tx_inbound_received: u64,
     pub tx_inbound_accepted: u64,
@@ -104,6 +108,13 @@ pub async fn get_metrics<S: RpcStateLike>(
         invalid_pow_total: runtime.pulsedag_invalid_pow_total,
         mining_templates_total: runtime.pulsedag_mining_templates_total,
         mining_submits_total: runtime.pulsedag_mining_submits_total,
+        external_mining_submit_actor_queue_len: runtime.external_mining_submit_actor_queue_len,
+        external_mining_submit_actor_queue_full_total: runtime
+            .external_mining_submit_actor_queue_full_total,
+        external_mining_submit_actor_timeout_total: runtime
+            .external_mining_submit_actor_timeout_total,
+        external_mining_submit_actor_completed_total: runtime
+            .external_mining_submit_actor_completed_total,
         p2p_blocks_received_total: runtime.pulsedag_p2p_blocks_received_total,
         tx_inbound_received: runtime.tx_inbound_received,
         tx_inbound_accepted: runtime.tx_inbound_accepted,
