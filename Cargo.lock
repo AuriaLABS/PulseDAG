@@ -3998,10 +3998,12 @@ version = "2.2.20"
 dependencies = [
  "anyhow",
  "axum",
+ "bincode",
  "pulsedag-core",
  "pulsedag-p2p",
  "pulsedag-rpc",
  "pulsedag-storage",
+ "serde_json",
  "tokio",
  "tower-http",
  "tracing",

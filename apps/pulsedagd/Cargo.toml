@@ -11,6 +11,8 @@ pulsedag-core = { path = "../../crates/pulsedag-core" }
 pulsedag-storage = { path = "../../crates/pulsedag-storage" }
 pulsedag-p2p = { path = "../../crates/pulsedag-p2p" }
 pulsedag-rpc = { path = "../../crates/pulsedag-rpc" }
+serde_json = "1"
+bincode = "1"
 
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
