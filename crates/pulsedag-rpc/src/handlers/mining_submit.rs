@@ -12,7 +12,10 @@ use std::{
     sync::{Arc, OnceLock},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
-use tokio::{sync::Semaphore, time::timeout};
+use tokio::{
+    sync::{mpsc, oneshot},
+    time::timeout,
+};
 use tracing::{info, warn};
 
 #[derive(Debug, serde::Serialize)]
@@ -64,12 +67,91 @@ where
 const SUBMIT_CHAIN_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 const SUBMIT_ORPHAN_ADOPTION_CHAIN_WRITE_TIMEOUT: Duration = Duration::from_millis(100);
 const SUBMIT_POST_ACCEPT_TIMEOUT: Duration = Duration::from_secs(10);
-const SUBMIT_MAX_INFLIGHT_REQUESTS: usize = 1;
+const MINING_SUBMIT_ACTOR_QUEUE_SIZE: usize = 1;
+const MINING_SUBMIT_ACTOR_RESPONSE_TIMEOUT: Duration = Duration::from_secs(15);
 
-fn mining_submit_semaphore() -> Arc<Semaphore> {
-    static SEMAPHORE: OnceLock<Arc<Semaphore>> = OnceLock::new();
-    SEMAPHORE
-        .get_or_init(|| Arc::new(Semaphore::new(SUBMIT_MAX_INFLIGHT_REQUESTS)))
+#[derive(Clone)]
+struct MiningSubmitState {
+    chain: Arc<tokio::sync::RwLock<pulsedag_core::state::ChainState>>,
+    storage: Arc<pulsedag_storage::Storage>,
+    p2p: Option<Arc<dyn pulsedag_p2p::P2pHandle>>,
+    runtime: Arc<tokio::sync::RwLock<crate::api::NodeRuntimeStats>>,
+}
+
+impl MiningSubmitState {
+    fn from_rpc_state<S: RpcStateLike>(state: &S) -> Self {
+        Self {
+            chain: state.chain(),
+            storage: state.storage(),
+            p2p: state.p2p(),
+            runtime: state.runtime(),
+        }
+    }
+}
+
+impl RpcStateLike for MiningSubmitState {
+    fn chain(&self) -> Arc<tokio::sync::RwLock<pulsedag_core::state::ChainState>> {
+        self.chain.clone()
+    }
+
+    fn p2p(&self) -> Option<Arc<dyn pulsedag_p2p::P2pHandle>> {
+        self.p2p.clone()
+    }
+
+    fn storage(&self) -> Arc<pulsedag_storage::Storage> {
+        self.storage.clone()
+    }
+
+    fn runtime(&self) -> Arc<tokio::sync::RwLock<crate::api::NodeRuntimeStats>> {
+        self.runtime.clone()
+    }
+}
+
+type SubmitBlockResponse = Json<ApiResponse<MiningSubmitData>>;
+
+struct SubmitBlockCommand {
+    state: MiningSubmitState,
+    req: SubmitMinedBlockRequest,
+    submit_started: Instant,
+    response: oneshot::Sender<SubmitBlockResponse>,
+}
+
+#[derive(Clone)]
+struct MiningSubmitActorHandle {
+    sender: mpsc::Sender<SubmitBlockCommand>,
+}
+
+impl MiningSubmitActorHandle {
+    fn spawn(queue_size: usize) -> Self {
+        let (sender, mut receiver) = mpsc::channel(queue_size);
+        tokio::spawn(async move {
+            while let Some(command) = receiver.recv().await {
+                let response =
+                    process_mining_submit(command.state, command.req, command.submit_started).await;
+                let _ = command.response.send(response);
+            }
+        });
+        Self { sender }
+    }
+
+    fn queue_len(&self) -> u64 {
+        self.sender
+            .max_capacity()
+            .saturating_sub(self.sender.capacity()) as u64
+    }
+
+    fn try_submit(
+        &self,
+        command: SubmitBlockCommand,
+    ) -> Result<(), mpsc::error::TrySendError<SubmitBlockCommand>> {
+        self.sender.try_send(command)
+    }
+}
+
+fn mining_submit_actor() -> MiningSubmitActorHandle {
+    static ACTOR: OnceLock<MiningSubmitActorHandle> = OnceLock::new();
+    ACTOR
+        .get_or_init(|| MiningSubmitActorHandle::spawn(MINING_SUBMIT_ACTOR_QUEUE_SIZE))
         .clone()
 }
 
@@ -111,6 +193,9 @@ async fn record_submit_completed<S: RpcStateLike>(
         runtime.external_mining_submit_inflight.saturating_sub(1);
     runtime.external_mining_submit_completed_total = runtime
         .external_mining_submit_completed_total
+        .saturating_add(1);
+    runtime.external_mining_submit_actor_completed_total = runtime
+        .external_mining_submit_actor_completed_total
         .saturating_add(1);
     runtime.external_mining_last_submit_phase = Some(phase.to_string());
     runtime.external_mining_last_submit_duration_ms = duration;
@@ -406,44 +491,114 @@ pub async fn post_mining_submit<S: RpcStateLike>(
     let submit_started = Instant::now();
     let block_hash = req.block.hash.clone();
     let height = req.block.header.height;
-
     record_submit_started(&state).await;
-    let submit_permit = match mining_submit_semaphore().try_acquire_owned() {
-        Ok(permit) => permit,
-        Err(_) => {
-            let detail = format!(
-                "mining submit rejected because another submit is already in flight; max_inflight={}",
-                SUBMIT_MAX_INFLIGHT_REQUESTS
-            );
-            record_submit_phase(&state, "busy").await;
-            {
-                let runtime_handle = state.runtime();
-                let mut runtime = runtime_handle.write().await;
-                runtime.external_mining_submit_rejected =
-                    runtime.external_mining_submit_rejected.saturating_add(1);
-                runtime.external_mining_rejected_internal_error = runtime
-                    .external_mining_rejected_internal_error
-                    .saturating_add(1);
-                runtime.external_mining_last_rejection_kind = Some("submit_busy".to_string());
-                runtime.external_mining_last_rejection_reason = Some(detail.clone());
-                runtime.record_rejected_block_reason("submit_busy");
-            }
-            let _ = state.storage().append_runtime_event(
-                "warn",
-                "external_mining_submit_busy",
-                &format!("block_hash={} height={} {}", block_hash, height, detail),
-            );
-            record_submit_completed(&state, submit_started, "busy").await;
-            return Json(rejection_submit_response(
-                "submit_busy",
+
+    let actor = mining_submit_actor();
+    {
+        let runtime_handle = state.runtime();
+        let mut runtime = runtime_handle.write().await;
+        runtime.external_mining_submit_actor_queue_len = actor.queue_len();
+    }
+
+    let (response, receiver) = oneshot::channel();
+    let command = SubmitBlockCommand {
+        state: MiningSubmitState::from_rpc_state(&state),
+        req,
+        submit_started,
+        response,
+    };
+
+    if let Err(err) = actor.try_submit(command) {
+        let detail = format!(
+            "mining submit rejected because bounded submit actor queue is full; queue_size={} queue_len={}",
+            MINING_SUBMIT_ACTOR_QUEUE_SIZE,
+            actor.queue_len()
+        );
+        {
+            let runtime_handle = state.runtime();
+            let mut runtime = runtime_handle.write().await;
+            runtime.external_mining_submit_actor_queue_len = actor.queue_len();
+            runtime.external_mining_submit_actor_queue_full_total = runtime
+                .external_mining_submit_actor_queue_full_total
+                .saturating_add(1);
+        }
+        let failed_command = match err {
+            mpsc::error::TrySendError::Full(command)
+            | mpsc::error::TrySendError::Closed(command) => command,
+        };
+        record_submit_phase(&state, "busy").await;
+        record_external_mining_rejection(&state, ExternalMiningRejectKind::InternalError, &detail)
+            .await;
+        let _ = state.storage().append_runtime_event(
+            "warn",
+            "external_mining_submit_busy",
+            &format!("block_hash={} height={} {}", block_hash, height, detail),
+        );
+        drop(failed_command);
+        record_submit_completed(&state, submit_started, "busy").await;
+        return Json(rejection_submit_response(
+            "submit_busy",
+            detail,
+            Some(block_hash),
+            Some(height),
+            false,
+        ));
+    }
+
+    match timeout(MINING_SUBMIT_ACTOR_RESPONSE_TIMEOUT, receiver).await {
+        Ok(Ok(response)) => response,
+        Ok(Err(_closed)) => {
+            let detail = "mining submit actor stopped before returning a response".to_string();
+            record_actor_timeout(&state, &detail).await;
+            record_submit_completed(&state, submit_started, "timeout").await;
+            Json(rejection_submit_response(
+                "submit_timeout",
                 detail,
                 Some(block_hash),
                 Some(height),
                 false,
-            ));
+            ))
         }
-    };
-    let _submit_permit = submit_permit;
+        Err(_) => {
+            let detail = format!(
+                "mining submit actor did not return within {}ms",
+                MINING_SUBMIT_ACTOR_RESPONSE_TIMEOUT.as_millis()
+            );
+            record_actor_timeout(&state, &detail).await;
+            record_submit_completed(&state, submit_started, "timeout").await;
+            Json(rejection_submit_response(
+                "submit_timeout",
+                detail,
+                Some(block_hash),
+                Some(height),
+                false,
+            ))
+        }
+    }
+}
+
+async fn record_actor_timeout<S: RpcStateLike>(state: &S, detail: &str) {
+    let runtime_handle = state.runtime();
+    let mut runtime = runtime_handle.write().await;
+    runtime.external_mining_submit_actor_timeout_total = runtime
+        .external_mining_submit_actor_timeout_total
+        .saturating_add(1);
+    runtime.external_mining_submit_timeout_total = runtime
+        .external_mining_submit_timeout_total
+        .saturating_add(1);
+    runtime.external_mining_last_submit_phase = Some("timeout".to_string());
+    runtime.external_mining_last_rejection_kind = Some("submit_timeout".to_string());
+    runtime.external_mining_last_rejection_reason = Some(detail.to_string());
+    runtime.record_rejected_block_reason("submit_timeout");
+}
+
+async fn process_mining_submit(
+    state: MiningSubmitState,
+    req: SubmitMinedBlockRequest,
+    submit_started: Instant,
+) -> SubmitBlockResponse {
+    let block_hash = req.block.hash.clone();
+    let height = req.block.header.height;
 
     record_submit_phase(&state, "precheck").await;
     let pow = pow_validation_result(&req.block.header);
@@ -1100,8 +1255,10 @@ async fn perform_orphan_adoption<S: RpcStateLike>(state: &S, block_hash: &str) -
 #[cfg(test)]
 mod tests {
     use super::{
-        persist_then_broadcast_mined_block, post_mining_submit, record_submit_completed,
-        record_submit_inflight, record_submit_phase, record_submit_started,
+        persist_then_broadcast_mined_block, post_mining_submit, record_actor_timeout,
+        record_submit_completed, record_submit_inflight, record_submit_phase,
+        record_submit_started, MiningSubmitActorHandle, MiningSubmitState, SubmitBlockCommand,
+        SubmitBlockResponse,
     };
     use crate::{
         api::{GetBlockTemplateRequest, NodeRuntimeStats, RpcStateLike, SubmitMinedBlockRequest},
@@ -1127,7 +1284,7 @@ mod tests {
         },
         time::{Instant, SystemTime, UNIX_EPOCH},
     };
-    use tokio::sync::RwLock;
+    use tokio::sync::{mpsc, oneshot, RwLock};
 
     #[derive(Clone)]
     struct FakeP2pHandle {
@@ -1345,6 +1502,25 @@ mod tests {
         (state, fake)
     }
 
+    fn submit_command_for_state(
+        state: &TestState,
+        block: Block,
+    ) -> (SubmitBlockCommand, oneshot::Receiver<SubmitBlockResponse>) {
+        let (response, receiver) = oneshot::channel();
+        (
+            SubmitBlockCommand {
+                state: MiningSubmitState::from_rpc_state(state),
+                req: SubmitMinedBlockRequest {
+                    template_id: Some("unit-test-template".to_string()),
+                    block,
+                },
+                submit_started: Instant::now(),
+                response,
+            },
+            receiver,
+        )
+    }
+
     async fn build_mined_block(state: &TestState) -> Block {
         let chain = state.chain.read().await;
         let height = chain.dag.best_height + 1;
@@ -1375,6 +1551,66 @@ mod tests {
         assert!(mined, "expected mined template header");
         block.header = mined_header;
         (template.template_id, block)
+    }
+
+    #[tokio::test]
+    async fn mining_submit_actor_queue_full_returns_submit_busy_path() {
+        let (state, _) = build_state_with_fake_p2p();
+        let block = build_mined_block(&state).await;
+        let (sender, _receiver) = mpsc::channel(1);
+        let actor = MiningSubmitActorHandle { sender };
+        let (first, _first_rx) = submit_command_for_state(&state, block.clone());
+        assert!(
+            actor.try_submit(first).is_ok(),
+            "first command should queue"
+        );
+        let (second, _second_rx) = submit_command_for_state(&state, block);
+        let err = actor
+            .try_submit(second)
+            .expect_err("second command should find bounded queue full");
+        assert!(matches!(err, mpsc::error::TrySendError::Full(_)));
+        assert_eq!(actor.queue_len(), 1);
+    }
+
+    #[tokio::test]
+    async fn mining_submit_actor_timeout_records_bounded_error_metric() {
+        let (state, _) = build_state_with_fake_p2p();
+        let before = state
+            .runtime
+            .read()
+            .await
+            .external_mining_submit_actor_timeout_total;
+        record_actor_timeout(&state, "unit-test timeout").await;
+        let runtime = state.runtime.read().await;
+        assert_eq!(
+            runtime.external_mining_submit_actor_timeout_total,
+            before + 1
+        );
+        assert_eq!(
+            runtime.external_mining_last_rejection_kind.as_deref(),
+            Some("submit_timeout")
+        );
+    }
+
+    #[tokio::test]
+    async fn handler_enqueue_path_does_not_hold_chain_lock_while_waiting_for_actor_response() {
+        let (state, _) = build_state_with_fake_p2p();
+        let block = build_mined_block(&state).await;
+        let (sender, _receiver) = mpsc::channel(1);
+        let actor = MiningSubmitActorHandle { sender };
+        let (command, response_rx) = submit_command_for_state(&state, block);
+        assert!(actor.try_submit(command).is_ok(), "command should enqueue");
+        let chain_write = state.chain.try_write();
+        assert!(
+            chain_write.is_ok(),
+            "enqueueing and waiting for the actor response must not hold the chain write lock"
+        );
+        drop(chain_write);
+        let timed_out = timeout(Duration::from_millis(10), response_rx).await;
+        assert!(
+            timed_out.is_err(),
+            "test actor intentionally never responds"
+        );
     }
 
     #[tokio::test]
