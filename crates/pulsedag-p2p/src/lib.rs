@@ -68,6 +68,11 @@ pub struct PeerRecoveryStatus {
     pub last_error: Option<String>,
     pub last_error_unix: Option<u64>,
     pub last_error_source: Option<String>,
+    pub health_states: Vec<String>,
+    pub eligible_for_sync: bool,
+    pub last_successful_block_unix: Option<u64>,
+    pub last_rate_limited_unix: Option<u64>,
+    pub connection_age_secs: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -174,6 +179,11 @@ pub struct P2pStatus {
     pub peer_lifecycle_degraded: usize,
     pub peer_lifecycle_cooldown: usize,
     pub peer_lifecycle_recovering: usize,
+    pub peer_retention_active_total: usize,
+    pub peer_retention_recovering_total: usize,
+    pub peer_retention_cooldown_total: usize,
+    pub peer_sync_eligible_total: usize,
+    pub peer_sync_suppressed_total: usize,
     pub degraded_mode: String,
     pub connection_shaping_active: bool,
     pub peer_recovery: Vec<PeerRecoveryStatus>,
@@ -520,6 +530,8 @@ struct PeerHealth {
     inbound_window_count: usize,
     dial_window_started_unix: u64,
     dial_attempts_in_window: usize,
+    last_successful_block_unix: Option<u64>,
+    last_rate_limited_unix: Option<u64>,
 }
 
 impl Default for PeerHealth {
@@ -551,6 +563,8 @@ impl Default for PeerHealth {
             inbound_window_count: 0,
             dial_window_started_unix: 0,
             dial_attempts_in_window: 0,
+            last_successful_block_unix: None,
+            last_rate_limited_unix: None,
         }
     }
 }
@@ -771,6 +785,11 @@ impl P2pHandle for MemoryP2pHandle {
             peer_lifecycle_degraded,
             peer_lifecycle_cooldown,
             peer_lifecycle_recovering,
+            peer_retention_active_total,
+            peer_retention_recovering_total,
+            peer_retention_cooldown_total,
+            peer_sync_eligible_total,
+            peer_sync_suppressed_total,
             degraded_mode,
             peer_recovery,
         ) = peer_recovery_snapshot(&inner);
@@ -873,6 +892,11 @@ impl P2pHandle for MemoryP2pHandle {
             peer_lifecycle_degraded,
             peer_lifecycle_cooldown,
             peer_lifecycle_recovering,
+            peer_retention_active_total,
+            peer_retention_recovering_total,
+            peer_retention_cooldown_total,
+            peer_sync_eligible_total,
+            peer_sync_suppressed_total,
             degraded_mode,
             connection_shaping_active: mode_connected_peers_are_real_network(&inner.mode),
             peer_recovery,
@@ -1198,9 +1222,48 @@ fn peer_recovery_reason(health: &PeerHealth, now: u64) -> Option<String> {
     None
 }
 
-fn peer_recovery_snapshot(
-    state: &InnerState,
-) -> (
+fn peer_rate_limited_recently(health: &PeerHealth, now: u64) -> bool {
+    health.last_rate_limited_unix.is_some_and(|last| {
+        now.saturating_sub(last) <= PEER_INBOUND_RATE_WINDOW_SECS.saturating_mul(4)
+    })
+}
+
+fn peer_eligible_for_sync(peer_id: &str, health: &PeerHealth, active: bool, now: u64) -> bool {
+    health.connected
+        && health.chain_id_compatible
+        && is_valid_peer_id(peer_id)
+        && (active || (health.next_retry_unix <= now && health.suppressed_until_unix <= now))
+}
+
+fn peer_health_states(peer_id: &str, health: &PeerHealth, active: bool, now: u64) -> Vec<String> {
+    let mut states = Vec::new();
+    if health.connected {
+        states.push("connected".to_string());
+    }
+    if active {
+        states.push("active".to_string());
+    }
+    if peer_lifecycle_tier(health, now) == "recovering" {
+        states.push("recovering".to_string());
+    }
+    if health.next_retry_unix > now || health.suppressed_until_unix > now {
+        states.push("cooling_down".to_string());
+    }
+    if peer_rate_limited_recently(health, now) {
+        states.push("rate_limited".to_string());
+    }
+    if peer_eligible_for_sync(peer_id, health, active, now) {
+        states.push("eligible_for_sync".to_string());
+    }
+    states
+}
+
+type PeerRecoverySnapshot = (
+    usize,
+    usize,
+    usize,
+    usize,
+    usize,
     usize,
     usize,
     usize,
@@ -1210,41 +1273,54 @@ fn peer_recovery_snapshot(
     usize,
     String,
     Vec<PeerRecoveryStatus>,
-) {
+);
+
+fn peer_recovery_snapshot(state: &InnerState) -> PeerRecoverySnapshot {
     let now = now_unix();
     let mut peer_recovery = state
         .peer_book
         .iter()
-        .map(|(peer_id, health)| PeerRecoveryStatus {
-            peer_id: peer_id.clone(),
-            chain_id: health.remote_chain_id.clone(),
-            chain_id_compatible: health.chain_id_compatible,
-            last_activity_unix: health
-                .last_seen_unix
-                .or(health.last_successful_connect_unix)
-                .or(health.last_failure_unix)
-                .or(health.last_recovery_unix),
-            score: health.score,
-            fail_streak: health.fail_streak,
-            lifecycle_tier: peer_lifecycle_tier(health, now).to_string(),
-            recovery_tier: peer_recovery_tier(health, now).to_string(),
-            recovery_reason: peer_recovery_reason(health, now),
-            connected: health.connected,
-            last_seen_unix: health.last_seen_unix,
-            last_successful_connect_unix: health.last_successful_connect_unix,
-            next_retry_unix: health.next_retry_unix,
-            reconnect_attempts: health.reconnect_attempts,
-            recovery_success_count: health.recovery_success_count,
-            last_recovery_unix: health.last_recovery_unix,
-            recent_failures_unix: health.recent_failures_unix.clone(),
-            cooldown_suppressed_count: health.cooldown_suppressed_count,
-            flap_suppressed_count: health.flap_suppressed_count,
-            flap_events: health.flap_events,
-            suppression_until_unix: (health.suppressed_until_unix > now)
-                .then_some(health.suppressed_until_unix),
-            last_error: health.last_error.clone(),
-            last_error_unix: health.last_error_unix,
-            last_error_source: health.last_error_source.clone(),
+        .map(|(peer_id, health)| {
+            let active = state.active_connections.get(peer_id).copied().unwrap_or(0) > 0;
+            let eligible_for_sync = peer_eligible_for_sync(peer_id, health, active, now);
+            PeerRecoveryStatus {
+                peer_id: peer_id.clone(),
+                chain_id: health.remote_chain_id.clone(),
+                chain_id_compatible: health.chain_id_compatible,
+                last_activity_unix: health
+                    .last_seen_unix
+                    .or(health.last_successful_connect_unix)
+                    .or(health.last_failure_unix)
+                    .or(health.last_recovery_unix),
+                score: health.score,
+                fail_streak: health.fail_streak,
+                lifecycle_tier: peer_lifecycle_tier(health, now).to_string(),
+                recovery_tier: peer_recovery_tier(health, now).to_string(),
+                recovery_reason: peer_recovery_reason(health, now),
+                connected: health.connected,
+                last_seen_unix: health.last_seen_unix,
+                last_successful_connect_unix: health.last_successful_connect_unix,
+                next_retry_unix: health.next_retry_unix,
+                reconnect_attempts: health.reconnect_attempts,
+                recovery_success_count: health.recovery_success_count,
+                last_recovery_unix: health.last_recovery_unix,
+                recent_failures_unix: health.recent_failures_unix.clone(),
+                cooldown_suppressed_count: health.cooldown_suppressed_count,
+                flap_suppressed_count: health.flap_suppressed_count,
+                flap_events: health.flap_events,
+                suppression_until_unix: (health.suppressed_until_unix > now)
+                    .then_some(health.suppressed_until_unix),
+                last_error: health.last_error.clone(),
+                last_error_unix: health.last_error_unix,
+                last_error_source: health.last_error_source.clone(),
+                health_states: peer_health_states(peer_id, health, active, now),
+                eligible_for_sync,
+                last_successful_block_unix: health.last_successful_block_unix,
+                last_rate_limited_unix: health.last_rate_limited_unix,
+                connection_age_secs: health
+                    .last_successful_connect_unix
+                    .map(|connected_at| now.saturating_sub(connected_at)),
+            }
         })
         .collect::<Vec<_>>();
     peer_recovery.sort_by(|a, b| a.peer_id.cmp(&b.peer_id));
@@ -1276,6 +1352,27 @@ fn peer_recovery_snapshot(
         .iter()
         .filter(|peer| peer.lifecycle_tier == "recovering")
         .count();
+    let peer_retention_active_total = peer_recovery
+        .iter()
+        .filter(|peer| peer.health_states.iter().any(|state| state == "active"))
+        .count();
+    let peer_retention_recovering_total = peer_lifecycle_recovering;
+    let peer_retention_cooldown_total = peer_lifecycle_cooldown;
+    let peer_sync_eligible_total = peer_recovery
+        .iter()
+        .filter(|peer| peer.eligible_for_sync)
+        .count();
+    let peer_sync_suppressed_total = peer_recovery
+        .iter()
+        .filter(|peer| !peer.eligible_for_sync)
+        .filter(|peer| {
+            peer.connected
+                || peer
+                    .health_states
+                    .iter()
+                    .any(|state| state == "cooling_down")
+        })
+        .count();
     let degraded_mode = if peer_recovery.is_empty() {
         "unknown"
     } else {
@@ -1297,6 +1394,11 @@ fn peer_recovery_snapshot(
         peer_lifecycle_degraded,
         peer_lifecycle_cooldown,
         peer_lifecycle_recovering,
+        peer_retention_active_total,
+        peer_retention_recovering_total,
+        peer_retention_cooldown_total,
+        peer_sync_eligible_total,
+        peer_sync_suppressed_total,
         degraded_mode.to_string(),
         peer_recovery,
     )
@@ -1361,6 +1463,9 @@ fn sync_candidates_snapshot(state: &InnerState) -> Vec<RankedSyncPeer> {
             suppressed_until_unix: health.suppressed_until_unix,
             recovery_success_count: health.recovery_success_count,
             recent_failures: health.recent_failures_unix.len(),
+            last_successful_block_unix: health.last_successful_block_unix,
+            last_rate_limited_unix: health.last_rate_limited_unix,
+            last_successful_connect_unix: health.last_successful_connect_unix,
         })
         .collect::<Vec<_>>();
     rank_sync_candidates(&candidates, now)
@@ -2481,6 +2586,7 @@ fn score_peer_message_outcome(
                 }
             }
             PeerMessageOutcome::RateLimited => {
+                health.last_rate_limited_unix = Some(now);
                 health.score =
                     (health.score - PEER_RATE_LIMIT_PENALTY).clamp(PEER_SCORE_MIN, PEER_SCORE_MAX);
                 health.fail_streak = health.fail_streak.saturating_add(1);
@@ -3308,11 +3414,17 @@ fn dispatch_network_message(
                     guard.inbound_messages += 1;
                     guard.last_message_kind = Some("block-data".into());
                     if let Some(peer) = source_peer {
+                        let now = now_unix();
+                        guard
+                            .peer_book
+                            .entry(peer.to_string())
+                            .or_default()
+                            .last_successful_block_unix = Some(now);
                         score_peer_message_outcome(
                             &mut guard,
                             peer,
                             PeerMessageOutcome::ValidRelay,
-                            now_unix(),
+                            now,
                         );
                     }
                 }
@@ -4217,6 +4329,11 @@ impl P2pHandle for Libp2pHandle {
             peer_lifecycle_degraded,
             peer_lifecycle_cooldown,
             peer_lifecycle_recovering,
+            peer_retention_active_total,
+            peer_retention_recovering_total,
+            peer_retention_cooldown_total,
+            peer_sync_eligible_total,
+            peer_sync_suppressed_total,
             degraded_mode,
             peer_recovery,
         ) = peer_recovery_snapshot(&inner);
@@ -4319,6 +4436,11 @@ impl P2pHandle for Libp2pHandle {
             peer_lifecycle_degraded,
             peer_lifecycle_cooldown,
             peer_lifecycle_recovering,
+            peer_retention_active_total,
+            peer_retention_recovering_total,
+            peer_retention_cooldown_total,
+            peer_sync_eligible_total,
+            peer_sync_suppressed_total,
             degraded_mode,
             connection_shaping_active: mode_connected_peers_are_real_network(&inner.mode),
             peer_recovery,
@@ -5567,7 +5689,8 @@ mod tests {
             },
         );
 
-        let (_cooldown, _flap, _, _, _, _, _, _, snapshot) = peer_recovery_snapshot(&state);
+        let (_cooldown, _flap, _, _, _, _, _, _, _, _, _, _, _, snapshot) =
+            peer_recovery_snapshot(&state);
         assert_eq!(snapshot.len(), 2);
         assert_eq!(snapshot[0].peer_id, "peer-a");
         assert_eq!(snapshot[1].peer_id, "peer-b");
@@ -5594,6 +5717,90 @@ mod tests {
         let health = guard.peer_book.get("peer-a").unwrap();
         assert_eq!(peer_lifecycle_tier(health, 10_201), "recovering");
         assert_eq!(peer_recovery_tier(health, 10_201), "recovering");
+    }
+
+    #[test]
+    fn recovering_peer_remains_visible_in_status() {
+        let mut state = InnerState::default();
+        state.mode = P2P_MODE_LIBP2P_REAL.into();
+        state.connection_slot_budget = 2;
+        state.active_connections.insert("peer-recovering".into(), 1);
+        state.peer_book.insert(
+            "peer-recovering".into(),
+            PeerHealth {
+                connected: true,
+                score: 82,
+                fail_streak: 1,
+                recent_failures_unix: vec![now_unix().saturating_sub(1)],
+                ..PeerHealth::default()
+            },
+        );
+
+        refresh_connected_peers_from_health(&mut state);
+        let status = peer_recovery_snapshot(&state).13;
+        let peer = status
+            .iter()
+            .find(|peer| peer.peer_id == "peer-recovering")
+            .expect("recovering peer remains in diagnostics");
+
+        assert!(state
+            .connected_peers
+            .contains(&"peer-recovering".to_string()));
+        assert_eq!(peer.lifecycle_tier, "recovering");
+        assert!(peer.health_states.iter().any(|state| state == "recovering"));
+        assert!(peer.health_states.iter().any(|state| state == "active"));
+    }
+
+    #[test]
+    fn cooldown_does_not_zero_peer_count_when_connections_exist() {
+        let mut state = InnerState::default();
+        state.mode = P2P_MODE_LIBP2P_REAL.into();
+        state.connection_slot_budget = 1;
+        state.active_connections.insert("peer-cooling".into(), 1);
+        state.peer_book.insert(
+            "peer-cooling".into(),
+            PeerHealth {
+                connected: true,
+                score: 25,
+                fail_streak: 5,
+                next_retry_unix: now_unix().saturating_add(120),
+                ..PeerHealth::default()
+            },
+        );
+
+        refresh_connected_peers_from_health(&mut state);
+
+        assert_eq!(state.connected_peers, vec!["peer-cooling".to_string()]);
+        assert_eq!(peer_recovery_snapshot(&state).7, 1);
+    }
+
+    #[test]
+    fn sync_peer_selection_has_fallback_peers() {
+        let mut state = InnerState::default();
+        state.mode = P2P_MODE_LIBP2P_REAL.into();
+        state.connection_slot_budget = 2;
+        let now = now_unix();
+        for (peer, retry_offset) in [("peer-a", 60), ("peer-b", 120)] {
+            state.active_connections.insert(peer.into(), 1);
+            state.peer_book.insert(
+                peer.into(),
+                PeerHealth {
+                    connected: true,
+                    score: 70,
+                    fail_streak: 2,
+                    next_retry_unix: now.saturating_add(retry_offset),
+                    ..PeerHealth::default()
+                },
+            );
+        }
+
+        refresh_connected_peers_from_health(&mut state);
+        let ranked = sync_candidates_snapshot(&state);
+        let selected = update_selected_sync_peer(&mut state, &ranked, now);
+
+        assert_eq!(state.connected_peers.len(), 2);
+        assert!(selected.is_some());
+        assert_eq!(peer_recovery_snapshot(&state).10, 2);
     }
 
     #[test]

@@ -10,6 +10,9 @@ pub struct SyncPeerCandidate {
     pub suppressed_until_unix: u64,
     pub recovery_success_count: u64,
     pub recent_failures: usize,
+    pub last_successful_block_unix: Option<u64>,
+    pub last_rate_limited_unix: Option<u64>,
+    pub last_successful_connect_unix: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -36,15 +39,35 @@ pub fn rank_sync_candidates(
             } else {
                 0
             };
-            let recent_failure_penalty = (candidate.recent_failures as i64) * 12;
-            let fail_streak_penalty = (candidate.fail_streak as i64) * 40;
-            let recovery_bonus = (candidate.recovery_success_count as i64) * 8;
+            let recent_failure_penalty = (candidate.recent_failures as i64).min(8) * 12;
+            let fail_streak_penalty = (candidate.fail_streak as i64).min(8) * 32;
+            let recovery_bonus = (candidate.recovery_success_count as i64).min(8) * 6;
             let connected_bonus = if candidate.connected { 25 } else { 0 };
-            let rank_score = candidate.score as i64 + connected_bonus + recovery_bonus
+            let recent_block_bonus = candidate
+                .last_successful_block_unix
+                .and_then(|last| now_unix.checked_sub(last))
+                .map(|age| 36i64.saturating_sub(age as i64 / 2).max(0))
+                .unwrap_or(0);
+            let rate_limit_penalty = candidate
+                .last_rate_limited_unix
+                .and_then(|last| now_unix.checked_sub(last))
+                .map(|age| 48i64.saturating_sub(age as i64).max(0))
+                .unwrap_or(0);
+            let connection_age_bonus = candidate
+                .last_successful_connect_unix
+                .and_then(|last| now_unix.checked_sub(last))
+                .map(|age| ((age / 30) as i64).min(24))
+                .unwrap_or(0);
+            let rank_score = candidate.score as i64
+                + connected_bonus
+                + recovery_bonus
+                + recent_block_bonus
+                + connection_age_bonus
                 - fail_streak_penalty
                 - recent_failure_penalty
-                - retry_penalty
-                - flap_penalty;
+                - rate_limit_penalty
+                - retry_penalty.min(240)
+                - flap_penalty.min(240);
             let excluded_until_unix = if candidate.suppressed_until_unix > now_unix {
                 Some(candidate.suppressed_until_unix)
             } else if candidate.next_retry_unix > now_unix {
@@ -271,6 +294,9 @@ mod tests {
                     suppressed_until_unix: 0,
                     recovery_success_count: 2,
                     recent_failures: 0,
+                    last_successful_block_unix: None,
+                    last_rate_limited_unix: None,
+                    last_successful_connect_unix: None,
                 },
                 SyncPeerCandidate {
                     peer_id: "peer-slow".into(),
@@ -281,6 +307,9 @@ mod tests {
                     suppressed_until_unix: 0,
                     recovery_success_count: 0,
                     recent_failures: 3,
+                    last_successful_block_unix: None,
+                    last_rate_limited_unix: None,
+                    last_successful_connect_unix: None,
                 },
             ],
             100,
@@ -323,6 +352,9 @@ mod tests {
                     suppressed_until_unix: 0,
                     recovery_success_count: 0,
                     recent_failures: 4,
+                    last_successful_block_unix: None,
+                    last_rate_limited_unix: None,
+                    last_successful_connect_unix: None,
                 },
                 SyncPeerCandidate {
                     peer_id: "peer-b".into(),
@@ -333,6 +365,9 @@ mod tests {
                     suppressed_until_unix: 0,
                     recovery_success_count: 1,
                     recent_failures: 3,
+                    last_successful_block_unix: None,
+                    last_rate_limited_unix: None,
+                    last_successful_connect_unix: None,
                 },
                 SyncPeerCandidate {
                     peer_id: "peer-c".into(),
@@ -343,6 +378,9 @@ mod tests {
                     suppressed_until_unix: 0,
                     recovery_success_count: 2,
                     recent_failures: 2,
+                    last_successful_block_unix: None,
+                    last_rate_limited_unix: None,
+                    last_successful_connect_unix: None,
                 },
             ],
             200,

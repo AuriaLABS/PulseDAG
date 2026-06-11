@@ -60,6 +60,11 @@ pub struct MetricsData {
     pub orphan_backlog_stale_total: u64,
     pub orphan_recovery_tick_duration_ms: u64,
     pub peer_count: usize,
+    pub peer_retention_active_total: usize,
+    pub peer_retention_recovering_total: usize,
+    pub peer_retention_cooldown_total: usize,
+    pub peer_sync_eligible_total: usize,
+    pub peer_sync_suppressed_total: usize,
     pub p2p_status_snapshot: P2pStatusSnapshotMetrics,
     pub rpc_degraded_response_total: u64,
     pub rpc_snapshot_age_ms: u64,
@@ -165,6 +170,26 @@ pub async fn get_metrics<S: RpcStateLike>(
         orphan_backlog_stale_total: runtime.orphan_backlog_stale_total,
         orphan_recovery_tick_duration_ms: runtime.orphan_recovery_tick_duration_ms,
         peer_count,
+        peer_retention_active_total: p2p_status
+            .as_ref()
+            .map(|snapshot| snapshot.status.peer_retention_active_total)
+            .unwrap_or(0),
+        peer_retention_recovering_total: p2p_status
+            .as_ref()
+            .map(|snapshot| snapshot.status.peer_retention_recovering_total)
+            .unwrap_or(0),
+        peer_retention_cooldown_total: p2p_status
+            .as_ref()
+            .map(|snapshot| snapshot.status.peer_retention_cooldown_total)
+            .unwrap_or(0),
+        peer_sync_eligible_total: p2p_status
+            .as_ref()
+            .map(|snapshot| snapshot.status.peer_sync_eligible_total)
+            .unwrap_or(0),
+        peer_sync_suppressed_total: p2p_status
+            .as_ref()
+            .map(|snapshot| snapshot.status.peer_sync_suppressed_total)
+            .unwrap_or(0),
         p2p_status_snapshot: snapshot_metrics,
         rpc_degraded_response_total: snapshot_metrics.rpc_degraded_response_total,
         rpc_snapshot_age_ms: node_snapshot_metrics.rpc_snapshot_age_ms,
