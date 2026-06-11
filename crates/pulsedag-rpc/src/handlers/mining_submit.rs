@@ -68,7 +68,6 @@ const SUBMIT_CHAIN_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 const SUBMIT_ORPHAN_ADOPTION_CHAIN_WRITE_TIMEOUT: Duration = Duration::from_millis(100);
 const SUBMIT_POST_ACCEPT_TIMEOUT: Duration = Duration::from_secs(10);
 const MINING_SUBMIT_ACTOR_QUEUE_SIZE: usize = 1;
-const MINING_SUBMIT_ACTOR_RESPONSE_TIMEOUT: Duration = Duration::from_secs(15);
 
 #[derive(Clone)]
 struct MiningSubmitState {
@@ -545,25 +544,10 @@ pub async fn post_mining_submit<S: RpcStateLike>(
         ));
     }
 
-    match timeout(MINING_SUBMIT_ACTOR_RESPONSE_TIMEOUT, receiver).await {
-        Ok(Ok(response)) => response,
-        Ok(Err(_closed)) => {
+    match receiver.await {
+        Ok(response) => response,
+        Err(_closed) => {
             let detail = "mining submit actor stopped before returning a response".to_string();
-            record_actor_timeout(&state, &detail).await;
-            record_submit_completed(&state, submit_started, "timeout").await;
-            Json(rejection_submit_response(
-                "submit_timeout",
-                detail,
-                Some(block_hash),
-                Some(height),
-                false,
-            ))
-        }
-        Err(_) => {
-            let detail = format!(
-                "mining submit actor did not return within {}ms",
-                MINING_SUBMIT_ACTOR_RESPONSE_TIMEOUT.as_millis()
-            );
             record_actor_timeout(&state, &detail).await;
             record_submit_completed(&state, submit_started, "timeout").await;
             Json(rejection_submit_response(
@@ -1573,14 +1557,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn mining_submit_actor_timeout_records_bounded_error_metric() {
+    async fn mining_submit_actor_closed_response_records_error_metric() {
         let (state, _) = build_state_with_fake_p2p();
         let before = state
             .runtime
             .read()
             .await
             .external_mining_submit_actor_timeout_total;
-        record_actor_timeout(&state, "unit-test timeout").await;
+        record_actor_timeout(&state, "unit-test actor stopped").await;
         let runtime = state.runtime.read().await;
         assert_eq!(
             runtime.external_mining_submit_actor_timeout_total,
@@ -1606,7 +1590,8 @@ mod tests {
             "enqueueing and waiting for the actor response must not hold the chain write lock"
         );
         drop(chain_write);
-        let timed_out = timeout(Duration::from_millis(10), response_rx).await;
+        let timed_out =
+            tokio::time::timeout(std::time::Duration::from_millis(10), response_rx).await;
         assert!(
             timed_out.is_err(),
             "test actor intentionally never responds"
