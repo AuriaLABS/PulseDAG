@@ -468,6 +468,26 @@ pub async fn get_p2p_status<S: RpcStateLike>(
                 serde_json::json!(status.degraded_mode),
             );
             payload.insert(
+                "peer_retention_active_total".into(),
+                serde_json::json!(status.peer_retention_active_total),
+            );
+            payload.insert(
+                "peer_retention_recovering_total".into(),
+                serde_json::json!(status.peer_retention_recovering_total),
+            );
+            payload.insert(
+                "peer_retention_cooldown_total".into(),
+                serde_json::json!(status.peer_retention_cooldown_total),
+            );
+            payload.insert(
+                "peer_sync_eligible_total".into(),
+                serde_json::json!(status.peer_sync_eligible_total),
+            );
+            payload.insert(
+                "peer_sync_suppressed_total".into(),
+                serde_json::json!(status.peer_sync_suppressed_total),
+            );
+            payload.insert(
                 "connection_shaping_active".into(),
                 serde_json::json!(status.connection_shaping_active),
             );
@@ -482,6 +502,11 @@ pub async fn get_p2p_status<S: RpcStateLike>(
                             "degraded": status.peer_lifecycle_degraded,
                             "cooldown": status.peer_lifecycle_cooldown,
                             "recovering": status.peer_lifecycle_recovering,
+                            "retention_active_total": status.peer_retention_active_total,
+                            "retention_recovering_total": status.peer_retention_recovering_total,
+                            "retention_cooldown_total": status.peer_retention_cooldown_total,
+                            "sync_eligible_total": status.peer_sync_eligible_total,
+                            "sync_suppressed_total": status.peer_sync_suppressed_total,
                             "derived_healthy_legacy": healthy_count,
                             "derived_degraded_legacy": degraded_count,
                             "derived_recovering_legacy": recovering_count,
@@ -500,7 +525,12 @@ pub async fn get_p2p_status<S: RpcStateLike>(
                     "suppressed_dial_count": status.peer_suppressed_dial_count,
                     "suppressed_dials": status.peer_suppressed_dial_count,
                     "peers_under_cooldown": status.peers_under_cooldown,
-                    "peers_under_flap_guard": status.peers_under_flap_guard
+                    "peers_under_flap_guard": status.peers_under_flap_guard,
+                    "retention_active_total": status.peer_retention_active_total,
+                    "retention_recovering_total": status.peer_retention_recovering_total,
+                    "retention_cooldown_total": status.peer_retention_cooldown_total,
+                    "sync_eligible_total": status.peer_sync_eligible_total,
+                    "sync_suppressed_total": status.peer_sync_suppressed_total
                 }),
             );
             payload.insert(
@@ -1205,6 +1235,11 @@ mod tests {
             peer_lifecycle_degraded: 0,
             peer_lifecycle_cooldown: 0,
             peer_lifecycle_recovering: 1,
+            peer_retention_active_total: 1,
+            peer_retention_recovering_total: 1,
+            peer_retention_cooldown_total: 0,
+            peer_sync_eligible_total: 1,
+            peer_sync_suppressed_total: 0,
             degraded_mode: "normal".into(),
             connection_shaping_active: false,
             peer_recovery: vec![
@@ -1233,6 +1268,11 @@ mod tests {
                     last_error: None,
                     last_error_unix: None,
                     last_error_source: None,
+                    health_states: vec!["connected".into(), "eligible_for_sync".into()],
+                    eligible_for_sync: true,
+                    last_successful_block_unix: None,
+                    last_rate_limited_unix: None,
+                    connection_age_secs: Some(0),
                 },
                 PeerRecoveryStatus {
                     chain_id: Some("testnet-dev".into()),
@@ -1259,6 +1299,11 @@ mod tests {
                     last_error: None,
                     last_error_unix: None,
                     last_error_source: None,
+                    health_states: vec!["connected".into(), "eligible_for_sync".into()],
+                    eligible_for_sync: true,
+                    last_successful_block_unix: None,
+                    last_rate_limited_unix: None,
+                    connection_age_secs: Some(0),
                 },
             ],
             sync_candidates: vec![],
@@ -1477,6 +1522,11 @@ mod tests {
                 peer_lifecycle_degraded: 0,
                 peer_lifecycle_cooldown: 0,
                 peer_lifecycle_recovering: 0,
+                peer_retention_active_total: 0,
+                peer_retention_recovering_total: 0,
+                peer_retention_cooldown_total: 0,
+                peer_sync_eligible_total: 0,
+                peer_sync_suppressed_total: 0,
                 degraded_mode: "unknown".into(),
                 connection_shaping_active: false,
                 peer_recovery: vec![],

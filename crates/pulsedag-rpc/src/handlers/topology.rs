@@ -329,6 +329,11 @@ mod tests {
             peer_lifecycle_degraded: 0,
             peer_lifecycle_cooldown: 0,
             peer_lifecycle_recovering: 0,
+            peer_retention_active_total: 0,
+            peer_retention_recovering_total: 0,
+            peer_retention_cooldown_total: 0,
+            peer_sync_eligible_total: 0,
+            peer_sync_suppressed_total: 0,
             degraded_mode: "unknown".into(),
             connection_shaping_active: true,
             peer_recovery: vec![],
@@ -419,6 +424,11 @@ mod tests {
             last_error: None,
             last_error_unix: None,
             last_error_source: None,
+            health_states: vec![],
+            eligible_for_sync: false,
+            last_successful_block_unix: None,
+            last_rate_limited_unix: None,
+            connection_age_secs: None,
         }
     }
 
