@@ -1,6 +1,6 @@
 use crate::{
-    api::p2p_status_for_rpc, api::read_chain_for_rpc, api::read_runtime_for_rpc, api::ApiResponse,
-    api::RpcStateLike,
+    api::fresh_or_cached_node_rpc_snapshot, api::p2p_status_for_rpc, api::read_chain_for_rpc,
+    api::read_runtime_for_rpc, api::ApiResponse, api::NodeRpcSnapshot, api::RpcStateLike,
 };
 use axum::{extract::State, Json};
 use pulsedag_core::state::ChainState;
@@ -93,6 +93,54 @@ fn repo_version() -> String {
     include_str!("../../../../VERSION").trim().to_string()
 }
 
+fn status_from_rpc_snapshot(snapshot: NodeRpcSnapshot) -> NodeStatusData {
+    let peer_summary = format!(
+        "peer_count={} semantics=cached_snapshot",
+        snapshot.peer_count
+    );
+    NodeStatusData {
+        rpc_response_degraded: true,
+        rpc_response_stale: true,
+        rpc_response_degraded_reason: snapshot.degraded_reason.clone(),
+        network_id: snapshot.chain_id.clone(),
+        peer_summary,
+        service: "pulsedagd".into(),
+        version: repo_version(),
+        chain_id: snapshot.chain_id,
+        best_height: snapshot.height,
+        uptime_secs: 0,
+        block_count: 0,
+        selected_tip: snapshot.tip.clone(),
+        tip_count: snapshot.tip.as_ref().map(|_| 1).unwrap_or(0),
+        orphan_count: snapshot.orphan_count,
+        mempool_size: 0,
+        utxo_count: 0,
+        address_count: 0,
+        snapshot_exists: false,
+        snapshot_height: Some(snapshot.height),
+        captured_at_unix: Some(snapshot.last_updated_ms / 1_000),
+        persisted_block_count: 0,
+        recommended_keep_from_height: snapshot.height,
+        p2p_enabled: snapshot.peer_count > 0,
+        p2p_mode: None,
+        p2p_runtime_mode_detail: Some("cached_node_rpc_snapshot".to_string()),
+        connected_peers_are_real_network: false,
+        connected_peers_semantics: "cached_snapshot".to_string(),
+        peer_count: snapshot.peer_count,
+        p2p_peer_health: None,
+        p2p_status_stale: true,
+        p2p_status_degraded: true,
+        p2p_status_degraded_reason: snapshot.degraded_reason,
+        p2p_status_captured_at_unix: Some(snapshot.last_updated_ms / 1_000),
+        sync_state: snapshot.sync_state,
+        storage_backend: "rocksdb".to_string(),
+        last_block_hash: snapshot.tip,
+        contracts_prepared: false,
+        contracts_enabled: false,
+        contracts_vm_version: "unknown".to_string(),
+    }
+}
+
 struct StatusStateSnapshot {
     chain_id: String,
     best_height: u64,
@@ -142,6 +190,10 @@ fn snapshot_chain(chain: &ChainState) -> StatusStateSnapshot {
 pub async fn get_status<S: RpcStateLike>(
     State(state): State<S>,
 ) -> Json<ApiResponse<NodeStatusData>> {
+    let liveness_snapshot = fresh_or_cached_node_rpc_snapshot(&state, "/status").await;
+    if liveness_snapshot.degraded || liveness_snapshot.stale {
+        return Json(ApiResponse::ok(status_from_rpc_snapshot(liveness_snapshot)));
+    }
     let snapshot_exists = match state.storage().snapshot_exists() {
         Ok(v) => v,
         Err(e) => return Json(ApiResponse::err("STORAGE_ERROR", e.to_string())),
@@ -318,7 +370,13 @@ pub async fn get_status<S: RpcStateLike>(
 #[cfg(test)]
 mod tests {
     use super::get_status;
-    use crate::api::{NodeRuntimeStats, RpcStateLike};
+    use crate::{
+        api::{
+            build_node_rpc_snapshot, NodeRpcSnapshot, NodeRpcSnapshotStore, NodeRuntimeStats,
+            RpcStateLike,
+        },
+        handlers::readiness::get_readiness,
+    };
     use axum::{extract::State, Json};
     use pulsedag_core::ChainState;
     use pulsedag_p2p::{
@@ -340,6 +398,7 @@ mod tests {
         storage: Arc<Storage>,
         runtime: Arc<RwLock<NodeRuntimeStats>>,
         p2p: Option<Arc<dyn P2pHandle>>,
+        rpc_snapshot: NodeRpcSnapshotStore,
     }
 
     impl RpcStateLike for TestState {
@@ -354,6 +413,9 @@ mod tests {
         }
         fn runtime(&self) -> Arc<RwLock<NodeRuntimeStats>> {
             self.runtime.clone()
+        }
+        fn rpc_snapshot(&self) -> NodeRpcSnapshotStore {
+            self.rpc_snapshot.clone()
         }
     }
 
@@ -394,11 +456,17 @@ mod tests {
         let chain = storage
             .load_or_init_genesis("testnet-dev".to_string())
             .unwrap();
+        let runtime = NodeRuntimeStats {
+            sync_state: "idle".to_string(),
+            ..NodeRuntimeStats::default()
+        };
+        let snapshot = build_node_rpc_snapshot(&chain, &runtime, Some(&status));
         TestState {
             chain: Arc::new(RwLock::new(chain)),
             storage,
-            runtime: Arc::new(RwLock::new(NodeRuntimeStats::default())),
+            runtime: Arc::new(RwLock::new(runtime)),
             p2p: Some(Arc::new(TestP2pHandle { status })),
+            rpc_snapshot: NodeRpcSnapshotStore::new(snapshot),
         }
     }
 
@@ -538,6 +606,71 @@ mod tests {
             inbound_peer_final_state: Vec::new(),
             outbound_peer_final_state: Vec::new(),
         }
+    }
+
+    #[tokio::test]
+    async fn status_returns_while_chain_lock_is_held() {
+        let state = mk_state(base_status(P2P_MODE_MEMORY_SIMULATED));
+        let _write_guard = state.chain.write().await;
+
+        let Json(resp) = get_status(State(state.clone())).await;
+        let data = resp.data.expect("status data should exist");
+
+        assert!(resp.ok);
+        assert!(data.rpc_response_degraded);
+        assert!(data.rpc_response_stale);
+        assert_eq!(data.chain_id, "testnet-dev");
+    }
+
+    #[tokio::test]
+    async fn readiness_returns_degraded_snapshot_when_fresh_state_is_unavailable() {
+        let state = mk_state(base_status(P2P_MODE_MEMORY_SIMULATED));
+        let _write_guard = state.chain.write().await;
+
+        let Json(resp) = get_readiness(State(state.clone())).await;
+        let data = resp.data.expect("readiness data should exist");
+
+        assert!(resp.ok);
+        assert_eq!(
+            data.overall_status,
+            crate::handlers::readiness::ReadinessStatus::Warn
+        );
+        assert!(!data.node_ready);
+        assert!(data
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("rpc_degraded_response")));
+    }
+
+    #[tokio::test]
+    async fn stale_snapshot_is_marked_stale() {
+        let state = mk_state(base_status(P2P_MODE_MEMORY_SIMULATED));
+        state.rpc_snapshot.store(NodeRpcSnapshot {
+            chain_id: "stale-chain".to_string(),
+            height: 7,
+            tip: Some("stale-tip".to_string()),
+            peer_count: 2,
+            orphan_count: 3,
+            pending_missing_parents: 4,
+            missing_parent_entries: Vec::new(),
+            inv_hashes_requested: 5,
+            last_updated_ms: 1,
+            degraded: true,
+            degraded_reason: Some("test stale snapshot".to_string()),
+            stale: true,
+            pending_block_requests: 6,
+            inflight_block_requests: 0,
+            sync_state: "degraded".to_string(),
+        });
+        let _write_guard = state.chain.write().await;
+
+        let Json(resp) = get_status(State(state.clone())).await;
+        let data = resp.data.expect("status data should exist");
+
+        assert!(data.rpc_response_stale);
+        assert!(data.rpc_response_degraded);
+        assert_eq!(data.best_height, 7);
+        assert_eq!(data.rpc_response_degraded_reason.as_deref(), Some("/status avoided waiting for fresh liveness state: node RPC snapshot capture skipped because chain read lock is busy"));
     }
 
     #[tokio::test]

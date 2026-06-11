@@ -5,7 +5,8 @@ use pulsedag_p2p::{
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::api::{
-    p2p_status_for_rpc, read_chain_for_rpc, read_runtime_for_rpc, ApiResponse, RpcStateLike,
+    fresh_or_cached_node_rpc_snapshot, p2p_status_for_rpc, read_chain_for_rpc,
+    read_runtime_for_rpc, ApiResponse, NodeRpcSnapshot, RpcStateLike,
 };
 
 fn unix_now_secs() -> u64 {
@@ -173,9 +174,44 @@ fn peer_health_counts(
     (healthy, degraded, recovering)
 }
 
+fn p2p_status_from_rpc_snapshot(snapshot: NodeRpcSnapshot) -> serde_json::Value {
+    serde_json::json!({
+        "rpc_response_degraded": true,
+        "rpc_response_stale": true,
+        "rpc_response_degraded_reason": snapshot.degraded_reason,
+        "p2p_status_stale": true,
+        "p2p_status_degraded": true,
+        "p2p_status_degraded_reason": "fresh p2p status unavailable; serving cached node RPC snapshot",
+        "p2p_status_captured_at_unix": snapshot.last_updated_ms / 1_000,
+        "chain_id": snapshot.chain_id,
+        "mode": "cached_snapshot",
+        "p2p_mode": "cached_snapshot",
+        "local_node_id": null,
+        "peer_count": snapshot.peer_count,
+        "connected_peers": [],
+        "listening_addresses": [],
+        "listening": [],
+        "topics": [],
+        "pending_block_requests": snapshot.pending_block_requests,
+        "inflight_block_requests": snapshot.inflight_block_requests,
+        "pending_missing_parents": snapshot.pending_missing_parents,
+        "orphan_count": snapshot.orphan_count,
+        "sync_state": snapshot.sync_state,
+        "inv_hashes_requested": snapshot.inv_hashes_requested,
+        "p2p_ready_for_private_rehearsal": false,
+        "readiness_reasons": ["fresh p2p state unavailable; serving degraded snapshot"]
+    })
+}
+
 pub async fn get_p2p_status<S: RpcStateLike>(
     State(state): State<S>,
 ) -> Json<ApiResponse<serde_json::Value>> {
+    let liveness_snapshot = fresh_or_cached_node_rpc_snapshot(&state, "/p2p/status").await;
+    if liveness_snapshot.degraded || liveness_snapshot.stale {
+        return Json(ApiResponse::ok(p2p_status_from_rpc_snapshot(
+            liveness_snapshot,
+        )));
+    }
     match p2p_status_for_rpc(state.p2p(), "/p2p/status").await {
         Ok(Some(snapshot)) => {
             let status = snapshot.status;

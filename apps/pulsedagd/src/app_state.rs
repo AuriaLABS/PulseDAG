@@ -7,7 +7,7 @@ use tokio::sync::RwLock;
 
 use pulsedag_core::state::ChainState;
 use pulsedag_p2p::P2pHandle;
-use pulsedag_rpc::api::{NodeRuntimeStats, RpcStateLike};
+use pulsedag_rpc::api::{NodeRpcSnapshotStore, NodeRuntimeStats, RpcStateLike};
 use pulsedag_storage::Storage;
 
 #[derive(Debug, Clone)]
@@ -300,6 +300,7 @@ pub struct AppState {
     pub storage: Arc<Storage>,
     pub p2p: Option<Arc<dyn P2pHandle>>,
     pub runtime: Arc<RwLock<NodeRuntimeStats>>,
+    pub rpc_snapshot: NodeRpcSnapshotStore,
 }
 
 pub fn new_runtime_stats() -> NodeRuntimeStats {
@@ -335,6 +336,9 @@ impl RpcStateLike for AppState {
     }
     fn runtime(&self) -> Arc<RwLock<NodeRuntimeStats>> {
         self.runtime.clone()
+    }
+    fn rpc_snapshot(&self) -> NodeRpcSnapshotStore {
+        self.rpc_snapshot.clone()
     }
 }
 

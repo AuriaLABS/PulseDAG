@@ -1,6 +1,6 @@
 use crate::{
-    api::p2p_status_for_rpc, api::read_chain_for_rpc, api::read_runtime_for_rpc, api::ApiResponse,
-    api::RpcStateLike,
+    api::fresh_or_cached_node_rpc_snapshot, api::p2p_status_for_rpc, api::read_chain_for_rpc,
+    api::read_runtime_for_rpc, api::ApiResponse, api::NodeRpcSnapshot, api::RpcStateLike,
 };
 use axum::{extract::State, Json};
 use pulsedag_core::preferred_tip_hash;
@@ -104,6 +104,58 @@ fn status_reasons(
 
 static READINESS_RESPONSE_CACHE: OnceLock<Mutex<Option<ReadinessData>>> = OnceLock::new();
 
+fn readiness_from_rpc_snapshot(snapshot: NodeRpcSnapshot) -> ReadinessData {
+    let reason = snapshot
+        .degraded_reason
+        .clone()
+        .unwrap_or_else(|| "cached node RPC snapshot is stale".to_string());
+    let mut categories = BTreeMap::new();
+    categories.insert(
+        "rpc_snapshot".to_string(),
+        category(ReadinessStatus::Warn, vec![reason.clone()]),
+    );
+    ReadinessData {
+        effective_rpc_bind: std::env::var("PULSEDAG_EFFECTIVE_RPC_BIND")
+            .or_else(|_| std::env::var("PULSEDAG_RPC_BIND"))
+            .unwrap_or_else(|_| "127.0.0.1:8080".to_string()),
+        effective_api_profile: std::env::var("PULSEDAG_API_PROFILE")
+            .unwrap_or_else(|_| "local_dev".to_string()),
+        admin_enabled: std::env::var("PULSEDAG_ADMIN_ENABLED")
+            .unwrap_or_else(|_| "false".to_string())
+            == "true",
+        storage_path_class: "unknown".to_string(),
+        peer_health: "degraded_cached_snapshot".to_string(),
+        mining_templates_available: false,
+        node_ready: false,
+        private_testnet_ready: false,
+        public_testnet_ready: false,
+        ready_for_release: false,
+        overall_status: ReadinessStatus::Warn,
+        categories,
+        metrics: ReadinessMetrics {
+            accepted_blocks: 0,
+            rejected_blocks_by_reason: BTreeMap::new(),
+            orphan_count: snapshot.orphan_count,
+            pending_missing_parents: snapshot.pending_missing_parents,
+            pending_block_requests: snapshot.pending_block_requests,
+            inflight_block_requests: snapshot.inflight_block_requests,
+            duplicate_block_requests_suppressed: 0,
+            missing_parent_requests_sent: 0,
+            orphan_blocks_retried: 0,
+            orphan_blocks_resolved: 0,
+            selected_tip: snapshot.tip,
+            best_height: snapshot.height,
+            p2p_peer_count: snapshot.peer_count,
+            storage_last_commit_height: None,
+            state_root: None,
+        },
+        release_blockers: vec![
+            "fresh liveness state unavailable; serving degraded snapshot".to_string(),
+        ],
+        warnings: vec![format!("rpc_degraded_response: {reason}")],
+    }
+}
+
 fn cached_readiness_response(reason: String) -> Option<ReadinessData> {
     READINESS_RESPONSE_CACHE
         .get_or_init(|| Mutex::new(None))
@@ -141,6 +193,12 @@ fn cache_readiness_response(data: &ReadinessData) {
 pub async fn get_readiness<S: RpcStateLike>(
     State(state): State<S>,
 ) -> Json<ApiResponse<ReadinessData>> {
+    let liveness_snapshot = fresh_or_cached_node_rpc_snapshot(&state, "/readiness").await;
+    if liveness_snapshot.degraded || liveness_snapshot.stale {
+        return Json(ApiResponse::ok(readiness_from_rpc_snapshot(
+            liveness_snapshot,
+        )));
+    }
     let snapshot_exists = match state.storage().snapshot_exists() {
         Ok(v) => v,
         Err(e) => return Json(ApiResponse::err("STORAGE_ERROR", e.to_string())),
