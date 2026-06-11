@@ -70,6 +70,12 @@ Stretch goal:
 
 - Docker `5N/4M stress` reaches PASS after quiescence with one final tip and zero missing-parent backlog.
 
+## Added storage restore evidence track
+
+- `docs/SNAPSHOT_RESTORE_DRILL_V2_2_20.md` defines the deterministic snapshot restore drill for v2.2.20 operator evidence.
+- `scripts/v2_2_20_snapshot_restore_drill.sh` produces `snapshot_bundle.bin`, `snapshot_bundle.bin.sha256`, status comparisons, and an evidence manifest/tarball.
+- This evidence track remains pre-public-testnet hardening only and does not change the v2.2.20 readiness claims.
+
 ## Guardrails
 
 - No consensus-rule breaking changes.

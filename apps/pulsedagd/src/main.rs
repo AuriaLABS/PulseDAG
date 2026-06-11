@@ -4,7 +4,9 @@ mod config;
 
 use std::{
     collections::HashSet,
+    io::{BufReader, BufWriter},
     net::SocketAddr,
+    path::PathBuf,
     sync::Arc,
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
@@ -112,6 +114,83 @@ fn orphan_recovery_roots(chain: &pulsedag_core::ChainState) -> Vec<String> {
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SnapshotBundleCommand {
+    Export(PathBuf),
+    Import(PathBuf),
+}
+
+fn parse_snapshot_bundle_command(args: &[String]) -> Result<Option<SnapshotBundleCommand>> {
+    let mut command = None;
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        match arg.as_str() {
+            "--snapshot-export" => {
+                let path = iter
+                    .next()
+                    .ok_or_else(|| anyhow::anyhow!("--snapshot-export requires a path"))?;
+                if command.is_some() {
+                    anyhow::bail!("only one snapshot bundle command may be provided");
+                }
+                command = Some(SnapshotBundleCommand::Export(PathBuf::from(path)));
+            }
+            "--snapshot-import" => {
+                let path = iter
+                    .next()
+                    .ok_or_else(|| anyhow::anyhow!("--snapshot-import requires a path"))?;
+                if command.is_some() {
+                    anyhow::bail!("only one snapshot bundle command may be provided");
+                }
+                command = Some(SnapshotBundleCommand::Import(PathBuf::from(path)));
+            }
+            _ => {}
+        }
+    }
+    Ok(command)
+}
+
+fn run_snapshot_bundle_command(
+    storage: &Storage,
+    chain_id: &str,
+    command: SnapshotBundleCommand,
+) -> Result<()> {
+    match command {
+        SnapshotBundleCommand::Export(path) => {
+            if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+                std::fs::create_dir_all(parent)?;
+            }
+            let (bundle, report) = storage.export_snapshot_bundle(Some(chain_id))?;
+            let file = std::fs::File::create(&path)?;
+            bincode::serialize_into(BufWriter::new(file), &bundle)?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "ok": true,
+                    "action": "snapshot_export",
+                    "path": path,
+                    "verification": report,
+                }))?
+            );
+        }
+        SnapshotBundleCommand::Import(path) => {
+            let file = std::fs::File::open(&path)?;
+            let bundle: pulsedag_storage::SnapshotExportBundle =
+                bincode::deserialize_from(BufReader::new(file))?;
+            let report = storage.import_snapshot_bundle(bundle, Some(chain_id))?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "ok": true,
+                    "action": "snapshot_import",
+                    "path": path,
+                    "verification": report,
+                }))?
+            );
+        }
+    }
+    Ok(())
+}
 
 fn now_unix() -> u64 {
     SystemTime::now()
@@ -245,7 +324,7 @@ fn update_orphan_backlog_classification(
 }
 
 fn usage() -> &'static str {
-    "usage: pulsedagd [--network dev|testnet|mainnet] [--rpc-listen HOST:PORT] [--p2p-listen MULTIADDR] [--bootnode MULTIADDR] [--peer MULTIADDR] [--help] [--version]"
+    "usage: pulsedagd [--network dev|testnet|mainnet] [--rpc-listen HOST:PORT] [--p2p-listen MULTIADDR] [--bootnode MULTIADDR] [--peer MULTIADDR] [--snapshot-export PATH|--snapshot-import PATH] [--help] [--version]"
 }
 
 fn print_help_and_exit() {
@@ -279,6 +358,7 @@ async fn main() -> Result<()> {
         .with_env_filter(EnvFilter::from_default_env())
         .init();
 
+    let snapshot_bundle_command = parse_snapshot_bundle_command(&cli_args)?;
     let mut cfg = Config::from_env()?;
     cfg.apply_cli_args(cli_args)?;
     let config_safety_summary = cfg.config_safety_summary();
@@ -288,6 +368,10 @@ async fn main() -> Result<()> {
         info!(summary = %config_safety_summary, "config safety summary");
     }
     let storage = Arc::new(Storage::open(&cfg.rocksdb_path)?);
+    if let Some(command) = snapshot_bundle_command {
+        run_snapshot_bundle_command(&storage, &cfg.chain_id, command)?;
+        return Ok(());
+    }
 
     let snapshot_exists = storage.snapshot_exists().unwrap_or(false);
     let persisted_blocks = storage.list_blocks().unwrap_or_default();
