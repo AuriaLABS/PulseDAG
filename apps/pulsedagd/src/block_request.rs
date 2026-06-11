@@ -32,6 +32,13 @@ pub struct FetchSchedule {
     pub dropped: usize,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GetBlockRequestReadiness {
+    Requestable,
+    AlreadyPending,
+    RateLimited,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct FetchBackpressureCounters {
     pub suppressed: u64,
@@ -133,6 +140,33 @@ impl BlockRequestTracker {
         let suppressed = self.backpressure_suppressed;
         self.backpressure_suppressed = 0;
         suppressed
+    }
+
+    pub fn classify_getblock_for_peers<I, S>(
+        &self,
+        hash: &str,
+        now_unix: u64,
+        _peers: I,
+    ) -> GetBlockRequestReadiness
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        if self.pending.contains_key(hash) {
+            return GetBlockRequestReadiness::AlreadyPending;
+        }
+        if self
+            .backoff_by_hash
+            .get(hash)
+            .map(|backoff| now_unix < backoff.retry_after_unix)
+            .unwrap_or(false)
+        {
+            return GetBlockRequestReadiness::RateLimited;
+        }
+        if self.pending.len() >= self.max_pending {
+            return GetBlockRequestReadiness::RateLimited;
+        }
+        GetBlockRequestReadiness::Requestable
     }
 
     pub fn should_issue_getblock(&mut self, hash: &str, now_unix: u64) -> bool {
@@ -264,6 +298,7 @@ impl BlockRequestTracker {
         self.note_request_dropped(hash, now_unix);
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn reset_backoff(&mut self, hash: &str) -> bool {
         self.backoff_by_hash.remove(hash).is_some()
     }
@@ -795,5 +830,20 @@ mod tests {
         let plan = scheduler.next_requests(&known, &pending, 4);
         assert_eq!(plan.requests, vec!["child"]);
         assert!(plan.deferred.is_empty());
+    }
+
+    #[test]
+    fn rate_limited_root_is_classified_not_hidden() {
+        let mut tracker = BlockRequestTracker::with_limit(10, 2, 1);
+        assert!(tracker.should_issue_getblock("root-a", 100));
+
+        assert_eq!(
+            tracker.classify_getblock_for_peers("root-a", 101, ["peer-a"]),
+            super::GetBlockRequestReadiness::AlreadyPending
+        );
+        assert_eq!(
+            tracker.classify_getblock_for_peers("root-b", 101, ["peer-a"]),
+            super::GetBlockRequestReadiness::RateLimited
+        );
     }
 }

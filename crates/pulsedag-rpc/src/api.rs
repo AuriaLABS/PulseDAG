@@ -446,6 +446,22 @@ pub struct NodeRuntimeStats {
     pub oldest_orphan_age_secs: u64,
     #[serde(default)]
     pub oldest_missing_parent_age_secs: u64,
+    #[serde(default)]
+    pub orphan_roots_discovered_total: u64,
+    #[serde(default)]
+    pub orphan_roots_requested_total: u64,
+    #[serde(default)]
+    pub orphan_roots_rate_limited_total: u64,
+    #[serde(default)]
+    pub orphan_backlog_reindexed_total: u64,
+    #[serde(default)]
+    pub orphan_backlog_revalidated_total: u64,
+    #[serde(default)]
+    pub orphan_backlog_evicted_total: u64,
+    #[serde(default)]
+    pub orphan_backlog_stale_total: u64,
+    #[serde(default)]
+    pub orphan_recovery_tick_duration_ms: u64,
     pub sync_catchup_completed: u64,
     pub sync_failures: u64,
     pub startup_snapshot_exists: bool,
