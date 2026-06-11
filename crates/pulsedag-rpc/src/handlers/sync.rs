@@ -6,8 +6,8 @@ use std::{
 };
 
 use crate::api::{
-    p2p_status_for_rpc, read_chain_for_rpc, read_runtime_for_rpc, ApiResponse, RpcStateLike,
-    SyncRebuildRequest,
+    fresh_or_cached_node_rpc_snapshot, p2p_status_for_rpc, read_chain_for_rpc,
+    read_runtime_for_rpc, ApiResponse, NodeRpcSnapshot, RpcStateLike, SyncRebuildRequest,
 };
 use pulsedag_core::reconcile_mempool;
 
@@ -168,9 +168,125 @@ fn cache_sync_missing_response(data: &SyncMissingData) {
     }
 }
 
+fn sync_status_from_rpc_snapshot(snapshot: NodeRpcSnapshot) -> SyncStatusData {
+    let reason = snapshot
+        .degraded_reason
+        .clone()
+        .unwrap_or_else(|| "cached node RPC snapshot is stale".to_string());
+    SyncStatusData {
+        rpc_response_degraded: true,
+        rpc_response_stale: true,
+        rpc_response_degraded_reason: Some(reason.clone()),
+        chain_id: snapshot.chain_id,
+        p2p_enabled: snapshot.peer_count > 0,
+        p2p_mode: "cached_snapshot".to_string(),
+        snapshot_exists: false,
+        persisted_block_count: 0,
+        in_memory_block_count: 0,
+        best_height: snapshot.height,
+        selected_tip: snapshot.tip,
+        tip_count: 0,
+        mempool_size: 0,
+        orphan_count: snapshot.orphan_count,
+        pending_block_requests: snapshot.pending_block_requests,
+        inflight_block_requests: snapshot.inflight_block_requests,
+        pending_block_request_hashes: Vec::new(),
+        duplicate_block_requests_suppressed: 0,
+        pending_missing_parents: snapshot.pending_missing_parents,
+        orphan_backlog_retryable_ready: 0,
+        orphan_backlog_waiting_missing_parent: snapshot.pending_missing_parents,
+        orphan_backlog_stale_missing_parent_entries: 0,
+        orphan_backlog_unindexed_missing_parent_entries: 0,
+        can_replay_from_blocks: false,
+        replay_gap: 0,
+        rebuild_recommended: false,
+        consistency_ok: false,
+        consistency_issue_count: 0,
+        catchup_stage: "degraded".to_string(),
+        lag_blocks: 0,
+        lag_band: "unknown".to_string(),
+        catchup_progress_bps: 0,
+        catchup_summary: "degraded cached node RPC snapshot".to_string(),
+        recovery_reason: Some(reason.clone()),
+        sync_state: snapshot.sync_state,
+        selected_sync_peer: None,
+        last_accepted_peer_block: None,
+        last_rejected_peer_block_reason: None,
+        chain_id_mismatch_drops: 0,
+        duplicate_suppression_counters: SyncDuplicateSuppressionCounters {
+            inbound_messages: 0,
+            outbound_messages: 0,
+            tx_outbound: 0,
+            block_outbound: 0,
+        },
+        blocks_requested: 0,
+        blocks_received: 0,
+        invalid_blocks_received: 0,
+        orphan_blocks_received: 0,
+        missing_parent_requests_sent: 0,
+        missing_parent_responses_received: 0,
+        missing_parent_request_timeouts: 0,
+        missing_parent_request_retries: 0,
+        missing_parent_request_fallbacks: 0,
+        orphan_blocks_queued: 0,
+        orphan_blocks_retried: 0,
+        orphan_blocks_resolved: 0,
+        orphan_blocks_evicted: 0,
+        blockdata_not_found: 0,
+        block_request_retries: 0,
+        block_request_fallbacks: 0,
+        block_request_backpressure_suppressed: 0,
+        block_request_fetches_queued: 0,
+        block_request_fetches_dropped: 0,
+        scheduler_queue_depth: 0,
+        max_orphan_age_secs: 0,
+        oldest_orphan_age_secs: 0,
+        oldest_missing_parent_age_secs: 0,
+        orphan_reprocess_attempts: 0,
+        orphan_reprocess_success: 0,
+        orphan_reprocess_failed_missing_parent: 0,
+        orphan_reprocess_failed_persist: 0,
+        orphan_reprocess_failures_by_reason: BTreeMap::new(),
+        last_orphan_reprocess_failure_reason: None,
+        duplicate_blocks_received: 0,
+        peer_penalties: 0,
+        p2p_ready_for_private_rehearsal: false,
+        readiness_reasons: vec![
+            "fresh sync state unavailable; serving degraded snapshot".to_string()
+        ],
+    }
+}
+
+fn sync_missing_from_rpc_snapshot(snapshot: NodeRpcSnapshot) -> SyncMissingData {
+    SyncMissingData {
+        rpc_response_degraded: true,
+        rpc_response_stale: true,
+        rpc_response_degraded_reason: snapshot.degraded_reason,
+        pending_block_requests: snapshot.pending_block_requests,
+        pending_missing_parents: snapshot.pending_missing_parents,
+        orphan_count: snapshot.orphan_count,
+        saturated: snapshot.orphan_count >= pulsedag_core::DEFAULT_ORPHAN_MAX_COUNT,
+        orphans: Vec::new(),
+        missing_parent_index: snapshot
+            .missing_parent_entries
+            .into_iter()
+            .map(|entry| MissingParentIndexEntry {
+                parent: entry.parent,
+                waiting_orphans: entry.waiting_orphans,
+            })
+            .collect(),
+    }
+}
+
 pub async fn get_sync_status<S: RpcStateLike>(
     State(state): State<S>,
 ) -> Json<ApiResponse<SyncStatusData>> {
+    let liveness_snapshot = fresh_or_cached_node_rpc_snapshot(&state, "/sync/status").await;
+    if liveness_snapshot.degraded || liveness_snapshot.stale {
+        return Json(ApiResponse::ok(sync_status_from_rpc_snapshot(
+            liveness_snapshot,
+        )));
+    }
     let snapshot_exists = match state.storage().snapshot_exists() {
         Ok(v) => v,
         Err(e) => return Json(ApiResponse::err("STORAGE_ERROR", e.to_string())),
@@ -494,6 +610,12 @@ pub struct SyncMissingData {
 pub async fn get_sync_missing<S: RpcStateLike>(
     State(state): State<S>,
 ) -> Json<ApiResponse<SyncMissingData>> {
+    let liveness_snapshot = fresh_or_cached_node_rpc_snapshot(&state, "/sync/missing").await;
+    if liveness_snapshot.degraded || liveness_snapshot.stale {
+        return Json(ApiResponse::ok(sync_missing_from_rpc_snapshot(
+            liveness_snapshot,
+        )));
+    }
     let chain_handle = state.chain();
     let chain = match read_chain_for_rpc(&chain_handle, "/sync/missing").await {
         Ok(chain) => chain,

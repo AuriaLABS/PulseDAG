@@ -25,6 +25,7 @@ use pulsedag_p2p::{
     build_p2p_stack, messages::HeaderInventory, InboundEvent, Libp2pConfig, Libp2pRuntimeMode,
     P2pHandle, P2pMode,
 };
+use pulsedag_rpc::api::{capture_and_store_node_rpc_snapshot, NodeRpcSnapshotStore};
 use pulsedag_rpc::routes::{
     router_with_profile, ApiExposureProfile as RpcApiExposureProfile, RateLimitConfig,
     RpcHardeningLimits,
@@ -419,7 +420,20 @@ async fn main() -> Result<()> {
         storage: storage.clone(),
         p2p,
         runtime: Arc::new(tokio::sync::RwLock::new(runtime_stats)),
+        rpc_snapshot: NodeRpcSnapshotStore::default(),
     };
+
+    let _ = capture_and_store_node_rpc_snapshot(&app_state).await;
+
+    {
+        let snapshot_state = app_state.clone();
+        tokio::spawn(async move {
+            loop {
+                let _ = capture_and_store_node_rpc_snapshot(&snapshot_state).await;
+                sleep(Duration::from_millis(500)).await;
+            }
+        });
+    }
 
     {
         let lifecycle_events = build_startup_lifecycle_events(

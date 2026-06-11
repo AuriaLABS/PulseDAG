@@ -2,7 +2,7 @@ use std::{
     collections::BTreeMap,
     sync::{
         atomic::{AtomicU64, Ordering},
-        Arc, Mutex, OnceLock,
+        Arc, Mutex, OnceLock, RwLock as StdRwLock,
     },
 };
 
@@ -19,6 +19,232 @@ use tokio::{
 pub use pulsedag_api::{
     ApiError, ApiMeta, ApiResponse, GetBlockTemplateRequest, MineRequest, SubmitMinedBlockRequest,
 };
+
+const RPC_SNAPSHOT_STALE_AFTER_MS: u64 = 5_000;
+static RPC_SNAPSHOT_STALE_TOTAL: AtomicU64 = AtomicU64::new(0);
+static RPC_HANDLER_DEGRADED_TOTAL: AtomicU64 = AtomicU64::new(0);
+static RPC_HANDLER_TIMEOUT_AVOIDED_TOTAL: AtomicU64 = AtomicU64::new(0);
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct MissingParentSnapshotEntry {
+    pub parent: String,
+    pub waiting_orphans: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NodeRpcSnapshot {
+    pub chain_id: String,
+    pub height: u64,
+    pub tip: Option<String>,
+    pub peer_count: usize,
+    pub orphan_count: usize,
+    pub pending_missing_parents: usize,
+    pub missing_parent_entries: Vec<MissingParentSnapshotEntry>,
+    pub inv_hashes_requested: u64,
+    pub last_updated_ms: u64,
+    pub degraded: bool,
+    pub degraded_reason: Option<String>,
+    #[serde(default)]
+    pub stale: bool,
+    #[serde(default)]
+    pub pending_block_requests: usize,
+    #[serde(default)]
+    pub inflight_block_requests: usize,
+    #[serde(default)]
+    pub sync_state: String,
+}
+
+impl Default for NodeRpcSnapshot {
+    fn default() -> Self {
+        Self {
+            chain_id: String::new(),
+            height: 0,
+            tip: None,
+            peer_count: 0,
+            orphan_count: 0,
+            pending_missing_parents: 0,
+            missing_parent_entries: Vec::new(),
+            inv_hashes_requested: 0,
+            last_updated_ms: unix_now_ms(),
+            degraded: true,
+            degraded_reason: Some("node RPC snapshot has not been captured yet".to_string()),
+            stale: true,
+            pending_block_requests: 0,
+            inflight_block_requests: 0,
+            sync_state: "unknown".to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct NodeRpcSnapshotStore {
+    inner: Arc<StdRwLock<NodeRpcSnapshot>>,
+}
+
+impl Default for NodeRpcSnapshotStore {
+    fn default() -> Self {
+        Self::new(NodeRpcSnapshot::default())
+    }
+}
+
+impl NodeRpcSnapshotStore {
+    pub fn new(snapshot: NodeRpcSnapshot) -> Self {
+        Self {
+            inner: Arc::new(StdRwLock::new(snapshot)),
+        }
+    }
+
+    pub fn load(&self) -> NodeRpcSnapshot {
+        self.inner
+            .try_read()
+            .map(|snapshot| snapshot.clone())
+            .unwrap_or_else(|_| {
+                record_rpc_snapshot_stale();
+                NodeRpcSnapshot {
+                    degraded_reason: Some(
+                        "node RPC snapshot read lock was busy; synthesized degraded snapshot"
+                            .to_string(),
+                    ),
+                    ..NodeRpcSnapshot::default()
+                }
+            })
+    }
+
+    pub fn store(&self, snapshot: NodeRpcSnapshot) {
+        if let Ok(mut guard) = self.inner.try_write() {
+            *guard = snapshot;
+        }
+    }
+
+    pub fn degraded_snapshot(&self, reason: impl Into<String>) -> NodeRpcSnapshot {
+        let reason = reason.into();
+        record_rpc_snapshot_stale();
+        record_rpc_handler_degraded();
+        record_rpc_handler_timeout_avoided();
+        let mut snapshot = self.load();
+        snapshot.degraded = true;
+        snapshot.stale = true;
+        snapshot.degraded_reason = Some(reason);
+        snapshot
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct NodeRpcSnapshotMetrics {
+    pub rpc_snapshot_age_ms: u64,
+    pub rpc_snapshot_stale_total: u64,
+    pub rpc_handler_degraded_total: u64,
+    pub rpc_handler_timeout_avoided_total: u64,
+}
+
+pub fn node_rpc_snapshot_metrics(snapshot: &NodeRpcSnapshot) -> NodeRpcSnapshotMetrics {
+    NodeRpcSnapshotMetrics {
+        rpc_snapshot_age_ms: unix_now_ms().saturating_sub(snapshot.last_updated_ms),
+        rpc_snapshot_stale_total: RPC_SNAPSHOT_STALE_TOTAL.load(Ordering::Relaxed),
+        rpc_handler_degraded_total: RPC_HANDLER_DEGRADED_TOTAL.load(Ordering::Relaxed),
+        rpc_handler_timeout_avoided_total: RPC_HANDLER_TIMEOUT_AVOIDED_TOTAL
+            .load(Ordering::Relaxed),
+    }
+}
+
+pub fn record_rpc_snapshot_stale() {
+    RPC_SNAPSHOT_STALE_TOTAL.fetch_add(1, Ordering::Relaxed);
+}
+
+pub fn record_rpc_handler_degraded() {
+    RPC_HANDLER_DEGRADED_TOTAL.fetch_add(1, Ordering::Relaxed);
+}
+
+pub fn record_rpc_handler_timeout_avoided() {
+    RPC_HANDLER_TIMEOUT_AVOIDED_TOTAL.fetch_add(1, Ordering::Relaxed);
+}
+
+pub fn unix_now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+pub fn build_node_rpc_snapshot(
+    chain: &ChainState,
+    runtime: &NodeRuntimeStats,
+    p2p_status: Option<&P2pStatus>,
+) -> NodeRpcSnapshot {
+    let mut missing_parent_entries = chain
+        .orphan_parent_index
+        .iter()
+        .map(|(parent, waiting)| MissingParentSnapshotEntry {
+            parent: parent.clone(),
+            waiting_orphans: waiting.iter().cloned().collect(),
+        })
+        .collect::<Vec<_>>();
+    missing_parent_entries.sort_by(|left, right| left.parent.cmp(&right.parent));
+    NodeRpcSnapshot {
+        chain_id: chain.chain_id.clone(),
+        height: chain.dag.best_height,
+        tip: pulsedag_core::preferred_tip_hash(chain),
+        peer_count: p2p_status
+            .map(|status| status.connected_peers.len())
+            .unwrap_or(0),
+        orphan_count: chain.orphan_blocks.len(),
+        pending_missing_parents: pulsedag_core::pending_missing_parent_count(chain),
+        missing_parent_entries,
+        inv_hashes_requested: p2p_status
+            .map(|status| status.inv_hashes_requested as u64)
+            .unwrap_or(0),
+        last_updated_ms: unix_now_ms(),
+        degraded: false,
+        degraded_reason: None,
+        stale: false,
+        pending_block_requests: runtime.pending_block_requests,
+        inflight_block_requests: runtime.inflight_block_requests,
+        sync_state: runtime.sync_state.clone(),
+    }
+}
+
+pub async fn capture_and_store_node_rpc_snapshot<S: RpcStateLike>(
+    state: &S,
+) -> Result<NodeRpcSnapshot, String> {
+    let p2p_status = p2p_status_for_rpc(state.p2p(), "/rpc/snapshot")
+        .await
+        .ok()
+        .flatten();
+    let chain_handle = state.chain();
+    let chain = chain_handle.try_read().map_err(|_| {
+        "node RPC snapshot capture skipped because chain read lock is busy".to_string()
+    })?;
+    let runtime_handle = state.runtime();
+    let runtime = runtime_handle.try_read().map_err(|_| {
+        "node RPC snapshot capture skipped because runtime read lock is busy".to_string()
+    })?;
+    let snapshot =
+        build_node_rpc_snapshot(&chain, &runtime, p2p_status.as_ref().map(|p| &p.status));
+    state.rpc_snapshot().store(snapshot.clone());
+    Ok(snapshot)
+}
+
+pub async fn fresh_or_cached_node_rpc_snapshot<S: RpcStateLike>(
+    state: &S,
+    endpoint: &str,
+) -> NodeRpcSnapshot {
+    match capture_and_store_node_rpc_snapshot(state).await {
+        Ok(mut snapshot) => {
+            if unix_now_ms().saturating_sub(snapshot.last_updated_ms) > RPC_SNAPSHOT_STALE_AFTER_MS
+            {
+                snapshot.stale = true;
+                snapshot.degraded = true;
+                snapshot.degraded_reason =
+                    Some("node RPC snapshot exceeded stale age threshold".to_string());
+                record_rpc_snapshot_stale();
+            }
+            snapshot
+        }
+        Err(reason) => state.rpc_snapshot().degraded_snapshot(format!(
+            "{endpoint} avoided waiting for fresh liveness state: {reason}"
+        )),
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WalletSignRequest {
@@ -368,6 +594,7 @@ fn stale_p2p_status(reason: String) -> Result<Option<P2pStatusSnapshot>, String>
 
 pub fn record_rpc_degraded_response() {
     RPC_DEGRADED_RESPONSE_TOTAL.fetch_add(1, Ordering::Relaxed);
+    record_rpc_handler_degraded();
 }
 
 pub async fn read_chain_for_rpc<'a>(
@@ -592,6 +819,12 @@ pub trait RpcStateLike: Clone + Send + Sync + 'static {
     fn p2p(&self) -> Option<Arc<dyn P2pHandle>>;
     fn storage(&self) -> Arc<Storage>;
     fn runtime(&self) -> Arc<RwLock<NodeRuntimeStats>>;
+    fn rpc_snapshot(&self) -> NodeRpcSnapshotStore {
+        static DEFAULT_RPC_SNAPSHOT: OnceLock<NodeRpcSnapshotStore> = OnceLock::new();
+        DEFAULT_RPC_SNAPSHOT
+            .get_or_init(NodeRpcSnapshotStore::default)
+            .clone()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

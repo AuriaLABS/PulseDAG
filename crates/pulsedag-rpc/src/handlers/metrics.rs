@@ -3,7 +3,10 @@ use std::collections::BTreeMap;
 
 use crate::{
     api::RpcStateLike,
-    api::{p2p_status_for_rpc, p2p_status_snapshot_metrics, ApiResponse, P2pStatusSnapshotMetrics},
+    api::{
+        node_rpc_snapshot_metrics, p2p_status_for_rpc, p2p_status_snapshot_metrics, ApiResponse,
+        NodeRpcSnapshotMetrics, P2pStatusSnapshotMetrics,
+    },
 };
 
 #[derive(Debug, serde::Serialize)]
@@ -47,6 +50,11 @@ pub struct MetricsData {
     pub peer_count: usize,
     pub p2p_status_snapshot: P2pStatusSnapshotMetrics,
     pub rpc_degraded_response_total: u64,
+    pub rpc_snapshot_age_ms: u64,
+    pub rpc_snapshot_stale_total: u64,
+    pub rpc_handler_degraded_total: u64,
+    pub rpc_handler_timeout_avoided_total: u64,
+    pub node_rpc_snapshot: NodeRpcSnapshotMetrics,
     pub limitations: Vec<String>,
 }
 
@@ -63,6 +71,8 @@ pub async fn get_metrics<S: RpcStateLike>(
         .ok()
         .flatten();
     let snapshot_metrics = p2p_status_snapshot_metrics();
+    let node_snapshot = state.rpc_snapshot().load();
+    let node_snapshot_metrics = node_rpc_snapshot_metrics(&node_snapshot);
     let peer_count = p2p_status
         .as_ref()
         .map(|snapshot| snapshot.status.connected_peers.len())
@@ -130,6 +140,11 @@ pub async fn get_metrics<S: RpcStateLike>(
         peer_count,
         p2p_status_snapshot: snapshot_metrics,
         rpc_degraded_response_total: snapshot_metrics.rpc_degraded_response_total,
+        rpc_snapshot_age_ms: node_snapshot_metrics.rpc_snapshot_age_ms,
+        rpc_snapshot_stale_total: node_snapshot_metrics.rpc_snapshot_stale_total,
+        rpc_handler_degraded_total: node_snapshot_metrics.rpc_handler_degraded_total,
+        rpc_handler_timeout_avoided_total: node_snapshot_metrics.rpc_handler_timeout_avoided_total,
+        node_rpc_snapshot: node_snapshot_metrics,
         limitations: vec![
             "Counters reset on node restart.".to_string(),
             "Peer and orphan counts are point-in-time snapshots.".to_string(),

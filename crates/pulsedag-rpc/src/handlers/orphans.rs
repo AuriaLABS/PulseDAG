@@ -4,7 +4,10 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use crate::{api::read_chain_for_rpc, api::ApiResponse, api::RpcStateLike};
+use crate::{
+    api::fresh_or_cached_node_rpc_snapshot, api::read_chain_for_rpc, api::ApiResponse,
+    api::NodeRpcSnapshot, api::RpcStateLike,
+};
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct OrphanEntry {
@@ -74,6 +77,17 @@ fn orphan_entry_status(
     (age_secs, status, actionable, stale, waiting, false)
 }
 
+fn orphans_from_rpc_snapshot(snapshot: NodeRpcSnapshot) -> OrphanStatusData {
+    OrphanStatusData {
+        rpc_response_degraded: true,
+        rpc_response_stale: true,
+        rpc_response_degraded_reason: snapshot.degraded_reason,
+        orphan_count: snapshot.orphan_count,
+        saturated: snapshot.orphan_count >= pulsedag_core::DEFAULT_ORPHAN_MAX_COUNT,
+        orphans: Vec::new(),
+    }
+}
+
 fn cache_orphans_response(data: &OrphanStatusData) {
     if let Ok(mut cache) = ORPHANS_RESPONSE_CACHE
         .get_or_init(|| Mutex::new(None))
@@ -86,6 +100,12 @@ fn cache_orphans_response(data: &OrphanStatusData) {
 pub async fn get_orphans<S: RpcStateLike>(
     State(state): State<S>,
 ) -> Json<ApiResponse<OrphanStatusData>> {
+    let liveness_snapshot = fresh_or_cached_node_rpc_snapshot(&state, "/orphans").await;
+    if liveness_snapshot.degraded || liveness_snapshot.stale {
+        return Json(ApiResponse::ok(orphans_from_rpc_snapshot(
+            liveness_snapshot,
+        )));
+    }
     let chain_handle = state.chain();
     let chain = match read_chain_for_rpc(&chain_handle, "/orphans").await {
         Ok(chain) => chain,
