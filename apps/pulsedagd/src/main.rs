@@ -6,7 +6,7 @@ use std::{
     collections::HashSet,
     net::SocketAddr,
     sync::Arc,
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::Result;
@@ -15,7 +15,10 @@ use app_state::{
     new_runtime_stats, short_hash, AppState, OperatorConsoleInputs,
 };
 use axum::Router;
-use block_request::{BlockRequestTracker, DependencyAwareFetchScheduler, HeaderFetchCandidate};
+use block_request::{
+    BlockRequestTracker, DependencyAwareFetchScheduler, GetBlockRequestReadiness,
+    HeaderFetchCandidate,
+};
 use config::Config;
 use pulsedag_core::accept::{
     accept_transaction_with_result, AcceptSource, BlockAcceptanceResult, TxAcceptanceResult,
@@ -37,6 +40,75 @@ use tokio::time::{sleep, Duration};
 const MAX_INFLIGHT_BLOCK_REQUESTS: usize = 64;
 const MAX_INFLIGHT_BLOCK_REQUESTS_PER_PEER: usize = 16;
 const MAX_FETCH_SCHEDULER_QUEUE_DEPTH: usize = 512;
+
+const ORPHAN_RECOVERY_ROOT_REQUEST_LIMIT: usize = 16;
+const ORPHAN_RECOVERY_REVALIDATE_EVICT_LIMIT: usize = 32;
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct OrphanRecoveryRootClassification {
+    requestable: Vec<String>,
+    already_pending: Vec<String>,
+    rate_limited: Vec<String>,
+    unknown_peerless: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct OrphanRecoveryTickResult {
+    roots_discovered: usize,
+    roots_requested: usize,
+    roots_rate_limited: usize,
+    backlog_reindexed: bool,
+    backlog_revalidated: bool,
+    backlog_evicted: usize,
+    backlog_stale: usize,
+    orphan_count: usize,
+    pending_missing: usize,
+    ages: (u64, u64),
+    orphan_backlog: pulsedag_core::OrphanBacklogClassification,
+    adopted: usize,
+    retried: usize,
+    persist_failed: bool,
+    failure_reasons: std::collections::BTreeMap<String, usize>,
+}
+
+fn classify_orphan_recovery_roots(
+    roots: Vec<String>,
+    block_requests: &BlockRequestTracker,
+    active_peers: &[String],
+    has_p2p: bool,
+    now_unix: u64,
+) -> OrphanRecoveryRootClassification {
+    let mut classification = OrphanRecoveryRootClassification::default();
+    for root in roots {
+        if !has_p2p || active_peers.is_empty() {
+            classification.unknown_peerless.push(root);
+            continue;
+        }
+        match block_requests.classify_getblock_for_peers(&root, now_unix, active_peers.to_vec()) {
+            GetBlockRequestReadiness::Requestable => classification.requestable.push(root),
+            GetBlockRequestReadiness::AlreadyPending => classification.already_pending.push(root),
+            GetBlockRequestReadiness::RateLimited => classification.rate_limited.push(root),
+        }
+    }
+    classification.requestable.sort();
+    classification.already_pending.sort();
+    classification.rate_limited.sort();
+    classification.unknown_peerless.sort();
+    classification
+}
+
+fn orphan_recovery_roots(chain: &pulsedag_core::ChainState) -> Vec<String> {
+    let known = chain.dag.blocks.keys().cloned().collect::<HashSet<_>>();
+    let mut roots = chain
+        .orphan_blocks
+        .keys()
+        .flat_map(|hash| pulsedag_core::orphan_missing_roots(chain, hash))
+        .filter(|root| !known.contains(root))
+        .collect::<Vec<_>>();
+    roots.sort();
+    roots.dedup();
+    roots
+}
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
@@ -45,6 +117,13 @@ fn now_unix() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+fn now_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
 }
 
@@ -586,19 +665,18 @@ async fn main() -> Result<()> {
                 }
                 recovery_tick = recovery_tick.saturating_add(1);
                 if recovery_tick.is_multiple_of(5) {
-                    let (
-                        missing_roots,
-                        adopted,
-                        retried,
-                        orphan_count,
-                        pending_missing,
-                        ages,
-                        persist_failed,
-                        failure_reasons,
-                        orphan_backlog,
-                    ) = {
+                    let tick_started = Instant::now();
+                    let active_peers = active_peer_ids(&p2p);
+                    let has_p2p = p2p.is_some();
+                    let mut tick = {
                         let mut guard = chain.write().await;
-                        if guard.orphan_parent_index.is_empty() && !guard.orphan_blocks.is_empty() {
+                        if guard.orphan_blocks.is_empty() {
+                            OrphanRecoveryTickResult {
+                                ages: orphan_age_metrics(&guard, now_unix()),
+                                orphan_backlog: pulsedag_core::classify_orphan_backlog(&guard),
+                                ..OrphanRecoveryTickResult::default()
+                            }
+                        } else {
                             let rebuilt = pulsedag_core::rebuild_orphan_parent_index(&mut guard);
                             info!(
                                 event = "orphan_parent_index_rebuilt",
@@ -609,95 +687,213 @@ async fn main() -> Result<()> {
                                     rebuilt.unindexed_missing_parent_entries,
                                 "rebuilt orphan parent index from queued orphan block parents"
                             );
-                        }
-                        let mut adopted_hashes = Vec::new();
-                        let adoption = pulsedag_core::adopt_ready_orphans_with_result(
-                            &mut guard,
-                            AcceptSource::P2p,
-                            None,
-                        );
-                        let adopted = adoption.accepted;
-                        let retried = adoption.retried;
-                        let failure_reasons = adoption.failure_reasons;
-                        adopted_hashes.extend(adoption.accepted_hashes);
-                        let persist_failed = if retried > 0 {
-                            match storage.persist_chain_state(&guard) {
-                                Ok(()) => false,
-                                Err(e) => {
-                                    warn!(error = %e, retried, adopted, "failed persisting chain state after recovery orphan reprocess");
-                                    true
+                            let mut adopted_hashes = Vec::new();
+                            let adoption = pulsedag_core::adopt_ready_orphans_with_result(
+                                &mut guard,
+                                AcceptSource::P2p,
+                                None,
+                            );
+                            let adopted = adoption.accepted;
+                            let retried = adoption.retried;
+                            let failure_reasons = adoption.failure_reasons;
+                            adopted_hashes.extend(adoption.accepted_hashes);
+                            let persist_failed = if retried > 0 {
+                                match storage.persist_chain_state(&guard) {
+                                    Ok(()) => false,
+                                    Err(e) => {
+                                        warn!(error = %e, retried, adopted, "failed persisting chain state after recovery orphan reprocess");
+                                        true
+                                    }
+                                }
+                            } else {
+                                false
+                            };
+                            for hash in adopted_hashes {
+                                block_requests.resolve(&hash);
+                            }
+
+                            let roots = orphan_recovery_roots(&guard);
+                            let roots_discovered = roots.len();
+                            let root_classes = classify_orphan_recovery_roots(
+                                roots,
+                                &block_requests,
+                                &active_peers,
+                                has_p2p,
+                                now_unix(),
+                            );
+                            let no_requestable_roots = root_classes.requestable.is_empty();
+                            let mut stale = rebuilt.stale_missing_parent_entries;
+                            let mut evicted = 0usize;
+                            let mut revalidated = false;
+                            if no_requestable_roots {
+                                let revalidated_backlog =
+                                    pulsedag_core::revalidate_orphan_backlog(&mut guard);
+                                stale = stale.saturating_add(
+                                    revalidated_backlog.stale_missing_parent_entries,
+                                );
+                                revalidated = true;
+                                evicted = pulsedag_core::evict_stale_orphans_bounded(
+                                    &mut guard,
+                                    now_millis(),
+                                    pulsedag_core::DEFAULT_ORPHAN_MAX_AGE_MS,
+                                    ORPHAN_RECOVERY_REVALIDATE_EVICT_LIMIT,
+                                );
+                                if evicted > 0 {
+                                    match storage.persist_chain_state(&guard) {
+                                        Ok(()) => {}
+                                        Err(e) => {
+                                            warn!(error = %e, evicted, "failed persisting chain state after stale orphan eviction")
+                                        }
+                                    }
                                 }
                             }
-                        } else {
-                            false
-                        };
-                        for hash in adopted_hashes {
-                            block_requests.resolve(&hash);
+                            let ages = orphan_age_metrics(&guard, now_unix());
+                            OrphanRecoveryTickResult {
+                                roots_discovered,
+                                roots_requested: 0,
+                                roots_rate_limited: root_classes.rate_limited.len(),
+                                backlog_reindexed: true,
+                                backlog_revalidated: revalidated,
+                                backlog_evicted: evicted,
+                                backlog_stale: stale,
+                                orphan_count: guard.orphan_blocks.len(),
+                                pending_missing: pulsedag_core::pending_missing_parent_count(
+                                    &guard,
+                                ),
+                                ages,
+                                orphan_backlog: pulsedag_core::classify_orphan_backlog(&guard),
+                                adopted,
+                                retried,
+                                persist_failed,
+                                failure_reasons,
+                            }
                         }
-                        let known = guard.dag.blocks.keys().cloned().collect::<HashSet<_>>();
-                        let mut roots = guard
-                            .orphan_blocks
-                            .keys()
-                            .flat_map(|hash| pulsedag_core::orphan_missing_roots(&guard, hash))
-                            .filter(|root| !known.contains(root))
-                            .collect::<Vec<_>>();
-                        roots.sort();
-                        roots.dedup();
-                        roots.truncate(16);
-                        let ages = orphan_age_metrics(&guard, now_unix());
-                        (
-                            roots,
-                            adopted,
-                            retried,
-                            guard.orphan_blocks.len(),
-                            pulsedag_core::pending_missing_parent_count(&guard),
-                            ages,
-                            persist_failed,
-                            failure_reasons,
-                            pulsedag_core::classify_orphan_backlog(&guard),
-                        )
                     };
-                    if retried > 0 || !missing_roots.is_empty() || pending_missing > 0 {
+                    let roots = {
+                        let guard = chain.read().await;
+                        orphan_recovery_roots(&guard)
+                    };
+                    let root_classes = classify_orphan_recovery_roots(
+                        roots,
+                        &block_requests,
+                        &active_peers,
+                        has_p2p,
+                        now_unix(),
+                    );
+                    for parent in root_classes
+                        .requestable
+                        .into_iter()
+                        .take(ORPHAN_RECOVERY_ROOT_REQUEST_LIMIT)
+                    {
+                        if block_requests.should_issue_getblock_for_peers(
+                            &parent,
+                            now_unix(),
+                            active_peers.clone(),
+                        ) {
+                            if let Some(ref p2p) = p2p {
+                                if let Err(e) = p2p.request_block(&parent) {
+                                    warn!(error = %e, missing_parent = %parent, "failed issuing recovery-tick orphan-root GetBlock request");
+                                }
+                            }
+                            tick.roots_requested = tick.roots_requested.saturating_add(1);
+                        }
+                    }
+                    if tick.retried > 0
+                        || tick.roots_discovered > 0
+                        || tick.pending_missing > 0
+                        || tick.backlog_reindexed
+                        || tick.backlog_revalidated
+                        || tick.backlog_evicted > 0
+                    {
                         let mut rt = runtime.write().await;
-                        let reprocess_attempts = if retried > 0 { retried as u64 } else { 1 };
+                        let reprocess_attempts = if tick.retried > 0 {
+                            tick.retried as u64
+                        } else {
+                            1
+                        };
                         rt.orphan_reprocess_attempts = rt
                             .orphan_reprocess_attempts
                             .saturating_add(reprocess_attempts);
-                        rt.orphan_reprocess_success =
-                            rt.orphan_reprocess_success.saturating_add(adopted as u64);
+                        rt.orphan_reprocess_success = rt
+                            .orphan_reprocess_success
+                            .saturating_add(tick.adopted as u64);
                         rt.orphan_reprocess_failed_missing_parent =
                             rt.orphan_reprocess_failed_missing_parent.saturating_add(
-                                failure_reasons.get("missing_parent").copied().unwrap_or(0) as u64,
+                                tick.failure_reasons
+                                    .get("missing_parent")
+                                    .copied()
+                                    .unwrap_or(0) as u64,
                             );
-                        record_orphan_reprocess_failures(&mut rt, &failure_reasons);
-                        if retried == 0 && pending_missing > 0 {
+                        record_orphan_reprocess_failures(&mut rt, &tick.failure_reasons);
+                        if tick.retried == 0 && tick.pending_missing > 0 {
                             let entry = rt
                                 .orphan_reprocess_failures_by_reason
                                 .entry("waiting_missing_parent".to_string())
                                 .or_insert(0);
-                            *entry = entry.saturating_add(pending_missing as u64);
+                            *entry = entry.saturating_add(tick.pending_missing as u64);
                             rt.last_orphan_reprocess_failure_reason =
                                 Some("waiting_missing_parent".to_string());
                         }
                         rt.orphan_blocks_retried =
-                            rt.orphan_blocks_retried.saturating_add(retried as u64);
-                        rt.orphan_blocks_resolved =
-                            rt.orphan_blocks_resolved.saturating_add(adopted as u64);
-                        if persist_failed {
+                            rt.orphan_blocks_retried.saturating_add(tick.retried as u64);
+                        rt.orphan_blocks_resolved = rt
+                            .orphan_blocks_resolved
+                            .saturating_add(tick.adopted as u64);
+                        if tick.persist_failed {
                             rt.orphan_reprocess_failed_persist =
                                 rt.orphan_reprocess_failed_persist.saturating_add(1);
                         }
-                        rt.pending_missing_parents = pending_missing;
-                        rt.orphan_backlog_retryable_ready = orphan_backlog.retryable_ready;
+                        rt.orphan_roots_discovered_total = rt
+                            .orphan_roots_discovered_total
+                            .saturating_add(tick.roots_discovered as u64);
+                        rt.orphan_roots_requested_total = rt
+                            .orphan_roots_requested_total
+                            .saturating_add(tick.roots_requested as u64);
+                        rt.orphan_roots_rate_limited_total = rt
+                            .orphan_roots_rate_limited_total
+                            .saturating_add(tick.roots_rate_limited as u64);
+                        if tick.backlog_reindexed {
+                            rt.orphan_backlog_reindexed_total =
+                                rt.orphan_backlog_reindexed_total.saturating_add(1);
+                        }
+                        if tick.backlog_revalidated {
+                            rt.orphan_backlog_revalidated_total =
+                                rt.orphan_backlog_revalidated_total.saturating_add(1);
+                        }
+                        rt.orphan_backlog_evicted_total = rt
+                            .orphan_backlog_evicted_total
+                            .saturating_add(tick.backlog_evicted as u64);
+                        rt.orphan_backlog_stale_total = rt
+                            .orphan_backlog_stale_total
+                            .saturating_add(tick.backlog_stale as u64);
+                        rt.orphan_recovery_tick_duration_ms =
+                            tick_started.elapsed().as_millis() as u64;
+                        rt.orphan_blocks_evicted = rt
+                            .orphan_blocks_evicted
+                            .saturating_add(tick.backlog_evicted as u64);
+                        rt.getblock_sent =
+                            rt.getblock_sent.saturating_add(tick.roots_requested as u64);
+                        rt.missing_parent_requests_sent = rt
+                            .missing_parent_requests_sent
+                            .saturating_add(tick.roots_requested as u64);
+                        rt.block_request_fallbacks = rt
+                            .block_request_fallbacks
+                            .saturating_add(tick.roots_requested as u64);
+                        rt.missing_parent_request_fallbacks = rt
+                            .missing_parent_request_fallbacks
+                            .saturating_add(tick.roots_requested as u64);
+                        rt.pending_missing_parents = tick.pending_missing;
+                        rt.orphan_backlog_retryable_ready = tick.orphan_backlog.retryable_ready;
                         rt.orphan_backlog_waiting_missing_parent =
-                            orphan_backlog.waiting_missing_parent;
+                            tick.orphan_backlog.waiting_missing_parent;
                         rt.orphan_backlog_stale_missing_parent_entries =
-                            orphan_backlog.stale_missing_parent_entries;
+                            tick.orphan_backlog.stale_missing_parent_entries;
                         rt.orphan_backlog_unindexed_missing_parent_entries =
-                            orphan_backlog.unindexed_missing_parent_entries;
-                        rt.max_orphan_age_secs = ages.0;
-                        rt.oldest_orphan_age_secs = ages.0;
-                        rt.oldest_missing_parent_age_secs = ages
+                            tick.orphan_backlog.unindexed_missing_parent_entries;
+                        rt.max_orphan_age_secs = tick.ages.0;
+                        rt.oldest_orphan_age_secs = tick.ages.0;
+                        rt.oldest_missing_parent_age_secs = tick
+                            .ages
                             .1
                             .max(block_requests.oldest_pending_age_secs(now_unix()));
                         rt.pending_block_requests = block_requests.pending.len();
@@ -706,40 +902,12 @@ async fn main() -> Result<()> {
                         rt.block_fetch_scheduler_queue_depth = fetch_scheduler.queue_depth();
                         rt.block_fetch_scheduler_inflight_by_peer =
                             block_requests.inflight_by_peer();
-                        rt.sync_state = if orphan_count == 0 {
+                        rt.sync_state = if tick.orphan_count == 0 {
                             "synced"
                         } else {
                             "catching_up"
                         }
                         .to_string();
-                    }
-                    for parent in missing_roots {
-                        let active_peers = active_peer_ids(&p2p);
-                        if !active_peers.is_empty() {
-                            block_requests.reset_backoff(&parent);
-                        }
-                        if block_requests.should_issue_getblock_for_peers(
-                            &parent,
-                            now_unix(),
-                            active_peers,
-                        ) {
-                            if let Some(ref p2p) = p2p {
-                                if let Err(e) = p2p.request_block(&parent) {
-                                    warn!(error = %e, missing_parent = %parent, "failed issuing recovery-tick orphan-root GetBlock request");
-                                }
-                            }
-                            let mut rt = runtime.write().await;
-                            rt.getblock_sent = rt.getblock_sent.saturating_add(1);
-                            rt.missing_parent_requests_sent =
-                                rt.missing_parent_requests_sent.saturating_add(1);
-                            rt.block_request_fallbacks =
-                                rt.block_request_fallbacks.saturating_add(1);
-                            rt.missing_parent_request_fallbacks =
-                                rt.missing_parent_request_fallbacks.saturating_add(1);
-                            rt.pending_block_requests = block_requests.pending.len();
-                            rt.inflight_block_requests = block_requests.pending.len();
-                            rt.pending_block_request_hashes = block_requests.pending_hashes();
-                        }
                     }
                 }
                 let Some(event) = maybe_event else {

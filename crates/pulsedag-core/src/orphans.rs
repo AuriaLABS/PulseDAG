@@ -11,6 +11,7 @@ use crate::{
 
 pub const DEFAULT_ORPHAN_MAX_COUNT: usize = 512;
 pub const DEFAULT_ORPHAN_MAX_AGE_MS: u64 = 15 * 60 * 1000;
+pub const DEFAULT_ORPHAN_RECOVERY_EVICT_LIMIT: usize = 32;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OrphanQueueResult {
@@ -235,6 +236,48 @@ pub fn classify_orphan_backlog(state: &ChainState) -> OrphanBacklogClassificatio
         }
     }
     classification
+}
+
+/// Revalidate every queued orphan against the current DAG and refresh the missing-parent index.
+///
+/// The pass is bounded by the current orphan pool size and is deterministic because orphans are
+/// visited by hash order. It does not accept or reject blocks; it only repairs stale metadata so a
+/// recovery supervisor can decide whether to request roots or evict aged entries.
+pub fn revalidate_orphan_backlog(state: &mut ChainState) -> OrphanBacklogClassification {
+    rebuild_orphan_parent_index(state)
+}
+
+/// Evict stale orphan blocks using a deterministic hash/timestamp order and a per-tick limit.
+pub fn evict_stale_orphans_bounded(
+    state: &mut ChainState,
+    now_ms: u64,
+    max_age_ms: u64,
+    limit: usize,
+) -> usize {
+    if limit == 0 {
+        return 0;
+    }
+    let mut stale = state
+        .orphan_received_at_ms
+        .iter()
+        .filter_map(|(hash, received_at)| {
+            (now_ms.saturating_sub(*received_at) > max_age_ms)
+                .then_some((hash.clone(), *received_at))
+        })
+        .collect::<Vec<_>>();
+    stale.sort_by(|(left_hash, left_ts), (right_hash, right_ts)| {
+        left_ts
+            .cmp(right_ts)
+            .then_with(|| left_hash.cmp(right_hash))
+    });
+
+    let mut evicted = 0usize;
+    for (hash, _) in stale.into_iter().take(limit) {
+        if remove_queued_orphan(state, &hash).is_some() {
+            evicted = evicted.saturating_add(1);
+        }
+    }
+    evicted
 }
 
 pub fn pending_missing_parent_count(state: &ChainState) -> usize {
@@ -994,5 +1037,81 @@ mod tests {
         let adopted_children = state.dag.children.get(&parent.hash).unwrap();
         assert_eq!(adopted_children.len(), 1);
         assert!(adopted_children[0] == alpha.hash || adopted_children[0] == beta.hash);
+    }
+
+    #[test]
+    fn pending_missing_parents_empty_index_triggers_reindex() {
+        let mut state = init_chain_state("test".into());
+        let child = candidate(vec!["missing-root".into()], 1, "needs-reindex", 1);
+        assert!(queue_orphan_block(
+            &mut state,
+            child.clone(),
+            vec!["missing-root".into()]
+        ));
+        state.orphan_missing_parents.clear();
+        state.orphan_parent_index.clear();
+
+        assert_eq!(pending_missing_parent_count(&state), 1);
+        let classification = rebuild_orphan_parent_index(&mut state);
+
+        assert_eq!(classification.waiting_missing_parent, 1);
+        assert_eq!(state.orphan_parent_index.len(), 1);
+        assert_eq!(
+            state.orphan_missing_parents.get(&child.hash),
+            Some(&vec!["missing-root".into()])
+        );
+        assert_orphan_indexes_consistent(&state);
+    }
+
+    #[test]
+    fn stale_orphan_entries_are_bounded_evicted() {
+        let mut state = init_chain_state("test".into());
+        let now = 100_000;
+        let mut hashes = Vec::new();
+        for idx in 0..4 {
+            let block = candidate(vec![format!("missing-{idx}")], 1, "stale", idx + 1);
+            hashes.push(block.hash.clone());
+            assert!(queue_orphan_block(
+                &mut state,
+                block,
+                vec![format!("missing-{idx}")]
+            ));
+        }
+        for (idx, hash) in hashes.iter().enumerate() {
+            state
+                .orphan_received_at_ms
+                .insert(hash.clone(), now - 10_000 + idx as u64);
+        }
+
+        let evicted = evict_stale_orphans_bounded(&mut state, now, 1_000, 2);
+
+        assert_eq!(evicted, 2);
+        assert_eq!(state.orphan_blocks.len(), 2);
+        assert!(!state.orphan_blocks.contains_key(&hashes[0]));
+        assert!(!state.orphan_blocks.contains_key(&hashes[1]));
+        assert!(state.orphan_blocks.contains_key(&hashes[2]));
+        assert!(state.orphan_blocks.contains_key(&hashes[3]));
+        assert_orphan_indexes_consistent(&state);
+    }
+
+    #[test]
+    fn recovery_root_discovery_is_bounded_by_orphan_backlog() {
+        let mut state = init_chain_state("test".into());
+        for idx in 0..32 {
+            let block = candidate(vec![format!("missing-root-{idx}")], 1, "root", idx + 1);
+            assert!(queue_orphan_block(
+                &mut state,
+                block,
+                vec![format!("missing-root-{idx}")]
+            ));
+        }
+        let roots = state
+            .orphan_blocks
+            .keys()
+            .flat_map(|hash| orphan_missing_roots(&state, hash))
+            .collect::<BTreeSet<_>>();
+
+        assert_eq!(roots.len(), 32);
+        assert_eq!(pending_missing_parent_count(&state), 32);
     }
 }

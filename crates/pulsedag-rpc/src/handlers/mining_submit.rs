@@ -123,7 +123,7 @@ struct MiningSubmitActorHandle {
 
 impl MiningSubmitActorHandle {
     fn spawn(queue_size: usize) -> Self {
-        let (sender, mut receiver) = mpsc::channel(queue_size);
+        let (sender, mut receiver) = mpsc::channel::<SubmitBlockCommand>(queue_size);
         tokio::spawn(async move {
             while let Some(command) = receiver.recv().await {
                 let response =
@@ -140,6 +140,7 @@ impl MiningSubmitActorHandle {
             .saturating_sub(self.sender.capacity()) as u64
     }
 
+    #[allow(clippy::result_large_err)]
     fn try_submit(
         &self,
         command: SubmitBlockCommand,
@@ -1282,9 +1283,12 @@ mod tests {
             atomic::{AtomicUsize, Ordering},
             Arc,
         },
-        time::{Instant, SystemTime, UNIX_EPOCH},
+        time::{Duration, Instant, SystemTime, UNIX_EPOCH},
     };
-    use tokio::sync::{mpsc, oneshot, RwLock};
+    use tokio::{
+        sync::{mpsc, oneshot, RwLock},
+        time::timeout,
+    };
 
     #[derive(Clone)]
     struct FakeP2pHandle {
