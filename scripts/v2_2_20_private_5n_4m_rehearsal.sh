@@ -129,15 +129,21 @@ text_has_match(){
 }
 
 count_matches_file(){
-  local pattern="$1" file="$2"
+  local pattern="$1" file="$2" output
   [[ -f "$file" ]] || { echo 0; return 0; }
-  if command -v rg >/dev/null 2>&1; then rg -ci -- "$pattern" "$file" 2>/dev/null || echo 0; else grep -Eic -- "$pattern" "$file" 2>/dev/null || echo 0; fi
+  if command -v rg >/dev/null 2>&1; then
+    output=$(rg -ci -- "$pattern" "$file" 2>/dev/null || true)
+  else
+    output=$(grep -Eic -- "$pattern" "$file" 2>/dev/null || true)
+  fi
+  integer_sum_or_zero "$output"
 }
 
 count_matches_in_logs(){
   local pattern="$1" total=0 c i
   for i in $(seq 1 "$MINER_COUNT"); do
     c=$(count_matches_file "$pattern" "$OUT_DIR/logs/miner-${i}.log")
+    c=$(integer_sum_or_zero "$c")
     total=$((total + c))
   done
   echo "$total"
@@ -773,6 +779,11 @@ json_number_or_zero(){
   [[ "$value" =~ ^[0-9]+$ ]] && printf '%s' "$value" || printf '0'
 }
 
+integer_sum_or_zero(){
+  local value="${1:-}"
+  awk 'BEGIN { total=0 } { for (i=1; i<=NF; i++) if ($i ~ /^[0-9]+$/) total += $i } END { print total + 0 }' <<<"$value"
+}
+
 sum_node_array(){
   local name="$1" total=0 i value
   for i in $(seq 1 "$NODE_COUNT"); do
@@ -784,6 +795,7 @@ sum_node_array(){
 }
 
 compute_evidence_aggregates(){
+  local submit_busy_log_count=0 mining_actor_timeout_log_count=0
   RPC_ALIVE_LISTENER_TIMEOUT_COUNT=$(count_matches_file '"class":"RPC_ALIVE_LISTENER_TIMEOUT"|class=RPC_ALIVE_LISTENER_TIMEOUT|RPC_DIAGNOSTIC\[RPC_ALIVE_LISTENER_TIMEOUT\]' "$OUT_DIR/command-log.txt")
   if compgen -G "$OUT_DIR/endpoints/*-rpc-failure-diagnostics.jsonl" >/dev/null 2>&1; then
     RPC_ALIVE_LISTENER_TIMEOUT_COUNT=$((RPC_ALIVE_LISTENER_TIMEOUT_COUNT + $(cat "$OUT_DIR"/endpoints/*-rpc-failure-diagnostics.jsonl 2>/dev/null | jq -r 'select(.class == "RPC_ALIVE_LISTENER_TIMEOUT") | 1' 2>/dev/null | wc -l | tr -d ' ')))
@@ -814,8 +826,10 @@ compute_evidence_aggregates(){
   if (( TOTAL_MINING_SUBMITS == 0 )); then TOTAL_MINING_SUBMITS=$(count_matches_in_logs 'submit_result|submit_accepted|submit'); fi
   if (( TOTAL_MINING_ACCEPTED == 0 )); then TOTAL_MINING_ACCEPTED=$ACCEPTED_BLOCKS; fi
   if (( TOTAL_MINING_REJECTED == 0 )); then TOTAL_MINING_REJECTED=$REJECTED_BLOCKS; fi
-  TOTAL_MINING_SUBMIT_BUSY=$((TOTAL_MINING_SUBMIT_BUSY + $(count_matches_in_logs 'submit_busy|queue_full|busy')))
-  TOTAL_MINING_ACTOR_TIMEOUT=$((TOTAL_MINING_ACTOR_TIMEOUT + $(count_matches_in_logs 'actor timeout|actor_timeout|submit_actor_timeout')))
+  submit_busy_log_count=$(count_matches_in_logs 'submit_busy|queue_full|busy')
+  mining_actor_timeout_log_count=$(count_matches_in_logs 'actor timeout|actor_timeout|submit_actor_timeout')
+  TOTAL_MINING_SUBMIT_BUSY=$(( $(integer_sum_or_zero "$TOTAL_MINING_SUBMIT_BUSY") + $(integer_sum_or_zero "$submit_busy_log_count") ))
+  TOTAL_MINING_ACTOR_TIMEOUT=$(( $(integer_sum_or_zero "$TOTAL_MINING_ACTOR_TIMEOUT") + $(integer_sum_or_zero "$mining_actor_timeout_log_count") ))
 }
 
 sha256_digest(){
