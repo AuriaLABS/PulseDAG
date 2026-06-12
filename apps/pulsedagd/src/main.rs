@@ -1570,8 +1570,46 @@ async fn main() -> Result<()> {
                                 warn!(error = %e, "failed persisting chain state after orphan queue");
                             }
                         } else if !acceptance.is_accepted() {
+                            let invalid_state_root_diagnostics = match &acceptance {
+                                BlockAcceptanceResult::Rejected(message)
+                                    if message.contains("invalid state root") =>
+                                {
+                                    pulsedag_core::validation::compute_post_state_root(
+                                        &block, &guard,
+                                    )
+                                    .ok()
+                                    .map(|computed| {
+                                        pulsedag_core::invalid_state_root_diagnostics(
+                                            &block, &guard, computed,
+                                        )
+                                    })
+                                }
+                                _ => None,
+                            };
+                            if let Some(diagnostics) = &invalid_state_root_diagnostics {
+                                warn!(
+                                    event = "invalid_state_root_rejected",
+                                    block_hash = %diagnostics.block_hash,
+                                    height = diagnostics.height,
+                                    parents = ?diagnostics.parent_hashes,
+                                    supplied_state_root = %diagnostics.supplied_state_root,
+                                    computed_state_root = %diagnostics.computed_state_root,
+                                    tx_count = diagnostics.tx_count,
+                                    coinbase_miner = ?diagnostics.coinbase_miner_address,
+                                    selected_tip = ?diagnostics.selected_tip,
+                                    selected_tip_height = ?diagnostics.selected_tip_height,
+                                    current_tips = ?diagnostics.current_tips,
+                                    stale_template = diagnostics.stale_template,
+                                    unknown_context = diagnostics.unknown_context,
+                                    classification = diagnostics.classification.as_str(),
+                                    "rejected inbound p2p block with invalid state root"
+                                );
+                            }
                             let mut rt = runtime.write().await;
                             rt.blockdata_received = rt.blockdata_received.saturating_add(1);
+                            if let Some(diagnostics) = &invalid_state_root_diagnostics {
+                                rt.record_invalid_state_root(diagnostics);
+                            }
                             if matches!(acceptance, BlockAcceptanceResult::Duplicate) {
                                 rt.duplicate_p2p_blocks += 1;
                                 rt.blockdata_duplicate = rt.blockdata_duplicate.saturating_add(1);

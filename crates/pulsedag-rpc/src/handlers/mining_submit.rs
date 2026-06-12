@@ -246,6 +246,15 @@ fn classify_rejected_validation_message(message: &str) -> (&'static str, Externa
             "invalid_merkle_or_payload",
             ExternalMiningRejectKind::InvalidMerkleOrPayload,
         )
+    } else if lower.contains("invalid state root")
+        && lower.contains("classification=stale_template")
+    {
+        ("stale_template", ExternalMiningRejectKind::StaleTemplate)
+    } else if lower.contains("invalid state root") {
+        (
+            "invalid_state_root",
+            ExternalMiningRejectKind::UnknownValidationError,
+        )
     } else if lower.contains("deserialize") || lower.contains("serialization") {
         (
             "malformed_serialization",
@@ -1158,13 +1167,48 @@ async fn process_mining_submit(
             }))
         }
         outcome => {
+            let invalid_state_root_diagnostics = match &outcome {
+                pulsedag_core::BlockAcceptanceResult::Rejected(message)
+                    if message.contains("invalid state root") =>
+                {
+                    pulsedag_core::validation::compute_post_state_root(&req.block, &chain)
+                        .ok()
+                        .map(|computed| {
+                            pulsedag_core::invalid_state_root_diagnostics(
+                                &req.block, &chain, computed,
+                            )
+                        })
+                }
+                _ => None,
+            };
             drop(chain);
             let runtime_handle = state.runtime();
             let mut runtime = runtime_handle.write().await;
             runtime.rejected_mined_blocks += 1;
             runtime.pulsedag_blocks_rejected_total =
                 runtime.pulsedag_blocks_rejected_total.saturating_add(1);
+            if let Some(diagnostics) = &invalid_state_root_diagnostics {
+                runtime.record_invalid_state_root(diagnostics);
+            }
             drop(runtime);
+            if let Some(diagnostics) = &invalid_state_root_diagnostics {
+                warn!(
+                    block_hash = %diagnostics.block_hash,
+                    height = diagnostics.height,
+                    parents = ?diagnostics.parent_hashes,
+                    supplied_state_root = %diagnostics.supplied_state_root,
+                    computed_state_root = %diagnostics.computed_state_root,
+                    tx_count = diagnostics.tx_count,
+                    coinbase_miner = ?diagnostics.coinbase_miner_address,
+                    selected_tip = ?diagnostics.selected_tip,
+                    selected_tip_height = ?diagnostics.selected_tip_height,
+                    current_tips = ?diagnostics.current_tips,
+                    stale_template = diagnostics.stale_template,
+                    unknown_context = diagnostics.unknown_context,
+                    classification = diagnostics.classification.as_str(),
+                    "mining submit rejected with invalid state root"
+                );
+            }
             warn!(block_hash = %block_hash, height, outcome = ?outcome, "mining submit rejected");
             let (rejection_kind, reason_code) = match &outcome {
                 pulsedag_core::BlockAcceptanceResult::Duplicate => {

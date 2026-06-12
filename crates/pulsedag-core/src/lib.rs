@@ -21,7 +21,9 @@ pub use accept::{
     accept_transaction_with_result, AcceptSource, AtomicBlockAcceptance, BlockAcceptanceResult,
     TxAcceptanceResult,
 };
-pub use errors::PulseError;
+pub use errors::{
+    InvalidStateRootClassification, InvalidStateRootDiagnostics, InvalidStateRootError, PulseError,
+};
 pub use state::{
     ChainState, ContractRuntimeConfig, ContractRuntimeState, DagState, Mempool, UtxoState,
 };
@@ -85,6 +87,7 @@ pub use sync_pipeline::{
     SyncProgressCounters,
 };
 pub use validation::{
-    block_subsidy, total_block_fees, validate_coinbase_reward, validate_created_utxo_outpoints,
-    INITIAL_BLOCK_SUBSIDY, SUBSIDY_HALVING_INTERVAL,
+    block_subsidy, invalid_state_root_diagnostics, invalid_state_root_error, total_block_fees,
+    validate_coinbase_reward, validate_created_utxo_outpoints, INITIAL_BLOCK_SUBSIDY,
+    SUBSIDY_HALVING_INTERVAL,
 };

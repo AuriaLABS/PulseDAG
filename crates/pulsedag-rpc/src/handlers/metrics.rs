@@ -26,6 +26,10 @@ pub struct MetricsData {
     pub suggested_difficulty: u64,
     pub blocks_accepted_total: u64,
     pub blocks_rejected_total: u64,
+    pub invalid_state_root_total: u64,
+    pub invalid_state_root_by_supplied_computed_pair_total: BTreeMap<String, u64>,
+    pub invalid_state_root_stale_template_total: u64,
+    pub invalid_state_root_unknown_context_total: u64,
     pub invalid_pow_total: u64,
     pub mining_templates_total: u64,
     pub mining_submits_total: u64,
@@ -120,6 +124,12 @@ pub async fn get_metrics<S: RpcStateLike>(
         suggested_difficulty: snapshot.suggested_difficulty,
         blocks_accepted_total: runtime.pulsedag_blocks_accepted_total,
         blocks_rejected_total: runtime.pulsedag_blocks_rejected_total,
+        invalid_state_root_total: runtime.invalid_state_root_total,
+        invalid_state_root_by_supplied_computed_pair_total: runtime
+            .invalid_state_root_by_supplied_computed_pair_total
+            .clone(),
+        invalid_state_root_stale_template_total: runtime.invalid_state_root_stale_template_total,
+        invalid_state_root_unknown_context_total: runtime.invalid_state_root_unknown_context_total,
         invalid_pow_total: runtime.pulsedag_invalid_pow_total,
         mining_templates_total: runtime.pulsedag_mining_templates_total,
         mining_submits_total: runtime.pulsedag_mining_submits_total,
