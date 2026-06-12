@@ -481,6 +481,14 @@ pub struct NodeRuntimeStats {
     #[serde(default)]
     pub orphan_backlog_stale_total: u64,
     #[serde(default)]
+    pub orphan_missing_parent_forced_reindex_total: u64,
+    #[serde(default)]
+    pub orphan_missing_parent_unactionable_state_total: u64,
+    #[serde(default)]
+    pub orphan_missing_parent_classified_after_reindex_total: u64,
+    #[serde(default)]
+    pub orphan_missing_parent_evicted_after_unactionable_total: u64,
+    #[serde(default)]
     pub orphan_recovery_tick_duration_ms: u64,
     #[serde(default)]
     pub rpc_dedicated_runtime_active: bool,

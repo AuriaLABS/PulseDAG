@@ -3,7 +3,7 @@ mod block_request;
 mod config;
 
 use std::{
-    collections::HashSet,
+    collections::{BTreeMap, HashSet},
     io::{BufReader, BufWriter},
     net::SocketAddr,
     path::PathBuf,
@@ -144,7 +144,11 @@ struct OrphanRecoveryRootClassification {
     requestable: Vec<String>,
     already_pending: Vec<String>,
     rate_limited: Vec<String>,
-    unknown_peerless: Vec<String>,
+    peer_not_found: Vec<String>,
+    peer_timeout: Vec<String>,
+    peerless: Vec<String>,
+    stale: Vec<String>,
+    evictable: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -156,6 +160,11 @@ struct OrphanRecoveryTickResult {
     backlog_revalidated: bool,
     backlog_evicted: usize,
     backlog_stale: usize,
+    forced_reindex: bool,
+    unactionable_state: bool,
+    classified_after_reindex: usize,
+    evicted_after_unactionable: usize,
+    root_classification_counts: BTreeMap<String, usize>,
     orphan_count: usize,
     pending_missing: usize,
     ages: (u64, u64),
@@ -176,20 +185,117 @@ fn classify_orphan_recovery_roots(
     let mut classification = OrphanRecoveryRootClassification::default();
     for root in roots {
         if !has_p2p || active_peers.is_empty() {
-            classification.unknown_peerless.push(root);
+            classification.peerless.push(root);
             continue;
         }
         match block_requests.classify_getblock_for_peers(&root, now_unix, active_peers.to_vec()) {
             GetBlockRequestReadiness::Requestable => classification.requestable.push(root),
             GetBlockRequestReadiness::AlreadyPending => classification.already_pending.push(root),
-            GetBlockRequestReadiness::RateLimited => classification.rate_limited.push(root),
+            GetBlockRequestReadiness::RateLimited => {
+                if block_requests.has_timed_out_peer(&root) {
+                    classification.peer_timeout.push(root);
+                } else if block_requests.has_not_found_peer(&root)
+                    || block_requests.is_all_peers_exhausted(&root)
+                {
+                    classification.peer_not_found.push(root);
+                } else {
+                    classification.rate_limited.push(root);
+                }
+            }
         }
     }
-    classification.requestable.sort();
-    classification.already_pending.sort();
-    classification.rate_limited.sort();
-    classification.unknown_peerless.sort();
+    classification.sort();
     classification
+}
+
+impl OrphanRecoveryRootClassification {
+    fn sort(&mut self) {
+        self.requestable.sort();
+        self.already_pending.sort();
+        self.rate_limited.sort();
+        self.peer_not_found.sort();
+        self.peer_timeout.sort();
+        self.peerless.sort();
+        self.stale.sort();
+        self.evictable.sort();
+    }
+
+    fn total_classified(&self) -> usize {
+        self.requestable.len()
+            + self.already_pending.len()
+            + self.rate_limited.len()
+            + self.peer_not_found.len()
+            + self.peer_timeout.len()
+            + self.peerless.len()
+            + self.stale.len()
+            + self.evictable.len()
+    }
+
+    fn counters(&self) -> BTreeMap<String, usize> {
+        BTreeMap::from([
+            ("requestable".to_string(), self.requestable.len()),
+            ("already_pending".to_string(), self.already_pending.len()),
+            ("rate_limited".to_string(), self.rate_limited.len()),
+            ("peer_not_found".to_string(), self.peer_not_found.len()),
+            ("peer_timeout".to_string(), self.peer_timeout.len()),
+            ("peerless".to_string(), self.peerless.len()),
+            ("stale".to_string(), self.stale.len()),
+            ("evictable".to_string(), self.evictable.len()),
+        ])
+    }
+}
+
+fn should_force_orphan_missing_parent_reindex(
+    chain: &pulsedag_core::state::ChainState,
+    inv_hashes_requested: usize,
+) -> bool {
+    let orphan_count = chain.orphan_blocks.len();
+    let pending_missing = pulsedag_core::pending_missing_parent_count(chain);
+    let missing_parent_entries = chain.orphan_missing_parents.len();
+    (orphan_count > 0 || pending_missing > 0)
+        && missing_parent_entries == 0
+        && inv_hashes_requested == 0
+}
+
+fn classify_stale_or_evictable_roots(
+    chain: &pulsedag_core::state::ChainState,
+    now_ms: u64,
+    max_age_ms: u64,
+    limit: usize,
+    root_classes: &mut OrphanRecoveryRootClassification,
+) {
+    if limit == 0 {
+        return;
+    }
+    let mut stale_roots = Vec::new();
+    let mut evictable_roots = Vec::new();
+    let mut stale_orphans = chain
+        .orphan_received_at_ms
+        .iter()
+        .filter_map(|(hash, received_at)| {
+            (now_ms.saturating_sub(*received_at) > max_age_ms).then_some((hash, received_at))
+        })
+        .collect::<Vec<_>>();
+    stale_orphans.sort_by(|(left_hash, left_ts), (right_hash, right_ts)| {
+        left_ts
+            .cmp(right_ts)
+            .then_with(|| left_hash.cmp(right_hash))
+    });
+    for (index, (hash, _)) in stale_orphans.into_iter().enumerate() {
+        for root in pulsedag_core::orphan_missing_roots(chain, hash) {
+            if index < limit {
+                evictable_roots.push(root.clone());
+            }
+            stale_roots.push(root);
+        }
+    }
+    stale_roots.sort();
+    stale_roots.dedup();
+    evictable_roots.sort();
+    evictable_roots.dedup();
+    root_classes.stale = stale_roots;
+    root_classes.evictable = evictable_roots;
+    root_classes.sort();
 }
 
 fn orphan_recovery_roots(chain: &pulsedag_core::ChainState) -> Vec<String> {
@@ -872,8 +978,17 @@ async fn main() -> Result<()> {
                     let tick_started = Instant::now();
                     let active_peers = active_peer_ids(&p2p);
                     let has_p2p = p2p.is_some();
+                    let inv_hashes_requested = p2p
+                        .as_ref()
+                        .and_then(|handle| handle.status().ok())
+                        .map(|status| status.inv_hashes_requested)
+                        .unwrap_or(0);
                     let mut tick = {
                         let mut guard = chain.write().await;
+                        let forced_reindex = should_force_orphan_missing_parent_reindex(
+                            &guard,
+                            inv_hashes_requested,
+                        );
                         if guard.orphan_blocks.is_empty() {
                             OrphanRecoveryTickResult {
                                 ages: orphan_age_metrics(&guard, now_unix()),
@@ -883,7 +998,11 @@ async fn main() -> Result<()> {
                         } else {
                             let rebuilt = pulsedag_core::rebuild_orphan_parent_index(&mut guard);
                             info!(
-                                event = "orphan_parent_index_rebuilt",
+                                event = if forced_reindex {
+                                    "orphan_parent_index_forced_reindex"
+                                } else {
+                                    "orphan_parent_index_rebuilt"
+                                },
                                 retryable_ready = rebuilt.retryable_ready,
                                 waiting_missing_parent = rebuilt.waiting_missing_parent,
                                 stale_missing_parent_entries = rebuilt.stale_missing_parent_entries,
@@ -918,18 +1037,50 @@ async fn main() -> Result<()> {
 
                             let roots = orphan_recovery_roots(&guard);
                             let roots_discovered = roots.len();
-                            let root_classes = classify_orphan_recovery_roots(
+                            let mut root_classes = classify_orphan_recovery_roots(
                                 roots,
                                 &block_requests,
                                 &active_peers,
                                 has_p2p,
                                 now_unix(),
                             );
+                            classify_stale_or_evictable_roots(
+                                &guard,
+                                now_millis(),
+                                pulsedag_core::DEFAULT_ORPHAN_MAX_AGE_MS,
+                                ORPHAN_RECOVERY_REVALIDATE_EVICT_LIMIT,
+                                &mut root_classes,
+                            );
+                            let root_classification_counts = root_classes.counters();
+                            let classified_after_reindex = root_classes.total_classified();
                             let no_requestable_roots = root_classes.requestable.is_empty();
                             let mut stale = rebuilt.stale_missing_parent_entries;
                             let mut evicted = 0usize;
                             let mut revalidated = false;
                             if no_requestable_roots {
+                                warn!(
+                                    requestable = *root_classification_counts
+                                        .get("requestable")
+                                        .unwrap_or(&0),
+                                    already_pending = *root_classification_counts
+                                        .get("already_pending")
+                                        .unwrap_or(&0),
+                                    rate_limited = *root_classification_counts
+                                        .get("rate_limited")
+                                        .unwrap_or(&0),
+                                    peer_not_found = *root_classification_counts
+                                        .get("peer_not_found")
+                                        .unwrap_or(&0),
+                                    peer_timeout = *root_classification_counts
+                                        .get("peer_timeout")
+                                        .unwrap_or(&0),
+                                    peerless =
+                                        *root_classification_counts.get("peerless").unwrap_or(&0),
+                                    stale = *root_classification_counts.get("stale").unwrap_or(&0),
+                                    evictable =
+                                        *root_classification_counts.get("evictable").unwrap_or(&0),
+                                    "orphan missing-parent reindex found no requestable roots"
+                                );
                                 let revalidated_backlog =
                                     pulsedag_core::revalidate_orphan_backlog(&mut guard);
                                 stale = stale.saturating_add(
@@ -960,6 +1111,15 @@ async fn main() -> Result<()> {
                                 backlog_revalidated: revalidated,
                                 backlog_evicted: evicted,
                                 backlog_stale: stale,
+                                forced_reindex,
+                                unactionable_state: forced_reindex || no_requestable_roots,
+                                classified_after_reindex,
+                                evicted_after_unactionable: if no_requestable_roots {
+                                    evicted
+                                } else {
+                                    0
+                                },
+                                root_classification_counts,
                                 orphan_count: guard.orphan_blocks.len(),
                                 pending_missing: pulsedag_core::pending_missing_parent_count(
                                     &guard,
@@ -1070,6 +1230,32 @@ async fn main() -> Result<()> {
                         rt.orphan_backlog_stale_total = rt
                             .orphan_backlog_stale_total
                             .saturating_add(tick.backlog_stale as u64);
+                        if tick.forced_reindex {
+                            rt.orphan_missing_parent_forced_reindex_total = rt
+                                .orphan_missing_parent_forced_reindex_total
+                                .saturating_add(1);
+                        }
+                        if tick.unactionable_state {
+                            rt.orphan_missing_parent_unactionable_state_total = rt
+                                .orphan_missing_parent_unactionable_state_total
+                                .saturating_add(1);
+                        }
+                        rt.orphan_missing_parent_classified_after_reindex_total = rt
+                            .orphan_missing_parent_classified_after_reindex_total
+                            .saturating_add(tick.classified_after_reindex as u64);
+                        rt.orphan_missing_parent_evicted_after_unactionable_total = rt
+                            .orphan_missing_parent_evicted_after_unactionable_total
+                            .saturating_add(tick.evicted_after_unactionable as u64);
+                        for (classification, count) in &tick.root_classification_counts {
+                            if *count == 0 {
+                                continue;
+                            }
+                            let entry = rt
+                                .orphan_reprocess_failures_by_reason
+                                .entry(format!("missing_parent_{classification}"))
+                                .or_insert(0);
+                            *entry = entry.saturating_add(*count as u64);
+                        }
                         rt.orphan_recovery_tick_duration_ms =
                             tick_started.elapsed().as_millis() as u64;
                         rt.orphan_blocks_evicted = rt
@@ -2703,6 +2889,122 @@ mod tests {
     use super::*;
     use axum::routing::get;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    fn test_orphan(hash: &str, parents: Vec<&str>, height: u64) -> pulsedag_core::Block {
+        let header = pulsedag_core::BlockHeader {
+            version: 1,
+            parents: parents.into_iter().map(str::to_string).collect(),
+            timestamp: 1,
+            difficulty: 1,
+            nonce: 0,
+            merkle_root: pulsedag_core::compute_merkle_root(&[]),
+            state_root: "state".to_string(),
+            blue_score: height,
+            height,
+        };
+        pulsedag_core::Block {
+            hash: hash.to_string(),
+            header,
+            transactions: Vec::new(),
+        }
+    }
+
+    fn chain_with_unindexed_orphan() -> pulsedag_core::ChainState {
+        let mut chain = pulsedag_core::genesis::init_chain_state("test-chain".to_string());
+        let orphan = test_orphan("orphan-a", vec!["missing-parent-a"], 1);
+        pulsedag_core::queue_orphan_block(&mut chain, orphan, vec!["missing-parent-a".to_string()]);
+        chain.orphan_missing_parents.clear();
+        chain.orphan_parent_index.clear();
+        chain
+    }
+
+    #[test]
+    fn orphan_count_with_empty_entries_and_no_inv_triggers_forced_reindex() {
+        let chain = chain_with_unindexed_orphan();
+        assert!(should_force_orphan_missing_parent_reindex(&chain, 0));
+
+        let mut rebuilt = chain.clone();
+        let classification = pulsedag_core::rebuild_orphan_parent_index(&mut rebuilt);
+        assert_eq!(classification.waiting_missing_parent, 1);
+        assert_eq!(rebuilt.orphan_missing_parents.len(), 1);
+        assert_eq!(rebuilt.orphan_parent_index.len(), 1);
+    }
+
+    #[test]
+    fn pending_missing_with_no_inv_triggers_forced_reindex() {
+        let chain = chain_with_unindexed_orphan();
+        assert_eq!(pulsedag_core::pending_missing_parent_count(&chain), 1);
+        assert!(should_force_orphan_missing_parent_reindex(&chain, 0));
+        assert!(!should_force_orphan_missing_parent_reindex(&chain, 1));
+    }
+
+    #[test]
+    fn forced_reindex_classifies_every_missing_parent_root() {
+        let mut chain = chain_with_unindexed_orphan();
+        pulsedag_core::rebuild_orphan_parent_index(&mut chain);
+        let roots = orphan_recovery_roots(&chain);
+        assert_eq!(roots, vec!["missing-parent-a".to_string()]);
+
+        let block_requests = BlockRequestTracker::with_limit(1, 1, 16);
+        let classes = classify_orphan_recovery_roots(
+            roots,
+            &block_requests,
+            &["peer-a".to_string()],
+            true,
+            1,
+        );
+        assert_eq!(classes.requestable, vec!["missing-parent-a".to_string()]);
+        assert_eq!(classes.total_classified(), 1);
+    }
+
+    #[test]
+    fn stale_peerless_backlog_is_classified_and_bounded_evicted() {
+        let mut chain = pulsedag_core::genesis::init_chain_state("test-chain".to_string());
+        for idx in 0..3 {
+            let parent = format!("missing-parent-{idx}");
+            let orphan = test_orphan(&format!("orphan-{idx}"), vec![&parent], 1);
+            pulsedag_core::queue_orphan_block(&mut chain, orphan, vec![parent]);
+        }
+        let now_ms = 10_000;
+        for received_at in chain.orphan_received_at_ms.values_mut() {
+            *received_at = 0;
+        }
+        let roots = orphan_recovery_roots(&chain);
+        let block_requests = BlockRequestTracker::with_limit(1, 1, 16);
+        let mut classes = classify_orphan_recovery_roots(roots, &block_requests, &[], false, 10);
+        classify_stale_or_evictable_roots(&chain, now_ms, 1, 2, &mut classes);
+        assert_eq!(classes.peerless.len(), 3);
+        assert_eq!(classes.stale.len(), 3);
+        assert_eq!(classes.evictable.len(), 2);
+
+        let evicted = pulsedag_core::evict_stale_orphans_bounded(&mut chain, now_ms, 1, 2);
+        assert_eq!(evicted, 2);
+        assert_eq!(chain.orphan_blocks.len(), 1);
+    }
+
+    #[test]
+    fn recovery_tick_helpers_remain_bounded() {
+        let mut chain = pulsedag_core::genesis::init_chain_state("test-chain".to_string());
+        for idx in 0..64 {
+            let parent = format!("missing-parent-{idx}");
+            let orphan = test_orphan(&format!("orphan-{idx}"), vec![&parent], 1);
+            pulsedag_core::queue_orphan_block(&mut chain, orphan, vec![parent]);
+        }
+        let rebuilt = pulsedag_core::rebuild_orphan_parent_index(&mut chain);
+        let roots = orphan_recovery_roots(&chain);
+        let block_requests = BlockRequestTracker::with_limit(1, 1, 8);
+        let classes = classify_orphan_recovery_roots(
+            roots.clone(),
+            &block_requests,
+            &["peer-a".to_string()],
+            true,
+            1,
+        );
+        assert_eq!(rebuilt.waiting_missing_parent, 64);
+        assert_eq!(roots.len(), 64);
+        assert_eq!(classes.requestable.len(), 64);
+        assert_eq!(classes.total_classified(), 64);
+    }
 
     async fn runtime_thread_name() -> String {
         std::thread::current()
