@@ -424,6 +424,16 @@ pub struct NodeRuntimeStats {
     pub missing_parent_request_retries: u64,
     #[serde(default)]
     pub missing_parent_request_fallbacks: u64,
+    #[serde(default)]
+    pub missing_parent_peer_not_found_total: u64,
+    #[serde(default)]
+    pub missing_parent_peer_timeout_total: u64,
+    #[serde(default)]
+    pub missing_parent_peer_response_success_total: u64,
+    #[serde(default)]
+    pub missing_parent_all_peers_exhausted_total: u64,
+    #[serde(default)]
+    pub missing_parent_retry_next_peer_total: u64,
     pub orphan_blocks_queued: u64,
     pub orphan_blocks_resolved: u64,
     pub orphan_blocks_retried: u64,

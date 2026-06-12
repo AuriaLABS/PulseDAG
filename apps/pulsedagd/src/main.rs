@@ -797,15 +797,38 @@ async fn main() -> Result<()> {
                             block_requests.inflight_by_peer();
                     }
                     for hash in timed_out.retryable {
-                        if let Some(ref p2p) = p2p {
-                            if let Err(e) = p2p.request_block(&hash) {
-                                warn!(error = %e, block_hash = %hash, "failed retrying timed-out GetBlock request");
+                        let outcome = block_requests.retry_after_timeout(
+                            &hash,
+                            now_unix(),
+                            active_peer_ids(&p2p),
+                        );
+                        let mut sent = false;
+                        if outcome.retry {
+                            if let Some(ref p2p) = p2p {
+                                if let Err(e) = p2p.request_block(&hash) {
+                                    warn!(error = %e, block_hash = %hash, "failed retrying timed-out GetBlock request on next peer");
+                                } else {
+                                    sent = true;
+                                }
                             }
                         }
                         let mut rt = runtime.write().await;
-                        rt.getblock_sent = rt.getblock_sent.saturating_add(1);
-                        rt.missing_parent_requests_sent =
-                            rt.missing_parent_requests_sent.saturating_add(1);
+                        rt.missing_parent_peer_timeout_total =
+                            rt.missing_parent_peer_timeout_total.saturating_add(1);
+                        if outcome.retry {
+                            rt.missing_parent_retry_next_peer_total =
+                                rt.missing_parent_retry_next_peer_total.saturating_add(1);
+                        }
+                        if outcome.all_peers_exhausted {
+                            rt.missing_parent_all_peers_exhausted_total = rt
+                                .missing_parent_all_peers_exhausted_total
+                                .saturating_add(1);
+                        }
+                        if sent {
+                            rt.getblock_sent = rt.getblock_sent.saturating_add(1);
+                            rt.missing_parent_requests_sent =
+                                rt.missing_parent_requests_sent.saturating_add(1);
+                        }
                         rt.pending_block_requests = block_requests.pending.len();
                         rt.inflight_block_requests = block_requests.pending.len();
                         rt.pending_block_request_hashes = block_requests.pending_hashes();
@@ -836,6 +859,10 @@ async fn main() -> Result<()> {
                             rt.inflight_block_requests = block_requests.pending.len();
                             rt.pending_block_request_hashes = block_requests.pending_hashes();
                         } else {
+                            let mut rt = runtime.write().await;
+                            rt.missing_parent_all_peers_exhausted_total = rt
+                                .missing_parent_all_peers_exhausted_total
+                                .saturating_add(1);
                             warn!(block_hash = %hash, "GetBlock request expired after retry limit; clearing inflight state");
                         }
                     }
@@ -1422,6 +1449,9 @@ async fn main() -> Result<()> {
                             if fulfilled_missing_parent_request {
                                 rt.missing_parent_responses_received =
                                     rt.missing_parent_responses_received.saturating_add(1);
+                                rt.missing_parent_peer_response_success_total = rt
+                                    .missing_parent_peer_response_success_total
+                                    .saturating_add(1);
                             }
                         }
                         info!(event = "peer_block_received", block_hash = %block.hash, parent_count = block.header.parents.len(), "received inbound p2p block payload");
@@ -2067,7 +2097,14 @@ async fn main() -> Result<()> {
                         let block = {
                             let guard = chain.read().await;
                             guard.dag.blocks.get(&hash).cloned()
-                        };
+                        }
+                        .or_else(|| match storage.get_block(&hash) {
+                            Ok(block) => block,
+                            Err(e) => {
+                                warn!(error = %e, block_hash = %hash, "failed loading historical block for GetBlock response");
+                                None
+                            }
+                        });
                         if let Some(ref p2p) = p2p {
                             if let Err(e) = p2p.send_block_data(Some(&hash), block.as_ref()) {
                                 warn!(error = %e, block_hash = %hash, "failed sending BlockData response");
@@ -2079,18 +2116,22 @@ async fn main() -> Result<()> {
                     }
                     InboundEvent::BlockDataMissing { hash } => {
                         let mut fallback_getblock_sent = false;
+                        let mut retry_next_peer = false;
+                        let mut all_peers_exhausted = false;
                         if let Some(hash) = hash.as_ref() {
                             let now = now_unix();
-                            block_requests.note_not_found(hash, now);
+                            let peers = p2p
+                                .as_ref()
+                                .map(active_peer_ids_from_handle)
+                                .unwrap_or_default();
+                            let outcome = block_requests.note_not_found(hash, now, peers);
+                            retry_next_peer = outcome.retry;
+                            all_peers_exhausted = outcome.all_peers_exhausted;
                             if let Some(ref p2p) = p2p {
                                 if let Err(e) = p2p.request_headers(&[], Some(hash), 128) {
                                     warn!(error = %e, block_hash = %hash, "failed issuing fallback headers after BlockData not-found");
                                 }
-                                if block_requests.should_issue_getblock_for_peers(
-                                    hash,
-                                    now,
-                                    active_peer_ids_from_handle(p2p),
-                                ) {
+                                if outcome.retry {
                                     if let Err(e) = p2p.request_block(hash) {
                                         warn!(error = %e, block_hash = %hash, "failed issuing fallback GetBlock after BlockData not-found");
                                     } else {
@@ -2106,8 +2147,23 @@ async fn main() -> Result<()> {
                         rt.block_request_fallbacks = rt.block_request_fallbacks.saturating_add(1);
                         rt.missing_parent_request_fallbacks =
                             rt.missing_parent_request_fallbacks.saturating_add(1);
+                        if hash.is_some() {
+                            rt.missing_parent_peer_not_found_total =
+                                rt.missing_parent_peer_not_found_total.saturating_add(1);
+                        }
+                        if retry_next_peer {
+                            rt.missing_parent_retry_next_peer_total =
+                                rt.missing_parent_retry_next_peer_total.saturating_add(1);
+                        }
+                        if all_peers_exhausted {
+                            rt.missing_parent_all_peers_exhausted_total = rt
+                                .missing_parent_all_peers_exhausted_total
+                                .saturating_add(1);
+                        }
                         if fallback_getblock_sent {
                             rt.getblock_sent = rt.getblock_sent.saturating_add(1);
+                            rt.missing_parent_requests_sent =
+                                rt.missing_parent_requests_sent.saturating_add(1);
                         }
                         if hash.is_some() {
                             rt.header_requests_sent = rt.header_requests_sent.saturating_add(1);

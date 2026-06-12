@@ -9,6 +9,13 @@ pub const DEFAULT_MAX_PENDING_BLOCK_REQUESTS_PER_PEER: usize = 128;
 pub const DEFAULT_BLOCK_REQUEST_BACKOFF_SECS: u64 = 8;
 pub const MAX_BLOCK_REQUEST_BACKOFF_SECS: u64 = 120;
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BlockRequestPeerRetryOutcome {
+    pub retry: bool,
+    pub peer: Option<String>,
+    pub all_peers_exhausted: bool,
+}
+
 #[derive(Debug, Clone)]
 pub struct PendingBlockRequest {
     pub first_requested_at_unix: u64,
@@ -65,6 +72,9 @@ pub struct BlockRequestTracker {
     fetch_queued: u64,
     fetch_dropped: u64,
     backoff_by_hash: HashMap<String, RequestBackoff>,
+    not_found_by_hash: HashMap<String, HashSet<String>>,
+    timed_out_by_hash: HashMap<String, HashSet<String>>,
+    exhausted_hashes: HashSet<String>,
     next_peer_index: usize,
 }
 
@@ -111,6 +121,9 @@ impl BlockRequestTracker {
             fetch_queued: 0,
             fetch_dropped: 0,
             backoff_by_hash: HashMap::new(),
+            not_found_by_hash: HashMap::new(),
+            timed_out_by_hash: HashMap::new(),
+            exhausted_hashes: HashSet::new(),
             next_peer_index: 0,
         }
     }
@@ -211,7 +224,7 @@ impl BlockRequestTracker {
             return false;
         }
 
-        let peer = self.select_available_peer(&peers);
+        let peer = self.select_available_peer_for_hash(hash, &peers);
         if !peers.is_empty() && peer.is_none() {
             // The request_block API is not peer-addressed at this layer. When all
             // visible peers have reached their accounting cap but global capacity
@@ -230,6 +243,7 @@ impl BlockRequestTracker {
             },
         );
         self.backoff_by_hash.remove(hash);
+        self.exhausted_hashes.remove(hash);
         self.fetch_queued = self.fetch_queued.saturating_add(1);
         true
     }
@@ -252,7 +266,7 @@ impl BlockRequestTracker {
         }
     }
 
-    fn select_available_peer(&mut self, peers: &[String]) -> Option<String> {
+    fn select_available_peer_for_hash(&mut self, hash: &str, peers: &[String]) -> Option<String> {
         if peers.is_empty() {
             return None;
         }
@@ -262,9 +276,16 @@ impl BlockRequestTracker {
                 *counts.entry(peer).or_default() += 1;
             }
         }
+        let not_found = self.not_found_by_hash.get(hash);
+        let timed_out = self.timed_out_by_hash.get(hash);
         for offset in 0..peers.len() {
             let idx = (self.next_peer_index + offset) % peers.len();
             let peer = &peers[idx];
+            if not_found.is_some_and(|failed| failed.contains(peer))
+                || timed_out.is_some_and(|failed| failed.contains(peer))
+            {
+                continue;
+            }
             if counts.get(peer.as_str()).copied().unwrap_or(0) < self.max_pending_per_peer {
                 self.next_peer_index = (idx + 1) % peers.len();
                 return Some(peer.clone());
@@ -293,9 +314,115 @@ impl BlockRequestTracker {
         self.backpressure_suppressed = self.backpressure_suppressed.saturating_add(1);
     }
 
-    pub fn note_not_found(&mut self, hash: &str, now_unix: u64) {
+    pub fn note_not_found<I, S>(
+        &mut self,
+        hash: &str,
+        now_unix: u64,
+        peers: I,
+    ) -> BlockRequestPeerRetryOutcome
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        let previous_peer = self.pending.remove(hash).and_then(|req| req.peer);
+        if let Some(peer) = previous_peer {
+            self.not_found_by_hash
+                .entry(hash.to_string())
+                .or_default()
+                .insert(peer);
+        }
+        self.retry_after_peer_failure(hash, now_unix, peers)
+    }
+
+    pub fn retry_after_timeout<I, S>(
+        &mut self,
+        hash: &str,
+        now_unix: u64,
+        peers: I,
+    ) -> BlockRequestPeerRetryOutcome
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        if let Some(peer) = self.pending.get(hash).and_then(|req| req.peer.clone()) {
+            self.timed_out_by_hash
+                .entry(hash.to_string())
+                .or_default()
+                .insert(peer);
+        }
         self.pending.remove(hash);
+        self.retry_after_peer_failure(hash, now_unix, peers)
+    }
+
+    fn retry_after_peer_failure<I, S>(
+        &mut self,
+        hash: &str,
+        now_unix: u64,
+        peers: I,
+    ) -> BlockRequestPeerRetryOutcome
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        let peers = peers.into_iter().map(Into::into).collect::<Vec<_>>();
+        if peers.is_empty() {
+            self.note_request_dropped(hash, now_unix);
+            return BlockRequestPeerRetryOutcome {
+                retry: false,
+                peer: None,
+                all_peers_exhausted: false,
+            };
+        }
+        if self.pending.len() >= self.max_pending {
+            self.backpressure_suppressed = self.backpressure_suppressed.saturating_add(1);
+            return BlockRequestPeerRetryOutcome {
+                retry: false,
+                peer: None,
+                all_peers_exhausted: false,
+            };
+        }
+        let peer = self.select_available_peer_for_hash(hash, &peers);
+        if let Some(peer) = peer {
+            self.pending.insert(
+                hash.to_string(),
+                PendingBlockRequest {
+                    first_requested_at_unix: now_unix,
+                    last_requested_at_unix: now_unix,
+                    retry_count: 0,
+                    peer: Some(peer.clone()),
+                },
+            );
+            self.backoff_by_hash.remove(hash);
+            self.fetch_queued = self.fetch_queued.saturating_add(1);
+            return BlockRequestPeerRetryOutcome {
+                retry: true,
+                peer: Some(peer),
+                all_peers_exhausted: false,
+            };
+        }
+        self.exhausted_hashes.insert(hash.to_string());
         self.note_request_dropped(hash, now_unix);
+        BlockRequestPeerRetryOutcome {
+            retry: false,
+            peer: None,
+            all_peers_exhausted: true,
+        }
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn is_all_peers_exhausted(&self, hash: &str) -> bool {
+        self.exhausted_hashes.contains(hash)
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn not_found_peers(&self, hash: &str) -> Vec<String> {
+        let mut peers = self
+            .not_found_by_hash
+            .get(hash)
+            .map(|peers| peers.iter().cloned().collect::<Vec<_>>())
+            .unwrap_or_default();
+        peers.sort();
+        peers
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
@@ -420,6 +547,9 @@ impl BlockRequestTracker {
     pub fn resolve(&mut self, hash: &str) {
         self.pending.remove(hash);
         self.backoff_by_hash.remove(hash);
+        self.not_found_by_hash.remove(hash);
+        self.timed_out_by_hash.remove(hash);
+        self.exhausted_hashes.remove(hash);
     }
 
     pub fn pending_hashes(&self) -> Vec<String> {
@@ -758,28 +888,85 @@ mod tests {
     }
 
     #[test]
-    fn not_found_hash_enters_backoff_before_reissue() {
-        let mut tracker = BlockRequestTracker::with_limit(5, 1, 2);
-        assert!(tracker.should_issue_getblock("parent", 100));
-        tracker.note_not_found("parent", 101);
-        assert!(!tracker.should_issue_getblock("parent", 102));
-        assert!(tracker.should_issue_getblock("parent", 130));
+    fn missing_parent_request_retries_next_peer_after_not_found() {
+        let mut tracker = BlockRequestTracker::with_limits(5, 1, 10, 10);
+        assert!(tracker.should_issue_getblock_for_peers("parent", 100, ["peer-a", "peer-b"]));
+        assert_eq!(
+            tracker
+                .pending
+                .get("parent")
+                .and_then(|req| req.peer.as_deref()),
+            Some("peer-a")
+        );
 
-        let counters = tracker.take_fetch_counters();
-        assert_eq!(counters.dropped, 1);
-        assert!(counters.suppressed >= 1);
+        let outcome = tracker.note_not_found("parent", 101, ["peer-a", "peer-b"]);
+        assert!(outcome.retry);
+        assert_eq!(outcome.peer.as_deref(), Some("peer-b"));
+        assert!(!outcome.all_peers_exhausted);
+        assert_eq!(tracker.not_found_peers("parent"), vec!["peer-a"]);
+        assert_eq!(
+            tracker
+                .pending
+                .get("parent")
+                .and_then(|req| req.peer.as_deref()),
+            Some("peer-b")
+        );
+    }
+
+    #[test]
+    fn missing_parent_request_marks_peer_not_found_and_does_not_hammer_same_peer() {
+        let mut tracker = BlockRequestTracker::with_limits(5, 1, 10, 10);
+        assert!(tracker.should_issue_getblock_for_peers("parent", 100, ["peer-a"]));
+
+        let outcome = tracker.note_not_found("parent", 101, ["peer-a"]);
+        assert!(!outcome.retry);
+        assert!(outcome.all_peers_exhausted);
+        assert_eq!(tracker.not_found_peers("parent"), vec!["peer-a"]);
+        assert!(!tracker.pending.contains_key("parent"));
+        assert!(tracker.is_all_peers_exhausted("parent"));
+        assert!(!tracker.should_issue_getblock_for_peers("parent", 102, ["peer-a"]));
     }
 
     #[test]
     fn reset_backoff_allows_bounded_recovery_reissue() {
         let mut tracker = BlockRequestTracker::with_limit(5, 1, 2);
         assert!(tracker.should_issue_getblock("parent", 100));
-        tracker.note_not_found("parent", 101);
+        let outcome = tracker.note_not_found("parent", 101, std::iter::empty::<String>());
+        assert!(!outcome.retry);
         assert!(!tracker.should_issue_getblock("parent", 102));
 
         assert!(tracker.reset_backoff("parent"));
         assert!(tracker.should_issue_getblock("parent", 103));
         assert!(!tracker.reset_backoff("parent"));
+    }
+
+    #[test]
+    fn successful_blockdata_response_resolves_orphan_request_state() {
+        let mut tracker = BlockRequestTracker::with_limits(5, 1, 10, 10);
+        assert!(tracker.should_issue_getblock_for_peers("parent", 100, ["peer-a", "peer-b"]));
+        let outcome = tracker.note_not_found("parent", 101, ["peer-a", "peer-b"]);
+        assert!(outcome.retry);
+        assert_eq!(tracker.not_found_peers("parent"), vec!["peer-a"]);
+
+        tracker.resolve("parent");
+
+        assert!(tracker.pending_hashes().is_empty());
+        assert!(tracker.not_found_peers("parent").is_empty());
+        assert!(!tracker.is_all_peers_exhausted("parent"));
+        assert!(tracker.should_issue_getblock_for_peers("parent", 102, ["peer-a"]));
+    }
+
+    #[test]
+    fn inflight_requests_drain_after_timeout_when_peers_exhausted() {
+        let mut tracker = BlockRequestTracker::with_limits(5, 1, 10, 10);
+        assert!(tracker.should_issue_getblock_for_peers("parent", 100, ["peer-a"]));
+        let timed_out = tracker.drain_timeouts(105);
+        assert_eq!(timed_out.retryable, vec!["parent"]);
+
+        let outcome = tracker.retry_after_timeout("parent", 105, ["peer-a"]);
+        assert!(!outcome.retry);
+        assert!(outcome.all_peers_exhausted);
+        assert!(tracker.pending_hashes().is_empty());
     }
 
     #[test]
