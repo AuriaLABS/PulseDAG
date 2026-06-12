@@ -462,6 +462,10 @@ pub struct NodeRuntimeStats {
     pub orphan_backlog_stale_total: u64,
     #[serde(default)]
     pub orphan_recovery_tick_duration_ms: u64,
+    #[serde(default)]
+    pub rpc_dedicated_runtime_active: bool,
+    #[serde(default)]
+    pub rpc_dedicated_runtime_worker_threads: usize,
     pub sync_catchup_completed: u64,
     pub sync_failures: u64,
     pub startup_snapshot_exists: bool,

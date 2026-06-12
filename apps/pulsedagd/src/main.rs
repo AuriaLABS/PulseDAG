@@ -36,7 +36,7 @@ use pulsedag_rpc::routes::{
     RpcHardeningLimits,
 };
 use pulsedag_storage::Storage;
-use tokio::net::TcpListener;
+use tokio::sync::oneshot;
 use tokio::time::{sleep, Duration};
 
 const MAX_INFLIGHT_BLOCK_REQUESTS: usize = 64;
@@ -45,6 +45,99 @@ const MAX_FETCH_SCHEDULER_QUEUE_DEPTH: usize = 512;
 
 const ORPHAN_RECOVERY_ROOT_REQUEST_LIMIT: usize = 16;
 const ORPHAN_RECOVERY_REVALIDATE_EVICT_LIMIT: usize = 32;
+const DEDICATED_RPC_RUNTIME_WORKER_THREADS: usize = 2;
+
+struct DedicatedRpcServer {
+    local_addr: SocketAddr,
+    worker_threads: usize,
+    shutdown: Option<oneshot::Sender<()>>,
+    join: Option<std::thread::JoinHandle<Result<()>>>,
+}
+
+impl DedicatedRpcServer {
+    #[cfg(test)]
+    fn local_addr(&self) -> SocketAddr {
+        self.local_addr
+    }
+
+    #[cfg(test)]
+    fn worker_threads(&self) -> usize {
+        self.worker_threads
+    }
+
+    #[cfg(test)]
+    fn shutdown_and_join(mut self) -> Result<()> {
+        if let Some(shutdown) = self.shutdown.take() {
+            let _ = shutdown.send(());
+        }
+        let join = self
+            .join
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("dedicated RPC runtime thread already joined"))?;
+        join_rpc_runtime_thread(join)
+    }
+}
+
+impl Drop for DedicatedRpcServer {
+    fn drop(&mut self) {
+        if let Some(shutdown) = self.shutdown.take() {
+            let _ = shutdown.send(());
+        }
+    }
+}
+
+fn spawn_dedicated_rpc_server(
+    addr: SocketAddr,
+    app: Router,
+    worker_threads: usize,
+) -> Result<DedicatedRpcServer> {
+    let worker_threads = worker_threads.max(1);
+    let std_listener = std::net::TcpListener::bind(addr)?;
+    std_listener.set_nonblocking(true)?;
+    let local_addr = std_listener.local_addr()?;
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+
+    let join = std::thread::Builder::new()
+        .name("pulsedagd-rpc-runtime".to_string())
+        .spawn(move || {
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .worker_threads(worker_threads)
+                .thread_name("pulsedagd-rpc-worker")
+                .build()?;
+
+            runtime.block_on(async move {
+                let listener = tokio::net::TcpListener::from_std(std_listener)?;
+                axum::serve(listener, app)
+                    .with_graceful_shutdown(async {
+                        let _ = shutdown_rx.await;
+                    })
+                    .await?;
+                Ok(())
+            })
+        })?;
+
+    Ok(DedicatedRpcServer {
+        local_addr,
+        worker_threads,
+        shutdown: Some(shutdown_tx),
+        join: Some(join),
+    })
+}
+
+fn join_rpc_runtime_thread(join: std::thread::JoinHandle<Result<()>>) -> Result<()> {
+    match join.join() {
+        Ok(result) => result,
+        Err(panic) => {
+            let message = panic
+                .downcast_ref::<&str>()
+                .map(|message| (*message).to_string())
+                .or_else(|| panic.downcast_ref::<String>().cloned())
+                .unwrap_or_else(|| "dedicated RPC runtime thread panicked".to_string());
+            Err(anyhow::anyhow!(message))
+        }
+    }
+}
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct OrphanRecoveryRootClassification {
@@ -2455,6 +2548,7 @@ async fn main() -> Result<()> {
         },
     };
     let cors_layer = build_cors_layer(&cfg)?;
+    let runtime_stats_handle = app_state.runtime.clone();
     let app: Router = router_with_profile(
         rpc_profile,
         cfg.admin_enabled,
@@ -2464,7 +2558,15 @@ async fn main() -> Result<()> {
     .layer(cors_layer)
     .with_state(app_state);
     let addr: SocketAddr = cfg.rpc_bind.parse()?;
-    let listener = TcpListener::bind(addr).await?;
+    let rpc_server = spawn_dedicated_rpc_server(addr, app, DEDICATED_RPC_RUNTIME_WORKER_THREADS)?;
+    let rpc_addr = rpc_server.local_addr;
+    let rpc_worker_threads = rpc_server.worker_threads;
+
+    {
+        let mut runtime = runtime_stats_handle.write().await;
+        runtime.rpc_dedicated_runtime_active = true;
+        runtime.rpc_dedicated_runtime_worker_threads = rpc_worker_threads;
+    }
 
     if cfg.admin_enabled {
         warn!(rpc_bind = %cfg.rpc_bind, api_profile = ?cfg.api_profile, "admin RPC endpoints are ENABLED; restrict access and avoid unauthenticated exposure");
@@ -2473,9 +2575,18 @@ async fn main() -> Result<()> {
         warn!(rpc_bind = %cfg.rpc_bind, "RPC is bound beyond localhost; verify firewall rules, auth controls, and API profile before exposing this port");
     }
 
-    info!(p2p_enabled = cfg.p2p_enabled, p2p_mode = %cfg.p2p_mode, admin_enabled = cfg.admin_enabled, operator_auth_configured = cfg.operator_auth_token.is_some(), api_profile = ?cfg.api_profile, auto_rebuild_on_start = cfg.auto_rebuild_on_start, persist_snapshot_on_start = cfg.persist_snapshot_on_start, snapshot_auto_every_blocks = cfg.snapshot_auto_every_blocks, auto_prune_enabled = cfg.auto_prune_enabled, auto_prune_every_blocks = cfg.auto_prune_every_blocks, prune_keep_recent_blocks = cfg.prune_keep_recent_blocks, prune_require_snapshot = cfg.prune_require_snapshot, target_block_interval_secs = cfg.target_block_interval_secs, difficulty_window = cfg.difficulty_window, max_future_drift_secs = cfg.max_future_drift_secs, "pulsedagd RPC listening on {}", addr);
-    axum::serve(listener, app).await?;
-    Ok(())
+    info!(p2p_enabled = cfg.p2p_enabled, p2p_mode = %cfg.p2p_mode, admin_enabled = cfg.admin_enabled, operator_auth_configured = cfg.operator_auth_token.is_some(), api_profile = ?cfg.api_profile, auto_rebuild_on_start = cfg.auto_rebuild_on_start, persist_snapshot_on_start = cfg.persist_snapshot_on_start, snapshot_auto_every_blocks = cfg.snapshot_auto_every_blocks, auto_prune_enabled = cfg.auto_prune_enabled, auto_prune_every_blocks = cfg.auto_prune_every_blocks, prune_keep_recent_blocks = cfg.prune_keep_recent_blocks, prune_require_snapshot = cfg.prune_require_snapshot, target_block_interval_secs = cfg.target_block_interval_secs, difficulty_window = cfg.difficulty_window, max_future_drift_secs = cfg.max_future_drift_secs, dedicated_rpc_runtime_active = true, dedicated_rpc_runtime_worker_threads = rpc_worker_threads, "pulsedagd RPC listening on {} using dedicated Tokio runtime", rpc_addr);
+
+    let mut rpc_server = rpc_server;
+    let rpc_runtime_join = rpc_server
+        .join
+        .take()
+        .ok_or_else(|| anyhow::anyhow!("dedicated RPC runtime thread already joined"))?;
+    let rpc_join = tokio::task::spawn_blocking(move || join_rpc_runtime_thread(rpc_runtime_join));
+    match rpc_join.await {
+        Ok(result) => result,
+        Err(e) => Err(anyhow::anyhow!("dedicated RPC runtime join failed: {e}")),
+    }
 }
 
 fn build_cors_layer(cfg: &Config) -> Result<CorsLayer> {
@@ -2491,4 +2602,65 @@ fn build_cors_layer(cfg: &Config) -> Result<CorsLayer> {
         .filter_map(|origin| origin.parse().ok())
         .collect::<Vec<_>>();
     Ok(CorsLayer::new().allow_origin(AllowOrigin::list(origins)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::routing::get;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    async fn runtime_thread_name() -> String {
+        std::thread::current()
+            .name()
+            .unwrap_or("unnamed")
+            .to_string()
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn dedicated_rpc_server_serves_requests_on_isolated_runtime_thread() {
+        let app = Router::new().route("/runtime-thread", get(runtime_thread_name));
+        let server = spawn_dedicated_rpc_server(
+            "127.0.0.1:0".parse().unwrap(),
+            app,
+            DEDICATED_RPC_RUNTIME_WORKER_THREADS,
+        )
+        .expect("dedicated RPC server should start");
+        assert_eq!(
+            server.worker_threads(),
+            DEDICATED_RPC_RUNTIME_WORKER_THREADS
+        );
+
+        let mut last_error = None;
+        let mut response = String::new();
+        for _ in 0..50 {
+            match tokio::net::TcpStream::connect(server.local_addr()).await {
+                Ok(mut stream) => {
+                    stream
+                        .write_all(
+                            b"GET /runtime-thread HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+                        )
+                        .await
+                        .expect("request should write");
+                    stream
+                        .read_to_string(&mut response)
+                        .await
+                        .expect("response should read");
+                    break;
+                }
+                Err(e) => {
+                    last_error = Some(e);
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            }
+        }
+
+        assert!(
+            response.contains("pulsedagd-rpc-worker"),
+            "expected response from dedicated RPC worker thread, got {response:?}; last_error={last_error:?}"
+        );
+        server
+            .shutdown_and_join()
+            .expect("dedicated RPC server should stop cleanly");
+    }
 }
