@@ -107,6 +107,7 @@ fn classify_block_validation_error(err: PulseError) -> BlockAcceptanceResult {
         | PulseError::DoubleSpend
         | PulseError::InsufficientFunds
         | PulseError::UtxoNotFound => BlockAcceptanceResult::InvalidTransaction,
+        PulseError::InvalidStateRoot(_) => BlockAcceptanceResult::Rejected(err.to_string()),
         PulseError::MissingCoinbase
         | PulseError::MultipleCoinbase
         | PulseError::CoinbaseNotFirst

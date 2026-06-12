@@ -7,7 +7,9 @@ use std::{
 };
 
 use pulsedag_core::state::ChainState;
-use pulsedag_core::SyncPipelineStatus;
+use pulsedag_core::{
+    InvalidStateRootClassification, InvalidStateRootDiagnostics, SyncPipelineStatus,
+};
 use pulsedag_p2p::{P2pHandle, P2pStatus};
 use pulsedag_storage::Storage;
 use serde::{Deserialize, Serialize};
@@ -349,6 +351,14 @@ pub struct NodeRuntimeStats {
     pub pulsedag_blocks_rejected_total: u64,
     #[serde(default)]
     pub rejected_blocks_by_reason: BTreeMap<String, u64>,
+    #[serde(default)]
+    pub invalid_state_root_total: u64,
+    #[serde(default)]
+    pub invalid_state_root_by_supplied_computed_pair_total: BTreeMap<String, u64>,
+    #[serde(default)]
+    pub invalid_state_root_stale_template_total: u64,
+    #[serde(default)]
+    pub invalid_state_root_unknown_context_total: u64,
     pub pulsedag_invalid_pow_total: u64,
     pub pulsedag_mining_templates_total: u64,
     pub pulsedag_mining_submits_total: u64,
@@ -541,6 +551,55 @@ impl NodeRuntimeStats {
         };
         let count = self.rejected_blocks_by_reason.entry(reason).or_insert(0);
         *count = count.saturating_add(1);
+    }
+    pub fn record_invalid_state_root(&mut self, diagnostics: &InvalidStateRootDiagnostics) {
+        self.invalid_state_root_total = self.invalid_state_root_total.saturating_add(1);
+        if matches!(
+            diagnostics.classification,
+            InvalidStateRootClassification::StaleTemplate
+        ) {
+            self.invalid_state_root_stale_template_total = self
+                .invalid_state_root_stale_template_total
+                .saturating_add(1);
+        }
+        if diagnostics.unknown_context {
+            self.invalid_state_root_unknown_context_total = self
+                .invalid_state_root_unknown_context_total
+                .saturating_add(1);
+        }
+
+        const MAX_INVALID_STATE_ROOT_PAIRS: usize = 128;
+        let pair = format!(
+            "{}->{}",
+            diagnostics.supplied_state_root, diagnostics.computed_state_root
+        );
+        if !self
+            .invalid_state_root_by_supplied_computed_pair_total
+            .contains_key(&pair)
+            && self
+                .invalid_state_root_by_supplied_computed_pair_total
+                .len()
+                >= MAX_INVALID_STATE_ROOT_PAIRS
+        {
+            if let Some(first_key) = self
+                .invalid_state_root_by_supplied_computed_pair_total
+                .keys()
+                .next()
+                .cloned()
+            {
+                self.invalid_state_root_by_supplied_computed_pair_total
+                    .remove(&first_key);
+            }
+        }
+        let count = self
+            .invalid_state_root_by_supplied_computed_pair_total
+            .entry(pair)
+            .or_insert(0);
+        *count = count.saturating_add(1);
+        self.record_rejected_block_reason(format!(
+            "invalid_state_root_{}",
+            diagnostics.classification.as_str()
+        ));
     }
 }
 
