@@ -11,8 +11,35 @@ The Docker wrapper does not replace the existing rehearsal scripts. It builds th
 ## Requirements
 
 - Docker with Compose v2.
+- `bash`, `jq`, `curl`, `tar`, and `gzip` available in the execution environment.
 - Enough CPU and memory for five local nodes plus miners.
 - No host services bound to the rehearsal ports when using host networking is not required; the default Compose setup runs everything inside one container process namespace.
+
+Run the Docker-mode preflight from the host before starting a local Compose rehearsal:
+
+```bash
+bash scripts/v2_2_20_preflight_check.sh --docker-mode
+```
+
+Missing tools are reported as `ENV_FAIL` and classified as `failure_class=environment` so bad local setup is not confused with a `5N/1M`, `5N/2M`, or node/convergence failure.
+
+## Windows local execution notes
+
+PowerShell does not support Bash-style inline environment assignment such as `REHEARSAL_GATE=5n1m docker compose ...`. Use PowerShell environment variables instead:
+
+```powershell
+$env:REHEARSAL_GATE = "5n1m"
+$env:REHEARSAL_OUT_DIR = "private_5n_1m_rehearsal"
+docker compose -f docker-compose.rehearsal.yml up --build --abort-on-container-exit --exit-code-from rehearsal
+```
+
+For direct script execution on Windows, use Git Bash and invoke the repository scripts from the Git Bash shell. A common Git for Windows path is:
+
+```text
+C:\Program Files\Git\bin\bash.exe
+```
+
+The recommended Windows path is Docker Compose from PowerShell, because Compose uses the Linux rehearsal image with the required `bash`, `jq`, `curl`, `tar`, and `gzip` dependencies installed. Direct WSL/Git Bash runs should still execute the preflight first; if `/bin/bash` or `bash` is missing, install/repair the shell before treating the rehearsal as node evidence.
 
 ## Run a gate locally
 

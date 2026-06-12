@@ -62,6 +62,8 @@ declare -A PRE_NODE_HEIGHT PRE_NODE_TIP PRE_NODE_ORPHANS PRE_NODE_MISSING_PARENT
 FAIL_REASONS=()
 FAIL_CLASSES=()
 WARNINGS=()
+FAILURE_CLASS="none"
+ENV_PREFLIGHT_OK=0
 RESULT="PENDING"
 EXIT_CODE=0
 WAIVE_ACCEPTED_BLOCK_GATE=${WAIVE_ACCEPTED_BLOCK_GATE:-0}
@@ -157,9 +159,62 @@ collect_miner_metrics(){
 record_warn(){ local msg="$1"; echo "WARN: $msg"; WARNINGS+=("$msg"); }
 record_fail(){
   local class="$1" msg="$2"
-  echo "FAIL[$class]: $msg"
+  if [[ "$class" == ENV_FAIL* || "$class" == ENV_* ]]; then
+    echo "ENV_FAIL[$class]: $msg" >&2
+  else
+    echo "FAIL[$class]: $msg" >&2
+  fi
   FAIL_CLASSES+=("$class")
   FAIL_REASONS+=("$class: $msg")
+}
+
+classify_failure_class(){
+  local c
+  if (( ${#FAIL_CLASSES[@]} == 0 )); then
+    echo "none"
+    return 0
+  fi
+  for c in "${FAIL_CLASSES[@]}"; do
+    [[ "$c" == ENV_FAIL* || "$c" == ENV_* ]] && { echo "environment"; return 0; }
+  done
+  for c in "${FAIL_CLASSES[@]}"; do
+    [[ "$c" == *TIMEOUT* || "$c" == HARNESS_STALL_TIMEOUT || "$c" == SIGNAL_TERM || "$c" == SIGNAL_INT ]] && { echo "timeout"; return 0; }
+  done
+  for c in "${FAIL_CLASSES[@]}"; do
+    [[ "$c" == STAGED_GATE_* || "$c" == P2P_NOT_CONNECTED || "$c" == READINESS_SCHEMA_MISMATCH ]] && { echo "convergence"; return 0; }
+  done
+  echo "node"
+}
+
+check_required_dependency(){
+  local dep="$1" detail="${2:-$1}"
+  if command -v "$dep" >/dev/null 2>&1; then
+    echo "PASS: dependency available: $detail ($(command -v "$dep"))"
+    return 0
+  fi
+  record_fail "ENV_FAIL" "missing dependency before rehearsal nodes start: $detail (command: $dep)"
+  return 1
+}
+
+run_rehearsal_environment_preflight(){
+  local missing=0
+  echo "environment preflight: checking required host/container dependencies"
+  check_required_dependency bash "bash shell" || missing=1
+  check_required_dependency jq "jq JSON parser" || missing=1
+  check_required_dependency curl "curl HTTP client" || missing=1
+  check_required_dependency tar "tar archive tool" || missing=1
+  check_required_dependency gzip "gzip compression tool" || missing=1
+  if [[ "${REHEARSAL_REQUIRE_DOCKER:-0}" == "1" || "${REHEARSAL_DOCKER_MODE:-0}" == "host" ]]; then
+    check_required_dependency docker "Docker CLI for Docker-mode rehearsal" || missing=1
+  fi
+  if (( missing == 1 )); then
+    ENV_PREFLIGHT_OK=0
+    FAILURE_CLASS="environment"
+    printf '%s\n' "failure_class=environment" "result=ENV_FAIL" > "$OUT_DIR/env-fail.txt" 2>/dev/null || true
+    echo "ENV_FAIL: missing dependencies; aborting before any nodes or miners are launched" >&2
+    exit 2
+  fi
+  ENV_PREFLIGHT_OK=1
 }
 
 mark_progress(){
@@ -320,6 +375,39 @@ extract_chain_id(){
   jq -r '.data.chain_id // .chain_id // empty' "$status_file" 2>/dev/null | head -n1 | awk 'NF {print; exit}' && return 0
   jq -r '.data.chain_id // .chain_id // .data.network_id // .network_id // empty' "$release_file" 2>/dev/null | head -n1 | awk 'NF {print; exit}' && return 0
   jq -r '.data.chain_id // .chain_id // empty' "$p2p_file" 2>/dev/null | head -n1 | awk 'NF {print; exit}' && return 0
+  return 1
+}
+
+extract_bootnode_peer_id(){
+  local p2p_file="$1" out reason peer_id schema_keys
+  out="$OUT_DIR/bootnode-peer-id-extraction-failure.txt"
+  if ! command -v jq >/dev/null 2>&1; then
+    reason="jq missing; cannot parse n1 /p2p/status JSON for .data.peer_id or .data.local_node_id"
+    printf '%s\n' "failure_class=environment" "reason=$reason" "file=$p2p_file" > "$out" 2>/dev/null || true
+    record_fail "ENV_FAIL" "$reason"
+    return 1
+  fi
+  if [[ ! -s "$p2p_file" ]]; then
+    reason="n1 /p2p/status capture is missing or empty; node may not have reached RPC readiness"
+    printf '%s\n' "failure_class=node" "reason=$reason" "file=$p2p_file" > "$out" 2>/dev/null || true
+    record_fail "RPC_UNAVAILABLE" "$reason"
+    return 1
+  fi
+  if ! jq -e . "$p2p_file" >/dev/null 2>&1; then
+    reason="n1 /p2p/status capture is not valid JSON; cannot extract bootnode peer id"
+    printf '%s\n' "failure_class=node" "reason=$reason" "file=$p2p_file" > "$out" 2>/dev/null || true
+    record_fail "RPC_UNAVAILABLE" "$reason"
+    return 1
+  fi
+  peer_id=$(jq -r '.data.peer_id // .data.local_node_id // empty' "$p2p_file" 2>/dev/null | head -n1 | awk 'NF {print; exit}' || true)
+  if [[ -n "$peer_id" ]]; then
+    printf '%s\n' "$peer_id"
+    return 0
+  fi
+  schema_keys=$(jq -c '{top_level:(keys_unsorted // []), data_keys:(.data | keys_unsorted? // [])}' "$p2p_file" 2>/dev/null || echo '{}')
+  reason="JSON schema mismatch; expected .data.peer_id or .data.local_node_id in n1 /p2p/status"
+  printf '%s\n' "failure_class=convergence" "reason=$reason" "file=$p2p_file" "observed_keys=$schema_keys" > "$out" 2>/dev/null || true
+  record_fail "READINESS_SCHEMA_MISMATCH" "$reason; observed keys: $schema_keys"
   return 1
 }
 
@@ -757,7 +845,9 @@ write_evidence_summary(){
     echo "- version: $NODE_VERSION"
     echo
     echo "## Result"
+    FAILURE_CLASS=$(classify_failure_class)
     echo "- result: $RESULT"
+    echo "- failure_class: $FAILURE_CLASS"
     echo "- exit_code: $EXIT_CODE"
     echo "- node_count: $NODE_COUNT"
     echo "- miner_count: $MINER_COUNT"
@@ -777,6 +867,7 @@ write_p2p_convergence_json(){
     --arg chain_id "$CHAIN_ID_EXPECTED" \
     --arg version "$NODE_VERSION" \
     --arg commit "$REPO_COMMIT" \
+    --arg failure_class "$(classify_failure_class)" \
     --arg tip "${NODE_TIP[1]:-}" \
     --argjson miner_count "$MINER_COUNT" \
     --argjson accepted_blocks "${ACCEPTED_BLOCKS:-0}" \
@@ -787,7 +878,7 @@ write_p2p_convergence_json(){
     --argjson nodes "$(for i in $(seq 1 "$NODE_COUNT"); do
       jq -n --arg node "n$i" --arg chain_id "${NODE_CHAIN_ID[$i]:-}" --argjson height "${NODE_HEIGHT[$i]:-0}" --arg tip "${NODE_TIP[$i]:-}" --argjson peer_count "${NODE_PEERS[$i]:-0}" --argjson orphan_count "${NODE_ORPHAN_COUNT[$i]:-0}" --argjson pending_missing_parents "${NODE_PENDING_MISSING_PARENTS[$i]:-0}" --argjson missing_parents_entries "${NODE_MISSING_PARENTS_COUNT[$i]:-0}" --argjson inv_hashes_requested "${NODE_INV_HASHES_REQUESTED[$i]:-0}" --argjson peer_recovery_success_count "${NODE_PEER_RECOVERY_SUCCESS_COUNT[$i]:-0}" '{node:$node,chain_id:$chain_id,height:$height,tip:$tip,peer_count:$peer_count,orphan_count:$orphan_count,pending_missing_parents:$pending_missing_parents,missing_parents_entries:$missing_parents_entries,inv_hashes_requested:$inv_hashes_requested,peer_recovery_success_count:$peer_recovery_success_count}'
     done | jq -s '.')" \
-    '{chain_id:$chain_id,version:$version,commit:$commit,tip:$tip,accepted_blocks:$accepted_blocks,rejected_blocks:$rejected_blocks,gates:{baseline_5n_1m:$gate_5n_1m,intermediate_5n_2m:$gate_5n_2m,stress_5n_4m:$gate_5n_4m},nodes:$nodes}' \
+    '{chain_id:$chain_id,version:$version,commit:$commit,failure_class:$failure_class,tip:$tip,accepted_blocks:$accepted_blocks,rejected_blocks:$rejected_blocks,gates:{baseline_5n_1m:$gate_5n_1m,intermediate_5n_2m:$gate_5n_2m,stress_5n_4m:$gate_5n_4m},nodes:$nodes}' \
     > "$OUT_DIR/p2p_convergence.json"
 }
 
@@ -813,6 +904,7 @@ write_metadata(){
     echo "end_utc=$(date -u +%FT%TZ)"
     echo "duration_seconds=$(( $(date +%s) - START_TS ))"
     echo "exit_code=$EXIT_CODE"
+    echo "failure_class=$(classify_failure_class)"
     echo "global_deadline_seconds=$GLOBAL_DEADLINE_SECS"
     echo "curl_connect_timeout_seconds=$CURL_CONNECT_TIMEOUT_SECS"
     echo "curl_max_time_seconds=$CURL_MAX_TIME_SECS"
@@ -933,11 +1025,15 @@ cleanup(){
     record_fail "HARNESS_ERROR" "script exited non-zero before classified failure: $exit_code"
   fi
   if (( QUIESCENCE_COMPLETED == 0 )); then
-    collect_final_state cleanup-pre-quiescence || true
-    snapshot_current_as_pre || true
-    compute_metrics_from_current PRE || true
-    POST_CONVERGED=$PRE_CONVERGED; POST_WORST_LAG=$PRE_WORST_LAG; POST_DISTINCT_TIPS=$PRE_DISTINCT_TIPS; LAG_IMPROVED=0
-    write_quiescence_metrics || true
+    if [[ "$(classify_failure_class)" == "environment" && "${ENV_PREFLIGHT_OK:-0}" == "0" ]]; then
+      record_warn "skipping node endpoint collection because environment preflight failed before node launch"
+    else
+      collect_final_state cleanup-pre-quiescence || true
+      snapshot_current_as_pre || true
+      compute_metrics_from_current PRE || true
+      POST_CONVERGED=$PRE_CONVERGED; POST_WORST_LAG=$PRE_WORST_LAG; POST_DISTINCT_TIPS=$PRE_DISTINCT_TIPS; LAG_IMPROVED=0
+      write_quiescence_metrics || true
+    fi
   fi
   if (( ${#FAIL_REASONS[@]} == 0 )); then RESULT="PASS"; else RESULT="FAIL"; fi
   capture_hard_stop_diagnostics || true
@@ -968,6 +1064,9 @@ trap 'cleanup $?' EXIT
 trap 'on_signal INT 130' INT
 trap 'on_signal TERM 143' TERM
 
+mark_progress "environment_preflight_start"
+run_rehearsal_environment_preflight
+mark_progress "environment_preflight_complete"
 mark_progress "preflight_start"
 OUT_DIR="$OUT_DIR" run_with_global_timeout preflight "$ROOT_DIR/scripts/v2_2_20_preflight_check.sh"
 mark_progress "preflight_complete"
@@ -1004,10 +1103,9 @@ wait_node_ready(){
 
 start_node 1 $((BASE_RPC_PORT+1)) $((BASE_P2P_PORT+1)) ""; sleep_with_deadline 3
 safe_curl_required "http://127.0.0.1:$((BASE_RPC_PORT+1))/p2p/status" "$OUT_DIR/endpoints/n1-p2p-status-bootstrap.json"
-NODE_1_ID=$(jq -r '.data.peer_id // .data.local_node_id // empty' "$OUT_DIR/endpoints/n1-p2p-status-bootstrap.json" 2>/dev/null || true)
+NODE_1_ID=$(extract_bootnode_peer_id "$OUT_DIR/endpoints/n1-p2p-status-bootstrap.json" || true)
 if [[ -z "$NODE_1_ID" ]]; then
-  record_fail "READINESS_SCHEMA_MISMATCH" "failed to extract bootnode peer id from n1 /p2p/status"
-  echo "FATAL: unable to build bootnode multiaddr because peer id extraction failed"
+  echo "FATAL: unable to build bootnode multiaddr because peer id extraction failed; see $OUT_DIR/bootnode-peer-id-extraction-failure.txt"
   exit 1
 fi
 BOOT_1="/ip4/127.0.0.1/tcp/$((BASE_P2P_PORT+1))/p2p/${NODE_1_ID}"
