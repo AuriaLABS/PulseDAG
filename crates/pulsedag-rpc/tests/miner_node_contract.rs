@@ -1,7 +1,7 @@
 use std::{
     path::PathBuf,
     sync::atomic::{AtomicU64, Ordering},
-    sync::Arc,
+    sync::{Arc, LazyLock},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -26,6 +26,8 @@ use tokio::sync::RwLock;
 use tower::ServiceExt;
 
 static TEMP_DB_COUNTER: AtomicU64 = AtomicU64::new(0);
+static MINING_SUBMIT_CONTRACT_LOCK: LazyLock<tokio::sync::Mutex<()>> =
+    LazyLock::new(|| tokio::sync::Mutex::new(()));
 
 #[derive(Clone)]
 struct TestState {
@@ -75,21 +77,30 @@ fn test_state() -> TestState {
 }
 
 async fn post_json(state: &TestState, uri: &str, body: Value) -> Value {
-    let app = routes::router::<TestState>().with_state(state.clone());
-    let response = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri(uri)
-                .header("content-type", "application/json")
-                .body(Body::from(body.to_string()))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
-    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-    serde_json::from_slice(&body).unwrap()
+    for attempt in 0..20 {
+        let app = routes::router::<TestState>().with_state(state.clone());
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(uri)
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        if response.status() == StatusCode::TOO_MANY_REQUESTS {
+            assert!(attempt < 19, "test route stayed rate-limited after retries");
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            continue;
+        }
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        return serde_json::from_slice(&body).unwrap();
+    }
+
+    unreachable!("retry loop returns or panics before exhaustion")
 }
 
 async fn request_template(state: &TestState) -> Value {
@@ -129,21 +140,41 @@ fn mine_with_canonical_cpu(mut block: Block, compact_target: u32) -> Block {
 }
 
 async fn submit_block(state: &TestState, template_id: String, block: Block) -> Value {
-    post_json(
-        state,
-        "/mining/submit",
-        serde_json::to_value(SubmitMinedBlockRequest {
-            template_id: Some(template_id),
-            block,
-        })
-        .unwrap(),
-    )
-    .await
+    let request = serde_json::to_value(SubmitMinedBlockRequest {
+        template_id: Some(template_id),
+        block,
+    })
+    .unwrap();
+
+    for attempt in 0..100 {
+        let response = post_json(state, "/mining/submit", request.clone()).await;
+        if response["data"]["reason_code"] != "submit_busy" {
+            return response;
+        }
+        assert!(
+            attempt < 99,
+            "bounded submit actor stayed busy after deterministic retries"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    }
+
+    unreachable!("retry loop returns or panics before exhaustion")
 }
 
 #[tokio::test]
-async fn mining_contract_miner_requests_template_mines_with_canonical_cpu_and_node_accepts_submit()
-{
+async fn mining_contract_routes_cover_accept_reject_codes_serially() {
+    scenario_node_rejects_invalid_pow_with_stable_code().await;
+    scenario_node_rejects_stale_submit_with_stable_code().await;
+    scenario_node_rejects_malformed_block_with_stable_code().await;
+    scenario_miner_requests_template_mines_with_canonical_cpu_and_node_accepts_submit().await;
+}
+
+async fn scenario_miner_requests_template_mines_with_canonical_cpu_and_node_accepts_submit() {
+    // These route-level contract tests use production singleton mining template
+    // storage and submit actor state. Serialize each full test so focused
+    // accept/reject assertions do not race the bounded actor queue or template
+    // files; unit tests cover the explicit queue-full `submit_busy` schema.
+    let _contract_guard = MINING_SUBMIT_CONTRACT_LOCK.lock().await;
     let state = test_state();
 
     let template = request_template(&state).await;
@@ -178,8 +209,12 @@ async fn mining_contract_miner_requests_template_mines_with_canonical_cpu_and_no
     assert_eq!(submit_data["pow_accepted"], true);
 }
 
-#[tokio::test]
-async fn mining_contract_node_rejects_stale_submit_with_stable_code() {
+async fn scenario_node_rejects_stale_submit_with_stable_code() {
+    // These route-level contract tests use production singleton mining template
+    // storage and submit actor state. Serialize each full test so focused
+    // accept/reject assertions do not race the bounded actor queue or template
+    // files; unit tests cover the explicit queue-full `submit_busy` schema.
+    let _contract_guard = MINING_SUBMIT_CONTRACT_LOCK.lock().await;
     let state = test_state();
     let template = request_template(&state).await;
     let compact_target = template["data"]["compact_target"].as_u64().unwrap() as u32;
@@ -202,8 +237,12 @@ async fn mining_contract_node_rejects_stale_submit_with_stable_code() {
     assert_eq!(submit["data"]["stale_template"], true);
 }
 
-#[tokio::test]
-async fn mining_contract_node_rejects_invalid_pow_with_stable_code() {
+async fn scenario_node_rejects_invalid_pow_with_stable_code() {
+    // These route-level contract tests use production singleton mining template
+    // storage and submit actor state. Serialize each full test so focused
+    // accept/reject assertions do not race the bounded actor queue or template
+    // files; unit tests cover the explicit queue-full `submit_busy` schema.
+    let _contract_guard = MINING_SUBMIT_CONTRACT_LOCK.lock().await;
     let state = test_state();
     let template = request_template(&state).await;
     let mut block = template_block(&template);
@@ -218,8 +257,12 @@ async fn mining_contract_node_rejects_invalid_pow_with_stable_code() {
     assert_eq!(submit["data"]["invalid_pow"], true);
 }
 
-#[tokio::test]
-async fn mining_contract_node_rejects_malformed_block_with_stable_code() {
+async fn scenario_node_rejects_malformed_block_with_stable_code() {
+    // These route-level contract tests use production singleton mining template
+    // storage and submit actor state. Serialize each full test so focused
+    // accept/reject assertions do not race the bounded actor queue or template
+    // files; unit tests cover the explicit queue-full `submit_busy` schema.
+    let _contract_guard = MINING_SUBMIT_CONTRACT_LOCK.lock().await;
     let state = test_state();
     let template = request_template(&state).await;
     let compact_target = template["data"]["compact_target"].as_u64().unwrap() as u32;
