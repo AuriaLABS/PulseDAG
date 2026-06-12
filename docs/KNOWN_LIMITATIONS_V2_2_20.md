@@ -9,14 +9,22 @@ This document records the current known limitations for `v2.2.20` active hardeni
 - This document does not claim public-testnet live status, public-testnet readiness, or `v2.3.0` readiness.
 - No limitation below authorizes a consensus-rule change, PoW semantic change, smart-contract enablement, pool-logic enablement, or `VERSION` bump.
 
-## Remaining limitations that block closeout unless waived
+## Remaining real limitations that block closeout unless waived
 
 | Limitation | Current state | Required exit evidence |
 |---|---|---|
-| `5N/2M` accepted-block recovery | The latest recorded `5N/2M` evidence improved peer visibility, convergence, and backlog drain, but failed because accepted blocks remained `0`. | Replacement `5N/2M` evidence after the latest hardening PRs with accepted blocks, archive, checksum, final node table, miner accept/reject summary, and no regression in peer/orphan/final-tip behavior. |
-| `5N/4M` stress recovery | First recorded `v2.2.20` stress evidence is still `OBSERVE_FAIL`, with all-zero peer visibility, orphan and pending-missing-parent saturation, and divergent tips. Later hardening PRs need replacement evidence. | Replacement `5N/4M` evidence that is PASS or an accepted non-blocking limitation with measured divergence, peer visibility, RPC liveness, orphan/missing-parent backlog, owner, expiry, and exit criteria. |
-| Snapshot/restore closeout evidence | The deterministic drill is documented, but closeout requires an attached drill artifact or formal waiver. | Snapshot creation/restore bundle, checksums, restored node health/readiness, timing metrics, and evidence manifest; or waiver with owner, UTC approval, scope, expiry, and exit criteria. |
-| Public RPC exposure | RPC endpoints remain private/localhost by default. Public exposure is out of scope until security posture and operator approval are separately evidenced. | Public-testnet-specific security/RPC exposure review, authn/authz posture, firewall/listener config, secret-redaction check, and operator sign-off. |
+| `5N/2M` accepted-block recovery | The latest recorded `5N/2M` evidence improved peer visibility, convergence, and backlog drain, but failed because accepted blocks remained `0`. | Replacement `5N/2M` evidence after the latest hardening PRs with accepted blocks, archive, checksum, final node table, miner accept/reject summary, and no regression in peer/orphan/final-tip behavior; or a complete non-readiness waiver. |
+| `5N/4M` stress recovery | The latest recorded `v2.2.20` stress evidence is still `OBSERVE_FAIL`, with all-zero peer visibility, orphan and pending-missing-parent saturation, and divergent tips. | Replacement `5N/4M` evidence that is PASS, or an accepted bounded limitation with measured divergence, peer visibility, RPC liveness, orphan/missing-parent backlog, owner, reviewer, UTC approval, expiry, and exit criteria. |
+| Snapshot/restore closeout artifact | The deterministic drill is documented, but closeout requires an attached drill artifact/checksum or formal waiver. | Snapshot creation/restore bundle, checksums, restored node health/readiness, timing metrics, and evidence manifest; or waiver with owner, UTC approval, scope, expiry, and exit criteria. |
+| Final CI/workspace validation artifact | The closeout requires validation logs for the evaluated merge commit. | Accepted logs or CI artifacts for `cargo fmt --all -- --check`, `cargo check --workspace --locked`, `cargo test --workspace --locked`, and `cargo clippy --workspace --all-targets -- -D warnings`. |
+
+## Out-of-scope non-readiness areas
+
+The following are not active `v2.2.20` code blockers by themselves. They remain future-public-testnet or future-product scope and cannot be used as readiness claims without separate evidence and approval.
+
+| Area | Current scope | Required future evidence before any claim |
+|---|---|---|
+| Public RPC exposure | RPC endpoints remain private/localhost by default; public exposure is out of scope for this closeout. | Public-testnet-specific security/RPC exposure review, authn/authz posture, firewall/listener config, secret-redaction check, and operator sign-off. |
 | Long-run public operation | Private rehearsals do not provide long-run public-testnet burn-in. | Separate public-testnet go/no-go authorization and at least 30 consecutive UTC days of burn-in evidence after launch authorization. |
 | Kaspa/GHOSTDAG compatibility assertions | Deterministic DAG behavior does not prove full Kaspa/GHOSTDAG compatibility. | Canonical compatibility implementation and explicit tests/evidence before any compatibility claim. |
 | GPU mining | GPU paths remain optional/scaffold-only unless a canonical tested kHeavyHash GPU kernel and evidence are included. | Canonical GPU kernel implementation, deterministic validation, and miner evidence before any production-ready GPU claim. |
@@ -44,6 +52,10 @@ This document records the current known limitations for `v2.2.20` active hardeni
 | `#612` | Mining submit tests aligned with actor semantics | Narrowed regression-test mismatch for bounded submit behavior. |
 | `#613` | Windows and Docker rehearsal hardening | Narrowed environment ambiguity by hardening preflight and Docker execution. |
 | `#614` | Evidence manifest completion | Narrowed evidence-review ambiguity by requiring self-classifying evidence manifests for rehearsal bundles. |
+
+## Closeout decision reference
+
+The final closeout evidence index is `docs/V2_2_20_FINAL_EVIDENCE_INDEX.md`. It records `NO_GO` as of 2026-06-12 because the remaining closeout blockers above have no complete replacement evidence or waiver in this repository.
 
 ## Closeout interpretation
 
