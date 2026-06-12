@@ -69,6 +69,11 @@ pub struct MetricsData {
     pub peer_retention_cooldown_total: usize,
     pub peer_sync_eligible_total: usize,
     pub peer_sync_suppressed_total: usize,
+    pub bootnode_reconnect_scheduled_total: u64,
+    pub bootnode_reconnect_skipped_cooldown_total: u64,
+    pub bootnode_reconnect_forced_from_cooldown_total: u64,
+    pub bootnode_reconnect_success_total: u64,
+    pub isolated_bootnode_reconnect_active: bool,
     pub p2p_status_snapshot: P2pStatusSnapshotMetrics,
     pub rpc_degraded_response_total: u64,
     pub rpc_snapshot_age_ms: u64,
@@ -202,6 +207,30 @@ pub async fn get_metrics<S: RpcStateLike>(
             .as_ref()
             .map(|snapshot| snapshot.status.peer_sync_suppressed_total)
             .unwrap_or(0),
+        bootnode_reconnect_scheduled_total: p2p_status
+            .as_ref()
+            .map(|snapshot| snapshot.status.bootnode_reconnect_scheduled_total)
+            .unwrap_or(0),
+        bootnode_reconnect_skipped_cooldown_total: p2p_status
+            .as_ref()
+            .map(|snapshot| snapshot.status.bootnode_reconnect_skipped_cooldown_total)
+            .unwrap_or(0),
+        bootnode_reconnect_forced_from_cooldown_total: p2p_status
+            .as_ref()
+            .map(|snapshot| {
+                snapshot
+                    .status
+                    .bootnode_reconnect_forced_from_cooldown_total
+            })
+            .unwrap_or(0),
+        bootnode_reconnect_success_total: p2p_status
+            .as_ref()
+            .map(|snapshot| snapshot.status.bootnode_reconnect_success_total)
+            .unwrap_or(0),
+        isolated_bootnode_reconnect_active: p2p_status
+            .as_ref()
+            .map(|snapshot| snapshot.status.isolated_bootnode_reconnect_active)
+            .unwrap_or(false),
         p2p_status_snapshot: snapshot_metrics,
         rpc_degraded_response_total: snapshot_metrics.rpc_degraded_response_total,
         rpc_snapshot_age_ms: node_snapshot_metrics.rpc_snapshot_age_ms,

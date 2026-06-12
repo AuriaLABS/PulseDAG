@@ -57,7 +57,7 @@ fn isolated_genesis_node_total(
 ) -> usize {
     usize::from(
         enabled
-            && best_height == 0
+            && best_height <= 1
             && status.is_some_and(|status| {
                 status.connected_peers.is_empty() && !status.bootnodes_configured.is_empty()
             }),
@@ -92,7 +92,7 @@ fn p2p_readiness_reasons(
     }
     if isolated_genesis_node_total(true, Some(status), best_height) > 0 {
         reasons.push(format!(
-            "isolated genesis node: height=0 peer_count=0 configured_bootnodes_total={}",
+            "isolated genesis-or-height-one node: height={best_height} peer_count=0 configured_bootnodes_total={}",
             status.bootnodes_configured.len()
         ));
     }
@@ -201,8 +201,20 @@ fn disabled_p2p_payload(
         object.insert("configured_bootnodes_total".into(), serde_json::json!(0));
         object.insert("bootnode_connected_total".into(), serde_json::json!(0));
         object.insert(
-            "bootnode_reconnect_attempts_total".into(),
+            "bootnode_reconnect_scheduled_total".into(),
             serde_json::json!(0),
+        );
+        object.insert(
+            "bootnode_reconnect_skipped_cooldown_total".into(),
+            serde_json::json!(0),
+        );
+        object.insert(
+            "bootnode_reconnect_forced_from_cooldown_total".into(),
+            serde_json::json!(0),
+        );
+        object.insert(
+            "isolated_bootnode_reconnect_active".into(),
+            serde_json::json!(false),
         );
         object.insert(
             "bootnode_reconnect_success_total".into(),
@@ -687,12 +699,24 @@ pub async fn get_p2p_status<S: RpcStateLike>(
                 serde_json::json!(status.bootnodes_connected.len()),
             );
             payload.insert(
-                "bootnode_reconnect_attempts_total".into(),
-                serde_json::json!(status.bootnode_redial_attempts),
+                "bootnode_reconnect_scheduled_total".into(),
+                serde_json::json!(status.bootnode_reconnect_scheduled_total),
+            );
+            payload.insert(
+                "bootnode_reconnect_skipped_cooldown_total".into(),
+                serde_json::json!(status.bootnode_reconnect_skipped_cooldown_total),
+            );
+            payload.insert(
+                "bootnode_reconnect_forced_from_cooldown_total".into(),
+                serde_json::json!(status.bootnode_reconnect_forced_from_cooldown_total),
             );
             payload.insert(
                 "bootnode_reconnect_success_total".into(),
-                serde_json::json!(status.bootnode_redial_successes),
+                serde_json::json!(status.bootnode_reconnect_success_total),
+            );
+            payload.insert(
+                "isolated_bootnode_reconnect_active".into(),
+                serde_json::json!(status.isolated_bootnode_reconnect_active),
             );
             payload.insert(
                 "bootnode_last_disconnect_reason".into(),
@@ -710,8 +734,11 @@ pub async fn get_p2p_status<S: RpcStateLike>(
                     "bootnode_connected_total": status.bootnodes_connected.len(),
                     "bootnodes_connected": status.bootnodes_connected.clone(),
                     "pending_bootnode_dials": status.pending_bootnode_dials.clone(),
-                    "bootnode_reconnect_attempts_total": status.bootnode_redial_attempts,
-                    "bootnode_reconnect_success_total": status.bootnode_redial_successes,
+                    "bootnode_reconnect_scheduled_total": status.bootnode_reconnect_scheduled_total,
+                    "bootnode_reconnect_skipped_cooldown_total": status.bootnode_reconnect_skipped_cooldown_total,
+                    "bootnode_reconnect_forced_from_cooldown_total": status.bootnode_reconnect_forced_from_cooldown_total,
+                    "bootnode_reconnect_success_total": status.bootnode_reconnect_success_total,
+                    "isolated_bootnode_reconnect_active": status.isolated_bootnode_reconnect_active,
                     "bootnode_reconnect_failures_total": status.bootnode_redial_failures,
                     "bootnode_next_reconnect_at": status.bootnode_next_redial_at.clone(),
                     "bootnode_reconnect_backoff_secs": status.bootnode_redial_backoff_secs.clone(),
@@ -1454,6 +1481,11 @@ mod tests {
             bootnode_redial_attempts: 2,
             bootnode_redial_successes: 1,
             bootnode_redial_failures: 0,
+            bootnode_reconnect_scheduled_total: 2,
+            bootnode_reconnect_skipped_cooldown_total: 0,
+            bootnode_reconnect_forced_from_cooldown_total: 0,
+            bootnode_reconnect_success_total: 1,
+            isolated_bootnode_reconnect_active: false,
             bootnode_next_redial_at: std::collections::HashMap::new(),
             bootnode_redial_backoff_secs: std::collections::HashMap::new(),
             last_bootnode_dial_error: None,
@@ -1495,7 +1527,7 @@ mod tests {
         assert!(data["p2p_ready_for_private_rehearsal"].is_boolean());
         assert_eq!(data["configured_bootnodes_total"], 1);
         assert_eq!(data["bootnode_connected_total"], 1);
-        assert_eq!(data["bootnode_reconnect_attempts_total"], 2);
+        assert_eq!(data["bootnode_reconnect_scheduled_total"], 2);
         assert_eq!(data["bootnode_reconnect_success_total"], 1);
         assert_eq!(
             data["bootnode_last_disconnect_reason"],
@@ -1511,7 +1543,7 @@ mod tests {
     }
 
     #[test]
-    fn isolated_genesis_node_total_requires_height_zero_zero_peers_and_bootnodes() {
+    fn isolated_genesis_node_total_requires_height_le_one_zero_peers_and_bootnodes() {
         let isolated = P2pStatus {
             connected_peers: Vec::new(),
             bootnodes_configured: vec!["/ip4/127.0.0.1/tcp/19080/p2p/bootnode".into()],
@@ -1533,7 +1565,7 @@ mod tests {
         );
         assert_eq!(
             super::isolated_genesis_node_total(true, Some(&isolated), 1),
-            0
+            1
         );
         assert_eq!(
             super::isolated_genesis_node_total(false, Some(&isolated), 0),
@@ -1721,6 +1753,11 @@ mod tests {
                 bootnode_redial_attempts: 0,
                 bootnode_redial_successes: 0,
                 bootnode_redial_failures: 0,
+                bootnode_reconnect_scheduled_total: 0,
+                bootnode_reconnect_skipped_cooldown_total: 0,
+                bootnode_reconnect_forced_from_cooldown_total: 0,
+                bootnode_reconnect_success_total: 0,
+                isolated_bootnode_reconnect_active: false,
                 bootnode_next_redial_at: std::collections::HashMap::new(),
                 bootnode_redial_backoff_secs: std::collections::HashMap::new(),
                 last_bootnode_dial_error: None,
