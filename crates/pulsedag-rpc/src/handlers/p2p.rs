@@ -33,12 +33,44 @@ fn is_peer_degraded(peer: &PeerRecoveryStatus) -> bool {
     peer.score < 80 || peer.flap_events > 0 || !peer.recent_failures_unix.is_empty()
 }
 
+fn configured_bootnode_peer_ids(status: &P2pStatus) -> Vec<String> {
+    status
+        .bootnodes_configured
+        .iter()
+        .filter_map(|addr| addr.rsplit_once("/p2p/").map(|(_, peer)| peer.to_string()))
+        .collect()
+}
+
+fn bootnode_last_disconnect_reason(status: &P2pStatus) -> Option<String> {
+    let bootnode_peer_ids = configured_bootnode_peer_ids(status);
+    status
+        .last_connection_closed_peer
+        .as_ref()
+        .filter(|peer| bootnode_peer_ids.iter().any(|bootnode| bootnode == *peer))
+        .and_then(|_| status.last_disconnect_reason.clone())
+}
+
+fn isolated_genesis_node_total(
+    enabled: bool,
+    status: Option<&P2pStatus>,
+    best_height: u64,
+) -> usize {
+    usize::from(
+        enabled
+            && best_height == 0
+            && status.is_some_and(|status| {
+                status.connected_peers.is_empty() && !status.bootnodes_configured.is_empty()
+            }),
+    )
+}
+
 fn p2p_readiness_reasons(
     enabled: bool,
     status: Option<&P2pStatus>,
     runtime: &crate::api::NodeRuntimeStats,
     pending_missing_parents: usize,
     orphan_count: usize,
+    best_height: u64,
 ) -> Vec<String> {
     let mut reasons = Vec::new();
     if !enabled {
@@ -57,6 +89,12 @@ fn p2p_readiness_reasons(
     }
     if status.connected_peers.is_empty() {
         reasons.push("no connected peers".to_string());
+    }
+    if isolated_genesis_node_total(true, Some(status), best_height) > 0 {
+        reasons.push(format!(
+            "isolated genesis node: height=0 peer_count=0 configured_bootnodes_total={}",
+            status.bootnodes_configured.len()
+        ));
     }
     if status.listening.is_empty() {
         reasons.push("no listening addresses reported".to_string());
@@ -87,9 +125,15 @@ fn disabled_p2p_payload(
     pending_missing_parents: usize,
     orphan_count: usize,
 ) -> serde_json::Value {
-    let reasons =
-        p2p_readiness_reasons(false, None, runtime, pending_missing_parents, orphan_count);
-    serde_json::json!({
+    let reasons = p2p_readiness_reasons(
+        false,
+        None,
+        runtime,
+        pending_missing_parents,
+        orphan_count,
+        0,
+    );
+    let mut payload = serde_json::json!({
         "p2p_enabled": false,
         "chain_id": null,
         "p2p_mode": "disabled",
@@ -152,7 +196,25 @@ fn disabled_p2p_payload(
         "peer_recovery": [],
         "p2p_ready_for_private_rehearsal": false,
         "readiness_reasons": reasons
-    })
+    });
+    if let Some(object) = payload.as_object_mut() {
+        object.insert("configured_bootnodes_total".into(), serde_json::json!(0));
+        object.insert("bootnode_connected_total".into(), serde_json::json!(0));
+        object.insert(
+            "bootnode_reconnect_attempts_total".into(),
+            serde_json::json!(0),
+        );
+        object.insert(
+            "bootnode_reconnect_success_total".into(),
+            serde_json::json!(0),
+        );
+        object.insert(
+            "bootnode_last_disconnect_reason".into(),
+            serde_json::Value::Null,
+        );
+        object.insert("isolated_genesis_node_total".into(), serde_json::json!(0));
+    }
+    payload
 }
 
 fn peer_health_counts(
@@ -609,9 +671,56 @@ pub async fn get_p2p_status<S: RpcStateLike>(
                 &runtime,
                 pending_missing_parents,
                 orphan_count,
+                chain.dag.best_height,
             );
+            let isolated_genesis_node_total =
+                isolated_genesis_node_total(true, Some(&status), chain.dag.best_height);
+            let bootnode_last_disconnect_reason = bootnode_last_disconnect_reason(&status);
             payload.insert("p2p_enabled".into(), serde_json::json!(true));
             payload.insert("p2p_mode".into(), serde_json::json!(status.mode));
+            payload.insert(
+                "configured_bootnodes_total".into(),
+                serde_json::json!(status.bootnodes_configured.len()),
+            );
+            payload.insert(
+                "bootnode_connected_total".into(),
+                serde_json::json!(status.bootnodes_connected.len()),
+            );
+            payload.insert(
+                "bootnode_reconnect_attempts_total".into(),
+                serde_json::json!(status.bootnode_redial_attempts),
+            );
+            payload.insert(
+                "bootnode_reconnect_success_total".into(),
+                serde_json::json!(status.bootnode_redial_successes),
+            );
+            payload.insert(
+                "bootnode_last_disconnect_reason".into(),
+                serde_json::json!(bootnode_last_disconnect_reason.clone()),
+            );
+            payload.insert(
+                "isolated_genesis_node_total".into(),
+                serde_json::json!(isolated_genesis_node_total),
+            );
+            payload.insert(
+                "bootnode_reconnect_diagnostics".into(),
+                serde_json::json!({
+                    "configured_bootnodes_total": status.bootnodes_configured.len(),
+                    "bootnodes_configured": status.bootnodes_configured.clone(),
+                    "bootnode_connected_total": status.bootnodes_connected.len(),
+                    "bootnodes_connected": status.bootnodes_connected.clone(),
+                    "pending_bootnode_dials": status.pending_bootnode_dials.clone(),
+                    "bootnode_reconnect_attempts_total": status.bootnode_redial_attempts,
+                    "bootnode_reconnect_success_total": status.bootnode_redial_successes,
+                    "bootnode_reconnect_failures_total": status.bootnode_redial_failures,
+                    "bootnode_next_reconnect_at": status.bootnode_next_redial_at.clone(),
+                    "bootnode_reconnect_backoff_secs": status.bootnode_redial_backoff_secs.clone(),
+                    "last_bootnode_dial_error": status.last_bootnode_dial_error.clone(),
+                    "bootnode_last_disconnect_reason": bootnode_last_disconnect_reason.clone(),
+                    "isolated_genesis_node_total": isolated_genesis_node_total
+                }),
+            );
+
             payload.insert(
                 "peer_count".into(),
                 serde_json::json!(status.connected_peers.len()),
@@ -1322,25 +1431,28 @@ mod tests {
             orphan_blocks_received: 0,
             duplicate_blocks_received: 0,
             peer_penalties: 0,
-            active_connections_by_peer: std::collections::HashMap::new(),
-            active_connection_total: 0,
+            active_connections_by_peer: std::collections::HashMap::from([(
+                "peer-a".into(),
+                1usize,
+            )]),
+            active_connection_total: 1,
             last_connection_established_peer: None,
-            last_connection_closed_peer: None,
-            last_connection_closed_remaining_count: None,
+            last_connection_closed_peer: Some("peer-a".into()),
+            last_connection_closed_remaining_count: Some(0),
             last_outgoing_connection_error_peer: None,
             last_incoming_connection_error_peer: None,
             last_dial_error: None,
-            last_disconnect_reason: None,
+            last_disconnect_reason: Some("swarm-connection-closed:closed".into()),
             last_peer_state_transition: None,
             bootstrap_dial_attempts: 0,
             bootstrap_dial_successes: 0,
             bootstrap_dial_failures: 0,
             bootstrap_connected_peer_ids: vec![],
-            bootnodes_configured: Vec::new(),
-            bootnodes_connected: Vec::new(),
-            pending_bootnode_dials: Vec::new(),
-            bootnode_redial_attempts: 0,
-            bootnode_redial_successes: 0,
+            bootnodes_configured: vec!["/ip4/127.0.0.1/tcp/19080/p2p/peer-a".into()],
+            bootnodes_connected: vec!["peer-a".into()],
+            pending_bootnode_dials: vec!["peer-a".into()],
+            bootnode_redial_attempts: 2,
+            bootnode_redial_successes: 1,
             bootnode_redial_failures: 0,
             bootnode_next_redial_at: std::collections::HashMap::new(),
             bootnode_redial_backoff_secs: std::collections::HashMap::new(),
@@ -1381,9 +1493,52 @@ mod tests {
         assert!(data["block_propagation_counters"]["pending_block_requests"].is_number());
         assert!(data["block_propagation_counters"]["pending_missing_parents"].is_number());
         assert!(data["p2p_ready_for_private_rehearsal"].is_boolean());
+        assert_eq!(data["configured_bootnodes_total"], 1);
+        assert_eq!(data["bootnode_connected_total"], 1);
+        assert_eq!(data["bootnode_reconnect_attempts_total"], 2);
+        assert_eq!(data["bootnode_reconnect_success_total"], 1);
+        assert_eq!(
+            data["bootnode_last_disconnect_reason"],
+            "swarm-connection-closed:closed"
+        );
+        assert_eq!(
+            data["bootnode_reconnect_diagnostics"]["configured_bootnodes_total"],
+            1
+        );
         let text = serde_json::to_string(&data).unwrap();
         assert!(!text.contains("private_key"));
         assert!(!text.contains("secret"));
+    }
+
+    #[test]
+    fn isolated_genesis_node_total_requires_height_zero_zero_peers_and_bootnodes() {
+        let isolated = P2pStatus {
+            connected_peers: Vec::new(),
+            bootnodes_configured: vec!["/ip4/127.0.0.1/tcp/19080/p2p/bootnode".into()],
+            ..P2pStatus::default()
+        };
+        assert_eq!(
+            super::isolated_genesis_node_total(true, Some(&isolated), 0),
+            1
+        );
+
+        let with_peer = P2pStatus {
+            connected_peers: vec!["peer-a".into()],
+            bootnodes_configured: isolated.bootnodes_configured.clone(),
+            ..P2pStatus::default()
+        };
+        assert_eq!(
+            super::isolated_genesis_node_total(true, Some(&with_peer), 0),
+            0
+        );
+        assert_eq!(
+            super::isolated_genesis_node_total(true, Some(&isolated), 1),
+            0
+        );
+        assert_eq!(
+            super::isolated_genesis_node_total(false, Some(&isolated), 0),
+            0
+        );
     }
 
     #[tokio::test]

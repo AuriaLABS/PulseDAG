@@ -278,6 +278,10 @@ pub async fn get_readiness<S: RpcStateLike>(
         .as_ref()
         .map(|snapshot| snapshot.status.connected_peers.len())
         .unwrap_or(0);
+    let p2p_configured_bootnodes_total = p2p_status
+        .as_ref()
+        .map(|snapshot| snapshot.status.bootnodes_configured.len())
+        .unwrap_or(0);
 
     let selected_tip = preferred_tip_hash(&chain);
     let state_root = chain.utxo.compute_state_root().ok();
@@ -395,6 +399,16 @@ pub async fn get_readiness<S: RpcStateLike>(
             category(
                 ReadinessStatus::Unknown,
                 vec!["p2p is disabled".to_string()],
+            )
+        } else if chain.dag.best_height == 0
+            && p2p_peer_count == 0
+            && p2p_configured_bootnodes_total > 0
+        {
+            category(
+                ReadinessStatus::Fail,
+                vec![format!(
+                    "isolated genesis node: p2p is enabled, height=0, peer_count=0, configured_bootnodes_total={p2p_configured_bootnodes_total}"
+                )],
             )
         } else if p2p_peer_count == 0 {
             category(
@@ -845,5 +859,111 @@ mod tests {
         assert!(!source.contains(&v230_phrase));
         assert!(!source.contains(&v300_phrase));
         assert!(!source.contains(&public_testnet_live_phrase));
+    }
+    #[tokio::test]
+    async fn node_at_genesis_with_zero_peers_and_bootnodes_is_not_private_testnet_ready() {
+        use crate::api::{NodeRuntimeStats, RpcStateLike};
+        use axum::extract::State;
+        use pulsedag_core::ChainState;
+        use pulsedag_p2p::{P2pHandle, P2pStatus, P2P_MODE_LIBP2P_REAL};
+        use pulsedag_storage::Storage;
+        use std::{
+            path::PathBuf,
+            sync::Arc,
+            time::{SystemTime, UNIX_EPOCH},
+        };
+        use tokio::sync::RwLock;
+
+        #[derive(Clone)]
+        struct TestP2pHandle {
+            status: P2pStatus,
+        }
+
+        impl P2pHandle for TestP2pHandle {
+            fn broadcast_transaction(
+                &self,
+                _tx: &pulsedag_core::types::Transaction,
+            ) -> Result<(), pulsedag_core::errors::PulseError> {
+                Ok(())
+            }
+
+            fn broadcast_block(
+                &self,
+                _block: &pulsedag_core::types::Block,
+            ) -> Result<(), pulsedag_core::errors::PulseError> {
+                Ok(())
+            }
+
+            fn status(&self) -> Result<P2pStatus, pulsedag_core::errors::PulseError> {
+                Ok(self.status.clone())
+            }
+        }
+
+        #[derive(Clone)]
+        struct TestState {
+            chain: Arc<RwLock<ChainState>>,
+            storage: Arc<Storage>,
+            runtime: Arc<RwLock<NodeRuntimeStats>>,
+            p2p: Option<Arc<dyn P2pHandle>>,
+        }
+
+        impl RpcStateLike for TestState {
+            fn chain(&self) -> Arc<RwLock<ChainState>> {
+                self.chain.clone()
+            }
+
+            fn p2p(&self) -> Option<Arc<dyn P2pHandle>> {
+                self.p2p.clone()
+            }
+
+            fn storage(&self) -> Arc<Storage> {
+                self.storage.clone()
+            }
+
+            fn runtime(&self) -> Arc<RwLock<NodeRuntimeStats>> {
+                self.runtime.clone()
+            }
+        }
+
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let path: PathBuf = std::env::temp_dir().join(format!("pulsedag-readiness-{unique}"));
+        let storage = Arc::new(Storage::open(path.to_str().expect("utf8 temp path")).unwrap());
+        let chain = storage
+            .load_or_init_genesis("testnet-dev".to_string())
+            .unwrap();
+        let status = P2pStatus {
+            chain_id: "testnet-dev".into(),
+            mode: P2P_MODE_LIBP2P_REAL.into(),
+            peer_id: "self".into(),
+            listening: vec!["/ip4/127.0.0.1/tcp/19081".into()],
+            bootnodes_configured: vec!["/ip4/127.0.0.1/tcp/19080/p2p/bootnode".into()],
+            runtime_started: true,
+            runtime_mode_detail: "real".into(),
+            ..P2pStatus::default()
+        };
+        let state = TestState {
+            chain: Arc::new(RwLock::new(chain)),
+            storage,
+            runtime: Arc::new(RwLock::new(NodeRuntimeStats {
+                last_self_audit_ok: true,
+                ..NodeRuntimeStats::default()
+            })),
+            p2p: Some(Arc::new(TestP2pHandle { status })),
+        };
+
+        let axum::Json(resp) = super::get_readiness(State(state)).await;
+        let data = resp.data.expect("readiness data");
+
+        assert!(!data.private_testnet_ready);
+        assert!(!data.node_ready);
+        assert_eq!(data.overall_status, ReadinessStatus::Fail);
+        assert_eq!(data.categories["p2p"].status, ReadinessStatus::Fail);
+        assert!(data.categories["p2p"].reasons.iter().any(|reason| {
+            reason.contains("isolated genesis node")
+                && reason.contains("configured_bootnodes_total=1")
+        }));
     }
 }
