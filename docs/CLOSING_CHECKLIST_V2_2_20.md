@@ -63,6 +63,20 @@ Required when any of the following is true:
 
 Allowed only for explicitly scoped non-PASS gates that are not public-testnet readiness gates. The final decision must list each waiver and explain why it is safe for `v2.2.20` hardening closeout only.
 
+
+## Final v2.2.20 evidence index
+
+The final closeout index is `docs/V2_2_20_FINAL_EVIDENCE_INDEX.md`. As of 2026-06-12, the recorded decision is `NO_GO`, not `GO_TO_START_V2_3_0_REVIEW`, because the repository does not yet contain acceptable replacement or waiver evidence for all required closeout gates.
+
+Current blockers recorded by the index:
+
+- `5N/2M intermediate` remains non-PASS because the latest accepted evidence failed the accepted-block gate.
+- `5N/4M stress` remains observe-only/non-PASS without an accepted bounded limitation.
+- Snapshot restore automation is documented, but a final closeout restore bundle/checksum or waiver is not attached.
+- Final CI/workspace validation artifacts must be attached for the evaluated closeout commit.
+
+This `NO_GO` preserves `public_testnet_ready=false`, makes no public-testnet live claim, and makes no `v2.3.0` readiness claim.
+
 ## Final decision record
 
 Record the final decision at `artifacts/v2_2_20/closeout_decision/final_decision.md` with:
