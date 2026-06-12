@@ -400,14 +400,15 @@ pub async fn get_readiness<S: RpcStateLike>(
                 ReadinessStatus::Unknown,
                 vec!["p2p is disabled".to_string()],
             )
-        } else if chain.dag.best_height == 0
+        } else if chain.dag.best_height <= 1
             && p2p_peer_count == 0
             && p2p_configured_bootnodes_total > 0
         {
             category(
                 ReadinessStatus::Fail,
                 vec![format!(
-                    "isolated genesis node: p2p is enabled, height=0, peer_count=0, configured_bootnodes_total={p2p_configured_bootnodes_total}"
+                    "isolated genesis-or-height-one node: p2p is enabled, height={}, peer_count=0, configured_bootnodes_total={p2p_configured_bootnodes_total}",
+                    chain.dag.best_height
                 )],
             )
         } else if p2p_peer_count == 0 {
@@ -962,7 +963,7 @@ mod tests {
         assert_eq!(data.overall_status, ReadinessStatus::Fail);
         assert_eq!(data.categories["p2p"].status, ReadinessStatus::Fail);
         assert!(data.categories["p2p"].reasons.iter().any(|reason| {
-            reason.contains("isolated genesis node")
+            reason.contains("isolated genesis-or-height-one node")
                 && reason.contains("configured_bootnodes_total=1")
         }));
     }

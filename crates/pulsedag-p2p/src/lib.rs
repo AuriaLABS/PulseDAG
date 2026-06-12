@@ -223,6 +223,11 @@ pub struct P2pStatus {
     pub bootnode_redial_attempts: u64,
     pub bootnode_redial_successes: u64,
     pub bootnode_redial_failures: u64,
+    pub bootnode_reconnect_scheduled_total: u64,
+    pub bootnode_reconnect_skipped_cooldown_total: u64,
+    pub bootnode_reconnect_forced_from_cooldown_total: u64,
+    pub bootnode_reconnect_success_total: u64,
+    pub isolated_bootnode_reconnect_active: bool,
     pub bootnode_next_redial_at: HashMap<String, u64>,
     pub bootnode_redial_backoff_secs: HashMap<String, u64>,
     pub last_bootnode_dial_error: Option<String>,
@@ -477,6 +482,10 @@ struct InnerState {
     bootnode_redial_attempts: u64,
     bootnode_redial_successes: u64,
     bootnode_redial_failures: u64,
+    bootnode_reconnect_scheduled_total: u64,
+    bootnode_reconnect_skipped_cooldown_total: u64,
+    bootnode_reconnect_forced_from_cooldown_total: u64,
+    bootnode_reconnect_success_total: u64,
     bootnode_next_redial_at: HashMap<String, u64>,
     bootnode_redial_backoff_secs: HashMap<String, u64>,
     last_bootnode_dial_error: Option<String>,
@@ -942,6 +951,13 @@ impl P2pHandle for MemoryP2pHandle {
             bootnode_redial_attempts: inner.bootnode_redial_attempts,
             bootnode_redial_successes: inner.bootnode_redial_successes,
             bootnode_redial_failures: inner.bootnode_redial_failures,
+            bootnode_reconnect_scheduled_total: inner.bootnode_reconnect_scheduled_total,
+            bootnode_reconnect_skipped_cooldown_total: inner
+                .bootnode_reconnect_skipped_cooldown_total,
+            bootnode_reconnect_forced_from_cooldown_total: inner
+                .bootnode_reconnect_forced_from_cooldown_total,
+            bootnode_reconnect_success_total: inner.bootnode_reconnect_success_total,
+            isolated_bootnode_reconnect_active: isolated_bootnode_reconnect_active(&inner),
             bootnode_next_redial_at: inner.bootnode_next_redial_at.clone(),
             bootnode_redial_backoff_secs: inner.bootnode_redial_backoff_secs.clone(),
             last_bootnode_dial_error: inner.last_bootnode_dial_error.clone(),
@@ -1025,6 +1041,10 @@ impl Libp2pHandle {
             bootnode_redial_attempts: 0,
             bootnode_redial_successes: 0,
             bootnode_redial_failures: 0,
+            bootnode_reconnect_scheduled_total: 0,
+            bootnode_reconnect_skipped_cooldown_total: 0,
+            bootnode_reconnect_forced_from_cooldown_total: 0,
+            bootnode_reconnect_success_total: 0,
             last_bootnode_dial_error: None,
             connection_established_total: 0,
             connection_closed_total: 0,
@@ -3631,6 +3651,45 @@ fn is_configured_bootnode_peer(guard: &InnerState, peer_id: &PeerId) -> bool {
         .any(|addr| addr.contains(&peer))
 }
 
+fn bootnode_generic_cooldown_active(state: &InnerState, peer_id: &PeerId, now: u64) -> bool {
+    state
+        .peer_book
+        .get(&peer_id.to_string())
+        .is_some_and(|health| health.next_retry_unix > now || health.suppressed_until_unix > now)
+}
+
+fn isolated_bootnode_reconnect_active(state: &InnerState) -> bool {
+    mode_connected_peers_are_real_network(&state.mode)
+        && !state.bootnodes_configured.is_empty()
+        && state.active_connections.is_empty()
+        && (!state.pending_bootnode_dials.is_empty() || !state.bootnode_next_redial_at.is_empty())
+}
+
+fn record_bootnode_reconnect_schedule(
+    inner: &Arc<Mutex<InnerState>>,
+    peer_id: &PeerId,
+    now: u64,
+) -> bool {
+    inner
+        .lock()
+        .map(|mut guard| {
+            let generic_cooldown_active = bootnode_generic_cooldown_active(&guard, peer_id, now);
+            guard.bootnode_redial_attempts = guard.bootnode_redial_attempts.saturating_add(1);
+            guard.bootnode_reconnect_scheduled_total =
+                guard.bootnode_reconnect_scheduled_total.saturating_add(1);
+            if generic_cooldown_active {
+                guard.bootnode_reconnect_skipped_cooldown_total = guard
+                    .bootnode_reconnect_skipped_cooldown_total
+                    .saturating_add(1);
+                guard.bootnode_reconnect_forced_from_cooldown_total = guard
+                    .bootnode_reconnect_forced_from_cooldown_total
+                    .saturating_add(1);
+            }
+            generic_cooldown_active
+        })
+        .unwrap_or(false)
+}
+
 fn handle_connection_established(
     inner: &Arc<Mutex<InnerState>>,
     pending_bootnode_dials: &mut HashSet<PeerId>,
@@ -3672,6 +3731,10 @@ fn handle_connection_established(
             },
         );
         guard.last_bootnode_dial_error = None;
+        if is_bootnode {
+            guard.bootnode_reconnect_success_total =
+                guard.bootnode_reconnect_success_total.saturating_add(1);
+        }
         if is_bootnode
             && !guard
                 .bootstrap_connected_peer_ids
@@ -4129,9 +4192,7 @@ async fn run_libp2p_real_runtime(
                     if bootnode_next_redial_at.get(peer_id).copied().unwrap_or(0) > now {
                         continue;
                     }
-                    if let Ok(mut guard) = inner.lock() {
-                        guard.bootnode_redial_attempts = guard.bootnode_redial_attempts.saturating_add(1);
-                    }
+                    record_bootnode_reconnect_schedule(&inner, peer_id, now);
                     note_swarm_event(&inner, format!("reconnect-scheduled:bootnode:{peer_id}:{addr}"));
                     note_swarm_event(&inner, format!("dial-attempt:redial:{peer_id}:{addr}"));
                     if let Err(e) = swarm.dial(addr.clone()) {
@@ -4518,6 +4579,13 @@ impl P2pHandle for Libp2pHandle {
             bootnode_redial_attempts: inner.bootnode_redial_attempts,
             bootnode_redial_successes: inner.bootnode_redial_successes,
             bootnode_redial_failures: inner.bootnode_redial_failures,
+            bootnode_reconnect_scheduled_total: inner.bootnode_reconnect_scheduled_total,
+            bootnode_reconnect_skipped_cooldown_total: inner
+                .bootnode_reconnect_skipped_cooldown_total,
+            bootnode_reconnect_forced_from_cooldown_total: inner
+                .bootnode_reconnect_forced_from_cooldown_total,
+            bootnode_reconnect_success_total: inner.bootnode_reconnect_success_total,
+            isolated_bootnode_reconnect_active: isolated_bootnode_reconnect_active(&inner),
             bootnode_next_redial_at: inner.bootnode_next_redial_at.clone(),
             bootnode_redial_backoff_secs: inner.bootnode_redial_backoff_secs.clone(),
             last_bootnode_dial_error: inner.last_bootnode_dial_error.clone(),
@@ -7323,6 +7391,62 @@ mod deterministic_p2p_sync_coverage_tests {
                 .map(|state| state.state.as_str()),
             Some("disconnected")
         );
+    }
+
+    #[test]
+    fn bootnode_reconnect_schedule_bypasses_generic_cooldown() {
+        let key = identity::Keypair::generate_ed25519();
+        let peer = PeerId::from(key.public());
+        let mut state = InnerState {
+            mode: P2P_MODE_LIBP2P_REAL.into(),
+            ..InnerState::default()
+        };
+        state.bootnodes_configured = vec![format!("/ip4/127.0.0.1/tcp/1/p2p/{peer}")];
+        state.peer_book.insert(
+            peer.to_string(),
+            PeerHealth {
+                next_retry_unix: 10_100,
+                suppressed_until_unix: 10_050,
+                ..PeerHealth::default()
+            },
+        );
+        let inner = Arc::new(Mutex::new(state));
+
+        assert!(record_bootnode_reconnect_schedule(&inner, &peer, 10_000));
+
+        let guard = inner.lock().unwrap();
+        assert_eq!(guard.bootnode_reconnect_scheduled_total, 1);
+        assert_eq!(guard.bootnode_reconnect_skipped_cooldown_total, 1);
+        assert_eq!(guard.bootnode_reconnect_forced_from_cooldown_total, 1);
+        assert_eq!(guard.bootnode_redial_attempts, 1);
+    }
+
+    #[test]
+    fn bootnode_cooldown_does_not_suppress_all_reconnect_attempts() {
+        let key = identity::Keypair::generate_ed25519();
+        let peer = PeerId::from(key.public());
+        let mut state = InnerState {
+            mode: P2P_MODE_LIBP2P_REAL.into(),
+            ..InnerState::default()
+        };
+        state.bootnodes_configured = vec![format!("/ip4/127.0.0.1/tcp/1/p2p/{peer}")];
+        state.peer_book.insert(
+            peer.to_string(),
+            PeerHealth {
+                next_retry_unix: 20_000,
+                ..PeerHealth::default()
+            },
+        );
+        let inner = Arc::new(Mutex::new(state));
+
+        for now in [10_000, 10_003, 10_006] {
+            assert!(record_bootnode_reconnect_schedule(&inner, &peer, now));
+        }
+
+        let guard = inner.lock().unwrap();
+        assert_eq!(guard.bootnode_reconnect_scheduled_total, 3);
+        assert_eq!(guard.bootnode_reconnect_forced_from_cooldown_total, 3);
+        assert_eq!(guard.bootnode_reconnect_skipped_cooldown_total, 3);
     }
 
     #[test]
