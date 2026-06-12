@@ -9,6 +9,8 @@ RUN apt-get update \
         ca-certificates \
         curl \
         jq \
+        tar \
+        gzip \
         pkg-config \
         libssl-dev \
         build-essential \

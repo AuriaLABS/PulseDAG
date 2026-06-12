@@ -48,6 +48,8 @@ Make `5N/4M` stress bounded, recoverable, and diagnostically complete without ch
 ### 5. Docker evidence continuity
 
 - Keep Docker rehearsals as the reproducible local evidence path through `docs/DOCKER_REHEARSALS_V2_2_20.md`, `docker-compose.rehearsal.yml`, and `scripts/docker_v2_2_20_rehearsal.sh`.
+- Rehearsal scripts fail before node launch with `ENV_FAIL` when required local/container dependencies (`bash`, `jq`, `curl`, `tar`, `gzip`, and Docker for Docker-mode host preflight) are missing.
+- Evidence summaries include `failure_class` with one of `environment`, `node`, `convergence`, or `timeout` for failures so local setup issues are separated from node behavior.
 - Mandatory regression checks remain:
   - `5N/1M baseline`: PASS
   - `5N/2M intermediate`: PASS

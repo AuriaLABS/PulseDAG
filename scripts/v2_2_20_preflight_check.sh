@@ -4,6 +4,11 @@ set -euo pipefail
 fail=0
 checks=0
 passes=0
+env_fail=0
+docker_mode=0
+if [[ "${1:-}" == "--docker-mode" || "${REHEARSAL_DOCKER_MODE:-0}" == "1" ]]; then
+  docker_mode=1
+fi
 
 ver="unknown"
 cargo_ver="unknown"
@@ -20,6 +25,35 @@ check(){
   else
     echo "FAIL: $msg"
     fail=1
+  fi
+}
+
+check_dependency(){
+  local dep="$1" detail="${2:-$1}"
+  checks=$((checks+1))
+  if command -v "$dep" >/dev/null 2>&1; then
+    passes=$((passes+1))
+    echo "PASS: dependency available: $detail ($(command -v "$dep"))"
+  else
+    echo "ENV_FAIL: missing dependency: $detail (command: $dep)" >&2
+    fail=1
+    env_fail=1
+  fi
+}
+
+run_environment_preflight(){
+  check_dependency bash "bash shell"
+  check_dependency jq "jq JSON parser"
+  check_dependency curl "curl HTTP client"
+  check_dependency tar "tar archive tool"
+  check_dependency gzip "gzip compression tool"
+  if (( docker_mode == 1 )); then
+    check_dependency docker "Docker CLI for Docker-mode rehearsal"
+  fi
+  if (( env_fail == 1 )); then
+    echo "SUMMARY: ENV_FAIL (${passes}/${checks} dependency checks passed)" >&2
+    write_evidence
+    exit 2
   fi
 }
 
@@ -68,6 +102,8 @@ write_evidence(){
 - cargo: $cargo_ver
 - explicit_checks: $checks
 - explicit_passes: $passes
+- env_fail: $env_fail
+- failure_class: $([[ $env_fail -eq 1 ]] && echo environment || echo none)
 - claim_scan_summary: $claim_scan_summary
 - result: $summary_result
 SUM
@@ -79,6 +115,8 @@ SUM
 }
 
 trap 'write_evidence' EXIT
+
+run_environment_preflight
 
 ver=$(tr -d '\r' < VERSION 2>/dev/null || echo "unknown")
 cargo_ver=$(awk '/^[[:space:]]*version[[:space:]]*=/{gsub(/"/, "", $3); print $3; exit}' Cargo.toml 2>/dev/null | tr -d '\r')
