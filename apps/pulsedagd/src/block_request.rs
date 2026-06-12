@@ -425,6 +425,20 @@ impl BlockRequestTracker {
         peers
     }
 
+    pub fn has_not_found_peer(&self, hash: &str) -> bool {
+        self.not_found_by_hash
+            .get(hash)
+            .map(|peers| !peers.is_empty())
+            .unwrap_or(false)
+    }
+
+    pub fn has_timed_out_peer(&self, hash: &str) -> bool {
+        self.timed_out_by_hash
+            .get(hash)
+            .map(|peers| !peers.is_empty())
+            .unwrap_or(false)
+    }
+
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn reset_backoff(&mut self, hash: &str) -> bool {
         self.backoff_by_hash.remove(hash).is_some()

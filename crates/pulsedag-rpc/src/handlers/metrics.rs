@@ -62,6 +62,10 @@ pub struct MetricsData {
     pub orphan_backlog_revalidated_total: u64,
     pub orphan_backlog_evicted_total: u64,
     pub orphan_backlog_stale_total: u64,
+    pub orphan_missing_parent_forced_reindex_total: u64,
+    pub orphan_missing_parent_unactionable_state_total: u64,
+    pub orphan_missing_parent_classified_after_reindex_total: u64,
+    pub orphan_missing_parent_evicted_after_unactionable_total: u64,
     pub orphan_recovery_tick_duration_ms: u64,
     pub peer_count: usize,
     pub peer_retention_active_total: usize,
@@ -185,6 +189,14 @@ pub async fn get_metrics<S: RpcStateLike>(
         orphan_backlog_revalidated_total: runtime.orphan_backlog_revalidated_total,
         orphan_backlog_evicted_total: runtime.orphan_backlog_evicted_total,
         orphan_backlog_stale_total: runtime.orphan_backlog_stale_total,
+        orphan_missing_parent_forced_reindex_total: runtime
+            .orphan_missing_parent_forced_reindex_total,
+        orphan_missing_parent_unactionable_state_total: runtime
+            .orphan_missing_parent_unactionable_state_total,
+        orphan_missing_parent_classified_after_reindex_total: runtime
+            .orphan_missing_parent_classified_after_reindex_total,
+        orphan_missing_parent_evicted_after_unactionable_total: runtime
+            .orphan_missing_parent_evicted_after_unactionable_total,
         orphan_recovery_tick_duration_ms: runtime.orphan_recovery_tick_duration_ms,
         peer_count,
         peer_retention_active_total: p2p_status
