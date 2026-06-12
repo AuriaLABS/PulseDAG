@@ -57,6 +57,9 @@ declare -a NODE_PIDS=()
 declare -a MINER_PIDS=()
 declare -A NODE_READY NODE_HEALTHY NODE_ADVANCED NODE_TIP NODE_HEIGHT NODE_P2P_OK NODE_PEERS NODE_P2P_INBOUND NODE_P2P_OUTBOUND NODE_CHAIN_ID
 declare -A NODE_ORPHAN_COUNT NODE_PENDING_MISSING_PARENTS NODE_INV_HASHES_REQUESTED NODE_PEER_RECOVERY_SUCCESS_COUNT NODE_MISSING_PARENTS_COUNT
+declare -A NODE_ACTIVE_PEERS NODE_RECOVERING_PEERS NODE_COOLDOWN_PEERS NODE_RATE_LIMITED_COUNT
+declare -A NODE_ORPHAN_RECOVERY_ATTEMPTS NODE_ORPHAN_RECOVERY_SUCCESS NODE_ORPHAN_RECOVERY_FAILED_MISSING_PARENT NODE_ORPHAN_RECOVERY_FAILED_PERSIST NODE_ORPHAN_ROOTS_RATE_LIMITED NODE_ORPHAN_BACKLOG_STALE
+declare -A NODE_RPC_DEGRADED_RESPONSE NODE_RPC_SNAPSHOT_STALE NODE_RPC_HANDLER_DEGRADED NODE_RPC_HANDLER_TIMEOUT_AVOIDED NODE_MINING_TEMPLATES NODE_MINING_SUBMITS NODE_MINING_ACCEPTED NODE_MINING_REJECTED NODE_MINING_SUBMIT_BUSY NODE_MINING_ACTOR_TIMEOUT
 declare -A NODE_READINESS_SCHEMA_OK NODE_SYNC_STATE NODE_SYNC_STAGE
 declare -A PRE_NODE_HEIGHT PRE_NODE_TIP PRE_NODE_ORPHANS PRE_NODE_MISSING_PARENTS PRE_NODE_SYNC_STATE PRE_NODE_PEERS
 FAIL_REASONS=()
@@ -71,6 +74,29 @@ WAIVE_ACCEPTED_BLOCK_REASON=${WAIVE_ACCEPTED_BLOCK_REASON:-""}
 ACCEPTED_BLOCKS=0
 REJECTED_BLOCKS=0
 TEMPLATES_OK=0
+RPC_ALIVE_LISTENER_TIMEOUT_COUNT=0
+RPC_LIVENESS_TIMEOUT_COUNT=0
+STALE_DEGRADED_SNAPSHOT_COUNT=0
+TOTAL_ORPHAN_COUNT=0
+TOTAL_PENDING_MISSING_PARENTS=0
+TOTAL_MISSING_PARENT_ENTRIES=0
+TOTAL_INV_HASHES_REQUESTED=0
+TOTAL_ACTIVE_PEERS=0
+TOTAL_RECOVERING_PEERS=0
+TOTAL_COOLDOWN_PEERS=0
+TOTAL_RATE_LIMITED_COUNT=0
+TOTAL_MINING_TEMPLATES=0
+TOTAL_MINING_SUBMITS=0
+TOTAL_MINING_ACCEPTED=0
+TOTAL_MINING_REJECTED=0
+TOTAL_MINING_SUBMIT_BUSY=0
+TOTAL_MINING_ACTOR_TIMEOUT=0
+TOTAL_ORPHAN_RECOVERY_ATTEMPTS=0
+TOTAL_ORPHAN_RECOVERY_SUCCESS=0
+TOTAL_ORPHAN_RECOVERY_FAILED_MISSING_PARENT=0
+TOTAL_ORPHAN_RECOVERY_FAILED_PERSIST=0
+TOTAL_ORPHAN_ROOTS_RATE_LIMITED=0
+TOTAL_ORPHAN_BACKLOG_STALE=0
 MINERS_STOPPED_FOR_QUIESCENCE=0
 GATE_5N_1M_BASELINE=FAIL
 GATE_5N_2M_INTERMEDIATE=FAIL
@@ -87,7 +113,11 @@ POST_CONVERGED=0
 LAG_IMPROVED=0
 declare -A miner_submit miner_accept miner_reject miner_template
 for i in 1 2 3 4; do miner_submit[$i]=0; miner_accept[$i]=0; miner_reject[$i]=0; miner_template[$i]=0; done
+REPO_REF="$(git -C "$ROOT_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)"
+REPO_COMMIT_FULL="$(git -C "$ROOT_DIR" rev-parse HEAD 2>/dev/null || echo unknown)"
 REPO_COMMIT="$(git -C "$ROOT_DIR" rev-parse --short=12 HEAD 2>/dev/null || echo unknown)"
+WORKSPACE_VERSION="$(cargo metadata --format-version 1 --no-deps 2>/dev/null | jq -r '.packages[0].version // "unknown"' || echo unknown)"
+RELEASE_VERSION="$(cat "$ROOT_DIR/VERSION" 2>/dev/null || echo unknown)"
 NODE_VERSION="$({ "$NODE_BIN" --version 2>/dev/null || true; } | head -n1)"
 NODE_VERSION=${NODE_VERSION:-unknown}
 for i in $(seq 1 "$MINER_COUNT"); do miner_submit[$i]=0; miner_accept[$i]=0; miner_reject[$i]=0; miner_template[$i]=0; done
@@ -632,6 +662,7 @@ collect_final_state(){
     safe_curl_optional "http://127.0.0.1:${rpc}/sync/status" "$OUT_DIR/endpoints/n${i}-sync-status-final.json" "n${i}:/sync/status ${phase}" || true
     safe_curl_optional "http://127.0.0.1:${rpc}/sync/missing" "$OUT_DIR/endpoints/n${i}-sync-missing-final.json" "n${i}:/sync/missing ${phase}" || true
     safe_curl_optional "http://127.0.0.1:${rpc}/orphans" "$OUT_DIR/endpoints/n${i}-orphans-final.json" "n${i}:/orphans ${phase}" || true
+    safe_curl_optional "http://127.0.0.1:${rpc}/metrics" "$OUT_DIR/endpoints/n${i}-metrics-final.json" "n${i}:/metrics ${phase}" || true
     NODE_HEIGHT[$i]="$(jq -r '.data.best_height // 0' "$OUT_DIR/endpoints/n${i}-status-final.json" 2>/dev/null || echo 0)"
     NODE_TIP[$i]="$(jq -r '.data.selected_tip // ""' "$OUT_DIR/endpoints/n${i}-status-final.json" 2>/dev/null || echo '')"
     NODE_READY[$i]="$(jq -r '.data.ready_for_release // .ready_for_release // 0' "$OUT_DIR/endpoints/n${i}-readiness-final.json" 2>/dev/null | sed 's/true/1/;s/false/0/' || echo 0)"
@@ -653,8 +684,30 @@ collect_final_state(){
     readiness_has_ready=$(jq -e '(.data.ready_for_release? // .ready_for_release?) | type == "boolean"' "$OUT_DIR/endpoints/n${i}-readiness-final.json" >/dev/null 2>&1 && echo 1 || echo 0)
     readiness_has_public=$(jq -e '(.data.public_testnet_ready? // .public_testnet_ready?) == false' "$OUT_DIR/endpoints/n${i}-readiness-final.json" >/dev/null 2>&1 && echo 1 || echo 0)
     NODE_READINESS_SCHEMA_OK[$i]=$(( readiness_has_ready == 1 && readiness_has_public == 1 ? 1 : 0 ))
+    metrics_file="$OUT_DIR/endpoints/n${i}-metrics-final.json"
+    NODE_ACTIVE_PEERS[$i]="$(jq -r '.data.peer_retention_active_total // .data.peer_count // 0' "$metrics_file" "$OUT_DIR/endpoints/n${i}-p2p-status-final.json" 2>/dev/null | head -n1 || echo 0)"
+    NODE_RECOVERING_PEERS[$i]="$(jq -r '.data.peer_retention_recovering_total // .data.peer_lifecycle_recovering // 0' "$metrics_file" "$OUT_DIR/endpoints/n${i}-p2p-status-final.json" 2>/dev/null | head -n1 || echo 0)"
+    NODE_COOLDOWN_PEERS[$i]="$(jq -r '.data.peer_retention_cooldown_total // .data.peer_lifecycle_cooldown // 0' "$metrics_file" "$OUT_DIR/endpoints/n${i}-p2p-status-final.json" 2>/dev/null | head -n1 || echo 0)"
+    NODE_RATE_LIMITED_COUNT[$i]="$(jq -r '.data.peer_message_rate_limited_count // .data.rate_limited_count // .data.orphan_roots_rate_limited_total // 0' "$OUT_DIR/endpoints/n${i}-p2p-status-final.json" "$metrics_file" 2>/dev/null | head -n1 || echo 0)"
+    NODE_ORPHAN_RECOVERY_ATTEMPTS[$i]="$(jq -r '.data.orphan_reprocess_attempts // 0' "$metrics_file" 2>/dev/null || echo 0)"
+    NODE_ORPHAN_RECOVERY_SUCCESS[$i]="$(jq -r '.data.orphan_reprocess_success // 0' "$metrics_file" 2>/dev/null || echo 0)"
+    NODE_ORPHAN_RECOVERY_FAILED_MISSING_PARENT[$i]="$(jq -r '.data.orphan_reprocess_failed_missing_parent // 0' "$metrics_file" 2>/dev/null || echo 0)"
+    NODE_ORPHAN_RECOVERY_FAILED_PERSIST[$i]="$(jq -r '.data.orphan_reprocess_failed_persist // 0' "$metrics_file" 2>/dev/null || echo 0)"
+    NODE_ORPHAN_ROOTS_RATE_LIMITED[$i]="$(jq -r '.data.orphan_roots_rate_limited_total // 0' "$metrics_file" 2>/dev/null || echo 0)"
+    NODE_ORPHAN_BACKLOG_STALE[$i]="$(jq -r '.data.orphan_backlog_stale_total // 0' "$metrics_file" 2>/dev/null || echo 0)"
+    NODE_RPC_DEGRADED_RESPONSE[$i]="$(jq -r '.data.rpc_degraded_response_total // 0' "$metrics_file" 2>/dev/null || echo 0)"
+    NODE_RPC_SNAPSHOT_STALE[$i]="$(jq -r '.data.rpc_snapshot_stale_total // 0' "$metrics_file" 2>/dev/null || echo 0)"
+    NODE_RPC_HANDLER_DEGRADED[$i]="$(jq -r '.data.rpc_handler_degraded_total // 0' "$metrics_file" 2>/dev/null || echo 0)"
+    NODE_RPC_HANDLER_TIMEOUT_AVOIDED[$i]="$(jq -r '.data.rpc_handler_timeout_avoided_total // 0' "$metrics_file" 2>/dev/null || echo 0)"
+    NODE_MINING_TEMPLATES[$i]="$(jq -r '.data.mining_templates_total // 0' "$metrics_file" 2>/dev/null || echo 0)"
+    NODE_MINING_SUBMITS[$i]="$(jq -r '.data.mining_submits_total // 0' "$metrics_file" 2>/dev/null || echo 0)"
+    NODE_MINING_ACCEPTED[$i]="$(jq -r '.data.blocks_accepted_total // 0' "$metrics_file" 2>/dev/null || echo 0)"
+    NODE_MINING_REJECTED[$i]="$(jq -r '.data.blocks_rejected_total // 0' "$metrics_file" 2>/dev/null || echo 0)"
+    NODE_MINING_SUBMIT_BUSY[$i]="$(jq -r '.data.external_mining_submit_actor_queue_full_total // 0' "$metrics_file" 2>/dev/null || echo 0)"
+    NODE_MINING_ACTOR_TIMEOUT[$i]="$(jq -r '.data.external_mining_submit_actor_timeout_total // 0' "$metrics_file" 2>/dev/null || echo 0)"
   done
   collect_miner_metrics
+  compute_evidence_aggregates || true
   (( skipped_budget == 0 )) || return 0
 }
 
@@ -715,6 +768,156 @@ write_quiescence_metrics(){
     > "$OUT_DIR/quiescence-metrics.json"
 }
 
+json_number_or_zero(){
+  local value="${1:-0}"
+  [[ "$value" =~ ^[0-9]+$ ]] && printf '%s' "$value" || printf '0'
+}
+
+sum_node_array(){
+  local name="$1" total=0 i value
+  for i in $(seq 1 "$NODE_COUNT"); do
+    eval "value=\${${name}[$i]:-0}"
+    value=$(json_number_or_zero "$value")
+    total=$((total + value))
+  done
+  echo "$total"
+}
+
+compute_evidence_aggregates(){
+  RPC_ALIVE_LISTENER_TIMEOUT_COUNT=$(count_matches_file '"class":"RPC_ALIVE_LISTENER_TIMEOUT"|class=RPC_ALIVE_LISTENER_TIMEOUT|RPC_DIAGNOSTIC\[RPC_ALIVE_LISTENER_TIMEOUT\]' "$OUT_DIR/command-log.txt")
+  if compgen -G "$OUT_DIR/endpoints/*-rpc-failure-diagnostics.jsonl" >/dev/null 2>&1; then
+    RPC_ALIVE_LISTENER_TIMEOUT_COUNT=$((RPC_ALIVE_LISTENER_TIMEOUT_COUNT + $(cat "$OUT_DIR"/endpoints/*-rpc-failure-diagnostics.jsonl 2>/dev/null | jq -r 'select(.class == "RPC_ALIVE_LISTENER_TIMEOUT") | 1' 2>/dev/null | wc -l | tr -d ' ')))
+  fi
+  RPC_LIVENESS_TIMEOUT_COUNT=$(count_matches_file 'rpc_liveness_timeout|RPC_LIVENESS_TIMEOUT' "$OUT_DIR/command-log.txt")
+  STALE_DEGRADED_SNAPSHOT_COUNT=$(( $(sum_node_array NODE_RPC_DEGRADED_RESPONSE) + $(sum_node_array NODE_RPC_SNAPSHOT_STALE) + $(sum_node_array NODE_RPC_HANDLER_DEGRADED) ))
+  TOTAL_ORPHAN_COUNT=$(sum_node_array NODE_ORPHAN_COUNT)
+  TOTAL_PENDING_MISSING_PARENTS=$(sum_node_array NODE_PENDING_MISSING_PARENTS)
+  TOTAL_MISSING_PARENT_ENTRIES=$(sum_node_array NODE_MISSING_PARENTS_COUNT)
+  TOTAL_INV_HASHES_REQUESTED=$(sum_node_array NODE_INV_HASHES_REQUESTED)
+  TOTAL_ACTIVE_PEERS=$(sum_node_array NODE_ACTIVE_PEERS)
+  TOTAL_RECOVERING_PEERS=$(sum_node_array NODE_RECOVERING_PEERS)
+  TOTAL_COOLDOWN_PEERS=$(sum_node_array NODE_COOLDOWN_PEERS)
+  TOTAL_RATE_LIMITED_COUNT=$(sum_node_array NODE_RATE_LIMITED_COUNT)
+  TOTAL_MINING_TEMPLATES=$(sum_node_array NODE_MINING_TEMPLATES)
+  TOTAL_MINING_SUBMITS=$(sum_node_array NODE_MINING_SUBMITS)
+  TOTAL_MINING_ACCEPTED=$(sum_node_array NODE_MINING_ACCEPTED)
+  TOTAL_MINING_REJECTED=$(sum_node_array NODE_MINING_REJECTED)
+  TOTAL_MINING_SUBMIT_BUSY=$(sum_node_array NODE_MINING_SUBMIT_BUSY)
+  TOTAL_MINING_ACTOR_TIMEOUT=$(sum_node_array NODE_MINING_ACTOR_TIMEOUT)
+  TOTAL_ORPHAN_RECOVERY_ATTEMPTS=$(sum_node_array NODE_ORPHAN_RECOVERY_ATTEMPTS)
+  TOTAL_ORPHAN_RECOVERY_SUCCESS=$(sum_node_array NODE_ORPHAN_RECOVERY_SUCCESS)
+  TOTAL_ORPHAN_RECOVERY_FAILED_MISSING_PARENT=$(sum_node_array NODE_ORPHAN_RECOVERY_FAILED_MISSING_PARENT)
+  TOTAL_ORPHAN_RECOVERY_FAILED_PERSIST=$(sum_node_array NODE_ORPHAN_RECOVERY_FAILED_PERSIST)
+  TOTAL_ORPHAN_ROOTS_RATE_LIMITED=$(sum_node_array NODE_ORPHAN_ROOTS_RATE_LIMITED)
+  TOTAL_ORPHAN_BACKLOG_STALE=$(sum_node_array NODE_ORPHAN_BACKLOG_STALE)
+  if (( TOTAL_MINING_TEMPLATES == 0 )); then TOTAL_MINING_TEMPLATES=$(count_matches_in_logs 'template_received|template'); fi
+  if (( TOTAL_MINING_SUBMITS == 0 )); then TOTAL_MINING_SUBMITS=$(count_matches_in_logs 'submit_result|submit_accepted|submit'); fi
+  if (( TOTAL_MINING_ACCEPTED == 0 )); then TOTAL_MINING_ACCEPTED=$ACCEPTED_BLOCKS; fi
+  if (( TOTAL_MINING_REJECTED == 0 )); then TOTAL_MINING_REJECTED=$REJECTED_BLOCKS; fi
+  TOTAL_MINING_SUBMIT_BUSY=$((TOTAL_MINING_SUBMIT_BUSY + $(count_matches_in_logs 'submit_busy|queue_full|busy')))
+  TOTAL_MINING_ACTOR_TIMEOUT=$((TOTAL_MINING_ACTOR_TIMEOUT + $(count_matches_in_logs 'actor timeout|actor_timeout|submit_actor_timeout')))
+}
+
+sha256_digest(){
+  local file="$1"
+  [[ -s "$file" ]] || { echo ""; return 0; }
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$file" | awk '{print $1}'
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$file" | awk '{print $1}'
+  elif command -v openssl >/dev/null 2>&1; then
+    openssl dgst -sha256 -r "$file" | awk '{print $1}'
+  else
+    echo "UNAVAILABLE"
+  fi
+}
+
+write_evidence_manifest(){
+  local archive_sha="${1:-}" end_ts duration manifest_tmp checksum_tmp
+  end_ts=$(date +%s)
+  duration=$((end_ts - START_TS))
+  compute_evidence_aggregates || true
+  manifest_tmp=$(mktemp -p /tmp evidence-manifest-json.XXXXXX) || return 1
+  checksum_tmp=$(mktemp -p /tmp evidence-checksums-json.XXXXXX) || { rm -f "$manifest_tmp"; return 1; }
+  {
+    for item in evidence-summary.md summaries/package-metadata.txt p2p_convergence.json quiescence-metrics.json command-log.txt process-pids.txt; do
+      if [[ -s "$OUT_DIR/$item" ]]; then
+        jq -n --arg path "$item" --arg sha "$(sha256_digest "$OUT_DIR/$item")" '{($path):$sha}'
+      fi
+    done
+    if [[ -n "$archive_sha" ]]; then
+      jq -n --arg sha "$archive_sha" '{"evidence.tar.gz":$sha}'
+    fi
+  } | jq -s 'add // {}' > "$checksum_tmp"
+  jq -n \
+    --arg git_ref "$REPO_REF" \
+    --arg git_commit "$REPO_COMMIT_FULL" \
+    --arg version "$RELEASE_VERSION" \
+    --arg cargo_workspace_version "$WORKSPACE_VERSION" \
+    --arg stage "$STAGE_NAME" \
+    --arg result "$RESULT" \
+    --arg failure_class "$(classify_failure_class)" \
+    --arg start_utc "$START_UTC" \
+    --arg end_utc "$(date -u +%FT%TZ)" \
+    --argjson node_count "$NODE_COUNT" \
+    --argjson miner_count "$MINER_COUNT" \
+    --argjson duration "$duration" \
+    --argjson exit_code "$EXIT_CODE" \
+    --argjson rpc_alive_listener_timeout_count "${RPC_ALIVE_LISTENER_TIMEOUT_COUNT:-0}" \
+    --argjson rpc_liveness_timeout_count "${RPC_LIVENESS_TIMEOUT_COUNT:-0}" \
+    --argjson stale_degraded_snapshot_count "${STALE_DEGRADED_SNAPSHOT_COUNT:-0}" \
+    --argjson orphan_count "${TOTAL_ORPHAN_COUNT:-0}" \
+    --argjson pending_missing_parents "${TOTAL_PENDING_MISSING_PARENTS:-0}" \
+    --argjson missing_parent_entries "${TOTAL_MISSING_PARENT_ENTRIES:-0}" \
+    --argjson inv_hashes_requested "${TOTAL_INV_HASHES_REQUESTED:-0}" \
+    --argjson active_peers "${TOTAL_ACTIVE_PEERS:-0}" \
+    --argjson recovering_peers "${TOTAL_RECOVERING_PEERS:-0}" \
+    --argjson cooldown_peers "${TOTAL_COOLDOWN_PEERS:-0}" \
+    --argjson rate_limited_count "${TOTAL_RATE_LIMITED_COUNT:-0}" \
+    --argjson templates "${TOTAL_MINING_TEMPLATES:-0}" \
+    --argjson submits "${TOTAL_MINING_SUBMITS:-0}" \
+    --argjson accepted "${TOTAL_MINING_ACCEPTED:-0}" \
+    --argjson rejected "${TOTAL_MINING_REJECTED:-0}" \
+    --argjson submit_busy "${TOTAL_MINING_SUBMIT_BUSY:-0}" \
+    --argjson actor_timeout "${TOTAL_MINING_ACTOR_TIMEOUT:-0}" \
+    --argjson orphan_recovery_attempts "${TOTAL_ORPHAN_RECOVERY_ATTEMPTS:-0}" \
+    --argjson orphan_recovery_success "${TOTAL_ORPHAN_RECOVERY_SUCCESS:-0}" \
+    --argjson orphan_recovery_failed_missing_parent "${TOTAL_ORPHAN_RECOVERY_FAILED_MISSING_PARENT:-0}" \
+    --argjson orphan_recovery_failed_persist "${TOTAL_ORPHAN_RECOVERY_FAILED_PERSIST:-0}" \
+    --argjson orphan_roots_rate_limited "${TOTAL_ORPHAN_ROOTS_RATE_LIMITED:-0}" \
+    --argjson orphan_backlog_stale "${TOTAL_ORPHAN_BACKLOG_STALE:-0}" \
+    --slurpfile checksums "$checksum_tmp" \
+    --argjson nodes "$(for i in $(seq 1 "$NODE_COUNT"); do
+      jq -n \
+        --arg node "n$i" \
+        --arg sync_state "${NODE_SYNC_STATE[$i]:-unknown}" \
+        --arg catchup_stage "${NODE_SYNC_STAGE[$i]:-unknown}" \
+        --argjson orphan_count "$(json_number_or_zero "${NODE_ORPHAN_COUNT[$i]:-0}")" \
+        --argjson pending_missing_parents "$(json_number_or_zero "${NODE_PENDING_MISSING_PARENTS[$i]:-0}")" \
+        --argjson missing_parent_entries "$(json_number_or_zero "${NODE_MISSING_PARENTS_COUNT[$i]:-0}")" \
+        --argjson inv_hashes_requested "$(json_number_or_zero "${NODE_INV_HASHES_REQUESTED[$i]:-0}")" \
+        --argjson active_peers "$(json_number_or_zero "${NODE_ACTIVE_PEERS[$i]:-0}")" \
+        --argjson recovering_peers "$(json_number_or_zero "${NODE_RECOVERING_PEERS[$i]:-0}")" \
+        --argjson cooldown_peers "$(json_number_or_zero "${NODE_COOLDOWN_PEERS[$i]:-0}")" \
+        --argjson rate_limited_count "$(json_number_or_zero "${NODE_RATE_LIMITED_COUNT[$i]:-0}")" \
+        --argjson rpc_degraded_response_total "$(json_number_or_zero "${NODE_RPC_DEGRADED_RESPONSE[$i]:-0}")" \
+        --argjson rpc_snapshot_stale_total "$(json_number_or_zero "${NODE_RPC_SNAPSHOT_STALE[$i]:-0}")" \
+        --argjson rpc_handler_degraded_total "$(json_number_or_zero "${NODE_RPC_HANDLER_DEGRADED[$i]:-0}")" \
+        --argjson templates "$(json_number_or_zero "${NODE_MINING_TEMPLATES[$i]:-0}")" \
+        --argjson submits "$(json_number_or_zero "${NODE_MINING_SUBMITS[$i]:-0}")" \
+        --argjson accepted "$(json_number_or_zero "${NODE_MINING_ACCEPTED[$i]:-0}")" \
+        --argjson rejected "$(json_number_or_zero "${NODE_MINING_REJECTED[$i]:-0}")" \
+        --argjson submit_busy "$(json_number_or_zero "${NODE_MINING_SUBMIT_BUSY[$i]:-0}")" \
+        --argjson actor_timeout "$(json_number_or_zero "${NODE_MINING_ACTOR_TIMEOUT[$i]:-0}")" \
+        '{node:$node,sync:{state:$sync_state,catchup_stage:$catchup_stage,orphan_count:$orphan_count,pending_missing_parents:$pending_missing_parents,missing_parent_entries:$missing_parent_entries,inv_hashes_requested:$inv_hashes_requested},peers:{active:$active_peers,recovering:$recovering_peers,cooldown:$cooldown_peers,rate_limited_count:$rate_limited_count},rpc:{degraded_response_total:$rpc_degraded_response_total,snapshot_stale_total:$rpc_snapshot_stale_total,handler_degraded_total:$rpc_handler_degraded_total},mining:{templates:$templates,submits:$submits,accepted:$accepted,rejected:$rejected,submit_busy:$submit_busy,actor_timeout:$actor_timeout}}'
+    done | jq -s '.')" \
+    '{git_ref:$git_ref,git_commit:$git_commit,version:$version,cargo_workspace_version:$cargo_workspace_version,stage:$stage,node_count:$node_count,miner_count:$miner_count,duration:$duration,result:$result,failure_class:$failure_class,start_utc:$start_utc,end_utc:$end_utc,exit_code:$exit_code,rpc_liveness:{RPC_ALIVE_LISTENER_TIMEOUT:$rpc_alive_listener_timeout_count,rpc_liveness_timeout:$rpc_liveness_timeout_count,stale_degraded_snapshot_count:$stale_degraded_snapshot_count},sync_orphan:{orphan_count:$orphan_count,pending_missing_parents:$pending_missing_parents,missing_parent_entries:$missing_parent_entries,inv_hashes_requested:$inv_hashes_requested,orphan_recovery_classification_counters:{attempts:$orphan_recovery_attempts,success:$orphan_recovery_success,failed_missing_parent:$orphan_recovery_failed_missing_parent,failed_persist:$orphan_recovery_failed_persist,roots_rate_limited:$orphan_roots_rate_limited,backlog_stale:$orphan_backlog_stale}},peers:{active:$active_peers,recovering:$recovering_peers,cooldown:$cooldown_peers,rate_limited_count:$rate_limited_count},mining:{templates:$templates,submits:$submits,accepted:$accepted,rejected:$rejected,submit_busy:$submit_busy,actor_timeout:$actor_timeout},nodes:$nodes,checksums:($checksums[0] // {})}' \
+    > "$manifest_tmp"
+  cp "$manifest_tmp" "$OUT_DIR/evidence_manifest.json"
+  cp "$OUT_DIR/evidence_manifest.json" "$OUT_DIR_ROOT/evidence_manifest.json" 2>/dev/null || true
+  rm -f "$manifest_tmp" "$checksum_tmp"
+}
+
 
 print_p2p_disconnect_diagnostics(){
   local i f
@@ -736,9 +939,9 @@ print_p2p_disconnect_diagnostics(){
           compact_array($d.inbound_peer_final_state),
           compact_array($d.outbound_peer_final_state)
         ] | @tsv
-      ' "$f" 2>/dev/null | awk -F '\t' '{ printf "| %s | `%s` | `%s` | `%s` | `%s` | `%s` |\n", $1, $2, $3, $4, $5, $6 }' || echo "| n${i} | `{}` | `{}` | `{}` | `[]` | `[]` |"
+      ' "$f" 2>/dev/null | awk -F '\t' '{ printf "| %s | `%s` | `%s` | `%s` | `%s` | `%s` |\n", $1, $2, $3, $4, $5, $6 }' || echo "| n${i} | \`{}\` | \`{}\` | \`{}\` | \`[]\` | \`[]\` |"
     else
-      echo "| n${i} | `{}` | `{}` | `{}` | `[]` | `[]` |"
+      echo "| n${i} | \`{}\` | \`{}\` | \`{}\` | \`[]\` | \`[]\` |"
     fi
   done
   echo
@@ -754,6 +957,7 @@ write_evidence_summary(){
   local end_ts now_utc duration i unique_classes
   end_ts=$(date +%s); now_utc=$(date -u +%FT%TZ); duration=$((end_ts - START_TS))
   unique_classes=$(printf '%s\n' "${FAIL_CLASSES[@]:-}" | awk 'NF' | sort -u | paste -sd, -)
+  compute_evidence_aggregates || true
   {
     echo "# v2.2.20 $STAGE_NAME Rehearsal Evidence"
     echo "- chain id expected: \`$CHAIN_ID_EXPECTED\`"
@@ -776,9 +980,27 @@ write_evidence_summary(){
     echo "## P2P status per node"
     for i in $(seq 1 "$NODE_COUNT"); do echo "- n${i}: peers=${NODE_PEERS[$i]:-0} inbound=${NODE_P2P_INBOUND[$i]:-0} outbound=${NODE_P2P_OUTBOUND[$i]:-0} ok=${NODE_P2P_OK[$i]:-0}"; done
     echo
+    echo "## Peer classification totals"
+    echo "- active peers: ${TOTAL_ACTIVE_PEERS:-0}"
+    echo "- recovering peers: ${TOTAL_RECOVERING_PEERS:-0}"
+    echo "- cooldown peers: ${TOTAL_COOLDOWN_PEERS:-0}"
+    echo "- rate_limited count: ${TOTAL_RATE_LIMITED_COUNT:-0}"
+    echo
     print_p2p_disconnect_diagnostics
     echo "## Sync/orphan status per node"
     for i in $(seq 1 "$NODE_COUNT"); do echo "- n${i}: sync_state=${NODE_SYNC_STATE[$i]:-unknown} catchup_stage=${NODE_SYNC_STAGE[$i]:-unknown} orphan_count=${NODE_ORPHANS[$i]:-0} pending_missing_parents=${NODE_MISSING_PARENTS[$i]:-0} missing_parent_entries=${NODE_MISSING_PARENTS_COUNT[$i]:-0} inv_hashes_requested=${NODE_INV_HASHES_REQUESTED[$i]:-0} peer_recovery_success_count=${NODE_PEER_RECOVERY_SUCCESS_COUNT[$i]:-0}"; done
+    echo
+    echo "## Sync/orphan aggregate counters"
+    echo "- orphan_count: ${TOTAL_ORPHAN_COUNT:-0}"
+    echo "- pending_missing_parents: ${TOTAL_PENDING_MISSING_PARENTS:-0}"
+    echo "- missing_parent_entries: ${TOTAL_MISSING_PARENT_ENTRIES:-0}"
+    echo "- inv_hashes_requested: ${TOTAL_INV_HASHES_REQUESTED:-0}"
+    echo "- orphan recovery attempts: ${TOTAL_ORPHAN_RECOVERY_ATTEMPTS:-0}"
+    echo "- orphan recovery success: ${TOTAL_ORPHAN_RECOVERY_SUCCESS:-0}"
+    echo "- orphan recovery failed_missing_parent: ${TOTAL_ORPHAN_RECOVERY_FAILED_MISSING_PARENT:-0}"
+    echo "- orphan recovery failed_persist: ${TOTAL_ORPHAN_RECOVERY_FAILED_PERSIST:-0}"
+    echo "- orphan roots rate_limited: ${TOTAL_ORPHAN_ROOTS_RATE_LIMITED:-0}"
+    echo "- orphan backlog stale: ${TOTAL_ORPHAN_BACKLOG_STALE:-0}"
     echo
     echo "## Chain identity per node"
     for i in $(seq 1 "$NODE_COUNT"); do echo "- n${i}: chain_id=${NODE_CHAIN_ID[$i]:-unknown}"; done
@@ -788,6 +1010,19 @@ write_evidence_summary(){
     echo
     echo "## Miner summaries"
     for i in $(seq 1 "$MINER_COUNT"); do echo "- miner-${i}: templates=${miner_template[$i]:-0} submits=${miner_submit[$i]:-0} accepted=${miner_accept[$i]:-0} rejected=${miner_reject[$i]:-0}"; done
+    echo
+    echo "## Mining aggregate counters"
+    echo "- templates: ${TOTAL_MINING_TEMPLATES:-0}"
+    echo "- submits: ${TOTAL_MINING_SUBMITS:-0}"
+    echo "- accepted: ${TOTAL_MINING_ACCEPTED:-0}"
+    echo "- rejected: ${TOTAL_MINING_REJECTED:-0}"
+    echo "- submit_busy: ${TOTAL_MINING_SUBMIT_BUSY:-0}"
+    echo "- actor_timeout: ${TOTAL_MINING_ACTOR_TIMEOUT:-0}"
+    echo
+    echo "## RPC liveness counters"
+    echo "- RPC_ALIVE_LISTENER_TIMEOUT count: ${RPC_ALIVE_LISTENER_TIMEOUT_COUNT:-0}"
+    echo "- rpc_liveness_timeout count: ${RPC_LIVENESS_TIMEOUT_COUNT:-0}"
+    echo "- stale/degraded snapshot count: ${STALE_DEGRADED_SNAPSHOT_COUNT:-0}"
     echo
     echo "## Convergence and quiescence"
     echo "- convergence before quiescence: $([[ $PRE_CONVERGED == 1 ]] && echo PASS || echo FAIL)"
@@ -851,6 +1086,7 @@ write_evidence_summary(){
     echo "- exit_code: $EXIT_CODE"
     echo "- node_count: $NODE_COUNT"
     echo "- miner_count: $MINER_COUNT"
+    echo "- evidence_manifest: evidence_manifest.json"
     echo "- failure_classification: ${unique_classes:-none}"
     echo "- warnings:"
     if (( ${#WARNINGS[@]} > 0 )); then for w in "${WARNINGS[@]}"; do echo "  - $w"; done; else echo "  - none"; fi
@@ -893,10 +1129,10 @@ write_restart_rejoin_log(){
 write_metadata(){
   {
     echo "stage_name=$STAGE_NAME"
-    echo "git_ref=$(git -C "$ROOT_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)"
-    echo "git_commit=$(git -C "$ROOT_DIR" rev-parse HEAD 2>/dev/null || echo unknown)"
-    echo "version=$(cat "$ROOT_DIR/VERSION" 2>/dev/null || echo unknown)"
-    echo "cargo_workspace_version=$(cargo metadata --format-version 1 --no-deps 2>/dev/null | jq -r '.packages[0].version // "unknown"' || echo unknown)"
+    echo "git_ref=$REPO_REF"
+    echo "git_commit=$REPO_COMMIT_FULL"
+    echo "version=$RELEASE_VERSION"
+    echo "cargo_workspace_version=$WORKSPACE_VERSION"
     echo "uname=$(uname -a 2>/dev/null || echo unknown)"
     echo "rustc_version=$(rustc --version 2>/dev/null || echo unavailable)"
     echo "cargo_version=$(cargo --version 2>/dev/null || echo unavailable)"
@@ -956,6 +1192,7 @@ package_evidence(){
   cp "$OUT_DIR/evidence-summary.md" "$OUT_DIR/summaries/evidence-summary.md" 2>/dev/null || true
   cp "$OUT_DIR/evidence-summary.md" "$OUT_DIR_ROOT/evidence-summary.md" 2>/dev/null || true
   cp "$OUT_DIR/command-log.txt" "$OUT_DIR_ROOT/command-log.txt" 2>/dev/null || true
+  write_evidence_manifest || record_warn "failed to write evidence manifest before packaging"
   cp "$OUT_DIR/bootnode.txt" "$OUT_DIR_ROOT/bootnode.txt" 2>/dev/null || true
   printf "%s\n" "$OUT_DIR" > "$OUT_DIR_ROOT/current-run-dir.txt" 2>/dev/null || true
   printf "%s\n" "$OUT_DIR" > "$OUT_DIR/current-run-dir.txt" 2>/dev/null || true
@@ -964,7 +1201,7 @@ package_evidence(){
   local tar_tmp manifest item tar_rc=0
   tar_tmp=$(mktemp -p /tmp evidence.XXXXXX.tar.gz) || return 1
   manifest=$(mktemp -p /tmp evidence-manifest.XXXXXX) || { rm -f "$tar_tmp"; return 1; }
-  for item in endpoints logs miners nodes samples summaries evidence-summary.md command-log.txt process-pids.txt p2p_convergence.json final-convergence-table.json quiescence-metrics.json restart_rejoin.log global-watchdog-timeout.txt hard-stop-diagnostics.txt progress.log current-run-dir.txt; do
+  for item in endpoints logs miners nodes samples summaries evidence-summary.md evidence_manifest.json command-log.txt process-pids.txt p2p_convergence.json final-convergence-table.json quiescence-metrics.json restart_rejoin.log global-watchdog-timeout.txt hard-stop-diagnostics.txt progress.log current-run-dir.txt; do
     [[ -e "$OUT_DIR/$item" ]] && printf '%s\n' "$item" >> "$manifest"
   done
   if [[ -s "$manifest" ]]; then
@@ -979,6 +1216,7 @@ package_evidence(){
   rm -f "$manifest"
   mv "$tar_tmp" "$OUT_DIR/evidence.tar.gz" || { rm -f "$tar_tmp"; return 1; }
   write_checksum_file "$OUT_DIR/evidence.tar.gz" "$OUT_DIR/evidence.tar.gz.sha256" || record_warn "failed to write evidence checksum"
+  write_evidence_manifest "$(awk '{print $1; exit}' "$OUT_DIR/evidence.tar.gz.sha256" 2>/dev/null || true)" || record_warn "failed to update evidence manifest with archive checksum"
   cp "$OUT_DIR/evidence.tar.gz" "$OUT_DIR_ROOT/evidence.tar.gz" 2>/dev/null || true
   write_checksum_file "$OUT_DIR_ROOT/evidence.tar.gz" "$OUT_DIR_ROOT/evidence.tar.gz.sha256" || cp "$OUT_DIR/evidence.tar.gz.sha256" "$OUT_DIR_ROOT/evidence.tar.gz.sha256" 2>/dev/null || true
   verify_checksum_file "$OUT_DIR_ROOT" evidence.tar.gz.sha256 || record_warn "root evidence checksum verification failed"

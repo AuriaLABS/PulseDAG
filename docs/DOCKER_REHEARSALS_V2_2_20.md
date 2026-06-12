@@ -117,3 +117,25 @@ It does not change:
 - miner architecture
 - version numbers
 - public-testnet readiness status
+
+## Interpreting self-classifying evidence bundles
+
+Each `5N/1M`, `5N/2M`, and `5N/4M` rehearsal writes `evidence_manifest.json` beside `evidence-summary.md` and includes the run-copy of that manifest inside `evidence.tar.gz`. The manifest is the first file to inspect because it carries the self-classifying result fields without requiring manual log grep:
+
+- `result` is the harness result (`PASS`, `FAIL`, `ENV_FAIL`, or observe-only diagnostic state for the stress gate).
+- `failure_class` groups the primary cause as `none`, `environment`, `timeout`, `convergence`, or `node`.
+- `stage`, `node_count`, `miner_count`, and `duration` identify which gate produced the bundle and how long it ran.
+- `git_ref`, `git_commit`, `version`, and `cargo_workspace_version` tie the evidence to the exact source and package versions without bumping `VERSION`.
+- `rpc_liveness` separates live-listener curl timeouts, explicit RPC liveness timeouts, and stale/degraded snapshot counters.
+- `sync_orphan` reports orphan backlog, missing-parent, INV-request, and orphan-recovery classification counters.
+- `peers` reports active, recovering, cooldown, and rate-limited peer totals.
+- `mining` reports template, submit, accepted, rejected, busy, and submit actor timeout totals.
+- `checksums` records SHA-256 digests for the key summary, manifest-adjacent metadata, and archive artifacts when available.
+
+Interpretation rules:
+
+1. Treat `failure_class=environment` as a host/container setup problem, not as node or miner behavior.
+2. Treat `failure_class=timeout` as an incomplete run unless the manifest also shows enough final endpoint captures to classify a node/convergence symptom.
+3. Treat `failure_class=convergence` as a staged gate failure involving readiness schema, P2P connection, height/tip convergence, or required stage gates.
+4. Treat `failure_class=node` as a runtime/node symptom that was not better classified as environment, timeout, or convergence.
+5. For `5N/4M`, use the manifest as diagnostic stress evidence only; it does not claim public testnet readiness or v2.3.0 readiness.

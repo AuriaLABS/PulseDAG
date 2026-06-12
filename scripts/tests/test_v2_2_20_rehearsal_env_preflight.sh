@@ -17,6 +17,11 @@ rg -q 'extract_bootnode_peer_id' scripts/v2_2_20_private_5n_4m_rehearsal.sh
 rg -q 'jq missing; cannot parse n1 /p2p/status JSON' scripts/v2_2_20_private_5n_4m_rehearsal.sh
 rg -q 'JSON schema mismatch; expected \.data\.peer_id or \.data\.local_node_id' scripts/v2_2_20_private_5n_4m_rehearsal.sh
 rg -q 'PowerShell does not support Bash-style inline environment assignment' docs/DOCKER_REHEARSALS_V2_2_20.md
+rg -q 'evidence_manifest.json' scripts/v2_2_20_private_5n_4m_rehearsal.sh
+rg -q 'RPC_ALIVE_LISTENER_TIMEOUT count' scripts/v2_2_20_private_5n_4m_rehearsal.sh
+rg -q 'orphan_recovery_classification_counters' scripts/v2_2_20_private_5n_4m_rehearsal.sh
+rg -q 'submit_busy' scripts/v2_2_20_private_5n_4m_rehearsal.sh
+rg -q 'Interpreting self-classifying evidence bundles' docs/DOCKER_REHEARSALS_V2_2_20.md
 rg -q 'Docker Compose from PowerShell' docs/DOCKER_REHEARSALS_V2_2_20.md
 
 TMP_BIN=$(mktemp -d)
