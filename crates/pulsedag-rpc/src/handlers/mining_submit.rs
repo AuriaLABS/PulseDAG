@@ -140,6 +140,10 @@ impl MiningSubmitActorHandle {
             .saturating_sub(self.sender.capacity()) as u64
     }
 
+    fn max_capacity(&self) -> usize {
+        self.sender.max_capacity()
+    }
+
     #[allow(clippy::result_large_err)]
     fn try_submit(
         &self,
@@ -489,12 +493,19 @@ pub async fn post_mining_submit<S: RpcStateLike>(
     State(state): State<S>,
     Json(req): Json<SubmitMinedBlockRequest>,
 ) -> Json<ApiResponse<MiningSubmitData>> {
+    post_mining_submit_with_actor(state, req, mining_submit_actor()).await
+}
+
+async fn post_mining_submit_with_actor<S: RpcStateLike>(
+    state: S,
+    req: SubmitMinedBlockRequest,
+    actor: MiningSubmitActorHandle,
+) -> Json<ApiResponse<MiningSubmitData>> {
     let submit_started = Instant::now();
     let block_hash = req.block.hash.clone();
     let height = req.block.header.height;
     record_submit_started(&state).await;
 
-    let actor = mining_submit_actor();
     {
         let runtime_handle = state.runtime();
         let mut runtime = runtime_handle.write().await;
@@ -512,7 +523,7 @@ pub async fn post_mining_submit<S: RpcStateLike>(
     if let Err(err) = actor.try_submit(command) {
         let detail = format!(
             "mining submit rejected because bounded submit actor queue is full; queue_size={} queue_len={}",
-            MINING_SUBMIT_ACTOR_QUEUE_SIZE,
+            actor.max_capacity(),
             actor.queue_len()
         );
         {
@@ -1256,13 +1267,16 @@ async fn perform_orphan_adoption<S: RpcStateLike>(state: &S, block_hash: &str) -
 #[cfg(test)]
 mod tests {
     use super::{
-        persist_then_broadcast_mined_block, post_mining_submit, record_actor_timeout,
+        persist_then_broadcast_mined_block, post_mining_submit_with_actor, record_actor_timeout,
         record_submit_completed, record_submit_inflight, record_submit_phase,
-        record_submit_started, MiningSubmitActorHandle, MiningSubmitState, SubmitBlockCommand,
-        SubmitBlockResponse,
+        record_submit_started, MiningSubmitActorHandle, MiningSubmitData, MiningSubmitState,
+        SubmitBlockCommand, SubmitBlockResponse,
     };
     use crate::{
-        api::{GetBlockTemplateRequest, NodeRuntimeStats, RpcStateLike, SubmitMinedBlockRequest},
+        api::{
+            ApiResponse, GetBlockTemplateRequest, NodeRuntimeStats, RpcStateLike,
+            SubmitMinedBlockRequest,
+        },
         handlers::mining_template::{post_mining_template, store_template, StoredMiningTemplate},
     };
     use axum::{extract::State, Json};
@@ -1530,6 +1544,13 @@ mod tests {
         )
     }
 
+    async fn post_mining_submit_for_test(
+        state: TestState,
+        req: SubmitMinedBlockRequest,
+    ) -> Json<ApiResponse<MiningSubmitData>> {
+        post_mining_submit_with_actor(state, req, MiningSubmitActorHandle::spawn(16)).await
+    }
+
     async fn build_mined_block(state: &TestState) -> Block {
         let chain = state.chain.read().await;
         let height = chain.dag.best_height + 1;
@@ -1602,24 +1623,117 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn handler_enqueue_path_does_not_hold_chain_lock_while_waiting_for_actor_response() {
+    async fn handler_queue_full_returns_submit_busy_schema() {
         let (state, _) = build_state_with_fake_p2p();
         let block = build_mined_block(&state).await;
         let (sender, _receiver) = mpsc::channel(1);
         let actor = MiningSubmitActorHandle { sender };
-        let (command, response_rx) = submit_command_for_state(&state, block);
-        assert!(actor.try_submit(command).is_ok(), "command should enqueue");
+        let (queued, _queued_rx) = submit_command_for_state(&state, block.clone());
+        assert!(
+            actor.try_submit(queued).is_ok(),
+            "first command should queue"
+        );
+
+        let Json(response) = post_mining_submit_with_actor(
+            state.clone(),
+            SubmitMinedBlockRequest {
+                template_id: Some("unit-test-template".to_string()),
+                block,
+            },
+            actor,
+        )
+        .await;
+
+        assert!(response.ok);
+        let data = response.data.expect("submit data expected");
+        assert!(!data.accepted);
+        assert_eq!(data.reason_code, "submit_busy");
+        assert!(data.reason.contains("bounded submit actor queue is full"));
+        let runtime = state.runtime.read().await;
+        assert_eq!(runtime.external_mining_submit_actor_queue_full_total, 1);
+        assert_eq!(runtime.external_mining_submit_rejected, 1);
+    }
+
+    #[tokio::test]
+    async fn handler_actor_response_closed_returns_submit_timeout_schema() {
+        let (state, _) = build_state_with_fake_p2p();
+        let block = build_mined_block(&state).await;
+        let (sender, mut receiver) = mpsc::channel(1);
+        let actor = MiningSubmitActorHandle { sender };
+        tokio::spawn(async move {
+            let _command = receiver.recv().await.expect("command expected");
+        });
+
+        let Json(response) = post_mining_submit_with_actor(
+            state.clone(),
+            SubmitMinedBlockRequest {
+                template_id: Some("unit-test-template".to_string()),
+                block,
+            },
+            actor,
+        )
+        .await;
+
+        assert!(response.ok);
+        let data = response.data.expect("submit data expected");
+        assert!(!data.accepted);
+        assert_eq!(data.reason_code, "submit_timeout");
+        assert!(data
+            .pow_rejection_reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("actor stopped")));
+        let runtime = state.runtime.read().await;
+        assert_eq!(runtime.external_mining_submit_actor_timeout_total, 1);
+        assert_eq!(
+            runtime.external_mining_last_rejection_kind.as_deref(),
+            Some("submit_timeout")
+        );
+    }
+
+    #[tokio::test]
+    async fn handler_does_not_hold_chain_write_lock_while_waiting_for_actor_response() {
+        let (state, _) = build_state_with_fake_p2p();
+        let block = build_mined_block(&state).await;
+        let (sender, mut receiver) = mpsc::channel(1);
+        let actor = MiningSubmitActorHandle { sender };
+        let (got_command_tx, got_command_rx) = oneshot::channel();
+        let (release_tx, release_rx) = oneshot::channel::<()>();
+        tokio::spawn(async move {
+            let command = receiver.recv().await.expect("command expected");
+            let _ = got_command_tx.send(());
+            let _ = release_rx.await;
+            drop(command);
+        });
+
+        let state_for_submit = state.clone();
+        let submit_task = tokio::spawn(async move {
+            post_mining_submit_with_actor(
+                state_for_submit,
+                SubmitMinedBlockRequest {
+                    template_id: Some("unit-test-template".to_string()),
+                    block,
+                },
+                actor,
+            )
+            .await
+        });
+
+        timeout(Duration::from_secs(1), got_command_rx)
+            .await
+            .expect("handler should enqueue command deterministically")
+            .expect("actor should signal command receipt");
         let chain_write = state.chain.try_write();
         assert!(
             chain_write.is_ok(),
-            "enqueueing and waiting for the actor response must not hold the chain write lock"
+            "handler must not hold the chain write lock while awaiting actor response"
         );
         drop(chain_write);
-        let timed_out = timeout(Duration::from_millis(10), response_rx).await;
-        assert!(
-            timed_out.is_err(),
-            "test actor intentionally never responds"
-        );
+        let _ = release_tx.send(());
+
+        let Json(response) = submit_task.await.expect("submit task should finish");
+        assert!(response.ok);
+        let data = response.data.expect("submit data expected");
+        assert_eq!(data.reason_code, "submit_timeout");
     }
 
     #[tokio::test]
@@ -1647,12 +1761,12 @@ mod tests {
         let (state, fake_p2p) = build_state_with_fake_p2p();
         let (template_id, block) = build_mined_template_block(&state).await;
 
-        let Json(response) = post_mining_submit(
-            State(state.clone()),
-            Json(SubmitMinedBlockRequest {
+        let Json(response) = post_mining_submit_for_test(
+            state.clone(),
+            SubmitMinedBlockRequest {
                 template_id: Some(template_id),
                 block,
-            }),
+            },
         )
         .await;
 
@@ -1675,12 +1789,12 @@ mod tests {
         let (state, _fake_p2p) = build_state_with_fake_p2p();
         let (template_id, block) = build_mined_template_block(&state).await;
 
-        let Json(submit_response) = post_mining_submit(
-            State(state.clone()),
-            Json(SubmitMinedBlockRequest {
+        let Json(submit_response) = post_mining_submit_for_test(
+            state.clone(),
+            SubmitMinedBlockRequest {
                 template_id: Some(template_id),
                 block,
-            }),
+            },
         )
         .await;
 
@@ -1698,12 +1812,12 @@ mod tests {
         let (state, _fake_p2p) = build_state_with_fake_p2p();
         let block = build_mined_block(&state).await;
 
-        let Json(submit_response) = post_mining_submit(
-            State(state.clone()),
-            Json(SubmitMinedBlockRequest {
+        let Json(submit_response) = post_mining_submit_for_test(
+            state.clone(),
+            SubmitMinedBlockRequest {
                 template_id: None,
                 block,
-            }),
+            },
         )
         .await;
 
@@ -1740,23 +1854,23 @@ mod tests {
         let (state, fake_p2p) = build_state_with_fake_p2p();
         let (template_id, block) = build_mined_template_block(&state).await;
 
-        let Json(first_response) = post_mining_submit(
-            State(state.clone()),
-            Json(SubmitMinedBlockRequest {
+        let Json(first_response) = post_mining_submit_for_test(
+            state.clone(),
+            SubmitMinedBlockRequest {
                 template_id: Some(template_id.clone()),
                 block: block.clone(),
-            }),
+            },
         )
         .await;
         assert!(first_response.ok);
         assert_eq!(fake_p2p.block_calls(), 1);
 
-        let Json(second_response) = post_mining_submit(
-            State(state.clone()),
-            Json(SubmitMinedBlockRequest {
+        let Json(second_response) = post_mining_submit_for_test(
+            state.clone(),
+            SubmitMinedBlockRequest {
                 template_id: Some(template_id),
                 block,
-            }),
+            },
         )
         .await;
 
@@ -1799,12 +1913,12 @@ mod tests {
         assert!(mined);
         block.header = mined_header;
 
-        let Json(submit_response) = post_mining_submit(
-            State(state.clone()),
-            Json(SubmitMinedBlockRequest {
+        let Json(submit_response) = post_mining_submit_for_test(
+            state.clone(),
+            SubmitMinedBlockRequest {
                 template_id: Some(template.template_id),
                 block,
-            }),
+            },
         )
         .await;
 
@@ -1834,12 +1948,12 @@ mod tests {
         assert!(mined);
         malformed.header = mined_header;
 
-        let Json(submit_response) = post_mining_submit(
-            State(state.clone()),
-            Json(SubmitMinedBlockRequest {
+        let Json(submit_response) = post_mining_submit_for_test(
+            state.clone(),
+            SubmitMinedBlockRequest {
                 template_id: Some(template_id),
                 block: malformed,
-            }),
+            },
         )
         .await;
 
@@ -1864,12 +1978,12 @@ mod tests {
         block.header.difficulty = 0x0100_0000;
         block.header.nonce = 0;
 
-        let Json(submit_response) = post_mining_submit(
-            State(state.clone()),
-            Json(SubmitMinedBlockRequest {
+        let Json(submit_response) = post_mining_submit_for_test(
+            state.clone(),
+            SubmitMinedBlockRequest {
                 template_id: Some(template_id),
                 block,
-            }),
+            },
         )
         .await;
 
@@ -1926,12 +2040,12 @@ mod tests {
         let (state, _fake_p2p) = build_state_with_fake_p2p();
         let (template_id, block) = build_mined_template_block(&state).await;
 
-        let Json(submit_response) = post_mining_submit(
-            State(state.clone()),
-            Json(SubmitMinedBlockRequest {
+        let Json(submit_response) = post_mining_submit_for_test(
+            state.clone(),
+            SubmitMinedBlockRequest {
                 template_id: Some(template_id),
                 block,
-            }),
+            },
         )
         .await;
         assert!(submit_response.ok);
@@ -1978,12 +2092,12 @@ mod tests {
             merkle_root: block.header.merkle_root.clone(),
         });
 
-        let Json(submit_response) = post_mining_submit(
-            State(state.clone()),
-            Json(SubmitMinedBlockRequest {
+        let Json(submit_response) = post_mining_submit_for_test(
+            state.clone(),
+            SubmitMinedBlockRequest {
                 template_id: Some(template_id),
                 block,
-            }),
+            },
         )
         .await;
 
@@ -2011,12 +2125,12 @@ mod tests {
             block.header.height,
         ));
 
-        let Json(submit_response) = post_mining_submit(
-            State(state.clone()),
-            Json(SubmitMinedBlockRequest {
+        let Json(submit_response) = post_mining_submit_for_test(
+            state.clone(),
+            SubmitMinedBlockRequest {
                 template_id: Some(template_id),
                 block,
-            }),
+            },
         )
         .await;
 
@@ -2045,12 +2159,12 @@ mod tests {
         let (template_id, mut block) = build_mined_template_block(&state).await;
         block.transactions.clear();
 
-        let Json(submit_response) = post_mining_submit(
-            State(state.clone()),
-            Json(SubmitMinedBlockRequest {
+        let Json(submit_response) = post_mining_submit_for_test(
+            state.clone(),
+            SubmitMinedBlockRequest {
                 template_id: Some(template_id),
                 block,
-            }),
+            },
         )
         .await;
 
