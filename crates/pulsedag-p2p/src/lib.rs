@@ -96,7 +96,7 @@ pub struct SeenCacheEntry {
     pub peer_source: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct P2pStatus {
     pub chain_id: String,
     pub mode: String,
@@ -3686,6 +3686,9 @@ fn handle_connection_established(
 
 fn handle_connection_closed(
     inner: &Arc<Mutex<InnerState>>,
+    pending_bootnode_dials: &mut HashSet<PeerId>,
+    bootnode_next_redial_at: &mut HashMap<PeerId, u64>,
+    bootnode_redial_backoff_secs: &mut HashMap<PeerId, u64>,
     peer_id: &PeerId,
     reason: String,
     direction: &str,
@@ -3693,6 +3696,7 @@ fn handle_connection_closed(
     let mut should_mark_disconnected = false;
     if let Ok(mut guard) = inner.lock() {
         let peer_key = peer_id.to_string();
+        let is_bootnode = is_configured_bootnode_peer(&guard, peer_id);
         let remaining_count = {
             if let Some(entry) = guard.active_connections.get_mut(&peer_key) {
                 *entry = entry.saturating_sub(1);
@@ -3733,6 +3737,26 @@ fn handle_connection_closed(
             guard.last_peer_state_transition = Some(format!("{peer_key}:disconnected"));
             guard.active_connections.remove(&peer_key);
             should_mark_disconnected = true;
+
+            if is_bootnode {
+                pending_bootnode_dials.remove(peer_id);
+                guard.pending_bootnode_dials.remove(&peer_key);
+                let now = now_unix();
+                let current = guard
+                    .bootnode_redial_backoff_secs
+                    .get(&peer_key)
+                    .copied()
+                    .unwrap_or(1)
+                    .max(1);
+                let next = (current.saturating_mul(2)).min(10);
+                let next_at = now.saturating_add(current);
+                bootnode_redial_backoff_secs.insert(*peer_id, next);
+                bootnode_next_redial_at.insert(*peer_id, next_at);
+                guard
+                    .bootnode_redial_backoff_secs
+                    .insert(peer_key.clone(), next);
+                guard.bootnode_next_redial_at.insert(peer_key, next_at);
+            }
         }
     }
     should_mark_disconnected
@@ -4024,7 +4048,15 @@ async fn run_libp2p_real_runtime(
                         let direction = connection_direction_from_endpoint_debug(&format!("{endpoint:?}"));
                         note_swarm_event(&inner, format!("peer-disconnected:{direction}:{peer_id}"));
                         let reason = format!("swarm-connection-closed:{cause:?}");
-                        let should_mark_disconnected = handle_connection_closed(&inner, &peer_id, reason, direction);
+                        let should_mark_disconnected = handle_connection_closed(
+                            &inner,
+                            &mut pending_bootnode_dials,
+                            &mut bootnode_next_redial_at,
+                            &mut bootnode_redial_backoff_secs,
+                            &peer_id,
+                            reason,
+                            direction,
+                        );
                         if should_mark_disconnected {
                             register_peer_result(&inner, &peer_id.to_string(), false);
                         }
@@ -7239,8 +7271,14 @@ mod deterministic_p2p_sync_coverage_tests {
         state.active_connections.insert(peer_b.to_string(), 1);
         let inner = Arc::new(Mutex::new(state));
 
+        let mut pending = HashSet::new();
+        let mut next_redial = HashMap::new();
+        let mut backoff = HashMap::new();
         assert!(!handle_connection_closed(
             &inner,
+            &mut pending,
+            &mut next_redial,
+            &mut backoff,
             &peer_a,
             "closed".into(),
             "outbound"
@@ -7256,8 +7294,14 @@ mod deterministic_p2p_sync_coverage_tests {
                 Some(1)
             );
         }
+        let mut pending = HashSet::new();
+        let mut next_redial = HashMap::new();
+        let mut backoff = HashMap::new();
         assert!(handle_connection_closed(
             &inner,
+            &mut pending,
+            &mut next_redial,
+            &mut backoff,
             &peer_a,
             "closed".into(),
             "outbound"
@@ -7278,6 +7322,57 @@ mod deterministic_p2p_sync_coverage_tests {
                 .get(&peer_a.to_string())
                 .map(|state| state.state.as_str()),
             Some("disconnected")
+        );
+    }
+
+    #[test]
+    fn configured_bootnode_reconnect_remains_scheduled_after_disconnect() {
+        let key = identity::Keypair::generate_ed25519();
+        let peer = PeerId::from(key.public());
+        let mut state = InnerState {
+            mode: P2P_MODE_LIBP2P_REAL.into(),
+            ..InnerState::default()
+        };
+        state.active_connections.insert(peer.to_string(), 1);
+        state.bootnodes_configured = vec![format!("/ip4/127.0.0.1/tcp/1/p2p/{peer}")];
+        state.pending_bootnode_dials.insert(peer.to_string());
+        state
+            .bootnode_redial_backoff_secs
+            .insert(peer.to_string(), 4);
+        let inner = Arc::new(Mutex::new(state));
+        let mut pending = HashSet::new();
+        pending.insert(peer);
+        let mut next_redial = HashMap::new();
+        let mut backoff = HashMap::new();
+
+        assert!(handle_connection_closed(
+            &inner,
+            &mut pending,
+            &mut next_redial,
+            &mut backoff,
+            &peer,
+            "closed-by-peer".into(),
+            "outbound"
+        ));
+
+        let guard = inner.lock().unwrap();
+        assert!(!pending.contains(&peer));
+        assert!(!guard.pending_bootnode_dials.contains(&peer.to_string()));
+        assert!(guard
+            .bootnode_next_redial_at
+            .contains_key(&peer.to_string()));
+        assert!(next_redial.contains_key(&peer));
+        assert_eq!(
+            guard.bootnode_redial_backoff_secs.get(&peer.to_string()),
+            Some(&8)
+        );
+        assert_eq!(backoff.get(&peer), Some(&8));
+        assert_eq!(
+            guard
+                .peer_connection_final_state
+                .get(&peer.to_string())
+                .and_then(|state| state.last_disconnect_reason.as_deref()),
+            Some("closed-by-peer")
         );
     }
 
