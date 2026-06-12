@@ -72,6 +72,8 @@ pub struct MetricsData {
     pub rpc_handler_degraded_total: u64,
     pub rpc_handler_timeout_avoided_total: u64,
     pub node_rpc_snapshot: NodeRpcSnapshotMetrics,
+    pub rpc_dedicated_runtime_active: bool,
+    pub rpc_dedicated_runtime_worker_threads: usize,
     pub limitations: Vec<String>,
 }
 
@@ -197,6 +199,8 @@ pub async fn get_metrics<S: RpcStateLike>(
         rpc_handler_degraded_total: node_snapshot_metrics.rpc_handler_degraded_total,
         rpc_handler_timeout_avoided_total: node_snapshot_metrics.rpc_handler_timeout_avoided_total,
         node_rpc_snapshot: node_snapshot_metrics,
+        rpc_dedicated_runtime_active: runtime.rpc_dedicated_runtime_active,
+        rpc_dedicated_runtime_worker_threads: runtime.rpc_dedicated_runtime_worker_threads,
         limitations: vec![
             "Counters reset on node restart.".to_string(),
             "Peer and orphan counts are point-in-time snapshots.".to_string(),
