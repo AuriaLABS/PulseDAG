@@ -146,6 +146,7 @@ struct OrphanRecoveryRootClassification {
     rate_limited: Vec<String>,
     peer_not_found: Vec<String>,
     peer_timeout: Vec<String>,
+    all_peers_exhausted: Vec<String>,
     peerless: Vec<String>,
     stale: Vec<String>,
     evictable: Vec<String>,
@@ -192,11 +193,11 @@ fn classify_orphan_recovery_roots(
             GetBlockRequestReadiness::Requestable => classification.requestable.push(root),
             GetBlockRequestReadiness::AlreadyPending => classification.already_pending.push(root),
             GetBlockRequestReadiness::RateLimited => {
-                if block_requests.has_timed_out_peer(&root) {
+                if block_requests.is_all_peers_exhausted(&root) {
+                    classification.all_peers_exhausted.push(root);
+                } else if block_requests.has_timed_out_peer(&root) {
                     classification.peer_timeout.push(root);
-                } else if block_requests.has_not_found_peer(&root)
-                    || block_requests.is_all_peers_exhausted(&root)
-                {
+                } else if block_requests.has_not_found_peer(&root) {
                     classification.peer_not_found.push(root);
                 } else {
                     classification.rate_limited.push(root);
@@ -215,6 +216,7 @@ impl OrphanRecoveryRootClassification {
         self.rate_limited.sort();
         self.peer_not_found.sort();
         self.peer_timeout.sort();
+        self.all_peers_exhausted.sort();
         self.peerless.sort();
         self.stale.sort();
         self.evictable.sort();
@@ -226,6 +228,7 @@ impl OrphanRecoveryRootClassification {
             + self.rate_limited.len()
             + self.peer_not_found.len()
             + self.peer_timeout.len()
+            + self.all_peers_exhausted.len()
             + self.peerless.len()
             + self.stale.len()
             + self.evictable.len()
@@ -238,6 +241,10 @@ impl OrphanRecoveryRootClassification {
             ("rate_limited".to_string(), self.rate_limited.len()),
             ("peer_not_found".to_string(), self.peer_not_found.len()),
             ("peer_timeout".to_string(), self.peer_timeout.len()),
+            (
+                "all_peers_exhausted".to_string(),
+                self.all_peers_exhausted.len(),
+            ),
             ("peerless".to_string(), self.peerless.len()),
             ("stale".to_string(), self.stale.len()),
             ("evictable".to_string(), self.evictable.len()),
@@ -924,6 +931,8 @@ async fn main() -> Result<()> {
                         if outcome.retry {
                             rt.missing_parent_retry_next_peer_total =
                                 rt.missing_parent_retry_next_peer_total.saturating_add(1);
+                            rt.missing_parent_retry_peer_total =
+                                rt.missing_parent_retry_peer_total.saturating_add(1);
                         }
                         if outcome.all_peers_exhausted {
                             rt.missing_parent_all_peers_exhausted_total = rt
@@ -934,6 +943,8 @@ async fn main() -> Result<()> {
                             rt.getblock_sent = rt.getblock_sent.saturating_add(1);
                             rt.missing_parent_requests_sent =
                                 rt.missing_parent_requests_sent.saturating_add(1);
+                            rt.missing_parent_request_started_total =
+                                rt.missing_parent_request_started_total.saturating_add(1);
                         }
                         rt.pending_block_requests = block_requests.pending.len();
                         rt.inflight_block_requests = block_requests.pending.len();
@@ -961,6 +972,8 @@ async fn main() -> Result<()> {
                             rt.getblock_sent = rt.getblock_sent.saturating_add(1);
                             rt.missing_parent_requests_sent =
                                 rt.missing_parent_requests_sent.saturating_add(1);
+                            rt.missing_parent_request_started_total =
+                                rt.missing_parent_request_started_total.saturating_add(1);
                             rt.pending_block_requests = block_requests.pending.len();
                             rt.inflight_block_requests = block_requests.pending.len();
                             rt.pending_block_request_hashes = block_requests.pending_hashes();
@@ -1073,6 +1086,9 @@ async fn main() -> Result<()> {
                                         .unwrap_or(&0),
                                     peer_timeout = *root_classification_counts
                                         .get("peer_timeout")
+                                        .unwrap_or(&0),
+                                    all_peers_exhausted = *root_classification_counts
+                                        .get("all_peers_exhausted")
                                         .unwrap_or(&0),
                                     peerless =
                                         *root_classification_counts.get("peerless").unwrap_or(&0),
@@ -1246,6 +1262,31 @@ async fn main() -> Result<()> {
                         rt.orphan_missing_parent_evicted_after_unactionable_total = rt
                             .orphan_missing_parent_evicted_after_unactionable_total
                             .saturating_add(tick.evicted_after_unactionable as u64);
+                        rt.orphan_missing_parent_stale_evicted_total = rt
+                            .orphan_missing_parent_stale_evicted_total
+                            .saturating_add(tick.backlog_evicted as u64);
+                        let recovery_progress = tick
+                            .adopted
+                            .saturating_add(tick.roots_requested)
+                            .saturating_add(tick.backlog_evicted);
+                        rt.orphan_missing_parent_recovery_progress_total = rt
+                            .orphan_missing_parent_recovery_progress_total
+                            .saturating_add(recovery_progress as u64);
+                        rt.missing_parent_request_already_pending_total = rt
+                            .missing_parent_request_already_pending_total
+                            .saturating_add(
+                                tick.root_classification_counts
+                                    .get("already_pending")
+                                    .copied()
+                                    .unwrap_or(0) as u64,
+                            );
+                        rt.missing_parent_all_peers_exhausted_total =
+                            rt.missing_parent_all_peers_exhausted_total.saturating_add(
+                                tick.root_classification_counts
+                                    .get("all_peers_exhausted")
+                                    .copied()
+                                    .unwrap_or(0) as u64,
+                            );
                         for (classification, count) in &tick.root_classification_counts {
                             if *count == 0 {
                                 continue;
@@ -1265,6 +1306,9 @@ async fn main() -> Result<()> {
                             rt.getblock_sent.saturating_add(tick.roots_requested as u64);
                         rt.missing_parent_requests_sent = rt
                             .missing_parent_requests_sent
+                            .saturating_add(tick.roots_requested as u64);
+                        rt.missing_parent_request_started_total = rt
+                            .missing_parent_request_started_total
                             .saturating_add(tick.roots_requested as u64);
                         rt.block_request_fallbacks = rt
                             .block_request_fallbacks
@@ -2378,6 +2422,8 @@ async fn main() -> Result<()> {
                         if retry_next_peer {
                             rt.missing_parent_retry_next_peer_total =
                                 rt.missing_parent_retry_next_peer_total.saturating_add(1);
+                            rt.missing_parent_retry_peer_total =
+                                rt.missing_parent_retry_peer_total.saturating_add(1);
                         }
                         if all_peers_exhausted {
                             rt.missing_parent_all_peers_exhausted_total = rt
@@ -2388,6 +2434,8 @@ async fn main() -> Result<()> {
                             rt.getblock_sent = rt.getblock_sent.saturating_add(1);
                             rt.missing_parent_requests_sent =
                                 rt.missing_parent_requests_sent.saturating_add(1);
+                            rt.missing_parent_request_started_total =
+                                rt.missing_parent_request_started_total.saturating_add(1);
                         }
                         if hash.is_some() {
                             rt.header_requests_sent = rt.header_requests_sent.saturating_add(1);
@@ -2954,6 +3002,30 @@ mod tests {
             1,
         );
         assert_eq!(classes.requestable, vec!["missing-parent-a".to_string()]);
+        assert_eq!(classes.total_classified(), 1);
+    }
+
+    #[test]
+    fn exhausted_missing_parent_root_is_classified_terminally() {
+        let mut chain = chain_with_unindexed_orphan();
+        pulsedag_core::rebuild_orphan_parent_index(&mut chain);
+        let mut block_requests = BlockRequestTracker::with_limit(1, 1, 16);
+        assert!(block_requests.should_issue_getblock_for_peers("missing-parent-a", 1, ["peer-a"]));
+        let outcome = block_requests.note_not_found("missing-parent-a", 2, ["peer-a"]);
+        assert!(outcome.all_peers_exhausted);
+
+        let classes = classify_orphan_recovery_roots(
+            orphan_recovery_roots(&chain),
+            &block_requests,
+            &["peer-a".to_string()],
+            true,
+            2,
+        );
+
+        assert_eq!(
+            classes.all_peers_exhausted,
+            vec!["missing-parent-a".to_string()]
+        );
         assert_eq!(classes.total_classified(), 1);
     }
 

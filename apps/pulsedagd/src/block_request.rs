@@ -762,6 +762,7 @@ impl DependencyAwareFetchScheduler {
 #[allow(dead_code, unused_variables)]
 mod tests {
     use super::{BlockRequestTracker, DependencyAwareFetchScheduler, HeaderFetchCandidate};
+    use crate::GetBlockRequestReadiness;
     use pulsedag_core::types::BlockHeader;
     use pulsedag_p2p::messages::BlockHeaderAnnouncement;
 
@@ -968,6 +969,45 @@ mod tests {
         assert!(tracker.not_found_peers("parent").is_empty());
         assert!(!tracker.is_all_peers_exhausted("parent"));
         assert!(tracker.should_issue_getblock_for_peers("parent", 102, ["peer-a"]));
+    }
+
+    #[test]
+    fn already_pending_request_times_out_and_retries_another_peer() {
+        let mut tracker = BlockRequestTracker::with_limits(5, 2, 10, 10);
+        assert!(tracker.should_issue_getblock_for_peers("parent", 100, ["peer-a", "peer-b"]));
+        assert_eq!(
+            tracker.classify_getblock_for_peers("parent", 101, ["peer-a", "peer-b"]),
+            GetBlockRequestReadiness::AlreadyPending
+        );
+
+        let timed_out = tracker.drain_timeouts(105);
+        assert_eq!(timed_out.retryable, vec!["parent"]);
+        let outcome = tracker.retry_after_timeout("parent", 105, ["peer-a", "peer-b"]);
+
+        assert!(outcome.retry);
+        assert_eq!(outcome.peer.as_deref(), Some("peer-b"));
+        assert_eq!(tracker.pending_hashes(), vec!["parent"]);
+        assert!(tracker.has_timed_out_peer("parent"));
+    }
+
+    #[test]
+    fn peer_not_found_rotates_peers_then_marks_exhausted() {
+        let mut tracker = BlockRequestTracker::with_limits(5, 2, 10, 10);
+        assert!(tracker.should_issue_getblock_for_peers("parent", 100, ["peer-a", "peer-b"]));
+
+        let first = tracker.note_not_found("parent", 101, ["peer-a", "peer-b"]);
+        assert!(first.retry);
+        assert_eq!(first.peer.as_deref(), Some("peer-b"));
+        assert!(!first.all_peers_exhausted);
+
+        let second = tracker.note_not_found("parent", 102, ["peer-a", "peer-b"]);
+        assert!(!second.retry);
+        assert!(second.all_peers_exhausted);
+        assert_eq!(
+            tracker.not_found_peers("parent"),
+            vec!["peer-a".to_string(), "peer-b".to_string()]
+        );
+        assert!(tracker.is_all_peers_exhausted("parent"));
     }
 
     #[test]
