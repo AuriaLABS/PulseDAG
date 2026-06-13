@@ -4197,7 +4197,17 @@ async fn run_libp2p_real_runtime(
                         .ok()
                         .and_then(|guard| guard.bootnode_next_redial_at.get(&peer_id.to_string()).copied())
                         .unwrap_or(0);
-                    let redial_due = local_next_redial_at <= now || exposed_next_redial_at <= now;
+                    let isolated_without_peers = inner
+                        .lock()
+                        .ok()
+                        .map(|guard| {
+                            guard.connected_peers.is_empty()
+                                && !guard.bootnodes_configured.is_empty()
+                                && guard.pending_bootnode_dials.is_empty()
+                        })
+                        .unwrap_or(false);
+                    let redial_due =
+                        isolated_without_peers || local_next_redial_at <= now || exposed_next_redial_at <= now;
                     if !redial_due {
                         continue;
                     }
