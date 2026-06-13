@@ -4181,17 +4181,18 @@ async fn run_libp2p_real_runtime(
                         continue;
                     }
                     let now = now_unix();
-                    let isolated_without_peers = inner
+                    let should_force_bootnode_redial = inner
                         .lock()
                         .ok()
                         .map(|guard| {
                             guard.connected_peers.is_empty()
                                 && !guard.bootnodes_configured.is_empty()
-                                && guard.pending_bootnode_dials.is_empty()
+                                && !guard.pending_bootnode_dials.contains(&peer_id.to_string())
                         })
                         .unwrap_or(false);
+                    let isolated_without_peers = should_force_bootnode_redial;
 
-                    if isolated_without_peers {
+                    if should_force_bootnode_redial {
                         bootnode_next_redial_at.insert(*peer_id, now);
                         if let Ok(mut guard) = inner.lock() {
                             guard.bootnode_next_redial_at.insert(peer_id.to_string(), now);
