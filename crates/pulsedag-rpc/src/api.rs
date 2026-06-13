@@ -427,6 +427,10 @@ pub struct NodeRuntimeStats {
     pub missing_parents_detected: u64,
     pub missing_parent_requests_sent: u64,
     #[serde(default)]
+    pub missing_parent_request_started_total: u64,
+    #[serde(default)]
+    pub missing_parent_request_already_pending_total: u64,
+    #[serde(default)]
     pub missing_parent_responses_received: u64,
     #[serde(default)]
     pub missing_parent_request_timeouts: u64,
@@ -444,6 +448,8 @@ pub struct NodeRuntimeStats {
     pub missing_parent_all_peers_exhausted_total: u64,
     #[serde(default)]
     pub missing_parent_retry_next_peer_total: u64,
+    #[serde(default)]
+    pub missing_parent_retry_peer_total: u64,
     pub orphan_blocks_queued: u64,
     pub orphan_blocks_resolved: u64,
     pub orphan_blocks_retried: u64,
@@ -488,6 +494,10 @@ pub struct NodeRuntimeStats {
     pub orphan_missing_parent_classified_after_reindex_total: u64,
     #[serde(default)]
     pub orphan_missing_parent_evicted_after_unactionable_total: u64,
+    #[serde(default)]
+    pub orphan_missing_parent_stale_evicted_total: u64,
+    #[serde(default)]
+    pub orphan_missing_parent_recovery_progress_total: u64,
     #[serde(default)]
     pub orphan_recovery_tick_duration_ms: u64,
     #[serde(default)]
