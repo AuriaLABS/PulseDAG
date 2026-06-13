@@ -4181,22 +4181,6 @@ async fn run_libp2p_real_runtime(
                         continue;
                     }
                     let now = now_unix();
-                    let active = inner.lock().ok().and_then(|guard| guard.active_connections.get(&peer_id.to_string()).copied()).unwrap_or(0);
-                    if active > 0 {
-                        bootnode_next_redial_at.remove(peer_id);
-                        bootnode_redial_backoff_secs.insert(*peer_id, 1);
-                        if let Ok(mut guard) = inner.lock() {
-                            guard.bootnode_next_redial_at.remove(&peer_id.to_string());
-                            guard.bootnode_redial_backoff_secs.insert(peer_id.to_string(), 1);
-                        }
-                        continue;
-                    }
-                    let local_next_redial_at = bootnode_next_redial_at.get(peer_id).copied().unwrap_or(0);
-                    let exposed_next_redial_at = inner
-                        .lock()
-                        .ok()
-                        .and_then(|guard| guard.bootnode_next_redial_at.get(&peer_id.to_string()).copied())
-                        .unwrap_or(0);
                     let isolated_without_peers = inner
                         .lock()
                         .ok()
@@ -4206,6 +4190,32 @@ async fn run_libp2p_real_runtime(
                                 && guard.pending_bootnode_dials.is_empty()
                         })
                         .unwrap_or(false);
+                    let active = inner
+                        .lock()
+                        .ok()
+                        .and_then(|guard| guard.active_connections.get(&peer_id.to_string()).copied())
+                        .unwrap_or(0);
+                    if active > 0 && !isolated_without_peers {
+                        bootnode_next_redial_at.remove(peer_id);
+                        bootnode_redial_backoff_secs.insert(*peer_id, 1);
+                        if let Ok(mut guard) = inner.lock() {
+                            guard.bootnode_next_redial_at.remove(&peer_id.to_string());
+                            guard.bootnode_redial_backoff_secs.insert(peer_id.to_string(), 1);
+                        }
+                        continue;
+                    }
+                    if active > 0 && isolated_without_peers {
+                        note_swarm_event(
+                            &inner,
+                            format!("reconnect-forced:bootnode-stale-active-connection:{peer_id}"),
+                        );
+                    }
+                    let local_next_redial_at = bootnode_next_redial_at.get(peer_id).copied().unwrap_or(0);
+                    let exposed_next_redial_at = inner
+                        .lock()
+                        .ok()
+                        .and_then(|guard| guard.bootnode_next_redial_at.get(&peer_id.to_string()).copied())
+                        .unwrap_or(0);
                     let redial_due =
                         isolated_without_peers || local_next_redial_at <= now || exposed_next_redial_at <= now;
                     if !redial_due {
