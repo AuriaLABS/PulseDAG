@@ -4191,7 +4191,14 @@ async fn run_libp2p_real_runtime(
                         }
                         continue;
                     }
-                    if bootnode_next_redial_at.get(peer_id).copied().unwrap_or(0) > now {
+                    let local_next_redial_at = bootnode_next_redial_at.get(peer_id).copied().unwrap_or(0);
+                    let exposed_next_redial_at = inner
+                        .lock()
+                        .ok()
+                        .and_then(|guard| guard.bootnode_next_redial_at.get(&peer_id.to_string()).copied())
+                        .unwrap_or(0);
+                    let redial_due = local_next_redial_at <= now || exposed_next_redial_at <= now;
+                    if !redial_due {
                         continue;
                     }
                     record_bootnode_reconnect_schedule(&inner, peer_id, now);

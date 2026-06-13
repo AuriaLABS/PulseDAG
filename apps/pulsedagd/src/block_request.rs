@@ -762,6 +762,7 @@ impl DependencyAwareFetchScheduler {
 #[allow(dead_code, unused_variables)]
 mod tests {
     use super::{BlockRequestTracker, DependencyAwareFetchScheduler, HeaderFetchCandidate};
+    use crate::GetBlockRequestReadiness;
     use pulsedag_core::types::BlockHeader;
     use pulsedag_p2p::messages::BlockHeaderAnnouncement;
 
