@@ -4190,6 +4190,20 @@ async fn run_libp2p_real_runtime(
                                 && guard.pending_bootnode_dials.is_empty()
                         })
                         .unwrap_or(false);
+
+                    if isolated_without_peers {
+                        bootnode_next_redial_at.insert(*peer_id, now);
+                        if let Ok(mut guard) = inner.lock() {
+                            guard.bootnode_next_redial_at.insert(peer_id.to_string(), now);
+                            guard.bootnode_redial_backoff_secs
+                                .entry(peer_id.to_string())
+                                .or_insert(1);
+                        }
+                        note_swarm_event(
+                            &inner,
+                            format!("reconnect-forced:isolated-bootnode-redial-due:{peer_id}"),
+                        );
+                    }
                     let active = inner
                         .lock()
                         .ok()
