@@ -3993,6 +3993,8 @@ async fn run_libp2p_real_runtime(
     let mut outbound_queue = OutboundPriorityQueue::default();
     let mut bootnode_next_redial_at: HashMap<PeerId, u64> = HashMap::new();
     let mut bootnode_redial_backoff_secs: HashMap<PeerId, u64> = HashMap::new();
+    let mut bootnode_redial_tick = tokio::time::interval(Duration::from_secs(3));
+    bootnode_redial_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
     loop {
         tokio::select! {
@@ -4172,7 +4174,7 @@ async fn run_libp2p_real_runtime(
                     }
                 }
             }
-            _ = sleep(Duration::from_secs(3)) => {
+            _ = bootnode_redial_tick.tick() => {
                 for (peer_id, addr) in &bootstrap_peers {
                     if pending_bootnode_dials.contains(peer_id) {
                         note_swarm_event(&inner, format!("reconnect-skipped:bootnode-dial-pending:{peer_id}"));
