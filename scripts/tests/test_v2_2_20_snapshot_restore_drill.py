@@ -27,6 +27,18 @@ def valid_metadata() -> dict:
     }
 
 
+
+def test_ci_mode_lowers_default_height_threshold_without_node_launch():
+    proc = subprocess.run(
+        ["bash", "-n", str(SCRIPT)],
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode == 0, proc.stderr
+    script = SCRIPT.read_text(encoding="utf-8")
+    assert 'HEIGHT_THRESHOLD_WAS_SET="${HEIGHT_THRESHOLD+x}"' in script
+    assert "HEIGHT_THRESHOLD=2" in script
+
 def test_snapshot_metadata_validation_requires_restore_identity_fields():
     with tempfile.TemporaryDirectory() as d:
         meta = write_json(Path(d), "meta.json", valid_metadata())

@@ -1,6 +1,6 @@
 # v2.2.20 deterministic snapshot restore drill
 
-Date: 2026-06-11
+Date: 2026-06-18
 
 ## Scope
 
@@ -46,7 +46,7 @@ The script:
 | `BUILD_NODE` | `0` | Set `1` to build `pulsedagd` if the binary is absent. |
 | `RPC_PORT` | `29220` | Local drill RPC port. |
 | `CHAIN_ID` | `pulsedag-restore-drill-v2-2-20` | Private drill chain id. |
-| `HEIGHT_THRESHOLD` | `3` | Minimum height to mine before snapshot. |
+| `HEIGHT_THRESHOLD` | `3` (`2` in `--ci` unless explicitly set) | Minimum height to mine before snapshot. |
 | `START_TIMEOUT_SECONDS` | `60` | Node readiness timeout. |
 | `MINE_MAX_TRIES` | `1000000` | Bound per local-dev mining RPC. |
 | `CI_MODE` | `0` | Set by `--ci`; intended for bounded CI evidence. |
@@ -68,6 +68,8 @@ Each run writes:
 - `restored-node.log`
 - `evidence.tar.gz`
 - `evidence.tar.gz.sha256`
+
+`evidence_manifest.json` also lists both the snapshot artifact and the packaged evidence tarball/checksum so release reviewers can verify the restored height/tip result and the transport artifact independently.
 
 The restore gate passes only when the original and restored summaries agree on:
 
