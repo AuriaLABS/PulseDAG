@@ -11,7 +11,7 @@ use std::{
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use app_state::{
     build_operator_console_rollup, build_startup_lifecycle_events, derive_startup_path_report,
     new_runtime_stats, short_hash, AppState, OperatorConsoleInputs,
@@ -92,9 +92,14 @@ fn spawn_dedicated_rpc_server(
     worker_threads: usize,
 ) -> Result<DedicatedRpcServer> {
     let worker_threads = worker_threads.max(1);
-    let std_listener = std::net::TcpListener::bind(addr)?;
-    std_listener.set_nonblocking(true)?;
-    let local_addr = std_listener.local_addr()?;
+    let std_listener = std::net::TcpListener::bind(addr)
+        .with_context(|| format!("failed to bind RPC listener on {addr}"))?;
+    std_listener
+        .set_nonblocking(true)
+        .context("failed to set RPC listener nonblocking before handing it to Tokio")?;
+    let local_addr = std_listener
+        .local_addr()
+        .context("failed to read RPC listener local address")?;
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
 
     let join = std::thread::Builder::new()
@@ -104,15 +109,18 @@ fn spawn_dedicated_rpc_server(
                 .enable_all()
                 .worker_threads(worker_threads)
                 .thread_name("pulsedagd-rpc-worker")
-                .build()?;
+                .build()
+                .context("failed to build dedicated RPC Tokio runtime")?;
 
             runtime.block_on(async move {
-                let listener = tokio::net::TcpListener::from_std(std_listener)?;
+                let listener = tokio::net::TcpListener::from_std(std_listener)
+                    .context("failed to move std RPC listener into dedicated Tokio runtime")?;
                 axum::serve(listener, app)
                     .with_graceful_shutdown(async {
                         let _ = shutdown_rx.await;
                     })
-                    .await?;
+                    .await
+                    .context("dedicated RPC axum server exited with an error")?;
                 Ok(())
             })
         })?;
