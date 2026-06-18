@@ -155,7 +155,7 @@ struct OrphanRecoveryRootClassification {
     peer_not_found: Vec<String>,
     peer_timeout: Vec<String>,
     all_peers_exhausted: Vec<String>,
-    peerless: Vec<String>,
+    unknown_peerless: Vec<String>,
     stale: Vec<String>,
     evictable: Vec<String>,
 }
@@ -194,7 +194,7 @@ fn classify_orphan_recovery_roots(
     let mut classification = OrphanRecoveryRootClassification::default();
     for root in roots {
         if !has_p2p || active_peers.is_empty() {
-            classification.peerless.push(root);
+            classification.unknown_peerless.push(root);
             continue;
         }
         match block_requests.classify_getblock_for_peers(&root, now_unix, active_peers.to_vec()) {
@@ -225,7 +225,7 @@ impl OrphanRecoveryRootClassification {
         self.peer_not_found.sort();
         self.peer_timeout.sort();
         self.all_peers_exhausted.sort();
-        self.peerless.sort();
+        self.unknown_peerless.sort();
         self.stale.sort();
         self.evictable.sort();
     }
@@ -237,7 +237,7 @@ impl OrphanRecoveryRootClassification {
             + self.peer_not_found.len()
             + self.peer_timeout.len()
             + self.all_peers_exhausted.len()
-            + self.peerless.len()
+            + self.unknown_peerless.len()
             + self.stale.len()
             + self.evictable.len()
     }
@@ -253,7 +253,7 @@ impl OrphanRecoveryRootClassification {
                 "all_peers_exhausted".to_string(),
                 self.all_peers_exhausted.len(),
             ),
-            ("peerless".to_string(), self.peerless.len()),
+            ("unknown_peerless".to_string(), self.unknown_peerless.len()),
             ("stale".to_string(), self.stale.len()),
             ("evictable".to_string(), self.evictable.len()),
         ])
@@ -1098,8 +1098,9 @@ async fn main() -> Result<()> {
                                     all_peers_exhausted = *root_classification_counts
                                         .get("all_peers_exhausted")
                                         .unwrap_or(&0),
-                                    peerless =
-                                        *root_classification_counts.get("peerless").unwrap_or(&0),
+                                    unknown_peerless = *root_classification_counts
+                                        .get("unknown_peerless")
+                                        .unwrap_or(&0),
                                     stale = *root_classification_counts.get("stale").unwrap_or(&0),
                                     evictable =
                                         *root_classification_counts.get("evictable").unwrap_or(&0),
@@ -3038,7 +3039,7 @@ mod tests {
     }
 
     #[test]
-    fn stale_peerless_backlog_is_classified_and_bounded_evicted() {
+    fn stale_unknown_peerless_backlog_is_classified_and_bounded_evicted() {
         let mut chain = pulsedag_core::genesis::init_chain_state("test-chain".to_string());
         for idx in 0..3 {
             let parent = format!("missing-parent-{idx}");
@@ -3053,7 +3054,7 @@ mod tests {
         let block_requests = BlockRequestTracker::with_limit(1, 1, 16);
         let mut classes = classify_orphan_recovery_roots(roots, &block_requests, &[], false, 10);
         classify_stale_or_evictable_roots(&chain, now_ms, 1, 2, &mut classes);
-        assert_eq!(classes.peerless.len(), 3);
+        assert_eq!(classes.unknown_peerless.len(), 3);
         assert_eq!(classes.stale.len(), 3);
         assert_eq!(classes.evictable.len(), 2);
 
