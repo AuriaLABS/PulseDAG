@@ -42,6 +42,16 @@ pub fn connected_peers_semantics(mode: &str) -> &'static str {
     }
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct PeerScoreComponents {
+    pub base_score: i32,
+    pub recent_block_bonus: i64,
+    pub recent_rate_limit_penalty: i64,
+    pub connection_age_bonus: i64,
+    pub failure_penalty: i64,
+    pub bounded_score: i64,
+}
+
 #[derive(Debug, Clone)]
 pub struct PeerRecoveryStatus {
     pub peer_id: String,
@@ -73,6 +83,7 @@ pub struct PeerRecoveryStatus {
     pub last_successful_block_unix: Option<u64>,
     pub last_rate_limited_unix: Option<u64>,
     pub connection_age_secs: Option<u64>,
+    pub score_components: PeerScoreComponents,
 }
 
 #[derive(Debug, Clone)]
@@ -1242,6 +1253,38 @@ fn peer_recovery_reason(health: &PeerHealth, now: u64) -> Option<String> {
     None
 }
 
+fn peer_score_components(health: &PeerHealth, now: u64) -> PeerScoreComponents {
+    let recent_block_bonus = health
+        .last_successful_block_unix
+        .and_then(|last| now.checked_sub(last))
+        .map(|age| 36i64.saturating_sub(age as i64 / 2).max(0))
+        .unwrap_or(0);
+    let recent_rate_limit_penalty = health
+        .last_rate_limited_unix
+        .and_then(|last| now.checked_sub(last))
+        .map(|age| 48i64.saturating_sub(age as i64).max(0))
+        .unwrap_or(0);
+    let connection_age_bonus = health
+        .last_successful_connect_unix
+        .and_then(|last| now.checked_sub(last))
+        .map(|age| ((age / 30) as i64).min(24))
+        .unwrap_or(0);
+    let failure_penalty = (health.fail_streak as i64).min(8) * 32
+        + (health.recent_failures_unix.len() as i64).min(8) * 12;
+    let bounded_score = (health.score as i64 + recent_block_bonus + connection_age_bonus
+        - recent_rate_limit_penalty
+        - failure_penalty)
+        .clamp(PEER_SCORE_MIN as i64, PEER_SCORE_MAX as i64);
+    PeerScoreComponents {
+        base_score: health.score,
+        recent_block_bonus,
+        recent_rate_limit_penalty,
+        connection_age_bonus,
+        failure_penalty,
+        bounded_score,
+    }
+}
+
 fn peer_rate_limited_recently(health: &PeerHealth, now: u64) -> bool {
     health.last_rate_limited_unix.is_some_and(|last| {
         now.saturating_sub(last) <= PEER_INBOUND_RATE_WINDOW_SECS.saturating_mul(4)
@@ -1340,6 +1383,7 @@ fn peer_recovery_snapshot(state: &InnerState) -> PeerRecoverySnapshot {
                 connection_age_secs: health
                     .last_successful_connect_unix
                     .map(|connected_at| now.saturating_sub(connected_at)),
+                score_components: peer_score_components(health, now),
             }
         })
         .collect::<Vec<_>>();

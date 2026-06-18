@@ -339,7 +339,20 @@ pub async fn get_p2p_status<S: RpcStateLike>(
                         "suppression_until_unix": peer.suppression_until_unix,
                         "last_error": peer.last_error,
                         "last_error_unix": peer.last_error_unix,
-                        "last_error_source": peer.last_error_source
+                        "last_error_source": peer.last_error_source,
+                        "health_states": peer.health_states,
+                        "eligible_for_sync": peer.eligible_for_sync,
+                        "last_successful_block_unix": peer.last_successful_block_unix,
+                        "last_rate_limited_unix": peer.last_rate_limited_unix,
+                        "connection_age_secs": peer.connection_age_secs,
+                        "score_components": {
+                            "base_score": peer.score_components.base_score,
+                            "recent_block_bonus": peer.score_components.recent_block_bonus,
+                            "recent_rate_limit_penalty": peer.score_components.recent_rate_limit_penalty,
+                            "connection_age_bonus": peer.score_components.connection_age_bonus,
+                            "failure_penalty": peer.score_components.failure_penalty,
+                            "bounded_score": peer.score_components.bounded_score
+                        }
                     })
                 })
                 .collect::<Vec<_>>();
@@ -1408,6 +1421,7 @@ mod tests {
                     eligible_for_sync: true,
                     last_successful_block_unix: None,
                     last_rate_limited_unix: None,
+                    score_components: Default::default(),
                     connection_age_secs: Some(0),
                 },
                 PeerRecoveryStatus {
@@ -1439,6 +1453,7 @@ mod tests {
                     eligible_for_sync: true,
                     last_successful_block_unix: None,
                     last_rate_limited_unix: None,
+                    score_components: Default::default(),
                     connection_age_secs: Some(0),
                 },
             ],
@@ -1522,6 +1537,9 @@ mod tests {
         assert!(data["duplicate_suppression_counters"].is_object());
         assert!(data["sync_candidates"].is_array());
         assert!(data["peer_recovery"].is_array());
+        assert_eq!(data["peer_recovery"][0]["eligible_for_sync"], true);
+        assert!(data["peer_recovery"][0]["health_states"].is_array());
+        assert!(data["peer_recovery"][0]["score_components"]["bounded_score"].is_number());
         assert!(data["block_propagation_counters"]["pending_block_requests"].is_number());
         assert!(data["block_propagation_counters"]["pending_missing_parents"].is_number());
         assert!(data["p2p_ready_for_private_rehearsal"].is_boolean());
