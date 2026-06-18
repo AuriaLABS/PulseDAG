@@ -13,6 +13,8 @@ bash -n \
 
 rg -q 'ENV_FAIL: missing dependency' scripts/v2_2_20_preflight_check.sh
 rg -q 'failure_class: \$FAILURE_CLASS' scripts/v2_2_20_private_5n_4m_rehearsal.sh
+rg -q 'RESULT="ENV_FAIL"' scripts/v2_2_20_private_5n_4m_rehearsal.sh
+rg -Fq '"failure_class":"$(classify_failure_class)"' scripts/v2_2_20_private_5n_4m_rehearsal.sh
 rg -q 'extract_bootnode_peer_id' scripts/v2_2_20_private_5n_4m_rehearsal.sh
 rg -q 'jq missing; cannot parse n1 /p2p/status JSON' scripts/v2_2_20_private_5n_4m_rehearsal.sh
 rg -q 'JSON schema mismatch; expected \.data\.peer_id or \.data\.local_node_id' scripts/v2_2_20_private_5n_4m_rehearsal.sh

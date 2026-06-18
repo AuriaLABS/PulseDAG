@@ -851,6 +851,13 @@ write_evidence_manifest(){
   end_ts=$(date +%s)
   duration=$((end_ts - START_TS))
   compute_evidence_aggregates || true
+  if ! command -v jq >/dev/null 2>&1; then
+    cat > "$OUT_DIR/evidence_manifest.json" <<JSON
+{"git_ref":"$REPO_REF","git_commit":"$REPO_COMMIT_FULL","version":"$RELEASE_VERSION","cargo_workspace_version":"$WORKSPACE_VERSION","stage":"$STAGE_NAME","node_count":$NODE_COUNT,"miner_count":$MINER_COUNT,"duration":$duration,"result":"$RESULT","failure_class":"$(classify_failure_class)","start_utc":"$START_UTC","end_utc":"$(date -u +%FT%TZ)","exit_code":$EXIT_CODE,"checksums":{"evidence.tar.gz":"$archive_sha"}}
+JSON
+    cp "$OUT_DIR/evidence_manifest.json" "$OUT_DIR_ROOT/evidence_manifest.json" 2>/dev/null || true
+    return 0
+  fi
   manifest_tmp=$(mktemp -p /tmp evidence-manifest-json.XXXXXX) || return 1
   checksum_tmp=$(mktemp -p /tmp evidence-checksums-json.XXXXXX) || { rm -f "$manifest_tmp"; return 1; }
   {
@@ -1287,7 +1294,13 @@ cleanup(){
       write_quiescence_metrics || true
     fi
   fi
-  if (( ${#FAIL_REASONS[@]} == 0 )); then RESULT="PASS"; else RESULT="FAIL"; fi
+  if (( ${#FAIL_REASONS[@]} == 0 )); then
+    RESULT="PASS"
+  elif [[ "$(classify_failure_class)" == "environment" ]]; then
+    RESULT="ENV_FAIL"
+  else
+    RESULT="FAIL"
+  fi
   capture_hard_stop_diagnostics || true
   capture_log_tails || true
   write_evidence_summary || true
