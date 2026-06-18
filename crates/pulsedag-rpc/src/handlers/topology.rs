@@ -433,6 +433,7 @@ mod tests {
             eligible_for_sync: false,
             last_successful_block_unix: None,
             last_rate_limited_unix: None,
+            score_components: Default::default(),
             connection_age_secs: None,
         }
     }

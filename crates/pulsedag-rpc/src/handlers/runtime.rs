@@ -1980,6 +1980,7 @@ mod tests {
                     eligible_for_sync: true,
                     last_successful_block_unix: None,
                     last_rate_limited_unix: None,
+                    score_components: Default::default(),
                     connection_age_secs: Some(0),
                 },
                 PeerRecoveryStatus {
@@ -2011,6 +2012,7 @@ mod tests {
                     eligible_for_sync: true,
                     last_successful_block_unix: None,
                     last_rate_limited_unix: None,
+                    score_components: Default::default(),
                     connection_age_secs: Some(0),
                 },
             ],
