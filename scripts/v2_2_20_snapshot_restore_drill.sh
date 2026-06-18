@@ -10,6 +10,7 @@ NODE_BIN="${NODE_BIN:-${ROOT_DIR}/target/debug/pulsedagd}"
 RPC_PORT="${RPC_PORT:-29220}"
 RPC_BIND="127.0.0.1:${RPC_PORT}"
 CHAIN_ID="${CHAIN_ID:-pulsedag-restore-drill-v2-2-20}"
+HEIGHT_THRESHOLD_WAS_SET="${HEIGHT_THRESHOLD+x}"
 HEIGHT_THRESHOLD="${HEIGHT_THRESHOLD:-3}"
 POLL_SECONDS="${POLL_SECONDS:-1}"
 START_TIMEOUT_SECONDS="${START_TIMEOUT_SECONDS:-60}"
@@ -19,7 +20,9 @@ BUILD_NODE="${BUILD_NODE:-0}"
 
 if [[ "${1:-}" == "--ci" ]]; then
   CI_MODE=1
-  HEIGHT_THRESHOLD="${HEIGHT_THRESHOLD:-2}"
+  if [[ -z "$HEIGHT_THRESHOLD_WAS_SET" ]]; then
+    HEIGHT_THRESHOLD=2
+  fi
   START_TIMEOUT_SECONDS="${START_TIMEOUT_SECONDS:-45}"
 fi
 
@@ -189,7 +192,7 @@ jq -n \
   --argjson original "$(cat "$ORIG_STATUS")" \
   --argjson restored "$(cat "$RESTORED_STATUS")" \
   --argjson restore_report "$(cat "$RESTORE_REPORT")" \
-  '{run_id:$run_id,chain_id:$chain_id,ci_mode:($ci_mode == "1"),snapshot_artifact:"snapshot_bundle.bin",snapshot_sha256:$snapshot_sha256,original:$original,restored:$restored,restore_report:$restore_report,files:["summary.md","snapshot_bundle.bin","snapshot_bundle.bin.sha256","snapshot_export_report.json","snapshot_import_report.json","original_status.json","restored_status.json","restore_report.json","original-node.log","restored-node.log"]}' > "$MANIFEST_JSON"
+  '{run_id:$run_id,chain_id:$chain_id,ci_mode:($ci_mode == "1"),snapshot_artifact:"snapshot_bundle.bin",snapshot_sha256:$snapshot_sha256,original:$original,restored:$restored,restore_report:$restore_report,files:["summary.md","snapshot_bundle.bin","snapshot_bundle.bin.sha256","snapshot_export_report.json","snapshot_import_report.json","original_status.json","restored_status.json","restore_report.json","original-node.log","restored-node.log","evidence.tar.gz","evidence.tar.gz.sha256"]}' > "$MANIFEST_JSON"
 
 (
   cd "$OUT_DIR"
