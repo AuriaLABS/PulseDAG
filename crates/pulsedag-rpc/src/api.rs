@@ -22,7 +22,7 @@ pub use pulsedag_api::{
     ApiError, ApiMeta, ApiResponse, GetBlockTemplateRequest, MineRequest, SubmitMinedBlockRequest,
 };
 
-const RPC_SNAPSHOT_STALE_AFTER_MS: u64 = 5_000;
+pub const RPC_SNAPSHOT_STALE_AFTER_MS: u64 = 5_000;
 static RPC_SNAPSHOT_STALE_TOTAL: AtomicU64 = AtomicU64::new(0);
 static RPC_HANDLER_DEGRADED_TOTAL: AtomicU64 = AtomicU64::new(0);
 static RPC_HANDLER_TIMEOUT_AVOIDED_TOTAL: AtomicU64 = AtomicU64::new(0);
@@ -97,7 +97,8 @@ impl NodeRpcSnapshotStore {
     }
 
     pub fn load(&self) -> NodeRpcSnapshot {
-        self.inner
+        let mut snapshot = self
+            .inner
             .try_read()
             .map(|snapshot| snapshot.clone())
             .unwrap_or_else(|_| {
@@ -109,7 +110,9 @@ impl NodeRpcSnapshotStore {
                     ),
                     ..NodeRpcSnapshot::default()
                 }
-            })
+            });
+        mark_node_rpc_snapshot_stale_if_needed(&mut snapshot);
+        snapshot
     }
 
     pub fn store(&self, snapshot: NodeRpcSnapshot) {
@@ -128,6 +131,18 @@ impl NodeRpcSnapshotStore {
         snapshot.stale = true;
         snapshot.degraded_reason = Some(reason);
         snapshot
+    }
+}
+
+pub fn mark_node_rpc_snapshot_stale_if_needed(snapshot: &mut NodeRpcSnapshot) {
+    if unix_now_ms().saturating_sub(snapshot.last_updated_ms) > RPC_SNAPSHOT_STALE_AFTER_MS {
+        snapshot.stale = true;
+        snapshot.degraded = true;
+        if snapshot.degraded_reason.is_none() {
+            snapshot.degraded_reason =
+                Some("node RPC snapshot exceeded stale age threshold".to_string());
+        }
+        record_rpc_snapshot_stale();
     }
 }
 
@@ -232,14 +247,7 @@ pub async fn fresh_or_cached_node_rpc_snapshot<S: RpcStateLike>(
 ) -> NodeRpcSnapshot {
     match capture_and_store_node_rpc_snapshot(state).await {
         Ok(mut snapshot) => {
-            if unix_now_ms().saturating_sub(snapshot.last_updated_ms) > RPC_SNAPSHOT_STALE_AFTER_MS
-            {
-                snapshot.stale = true;
-                snapshot.degraded = true;
-                snapshot.degraded_reason =
-                    Some("node RPC snapshot exceeded stale age threshold".to_string());
-                record_rpc_snapshot_stale();
-            }
+            mark_node_rpc_snapshot_stale_if_needed(&mut snapshot);
             snapshot
         }
         Err(reason) => state.rpc_snapshot().degraded_snapshot(format!(
