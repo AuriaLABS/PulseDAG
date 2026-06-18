@@ -515,6 +515,26 @@ async fn post_mining_submit_with_actor<S: RpcStateLike>(
     let height = req.block.header.height;
     record_submit_started(&state).await;
 
+    if req.template_id.is_none() {
+        let detail =
+            "submit request missing required template_id; refresh template and retry".to_string();
+        record_submit_phase(&state, "precheck_rejected").await;
+        record_external_mining_rejection(
+            &state,
+            ExternalMiningRejectKind::MissingTemplateId,
+            &detail,
+        )
+        .await;
+        record_submit_completed(&state, submit_started, "rejected").await;
+        return Json(rejection_submit_response(
+            "missing_template_id",
+            detail,
+            Some(block_hash),
+            Some(height),
+            true,
+        ));
+    }
+
     {
         let runtime_handle = state.runtime();
         let mut runtime = runtime_handle.write().await;
