@@ -287,7 +287,14 @@ fn sync_missing_from_rpc_snapshot(snapshot: NodeRpcSnapshot) -> SyncMissingData 
         orphan_count: snapshot.orphan_count,
         saturated: snapshot.orphan_count >= pulsedag_core::DEFAULT_ORPHAN_MAX_COUNT,
         orphans: Vec::new(),
-        terminal_missing_parent_index: Vec::new(),
+        terminal_missing_parent_index: snapshot
+            .terminal_missing_parent_entries
+            .into_iter()
+            .map(|entry| MissingParentIndexEntry {
+                parent: entry.parent,
+                waiting_orphans: entry.waiting_orphans,
+            })
+            .collect(),
         missing_parent_index: snapshot
             .missing_parent_entries
             .into_iter()

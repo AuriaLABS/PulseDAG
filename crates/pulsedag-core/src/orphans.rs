@@ -84,6 +84,13 @@ pub struct MissingParentTerminalResult {
     pub waiting_orphans: usize,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ResidualMissingParentTerminalResult {
+    pub transitioned_parents: usize,
+    pub evicted_orphans: usize,
+    pub waiting_orphans: usize,
+}
+
 pub fn active_missing_parent_count(state: &ChainState) -> usize {
     state.orphan_parent_index.len()
 }
@@ -126,6 +133,7 @@ pub fn terminally_exhaust_missing_parent(
             matches!(
                 entry.state,
                 MissingParentState::Exhausted(_)
+                    | MissingParentState::ExhaustedResidual
                     | MissingParentState::TerminalEvicted
                     | MissingParentState::Quarantined
             )
@@ -175,11 +183,67 @@ pub fn suppress_terminal_missing_parent_retry(state: &ChainState, parent: &Hash)
             matches!(
                 entry.state,
                 MissingParentState::Exhausted(_)
+                    | MissingParentState::ExhaustedResidual
                     | MissingParentState::TerminalEvicted
                     | MissingParentState::Quarantined
             )
         })
         .unwrap_or(false)
+}
+
+pub fn terminalize_residual_waiting_missing_parents(
+    state: &mut ChainState,
+    now_ms: u64,
+    ttl_ms: u64,
+    limit: usize,
+) -> ResidualMissingParentTerminalResult {
+    if limit == 0 {
+        return ResidualMissingParentTerminalResult::default();
+    }
+    let mut residual = state
+        .orphan_parent_index
+        .iter()
+        .filter_map(|(parent, waiting)| {
+            if state.dag.blocks.contains_key(parent) {
+                return None;
+            }
+            let oldest_received = waiting
+                .iter()
+                .filter_map(|orphan| state.orphan_received_at_ms.get(orphan).copied())
+                .min()?;
+            (now_ms.saturating_sub(oldest_received) > ttl_ms)
+                .then_some((parent.clone(), oldest_received))
+        })
+        .collect::<Vec<_>>();
+    residual.sort_by(|(left_parent, left_ts), (right_parent, right_ts)| {
+        left_ts
+            .cmp(right_ts)
+            .then_with(|| left_parent.cmp(right_parent))
+    });
+
+    let mut result = ResidualMissingParentTerminalResult::default();
+    for (parent, _) in residual.into_iter().take(limit) {
+        let transitioned = terminally_exhaust_missing_parent(
+            state,
+            &parent,
+            vec!["residual_waiting_ttl".to_string()],
+            now_ms,
+            true,
+        );
+        if transitioned.transitioned {
+            if let Some(entry) = state.terminal_missing_parents.get_mut(&parent) {
+                entry.state = MissingParentState::ExhaustedResidual;
+            }
+            result.transitioned_parents = result.transitioned_parents.saturating_add(1);
+            result.evicted_orphans = result
+                .evicted_orphans
+                .saturating_add(transitioned.evicted_orphans);
+            result.waiting_orphans = result
+                .waiting_orphans
+                .saturating_add(transitioned.waiting_orphans);
+        }
+    }
+    result
 }
 
 pub fn missing_block_parents(block: &Block, state: &ChainState) -> Vec<Hash> {
@@ -1272,6 +1336,58 @@ mod tests {
                 .state,
             MissingParentState::TerminalEvicted
         ));
+    }
+
+    #[test]
+    fn residual_waiting_missing_parent_older_than_ttl_becomes_terminal() {
+        let mut state = init_chain_state("test".into());
+        let child = candidate(vec!["residual-parent".into()], 1, "residual-child", 1);
+        queue_missing(&mut state, child.clone());
+        state
+            .orphan_received_at_ms
+            .insert(child.hash.clone(), 1_000);
+
+        let result = terminalize_residual_waiting_missing_parents(&mut state, 10_000, 1_000, 8);
+
+        assert_eq!(result.transitioned_parents, 1);
+        assert_eq!(result.evicted_orphans, 1);
+        assert_eq!(pending_missing_parent_count(&state), 0);
+        assert!(!state.orphan_parent_index.contains_key("residual-parent"));
+        assert!(state.orphan_blocks.is_empty());
+        assert!(matches!(
+            state
+                .terminal_missing_parents
+                .get("residual-parent")
+                .unwrap()
+                .state,
+            MissingParentState::ExhaustedResidual
+        ));
+        assert_eq!(
+            state
+                .terminal_missing_parents
+                .get("residual-parent")
+                .unwrap()
+                .waiting_orphans,
+            vec![child.hash]
+        );
+    }
+
+    #[test]
+    fn fresh_waiting_missing_parent_below_ttl_is_not_terminalized() {
+        let mut state = init_chain_state("test".into());
+        let child = candidate(vec!["fresh-parent".into()], 1, "fresh-child", 1);
+        queue_missing(&mut state, child.clone());
+        state
+            .orphan_received_at_ms
+            .insert(child.hash.clone(), 9_500);
+
+        let result = terminalize_residual_waiting_missing_parents(&mut state, 10_000, 1_000, 8);
+
+        assert_eq!(result.transitioned_parents, 0);
+        assert_eq!(pending_missing_parent_count(&state), 1);
+        assert!(state.orphan_parent_index.contains_key("fresh-parent"));
+        assert!(state.terminal_missing_parents.is_empty());
+        assert!(state.orphan_blocks.contains_key(&child.hash));
     }
 
     #[test]
