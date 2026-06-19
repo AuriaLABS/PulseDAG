@@ -455,6 +455,10 @@ pub struct NodeRuntimeStats {
     #[serde(default)]
     pub missing_parent_all_peers_exhausted_total: u64,
     #[serde(default)]
+    pub missing_parent_terminal_exhausted_total: u64,
+    #[serde(default)]
+    pub missing_parent_retry_suppressed_exhausted_total: u64,
+    #[serde(default)]
     pub missing_parent_retry_next_peer_total: u64,
     #[serde(default)]
     pub missing_parent_retry_peer_total: u64,
@@ -506,6 +510,14 @@ pub struct NodeRuntimeStats {
     pub orphan_missing_parent_stale_evicted_total: u64,
     #[serde(default)]
     pub orphan_missing_parent_recovery_progress_total: u64,
+    #[serde(default)]
+    pub orphan_missing_parent_terminal_evicted_total: u64,
+    #[serde(default)]
+    pub orphan_missing_parent_quarantined_total: u64,
+    #[serde(default)]
+    pub missing_parent_index_active_entries: usize,
+    #[serde(default)]
+    pub missing_parent_index_terminal_entries: usize,
     #[serde(default)]
     pub orphan_recovery_tick_duration_ms: u64,
     #[serde(default)]

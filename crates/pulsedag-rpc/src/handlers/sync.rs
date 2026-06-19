@@ -68,6 +68,8 @@ pub struct SyncStatusData {
     pub missing_parent_peer_timeout_total: u64,
     pub missing_parent_peer_response_success_total: u64,
     pub missing_parent_all_peers_exhausted_total: u64,
+    pub missing_parent_terminal_exhausted_total: u64,
+    pub missing_parent_retry_suppressed_exhausted_total: u64,
     pub missing_parent_retry_next_peer_total: u64,
     pub missing_parent_retry_peer_total: u64,
     pub orphan_blocks_queued: u64,
@@ -242,6 +244,8 @@ fn sync_status_from_rpc_snapshot(snapshot: NodeRpcSnapshot) -> SyncStatusData {
         missing_parent_peer_timeout_total: 0,
         missing_parent_peer_response_success_total: 0,
         missing_parent_all_peers_exhausted_total: 0,
+        missing_parent_terminal_exhausted_total: 0,
+        missing_parent_retry_suppressed_exhausted_total: 0,
         missing_parent_retry_next_peer_total: 0,
         missing_parent_retry_peer_total: 0,
         orphan_blocks_queued: 0,
@@ -283,6 +287,7 @@ fn sync_missing_from_rpc_snapshot(snapshot: NodeRpcSnapshot) -> SyncMissingData 
         orphan_count: snapshot.orphan_count,
         saturated: snapshot.orphan_count >= pulsedag_core::DEFAULT_ORPHAN_MAX_COUNT,
         orphans: Vec::new(),
+        terminal_missing_parent_index: Vec::new(),
         missing_parent_index: snapshot
             .missing_parent_entries
             .into_iter()
@@ -563,6 +568,9 @@ pub async fn get_sync_status<S: RpcStateLike>(
         missing_parent_peer_response_success_total: runtime
             .missing_parent_peer_response_success_total,
         missing_parent_all_peers_exhausted_total: runtime.missing_parent_all_peers_exhausted_total,
+        missing_parent_terminal_exhausted_total: runtime.missing_parent_terminal_exhausted_total,
+        missing_parent_retry_suppressed_exhausted_total: runtime
+            .missing_parent_retry_suppressed_exhausted_total,
         missing_parent_retry_next_peer_total: runtime.missing_parent_retry_next_peer_total,
         missing_parent_retry_peer_total: runtime.missing_parent_retry_peer_total,
         orphan_blocks_queued: runtime.orphan_blocks_queued,
@@ -631,6 +639,7 @@ pub struct SyncMissingData {
     pub saturated: bool,
     pub orphans: Vec<MissingBlockEntry>,
     pub missing_parent_index: Vec<MissingParentIndexEntry>,
+    pub terminal_missing_parent_index: Vec<MissingParentIndexEntry>,
 }
 
 pub async fn get_sync_missing<S: RpcStateLike>(
@@ -724,6 +733,14 @@ pub async fn get_sync_missing<S: RpcStateLike>(
         orphan_count: chain.orphan_blocks.len(),
         saturated: chain.orphan_blocks.len() >= pulsedag_core::DEFAULT_ORPHAN_MAX_COUNT,
         orphans,
+        terminal_missing_parent_index: chain
+            .terminal_missing_parents
+            .iter()
+            .map(|(parent, entry)| MissingParentIndexEntry {
+                parent: parent.clone(),
+                waiting_orphans: entry.waiting_orphans.clone(),
+            })
+            .collect(),
         missing_parent_index,
     };
     cache_sync_missing_response(&data);

@@ -30,13 +30,15 @@ use pulsedag_p2p::{
     build_p2p_stack, messages::HeaderInventory, InboundEvent, Libp2pConfig, Libp2pRuntimeMode,
     P2pHandle, P2pMode,
 };
-use pulsedag_rpc::api::{capture_and_store_node_rpc_snapshot, NodeRpcSnapshotStore};
+use pulsedag_rpc::api::{
+    capture_and_store_node_rpc_snapshot, NodeRpcSnapshotStore, NodeRuntimeStats,
+};
 use pulsedag_rpc::routes::{
     router_with_profile, ApiExposureProfile as RpcApiExposureProfile, RateLimitConfig,
     RpcHardeningLimits,
 };
 use pulsedag_storage::Storage;
-use tokio::sync::oneshot;
+use tokio::sync::{oneshot, RwLock};
 use tokio::time::{sleep, Duration};
 
 const MAX_INFLIGHT_BLOCK_REQUESTS: usize = 64;
@@ -257,6 +259,36 @@ impl OrphanRecoveryRootClassification {
             ("stale".to_string(), self.stale.len()),
             ("evictable".to_string(), self.evictable.len()),
         ])
+    }
+}
+
+async fn terminally_handle_exhausted_missing_parent(
+    chain: &Arc<RwLock<pulsedag_core::ChainState>>,
+    runtime: &Arc<RwLock<NodeRuntimeStats>>,
+    hash: &str,
+    exhausted_peers: Vec<String>,
+) {
+    let terminal = {
+        let mut guard = chain.write().await;
+        pulsedag_core::terminally_exhaust_missing_parent(
+            &mut guard,
+            &hash.to_string(),
+            exhausted_peers,
+            now_unix().saturating_mul(1_000),
+            true,
+        )
+    };
+    let mut rt = runtime.write().await;
+    if terminal.transitioned {
+        rt.missing_parent_terminal_exhausted_total =
+            rt.missing_parent_terminal_exhausted_total.saturating_add(1);
+        rt.orphan_missing_parent_terminal_evicted_total = rt
+            .orphan_missing_parent_terminal_evicted_total
+            .saturating_add(terminal.evicted_orphans as u64);
+    } else {
+        rt.missing_parent_retry_suppressed_exhausted_total = rt
+            .missing_parent_retry_suppressed_exhausted_total
+            .saturating_add(1);
     }
 }
 
@@ -986,6 +1018,13 @@ async fn main() -> Result<()> {
                             rt.inflight_block_requests = block_requests.pending.len();
                             rt.pending_block_request_hashes = block_requests.pending_hashes();
                         } else {
+                            terminally_handle_exhausted_missing_parent(
+                                &chain,
+                                &runtime,
+                                &hash,
+                                active_peer_ids(&p2p),
+                            )
+                            .await;
                             let mut rt = runtime.write().await;
                             rt.missing_parent_all_peers_exhausted_total = rt
                                 .missing_parent_all_peers_exhausted_total

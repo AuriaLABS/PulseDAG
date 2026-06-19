@@ -133,5 +133,6 @@ pub fn init_chain_state(chain_id: String) -> ChainState {
         orphan_missing_parents: HashMap::new(),
         orphan_parent_index: HashMap::new(),
         orphan_received_at_ms: HashMap::new(),
+        terminal_missing_parents: HashMap::new(),
     }
 }
