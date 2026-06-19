@@ -965,6 +965,15 @@ async fn main() -> Result<()> {
                                 }
                             }
                         }
+                        if outcome.all_peers_exhausted {
+                            terminally_handle_exhausted_missing_parent(
+                                &chain,
+                                &runtime,
+                                &hash,
+                                active_peer_ids(&p2p),
+                            )
+                            .await;
+                        }
                         let mut rt = runtime.write().await;
                         rt.missing_parent_peer_timeout_total =
                             rt.missing_parent_peer_timeout_total.saturating_add(1);
@@ -2454,6 +2463,18 @@ async fn main() -> Result<()> {
                                         fallback_getblock_sent = true;
                                     }
                                 }
+                            }
+                        }
+                        if all_peers_exhausted {
+                            if let Some(hash) = hash.as_ref() {
+                                let peers = p2p
+                                    .as_ref()
+                                    .map(active_peer_ids_from_handle)
+                                    .unwrap_or_default();
+                                terminally_handle_exhausted_missing_parent(
+                                    &chain, &runtime, hash, peers,
+                                )
+                                .await;
                             }
                         }
                         let mut rt = runtime.write().await;
