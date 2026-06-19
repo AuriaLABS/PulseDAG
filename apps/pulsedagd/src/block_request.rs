@@ -197,6 +197,11 @@ impl BlockRequestTracker {
         S: Into<String>,
     {
         let peers = peers.into_iter().map(Into::into).collect::<Vec<_>>();
+        if self.exhausted_hashes.contains(hash) {
+            self.backpressure_suppressed = self.backpressure_suppressed.saturating_add(1);
+            return false;
+        }
+
         if self.is_backing_off(hash, now_unix) {
             self.backpressure_suppressed = self.backpressure_suppressed.saturating_add(1);
             return false;
@@ -243,7 +248,6 @@ impl BlockRequestTracker {
             },
         );
         self.backoff_by_hash.remove(hash);
-        self.exhausted_hashes.remove(hash);
         self.fetch_queued = self.fetch_queued.saturating_add(1);
         true
     }
@@ -400,8 +404,12 @@ impl BlockRequestTracker {
                 all_peers_exhausted: false,
             };
         }
-        self.exhausted_hashes.insert(hash.to_string());
-        self.note_request_dropped(hash, now_unix);
+        let newly_exhausted = self.exhausted_hashes.insert(hash.to_string());
+        if newly_exhausted {
+            self.note_request_dropped(hash, now_unix);
+        } else {
+            self.backpressure_suppressed = self.backpressure_suppressed.saturating_add(1);
+        }
         BlockRequestPeerRetryOutcome {
             retry: false,
             peer: None,
@@ -1086,5 +1094,15 @@ mod tests {
             tracker.classify_getblock_for_peers("root-b", 101, ["peer-a"]),
             super::GetBlockRequestReadiness::RateLimited
         );
+    }
+
+    #[test]
+    fn exhausted_missing_parent_suppresses_future_retries() {
+        let mut tracker = BlockRequestTracker::with_limits(5, 1, 10, 10);
+        assert!(tracker.should_issue_getblock_for_peers("parent", 100, ["peer-a"]));
+        let first = tracker.note_not_found("parent", 101, ["peer-a"]);
+        assert!(first.all_peers_exhausted);
+        assert!(!tracker.should_issue_getblock_for_peers("parent", 200, ["peer-a"]));
+        assert!(tracker.is_all_peers_exhausted("parent"));
     }
 }

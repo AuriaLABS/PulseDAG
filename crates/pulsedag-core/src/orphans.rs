@@ -5,7 +5,7 @@ use std::{
 
 use crate::{
     accept::{accept_block_with_result, AcceptSource, BlockAcceptanceResult},
-    state::ChainState,
+    state::{ChainState, MissingParentState, MissingParentTerminalEntry},
     types::{Block, Hash},
 };
 
@@ -77,6 +77,111 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MissingParentTerminalResult {
+    pub transitioned: bool,
+    pub evicted_orphans: usize,
+    pub waiting_orphans: usize,
+}
+
+pub fn active_missing_parent_count(state: &ChainState) -> usize {
+    state.orphan_parent_index.len()
+}
+
+pub fn terminal_missing_parent_count(state: &ChainState) -> usize {
+    state.terminal_missing_parents.len()
+}
+
+pub fn terminally_exhaust_missing_parent(
+    state: &mut ChainState,
+    parent: &Hash,
+    exhausted_peers: Vec<String>,
+    now_ms: u64,
+    evict_dependents: bool,
+) -> MissingParentTerminalResult {
+    if state.dag.blocks.contains_key(parent) {
+        state.terminal_missing_parents.insert(
+            parent.clone(),
+            MissingParentTerminalEntry {
+                state: MissingParentState::Resolved,
+                transitioned_at_ms: now_ms,
+                waiting_orphans: Vec::new(),
+            },
+        );
+        return MissingParentTerminalResult {
+            transitioned: true,
+            evicted_orphans: 0,
+            waiting_orphans: 0,
+        };
+    }
+    let waiting = state
+        .orphan_parent_index
+        .get(parent)
+        .map(|orphans| orphans.iter().cloned().collect::<Vec<_>>())
+        .unwrap_or_default();
+    let already_terminal = state
+        .terminal_missing_parents
+        .get(parent)
+        .map(|entry| {
+            matches!(
+                entry.state,
+                MissingParentState::Exhausted(_)
+                    | MissingParentState::TerminalEvicted
+                    | MissingParentState::Quarantined
+            )
+        })
+        .unwrap_or(false);
+    if already_terminal {
+        return MissingParentTerminalResult {
+            transitioned: false,
+            evicted_orphans: 0,
+            waiting_orphans: waiting.len(),
+        };
+    }
+
+    let mut evicted = 0usize;
+    if evict_dependents {
+        for orphan in waiting.iter() {
+            if remove_queued_orphan(state, orphan).is_some() {
+                evicted = evicted.saturating_add(1);
+            }
+        }
+    }
+    state.orphan_parent_index.remove(parent);
+    state.terminal_missing_parents.insert(
+        parent.clone(),
+        MissingParentTerminalEntry {
+            state: if evict_dependents {
+                MissingParentState::TerminalEvicted
+            } else {
+                MissingParentState::Exhausted(exhausted_peers)
+            },
+            transitioned_at_ms: now_ms,
+            waiting_orphans: waiting.clone(),
+        },
+    );
+    MissingParentTerminalResult {
+        transitioned: true,
+        evicted_orphans: evicted,
+        waiting_orphans: waiting.len(),
+    }
+}
+
+pub fn suppress_terminal_missing_parent_retry(state: &ChainState, parent: &Hash) -> bool {
+    state
+        .terminal_missing_parents
+        .get(parent)
+        .map(|entry| {
+            matches!(
+                entry.state,
+                MissingParentState::Exhausted(_)
+                    | MissingParentState::TerminalEvicted
+                    | MissingParentState::Quarantined
+            )
+        })
+        .unwrap_or(false)
+}
+
 pub fn missing_block_parents(block: &Block, state: &ChainState) -> Vec<Hash> {
     block
         .header
@@ -118,15 +223,22 @@ fn index_orphan_missing_parents(
     unindex_orphan_missing_parents(state, &orphan_hash);
     let missing_parents = normalize_missing_parents(missing_parents);
     for parent in &missing_parents {
+        if suppress_terminal_missing_parent_retry(state, parent) {
+            continue;
+        }
         state
             .orphan_parent_index
             .entry(parent.clone())
             .or_default()
             .insert(orphan_hash.clone());
     }
+    let active_missing = missing_parents
+        .into_iter()
+        .filter(|parent| !suppress_terminal_missing_parent_retry(state, parent))
+        .collect();
     state
         .orphan_missing_parents
-        .insert(orphan_hash, missing_parents);
+        .insert(orphan_hash, active_missing);
 }
 
 fn remove_queued_orphan(state: &mut ChainState, orphan_hash: &Hash) -> Option<Block> {
@@ -281,7 +393,7 @@ pub fn evict_stale_orphans_bounded(
 }
 
 pub fn pending_missing_parent_count(state: &ChainState) -> usize {
-    let indexed = state.orphan_parent_index.len();
+    let indexed = active_missing_parent_count(state);
     if indexed > 0 {
         return indexed;
     }
@@ -359,6 +471,9 @@ pub fn queue_orphan_block_bounded(
             evicted: 0,
         };
     }
+    for parent in &missing_parents {
+        state.terminal_missing_parents.remove(parent);
+    }
     state.orphan_blocks.insert(hash.clone(), block);
     index_orphan_missing_parents(state, hash.clone(), missing_parents);
     state.orphan_received_at_ms.insert(hash.clone(), now_ms());
@@ -427,6 +542,14 @@ pub fn adopt_ready_orphans_with_result(
             match result {
                 BlockAcceptanceResult::Accepted => {
                     accepted += 1;
+                    state.terminal_missing_parents.insert(
+                        hash.clone(),
+                        MissingParentTerminalEntry {
+                            state: MissingParentState::Resolved,
+                            transitioned_at_ms: now_ms(),
+                            waiting_orphans: Vec::new(),
+                        },
+                    );
                     accepted_hashes.push(hash.clone());
                     candidates.extend(orphan_children_waiting_for_parent(state, &hash));
                 }
@@ -1113,5 +1236,74 @@ mod tests {
 
         assert_eq!(roots.len(), 32);
         assert_eq!(pending_missing_parent_count(&state), 32);
+    }
+    #[test]
+    fn exhausted_missing_parent_terminally_evicts_dependents_and_decrements_pending() {
+        let mut state = init_chain_state("test".into());
+        let parent = candidate_for_state(
+            &state,
+            vec![state.dag.genesis_hash.clone()],
+            1,
+            "terminal-parent",
+            1,
+        );
+        let child = candidate(vec![parent.hash.clone()], 2, "terminal-child", 2);
+        queue_missing(&mut state, child.clone());
+
+        assert_eq!(pending_missing_parent_count(&state), 1);
+        let result = terminally_exhaust_missing_parent(
+            &mut state,
+            &parent.hash,
+            vec!["peer-a".into()],
+            123,
+            true,
+        );
+
+        assert!(result.transitioned);
+        assert_eq!(result.evicted_orphans, 1);
+        assert_eq!(pending_missing_parent_count(&state), 0);
+        assert!(state.orphan_blocks.is_empty());
+        assert_eq!(terminal_missing_parent_count(&state), 1);
+        assert!(matches!(
+            state
+                .terminal_missing_parents
+                .get(&parent.hash)
+                .unwrap()
+                .state,
+            MissingParentState::TerminalEvicted
+        ));
+    }
+
+    #[test]
+    fn resolved_parent_reprocesses_dependent_orphan_successfully() {
+        let mut state = init_chain_state("test".into());
+        let parent = candidate_for_state(
+            &state,
+            vec![state.dag.genesis_hash.clone()],
+            1,
+            "resolved-parent",
+            1,
+        );
+        let parent_state = state_after(&state, &parent);
+        let child = candidate_for_state(
+            &parent_state,
+            vec![parent.hash.clone()],
+            2,
+            "resolved-child",
+            2,
+        );
+        queue_missing(&mut state, child.clone());
+
+        assert!(accept_block(parent, &mut state, AcceptSource::P2p).is_ok());
+        let adopted = adopt_ready_orphans_with_result(
+            &mut state,
+            AcceptSource::P2p,
+            Some(&child.header.parents[0]),
+        );
+
+        assert_eq!(adopted.accepted, 1);
+        assert_eq!(adopted.accepted_hashes, vec![child.hash.clone()]);
+        assert!(state.orphan_blocks.is_empty());
+        assert_eq!(pending_missing_parent_count(&state), 0);
     }
 }

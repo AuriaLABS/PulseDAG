@@ -218,6 +218,28 @@ pub struct ChainState {
     pub orphan_parent_index: HashMap<Hash, BTreeSet<Hash>>,
     #[serde(default)]
     pub orphan_received_at_ms: HashMap<Hash, u64>,
+    #[serde(default)]
+    pub terminal_missing_parents: HashMap<Hash, MissingParentTerminalEntry>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MissingParentState {
+    Requestable,
+    Pending(String),
+    Retryable(String),
+    Backoff(u64),
+    Exhausted(Vec<String>),
+    Peerless,
+    TerminalEvicted,
+    Quarantined,
+    Resolved,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MissingParentTerminalEntry {
+    pub state: MissingParentState,
+    pub transitioned_at_ms: u64,
+    pub waiting_orphans: Vec<Hash>,
 }
 
 #[cfg(test)]
