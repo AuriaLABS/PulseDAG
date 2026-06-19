@@ -74,8 +74,9 @@ pub use orphans::{
     evict_stale_orphans_bounded, missing_block_parents, orphan_children_waiting_for_parent,
     orphan_missing_roots, pending_missing_parent_count, prune_orphans, queue_orphan_block,
     queue_orphan_block_bounded, rebuild_orphan_parent_index, revalidate_orphan_backlog,
-    terminally_exhaust_missing_parent, MissingParentTerminalResult, OrphanAdoptionResult,
-    OrphanBacklogClassification, OrphanQueueResult, DEFAULT_ORPHAN_MAX_AGE_MS,
+    terminalize_residual_waiting_missing_parents, terminally_exhaust_missing_parent,
+    MissingParentTerminalResult, OrphanAdoptionResult, OrphanBacklogClassification,
+    OrphanQueueResult, ResidualMissingParentTerminalResult, DEFAULT_ORPHAN_MAX_AGE_MS,
     DEFAULT_ORPHAN_MAX_COUNT, DEFAULT_ORPHAN_RECOVERY_EVICT_LIMIT,
 };
 

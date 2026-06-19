@@ -175,6 +175,8 @@ struct OrphanRecoveryTickResult {
     unactionable_state: bool,
     classified_after_reindex: usize,
     evicted_after_unactionable: usize,
+    residual_waiting_terminal: usize,
+    residual_waiting_evicted: usize,
     root_classification_counts: BTreeMap<String, usize>,
     orphan_count: usize,
     pending_missing: usize,
@@ -1126,6 +1128,8 @@ async fn main() -> Result<()> {
                             let mut stale = rebuilt.stale_missing_parent_entries;
                             let mut evicted = 0usize;
                             let mut revalidated = false;
+                            let mut residual_waiting_terminal = 0usize;
+                            let mut residual_waiting_evicted = 0usize;
                             if no_requestable_roots {
                                 warn!(
                                     requestable = *root_classification_counts
@@ -1166,11 +1170,20 @@ async fn main() -> Result<()> {
                                     pulsedag_core::DEFAULT_ORPHAN_MAX_AGE_MS,
                                     ORPHAN_RECOVERY_REVALIDATE_EVICT_LIMIT,
                                 );
-                                if evicted > 0 {
+                                let residual =
+                                    pulsedag_core::terminalize_residual_waiting_missing_parents(
+                                        &mut guard,
+                                        now_millis(),
+                                        pulsedag_core::DEFAULT_ORPHAN_MAX_AGE_MS,
+                                        ORPHAN_RECOVERY_REVALIDATE_EVICT_LIMIT,
+                                    );
+                                residual_waiting_terminal = residual.transitioned_parents;
+                                residual_waiting_evicted = residual.evicted_orphans;
+                                if evicted > 0 || residual_waiting_terminal > 0 {
                                     match storage.persist_chain_state(&guard) {
                                         Ok(()) => {}
                                         Err(e) => {
-                                            warn!(error = %e, evicted, "failed persisting chain state after stale orphan eviction")
+                                            warn!(error = %e, evicted, residual_waiting_terminal, "failed persisting chain state after residual missing-parent eviction")
                                         }
                                     }
                                 }
@@ -1192,6 +1205,8 @@ async fn main() -> Result<()> {
                                 } else {
                                     0
                                 },
+                                residual_waiting_terminal,
+                                residual_waiting_evicted,
                                 root_classification_counts,
                                 orphan_count: guard.orphan_blocks.len(),
                                 pending_missing: pulsedag_core::pending_missing_parent_count(
@@ -1303,6 +1318,12 @@ async fn main() -> Result<()> {
                         rt.orphan_backlog_stale_total = rt
                             .orphan_backlog_stale_total
                             .saturating_add(tick.backlog_stale as u64);
+                        rt.missing_parent_residual_waiting_terminal_total = rt
+                            .missing_parent_residual_waiting_terminal_total
+                            .saturating_add(tick.residual_waiting_terminal as u64);
+                        rt.orphan_missing_parent_residual_evicted_total = rt
+                            .orphan_missing_parent_residual_evicted_total
+                            .saturating_add(tick.residual_waiting_evicted as u64);
                         if tick.forced_reindex {
                             rt.orphan_missing_parent_forced_reindex_total = rt
                                 .orphan_missing_parent_forced_reindex_total

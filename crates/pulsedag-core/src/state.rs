@@ -229,6 +229,7 @@ pub enum MissingParentState {
     Retryable(String),
     Backoff(u64),
     Exhausted(Vec<String>),
+    ExhaustedResidual,
     Peerless,
     TerminalEvicted,
     Quarantined,

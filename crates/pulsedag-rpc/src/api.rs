@@ -42,6 +42,8 @@ pub struct NodeRpcSnapshot {
     pub orphan_count: usize,
     pub pending_missing_parents: usize,
     pub missing_parent_entries: Vec<MissingParentSnapshotEntry>,
+    #[serde(default)]
+    pub terminal_missing_parent_entries: Vec<MissingParentSnapshotEntry>,
     pub inv_hashes_requested: u64,
     pub last_updated_ms: u64,
     pub degraded: bool,
@@ -66,6 +68,7 @@ impl Default for NodeRpcSnapshot {
             orphan_count: 0,
             pending_missing_parents: 0,
             missing_parent_entries: Vec::new(),
+            terminal_missing_parent_entries: Vec::new(),
             inv_hashes_requested: 0,
             last_updated_ms: unix_now_ms(),
             degraded: true,
@@ -197,6 +200,15 @@ pub fn build_node_rpc_snapshot(
         })
         .collect::<Vec<_>>();
     missing_parent_entries.sort_by(|left, right| left.parent.cmp(&right.parent));
+    let mut terminal_missing_parent_entries = chain
+        .terminal_missing_parents
+        .iter()
+        .map(|(parent, entry)| MissingParentSnapshotEntry {
+            parent: parent.clone(),
+            waiting_orphans: entry.waiting_orphans.clone(),
+        })
+        .collect::<Vec<_>>();
+    terminal_missing_parent_entries.sort_by(|left, right| left.parent.cmp(&right.parent));
     NodeRpcSnapshot {
         chain_id: chain.chain_id.clone(),
         height: chain.dag.best_height,
@@ -207,6 +219,7 @@ pub fn build_node_rpc_snapshot(
         orphan_count: chain.orphan_blocks.len(),
         pending_missing_parents: pulsedag_core::pending_missing_parent_count(chain),
         missing_parent_entries,
+        terminal_missing_parent_entries,
         inv_hashes_requested: p2p_status
             .map(|status| status.inv_hashes_requested as u64)
             .unwrap_or(0),
@@ -462,6 +475,8 @@ pub struct NodeRuntimeStats {
     pub missing_parent_retry_next_peer_total: u64,
     #[serde(default)]
     pub missing_parent_retry_peer_total: u64,
+    #[serde(default)]
+    pub missing_parent_residual_waiting_terminal_total: u64,
     pub orphan_blocks_queued: u64,
     pub orphan_blocks_resolved: u64,
     pub orphan_blocks_retried: u64,
@@ -512,6 +527,8 @@ pub struct NodeRuntimeStats {
     pub orphan_missing_parent_recovery_progress_total: u64,
     #[serde(default)]
     pub orphan_missing_parent_terminal_evicted_total: u64,
+    #[serde(default)]
+    pub orphan_missing_parent_residual_evicted_total: u64,
     #[serde(default)]
     pub orphan_missing_parent_quarantined_total: u64,
     #[serde(default)]

@@ -71,10 +71,12 @@ pub struct MetricsData {
     pub missing_parent_retry_peer_total: u64,
     pub missing_parent_all_peers_exhausted_total: u64,
     pub missing_parent_terminal_exhausted_total: u64,
+    pub missing_parent_residual_waiting_terminal_total: u64,
     pub missing_parent_retry_suppressed_exhausted_total: u64,
     pub orphan_missing_parent_stale_evicted_total: u64,
     pub orphan_missing_parent_recovery_progress_total: u64,
     pub orphan_missing_parent_terminal_evicted_total: u64,
+    pub orphan_missing_parent_residual_evicted_total: u64,
     pub orphan_missing_parent_quarantined_total: u64,
     pub missing_parent_index_active_entries: usize,
     pub missing_parent_index_terminal_entries: usize,
@@ -215,6 +217,8 @@ pub async fn get_metrics<S: RpcStateLike>(
         missing_parent_retry_peer_total: runtime.missing_parent_retry_peer_total,
         missing_parent_all_peers_exhausted_total: runtime.missing_parent_all_peers_exhausted_total,
         missing_parent_terminal_exhausted_total: runtime.missing_parent_terminal_exhausted_total,
+        missing_parent_residual_waiting_terminal_total: runtime
+            .missing_parent_residual_waiting_terminal_total,
         missing_parent_retry_suppressed_exhausted_total: runtime
             .missing_parent_retry_suppressed_exhausted_total,
         orphan_missing_parent_stale_evicted_total: runtime
@@ -223,6 +227,8 @@ pub async fn get_metrics<S: RpcStateLike>(
             .orphan_missing_parent_recovery_progress_total,
         orphan_missing_parent_terminal_evicted_total: runtime
             .orphan_missing_parent_terminal_evicted_total,
+        orphan_missing_parent_residual_evicted_total: runtime
+            .orphan_missing_parent_residual_evicted_total,
         orphan_missing_parent_quarantined_total: runtime.orphan_missing_parent_quarantined_total,
         missing_parent_index_active_entries: chain.orphan_parent_index.len(),
         missing_parent_index_terminal_entries: chain.terminal_missing_parents.len(),
