@@ -207,11 +207,14 @@ pub fn terminalize_residual_waiting_missing_parents(
             if state.dag.blocks.contains_key(parent) {
                 return None;
             }
-            let oldest_received = waiting
-                .iter()
-                .filter_map(|orphan| state.orphan_received_at_ms.get(orphan).copied())
-                .min()?;
-            (now_ms.saturating_sub(oldest_received) > ttl_ms)
+            let mut oldest_received = u64::MAX;
+            let mut newest_received = 0;
+            for orphan in waiting {
+                let received = state.orphan_received_at_ms.get(orphan).copied()?;
+                oldest_received = oldest_received.min(received);
+                newest_received = newest_received.max(received);
+            }
+            (now_ms.saturating_sub(newest_received) > ttl_ms)
                 .then_some((parent.clone(), oldest_received))
         })
         .collect::<Vec<_>>();
@@ -1370,6 +1373,30 @@ mod tests {
                 .waiting_orphans,
             vec![child.hash]
         );
+    }
+
+    #[test]
+    fn residual_waiting_parent_with_fresh_child_is_not_terminalized() {
+        let mut state = init_chain_state("test".into());
+        let old_child = candidate(vec!["mixed-parent".into()], 1, "old-child", 1);
+        let fresh_child = candidate(vec!["mixed-parent".into()], 1, "fresh-child", 2);
+        queue_missing(&mut state, old_child.clone());
+        queue_missing(&mut state, fresh_child.clone());
+        state
+            .orphan_received_at_ms
+            .insert(old_child.hash.clone(), 1_000);
+        state
+            .orphan_received_at_ms
+            .insert(fresh_child.hash.clone(), 9_500);
+
+        let result = terminalize_residual_waiting_missing_parents(&mut state, 10_000, 1_000, 8);
+
+        assert_eq!(result.transitioned_parents, 0);
+        assert_eq!(pending_missing_parent_count(&state), 1);
+        assert!(state.orphan_parent_index.contains_key("mixed-parent"));
+        assert!(state.terminal_missing_parents.is_empty());
+        assert!(state.orphan_blocks.contains_key(&old_child.hash));
+        assert!(state.orphan_blocks.contains_key(&fresh_child.hash));
     }
 
     #[test]
