@@ -134,8 +134,14 @@ Each `5N/1M`, `5N/2M`, and `5N/4M` rehearsal writes `evidence_manifest.json` bes
 
 Interpretation rules:
 
-1. Treat `failure_class=environment` as a host/container setup problem, not as node or miner behavior.
-2. Treat `failure_class=timeout` as an incomplete run unless the manifest also shows enough final endpoint captures to classify a node/convergence symptom.
-3. Treat `failure_class=convergence` as a staged gate failure involving readiness schema, P2P connection, height/tip convergence, or required stage gates.
-4. Treat `failure_class=node` as a runtime/node symptom that was not better classified as environment, timeout, or convergence.
-5. For `5N/4M`, use the manifest as diagnostic stress evidence only; it does not claim public testnet readiness or v2.3.0 readiness.
+1. Read `result` first:
+   - `PASS` means the mandatory gates for the selected stage passed.
+   - `FAIL` means the bundle is complete enough to classify a node, convergence, timeout, or packaging failure.
+   - `ENV_FAIL` means the run failed host/container preflight before valid node evidence could be produced.
+   - For the `5N/4M` stress workflow, a non-pass result remains observe-only diagnostic evidence for v2.2.20.
+2. Treat `failure_class=none` with `result=PASS` as a successful staged evidence bundle.
+3. Treat `failure_class=environment` as a host/container setup problem, not as node or miner behavior.
+4. Treat `failure_class=timeout` as an incomplete run unless the manifest also shows enough final endpoint captures to classify a node/convergence symptom.
+5. Treat `failure_class=convergence` as a staged gate failure involving readiness schema, P2P connection, height/tip convergence, or required stage gates.
+6. Treat `failure_class=node` as a runtime/node symptom that was not better classified as environment, timeout, or convergence.
+7. For `5N/4M`, use the manifest as diagnostic stress evidence only; it does not claim public testnet readiness or v2.3.0 readiness.
