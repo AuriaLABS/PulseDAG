@@ -9,14 +9,14 @@ This document records the current known limitations for `v2.2.20` active hardeni
 - This document does not claim public-testnet live status, public-testnet readiness, or `v2.3.0` readiness.
 - No limitation below authorizes a consensus-rule change, PoW semantic change, smart-contract enablement, pool-logic enablement, or `VERSION` bump.
 
-## Remaining real limitations that block closeout unless waived
+## Remaining limitations that block closeout unless resolved or waived
 
 | Limitation | Current state | Required exit evidence |
 |---|---|---|
-| `5N/2M` accepted-block recovery | The latest recorded `5N/2M` evidence improved peer visibility, convergence, and backlog drain, but failed because accepted blocks remained `0`. | Replacement `5N/2M` evidence after the latest hardening PRs with accepted blocks, archive, checksum, final node table, miner accept/reject summary, and no regression in peer/orphan/final-tip behavior; or a complete non-readiness waiver. |
+| `5N/2M` accepted-block recovery | The latest recorded `5N/2M` evidence improved peer visibility, convergence, and backlog drain, but failed because accepted blocks remained `0`. | Replacement `5N/2M` evidence after all remaining `v2.2.20` hardening PRs with accepted blocks, archive, checksum, final node table, miner accept/reject summary, and no regression in peer/orphan/final-tip behavior; or a complete non-readiness waiver. |
 | `5N/4M` stress recovery | The latest recorded `v2.2.20` stress evidence is still `OBSERVE_FAIL`, with all-zero peer visibility, orphan and pending-missing-parent saturation, and divergent tips. | Replacement `5N/4M` evidence that is PASS, or an accepted bounded limitation with measured divergence, peer visibility, RPC liveness, orphan/missing-parent backlog, owner, reviewer, UTC approval, expiry, and exit criteria. |
 | Snapshot/restore closeout artifact | The deterministic drill is documented, but closeout requires an attached drill artifact/checksum or formal waiver. | Snapshot creation/restore bundle, checksums, restored node health/readiness, timing metrics, and evidence manifest; or waiver with owner, UTC approval, scope, expiry, and exit criteria. |
-| Final CI/workspace validation artifact | The closeout requires validation logs for the evaluated merge commit. | Accepted logs or CI artifacts for `cargo fmt --all -- --check`, `cargo check --workspace --locked`, `cargo test --workspace --locked`, and `cargo clippy --workspace --all-targets -- -D warnings`. |
+| Final CI/workspace validation artifact | The closeout requires validation logs for the evaluated merge commit and version guards proving `VERSION=v2.2.20` and root Cargo workspace version `2.2.20`. | Accepted logs or CI artifacts for `cat VERSION`, Cargo workspace version inspection, `cargo fmt --all -- --check`, `cargo check --workspace --locked`, `cargo test --workspace --locked`, and `cargo clippy --workspace --all-targets -- -D warnings`. |
 
 ## Out-of-scope non-readiness areas
 
@@ -40,7 +40,7 @@ The following are not active `v2.2.20` code blockers by themselves. They remain 
 | `#604` | Rate-limit-aware block request recovery in the submit-isolation branch | Narrowed parent-fetch/orphan recovery retry risk by making block request recovery rate-limit aware. Replacement staged evidence remains required. |
 | `#605` | Bound RPC liveness endpoint handlers | Narrowed RPC liveness starvation risk by bounding liveness endpoint handlers. Replacement stress evidence must prove the endpoints remain captureable under load. |
 
-## Limitations resolved or narrowed by later PRs
+## Limitations resolved or narrowed by PRs #606 and later
 
 | PR | Hardening area | Limitation status |
 |---|---|---|
@@ -52,6 +52,7 @@ The following are not active `v2.2.20` code blockers by themselves. They remain 
 | `#612` | Mining submit tests aligned with actor semantics | Narrowed regression-test mismatch for bounded submit behavior. |
 | `#613` | Windows and Docker rehearsal hardening | Narrowed environment ambiguity by hardening preflight and Docker execution. |
 | `#614` | Evidence manifest completion | Narrowed evidence-review ambiguity by requiring self-classifying evidence manifests for rehearsal bundles. |
+| Later `v2.2.20` hardening PRs | Evidence-driven closeout only | Must remain in `v2.2.20`, preserve consensus and PoW semantics, and update this table or the closeout index with whether each prior limitation is resolved, narrowed, or still blocked. |
 
 ## Closeout decision reference
 
@@ -59,4 +60,4 @@ The final closeout evidence index is `docs/V2_2_20_FINAL_EVIDENCE_INDEX.md`. It 
 
 ## Closeout interpretation
 
-Resolved or narrowed limitations are not public-testnet readiness evidence by themselves. They must be paired with the closeout checklist, replacement private rehearsal bundles, checksums, waivers where applicable, and a final `GO/NO-GO` decision.
+Resolved or narrowed limitations are not public-testnet readiness evidence by themselves. A limitation is considered resolved for closeout only when the relevant replacement evidence or complete waiver is recorded; otherwise it remains a `v2.2.20` blocker. They must be paired with the closeout checklist, replacement private rehearsal bundles, checksums, waivers where applicable, and a final `GO/NO-GO` decision.

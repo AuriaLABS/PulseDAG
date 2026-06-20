@@ -6,10 +6,10 @@
 |---|---|
 | VERSION file | `v2.2.20` |
 | Cargo workspace version | `2.2.20` |
-| Current milestone | `v2.2.20` active hardening and closeout evidence collection |
+| Current milestone | `v2.2.20` active hardening; all remaining hardening PRs stay in this milestone until closeout passes |
 | Current state | **CLOSEOUT EVIDENCE RECORDED; NO_GO TO START V2.3.0 REVIEW** |
 | Readiness claims | No `v2.3.0` readiness claim; no `v3.0` readiness claim; no public-testnet launch claim |
-| Public testnet signal | `public_testnet_ready=false` |
+| Public testnet signal | `public_testnet_ready=false` (mandatory; no live/ready claim) |
 
 ## v2.2.x progression status
 
@@ -23,14 +23,16 @@
 
 ## v2.2.20 evidence matrix
 
+Status meanings: `PASS` may support `v2.2.20` closeout, `FAIL`/`OBSERVE_FAIL` are not closeout-pass, and `MISSING` requires evidence or a complete non-readiness waiver.
+
 The final `v2.2.20` evidence index is `docs/V2_2_20_FINAL_EVIDENCE_INDEX.md` and records `NO_GO` as of 2026-06-12. The evidence below is private rehearsal and closeout evidence only. It does **not** authorize a public-testnet launch, does **not** start burn-in, does **not** bump `VERSION`, and does **not** declare `v2.3.0` readiness.
 
 | Evidence gate | Current status | Evidence / interpretation |
 |---|---|---|
-| `5N/1M baseline` | **PASS** | Accepted `v2.2.20` baseline evidence is recorded in `docs/V2_2_20_5N_1M_BASELINE_EVIDENCE.md`. This remains the mandatory regression guard. |
-| `5N/2M intermediate` | **FAIL, improved / not closeout-pass** | Latest recorded `v2.2.20` evidence at merge commit `b6950201cd24ed8067c0b5dd228486047a1c27e0` cleared the prior peer/orphan/final-tip failure signature, but failed the accepted-block gate with `MINER_NO_ACCEPTED_BLOCKS`. See `docs/V2_2_20_5N_2M_INTERMEDIATE_EVIDENCE.md`. Later hardening PRs must attach replacement evidence before closeout can pass. |
-| `5N/4M stress` | **OBSERVE_FAIL / evidence-only until replaced** | First `v2.2.20` measured stress evidence at commit `6633962c07bb1ccfc8c9e15b8763faf0402f45a6` retained peer collapse, saturated orphan and pending-missing-parent backlogs, and divergent final tips. See `docs/V2_2_20_FIRST_STRESS_EVIDENCE.md`. Later PRs `#600`-`#614` add hardening that must be validated by a new stress bundle before this gate can be closed. |
-| Snapshot/restore drill | **DOCUMENTED; CLOSEOUT ARTIFACT MISSING** | `docs/SNAPSHOT_RESTORE_DRILL_V2_2_20.md` defines the deterministic restore evidence track. Closeout still needs the drill artifact/checksum or an approved waiver. |
+| `5N/1M baseline` | **PASS / closeout-eligible** | Accepted `v2.2.20` baseline evidence is recorded in `docs/V2_2_20_5N_1M_BASELINE_EVIDENCE.md`. This remains the mandatory regression guard, but it does not imply `v2.3.0` or public-testnet readiness. |
+| `5N/2M intermediate` | **FAIL, improved / not closeout-pass** | Latest recorded `v2.2.20` evidence at merge commit `b6950201cd24ed8067c0b5dd228486047a1c27e0` cleared the prior peer/orphan/final-tip failure signature, but failed the accepted-block gate with `MINER_NO_ACCEPTED_BLOCKS`. See `docs/V2_2_20_5N_2M_INTERMEDIATE_EVIDENCE.md`. Replacement evidence after all remaining `v2.2.20` hardening PRs, or a complete non-readiness waiver, is required before closeout can pass. |
+| `5N/4M stress` | **OBSERVE_FAIL / evidence-only until replaced** | First `v2.2.20` measured stress evidence at commit `6633962c07bb1ccfc8c9e15b8763faf0402f45a6` retained peer collapse, saturated orphan and pending-missing-parent backlogs, and divergent final tips. See `docs/V2_2_20_FIRST_STRESS_EVIDENCE.md`. PRs `#600`-`#614` and any later `v2.2.20` hardening must be validated by a replacement stress bundle or accepted bounded limitation before this gate can be closed. |
+| Snapshot/restore drill | **MISSING closeout artifact / waiver required** | `docs/SNAPSHOT_RESTORE_DRILL_V2_2_20.md` defines the deterministic restore evidence track. Closeout still needs the drill artifact/checksum or an approved waiver. |
 | Workspace validation | **PASS locally for final docs PR; CI artifact still required for evaluated merge commit** | `cargo fmt --all -- --check`, `cargo check --workspace --locked`, `cargo test --workspace --locked`, and `cargo clippy --workspace --all-targets -- -D warnings` passed locally on 2026-06-12 UTC; final CI/release-manager evidence must still be attached for the evaluated merge commit. |
 
 ## v2.2.20 hardening scope retained in this milestone

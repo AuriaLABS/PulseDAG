@@ -6,18 +6,20 @@ This checklist closes `v2.2.20` active hardening only. It must not be used to cl
 
 | Gate | Required state | Evidence path / notes |
 |---|---|---|
-| Version guard | PASS | `VERSION` is `v2.2.20`; Cargo workspace version is `2.2.20`; no `v2.3.0` bump is included. |
+| Version guard | PASS | Attach `cat VERSION` showing `v2.2.20`, root Cargo `[workspace.package] version = "2.2.20"`, and a diff proving no `v2.3.0` bump is included. |
 | Public-testnet signal guard | PASS | `public_testnet_ready=false` remains the required value for all closeout materials; any true/ready/live assertion is automatic **NO-GO**. |
 | Workspace validation | PASS | Attach logs for `cargo fmt --all -- --check`, `cargo check --workspace --locked`, `cargo test --workspace --locked`, and `cargo clippy --workspace --all-targets -- -D warnings`. |
 | `5N/1M baseline` | PASS | Attach private evidence archive, sha256, manifest, final node table, convergence metrics, orphan/missing-parent counts, peer counts, and miner accept/reject summary. |
-| `5N/2M intermediate` | PASS or approved non-readiness waiver | Attach replacement evidence after hardening PRs. If non-PASS, waiver must explicitly say public-testnet readiness and `v2.3.0` readiness are not claimed. |
-| `5N/4M stress` | PASS or accepted non-blocking limitation | Attach replacement stress evidence after PRs `#600`-`#614`, including RPC liveness/final-capture behavior, peer visibility, final tips, orphan/missing-parent backlog, miner metrics, archive, sha256, and manifest. |
+| `5N/2M intermediate` | PASS or approved non-readiness waiver | Attach replacement evidence after all remaining `v2.2.20` hardening PRs. If non-PASS, waiver must explicitly say public-testnet readiness and `v2.3.0` readiness are not claimed. |
+| `5N/4M stress` | PASS or accepted non-blocking limitation | Attach replacement stress evidence after PRs `#600`-`#614` and any later `v2.2.20` hardening PRs, including RPC liveness/final-capture behavior, peer visibility, final tips, orphan/missing-parent backlog, miner metrics, archive, sha256, and manifest. |
 | Snapshot/restore | PASS or approved waiver | Attach deterministic restore drill evidence from `docs/SNAPSHOT_RESTORE_DRILL_V2_2_20.md`, or waiver. |
 | Known limitations | PASS | Attach decision-scoped mapping from `docs/KNOWN_LIMITATIONS_V2_2_20.md` showing remaining limitations, resolved/narrowed limitations, owners, expiry, and exit criteria. |
 | Incident ledger | PASS | Attach incident list proving no unresolved Sev-1 consensus/sync/security blocker. |
 | Evidence integrity | PASS | Every referenced bundle has an archive, checksum, evaluated commit, UTC timestamp, and reproducible command or workflow name. |
 
 ## Waiver requirements
+
+Waivers are allowed only for `v2.2.20` hardening closeout scope. They cannot convert a non-PASS gate into public-testnet readiness or `v2.3.0` readiness.
 
 A waiver is valid only when it records all of the following:
 
@@ -41,8 +43,8 @@ Allowed only when:
 
 - all mandatory evidence gates are PASS, or any non-PASS gate has a complete waiver that is explicitly non-readiness and non-public-testnet;
 - `5N/1M` is PASS;
-- `5N/2M` has replacement evidence after the latest hardening PRs;
-- `5N/4M` has replacement evidence after PRs `#600`-`#614` and any non-PASS outcome is accepted as a bounded limitation;
+- `5N/2M` has replacement evidence after all remaining `v2.2.20` hardening PRs, or a complete non-readiness waiver;
+- `5N/4M` has replacement evidence after PRs `#600`-`#614` and any later `v2.2.20` hardening PRs, and any non-PASS outcome is accepted as a bounded limitation;
 - no unresolved Sev-1 consensus/sync/security blocker exists;
 - `VERSION` remains `v2.2.20` and Cargo workspace version remains `2.2.20`;
 - `public_testnet_ready=false` remains the only public-testnet signal.
@@ -57,7 +59,8 @@ Required when any of the following is true:
 - evidence archive, checksum, evaluated commit, or manifest is missing for a required bundle;
 - unresolved Sev-1 consensus/sync/security blocker exists;
 - `VERSION` or Cargo workspace version is bumped without explicit maintainer approval;
-- any document claims public-testnet ready, public-testnet live, or `v2.3.0` ready status.
+- any document claims public-testnet ready, public-testnet live, or `v2.3.0` ready status;
+- a waiver omits owner, reviewer, UTC approval, scope, expiry, exit criteria, or the required non-readiness statement.
 
 ### `WAIVED_WITH_REASON`
 

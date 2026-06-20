@@ -4,7 +4,8 @@ This checklist defines the objective gate for **starting** formal `v2.3.0` readi
 
 ## Non-negotiable guardrails
 
-- `v2.3.0` work can start only after `v2.2.20` closeout is complete, reviewed, and recorded as `GO_TO_START_V2_3_0_REVIEW`.
+- `v2.3.0` work can start only after `v2.2.20` closeout is complete, reviewed, and recorded as `GO_TO_START_V2_3_0_REVIEW`; a `NO_GO` or incomplete closeout keeps all remaining hardening in `v2.2.20`.
+- Guardrail commands must show `VERSION` exactly `v2.2.20` and the root `[workspace.package]` Cargo version exactly `2.2.20`.
 - Do **not** bump `VERSION` from `v2.2.20` unless a later explicit maintainer approval is recorded after the closeout gates pass.
 - Cargo workspace version must remain `2.2.20` during this checklist unless that same later explicit maintainer approval authorizes a version bump.
 - Keep `public_testnet_ready=false`; this checklist cannot authorize public-testnet launch, public-testnet live status, or public-testnet readiness.
@@ -16,12 +17,12 @@ This checklist defines the objective gate for **starting** formal `v2.3.0` readi
 | Gate | Required status | Minimum evidence |
 |---|---|---|
 | v2.2.20 closeout | PASS | Completed `docs/CLOSING_CHECKLIST_V2_2_20.md` with final decision `GO_TO_START_V2_3_0_REVIEW`, exact commit, reviewer, UTC date, and evidence paths. |
-| Version guard | PASS | `VERSION` remains `v2.2.20`; Cargo workspace version remains `2.2.20`; no unauthorized version bump diff. |
+| Version guard | PASS | Attach `cat VERSION` showing `v2.2.20`, root Cargo `[workspace.package] version = "2.2.20"`, and a diff proving no unauthorized version bump. |
 | Workspace validation | PASS | `cargo fmt --all -- --check`, `cargo check --workspace --locked`, `cargo test --workspace --locked`, and `cargo clippy --workspace --all-targets -- -D warnings` logs from the evaluated closeout commit. |
 | Local smoke | PASS | `3N/1M` or equivalent local smoke bundle with node health, readiness, peer visibility, miner activity, accepted-block count, and `public_testnet_ready=false`. |
 | Private baseline | PASS | `5N/1M` run bundle with pre/post-quiescence convergence, worst lag, distinct final tips, orphan/missing-parent counts, miner accept/reject summary, archive, and checksum. |
-| Private intermediate | PASS or explicit non-readiness waiver | Replacement `5N/2M` run after `v2.2.20` hardening PRs. Any waiver must state that it blocks public-testnet readiness and does not make `v2.3.0` ready. |
-| Private stress | PASS or accepted non-blocking limitation | Replacement `5N/4M` stress bundle with metrics. If not PASS, the release manager must accept a non-blocking limitation that includes measured divergence, orphan pressure, missing-parent backlog, RPC liveness, peer visibility, final tips, recovery behavior, owner, expiry, and exit criteria. |
+| Private intermediate | PASS or explicit non-readiness waiver | Replacement `5N/2M` run after all remaining `v2.2.20` hardening PRs. Any waiver must state that it blocks public-testnet readiness and does not make `v2.3.0` ready. |
+| Private stress | PASS or accepted non-blocking limitation | Replacement `5N/4M` stress bundle after all remaining `v2.2.20` hardening PRs with metrics. If not PASS, the release manager must accept a non-blocking limitation that includes measured divergence, orphan pressure, missing-parent backlog, RPC liveness, peer visibility, final tips, recovery behavior, owner, expiry, and exit criteria. |
 | Release workflow | PASS | Preflight and release workflow logs, `/release`, `/status`, and `/readiness` captures, and reproducible artifact/checksum evidence for the closeout commit. |
 | Snapshot/restore | PASS or approved waiver | Snapshot creation and restore/rebuild drill logs, restored node health/readiness, and timing metrics, or an explicit waiver with owner, UTC approval, scope, expiry, and exit criteria. |
 | Known limitations mapping | PASS | Decision-scoped mapping from `docs/KNOWN_LIMITATIONS_V2_2_20.md` that identifies remaining limitations, resolved limitations from PRs `#600`-`#605` and later PRs, blockers, owners, and exit criteria. |
