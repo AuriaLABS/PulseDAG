@@ -502,6 +502,14 @@ pub struct NodeRuntimeStats {
     pub missing_parent_retry_peer_total: u64,
     #[serde(default)]
     pub missing_parent_residual_waiting_terminal_total: u64,
+    #[serde(default)]
+    pub final_quiescence_orphan_reprocess_total: u64,
+    #[serde(default)]
+    pub final_quiescence_orphan_terminalized_total: u64,
+    #[serde(default)]
+    pub final_quiescence_tip_reconcile_total: u64,
+    #[serde(default)]
+    pub final_quiescence_tip_reconcile_blocked_reason: Option<String>,
     pub orphan_blocks_queued: u64,
     pub orphan_blocks_resolved: u64,
     pub orphan_blocks_retried: u64,

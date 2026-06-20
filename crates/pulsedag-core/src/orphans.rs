@@ -91,6 +91,20 @@ pub struct ResidualMissingParentTerminalResult {
     pub waiting_orphans: usize,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FinalQuiescenceReconcileResult {
+    pub orphan_reprocess_total: usize,
+    pub orphan_reprocess_accepted: usize,
+    pub orphan_terminalized_total: usize,
+    pub orphan_evicted_total: usize,
+    pub tip_reconcile_total: usize,
+    pub tip_reconcile_blocked_reason: Option<String>,
+    pub active_orphan_count: usize,
+    pub active_pending_missing_parents: usize,
+    pub terminal_missing_parent_entries: usize,
+    pub quarantined_missing_parent_entries: usize,
+}
+
 pub fn active_missing_parent_count(state: &ChainState) -> usize {
     state.orphan_parent_index.len()
 }
@@ -252,6 +266,53 @@ pub fn terminalize_residual_waiting_missing_parents(
         }
     }
     result
+}
+
+/// Run a deterministic final-quiescence cleanup pass for near-converged nodes.
+///
+/// This helper is intentionally limited to orphan/missing-parent bookkeeping and tip diagnostics.
+/// It does not rewrite accepted DAG tips or consensus choice. The pass first revalidates stale
+/// orphan indexes, adopts any now-ready orphans, then terminalizes residual missing-parent roots
+/// that have exceeded `ttl_ms`, and finally re-runs orphan adoption so late cleanup cannot leave
+/// active ready entries behind.
+pub fn reconcile_final_quiescence(
+    state: &mut ChainState,
+    now_ms: u64,
+    ttl_ms: u64,
+    limit: usize,
+) -> FinalQuiescenceReconcileResult {
+    let _ = revalidate_orphan_backlog(state);
+    let first = adopt_ready_orphans_with_result(state, AcceptSource::P2p, None);
+    let residual = terminalize_residual_waiting_missing_parents(state, now_ms, ttl_ms, limit);
+    let _ = revalidate_orphan_backlog(state);
+    let second = adopt_ready_orphans_with_result(state, AcceptSource::P2p, None);
+
+    let active_orphan_count = state.orphan_blocks.len();
+    let active_pending_missing_parents = pending_missing_parent_count(state);
+    let tip_count = state.dag.tips.len();
+    let tip_reconcile_blocked_reason = if tip_count <= 1 {
+        None
+    } else if active_orphan_count > 0 || active_pending_missing_parents > 0 {
+        Some(format!(
+            "waiting_for_orphan_cleanup active_orphans={} active_missing_parents={}",
+            active_orphan_count, active_pending_missing_parents
+        ))
+    } else {
+        Some(format!("multiple_valid_tips tip_count={}", tip_count))
+    };
+
+    FinalQuiescenceReconcileResult {
+        orphan_reprocess_total: first.retried.saturating_add(second.retried),
+        orphan_reprocess_accepted: first.accepted.saturating_add(second.accepted),
+        orphan_terminalized_total: residual.transitioned_parents,
+        orphan_evicted_total: residual.evicted_orphans,
+        tip_reconcile_total: usize::from(tip_count > 1),
+        tip_reconcile_blocked_reason,
+        active_orphan_count,
+        active_pending_missing_parents,
+        terminal_missing_parent_entries: terminal_missing_parent_count(state),
+        quarantined_missing_parent_entries: quarantined_missing_parent_count(state),
+    }
 }
 
 pub fn missing_block_parents(block: &Block, state: &ChainState) -> Vec<Hash> {
@@ -901,6 +962,89 @@ mod tests {
         assert!(!state.orphan_blocks.contains_key(&child.hash));
         assert!(!state.orphan_missing_parents.contains_key(&child.hash));
         assert!(!state.orphan_received_at_ms.contains_key(&child.hash));
+        assert_orphan_indexes_consistent(&state);
+    }
+
+    #[test]
+    fn final_quiescence_reprocesses_ready_orphan_and_clears_active_missing_parent() {
+        let mut state = init_chain_state("test".into());
+        let parent = candidate_for_state(
+            &state,
+            vec![state.dag.genesis_hash.clone()],
+            1,
+            "final-parent",
+            1,
+        );
+        let parent_state = state_after(&state, &parent);
+        let child = candidate_for_state(
+            &parent_state,
+            vec![parent.hash.clone()],
+            2,
+            "final-child",
+            2,
+        );
+        queue_missing(&mut state, child.clone());
+        apply_block(&parent, &mut state).unwrap();
+
+        let result = reconcile_final_quiescence(&mut state, now_ms(), DEFAULT_ORPHAN_MAX_AGE_MS, 8);
+
+        assert_eq!(result.orphan_reprocess_accepted, 1);
+        assert_eq!(result.active_orphan_count, 0);
+        assert_eq!(result.active_pending_missing_parents, 0);
+        assert!(state.dag.blocks.contains_key(&child.hash));
+        assert_orphan_indexes_consistent(&state);
+    }
+
+    #[test]
+    fn final_quiescence_terminalizes_residual_missing_parent_after_ttl() {
+        let mut state = init_chain_state("test".into());
+        let parent = candidate_for_state(
+            &state,
+            vec![state.dag.genesis_hash.clone()],
+            1,
+            "residual-parent",
+            1,
+        );
+        let child = candidate(vec![parent.hash.clone()], 2, "residual-child", 2);
+        queue_missing(&mut state, child);
+        let old = now_ms().saturating_sub(DEFAULT_ORPHAN_MAX_AGE_MS + 1_000);
+        for received_at in state.orphan_received_at_ms.values_mut() {
+            *received_at = old;
+        }
+
+        let result = reconcile_final_quiescence(
+            &mut state,
+            now_ms(),
+            DEFAULT_ORPHAN_MAX_AGE_MS,
+            DEFAULT_ORPHAN_RECOVERY_EVICT_LIMIT,
+        );
+
+        assert_eq!(result.orphan_terminalized_total, 1);
+        assert_eq!(result.orphan_evicted_total, 1);
+        assert_eq!(result.active_orphan_count, 0);
+        assert_eq!(result.active_pending_missing_parents, 0);
+        assert_eq!(result.quarantined_missing_parent_entries, 1);
+        assert_orphan_indexes_consistent(&state);
+    }
+
+    #[test]
+    fn final_quiescence_keeps_fresh_waiting_missing_parent_active() {
+        let mut state = init_chain_state("test".into());
+        let parent = candidate_for_state(
+            &state,
+            vec![state.dag.genesis_hash.clone()],
+            1,
+            "fresh-parent",
+            1,
+        );
+        let child = candidate(vec![parent.hash.clone()], 2, "fresh-child", 2);
+        queue_missing(&mut state, child);
+
+        let result = reconcile_final_quiescence(&mut state, now_ms(), DEFAULT_ORPHAN_MAX_AGE_MS, 8);
+
+        assert_eq!(result.orphan_terminalized_total, 0);
+        assert_eq!(result.active_orphan_count, 1);
+        assert_eq!(result.active_pending_missing_parents, 1);
         assert_orphan_indexes_consistent(&state);
     }
 

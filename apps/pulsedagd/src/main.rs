@@ -177,6 +177,10 @@ struct OrphanRecoveryTickResult {
     evicted_after_unactionable: usize,
     residual_waiting_terminal: usize,
     residual_waiting_evicted: usize,
+    final_quiescence_orphan_reprocess: usize,
+    final_quiescence_orphan_terminalized: usize,
+    final_quiescence_tip_reconcile: usize,
+    final_quiescence_tip_reconcile_blocked_reason: Option<String>,
     root_classification_counts: BTreeMap<String, usize>,
     orphan_count: usize,
     pending_missing: usize,
@@ -1130,6 +1134,10 @@ async fn main() -> Result<()> {
                             let mut revalidated = false;
                             let mut residual_waiting_terminal = 0usize;
                             let mut residual_waiting_evicted = 0usize;
+                            let mut final_quiescence_orphan_reprocess = 0usize;
+                            let mut final_quiescence_orphan_terminalized = 0usize;
+                            let mut final_quiescence_tip_reconcile = 0usize;
+                            let mut final_quiescence_tip_reconcile_blocked_reason = None;
                             if no_requestable_roots {
                                 warn!(
                                     requestable = *root_classification_counts
@@ -1179,7 +1187,28 @@ async fn main() -> Result<()> {
                                     );
                                 residual_waiting_terminal = residual.transitioned_parents;
                                 residual_waiting_evicted = residual.evicted_orphans;
-                                if evicted > 0 || residual_waiting_terminal > 0 {
+                                let final_quiescence = pulsedag_core::reconcile_final_quiescence(
+                                    &mut guard,
+                                    now_millis(),
+                                    pulsedag_core::DEFAULT_ORPHAN_MAX_AGE_MS,
+                                    ORPHAN_RECOVERY_REVALIDATE_EVICT_LIMIT,
+                                );
+                                final_quiescence_orphan_reprocess =
+                                    final_quiescence.orphan_reprocess_total;
+                                final_quiescence_orphan_terminalized =
+                                    final_quiescence.orphan_terminalized_total;
+                                final_quiescence_tip_reconcile =
+                                    final_quiescence.tip_reconcile_total;
+                                final_quiescence_tip_reconcile_blocked_reason =
+                                    final_quiescence.tip_reconcile_blocked_reason;
+                                residual_waiting_terminal = residual_waiting_terminal
+                                    .saturating_add(final_quiescence.orphan_terminalized_total);
+                                residual_waiting_evicted = residual_waiting_evicted
+                                    .saturating_add(final_quiescence.orphan_evicted_total);
+                                if evicted > 0
+                                    || residual_waiting_terminal > 0
+                                    || final_quiescence_orphan_reprocess > 0
+                                {
                                     match storage.persist_chain_state(&guard) {
                                         Ok(()) => {}
                                         Err(e) => {
@@ -1207,6 +1236,10 @@ async fn main() -> Result<()> {
                                 },
                                 residual_waiting_terminal,
                                 residual_waiting_evicted,
+                                final_quiescence_orphan_reprocess,
+                                final_quiescence_orphan_terminalized,
+                                final_quiescence_tip_reconcile,
+                                final_quiescence_tip_reconcile_blocked_reason,
                                 root_classification_counts,
                                 orphan_count: guard.orphan_blocks.len(),
                                 pending_missing: pulsedag_core::pending_missing_parent_count(
@@ -1324,6 +1357,19 @@ async fn main() -> Result<()> {
                         rt.orphan_missing_parent_residual_evicted_total = rt
                             .orphan_missing_parent_residual_evicted_total
                             .saturating_add(tick.residual_waiting_evicted as u64);
+                        rt.final_quiescence_orphan_reprocess_total = rt
+                            .final_quiescence_orphan_reprocess_total
+                            .saturating_add(tick.final_quiescence_orphan_reprocess as u64);
+                        rt.final_quiescence_orphan_terminalized_total = rt
+                            .final_quiescence_orphan_terminalized_total
+                            .saturating_add(tick.final_quiescence_orphan_terminalized as u64);
+                        rt.final_quiescence_tip_reconcile_total = rt
+                            .final_quiescence_tip_reconcile_total
+                            .saturating_add(tick.final_quiescence_tip_reconcile as u64);
+                        if tick.final_quiescence_tip_reconcile_blocked_reason.is_some() {
+                            rt.final_quiescence_tip_reconcile_blocked_reason =
+                                tick.final_quiescence_tip_reconcile_blocked_reason.clone();
+                        }
                         if tick.forced_reindex {
                             rt.orphan_missing_parent_forced_reindex_total = rt
                                 .orphan_missing_parent_forced_reindex_total

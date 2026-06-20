@@ -72,6 +72,10 @@ pub struct MetricsData {
     pub missing_parent_all_peers_exhausted_total: u64,
     pub missing_parent_terminal_exhausted_total: u64,
     pub missing_parent_residual_waiting_terminal_total: u64,
+    pub final_quiescence_orphan_reprocess_total: u64,
+    pub final_quiescence_orphan_terminalized_total: u64,
+    pub final_quiescence_tip_reconcile_total: u64,
+    pub final_quiescence_tip_reconcile_blocked_reason: Option<String>,
     pub missing_parent_retry_suppressed_exhausted_total: u64,
     pub orphan_missing_parent_stale_evicted_total: u64,
     pub orphan_missing_parent_recovery_progress_total: u64,
@@ -237,6 +241,13 @@ pub async fn get_metrics<S: RpcStateLike>(
         missing_parent_terminal_exhausted_total: runtime.missing_parent_terminal_exhausted_total,
         missing_parent_residual_waiting_terminal_total: runtime
             .missing_parent_residual_waiting_terminal_total,
+        final_quiescence_orphan_reprocess_total: runtime.final_quiescence_orphan_reprocess_total,
+        final_quiescence_orphan_terminalized_total: runtime
+            .final_quiescence_orphan_terminalized_total,
+        final_quiescence_tip_reconcile_total: runtime.final_quiescence_tip_reconcile_total,
+        final_quiescence_tip_reconcile_blocked_reason: runtime
+            .final_quiescence_tip_reconcile_blocked_reason
+            .clone(),
         missing_parent_retry_suppressed_exhausted_total: runtime
             .missing_parent_retry_suppressed_exhausted_total,
         orphan_missing_parent_stale_evicted_total: runtime
