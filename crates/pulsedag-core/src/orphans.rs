@@ -99,6 +99,14 @@ pub fn terminal_missing_parent_count(state: &ChainState) -> usize {
     state.terminal_missing_parents.len()
 }
 
+pub fn quarantined_missing_parent_count(state: &ChainState) -> usize {
+    state
+        .terminal_missing_parents
+        .values()
+        .filter(|entry| matches!(entry.state, MissingParentState::Quarantined))
+        .count()
+}
+
 pub fn terminally_exhaust_missing_parent(
     state: &mut ChainState,
     parent: &Hash,
@@ -232,7 +240,7 @@ pub fn terminalize_residual_waiting_missing_parents(
         );
         if transitioned.transitioned {
             if let Some(entry) = state.terminal_missing_parents.get_mut(&parent) {
-                entry.state = MissingParentState::ExhaustedResidual;
+                entry.state = MissingParentState::Quarantined;
             }
             result.transitioned_parents = result.transitioned_parents.saturating_add(1);
             result.evicted_orphans = result
@@ -1360,8 +1368,9 @@ mod tests {
                 .get("residual-parent")
                 .unwrap()
                 .state,
-            MissingParentState::ExhaustedResidual
+            MissingParentState::Quarantined
         ));
+        assert_eq!(quarantined_missing_parent_count(&state), 1);
         assert_eq!(
             state
                 .terminal_missing_parents

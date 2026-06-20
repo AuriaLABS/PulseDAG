@@ -182,6 +182,11 @@ pub struct P2pStatus {
     pub peer_cooldown_suppressed_count: u64,
     pub peer_flap_suppressed_count: u64,
     pub peer_message_rate_limited_count: u64,
+    pub peer_effective_count: usize,
+    pub peer_min_target_missed_total: u64,
+    pub peer_cooldown_bypassed_for_connectivity_total: u64,
+    pub peer_rate_limit_recovery_suppressed_total: u64,
+    pub peer_rate_limit_by_kind_total: HashMap<String, u64>,
     pub peer_suppressed_dial_count: u64,
     pub peers_under_cooldown: usize,
     pub peers_under_flap_guard: usize,
@@ -514,6 +519,10 @@ struct InnerState {
     peer_cooldown_suppressed_count: u64,
     peer_flap_suppressed_count: u64,
     peer_message_rate_limited_count: u64,
+    peer_min_target_missed_total: u64,
+    peer_cooldown_bypassed_for_connectivity_total: u64,
+    peer_rate_limit_recovery_suppressed_total: u64,
+    peer_rate_limit_by_kind_total: HashMap<String, u64>,
     peer_suppressed_dial_count: u64,
     connection_slot_budget: usize,
     sync_selection_stickiness_secs: u64,
@@ -797,6 +806,7 @@ impl P2pHandle for MemoryP2pHandle {
             .lock()
             .map_err(|_| PulseError::Internal("p2p lock poisoned".into()))?;
         refresh_connected_peers_from_health(&mut inner);
+        enforce_connectivity_aware_cooldown_floor(&mut inner, now_unix());
         let (
             peers_under_cooldown,
             peers_under_flap_guard,
@@ -904,6 +914,13 @@ impl P2pHandle for MemoryP2pHandle {
             peer_cooldown_suppressed_count: inner.peer_cooldown_suppressed_count,
             peer_flap_suppressed_count: inner.peer_flap_suppressed_count,
             peer_message_rate_limited_count: inner.peer_message_rate_limited_count,
+            peer_effective_count: peer_sync_eligible_total.max(inner.active_connections.len()),
+            peer_min_target_missed_total: inner.peer_min_target_missed_total,
+            peer_cooldown_bypassed_for_connectivity_total: inner
+                .peer_cooldown_bypassed_for_connectivity_total,
+            peer_rate_limit_recovery_suppressed_total: inner
+                .peer_rate_limit_recovery_suppressed_total,
+            peer_rate_limit_by_kind_total: inner.peer_rate_limit_by_kind_total.clone(),
             peer_suppressed_dial_count: inner.peer_suppressed_dial_count,
             peers_under_cooldown,
             peers_under_flap_guard,
@@ -2725,6 +2742,43 @@ fn score_peer_message_outcome(
     }
 }
 
+fn private_rehearsal_min_useful_peer_target(state: &InnerState) -> usize {
+    if !state.bootnodes_configured.is_empty() || state.peer_book.len() >= 4 {
+        2
+    } else {
+        1
+    }
+}
+
+fn enforce_connectivity_aware_cooldown_floor(state: &mut InnerState, now: u64) {
+    let target = private_rehearsal_min_useful_peer_target(state);
+    if state.peer_book.is_empty() || state.active_connections.len() >= target {
+        return;
+    }
+    state.peer_min_target_missed_total = state.peer_min_target_missed_total.saturating_add(1);
+    let needed = target.saturating_sub(state.active_connections.len());
+    let mut bypassed = 0usize;
+    for health in state.peer_book.values_mut() {
+        if bypassed >= needed {
+            break;
+        }
+        if health.connected {
+            continue;
+        }
+        let suppressed = health.suppressed_until_unix > now || health.next_retry_unix > now;
+        if suppressed {
+            health.suppressed_until_unix = now;
+            health.next_retry_unix = now;
+            bypassed = bypassed.saturating_add(1);
+        }
+    }
+    if bypassed > 0 {
+        state.peer_cooldown_bypassed_for_connectivity_total = state
+            .peer_cooldown_bypassed_for_connectivity_total
+            .saturating_add(bypassed as u64);
+    }
+}
+
 fn admit_peer_inbound_message(state: &mut InnerState, peer: Option<&str>, now: u64) -> bool {
     let Some(peer) = peer else {
         return true;
@@ -2739,6 +2793,15 @@ fn admit_peer_inbound_message(state: &mut InnerState, peer: Option<&str>, now: u
         return true;
     }
     state.peer_message_rate_limited_count = state.peer_message_rate_limited_count.saturating_add(1);
+    *state
+        .peer_rate_limit_by_kind_total
+        .entry("peer_inbound".to_string())
+        .or_insert(0) += 1;
+    if state.active_connections.len() <= private_rehearsal_min_useful_peer_target(state) {
+        state.peer_rate_limit_recovery_suppressed_total = state
+            .peer_rate_limit_recovery_suppressed_total
+            .saturating_add(1);
+    }
     score_peer_message_outcome(state, peer, PeerMessageOutcome::RateLimited, now);
     false
 }
@@ -4502,6 +4565,7 @@ impl P2pHandle for Libp2pHandle {
             .lock()
             .map_err(|_| PulseError::Internal("p2p lock poisoned".into()))?;
         refresh_connected_peers_from_health(&mut inner);
+        enforce_connectivity_aware_cooldown_floor(&mut inner, now_unix());
         let (
             peers_under_cooldown,
             peers_under_flap_guard,
@@ -4609,6 +4673,13 @@ impl P2pHandle for Libp2pHandle {
             peer_cooldown_suppressed_count: inner.peer_cooldown_suppressed_count,
             peer_flap_suppressed_count: inner.peer_flap_suppressed_count,
             peer_message_rate_limited_count: inner.peer_message_rate_limited_count,
+            peer_effective_count: peer_sync_eligible_total.max(inner.active_connections.len()),
+            peer_min_target_missed_total: inner.peer_min_target_missed_total,
+            peer_cooldown_bypassed_for_connectivity_total: inner
+                .peer_cooldown_bypassed_for_connectivity_total,
+            peer_rate_limit_recovery_suppressed_total: inner
+                .peer_rate_limit_recovery_suppressed_total,
+            peer_rate_limit_by_kind_total: inner.peer_rate_limit_by_kind_total.clone(),
             peer_suppressed_dial_count: inner.peer_suppressed_dial_count,
             peers_under_cooldown,
             peers_under_flap_guard,

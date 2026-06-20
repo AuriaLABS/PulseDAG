@@ -72,8 +72,9 @@ pub use consistency::{assert_dag_consistent_for_tests, dag_consistency_issues};
 pub use orphans::{
     adopt_ready_orphans, adopt_ready_orphans_with_result, classify_orphan_backlog,
     evict_stale_orphans_bounded, missing_block_parents, orphan_children_waiting_for_parent,
-    orphan_missing_roots, pending_missing_parent_count, prune_orphans, queue_orphan_block,
-    queue_orphan_block_bounded, rebuild_orphan_parent_index, revalidate_orphan_backlog,
+    orphan_missing_roots, pending_missing_parent_count, prune_orphans,
+    quarantined_missing_parent_count, queue_orphan_block, queue_orphan_block_bounded,
+    rebuild_orphan_parent_index, revalidate_orphan_backlog,
     terminalize_residual_waiting_missing_parents, terminally_exhaust_missing_parent,
     MissingParentTerminalResult, OrphanAdoptionResult, OrphanBacklogClassification,
     OrphanQueueResult, ResidualMissingParentTerminalResult, DEFAULT_ORPHAN_MAX_AGE_MS,
