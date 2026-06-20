@@ -80,8 +80,14 @@ pub struct MetricsData {
     pub orphan_missing_parent_quarantined_total: u64,
     pub missing_parent_index_active_entries: usize,
     pub missing_parent_index_terminal_entries: usize,
+    pub missing_parent_index_quarantined_entries: usize,
     pub orphan_recovery_tick_duration_ms: u64,
     pub peer_count: usize,
+    pub peer_effective_count: usize,
+    pub peer_min_target_missed_total: u64,
+    pub peer_cooldown_bypassed_for_connectivity_total: u64,
+    pub peer_rate_limit_recovery_suppressed_total: u64,
+    pub peer_rate_limit_by_kind_total: BTreeMap<String, u64>,
     pub peer_retention_active_total: usize,
     pub peer_retention_recovering_total: usize,
     pub peer_retention_cooldown_total: usize,
@@ -232,8 +238,35 @@ pub async fn get_metrics<S: RpcStateLike>(
         orphan_missing_parent_quarantined_total: runtime.orphan_missing_parent_quarantined_total,
         missing_parent_index_active_entries: chain.orphan_parent_index.len(),
         missing_parent_index_terminal_entries: chain.terminal_missing_parents.len(),
+        missing_parent_index_quarantined_entries: pulsedag_core::quarantined_missing_parent_count(
+            &chain,
+        ),
         orphan_recovery_tick_duration_ms: runtime.orphan_recovery_tick_duration_ms,
         peer_count,
+        peer_effective_count: p2p_status
+            .as_ref()
+            .map(|snapshot| snapshot.status.peer_effective_count)
+            .unwrap_or(peer_count),
+        peer_min_target_missed_total: p2p_status
+            .as_ref()
+            .map(|snapshot| snapshot.status.peer_min_target_missed_total)
+            .unwrap_or(0),
+        peer_cooldown_bypassed_for_connectivity_total: p2p_status
+            .as_ref()
+            .map(|snapshot| {
+                snapshot
+                    .status
+                    .peer_cooldown_bypassed_for_connectivity_total
+            })
+            .unwrap_or(0),
+        peer_rate_limit_recovery_suppressed_total: p2p_status
+            .as_ref()
+            .map(|snapshot| snapshot.status.peer_rate_limit_recovery_suppressed_total)
+            .unwrap_or(0),
+        peer_rate_limit_by_kind_total: p2p_status
+            .as_ref()
+            .map(|snapshot| snapshot.status.peer_rate_limit_by_kind_total.clone())
+            .unwrap_or_default(),
         peer_retention_active_total: p2p_status
             .as_ref()
             .map(|snapshot| snapshot.status.peer_retention_active_total)

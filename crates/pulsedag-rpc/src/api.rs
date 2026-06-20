@@ -44,6 +44,8 @@ pub struct NodeRpcSnapshot {
     pub missing_parent_entries: Vec<MissingParentSnapshotEntry>,
     #[serde(default)]
     pub terminal_missing_parent_entries: Vec<MissingParentSnapshotEntry>,
+    #[serde(default)]
+    pub quarantined_missing_parent_entries: Vec<MissingParentSnapshotEntry>,
     pub inv_hashes_requested: u64,
     pub last_updated_ms: u64,
     pub degraded: bool,
@@ -69,6 +71,7 @@ impl Default for NodeRpcSnapshot {
             pending_missing_parents: 0,
             missing_parent_entries: Vec::new(),
             terminal_missing_parent_entries: Vec::new(),
+            quarantined_missing_parent_entries: Vec::new(),
             inv_hashes_requested: 0,
             last_updated_ms: unix_now_ms(),
             degraded: true,
@@ -203,12 +206,33 @@ pub fn build_node_rpc_snapshot(
     let mut terminal_missing_parent_entries = chain
         .terminal_missing_parents
         .iter()
+        .filter(|(_, entry)| {
+            !matches!(
+                entry.state,
+                pulsedag_core::state::MissingParentState::Quarantined
+            )
+        })
+        .map(|(parent, entry)| MissingParentSnapshotEntry {
+            parent: parent.clone(),
+            waiting_orphans: entry.waiting_orphans.clone(),
+        })
+        .collect::<Vec<_>>();
+    let mut quarantined_missing_parent_entries = chain
+        .terminal_missing_parents
+        .iter()
+        .filter(|(_, entry)| {
+            matches!(
+                entry.state,
+                pulsedag_core::state::MissingParentState::Quarantined
+            )
+        })
         .map(|(parent, entry)| MissingParentSnapshotEntry {
             parent: parent.clone(),
             waiting_orphans: entry.waiting_orphans.clone(),
         })
         .collect::<Vec<_>>();
     terminal_missing_parent_entries.sort_by(|left, right| left.parent.cmp(&right.parent));
+    quarantined_missing_parent_entries.sort_by(|left, right| left.parent.cmp(&right.parent));
     NodeRpcSnapshot {
         chain_id: chain.chain_id.clone(),
         height: chain.dag.best_height,
@@ -220,6 +244,7 @@ pub fn build_node_rpc_snapshot(
         pending_missing_parents: pulsedag_core::pending_missing_parent_count(chain),
         missing_parent_entries,
         terminal_missing_parent_entries,
+        quarantined_missing_parent_entries,
         inv_hashes_requested: p2p_status
             .map(|status| status.inv_hashes_requested as u64)
             .unwrap_or(0),
