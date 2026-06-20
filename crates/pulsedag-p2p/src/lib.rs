@@ -1741,9 +1741,15 @@ fn refresh_connected_peers_from_health(state: &mut InnerState) {
         }
         if has_active_connections {
             for peer_id in active {
-                if !selected
-                    .iter()
-                    .any(|selected_peer| selected_peer == &peer_id)
+                let useful = state
+                    .peer_book
+                    .get(&peer_id)
+                    .map(|health| health.connected && health.chain_id_compatible)
+                    .unwrap_or(false);
+                if useful
+                    && !selected
+                        .iter()
+                        .any(|selected_peer| selected_peer == &peer_id)
                 {
                     selected.push(peer_id);
                 }
@@ -3845,10 +3851,21 @@ fn bootnode_generic_cooldown_active(state: &InnerState, peer_id: &PeerId, now: u
         .is_some_and(|health| health.next_retry_unix > now || health.suppressed_until_unix > now)
 }
 
+fn has_useful_connected_peers(state: &InnerState) -> bool {
+    !state.connected_peers.is_empty()
+}
+
+fn should_force_bootnode_redial_for_peer(state: &InnerState, peer_id: &str) -> bool {
+    mode_connected_peers_are_real_network(&state.mode)
+        && !state.bootnodes_configured.is_empty()
+        && !has_useful_connected_peers(state)
+        && !state.pending_bootnode_dials.contains(peer_id)
+}
+
 fn isolated_bootnode_reconnect_active(state: &InnerState) -> bool {
     mode_connected_peers_are_real_network(&state.mode)
         && !state.bootnodes_configured.is_empty()
-        && state.active_connections.is_empty()
+        && !has_useful_connected_peers(state)
         && (!state.pending_bootnode_dials.is_empty() || !state.bootnode_next_redial_at.is_empty())
 }
 
@@ -4397,14 +4414,11 @@ async fn run_libp2p_real_runtime(
                             continue;
                         }
                     }
+                    let peer_key = peer_id.to_string();
                     let should_force_bootnode_redial = inner
                         .lock()
                         .ok()
-                        .map(|guard| {
-                            guard.active_connections.is_empty()
-                                && !guard.bootnodes_configured.is_empty()
-                                && !guard.pending_bootnode_dials.contains(&peer_id.to_string())
-                        })
+                        .map(|guard| should_force_bootnode_redial_for_peer(&guard, &peer_key))
                         .unwrap_or(false);
                     let isolated_without_peers = should_force_bootnode_redial;
 
@@ -7833,7 +7847,7 @@ mod deterministic_p2p_sync_coverage_tests {
     }
 
     #[test]
-    fn active_connections_remain_visible_during_peer_recovery() {
+    fn unusable_active_connections_do_not_count_as_connected_peers() {
         let mut state = InnerState {
             mode: P2P_MODE_LIBP2P_REAL.into(),
             ..InnerState::default()
@@ -7852,7 +7866,36 @@ mod deterministic_p2p_sync_coverage_tests {
 
         refresh_connected_peers_from_health(&mut state);
 
-        assert_eq!(state.connected_peers, vec!["peer-recovering".to_string()]);
+        assert!(state.connected_peers.is_empty());
+    }
+
+    #[test]
+    fn stale_unusable_bootnode_active_slot_forces_redial() {
+        let key = identity::Keypair::generate_ed25519();
+        let peer = PeerId::from(key.public());
+        let mut state = InnerState {
+            mode: P2P_MODE_LIBP2P_REAL.into(),
+            bootnodes_configured: vec![format!("/ip4/127.0.0.1/tcp/1/p2p/{peer}")],
+            ..InnerState::default()
+        };
+        state.active_connections.insert(peer.to_string(), 1);
+        state.peer_book.insert(
+            peer.to_string(),
+            PeerHealth {
+                connected: false,
+                chain_id_compatible: false,
+                last_error: Some("chain_mismatch".into()),
+                ..PeerHealth::default()
+            },
+        );
+
+        refresh_connected_peers_from_health(&mut state);
+
+        assert!(state.connected_peers.is_empty());
+        assert!(should_force_bootnode_redial_for_peer(
+            &state,
+            &peer.to_string()
+        ));
     }
 
     #[test]
