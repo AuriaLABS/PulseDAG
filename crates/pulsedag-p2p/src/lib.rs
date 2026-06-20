@@ -1691,8 +1691,8 @@ fn refresh_connected_peers_from_health(state: &mut InnerState) {
                 state
                     .peer_book
                     .get(peer_id)
-                    .map(|health| health.connected && health.chain_id_compatible)
-                    .unwrap_or(false)
+                    .map(|health| health.chain_id_compatible)
+                    .unwrap_or(true)
             })
             .collect::<Vec<_>>();
         active_remainder.sort();
@@ -1761,8 +1761,8 @@ fn refresh_connected_peers_from_health(state: &mut InnerState) {
                 let useful = state
                     .peer_book
                     .get(&peer_id)
-                    .map(|health| health.connected && health.chain_id_compatible)
-                    .unwrap_or(false);
+                    .map(|health| health.chain_id_compatible)
+                    .unwrap_or(true);
                 if useful
                     && !selected
                         .iter()
@@ -2828,8 +2828,8 @@ fn useful_peer_count(state: &InnerState) -> usize {
                 && state
                     .peer_book
                     .get(*peer_id)
-                    .map(|health| health.connected && health.chain_id_compatible)
-                    .unwrap_or(false)
+                    .map(|health| health.chain_id_compatible)
+                    .unwrap_or(true)
         })
         .count()
 }
@@ -7953,7 +7953,7 @@ mod deterministic_p2p_sync_coverage_tests {
     }
 
     #[test]
-    fn unusable_active_connections_do_not_count_as_connected_peers() {
+    fn active_chain_compatible_connections_remain_visible_during_recovery() {
         let mut state = InnerState {
             mode: P2P_MODE_LIBP2P_REAL.into(),
             ..InnerState::default()
@@ -7972,7 +7972,7 @@ mod deterministic_p2p_sync_coverage_tests {
 
         refresh_connected_peers_from_health(&mut state);
 
-        assert!(state.connected_peers.is_empty());
+        assert_eq!(state.connected_peers, vec!["peer-recovering".to_string()]);
     }
 
     #[test]
