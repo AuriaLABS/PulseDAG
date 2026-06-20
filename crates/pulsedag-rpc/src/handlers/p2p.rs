@@ -221,6 +221,34 @@ fn disabled_p2p_payload(
             serde_json::json!(0),
         );
         object.insert(
+            "peer_zero_count_duration_seconds".into(),
+            serde_json::json!(0),
+        );
+        object.insert(
+            "peer_zero_reconnect_attempt_total".into(),
+            serde_json::json!(0),
+        );
+        object.insert(
+            "peer_zero_reconnect_success_total".into(),
+            serde_json::json!(0),
+        );
+        object.insert(
+            "peer_reconnect_suppressed_by_cooldown_total".into(),
+            serde_json::json!(0),
+        );
+        object.insert(
+            "peer_reconnect_suppressed_by_rate_limit_total".into(),
+            serde_json::json!(0),
+        );
+        object.insert(
+            "peer_min_target_recovered_total".into(),
+            serde_json::json!(0),
+        );
+        object.insert(
+            "last_peer_reconnect_blocked_reason".into(),
+            serde_json::Value::Null,
+        );
+        object.insert(
             "bootnode_last_disconnect_reason".into(),
             serde_json::Value::Null,
         );
@@ -732,6 +760,34 @@ pub async fn get_p2p_status<S: RpcStateLike>(
                 serde_json::json!(status.isolated_bootnode_reconnect_active),
             );
             payload.insert(
+                "peer_zero_count_duration_seconds".into(),
+                serde_json::json!(status.peer_zero_count_duration_seconds),
+            );
+            payload.insert(
+                "peer_zero_reconnect_attempt_total".into(),
+                serde_json::json!(status.peer_zero_reconnect_attempt_total),
+            );
+            payload.insert(
+                "peer_zero_reconnect_success_total".into(),
+                serde_json::json!(status.peer_zero_reconnect_success_total),
+            );
+            payload.insert(
+                "peer_reconnect_suppressed_by_cooldown_total".into(),
+                serde_json::json!(status.peer_reconnect_suppressed_by_cooldown_total),
+            );
+            payload.insert(
+                "peer_reconnect_suppressed_by_rate_limit_total".into(),
+                serde_json::json!(status.peer_reconnect_suppressed_by_rate_limit_total),
+            );
+            payload.insert(
+                "peer_min_target_recovered_total".into(),
+                serde_json::json!(status.peer_min_target_recovered_total),
+            );
+            payload.insert(
+                "last_peer_reconnect_blocked_reason".into(),
+                serde_json::json!(status.last_peer_reconnect_blocked_reason),
+            );
+            payload.insert(
                 "bootnode_last_disconnect_reason".into(),
                 serde_json::json!(bootnode_last_disconnect_reason.clone()),
             );
@@ -752,6 +808,14 @@ pub async fn get_p2p_status<S: RpcStateLike>(
                     "bootnode_reconnect_forced_from_cooldown_total": status.bootnode_reconnect_forced_from_cooldown_total,
                     "bootnode_reconnect_success_total": status.bootnode_reconnect_success_total,
                     "isolated_bootnode_reconnect_active": status.isolated_bootnode_reconnect_active,
+                    "peer_zero_count_duration_seconds": status.peer_zero_count_duration_seconds,
+                    "peer_zero_reconnect_attempt_total": status.peer_zero_reconnect_attempt_total,
+                    "peer_zero_reconnect_success_total": status.peer_zero_reconnect_success_total,
+                    "peer_reconnect_suppressed_by_cooldown_total": status.peer_reconnect_suppressed_by_cooldown_total,
+                    "peer_reconnect_suppressed_by_rate_limit_total": status.peer_reconnect_suppressed_by_rate_limit_total,
+                    "peer_min_target_missed_total": status.peer_min_target_missed_total,
+                    "peer_min_target_recovered_total": status.peer_min_target_recovered_total,
+                    "last_peer_reconnect_blocked_reason": status.last_peer_reconnect_blocked_reason.clone(),
                     "bootnode_reconnect_failures_total": status.bootnode_redial_failures,
                     "bootnode_next_reconnect_at": status.bootnode_next_redial_at.clone(),
                     "bootnode_reconnect_backoff_secs": status.bootnode_redial_backoff_secs.clone(),
@@ -1378,6 +1442,11 @@ mod tests {
             peer_message_rate_limited_count: 2,
             peer_effective_count: 0,
             peer_min_target_missed_total: 0,
+            peer_min_target_reconnect_attempt_total: 0,
+            peer_min_target_reconnect_success_total: 0,
+            peer_below_target_duration_seconds: 0,
+            peer_below_target_blocked_reason: None,
+            peer_recovery_state: "healthy".into(),
             peer_cooldown_bypassed_for_connectivity_total: 0,
             peer_rate_limit_recovery_suppressed_total: 0,
             peer_rate_limit_by_kind_total: Default::default(),
@@ -1506,6 +1575,13 @@ mod tests {
             bootnode_reconnect_forced_from_cooldown_total: 0,
             bootnode_reconnect_success_total: 1,
             isolated_bootnode_reconnect_active: false,
+            peer_zero_count_duration_seconds: 0,
+            peer_zero_reconnect_attempt_total: 0,
+            peer_zero_reconnect_success_total: 0,
+            peer_reconnect_suppressed_by_cooldown_total: 0,
+            peer_reconnect_suppressed_by_rate_limit_total: 0,
+            peer_min_target_recovered_total: 0,
+            last_peer_reconnect_blocked_reason: None,
             bootnode_next_redial_at: std::collections::HashMap::new(),
             bootnode_redial_backoff_secs: std::collections::HashMap::new(),
             last_bootnode_dial_error: None,
@@ -1726,6 +1802,11 @@ mod tests {
                 peer_message_rate_limited_count: 0,
                 peer_effective_count: 0,
                 peer_min_target_missed_total: 0,
+                peer_min_target_reconnect_attempt_total: 0,
+                peer_min_target_reconnect_success_total: 0,
+                peer_below_target_duration_seconds: 0,
+                peer_below_target_blocked_reason: None,
+                peer_recovery_state: "healthy".into(),
                 peer_cooldown_bypassed_for_connectivity_total: 0,
                 peer_rate_limit_recovery_suppressed_total: 0,
                 peer_rate_limit_by_kind_total: Default::default(),
@@ -1786,6 +1867,13 @@ mod tests {
                 bootnode_reconnect_forced_from_cooldown_total: 0,
                 bootnode_reconnect_success_total: 0,
                 isolated_bootnode_reconnect_active: false,
+                peer_zero_count_duration_seconds: 0,
+                peer_zero_reconnect_attempt_total: 0,
+                peer_zero_reconnect_success_total: 0,
+                peer_reconnect_suppressed_by_cooldown_total: 0,
+                peer_reconnect_suppressed_by_rate_limit_total: 0,
+                peer_min_target_recovered_total: 0,
+                last_peer_reconnect_blocked_reason: None,
                 bootnode_next_redial_at: std::collections::HashMap::new(),
                 bootnode_redial_backoff_secs: std::collections::HashMap::new(),
                 last_bootnode_dial_error: None,
