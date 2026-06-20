@@ -184,6 +184,11 @@ pub struct P2pStatus {
     pub peer_message_rate_limited_count: u64,
     pub peer_effective_count: usize,
     pub peer_min_target_missed_total: u64,
+    pub peer_min_target_reconnect_attempt_total: u64,
+    pub peer_min_target_reconnect_success_total: u64,
+    pub peer_below_target_duration_seconds: u64,
+    pub peer_below_target_blocked_reason: Option<String>,
+    pub peer_recovery_state: String,
     pub peer_cooldown_bypassed_for_connectivity_total: u64,
     pub peer_rate_limit_recovery_suppressed_total: u64,
     pub peer_rate_limit_by_kind_total: HashMap<String, u64>,
@@ -535,6 +540,10 @@ struct InnerState {
     peer_flap_suppressed_count: u64,
     peer_message_rate_limited_count: u64,
     peer_min_target_missed_total: u64,
+    peer_min_target_reconnect_attempt_total: u64,
+    peer_min_target_reconnect_success_total: u64,
+    peer_below_target_since_unix: Option<u64>,
+    peer_below_target_blocked_reason: Option<String>,
     peer_cooldown_bypassed_for_connectivity_total: u64,
     peer_rate_limit_recovery_suppressed_total: u64,
     peer_rate_limit_by_kind_total: HashMap<String, u64>,
@@ -929,8 +938,16 @@ impl P2pHandle for MemoryP2pHandle {
             peer_cooldown_suppressed_count: inner.peer_cooldown_suppressed_count,
             peer_flap_suppressed_count: inner.peer_flap_suppressed_count,
             peer_message_rate_limited_count: inner.peer_message_rate_limited_count,
-            peer_effective_count: peer_sync_eligible_total.max(inner.active_connections.len()),
+            peer_effective_count: inner.connected_peers.len().max(peer_sync_eligible_total),
             peer_min_target_missed_total: inner.peer_min_target_missed_total,
+            peer_min_target_reconnect_attempt_total: inner.peer_min_target_reconnect_attempt_total,
+            peer_min_target_reconnect_success_total: inner.peer_min_target_reconnect_success_total,
+            peer_below_target_duration_seconds: inner
+                .peer_below_target_since_unix
+                .map(|since| now_unix().saturating_sub(since))
+                .unwrap_or(0),
+            peer_below_target_blocked_reason: inner.peer_below_target_blocked_reason.clone(),
+            peer_recovery_state: peer_recovery_state(&inner),
             peer_cooldown_bypassed_for_connectivity_total: inner
                 .peer_cooldown_bypassed_for_connectivity_total,
             peer_rate_limit_recovery_suppressed_total: inner
@@ -2784,16 +2801,54 @@ fn score_peer_message_outcome(
 }
 
 fn private_rehearsal_min_useful_peer_target(state: &InnerState) -> usize {
-    if !state.bootnodes_configured.is_empty() || state.peer_book.len() >= 4 {
-        2
+    let configured_bootnodes = state
+        .bootnodes_configured
+        .iter()
+        .filter(|addr| parse_bootnode_multiaddr(addr).is_some())
+        .count();
+    let known_peers = state.peer_book.len().max(configured_bootnodes);
+    if known_peers >= 4 {
+        4
+    } else if known_peers >= 2 || !state.bootnodes_configured.is_empty() {
+        2.min(known_peers.max(1))
     } else {
         1
     }
 }
 
+fn useful_peer_count(state: &InnerState) -> usize {
+    if !state.connected_peers.is_empty() {
+        return state.connected_peers.len();
+    }
+    state
+        .active_connections
+        .iter()
+        .filter(|(peer_id, connections)| {
+            **connections > 0
+                && state
+                    .peer_book
+                    .get(*peer_id)
+                    .map(|health| health.connected && health.chain_id_compatible)
+                    .unwrap_or(false)
+        })
+        .count()
+}
+
+fn peer_recovery_state(state: &InnerState) -> String {
+    let useful = useful_peer_count(state);
+    let target = private_rehearsal_min_useful_peer_target(state);
+    if useful == 0 && target > 0 {
+        "isolated".to_string()
+    } else if useful < target {
+        "below_target".to_string()
+    } else {
+        "healthy".to_string()
+    }
+}
+
 fn enforce_connectivity_aware_cooldown_floor(state: &mut InnerState, now: u64) {
     let target = private_rehearsal_min_useful_peer_target(state);
-    let active_count = state.active_connections.len();
+    let active_count = useful_peer_count(state);
     if active_count == 0 && (!state.bootnodes_configured.is_empty() || !state.peer_book.is_empty())
     {
         state.peer_zero_since_unix.get_or_insert(now);
@@ -2822,11 +2877,40 @@ fn enforce_connectivity_aware_cooldown_floor(state: &mut InnerState, now: u64) {
         if active_count >= target && target > 0 {
             state.peer_min_target_recovered_total =
                 state.peer_min_target_recovered_total.saturating_add(1);
+            if state.peer_below_target_since_unix.take().is_some() {
+                state.peer_min_target_reconnect_success_total = state
+                    .peer_min_target_reconnect_success_total
+                    .saturating_add(1);
+            }
+            state.peer_below_target_blocked_reason = None;
         }
         return;
     }
+    state.peer_below_target_since_unix.get_or_insert(now);
     state.peer_min_target_missed_total = state.peer_min_target_missed_total.saturating_add(1);
     let needed = target.saturating_sub(active_count);
+    let mut scheduled = 0usize;
+    for bootnode in &state.bootnodes_configured {
+        if scheduled >= needed {
+            break;
+        }
+        if let Some((peer_id, _)) = parse_bootnode_multiaddr(bootnode) {
+            let peer = peer_id.to_string();
+            if state.active_connections.get(&peer).copied().unwrap_or(0) > 0
+                || state.pending_bootnode_dials.contains(&peer)
+            {
+                continue;
+            }
+            state.bootnode_next_redial_at.insert(peer.clone(), now);
+            state.bootnode_redial_backoff_secs.entry(peer).or_insert(1);
+            scheduled = scheduled.saturating_add(1);
+        }
+    }
+    if scheduled > 0 {
+        state.peer_min_target_reconnect_attempt_total = state
+            .peer_min_target_reconnect_attempt_total
+            .saturating_add(scheduled as u64);
+    }
     let mut bypassed = 0usize;
     let mut rate_limited = 0usize;
     for health in state.peer_book.values_mut() {
@@ -2855,8 +2939,18 @@ fn enforce_connectivity_aware_cooldown_floor(state: &mut InnerState, now: u64) {
             .peer_reconnect_suppressed_by_cooldown_total
             .saturating_add(bypassed as u64);
         state.last_peer_reconnect_blocked_reason = None;
+        state.peer_below_target_blocked_reason = if scheduled > 0 {
+            Some("bootnode_redial_scheduled".to_string())
+        } else {
+            None
+        };
+    } else if scheduled > 0 {
+        state.peer_below_target_blocked_reason = Some("bootnode_redial_scheduled".to_string());
     } else if active_count == 0 {
         state.last_peer_reconnect_blocked_reason = Some("no_eligible_peer_after_floor".to_string());
+        state.peer_below_target_blocked_reason = Some("no_eligible_peer_after_floor".to_string());
+    } else {
+        state.peer_below_target_blocked_reason = Some("no_disconnected_peer_available".to_string());
     }
     if rate_limited > 0 {
         state.peer_reconnect_suppressed_by_rate_limit_total = state
@@ -4389,6 +4483,10 @@ async fn run_libp2p_real_runtime(
                 }
             }
             _ = bootnode_redial_tick.tick() => {
+                if let Ok(mut guard) = inner.lock() {
+                    refresh_connected_peers_from_health(&mut guard);
+                    enforce_connectivity_aware_cooldown_floor(&mut guard, now_unix());
+                }
                 for (peer_id, addr) in &bootstrap_peers {
                     let now = now_unix();
                     if pending_bootnode_dials.contains(peer_id) {
@@ -4798,8 +4896,16 @@ impl P2pHandle for Libp2pHandle {
             peer_cooldown_suppressed_count: inner.peer_cooldown_suppressed_count,
             peer_flap_suppressed_count: inner.peer_flap_suppressed_count,
             peer_message_rate_limited_count: inner.peer_message_rate_limited_count,
-            peer_effective_count: peer_sync_eligible_total.max(inner.active_connections.len()),
+            peer_effective_count: inner.connected_peers.len().max(peer_sync_eligible_total),
             peer_min_target_missed_total: inner.peer_min_target_missed_total,
+            peer_min_target_reconnect_attempt_total: inner.peer_min_target_reconnect_attempt_total,
+            peer_min_target_reconnect_success_total: inner.peer_min_target_reconnect_success_total,
+            peer_below_target_duration_seconds: inner
+                .peer_below_target_since_unix
+                .map(|since| now_unix().saturating_sub(since))
+                .unwrap_or(0),
+            peer_below_target_blocked_reason: inner.peer_below_target_blocked_reason.clone(),
+            peer_recovery_state: peer_recovery_state(&inner),
             peer_cooldown_bypassed_for_connectivity_total: inner
                 .peer_cooldown_bypassed_for_connectivity_total,
             peer_rate_limit_recovery_suppressed_total: inner
@@ -8109,6 +8215,53 @@ mod deterministic_p2p_sync_coverage_tests {
         enforce_connectivity_aware_cooldown_floor(&mut state, 1_010);
         assert_eq!(state.peer_zero_since_unix, None);
         assert_eq!(state.peer_zero_reconnect_success_total, 1);
+    }
+
+    #[test]
+    fn peer_below_target_schedules_bootnode_reconnect_above_one_peer() {
+        let key_a = identity::Keypair::generate_ed25519();
+        let key_b = identity::Keypair::generate_ed25519();
+        let peer_a = PeerId::from(key_a.public());
+        let peer_b = PeerId::from(key_b.public());
+        let mut state = InnerState {
+            mode: P2P_MODE_LIBP2P_REAL.into(),
+            bootnodes_configured: vec![
+                format!("/ip4/127.0.0.1/tcp/1/p2p/{peer_a}"),
+                format!("/ip4/127.0.0.1/tcp/2/p2p/{peer_b}"),
+            ],
+            ..InnerState::default()
+        };
+        state.active_connections.insert(peer_a.to_string(), 1);
+        state.connected_peers = vec![peer_a.to_string()];
+        state.peer_book.insert(
+            peer_a.to_string(),
+            PeerHealth {
+                connected: true,
+                chain_id_compatible: true,
+                ..PeerHealth::default()
+            },
+        );
+        state.peer_book.insert(
+            peer_b.to_string(),
+            PeerHealth {
+                connected: false,
+                next_retry_unix: 20_000,
+                suppressed_until_unix: 20_000,
+                ..PeerHealth::default()
+            },
+        );
+
+        enforce_connectivity_aware_cooldown_floor(&mut state, 10_000);
+
+        assert_eq!(private_rehearsal_min_useful_peer_target(&state), 2);
+        assert!(state
+            .bootnode_next_redial_at
+            .contains_key(&peer_b.to_string()));
+        assert_eq!(state.peer_min_target_reconnect_attempt_total, 1);
+        assert_eq!(
+            state.peer_below_target_blocked_reason.as_deref(),
+            Some("bootnode_redial_scheduled")
+        );
     }
 
     #[test]

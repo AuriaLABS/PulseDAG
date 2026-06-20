@@ -85,6 +85,11 @@ pub struct MetricsData {
     pub peer_count: usize,
     pub peer_effective_count: usize,
     pub peer_min_target_missed_total: u64,
+    pub peer_min_target_reconnect_attempt_total: u64,
+    pub peer_min_target_reconnect_success_total: u64,
+    pub peer_below_target_duration_seconds: u64,
+    pub peer_below_target_blocked_reason: Option<String>,
+    pub peer_recovery_state: String,
     pub peer_cooldown_bypassed_for_connectivity_total: u64,
     pub peer_rate_limit_recovery_suppressed_total: u64,
     pub peer_rate_limit_by_kind_total: BTreeMap<String, u64>,
@@ -258,6 +263,25 @@ pub async fn get_metrics<S: RpcStateLike>(
             .as_ref()
             .map(|snapshot| snapshot.status.peer_min_target_missed_total)
             .unwrap_or(0),
+        peer_min_target_reconnect_attempt_total: p2p_status
+            .as_ref()
+            .map(|snapshot| snapshot.status.peer_min_target_reconnect_attempt_total)
+            .unwrap_or(0),
+        peer_min_target_reconnect_success_total: p2p_status
+            .as_ref()
+            .map(|snapshot| snapshot.status.peer_min_target_reconnect_success_total)
+            .unwrap_or(0),
+        peer_below_target_duration_seconds: p2p_status
+            .as_ref()
+            .map(|snapshot| snapshot.status.peer_below_target_duration_seconds)
+            .unwrap_or(0),
+        peer_below_target_blocked_reason: p2p_status
+            .as_ref()
+            .and_then(|snapshot| snapshot.status.peer_below_target_blocked_reason.clone()),
+        peer_recovery_state: p2p_status
+            .as_ref()
+            .map(|snapshot| snapshot.status.peer_recovery_state.clone())
+            .unwrap_or_else(|| "unknown".to_string()),
         peer_cooldown_bypassed_for_connectivity_total: p2p_status
             .as_ref()
             .map(|snapshot| {
