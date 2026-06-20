@@ -265,7 +265,14 @@ pub async fn get_metrics<S: RpcStateLike>(
             .unwrap_or(0),
         peer_rate_limit_by_kind_total: p2p_status
             .as_ref()
-            .map(|snapshot| snapshot.status.peer_rate_limit_by_kind_total.clone())
+            .map(|snapshot| {
+                snapshot
+                    .status
+                    .peer_rate_limit_by_kind_total
+                    .iter()
+                    .map(|(kind, total)| (kind.clone(), *total))
+                    .collect()
+            })
             .unwrap_or_default(),
         peer_retention_active_total: p2p_status
             .as_ref()
