@@ -57,7 +57,7 @@ declare -a NODE_PIDS=()
 declare -a MINER_PIDS=()
 declare -A NODE_READY NODE_HEALTHY NODE_ADVANCED NODE_TIP NODE_HEIGHT NODE_P2P_OK NODE_PEERS NODE_P2P_INBOUND NODE_P2P_OUTBOUND NODE_CHAIN_ID
 declare -A NODE_ORPHAN_COUNT NODE_PENDING_MISSING_PARENTS NODE_INV_HASHES_REQUESTED NODE_PEER_RECOVERY_SUCCESS_COUNT NODE_MISSING_PARENTS_COUNT NODE_TERMINAL_MISSING_PARENTS_COUNT
-declare -A NODE_ACTIVE_PEERS NODE_RECOVERING_PEERS NODE_COOLDOWN_PEERS NODE_RATE_LIMITED_COUNT
+declare -A NODE_ACTIVE_PEERS NODE_RECOVERING_PEERS NODE_COOLDOWN_PEERS NODE_RATE_LIMITED_COUNT NODE_RECONNECT_ATTEMPTS NODE_RECONNECT_BLOCKED_REASON NODE_MIN_TARGET_MISSED NODE_ZERO_RECONNECT_ATTEMPTS NODE_ZERO_RECONNECT_SUCCESS
 declare -A NODE_ORPHAN_RECOVERY_ATTEMPTS NODE_ORPHAN_RECOVERY_SUCCESS NODE_ORPHAN_RECOVERY_FAILED_MISSING_PARENT NODE_ORPHAN_RECOVERY_FAILED_PERSIST NODE_ORPHAN_ROOTS_RATE_LIMITED NODE_ORPHAN_BACKLOG_STALE
 declare -A NODE_RPC_DEGRADED_RESPONSE NODE_RPC_SNAPSHOT_STALE NODE_RPC_HANDLER_DEGRADED NODE_RPC_HANDLER_TIMEOUT_AVOIDED NODE_MINING_TEMPLATES NODE_MINING_SUBMITS NODE_MINING_ACCEPTED NODE_MINING_REJECTED NODE_MINING_SUBMIT_BUSY NODE_MINING_ACTOR_TIMEOUT
 declare -A NODE_READINESS_SCHEMA_OK NODE_SYNC_STATE NODE_SYNC_STAGE
@@ -85,6 +85,10 @@ TOTAL_ACTIVE_PEERS=0
 TOTAL_RECOVERING_PEERS=0
 TOTAL_COOLDOWN_PEERS=0
 TOTAL_RATE_LIMITED_COUNT=0
+TOTAL_RECONNECT_ATTEMPTS=0
+TOTAL_MIN_TARGET_MISSED=0
+TOTAL_ZERO_RECONNECT_ATTEMPTS=0
+TOTAL_ZERO_RECONNECT_SUCCESS=0
 TOTAL_MINING_TEMPLATES=0
 TOTAL_MINING_SUBMITS=0
 TOTAL_MINING_ACCEPTED=0
@@ -696,6 +700,11 @@ collect_final_state(){
     NODE_RECOVERING_PEERS[$i]="$(jq -r '.data.peer_retention_recovering_total // .data.peer_lifecycle_recovering // 0' "$metrics_file" "$OUT_DIR/endpoints/n${i}-p2p-status-final.json" 2>/dev/null | head -n1 || echo 0)"
     NODE_COOLDOWN_PEERS[$i]="$(jq -r '.data.peer_retention_cooldown_total // .data.peer_lifecycle_cooldown // 0' "$metrics_file" "$OUT_DIR/endpoints/n${i}-p2p-status-final.json" 2>/dev/null | head -n1 || echo 0)"
     NODE_RATE_LIMITED_COUNT[$i]="$(jq -r '.data.peer_message_rate_limited_count // .data.rate_limited_count // .data.orphan_roots_rate_limited_total // 0' "$OUT_DIR/endpoints/n${i}-p2p-status-final.json" "$metrics_file" 2>/dev/null | head -n1 || echo 0)"
+    NODE_RECONNECT_ATTEMPTS[$i]="$(jq -r '.data.peer_reconnect_attempts // .data.recovery_activity_summary.reconnect_attempts // 0' "$OUT_DIR/endpoints/n${i}-p2p-status-final.json" "$metrics_file" 2>/dev/null | head -n1 || echo 0)"
+    NODE_RECONNECT_BLOCKED_REASON[$i]="$(jq -r '.data.last_peer_reconnect_blocked_reason // ""' "$OUT_DIR/endpoints/n${i}-p2p-status-final.json" "$metrics_file" 2>/dev/null | head -n1 || echo '')"
+    NODE_MIN_TARGET_MISSED[$i]="$(jq -r '.data.peer_min_target_missed_total // 0' "$OUT_DIR/endpoints/n${i}-p2p-status-final.json" "$metrics_file" 2>/dev/null | head -n1 || echo 0)"
+    NODE_ZERO_RECONNECT_ATTEMPTS[$i]="$(jq -r '.data.peer_zero_reconnect_attempt_total // 0' "$OUT_DIR/endpoints/n${i}-p2p-status-final.json" "$metrics_file" 2>/dev/null | head -n1 || echo 0)"
+    NODE_ZERO_RECONNECT_SUCCESS[$i]="$(jq -r '.data.peer_zero_reconnect_success_total // 0' "$OUT_DIR/endpoints/n${i}-p2p-status-final.json" "$metrics_file" 2>/dev/null | head -n1 || echo 0)"
     NODE_ORPHAN_RECOVERY_ATTEMPTS[$i]="$(jq -r '.data.orphan_reprocess_attempts // 0' "$metrics_file" 2>/dev/null || echo 0)"
     NODE_ORPHAN_RECOVERY_SUCCESS[$i]="$(jq -r '.data.orphan_reprocess_success // 0' "$metrics_file" 2>/dev/null || echo 0)"
     NODE_ORPHAN_RECOVERY_FAILED_MISSING_PARENT[$i]="$(jq -r '.data.orphan_reprocess_failed_missing_parent // 0' "$metrics_file" 2>/dev/null || echo 0)"
@@ -812,6 +821,10 @@ compute_evidence_aggregates(){
   TOTAL_RECOVERING_PEERS=$(sum_node_array NODE_RECOVERING_PEERS)
   TOTAL_COOLDOWN_PEERS=$(sum_node_array NODE_COOLDOWN_PEERS)
   TOTAL_RATE_LIMITED_COUNT=$(sum_node_array NODE_RATE_LIMITED_COUNT)
+  TOTAL_RECONNECT_ATTEMPTS=$(sum_node_array NODE_RECONNECT_ATTEMPTS)
+  TOTAL_MIN_TARGET_MISSED=$(sum_node_array NODE_MIN_TARGET_MISSED)
+  TOTAL_ZERO_RECONNECT_ATTEMPTS=$(sum_node_array NODE_ZERO_RECONNECT_ATTEMPTS)
+  TOTAL_ZERO_RECONNECT_SUCCESS=$(sum_node_array NODE_ZERO_RECONNECT_SUCCESS)
   TOTAL_MINING_TEMPLATES=$(sum_node_array NODE_MINING_TEMPLATES)
   TOTAL_MINING_SUBMITS=$(sum_node_array NODE_MINING_SUBMITS)
   TOTAL_MINING_ACCEPTED=$(sum_node_array NODE_MINING_ACCEPTED)
@@ -855,7 +868,7 @@ write_evidence_manifest(){
   compute_evidence_aggregates || true
   if ! command -v jq >/dev/null 2>&1; then
     cat > "$OUT_DIR/evidence_manifest.json" <<JSON
-{"git_ref":"$REPO_REF","git_commit":"$REPO_COMMIT_FULL","version":"$RELEASE_VERSION","cargo_workspace_version":"$WORKSPACE_VERSION","stage":"$STAGE_NAME","node_count":$NODE_COUNT,"miner_count":$MINER_COUNT,"duration":$duration,"result":"$RESULT","failure_class":"$(classify_failure_class)","start_utc":"$START_UTC","end_utc":"$(date -u +%FT%TZ)","exit_code":$EXIT_CODE,"rpc_liveness":{"RPC_ALIVE_LISTENER_TIMEOUT":$RPC_ALIVE_LISTENER_TIMEOUT_COUNT,"rpc_liveness_timeout":$RPC_LIVENESS_TIMEOUT_COUNT,"stale_degraded_snapshot_count":$STALE_DEGRADED_SNAPSHOT_COUNT},"sync_orphan":{"orphan_count":$TOTAL_ORPHAN_COUNT,"pending_missing_parents":$TOTAL_PENDING_MISSING_PARENTS,"missing_parent_entries":$TOTAL_MISSING_PARENT_ENTRIES,"terminal_missing_parent_entries":$TOTAL_TERMINAL_MISSING_PARENT_ENTRIES,"quarantined_missing_parent_entries":0,"inv_hashes_requested":$TOTAL_INV_HASHES_REQUESTED,"orphan_recovery_classification_counters":{"attempts":$TOTAL_ORPHAN_RECOVERY_ATTEMPTS,"success":$TOTAL_ORPHAN_RECOVERY_SUCCESS,"failed_missing_parent":$TOTAL_ORPHAN_RECOVERY_FAILED_MISSING_PARENT,"failed_persist":$TOTAL_ORPHAN_RECOVERY_FAILED_PERSIST,"roots_rate_limited":$TOTAL_ORPHAN_ROOTS_RATE_LIMITED,"backlog_stale":$TOTAL_ORPHAN_BACKLOG_STALE}},"peers":{"active":$TOTAL_ACTIVE_PEERS,"recovering":$TOTAL_RECOVERING_PEERS,"cooldown":$TOTAL_COOLDOWN_PEERS,"rate_limited_count":$TOTAL_RATE_LIMITED_COUNT},"mining":{"templates":$TOTAL_MINING_TEMPLATES,"submits":$TOTAL_MINING_SUBMITS,"accepted":$TOTAL_MINING_ACCEPTED,"rejected":$TOTAL_MINING_REJECTED,"submit_busy":$TOTAL_MINING_SUBMIT_BUSY,"actor_timeout":$TOTAL_MINING_ACTOR_TIMEOUT},"checksums":{"evidence.tar.gz":"$archive_sha"}}
+{"git_ref":"$REPO_REF","git_commit":"$REPO_COMMIT_FULL","version":"$RELEASE_VERSION","cargo_workspace_version":"$WORKSPACE_VERSION","stage":"$STAGE_NAME","node_count":$NODE_COUNT,"miner_count":$MINER_COUNT,"duration":$duration,"result":"$RESULT","failure_class":"$(classify_failure_class)","start_utc":"$START_UTC","end_utc":"$(date -u +%FT%TZ)","exit_code":$EXIT_CODE,"rpc_liveness":{"RPC_ALIVE_LISTENER_TIMEOUT":$RPC_ALIVE_LISTENER_TIMEOUT_COUNT,"rpc_liveness_timeout":$RPC_LIVENESS_TIMEOUT_COUNT,"stale_degraded_snapshot_count":$STALE_DEGRADED_SNAPSHOT_COUNT},"sync_orphan":{"orphan_count":$TOTAL_ORPHAN_COUNT,"pending_missing_parents":$TOTAL_PENDING_MISSING_PARENTS,"missing_parent_entries":$TOTAL_MISSING_PARENT_ENTRIES,"terminal_missing_parent_entries":$TOTAL_TERMINAL_MISSING_PARENT_ENTRIES,"quarantined_missing_parent_entries":0,"inv_hashes_requested":$TOTAL_INV_HASHES_REQUESTED,"orphan_recovery_classification_counters":{"attempts":$TOTAL_ORPHAN_RECOVERY_ATTEMPTS,"success":$TOTAL_ORPHAN_RECOVERY_SUCCESS,"failed_missing_parent":$TOTAL_ORPHAN_RECOVERY_FAILED_MISSING_PARENT,"failed_persist":$TOTAL_ORPHAN_RECOVERY_FAILED_PERSIST,"roots_rate_limited":$TOTAL_ORPHAN_ROOTS_RATE_LIMITED,"backlog_stale":$TOTAL_ORPHAN_BACKLOG_STALE}},"peers":{"active":$TOTAL_ACTIVE_PEERS,"recovering":$TOTAL_RECOVERING_PEERS,"cooldown":$TOTAL_COOLDOWN_PEERS,"rate_limited_count":$TOTAL_RATE_LIMITED_COUNT,"reconnect_attempts":$TOTAL_RECONNECT_ATTEMPTS,"min_target_missed":$TOTAL_MIN_TARGET_MISSED,"peer_zero_reconnect_attempts":$TOTAL_ZERO_RECONNECT_ATTEMPTS,"peer_zero_reconnect_success":$TOTAL_ZERO_RECONNECT_SUCCESS},"mining":{"templates":$TOTAL_MINING_TEMPLATES,"submits":$TOTAL_MINING_SUBMITS,"accepted":$TOTAL_MINING_ACCEPTED,"rejected":$TOTAL_MINING_REJECTED,"submit_busy":$TOTAL_MINING_SUBMIT_BUSY,"actor_timeout":$TOTAL_MINING_ACTOR_TIMEOUT},"checksums":{"evidence.tar.gz":"$archive_sha"}}
 JSON
     cp "$OUT_DIR/evidence_manifest.json" "$OUT_DIR_ROOT/evidence_manifest.json" 2>/dev/null || true
     return 0
@@ -898,6 +911,10 @@ JSON
     --argjson recovering_peers "${TOTAL_RECOVERING_PEERS:-0}" \
     --argjson cooldown_peers "${TOTAL_COOLDOWN_PEERS:-0}" \
     --argjson rate_limited_count "${TOTAL_RATE_LIMITED_COUNT:-0}" \
+    --argjson reconnect_attempts "${TOTAL_RECONNECT_ATTEMPTS:-0}" \
+    --argjson min_target_missed "${TOTAL_MIN_TARGET_MISSED:-0}" \
+    --argjson zero_reconnect_attempts "${TOTAL_ZERO_RECONNECT_ATTEMPTS:-0}" \
+    --argjson zero_reconnect_success "${TOTAL_ZERO_RECONNECT_SUCCESS:-0}" \
     --argjson templates "${TOTAL_MINING_TEMPLATES:-0}" \
     --argjson submits "${TOTAL_MINING_SUBMITS:-0}" \
     --argjson accepted "${TOTAL_MINING_ACCEPTED:-0}" \
@@ -925,6 +942,11 @@ JSON
         --argjson recovering_peers "$(json_number_or_zero "${NODE_RECOVERING_PEERS[$i]:-0}")" \
         --argjson cooldown_peers "$(json_number_or_zero "${NODE_COOLDOWN_PEERS[$i]:-0}")" \
         --argjson rate_limited_count "$(json_number_or_zero "${NODE_RATE_LIMITED_COUNT[$i]:-0}")" \
+        --argjson reconnect_attempts "$(json_number_or_zero "${NODE_RECONNECT_ATTEMPTS[$i]:-0}")" \
+        --arg reconnect_blocked_reason "${NODE_RECONNECT_BLOCKED_REASON[$i]:-}" \
+        --argjson min_target_missed "$(json_number_or_zero "${NODE_MIN_TARGET_MISSED[$i]:-0}")" \
+        --argjson zero_reconnect_attempts "$(json_number_or_zero "${NODE_ZERO_RECONNECT_ATTEMPTS[$i]:-0}")" \
+        --argjson zero_reconnect_success "$(json_number_or_zero "${NODE_ZERO_RECONNECT_SUCCESS[$i]:-0}")" \
         --argjson rpc_degraded_response_total "$(json_number_or_zero "${NODE_RPC_DEGRADED_RESPONSE[$i]:-0}")" \
         --argjson rpc_snapshot_stale_total "$(json_number_or_zero "${NODE_RPC_SNAPSHOT_STALE[$i]:-0}")" \
         --argjson rpc_handler_degraded_total "$(json_number_or_zero "${NODE_RPC_HANDLER_DEGRADED[$i]:-0}")" \
@@ -934,9 +956,9 @@ JSON
         --argjson rejected "$(json_number_or_zero "${NODE_MINING_REJECTED[$i]:-0}")" \
         --argjson submit_busy "$(json_number_or_zero "${NODE_MINING_SUBMIT_BUSY[$i]:-0}")" \
         --argjson actor_timeout "$(json_number_or_zero "${NODE_MINING_ACTOR_TIMEOUT[$i]:-0}")" \
-        '{node:$node,sync:{state:$sync_state,catchup_stage:$catchup_stage,orphan_count:$orphan_count,pending_missing_parents:$pending_missing_parents,missing_parent_entries:$missing_parent_entries,terminal_missing_parent_entries:$terminal_missing_parent_entries,quarantined_missing_parent_entries:0,inv_hashes_requested:$inv_hashes_requested},peers:{active:$active_peers,recovering:$recovering_peers,cooldown:$cooldown_peers,rate_limited_count:$rate_limited_count},rpc:{degraded_response_total:$rpc_degraded_response_total,snapshot_stale_total:$rpc_snapshot_stale_total,handler_degraded_total:$rpc_handler_degraded_total},mining:{templates:$templates,submits:$submits,accepted:$accepted,rejected:$rejected,submit_busy:$submit_busy,actor_timeout:$actor_timeout}}'
+        '{node:$node,sync:{state:$sync_state,catchup_stage:$catchup_stage,orphan_count:$orphan_count,pending_missing_parents:$pending_missing_parents,missing_parent_entries:$missing_parent_entries,terminal_missing_parent_entries:$terminal_missing_parent_entries,quarantined_missing_parent_entries:0,inv_hashes_requested:$inv_hashes_requested},peers:{active:$active_peers,recovering:$recovering_peers,cooldown:$cooldown_peers,rate_limited_count:$rate_limited_count,reconnect_attempts:$reconnect_attempts,reconnect_blocked_reason:$reconnect_blocked_reason,min_target_missed:$min_target_missed,peer_zero_reconnect_attempts:$zero_reconnect_attempts,peer_zero_reconnect_success:$zero_reconnect_success},rpc:{degraded_response_total:$rpc_degraded_response_total,snapshot_stale_total:$rpc_snapshot_stale_total,handler_degraded_total:$rpc_handler_degraded_total},mining:{templates:$templates,submits:$submits,accepted:$accepted,rejected:$rejected,submit_busy:$submit_busy,actor_timeout:$actor_timeout}}'
     done | jq -s '.')" \
-    '{git_ref:$git_ref,git_commit:$git_commit,version:$version,cargo_workspace_version:$cargo_workspace_version,stage:$stage,node_count:$node_count,miner_count:$miner_count,duration:$duration,result:$result,failure_class:$failure_class,start_utc:$start_utc,end_utc:$end_utc,exit_code:$exit_code,rpc_liveness:{RPC_ALIVE_LISTENER_TIMEOUT:$rpc_alive_listener_timeout_count,rpc_liveness_timeout:$rpc_liveness_timeout_count,stale_degraded_snapshot_count:$stale_degraded_snapshot_count},sync_orphan:{orphan_count:$orphan_count,pending_missing_parents:$pending_missing_parents,missing_parent_entries:$missing_parent_entries,terminal_missing_parent_entries:$terminal_missing_parent_entries,quarantined_missing_parent_entries:0,inv_hashes_requested:$inv_hashes_requested,orphan_recovery_classification_counters:{attempts:$orphan_recovery_attempts,success:$orphan_recovery_success,failed_missing_parent:$orphan_recovery_failed_missing_parent,failed_persist:$orphan_recovery_failed_persist,roots_rate_limited:$orphan_roots_rate_limited,backlog_stale:$orphan_backlog_stale}},peers:{active:$active_peers,recovering:$recovering_peers,cooldown:$cooldown_peers,rate_limited_count:$rate_limited_count},mining:{templates:$templates,submits:$submits,accepted:$accepted,rejected:$rejected,submit_busy:$submit_busy,actor_timeout:$actor_timeout},nodes:$nodes,checksums:($checksums[0] // {})}' \
+    '{git_ref:$git_ref,git_commit:$git_commit,version:$version,cargo_workspace_version:$cargo_workspace_version,stage:$stage,node_count:$node_count,miner_count:$miner_count,duration:$duration,result:$result,failure_class:$failure_class,start_utc:$start_utc,end_utc:$end_utc,exit_code:$exit_code,rpc_liveness:{RPC_ALIVE_LISTENER_TIMEOUT:$rpc_alive_listener_timeout_count,rpc_liveness_timeout:$rpc_liveness_timeout_count,stale_degraded_snapshot_count:$stale_degraded_snapshot_count},sync_orphan:{orphan_count:$orphan_count,pending_missing_parents:$pending_missing_parents,missing_parent_entries:$missing_parent_entries,terminal_missing_parent_entries:$terminal_missing_parent_entries,quarantined_missing_parent_entries:0,inv_hashes_requested:$inv_hashes_requested,orphan_recovery_classification_counters:{attempts:$orphan_recovery_attempts,success:$orphan_recovery_success,failed_missing_parent:$orphan_recovery_failed_missing_parent,failed_persist:$orphan_recovery_failed_persist,roots_rate_limited:$orphan_roots_rate_limited,backlog_stale:$orphan_backlog_stale}},peers:{active:$active_peers,recovering:$recovering_peers,cooldown:$cooldown_peers,rate_limited_count:$rate_limited_count,reconnect_attempts:$reconnect_attempts,min_target_missed:$min_target_missed,peer_zero_reconnect_attempts:$zero_reconnect_attempts,peer_zero_reconnect_success:$zero_reconnect_success},mining:{templates:$templates,submits:$submits,accepted:$accepted,rejected:$rejected,submit_busy:$submit_busy,actor_timeout:$actor_timeout},nodes:$nodes,checksums:($checksums[0] // {})}' \
     > "$manifest_tmp"
   cp "$manifest_tmp" "$OUT_DIR/evidence_manifest.json"
   cp "$OUT_DIR/evidence_manifest.json" "$OUT_DIR_ROOT/evidence_manifest.json" 2>/dev/null || true

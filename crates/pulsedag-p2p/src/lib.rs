@@ -244,6 +244,13 @@ pub struct P2pStatus {
     pub bootnode_reconnect_forced_from_cooldown_total: u64,
     pub bootnode_reconnect_success_total: u64,
     pub isolated_bootnode_reconnect_active: bool,
+    pub peer_zero_count_duration_seconds: u64,
+    pub peer_zero_reconnect_attempt_total: u64,
+    pub peer_zero_reconnect_success_total: u64,
+    pub peer_reconnect_suppressed_by_cooldown_total: u64,
+    pub peer_reconnect_suppressed_by_rate_limit_total: u64,
+    pub peer_min_target_recovered_total: u64,
+    pub last_peer_reconnect_blocked_reason: Option<String>,
     pub bootnode_next_redial_at: HashMap<String, u64>,
     pub bootnode_redial_backoff_secs: HashMap<String, u64>,
     pub last_bootnode_dial_error: Option<String>,
@@ -502,6 +509,14 @@ struct InnerState {
     bootnode_reconnect_skipped_cooldown_total: u64,
     bootnode_reconnect_forced_from_cooldown_total: u64,
     bootnode_reconnect_success_total: u64,
+    peer_zero_since_unix: Option<u64>,
+    peer_zero_reconnect_attempt_total: u64,
+    peer_zero_reconnect_success_total: u64,
+    peer_reconnect_suppressed_by_cooldown_total: u64,
+    peer_reconnect_suppressed_by_rate_limit_total: u64,
+    peer_min_target_recovered_total: u64,
+    last_peer_reconnect_blocked_reason: Option<String>,
+    pending_bootnode_dial_started_at: HashMap<String, u64>,
     bootnode_next_redial_at: HashMap<String, u64>,
     bootnode_redial_backoff_secs: HashMap<String, u64>,
     last_bootnode_dial_error: Option<String>,
@@ -986,6 +1001,18 @@ impl P2pHandle for MemoryP2pHandle {
                 .bootnode_reconnect_forced_from_cooldown_total,
             bootnode_reconnect_success_total: inner.bootnode_reconnect_success_total,
             isolated_bootnode_reconnect_active: isolated_bootnode_reconnect_active(&inner),
+            peer_zero_count_duration_seconds: inner
+                .peer_zero_since_unix
+                .map(|since| now_unix().saturating_sub(since))
+                .unwrap_or(0),
+            peer_zero_reconnect_attempt_total: inner.peer_zero_reconnect_attempt_total,
+            peer_zero_reconnect_success_total: inner.peer_zero_reconnect_success_total,
+            peer_reconnect_suppressed_by_cooldown_total: inner
+                .peer_reconnect_suppressed_by_cooldown_total,
+            peer_reconnect_suppressed_by_rate_limit_total: inner
+                .peer_reconnect_suppressed_by_rate_limit_total,
+            peer_min_target_recovered_total: inner.peer_min_target_recovered_total,
+            last_peer_reconnect_blocked_reason: inner.last_peer_reconnect_blocked_reason.clone(),
             bootnode_next_redial_at: inner.bootnode_next_redial_at.clone(),
             bootnode_redial_backoff_secs: inner.bootnode_redial_backoff_secs.clone(),
             last_bootnode_dial_error: inner.last_bootnode_dial_error.clone(),
@@ -1073,6 +1100,14 @@ impl Libp2pHandle {
             bootnode_reconnect_skipped_cooldown_total: 0,
             bootnode_reconnect_forced_from_cooldown_total: 0,
             bootnode_reconnect_success_total: 0,
+            peer_zero_since_unix: None,
+            peer_zero_reconnect_attempt_total: 0,
+            peer_zero_reconnect_success_total: 0,
+            peer_reconnect_suppressed_by_cooldown_total: 0,
+            peer_reconnect_suppressed_by_rate_limit_total: 0,
+            peer_min_target_recovered_total: 0,
+            last_peer_reconnect_blocked_reason: None,
+            pending_bootnode_dial_started_at: HashMap::new(),
             last_bootnode_dial_error: None,
             connection_established_total: 0,
             connection_closed_total: 0,
@@ -2752,12 +2787,42 @@ fn private_rehearsal_min_useful_peer_target(state: &InnerState) -> usize {
 
 fn enforce_connectivity_aware_cooldown_floor(state: &mut InnerState, now: u64) {
     let target = private_rehearsal_min_useful_peer_target(state);
-    if state.peer_book.is_empty() || state.active_connections.len() >= target {
+    let active_count = state.active_connections.len();
+    if active_count == 0 && (!state.bootnodes_configured.is_empty() || !state.peer_book.is_empty())
+    {
+        state.peer_zero_since_unix.get_or_insert(now);
+        if !state.bootnodes_configured.is_empty() {
+            for bootnode in &state.bootnodes_configured {
+                if let Some((peer_id, _)) = parse_bootnode_multiaddr(bootnode) {
+                    state
+                        .bootnode_next_redial_at
+                        .insert(peer_id.to_string(), now);
+                    state
+                        .bootnode_redial_backoff_secs
+                        .entry(peer_id.to_string())
+                        .or_insert(1);
+                }
+            }
+        }
+    } else if active_count > 0 {
+        if state.peer_zero_since_unix.is_some() {
+            state.peer_zero_reconnect_success_total =
+                state.peer_zero_reconnect_success_total.saturating_add(1);
+        }
+        state.peer_zero_since_unix = None;
+        state.last_peer_reconnect_blocked_reason = None;
+    }
+    if state.peer_book.is_empty() || active_count >= target {
+        if active_count >= target && target > 0 {
+            state.peer_min_target_recovered_total =
+                state.peer_min_target_recovered_total.saturating_add(1);
+        }
         return;
     }
     state.peer_min_target_missed_total = state.peer_min_target_missed_total.saturating_add(1);
-    let needed = target.saturating_sub(state.active_connections.len());
+    let needed = target.saturating_sub(active_count);
     let mut bypassed = 0usize;
+    let mut rate_limited = 0usize;
     for health in state.peer_book.values_mut() {
         if bypassed >= needed {
             break;
@@ -2765,8 +2830,12 @@ fn enforce_connectivity_aware_cooldown_floor(state: &mut InnerState, now: u64) {
         if health.connected {
             continue;
         }
+        if peer_rate_limited_recently(health, now) {
+            rate_limited = rate_limited.saturating_add(1);
+            health.last_rate_limited_unix = None;
+        }
         let suppressed = health.suppressed_until_unix > now || health.next_retry_unix > now;
-        if suppressed {
+        if suppressed || active_count == 0 {
             health.suppressed_until_unix = now;
             health.next_retry_unix = now;
             bypassed = bypassed.saturating_add(1);
@@ -2776,6 +2845,17 @@ fn enforce_connectivity_aware_cooldown_floor(state: &mut InnerState, now: u64) {
         state.peer_cooldown_bypassed_for_connectivity_total = state
             .peer_cooldown_bypassed_for_connectivity_total
             .saturating_add(bypassed as u64);
+        state.peer_reconnect_suppressed_by_cooldown_total = state
+            .peer_reconnect_suppressed_by_cooldown_total
+            .saturating_add(bypassed as u64);
+        state.last_peer_reconnect_blocked_reason = None;
+    } else if active_count == 0 {
+        state.last_peer_reconnect_blocked_reason = Some("no_eligible_peer_after_floor".to_string());
+    }
+    if rate_limited > 0 {
+        state.peer_reconnect_suppressed_by_rate_limit_total = state
+            .peer_reconnect_suppressed_by_rate_limit_total
+            .saturating_add(rate_limited as u64);
     }
 }
 
@@ -3808,6 +3888,9 @@ fn handle_connection_established(
         if is_bootnode {
             pending_bootnode_dials.remove(peer_id);
             guard.pending_bootnode_dials.remove(&peer_id.to_string());
+            guard
+                .pending_bootnode_dial_started_at
+                .remove(&peer_id.to_string());
             guard.bootnode_next_redial_at.remove(&peer_id.to_string());
             guard
                 .bootnode_redial_backoff_secs
@@ -3911,6 +3994,7 @@ fn handle_connection_closed(
             if is_bootnode {
                 pending_bootnode_dials.remove(peer_id);
                 guard.pending_bootnode_dials.remove(&peer_key);
+                guard.pending_bootnode_dial_started_at.remove(&peer_key);
                 let now = now_unix();
                 let current = guard
                     .bootnode_redial_backoff_secs
@@ -3943,6 +4027,9 @@ fn handle_outgoing_connection_error(
         if is_bootnode {
             pending_bootnode_dials.remove(peer_id);
             guard.pending_bootnode_dials.remove(&peer_id.to_string());
+            guard
+                .pending_bootnode_dial_started_at
+                .remove(&peer_id.to_string());
             let now = now_unix();
             let current = guard
                 .bootnode_redial_backoff_secs
@@ -4088,6 +4175,9 @@ async fn run_libp2p_real_runtime(
             pending_bootnode_dials.insert(*peer_id);
             if let Ok(mut guard) = inner.lock() {
                 guard.pending_bootnode_dials.insert(peer_id.to_string());
+                guard
+                    .pending_bootnode_dial_started_at
+                    .insert(peer_id.to_string(), now_unix());
                 guard
                     .bootnode_redial_backoff_secs
                     .insert(peer_id.to_string(), 1);
@@ -4283,16 +4373,35 @@ async fn run_libp2p_real_runtime(
             }
             _ = bootnode_redial_tick.tick() => {
                 for (peer_id, addr) in &bootstrap_peers {
-                    if pending_bootnode_dials.contains(peer_id) {
-                        note_swarm_event(&inner, format!("reconnect-skipped:bootnode-dial-pending:{peer_id}"));
-                        continue;
-                    }
                     let now = now_unix();
+                    if pending_bootnode_dials.contains(peer_id) {
+                        let stale_pending = inner
+                            .lock()
+                            .ok()
+                            .and_then(|guard| guard.pending_bootnode_dial_started_at.get(&peer_id.to_string()).copied())
+                            .map(|started| now.saturating_sub(started) >= 5)
+                            .unwrap_or(false);
+                        if stale_pending {
+                            pending_bootnode_dials.remove(peer_id);
+                            if let Ok(mut guard) = inner.lock() {
+                                guard.pending_bootnode_dials.remove(&peer_id.to_string());
+                                guard.pending_bootnode_dial_started_at.remove(&peer_id.to_string());
+                                guard.last_peer_reconnect_blocked_reason = Some("stale_pending_bootnode_dial_released".to_string());
+                            }
+                            note_swarm_event(&inner, format!("reconnect-retry:stale-bootnode-dial-pending:{peer_id}"));
+                        } else {
+                            if let Ok(mut guard) = inner.lock() {
+                                guard.last_peer_reconnect_blocked_reason = Some("bootnode_dial_pending".to_string());
+                            }
+                            note_swarm_event(&inner, format!("reconnect-skipped:bootnode-dial-pending:{peer_id}"));
+                            continue;
+                        }
+                    }
                     let should_force_bootnode_redial = inner
                         .lock()
                         .ok()
                         .map(|guard| {
-                            guard.connected_peers.is_empty()
+                            guard.active_connections.is_empty()
                                 && !guard.bootnodes_configured.is_empty()
                                 && !guard.pending_bootnode_dials.contains(&peer_id.to_string())
                         })
@@ -4363,6 +4472,8 @@ async fn run_libp2p_real_runtime(
                         bootnode_redial_backoff_secs.insert(*peer_id, 1);
                         bootnode_next_redial_at.remove(peer_id);
                         guard.pending_bootnode_dials.insert(peer_id.to_string());
+                        guard.pending_bootnode_dial_started_at.insert(peer_id.to_string(), now);
+                        guard.peer_zero_reconnect_attempt_total = guard.peer_zero_reconnect_attempt_total.saturating_add(1);
                         guard.bootnode_redial_backoff_secs.insert(peer_id.to_string(), 1);
                         guard.bootnode_next_redial_at.remove(&peer_id.to_string());
                         guard.bootnode_redial_successes = guard.bootnode_redial_successes.saturating_add(1);
@@ -4745,6 +4856,18 @@ impl P2pHandle for Libp2pHandle {
                 .bootnode_reconnect_forced_from_cooldown_total,
             bootnode_reconnect_success_total: inner.bootnode_reconnect_success_total,
             isolated_bootnode_reconnect_active: isolated_bootnode_reconnect_active(&inner),
+            peer_zero_count_duration_seconds: inner
+                .peer_zero_since_unix
+                .map(|since| now_unix().saturating_sub(since))
+                .unwrap_or(0),
+            peer_zero_reconnect_attempt_total: inner.peer_zero_reconnect_attempt_total,
+            peer_zero_reconnect_success_total: inner.peer_zero_reconnect_success_total,
+            peer_reconnect_suppressed_by_cooldown_total: inner
+                .peer_reconnect_suppressed_by_cooldown_total,
+            peer_reconnect_suppressed_by_rate_limit_total: inner
+                .peer_reconnect_suppressed_by_rate_limit_total,
+            peer_min_target_recovered_total: inner.peer_min_target_recovered_total,
+            last_peer_reconnect_blocked_reason: inner.last_peer_reconnect_blocked_reason.clone(),
             bootnode_next_redial_at: inner.bootnode_next_redial_at.clone(),
             bootnode_redial_backoff_secs: inner.bootnode_redial_backoff_secs.clone(),
             last_bootnode_dial_error: inner.last_bootnode_dial_error.clone(),
@@ -7835,6 +7958,152 @@ mod deterministic_p2p_sync_coverage_tests {
             .bootnode_next_redial_at
             .contains_key(&peer.to_string()));
     }
+
+    #[test]
+    fn peer_zero_with_configured_bootnode_marks_immediate_reconnect_need() {
+        let key = identity::Keypair::generate_ed25519();
+        let peer = PeerId::from(key.public()).to_string();
+        let mut state = InnerState {
+            mode: P2P_MODE_LIBP2P_REAL.into(),
+            bootnodes_configured: vec![format!("/ip4/127.0.0.1/tcp/1/p2p/{peer}")],
+            ..InnerState::default()
+        };
+        state.peer_book.insert(
+            peer.clone(),
+            PeerHealth {
+                connected: false,
+                next_retry_unix: 10_100,
+                suppressed_until_unix: 10_200,
+                ..PeerHealth::default()
+            },
+        );
+
+        enforce_connectivity_aware_cooldown_floor(&mut state, 10_000);
+
+        let health = state.peer_book.get(&peer).unwrap();
+        assert_eq!(health.next_retry_unix, 10_000);
+        assert_eq!(health.suppressed_until_unix, 10_000);
+        assert_eq!(state.peer_zero_since_unix, Some(10_000));
+        assert_eq!(state.peer_min_target_missed_total, 1);
+        assert_eq!(state.peer_cooldown_bypassed_for_connectivity_total, 1);
+    }
+
+    #[test]
+    fn cooldown_floor_preserves_minimum_useful_private_topology() {
+        let mut state = InnerState {
+            mode: P2P_MODE_LIBP2P_REAL.into(),
+            bootnodes_configured: vec!["/ip4/127.0.0.1/tcp/1/p2p/peer-a".into()],
+            ..InnerState::default()
+        };
+        for peer in ["peer-a", "peer-b", "peer-c"] {
+            state.peer_book.insert(
+                peer.into(),
+                PeerHealth {
+                    connected: false,
+                    next_retry_unix: 5_100,
+                    suppressed_until_unix: 5_200,
+                    ..PeerHealth::default()
+                },
+            );
+        }
+
+        enforce_connectivity_aware_cooldown_floor(&mut state, 5_000);
+
+        let released = state
+            .peer_book
+            .values()
+            .filter(|health| {
+                health.next_retry_unix == 5_000 && health.suppressed_until_unix == 5_000
+            })
+            .count();
+        assert_eq!(released, 2);
+        assert_eq!(state.peer_cooldown_bypassed_for_connectivity_total, 2);
+    }
+
+    #[test]
+    fn rate_limit_flag_does_not_permanently_block_first_peer_reconnect() {
+        let mut state = InnerState {
+            mode: P2P_MODE_LIBP2P_REAL.into(),
+            bootnodes_configured: vec!["/ip4/127.0.0.1/tcp/1/p2p/peer-a".into()],
+            ..InnerState::default()
+        };
+        state.peer_book.insert(
+            "peer-a".into(),
+            PeerHealth {
+                connected: false,
+                last_rate_limited_unix: Some(9_999),
+                next_retry_unix: 10_050,
+                ..PeerHealth::default()
+            },
+        );
+
+        enforce_connectivity_aware_cooldown_floor(&mut state, 10_000);
+
+        let health = state.peer_book.get("peer-a").unwrap();
+        assert_eq!(health.next_retry_unix, 10_000);
+        assert_eq!(health.last_rate_limited_unix, None);
+        assert_eq!(state.peer_reconnect_suppressed_by_rate_limit_total, 1);
+    }
+
+    #[test]
+    fn private_rehearsal_recovers_from_peer_zero_after_connection() {
+        let mut state = InnerState {
+            mode: P2P_MODE_LIBP2P_REAL.into(),
+            bootnodes_configured: vec!["/ip4/127.0.0.1/tcp/1/p2p/peer-a".into()],
+            ..InnerState::default()
+        };
+        state.peer_book.insert(
+            "peer-a".into(),
+            PeerHealth {
+                connected: false,
+                ..PeerHealth::default()
+            },
+        );
+        enforce_connectivity_aware_cooldown_floor(&mut state, 1_000);
+        assert!(state.peer_zero_since_unix.is_some());
+        state.active_connections.insert("peer-a".into(), 1);
+        state.peer_book.get_mut("peer-a").unwrap().connected = true;
+        enforce_connectivity_aware_cooldown_floor(&mut state, 1_010);
+        assert_eq!(state.peer_zero_since_unix, None);
+        assert_eq!(state.peer_zero_reconnect_success_total, 1);
+    }
+
+    #[test]
+    fn five_node_two_miner_style_topology_floor_does_not_leave_two_nodes_isolated() {
+        let mut nodes = Vec::new();
+        for node_idx in 0..5 {
+            let mut state = InnerState {
+                mode: P2P_MODE_LIBP2P_REAL.into(),
+                bootnodes_configured: vec!["/ip4/127.0.0.1/tcp/1/p2p/peer-0".into()],
+                ..InnerState::default()
+            };
+            for peer_idx in 0..5 {
+                if peer_idx != node_idx {
+                    state.peer_book.insert(
+                        format!("peer-{peer_idx}"),
+                        PeerHealth {
+                            connected: false,
+                            next_retry_unix: 50_300,
+                            suppressed_until_unix: 50_300,
+                            ..PeerHealth::default()
+                        },
+                    );
+                }
+            }
+            enforce_connectivity_aware_cooldown_floor(&mut state, 50_000);
+            nodes.push(state);
+        }
+
+        assert!(nodes.iter().all(|state| {
+            state
+                .peer_book
+                .values()
+                .filter(|health| health.next_retry_unix <= 50_000)
+                .count()
+                >= 2
+        }));
+    }
+
     #[test]
     fn is_valid_peer_id_rejects_multiaddr_values() {
         assert!(!is_valid_peer_id("/ip4/127.0.0.1/tcp/19080/p2p/12D3KooW"));
