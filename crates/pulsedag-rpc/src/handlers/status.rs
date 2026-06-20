@@ -669,6 +669,7 @@ mod tests {
             pending_missing_parents: 4,
             missing_parent_entries: Vec::new(),
             terminal_missing_parent_entries: Vec::new(),
+            quarantined_missing_parent_entries: Vec::new(),
             inv_hashes_requested: 5,
             last_updated_ms: 1,
             degraded: true,
