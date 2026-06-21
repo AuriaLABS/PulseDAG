@@ -93,6 +93,11 @@ pub struct MetricsData {
     pub peer_min_target_reconnect_success_total: u64,
     pub peer_below_target_duration_seconds: u64,
     pub peer_below_target_blocked_reason: Option<String>,
+    pub peer_known_connected_total: usize,
+    pub peer_known_disconnected_total: usize,
+    pub peer_known_cooldown_total: usize,
+    pub peer_known_rate_limited_total: usize,
+    pub peer_known_dialable_total: usize,
     pub peer_recovery_state: String,
     pub peer_cooldown_bypassed_for_connectivity_total: u64,
     pub peer_rate_limit_recovery_suppressed_total: u64,
@@ -289,6 +294,26 @@ pub async fn get_metrics<S: RpcStateLike>(
         peer_below_target_blocked_reason: p2p_status
             .as_ref()
             .and_then(|snapshot| snapshot.status.peer_below_target_blocked_reason.clone()),
+        peer_known_connected_total: p2p_status
+            .as_ref()
+            .map(|snapshot| snapshot.status.peer_known_connected_total)
+            .unwrap_or(0),
+        peer_known_disconnected_total: p2p_status
+            .as_ref()
+            .map(|snapshot| snapshot.status.peer_known_disconnected_total)
+            .unwrap_or(0),
+        peer_known_cooldown_total: p2p_status
+            .as_ref()
+            .map(|snapshot| snapshot.status.peer_known_cooldown_total)
+            .unwrap_or(0),
+        peer_known_rate_limited_total: p2p_status
+            .as_ref()
+            .map(|snapshot| snapshot.status.peer_known_rate_limited_total)
+            .unwrap_or(0),
+        peer_known_dialable_total: p2p_status
+            .as_ref()
+            .map(|snapshot| snapshot.status.peer_known_dialable_total)
+            .unwrap_or(0),
         peer_recovery_state: p2p_status
             .as_ref()
             .map(|snapshot| snapshot.status.peer_recovery_state.clone())

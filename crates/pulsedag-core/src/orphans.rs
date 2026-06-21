@@ -289,6 +289,23 @@ pub fn reconcile_final_quiescence(
 
     let active_orphan_count = state.orphan_blocks.len();
     let active_pending_missing_parents = pending_missing_parent_count(state);
+    let mut tip_reconcile_success = false;
+    if active_orphan_count == 0 && active_pending_missing_parents == 0 && state.dag.tips.len() > 1 {
+        let known_tips = crate::selection::sorted_tip_hashes(state);
+        let same_height = known_tips
+            .iter()
+            .filter_map(|tip| state.dag.blocks.get(tip).map(|block| block.header.height))
+            .collect::<BTreeSet<_>>()
+            .len()
+            <= 1;
+        if same_height {
+            if let Some(preferred) = known_tips.first().cloned() {
+                state.dag.tips.clear();
+                state.dag.tips.insert(preferred);
+                tip_reconcile_success = true;
+            }
+        }
+    }
     let tip_count = state.dag.tips.len();
     let tip_reconcile_blocked_reason = if tip_count <= 1 {
         None
@@ -306,7 +323,7 @@ pub fn reconcile_final_quiescence(
         orphan_reprocess_accepted: first.accepted.saturating_add(second.accepted),
         orphan_terminalized_total: residual.transitioned_parents,
         orphan_evicted_total: residual.evicted_orphans,
-        tip_reconcile_total: usize::from(tip_count > 1),
+        tip_reconcile_total: usize::from(tip_reconcile_success || tip_count > 1),
         tip_reconcile_blocked_reason,
         active_orphan_count,
         active_pending_missing_parents,
@@ -1046,6 +1063,37 @@ mod tests {
         assert_eq!(result.active_orphan_count, 1);
         assert_eq!(result.active_pending_missing_parents, 1);
         assert_orphan_indexes_consistent(&state);
+    }
+
+    #[test]
+    fn final_quiescence_collapses_same_height_tips_to_preferred_tip() {
+        let mut state = init_chain_state("test".into());
+        let parent = candidate_for_state(
+            &state,
+            vec![state.dag.genesis_hash.clone()],
+            1,
+            "split-parent",
+            1,
+        );
+        apply_block(&parent, &mut state).unwrap();
+        let parent_state = state.clone();
+        let lower = candidate_for_state(&parent_state, vec![parent.hash.clone()], 2, "tip-a", 2);
+        let higher = candidate_for_state(&parent_state, vec![parent.hash.clone()], 2, "tip-z", 3);
+        state.dag.blocks.insert(lower.hash.clone(), lower.clone());
+        state.dag.blocks.insert(higher.hash.clone(), higher.clone());
+        state.dag.tips.remove(&parent.hash);
+        state.dag.tips.insert(lower.hash.clone());
+        state.dag.tips.insert(higher.hash.clone());
+        state.dag.best_height = 2;
+        assert_eq!(state.dag.tips.len(), 2);
+
+        let expected = crate::selection::preferred_tip_hash(&state).unwrap();
+        let result = reconcile_final_quiescence(&mut state, now_ms(), DEFAULT_ORPHAN_MAX_AGE_MS, 8);
+
+        assert_eq!(result.tip_reconcile_total, 1);
+        assert_eq!(result.tip_reconcile_blocked_reason, None);
+        assert_eq!(state.dag.tips.len(), 1);
+        assert!(state.dag.tips.contains(&expected));
     }
 
     #[test]

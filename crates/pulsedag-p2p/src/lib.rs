@@ -188,6 +188,11 @@ pub struct P2pStatus {
     pub peer_min_target_reconnect_success_total: u64,
     pub peer_below_target_duration_seconds: u64,
     pub peer_below_target_blocked_reason: Option<String>,
+    pub peer_known_connected_total: usize,
+    pub peer_known_disconnected_total: usize,
+    pub peer_known_cooldown_total: usize,
+    pub peer_known_rate_limited_total: usize,
+    pub peer_known_dialable_total: usize,
     pub peer_recovery_state: String,
     pub peer_cooldown_bypassed_for_connectivity_total: u64,
     pub peer_rate_limit_recovery_suppressed_total: u64,
@@ -862,6 +867,7 @@ impl P2pHandle for MemoryP2pHandle {
         ) = topology_stats_for_connected_peers(&inner.connected_peers);
         let (inbound_peer_final_state, outbound_peer_final_state) =
             peer_final_state_snapshots(&inner);
+        let peer_target_accounting = peer_target_accounting(&inner, now_unix());
         Ok(P2pStatus {
             chain_id: inner.chain_id.clone(),
             mode: inner.mode.clone(),
@@ -947,6 +953,11 @@ impl P2pHandle for MemoryP2pHandle {
                 .map(|since| now_unix().saturating_sub(since))
                 .unwrap_or(0),
             peer_below_target_blocked_reason: inner.peer_below_target_blocked_reason.clone(),
+            peer_known_connected_total: peer_target_accounting.connected,
+            peer_known_disconnected_total: peer_target_accounting.disconnected,
+            peer_known_cooldown_total: peer_target_accounting.cooldown,
+            peer_known_rate_limited_total: peer_target_accounting.rate_limited,
+            peer_known_dialable_total: peer_target_accounting.dialable,
             peer_recovery_state: peer_recovery_state(&inner),
             peer_cooldown_bypassed_for_connectivity_total: inner
                 .peer_cooldown_bypassed_for_connectivity_total,
@@ -2846,6 +2857,51 @@ fn peer_recovery_state(state: &InnerState) -> String {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+struct PeerTargetAccounting {
+    connected: usize,
+    disconnected: usize,
+    cooldown: usize,
+    rate_limited: usize,
+    dialable: usize,
+}
+
+fn peer_target_accounting(state: &InnerState, now: u64) -> PeerTargetAccounting {
+    let mut accounting = PeerTargetAccounting::default();
+    for (peer, health) in &state.peer_book {
+        let active =
+            health.connected || state.active_connections.get(peer).copied().unwrap_or(0) > 0;
+        if active {
+            accounting.connected = accounting.connected.saturating_add(1);
+            continue;
+        }
+        accounting.disconnected = accounting.disconnected.saturating_add(1);
+        let cooling_down = health.suppressed_until_unix > now || health.next_retry_unix > now;
+        if cooling_down {
+            accounting.cooldown = accounting.cooldown.saturating_add(1);
+        }
+        let rate_limited = peer_rate_limited_recently(health, now);
+        if rate_limited {
+            accounting.rate_limited = accounting.rate_limited.saturating_add(1);
+        }
+        if !cooling_down && !rate_limited && health.chain_id_compatible {
+            accounting.dialable = accounting.dialable.saturating_add(1);
+        }
+    }
+    accounting
+}
+
+fn peer_below_target_accounting_reason(accounting: PeerTargetAccounting) -> String {
+    format!(
+        "connected={} disconnected={} cooldown={} rate_limited={} dialable={}",
+        accounting.connected,
+        accounting.disconnected,
+        accounting.cooldown,
+        accounting.rate_limited,
+        accounting.dialable
+    )
+}
+
 fn enforce_connectivity_aware_cooldown_floor(state: &mut InnerState, now: u64) {
     let target = private_rehearsal_min_useful_peer_target(state);
     let active_count = useful_peer_count(state);
@@ -2950,7 +3006,10 @@ fn enforce_connectivity_aware_cooldown_floor(state: &mut InnerState, now: u64) {
         state.last_peer_reconnect_blocked_reason = Some("no_eligible_peer_after_floor".to_string());
         state.peer_below_target_blocked_reason = Some("no_eligible_peer_after_floor".to_string());
     } else {
-        state.peer_below_target_blocked_reason = Some("no_disconnected_peer_available".to_string());
+        state.peer_below_target_blocked_reason = Some(format!(
+            "no_disconnected_peer_available {}",
+            peer_below_target_accounting_reason(peer_target_accounting(state, now))
+        ));
     }
     if rate_limited > 0 {
         state.peer_reconnect_suppressed_by_rate_limit_total = state
@@ -4820,6 +4879,7 @@ impl P2pHandle for Libp2pHandle {
         ) = topology_stats_for_connected_peers(&inner.connected_peers);
         let (inbound_peer_final_state, outbound_peer_final_state) =
             peer_final_state_snapshots(&inner);
+        let peer_target_accounting = peer_target_accounting(&inner, now_unix());
         Ok(P2pStatus {
             chain_id: inner.chain_id.clone(),
             mode: inner.mode.clone(),
@@ -4905,6 +4965,11 @@ impl P2pHandle for Libp2pHandle {
                 .map(|since| now_unix().saturating_sub(since))
                 .unwrap_or(0),
             peer_below_target_blocked_reason: inner.peer_below_target_blocked_reason.clone(),
+            peer_known_connected_total: peer_target_accounting.connected,
+            peer_known_disconnected_total: peer_target_accounting.disconnected,
+            peer_known_cooldown_total: peer_target_accounting.cooldown,
+            peer_known_rate_limited_total: peer_target_accounting.rate_limited,
+            peer_known_dialable_total: peer_target_accounting.dialable,
             peer_recovery_state: peer_recovery_state(&inner),
             peer_cooldown_bypassed_for_connectivity_total: inner
                 .peer_cooldown_bypassed_for_connectivity_total,
