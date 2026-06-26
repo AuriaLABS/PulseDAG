@@ -563,6 +563,68 @@ pub struct NodeRuntimeStats {
     #[serde(default)]
     pub orphan_recovery_tick_duration_ms: u64,
     #[serde(default)]
+    pub final_quiescence_orphan_reprocess_total: u64,
+    #[serde(default)]
+    pub final_quiescence_orphan_reprocess_success_total: u64,
+    #[serde(default)]
+    pub final_quiescence_orphan_terminalized_total: u64,
+    #[serde(default)]
+    pub final_quiescence_missing_parent_terminalized_total: u64,
+    #[serde(default)]
+    pub final_quiescence_missing_parent_quarantined_total: u64,
+    #[serde(default)]
+    pub final_quiescence_tip_reconcile_total: u64,
+    #[serde(default)]
+    pub final_quiescence_tip_reconcile_success_total: u64,
+    #[serde(default)]
+    pub final_quiescence_tip_reconcile_blocked_total: u64,
+    #[serde(default)]
+    pub final_quiescence_tip_reconcile_blocked_reason: Option<String>,
+    #[serde(default)]
+    pub final_quiescence_height_reconcile_total: u64,
+    #[serde(default)]
+    pub final_quiescence_height_reconcile_success_total: u64,
+    #[serde(default)]
+    pub final_quiescence_height_reconcile_blocked_total: u64,
+    #[serde(default)]
+    pub final_quiescence_height_reconcile_blocked_reason: Option<String>,
+    #[serde(default)]
+    pub final_quiescence_higher_tip_seen_total: u64,
+    #[serde(default)]
+    pub final_quiescence_higher_tip_fetch_attempt_total: u64,
+    #[serde(default)]
+    pub final_quiescence_higher_tip_fetch_success_total: u64,
+    #[serde(default)]
+    pub final_quiescence_higher_tip_apply_success_total: u64,
+    #[serde(default)]
+    pub final_quiescence_higher_tip_apply_rejected_total: u64,
+    #[serde(default)]
+    pub final_quiescence_height_gap_before: u64,
+    #[serde(default)]
+    pub final_quiescence_height_gap_after: u64,
+    #[serde(default)]
+    pub final_quiescence_same_height_reconcile_total: u64,
+    #[serde(default)]
+    pub final_quiescence_same_height_reconcile_success_total: u64,
+    #[serde(default)]
+    pub final_quiescence_same_height_reconcile_blocked_total: u64,
+    #[serde(default)]
+    pub final_quiescence_same_height_reconcile_blocked_reason: Option<String>,
+    #[serde(default)]
+    pub final_quiescence_same_height_competing_tip_seen_total: u64,
+    #[serde(default)]
+    pub final_quiescence_same_height_competing_tip_fetch_attempt_total: u64,
+    #[serde(default)]
+    pub final_quiescence_same_height_competing_tip_fetch_success_total: u64,
+    #[serde(default)]
+    pub final_quiescence_same_height_competing_tip_apply_success_total: u64,
+    #[serde(default)]
+    pub final_quiescence_same_height_competing_tip_apply_rejected_total: u64,
+    #[serde(default)]
+    pub final_quiescence_distinct_tips_before: u64,
+    #[serde(default)]
+    pub final_quiescence_distinct_tips_after: u64,
+    #[serde(default)]
     pub rpc_dedicated_runtime_active: bool,
     #[serde(default)]
     pub rpc_dedicated_runtime_worker_threads: usize,

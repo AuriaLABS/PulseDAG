@@ -515,6 +515,7 @@ struct InnerState {
     bootnode_reconnect_forced_from_cooldown_total: u64,
     bootnode_reconnect_success_total: u64,
     peer_zero_since_unix: Option<u64>,
+    peer_zero_reconnect_pending: HashSet<String>,
     peer_zero_reconnect_attempt_total: u64,
     peer_zero_reconnect_success_total: u64,
     peer_reconnect_suppressed_by_cooldown_total: u64,
@@ -1118,6 +1119,7 @@ impl Libp2pHandle {
             bootnode_reconnect_forced_from_cooldown_total: 0,
             bootnode_reconnect_success_total: 0,
             peer_zero_since_unix: None,
+            peer_zero_reconnect_pending: HashSet::new(),
             peer_zero_reconnect_attempt_total: 0,
             peer_zero_reconnect_success_total: 0,
             peer_reconnect_suppressed_by_cooldown_total: 0,
@@ -2866,12 +2868,13 @@ fn enforce_connectivity_aware_cooldown_floor(state: &mut InnerState, now: u64) {
             }
         }
     } else if active_count > 0 {
-        if state.peer_zero_since_unix.is_some() {
-            state.peer_zero_reconnect_success_total =
-                state.peer_zero_reconnect_success_total.saturating_add(1);
-        }
         state.peer_zero_since_unix = None;
         state.last_peer_reconnect_blocked_reason = None;
+    } else if active_count == 0
+        && state.bootnodes_configured.is_empty()
+        && state.peer_book.is_empty()
+    {
+        state.last_peer_reconnect_blocked_reason = Some("no_configured_peers".to_string());
     }
     if state.peer_book.is_empty() || active_count >= target {
         if active_count >= target && target > 0 {
@@ -3953,7 +3956,9 @@ fn should_force_bootnode_redial_for_peer(state: &InnerState, peer_id: &str) -> b
     mode_connected_peers_are_real_network(&state.mode)
         && !state.bootnodes_configured.is_empty()
         && !has_useful_connected_peers(state)
+        && state.active_connections.is_empty()
         && !state.pending_bootnode_dials.contains(peer_id)
+        && !state.peer_zero_reconnect_pending.contains(peer_id)
 }
 
 fn isolated_bootnode_reconnect_active(state: &InnerState) -> bool {
@@ -3975,6 +3980,19 @@ fn record_bootnode_reconnect_schedule(
             guard.bootnode_redial_attempts = guard.bootnode_redial_attempts.saturating_add(1);
             guard.bootnode_reconnect_scheduled_total =
                 guard.bootnode_reconnect_scheduled_total.saturating_add(1);
+            let peer_key = peer_id.to_string();
+            let zero_peer_isolated = mode_connected_peers_are_real_network(&guard.mode)
+                && guard.connected_peers.is_empty()
+                && guard.active_connections.is_empty()
+                && !guard.bootnodes_configured.is_empty()
+                && !guard.pending_bootnode_dials.contains(&peer_key)
+                && !guard.peer_zero_reconnect_pending.contains(&peer_key);
+            if zero_peer_isolated {
+                guard.peer_zero_reconnect_pending.insert(peer_key);
+                guard.peer_zero_reconnect_attempt_total =
+                    guard.peer_zero_reconnect_attempt_total.saturating_add(1);
+                guard.last_peer_reconnect_blocked_reason = None;
+            }
             if generic_cooldown_active {
                 guard.bootnode_reconnect_skipped_cooldown_total = guard
                     .bootnode_reconnect_skipped_cooldown_total
@@ -3996,18 +4014,16 @@ fn handle_connection_established(
 ) {
     if let Ok(mut guard) = inner.lock() {
         let is_bootnode = is_configured_bootnode_peer(&guard, peer_id);
+        let peer_key = peer_id.to_string();
         if is_bootnode {
             pending_bootnode_dials.remove(peer_id);
-            guard.pending_bootnode_dials.remove(&peer_id.to_string());
-            guard
-                .pending_bootnode_dial_started_at
-                .remove(&peer_id.to_string());
-            guard.bootnode_next_redial_at.remove(&peer_id.to_string());
+            guard.pending_bootnode_dials.remove(&peer_key);
+            guard.pending_bootnode_dial_started_at.remove(&peer_key);
+            guard.bootnode_next_redial_at.remove(&peer_key);
             guard
                 .bootnode_redial_backoff_secs
-                .insert(peer_id.to_string(), 1);
+                .insert(peer_key.clone(), 1);
         }
-        let peer_key = peer_id.to_string();
         let count = guard
             .active_connections
             .entry(peer_key.clone())
@@ -4035,6 +4051,15 @@ fn handle_connection_established(
         if is_bootnode {
             guard.bootnode_reconnect_success_total =
                 guard.bootnode_reconnect_success_total.saturating_add(1);
+        }
+        if guard.peer_zero_reconnect_pending.remove(&peer_key)
+            && !guard.active_connections.is_empty()
+            && guard.peer_zero_reconnect_attempt_total > guard.peer_zero_reconnect_success_total
+        {
+            guard.peer_zero_reconnect_success_total =
+                guard.peer_zero_reconnect_success_total.saturating_add(1);
+            guard.peer_zero_since_unix = None;
+            guard.last_peer_reconnect_blocked_reason = None;
         }
         if is_bootnode
             && !guard
@@ -4105,6 +4130,7 @@ fn handle_connection_closed(
             if is_bootnode {
                 pending_bootnode_dials.remove(peer_id);
                 guard.pending_bootnode_dials.remove(&peer_key);
+                guard.peer_zero_reconnect_pending.remove(&peer_key);
                 guard.pending_bootnode_dial_started_at.remove(&peer_key);
                 let now = now_unix();
                 let current = guard
@@ -4137,24 +4163,25 @@ fn handle_outgoing_connection_error(
         let is_bootnode = is_configured_bootnode_peer(&guard, peer_id);
         if is_bootnode {
             pending_bootnode_dials.remove(peer_id);
-            guard.pending_bootnode_dials.remove(&peer_id.to_string());
-            guard
-                .pending_bootnode_dial_started_at
-                .remove(&peer_id.to_string());
+            let peer_key = peer_id.to_string();
+            guard.pending_bootnode_dials.remove(&peer_key);
+            guard.peer_zero_reconnect_pending.remove(&peer_key);
+            guard.last_peer_reconnect_blocked_reason = Some("dial_failed".to_string());
+            guard.pending_bootnode_dial_started_at.remove(&peer_key);
             let now = now_unix();
             let current = guard
                 .bootnode_redial_backoff_secs
-                .get(&peer_id.to_string())
+                .get(&peer_key)
                 .copied()
                 .unwrap_or(1)
                 .max(1);
             let next = (current.saturating_mul(2)).min(10);
             guard
                 .bootnode_next_redial_at
-                .insert(peer_id.to_string(), now.saturating_add(current));
+                .insert(peer_key.clone(), now.saturating_add(current));
             guard
                 .bootnode_redial_backoff_secs
-                .insert(peer_id.to_string(), next);
+                .insert(peer_key.clone(), next);
             guard.bootnode_redial_failures = guard.bootnode_redial_failures.saturating_add(1);
             guard.last_bootnode_dial_error = Some(error.to_string());
         }
@@ -4501,12 +4528,13 @@ async fn run_libp2p_real_runtime(
                             if let Ok(mut guard) = inner.lock() {
                                 guard.pending_bootnode_dials.remove(&peer_id.to_string());
                                 guard.pending_bootnode_dial_started_at.remove(&peer_id.to_string());
+                                guard.peer_zero_reconnect_pending.remove(&peer_id.to_string());
                                 guard.last_peer_reconnect_blocked_reason = Some("stale_pending_bootnode_dial_released".to_string());
                             }
                             note_swarm_event(&inner, format!("reconnect-retry:stale-bootnode-dial-pending:{peer_id}"));
                         } else {
                             if let Ok(mut guard) = inner.lock() {
-                                guard.last_peer_reconnect_blocked_reason = Some("bootnode_dial_pending".to_string());
+                                guard.last_peer_reconnect_blocked_reason = Some("dial_in_progress".to_string());
                             }
                             note_swarm_event(&inner, format!("reconnect-skipped:bootnode-dial-pending:{peer_id}"));
                             continue;
@@ -4576,6 +4604,8 @@ async fn run_libp2p_real_runtime(
                             guard.bootnode_redial_backoff_secs.insert(peer_id.to_string(), next);
                             guard.bootnode_next_redial_at.insert(peer_id.to_string(), now.saturating_add(current.max(1)));
                             guard.bootnode_redial_failures = guard.bootnode_redial_failures.saturating_add(1);
+                            guard.peer_zero_reconnect_pending.remove(&peer_id.to_string());
+                            guard.last_peer_reconnect_blocked_reason = Some("dial_failed".to_string());
                             guard.last_bootnode_dial_error = Some(e.to_string());
                         }
                         note_swarm_event(&inner, format!("dial-failure:redial:{peer_id}:{e}"));
@@ -4585,7 +4615,6 @@ async fn run_libp2p_real_runtime(
                         bootnode_next_redial_at.remove(peer_id);
                         guard.pending_bootnode_dials.insert(peer_id.to_string());
                         guard.pending_bootnode_dial_started_at.insert(peer_id.to_string(), now);
-                        guard.peer_zero_reconnect_attempt_total = guard.peer_zero_reconnect_attempt_total.saturating_add(1);
                         guard.bootnode_redial_backoff_secs.insert(peer_id.to_string(), 1);
                         guard.bootnode_next_redial_at.remove(&peer_id.to_string());
                         guard.bootnode_redial_successes = guard.bootnode_redial_successes.saturating_add(1);
@@ -7998,6 +8027,11 @@ mod deterministic_p2p_sync_coverage_tests {
         refresh_connected_peers_from_health(&mut state);
 
         assert!(state.connected_peers.is_empty());
+        assert!(!should_force_bootnode_redial_for_peer(
+            &state,
+            &peer.to_string()
+        ));
+        state.active_connections.clear();
         assert!(should_force_bootnode_redial_for_peer(
             &state,
             &peer.to_string()
@@ -8214,7 +8248,137 @@ mod deterministic_p2p_sync_coverage_tests {
         state.peer_book.get_mut("peer-a").unwrap().connected = true;
         enforce_connectivity_aware_cooldown_floor(&mut state, 1_010);
         assert_eq!(state.peer_zero_since_unix, None);
-        assert_eq!(state.peer_zero_reconnect_success_total, 1);
+        assert_eq!(state.peer_zero_reconnect_success_total, 0);
+    }
+
+    #[test]
+    fn zero_peer_success_requires_pending_attempt() {
+        let key = identity::Keypair::generate_ed25519();
+        let peer = PeerId::from(key.public());
+        let state = InnerState {
+            mode: P2P_MODE_LIBP2P_REAL.into(),
+            bootnodes_configured: vec![format!("/ip4/127.0.0.1/tcp/1/p2p/{peer}")],
+            ..InnerState::default()
+        };
+        let inner = Arc::new(Mutex::new(state));
+        let mut pending = HashSet::new();
+
+        handle_connection_established(&inner, &mut pending, &peer, "outbound");
+
+        let guard = inner.lock().unwrap();
+        assert_eq!(guard.peer_zero_reconnect_attempt_total, 0);
+        assert_eq!(guard.peer_zero_reconnect_success_total, 0);
+    }
+
+    #[test]
+    fn zero_peer_attempt_increments_when_isolated_with_bootnode() {
+        let key = identity::Keypair::generate_ed25519();
+        let peer = PeerId::from(key.public());
+        let state = InnerState {
+            mode: P2P_MODE_LIBP2P_REAL.into(),
+            bootnodes_configured: vec![format!("/ip4/127.0.0.1/tcp/1/p2p/{peer}")],
+            ..InnerState::default()
+        };
+        let inner = Arc::new(Mutex::new(state));
+
+        record_bootnode_reconnect_schedule(&inner, &peer, 10_000);
+
+        let guard = inner.lock().unwrap();
+        assert_eq!(guard.peer_zero_reconnect_attempt_total, 1);
+        assert!(guard
+            .peer_zero_reconnect_pending
+            .contains(&peer.to_string()));
+        assert_eq!(guard.peer_zero_reconnect_success_total, 0);
+    }
+
+    #[test]
+    fn zero_peer_dial_failure_clears_pending_without_success() {
+        let key = identity::Keypair::generate_ed25519();
+        let peer = PeerId::from(key.public());
+        let mut state = InnerState {
+            mode: P2P_MODE_LIBP2P_REAL.into(),
+            bootnodes_configured: vec![format!("/ip4/127.0.0.1/tcp/1/p2p/{peer}")],
+            ..InnerState::default()
+        };
+        state.peer_zero_reconnect_pending.insert(peer.to_string());
+        state.pending_bootnode_dials.insert(peer.to_string());
+        let inner = Arc::new(Mutex::new(state));
+        let mut pending = HashSet::new();
+        pending.insert(peer);
+
+        assert!(handle_outgoing_connection_error(
+            &inner,
+            &mut pending,
+            &peer,
+            "dial failed"
+        ));
+
+        let guard = inner.lock().unwrap();
+        assert!(!guard
+            .peer_zero_reconnect_pending
+            .contains(&peer.to_string()));
+        assert_eq!(guard.peer_zero_reconnect_success_total, 0);
+        assert_eq!(
+            guard.last_peer_reconnect_blocked_reason.as_deref(),
+            Some("dial_failed")
+        );
+    }
+
+    #[test]
+    fn zero_peer_pending_connection_established_counts_success_once() {
+        let key = identity::Keypair::generate_ed25519();
+        let peer = PeerId::from(key.public());
+        let mut state = InnerState {
+            mode: P2P_MODE_LIBP2P_REAL.into(),
+            bootnodes_configured: vec![format!("/ip4/127.0.0.1/tcp/1/p2p/{peer}")],
+            ..InnerState::default()
+        };
+        state.peer_zero_reconnect_pending.insert(peer.to_string());
+        state.peer_zero_reconnect_attempt_total = 1;
+        let inner = Arc::new(Mutex::new(state));
+        let mut pending = HashSet::new();
+
+        handle_connection_established(&inner, &mut pending, &peer, "outbound");
+        handle_connection_established(&inner, &mut pending, &peer, "outbound");
+
+        let guard = inner.lock().unwrap();
+        assert_eq!(guard.peer_zero_reconnect_success_total, 1);
+        assert!(!guard
+            .peer_zero_reconnect_pending
+            .contains(&peer.to_string()));
+    }
+
+    #[test]
+    fn zero_peer_reconnect_pending_blocks_duplicate_attempt() {
+        let key = identity::Keypair::generate_ed25519();
+        let peer = PeerId::from(key.public());
+        let mut state = InnerState {
+            mode: P2P_MODE_LIBP2P_REAL.into(),
+            bootnodes_configured: vec![format!("/ip4/127.0.0.1/tcp/1/p2p/{peer}")],
+            ..InnerState::default()
+        };
+        state.peer_zero_reconnect_pending.insert(peer.to_string());
+
+        assert!(!should_force_bootnode_redial_for_peer(
+            &state,
+            &peer.to_string()
+        ));
+    }
+
+    #[test]
+    fn zero_peer_without_configured_peers_sets_blocked_reason() {
+        let mut state = InnerState {
+            mode: P2P_MODE_LIBP2P_REAL.into(),
+            ..InnerState::default()
+        };
+
+        enforce_connectivity_aware_cooldown_floor(&mut state, 10_000);
+
+        assert_eq!(state.peer_zero_reconnect_attempt_total, 0);
+        assert_eq!(
+            state.last_peer_reconnect_blocked_reason.as_deref(),
+            Some("no_configured_peers")
+        );
     }
 
     #[test]
