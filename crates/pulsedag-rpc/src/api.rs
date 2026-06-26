@@ -581,6 +581,28 @@ pub struct NodeRuntimeStats {
     #[serde(default)]
     pub final_quiescence_tip_reconcile_blocked_reason: Option<String>,
     #[serde(default)]
+    pub final_quiescence_height_reconcile_total: u64,
+    #[serde(default)]
+    pub final_quiescence_height_reconcile_success_total: u64,
+    #[serde(default)]
+    pub final_quiescence_height_reconcile_blocked_total: u64,
+    #[serde(default)]
+    pub final_quiescence_height_reconcile_blocked_reason: Option<String>,
+    #[serde(default)]
+    pub final_quiescence_higher_tip_seen_total: u64,
+    #[serde(default)]
+    pub final_quiescence_higher_tip_fetch_attempt_total: u64,
+    #[serde(default)]
+    pub final_quiescence_higher_tip_fetch_success_total: u64,
+    #[serde(default)]
+    pub final_quiescence_higher_tip_apply_success_total: u64,
+    #[serde(default)]
+    pub final_quiescence_higher_tip_apply_rejected_total: u64,
+    #[serde(default)]
+    pub final_quiescence_height_gap_before: u64,
+    #[serde(default)]
+    pub final_quiescence_height_gap_after: u64,
+    #[serde(default)]
     pub rpc_dedicated_runtime_active: bool,
     #[serde(default)]
     pub rpc_dedicated_runtime_worker_threads: usize,

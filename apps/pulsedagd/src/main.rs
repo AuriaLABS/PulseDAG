@@ -113,6 +113,25 @@ fn run_final_quiescence_orphan_cleanup(
     }
 }
 
+fn final_quiescence_reconcile_pending(total: u64, success: u64, blocked: u64) -> bool {
+    total > success.saturating_add(blocked)
+}
+
+fn final_height_reconcile_rejection_reason(acceptance: &BlockAcceptanceResult) -> &'static str {
+    match acceptance {
+        BlockAcceptanceResult::MissingParent => "parent_missing_after_fetch",
+        BlockAcceptanceResult::Rejected(message)
+            if message.contains("storage") || message.contains("persist") =>
+        {
+            "storage_missing"
+        }
+        BlockAcceptanceResult::Rejected(_) | BlockAcceptanceResult::InvalidPow => {
+            "validation_rejected"
+        }
+        _ => "block_received_but_rejected",
+    }
+}
+
 struct DedicatedRpcServer {
     local_addr: SocketAddr,
     worker_threads: usize,
@@ -973,6 +992,7 @@ async fn main() -> Result<()> {
             );
             let mut fetch_scheduler =
                 DependencyAwareFetchScheduler::with_limit(MAX_FETCH_SCHEDULER_QUEUE_DEPTH);
+            let mut final_quiescence_higher_tip_requests: HashSet<String> = HashSet::new();
             let mut recovery_tick: u64 = 0;
             loop {
                 let maybe_event =
@@ -1016,6 +1036,8 @@ async fn main() -> Result<()> {
                             block_requests.inflight_by_peer();
                     }
                     for hash in timed_out.retryable {
+                        let final_height_retry =
+                            final_quiescence_higher_tip_requests.contains(&hash);
                         let outcome = block_requests.retry_after_timeout(
                             &hash,
                             now_unix(),
@@ -1041,6 +1063,14 @@ async fn main() -> Result<()> {
                             .await;
                         }
                         let mut rt = runtime.write().await;
+                        if final_height_retry && outcome.all_peers_exhausted {
+                            final_quiescence_higher_tip_requests.remove(&hash);
+                            rt.final_quiescence_height_reconcile_blocked_total = rt
+                                .final_quiescence_height_reconcile_blocked_total
+                                .saturating_add(1);
+                            rt.final_quiescence_height_reconcile_blocked_reason =
+                                Some("block_request_timed_out".to_string());
+                        }
                         rt.missing_parent_peer_timeout_total =
                             rt.missing_parent_peer_timeout_total.saturating_add(1);
                         if outcome.retry {
@@ -1066,6 +1096,8 @@ async fn main() -> Result<()> {
                         rt.pending_block_request_hashes = block_requests.pending_hashes();
                     }
                     for hash in timed_out.expired {
+                        let final_height_expired =
+                            final_quiescence_higher_tip_requests.remove(&hash);
                         let missing_parent_still_needed = {
                             let guard = chain.read().await;
                             guard.orphan_parent_index.contains_key(&hash)
@@ -1082,6 +1114,9 @@ async fn main() -> Result<()> {
                                 if let Err(e) = p2p.request_block(&hash) {
                                     warn!(error = %e, block_hash = %hash, "failed restarting expired missing-parent GetBlock request");
                                 }
+                            }
+                            if final_height_expired {
+                                final_quiescence_higher_tip_requests.insert(hash.clone());
                             }
                             let mut rt = runtime.write().await;
                             rt.getblock_sent = rt.getblock_sent.saturating_add(1);
@@ -1101,6 +1136,13 @@ async fn main() -> Result<()> {
                             )
                             .await;
                             let mut rt = runtime.write().await;
+                            if final_height_expired {
+                                rt.final_quiescence_height_reconcile_blocked_total = rt
+                                    .final_quiescence_height_reconcile_blocked_total
+                                    .saturating_add(1);
+                                rt.final_quiescence_height_reconcile_blocked_reason =
+                                    Some("block_request_timed_out".to_string());
+                            }
                             rt.missing_parent_all_peers_exhausted_total = rt
                                 .missing_parent_all_peers_exhausted_total
                                 .saturating_add(1);
@@ -1803,6 +1845,8 @@ async fn main() -> Result<()> {
                         }
                     }
                     InboundEvent::Block(block) => {
+                        let final_height_reconcile_block =
+                            final_quiescence_higher_tip_requests.contains(&block.hash);
                         let fulfilled_missing_parent_request =
                             block_requests.pending.contains_key(&block.hash);
                         {
@@ -1827,6 +1871,9 @@ async fn main() -> Result<()> {
                             }
                         }
                         info!(event = "peer_block_received", block_hash = %block.hash, parent_count = block.header.parents.len(), "received inbound p2p block payload");
+                        let height_before_accept = guard.dag.best_height;
+                        let final_height_gap_before =
+                            block.header.height.saturating_sub(height_before_accept);
                         let _ = storage.append_runtime_event(
                             "info",
                             "peer_block_received",
@@ -1857,6 +1904,21 @@ async fn main() -> Result<()> {
                         };
                         if matches!(acceptance, BlockAcceptanceResult::MissingParent) {
                             let mut rt = runtime.write().await;
+                            if final_height_reconcile_block {
+                                final_quiescence_higher_tip_requests.remove(&block.hash);
+                                rt.final_quiescence_higher_tip_fetch_success_total = rt
+                                    .final_quiescence_higher_tip_fetch_success_total
+                                    .saturating_add(1);
+                                rt.final_quiescence_height_reconcile_blocked_total = rt
+                                    .final_quiescence_height_reconcile_blocked_total
+                                    .saturating_add(1);
+                                rt.final_quiescence_height_reconcile_blocked_reason = Some(
+                                    final_height_reconcile_rejection_reason(&acceptance)
+                                        .to_string(),
+                                );
+                                rt.final_quiescence_height_gap_before = final_height_gap_before;
+                                rt.final_quiescence_height_gap_after = final_height_gap_before;
+                            }
                             rt.blockdata_received = rt.blockdata_received.saturating_add(1);
                             rt.blockdata_missing_parent =
                                 rt.blockdata_missing_parent.saturating_add(1);
@@ -2008,6 +2070,24 @@ async fn main() -> Result<()> {
                                 );
                             }
                             let mut rt = runtime.write().await;
+                            if final_height_reconcile_block {
+                                final_quiescence_higher_tip_requests.remove(&block.hash);
+                                rt.final_quiescence_higher_tip_fetch_success_total = rt
+                                    .final_quiescence_higher_tip_fetch_success_total
+                                    .saturating_add(1);
+                                rt.final_quiescence_higher_tip_apply_rejected_total = rt
+                                    .final_quiescence_higher_tip_apply_rejected_total
+                                    .saturating_add(1);
+                                rt.final_quiescence_height_reconcile_blocked_total = rt
+                                    .final_quiescence_height_reconcile_blocked_total
+                                    .saturating_add(1);
+                                rt.final_quiescence_height_reconcile_blocked_reason = Some(
+                                    final_height_reconcile_rejection_reason(&acceptance)
+                                        .to_string(),
+                                );
+                                rt.final_quiescence_height_gap_before = final_height_gap_before;
+                                rt.final_quiescence_height_gap_after = final_height_gap_before;
+                            }
                             rt.blockdata_received = rt.blockdata_received.saturating_add(1);
                             if let Some(diagnostics) = &invalid_state_root_diagnostics {
                                 rt.record_invalid_state_root(diagnostics);
@@ -2126,10 +2206,27 @@ async fn main() -> Result<()> {
                             };
                             let ages = orphan_age_metrics(&guard, now_unix());
                             let accepted_height = guard.dag.best_height;
+                            let final_height_gap_after =
+                                block.header.height.saturating_sub(accepted_height);
                             let accepted_tip = pulsedag_core::preferred_tip_hash(&guard)
                                 .unwrap_or_else(|| guard.dag.genesis_hash.clone());
                             {
                                 let mut rt = runtime.write().await;
+                                if final_height_reconcile_block {
+                                    final_quiescence_higher_tip_requests.remove(&block.hash);
+                                    rt.final_quiescence_higher_tip_fetch_success_total = rt
+                                        .final_quiescence_higher_tip_fetch_success_total
+                                        .saturating_add(1);
+                                    rt.final_quiescence_higher_tip_apply_success_total = rt
+                                        .final_quiescence_higher_tip_apply_success_total
+                                        .saturating_add(1);
+                                    rt.final_quiescence_height_reconcile_success_total = rt
+                                        .final_quiescence_height_reconcile_success_total
+                                        .saturating_add(1);
+                                    rt.final_quiescence_height_gap_before = final_height_gap_before;
+                                    rt.final_quiescence_height_gap_after = final_height_gap_after;
+                                    rt.final_quiescence_height_reconcile_blocked_reason = None;
+                                }
                                 rt.sync_pipeline.validate_and_apply_blocks(1, now_unix());
                                 rt.accepted_p2p_blocks += 1;
                                 rt.blockdata_received = rt.blockdata_received.saturating_add(1);
@@ -2394,18 +2491,29 @@ async fn main() -> Result<()> {
                             rt.unknown_tips_seen = rt
                                 .unknown_tips_seen
                                 .saturating_add(unknown_tips.len() as u64);
-                            let final_reconcile_pending = rt.final_quiescence_tip_reconcile_total
-                                > rt.final_quiescence_tip_reconcile_success_total
-                                    .saturating_add(
-                                        rt.final_quiescence_tip_reconcile_blocked_total,
-                                    );
+                            let final_reconcile_pending = final_quiescence_reconcile_pending(
+                                rt.final_quiescence_tip_reconcile_total,
+                                rt.final_quiescence_tip_reconcile_success_total,
+                                rt.final_quiescence_tip_reconcile_blocked_total,
+                            );
                             if final_reconcile_pending {
                                 if unknown_tips.is_empty() {
                                     rt.final_quiescence_tip_reconcile_blocked_total = rt
                                         .final_quiescence_tip_reconcile_blocked_total
                                         .saturating_add(1);
                                     rt.final_quiescence_tip_reconcile_blocked_reason =
-                                        Some("no_unknown_tips".to_string());
+                                        Some("higher_tip_not_advertised".to_string());
+                                    if final_quiescence_reconcile_pending(
+                                        rt.final_quiescence_height_reconcile_total,
+                                        rt.final_quiescence_height_reconcile_success_total,
+                                        rt.final_quiescence_height_reconcile_blocked_total,
+                                    ) {
+                                        rt.final_quiescence_height_reconcile_blocked_total = rt
+                                            .final_quiescence_height_reconcile_blocked_total
+                                            .saturating_add(1);
+                                        rt.final_quiescence_height_reconcile_blocked_reason =
+                                            Some("higher_tip_not_advertised".to_string());
+                                    }
                                 } else {
                                     rt.final_quiescence_tip_reconcile_success_total = rt
                                         .final_quiescence_tip_reconcile_success_total
@@ -2421,6 +2529,23 @@ async fn main() -> Result<()> {
                             .to_string();
                         }
                         for tip in unknown_tips {
+                            let final_height_pending = {
+                                let rt = runtime.read().await;
+                                final_quiescence_reconcile_pending(
+                                    rt.final_quiescence_height_reconcile_total,
+                                    rt.final_quiescence_height_reconcile_success_total,
+                                    rt.final_quiescence_height_reconcile_blocked_total,
+                                ) || final_quiescence_reconcile_pending(
+                                    rt.final_quiescence_tip_reconcile_total,
+                                    rt.final_quiescence_tip_reconcile_success_total,
+                                    rt.final_quiescence_tip_reconcile_blocked_total,
+                                )
+                            };
+                            if final_height_pending {
+                                let mut rt = runtime.write().await;
+                                rt.final_quiescence_higher_tip_seen_total =
+                                    rt.final_quiescence_higher_tip_seen_total.saturating_add(1);
+                            }
                             if block_requests.should_issue_getblock_for_peers(
                                 &tip,
                                 now_unix(),
@@ -2433,11 +2558,25 @@ async fn main() -> Result<()> {
                                 }
                                 let mut rt = runtime.write().await;
                                 rt.getblock_sent = rt.getblock_sent.saturating_add(1);
+                                if final_height_pending {
+                                    final_quiescence_higher_tip_requests.insert(tip.clone());
+                                    rt.final_quiescence_higher_tip_fetch_attempt_total = rt
+                                        .final_quiescence_higher_tip_fetch_attempt_total
+                                        .saturating_add(1);
+                                    rt.final_quiescence_height_reconcile_blocked_reason = None;
+                                }
                                 rt.pending_block_requests = block_requests.pending.len();
                                 rt.inflight_block_requests = block_requests.pending.len();
                                 rt.pending_block_request_hashes = block_requests.pending_hashes();
                             } else {
                                 let mut rt = runtime.write().await;
+                                if final_height_pending {
+                                    rt.final_quiescence_height_reconcile_blocked_total = rt
+                                        .final_quiescence_height_reconcile_blocked_total
+                                        .saturating_add(1);
+                                    rt.final_quiescence_height_reconcile_blocked_reason =
+                                        Some("block_request_not_sent".to_string());
+                                }
                                 rt.duplicate_block_requests_suppressed =
                                     rt.duplicate_block_requests_suppressed.saturating_add(1);
                                 rt.pending_block_requests = block_requests.pending.len();
@@ -2547,7 +2686,10 @@ async fn main() -> Result<()> {
                         let mut fallback_getblock_sent = false;
                         let mut retry_next_peer = false;
                         let mut all_peers_exhausted = false;
+                        let mut final_height_not_found = false;
                         if let Some(hash) = hash.as_ref() {
+                            final_height_not_found =
+                                final_quiescence_higher_tip_requests.contains(hash);
                             let now = now_unix();
                             let peers = p2p
                                 .as_ref()
@@ -2582,6 +2724,16 @@ async fn main() -> Result<()> {
                             }
                         }
                         let mut rt = runtime.write().await;
+                        if final_height_not_found && all_peers_exhausted {
+                            if let Some(hash) = hash.as_ref() {
+                                final_quiescence_higher_tip_requests.remove(hash);
+                            }
+                            rt.final_quiescence_height_reconcile_blocked_total = rt
+                                .final_quiescence_height_reconcile_blocked_total
+                                .saturating_add(1);
+                            rt.final_quiescence_height_reconcile_blocked_reason =
+                                Some("higher_tip_known_but_block_missing".to_string());
+                        }
                         rt.sync_state = "degraded".to_string();
                         rt.sync_failures = rt.sync_failures.saturating_add(1);
                         rt.blockdata_not_found = rt.blockdata_not_found.saturating_add(1);
@@ -2875,47 +3027,85 @@ async fn main() -> Result<()> {
                                 let mut rt = runtime.write().await;
                                 rt.final_quiescence_tip_reconcile_total =
                                     rt.final_quiescence_tip_reconcile_total.saturating_add(1);
+                                let height_reconcile_already_pending =
+                                    final_quiescence_reconcile_pending(
+                                        rt.final_quiescence_height_reconcile_total,
+                                        rt.final_quiescence_height_reconcile_success_total,
+                                        rt.final_quiescence_height_reconcile_blocked_total,
+                                    );
+                                if !height_reconcile_already_pending {
+                                    rt.final_quiescence_height_reconcile_total = rt
+                                        .final_quiescence_height_reconcile_total
+                                        .saturating_add(1);
+                                }
                                 if requested {
                                     rt.tips_requested = rt.tips_requested.saturating_add(1);
                                     rt.final_quiescence_tip_reconcile_blocked_reason = None;
+                                    rt.final_quiescence_height_reconcile_blocked_reason = None;
                                 } else {
                                     rt.final_quiescence_tip_reconcile_blocked_total = rt
                                         .final_quiescence_tip_reconcile_blocked_total
                                         .saturating_add(1);
                                     rt.final_quiescence_tip_reconcile_blocked_reason =
                                         Some("request_tips_failed".to_string());
+                                    rt.final_quiescence_height_reconcile_blocked_total = rt
+                                        .final_quiescence_height_reconcile_blocked_total
+                                        .saturating_add(1);
+                                    rt.final_quiescence_height_reconcile_blocked_reason =
+                                        Some("block_request_not_sent".to_string());
                                 }
                             }
                             Ok(_) => {
                                 let mut rt = runtime.write().await;
                                 rt.final_quiescence_tip_reconcile_total =
                                     rt.final_quiescence_tip_reconcile_total.saturating_add(1);
+                                rt.final_quiescence_height_reconcile_total =
+                                    rt.final_quiescence_height_reconcile_total.saturating_add(1);
                                 rt.final_quiescence_tip_reconcile_blocked_total = rt
                                     .final_quiescence_tip_reconcile_blocked_total
                                     .saturating_add(1);
                                 rt.final_quiescence_tip_reconcile_blocked_reason =
                                     Some("no_connected_peers".to_string());
+                                rt.final_quiescence_height_reconcile_blocked_total = rt
+                                    .final_quiescence_height_reconcile_blocked_total
+                                    .saturating_add(1);
+                                rt.final_quiescence_height_reconcile_blocked_reason =
+                                    Some("no_connected_peer_with_higher_tip".to_string());
                             }
                             Err(e) => {
                                 let mut rt = runtime.write().await;
                                 rt.final_quiescence_tip_reconcile_total =
                                     rt.final_quiescence_tip_reconcile_total.saturating_add(1);
+                                rt.final_quiescence_height_reconcile_total =
+                                    rt.final_quiescence_height_reconcile_total.saturating_add(1);
                                 rt.final_quiescence_tip_reconcile_blocked_total = rt
                                     .final_quiescence_tip_reconcile_blocked_total
                                     .saturating_add(1);
                                 rt.final_quiescence_tip_reconcile_blocked_reason =
                                     Some(format!("p2p_status_failed:{e}"));
+                                rt.final_quiescence_height_reconcile_blocked_total = rt
+                                    .final_quiescence_height_reconcile_blocked_total
+                                    .saturating_add(1);
+                                rt.final_quiescence_height_reconcile_blocked_reason =
+                                    Some("unknown".to_string());
                             }
                         }
                     } else {
                         let mut rt = runtime.write().await;
                         rt.final_quiescence_tip_reconcile_total =
                             rt.final_quiescence_tip_reconcile_total.saturating_add(1);
+                        rt.final_quiescence_height_reconcile_total =
+                            rt.final_quiescence_height_reconcile_total.saturating_add(1);
                         rt.final_quiescence_tip_reconcile_blocked_total = rt
                             .final_quiescence_tip_reconcile_blocked_total
                             .saturating_add(1);
                         rt.final_quiescence_tip_reconcile_blocked_reason =
                             Some("p2p_disabled".to_string());
+                        rt.final_quiescence_height_reconcile_blocked_total = rt
+                            .final_quiescence_height_reconcile_blocked_total
+                            .saturating_add(1);
+                        rt.final_quiescence_height_reconcile_blocked_reason =
+                            Some("no_connected_peer_with_higher_tip".to_string());
                     }
 
                     if orphan_count > 0 && pending_block_requests == 0 {
@@ -3408,6 +3598,38 @@ mod tests {
         assert_eq!(cleanup.active_missing_parent_entries, 0);
         assert!(!chain.orphan_blocks.contains_key("ready-child"));
         assert_eq!(pulsedag_core::pending_missing_parent_count(&chain), 0);
+    }
+
+    #[test]
+    fn final_height_reconcile_pending_is_bounded_by_completed_attempts() {
+        assert!(!final_quiescence_reconcile_pending(0, 0, 0));
+        assert!(final_quiescence_reconcile_pending(1, 0, 0));
+        assert!(!final_quiescence_reconcile_pending(1, 1, 0));
+        assert!(!final_quiescence_reconcile_pending(1, 0, 1));
+    }
+
+    #[test]
+    fn final_height_reconcile_uses_precise_rejection_reasons() {
+        assert_eq!(
+            final_height_reconcile_rejection_reason(&BlockAcceptanceResult::MissingParent),
+            "parent_missing_after_fetch"
+        );
+        assert_eq!(
+            final_height_reconcile_rejection_reason(&BlockAcceptanceResult::Rejected(
+                "invalid state root".to_string()
+            )),
+            "validation_rejected"
+        );
+        assert_eq!(
+            final_height_reconcile_rejection_reason(&BlockAcceptanceResult::Rejected(
+                "storage persist failed".to_string()
+            )),
+            "storage_missing"
+        );
+        assert_eq!(
+            final_height_reconcile_rejection_reason(&BlockAcceptanceResult::InvalidPow),
+            "validation_rejected"
+        );
     }
 
     async fn runtime_thread_name() -> String {
