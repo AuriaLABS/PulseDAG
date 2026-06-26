@@ -105,6 +105,17 @@ pub struct MetricsData {
     pub final_quiescence_higher_tip_apply_rejected_total: u64,
     pub final_quiescence_height_gap_before: u64,
     pub final_quiescence_height_gap_after: u64,
+    pub final_quiescence_same_height_reconcile_total: u64,
+    pub final_quiescence_same_height_reconcile_success_total: u64,
+    pub final_quiescence_same_height_reconcile_blocked_total: u64,
+    pub final_quiescence_same_height_reconcile_blocked_reason: Option<String>,
+    pub final_quiescence_same_height_competing_tip_seen_total: u64,
+    pub final_quiescence_same_height_competing_tip_fetch_attempt_total: u64,
+    pub final_quiescence_same_height_competing_tip_fetch_success_total: u64,
+    pub final_quiescence_same_height_competing_tip_apply_success_total: u64,
+    pub final_quiescence_same_height_competing_tip_apply_rejected_total: u64,
+    pub final_quiescence_distinct_tips_before: u64,
+    pub final_quiescence_distinct_tips_after: u64,
     pub peer_count: usize,
     pub peer_effective_count: usize,
     pub peer_min_target_missed_total: u64,
@@ -319,6 +330,27 @@ pub async fn get_metrics<S: RpcStateLike>(
             .final_quiescence_higher_tip_apply_rejected_total,
         final_quiescence_height_gap_before: runtime.final_quiescence_height_gap_before,
         final_quiescence_height_gap_after: runtime.final_quiescence_height_gap_after,
+        final_quiescence_same_height_reconcile_total: runtime
+            .final_quiescence_same_height_reconcile_total,
+        final_quiescence_same_height_reconcile_success_total: runtime
+            .final_quiescence_same_height_reconcile_success_total,
+        final_quiescence_same_height_reconcile_blocked_total: runtime
+            .final_quiescence_same_height_reconcile_blocked_total,
+        final_quiescence_same_height_reconcile_blocked_reason: runtime
+            .final_quiescence_same_height_reconcile_blocked_reason
+            .clone(),
+        final_quiescence_same_height_competing_tip_seen_total: runtime
+            .final_quiescence_same_height_competing_tip_seen_total,
+        final_quiescence_same_height_competing_tip_fetch_attempt_total: runtime
+            .final_quiescence_same_height_competing_tip_fetch_attempt_total,
+        final_quiescence_same_height_competing_tip_fetch_success_total: runtime
+            .final_quiescence_same_height_competing_tip_fetch_success_total,
+        final_quiescence_same_height_competing_tip_apply_success_total: runtime
+            .final_quiescence_same_height_competing_tip_apply_success_total,
+        final_quiescence_same_height_competing_tip_apply_rejected_total: runtime
+            .final_quiescence_same_height_competing_tip_apply_rejected_total,
+        final_quiescence_distinct_tips_before: runtime.final_quiescence_distinct_tips_before,
+        final_quiescence_distinct_tips_after: runtime.final_quiescence_distinct_tips_after,
         peer_count,
         peer_effective_count: p2p_status
             .as_ref()

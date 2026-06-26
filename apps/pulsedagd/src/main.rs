@@ -132,6 +132,23 @@ fn final_height_reconcile_rejection_reason(acceptance: &BlockAcceptanceResult) -
     }
 }
 
+fn final_same_height_reconcile_rejection_reason(
+    acceptance: &BlockAcceptanceResult,
+) -> &'static str {
+    match acceptance {
+        BlockAcceptanceResult::MissingParent => "same_height_block_received_but_rejected",
+        BlockAcceptanceResult::Rejected(message)
+            if message.contains("validation") || message.contains("invalid") =>
+        {
+            "same_height_candidate_validation_failed"
+        }
+        BlockAcceptanceResult::Rejected(_) | BlockAcceptanceResult::InvalidPow => {
+            "same_height_candidate_validation_failed"
+        }
+        _ => "same_height_block_received_but_rejected",
+    }
+}
+
 struct DedicatedRpcServer {
     local_addr: SocketAddr,
     worker_threads: usize,
@@ -993,6 +1010,7 @@ async fn main() -> Result<()> {
             let mut fetch_scheduler =
                 DependencyAwareFetchScheduler::with_limit(MAX_FETCH_SCHEDULER_QUEUE_DEPTH);
             let mut final_quiescence_higher_tip_requests: HashSet<String> = HashSet::new();
+            let mut final_quiescence_same_height_tip_requests: HashSet<String> = HashSet::new();
             let mut recovery_tick: u64 = 0;
             loop {
                 let maybe_event =
@@ -1038,6 +1056,8 @@ async fn main() -> Result<()> {
                     for hash in timed_out.retryable {
                         let final_height_retry =
                             final_quiescence_higher_tip_requests.contains(&hash);
+                        let final_same_height_retry =
+                            final_quiescence_same_height_tip_requests.contains(&hash);
                         let outcome = block_requests.retry_after_timeout(
                             &hash,
                             now_unix(),
@@ -1071,6 +1091,14 @@ async fn main() -> Result<()> {
                             rt.final_quiescence_height_reconcile_blocked_reason =
                                 Some("block_request_timed_out".to_string());
                         }
+                        if final_same_height_retry && outcome.all_peers_exhausted {
+                            final_quiescence_same_height_tip_requests.remove(&hash);
+                            rt.final_quiescence_same_height_reconcile_blocked_total = rt
+                                .final_quiescence_same_height_reconcile_blocked_total
+                                .saturating_add(1);
+                            rt.final_quiescence_same_height_reconcile_blocked_reason =
+                                Some("same_height_block_request_timed_out".to_string());
+                        }
                         rt.missing_parent_peer_timeout_total =
                             rt.missing_parent_peer_timeout_total.saturating_add(1);
                         if outcome.retry {
@@ -1098,6 +1126,8 @@ async fn main() -> Result<()> {
                     for hash in timed_out.expired {
                         let final_height_expired =
                             final_quiescence_higher_tip_requests.remove(&hash);
+                        let final_same_height_expired =
+                            final_quiescence_same_height_tip_requests.remove(&hash);
                         let missing_parent_still_needed = {
                             let guard = chain.read().await;
                             guard.orphan_parent_index.contains_key(&hash)
@@ -1117,6 +1147,9 @@ async fn main() -> Result<()> {
                             }
                             if final_height_expired {
                                 final_quiescence_higher_tip_requests.insert(hash.clone());
+                            }
+                            if final_same_height_expired {
+                                final_quiescence_same_height_tip_requests.insert(hash.clone());
                             }
                             let mut rt = runtime.write().await;
                             rt.getblock_sent = rt.getblock_sent.saturating_add(1);
@@ -1142,6 +1175,13 @@ async fn main() -> Result<()> {
                                     .saturating_add(1);
                                 rt.final_quiescence_height_reconcile_blocked_reason =
                                     Some("block_request_timed_out".to_string());
+                            }
+                            if final_same_height_expired {
+                                rt.final_quiescence_same_height_reconcile_blocked_total = rt
+                                    .final_quiescence_same_height_reconcile_blocked_total
+                                    .saturating_add(1);
+                                rt.final_quiescence_same_height_reconcile_blocked_reason =
+                                    Some("same_height_block_request_timed_out".to_string());
                             }
                             rt.missing_parent_all_peers_exhausted_total = rt
                                 .missing_parent_all_peers_exhausted_total
@@ -1847,6 +1887,8 @@ async fn main() -> Result<()> {
                     InboundEvent::Block(block) => {
                         let final_height_reconcile_block =
                             final_quiescence_higher_tip_requests.contains(&block.hash);
+                        let final_same_height_reconcile_block =
+                            final_quiescence_same_height_tip_requests.contains(&block.hash);
                         let fulfilled_missing_parent_request =
                             block_requests.pending.contains_key(&block.hash);
                         {
@@ -1918,6 +1960,19 @@ async fn main() -> Result<()> {
                                 );
                                 rt.final_quiescence_height_gap_before = final_height_gap_before;
                                 rt.final_quiescence_height_gap_after = final_height_gap_before;
+                            }
+                            if final_same_height_reconcile_block {
+                                final_quiescence_same_height_tip_requests.remove(&block.hash);
+                                rt.final_quiescence_same_height_competing_tip_fetch_success_total =
+                                    rt.final_quiescence_same_height_competing_tip_fetch_success_total
+                                        .saturating_add(1);
+                                rt.final_quiescence_same_height_reconcile_blocked_total = rt
+                                    .final_quiescence_same_height_reconcile_blocked_total
+                                    .saturating_add(1);
+                                rt.final_quiescence_same_height_reconcile_blocked_reason = Some(
+                                    final_same_height_reconcile_rejection_reason(&acceptance)
+                                        .to_string(),
+                                );
                             }
                             rt.blockdata_received = rt.blockdata_received.saturating_add(1);
                             rt.blockdata_missing_parent =
@@ -2088,6 +2143,22 @@ async fn main() -> Result<()> {
                                 rt.final_quiescence_height_gap_before = final_height_gap_before;
                                 rt.final_quiescence_height_gap_after = final_height_gap_before;
                             }
+                            if final_same_height_reconcile_block {
+                                final_quiescence_same_height_tip_requests.remove(&block.hash);
+                                rt.final_quiescence_same_height_competing_tip_fetch_success_total =
+                                    rt.final_quiescence_same_height_competing_tip_fetch_success_total
+                                        .saturating_add(1);
+                                rt.final_quiescence_same_height_competing_tip_apply_rejected_total =
+                                    rt.final_quiescence_same_height_competing_tip_apply_rejected_total
+                                        .saturating_add(1);
+                                rt.final_quiescence_same_height_reconcile_blocked_total = rt
+                                    .final_quiescence_same_height_reconcile_blocked_total
+                                    .saturating_add(1);
+                                rt.final_quiescence_same_height_reconcile_blocked_reason = Some(
+                                    final_same_height_reconcile_rejection_reason(&acceptance)
+                                        .to_string(),
+                                );
+                            }
                             rt.blockdata_received = rt.blockdata_received.saturating_add(1);
                             if let Some(diagnostics) = &invalid_state_root_diagnostics {
                                 rt.record_invalid_state_root(diagnostics);
@@ -2226,6 +2297,34 @@ async fn main() -> Result<()> {
                                     rt.final_quiescence_height_gap_before = final_height_gap_before;
                                     rt.final_quiescence_height_gap_after = final_height_gap_after;
                                     rt.final_quiescence_height_reconcile_blocked_reason = None;
+                                }
+                                if final_same_height_reconcile_block {
+                                    final_quiescence_same_height_tip_requests.remove(&block.hash);
+                                    rt.final_quiescence_same_height_competing_tip_fetch_success_total =
+                                        rt.final_quiescence_same_height_competing_tip_fetch_success_total
+                                            .saturating_add(1);
+                                    rt.final_quiescence_same_height_competing_tip_apply_success_total =
+                                        rt.final_quiescence_same_height_competing_tip_apply_success_total
+                                            .saturating_add(1);
+                                    let selected_tip = pulsedag_core::preferred_tip_hash(&guard)
+                                        .unwrap_or_else(|| guard.dag.genesis_hash.clone());
+                                    if selected_tip == accepted_tip {
+                                        rt.final_quiescence_same_height_reconcile_success_total =
+                                            rt.final_quiescence_same_height_reconcile_success_total
+                                                .saturating_add(1);
+                                        rt.final_quiescence_same_height_reconcile_blocked_reason =
+                                            None;
+                                    } else {
+                                        rt.final_quiescence_same_height_reconcile_blocked_total =
+                                            rt.final_quiescence_same_height_reconcile_blocked_total
+                                                .saturating_add(1);
+                                        rt.final_quiescence_same_height_reconcile_blocked_reason =
+                                            Some(
+                                                "same_height_selected_tip_not_applied".to_string(),
+                                            );
+                                    }
+                                    rt.final_quiescence_distinct_tips_after =
+                                        guard.dag.tips.len() as u64;
                                 }
                                 rt.sync_pipeline.validate_and_apply_blocks(1, now_unix());
                                 rt.accepted_p2p_blocks += 1;
@@ -2496,6 +2595,11 @@ async fn main() -> Result<()> {
                                 rt.final_quiescence_tip_reconcile_success_total,
                                 rt.final_quiescence_tip_reconcile_blocked_total,
                             );
+                            let same_height_reconcile_pending = final_quiescence_reconcile_pending(
+                                rt.final_quiescence_same_height_reconcile_total,
+                                rt.final_quiescence_same_height_reconcile_success_total,
+                                rt.final_quiescence_same_height_reconcile_blocked_total,
+                            );
                             if final_reconcile_pending {
                                 if unknown_tips.is_empty() {
                                     rt.final_quiescence_tip_reconcile_blocked_total = rt
@@ -2513,6 +2617,16 @@ async fn main() -> Result<()> {
                                             .saturating_add(1);
                                         rt.final_quiescence_height_reconcile_blocked_reason =
                                             Some("higher_tip_not_advertised".to_string());
+                                    }
+                                    if same_height_reconcile_pending {
+                                        rt.final_quiescence_same_height_reconcile_blocked_total =
+                                            rt.final_quiescence_same_height_reconcile_blocked_total
+                                                .saturating_add(1);
+                                        rt.final_quiescence_same_height_reconcile_blocked_reason =
+                                            Some(
+                                                "same_height_competing_tip_not_advertised"
+                                                    .to_string(),
+                                            );
                                     }
                                 } else {
                                     rt.final_quiescence_tip_reconcile_success_total = rt
@@ -2541,10 +2655,24 @@ async fn main() -> Result<()> {
                                     rt.final_quiescence_tip_reconcile_blocked_total,
                                 )
                             };
+                            let final_same_height_pending = {
+                                let rt = runtime.read().await;
+                                final_quiescence_reconcile_pending(
+                                    rt.final_quiescence_same_height_reconcile_total,
+                                    rt.final_quiescence_same_height_reconcile_success_total,
+                                    rt.final_quiescence_same_height_reconcile_blocked_total,
+                                )
+                            };
                             if final_height_pending {
                                 let mut rt = runtime.write().await;
                                 rt.final_quiescence_higher_tip_seen_total =
                                     rt.final_quiescence_higher_tip_seen_total.saturating_add(1);
+                            }
+                            if final_same_height_pending {
+                                let mut rt = runtime.write().await;
+                                rt.final_quiescence_same_height_competing_tip_seen_total = rt
+                                    .final_quiescence_same_height_competing_tip_seen_total
+                                    .saturating_add(1);
                             }
                             if block_requests.should_issue_getblock_for_peers(
                                 &tip,
@@ -2565,6 +2693,13 @@ async fn main() -> Result<()> {
                                         .saturating_add(1);
                                     rt.final_quiescence_height_reconcile_blocked_reason = None;
                                 }
+                                if final_same_height_pending {
+                                    final_quiescence_same_height_tip_requests.insert(tip.clone());
+                                    rt.final_quiescence_same_height_competing_tip_fetch_attempt_total =
+                                        rt.final_quiescence_same_height_competing_tip_fetch_attempt_total
+                                            .saturating_add(1);
+                                    rt.final_quiescence_same_height_reconcile_blocked_reason = None;
+                                }
                                 rt.pending_block_requests = block_requests.pending.len();
                                 rt.inflight_block_requests = block_requests.pending.len();
                                 rt.pending_block_request_hashes = block_requests.pending_hashes();
@@ -2576,6 +2711,13 @@ async fn main() -> Result<()> {
                                         .saturating_add(1);
                                     rt.final_quiescence_height_reconcile_blocked_reason =
                                         Some("block_request_not_sent".to_string());
+                                }
+                                if final_same_height_pending {
+                                    rt.final_quiescence_same_height_reconcile_blocked_total = rt
+                                        .final_quiescence_same_height_reconcile_blocked_total
+                                        .saturating_add(1);
+                                    rt.final_quiescence_same_height_reconcile_blocked_reason =
+                                        Some("same_height_block_request_not_sent".to_string());
                                 }
                                 rt.duplicate_block_requests_suppressed =
                                     rt.duplicate_block_requests_suppressed.saturating_add(1);
@@ -2687,9 +2829,12 @@ async fn main() -> Result<()> {
                         let mut retry_next_peer = false;
                         let mut all_peers_exhausted = false;
                         let mut final_height_not_found = false;
+                        let mut final_same_height_not_found = false;
                         if let Some(hash) = hash.as_ref() {
                             final_height_not_found =
                                 final_quiescence_higher_tip_requests.contains(hash);
+                            final_same_height_not_found =
+                                final_quiescence_same_height_tip_requests.contains(hash);
                             let now = now_unix();
                             let peers = p2p
                                 .as_ref()
@@ -2733,6 +2878,17 @@ async fn main() -> Result<()> {
                                 .saturating_add(1);
                             rt.final_quiescence_height_reconcile_blocked_reason =
                                 Some("higher_tip_known_but_block_missing".to_string());
+                        }
+                        if final_same_height_not_found && all_peers_exhausted {
+                            if let Some(hash) = hash.as_ref() {
+                                final_quiescence_same_height_tip_requests.remove(hash);
+                            }
+                            rt.final_quiescence_same_height_reconcile_blocked_total = rt
+                                .final_quiescence_same_height_reconcile_blocked_total
+                                .saturating_add(1);
+                            rt.final_quiescence_same_height_reconcile_blocked_reason = Some(
+                                "same_height_competing_tip_known_but_block_missing".to_string(),
+                            );
                         }
                         rt.sync_state = "degraded".to_string();
                         rt.sync_failures = rt.sync_failures.saturating_add(1);
@@ -2832,7 +2988,14 @@ async fn main() -> Result<()> {
             let mut previous_accepted_mined_blocks = 0u64;
             loop {
                 sleep(Duration::from_secs(15)).await;
-                let (issue_count, best_height, best_tip_hash, orphan_count, mempool_size) = {
+                let (
+                    issue_count,
+                    best_height,
+                    best_tip_hash,
+                    orphan_count,
+                    local_tip_count,
+                    mempool_size,
+                ) = {
                     let guard = chain.read().await;
                     (
                         pulsedag_core::dag_consistency_issues(&guard).len(),
@@ -2840,6 +3003,7 @@ async fn main() -> Result<()> {
                         pulsedag_core::preferred_tip_hash(&guard)
                             .unwrap_or_else(|| guard.dag.genesis_hash.clone()),
                         guard.orphan_blocks.len(),
+                        guard.dag.tips.len(),
                         guard.mempool.transactions.len(),
                     )
                 };
@@ -3033,15 +3197,35 @@ async fn main() -> Result<()> {
                                         rt.final_quiescence_height_reconcile_success_total,
                                         rt.final_quiescence_height_reconcile_blocked_total,
                                     );
+                                let same_height_reconcile_already_pending =
+                                    final_quiescence_reconcile_pending(
+                                        rt.final_quiescence_same_height_reconcile_total,
+                                        rt.final_quiescence_same_height_reconcile_success_total,
+                                        rt.final_quiescence_same_height_reconcile_blocked_total,
+                                    );
                                 if !height_reconcile_already_pending {
                                     rt.final_quiescence_height_reconcile_total = rt
                                         .final_quiescence_height_reconcile_total
                                         .saturating_add(1);
                                 }
+                                let cleanup_complete = orphan_count == 0
+                                    && rt.pending_missing_parents == 0
+                                    && pending_block_requests == 0;
+                                if cleanup_complete
+                                    && !height_reconcile_already_pending
+                                    && !same_height_reconcile_already_pending
+                                {
+                                    rt.final_quiescence_same_height_reconcile_total = rt
+                                        .final_quiescence_same_height_reconcile_total
+                                        .saturating_add(1);
+                                    rt.final_quiescence_distinct_tips_before =
+                                        local_tip_count as u64;
+                                }
                                 if requested {
                                     rt.tips_requested = rt.tips_requested.saturating_add(1);
                                     rt.final_quiescence_tip_reconcile_blocked_reason = None;
                                     rt.final_quiescence_height_reconcile_blocked_reason = None;
+                                    rt.final_quiescence_same_height_reconcile_blocked_reason = None;
                                 } else {
                                     rt.final_quiescence_tip_reconcile_blocked_total = rt
                                         .final_quiescence_tip_reconcile_blocked_total
@@ -3053,6 +3237,13 @@ async fn main() -> Result<()> {
                                         .saturating_add(1);
                                     rt.final_quiescence_height_reconcile_blocked_reason =
                                         Some("block_request_not_sent".to_string());
+                                    if cleanup_complete {
+                                        rt.final_quiescence_same_height_reconcile_blocked_total =
+                                            rt.final_quiescence_same_height_reconcile_blocked_total
+                                                .saturating_add(1);
+                                        rt.final_quiescence_same_height_reconcile_blocked_reason =
+                                            Some("same_height_block_request_not_sent".to_string());
+                                    }
                                 }
                             }
                             Ok(_) => {
@@ -3629,6 +3820,24 @@ mod tests {
         assert_eq!(
             final_height_reconcile_rejection_reason(&BlockAcceptanceResult::InvalidPow),
             "validation_rejected"
+        );
+    }
+
+    #[test]
+    fn final_same_height_reconcile_uses_precise_rejection_reasons() {
+        assert_eq!(
+            final_same_height_reconcile_rejection_reason(&BlockAcceptanceResult::MissingParent),
+            "same_height_block_received_but_rejected"
+        );
+        assert_eq!(
+            final_same_height_reconcile_rejection_reason(&BlockAcceptanceResult::Rejected(
+                "invalid state root".to_string()
+            )),
+            "same_height_candidate_validation_failed"
+        );
+        assert_eq!(
+            final_same_height_reconcile_rejection_reason(&BlockAcceptanceResult::InvalidPow),
+            "same_height_candidate_validation_failed"
         );
     }
 
