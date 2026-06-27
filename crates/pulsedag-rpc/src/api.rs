@@ -625,6 +625,38 @@ pub struct NodeRuntimeStats {
     #[serde(default)]
     pub final_quiescence_distinct_tips_after: u64,
     #[serde(default)]
+    pub final_quiescence_selected_sync_total: u64,
+    #[serde(default)]
+    pub final_quiescence_selected_sync_success_total: u64,
+    #[serde(default)]
+    pub final_quiescence_selected_sync_blocked_total: u64,
+    #[serde(default)]
+    pub final_quiescence_selected_sync_blocked_reason: Option<String>,
+    #[serde(default)]
+    pub final_quiescence_selected_locator_request_total: u64,
+    #[serde(default)]
+    pub final_quiescence_selected_locator_success_total: u64,
+    #[serde(default)]
+    pub final_quiescence_selected_locator_empty_total: u64,
+    #[serde(default)]
+    pub final_quiescence_highest_common_found_total: u64,
+    #[serde(default)]
+    pub final_quiescence_missing_segment_request_total: u64,
+    #[serde(default)]
+    pub final_quiescence_missing_segment_apply_success_total: u64,
+    #[serde(default)]
+    pub final_quiescence_missing_segment_apply_rejected_total: u64,
+    #[serde(default)]
+    pub final_quiescence_same_height_candidate_seen_total: u64,
+    #[serde(default)]
+    pub final_quiescence_same_height_candidate_fetch_total: u64,
+    #[serde(default)]
+    pub final_quiescence_same_height_candidate_apply_total: u64,
+    #[serde(default)]
+    pub final_quiescence_worst_lag_before: u64,
+    #[serde(default)]
+    pub final_quiescence_worst_lag_after: u64,
+    #[serde(default)]
     pub rpc_dedicated_runtime_active: bool,
     #[serde(default)]
     pub rpc_dedicated_runtime_worker_threads: usize,
