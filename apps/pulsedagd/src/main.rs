@@ -149,6 +149,34 @@ fn final_same_height_reconcile_rejection_reason(
     }
 }
 
+fn selected_chain_locator(chain: &pulsedag_core::state::ChainState, limit: usize) -> Vec<String> {
+    let mut blocks = chain.dag.blocks.values().cloned().collect::<Vec<_>>();
+    blocks.sort_by(|a, b| {
+        b.header
+            .height
+            .cmp(&a.header.height)
+            .then_with(|| a.hash.cmp(&b.hash))
+    });
+    blocks
+        .into_iter()
+        .take(limit.max(1))
+        .map(|block| block.hash)
+        .collect()
+}
+
+fn final_quiescence_request_suppression_reason(
+    readiness: GetBlockRequestReadiness,
+    pending_len: usize,
+    max_pending: usize,
+) -> &'static str {
+    match readiness {
+        GetBlockRequestReadiness::Requestable => "unknown",
+        GetBlockRequestReadiness::AlreadyPending => "request_already_in_flight",
+        GetBlockRequestReadiness::RateLimited if pending_len >= max_pending => "request_queue_full",
+        GetBlockRequestReadiness::RateLimited => "peer_rate_limited",
+    }
+}
+
 struct DedicatedRpcServer {
     local_addr: SocketAddr,
     worker_threads: usize,
@@ -1960,6 +1988,8 @@ async fn main() -> Result<()> {
                                 );
                                 rt.final_quiescence_height_gap_before = final_height_gap_before;
                                 rt.final_quiescence_height_gap_after = final_height_gap_before;
+                                rt.final_quiescence_worst_lag_before = final_height_gap_before;
+                                rt.final_quiescence_worst_lag_after = final_height_gap_before;
                             }
                             if final_same_height_reconcile_block {
                                 final_quiescence_same_height_tip_requests.remove(&block.hash);
@@ -2133,6 +2163,14 @@ async fn main() -> Result<()> {
                                 rt.final_quiescence_higher_tip_apply_rejected_total = rt
                                     .final_quiescence_higher_tip_apply_rejected_total
                                     .saturating_add(1);
+                                rt.final_quiescence_missing_segment_apply_rejected_total = rt
+                                    .final_quiescence_missing_segment_apply_rejected_total
+                                    .saturating_add(1);
+                                rt.final_quiescence_selected_sync_blocked_total = rt
+                                    .final_quiescence_selected_sync_blocked_total
+                                    .saturating_add(1);
+                                rt.final_quiescence_selected_sync_blocked_reason =
+                                    Some("block_received_but_validation_failed".to_string());
                                 rt.final_quiescence_height_reconcile_blocked_total = rt
                                     .final_quiescence_height_reconcile_blocked_total
                                     .saturating_add(1);
@@ -2142,6 +2180,8 @@ async fn main() -> Result<()> {
                                 );
                                 rt.final_quiescence_height_gap_before = final_height_gap_before;
                                 rt.final_quiescence_height_gap_after = final_height_gap_before;
+                                rt.final_quiescence_worst_lag_before = final_height_gap_before;
+                                rt.final_quiescence_worst_lag_after = final_height_gap_before;
                             }
                             if final_same_height_reconcile_block {
                                 final_quiescence_same_height_tip_requests.remove(&block.hash);
@@ -2151,6 +2191,14 @@ async fn main() -> Result<()> {
                                 rt.final_quiescence_same_height_competing_tip_apply_rejected_total =
                                     rt.final_quiescence_same_height_competing_tip_apply_rejected_total
                                         .saturating_add(1);
+                                rt.final_quiescence_missing_segment_apply_rejected_total = rt
+                                    .final_quiescence_missing_segment_apply_rejected_total
+                                    .saturating_add(1);
+                                rt.final_quiescence_selected_sync_blocked_total = rt
+                                    .final_quiescence_selected_sync_blocked_total
+                                    .saturating_add(1);
+                                rt.final_quiescence_selected_sync_blocked_reason =
+                                    Some("block_received_but_validation_failed".to_string());
                                 rt.final_quiescence_same_height_reconcile_blocked_total = rt
                                     .final_quiescence_same_height_reconcile_blocked_total
                                     .saturating_add(1);
@@ -2291,11 +2339,19 @@ async fn main() -> Result<()> {
                                     rt.final_quiescence_higher_tip_apply_success_total = rt
                                         .final_quiescence_higher_tip_apply_success_total
                                         .saturating_add(1);
+                                    rt.final_quiescence_missing_segment_apply_success_total = rt
+                                        .final_quiescence_missing_segment_apply_success_total
+                                        .saturating_add(1);
+                                    rt.final_quiescence_selected_sync_success_total = rt
+                                        .final_quiescence_selected_sync_success_total
+                                        .saturating_add(1);
                                     rt.final_quiescence_height_reconcile_success_total = rt
                                         .final_quiescence_height_reconcile_success_total
                                         .saturating_add(1);
                                     rt.final_quiescence_height_gap_before = final_height_gap_before;
                                     rt.final_quiescence_height_gap_after = final_height_gap_after;
+                                    rt.final_quiescence_worst_lag_before = final_height_gap_before;
+                                    rt.final_quiescence_worst_lag_after = final_height_gap_after;
                                     rt.final_quiescence_height_reconcile_blocked_reason = None;
                                 }
                                 if final_same_height_reconcile_block {
@@ -2306,6 +2362,9 @@ async fn main() -> Result<()> {
                                     rt.final_quiescence_same_height_competing_tip_apply_success_total =
                                         rt.final_quiescence_same_height_competing_tip_apply_success_total
                                             .saturating_add(1);
+                                    rt.final_quiescence_same_height_candidate_apply_total = rt
+                                        .final_quiescence_same_height_candidate_apply_total
+                                        .saturating_add(1);
                                     let selected_tip = pulsedag_core::preferred_tip_hash(&guard)
                                         .unwrap_or_else(|| guard.dag.genesis_hash.clone());
                                     if selected_tip == accepted_tip {
@@ -2534,6 +2593,7 @@ async fn main() -> Result<()> {
                             )
                         };
                         let plan = fetch_scheduler.next_requests(&known, &pending, 8);
+                        let planned_request_count = plan.requests.len() as u64;
                         for hash in plan.requests {
                             if block_requests.should_issue_getblock_for_peers(
                                 &hash,
@@ -2553,6 +2613,30 @@ async fn main() -> Result<()> {
                             }
                         }
                         let mut rt = runtime.write().await;
+                        if !headers.is_empty() {
+                            rt.final_quiescence_selected_locator_success_total = rt
+                                .final_quiescence_selected_locator_success_total
+                                .saturating_add(1);
+                            rt.final_quiescence_highest_common_found_total = rt
+                                .final_quiescence_highest_common_found_total
+                                .saturating_add(1);
+                        } else if final_quiescence_reconcile_pending(
+                            rt.final_quiescence_selected_sync_total,
+                            rt.final_quiescence_selected_sync_success_total,
+                            rt.final_quiescence_selected_sync_blocked_total,
+                        ) {
+                            rt.final_quiescence_selected_locator_empty_total = rt
+                                .final_quiescence_selected_locator_empty_total
+                                .saturating_add(1);
+                            rt.final_quiescence_selected_sync_blocked_total = rt
+                                .final_quiescence_selected_sync_blocked_total
+                                .saturating_add(1);
+                            rt.final_quiescence_selected_sync_blocked_reason =
+                                Some("selected_locator_empty".to_string());
+                        }
+                        rt.final_quiescence_missing_segment_request_total = rt
+                            .final_quiescence_missing_segment_request_total
+                            .saturating_add(planned_request_count);
                         rt.block_fetch_scheduler_queue_depth = fetch_scheduler.queue_depth();
                         rt.block_fetch_scheduler_inflight_by_peer =
                             block_requests.inflight_by_peer();
@@ -2605,8 +2689,10 @@ async fn main() -> Result<()> {
                                     rt.final_quiescence_tip_reconcile_blocked_total = rt
                                         .final_quiescence_tip_reconcile_blocked_total
                                         .saturating_add(1);
-                                    rt.final_quiescence_tip_reconcile_blocked_reason =
-                                        Some("higher_tip_not_advertised".to_string());
+                                    rt.final_quiescence_tip_reconcile_blocked_reason = Some(
+                                        "no_connected_peer_with_better_or_competing_tip"
+                                            .to_string(),
+                                    );
                                     if final_quiescence_reconcile_pending(
                                         rt.final_quiescence_height_reconcile_total,
                                         rt.final_quiescence_height_reconcile_success_total,
@@ -2615,8 +2701,10 @@ async fn main() -> Result<()> {
                                         rt.final_quiescence_height_reconcile_blocked_total = rt
                                             .final_quiescence_height_reconcile_blocked_total
                                             .saturating_add(1);
-                                        rt.final_quiescence_height_reconcile_blocked_reason =
-                                            Some("higher_tip_not_advertised".to_string());
+                                        rt.final_quiescence_height_reconcile_blocked_reason = Some(
+                                            "no_connected_peer_with_better_or_competing_tip"
+                                                .to_string(),
+                                        );
                                     }
                                     if same_height_reconcile_pending {
                                         rt.final_quiescence_same_height_reconcile_blocked_total =
@@ -2624,7 +2712,7 @@ async fn main() -> Result<()> {
                                                 .saturating_add(1);
                                         rt.final_quiescence_same_height_reconcile_blocked_reason =
                                             Some(
-                                                "same_height_competing_tip_not_advertised"
+                                                "no_connected_peer_with_better_or_competing_tip"
                                                     .to_string(),
                                             );
                                     }
@@ -2667,13 +2755,25 @@ async fn main() -> Result<()> {
                                 let mut rt = runtime.write().await;
                                 rt.final_quiescence_higher_tip_seen_total =
                                     rt.final_quiescence_higher_tip_seen_total.saturating_add(1);
+                                rt.final_quiescence_selected_sync_total =
+                                    rt.final_quiescence_selected_sync_total.saturating_add(1);
                             }
                             if final_same_height_pending {
                                 let mut rt = runtime.write().await;
                                 rt.final_quiescence_same_height_competing_tip_seen_total = rt
                                     .final_quiescence_same_height_competing_tip_seen_total
                                     .saturating_add(1);
+                                rt.final_quiescence_same_height_candidate_seen_total = rt
+                                    .final_quiescence_same_height_candidate_seen_total
+                                    .saturating_add(1);
+                                rt.final_quiescence_selected_sync_total =
+                                    rt.final_quiescence_selected_sync_total.saturating_add(1);
                             }
+                            let readiness = block_requests.classify_getblock_for_peers(
+                                &tip,
+                                now_unix(),
+                                active_peer_ids(&p2p),
+                            );
                             if block_requests.should_issue_getblock_for_peers(
                                 &tip,
                                 now_unix(),
@@ -2691,6 +2791,9 @@ async fn main() -> Result<()> {
                                     rt.final_quiescence_higher_tip_fetch_attempt_total = rt
                                         .final_quiescence_higher_tip_fetch_attempt_total
                                         .saturating_add(1);
+                                    rt.final_quiescence_missing_segment_request_total = rt
+                                        .final_quiescence_missing_segment_request_total
+                                        .saturating_add(1);
                                     rt.final_quiescence_height_reconcile_blocked_reason = None;
                                 }
                                 if final_same_height_pending {
@@ -2698,27 +2801,42 @@ async fn main() -> Result<()> {
                                     rt.final_quiescence_same_height_competing_tip_fetch_attempt_total =
                                         rt.final_quiescence_same_height_competing_tip_fetch_attempt_total
                                             .saturating_add(1);
+                                    rt.final_quiescence_same_height_candidate_fetch_total = rt
+                                        .final_quiescence_same_height_candidate_fetch_total
+                                        .saturating_add(1);
                                     rt.final_quiescence_same_height_reconcile_blocked_reason = None;
                                 }
+                                rt.final_quiescence_selected_sync_blocked_reason =
+                                    Some("block_request_sent".to_string());
                                 rt.pending_block_requests = block_requests.pending.len();
                                 rt.inflight_block_requests = block_requests.pending.len();
                                 rt.pending_block_request_hashes = block_requests.pending_hashes();
                             } else {
+                                let reason = final_quiescence_request_suppression_reason(
+                                    readiness,
+                                    block_requests.pending.len(),
+                                    block_requests.max_pending(),
+                                );
                                 let mut rt = runtime.write().await;
                                 if final_height_pending {
                                     rt.final_quiescence_height_reconcile_blocked_total = rt
                                         .final_quiescence_height_reconcile_blocked_total
                                         .saturating_add(1);
                                     rt.final_quiescence_height_reconcile_blocked_reason =
-                                        Some("block_request_not_sent".to_string());
+                                        Some(reason.to_string());
                                 }
                                 if final_same_height_pending {
                                     rt.final_quiescence_same_height_reconcile_blocked_total = rt
                                         .final_quiescence_same_height_reconcile_blocked_total
                                         .saturating_add(1);
                                     rt.final_quiescence_same_height_reconcile_blocked_reason =
-                                        Some("same_height_block_request_not_sent".to_string());
+                                        Some(reason.to_string());
                                 }
+                                rt.final_quiescence_selected_sync_blocked_total = rt
+                                    .final_quiescence_selected_sync_blocked_total
+                                    .saturating_add(1);
+                                rt.final_quiescence_selected_sync_blocked_reason =
+                                    Some(reason.to_string());
                                 rt.duplicate_block_requests_suppressed =
                                     rt.duplicate_block_requests_suppressed.saturating_add(1);
                                 rt.pending_block_requests = block_requests.pending.len();
@@ -2877,7 +2995,7 @@ async fn main() -> Result<()> {
                                 .final_quiescence_height_reconcile_blocked_total
                                 .saturating_add(1);
                             rt.final_quiescence_height_reconcile_blocked_reason =
-                                Some("higher_tip_known_but_block_missing".to_string());
+                                Some("storage_missing_after_receive".to_string());
                         }
                         if final_same_height_not_found && all_peers_exhausted {
                             if let Some(hash) = hash.as_ref() {
@@ -2886,9 +3004,8 @@ async fn main() -> Result<()> {
                             rt.final_quiescence_same_height_reconcile_blocked_total = rt
                                 .final_quiescence_same_height_reconcile_blocked_total
                                 .saturating_add(1);
-                            rt.final_quiescence_same_height_reconcile_blocked_reason = Some(
-                                "same_height_competing_tip_known_but_block_missing".to_string(),
-                            );
+                            rt.final_quiescence_same_height_reconcile_blocked_reason =
+                                Some("storage_missing_after_receive".to_string());
                         }
                         rt.sync_state = "degraded".to_string();
                         rt.sync_failures = rt.sync_failures.saturating_add(1);
@@ -3188,9 +3305,23 @@ async fn main() -> Result<()> {
                         match p2p.status() {
                             Ok(status) if !status.connected_peers.is_empty() => {
                                 let requested = p2p.request_tips().is_ok();
+                                let locator = {
+                                    let guard = chain.read().await;
+                                    selected_chain_locator(&guard, 64)
+                                };
+                                let locator_requested = if locator.is_empty() {
+                                    false
+                                } else {
+                                    p2p.request_headers(&locator, None, 128).is_ok()
+                                };
                                 let mut rt = runtime.write().await;
                                 rt.final_quiescence_tip_reconcile_total =
                                     rt.final_quiescence_tip_reconcile_total.saturating_add(1);
+                                rt.final_quiescence_selected_sync_total =
+                                    rt.final_quiescence_selected_sync_total.saturating_add(1);
+                                rt.final_quiescence_selected_locator_request_total = rt
+                                    .final_quiescence_selected_locator_request_total
+                                    .saturating_add(1);
                                 let height_reconcile_already_pending =
                                     final_quiescence_reconcile_pending(
                                         rt.final_quiescence_height_reconcile_total,
@@ -3226,23 +3357,42 @@ async fn main() -> Result<()> {
                                     rt.final_quiescence_tip_reconcile_blocked_reason = None;
                                     rt.final_quiescence_height_reconcile_blocked_reason = None;
                                     rt.final_quiescence_same_height_reconcile_blocked_reason = None;
+                                    if locator_requested {
+                                        rt.final_quiescence_selected_sync_blocked_reason =
+                                            Some("block_request_sent".to_string());
+                                    } else if locator.is_empty() {
+                                        rt.final_quiescence_selected_locator_empty_total = rt
+                                            .final_quiescence_selected_locator_empty_total
+                                            .saturating_add(1);
+                                        rt.final_quiescence_selected_sync_blocked_total = rt
+                                            .final_quiescence_selected_sync_blocked_total
+                                            .saturating_add(1);
+                                        rt.final_quiescence_selected_sync_blocked_reason =
+                                            Some("selected_locator_empty".to_string());
+                                    } else {
+                                        rt.final_quiescence_selected_sync_blocked_total = rt
+                                            .final_quiescence_selected_sync_blocked_total
+                                            .saturating_add(1);
+                                        rt.final_quiescence_selected_sync_blocked_reason =
+                                            Some("selected_locator_request_failed".to_string());
+                                    }
                                 } else {
                                     rt.final_quiescence_tip_reconcile_blocked_total = rt
                                         .final_quiescence_tip_reconcile_blocked_total
                                         .saturating_add(1);
                                     rt.final_quiescence_tip_reconcile_blocked_reason =
-                                        Some("request_tips_failed".to_string());
+                                        Some("selected_locator_request_failed".to_string());
                                     rt.final_quiescence_height_reconcile_blocked_total = rt
                                         .final_quiescence_height_reconcile_blocked_total
                                         .saturating_add(1);
                                     rt.final_quiescence_height_reconcile_blocked_reason =
-                                        Some("block_request_not_sent".to_string());
+                                        Some("selected_locator_request_failed".to_string());
                                     if cleanup_complete {
                                         rt.final_quiescence_same_height_reconcile_blocked_total =
                                             rt.final_quiescence_same_height_reconcile_blocked_total
                                                 .saturating_add(1);
                                         rt.final_quiescence_same_height_reconcile_blocked_reason =
-                                            Some("same_height_block_request_not_sent".to_string());
+                                            Some("selected_locator_request_failed".to_string());
                                     }
                                 }
                             }
@@ -3255,15 +3405,17 @@ async fn main() -> Result<()> {
                                 rt.final_quiescence_tip_reconcile_blocked_total = rt
                                     .final_quiescence_tip_reconcile_blocked_total
                                     .saturating_add(1);
-                                rt.final_quiescence_tip_reconcile_blocked_reason =
-                                    Some("no_connected_peers".to_string());
+                                rt.final_quiescence_tip_reconcile_blocked_reason = Some(
+                                    "no_connected_peer_with_better_or_competing_tip".to_string(),
+                                );
                                 rt.final_quiescence_height_reconcile_blocked_total = rt
                                     .final_quiescence_height_reconcile_blocked_total
                                     .saturating_add(1);
-                                rt.final_quiescence_height_reconcile_blocked_reason =
-                                    Some("no_connected_peer_with_higher_tip".to_string());
+                                rt.final_quiescence_height_reconcile_blocked_reason = Some(
+                                    "no_connected_peer_with_better_or_competing_tip".to_string(),
+                                );
                             }
-                            Err(e) => {
+                            Err(_e) => {
                                 let mut rt = runtime.write().await;
                                 rt.final_quiescence_tip_reconcile_total =
                                     rt.final_quiescence_tip_reconcile_total.saturating_add(1);
@@ -3273,7 +3425,7 @@ async fn main() -> Result<()> {
                                     .final_quiescence_tip_reconcile_blocked_total
                                     .saturating_add(1);
                                 rt.final_quiescence_tip_reconcile_blocked_reason =
-                                    Some(format!("p2p_status_failed:{e}"));
+                                    Some("unknown".to_string());
                                 rt.final_quiescence_height_reconcile_blocked_total = rt
                                     .final_quiescence_height_reconcile_blocked_total
                                     .saturating_add(1);
@@ -3291,12 +3443,12 @@ async fn main() -> Result<()> {
                             .final_quiescence_tip_reconcile_blocked_total
                             .saturating_add(1);
                         rt.final_quiescence_tip_reconcile_blocked_reason =
-                            Some("p2p_disabled".to_string());
+                            Some("no_connected_peer_with_better_or_competing_tip".to_string());
                         rt.final_quiescence_height_reconcile_blocked_total = rt
                             .final_quiescence_height_reconcile_blocked_total
                             .saturating_add(1);
                         rt.final_quiescence_height_reconcile_blocked_reason =
-                            Some("no_connected_peer_with_higher_tip".to_string());
+                            Some("no_connected_peer_with_better_or_competing_tip".to_string());
                     }
 
                     if orphan_count > 0 && pending_block_requests == 0 {
@@ -3797,6 +3949,34 @@ mod tests {
         assert!(final_quiescence_reconcile_pending(1, 0, 0));
         assert!(!final_quiescence_reconcile_pending(1, 1, 0));
         assert!(!final_quiescence_reconcile_pending(1, 0, 1));
+    }
+
+    #[test]
+    fn final_quiescence_never_reports_vague_block_request_not_sent() {
+        assert_eq!(
+            final_quiescence_request_suppression_reason(
+                GetBlockRequestReadiness::AlreadyPending,
+                1,
+                64,
+            ),
+            "request_already_in_flight"
+        );
+        assert_eq!(
+            final_quiescence_request_suppression_reason(
+                GetBlockRequestReadiness::RateLimited,
+                64,
+                64,
+            ),
+            "request_queue_full"
+        );
+        assert_eq!(
+            final_quiescence_request_suppression_reason(
+                GetBlockRequestReadiness::RateLimited,
+                1,
+                64,
+            ),
+            "peer_rate_limited"
+        );
     }
 
     #[test]
