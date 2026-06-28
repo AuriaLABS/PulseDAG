@@ -149,21 +149,6 @@ fn final_same_height_reconcile_rejection_reason(
     }
 }
 
-fn selected_chain_locator(chain: &pulsedag_core::state::ChainState, limit: usize) -> Vec<String> {
-    let mut blocks = chain.dag.blocks.values().cloned().collect::<Vec<_>>();
-    blocks.sort_by(|a, b| {
-        b.header
-            .height
-            .cmp(&a.header.height)
-            .then_with(|| a.hash.cmp(&b.hash))
-    });
-    blocks
-        .into_iter()
-        .take(limit.max(1))
-        .map(|block| block.hash)
-        .collect()
-}
-
 fn final_quiescence_request_suppression_reason(
     readiness: GetBlockRequestReadiness,
     pending_len: usize,
@@ -3111,6 +3096,8 @@ async fn main() -> Result<()> {
                     best_tip_hash,
                     orphan_count,
                     local_tip_count,
+                    local_missing_parent_entries,
+                    local_pending_missing_parents,
                     mempool_size,
                 ) = {
                     let guard = chain.read().await;
@@ -3121,6 +3108,8 @@ async fn main() -> Result<()> {
                             .unwrap_or_else(|| guard.dag.genesis_hash.clone()),
                         guard.orphan_blocks.len(),
                         guard.dag.tips.len(),
+                        guard.orphan_missing_parents.len(),
+                        pulsedag_core::pending_missing_parent_count(&guard),
                         guard.mempool.transactions.len(),
                     )
                 };
@@ -3301,154 +3290,138 @@ async fn main() -> Result<()> {
                 drop(rt);
 
                 if final_quiescence_due {
-                    if let Some(ref p2p) = p2p {
-                        match p2p.status() {
-                            Ok(status) if !status.connected_peers.is_empty() => {
-                                let requested = p2p.request_tips().is_ok();
-                                let locator = {
-                                    let guard = chain.read().await;
-                                    selected_chain_locator(&guard, 64)
-                                };
-                                let locator_requested = if locator.is_empty() {
-                                    false
-                                } else {
-                                    p2p.request_headers(&locator, None, 128).is_ok()
-                                };
-                                let mut rt = runtime.write().await;
-                                rt.final_quiescence_tip_reconcile_total =
-                                    rt.final_quiescence_tip_reconcile_total.saturating_add(1);
-                                rt.final_quiescence_selected_sync_total =
-                                    rt.final_quiescence_selected_sync_total.saturating_add(1);
-                                rt.final_quiescence_selected_locator_request_total = rt
-                                    .final_quiescence_selected_locator_request_total
-                                    .saturating_add(1);
-                                let height_reconcile_already_pending =
-                                    final_quiescence_reconcile_pending(
-                                        rt.final_quiescence_height_reconcile_total,
-                                        rt.final_quiescence_height_reconcile_success_total,
-                                        rt.final_quiescence_height_reconcile_blocked_total,
-                                    );
-                                let same_height_reconcile_already_pending =
-                                    final_quiescence_reconcile_pending(
-                                        rt.final_quiescence_same_height_reconcile_total,
-                                        rt.final_quiescence_same_height_reconcile_success_total,
-                                        rt.final_quiescence_same_height_reconcile_blocked_total,
-                                    );
-                                if !height_reconcile_already_pending {
+                    let cleanup_complete = orphan_count == 0
+                        && local_pending_missing_parents == 0
+                        && local_missing_parent_entries == 0
+                        && pending_block_requests == 0;
+
+                    // Never run final tip reconciliation while peer recovery or orphan cleanup has
+                    // work left.  In particular, zero-peer recovery must be allowed to run before
+                    // final sync, and selected/same-height sync must not run with peer_count=0.
+                    if cleanup_complete {
+                        if let Some(ref p2p) = p2p {
+                            match p2p.status() {
+                                Ok(status) if !status.connected_peers.is_empty() => {
+                                    let connected_peer_count = status.connected_peers.len();
+                                    let all_expected_peers_connected = status
+                                        .connection_slot_budget
+                                        == 0
+                                        || connected_peer_count >= status.connection_slot_budget;
+                                    let same_height_tip_reconcile_ready =
+                                        all_expected_peers_connected && local_tip_count > 1;
+                                    let requested = p2p.request_tips().is_ok();
+                                    let mut rt = runtime.write().await;
+                                    rt.final_quiescence_tip_reconcile_total =
+                                        rt.final_quiescence_tip_reconcile_total.saturating_add(1);
+                                    let height_reconcile_already_pending =
+                                        final_quiescence_reconcile_pending(
+                                            rt.final_quiescence_height_reconcile_total,
+                                            rt.final_quiescence_height_reconcile_success_total,
+                                            rt.final_quiescence_height_reconcile_blocked_total,
+                                        );
+                                    let same_height_reconcile_already_pending =
+                                        final_quiescence_reconcile_pending(
+                                            rt.final_quiescence_same_height_reconcile_total,
+                                            rt.final_quiescence_same_height_reconcile_success_total,
+                                            rt.final_quiescence_same_height_reconcile_blocked_total,
+                                        );
+                                    if !height_reconcile_already_pending {
+                                        rt.final_quiescence_height_reconcile_total = rt
+                                            .final_quiescence_height_reconcile_total
+                                            .saturating_add(1);
+                                    }
+                                    if same_height_tip_reconcile_ready
+                                        && !height_reconcile_already_pending
+                                        && !same_height_reconcile_already_pending
+                                    {
+                                        rt.final_quiescence_same_height_reconcile_total = rt
+                                            .final_quiescence_same_height_reconcile_total
+                                            .saturating_add(1);
+                                        rt.final_quiescence_distinct_tips_before =
+                                            local_tip_count as u64;
+                                        rt.final_quiescence_worst_lag_before = 0;
+                                    }
+                                    if requested {
+                                        rt.tips_requested = rt.tips_requested.saturating_add(1);
+                                        rt.final_quiescence_tip_reconcile_blocked_reason = None;
+                                        rt.final_quiescence_height_reconcile_blocked_reason = None;
+                                        if same_height_tip_reconcile_ready {
+                                            rt.final_quiescence_same_height_reconcile_blocked_reason = None;
+                                        }
+                                    } else {
+                                        rt.final_quiescence_tip_reconcile_blocked_total = rt
+                                            .final_quiescence_tip_reconcile_blocked_total
+                                            .saturating_add(1);
+                                        rt.final_quiescence_tip_reconcile_blocked_reason =
+                                            Some("request_tips_failed".to_string());
+                                        rt.final_quiescence_height_reconcile_blocked_total = rt
+                                            .final_quiescence_height_reconcile_blocked_total
+                                            .saturating_add(1);
+                                        rt.final_quiescence_height_reconcile_blocked_reason =
+                                            Some("request_tips_failed".to_string());
+                                        if same_height_tip_reconcile_ready {
+                                            rt.final_quiescence_same_height_reconcile_blocked_total = rt
+                                                .final_quiescence_same_height_reconcile_blocked_total
+                                                .saturating_add(1);
+                                            rt.final_quiescence_same_height_reconcile_blocked_reason =
+                                                Some("request_tips_failed".to_string());
+                                        }
+                                    }
+                                }
+                                Ok(_) => {
+                                    let mut rt = runtime.write().await;
+                                    rt.final_quiescence_tip_reconcile_total =
+                                        rt.final_quiescence_tip_reconcile_total.saturating_add(1);
                                     rt.final_quiescence_height_reconcile_total = rt
                                         .final_quiescence_height_reconcile_total
                                         .saturating_add(1);
-                                }
-                                let cleanup_complete = orphan_count == 0
-                                    && rt.pending_missing_parents == 0
-                                    && pending_block_requests == 0;
-                                if cleanup_complete
-                                    && !height_reconcile_already_pending
-                                    && !same_height_reconcile_already_pending
-                                {
-                                    rt.final_quiescence_same_height_reconcile_total = rt
-                                        .final_quiescence_same_height_reconcile_total
-                                        .saturating_add(1);
-                                    rt.final_quiescence_distinct_tips_before =
-                                        local_tip_count as u64;
-                                }
-                                if requested {
-                                    rt.tips_requested = rt.tips_requested.saturating_add(1);
-                                    rt.final_quiescence_tip_reconcile_blocked_reason = None;
-                                    rt.final_quiescence_height_reconcile_blocked_reason = None;
-                                    rt.final_quiescence_same_height_reconcile_blocked_reason = None;
-                                    if locator_requested {
-                                        rt.final_quiescence_selected_sync_blocked_reason =
-                                            Some("block_request_sent".to_string());
-                                    } else if locator.is_empty() {
-                                        rt.final_quiescence_selected_locator_empty_total = rt
-                                            .final_quiescence_selected_locator_empty_total
-                                            .saturating_add(1);
-                                        rt.final_quiescence_selected_sync_blocked_total = rt
-                                            .final_quiescence_selected_sync_blocked_total
-                                            .saturating_add(1);
-                                        rt.final_quiescence_selected_sync_blocked_reason =
-                                            Some("selected_locator_empty".to_string());
-                                    } else {
-                                        rt.final_quiescence_selected_sync_blocked_total = rt
-                                            .final_quiescence_selected_sync_blocked_total
-                                            .saturating_add(1);
-                                        rt.final_quiescence_selected_sync_blocked_reason =
-                                            Some("selected_locator_request_failed".to_string());
-                                    }
-                                } else {
                                     rt.final_quiescence_tip_reconcile_blocked_total = rt
                                         .final_quiescence_tip_reconcile_blocked_total
                                         .saturating_add(1);
                                     rt.final_quiescence_tip_reconcile_blocked_reason =
-                                        Some("selected_locator_request_failed".to_string());
+                                        Some("no_connected_peers".to_string());
                                     rt.final_quiescence_height_reconcile_blocked_total = rt
                                         .final_quiescence_height_reconcile_blocked_total
                                         .saturating_add(1);
                                     rt.final_quiescence_height_reconcile_blocked_reason =
-                                        Some("selected_locator_request_failed".to_string());
-                                    if cleanup_complete {
-                                        rt.final_quiescence_same_height_reconcile_blocked_total =
-                                            rt.final_quiescence_same_height_reconcile_blocked_total
-                                                .saturating_add(1);
-                                        rt.final_quiescence_same_height_reconcile_blocked_reason =
-                                            Some("selected_locator_request_failed".to_string());
-                                    }
+                                        Some("no_connected_peers".to_string());
+                                }
+                                Err(e) => {
+                                    let mut rt = runtime.write().await;
+                                    rt.final_quiescence_tip_reconcile_total =
+                                        rt.final_quiescence_tip_reconcile_total.saturating_add(1);
+                                    rt.final_quiescence_height_reconcile_total = rt
+                                        .final_quiescence_height_reconcile_total
+                                        .saturating_add(1);
+                                    rt.final_quiescence_tip_reconcile_blocked_total = rt
+                                        .final_quiescence_tip_reconcile_blocked_total
+                                        .saturating_add(1);
+                                    rt.final_quiescence_tip_reconcile_blocked_reason =
+                                        Some(format!("p2p_status_failed:{e}"));
+                                    rt.final_quiescence_height_reconcile_blocked_total = rt
+                                        .final_quiescence_height_reconcile_blocked_total
+                                        .saturating_add(1);
+                                    rt.final_quiescence_height_reconcile_blocked_reason =
+                                        Some(format!("p2p_status_failed:{e}"));
                                 }
                             }
-                            Ok(_) => {
-                                let mut rt = runtime.write().await;
-                                rt.final_quiescence_tip_reconcile_total =
-                                    rt.final_quiescence_tip_reconcile_total.saturating_add(1);
-                                rt.final_quiescence_height_reconcile_total =
-                                    rt.final_quiescence_height_reconcile_total.saturating_add(1);
-                                rt.final_quiescence_tip_reconcile_blocked_total = rt
-                                    .final_quiescence_tip_reconcile_blocked_total
-                                    .saturating_add(1);
-                                rt.final_quiescence_tip_reconcile_blocked_reason = Some(
-                                    "no_connected_peer_with_better_or_competing_tip".to_string(),
-                                );
-                                rt.final_quiescence_height_reconcile_blocked_total = rt
-                                    .final_quiescence_height_reconcile_blocked_total
-                                    .saturating_add(1);
-                                rt.final_quiescence_height_reconcile_blocked_reason = Some(
-                                    "no_connected_peer_with_better_or_competing_tip".to_string(),
-                                );
-                            }
-                            Err(_e) => {
-                                let mut rt = runtime.write().await;
-                                rt.final_quiescence_tip_reconcile_total =
-                                    rt.final_quiescence_tip_reconcile_total.saturating_add(1);
-                                rt.final_quiescence_height_reconcile_total =
-                                    rt.final_quiescence_height_reconcile_total.saturating_add(1);
-                                rt.final_quiescence_tip_reconcile_blocked_total = rt
-                                    .final_quiescence_tip_reconcile_blocked_total
-                                    .saturating_add(1);
-                                rt.final_quiescence_tip_reconcile_blocked_reason =
-                                    Some("unknown".to_string());
-                                rt.final_quiescence_height_reconcile_blocked_total = rt
-                                    .final_quiescence_height_reconcile_blocked_total
-                                    .saturating_add(1);
-                                rt.final_quiescence_height_reconcile_blocked_reason =
-                                    Some("unknown".to_string());
-                            }
+                        } else {
+                            let mut rt = runtime.write().await;
+                            rt.final_quiescence_tip_reconcile_total =
+                                rt.final_quiescence_tip_reconcile_total.saturating_add(1);
+                            rt.final_quiescence_height_reconcile_total =
+                                rt.final_quiescence_height_reconcile_total.saturating_add(1);
+                            rt.final_quiescence_tip_reconcile_blocked_total = rt
+                                .final_quiescence_tip_reconcile_blocked_total
+                                .saturating_add(1);
+                            rt.final_quiescence_tip_reconcile_blocked_reason =
+                                Some("p2p_disabled".to_string());
+                            rt.final_quiescence_height_reconcile_blocked_total = rt
+                                .final_quiescence_height_reconcile_blocked_total
+                                .saturating_add(1);
+                            rt.final_quiescence_height_reconcile_blocked_reason =
+                                Some("p2p_disabled".to_string());
                         }
-                    } else {
-                        let mut rt = runtime.write().await;
-                        rt.final_quiescence_tip_reconcile_total =
-                            rt.final_quiescence_tip_reconcile_total.saturating_add(1);
-                        rt.final_quiescence_height_reconcile_total =
-                            rt.final_quiescence_height_reconcile_total.saturating_add(1);
-                        rt.final_quiescence_tip_reconcile_blocked_total = rt
-                            .final_quiescence_tip_reconcile_blocked_total
-                            .saturating_add(1);
-                        rt.final_quiescence_tip_reconcile_blocked_reason =
-                            Some("no_connected_peer_with_better_or_competing_tip".to_string());
-                        rt.final_quiescence_height_reconcile_blocked_total = rt
-                            .final_quiescence_height_reconcile_blocked_total
-                            .saturating_add(1);
-                        rt.final_quiescence_height_reconcile_blocked_reason =
-                            Some("no_connected_peer_with_better_or_competing_tip".to_string());
                     }
 
                     if orphan_count > 0 && pending_block_requests == 0 {
