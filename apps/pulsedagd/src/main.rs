@@ -3303,10 +3303,14 @@ async fn main() -> Result<()> {
                             match p2p.status() {
                                 Ok(status) if !status.connected_peers.is_empty() => {
                                     let connected_peer_count = status.connected_peers.len();
-                                    let all_expected_peers_connected = status
+                                    let known_reachable_peer_count =
+                                        status.peer_recovery.len().max(connected_peer_count);
+                                    let expected_peer_count = status
                                         .connection_slot_budget
-                                        == 0
-                                        || connected_peer_count >= status.connection_slot_budget;
+                                        .min(known_reachable_peer_count);
+                                    let all_expected_peers_connected =
+                                        status.connection_slot_budget == 0
+                                            || connected_peer_count >= expected_peer_count;
                                     let same_height_tip_reconcile_ready =
                                         all_expected_peers_connected && local_tip_count > 1;
                                     let requested = p2p.request_tips().is_ok();
