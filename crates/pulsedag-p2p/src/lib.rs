@@ -2855,16 +2855,28 @@ fn enforce_connectivity_aware_cooldown_floor(state: &mut InnerState, now: u64) {
     {
         state.peer_zero_since_unix.get_or_insert(now);
         if !state.bootnodes_configured.is_empty() {
+            let mut zero_peer_attempts_scheduled = 0u64;
             for bootnode in &state.bootnodes_configured {
                 if let Some((peer_id, _)) = parse_bootnode_multiaddr(bootnode) {
-                    state
-                        .bootnode_next_redial_at
-                        .insert(peer_id.to_string(), now);
+                    let peer = peer_id.to_string();
+                    state.bootnode_next_redial_at.insert(peer.clone(), now);
                     state
                         .bootnode_redial_backoff_secs
-                        .entry(peer_id.to_string())
+                        .entry(peer.clone())
                         .or_insert(1);
+                    if !state.pending_bootnode_dials.contains(&peer)
+                        && state.peer_zero_reconnect_pending.insert(peer)
+                    {
+                        zero_peer_attempts_scheduled =
+                            zero_peer_attempts_scheduled.saturating_add(1);
+                    }
                 }
+            }
+            if zero_peer_attempts_scheduled > 0 {
+                state.peer_zero_reconnect_attempt_total = state
+                    .peer_zero_reconnect_attempt_total
+                    .saturating_add(zero_peer_attempts_scheduled);
+                state.last_peer_reconnect_blocked_reason = None;
             }
         }
     } else if active_count > 0 {
@@ -8249,6 +8261,29 @@ mod deterministic_p2p_sync_coverage_tests {
         enforce_connectivity_aware_cooldown_floor(&mut state, 1_010);
         assert_eq!(state.peer_zero_since_unix, None);
         assert_eq!(state.peer_zero_reconnect_success_total, 0);
+    }
+
+    #[test]
+    fn connectivity_floor_counts_zero_peer_bootnode_handoff_once() {
+        let key = identity::Keypair::generate_ed25519();
+        let peer = PeerId::from(key.public());
+        let mut state = InnerState {
+            mode: P2P_MODE_LIBP2P_REAL.into(),
+            bootnodes_configured: vec![format!("/ip4/127.0.0.1/tcp/1/p2p/{peer}")],
+            ..InnerState::default()
+        };
+
+        enforce_connectivity_aware_cooldown_floor(&mut state, 10_000);
+        enforce_connectivity_aware_cooldown_floor(&mut state, 10_001);
+
+        assert_eq!(state.peer_zero_reconnect_attempt_total, 1);
+        assert!(state
+            .peer_zero_reconnect_pending
+            .contains(&peer.to_string()));
+        assert_eq!(
+            state.bootnode_next_redial_at.get(&peer.to_string()),
+            Some(&10_001)
+        );
     }
 
     #[test]
