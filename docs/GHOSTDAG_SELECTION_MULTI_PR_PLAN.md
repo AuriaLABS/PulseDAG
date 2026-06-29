@@ -16,7 +16,7 @@ The first PR must define the exact PulseDAG meaning of the following terms befor
 
 - `selected_parent`: the parent chosen by deterministic consensus scoring as the block's main selected-chain predecessor.
 - `selected_tip`: the current best DAG tip according to selected-parent traversal and tie-breaking rules.
-- `blue_score`: the count-like monotonic score representing accepted blue ancestry under the bounded classification rules defined for PulseDAG.
+- `blue_score`: the count-like monotonic score representing accepted blue ancestry under the bounded classification rules defined for PulseDAG. The existing `BlockHeader::blue_score` is already canonical hash/preimage data in current blocks, so any semantic change must be introduced through an explicit header/version or activation strategy; legacy headers continue to interpret this field with legacy semantics until that migration is active.
 - `blue_work`: the work-weighted score used for selected-parent comparison when cumulative work must dominate count-only tie breaks.
 - `merge-set`: blocks referenced by a candidate that are not on the selected-parent chain segment being extended and must be classified for acceptance.
 - Blue/red classification: deterministic merge-set partitioning into accepted blue blocks and non-selected red blocks under bounded rules.
@@ -34,6 +34,8 @@ Each PR must preserve or explicitly strengthen these invariants:
 6. Mining templates never include duplicate transactions across selected-parent and parallel-parent context.
 7. Blue/red classification is bounded so adversarial merge-sets cannot cause unbounded validation work.
 8. High-cadence block production remains disabled until selected-parent and DAG ordering evidence is merged.
+9. Any change to canonical header fields, including `blue_score`, requires explicit versioning/activation and replay tests over legacy blocks, miner templates, and hash/preimage construction.
+10. Consensus state mutation must not be committed from arrival-order validation once derived DAG order can differ; PRs that change ordering must introduce staging plus rollback/rebuild semantics before applying ordered state.
 
 ## PR 1 — Documentation/spec for selected-parent and GHOSTDAG-style terms
 
@@ -62,21 +64,24 @@ Each PR must preserve or explicitly strengthen these invariants:
 
 **Changes:**
 
-- Add optional selected-parent metadata fields to block index/state records.
+- Add optional selected-parent metadata fields to block index/state records and snapshot/export metadata, including any metadata currently derived from `selected_tip`.
 - Track `selected_parent`, `blue_score`, `blue_work`, and classification placeholders without changing selection behavior yet.
-- Add schema/version compatibility handling so older data can replay with default/derived metadata.
-- Add serialization compatibility tests for old and new records.
+- Add schema/version compatibility handling so older data and snapshots can replay with default/derived metadata.
+- Define the header/version or activation migration for the existing canonical `BlockHeader::blue_score` field before any new consensus meaning is enforced.
+- Add serialization compatibility tests for old and new records, including snapshot metadata restore verification.
 
 **Tests/checks:**
 
 - Unit tests for metadata defaults and round-trip serialization.
 - Replay of existing fixtures or snapshots, if present.
+- Snapshot export/restore tests proving `selected_tip` metadata remains consistent with restored block records.
 - Existing workspace tests.
 
 **Exit criteria:**
 
 - Existing behavior remains unchanged when metadata is absent.
-- Persisted data can be loaded without forcing a network reset.
+- Persisted data and snapshots can be loaded without forcing a network reset.
+- Maintainers have approved the `blue_score` header/version migration boundary before implementation PRs rely on new semantics.
 
 ## PR 3 — Deterministic selected-parent selection
 
@@ -84,8 +89,9 @@ Each PR must preserve or explicitly strengthen these invariants:
 
 **Changes:**
 
-- Implement selected-parent scoring using cumulative work/score and deterministic tie breaks.
-- Persist selected-parent metadata after validation.
+- Implement selected-parent selection using only stable inputs available before bounded classification, such as cumulative work, legacy-safe provisional score data, and deterministic tie breaks.
+- Treat selected-parent scoring as provisional/non-final for persistence until PR 4 supplies bounded blue/red classification inputs, or move the required score computation into this PR if persistence is needed.
+- Persist only metadata whose inputs are final under the PR 1/PR 2 migration rules; otherwise recompute on load and upgrade after PR 4.
 - Keep existing block cadence and mining behavior unchanged.
 - Add replay and order-independence tests that feed the same DAG in multiple arrival orders.
 
@@ -93,7 +99,7 @@ Each PR must preserve or explicitly strengthen these invariants:
 
 - Unit tests for selected-parent tie breaks.
 - Replay/order-independence tests over small forks and multi-parent DAGs.
-- Restart/reload test proving persisted selection matches recomputation.
+- Restart/reload test proving any persisted final selection matches recomputation, or proving provisional selection is recomputed without changing consensus results.
 
 **Exit criteria:**
 
@@ -130,6 +136,8 @@ Each PR must preserve or explicitly strengthen these invariants:
 
 - Implement deterministic DAG order derivation from the selected chain.
 - Define merge-set ordering rules using canonical sort keys.
+- Introduce a staging boundary for arrival-order block acceptance so header/body checks can accept blocks without immediately committing UTXO/state effects in the wrong order.
+- Add rollback/rebuild semantics for any state already committed under arrival order before applying derived DAG order.
 - Ensure transaction validation applies blocks in derived DAG order, not arrival order.
 - Add duplicate transaction and conflict handling at ordering boundaries.
 
@@ -138,10 +146,11 @@ Each PR must preserve or explicitly strengthen these invariants:
 - DAG order fixture tests for forks, diamonds, and multi-level merges.
 - Replay/order-independence tests asserting identical ordered block lists.
 - Transaction conflict tests proving deterministic winner selection.
+- Rollback/rebuild tests proving state roots and UTXO effects are recomputed from derived order after reordered arrivals.
 
 **Exit criteria:**
 
-- Consensus state is derived from deterministic DAG order.
+- Consensus state is derived from deterministic DAG order, with no arrival-order committed state left as authoritative.
 - This PR unlocks later high-cadence experiments but does not enable them.
 
 ## PR 6 — Mining templates using selected parent and valid parallel parents
@@ -173,19 +182,22 @@ Each PR must preserve or explicitly strengthen these invariants:
 **Changes:**
 
 - Add selected-chain locator exchange for efficient common-ancestor discovery.
-- Add DAG frontier exchange for parallel tips and missing-parent discovery.
+- Add capability/version negotiation or a backwards-compatible message envelope before advertising or sending any new DAG frontier message variants.
+- Add DAG frontier exchange for parallel tips and missing-parent discovery only to peers that negotiated support.
 - Keep zero-peer startup and orphan adoption recovery conservative: no final selected-sync from incomplete peer data.
 - Add peer-order-independent sync tests where possible.
 
 **Tests/checks:**
 
 - Unit tests for locator construction and matching.
+- Compatibility tests proving older peers do not receive undecodable frontier messages and are not penalized during rolling upgrades.
 - Integration tests for orphan recovery and delayed parent arrival.
 - Regression test that zero-peer recovery does not finalize unsafe selected-sync state.
 
 **Exit criteria:**
 
 - Nodes converge on selected tip and DAG frontier without relying on unsafe peer timing.
+- Rolling upgrades do not cause decode-failure penalties for peers that lack frontier capability.
 - Sync remains safe when a node starts with zero peers and later reconnects.
 
 ## PR 8 — Experimental fast block cadence behind a feature flag
@@ -239,9 +251,9 @@ Each PR must preserve or explicitly strengthen these invariants:
 
 ```text
 PR 1 spec
-  -> PR 2 data model
-    -> PR 3 selected parent
-      -> PR 4 blue/red classification
+  -> PR 2 data model + header/snapshot migration boundaries
+    -> PR 3 provisional selected parent
+      -> PR 4 final blue/red classification + persisted scoring
         -> PR 5 DAG ordering
           -> PR 6 mining template
           -> PR 7 P2P sync
