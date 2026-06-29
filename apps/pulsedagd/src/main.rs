@@ -407,6 +407,28 @@ async fn terminally_handle_exhausted_missing_parent(
     }
 }
 
+fn final_quiescence_reachable_peer_count(status: &pulsedag_p2p::P2pStatus) -> usize {
+    let connected_peer_count = status.connected_peers.len();
+    let known_peer_count = status
+        .peer_recovery
+        .len()
+        .max(status.bootnodes_configured.len())
+        .max(connected_peer_count);
+
+    if status.connection_slot_budget == 0 {
+        known_peer_count
+    } else if known_peer_count == 0 {
+        status.connection_slot_budget
+    } else {
+        status.connection_slot_budget.min(known_peer_count)
+    }
+}
+
+fn final_quiescence_all_reachable_peers_connected(status: &pulsedag_p2p::P2pStatus) -> bool {
+    let expected_peer_count = final_quiescence_reachable_peer_count(status);
+    expected_peer_count == 0 || status.connected_peers.len() >= expected_peer_count
+}
+
 fn should_force_orphan_missing_parent_reindex(
     chain: &pulsedag_core::state::ChainState,
     inv_hashes_requested: usize,
@@ -3302,17 +3324,10 @@ async fn main() -> Result<()> {
                         if let Some(ref p2p) = p2p {
                             match p2p.status() {
                                 Ok(status) if !status.connected_peers.is_empty() => {
-                                    let connected_peer_count = status.connected_peers.len();
-                                    let known_reachable_peer_count =
-                                        status.peer_recovery.len().max(connected_peer_count);
-                                    let expected_peer_count = status
-                                        .connection_slot_budget
-                                        .min(known_reachable_peer_count);
-                                    let all_expected_peers_connected =
-                                        status.connection_slot_budget == 0
-                                            || connected_peer_count >= expected_peer_count;
+                                    let all_reachable_peers_connected =
+                                        final_quiescence_all_reachable_peers_connected(&status);
                                     let same_height_tip_reconcile_ready =
-                                        all_expected_peers_connected && local_tip_count > 1;
+                                        all_reachable_peers_connected && local_tip_count > 1;
                                     let requested = p2p.request_tips().is_ok();
                                     let mut rt = runtime.write().await;
                                     rt.final_quiescence_tip_reconcile_total =
@@ -3748,6 +3763,51 @@ mod tests {
         chain.orphan_missing_parents.clear();
         chain.orphan_parent_index.clear();
         chain
+    }
+
+    #[test]
+    fn final_quiescence_caps_slot_budget_to_configured_reachable_peers() {
+        let status = pulsedag_p2p::P2pStatus {
+            connected_peers: vec![
+                "peer-a".to_string(),
+                "peer-b".to_string(),
+                "peer-c".to_string(),
+                "peer-d".to_string(),
+            ],
+            bootnodes_configured: vec![
+                "/ip4/127.0.0.1/tcp/1/p2p/peer-a".to_string(),
+                "/ip4/127.0.0.1/tcp/2/p2p/peer-b".to_string(),
+                "/ip4/127.0.0.1/tcp/3/p2p/peer-c".to_string(),
+                "/ip4/127.0.0.1/tcp/4/p2p/peer-d".to_string(),
+            ],
+            connection_slot_budget: 8,
+            ..pulsedag_p2p::P2pStatus::default()
+        };
+
+        assert_eq!(final_quiescence_reachable_peer_count(&status), 4);
+        assert!(final_quiescence_all_reachable_peers_connected(&status));
+    }
+
+    #[test]
+    fn final_quiescence_waits_for_known_reachable_peers_not_just_connected_subset() {
+        let status = pulsedag_p2p::P2pStatus {
+            connected_peers: vec![
+                "peer-a".to_string(),
+                "peer-b".to_string(),
+                "peer-c".to_string(),
+            ],
+            bootnodes_configured: vec![
+                "/ip4/127.0.0.1/tcp/1/p2p/peer-a".to_string(),
+                "/ip4/127.0.0.1/tcp/2/p2p/peer-b".to_string(),
+                "/ip4/127.0.0.1/tcp/3/p2p/peer-c".to_string(),
+                "/ip4/127.0.0.1/tcp/4/p2p/peer-d".to_string(),
+            ],
+            connection_slot_budget: 8,
+            ..pulsedag_p2p::P2pStatus::default()
+        };
+
+        assert_eq!(final_quiescence_reachable_peer_count(&status), 4);
+        assert!(!final_quiescence_all_reachable_peers_connected(&status));
     }
 
     #[test]
