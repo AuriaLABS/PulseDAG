@@ -611,6 +611,14 @@ pub struct NodeRuntimeStats {
     #[serde(default)]
     pub final_quiescence_same_height_reconcile_blocked_reason: Option<String>,
     #[serde(default)]
+    pub final_quiescence_same_height_missing_parent_request_pending_total: u64,
+    #[serde(default)]
+    pub final_quiescence_same_height_missing_parent_request_sent_total: u64,
+    #[serde(default)]
+    pub final_quiescence_same_height_missing_parent_unavailable_total: u64,
+    #[serde(default)]
+    pub final_quiescence_same_height_candidate_resolved_total: u64,
+    #[serde(default)]
     pub final_quiescence_same_height_competing_tip_seen_total: u64,
     #[serde(default)]
     pub final_quiescence_same_height_competing_tip_fetch_attempt_total: u64,

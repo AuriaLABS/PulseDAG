@@ -149,6 +149,19 @@ fn final_same_height_reconcile_rejection_reason(
     }
 }
 
+fn final_same_height_missing_parent_blocked_reason(
+    missing_parent_count: usize,
+    requests_sent: usize,
+) -> &'static str {
+    if missing_parent_count == 0 {
+        "same_height_candidate_resolved"
+    } else if requests_sent > 0 {
+        "missing_parent_request_sent"
+    } else {
+        "missing_parent_request_pending"
+    }
+}
+
 fn final_quiescence_request_suppression_reason(
     readiness: GetBlockRequestReadiness,
     pending_len: usize,
@@ -1132,7 +1145,10 @@ async fn main() -> Result<()> {
                                 .final_quiescence_same_height_reconcile_blocked_total
                                 .saturating_add(1);
                             rt.final_quiescence_same_height_reconcile_blocked_reason =
-                                Some("same_height_block_request_timed_out".to_string());
+                                Some("missing_parent_unavailable".to_string());
+                            rt.final_quiescence_same_height_missing_parent_unavailable_total = rt
+                                .final_quiescence_same_height_missing_parent_unavailable_total
+                                .saturating_add(1);
                         }
                         rt.missing_parent_peer_timeout_total =
                             rt.missing_parent_peer_timeout_total.saturating_add(1);
@@ -1216,7 +1232,10 @@ async fn main() -> Result<()> {
                                     .final_quiescence_same_height_reconcile_blocked_total
                                     .saturating_add(1);
                                 rt.final_quiescence_same_height_reconcile_blocked_reason =
-                                    Some("same_height_block_request_timed_out".to_string());
+                                    Some("missing_parent_unavailable".to_string());
+                                rt.final_quiescence_same_height_missing_parent_unavailable_total = rt
+                                    .final_quiescence_same_height_missing_parent_unavailable_total
+                                    .saturating_add(1);
                             }
                             rt.missing_parent_all_peers_exhausted_total = rt
                                 .missing_parent_all_peers_exhausted_total
@@ -1999,17 +2018,9 @@ async fn main() -> Result<()> {
                                 rt.final_quiescence_worst_lag_after = final_height_gap_before;
                             }
                             if final_same_height_reconcile_block {
-                                final_quiescence_same_height_tip_requests.remove(&block.hash);
                                 rt.final_quiescence_same_height_competing_tip_fetch_success_total =
                                     rt.final_quiescence_same_height_competing_tip_fetch_success_total
                                         .saturating_add(1);
-                                rt.final_quiescence_same_height_reconcile_blocked_total = rt
-                                    .final_quiescence_same_height_reconcile_blocked_total
-                                    .saturating_add(1);
-                                rt.final_quiescence_same_height_reconcile_blocked_reason = Some(
-                                    final_same_height_reconcile_rejection_reason(&acceptance)
-                                        .to_string(),
-                                );
                             }
                             rt.blockdata_received = rt.blockdata_received.saturating_add(1);
                             rt.blockdata_missing_parent =
@@ -2074,21 +2085,29 @@ async fn main() -> Result<()> {
                                     block.hash, missing_parents
                                 ),
                             );
+                            let mut missing_parent_requests_issued = 0usize;
                             for parent in &missing_parents {
                                 if block_requests.should_issue_getblock_for_peers(
                                     parent,
                                     now_unix(),
                                     active_peer_ids(&p2p),
                                 ) {
+                                    let mut request_sent = false;
                                     if let Some(ref p2p) = p2p {
                                         if let Err(e) = p2p.request_block(parent) {
                                             warn!(error = %e, missing_parent = %parent, "failed issuing missing-parent GetBlock request");
+                                        } else {
+                                            request_sent = true;
+                                            missing_parent_requests_issued =
+                                                missing_parent_requests_issued.saturating_add(1);
                                         }
                                     }
                                     let mut rt = runtime.write().await;
-                                    rt.getblock_sent = rt.getblock_sent.saturating_add(1);
-                                    rt.missing_parent_requests_sent =
-                                        rt.missing_parent_requests_sent.saturating_add(1);
+                                    if request_sent {
+                                        rt.getblock_sent = rt.getblock_sent.saturating_add(1);
+                                        rt.missing_parent_requests_sent =
+                                            rt.missing_parent_requests_sent.saturating_add(1);
+                                    }
                                     rt.pending_block_requests = block_requests.pending.len();
                                     rt.inflight_block_requests = block_requests.pending.len();
                                     rt.pending_block_request_hashes =
@@ -2102,6 +2121,34 @@ async fn main() -> Result<()> {
                                     rt.inflight_block_requests = block_requests.pending.len();
                                     rt.pending_block_request_hashes =
                                         block_requests.pending_hashes();
+                                }
+                            }
+                            if final_same_height_reconcile_block {
+                                let mut rt = runtime.write().await;
+                                let blocked_reason =
+                                    final_same_height_missing_parent_blocked_reason(
+                                        missing_parents.len(),
+                                        missing_parent_requests_issued,
+                                    );
+                                rt.final_quiescence_same_height_reconcile_blocked_reason =
+                                    Some(blocked_reason.to_string());
+                                match blocked_reason {
+                                    "missing_parent_request_sent" => {
+                                        rt.final_quiescence_same_height_missing_parent_request_sent_total = rt
+                                            .final_quiescence_same_height_missing_parent_request_sent_total
+                                            .saturating_add(1);
+                                    }
+                                    "missing_parent_request_pending" => {
+                                        rt.final_quiescence_same_height_missing_parent_request_pending_total = rt
+                                            .final_quiescence_same_height_missing_parent_request_pending_total
+                                            .saturating_add(1);
+                                    }
+                                    "same_height_candidate_resolved" => {
+                                        rt.final_quiescence_same_height_candidate_resolved_total = rt
+                                            .final_quiescence_same_height_candidate_resolved_total
+                                            .saturating_add(1);
+                                    }
+                                    _ => {}
                                 }
                             }
                             if pruned > 0 {
@@ -2379,7 +2426,10 @@ async fn main() -> Result<()> {
                                             rt.final_quiescence_same_height_reconcile_success_total
                                                 .saturating_add(1);
                                         rt.final_quiescence_same_height_reconcile_blocked_reason =
-                                            None;
+                                            Some("same_height_candidate_resolved".to_string());
+                                        rt.final_quiescence_same_height_candidate_resolved_total = rt
+                                            .final_quiescence_same_height_candidate_resolved_total
+                                            .saturating_add(1);
                                     } else {
                                         rt.final_quiescence_same_height_reconcile_blocked_total =
                                             rt.final_quiescence_same_height_reconcile_blocked_total
@@ -3012,7 +3062,10 @@ async fn main() -> Result<()> {
                                 .final_quiescence_same_height_reconcile_blocked_total
                                 .saturating_add(1);
                             rt.final_quiescence_same_height_reconcile_blocked_reason =
-                                Some("storage_missing_after_receive".to_string());
+                                Some("missing_parent_unavailable".to_string());
+                            rt.final_quiescence_same_height_missing_parent_unavailable_total = rt
+                                .final_quiescence_same_height_missing_parent_unavailable_total
+                                .saturating_add(1);
                         }
                         rt.sync_state = "degraded".to_string();
                         rt.sync_failures = rt.sync_failures.saturating_add(1);
@@ -3327,7 +3380,7 @@ async fn main() -> Result<()> {
                                     let all_reachable_peers_connected =
                                         final_quiescence_all_reachable_peers_connected(&status);
                                     let same_height_tip_reconcile_ready =
-                                        all_reachable_peers_connected && local_tip_count > 1;
+                                        all_reachable_peers_connected;
                                     let requested = p2p.request_tips().is_ok();
                                     let mut rt = runtime.write().await;
                                     rt.final_quiescence_tip_reconcile_total =
@@ -4055,6 +4108,41 @@ mod tests {
         assert_eq!(
             final_same_height_reconcile_rejection_reason(&BlockAcceptanceResult::InvalidPow),
             "same_height_candidate_validation_failed"
+        );
+    }
+
+    #[test]
+    fn same_height_missing_parent_reconciliation_tracks_chain_progress() {
+        assert_eq!(
+            final_same_height_missing_parent_blocked_reason(1, 1),
+            "missing_parent_request_sent"
+        );
+        assert_eq!(
+            final_same_height_missing_parent_blocked_reason(1, 0),
+            "missing_parent_request_pending"
+        );
+        assert_eq!(
+            final_same_height_missing_parent_blocked_reason(0, 0),
+            "same_height_candidate_resolved"
+        );
+    }
+
+    #[test]
+    fn same_height_missing_parent_reconciliation_is_idempotent_while_pending() {
+        let mut block_requests = BlockRequestTracker::with_limit(8, 2, 16);
+        assert!(block_requests.should_issue_getblock_for_peers(
+            "same-height-missing-parent",
+            1,
+            ["peer-a"]
+        ));
+        assert!(!block_requests.should_issue_getblock_for_peers(
+            "same-height-missing-parent",
+            2,
+            ["peer-a"]
+        ));
+        assert_eq!(
+            final_same_height_missing_parent_blocked_reason(1, 0),
+            "missing_parent_request_pending"
         );
     }
 
