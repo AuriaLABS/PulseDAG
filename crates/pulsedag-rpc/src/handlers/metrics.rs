@@ -109,6 +109,10 @@ pub struct MetricsData {
     pub final_quiescence_same_height_reconcile_success_total: u64,
     pub final_quiescence_same_height_reconcile_blocked_total: u64,
     pub final_quiescence_same_height_reconcile_blocked_reason: Option<String>,
+    pub final_quiescence_same_height_missing_parent_request_pending_total: u64,
+    pub final_quiescence_same_height_missing_parent_request_sent_total: u64,
+    pub final_quiescence_same_height_missing_parent_unavailable_total: u64,
+    pub final_quiescence_same_height_candidate_resolved_total: u64,
     pub final_quiescence_same_height_competing_tip_seen_total: u64,
     pub final_quiescence_same_height_competing_tip_fetch_attempt_total: u64,
     pub final_quiescence_same_height_competing_tip_fetch_success_total: u64,
@@ -355,6 +359,14 @@ pub async fn get_metrics<S: RpcStateLike>(
         final_quiescence_same_height_reconcile_blocked_reason: runtime
             .final_quiescence_same_height_reconcile_blocked_reason
             .clone(),
+        final_quiescence_same_height_missing_parent_request_pending_total: runtime
+            .final_quiescence_same_height_missing_parent_request_pending_total,
+        final_quiescence_same_height_missing_parent_request_sent_total: runtime
+            .final_quiescence_same_height_missing_parent_request_sent_total,
+        final_quiescence_same_height_missing_parent_unavailable_total: runtime
+            .final_quiescence_same_height_missing_parent_unavailable_total,
+        final_quiescence_same_height_candidate_resolved_total: runtime
+            .final_quiescence_same_height_candidate_resolved_total,
         final_quiescence_same_height_competing_tip_seen_total: runtime
             .final_quiescence_same_height_competing_tip_seen_total,
         final_quiescence_same_height_competing_tip_fetch_attempt_total: runtime
