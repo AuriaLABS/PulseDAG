@@ -282,6 +282,19 @@ pub async fn get_readiness<S: RpcStateLike>(
         .as_ref()
         .map(|snapshot| snapshot.status.bootnodes_configured.len())
         .unwrap_or(0);
+    let bootnode_zero_peer_private_topology = p2p_status.as_ref().is_some_and(|snapshot| {
+        snapshot.status.connected_peers.is_empty()
+            && snapshot.status.bootnodes_configured.is_empty()
+            && !snapshot.status.listening.is_empty()
+            && snapshot
+                .status
+                .asymmetric_connectivity_diagnostics
+                .iter()
+                .any(|diagnostic| {
+                    diagnostic == "bootnode_root_no_inbound_peers_counted"
+                        || diagnostic.starts_with("private_topology_below_min_connected_peers")
+                })
+    });
 
     let selected_tip = preferred_tip_hash(&chain);
     let state_root = chain.utxo.compute_state_root().ok();
@@ -392,6 +405,28 @@ pub async fn get_readiness<S: RpcStateLike>(
             "no invalid PoW blocks observed since startup",
         ),
     );
+
+    if chain.dag.best_height <= 1 && p2p_peer_count == 0 && p2p_configured_bootnodes_total > 0 {
+        categories.insert(
+            "isolated_genesis_or_height_one_node".to_string(),
+            category(
+                ReadinessStatus::Fail,
+                vec![format!(
+                    "height={} peer_count=0 configured_bootnodes_total={p2p_configured_bootnodes_total}; recovery remains active until reconnect and catch-up above genesis",
+                    chain.dag.best_height
+                )],
+            ),
+        );
+    }
+    if bootnode_zero_peer_private_topology {
+        categories.insert(
+            "bootnode_zero_peer_private_topology".to_string(),
+            category(
+                ReadinessStatus::Fail,
+                vec!["bootnode/root has no configured peers by design, but no inbound peers are counted and private topology is below minimum connected peers".to_string()],
+            ),
+        );
+    }
 
     categories.insert(
         "p2p".to_string(),
