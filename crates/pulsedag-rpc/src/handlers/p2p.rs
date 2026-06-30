@@ -1595,6 +1595,9 @@ mod tests {
             last_error_by_peer: std::collections::HashMap::new(),
             inbound_peer_final_state: Vec::new(),
             outbound_peer_final_state: Vec::new(),
+            asymmetric_connectivity_diagnostics: Vec::new(),
+            inbound_connections_not_counted: 0,
+            bootnode_peer_accounting_mismatch: false,
         };
 
         let Json(resp) = get_p2p_status(State(mk_state(status))).await;
@@ -1887,6 +1890,9 @@ mod tests {
                 last_error_by_peer: std::collections::HashMap::new(),
                 inbound_peer_final_state: Vec::new(),
                 outbound_peer_final_state: Vec::new(),
+                asymmetric_connectivity_diagnostics: Vec::new(),
+                inbound_connections_not_counted: 0,
+                bootnode_peer_accounting_mismatch: false,
             };
             let Json(resp) = get_p2p_status(State(mk_state(status.clone()))).await;
             let data = resp.data.expect("p2p status data");
