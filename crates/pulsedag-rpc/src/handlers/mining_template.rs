@@ -293,7 +293,7 @@ fn mining_template_unavailable_reason<S: RpcStateLike>(state: &S) -> Option<Stri
     (status.runtime_started
         && mode_connected_peers_are_real_network(&status.mode)
         && status.connected_peers.is_empty()
-        && (!status.bootnodes_configured.is_empty() || !status.listening.is_empty()))
+        && !status.bootnodes_configured.is_empty())
     .then(|| {
         format!(
             "mining template unavailable while p2p is enabled with peer_count=0; diagnostics={}",
@@ -628,6 +628,20 @@ mod tests {
             explicit_expiry + TEMPLATE_FRESHNESS_GRACE_SECS
         );
     }
+
+    #[test]
+    fn seed_node_without_bootnodes_can_issue_template_while_waiting_for_followers() {
+        let state = test_state_with_status(P2pStatus {
+            mode: P2P_MODE_LIBP2P_REAL.to_string(),
+            runtime_started: true,
+            listening: vec!["/ip4/127.0.0.1/tcp/19080".to_string()],
+            bootnodes_configured: vec![],
+            ..P2pStatus::default()
+        });
+
+        assert!(mining_template_unavailable_reason(&state).is_none());
+    }
+
     #[test]
     fn isolated_mining_node_does_not_get_template_when_p2p_zero_peer() {
         let state = test_state_with_status(P2pStatus {
