@@ -180,6 +180,8 @@ pub struct MetricsData {
     pub rpc_handler_degraded_total: u64,
     pub rpc_handler_timeout_avoided_total: u64,
     pub rpc_handler_timeout_total: BTreeMap<String, u64>,
+    pub rpc_alive_listener_timeout_total: u64,
+    pub rpc_handler_inflight_total: BTreeMap<String, u64>,
     pub runtime_lock_busy_total: BTreeMap<String, u64>,
     pub degraded_snapshot_returned_total: BTreeMap<String, u64>,
     pub rpc_accept_backlog_observed: u64,
@@ -603,6 +605,8 @@ pub async fn get_metrics<S: RpcStateLike>(
         rpc_handler_degraded_total: node_snapshot_metrics.rpc_handler_degraded_total,
         rpc_handler_timeout_avoided_total: node_snapshot_metrics.rpc_handler_timeout_avoided_total,
         rpc_handler_timeout_total: node_snapshot_metrics.rpc_handler_timeout_total.clone(),
+        rpc_alive_listener_timeout_total: node_snapshot_metrics.rpc_alive_listener_timeout_total,
+        rpc_handler_inflight_total: node_snapshot_metrics.rpc_handler_inflight_total.clone(),
         runtime_lock_busy_total: node_snapshot_metrics.runtime_lock_busy_total.clone(),
         degraded_snapshot_returned_total: node_snapshot_metrics
             .degraded_snapshot_returned_total

@@ -26,6 +26,7 @@ pub const RPC_SNAPSHOT_STALE_AFTER_MS: u64 = 5_000;
 static RPC_SNAPSHOT_STALE_TOTAL: AtomicU64 = AtomicU64::new(0);
 static RPC_HANDLER_DEGRADED_TOTAL: AtomicU64 = AtomicU64::new(0);
 static RPC_HANDLER_TIMEOUT_AVOIDED_TOTAL: AtomicU64 = AtomicU64::new(0);
+static RPC_ALIVE_LISTENER_TIMEOUT_TOTAL: AtomicU64 = AtomicU64::new(0);
 static RPC_ACCEPT_BACKLOG_OBSERVED: AtomicU64 = AtomicU64::new(0);
 static RPC_INFLIGHT_HANDLER_SEQ: AtomicU64 = AtomicU64::new(1);
 static RPC_INFLIGHT_HANDLERS: OnceLock<Mutex<BTreeMap<u64, (String, u64)>>> = OnceLock::new();
@@ -170,6 +171,8 @@ pub struct NodeRpcSnapshotMetrics {
     pub rpc_handler_degraded_total: u64,
     pub rpc_handler_timeout_avoided_total: u64,
     pub rpc_handler_timeout_total: BTreeMap<String, u64>,
+    pub rpc_alive_listener_timeout_total: u64,
+    pub rpc_handler_inflight_total: BTreeMap<String, u64>,
     pub runtime_lock_busy_total: BTreeMap<String, u64>,
     pub degraded_snapshot_returned_total: BTreeMap<String, u64>,
     pub rpc_accept_backlog_observed: u64,
@@ -184,6 +187,8 @@ pub fn node_rpc_snapshot_metrics(snapshot: &NodeRpcSnapshot) -> NodeRpcSnapshotM
         rpc_handler_timeout_avoided_total: RPC_HANDLER_TIMEOUT_AVOIDED_TOTAL
             .load(Ordering::Relaxed),
         rpc_handler_timeout_total: endpoint_counts(&RPC_HANDLER_TIMEOUT_BY_ENDPOINT),
+        rpc_alive_listener_timeout_total: RPC_ALIVE_LISTENER_TIMEOUT_TOTAL.load(Ordering::Relaxed),
+        rpc_handler_inflight_total: inflight_rpc_handler_counts(),
         runtime_lock_busy_total: endpoint_counts(&RUNTIME_LOCK_BUSY_BY_ENDPOINT),
         degraded_snapshot_returned_total: endpoint_counts(&DEGRADED_SNAPSHOT_BY_ENDPOINT),
         rpc_accept_backlog_observed: RPC_ACCEPT_BACKLOG_OBSERVED.load(Ordering::Relaxed),
@@ -217,6 +222,7 @@ fn endpoint_counts(map: &OnceLock<Mutex<BTreeMap<String, u64>>>) -> BTreeMap<Str
 }
 
 pub fn record_rpc_handler_timeout(endpoint: &str) {
+    RPC_ALIVE_LISTENER_TIMEOUT_TOTAL.fetch_add(1, Ordering::Relaxed);
     bump_endpoint(&RPC_HANDLER_TIMEOUT_BY_ENDPOINT, endpoint);
 }
 
@@ -266,6 +272,20 @@ pub fn oldest_inflight_rpc_handler_age_ms() -> u64 {
                 .max()
         })
         .unwrap_or(0)
+}
+
+pub fn inflight_rpc_handler_counts() -> BTreeMap<String, u64> {
+    RPC_INFLIGHT_HANDLERS
+        .get_or_init(|| Mutex::new(BTreeMap::new()))
+        .lock()
+        .map(|handlers| {
+            let mut counts = BTreeMap::new();
+            for (endpoint, _) in handlers.values() {
+                *counts.entry(endpoint.clone()).or_default() += 1;
+            }
+            counts
+        })
+        .unwrap_or_default()
 }
 
 pub fn unix_now_ms() -> u64 {
