@@ -26,6 +26,12 @@ pub const RPC_SNAPSHOT_STALE_AFTER_MS: u64 = 5_000;
 static RPC_SNAPSHOT_STALE_TOTAL: AtomicU64 = AtomicU64::new(0);
 static RPC_HANDLER_DEGRADED_TOTAL: AtomicU64 = AtomicU64::new(0);
 static RPC_HANDLER_TIMEOUT_AVOIDED_TOTAL: AtomicU64 = AtomicU64::new(0);
+static RPC_ACCEPT_BACKLOG_OBSERVED: AtomicU64 = AtomicU64::new(0);
+static RPC_INFLIGHT_HANDLER_SEQ: AtomicU64 = AtomicU64::new(1);
+static RPC_INFLIGHT_HANDLERS: OnceLock<Mutex<BTreeMap<u64, (String, u64)>>> = OnceLock::new();
+static RPC_HANDLER_TIMEOUT_BY_ENDPOINT: OnceLock<Mutex<BTreeMap<String, u64>>> = OnceLock::new();
+static RUNTIME_LOCK_BUSY_BY_ENDPOINT: OnceLock<Mutex<BTreeMap<String, u64>>> = OnceLock::new();
+static DEGRADED_SNAPSHOT_BY_ENDPOINT: OnceLock<Mutex<BTreeMap<String, u64>>> = OnceLock::new();
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct MissingParentSnapshotEntry {
@@ -132,6 +138,7 @@ impl NodeRpcSnapshotStore {
         record_rpc_snapshot_stale();
         record_rpc_handler_degraded();
         record_rpc_handler_timeout_avoided();
+        record_degraded_snapshot_returned("/rpc/snapshot");
         let mut snapshot = self.load();
         snapshot.degraded = true;
         snapshot.stale = true;
@@ -152,12 +159,17 @@ pub fn mark_node_rpc_snapshot_stale_if_needed(snapshot: &mut NodeRpcSnapshot) {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NodeRpcSnapshotMetrics {
     pub rpc_snapshot_age_ms: u64,
     pub rpc_snapshot_stale_total: u64,
     pub rpc_handler_degraded_total: u64,
     pub rpc_handler_timeout_avoided_total: u64,
+    pub rpc_handler_timeout_total: BTreeMap<String, u64>,
+    pub runtime_lock_busy_total: BTreeMap<String, u64>,
+    pub degraded_snapshot_returned_total: BTreeMap<String, u64>,
+    pub rpc_accept_backlog_observed: u64,
+    pub oldest_inflight_rpc_handler_age_ms: u64,
 }
 
 pub fn node_rpc_snapshot_metrics(snapshot: &NodeRpcSnapshot) -> NodeRpcSnapshotMetrics {
@@ -167,6 +179,11 @@ pub fn node_rpc_snapshot_metrics(snapshot: &NodeRpcSnapshot) -> NodeRpcSnapshotM
         rpc_handler_degraded_total: RPC_HANDLER_DEGRADED_TOTAL.load(Ordering::Relaxed),
         rpc_handler_timeout_avoided_total: RPC_HANDLER_TIMEOUT_AVOIDED_TOTAL
             .load(Ordering::Relaxed),
+        rpc_handler_timeout_total: endpoint_counts(&RPC_HANDLER_TIMEOUT_BY_ENDPOINT),
+        runtime_lock_busy_total: endpoint_counts(&RUNTIME_LOCK_BUSY_BY_ENDPOINT),
+        degraded_snapshot_returned_total: endpoint_counts(&DEGRADED_SNAPSHOT_BY_ENDPOINT),
+        rpc_accept_backlog_observed: RPC_ACCEPT_BACKLOG_OBSERVED.load(Ordering::Relaxed),
+        oldest_inflight_rpc_handler_age_ms: oldest_inflight_rpc_handler_age_ms(),
     }
 }
 
@@ -180,6 +197,71 @@ pub fn record_rpc_handler_degraded() {
 
 pub fn record_rpc_handler_timeout_avoided() {
     RPC_HANDLER_TIMEOUT_AVOIDED_TOTAL.fetch_add(1, Ordering::Relaxed);
+}
+
+fn bump_endpoint(map: &OnceLock<Mutex<BTreeMap<String, u64>>>, endpoint: &str) {
+    if let Ok(mut counts) = map.get_or_init(|| Mutex::new(BTreeMap::new())).lock() {
+        *counts.entry(endpoint.to_string()).or_default() += 1;
+    }
+}
+
+fn endpoint_counts(map: &OnceLock<Mutex<BTreeMap<String, u64>>>) -> BTreeMap<String, u64> {
+    map.get_or_init(|| Mutex::new(BTreeMap::new()))
+        .lock()
+        .map(|counts| counts.clone())
+        .unwrap_or_default()
+}
+
+pub fn record_rpc_handler_timeout(endpoint: &str) {
+    bump_endpoint(&RPC_HANDLER_TIMEOUT_BY_ENDPOINT, endpoint);
+}
+
+pub fn record_runtime_lock_busy(endpoint: &str) {
+    bump_endpoint(&RUNTIME_LOCK_BUSY_BY_ENDPOINT, endpoint);
+}
+
+pub fn record_degraded_snapshot_returned(endpoint: &str) {
+    bump_endpoint(&DEGRADED_SNAPSHOT_BY_ENDPOINT, endpoint);
+}
+
+pub fn record_rpc_accept_backlog_observed(observed: u64) {
+    RPC_ACCEPT_BACKLOG_OBSERVED.fetch_max(observed, Ordering::Relaxed);
+}
+
+pub fn begin_rpc_handler(endpoint: &str) -> u64 {
+    let id = RPC_INFLIGHT_HANDLER_SEQ.fetch_add(1, Ordering::Relaxed);
+    if let Ok(mut handlers) = RPC_INFLIGHT_HANDLERS
+        .get_or_init(|| Mutex::new(BTreeMap::new()))
+        .lock()
+    {
+        handlers.insert(id, (endpoint.to_string(), unix_now_ms()));
+        record_rpc_accept_backlog_observed(handlers.len() as u64);
+    }
+    id
+}
+
+pub fn end_rpc_handler(id: u64) {
+    if let Ok(mut handlers) = RPC_INFLIGHT_HANDLERS
+        .get_or_init(|| Mutex::new(BTreeMap::new()))
+        .lock()
+    {
+        handlers.remove(&id);
+    }
+}
+
+pub fn oldest_inflight_rpc_handler_age_ms() -> u64 {
+    let now = unix_now_ms();
+    RPC_INFLIGHT_HANDLERS
+        .get_or_init(|| Mutex::new(BTreeMap::new()))
+        .lock()
+        .ok()
+        .and_then(|handlers| {
+            handlers
+                .values()
+                .map(|(_, started)| now.saturating_sub(*started))
+                .max()
+        })
+        .unwrap_or(0)
 }
 
 pub fn unix_now_ms() -> u64 {
@@ -288,9 +370,12 @@ pub async fn fresh_or_cached_node_rpc_snapshot<S: RpcStateLike>(
             mark_node_rpc_snapshot_stale_if_needed(&mut snapshot);
             snapshot
         }
-        Err(reason) => state.rpc_snapshot().degraded_snapshot(format!(
-            "{endpoint} avoided waiting for fresh liveness state: {reason}"
-        )),
+        Err(reason) => {
+            record_degraded_snapshot_returned(endpoint);
+            state.rpc_snapshot().degraded_snapshot(format!(
+                "{endpoint} avoided waiting for fresh liveness state: {reason}"
+            ))
+        }
     }
 }
 
@@ -880,6 +965,7 @@ pub async fn read_chain_for_rpc<'a>(
     chain.try_read().map_err(|_| {
         record_rpc_degraded_response();
         record_rpc_handler_timeout_avoided();
+        record_runtime_lock_busy(endpoint);
         format!(
             "{endpoint} skipped blocking chain read lock acquisition; shared state is busy and RPC starvation diagnostics should inspect long-running writers"
         )
@@ -893,6 +979,7 @@ pub async fn read_runtime_for_rpc<'a>(
     runtime.try_read().map_err(|_| {
         record_rpc_degraded_response();
         record_rpc_handler_timeout_avoided();
+        record_runtime_lock_busy(endpoint);
         format!(
             "{endpoint} skipped blocking runtime read lock acquisition; shared state is busy and RPC starvation diagnostics should inspect long-running writers"
         )
