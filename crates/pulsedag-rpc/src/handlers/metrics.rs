@@ -175,6 +175,11 @@ pub struct MetricsData {
     pub rpc_snapshot_stale_total: u64,
     pub rpc_handler_degraded_total: u64,
     pub rpc_handler_timeout_avoided_total: u64,
+    pub rpc_handler_timeout_total: BTreeMap<String, u64>,
+    pub runtime_lock_busy_total: BTreeMap<String, u64>,
+    pub degraded_snapshot_returned_total: BTreeMap<String, u64>,
+    pub rpc_accept_backlog_observed: u64,
+    pub oldest_inflight_rpc_handler_age_ms: u64,
     pub node_rpc_snapshot: NodeRpcSnapshotMetrics,
     pub rpc_dedicated_runtime_active: bool,
     pub rpc_dedicated_runtime_worker_threads: usize,
@@ -192,6 +197,8 @@ pub async fn get_metrics<S: RpcStateLike>(
             record_rpc_snapshot_stale();
             record_rpc_handler_degraded();
             record_rpc_handler_timeout_avoided();
+            crate::api::record_runtime_lock_busy("/metrics");
+            crate::api::record_degraded_snapshot_returned("/metrics");
             None
         }
     };
@@ -214,6 +221,8 @@ pub async fn get_metrics<S: RpcStateLike>(
             record_rpc_snapshot_stale();
             record_rpc_handler_degraded();
             record_rpc_handler_timeout_avoided();
+            crate::api::record_runtime_lock_busy("/metrics");
+            crate::api::record_degraded_snapshot_returned("/metrics");
             None
         }
     };
@@ -582,6 +591,14 @@ pub async fn get_metrics<S: RpcStateLike>(
         rpc_snapshot_stale_total: node_snapshot_metrics.rpc_snapshot_stale_total,
         rpc_handler_degraded_total: node_snapshot_metrics.rpc_handler_degraded_total,
         rpc_handler_timeout_avoided_total: node_snapshot_metrics.rpc_handler_timeout_avoided_total,
+        rpc_handler_timeout_total: node_snapshot_metrics.rpc_handler_timeout_total.clone(),
+        runtime_lock_busy_total: node_snapshot_metrics.runtime_lock_busy_total.clone(),
+        degraded_snapshot_returned_total: node_snapshot_metrics
+            .degraded_snapshot_returned_total
+            .clone(),
+        rpc_accept_backlog_observed: node_snapshot_metrics.rpc_accept_backlog_observed,
+        oldest_inflight_rpc_handler_age_ms: node_snapshot_metrics
+            .oldest_inflight_rpc_handler_age_ms,
         node_rpc_snapshot: node_snapshot_metrics,
         rpc_dedicated_runtime_active: runtime.rpc_dedicated_runtime_active,
         rpc_dedicated_runtime_worker_threads: runtime.rpc_dedicated_runtime_worker_threads,

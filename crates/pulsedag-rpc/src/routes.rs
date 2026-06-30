@@ -16,7 +16,9 @@ use tokio::sync::Mutex;
 use tokio::time::timeout;
 
 use crate::{
-    api::{ApiResponse, RpcStateLike},
+    api::{
+        begin_rpc_handler, end_rpc_handler, record_rpc_handler_timeout, ApiResponse, RpcStateLike,
+    },
     handlers::{
         address::{
             get_address, get_address_activity, get_address_summary, get_address_utxos, get_utxos,
@@ -207,6 +209,10 @@ fn is_liveness_endpoint(path: &str) -> bool {
             | "/api/v1/status"
             | "/readiness"
             | "/api/v1/readiness"
+            | "/release"
+            | "/api/v1/release"
+            | "/metrics"
+            | "/api/v1/metrics"
             | "/p2p/status"
             | "/api/v1/p2p/status"
             | "/sync/status"
@@ -218,7 +224,8 @@ fn is_liveness_endpoint(path: &str) -> bool {
     )
 }
 
-fn rpc_liveness_timeout_response() -> Response {
+fn rpc_liveness_timeout_response(endpoint: &str) -> Response {
+    record_rpc_handler_timeout(endpoint);
     (
         StatusCode::SERVICE_UNAVAILABLE,
         Json(ApiResponse::<serde_json::Value>::err(
@@ -253,9 +260,17 @@ async fn hardening_middleware(req: Request, next: Next, limits: RpcHardeningLimi
     );
     if !is_guarded {
         if is_liveness {
+            let endpoint = path.to_string();
+            let handler_id = begin_rpc_handler(&endpoint);
             return match timeout(RPC_LIVENESS_TIMEOUT, next.run(req)).await {
-                Ok(response) => response,
-                Err(_) => rpc_liveness_timeout_response(),
+                Ok(response) => {
+                    end_rpc_handler(handler_id);
+                    response
+                }
+                Err(_) => {
+                    end_rpc_handler(handler_id);
+                    rpc_liveness_timeout_response(&endpoint)
+                }
             };
         }
 
@@ -310,9 +325,17 @@ async fn hardening_middleware(req: Request, next: Next, limits: RpcHardeningLimi
         entry.1 = entry.1.saturating_add(1);
     }
     if is_liveness {
+        let endpoint = path.to_string();
+        let handler_id = begin_rpc_handler(&endpoint);
         match timeout(RPC_LIVENESS_TIMEOUT, next.run(req)).await {
-            Ok(response) => response,
-            Err(_) => rpc_liveness_timeout_response(),
+            Ok(response) => {
+                end_rpc_handler(handler_id);
+                response
+            }
+            Err(_) => {
+                end_rpc_handler(handler_id);
+                rpc_liveness_timeout_response(&endpoint)
+            }
         }
     } else {
         next.run(req).await
