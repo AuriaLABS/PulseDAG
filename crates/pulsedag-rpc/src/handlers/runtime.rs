@@ -132,6 +132,7 @@ pub struct RuntimeStatusData {
     pub external_mining_submit_actor_queue_full_total: u64,
     pub external_mining_submit_actor_timeout_total: u64,
     pub external_mining_submit_actor_completed_total: u64,
+    pub external_mining_submit_actor_oldest_pending_age_ms: u64,
     pub external_mining_last_submit_phase: Option<String>,
     pub external_mining_last_submit_duration_ms: u64,
     pub external_mining_max_submit_duration_ms: u64,
@@ -1493,6 +1494,8 @@ pub async fn get_runtime_status<S: RpcStateLike>(
             .external_mining_submit_actor_timeout_total,
         external_mining_submit_actor_completed_total: runtime
             .external_mining_submit_actor_completed_total,
+        external_mining_submit_actor_oldest_pending_age_ms: runtime
+            .external_mining_submit_actor_oldest_pending_age_ms,
         external_mining_last_submit_phase: runtime.external_mining_last_submit_phase.clone(),
         external_mining_last_submit_duration_ms: runtime.external_mining_last_submit_duration_ms,
         external_mining_max_submit_duration_ms: runtime.external_mining_max_submit_duration_ms,
