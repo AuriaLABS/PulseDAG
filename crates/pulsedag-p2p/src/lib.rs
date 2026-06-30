@@ -272,6 +272,11 @@ pub struct P2pStatus {
     pub asymmetric_connectivity_diagnostics: Vec<String>,
     pub inbound_connections_not_counted: usize,
     pub bootnode_peer_accounting_mismatch: bool,
+    pub bootnode_inbound_peers_counted: usize,
+    pub bootnode_inbound_connections_seen_total: u64,
+    pub bootnode_inbound_not_promoted_total: u64,
+    pub private_topology_asymmetric_peer_count_total: u64,
+    pub peer_reports_connected_to_bootnode_but_bootnode_reports_zero_total: u64,
 }
 
 pub trait P2pHandle: Send + Sync {
@@ -536,6 +541,10 @@ struct InnerState {
     peer_lifecycle_event_counters: HashMap<String, u64>,
     last_error_by_peer: HashMap<String, String>,
     peer_connection_final_state: HashMap<String, PeerConnectionFinalState>,
+    bootnode_inbound_connections_seen_total: u64,
+    bootnode_inbound_not_promoted_total: u64,
+    private_topology_asymmetric_peer_count_total: u64,
+    peer_reports_connected_to_bootnode_but_bootnode_reports_zero_total: u64,
     peer_state_path: Option<PathBuf>,
     peer_reconnect_attempts: u64,
     peer_recovery_success_count: u64,
@@ -870,7 +879,8 @@ impl P2pHandle for MemoryP2pHandle {
             asymmetric_connectivity_diagnostics,
             inbound_connections_not_counted,
             bootnode_peer_accounting_mismatch,
-        ) = connectivity_accounting_diagnostics(&inner);
+            bootnode_inbound_peers_counted,
+        ) = connectivity_accounting_diagnostics(&mut inner);
         Ok(P2pStatus {
             chain_id: inner.chain_id.clone(),
             mode: inner.mode.clone(),
@@ -1055,6 +1065,13 @@ impl P2pHandle for MemoryP2pHandle {
             asymmetric_connectivity_diagnostics,
             inbound_connections_not_counted,
             bootnode_peer_accounting_mismatch,
+            bootnode_inbound_peers_counted,
+            bootnode_inbound_connections_seen_total: inner.bootnode_inbound_connections_seen_total,
+            bootnode_inbound_not_promoted_total: inner.bootnode_inbound_not_promoted_total,
+            private_topology_asymmetric_peer_count_total: inner
+                .private_topology_asymmetric_peer_count_total,
+            peer_reports_connected_to_bootnode_but_bootnode_reports_zero_total: inner
+                .peer_reports_connected_to_bootnode_but_bootnode_reports_zero_total,
         })
     }
 }
@@ -1662,7 +1679,9 @@ fn topology_stats_for_connected_peers(peers: &[String]) -> (usize, usize, u16, u
     )
 }
 
-fn connectivity_accounting_diagnostics(state: &InnerState) -> (Vec<String>, usize, bool) {
+fn connectivity_accounting_diagnostics(
+    state: &mut InnerState,
+) -> (Vec<String>, usize, bool, usize) {
     let mut diagnostics = Vec::new();
     let connected = state
         .connected_peers
@@ -1680,22 +1699,36 @@ fn connectivity_accounting_diagnostics(state: &InnerState) -> (Vec<String>, usiz
         })
         .count();
     if inbound_unaccounted > 0 {
+        state.bootnode_inbound_not_promoted_total = state
+            .bootnode_inbound_not_promoted_total
+            .saturating_add(inbound_unaccounted as u64);
         diagnostics.push(format!(
             "inbound_connection_accepted_but_not_counted:{inbound_unaccounted}"
+        ));
+        diagnostics.push(format!(
+            "bootnode_inbound_not_promoted_total:{inbound_unaccounted}"
         ));
     }
     let active_total = state.active_connections.values().copied().sum::<usize>();
     if state.connected_peers.is_empty() && active_total > 0 {
+        state.private_topology_asymmetric_peer_count_total = state
+            .private_topology_asymmetric_peer_count_total
+            .saturating_add(1);
+        state.peer_reports_connected_to_bootnode_but_bootnode_reports_zero_total = state
+            .peer_reports_connected_to_bootnode_but_bootnode_reports_zero_total
+            .saturating_add(1);
         diagnostics.push(format!(
             "peer_reports_connected_to_us_but_local_zero_peers:active_connections={active_total}"
         ));
+        diagnostics.push("private_topology_asymmetric_peer_count_total".to_string());
+        diagnostics
+            .push("peer_reports_connected_to_bootnode_but_bootnode_reports_zero_total".to_string());
     }
     let bootnode_root_zero_private_topology = state.bootnodes_configured.is_empty()
         && state.connected_peers.is_empty()
         && mode_connected_peers_are_real_network(&state.mode)
         && !state.listening.is_empty();
     if bootnode_root_zero_private_topology {
-        diagnostics.push("bootnode_root_no_configured_peers".to_string());
         diagnostics.push("bootnode_root_no_inbound_peers_counted".to_string());
         diagnostics.push(format!(
             "private_topology_below_min_connected_peers:connected=0,min={}",
@@ -1708,7 +1741,27 @@ fn connectivity_accounting_diagnostics(state: &InnerState) -> (Vec<String>, usiz
     if bootnode_mismatch {
         diagnostics.push("bootnode_peer_accounting_mismatch".to_string());
     }
-    (diagnostics, inbound_unaccounted, bootnode_mismatch)
+    let bootnode_inbound_peers_counted = state
+        .peer_connection_final_state
+        .values()
+        .filter(|final_state| {
+            final_state.direction == "inbound"
+                && final_state.state == "connected"
+                && final_state.active_connections > 0
+                && connected.contains(&final_state.peer_id)
+        })
+        .count();
+    if bootnode_inbound_peers_counted > 0 {
+        diagnostics.push(format!(
+            "bootnode_inbound_peers_counted:{bootnode_inbound_peers_counted}"
+        ));
+    }
+    (
+        diagnostics,
+        inbound_unaccounted,
+        bootnode_mismatch,
+        bootnode_inbound_peers_counted,
+    )
 }
 
 fn refresh_connected_peers_from_health(state: &mut InnerState) {
@@ -2963,7 +3016,7 @@ fn enforce_connectivity_aware_cooldown_floor(state: &mut InnerState, now: u64) {
     {
         state.last_peer_reconnect_blocked_reason =
             if mode_connected_peers_are_real_network(&state.mode) && !state.listening.is_empty() {
-                Some("bootnode_root_no_configured_peers_no_inbound_peers_counted".to_string())
+                Some("bootnode_root_no_inbound_peers_counted".to_string())
             } else {
                 Some("no_configured_peers".to_string())
             };
@@ -4124,6 +4177,11 @@ fn handle_connection_established(
         guard.connection_established_total = guard.connection_established_total.saturating_add(1);
         record_peer_lifecycle_event(&mut guard, "connection_established");
         record_peer_lifecycle_event(&mut guard, &format!("{direction}_connected"));
+        if direction == "inbound" {
+            guard.bootnode_inbound_connections_seen_total = guard
+                .bootnode_inbound_connections_seen_total
+                .saturating_add(1);
+        }
         guard.last_connection_established_peer = Some(peer_key.clone());
         guard.last_peer_state_transition = Some(format!("{peer_key}:connected"));
         guard.peer_connection_final_state.insert(
@@ -4946,7 +5004,8 @@ impl P2pHandle for Libp2pHandle {
             asymmetric_connectivity_diagnostics,
             inbound_connections_not_counted,
             bootnode_peer_accounting_mismatch,
-        ) = connectivity_accounting_diagnostics(&inner);
+            bootnode_inbound_peers_counted,
+        ) = connectivity_accounting_diagnostics(&mut inner);
         Ok(P2pStatus {
             chain_id: inner.chain_id.clone(),
             mode: inner.mode.clone(),
@@ -5131,6 +5190,13 @@ impl P2pHandle for Libp2pHandle {
             asymmetric_connectivity_diagnostics,
             inbound_connections_not_counted,
             bootnode_peer_accounting_mismatch,
+            bootnode_inbound_peers_counted,
+            bootnode_inbound_connections_seen_total: inner.bootnode_inbound_connections_seen_total,
+            bootnode_inbound_not_promoted_total: inner.bootnode_inbound_not_promoted_total,
+            private_topology_asymmetric_peer_count_total: inner
+                .private_topology_asymmetric_peer_count_total,
+            peer_reports_connected_to_bootnode_but_bootnode_reports_zero_total: inner
+                .peer_reports_connected_to_bootnode_but_bootnode_reports_zero_total,
         })
     }
 }
@@ -8718,8 +8784,8 @@ mod deterministic_p2p_sync_coverage_tests {
                 last_disconnect_reason: None,
             },
         );
-        let (diagnostics, inbound_unaccounted, bootnode_mismatch) =
-            connectivity_accounting_diagnostics(&state);
+        let (diagnostics, inbound_unaccounted, bootnode_mismatch, _) =
+            connectivity_accounting_diagnostics(&mut state);
         assert_eq!(inbound_unaccounted, 1);
         assert!(!bootnode_mismatch);
         assert!(diagnostics
@@ -8739,7 +8805,8 @@ mod deterministic_p2p_sync_coverage_tests {
             ..InnerState::default()
         };
         state.connected_peers.clear();
-        let (diagnostics, _, bootnode_mismatch) = connectivity_accounting_diagnostics(&state);
+        let (diagnostics, _, bootnode_mismatch, _) =
+            connectivity_accounting_diagnostics(&mut state);
         assert!(bootnode_mismatch);
         assert!(diagnostics
             .iter()
@@ -8799,6 +8866,103 @@ mod deterministic_p2p_sync_coverage_tests {
     }
 
     #[test]
+    fn bootnode_with_no_outbound_configured_peers_is_valid_when_inbound_counted() {
+        let inner = Arc::new(Mutex::new(InnerState {
+            mode: P2P_MODE_LIBP2P_REAL.into(),
+            listening: vec!["/ip4/127.0.0.1/tcp/19080".into()],
+            ..InnerState::default()
+        }));
+        let mut pending = HashSet::new();
+        let key = identity::Keypair::generate_ed25519();
+        let peer = PeerId::from(key.public());
+
+        handle_connection_established(&inner, &mut pending, &peer, "inbound");
+
+        let mut state = inner.lock().unwrap();
+        refresh_connected_peers_from_health(&mut state);
+        let (diagnostics, inbound_unaccounted, bootnode_mismatch, inbound_counted) =
+            connectivity_accounting_diagnostics(&mut state);
+        assert_eq!(inbound_unaccounted, 0);
+        assert!(!bootnode_mismatch);
+        assert_eq!(inbound_counted, 1);
+        assert!(state.bootnodes_configured.is_empty());
+        assert!(diagnostics
+            .iter()
+            .any(|item| item == "bootnode_inbound_peers_counted:1"));
+        assert!(!diagnostics
+            .iter()
+            .any(|item| item.contains("no_configured_peers")));
+        assert!(!diagnostics
+            .iter()
+            .any(|item| item.starts_with("private_topology_below_min_connected_peers")));
+    }
+
+    #[test]
+    fn five_node_private_profile_fails_when_bootnode_peer_count_zero_after_grace() {
+        let mut bootnode = InnerState {
+            mode: P2P_MODE_LIBP2P_REAL.into(),
+            listening: vec!["/ip4/127.0.0.1/tcp/19080".into()],
+            ..InnerState::default()
+        };
+        for peer_idx in 1..5 {
+            bootnode.peer_book.insert(
+                format!("peer-{peer_idx}"),
+                PeerHealth {
+                    chain_id_compatible: true,
+                    ..PeerHealth::default()
+                },
+            );
+        }
+
+        enforce_connectivity_aware_cooldown_floor(&mut bootnode, 10_000);
+        let (diagnostics, _, _, inbound_counted) =
+            connectivity_accounting_diagnostics(&mut bootnode);
+
+        assert_eq!(inbound_counted, 0);
+        assert!(diagnostics
+            .iter()
+            .any(|item| item == "bootnode_root_no_inbound_peers_counted"));
+        assert!(diagnostics
+            .iter()
+            .any(|item| item
+                .starts_with("private_topology_below_min_connected_peers:connected=0,min=")));
+    }
+
+    #[test]
+    fn five_node_private_profile_passes_topology_when_bootnode_counts_inbound_peers() {
+        let inner = Arc::new(Mutex::new(InnerState {
+            mode: P2P_MODE_LIBP2P_REAL.into(),
+            listening: vec!["/ip4/127.0.0.1/tcp/19080".into()],
+            ..InnerState::default()
+        }));
+        let mut pending = HashSet::new();
+        let peers = (0..2)
+            .map(|_| {
+                let key = identity::Keypair::generate_ed25519();
+                PeerId::from(key.public())
+            })
+            .collect::<Vec<_>>();
+        for peer in &peers {
+            handle_connection_established(&inner, &mut pending, peer, "inbound");
+        }
+
+        let mut bootnode = inner.lock().unwrap();
+        refresh_connected_peers_from_health(&mut bootnode);
+        let (diagnostics, _, mismatch, inbound_counted) =
+            connectivity_accounting_diagnostics(&mut bootnode);
+
+        assert!(!mismatch);
+        assert_eq!(inbound_counted, 2);
+        assert_eq!(bootnode.connected_peers.len(), 2);
+        assert!(diagnostics
+            .iter()
+            .any(|item| item == "bootnode_inbound_peers_counted:2"));
+        assert!(!diagnostics
+            .iter()
+            .any(|item| item.starts_with("private_topology_below_min_connected_peers")));
+    }
+
+    #[test]
     fn bootnode_root_private_profile_reports_topology_degraded_without_inbound_peers() {
         let mut state = InnerState {
             mode: P2P_MODE_LIBP2P_REAL.into(),
@@ -8807,18 +8971,15 @@ mod deterministic_p2p_sync_coverage_tests {
         };
 
         enforce_connectivity_aware_cooldown_floor(&mut state, 10_000);
-        let (diagnostics, inbound_unaccounted, bootnode_mismatch) =
-            connectivity_accounting_diagnostics(&state);
+        let (diagnostics, inbound_unaccounted, bootnode_mismatch, _) =
+            connectivity_accounting_diagnostics(&mut state);
 
         assert_eq!(inbound_unaccounted, 0);
         assert!(!bootnode_mismatch);
         assert_eq!(
             state.last_peer_reconnect_blocked_reason.as_deref(),
-            Some("bootnode_root_no_configured_peers_no_inbound_peers_counted")
+            Some("bootnode_root_no_inbound_peers_counted")
         );
-        assert!(diagnostics
-            .iter()
-            .any(|item| item == "bootnode_root_no_configured_peers"));
         assert!(diagnostics
             .iter()
             .any(|item| item == "bootnode_root_no_inbound_peers_counted"));
