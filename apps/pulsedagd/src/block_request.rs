@@ -10,6 +10,24 @@ pub const DEFAULT_BLOCK_REQUEST_BACKOFF_SECS: u64 = 8;
 pub const MAX_BLOCK_REQUEST_BACKOFF_SECS: u64 = 120;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MissingParentRequestState {
+    pub requested_from_peers: Vec<String>,
+    pub not_found_from_peers: Vec<String>,
+    pub last_request_unix: Option<u64>,
+    pub retry_count: u64,
+    pub terminal_unavailable_after_all_peers: bool,
+}
+
+#[derive(Debug, Clone, Default)]
+struct PeerMissingParentHints {
+    inventory: HashSet<String>,
+    tip_ancestry: HashSet<String>,
+    selected_tip: Option<String>,
+    best_height: Option<u64>,
+    successful_blockdata_responses: u64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct BlockRequestPeerRetryOutcome {
     pub retry: bool,
     pub peer: Option<String>,
@@ -74,6 +92,9 @@ pub struct BlockRequestTracker {
     backoff_by_hash: HashMap<String, RequestBackoff>,
     not_found_by_hash: HashMap<String, HashSet<String>>,
     timed_out_by_hash: HashMap<String, HashSet<String>>,
+    requested_by_hash: HashMap<String, HashSet<String>>,
+    request_state_by_hash: HashMap<String, MissingParentRequestState>,
+    peer_hints: HashMap<String, PeerMissingParentHints>,
     exhausted_hashes: HashSet<String>,
     next_peer_index: usize,
 }
@@ -123,6 +144,9 @@ impl BlockRequestTracker {
             backoff_by_hash: HashMap::new(),
             not_found_by_hash: HashMap::new(),
             timed_out_by_hash: HashMap::new(),
+            requested_by_hash: HashMap::new(),
+            request_state_by_hash: HashMap::new(),
+            peer_hints: HashMap::new(),
             exhausted_hashes: HashSet::new(),
             next_peer_index: 0,
         }
@@ -238,6 +262,7 @@ impl BlockRequestTracker {
             // still bounds total in-flight work.
             self.backpressure_suppressed = self.backpressure_suppressed.saturating_add(1);
         }
+        self.record_missing_parent_request(hash, peer.as_deref(), now_unix);
         self.pending.insert(
             hash.to_string(),
             PendingBlockRequest {
@@ -250,6 +275,114 @@ impl BlockRequestTracker {
         self.backoff_by_hash.remove(hash);
         self.fetch_queued = self.fetch_queued.saturating_add(1);
         true
+    }
+
+    fn record_missing_parent_request(&mut self, hash: &str, peer: Option<&str>, now_unix: u64) {
+        let state = self
+            .request_state_by_hash
+            .entry(hash.to_string())
+            .or_default();
+        state.last_request_unix = Some(now_unix);
+        state.retry_count = state.retry_count.saturating_add(1);
+        state.terminal_unavailable_after_all_peers = false;
+        if let Some(peer) = peer {
+            self.requested_by_hash
+                .entry(hash.to_string())
+                .or_default()
+                .insert(peer.to_string());
+            if !state.requested_from_peers.iter().any(|p| p == peer) {
+                state.requested_from_peers.push(peer.to_string());
+                state.requested_from_peers.sort();
+            }
+        }
+    }
+
+    pub fn missing_parent_request_state(&self, hash: &str) -> MissingParentRequestState {
+        let mut state = self
+            .request_state_by_hash
+            .get(hash)
+            .cloned()
+            .unwrap_or_default();
+        state.requested_from_peers = self
+            .requested_by_hash
+            .get(hash)
+            .map(|p| {
+                let mut v = p.iter().cloned().collect::<Vec<_>>();
+                v.sort();
+                v
+            })
+            .unwrap_or(state.requested_from_peers);
+        state.not_found_from_peers = self.not_found_peers(hash);
+        state.terminal_unavailable_after_all_peers = self.exhausted_hashes.contains(hash);
+        state
+    }
+
+    pub fn note_peer_inventory<I, S>(&mut self, peer: impl Into<String>, hashes: I)
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        let hints = self.peer_hints.entry(peer.into()).or_default();
+        hints.inventory.extend(hashes.into_iter().map(Into::into));
+    }
+
+    pub fn note_peer_tip_ancestry<I, S>(
+        &mut self,
+        peer: impl Into<String>,
+        selected_tip: Option<String>,
+        best_height: u64,
+        ancestry: I,
+    ) where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        let hints = self.peer_hints.entry(peer.into()).or_default();
+        hints.selected_tip = selected_tip;
+        hints.best_height = Some(best_height);
+        hints
+            .tip_ancestry
+            .extend(ancestry.into_iter().map(Into::into));
+    }
+
+    pub fn note_successful_blockdata_response(&mut self, peer: impl Into<String>, hash: &str) {
+        let hints = self.peer_hints.entry(peer.into()).or_default();
+        hints.successful_blockdata_responses =
+            hints.successful_blockdata_responses.saturating_add(1);
+        hints.inventory.insert(hash.to_string());
+        self.resolve(hash);
+    }
+
+    fn eligible_peers_for_hash(&self, hash: &str, peers: &[String]) -> Vec<String> {
+        let mut scored = peers
+            .iter()
+            .map(|peer| {
+                let score = self
+                    .peer_hints
+                    .get(peer)
+                    .map(|h| {
+                        let mut score = 0i64;
+                        if h.inventory.contains(hash) {
+                            score += 100;
+                        }
+                        if h.tip_ancestry.contains(hash) {
+                            score += 80;
+                        }
+                        if h.best_height.unwrap_or(0) > 0 {
+                            score += 10;
+                        }
+                        score += (h.successful_blockdata_responses as i64).min(20);
+                        score
+                    })
+                    .unwrap_or(0);
+                (peer.clone(), score)
+            })
+            .collect::<Vec<_>>();
+        let has_positive = scored.iter().any(|(_, score)| *score > 0);
+        if has_positive {
+            scored.retain(|(_, score)| *score > 0);
+        }
+        scored.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        scored.into_iter().map(|(peer, _)| peer).collect()
     }
 
     fn retry_backoff_secs(timeout_secs: u64, retry_count: u8) -> u64 {
@@ -274,6 +407,7 @@ impl BlockRequestTracker {
         if peers.is_empty() {
             return None;
         }
+        let peers = self.eligible_peers_for_hash(hash, peers);
         let mut counts: HashMap<&str, usize> = HashMap::new();
         for req in self.pending.values() {
             if let Some(peer) = req.peer.as_deref() {
@@ -333,7 +467,15 @@ impl BlockRequestTracker {
             self.not_found_by_hash
                 .entry(hash.to_string())
                 .or_default()
-                .insert(peer);
+                .insert(peer.clone());
+            let state = self
+                .request_state_by_hash
+                .entry(hash.to_string())
+                .or_default();
+            if !state.not_found_from_peers.iter().any(|p| p == &peer) {
+                state.not_found_from_peers.push(peer);
+                state.not_found_from_peers.sort();
+            }
         }
         self.retry_after_peer_failure(hash, now_unix, peers)
     }
@@ -387,6 +529,7 @@ impl BlockRequestTracker {
         }
         let peer = self.select_available_peer_for_hash(hash, &peers);
         if let Some(peer) = peer {
+            self.record_missing_parent_request(hash, Some(&peer), now_unix);
             self.pending.insert(
                 hash.to_string(),
                 PendingBlockRequest {
@@ -405,6 +548,10 @@ impl BlockRequestTracker {
             };
         }
         let newly_exhausted = self.exhausted_hashes.insert(hash.to_string());
+        self.request_state_by_hash
+            .entry(hash.to_string())
+            .or_default()
+            .terminal_unavailable_after_all_peers = true;
         if newly_exhausted {
             self.note_request_dropped(hash, now_unix);
         } else {
@@ -571,6 +718,8 @@ impl BlockRequestTracker {
         self.backoff_by_hash.remove(hash);
         self.not_found_by_hash.remove(hash);
         self.timed_out_by_hash.remove(hash);
+        self.requested_by_hash.remove(hash);
+        self.request_state_by_hash.remove(hash);
         self.exhausted_hashes.remove(hash);
     }
 
@@ -1094,6 +1243,72 @@ mod tests {
             tracker.classify_getblock_for_peers("root-b", 101, ["peer-a"]),
             super::GetBlockRequestReadiness::RateLimited
         );
+    }
+
+    #[test]
+    fn missing_parent_requested_from_peer_with_inventory_hint() {
+        let mut tracker = BlockRequestTracker::with_limits(5, 2, 10, 10);
+        tracker.note_peer_inventory("peer-b", ["parent"]);
+        tracker.note_peer_tip_ancestry("peer-c", Some("tip-c".to_string()), 7, ["other"]);
+
+        assert!(tracker.should_issue_getblock_for_peers(
+            "parent",
+            100,
+            ["peer-a", "peer-b", "peer-c"]
+        ));
+
+        let state = tracker.missing_parent_request_state("parent");
+        assert_eq!(state.requested_from_peers, vec!["peer-b"]);
+        assert_eq!(state.last_request_unix, Some(100));
+        assert_eq!(state.retry_count, 1);
+        assert_eq!(
+            tracker
+                .pending
+                .get("parent")
+                .and_then(|req| req.peer.as_deref()),
+            Some("peer-b")
+        );
+    }
+
+    #[test]
+    fn missing_parent_request_state_tracks_rotation_until_terminal() {
+        let mut tracker = BlockRequestTracker::with_limits(5, 2, 10, 10);
+        tracker.note_peer_inventory("peer-a", ["parent"]);
+        tracker.note_peer_tip_ancestry("peer-b", Some("tip-b".to_string()), 9, ["parent"]);
+
+        assert!(tracker.should_issue_getblock_for_peers("parent", 100, ["peer-a", "peer-b"]));
+        let first = tracker.note_not_found("parent", 101, ["peer-a", "peer-b"]);
+        assert!(first.retry);
+        assert_eq!(first.peer.as_deref(), Some("peer-b"));
+        let state = tracker.missing_parent_request_state("parent");
+        assert_eq!(state.requested_from_peers, vec!["peer-a", "peer-b"]);
+        assert_eq!(state.not_found_from_peers, vec!["peer-a"]);
+        assert!(!state.terminal_unavailable_after_all_peers);
+
+        let second = tracker.note_not_found("parent", 102, ["peer-a", "peer-b"]);
+        assert!(!second.retry);
+        assert!(second.all_peers_exhausted);
+        let terminal = tracker.missing_parent_request_state("parent");
+        assert_eq!(terminal.not_found_from_peers, vec!["peer-a", "peer-b"]);
+        assert!(terminal.terminal_unavailable_after_all_peers);
+        assert_eq!(terminal.retry_count, 2);
+    }
+
+    #[test]
+    fn repeated_missing_parent_reconciliation_is_idempotent_after_exhaustion() {
+        let mut tracker = BlockRequestTracker::with_limits(5, 2, 10, 10);
+        assert!(tracker.should_issue_getblock_for_peers("parent", 100, ["peer-a"]));
+        assert!(
+            tracker
+                .note_not_found("parent", 101, ["peer-a"])
+                .all_peers_exhausted
+        );
+        let before = tracker.missing_parent_request_state("parent");
+
+        assert!(!tracker.should_issue_getblock_for_peers("parent", 200, ["peer-a"]));
+        assert!(!tracker.should_issue_getblock_for_peers("parent", 300, ["peer-a"]));
+
+        assert_eq!(tracker.missing_parent_request_state("parent"), before);
     }
 
     #[test]
