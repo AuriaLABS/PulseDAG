@@ -1618,6 +1618,11 @@ mod tests {
                 asymmetric_connectivity_diagnostics: Vec::new(),
                 inbound_connections_not_counted: 0,
                 bootnode_peer_accounting_mismatch: false,
+                bootnode_inbound_peers_counted: 0,
+                bootnode_inbound_connections_seen_total: 0,
+                bootnode_inbound_not_promoted_total: 0,
+                private_topology_asymmetric_peer_count_total: 0,
+                peer_reports_connected_to_bootnode_but_bootnode_reports_zero_total: 0,
             })
         }
     }
