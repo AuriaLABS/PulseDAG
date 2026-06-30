@@ -1690,9 +1690,21 @@ fn connectivity_accounting_diagnostics(state: &InnerState) -> (Vec<String>, usiz
             "peer_reports_connected_to_us_but_local_zero_peers:active_connections={active_total}"
         ));
     }
-    let bootnode_mismatch = !state.bootnodes_configured.is_empty()
+    let bootnode_root_zero_private_topology = state.bootnodes_configured.is_empty()
         && state.connected_peers.is_empty()
-        && (active_total > 0 || !state.bootstrap_connected_peer_ids.is_empty());
+        && mode_connected_peers_are_real_network(&state.mode)
+        && !state.listening.is_empty();
+    if bootnode_root_zero_private_topology {
+        diagnostics.push("bootnode_root_no_configured_peers".to_string());
+        diagnostics.push("bootnode_root_no_inbound_peers_counted".to_string());
+        diagnostics.push(format!(
+            "private_topology_below_min_connected_peers:connected=0,min={}",
+            private_rehearsal_min_useful_peer_target(state)
+        ));
+    }
+    let bootnode_mismatch = state.connected_peers.is_empty()
+        && (active_total > 0 || !state.bootstrap_connected_peer_ids.is_empty())
+        && (!state.bootnodes_configured.is_empty() || bootnode_root_zero_private_topology);
     if bootnode_mismatch {
         diagnostics.push("bootnode_peer_accounting_mismatch".to_string());
     }
@@ -2949,7 +2961,12 @@ fn enforce_connectivity_aware_cooldown_floor(state: &mut InnerState, now: u64) {
         && state.bootnodes_configured.is_empty()
         && state.peer_book.is_empty()
     {
-        state.last_peer_reconnect_blocked_reason = Some("no_configured_peers".to_string());
+        state.last_peer_reconnect_blocked_reason =
+            if mode_connected_peers_are_real_network(&state.mode) && !state.listening.is_empty() {
+                Some("bootnode_root_no_configured_peers_no_inbound_peers_counted".to_string())
+            } else {
+                Some("no_configured_peers".to_string())
+            };
     }
     if state.peer_book.is_empty() || active_count >= target {
         if active_count >= target && target > 0 {
@@ -8727,5 +8744,86 @@ mod deterministic_p2p_sync_coverage_tests {
         assert!(diagnostics
             .iter()
             .any(|item| item == "bootnode_peer_accounting_mismatch"));
+    }
+
+    #[test]
+    fn node_at_genesis_with_configured_bootnode_remains_recovery_active() {
+        let key = identity::Keypair::generate_ed25519();
+        let peer = PeerId::from(key.public());
+        let mut state = InnerState {
+            mode: P2P_MODE_LIBP2P_REAL.into(),
+            bootnodes_configured: vec![format!("/ip4/127.0.0.1/tcp/1/p2p/{peer}")],
+            ..InnerState::default()
+        };
+
+        enforce_connectivity_aware_cooldown_floor(&mut state, 10_000);
+
+        assert!(state.peer_zero_since_unix.is_some());
+        assert!(state
+            .peer_zero_reconnect_pending
+            .contains(&peer.to_string()));
+        assert_eq!(state.peer_zero_reconnect_attempt_total, 1);
+        assert_eq!(state.peer_zero_reconnect_success_total, 0);
+        assert!(should_force_bootnode_redial_for_peer(
+            &state,
+            &peer.to_string()
+        ));
+    }
+
+    #[test]
+    fn reconnect_success_does_not_clear_recovery_if_peer_count_returns_to_zero() {
+        let key = identity::Keypair::generate_ed25519();
+        let peer = PeerId::from(key.public());
+        let mut state = InnerState {
+            mode: P2P_MODE_LIBP2P_REAL.into(),
+            bootnodes_configured: vec![format!("/ip4/127.0.0.1/tcp/1/p2p/{peer}")],
+            ..InnerState::default()
+        };
+        enforce_connectivity_aware_cooldown_floor(&mut state, 10_000);
+        state.active_connections.insert(peer.to_string(), 1);
+        state.connected_peers = vec![peer.to_string()];
+        enforce_connectivity_aware_cooldown_floor(&mut state, 10_010);
+        assert_eq!(state.peer_zero_reconnect_success_total, 1);
+        assert!(state.peer_zero_since_unix.is_none());
+
+        state.active_connections.clear();
+        state.connected_peers.clear();
+        enforce_connectivity_aware_cooldown_floor(&mut state, 10_020);
+
+        assert!(state.peer_zero_since_unix.is_some());
+        assert!(state
+            .peer_zero_reconnect_pending
+            .contains(&peer.to_string()));
+        assert_eq!(state.peer_zero_reconnect_success_total, 1);
+        assert_eq!(state.peer_zero_reconnect_attempt_total, 2);
+    }
+
+    #[test]
+    fn bootnode_root_private_profile_reports_topology_degraded_without_inbound_peers() {
+        let mut state = InnerState {
+            mode: P2P_MODE_LIBP2P_REAL.into(),
+            listening: vec!["/ip4/127.0.0.1/tcp/19080".into()],
+            ..InnerState::default()
+        };
+
+        enforce_connectivity_aware_cooldown_floor(&mut state, 10_000);
+        let (diagnostics, inbound_unaccounted, bootnode_mismatch) =
+            connectivity_accounting_diagnostics(&state);
+
+        assert_eq!(inbound_unaccounted, 0);
+        assert!(!bootnode_mismatch);
+        assert_eq!(
+            state.last_peer_reconnect_blocked_reason.as_deref(),
+            Some("bootnode_root_no_configured_peers_no_inbound_peers_counted")
+        );
+        assert!(diagnostics
+            .iter()
+            .any(|item| item == "bootnode_root_no_configured_peers"));
+        assert!(diagnostics
+            .iter()
+            .any(|item| item == "bootnode_root_no_inbound_peers_counted"));
+        assert!(diagnostics
+            .iter()
+            .any(|item| item.starts_with("private_topology_below_min_connected_peers")));
     }
 }
