@@ -85,6 +85,10 @@ pub struct MetricsData {
     pub orphan_missing_parent_quarantined_total: u64,
     pub missing_parent_index_active_entries: usize,
     pub missing_parent_index_terminal_entries: usize,
+    pub terminal_missing_parent_historical_total: u64,
+    pub terminal_missing_parent_active_blocking_total: u64,
+    pub terminal_missing_parent_pruned_total: u64,
+    pub sync_degraded_due_to_terminal_history_total: u64,
     pub missing_parent_index_quarantined_entries: usize,
     pub missing_parent_active_entries: usize,
     pub missing_parent_terminal_entries: usize,
@@ -354,6 +358,13 @@ pub async fn get_metrics<S: RpcStateLike>(
         orphan_missing_parent_quarantined_total: runtime.orphan_missing_parent_quarantined_total,
         missing_parent_index_active_entries: chain.orphan_parent_index.len(),
         missing_parent_index_terminal_entries: chain.terminal_missing_parents.len(),
+        terminal_missing_parent_historical_total:
+            pulsedag_core::terminal_missing_parent_historical_count(&chain) as u64,
+        terminal_missing_parent_active_blocking_total:
+            pulsedag_core::terminal_missing_parent_active_blocking_count(&chain) as u64,
+        terminal_missing_parent_pruned_total: runtime.terminal_missing_parent_pruned_total,
+        sync_degraded_due_to_terminal_history_total: runtime
+            .sync_degraded_due_to_terminal_history_total,
         missing_parent_index_quarantined_entries: pulsedag_core::quarantined_missing_parent_count(
             &chain,
         ),

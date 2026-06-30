@@ -12,6 +12,7 @@ use crate::{
 pub const DEFAULT_ORPHAN_MAX_COUNT: usize = 512;
 pub const DEFAULT_ORPHAN_MAX_AGE_MS: u64 = 15 * 60 * 1000;
 pub const DEFAULT_ORPHAN_RECOVERY_EVICT_LIMIT: usize = 32;
+pub const DEFAULT_TERMINAL_MISSING_PARENT_HISTORY_LIMIT: usize = 256;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OrphanQueueResult {
@@ -89,6 +90,92 @@ pub struct ResidualMissingParentTerminalResult {
     pub transitioned_parents: usize,
     pub evicted_orphans: usize,
     pub waiting_orphans: usize,
+}
+
+fn terminal_missing_parent_is_active_blocker(
+    state: &ChainState,
+    parent: &Hash,
+    entry: &MissingParentTerminalEntry,
+) -> bool {
+    state.orphan_parent_index.contains_key(parent)
+        || entry
+            .waiting_orphans
+            .iter()
+            .any(|orphan| state.orphan_blocks.contains_key(orphan))
+}
+
+pub fn terminal_missing_parent_active_blocking_count(state: &ChainState) -> usize {
+    state
+        .terminal_missing_parents
+        .iter()
+        .filter(|(parent, entry)| terminal_missing_parent_is_active_blocker(state, parent, entry))
+        .count()
+}
+
+pub fn terminal_missing_parent_historical_count(state: &ChainState) -> usize {
+    state
+        .terminal_missing_parents
+        .len()
+        .saturating_sub(terminal_missing_parent_active_blocking_count(state))
+}
+
+pub fn terminal_missing_parent_reason(entry: &MissingParentTerminalEntry) -> String {
+    match &entry.state {
+        MissingParentState::Requestable => "requestable".to_string(),
+        MissingParentState::Pending(peer) => format!("pending:{peer}"),
+        MissingParentState::Retryable(peer) => format!("retryable:{peer}"),
+        MissingParentState::Backoff(until_ms) => format!("backoff_until_ms:{until_ms}"),
+        MissingParentState::Exhausted(peers) => {
+            format!("exhausted_peers:{}", peers.join(","))
+        }
+        MissingParentState::ExhaustedResidual => "exhausted_residual".to_string(),
+        MissingParentState::Peerless => "peerless".to_string(),
+        MissingParentState::TerminalEvicted => "terminal_evicted".to_string(),
+        MissingParentState::Quarantined => "quarantined".to_string(),
+        MissingParentState::Resolved => "resolved".to_string(),
+    }
+}
+
+pub fn terminal_missing_parent_active_blocking_details(
+    state: &ChainState,
+) -> Vec<(Hash, String, Vec<Hash>)> {
+    let mut details = state
+        .terminal_missing_parents
+        .iter()
+        .filter(|(parent, entry)| terminal_missing_parent_is_active_blocker(state, parent, entry))
+        .map(|(parent, entry)| {
+            (
+                parent.clone(),
+                terminal_missing_parent_reason(entry),
+                entry.waiting_orphans.clone(),
+            )
+        })
+        .collect::<Vec<_>>();
+    details.sort_by(|left, right| left.0.cmp(&right.0));
+    details
+}
+
+pub fn prune_historical_terminal_missing_parents(state: &mut ChainState, keep: usize) -> usize {
+    let historical = state
+        .terminal_missing_parents
+        .iter()
+        .filter(|(parent, entry)| !terminal_missing_parent_is_active_blocker(state, parent, entry))
+        .map(|(parent, entry)| (parent.clone(), entry.transitioned_at_ms))
+        .collect::<Vec<_>>();
+    if historical.len() <= keep {
+        return 0;
+    }
+    let prune_count = historical.len().saturating_sub(keep);
+    let mut historical = historical;
+    historical.sort_by(|(left_parent, left_ts), (right_parent, right_ts)| {
+        left_ts
+            .cmp(right_ts)
+            .then_with(|| left_parent.cmp(right_parent))
+    });
+    for (parent, _) in historical.into_iter().take(prune_count) {
+        state.terminal_missing_parents.remove(&parent);
+    }
+    prune_count
 }
 
 pub fn active_missing_parent_count(state: &ChainState) -> usize {
@@ -1309,6 +1396,78 @@ mod tests {
         assert_eq!(roots.len(), 32);
         assert_eq!(pending_missing_parent_count(&state), 32);
     }
+
+    #[test]
+    fn terminal_missing_parent_history_alone_is_not_active_blocking() {
+        let mut state = init_chain_state("test".into());
+        state.terminal_missing_parents.insert(
+            "old-missing-parent".into(),
+            MissingParentTerminalEntry {
+                state: MissingParentState::TerminalEvicted,
+                transitioned_at_ms: 1,
+                waiting_orphans: vec!["evicted-orphan".into()],
+            },
+        );
+
+        assert_eq!(pending_missing_parent_count(&state), 0);
+        assert_eq!(active_missing_parent_count(&state), 0);
+        assert_eq!(terminal_missing_parent_active_blocking_count(&state), 0);
+        assert_eq!(terminal_missing_parent_historical_count(&state), 1);
+        assert!(terminal_missing_parent_active_blocking_details(&state).is_empty());
+    }
+
+    #[test]
+    fn active_missing_parent_terminal_blocker_reports_exact_reason_and_hash() {
+        let mut state = init_chain_state("test".into());
+        let parent = "missing-active-parent".to_string();
+        let child = candidate(vec![parent.clone()], 1, "terminal-active-child", 77);
+        let child_hash = child.hash.clone();
+        queue_missing(&mut state, child);
+        state.orphan_parent_index.remove(&parent);
+        state.terminal_missing_parents.insert(
+            parent.clone(),
+            MissingParentTerminalEntry {
+                state: MissingParentState::Exhausted(vec!["peer-a".into(), "peer-b".into()]),
+                transitioned_at_ms: 2,
+                waiting_orphans: vec![child_hash.clone()],
+            },
+        );
+
+        let details = terminal_missing_parent_active_blocking_details(&state);
+        assert_eq!(terminal_missing_parent_active_blocking_count(&state), 1);
+        assert_eq!(details.len(), 1);
+        assert_eq!(details[0].0, parent);
+        assert_eq!(details[0].1, "exhausted_peers:peer-a,peer-b");
+        assert_eq!(details[0].2, vec![child_hash]);
+    }
+
+    #[test]
+    fn terminal_missing_parent_history_is_bounded_and_pruned() {
+        let mut state = init_chain_state("test".into());
+        for idx in 0..300 {
+            state.terminal_missing_parents.insert(
+                format!("historical-parent-{idx:03}"),
+                MissingParentTerminalEntry {
+                    state: MissingParentState::TerminalEvicted,
+                    transitioned_at_ms: idx,
+                    waiting_orphans: vec![format!("evicted-orphan-{idx:03}")],
+                },
+            );
+        }
+
+        let pruned = prune_historical_terminal_missing_parents(&mut state, 256);
+
+        assert_eq!(pruned, 44);
+        assert_eq!(state.terminal_missing_parents.len(), 256);
+        assert_eq!(terminal_missing_parent_active_blocking_count(&state), 0);
+        assert!(!state
+            .terminal_missing_parents
+            .contains_key("historical-parent-000"));
+        assert!(state
+            .terminal_missing_parents
+            .contains_key("historical-parent-299"));
+    }
+
     #[test]
     fn exhausted_missing_parent_terminally_evicts_dependents_and_decrements_pending() {
         let mut state = init_chain_state("test".into());

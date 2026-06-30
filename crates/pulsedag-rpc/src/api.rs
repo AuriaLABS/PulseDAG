@@ -37,6 +37,10 @@ static DEGRADED_SNAPSHOT_BY_ENDPOINT: OnceLock<Mutex<BTreeMap<String, u64>>> = O
 pub struct MissingParentSnapshotEntry {
     pub parent: String,
     pub waiting_orphans: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal_reason: Option<String>,
+    #[serde(default)]
+    pub active_blocking: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -282,6 +286,8 @@ pub fn build_node_rpc_snapshot(
         .map(|(parent, waiting)| MissingParentSnapshotEntry {
             parent: parent.clone(),
             waiting_orphans: waiting.iter().cloned().collect(),
+            terminal_reason: None,
+            active_blocking: false,
         })
         .collect::<Vec<_>>();
     missing_parent_entries.sort_by(|left, right| left.parent.cmp(&right.parent));
@@ -297,6 +303,10 @@ pub fn build_node_rpc_snapshot(
         .map(|(parent, entry)| MissingParentSnapshotEntry {
             parent: parent.clone(),
             waiting_orphans: entry.waiting_orphans.clone(),
+            terminal_reason: Some(pulsedag_core::terminal_missing_parent_reason(entry)),
+            active_blocking: pulsedag_core::terminal_missing_parent_active_blocking_details(chain)
+                .iter()
+                .any(|(active_parent, _, _)| active_parent == parent),
         })
         .collect::<Vec<_>>();
     let mut quarantined_missing_parent_entries = chain
@@ -311,6 +321,10 @@ pub fn build_node_rpc_snapshot(
         .map(|(parent, entry)| MissingParentSnapshotEntry {
             parent: parent.clone(),
             waiting_orphans: entry.waiting_orphans.clone(),
+            terminal_reason: Some(pulsedag_core::terminal_missing_parent_reason(entry)),
+            active_blocking: pulsedag_core::terminal_missing_parent_active_blocking_details(chain)
+                .iter()
+                .any(|(active_parent, _, _)| active_parent == parent),
         })
         .collect::<Vec<_>>();
     terminal_missing_parent_entries.sort_by(|left, right| left.parent.cmp(&right.parent));
@@ -646,6 +660,14 @@ pub struct NodeRuntimeStats {
     pub missing_parent_index_active_entries: usize,
     #[serde(default)]
     pub missing_parent_index_terminal_entries: usize,
+    #[serde(default)]
+    pub terminal_missing_parent_historical_total: u64,
+    #[serde(default)]
+    pub terminal_missing_parent_active_blocking_total: u64,
+    #[serde(default)]
+    pub terminal_missing_parent_pruned_total: u64,
+    #[serde(default)]
+    pub sync_degraded_due_to_terminal_history_total: u64,
     #[serde(default)]
     pub orphan_recovery_tick_duration_ms: u64,
     #[serde(default)]

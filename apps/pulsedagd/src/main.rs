@@ -60,6 +60,9 @@ struct FinalQuiescenceCleanupResult {
     quarantined_missing_parents: usize,
     active_missing_parent_entries: usize,
     terminal_missing_parent_entries: usize,
+    historical_terminal_missing_parent_entries: usize,
+    active_blocking_terminal_missing_parent_entries: usize,
+    pruned_terminal_missing_parent_entries: usize,
     quarantined_missing_parent_entries: usize,
 }
 
@@ -73,6 +76,11 @@ fn run_final_quiescence_orphan_cleanup(
         return FinalQuiescenceCleanupResult {
             active_missing_parent_entries: chain.orphan_parent_index.len(),
             terminal_missing_parent_entries: chain.terminal_missing_parents.len(),
+            historical_terminal_missing_parent_entries:
+                pulsedag_core::terminal_missing_parent_historical_count(chain),
+            active_blocking_terminal_missing_parent_entries:
+                pulsedag_core::terminal_missing_parent_active_blocking_count(chain),
+            pruned_terminal_missing_parent_entries: 0,
             quarantined_missing_parent_entries: pulsedag_core::quarantined_missing_parent_count(
                 chain,
             ),
@@ -88,6 +96,11 @@ fn run_final_quiescence_orphan_cleanup(
         no_progress_ms,
         limit,
     );
+    let pruned_terminal_missing_parent_entries =
+        pulsedag_core::prune_historical_terminal_missing_parents(
+            chain,
+            pulsedag_core::DEFAULT_TERMINAL_MISSING_PARENT_HISTORY_LIMIT,
+        );
     let second = if residual.transitioned_parents > 0 || first.accepted > 0 {
         pulsedag_core::rebuild_orphan_parent_index(chain);
         pulsedag_core::adopt_ready_orphans_with_result(chain, AcceptSource::P2p, None)
@@ -109,6 +122,11 @@ fn run_final_quiescence_orphan_cleanup(
         quarantined_missing_parents: residual.transitioned_parents,
         active_missing_parent_entries: chain.orphan_parent_index.len(),
         terminal_missing_parent_entries: chain.terminal_missing_parents.len(),
+        historical_terminal_missing_parent_entries:
+            pulsedag_core::terminal_missing_parent_historical_count(chain),
+        active_blocking_terminal_missing_parent_entries:
+            pulsedag_core::terminal_missing_parent_active_blocking_count(chain),
+        pruned_terminal_missing_parent_entries,
         quarantined_missing_parent_entries: pulsedag_core::quarantined_missing_parent_count(chain),
     }
 }
@@ -3222,6 +3240,25 @@ async fn main() -> Result<()> {
                 }
                 let final_quiescence_due = stagnation_secs >= FINAL_QUIESCENCE_NO_PROGRESS_SECS;
                 let pending_block_requests = rt.pending_block_requests;
+                let cleanup_complete = orphan_count == 0
+                    && local_pending_missing_parents == 0
+                    && local_missing_parent_entries == 0
+                    && pending_block_requests == 0;
+                if cleanup_complete
+                    && matches!(
+                        rt.sync_state.as_str(),
+                        "requesting_blocks" | "degraded" | "catching_up"
+                    )
+                    && rt.sync_pipeline.last_error.is_none()
+                {
+                    if rt.sync_state == "degraded" && rt.missing_parent_index_terminal_entries > 0 {
+                        rt.sync_degraded_due_to_terminal_history_total = rt
+                            .sync_degraded_due_to_terminal_history_total
+                            .saturating_add(1);
+                    }
+                    rt.sync_state = "idle".to_string();
+                    rt.sync_pipeline.complete_cycle(now);
+                }
                 rt.active_alerts = active_alerts.clone();
                 rt.last_self_audit_unix = Some(now);
                 rt.last_self_audit_ok = issue_count == 0;
@@ -3365,10 +3402,7 @@ async fn main() -> Result<()> {
                 drop(rt);
 
                 if final_quiescence_due {
-                    let cleanup_complete = orphan_count == 0
-                        && local_pending_missing_parents == 0
-                        && local_missing_parent_entries == 0
-                        && pending_block_requests == 0;
+                    let cleanup_complete = cleanup_complete;
 
                     // Never run final tip reconciliation while peer recovery or orphan cleanup has
                     // work left.  In particular, zero-peer recovery must be allowed to run before
@@ -3540,6 +3574,13 @@ async fn main() -> Result<()> {
                             .quarantined_missing_parent_entries
                             .try_into()
                             .unwrap_or(u64::MAX);
+                        rt.terminal_missing_parent_historical_total =
+                            cleanup.historical_terminal_missing_parent_entries as u64;
+                        rt.terminal_missing_parent_active_blocking_total =
+                            cleanup.active_blocking_terminal_missing_parent_entries as u64;
+                        rt.terminal_missing_parent_pruned_total = rt
+                            .terminal_missing_parent_pruned_total
+                            .saturating_add(cleanup.pruned_terminal_missing_parent_entries as u64);
                     }
                 }
             }

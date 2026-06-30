@@ -293,6 +293,8 @@ fn sync_missing_from_rpc_snapshot(snapshot: NodeRpcSnapshot) -> SyncMissingData 
             .map(|entry| MissingParentIndexEntry {
                 parent: entry.parent,
                 waiting_orphans: entry.waiting_orphans,
+                terminal_reason: entry.terminal_reason,
+                active_blocking: entry.active_blocking,
             })
             .collect(),
         missing_parent_index: snapshot
@@ -301,6 +303,8 @@ fn sync_missing_from_rpc_snapshot(snapshot: NodeRpcSnapshot) -> SyncMissingData 
             .map(|entry| MissingParentIndexEntry {
                 parent: entry.parent,
                 waiting_orphans: entry.waiting_orphans,
+                terminal_reason: entry.terminal_reason,
+                active_blocking: entry.active_blocking,
             })
             .collect(),
     }
@@ -384,7 +388,11 @@ pub async fn get_sync_status<S: RpcStateLike>(
             .unwrap_or(false);
     let pending_missing_parents = pulsedag_core::pending_missing_parent_count(&chain);
     let orphan_backlog = pulsedag_core::classify_orphan_backlog(&chain);
-    let has_orphan_backlog = pending_missing_parents > 0 || !chain.orphan_blocks.is_empty();
+    let active_terminal_missing_parents =
+        pulsedag_core::terminal_missing_parent_active_blocking_count(&chain);
+    let has_orphan_backlog = pending_missing_parents > 0
+        || !chain.orphan_blocks.is_empty()
+        || active_terminal_missing_parents > 0;
     let catchup_stage = if runtime.sync_pipeline.last_error.is_some() || !counters_coherent {
         "degraded"
     } else if has_orphan_backlog {
@@ -436,6 +444,16 @@ pub async fn get_sync_status<S: RpcStateLike>(
             "{} pending missing parent(s)",
             pending_missing_parents
         ));
+    }
+    if active_terminal_missing_parents > 0 {
+        for (parent, reason, waiting_orphans) in
+            pulsedag_core::terminal_missing_parent_active_blocking_details(&chain)
+        {
+            readiness_reasons.push(format!(
+                "terminal missing parent active blocker parent={parent} reason={reason} waiting_orphans={}",
+                waiting_orphans.join(",")
+            ));
+        }
     }
     if !chain.orphan_blocks.is_empty() {
         readiness_reasons.push(format!(
@@ -508,7 +526,18 @@ pub async fn get_sync_status<S: RpcStateLike>(
         catchup_progress_bps,
         catchup_summary,
         recovery_reason,
-        sync_state: runtime.sync_state.clone(),
+        sync_state: if runtime.pending_block_requests == 0
+            && pending_missing_parents == 0
+            && chain.orphan_blocks.is_empty()
+            && active_terminal_missing_parents == 0
+            && matches!(
+                runtime.sync_state.as_str(),
+                "requesting_blocks" | "degraded"
+            ) {
+            "idle".to_string()
+        } else {
+            runtime.sync_state.clone()
+        },
         selected_sync_peer: runtime.sync_pipeline.selected_peer.clone().or_else(|| {
             p2p_status
                 .as_ref()
@@ -633,6 +662,9 @@ pub struct MissingBlockEntry {
 pub struct MissingParentIndexEntry {
     pub parent: String,
     pub waiting_orphans: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub terminal_reason: Option<String>,
+    pub active_blocking: bool,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -728,6 +760,8 @@ pub async fn get_sync_missing<S: RpcStateLike>(
         .map(|(parent, waiting)| MissingParentIndexEntry {
             parent: parent.clone(),
             waiting_orphans: waiting.iter().cloned().collect(),
+            terminal_reason: None,
+            active_blocking: true,
         })
         .collect::<Vec<_>>();
     missing_parent_index.sort_by(|left, right| left.parent.cmp(&right.parent));
@@ -746,6 +780,12 @@ pub async fn get_sync_missing<S: RpcStateLike>(
             .map(|(parent, entry)| MissingParentIndexEntry {
                 parent: parent.clone(),
                 waiting_orphans: entry.waiting_orphans.clone(),
+                terminal_reason: Some(pulsedag_core::terminal_missing_parent_reason(entry)),
+                active_blocking: pulsedag_core::terminal_missing_parent_active_blocking_details(
+                    &chain,
+                )
+                .iter()
+                .any(|(active_parent, _, _)| active_parent == parent),
             })
             .collect(),
         missing_parent_index,
