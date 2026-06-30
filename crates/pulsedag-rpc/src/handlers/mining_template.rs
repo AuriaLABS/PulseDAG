@@ -17,6 +17,7 @@ use pulsedag_core::{
     pow_preimage_bytes, preferred_tip_hash, refresh_block_consensus_ids_with_state,
     state::ChainState,
 };
+use pulsedag_p2p::mode_connected_peers_are_real_network;
 use sha3::{Digest, Keccak256};
 use tracing::info;
 
@@ -287,10 +288,27 @@ fn sanitize(s: &str) -> String {
         .collect()
 }
 
+fn mining_template_unavailable_reason<S: RpcStateLike>(state: &S) -> Option<String> {
+    let status = state.p2p()?.status().ok()?;
+    (status.runtime_started
+        && mode_connected_peers_are_real_network(&status.mode)
+        && status.connected_peers.is_empty()
+        && (!status.bootnodes_configured.is_empty() || !status.listening.is_empty()))
+    .then(|| {
+        format!(
+            "mining template unavailable while p2p is enabled with peer_count=0; diagnostics={}",
+            status.asymmetric_connectivity_diagnostics.join("|")
+        )
+    })
+}
+
 pub async fn post_mining_template<S: RpcStateLike>(
     State(state): State<S>,
     Json(req): Json<GetBlockTemplateRequest>,
 ) -> Json<ApiResponse<MiningTemplateData>> {
+    if let Some(reason) = mining_template_unavailable_reason(&state) {
+        return Json(ApiResponse::err("MINING_TEMPLATE_UNAVAILABLE", reason));
+    }
     let chain_handle = state.chain();
     let chain = chain_handle.read().await;
     let snapshot = consensus_difficulty_snapshot(&chain);
@@ -446,14 +464,88 @@ pub async fn post_mining_template<S: RpcStateLike>(
 #[cfg(test)]
 mod tests {
     use super::{
-        current_template_state, template_freshness_window, template_id_for_state,
-        template_ordered_transactions, TEMPLATE_FRESHNESS_GRACE_SECS, TEMPLATE_TTL_SECS,
+        current_template_state, mining_template_unavailable_reason, template_freshness_window,
+        template_id_for_state, template_ordered_transactions, TEMPLATE_FRESHNESS_GRACE_SECS,
+        TEMPLATE_TTL_SECS,
     };
+    use crate::api::{NodeRuntimeStats, RpcStateLike};
     use pulsedag_core::{
         genesis::init_chain_state,
-        types::{OutPoint, Transaction, TxInput},
+        state::ChainState,
+        types::{Block, OutPoint, Transaction, TxInput},
+        PulseError,
     };
+    use pulsedag_p2p::{P2pHandle, P2pStatus, P2P_MODE_LIBP2P_REAL};
+    use pulsedag_storage::Storage;
+    use std::{
+        path::PathBuf,
+        sync::Arc,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+    use tokio::sync::RwLock;
 
+    #[derive(Clone)]
+    struct TestState {
+        chain: Arc<RwLock<ChainState>>,
+        storage: Arc<Storage>,
+        runtime: Arc<RwLock<NodeRuntimeStats>>,
+        p2p: Option<Arc<dyn P2pHandle>>,
+    }
+
+    impl RpcStateLike for TestState {
+        fn chain(&self) -> Arc<RwLock<ChainState>> {
+            self.chain.clone()
+        }
+
+        fn p2p(&self) -> Option<Arc<dyn P2pHandle>> {
+            self.p2p.clone()
+        }
+
+        fn storage(&self) -> Arc<Storage> {
+            self.storage.clone()
+        }
+
+        fn runtime(&self) -> Arc<RwLock<NodeRuntimeStats>> {
+            self.runtime.clone()
+        }
+    }
+
+    #[derive(Clone)]
+    struct TestP2pHandle {
+        status: P2pStatus,
+    }
+
+    impl P2pHandle for TestP2pHandle {
+        fn broadcast_transaction(&self, _tx: &Transaction) -> Result<(), PulseError> {
+            Ok(())
+        }
+
+        fn broadcast_block(&self, _block: &Block) -> Result<(), PulseError> {
+            Ok(())
+        }
+
+        fn status(&self) -> Result<P2pStatus, PulseError> {
+            Ok(self.status.clone())
+        }
+    }
+
+    fn temp_db_path(name: &str) -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        std::env::temp_dir().join(format!("pulsedag-{name}-{unique}"))
+    }
+
+    fn test_state_with_status(status: P2pStatus) -> TestState {
+        let path = temp_db_path("mining-template-connectivity");
+        TestState {
+            chain: Arc::new(RwLock::new(init_chain_state("testnet-dev".to_string()))),
+            storage: Arc::new(Storage::open(path.to_str().unwrap()).unwrap()),
+            runtime: Arc::new(RwLock::new(NodeRuntimeStats::default())),
+            p2p: Some(Arc::new(TestP2pHandle { status })),
+        }
+    }
     #[test]
     fn template_id_changes_when_mempool_changes() {
         let mut chain = init_chain_state("testnet-dev".to_string());
@@ -535,5 +627,22 @@ mod tests {
             hard_expiry_explicit,
             explicit_expiry + TEMPLATE_FRESHNESS_GRACE_SECS
         );
+    }
+    #[test]
+    fn isolated_mining_node_does_not_get_template_when_p2p_zero_peer() {
+        let state = test_state_with_status(P2pStatus {
+            mode: P2P_MODE_LIBP2P_REAL.to_string(),
+            runtime_started: true,
+            listening: vec!["/ip4/127.0.0.1/tcp/19080".to_string()],
+            bootnodes_configured: vec!["/ip4/127.0.0.1/tcp/19081/p2p/peer-a".to_string()],
+            asymmetric_connectivity_diagnostics: vec![
+                "bootnode_peer_accounting_mismatch".to_string()
+            ],
+            ..P2pStatus::default()
+        });
+
+        let reason = mining_template_unavailable_reason(&state).unwrap();
+        assert!(reason.contains("peer_count=0"));
+        assert!(reason.contains("bootnode_peer_accounting_mismatch"));
     }
 }

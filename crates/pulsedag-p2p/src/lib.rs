@@ -269,6 +269,9 @@ pub struct P2pStatus {
     pub last_error_by_peer: HashMap<String, String>,
     pub inbound_peer_final_state: Vec<PeerConnectionFinalState>,
     pub outbound_peer_final_state: Vec<PeerConnectionFinalState>,
+    pub asymmetric_connectivity_diagnostics: Vec<String>,
+    pub inbound_connections_not_counted: usize,
+    pub bootnode_peer_accounting_mismatch: bool,
 }
 
 pub trait P2pHandle: Send + Sync {
@@ -863,6 +866,11 @@ impl P2pHandle for MemoryP2pHandle {
         ) = topology_stats_for_connected_peers(&inner.connected_peers);
         let (inbound_peer_final_state, outbound_peer_final_state) =
             peer_final_state_snapshots(&inner);
+        let (
+            asymmetric_connectivity_diagnostics,
+            inbound_connections_not_counted,
+            bootnode_peer_accounting_mismatch,
+        ) = connectivity_accounting_diagnostics(&inner);
         Ok(P2pStatus {
             chain_id: inner.chain_id.clone(),
             mode: inner.mode.clone(),
@@ -1044,6 +1052,9 @@ impl P2pHandle for MemoryP2pHandle {
             last_error_by_peer: inner.last_error_by_peer.clone(),
             inbound_peer_final_state,
             outbound_peer_final_state,
+            asymmetric_connectivity_diagnostics,
+            inbound_connections_not_counted,
+            bootnode_peer_accounting_mismatch,
         })
     }
 }
@@ -1649,6 +1660,43 @@ fn topology_stats_for_connected_peers(peers: &[String]) -> (usize, usize, u16, u
         dominant_share_bps,
         diversity_score_bps as u16,
     )
+}
+
+fn connectivity_accounting_diagnostics(state: &InnerState) -> (Vec<String>, usize, bool) {
+    let mut diagnostics = Vec::new();
+    let connected = state
+        .connected_peers
+        .iter()
+        .cloned()
+        .collect::<HashSet<_>>();
+    let inbound_unaccounted = state
+        .peer_connection_final_state
+        .values()
+        .filter(|final_state| {
+            final_state.direction == "inbound"
+                && final_state.state == "connected"
+                && final_state.active_connections > 0
+                && !connected.contains(&final_state.peer_id)
+        })
+        .count();
+    if inbound_unaccounted > 0 {
+        diagnostics.push(format!(
+            "inbound_connection_accepted_but_not_counted:{inbound_unaccounted}"
+        ));
+    }
+    let active_total = state.active_connections.values().copied().sum::<usize>();
+    if state.connected_peers.is_empty() && active_total > 0 {
+        diagnostics.push(format!(
+            "peer_reports_connected_to_us_but_local_zero_peers:active_connections={active_total}"
+        ));
+    }
+    let bootnode_mismatch = !state.bootnodes_configured.is_empty()
+        && state.connected_peers.is_empty()
+        && (active_total > 0 || !state.bootstrap_connected_peer_ids.is_empty());
+    if bootnode_mismatch {
+        diagnostics.push("bootnode_peer_accounting_mismatch".to_string());
+    }
+    (diagnostics, inbound_unaccounted, bootnode_mismatch)
 }
 
 fn refresh_connected_peers_from_health(state: &mut InnerState) {
@@ -4877,6 +4925,11 @@ impl P2pHandle for Libp2pHandle {
         ) = topology_stats_for_connected_peers(&inner.connected_peers);
         let (inbound_peer_final_state, outbound_peer_final_state) =
             peer_final_state_snapshots(&inner);
+        let (
+            asymmetric_connectivity_diagnostics,
+            inbound_connections_not_counted,
+            bootnode_peer_accounting_mismatch,
+        ) = connectivity_accounting_diagnostics(&inner);
         Ok(P2pStatus {
             chain_id: inner.chain_id.clone(),
             mode: inner.mode.clone(),
@@ -5058,6 +5111,9 @@ impl P2pHandle for Libp2pHandle {
             last_error_by_peer: inner.last_error_by_peer.clone(),
             inbound_peer_final_state,
             outbound_peer_final_state,
+            asymmetric_connectivity_diagnostics,
+            inbound_connections_not_counted,
+            bootnode_peer_accounting_mismatch,
         })
     }
 }
@@ -8604,5 +8660,72 @@ mod deterministic_p2p_sync_coverage_tests {
     #[test]
     fn is_valid_peer_id_rejects_multiaddr_values() {
         assert!(!is_valid_peer_id("/ip4/127.0.0.1/tcp/19080/p2p/12D3KooW"));
+    }
+    #[test]
+    fn bootnode_inbound_connection_is_counted_as_connected_peer() {
+        let inner = Arc::new(Mutex::new(InnerState {
+            mode: P2P_MODE_LIBP2P_REAL.into(),
+            ..InnerState::default()
+        }));
+        let mut pending = HashSet::new();
+        let key = identity::Keypair::generate_ed25519();
+        let peer = PeerId::from(key.public());
+
+        handle_connection_established(&inner, &mut pending, &peer, "inbound");
+
+        let mut guard = inner.lock().unwrap();
+        refresh_connected_peers_from_health(&mut guard);
+        assert!(guard.connected_peers.contains(&peer.to_string()));
+        assert_eq!(
+            guard.active_connections.get(&peer.to_string()).copied(),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn peer_accounting_detects_asymmetric_zero_peer_state() {
+        let mut state = InnerState {
+            mode: P2P_MODE_LIBP2P_REAL.into(),
+            ..InnerState::default()
+        };
+        state.active_connections.insert("peer-a".into(), 1);
+        state.peer_connection_final_state.insert(
+            "peer-a".into(),
+            PeerConnectionFinalState {
+                peer_id: "peer-a".into(),
+                direction: "inbound".into(),
+                state: "connected".into(),
+                active_connections: 1,
+                last_event_unix: Some(1_000),
+                last_error: None,
+                last_disconnect_reason: None,
+            },
+        );
+        let (diagnostics, inbound_unaccounted, bootnode_mismatch) =
+            connectivity_accounting_diagnostics(&state);
+        assert_eq!(inbound_unaccounted, 1);
+        assert!(!bootnode_mismatch);
+        assert!(diagnostics
+            .iter()
+            .any(|item| item.starts_with("peer_reports_connected_to_us_but_local_zero_peers")));
+        assert!(diagnostics
+            .iter()
+            .any(|item| item.starts_with("inbound_connection_accepted_but_not_counted")));
+    }
+
+    #[test]
+    fn bootnode_peer_accounting_mismatch_detected_when_clients_connected_but_root_zero() {
+        let mut state = InnerState {
+            mode: P2P_MODE_LIBP2P_REAL.into(),
+            bootnodes_configured: vec!["/ip4/127.0.0.1/tcp/1/p2p/peer-a".into()],
+            bootstrap_connected_peer_ids: vec!["peer-client".into()],
+            ..InnerState::default()
+        };
+        state.connected_peers.clear();
+        let (diagnostics, _, bootnode_mismatch) = connectivity_accounting_diagnostics(&state);
+        assert!(bootnode_mismatch);
+        assert!(diagnostics
+            .iter()
+            .any(|item| item == "bootnode_peer_accounting_mismatch"));
     }
 }
