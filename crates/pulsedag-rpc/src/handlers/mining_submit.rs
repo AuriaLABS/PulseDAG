@@ -2,14 +2,17 @@ use super::mining_template::{
     current_template_state, load_template, template_freshness_window, template_id_for_state,
     MINING_PROTOCOL_VERSION,
 };
-use crate::api::{ApiResponse, RpcStateLike, SubmitMinedBlockRequest};
+use crate::api::{unix_now_ms, ApiResponse, RpcStateLike, SubmitMinedBlockRequest};
 use axum::{extract::State, Json};
 use pulsedag_core::{
     accept_block_atomically, adopt_ready_orphans, expected_difficulty, pow_validation_result,
     preferred_tip_hash, AcceptSource,
 };
 use std::{
-    sync::{Arc, OnceLock},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc, OnceLock,
+    },
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use tokio::{
@@ -119,19 +122,28 @@ struct SubmitBlockCommand {
 #[derive(Clone)]
 struct MiningSubmitActorHandle {
     sender: mpsc::Sender<SubmitBlockCommand>,
+    oldest_pending_since_ms: Arc<AtomicU64>,
 }
 
 impl MiningSubmitActorHandle {
     fn spawn(queue_size: usize) -> Self {
         let (sender, mut receiver) = mpsc::channel::<SubmitBlockCommand>(queue_size);
+        let oldest_pending_since_ms = Arc::new(AtomicU64::new(0));
+        let actor_oldest_pending_since_ms = oldest_pending_since_ms.clone();
         tokio::spawn(async move {
             while let Some(command) = receiver.recv().await {
+                if receiver.is_empty() {
+                    actor_oldest_pending_since_ms.store(0, Ordering::Relaxed);
+                }
                 let response =
                     process_mining_submit(command.state, command.req, command.submit_started).await;
                 let _ = command.response.send(response);
             }
         });
-        Self { sender }
+        Self {
+            sender,
+            oldest_pending_since_ms,
+        }
     }
 
     fn queue_len(&self) -> u64 {
@@ -144,12 +156,33 @@ impl MiningSubmitActorHandle {
         self.sender.max_capacity()
     }
 
+    fn oldest_pending_age_ms(&self) -> u64 {
+        let since = self.oldest_pending_since_ms.load(Ordering::Relaxed);
+        if since == 0 {
+            0
+        } else {
+            unix_now_ms().saturating_sub(since)
+        }
+    }
+
     #[allow(clippy::result_large_err)]
     fn try_submit(
         &self,
         command: SubmitBlockCommand,
     ) -> Result<(), mpsc::error::TrySendError<SubmitBlockCommand>> {
-        self.sender.try_send(command)
+        if self.queue_len() == 0 {
+            self.oldest_pending_since_ms
+                .store(unix_now_ms(), Ordering::Relaxed);
+        }
+        match self.sender.try_send(command) {
+            Ok(()) => Ok(()),
+            Err(err) => {
+                if self.queue_len() == 0 {
+                    self.oldest_pending_since_ms.store(0, Ordering::Relaxed);
+                }
+                Err(err)
+            }
+        }
     }
 }
 
@@ -535,10 +568,33 @@ async fn post_mining_submit_with_actor<S: RpcStateLike>(
         ));
     }
 
+    if let Ok(chain) = state.chain().try_read() {
+        if height <= chain.dag.best_height {
+            let best_height = chain.dag.best_height;
+            let detail = format!(
+                "early stale template rejection before submit actor enqueue: current best height is {best_height} and submitted block height is {height}"
+            );
+            drop(chain);
+            record_submit_phase(&state, "precheck_rejected").await;
+            record_external_mining_rejection(
+                &state,
+                ExternalMiningRejectKind::StaleTemplate,
+                &detail,
+            )
+            .await;
+            record_submit_completed(&state, submit_started, "rejected").await;
+            return Json(stale_template_error(
+                StaleTemplateReason::ChainHeightAdvanced,
+                detail,
+            ));
+        }
+    }
+
     {
         let runtime_handle = state.runtime();
         let mut runtime = runtime_handle.write().await;
         runtime.external_mining_submit_actor_queue_len = actor.queue_len();
+        runtime.external_mining_submit_actor_oldest_pending_age_ms = actor.oldest_pending_age_ms();
     }
 
     let (response, receiver) = oneshot::channel();
@@ -559,6 +615,8 @@ async fn post_mining_submit_with_actor<S: RpcStateLike>(
             let runtime_handle = state.runtime();
             let mut runtime = runtime_handle.write().await;
             runtime.external_mining_submit_actor_queue_len = actor.queue_len();
+            runtime.external_mining_submit_actor_oldest_pending_age_ms =
+                actor.oldest_pending_age_ms();
             runtime.external_mining_submit_actor_queue_full_total = runtime
                 .external_mining_submit_actor_queue_full_total
                 .saturating_add(1);
@@ -1674,7 +1732,10 @@ mod tests {
         let (state, _) = build_state_with_fake_p2p();
         let block = build_mined_block(&state).await;
         let (sender, _receiver) = mpsc::channel(1);
-        let actor = MiningSubmitActorHandle { sender };
+        let actor = MiningSubmitActorHandle {
+            sender,
+            oldest_pending_since_ms: Arc::new(AtomicU64::new(0)),
+        };
         let (first, _first_rx) = submit_command_for_state(&state, block.clone());
         assert!(
             actor.try_submit(first).is_ok(),
@@ -1713,7 +1774,10 @@ mod tests {
         let (state, _) = build_state_with_fake_p2p();
         let block = build_mined_block(&state).await;
         let (sender, _receiver) = mpsc::channel(1);
-        let actor = MiningSubmitActorHandle { sender };
+        let actor = MiningSubmitActorHandle {
+            sender,
+            oldest_pending_since_ms: Arc::new(AtomicU64::new(0)),
+        };
         let (queued, _queued_rx) = submit_command_for_state(&state, block.clone());
         assert!(
             actor.try_submit(queued).is_ok(),
@@ -1745,7 +1809,10 @@ mod tests {
         let (state, _) = build_state_with_fake_p2p();
         let block = build_mined_block(&state).await;
         let (sender, mut receiver) = mpsc::channel(1);
-        let actor = MiningSubmitActorHandle { sender };
+        let actor = MiningSubmitActorHandle {
+            sender,
+            oldest_pending_since_ms: Arc::new(AtomicU64::new(0)),
+        };
         tokio::spawn(async move {
             let _command = receiver.recv().await.expect("command expected");
         });
@@ -1781,7 +1848,10 @@ mod tests {
         let (state, _) = build_state_with_fake_p2p();
         let block = build_mined_block(&state).await;
         let (sender, mut receiver) = mpsc::channel(1);
-        let actor = MiningSubmitActorHandle { sender };
+        let actor = MiningSubmitActorHandle {
+            sender,
+            oldest_pending_since_ms: Arc::new(AtomicU64::new(0)),
+        };
         let (got_command_tx, got_command_rx) = oneshot::channel();
         let (release_tx, release_rx) = oneshot::channel::<()>();
         tokio::spawn(async move {

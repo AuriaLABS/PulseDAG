@@ -387,6 +387,7 @@ pub struct NodeRuntimeStats {
     pub external_mining_submit_actor_queue_full_total: u64,
     pub external_mining_submit_actor_timeout_total: u64,
     pub external_mining_submit_actor_completed_total: u64,
+    pub external_mining_submit_actor_oldest_pending_age_ms: u64,
     pub external_mining_last_submit_phase: Option<String>,
     pub external_mining_last_submit_duration_ms: u64,
     pub external_mining_max_submit_duration_ms: u64,
@@ -876,30 +877,26 @@ pub async fn read_chain_for_rpc<'a>(
     chain: &'a Arc<RwLock<ChainState>>,
     endpoint: &str,
 ) -> Result<RwLockReadGuard<'a, ChainState>, String> {
-    timeout(RPC_STATE_LOCK_TIMEOUT, chain.read())
-        .await
-        .map_err(|_| {
-            record_rpc_degraded_response();
-            format!(
-                "{endpoint} could not acquire chain read lock within {}ms; shared state is busy and RPC starvation diagnostics should inspect long-running writers",
-                RPC_STATE_LOCK_TIMEOUT.as_millis()
-            )
-        })
+    chain.try_read().map_err(|_| {
+        record_rpc_degraded_response();
+        record_rpc_handler_timeout_avoided();
+        format!(
+            "{endpoint} skipped blocking chain read lock acquisition; shared state is busy and RPC starvation diagnostics should inspect long-running writers"
+        )
+    })
 }
 
 pub async fn read_runtime_for_rpc<'a>(
     runtime: &'a Arc<RwLock<NodeRuntimeStats>>,
     endpoint: &str,
 ) -> Result<RwLockReadGuard<'a, NodeRuntimeStats>, String> {
-    timeout(RPC_STATE_LOCK_TIMEOUT, runtime.read())
-        .await
-        .map_err(|_| {
-            record_rpc_degraded_response();
-            format!(
-                "{endpoint} could not acquire runtime read lock within {}ms; shared state is busy and RPC starvation diagnostics should inspect long-running writers",
-                RPC_STATE_LOCK_TIMEOUT.as_millis()
-            )
-        })
+    runtime.try_read().map_err(|_| {
+        record_rpc_degraded_response();
+        record_rpc_handler_timeout_avoided();
+        format!(
+            "{endpoint} skipped blocking runtime read lock acquisition; shared state is busy and RPC starvation diagnostics should inspect long-running writers"
+        )
+    })
 }
 
 pub async fn p2p_status_for_rpc(

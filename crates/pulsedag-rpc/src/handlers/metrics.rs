@@ -1,4 +1,5 @@
 use axum::{extract::State, Json};
+use pulsedag_core::genesis::init_chain_state;
 use std::collections::BTreeMap;
 
 use crate::{
@@ -6,6 +7,9 @@ use crate::{
     api::{
         node_rpc_snapshot_metrics, p2p_status_for_rpc, p2p_status_snapshot_metrics, ApiResponse,
         NodeRpcSnapshotMetrics, P2pStatusSnapshotMetrics,
+    },
+    api::{
+        record_rpc_handler_degraded, record_rpc_handler_timeout_avoided, record_rpc_snapshot_stale,
     },
 };
 
@@ -37,6 +41,7 @@ pub struct MetricsData {
     pub external_mining_submit_actor_queue_full_total: u64,
     pub external_mining_submit_actor_timeout_total: u64,
     pub external_mining_submit_actor_completed_total: u64,
+    pub external_mining_submit_actor_oldest_pending_age_ms: u64,
     pub p2p_blocks_received_total: u64,
     pub tx_inbound_received: u64,
     pub tx_inbound_accepted: u64,
@@ -179,17 +184,51 @@ pub struct MetricsData {
 pub async fn get_metrics<S: RpcStateLike>(
     State(state): State<S>,
 ) -> Json<ApiResponse<MetricsData>> {
+    let node_snapshot = state.rpc_snapshot().load();
     let chain_handle = state.chain();
-    let chain = chain_handle.read().await;
-    let snapshot = pulsedag_core::dev_difficulty_snapshot(&chain);
-    let runtime = state.runtime();
-    let runtime = runtime.read().await;
+    let chain_guard = match chain_handle.try_read() {
+        Ok(chain) => Some(chain),
+        Err(_) => {
+            record_rpc_snapshot_stale();
+            record_rpc_handler_degraded();
+            record_rpc_handler_timeout_avoided();
+            None
+        }
+    };
+    let fallback_chain;
+    let chain = if let Some(chain) = chain_guard.as_deref() {
+        chain
+    } else {
+        fallback_chain = init_chain_state(if node_snapshot.chain_id.is_empty() {
+            "unknown".to_string()
+        } else {
+            node_snapshot.chain_id.clone()
+        });
+        &fallback_chain
+    };
+    let snapshot = pulsedag_core::dev_difficulty_snapshot(chain);
+    let runtime_handle = state.runtime();
+    let runtime_guard = match runtime_handle.try_read() {
+        Ok(runtime) => Some(runtime),
+        Err(_) => {
+            record_rpc_snapshot_stale();
+            record_rpc_handler_degraded();
+            record_rpc_handler_timeout_avoided();
+            None
+        }
+    };
+    let fallback_runtime;
+    let runtime = if let Some(runtime) = runtime_guard.as_deref() {
+        runtime
+    } else {
+        fallback_runtime = crate::api::NodeRuntimeStats::default();
+        &fallback_runtime
+    };
     let p2p_status = p2p_status_for_rpc(state.p2p(), "/metrics")
         .await
         .ok()
         .flatten();
     let snapshot_metrics = p2p_status_snapshot_metrics();
-    let node_snapshot = state.rpc_snapshot().load();
     let node_snapshot_metrics = node_rpc_snapshot_metrics(&node_snapshot);
     let peer_count = p2p_status
         .as_ref()
@@ -235,6 +274,8 @@ pub async fn get_metrics<S: RpcStateLike>(
             .external_mining_submit_actor_timeout_total,
         external_mining_submit_actor_completed_total: runtime
             .external_mining_submit_actor_completed_total,
+        external_mining_submit_actor_oldest_pending_age_ms: runtime
+            .external_mining_submit_actor_oldest_pending_age_ms,
         p2p_blocks_received_total: runtime.pulsedag_p2p_blocks_received_total,
         tx_inbound_received: runtime.tx_inbound_received,
         tx_inbound_accepted: runtime.tx_inbound_accepted,
