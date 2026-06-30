@@ -406,13 +406,13 @@ pub async fn get_readiness<S: RpcStateLike>(
         ),
     );
 
-    if chain.dag.best_height <= 1 && p2p_peer_count == 0 && p2p_configured_bootnodes_total > 0 {
+    if chain.dag.best_height <= 1 && p2p_configured_bootnodes_total > 0 {
         categories.insert(
             "isolated_genesis_or_height_one_node".to_string(),
             category(
                 ReadinessStatus::Fail,
                 vec![format!(
-                    "height={} peer_count=0 configured_bootnodes_total={p2p_configured_bootnodes_total}; recovery remains active until reconnect and catch-up above genesis",
+                    "height={} peer_count={p2p_peer_count} configured_bootnodes_total={p2p_configured_bootnodes_total}; recovery remains active until reconnect and catch-up above genesis",
                     chain.dag.best_height
                 )],
             ),
@@ -435,14 +435,11 @@ pub async fn get_readiness<S: RpcStateLike>(
                 ReadinessStatus::Unknown,
                 vec!["p2p is disabled".to_string()],
             )
-        } else if chain.dag.best_height <= 1
-            && p2p_peer_count == 0
-            && p2p_configured_bootnodes_total > 0
-        {
+        } else if chain.dag.best_height <= 1 && p2p_configured_bootnodes_total > 0 {
             category(
                 ReadinessStatus::Fail,
                 vec![format!(
-                    "isolated genesis-or-height-one node: p2p is enabled, height={}, peer_count=0, configured_bootnodes_total={p2p_configured_bootnodes_total}",
+                    "isolated genesis-or-height-one node: p2p is enabled, height={}, peer_count={p2p_peer_count}, configured_bootnodes_total={p2p_configured_bootnodes_total}",
                     chain.dag.best_height
                 )],
             )
@@ -897,7 +894,7 @@ mod tests {
         assert!(!source.contains(&public_testnet_live_phrase));
     }
     #[tokio::test]
-    async fn node_at_genesis_with_zero_peers_and_bootnodes_is_not_private_testnet_ready() {
+    async fn node_at_genesis_with_connected_peer_and_bootnodes_is_not_private_testnet_ready() {
         use crate::api::{NodeRuntimeStats, RpcStateLike};
         use axum::extract::State;
         use pulsedag_core::ChainState;
@@ -975,6 +972,7 @@ mod tests {
             mode: P2P_MODE_LIBP2P_REAL.into(),
             peer_id: "self".into(),
             listening: vec!["/ip4/127.0.0.1/tcp/19081".into()],
+            connected_peers: vec!["connected-peer".into()],
             bootnodes_configured: vec!["/ip4/127.0.0.1/tcp/19080/p2p/bootnode".into()],
             runtime_started: true,
             runtime_mode_detail: "real".into(),
@@ -999,6 +997,7 @@ mod tests {
         assert_eq!(data.categories["p2p"].status, ReadinessStatus::Fail);
         assert!(data.categories["p2p"].reasons.iter().any(|reason| {
             reason.contains("isolated genesis-or-height-one node")
+                && reason.contains("peer_count=1")
                 && reason.contains("configured_bootnodes_total=1")
         }));
     }
