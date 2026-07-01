@@ -2,8 +2,9 @@ use std::collections::{hash_map::Entry, BTreeSet};
 
 use crate::{
     errors::PulseError,
+    ghostdag::classify_merge_set,
     mining::is_coinbase,
-    selection::{calculate_selected_parent, refresh_selected_chain},
+    selection::refresh_selected_chain,
     state::ChainState,
     types::{Block, OutPoint, Transaction, Utxo},
     validation::validate_block,
@@ -79,6 +80,10 @@ pub fn apply_transaction(
 }
 
 pub fn commit_block_to_state(block: &Block, state: &mut ChainState) -> Result<(), PulseError> {
+    let classification = classify_merge_set(block, state);
+    let mut committed_block = block.clone();
+    committed_block.header.blue_score = classification.blue_score;
+    let block = &committed_block;
     let height = block.header.height;
     for tx in &block.transactions {
         apply_transaction(tx, state, height)?;
@@ -92,11 +97,26 @@ pub fn commit_block_to_state(block: &Block, state: &mut ChainState) -> Result<()
     }
     state.dag.tips.insert(block.hash.clone());
     state.dag.best_height = state.dag.best_height.max(height);
-    let selected_parent = calculate_selected_parent(block, state);
     state
         .dag
         .selected_parents
-        .insert(block.hash.clone(), selected_parent);
+        .insert(block.hash.clone(), classification.selected_parent.clone());
+    state
+        .dag
+        .merge_set_blues
+        .insert(block.hash.clone(), classification.blues.clone());
+    state
+        .dag
+        .merge_set_reds
+        .insert(block.hash.clone(), classification.reds.clone());
+    state
+        .dag
+        .blue_work
+        .insert(block.hash.clone(), classification.blue_work);
+    state
+        .dag
+        .merge_set_diagnostics
+        .insert(block.hash.clone(), classification.diagnostics.clone());
     state.dag.blocks.insert(block.hash.clone(), block.clone());
     refresh_selected_chain(state);
     Ok(())
