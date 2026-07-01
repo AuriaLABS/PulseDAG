@@ -691,8 +691,26 @@ impl Storage {
     }
 
     pub fn load_or_init_genesis(&self, chain_id: String) -> Result<ChainState, PulseError> {
-        if let Some(state) = self.load_chain_state()? {
-            return Ok(state);
+        match self.load_chain_state() {
+            Ok(Some(state)) => return Ok(state),
+            Ok(None) => {}
+            Err(snapshot_err) => {
+                let blocks = self.list_blocks()?;
+                if blocks.is_empty() {
+                    return Err(snapshot_err);
+                }
+                let _ = self.append_runtime_event(
+                    "warn",
+                    "startup_snapshot_decode_failed_fallback_full",
+                    &format!(
+                        "startup snapshot decode failed and full rebuild fallback engaged: {}",
+                        snapshot_err
+                    ),
+                );
+                let rebuilt = rebuild_state_from_blocks(chain_id, blocks)?;
+                self.persist_chain_state(&rebuilt)?;
+                return Ok(rebuilt);
+            }
         }
         let blocks = self.list_blocks()?;
         if !blocks.is_empty() {
@@ -1412,12 +1430,16 @@ mod tests {
         SnapshotExportBundle, Storage, CHAIN_STATE_KEY, SNAPSHOT_CAPTURED_AT_UNIX_KEY,
         STORAGE_SCHEMA_VERSION, STORAGE_SCHEMA_VERSION_KEY,
     };
+    use std::collections::{HashMap, HashSet};
+
     use proptest::prelude::*;
     use pulsedag_core::{
         accept::{accept_block, AcceptSource},
         build_candidate_block, build_coinbase_transaction, dev_mine_header,
         genesis::init_chain_state,
         refresh_block_consensus_ids, refresh_block_consensus_ids_with_state,
+        state::{ContractRuntimeState, Mempool, UtxoState},
+        types::{Block, Hash},
     };
 
     fn best_tip_hash(state: &pulsedag_core::ChainState) -> String {
@@ -1577,6 +1599,41 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[derive(serde::Serialize)]
+    struct LegacyDagState {
+        blocks: HashMap<Hash, Block>,
+        tips: HashSet<Hash>,
+        children: HashMap<Hash, Vec<Hash>>,
+        genesis_hash: Hash,
+        best_height: u64,
+    }
+
+    #[derive(serde::Serialize)]
+    struct LegacyChainState {
+        chain_id: String,
+        dag: LegacyDagState,
+        utxo: UtxoState,
+        mempool: Mempool,
+        contracts: ContractRuntimeState,
+    }
+
+    fn legacy_chain_state_bytes(state: &pulsedag_core::ChainState) -> Vec<u8> {
+        let legacy = LegacyChainState {
+            chain_id: state.chain_id.clone(),
+            dag: LegacyDagState {
+                blocks: state.dag.blocks.clone(),
+                tips: state.dag.tips.clone(),
+                children: state.dag.children.clone(),
+                genesis_hash: state.dag.genesis_hash.clone(),
+                best_height: state.dag.best_height,
+            },
+            utxo: state.utxo.clone(),
+            mempool: state.mempool.clone(),
+            contracts: state.contracts.clone(),
+        };
+        bincode::serialize(&legacy).expect("serialize legacy state")
     }
 
     fn build_linear_chain(chain_id: &str, blocks_to_add: usize) -> pulsedag_core::ChainState {
@@ -1900,6 +1957,44 @@ mod tests {
             .snapshot_captured_at_unix()
             .expect("snapshot metadata")
             .is_some());
+
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn load_or_init_genesis_replays_blocks_when_legacy_snapshot_truncates() {
+        let path = temp_db_path("legacy-snapshot-fallback");
+        let storage = Storage::open(&path).expect("open storage");
+        let state = build_linear_chain("testnet", 3);
+        let mut blocks: Vec<_> = state.dag.blocks.values().cloned().collect();
+        blocks.sort_by_key(|b| b.header.height);
+        for block in &blocks {
+            storage.persist_block(block).expect("persist block");
+        }
+
+        let meta_cf = storage.db.cf_handle("meta").expect("meta cf");
+        storage
+            .db
+            .put_cf(&meta_cf, CHAIN_STATE_KEY, legacy_chain_state_bytes(&state))
+            .expect("write legacy snapshot bytes");
+
+        let rebuilt = storage
+            .load_or_init_genesis("testnet".to_string())
+            .expect("legacy snapshot must fall back to block replay");
+        assert_eq!(rebuilt.dag.best_height, state.dag.best_height);
+        assert_eq!(best_tip_hash(&rebuilt), best_tip_hash(&state));
+        assert!(rebuilt
+            .dag
+            .selected_chain
+            .iter()
+            .any(|hash| hash == &rebuilt.dag.genesis_hash));
+        let events = storage.list_runtime_events(25).expect("runtime events");
+        assert!(
+            events
+                .iter()
+                .any(|e| e.kind == "startup_snapshot_decode_failed_fallback_full"),
+            "expected startup fallback runtime event"
+        );
 
         let _ = std::fs::remove_dir_all(path);
     }
