@@ -3,6 +3,7 @@ use std::collections::{hash_map::Entry, BTreeSet};
 use crate::{
     errors::PulseError,
     mining::is_coinbase,
+    selection::{calculate_selected_parent, refresh_selected_chain},
     state::ChainState,
     types::{Block, OutPoint, Transaction, Utxo},
     validation::validate_block,
@@ -91,7 +92,13 @@ pub fn commit_block_to_state(block: &Block, state: &mut ChainState) -> Result<()
     }
     state.dag.tips.insert(block.hash.clone());
     state.dag.best_height = state.dag.best_height.max(height);
+    let selected_parent = calculate_selected_parent(block, state);
+    state
+        .dag
+        .selected_parents
+        .insert(block.hash.clone(), selected_parent);
     state.dag.blocks.insert(block.hash.clone(), block.clone());
+    refresh_selected_chain(state);
     Ok(())
 }
 

@@ -2,7 +2,8 @@ use std::collections::{HashMap, HashSet};
 
 use crate::{
     state::{
-        ChainState, ContractRuntimeConfig, ContractRuntimeState, DagState, Mempool, UtxoState,
+        ChainState, ContractRuntimeConfig, ContractRuntimeState, DagState, Mempool,
+        SelectedParentPolicy, UtxoState,
     },
     tx::compute_txid,
     types::{
@@ -95,6 +96,10 @@ pub fn init_chain_state(chain_id: String) -> ChainState {
     let mut tips = HashSet::new();
     tips.insert(genesis.hash.clone());
 
+    let mut selected_parents = HashMap::new();
+    selected_parents.insert(genesis.hash.clone(), None);
+    let selected_chain = vec![genesis.hash.clone()];
+
     let mut utxos = HashMap::new();
     utxos.insert(outpoint.clone(), utxo);
 
@@ -109,6 +114,9 @@ pub fn init_chain_state(chain_id: String) -> ChainState {
             children: HashMap::new(),
             genesis_hash: genesis.hash,
             best_height: 0,
+            selected_parents,
+            selected_chain,
+            selected_parent_policy: SelectedParentPolicy::GhostdagInspired,
         },
         utxo: UtxoState {
             utxos,
