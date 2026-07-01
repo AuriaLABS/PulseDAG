@@ -19,6 +19,7 @@ pub struct MissingParentRequestState {
 }
 
 #[derive(Debug, Clone, Default)]
+#[allow(dead_code)]
 struct PeerMissingParentHints {
     inventory: HashSet<String>,
     tip_ancestry: HashSet<String>,
@@ -297,6 +298,7 @@ impl BlockRequestTracker {
         }
     }
 
+    #[allow(dead_code)]
     pub fn missing_parent_request_state(&self, hash: &str) -> MissingParentRequestState {
         let mut state = self
             .request_state_by_hash
@@ -317,6 +319,7 @@ impl BlockRequestTracker {
         state
     }
 
+    #[allow(dead_code)]
     pub fn note_peer_inventory<I, S>(&mut self, peer: impl Into<String>, hashes: I)
     where
         I: IntoIterator<Item = S>,
@@ -326,6 +329,7 @@ impl BlockRequestTracker {
         hints.inventory.extend(hashes.into_iter().map(Into::into));
     }
 
+    #[allow(dead_code)]
     pub fn note_peer_tip_ancestry<I, S>(
         &mut self,
         peer: impl Into<String>,
@@ -344,6 +348,7 @@ impl BlockRequestTracker {
             .extend(ancestry.into_iter().map(Into::into));
     }
 
+    #[allow(dead_code)]
     pub fn note_successful_blockdata_response(&mut self, peer: impl Into<String>, hash: &str) {
         let hints = self.peer_hints.entry(peer.into()).or_default();
         hints.successful_blockdata_responses =

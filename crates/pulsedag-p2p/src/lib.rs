@@ -107,6 +107,65 @@ pub struct SeenCacheEntry {
     pub peer_source: Option<String>,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PeerAccountingSnapshot {
+    pub peer_count: usize,
+    pub connected_peer_count: usize,
+    pub lifecycle_connected_peer_count: usize,
+    pub inbound_peer_count: usize,
+    pub outbound_peer_count: usize,
+    pub configured_bootnodes_total: usize,
+    pub bootnode_connected_total: usize,
+    pub bootnode_root_topology: bool,
+    pub zero_peer_recovery_active: bool,
+    pub peer_count_source: String,
+    pub explanation: String,
+}
+
+pub fn peer_accounting_snapshot(status: &P2pStatus) -> PeerAccountingSnapshot {
+    let inbound_peer_count = status
+        .inbound_peer_final_state
+        .iter()
+        .filter(|peer| peer.state == "connected" && peer.active_connections > 0)
+        .count();
+    let outbound_peer_count = status
+        .outbound_peer_final_state
+        .iter()
+        .filter(|peer| peer.state == "connected" && peer.active_connections > 0)
+        .count();
+    let lifecycle_connected_peer_count = status
+        .active_connections_by_peer
+        .values()
+        .filter(|connections| **connections > 0)
+        .count();
+    let bootnode_root_topology =
+        status.bootnodes_configured.is_empty() && !status.listening.is_empty();
+    let zero_peer_recovery_active = status.connected_peers.is_empty()
+        && (status.peer_zero_count_duration_seconds > 0
+            || status.peer_zero_reconnect_attempt_total > 0
+            || status.isolated_bootnode_reconnect_active
+            || lifecycle_connected_peer_count > 0);
+    let explanation = if lifecycle_connected_peer_count > 0 && status.connected_peers.is_empty() {
+        "lifecycle connections exist, but no peers are eligible for connected_peers because they are incompatible, disconnected in health, or suppressed by recovery accounting"
+    } else {
+        "peer_count reports eligible real-network connected peers after lifecycle, chain-compatibility, and recovery accounting"
+    };
+
+    PeerAccountingSnapshot {
+        peer_count: status.connected_peers.len(),
+        connected_peer_count: status.connected_peers.len(),
+        lifecycle_connected_peer_count,
+        inbound_peer_count,
+        outbound_peer_count,
+        configured_bootnodes_total: status.bootnodes_configured.len(),
+        bootnode_connected_total: status.bootnodes_connected.len(),
+        bootnode_root_topology,
+        zero_peer_recovery_active,
+        peer_count_source: "eligible_connected_peers".to_string(),
+        explanation: explanation.to_string(),
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct P2pStatus {
     pub chain_id: String,
