@@ -1006,7 +1006,7 @@ pub async fn get_p2p_status<S: RpcStateLike>(
                     "configured_bootnodes_total": peer_accounting.configured_bootnodes_total,
                     "bootnode_connected_total": peer_accounting.bootnode_connected_total,
                     "bootnode_root_topology": peer_accounting.bootnode_root_topology,
-                    "private_topology_valid": !peer_accounting.bootnode_root_topology || peer_accounting.inbound_peer_count > 0 || peer_accounting.lifecycle_connected_peer_count > 0,
+                    "private_topology_valid": !peer_accounting.bootnode_root_topology || (peer_accounting.inbound_peer_count > 0 && peer_accounting.connected_peer_count > 0),
                     "zero_peer_recovery_active": peer_accounting.zero_peer_recovery_active,
                     "explanation": peer_accounting.explanation
                 }),

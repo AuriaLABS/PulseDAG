@@ -4,6 +4,7 @@ use crate::{
 };
 use axum::{extract::State, Json};
 use pulsedag_core::preferred_tip_hash;
+use pulsedag_p2p::peer_accounting_snapshot;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -276,24 +277,26 @@ pub async fn get_readiness<S: RpcStateLike>(
     };
     let p2p_peer_count = p2p_status
         .as_ref()
-        .map(|snapshot| snapshot.status.connected_peers.len())
+        .map(|snapshot| peer_accounting_snapshot(&snapshot.status).peer_count)
         .unwrap_or(0);
     let p2p_configured_bootnodes_total = p2p_status
         .as_ref()
         .map(|snapshot| snapshot.status.bootnodes_configured.len())
         .unwrap_or(0);
     let bootnode_zero_peer_private_topology = p2p_status.as_ref().is_some_and(|snapshot| {
-        snapshot.status.connected_peers.is_empty()
+        let accounting = peer_accounting_snapshot(&snapshot.status);
+        accounting.peer_count == 0
             && snapshot.status.bootnodes_configured.is_empty()
             && !snapshot.status.listening.is_empty()
-            && snapshot
-                .status
-                .asymmetric_connectivity_diagnostics
-                .iter()
-                .any(|diagnostic| {
-                    diagnostic == "bootnode_root_no_inbound_peers_counted"
-                        || diagnostic.starts_with("private_topology_below_min_connected_peers")
-                })
+            && (accounting.inbound_peer_count == 0
+                || snapshot
+                    .status
+                    .asymmetric_connectivity_diagnostics
+                    .iter()
+                    .any(|diagnostic| {
+                        diagnostic == "bootnode_root_no_inbound_peers_counted"
+                            || diagnostic.starts_with("private_topology_below_min_connected_peers")
+                    }))
     });
 
     let selected_tip = preferred_tip_hash(&chain);

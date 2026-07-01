@@ -145,19 +145,12 @@ pub fn peer_accounting_snapshot(status: &P2pStatus) -> PeerAccountingSnapshot {
             || lifecycle_connected_peer_count > 0);
     let bootnode_root_topology =
         status.bootnodes_configured.is_empty() && !status.listening.is_empty();
-    let effective_connected_peer_count = if bootnode_root_topology {
-        status
-            .connected_peers
-            .len()
-            .max(inbound_peer_count)
-            .max(lifecycle_connected_peer_count)
-    } else {
-        status.connected_peers.len()
-    };
+    let effective_connected_peer_count = status.connected_peers.len();
     let explanation = if bootnode_root_topology
-        && effective_connected_peer_count > status.connected_peers.len()
+        && inbound_peer_count > 0
+        && status.connected_peers.is_empty()
     {
-        "bootnode/root topology: peer_count includes inbound lifecycle connections so private topology accounting does not under-report root peers"
+        "bootnode/root topology has inbound lifecycle connections, but peer_count remains zero until peers are eligible for connected_peers after chain-compatibility, health, and recovery accounting"
     } else if lifecycle_connected_peer_count > 0 && status.connected_peers.is_empty() {
         "lifecycle connections exist, but no peers are eligible for connected_peers because they are incompatible, disconnected in health, or suppressed by recovery accounting"
     } else {

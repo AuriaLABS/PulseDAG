@@ -670,14 +670,22 @@ collect_final_state(){
       break
     fi
     rpc=$((BASE_RPC_PORT+i))
-    safe_curl_required "http://127.0.0.1:${rpc}/status" "$OUT_DIR/endpoints/n${i}-status-final.json" "n${i}:/status final" || true
-    safe_curl_optional "http://127.0.0.1:${rpc}/release" "$OUT_DIR/endpoints/n${i}-release-final.json" "n${i}:/release final" || true
-    safe_curl_required "http://127.0.0.1:${rpc}/readiness" "$OUT_DIR/endpoints/n${i}-readiness-final.json" "n${i}:/readiness final" || true
-    safe_curl_required "http://127.0.0.1:${rpc}/p2p/status" "$OUT_DIR/endpoints/n${i}-p2p-status-final.json" "n${i}:/p2p/status ${phase}" || true
-    safe_curl_required "http://127.0.0.1:${rpc}/sync/status" "$OUT_DIR/endpoints/n${i}-sync-status-final.json" "n${i}:/sync/status ${phase}" || true
+    if [[ "$phase" == "quiescent" || "$phase" == "final" ]]; then
+      safe_curl_required "http://127.0.0.1:${rpc}/status" "$OUT_DIR/endpoints/n${i}-status-final.json" "n${i}:/status ${phase}" || true
+      safe_curl_required "http://127.0.0.1:${rpc}/readiness" "$OUT_DIR/endpoints/n${i}-readiness-final.json" "n${i}:/readiness ${phase}" || true
+      safe_curl_required "http://127.0.0.1:${rpc}/p2p/status" "$OUT_DIR/endpoints/n${i}-p2p-status-final.json" "n${i}:/p2p/status ${phase}" || true
+      safe_curl_required "http://127.0.0.1:${rpc}/sync/status" "$OUT_DIR/endpoints/n${i}-sync-status-final.json" "n${i}:/sync/status ${phase}" || true
+      safe_curl_required "http://127.0.0.1:${rpc}/metrics" "$OUT_DIR/endpoints/n${i}-metrics-final.json" "n${i}:/metrics ${phase}" || true
+    else
+      safe_curl_optional "http://127.0.0.1:${rpc}/status" "$OUT_DIR/endpoints/n${i}-status-final.json" "n${i}:/status ${phase}" || true
+      safe_curl_optional "http://127.0.0.1:${rpc}/readiness" "$OUT_DIR/endpoints/n${i}-readiness-final.json" "n${i}:/readiness ${phase}" || true
+      safe_curl_optional "http://127.0.0.1:${rpc}/p2p/status" "$OUT_DIR/endpoints/n${i}-p2p-status-final.json" "n${i}:/p2p/status ${phase}" || true
+      safe_curl_optional "http://127.0.0.1:${rpc}/sync/status" "$OUT_DIR/endpoints/n${i}-sync-status-final.json" "n${i}:/sync/status ${phase}" || true
+      safe_curl_optional "http://127.0.0.1:${rpc}/metrics" "$OUT_DIR/endpoints/n${i}-metrics-final.json" "n${i}:/metrics ${phase}" || true
+    fi
+    safe_curl_optional "http://127.0.0.1:${rpc}/release" "$OUT_DIR/endpoints/n${i}-release-final.json" "n${i}:/release ${phase}" || true
     safe_curl_optional "http://127.0.0.1:${rpc}/sync/missing" "$OUT_DIR/endpoints/n${i}-sync-missing-final.json" "n${i}:/sync/missing ${phase}" || true
     safe_curl_optional "http://127.0.0.1:${rpc}/orphans" "$OUT_DIR/endpoints/n${i}-orphans-final.json" "n${i}:/orphans ${phase}" || true
-    safe_curl_required "http://127.0.0.1:${rpc}/metrics" "$OUT_DIR/endpoints/n${i}-metrics-final.json" "n${i}:/metrics ${phase}" || true
     NODE_HEIGHT[$i]="$(jq -r '.data.best_height // 0' "$OUT_DIR/endpoints/n${i}-status-final.json" 2>/dev/null || echo 0)"
     NODE_TIP[$i]="$(jq -r '.data.selected_tip // ""' "$OUT_DIR/endpoints/n${i}-status-final.json" 2>/dev/null || echo '')"
     NODE_READY[$i]="$(jq -r '.data.ready_for_release // .ready_for_release // 0' "$OUT_DIR/endpoints/n${i}-readiness-final.json" 2>/dev/null | sed 's/true/1/;s/false/0/' || echo 0)"
