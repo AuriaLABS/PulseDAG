@@ -60,7 +60,8 @@ fn isolated_genesis_node_total(
         enabled
             && best_height <= 1
             && status.is_some_and(|status| {
-                status.connected_peers.is_empty() && !status.bootnodes_configured.is_empty()
+                peer_accounting_snapshot(status).peer_count == 0
+                    && !status.bootnodes_configured.is_empty()
             }),
     )
 }
@@ -88,7 +89,8 @@ fn p2p_readiness_reasons(
             status.mode
         ));
     }
-    if status.connected_peers.is_empty() {
+    let accounting = peer_accounting_snapshot(status);
+    if accounting.peer_count == 0 {
         reasons.push("no connected peers".to_string());
     }
     if isolated_genesis_node_total(true, Some(status), best_height) > 0 {
@@ -826,9 +828,14 @@ pub async fn get_p2p_status<S: RpcStateLike>(
                 }),
             );
 
+            let peer_accounting = peer_accounting_snapshot(&status);
             payload.insert(
                 "peer_count".into(),
-                serde_json::json!(status.connected_peers.len()),
+                serde_json::json!(peer_accounting.peer_count),
+            );
+            payload.insert(
+                "connected_peer_count".into(),
+                serde_json::json!(peer_accounting.connected_peer_count),
             );
             payload.insert(
                 "listening_addresses".into(),
@@ -979,7 +986,6 @@ pub async fn get_p2p_status<S: RpcStateLike>(
                     }))
                     .collect::<Vec<_>>()),
             );
-            let peer_accounting = peer_accounting_snapshot(&status);
             payload.insert(
                 "inbound_peer_count".into(),
                 serde_json::json!(peer_accounting.inbound_peer_count),
@@ -1000,6 +1006,7 @@ pub async fn get_p2p_status<S: RpcStateLike>(
                     "configured_bootnodes_total": peer_accounting.configured_bootnodes_total,
                     "bootnode_connected_total": peer_accounting.bootnode_connected_total,
                     "bootnode_root_topology": peer_accounting.bootnode_root_topology,
+                    "private_topology_valid": !peer_accounting.bootnode_root_topology || (peer_accounting.inbound_peer_count > 0 && peer_accounting.connected_peer_count > 0),
                     "zero_peer_recovery_active": peer_accounting.zero_peer_recovery_active,
                     "explanation": peer_accounting.explanation
                 }),
