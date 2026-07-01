@@ -98,6 +98,8 @@ pub fn init_chain_state(chain_id: String) -> ChainState {
 
     let mut selected_parents = HashMap::new();
     selected_parents.insert(genesis.hash.clone(), None);
+    let mut blue_work = HashMap::new();
+    blue_work.insert(genesis.hash.clone(), 0);
     let selected_chain = vec![genesis.hash.clone()];
 
     let mut utxos = HashMap::new();
@@ -117,6 +119,11 @@ pub fn init_chain_state(chain_id: String) -> ChainState {
             selected_parents,
             selected_chain,
             selected_parent_policy: SelectedParentPolicy::GhostdagInspired,
+            merge_set_k: crate::ghostdag::DEFAULT_MERGE_SET_K,
+            merge_set_blues: HashMap::new(),
+            merge_set_reds: HashMap::new(),
+            blue_work,
+            merge_set_diagnostics: HashMap::new(),
         },
         utxo: UtxoState {
             utxos,

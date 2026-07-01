@@ -40,6 +40,16 @@ pub struct DagState {
     pub selected_chain: Vec<Hash>,
     #[serde(default)]
     pub selected_parent_policy: SelectedParentPolicy,
+    #[serde(default = "crate::ghostdag::default_merge_set_k")]
+    pub merge_set_k: usize,
+    #[serde(default)]
+    pub merge_set_blues: HashMap<Hash, Vec<Hash>>,
+    #[serde(default)]
+    pub merge_set_reds: HashMap<Hash, Vec<Hash>>,
+    #[serde(default)]
+    pub blue_work: HashMap<Hash, u128>,
+    #[serde(default)]
+    pub merge_set_diagnostics: HashMap<Hash, crate::ghostdag::MergeSetDiagnostics>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]

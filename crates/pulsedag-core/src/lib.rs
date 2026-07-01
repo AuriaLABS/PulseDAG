@@ -3,6 +3,7 @@ pub mod apply;
 pub mod consistency;
 pub mod errors;
 pub mod genesis;
+pub mod ghostdag;
 pub mod mempool;
 pub mod mining;
 pub mod orphans;
@@ -64,6 +65,11 @@ pub use pow::{
 pub use mempool::{
     combined_pressure_tier, mempool_pressure_bps, pressure_tier_from_bps, reconcile_mempool,
     MempoolPressureTier, MempoolReconcileResult,
+};
+
+pub use ghostdag::{
+    calculate_merge_set, classify_merge_set, classify_merge_set_with_k, MergeSetClassification,
+    MergeSetColor, MergeSetDiagnostics, DEFAULT_MERGE_SET_K,
 };
 
 pub use selection::{
