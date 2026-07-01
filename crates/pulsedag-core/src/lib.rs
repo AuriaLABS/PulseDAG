@@ -25,7 +25,8 @@ pub use errors::{
     InvalidStateRootClassification, InvalidStateRootDiagnostics, InvalidStateRootError, PulseError,
 };
 pub use state::{
-    ChainState, ContractRuntimeConfig, ContractRuntimeState, DagState, Mempool, UtxoState,
+    ChainState, ContractRuntimeConfig, ContractRuntimeState, DagState, Mempool,
+    SelectedParentPolicy, UtxoState,
 };
 pub use tx::{
     address_from_public_key, compute_txid, signing_message, verify_transaction_signatures,
@@ -65,7 +66,10 @@ pub use mempool::{
     MempoolPressureTier, MempoolReconcileResult,
 };
 
-pub use selection::{preferred_tip_hash, sorted_tip_hashes};
+pub use selection::{
+    calculate_selected_parent, legacy_preferred_tip_hash, preferred_tip_hash,
+    refresh_selected_chain, sorted_legacy_tip_hashes, sorted_tip_hashes,
+};
 
 pub use consistency::{assert_dag_consistent_for_tests, dag_consistency_issues};
 

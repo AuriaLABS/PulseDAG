@@ -34,6 +34,20 @@ pub struct DagState {
     pub children: HashMap<Hash, Vec<Hash>>,
     pub genesis_hash: Hash,
     pub best_height: u64,
+    #[serde(default)]
+    pub selected_parents: HashMap<Hash, Option<Hash>>,
+    #[serde(default)]
+    pub selected_chain: Vec<Hash>,
+    #[serde(default)]
+    pub selected_parent_policy: SelectedParentPolicy,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SelectedParentPolicy {
+    #[default]
+    GhostdagInspired,
+    LegacyTip,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
