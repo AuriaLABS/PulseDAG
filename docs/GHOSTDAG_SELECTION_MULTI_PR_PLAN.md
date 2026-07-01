@@ -1,5 +1,7 @@
 # Kaspa-inspired selected-parent / GHOSTDAG-style DAG selection multi-PR plan
 
+See `docs/GHOSTDAG_SELECTION_DESIGN_SPEC.md` for the design-only terminology, migration plan, current limitation statement, high-cadence prerequisites, and risk register that downstream implementation PRs must cite.
+
 This plan introduces selected-parent and GHOSTDAG-style DAG selection incrementally. It is intentionally scoped to avoid high block cadence until deterministic selected-parent selection, deterministic DAG ordering, and convergence evidence exist.
 
 ## Non-goals and claim boundaries
