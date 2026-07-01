@@ -1,6 +1,7 @@
 use axum::{extract::State, Json};
 use pulsedag_p2p::{
-    connected_peers_semantics, mode_connected_peers_are_real_network, P2pStatus, PeerRecoveryStatus,
+    connected_peers_semantics, mode_connected_peers_are_real_network, peer_accounting_snapshot,
+    P2pStatus, PeerRecoveryStatus,
 };
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -978,45 +979,29 @@ pub async fn get_p2p_status<S: RpcStateLike>(
                     }))
                     .collect::<Vec<_>>()),
             );
-            let inbound_peer_count = status
-                .inbound_peer_final_state
-                .iter()
-                .filter(|peer| peer.state == "connected" && peer.active_connections > 0)
-                .count();
-            let outbound_peer_count = status
-                .outbound_peer_final_state
-                .iter()
-                .filter(|peer| peer.state == "connected" && peer.active_connections > 0)
-                .count();
+            let peer_accounting = peer_accounting_snapshot(&status);
             payload.insert(
                 "inbound_peer_count".into(),
-                serde_json::json!(inbound_peer_count),
+                serde_json::json!(peer_accounting.inbound_peer_count),
             );
             payload.insert(
                 "outbound_peer_count".into(),
-                serde_json::json!(outbound_peer_count),
+                serde_json::json!(peer_accounting.outbound_peer_count),
             );
-            let lifecycle_connected_peer_count = status
-                .active_connections_by_peer
-                .values()
-                .filter(|connections| **connections > 0)
-                .count();
-            let peer_count_explanation = if lifecycle_connected_peer_count > 0
-                && status.connected_peers.is_empty()
-            {
-                "lifecycle connections exist, but no peers are eligible for connected_peers because they are incompatible, disconnected in health, or suppressed by recovery accounting"
-            } else {
-                "peer_count reports eligible real-network connected peers after lifecycle, chain-compatibility, and recovery accounting"
-            };
             payload.insert(
                 "peer_accounting".into(),
                 serde_json::json!({
-                    "peer_count_source": "eligible_connected_peers",
-                    "peer_count": status.connected_peers.len(),
-                    "lifecycle_connected_peer_count": lifecycle_connected_peer_count,
-                    "inbound_peer_count": inbound_peer_count,
-                    "outbound_peer_count": outbound_peer_count,
-                    "explanation": peer_count_explanation
+                    "peer_count_source": peer_accounting.peer_count_source,
+                    "peer_count": peer_accounting.peer_count,
+                    "connected_peer_count": peer_accounting.connected_peer_count,
+                    "lifecycle_connected_peer_count": peer_accounting.lifecycle_connected_peer_count,
+                    "inbound_peer_count": peer_accounting.inbound_peer_count,
+                    "outbound_peer_count": peer_accounting.outbound_peer_count,
+                    "configured_bootnodes_total": peer_accounting.configured_bootnodes_total,
+                    "bootnode_connected_total": peer_accounting.bootnode_connected_total,
+                    "bootnode_root_topology": peer_accounting.bootnode_root_topology,
+                    "zero_peer_recovery_active": peer_accounting.zero_peer_recovery_active,
+                    "explanation": peer_accounting.explanation
                 }),
             );
             payload.insert(

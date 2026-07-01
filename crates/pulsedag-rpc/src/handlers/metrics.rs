@@ -361,21 +361,21 @@ pub async fn get_metrics<S: RpcStateLike>(
         missing_parent_index_active_entries: chain.orphan_parent_index.len(),
         missing_parent_index_terminal_entries: chain.terminal_missing_parents.len(),
         terminal_missing_parent_historical_total:
-            pulsedag_core::terminal_missing_parent_historical_count(&chain) as u64,
+            pulsedag_core::terminal_missing_parent_historical_count(chain) as u64,
         terminal_missing_parent_active_blocking_total:
-            pulsedag_core::terminal_missing_parent_active_blocking_count(&chain) as u64,
+            pulsedag_core::terminal_missing_parent_active_blocking_count(chain) as u64,
         terminal_missing_parent_pruned_total: runtime.terminal_missing_parent_pruned_total,
         sync_degraded_due_to_terminal_history_total: runtime
             .sync_degraded_due_to_terminal_history_total,
         missing_parent_index_quarantined_entries: pulsedag_core::quarantined_missing_parent_count(
-            &chain,
+            chain,
         ),
         missing_parent_active_entries: chain.orphan_parent_index.len(),
         missing_parent_terminal_entries: chain
             .terminal_missing_parents
             .len()
-            .saturating_sub(pulsedag_core::quarantined_missing_parent_count(&chain)),
-        missing_parent_quarantined_entries: pulsedag_core::quarantined_missing_parent_count(&chain),
+            .saturating_sub(pulsedag_core::quarantined_missing_parent_count(chain)),
+        missing_parent_quarantined_entries: pulsedag_core::quarantined_missing_parent_count(chain),
         orphan_recovery_tick_duration_ms: runtime.orphan_recovery_tick_duration_ms,
         final_quiescence_orphan_reprocess_total: runtime.final_quiescence_orphan_reprocess_total,
         final_quiescence_orphan_reprocess_success_total: runtime

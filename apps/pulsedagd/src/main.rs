@@ -3402,8 +3402,6 @@ async fn main() -> Result<()> {
                 drop(rt);
 
                 if final_quiescence_due {
-                    let cleanup_complete = cleanup_complete;
-
                     // Never run final tip reconciliation while peer recovery or orphan cleanup has
                     // work left.  In particular, zero-peer recovery must be allowed to run before
                     // final sync, and selected/same-height sync must not run with peer_count=0.
