@@ -25,7 +25,19 @@ struct PeerMissingParentHints {
     tip_ancestry: HashSet<String>,
     selected_tip: Option<String>,
     best_height: Option<u64>,
+    blue_score: Option<u64>,
     successful_blockdata_responses: u64,
+    not_found_responses: u64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PeerSyncHintsSnapshot {
+    pub peer: String,
+    pub best_height: Option<u64>,
+    pub selected_tip: Option<String>,
+    pub blue_score: Option<u64>,
+    pub known_inventory: usize,
+    pub missing_parent_usefulness: i64,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -349,6 +361,39 @@ impl BlockRequestTracker {
     }
 
     #[allow(dead_code)]
+    pub fn note_peer_sync_state(
+        &mut self,
+        peer: impl Into<String>,
+        best_height: u64,
+        selected_tip: Option<String>,
+        blue_score: u64,
+    ) {
+        let hints = self.peer_hints.entry(peer.into()).or_default();
+        hints.best_height = Some(best_height);
+        hints.selected_tip = selected_tip;
+        hints.blue_score = Some(blue_score);
+    }
+
+    #[allow(dead_code)]
+    pub fn peer_sync_hints(&self) -> Vec<PeerSyncHintsSnapshot> {
+        let mut snapshots = self
+            .peer_hints
+            .iter()
+            .map(|(peer, hints)| PeerSyncHintsSnapshot {
+                peer: peer.clone(),
+                best_height: hints.best_height,
+                selected_tip: hints.selected_tip.clone(),
+                blue_score: hints.blue_score,
+                known_inventory: hints.inventory.len(),
+                missing_parent_usefulness: (hints.successful_blockdata_responses as i64 * 10)
+                    - (hints.not_found_responses as i64 * 5),
+            })
+            .collect::<Vec<_>>();
+        snapshots.sort_by(|a, b| a.peer.cmp(&b.peer));
+        snapshots
+    }
+
+    #[allow(dead_code)]
     pub fn note_successful_blockdata_response(&mut self, peer: impl Into<String>, hash: &str) {
         let hints = self.peer_hints.entry(peer.into()).or_default();
         hints.successful_blockdata_responses =
@@ -375,7 +420,9 @@ impl BlockRequestTracker {
                         if h.best_height.unwrap_or(0) > 0 {
                             score += 10;
                         }
+                        score += (h.blue_score.unwrap_or(0) as i64).min(20);
                         score += (h.successful_blockdata_responses as i64).min(20);
+                        score -= ((h.not_found_responses as i64) * 5).min(40);
                         score
                     })
                     .unwrap_or(0);
@@ -469,6 +516,8 @@ impl BlockRequestTracker {
     {
         let previous_peer = self.pending.remove(hash).and_then(|req| req.peer);
         if let Some(peer) = previous_peer {
+            let hints = self.peer_hints.entry(peer.clone()).or_default();
+            hints.not_found_responses = hints.not_found_responses.saturating_add(1);
             self.not_found_by_hash
                 .entry(hash.to_string())
                 .or_default()
@@ -1255,6 +1304,7 @@ mod tests {
         let mut tracker = BlockRequestTracker::with_limits(5, 2, 10, 10);
         tracker.note_peer_inventory("peer-b", ["parent"]);
         tracker.note_peer_tip_ancestry("peer-c", Some("tip-c".to_string()), 7, ["other"]);
+        tracker.note_peer_sync_state("peer-b", 8, Some("tip-b".to_string()), 11);
 
         assert!(tracker.should_issue_getblock_for_peers(
             "parent",
@@ -1273,6 +1323,16 @@ mod tests {
                 .and_then(|req| req.peer.as_deref()),
             Some("peer-b")
         );
+        let peer_b = tracker
+            .peer_sync_hints()
+            .into_iter()
+            .find(|peer| peer.peer == "peer-b")
+            .expect("peer-b snapshot");
+        assert_eq!(peer_b.best_height, Some(8));
+        assert_eq!(peer_b.selected_tip.as_deref(), Some("tip-b"));
+        assert_eq!(peer_b.blue_score, Some(11));
+        assert_eq!(peer_b.known_inventory, 1);
+        assert!(peer_b.missing_parent_usefulness >= 0);
     }
 
     #[test]
