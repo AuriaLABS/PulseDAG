@@ -193,6 +193,53 @@ fn final_quiescence_request_suppression_reason(
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DagSyncStage {
+    SelectedChainLocator,
+    DagFrontierTips,
+    MissingParentRecovery,
+    MergeSetBlockRecovery,
+}
+
+impl DagSyncStage {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::SelectedChainLocator => "selected_chain_locator_sync",
+            Self::DagFrontierTips => "dag_frontier_tips_sync",
+            Self::MissingParentRecovery => "missing_parent_recovery",
+            Self::MergeSetBlockRecovery => "merge_set_block_recovery",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct SelectedChainSyncGate {
+    peer_count: usize,
+    orphan_recovery_active: bool,
+    missing_parent_recovery_active: bool,
+    rpc_liveness_degraded: bool,
+}
+
+impl SelectedChainSyncGate {
+    fn blocked_reason(&self) -> Option<&'static str> {
+        if self.peer_count == 0 {
+            Some("peer_count_zero")
+        } else if self.orphan_recovery_active {
+            Some("orphan_recovery_active")
+        } else if self.missing_parent_recovery_active {
+            Some("missing_parent_recovery_active")
+        } else if self.rpc_liveness_degraded {
+            Some("rpc_liveness_degraded")
+        } else {
+            None
+        }
+    }
+
+    fn allows_selected_chain_sync(&self) -> bool {
+        self.blocked_reason().is_none()
+    }
+}
+
 struct DedicatedRpcServer {
     local_addr: SocketAddr,
     worker_threads: usize,
@@ -2074,6 +2121,9 @@ async fn main() -> Result<()> {
                                 rt.pulsedag_sync_missing_parents_total = rt
                                     .pulsedag_sync_missing_parents_total
                                     .saturating_add(missing_parents.len() as u64);
+                                rt.dag_sync_missing_parent_recovery_total = rt
+                                    .dag_sync_missing_parent_recovery_total
+                                    .saturating_add(missing_parents.len() as u64);
                                 rt.pending_missing_parents =
                                     pulsedag_core::pending_missing_parent_count(&guard);
                                 update_orphan_backlog_classification(&mut rt, &guard);
@@ -2746,6 +2796,8 @@ async fn main() -> Result<()> {
                         {
                             let mut rt = runtime.write().await;
                             rt.tips_received = rt.tips_received.saturating_add(1);
+                            rt.dag_sync_frontier_tips_total =
+                                rt.dag_sync_frontier_tips_total.saturating_add(1);
                             rt.unknown_tips_seen = rt
                                 .unknown_tips_seen
                                 .saturating_add(unknown_tips.len() as u64);
@@ -2963,6 +3015,9 @@ async fn main() -> Result<()> {
                                 .observe_headers(headers.len() as u64, now_unix());
                             rt.block_header_batches_received =
                                 rt.block_header_batches_received.saturating_add(1);
+                            rt.dag_sync_merge_set_block_recovery_total = rt
+                                .dag_sync_merge_set_block_recovery_total
+                                .saturating_add(headers.len() as u64);
                             rt.block_headers_received = rt
                                 .block_headers_received
                                 .saturating_add(headers.len() as u64);
@@ -3900,6 +3955,61 @@ mod tests {
 
         assert_eq!(final_quiescence_reachable_peer_count(&status), 4);
         assert!(!final_quiescence_all_reachable_peers_connected(&status));
+    }
+
+    #[test]
+    fn dag_sync_stage_names_are_explicit_and_ordered() {
+        let stages = [
+            DagSyncStage::SelectedChainLocator,
+            DagSyncStage::DagFrontierTips,
+            DagSyncStage::MissingParentRecovery,
+            DagSyncStage::MergeSetBlockRecovery,
+        ];
+
+        assert_eq!(
+            stages.map(DagSyncStage::as_str),
+            [
+                "selected_chain_locator_sync",
+                "dag_frontier_tips_sync",
+                "missing_parent_recovery",
+                "merge_set_block_recovery"
+            ]
+        );
+    }
+
+    #[test]
+    fn selected_chain_sync_gate_blocks_during_zero_peer_and_recovery_states() {
+        for gate in [
+            SelectedChainSyncGate {
+                peer_count: 0,
+                ..SelectedChainSyncGate::default()
+            },
+            SelectedChainSyncGate {
+                peer_count: 1,
+                orphan_recovery_active: true,
+                ..SelectedChainSyncGate::default()
+            },
+            SelectedChainSyncGate {
+                peer_count: 1,
+                missing_parent_recovery_active: true,
+                ..SelectedChainSyncGate::default()
+            },
+            SelectedChainSyncGate {
+                peer_count: 1,
+                rpc_liveness_degraded: true,
+                ..SelectedChainSyncGate::default()
+            },
+        ] {
+            assert!(!gate.allows_selected_chain_sync());
+            assert!(gate.blocked_reason().is_some());
+        }
+
+        let allowed = SelectedChainSyncGate {
+            peer_count: 1,
+            ..SelectedChainSyncGate::default()
+        };
+        assert!(allowed.allows_selected_chain_sync());
+        assert_eq!(allowed.blocked_reason(), None);
     }
 
     #[test]

@@ -775,6 +775,18 @@ pub struct NodeRuntimeStats {
     #[serde(default)]
     pub final_quiescence_selected_locator_empty_total: u64,
     #[serde(default)]
+    pub dag_sync_selected_chain_locator_total: u64,
+    #[serde(default)]
+    pub dag_sync_frontier_tips_total: u64,
+    #[serde(default)]
+    pub dag_sync_missing_parent_recovery_total: u64,
+    #[serde(default)]
+    pub dag_sync_merge_set_block_recovery_total: u64,
+    #[serde(default)]
+    pub dag_sync_selected_chain_gate_blocked_total: u64,
+    #[serde(default)]
+    pub dag_sync_selected_chain_gate_blocked_reason: Option<String>,
+    #[serde(default)]
     pub final_quiescence_highest_common_found_total: u64,
     #[serde(default)]
     pub final_quiescence_missing_segment_request_total: u64,

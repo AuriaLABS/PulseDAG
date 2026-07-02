@@ -136,6 +136,12 @@ pub struct MetricsData {
     pub final_quiescence_selected_locator_request_total: u64,
     pub final_quiescence_selected_locator_success_total: u64,
     pub final_quiescence_selected_locator_empty_total: u64,
+    pub dag_sync_selected_chain_locator_total: u64,
+    pub dag_sync_frontier_tips_total: u64,
+    pub dag_sync_missing_parent_recovery_total: u64,
+    pub dag_sync_merge_set_block_recovery_total: u64,
+    pub dag_sync_selected_chain_gate_blocked_total: u64,
+    pub dag_sync_selected_chain_gate_blocked_reason: Option<String>,
     pub final_quiescence_highest_common_found_total: u64,
     pub final_quiescence_missing_segment_request_total: u64,
     pub final_quiescence_missing_segment_apply_success_total: u64,
@@ -456,6 +462,15 @@ pub async fn get_metrics<S: RpcStateLike>(
             .final_quiescence_selected_locator_success_total,
         final_quiescence_selected_locator_empty_total: runtime
             .final_quiescence_selected_locator_empty_total,
+        dag_sync_selected_chain_locator_total: runtime.dag_sync_selected_chain_locator_total,
+        dag_sync_frontier_tips_total: runtime.dag_sync_frontier_tips_total,
+        dag_sync_missing_parent_recovery_total: runtime.dag_sync_missing_parent_recovery_total,
+        dag_sync_merge_set_block_recovery_total: runtime.dag_sync_merge_set_block_recovery_total,
+        dag_sync_selected_chain_gate_blocked_total: runtime
+            .dag_sync_selected_chain_gate_blocked_total,
+        dag_sync_selected_chain_gate_blocked_reason: runtime
+            .dag_sync_selected_chain_gate_blocked_reason
+            .clone(),
         final_quiescence_highest_common_found_total: runtime
             .final_quiescence_highest_common_found_total,
         final_quiescence_missing_segment_request_total: runtime
