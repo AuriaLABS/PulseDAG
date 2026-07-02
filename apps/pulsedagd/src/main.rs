@@ -1031,6 +1031,15 @@ async fn main() -> Result<()> {
     runtime_stats.auto_prune_every_blocks = cfg.auto_prune_every_blocks;
     runtime_stats.prune_keep_recent_blocks = cfg.prune_keep_recent_blocks;
     runtime_stats.prune_require_snapshot = cfg.prune_require_snapshot;
+    runtime_stats.experimental_ghostdag_selection = cfg.experimental_ghostdag_selection;
+    runtime_stats.experimental_fast_cadence = cfg.experimental_fast_cadence;
+    runtime_stats.target_block_interval_ms = cfg.target_block_interval_ms;
+    runtime_stats.max_parallel_tips = cfg.max_parallel_tips;
+    runtime_stats.max_merge_set_size = cfg.max_merge_set_size;
+    runtime_stats.max_orphan_count = cfg.max_orphan_count;
+    runtime_stats.max_pending_missing_parents = cfg.max_pending_missing_parents;
+    runtime_stats.max_block_mass = cfg.max_block_mass;
+    runtime_stats.max_template_age_ms = cfg.max_template_age_ms;
     runtime_stats.last_snapshot_height = if snapshot_exists {
         Some(chain_state.dag.best_height)
     } else {
@@ -1113,6 +1122,7 @@ async fn main() -> Result<()> {
         let storage = storage.clone();
         let runtime = app_state.runtime.clone();
         let p2p = app_state.p2p.clone();
+        let max_orphan_count = cfg.max_orphan_count;
         tokio::spawn(async move {
             let mut block_requests = BlockRequestTracker::with_limits(
                 8,
@@ -2097,7 +2107,7 @@ async fn main() -> Result<()> {
                                 &mut guard,
                                 block.clone(),
                                 missing_parents.clone(),
-                                pulsedag_core::DEFAULT_ORPHAN_MAX_COUNT,
+                                max_orphan_count,
                                 pulsedag_core::DEFAULT_ORPHAN_MAX_AGE_MS,
                             );
                             let pruned = orphan_queue.evicted;
@@ -3849,7 +3859,7 @@ async fn main() -> Result<()> {
         warn!(rpc_bind = %cfg.rpc_bind, "RPC is bound beyond localhost; verify firewall rules, auth controls, and API profile before exposing this port");
     }
 
-    info!(p2p_enabled = cfg.p2p_enabled, p2p_mode = %cfg.p2p_mode, admin_enabled = cfg.admin_enabled, operator_auth_configured = cfg.operator_auth_token.is_some(), api_profile = ?cfg.api_profile, auto_rebuild_on_start = cfg.auto_rebuild_on_start, persist_snapshot_on_start = cfg.persist_snapshot_on_start, snapshot_auto_every_blocks = cfg.snapshot_auto_every_blocks, auto_prune_enabled = cfg.auto_prune_enabled, auto_prune_every_blocks = cfg.auto_prune_every_blocks, prune_keep_recent_blocks = cfg.prune_keep_recent_blocks, prune_require_snapshot = cfg.prune_require_snapshot, target_block_interval_secs = cfg.target_block_interval_secs, difficulty_window = cfg.difficulty_window, max_future_drift_secs = cfg.max_future_drift_secs, dedicated_rpc_runtime_active = true, dedicated_rpc_runtime_worker_threads = rpc_worker_threads, "pulsedagd RPC listening on {} using dedicated Tokio runtime", rpc_addr);
+    info!(p2p_enabled = cfg.p2p_enabled, p2p_mode = %cfg.p2p_mode, admin_enabled = cfg.admin_enabled, operator_auth_configured = cfg.operator_auth_token.is_some(), api_profile = ?cfg.api_profile, auto_rebuild_on_start = cfg.auto_rebuild_on_start, persist_snapshot_on_start = cfg.persist_snapshot_on_start, snapshot_auto_every_blocks = cfg.snapshot_auto_every_blocks, auto_prune_enabled = cfg.auto_prune_enabled, auto_prune_every_blocks = cfg.auto_prune_every_blocks, prune_keep_recent_blocks = cfg.prune_keep_recent_blocks, prune_require_snapshot = cfg.prune_require_snapshot, target_block_interval_secs = cfg.target_block_interval_secs, target_block_interval_ms = cfg.target_block_interval_ms, experimental_ghostdag_selection = cfg.experimental_ghostdag_selection, experimental_fast_cadence = cfg.experimental_fast_cadence, max_parallel_tips = cfg.max_parallel_tips, max_merge_set_size = cfg.max_merge_set_size, max_orphan_count = cfg.max_orphan_count, max_pending_missing_parents = cfg.max_pending_missing_parents, max_block_mass = cfg.max_block_mass, max_template_age_ms = cfg.max_template_age_ms, difficulty_window = cfg.difficulty_window, max_future_drift_secs = cfg.max_future_drift_secs, dedicated_rpc_runtime_active = true, dedicated_rpc_runtime_worker_threads = rpc_worker_threads, "pulsedagd RPC listening on {} using dedicated Tokio runtime", rpc_addr);
 
     let mut rpc_server = rpc_server;
     let rpc_runtime_join = rpc_server
