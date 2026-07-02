@@ -116,3 +116,59 @@ pub fn rebuild_state_from_blocks_defensive(
         skipped_reasons,
     }
 }
+
+#[cfg(test)]
+mod dag_ordering_replay_tests {
+    use crate::{
+        genesis::init_chain_state,
+        ordering::refresh_ordered_dag,
+        types::{Block, BlockHeader},
+    };
+
+    fn block(hash: &str, parent: &str, height: u64, timestamp: u64) -> Block {
+        Block {
+            hash: hash.to_string(),
+            header: BlockHeader {
+                version: 1,
+                parents: vec![parent.to_string()],
+                timestamp,
+                difficulty: 1,
+                nonce: 0,
+                merkle_root: format!("m-{hash}"),
+                state_root: format!("s-{hash}"),
+                blue_score: height,
+                height,
+            },
+            transactions: vec![],
+        }
+    }
+
+    #[test]
+    fn replay_order_independence_keeps_same_ordered_dag() {
+        let genesis = init_chain_state("replay-ordering".to_string())
+            .dag
+            .genesis_hash;
+        let a = block("a", &genesis, 1, 10);
+        let b = block("b", "a", 2, 11);
+        let mut forward = vec![a.clone(), b.clone()];
+        let mut reverse = vec![b, a];
+        super::sort_blocks_for_deterministic_replay(&mut forward);
+        super::sort_blocks_for_deterministic_replay(&mut reverse);
+        assert_eq!(
+            forward.iter().map(|b| &b.hash).collect::<Vec<_>>(),
+            reverse.iter().map(|b| &b.hash).collect::<Vec<_>>()
+        );
+
+        let mut state = init_chain_state("replay-ordering".to_string());
+        for block in forward {
+            state
+                .dag
+                .selected_parents
+                .insert(block.hash.clone(), block.header.parents.first().cloned());
+            state.dag.selected_chain.push(block.hash.clone());
+            state.dag.blocks.insert(block.hash.clone(), block);
+        }
+        refresh_ordered_dag(&mut state);
+        assert_eq!(state.dag.selected_chain, state.dag.ordered_dag);
+    }
+}

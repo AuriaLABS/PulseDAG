@@ -35,6 +35,10 @@ pub struct NodeStatusData {
     pub uptime_secs: u64,
     pub block_count: usize,
     pub selected_tip: Option<String>,
+    pub selected_height: Option<u64>,
+    pub selected_blue_score: Option<u64>,
+    pub ordered_dag_tip: Option<String>,
+    pub ordering_version: String,
     pub tip_count: usize,
     pub orphan_count: usize,
     pub mempool_size: usize,
@@ -111,6 +115,10 @@ fn status_from_rpc_snapshot(snapshot: NodeRpcSnapshot) -> NodeStatusData {
         uptime_secs: 0,
         block_count: 0,
         selected_tip: snapshot.tip.clone(),
+        selected_height: Some(snapshot.height),
+        selected_blue_score: None,
+        ordered_dag_tip: snapshot.tip.clone(),
+        ordering_version: pulsedag_core::DAG_ORDERING_VERSION.to_string(),
         tip_count: snapshot.tip.as_ref().map(|_| 1).unwrap_or(0),
         orphan_count: snapshot.orphan_count,
         mempool_size: 0,
@@ -146,6 +154,10 @@ struct StatusStateSnapshot {
     best_height: u64,
     block_count: usize,
     selected_tip: Option<String>,
+    selected_height: Option<u64>,
+    selected_blue_score: Option<u64>,
+    ordered_dag_tip: Option<String>,
+    ordering_version: String,
     tip_count: usize,
     orphan_count: usize,
     mempool_size: usize,
@@ -163,19 +175,20 @@ fn snapshot_chain(chain: &ChainState) -> StatusStateSnapshot {
         .values()
         .max_by_key(|b| b.header.height)
         .map(|b| b.hash.clone());
-    let selected_tip = chain
-        .dag
-        .tips
-        .iter()
-        .filter_map(|tip| chain.dag.blocks.get(tip))
-        .max_by_key(|b| b.header.height)
-        .map(|b| b.hash.clone());
+    let selected_tip = chain.dag.selected_chain.last().cloned();
+    let selected_block = selected_tip
+        .as_ref()
+        .and_then(|hash| chain.dag.blocks.get(hash));
 
     StatusStateSnapshot {
         chain_id: chain.chain_id.clone(),
         best_height: chain.dag.best_height,
         block_count: chain.dag.blocks.len(),
         selected_tip,
+        selected_height: selected_block.map(|block| block.header.height),
+        selected_blue_score: selected_block.map(|block| block.header.blue_score),
+        ordered_dag_tip: pulsedag_core::ordered_dag_tip(chain),
+        ordering_version: chain.dag.ordering_version.clone(),
         tip_count: chain.dag.tips.len(),
         orphan_count: chain.orphan_blocks.len(),
         mempool_size: chain.mempool.transactions.len(),
@@ -323,6 +336,10 @@ pub async fn get_status<S: RpcStateLike>(
         uptime_secs,
         block_count: chain_snapshot.block_count,
         selected_tip: chain_snapshot.selected_tip,
+        selected_height: chain_snapshot.selected_height,
+        selected_blue_score: chain_snapshot.selected_blue_score,
+        ordered_dag_tip: chain_snapshot.ordered_dag_tip,
+        ordering_version: chain_snapshot.ordering_version,
         tip_count: chain_snapshot.tip_count,
         orphan_count: chain_snapshot.orphan_count,
         mempool_size: chain_snapshot.mempool_size,

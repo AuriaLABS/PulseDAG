@@ -50,6 +50,10 @@ pub struct DagState {
     pub blue_work: HashMap<Hash, u128>,
     #[serde(default)]
     pub merge_set_diagnostics: HashMap<Hash, crate::ghostdag::MergeSetDiagnostics>,
+    #[serde(default)]
+    pub ordered_dag: Vec<Hash>,
+    #[serde(default = "crate::ordering::default_ordering_version")]
+    pub ordering_version: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
