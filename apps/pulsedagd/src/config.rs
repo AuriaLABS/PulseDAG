@@ -17,6 +17,15 @@ pub struct Config {
     pub auto_rebuild_on_start: bool,
     pub persist_snapshot_on_start: bool,
     pub target_block_interval_secs: u64,
+    pub target_block_interval_ms: u64,
+    pub experimental_ghostdag_selection: bool,
+    pub experimental_fast_cadence: bool,
+    pub max_parallel_tips: usize,
+    pub max_merge_set_size: usize,
+    pub max_orphan_count: usize,
+    pub max_pending_missing_parents: usize,
+    pub max_block_mass: usize,
+    pub max_template_age_ms: u64,
     pub difficulty_window: usize,
     pub max_future_drift_secs: u64,
     pub snapshot_auto_every_blocks: u64,
@@ -105,6 +114,7 @@ impl Config {
         if let Ok(v) = std::env::var("PULSEDAG_API_PROFILE") {
             cfg.api_profile = ApiExposureProfile::from_env_value(&v)?;
         }
+        cfg.apply_experimental_guards()?;
         cfg.validate_api_exposure()?;
         cfg.validate_cors_policy()?;
         cfg.validate_security_hardening()?;
@@ -129,6 +139,15 @@ impl Config {
                 auto_rebuild_on_start: true,
                 persist_snapshot_on_start: true,
                 target_block_interval_secs: 60,
+                target_block_interval_ms: 60_000,
+                experimental_ghostdag_selection: false,
+                experimental_fast_cadence: false,
+                max_parallel_tips: 1,
+                max_merge_set_size: 32,
+                max_orphan_count: pulsedag_core::DEFAULT_ORPHAN_MAX_COUNT,
+                max_pending_missing_parents: 512,
+                max_block_mass: 1_000_000,
+                max_template_age_ms: 30_000,
                 difficulty_window: 10,
                 max_future_drift_secs: 120,
                 snapshot_auto_every_blocks: 25,
@@ -161,6 +180,15 @@ impl Config {
                 auto_rebuild_on_start: true,
                 persist_snapshot_on_start: true,
                 target_block_interval_secs: 60,
+                target_block_interval_ms: 60_000,
+                experimental_ghostdag_selection: false,
+                experimental_fast_cadence: false,
+                max_parallel_tips: 1,
+                max_merge_set_size: 32,
+                max_orphan_count: pulsedag_core::DEFAULT_ORPHAN_MAX_COUNT,
+                max_pending_missing_parents: 512,
+                max_block_mass: 1_000_000,
+                max_template_age_ms: 30_000,
                 difficulty_window: 10,
                 max_future_drift_secs: 90,
                 snapshot_auto_every_blocks: 25,
@@ -193,6 +221,15 @@ impl Config {
                 auto_rebuild_on_start: true,
                 persist_snapshot_on_start: true,
                 target_block_interval_secs: 60,
+                target_block_interval_ms: 60_000,
+                experimental_ghostdag_selection: false,
+                experimental_fast_cadence: false,
+                max_parallel_tips: 1,
+                max_merge_set_size: 32,
+                max_orphan_count: pulsedag_core::DEFAULT_ORPHAN_MAX_COUNT,
+                max_pending_missing_parents: 512,
+                max_block_mass: 1_000_000,
+                max_template_age_ms: 30_000,
                 difficulty_window: 20,
                 max_future_drift_secs: 120,
                 snapshot_auto_every_blocks: 25,
@@ -225,6 +262,15 @@ impl Config {
                 auto_rebuild_on_start: true,
                 persist_snapshot_on_start: true,
                 target_block_interval_secs: 60,
+                target_block_interval_ms: 60_000,
+                experimental_ghostdag_selection: false,
+                experimental_fast_cadence: false,
+                max_parallel_tips: 1,
+                max_merge_set_size: 32,
+                max_orphan_count: pulsedag_core::DEFAULT_ORPHAN_MAX_COUNT,
+                max_pending_missing_parents: 512,
+                max_block_mass: 1_000_000,
+                max_template_age_ms: 30_000,
                 difficulty_window: 20,
                 max_future_drift_secs: 120,
                 snapshot_auto_every_blocks: 25,
@@ -257,6 +303,15 @@ impl Config {
                 auto_rebuild_on_start: true,
                 persist_snapshot_on_start: true,
                 target_block_interval_secs: 60,
+                target_block_interval_ms: 60_000,
+                experimental_ghostdag_selection: false,
+                experimental_fast_cadence: false,
+                max_parallel_tips: 1,
+                max_merge_set_size: 32,
+                max_orphan_count: pulsedag_core::DEFAULT_ORPHAN_MAX_COUNT,
+                max_pending_missing_parents: 512,
+                max_block_mass: 1_000_000,
+                max_template_age_ms: 30_000,
                 difficulty_window: 20,
                 max_future_drift_secs: 120,
                 snapshot_auto_every_blocks: 25,
@@ -289,6 +344,15 @@ impl Config {
                 auto_rebuild_on_start: true,
                 persist_snapshot_on_start: true,
                 target_block_interval_secs: 60,
+                target_block_interval_ms: 60_000,
+                experimental_ghostdag_selection: false,
+                experimental_fast_cadence: false,
+                max_parallel_tips: 1,
+                max_merge_set_size: 32,
+                max_orphan_count: pulsedag_core::DEFAULT_ORPHAN_MAX_COUNT,
+                max_pending_missing_parents: 512,
+                max_block_mass: 1_000_000,
+                max_template_age_ms: 30_000,
                 difficulty_window: 20,
                 max_future_drift_secs: 120,
                 snapshot_auto_every_blocks: 25,
@@ -324,6 +388,15 @@ impl Config {
                 auto_rebuild_on_start: true,
                 persist_snapshot_on_start: true,
                 target_block_interval_secs: 60,
+                target_block_interval_ms: 60_000,
+                experimental_ghostdag_selection: false,
+                experimental_fast_cadence: false,
+                max_parallel_tips: 1,
+                max_merge_set_size: 32,
+                max_orphan_count: pulsedag_core::DEFAULT_ORPHAN_MAX_COUNT,
+                max_pending_missing_parents: 512,
+                max_block_mass: 1_000_000,
+                max_template_age_ms: 30_000,
                 difficulty_window: 20,
                 max_future_drift_secs: 120,
                 snapshot_auto_every_blocks: 25,
@@ -356,6 +429,15 @@ impl Config {
                 auto_rebuild_on_start: true,
                 persist_snapshot_on_start: true,
                 target_block_interval_secs: 60,
+                target_block_interval_ms: 60_000,
+                experimental_ghostdag_selection: false,
+                experimental_fast_cadence: false,
+                max_parallel_tips: 1,
+                max_merge_set_size: 32,
+                max_orphan_count: pulsedag_core::DEFAULT_ORPHAN_MAX_COUNT,
+                max_pending_missing_parents: 512,
+                max_block_mass: 1_000_000,
+                max_template_age_ms: 30_000,
                 difficulty_window: 20,
                 max_future_drift_secs: 120,
                 snapshot_auto_every_blocks: 25,
@@ -414,12 +496,40 @@ impl Config {
             "PULSEDAG_PERSIST_SNAPSHOT_ON_START",
             self.persist_snapshot_on_start,
         );
-        self.target_block_interval_secs =
-            guarded_target_block_interval_secs(read_env_u64_positive(
-                "PULSEDAG_TARGET_BLOCK_INTERVAL_SECS",
-                self.target_block_interval_secs,
-                1,
-            ));
+        self.experimental_ghostdag_selection = read_env_bool(
+            "PULSEDAG_EXPERIMENTAL_GHOSTDAG_SELECTION",
+            self.experimental_ghostdag_selection,
+        );
+        self.experimental_fast_cadence = read_env_bool(
+            "PULSEDAG_EXPERIMENTAL_FAST_CADENCE",
+            self.experimental_fast_cadence,
+        );
+        let interval_ms_default = std::env::var("PULSEDAG_TARGET_BLOCK_INTERVAL_SECS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .filter(|v| *v >= 1)
+            .map(|secs| secs.saturating_mul(1_000))
+            .unwrap_or(self.target_block_interval_ms);
+        self.target_block_interval_ms = guarded_target_block_interval_ms(
+            read_env_u64_positive("PULSEDAG_TARGET_BLOCK_INTERVAL_MS", interval_ms_default, 1),
+            self.experimental_fast_cadence,
+        );
+        self.target_block_interval_secs = self.target_block_interval_ms.div_ceil(1_000).max(1);
+        self.max_parallel_tips =
+            read_env_usize_positive("PULSEDAG_MAX_PARALLEL_TIPS", self.max_parallel_tips, 1);
+        self.max_merge_set_size =
+            read_env_usize_positive("PULSEDAG_MAX_MERGE_SET_SIZE", self.max_merge_set_size, 1);
+        self.max_orphan_count =
+            read_env_usize_positive("PULSEDAG_MAX_ORPHAN_COUNT", self.max_orphan_count, 1);
+        self.max_pending_missing_parents = read_env_usize_positive(
+            "PULSEDAG_MAX_PENDING_MISSING_PARENTS",
+            self.max_pending_missing_parents,
+            1,
+        );
+        self.max_block_mass =
+            read_env_usize_positive("PULSEDAG_MAX_BLOCK_MASS", self.max_block_mass, 1);
+        self.max_template_age_ms =
+            read_env_u64_positive("PULSEDAG_MAX_TEMPLATE_AGE_MS", self.max_template_age_ms, 1);
         self.difficulty_window =
             read_env_usize_positive("PULSEDAG_DIFFICULTY_WINDOW", self.difficulty_window, 2);
         self.max_future_drift_secs = read_env_u64_positive(
@@ -480,6 +590,8 @@ impl Config {
             }
         }
 
+        self.apply_env_overrides();
+
         let mut iter = args.into_iter();
         while let Some(arg) = iter.next() {
             match arg.as_str() {
@@ -499,6 +611,54 @@ impl Config {
                         .next()
                         .ok_or_else(|| anyhow::anyhow!("{arg} requires a value"))?;
                 }
+                "--experimental-ghostdag-selection" => {
+                    self.experimental_ghostdag_selection = true;
+                }
+                "--experimental-fast-cadence" => {
+                    self.experimental_fast_cadence = true;
+                }
+                "--target-block-interval-ms" => {
+                    self.target_block_interval_ms = iter
+                        .next()
+                        .ok_or_else(|| anyhow::anyhow!("{arg} requires a value"))?
+                        .parse()?;
+                }
+                "--max-parallel-tips" => {
+                    self.max_parallel_tips = iter
+                        .next()
+                        .ok_or_else(|| anyhow::anyhow!("{arg} requires a value"))?
+                        .parse()?;
+                }
+                "--max-merge-set-size" => {
+                    self.max_merge_set_size = iter
+                        .next()
+                        .ok_or_else(|| anyhow::anyhow!("{arg} requires a value"))?
+                        .parse()?;
+                }
+                "--max-orphan-count" => {
+                    self.max_orphan_count = iter
+                        .next()
+                        .ok_or_else(|| anyhow::anyhow!("{arg} requires a value"))?
+                        .parse()?;
+                }
+                "--max-pending-missing-parents" => {
+                    self.max_pending_missing_parents = iter
+                        .next()
+                        .ok_or_else(|| anyhow::anyhow!("{arg} requires a value"))?
+                        .parse()?;
+                }
+                "--max-block-mass" => {
+                    self.max_block_mass = iter
+                        .next()
+                        .ok_or_else(|| anyhow::anyhow!("{arg} requires a value"))?
+                        .parse()?;
+                }
+                "--max-template-age-ms" => {
+                    self.max_template_age_ms = iter
+                        .next()
+                        .ok_or_else(|| anyhow::anyhow!("{arg} requires a value"))?
+                        .parse()?;
+                }
                 "--bootnode" | "--peer" => {
                     let value = iter
                         .next()
@@ -511,14 +671,30 @@ impl Config {
                 _ => {}
             }
         }
-        self.apply_env_overrides();
+        self.apply_experimental_guards()?;
         if let Ok(v) = std::env::var("PULSEDAG_API_PROFILE") {
             self.api_profile = ApiExposureProfile::from_env_value(&v)?;
         }
         self.apply_admin_default_or_env_override();
+        self.apply_experimental_guards()?;
         self.validate_api_exposure()?;
         self.validate_cors_policy()?;
         self.validate_security_hardening()?;
+        Ok(())
+    }
+
+    fn apply_experimental_guards(&mut self) -> Result<()> {
+        if self.experimental_fast_cadence && !self.experimental_ghostdag_selection {
+            bail!("--experimental-fast-cadence requires --experimental-ghostdag-selection");
+        }
+        self.target_block_interval_ms = guarded_target_block_interval_ms(
+            self.target_block_interval_ms,
+            self.experimental_fast_cadence,
+        );
+        self.target_block_interval_secs = self.target_block_interval_ms.div_ceil(1_000).max(1);
+        if !self.experimental_ghostdag_selection {
+            self.max_parallel_tips = 1;
+        }
         Ok(())
     }
 
@@ -697,11 +873,12 @@ fn read_env_bool(key: &str, default: bool) -> bool {
         .unwrap_or(default)
 }
 
-fn guarded_target_block_interval_secs(candidate: u64) -> u64 {
-    if candidate == pulsedag_core::CONSENSUS_TARGET_BLOCK_INTERVAL_SECS {
-        candidate
+fn guarded_target_block_interval_ms(candidate: u64, experimental_fast_cadence: bool) -> u64 {
+    let consensus = pulsedag_core::CONSENSUS_TARGET_BLOCK_INTERVAL_SECS.saturating_mul(1_000);
+    if experimental_fast_cadence {
+        candidate.max(1)
     } else {
-        pulsedag_core::CONSENSUS_TARGET_BLOCK_INTERVAL_SECS
+        consensus
     }
 }
 
@@ -765,6 +942,15 @@ mod tests {
             "PULSEDAG_AUTO_PRUNE_ENABLED",
             "PULSEDAG_PRUNE_KEEP_RECENT_BLOCKS",
             "PULSEDAG_TARGET_BLOCK_INTERVAL_SECS",
+            "PULSEDAG_TARGET_BLOCK_INTERVAL_MS",
+            "PULSEDAG_EXPERIMENTAL_GHOSTDAG_SELECTION",
+            "PULSEDAG_EXPERIMENTAL_FAST_CADENCE",
+            "PULSEDAG_MAX_PARALLEL_TIPS",
+            "PULSEDAG_MAX_MERGE_SET_SIZE",
+            "PULSEDAG_MAX_ORPHAN_COUNT",
+            "PULSEDAG_MAX_PENDING_MISSING_PARENTS",
+            "PULSEDAG_MAX_BLOCK_MASS",
+            "PULSEDAG_MAX_TEMPLATE_AGE_MS",
             "PULSEDAG_ADMIN_ENABLED",
             "PULSEDAG_ADMIN_UNSAFE_ALLOW_REMOTE_NOAUTH",
             "PULSEDAG_API_PROFILE",
@@ -805,6 +991,53 @@ mod tests {
             cfg.target_block_interval_secs,
             pulsedag_core::CONSENSUS_TARGET_BLOCK_INTERVAL_SECS
         );
+    }
+
+    #[test]
+    fn experimental_fast_cadence_requires_ghostdag_flag() {
+        let _guard = env_lock().lock().expect("env lock");
+        clear_test_env();
+        std::env::set_var("PULSEDAG_EXPERIMENTAL_FAST_CADENCE", "true");
+        let err = Config::from_env().expect_err("fast cadence must be gated");
+        assert!(err
+            .to_string()
+            .contains("requires --experimental-ghostdag-selection"));
+    }
+
+    #[test]
+    fn experimental_flags_unlock_millisecond_cadence_and_limits() {
+        let _guard = env_lock().lock().expect("env lock");
+        clear_test_env();
+        let mut cfg = Config::defaults_for_profile(ConfigProfile::Local);
+        cfg.apply_cli_args(vec![
+            "--experimental-ghostdag-selection".to_string(),
+            "--experimental-fast-cadence".to_string(),
+            "--target-block-interval-ms".to_string(),
+            "250".to_string(),
+            "--max-parallel-tips".to_string(),
+            "8".to_string(),
+            "--max-merge-set-size".to_string(),
+            "64".to_string(),
+            "--max-orphan-count".to_string(),
+            "2048".to_string(),
+            "--max-pending-missing-parents".to_string(),
+            "1024".to_string(),
+            "--max-block-mass".to_string(),
+            "2000000".to_string(),
+            "--max-template-age-ms".to_string(),
+            "5000".to_string(),
+        ])
+        .expect("experimental config");
+
+        assert!(cfg.experimental_ghostdag_selection);
+        assert!(cfg.experimental_fast_cadence);
+        assert_eq!(cfg.target_block_interval_ms, 250);
+        assert_eq!(cfg.max_parallel_tips, 8);
+        assert_eq!(cfg.max_merge_set_size, 64);
+        assert_eq!(cfg.max_orphan_count, 2048);
+        assert_eq!(cfg.max_pending_missing_parents, 1024);
+        assert_eq!(cfg.max_block_mass, 2_000_000);
+        assert_eq!(cfg.max_template_age_ms, 5_000);
     }
 
     #[test]
