@@ -475,6 +475,8 @@ async fn record_external_mining_rejection<S: RpcStateLike>(
             runtime.external_mining_stale_work_detected = runtime
                 .external_mining_stale_work_detected
                 .saturating_add(1);
+            runtime.template_stale_reject_total =
+                runtime.template_stale_reject_total.saturating_add(1);
         }
         ExternalMiningRejectKind::MissingTemplateId | ExternalMiningRejectKind::UnknownTemplate => {
             runtime.external_mining_rejected_unknown_template = runtime
@@ -2254,6 +2256,11 @@ mod tests {
                 .map(|tx| tx.txid.clone())
                 .collect(),
             merkle_root: block.header.merkle_root.clone(),
+            template_selected_parent: None,
+            template_parent_count: block.header.parents.len(),
+            template_blue_score: block.header.blue_score,
+            template_merge_set_size: 0,
+            duplicate_tx_filtered: 0,
         });
 
         let Json(submit_response) = post_mining_submit_for_test(

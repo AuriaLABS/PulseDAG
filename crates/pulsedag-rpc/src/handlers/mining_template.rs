@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeSet, HashMap},
+    collections::{BTreeSet, HashMap, HashSet},
     fs,
     path::PathBuf,
     sync::atomic::{AtomicU64, Ordering},
@@ -43,6 +43,16 @@ pub struct StoredMiningTemplate {
     pub template_txids: Vec<String>,
     #[serde(default)]
     pub merkle_root: String,
+    #[serde(default)]
+    pub template_selected_parent: Option<String>,
+    #[serde(default)]
+    pub template_parent_count: usize,
+    #[serde(default)]
+    pub template_blue_score: u64,
+    #[serde(default)]
+    pub template_merge_set_size: usize,
+    #[serde(default)]
+    pub duplicate_tx_filtered: u64,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -78,6 +88,11 @@ pub struct MiningTemplateData {
     pub pow_preimage_nonce_offset: usize,
     pub pow_header_preimage_version: u8,
     pub mutable_header_fields: Vec<String>,
+    pub template_selected_parent: Option<String>,
+    pub template_parent_count: usize,
+    pub template_blue_score: u64,
+    pub template_merge_set_size: usize,
+    pub duplicate_tx_filtered: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -89,6 +104,7 @@ pub(crate) struct TemplateLifecycleState {
     pub target_u64: u64,
     pub mempool_fingerprint: String,
     pub mempool_tx_count: usize,
+    pub duplicate_tx_filtered: u64,
 }
 
 pub(crate) const MINING_PROTOCOL_VERSION: u32 = 1;
@@ -146,12 +162,32 @@ fn invalidation_reason_codes(
     reasons
 }
 
-fn template_ordered_transactions(chain: &ChainState) -> Vec<pulsedag_core::types::Transaction> {
+fn parent_confirmed_txids(chain: &ChainState, parents: &[String]) -> HashSet<String> {
+    parents
+        .iter()
+        .filter_map(|parent| chain.dag.blocks.get(parent))
+        .flat_map(|block| block.transactions.iter().skip(1).map(|tx| tx.txid.clone()))
+        .collect()
+}
+
+fn template_ordered_transactions(
+    chain: &ChainState,
+    parents: &[String],
+) -> (Vec<pulsedag_core::types::Transaction>, u64) {
+    let parent_txids = parent_confirmed_txids(chain, parents);
+    let mut duplicate_tx_filtered = 0u64;
     let mut txs = chain
         .mempool
         .transactions
         .iter()
-        .map(|(txid, tx)| (txid.clone(), tx.clone()))
+        .filter_map(|(txid, tx)| {
+            if parent_txids.contains(txid) {
+                duplicate_tx_filtered = duplicate_tx_filtered.saturating_add(1);
+                None
+            } else {
+                Some((txid.clone(), tx.clone()))
+            }
+        })
         .collect::<HashMap<_, _>>();
     let mut remaining_parents = HashMap::<String, usize>::new();
     let mut children = HashMap::<String, Vec<String>>::new();
@@ -203,14 +239,22 @@ fn template_ordered_transactions(chain: &ChainState) -> Vec<pulsedag_core::types
         ordered.extend(fallback);
     }
 
-    ordered
+    (ordered, duplicate_tx_filtered)
 }
 
 pub(crate) fn current_template_state(chain: &ChainState) -> TemplateLifecycleState {
     let height = chain.dag.best_height + 1;
-    let mut parent_hashes = chain.dag.tips.iter().cloned().collect::<Vec<_>>();
-    parent_hashes.sort();
     let selected_tip = preferred_tip_hash(chain);
+    let mut parent_hashes = selected_tip.iter().cloned().collect::<Vec<_>>();
+    for tip in pulsedag_core::sorted_tip_hashes(chain) {
+        if selected_tip.as_ref() == Some(&tip) {
+            continue;
+        }
+        if parent_hashes.len() >= chain.dag.merge_set_k.saturating_add(1) {
+            break;
+        }
+        parent_hashes.push(tip);
+    }
     let snapshot = consensus_difficulty_snapshot(chain);
     let difficulty = snapshot.expected_difficulty;
     let target_u64 = snapshot.expected_target_u64;
@@ -221,7 +265,11 @@ pub(crate) fn current_template_state(chain: &ChainState) -> TemplateLifecycleSta
         .cloned()
         .collect::<Vec<_>>();
     tx_ids.sort();
-    let mempool_tx_count = tx_ids.len();
+    let duplicate_tx_filtered = parent_confirmed_txids(chain, &parent_hashes)
+        .into_iter()
+        .filter(|txid| chain.mempool.transactions.contains_key(txid))
+        .count() as u64;
+    let mempool_tx_count = tx_ids.len().saturating_sub(duplicate_tx_filtered as usize);
     let mempool_fingerprint = format!("{mempool_tx_count}:{}", tx_ids.join(","));
 
     TemplateLifecycleState {
@@ -232,6 +280,7 @@ pub(crate) fn current_template_state(chain: &ChainState) -> TemplateLifecycleSta
         target_u64,
         mempool_fingerprint,
         mempool_tx_count,
+        duplicate_tx_filtered,
     }
 }
 
@@ -329,9 +378,12 @@ pub async fn post_mining_template<S: RpcStateLike>(
         reward,
         height,
     )];
-    txs.extend(template_ordered_transactions(&chain));
+    let (ordered_txs, duplicate_tx_filtered) = template_ordered_transactions(&chain, &parents);
+    txs.extend(ordered_txs);
     let header_difficulty = lifecycle.difficulty;
     let mut block = build_candidate_block(parents.clone(), height, header_difficulty, txs);
+    let merge_classification = pulsedag_core::classify_merge_set(&block, &chain);
+    block.header.blue_score = merge_classification.blue_score;
     if let Err(e) = refresh_block_consensus_ids_with_state(&mut block, &chain) {
         return Json(ApiResponse::err("STATE_ROOT_ERROR", e.to_string()));
     }
@@ -362,12 +414,24 @@ pub async fn post_mining_template<S: RpcStateLike>(
         expires_at_unix,
         template_txids: template_txids.clone(),
         merkle_root: block.header.merkle_root.clone(),
+        template_selected_parent: merge_classification.selected_parent.clone(),
+        template_parent_count: block.header.parents.len(),
+        template_blue_score: block.header.blue_score,
+        template_merge_set_size: merge_classification.diagnostics.merge_set_size,
+        duplicate_tx_filtered,
     });
     {
         let runtime_handle = state.runtime();
         let mut runtime = runtime_handle.write().await;
         runtime.external_mining_templates_emitted =
             runtime.external_mining_templates_emitted.saturating_add(1);
+        runtime.template_selected_parent = merge_classification.selected_parent.clone();
+        runtime.template_parent_count = block.header.parents.len() as u64;
+        runtime.template_blue_score = block.header.blue_score;
+        runtime.template_merge_set_size = merge_classification.diagnostics.merge_set_size as u64;
+        runtime.duplicate_tx_filtered_total = runtime
+            .duplicate_tx_filtered_total
+            .saturating_add(duplicate_tx_filtered);
         if runtime
             .external_mining_last_template_id
             .as_ref()
@@ -458,6 +522,11 @@ pub async fn post_mining_template<S: RpcStateLike>(
         pow_preimage_nonce_offset: POW_NONCE_OFFSET,
         pow_header_preimage_version: pulsedag_core::POW_HEADER_PREIMAGE_VERSION,
         mutable_header_fields: vec!["nonce".to_string()],
+        template_selected_parent: merge_classification.selected_parent,
+        template_parent_count: block.header.parents.len(),
+        template_blue_score: blue_score,
+        template_merge_set_size: merge_classification.diagnostics.merge_set_size,
+        duplicate_tx_filtered,
     }))
 }
 
@@ -472,7 +541,7 @@ mod tests {
     use pulsedag_core::{
         genesis::init_chain_state,
         state::ChainState,
-        types::{Block, OutPoint, Transaction, TxInput},
+        types::{Block, BlockHeader, OutPoint, Transaction, TxInput, TxOutput},
         PulseError,
     };
     use pulsedag_p2p::{P2pHandle, P2pStatus, P2P_MODE_LIBP2P_REAL};
@@ -546,6 +615,111 @@ mod tests {
             p2p: Some(Arc::new(TestP2pHandle { status })),
         }
     }
+
+    fn tip_block(hash: &str, height: u64, blue_score: u64, txs: Vec<Transaction>) -> Block {
+        Block {
+            hash: hash.to_string(),
+            header: BlockHeader {
+                version: 1,
+                parents: vec!["genesis-block".to_string()],
+                timestamp: height,
+                difficulty: 1,
+                nonce: 0,
+                merkle_root: format!("merkle-{hash}"),
+                state_root: format!("state-{hash}"),
+                blue_score,
+                height,
+            },
+            transactions: txs,
+        }
+    }
+
+    fn non_coinbase_tx(txid: &str, fee: u64) -> Transaction {
+        Transaction {
+            txid: txid.to_string(),
+            version: 1,
+            inputs: vec![TxInput {
+                previous_output: OutPoint {
+                    txid: format!("utxo-{txid}"),
+                    index: 0,
+                },
+                public_key: "pk".to_string(),
+                signature: "sig".to_string(),
+            }],
+            outputs: vec![TxOutput {
+                address: "kaspa:qptest".to_string(),
+                amount: 1,
+            }],
+            fee,
+            nonce: fee,
+        }
+    }
+
+    #[test]
+    fn template_state_uses_selected_parent_first_and_includes_parallel_tips() {
+        let mut chain = init_chain_state("testnet-dev".to_string());
+        chain.dag.tips.clear();
+        chain.dag.blocks.insert(
+            "lower-blue".to_string(),
+            tip_block("lower-blue", 10, 10, vec![]),
+        );
+        chain.dag.blocks.insert(
+            "selected-blue".to_string(),
+            tip_block("selected-blue", 9, 20, vec![]),
+        );
+        chain.dag.tips.insert("lower-blue".to_string());
+        chain.dag.tips.insert("selected-blue".to_string());
+
+        let state = current_template_state(&chain);
+
+        assert_eq!(state.selected_tip, Some("selected-blue".to_string()));
+        assert_eq!(state.parent_hashes[0], "selected-blue");
+        assert!(state.parent_hashes.contains(&"lower-blue".to_string()));
+    }
+
+    #[test]
+    fn template_filters_duplicate_transactions_already_in_parallel_parents() {
+        let mut chain = init_chain_state("testnet-dev".to_string());
+        chain.dag.tips.clear();
+        let duplicate = non_coinbase_tx("duplicate-tx", 10);
+        let fresh = non_coinbase_tx("fresh-tx", 9);
+        chain.dag.blocks.insert(
+            "selected-blue".to_string(),
+            tip_block("selected-blue", 2, 2, vec![]),
+        );
+        chain.dag.blocks.insert(
+            "parallel".to_string(),
+            tip_block(
+                "parallel",
+                1,
+                1,
+                vec![
+                    pulsedag_core::build_coinbase_transaction("kaspa:qptest", 1, 1),
+                    duplicate.clone(),
+                ],
+            ),
+        );
+        chain.dag.tips.insert("selected-blue".to_string());
+        chain.dag.tips.insert("parallel".to_string());
+        chain
+            .mempool
+            .transactions
+            .insert(duplicate.txid.clone(), duplicate);
+        chain
+            .mempool
+            .transactions
+            .insert(fresh.txid.clone(), fresh.clone());
+
+        let state = current_template_state(&chain);
+        let (selected, filtered) = template_ordered_transactions(&chain, &state.parent_hashes);
+
+        assert_eq!(filtered, 1);
+        assert_eq!(state.duplicate_tx_filtered, 1);
+        assert_eq!(
+            selected.into_iter().map(|tx| tx.txid).collect::<Vec<_>>(),
+            vec![fresh.txid]
+        );
+    }
     #[test]
     fn template_id_changes_when_mempool_changes() {
         let mut chain = init_chain_state("testnet-dev".to_string());
@@ -604,10 +778,12 @@ mod tests {
             .transactions
             .insert(parent.txid.clone(), parent.clone());
 
-        let ordered = template_ordered_transactions(&chain)
+        let (ordered_txs, filtered) = template_ordered_transactions(&chain, &[]);
+        let ordered = ordered_txs
             .into_iter()
             .map(|tx| tx.txid)
             .collect::<Vec<_>>();
+        assert_eq!(filtered, 0);
         assert_eq!(ordered, vec![parent.txid, child.txid]);
     }
 
