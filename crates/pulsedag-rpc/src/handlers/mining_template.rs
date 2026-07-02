@@ -398,6 +398,10 @@ pub async fn post_mining_template<S: RpcStateLike>(
     let pow_preimage = pow_preimage_bytes(&block.header);
     let pow_preimage_hex = hex::encode(&pow_preimage);
     let pre_pow_hash = hex::encode(Keccak256::digest(&pow_preimage));
+    let parent_tips = block.header.parents.clone();
+    let template_parent_count = parent_tips.len();
+    let template_blue_score = block.header.blue_score;
+    let template_merge_set_size = merge_classification.diagnostics.merge_set_size;
 
     store_template(&StoredMiningTemplate {
         protocol_version: MINING_PROTOCOL_VERSION,
@@ -415,9 +419,9 @@ pub async fn post_mining_template<S: RpcStateLike>(
         template_txids: template_txids.clone(),
         merkle_root: block.header.merkle_root.clone(),
         template_selected_parent: merge_classification.selected_parent.clone(),
-        template_parent_count: block.header.parents.len(),
-        template_blue_score: block.header.blue_score,
-        template_merge_set_size: merge_classification.diagnostics.merge_set_size,
+        template_parent_count,
+        template_blue_score,
+        template_merge_set_size,
         duplicate_tx_filtered,
     });
     {
@@ -426,9 +430,9 @@ pub async fn post_mining_template<S: RpcStateLike>(
         runtime.external_mining_templates_emitted =
             runtime.external_mining_templates_emitted.saturating_add(1);
         runtime.template_selected_parent = merge_classification.selected_parent.clone();
-        runtime.template_parent_count = block.header.parents.len() as u64;
-        runtime.template_blue_score = block.header.blue_score;
-        runtime.template_merge_set_size = merge_classification.diagnostics.merge_set_size as u64;
+        runtime.template_parent_count = template_parent_count as u64;
+        runtime.template_blue_score = template_blue_score;
+        runtime.template_merge_set_size = template_merge_set_size as u64;
         runtime.duplicate_tx_filtered_total = runtime
             .duplicate_tx_filtered_total
             .saturating_add(duplicate_tx_filtered);
@@ -488,7 +492,7 @@ pub async fn post_mining_template<S: RpcStateLike>(
         notes: vec!["Mining template uses centralized runtime retarget policy".to_string()],
     };
 
-    let blue_score = block.header.blue_score;
+    let blue_score = template_blue_score;
 
     Json(ApiResponse::ok(MiningTemplateData {
         protocol_version: MINING_PROTOCOL_VERSION,
@@ -498,7 +502,7 @@ pub async fn post_mining_template<S: RpcStateLike>(
         miner_address: req.miner_address,
         template_id,
         selected_tip,
-        parent_tips: block.header.parents.clone(),
+        parent_tips,
         created_at_unix,
         expires_at_unix,
         freshness_ttl_secs: TEMPLATE_TTL_SECS,
@@ -523,9 +527,9 @@ pub async fn post_mining_template<S: RpcStateLike>(
         pow_header_preimage_version: pulsedag_core::POW_HEADER_PREIMAGE_VERSION,
         mutable_header_fields: vec!["nonce".to_string()],
         template_selected_parent: merge_classification.selected_parent,
-        template_parent_count: block.header.parents.len(),
+        template_parent_count,
         template_blue_score: blue_score,
-        template_merge_set_size: merge_classification.diagnostics.merge_set_size,
+        template_merge_set_size,
         duplicate_tx_filtered,
     }))
 }
