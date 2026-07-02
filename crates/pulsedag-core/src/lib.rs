@@ -6,6 +6,7 @@ pub mod genesis;
 pub mod ghostdag;
 pub mod mempool;
 pub mod mining;
+pub mod ordering;
 pub mod orphans;
 pub mod pow;
 pub mod replay;
@@ -60,6 +61,10 @@ pub use pow::{
     CanonicalPowMaterial, CanonicalPowTarget, DevDifficultyPolicy, DevDifficultySnapshot,
     PowAlgorithm, PowEngine, PowEvaluation, PowHeaderPreimage, PowRejectReason,
     PowTargetComparison, PowValidationResult, POW_HEADER_PREIMAGE_VERSION,
+};
+
+pub use ordering::{
+    derive_ordered_dag, ordered_dag_tip, refresh_ordered_dag, DAG_ORDERING_VERSION,
 };
 
 pub use mempool::{

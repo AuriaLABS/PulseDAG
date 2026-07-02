@@ -4,6 +4,7 @@ use crate::{
     errors::PulseError,
     ghostdag::classify_merge_set,
     mining::is_coinbase,
+    ordering::refresh_ordered_dag,
     selection::refresh_selected_chain,
     state::ChainState,
     types::{Block, OutPoint, Transaction, Utxo},
@@ -119,6 +120,7 @@ pub fn commit_block_to_state(block: &Block, state: &mut ChainState) -> Result<()
         .insert(block.hash.clone(), classification.diagnostics.clone());
     state.dag.blocks.insert(block.hash.clone(), block.clone());
     refresh_selected_chain(state);
+    refresh_ordered_dag(state);
     Ok(())
 }
 
