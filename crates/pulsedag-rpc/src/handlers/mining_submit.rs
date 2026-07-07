@@ -571,7 +571,8 @@ async fn post_mining_submit_with_actor<S: RpcStateLike>(
     }
 
     if let Ok(chain) = state.chain().try_read() {
-        if height <= chain.dag.best_height {
+        let known_duplicate = chain.dag.blocks.contains_key(&block_hash);
+        if !known_duplicate && height <= chain.dag.best_height {
             let best_height = chain.dag.best_height;
             let detail = format!(
                 "early stale template rejection before submit actor enqueue: current best height is {best_height} and submitted block height is {height}"
