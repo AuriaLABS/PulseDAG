@@ -188,6 +188,7 @@ pub struct MetricsData {
     pub p2p_status_snapshot: P2pStatusSnapshotMetrics,
     pub rpc_degraded_response_total: u64,
     pub rpc_snapshot_age_ms: u64,
+    pub rpc_snapshot_age_ms_by_endpoint: BTreeMap<String, u64>,
     pub rpc_snapshot_stale_total: u64,
     pub rpc_handler_degraded_total: u64,
     pub rpc_handler_timeout_avoided_total: u64,
@@ -628,6 +629,9 @@ pub async fn get_metrics<S: RpcStateLike>(
         p2p_status_snapshot: snapshot_metrics,
         rpc_degraded_response_total: snapshot_metrics.rpc_degraded_response_total,
         rpc_snapshot_age_ms: node_snapshot_metrics.rpc_snapshot_age_ms,
+        rpc_snapshot_age_ms_by_endpoint: node_snapshot_metrics
+            .rpc_snapshot_age_ms_by_endpoint
+            .clone(),
         rpc_snapshot_stale_total: node_snapshot_metrics.rpc_snapshot_stale_total,
         rpc_handler_degraded_total: node_snapshot_metrics.rpc_handler_degraded_total,
         rpc_handler_timeout_avoided_total: node_snapshot_metrics.rpc_handler_timeout_avoided_total,
