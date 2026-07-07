@@ -71,6 +71,21 @@ pub struct NodeRpcSnapshot {
     pub sync_state: String,
 }
 
+/// Lightweight status snapshot used by liveness-style RPCs instead of waiting
+/// behind consensus/runtime locks.
+pub type StatusSnapshot = NodeRpcSnapshot;
+
+/// Lightweight sync snapshot used by `/sync/status` and `/sync/missing`.
+pub type SyncSnapshot = NodeRpcSnapshot;
+
+/// Lightweight readiness snapshot used to make readiness fail/warn quickly
+/// when fresh state is unavailable instead of timing out.
+pub type ReadinessSnapshot = NodeRpcSnapshot;
+
+/// Lightweight metrics snapshot used by `/metrics` so the endpoint can return
+/// while the process and listener are alive, even when runtime state is busy.
+pub type MetricsSnapshot = NodeRpcSnapshotMetrics;
+
 impl Default for NodeRpcSnapshot {
     fn default() -> Self {
         Self {
@@ -167,6 +182,7 @@ pub fn mark_node_rpc_snapshot_stale_if_needed(snapshot: &mut NodeRpcSnapshot) {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NodeRpcSnapshotMetrics {
     pub rpc_snapshot_age_ms: u64,
+    pub rpc_snapshot_age_ms_by_endpoint: BTreeMap<String, u64>,
     pub rpc_snapshot_stale_total: u64,
     pub rpc_handler_degraded_total: u64,
     pub rpc_handler_timeout_avoided_total: u64,
@@ -180,8 +196,10 @@ pub struct NodeRpcSnapshotMetrics {
 }
 
 pub fn node_rpc_snapshot_metrics(snapshot: &NodeRpcSnapshot) -> NodeRpcSnapshotMetrics {
+    let rpc_snapshot_age_ms = unix_now_ms().saturating_sub(snapshot.last_updated_ms);
     NodeRpcSnapshotMetrics {
-        rpc_snapshot_age_ms: unix_now_ms().saturating_sub(snapshot.last_updated_ms),
+        rpc_snapshot_age_ms,
+        rpc_snapshot_age_ms_by_endpoint: rpc_snapshot_age_ms_by_endpoint(rpc_snapshot_age_ms),
         rpc_snapshot_stale_total: RPC_SNAPSHOT_STALE_TOTAL.load(Ordering::Relaxed),
         rpc_handler_degraded_total: RPC_HANDLER_DEGRADED_TOTAL.load(Ordering::Relaxed),
         rpc_handler_timeout_avoided_total: RPC_HANDLER_TIMEOUT_AVOIDED_TOTAL
@@ -194,6 +212,34 @@ pub fn node_rpc_snapshot_metrics(snapshot: &NodeRpcSnapshot) -> NodeRpcSnapshotM
         rpc_accept_backlog_observed: RPC_ACCEPT_BACKLOG_OBSERVED.load(Ordering::Relaxed),
         oldest_inflight_rpc_handler_age_ms: oldest_inflight_rpc_handler_age_ms(),
     }
+}
+
+fn rpc_snapshot_age_ms_by_endpoint(age_ms: u64) -> BTreeMap<String, u64> {
+    const LIVENESS_ENDPOINTS: [&str; 8] = [
+        "/metrics",
+        "/status",
+        "/readiness",
+        "/release",
+        "/p2p/status",
+        "/sync/status",
+        "/sync/missing",
+        "/orphans",
+    ];
+    let mut ages = LIVENESS_ENDPOINTS
+        .into_iter()
+        .map(|endpoint| (endpoint.to_string(), age_ms))
+        .collect::<BTreeMap<_, _>>();
+    for counts in [
+        endpoint_counts(&RPC_HANDLER_TIMEOUT_BY_ENDPOINT),
+        endpoint_counts(&RUNTIME_LOCK_BUSY_BY_ENDPOINT),
+        endpoint_counts(&DEGRADED_SNAPSHOT_BY_ENDPOINT),
+        inflight_rpc_handler_counts(),
+    ] {
+        for endpoint in counts.keys() {
+            ages.entry(endpoint.clone()).or_insert(age_ms);
+        }
+    }
+    ages
 }
 
 pub fn record_rpc_snapshot_stale() {
@@ -965,6 +1011,10 @@ pub struct P2pStatusSnapshot {
     pub degraded_reason: Option<String>,
     pub captured_at_unix: Option<u64>,
 }
+
+/// Lightweight P2P snapshot used by status-like handlers instead of calling
+/// into P2P synchronously without a bound.
+pub type P2pSnapshot = P2pStatusSnapshot;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct P2pStatusSnapshotMetrics {
