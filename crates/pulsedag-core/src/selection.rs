@@ -133,6 +133,7 @@ mod tests {
 
     fn state_with_tips(blocks: Vec<Block>) -> crate::ChainState {
         let mut state = init_chain_state("selection-test".to_string());
+        state.dag.selected_parent_policy = SelectedParentPolicy::GhostdagInspired;
         state.dag.tips.clear();
 
         for block in blocks {

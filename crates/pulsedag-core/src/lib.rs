@@ -27,7 +27,7 @@ pub use errors::{
     InvalidStateRootClassification, InvalidStateRootDiagnostics, InvalidStateRootError, PulseError,
 };
 pub use state::{
-    ChainState, ContractRuntimeConfig, ContractRuntimeState, DagState, Mempool,
+    ChainState, ConsensusMode, ContractRuntimeConfig, ContractRuntimeState, DagState, Mempool,
     SelectedParentPolicy, UtxoState,
 };
 pub use tx::{

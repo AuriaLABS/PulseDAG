@@ -1,4 +1,5 @@
 use anyhow::{bail, Result};
+use pulsedag_core::ConsensusMode;
 
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -20,6 +21,7 @@ pub struct Config {
     pub target_block_interval_ms: u64,
     pub experimental_ghostdag_selection: bool,
     pub experimental_fast_cadence: bool,
+    pub consensus_mode: ConsensusMode,
     pub max_parallel_tips: usize,
     pub max_merge_set_size: usize,
     pub max_orphan_count: usize,
@@ -142,6 +144,7 @@ impl Config {
                 target_block_interval_ms: 60_000,
                 experimental_ghostdag_selection: false,
                 experimental_fast_cadence: false,
+                consensus_mode: ConsensusMode::Legacy,
                 max_parallel_tips: 1,
                 max_merge_set_size: 32,
                 max_orphan_count: pulsedag_core::DEFAULT_ORPHAN_MAX_COUNT,
@@ -183,6 +186,7 @@ impl Config {
                 target_block_interval_ms: 60_000,
                 experimental_ghostdag_selection: false,
                 experimental_fast_cadence: false,
+                consensus_mode: ConsensusMode::Legacy,
                 max_parallel_tips: 1,
                 max_merge_set_size: 32,
                 max_orphan_count: pulsedag_core::DEFAULT_ORPHAN_MAX_COUNT,
@@ -224,6 +228,7 @@ impl Config {
                 target_block_interval_ms: 60_000,
                 experimental_ghostdag_selection: false,
                 experimental_fast_cadence: false,
+                consensus_mode: ConsensusMode::Legacy,
                 max_parallel_tips: 1,
                 max_merge_set_size: 32,
                 max_orphan_count: pulsedag_core::DEFAULT_ORPHAN_MAX_COUNT,
@@ -265,6 +270,7 @@ impl Config {
                 target_block_interval_ms: 60_000,
                 experimental_ghostdag_selection: false,
                 experimental_fast_cadence: false,
+                consensus_mode: ConsensusMode::Legacy,
                 max_parallel_tips: 1,
                 max_merge_set_size: 32,
                 max_orphan_count: pulsedag_core::DEFAULT_ORPHAN_MAX_COUNT,
@@ -306,6 +312,7 @@ impl Config {
                 target_block_interval_ms: 60_000,
                 experimental_ghostdag_selection: false,
                 experimental_fast_cadence: false,
+                consensus_mode: ConsensusMode::Legacy,
                 max_parallel_tips: 1,
                 max_merge_set_size: 32,
                 max_orphan_count: pulsedag_core::DEFAULT_ORPHAN_MAX_COUNT,
@@ -347,6 +354,7 @@ impl Config {
                 target_block_interval_ms: 60_000,
                 experimental_ghostdag_selection: false,
                 experimental_fast_cadence: false,
+                consensus_mode: ConsensusMode::Legacy,
                 max_parallel_tips: 1,
                 max_merge_set_size: 32,
                 max_orphan_count: pulsedag_core::DEFAULT_ORPHAN_MAX_COUNT,
@@ -391,6 +399,7 @@ impl Config {
                 target_block_interval_ms: 60_000,
                 experimental_ghostdag_selection: false,
                 experimental_fast_cadence: false,
+                consensus_mode: ConsensusMode::Legacy,
                 max_parallel_tips: 1,
                 max_merge_set_size: 32,
                 max_orphan_count: pulsedag_core::DEFAULT_ORPHAN_MAX_COUNT,
@@ -432,6 +441,7 @@ impl Config {
                 target_block_interval_ms: 60_000,
                 experimental_ghostdag_selection: false,
                 experimental_fast_cadence: false,
+                consensus_mode: ConsensusMode::Legacy,
                 max_parallel_tips: 1,
                 max_merge_set_size: 32,
                 max_orphan_count: pulsedag_core::DEFAULT_ORPHAN_MAX_COUNT,
@@ -500,6 +510,9 @@ impl Config {
             "PULSEDAG_EXPERIMENTAL_GHOSTDAG_SELECTION",
             self.experimental_ghostdag_selection,
         );
+        if let Ok(raw) = std::env::var("PULSEDAG_CONSENSUS_MODE") {
+            self.consensus_mode = raw.parse().map_err(anyhow::Error::msg)?;
+        }
         self.experimental_fast_cadence = read_env_bool(
             "PULSEDAG_EXPERIMENTAL_FAST_CADENCE",
             self.experimental_fast_cadence,
@@ -612,10 +625,17 @@ impl Config {
                         .ok_or_else(|| anyhow::anyhow!("{arg} requires a value"))?;
                 }
                 "--experimental-ghostdag-selection" => {
-                    self.experimental_ghostdag_selection = true;
+                    self.consensus_mode = ConsensusMode::GhostdagDev;
                 }
                 "--experimental-fast-cadence" => {
                     self.experimental_fast_cadence = true;
+                }
+                "--consensus-mode" => {
+                    self.consensus_mode = iter
+                        .next()
+                        .ok_or_else(|| anyhow::anyhow!("{arg} requires a value"))?
+                        .parse()
+                        .map_err(anyhow::Error::msg)?;
                 }
                 "--target-block-interval-ms" => {
                     self.target_block_interval_ms = iter
@@ -684,9 +704,11 @@ impl Config {
     }
 
     fn apply_experimental_guards(&mut self) -> Result<()> {
+        self.experimental_ghostdag_selection = self.consensus_mode == ConsensusMode::GhostdagDev;
         if self.experimental_fast_cadence && !self.experimental_ghostdag_selection {
             bail!("--experimental-fast-cadence requires --experimental-ghostdag-selection");
         }
+        self.experimental_fast_cadence = false;
         self.target_block_interval_ms = guarded_target_block_interval_ms(
             self.target_block_interval_ms,
             self.experimental_fast_cadence,

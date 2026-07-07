@@ -1,6 +1,6 @@
 use pulsedag_core::apply::commit_block_to_state;
 use pulsedag_core::genesis::init_chain_state;
-use pulsedag_core::{Block, BlockHeader, ChainState, Hash};
+use pulsedag_core::{Block, BlockHeader, ChainState, ConsensusMode, Hash, SelectedParentPolicy};
 
 fn block(hash: &str, parents: Vec<Hash>, height: u64, blue_score: u64) -> Block {
     Block {
@@ -20,6 +20,13 @@ fn block(hash: &str, parents: Vec<Hash>, height: u64, blue_score: u64) -> Block 
     }
 }
 
+fn init_ghostdag_dev(chain_id: &str) -> ChainState {
+    let mut state = init_chain_state(chain_id.to_string());
+    state.dag.consensus_mode = ConsensusMode::GhostdagDev;
+    state.dag.selected_parent_policy = SelectedParentPolicy::GhostdagInspired;
+    state
+}
+
 fn accept_all(mut state: ChainState, blocks: Vec<Block>) -> ChainState {
     for block in blocks {
         commit_block_to_state(&block, &mut state).expect("test block should commit");
@@ -37,7 +44,7 @@ fn build_dag_blocks(genesis: &str) -> (Block, Block, Block, Block) {
 
 #[test]
 fn selected_parent_same_dag_different_arrival_orders_is_deterministic() {
-    let base = init_chain_state("selected-parent-arrival".to_string());
+    let base = init_ghostdag_dev("selected-parent-arrival");
     let genesis = base.dag.genesis_hash.clone();
     let (a, b, a2, merge) = build_dag_blocks(&genesis);
 
@@ -59,7 +66,7 @@ fn selected_parent_same_dag_different_arrival_orders_is_deterministic() {
 
 #[test]
 fn replay_selected_chain_from_snapshot_is_stable() {
-    let base = init_chain_state("selected-parent-snapshot".to_string());
+    let base = init_ghostdag_dev("selected-parent-snapshot");
     let genesis = base.dag.genesis_hash.clone();
     let (a, b, a2, merge) = build_dag_blocks(&genesis);
 
@@ -84,7 +91,7 @@ fn replay_selected_chain_from_snapshot_is_stable() {
 
 #[test]
 fn selected_parent_orphan_adoption_preserves_final_selection() {
-    let base = init_chain_state("selected-parent-orphan".to_string());
+    let base = init_ghostdag_dev("selected-parent-orphan");
     let genesis = base.dag.genesis_hash.clone();
     let (a, b, a2, merge) = build_dag_blocks(&genesis);
 
@@ -106,7 +113,7 @@ fn selected_parent_orphan_adoption_preserves_final_selection() {
 
 #[test]
 fn selected_parent_competing_same_height_tips_use_hash_tie_break() {
-    let base = init_chain_state("selected-parent-tie".to_string());
+    let base = init_ghostdag_dev("selected-parent-tie");
     let genesis = base.dag.genesis_hash.clone();
     let z = block("z-parent", vec![genesis.clone()], 1, 1);
     let a = block("a-parent", vec![genesis], 1, 1);

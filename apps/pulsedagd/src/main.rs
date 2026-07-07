@@ -837,6 +837,12 @@ async fn main() -> Result<()> {
     let snapshot_exists = storage.snapshot_exists().unwrap_or(false);
     let persisted_blocks = storage.list_blocks().unwrap_or_default();
     let mut chain_state = storage.load_or_init_genesis(cfg.chain_id.clone())?;
+    chain_state.dag.consensus_mode = cfg.consensus_mode;
+    chain_state.dag.selected_parent_policy = if cfg.consensus_mode.ghostdag_metadata_active() {
+        pulsedag_core::SelectedParentPolicy::GhostdagInspired
+    } else {
+        pulsedag_core::SelectedParentPolicy::LegacyTip
+    };
     let startup_persisted_max_height = persisted_blocks
         .iter()
         .map(|b| b.header.height)
@@ -1033,6 +1039,9 @@ async fn main() -> Result<()> {
     runtime_stats.prune_require_snapshot = cfg.prune_require_snapshot;
     runtime_stats.experimental_ghostdag_selection = cfg.experimental_ghostdag_selection;
     runtime_stats.experimental_fast_cadence = cfg.experimental_fast_cadence;
+    runtime_stats.consensus_mode = cfg.consensus_mode.to_string();
+    runtime_stats.ghostdag_metadata_active = cfg.consensus_mode.ghostdag_metadata_active();
+    runtime_stats.high_cadence_allowed = cfg.consensus_mode.high_cadence_allowed();
     runtime_stats.target_block_interval_ms = cfg.target_block_interval_ms;
     runtime_stats.max_parallel_tips = cfg.max_parallel_tips;
     runtime_stats.max_merge_set_size = cfg.max_merge_set_size;

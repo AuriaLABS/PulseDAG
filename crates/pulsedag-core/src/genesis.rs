@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::{
     state::{
-        ChainState, ContractRuntimeConfig, ContractRuntimeState, DagState, Mempool,
+        ChainState, ConsensusMode, ContractRuntimeConfig, ContractRuntimeState, DagState, Mempool,
         SelectedParentPolicy, UtxoState,
     },
     tx::compute_txid,
@@ -116,9 +116,10 @@ pub fn init_chain_state(chain_id: String) -> ChainState {
             children: HashMap::new(),
             genesis_hash: genesis.hash,
             best_height: 0,
+            consensus_mode: ConsensusMode::Legacy,
             selected_parents,
             selected_chain: selected_chain.clone(),
-            selected_parent_policy: SelectedParentPolicy::GhostdagInspired,
+            selected_parent_policy: SelectedParentPolicy::LegacyTip,
             merge_set_k: crate::ghostdag::DEFAULT_MERGE_SET_K,
             merge_set_blues: HashMap::new(),
             merge_set_reds: HashMap::new(),

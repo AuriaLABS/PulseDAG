@@ -43,6 +43,9 @@ pub struct ReadinessMetrics {
     pub p2p_peer_count: usize,
     pub storage_last_commit_height: Option<u64>,
     pub state_root: Option<String>,
+    pub consensus_mode: String,
+    pub ghostdag_metadata_active: bool,
+    pub high_cadence_allowed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -149,6 +152,9 @@ fn readiness_from_rpc_snapshot(snapshot: NodeRpcSnapshot) -> ReadinessData {
             p2p_peer_count: snapshot.peer_count,
             storage_last_commit_height: None,
             state_root: None,
+            consensus_mode: pulsedag_core::ConsensusMode::Legacy.to_string(),
+            ghostdag_metadata_active: false,
+            high_cadence_allowed: false,
         },
         release_blockers: vec![
             "fresh liveness state unavailable; serving degraded snapshot".to_string(),
@@ -321,6 +327,9 @@ pub async fn get_readiness<S: RpcStateLike>(
         p2p_peer_count,
         storage_last_commit_height,
         state_root: state_root.clone(),
+        consensus_mode: chain.dag.consensus_mode.to_string(),
+        ghostdag_metadata_active: chain.dag.consensus_mode.ghostdag_metadata_active(),
+        high_cadence_allowed: chain.dag.consensus_mode.high_cadence_allowed(),
     };
 
     let mut categories = BTreeMap::new();
@@ -346,6 +355,26 @@ pub async fn get_readiness<S: RpcStateLike>(
                 Vec::new()
             },
             "consensus tip selection and genesis anchor are available",
+        ),
+    );
+    if chain.dag.consensus_mode == pulsedag_core::ConsensusMode::GhostdagDev {
+        categories.insert(
+            "consensus_mode".to_string(),
+            category(
+                ReadinessStatus::Fail,
+                vec![
+                    "ghostdag_dev_mode_not_release_ready".to_string(),
+                    "ghostdag_dev is experimental diagnostics mode, not public-testnet readiness"
+                        .to_string(),
+                ],
+            ),
+        );
+    }
+    categories.insert(
+        "high_cadence".to_string(),
+        category(
+            ReadinessStatus::Fail,
+            vec!["high_cadence_blocked_until_replay_and_harness_pass".to_string()],
         ),
     );
 
@@ -806,6 +835,9 @@ mod tests {
                 p2p_peer_count: 3,
                 storage_last_commit_height: Some(4),
                 state_root: Some("root".to_string()),
+                consensus_mode: pulsedag_core::ConsensusMode::Legacy.to_string(),
+                ghostdag_metadata_active: false,
+                high_cadence_allowed: false,
             },
             release_blockers: Vec::new(),
             warnings: vec!["p2p: no peers".to_string()],
@@ -853,6 +885,9 @@ mod tests {
                 p2p_peer_count: 0,
                 storage_last_commit_height: None,
                 state_root: None,
+                consensus_mode: pulsedag_core::ConsensusMode::Legacy.to_string(),
+                ghostdag_metadata_active: false,
+                high_cadence_allowed: false,
             },
             release_blockers: vec!["public_testnet_evidence: missing explicit gate evidence".to_string()],
             warnings: vec!["public_testnet_evidence: public testnet readiness is gated by explicit evidence and remains disabled for v2.2.19".to_string()],
