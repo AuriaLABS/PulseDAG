@@ -35,6 +35,8 @@ pub struct DagState {
     pub genesis_hash: Hash,
     pub best_height: u64,
     #[serde(default)]
+    pub consensus_mode: ConsensusMode,
+    #[serde(default)]
     pub selected_parents: HashMap<Hash, Option<Hash>>,
     #[serde(default)]
     pub selected_chain: Vec<Hash>,
@@ -54,6 +56,47 @@ pub struct DagState {
     pub ordered_dag: Vec<Hash>,
     #[serde(default = "crate::ordering::default_ordering_version")]
     pub ordering_version: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ConsensusMode {
+    #[default]
+    Legacy,
+    GhostdagDev,
+}
+
+impl ConsensusMode {
+    pub fn ghostdag_metadata_active(self) -> bool {
+        matches!(self, Self::GhostdagDev)
+    }
+
+    pub fn high_cadence_allowed(self) -> bool {
+        false
+    }
+}
+
+impl std::fmt::Display for ConsensusMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Legacy => f.write_str("legacy"),
+            Self::GhostdagDev => f.write_str("ghostdag_dev"),
+        }
+    }
+}
+
+impl std::str::FromStr for ConsensusMode {
+    type Err = String;
+
+    fn from_str(raw: &str) -> Result<Self, Self::Err> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "legacy" => Ok(Self::Legacy),
+            "ghostdag_dev" => Ok(Self::GhostdagDev),
+            other => Err(format!(
+                "invalid consensus mode {other:?}; expected legacy or ghostdag_dev"
+            )),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]

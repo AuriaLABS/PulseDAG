@@ -232,3 +232,27 @@ High block cadence remains blocked until all of the following are implemented, a
 | Mining creates duplicate/conflicting transactions | Invalid blocks or nondeterministic acceptance | Template-level duplicate filtering and consensus DAG-order conflict tests. |
 | Premature high cadence | Amplifies orphan and convergence failures | Require feature flag disabled by default and evidence gates listed above. |
 | Over-pruning side-DAG data | Unable to replay or resolve reorgs | Conservative finality boundary and snapshot restore proof before pruning. |
+
+## Consensus activation gates
+
+PulseDAG exposes an explicit `consensus_mode` gate so design-only GHOSTDAG-inspired metadata cannot silently become live consensus.
+
+| Mode | Default | Metadata behavior | High cadence | Release/readiness status |
+| --- | --- | --- | --- | --- |
+| `legacy` | yes | Preserves stable legacy tip behavior; selected-parent, merge-set, blue/red, and ordered-DAG fields are not activated consensus. | Disabled (`high_cadence_allowed=false`). | Normal mode, with high cadence still blocked until replay and harness evidence passes. |
+| `ghostdag_dev` | no | Enables selected-parent, merge-set, blue/red diagnostics, and ordered-DAG metadata for development diagnostics only. | Disabled (`high_cadence_allowed=false`). | Experimental only; not public-testnet readiness and blocked by `ghostdag_dev_mode_not_release_ready`. |
+
+Operators may select the mode with `PULSEDAG_CONSENSUS_MODE=legacy` or `PULSEDAG_CONSENSUS_MODE=ghostdag_dev` (or `--consensus-mode`). The default is always `legacy`.
+
+Status and readiness surfaces must report:
+
+- `consensus_mode`
+- `ghostdag_metadata_active`
+- `high_cadence_allowed=false`
+
+Release/readiness blockers include:
+
+- `ghostdag_dev_mode_not_release_ready`
+- `high_cadence_blocked_until_replay_and_harness_pass`
+
+`ghostdag_dev` is not public-testnet readiness. It does not implement new GHOSTDAG rules, change PoW or emission, enable high block cadence, or change the P2P protocol.

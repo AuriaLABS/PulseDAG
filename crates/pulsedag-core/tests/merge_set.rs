@@ -1,6 +1,13 @@
 use pulsedag_core::apply::commit_block_to_state;
 use pulsedag_core::genesis::init_chain_state;
-use pulsedag_core::{Block, BlockHeader, ChainState, Hash};
+use pulsedag_core::{Block, BlockHeader, ChainState, ConsensusMode, Hash, SelectedParentPolicy};
+
+fn init_ghostdag_dev(chain_id: &str) -> ChainState {
+    let mut state = init_chain_state(chain_id.to_string());
+    state.dag.consensus_mode = ConsensusMode::GhostdagDev;
+    state.dag.selected_parent_policy = SelectedParentPolicy::GhostdagInspired;
+    state
+}
 
 fn block(hash: &str, parents: Vec<Hash>, height: u64) -> Block {
     Block {
@@ -26,7 +33,7 @@ fn commit(state: &mut ChainState, block: &Block) {
 
 #[test]
 fn merge_set_parallel_blocks_within_k_become_blue() {
-    let mut state = init_chain_state("merge-set-within-k".to_string());
+    let mut state = init_ghostdag_dev("merge-set-within-k");
     state.dag.merge_set_k = 2;
     let genesis = state.dag.genesis_hash.clone();
     let a = block("a", vec![genesis.clone()], 1);
@@ -53,7 +60,7 @@ fn merge_set_parallel_blocks_within_k_become_blue() {
 
 #[test]
 fn merge_set_blocks_outside_k_become_red() {
-    let mut state = init_chain_state("merge-set-outside-k".to_string());
+    let mut state = init_ghostdag_dev("merge-set-outside-k");
     state.dag.merge_set_k = 1;
     let genesis = state.dag.genesis_hash.clone();
     let a = block("a", vec![genesis.clone()], 1);
@@ -126,12 +133,12 @@ fn orphan_adoption_order_recomputes_merge_set_consistently() {
     let b = block("b", vec![genesis], 1);
     let merge = block("merge", vec!["a".into(), "b".into()], 2);
 
-    let mut adopted_like = init_chain_state("adopted-like".to_string());
+    let mut adopted_like = init_ghostdag_dev("adopted-like");
     commit(&mut adopted_like, &b);
     commit(&mut adopted_like, &a);
     commit(&mut adopted_like, &merge);
 
-    let mut canonical = init_chain_state("canonical".to_string());
+    let mut canonical = init_ghostdag_dev("canonical");
     commit(&mut canonical, &a);
     commit(&mut canonical, &b);
     commit(&mut canonical, &merge);

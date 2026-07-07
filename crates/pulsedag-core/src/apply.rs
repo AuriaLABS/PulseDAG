@@ -6,7 +6,7 @@ use crate::{
     mining::is_coinbase,
     ordering::refresh_ordered_dag,
     selection::refresh_selected_chain,
-    state::ChainState,
+    state::{ChainState, ConsensusMode},
     types::{Block, OutPoint, Transaction, Utxo},
     validation::validate_block,
 };
@@ -81,9 +81,12 @@ pub fn apply_transaction(
 }
 
 pub fn commit_block_to_state(block: &Block, state: &mut ChainState) -> Result<(), PulseError> {
+    let ghostdag_metadata_active = state.dag.consensus_mode.ghostdag_metadata_active();
     let classification = classify_merge_set(block, state);
     let mut committed_block = block.clone();
-    committed_block.header.blue_score = classification.blue_score;
+    if ghostdag_metadata_active {
+        committed_block.header.blue_score = classification.blue_score;
+    }
     let block = &committed_block;
     let height = block.header.height;
     for tx in &block.transactions {
@@ -98,29 +101,47 @@ pub fn commit_block_to_state(block: &Block, state: &mut ChainState) -> Result<()
     }
     state.dag.tips.insert(block.hash.clone());
     state.dag.best_height = state.dag.best_height.max(height);
-    state
-        .dag
-        .selected_parents
-        .insert(block.hash.clone(), classification.selected_parent.clone());
-    state
-        .dag
-        .merge_set_blues
-        .insert(block.hash.clone(), classification.blues.clone());
-    state
-        .dag
-        .merge_set_reds
-        .insert(block.hash.clone(), classification.reds.clone());
-    state
-        .dag
-        .blue_work
-        .insert(block.hash.clone(), classification.blue_work);
-    state
-        .dag
-        .merge_set_diagnostics
-        .insert(block.hash.clone(), classification.diagnostics.clone());
+    if ghostdag_metadata_active {
+        state
+            .dag
+            .selected_parents
+            .insert(block.hash.clone(), classification.selected_parent.clone());
+        state
+            .dag
+            .merge_set_blues
+            .insert(block.hash.clone(), classification.blues.clone());
+        state
+            .dag
+            .merge_set_reds
+            .insert(block.hash.clone(), classification.reds.clone());
+        state
+            .dag
+            .blue_work
+            .insert(block.hash.clone(), classification.blue_work);
+        state
+            .dag
+            .merge_set_diagnostics
+            .insert(block.hash.clone(), classification.diagnostics.clone());
+    } else {
+        state.dag.selected_parents.insert(
+            block.hash.clone(),
+            block
+                .header
+                .parents
+                .iter()
+                .filter(|parent| state.dag.blocks.contains_key(*parent))
+                .max()
+                .cloned(),
+        );
+    }
     state.dag.blocks.insert(block.hash.clone(), block.clone());
     refresh_selected_chain(state);
-    refresh_ordered_dag(state);
+    if state.dag.consensus_mode == ConsensusMode::GhostdagDev {
+        refresh_ordered_dag(state);
+    } else {
+        state.dag.ordered_dag = state.dag.selected_chain.clone();
+        state.dag.ordering_version = "legacy".to_string();
+    }
     Ok(())
 }
 
