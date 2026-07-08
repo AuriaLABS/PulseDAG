@@ -8,7 +8,9 @@ use pulsedag_core::{
     genesis::init_chain_state,
     rebuild_state_from_blocks, rebuild_state_from_snapshot_and_blocks,
     sort_blocks_for_deterministic_replay,
-    state::ChainState,
+    state::{
+        ChainState, ConsensusMode, ContractRuntimeState, Mempool, SelectedParentPolicy, UtxoState,
+    },
     types::{Block, Hash, OutPoint, Utxo},
 };
 use rocksdb::{ColumnFamilyDescriptor, WriteBatch, DB};
@@ -28,6 +30,98 @@ pub struct RuntimeEvent {
     pub level: String,
     pub kind: String,
     pub message: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct PreConsensusModeDagState {
+    blocks: std::collections::HashMap<Hash, Block>,
+    tips: std::collections::HashSet<Hash>,
+    children: std::collections::HashMap<Hash, Vec<Hash>>,
+    genesis_hash: Hash,
+    best_height: u64,
+    #[serde(default)]
+    selected_parents: std::collections::HashMap<Hash, Option<Hash>>,
+    #[serde(default)]
+    selected_chain: Vec<Hash>,
+    #[serde(default)]
+    selected_parent_policy: SelectedParentPolicy,
+    #[serde(default = "pulsedag_core::ghostdag::default_merge_set_k")]
+    merge_set_k: usize,
+    #[serde(default)]
+    merge_set_blues: std::collections::HashMap<Hash, Vec<Hash>>,
+    #[serde(default)]
+    merge_set_reds: std::collections::HashMap<Hash, Vec<Hash>>,
+    #[serde(default)]
+    blue_work: std::collections::HashMap<Hash, u128>,
+    #[serde(default)]
+    merge_set_diagnostics:
+        std::collections::HashMap<Hash, pulsedag_core::ghostdag::MergeSetDiagnostics>,
+    #[serde(default)]
+    ordered_dag: Vec<Hash>,
+    #[serde(default = "pulsedag_core::ordering::default_ordering_version")]
+    ordering_version: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct PreConsensusModeChainState {
+    chain_id: String,
+    dag: PreConsensusModeDagState,
+    utxo: UtxoState,
+    mempool: Mempool,
+    contracts: ContractRuntimeState,
+    #[serde(default)]
+    orphan_blocks: std::collections::HashMap<Hash, Block>,
+    #[serde(default)]
+    orphan_missing_parents: std::collections::HashMap<Hash, Vec<Hash>>,
+    #[serde(default)]
+    orphan_parent_index: std::collections::HashMap<Hash, std::collections::BTreeSet<Hash>>,
+    #[serde(default)]
+    orphan_received_at_ms: std::collections::HashMap<Hash, u64>,
+    #[serde(default)]
+    terminal_missing_parents:
+        std::collections::HashMap<Hash, pulsedag_core::state::MissingParentTerminalEntry>,
+}
+
+impl From<PreConsensusModeChainState> for ChainState {
+    fn from(state: PreConsensusModeChainState) -> Self {
+        ChainState {
+            chain_id: state.chain_id,
+            dag: pulsedag_core::DagState {
+                blocks: state.dag.blocks,
+                tips: state.dag.tips,
+                children: state.dag.children,
+                genesis_hash: state.dag.genesis_hash,
+                best_height: state.dag.best_height,
+                selected_parents: state.dag.selected_parents,
+                selected_chain: state.dag.selected_chain,
+                selected_parent_policy: state.dag.selected_parent_policy,
+                merge_set_k: state.dag.merge_set_k,
+                merge_set_blues: state.dag.merge_set_blues,
+                merge_set_reds: state.dag.merge_set_reds,
+                blue_work: state.dag.blue_work,
+                merge_set_diagnostics: state.dag.merge_set_diagnostics,
+                ordered_dag: state.dag.ordered_dag,
+                ordering_version: state.dag.ordering_version,
+                consensus_mode: ConsensusMode::Legacy,
+            },
+            utxo: state.utxo,
+            mempool: state.mempool,
+            contracts: state.contracts,
+            orphan_blocks: state.orphan_blocks,
+            orphan_missing_parents: state.orphan_missing_parents,
+            orphan_parent_index: state.orphan_parent_index,
+            orphan_received_at_ms: state.orphan_received_at_ms,
+            terminal_missing_parents: state.terminal_missing_parents,
+        }
+    }
+}
+
+fn decode_chain_state_snapshot(bytes: &[u8]) -> Result<ChainState, bincode::Error> {
+    bincode::deserialize(bytes).or_else(|current_err| {
+        bincode::deserialize::<PreConsensusModeChainState>(bytes)
+            .map(ChainState::from)
+            .map_err(|_| current_err)
+    })
 }
 
 pub struct Storage {
@@ -683,7 +777,7 @@ impl Storage {
             .map_err(|e| PulseError::StorageError(e.to_string()))?
         {
             Some(bytes) => Ok(Some(
-                bincode::deserialize(&bytes)
+                decode_chain_state_snapshot(&bytes)
                     .map_err(|e| PulseError::StorageError(e.to_string()))?,
             )),
             None => Ok(None),

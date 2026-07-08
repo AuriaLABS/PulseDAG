@@ -112,7 +112,7 @@ impl Config {
             .transpose()?
             .unwrap_or(ConfigProfile::Dev);
         let mut cfg = Self::defaults_for_profile(profile);
-        cfg.apply_env_overrides();
+        cfg.apply_env_overrides()?;
         if let Ok(v) = std::env::var("PULSEDAG_API_PROFILE") {
             cfg.api_profile = ApiExposureProfile::from_env_value(&v)?;
         }
@@ -467,7 +467,7 @@ impl Config {
         }
     }
 
-    fn apply_env_overrides(&mut self) {
+    fn apply_env_overrides(&mut self) -> Result<()> {
         self.network_profile = read_env_string("PULSEDAG_NETWORK_PROFILE", &self.network_profile);
         self.chain_id = read_env_string("PULSEDAG_CHAIN_ID", &self.chain_id);
         self.rpc_bind = read_env_string("PULSEDAG_RPC_BIND", &self.rpc_bind);
@@ -571,6 +571,7 @@ impl Config {
         );
         self.operator_auth_token = read_env_optional_nonempty("PULSEDAG_OPERATOR_AUTH_TOKEN");
         self.apply_admin_default_or_env_override();
+        Ok(())
     }
 }
 
@@ -603,7 +604,7 @@ impl Config {
             }
         }
 
-        self.apply_env_overrides();
+        self.apply_env_overrides()?;
 
         let mut iter = args.into_iter();
         while let Some(arg) = iter.next() {

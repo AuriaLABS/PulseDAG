@@ -35,8 +35,6 @@ pub struct DagState {
     pub genesis_hash: Hash,
     pub best_height: u64,
     #[serde(default)]
-    pub consensus_mode: ConsensusMode,
-    #[serde(default)]
     pub selected_parents: HashMap<Hash, Option<Hash>>,
     #[serde(default)]
     pub selected_chain: Vec<Hash>,
@@ -56,6 +54,8 @@ pub struct DagState {
     pub ordered_dag: Vec<Hash>,
     #[serde(default = "crate::ordering::default_ordering_version")]
     pub ordering_version: String,
+    #[serde(default)]
+    pub consensus_mode: ConsensusMode,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
