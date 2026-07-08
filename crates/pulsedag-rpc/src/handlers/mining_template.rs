@@ -596,7 +596,9 @@ pub async fn post_mining_template<S: RpcStateLike>(
         duplicate_tx_filtered,
         duplicate_tx_filtered_total: {
             let runtime_handle = state.runtime();
-            runtime_handle.read().await.duplicate_tx_filtered_total
+            let duplicate_tx_filtered_total =
+                runtime_handle.read().await.duplicate_tx_filtered_total;
+            duplicate_tx_filtered_total
         },
     }))
 }
