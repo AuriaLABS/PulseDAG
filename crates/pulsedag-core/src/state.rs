@@ -56,6 +56,16 @@ pub struct DagState {
     pub ordered_dag: Vec<Hash>,
     #[serde(default = "crate::ordering::default_ordering_version")]
     pub ordering_version: String,
+    #[serde(default)]
+    pub ordered_dag_rebuild_total: u64,
+    #[serde(default)]
+    pub ordered_dag_rebuild_failed_total: u64,
+    #[serde(default)]
+    pub ordered_dag_state_root: Option<StateRoot>,
+    #[serde(default)]
+    pub ordered_dag_tip: Option<Hash>,
+    #[serde(default)]
+    pub ordered_dag_conflict_diagnostics: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]

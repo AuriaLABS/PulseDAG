@@ -67,6 +67,12 @@ pub use ordering::{
     derive_ordered_dag, ordered_dag_tip, refresh_ordered_dag, DAG_ORDERING_VERSION,
 };
 
+pub use apply::{
+    accept_block_to_dag_metadata, commit_rebuilt_state, rebuild_state_from_ordered_dag,
+    refresh_ordered_dag_phase, refresh_selected_chain_phase, OrderedDagRebuild,
+    OrderedDagRebuildDiagnostics,
+};
+
 pub use mempool::{
     combined_pressure_tier, mempool_pressure_bps, pressure_tier_from_bps, reconcile_mempool,
     MempoolPressureTier, MempoolReconcileResult,
