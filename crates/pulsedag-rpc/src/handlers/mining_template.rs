@@ -52,6 +52,10 @@ pub struct StoredMiningTemplate {
     #[serde(default)]
     pub template_merge_set_size: usize,
     #[serde(default)]
+    pub template_parallel_parents_enabled: bool,
+    #[serde(default)]
+    pub template_parallel_parent_exclusion_reasons: Vec<String>,
+    #[serde(default)]
     pub duplicate_tx_filtered: u64,
 }
 
@@ -92,7 +96,10 @@ pub struct MiningTemplateData {
     pub template_parent_count: usize,
     pub template_blue_score: u64,
     pub template_merge_set_size: usize,
+    pub template_parallel_parents_enabled: bool,
+    pub template_parallel_parent_exclusion_reasons: Vec<String>,
     pub duplicate_tx_filtered: u64,
+    pub duplicate_tx_filtered_total: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -105,6 +112,8 @@ pub(crate) struct TemplateLifecycleState {
     pub mempool_fingerprint: String,
     pub mempool_tx_count: usize,
     pub duplicate_tx_filtered: u64,
+    pub parallel_parents_enabled: bool,
+    pub parallel_parent_exclusion_reasons: Vec<String>,
 }
 
 pub(crate) const MINING_PROTOCOL_VERSION: u32 = 1;
@@ -242,18 +251,43 @@ fn template_ordered_transactions(
     (ordered, duplicate_tx_filtered)
 }
 
+fn experimental_parallel_parents_enabled() -> bool {
+    std::env::var("PULSEDAG_EXPERIMENTAL_PARALLEL_PARENTS")
+        .map(|v| {
+            matches!(
+                v.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
+}
+
 pub(crate) fn current_template_state(chain: &ChainState) -> TemplateLifecycleState {
     let height = chain.dag.best_height + 1;
     let selected_tip = preferred_tip_hash(chain);
+    let experimental_parallel = experimental_parallel_parents_enabled();
+    let ghostdag_dev = chain.dag.consensus_mode == pulsedag_core::ConsensusMode::GhostdagDev;
+    let parallel_parents_enabled = ghostdag_dev && experimental_parallel;
+    let mut parallel_parent_exclusion_reasons = Vec::new();
+    if !ghostdag_dev {
+        parallel_parent_exclusion_reasons.push("consensus_mode_not_ghostdag_dev".to_string());
+    }
+    if !experimental_parallel {
+        parallel_parent_exclusion_reasons
+            .push("experimental_parallel_parents_flag_disabled".to_string());
+    }
     let mut parent_hashes = selected_tip.iter().cloned().collect::<Vec<_>>();
-    for tip in pulsedag_core::sorted_tip_hashes(chain) {
-        if selected_tip.as_ref() == Some(&tip) {
-            continue;
+    if parallel_parents_enabled {
+        for tip in pulsedag_core::sorted_tip_hashes(chain) {
+            if selected_tip.as_ref() == Some(&tip) {
+                continue;
+            }
+            if parent_hashes.len() >= chain.dag.merge_set_k.saturating_add(1) {
+                parallel_parent_exclusion_reasons.push("merge_set_k_limit_reached".to_string());
+                break;
+            }
+            parent_hashes.push(tip);
         }
-        if parent_hashes.len() >= chain.dag.merge_set_k.saturating_add(1) {
-            break;
-        }
-        parent_hashes.push(tip);
     }
     let snapshot = consensus_difficulty_snapshot(chain);
     let difficulty = snapshot.expected_difficulty;
@@ -281,6 +315,8 @@ pub(crate) fn current_template_state(chain: &ChainState) -> TemplateLifecycleSta
         mempool_fingerprint,
         mempool_tx_count,
         duplicate_tx_filtered,
+        parallel_parents_enabled,
+        parallel_parent_exclusion_reasons,
     }
 }
 
@@ -337,7 +373,25 @@ fn sanitize(s: &str) -> String {
         .collect()
 }
 
-fn mining_template_unavailable_reason<S: RpcStateLike>(state: &S) -> Option<String> {
+async fn mining_template_unavailable_reason<S: RpcStateLike>(state: &S) -> Option<String> {
+    {
+        let runtime_handle = state.runtime();
+        let runtime = runtime_handle.read().await;
+        if matches!(
+            runtime.sync_state.as_str(),
+            "missing_parent" | "missing_parent_recovery" | "orphan_recovery"
+        ) || runtime.pending_missing_parents > 0
+            || runtime.orphan_backlog_waiting_missing_parent > 0
+        {
+            return Some(format!("mining template unavailable while sync_state={} missing_parent/orphan recovery is active", runtime.sync_state));
+        }
+        if runtime.sync_state == "degraded" || runtime.sync_pipeline.last_error.is_some() {
+            return Some(format!(
+                "mining template unavailable while readiness snapshot is degraded: sync_state={}",
+                runtime.sync_state
+            ));
+        }
+    }
     let status = state.p2p()?.status().ok()?;
     (status.runtime_started
         && mode_connected_peers_are_real_network(&status.mode)
@@ -355,7 +409,7 @@ pub async fn post_mining_template<S: RpcStateLike>(
     State(state): State<S>,
     Json(req): Json<GetBlockTemplateRequest>,
 ) -> Json<ApiResponse<MiningTemplateData>> {
-    if let Some(reason) = mining_template_unavailable_reason(&state) {
+    if let Some(reason) = mining_template_unavailable_reason(&state).await {
         return Json(ApiResponse::err("MINING_TEMPLATE_UNAVAILABLE", reason));
     }
     let chain_handle = state.chain();
@@ -422,6 +476,10 @@ pub async fn post_mining_template<S: RpcStateLike>(
         template_parent_count,
         template_blue_score,
         template_merge_set_size,
+        template_parallel_parents_enabled: lifecycle.parallel_parents_enabled,
+        template_parallel_parent_exclusion_reasons: lifecycle
+            .parallel_parent_exclusion_reasons
+            .clone(),
         duplicate_tx_filtered,
     });
     {
@@ -433,6 +491,9 @@ pub async fn post_mining_template<S: RpcStateLike>(
         runtime.template_parent_count = template_parent_count as u64;
         runtime.template_blue_score = template_blue_score;
         runtime.template_merge_set_size = template_merge_set_size as u64;
+        runtime.template_parallel_parents_enabled = lifecycle.parallel_parents_enabled;
+        runtime.template_parallel_parent_exclusion_reasons =
+            lifecycle.parallel_parent_exclusion_reasons.clone();
         runtime.duplicate_tx_filtered_total = runtime
             .duplicate_tx_filtered_total
             .saturating_add(duplicate_tx_filtered);
@@ -530,16 +591,21 @@ pub async fn post_mining_template<S: RpcStateLike>(
         template_parent_count,
         template_blue_score: blue_score,
         template_merge_set_size,
+        template_parallel_parents_enabled: lifecycle.parallel_parents_enabled,
+        template_parallel_parent_exclusion_reasons: lifecycle.parallel_parent_exclusion_reasons,
         duplicate_tx_filtered,
+        duplicate_tx_filtered_total: {
+            let runtime_handle = state.runtime();
+            runtime_handle.read().await.duplicate_tx_filtered_total
+        },
     }))
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        current_template_state, mining_template_unavailable_reason, template_freshness_window,
-        template_id_for_state, template_ordered_transactions, TEMPLATE_FRESHNESS_GRACE_SECS,
-        TEMPLATE_TTL_SECS,
+        current_template_state, template_freshness_window, template_id_for_state,
+        template_ordered_transactions, TEMPLATE_FRESHNESS_GRACE_SECS, TEMPLATE_TTL_SECS,
     };
     use crate::api::{NodeRuntimeStats, RpcStateLike};
     use pulsedag_core::{
@@ -660,7 +726,7 @@ mod tests {
     }
 
     #[test]
-    fn template_state_uses_selected_parent_first_and_includes_parallel_tips() {
+    fn parallel_parents_disabled_by_default() {
         let mut chain = init_chain_state("testnet-dev".to_string());
         chain.dag.tips.clear();
         chain.dag.blocks.insert(
@@ -677,8 +743,39 @@ mod tests {
         let state = current_template_state(&chain);
 
         assert_eq!(state.selected_tip, Some("selected-blue".to_string()));
-        assert_eq!(state.parent_hashes[0], "selected-blue");
-        assert!(state.parent_hashes.contains(&"lower-blue".to_string()));
+        assert_eq!(state.parent_hashes, vec!["selected-blue".to_string()]);
+        assert!(!state.parallel_parents_enabled);
+        assert!(state
+            .parallel_parent_exclusion_reasons
+            .contains(&"experimental_parallel_parents_flag_disabled".to_string()));
+    }
+
+    #[test]
+    fn parallel_parents_require_ghostdag_dev_and_explicit_flag() {
+        let mut chain = init_chain_state("testnet-dev".to_string());
+        chain.dag.tips.clear();
+        chain.dag.blocks.insert(
+            "lower-blue".to_string(),
+            tip_block("lower-blue", 10, 10, vec![]),
+        );
+        chain.dag.blocks.insert(
+            "selected-blue".to_string(),
+            tip_block("selected-blue", 9, 20, vec![]),
+        );
+        chain.dag.tips.insert("lower-blue".to_string());
+        chain.dag.tips.insert("selected-blue".to_string());
+
+        std::env::set_var("PULSEDAG_EXPERIMENTAL_PARALLEL_PARENTS", "true");
+        let legacy = current_template_state(&chain);
+        assert_eq!(legacy.parent_hashes, vec!["selected-blue".to_string()]);
+        assert!(!legacy.parallel_parents_enabled);
+
+        chain.dag.consensus_mode = pulsedag_core::ConsensusMode::GhostdagDev;
+        let ghostdag = current_template_state(&chain);
+        std::env::remove_var("PULSEDAG_EXPERIMENTAL_PARALLEL_PARENTS");
+        assert!(ghostdag.parallel_parents_enabled);
+        assert_eq!(ghostdag.parent_hashes[0], "selected-blue");
+        assert!(ghostdag.parent_hashes.contains(&"lower-blue".to_string()));
     }
 
     #[test]
@@ -705,6 +802,8 @@ mod tests {
         );
         chain.dag.tips.insert("selected-blue".to_string());
         chain.dag.tips.insert("parallel".to_string());
+        chain.dag.consensus_mode = pulsedag_core::ConsensusMode::GhostdagDev;
+        std::env::set_var("PULSEDAG_EXPERIMENTAL_PARALLEL_PARENTS", "true");
         chain
             .mempool
             .transactions
@@ -715,6 +814,7 @@ mod tests {
             .insert(fresh.txid.clone(), fresh.clone());
 
         let state = current_template_state(&chain);
+        std::env::remove_var("PULSEDAG_EXPERIMENTAL_PARALLEL_PARENTS");
         let (selected, filtered) = template_ordered_transactions(&chain, &state.parent_hashes);
 
         assert_eq!(filtered, 1);
@@ -808,8 +908,8 @@ mod tests {
             explicit_expiry + TEMPLATE_FRESHNESS_GRACE_SECS
         );
     }
-    #[test]
-    fn isolated_mining_node_does_not_get_template_when_p2p_zero_peer() {
+    #[tokio::test]
+    async fn isolated_mining_node_does_not_get_template_when_p2p_zero_peer() {
         let state = test_state_with_status(P2pStatus {
             mode: P2P_MODE_LIBP2P_REAL.to_string(),
             runtime_started: true,
@@ -821,7 +921,7 @@ mod tests {
             ..P2pStatus::default()
         });
 
-        let reason = mining_template_unavailable_reason(&state).unwrap();
+        let reason = mining_template_unavailable_reason(&state).await.unwrap();
         assert!(reason.contains("peer_count=0"));
         assert!(reason.contains("bootnode_peer_accounting_mismatch"));
     }
