@@ -46,7 +46,7 @@ run_multi_node_gate(){
   local id="$1" label="$2" miners="$3" subdir="$4" rc=0
   local dir="$OUT_DIR_BASE/$subdir"
   echo "== Gate $id: $label =="
-  MINER_COUNT="$miners" STAGE_NAME="$label" RUN_ID="$RUN_ID" OUT_DIR="$dir" "$ROOT_DIR/scripts/v2_2_20_private_5n_4m_rehearsal.sh" || rc=$?
+  MINER_COUNT="$miners" PR647_RUNTIME_CASES="${PR647_RUNTIME_CASES:-0}" STAGE_NAME="$label" RUN_ID="$RUN_ID" OUT_DIR="$dir" "$ROOT_DIR/scripts/v2_2_20_private_5n_4m_rehearsal.sh" || rc=$?
   local evidence="$dir/$RUN_ID/evidence-summary.md"
   [[ -f "$evidence" ]] || evidence="$dir/evidence-summary.md"
   if (( rc == 0 )); then set_gate "$id" PASS "$evidence" "conservative multi-node pass criteria satisfied"; else set_gate "$id" FAIL "$evidence" "multi-node gate failed (rc=$rc)"; fi
@@ -67,7 +67,7 @@ if [[ "${STATUS[C]}" == PASS ]]; then run_multi_node_gate D "5N/2M conservative"
 if [[ "${STATUS[D]}" == PASS ]]; then run_multi_node_gate E "5N/4M conservative" 4 "gate_e_5n_4m" || true; else set_skip_gate E "blocked by Gate D"; fi
 
 if [[ "${STATUS[E]}" == PASS && "$RUN_CHAOS_GATES" == 1 ]]; then set_skip_gate F "temporary peer isolation/rejoin hook not wired in this harness yet"; else set_skip_gate F "blocked unless Gate E passes and RUN_CHAOS_GATES=1"; fi
-if [[ "${STATUS[F]}" == PASS && "$RUN_CHAOS_GATES" == 1 ]]; then set_skip_gate G "restart/rejoin hook not wired in this harness yet"; else set_skip_gate G "blocked unless Gate F passes and RUN_CHAOS_GATES=1"; fi
+if [[ "${STATUS[E]}" == PASS && "$RUN_CHAOS_GATES" == 1 ]]; then PR647_RUNTIME_CASES=1 run_multi_node_gate G "5N restart/rejoin" 1 "gate_g_restart_rejoin" || true; else set_skip_gate G "blocked unless Gate E passes and RUN_CHAOS_GATES=1"; fi
 if [[ "${STATUS[G]}" == PASS && "$RUN_CHAOS_GATES" == 1 ]]; then set_skip_gate H "orphan storm hook not wired in this harness yet"; else set_skip_gate H "blocked unless Gate G passes and RUN_CHAOS_GATES=1"; fi
 if [[ "${STATUS[H]}" == PASS && "$FAST_CADENCE_EXPERIMENTAL" == 1 ]]; then set_skip_gate I "fast cadence experimental hook remains disabled by default"; else set_skip_gate I "fast cadence experimental disabled unless all previous gates pass and FAST_CADENCE_EXPERIMENTAL=1"; fi
 

@@ -12,7 +12,7 @@ CLEANUP_KILL_GRACE_SECS=${CLEANUP_KILL_GRACE_SECS:-3}
 CLEANUP_PORT_WAIT_SECS=${CLEANUP_PORT_WAIT_SECS:-10}
 QUIESCENCE_WAIT_SECS=${QUIESCENCE_WAIT_SECS:-90}
 PEER_ZERO_OUTAGE_SECS=${PEER_ZERO_OUTAGE_SECS:-20}
-PR647_RUNTIME_CASES=${PR647_RUNTIME_CASES:-1}
+PR647_RUNTIME_CASES=${PR647_RUNTIME_CASES:-0}
 GLOBAL_DEADLINE_SECS=${GLOBAL_DEADLINE_SECS:-21600}
 MAX_GLOBAL_DEADLINE_SECS=21600
 RUN_ID=${RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)}
@@ -1232,8 +1232,13 @@ write_p2p_convergence_json(){
 
 write_restart_rejoin_log(){
   {
-    echo "restart_rejoin_status=NOT_EXECUTED"
-    echo "note=this staged convergence rehearsal validates steady-state convergence and quiescence; restart/rejoin drill not invoked by this script"
+    if [[ "${RESTART_REJOIN_EXECUTED:-0}" == "1" ]]; then
+      echo "restart_rejoin_status=EXECUTED"
+      echo "note=restart/rejoin drill invoked by this script"
+    else
+      echo "restart_rejoin_status=NOT_EXECUTED"
+      echo "note=this staged convergence rehearsal validates steady-state convergence and quiescence; restart/rejoin drill not invoked by this script"
+    fi
     echo "timestamp_utc=$(date -u +%FT%TZ)"
   } > "$OUT_DIR/restart_rejoin.log"
 }
@@ -1457,6 +1462,7 @@ run_pr647_runtime_cases(){
     stop_pids --label=pr647-peer-zero-n1 "$n1_pid"
     sleep_with_deadline "$PEER_ZERO_OUTAGE_SECS"
     start_node 1 $((BASE_RPC_PORT+1)) $((BASE_P2P_PORT+1)) ""
+    RESTART_REJOIN_EXECUTED=1
     wait_node_ready 1 || true
     echo "timestamp_utc=$(date -u +%FT%TZ) case=peer_zero_recovery action=restarted_bootnode target=n1" >> "$OUT_DIR/pr647-runtime-cases.log"
     mark_progress "pr647_peer_zero_recovery_case_complete"
@@ -1501,7 +1507,29 @@ while (( $(date +%s) < peer_wait_deadline )); do
   (( peers_total > 0 )) && break
   sleep_with_deadline 2
 done
-(( peers_total > 0 )) || { capture_p2p_gate_failure; record_fail "P2P_NOT_CONNECTED" "pre-mining p2p peers remained zero after ${P2P_CONNECT_WAIT_SECS}s"; exit 1; }
+validate_startup_topology_gate(){
+  local root_inbound nonroot_bad=0 unstable=0 expected=0 peer_count peer_id changed
+  root_inbound=$(jq -r '.data.peer_accounting.inbound_peer_count // .data.inbound_peer_count // 0' "$OUT_DIR/endpoints/n1-p2p-status-pre-mining.json" 2>/dev/null || echo 0)
+  for i in $(seq 1 "$NODE_COUNT"); do
+    peer_id=$(jq -r '.data.peer_id // .data.p2p_peer_id // empty' "$OUT_DIR/endpoints/n${i}-p2p-status-pre-mining.json" 2>/dev/null || true)
+    changed=$(jq -r '.data.p2p_peer_id_changed_since_previous_start // false' "$OUT_DIR/endpoints/n${i}-p2p-status-pre-mining.json" 2>/dev/null || echo false)
+    [[ -n "$peer_id" ]] || unstable=1
+    [[ "$changed" != "true" ]] || unstable=1
+    if (( i > 1 )); then
+      peer_count=$(jq -r '.data.peer_count // (.data.connected_peers|length) // .data.connected_peer_count // 0' "$OUT_DIR/endpoints/n${i}-p2p-status-pre-mining.json" 2>/dev/null || echo 0)
+      (( peer_count >= 1 )) || nonroot_bad=1
+    fi
+  done
+  expected=$((NODE_COUNT - 1))
+  if (( root_inbound < expected || nonroot_bad != 0 || unstable != 0 )); then
+    capture_p2p_gate_failure
+    record_fail "startup_topology_failure" "startup topology invalid before mining: root_inbound=${root_inbound}/${expected} nonroot_bad=${nonroot_bad} unstable_peer_ids=${unstable}"
+    return 1
+  fi
+  return 0
+}
+(( peers_total > 0 )) || { capture_p2p_gate_failure; record_fail "startup_topology_failure" "pre-mining p2p peers remained zero after ${P2P_CONNECT_WAIT_SECS}s"; exit 1; }
+validate_startup_topology_gate || exit 1
 
 for i in $(seq 1 "$MINER_COUNT"); do
   local_node="http://127.0.0.1:$((BASE_RPC_PORT+i))"
