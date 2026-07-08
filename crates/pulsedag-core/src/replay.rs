@@ -2,6 +2,83 @@ use crate::{
     apply::apply_block, errors::PulseError, genesis::init_chain_state, state::ChainState,
     types::Block, validation::validate_block,
 };
+use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
+
+fn digest_parts(domain: &str, parts: impl IntoIterator<Item = String>) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(domain.as_bytes());
+    for part in parts {
+        hasher.update([0]);
+        hasher.update(part.as_bytes());
+    }
+    hex::encode(hasher.finalize())
+}
+
+/// Digest of selected-parent metadata keyed by block hash.
+pub fn selection_digest(state: &ChainState) -> String {
+    let ordered = state
+        .dag
+        .selected_parents
+        .iter()
+        .map(|(block, parent)| (block.clone(), parent.clone().unwrap_or_default()))
+        .collect::<BTreeMap<_, _>>();
+    digest_parts(
+        "PulseDAG:selection-digest:v1",
+        ordered
+            .into_iter()
+            .map(|(block, parent)| format!("{block}->{parent}")),
+    )
+}
+
+/// Digest of blue/red merge-set membership keyed by block hash.
+pub fn merge_set_digest(state: &ChainState) -> String {
+    let mut ordered = BTreeMap::new();
+    for block in state.dag.blocks.keys() {
+        let mut blues = state
+            .dag
+            .merge_set_blues
+            .get(block)
+            .cloned()
+            .unwrap_or_default();
+        let mut reds = state
+            .dag
+            .merge_set_reds
+            .get(block)
+            .cloned()
+            .unwrap_or_default();
+        blues.sort();
+        reds.sort();
+        ordered.insert(block.clone(), (blues, reds));
+    }
+    digest_parts(
+        "PulseDAG:merge-set-digest:v1",
+        ordered.into_iter().map(|(block, (blues, reds))| {
+            format!("{block}|B:{}|R:{}", blues.join(","), reds.join(","))
+        }),
+    )
+}
+
+/// Digest of the deterministic ordered-DAG vector.
+pub fn ordered_dag_digest(state: &ChainState) -> String {
+    digest_parts(
+        "PulseDAG:ordered-dag-digest:v1",
+        state
+            .dag
+            .ordered_dag
+            .iter()
+            .enumerate()
+            .map(|(index, hash)| format!("{index}:{hash}")),
+    )
+}
+
+/// Digest of the canonical UTXO/state root.
+pub fn state_digest(state: &ChainState) -> Result<String, PulseError> {
+    Ok(digest_parts(
+        "PulseDAG:state-digest:v1",
+        [state.utxo.compute_state_root()?],
+    ))
+}
 
 #[derive(Debug, Clone)]
 pub struct ReplayDefensiveReport {
