@@ -107,6 +107,146 @@ pub struct SeenCacheEntry {
     pub peer_source: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SyncStage {
+    Connectivity,
+    PeerInventory,
+    TipExchange,
+    SelectedChainLocator,
+    DagFrontier,
+    MissingParentRecovery,
+    OrphanReprocessing,
+    QuiescenceValidation,
+}
+
+impl SyncStage {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Connectivity => "connectivity",
+            Self::PeerInventory => "peer_inventory",
+            Self::TipExchange => "tip_exchange",
+            Self::SelectedChainLocator => "selected_chain_locator",
+            Self::DagFrontier => "dag_frontier",
+            Self::MissingParentRecovery => "missing_parent_recovery",
+            Self::OrphanReprocessing => "orphan_reprocessing",
+            Self::QuiescenceValidation => "quiescence_validation",
+        }
+    }
+
+    pub fn selected_or_final_reconciliation_allowed(self) -> bool {
+        matches!(self, Self::QuiescenceValidation)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SyncStageStatus {
+    pub stage: SyncStage,
+    pub entry_condition: String,
+    pub exit_condition: String,
+    pub active_blocker_reason: Option<String>,
+    pub terminal_blocker_reason: Option<String>,
+    pub metrics: Vec<String>,
+    pub timeout_behavior: String,
+    pub selected_final_reconciliation_allowed: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SyncStateMachineInputs {
+    pub peer_count: usize,
+    pub height: u64,
+    pub fresh_status_has_stable_peers: bool,
+    pub inventory_ready: bool,
+    pub tip_exchange_ready: bool,
+    pub ghostdag_dev_active: bool,
+    pub dag_frontier_ready: bool,
+    pub missing_parent_recovery_active: bool,
+    pub orphan_recovery_active: bool,
+    pub rpc_readiness_degraded: bool,
+    pub terminal_blocker_reason: Option<String>,
+}
+
+pub fn zero_peer_recovery_active(
+    peer_count: usize,
+    height: u64,
+    fresh_status_has_stable_peers: bool,
+) -> bool {
+    peer_count == 0 || height <= 1 || !fresh_status_has_stable_peers
+}
+
+pub fn evaluate_sync_state_machine(input: &SyncStateMachineInputs) -> SyncStageStatus {
+    let stage = if zero_peer_recovery_active(
+        input.peer_count,
+        input.height,
+        input.fresh_status_has_stable_peers,
+    ) {
+        SyncStage::Connectivity
+    } else if !input.inventory_ready {
+        SyncStage::PeerInventory
+    } else if !input.tip_exchange_ready {
+        SyncStage::TipExchange
+    } else if input.ghostdag_dev_active {
+        SyncStage::SelectedChainLocator
+    } else if !input.dag_frontier_ready {
+        SyncStage::DagFrontier
+    } else if input.missing_parent_recovery_active {
+        SyncStage::MissingParentRecovery
+    } else if input.orphan_recovery_active {
+        SyncStage::OrphanReprocessing
+    } else {
+        SyncStage::QuiescenceValidation
+    };
+
+    let active_blocker_reason = match stage {
+        SyncStage::Connectivity if input.peer_count == 0 => Some("peer_count_zero".to_string()),
+        SyncStage::Connectivity if input.height <= 1 => {
+            Some("genesis_or_height_one_recovery_active".to_string())
+        }
+        SyncStage::Connectivity => Some("stable_peer_status_not_fresh".to_string()),
+        SyncStage::PeerInventory => Some("peer_inventory_pending".to_string()),
+        SyncStage::TipExchange => Some("tip_exchange_pending".to_string()),
+        SyncStage::SelectedChainLocator => {
+            Some("selected_chain_locator_disabled_until_ghostdag_p2p".to_string())
+        }
+        SyncStage::DagFrontier => Some("dag_frontier_pending".to_string()),
+        SyncStage::MissingParentRecovery => Some("missing_parent_recovery_active".to_string()),
+        SyncStage::OrphanReprocessing => Some("orphan_reprocessing_active".to_string()),
+        SyncStage::QuiescenceValidation if input.rpc_readiness_degraded => {
+            Some("rpc_readiness_degraded".to_string())
+        }
+        SyncStage::QuiescenceValidation => None,
+    };
+    let mut terminal = input.terminal_blocker_reason.clone();
+    if terminal.is_none() && input.rpc_readiness_degraded {
+        terminal = Some("rpc_readiness_degraded".to_string());
+    }
+    SyncStageStatus {
+        stage,
+        entry_condition: format!("enter {} after all prior stages exit", stage.as_str()),
+        exit_condition: match stage {
+            SyncStage::Connectivity => "peer_count>0 && height>1 && fresh status confirms stable peers".to_string(),
+            SyncStage::PeerInventory => "inventory has been collected from connected peers".to_string(),
+            SyncStage::TipExchange => "tips have been exchanged with connected peers".to_string(),
+            SyncStage::SelectedChainLocator => "disabled placeholder exits only when ghostdag_dev selected-chain P2P is active".to_string(),
+            SyncStage::DagFrontier => "DAG frontier has no unknown better or competing tips".to_string(),
+            SyncStage::MissingParentRecovery => "pending missing-parent count is zero and no missing-parent request is active".to_string(),
+            SyncStage::OrphanReprocessing => "orphan backlog is empty or only terminal historical entries remain".to_string(),
+            SyncStage::QuiescenceValidation => "readiness is fresh, RPC is not degraded, and reconciliation checks pass".to_string(),
+        },
+        active_blocker_reason,
+        terminal_blocker_reason: terminal,
+        metrics: vec![
+            format!("sync_stage{{stage=\"{}\"}}", stage.as_str()),
+            "final_quiescence_*_blocked_total".to_string(),
+            "bootnode_inbound_peers_counted".to_string(),
+            "peer_zero_reconnect_attempt_total".to_string(),
+        ],
+        timeout_behavior: "stage timeout records blocker reason and keeps later reconciliation disabled; it does not skip the active recovery stage".to_string(),
+        selected_final_reconciliation_allowed: stage.selected_or_final_reconciliation_allowed()
+            && !input.rpc_readiness_degraded,
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PeerAccountingSnapshot {
     pub peer_count: usize,
@@ -145,7 +285,11 @@ pub fn peer_accounting_snapshot(status: &P2pStatus) -> PeerAccountingSnapshot {
             || lifecycle_connected_peer_count > 0);
     let bootnode_root_topology =
         status.bootnodes_configured.is_empty() && !status.listening.is_empty();
-    let effective_connected_peer_count = status.connected_peers.len();
+    let effective_connected_peer_count = if bootnode_root_topology && inbound_peer_count > 0 {
+        status.connected_peers.len().max(inbound_peer_count)
+    } else {
+        status.connected_peers.len()
+    };
     let explanation = if bootnode_root_topology
         && inbound_peer_count > 0
         && status.connected_peers.is_empty()
@@ -167,7 +311,12 @@ pub fn peer_accounting_snapshot(status: &P2pStatus) -> PeerAccountingSnapshot {
         bootnode_connected_total: status.bootnodes_connected.len(),
         bootnode_root_topology,
         zero_peer_recovery_active,
-        peer_count_source: "eligible_connected_peers".to_string(),
+        peer_count_source: if bootnode_root_topology && inbound_peer_count > 0 {
+            "eligible_or_inbound_bootnode_peers"
+        } else {
+            "eligible_connected_peers"
+        }
+        .to_string(),
         explanation: explanation.to_string(),
     }
 }
@@ -7746,6 +7895,69 @@ mod deterministic_p2p_sync_coverage_tests {
     #![allow(clippy::field_reassign_with_default)]
 
     use super::*;
+
+    #[test]
+    fn peer_zero_state_machine_keeps_genesis_isolated_nodes_recovery_active() {
+        let status = evaluate_sync_state_machine(&SyncStateMachineInputs {
+            peer_count: 0,
+            height: 1,
+            fresh_status_has_stable_peers: false,
+            inventory_ready: false,
+            tip_exchange_ready: false,
+            ghostdag_dev_active: false,
+            dag_frontier_ready: false,
+            missing_parent_recovery_active: false,
+            orphan_recovery_active: false,
+            rpc_readiness_degraded: false,
+            terminal_blocker_reason: None,
+        });
+
+        assert_eq!(status.stage, SyncStage::Connectivity);
+        assert_eq!(
+            status.active_blocker_reason.as_deref(),
+            Some("peer_count_zero")
+        );
+        assert!(!status.selected_final_reconciliation_allowed);
+    }
+
+    #[test]
+    fn sync_state_machine_blocks_final_reconciliation_during_missing_parent_and_orphans() {
+        let missing = evaluate_sync_state_machine(&SyncStateMachineInputs {
+            peer_count: 2,
+            height: 8,
+            fresh_status_has_stable_peers: true,
+            inventory_ready: true,
+            tip_exchange_ready: true,
+            ghostdag_dev_active: false,
+            dag_frontier_ready: true,
+            missing_parent_recovery_active: true,
+            orphan_recovery_active: true,
+            rpc_readiness_degraded: false,
+            terminal_blocker_reason: None,
+        });
+        assert_eq!(missing.stage, SyncStage::MissingParentRecovery);
+        assert_eq!(
+            missing.active_blocker_reason.as_deref(),
+            Some("missing_parent_recovery_active")
+        );
+        assert!(!missing.selected_final_reconciliation_allowed);
+
+        let orphan = evaluate_sync_state_machine(&SyncStateMachineInputs {
+            missing_parent_recovery_active: false,
+            orphan_recovery_active: true,
+            ..SyncStateMachineInputs {
+                peer_count: 2,
+                height: 8,
+                fresh_status_has_stable_peers: true,
+                inventory_ready: true,
+                tip_exchange_ready: true,
+                dag_frontier_ready: true,
+                ..SyncStateMachineInputs::default()
+            }
+        });
+        assert_eq!(orphan.stage, SyncStage::OrphanReprocessing);
+        assert!(!orphan.selected_final_reconciliation_allowed);
+    }
 
     fn sample_tx(txid: &str) -> Transaction {
         Transaction {
