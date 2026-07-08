@@ -194,6 +194,7 @@ fn final_quiescence_request_suppression_reason(
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
 enum DagSyncStage {
     SelectedChainLocator,
     DagFrontierTips,
@@ -202,6 +203,7 @@ enum DagSyncStage {
 }
 
 impl DagSyncStage {
+    #[allow(dead_code)]
     fn as_str(self) -> &'static str {
         match self {
             Self::SelectedChainLocator => "selected_chain_locator_sync",
@@ -3313,6 +3315,7 @@ async fn main() -> Result<()> {
                     ));
                 }
                 let final_quiescence_due = stagnation_secs >= FINAL_QUIESCENCE_NO_PROGRESS_SECS;
+                let rpc_liveness_degraded = rt.sync_pipeline.last_error.is_some();
                 let pending_block_requests = rt.pending_block_requests;
                 let cleanup_complete = orphan_count == 0
                     && local_pending_missing_parents == 0
@@ -3476,10 +3479,18 @@ async fn main() -> Result<()> {
                 drop(rt);
 
                 if final_quiescence_due {
+                    let selected_chain_gate = SelectedChainSyncGate {
+                        peer_count: connected_peers,
+                        orphan_recovery_active: orphan_count > 0,
+                        missing_parent_recovery_active: local_pending_missing_parents > 0
+                            || local_missing_parent_entries > 0
+                            || pending_block_requests > 0,
+                        rpc_liveness_degraded,
+                    };
                     // Never run final tip reconciliation while peer recovery or orphan cleanup has
                     // work left.  In particular, zero-peer recovery must be allowed to run before
                     // final sync, and selected/same-height sync must not run with peer_count=0.
-                    if cleanup_complete {
+                    if cleanup_complete && selected_chain_gate.allows_selected_chain_sync() {
                         if let Some(ref p2p) = p2p {
                             match p2p.status() {
                                 Ok(status) if !status.connected_peers.is_empty() => {
@@ -3600,6 +3611,26 @@ async fn main() -> Result<()> {
                             rt.final_quiescence_height_reconcile_blocked_reason =
                                 Some("p2p_disabled".to_string());
                         }
+                    } else if let Some(reason) = selected_chain_gate.blocked_reason() {
+                        let mut rt = runtime.write().await;
+                        rt.final_quiescence_tip_reconcile_total =
+                            rt.final_quiescence_tip_reconcile_total.saturating_add(1);
+                        rt.final_quiescence_height_reconcile_total =
+                            rt.final_quiescence_height_reconcile_total.saturating_add(1);
+                        rt.final_quiescence_tip_reconcile_blocked_total = rt
+                            .final_quiescence_tip_reconcile_blocked_total
+                            .saturating_add(1);
+                        rt.final_quiescence_tip_reconcile_blocked_reason = Some(reason.to_string());
+                        rt.final_quiescence_height_reconcile_blocked_total = rt
+                            .final_quiescence_height_reconcile_blocked_total
+                            .saturating_add(1);
+                        rt.final_quiescence_height_reconcile_blocked_reason =
+                            Some(reason.to_string());
+                        rt.final_quiescence_same_height_reconcile_blocked_total = rt
+                            .final_quiescence_same_height_reconcile_blocked_total
+                            .saturating_add(1);
+                        rt.final_quiescence_same_height_reconcile_blocked_reason =
+                            Some(reason.to_string());
                     }
 
                     if orphan_count > 0 && pending_block_requests == 0 {

@@ -511,7 +511,9 @@ impl Config {
             self.experimental_ghostdag_selection,
         );
         if let Ok(raw) = std::env::var("PULSEDAG_CONSENSUS_MODE") {
-            self.consensus_mode = raw.parse().map_err(anyhow::Error::msg)?;
+            if let Ok(mode) = raw.parse() {
+                self.consensus_mode = mode;
+            }
         }
         self.experimental_fast_cadence = read_env_bool(
             "PULSEDAG_EXPERIMENTAL_FAST_CADENCE",
