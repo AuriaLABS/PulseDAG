@@ -95,6 +95,7 @@ pub fn derive_ordered_dag(state: &ChainState) -> Vec<Hash> {
 pub fn refresh_ordered_dag(state: &mut ChainState) {
     state.dag.ordered_dag = derive_ordered_dag(state);
     state.dag.ordering_version = DAG_ORDERING_VERSION.to_string();
+    state.dag.ordered_dag_tip = state.dag.ordered_dag.last().cloned();
 }
 
 pub fn ordered_dag_tip(state: &ChainState) -> Option<Hash> {

@@ -127,6 +127,11 @@ pub fn init_chain_state(chain_id: String) -> ChainState {
             merge_set_diagnostics: HashMap::new(),
             ordered_dag: selected_chain.clone(),
             ordering_version: crate::ordering::DAG_ORDERING_VERSION.to_string(),
+            ordered_dag_rebuild_total: 0,
+            ordered_dag_rebuild_failed_total: 0,
+            ordered_dag_state_root: None,
+            ordered_dag_tip: selected_chain.last().cloned(),
+            ordered_dag_conflict_diagnostics: Vec::new(),
         },
         utxo: UtxoState {
             utxos,
