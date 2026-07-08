@@ -9,6 +9,7 @@ bash -n \
   scripts/v2_2_20_private_5n_1m_rehearsal.sh \
   scripts/v2_2_20_private_5n_2m_rehearsal.sh \
   scripts/v2_2_20_private_5n_4m_rehearsal.sh \
+  scripts/v2_2_20_staged_private_network_gates.sh \
   scripts/docker_v2_2_20_rehearsal.sh
 
 rg -q 'ENV_FAIL: missing dependency' scripts/v2_2_20_preflight_check.sh
@@ -23,6 +24,11 @@ rg -q 'evidence_manifest.json' scripts/v2_2_20_private_5n_4m_rehearsal.sh
 rg -q 'RPC_ALIVE_LISTENER_TIMEOUT count' scripts/v2_2_20_private_5n_4m_rehearsal.sh
 rg -q 'orphan_recovery_classification_counters' scripts/v2_2_20_private_5n_4m_rehearsal.sh
 rg -q 'submit_busy' scripts/v2_2_20_private_5n_4m_rehearsal.sh
+rg -q 'Final table per node' scripts/v2_2_20_private_5n_4m_rehearsal.sh
+rg -q 'terminal_missing_parent_entries' scripts/v2_2_20_private_5n_4m_rehearsal.sh
+rg -q 'blockdata_not_found' scripts/v2_2_20_private_5n_4m_rehearsal.sh
+rg -q 'Gate B: replay determinism digests' scripts/v2_2_20_staged_private_network_gates.sh
+rg -q 'FAST_CADENCE_EXPERIMENTAL=1' scripts/v2_2_20_staged_private_network_gates.sh
 rg -q 'Interpreting self-classifying evidence bundles' docs/DOCKER_REHEARSALS_V2_2_20.md
 rg -q 'Docker Compose from PowerShell' docs/DOCKER_REHEARSALS_V2_2_20.md
 
