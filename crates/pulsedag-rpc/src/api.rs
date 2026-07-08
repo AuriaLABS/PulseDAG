@@ -545,6 +545,10 @@ pub struct NodeRuntimeStats {
     pub template_parent_count: u64,
     pub template_blue_score: u64,
     pub template_merge_set_size: u64,
+    #[serde(default)]
+    pub template_parallel_parents_enabled: bool,
+    #[serde(default)]
+    pub template_parallel_parent_exclusion_reasons: Vec<String>,
     pub template_stale_reject_total: u64,
     pub duplicate_tx_filtered_total: u64,
     pub external_mining_submit_accepted: u64,
