@@ -13,6 +13,7 @@ pub struct Config {
     pub p2p_mdns: bool,
     pub p2p_kademlia: bool,
     pub p2p_connection_slot_budget: usize,
+    pub p2p_identity_key: Option<String>,
     pub rocksdb_path: String,
     pub simulated_peers: Vec<String>,
     pub auto_rebuild_on_start: bool,
@@ -135,6 +136,7 @@ impl Config {
                 p2p_bootstrap: Vec::new(),
                 p2p_mdns: true,
                 p2p_kademlia: true,
+                p2p_identity_key: None,
                 p2p_connection_slot_budget: 8,
                 rocksdb_path: "./data/rocksdb".into(),
                 simulated_peers: Vec::new(),
@@ -177,6 +179,7 @@ impl Config {
                 p2p_bootstrap: Vec::new(),
                 p2p_mdns: true,
                 p2p_kademlia: true,
+                p2p_identity_key: None,
                 p2p_connection_slot_budget: 12,
                 rocksdb_path: "./data/local/rocksdb".into(),
                 simulated_peers: Vec::new(),
@@ -219,6 +222,7 @@ impl Config {
                 p2p_bootstrap: Vec::new(),
                 p2p_mdns: false,
                 p2p_kademlia: true,
+                p2p_identity_key: None,
                 p2p_connection_slot_budget: 32,
                 rocksdb_path: "./data/private/rocksdb".into(),
                 simulated_peers: Vec::new(),
@@ -261,6 +265,7 @@ impl Config {
                 p2p_bootstrap: Vec::new(),
                 p2p_mdns: true,
                 p2p_kademlia: true,
+                p2p_identity_key: None,
                 p2p_connection_slot_budget: 24,
                 rocksdb_path: "./data/rocksdb".into(),
                 simulated_peers: Vec::new(),
@@ -303,6 +308,7 @@ impl Config {
                 p2p_bootstrap: Vec::new(),
                 p2p_mdns: false,
                 p2p_kademlia: true,
+                p2p_identity_key: None,
                 p2p_connection_slot_budget: 32,
                 rocksdb_path: "./data/rehearsal-a/rocksdb".into(),
                 simulated_peers: Vec::new(),
@@ -345,6 +351,7 @@ impl Config {
                 p2p_bootstrap: vec!["/ip4/127.0.0.1/tcp/18181".into()],
                 p2p_mdns: false,
                 p2p_kademlia: true,
+                p2p_identity_key: None,
                 p2p_connection_slot_budget: 32,
                 rocksdb_path: "./data/rehearsal-b/rocksdb".into(),
                 simulated_peers: Vec::new(),
@@ -390,6 +397,7 @@ impl Config {
                 ],
                 p2p_mdns: false,
                 p2p_kademlia: true,
+                p2p_identity_key: None,
                 p2p_connection_slot_budget: 32,
                 rocksdb_path: "./data/rehearsal-c/rocksdb".into(),
                 simulated_peers: Vec::new(),
@@ -432,6 +440,7 @@ impl Config {
                 p2p_bootstrap: Vec::new(),
                 p2p_mdns: false,
                 p2p_kademlia: true,
+                p2p_identity_key: None,
                 p2p_connection_slot_budget: 32,
                 rocksdb_path: "./data/rocksdb".into(),
                 simulated_peers: Vec::new(),
@@ -498,6 +507,7 @@ impl Config {
             self.p2p_connection_slot_budget,
             1,
         );
+        self.p2p_identity_key = read_env_optional_nonempty("PULSEDAG_P2P_IDENTITY_KEY");
         self.rocksdb_path = read_env_string("PULSEDAG_ROCKSDB_PATH", &self.rocksdb_path);
         self.simulated_peers = read_env_list("PULSEDAG_SIMULATED_PEERS", &self.simulated_peers);
         self.auto_rebuild_on_start =
@@ -680,6 +690,12 @@ impl Config {
                         .next()
                         .ok_or_else(|| anyhow::anyhow!("{arg} requires a value"))?
                         .parse()?;
+                }
+                "--p2p-identity-key" => {
+                    self.p2p_identity_key = Some(
+                        iter.next()
+                            .ok_or_else(|| anyhow::anyhow!("{arg} requires a value"))?,
+                    );
                 }
                 "--bootnode" | "--peer" => {
                     let value = iter

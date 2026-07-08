@@ -27,8 +27,8 @@ use pulsedag_core::accept::{
 };
 use pulsedag_core::reconcile_mempool;
 use pulsedag_p2p::{
-    build_p2p_stack, messages::HeaderInventory, InboundEvent, Libp2pConfig, Libp2pRuntimeMode,
-    P2pHandle, P2pMode,
+    build_p2p_stack, default_p2p_identity_path, messages::HeaderInventory, InboundEvent,
+    Libp2pConfig, Libp2pRuntimeMode, P2pHandle, P2pMode,
 };
 use pulsedag_rpc::api::{
     capture_and_store_node_rpc_snapshot, NodeRpcSnapshotStore, NodeRuntimeStats,
@@ -787,7 +787,7 @@ fn update_orphan_backlog_classification(
 }
 
 fn usage() -> &'static str {
-    "usage: pulsedagd [--network dev|testnet|mainnet] [--rpc-listen HOST:PORT] [--p2p-listen MULTIADDR] [--bootnode MULTIADDR] [--peer MULTIADDR] [--snapshot-export PATH|--snapshot-import PATH] [--help] [--version]"
+    "usage: pulsedagd [--network dev|testnet|mainnet] [--rpc-listen HOST:PORT] [--p2p-listen MULTIADDR] [--bootnode MULTIADDR] [--peer MULTIADDR] [--p2p-identity-key PATH] [--snapshot-export PATH|--snapshot-import PATH] [--help] [--version]"
 }
 
 fn print_help_and_exit() {
@@ -912,6 +912,7 @@ async fn main() -> Result<()> {
         rpc_bind = %cfg.rpc_bind,
         data_dir = %cfg.rocksdb_path,
         p2p_bootstrap = ?cfg.p2p_bootstrap,
+        p2p_identity_path = %cfg.p2p_identity_key.clone().unwrap_or_else(|| default_p2p_identity_path(&cfg.rocksdb_path).display().to_string()),
         genesis_hash = %genesis_hash,
         "node startup identity"
     );
@@ -938,6 +939,11 @@ async fn main() -> Result<()> {
         Option<tokio::sync::mpsc::UnboundedReceiver<InboundEvent>>,
     ) = if cfg.p2p_enabled {
         let configured_mode = cfg.p2p_mode.clone();
+        let identity_path = cfg
+            .p2p_identity_key
+            .clone()
+            .map(PathBuf::from)
+            .unwrap_or_else(|| default_p2p_identity_path(&cfg.rocksdb_path));
         let stack = match cfg.p2p_mode.as_str() {
             "libp2p-real" => build_p2p_stack(P2pMode::Libp2p(Libp2pConfig {
                 chain_id: cfg.chain_id.clone(),
@@ -948,6 +954,7 @@ async fn main() -> Result<()> {
                 connection_slot_budget: cfg.p2p_connection_slot_budget,
                 sync_selection_stickiness_secs: 30,
                 runtime: Libp2pRuntimeMode::RealSwarm,
+                identity_path: Some(identity_path.clone()),
             }))?,
             "libp2p" | "libp2p-dev" | "libp2p-skeleton" => {
                 build_p2p_stack(P2pMode::Libp2p(Libp2pConfig {
@@ -959,6 +966,7 @@ async fn main() -> Result<()> {
                     connection_slot_budget: cfg.p2p_connection_slot_budget,
                     sync_selection_stickiness_secs: 30,
                     runtime: Libp2pRuntimeMode::DevLoopbackSkeleton,
+                    identity_path: Some(identity_path.clone()),
                 }))?
             }
             "memory" | "simulated" => build_p2p_stack(P2pMode::Memory {
@@ -980,6 +988,12 @@ async fn main() -> Result<()> {
                 runtime_mode_detail = %status.runtime_mode_detail,
                 connected_peers_are_real_network = pulsedag_p2p::mode_connected_peers_are_real_network(&status.mode),
                 connected_peers_semantics = pulsedag_p2p::connected_peers_semantics(&status.mode),
+                p2p_identity_path = ?status.p2p_identity_path,
+                p2p_identity_loaded_existing = status.p2p_identity_loaded_existing,
+                p2p_identity_created_new = status.p2p_identity_created_new,
+                p2p_peer_id = %status.peer_id,
+                p2p_peer_id_changed_since_previous_start = status.p2p_peer_id_changed_since_previous_start,
+                configured_bootnode_peer_ids = ?status.configured_bootnode_peer_ids,
                 "p2p initialized"
             );
         } else {

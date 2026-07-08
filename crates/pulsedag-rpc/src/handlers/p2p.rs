@@ -416,6 +416,27 @@ pub async fn get_p2p_status<S: RpcStateLike>(
             );
             payload.insert("peer_id".into(), serde_json::json!(status.peer_id));
             payload.insert("local_node_id".into(), serde_json::json!(status.peer_id));
+            payload.insert(
+                "p2p_identity_path".into(),
+                serde_json::json!(status.p2p_identity_path),
+            );
+            payload.insert(
+                "p2p_identity_loaded_existing".into(),
+                serde_json::json!(status.p2p_identity_loaded_existing),
+            );
+            payload.insert(
+                "p2p_identity_created_new".into(),
+                serde_json::json!(status.p2p_identity_created_new),
+            );
+            payload.insert("p2p_peer_id".into(), serde_json::json!(status.peer_id));
+            payload.insert(
+                "p2p_peer_id_changed_since_previous_start".into(),
+                serde_json::json!(status.p2p_peer_id_changed_since_previous_start),
+            );
+            payload.insert(
+                "configured_bootnode_peer_ids".into(),
+                serde_json::json!(status.configured_bootnode_peer_ids),
+            );
             payload.insert("listening".into(), serde_json::json!(status.listening));
             payload.insert(
                 "connected_peers".into(),
@@ -1003,6 +1024,7 @@ pub async fn get_p2p_status<S: RpcStateLike>(
                     "lifecycle_connected_peer_count": peer_accounting.lifecycle_connected_peer_count,
                     "inbound_peer_count": peer_accounting.inbound_peer_count,
                     "outbound_peer_count": peer_accounting.outbound_peer_count,
+                    "direction_unknown_count": peer_accounting.direction_unknown_count,
                     "configured_bootnodes_total": peer_accounting.configured_bootnodes_total,
                     "bootnode_connected_total": peer_accounting.bootnode_connected_total,
                     "bootnode_root_topology": peer_accounting.bootnode_root_topology,

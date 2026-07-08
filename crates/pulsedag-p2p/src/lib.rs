@@ -1,9 +1,9 @@
 pub mod messages;
 
 use std::collections::{HashMap, HashSet};
-use std::fs;
+use std::fs::{self, OpenOptions};
 use std::hash::{Hash, Hasher};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration as StdDuration, SystemTime, UNIX_EPOCH};
 
@@ -29,6 +29,7 @@ use crate::messages::{
 pub const P2P_MODE_MEMORY_SIMULATED: &str = "memory-simulated";
 pub const P2P_MODE_LIBP2P_DEV_LOOPBACK_SKELETON: &str = "libp2p-dev-loopback-skeleton";
 pub const P2P_MODE_LIBP2P_REAL: &str = "libp2p-real";
+pub const DEFAULT_P2P_IDENTITY_FILE: &str = "p2p/identity.key";
 
 pub fn mode_connected_peers_are_real_network(mode: &str) -> bool {
     mode == P2P_MODE_LIBP2P_REAL
@@ -40,6 +41,114 @@ pub fn connected_peers_semantics(mode: &str) -> &'static str {
     } else {
         "simulated-or-internal-peer-observations"
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct P2pIdentityLoadResult {
+    pub keypair: identity::Keypair,
+    pub path: Option<PathBuf>,
+    pub loaded_existing: bool,
+    pub created_new: bool,
+    pub peer_id_changed_since_previous_start: bool,
+}
+
+pub fn default_p2p_identity_path(data_dir: impl AsRef<Path>) -> PathBuf {
+    data_dir.as_ref().join(DEFAULT_P2P_IDENTITY_FILE)
+}
+
+pub fn load_or_create_identity(path: Option<&Path>) -> Result<P2pIdentityLoadResult, PulseError> {
+    let Some(path) = path else {
+        return Ok(P2pIdentityLoadResult {
+            keypair: identity::Keypair::generate_ed25519(),
+            path: None,
+            loaded_existing: false,
+            created_new: true,
+            peer_id_changed_since_previous_start: false,
+        });
+    };
+
+    if path.exists() {
+        let bytes = fs::read(path).map_err(|e| {
+            PulseError::StorageError(format!(
+                "failed reading p2p identity {}: {e}",
+                path.display()
+            ))
+        })?;
+        let keypair = identity::Keypair::from_protobuf_encoding(&bytes).map_err(|e| {
+            PulseError::StorageError(format!(
+                "failed decoding p2p identity {}; refusing to generate replacement: {e}",
+                path.display()
+            ))
+        })?;
+        return Ok(P2pIdentityLoadResult {
+            keypair,
+            path: Some(path.to_path_buf()),
+            loaded_existing: true,
+            created_new: false,
+            peer_id_changed_since_previous_start: false,
+        });
+    }
+
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| {
+            PulseError::StorageError(format!(
+                "failed creating p2p identity directory {}: {e}",
+                parent.display()
+            ))
+        })?;
+    }
+    let keypair = identity::Keypair::generate_ed25519();
+    let bytes = keypair
+        .to_protobuf_encoding()
+        .map_err(|e| PulseError::StorageError(format!("failed encoding new p2p identity: {e}")))?;
+    let tmp_path = path.with_extension(format!("key.tmp.{}.{}", std::process::id(), now_unix()));
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    {
+        use std::io::Write;
+        let mut file = options.open(&tmp_path).map_err(|e| {
+            PulseError::StorageError(format!(
+                "failed creating temporary p2p identity {}: {e}",
+                tmp_path.display()
+            ))
+        })?;
+        file.write_all(&bytes).map_err(|e| {
+            PulseError::StorageError(format!(
+                "failed writing temporary p2p identity {}: {e}",
+                tmp_path.display()
+            ))
+        })?;
+        file.sync_all().map_err(|e| {
+            PulseError::StorageError(format!(
+                "failed syncing temporary p2p identity {}: {e}",
+                tmp_path.display()
+            ))
+        })?;
+    }
+    fs::rename(&tmp_path, path).map_err(|e| {
+        let _ = fs::remove_file(&tmp_path);
+        PulseError::StorageError(format!(
+            "failed installing p2p identity {}: {e}",
+            path.display()
+        ))
+    })?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o600));
+    }
+    Ok(P2pIdentityLoadResult {
+        keypair,
+        path: Some(path.to_path_buf()),
+        loaded_existing: false,
+        created_new: true,
+        peer_id_changed_since_previous_start: false,
+    })
 }
 
 #[derive(Debug, Clone, Default)]
@@ -254,6 +363,7 @@ pub struct PeerAccountingSnapshot {
     pub lifecycle_connected_peer_count: usize,
     pub inbound_peer_count: usize,
     pub outbound_peer_count: usize,
+    pub direction_unknown_count: usize,
     pub configured_bootnodes_total: usize,
     pub bootnode_connected_total: usize,
     pub bootnode_root_topology: bool,
@@ -278,6 +388,15 @@ pub fn peer_accounting_snapshot(status: &P2pStatus) -> PeerAccountingSnapshot {
         .values()
         .filter(|connections| **connections > 0)
         .count();
+    let connected_peer_ids: HashSet<String> = status.connected_peers.iter().cloned().collect();
+    let directed_peer_ids: HashSet<String> = status
+        .inbound_peer_final_state
+        .iter()
+        .chain(status.outbound_peer_final_state.iter())
+        .filter(|peer| peer.state == "connected" && peer.active_connections > 0)
+        .map(|peer| peer.peer_id.clone())
+        .collect();
+    let direction_unknown_count = connected_peer_ids.difference(&directed_peer_ids).count();
     let zero_peer_recovery_active = status.connected_peers.is_empty()
         && (status.peer_zero_count_duration_seconds > 0
             || status.peer_zero_reconnect_attempt_total > 0
@@ -307,6 +426,7 @@ pub fn peer_accounting_snapshot(status: &P2pStatus) -> PeerAccountingSnapshot {
         lifecycle_connected_peer_count,
         inbound_peer_count,
         outbound_peer_count,
+        direction_unknown_count,
         configured_bootnodes_total: status.bootnodes_configured.len(),
         bootnode_connected_total: status.bootnodes_connected.len(),
         bootnode_root_topology,
@@ -491,6 +611,11 @@ pub struct P2pStatus {
     pub bootnode_inbound_not_promoted_total: u64,
     pub private_topology_asymmetric_peer_count_total: u64,
     pub peer_reports_connected_to_bootnode_but_bootnode_reports_zero_total: u64,
+    pub p2p_identity_path: Option<String>,
+    pub p2p_identity_loaded_existing: bool,
+    pub p2p_identity_created_new: bool,
+    pub p2p_peer_id_changed_since_previous_start: bool,
+    pub configured_bootnode_peer_ids: Vec<String>,
 }
 
 pub trait P2pHandle: Send + Sync {
@@ -545,6 +670,7 @@ pub struct Libp2pConfig {
     pub connection_slot_budget: usize,
     pub sync_selection_stickiness_secs: u64,
     pub runtime: Libp2pRuntimeMode,
+    pub identity_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -777,6 +903,10 @@ struct InnerState {
     peer_suppressed_dial_count: u64,
     connection_slot_budget: usize,
     sync_selection_stickiness_secs: u64,
+    p2p_identity_path: Option<String>,
+    p2p_identity_loaded_existing: bool,
+    p2p_identity_created_new: bool,
+    p2p_peer_id_changed_since_previous_start: bool,
     selected_sync_peer: Option<String>,
     sync_selection_sticky_until_unix: u64,
 }
@@ -1286,6 +1416,16 @@ impl P2pHandle for MemoryP2pHandle {
                 .private_topology_asymmetric_peer_count_total,
             peer_reports_connected_to_bootnode_but_bootnode_reports_zero_total: inner
                 .peer_reports_connected_to_bootnode_but_bootnode_reports_zero_total,
+            p2p_identity_path: inner.p2p_identity_path.clone(),
+            p2p_identity_loaded_existing: inner.p2p_identity_loaded_existing,
+            p2p_identity_created_new: inner.p2p_identity_created_new,
+            p2p_peer_id_changed_since_previous_start: inner
+                .p2p_peer_id_changed_since_previous_start,
+            configured_bootnode_peer_ids: inner
+                .bootnodes_configured
+                .iter()
+                .filter_map(|addr| parse_bootnode_multiaddr(addr).map(|(peer, _)| peer.to_string()))
+                .collect(),
         })
     }
 }
@@ -1300,7 +1440,8 @@ impl Libp2pHandle {
     pub fn new(
         cfg: Libp2pConfig,
     ) -> Result<(Self, mpsc::UnboundedReceiver<InboundEvent>), PulseError> {
-        let local_key = identity::Keypair::generate_ed25519();
+        let identity = load_or_create_identity(cfg.identity_path.as_deref())?;
+        let local_key = identity.keypair.clone();
         let peer_id = local_key.public().to_peer_id();
         let topics = topic_names(&cfg.chain_id);
         let topic_objs = topics
@@ -1353,6 +1494,10 @@ impl Libp2pHandle {
             bootstrap_dial_failures: 0,
             bootstrap_connected_peer_ids: Vec::new(),
             bootnodes_configured: cfg.bootstrap.clone(),
+            p2p_identity_path: identity.path.as_ref().map(|p| p.display().to_string()),
+            p2p_identity_loaded_existing: identity.loaded_existing,
+            p2p_identity_created_new: identity.created_new,
+            p2p_peer_id_changed_since_previous_start: identity.peer_id_changed_since_previous_start,
             bootnode_redial_attempts: 0,
             bootnode_redial_successes: 0,
             bootnode_redial_failures: 0,
@@ -5411,6 +5556,15 @@ impl P2pHandle for Libp2pHandle {
                 .private_topology_asymmetric_peer_count_total,
             peer_reports_connected_to_bootnode_but_bootnode_reports_zero_total: inner
                 .peer_reports_connected_to_bootnode_but_bootnode_reports_zero_total,
+            p2p_identity_path: None,
+            p2p_identity_loaded_existing: false,
+            p2p_identity_created_new: false,
+            p2p_peer_id_changed_since_previous_start: false,
+            configured_bootnode_peer_ids: inner
+                .bootnodes_configured
+                .iter()
+                .filter_map(|addr| parse_bootnode_multiaddr(addr).map(|(peer, _)| peer.to_string()))
+                .collect(),
         })
     }
 }
@@ -6421,6 +6575,7 @@ mod tests {
             connection_slot_budget: 8,
             sync_selection_stickiness_secs: 30,
             runtime: Libp2pRuntimeMode::DevLoopbackSkeleton,
+            identity_path: None,
         };
         let (handle, _rx) = Libp2pHandle::new(cfg).expect("libp2p handle should init");
         let status = handle.status().expect("status should work");
@@ -6462,6 +6617,7 @@ mod tests {
             connection_slot_budget: 8,
             sync_selection_stickiness_secs: 30,
             runtime: Libp2pRuntimeMode::DevLoopbackSkeleton,
+            identity_path: None,
         };
         let (handle, _rx) = Libp2pHandle::new(cfg).expect("libp2p handle should init");
         let status = handle.status().expect("status should work");
@@ -7231,6 +7387,7 @@ mod tests {
             connection_slot_budget: 8,
             sync_selection_stickiness_secs: 30,
             runtime: Libp2pRuntimeMode::RealSwarm,
+            identity_path: None,
         };
 
         let (handle, _rx) = Libp2pHandle::new(cfg).expect("real swarm handle should init");
@@ -7276,6 +7433,7 @@ mod tests {
                 connection_slot_budget: 8,
                 sync_selection_stickiness_secs: 30,
                 runtime: Libp2pRuntimeMode::RealSwarm,
+                identity_path: None,
             };
 
             let handle = Libp2pHandle::new(cfg).expect("real swarm handle should init");
@@ -9263,5 +9421,53 @@ mod deterministic_p2p_sync_coverage_tests {
         assert!(diagnostics
             .iter()
             .any(|item| item.starts_with("private_topology_below_min_connected_peers")));
+    }
+    #[test]
+    fn identity_restart_same_data_dir_keeps_peer_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = default_p2p_identity_path(dir.path());
+        let first = load_or_create_identity(Some(&path)).unwrap();
+        let first_peer = first.keypair.public().to_peer_id();
+        assert!(first.created_new);
+        let second = load_or_create_identity(Some(&path)).unwrap();
+        assert!(second.loaded_existing);
+        assert_eq!(first_peer, second.keypair.public().to_peer_id());
+    }
+
+    #[test]
+    fn identity_explicit_file_restart_keeps_peer_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("explicit.key");
+        let first = load_or_create_identity(Some(&path)).unwrap();
+        let second = load_or_create_identity(Some(&path)).unwrap();
+        assert_eq!(
+            first.keypair.public().to_peer_id(),
+            second.keypair.public().to_peer_id()
+        );
+    }
+
+    #[test]
+    fn identity_different_data_dirs_produce_different_peer_ids() {
+        let a = tempfile::tempdir().unwrap();
+        let b = tempfile::tempdir().unwrap();
+        let ka = load_or_create_identity(Some(&default_p2p_identity_path(a.path()))).unwrap();
+        let kb = load_or_create_identity(Some(&default_p2p_identity_path(b.path()))).unwrap();
+        assert_ne!(
+            ka.keypair.public().to_peer_id(),
+            kb.keypair.public().to_peer_id()
+        );
+    }
+
+    #[test]
+    fn identity_corrupted_file_fails_without_replacement() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = default_p2p_identity_path(dir.path());
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, b"not-a-libp2p-key").unwrap();
+        let err = load_or_create_identity(Some(&path))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("refusing to generate replacement"), "{err}");
+        assert_eq!(std::fs::read(&path).unwrap(), b"not-a-libp2p-key");
     }
 }
