@@ -613,7 +613,7 @@ mod tests {
     use crate::api::{NodeRuntimeStats, RpcStateLike};
     use pulsedag_core::{
         genesis::init_chain_state,
-        state::ChainState,
+        state::{ChainState, SelectedParentPolicy},
         types::{Block, BlockHeader, OutPoint, Transaction, TxInput, TxOutput},
         PulseError,
     };
@@ -731,6 +731,7 @@ mod tests {
     #[test]
     fn parallel_parents_disabled_by_default() {
         let mut chain = init_chain_state("testnet-dev".to_string());
+        chain.dag.selected_parent_policy = SelectedParentPolicy::GhostdagInspired;
         chain.dag.tips.clear();
         chain.dag.blocks.insert(
             "lower-blue".to_string(),
@@ -756,6 +757,7 @@ mod tests {
     #[test]
     fn parallel_parents_require_ghostdag_dev_and_explicit_flag() {
         let mut chain = init_chain_state("testnet-dev".to_string());
+        chain.dag.selected_parent_policy = SelectedParentPolicy::GhostdagInspired;
         chain.dag.tips.clear();
         chain.dag.blocks.insert(
             "lower-blue".to_string(),
