@@ -895,6 +895,24 @@ pub struct NodeRuntimeStats {
     #[serde(default)]
     pub final_quiescence_missing_segment_apply_rejected_total: u64,
     #[serde(default)]
+    pub selected_segment_gap_blocks: u64,
+    #[serde(default)]
+    pub selected_segment_header_requests_total: u64,
+    #[serde(default)]
+    pub selected_segment_headers_received_total: u64,
+    #[serde(default)]
+    pub selected_segment_block_requests_total: u64,
+    #[serde(default)]
+    pub selected_segment_blocks_applied_total: u64,
+    #[serde(default)]
+    pub selected_segment_chunks_completed_total: u64,
+    #[serde(default)]
+    pub selected_segment_restarts_total: u64,
+    #[serde(default)]
+    pub selected_segment_failure_total: BTreeMap<String, u64>,
+    #[serde(default)]
+    pub selected_segment_peer_rotations_total: u64,
+    #[serde(default)]
     pub final_quiescence_same_height_candidate_seen_total: u64,
     #[serde(default)]
     pub final_quiescence_same_height_candidate_fetch_total: u64,
