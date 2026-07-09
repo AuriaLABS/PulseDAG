@@ -46,7 +46,7 @@ run_multi_node_gate(){
   local id="$1" label="$2" miners="$3" subdir="$4" rc=0
   local dir="$OUT_DIR_BASE/$subdir"
   echo "== Gate $id: $label =="
-  MINER_COUNT="$miners" PR647_RUNTIME_CASES="${PR647_RUNTIME_CASES:-0}" STAGE_NAME="$label" RUN_ID="$RUN_ID" OUT_DIR="$dir" "$ROOT_DIR/scripts/v2_2_20_private_5n_4m_rehearsal.sh" || rc=$?
+  PRIOR_GATE_C_MANIFEST="${PRIOR_GATE_C_MANIFEST:-}" PRIOR_GATE_D_MANIFEST="${PRIOR_GATE_D_MANIFEST:-}" MINER_COUNT="$miners" PR647_RUNTIME_CASES="${PR647_RUNTIME_CASES:-0}" STAGE_NAME="$label" RUN_ID="$RUN_ID" OUT_DIR="$dir" "$ROOT_DIR/scripts/v2_2_20_private_5n_4m_rehearsal.sh" || rc=$?
   local evidence="$dir/$RUN_ID/evidence-summary.md"
   [[ -f "$evidence" ]] || evidence="$dir/evidence-summary.md"
   if (( rc == 0 )); then set_gate "$id" PASS "$evidence" "conservative multi-node pass criteria satisfied"; else set_gate "$id" FAIL "$evidence" "multi-node gate failed (rc=$rc)"; fi
@@ -63,8 +63,12 @@ if [[ "${STATUS[A1]}${STATUS[A2]}${STATUS[A3]}" == PASSPASSPASS ]]; then set_gat
 
 if [[ "${STATUS[A]}" == PASS ]]; then run_replay_gate || true; else set_skip_gate B "blocked by Gate A"; fi
 if [[ "${STATUS[B]}" == PASS ]]; then run_multi_node_gate C "5N/1M conservative" 1 "gate_c_5n_1m" || true; else set_skip_gate C "blocked by Gate B"; fi
-if [[ "${STATUS[C]}" == PASS ]]; then run_multi_node_gate D "5N/2M conservative" 2 "gate_d_5n_2m" || true; else set_skip_gate D "blocked by Gate C"; fi
-if [[ "${STATUS[D]}" == PASS ]]; then run_multi_node_gate E "5N/4M conservative" 4 "gate_e_5n_4m" || true; else set_skip_gate E "blocked by Gate D"; fi
+GATE_C_MANIFEST="$OUT_DIR_BASE/gate_c_5n_1m/$RUN_ID/evidence_manifest.json"
+[[ -f "$GATE_C_MANIFEST" ]] || GATE_C_MANIFEST="$OUT_DIR_BASE/gate_c_5n_1m/evidence_manifest.json"
+if [[ "${STATUS[C]}" == PASS ]]; then PRIOR_GATE_C_MANIFEST="$GATE_C_MANIFEST" run_multi_node_gate D "5N/2M conservative" 2 "gate_d_5n_2m" || true; else set_skip_gate D "blocked by Gate C"; fi
+GATE_D_MANIFEST="$OUT_DIR_BASE/gate_d_5n_2m/$RUN_ID/evidence_manifest.json"
+[[ -f "$GATE_D_MANIFEST" ]] || GATE_D_MANIFEST="$OUT_DIR_BASE/gate_d_5n_2m/evidence_manifest.json"
+if [[ "${STATUS[D]}" == PASS ]]; then PRIOR_GATE_C_MANIFEST="$GATE_C_MANIFEST" PRIOR_GATE_D_MANIFEST="$GATE_D_MANIFEST" run_multi_node_gate E "5N/4M conservative" 4 "gate_e_5n_4m" || true; else set_skip_gate E "blocked by Gate D"; fi
 
 if [[ "${STATUS[E]}" == PASS && "$RUN_CHAOS_GATES" == 1 ]]; then set_skip_gate F "temporary peer isolation/rejoin hook not wired in this harness yet"; else set_skip_gate F "blocked unless Gate E passes and RUN_CHAOS_GATES=1"; fi
 if [[ "${STATUS[E]}" == PASS && "$RUN_CHAOS_GATES" == 1 ]]; then PR647_RUNTIME_CASES=1 run_multi_node_gate G "5N restart/rejoin" 1 "gate_g_restart_rejoin" || true; else set_skip_gate G "blocked unless Gate E passes and RUN_CHAOS_GATES=1"; fi
