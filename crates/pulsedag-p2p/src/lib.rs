@@ -4294,7 +4294,6 @@ fn dispatch_network_message(
                     guard.getblock_requests_received_total =
                         guard.getblock_requests_received_total.saturating_add(1);
                     let direction = source_peer
-                        .as_deref()
                         .and_then(|peer| {
                             guard
                                 .peer_connection_final_state
