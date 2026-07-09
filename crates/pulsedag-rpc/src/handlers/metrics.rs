@@ -173,6 +173,19 @@ pub struct MetricsData {
     pub peer_cooldown_bypassed_for_connectivity_total: u64,
     pub peer_rate_limit_recovery_suppressed_total: u64,
     pub peer_rate_limit_by_kind_total: BTreeMap<String, u64>,
+    pub message_rate_limited_total: BTreeMap<String, u64>,
+    pub recovery_queue_depth: usize,
+    pub recovery_queue_dropped_total: u64,
+    pub recovery_queue_delayed_total: u64,
+    pub requested_blockdata_rate_limited_total: u64,
+    pub unsolicited_blockdata_rate_limited_total: u64,
+    pub peer_health_penalty_total: BTreeMap<String, u64>,
+    pub peer_addressed_getblock_sent_total: u64,
+    pub peer_addressed_getblock_response_total: u64,
+    pub peer_addressed_getblock_timeout_total: u64,
+    pub peer_addressed_getblock_transport_error_total: u64,
+    pub direct_request_capable_peers: Vec<String>,
+    pub connected_request_capable_session_peers: Vec<String>,
     pub peer_retention_active_total: usize,
     pub peer_retention_recovering_total: usize,
     pub peer_retention_cooldown_total: usize,
@@ -564,6 +577,81 @@ pub async fn get_metrics<S: RpcStateLike>(
                     .iter()
                     .map(|(kind, total)| (kind.clone(), *total))
                     .collect()
+            })
+            .unwrap_or_default(),
+        message_rate_limited_total: p2p_status
+            .as_ref()
+            .map(|snapshot| {
+                snapshot
+                    .status
+                    .message_rate_limited_total
+                    .clone()
+                    .into_iter()
+                    .collect()
+            })
+            .unwrap_or_default(),
+        recovery_queue_depth: p2p_status
+            .as_ref()
+            .map(|snapshot| snapshot.status.recovery_queue_depth)
+            .unwrap_or(0),
+        recovery_queue_dropped_total: p2p_status
+            .as_ref()
+            .map(|snapshot| snapshot.status.recovery_queue_dropped_total)
+            .unwrap_or(0),
+        recovery_queue_delayed_total: p2p_status
+            .as_ref()
+            .map(|snapshot| snapshot.status.recovery_queue_delayed_total)
+            .unwrap_or(0),
+        requested_blockdata_rate_limited_total: p2p_status
+            .as_ref()
+            .map(|snapshot| snapshot.status.requested_blockdata_rate_limited_total)
+            .unwrap_or(0),
+        unsolicited_blockdata_rate_limited_total: p2p_status
+            .as_ref()
+            .map(|snapshot| snapshot.status.unsolicited_blockdata_rate_limited_total)
+            .unwrap_or(0),
+        peer_health_penalty_total: p2p_status
+            .as_ref()
+            .map(|snapshot| {
+                snapshot
+                    .status
+                    .peer_health_penalty_total
+                    .clone()
+                    .into_iter()
+                    .collect()
+            })
+            .unwrap_or_default(),
+        peer_addressed_getblock_sent_total: p2p_status
+            .as_ref()
+            .map(|snapshot| snapshot.status.peer_addressed_getblock_sent_total)
+            .unwrap_or(0),
+        peer_addressed_getblock_response_total: p2p_status
+            .as_ref()
+            .map(|snapshot| snapshot.status.peer_addressed_getblock_response_total)
+            .unwrap_or(0),
+        peer_addressed_getblock_timeout_total: p2p_status
+            .as_ref()
+            .map(|snapshot| snapshot.status.peer_addressed_getblock_timeout_total)
+            .unwrap_or(0),
+        peer_addressed_getblock_transport_error_total: p2p_status
+            .as_ref()
+            .map(|snapshot| {
+                snapshot
+                    .status
+                    .peer_addressed_getblock_transport_error_total
+            })
+            .unwrap_or(0),
+        direct_request_capable_peers: p2p_status
+            .as_ref()
+            .map(|snapshot| snapshot.status.direct_request_capable_peers.clone())
+            .unwrap_or_default(),
+        connected_request_capable_session_peers: p2p_status
+            .as_ref()
+            .map(|snapshot| {
+                snapshot
+                    .status
+                    .connected_request_capable_session_peers
+                    .clone()
             })
             .unwrap_or_default(),
         peer_retention_active_total: p2p_status
