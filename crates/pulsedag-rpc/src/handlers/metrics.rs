@@ -205,6 +205,10 @@ pub struct MetricsData {
     pub rpc_accept_backlog_observed: u64,
     pub oldest_inflight_rpc_handler_age_ms: u64,
     pub node_rpc_snapshot: NodeRpcSnapshotMetrics,
+    pub rpc_liveness_current_degraded: bool,
+    pub rpc_liveness_last_failure_unix: Option<u64>,
+    pub rpc_liveness_consecutive_successes: u64,
+    pub rpc_liveness_historical_degraded_total: u64,
     pub rpc_dedicated_runtime_active: bool,
     pub rpc_dedicated_runtime_worker_threads: usize,
     pub limitations: Vec<String>,
@@ -657,6 +661,10 @@ pub async fn get_metrics<S: RpcStateLike>(
         oldest_inflight_rpc_handler_age_ms: node_snapshot_metrics
             .oldest_inflight_rpc_handler_age_ms,
         node_rpc_snapshot: node_snapshot_metrics,
+        rpc_liveness_current_degraded: runtime.rpc_liveness_current_degraded,
+        rpc_liveness_last_failure_unix: runtime.rpc_liveness_last_failure_unix,
+        rpc_liveness_consecutive_successes: runtime.rpc_liveness_consecutive_successes,
+        rpc_liveness_historical_degraded_total: runtime.rpc_liveness_historical_degraded_total,
         rpc_dedicated_runtime_active: runtime.rpc_dedicated_runtime_active,
         rpc_dedicated_runtime_worker_threads: runtime.rpc_dedicated_runtime_worker_threads,
         limitations: vec![

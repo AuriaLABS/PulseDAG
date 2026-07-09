@@ -411,17 +411,43 @@ impl BlockRequestTracker {
         S: Into<String>,
     {
         let hints = self.peer_hints.entry(peer.into()).or_default();
-        let mut changed = false;
+        let mut changed_hashes = Vec::new();
         let hashes = hashes.into_iter().map(Into::into).collect::<Vec<String>>();
         for hash in &hashes {
-            changed |= hints.inventory.insert(hash.clone());
+            if hints.inventory.insert(hash.clone()) {
+                changed_hashes.push(hash.clone());
+            }
         }
-        if changed {
+        if !changed_hashes.is_empty() {
             self.peer_inventory_generation = self.peer_inventory_generation.saturating_add(1);
         }
-        for hash in hashes {
+        for hash in changed_hashes {
             self.reopen_exhausted_hash(&hash, "peer_inventory_advertised_hash");
         }
+    }
+
+    #[allow(dead_code)]
+    pub fn note_peer_set_changed(&mut self) -> usize {
+        self.peer_inventory_generation = self.peer_inventory_generation.saturating_add(1);
+        let exhausted = self.exhausted_hashes.iter().cloned().collect::<Vec<_>>();
+        exhausted
+            .iter()
+            .filter(|hash| self.reopen_exhausted_hash(hash, "peer_set_changed"))
+            .count()
+    }
+
+    #[allow(dead_code)]
+    pub fn note_quiescence_recovery_window<I, S>(&mut self, hashes: I) -> usize
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.peer_inventory_generation = self.peer_inventory_generation.saturating_add(1);
+        hashes
+            .into_iter()
+            .map(Into::into)
+            .filter(|hash: &String| self.reopen_exhausted_hash(hash, "quiescence_recovery_window"))
+            .count()
     }
 
     #[allow(dead_code)]
@@ -1565,8 +1591,49 @@ mod tests {
 
         assert!(!tracker.should_issue_getblock_for_peers("parent", 200, ["peer-a"]));
         assert!(!tracker.should_issue_getblock_for_peers("parent", 300, ["peer-a"]));
+        tracker.note_peer_inventory("peer-a", ["other-parent"]);
+        assert!(!tracker.should_issue_getblock_for_peers("parent", 400, ["peer-a"]));
         let state = tracker.missing_parent_request_state("parent");
         assert!(state.terminal_unavailable_after_all_peers);
         assert_eq!(state.reopened_total, 0);
+    }
+
+    #[test]
+    fn quiescence_rearms_recoverable_terminal_parent_once_per_window() {
+        let mut tracker = BlockRequestTracker::with_limits(5, 1, 10, 10);
+        assert!(tracker.should_issue_getblock_for_peers("parent", 100, ["peer-a"]));
+        assert!(
+            tracker
+                .note_not_found("parent", 101, ["peer-a"])
+                .all_peers_exhausted
+        );
+
+        assert_eq!(tracker.note_quiescence_recovery_window(["parent"]), 1);
+        let state = tracker.missing_parent_request_state("parent");
+        assert!(!state.terminal_unavailable_after_all_peers);
+        assert_eq!(
+            state.reopen_reason.as_deref(),
+            Some("quiescence_recovery_window")
+        );
+    }
+
+    #[test]
+    fn peer_set_change_reopens_terminal_parent_with_generation_digest() {
+        let mut tracker = BlockRequestTracker::with_limits(5, 1, 10, 10);
+        assert!(tracker.should_issue_getblock_for_peers("parent", 100, ["peer-a"]));
+        assert!(
+            tracker
+                .note_not_found("parent", 101, ["peer-a"])
+                .all_peers_exhausted
+        );
+        let terminal = tracker.missing_parent_request_state("parent");
+        assert_eq!(terminal.terminal_generation, 0);
+        assert_eq!(terminal.terminal_at_unix, Some(101));
+
+        assert_eq!(tracker.note_peer_set_changed(), 1);
+        let reopened = tracker.missing_parent_request_state("parent");
+        assert!(!reopened.terminal_unavailable_after_all_peers);
+        assert_eq!(reopened.reopened_total, 1);
+        assert_eq!(reopened.reopen_reason.as_deref(), Some("peer_set_changed"));
     }
 }

@@ -244,6 +244,8 @@ mod tests {
             NetworkMessage::GetBlock {
                 chain_id: "testnet".into(),
                 hash: block.hash.clone(),
+                request_id: None,
+                requested_peer_id: None,
             },
             NetworkMessage::BlockData {
                 chain_id: "testnet".into(),
