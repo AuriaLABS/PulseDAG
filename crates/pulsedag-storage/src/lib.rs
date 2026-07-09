@@ -1,5 +1,8 @@
 use std::{
-    sync::Arc,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -21,6 +24,17 @@ const CHAIN_ID_KEY: &[u8] = b"chain_id";
 const SNAPSHOT_CAPTURED_AT_UNIX_KEY: &[u8] = b"snapshot_captured_at_unix";
 const SNAPSHOT_METADATA_KEY: &[u8] = b"snapshot_metadata";
 const RUNTIME_EVENT_PREFIX: &str = "runtime_event:";
+const ACCEPTED_BLOCKS_CF: &str = "blocks";
+const ORPHAN_STAGED_BLOCKS_CF: &str = "orphan_staged_blocks";
+const TERMINAL_MISSING_PARENT_CF: &str = "terminal_missing_parent_metadata";
+const REJECTED_BLOCK_DIAGNOSTICS_CF: &str = "rejected_block_diagnostics";
+
+pub static ACCEPTED_STORAGE_MEMORY_MISMATCH_TOTAL: AtomicU64 = AtomicU64::new(0);
+pub static ACCEPTED_STORAGE_ORPHAN_RECORD_TOTAL: AtomicU64 = AtomicU64::new(0);
+pub static BLOCK_COMMIT_BATCH_FAILED_TOTAL: AtomicU64 = AtomicU64::new(0);
+pub static BLOCK_COMMIT_ROLLBACK_TOTAL: AtomicU64 = AtomicU64::new(0);
+pub static STARTUP_STORAGE_RECONCILIATION_TOTAL: AtomicU64 = AtomicU64::new(0);
+pub static STARTUP_STORAGE_RECONCILIATION_FAILED_TOTAL: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RuntimeEvent {
@@ -32,6 +46,31 @@ pub struct RuntimeEvent {
 
 pub struct Storage {
     pub db: Arc<DB>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AcceptedStorageInvariantReport {
+    pub accepted_storage_count: usize,
+    pub in_memory_dag_count: usize,
+    pub storage_only_hashes: Vec<Hash>,
+    pub memory_only_hashes: Vec<Hash>,
+    pub staged_hashes_present_in_accepted_storage: Vec<Hash>,
+}
+
+impl AcceptedStorageInvariantReport {
+    pub fn is_ok(&self) -> bool {
+        self.accepted_storage_count == self.in_memory_dag_count
+            && self.storage_only_hashes.is_empty()
+            && self.memory_only_hashes.is_empty()
+            && self.staged_hashes_present_in_accepted_storage.is_empty()
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StartupStorageReconciliationReport {
+    pub repaired: bool,
+    pub quarantined_accepted_records: Vec<Hash>,
+    pub missing_accepted_records: Vec<Hash>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -297,7 +336,10 @@ impl Storage {
 
     pub fn open(path: &str) -> Result<Self, PulseError> {
         let cfs = vec![
-            ColumnFamilyDescriptor::new("blocks", Default::default()),
+            ColumnFamilyDescriptor::new(ACCEPTED_BLOCKS_CF, Default::default()),
+            ColumnFamilyDescriptor::new(ORPHAN_STAGED_BLOCKS_CF, Default::default()),
+            ColumnFamilyDescriptor::new(TERMINAL_MISSING_PARENT_CF, Default::default()),
+            ColumnFamilyDescriptor::new(REJECTED_BLOCK_DIAGNOSTICS_CF, Default::default()),
             ColumnFamilyDescriptor::new("utxos", Default::default()),
             ColumnFamilyDescriptor::new("meta", Default::default()),
             ColumnFamilyDescriptor::new("contracts_meta", Default::default()),
@@ -314,6 +356,7 @@ impl Storage {
             ),
         };
         storage.ensure_schema_compatible()?;
+        storage.reconcile_accepted_storage_at_startup()?;
         Ok(storage)
     }
 
@@ -390,11 +433,87 @@ impl Storage {
         Ok(())
     }
 
+    pub fn reconcile_accepted_storage_at_startup(
+        &self,
+    ) -> Result<StartupStorageReconciliationReport, PulseError> {
+        let Some(snapshot) = self.load_chain_state()? else {
+            return Ok(StartupStorageReconciliationReport {
+                repaired: false,
+                quarantined_accepted_records: Vec::new(),
+                missing_accepted_records: Vec::new(),
+            });
+        };
+        let accepted_cf = self
+            .db
+            .cf_handle(ACCEPTED_BLOCKS_CF)
+            .ok_or_else(|| PulseError::StorageError("missing cf accepted blocks".into()))?;
+        let quarantine_cf = self
+            .db
+            .cf_handle(TERMINAL_MISSING_PARENT_CF)
+            .ok_or_else(|| PulseError::StorageError("missing cf terminal missing parent".into()))?;
+        let accepted = self.list_blocks()?;
+        let accepted_hashes = accepted
+            .iter()
+            .map(|block| block.hash.clone())
+            .collect::<std::collections::BTreeSet<_>>();
+        let memory_hashes = snapshot
+            .dag
+            .blocks
+            .keys()
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>();
+
+        let mut batch = WriteBatch::default();
+        let mut quarantined = Vec::new();
+        for block in accepted {
+            if !memory_hashes.contains(&block.hash) {
+                batch.delete_cf(&accepted_cf, block.hash.as_bytes());
+                batch.put_cf(
+                    &quarantine_cf,
+                    block.hash.as_bytes(),
+                    serde_json::to_vec(&block)
+                        .map_err(|e| PulseError::StorageError(e.to_string()))?,
+                );
+                quarantined.push(block.hash);
+            }
+        }
+        let missing = memory_hashes
+            .difference(&accepted_hashes)
+            .cloned()
+            .collect::<Vec<_>>();
+        if !missing.is_empty() {
+            STARTUP_STORAGE_RECONCILIATION_FAILED_TOTAL.fetch_add(1, Ordering::Relaxed);
+            return Err(PulseError::StorageError(format!(
+                "startup accepted storage reconciliation failed: snapshot references missing accepted block records: {}",
+                missing.join(",")
+            )));
+        }
+        if !quarantined.is_empty() {
+            STARTUP_STORAGE_RECONCILIATION_TOTAL.fetch_add(1, Ordering::Relaxed);
+            self.db
+                .write(batch)
+                .map_err(|e| PulseError::StorageError(e.to_string()))?;
+            let _ = self.append_runtime_event(
+                "warn",
+                "startup_storage_reconciliation",
+                &format!(
+                    "quarantined {} accepted block record(s) not referenced by persisted chain metadata",
+                    quarantined.len()
+                ),
+            );
+        }
+        Ok(StartupStorageReconciliationReport {
+            repaired: !quarantined.is_empty(),
+            quarantined_accepted_records: quarantined,
+            missing_accepted_records: missing,
+        })
+    }
+
     pub fn persist_block(&self, block: &Block) -> Result<(), PulseError> {
         let cf = self
             .db
-            .cf_handle("blocks")
-            .ok_or_else(|| PulseError::StorageError("missing cf blocks".into()))?;
+            .cf_handle(ACCEPTED_BLOCKS_CF)
+            .ok_or_else(|| PulseError::StorageError("missing cf accepted blocks".into()))?;
         self.db
             .put_cf(
                 cf,
@@ -407,8 +526,8 @@ impl Storage {
     pub fn list_blocks(&self) -> Result<Vec<Block>, PulseError> {
         let cf = self
             .db
-            .cf_handle("blocks")
-            .ok_or_else(|| PulseError::StorageError("missing cf blocks".into()))?;
+            .cf_handle(ACCEPTED_BLOCKS_CF)
+            .ok_or_else(|| PulseError::StorageError("missing cf accepted blocks".into()))?;
         let iter = self.db.iterator_cf(cf, rocksdb::IteratorMode::Start);
         let mut blocks = Vec::new();
         for item in iter {
@@ -424,8 +543,8 @@ impl Storage {
     pub fn block_count(&self) -> Result<usize, PulseError> {
         let cf = self
             .db
-            .cf_handle("blocks")
-            .ok_or_else(|| PulseError::StorageError("missing cf blocks".into()))?;
+            .cf_handle(ACCEPTED_BLOCKS_CF)
+            .ok_or_else(|| PulseError::StorageError("missing cf accepted blocks".into()))?;
         let iter = self.db.iterator_cf(cf, rocksdb::IteratorMode::Start);
         let mut count = 0usize;
         for item in iter {
@@ -433,6 +552,90 @@ impl Storage {
             count = count.saturating_add(1);
         }
         Ok(count)
+    }
+
+    pub fn persist_staged_orphan_block(&self, block: &Block) -> Result<(), PulseError> {
+        let cf = self
+            .db
+            .cf_handle(ORPHAN_STAGED_BLOCKS_CF)
+            .ok_or_else(|| PulseError::StorageError("missing cf orphan staged blocks".into()))?;
+        ACCEPTED_STORAGE_ORPHAN_RECORD_TOTAL.fetch_add(1, Ordering::Relaxed);
+        self.db
+            .put_cf(
+                cf,
+                block.hash.as_bytes(),
+                serde_json::to_vec(block).map_err(|e| PulseError::StorageError(e.to_string()))?,
+            )
+            .map_err(|e| PulseError::StorageError(e.to_string()))
+    }
+
+    pub fn delete_staged_orphan_block(&self, hash: &Hash) -> Result<(), PulseError> {
+        let cf = self
+            .db
+            .cf_handle(ORPHAN_STAGED_BLOCKS_CF)
+            .ok_or_else(|| PulseError::StorageError("missing cf orphan staged blocks".into()))?;
+        self.db
+            .delete_cf(cf, hash.as_bytes())
+            .map_err(|e| PulseError::StorageError(e.to_string()))
+    }
+
+    pub fn list_staged_orphan_blocks(&self) -> Result<Vec<Block>, PulseError> {
+        let cf = self
+            .db
+            .cf_handle(ORPHAN_STAGED_BLOCKS_CF)
+            .ok_or_else(|| PulseError::StorageError("missing cf orphan staged blocks".into()))?;
+        let mut blocks = Vec::new();
+        for item in self.db.iterator_cf(cf, rocksdb::IteratorMode::Start) {
+            let (_, value) = item.map_err(|e| PulseError::StorageError(e.to_string()))?;
+            blocks.push(
+                serde_json::from_slice(&value)
+                    .map_err(|e| PulseError::StorageError(e.to_string()))?,
+            );
+        }
+        sort_blocks_for_deterministic_replay(&mut blocks);
+        Ok(blocks)
+    }
+
+    pub fn verify_accepted_storage_invariants(
+        &self,
+        state: &ChainState,
+    ) -> Result<AcceptedStorageInvariantReport, PulseError> {
+        let accepted_hashes = self
+            .list_blocks()?
+            .into_iter()
+            .map(|block| block.hash)
+            .collect::<std::collections::BTreeSet<_>>();
+        let memory_hashes = state
+            .dag
+            .blocks
+            .keys()
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>();
+        let staged_hashes = self
+            .list_staged_orphan_blocks()?
+            .into_iter()
+            .map(|block| block.hash)
+            .collect::<std::collections::BTreeSet<_>>();
+        let report = AcceptedStorageInvariantReport {
+            accepted_storage_count: accepted_hashes.len(),
+            in_memory_dag_count: memory_hashes.len(),
+            storage_only_hashes: accepted_hashes
+                .difference(&memory_hashes)
+                .cloned()
+                .collect(),
+            memory_only_hashes: memory_hashes
+                .difference(&accepted_hashes)
+                .cloned()
+                .collect(),
+            staged_hashes_present_in_accepted_storage: staged_hashes
+                .intersection(&accepted_hashes)
+                .cloned()
+                .collect(),
+        };
+        if !report.is_ok() {
+            ACCEPTED_STORAGE_MEMORY_MISMATCH_TOTAL.fetch_add(1, Ordering::Relaxed);
+        }
+        Ok(report)
     }
 
     pub fn persist_utxo(&self, outpoint: &OutPoint, utxo: &Utxo) -> Result<(), PulseError> {
@@ -464,8 +667,8 @@ impl Storage {
     pub fn get_block(&self, hash: &Hash) -> Result<Option<Block>, PulseError> {
         let cf = self
             .db
-            .cf_handle("blocks")
-            .ok_or_else(|| PulseError::StorageError("missing cf blocks".into()))?;
+            .cf_handle(ACCEPTED_BLOCKS_CF)
+            .ok_or_else(|| PulseError::StorageError("missing cf accepted blocks".into()))?;
         let raw = self
             .db
             .get_cf(cf, hash.as_bytes())
@@ -525,8 +728,8 @@ impl Storage {
     {
         let blocks_cf = self
             .db
-            .cf_handle("blocks")
-            .ok_or_else(|| PulseError::StorageError("missing cf blocks".into()))?;
+            .cf_handle(ACCEPTED_BLOCKS_CF)
+            .ok_or_else(|| PulseError::StorageError("missing cf accepted blocks".into()))?;
         let meta_cf = self
             .db
             .cf_handle("meta")
@@ -536,7 +739,13 @@ impl Storage {
         let mut batch = WriteBatch::default();
         batch.put_cf(&blocks_cf, block.hash.as_bytes(), block_value);
         self.stage_chain_state_snapshot(&mut batch, &meta_cf, state)?;
-        write_batch(&self.db, batch)
+        match write_batch(&self.db, batch) {
+            Ok(()) => Ok(()),
+            Err(err) => {
+                BLOCK_COMMIT_BATCH_FAILED_TOTAL.fetch_add(1, Ordering::Relaxed);
+                Err(err)
+            }
+        }
     }
 
     fn snapshot_metadata_for_state(state: &ChainState, created_at: u64) -> SnapshotMetadata {
@@ -1016,8 +1225,8 @@ impl Storage {
 
         let blocks_cf = self
             .db
-            .cf_handle("blocks")
-            .ok_or_else(|| PulseError::StorageError("missing cf blocks".into()))?;
+            .cf_handle(ACCEPTED_BLOCKS_CF)
+            .ok_or_else(|| PulseError::StorageError("missing cf accepted blocks".into()))?;
         let meta_cf = self
             .db
             .cf_handle("meta")
@@ -1317,8 +1526,8 @@ impl Storage {
     pub fn prune_blocks_below_height(&self, keep_from_height: u64) -> Result<usize, PulseError> {
         let cf = self
             .db
-            .cf_handle("blocks")
-            .ok_or_else(|| PulseError::StorageError("missing cf blocks".into()))?;
+            .cf_handle(ACCEPTED_BLOCKS_CF)
+            .ok_or_else(|| PulseError::StorageError("missing cf accepted blocks".into()))?;
         let blocks = self.list_blocks()?;
         let mut removed = 0usize;
         for block in blocks {
@@ -1427,15 +1636,20 @@ impl Storage {
 #[cfg(test)]
 mod tests {
     use super::{
-        SnapshotExportBundle, Storage, CHAIN_STATE_KEY, SNAPSHOT_CAPTURED_AT_UNIX_KEY,
-        STORAGE_SCHEMA_VERSION, STORAGE_SCHEMA_VERSION_KEY,
+        SnapshotExportBundle, Storage, ACCEPTED_STORAGE_MEMORY_MISMATCH_TOTAL,
+        BLOCK_COMMIT_BATCH_FAILED_TOTAL, CHAIN_STATE_KEY, SNAPSHOT_CAPTURED_AT_UNIX_KEY,
+        STARTUP_STORAGE_RECONCILIATION_TOTAL, STORAGE_SCHEMA_VERSION, STORAGE_SCHEMA_VERSION_KEY,
     };
-    use std::collections::{HashMap, HashSet};
+    use std::{
+        collections::{HashMap, HashSet},
+        sync::atomic::Ordering,
+    };
 
     use proptest::prelude::*;
     use pulsedag_core::{
         accept::{accept_block, AcceptSource},
         build_candidate_block, build_coinbase_transaction, dev_mine_header,
+        errors::PulseError,
         genesis::init_chain_state,
         refresh_block_consensus_ids, refresh_block_consensus_ids_with_state,
         state::{ContractRuntimeState, Mempool, UtxoState},
@@ -1907,6 +2121,131 @@ mod tests {
             .iter()
             .any(|b| b.hash == best_tip_hash(&snapshot)
                 && b.header.height == snapshot.dag.best_height));
+
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn block_commit_missing_parent_stays_out_of_accepted_storage() {
+        let path = temp_db_path("block-commit-missing-parent");
+        let storage = Storage::open(&path).expect("open storage");
+        let state = init_chain_state("testnet".to_string());
+        let genesis = state.dag.blocks.values().next().cloned().expect("genesis");
+        storage
+            .persist_block_and_chain_state(&genesis, &state)
+            .expect("persist genesis");
+        let missing_parent = build_candidate_block(
+            vec!["missing-parent".into()],
+            1,
+            1,
+            vec![build_coinbase_transaction("miner", 50, 99)],
+        );
+
+        storage
+            .persist_staged_orphan_block(&missing_parent)
+            .expect("stage orphan separately");
+
+        assert_eq!(storage.block_count().expect("accepted count"), 1);
+        assert_eq!(
+            storage
+                .verify_accepted_storage_invariants(&state)
+                .expect("invariants")
+                .accepted_storage_count,
+            state.dag.blocks.len()
+        );
+
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn block_commit_failure_leaves_memory_and_storage_unchanged() {
+        let path = temp_db_path("block-commit-failure");
+        let storage = Storage::open(&path).expect("open storage");
+        let mut state = init_chain_state("testnet".to_string());
+        let genesis = state.dag.blocks.values().next().cloned().expect("genesis");
+        storage
+            .persist_block_and_chain_state(&genesis, &state)
+            .expect("persist genesis");
+        let before_state = state.clone();
+        let before_count = storage.block_count().expect("before count");
+        let before_failures = BLOCK_COMMIT_BATCH_FAILED_TOTAL.load(Ordering::Relaxed);
+        let mut block = build_candidate_block(
+            vec![best_tip_hash(&state)],
+            1,
+            1,
+            vec![build_coinbase_transaction("miner", 50, 100)],
+        );
+        refresh_block_consensus_ids_with_state(&mut block, &state).expect("state root");
+        accept_block(block.clone(), &mut state, AcceptSource::LocalMining).expect("accept in temp");
+        let prepared = state.clone();
+        state = before_state.clone();
+
+        let err = storage
+            .persist_block_and_chain_state_with_write(&block, &prepared, |_db, _batch| {
+                Err(PulseError::StorageError("injected write failure".into()))
+            })
+            .expect_err("write should fail");
+        assert!(err.to_string().contains("injected write failure"));
+        assert_eq!(state.dag.blocks.len(), before_state.dag.blocks.len());
+        assert_eq!(storage.block_count().expect("after count"), before_count);
+        assert_eq!(
+            BLOCK_COMMIT_BATCH_FAILED_TOTAL.load(Ordering::Relaxed),
+            before_failures + 1
+        );
+
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn block_commit_startup_reconciliation_quarantines_unreferenced_accepted_record() {
+        let path = temp_db_path("block-commit-startup-reconcile");
+        {
+            let storage = Storage::open(&path).expect("open storage");
+            let mut state = init_chain_state("testnet".to_string());
+            let genesis = state.dag.blocks.values().next().cloned().expect("genesis");
+            storage
+                .persist_block_and_chain_state(&genesis, &state)
+                .expect("persist genesis");
+            let mut block = build_candidate_block(
+                vec![best_tip_hash(&state)],
+                1,
+                1,
+                vec![build_coinbase_transaction("miner", 50, 101)],
+            );
+            refresh_block_consensus_ids_with_state(&mut block, &state).expect("state root");
+            accept_block(block.clone(), &mut state, AcceptSource::LocalMining).expect("accept");
+            storage
+                .persist_block(&block)
+                .expect("simulate legacy orphaned accepted record");
+            assert_eq!(storage.block_count().expect("legacy count"), 2);
+        }
+
+        let before = STARTUP_STORAGE_RECONCILIATION_TOTAL.load(Ordering::Relaxed);
+        let reopened = Storage::open(&path).expect("reopen reconciles");
+        assert_eq!(reopened.block_count().expect("repaired count"), 1);
+        assert_eq!(
+            STARTUP_STORAGE_RECONCILIATION_TOTAL.load(Ordering::Relaxed),
+            before + 1
+        );
+
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn block_commit_invariants_detect_and_count_mismatch() {
+        let path = temp_db_path("block-commit-invariant-mismatch");
+        let storage = Storage::open(&path).expect("open storage");
+        let state = init_chain_state("testnet".to_string());
+        let before = ACCEPTED_STORAGE_MEMORY_MISMATCH_TOTAL.load(Ordering::Relaxed);
+        let report = storage
+            .verify_accepted_storage_invariants(&state)
+            .expect("invariants");
+        assert!(!report.is_ok());
+        assert_eq!(report.memory_only_hashes.len(), state.dag.blocks.len());
+        assert_eq!(
+            ACCEPTED_STORAGE_MEMORY_MISMATCH_TOTAL.load(Ordering::Relaxed),
+            before + 1
+        );
 
         let _ = std::fs::remove_dir_all(path);
     }

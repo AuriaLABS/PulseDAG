@@ -589,6 +589,14 @@ where
     FPersist: FnOnce(&Block, &ChainState) -> Result<(), PulseError>,
     FBroadcast: FnOnce(&Block) -> Result<(), PulseError>,
 {
+    // Accepted block commit order:
+    // receive/decode happens before this API; this function performs PoW and
+    // structural validation, parent-context/state-root validation inside
+    // `prepare_block_state`, prepares the complete next `ChainState`, persists
+    // the accepted block plus chain metadata as one caller-supplied atomic
+    // storage unit, publishes the new in-memory state only after persistence
+    // succeeds, then broadcasts. Missing-parent, invalid, staged, orphaned, or
+    // rejected blocks return before persistence and never enter accepted storage.
     let enforce_pow = matches!(
         source,
         AcceptSource::Rpc | AcceptSource::P2p | AcceptSource::LocalMining
