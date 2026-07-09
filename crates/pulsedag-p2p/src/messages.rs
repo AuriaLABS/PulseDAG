@@ -90,6 +90,29 @@ pub enum NetworkMessage {
     },
 }
 
+impl NetworkMessage {
+    pub fn kind(&self) -> &'static str {
+        match self {
+            NetworkMessage::NewTransaction { .. } => "NewTransaction",
+            NetworkMessage::NewBlock { .. } => "NewBlock",
+            NetworkMessage::BlockAnnounce { .. } => "BlockAnnounce",
+            NetworkMessage::NewBlockHash { .. } => "NewBlockHash",
+            NetworkMessage::InvBlock { .. } => "InvBlock",
+            NetworkMessage::GetHeaders { .. } => "GetHeaders",
+            NetworkMessage::Headers { .. } => "Headers",
+            NetworkMessage::GetTips { .. } => "GetTips",
+            NetworkMessage::Tips { .. } => "Tips",
+            NetworkMessage::GetBlockHeaders { .. } => "GetBlockHeaders",
+            NetworkMessage::BlockHeaders { .. } => "BlockHeaders",
+            NetworkMessage::GetBlock { .. } => "GetBlock",
+            NetworkMessage::BlockData { .. } => "BlockData",
+            NetworkMessage::Block { .. } => "Block",
+            NetworkMessage::Reject { .. } => "Reject",
+            NetworkMessage::Error { .. } => "Error",
+        }
+    }
+}
+
 pub fn topic_names(chain_id: &str) -> Vec<String> {
     vec![
         format!("{}-blocks", chain_id),

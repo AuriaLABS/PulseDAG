@@ -526,6 +526,13 @@ pub struct P2pStatus {
     pub peer_cooldown_bypassed_for_connectivity_total: u64,
     pub peer_rate_limit_recovery_suppressed_total: u64,
     pub peer_rate_limit_by_kind_total: HashMap<String, u64>,
+    pub message_rate_limited_total: HashMap<String, u64>,
+    pub recovery_queue_depth: usize,
+    pub recovery_queue_dropped_total: u64,
+    pub recovery_queue_delayed_total: u64,
+    pub requested_blockdata_rate_limited_total: u64,
+    pub unsolicited_blockdata_rate_limited_total: u64,
+    pub peer_health_penalty_total: HashMap<String, u64>,
     pub peer_suppressed_dial_count: u64,
     pub peers_under_cooldown: usize,
     pub peers_under_flap_guard: usize,
@@ -938,6 +945,13 @@ struct InnerState {
     peer_cooldown_bypassed_for_connectivity_total: u64,
     peer_rate_limit_recovery_suppressed_total: u64,
     peer_rate_limit_by_kind_total: HashMap<String, u64>,
+    message_rate_limited_total: HashMap<String, u64>,
+    recovery_queue_depth: usize,
+    recovery_queue_dropped_total: u64,
+    recovery_queue_delayed_total: u64,
+    requested_blockdata_rate_limited_total: u64,
+    unsolicited_blockdata_rate_limited_total: u64,
+    peer_health_penalty_total: HashMap<String, u64>,
     peer_suppressed_dial_count: u64,
     connection_slot_budget: usize,
     sync_selection_stickiness_secs: u64,
@@ -985,6 +999,7 @@ struct PeerHealth {
     invalid_block_announce_streak: u32,
     inbound_window_started_unix: u64,
     inbound_window_count: usize,
+    inbound_class_window_count: HashMap<String, usize>,
     dial_window_started_unix: u64,
     dial_attempts_in_window: usize,
     last_successful_block_unix: Option<u64>,
@@ -1018,6 +1033,7 @@ impl Default for PeerHealth {
             invalid_block_announce_streak: 0,
             inbound_window_started_unix: 0,
             inbound_window_count: 0,
+            inbound_class_window_count: HashMap::new(),
             dial_window_started_unix: 0,
             dial_attempts_in_window: 0,
             last_successful_block_unix: None,
@@ -1398,6 +1414,14 @@ impl P2pHandle for MemoryP2pHandle {
             peer_rate_limit_recovery_suppressed_total: inner
                 .peer_rate_limit_recovery_suppressed_total,
             peer_rate_limit_by_kind_total: inner.peer_rate_limit_by_kind_total.clone(),
+            message_rate_limited_total: inner.message_rate_limited_total.clone(),
+            recovery_queue_depth: inner.recovery_queue_depth,
+            recovery_queue_dropped_total: inner.recovery_queue_dropped_total,
+            recovery_queue_delayed_total: inner.recovery_queue_delayed_total,
+            requested_blockdata_rate_limited_total: inner.requested_blockdata_rate_limited_total,
+            unsolicited_blockdata_rate_limited_total: inner
+                .unsolicited_blockdata_rate_limited_total,
+            peer_health_penalty_total: inner.peer_health_penalty_total.clone(),
             peer_suppressed_dial_count: inner.peer_suppressed_dial_count,
             peers_under_cooldown,
             peers_under_flap_guard,
@@ -3270,6 +3294,10 @@ fn score_peer_message_outcome(
         let health = state.peer_book.entry(peer.to_string()).or_default();
         health.last_seen_unix = Some(now);
         if let Some(reason) = outcome_reason {
+            *state
+                .peer_health_penalty_total
+                .entry(reason.to_string())
+                .or_insert(0) += 1;
             health.last_error = Some(reason.to_string());
             health.last_error_unix = Some(now);
             health.last_error_source = Some("peer_message_outcome".to_string());
@@ -3580,7 +3608,94 @@ fn enforce_connectivity_aware_cooldown_floor(state: &mut InnerState, now: u64) {
     }
 }
 
-fn admit_peer_inbound_message(state: &mut InnerState, peer: Option<&str>, now: u64) -> bool {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MessageClass {
+    Control,
+    Gossip,
+    RecoveryRequest,
+    RecoveryResponse,
+    Transactions,
+}
+
+impl MessageClass {
+    fn as_str(self) -> &'static str {
+        match self {
+            MessageClass::Control => "control",
+            MessageClass::Gossip => "gossip",
+            MessageClass::RecoveryRequest => "recovery_request",
+            MessageClass::RecoveryResponse => "recovery_response",
+            MessageClass::Transactions => "transactions",
+        }
+    }
+}
+
+fn classify_network_message(msg: &NetworkMessage) -> MessageClass {
+    match msg {
+        NetworkMessage::GetHeaders { .. }
+        | NetworkMessage::Headers { .. }
+        | NetworkMessage::GetTips { .. }
+        | NetworkMessage::Tips { .. }
+        | NetworkMessage::Reject { .. }
+        | NetworkMessage::Error { .. } => MessageClass::Control,
+        NetworkMessage::InvBlock { .. }
+        | NetworkMessage::NewBlock { .. }
+        | NetworkMessage::Block { .. }
+        | NetworkMessage::BlockAnnounce { .. }
+        | NetworkMessage::NewBlockHash { .. } => MessageClass::Gossip,
+        NetworkMessage::GetBlock { .. } | NetworkMessage::GetBlockHeaders { .. } => {
+            MessageClass::RecoveryRequest
+        }
+        NetworkMessage::BlockData { .. } | NetworkMessage::BlockHeaders { .. } => {
+            MessageClass::RecoveryResponse
+        }
+        NetworkMessage::NewTransaction { .. } => MessageClass::Transactions,
+    }
+}
+
+fn note_message_rate_limited(
+    state: &mut InnerState,
+    class: MessageClass,
+    kind: &str,
+    requested_blockdata: Option<bool>,
+) {
+    state.peer_message_rate_limited_count = state.peer_message_rate_limited_count.saturating_add(1);
+    *state
+        .peer_rate_limit_by_kind_total
+        .entry(kind.to_string())
+        .or_insert(0) += 1;
+    *state
+        .message_rate_limited_total
+        .entry(format!("class={},kind={}", class.as_str(), kind))
+        .or_insert(0) += 1;
+    if matches!(
+        class,
+        MessageClass::RecoveryRequest | MessageClass::RecoveryResponse
+    ) {
+        state.recovery_queue_delayed_total = state.recovery_queue_delayed_total.saturating_add(1);
+    }
+    match requested_blockdata {
+        Some(true) => {
+            state.requested_blockdata_rate_limited_total = state
+                .requested_blockdata_rate_limited_total
+                .saturating_add(1);
+        }
+        Some(false) => {
+            state.unsolicited_blockdata_rate_limited_total = state
+                .unsolicited_blockdata_rate_limited_total
+                .saturating_add(1);
+        }
+        None => {}
+    }
+}
+
+fn admit_peer_inbound_message(
+    state: &mut InnerState,
+    peer: Option<&str>,
+    now: u64,
+    class: MessageClass,
+    kind: &str,
+    requested_blockdata: Option<bool>,
+) -> bool {
     let Some(peer) = peer else {
         return true;
     };
@@ -3588,22 +3703,35 @@ fn admit_peer_inbound_message(state: &mut InnerState, peer: Option<&str>, now: u
     if now.saturating_sub(health.inbound_window_started_unix) >= PEER_INBOUND_RATE_WINDOW_SECS {
         health.inbound_window_started_unix = now;
         health.inbound_window_count = 0;
+        health.inbound_class_window_count.clear();
     }
-    health.inbound_window_count = health.inbound_window_count.saturating_add(1);
-    if health.inbound_window_count <= PEER_MAX_INBOUND_MESSAGES_PER_WINDOW {
+    let class_count = health
+        .inbound_class_window_count
+        .entry(class.as_str().to_string())
+        .or_insert(0);
+    *class_count = class_count.saturating_add(1);
+    let class_limit = match class {
+        MessageClass::Control => PEER_MAX_INBOUND_MESSAGES_PER_WINDOW,
+        MessageClass::RecoveryRequest | MessageClass::RecoveryResponse => {
+            PEER_MAX_INBOUND_MESSAGES_PER_WINDOW.saturating_mul(3)
+        }
+        MessageClass::Gossip | MessageClass::Transactions => PEER_MAX_INBOUND_MESSAGES_PER_WINDOW,
+    };
+    if *class_count <= class_limit {
         return true;
     }
-    state.peer_message_rate_limited_count = state.peer_message_rate_limited_count.saturating_add(1);
-    *state
-        .peer_rate_limit_by_kind_total
-        .entry("peer_inbound".to_string())
-        .or_insert(0) += 1;
+    note_message_rate_limited(state, class, kind, requested_blockdata);
     if state.active_connections.len() <= private_rehearsal_min_useful_peer_target(state) {
         state.peer_rate_limit_recovery_suppressed_total = state
             .peer_rate_limit_recovery_suppressed_total
             .saturating_add(1);
     }
-    score_peer_message_outcome(state, peer, PeerMessageOutcome::RateLimited, now);
+    if !matches!(
+        class,
+        MessageClass::RecoveryRequest | MessageClass::RecoveryResponse
+    ) {
+        score_peer_message_outcome(state, peer, PeerMessageOutcome::RateLimited, now);
+    }
     false
 }
 
@@ -3704,8 +3832,22 @@ fn dispatch_network_message(
         }
     };
 
+    let msg_class = classify_network_message(&msg);
+    let msg_kind = msg.kind();
+    let requested_blockdata = match &msg {
+        NetworkMessage::BlockData { request_hash, .. } => Some(request_hash.is_some()),
+        _ => None,
+    };
+
     if let Ok(mut guard) = inner.lock() {
-        if !admit_peer_inbound_message(&mut guard, source_peer, now_unix()) {
+        if !admit_peer_inbound_message(
+            &mut guard,
+            source_peer,
+            now_unix(),
+            msg_class,
+            msg_kind,
+            requested_blockdata,
+        ) {
             guard.last_drop_reason = Some("peer_inbound_rate_limited".into());
             refresh_connected_peers_from_health(&mut guard);
             persist_peer_state_if_configured(&guard);
@@ -4354,6 +4496,11 @@ fn dispatch_network_message(
                 let id = message_id_for_block(&block);
                 if let Ok(mut guard) = inner.lock() {
                     guard.blocks_received = guard.blocks_received.saturating_add(1);
+                    if request_hash.is_some() {
+                        guard.peer_addressed_getblock_response_total = guard
+                            .peer_addressed_getblock_response_total
+                            .saturating_add(1);
+                    }
                     if !mark_inbound_block_seen(
                         &mut guard,
                         id,
@@ -5652,6 +5799,14 @@ impl P2pHandle for Libp2pHandle {
             peer_rate_limit_recovery_suppressed_total: inner
                 .peer_rate_limit_recovery_suppressed_total,
             peer_rate_limit_by_kind_total: inner.peer_rate_limit_by_kind_total.clone(),
+            message_rate_limited_total: inner.message_rate_limited_total.clone(),
+            recovery_queue_depth: inner.recovery_queue_depth,
+            recovery_queue_dropped_total: inner.recovery_queue_dropped_total,
+            recovery_queue_delayed_total: inner.recovery_queue_delayed_total,
+            requested_blockdata_rate_limited_total: inner.requested_blockdata_rate_limited_total,
+            unsolicited_blockdata_rate_limited_total: inner
+                .unsolicited_blockdata_rate_limited_total,
+            peer_health_penalty_total: inner.peer_health_penalty_total.clone(),
             peer_suppressed_dial_count: inner.peer_suppressed_dial_count,
             peers_under_cooldown,
             peers_under_flap_guard,
@@ -9696,5 +9851,95 @@ mod deterministic_p2p_sync_coverage_tests {
             .to_string();
         assert!(err.contains("refusing to generate replacement"), "{err}");
         assert_eq!(std::fs::read(&path).unwrap(), b"not-a-libp2p-key");
+    }
+
+    #[test]
+    fn rate_limit_separates_gossip_from_reserved_recovery_classes() {
+        let mut state = InnerState::default();
+        let peer = "peer-recovery";
+        for _ in 0..PEER_MAX_INBOUND_MESSAGES_PER_WINDOW {
+            assert!(admit_peer_inbound_message(
+                &mut state,
+                Some(peer),
+                10,
+                MessageClass::Gossip,
+                "InvBlock",
+                None,
+            ));
+        }
+        assert!(!admit_peer_inbound_message(
+            &mut state,
+            Some(peer),
+            10,
+            MessageClass::Gossip,
+            "InvBlock",
+            None,
+        ));
+        assert!(state
+            .peer_book
+            .get(peer)
+            .unwrap()
+            .last_rate_limited_unix
+            .is_some());
+
+        let mut recovery_state = InnerState::default();
+        for _ in 0..PEER_MAX_INBOUND_MESSAGES_PER_WINDOW {
+            assert!(admit_peer_inbound_message(
+                &mut recovery_state,
+                Some(peer),
+                10,
+                MessageClass::RecoveryResponse,
+                "BlockData",
+                Some(true),
+            ));
+        }
+        assert_eq!(recovery_state.peer_message_rate_limited_count, 0);
+        assert!(recovery_state
+            .peer_book
+            .get(peer)
+            .unwrap()
+            .last_rate_limited_unix
+            .is_none());
+    }
+
+    #[test]
+    fn rate_limited_requested_blockdata_is_delayed_not_health_penalized() {
+        let mut state = InnerState::default();
+        let peer = "peer-requested-blockdata";
+        for _ in 0..(PEER_MAX_INBOUND_MESSAGES_PER_WINDOW * 3) {
+            assert!(admit_peer_inbound_message(
+                &mut state,
+                Some(peer),
+                20,
+                MessageClass::RecoveryResponse,
+                "BlockData",
+                Some(true),
+            ));
+        }
+        assert!(!admit_peer_inbound_message(
+            &mut state,
+            Some(peer),
+            20,
+            MessageClass::RecoveryResponse,
+            "BlockData",
+            Some(true),
+        ));
+        assert_eq!(state.recovery_queue_delayed_total, 1);
+        assert_eq!(state.requested_blockdata_rate_limited_total, 1);
+        assert_eq!(state.unsolicited_blockdata_rate_limited_total, 0);
+        assert_eq!(
+            state
+                .message_rate_limited_total
+                .get("class=recovery_response,kind=BlockData")
+                .copied(),
+            Some(1)
+        );
+        assert!(state
+            .peer_book
+            .get(peer)
+            .unwrap()
+            .last_rate_limited_unix
+            .is_none());
+        assert!(!state.peer_health_penalty_total.contains_key("rate_limited"));
     }
 }
