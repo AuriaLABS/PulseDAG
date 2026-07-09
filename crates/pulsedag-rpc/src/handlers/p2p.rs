@@ -1622,6 +1622,7 @@ mod tests {
             p2p_identity_created_new: false,
             p2p_peer_id_changed_since_previous_start: false,
             configured_bootnode_peer_ids: Vec::new(),
+            ..P2pStatus::default()
         };
 
         let Json(resp) = get_p2p_status(State(mk_state(status))).await;
@@ -1927,6 +1928,7 @@ mod tests {
                 p2p_identity_created_new: false,
                 p2p_peer_id_changed_since_previous_start: false,
                 configured_bootnode_peer_ids: Vec::new(),
+                ..P2pStatus::default()
             };
             let Json(resp) = get_p2p_status(State(mk_state(status.clone()))).await;
             let data = resp.data.expect("p2p status data");

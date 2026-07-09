@@ -2125,6 +2125,7 @@ mod tests {
             p2p_identity_created_new: false,
             p2p_peer_id_changed_since_previous_start: false,
             configured_bootnode_peer_ids: Vec::new(),
+            ..P2pStatus::default()
         };
         let state = TestState {
             chain: Arc::new(RwLock::new(chain)),
@@ -2372,6 +2373,7 @@ mod tests {
             p2p_identity_created_new: false,
             p2p_peer_id_changed_since_previous_start: false,
             configured_bootnode_peer_ids: Vec::new(),
+            ..P2pStatus::default()
         };
         let state = TestState {
             chain: Arc::new(RwLock::new(chain)),
