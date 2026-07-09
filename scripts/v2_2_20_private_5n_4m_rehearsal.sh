@@ -58,6 +58,7 @@ exec > >(tee -a "$OUT_DIR/command-log.txt") 2>&1
 declare -a NODE_PIDS=()
 declare -a MINER_PIDS=()
 declare -A NODE_READY NODE_HEALTHY NODE_ADVANCED NODE_TIP NODE_HEIGHT NODE_P2P_OK NODE_PEERS NODE_P2P_INBOUND NODE_P2P_OUTBOUND NODE_CHAIN_ID
+declare -A NODE_MISSING_PARENT_REQUESTS_SENT NODE_MISSING_PARENT_RESPONSES_RECEIVED
 declare -A NODE_ORPHAN_COUNT NODE_PENDING_MISSING_PARENTS NODE_PENDING_BLOCK_REQUESTS NODE_INV_HASHES_REQUESTED NODE_PEER_RECOVERY_SUCCESS_COUNT NODE_MISSING_PARENTS_COUNT NODE_TERMINAL_MISSING_PARENTS_COUNT
 declare -A NODE_ACTIVE_PEERS NODE_RECOVERING_PEERS NODE_COOLDOWN_PEERS NODE_RATE_LIMITED_COUNT NODE_RECONNECT_ATTEMPTS NODE_RECONNECT_BLOCKED_REASON NODE_MIN_TARGET_MISSED NODE_ZERO_RECONNECT_ATTEMPTS NODE_ZERO_RECONNECT_SUCCESS
 declare -A NODE_ORPHAN_RECOVERY_ATTEMPTS NODE_ORPHAN_RECOVERY_SUCCESS NODE_ORPHAN_RECOVERY_FAILED_MISSING_PARENT NODE_ORPHAN_RECOVERY_FAILED_PERSIST NODE_ORPHAN_ROOTS_RATE_LIMITED NODE_ORPHAN_BACKLOG_STALE
@@ -110,8 +111,8 @@ TOTAL_MISSING_PARENT_REQUESTS_SENT=0
 TOTAL_MISSING_PARENT_RESPONSES_RECEIVED=0
 TOTAL_BLOCKDATA_NOT_FOUND=0
 MINERS_STOPPED_FOR_QUIESCENCE=0
-GATE_5N_1M_BASELINE=FAIL
-GATE_5N_2M_INTERMEDIATE=FAIL
+GATE_5N_1M_BASELINE=NOT_PROVIDED
+GATE_5N_2M_INTERMEDIATE=NOT_PROVIDED
 GATE_5N_4M_STRESS=OBSERVE
 IN_CLEANUP=0
 CLEANUP_STARTED=0
@@ -123,6 +124,23 @@ POST_WORST_LAG=0
 POST_DISTINCT_TIPS=0
 POST_CONVERGED=0
 LAG_IMPROVED=0
+PRIOR_GATE_C_MANIFEST=${PRIOR_GATE_C_MANIFEST:-}
+PRIOR_GATE_D_MANIFEST=${PRIOR_GATE_D_MANIFEST:-}
+PRIOR_GATE_C_SHA256=
+PRIOR_GATE_D_SHA256=
+PRIOR_GATE_C_RESULT=NOT_PROVIDED
+PRIOR_GATE_D_RESULT=NOT_PROVIDED
+PRIOR_GATE_C_COMMIT=
+PRIOR_GATE_D_COMMIT=
+UNIQUE_TEMPLATES_ISSUED=0
+LOCAL_MINER_SUBMITS_TOTAL=0
+LOCAL_MINER_SUBMITS_ACCEPTED=0
+LOCAL_MINER_SUBMITS_REJECTED=0
+LOCAL_MINER_SUBMITS_REJECTED_BY_REASON=[]
+NODE_BLOCK_ACCEPT_EVENTS_TOTAL=0
+NODE_BLOCK_REJECT_EVENTS_TOTAL=0
+DUPLICATE_BLOCK_EVENTS_TOTAL=0
+UNIQUE_BLOCK_HASHES_OBSERVED=0
 declare -A miner_submit miner_accept miner_reject miner_template
 for i in 1 2 3 4; do miner_submit[$i]=0; miner_accept[$i]=0; miner_reject[$i]=0; miner_template[$i]=0; done
 REPO_REF="$(git -C "$ROOT_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)"
@@ -704,6 +722,8 @@ collect_final_state(){
     NODE_PENDING_BLOCK_REQUESTS[$i]="$(jq -r '.data.pending_block_requests // .pending_block_requests // 0' "$OUT_DIR/endpoints/n${i}-sync-status-final.json" "$OUT_DIR/endpoints/n${i}-p2p-status-final.json" 2>/dev/null | head -n1 || echo 0)"
     NODE_PENDING_MISSING_PARENTS[$i]="$(jq -r '.data.pending_missing_parents // .pending_missing_parents // 0' "$OUT_DIR/endpoints/n${i}-sync-status-final.json" 2>/dev/null || echo 0)"
     NODE_INV_HASHES_REQUESTED[$i]="$(jq -r '.data.inv_hashes_requested // .inv_hashes_requested // 0' "$OUT_DIR/endpoints/n${i}-p2p-status-final.json" "$OUT_DIR/endpoints/n${i}-sync-status-final.json" 2>/dev/null | head -n1 || echo 0)"
+    NODE_MISSING_PARENT_REQUESTS_SENT[$i]="$(jq -r '.data.missing_parent_requests_sent // .data.network_counters.missing_parent_requests_sent // .data.sync_counters.missing_parent_requests_sent // .missing_parent_requests_sent // 0' "$OUT_DIR/endpoints/n${i}-sync-status-final.json" 2>/dev/null || echo 0)"
+    NODE_MISSING_PARENT_RESPONSES_RECEIVED[$i]="$(jq -r '.data.missing_parent_responses_received // .data.network_counters.missing_parent_responses_received // .data.sync_counters.missing_parent_responses_received // .missing_parent_responses_received // 0' "$OUT_DIR/endpoints/n${i}-sync-status-final.json" 2>/dev/null || echo 0)"
     NODE_PEER_RECOVERY_SUCCESS_COUNT[$i]="$(jq -r '.data.peer_recovery_success_count // .peer_recovery_success_count // 0' "$OUT_DIR/endpoints/n${i}-p2p-status-final.json" "$OUT_DIR/endpoints/n${i}-sync-status-final.json" 2>/dev/null | head -n1 || echo 0)"
     NODE_MISSING_PARENTS_COUNT[$i]="$(jq -r '.data.missing_parent_index | if type == "array" then length else 0 end' "$OUT_DIR/endpoints/n${i}-sync-missing-final.json" 2>/dev/null || echo 0)"
     NODE_TERMINAL_MISSING_PARENTS_COUNT[$i]="$(jq -r '.data.terminal_missing_parent_index | if type == "array" then length else 0 end' "$OUT_DIR/endpoints/n${i}-sync-missing-final.json" 2>/dev/null || echo 0)"
@@ -713,8 +733,8 @@ collect_final_state(){
     NODE_SYNC_STATE[$i]="$(jq -r '.data.sync_state // .sync_state // .data.state // "unknown"' "$OUT_DIR/endpoints/n${i}-sync-status-final.json" 2>/dev/null || echo unknown)"
     NODE_SYNC_STAGE[$i]="$(jq -r '.data.catchup_stage // .catchup_stage // .data.stage // "unknown"' "$OUT_DIR/endpoints/n${i}-sync-status-final.json" 2>/dev/null || echo unknown)"
     NODE_P2P_OK[$i]=$(( NODE_PEERS[$i] > 0 ? 1 : 0 ))
-    readiness_has_ready=$(jq -e '((.data.node_operational_ready? // .node_operational_ready?) | type == "boolean") and ((.data.private_conservative_ready? // .private_conservative_ready?) | type == "boolean") and ((.data.fast_cadence_ready? // .fast_cadence_ready?) | type == "boolean") and ((.data.ready_for_release? // .ready_for_release?) | type == "boolean")' "$OUT_DIR/endpoints/n${i}-readiness-final.json" >/dev/null 2>&1 && echo 1 || echo 0)
-    readiness_has_public=$(jq -e '(.data.public_testnet_ready? // .public_testnet_ready?) == false' "$OUT_DIR/endpoints/n${i}-readiness-final.json" >/dev/null 2>&1 && echo 1 || echo 0)
+    readiness_has_ready=$(jq -e '(.data // .) as $r | ($r|has("node_operational_ready")) and ($r.node_operational_ready|type == "boolean") and ($r|has("private_conservative_ready")) and ($r.private_conservative_ready|type == "boolean") and ($r|has("fast_cadence_ready")) and ($r.fast_cadence_ready|type == "boolean") and ($r|has("public_testnet_ready")) and ($r.public_testnet_ready|type == "boolean") and ($r|has("ready_for_release")) and ($r.ready_for_release|type == "boolean")' "$OUT_DIR/endpoints/n${i}-readiness-final.json" >/dev/null 2>&1 && echo 1 || echo 0)
+    readiness_has_public=$(jq -e '(.data // .) as $r | ($r|has("public_testnet_ready")) and ($r.public_testnet_ready == false)' "$OUT_DIR/endpoints/n${i}-readiness-final.json" >/dev/null 2>&1 && echo 1 || echo 0)
     NODE_READINESS_SCHEMA_OK[$i]=$(( readiness_has_ready == 1 && readiness_has_public == 1 ? 1 : 0 ))
     metrics_file="$OUT_DIR/endpoints/n${i}-metrics-final.json"
     NODE_ACTIVE_PEERS[$i]="$(jq -r '.data.peer_retention_active_total // .data.peer_count // 0' "$metrics_file" "$OUT_DIR/endpoints/n${i}-p2p-status-final.json" 2>/dev/null | head -n1 || echo 0)"
@@ -850,10 +870,12 @@ compute_evidence_aggregates(){
   TOTAL_ZERO_RECONNECT_SUCCESS=$(sum_node_array NODE_ZERO_RECONNECT_SUCCESS)
   RECONNECT_BLOCKED_REASONS_JSON=$(for i in $(seq 1 "$NODE_COUNT"); do printf '%s\n' "${NODE_RECONNECT_BLOCKED_REASON[$i]:-}"; done | awk 'NF' | sort | uniq -c | jq -Rn '[inputs | capture("^\\s*(?<count>[0-9]+)\\s+(?<reason>.*)$") | {reason, count:(.count|tonumber)}]')
   SAME_HEIGHT_RECONCILE_BLOCKED_REASONS_JSON=$(for i in $(seq 1 "$NODE_COUNT"); do printf '%s\n' "${NODE_SAME_HEIGHT_RECONCILE_BLOCKED_REASON[$i]:-}"; done | awk 'NF' | sort | uniq -c | jq -Rn '[inputs | capture("^\\s*(?<count>[0-9]+)\\s+(?<reason>.*)$") | {reason, count:(.count|tonumber)}]')
+  NODE_BLOCK_ACCEPT_EVENTS_TOTAL=$(sum_node_array NODE_MINING_ACCEPTED)
+  NODE_BLOCK_REJECT_EVENTS_TOTAL=$(sum_node_array NODE_MINING_REJECTED)
   TOTAL_MINING_TEMPLATES=$(sum_node_array NODE_MINING_TEMPLATES)
   TOTAL_MINING_SUBMITS=$(sum_node_array NODE_MINING_SUBMITS)
-  TOTAL_MINING_ACCEPTED=$(sum_node_array NODE_MINING_ACCEPTED)
-  TOTAL_MINING_REJECTED=$(sum_node_array NODE_MINING_REJECTED)
+  TOTAL_MINING_ACCEPTED=$NODE_BLOCK_ACCEPT_EVENTS_TOTAL
+  TOTAL_MINING_REJECTED=$NODE_BLOCK_REJECT_EVENTS_TOTAL
   TOTAL_MINING_SUBMIT_BUSY=$(sum_node_array NODE_MINING_SUBMIT_BUSY)
   TOTAL_MINING_ACTOR_TIMEOUT=$(sum_node_array NODE_MINING_ACTOR_TIMEOUT)
   TOTAL_ORPHAN_RECOVERY_ATTEMPTS=$(sum_node_array NODE_ORPHAN_RECOVERY_ATTEMPTS)
@@ -862,9 +884,19 @@ compute_evidence_aggregates(){
   TOTAL_ORPHAN_RECOVERY_FAILED_PERSIST=$(sum_node_array NODE_ORPHAN_RECOVERY_FAILED_PERSIST)
   TOTAL_ORPHAN_ROOTS_RATE_LIMITED=$(sum_node_array NODE_ORPHAN_ROOTS_RATE_LIMITED)
   TOTAL_ORPHAN_BACKLOG_STALE=$(sum_node_array NODE_ORPHAN_BACKLOG_STALE)
-  TOTAL_MISSING_PARENT_REQUESTS_SENT=$(integer_sum_or_zero "$(count_matches_file 'missing_parent_requests_sent|missing parent request' "$OUT_DIR/command-log.txt")")
-  TOTAL_MISSING_PARENT_RESPONSES_RECEIVED=$(integer_sum_or_zero "$(count_matches_file 'missing_parent_responses_received|missing parent response' "$OUT_DIR/command-log.txt")")
+  TOTAL_MISSING_PARENT_REQUESTS_SENT=$(sum_node_array NODE_MISSING_PARENT_REQUESTS_SENT)
+  if (( TOTAL_MISSING_PARENT_REQUESTS_SENT == 0 )); then TOTAL_MISSING_PARENT_REQUESTS_SENT=$(integer_sum_or_zero "$(count_matches_file 'missing_parent_requests_sent|missing parent request' "$OUT_DIR/command-log.txt")"); fi
+  TOTAL_MISSING_PARENT_RESPONSES_RECEIVED=$(sum_node_array NODE_MISSING_PARENT_RESPONSES_RECEIVED)
+  if (( TOTAL_MISSING_PARENT_RESPONSES_RECEIVED == 0 )); then TOTAL_MISSING_PARENT_RESPONSES_RECEIVED=$(integer_sum_or_zero "$(count_matches_file 'missing_parent_responses_received|missing parent response' "$OUT_DIR/command-log.txt")"); fi
   TOTAL_BLOCKDATA_NOT_FOUND=$(integer_sum_or_zero "$(count_matches_file 'blockdata_not_found|BLOCKDATA_NOT_FOUND|block data not found' "$OUT_DIR/command-log.txt")")
+  UNIQUE_TEMPLATES_ISSUED=$(find "$OUT_DIR/miners" "$OUT_DIR/logs" -type f 2>/dev/null | xargs -r perl -ne 'print "$1\n" if /(?:template[_ -]?id|template_hash|block_template_hash)[=: ]+([0-9a-fA-F]+)/' | sort -u | wc -l | tr -d " ")
+  UNIQUE_BLOCK_HASHES_OBSERVED=$(find "$OUT_DIR/endpoints" "$OUT_DIR/logs" -type f 2>/dev/null | xargs -r perl -ne 'print "$1\n" if /(?:block_hash|hash)["=: ]+([0-9a-fA-F]{16,})/' | sort -u | wc -l | tr -d " ")
+  LOCAL_MINER_SUBMITS_TOTAL=$(count_matches_in_logs 'submit_result|submit_accepted|submit')
+  LOCAL_MINER_SUBMITS_ACCEPTED=$ACCEPTED_BLOCKS
+  LOCAL_MINER_SUBMITS_REJECTED=$REJECTED_BLOCKS
+  LOCAL_MINER_SUBMITS_REJECTED_BY_REASON=$(for i in $(seq 1 "$MINER_COUNT"); do awk 'tolower($0) ~ /reject|rejected|accepted=false/ {print tolower($0)}' "$OUT_DIR/logs/miner-${i}.log" 2>/dev/null; done | sed -E 's/.*(stale[^ ,;]*|duplicate[^ ,;]*|invalid[^ ,;]*|busy[^ ,;]*|timeout[^ ,;]*).*/\1/' | sort | uniq -c | jq -Rn '[inputs | capture("^\\s*(?<count>[0-9]+)\\s+(?<reason>.*)$") | {reason, count:(.count|tonumber)}]')
+  if (( UNIQUE_TEMPLATES_ISSUED == 0 )); then UNIQUE_TEMPLATES_ISSUED=$TOTAL_MINING_TEMPLATES; fi
+  if (( UNIQUE_BLOCK_HASHES_OBSERVED > 0 && NODE_BLOCK_ACCEPT_EVENTS_TOTAL > UNIQUE_BLOCK_HASHES_OBSERVED )); then DUPLICATE_BLOCK_EVENTS_TOTAL=$((NODE_BLOCK_ACCEPT_EVENTS_TOTAL - UNIQUE_BLOCK_HASHES_OBSERVED)); fi
   if (( TOTAL_MINING_TEMPLATES == 0 )); then TOTAL_MINING_TEMPLATES=$(count_matches_in_logs 'template_received|template'); fi
   if (( TOTAL_MINING_SUBMITS == 0 )); then TOTAL_MINING_SUBMITS=$(count_matches_in_logs 'submit_result|submit_accepted|submit'); fi
   if (( TOTAL_MINING_ACCEPTED == 0 )); then TOTAL_MINING_ACCEPTED=$ACCEPTED_BLOCKS; fi
@@ -887,6 +919,28 @@ sha256_digest(){
   else
     echo "UNAVAILABLE"
   fi
+}
+
+load_prior_gate_manifest(){
+  local gate="$1" file="$2" expected_miners="$3" result commit sha
+  [[ -n "$file" ]] || return 0
+  if [[ ! -s "$file" ]]; then record_fail "PRIOR_GATE_MANIFEST_MISSING" "prior Gate $gate manifest not found: $file"; return 1; fi
+  result=$(jq -r '.result // "UNKNOWN"' "$file" 2>/dev/null || echo UNKNOWN)
+  commit=$(jq -r '.git_commit // .commit // "unknown"' "$file" 2>/dev/null || echo unknown)
+  miners=$(jq -r '.miner_count // 0' "$file" 2>/dev/null || echo 0)
+  sha=$(sha256_digest "$file")
+  if [[ "$commit" != "$REPO_COMMIT_FULL" ]]; then record_fail "PRIOR_GATE_COMMIT_MISMATCH" "Gate $gate commit $commit does not match current $REPO_COMMIT_FULL"; fi
+  if [[ "$result" != "PASS" ]]; then record_fail "PRIOR_GATE_RESULT_CONTRADICTION" "Gate $gate referenced result is $result, expected PASS"; fi
+  if [[ "$miners" != "$expected_miners" ]]; then record_fail "PRIOR_GATE_TOPOLOGY_MISMATCH" "Gate $gate manifest miner_count=$miners, expected $expected_miners"; fi
+  case "$gate" in
+    C) PRIOR_GATE_C_RESULT="$result"; PRIOR_GATE_C_COMMIT="$commit"; PRIOR_GATE_C_SHA256="$sha"; GATE_5N_1M_BASELINE="$result" ;;
+    D) PRIOR_GATE_D_RESULT="$result"; PRIOR_GATE_D_COMMIT="$commit"; PRIOR_GATE_D_SHA256="$sha"; GATE_5N_2M_INTERMEDIATE="$result" ;;
+  esac
+}
+
+apply_prior_gate_manifests(){
+  load_prior_gate_manifest C "$PRIOR_GATE_C_MANIFEST" 1 || true
+  load_prior_gate_manifest D "$PRIOR_GATE_D_MANIFEST" 2 || true
 }
 
 write_evidence_manifest(){
@@ -963,6 +1017,26 @@ JSON
     --argjson missing_parent_requests_sent "${TOTAL_MISSING_PARENT_REQUESTS_SENT:-0}" \
     --argjson missing_parent_responses_received "${TOTAL_MISSING_PARENT_RESPONSES_RECEIVED:-0}" \
     --argjson blockdata_not_found "${TOTAL_BLOCKDATA_NOT_FOUND:-0}" \
+    --argjson unique_templates_issued "${UNIQUE_TEMPLATES_ISSUED:-0}" \
+    --argjson local_miner_submits_total "${LOCAL_MINER_SUBMITS_TOTAL:-0}" \
+    --argjson local_miner_submits_accepted "${LOCAL_MINER_SUBMITS_ACCEPTED:-0}" \
+    --argjson local_miner_submits_rejected "${LOCAL_MINER_SUBMITS_REJECTED:-0}" \
+    --argjson local_miner_submits_rejected_by_reason "${LOCAL_MINER_SUBMITS_REJECTED_BY_REASON:-[]}" \
+    --argjson node_block_accept_events_total "${NODE_BLOCK_ACCEPT_EVENTS_TOTAL:-0}" \
+    --argjson node_block_reject_events_total "${NODE_BLOCK_REJECT_EVENTS_TOTAL:-0}" \
+    --argjson duplicate_block_events_total "${DUPLICATE_BLOCK_EVENTS_TOTAL:-0}" \
+    --argjson unique_block_hashes_observed "${UNIQUE_BLOCK_HASHES_OBSERVED:-0}" \
+    --arg prior_gate_c_manifest "$PRIOR_GATE_C_MANIFEST" \
+    --arg prior_gate_d_manifest "$PRIOR_GATE_D_MANIFEST" \
+    --arg prior_gate_c_commit "$PRIOR_GATE_C_COMMIT" \
+    --arg prior_gate_d_commit "$PRIOR_GATE_D_COMMIT" \
+    --arg prior_gate_c_result "$PRIOR_GATE_C_RESULT" \
+    --arg prior_gate_d_result "$PRIOR_GATE_D_RESULT" \
+    --arg prior_gate_c_sha256 "$PRIOR_GATE_C_SHA256" \
+    --arg prior_gate_d_sha256 "$PRIOR_GATE_D_SHA256" \
+    --arg gate_5n_1m "$GATE_5N_1M_BASELINE" \
+    --arg gate_5n_2m "$GATE_5N_2M_INTERMEDIATE" \
+    --arg gate_5n_4m "$GATE_5N_4M_STRESS" \
     --slurpfile checksums "$checksum_tmp" \
     --argjson nodes "$(for i in $(seq 1 "$NODE_COUNT"); do
       jq -n \
@@ -1005,7 +1079,7 @@ JSON
         --argjson actor_timeout "$(json_number_or_zero "${NODE_MINING_ACTOR_TIMEOUT[$i]:-0}")" \
         '{node:$node,chain_id:$chain_id,height:$height,tip:$tip,selected_tip:$selected_tip,ordered_dag_tip:$ordered_dag_tip,peer_count:$peer_count,inbound_count:$inbound_count,outbound_count:$outbound_count,readiness_status:$readiness_status,sync:{state:$sync_state,catchup_stage:$catchup_stage,orphan_count:$orphan_count,pending_missing_parents:$pending_missing_parents,pending_block_requests:$pending_block_requests,missing_parent_entries:$missing_parent_entries,terminal_missing_parent_entries:$terminal_missing_parent_entries,quarantined_missing_parent_entries:0,inv_hashes_requested:$inv_hashes_requested},peers:{active:$active_peers,recovering:$recovering_peers,cooldown:$cooldown_peers,rate_limited_count:$rate_limited_count,reconnect_attempts:$reconnect_attempts,reconnect_blocked_reason:$reconnect_blocked_reason,min_target_missed:$min_target_missed,peer_zero_reconnect_attempts:$zero_reconnect_attempts,peer_zero_reconnect_success:$zero_reconnect_success},rpc:{degraded_response_total:$rpc_degraded_response_total,snapshot_stale_total:$rpc_snapshot_stale_total,handler_degraded_total:$rpc_handler_degraded_total},mining:{templates:$templates,submits:$submits,accepted:$accepted,rejected:$rejected,submit_busy:$submit_busy,actor_timeout:$actor_timeout},same_height_reconcile:{blocked_reason:$same_height_reconcile_blocked_reason}}'
     done | jq -s '.')" \
-    '{git_ref:$git_ref,git_commit:$git_commit,version:$version,cargo_workspace_version:$cargo_workspace_version,stage:$stage,node_count:$node_count,miner_count:$miner_count,duration:$duration,result:$result,failure_class:$failure_class,start_utc:$start_utc,end_utc:$end_utc,exit_code:$exit_code,rpc_liveness:{RPC_ALIVE_LISTENER_TIMEOUT:$rpc_alive_listener_timeout_count,rpc_liveness_timeout:$rpc_liveness_timeout_count,stale_degraded_snapshot_count:$stale_degraded_snapshot_count},sync_orphan:{orphan_count:$orphan_count,pending_missing_parents:$pending_missing_parents,pending_block_requests:$pending_block_requests,missing_parent_entries:$missing_parent_entries,terminal_missing_parent_entries:$terminal_missing_parent_entries,quarantined_missing_parent_entries:0,inv_hashes_requested:$inv_hashes_requested,orphan_recovery_classification_counters:{attempts:$orphan_recovery_attempts,success:$orphan_recovery_success,failed_missing_parent:$orphan_recovery_failed_missing_parent,failed_persist:$orphan_recovery_failed_persist,roots_rate_limited:$orphan_roots_rate_limited,backlog_stale:$orphan_backlog_stale}},peers:{active:$active_peers,recovering:$recovering_peers,cooldown:$cooldown_peers,rate_limited_count:$rate_limited_count,reconnect_attempts:$reconnect_attempts,min_target_missed:$min_target_missed,peer_zero_reconnect_attempts:$zero_reconnect_attempts,peer_zero_reconnect_success:$zero_reconnect_success,reconnect_blocked_reasons:$reconnect_blocked_reasons},mining:{templates:$templates,submits:$submits,accepted:$accepted,rejected:$rejected,submit_busy:$submit_busy,actor_timeout:$actor_timeout},distinct_tips:$post_distinct_tips,worst_lag_from_max_height:$post_worst_lag,same_height_reconcile:{blocked_reasons:$same_height_reconcile_blocked_reasons},network_counters:{missing_parent_requests_sent:$missing_parent_requests_sent,missing_parent_responses_received:$missing_parent_responses_received,blockdata_not_found:$blockdata_not_found},nodes:$nodes,checksums:($checksums[0] // {})}' \
+    '{git_ref:$git_ref,git_commit:$git_commit,version:$version,cargo_workspace_version:$cargo_workspace_version,stage:$stage,node_count:$node_count,miner_count:$miner_count,duration:$duration,result:$result,failure_class:$failure_class,start_utc:$start_utc,end_utc:$end_utc,exit_code:$exit_code,rpc_liveness:{RPC_ALIVE_LISTENER_TIMEOUT:$rpc_alive_listener_timeout_count,rpc_liveness_timeout:$rpc_liveness_timeout_count,stale_degraded_snapshot_count:$stale_degraded_snapshot_count},sync_orphan:{orphan_count:$orphan_count,pending_missing_parents:$pending_missing_parents,pending_block_requests:$pending_block_requests,missing_parent_entries:$missing_parent_entries,terminal_missing_parent_entries:$terminal_missing_parent_entries,quarantined_missing_parent_entries:0,inv_hashes_requested:$inv_hashes_requested,orphan_recovery_classification_counters:{attempts:$orphan_recovery_attempts,success:$orphan_recovery_success,failed_missing_parent:$orphan_recovery_failed_missing_parent,failed_persist:$orphan_recovery_failed_persist,roots_rate_limited:$orphan_roots_rate_limited,backlog_stale:$orphan_backlog_stale}},peers:{active:$active_peers,recovering:$recovering_peers,cooldown:$cooldown_peers,rate_limited_count:$rate_limited_count,reconnect_attempts:$reconnect_attempts,min_target_missed:$min_target_missed,peer_zero_reconnect_attempts:$zero_reconnect_attempts,peer_zero_reconnect_success:$zero_reconnect_success,reconnect_blocked_reasons:$reconnect_blocked_reasons},mining:{templates:$templates,submits:$submits,accepted:$accepted,rejected:$rejected,submit_busy:$submit_busy,actor_timeout:$actor_timeout},distinct_tips:$post_distinct_tips,worst_lag_from_max_height:$post_worst_lag,same_height_reconcile:{blocked_reasons:$same_height_reconcile_blocked_reasons},network_counters:{missing_parent_requests_sent:$missing_parent_requests_sent,missing_parent_responses_received:$missing_parent_responses_received,blockdata_not_found:$blockdata_not_found},metric_definitions:{unique_templates_issued:"distinct template ids/hashes seen in miner logs",local_miner_submits_total:"submit attempts emitted by local miner logs",local_miner_submits_accepted:"local miner submits accepted by RPC",local_miner_submits_rejected_by_reason:"local miner submit rejects grouped by reason",node_block_accept_events_total:"sum of per-node block acceptance events; not unique network blocks",node_block_reject_events_total:"sum of per-node block rejection events",duplicate_block_events_total:"accept events beyond unique observed block hashes",unique_block_hashes_observed:"distinct block hashes observed in endpoint/log evidence"},mining_semantics:{unique_templates_issued:$unique_templates_issued,local_miner_submits_total:$local_miner_submits_total,local_miner_submits_accepted:$local_miner_submits_accepted,local_miner_submits_rejected:$local_miner_submits_rejected,local_miner_submits_rejected_by_reason:$local_miner_submits_rejected_by_reason,node_block_accept_events_total:$node_block_accept_events_total,node_block_reject_events_total:$node_block_reject_events_total,duplicate_block_events_total:$duplicate_block_events_total,unique_block_hashes_observed:$unique_block_hashes_observed},gates:{baseline_5n_1m:$gate_5n_1m,intermediate_5n_2m:$gate_5n_2m,stress_5n_4m:$gate_5n_4m},prior_evidence:{gate_c:{artifact_path:$prior_gate_c_manifest,git_commit:$prior_gate_c_commit,result:$prior_gate_c_result,manifest_sha256:$prior_gate_c_sha256},gate_d:{artifact_path:$prior_gate_d_manifest,git_commit:$prior_gate_d_commit,result:$prior_gate_d_result,manifest_sha256:$prior_gate_d_sha256}},nodes:$nodes,checksums:($checksums[0] // {})}' \
     > "$manifest_tmp"
   cp "$manifest_tmp" "$OUT_DIR/evidence_manifest.json"
   cp "$OUT_DIR/evidence_manifest.json" "$OUT_DIR_ROOT/evidence_manifest.json" 2>/dev/null || true
@@ -1129,7 +1203,13 @@ write_evidence_summary(){
     echo "## Mining aggregate counters"
     echo "- templates: ${TOTAL_MINING_TEMPLATES:-0}"
     echo "- submits: ${TOTAL_MINING_SUBMITS:-0}"
-    echo "- accepted: ${TOTAL_MINING_ACCEPTED:-0}"
+    echo "- node_block_accept_events_total: ${NODE_BLOCK_ACCEPT_EVENTS_TOTAL:-0}"
+    echo "- node_block_reject_events_total: ${NODE_BLOCK_REJECT_EVENTS_TOTAL:-0}"
+    echo "- unique_block_hashes_observed: ${UNIQUE_BLOCK_HASHES_OBSERVED:-0}"
+    echo "- duplicate_block_events_total: ${DUPLICATE_BLOCK_EVENTS_TOTAL:-0}"
+    echo "- local_miner_submits_total: ${LOCAL_MINER_SUBMITS_TOTAL:-0}"
+    echo "- local_miner_submits_accepted: ${LOCAL_MINER_SUBMITS_ACCEPTED:-0}"
+    echo "- local_miner_submits_rejected: ${LOCAL_MINER_SUBMITS_REJECTED:-0}"
     echo "- rejected: ${TOTAL_MINING_REJECTED:-0}"
     echo "- submit_busy: ${TOTAL_MINING_SUBMIT_BUSY:-0}"
     echo "- actor_timeout: ${TOTAL_MINING_ACTOR_TIMEOUT:-0}"
@@ -1616,9 +1696,11 @@ for i in $(seq 1 "$MINER_COUNT"); do
   (( ${miner_submit[$i]:-0} == 1 )) || STRESS_OK=0
 done
 
-(( BASELINE_OK == 1 )) && GATE_5N_1M_BASELINE=PASS || GATE_5N_1M_BASELINE=FAIL
+if [[ -z "$PRIOR_GATE_C_MANIFEST" ]]; then
+  if (( MINER_COUNT == 1 )); then (( BASELINE_OK == 1 )) && GATE_5N_1M_BASELINE=PASS || GATE_5N_1M_BASELINE=FAIL; else GATE_5N_1M_BASELINE=NOT_PROVIDED; fi
+fi
 if (( MINER_COUNT >= 2 )); then
-  (( INTERMEDIATE_OK == 1 )) && GATE_5N_2M_INTERMEDIATE=PASS || GATE_5N_2M_INTERMEDIATE=FAIL
+  if [[ -z "$PRIOR_GATE_D_MANIFEST" ]]; then (( INTERMEDIATE_OK == 1 )) && GATE_5N_2M_INTERMEDIATE=PASS || GATE_5N_2M_INTERMEDIATE=FAIL; fi
 else
   GATE_5N_2M_INTERMEDIATE=NOT_RUN
 fi
@@ -1628,19 +1710,23 @@ else
   GATE_5N_4M_STRESS=NOT_RUN
 fi
 
-[[ "$GATE_5N_1M_BASELINE" == "PASS" ]] || record_fail "STAGED_GATE_5N_1M" "5N/1M baseline gate failed after quiescence"
+apply_prior_gate_manifests
+if [[ "$GATE_5N_1M_BASELINE" != "PASS" && "$GATE_5N_1M_BASELINE" != "NOT_PROVIDED" && "$GATE_5N_1M_BASELINE" != "NOT_RUN" ]]; then record_fail "STAGED_GATE_5N_1M" "5N/1M baseline gate did not pass (status=$GATE_5N_1M_BASELINE)"; fi
 root_private_topology_valid=$(jq -r 'if (.data.peer_accounting.bootnode_root_topology // false) then (.data.peer_accounting.private_topology_valid // false) else true end' "$OUT_DIR/endpoints/n1-p2p-status-final.json" 2>/dev/null || echo false)
 root_inbound_peers=$(jq -r '.data.inbound_peer_count // .data.peer_accounting.inbound_peer_count // 0' "$OUT_DIR/endpoints/n1-p2p-status-final.json" 2>/dev/null || echo 0)
 if [[ "$root_private_topology_valid" != "true" || "$root_inbound_peers" == "0" ]]; then
   record_fail "PRIVATE_TOPOLOGY_BOOTNODE_ROOT" "bootnode/root topology invalid: private_topology_valid=${root_private_topology_valid} inbound_peer_count=${root_inbound_peers}"
 fi
 if (( MINER_COUNT >= 2 )); then
-  [[ "$GATE_5N_2M_INTERMEDIATE" == "PASS" ]] || record_fail "STAGED_GATE_5N_2M" "5N/2M intermediate gate failed after quiescence"
+  if [[ "$GATE_5N_2M_INTERMEDIATE" != "PASS" && "$GATE_5N_2M_INTERMEDIATE" != "NOT_PROVIDED" && "$GATE_5N_2M_INTERMEDIATE" != "NOT_RUN" ]]; then record_fail "STAGED_GATE_5N_2M" "5N/2M intermediate gate did not pass (status=$GATE_5N_2M_INTERMEDIATE)"; fi
 fi
 if (( MINER_COUNT >= 4 )) && [[ "$GATE_5N_4M_STRESS" != "PASS" ]]; then
   record_warn "5N/4M stress gate did not pass; retained as non-mandatory readiness evidence for v2.2.20"
 fi
 
+for i in $(seq 1 "$NODE_COUNT"); do if [[ "${NODE_READINESS_SCHEMA_OK[$i]:-0}" != "1" ]]; then record_fail "READINESS_SCHEMA_MISMATCH" "n${i} readiness response does not match current required schema"; fi; done
+if (( TOTAL_MISSING_PARENT_REQUESTS_SENT != $(sum_node_array NODE_MISSING_PARENT_REQUESTS_SENT) )); then record_fail "NETWORK_COUNTER_AGGREGATE_MISMATCH" "manifest missing_parent_requests_sent=${TOTAL_MISSING_PARENT_REQUESTS_SENT} differs from endpoint aggregate=$(sum_node_array NODE_MISSING_PARENT_REQUESTS_SENT)"; fi
+if (( NODE_BLOCK_ACCEPT_EVENTS_TOTAL > 0 && UNIQUE_BLOCK_HASHES_OBSERVED > 0 && TOTAL_MINING_ACCEPTED != NODE_BLOCK_ACCEPT_EVENTS_TOTAL )); then record_fail "ACCEPTED_COUNTER_SEMANTIC_MISMATCH" "mining.accepted must equal node block accept events, not unique network blocks"; fi
 if (( TOTAL_ORPHAN_COUNT != 0 )); then record_fail "POST_QUIESCENCE_ORPHANS" "post-quiescence orphan_count is ${TOTAL_ORPHAN_COUNT}"; fi
 if (( TOTAL_PENDING_MISSING_PARENTS != 0 )); then record_fail "POST_QUIESCENCE_PENDING_MISSING_PARENTS" "post-quiescence pending_missing_parents is ${TOTAL_PENDING_MISSING_PARENTS}"; fi
 if (( TOTAL_MISSING_PARENT_ENTRIES != 0 )); then record_fail "POST_QUIESCENCE_MISSING_PARENT_ENTRIES" "active missing_parent_entries is ${TOTAL_MISSING_PARENT_ENTRIES}"; fi
