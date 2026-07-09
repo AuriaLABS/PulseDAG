@@ -201,6 +201,7 @@ pub fn terminally_exhaust_missing_parent(
     now_ms: u64,
     evict_dependents: bool,
 ) -> MissingParentTerminalResult {
+    let terminal_at_unix = now_ms / 1_000;
     if state.dag.blocks.contains_key(parent) {
         state.terminal_missing_parents.insert(
             parent.clone(),
@@ -208,6 +209,11 @@ pub fn terminally_exhaust_missing_parent(
                 state: MissingParentState::Resolved,
                 transitioned_at_ms: now_ms,
                 waiting_orphans: Vec::new(),
+                terminal_generation: 0,
+                terminal_at_unix,
+                terminal_peer_set_digest: None,
+                reopened_total: 0,
+                reopen_reason: None,
             },
         );
         return MissingParentTerminalResult {
@@ -261,6 +267,11 @@ pub fn terminally_exhaust_missing_parent(
             },
             transitioned_at_ms: now_ms,
             waiting_orphans: waiting.clone(),
+            terminal_generation: 0,
+            terminal_at_unix,
+            terminal_peer_set_digest: None,
+            reopened_total: 0,
+            reopen_reason: None,
         },
     );
     MissingParentTerminalResult {
@@ -707,6 +718,11 @@ pub fn adopt_ready_orphans_with_result(
                             state: MissingParentState::Resolved,
                             transitioned_at_ms: now_ms(),
                             waiting_orphans: Vec::new(),
+                            terminal_generation: 0,
+                            terminal_at_unix: now_ms() / 1_000,
+                            terminal_peer_set_digest: None,
+                            reopened_total: 0,
+                            reopen_reason: None,
                         },
                     );
                     accepted_hashes.push(hash.clone());

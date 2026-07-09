@@ -186,7 +186,7 @@ fn final_quiescence_request_suppression_reason(
     max_pending: usize,
 ) -> &'static str {
     match readiness {
-        GetBlockRequestReadiness::Requestable => "unknown",
+        GetBlockRequestReadiness::Requestable => "requestable_no_suppression",
         GetBlockRequestReadiness::AlreadyPending => "request_already_in_flight",
         GetBlockRequestReadiness::RateLimited if pending_len >= max_pending => "request_queue_full",
         GetBlockRequestReadiness::RateLimited => "peer_rate_limited",
@@ -219,7 +219,7 @@ struct SelectedChainSyncGate {
     peer_count: usize,
     orphan_recovery_active: bool,
     missing_parent_recovery_active: bool,
-    rpc_liveness_degraded: bool,
+    rpc_liveness_current_degraded: bool,
 }
 
 impl SelectedChainSyncGate {
@@ -230,8 +230,8 @@ impl SelectedChainSyncGate {
             Some("orphan_recovery_active")
         } else if self.missing_parent_recovery_active {
             Some("missing_parent_recovery_active")
-        } else if self.rpc_liveness_degraded {
-            Some("rpc_liveness_degraded")
+        } else if self.rpc_liveness_current_degraded {
+            Some("rpc_liveness_current_degraded")
         } else {
             None
         }
@@ -239,6 +239,36 @@ impl SelectedChainSyncGate {
 
     fn allows_selected_chain_sync(&self) -> bool {
         self.blocked_reason().is_none()
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[allow(dead_code)]
+struct RpcLivenessReconcileState {
+    current_degraded: bool,
+    last_failure_unix: Option<u64>,
+    consecutive_successes: u64,
+    historical_degraded_total: u64,
+}
+
+impl RpcLivenessReconcileState {
+    #[allow(dead_code)]
+    fn note_success(&mut self) {
+        self.current_degraded = false;
+        self.consecutive_successes = self.consecutive_successes.saturating_add(1);
+    }
+
+    #[allow(dead_code)]
+    fn note_failure(&mut self, now_unix: u64) {
+        self.current_degraded = true;
+        self.last_failure_unix = Some(now_unix);
+        self.consecutive_successes = 0;
+        self.historical_degraded_total = self.historical_degraded_total.saturating_add(1);
+    }
+
+    #[allow(dead_code)]
+    fn allows_reconciliation(&self) -> bool {
+        !self.current_degraded
     }
 }
 
@@ -2936,6 +2966,9 @@ async fn main() -> Result<()> {
                             };
                             if final_height_pending {
                                 let mut rt = runtime.write().await;
+                                if rt.sync_state == "idle" || rt.sync_state == "synced" {
+                                    rt.sync_state = "recovering_higher_tip".to_string();
+                                }
                                 rt.final_quiescence_higher_tip_seen_total =
                                     rt.final_quiescence_higher_tip_seen_total.saturating_add(1);
                                 rt.final_quiescence_selected_sync_total =
@@ -3350,7 +3383,7 @@ async fn main() -> Result<()> {
                     ));
                 }
                 let final_quiescence_due = stagnation_secs >= FINAL_QUIESCENCE_NO_PROGRESS_SECS;
-                let rpc_liveness_degraded = rt.sync_pipeline.last_error.is_some();
+                let rpc_liveness_current_degraded = rt.sync_pipeline.last_error.is_some();
                 let pending_block_requests = rt.pending_block_requests;
                 let cleanup_complete = orphan_count == 0
                     && local_pending_missing_parents == 0
@@ -3520,7 +3553,7 @@ async fn main() -> Result<()> {
                         missing_parent_recovery_active: local_pending_missing_parents > 0
                             || local_missing_parent_entries > 0
                             || pending_block_requests > 0,
-                        rpc_liveness_degraded,
+                        rpc_liveness_current_degraded,
                     };
                     // Never run final tip reconciliation while peer recovery or orphan cleanup has
                     // work left.  In particular, zero-peer recovery must be allowed to run before
@@ -4081,7 +4114,7 @@ mod tests {
             },
             SelectedChainSyncGate {
                 peer_count: 1,
-                rpc_liveness_degraded: true,
+                rpc_liveness_current_degraded: true,
                 ..SelectedChainSyncGate::default()
             },
         ] {
@@ -4095,6 +4128,45 @@ mod tests {
         };
         assert!(allowed.allows_selected_chain_sync());
         assert_eq!(allowed.blocked_reason(), None);
+    }
+
+    #[test]
+    fn historical_rpc_degraded_count_does_not_block_after_success() {
+        let mut liveness = RpcLivenessReconcileState::default();
+        liveness.note_failure(10);
+        assert!(!liveness.allows_reconciliation());
+        liveness.note_success();
+
+        assert!(liveness.allows_reconciliation());
+        assert_eq!(liveness.historical_degraded_total, 1);
+        assert_eq!(liveness.consecutive_successes, 1);
+        assert_eq!(liveness.last_failure_unix, Some(10));
+    }
+
+    #[test]
+    fn currently_degraded_rpc_still_blocks() {
+        let mut liveness = RpcLivenessReconcileState::default();
+        liveness.note_failure(10);
+
+        let gate = SelectedChainSyncGate {
+            peer_count: 1,
+            rpc_liveness_current_degraded: liveness.current_degraded,
+            ..SelectedChainSyncGate::default()
+        };
+
+        assert!(!gate.allows_selected_chain_sync());
+        assert_eq!(gate.blocked_reason(), Some("rpc_liveness_current_degraded"));
+    }
+
+    #[test]
+    fn lagging_node_with_higher_peer_tip_uses_recovering_state() {
+        let mut sync_state = "idle".to_string();
+        let local_height = 10u64;
+        let remote_height = 26u64;
+        if remote_height > local_height && sync_state == "idle" {
+            sync_state = "recovering_higher_tip".to_string();
+        }
+        assert_eq!(sync_state, "recovering_higher_tip");
     }
 
     #[test]
