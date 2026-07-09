@@ -57,7 +57,11 @@ pub struct ReadinessData {
     pub peer_health: String,
     pub mining_templates_available: bool,
     pub node_ready: bool,
+    pub node_operational_ready: bool,
     pub private_testnet_ready: bool,
+    pub private_conservative_ready: bool,
+    pub ghostdag_dev_ready: bool,
+    pub fast_cadence_ready: bool,
     pub public_testnet_ready: bool,
     pub ready_for_release: bool,
     pub overall_status: ReadinessStatus,
@@ -106,6 +110,66 @@ fn status_reasons(
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ReadinessDimensions {
+    node_operational_ready: bool,
+    private_conservative_ready: bool,
+    ghostdag_dev_ready: bool,
+    fast_cadence_ready: bool,
+    public_testnet_ready: bool,
+    ready_for_release: bool,
+    release_blockers: Vec<String>,
+}
+
+fn compute_readiness_dimensions(
+    categories: &BTreeMap<String, ReadinessCategory>,
+    consensus_mode: pulsedag_core::ConsensusMode,
+) -> ReadinessDimensions {
+    let release_blockers = categories
+        .iter()
+        .filter(|(_, category)| category.status == ReadinessStatus::Fail)
+        .flat_map(|(name, category)| {
+            category
+                .reasons
+                .iter()
+                .map(move |reason| format!("{name}: {reason}"))
+        })
+        .collect::<Vec<_>>();
+    let operational_blocker_categories = [
+        "api_profile_safety",
+        "admin_exposure",
+        "bootnode_zero_peer_private_topology",
+        "chain_id",
+        "consensus",
+        "critical_warnings",
+        "dag",
+        "isolated_genesis_or_height_one_node",
+        "mempool",
+        "p2p",
+        "pow",
+        "replay",
+        "storage",
+        "sync_status",
+    ];
+    let node_operational_ready = !categories.iter().any(|(name, category)| {
+        category.status == ReadinessStatus::Fail
+            && operational_blocker_categories.contains(&name.as_str())
+    });
+    let private_conservative_ready =
+        node_operational_ready && consensus_mode == pulsedag_core::ConsensusMode::Legacy;
+    let ghostdag_dev_ready =
+        node_operational_ready && consensus_mode == pulsedag_core::ConsensusMode::GhostdagDev;
+    ReadinessDimensions {
+        node_operational_ready,
+        private_conservative_ready,
+        ghostdag_dev_ready,
+        fast_cadence_ready: false,
+        public_testnet_ready: false,
+        ready_for_release: private_conservative_ready,
+        release_blockers,
+    }
+}
+
 static READINESS_RESPONSE_CACHE: OnceLock<Mutex<Option<ReadinessData>>> = OnceLock::new();
 
 fn readiness_from_rpc_snapshot(snapshot: NodeRpcSnapshot) -> ReadinessData {
@@ -131,7 +195,11 @@ fn readiness_from_rpc_snapshot(snapshot: NodeRpcSnapshot) -> ReadinessData {
         peer_health: "degraded_cached_snapshot".to_string(),
         mining_templates_available: false,
         node_ready: false,
+        node_operational_ready: false,
         private_testnet_ready: false,
+        private_conservative_ready: false,
+        ghostdag_dev_ready: false,
+        fast_cadence_ready: false,
         public_testnet_ready: false,
         ready_for_release: false,
         overall_status: ReadinessStatus::Warn,
@@ -172,7 +240,11 @@ fn cached_readiness_response(reason: String) -> Option<ReadinessData> {
         .map(|mut data| {
             data.overall_status = ReadinessStatus::Warn;
             data.node_ready = false;
+            data.node_operational_ready = false;
             data.private_testnet_ready = false;
+            data.private_conservative_ready = false;
+            data.ghostdag_dev_ready = false;
+            data.fast_cadence_ready = false;
             data.ready_for_release = false;
             data.warnings.push(format!(
                 "rpc_degraded_response: returning stale readiness because {reason}"
@@ -361,7 +433,7 @@ pub async fn get_readiness<S: RpcStateLike>(
         categories.insert(
             "consensus_mode".to_string(),
             category(
-                ReadinessStatus::Fail,
+                ReadinessStatus::Warn,
                 vec![
                     "ghostdag_dev_mode_not_release_ready".to_string(),
                     "ghostdag_dev is experimental diagnostics mode, not public-testnet readiness"
@@ -372,10 +444,20 @@ pub async fn get_readiness<S: RpcStateLike>(
     }
     categories.insert(
         "high_cadence".to_string(),
-        category(
-            ReadinessStatus::Fail,
-            vec!["high_cadence_blocked_until_replay_and_harness_pass".to_string()],
-        ),
+        if chain.dag.consensus_mode.high_cadence_allowed() {
+            category(
+                ReadinessStatus::Warn,
+                vec![
+                    "high cadence enabled; dedicated fast-cadence gates are still required"
+                        .to_string(),
+                ],
+            )
+        } else {
+            category(
+                ReadinessStatus::Pass,
+                vec!["experimental high cadence safely disabled".to_string()],
+            )
+        },
     );
 
     let mut dag_fail = Vec::new();
@@ -706,24 +788,19 @@ pub async fn get_readiness<S: RpcStateLike>(
         "public_testnet_evidence".to_string(),
         category(
             ReadinessStatus::Warn,
-            vec!["public testnet readiness is gated by explicit evidence and remains disabled for v2.2.19".to_string()],
+            vec!["public testnet readiness is gated by explicit evidence and remains disabled for v2.2.20".to_string()],
         ),
     );
 
-    let blockers = categories
-        .iter()
-        .filter(|(_, category)| category.status == ReadinessStatus::Fail)
-        .flat_map(|(name, category)| {
-            category
-                .reasons
-                .iter()
-                .map(move |reason| format!("{name}: {reason}"))
-        })
-        .collect::<Vec<_>>();
-
-    let node_ready = blockers.is_empty();
-    let private_testnet_ready = node_ready;
-    let public_testnet_ready = false;
+    let dimensions = compute_readiness_dimensions(&categories, chain.dag.consensus_mode);
+    let node_operational_ready = dimensions.node_operational_ready;
+    let private_conservative_ready = dimensions.private_conservative_ready;
+    let ghostdag_dev_ready = dimensions.ghostdag_dev_ready;
+    let fast_cadence_ready = dimensions.fast_cadence_ready;
+    let public_testnet_ready = dimensions.public_testnet_ready;
+    let ready_for_release = dimensions.ready_for_release;
+    let node_ready = node_operational_ready;
+    let private_testnet_ready = private_conservative_ready;
 
     let warnings = categories
         .iter()
@@ -757,13 +834,17 @@ pub async fn get_readiness<S: RpcStateLike>(
         peer_health,
         mining_templates_available: runtime.pulsedag_mining_templates_total > 0,
         node_ready,
+        node_operational_ready,
         private_testnet_ready,
+        private_conservative_ready,
+        ghostdag_dev_ready,
+        fast_cadence_ready,
         public_testnet_ready,
-        ready_for_release: private_testnet_ready,
+        ready_for_release,
         overall_status,
         categories,
         metrics,
-        release_blockers: blockers,
+        release_blockers: dimensions.release_blockers,
         warnings,
     };
     cache_readiness_response(&data);
@@ -815,6 +896,10 @@ mod tests {
             mining_templates_available: false,
             node_ready: true,
             private_testnet_ready: true,
+            node_operational_ready: true,
+            private_conservative_ready: true,
+            ghostdag_dev_ready: false,
+            fast_cadence_ready: false,
             public_testnet_ready: false,
             ready_for_release: true,
             overall_status: ReadinessStatus::Warn,
@@ -865,6 +950,10 @@ mod tests {
             mining_templates_available: false,
             node_ready: false,
             private_testnet_ready: false,
+            node_operational_ready: false,
+            private_conservative_ready: false,
+            ghostdag_dev_ready: false,
+            fast_cadence_ready: false,
             public_testnet_ready: false,
             ready_for_release: false,
             overall_status: ReadinessStatus::Warn,
@@ -890,7 +979,7 @@ mod tests {
                 high_cadence_allowed: false,
             },
             release_blockers: vec!["public_testnet_evidence: missing explicit gate evidence".to_string()],
-            warnings: vec!["public_testnet_evidence: public testnet readiness is gated by explicit evidence and remains disabled for v2.2.19".to_string()],
+            warnings: vec!["public_testnet_evidence: public testnet readiness is gated by explicit evidence and remains disabled for v2.2.20".to_string()],
         };
         let value = serde_json::to_value(data).unwrap();
         assert_eq!(value["ready_for_release"], false);
@@ -931,6 +1020,55 @@ mod tests {
         assert!(!source.contains(&v300_phrase));
         assert!(!source.contains(&public_testnet_live_phrase));
     }
+    #[test]
+    fn legacy_high_cadence_disabled_is_operational_and_release_safe() {
+        let mut categories = BTreeMap::new();
+        categories.insert(
+            "high_cadence".to_string(),
+            category(
+                ReadinessStatus::Pass,
+                vec!["experimental high cadence safely disabled".to_string()],
+            ),
+        );
+        let dimensions =
+            compute_readiness_dimensions(&categories, pulsedag_core::ConsensusMode::Legacy);
+        assert!(dimensions.node_operational_ready);
+        assert!(dimensions.private_conservative_ready);
+        assert!(!dimensions.fast_cadence_ready);
+        assert!(dimensions.ready_for_release);
+    }
+
+    #[test]
+    fn ghostdag_dev_is_not_public_or_release_ready() {
+        let categories = BTreeMap::new();
+        let dimensions =
+            compute_readiness_dimensions(&categories, pulsedag_core::ConsensusMode::GhostdagDev);
+        assert!(dimensions.node_operational_ready);
+        assert!(dimensions.ghostdag_dev_ready);
+        assert!(!dimensions.public_testnet_ready);
+        assert!(!dimensions.ready_for_release);
+        assert!(!dimensions.fast_cadence_ready);
+    }
+
+    #[test]
+    fn runtime_blockers_fail_operational_readiness() {
+        for name in ["p2p", "sync_status", "dag", "storage", "pow"] {
+            let mut categories = BTreeMap::new();
+            categories.insert(
+                name.to_string(),
+                category(ReadinessStatus::Fail, vec!["blocked".to_string()]),
+            );
+            let dimensions =
+                compute_readiness_dimensions(&categories, pulsedag_core::ConsensusMode::Legacy);
+            assert!(
+                !dimensions.node_operational_ready,
+                "{name} should block operational readiness"
+            );
+            assert!(!dimensions.private_conservative_ready);
+            assert!(!dimensions.ready_for_release);
+        }
+    }
+
     #[tokio::test]
     async fn node_at_genesis_with_connected_peer_and_bootnodes_is_not_private_testnet_ready() {
         use crate::api::{NodeRuntimeStats, RpcStateLike};
