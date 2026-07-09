@@ -7729,6 +7729,8 @@ mod inventory_tests {
         let msg = NetworkMessage::GetBlock {
             chain_id: "testnet".into(),
             hash: "h-request".into(),
+            request_id: None,
+            requested_peer_id: None,
         };
         let bytes = serde_json::to_vec(&msg).expect("serialize get_block message");
         let decoded: NetworkMessage =
@@ -7738,7 +7740,7 @@ mod inventory_tests {
                 chain_id,
                 hash,
                 request_id: _,
-                requested_peer_id,
+                requested_peer_id: _,
             } => {
                 assert_eq!(chain_id, "testnet");
                 assert_eq!(hash, "h-request");
@@ -8258,6 +8260,8 @@ mod inventory_tests {
         let wire = serde_json::to_vec(&NetworkMessage::GetBlock {
             chain_id: "testnet".into(),
             hash: "missing-block".into(),
+            request_id: None,
+            requested_peer_id: None,
         })
         .expect("serialize getblock");
 
@@ -8379,6 +8383,8 @@ mod deterministic_p2p_sync_coverage_tests {
             let wire = serde_json::to_vec(&NetworkMessage::GetBlock {
                 chain_id: "testnet".into(),
                 hash: requested_hash.to_string(),
+                request_id: None,
+                requested_peer_id: None,
             })
             .expect("serialize getblock");
             dispatch_network_message("testnet", &wire, Some("peer-b"), &inner, &inbound_tx);

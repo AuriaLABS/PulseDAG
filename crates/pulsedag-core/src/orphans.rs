@@ -1422,6 +1422,7 @@ mod tests {
                 state: MissingParentState::TerminalEvicted,
                 transitioned_at_ms: 1,
                 waiting_orphans: vec!["evicted-orphan".into()],
+                ..MissingParentTerminalEntry::default()
             },
         );
 
@@ -1446,6 +1447,7 @@ mod tests {
                 state: MissingParentState::Exhausted(vec!["peer-a".into(), "peer-b".into()]),
                 transitioned_at_ms: 2,
                 waiting_orphans: vec![child_hash.clone()],
+                ..MissingParentTerminalEntry::default()
             },
         );
 
@@ -1467,6 +1469,7 @@ mod tests {
                     state: MissingParentState::TerminalEvicted,
                     transitioned_at_ms: idx,
                     waiting_orphans: vec![format!("evicted-orphan-{idx:03}")],
+                    ..MissingParentTerminalEntry::default()
                 },
             );
         }

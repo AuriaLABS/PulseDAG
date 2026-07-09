@@ -3384,6 +3384,19 @@ async fn main() -> Result<()> {
                 }
                 let final_quiescence_due = stagnation_secs >= FINAL_QUIESCENCE_NO_PROGRESS_SECS;
                 let rpc_liveness_current_degraded = rt.sync_pipeline.last_error.is_some();
+                if rpc_liveness_current_degraded {
+                    if !rt.rpc_liveness_current_degraded {
+                        rt.rpc_liveness_historical_degraded_total =
+                            rt.rpc_liveness_historical_degraded_total.saturating_add(1);
+                    }
+                    rt.rpc_liveness_current_degraded = true;
+                    rt.rpc_liveness_last_failure_unix = Some(now);
+                    rt.rpc_liveness_consecutive_successes = 0;
+                } else {
+                    rt.rpc_liveness_current_degraded = false;
+                    rt.rpc_liveness_consecutive_successes =
+                        rt.rpc_liveness_consecutive_successes.saturating_add(1);
+                }
                 let pending_block_requests = rt.pending_block_requests;
                 let cleanup_complete = orphan_count == 0
                     && local_pending_missing_parents == 0
