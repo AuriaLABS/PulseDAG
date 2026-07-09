@@ -616,6 +616,27 @@ pub struct P2pStatus {
     pub p2p_identity_created_new: bool,
     pub p2p_peer_id_changed_since_previous_start: bool,
     pub configured_bootnode_peer_ids: Vec<String>,
+    pub known_network_peers: Vec<String>,
+    pub sync_known_peers: Vec<String>,
+    pub direct_request_capable_peers: Vec<String>,
+    pub connected_request_capable_session_peers: Vec<String>,
+    pub getblock_requests_received_total: u64,
+    pub getblock_responses_blockdata_sent_total: u64,
+    pub getblock_responses_not_found_sent_total: u64,
+    pub getblock_response_send_failed_total: u64,
+    pub getblock_requests_received_by_connection_direction: HashMap<String, u64>,
+    pub peer_addressed_getblock_sent_total: u64,
+    pub peer_addressed_getblock_response_total: u64,
+    pub peer_addressed_getblock_timeout_total: u64,
+    pub peer_addressed_getblock_transport_error_total: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PeerAddressedBlockRequest {
+    pub request_id: String,
+    pub requested_peer_id: String,
+    pub block_hash: PulseHash,
+    pub sent_at: u64,
 }
 
 pub trait P2pHandle: Send + Sync {
@@ -633,8 +654,20 @@ pub trait P2pHandle: Send + Sync {
     fn send_block_headers(&self, _headers: &[BlockHeaderAnnouncement]) -> Result<(), PulseError> {
         Ok(())
     }
-    fn request_block(&self, _hash: &PulseHash) -> Result<(), PulseError> {
+    fn request_block_broadcast(&self, _hash: &PulseHash) -> Result<(), PulseError> {
         Ok(())
+    }
+    fn request_block(&self, hash: &PulseHash) -> Result<(), PulseError> {
+        self.request_block_broadcast(hash)
+    }
+    fn request_block_from(
+        &self,
+        _peer_id: &str,
+        _hash: &PulseHash,
+    ) -> Result<PeerAddressedBlockRequest, PulseError> {
+        Err(PulseError::Internal(
+            "peer-addressed GetBlock is not supported by this p2p handle".into(),
+        ))
     }
     fn announce_block_inventory(&self, _hashes: &[PulseHash]) -> Result<(), PulseError> {
         Ok(())
@@ -741,6 +774,11 @@ enum OutboundMessage {
     GetBlockHeaders(Vec<PulseHash>),
     BlockHeaders(Vec<BlockHeaderAnnouncement>),
     GetBlock(PulseHash),
+    GetBlockFrom {
+        peer_id: String,
+        hash: PulseHash,
+        request_id: String,
+    },
     BlockData {
         block: Option<Block>,
         request_hash: Option<PulseHash>,
@@ -909,6 +947,15 @@ struct InnerState {
     p2p_peer_id_changed_since_previous_start: bool,
     selected_sync_peer: Option<String>,
     sync_selection_sticky_until_unix: u64,
+    peer_addressed_getblock_sent_total: u64,
+    peer_addressed_getblock_response_total: u64,
+    peer_addressed_getblock_timeout_total: u64,
+    peer_addressed_getblock_transport_error_total: u64,
+    getblock_requests_received_total: u64,
+    getblock_responses_blockdata_sent_total: u64,
+    getblock_responses_not_found_sent_total: u64,
+    getblock_response_send_failed_total: u64,
+    getblock_requests_received_by_connection_direction: HashMap<String, u64>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -1110,7 +1157,7 @@ impl P2pHandle for MemoryP2pHandle {
         Ok(())
     }
 
-    fn request_block(&self, _hash: &PulseHash) -> Result<(), PulseError> {
+    fn request_block_broadcast(&self, _hash: &PulseHash) -> Result<(), PulseError> {
         let mut inner = self
             .inner
             .lock()
@@ -1120,6 +1167,41 @@ impl P2pHandle for MemoryP2pHandle {
         inner.blocks_requested = inner.blocks_requested.saturating_add(1);
         inner.last_message_kind = Some("get-block".into());
         Ok(())
+    }
+
+    fn request_block_from(
+        &self,
+        peer_id: &str,
+        hash: &PulseHash,
+    ) -> Result<PeerAddressedBlockRequest, PulseError> {
+        let sent_at = now_unix();
+        let request_id = format!("getblock:{peer_id}:{hash}:{sent_at}");
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| PulseError::Internal("p2p lock poisoned".into()))?;
+        if !inner.connected_peers.iter().any(|p| p == peer_id)
+            && inner.active_connections.get(peer_id).copied().unwrap_or(0) == 0
+        {
+            inner.peer_addressed_getblock_transport_error_total = inner
+                .peer_addressed_getblock_transport_error_total
+                .saturating_add(1);
+            return Err(PulseError::Internal(format!(
+                "peer {peer_id} is not a direct request-capable session"
+            )));
+        }
+        inner.publish_attempts += 1;
+        inner.broadcasted_messages += 1;
+        inner.blocks_requested = inner.blocks_requested.saturating_add(1);
+        inner.peer_addressed_getblock_sent_total =
+            inner.peer_addressed_getblock_sent_total.saturating_add(1);
+        inner.last_message_kind = Some("get-block-from".into());
+        Ok(PeerAddressedBlockRequest {
+            request_id,
+            requested_peer_id: peer_id.to_string(),
+            block_hash: hash.clone(),
+            sent_at,
+        })
     }
 
     fn announce_block_inventory(&self, hashes: &[PulseHash]) -> Result<(), PulseError> {
@@ -1426,6 +1508,26 @@ impl P2pHandle for MemoryP2pHandle {
                 .iter()
                 .filter_map(|addr| parse_bootnode_multiaddr(addr).map(|(peer, _)| peer.to_string()))
                 .collect(),
+            known_network_peers: inner.peer_book.keys().cloned().collect(),
+            sync_known_peers: inner.connected_peers.clone(),
+            direct_request_capable_peers: inner.active_connections.keys().cloned().collect(),
+            connected_request_capable_session_peers: inner
+                .active_connections
+                .iter()
+                .filter_map(|(peer, count)| (*count > 0).then_some(peer.clone()))
+                .collect(),
+            getblock_requests_received_total: inner.getblock_requests_received_total,
+            getblock_responses_blockdata_sent_total: inner.getblock_responses_blockdata_sent_total,
+            getblock_responses_not_found_sent_total: inner.getblock_responses_not_found_sent_total,
+            getblock_response_send_failed_total: inner.getblock_response_send_failed_total,
+            getblock_requests_received_by_connection_direction: inner
+                .getblock_requests_received_by_connection_direction
+                .clone(),
+            peer_addressed_getblock_sent_total: inner.peer_addressed_getblock_sent_total,
+            peer_addressed_getblock_response_total: inner.peer_addressed_getblock_response_total,
+            peer_addressed_getblock_timeout_total: inner.peer_addressed_getblock_timeout_total,
+            peer_addressed_getblock_transport_error_total: inner
+                .peer_addressed_getblock_transport_error_total,
         })
     }
 }
@@ -2445,6 +2547,17 @@ fn enqueue_outbound_message(
         OutboundMessage::GetBlock(hash) => {
             queue.blocks.push_back(OutboundMessage::GetBlock(hash));
         }
+        OutboundMessage::GetBlockFrom {
+            peer_id,
+            hash,
+            request_id,
+        } => {
+            queue.blocks.push_back(OutboundMessage::GetBlockFrom {
+                peer_id,
+                hash,
+                request_id,
+            });
+        }
         OutboundMessage::BlockData {
             block,
             request_hash,
@@ -2529,6 +2642,7 @@ fn pop_outbound_message(
             | OutboundMessage::GetBlockHeaders(_)
             | OutboundMessage::BlockHeaders(_)
             | OutboundMessage::GetBlock(_)
+            | OutboundMessage::GetBlockFrom { .. }
             | OutboundMessage::BlockData { .. } => {
                 guard.queued_block_messages = guard.queued_block_messages.saturating_sub(1);
                 guard.dequeued_block_messages = guard.dequeued_block_messages.saturating_add(1);
@@ -4134,7 +4248,12 @@ fn dispatch_network_message(
             }
             let _ = inbound_tx.send(InboundEvent::BlockHeaders { headers });
         }
-        NetworkMessage::GetBlock { chain_id, hash } => {
+        NetworkMessage::GetBlock {
+            chain_id,
+            hash,
+            request_id: _,
+            requested_peer_id,
+        } => {
             if chain_id != expected_chain_id {
                 if let Ok(mut guard) = inner.lock() {
                     guard.inbound_chain_mismatch_dropped += 1;
@@ -4165,7 +4284,31 @@ fn dispatch_network_message(
                     );
                 }
             }
-            let _ = inbound_tx.send(InboundEvent::GetBlock { hash });
+            if requested_peer_id.as_ref().is_none_or(|peer| {
+                inner
+                    .lock()
+                    .map(|guard| peer == &guard.peer_id)
+                    .unwrap_or(false)
+            }) {
+                if let Ok(mut guard) = inner.lock() {
+                    guard.getblock_requests_received_total =
+                        guard.getblock_requests_received_total.saturating_add(1);
+                    let direction = source_peer
+                        .as_deref()
+                        .and_then(|peer| {
+                            guard
+                                .peer_connection_final_state
+                                .get(peer)
+                                .map(|s| s.direction.clone())
+                        })
+                        .unwrap_or_else(|| "unknown".to_string());
+                    *guard
+                        .getblock_requests_received_by_connection_direction
+                        .entry(direction)
+                        .or_default() += 1;
+                }
+                let _ = inbound_tx.send(InboundEvent::GetBlock { hash });
+            }
         }
         NetworkMessage::BlockData {
             chain_id,
@@ -4366,8 +4509,14 @@ async fn run_libp2p_runtime(
                     OutboundMessage::GetBlock(hash) => {
                         let topic_name = format!("{}-sync", cfg.chain_id);
                         let message_id = format!("sync:get-block:{hash}");
-                        let wire = serde_json::to_vec(&NetworkMessage::GetBlock { chain_id: cfg.chain_id.clone(), hash });
+                        let wire = serde_json::to_vec(&NetworkMessage::GetBlock { chain_id: cfg.chain_id.clone(), hash, request_id: None, requested_peer_id: None });
                         (wire, topic_name, "get-block", message_id)
+                    }
+                    OutboundMessage::GetBlockFrom { peer_id, hash, request_id } => {
+                        let topic_name = format!("{}-sync", cfg.chain_id);
+                        let message_id = format!("sync:get-block:{request_id}");
+                        let wire = serde_json::to_vec(&NetworkMessage::GetBlock { chain_id: cfg.chain_id.clone(), hash, request_id: Some(request_id), requested_peer_id: Some(peer_id) });
+                        (wire, topic_name, "get-block-from", message_id)
                     }
                     OutboundMessage::BlockData { block, request_hash } => {
                         let topic_name = format!("{}-sync", cfg.chain_id);
@@ -4912,8 +5061,14 @@ async fn run_libp2p_real_runtime(
                     OutboundMessage::GetBlock(hash) => {
                         let topic_name = format!("{}-sync", cfg.chain_id);
                         let message_id = format!("sync:get-block:{hash}");
-                        let wire = serde_json::to_vec(&NetworkMessage::GetBlock { chain_id: cfg.chain_id.clone(), hash });
+                        let wire = serde_json::to_vec(&NetworkMessage::GetBlock { chain_id: cfg.chain_id.clone(), hash, request_id: None, requested_peer_id: None });
                         (wire, topic_name, "get-block", message_id)
+                    }
+                    OutboundMessage::GetBlockFrom { peer_id, hash, request_id } => {
+                        let topic_name = format!("{}-sync", cfg.chain_id);
+                        let message_id = format!("sync:get-block:{request_id}");
+                        let wire = serde_json::to_vec(&NetworkMessage::GetBlock { chain_id: cfg.chain_id.clone(), hash, request_id: Some(request_id), requested_peer_id: Some(peer_id) });
+                        (wire, topic_name, "get-block-from", message_id)
                     }
                     OutboundMessage::BlockData { block, request_hash } => {
                         let topic_name = format!("{}-sync", cfg.chain_id);
@@ -5253,8 +5408,50 @@ impl P2pHandle for Libp2pHandle {
         )
     }
 
-    fn request_block(&self, hash: &PulseHash) -> Result<(), PulseError> {
-        self.queue_sync_message(OutboundMessage::GetBlock(hash.clone()), "get-block")
+    fn request_block_broadcast(&self, hash: &PulseHash) -> Result<(), PulseError> {
+        self.queue_sync_message(
+            OutboundMessage::GetBlock(hash.clone()),
+            "get-block-broadcast",
+        )
+    }
+
+    fn request_block_from(
+        &self,
+        peer_id: &str,
+        hash: &PulseHash,
+    ) -> Result<PeerAddressedBlockRequest, PulseError> {
+        let sent_at = now_unix();
+        let request_id = format!("getblock:{peer_id}:{hash}:{sent_at}");
+        {
+            let mut inner = self
+                .inner
+                .lock()
+                .map_err(|_| PulseError::Internal("p2p lock poisoned".into()))?;
+            if inner.active_connections.get(peer_id).copied().unwrap_or(0) == 0 {
+                inner.peer_addressed_getblock_transport_error_total = inner
+                    .peer_addressed_getblock_transport_error_total
+                    .saturating_add(1);
+                return Err(PulseError::Internal(format!(
+                    "peer {peer_id} is not a direct request-capable session"
+                )));
+            }
+            inner.peer_addressed_getblock_sent_total =
+                inner.peer_addressed_getblock_sent_total.saturating_add(1);
+        }
+        self.queue_sync_message(
+            OutboundMessage::GetBlockFrom {
+                peer_id: peer_id.to_string(),
+                hash: hash.clone(),
+                request_id: request_id.clone(),
+            },
+            "get-block-from",
+        )?;
+        Ok(PeerAddressedBlockRequest {
+            request_id,
+            requested_peer_id: peer_id.to_string(),
+            block_hash: hash.clone(),
+            sent_at,
+        })
     }
 
     fn announce_block_inventory(&self, hashes: &[PulseHash]) -> Result<(), PulseError> {
@@ -5565,6 +5762,26 @@ impl P2pHandle for Libp2pHandle {
                 .iter()
                 .filter_map(|addr| parse_bootnode_multiaddr(addr).map(|(peer, _)| peer.to_string()))
                 .collect(),
+            known_network_peers: inner.peer_book.keys().cloned().collect(),
+            sync_known_peers: inner.connected_peers.clone(),
+            direct_request_capable_peers: inner.active_connections.keys().cloned().collect(),
+            connected_request_capable_session_peers: inner
+                .active_connections
+                .iter()
+                .filter_map(|(peer, count)| (*count > 0).then_some(peer.clone()))
+                .collect(),
+            getblock_requests_received_total: inner.getblock_requests_received_total,
+            getblock_responses_blockdata_sent_total: inner.getblock_responses_blockdata_sent_total,
+            getblock_responses_not_found_sent_total: inner.getblock_responses_not_found_sent_total,
+            getblock_response_send_failed_total: inner.getblock_response_send_failed_total,
+            getblock_requests_received_by_connection_direction: inner
+                .getblock_requests_received_by_connection_direction
+                .clone(),
+            peer_addressed_getblock_sent_total: inner.peer_addressed_getblock_sent_total,
+            peer_addressed_getblock_response_total: inner.peer_addressed_getblock_response_total,
+            peer_addressed_getblock_timeout_total: inner.peer_addressed_getblock_timeout_total,
+            peer_addressed_getblock_transport_error_total: inner
+                .peer_addressed_getblock_transport_error_total,
         })
     }
 }
@@ -7517,7 +7734,12 @@ mod inventory_tests {
         let decoded: NetworkMessage =
             serde_json::from_slice(&bytes).expect("deserialize get_block message");
         match decoded {
-            NetworkMessage::GetBlock { chain_id, hash } => {
+            NetworkMessage::GetBlock {
+                chain_id,
+                hash,
+                request_id: _,
+                requested_peer_id,
+            } => {
                 assert_eq!(chain_id, "testnet");
                 assert_eq!(hash, "h-request");
             }

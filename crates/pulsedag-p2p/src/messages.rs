@@ -65,6 +65,10 @@ pub enum NetworkMessage {
     GetBlock {
         chain_id: String,
         hash: Hash,
+        #[serde(default)]
+        request_id: Option<String>,
+        #[serde(default)]
+        requested_peer_id: Option<String>,
     },
     BlockData {
         chain_id: String,
