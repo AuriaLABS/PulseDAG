@@ -197,6 +197,11 @@ fn final_quiescence_request_suppression_reason(
 #[allow(dead_code)]
 enum DagSyncStage {
     SelectedChainLocator,
+    RequestingSelectedHeaders,
+    RequestingSelectedBlocks,
+    ApplyingSelectedSegment,
+    SelectedSegmentComplete,
+    SelectedSegmentFailed,
     DagFrontierTips,
     MissingParentRecovery,
     MergeSetBlockRecovery,
@@ -207,11 +212,105 @@ impl DagSyncStage {
     fn as_str(self) -> &'static str {
         match self {
             Self::SelectedChainLocator => "selected_chain_locator_sync",
+            Self::RequestingSelectedHeaders => "requesting_selected_headers",
+            Self::RequestingSelectedBlocks => "requesting_selected_blocks",
+            Self::ApplyingSelectedSegment => "applying_selected_segment",
+            Self::SelectedSegmentComplete => "selected_segment_complete",
+            Self::SelectedSegmentFailed => "selected_segment_failed",
             Self::DagFrontierTips => "dag_frontier_tips_sync",
             Self::MissingParentRecovery => "missing_parent_recovery",
             Self::MergeSetBlockRecovery => "merge_set_block_recovery",
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SelectedSegmentLimits {
+    headers_per_chunk: usize,
+    max_inflight_blocks_per_peer: usize,
+    max_segment_bytes: usize,
+}
+
+impl Default for SelectedSegmentLimits {
+    fn default() -> Self {
+        Self {
+            headers_per_chunk: std::env::var("PULSEDAG_SELECTED_SEGMENT_HEADERS_PER_CHUNK")
+                .ok()
+                .and_then(|value| value.parse::<usize>().ok())
+                .unwrap_or(128)
+                .clamp(64, 256),
+            max_inflight_blocks_per_peer: std::env::var(
+                "PULSEDAG_SELECTED_SEGMENT_MAX_INFLIGHT_BLOCKS_PER_PEER",
+            )
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(32)
+            .clamp(1, 128),
+            max_segment_bytes: std::env::var("PULSEDAG_SELECTED_SEGMENT_MAX_BYTES")
+                .ok()
+                .and_then(|value| value.parse::<usize>().ok())
+                .unwrap_or(4 * 1024 * 1024)
+                .clamp(256 * 1024, 16 * 1024 * 1024),
+        }
+    }
+}
+
+fn validate_selected_header_segment(
+    common_ancestor: &str,
+    headers: &[HeaderInventory],
+    known_blocks: &HashSet<String>,
+) -> Result<(), &'static str> {
+    let Some(first) = headers.first() else {
+        return Err("empty_segment");
+    };
+    if !first
+        .header
+        .parents
+        .iter()
+        .any(|parent| parent == common_ancestor)
+    {
+        return Err("first_header_not_connected_to_common_ancestor");
+    }
+    let mut staged = known_blocks.clone();
+    let mut seen = HashSet::new();
+    for item in headers {
+        if !seen.insert(item.hash.clone()) {
+            return Err("duplicate_hash");
+        }
+        if item
+            .header
+            .parents
+            .iter()
+            .any(|parent| parent == &item.hash)
+        {
+            return Err("cycle");
+        }
+        if item
+            .header
+            .parents
+            .iter()
+            .any(|parent| !staged.contains(parent))
+        {
+            return Err("unknown_or_unstaged_parent");
+        }
+        staged.insert(item.hash.clone());
+    }
+    Ok(())
+}
+
+fn selected_segment_request_order(headers: &[HeaderInventory], limit: usize) -> Vec<String> {
+    let mut ordered = headers.iter().collect::<Vec<_>>();
+    ordered.sort_by(|a, b| {
+        a.header
+            .height
+            .cmp(&b.header.height)
+            .then_with(|| a.hash.cmp(&b.hash))
+    });
+    ordered
+        .into_iter()
+        .take(limit.max(1))
+        .map(|item| item.hash.clone())
+        .collect()
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -711,7 +810,14 @@ fn headers_for_request(
         .filter_map(|hash| chain.dag.blocks.get(hash).map(|block| block.header.height))
         .collect::<Vec<_>>();
     let start_height = locator_heights.into_iter().max().unwrap_or(0);
-    let mut blocks = chain.dag.blocks.values().cloned().collect::<Vec<_>>();
+    let selected: HashSet<_> = chain.dag.selected_chain.iter().cloned().collect();
+    let mut blocks = chain
+        .dag
+        .blocks
+        .values()
+        .filter(|block| locator.is_empty() || selected.contains(&block.hash))
+        .cloned()
+        .collect::<Vec<_>>();
     blocks.sort_by(|a, b| {
         a.header
             .height
@@ -2600,6 +2706,15 @@ async fn main() -> Result<()> {
                                 rt.accepted_p2p_blocks += 1;
                                 rt.blockdata_received = rt.blockdata_received.saturating_add(1);
                                 rt.blockdata_accepted = rt.blockdata_accepted.saturating_add(1);
+                                if matches!(
+                                    rt.sync_state.as_str(),
+                                    "requesting_selected_blocks" | "applying_selected_segment"
+                                ) {
+                                    rt.sync_state =
+                                        DagSyncStage::ApplyingSelectedSegment.as_str().to_string();
+                                    rt.selected_segment_blocks_applied_total =
+                                        rt.selected_segment_blocks_applied_total.saturating_add(1);
+                                }
                                 rt.pulsedag_blocks_accepted_total =
                                     rt.pulsedag_blocks_accepted_total.saturating_add(1);
                                 rt.adopted_orphan_blocks += adopted as u64;
@@ -2787,6 +2902,32 @@ async fn main() -> Result<()> {
                         rt.headers_sent = rt.headers_sent.saturating_add(headers.len() as u64);
                     }
                     InboundEvent::Headers { headers } => {
+                        let selected_limits = SelectedSegmentLimits::default();
+                        let (known_blocks_for_segment, common_ancestor, common_ancestor_height) = {
+                            let guard = chain.read().await;
+                            let known = known_hashes_for_scheduler(&guard);
+                            let common = headers.first().and_then(|first| {
+                                first
+                                    .header
+                                    .parents
+                                    .iter()
+                                    .find(|parent| known.contains(*parent))
+                                    .cloned()
+                            });
+                            let height = common
+                                .as_ref()
+                                .and_then(|hash| guard.dag.blocks.get(hash))
+                                .map(|block| block.header.height)
+                                .unwrap_or(0);
+                            (known, common, height)
+                        };
+                        let selected_segment_validation = common_ancestor.as_ref().map(|common| {
+                            validate_selected_header_segment(
+                                common,
+                                &headers,
+                                &known_blocks_for_segment,
+                            )
+                        });
                         let candidates = headers
                             .iter()
                             .map(|item| HeaderFetchCandidate {
@@ -2804,8 +2945,22 @@ async fn main() -> Result<()> {
                             )
                         };
                         let plan = fetch_scheduler.next_requests(&known, &pending, 8);
-                        let planned_request_count = plan.requests.len() as u64;
-                        for hash in plan.requests {
+                        let selected_requests =
+                            if matches!(selected_segment_validation, Some(Ok(()))) {
+                                selected_segment_request_order(
+                                    &headers,
+                                    selected_limits.max_inflight_blocks_per_peer,
+                                )
+                            } else {
+                                Vec::new()
+                            };
+                        let requests = if selected_requests.is_empty() {
+                            plan.requests
+                        } else {
+                            selected_requests
+                        };
+                        let planned_request_count = requests.len() as u64;
+                        for hash in requests {
                             if block_requests.should_issue_getblock_for_peers(
                                 &hash,
                                 now_unix(),
@@ -2831,6 +2986,47 @@ async fn main() -> Result<()> {
                             rt.final_quiescence_highest_common_found_total = rt
                                 .final_quiescence_highest_common_found_total
                                 .saturating_add(1);
+                            let local_height = common_ancestor_height;
+                            let remote_height = headers
+                                .iter()
+                                .map(|item| item.header.height)
+                                .max()
+                                .unwrap_or(local_height);
+                            rt.selected_segment_gap_blocks =
+                                remote_height.saturating_sub(local_height);
+                            rt.selected_segment_header_requests_total =
+                                rt.selected_segment_header_requests_total.saturating_add(1);
+                            rt.selected_segment_headers_received_total = rt
+                                .selected_segment_headers_received_total
+                                .saturating_add(headers.len() as u64);
+                            match selected_segment_validation {
+                                Some(Ok(())) if planned_request_count > 0 => {
+                                    rt.sync_state =
+                                        DagSyncStage::RequestingSelectedBlocks.as_str().to_string();
+                                    rt.selected_segment_block_requests_total = rt
+                                        .selected_segment_block_requests_total
+                                        .saturating_add(planned_request_count);
+                                    rt.final_quiescence_selected_sync_blocked_reason =
+                                        Some("selected_segment_request_sent".to_string());
+                                }
+                                Some(Ok(())) => {
+                                    rt.sync_state =
+                                        DagSyncStage::SelectedSegmentComplete.as_str().to_string();
+                                    rt.selected_segment_chunks_completed_total = rt
+                                        .selected_segment_chunks_completed_total
+                                        .saturating_add(1);
+                                }
+                                Some(Err(reason)) => {
+                                    rt.sync_state =
+                                        DagSyncStage::SelectedSegmentFailed.as_str().to_string();
+                                    let entry = rt
+                                        .selected_segment_failure_total
+                                        .entry(reason.to_string())
+                                        .or_insert(0);
+                                    *entry = entry.saturating_add(1);
+                                }
+                                None => {}
+                            }
                         } else if final_quiescence_reconcile_pending(
                             rt.final_quiescence_selected_sync_total,
                             rt.final_quiescence_selected_sync_success_total,
@@ -2859,7 +3055,14 @@ async fn main() -> Result<()> {
                         rt.parent_first_fetches = rt
                             .parent_first_fetches
                             .saturating_add(plan.parent_first_requests as u64);
-                        rt.sync_state = "requesting_blocks".to_string();
+                        if !matches!(
+                            rt.sync_state.as_str(),
+                            "requesting_selected_blocks"
+                                | "selected_segment_complete"
+                                | "selected_segment_failed"
+                        ) {
+                            rt.sync_state = "requesting_blocks".to_string();
+                        }
                     }
                     InboundEvent::GetTips => {
                         let tips = {
@@ -3033,6 +3236,18 @@ async fn main() -> Result<()> {
                                     block_requests.pending.len(),
                                     block_requests.max_pending(),
                                 );
+                                if reason == "requestable_no_suppression" {
+                                    if let Some(ref p2p) = p2p {
+                                        if let Err(e) = p2p.request_block(&tip) {
+                                            warn!(error = %e, block_hash = %tip, "failed requesting requestable final-quiescence tip");
+                                        }
+                                    }
+                                    let mut rt = runtime.write().await;
+                                    rt.getblock_sent = rt.getblock_sent.saturating_add(1);
+                                    rt.final_quiescence_selected_sync_blocked_reason =
+                                        Some("block_request_sent".to_string());
+                                    continue;
+                                }
                                 let mut rt = runtime.write().await;
                                 if final_height_pending {
                                     rt.final_quiescence_height_reconcile_blocked_total = rt
@@ -3580,6 +3795,25 @@ async fn main() -> Result<()> {
                                     let same_height_tip_reconcile_ready =
                                         all_reachable_peers_connected;
                                     let requested = p2p.request_tips().is_ok();
+                                    let selected_locator = {
+                                        let guard = chain.read().await;
+                                        guard
+                                            .dag
+                                            .selected_chain
+                                            .iter()
+                                            .rev()
+                                            .take(32)
+                                            .cloned()
+                                            .collect::<Vec<_>>()
+                                    };
+                                    let selected_limits = SelectedSegmentLimits::default();
+                                    let selected_locator_requested = p2p
+                                        .request_headers(
+                                            &selected_locator,
+                                            None,
+                                            selected_limits.headers_per_chunk,
+                                        )
+                                        .is_ok();
                                     let mut rt = runtime.write().await;
                                     rt.final_quiescence_tip_reconcile_total =
                                         rt.final_quiescence_tip_reconcile_total.saturating_add(1);
@@ -3636,6 +3870,25 @@ async fn main() -> Result<()> {
                                             rt.final_quiescence_same_height_reconcile_blocked_reason =
                                                 Some("request_tips_failed".to_string());
                                         }
+                                    }
+                                    rt.final_quiescence_selected_locator_request_total = rt
+                                        .final_quiescence_selected_locator_request_total
+                                        .saturating_add(1);
+                                    rt.dag_sync_selected_chain_locator_total =
+                                        rt.dag_sync_selected_chain_locator_total.saturating_add(1);
+                                    if selected_locator_requested {
+                                        rt.sync_state = DagSyncStage::RequestingSelectedHeaders
+                                            .as_str()
+                                            .to_string();
+                                        rt.selected_segment_header_requests_total = rt
+                                            .selected_segment_header_requests_total
+                                            .saturating_add(1);
+                                    } else {
+                                        rt.final_quiescence_selected_sync_blocked_total = rt
+                                            .final_quiescence_selected_sync_blocked_total
+                                            .saturating_add(1);
+                                        rt.final_quiescence_selected_sync_blocked_reason =
+                                            Some("selected_locator_request_failed".to_string());
                                     }
                                 }
                                 Ok(_) => {
@@ -4385,6 +4638,62 @@ mod tests {
                 64,
             ),
             "peer_rate_limited"
+        );
+    }
+
+    fn selected_test_header(
+        hash: &str,
+        parent: &str,
+        height: u64,
+    ) -> pulsedag_p2p::messages::HeaderInventory {
+        pulsedag_p2p::messages::HeaderInventory {
+            hash: hash.to_string(),
+            header: pulsedag_core::types::BlockHeader {
+                version: 1,
+                parents: vec![parent.to_string()],
+                timestamp: height,
+                difficulty: 1,
+                nonce: height,
+                merkle_root: "mr".to_string(),
+                state_root: "sr".to_string(),
+                blue_score: height,
+                height,
+            },
+        }
+    }
+
+    #[test]
+    fn selected_segment_validation_accepts_parent_first_chain() {
+        let known = HashSet::from(["common".to_string()]);
+        let headers = vec![
+            selected_test_header("b1", "common", 514),
+            selected_test_header("b2", "b1", 515),
+        ];
+        assert_eq!(
+            validate_selected_header_segment("common", &headers, &known),
+            Ok(())
+        );
+        assert_eq!(
+            selected_segment_request_order(&headers, 8),
+            vec!["b1".to_string(), "b2".to_string()]
+        );
+    }
+
+    #[test]
+    fn selected_segment_validation_rejects_invalid_segment() {
+        let known = HashSet::from(["common".to_string()]);
+        let bad = vec![selected_test_header("b1", "unknown", 514)];
+        assert_eq!(
+            validate_selected_header_segment("common", &bad, &known),
+            Err("first_header_not_connected_to_common_ancestor")
+        );
+        let dup = vec![
+            selected_test_header("b1", "common", 514),
+            selected_test_header("b1", "common", 515),
+        ];
+        assert_eq!(
+            validate_selected_header_segment("common", &dup, &known),
+            Err("duplicate_hash")
         );
     }
 
