@@ -62,7 +62,7 @@ declare -A NODE_ORPHAN_COUNT NODE_PENDING_MISSING_PARENTS NODE_PENDING_BLOCK_REQ
 declare -A NODE_ACTIVE_PEERS NODE_RECOVERING_PEERS NODE_COOLDOWN_PEERS NODE_RATE_LIMITED_COUNT NODE_RECONNECT_ATTEMPTS NODE_RECONNECT_BLOCKED_REASON NODE_MIN_TARGET_MISSED NODE_ZERO_RECONNECT_ATTEMPTS NODE_ZERO_RECONNECT_SUCCESS
 declare -A NODE_ORPHAN_RECOVERY_ATTEMPTS NODE_ORPHAN_RECOVERY_SUCCESS NODE_ORPHAN_RECOVERY_FAILED_MISSING_PARENT NODE_ORPHAN_RECOVERY_FAILED_PERSIST NODE_ORPHAN_ROOTS_RATE_LIMITED NODE_ORPHAN_BACKLOG_STALE
 declare -A NODE_RPC_DEGRADED_RESPONSE NODE_RPC_SNAPSHOT_STALE NODE_RPC_HANDLER_DEGRADED NODE_RPC_HANDLER_TIMEOUT_AVOIDED NODE_MINING_TEMPLATES NODE_MINING_SUBMITS NODE_MINING_ACCEPTED NODE_MINING_REJECTED NODE_MINING_SUBMIT_BUSY NODE_MINING_ACTOR_TIMEOUT
-declare -A NODE_READINESS_SCHEMA_OK NODE_READINESS_STATUS NODE_ORDERED_DAG_TIP NODE_SYNC_STATE NODE_SYNC_STAGE NODE_SAME_HEIGHT_RECONCILE_BLOCKED_REASON
+declare -A NODE_READINESS_SCHEMA_OK NODE_READINESS_STATUS NODE_ORDERED_DAG_TIP NODE_CONSENSUS_MODE NODE_SELECTED_TIP NODE_SYNC_STATE NODE_SYNC_STAGE NODE_SAME_HEIGHT_RECONCILE_BLOCKED_REASON
 declare -A PRE_NODE_HEIGHT PRE_NODE_TIP PRE_NODE_ORPHANS PRE_NODE_MISSING_PARENTS PRE_NODE_SYNC_STATE PRE_NODE_PEERS
 FAIL_REASONS=()
 FAIL_CLASSES=()
@@ -691,6 +691,9 @@ collect_final_state(){
     safe_curl_optional "http://127.0.0.1:${rpc}/orphans" "$OUT_DIR/endpoints/n${i}-orphans-final.json" "n${i}:/orphans ${phase}" || true
     NODE_HEIGHT[$i]="$(jq -r '.data.best_height // 0' "$OUT_DIR/endpoints/n${i}-status-final.json" 2>/dev/null || echo 0)"
     NODE_TIP[$i]="$(jq -r '.data.selected_tip // ""' "$OUT_DIR/endpoints/n${i}-status-final.json" 2>/dev/null || echo '')"
+    NODE_SELECTED_TIP[$i]="$(jq -r '.data.selected_tip // .data.metrics.selected_tip // ""' "$OUT_DIR/endpoints/n${i}-status-final.json" "$OUT_DIR/endpoints/n${i}-readiness-final.json" 2>/dev/null | head -n1 || echo '')"
+    NODE_ORDERED_DAG_TIP[$i]="$(jq -r '.data.ordered_dag_tip // ""' "$OUT_DIR/endpoints/n${i}-status-final.json" 2>/dev/null || echo '')"
+    NODE_CONSENSUS_MODE[$i]="$(jq -r '.data.consensus_mode // .data.metrics.consensus_mode // "unknown"' "$OUT_DIR/endpoints/n${i}-status-final.json" "$OUT_DIR/endpoints/n${i}-readiness-final.json" 2>/dev/null | head -n1 || echo unknown)"
     NODE_READY[$i]="$(jq -r '.data.ready_for_release // .ready_for_release // 0' "$OUT_DIR/endpoints/n${i}-readiness-final.json" 2>/dev/null | sed 's/true/1/;s/false/0/' || echo 0)"
     NODE_HEALTHY[$i]="$(jq -r '.ok // .data.ok // 0' "$OUT_DIR/endpoints/n${i}-status-final.json" 2>/dev/null | sed 's/true/1/;s/false/0/' || echo 0)"
     NODE_PEERS[$i]="$(jq -r '.data.peer_count // (.data.connected_peers|length) // .data.connected_peer_count // (.data.peers|length) // 0' "$OUT_DIR/endpoints/n${i}-p2p-status-final.json" 2>/dev/null || echo 0)"
@@ -710,7 +713,7 @@ collect_final_state(){
     NODE_SYNC_STATE[$i]="$(jq -r '.data.sync_state // .sync_state // .data.state // "unknown"' "$OUT_DIR/endpoints/n${i}-sync-status-final.json" 2>/dev/null || echo unknown)"
     NODE_SYNC_STAGE[$i]="$(jq -r '.data.catchup_stage // .catchup_stage // .data.stage // "unknown"' "$OUT_DIR/endpoints/n${i}-sync-status-final.json" 2>/dev/null || echo unknown)"
     NODE_P2P_OK[$i]=$(( NODE_PEERS[$i] > 0 ? 1 : 0 ))
-    readiness_has_ready=$(jq -e '(.data.ready_for_release? // .ready_for_release?) | type == "boolean"' "$OUT_DIR/endpoints/n${i}-readiness-final.json" >/dev/null 2>&1 && echo 1 || echo 0)
+    readiness_has_ready=$(jq -e '((.data.node_operational_ready? // .node_operational_ready?) | type == "boolean") and ((.data.private_conservative_ready? // .private_conservative_ready?) | type == "boolean") and ((.data.fast_cadence_ready? // .fast_cadence_ready?) | type == "boolean") and ((.data.ready_for_release? // .ready_for_release?) | type == "boolean")' "$OUT_DIR/endpoints/n${i}-readiness-final.json" >/dev/null 2>&1 && echo 1 || echo 0)
     readiness_has_public=$(jq -e '(.data.public_testnet_ready? // .public_testnet_ready?) == false' "$OUT_DIR/endpoints/n${i}-readiness-final.json" >/dev/null 2>&1 && echo 1 || echo 0)
     NODE_READINESS_SCHEMA_OK[$i]=$(( readiness_has_ready == 1 && readiness_has_public == 1 ? 1 : 0 ))
     metrics_file="$OUT_DIR/endpoints/n${i}-metrics-final.json"
@@ -1067,10 +1070,10 @@ write_evidence_summary(){
     echo
 
     echo "## Final table per node"
-    echo "| node | chain_id | height | tip | selected_tip | ordered_dag_tip | peer_count | inbound_count | outbound_count | orphan_count | pending_missing_parents | missing_parent_entries | terminal_missing_parent_entries | pending_block_requests | sync_state | catchup_stage | readiness status |"
-    echo "|---|---|---:|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---|---|---|"
+    echo "| node | chain_id | consensus_mode | height | tip | selected_tip | ordered_dag_tip | peer_count | inbound_count | outbound_count | orphan_count | pending_missing_parents | missing_parent_entries | terminal_missing_parent_entries | pending_block_requests | sync_state | catchup_stage | readiness status |"
+    echo "|---|---|---|---:|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---|---|---|"
     for i in $(seq 1 "$NODE_COUNT"); do
-      echo "| n${i} | ${NODE_CHAIN_ID[$i]:-unknown} | ${NODE_HEIGHT[$i]:-0} | ${NODE_TIP[$i]:-} | ${NODE_TIP[$i]:-} | ${NODE_ORDERED_DAG_TIP[$i]:-unavailable} | ${NODE_PEERS[$i]:-0} | ${NODE_P2P_INBOUND[$i]:-0} | ${NODE_P2P_OUTBOUND[$i]:-0} | ${NODE_ORPHAN_COUNT[$i]:-0} | ${NODE_PENDING_MISSING_PARENTS[$i]:-0} | ${NODE_MISSING_PARENTS_COUNT[$i]:-0} | ${NODE_TERMINAL_MISSING_PARENTS_COUNT[$i]:-0} | ${NODE_PENDING_BLOCK_REQUESTS[$i]:-0} | ${NODE_SYNC_STATE[$i]:-unknown} | ${NODE_SYNC_STAGE[$i]:-unknown} | ${NODE_READINESS_STATUS[$i]:-unknown} |"
+      echo "| n${i} | ${NODE_CHAIN_ID[$i]:-unknown} | ${NODE_CONSENSUS_MODE[$i]:-unknown} | ${NODE_HEIGHT[$i]:-0} | ${NODE_TIP[$i]:-} | ${NODE_SELECTED_TIP[$i]:-${NODE_TIP[$i]:-}} | ${NODE_ORDERED_DAG_TIP[$i]:-unavailable} | ${NODE_PEERS[$i]:-0} | ${NODE_P2P_INBOUND[$i]:-0} | ${NODE_P2P_OUTBOUND[$i]:-0} | ${NODE_ORPHAN_COUNT[$i]:-0} | ${NODE_PENDING_MISSING_PARENTS[$i]:-0} | ${NODE_MISSING_PARENTS_COUNT[$i]:-0} | ${NODE_TERMINAL_MISSING_PARENTS_COUNT[$i]:-0} | ${NODE_PENDING_BLOCK_REQUESTS[$i]:-0} | ${NODE_SYNC_STATE[$i]:-unknown} | ${NODE_SYNC_STAGE[$i]:-unknown} | ${NODE_READINESS_STATUS[$i]:-unknown} |"
     done
     echo
     echo "## Required multi-node aggregate gates"
