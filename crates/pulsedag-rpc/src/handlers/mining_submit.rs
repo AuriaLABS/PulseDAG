@@ -1626,6 +1626,11 @@ mod tests {
                 bootnode_inbound_not_promoted_total: 0,
                 private_topology_asymmetric_peer_count_total: 0,
                 peer_reports_connected_to_bootnode_but_bootnode_reports_zero_total: 0,
+                p2p_identity_path: None,
+                p2p_identity_loaded_existing: false,
+                p2p_identity_created_new: false,
+                p2p_peer_id_changed_since_previous_start: false,
+                configured_bootnode_peer_ids: Vec::new(),
             })
         }
     }
@@ -2261,6 +2266,8 @@ mod tests {
             template_parent_count: block.header.parents.len(),
             template_blue_score: block.header.blue_score,
             template_merge_set_size: 0,
+            template_parallel_parents_enabled: block.header.parents.len() > 1,
+            template_parallel_parent_exclusion_reasons: Vec::new(),
             duplicate_tx_filtered: 0,
         });
 

@@ -1617,6 +1617,11 @@ mod tests {
             bootnode_inbound_not_promoted_total: 0,
             private_topology_asymmetric_peer_count_total: 0,
             peer_reports_connected_to_bootnode_but_bootnode_reports_zero_total: 0,
+            p2p_identity_path: None,
+            p2p_identity_loaded_existing: false,
+            p2p_identity_created_new: false,
+            p2p_peer_id_changed_since_previous_start: false,
+            configured_bootnode_peer_ids: Vec::new(),
         };
 
         let Json(resp) = get_p2p_status(State(mk_state(status))).await;
