@@ -20,6 +20,11 @@ pub struct MissingParentRequestState {
     pub last_request_unix: Option<u64>,
     pub retry_count: u64,
     pub terminal_unavailable_after_all_peers: bool,
+    pub terminal_generation: u64,
+    pub terminal_at_unix: Option<u64>,
+    pub terminal_peer_set_digest: Option<String>,
+    pub reopened_total: u64,
+    pub reopen_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -126,6 +131,11 @@ pub struct BlockRequestTracker {
     next_peer_index: usize,
     request_sequence: u64,
     request_records_by_hash: HashMap<String, Vec<MissingParentRequestRecord>>,
+    peer_inventory_generation: u64,
+    exhausted_generation_by_hash: HashMap<String, u64>,
+    reopened_total_by_hash: HashMap<String, u64>,
+    reopen_reason_by_hash: HashMap<String, String>,
+    terminal_at_unix_by_hash: HashMap<String, u64>,
 }
 
 impl BlockRequestTracker {
@@ -180,6 +190,11 @@ impl BlockRequestTracker {
             next_peer_index: 0,
             request_sequence: 0,
             request_records_by_hash: HashMap::new(),
+            peer_inventory_generation: 0,
+            exhausted_generation_by_hash: HashMap::new(),
+            reopened_total_by_hash: HashMap::new(),
+            reopen_reason_by_hash: HashMap::new(),
+            terminal_at_unix_by_hash: HashMap::new(),
         }
     }
 
@@ -367,6 +382,22 @@ impl BlockRequestTracker {
             .cloned()
             .unwrap_or_default();
         state.terminal_unavailable_after_all_peers = self.exhausted_hashes.contains(hash);
+        state.terminal_generation = self
+            .exhausted_generation_by_hash
+            .get(hash)
+            .copied()
+            .unwrap_or_default();
+        state.terminal_at_unix = self.terminal_at_unix_by_hash.get(hash).copied();
+        state.terminal_peer_set_digest = state
+            .terminal_generation
+            .ne(&0)
+            .then(|| format!("peer_inventory_generation:{}", state.terminal_generation));
+        state.reopened_total = self
+            .reopened_total_by_hash
+            .get(hash)
+            .copied()
+            .unwrap_or_default();
+        state.reopen_reason = self.reopen_reason_by_hash.get(hash).cloned();
         state.terminal_reason = state
             .terminal_unavailable_after_all_peers
             .then(|| "all_direct_request_capable_peers_exhausted".to_string());
@@ -380,7 +411,17 @@ impl BlockRequestTracker {
         S: Into<String>,
     {
         let hints = self.peer_hints.entry(peer.into()).or_default();
-        hints.inventory.extend(hashes.into_iter().map(Into::into));
+        let mut changed = false;
+        let hashes = hashes.into_iter().map(Into::into).collect::<Vec<String>>();
+        for hash in &hashes {
+            changed |= hints.inventory.insert(hash.clone());
+        }
+        if changed {
+            self.peer_inventory_generation = self.peer_inventory_generation.saturating_add(1);
+        }
+        for hash in hashes {
+            self.reopen_exhausted_hash(&hash, "peer_inventory_advertised_hash");
+        }
     }
 
     #[allow(dead_code)]
@@ -400,6 +441,10 @@ impl BlockRequestTracker {
         hints
             .tip_ancestry
             .extend(ancestry.into_iter().map(Into::into));
+        let ancestry = hints.tip_ancestry.clone();
+        for hash in ancestry {
+            self.reopen_exhausted_hash(&hash, "peer_tip_ancestry_references_hash");
+        }
     }
 
     #[allow(dead_code)]
@@ -411,9 +456,39 @@ impl BlockRequestTracker {
         blue_score: u64,
     ) {
         let hints = self.peer_hints.entry(peer.into()).or_default();
+        let old_tip = hints.selected_tip.clone();
         hints.best_height = Some(best_height);
         hints.selected_tip = selected_tip;
         hints.blue_score = Some(blue_score);
+        if old_tip != hints.selected_tip {
+            self.peer_inventory_generation = self.peer_inventory_generation.saturating_add(1);
+            if let Some(tip) = hints.selected_tip.clone() {
+                self.reopen_exhausted_hash(&tip, "selected_chain_frontier_references_hash");
+            }
+        }
+    }
+
+    fn reopen_exhausted_hash(&mut self, hash: &str, reason: &str) -> bool {
+        if !self.exhausted_hashes.remove(hash) {
+            return false;
+        }
+        self.backoff_by_hash.remove(hash);
+        self.not_found_by_hash.remove(hash);
+        self.timed_out_by_hash.remove(hash);
+        self.exhausted_generation_by_hash.remove(hash);
+        let total = self
+            .reopened_total_by_hash
+            .entry(hash.to_string())
+            .or_default();
+        *total = total.saturating_add(1);
+        self.reopen_reason_by_hash
+            .insert(hash.to_string(), reason.to_string());
+        if let Some(state) = self.request_state_by_hash.get_mut(hash) {
+            state.terminal_unavailable_after_all_peers = false;
+            state.reopened_total = *total;
+            state.reopen_reason = Some(reason.to_string());
+        }
+        true
     }
 
     #[allow(dead_code)]
@@ -668,6 +743,10 @@ impl BlockRequestTracker {
             };
         }
         let newly_exhausted = self.exhausted_hashes.insert(hash.to_string());
+        self.exhausted_generation_by_hash
+            .insert(hash.to_string(), self.peer_inventory_generation);
+        self.terminal_at_unix_by_hash
+            .insert(hash.to_string(), now_unix);
         self.request_state_by_hash
             .entry(hash.to_string())
             .or_default()
@@ -1450,5 +1529,44 @@ mod tests {
         assert!(first.all_peers_exhausted);
         assert!(!tracker.should_issue_getblock_for_peers("parent", 200, ["peer-a"]));
         assert!(tracker.is_all_peers_exhausted("parent"));
+    }
+
+    #[test]
+    fn terminal_parent_reopens_when_peer_inventory_later_advertises_it() {
+        let mut tracker = BlockRequestTracker::with_limits(5, 1, 10, 10);
+        assert!(tracker.should_issue_getblock_for_peers("parent", 100, ["peer-a"]));
+        assert!(
+            tracker
+                .note_not_found("parent", 101, ["peer-a"])
+                .all_peers_exhausted
+        );
+
+        tracker.note_peer_inventory("peer-a", ["parent"]);
+
+        assert!(!tracker.is_all_peers_exhausted("parent"));
+        let state = tracker.missing_parent_request_state("parent");
+        assert_eq!(state.reopened_total, 1);
+        assert_eq!(
+            state.reopen_reason.as_deref(),
+            Some("peer_inventory_advertised_hash")
+        );
+        assert!(tracker.should_issue_getblock_for_peers("parent", 200, ["peer-a"]));
+    }
+
+    #[test]
+    fn unchanged_peer_inventory_generation_does_not_retry_terminal_parent() {
+        let mut tracker = BlockRequestTracker::with_limits(5, 1, 10, 10);
+        assert!(tracker.should_issue_getblock_for_peers("parent", 100, ["peer-a"]));
+        assert!(
+            tracker
+                .note_not_found("parent", 101, ["peer-a"])
+                .all_peers_exhausted
+        );
+
+        assert!(!tracker.should_issue_getblock_for_peers("parent", 200, ["peer-a"]));
+        assert!(!tracker.should_issue_getblock_for_peers("parent", 300, ["peer-a"]));
+        let state = tracker.missing_parent_request_state("parent");
+        assert!(state.terminal_unavailable_after_all_peers);
+        assert_eq!(state.reopened_total, 0);
     }
 }

@@ -322,6 +322,31 @@ pub struct MissingParentTerminalEntry {
     pub state: MissingParentState,
     pub transitioned_at_ms: u64,
     pub waiting_orphans: Vec<Hash>,
+    #[serde(default)]
+    pub terminal_generation: u64,
+    #[serde(default)]
+    pub terminal_at_unix: u64,
+    #[serde(default)]
+    pub terminal_peer_set_digest: Option<String>,
+    #[serde(default)]
+    pub reopened_total: u64,
+    #[serde(default)]
+    pub reopen_reason: Option<String>,
+}
+
+impl Default for MissingParentTerminalEntry {
+    fn default() -> Self {
+        Self {
+            state: MissingParentState::Requestable,
+            transitioned_at_ms: 0,
+            waiting_orphans: Vec::new(),
+            terminal_generation: 0,
+            terminal_at_unix: 0,
+            terminal_peer_set_digest: None,
+            reopened_total: 0,
+            reopen_reason: None,
+        }
+    }
 }
 
 #[cfg(test)]
