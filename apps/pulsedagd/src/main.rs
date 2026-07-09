@@ -758,13 +758,20 @@ fn active_peer_ids(p2p: &Option<Arc<dyn P2pHandle>>) -> Vec<String> {
 fn active_peer_ids_from_handle(p2p: &Arc<dyn P2pHandle>) -> Vec<String> {
     p2p.status()
         .map(|status| {
-            let mut peers = status
-                .active_connections_by_peer
-                .into_iter()
-                .filter_map(|(peer, connections)| (connections > 0).then_some(peer))
-                .collect::<Vec<_>>();
+            let mut peers = status.connected_request_capable_session_peers;
             if peers.is_empty() {
-                peers = status.connected_peers;
+                peers = status
+                    .direct_request_capable_peers
+                    .into_iter()
+                    .filter(|peer| {
+                        status
+                            .active_connections_by_peer
+                            .get(peer)
+                            .copied()
+                            .unwrap_or(0)
+                            > 0
+                    })
+                    .collect::<Vec<_>>();
             }
             peers.sort();
             peers.dedup();
@@ -1214,8 +1221,13 @@ async fn main() -> Result<()> {
                         let mut sent = false;
                         if outcome.retry {
                             if let Some(ref p2p) = p2p {
-                                if let Err(e) = p2p.request_block(&hash) {
-                                    warn!(error = %e, block_hash = %hash, "failed retrying timed-out GetBlock request on next peer");
+                                let send_result = if let Some(peer) = outcome.peer.as_deref() {
+                                    p2p.request_block_from(peer, &hash).map(|_| ())
+                                } else {
+                                    p2p.request_block_broadcast(&hash)
+                                };
+                                if let Err(e) = send_result {
+                                    warn!(error = %e, block_hash = %hash, requested_peer = ?outcome.peer, "failed retrying timed-out GetBlock request on selected peer");
                                 } else {
                                     sent = true;
                                 }
@@ -1292,8 +1304,17 @@ async fn main() -> Result<()> {
                             )
                         {
                             if let Some(ref p2p) = p2p {
-                                if let Err(e) = p2p.request_block(&hash) {
-                                    warn!(error = %e, block_hash = %hash, "failed restarting expired missing-parent GetBlock request");
+                                let selected_peer = block_requests
+                                    .pending
+                                    .get(&hash)
+                                    .and_then(|req| req.peer.clone());
+                                let send_result = if let Some(peer) = selected_peer.as_deref() {
+                                    p2p.request_block_from(peer, &hash).map(|_| ())
+                                } else {
+                                    p2p.request_block_broadcast(&hash)
+                                };
+                                if let Err(e) = send_result {
+                                    warn!(error = %e, block_hash = %hash, requested_peer = ?selected_peer, "failed restarting expired missing-parent GetBlock request");
                                 }
                             }
                             if final_height_expired {

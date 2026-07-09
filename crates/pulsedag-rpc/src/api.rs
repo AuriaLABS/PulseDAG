@@ -700,6 +700,28 @@ pub struct NodeRuntimeStats {
     pub missing_parent_retry_peer_total: u64,
     #[serde(default)]
     pub missing_parent_residual_waiting_terminal_total: u64,
+    #[serde(default)]
+    pub peer_addressed_getblock_sent_total: u64,
+    #[serde(default)]
+    pub peer_addressed_getblock_response_total: u64,
+    #[serde(default)]
+    pub peer_addressed_getblock_timeout_total: u64,
+    #[serde(default)]
+    pub peer_addressed_getblock_transport_error_total: u64,
+    #[serde(default)]
+    pub missing_parent_requested_peer_mismatch_total: u64,
+    #[serde(default)]
+    pub missing_parent_direct_peer_candidates: usize,
+    #[serde(default)]
+    pub getblock_requests_received_total: u64,
+    #[serde(default)]
+    pub getblock_responses_blockdata_sent_total: u64,
+    #[serde(default)]
+    pub getblock_responses_not_found_sent_total: u64,
+    #[serde(default)]
+    pub getblock_response_send_failed_total: u64,
+    #[serde(default)]
+    pub getblock_requests_received_by_connection_direction: BTreeMap<String, u64>,
     pub orphan_blocks_queued: u64,
     pub orphan_blocks_resolved: u64,
     pub orphan_blocks_retried: u64,

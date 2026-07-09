@@ -13,9 +13,23 @@ pub const MAX_BLOCK_REQUEST_BACKOFF_SECS: u64 = 120;
 pub struct MissingParentRequestState {
     pub requested_from_peers: Vec<String>,
     pub not_found_from_peers: Vec<String>,
+    pub contacted_peers: Vec<String>,
+    pub requests: Vec<MissingParentRequestRecord>,
+    pub next_eligible_direct_peer: Option<String>,
+    pub terminal_reason: Option<String>,
     pub last_request_unix: Option<u64>,
     pub retry_count: u64,
     pub terminal_unavailable_after_all_peers: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MissingParentRequestRecord {
+    pub request_id: String,
+    pub requested_peer_id: String,
+    pub block_hash: String,
+    pub sent_at: u64,
+    pub response_at: Option<u64>,
+    pub response_kind: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -110,6 +124,8 @@ pub struct BlockRequestTracker {
     peer_hints: HashMap<String, PeerMissingParentHints>,
     exhausted_hashes: HashSet<String>,
     next_peer_index: usize,
+    request_sequence: u64,
+    request_records_by_hash: HashMap<String, Vec<MissingParentRequestRecord>>,
 }
 
 impl BlockRequestTracker {
@@ -162,6 +178,8 @@ impl BlockRequestTracker {
             peer_hints: HashMap::new(),
             exhausted_hashes: HashSet::new(),
             next_peer_index: 0,
+            request_sequence: 0,
+            request_records_by_hash: HashMap::new(),
         }
     }
 
@@ -303,6 +321,21 @@ impl BlockRequestTracker {
                 .entry(hash.to_string())
                 .or_default()
                 .insert(peer.to_string());
+            self.request_sequence = self.request_sequence.saturating_add(1);
+            self.request_records_by_hash
+                .entry(hash.to_string())
+                .or_default()
+                .push(MissingParentRequestRecord {
+                    request_id: format!(
+                        "missing-parent:{}:{}:{}",
+                        hash, peer, self.request_sequence
+                    ),
+                    requested_peer_id: peer.to_string(),
+                    block_hash: hash.to_string(),
+                    sent_at: now_unix,
+                    response_at: None,
+                    response_kind: None,
+                });
             if !state.requested_from_peers.iter().any(|p| p == peer) {
                 state.requested_from_peers.push(peer.to_string());
                 state.requested_from_peers.sort();
@@ -327,7 +360,16 @@ impl BlockRequestTracker {
             })
             .unwrap_or(state.requested_from_peers);
         state.not_found_from_peers = self.not_found_peers(hash);
+        state.contacted_peers = state.requested_from_peers.clone();
+        state.requests = self
+            .request_records_by_hash
+            .get(hash)
+            .cloned()
+            .unwrap_or_default();
         state.terminal_unavailable_after_all_peers = self.exhausted_hashes.contains(hash);
+        state.terminal_reason = state
+            .terminal_unavailable_after_all_peers
+            .then(|| "all_direct_request_capable_peers_exhausted".to_string());
         state
     }
 
@@ -522,6 +564,18 @@ impl BlockRequestTracker {
                 .entry(hash.to_string())
                 .or_default()
                 .insert(peer.clone());
+            if let Some(record) = self
+                .request_records_by_hash
+                .get_mut(hash)
+                .and_then(|records| {
+                    records.iter_mut().rev().find(|record| {
+                        record.requested_peer_id == peer && record.response_kind.is_none()
+                    })
+                })
+            {
+                record.response_at = Some(now_unix);
+                record.response_kind = Some("not_found".to_string());
+            }
             let state = self
                 .request_state_by_hash
                 .entry(hash.to_string())
@@ -548,7 +602,19 @@ impl BlockRequestTracker {
             self.timed_out_by_hash
                 .entry(hash.to_string())
                 .or_default()
-                .insert(peer);
+                .insert(peer.clone());
+            if let Some(record) = self
+                .request_records_by_hash
+                .get_mut(hash)
+                .and_then(|records| {
+                    records.iter_mut().rev().find(|record| {
+                        record.requested_peer_id == peer && record.response_kind.is_none()
+                    })
+                })
+            {
+                record.response_at = Some(now_unix);
+                record.response_kind = Some("timeout".to_string());
+            }
         }
         self.pending.remove(hash);
         self.retry_after_peer_failure(hash, now_unix, peers)
