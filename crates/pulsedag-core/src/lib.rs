@@ -114,7 +114,8 @@ pub use sync_pipeline::{
     SyncProgressCounters,
 };
 pub use validation::{
-    block_subsidy, invalid_state_root_diagnostics, invalid_state_root_error, total_block_fees,
-    validate_coinbase_reward, validate_created_utxo_outpoints, INITIAL_BLOCK_SUBSIDY,
-    SUBSIDY_HALVING_INTERVAL,
+    block_subsidy, invalid_state_root_diagnostics, invalid_state_root_diagnostics_with_context,
+    invalid_state_root_error, parent_state_context, selected_parent_for_state_validation,
+    total_block_fees, validate_coinbase_reward, validate_created_utxo_outpoints,
+    INITIAL_BLOCK_SUBSIDY, SUBSIDY_HALVING_INTERVAL,
 };

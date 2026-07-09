@@ -96,15 +96,29 @@ pub fn commit_block_to_state(block: &Block, state: &mut ChainState) -> Result<()
         };
         commit_rebuilt_state(state, rebuilt);
     } else {
-        let height = block.header.height;
-        for tx in &block.transactions {
-            apply_transaction(tx, state, height)?;
-        }
         accept_block_to_dag_metadata(block, state)?;
         refresh_selected_chain(state);
         state.dag.ordered_dag = state.dag.selected_chain.clone();
         state.dag.ordering_version = "legacy".to_string();
         state.dag.ordered_dag_tip = state.dag.ordered_dag.last().cloned();
+
+        let mut rebuilt = init_chain_state(state.chain_id.clone());
+        rebuilt.dag.consensus_mode = state.dag.consensus_mode;
+        rebuilt.dag.selected_parent_policy = state.dag.selected_parent_policy;
+        for hash in &state.dag.selected_chain {
+            if hash == &state.dag.genesis_hash {
+                continue;
+            }
+            let selected_block = state.dag.blocks.get(hash).ok_or_else(|| {
+                PulseError::Internal(format!("selected chain references missing block {hash}"))
+            })?;
+            for tx in &selected_block.transactions {
+                apply_transaction(tx, &mut rebuilt, selected_block.header.height)?;
+            }
+            accept_block_to_dag_metadata(selected_block, &mut rebuilt)?;
+            refresh_selected_chain(&mut rebuilt);
+        }
+        state.utxo = rebuilt.utxo;
         state.dag.ordered_dag_state_root = state.utxo.compute_state_root().ok();
     }
     Ok(())
