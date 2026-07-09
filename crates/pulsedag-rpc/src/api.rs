@@ -593,6 +593,16 @@ pub struct NodeRuntimeStats {
     pub invalid_state_root_stale_template_total: u64,
     #[serde(default)]
     pub invalid_state_root_unknown_context_total: u64,
+    #[serde(default)]
+    pub parent_state_context_rebuild_total: u64,
+    #[serde(default)]
+    pub parent_state_context_unavailable_total: u64,
+    #[serde(default)]
+    pub peer_block_stale_template_misclassification_total: u64,
+    #[serde(default)]
+    pub side_dag_block_validated_total: u64,
+    #[serde(default)]
+    pub side_dag_block_invalid_state_root_total: u64,
     pub pulsedag_invalid_pow_total: u64,
     pub pulsedag_mining_templates_total: u64,
     pub pulsedag_mining_submits_total: u64,
@@ -955,6 +965,27 @@ impl NodeRuntimeStats {
         if diagnostics.unknown_context {
             self.invalid_state_root_unknown_context_total = self
                 .invalid_state_root_unknown_context_total
+                .saturating_add(1);
+        }
+        if matches!(
+            diagnostics.classification,
+            InvalidStateRootClassification::ParentStateContextUnavailable
+        ) {
+            self.parent_state_context_unavailable_total = self
+                .parent_state_context_unavailable_total
+                .saturating_add(1);
+        }
+        if diagnostics.state_validation_context_source.as_deref()
+            == Some("canonical_parent_rebuild")
+        {
+            self.parent_state_context_rebuild_total =
+                self.parent_state_context_rebuild_total.saturating_add(1);
+        }
+        if !diagnostics.stale_template
+            && diagnostics.state_validation_context_tip != diagnostics.selected_tip
+        {
+            self.side_dag_block_invalid_state_root_total = self
+                .side_dag_block_invalid_state_root_total
                 .saturating_add(1);
         }
 

@@ -10,6 +10,7 @@ pub enum InvalidStateRootClassification {
     StaleTemplate,
     TrueInvalid,
     UnknownContext,
+    ParentStateContextUnavailable,
 }
 
 impl InvalidStateRootClassification {
@@ -18,6 +19,7 @@ impl InvalidStateRootClassification {
             Self::StaleTemplate => "stale_template",
             Self::TrueInvalid => "true_invalid",
             Self::UnknownContext => "unknown_context",
+            Self::ParentStateContextUnavailable => "parent_state_context_unavailable",
         }
     }
 }
@@ -37,6 +39,12 @@ pub struct InvalidStateRootDiagnostics {
     pub stale_template: bool,
     pub unknown_context: bool,
     pub classification: InvalidStateRootClassification,
+    #[serde(default)]
+    pub state_validation_context_tip: Option<Hash>,
+    #[serde(default)]
+    pub state_validation_context_height: Option<u64>,
+    #[serde(default)]
+    pub state_validation_context_source: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -105,6 +113,8 @@ pub enum PulseError {
     InvalidTransaction(String),
     #[error("invalid txid")]
     InvalidTxid,
+    #[error("parent state context unavailable for block {block_hash} parent {parent_hash}")]
+    ParentStateContextUnavailable { block_hash: Hash, parent_hash: Hash },
     #[error("{0}")]
     InvalidStateRoot(Box<InvalidStateRootError>),
     #[error("missing coinbase transaction")]

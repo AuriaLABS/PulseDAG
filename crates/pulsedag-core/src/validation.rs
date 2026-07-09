@@ -8,10 +8,10 @@ use crate::{
     },
     expected_difficulty,
     mining::{current_ts, is_coinbase},
-    selection::sorted_tip_hashes,
+    selection::{calculate_selected_parent, rebuild_selected_chain_from_tip, sorted_tip_hashes},
     state::ChainState,
     tx::{compute_txid, verify_transaction_signatures},
-    types::{compute_block_hash, compute_merkle_root, Block, OutPoint, Transaction},
+    types::{compute_block_hash, compute_merkle_root, Block, Hash, OutPoint, Transaction},
     validate_pow_header,
 };
 
@@ -264,12 +264,18 @@ pub fn validate_block(block: &Block, state: &ChainState) -> Result<(), PulseErro
             return Err(PulseError::InvalidTxid);
         }
     }
-    validate_created_utxo_outpoints(block, state)?;
+    let parent_context = parent_state_context(block, state)?;
+    validate_created_utxo_outpoints(block, &parent_context)?;
     validate_coinbase_reward(block)?;
 
-    let computed_state_root = compute_post_state_root(block, state)?;
+    let computed_state_root = compute_post_state_root(block, &parent_context)?;
     if computed_state_root != block.header.state_root {
-        let diagnostics = invalid_state_root_diagnostics(block, state, computed_state_root);
+        let diagnostics = invalid_state_root_diagnostics_with_context(
+            block,
+            state,
+            &parent_context,
+            computed_state_root,
+        );
         return Err(invalid_state_root_error(diagnostics));
     }
     Ok(())
@@ -320,13 +326,106 @@ pub fn invalid_state_root_diagnostics(
             .first()
             .and_then(|tx| tx.outputs.first())
             .map(|output| output.address.clone()),
-        selected_tip,
+        selected_tip: selected_tip.clone(),
         selected_tip_height,
         current_tips,
         stale_template,
         unknown_context,
         classification,
+        state_validation_context_tip: selected_tip,
+        state_validation_context_height: selected_tip_height,
+        state_validation_context_source: Some("current_selected_tip_legacy".to_string()),
     }
+}
+
+pub fn selected_parent_for_state_validation(block: &Block, state: &ChainState) -> Option<Hash> {
+    if state.dag.consensus_mode.ghostdag_metadata_active() {
+        calculate_selected_parent(block, state)
+    } else {
+        block
+            .header
+            .parents
+            .iter()
+            .filter(|parent| state.dag.blocks.contains_key(*parent))
+            .max()
+            .cloned()
+    }
+}
+
+pub fn parent_state_context(block: &Block, state: &ChainState) -> Result<ChainState, PulseError> {
+    let parent_hash = selected_parent_for_state_validation(block, state).ok_or_else(|| {
+        PulseError::ParentStateContextUnavailable {
+            block_hash: block.hash.clone(),
+            parent_hash: block.header.parents.first().cloned().unwrap_or_default(),
+        }
+    })?;
+    let parent_height = state
+        .dag
+        .blocks
+        .get(&parent_hash)
+        .map(|parent| parent.header.height)
+        .ok_or_else(|| PulseError::ParentStateContextUnavailable {
+            block_hash: block.hash.clone(),
+            parent_hash: parent_hash.clone(),
+        })?;
+
+    let mut context = crate::genesis::init_chain_state(state.chain_id.clone());
+    context.dag.consensus_mode = state.dag.consensus_mode;
+    context.dag.selected_parent_policy = state.dag.selected_parent_policy;
+    let chain = rebuild_selected_chain_from_tip(state, Some(parent_hash.clone()));
+    if !chain.iter().any(|hash| hash == &parent_hash) {
+        return Err(PulseError::ParentStateContextUnavailable {
+            block_hash: block.hash.clone(),
+            parent_hash,
+        });
+    }
+    for hash in chain {
+        if hash == context.dag.genesis_hash {
+            continue;
+        }
+        let ancestor = state.dag.blocks.get(&hash).ok_or_else(|| {
+            PulseError::ParentStateContextUnavailable {
+                block_hash: block.hash.clone(),
+                parent_hash: hash.clone(),
+            }
+        })?;
+        for tx in &ancestor.transactions {
+            apply_transaction(tx, &mut context, ancestor.header.height)?;
+        }
+        crate::apply::accept_block_to_dag_metadata(ancestor, &mut context)?;
+        crate::selection::refresh_selected_chain(&mut context);
+    }
+    debug_assert_eq!(
+        context
+            .dag
+            .blocks
+            .get(&parent_hash)
+            .map(|b| b.header.height),
+        Some(parent_height)
+    );
+    Ok(context)
+}
+
+pub fn invalid_state_root_diagnostics_with_context(
+    block: &Block,
+    state: &ChainState,
+    context: &ChainState,
+    computed_state_root: String,
+) -> InvalidStateRootDiagnostics {
+    let mut diagnostics = invalid_state_root_diagnostics(block, state, computed_state_root);
+    let context_tip = selected_parent_for_state_validation(block, state);
+    diagnostics.state_validation_context_height = context_tip
+        .as_ref()
+        .and_then(|hash| state.dag.blocks.get(hash))
+        .map(|block| block.header.height);
+    diagnostics.state_validation_context_tip = context_tip;
+    diagnostics.state_validation_context_source = Some("canonical_parent_rebuild".to_string());
+    diagnostics.stale_template = false;
+    diagnostics.classification = InvalidStateRootClassification::TrueInvalid;
+    if context.dag.blocks.is_empty() {
+        diagnostics.classification = InvalidStateRootClassification::ParentStateContextUnavailable;
+    }
+    diagnostics
 }
 
 pub fn invalid_state_root_error(diagnostics: InvalidStateRootDiagnostics) -> PulseError {
@@ -1043,6 +1142,74 @@ mod tests {
     }
 
     #[test]
+    fn two_same_height_blocks_on_same_parent_are_consensus_valid() {
+        let state = init_chain_state("same-height-valid".to_string());
+        let a = mined_next_block(&state, 1, 201);
+        let b = mined_next_block(&state, 1, 202);
+
+        validate_block(&a, &state).unwrap();
+        validate_block(&b, &state).unwrap();
+    }
+
+    #[test]
+    fn side_branch_validates_against_parent_context_not_selected_tip() {
+        let mut state = init_chain_state("side-branch-parent-context".to_string());
+        let a = mined_next_block(&state, 1, 301);
+        let b = mined_next_block(&state, 1, 302);
+        apply_block(&a, &mut state).unwrap();
+
+        assert_ne!(
+            compute_post_state_root(&b, &state).unwrap(),
+            b.header.state_root
+        );
+        validate_block(&b, &state).unwrap();
+        let context = parent_state_context(&b, &state).unwrap();
+        assert_eq!(
+            compute_post_state_root(&b, &context).unwrap(),
+            b.header.state_root
+        );
+    }
+
+    #[test]
+    fn side_branch_invalid_state_root_is_not_stale_template() {
+        let mut state = init_chain_state("side-branch-not-stale".to_string());
+        let a = mined_next_block(&state, 1, 401);
+        let mut b = mined_next_block(&state, 1, 402);
+        apply_block(&a, &mut state).unwrap();
+        b.header.state_root = "wrong-side-root".to_string();
+        refresh_block_consensus_ids(&mut b);
+
+        match validate_block(&b, &state) {
+            Err(PulseError::InvalidStateRoot(err)) => {
+                assert!(!err.diagnostics.stale_template);
+                assert_eq!(
+                    err.diagnostics.classification,
+                    InvalidStateRootClassification::TrueInvalid
+                );
+                assert_eq!(
+                    err.diagnostics.state_validation_context_source.as_deref(),
+                    Some("canonical_parent_rebuild")
+                );
+            }
+            other => panic!("expected invalid state root, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn unavailable_parent_state_context_is_staged_for_recovery() {
+        let state = init_chain_state("missing-context".to_string());
+        let mut block = structurally_valid_block(&state);
+        block.header.parents = vec!["missing-parent".to_string()];
+        block.header.height = 2;
+        refresh_block_consensus_ids(&mut block);
+
+        assert!(matches!(
+            parent_state_context(&block, &state),
+            Err(PulseError::ParentStateContextUnavailable { .. })
+        ));
+    }
+
+    #[test]
     fn deterministic_replay_same_block_and_parent_state_computes_same_state_root() {
         let base = init_chain_state("test".to_string());
         let parent = structurally_valid_block(&base);
@@ -1066,52 +1233,18 @@ mod tests {
     }
 
     #[test]
-    fn stale_template_invalid_state_root_is_classified_clearly() {
+    fn peer_side_branch_is_not_classified_as_stale_template() {
         let mut state = init_chain_state("test".to_string());
         let parents = vec![state.dag.genesis_hash.clone()];
 
-        let mut stale_template_block =
-            build_candidate_block(parents.clone(), 1, 1, vec![coinbase(31)]);
-        refresh_block_consensus_ids_with_state(&mut stale_template_block, &state).unwrap();
+        let mut side_branch = build_candidate_block(parents.clone(), 1, 1, vec![coinbase(31)]);
+        refresh_block_consensus_ids_with_state(&mut side_branch, &state).unwrap();
 
         let mut competing_tip = build_candidate_block(parents, 1, 1, vec![coinbase(32)]);
         refresh_block_consensus_ids_with_state(&mut competing_tip, &state).unwrap();
         apply_block(&competing_tip, &mut state).unwrap();
 
-        match validate_block(&stale_template_block, &state) {
-            Err(PulseError::InvalidStateRoot(error)) => {
-                let diagnostics = &error.diagnostics;
-                assert_eq!(
-                    diagnostics.classification,
-                    InvalidStateRootClassification::StaleTemplate
-                );
-                assert!(diagnostics.stale_template);
-                assert!(!diagnostics.unknown_context);
-                assert_eq!(diagnostics.block_hash, stale_template_block.hash);
-                assert_eq!(diagnostics.height, stale_template_block.header.height);
-                assert_eq!(
-                    diagnostics.parent_hashes,
-                    stale_template_block.header.parents
-                );
-                assert_eq!(
-                    diagnostics.supplied_state_root,
-                    stale_template_block.header.state_root
-                );
-                assert_eq!(
-                    diagnostics.tx_count,
-                    stale_template_block.transactions.len()
-                );
-                assert_eq!(
-                    diagnostics.coinbase_miner_address.as_deref(),
-                    Some("miner1")
-                );
-                assert_eq!(
-                    diagnostics.selected_tip.as_deref(),
-                    Some(competing_tip.hash.as_str())
-                );
-            }
-            other => panic!("expected stale-template invalid state root, got {other:?}"),
-        }
+        validate_block(&side_branch, &state).unwrap();
     }
 
     #[test]
