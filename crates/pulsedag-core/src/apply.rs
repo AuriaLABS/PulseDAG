@@ -119,9 +119,36 @@ pub fn commit_block_to_state(block: &Block, state: &mut ChainState) -> Result<()
             refresh_selected_chain(&mut rebuilt);
         }
         state.utxo = rebuilt.utxo;
+        for hash in state.dag.selected_chain.clone() {
+            if hash == state.dag.genesis_hash {
+                continue;
+            }
+            let confirmed_transactions = state
+                .dag
+                .blocks
+                .get(&hash)
+                .ok_or_else(|| {
+                    PulseError::Internal(format!("selected chain references missing block {hash}"))
+                })?
+                .transactions
+                .clone();
+            for tx in &confirmed_transactions {
+                remove_confirmed_transaction_from_mempool(tx, state);
+            }
+        }
         state.dag.ordered_dag_state_root = state.utxo.compute_state_root().ok();
     }
     Ok(())
+}
+
+fn remove_confirmed_transaction_from_mempool(tx: &Transaction, state: &mut ChainState) {
+    state.mempool.transactions.remove(&tx.txid);
+    state.mempool.orphan_transactions.remove(&tx.txid);
+    state.mempool.orphan_missing_outpoints.remove(&tx.txid);
+    state.mempool.orphan_received_order.remove(&tx.txid);
+    for input in &tx.inputs {
+        state.mempool.spent_outpoints.remove(&input.previous_output);
+    }
 }
 
 pub fn accept_block_to_dag_metadata(
@@ -268,10 +295,11 @@ pub fn apply_block(block: &Block, state: &mut ChainState) -> Result<(), PulseErr
 mod ordered_dag_state_rebuild_tests {
     use super::*;
     use crate::{
-        genesis::init_chain_state,
+        genesis::{genesis_transaction, init_chain_state, GENESIS_SUPPLY},
         mining::build_coinbase_transaction,
         state::{ConsensusMode, SelectedParentPolicy},
-        types::BlockHeader,
+        tx::compute_txid,
+        types::{compute_block_hash, BlockHeader, TxInput, TxOutput},
     };
 
     fn ghostdag_state(chain_id: &str) -> ChainState {
@@ -306,6 +334,50 @@ mod ordered_dag_state_rebuild_tests {
             refresh_selected_chain_phase(state);
             refresh_ordered_dag_phase(state);
         }
+    }
+
+    fn spend_genesis_transaction(address: &str) -> Transaction {
+        let genesis_tx = genesis_transaction();
+        let mut tx = Transaction {
+            txid: String::new(),
+            version: 1,
+            inputs: vec![TxInput {
+                previous_output: OutPoint {
+                    txid: genesis_tx.txid,
+                    index: 0,
+                },
+                public_key: String::new(),
+                signature: String::new(),
+            }],
+            outputs: vec![TxOutput {
+                address: address.to_string(),
+                amount: GENESIS_SUPPLY,
+            }],
+            fee: 0,
+            nonce: 0,
+        };
+        tx.txid = compute_txid(&tx);
+        tx
+    }
+
+    fn legacy_block(hash_seed: &str, parent: &str, height: u64, tx: Transaction) -> Block {
+        let mut block = Block {
+            hash: String::new(),
+            header: BlockHeader {
+                version: 1,
+                parents: vec![parent.to_string()],
+                timestamp: height,
+                difficulty: 1,
+                nonce: 0,
+                merkle_root: crate::types::compute_merkle_root(std::slice::from_ref(&tx)),
+                state_root: format!("state-{hash_seed}"),
+                blue_score: height,
+                height,
+            },
+            transactions: vec![tx],
+        };
+        block.hash = compute_block_hash(&block.header);
+        block
     }
 
     #[test]
@@ -349,5 +421,23 @@ mod ordered_dag_state_rebuild_tests {
         assert_eq!(rebuilt.diagnostics.applied_transactions, 1);
         assert_eq!(rebuilt.diagnostics.skipped_conflicting_transactions, 1);
         assert_eq!(rebuilt.diagnostics.conflict_diagnostics.len(), 1);
+    }
+
+    #[test]
+    fn legacy_commit_removes_selected_chain_transactions_from_mempool_after_rebuild() {
+        let mut state = init_chain_state("legacy-mempool-cleanup".to_string());
+        let parent = state.dag.genesis_hash.clone();
+        let tx = spend_genesis_transaction("confirmed-recipient");
+        let spent_outpoint = tx.inputs[0].previous_output.clone();
+        let txid = tx.txid.clone();
+        state.mempool.transactions.insert(txid.clone(), tx.clone());
+        state.mempool.spent_outpoints.insert(spent_outpoint.clone());
+
+        let block = legacy_block("confirmed", &parent, 1, tx);
+        commit_block_to_state(&block, &mut state).unwrap();
+
+        assert!(!state.mempool.transactions.contains_key(&txid));
+        assert!(!state.mempool.spent_outpoints.contains(&spent_outpoint));
+        assert!(!state.utxo.utxos.contains_key(&spent_outpoint));
     }
 }
