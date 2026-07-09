@@ -606,8 +606,9 @@ pub async fn post_mining_template<S: RpcStateLike>(
 #[cfg(test)]
 mod tests {
     use super::{
-        current_template_state, template_freshness_window, template_id_for_state,
-        template_ordered_transactions, TEMPLATE_FRESHNESS_GRACE_SECS, TEMPLATE_TTL_SECS,
+        current_template_state, mining_template_unavailable_reason, template_freshness_window,
+        template_id_for_state, template_ordered_transactions, TEMPLATE_FRESHNESS_GRACE_SECS,
+        TEMPLATE_TTL_SECS,
     };
     use crate::api::{NodeRuntimeStats, RpcStateLike};
     use pulsedag_core::{
