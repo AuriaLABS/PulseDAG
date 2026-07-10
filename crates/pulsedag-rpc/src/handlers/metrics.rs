@@ -5,8 +5,8 @@ use std::collections::BTreeMap;
 use crate::{
     api::RpcStateLike,
     api::{
-        node_rpc_snapshot_metrics, p2p_status_for_rpc, p2p_status_snapshot_metrics, ApiResponse,
-        NodeRpcSnapshotMetrics, P2pStatusSnapshotMetrics,
+        node_rpc_snapshot_metrics_excluding, p2p_status_for_rpc, p2p_status_snapshot_metrics,
+        ApiResponse, NodeRpcSnapshotMetrics, P2pStatusSnapshotMetrics,
     },
     api::{
         record_rpc_handler_degraded, record_rpc_handler_timeout_avoided, record_rpc_snapshot_stale,
@@ -288,7 +288,8 @@ pub async fn get_metrics<S: RpcStateLike>(
         .ok()
         .flatten();
     let snapshot_metrics = p2p_status_snapshot_metrics();
-    let node_snapshot_metrics = node_rpc_snapshot_metrics(&node_snapshot);
+    let node_snapshot_metrics =
+        node_rpc_snapshot_metrics_excluding(&node_snapshot, Some("/metrics"));
     let peer_count = p2p_status
         .as_ref()
         .map(|snapshot| snapshot.status.connected_peers.len())
