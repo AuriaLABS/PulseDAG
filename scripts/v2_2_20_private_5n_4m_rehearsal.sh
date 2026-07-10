@@ -837,9 +837,9 @@ write_quiescence_metrics(){
     --argjson pre_converged "$PRE_CONVERGED" \
     --argjson post_converged "$POST_CONVERGED" \
     --argjson pre_worst_lag "$PRE_WORST_LAG" \
-    --argjson post_worst_lag "$POST_WORST_LAG" \
+    --argjson post_worst_lag "${POST_WORST_LAG:-0}" \
     --argjson pre_distinct_tips "$PRE_DISTINCT_TIPS" \
-    --argjson post_distinct_tips "$POST_DISTINCT_TIPS" \
+    --argjson post_distinct_tips "${POST_DISTINCT_TIPS:-0}" \
     --argjson lag_improved "$LAG_IMPROVED" \
     --argjson pre_orphan_count "$pre_orphans" \
     --argjson post_orphan_count "$post_orphans" \
@@ -1005,8 +1005,8 @@ load_prior_gate_manifest(){
 }
 
 apply_prior_gate_manifests(){
-  load_prior_gate_manifest C "$PRIOR_GATE_C_MANIFEST" 1 || true
-  load_prior_gate_manifest D "$PRIOR_GATE_D_MANIFEST" 2 || true
+  load_prior_gate_manifest C "${PRIOR_GATE_C_MANIFEST:-}" 1 || true
+  load_prior_gate_manifest D "${PRIOR_GATE_D_MANIFEST:-}" 2 || true
 }
 
 # Evidence parser compatibility markers retained for static semantics tests:
@@ -1057,17 +1057,63 @@ write_evidence_manifest(){
     [[ -n "$archive_sha" ]] && jq -n --arg sha "$archive_sha" '{"evidence.tar.gz":$sha}'
   } | jq -s 'add // {}' > "$checksum_tmp" 2>"$jq_err" || printf '{}' > "$checksum_tmp"
   jq -e 'type == "object"' "$checksum_tmp" >/dev/null 2>>"$jq_err" || printf '{}' > "$checksum_tmp"
-  nodes_json=$(for i in $(seq 1 "$NODE_COUNT"); do jq -n --arg node "n$i" --argjson peer_count "$(json_number_or_zero "${NODE_PEERS[$i]:-0}")" --argjson inbound_count "$(json_number_or_zero "${NODE_P2P_INBOUND[$i]:-0}")" --argjson outbound_count "$(json_number_or_zero "${NODE_P2P_OUTBOUND[$i]:-0}")" '{node:$node,peer_count:$peer_count,inbound_count:$inbound_count,outbound_count:$outbound_count}'; done | jq -s '.')
+  nodes_json=$(for i in $(seq 1 "$NODE_COUNT"); do
+    jq -n \
+      --arg node "n$i" \
+      --arg sync_state "${NODE_SYNC_STATE[$i]:-unknown}" \
+      --arg readiness_status "${NODE_READINESS_STATUS[$i]:-unknown}" \
+      --arg chain_id "${NODE_CHAIN_ID[$i]:-}" \
+      --arg selected_tip "${NODE_TIP[$i]:-}" \
+      --arg ordered_dag_tip "${NODE_ORDERED_DAG_TIP[$i]:-}" \
+      --argjson height "$(json_number_or_zero "${NODE_HEIGHT[$i]:-0}")" \
+      --arg tip "${NODE_TIP[$i]:-}" \
+      --argjson peer_count "$(json_number_or_zero "${NODE_PEERS[$i]:-0}")" \
+      --argjson inbound_count "$(json_number_or_zero "${NODE_P2P_INBOUND[$i]:-0}")" \
+      --argjson outbound_count "$(json_number_or_zero "${NODE_P2P_OUTBOUND[$i]:-0}")" \
+      --arg catchup_stage "${NODE_SYNC_STAGE[$i]:-unknown}" \
+      --argjson orphan_count "$(json_number_or_zero "${NODE_ORPHAN_COUNT[$i]:-0}")" \
+      --argjson pending_missing_parents "$(json_number_or_zero "${NODE_PENDING_MISSING_PARENTS[$i]:-0}")" \
+      --argjson pending_block_requests "$(json_number_or_zero "${NODE_PENDING_BLOCK_REQUESTS[$i]:-0}")" \
+      --argjson missing_parent_entries "$(json_number_or_zero "${NODE_MISSING_PARENTS_COUNT[$i]:-0}")" \
+      --argjson terminal_missing_parent_entries "$(json_number_or_zero "${NODE_TERMINAL_MISSING_PARENTS_COUNT[$i]:-0}")" \
+      --argjson inv_hashes_requested "$(json_number_or_zero "${NODE_INV_HASHES_REQUESTED[$i]:-0}")" \
+      --argjson active_peers "$(json_number_or_zero "${NODE_ACTIVE_PEERS[$i]:-0}")" \
+      --argjson recovering_peers "$(json_number_or_zero "${NODE_RECOVERING_PEERS[$i]:-0}")" \
+      --argjson cooldown_peers "$(json_number_or_zero "${NODE_COOLDOWN_PEERS[$i]:-0}")" \
+      --argjson rate_limited_count "$(json_number_or_zero "${NODE_RATE_LIMITED_COUNT[$i]:-0}")" \
+      --argjson reconnect_attempts "$(json_number_or_zero "${NODE_RECONNECT_ATTEMPTS[$i]:-0}")" \
+      --arg reconnect_blocked_reason "${NODE_RECONNECT_BLOCKED_REASON[$i]:-}" \
+      --arg same_height_reconcile_blocked_reason "${NODE_SAME_HEIGHT_RECONCILE_BLOCKED_REASON[$i]:-}" \
+      --argjson min_target_missed "$(json_number_or_zero "${NODE_MIN_TARGET_MISSED[$i]:-0}")" \
+      --argjson zero_reconnect_attempts "$(json_number_or_zero "${NODE_ZERO_RECONNECT_ATTEMPTS[$i]:-0}")" \
+      --argjson zero_reconnect_success "$(json_number_or_zero "${NODE_ZERO_RECONNECT_SUCCESS[$i]:-0}")" \
+      --argjson rpc_degraded_response_total "$(json_number_or_zero "${NODE_RPC_DEGRADED_RESPONSE[$i]:-0}")" \
+      --argjson rpc_snapshot_stale_total "$(json_number_or_zero "${NODE_RPC_SNAPSHOT_STALE[$i]:-0}")" \
+      --argjson rpc_handler_degraded_total "$(json_number_or_zero "${NODE_RPC_HANDLER_DEGRADED[$i]:-0}")" \
+      --argjson templates "$(json_number_or_zero "${NODE_MINING_TEMPLATES[$i]:-0}")" \
+      --argjson submits "$(json_number_or_zero "${NODE_MINING_SUBMITS[$i]:-0}")" \
+      --argjson accepted "$(json_number_or_zero "${NODE_MINING_ACCEPTED[$i]:-0}")" \
+      --argjson rejected "$(json_number_or_zero "${NODE_MINING_REJECTED[$i]:-0}")" \
+      --argjson submit_busy "$(json_number_or_zero "${NODE_MINING_SUBMIT_BUSY[$i]:-0}")" \
+      --argjson actor_timeout "$(json_number_or_zero "${NODE_MINING_ACTOR_TIMEOUT[$i]:-0}")" \
+      '{node:$node,chain_id:$chain_id,height:$height,tip:$tip,selected_tip:$selected_tip,ordered_dag_tip:$ordered_dag_tip,peer_count:$peer_count,inbound_count:$inbound_count,outbound_count:$outbound_count,readiness_status:$readiness_status,sync:{state:$sync_state,catchup_stage:$catchup_stage,orphan_count:$orphan_count,pending_missing_parents:$pending_missing_parents,pending_block_requests:$pending_block_requests,missing_parent_entries:$missing_parent_entries,terminal_missing_parent_entries:$terminal_missing_parent_entries,quarantined_missing_parent_entries:0,inv_hashes_requested:$inv_hashes_requested},peers:{active:$active_peers,recovering:$recovering_peers,cooldown:$cooldown_peers,rate_limited_count:$rate_limited_count,reconnect_attempts:$reconnect_attempts,reconnect_blocked_reason:$reconnect_blocked_reason,min_target_missed:$min_target_missed,peer_zero_reconnect_attempts:$zero_reconnect_attempts,peer_zero_reconnect_success:$zero_reconnect_success},rpc:{degraded_response_total:$rpc_degraded_response_total,snapshot_stale_total:$rpc_snapshot_stale_total,handler_degraded_total:$rpc_handler_degraded_total},mining:{templates:$templates,submits:$submits,accepted:$accepted,rejected:$rejected,submit_busy:$submit_busy,actor_timeout:$actor_timeout},same_height_reconcile:{blocked_reason:$same_height_reconcile_blocked_reason}}'
+  done | jq -s '.')
   nodes_json=$(json_array_or_empty "$nodes_json")
   if ! jq -n \
     --arg git_ref "$REPO_REF" --arg git_commit "$REPO_COMMIT_FULL" --arg version "$RELEASE_VERSION" --arg cargo_workspace_version "$WORKSPACE_VERSION" --arg stage "$STAGE_NAME" --arg result "$RESULT" --arg failure_class "$(classify_failure_class)" --arg start_utc "$START_UTC" --arg end_utc "$(date -u +%FT%TZ)" \
     --arg gate_5n_1m "$GATE_5N_1M_BASELINE" --arg gate_5n_2m "$GATE_5N_2M_INTERMEDIATE" --arg gate_5n_4m "$GATE_5N_4M_STRESS" \
     --argjson node_count "$(json_number_or_zero "$NODE_COUNT")" --argjson miner_count "$(json_number_or_zero "$MINER_COUNT")" --argjson duration "$(json_number_or_zero "$duration")" --argjson exit_code "$(json_number_or_zero "$EXIT_CODE")" \
     --argjson startup_topology_samples_total "$(json_number_or_zero "$STARTUP_TOPOLOGY_SAMPLES_TOTAL")" --argjson startup_topology_stable_samples "$(json_number_or_zero "$STARTUP_TOPOLOGY_STABLE_SAMPLES")" --argjson startup_topology_resets_total "$(json_number_or_zero "$STARTUP_TOPOLOGY_RESETS_TOTAL")" --argjson startup_connection_keepalive_timeouts_total "$(json_number_or_zero "$STARTUP_CONNECTION_KEEPALIVE_TIMEOUTS_TOTAL")" --argjson startup_reconnect_attempts_total "$(json_number_or_zero "$STARTUP_RECONNECT_ATTEMPTS_TOTAL")" --argjson startup_reconnect_success_total "$(json_number_or_zero "$STARTUP_RECONNECT_SUCCESS_TOTAL")" --argjson startup_topology_ready_unix "$(json_number_or_zero "$STARTUP_TOPOLOGY_READY_UNIX")" --argjson startup_topology_wait_duration_ms "$(json_number_or_zero "$STARTUP_TOPOLOGY_WAIT_DURATION_MS")" \
+    --argjson rpc_alive_listener_timeout_count "$(json_number_or_zero "${RPC_ALIVE_LISTENER_TIMEOUT_COUNT:-0}")" --argjson rpc_liveness_timeout_count "$(json_number_or_zero "${RPC_LIVENESS_TIMEOUT_COUNT:-0}")" --argjson stale_degraded_snapshot_count "$(json_number_or_zero "${STALE_DEGRADED_SNAPSHOT_COUNT:-0}")" \
+    --argjson orphan_count "$(json_number_or_zero "${TOTAL_ORPHAN_COUNT:-0}")" --argjson pending_missing_parents "$(json_number_or_zero "${TOTAL_PENDING_MISSING_PARENTS:-0}")" --argjson pending_block_requests "$(json_number_or_zero "${TOTAL_PENDING_BLOCK_REQUESTS:-0}")" --argjson missing_parent_entries "$(json_number_or_zero "${TOTAL_MISSING_PARENT_ENTRIES:-0}")" --argjson terminal_missing_parent_entries "$(json_number_or_zero "${TOTAL_TERMINAL_MISSING_PARENT_ENTRIES:-0}")" --argjson inv_hashes_requested "$(json_number_or_zero "${TOTAL_INV_HASHES_REQUESTED:-0}")" \
+    --argjson active_peers "$(json_number_or_zero "${TOTAL_ACTIVE_PEERS:-0}")" --argjson recovering_peers "$(json_number_or_zero "${TOTAL_RECOVERING_PEERS:-0}")" --argjson cooldown_peers "$(json_number_or_zero "${TOTAL_COOLDOWN_PEERS:-0}")" --argjson rate_limited_count "$(json_number_or_zero "${TOTAL_RATE_LIMITED_COUNT:-0}")" --argjson reconnect_attempts "$(json_number_or_zero "${TOTAL_RECONNECT_ATTEMPTS:-0}")" --argjson min_target_missed "$(json_number_or_zero "${TOTAL_MIN_TARGET_MISSED:-0}")" --argjson zero_reconnect_attempts "$(json_number_or_zero "${TOTAL_ZERO_RECONNECT_ATTEMPTS:-0}")" --argjson zero_reconnect_success "$(json_number_or_zero "${TOTAL_ZERO_RECONNECT_SUCCESS:-0}")" --argjson reconnect_blocked_reasons "$(json_array_or_empty "${RECONNECT_BLOCKED_REASONS_JSON:-[]}")" --argjson same_height_reconcile_blocked_reasons "$(json_array_or_empty "${SAME_HEIGHT_RECONCILE_BLOCKED_REASONS_JSON:-[]}")" \
     --argjson templates "$(json_number_or_zero "$TOTAL_MINING_TEMPLATES")" --argjson submits "$(json_number_or_zero "$TOTAL_MINING_SUBMITS")" --argjson accepted "$(json_number_or_zero "$TOTAL_MINING_ACCEPTED")" --argjson rejected "$(json_number_or_zero "$TOTAL_MINING_REJECTED")" --argjson submit_busy "$(json_number_or_zero "$TOTAL_MINING_SUBMIT_BUSY")" --argjson actor_timeout "$(json_number_or_zero "$TOTAL_MINING_ACTOR_TIMEOUT")" \
-    --argjson local_miner_submits_total "$(json_number_or_zero "$LOCAL_MINER_SUBMITS_TOTAL")" --argjson local_miner_submits_accepted "$(json_number_or_zero "$LOCAL_MINER_SUBMITS_ACCEPTED")" --argjson local_miner_submits_rejected "$(json_number_or_zero "$LOCAL_MINER_SUBMITS_REJECTED")" --argjson local_miner_submits_rejected_by_reason "$(json_array_or_empty "$LOCAL_MINER_SUBMITS_REJECTED_BY_REASON")" \
+    --argjson orphan_recovery_attempts "$(json_number_or_zero "${TOTAL_ORPHAN_RECOVERY_ATTEMPTS:-0}")" --argjson orphan_recovery_success "$(json_number_or_zero "${TOTAL_ORPHAN_RECOVERY_SUCCESS:-0}")" --argjson orphan_recovery_failed_missing_parent "$(json_number_or_zero "${TOTAL_ORPHAN_RECOVERY_FAILED_MISSING_PARENT:-0}")" --argjson orphan_recovery_failed_persist "$(json_number_or_zero "${TOTAL_ORPHAN_RECOVERY_FAILED_PERSIST:-0}")" --argjson orphan_roots_rate_limited "$(json_number_or_zero "${TOTAL_ORPHAN_ROOTS_RATE_LIMITED:-0}")" --argjson orphan_backlog_stale "$(json_number_or_zero "${TOTAL_ORPHAN_BACKLOG_STALE:-0}")" \
+    --argjson post_distinct_tips "$(json_number_or_zero "${POST_DISTINCT_TIPS:-0}")" --argjson post_worst_lag "$(json_number_or_zero "${POST_WORST_LAG:-0}")" --argjson missing_parent_requests_sent "$(json_number_or_zero "${TOTAL_MISSING_PARENT_REQUESTS_SENT:-0}")" --argjson missing_parent_responses_received "$(json_number_or_zero "${TOTAL_MISSING_PARENT_RESPONSES_RECEIVED:-0}")" --argjson blockdata_not_found "$(json_number_or_zero "${TOTAL_BLOCKDATA_NOT_FOUND:-0}")" \
+    --argjson unique_templates_issued "$(json_number_or_zero "${UNIQUE_TEMPLATES_ISSUED:-0}")" --argjson local_miner_submits_total "$(json_number_or_zero "$LOCAL_MINER_SUBMITS_TOTAL")" --argjson local_miner_submits_accepted "$(json_number_or_zero "$LOCAL_MINER_SUBMITS_ACCEPTED")" --argjson local_miner_submits_rejected "$(json_number_or_zero "$LOCAL_MINER_SUBMITS_REJECTED")" --argjson local_miner_submits_rejected_by_reason "$(json_array_or_empty "$LOCAL_MINER_SUBMITS_REJECTED_BY_REASON")" --argjson node_block_accept_events_total "$(json_number_or_zero "${NODE_BLOCK_ACCEPT_EVENTS_TOTAL:-0}")" --argjson node_block_reject_events_total "$(json_number_or_zero "${NODE_BLOCK_REJECT_EVENTS_TOTAL:-0}")" --argjson duplicate_block_events_total "$(json_number_or_zero "${DUPLICATE_BLOCK_EVENTS_TOTAL:-0}")" --argjson unique_block_hashes_observed "$(json_number_or_zero "${UNIQUE_BLOCK_HASHES_OBSERVED:-0}")" \
+    --arg prior_gate_c_manifest "${PRIOR_GATE_C_MANIFEST:-}" --arg prior_gate_d_manifest "${PRIOR_GATE_D_MANIFEST:-}" --arg prior_gate_c_commit "${PRIOR_GATE_C_COMMIT:-}" --arg prior_gate_d_commit "${PRIOR_GATE_D_COMMIT:-}" --arg prior_gate_c_result "${PRIOR_GATE_C_RESULT:-}" --arg prior_gate_d_result "${PRIOR_GATE_D_RESULT:-}" --arg prior_gate_c_sha256 "${PRIOR_GATE_C_SHA256:-}" --arg prior_gate_d_sha256 "${PRIOR_GATE_D_SHA256:-}" \
     --argjson nodes "$nodes_json" --slurpfile checksums "$checksum_tmp" \
-    '{git_ref:$git_ref,git_commit:$git_commit,version:$version,cargo_workspace_version:$cargo_workspace_version,stage:$stage,node_count:$node_count,miner_count:$miner_count,duration:$duration,result:$result,failure_class:$failure_class,start_utc:$start_utc,end_utc:$end_utc,exit_code:$exit_code,startup_metrics:{startup_topology_samples_total:$startup_topology_samples_total,startup_topology_stable_samples:$startup_topology_stable_samples,startup_topology_resets_total:$startup_topology_resets_total,startup_connection_keepalive_timeouts_total:$startup_connection_keepalive_timeouts_total,startup_reconnect_attempts_total:$startup_reconnect_attempts_total,startup_reconnect_success_total:$startup_reconnect_success_total,startup_topology_ready_unix:$startup_topology_ready_unix,startup_topology_wait_duration_ms:$startup_topology_wait_duration_ms},mining:{templates:$templates,submits:$submits,accepted:$accepted,rejected:$rejected,submit_busy:$submit_busy,actor_timeout:$actor_timeout},mining_semantics:{local_miner_submits_total:$local_miner_submits_total,local_miner_submits_accepted:$local_miner_submits_accepted,local_miner_submits_rejected:$local_miner_submits_rejected,local_miner_submits_rejected_by_reason:$local_miner_submits_rejected_by_reason,result:(if $local_miner_submits_total == 0 then "NOT_EXECUTED" else "EXECUTED" end)},gates:{baseline_5n_1m:$gate_5n_1m,intermediate_5n_2m:$gate_5n_2m,stress_5n_4m},prior_evidence:{},nodes:$nodes,checksums:($checksums[0] // {})}' > "$manifest_tmp" 2>"$jq_err"; then
+    '{git_ref:$git_ref,git_commit:$git_commit,version:$version,cargo_workspace_version:$cargo_workspace_version,stage:$stage,node_count:$node_count,miner_count:$miner_count,duration:$duration,result:$result,failure_class:$failure_class,start_utc:$start_utc,end_utc:$end_utc,exit_code:$exit_code,startup_metrics:{startup_topology_samples_total:$startup_topology_samples_total,startup_topology_stable_samples:$startup_topology_stable_samples,startup_topology_resets_total:$startup_topology_resets_total,startup_connection_keepalive_timeouts_total:$startup_connection_keepalive_timeouts_total,startup_reconnect_attempts_total:$startup_reconnect_attempts_total,startup_reconnect_success_total:$startup_reconnect_success_total,startup_topology_ready_unix:$startup_topology_ready_unix,startup_topology_wait_duration_ms:$startup_topology_wait_duration_ms},rpc_liveness:{RPC_ALIVE_LISTENER_TIMEOUT:$rpc_alive_listener_timeout_count,rpc_liveness_timeout:$rpc_liveness_timeout_count,stale_degraded_snapshot_count:$stale_degraded_snapshot_count},sync_orphan:{orphan_count:$orphan_count,pending_missing_parents:$pending_missing_parents,pending_block_requests:$pending_block_requests,missing_parent_entries:$missing_parent_entries,terminal_missing_parent_entries:$terminal_missing_parent_entries,quarantined_missing_parent_entries:0,inv_hashes_requested:$inv_hashes_requested,orphan_recovery_classification_counters:{attempts:$orphan_recovery_attempts,success:$orphan_recovery_success,failed_missing_parent:$orphan_recovery_failed_missing_parent,failed_persist:$orphan_recovery_failed_persist,roots_rate_limited:$orphan_roots_rate_limited,backlog_stale:$orphan_backlog_stale}},peers:{active:$active_peers,recovering:$recovering_peers,cooldown:$cooldown_peers,rate_limited_count:$rate_limited_count,reconnect_attempts:$reconnect_attempts,min_target_missed:$min_target_missed,peer_zero_reconnect_attempts:$zero_reconnect_attempts,peer_zero_reconnect_success:$zero_reconnect_success,reconnect_blocked_reasons:$reconnect_blocked_reasons},mining:{templates:$templates,submits:$submits,accepted:$accepted,rejected:$rejected,submit_busy:$submit_busy,actor_timeout:$actor_timeout},distinct_tips:$post_distinct_tips,worst_lag_from_max_height:$post_worst_lag,same_height_reconcile:{blocked_reasons:$same_height_reconcile_blocked_reasons},network_counters:{missing_parent_requests_sent:$missing_parent_requests_sent,missing_parent_responses_received:$missing_parent_responses_received,blockdata_not_found:$blockdata_not_found},metric_definitions:{unique_templates_issued:"distinct template ids/hashes seen in miner logs",local_miner_submits_total:"submit attempts emitted by local miner logs",local_miner_submits_accepted:"local miner submits accepted by RPC",local_miner_submits_rejected_by_reason:"local miner submit rejects grouped by reason",node_block_accept_events_total:"sum of per-node block acceptance events; not unique network blocks",node_block_reject_events_total:"sum of per-node block rejection events",duplicate_block_events_total:"accept events beyond unique observed block hashes",unique_block_hashes_observed:"distinct block hashes observed in endpoint/log evidence"},mining_semantics:{unique_templates_issued:$unique_templates_issued,local_miner_submits_total:$local_miner_submits_total,local_miner_submits_accepted:$local_miner_submits_accepted,local_miner_submits_rejected:$local_miner_submits_rejected,local_miner_submits_rejected_by_reason:$local_miner_submits_rejected_by_reason,node_block_accept_events_total:$node_block_accept_events_total,node_block_reject_events_total:$node_block_reject_events_total,duplicate_block_events_total:$duplicate_block_events_total,unique_block_hashes_observed:$unique_block_hashes_observed,result:(if $local_miner_submits_total == 0 then "NOT_EXECUTED" else "EXECUTED" end)},gates:{baseline_5n_1m:$gate_5n_1m,intermediate_5n_2m:$gate_5n_2m,stress_5n_4m:$gate_5n_4m},prior_evidence:{gate_c:{artifact_path:$prior_gate_c_manifest,git_commit:$prior_gate_c_commit,result:$prior_gate_c_result,manifest_sha256:$prior_gate_c_sha256},gate_d:{artifact_path:$prior_gate_d_manifest,git_commit:$prior_gate_d_commit,result:$prior_gate_d_result,manifest_sha256:$prior_gate_d_sha256}},nodes:$nodes,checksums:($checksums[0] // {})}' > "$manifest_tmp" 2>"$jq_err"; then
     write_minimal_fallback_manifest "$(cat "$jq_err" 2>/dev/null || echo jq manifest generation failed)"; rm -f "$manifest_tmp" "$checksum_tmp"; return 1
   fi
   if jq -e . "$manifest_tmp" >/dev/null 2>>"$jq_err" && [[ -s "$manifest_tmp" ]]; then
@@ -1749,11 +1795,11 @@ for i in $(seq 1 "$MINER_COUNT"); do
   (( ${miner_submit[$i]:-0} == 1 )) || STRESS_OK=0
 done
 
-if [[ -z "$PRIOR_GATE_C_MANIFEST" ]]; then
+if [[ -z "${PRIOR_GATE_C_MANIFEST:-}" ]]; then
   if (( MINER_COUNT == 1 )); then (( BASELINE_OK == 1 )) && GATE_5N_1M_BASELINE=PASS || GATE_5N_1M_BASELINE=FAIL; else GATE_5N_1M_BASELINE=NOT_PROVIDED; fi
 fi
 if (( MINER_COUNT >= 2 )); then
-  if [[ -z "$PRIOR_GATE_D_MANIFEST" ]]; then (( INTERMEDIATE_OK == 1 )) && GATE_5N_2M_INTERMEDIATE=PASS || GATE_5N_2M_INTERMEDIATE=FAIL; fi
+  if [[ -z "${PRIOR_GATE_D_MANIFEST:-}" ]]; then (( INTERMEDIATE_OK == 1 )) && GATE_5N_2M_INTERMEDIATE=PASS || GATE_5N_2M_INTERMEDIATE=FAIL; fi
 else
   GATE_5N_2M_INTERMEDIATE=NOT_RUN
 fi
