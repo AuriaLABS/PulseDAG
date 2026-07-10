@@ -3,6 +3,7 @@ use std::hash::{Hash, Hasher};
 
 use crate::api::NodeRuntimeStats;
 use pulsedag_core::{state::ChainState, SyncPhase};
+use pulsedag_p2p::P2pStatus;
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct CanonicalSyncState {
@@ -10,17 +11,47 @@ pub struct CanonicalSyncState {
     pub catchup_stage: String,
     pub lag_blocks: u64,
     pub lag_band: String,
+    pub network_selected_height_gap: u64,
+    pub network_selected_tip_mismatch: bool,
+    pub storage_replay_gap: u64,
+    pub storage_memory_mismatch: bool,
+    pub local_selected_height: u64,
+    pub best_remote_selected_height: Option<u64>,
+    pub best_remote_selected_tip: Option<String>,
     pub catchup_progress_bps: u64,
     pub catchup_summary: String,
     pub recovery_reason: Option<String>,
     pub selected_sync_peer: Option<String>,
     pub canonical_sync_state_generation: u64,
+    pub canonical_remote_tip_generation: u64,
+    pub canonical_remote_tip_peer: Option<String>,
+    pub live_sync_error_active: u64,
+    pub live_sync_error_cleared_total: u64,
+    pub stale_sync_error_suppressed_total: u64,
+    pub sync_live_error: Option<String>,
+    pub sync_last_historical_error: Option<String>,
+    pub sync_last_error_resolved_at: Option<u64>,
+    pub sync_last_error_resolution_reason: Option<String>,
     pub synced_with_recovering_stage_total: u64,
     pub aligned_with_active_recovery_reason_total: u64,
     pub catchup_recovery_started_total: u64,
     pub catchup_recovery_completed_total: u64,
     pub catchup_recovery_last_reason: Option<String>,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct RemoteSelectedTipEvidence {
+    pub peer_id: String,
+    pub selected_height: u64,
+    pub selected_tip: Option<String>,
+    pub chain_id: String,
+    pub observed_at_unix: u64,
+    pub direct_request_capable: bool,
+    pub connected: bool,
+    pub from_tip_inventory: bool,
+}
+
+pub const REMOTE_SELECTED_TIP_MAX_AGE_SECS: u64 = 30;
 
 pub fn lag_band(lag_blocks: u64) -> &'static str {
     match lag_blocks {
@@ -40,33 +71,128 @@ fn counters_coherent(runtime: &NodeRuntimeStats) -> bool {
             <= runtime.sync_pipeline.counters.blocks_requested
 }
 
-pub fn build_canonical_sync_state(
+fn local_selected_height(chain: &ChainState) -> u64 {
+    chain
+        .dag
+        .selected_chain
+        .last()
+        .and_then(|tip| chain.dag.blocks.get(tip))
+        .map(|block| block.header.height)
+        .unwrap_or(chain.dag.best_height)
+}
+
+pub fn select_remote_sync_evidence(
+    chain_id: &str,
+    now_unix: u64,
+    evidence: &[RemoteSelectedTipEvidence],
+) -> Option<RemoteSelectedTipEvidence> {
+    evidence
+        .iter()
+        .filter(|ev| ev.chain_id == chain_id)
+        .filter(|ev| ev.connected && ev.direct_request_capable && ev.from_tip_inventory)
+        .filter(|ev| {
+            now_unix.saturating_sub(ev.observed_at_unix) <= REMOTE_SELECTED_TIP_MAX_AGE_SECS
+        })
+        .max_by(|a, b| {
+            a.selected_height
+                .cmp(&b.selected_height)
+                .then_with(|| a.observed_at_unix.cmp(&b.observed_at_unix))
+                .then_with(|| b.peer_id.cmp(&a.peer_id))
+        })
+        .cloned()
+}
+
+pub fn remote_sync_evidence_from_p2p_status(
+    status: Option<&P2pStatus>,
+    now_unix: u64,
+) -> Vec<RemoteSelectedTipEvidence> {
+    let Some(status) = status else {
+        return Vec::new();
+    };
+    // Current P2P status has peer eligibility/connectivity but does not yet carry
+    // selected-tip heights. Keep this adapter intentionally conservative: callers
+    // only get network lag when a producer supplies explicit selected-tip evidence.
+    status
+        .connected_request_capable_session_peers
+        .iter()
+        .filter(|peer| {
+            status
+                .connected_peers
+                .iter()
+                .any(|connected| connected == *peer)
+        })
+        .map(|peer| RemoteSelectedTipEvidence {
+            peer_id: peer.clone(),
+            selected_height: 0,
+            selected_tip: None,
+            chain_id: status.chain_id.clone(),
+            observed_at_unix: now_unix,
+            direct_request_capable: true,
+            connected: true,
+            from_tip_inventory: false,
+        })
+        .collect()
+}
+
+pub fn build_canonical_sync_state_with_remote_evidence(
     chain: &ChainState,
     runtime: &NodeRuntimeStats,
     persisted_block_count: usize,
     now_unix: u64,
     fallback_selected_sync_peer: Option<String>,
+    remote_evidence: &[RemoteSelectedTipEvidence],
 ) -> CanonicalSyncState {
-    let lag_blocks = (persisted_block_count as u64).saturating_sub(chain.dag.blocks.len() as u64);
+    let local_selected_height = local_selected_height(chain);
+    let local_selected_tip = chain.dag.selected_chain.last().cloned();
+    let best_remote = select_remote_sync_evidence(&chain.chain_id, now_unix, remote_evidence);
+    let best_remote_selected_height = best_remote.as_ref().map(|ev| ev.selected_height);
+    let best_remote_selected_tip = best_remote.as_ref().and_then(|ev| ev.selected_tip.clone());
+    let network_selected_height_gap = best_remote_selected_height
+        .unwrap_or(local_selected_height)
+        .saturating_sub(local_selected_height);
+    let network_selected_tip_mismatch = best_remote_selected_tip.is_some()
+        && local_selected_tip.is_some()
+        && best_remote_selected_tip != local_selected_tip;
+    let storage_replay_gap =
+        (persisted_block_count as u64).saturating_sub(chain.dag.blocks.len() as u64);
+    let storage_memory_mismatch =
+        storage_replay_gap > 0 || chain.dag.blocks.len() > persisted_block_count;
+    let lag_blocks = network_selected_height_gap;
     let lag_band = lag_band(lag_blocks).to_string();
-    let catchup_progress_bps = if persisted_block_count == 0 {
-        10_000
-    } else {
-        (chain.dag.blocks.len() as u64)
-            .saturating_mul(10_000)
-            .saturating_div(persisted_block_count as u64)
-            .min(10_000)
-    };
+    let catchup_progress_bps = best_remote_selected_height
+        .map(|remote| {
+            if remote == 0 {
+                10_000
+            } else {
+                local_selected_height
+                    .saturating_mul(10_000)
+                    .saturating_div(remote)
+                    .min(10_000)
+            }
+        })
+        .unwrap_or(10_000);
     let pending_missing_parents = pulsedag_core::pending_missing_parent_count(chain);
     let active_terminal_missing_parents =
         pulsedag_core::terminal_missing_parent_active_blocking_count(chain);
     let has_orphan_work = !chain.orphan_blocks.is_empty() || active_terminal_missing_parents > 0;
+    let coherent = counters_coherent(runtime);
+    let historical_error = runtime.sync_pipeline.last_error.clone();
+    let live_error_active = historical_error.is_some()
+        && (pending_missing_parents > 0
+            || active_terminal_missing_parents > 0
+            || runtime.pending_block_requests > 0
+            || runtime.inflight_block_requests > 0);
+    let sync_live_error = live_error_active
+        .then(|| historical_error.clone())
+        .flatten();
+    let stale_sync_error_suppressed_total =
+        u64::from(historical_error.is_some() && !live_error_active);
     let no_blockers = lag_blocks == 0
-        && has_orphan_work == false
+        && !network_selected_tip_mismatch
+        && !has_orphan_work
         && pending_missing_parents == 0
         && runtime.pending_block_requests == 0
         && runtime.inflight_block_requests == 0;
-    let coherent = counters_coherent(runtime);
     let stalled = runtime.sync_pipeline.phase != SyncPhase::Idle
         && lag_band != "aligned"
         && (lag_blocks > 0
@@ -80,33 +206,27 @@ pub fn build_canonical_sync_state(
 
     let (sync_state, catchup_stage, recovery_reason) = if no_blockers
         && coherent
-        && runtime.sync_pipeline.last_error.is_none()
+        && !live_error_active
     {
         ("synced".to_string(), "steady".to_string(), None)
-    } else if runtime.sync_pipeline.last_error.is_some() || !coherent {
+    } else if live_error_active || !coherent {
         (
             runtime.sync_state.clone(),
             "degraded".to_string(),
             Some(
-                if let Some(err) = runtime.sync_pipeline.last_error.clone() {
-                    format!("sync error: {err}")
-                } else {
-                    "sync counter incoherence detected; verify sync pipeline accounting".to_string()
-                },
+                sync_live_error
+                    .clone()
+                    .map(|err| format!("sync live error: {err}"))
+                    .unwrap_or_else(|| {
+                        "sync counter incoherence detected; verify sync pipeline accounting"
+                            .to_string()
+                    }),
             ),
         )
+    } else if lag_blocks > 2 || network_selected_tip_mismatch {
+        ("locating_common_ancestor".to_string(), "discovering".to_string(), Some(format!("peer selected tip ahead: local_height={local_selected_height} remote_height={} network_gap={lag_blocks} tip_mismatch={network_selected_tip_mismatch}", best_remote_selected_height.unwrap_or(local_selected_height))))
     } else if stalled {
-        (
-            runtime.sync_state.clone(),
-            "recovering".to_string(),
-            Some(format!(
-                "no-progress escalation: sync stalled in {:?} with lag_band={lag_band}; bounded remediation active (fallbacks={}, timeouts={}, restarts={})",
-                runtime.sync_pipeline.phase,
-                runtime.sync_pipeline.fallback_count,
-                runtime.sync_pipeline.timeout_fallback_count,
-                runtime.sync_pipeline.restart_count
-            )),
-        )
+        (runtime.sync_state.clone(), "recovering".to_string(), Some(format!("no-progress escalation: sync stalled in {:?} with lag_band={lag_band}; bounded remediation active (fallbacks={}, timeouts={}, restarts={})", runtime.sync_pipeline.phase, runtime.sync_pipeline.fallback_count, runtime.sync_pipeline.timeout_fallback_count, runtime.sync_pipeline.restart_count)))
     } else if pending_missing_parents > 0 {
         (
             runtime.sync_state.clone(),
@@ -128,35 +248,26 @@ pub fn build_canonical_sync_state(
     } else {
         let stage = match runtime.sync_pipeline.phase {
             SyncPhase::Idle if lag_blocks == 0 => "steady",
-            SyncPhase::Idle => "recovering",
+            SyncPhase::Idle => "requesting_selected_headers",
             SyncPhase::PeerSelection | SyncPhase::HeaderDiscovery => "discovering",
             SyncPhase::BlockAcquisition => "recovering",
             SyncPhase::ValidationApplication => "validating",
             SyncPhase::CatchUpCompletion => "steady",
         };
-        let reason = if stage != "steady" || lag_blocks > 0 {
-            Some(format!(
-                "catch-up in progress: stage={stage}, lag_band={lag_band}, replay_gap={}",
-                persisted_block_count as i64 - chain.dag.blocks.len() as i64
-            ))
-        } else {
-            None
-        };
+        let reason = (stage != "steady" || lag_blocks > 0).then(|| format!("catch-up in progress: stage={stage}, lag_band={lag_band}, network_gap={lag_blocks}, storage_replay_gap={storage_replay_gap}"));
         (runtime.sync_state.clone(), stage.to_string(), reason)
     };
 
     let selected_sync_peer = if sync_state == "synced" && catchup_stage == "steady" {
         None
     } else {
-        runtime
-            .sync_pipeline
-            .selected_peer
-            .clone()
+        best_remote
+            .as_ref()
+            .map(|ev| ev.peer_id.clone())
+            .or_else(|| runtime.sync_pipeline.selected_peer.clone())
             .or(fallback_selected_sync_peer)
     };
-    let catchup_summary = format!(
-        "stage={catchup_stage} lag_blocks={lag_blocks} lag_band={lag_band} progress_bps={catchup_progress_bps}"
-    );
+    let catchup_summary = format!("stage={catchup_stage} lag_blocks={lag_blocks} lag_band={lag_band} network_selected_height_gap={network_selected_height_gap} storage_replay_gap={storage_replay_gap}");
     let synced_with_recovering_stage_total =
         u64::from(sync_state == "synced" && catchup_stage == "recovering");
     let aligned_with_active_recovery_reason_total =
@@ -167,6 +278,17 @@ pub fn build_canonical_sync_state(
     let catchup_recovery_completed_total =
         u64::from(sync_state == "synced" && catchup_stage == "steady");
     let catchup_recovery_last_reason = recovery_reason.clone();
+    let sync_last_error_resolved_at =
+        (historical_error.is_some() && !live_error_active).then_some(now_unix);
+    let sync_last_error_resolution_reason = (historical_error.is_some() && !live_error_active)
+        .then_some(
+            "historical sync error has no active missing-parent, orphan, or request blocker"
+                .to_string(),
+        );
+    let mut remote_hasher = DefaultHasher::new();
+    best_remote.hash(&mut remote_hasher);
+    let canonical_remote_tip_generation = remote_hasher.finish();
+    let canonical_remote_tip_peer = best_remote.as_ref().map(|ev| ev.peer_id.clone());
     let mut hasher = DefaultHasher::new();
     sync_state.hash(&mut hasher);
     catchup_stage.hash(&mut hasher);
@@ -174,6 +296,9 @@ pub fn build_canonical_sync_state(
     lag_band.hash(&mut hasher);
     recovery_reason.hash(&mut hasher);
     selected_sync_peer.hash(&mut hasher);
+    storage_replay_gap.hash(&mut hasher);
+    network_selected_tip_mismatch.hash(&mut hasher);
+    canonical_remote_tip_generation.hash(&mut hasher);
     let canonical_sync_state_generation = hasher.finish();
 
     CanonicalSyncState {
@@ -181,15 +306,201 @@ pub fn build_canonical_sync_state(
         catchup_stage,
         lag_blocks,
         lag_band,
+        network_selected_height_gap,
+        network_selected_tip_mismatch,
+        storage_replay_gap,
+        storage_memory_mismatch,
+        local_selected_height,
+        best_remote_selected_height,
+        best_remote_selected_tip,
         catchup_progress_bps,
         catchup_summary,
         recovery_reason,
         selected_sync_peer,
         canonical_sync_state_generation,
+        canonical_remote_tip_generation,
+        canonical_remote_tip_peer,
+        live_sync_error_active: u64::from(live_error_active),
+        live_sync_error_cleared_total: u64::from(historical_error.is_some() && !live_error_active),
+        stale_sync_error_suppressed_total,
+        sync_live_error,
+        sync_last_historical_error: historical_error,
+        sync_last_error_resolved_at,
+        sync_last_error_resolution_reason,
         synced_with_recovering_stage_total,
         aligned_with_active_recovery_reason_total,
         catchup_recovery_started_total,
         catchup_recovery_completed_total,
         catchup_recovery_last_reason,
+    }
+}
+
+pub fn build_canonical_sync_state(
+    chain: &ChainState,
+    runtime: &NodeRuntimeStats,
+    persisted_block_count: usize,
+    now_unix: u64,
+    fallback_selected_sync_peer: Option<String>,
+) -> CanonicalSyncState {
+    build_canonical_sync_state_with_remote_evidence(
+        chain,
+        runtime,
+        persisted_block_count,
+        now_unix,
+        fallback_selected_sync_peer,
+        &[],
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::api::NodeRuntimeStats;
+    use pulsedag_core::{
+        genesis::init_chain_state,
+        types::{Block, BlockHeader},
+    };
+
+    fn block(hash: &str, parent: &str, height: u64) -> Block {
+        Block {
+            hash: hash.to_string(),
+            header: BlockHeader {
+                version: 1,
+                parents: vec![parent.to_string()],
+                timestamp: height,
+                difficulty: 1,
+                nonce: 0,
+                merkle_root: "root".into(),
+                state_root: "state".into(),
+                blue_score: height,
+                height,
+            },
+            transactions: Vec::new(),
+        }
+    }
+
+    fn chain_at_selected_height(height: u64) -> ChainState {
+        let mut chain = init_chain_state("testnet-dev".to_string());
+        let mut parent = chain.dag.genesis_hash.clone();
+        for h in 1..=height {
+            let hash = format!("b{h}");
+            let b = block(&hash, &parent, h);
+            chain.dag.blocks.insert(hash.clone(), b);
+            chain
+                .dag
+                .selected_parents
+                .insert(hash.clone(), Some(parent.clone()));
+            chain.dag.selected_chain.push(hash.clone());
+            parent = hash;
+        }
+        chain.dag.best_height = height;
+        chain.dag.tips.clear();
+        chain.dag.tips.insert(parent);
+        chain
+    }
+
+    fn fresh_remote(peer_id: &str, height: u64) -> RemoteSelectedTipEvidence {
+        RemoteSelectedTipEvidence {
+            peer_id: peer_id.to_string(),
+            selected_height: height,
+            selected_tip: Some(format!("remote-{height}")),
+            chain_id: "testnet-dev".to_string(),
+            observed_at_unix: 1_000,
+            direct_request_capable: true,
+            connected: true,
+            from_tip_inventory: true,
+        }
+    }
+
+    #[test]
+    fn network_gap_is_not_storage_replay_gap() {
+        let mut chain = chain_at_selected_height(631);
+        let parent = chain.dag.genesis_hash.clone();
+        for i in chain.dag.blocks.len()..878 {
+            let hash = format!("side{i}");
+            chain
+                .dag
+                .blocks
+                .insert(hash.clone(), block(&hash, &parent, 1));
+        }
+        let runtime = NodeRuntimeStats::default();
+        let state = build_canonical_sync_state_with_remote_evidence(
+            &chain,
+            &runtime,
+            879,
+            1_000,
+            None,
+            &[fresh_remote("peer-a", 690)],
+        );
+        assert_eq!(state.network_selected_height_gap, 59);
+        assert_eq!(state.lag_blocks, 59);
+        assert_eq!(state.storage_replay_gap, 1);
+        assert_eq!(state.best_remote_selected_height, Some(690));
+        assert_ne!(state.lag_band, "near_tip");
+        assert_ne!(state.sync_state, "synced");
+    }
+
+    #[test]
+    fn disconnected_stale_or_wrong_chain_peer_evidence_is_not_used() {
+        let stale = RemoteSelectedTipEvidence {
+            observed_at_unix: 900,
+            ..fresh_remote("stale", 700)
+        };
+        let disconnected = RemoteSelectedTipEvidence {
+            connected: false,
+            ..fresh_remote("disconnected", 710)
+        };
+        let wrong_chain = RemoteSelectedTipEvidence {
+            chain_id: "other".into(),
+            ..fresh_remote("wrong", 720)
+        };
+        assert!(select_remote_sync_evidence(
+            "testnet-dev",
+            1_000,
+            &[stale, disconnected, wrong_chain]
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn historical_error_without_active_blocker_is_suppressed() {
+        let chain = chain_at_selected_height(3);
+        let mut runtime = NodeRuntimeStats::default();
+        runtime.sync_pipeline.last_error = Some("missing parent old".into());
+        let state = build_canonical_sync_state_with_remote_evidence(
+            &chain,
+            &runtime,
+            chain.dag.blocks.len(),
+            1_000,
+            None,
+            &[],
+        );
+        assert_eq!(state.catchup_stage, "steady");
+        assert_eq!(state.live_sync_error_active, 0);
+        assert_eq!(state.stale_sync_error_suppressed_total, 1);
+        assert!(state.sync_live_error.is_none());
+        assert!(state.sync_last_historical_error.is_some());
+        assert!(state.sync_last_error_resolved_at.is_some());
+    }
+
+    #[test]
+    fn active_unresolved_missing_parent_still_degrades() {
+        let mut chain = chain_at_selected_height(3);
+        chain
+            .orphan_parent_index
+            .insert("missing".into(), ["orphan".into()].into_iter().collect());
+        let mut runtime = NodeRuntimeStats::default();
+        runtime.sync_pipeline.last_error = Some("missing parent active".into());
+        let state = build_canonical_sync_state_with_remote_evidence(
+            &chain,
+            &runtime,
+            chain.dag.blocks.len(),
+            1_000,
+            None,
+            &[],
+        );
+        assert_eq!(state.catchup_stage, "degraded");
+        assert_eq!(state.live_sync_error_active, 1);
+        assert!(state.sync_live_error.is_some());
     }
 }
