@@ -5061,7 +5061,11 @@ async fn run_libp2p_real_runtime(
             gossipsub: gossip,
             ping,
         }) {
-            Ok(builder) => builder.build(),
+            Ok(builder) => builder
+                .with_swarm_config(|cfg| {
+                    cfg.with_idle_connection_timeout(StdDuration::from_secs(300))
+                })
+                .build(),
             Err(e) => {
                 note_swarm_event(&inner, format!("swarm-init-failed:behaviour:{e}"));
                 return;
@@ -5253,6 +5257,13 @@ async fn run_libp2p_real_runtime(
                         let direction = connection_direction_from_endpoint_debug(&format!("{endpoint:?}"));
                         note_swarm_event(&inner, format!("peer-connected:{direction}:{peer_id}"));
                         handle_connection_established(&inner, &mut pending_bootnode_dials, &peer_id, direction);
+                        let topic = gossipsub::IdentTopic::new(format!("{}-sync", cfg.chain_id));
+                        if let Ok(bytes) = serde_json::to_vec(&NetworkMessage::GetTips {
+                            chain_id: cfg.chain_id.clone(),
+                        }) {
+                            note_swarm_event(&inner, format!("startup-tip-exchange:{peer_id}"));
+                            let _ = swarm.behaviour_mut().gossipsub.publish(topic, bytes);
+                        }
                         let _ = inbound_tx.send(InboundEvent::PeerConnected(peer_id.to_string()));
                     }
                     SwarmEvent::ConnectionClosed { peer_id, endpoint, cause, .. } => {
