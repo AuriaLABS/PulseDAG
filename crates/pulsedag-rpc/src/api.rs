@@ -1010,6 +1010,30 @@ pub struct NodeRuntimeStats {
     #[serde(default)]
     pub selected_segment_peer_rotations_total: u64,
     #[serde(default)]
+    pub selected_segment_uncorrelated_headers_total: u64,
+    #[serde(default)]
+    pub active_session_id: Option<u64>,
+    #[serde(default)]
+    pub active_session_peer: Option<String>,
+    #[serde(default)]
+    pub active_session_remote_tip: Option<String>,
+    #[serde(default)]
+    pub active_session_remote_height: u64,
+    #[serde(default)]
+    pub active_session_common_ancestor: Option<String>,
+    #[serde(default)]
+    pub active_session_requested_headers: u64,
+    #[serde(default)]
+    pub active_session_received_headers: u64,
+    #[serde(default)]
+    pub active_session_requested_blocks: u64,
+    #[serde(default)]
+    pub active_session_received_blocks: u64,
+    #[serde(default)]
+    pub active_session_applied_blocks: u64,
+    #[serde(default)]
+    pub active_session_remaining_blocks: u64,
+    #[serde(default)]
     pub final_quiescence_same_height_candidate_seen_total: u64,
     #[serde(default)]
     pub final_quiescence_same_height_candidate_fetch_total: u64,

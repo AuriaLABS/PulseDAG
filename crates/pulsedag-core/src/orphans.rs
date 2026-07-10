@@ -214,6 +214,7 @@ pub fn terminally_exhaust_missing_parent(
                 terminal_peer_set_digest: None,
                 reopened_total: 0,
                 reopen_reason: None,
+                selected_segment_required: false,
             },
         );
         return MissingParentTerminalResult {
@@ -240,6 +241,18 @@ pub fn terminally_exhaust_missing_parent(
             )
         })
         .unwrap_or(false);
+    if state
+        .terminal_missing_parents
+        .get(parent)
+        .map(|entry| entry.selected_segment_required)
+        .unwrap_or(false)
+    {
+        return MissingParentTerminalResult {
+            transitioned: false,
+            evicted_orphans: 0,
+            waiting_orphans: waiting.len(),
+        };
+    }
     if already_terminal {
         return MissingParentTerminalResult {
             transitioned: false,
@@ -272,6 +285,7 @@ pub fn terminally_exhaust_missing_parent(
             terminal_peer_set_digest: None,
             reopened_total: 0,
             reopen_reason: None,
+            selected_segment_required: false,
         },
     );
     MissingParentTerminalResult {
@@ -279,6 +293,30 @@ pub fn terminally_exhaust_missing_parent(
         evicted_orphans: evicted,
         waiting_orphans: waiting.len(),
     }
+}
+
+pub fn mark_selected_segment_required_parent(state: &mut ChainState, parent: &Hash, now_ms: u64) {
+    let entry = state
+        .terminal_missing_parents
+        .entry(parent.clone())
+        .or_insert_with(|| MissingParentTerminalEntry {
+            state: MissingParentState::Quarantined,
+            transitioned_at_ms: now_ms,
+            waiting_orphans: state
+                .orphan_parent_index
+                .get(parent)
+                .map(|orphans| orphans.iter().cloned().collect())
+                .unwrap_or_default(),
+            terminal_generation: 0,
+            terminal_at_unix: now_ms / 1_000,
+            terminal_peer_set_digest: None,
+            reopened_total: 0,
+            reopen_reason: Some("selected_segment_required".to_string()),
+            selected_segment_required: true,
+        });
+    entry.selected_segment_required = true;
+    entry.reopened_total = entry.reopened_total.saturating_add(1);
+    entry.reopen_reason = Some("selected_segment_required".to_string());
 }
 
 pub fn suppress_terminal_missing_parent_retry(state: &ChainState, parent: &Hash) -> bool {
@@ -723,6 +761,7 @@ pub fn adopt_ready_orphans_with_result(
                             terminal_peer_set_digest: None,
                             reopened_total: 0,
                             reopen_reason: None,
+                            selected_segment_required: false,
                         },
                     );
                     accepted_hashes.push(hash.clone());
