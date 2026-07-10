@@ -236,6 +236,13 @@ pub struct NodeRpcSnapshotMetrics {
 }
 
 pub fn node_rpc_snapshot_metrics(snapshot: &NodeRpcSnapshot) -> NodeRpcSnapshotMetrics {
+    node_rpc_snapshot_metrics_excluding(snapshot, None)
+}
+
+pub fn node_rpc_snapshot_metrics_excluding(
+    snapshot: &NodeRpcSnapshot,
+    excluded_inflight_endpoint: Option<&str>,
+) -> NodeRpcSnapshotMetrics {
     let rpc_snapshot_age_ms = unix_now_ms().saturating_sub(snapshot.last_updated_ms);
     NodeRpcSnapshotMetrics {
         rpc_snapshot_age_ms,
@@ -246,11 +253,15 @@ pub fn node_rpc_snapshot_metrics(snapshot: &NodeRpcSnapshot) -> NodeRpcSnapshotM
             .load(Ordering::Relaxed),
         rpc_handler_timeout_total: endpoint_counts(&RPC_HANDLER_TIMEOUT_BY_ENDPOINT),
         rpc_alive_listener_timeout_total: RPC_ALIVE_LISTENER_TIMEOUT_TOTAL.load(Ordering::Relaxed),
-        rpc_handler_inflight_total: inflight_rpc_handler_counts(),
+        rpc_handler_inflight_total: inflight_rpc_handler_counts_excluding(
+            excluded_inflight_endpoint,
+        ),
         runtime_lock_busy_total: endpoint_counts(&RUNTIME_LOCK_BUSY_BY_ENDPOINT),
         degraded_snapshot_returned_total: endpoint_counts(&DEGRADED_SNAPSHOT_BY_ENDPOINT),
         rpc_accept_backlog_observed: RPC_ACCEPT_BACKLOG_OBSERVED.load(Ordering::Relaxed),
-        oldest_inflight_rpc_handler_age_ms: oldest_inflight_rpc_handler_age_ms(),
+        oldest_inflight_rpc_handler_age_ms: oldest_inflight_rpc_handler_age_ms_excluding(
+            excluded_inflight_endpoint,
+        ),
         health_handler_duration_ms: HEALTH_HANDLER_DURATION_MS.load(Ordering::Relaxed),
         health_snapshot_age_ms: rpc_snapshot_age_ms,
         health_snapshot_stale_total: HEALTH_SNAPSHOT_STALE_TOTAL.load(Ordering::Relaxed),
@@ -281,7 +292,7 @@ fn rpc_snapshot_age_ms_by_endpoint(age_ms: u64) -> BTreeMap<String, u64> {
         endpoint_counts(&RPC_HANDLER_TIMEOUT_BY_ENDPOINT),
         endpoint_counts(&RUNTIME_LOCK_BUSY_BY_ENDPOINT),
         endpoint_counts(&DEGRADED_SNAPSHOT_BY_ENDPOINT),
-        inflight_rpc_handler_counts(),
+        inflight_rpc_handler_counts_excluding(None),
     ] {
         for endpoint in counts.keys() {
             ages.entry(endpoint.clone()).or_insert(age_ms);
@@ -374,6 +385,10 @@ pub fn end_rpc_handler(id: u64) {
 }
 
 pub fn oldest_inflight_rpc_handler_age_ms() -> u64 {
+    oldest_inflight_rpc_handler_age_ms_excluding(None)
+}
+
+fn oldest_inflight_rpc_handler_age_ms_excluding(excluded_endpoint: Option<&str>) -> u64 {
     let now = unix_now_ms();
     RPC_INFLIGHT_HANDLERS
         .get_or_init(|| Mutex::new(BTreeMap::new()))
@@ -382,6 +397,7 @@ pub fn oldest_inflight_rpc_handler_age_ms() -> u64 {
         .and_then(|handlers| {
             handlers
                 .values()
+                .filter(|(endpoint, _)| Some(endpoint.as_str()) != excluded_endpoint)
                 .map(|(_, started)| now.saturating_sub(*started))
                 .max()
         })
@@ -389,12 +405,19 @@ pub fn oldest_inflight_rpc_handler_age_ms() -> u64 {
 }
 
 pub fn inflight_rpc_handler_counts() -> BTreeMap<String, u64> {
+    inflight_rpc_handler_counts_excluding(None)
+}
+
+fn inflight_rpc_handler_counts_excluding(excluded_endpoint: Option<&str>) -> BTreeMap<String, u64> {
     RPC_INFLIGHT_HANDLERS
         .get_or_init(|| Mutex::new(BTreeMap::new()))
         .lock()
         .map(|handlers| {
             let mut counts = BTreeMap::new();
             for (endpoint, _) in handlers.values() {
+                if Some(endpoint.as_str()) == excluded_endpoint {
+                    continue;
+                }
                 *counts.entry(endpoint.clone()).or_default() += 1;
             }
             counts
