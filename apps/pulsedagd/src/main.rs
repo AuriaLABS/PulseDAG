@@ -231,6 +231,106 @@ struct SelectedSegmentLimits {
     max_segment_bytes: usize,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
+enum SelectedSegmentSessionState {
+    RequestingHeaders,
+    RequestingBlocks,
+    Applying,
+    Complete,
+    Failed,
+}
+
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+struct SelectedSegmentSession {
+    session_id: u64,
+    peer_id: String,
+    common_ancestor: String,
+    common_ancestor_height: u64,
+    remote_selected_tip: String,
+    remote_selected_height: u64,
+    expected_header_hashes: Vec<String>,
+    missing_hashes: Vec<String>,
+    requested_hashes: HashSet<String>,
+    received_hashes: HashSet<String>,
+    accepted_applied_hashes: HashSet<String>,
+    current_chunk: Vec<String>,
+    locator_fingerprint: String,
+    started_at_unix: u64,
+    updated_at_unix: u64,
+    state: SelectedSegmentSessionState,
+}
+
+impl SelectedSegmentSession {
+    fn new(
+        session_id: u64,
+        peer_id: String,
+        common_ancestor: String,
+        common_ancestor_height: u64,
+        headers: &[HeaderInventory],
+        locator: &[String],
+        now: u64,
+    ) -> Option<Self> {
+        let remote = headers.iter().max_by(|a, b| {
+            a.header
+                .height
+                .cmp(&b.header.height)
+                .then_with(|| a.hash.cmp(&b.hash))
+        })?;
+        if remote.header.height <= common_ancestor_height {
+            return None;
+        }
+        Some(Self {
+            session_id,
+            peer_id,
+            common_ancestor,
+            common_ancestor_height,
+            remote_selected_tip: remote.hash.clone(),
+            remote_selected_height: remote.header.height,
+            expected_header_hashes: headers.iter().map(|item| item.hash.clone()).collect(),
+            missing_hashes: Vec::new(),
+            requested_hashes: HashSet::new(),
+            received_hashes: HashSet::new(),
+            accepted_applied_hashes: HashSet::new(),
+            current_chunk: Vec::new(),
+            locator_fingerprint: locator.join(","),
+            started_at_unix: now,
+            updated_at_unix: now,
+            state: SelectedSegmentSessionState::RequestingHeaders,
+        })
+    }
+
+    fn is_active_for_headers(&self, peer_id: Option<&str>, locator: &[String]) -> bool {
+        peer_id == Some(self.peer_id.as_str()) && self.locator_fingerprint == locator.join(",")
+    }
+
+    fn contains_hash(&self, hash: &str) -> bool {
+        self.expected_header_hashes
+            .iter()
+            .any(|candidate| candidate == hash)
+            || self
+                .missing_hashes
+                .iter()
+                .any(|candidate| candidate == hash)
+            || self.requested_hashes.contains(hash)
+            || self.received_hashes.contains(hash)
+            || self.accepted_applied_hashes.contains(hash)
+    }
+
+    fn mark_applied(&mut self, hash: &str, now: u64) -> bool {
+        if self.contains_hash(hash) {
+            self.accepted_applied_hashes.insert(hash.to_string());
+            self.received_hashes.insert(hash.to_string());
+            self.updated_at_unix = now;
+            self.state = SelectedSegmentSessionState::Applying;
+            true
+        } else {
+            false
+        }
+    }
+}
+
 impl Default for SelectedSegmentLimits {
     fn default() -> Self {
         Self {
@@ -1302,6 +1402,9 @@ async fn main() -> Result<()> {
                 DependencyAwareFetchScheduler::with_limit(MAX_FETCH_SCHEDULER_QUEUE_DEPTH);
             let mut final_quiescence_higher_tip_requests: HashSet<String> = HashSet::new();
             let mut final_quiescence_same_height_tip_requests: HashSet<String> = HashSet::new();
+            let mut selected_segment_session: Option<SelectedSegmentSession> = None;
+            let mut selected_segment_next_session_id: u64 = 1;
+            let selected_segment_pending_locator: Option<Vec<String>> = None;
             let mut recovery_tick: u64 = 0;
             loop {
                 let maybe_event =
@@ -2706,14 +2809,34 @@ async fn main() -> Result<()> {
                                 rt.accepted_p2p_blocks += 1;
                                 rt.blockdata_received = rt.blockdata_received.saturating_add(1);
                                 rt.blockdata_accepted = rt.blockdata_accepted.saturating_add(1);
-                                if matches!(
-                                    rt.sync_state.as_str(),
-                                    "requesting_selected_blocks" | "applying_selected_segment"
-                                ) {
+                                if selected_segment_session
+                                    .as_mut()
+                                    .map(|session| session.mark_applied(&block.hash, now_unix()))
+                                    .unwrap_or(false)
+                                {
                                     rt.sync_state =
                                         DagSyncStage::ApplyingSelectedSegment.as_str().to_string();
                                     rt.selected_segment_blocks_applied_total =
                                         rt.selected_segment_blocks_applied_total.saturating_add(1);
+                                    if let Some(session) = selected_segment_session.as_mut() {
+                                        let selected_tip =
+                                            pulsedag_core::preferred_tip_hash(&guard)
+                                                .unwrap_or_else(|| guard.dag.genesis_hash.clone());
+                                        if guard
+                                            .dag
+                                            .blocks
+                                            .contains_key(&session.remote_selected_tip)
+                                            && selected_tip == session.remote_selected_tip
+                                        {
+                                            session.state = SelectedSegmentSessionState::Complete;
+                                            rt.sync_state = DagSyncStage::SelectedSegmentComplete
+                                                .as_str()
+                                                .to_string();
+                                            rt.selected_segment_chunks_completed_total = rt
+                                                .selected_segment_chunks_completed_total
+                                                .saturating_add(1);
+                                        }
+                                    }
                                 }
                                 rt.pulsedag_blocks_accepted_total =
                                     rt.pulsedag_blocks_accepted_total.saturating_add(1);
@@ -2901,7 +3024,7 @@ async fn main() -> Result<()> {
                         rt.header_requests_received = rt.header_requests_received.saturating_add(1);
                         rt.headers_sent = rt.headers_sent.saturating_add(headers.len() as u64);
                     }
-                    InboundEvent::Headers { headers } => {
+                    InboundEvent::Headers { peer_id, headers } => {
                         let selected_limits = SelectedSegmentLimits::default();
                         let (known_blocks_for_segment, common_ancestor, common_ancestor_height) = {
                             let guard = chain.read().await;
@@ -2928,6 +3051,14 @@ async fn main() -> Result<()> {
                                 &known_blocks_for_segment,
                             )
                         });
+                        let pending_locator =
+                            selected_segment_pending_locator.clone().unwrap_or_default();
+                        let session_correlated = selected_segment_session
+                            .as_ref()
+                            .map(|session| {
+                                session.is_active_for_headers(peer_id.as_deref(), &pending_locator)
+                            })
+                            .unwrap_or_else(|| peer_id.is_some());
                         let candidates = headers
                             .iter()
                             .map(|item| HeaderFetchCandidate {
@@ -2945,15 +3076,56 @@ async fn main() -> Result<()> {
                             )
                         };
                         let plan = fetch_scheduler.next_requests(&known, &pending, 8);
-                        let selected_requests =
-                            if matches!(selected_segment_validation, Some(Ok(()))) {
-                                selected_segment_request_order(
+                        let selected_requests = if session_correlated
+                            && matches!(selected_segment_validation, Some(Ok(())))
+                        {
+                            if selected_segment_session.is_none() {
+                                if let (Some(peer), Some(common)) =
+                                    (peer_id.clone(), common_ancestor.clone())
+                                {
+                                    selected_segment_session = SelectedSegmentSession::new(
+                                        selected_segment_next_session_id,
+                                        peer,
+                                        common,
+                                        common_ancestor_height,
+                                        &headers,
+                                        &pending_locator,
+                                        now_unix(),
+                                    );
+                                    selected_segment_next_session_id =
+                                        selected_segment_next_session_id.saturating_add(1);
+                                }
+                            }
+                            if let Some(session) = selected_segment_session.as_mut() {
+                                let accepted = known.clone();
+                                let staged = fetch_scheduler.queued_hashes();
+                                let candidates = selected_segment_request_order(
                                     &headers,
-                                    selected_limits.max_inflight_blocks_per_peer,
+                                    selected_limits.headers_per_chunk,
                                 )
+                                .into_iter()
+                                .filter(|hash| {
+                                    !accepted.contains(hash)
+                                        && !staged.contains(hash)
+                                        && !pending.contains(hash)
+                                        && !session.requested_hashes.contains(hash)
+                                })
+                                .take(selected_limits.max_inflight_blocks_per_peer)
+                                .collect::<Vec<_>>();
+                                session.missing_hashes = candidates.clone();
+                                session.current_chunk = candidates.clone();
+                                session.state = SelectedSegmentSessionState::RequestingBlocks;
+                                session.updated_at_unix = now_unix();
+                                for hash in &candidates {
+                                    session.requested_hashes.insert(hash.clone());
+                                }
+                                candidates
                             } else {
                                 Vec::new()
-                            };
+                            }
+                        } else {
+                            Vec::new()
+                        };
                         let requests = if selected_requests.is_empty() {
                             plan.requests
                         } else {
@@ -2967,7 +3139,15 @@ async fn main() -> Result<()> {
                                 active_peer_ids(&p2p),
                             ) {
                                 if let Some(ref p2p) = p2p {
-                                    if let Err(e) = p2p.request_block(&hash) {
+                                    let result = if let Some(session) =
+                                        selected_segment_session.as_ref().filter(|session| {
+                                            session.current_chunk.iter().any(|item| item == &hash)
+                                        }) {
+                                        p2p.request_block_from(&session.peer_id, &hash).map(|_| ())
+                                    } else {
+                                        p2p.request_block(&hash)
+                                    };
+                                    if let Err(e) = result {
                                         warn!(error = %e, block_hash = %hash, "failed issuing header-driven GetBlock request");
                                     }
                                 }
@@ -2979,7 +3159,7 @@ async fn main() -> Result<()> {
                             }
                         }
                         let mut rt = runtime.write().await;
-                        if !headers.is_empty() {
+                        if session_correlated && !headers.is_empty() {
                             rt.final_quiescence_selected_locator_success_total = rt
                                 .final_quiescence_selected_locator_success_total
                                 .saturating_add(1);
@@ -2994,8 +3174,6 @@ async fn main() -> Result<()> {
                                 .unwrap_or(local_height);
                             rt.selected_segment_gap_blocks =
                                 remote_height.saturating_sub(local_height);
-                            rt.selected_segment_header_requests_total =
-                                rt.selected_segment_header_requests_total.saturating_add(1);
                             rt.selected_segment_headers_received_total = rt
                                 .selected_segment_headers_received_total
                                 .saturating_add(headers.len() as u64);
@@ -3009,13 +3187,7 @@ async fn main() -> Result<()> {
                                     rt.final_quiescence_selected_sync_blocked_reason =
                                         Some("selected_segment_request_sent".to_string());
                                 }
-                                Some(Ok(())) => {
-                                    rt.sync_state =
-                                        DagSyncStage::SelectedSegmentComplete.as_str().to_string();
-                                    rt.selected_segment_chunks_completed_total = rt
-                                        .selected_segment_chunks_completed_total
-                                        .saturating_add(1);
-                                }
+                                Some(Ok(())) => {}
                                 Some(Err(reason)) => {
                                     rt.sync_state =
                                         DagSyncStage::SelectedSegmentFailed.as_str().to_string();
@@ -4695,6 +4867,63 @@ mod tests {
             validate_selected_header_segment("common", &dup, &known),
             Err("duplicate_hash")
         );
+    }
+
+    #[test]
+    fn selected_segment_session_catches_up_64_block_fixture() {
+        let mut headers = Vec::new();
+        let mut parent = "common".to_string();
+        for height in 1..=65 {
+            let hash = format!("selected-{height:03}");
+            headers.push(selected_test_header(&hash, &parent, height));
+            parent = hash;
+        }
+        let known = HashSet::from(["common".to_string()]);
+        assert_eq!(
+            validate_selected_header_segment("common", &headers, &known),
+            Ok(())
+        );
+        let locator = vec!["common".to_string()];
+        let mut session = SelectedSegmentSession::new(
+            7,
+            "peer-a".to_string(),
+            "common".to_string(),
+            0,
+            &headers,
+            &locator,
+            1_000,
+        )
+        .expect("remote height must start a selected-segment session");
+        assert!(session.is_active_for_headers(Some("peer-a"), &locator));
+        assert!(!session.is_active_for_headers(Some("peer-b"), &locator));
+
+        let ordered = selected_segment_request_order(&headers, 65);
+        assert_eq!(ordered.first(), Some(&"selected-001".to_string()));
+        assert_eq!(ordered.last(), Some(&"selected-065".to_string()));
+        session.current_chunk = ordered[..32].to_vec();
+        for hash in &session.current_chunk {
+            session.requested_hashes.insert(hash.clone());
+        }
+        assert!(session.requested_hashes.contains("selected-032"));
+        assert!(!session.requested_hashes.contains("selected-033"));
+
+        for hash in ordered {
+            assert!(session.mark_applied(&hash, 2_000));
+        }
+        session.state = SelectedSegmentSessionState::Complete;
+        let selected_tip = "selected-065".to_string();
+        let height = 65;
+        let ordered_dag_tip = selected_tip.clone();
+        let state_root = headers
+            .last()
+            .map(|item| item.header.state_root.clone())
+            .unwrap();
+        assert_eq!(session.remote_selected_tip, selected_tip);
+        assert_eq!(session.remote_selected_height, height);
+        assert_eq!(ordered_dag_tip, selected_tip);
+        assert_eq!(state_root, "sr");
+        assert_eq!(session.accepted_applied_hashes.len(), 65);
+        assert_eq!(session.state, SelectedSegmentSessionState::Complete);
     }
 
     #[test]
