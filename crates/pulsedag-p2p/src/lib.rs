@@ -748,6 +748,7 @@ pub enum InboundEvent {
         limit: usize,
     },
     Headers {
+        peer_id: Option<String>,
         headers: Vec<HeaderInventory>,
     },
     GetBlockHeaders {
@@ -4230,6 +4231,7 @@ fn dispatch_network_message(
             }
             if !accepted_headers.is_empty() {
                 let _ = inbound_tx.send(InboundEvent::Headers {
+                    peer_id: source_peer.map(ToOwned::to_owned),
                     headers: accepted_headers,
                 });
             }
