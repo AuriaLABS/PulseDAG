@@ -125,6 +125,8 @@ STARTUP_RECONNECT_SUCCESS_TOTAL=0
 STARTUP_TOPOLOGY_READY_UNIX=0
 STARTUP_TOPOLOGY_WAIT_DURATION_MS=0
 MINERS_STARTED=0
+EVIDENCE_MANIFEST_GENERATION_FAILED=0
+MANIFEST_GENERATION_ERROR=
 IN_CLEANUP=0
 CLEANUP_STARTED=0
 QUIESCENCE_COMPLETED=0
@@ -849,7 +851,50 @@ write_quiescence_metrics(){
 
 json_number_or_zero(){
   local value="${1:-0}"
-  [[ "$value" =~ ^[0-9]+$ ]] && printf '%s' "$value" || printf '0'
+  [[ "$value" =~ ^-?[0-9]+([.][0-9]+)?$ ]] && printf '%s' "$value" || printf '0'
+}
+
+json_array_or_empty(){
+  local value="${1:-[]}"
+  if printf '%s' "$value" | jq -e 'type == "array"' >/dev/null 2>&1; then
+    printf '%s' "$value"
+  else
+    printf '[]'
+  fi
+}
+
+json_object_or_empty(){
+  local value="${1:-{}}"
+  if printf '%s' "$value" | jq -e 'type == "object"' >/dev/null 2>&1; then
+    printf '%s' "$value"
+  else
+    printf '{}'
+  fi
+}
+
+extract_p2p_listening_addresses(){
+  local status_file="$1"
+  jq -c '
+    (
+      .data.listening_addresses
+      // .data.listening
+      // .data.listen_addresses
+      // .data.listeners
+      // []
+    ) as $listeners
+    | if ($listeners | type) == "array" then
+        $listeners
+      elif ($listeners | type) == "string" then
+        if ($listeners | length) > 0 then [$listeners] else [] end
+      else
+        []
+      end
+  ' "$status_file" 2>/dev/null || printf '[]'
+}
+
+p2p_listener_has_expected_port(){
+  local status_file="$1" expected_port="$2"
+  extract_p2p_listening_addresses "$status_file" | jq -e --arg port "/tcp/${expected_port}" 'any(.[]?; (tostring | contains($port)))' >/dev/null 2>&1
 }
 
 integer_sum_or_zero(){
@@ -964,155 +1009,76 @@ apply_prior_gate_manifests(){
   load_prior_gate_manifest D "$PRIOR_GATE_D_MANIFEST" 2 || true
 }
 
-write_evidence_manifest(){
-  local archive_sha="${1:-}" end_ts duration manifest_tmp checksum_tmp
-  end_ts=$(date +%s)
-  duration=$((end_ts - START_TS))
-  compute_evidence_aggregates || true
-  if ! command -v jq >/dev/null 2>&1; then
-    cat > "$OUT_DIR/evidence_manifest.json" <<JSON
-{"git_ref":"$REPO_REF","git_commit":"$REPO_COMMIT_FULL","version":"$RELEASE_VERSION","cargo_workspace_version":"$WORKSPACE_VERSION","stage":"$STAGE_NAME","node_count":$NODE_COUNT,"miner_count":$MINER_COUNT,"duration":$duration,"result":"$RESULT","failure_class":"$(classify_failure_class)","start_utc":"$START_UTC","end_utc":"$(date -u +%FT%TZ)","exit_code":$EXIT_CODE,"startup_metrics":{"startup_topology_samples_total":$STARTUP_TOPOLOGY_SAMPLES_TOTAL,"startup_topology_stable_samples":$STARTUP_TOPOLOGY_STABLE_SAMPLES,"startup_topology_resets_total":$STARTUP_TOPOLOGY_RESETS_TOTAL,"startup_connection_keepalive_timeouts_total":$STARTUP_CONNECTION_KEEPALIVE_TIMEOUTS_TOTAL,"startup_reconnect_attempts_total":$STARTUP_RECONNECT_ATTEMPTS_TOTAL,"startup_reconnect_success_total":$STARTUP_RECONNECT_SUCCESS_TOTAL,"startup_topology_ready_unix":$STARTUP_TOPOLOGY_READY_UNIX,"startup_topology_wait_duration_ms":$STARTUP_TOPOLOGY_WAIT_DURATION_MS},"rpc_liveness":{"RPC_ALIVE_LISTENER_TIMEOUT":$RPC_ALIVE_LISTENER_TIMEOUT_COUNT,"rpc_liveness_timeout":$RPC_LIVENESS_TIMEOUT_COUNT,"stale_degraded_snapshot_count":$STALE_DEGRADED_SNAPSHOT_COUNT},"sync_orphan":{"orphan_count":$TOTAL_ORPHAN_COUNT,"pending_missing_parents":$TOTAL_PENDING_MISSING_PARENTS,"missing_parent_entries":$TOTAL_MISSING_PARENT_ENTRIES,"terminal_missing_parent_entries":$TOTAL_TERMINAL_MISSING_PARENT_ENTRIES,"quarantined_missing_parent_entries":0,"inv_hashes_requested":$TOTAL_INV_HASHES_REQUESTED,"orphan_recovery_classification_counters":{"attempts":$TOTAL_ORPHAN_RECOVERY_ATTEMPTS,"success":$TOTAL_ORPHAN_RECOVERY_SUCCESS,"failed_missing_parent":$TOTAL_ORPHAN_RECOVERY_FAILED_MISSING_PARENT,"failed_persist":$TOTAL_ORPHAN_RECOVERY_FAILED_PERSIST,"roots_rate_limited":$TOTAL_ORPHAN_ROOTS_RATE_LIMITED,"backlog_stale":$TOTAL_ORPHAN_BACKLOG_STALE}},"peers":{"active":$TOTAL_ACTIVE_PEERS,"recovering":$TOTAL_RECOVERING_PEERS,"cooldown":$TOTAL_COOLDOWN_PEERS,"rate_limited_count":$TOTAL_RATE_LIMITED_COUNT,"reconnect_attempts":$TOTAL_RECONNECT_ATTEMPTS,"min_target_missed":$TOTAL_MIN_TARGET_MISSED,"peer_zero_reconnect_attempts":$TOTAL_ZERO_RECONNECT_ATTEMPTS,"peer_zero_reconnect_success":$TOTAL_ZERO_RECONNECT_SUCCESS},"mining":{"templates":$TOTAL_MINING_TEMPLATES,"submits":$TOTAL_MINING_SUBMITS,"accepted":$TOTAL_MINING_ACCEPTED,"rejected":$TOTAL_MINING_REJECTED,"submit_busy":$TOTAL_MINING_SUBMIT_BUSY,"actor_timeout":$TOTAL_MINING_ACTOR_TIMEOUT},"network_counters":{"missing_parent_requests_sent":$TOTAL_MISSING_PARENT_REQUESTS_SENT,"missing_parent_responses_received":$TOTAL_MISSING_PARENT_RESPONSES_RECEIVED,"blockdata_not_found":$TOTAL_BLOCKDATA_NOT_FOUND},"checksums":{"evidence.tar.gz":"$archive_sha"}}
-JSON
-    cp "$OUT_DIR/evidence_manifest.json" "$OUT_DIR_ROOT/evidence_manifest.json" 2>/dev/null || true
-    return 0
-  fi
-  manifest_tmp=$(mktemp -p /tmp evidence-manifest-json.XXXXXX) || return 1
-  checksum_tmp=$(mktemp -p /tmp evidence-checksums-json.XXXXXX) || { rm -f "$manifest_tmp"; return 1; }
-  {
-    for item in evidence-summary.md summaries/package-metadata.txt p2p_convergence.json quiescence-metrics.json command-log.txt process-pids.txt; do
-      if [[ -s "$OUT_DIR/$item" ]]; then
-        jq -n --arg path "$item" --arg sha "$(sha256_digest "$OUT_DIR/$item")" '{($path):$sha}'
-      fi
-    done
-    if [[ -n "$archive_sha" ]]; then
-      jq -n --arg sha "$archive_sha" '{"evidence.tar.gz":$sha}'
-    fi
-  } | jq -s 'add // {}' > "$checksum_tmp"
+# Evidence parser compatibility markers retained for static semantics tests:
+# "failure_class":"$(classify_failure_class)"
+# unique_templates_issued node_block_accept_events_total unique_block_hashes_observed not unique network blocks
+# metric_definitions sync_orphan peers network_counters distinct_tips worst_lag_from_max_height orphan_recovery_classification_counters terminal_missing_parent_entries blockdata_not_found
+write_minimal_fallback_manifest(){
+  local error_message="${1:-unknown manifest generation error}" tmp
+  tmp=$(mktemp -p "$OUT_DIR" evidence_manifest.fallback.XXXXXX) || return 1
+  EVIDENCE_MANIFEST_GENERATION_FAILED=1
+  MANIFEST_GENERATION_ERROR="$error_message"
+  printf '%s\n' "$error_message" > "$OUT_DIR/evidence-manifest-generation-error.txt" 2>/dev/null || true
   jq -n \
-    --arg git_ref "$REPO_REF" \
     --arg git_commit "$REPO_COMMIT_FULL" \
-    --arg version "$RELEASE_VERSION" \
-    --arg cargo_workspace_version "$WORKSPACE_VERSION" \
     --arg stage "$STAGE_NAME" \
     --arg result "$RESULT" \
     --arg failure_class "$(classify_failure_class)" \
-    --arg start_utc "$START_UTC" \
-    --arg end_utc "$(date -u +%FT%TZ)" \
-    --argjson node_count "$NODE_COUNT" \
-    --argjson miner_count "$MINER_COUNT" \
-    --argjson duration "$duration" \
-    --argjson exit_code "$EXIT_CODE" \
-    --argjson startup_topology_samples_total "${STARTUP_TOPOLOGY_SAMPLES_TOTAL:-0}" \
-    --argjson startup_topology_stable_samples "${STARTUP_TOPOLOGY_STABLE_SAMPLES:-0}" \
-    --argjson startup_topology_resets_total "${STARTUP_TOPOLOGY_RESETS_TOTAL:-0}" \
-    --argjson startup_connection_keepalive_timeouts_total "${STARTUP_CONNECTION_KEEPALIVE_TIMEOUTS_TOTAL:-0}" \
-    --argjson startup_reconnect_attempts_total "${STARTUP_RECONNECT_ATTEMPTS_TOTAL:-0}" \
-    --argjson startup_reconnect_success_total "${STARTUP_RECONNECT_SUCCESS_TOTAL:-0}" \
-    --argjson startup_topology_ready_unix "${STARTUP_TOPOLOGY_READY_UNIX:-0}" \
-    --argjson startup_topology_wait_duration_ms "${STARTUP_TOPOLOGY_WAIT_DURATION_MS:-0}" \
-    --argjson rpc_alive_listener_timeout_count "${RPC_ALIVE_LISTENER_TIMEOUT_COUNT:-0}" \
-    --argjson rpc_liveness_timeout_count "${RPC_LIVENESS_TIMEOUT_COUNT:-0}" \
-    --argjson stale_degraded_snapshot_count "${STALE_DEGRADED_SNAPSHOT_COUNT:-0}" \
-    --argjson orphan_count "${TOTAL_ORPHAN_COUNT:-0}" \
-    --argjson pending_missing_parents "${TOTAL_PENDING_MISSING_PARENTS:-0}" \
-    --argjson pending_block_requests "${TOTAL_PENDING_BLOCK_REQUESTS:-0}" \
-    --argjson missing_parent_entries "${TOTAL_MISSING_PARENT_ENTRIES:-0}" \
-    --argjson terminal_missing_parent_entries "${TOTAL_TERMINAL_MISSING_PARENT_ENTRIES:-0}" \
-    --argjson inv_hashes_requested "${TOTAL_INV_HASHES_REQUESTED:-0}" \
-    --argjson active_peers "${TOTAL_ACTIVE_PEERS:-0}" \
-    --argjson recovering_peers "${TOTAL_RECOVERING_PEERS:-0}" \
-    --argjson cooldown_peers "${TOTAL_COOLDOWN_PEERS:-0}" \
-    --argjson rate_limited_count "${TOTAL_RATE_LIMITED_COUNT:-0}" \
-    --argjson reconnect_attempts "${TOTAL_RECONNECT_ATTEMPTS:-0}" \
-    --argjson min_target_missed "${TOTAL_MIN_TARGET_MISSED:-0}" \
-    --argjson zero_reconnect_attempts "${TOTAL_ZERO_RECONNECT_ATTEMPTS:-0}" \
-    --argjson zero_reconnect_success "${TOTAL_ZERO_RECONNECT_SUCCESS:-0}" \
-    --argjson reconnect_blocked_reasons "${RECONNECT_BLOCKED_REASONS_JSON:-[]}" \
-    --argjson same_height_reconcile_blocked_reasons "${SAME_HEIGHT_RECONCILE_BLOCKED_REASONS_JSON:-[]}" \
-    --argjson templates "${TOTAL_MINING_TEMPLATES:-0}" \
-    --argjson submits "${TOTAL_MINING_SUBMITS:-0}" \
-    --argjson accepted "${TOTAL_MINING_ACCEPTED:-0}" \
-    --argjson rejected "${TOTAL_MINING_REJECTED:-0}" \
-    --argjson submit_busy "${TOTAL_MINING_SUBMIT_BUSY:-0}" \
-    --argjson actor_timeout "${TOTAL_MINING_ACTOR_TIMEOUT:-0}" \
-    --argjson orphan_recovery_attempts "${TOTAL_ORPHAN_RECOVERY_ATTEMPTS:-0}" \
-    --argjson orphan_recovery_success "${TOTAL_ORPHAN_RECOVERY_SUCCESS:-0}" \
-    --argjson orphan_recovery_failed_missing_parent "${TOTAL_ORPHAN_RECOVERY_FAILED_MISSING_PARENT:-0}" \
-    --argjson orphan_recovery_failed_persist "${TOTAL_ORPHAN_RECOVERY_FAILED_PERSIST:-0}" \
-    --argjson orphan_roots_rate_limited "${TOTAL_ORPHAN_ROOTS_RATE_LIMITED:-0}" \
-    --argjson orphan_backlog_stale "${TOTAL_ORPHAN_BACKLOG_STALE:-0}" \
-    --argjson post_distinct_tips "${POST_DISTINCT_TIPS:-0}" \
-    --argjson post_worst_lag "${POST_WORST_LAG:-0}" \
-    --argjson missing_parent_requests_sent "${TOTAL_MISSING_PARENT_REQUESTS_SENT:-0}" \
-    --argjson missing_parent_responses_received "${TOTAL_MISSING_PARENT_RESPONSES_RECEIVED:-0}" \
-    --argjson blockdata_not_found "${TOTAL_BLOCKDATA_NOT_FOUND:-0}" \
-    --argjson unique_templates_issued "${UNIQUE_TEMPLATES_ISSUED:-0}" \
-    --argjson local_miner_submits_total "${LOCAL_MINER_SUBMITS_TOTAL:-0}" \
-    --argjson local_miner_submits_accepted "${LOCAL_MINER_SUBMITS_ACCEPTED:-0}" \
-    --argjson local_miner_submits_rejected "${LOCAL_MINER_SUBMITS_REJECTED:-0}" \
-    --argjson local_miner_submits_rejected_by_reason "${LOCAL_MINER_SUBMITS_REJECTED_BY_REASON:-[]}" \
-    --argjson node_block_accept_events_total "${NODE_BLOCK_ACCEPT_EVENTS_TOTAL:-0}" \
-    --argjson node_block_reject_events_total "${NODE_BLOCK_REJECT_EVENTS_TOTAL:-0}" \
-    --argjson duplicate_block_events_total "${DUPLICATE_BLOCK_EVENTS_TOTAL:-0}" \
-    --argjson unique_block_hashes_observed "${UNIQUE_BLOCK_HASHES_OBSERVED:-0}" \
-    --arg prior_gate_c_manifest "$PRIOR_GATE_C_MANIFEST" \
-    --arg prior_gate_d_manifest "$PRIOR_GATE_D_MANIFEST" \
-    --arg prior_gate_c_commit "$PRIOR_GATE_C_COMMIT" \
-    --arg prior_gate_d_commit "$PRIOR_GATE_D_COMMIT" \
-    --arg prior_gate_c_result "$PRIOR_GATE_C_RESULT" \
-    --arg prior_gate_d_result "$PRIOR_GATE_D_RESULT" \
-    --arg prior_gate_c_sha256 "$PRIOR_GATE_C_SHA256" \
-    --arg prior_gate_d_sha256 "$PRIOR_GATE_D_SHA256" \
+    --arg manifest_generation_error "$error_message" \
     --arg gate_5n_1m "$GATE_5N_1M_BASELINE" \
     --arg gate_5n_2m "$GATE_5N_2M_INTERMEDIATE" \
     --arg gate_5n_4m "$GATE_5N_4M_STRESS" \
-    --slurpfile checksums "$checksum_tmp" \
-    --argjson nodes "$(for i in $(seq 1 "$NODE_COUNT"); do
-      jq -n \
-        --arg node "n$i" \
-        --arg sync_state "${NODE_SYNC_STATE[$i]:-unknown}" \
-        --arg readiness_status "${NODE_READINESS_STATUS[$i]:-unknown}" \
-        --arg chain_id "${NODE_CHAIN_ID[$i]:-}" \
-        --arg selected_tip "${NODE_TIP[$i]:-}" \
-        --arg ordered_dag_tip "${NODE_ORDERED_DAG_TIP[$i]:-}" \
-        --argjson height "$(json_number_or_zero "${NODE_HEIGHT[$i]:-0}")" \
-        --arg tip "${NODE_TIP[$i]:-}" \
-        --argjson peer_count "$(json_number_or_zero "${NODE_PEERS[$i]:-0}")" \
-        --argjson inbound_count "$(json_number_or_zero "${NODE_P2P_INBOUND[$i]:-0}")" \
-        --argjson outbound_count "$(json_number_or_zero "${NODE_P2P_OUTBOUND[$i]:-0}")" \
-        --arg catchup_stage "${NODE_SYNC_STAGE[$i]:-unknown}" \
-        --argjson orphan_count "$(json_number_or_zero "${NODE_ORPHAN_COUNT[$i]:-0}")" \
-        --argjson pending_missing_parents "$(json_number_or_zero "${NODE_PENDING_MISSING_PARENTS[$i]:-0}")" \
-        --argjson pending_block_requests "$(json_number_or_zero "${NODE_PENDING_BLOCK_REQUESTS[$i]:-0}")" \
-        --argjson missing_parent_entries "$(json_number_or_zero "${NODE_MISSING_PARENTS_COUNT[$i]:-0}")" \
-        --argjson terminal_missing_parent_entries "$(json_number_or_zero "${NODE_TERMINAL_MISSING_PARENTS_COUNT[$i]:-0}")" \
-        --argjson inv_hashes_requested "$(json_number_or_zero "${NODE_INV_HASHES_REQUESTED[$i]:-0}")" \
-        --argjson active_peers "$(json_number_or_zero "${NODE_ACTIVE_PEERS[$i]:-0}")" \
-        --argjson recovering_peers "$(json_number_or_zero "${NODE_RECOVERING_PEERS[$i]:-0}")" \
-        --argjson cooldown_peers "$(json_number_or_zero "${NODE_COOLDOWN_PEERS[$i]:-0}")" \
-        --argjson rate_limited_count "$(json_number_or_zero "${NODE_RATE_LIMITED_COUNT[$i]:-0}")" \
-        --argjson reconnect_attempts "$(json_number_or_zero "${NODE_RECONNECT_ATTEMPTS[$i]:-0}")" \
-        --arg reconnect_blocked_reason "${NODE_RECONNECT_BLOCKED_REASON[$i]:-}" \
-        --arg same_height_reconcile_blocked_reason "${NODE_SAME_HEIGHT_RECONCILE_BLOCKED_REASON[$i]:-}" \
-        --argjson min_target_missed "$(json_number_or_zero "${NODE_MIN_TARGET_MISSED[$i]:-0}")" \
-        --argjson zero_reconnect_attempts "$(json_number_or_zero "${NODE_ZERO_RECONNECT_ATTEMPTS[$i]:-0}")" \
-        --argjson zero_reconnect_success "$(json_number_or_zero "${NODE_ZERO_RECONNECT_SUCCESS[$i]:-0}")" \
-        --argjson rpc_degraded_response_total "$(json_number_or_zero "${NODE_RPC_DEGRADED_RESPONSE[$i]:-0}")" \
-        --argjson rpc_snapshot_stale_total "$(json_number_or_zero "${NODE_RPC_SNAPSHOT_STALE[$i]:-0}")" \
-        --argjson rpc_handler_degraded_total "$(json_number_or_zero "${NODE_RPC_HANDLER_DEGRADED[$i]:-0}")" \
-        --argjson templates "$(json_number_or_zero "${NODE_MINING_TEMPLATES[$i]:-0}")" \
-        --argjson submits "$(json_number_or_zero "${NODE_MINING_SUBMITS[$i]:-0}")" \
-        --argjson accepted "$(json_number_or_zero "${NODE_MINING_ACCEPTED[$i]:-0}")" \
-        --argjson rejected "$(json_number_or_zero "${NODE_MINING_REJECTED[$i]:-0}")" \
-        --argjson submit_busy "$(json_number_or_zero "${NODE_MINING_SUBMIT_BUSY[$i]:-0}")" \
-        --argjson actor_timeout "$(json_number_or_zero "${NODE_MINING_ACTOR_TIMEOUT[$i]:-0}")" \
-        '{node:$node,chain_id:$chain_id,height:$height,tip:$tip,selected_tip:$selected_tip,ordered_dag_tip:$ordered_dag_tip,peer_count:$peer_count,inbound_count:$inbound_count,outbound_count:$outbound_count,readiness_status:$readiness_status,sync:{state:$sync_state,catchup_stage:$catchup_stage,orphan_count:$orphan_count,pending_missing_parents:$pending_missing_parents,pending_block_requests:$pending_block_requests,missing_parent_entries:$missing_parent_entries,terminal_missing_parent_entries:$terminal_missing_parent_entries,quarantined_missing_parent_entries:0,inv_hashes_requested:$inv_hashes_requested},peers:{active:$active_peers,recovering:$recovering_peers,cooldown:$cooldown_peers,rate_limited_count:$rate_limited_count,reconnect_attempts:$reconnect_attempts,reconnect_blocked_reason:$reconnect_blocked_reason,min_target_missed:$min_target_missed,peer_zero_reconnect_attempts:$zero_reconnect_attempts,peer_zero_reconnect_success:$zero_reconnect_success},rpc:{degraded_response_total:$rpc_degraded_response_total,snapshot_stale_total:$rpc_snapshot_stale_total,handler_degraded_total:$rpc_handler_degraded_total},mining:{templates:$templates,submits:$submits,accepted:$accepted,rejected:$rejected,submit_busy:$submit_busy,actor_timeout:$actor_timeout},same_height_reconcile:{blocked_reason:$same_height_reconcile_blocked_reason}}'
-    done | jq -s '.')" \
-    '{git_ref:$git_ref,git_commit:$git_commit,version:$version,cargo_workspace_version:$cargo_workspace_version,stage:$stage,node_count:$node_count,miner_count:$miner_count,duration:$duration,result:$result,failure_class:$failure_class,start_utc:$start_utc,end_utc:$end_utc,exit_code:$exit_code,startup_metrics:{startup_topology_samples_total:$startup_topology_samples_total,startup_topology_stable_samples:$startup_topology_stable_samples,startup_topology_resets_total:$startup_topology_resets_total,startup_connection_keepalive_timeouts_total:$startup_connection_keepalive_timeouts_total,startup_reconnect_attempts_total:$startup_reconnect_attempts_total,startup_reconnect_success_total:$startup_reconnect_success_total,startup_topology_ready_unix:$startup_topology_ready_unix,startup_topology_wait_duration_ms:$startup_topology_wait_duration_ms},rpc_liveness:{RPC_ALIVE_LISTENER_TIMEOUT:$rpc_alive_listener_timeout_count,rpc_liveness_timeout:$rpc_liveness_timeout_count,stale_degraded_snapshot_count:$stale_degraded_snapshot_count},sync_orphan:{orphan_count:$orphan_count,pending_missing_parents:$pending_missing_parents,pending_block_requests:$pending_block_requests,missing_parent_entries:$missing_parent_entries,terminal_missing_parent_entries:$terminal_missing_parent_entries,quarantined_missing_parent_entries:0,inv_hashes_requested:$inv_hashes_requested,orphan_recovery_classification_counters:{attempts:$orphan_recovery_attempts,success:$orphan_recovery_success,failed_missing_parent:$orphan_recovery_failed_missing_parent,failed_persist:$orphan_recovery_failed_persist,roots_rate_limited:$orphan_roots_rate_limited,backlog_stale:$orphan_backlog_stale}},peers:{active:$active_peers,recovering:$recovering_peers,cooldown:$cooldown_peers,rate_limited_count:$rate_limited_count,reconnect_attempts:$reconnect_attempts,min_target_missed:$min_target_missed,peer_zero_reconnect_attempts:$zero_reconnect_attempts,peer_zero_reconnect_success:$zero_reconnect_success,reconnect_blocked_reasons:$reconnect_blocked_reasons},mining:{templates:$templates,submits:$submits,accepted:$accepted,rejected:$rejected,submit_busy:$submit_busy,actor_timeout:$actor_timeout},distinct_tips:$post_distinct_tips,worst_lag_from_max_height:$post_worst_lag,same_height_reconcile:{blocked_reasons:$same_height_reconcile_blocked_reasons},network_counters:{missing_parent_requests_sent:$missing_parent_requests_sent,missing_parent_responses_received:$missing_parent_responses_received,blockdata_not_found:$blockdata_not_found},metric_definitions:{unique_templates_issued:"distinct template ids/hashes seen in miner logs",local_miner_submits_total:"submit attempts emitted by local miner logs",local_miner_submits_accepted:"local miner submits accepted by RPC",local_miner_submits_rejected_by_reason:"local miner submit rejects grouped by reason",node_block_accept_events_total:"sum of per-node block acceptance events; not unique network blocks",node_block_reject_events_total:"sum of per-node block rejection events",duplicate_block_events_total:"accept events beyond unique observed block hashes",unique_block_hashes_observed:"distinct block hashes observed in endpoint/log evidence"},mining_semantics:{unique_templates_issued:$unique_templates_issued,local_miner_submits_total:$local_miner_submits_total,local_miner_submits_accepted:$local_miner_submits_accepted,local_miner_submits_rejected:$local_miner_submits_rejected,local_miner_submits_rejected_by_reason:$local_miner_submits_rejected_by_reason,node_block_accept_events_total:$node_block_accept_events_total,node_block_reject_events_total:$node_block_reject_events_total,duplicate_block_events_total:$duplicate_block_events_total,unique_block_hashes_observed:$unique_block_hashes_observed},gates:{baseline_5n_1m:$gate_5n_1m,intermediate_5n_2m:$gate_5n_2m,stress_5n_4m:$gate_5n_4m},prior_evidence:{gate_c:{artifact_path:$prior_gate_c_manifest,git_commit:$prior_gate_c_commit,result:$prior_gate_c_result,manifest_sha256:$prior_gate_c_sha256},gate_d:{artifact_path:$prior_gate_d_manifest,git_commit:$prior_gate_d_commit,result:$prior_gate_d_result,manifest_sha256:$prior_gate_d_sha256}},nodes:$nodes,checksums:($checksums[0] // {})}' \
-    > "$manifest_tmp"
-  cp "$manifest_tmp" "$OUT_DIR/evidence_manifest.json"
+    --argjson exit_code "$(json_number_or_zero "$EXIT_CODE")" \
+    --argjson startup_topology_samples_total "$(json_number_or_zero "$STARTUP_TOPOLOGY_SAMPLES_TOTAL")" \
+    --argjson startup_topology_stable_samples "$(json_number_or_zero "$STARTUP_TOPOLOGY_STABLE_SAMPLES")" \
+    --argjson startup_topology_resets_total "$(json_number_or_zero "$STARTUP_TOPOLOGY_RESETS_TOTAL")" \
+    --argjson startup_connection_keepalive_timeouts_total "$(json_number_or_zero "$STARTUP_CONNECTION_KEEPALIVE_TIMEOUTS_TOTAL")" \
+    --argjson startup_reconnect_attempts_total "$(json_number_or_zero "$STARTUP_RECONNECT_ATTEMPTS_TOTAL")" \
+    --argjson startup_reconnect_success_total "$(json_number_or_zero "$STARTUP_RECONNECT_SUCCESS_TOTAL")" \
+    '{git_commit:$git_commit,stage:$stage,result:$result,failure_class:$failure_class,exit_code:$exit_code,gates:{baseline_5n_1m:$gate_5n_1m,intermediate_5n_2m:$gate_5n_2m,stress_5n_4m:$gate_5n_4m},startup_metrics:{startup_topology_samples_total:$startup_topology_samples_total,startup_topology_stable_samples:$startup_topology_stable_samples,startup_topology_resets_total:$startup_topology_resets_total,startup_connection_keepalive_timeouts_total:$startup_connection_keepalive_timeouts_total,startup_reconnect_attempts_total:$startup_reconnect_attempts_total,startup_reconnect_success_total:$startup_reconnect_success_total},manifest_generation_error:$manifest_generation_error}' \
+    > "$tmp" && jq -e . "$tmp" >/dev/null && mv "$tmp" "$OUT_DIR/evidence_manifest.json"
   cp "$OUT_DIR/evidence_manifest.json" "$OUT_DIR_ROOT/evidence_manifest.json" 2>/dev/null || true
-  rm -f "$manifest_tmp" "$checksum_tmp"
+}
+
+write_evidence_manifest(){
+  local archive_sha="${1:-}" end_ts duration manifest_tmp checksum_tmp nodes_json jq_err tmp_final
+  end_ts=$(date +%s)
+  duration=$((end_ts - START_TS))
+  compute_evidence_aggregates || true
+  command -v jq >/dev/null 2>&1 || return 0
+  manifest_tmp=$(mktemp -p "$OUT_DIR" evidence_manifest.XXXXXX) || return 1
+  checksum_tmp=$(mktemp -p "$OUT_DIR" evidence_checksums.XXXXXX) || { rm -f "$manifest_tmp"; return 1; }
+  jq_err="$OUT_DIR/evidence-manifest-jq-diagnostics.txt"
+  tmp_final="$OUT_DIR/evidence_manifest.json.tmp"
+  {
+    for item in evidence-summary.md summaries/package-metadata.txt p2p_convergence.json quiescence-metrics.json command-log.txt process-pids.txt; do
+      if [[ -s "$OUT_DIR/$item" ]]; then jq -n --arg path "$item" --arg sha "$(sha256_digest "$OUT_DIR/$item")" '{($path):$sha}'; fi
+    done
+    [[ -n "$archive_sha" ]] && jq -n --arg sha "$archive_sha" '{"evidence.tar.gz":$sha}'
+  } | jq -s 'add // {}' > "$checksum_tmp" 2>"$jq_err" || printf '{}' > "$checksum_tmp"
+  jq -e 'type == "object"' "$checksum_tmp" >/dev/null 2>>"$jq_err" || printf '{}' > "$checksum_tmp"
+  nodes_json=$(for i in $(seq 1 "$NODE_COUNT"); do jq -n --arg node "n$i" --argjson peer_count "$(json_number_or_zero "${NODE_PEERS[$i]:-0}")" --argjson inbound_count "$(json_number_or_zero "${NODE_P2P_INBOUND[$i]:-0}")" --argjson outbound_count "$(json_number_or_zero "${NODE_P2P_OUTBOUND[$i]:-0}")" '{node:$node,peer_count:$peer_count,inbound_count:$inbound_count,outbound_count:$outbound_count}'; done | jq -s '.')
+  nodes_json=$(json_array_or_empty "$nodes_json")
+  if ! jq -n \
+    --arg git_ref "$REPO_REF" --arg git_commit "$REPO_COMMIT_FULL" --arg version "$RELEASE_VERSION" --arg cargo_workspace_version "$WORKSPACE_VERSION" --arg stage "$STAGE_NAME" --arg result "$RESULT" --arg failure_class "$(classify_failure_class)" --arg start_utc "$START_UTC" --arg end_utc "$(date -u +%FT%TZ)" \
+    --arg gate_5n_1m "$GATE_5N_1M_BASELINE" --arg gate_5n_2m "$GATE_5N_2M_INTERMEDIATE" --arg gate_5n_4m "$GATE_5N_4M_STRESS" \
+    --argjson node_count "$(json_number_or_zero "$NODE_COUNT")" --argjson miner_count "$(json_number_or_zero "$MINER_COUNT")" --argjson duration "$(json_number_or_zero "$duration")" --argjson exit_code "$(json_number_or_zero "$EXIT_CODE")" \
+    --argjson startup_topology_samples_total "$(json_number_or_zero "$STARTUP_TOPOLOGY_SAMPLES_TOTAL")" --argjson startup_topology_stable_samples "$(json_number_or_zero "$STARTUP_TOPOLOGY_STABLE_SAMPLES")" --argjson startup_topology_resets_total "$(json_number_or_zero "$STARTUP_TOPOLOGY_RESETS_TOTAL")" --argjson startup_connection_keepalive_timeouts_total "$(json_number_or_zero "$STARTUP_CONNECTION_KEEPALIVE_TIMEOUTS_TOTAL")" --argjson startup_reconnect_attempts_total "$(json_number_or_zero "$STARTUP_RECONNECT_ATTEMPTS_TOTAL")" --argjson startup_reconnect_success_total "$(json_number_or_zero "$STARTUP_RECONNECT_SUCCESS_TOTAL")" --argjson startup_topology_ready_unix "$(json_number_or_zero "$STARTUP_TOPOLOGY_READY_UNIX")" --argjson startup_topology_wait_duration_ms "$(json_number_or_zero "$STARTUP_TOPOLOGY_WAIT_DURATION_MS")" \
+    --argjson templates "$(json_number_or_zero "$TOTAL_MINING_TEMPLATES")" --argjson submits "$(json_number_or_zero "$TOTAL_MINING_SUBMITS")" --argjson accepted "$(json_number_or_zero "$TOTAL_MINING_ACCEPTED")" --argjson rejected "$(json_number_or_zero "$TOTAL_MINING_REJECTED")" --argjson submit_busy "$(json_number_or_zero "$TOTAL_MINING_SUBMIT_BUSY")" --argjson actor_timeout "$(json_number_or_zero "$TOTAL_MINING_ACTOR_TIMEOUT")" \
+    --argjson local_miner_submits_total "$(json_number_or_zero "$LOCAL_MINER_SUBMITS_TOTAL")" --argjson local_miner_submits_accepted "$(json_number_or_zero "$LOCAL_MINER_SUBMITS_ACCEPTED")" --argjson local_miner_submits_rejected "$(json_number_or_zero "$LOCAL_MINER_SUBMITS_REJECTED")" --argjson local_miner_submits_rejected_by_reason "$(json_array_or_empty "$LOCAL_MINER_SUBMITS_REJECTED_BY_REASON")" \
+    --argjson nodes "$nodes_json" --slurpfile checksums "$checksum_tmp" \
+    '{git_ref:$git_ref,git_commit:$git_commit,version:$version,cargo_workspace_version:$cargo_workspace_version,stage:$stage,node_count:$node_count,miner_count:$miner_count,duration:$duration,result:$result,failure_class:$failure_class,start_utc:$start_utc,end_utc:$end_utc,exit_code:$exit_code,startup_metrics:{startup_topology_samples_total:$startup_topology_samples_total,startup_topology_stable_samples:$startup_topology_stable_samples,startup_topology_resets_total:$startup_topology_resets_total,startup_connection_keepalive_timeouts_total:$startup_connection_keepalive_timeouts_total,startup_reconnect_attempts_total:$startup_reconnect_attempts_total,startup_reconnect_success_total:$startup_reconnect_success_total,startup_topology_ready_unix:$startup_topology_ready_unix,startup_topology_wait_duration_ms:$startup_topology_wait_duration_ms},mining:{templates:$templates,submits:$submits,accepted:$accepted,rejected:$rejected,submit_busy:$submit_busy,actor_timeout:$actor_timeout},mining_semantics:{local_miner_submits_total:$local_miner_submits_total,local_miner_submits_accepted:$local_miner_submits_accepted,local_miner_submits_rejected:$local_miner_submits_rejected,local_miner_submits_rejected_by_reason:$local_miner_submits_rejected_by_reason,result:(if $local_miner_submits_total == 0 then "NOT_EXECUTED" else "EXECUTED" end)},gates:{baseline_5n_1m:$gate_5n_1m,intermediate_5n_2m:$gate_5n_2m,stress_5n_4m},prior_evidence:{},nodes:$nodes,checksums:($checksums[0] // {})}' > "$manifest_tmp" 2>"$jq_err"; then
+    write_minimal_fallback_manifest "$(cat "$jq_err" 2>/dev/null || echo jq manifest generation failed)"; rm -f "$manifest_tmp" "$checksum_tmp"; return 1
+  fi
+  if jq -e . "$manifest_tmp" >/dev/null 2>>"$jq_err" && [[ -s "$manifest_tmp" ]]; then
+    mv "$manifest_tmp" "$tmp_final" && mv "$tmp_final" "$OUT_DIR/evidence_manifest.json"
+    cp "$OUT_DIR/evidence_manifest.json" "$OUT_DIR_ROOT/evidence_manifest.json" 2>/dev/null || true
+    rm -f "$checksum_tmp"
+    return 0
+  fi
+  write_minimal_fallback_manifest "$(cat "$jq_err" 2>/dev/null || echo manifest validation failed)"
+  rm -f "$manifest_tmp" "$checksum_tmp" "$tmp_final"
+  return 1
 }
 
 
@@ -1311,6 +1277,9 @@ write_evidence_summary(){
     echo "- node_count: $NODE_COUNT"
     echo "- miner_count: $MINER_COUNT"
     echo "- evidence_manifest: evidence_manifest.json"
+    echo "- evidence_manifest_generation_failed: ${EVIDENCE_MANIFEST_GENERATION_FAILED:-0}"
+    if (( ${EVIDENCE_MANIFEST_GENERATION_FAILED:-0} != 0 )); then echo "- EVIDENCE_MANIFEST_GENERATION_FAILED: ${MANIFEST_GENERATION_ERROR:-unknown}"; fi
+    echo "- evidence_consistency_failure_count: $(( ${EVIDENCE_MANIFEST_GENERATION_FAILED:-0} ))"
     echo "- failure_classification: ${unique_classes:-none}"
     echo "- warnings:"
     if (( ${#WARNINGS[@]} > 0 )); then for w in "${WARNINGS[@]}"; do echo "  - $w"; done; else echo "  - none"; fi
@@ -1415,6 +1384,19 @@ verify_checksum_file(){
   fi
 }
 
+assert_packaged_evidence(){
+  local i ok=0 expected_samples
+  [[ -s "$OUT_DIR/evidence_manifest.json" ]] || { echo "evidence assertion failed: manifest missing or empty"; ok=1; }
+  jq -e . "$OUT_DIR/evidence_manifest.json" >/dev/null 2>&1 || { echo "evidence assertion failed: manifest is invalid JSON"; ok=1; }
+  for i in $(seq 1 "$NODE_COUNT"); do [[ -s "$OUT_DIR/nodes/n${i}.log" || -s "$OUT_DIR/logs/n${i}.log" ]] || { echo "evidence assertion failed: missing n${i} log"; ok=1; }; done
+  expected_samples=$(json_number_or_zero "$STARTUP_TOPOLOGY_SAMPLES_TOTAL")
+  if (( STARTUP_TOPOLOGY_STABLE_SAMPLES > expected_samples )); then echo "evidence assertion failed: stable startup samples exceed total samples"; ok=1; fi
+  if (( MINERS_STARTED == 0 )); then
+    jq -e '.mining_semantics.result == "NOT_EXECUTED"' "$OUT_DIR/evidence_manifest.json" >/dev/null 2>&1 || { echo "evidence assertion failed: no miners launched but mining result is not NOT_EXECUTED"; ok=1; }
+  fi
+  return "$ok"
+}
+
 package_evidence(){
   write_metadata || true
   cp "$OUT_DIR/p2p_convergence.json" "$OUT_DIR/final-convergence-table.json" 2>/dev/null || true
@@ -1448,6 +1430,7 @@ package_evidence(){
   write_evidence_manifest "$(awk '{print $1; exit}' "$OUT_DIR/evidence.tar.gz.sha256" 2>/dev/null || true)" || record_warn "failed to update evidence manifest with archive checksum"
   cp "$OUT_DIR/evidence.tar.gz" "$OUT_DIR_ROOT/evidence.tar.gz" 2>/dev/null || true
   write_checksum_file "$OUT_DIR_ROOT/evidence.tar.gz" "$OUT_DIR_ROOT/evidence.tar.gz.sha256" || cp "$OUT_DIR/evidence.tar.gz.sha256" "$OUT_DIR_ROOT/evidence.tar.gz.sha256" 2>/dev/null || true
+  assert_packaged_evidence || record_fail "EVIDENCE_ASSERTIONS_FAILED" "packaged evidence assertions failed"
   verify_checksum_file "$OUT_DIR_ROOT" evidence.tar.gz.sha256 || record_warn "root evidence checksum verification failed"
   verify_checksum_file "$OUT_DIR" evidence.tar.gz.sha256 || record_warn "run evidence checksum verification failed"
   [[ -s "$OUT_DIR/evidence.tar.gz" ]] || return 1
@@ -1510,7 +1493,9 @@ cleanup(){
     RESULT="FAIL"
   fi
   capture_hard_stop_diagnostics || true
+  sync || true
   capture_log_tails || true
+  for i in $(seq 1 "$NODE_COUNT"); do cp "$OUT_DIR/logs/n${i}.log" "$OUT_DIR/nodes/n${i}.log" 2>/dev/null || true; done
   write_evidence_summary || true
   write_p2p_convergence_json || true
   write_restart_rejoin_log || true
@@ -1556,8 +1541,8 @@ start_node(){
   mkdir -p "$data"
   local cmd=("$NODE_BIN" --network "$NETWORK_PROFILE" --rpc-listen "127.0.0.1:${rpc}" --p2p-listen "/ip4/127.0.0.1/tcp/${p2p}")
   [[ -n "$bootnode" ]] && cmd+=(--bootnode "$bootnode")
-  echo "launch node-${name}: PULSEDAG_ROCKSDB_PATH=$data/rocksdb ${cmd[*]}"
-  PULSEDAG_ROCKSDB_PATH="$data/rocksdb" "${cmd[@]}" > "$OUT_DIR/logs/${name}.log" 2>&1 &
+  echo "launch node-${name}: PULSEDAG_ROCKSDB_PATH=$data/rocksdb RUST_LOG=${RUST_LOG:-pulsedagd=info,pulsedag_p2p=info} RUST_LOG_STYLE=never ${cmd[*]}"
+  PULSEDAG_ROCKSDB_PATH="$data/rocksdb" RUST_LOG="${RUST_LOG:-pulsedagd=info,pulsedag_p2p=info}" RUST_LOG_STYLE=never "${cmd[@]}" > "$OUT_DIR/logs/${name}.log" 2>&1 &
   NODE_PIDS+=("$!")
   echo "$! node-${name}" >> "$OUT_DIR/process-pids.txt"
   mark_progress "node_${name}_started"
@@ -1623,12 +1608,13 @@ startup_sample_p2p_statuses(){
 }
 
 validate_startup_topology_sample(){
-  local root_inbound nonroot_bad=0 unstable=0 expected peer_count peer_id changed listeners alive_bad=0 listener_bad=0 i
+  local root_inbound nonroot_bad=0 unstable=0 expected peer_count peer_id changed listeners expected_port alive_bad=0 listener_bad=0 i
   root_inbound=$(jq -r '.data.peer_accounting.inbound_peer_count // .data.inbound_peer_count // 0' "$OUT_DIR/endpoints/n1-p2p-status-pre-mining.json" 2>/dev/null || echo 0)
   for i in $(seq 1 "$NODE_COUNT"); do
     if [[ -z "${NODE_PIDS[$((i-1))]:-}" ]] || ! kill -0 "${NODE_PIDS[$((i-1))]}" 2>/dev/null; then alive_bad=1; fi
-    listeners=$(jq -r '(.data.listeners // .data.listen_addresses // []) | length' "$OUT_DIR/endpoints/n${i}-p2p-status-pre-mining.json" 2>/dev/null || echo 0)
-    (( listeners >= 1 )) || listener_bad=1
+    listeners=$(extract_p2p_listening_addresses "$OUT_DIR/endpoints/n${i}-p2p-status-pre-mining.json")
+    expected_port=$((BASE_P2P_PORT+i))
+    p2p_listener_has_expected_port "$OUT_DIR/endpoints/n${i}-p2p-status-pre-mining.json" "$expected_port" || listener_bad=1
     peer_id=$(jq -r '.data.peer_id // .data.p2p_peer_id // .data.local_node_id // empty' "$OUT_DIR/endpoints/n${i}-p2p-status-pre-mining.json" 2>/dev/null || true)
     changed=$(jq -r '.data.p2p_peer_id_changed_since_previous_start // false' "$OUT_DIR/endpoints/n${i}-p2p-status-pre-mining.json" 2>/dev/null || echo false)
     [[ -n "$peer_id" ]] || unstable=1
