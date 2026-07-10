@@ -8,22 +8,20 @@ use axum::{
 pub struct HealthData {
     pub service: String,
     pub status: String,
+    pub process_alive: bool,
+    pub listener_alive: bool,
     pub chain_id: String,
     pub height: u64,
     pub selected_tip: Option<String>,
-    pub consistency_ok: bool,
-    pub consistency_issue_count: usize,
-    pub mempool_size: usize,
-    pub orphan_count: usize,
-    pub p2p_enabled: bool,
+    pub snapshot_age_ms: u64,
     pub peer_count: usize,
     pub storage: String,
-    pub uptime_secs: u64,
-    pub burn_in_remaining_days: u64,
     pub startup_recovery_mode: String,
-    pub last_self_audit_ok: bool,
-    pub last_self_audit_issue_count: usize,
+    pub last_consistency_audit_ok: bool,
+    pub last_consistency_audit_issue_count: usize,
+    pub last_consistency_audit_unix: Option<u64>,
     pub active_alert_count: usize,
+    pub degraded_reason: Option<String>,
 }
 #[derive(Debug, serde::Serialize)]
 pub struct GenesisData {
@@ -82,43 +80,40 @@ pub struct BlockData {
 }
 
 pub async fn get_health<S: RpcStateLike>(State(state): State<S>) -> Json<ApiResponse<HealthData>> {
-    let chain_handle = state.chain();
-    let chain = chain_handle.read().await;
-    let peer_count = state
-        .p2p()
-        .and_then(|p| p.status().ok())
-        .map(|s| s.connected_peers.len())
-        .unwrap_or(0);
-    let selected_tip = pulsedag_core::preferred_tip_hash(&chain);
-    let consistency_issues = pulsedag_core::dag_consistency_issues(&chain);
-    let runtime_handle = state.runtime();
-    let runtime = runtime_handle.read().await;
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(runtime.started_at_unix);
-    let uptime_secs = now.saturating_sub(runtime.started_at_unix);
-    let burn_in_remaining_days = 30u64.saturating_sub(uptime_secs / 86_400);
-    Json(ApiResponse::ok(HealthData {
+    let started = std::time::Instant::now();
+    let snapshot = state.rpc_snapshot().load();
+    let snapshot_age_ms = crate::api::unix_now_ms().saturating_sub(snapshot.last_updated_ms);
+    if snapshot.stale {
+        crate::api::record_health_snapshot_stale();
+    }
+    let status =
+        if !snapshot.last_consistency_audit_ok && snapshot.last_consistency_audit_issue_count > 0 {
+            "failed"
+        } else if snapshot.stale || snapshot.degraded {
+            "degraded"
+        } else {
+            "ok"
+        };
+    let response = Json(ApiResponse::ok(HealthData {
         service: "pulsedagd".into(),
-        status: "ok".into(),
-        chain_id: chain.chain_id.clone(),
-        height: chain.dag.best_height,
-        selected_tip,
-        consistency_ok: consistency_issues.is_empty(),
-        consistency_issue_count: consistency_issues.len(),
-        mempool_size: chain.mempool.transactions.len(),
-        orphan_count: chain.orphan_blocks.len(),
-        p2p_enabled: state.p2p().is_some(),
-        peer_count,
-        storage: "rocksdb".into(),
-        uptime_secs,
-        burn_in_remaining_days,
-        startup_recovery_mode: runtime.startup_recovery_mode.clone(),
-        last_self_audit_ok: runtime.last_self_audit_ok,
-        last_self_audit_issue_count: runtime.last_self_audit_issue_count,
-        active_alert_count: runtime.active_alerts.len(),
-    }))
+        status: status.into(),
+        process_alive: true,
+        listener_alive: true,
+        chain_id: snapshot.chain_id,
+        height: snapshot.height,
+        selected_tip: snapshot.tip,
+        snapshot_age_ms,
+        peer_count: snapshot.peer_count,
+        storage: snapshot.storage_mode,
+        startup_recovery_mode: snapshot.startup_mode,
+        last_consistency_audit_ok: snapshot.last_consistency_audit_ok,
+        last_consistency_audit_issue_count: snapshot.last_consistency_audit_issue_count,
+        last_consistency_audit_unix: snapshot.last_consistency_audit_unix,
+        active_alert_count: snapshot.active_alert_count,
+        degraded_reason: snapshot.degraded_reason,
+    }));
+    crate::api::record_health_handler_duration_ms(started.elapsed().as_millis() as u64);
+    response
 }
 
 pub async fn get_genesis<S: RpcStateLike>(

@@ -104,11 +104,12 @@ async fn rpc_liveness_endpoints_return_degraded_when_runtime_state_is_blocked() 
         "/orphans",
         "/metrics",
         "/release",
+        "/health",
     ] {
         let (status, body) = get_json(&state, endpoint).await;
         assert_eq!(status, StatusCode::OK, "{endpoint} returned {body}");
         assert_eq!(body["ok"], true, "{endpoint} returned {body}");
-        if endpoint != "/release" {
+        if endpoint != "/release" && endpoint != "/health" {
             assert!(
                 body["data"]["rpc_response_degraded"]
                     .as_bool()
@@ -149,4 +150,71 @@ async fn repeated_liveness_polling_drains_inflight_handlers_under_blocked_runtim
             < 64,
         "sequential polling should not leave an ever-growing inflight backlog: {metrics}"
     );
+}
+
+#[tokio::test]
+async fn health_returns_cached_snapshot_when_chain_write_lock_is_held() {
+    let state = test_state("health-blocked-chain");
+    state
+        .rpc_snapshot
+        .store(pulsedag_rpc::api::NodeRpcSnapshot {
+            height: 42,
+            peer_count: 7,
+            degraded: true,
+            degraded_reason: Some("cached snapshot used while chain writer is active".to_string()),
+            last_updated_ms: pulsedag_rpc::api::unix_now_ms().saturating_sub(10_000),
+            ..state.rpc_snapshot.load()
+        });
+    let _chain_writer = state.chain.write().await;
+
+    let (status, body) = get_json(&state, "/health").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["ok"], true, "{body}");
+    assert_eq!(body["data"]["status"], "degraded", "{body}");
+    assert_eq!(body["data"]["height"], 42, "{body}");
+    assert_eq!(body["data"]["peer_count"], 7, "{body}");
+}
+
+#[tokio::test]
+async fn health_returns_cached_snapshot_when_runtime_write_lock_is_held() {
+    let state = test_state("health-blocked-runtime");
+    state
+        .rpc_snapshot
+        .store(pulsedag_rpc::api::NodeRpcSnapshot {
+            height: 11,
+            peer_count: 3,
+            startup_mode: "reconciling".to_string(),
+            ..state.rpc_snapshot.load()
+        });
+    let _runtime_writer = state.runtime.write().await;
+
+    let (status, body) = get_json(&state, "/health").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["ok"], true, "{body}");
+    assert_eq!(body["data"]["height"], 11, "{body}");
+    assert_eq!(
+        body["data"]["startup_recovery_mode"], "reconciling",
+        "{body}"
+    );
+}
+
+#[tokio::test]
+async fn health_snapshot_refresh_updates_height_and_peer_count() {
+    let state = test_state("health-snapshot-refresh");
+    state
+        .rpc_snapshot
+        .store(pulsedag_rpc::api::NodeRpcSnapshot {
+            height: 123,
+            peer_count: 9,
+            last_updated_ms: pulsedag_rpc::api::unix_now_ms(),
+            degraded: false,
+            stale: false,
+            ..state.rpc_snapshot.load()
+        });
+
+    let (status, body) = get_json(&state, "/health").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["status"], "ok", "{body}");
+    assert_eq!(body["data"]["height"], 123, "{body}");
+    assert_eq!(body["data"]["peer_count"], 9, "{body}");
 }

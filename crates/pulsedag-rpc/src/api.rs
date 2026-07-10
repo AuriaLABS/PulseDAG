@@ -33,6 +33,11 @@ static RPC_INFLIGHT_HANDLERS: OnceLock<Mutex<BTreeMap<u64, (String, u64)>>> = On
 static RPC_HANDLER_TIMEOUT_BY_ENDPOINT: OnceLock<Mutex<BTreeMap<String, u64>>> = OnceLock::new();
 static RUNTIME_LOCK_BUSY_BY_ENDPOINT: OnceLock<Mutex<BTreeMap<String, u64>>> = OnceLock::new();
 static DEGRADED_SNAPSHOT_BY_ENDPOINT: OnceLock<Mutex<BTreeMap<String, u64>>> = OnceLock::new();
+static HEALTH_HANDLER_DURATION_MS: AtomicU64 = AtomicU64::new(0);
+static HEALTH_SNAPSHOT_STALE_TOTAL: AtomicU64 = AtomicU64::new(0);
+static HEALTH_CHAIN_LOCK_ATTEMPT_TOTAL: AtomicU64 = AtomicU64::new(0);
+static HEALTH_HANDLER_TIMEOUT_TOTAL: AtomicU64 = AtomicU64::new(0);
+static HEALTH_BACKGROUND_CONSISTENCY_AUDIT_DURATION_MS: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct MissingParentSnapshotEntry {
@@ -69,7 +74,30 @@ pub struct NodeRpcSnapshot {
     pub inflight_block_requests: usize,
     #[serde(default)]
     pub sync_state: String,
+    #[serde(default = "default_storage_mode")]
+    pub storage_mode: String,
+    #[serde(default = "default_startup_mode")]
+    pub startup_mode: String,
+    #[serde(default)]
+    pub last_consistency_audit_ok: bool,
+    #[serde(default)]
+    pub last_consistency_audit_issue_count: usize,
+    #[serde(default)]
+    pub last_consistency_audit_unix: Option<u64>,
+    #[serde(default)]
+    pub active_alert_count: usize,
 }
+
+fn default_storage_mode() -> String {
+    "rocksdb".to_string()
+}
+fn default_startup_mode() -> String {
+    "unknown".to_string()
+}
+
+/// Lightweight health snapshot used by `/health` instead of waiting behind
+/// consensus/runtime/P2P locks.
+pub type HealthSnapshot = NodeRpcSnapshot;
 
 /// Lightweight status snapshot used by liveness-style RPCs instead of waiting
 /// behind consensus/runtime locks.
@@ -106,6 +134,12 @@ impl Default for NodeRpcSnapshot {
             pending_block_requests: 0,
             inflight_block_requests: 0,
             sync_state: "unknown".to_string(),
+            storage_mode: default_storage_mode(),
+            startup_mode: default_startup_mode(),
+            last_consistency_audit_ok: false,
+            last_consistency_audit_issue_count: 0,
+            last_consistency_audit_unix: None,
+            active_alert_count: 0,
         }
     }
 }
@@ -193,6 +227,12 @@ pub struct NodeRpcSnapshotMetrics {
     pub degraded_snapshot_returned_total: BTreeMap<String, u64>,
     pub rpc_accept_backlog_observed: u64,
     pub oldest_inflight_rpc_handler_age_ms: u64,
+    pub health_handler_duration_ms: u64,
+    pub health_snapshot_age_ms: u64,
+    pub health_snapshot_stale_total: u64,
+    pub health_chain_lock_attempt_total: u64,
+    pub health_handler_timeout_total: u64,
+    pub health_background_consistency_audit_duration_ms: u64,
 }
 
 pub fn node_rpc_snapshot_metrics(snapshot: &NodeRpcSnapshot) -> NodeRpcSnapshotMetrics {
@@ -211,12 +251,20 @@ pub fn node_rpc_snapshot_metrics(snapshot: &NodeRpcSnapshot) -> NodeRpcSnapshotM
         degraded_snapshot_returned_total: endpoint_counts(&DEGRADED_SNAPSHOT_BY_ENDPOINT),
         rpc_accept_backlog_observed: RPC_ACCEPT_BACKLOG_OBSERVED.load(Ordering::Relaxed),
         oldest_inflight_rpc_handler_age_ms: oldest_inflight_rpc_handler_age_ms(),
+        health_handler_duration_ms: HEALTH_HANDLER_DURATION_MS.load(Ordering::Relaxed),
+        health_snapshot_age_ms: rpc_snapshot_age_ms,
+        health_snapshot_stale_total: HEALTH_SNAPSHOT_STALE_TOTAL.load(Ordering::Relaxed),
+        health_chain_lock_attempt_total: HEALTH_CHAIN_LOCK_ATTEMPT_TOTAL.load(Ordering::Relaxed),
+        health_handler_timeout_total: HEALTH_HANDLER_TIMEOUT_TOTAL.load(Ordering::Relaxed),
+        health_background_consistency_audit_duration_ms:
+            HEALTH_BACKGROUND_CONSISTENCY_AUDIT_DURATION_MS.load(Ordering::Relaxed),
     }
 }
 
 fn rpc_snapshot_age_ms_by_endpoint(age_ms: u64) -> BTreeMap<String, u64> {
-    const LIVENESS_ENDPOINTS: [&str; 8] = [
+    const LIVENESS_ENDPOINTS: [&str; 9] = [
         "/metrics",
+        "/health",
         "/status",
         "/readiness",
         "/release",
@@ -244,6 +292,26 @@ fn rpc_snapshot_age_ms_by_endpoint(age_ms: u64) -> BTreeMap<String, u64> {
 
 pub fn record_rpc_snapshot_stale() {
     RPC_SNAPSHOT_STALE_TOTAL.fetch_add(1, Ordering::Relaxed);
+}
+
+pub fn record_health_handler_duration_ms(duration_ms: u64) {
+    HEALTH_HANDLER_DURATION_MS.store(duration_ms, Ordering::Relaxed);
+}
+
+pub fn record_health_snapshot_stale() {
+    HEALTH_SNAPSHOT_STALE_TOTAL.fetch_add(1, Ordering::Relaxed);
+}
+
+pub fn record_health_chain_lock_attempt() {
+    HEALTH_CHAIN_LOCK_ATTEMPT_TOTAL.fetch_add(1, Ordering::Relaxed);
+}
+
+pub fn record_health_handler_timeout() {
+    HEALTH_HANDLER_TIMEOUT_TOTAL.fetch_add(1, Ordering::Relaxed);
+}
+
+pub fn record_health_background_consistency_audit_duration_ms(duration_ms: u64) {
+    HEALTH_BACKGROUND_CONSISTENCY_AUDIT_DURATION_MS.store(duration_ms, Ordering::Relaxed);
 }
 
 pub fn record_rpc_handler_degraded() {
@@ -417,6 +485,12 @@ pub fn build_node_rpc_snapshot(
         pending_block_requests: runtime.pending_block_requests,
         inflight_block_requests: runtime.inflight_block_requests,
         sync_state: runtime.sync_state.clone(),
+        storage_mode: default_storage_mode(),
+        startup_mode: runtime.startup_recovery_mode.clone(),
+        last_consistency_audit_ok: runtime.last_self_audit_ok,
+        last_consistency_audit_issue_count: runtime.last_self_audit_issue_count,
+        last_consistency_audit_unix: Some(runtime.started_at_unix),
+        active_alert_count: runtime.active_alerts.len(),
     }
 }
 

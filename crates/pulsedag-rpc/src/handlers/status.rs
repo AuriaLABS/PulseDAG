@@ -751,6 +751,12 @@ mod tests {
             pending_block_requests: 6,
             inflight_block_requests: 0,
             sync_state: "degraded".to_string(),
+            storage_mode: "rocksdb".to_string(),
+            startup_mode: "unknown".to_string(),
+            last_consistency_audit_ok: true,
+            last_consistency_audit_issue_count: 0,
+            last_consistency_audit_unix: None,
+            active_alert_count: 0,
         });
         let _write_guard = state.chain.write().await;
 
