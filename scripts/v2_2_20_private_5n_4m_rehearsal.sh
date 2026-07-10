@@ -153,7 +153,11 @@ LOCAL_MINER_SUBMITS_REJECTED_BY_REASON=[]
 NODE_BLOCK_ACCEPT_EVENTS_TOTAL=0
 NODE_BLOCK_REJECT_EVENTS_TOTAL=0
 DUPLICATE_BLOCK_EVENTS_TOTAL=0
+NODE_BLOCK_DUPLICATE_EVENTS_TOTAL=0
 UNIQUE_BLOCK_HASHES_OBSERVED=0
+LOCAL_MINER_TEMPLATES_RECEIVED=0
+UNIQUE_SUBMITTED_BLOCK_HASHES=0
+MINER_EVIDENCE_CONSISTENCY_FAILURES=[]
 declare -A miner_submit miner_accept miner_reject miner_template
 for i in 1 2 3 4; do miner_submit[$i]=0; miner_accept[$i]=0; miner_reject[$i]=0; miner_template[$i]=0; done
 REPO_REF="$(git -C "$ROOT_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)"
@@ -208,6 +212,29 @@ count_rejected_file(){
   local file="$1"
   [[ -f "$file" ]] || { echo 0; return 0; }
   awk '{ line=tolower($0); if (line ~ /submit_result accepted=false|reject|rejected/) count++ } END { print count + 0 }' "$file" 2>/dev/null || echo 0
+}
+
+parse_miner_terminal_evidence(){
+  local parser="$ROOT_DIR/scripts/lib/miner_evidence_parser.awk" parsed
+  if [[ ! -f "$parser" ]]; then
+    record_fail "MINER_EVIDENCE_PARSER_MISSING" "miner evidence parser not found: $parser"
+    return 1
+  fi
+  parsed=$(find "$OUT_DIR/logs" -maxdepth 1 -type f -name 'miner-*.log' -print0 2>/dev/null | xargs -0 -r awk -f "$parser" 2>/dev/null || true)
+  if [[ -z "$parsed" ]]; then
+    parsed=$(awk -f "$parser" /dev/null 2>/dev/null || true)
+  fi
+  eval "$parsed"
+  LOCAL_MINER_TEMPLATES_RECEIVED=$(json_number_or_zero "${local_miner_templates_received:-0}")
+  LOCAL_MINER_SUBMITS_TOTAL=$(json_number_or_zero "${local_miner_submits_total:-0}")
+  LOCAL_MINER_SUBMITS_ACCEPTED=$(json_number_or_zero "${local_miner_submits_accepted:-0}")
+  LOCAL_MINER_SUBMITS_REJECTED=$(json_number_or_zero "${local_miner_submits_rejected:-0}")
+  LOCAL_MINER_SUBMITS_REJECTED_BY_REASON=$(json_array_or_empty "${local_miner_submits_rejected_by_reason:-[]}")
+  UNIQUE_SUBMITTED_BLOCK_HASHES=$(json_number_or_zero "${unique_submitted_block_hashes:-0}")
+  MINER_EVIDENCE_CONSISTENCY_FAILURES=$(json_array_or_empty "${miner_evidence_consistency_failures:-[]}")
+  if [[ "$MINER_EVIDENCE_CONSISTENCY_FAILURES" != "[]" ]]; then
+    while IFS= read -r failure; do [[ -n "$failure" ]] && record_fail "MINER_EVIDENCE_CONSISTENCY" "$failure"; done < <(printf '%s' "$MINER_EVIDENCE_CONSISTENCY_FAILURES" | jq -r '.[]' 2>/dev/null || true)
+  fi
 }
 
 collect_miner_metrics(){
@@ -957,12 +984,10 @@ compute_evidence_aggregates(){
   TOTAL_BLOCKDATA_NOT_FOUND=$(integer_sum_or_zero "$(count_matches_file 'blockdata_not_found|BLOCKDATA_NOT_FOUND|block data not found' "$OUT_DIR/command-log.txt")")
   UNIQUE_TEMPLATES_ISSUED=$(find "$OUT_DIR/miners" "$OUT_DIR/logs" -type f 2>/dev/null | xargs -r perl -ne 'print "$1\n" if /(?:template[_ -]?id|template_hash|block_template_hash)[=: ]+([0-9a-fA-F]+)/' | sort -u | wc -l | tr -d " ")
   UNIQUE_BLOCK_HASHES_OBSERVED=$(find "$OUT_DIR/endpoints" "$OUT_DIR/logs" -type f 2>/dev/null | xargs -r perl -ne 'print "$1\n" if /(?:block_hash|hash)["=: ]+([0-9a-fA-F]{16,})/' | sort -u | wc -l | tr -d " ")
-  LOCAL_MINER_SUBMITS_TOTAL=$(count_matches_in_logs 'submit_result|submit_accepted|submit')
-  LOCAL_MINER_SUBMITS_ACCEPTED=$ACCEPTED_BLOCKS
-  LOCAL_MINER_SUBMITS_REJECTED=$REJECTED_BLOCKS
-  LOCAL_MINER_SUBMITS_REJECTED_BY_REASON=$(for i in $(seq 1 "$MINER_COUNT"); do awk 'tolower($0) ~ /reject|rejected|accepted=false/ {print tolower($0)}' "$OUT_DIR/logs/miner-${i}.log" 2>/dev/null; done | sed -E 's/.*(stale[^ ,;]*|duplicate[^ ,;]*|invalid[^ ,;]*|busy[^ ,;]*|timeout[^ ,;]*).*/\1/' | sort | uniq -c | jq -Rn '[inputs | capture("^\\s*(?<count>[0-9]+)\\s+(?<reason>.*)$") | {reason, count:(.count|tonumber)}]')
+  parse_miner_terminal_evidence || true
   if (( UNIQUE_TEMPLATES_ISSUED == 0 )); then UNIQUE_TEMPLATES_ISSUED=$TOTAL_MINING_TEMPLATES; fi
-  if (( UNIQUE_BLOCK_HASHES_OBSERVED > 0 && NODE_BLOCK_ACCEPT_EVENTS_TOTAL > UNIQUE_BLOCK_HASHES_OBSERVED )); then DUPLICATE_BLOCK_EVENTS_TOTAL=$((NODE_BLOCK_ACCEPT_EVENTS_TOTAL - UNIQUE_BLOCK_HASHES_OBSERVED)); fi
+  NODE_BLOCK_DUPLICATE_EVENTS_TOTAL=$DUPLICATE_BLOCK_EVENTS_TOTAL
+  if (( UNIQUE_BLOCK_HASHES_OBSERVED > 0 && NODE_BLOCK_ACCEPT_EVENTS_TOTAL > UNIQUE_BLOCK_HASHES_OBSERVED )); then NODE_BLOCK_DUPLICATE_EVENTS_TOTAL=$((NODE_BLOCK_ACCEPT_EVENTS_TOTAL - UNIQUE_BLOCK_HASHES_OBSERVED)); DUPLICATE_BLOCK_EVENTS_TOTAL=$NODE_BLOCK_DUPLICATE_EVENTS_TOTAL; fi
   if (( TOTAL_MINING_TEMPLATES == 0 )); then TOTAL_MINING_TEMPLATES=$(count_matches_in_logs 'template_received|template'); fi
   if (( TOTAL_MINING_SUBMITS == 0 )); then TOTAL_MINING_SUBMITS=$(count_matches_in_logs 'submit_result|submit_accepted|submit'); fi
   if (( TOTAL_MINING_ACCEPTED == 0 )); then TOTAL_MINING_ACCEPTED=$ACCEPTED_BLOCKS; fi
@@ -1065,9 +1090,9 @@ write_evidence_manifest(){
     --argjson node_count "$(json_number_or_zero "$NODE_COUNT")" --argjson miner_count "$(json_number_or_zero "$MINER_COUNT")" --argjson duration "$(json_number_or_zero "$duration")" --argjson exit_code "$(json_number_or_zero "$EXIT_CODE")" \
     --argjson startup_topology_samples_total "$(json_number_or_zero "$STARTUP_TOPOLOGY_SAMPLES_TOTAL")" --argjson startup_topology_stable_samples "$(json_number_or_zero "$STARTUP_TOPOLOGY_STABLE_SAMPLES")" --argjson startup_topology_resets_total "$(json_number_or_zero "$STARTUP_TOPOLOGY_RESETS_TOTAL")" --argjson startup_connection_keepalive_timeouts_total "$(json_number_or_zero "$STARTUP_CONNECTION_KEEPALIVE_TIMEOUTS_TOTAL")" --argjson startup_reconnect_attempts_total "$(json_number_or_zero "$STARTUP_RECONNECT_ATTEMPTS_TOTAL")" --argjson startup_reconnect_success_total "$(json_number_or_zero "$STARTUP_RECONNECT_SUCCESS_TOTAL")" --argjson startup_topology_ready_unix "$(json_number_or_zero "$STARTUP_TOPOLOGY_READY_UNIX")" --argjson startup_topology_wait_duration_ms "$(json_number_or_zero "$STARTUP_TOPOLOGY_WAIT_DURATION_MS")" \
     --argjson templates "$(json_number_or_zero "$TOTAL_MINING_TEMPLATES")" --argjson submits "$(json_number_or_zero "$TOTAL_MINING_SUBMITS")" --argjson accepted "$(json_number_or_zero "$TOTAL_MINING_ACCEPTED")" --argjson rejected "$(json_number_or_zero "$TOTAL_MINING_REJECTED")" --argjson submit_busy "$(json_number_or_zero "$TOTAL_MINING_SUBMIT_BUSY")" --argjson actor_timeout "$(json_number_or_zero "$TOTAL_MINING_ACTOR_TIMEOUT")" \
-    --argjson local_miner_submits_total "$(json_number_or_zero "$LOCAL_MINER_SUBMITS_TOTAL")" --argjson local_miner_submits_accepted "$(json_number_or_zero "$LOCAL_MINER_SUBMITS_ACCEPTED")" --argjson local_miner_submits_rejected "$(json_number_or_zero "$LOCAL_MINER_SUBMITS_REJECTED")" --argjson local_miner_submits_rejected_by_reason "$(json_array_or_empty "$LOCAL_MINER_SUBMITS_REJECTED_BY_REASON")" \
+    --argjson local_miner_templates_received "$(json_number_or_zero "$LOCAL_MINER_TEMPLATES_RECEIVED")" --argjson local_miner_submits_total "$(json_number_or_zero "$LOCAL_MINER_SUBMITS_TOTAL")" --argjson local_miner_submits_accepted "$(json_number_or_zero "$LOCAL_MINER_SUBMITS_ACCEPTED")" --argjson local_miner_submits_rejected "$(json_number_or_zero "$LOCAL_MINER_SUBMITS_REJECTED")" --argjson local_miner_submits_rejected_by_reason "$(json_array_or_empty "$LOCAL_MINER_SUBMITS_REJECTED_BY_REASON")" --argjson unique_submitted_block_hashes "$(json_number_or_zero "$UNIQUE_SUBMITTED_BLOCK_HASHES")" --argjson node_block_accept_events_total "$(json_number_or_zero "$NODE_BLOCK_ACCEPT_EVENTS_TOTAL")" --argjson node_block_duplicate_events_total "$(json_number_or_zero "$NODE_BLOCK_DUPLICATE_EVENTS_TOTAL")" --argjson node_block_reject_events_total "$(json_number_or_zero "$NODE_BLOCK_REJECT_EVENTS_TOTAL")" --argjson miner_evidence_consistency_failures "$(json_array_or_empty "$MINER_EVIDENCE_CONSISTENCY_FAILURES")" \
     --argjson nodes "$nodes_json" --slurpfile checksums "$checksum_tmp" \
-    '{git_ref:$git_ref,git_commit:$git_commit,version:$version,cargo_workspace_version:$cargo_workspace_version,stage:$stage,node_count:$node_count,miner_count:$miner_count,duration:$duration,result:$result,failure_class:$failure_class,start_utc:$start_utc,end_utc:$end_utc,exit_code:$exit_code,startup_metrics:{startup_topology_samples_total:$startup_topology_samples_total,startup_topology_stable_samples:$startup_topology_stable_samples,startup_topology_resets_total:$startup_topology_resets_total,startup_connection_keepalive_timeouts_total:$startup_connection_keepalive_timeouts_total,startup_reconnect_attempts_total:$startup_reconnect_attempts_total,startup_reconnect_success_total:$startup_reconnect_success_total,startup_topology_ready_unix:$startup_topology_ready_unix,startup_topology_wait_duration_ms:$startup_topology_wait_duration_ms},mining:{templates:$templates,submits:$submits,accepted:$accepted,rejected:$rejected,submit_busy:$submit_busy,actor_timeout:$actor_timeout},mining_semantics:{local_miner_submits_total:$local_miner_submits_total,local_miner_submits_accepted:$local_miner_submits_accepted,local_miner_submits_rejected:$local_miner_submits_rejected,local_miner_submits_rejected_by_reason:$local_miner_submits_rejected_by_reason,result:(if $local_miner_submits_total == 0 then "NOT_EXECUTED" else "EXECUTED" end)},gates:{baseline_5n_1m:$gate_5n_1m,intermediate_5n_2m:$gate_5n_2m,stress_5n_4m},prior_evidence:{},nodes:$nodes,checksums:($checksums[0] // {})}' > "$manifest_tmp" 2>"$jq_err"; then
+    '{git_ref:$git_ref,git_commit:$git_commit,version:$version,cargo_workspace_version:$cargo_workspace_version,stage:$stage,node_count:$node_count,miner_count:$miner_count,duration:$duration,result:$result,failure_class:$failure_class,start_utc:$start_utc,end_utc:$end_utc,exit_code:$exit_code,startup_metrics:{startup_topology_samples_total:$startup_topology_samples_total,startup_topology_stable_samples:$startup_topology_stable_samples,startup_topology_resets_total:$startup_topology_resets_total,startup_connection_keepalive_timeouts_total:$startup_connection_keepalive_timeouts_total,startup_reconnect_attempts_total:$startup_reconnect_attempts_total,startup_reconnect_success_total:$startup_reconnect_success_total,startup_topology_ready_unix:$startup_topology_ready_unix,startup_topology_wait_duration_ms:$startup_topology_wait_duration_ms},mining:{templates:$templates,submits:$submits,accepted:$accepted,rejected:$rejected,submit_busy:$submit_busy,actor_timeout:$actor_timeout},mining_semantics:{local_miner_templates_received:$local_miner_templates_received,local_miner_submits_total:$local_miner_submits_total,local_miner_submits_accepted:$local_miner_submits_accepted,local_miner_submits_rejected:$local_miner_submits_rejected,local_miner_submits_rejected_by_reason:$local_miner_submits_rejected_by_reason,unique_submitted_block_hashes:$unique_submitted_block_hashes,node_block_accept_events_total:$node_block_accept_events_total,node_block_duplicate_events_total:$node_block_duplicate_events_total,node_block_reject_events_total:$node_block_reject_events_total,evidence_consistency_failures:$miner_evidence_consistency_failures,result:(if $local_miner_submits_total == 0 then "NOT_EXECUTED" else "EXECUTED" end)},gates:{baseline_5n_1m:$gate_5n_1m,intermediate_5n_2m:$gate_5n_2m,stress_5n_4m},prior_evidence:{},nodes:$nodes,checksums:($checksums[0] // {})}' > "$manifest_tmp" 2>"$jq_err"; then
     write_minimal_fallback_manifest "$(cat "$jq_err" 2>/dev/null || echo jq manifest generation failed)"; rm -f "$manifest_tmp" "$checksum_tmp"; return 1
   fi
   if jq -e . "$manifest_tmp" >/dev/null 2>>"$jq_err" && [[ -s "$manifest_tmp" ]]; then
@@ -1201,7 +1226,7 @@ write_evidence_summary(){
     echo "- node_block_accept_events_total: ${NODE_BLOCK_ACCEPT_EVENTS_TOTAL:-0}"
     echo "- node_block_reject_events_total: ${NODE_BLOCK_REJECT_EVENTS_TOTAL:-0}"
     echo "- unique_block_hashes_observed: ${UNIQUE_BLOCK_HASHES_OBSERVED:-0}"
-    echo "- duplicate_block_events_total: ${DUPLICATE_BLOCK_EVENTS_TOTAL:-0}"
+    echo "- node_block_duplicate_events_total: ${NODE_BLOCK_DUPLICATE_EVENTS_TOTAL:-0}"
     echo "- local_miner_submits_total: ${LOCAL_MINER_SUBMITS_TOTAL:-0}"
     echo "- local_miner_submits_accepted: ${LOCAL_MINER_SUBMITS_ACCEPTED:-0}"
     echo "- local_miner_submits_rejected: ${LOCAL_MINER_SUBMITS_REJECTED:-0}"
