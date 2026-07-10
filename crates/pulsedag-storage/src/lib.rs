@@ -16,6 +16,7 @@ use pulsedag_core::{
 };
 use rocksdb::{ColumnFamilyDescriptor, WriteBatch, DB};
 use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, BTreeSet};
 
 const CHAIN_STATE_KEY: &[u8] = b"chain_state";
 pub const STORAGE_SCHEMA_VERSION: u32 = 1;
@@ -50,11 +51,22 @@ pub struct Storage {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AcceptedStorageInvariantReport {
+    pub memory_generation: String,
+    pub storage_generation: String,
     pub accepted_storage_count: usize,
     pub in_memory_dag_count: usize,
+    pub in_memory_accepted_hashes: Vec<Hash>,
+    pub persisted_accepted_hashes: Vec<Hash>,
     pub storage_only_hashes: Vec<Hash>,
     pub memory_only_hashes: Vec<Hash>,
+    pub mismatch_acceptance_sources: BTreeMap<Hash, String>,
     pub staged_hashes_present_in_accepted_storage: Vec<Hash>,
+}
+
+fn invariant_generation(hashes: &[Hash]) -> String {
+    let first = hashes.first().map(String::as_str).unwrap_or("-");
+    let last = hashes.last().map(String::as_str).unwrap_or("-");
+    format!("count:{}:first:{}:last:{}", hashes.len(), first, last)
 }
 
 impl AcceptedStorageInvariantReport {
@@ -604,29 +616,48 @@ impl Storage {
             .list_blocks()?
             .into_iter()
             .map(|block| block.hash)
-            .collect::<std::collections::BTreeSet<_>>();
-        let memory_hashes = state
-            .dag
-            .blocks
-            .keys()
-            .cloned()
-            .collect::<std::collections::BTreeSet<_>>();
+            .collect::<BTreeSet<_>>();
+        let memory_hashes = state.dag.blocks.keys().cloned().collect::<BTreeSet<_>>();
         let staged_hashes = self
             .list_staged_orphan_blocks()?
             .into_iter()
             .map(|block| block.hash)
-            .collect::<std::collections::BTreeSet<_>>();
+            .collect::<BTreeSet<_>>();
+        let storage_only_hashes = accepted_hashes
+            .difference(&memory_hashes)
+            .cloned()
+            .collect::<Vec<_>>();
+        let memory_only_hashes = memory_hashes
+            .difference(&accepted_hashes)
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut mismatch_acceptance_sources = BTreeMap::new();
+        for hash in storage_only_hashes.iter().chain(memory_only_hashes.iter()) {
+            let source = if state.orphan_blocks.contains_key(hash) || staged_hashes.contains(hash) {
+                "staged_or_missing_parent"
+            } else if state.terminal_missing_parents.contains_key(hash) {
+                "terminal_or_quarantined_missing_parent"
+            } else if state.dag.blocks.contains_key(hash) {
+                "in_memory_accepted"
+            } else if accepted_hashes.contains(hash) {
+                "persisted_accepted_unreferenced"
+            } else {
+                "unknown"
+            };
+            mismatch_acceptance_sources.insert(hash.clone(), source.to_string());
+        }
+        let in_memory_accepted_hashes = memory_hashes.iter().cloned().collect::<Vec<_>>();
+        let persisted_accepted_hashes = accepted_hashes.iter().cloned().collect::<Vec<_>>();
         let report = AcceptedStorageInvariantReport {
+            memory_generation: invariant_generation(&in_memory_accepted_hashes),
+            storage_generation: invariant_generation(&persisted_accepted_hashes),
             accepted_storage_count: accepted_hashes.len(),
             in_memory_dag_count: memory_hashes.len(),
-            storage_only_hashes: accepted_hashes
-                .difference(&memory_hashes)
-                .cloned()
-                .collect(),
-            memory_only_hashes: memory_hashes
-                .difference(&accepted_hashes)
-                .cloned()
-                .collect(),
+            in_memory_accepted_hashes,
+            persisted_accepted_hashes,
+            storage_only_hashes,
+            memory_only_hashes,
+            mismatch_acceptance_sources,
             staged_hashes_present_in_accepted_storage: staged_hashes
                 .intersection(&accepted_hashes)
                 .cloned()
@@ -2121,6 +2152,48 @@ mod tests {
             .iter()
             .any(|b| b.hash == best_tip_hash(&snapshot)
                 && b.header.height == snapshot.dag.best_height));
+
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn block_commit_invariant_snapshot_identifies_extra_persisted_hash_and_source() {
+        let path = temp_db_path("block-commit-invariant-extra");
+        let storage = Storage::open(&path).expect("open storage");
+        let state = init_chain_state("testnet".to_string());
+        let genesis = state.dag.blocks.values().next().cloned().expect("genesis");
+        storage
+            .persist_block_and_chain_state(&genesis, &state)
+            .expect("persist genesis");
+        let extra = build_candidate_block(
+            vec!["missing-parent".into()],
+            1,
+            1,
+            vec![build_coinbase_transaction("miner", 50, 98)],
+        );
+        storage
+            .persist_block(&extra)
+            .expect("simulate legacy rejected/staged block leak into accepted storage");
+
+        let report = storage
+            .verify_accepted_storage_invariants(&state)
+            .expect("coherent invariant snapshot");
+
+        assert!(!report.is_ok());
+        assert_eq!(report.storage_only_hashes, vec![extra.hash.clone()]);
+        assert_eq!(
+            report.mismatch_acceptance_sources.get(&extra.hash),
+            Some(&"persisted_accepted_unreferenced".to_string())
+        );
+        assert_eq!(report.memory_only_hashes, Vec::<Hash>::new());
+        assert_eq!(
+            report.in_memory_accepted_hashes.len(),
+            state.dag.blocks.len()
+        );
+        assert_eq!(
+            report.persisted_accepted_hashes.len(),
+            state.dag.blocks.len() + 1
+        );
 
         let _ = std::fs::remove_dir_all(path);
     }
