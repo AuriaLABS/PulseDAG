@@ -1,6 +1,5 @@
 use crate::{api::ApiResponse, api::RpcStateLike};
 use axum::{extract::State, Json};
-use std::collections::BTreeSet;
 
 #[derive(Debug, serde::Serialize)]
 pub struct NodeCheckItem {
@@ -22,18 +21,12 @@ pub async fn get_node_checks<S: RpcStateLike>(
         Ok(v) => v,
         Err(e) => return Json(ApiResponse::err("STORAGE_ERROR", e.to_string())),
     };
-    let persisted_blocks = match state.storage().list_blocks() {
-        Ok(v) => v,
-        Err(e) => return Json(ApiResponse::err("STORAGE_ERROR", e.to_string())),
-    };
-    let persisted_hashes = persisted_blocks
-        .iter()
-        .map(|b| b.hash.clone())
-        .collect::<BTreeSet<_>>();
-
     let chain_handle = state.chain();
     let chain = chain_handle.read().await;
-    let memory_hashes = chain.dag.blocks.keys().cloned().collect::<BTreeSet<_>>();
+    let invariant_snapshot = match state.storage().verify_accepted_storage_invariants(&chain) {
+        Ok(report) => report,
+        Err(e) => return Json(ApiResponse::err("STORAGE_ERROR", e.to_string())),
+    };
     let p2p_status = state.p2p().and_then(|p| p.status().ok());
     let peer_count = p2p_status
         .as_ref()
@@ -57,14 +50,22 @@ pub async fn get_node_checks<S: RpcStateLike>(
         },
         NodeCheckItem {
             name: "storage_consistency".into(),
-            ok: memory_hashes == persisted_hashes,
-            detail: if memory_hashes == persisted_hashes {
-                "memory and storage block sets match".into()
+            ok: invariant_snapshot.is_ok(),
+            detail: if invariant_snapshot.is_ok() {
+                format!(
+                    "memory and storage block sets match ({})",
+                    invariant_snapshot.memory_generation
+                )
             } else {
                 format!(
-                    "memory={}, storage={}",
-                    memory_hashes.len(),
-                    persisted_hashes.len()
+                    "memory={} storage={} storage_only={:?} memory_only={:?} sources={:?} memory_generation={} storage_generation={}",
+                    invariant_snapshot.in_memory_dag_count,
+                    invariant_snapshot.accepted_storage_count,
+                    invariant_snapshot.storage_only_hashes,
+                    invariant_snapshot.memory_only_hashes,
+                    invariant_snapshot.mismatch_acceptance_sources,
+                    invariant_snapshot.memory_generation,
+                    invariant_snapshot.storage_generation
                 )
             },
         },
