@@ -42,3 +42,12 @@ printf '%s' "$readiness" | jq -e '(.data // .) as $r | ($r|has("node_operational
 
 sync_status='{"data":{"missing_parent_requests_sent":158,"network_counters":{"missing_parent_requests_sent":158}}}'
 [[ "$(printf '%s' "$sync_status" | jq -r '.data.missing_parent_requests_sent // .data.network_counters.missing_parent_requests_sent // .data.sync_counters.missing_parent_requests_sent // .missing_parent_requests_sent // 0')" == "158" ]]
+grep_q 'json_array_or_empty' "$SCRIPT"
+grep_q 'json_number_or_zero' "$SCRIPT"
+grep_q 'evidence-manifest-jq-diagnostics.txt' "$SCRIPT"
+grep_q 'write_minimal_fallback_manifest' "$SCRIPT"
+grep_q 'manifest_generation_error' "$SCRIPT"
+grep_q 'EVIDENCE_MANIFEST_GENERATION_FAILED' "$SCRIPT"
+grep_q 'assert_packaged_evidence' "$SCRIPT"
+grep_q 'RUST_LOG_STYLE=never' "$SCRIPT"
+grep_q 'pulsedagd=info,pulsedag_p2p=info' "$SCRIPT"
