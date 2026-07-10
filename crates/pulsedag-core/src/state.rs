@@ -332,6 +332,8 @@ pub struct MissingParentTerminalEntry {
     pub reopened_total: u64,
     #[serde(default)]
     pub reopen_reason: Option<String>,
+    #[serde(default)]
+    pub selected_segment_required: bool,
 }
 
 impl Default for MissingParentTerminalEntry {
@@ -345,6 +347,7 @@ impl Default for MissingParentTerminalEntry {
             terminal_peer_set_digest: None,
             reopened_total: 0,
             reopen_reason: None,
+            selected_segment_required: false,
         }
     }
 }

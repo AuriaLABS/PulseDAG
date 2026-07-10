@@ -92,16 +92,17 @@ pub use consistency::{assert_dag_consistent_for_tests, dag_consistency_issues};
 
 pub use orphans::{
     adopt_ready_orphans, adopt_ready_orphans_with_result, classify_orphan_backlog,
-    evict_stale_orphans_bounded, missing_block_parents, orphan_children_waiting_for_parent,
-    orphan_missing_roots, pending_missing_parent_count, prune_historical_terminal_missing_parents,
-    prune_orphans, quarantined_missing_parent_count, queue_orphan_block,
-    queue_orphan_block_bounded, rebuild_orphan_parent_index, revalidate_orphan_backlog,
-    terminal_missing_parent_active_blocking_count, terminal_missing_parent_active_blocking_details,
-    terminal_missing_parent_count, terminal_missing_parent_historical_count,
-    terminal_missing_parent_reason, terminalize_residual_waiting_missing_parents,
-    terminally_exhaust_missing_parent, MissingParentTerminalResult, OrphanAdoptionResult,
-    OrphanBacklogClassification, OrphanQueueResult, ResidualMissingParentTerminalResult,
-    DEFAULT_ORPHAN_MAX_AGE_MS, DEFAULT_ORPHAN_MAX_COUNT, DEFAULT_ORPHAN_RECOVERY_EVICT_LIMIT,
+    evict_stale_orphans_bounded, mark_selected_segment_required_parent, missing_block_parents,
+    orphan_children_waiting_for_parent, orphan_missing_roots, pending_missing_parent_count,
+    prune_historical_terminal_missing_parents, prune_orphans, quarantined_missing_parent_count,
+    queue_orphan_block, queue_orphan_block_bounded, rebuild_orphan_parent_index,
+    revalidate_orphan_backlog, terminal_missing_parent_active_blocking_count,
+    terminal_missing_parent_active_blocking_details, terminal_missing_parent_count,
+    terminal_missing_parent_historical_count, terminal_missing_parent_reason,
+    terminalize_residual_waiting_missing_parents, terminally_exhaust_missing_parent,
+    MissingParentTerminalResult, OrphanAdoptionResult, OrphanBacklogClassification,
+    OrphanQueueResult, ResidualMissingParentTerminalResult, DEFAULT_ORPHAN_MAX_AGE_MS,
+    DEFAULT_ORPHAN_MAX_COUNT, DEFAULT_ORPHAN_RECOVERY_EVICT_LIMIT,
     DEFAULT_TERMINAL_MISSING_PARENT_HISTORY_LIMIT,
 };
 

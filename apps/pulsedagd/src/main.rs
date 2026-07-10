@@ -243,6 +243,13 @@ enum SelectedSegmentSessionState {
 
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
+struct PendingSelectedLocator {
+    request_id: u64,
+    peer_id: String,
+    locator: Vec<String>,
+    requested_at_unix: u64,
+}
+
 struct SelectedSegmentSession {
     session_id: u64,
     peer_id: String,
@@ -250,6 +257,7 @@ struct SelectedSegmentSession {
     common_ancestor_height: u64,
     remote_selected_tip: String,
     remote_selected_height: u64,
+    locator_request_id: u64,
     expected_header_hashes: Vec<String>,
     missing_hashes: Vec<String>,
     requested_hashes: HashSet<String>,
@@ -270,6 +278,7 @@ impl SelectedSegmentSession {
         common_ancestor_height: u64,
         headers: &[HeaderInventory],
         locator: &[String],
+        locator_request_id: u64,
         now: u64,
     ) -> Option<Self> {
         let remote = headers.iter().max_by(|a, b| {
@@ -288,6 +297,7 @@ impl SelectedSegmentSession {
             common_ancestor_height,
             remote_selected_tip: remote.hash.clone(),
             remote_selected_height: remote.header.height,
+            locator_request_id,
             expected_header_hashes: headers.iter().map(|item| item.hash.clone()).collect(),
             missing_hashes: Vec::new(),
             requested_hashes: HashSet::new(),
@@ -301,8 +311,17 @@ impl SelectedSegmentSession {
         })
     }
 
-    fn is_active_for_headers(&self, peer_id: Option<&str>, locator: &[String]) -> bool {
-        peer_id == Some(self.peer_id.as_str()) && self.locator_fingerprint == locator.join(",")
+    fn is_active_for_headers(
+        &self,
+        peer_id: Option<&str>,
+        locator: &[String],
+        locator_request_id: u64,
+        common_ancestor: Option<&str>,
+    ) -> bool {
+        peer_id == Some(self.peer_id.as_str())
+            && self.locator_request_id == locator_request_id
+            && self.locator_fingerprint == locator.join(",")
+            && common_ancestor == Some(self.common_ancestor.as_str())
     }
 
     fn contains_hash(&self, hash: &str) -> bool {
@@ -1404,7 +1423,8 @@ async fn main() -> Result<()> {
             let mut final_quiescence_same_height_tip_requests: HashSet<String> = HashSet::new();
             let mut selected_segment_session: Option<SelectedSegmentSession> = None;
             let mut selected_segment_next_session_id: u64 = 1;
-            let selected_segment_pending_locator: Option<Vec<String>> = None;
+            let mut selected_segment_next_locator_request_id: u64 = 1;
+            let mut selected_segment_pending_locator: Option<PendingSelectedLocator> = None;
             let mut recovery_tick: u64 = 0;
             loop {
                 let maybe_event =
@@ -3051,14 +3071,29 @@ async fn main() -> Result<()> {
                                 &known_blocks_for_segment,
                             )
                         });
-                        let pending_locator =
-                            selected_segment_pending_locator.clone().unwrap_or_default();
+                        let pending_request_id = selected_segment_pending_locator
+                            .as_ref()
+                            .map(|pending| pending.request_id)
+                            .unwrap_or(0);
+                        let pending_locator = selected_segment_pending_locator
+                            .as_ref()
+                            .map(|pending| pending.locator.clone())
+                            .unwrap_or_default();
+                        let pending_peer_matches = selected_segment_pending_locator
+                            .as_ref()
+                            .map(|pending| peer_id.as_deref() == Some(pending.peer_id.as_str()))
+                            .unwrap_or(false);
                         let session_correlated = selected_segment_session
                             .as_ref()
                             .map(|session| {
-                                session.is_active_for_headers(peer_id.as_deref(), &pending_locator)
+                                session.is_active_for_headers(
+                                    peer_id.as_deref(),
+                                    &pending_locator,
+                                    pending_request_id,
+                                    common_ancestor.as_deref(),
+                                )
                             })
-                            .unwrap_or_else(|| peer_id.is_some());
+                            .unwrap_or(false);
                         let candidates = headers
                             .iter()
                             .map(|item| HeaderFetchCandidate {
@@ -3076,7 +3111,8 @@ async fn main() -> Result<()> {
                             )
                         };
                         let plan = fetch_scheduler.next_requests(&known, &pending, 8);
-                        let selected_requests = if session_correlated
+                        let selected_requests = if (session_correlated
+                            || (selected_segment_session.is_none() && pending_peer_matches))
                             && matches!(selected_segment_validation, Some(Ok(())))
                         {
                             if selected_segment_session.is_none() {
@@ -3090,6 +3126,7 @@ async fn main() -> Result<()> {
                                         common_ancestor_height,
                                         &headers,
                                         &pending_locator,
+                                        pending_request_id,
                                         now_unix(),
                                     );
                                     selected_segment_next_session_id =
@@ -3116,6 +3153,24 @@ async fn main() -> Result<()> {
                                 session.current_chunk = candidates.clone();
                                 session.state = SelectedSegmentSessionState::RequestingBlocks;
                                 session.updated_at_unix = now_unix();
+                                {
+                                    let mut guard = chain.write().await;
+                                    let now_ms = now_unix().saturating_mul(1_000);
+                                    for item in headers
+                                        .iter()
+                                        .filter(|item| candidates.contains(&item.hash))
+                                    {
+                                        for parent in &item.header.parents {
+                                            if !known.contains(parent) {
+                                                pulsedag_core::mark_selected_segment_required_parent(
+                                                    &mut guard,
+                                                    parent,
+                                                    now_ms,
+                                                );
+                                            }
+                                        }
+                                    }
+                                }
                                 for hash in &candidates {
                                     session.requested_hashes.insert(hash.clone());
                                 }
@@ -3159,7 +3214,10 @@ async fn main() -> Result<()> {
                             }
                         }
                         let mut rt = runtime.write().await;
-                        if session_correlated && !headers.is_empty() {
+                        let headers_correlated = (session_correlated
+                            || (selected_segment_session.is_some() && pending_peer_matches))
+                            && !headers.is_empty();
+                        if headers_correlated {
                             rt.final_quiescence_selected_locator_success_total = rt
                                 .final_quiescence_selected_locator_success_total
                                 .saturating_add(1);
@@ -3177,6 +3235,27 @@ async fn main() -> Result<()> {
                             rt.selected_segment_headers_received_total = rt
                                 .selected_segment_headers_received_total
                                 .saturating_add(headers.len() as u64);
+                            if let Some(session) = selected_segment_session.as_ref() {
+                                rt.active_session_id = Some(session.session_id);
+                                rt.active_session_peer = Some(session.peer_id.clone());
+                                rt.active_session_remote_tip =
+                                    Some(session.remote_selected_tip.clone());
+                                rt.active_session_remote_height = session.remote_selected_height;
+                                rt.active_session_common_ancestor =
+                                    Some(session.common_ancestor.clone());
+                                rt.active_session_requested_headers =
+                                    rt.selected_segment_header_requests_total;
+                                rt.active_session_received_headers = rt
+                                    .active_session_received_headers
+                                    .saturating_add(headers.len() as u64);
+                                rt.active_session_requested_blocks = rt
+                                    .active_session_requested_blocks
+                                    .saturating_add(planned_request_count);
+                                rt.active_session_remaining_blocks = session
+                                    .remote_selected_height
+                                    .saturating_sub(session.common_ancestor_height)
+                                    .saturating_sub(rt.active_session_applied_blocks);
+                            }
                             match selected_segment_validation {
                                 Some(Ok(())) if planned_request_count > 0 => {
                                     rt.sync_state =
@@ -3199,11 +3278,18 @@ async fn main() -> Result<()> {
                                 }
                                 None => {}
                             }
-                        } else if final_quiescence_reconcile_pending(
-                            rt.final_quiescence_selected_sync_total,
-                            rt.final_quiescence_selected_sync_success_total,
-                            rt.final_quiescence_selected_sync_blocked_total,
-                        ) {
+                        } else {
+                            rt.selected_segment_uncorrelated_headers_total = rt
+                                .selected_segment_uncorrelated_headers_total
+                                .saturating_add(headers.len() as u64);
+                        }
+                        if !headers_correlated
+                            && final_quiescence_reconcile_pending(
+                                rt.final_quiescence_selected_sync_total,
+                                rt.final_quiescence_selected_sync_success_total,
+                                rt.final_quiescence_selected_sync_blocked_total,
+                            )
+                        {
                             rt.final_quiescence_selected_locator_empty_total = rt
                                 .final_quiescence_selected_locator_empty_total
                                 .saturating_add(1);
@@ -3979,13 +4065,35 @@ async fn main() -> Result<()> {
                                             .collect::<Vec<_>>()
                                     };
                                     let selected_limits = SelectedSegmentLimits::default();
-                                    let selected_locator_requested = p2p
-                                        .request_headers(
-                                            &selected_locator,
-                                            None,
-                                            selected_limits.headers_per_chunk,
-                                        )
-                                        .is_ok();
+                                    let selected_locator_peer = status
+                                        .direct_request_capable_peers
+                                        .iter()
+                                        .find(|peer| status.connected_peers.contains(*peer))
+                                        .cloned();
+                                    let selected_locator_request_id =
+                                        selected_segment_next_locator_request_id;
+                                    let selected_locator_requested = selected_locator_peer
+                                        .is_some()
+                                        && p2p
+                                            .request_headers(
+                                                &selected_locator,
+                                                None,
+                                                selected_limits.headers_per_chunk,
+                                            )
+                                            .is_ok();
+                                    if selected_locator_requested {
+                                        selected_segment_next_locator_request_id =
+                                            selected_segment_next_locator_request_id
+                                                .saturating_add(1);
+                                        selected_segment_pending_locator = selected_locator_peer
+                                            .clone()
+                                            .map(|peer_id| PendingSelectedLocator {
+                                                request_id: selected_locator_request_id,
+                                                peer_id,
+                                                locator: selected_locator.clone(),
+                                                requested_at_unix: now_unix(),
+                                            });
+                                    }
                                     let mut rt = runtime.write().await;
                                     rt.final_quiescence_tip_reconcile_total =
                                         rt.final_quiescence_tip_reconcile_total.saturating_add(1);
@@ -4891,11 +4999,13 @@ mod tests {
             0,
             &headers,
             &locator,
+            11,
             1_000,
         )
         .expect("remote height must start a selected-segment session");
-        assert!(session.is_active_for_headers(Some("peer-a"), &locator));
-        assert!(!session.is_active_for_headers(Some("peer-b"), &locator));
+        assert!(session.is_active_for_headers(Some("peer-a"), &locator, 11, Some("common")));
+        assert!(!session.is_active_for_headers(Some("peer-b"), &locator, 11, Some("common")));
+        assert!(!session.is_active_for_headers(Some("peer-a"), &locator, 12, Some("common")));
 
         let ordered = selected_segment_request_order(&headers, 65);
         assert_eq!(ordered.first(), Some(&"selected-001".to_string()));
