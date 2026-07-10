@@ -11,6 +11,7 @@ use crate::{
     api::{
         record_rpc_handler_degraded, record_rpc_handler_timeout_avoided, record_rpc_snapshot_stale,
     },
+    handlers::canonical_sync::build_canonical_sync_state,
 };
 
 #[derive(Debug, serde::Serialize)]
@@ -233,6 +234,12 @@ pub struct MetricsData {
     pub rpc_liveness_historical_degraded_total: u64,
     pub rpc_dedicated_runtime_active: bool,
     pub rpc_dedicated_runtime_worker_threads: usize,
+    pub canonical_sync_state_generation: u64,
+    pub synced_with_recovering_stage_total: u64,
+    pub aligned_with_active_recovery_reason_total: u64,
+    pub catchup_recovery_started_total: u64,
+    pub catchup_recovery_completed_total: u64,
+    pub catchup_recovery_last_reason: Option<String>,
     pub limitations: Vec<String>,
 }
 
@@ -301,6 +308,19 @@ pub async fn get_metrics<S: RpcStateLike>(
         .values()
         .max_by_key(|b| b.header.height)
         .map(|b| b.hash.clone());
+    let now_unix = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let canonical_sync = build_canonical_sync_state(
+        chain,
+        runtime,
+        chain.dag.blocks.len(),
+        now_unix,
+        p2p_status
+            .as_ref()
+            .and_then(|snapshot| snapshot.status.selected_sync_peer.clone()),
+    );
 
     Json(ApiResponse::ok(MetricsData {
         chain_id: chain.chain_id.clone(),
@@ -774,6 +794,13 @@ pub async fn get_metrics<S: RpcStateLike>(
         rpc_liveness_historical_degraded_total: runtime.rpc_liveness_historical_degraded_total,
         rpc_dedicated_runtime_active: runtime.rpc_dedicated_runtime_active,
         rpc_dedicated_runtime_worker_threads: runtime.rpc_dedicated_runtime_worker_threads,
+        canonical_sync_state_generation: canonical_sync.canonical_sync_state_generation,
+        synced_with_recovering_stage_total: canonical_sync.synced_with_recovering_stage_total,
+        aligned_with_active_recovery_reason_total: canonical_sync
+            .aligned_with_active_recovery_reason_total,
+        catchup_recovery_started_total: canonical_sync.catchup_recovery_started_total,
+        catchup_recovery_completed_total: canonical_sync.catchup_recovery_completed_total,
+        catchup_recovery_last_reason: canonical_sync.catchup_recovery_last_reason,
         limitations: vec![
             "Counters reset on node restart.".to_string(),
             "Peer and orphan counts are point-in-time snapshots.".to_string(),

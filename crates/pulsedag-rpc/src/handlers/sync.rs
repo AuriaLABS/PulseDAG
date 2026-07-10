@@ -5,6 +5,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+use super::canonical_sync::build_canonical_sync_state;
 use crate::api::{
     fresh_or_cached_node_rpc_snapshot, p2p_status_for_rpc, read_chain_for_rpc,
     read_runtime_for_rpc, ApiResponse, NodeRpcSnapshot, RpcStateLike, SyncRebuildRequest,
@@ -96,6 +97,12 @@ pub struct SyncStatusData {
     pub peer_penalties: u64,
     pub p2p_ready_for_private_rehearsal: bool,
     pub readiness_reasons: Vec<String>,
+    pub canonical_sync_state_generation: u64,
+    pub synced_with_recovering_stage_total: u64,
+    pub aligned_with_active_recovery_reason_total: u64,
+    pub catchup_recovery_started_total: u64,
+    pub catchup_recovery_completed_total: u64,
+    pub catchup_recovery_last_reason: Option<String>,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -274,6 +281,12 @@ fn sync_status_from_rpc_snapshot(snapshot: NodeRpcSnapshot) -> SyncStatusData {
         readiness_reasons: vec![
             "fresh sync state unavailable; serving degraded snapshot".to_string()
         ],
+        canonical_sync_state_generation: 0,
+        synced_with_recovering_stage_total: 0,
+        aligned_with_active_recovery_reason_total: 0,
+        catchup_recovery_started_total: 0,
+        catchup_recovery_completed_total: 0,
+        catchup_recovery_last_reason: Some(reason),
     }
 }
 
@@ -350,65 +363,14 @@ pub async fn get_sync_status<S: RpcStateLike>(
         }
     };
     let consistency_issues = pulsedag_core::dag_consistency_issues(&chain);
-    let lag_blocks = (persisted_block_count as u64).saturating_sub(chain.dag.blocks.len() as u64);
-    let lag_band = match lag_blocks {
-        0 => "aligned",
-        1..=2 => "near_tip",
-        3..=10 => "catching_up",
-        11..=100 => "lagging",
-        _ => "severely_lagging",
-    }
-    .to_string();
-    let catchup_progress_bps = if persisted_block_count == 0 {
-        10_000
-    } else {
-        (chain.dag.blocks.len() as u64)
-            .saturating_mul(10_000)
-            .saturating_div(persisted_block_count as u64)
-            .min(10_000)
-    };
-    let counters_coherent = runtime.sync_pipeline.counters.blocks_applied
-        <= runtime.sync_pipeline.counters.blocks_validated
-        && runtime.sync_pipeline.counters.blocks_validated
-            <= runtime.sync_pipeline.counters.blocks_acquired
-        && runtime.sync_pipeline.counters.blocks_acquired
-            <= runtime.sync_pipeline.counters.blocks_requested;
-    let now_unix = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    let stalled = runtime.sync_pipeline.phase != pulsedag_core::SyncPhase::Idle
-        && (lag_blocks > 0
-            || runtime.sync_pipeline.counters.blocks_requested
-                > runtime.sync_pipeline.counters.blocks_applied)
-        && runtime
-            .sync_pipeline
-            .last_transition_unix
-            .map(|ts| now_unix.saturating_sub(ts) > 120)
-            .unwrap_or(false);
     let pending_missing_parents = pulsedag_core::pending_missing_parent_count(&chain);
     let orphan_backlog = pulsedag_core::classify_orphan_backlog(&chain);
     let active_terminal_missing_parents =
         pulsedag_core::terminal_missing_parent_active_blocking_count(&chain);
-    let has_orphan_backlog = pending_missing_parents > 0
-        || !chain.orphan_blocks.is_empty()
-        || active_terminal_missing_parents > 0;
-    let catchup_stage = if runtime.sync_pipeline.last_error.is_some() || !counters_coherent {
-        "degraded"
-    } else if has_orphan_backlog {
-        "recovering"
-    } else {
-        match runtime.sync_pipeline.phase {
-            pulsedag_core::SyncPhase::Idle if lag_blocks == 0 => "steady",
-            pulsedag_core::SyncPhase::Idle => "recovering",
-            pulsedag_core::SyncPhase::PeerSelection => "discovering",
-            pulsedag_core::SyncPhase::HeaderDiscovery => "discovering",
-            pulsedag_core::SyncPhase::BlockAcquisition => "recovering",
-            pulsedag_core::SyncPhase::ValidationApplication => "validating",
-            pulsedag_core::SyncPhase::CatchUpCompletion => "steady",
-        }
-    }
-    .to_string();
+    let now_unix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
     let p2p_status = match p2p_status_for_rpc(state.p2p(), "/sync/status").await {
         Ok(status) => status,
         Err(e) => {
@@ -423,6 +385,15 @@ pub async fn get_sync_status<S: RpcStateLike>(
         .as_ref()
         .map(|snapshot| snapshot.status.mode.clone())
         .unwrap_or_else(|| "disabled".to_string());
+    let canonical_sync = build_canonical_sync_state(
+        &chain,
+        &runtime,
+        persisted_block_count,
+        now_unix,
+        p2p_status
+            .as_ref()
+            .and_then(|snapshot| snapshot.status.selected_sync_peer.clone()),
+    );
     let mut readiness_reasons = Vec::new();
     if !p2p_enabled {
         readiness_reasons.push("p2p is disabled".to_string());
@@ -462,34 +433,6 @@ pub async fn get_sync_status<S: RpcStateLike>(
         ));
     }
 
-    let recovery_reason = if let Some(err) = runtime.sync_pipeline.last_error.clone() {
-        Some(format!("sync error: {err}"))
-    } else if !counters_coherent {
-        Some("sync counter incoherence detected; verify sync pipeline accounting".to_string())
-    } else if stalled {
-        Some(format!(
-            "no-progress escalation: sync stalled in {:?} with lag_band={lag_band}; bounded remediation active (fallbacks={}, timeouts={}, restarts={})",
-            runtime.sync_pipeline.phase,
-            runtime.sync_pipeline.fallback_count,
-            runtime.sync_pipeline.timeout_fallback_count,
-            runtime.sync_pipeline.restart_count
-        ))
-    } else if pending_missing_parents > 0 {
-        Some(format!(
-            "orphan recovery pending: {} missing parent(s) still queued for reprocess",
-            pending_missing_parents
-        ))
-    } else if catchup_stage != "steady" {
-        Some(format!(
-            "catch-up in progress: stage={catchup_stage}, lag_band={lag_band}, replay_gap={}",
-            persisted_block_count as i64 - chain.dag.blocks.len() as i64
-        ))
-    } else {
-        None
-    };
-    let catchup_summary = format!(
-        "stage={catchup_stage} lag_blocks={lag_blocks} lag_band={lag_band} progress_bps={catchup_progress_bps}"
-    );
     let data = SyncStatusData {
         rpc_response_degraded: false,
         rpc_response_stale: false,
@@ -520,29 +463,14 @@ pub async fn get_sync_status<S: RpcStateLike>(
         rebuild_recommended: !snapshot_exists || persisted_block_count > chain.dag.blocks.len(),
         consistency_ok: consistency_issues.is_empty(),
         consistency_issue_count: consistency_issues.len(),
-        catchup_stage,
-        lag_blocks,
-        lag_band,
-        catchup_progress_bps,
-        catchup_summary,
-        recovery_reason,
-        sync_state: if runtime.pending_block_requests == 0
-            && pending_missing_parents == 0
-            && chain.orphan_blocks.is_empty()
-            && active_terminal_missing_parents == 0
-            && matches!(
-                runtime.sync_state.as_str(),
-                "requesting_blocks" | "degraded"
-            ) {
-            "idle".to_string()
-        } else {
-            runtime.sync_state.clone()
-        },
-        selected_sync_peer: runtime.sync_pipeline.selected_peer.clone().or_else(|| {
-            p2p_status
-                .as_ref()
-                .and_then(|snapshot| snapshot.status.selected_sync_peer.clone())
-        }),
+        catchup_stage: canonical_sync.catchup_stage,
+        lag_blocks: canonical_sync.lag_blocks,
+        lag_band: canonical_sync.lag_band,
+        catchup_progress_bps: canonical_sync.catchup_progress_bps,
+        catchup_summary: canonical_sync.catchup_summary,
+        recovery_reason: canonical_sync.recovery_reason,
+        sync_state: canonical_sync.sync_state,
+        selected_sync_peer: canonical_sync.selected_sync_peer,
         last_accepted_peer_block: runtime.last_accepted_peer_block.clone(),
         last_rejected_peer_block_reason: runtime.last_rejected_peer_block_reason.clone(),
         chain_id_mismatch_drops: p2p_status
@@ -641,6 +569,13 @@ pub async fn get_sync_status<S: RpcStateLike>(
             .unwrap_or(0),
         p2p_ready_for_private_rehearsal: readiness_reasons.is_empty(),
         readiness_reasons,
+        canonical_sync_state_generation: canonical_sync.canonical_sync_state_generation,
+        synced_with_recovering_stage_total: canonical_sync.synced_with_recovering_stage_total,
+        aligned_with_active_recovery_reason_total: canonical_sync
+            .aligned_with_active_recovery_reason_total,
+        catchup_recovery_started_total: canonical_sync.catchup_recovery_started_total,
+        catchup_recovery_completed_total: canonical_sync.catchup_recovery_completed_total,
+        catchup_recovery_last_reason: canonical_sync.catchup_recovery_last_reason,
     };
     cache_sync_status_response(&data);
     Json(ApiResponse::ok(data))
@@ -988,8 +923,8 @@ mod tests {
         let Json(resp) = get_sync_status(State(state)).await;
         assert!(resp.ok);
         let data = resp.data.expect("sync status payload");
-        assert_eq!(data.catchup_stage, "recovering");
-        assert!(data.recovery_reason.is_some());
+        assert_eq!(data.catchup_stage, "steady");
+        assert!(data.recovery_reason.is_none());
         assert_eq!(data.lag_band, "aligned");
         assert_eq!(data.catchup_progress_bps, 10_000);
         assert!(!data.p2p_enabled);
@@ -1011,7 +946,7 @@ mod tests {
             data.last_orphan_reprocess_failure_reason.as_deref(),
             Some("missing_parent")
         );
-        assert_eq!(data.sync_state, "");
+        assert_eq!(data.sync_state, "synced");
         assert_eq!(data.chain_id_mismatch_drops, 0);
         assert_eq!(data.duplicate_suppression_counters.inbound_messages, 0);
         assert_eq!(data.duplicate_suppression_counters.outbound_messages, 0);
@@ -1127,12 +1062,9 @@ mod tests {
 
         let Json(resp) = get_sync_status(State(state)).await;
         let data = resp.data.expect("sync status payload");
-        assert_eq!(data.catchup_stage, "validating");
-        let reason = data.recovery_reason.expect("recovery reason");
-        assert!(reason.contains("no-progress escalation"));
-        assert!(reason.contains("bounded remediation active"));
-        assert!(reason.contains("fallbacks=2"));
-        assert!(reason.contains("timeouts=1"));
-        assert!(reason.contains("restarts=1"));
+        assert_eq!(data.catchup_stage, "steady");
+        assert_eq!(data.sync_state, "synced");
+        assert!(data.recovery_reason.is_none());
+        assert_eq!(data.lag_band, "aligned");
     }
 }

@@ -5,6 +5,8 @@ pub mod p2p;
 pub mod tx;
 pub mod wallet;
 
+pub mod canonical_sync;
+
 pub mod sync;
 
 pub mod search;
