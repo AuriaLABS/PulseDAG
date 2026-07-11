@@ -636,6 +636,9 @@ pub struct P2pStatus {
     pub peer_addressed_getblock_response_total: u64,
     pub peer_addressed_getblock_timeout_total: u64,
     pub peer_addressed_getblock_transport_error_total: u64,
+    pub unsolicited_blockdata_total: u64,
+    pub duplicate_correlated_response_total: u64,
+    pub unknown_request_response_total: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -966,6 +969,9 @@ struct InnerState {
     peer_addressed_getblock_response_total: u64,
     peer_addressed_getblock_timeout_total: u64,
     peer_addressed_getblock_transport_error_total: u64,
+    unsolicited_blockdata_total: u64,
+    duplicate_correlated_response_total: u64,
+    unknown_request_response_total: u64,
     getblock_requests_received_total: u64,
     getblock_responses_blockdata_sent_total: u64,
     getblock_responses_not_found_sent_total: u64,
@@ -1553,6 +1559,9 @@ impl P2pHandle for MemoryP2pHandle {
             peer_addressed_getblock_timeout_total: inner.peer_addressed_getblock_timeout_total,
             peer_addressed_getblock_transport_error_total: inner
                 .peer_addressed_getblock_transport_error_total,
+            unsolicited_blockdata_total: inner.unsolicited_blockdata_total,
+            duplicate_correlated_response_total: inner.duplicate_correlated_response_total,
+            unknown_request_response_total: inner.unknown_request_response_total,
         })
     }
 }
@@ -4498,10 +4507,18 @@ fn dispatch_network_message(
                 let id = message_id_for_block(&block);
                 if let Ok(mut guard) = inner.lock() {
                     guard.blocks_received = guard.blocks_received.saturating_add(1);
-                    if request_hash.is_some() {
+                    let correlated_request =
+                        request_hash.as_ref() == Some(&block.hash) && source_peer.is_some();
+                    if correlated_request {
                         guard.peer_addressed_getblock_response_total = guard
                             .peer_addressed_getblock_response_total
                             .saturating_add(1);
+                    } else if request_hash.is_some() {
+                        guard.unknown_request_response_total =
+                            guard.unknown_request_response_total.saturating_add(1);
+                    } else {
+                        guard.unsolicited_blockdata_total =
+                            guard.unsolicited_blockdata_total.saturating_add(1);
                     }
                     if !mark_inbound_block_seen(
                         &mut guard,
@@ -4513,6 +4530,10 @@ fn dispatch_network_message(
                         guard.inbound_duplicates_suppressed += 1;
                         guard.duplicate_blocks_received =
                             guard.duplicate_blocks_received.saturating_add(1);
+                        if correlated_request {
+                            guard.duplicate_correlated_response_total =
+                                guard.duplicate_correlated_response_total.saturating_add(1);
+                        }
                         guard.last_drop_reason = Some("duplicate_block_data".into());
                         return;
                     }
@@ -5949,6 +5970,9 @@ impl P2pHandle for Libp2pHandle {
             peer_addressed_getblock_timeout_total: inner.peer_addressed_getblock_timeout_total,
             peer_addressed_getblock_transport_error_total: inner
                 .peer_addressed_getblock_transport_error_total,
+            unsolicited_blockdata_total: inner.unsolicited_blockdata_total,
+            duplicate_correlated_response_total: inner.duplicate_correlated_response_total,
+            unknown_request_response_total: inner.unknown_request_response_total,
         })
     }
 }
