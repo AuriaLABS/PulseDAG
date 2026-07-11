@@ -49,9 +49,9 @@ with open(p1,'w') as f:
         f.write(f"INFO template_received block_template_hash=t{i:04x}\n")
         f.write(f"INFO submit_result: accepted=true rejected=false reason_code=none block_hash=a{i:04x} height={i}\n")
 with open(p2,'w') as f:
-    for i in range(707): f.write(f"INFO template_received block_template_hash=u{i:04x}\n")
-    for i in range(692): f.write(f"INFO submit_result: accepted=true rejected=false reason_code=none block_hash=b{i:04x} height={i}\n")
-    for i in range(14): f.write(f"WARN submit_result: accepted=false rejected=true reason_code=stale_template block_hash=c{i:04x} height={i}\n")
+    for i in range(702): f.write(f"INFO template_received block_template_hash=u{i:04x}\n")
+    for i in range(696): f.write(f"INFO submit_result: accepted=true rejected=false reason_code=none block_hash=b{i:04x} height={i}\n")
+    for i in range(6): f.write(f"WARN submit_result: accepted=false rejected=true reason_code=stale_template block_hash=c{i:04x} height={i}\n")
 PY
 parsed="$(run_fixture "$TMP_DIR/5n1m.log")"
 assert_metric "$parsed" local_miner_templates_received 391
@@ -59,8 +59,23 @@ assert_metric "$parsed" local_miner_submits_total 391
 assert_metric "$parsed" local_miner_submits_accepted 391
 assert_metric "$parsed" local_miner_submits_rejected 0
 parsed="$(run_fixture "$TMP_DIR/5n2m.log")"
-assert_metric "$parsed" local_miner_templates_received 707
-assert_metric "$parsed" local_miner_submits_total 706
-assert_metric "$parsed" local_miner_submits_accepted 692
-assert_metric "$parsed" local_miner_submits_rejected 14
+assert_metric "$parsed" local_miner_templates_received 702
+assert_metric "$parsed" local_miner_submits_total 702
+assert_metric "$parsed" local_miner_submits_accepted 696
+assert_metric "$parsed" local_miner_submits_rejected 6
 printf '%s\n' "$parsed" | rg -q 'stale_template'
+
+
+python3 - <<'PY' "$TMP_DIR/5n4m.log"
+import sys
+p=sys.argv[1]
+with open(p,'w') as f:
+    for i in range(1227): f.write(f"INFO template_received block_template_hash=v{i:04x}\n")
+    for i in range(1033): f.write(f"INFO submit_result: accepted=true rejected=false reason_code=none block_hash=d{i:04x} height={i}\n")
+    for i in range(194): f.write(f"WARN submit_result: accepted=false rejected=true reason_code=stale_template block_hash=e{i:04x} height={i}\n")
+PY
+parsed="$(run_fixture "$TMP_DIR/5n4m.log")"
+assert_metric "$parsed" local_miner_templates_received 1227
+assert_metric "$parsed" local_miner_submits_total 1227
+assert_metric "$parsed" local_miner_submits_accepted 1033
+assert_metric "$parsed" local_miner_submits_rejected 194
