@@ -12,12 +12,29 @@ use crate::{
 };
 use std::cmp::Ordering;
 use std::collections::{BTreeSet, HashMap, HashSet};
+use std::sync::{Mutex, OnceLock};
 
 #[derive(Debug, Clone, Copy)]
 pub enum AcceptSource {
     Rpc,
     P2p,
     LocalMining,
+}
+
+impl AcceptSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Rpc => "rpc",
+            Self::P2p => "p2p",
+            Self::LocalMining => "local_mining",
+        }
+    }
+}
+
+static ACCEPTED_STATE_COMMIT_COORDINATOR: OnceLock<Mutex<()>> = OnceLock::new();
+
+fn accepted_state_commit_coordinator() -> &'static Mutex<()> {
+    ACCEPTED_STATE_COMMIT_COORDINATOR.get_or_init(|| Mutex::new(()))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -582,21 +599,22 @@ pub fn accept_block_atomically<FPersist, FBroadcast>(
     block: Block,
     state: &mut ChainState,
     source: AcceptSource,
-    persist: FPersist,
+    mut persist: FPersist,
     broadcast: FBroadcast,
 ) -> Result<AtomicBlockAcceptance, PulseError>
 where
-    FPersist: FnOnce(&Block, &ChainState) -> Result<(), PulseError>,
+    FPersist: FnMut(&Block, &ChainState) -> Result<(), PulseError>,
     FBroadcast: FnOnce(&Block) -> Result<(), PulseError>,
 {
-    // Accepted block commit order:
-    // receive/decode happens before this API; this function performs PoW and
-    // structural validation, parent-context/state-root validation inside
-    // `prepare_block_state`, prepares the complete next `ChainState`, persists
-    // the accepted block plus chain metadata as one caller-supplied atomic
-    // storage unit, publishes the new in-memory state only after persistence
-    // succeeds, then broadcasts. Missing-parent, invalid, staged, orphaned, or
-    // rejected blocks return before persistence and never enter accepted storage.
+    // Serialized accepted-state commit protocol:
+    // 1. validate and prepare a complete candidate state from a captured base
+    //    generation without publishing it;
+    // 2. enter the accepted commit coordinator;
+    // 3. CAS-check the current generation against the captured base generation;
+    // 4. if another acceptance source won, reprepare against current memory;
+    // 5. persist the accepted block and exact candidate ChainState atomically;
+    // 6. publish that persisted state in memory, increment generation, then
+    //    broadcast. No two candidates from the same base generation can publish.
     let enforce_pow = matches!(
         source,
         AcceptSource::Rpc | AcceptSource::P2p | AcceptSource::LocalMining
@@ -608,7 +626,8 @@ where
         ));
     }
 
-    let working = match prepare_block_state(&block, state) {
+    let mut base_generation = state.chain_state_generation;
+    let mut working = match prepare_block_state(&block, state) {
         Ok(working) => working,
         Err(err) => {
             return Ok(AtomicBlockAcceptance::rejected(
@@ -617,8 +636,58 @@ where
         }
     };
 
-    persist(&block, &working)?;
-    *state = working;
+    let _commit_guard = accepted_state_commit_coordinator()
+        .lock()
+        .map_err(|_| PulseError::Internal("accepted state commit coordinator poisoned".into()))?;
+    state.accepted_commit_serialized_total =
+        state.accepted_commit_serialized_total.saturating_add(1);
+
+    loop {
+        if state.chain_state_generation != base_generation {
+            state.accepted_commit_generation_conflict_total = state
+                .accepted_commit_generation_conflict_total
+                .saturating_add(1);
+            state.accepted_commit_reprepare_total =
+                state.accepted_commit_reprepare_total.saturating_add(1);
+            base_generation = state.chain_state_generation;
+            working = match prepare_block_state(&block, state) {
+                Ok(working) => working,
+                Err(err) => {
+                    return Ok(AtomicBlockAcceptance::rejected(
+                        classify_block_validation_error(err),
+                    ))
+                }
+            };
+            continue;
+        }
+
+        let next_generation = base_generation.saturating_add(1);
+        working.chain_state_generation = next_generation;
+        working.accepted_commit_generation_conflict_total =
+            state.accepted_commit_generation_conflict_total;
+        working.accepted_commit_reprepare_total = state.accepted_commit_reprepare_total;
+        working.accepted_commit_serialized_total = state.accepted_commit_serialized_total;
+        working.accepted_commit_publish_mismatch_total =
+            state.accepted_commit_publish_mismatch_total;
+        working.accepted_commit_last_hash = Some(block.hash.clone());
+        working.accepted_commit_last_source = Some(source.as_str().to_string());
+
+        persist(&block, &working)?;
+        *state = working;
+        if state.accepted_commit_last_hash.as_ref() != Some(&block.hash)
+            || state.chain_state_generation != next_generation
+        {
+            state.accepted_commit_publish_mismatch_total = state
+                .accepted_commit_publish_mismatch_total
+                .saturating_add(1);
+            return Err(PulseError::Internal(format!(
+                "accepted commit publish mismatch hash={} generation={}",
+                block.hash, next_generation
+            )));
+        }
+        break;
+    }
+
     broadcast(&block)?;
     Ok(AtomicBlockAcceptance {
         result: BlockAcceptanceResult::Accepted,
@@ -1120,6 +1189,53 @@ mod tests {
             .dag
             .blocks
             .contains_key(&mining_state.dag.tips.iter().next().unwrap().clone()));
+    }
+
+    #[test]
+    fn accepted_state_commit_generation_serializes_same_base_side_dag_blocks() {
+        let mut state = init_chain_state("serialized-side-dag".to_string());
+        let left = valid_acceptance_block(&state, "left", 101);
+        let right = valid_acceptance_block(&state, "right", 102);
+        assert_eq!(state.chain_state_generation, 0);
+
+        let left_acceptance = accept_block_atomically(
+            left.clone(),
+            &mut state,
+            AcceptSource::P2p,
+            |_block, chain| {
+                assert_eq!(chain.chain_state_generation, 1);
+                Ok(())
+            },
+            |_block| Ok(()),
+        )
+        .expect("left commit should succeed");
+        assert_eq!(left_acceptance.result, BlockAcceptanceResult::Accepted);
+
+        let right_acceptance = accept_block_atomically(
+            right.clone(),
+            &mut state,
+            AcceptSource::LocalMining,
+            |_block, chain| {
+                assert_eq!(chain.chain_state_generation, 2);
+                Ok(())
+            },
+            |_block| Ok(()),
+        )
+        .expect("right commit should succeed");
+
+        assert_eq!(right_acceptance.result, BlockAcceptanceResult::Accepted);
+        assert_eq!(state.chain_state_generation, 2);
+        assert!(state.dag.blocks.contains_key(&left.hash));
+        assert!(state.dag.blocks.contains_key(&right.hash));
+        assert_eq!(
+            state.accepted_commit_last_hash.as_deref(),
+            Some(right.hash.as_str())
+        );
+        assert_eq!(
+            state.accepted_commit_last_source.as_deref(),
+            Some("local_mining")
+        );
+        assert_eq!(state.accepted_commit_serialized_total, 2);
     }
 
     #[test]
