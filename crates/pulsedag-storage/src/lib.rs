@@ -24,6 +24,7 @@ const STORAGE_SCHEMA_VERSION_KEY: &[u8] = b"storage_schema_version";
 const CHAIN_ID_KEY: &[u8] = b"chain_id";
 const SNAPSHOT_CAPTURED_AT_UNIX_KEY: &[u8] = b"snapshot_captured_at_unix";
 const SNAPSHOT_METADATA_KEY: &[u8] = b"snapshot_metadata";
+const ACCEPTED_STORAGE_GENERATION_KEY: &[u8] = b"accepted_storage_generation";
 const RUNTIME_EVENT_PREFIX: &str = "runtime_event:";
 const ACCEPTED_BLOCKS_CF: &str = "blocks";
 const ORPHAN_STAGED_BLOCKS_CF: &str = "orphan_staged_blocks";
@@ -36,6 +37,11 @@ pub static BLOCK_COMMIT_BATCH_FAILED_TOTAL: AtomicU64 = AtomicU64::new(0);
 pub static BLOCK_COMMIT_ROLLBACK_TOTAL: AtomicU64 = AtomicU64::new(0);
 pub static STARTUP_STORAGE_RECONCILIATION_TOTAL: AtomicU64 = AtomicU64::new(0);
 pub static STARTUP_STORAGE_RECONCILIATION_FAILED_TOTAL: AtomicU64 = AtomicU64::new(0);
+pub static SNAPSHOT_VERIFICATION_GENERATION_CHANGED_TOTAL: AtomicU64 = AtomicU64::new(0);
+pub static SNAPSHOT_VERIFICATION_STABLE_FAILURE_TOTAL: AtomicU64 = AtomicU64::new(0);
+pub static SNAPSHOT_VERIFICATION_RETRY_TOTAL: AtomicU64 = AtomicU64::new(0);
+pub static SNAPSHOT_VERIFICATION_LAST_GENERATION: AtomicU64 = AtomicU64::new(0);
+pub static SNAPSHOT_VERIFICATION_LAST_FAILED_HASH: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RuntimeEvent {
@@ -134,6 +140,16 @@ pub struct SnapshotExportBundle {
     pub snapshot_metadata: SnapshotMetadata,
     pub snapshot: ChainState,
     pub persisted_blocks: Vec<Block>,
+    #[serde(default)]
+    pub chain_state_generation_at_capture: u64,
+    #[serde(default)]
+    pub accepted_storage_generation: u64,
+    #[serde(default)]
+    pub snapshot_generation: u64,
+    #[serde(default)]
+    pub delta_start_generation: u64,
+    #[serde(default)]
+    pub delta_end_generation: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -159,6 +175,12 @@ pub struct SnapshotVerificationReport {
     pub confidence_reason: String,
     pub issue_count: usize,
     pub issues: Vec<SnapshotVerificationIssue>,
+    #[serde(default)]
+    pub verification_start_generation: u64,
+    #[serde(default)]
+    pub verification_end_generation: u64,
+    #[serde(default)]
+    pub verification_generation_changed: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -189,6 +211,37 @@ pub struct StorageAuditReport {
 }
 
 impl Storage {
+    fn snapshot_bundle_for_state(
+        snapshot: ChainState,
+        persisted_blocks: Vec<Block>,
+        exported_at_unix: u64,
+        snapshot_captured_at_unix: Option<u64>,
+        snapshot_metadata: SnapshotMetadata,
+        accepted_storage_generation: u64,
+    ) -> SnapshotExportBundle {
+        let chain_state_generation_at_capture = snapshot.chain_state_generation;
+        SnapshotExportBundle {
+            format_version: 1,
+            exported_at_unix,
+            snapshot_captured_at_unix,
+            snapshot_metadata,
+            snapshot,
+            persisted_blocks,
+            chain_state_generation_at_capture,
+            accepted_storage_generation,
+            snapshot_generation: chain_state_generation_at_capture,
+            delta_start_generation: accepted_storage_generation,
+            delta_end_generation: accepted_storage_generation,
+        }
+    }
+
+    fn failed_hash_metric(hash: &str) -> u64 {
+        use std::hash::{Hash as StdHash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        hash.hash(&mut hasher);
+        hasher.finish()
+    }
+
     fn detect_lineage_issues(
         snapshot_hashes: &std::collections::BTreeSet<String>,
         persisted_hashes: &std::collections::BTreeSet<String>,
@@ -526,13 +579,56 @@ impl Storage {
             .db
             .cf_handle(ACCEPTED_BLOCKS_CF)
             .ok_or_else(|| PulseError::StorageError("missing cf accepted blocks".into()))?;
+        let meta_cf = self
+            .db
+            .cf_handle("meta")
+            .ok_or_else(|| PulseError::StorageError("missing cf meta".into()))?;
+        let mut batch = WriteBatch::default();
+        batch.put_cf(
+            &cf,
+            block.hash.as_bytes(),
+            serde_json::to_vec(block).map_err(|e| PulseError::StorageError(e.to_string()))?,
+        );
+        self.stage_accepted_storage_generation_advance(&mut batch, &meta_cf)?;
         self.db
-            .put_cf(
-                cf,
-                block.hash.as_bytes(),
-                serde_json::to_vec(block).map_err(|e| PulseError::StorageError(e.to_string()))?,
-            )
+            .write(batch)
             .map_err(|e| PulseError::StorageError(e.to_string()))
+    }
+
+    pub fn accepted_storage_generation(&self) -> Result<u64, PulseError> {
+        let cf = self
+            .db
+            .cf_handle("meta")
+            .ok_or_else(|| PulseError::StorageError("missing cf meta".into()))?;
+        match self
+            .db
+            .get_cf(cf, ACCEPTED_STORAGE_GENERATION_KEY)
+            .map_err(|e| PulseError::StorageError(e.to_string()))?
+        {
+            Some(bytes) => std::str::from_utf8(&bytes)
+                .ok()
+                .and_then(|raw| raw.parse::<u64>().ok())
+                .ok_or_else(|| {
+                    PulseError::StorageError(
+                        "accepted storage generation metadata is corrupt".into(),
+                    )
+                }),
+            None => Ok(0),
+        }
+    }
+
+    fn stage_accepted_storage_generation_advance(
+        &self,
+        batch: &mut WriteBatch,
+        meta_cf: &impl rocksdb::AsColumnFamilyRef,
+    ) -> Result<u64, PulseError> {
+        let next = self.accepted_storage_generation()?.saturating_add(1);
+        batch.put_cf(
+            meta_cf,
+            ACCEPTED_STORAGE_GENERATION_KEY,
+            next.to_string().into_bytes(),
+        );
+        Ok(next)
     }
 
     pub fn list_blocks(&self) -> Result<Vec<Block>, PulseError> {
@@ -769,6 +865,7 @@ impl Storage {
             serde_json::to_vec(block).map_err(|e| PulseError::StorageError(e.to_string()))?;
         let mut batch = WriteBatch::default();
         batch.put_cf(&blocks_cf, block.hash.as_bytes(), block_value);
+        self.stage_accepted_storage_generation_advance(&mut batch, &meta_cf)?;
         self.stage_chain_state_snapshot(&mut batch, &meta_cf, state)?;
         match write_batch(&self.db, batch) {
             Ok(()) => Ok(()),
@@ -1021,6 +1118,7 @@ impl Storage {
         expected_chain_id: Option<&str>,
     ) -> SnapshotVerificationReport {
         let mut issues = Vec::new();
+        let verification_start_generation = self.accepted_storage_generation().unwrap_or(0);
         if bundle.format_version != 1 {
             issues.push(SnapshotVerificationIssue {
                 code: "SNAPSHOT_BUNDLE_UNSUPPORTED_FORMAT".to_string(),
@@ -1074,6 +1172,25 @@ impl Storage {
             });
         }
 
+        let verification_generation_changed = bundle.delta_start_generation
+            != bundle.delta_end_generation
+            || bundle.snapshot_generation != bundle.chain_state_generation_at_capture;
+        if verification_generation_changed {
+            SNAPSHOT_VERIFICATION_GENERATION_CHANGED_TOTAL.fetch_add(1, Ordering::Relaxed);
+            issues.push(SnapshotVerificationIssue {
+                code: "SNAPSHOT_BUNDLE_VERIFICATION_GENERATION_CHANGED".to_string(),
+                message: format!(
+                    "verification_generation_changed: snapshot_generation={} capture_generation={} delta_start_generation={} delta_end_generation={} accepted_storage_generation={} verification_start_generation={}",
+                    bundle.snapshot_generation,
+                    bundle.chain_state_generation_at_capture,
+                    bundle.delta_start_generation,
+                    bundle.delta_end_generation,
+                    bundle.accepted_storage_generation,
+                    verification_start_generation
+                ),
+            });
+        }
+
         let snapshot_hashes = bundle
             .snapshot
             .dag
@@ -1086,14 +1203,27 @@ impl Storage {
             .iter()
             .map(|b| b.hash.clone())
             .collect::<std::collections::BTreeSet<_>>();
-        let lineage_issues = Self::detect_lineage_issues(
-            &snapshot_hashes,
-            &persisted_hashes,
-            &bundle.persisted_blocks,
-            bundle.snapshot.dag.best_height,
-        );
+        let lineage_issues = if verification_generation_changed {
+            Vec::new()
+        } else {
+            Self::detect_lineage_issues(
+                &snapshot_hashes,
+                &persisted_hashes,
+                &bundle.persisted_blocks,
+                bundle.snapshot.dag.best_height,
+            )
+        };
         let lineage_issue_count = lineage_issues.len();
         for (code, message) in lineage_issues {
+            if code == "DELTA_NOT_IN_SNAPSHOT" {
+                SNAPSHOT_VERIFICATION_STABLE_FAILURE_TOTAL.fetch_add(1, Ordering::Relaxed);
+                SNAPSHOT_VERIFICATION_LAST_GENERATION
+                    .store(bundle.snapshot_generation, Ordering::Relaxed);
+                if let Some(hash) = message.split_whitespace().nth(2) {
+                    SNAPSHOT_VERIFICATION_LAST_FAILED_HASH
+                        .store(Self::failed_hash_metric(hash), Ordering::Relaxed);
+                }
+            }
             issues.push(SnapshotVerificationIssue {
                 code: format!("SNAPSHOT_BUNDLE_{code}"),
                 message,
@@ -1178,6 +1308,19 @@ impl Storage {
                     "replay is viable but chain_id mismatch blocks operator trust".to_string(),
                 )
             };
+        let verification_end_generation = self.accepted_storage_generation().unwrap_or(0);
+        let verification_generation_changed = verification_generation_changed
+            || verification_start_generation != verification_end_generation;
+        if verification_start_generation != verification_end_generation {
+            SNAPSHOT_VERIFICATION_GENERATION_CHANGED_TOTAL.fetch_add(1, Ordering::Relaxed);
+            issues.push(SnapshotVerificationIssue {
+                code: "SNAPSHOT_BUNDLE_VERIFICATION_GENERATION_CHANGED".to_string(),
+                message: format!(
+                    "verification_generation_changed: verification_start_generation={} verification_end_generation={}",
+                    verification_start_generation, verification_end_generation
+                ),
+            });
+        }
         let restore_guarantees_explicit = issues.is_empty();
         let issue_count = issues.len();
         SnapshotVerificationReport {
@@ -1196,6 +1339,9 @@ impl Storage {
             confidence_reason,
             issue_count,
             issues,
+            verification_start_generation,
+            verification_end_generation,
+            verification_generation_changed,
         }
     }
 
@@ -1203,37 +1349,61 @@ impl Storage {
         &self,
         expected_chain_id: Option<&str>,
     ) -> Result<(SnapshotExportBundle, SnapshotVerificationReport), PulseError> {
-        let snapshot = self
-            .load_chain_state()?
-            .ok_or_else(|| PulseError::StorageError("validated snapshot missing".to_string()))?;
-        let persisted_blocks = self.list_blocks()?;
-        let exported_at_unix = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
-        let bundle = SnapshotExportBundle {
-            format_version: 1,
-            exported_at_unix,
-            snapshot_captured_at_unix: self.snapshot_captured_at_unix()?,
-            snapshot_metadata: self
-                .snapshot_metadata()?
-                .unwrap_or_else(|| Self::snapshot_metadata_for_state(&snapshot, exported_at_unix)),
-            snapshot,
-            persisted_blocks,
-        };
-        let report = self.verify_snapshot_bundle(&bundle, expected_chain_id);
-        if !report.restore_guarantees_explicit {
-            return Err(PulseError::StorageError(format!(
-                "snapshot export verification failed: {}",
-                report
-                    .issues
-                    .iter()
-                    .map(|issue| format!("{}={}", issue.code, issue.message))
-                    .collect::<Vec<_>>()
-                    .join("; ")
-            )));
+        for attempt in 0..3 {
+            let accepted_start_generation = self.accepted_storage_generation()?;
+            let snapshot = self.load_chain_state()?.ok_or_else(|| {
+                PulseError::StorageError("validated snapshot missing".to_string())
+            })?;
+            let persisted_blocks = self.list_blocks()?;
+            let accepted_end_generation = self.accepted_storage_generation()?;
+            let exported_at_unix = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            let mut bundle = Self::snapshot_bundle_for_state(
+                snapshot.clone(),
+                persisted_blocks,
+                exported_at_unix,
+                self.snapshot_captured_at_unix()?,
+                self.snapshot_metadata()?.unwrap_or_else(|| {
+                    Self::snapshot_metadata_for_state(&snapshot, exported_at_unix)
+                }),
+                accepted_end_generation,
+            );
+            bundle.delta_start_generation = accepted_start_generation;
+            bundle.delta_end_generation = accepted_end_generation;
+
+            let report = self.verify_snapshot_bundle(&bundle, expected_chain_id);
+            if report.verification_generation_changed {
+                SNAPSHOT_VERIFICATION_RETRY_TOTAL.fetch_add(1, Ordering::Relaxed);
+                if attempt < 2 {
+                    std::thread::sleep(std::time::Duration::from_millis(10 * (attempt + 1)));
+                    continue;
+                }
+                return Err(PulseError::StorageError(format!(
+                    "snapshot export verification discarded after generation-changed retries: {}",
+                    report
+                        .issues
+                        .iter()
+                        .map(|issue| format!("{}={}", issue.code, issue.message))
+                        .collect::<Vec<_>>()
+                        .join("; ")
+                )));
+            }
+            if !report.restore_guarantees_explicit {
+                return Err(PulseError::StorageError(format!(
+                    "snapshot export verification failed: {}",
+                    report
+                        .issues
+                        .iter()
+                        .map(|issue| format!("{}={}", issue.code, issue.message))
+                        .collect::<Vec<_>>()
+                        .join("; ")
+                )));
+            }
+            return Ok((bundle, report));
         }
-        Ok((bundle, report))
+        unreachable!("bounded snapshot verification retry loop always returns")
     }
 
     pub fn import_snapshot_bundle(
@@ -1667,8 +1837,8 @@ impl Storage {
 #[cfg(test)]
 mod tests {
     use super::{
-        SnapshotExportBundle, Storage, ACCEPTED_STORAGE_MEMORY_MISMATCH_TOTAL,
-        BLOCK_COMMIT_BATCH_FAILED_TOTAL, CHAIN_STATE_KEY, SNAPSHOT_CAPTURED_AT_UNIX_KEY,
+        Storage, ACCEPTED_STORAGE_MEMORY_MISMATCH_TOTAL, BLOCK_COMMIT_BATCH_FAILED_TOTAL,
+        CHAIN_STATE_KEY, SNAPSHOT_CAPTURED_AT_UNIX_KEY, SNAPSHOT_VERIFICATION_STABLE_FAILURE_TOTAL,
         STARTUP_STORAGE_RECONCILIATION_TOTAL, STORAGE_SCHEMA_VERSION, STORAGE_SCHEMA_VERSION_KEY,
     };
     use std::{
@@ -2750,14 +2920,14 @@ mod tests {
         let path = temp_db_path("snapshot-verify-chain-mismatch");
         let storage = Storage::open(&path).expect("open storage");
         let state = build_linear_chain("testnet", 3);
-        let bundle = SnapshotExportBundle {
-            format_version: 1,
-            exported_at_unix: 1,
-            snapshot_captured_at_unix: Some(1),
-            snapshot_metadata: Storage::snapshot_metadata_for_state(&state, 1),
-            snapshot: state.clone(),
-            persisted_blocks: state.dag.blocks.values().cloned().collect(),
-        };
+        let bundle = Storage::snapshot_bundle_for_state(
+            state.clone(),
+            state.dag.blocks.values().cloned().collect(),
+            1,
+            Some(1),
+            Storage::snapshot_metadata_for_state(&state, 1),
+            0,
+        );
 
         let report = storage.verify_snapshot_bundle(&bundle, Some("stagingnet"));
         assert!(!report.restore_guarantees_explicit);
@@ -2775,14 +2945,14 @@ mod tests {
         let path = temp_db_path("snapshot-verify-anchor-missing");
         let storage = Storage::open(&path).expect("open storage");
         let state = build_linear_chain("testnet", 3);
-        let bundle = SnapshotExportBundle {
-            format_version: 1,
-            exported_at_unix: 1,
-            snapshot_captured_at_unix: None,
-            snapshot_metadata: Storage::snapshot_metadata_for_state(&state, 1),
-            snapshot: state.clone(),
-            persisted_blocks: state.dag.blocks.values().cloned().collect(),
-        };
+        let bundle = Storage::snapshot_bundle_for_state(
+            state.clone(),
+            state.dag.blocks.values().cloned().collect(),
+            1,
+            None,
+            Storage::snapshot_metadata_for_state(&state, 1),
+            0,
+        );
 
         let report = storage.verify_snapshot_bundle(&bundle, Some("testnet"));
         assert!(!report.restore_guarantees_explicit);
@@ -2791,6 +2961,120 @@ mod tests {
             .issues
             .iter()
             .any(|i| i.code == "SNAPSHOT_BUNDLE_ANCHOR_MISSING"));
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn snapshot_verification_generation_changed_discards_lineage_failure_for_retry() {
+        let path = temp_db_path("snapshot-generation-changed-retry");
+        let storage = Storage::open(&path).expect("open storage");
+        let state = build_linear_chain("testnet", 3);
+        let mut persisted = state.dag.blocks.values().cloned().collect::<Vec<_>>();
+        let mut newer = persisted
+            .iter()
+            .find(|block| block.header.height == 2)
+            .cloned()
+            .expect("height two block");
+        newer.hash = "newer-generation-side-dag".to_string();
+        persisted.push(newer);
+        let mut bundle = Storage::snapshot_bundle_for_state(
+            state.clone(),
+            persisted,
+            1,
+            Some(1),
+            Storage::snapshot_metadata_for_state(&state, 1),
+            storage
+                .accepted_storage_generation()
+                .expect("storage generation"),
+        );
+        bundle.delta_start_generation = 1;
+        bundle.delta_end_generation = 2;
+
+        let report = storage.verify_snapshot_bundle(&bundle, Some("testnet"));
+        assert!(report.verification_generation_changed);
+        assert!(report
+            .issues
+            .iter()
+            .any(|issue| issue.code == "SNAPSHOT_BUNDLE_VERIFICATION_GENERATION_CHANGED"));
+        assert!(!report
+            .issues
+            .iter()
+            .any(|issue| issue.code == "SNAPSHOT_BUNDLE_DELTA_NOT_IN_SNAPSHOT"));
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn snapshot_verification_stable_missing_hash_is_real_failure() {
+        let path = temp_db_path("snapshot-stable-missing-hash");
+        let storage = Storage::open(&path).expect("open storage");
+        let state = build_linear_chain("testnet", 3);
+        let mut snapshot = state.clone();
+        let missing = snapshot
+            .dag
+            .blocks
+            .iter()
+            .find(|(_, block)| block.header.height == 2)
+            .map(|(hash, _)| hash.clone())
+            .expect("height two hash");
+        snapshot.dag.blocks.remove(&missing);
+        let bundle = Storage::snapshot_bundle_for_state(
+            snapshot,
+            state.dag.blocks.values().cloned().collect(),
+            1,
+            Some(1),
+            Storage::snapshot_metadata_for_state(&state, 1),
+            storage
+                .accepted_storage_generation()
+                .expect("storage generation"),
+        );
+
+        let before = SNAPSHOT_VERIFICATION_STABLE_FAILURE_TOTAL.load(Ordering::Relaxed);
+        let report = storage.verify_snapshot_bundle(&bundle, Some("testnet"));
+        assert!(!report.verification_generation_changed);
+        assert!(!report.restore_guarantees_explicit);
+        assert!(report.issues.iter().any(|issue| issue.code
+            == "SNAPSHOT_BUNDLE_DELTA_NOT_IN_SNAPSHOT"
+            && issue.message.contains(&missing)));
+        assert!(SNAPSHOT_VERIFICATION_STABLE_FAILURE_TOTAL.load(Ordering::Relaxed) > before);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn snapshot_verification_newer_delta_side_dag_is_not_snapshot_corruption() {
+        let path = temp_db_path("snapshot-newer-side-dag");
+        let storage = Storage::open(&path).expect("open storage");
+        let snapshot = build_linear_chain("testnet", 2);
+        let mut final_state = snapshot.clone();
+        let mut side = build_candidate_block(
+            vec![best_tip_hash(&snapshot)],
+            3,
+            1,
+            vec![build_coinbase_transaction("side", 50, 30)],
+        );
+        refresh_block_consensus_ids_with_state(&mut side, &final_state)
+            .expect("prepare side block");
+        let (header, mined, _, _) = dev_mine_header(side.header.clone(), 25_000);
+        assert!(mined, "failed to mine side-dag block");
+        side.header = header;
+        refresh_block_consensus_ids(&mut side);
+        accept_block(side.clone(), &mut final_state, AcceptSource::LocalMining)
+            .expect("accept side block");
+        let bundle = Storage::snapshot_bundle_for_state(
+            snapshot.clone(),
+            vec![side],
+            1,
+            Some(1),
+            Storage::snapshot_metadata_for_state(&snapshot, 1),
+            storage
+                .accepted_storage_generation()
+                .expect("storage generation"),
+        );
+
+        let report = storage.verify_snapshot_bundle(&bundle, Some("testnet"));
+        assert!(!report
+            .issues
+            .iter()
+            .any(|issue| issue.code == "SNAPSHOT_BUNDLE_DELTA_NOT_IN_SNAPSHOT"));
         let _ = std::fs::remove_dir_all(path);
     }
 
