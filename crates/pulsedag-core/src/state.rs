@@ -301,6 +301,20 @@ pub struct ChainState {
     pub orphan_received_at_ms: HashMap<Hash, u64>,
     #[serde(default)]
     pub terminal_missing_parents: HashMap<Hash, MissingParentTerminalEntry>,
+    #[serde(default)]
+    pub chain_state_generation: u64,
+    #[serde(default)]
+    pub accepted_commit_generation_conflict_total: u64,
+    #[serde(default)]
+    pub accepted_commit_reprepare_total: u64,
+    #[serde(default)]
+    pub accepted_commit_serialized_total: u64,
+    #[serde(default)]
+    pub accepted_commit_publish_mismatch_total: u64,
+    #[serde(default)]
+    pub accepted_commit_last_hash: Option<Hash>,
+    #[serde(default)]
+    pub accepted_commit_last_source: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

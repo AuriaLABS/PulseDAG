@@ -157,5 +157,12 @@ pub fn init_chain_state(chain_id: String) -> ChainState {
         orphan_parent_index: HashMap::new(),
         orphan_received_at_ms: HashMap::new(),
         terminal_missing_parents: HashMap::new(),
+        chain_state_generation: 0,
+        accepted_commit_generation_conflict_total: 0,
+        accepted_commit_reprepare_total: 0,
+        accepted_commit_serialized_total: 0,
+        accepted_commit_publish_mismatch_total: 0,
+        accepted_commit_last_hash: None,
+        accepted_commit_last_source: None,
     }
 }
