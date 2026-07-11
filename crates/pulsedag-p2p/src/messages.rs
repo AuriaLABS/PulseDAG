@@ -68,11 +68,17 @@ pub enum NetworkMessage {
         #[serde(default)]
         request_id: Option<String>,
         #[serde(default)]
+        requesting_peer_id: Option<String>,
+        #[serde(default)]
         requested_peer_id: Option<String>,
+        #[serde(default)]
+        request_kind: Option<String>,
     },
     BlockData {
         chain_id: String,
         block: Option<Block>,
+        #[serde(default)]
+        request_id: Option<String>,
         #[serde(default)]
         request_hash: Option<Hash>,
     },
@@ -268,16 +274,20 @@ mod tests {
                 chain_id: "testnet".into(),
                 hash: block.hash.clone(),
                 request_id: None,
+                requesting_peer_id: None,
                 requested_peer_id: None,
+                request_kind: Some("generic".into()),
             },
             NetworkMessage::BlockData {
                 chain_id: "testnet".into(),
                 block: Some(block.clone()),
+                request_id: None,
                 request_hash: Some(block.hash.clone()),
             },
             NetworkMessage::BlockData {
                 chain_id: "testnet".into(),
                 block: None,
+                request_id: None,
                 request_hash: None,
             },
             NetworkMessage::Block {

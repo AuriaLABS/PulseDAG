@@ -3627,7 +3627,7 @@ async fn main() -> Result<()> {
                             );
                         }
                     }
-                    InboundEvent::GetBlock { hash } => {
+                    InboundEvent::GetBlock { hash, request_id } => {
                         let block = {
                             let guard = chain.read().await;
                             guard.dag.blocks.get(&hash).cloned()
@@ -3640,7 +3640,11 @@ async fn main() -> Result<()> {
                             }
                         });
                         if let Some(ref p2p) = p2p {
-                            if let Err(e) = p2p.send_block_data(Some(&hash), block.as_ref()) {
+                            if let Err(e) = p2p.send_block_data_with_request_id(
+                                request_id.as_deref(),
+                                Some(&hash),
+                                block.as_ref(),
+                            ) {
                                 warn!(error = %e, block_hash = %hash, "failed sending BlockData response");
                             }
                         }
