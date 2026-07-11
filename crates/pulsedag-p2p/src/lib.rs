@@ -442,6 +442,22 @@ pub fn peer_accounting_snapshot(status: &P2pStatus) -> PeerAccountingSnapshot {
 }
 
 #[derive(Debug, Clone, Default)]
+pub struct RemoteSelectedTipStatus {
+    pub peer_id: String,
+    pub connection_generation: u64,
+    pub chain_id: String,
+    pub selected_tip: Option<PulseHash>,
+    pub selected_height: u64,
+    pub selected_blue_score: Option<u64>,
+    pub ordered_dag_tip: Option<PulseHash>,
+    pub state_root_digest: Option<String>,
+    pub observed_at_unix: u64,
+    pub inventory_generation: u64,
+    pub direct_request_capable: bool,
+    pub connected: bool,
+}
+
+#[derive(Debug, Clone, Default)]
 pub struct P2pStatus {
     pub chain_id: String,
     pub mode: String,
@@ -627,6 +643,7 @@ pub struct P2pStatus {
     pub sync_known_peers: Vec<String>,
     pub direct_request_capable_peers: Vec<String>,
     pub connected_request_capable_session_peers: Vec<String>,
+    pub remote_selected_tip_inventory: Vec<RemoteSelectedTipStatus>,
     pub getblock_requests_received_total: u64,
     pub getblock_responses_blockdata_sent_total: u64,
     pub getblock_responses_not_found_sent_total: u64,
@@ -1587,6 +1604,7 @@ impl P2pHandle for MemoryP2pHandle {
                 .iter()
                 .filter_map(|(peer, count)| (*count > 0).then_some(peer.clone()))
                 .collect(),
+            remote_selected_tip_inventory: Vec::new(),
             getblock_requests_received_total: inner.getblock_requests_received_total,
             getblock_responses_blockdata_sent_total: inner.getblock_responses_blockdata_sent_total,
             getblock_responses_not_found_sent_total: inner.getblock_responses_not_found_sent_total,
@@ -4292,7 +4310,10 @@ fn dispatch_network_message(
                 });
             }
         }
-        NetworkMessage::GetTips { chain_id } => {
+        NetworkMessage::GetTips {
+            chain_id,
+            inventory: _,
+        } => {
             if chain_id != expected_chain_id {
                 if let Ok(mut guard) = inner.lock() {
                     guard.inbound_chain_mismatch_dropped += 1;
@@ -4324,7 +4345,11 @@ fn dispatch_network_message(
             }
             let _ = inbound_tx.send(InboundEvent::GetTips);
         }
-        NetworkMessage::Tips { chain_id, tips } => {
+        NetworkMessage::Tips {
+            chain_id,
+            tips,
+            inventory: _,
+        } => {
             if chain_id != expected_chain_id {
                 if let Ok(mut guard) = inner.lock() {
                     guard.inbound_chain_mismatch_dropped += 1;
@@ -4729,13 +4754,13 @@ async fn run_libp2p_runtime(
                     }
                     OutboundMessage::GetTips => {
                         let topic_name = format!("{}-sync", cfg.chain_id);
-                        let wire = serde_json::to_vec(&NetworkMessage::GetTips { chain_id: cfg.chain_id.clone() });
+                        let wire = serde_json::to_vec(&NetworkMessage::GetTips { chain_id: cfg.chain_id.clone(), inventory: None });
                         (wire, topic_name, "get-tips", "sync:get-tips".to_string())
                     }
                     OutboundMessage::Tips(tips) => {
                         let topic_name = format!("{}-sync", cfg.chain_id);
                         let message_id = format!("sync:tips:{}", tips.join(","));
-                        let wire = serde_json::to_vec(&NetworkMessage::Tips { chain_id: cfg.chain_id.clone(), tips });
+                        let wire = serde_json::to_vec(&NetworkMessage::Tips { chain_id: cfg.chain_id.clone(), tips, inventory: None });
                         (wire, topic_name, "tips", message_id)
                     }
                     OutboundMessage::GetBlockHeaders(hashes) => {
@@ -4791,6 +4816,7 @@ async fn run_libp2p_runtime(
             _ = sleep(Duration::from_secs(5)) => {
                 let heartbeat = serde_json::to_vec(&NetworkMessage::GetTips {
                     chain_id: cfg.chain_id.clone(),
+                    inventory: None,
                 });
                 note_swarm_event(&inner, "heartbeat:get-tips");
                 if let Ok(bytes) = heartbeat {
@@ -5285,13 +5311,13 @@ async fn run_libp2p_real_runtime(
                     }
                     OutboundMessage::GetTips => {
                         let topic_name = format!("{}-sync", cfg.chain_id);
-                        let wire = serde_json::to_vec(&NetworkMessage::GetTips { chain_id: cfg.chain_id.clone() });
+                        let wire = serde_json::to_vec(&NetworkMessage::GetTips { chain_id: cfg.chain_id.clone(), inventory: None });
                         (wire, topic_name, "get-tips", "sync:get-tips".to_string())
                     }
                     OutboundMessage::Tips(tips) => {
                         let topic_name = format!("{}-sync", cfg.chain_id);
                         let message_id = format!("sync:tips:{}", tips.join(","));
-                        let wire = serde_json::to_vec(&NetworkMessage::Tips { chain_id: cfg.chain_id.clone(), tips });
+                        let wire = serde_json::to_vec(&NetworkMessage::Tips { chain_id: cfg.chain_id.clone(), tips, inventory: None });
                         (wire, topic_name, "tips", message_id)
                     }
                     OutboundMessage::GetBlockHeaders(hashes) => {
@@ -5358,6 +5384,7 @@ async fn run_libp2p_real_runtime(
                         let topic = gossipsub::IdentTopic::new(format!("{}-sync", cfg.chain_id));
                         if let Ok(bytes) = serde_json::to_vec(&NetworkMessage::GetTips {
                             chain_id: cfg.chain_id.clone(),
+                            inventory: None,
                         }) {
                             note_swarm_event(&inner, format!("startup-tip-exchange:{peer_id}"));
                             let _ = swarm.behaviour_mut().gossipsub.publish(topic, bytes);
@@ -6062,6 +6089,7 @@ impl P2pHandle for Libp2pHandle {
                 .iter()
                 .filter_map(|(peer, count)| (*count > 0).then_some(peer.clone()))
                 .collect(),
+            remote_selected_tip_inventory: Vec::new(),
             getblock_requests_received_total: inner.getblock_requests_received_total,
             getblock_responses_blockdata_sent_total: inner.getblock_responses_blockdata_sent_total,
             getblock_responses_not_found_sent_total: inner.getblock_responses_not_found_sent_total,
@@ -8319,6 +8347,7 @@ mod inventory_tests {
         let (inbound_tx, _inbound_rx) = mpsc::unbounded_channel();
         let wire = serde_json::to_vec(&NetworkMessage::GetTips {
             chain_id: "testnet".into(),
+            inventory: None,
         })
         .expect("serialize get tips");
 
@@ -8550,6 +8579,7 @@ mod inventory_tests {
         let wire = serde_json::to_vec(&NetworkMessage::Tips {
             chain_id: "testnet".into(),
             tips: vec!["remote-tip-1".into(), "remote-tip-2".into()],
+            inventory: None,
         })
         .expect("serialize tips");
 
@@ -8733,6 +8763,7 @@ mod deterministic_p2p_sync_coverage_tests {
         let wire = serde_json::to_vec(&NetworkMessage::Tips {
             chain_id: "testnet".into(),
             tips: vec!["local-tip".into(), "remote-tip".into()],
+            inventory: None,
         })
         .expect("serialize tips");
 

@@ -104,32 +104,32 @@ pub fn select_remote_sync_evidence(
 
 pub fn remote_sync_evidence_from_p2p_status(
     status: Option<&P2pStatus>,
-    now_unix: u64,
+    _now_unix: u64,
 ) -> Vec<RemoteSelectedTipEvidence> {
     let Some(status) = status else {
         return Vec::new();
     };
-    // Current P2P status has peer eligibility/connectivity but does not yet carry
-    // selected-tip heights. Keep this adapter intentionally conservative: callers
-    // only get network lag when a producer supplies explicit selected-tip evidence.
+
     status
-        .connected_request_capable_session_peers
+        .remote_selected_tip_inventory
         .iter()
-        .filter(|peer| {
+        .filter(|ev| ev.connected)
+        .filter(|ev| {
             status
                 .connected_peers
                 .iter()
-                .any(|connected| connected == *peer)
+                .any(|connected| connected == &ev.peer_id)
         })
-        .map(|peer| RemoteSelectedTipEvidence {
-            peer_id: peer.clone(),
-            selected_height: 0,
-            selected_tip: None,
-            chain_id: status.chain_id.clone(),
-            observed_at_unix: now_unix,
-            direct_request_capable: true,
-            connected: true,
-            from_tip_inventory: false,
+        .filter(|ev| ev.direct_request_capable)
+        .map(|ev| RemoteSelectedTipEvidence {
+            peer_id: ev.peer_id.clone(),
+            selected_height: ev.selected_height,
+            selected_tip: ev.selected_tip.clone(),
+            chain_id: ev.chain_id.clone(),
+            observed_at_unix: ev.observed_at_unix,
+            direct_request_capable: ev.direct_request_capable,
+            connected: ev.connected,
+            from_tip_inventory: true,
         })
         .collect()
 }
@@ -502,5 +502,42 @@ mod tests {
         assert_eq!(state.catchup_stage, "degraded");
         assert_eq!(state.live_sync_error_active, 1);
         assert!(state.sync_live_error.is_some());
+    }
+    #[test]
+    fn p2p_status_remote_inventory_produces_n5_style_gap() {
+        let status = P2pStatus {
+            chain_id: "testnet-dev".into(),
+            connected_peers: vec!["n1".into()],
+            remote_selected_tip_inventory: vec![pulsedag_p2p::RemoteSelectedTipStatus {
+                peer_id: "n1".into(),
+                connection_generation: 7,
+                chain_id: "testnet-dev".into(),
+                selected_tip: Some("remote-741".into()),
+                selected_height: 741,
+                selected_blue_score: Some(741),
+                ordered_dag_tip: Some("ordered-741".into()),
+                state_root_digest: Some("state-root-741".into()),
+                observed_at_unix: 1_000,
+                inventory_generation: 11,
+                direct_request_capable: true,
+                connected: true,
+            }],
+            ..P2pStatus::default()
+        };
+        let chain = chain_at_selected_height(717);
+        let evidence = remote_sync_evidence_from_p2p_status(Some(&status), 1_000);
+        let state = build_canonical_sync_state_with_remote_evidence(
+            &chain,
+            &NodeRuntimeStats::default(),
+            chain.dag.blocks.len(),
+            1_000,
+            Some(&status),
+            &evidence,
+        );
+
+        assert_eq!(state.best_remote_selected_height, Some(741));
+        assert_eq!(state.network_selected_height_gap, 24);
+        assert_eq!(state.sync_state, "locating_common_ancestor");
+        assert_eq!(state.catchup_stage, "discovering");
     }
 }
