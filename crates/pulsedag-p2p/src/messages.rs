@@ -14,6 +14,18 @@ pub struct BlockHeaderAnnouncement {
     pub header: BlockHeader,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TipInventoryStatus {
+    pub chain_id: String,
+    pub selected_tip: Option<Hash>,
+    pub selected_height: Option<u64>,
+    pub selected_blue_score: Option<u64>,
+    pub ordered_dag_tip: Option<Hash>,
+    pub state_root_digest: Option<String>,
+    pub observed_at_unix: u64,
+    pub inventory_generation: u64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum NetworkMessage {
@@ -49,10 +61,14 @@ pub enum NetworkMessage {
     },
     GetTips {
         chain_id: String,
+        #[serde(default)]
+        inventory: Option<TipInventoryStatus>,
     },
     Tips {
         chain_id: String,
         tips: Vec<Hash>,
+        #[serde(default)]
+        inventory: Option<TipInventoryStatus>,
     },
     GetBlockHeaders {
         chain_id: String,
@@ -181,7 +197,7 @@ mod tests {
             | NetworkMessage::InvBlock { chain_id, .. }
             | NetworkMessage::GetHeaders { chain_id, .. }
             | NetworkMessage::Headers { chain_id, .. }
-            | NetworkMessage::GetTips { chain_id }
+            | NetworkMessage::GetTips { chain_id, .. }
             | NetworkMessage::Tips { chain_id, .. }
             | NetworkMessage::GetBlockHeaders { chain_id, .. }
             | NetworkMessage::BlockHeaders { chain_id, .. }
@@ -254,10 +270,12 @@ mod tests {
             },
             NetworkMessage::GetTips {
                 chain_id: "testnet".into(),
+                inventory: None,
             },
             NetworkMessage::Tips {
                 chain_id: "testnet".into(),
                 tips: vec![block.hash.clone()],
+                inventory: None,
             },
             NetworkMessage::GetBlockHeaders {
                 chain_id: "testnet".into(),
@@ -341,5 +359,41 @@ mod tests {
             message_id_for_block(&block),
             message_id_for_block(&block_with_different_body)
         );
+    }
+}
+
+#[cfg(test)]
+mod selected_tip_inventory_wire_tests {
+    use super::{NetworkMessage, TipInventoryStatus};
+
+    #[test]
+    fn tips_wire_carries_selected_tip_inventory_status() {
+        let inventory = TipInventoryStatus {
+            chain_id: "testnet-dev".into(),
+            selected_tip: Some("tip-741".into()),
+            selected_height: Some(741),
+            selected_blue_score: Some(741),
+            ordered_dag_tip: Some("ordered-741".into()),
+            state_root_digest: Some("state-root".into()),
+            observed_at_unix: 1_000,
+            inventory_generation: 3,
+        };
+        let wire = serde_json::to_vec(&NetworkMessage::Tips {
+            chain_id: "testnet-dev".into(),
+            tips: vec!["tip-741".into()],
+            inventory: Some(inventory.clone()),
+        })
+        .expect("serialize tips");
+        let decoded: NetworkMessage = serde_json::from_slice(&wire).expect("decode tips");
+
+        match decoded {
+            NetworkMessage::Tips {
+                inventory: Some(decoded),
+                ..
+            } => {
+                assert_eq!(decoded, inventory);
+            }
+            other => panic!("unexpected decoded message: {other:?}"),
+        }
     }
 }
