@@ -6,6 +6,22 @@ pub struct NodeCheckItem {
     pub name: String,
     pub ok: bool,
     pub detail: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub accepted_storage_count: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub in_memory_dag_count: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub storage_only_hashes: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub memory_only_hashes: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mismatch_acceptance_sources: Option<std::collections::BTreeMap<String, String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub memory_generation: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub storage_generation: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub accepted_hash_set_digest: Option<String>,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -38,6 +54,7 @@ pub async fn get_node_checks<S: RpcStateLike>(
         max_block_height = max_block_height.max(block.header.height);
     }
 
+    let accepted_hash_set_digest = invariant_snapshot.storage_generation.clone();
     let checks = vec![
         NodeCheckItem {
             name: "snapshot_exists".into(),
@@ -47,10 +64,28 @@ pub async fn get_node_checks<S: RpcStateLike>(
             } else {
                 "snapshot missing".into()
             },
+            accepted_storage_count: None,
+            in_memory_dag_count: None,
+            storage_only_hashes: None,
+            memory_only_hashes: None,
+            mismatch_acceptance_sources: None,
+            memory_generation: None,
+            storage_generation: None,
+            accepted_hash_set_digest: None,
         },
         NodeCheckItem {
             name: "storage_consistency".into(),
             ok: invariant_snapshot.is_ok(),
+            accepted_storage_count: Some(invariant_snapshot.accepted_storage_count),
+            in_memory_dag_count: Some(invariant_snapshot.in_memory_dag_count),
+            storage_only_hashes: Some(invariant_snapshot.storage_only_hashes.clone()),
+            memory_only_hashes: Some(invariant_snapshot.memory_only_hashes.clone()),
+            mismatch_acceptance_sources: Some(
+                invariant_snapshot.mismatch_acceptance_sources.clone(),
+            ),
+            memory_generation: Some(invariant_snapshot.memory_generation.clone()),
+            storage_generation: Some(invariant_snapshot.storage_generation.clone()),
+            accepted_hash_set_digest: Some(accepted_hash_set_digest),
             detail: if invariant_snapshot.is_ok() {
                 format!(
                     "memory and storage block sets match ({})",
@@ -73,6 +108,14 @@ pub async fn get_node_checks<S: RpcStateLike>(
             name: "genesis_present".into(),
             ok: chain.dag.blocks.contains_key(&chain.dag.genesis_hash),
             detail: chain.dag.genesis_hash.clone(),
+            accepted_storage_count: None,
+            in_memory_dag_count: None,
+            storage_only_hashes: None,
+            memory_only_hashes: None,
+            mismatch_acceptance_sources: None,
+            memory_generation: None,
+            storage_generation: None,
+            accepted_hash_set_digest: None,
         },
         NodeCheckItem {
             name: "p2p_state".into(),
@@ -82,11 +125,27 @@ pub async fn get_node_checks<S: RpcStateLike>(
             } else {
                 "p2p disabled".into()
             },
+            accepted_storage_count: None,
+            in_memory_dag_count: None,
+            storage_only_hashes: None,
+            memory_only_hashes: None,
+            mismatch_acceptance_sources: None,
+            memory_generation: None,
+            storage_generation: None,
+            accepted_hash_set_digest: None,
         },
         NodeCheckItem {
             name: "tip_presence".into(),
             ok: !chain.dag.tips.is_empty(),
             detail: format!("tips={}", chain.dag.tips.len()),
+            accepted_storage_count: None,
+            in_memory_dag_count: None,
+            storage_only_hashes: None,
+            memory_only_hashes: None,
+            mismatch_acceptance_sources: None,
+            memory_generation: None,
+            storage_generation: None,
+            accepted_hash_set_digest: None,
         },
         NodeCheckItem {
             name: "best_height_consistency".into(),
@@ -95,6 +154,14 @@ pub async fn get_node_checks<S: RpcStateLike>(
                 "best_height={}, max_block_height={}",
                 chain.dag.best_height, max_block_height
             ),
+            accepted_storage_count: None,
+            in_memory_dag_count: None,
+            storage_only_hashes: None,
+            memory_only_hashes: None,
+            mismatch_acceptance_sources: None,
+            memory_generation: None,
+            storage_generation: None,
+            accepted_hash_set_digest: None,
         },
         NodeCheckItem {
             name: "contracts_namespaces_ready".into(),
@@ -104,6 +171,14 @@ pub async fn get_node_checks<S: RpcStateLike>(
             } else {
                 "contracts namespaces missing".into()
             },
+            accepted_storage_count: None,
+            in_memory_dag_count: None,
+            storage_only_hashes: None,
+            memory_only_hashes: None,
+            mismatch_acceptance_sources: None,
+            memory_generation: None,
+            storage_generation: None,
+            accepted_hash_set_digest: None,
         },
     ];
 
