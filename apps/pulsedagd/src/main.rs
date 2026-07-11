@@ -38,7 +38,7 @@ use pulsedag_rpc::routes::{
     RpcHardeningLimits,
 };
 use pulsedag_storage::Storage;
-use tokio::sync::{oneshot, RwLock};
+use tokio::sync::{oneshot, Mutex, RwLock};
 use tokio::time::{sleep, Duration};
 
 const MAX_INFLIGHT_BLOCK_REQUESTS: usize = 64;
@@ -248,6 +248,12 @@ struct PendingSelectedLocator {
     peer_id: String,
     locator: Vec<String>,
     requested_at_unix: u64,
+}
+
+#[derive(Debug, Default)]
+struct SelectedSegmentLocatorState {
+    next_request_id: u64,
+    pending_locator: Option<PendingSelectedLocator>,
 }
 
 struct SelectedSegmentSession {
@@ -1404,11 +1410,17 @@ async fn main() -> Result<()> {
         );
     }
 
+    let selected_segment_locator_state = Arc::new(Mutex::new(SelectedSegmentLocatorState {
+        next_request_id: 1,
+        pending_locator: None,
+    }));
+
     if let Some(mut rx) = inbound_rx {
         let chain = app_state.chain.clone();
         let storage = storage.clone();
         let runtime = app_state.runtime.clone();
         let p2p = app_state.p2p.clone();
+        let selected_segment_locator_state = selected_segment_locator_state.clone();
         let max_orphan_count = cfg.max_orphan_count;
         tokio::spawn(async move {
             let mut block_requests = BlockRequestTracker::with_limits(
@@ -1423,8 +1435,6 @@ async fn main() -> Result<()> {
             let mut final_quiescence_same_height_tip_requests: HashSet<String> = HashSet::new();
             let mut selected_segment_session: Option<SelectedSegmentSession> = None;
             let mut selected_segment_next_session_id: u64 = 1;
-            let mut selected_segment_next_locator_request_id: u64 = 1;
-            let mut selected_segment_pending_locator: Option<PendingSelectedLocator> = None;
             let mut recovery_tick: u64 = 0;
             loop {
                 let maybe_event =
@@ -3071,15 +3081,19 @@ async fn main() -> Result<()> {
                                 &known_blocks_for_segment,
                             )
                         });
-                        let pending_request_id = selected_segment_pending_locator
+                        let pending_selected_locator = {
+                            let guard = selected_segment_locator_state.lock().await;
+                            guard.pending_locator.clone()
+                        };
+                        let pending_request_id = pending_selected_locator
                             .as_ref()
                             .map(|pending| pending.request_id)
                             .unwrap_or(0);
-                        let pending_locator = selected_segment_pending_locator
+                        let pending_locator = pending_selected_locator
                             .as_ref()
                             .map(|pending| pending.locator.clone())
                             .unwrap_or_default();
-                        let pending_peer_matches = selected_segment_pending_locator
+                        let pending_peer_matches = pending_selected_locator
                             .as_ref()
                             .map(|pending| peer_id.as_deref() == Some(pending.peer_id.as_str()))
                             .unwrap_or(false);
@@ -3794,6 +3808,7 @@ async fn main() -> Result<()> {
         let runtime = app_state.runtime.clone();
         let storage = app_state.storage.clone();
         let p2p = app_state.p2p.clone();
+        let selected_segment_locator_state = selected_segment_locator_state.clone();
         tokio::spawn(async move {
             let mut previous_best_height = 0u64;
             let mut previous_accepted_p2p_blocks = 0u64;
@@ -4070,8 +4085,10 @@ async fn main() -> Result<()> {
                                         .iter()
                                         .find(|peer| status.connected_peers.contains(*peer))
                                         .cloned();
-                                    let selected_locator_request_id =
-                                        selected_segment_next_locator_request_id;
+                                    let selected_locator_request_id = {
+                                        let guard = selected_segment_locator_state.lock().await;
+                                        guard.next_request_id
+                                    };
                                     let selected_locator_requested = selected_locator_peer
                                         .is_some()
                                         && p2p
@@ -4082,16 +4099,17 @@ async fn main() -> Result<()> {
                                             )
                                             .is_ok();
                                     if selected_locator_requested {
-                                        selected_segment_next_locator_request_id =
-                                            selected_segment_next_locator_request_id
-                                                .saturating_add(1);
-                                        selected_segment_pending_locator = selected_locator_peer
-                                            .clone()
-                                            .map(|peer_id| PendingSelectedLocator {
-                                                request_id: selected_locator_request_id,
-                                                peer_id,
-                                                locator: selected_locator.clone(),
-                                                requested_at_unix: now_unix(),
+                                        let mut guard = selected_segment_locator_state.lock().await;
+                                        guard.next_request_id =
+                                            guard.next_request_id.saturating_add(1);
+                                        guard.pending_locator =
+                                            selected_locator_peer.clone().map(|peer_id| {
+                                                PendingSelectedLocator {
+                                                    request_id: selected_locator_request_id,
+                                                    peer_id,
+                                                    locator: selected_locator.clone(),
+                                                    requested_at_unix: now_unix(),
+                                                }
                                             });
                                     }
                                     let mut rt = runtime.write().await;
