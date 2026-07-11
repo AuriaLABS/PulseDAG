@@ -1,6 +1,11 @@
 use axum::{extract::State, Json};
 use pulsedag_core::genesis::init_chain_state;
-use std::collections::BTreeMap;
+use pulsedag_storage::{
+    SNAPSHOT_VERIFICATION_GENERATION_CHANGED_TOTAL, SNAPSHOT_VERIFICATION_LAST_FAILED_HASH,
+    SNAPSHOT_VERIFICATION_LAST_GENERATION, SNAPSHOT_VERIFICATION_RETRY_TOTAL,
+    SNAPSHOT_VERIFICATION_STABLE_FAILURE_TOTAL,
+};
+use std::{collections::BTreeMap, sync::atomic::Ordering};
 
 use crate::{
     api::RpcStateLike,
@@ -36,6 +41,11 @@ pub struct MetricsData {
     pub chain_state_mutation_source: Option<String>,
     pub chain_state_mutation_conflict_total: u64,
     pub chain_state_reprepare_total: u64,
+    pub snapshot_verification_generation_changed_total: u64,
+    pub snapshot_verification_stable_failure_total: u64,
+    pub snapshot_verification_retry_total: u64,
+    pub snapshot_verification_last_generation: u64,
+    pub snapshot_verification_last_failed_hash: u64,
     pub accepted_hash_lost_from_memory_total: u64,
     pub accepted_hash_terminalization_prevented_total: u64,
     pub accepted_storage_repair_total: u64,
@@ -379,6 +389,16 @@ pub async fn get_metrics<S: RpcStateLike>(
         chain_state_mutation_source: chain.chain_state_mutation_source.clone(),
         chain_state_mutation_conflict_total: chain.chain_state_mutation_conflict_total,
         chain_state_reprepare_total: chain.chain_state_reprepare_total,
+        snapshot_verification_generation_changed_total:
+            SNAPSHOT_VERIFICATION_GENERATION_CHANGED_TOTAL.load(Ordering::Relaxed),
+        snapshot_verification_stable_failure_total: SNAPSHOT_VERIFICATION_STABLE_FAILURE_TOTAL
+            .load(Ordering::Relaxed),
+        snapshot_verification_retry_total: SNAPSHOT_VERIFICATION_RETRY_TOTAL
+            .load(Ordering::Relaxed),
+        snapshot_verification_last_generation: SNAPSHOT_VERIFICATION_LAST_GENERATION
+            .load(Ordering::Relaxed),
+        snapshot_verification_last_failed_hash: SNAPSHOT_VERIFICATION_LAST_FAILED_HASH
+            .load(Ordering::Relaxed),
         accepted_hash_lost_from_memory_total: chain.accepted_hash_lost_from_memory_total,
         accepted_hash_terminalization_prevented_total: chain
             .accepted_hash_terminalization_prevented_total,
