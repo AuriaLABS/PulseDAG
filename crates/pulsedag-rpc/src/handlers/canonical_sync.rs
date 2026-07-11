@@ -531,7 +531,7 @@ mod tests {
             &NodeRuntimeStats::default(),
             chain.dag.blocks.len(),
             1_000,
-            Some(&status),
+            None,
             &evidence,
         );
 
