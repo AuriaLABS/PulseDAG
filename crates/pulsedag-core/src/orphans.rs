@@ -5,6 +5,7 @@ use std::{
 
 use crate::{
     accept::{accept_block_with_result, AcceptSource, BlockAcceptanceResult},
+    errors::PulseError,
     state::{ChainState, MissingParentState, MissingParentTerminalEntry},
     types::{Block, Hash},
 };
@@ -367,6 +368,13 @@ pub fn terminalize_residual_waiting_missing_parents(
 
     let mut result = ResidualMissingParentTerminalResult::default();
     for (parent, _) in residual.into_iter().take(limit) {
+        if state.dag.blocks.contains_key(&parent) {
+            state.orphan_parent_index.remove(&parent);
+            state.accepted_hash_terminalization_prevented_total = state
+                .accepted_hash_terminalization_prevented_total
+                .saturating_add(1);
+            continue;
+        }
         let transitioned = terminally_exhaust_missing_parent(
             state,
             &parent,
@@ -388,6 +396,46 @@ pub fn terminalize_residual_waiting_missing_parents(
         }
     }
     result
+}
+
+pub fn terminalize_residual_waiting_missing_parents_guarded<F>(
+    state: &mut ChainState,
+    now_ms: u64,
+    ttl_ms: u64,
+    limit: usize,
+    mut accepted_storage_contains: F,
+) -> Result<ResidualMissingParentTerminalResult, PulseError>
+where
+    F: FnMut(&Hash) -> Result<Option<u64>, PulseError>,
+{
+    let parents = state
+        .orphan_parent_index
+        .keys()
+        .cloned()
+        .collect::<Vec<_>>();
+    for parent in parents {
+        if state.dag.blocks.contains_key(&parent) {
+            state.orphan_parent_index.remove(&parent);
+            state.terminal_missing_parents.remove(&parent);
+            state.accepted_hash_terminalization_prevented_total = state
+                .accepted_hash_terminalization_prevented_total
+                .saturating_add(1);
+            continue;
+        }
+        if let Some(height) = accepted_storage_contains(&parent)? {
+            state.accepted_hash_lost_from_memory_total =
+                state.accepted_hash_lost_from_memory_total.saturating_add(1);
+            state.last_lost_accepted_hash = Some(parent.clone());
+            state.last_lost_accepted_height = Some(height);
+            return Err(PulseError::Internal(format!(
+                "accepted_state_memory_loss hash={} height={}",
+                parent, height
+            )));
+        }
+    }
+    Ok(terminalize_residual_waiting_missing_parents(
+        state, now_ms, ttl_ms, limit,
+    ))
 }
 
 pub fn missing_block_parents(block: &Block, state: &ChainState) -> Vec<Hash> {

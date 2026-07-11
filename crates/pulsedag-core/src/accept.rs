@@ -31,10 +31,10 @@ impl AcceptSource {
     }
 }
 
-static ACCEPTED_STATE_COMMIT_COORDINATOR: OnceLock<Mutex<()>> = OnceLock::new();
+static CHAIN_STATE_MUTATION_COORDINATOR: OnceLock<Mutex<()>> = OnceLock::new();
 
-fn accepted_state_commit_coordinator() -> &'static Mutex<()> {
-    ACCEPTED_STATE_COMMIT_COORDINATOR.get_or_init(|| Mutex::new(()))
+fn chain_state_mutation_coordinator() -> &'static Mutex<()> {
+    CHAIN_STATE_MUTATION_COORDINATOR.get_or_init(|| Mutex::new(()))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -103,6 +103,68 @@ impl AtomicBlockAcceptance {
             committed: false,
             broadcast: false,
         }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChainStateMutationOutcome<T> {
+    pub result: T,
+    pub generation: u64,
+}
+
+pub fn mutate_chain_state_serialized<T, FPrepare, FPersist>(
+    state: &mut ChainState,
+    source: &str,
+    mut prepare: FPrepare,
+    mut persist: FPersist,
+) -> Result<ChainStateMutationOutcome<T>, PulseError>
+where
+    FPrepare: FnMut(&ChainState) -> Result<(ChainState, T), PulseError>,
+    FPersist: FnMut(&ChainState) -> Result<(), PulseError>,
+{
+    let mut base_generation = state.chain_state_generation;
+    let (mut working, mut result) = prepare(state)?;
+    let _mutation_guard = chain_state_mutation_coordinator()
+        .lock()
+        .map_err(|_| PulseError::Internal("chain state mutation coordinator poisoned".into()))?;
+
+    loop {
+        if state.chain_state_generation != base_generation {
+            state.chain_state_mutation_conflict_total =
+                state.chain_state_mutation_conflict_total.saturating_add(1);
+            state.chain_state_reprepare_total = state.chain_state_reprepare_total.saturating_add(1);
+            base_generation = state.chain_state_generation;
+            (working, result) = prepare(state)?;
+            continue;
+        }
+
+        let next_generation = base_generation.saturating_add(1);
+        working.chain_state_generation = next_generation;
+        working.chain_state_mutation_generation = next_generation;
+        working.chain_state_mutation_source = Some(source.to_string());
+        working.chain_state_mutation_conflict_total = state.chain_state_mutation_conflict_total;
+        working.chain_state_reprepare_total = state.chain_state_reprepare_total;
+        working.accepted_hash_lost_from_memory_total = state.accepted_hash_lost_from_memory_total;
+        working.accepted_hash_terminalization_prevented_total =
+            state.accepted_hash_terminalization_prevented_total;
+        working.accepted_storage_repair_total = state.accepted_storage_repair_total;
+        working.last_lost_accepted_hash = state.last_lost_accepted_hash.clone();
+        working.last_lost_accepted_height = state.last_lost_accepted_height;
+        working.accepted_commit_generation_conflict_total =
+            state.accepted_commit_generation_conflict_total;
+        working.accepted_commit_reprepare_total = state.accepted_commit_reprepare_total;
+        working.accepted_commit_serialized_total = state.accepted_commit_serialized_total;
+        working.accepted_commit_publish_mismatch_total =
+            state.accepted_commit_publish_mismatch_total;
+        working.accepted_commit_last_hash = state.accepted_commit_last_hash.clone();
+        working.accepted_commit_last_source = state.accepted_commit_last_source.clone();
+
+        persist(&working)?;
+        *state = working;
+        return Ok(ChainStateMutationOutcome {
+            result,
+            generation: next_generation,
+        });
     }
 }
 
@@ -636,11 +698,12 @@ where
         }
     };
 
-    let _commit_guard = accepted_state_commit_coordinator()
+    let _commit_guard = chain_state_mutation_coordinator()
         .lock()
         .map_err(|_| PulseError::Internal("accepted state commit coordinator poisoned".into()))?;
     state.accepted_commit_serialized_total =
         state.accepted_commit_serialized_total.saturating_add(1);
+    state.chain_state_mutation_source = Some(source.as_str().to_string());
 
     loop {
         if state.chain_state_generation != base_generation {
@@ -649,6 +712,9 @@ where
                 .saturating_add(1);
             state.accepted_commit_reprepare_total =
                 state.accepted_commit_reprepare_total.saturating_add(1);
+            state.chain_state_mutation_conflict_total =
+                state.chain_state_mutation_conflict_total.saturating_add(1);
+            state.chain_state_reprepare_total = state.chain_state_reprepare_total.saturating_add(1);
             base_generation = state.chain_state_generation;
             working = match prepare_block_state(&block, state) {
                 Ok(working) => working,
@@ -663,6 +729,16 @@ where
 
         let next_generation = base_generation.saturating_add(1);
         working.chain_state_generation = next_generation;
+        working.chain_state_mutation_generation = next_generation;
+        working.chain_state_mutation_source = Some(source.as_str().to_string());
+        working.chain_state_mutation_conflict_total = state.chain_state_mutation_conflict_total;
+        working.chain_state_reprepare_total = state.chain_state_reprepare_total;
+        working.accepted_hash_lost_from_memory_total = state.accepted_hash_lost_from_memory_total;
+        working.accepted_hash_terminalization_prevented_total =
+            state.accepted_hash_terminalization_prevented_total;
+        working.accepted_storage_repair_total = state.accepted_storage_repair_total;
+        working.last_lost_accepted_hash = state.last_lost_accepted_hash.clone();
+        working.last_lost_accepted_height = state.last_lost_accepted_height;
         working.accepted_commit_generation_conflict_total =
             state.accepted_commit_generation_conflict_total;
         working.accepted_commit_reprepare_total = state.accepted_commit_reprepare_total;

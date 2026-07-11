@@ -164,5 +164,14 @@ pub fn init_chain_state(chain_id: String) -> ChainState {
         accepted_commit_publish_mismatch_total: 0,
         accepted_commit_last_hash: None,
         accepted_commit_last_source: None,
+        chain_state_mutation_generation: 0,
+        chain_state_mutation_source: None,
+        chain_state_mutation_conflict_total: 0,
+        chain_state_reprepare_total: 0,
+        accepted_hash_lost_from_memory_total: 0,
+        accepted_hash_terminalization_prevented_total: 0,
+        accepted_storage_repair_total: 0,
+        last_lost_accepted_hash: None,
+        last_lost_accepted_height: None,
     }
 }

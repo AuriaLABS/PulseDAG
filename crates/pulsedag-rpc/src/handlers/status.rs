@@ -72,6 +72,22 @@ pub struct NodeStatusData {
     pub contracts_prepared: bool,
     pub contracts_enabled: bool,
     pub contracts_vm_version: String,
+    pub chain_state_generation: u64,
+    pub accepted_commit_generation_conflict_total: u64,
+    pub accepted_commit_reprepare_total: u64,
+    pub accepted_commit_serialized_total: u64,
+    pub accepted_commit_publish_mismatch_total: u64,
+    pub accepted_commit_last_hash: Option<String>,
+    pub accepted_commit_last_source: Option<String>,
+    pub chain_state_mutation_generation: u64,
+    pub chain_state_mutation_source: Option<String>,
+    pub chain_state_mutation_conflict_total: u64,
+    pub chain_state_reprepare_total: u64,
+    pub accepted_hash_lost_from_memory_total: u64,
+    pub accepted_hash_terminalization_prevented_total: u64,
+    pub accepted_storage_repair_total: u64,
+    pub last_lost_accepted_hash: Option<String>,
+    pub last_lost_accepted_height: Option<u64>,
 }
 
 static STATUS_RESPONSE_CACHE: OnceLock<Mutex<Option<NodeStatusData>>> = OnceLock::new();
@@ -158,6 +174,22 @@ fn status_from_rpc_snapshot(snapshot: NodeRpcSnapshot) -> NodeStatusData {
         contracts_prepared: false,
         contracts_enabled: false,
         contracts_vm_version: "unknown".to_string(),
+        chain_state_generation: 0,
+        accepted_commit_generation_conflict_total: 0,
+        accepted_commit_reprepare_total: 0,
+        accepted_commit_serialized_total: 0,
+        accepted_commit_publish_mismatch_total: 0,
+        accepted_commit_last_hash: None,
+        accepted_commit_last_source: None,
+        chain_state_mutation_generation: 0,
+        chain_state_mutation_source: None,
+        chain_state_mutation_conflict_total: 0,
+        chain_state_reprepare_total: 0,
+        accepted_hash_lost_from_memory_total: 0,
+        accepted_hash_terminalization_prevented_total: 0,
+        accepted_storage_repair_total: 0,
+        last_lost_accepted_hash: None,
+        last_lost_accepted_height: None,
     }
 }
 
@@ -184,6 +216,22 @@ struct StatusStateSnapshot {
     last_block_hash: Option<String>,
     contracts_enabled: bool,
     contracts_vm_version: String,
+    chain_state_generation: u64,
+    accepted_commit_generation_conflict_total: u64,
+    accepted_commit_reprepare_total: u64,
+    accepted_commit_serialized_total: u64,
+    accepted_commit_publish_mismatch_total: u64,
+    accepted_commit_last_hash: Option<String>,
+    accepted_commit_last_source: Option<String>,
+    chain_state_mutation_generation: u64,
+    chain_state_mutation_source: Option<String>,
+    chain_state_mutation_conflict_total: u64,
+    chain_state_reprepare_total: u64,
+    accepted_hash_lost_from_memory_total: u64,
+    accepted_hash_terminalization_prevented_total: u64,
+    accepted_storage_repair_total: u64,
+    last_lost_accepted_hash: Option<String>,
+    last_lost_accepted_height: Option<u64>,
 }
 
 fn snapshot_chain(chain: &ChainState) -> StatusStateSnapshot {
@@ -221,6 +269,23 @@ fn snapshot_chain(chain: &ChainState) -> StatusStateSnapshot {
         last_block_hash,
         contracts_enabled: chain.contracts.config.enabled,
         contracts_vm_version: chain.contracts.config.vm_version.clone(),
+        chain_state_generation: chain.chain_state_generation,
+        accepted_commit_generation_conflict_total: chain.accepted_commit_generation_conflict_total,
+        accepted_commit_reprepare_total: chain.accepted_commit_reprepare_total,
+        accepted_commit_serialized_total: chain.accepted_commit_serialized_total,
+        accepted_commit_publish_mismatch_total: chain.accepted_commit_publish_mismatch_total,
+        accepted_commit_last_hash: chain.accepted_commit_last_hash.clone(),
+        accepted_commit_last_source: chain.accepted_commit_last_source.clone(),
+        chain_state_mutation_generation: chain.chain_state_mutation_generation,
+        chain_state_mutation_source: chain.chain_state_mutation_source.clone(),
+        chain_state_mutation_conflict_total: chain.chain_state_mutation_conflict_total,
+        chain_state_reprepare_total: chain.chain_state_reprepare_total,
+        accepted_hash_lost_from_memory_total: chain.accepted_hash_lost_from_memory_total,
+        accepted_hash_terminalization_prevented_total: chain
+            .accepted_hash_terminalization_prevented_total,
+        accepted_storage_repair_total: chain.accepted_storage_repair_total,
+        last_lost_accepted_hash: chain.last_lost_accepted_hash.clone(),
+        last_lost_accepted_height: chain.last_lost_accepted_height,
     }
 }
 
@@ -409,6 +474,25 @@ pub async fn get_status<S: RpcStateLike>(
         contracts_prepared,
         contracts_enabled: chain_snapshot.contracts_enabled,
         contracts_vm_version: chain_snapshot.contracts_vm_version,
+        chain_state_generation: chain_snapshot.chain_state_generation,
+        accepted_commit_generation_conflict_total: chain_snapshot
+            .accepted_commit_generation_conflict_total,
+        accepted_commit_reprepare_total: chain_snapshot.accepted_commit_reprepare_total,
+        accepted_commit_serialized_total: chain_snapshot.accepted_commit_serialized_total,
+        accepted_commit_publish_mismatch_total: chain_snapshot
+            .accepted_commit_publish_mismatch_total,
+        accepted_commit_last_hash: chain_snapshot.accepted_commit_last_hash,
+        accepted_commit_last_source: chain_snapshot.accepted_commit_last_source,
+        chain_state_mutation_generation: chain_snapshot.chain_state_mutation_generation,
+        chain_state_mutation_source: chain_snapshot.chain_state_mutation_source,
+        chain_state_mutation_conflict_total: chain_snapshot.chain_state_mutation_conflict_total,
+        chain_state_reprepare_total: chain_snapshot.chain_state_reprepare_total,
+        accepted_hash_lost_from_memory_total: chain_snapshot.accepted_hash_lost_from_memory_total,
+        accepted_hash_terminalization_prevented_total: chain_snapshot
+            .accepted_hash_terminalization_prevented_total,
+        accepted_storage_repair_total: chain_snapshot.accepted_storage_repair_total,
+        last_lost_accepted_hash: chain_snapshot.last_lost_accepted_hash,
+        last_lost_accepted_height: chain_snapshot.last_lost_accepted_height,
     };
     cache_status_response(&data);
     Json(ApiResponse::ok(data))

@@ -20,8 +20,8 @@ pub mod validation;
 
 pub use accept::{
     accept_block, accept_block_atomically, accept_block_with_result, accept_transaction,
-    accept_transaction_with_result, AcceptSource, AtomicBlockAcceptance, BlockAcceptanceResult,
-    TxAcceptanceResult,
+    accept_transaction_with_result, mutate_chain_state_serialized, AcceptSource,
+    AtomicBlockAcceptance, BlockAcceptanceResult, ChainStateMutationOutcome, TxAcceptanceResult,
 };
 pub use errors::{
     InvalidStateRootClassification, InvalidStateRootDiagnostics, InvalidStateRootError, PulseError,
@@ -99,7 +99,8 @@ pub use orphans::{
     revalidate_orphan_backlog, terminal_missing_parent_active_blocking_count,
     terminal_missing_parent_active_blocking_details, terminal_missing_parent_count,
     terminal_missing_parent_historical_count, terminal_missing_parent_reason,
-    terminalize_residual_waiting_missing_parents, terminally_exhaust_missing_parent,
+    terminalize_residual_waiting_missing_parents,
+    terminalize_residual_waiting_missing_parents_guarded, terminally_exhaust_missing_parent,
     MissingParentTerminalResult, OrphanAdoptionResult, OrphanBacklogClassification,
     OrphanQueueResult, ResidualMissingParentTerminalResult, DEFAULT_ORPHAN_MAX_AGE_MS,
     DEFAULT_ORPHAN_MAX_COUNT, DEFAULT_ORPHAN_RECOVERY_EVICT_LIMIT,
