@@ -4568,8 +4568,10 @@ fn dispatch_network_message(
                             } else if source_peer != Some(outstanding.target_peer_id.as_str()) {
                                 guard.wrong_peer_response_total =
                                     guard.wrong_peer_response_total.saturating_add(1);
-                            } else if request_hash.as_ref() != Some(&outstanding.block_hash)
-                                || request_hash.as_ref() != Some(&block.hash)
+                            } else if outstanding.block_hash != block.hash
+                                || request_hash
+                                    .as_ref()
+                                    .is_some_and(|h| h != &outstanding.block_hash)
                             {
                                 guard.wrong_hash_response_total =
                                     guard.wrong_hash_response_total.saturating_add(1);
