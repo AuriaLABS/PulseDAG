@@ -1,0 +1,21 @@
+{
+  "git_commit":"dd13af2",
+  "miner_count":4,
+  "startup_result":"PASS",
+  "convergence_result":"PASS",
+  "consensus_state_result":"PASS",
+  "storage_consistency_result":"FAIL",
+  "readiness_result":"FAIL",
+  "overall_result":"FAIL",
+  "result":"FAIL",
+  "failure_class":"storage_consistency",
+  "gates":{"baseline_5n_1m":"NOT_PROVIDED","intermediate_5n_2m":"NOT_PROVIDED","stress_5n_4m":"FAIL"},
+  "pre_quiescence":{"distinct_tips":2,"worst_lag_from_max_height":1},
+  "post_quiescence":{"distinct_tips":1,"worst_lag_from_max_height":0},
+  "distinct_tips":1,
+  "worst_lag_from_max_height":0,
+  "rich_node_state":[
+    {"node":"n5","height":1054,"selected_tip":"tip-a","ordered_dag_tip":"tip-a","state_root":"root-a","accepted_hash_set_digest":"accepted-digest-a","readiness":{"status":"not_ready","ready_for_release":false},"sync":{"state":"synced","stage":"quiescent"},"storage":{"coherent_storage_invariant":false,"memory_count":1053,"persisted_count":1054,"memory_digest":"mem-digest","persisted_digest":"persist-digest","storage_only_hashes":["persist-only-hash"],"memory_only_hashes":[],"mismatch_source":"memory_persisted_count","generation":42,"digest":"checks-digest"},"network_gaps":{"missing_parent_requests_sent":0},"storage_gaps":{"storage_only_hashes":["persist-only-hash"],"memory_only_hashes":[],"mismatch_source":"memory_persisted_count"},"selected_segment_session_metrics":{"requested":0,"received":0,"applied":0},"correlated_request_counters":{"duplicate_correlated_response_total":0,"unknown_request_response_total":0}}
+  ],
+  "mining":{"local_miner_submit_metrics":{"submits_total":10,"submits_accepted":10},"per_node_block_acceptance_events":50,"unique_submitted_hashes":10}
+}
