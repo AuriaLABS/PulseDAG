@@ -315,6 +315,24 @@ pub struct ChainState {
     pub accepted_commit_last_hash: Option<Hash>,
     #[serde(default)]
     pub accepted_commit_last_source: Option<String>,
+    #[serde(default)]
+    pub chain_state_mutation_generation: u64,
+    #[serde(default)]
+    pub chain_state_mutation_source: Option<String>,
+    #[serde(default)]
+    pub chain_state_mutation_conflict_total: u64,
+    #[serde(default)]
+    pub chain_state_reprepare_total: u64,
+    #[serde(default)]
+    pub accepted_hash_lost_from_memory_total: u64,
+    #[serde(default)]
+    pub accepted_hash_terminalization_prevented_total: u64,
+    #[serde(default)]
+    pub accepted_storage_repair_total: u64,
+    #[serde(default)]
+    pub last_lost_accepted_hash: Option<Hash>,
+    #[serde(default)]
+    pub last_lost_accepted_height: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
