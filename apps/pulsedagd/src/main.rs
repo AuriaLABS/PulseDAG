@@ -308,6 +308,108 @@ struct SelectedSegmentSession {
     state: SelectedSegmentSessionState,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code)]
+struct LagInjectionEvidenceConfig {
+    configured_min_gap: u64,
+    observed_network_gap: u64,
+    canonical_network_gap: u64,
+    peer_count_per_node: BTreeMap<String, usize>,
+    transition_events: Vec<&'static str>,
+    locator_requests_sent: u64,
+    locator_responses_accepted: u64,
+    header_requests_sent: u64,
+    headers_accepted: u64,
+    block_requests_sent: u64,
+    correlated_blocks_received: u64,
+    blocks_applied: u64,
+    chunks_completed: u64,
+    pending_selected_segment_requests: u64,
+    final_ready_nodes: usize,
+    final_identical_selected_tip: bool,
+    final_identical_ordered_dag_tip: bool,
+    final_identical_state_root: bool,
+    final_identical_retained_hash_digest: bool,
+    storage_memory_retained_set_equal: bool,
+    active_orphans: u64,
+    missing_parent_blockers: u64,
+}
+
+impl LagInjectionEvidenceConfig {
+    #[allow(dead_code)]
+    fn validate(&self) -> Result<(), &'static str> {
+        const MIN_GAP_FLOOR: u64 = 64;
+        const REQUIRED_TRANSITIONS: [&str; 12] = [
+            "remote_inventory_accepted",
+            "best_remote_selected_height_gt_local_height",
+            "network_selected_height_gap_observed",
+            "sync_state_locating_common_ancestor",
+            "locator_request_sent",
+            "matching_locator_header_response_accepted",
+            "selected_segment_session_active",
+            "parent_first_block_requests_sent",
+            "blocks_received_and_applied",
+            "chunks_completed",
+            "remote_selected_tip_selected_locally",
+            "session_completed",
+        ];
+
+        if self.configured_min_gap < MIN_GAP_FLOOR {
+            return Err("configured_gap_below_floor");
+        }
+        if self.observed_network_gap < self.configured_min_gap
+            || self.canonical_network_gap < self.configured_min_gap
+        {
+            return Err("network_gap_below_configured_minimum");
+        }
+        if self.observed_network_gap != self.canonical_network_gap {
+            return Err("canonical_gap_disagrees_with_harness_gap");
+        }
+        if self.peer_count_per_node.len() != 5
+            || self.peer_count_per_node.values().any(|count| *count != 4)
+        {
+            return Err("topology_not_stable_5n_4peer");
+        }
+        if !REQUIRED_TRANSITIONS
+            .iter()
+            .all(|required| self.transition_events.iter().any(|event| event == required))
+        {
+            return Err("missing_mandatory_transition");
+        }
+        if self.locator_responses_accepted > self.locator_requests_sent
+            || self.headers_accepted > self.header_requests_sent
+            || self.correlated_blocks_received > self.block_requests_sent
+            || self.blocks_applied > self.correlated_blocks_received
+        {
+            return Err("correlation_counts_invalid");
+        }
+        if self.locator_requests_sent == 0
+            || self.locator_responses_accepted == 0
+            || self.header_requests_sent == 0
+            || self.headers_accepted == 0
+            || self.block_requests_sent == 0
+            || self.correlated_blocks_received == 0
+            || self.blocks_applied == 0
+            || self.chunks_completed == 0
+        {
+            return Err("selected_segment_session_not_proven");
+        }
+        if self.pending_selected_segment_requests != 0
+            || self.final_ready_nodes != 5
+            || !self.final_identical_selected_tip
+            || !self.final_identical_ordered_dag_tip
+            || !self.final_identical_state_root
+            || !self.final_identical_retained_hash_digest
+            || !self.storage_memory_retained_set_equal
+            || self.active_orphans != 0
+            || self.missing_parent_blockers != 0
+        {
+            return Err("final_invariants_failed");
+        }
+        Ok(())
+    }
+}
+
 impl SelectedSegmentSession {
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -5259,6 +5361,117 @@ mod tests {
         assert_eq!(state_root, "sr");
         assert_eq!(session.accepted_applied_hashes.len(), 65);
         assert_eq!(session.state, SelectedSegmentSessionState::Complete);
+    }
+
+    #[test]
+    fn lag_injection_evidence_requires_correlated_selected_segment_recovery() {
+        let evidence = LagInjectionEvidenceConfig {
+            configured_min_gap: 96,
+            observed_network_gap: 96,
+            canonical_network_gap: 96,
+            peer_count_per_node: BTreeMap::from([
+                ("n1".to_string(), 4),
+                ("n2".to_string(), 4),
+                ("n3".to_string(), 4),
+                ("n4".to_string(), 4),
+                ("n5".to_string(), 4),
+            ]),
+            transition_events: vec![
+                "remote_inventory_accepted",
+                "best_remote_selected_height_gt_local_height",
+                "network_selected_height_gap_observed",
+                "sync_state_locating_common_ancestor",
+                "locator_request_sent",
+                "matching_locator_header_response_accepted",
+                "selected_segment_session_active",
+                "parent_first_block_requests_sent",
+                "blocks_received_and_applied",
+                "chunks_completed",
+                "remote_selected_tip_selected_locally",
+                "session_completed",
+            ],
+            locator_requests_sent: 1,
+            locator_responses_accepted: 1,
+            header_requests_sent: 1,
+            headers_accepted: 1,
+            block_requests_sent: 96,
+            correlated_blocks_received: 96,
+            blocks_applied: 96,
+            chunks_completed: 3,
+            pending_selected_segment_requests: 0,
+            final_ready_nodes: 5,
+            final_identical_selected_tip: true,
+            final_identical_ordered_dag_tip: true,
+            final_identical_state_root: true,
+            final_identical_retained_hash_digest: true,
+            storage_memory_retained_set_equal: true,
+            active_orphans: 0,
+            missing_parent_blockers: 0,
+        };
+        assert_eq!(evidence.validate(), Ok(()));
+    }
+
+    #[test]
+    fn lag_injection_evidence_rejects_broadcast_or_gap_mismatch_shortcuts() {
+        let mut evidence = LagInjectionEvidenceConfig {
+            configured_min_gap: 63,
+            observed_network_gap: 96,
+            canonical_network_gap: 95,
+            peer_count_per_node: BTreeMap::from([
+                ("n1".to_string(), 4),
+                ("n2".to_string(), 4),
+                ("n3".to_string(), 4),
+                ("n4".to_string(), 4),
+                ("n5".to_string(), 4),
+            ]),
+            transition_events: vec![],
+            locator_requests_sent: 1,
+            locator_responses_accepted: 1,
+            header_requests_sent: 1,
+            headers_accepted: 1,
+            block_requests_sent: 96,
+            correlated_blocks_received: 96,
+            blocks_applied: 96,
+            chunks_completed: 3,
+            pending_selected_segment_requests: 0,
+            final_ready_nodes: 5,
+            final_identical_selected_tip: true,
+            final_identical_ordered_dag_tip: true,
+            final_identical_state_root: true,
+            final_identical_retained_hash_digest: true,
+            storage_memory_retained_set_equal: true,
+            active_orphans: 0,
+            missing_parent_blockers: 0,
+        };
+        assert_eq!(evidence.validate(), Err("configured_gap_below_floor"));
+        evidence.configured_min_gap = 96;
+        assert_eq!(
+            evidence.validate(),
+            Err("canonical_gap_disagrees_with_harness_gap")
+        );
+        evidence.canonical_network_gap = 96;
+        evidence.transition_events = vec!["remote_inventory_accepted"];
+        assert_eq!(evidence.validate(), Err("missing_mandatory_transition"));
+        evidence.transition_events = vec![
+            "remote_inventory_accepted",
+            "best_remote_selected_height_gt_local_height",
+            "network_selected_height_gap_observed",
+            "sync_state_locating_common_ancestor",
+            "locator_request_sent",
+            "matching_locator_header_response_accepted",
+            "selected_segment_session_active",
+            "parent_first_block_requests_sent",
+            "blocks_received_and_applied",
+            "chunks_completed",
+            "remote_selected_tip_selected_locally",
+            "session_completed",
+        ];
+        evidence.correlated_blocks_received = 0;
+        evidence.blocks_applied = 0;
+        assert_eq!(
+            evidence.validate(),
+            Err("selected_segment_session_not_proven")
+        );
     }
 
     #[test]
