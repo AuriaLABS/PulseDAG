@@ -573,6 +573,20 @@ fn selected_segment_request_order(headers: &[HeaderInventory], limit: usize) -> 
         .collect()
 }
 
+fn auto_prune_should_fire(
+    best_height: u64,
+    last_prune_height: Option<u64>,
+    auto_prune_every: u64,
+) -> bool {
+    last_prune_height
+        .map(|h| best_height.saturating_sub(h) >= auto_prune_every)
+        .unwrap_or(best_height >= auto_prune_every)
+}
+
+fn auto_prune_keep_from_height(best_height: u64, prune_keep_recent_blocks: u64) -> u64 {
+    best_height.saturating_sub(prune_keep_recent_blocks.saturating_sub(1))
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct SelectedChainSyncGate {
     peer_count: usize,
@@ -4568,12 +4582,11 @@ async fn main() -> Result<()> {
                 }
 
                 if auto_prune_enabled && auto_prune_every > 0 && best_height > 0 {
-                    let should_prune = last_prune_height
-                        .map(|h| best_height.saturating_sub(h) >= auto_prune_every)
-                        .unwrap_or(best_height >= auto_prune_every);
+                    let should_prune =
+                        auto_prune_should_fire(best_height, last_prune_height, auto_prune_every);
                     if should_prune {
                         let keep_from_height =
-                            best_height.saturating_sub(prune_keep_recent_blocks.saturating_sub(1));
+                            auto_prune_keep_from_height(best_height, prune_keep_recent_blocks);
                         let snapshot_status = match storage.load_chain_state() {
                             Ok(Some(snapshot)) => (
                                 snapshot.dag.best_height >= keep_from_height,
@@ -5603,5 +5616,336 @@ mod tests {
         server
             .shutdown_and_join()
             .expect("dedicated RPC server should stop cleanly");
+    }
+
+    fn temp_db_path(name: &str) -> String {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        std::env::temp_dir()
+            .join(format!("pulsedagd-{name}-{nanos}"))
+            .to_string_lossy()
+            .into_owned()
+    }
+
+    fn build_test_chain(chain_id: &str, length: usize) -> pulsedag_core::ChainState {
+        use pulsedag_core::{
+            accept_block, build_candidate_block, build_coinbase_transaction,
+            genesis::init_chain_state, pow::dev_mine_header, refresh_block_consensus_ids,
+            refresh_block_consensus_ids_with_state, AcceptSource,
+        };
+        let mut state = init_chain_state(chain_id.to_string());
+        for i in 1..=length {
+            let parent = state
+                .dag
+                .tips
+                .iter()
+                .min()
+                .cloned()
+                .unwrap_or_else(|| state.dag.genesis_hash.clone());
+            let mut block = build_candidate_block(
+                vec![parent],
+                i as u64,
+                1,
+                vec![build_coinbase_transaction("miner", 50, i as u64)],
+            );
+            refresh_block_consensus_ids_with_state(&mut block, &state)
+                .expect("prepare state root for test block");
+            let (header, mined, _, _) = dev_mine_header(block.header.clone(), 25_000);
+            assert!(mined, "failed to mine block at height {i}");
+            block.header = header;
+            refresh_block_consensus_ids(&mut block);
+            accept_block(block, &mut state, AcceptSource::LocalMining).expect("accept mined block");
+        }
+        state
+    }
+
+    fn persist_chain_blocks(storage: &Storage, state: &pulsedag_core::ChainState) {
+        let mut blocks: Vec<_> = state.dag.blocks.values().cloned().collect();
+        blocks.sort_by_key(|b| b.header.height);
+        for block in blocks {
+            storage.persist_block(&block).expect("persist block");
+        }
+    }
+
+    fn chain_best_tip(state: &pulsedag_core::ChainState) -> String {
+        state
+            .dag
+            .tips
+            .iter()
+            .min()
+            .cloned()
+            .unwrap_or_else(|| state.dag.genesis_hash.clone())
+    }
+
+    // ── auto_prune gate tests ──────────────────────────────────────────────
+
+    #[test]
+    fn auto_prune_should_fire_triggers_on_first_eligible_height() {
+        assert!(auto_prune_should_fire(100, None, 100));
+        assert!(!auto_prune_should_fire(99, None, 100));
+        assert!(!auto_prune_should_fire(0, None, 100));
+    }
+
+    #[test]
+    fn auto_prune_should_fire_triggers_after_interval_from_last_prune() {
+        assert!(auto_prune_should_fire(200, Some(100), 100));
+        assert!(!auto_prune_should_fire(199, Some(100), 100));
+        assert!(!auto_prune_should_fire(100, Some(100), 100));
+    }
+
+    #[test]
+    fn auto_prune_should_fire_zero_interval_deferred_to_caller_guard() {
+        // The outer loop guards with `auto_prune_every > 0` before calling this function.
+        // When the interval is zero, the caller never invokes auto_prune_should_fire,
+        // so zero-interval behaviour is not a responsibility of this function.
+        // This test verifies the boundary of the first valid interval (1).
+        assert!(auto_prune_should_fire(1, None, 1));
+        assert!(!auto_prune_should_fire(0, None, 1));
+    }
+
+    #[test]
+    fn auto_prune_keep_from_height_retains_recent_window() {
+        assert_eq!(auto_prune_keep_from_height(100, 20), 81);
+        assert_eq!(auto_prune_keep_from_height(100, 1), 100);
+        assert_eq!(auto_prune_keep_from_height(5, 10), 0);
+    }
+
+    #[test]
+    fn auto_prune_non_zero_blocks_pruned_with_retained_set_model() {
+        let path = temp_db_path("auto-prune-nonzero");
+        let storage = Storage::open(&path).expect("open storage");
+        let state = build_test_chain("testnet", 12);
+        persist_chain_blocks(&storage, &state);
+        storage
+            .persist_chain_state(&state)
+            .expect("persist snapshot");
+
+        let keep_from_height = auto_prune_keep_from_height(state.dag.best_height, 5);
+        let report = storage
+            .prune_blocks_with_retained_set(&state, keep_from_height)
+            .expect("retained-set prune");
+
+        assert!(
+            report.blocks_pruned_total > 0,
+            "auto_prune must remove at least one block; got blocks_pruned_total=0"
+        );
+        assert_eq!(
+            report.retained_storage_hash_digest, report.retained_memory_hash_digest,
+            "retained storage and memory digests must match after auto_prune"
+        );
+        assert!(
+            report.storage_only_retained_hashes.is_empty(),
+            "no storage-only retained hashes after prune"
+        );
+        assert!(
+            report.memory_only_retained_hashes.is_empty(),
+            "no memory-only retained hashes after prune"
+        );
+
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn auto_prune_snapshot_guard_skips_when_snapshot_below_keep_boundary() {
+        let path = temp_db_path("auto-prune-snapshot-guard");
+        let storage = Storage::open(&path).expect("open storage");
+        let shallow_state = build_test_chain("testnet", 4);
+        persist_chain_blocks(&storage, &shallow_state);
+        storage
+            .persist_chain_state(&shallow_state)
+            .expect("persist shallow snapshot");
+
+        let live_height = 20u64;
+        let keep_from_height = auto_prune_keep_from_height(live_height, 6);
+        let snapshot_height = shallow_state.dag.best_height;
+        let snapshot_adequate = snapshot_height >= keep_from_height;
+
+        assert!(
+            !snapshot_adequate,
+            "shallow snapshot at height {snapshot_height} should not satisfy keep_from_height={keep_from_height}"
+        );
+
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    // ── restart_rejoin tests ───────────────────────────────────────────────
+
+    #[test]
+    fn restart_rejoin_snapshot_delta_tip_and_state_root_match_after_prune() {
+        let path = temp_db_path("restart-rejoin-tip-match");
+        let storage = Storage::open(&path).expect("open storage");
+        let state = build_test_chain("testnet", 10);
+        persist_chain_blocks(&storage, &state);
+        storage
+            .persist_chain_state(&state)
+            .expect("persist snapshot");
+
+        let keep_from_height = auto_prune_keep_from_height(state.dag.best_height, 4);
+        let report = storage
+            .prune_blocks_with_retained_set(&state, keep_from_height)
+            .expect("prune before restart");
+        assert!(
+            report.blocks_pruned_total > 0,
+            "restart_rejoin requires non-zero pruning"
+        );
+        drop(storage);
+
+        let restarted = Storage::open(&path).expect("reopen storage after restart");
+        let restored = restarted
+            .replay_from_validated_snapshot_and_delta(Some("testnet"))
+            .expect("restart from snapshot+delta");
+
+        assert_eq!(
+            chain_best_tip(&restored),
+            chain_best_tip(&state),
+            "restarted node selected tip must match original"
+        );
+        assert_eq!(
+            restored.dag.ordered_dag_tip, state.dag.ordered_dag_tip,
+            "restarted node ordered DAG tip must match original"
+        );
+        let tip_hash = chain_best_tip(&restored);
+        assert_eq!(
+            restored
+                .dag
+                .blocks
+                .get(&tip_hash)
+                .map(|b| b.header.state_root.clone()),
+            state
+                .dag
+                .blocks
+                .get(&tip_hash)
+                .map(|b| b.header.state_root.clone()),
+            "restarted node state root must match original at selected tip"
+        );
+
+        let restart_report = restarted
+            .retained_set_report(&restored, keep_from_height)
+            .expect("retained set report after restart");
+        assert!(
+            restart_report.memory_only_retained_hashes.is_empty(),
+            "no memory-only retained hashes after restart"
+        );
+        assert!(
+            restart_report.storage_only_retained_hashes.is_empty(),
+            "no storage-only retained hashes after restart"
+        );
+        assert_eq!(
+            restart_report.retained_storage_hash_digest, restart_report.retained_memory_hash_digest,
+            "retained digests must match after restart"
+        );
+
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn restart_rejoin_offline_node_converges_after_selected_segment_catch_up() {
+        let path = temp_db_path("restart-rejoin-offline-catch-up");
+        let storage = Storage::open(&path).expect("open storage");
+        let offline_state = build_test_chain("testnet", 8);
+        persist_chain_blocks(&storage, &offline_state);
+        storage
+            .persist_chain_state(&offline_state)
+            .expect("persist offline node snapshot");
+        let offline_boundary_height = offline_state.dag.best_height;
+
+        let report = storage
+            .prune_blocks_with_retained_set(
+                &offline_state,
+                offline_boundary_height.saturating_sub(3),
+            )
+            .expect("non-zero prune before offline window");
+        assert!(
+            report.blocks_pruned_total > 0,
+            "restart_rejoin offline requires non-zero pruning"
+        );
+        drop(storage);
+
+        use pulsedag_core::{
+            accept_block, build_candidate_block, build_coinbase_transaction, pow::dev_mine_header,
+            refresh_block_consensus_ids, refresh_block_consensus_ids_with_state, AcceptSource,
+        };
+        let mut network_state = offline_state.clone();
+        for i in (offline_boundary_height + 1)..=(offline_boundary_height + 4) {
+            let parent = chain_best_tip(&network_state);
+            let mut block = build_candidate_block(
+                vec![parent],
+                i,
+                1,
+                vec![build_coinbase_transaction("miner", 50, i * 1000)],
+            );
+            refresh_block_consensus_ids_with_state(&mut block, &network_state)
+                .expect("prepare state root");
+            let (header, mined, _, _) = dev_mine_header(block.header.clone(), 25_000);
+            assert!(mined, "failed to mine catch-up block at height {i}");
+            block.header = header;
+            refresh_block_consensus_ids(&mut block);
+            accept_block(block, &mut network_state, AcceptSource::P2p)
+                .expect("accept catch-up block");
+        }
+
+        let rejoined = Storage::open(&path).expect("reopen offline node for rejoin");
+        for block in network_state
+            .dag
+            .blocks
+            .values()
+            .filter(|b| b.header.height > offline_boundary_height)
+        {
+            rejoined
+                .persist_block(block)
+                .expect("persist catch-up block during rejoin");
+        }
+        rejoined
+            .persist_chain_state(&network_state)
+            .expect("persist converged snapshot after rejoin");
+        let caught_up = rejoined
+            .replay_from_validated_snapshot_and_delta(Some("testnet"))
+            .expect("replay after rejoin");
+
+        assert_eq!(
+            chain_best_tip(&caught_up),
+            chain_best_tip(&network_state),
+            "rejoined node selected tip must match network after catch-up"
+        );
+        assert_eq!(
+            caught_up.dag.ordered_dag_tip, network_state.dag.ordered_dag_tip,
+            "rejoined node ordered DAG tip must match network"
+        );
+        assert_eq!(
+            caught_up.dag.best_height, network_state.dag.best_height,
+            "rejoined node best height must match network"
+        );
+
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn restart_rejoin_chain_id_matches_after_snapshot_delta_restore() {
+        let path = temp_db_path("restart-rejoin-chain-id");
+        let storage = Storage::open(&path).expect("open storage");
+        let state = build_test_chain("private-testnet-v2-3-0", 6);
+        persist_chain_blocks(&storage, &state);
+        storage
+            .persist_chain_state(&state)
+            .expect("persist snapshot");
+        let report = storage
+            .prune_blocks_with_retained_set(&state, 4)
+            .expect("prune");
+        assert!(report.blocks_pruned_total > 0);
+        drop(storage);
+
+        let restarted = Storage::open(&path).expect("reopen storage");
+        let restored = restarted
+            .replay_from_validated_snapshot_and_delta(Some("private-testnet-v2-3-0"))
+            .expect("restart from snapshot+delta");
+
+        assert_eq!(
+            restored.chain_id, state.chain_id,
+            "chain ID must survive restart from snapshot+delta"
+        );
+
+        let _ = std::fs::remove_dir_all(path);
     }
 }
