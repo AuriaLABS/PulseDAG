@@ -42,10 +42,12 @@ use pulsedag_storage::Storage;
 
 fn local_tip_inventory_status(chain: &pulsedag_core::ChainState) -> TipInventoryStatus {
     let selected_tip = pulsedag_core::preferred_tip_hash(chain);
-    let selected_block = chain.dag.blocks.get(&selected_tip);
+    let selected_block = selected_tip
+        .as_ref()
+        .and_then(|tip| chain.dag.blocks.get(tip));
     TipInventoryStatus {
         chain_id: chain.chain_id.clone(),
-        selected_tip: Some(selected_tip),
+        selected_tip,
         selected_height: selected_block.map(|block| block.header.height),
         selected_blue_score: selected_block.map(|block| block.header.blue_score),
         ordered_dag_tip: chain.dag.ordered_dag_tip.clone(),
