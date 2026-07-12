@@ -1102,13 +1102,8 @@ mod tests {
         let parent_state = state_after(&state, &parent);
         let child = candidate_for_state(&parent_state, vec![parent.hash.clone()], 2, "child", 2);
         let child_state = state_after(&parent_state, &child);
-        let grandchild = candidate_for_state(
-            &child_state,
-            vec![parent.hash.clone(), child.hash.clone()],
-            3,
-            "grandchild",
-            3,
-        );
+        let grandchild =
+            candidate_for_state(&child_state, vec![child.hash.clone()], 3, "grandchild", 3);
 
         queue_missing(&mut state, grandchild.clone());
         queue_missing(&mut state, child.clone());
@@ -1412,16 +1407,33 @@ mod tests {
             "orphan-alpha",
             3,
         );
+        let malformed = candidate(vec![parent.hash.clone()], 3, "orphan-malformed", 4);
         queue_missing(&mut state, beta.clone());
         queue_missing(&mut state, alpha.clone());
+        queue_missing(&mut state, malformed.clone());
+
+        let mut expected_children = vec![alpha.hash.clone(), beta.hash.clone()];
+        expected_children.sort();
 
         assert!(accept_block(parent.clone(), &mut state, AcceptSource::P2p).is_ok());
-        let adopted = adopt_ready_orphans(&mut state, AcceptSource::P2p);
+        let adoption = adopt_ready_orphans_with_result(&mut state, AcceptSource::P2p, None);
 
-        assert_eq!(adopted, 1);
+        assert_eq!(adoption.accepted, expected_children.len());
+        assert_eq!(adoption.rejected, 1);
+        let mut accepted_hashes = adoption.accepted_hashes.clone();
+        accepted_hashes.sort();
+        accepted_hashes.dedup();
+        assert_eq!(accepted_hashes, expected_children);
         let adopted_children = state.dag.children.get(&parent.hash).unwrap();
-        assert_eq!(adopted_children.len(), 1);
-        assert!(adopted_children[0] == alpha.hash || adopted_children[0] == beta.hash);
+        assert_eq!(adopted_children, &expected_children);
+        assert!(!state.orphan_blocks.contains_key(&alpha.hash));
+        assert!(!state.orphan_blocks.contains_key(&beta.hash));
+        assert!(!state.orphan_blocks.contains_key(&malformed.hash));
+        assert!(!state.orphan_missing_parents.contains_key(&alpha.hash));
+        assert!(!state.orphan_missing_parents.contains_key(&beta.hash));
+        assert!(!state.orphan_missing_parents.contains_key(&malformed.hash));
+        assert!(state.orphan_parent_index.is_empty());
+        assert_orphan_indexes_consistent(&state);
     }
 
     #[test]
