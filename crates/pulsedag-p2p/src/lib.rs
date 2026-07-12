@@ -23,7 +23,7 @@ use tokio::time::{sleep, Duration};
 
 use crate::messages::{
     message_id_for_block, message_id_for_tx, topic_names, BlockHeaderAnnouncement, HeaderInventory,
-    NetworkMessage,
+    NetworkMessage, TipInventoryStatus,
 };
 
 pub const P2P_MODE_MEMORY_SIMULATED: &str = "memory-simulated";
@@ -457,6 +457,14 @@ pub struct RemoteSelectedTipStatus {
     pub connected: bool,
 }
 
+const TIP_INVENTORY_TTL_SECS: u64 = 10 * 60;
+
+#[derive(Debug, Clone)]
+struct RemoteTipInventoryEntry {
+    status: RemoteSelectedTipStatus,
+    last_seen_unix: u64,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct P2pStatus {
     pub chain_id: String,
@@ -682,6 +690,9 @@ pub struct PeerAddressedBlockRequest {
 pub trait P2pHandle: Send + Sync {
     fn broadcast_transaction(&self, tx: &Transaction) -> Result<(), PulseError>;
     fn broadcast_block(&self, block: &Block) -> Result<(), PulseError>;
+    fn update_tip_inventory(&self, _inventory: TipInventoryStatus) -> Result<(), PulseError> {
+        Ok(())
+    }
     fn request_tips(&self) -> Result<(), PulseError> {
         Ok(())
     }
@@ -1023,6 +1034,9 @@ struct InnerState {
     getblock_responses_not_found_sent_total: u64,
     getblock_response_send_failed_total: u64,
     getblock_requests_received_by_connection_direction: HashMap<String, u64>,
+    local_tip_inventory: Option<TipInventoryStatus>,
+    local_tip_inventory_generation: u64,
+    remote_selected_tip_inventory: HashMap<String, RemoteTipInventoryEntry>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -1126,6 +1140,15 @@ impl MemoryP2pHandle {
 }
 
 impl P2pHandle for MemoryP2pHandle {
+    fn update_tip_inventory(&self, inventory: TipInventoryStatus) -> Result<(), PulseError> {
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| PulseError::Internal("p2p lock poisoned".into()))?;
+        next_local_tip_inventory(&mut inner, inventory);
+        Ok(())
+    }
+
     fn broadcast_transaction(&self, tx: &Transaction) -> Result<(), PulseError> {
         let mut inner = self
             .inner
@@ -1604,7 +1627,7 @@ impl P2pHandle for MemoryP2pHandle {
                 .iter()
                 .filter_map(|(peer, count)| (*count > 0).then_some(peer.clone()))
                 .collect(),
-            remote_selected_tip_inventory: Vec::new(),
+            remote_selected_tip_inventory: remote_tip_inventory_snapshot(&mut inner),
             getblock_requests_received_total: inner.getblock_requests_received_total,
             getblock_responses_blockdata_sent_total: inner.getblock_responses_blockdata_sent_total,
             getblock_responses_not_found_sent_total: inner.getblock_responses_not_found_sent_total,
@@ -1776,6 +1799,99 @@ fn now_unix() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
+}
+
+fn next_local_tip_inventory(state: &mut InnerState, mut inventory: TipInventoryStatus) {
+    state.local_tip_inventory_generation = state.local_tip_inventory_generation.saturating_add(1);
+    inventory.inventory_generation = state.local_tip_inventory_generation;
+    if inventory.observed_at_unix == 0 {
+        inventory.observed_at_unix = now_unix();
+    }
+    state.local_tip_inventory = Some(inventory);
+}
+
+fn current_tip_inventory(state: &InnerState, chain_id: &str) -> Option<TipInventoryStatus> {
+    state.local_tip_inventory.as_ref().map(|inventory| {
+        let mut inventory = inventory.clone();
+        inventory.chain_id = chain_id.to_string();
+        inventory
+    })
+}
+
+fn valid_tip_inventory_shape(inventory: &TipInventoryStatus) -> bool {
+    match (&inventory.selected_tip, inventory.selected_height) {
+        (Some(tip), Some(_)) if !tip.is_empty() => true,
+        (None, None) => true,
+        _ => false,
+    }
+}
+
+fn prune_remote_tip_inventory(state: &mut InnerState, now: u64) {
+    let connected = state.active_connections.clone();
+    let chain_id = state.chain_id.clone();
+    state.remote_selected_tip_inventory.retain(|peer, entry| {
+        entry.status.connected
+            && connected.get(peer).copied().unwrap_or(0) > 0
+            && now.saturating_sub(entry.last_seen_unix) <= TIP_INVENTORY_TTL_SECS
+            && entry.status.chain_id == chain_id
+    });
+}
+
+fn note_remote_tip_inventory(
+    state: &mut InnerState,
+    peer_id: &str,
+    inventory: TipInventoryStatus,
+    now: u64,
+) -> bool {
+    if inventory.chain_id != state.chain_id || !valid_tip_inventory_shape(&inventory) {
+        state.remote_selected_tip_inventory.remove(peer_id);
+        return false;
+    }
+    let connection_generation = state.active_connections.get(peer_id).copied().unwrap_or(0) as u64;
+    let selected_height = inventory.selected_height.unwrap_or(0);
+    let replacement_is_fresher = state
+        .remote_selected_tip_inventory
+        .get(peer_id)
+        .map(|current| {
+            inventory.inventory_generation > current.status.inventory_generation
+                || (inventory.inventory_generation == current.status.inventory_generation
+                    && inventory.observed_at_unix > current.status.observed_at_unix)
+        })
+        .unwrap_or(true);
+    if replacement_is_fresher {
+        state.remote_selected_tip_inventory.insert(
+            peer_id.to_string(),
+            RemoteTipInventoryEntry {
+                last_seen_unix: now,
+                status: RemoteSelectedTipStatus {
+                    peer_id: peer_id.to_string(),
+                    connection_generation,
+                    chain_id: inventory.chain_id,
+                    selected_tip: inventory.selected_tip,
+                    selected_height,
+                    selected_blue_score: inventory.selected_blue_score,
+                    ordered_dag_tip: inventory.ordered_dag_tip,
+                    state_root_digest: inventory.state_root_digest,
+                    observed_at_unix: inventory.observed_at_unix,
+                    inventory_generation: inventory.inventory_generation,
+                    direct_request_capable: connection_generation > 0,
+                    connected: connection_generation > 0,
+                },
+            },
+        );
+        true
+    } else {
+        false
+    }
+}
+
+fn remote_tip_inventory_snapshot(state: &mut InnerState) -> Vec<RemoteSelectedTipStatus> {
+    prune_remote_tip_inventory(state, now_unix());
+    state
+        .remote_selected_tip_inventory
+        .values()
+        .map(|entry| entry.status.clone())
+        .collect()
 }
 
 fn peer_jitter(peer: &str) -> u64 {
@@ -4312,7 +4428,7 @@ fn dispatch_network_message(
         }
         NetworkMessage::GetTips {
             chain_id,
-            inventory: _,
+            inventory,
         } => {
             if chain_id != expected_chain_id {
                 if let Ok(mut guard) = inner.lock() {
@@ -4335,6 +4451,9 @@ fn dispatch_network_message(
                 guard.inbound_messages += 1;
                 guard.last_message_kind = Some("get-tips".into());
                 if let Some(peer) = source_peer {
+                    if let Some(inventory) = inventory {
+                        note_remote_tip_inventory(&mut guard, peer, inventory, now_unix());
+                    }
                     score_peer_message_outcome(
                         &mut guard,
                         peer,
@@ -4348,7 +4467,7 @@ fn dispatch_network_message(
         NetworkMessage::Tips {
             chain_id,
             tips,
-            inventory: _,
+            inventory,
         } => {
             if chain_id != expected_chain_id {
                 if let Ok(mut guard) = inner.lock() {
@@ -4371,6 +4490,9 @@ fn dispatch_network_message(
                 guard.inbound_messages += 1;
                 guard.last_message_kind = Some("tips".into());
                 if let Some(peer) = source_peer {
+                    if let Some(inventory) = inventory {
+                        note_remote_tip_inventory(&mut guard, peer, inventory, now_unix());
+                    }
                     score_peer_message_outcome(
                         &mut guard,
                         peer,
@@ -4754,13 +4876,15 @@ async fn run_libp2p_runtime(
                     }
                     OutboundMessage::GetTips => {
                         let topic_name = format!("{}-sync", cfg.chain_id);
-                        let wire = serde_json::to_vec(&NetworkMessage::GetTips { chain_id: cfg.chain_id.clone(), inventory: None });
+                        let inventory = inner.lock().ok().and_then(|guard| current_tip_inventory(&guard, &cfg.chain_id));
+                        let wire = serde_json::to_vec(&NetworkMessage::GetTips { chain_id: cfg.chain_id.clone(), inventory });
                         (wire, topic_name, "get-tips", "sync:get-tips".to_string())
                     }
                     OutboundMessage::Tips(tips) => {
                         let topic_name = format!("{}-sync", cfg.chain_id);
                         let message_id = format!("sync:tips:{}", tips.join(","));
-                        let wire = serde_json::to_vec(&NetworkMessage::Tips { chain_id: cfg.chain_id.clone(), tips, inventory: None });
+                        let inventory = inner.lock().ok().and_then(|guard| current_tip_inventory(&guard, &cfg.chain_id));
+                        let wire = serde_json::to_vec(&NetworkMessage::Tips { chain_id: cfg.chain_id.clone(), tips, inventory });
                         (wire, topic_name, "tips", message_id)
                     }
                     OutboundMessage::GetBlockHeaders(hashes) => {
@@ -4816,7 +4940,7 @@ async fn run_libp2p_runtime(
             _ = sleep(Duration::from_secs(5)) => {
                 let heartbeat = serde_json::to_vec(&NetworkMessage::GetTips {
                     chain_id: cfg.chain_id.clone(),
-                    inventory: None,
+                    inventory: inner.lock().ok().and_then(|guard| current_tip_inventory(&guard, &cfg.chain_id)),
                 });
                 note_swarm_event(&inner, "heartbeat:get-tips");
                 if let Ok(bytes) = heartbeat {
@@ -5046,6 +5170,7 @@ fn handle_connection_closed(
         if remaining_count == 0 {
             guard.last_peer_state_transition = Some(format!("{peer_key}:disconnected"));
             guard.active_connections.remove(&peer_key);
+            guard.remote_selected_tip_inventory.remove(&peer_key);
             should_mark_disconnected = true;
 
             if is_bootnode {
@@ -5311,13 +5436,15 @@ async fn run_libp2p_real_runtime(
                     }
                     OutboundMessage::GetTips => {
                         let topic_name = format!("{}-sync", cfg.chain_id);
-                        let wire = serde_json::to_vec(&NetworkMessage::GetTips { chain_id: cfg.chain_id.clone(), inventory: None });
+                        let inventory = inner.lock().ok().and_then(|guard| current_tip_inventory(&guard, &cfg.chain_id));
+                        let wire = serde_json::to_vec(&NetworkMessage::GetTips { chain_id: cfg.chain_id.clone(), inventory });
                         (wire, topic_name, "get-tips", "sync:get-tips".to_string())
                     }
                     OutboundMessage::Tips(tips) => {
                         let topic_name = format!("{}-sync", cfg.chain_id);
                         let message_id = format!("sync:tips:{}", tips.join(","));
-                        let wire = serde_json::to_vec(&NetworkMessage::Tips { chain_id: cfg.chain_id.clone(), tips, inventory: None });
+                        let inventory = inner.lock().ok().and_then(|guard| current_tip_inventory(&guard, &cfg.chain_id));
+                        let wire = serde_json::to_vec(&NetworkMessage::Tips { chain_id: cfg.chain_id.clone(), tips, inventory });
                         (wire, topic_name, "tips", message_id)
                     }
                     OutboundMessage::GetBlockHeaders(hashes) => {
@@ -5384,7 +5511,10 @@ async fn run_libp2p_real_runtime(
                         let topic = gossipsub::IdentTopic::new(format!("{}-sync", cfg.chain_id));
                         if let Ok(bytes) = serde_json::to_vec(&NetworkMessage::GetTips {
                             chain_id: cfg.chain_id.clone(),
-                            inventory: None,
+                            inventory: inner
+                                .lock()
+                                .ok()
+                                .and_then(|guard| current_tip_inventory(&guard, &cfg.chain_id)),
                         }) {
                             note_swarm_event(&inner, format!("startup-tip-exchange:{peer_id}"));
                             let _ = swarm.behaviour_mut().gossipsub.publish(topic, bytes);
@@ -5618,6 +5748,15 @@ impl Libp2pHandle {
 }
 
 impl P2pHandle for Libp2pHandle {
+    fn update_tip_inventory(&self, inventory: TipInventoryStatus) -> Result<(), PulseError> {
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| PulseError::Internal("p2p lock poisoned".into()))?;
+        next_local_tip_inventory(&mut inner, inventory);
+        Ok(())
+    }
+
     fn broadcast_transaction(&self, tx: &Transaction) -> Result<(), PulseError> {
         {
             let mut inner = self
@@ -6089,7 +6228,7 @@ impl P2pHandle for Libp2pHandle {
                 .iter()
                 .filter_map(|(peer, count)| (*count > 0).then_some(peer.clone()))
                 .collect(),
-            remote_selected_tip_inventory: Vec::new(),
+            remote_selected_tip_inventory: remote_tip_inventory_snapshot(&mut inner),
             getblock_requests_received_total: inner.getblock_requests_received_total,
             getblock_responses_blockdata_sent_total: inner.getblock_responses_blockdata_sent_total,
             getblock_responses_not_found_sent_total: inner.getblock_responses_not_found_sent_total,
@@ -10130,5 +10269,104 @@ mod deterministic_p2p_sync_coverage_tests {
             .last_rate_limited_unix
             .is_none());
         assert!(!state.peer_health_penalty_total.contains_key("rate_limited"));
+    }
+
+    fn tip_inventory_for_test(generation: u64, observed_at_unix: u64) -> TipInventoryStatus {
+        TipInventoryStatus {
+            chain_id: "test-chain".to_string(),
+            selected_tip: Some(format!("selected-{generation}")),
+            selected_height: Some(600 + generation),
+            selected_blue_score: Some(700 + generation),
+            ordered_dag_tip: Some(format!("ordered-{generation}")),
+            state_root_digest: Some(format!("state-{generation}")),
+            observed_at_unix,
+            inventory_generation: generation,
+        }
+    }
+
+    #[test]
+    fn remote_tip_inventory_replaces_by_generation_then_freshness() {
+        let mut state = InnerState {
+            chain_id: "test-chain".to_string(),
+            ..InnerState::default()
+        };
+        state.active_connections.insert("peer-a".to_string(), 1);
+
+        assert!(note_remote_tip_inventory(
+            &mut state,
+            "peer-a",
+            tip_inventory_for_test(1, 10),
+            10
+        ));
+        assert!(!note_remote_tip_inventory(
+            &mut state,
+            "peer-a",
+            tip_inventory_for_test(1, 9),
+            11
+        ));
+        assert!(note_remote_tip_inventory(
+            &mut state,
+            "peer-a",
+            tip_inventory_for_test(1, 12),
+            12
+        ));
+        assert_eq!(
+            state
+                .remote_selected_tip_inventory
+                .get("peer-a")
+                .unwrap()
+                .status
+                .selected_tip
+                .as_deref(),
+            Some("selected-1")
+        );
+        assert!(note_remote_tip_inventory(
+            &mut state,
+            "peer-a",
+            tip_inventory_for_test(2, 11),
+            13
+        ));
+        let status = &state.remote_selected_tip_inventory["peer-a"].status;
+        assert_eq!(status.inventory_generation, 2);
+        assert_eq!(status.selected_height, 602);
+    }
+
+    #[test]
+    fn remote_tip_inventory_prune_removes_disconnected_expired_and_wrong_chain() {
+        let mut state = InnerState {
+            chain_id: "test-chain".to_string(),
+            ..InnerState::default()
+        };
+        state.active_connections.insert("connected".to_string(), 1);
+        state.active_connections.insert("expired".to_string(), 1);
+        assert!(note_remote_tip_inventory(
+            &mut state,
+            "connected",
+            tip_inventory_for_test(1, 100),
+            100
+        ));
+        assert!(note_remote_tip_inventory(
+            &mut state,
+            "expired",
+            tip_inventory_for_test(1, 100),
+            100
+        ));
+        assert!(note_remote_tip_inventory(
+            &mut state,
+            "disconnected",
+            tip_inventory_for_test(1, 100),
+            100
+        ));
+        let mut wrong_chain = tip_inventory_for_test(2, 100);
+        wrong_chain.chain_id = "other-chain".to_string();
+        assert!(!note_remote_tip_inventory(
+            &mut state,
+            "wrong-chain",
+            wrong_chain,
+            100
+        ));
+
+        prune_remote_tip_inventory(&mut state, 100 + TIP_INVENTORY_TTL_SECS + 1);
+        assert!(state.remote_selected_tip_inventory.is_empty());
     }
 }

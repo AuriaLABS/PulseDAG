@@ -27,8 +27,9 @@ use pulsedag_core::accept::{
 };
 use pulsedag_core::reconcile_mempool;
 use pulsedag_p2p::{
-    build_p2p_stack, default_p2p_identity_path, messages::HeaderInventory, InboundEvent,
-    Libp2pConfig, Libp2pRuntimeMode, P2pHandle, P2pMode,
+    build_p2p_stack, default_p2p_identity_path,
+    messages::{HeaderInventory, TipInventoryStatus},
+    InboundEvent, Libp2pConfig, Libp2pRuntimeMode, P2pHandle, P2pMode,
 };
 use pulsedag_rpc::api::{
     capture_and_store_node_rpc_snapshot, NodeRpcSnapshotStore, NodeRuntimeStats,
@@ -38,6 +39,24 @@ use pulsedag_rpc::routes::{
     RpcHardeningLimits,
 };
 use pulsedag_storage::Storage;
+
+fn local_tip_inventory_status(chain: &pulsedag_core::ChainState) -> TipInventoryStatus {
+    let selected_tip = pulsedag_core::preferred_tip_hash(chain);
+    let selected_block = chain.dag.blocks.get(&selected_tip);
+    TipInventoryStatus {
+        chain_id: chain.chain_id.clone(),
+        selected_tip: Some(selected_tip),
+        selected_height: selected_block.map(|block| block.header.height),
+        selected_blue_score: selected_block.map(|block| block.header.blue_score),
+        ordered_dag_tip: chain.dag.ordered_dag_tip.clone(),
+        state_root_digest: chain.dag.ordered_dag_state_root.clone(),
+        observed_at_unix: SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0),
+        inventory_generation: 0,
+    }
+}
 use tokio::sync::{oneshot, Mutex, RwLock};
 use tokio::time::{sleep, Duration};
 
@@ -2991,6 +3010,17 @@ async fn main() -> Result<()> {
                                 rt.sync_pipeline.request_blocks(1, now_unix());
                             }
                             if p2p.is_some() {
+                                if let Some(ref p2p) = p2p {
+                                    let inventory = local_tip_inventory_status(&guard);
+                                    if let Err(e) = p2p.update_tip_inventory(inventory) {
+                                        warn!(error = %e, block_hash = %block.hash, "failed refreshing accepted-block tip inventory");
+                                    }
+                                    if let Err(e) = p2p.announce_block_inventory(
+                                        std::slice::from_ref(&accepted_tip),
+                                    ) {
+                                        warn!(error = %e, selected_tip = %accepted_tip, "failed announcing selected tip inventory");
+                                    }
+                                }
                                 info!(event = "peer_block_rebroadcast", block_hash = %block.hash, "rebroadcasted accepted first-seen inbound p2p block after durable commit");
                                 let _ = storage.append_runtime_event(
                                     "info",
@@ -3355,11 +3385,17 @@ async fn main() -> Result<()> {
                         }
                     }
                     InboundEvent::GetTips => {
-                        let tips = {
+                        let (tips, inventory) = {
                             let guard = chain.read().await;
-                            guard.dag.tips.iter().cloned().collect::<Vec<_>>()
+                            (
+                                guard.dag.tips.iter().cloned().collect::<Vec<_>>(),
+                                local_tip_inventory_status(&guard),
+                            )
                         };
                         if let Some(ref p2p) = p2p {
+                            if let Err(e) = p2p.update_tip_inventory(inventory) {
+                                warn!(error = %e, "failed updating local tip inventory");
+                            }
                             if let Err(e) = p2p.send_tips(&tips) {
                                 warn!(error = %e, "failed sending Tips response");
                             }
@@ -3782,6 +3818,13 @@ async fn main() -> Result<()> {
                             .as_ref()
                             .and_then(|h| h.status().ok().map(|s| s.connected_peers));
                         if let Some(ref p2p) = p2p {
+                            let inventory = {
+                                let guard = chain.read().await;
+                                local_tip_inventory_status(&guard)
+                            };
+                            if let Err(e) = p2p.update_tip_inventory(inventory) {
+                                warn!(error = %e, peer = %peer, "failed refreshing tip inventory on peer connect");
+                            }
                             if let Err(e) = p2p.request_tips() {
                                 warn!(error = %e, peer = %peer, "failed issuing GetTips on peer connect");
                             }
