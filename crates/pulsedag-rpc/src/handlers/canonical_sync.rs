@@ -519,6 +519,7 @@ mod tests {
                 state_root_digest: Some("state-root-741".into()),
                 observed_at_unix: 1_000,
                 inventory_generation: 11,
+                age_secs: 0,
                 direct_request_capable: true,
                 connected: true,
             }],
