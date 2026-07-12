@@ -442,6 +442,55 @@ pub async fn get_p2p_status<S: RpcStateLike>(
                 "connected_peers".into(),
                 serde_json::json!(status.connected_peers),
             );
+            payload.insert(
+                "remote_selected_tip_inventory".into(),
+                serde_json::json!(status.remote_selected_tip_inventory),
+            );
+            payload.insert(
+                "tip_inventory_counters".into(),
+                serde_json::json!({
+                    "local_tip_inventory_generated_total": status.local_tip_inventory_generated_total,
+                    "local_tip_inventory_sent_total": status.local_tip_inventory_sent_total,
+                    "remote_tip_inventory_received_total": status.remote_tip_inventory_received_total,
+                    "remote_tip_inventory_accepted_total": status.remote_tip_inventory_accepted_total,
+                    "remote_tip_inventory_rejected_total": status.remote_tip_inventory_rejected_total,
+                    "remote_tip_inventory_replaced_total": status.remote_tip_inventory_replaced_total,
+                    "remote_tip_inventory_pruned_total": status.remote_tip_inventory_pruned_total,
+                    "remote_tip_inventory_current_entries": status.remote_tip_inventory_current_entries
+                }),
+            );
+            payload.insert(
+                "local_tip_inventory_generated_total".into(),
+                serde_json::json!(status.local_tip_inventory_generated_total),
+            );
+            payload.insert(
+                "local_tip_inventory_sent_total".into(),
+                serde_json::json!(status.local_tip_inventory_sent_total),
+            );
+            payload.insert(
+                "remote_tip_inventory_received_total".into(),
+                serde_json::json!(status.remote_tip_inventory_received_total),
+            );
+            payload.insert(
+                "remote_tip_inventory_accepted_total".into(),
+                serde_json::json!(status.remote_tip_inventory_accepted_total),
+            );
+            payload.insert(
+                "remote_tip_inventory_rejected_total".into(),
+                serde_json::json!(status.remote_tip_inventory_rejected_total),
+            );
+            payload.insert(
+                "remote_tip_inventory_replaced_total".into(),
+                serde_json::json!(status.remote_tip_inventory_replaced_total),
+            );
+            payload.insert(
+                "remote_tip_inventory_pruned_total".into(),
+                serde_json::json!(status.remote_tip_inventory_pruned_total),
+            );
+            payload.insert(
+                "remote_tip_inventory_current_entries".into(),
+                serde_json::json!(status.remote_tip_inventory_current_entries),
+            );
             payload.insert("topics".into(), serde_json::json!(status.topics));
             payload.insert("mdns".into(), serde_json::json!(status.mdns));
             payload.insert("kademlia".into(), serde_json::json!(status.kademlia));
