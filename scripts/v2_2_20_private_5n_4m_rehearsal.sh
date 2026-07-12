@@ -65,7 +65,7 @@ declare -A NODE_ORPHAN_COUNT NODE_PENDING_MISSING_PARENTS NODE_PENDING_BLOCK_REQ
 declare -A NODE_ACTIVE_PEERS NODE_RECOVERING_PEERS NODE_COOLDOWN_PEERS NODE_RATE_LIMITED_COUNT NODE_RECONNECT_ATTEMPTS NODE_RECONNECT_BLOCKED_REASON NODE_MIN_TARGET_MISSED NODE_ZERO_RECONNECT_ATTEMPTS NODE_ZERO_RECONNECT_SUCCESS
 declare -A NODE_ORPHAN_RECOVERY_ATTEMPTS NODE_ORPHAN_RECOVERY_SUCCESS NODE_ORPHAN_RECOVERY_FAILED_MISSING_PARENT NODE_ORPHAN_RECOVERY_FAILED_PERSIST NODE_ORPHAN_ROOTS_RATE_LIMITED NODE_ORPHAN_BACKLOG_STALE
 declare -A NODE_RPC_DEGRADED_RESPONSE NODE_RPC_SNAPSHOT_STALE NODE_RPC_HANDLER_DEGRADED NODE_RPC_HANDLER_TIMEOUT_AVOIDED NODE_MINING_TEMPLATES NODE_MINING_SUBMITS NODE_MINING_ACCEPTED NODE_MINING_REJECTED NODE_MINING_SUBMIT_BUSY NODE_MINING_ACTOR_TIMEOUT
-declare -A NODE_READINESS_SCHEMA_OK NODE_READINESS_STATUS NODE_ORDERED_DAG_TIP NODE_CONSENSUS_MODE NODE_SELECTED_TIP NODE_SYNC_STATE NODE_SYNC_STAGE NODE_SAME_HEIGHT_RECONCILE_BLOCKED_REASON
+declare -A NODE_READINESS_SCHEMA_OK NODE_READINESS_STATUS NODE_ORDERED_DAG_TIP NODE_CONSENSUS_MODE NODE_SELECTED_TIP NODE_SYNC_STATE NODE_SYNC_STAGE NODE_SYNC_OBSERVABILITY_WARNING NODE_CANONICAL_NODE_GAP NODE_HARNESS_OBSERVED_GAP NODE_SAME_HEIGHT_RECONCILE_BLOCKED_REASON
 declare -A NODE_STATE_ROOT NODE_ACCEPTED_HASH_SET_DIGEST NODE_STORAGE_MEMORY_COUNT NODE_STORAGE_PERSISTED_COUNT NODE_STORAGE_MEMORY_DIGEST NODE_STORAGE_PERSISTED_DIGEST NODE_STORAGE_COHERENT NODE_STORAGE_ONLY_HASHES NODE_MEMORY_ONLY_HASHES NODE_STORAGE_MISMATCH_SOURCE NODE_CHECKS_GENERATION NODE_CHECKS_DIGEST
 declare -A NODE_NETWORK_GAPS NODE_STORAGE_GAPS NODE_SELECTED_SEGMENT_REQUESTED NODE_SELECTED_SEGMENT_RECEIVED NODE_SELECTED_SEGMENT_APPLIED NODE_CORRELATED_REQUEST_COUNTERS
 declare -A PRE_NODE_HEIGHT PRE_NODE_TIP PRE_NODE_ORPHANS PRE_NODE_MISSING_PARENTS PRE_NODE_SYNC_STATE PRE_NODE_PEERS
@@ -283,24 +283,38 @@ record_fail(){
   FAIL_REASONS+=("$class: $msg")
 }
 
-classify_failure_class(){
-  local c
-  if (( ${#FAIL_CLASSES[@]} == 0 )); then
-    echo "none"
-    return 0
-  fi
-  for c in "${FAIL_CLASSES[@]}"; do
-    [[ "$c" == ENV_FAIL* || "$c" == ENV_* ]] && { echo "environment"; return 0; }
-  done
-  for c in "${FAIL_CLASSES[@]}"; do
-    [[ "$c" == *TIMEOUT* || "$c" == HARNESS_STALL_TIMEOUT || "$c" == SIGNAL_TERM || "$c" == SIGNAL_INT ]] && { echo "timeout"; return 0; }
-  done
-  for c in "${FAIL_CLASSES[@]}"; do
-    [[ "$c" == STORAGE_* || "$c" == *STORAGE* || "$c" == *MEMORY_PERSIST* ]] && { echo "storage_consistency"; return 0; }
-    [[ "$c" == READINESS_* || "$c" == *READINESS* ]] && { echo "readiness"; return 0; }
-    [[ "$c" == STAGED_GATE_* || "$c" == P2P_NOT_CONNECTED ]] && { echo "convergence"; return 0; }
-  done
+failure_class_from_code(){
+  local c="$1"
+  [[ "$c" == ENV_FAIL* || "$c" == ENV_* ]] && { echo "environment"; return 0; }
+  [[ "$c" == *TIMEOUT* || "$c" == HARNESS_STALL_TIMEOUT || "$c" == SIGNAL_TERM || "$c" == SIGNAL_INT ]] && { echo "timeout"; return 0; }
+  [[ "$c" == FAIL_STARTUP* || "$c" == STARTUP_* ]] && { echo "startup"; return 0; }
+  [[ "$c" == CONSENSUS_* || "$c" == *CONSENSUS_STATE* || "$c" == *STATE_ROOT* ]] && { echo "consensus_state"; return 0; }
+  [[ "$c" == STAGED_GATE_* || "$c" == P2P_NOT_CONNECTED || "$c" == POST_QUIESCENCE_* || "$c" == *CONVERGENCE* ]] && { echo "convergence"; return 0; }
+  [[ "$c" == STORAGE_* || "$c" == *STORAGE* || "$c" == *MEMORY_PERSIST* ]] && { echo "storage_consistency"; return 0; }
+  [[ "$c" == READINESS_* || "$c" == *READINESS* ]] && { echo "readiness"; return 0; }
+  [[ "$c" == EVIDENCE_* || "$c" == *EVIDENCE_CONSISTENCY* || "$c" == NETWORK_COUNTER_AGGREGATE_MISMATCH || "$c" == ACCEPTED_COUNTER_SEMANTIC_MISMATCH || "$c" == SYNC_OBSERVABILITY_* ]] && { echo "evidence_consistency"; return 0; }
   echo "node"
+}
+
+failure_classes_json(){
+  local classes=() c cls prio present=0
+  [[ "${STARTUP_RESULT:-}" == "FAIL" ]] && classes+=(startup)
+  [[ "${CONSENSUS_STATE_RESULT:-}" == "FAIL" ]] && classes+=(consensus_state)
+  [[ "${CONVERGENCE_RESULT:-}" == "FAIL" ]] && classes+=(convergence)
+  [[ "${STORAGE_CONSISTENCY_RESULT:-}" == "FAIL" ]] && classes+=(storage_consistency)
+  [[ "${READINESS_RESULT:-}" == "FAIL" ]] && classes+=(readiness)
+  for c in "${FAIL_CLASSES[@]:-}"; do classes+=("$(failure_class_from_code "$c")"); done
+  for prio in startup consensus_state convergence storage_consistency readiness evidence_consistency environment timeout node; do
+    present=0
+    for cls in "${classes[@]:-}"; do [[ "$cls" == "$prio" ]] && present=1; done
+    (( present == 1 )) && printf '%s\n' "$prio"
+  done | awk '!seen[$0]++' | jq -R . | jq -s .
+}
+
+classify_failure_class(){
+  local first
+  first=$(failure_classes_json | jq -r '.[0] // "none"')
+  echo "$first"
 }
 
 classify_result_failure_class(){
@@ -308,12 +322,8 @@ classify_result_failure_class(){
     echo "none"
     return 0
   fi
-  if [[ "${STORAGE_CONSISTENCY_RESULT:-}" == "FAIL" ]]; then echo "storage_consistency"; return 0; fi
-  if [[ "${READINESS_RESULT:-}" == "FAIL" ]]; then echo "readiness"; return 0; fi
-  if [[ "${CONVERGENCE_RESULT:-}" == "FAIL" ]]; then echo "convergence"; return 0; fi
   classify_failure_class
 }
-
 mark_startup_failure_gates(){
   case "$MINER_COUNT" in
     1) GATE_5N_1M_BASELINE=FAIL_STARTUP; GATE_5N_2M_INTERMEDIATE=NOT_EXECUTED; GATE_5N_4M_STRESS=NOT_EXECUTED ;;
@@ -804,6 +814,8 @@ collect_final_state(){
     NODE_MISSING_PARENTS[$i]="${NODE_PENDING_MISSING_PARENTS[$i]:-0}"
     NODE_READINESS_STATUS[$i]="$(jq -r 'if (.data.ready_for_release // .ready_for_release // false) == true then "ready" elif (.data.public_testnet_ready // .public_testnet_ready // false) == true then "public-ready-unexpected" else "not_ready" end' "$OUT_DIR/endpoints/n${i}-readiness-final.json" 2>/dev/null || echo not_ready)"
     NODE_SYNC_STATE[$i]="$(jq -r '.data.sync_state // .sync_state // .data.state // "unknown"' "$OUT_DIR/endpoints/n${i}-sync-status-final.json" 2>/dev/null || echo unknown)"
+    NODE_CANONICAL_NODE_GAP[$i]="$(jq -r '(.data // .) as $d | $d.canonical_node_gap // $d.best_height_gap // $d.blocks_behind // $d.sync_gap // null // ""' "$OUT_DIR/endpoints/n${i}-sync-status-final.json" 2>/dev/null || echo '')"
+    NODE_SYNC_OBSERVABILITY_WARNING[$i]="$(jq -r '(.data // .) as $d | $d.sync_observability_incomplete // $d.warnings.sync_observability_incomplete // false' "$OUT_DIR/endpoints/n${i}-sync-status-final.json" 2>/dev/null | sed 's/true/1/;s/false/0/' || echo 0)"
     NODE_SYNC_STAGE[$i]="$(jq -r '.data.catchup_stage // .catchup_stage // .data.stage // "unknown"' "$OUT_DIR/endpoints/n${i}-sync-status-final.json" 2>/dev/null || echo unknown)"
     NODE_STATE_ROOT[$i]="$(jq -r '.data.state_root // .data.metrics.state_root // .state_root // ""' "$OUT_DIR/endpoints/n${i}-status-final.json" "$OUT_DIR/endpoints/n${i}-readiness-final.json" 2>/dev/null | head -n1 || echo '')"
     checks_file="$OUT_DIR/endpoints/n${i}-checks-final.json"
@@ -881,6 +893,11 @@ compute_metrics_from_current(){
     (( h < min )) && min=$h
   done
   worst=$((max - min))
+  if [[ "$prefix" != "PRE" ]]; then
+    for i in $(seq 1 "$NODE_COUNT"); do
+      NODE_HARNESS_OBSERVED_GAP[$i]=$((max - ${NODE_HEIGHT[$i]:-0}))
+    done
+  fi
   distinct=$(for i in $(seq 1 "$NODE_COUNT"); do printf '%s\n' "${NODE_TIP[$i]:-}"; done | awk 'NF' | sort -u | wc -l | tr -d ' ')
   converged=0
   (( distinct == 1 && worst == 0 && MINERS_STARTED > 0 && TOTAL_MINING_ACCEPTED > 0 )) && converged=1
@@ -1092,6 +1109,7 @@ write_minimal_fallback_manifest(){
     --arg stage "$STAGE_NAME" \
     --arg result "$RESULT" \
     --arg failure_class "$(classify_result_failure_class)" \
+    --argjson failure_classes "$(failure_classes_json)" \
     --arg manifest_generation_error "$error_message" \
     --arg gate_5n_1m "$GATE_5N_1M_BASELINE" \
     --arg gate_5n_2m "$GATE_5N_2M_INTERMEDIATE" \
@@ -1103,7 +1121,7 @@ write_minimal_fallback_manifest(){
     --argjson startup_connection_keepalive_timeouts_total "$(json_number_or_zero "$STARTUP_CONNECTION_KEEPALIVE_TIMEOUTS_TOTAL")" \
     --argjson startup_reconnect_attempts_total "$(json_number_or_zero "$STARTUP_RECONNECT_ATTEMPTS_TOTAL")" \
     --argjson startup_reconnect_success_total "$(json_number_or_zero "$STARTUP_RECONNECT_SUCCESS_TOTAL")" \
-    '{git_commit:$git_commit,stage:$stage,result:$result,failure_class:$failure_class,exit_code:$exit_code,gates:{baseline_5n_1m:$gate_5n_1m,intermediate_5n_2m:$gate_5n_2m,stress_5n_4m:$gate_5n_4m},startup_metrics:{startup_topology_samples_total:$startup_topology_samples_total,startup_topology_stable_samples:$startup_topology_stable_samples,startup_topology_resets_total:$startup_topology_resets_total,startup_connection_keepalive_timeouts_total:$startup_connection_keepalive_timeouts_total,startup_reconnect_attempts_total:$startup_reconnect_attempts_total,startup_reconnect_success_total:$startup_reconnect_success_total},manifest_generation_error:$manifest_generation_error}' \
+    '{git_commit:$git_commit,stage:$stage,result:$result,primary_failure_class:$failure_class,failure_class:$failure_class,failure_classes:$failure_classes,exit_code:$exit_code,gates:{baseline_5n_1m:$gate_5n_1m,intermediate_5n_2m:$gate_5n_2m,stress_5n_4m:$gate_5n_4m},startup_metrics:{startup_topology_samples_total:$startup_topology_samples_total,startup_topology_stable_samples:$startup_topology_stable_samples,startup_topology_resets_total:$startup_topology_resets_total,startup_connection_keepalive_timeouts_total:$startup_connection_keepalive_timeouts_total,startup_reconnect_attempts_total:$startup_reconnect_attempts_total,startup_reconnect_success_total:$startup_reconnect_success_total},manifest_generation_error:$manifest_generation_error}' \
     > "$tmp" && jq -e . "$tmp" >/dev/null && mv "$tmp" "$OUT_DIR/evidence_manifest.json"
   cp "$OUT_DIR/evidence_manifest.json" "$OUT_DIR_ROOT/evidence_manifest.json" 2>/dev/null || true
 }
@@ -1139,7 +1157,7 @@ compute_result_dimensions(){
 build_rich_node_state(){
   local i
   for i in $(seq 1 "$NODE_COUNT"); do
-    jq -n --arg node "n$i" --arg tip "${NODE_TIP[$i]:-}" --arg selected_tip "${NODE_SELECTED_TIP[$i]:-}" --arg ordered_dag_tip "${NODE_ORDERED_DAG_TIP[$i]:-}" --arg state_root "${NODE_STATE_ROOT[$i]:-}" --arg accepted_hash_set_digest "${NODE_ACCEPTED_HASH_SET_DIGEST[$i]:-}" --arg readiness "${NODE_READINESS_STATUS[$i]:-unknown}" --arg sync_state "${NODE_SYNC_STATE[$i]:-unknown}" --arg sync_stage "${NODE_SYNC_STAGE[$i]:-unknown}" --arg memory_digest "${NODE_STORAGE_MEMORY_DIGEST[$i]:-}" --arg persisted_digest "${NODE_STORAGE_PERSISTED_DIGEST[$i]:-}" --arg mismatch_source "${NODE_STORAGE_MISMATCH_SOURCE[$i]:-unknown}" --arg checks_digest "${NODE_CHECKS_DIGEST[$i]:-}" --argjson height "$(json_number_or_zero "${NODE_HEIGHT[$i]:-0}")" --argjson peer_count "$(json_number_or_zero "${NODE_PEERS[$i]:-0}")" --argjson inbound_count "$(json_number_or_zero "${NODE_P2P_INBOUND[$i]:-0}")" --argjson outbound_count "$(json_number_or_zero "${NODE_P2P_OUTBOUND[$i]:-0}")" --argjson ready_for_release "$(json_number_or_zero "${NODE_READY[$i]:-0}")" --argjson memory_count "$(json_number_or_zero "${NODE_STORAGE_MEMORY_COUNT[$i]:-0}")" --argjson persisted_count "$(json_number_or_zero "${NODE_STORAGE_PERSISTED_COUNT[$i]:-0}")" --argjson coherent_storage_invariant "$(json_number_or_zero "${NODE_STORAGE_COHERENT[$i]:-0}")" --argjson storage_only_hashes "$(json_array_or_empty "${NODE_STORAGE_ONLY_HASHES[$i]:-[]}")" --argjson memory_only_hashes "$(json_array_or_empty "${NODE_MEMORY_ONLY_HASHES[$i]:-[]}")" --argjson generation "$(json_number_or_zero "${NODE_CHECKS_GENERATION[$i]:-0}")" --argjson network_gaps "$(json_object_or_empty "${NODE_NETWORK_GAPS[$i]:-{}}")" --argjson storage_gaps "$(json_object_or_empty "${NODE_STORAGE_GAPS[$i]:-{}}")" --argjson seg_requested "$(json_number_or_zero "${NODE_SELECTED_SEGMENT_REQUESTED[$i]:-0}")" --argjson seg_received "$(json_number_or_zero "${NODE_SELECTED_SEGMENT_RECEIVED[$i]:-0}")" --argjson seg_applied "$(json_number_or_zero "${NODE_SELECTED_SEGMENT_APPLIED[$i]:-0}")" --argjson correlated_request_counters "$(json_object_or_empty "${NODE_CORRELATED_REQUEST_COUNTERS[$i]:-{}}")" '{node:$node,height:$height,tip:$tip,selected_tip:$selected_tip,ordered_dag_tip:$ordered_dag_tip,state_root:$state_root,accepted_hash_set_digest:$accepted_hash_set_digest,peer_count:$peer_count,inbound_count:$inbound_count,outbound_count:$outbound_count,readiness:{status:$readiness,ready_for_release:($ready_for_release==1)},sync:{state:$sync_state,stage:$sync_stage},storage:{coherent_storage_invariant:($coherent_storage_invariant==1),memory_count:$memory_count,persisted_count:$persisted_count,memory_digest:$memory_digest,persisted_digest:$persisted_digest,storage_only_hashes:$storage_only_hashes,memory_only_hashes:$memory_only_hashes,mismatch_source:$mismatch_source,generation:$generation,digest:$checks_digest},network_gaps:$network_gaps,storage_gaps:$storage_gaps,selected_segment_session_metrics:{requested:$seg_requested,received:$seg_received,applied:$seg_applied},correlated_request_counters:$correlated_request_counters}'
+    jq -n --arg node "n$i" --arg tip "${NODE_TIP[$i]:-}" --arg selected_tip "${NODE_SELECTED_TIP[$i]:-}" --arg ordered_dag_tip "${NODE_ORDERED_DAG_TIP[$i]:-}" --arg state_root "${NODE_STATE_ROOT[$i]:-}" --arg accepted_hash_set_digest "${NODE_ACCEPTED_HASH_SET_DIGEST[$i]:-}" --arg readiness "${NODE_READINESS_STATUS[$i]:-unknown}" --arg sync_state "${NODE_SYNC_STATE[$i]:-unknown}" --arg sync_stage "${NODE_SYNC_STAGE[$i]:-unknown}" --arg sync_warning "${NODE_SYNC_OBSERVABILITY_WARNING[$i]:-0}" --arg memory_digest "${NODE_STORAGE_MEMORY_DIGEST[$i]:-}" --arg persisted_digest "${NODE_STORAGE_PERSISTED_DIGEST[$i]:-}" --arg mismatch_source "${NODE_STORAGE_MISMATCH_SOURCE[$i]:-unknown}" --arg checks_digest "${NODE_CHECKS_DIGEST[$i]:-}" --argjson height "$(json_number_or_zero "${NODE_HEIGHT[$i]:-0}")" --argjson peer_count "$(json_number_or_zero "${NODE_PEERS[$i]:-0}")" --argjson inbound_count "$(json_number_or_zero "${NODE_P2P_INBOUND[$i]:-0}")" --argjson outbound_count "$(json_number_or_zero "${NODE_P2P_OUTBOUND[$i]:-0}")" --argjson ready_for_release "$(json_number_or_zero "${NODE_READY[$i]:-0}")" --argjson memory_count "$(json_number_or_zero "${NODE_STORAGE_MEMORY_COUNT[$i]:-0}")" --argjson persisted_count "$(json_number_or_zero "${NODE_STORAGE_PERSISTED_COUNT[$i]:-0}")" --argjson coherent_storage_invariant "$(json_number_or_zero "${NODE_STORAGE_COHERENT[$i]:-0}")" --argjson storage_only_hashes "$(json_array_or_empty "${NODE_STORAGE_ONLY_HASHES[$i]:-[]}")" --argjson memory_only_hashes "$(json_array_or_empty "${NODE_MEMORY_ONLY_HASHES[$i]:-[]}")" --argjson generation "$(json_number_or_zero "${NODE_CHECKS_GENERATION[$i]:-0}")" --argjson canonical_node_gap "$(json_number_or_zero "${NODE_CANONICAL_NODE_GAP[$i]:-0}")" --argjson harness_observed_gap "$(json_number_or_zero "${NODE_HARNESS_OBSERVED_GAP[$i]:-0}")" --argjson network_gaps "$(json_object_or_empty "${NODE_NETWORK_GAPS[$i]:-{}}")" --argjson storage_gaps "$(json_object_or_empty "${NODE_STORAGE_GAPS[$i]:-{}}")" --argjson seg_requested "$(json_number_or_zero "${NODE_SELECTED_SEGMENT_REQUESTED[$i]:-0}")" --argjson seg_received "$(json_number_or_zero "${NODE_SELECTED_SEGMENT_RECEIVED[$i]:-0}")" --argjson seg_applied "$(json_number_or_zero "${NODE_SELECTED_SEGMENT_APPLIED[$i]:-0}")" --argjson correlated_request_counters "$(json_object_or_empty "${NODE_CORRELATED_REQUEST_COUNTERS[$i]:-{}}")" '{node:$node,height:$height,tip:$tip,selected_tip:$selected_tip,ordered_dag_tip:$ordered_dag_tip,state_root:$state_root,accepted_hash_set_digest:$accepted_hash_set_digest,peer_count:$peer_count,inbound_count:$inbound_count,outbound_count:$outbound_count,readiness:{status:$readiness,ready_for_release:($ready_for_release==1)},sync:{state:$sync_state,stage:$sync_stage,canonical_node_gap:$canonical_node_gap,harness_observed_gap:$harness_observed_gap,sync_observability_incomplete:($sync_warning=="1")},storage:{coherent_storage_invariant:($coherent_storage_invariant==1),memory_count:$memory_count,persisted_count:$persisted_count,memory_digest:$memory_digest,persisted_digest:$persisted_digest,storage_only_hashes:$storage_only_hashes,memory_only_hashes:$memory_only_hashes,mismatch_source:$mismatch_source,generation:$generation,digest:$checks_digest},network_gaps:$network_gaps,storage_gaps:$storage_gaps,selected_segment_session_metrics:{requested:$seg_requested,received:$seg_received,applied:$seg_applied},correlated_request_counters:$correlated_request_counters}'
   done | jq -s '.'
 }
 
@@ -1164,14 +1182,14 @@ write_evidence_manifest(){
   nodes_json=$(build_rich_node_state)
   nodes_json=$(json_array_or_empty "$nodes_json")
   if ! jq -n \
-    --arg git_ref "$REPO_REF" --arg git_commit "$REPO_COMMIT_FULL" --arg version "$RELEASE_VERSION" --arg cargo_workspace_version "$WORKSPACE_VERSION" --arg stage "$STAGE_NAME" --arg result "$RESULT" --arg failure_class "$(classify_result_failure_class)" --arg startup_result "$STARTUP_RESULT" --arg convergence_result "$CONVERGENCE_RESULT" --arg consensus_state_result "$CONSENSUS_STATE_RESULT" --arg storage_consistency_result "$STORAGE_CONSISTENCY_RESULT" --arg readiness_result "$READINESS_RESULT" --arg overall_result "$OVERALL_RESULT" --arg start_utc "$START_UTC" --arg end_utc "$(date -u +%FT%TZ)" \
+    --arg git_ref "$REPO_REF" --arg git_commit "$REPO_COMMIT_FULL" --arg version "$RELEASE_VERSION" --arg cargo_workspace_version "$WORKSPACE_VERSION" --arg stage "$STAGE_NAME" --arg result "$RESULT" --arg failure_class "$(classify_result_failure_class)" --argjson failure_classes "$(failure_classes_json)" --arg startup_result "$STARTUP_RESULT" --arg convergence_result "$CONVERGENCE_RESULT" --arg consensus_state_result "$CONSENSUS_STATE_RESULT" --arg storage_consistency_result "$STORAGE_CONSISTENCY_RESULT" --arg readiness_result "$READINESS_RESULT" --arg overall_result "$OVERALL_RESULT" --arg start_utc "$START_UTC" --arg end_utc "$(date -u +%FT%TZ)" \
     --arg gate_5n_1m "$GATE_5N_1M_BASELINE" --arg gate_5n_2m "$GATE_5N_2M_INTERMEDIATE" --arg gate_5n_4m "$GATE_5N_4M_STRESS" \
     --argjson node_count "$(json_number_or_zero "$NODE_COUNT")" --argjson miner_count "$(json_number_or_zero "$MINER_COUNT")" --argjson duration "$(json_number_or_zero "$duration")" --argjson exit_code "$(json_number_or_zero "$EXIT_CODE")" \
     --argjson startup_topology_samples_total "$(json_number_or_zero "$STARTUP_TOPOLOGY_SAMPLES_TOTAL")" --argjson startup_topology_stable_samples "$(json_number_or_zero "$STARTUP_TOPOLOGY_STABLE_SAMPLES")" --argjson startup_topology_resets_total "$(json_number_or_zero "$STARTUP_TOPOLOGY_RESETS_TOTAL")" --argjson startup_connection_keepalive_timeouts_total "$(json_number_or_zero "$STARTUP_CONNECTION_KEEPALIVE_TIMEOUTS_TOTAL")" --argjson startup_reconnect_attempts_total "$(json_number_or_zero "$STARTUP_RECONNECT_ATTEMPTS_TOTAL")" --argjson startup_reconnect_success_total "$(json_number_or_zero "$STARTUP_RECONNECT_SUCCESS_TOTAL")" --argjson startup_topology_ready_unix "$(json_number_or_zero "$STARTUP_TOPOLOGY_READY_UNIX")" --argjson startup_topology_wait_duration_ms "$(json_number_or_zero "$STARTUP_TOPOLOGY_WAIT_DURATION_MS")" \
     --argjson templates "$(json_number_or_zero "$TOTAL_MINING_TEMPLATES")" --argjson submits "$(json_number_or_zero "$TOTAL_MINING_SUBMITS")" --argjson accepted "$(json_number_or_zero "$TOTAL_MINING_ACCEPTED")" --argjson rejected "$(json_number_or_zero "$TOTAL_MINING_REJECTED")" --argjson submit_busy "$(json_number_or_zero "$TOTAL_MINING_SUBMIT_BUSY")" --argjson actor_timeout "$(json_number_or_zero "$TOTAL_MINING_ACTOR_TIMEOUT")" \
     --argjson local_miner_templates_received "$(json_number_or_zero "$LOCAL_MINER_TEMPLATES_RECEIVED")" --argjson local_miner_submits_total "$(json_number_or_zero "$LOCAL_MINER_SUBMITS_TOTAL")" --argjson local_miner_submits_accepted "$(json_number_or_zero "$LOCAL_MINER_SUBMITS_ACCEPTED")" --argjson local_miner_submits_rejected "$(json_number_or_zero "$LOCAL_MINER_SUBMITS_REJECTED")" --argjson local_miner_submits_rejected_by_reason "$(json_array_or_empty "$LOCAL_MINER_SUBMITS_REJECTED_BY_REASON")" --argjson unique_submitted_block_hashes "$(json_number_or_zero "$UNIQUE_SUBMITTED_BLOCK_HASHES")" --argjson node_block_accept_events_total "$(json_number_or_zero "$NODE_BLOCK_ACCEPT_EVENTS_TOTAL")" --argjson node_block_duplicate_events_total "$(json_number_or_zero "$NODE_BLOCK_DUPLICATE_EVENTS_TOTAL")" --argjson node_block_reject_events_total "$(json_number_or_zero "$NODE_BLOCK_REJECT_EVENTS_TOTAL")" --argjson miner_evidence_consistency_failures "$(json_array_or_empty "$MINER_EVIDENCE_CONSISTENCY_FAILURES")" \
     --argjson pre_distinct_tips "$(json_number_or_zero "$PRE_DISTINCT_TIPS")" --argjson post_distinct_tips "$(json_number_or_zero "$POST_DISTINCT_TIPS")" --argjson pre_worst_lag "$(json_number_or_zero "$PRE_WORST_LAG")" --argjson post_worst_lag "$(json_number_or_zero "$POST_WORST_LAG")" --argjson nodes "$nodes_json" --slurpfile checksums "$checksum_tmp" \
-    '{git_ref:$git_ref,git_commit:$git_commit,version:$version,cargo_workspace_version:$cargo_workspace_version,stage:$stage,node_count:$node_count,miner_count:$miner_count,duration:$duration,result:$overall_result,overall_result:$overall_result,startup_result:$startup_result,convergence_result:$convergence_result,consensus_state_result:$consensus_state_result,storage_consistency_result:$storage_consistency_result,readiness_result:$readiness_result,failure_class:$failure_class,start_utc:$start_utc,end_utc:$end_utc,exit_code:$exit_code,metric_definitions:{miner_counts:"authoritative miner-N.log submit_result lines; miner-N-tail.log diagnostics ignored",local_miner_submit_metrics:"submit_result lines emitted by local miner processes",per_node_block_acceptance_events:"node metrics blocks_accepted_total summed separately from local submissions",correlated_getblock_response:"outstanding peer/hash/request_id match required",selected_segment_invariant:"applied <= received <= requested"},rpc_liveness:{alive_listener_timeouts:$startup_connection_keepalive_timeouts_total,rpc_liveness_timeouts:0},sync_orphan:{orphan_count_total:0,pending_missing_parents_total:0,terminal_missing_parent_entries:0},network_counters:{missing_parent_requests_sent:0,missing_parent_responses_received:0,unsolicited_blockdata_total:0,duplicate_correlated_response_total:0,unknown_request_response_total:0,locator_requests_sent_total:0,locator_success_total:0},pre_quiescence:{distinct_tips:$pre_distinct_tips,worst_lag_from_max_height:$pre_worst_lag},post_quiescence:{distinct_tips:$post_distinct_tips,worst_lag_from_max_height:$post_worst_lag},distinct_tips:$post_distinct_tips,worst_lag_from_max_height:$post_worst_lag,selected_segment_session_metrics:{requested:($nodes|map(.selected_segment_session_metrics.requested)|add // 0),received:($nodes|map(.selected_segment_session_metrics.received)|add // 0),applied:($nodes|map(.selected_segment_session_metrics.applied)|add // 0)},startup_metrics:{startup_topology_samples_total:$startup_topology_samples_total,startup_topology_stable_samples:$startup_topology_stable_samples,startup_topology_resets_total:$startup_topology_resets_total,startup_connection_keepalive_timeouts_total:$startup_connection_keepalive_timeouts_total,startup_reconnect_attempts_total:$startup_reconnect_attempts_total,startup_reconnect_success_total:$startup_reconnect_success_total,startup_topology_ready_unix:$startup_topology_ready_unix,startup_topology_wait_duration_ms:$startup_topology_wait_duration_ms},mining:{templates:$templates,submit_busy:$submit_busy,actor_timeout:$actor_timeout,local_miner_submit_metrics:{templates_received:$local_miner_templates_received,submits_total:$local_miner_submits_total,submits_accepted:$local_miner_submits_accepted,submits_rejected:$local_miner_submits_rejected,submits_rejected_by_reason:$local_miner_submits_rejected_by_reason},per_node_block_acceptance_events:$node_block_accept_events_total,unique_submitted_hashes:$unique_submitted_block_hashes},mining_semantics:{local_miner_templates_received:$local_miner_templates_received,local_miner_submits_total:$local_miner_submits_total,local_miner_submits_accepted:$local_miner_submits_accepted,local_miner_submits_rejected:$local_miner_submits_rejected,local_miner_submits_rejected_by_reason:$local_miner_submits_rejected_by_reason,unique_submitted_block_hashes:$unique_submitted_block_hashes,node_block_accept_events_total:$node_block_accept_events_total,node_block_duplicate_events_total:$node_block_duplicate_events_total,node_block_reject_events_total:$node_block_reject_events_total,evidence_consistency_failures:$miner_evidence_consistency_failures,result:(if $local_miner_submits_total == 0 then "NOT_EXECUTED" else "EXECUTED" end)},gates:{baseline_5n_1m:$gate_5n_1m,intermediate_5n_2m:$gate_5n_2m,stress_5n_4m:$gate_5n_4m},prior_evidence:{gate_c:{result:$gate_5n_1m},gate_d:{result:$gate_5n_2m}},rich_node_state:$nodes,nodes:$nodes,checksums:($checksums[0] // {})}' > "$manifest_tmp" 2>"$jq_err"; then
+    '{git_ref:$git_ref,git_commit:$git_commit,version:$version,cargo_workspace_version:$cargo_workspace_version,stage:$stage,node_count:$node_count,miner_count:$miner_count,duration:$duration,result:$overall_result,overall_result:$overall_result,startup_result:$startup_result,convergence_result:$convergence_result,consensus_state_result:$consensus_state_result,storage_consistency_result:$storage_consistency_result,readiness_result:$readiness_result,primary_failure_class:$failure_class,failure_class:$failure_class,failure_classes:$failure_classes,start_utc:$start_utc,end_utc:$end_utc,exit_code:$exit_code,metric_definitions:{miner_counts:"authoritative miner-N.log submit_result lines; miner-N-tail.log diagnostics ignored",local_miner_submit_metrics:"submit_result lines emitted by local miner processes",per_node_block_acceptance_events:"node metrics blocks_accepted_total summed separately from local submissions",correlated_getblock_response:"outstanding peer/hash/request_id match required",selected_segment_invariant:"applied <= received <= requested"},rpc_liveness:{alive_listener_timeouts:$startup_connection_keepalive_timeouts_total,rpc_liveness_timeouts:0},sync_orphan:{orphan_count_total:0,pending_missing_parents_total:0,terminal_missing_parent_entries:0},network_counters:{missing_parent_requests_sent:0,missing_parent_responses_received:0,unsolicited_blockdata_total:0,duplicate_correlated_response_total:0,unknown_request_response_total:0,locator_requests_sent_total:0,locator_success_total:0},pre_quiescence:{distinct_tips:$pre_distinct_tips,worst_lag_from_max_height:$pre_worst_lag},post_quiescence:{distinct_tips:$post_distinct_tips,worst_lag_from_max_height:$post_worst_lag},distinct_tips:$post_distinct_tips,worst_lag_from_max_height:$post_worst_lag,selected_segment_session_metrics:{requested:($nodes|map(.selected_segment_session_metrics.requested)|add // 0),received:($nodes|map(.selected_segment_session_metrics.received)|add // 0),applied:($nodes|map(.selected_segment_session_metrics.applied)|add // 0)},startup_metrics:{startup_topology_samples_total:$startup_topology_samples_total,startup_topology_stable_samples:$startup_topology_stable_samples,startup_topology_resets_total:$startup_topology_resets_total,startup_connection_keepalive_timeouts_total:$startup_connection_keepalive_timeouts_total,startup_reconnect_attempts_total:$startup_reconnect_attempts_total,startup_reconnect_success_total:$startup_reconnect_success_total,startup_topology_ready_unix:$startup_topology_ready_unix,startup_topology_wait_duration_ms:$startup_topology_wait_duration_ms},mining:{templates:$templates,submit_busy:$submit_busy,actor_timeout:$actor_timeout,local_miner_submit_metrics:{templates_received:$local_miner_templates_received,submits_total:$local_miner_submits_total,submits_accepted:$local_miner_submits_accepted,submits_rejected:$local_miner_submits_rejected,submits_rejected_by_reason:$local_miner_submits_rejected_by_reason},per_node_block_acceptance_events:$node_block_accept_events_total,unique_submitted_hashes:$unique_submitted_block_hashes},mining_semantics:{local_miner_templates_received:$local_miner_templates_received,local_miner_submits_total:$local_miner_submits_total,local_miner_submits_accepted:$local_miner_submits_accepted,local_miner_submits_rejected:$local_miner_submits_rejected,local_miner_submits_rejected_by_reason:$local_miner_submits_rejected_by_reason,unique_submitted_block_hashes:$unique_submitted_block_hashes,node_block_accept_events_total:$node_block_accept_events_total,node_block_duplicate_events_total:$node_block_duplicate_events_total,node_block_reject_events_total:$node_block_reject_events_total,evidence_consistency_failures:$miner_evidence_consistency_failures,result:(if $local_miner_submits_total == 0 then "NOT_EXECUTED" else "EXECUTED" end)},gates:{baseline_5n_1m:$gate_5n_1m,intermediate_5n_2m:$gate_5n_2m,stress_5n_4m:$gate_5n_4m},prior_evidence:{gate_c:{result:$gate_5n_1m},gate_d:{result:$gate_5n_2m}},rich_node_state:$nodes,nodes:$nodes,checksums:($checksums[0] // {})}' > "$manifest_tmp" 2>"$jq_err"; then
     write_minimal_fallback_manifest "$(cat "$jq_err" 2>/dev/null || echo jq manifest generation failed)"; rm -f "$manifest_tmp" "$checksum_tmp"; return 1
   fi
   if jq -e . "$manifest_tmp" >/dev/null 2>>"$jq_err" && [[ -s "$manifest_tmp" ]]; then
@@ -1374,9 +1392,12 @@ write_evidence_summary(){
     echo "- version: $NODE_VERSION"
     echo
     echo "## Result"
-    FAILURE_CLASS=$(classify_failure_class)
+    FAILURE_CLASS=$(classify_result_failure_class)
+    FAILURE_CLASSES=$(failure_classes_json | jq -c .)
     echo "- result: $RESULT"
+    echo "- primary_failure_class: $FAILURE_CLASS"
     echo "- failure_class: $FAILURE_CLASS"
+    echo "- failure_classes: $FAILURE_CLASSES"
     echo "- exit_code: $EXIT_CODE"
     echo "- node_count: $NODE_COUNT"
     echo "- miner_count: $MINER_COUNT"
@@ -1400,7 +1421,8 @@ write_p2p_convergence_json(){
     --arg chain_id "$CHAIN_ID_EXPECTED" \
     --arg version "$NODE_VERSION" \
     --arg commit "$REPO_COMMIT" \
-    --arg failure_class "$(classify_failure_class)" \
+    --arg failure_class "$(classify_result_failure_class)" \
+    --argjson failure_classes "$(failure_classes_json)" \
     --arg tip "${NODE_TIP[1]:-}" \
     --argjson miner_count "$MINER_COUNT" \
     --argjson accepted_blocks "${ACCEPTED_BLOCKS:-0}" \
@@ -1411,7 +1433,7 @@ write_p2p_convergence_json(){
     --argjson nodes "$(for i in $(seq 1 "$NODE_COUNT"); do
       jq -n --arg node "n$i" --arg chain_id "${NODE_CHAIN_ID[$i]:-}" --argjson height "${NODE_HEIGHT[$i]:-0}" --arg tip "${NODE_TIP[$i]:-}" --argjson peer_count "${NODE_PEERS[$i]:-0}" --argjson orphan_count "${NODE_ORPHAN_COUNT[$i]:-0}" --argjson pending_missing_parents "${NODE_PENDING_MISSING_PARENTS[$i]:-0}" --argjson missing_parents_entries "${NODE_MISSING_PARENTS_COUNT[$i]:-0}" --argjson inv_hashes_requested "${NODE_INV_HASHES_REQUESTED[$i]:-0}" --argjson peer_recovery_success_count "${NODE_PEER_RECOVERY_SUCCESS_COUNT[$i]:-0}" '{node:$node,chain_id:$chain_id,height:$height,tip:$tip,peer_count:$peer_count,orphan_count:$orphan_count,pending_missing_parents:$pending_missing_parents,missing_parents_entries:$missing_parents_entries,inv_hashes_requested:$inv_hashes_requested,peer_recovery_success_count:$peer_recovery_success_count}'
     done | jq -s '.')" \
-    '{chain_id:$chain_id,version:$version,commit:$commit,failure_class:$failure_class,tip:$tip,accepted_blocks:$accepted_blocks,rejected_blocks:$rejected_blocks,gates:{baseline_5n_1m:$gate_5n_1m,intermediate_5n_2m:$gate_5n_2m,stress_5n_4m:$gate_5n_4m},nodes:$nodes}' \
+    '{chain_id:$chain_id,version:$version,commit:$commit,primary_failure_class:$failure_class,failure_class:$failure_class,failure_classes:$failure_classes,tip:$tip,accepted_blocks:$accepted_blocks,rejected_blocks:$rejected_blocks,gates:{baseline_5n_1m:$gate_5n_1m,intermediate_5n_2m:$gate_5n_2m,stress_5n_4m:$gate_5n_4m},nodes:$nodes}' \
     > "$OUT_DIR/p2p_convergence.json"
 }
 
@@ -1498,7 +1520,7 @@ assert_packaged_evidence(){
   if (( MINERS_STARTED == 0 )); then
     jq -e '.mining_semantics.result == "NOT_EXECUTED"' "$OUT_DIR/evidence_manifest.json" >/dev/null 2>&1 || { echo "evidence assertion failed: no miners launched but mining result is not NOT_EXECUTED"; ok=1; }
   fi
-  jq -e '(.result == .overall_result) and (if .result == "PASS" then .failure_class == "none" else true end)' "$OUT_DIR/evidence_manifest.json" >/dev/null 2>&1 || { echo "evidence assertion failed: result/overall/failure_class contradiction"; ok=1; }
+  jq -e '(.result == .overall_result) and (.failure_class == .primary_failure_class) and (.failure_classes | type == "array") and (if .result == "PASS" then .failure_class == "none" and (.failure_classes | length == 0) else (.failure_classes | length > 0) end)' "$OUT_DIR/evidence_manifest.json" >/dev/null 2>&1 || { echo "evidence assertion failed: result/overall/failure_class contradiction"; ok=1; }
   jq -e 'if .storage_consistency_result == "FAIL" then ([.rich_node_state[].storage.coherent_storage_invariant] | any(. == false)) else true end' "$OUT_DIR/evidence_manifest.json" >/dev/null 2>&1 || { echo "evidence assertion failed: endpoint checks true cannot yield storage FAIL"; ok=1; }
   jq -e 'all(.rich_node_state[]; (.storage.memory_count // 0) > 0 and (.storage.persisted_count // 0) > 0)' "$OUT_DIR/evidence_manifest.json" >/dev/null 2>&1 || { echo "evidence assertion failed: memory/persisted values defaulted to zero"; ok=1; }
   jq -e 'all(.rich_node_state[]; ((.state_root // "") != "") and ((.accepted_hash_set_digest // "") != ""))' "$OUT_DIR/evidence_manifest.json" >/dev/null 2>&1 || { echo "evidence assertion failed: completed evidence has blank state root or accepted hash digest"; ok=1; }
@@ -1895,6 +1917,14 @@ if (( TOTAL_MISSING_PARENT_ENTRIES != 0 )); then record_fail "POST_QUIESCENCE_MI
 if (( TOTAL_PENDING_BLOCK_REQUESTS != 0 )); then record_fail "POST_QUIESCENCE_PENDING_BLOCK_REQUESTS" "pending_block_requests is ${TOTAL_PENDING_BLOCK_REQUESTS}"; fi
 if (( POST_DISTINCT_TIPS != 1 )); then record_fail "POST_QUIESCENCE_DISTINCT_TIPS" "distinct_tips is ${POST_DISTINCT_TIPS}"; fi
 if (( POST_WORST_LAG != 0 )); then record_fail "POST_QUIESCENCE_WORST_LAG" "worst_lag_from_max_height is ${POST_WORST_LAG}"; fi
+for i in $(seq 1 "$NODE_COUNT"); do
+  if (( ${NODE_HARNESS_OBSERVED_GAP[$i]:-0} >= 94 )) && [[ "${NODE_SYNC_STATE[$i]:-unknown}" =~ ^(synced|steady)$ ]] && [[ "${NODE_SYNC_OBSERVABILITY_WARNING[$i]:-0}" != "1" ]]; then
+    record_fail "SYNC_OBSERVABILITY_INCOMPLETE_MISSING" "n${i} is ${NODE_HARNESS_OBSERVED_GAP[$i]} blocks behind but reports sync_state=${NODE_SYNC_STATE[$i]} without sync_observability_incomplete warning"
+  fi
+  if [[ -n "${NODE_CANONICAL_NODE_GAP[$i]:-}" ]] && (( ${NODE_CANONICAL_NODE_GAP[$i]:-0} != ${NODE_HARNESS_OBSERVED_GAP[$i]:-0} )); then
+    record_fail "EVIDENCE_CONSISTENCY_SYNC_GAP_MISMATCH" "n${i} canonical_node_gap=${NODE_CANONICAL_NODE_GAP[$i]} harness_observed_gap=${NODE_HARNESS_OBSERVED_GAP[$i]}"
+  fi
+done
 if (( RPC_ALIVE_LISTENER_TIMEOUT_COUNT != 0 )); then record_fail "RPC_ALIVE_LISTENER_TIMEOUT" "RPC_ALIVE_LISTENER_TIMEOUT is ${RPC_ALIVE_LISTENER_TIMEOUT_COUNT}"; fi
 if (( RPC_LIVENESS_TIMEOUT_COUNT != 0 )); then record_fail "RPC_LIVENESS_TIMEOUT" "rpc_liveness_timeout is ${RPC_LIVENESS_TIMEOUT_COUNT}"; fi
 if (( TOTAL_MINING_SUBMIT_BUSY != 0 )); then record_fail "MINING_SUBMIT_BUSY" "submit_busy is ${TOTAL_MINING_SUBMIT_BUSY}"; fi

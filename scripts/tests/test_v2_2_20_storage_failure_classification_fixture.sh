@@ -9,7 +9,9 @@ jq -e '
   .storage_consistency_result == "FAIL" and
   .readiness_result == "FAIL" and
   .overall_result == "FAIL" and
-  .failure_class == "storage_consistency" and
+  .primary_failure_class == "storage_consistency" and
+  .failure_class == .primary_failure_class and
+  .failure_classes == ["storage_consistency","readiness"] and
   .gates.stress_5n_4m != null and
   .gates.intermediate_5n_2m == "NOT_PROVIDED" and
   .distinct_tips == 1 and
