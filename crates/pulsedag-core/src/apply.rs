@@ -73,7 +73,14 @@ pub fn apply_transaction(
             .push(outpoint);
     }
 
-    state.mempool.transactions.remove(&tx.txid);
+    if state.mempool.transactions.remove(&tx.txid).is_some() {
+        state.mempool.first_seen.remove(&tx.txid);
+        state.mempool.counters.confirmed_removed_total = state
+            .mempool
+            .counters
+            .confirmed_removed_total
+            .saturating_add(1);
+    }
     for input in &tx.inputs {
         state.mempool.spent_outpoints.remove(&input.previous_output);
     }

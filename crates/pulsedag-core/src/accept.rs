@@ -531,6 +531,29 @@ pub fn accept_transaction_with_result(
             state.mempool.counters.rejected_total.saturating_add(1);
         return classify_tx_validation_error(err);
     }
+    let incoming_spent = tx.inputs.len();
+    if state
+        .mempool
+        .spent_outpoints
+        .len()
+        .saturating_add(incoming_spent)
+        > state.mempool.max_spent_outpoints
+    {
+        state.mempool.counters.pressure_events_total = state
+            .mempool
+            .counters
+            .pressure_events_total
+            .saturating_add(1);
+        state.mempool.counters.rejected_total =
+            state.mempool.counters.rejected_total.saturating_add(1);
+        return TxAcceptanceResult::Rejected(format!(
+            "mempool spent-outpoint capacity exceeded (used={} incoming={} max={})",
+            state.mempool.spent_outpoints.len(),
+            incoming_spent,
+            state.mempool.max_spent_outpoints
+        ));
+    }
+
     if state.mempool.transactions.len() >= state.mempool.max_transactions {
         state.mempool.counters.pressure_events_total = state
             .mempool
@@ -651,6 +674,9 @@ pub fn accept_transaction_with_result(
             .spent_outpoints
             .insert(input.previous_output.clone());
     }
+    let sequence = state.mempool.next_first_seen;
+    state.mempool.next_first_seen = state.mempool.next_first_seen.saturating_add(1);
+    state.mempool.first_seen.insert(tx.txid.clone(), sequence);
     state.mempool.transactions.insert(tx.txid.clone(), tx);
     state.mempool.counters.accepted_total = state.mempool.counters.accepted_total.saturating_add(1);
     promote_ready_orphans(state, source);

@@ -218,8 +218,13 @@ fn template_ordered_transactions(
     let mut ready = BTreeSet::<(u64, String)>::new();
     for (txid, count) in &remaining_parents {
         if *count == 0 {
-            let fee = txs.get(txid).map(|tx| tx.fee).unwrap_or(0);
-            ready.insert((u64::MAX.saturating_sub(fee), txid.clone()));
+            let first_seen = chain
+                .mempool
+                .first_seen
+                .get(txid)
+                .copied()
+                .unwrap_or(u64::MAX);
+            ready.insert((first_seen, txid.clone()));
         }
     }
 
@@ -234,8 +239,13 @@ fn template_ordered_transactions(
                 if let Some(parent_count) = remaining_parents.get_mut(child) {
                     *parent_count = parent_count.saturating_sub(1);
                     if *parent_count == 0 {
-                        let fee = txs.get(child).map(|tx| tx.fee).unwrap_or(0);
-                        ready.insert((u64::MAX.saturating_sub(fee), child.clone()));
+                        let first_seen = chain
+                            .mempool
+                            .first_seen
+                            .get(child)
+                            .copied()
+                            .unwrap_or(u64::MAX);
+                        ready.insert((first_seen, child.clone()));
                     }
                 }
             }
@@ -244,7 +254,17 @@ fn template_ordered_transactions(
 
     if !txs.is_empty() {
         let mut fallback = txs.into_values().collect::<Vec<_>>();
-        fallback.sort_by(|a, b| b.fee.cmp(&a.fee).then_with(|| a.txid.cmp(&b.txid)));
+        fallback.sort_by_key(|tx| {
+            (
+                chain
+                    .mempool
+                    .first_seen
+                    .get(&tx.txid)
+                    .copied()
+                    .unwrap_or(u64::MAX),
+                tx.txid.clone(),
+            )
+        });
         ordered.extend(fallback);
     }
 

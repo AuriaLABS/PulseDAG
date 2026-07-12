@@ -58,6 +58,37 @@ pub struct MempoolReconcileResult {
     pub kept_txids: Vec<String>,
 }
 
+fn assign_first_seen(txid: &str, state: &mut ChainState) {
+    if state.mempool.first_seen.contains_key(txid) {
+        return;
+    }
+    let sequence = state.mempool.next_first_seen;
+    state.mempool.next_first_seen = state.mempool.next_first_seen.saturating_add(1);
+    state.mempool.first_seen.insert(txid.to_string(), sequence);
+}
+
+pub fn canonical_mempool_txids(state: &ChainState) -> Vec<String> {
+    let mut txids = state
+        .mempool
+        .transactions
+        .keys()
+        .cloned()
+        .collect::<Vec<_>>();
+    txids.sort();
+    txids.sort_by_key(|txid| {
+        (
+            state
+                .mempool
+                .first_seen
+                .get(txid)
+                .copied()
+                .unwrap_or(u64::MAX),
+            txid.clone(),
+        )
+    });
+    txids
+}
+
 fn simulate_mempool_accept(tx: &Transaction, state: &mut ChainState) -> Result<(), PulseError> {
     for input in &tx.inputs {
         if state
@@ -73,6 +104,7 @@ fn simulate_mempool_accept(tx: &Transaction, state: &mut ChainState) -> Result<(
             .insert(input.previous_output.clone());
     }
 
+    assign_first_seen(&tx.txid, state);
     state
         .mempool
         .transactions
@@ -95,10 +127,19 @@ pub fn reconcile_mempool(state: &mut ChainState) -> MempoolReconcileResult {
         };
     }
 
+    let original_first_seen = state.mempool.first_seen.clone();
     let mut txs = std::mem::take(&mut state.mempool.transactions)
         .into_values()
         .collect::<Vec<_>>();
-    txs.sort_by(|a, b| a.txid.cmp(&b.txid));
+    txs.sort_by_key(|tx| {
+        (
+            original_first_seen
+                .get(&tx.txid)
+                .copied()
+                .unwrap_or(u64::MAX),
+            tx.txid.clone(),
+        )
+    });
 
     let mut working = state.clone();
     working.mempool.transactions.clear();
@@ -136,8 +177,19 @@ pub fn reconcile_mempool(state: &mut ChainState) -> MempoolReconcileResult {
     }
 
     let mut rebuilt_mempool = working.mempool;
+    rebuilt_mempool
+        .first_seen
+        .retain(|txid, _| rebuilt_mempool.transactions.contains_key(txid));
     rebuilt_mempool.counters = state.mempool.counters.clone();
     rebuilt_mempool.max_transactions = state.mempool.max_transactions;
+    rebuilt_mempool.max_spent_outpoints = state.mempool.max_spent_outpoints;
+    rebuilt_mempool.next_first_seen = rebuilt_mempool
+        .first_seen
+        .values()
+        .copied()
+        .max()
+        .map(|sequence| sequence.saturating_add(1))
+        .unwrap_or(0);
     rebuilt_mempool.counters.reconcile_removed_total = rebuilt_mempool
         .counters
         .reconcile_removed_total
@@ -248,6 +300,88 @@ mod tests {
         }
         tx.txid = compute_txid(&tx);
         tx
+    }
+
+    #[test]
+    fn default_mempool_bounds_match_private_testnet_policy() {
+        let state = init_chain_state("test".into());
+
+        assert_eq!(state.mempool.max_transactions, 4_096);
+        assert_eq!(state.mempool.max_spent_outpoints, 8_192);
+    }
+
+    #[test]
+    fn spent_outpoint_capacity_rejects_without_mutating_indexes() {
+        let mut state = init_chain_state("test".into());
+        state.mempool.max_spent_outpoints = 1;
+
+        let key = signing_key(42);
+        let address = address_from_public_key(&public_key_hex(&key));
+        let input_a = fund_address(&mut state, "fund-cap-a", 0, address.clone(), 60);
+        let input_b = fund_address(&mut state, "fund-cap-b", 0, address, 70);
+        let accepted = signed_tx(
+            &key,
+            vec![input_a.clone()],
+            vec![TxOutput {
+                address: "pulse1dest-cap-a".into(),
+                amount: 55,
+            }],
+            5,
+            1,
+        );
+        let rejected = signed_tx(
+            &key,
+            vec![input_b.clone()],
+            vec![TxOutput {
+                address: "pulse1dest-cap-b".into(),
+                amount: 65,
+            }],
+            5,
+            2,
+        );
+
+        assert!(accept_transaction(accepted.clone(), &mut state, AcceptSource::Rpc).is_ok());
+        let err = accept_transaction(rejected.clone(), &mut state, AcceptSource::Rpc)
+            .expect_err("spent-outpoint cap should reject the second tracked input");
+
+        assert!(
+            matches!(err, PulseError::InvalidTransaction(reason) if reason.contains("spent-outpoint capacity"))
+        );
+        assert!(state.mempool.transactions.contains_key(&accepted.txid));
+        assert!(!state.mempool.transactions.contains_key(&rejected.txid));
+        assert_eq!(state.mempool.spent_outpoints.len(), 1);
+        assert!(state.mempool.spent_outpoints.contains(&input_a));
+    }
+
+    #[test]
+    fn canonical_mempool_txids_use_first_seen_then_txid() {
+        let mut state = init_chain_state("test".into());
+        let tx_a = Transaction {
+            txid: "tx-a".into(),
+            version: 1,
+            inputs: Vec::new(),
+            outputs: Vec::new(),
+            fee: 0,
+            nonce: 0,
+        };
+        let tx_b = Transaction {
+            txid: "tx-b".into(),
+            ..tx_a.clone()
+        };
+        let tx_c = Transaction {
+            txid: "tx-c".into(),
+            ..tx_a.clone()
+        };
+        state.mempool.transactions.insert(tx_b.txid.clone(), tx_b);
+        state.mempool.transactions.insert(tx_c.txid.clone(), tx_c);
+        state.mempool.transactions.insert(tx_a.txid.clone(), tx_a);
+        state.mempool.first_seen.insert("tx-c".into(), 0);
+        state.mempool.first_seen.insert("tx-a".into(), 1);
+
+        assert_eq!(
+            super::canonical_mempool_txids(&state),
+            vec!["tx-c".to_string(), "tx-a".to_string(), "tx-b".to_string()]
+        );
     }
 
     #[test]
