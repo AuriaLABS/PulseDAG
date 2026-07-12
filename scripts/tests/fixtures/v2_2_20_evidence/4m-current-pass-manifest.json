@@ -1,0 +1,39 @@
+{
+  "git_commit": "115c51bf",
+  "stage": "5N/4M stress",
+  "miner_count": 4,
+  "startup_result": "PASS",
+  "convergence_result": "PASS",
+  "consensus_state_result": "PASS",
+  "storage_consistency_result": "PASS",
+  "readiness_result": "PASS",
+  "overall_result": "PASS",
+  "result": "PASS",
+  "primary_failure_class": "none",
+  "failure_class": "none",
+  "failure_classes": [],
+  "failure_reasons": [],
+  "evidence_consistency_failure_count": 0,
+  "gates": {"baseline_5n_1m":"PASS","intermediate_5n_2m":"PASS","stress_5n_4m":"PASS"},
+  "prior_evidence": {
+    "gate_c": {"result":"PASS","commit":"115c51bf","stage":"5N/1M baseline","manifest_checksum":"sha256:gate-c"},
+    "gate_d": {"result":"PASS","commit":"115c51bf","stage":"5N/2M intermediate","manifest_checksum":"sha256:gate-d"}
+  },
+  "mining": {"templates":1199,"submits":1197,"accepted":986,"rejected":211,"stale_template":211},
+  "mining_semantics": {
+    "local_miner_templates_received": 1199,
+    "local_miner_submits_total": 1197,
+    "local_miner_submits_accepted": 986,
+    "local_miner_submits_rejected": 211,
+    "local_miner_submits_rejected_by_reason": [{"reason":"stale_template","count":211}],
+    "per_miner": [
+      {"miner":"miner-1","submits":300,"accepted":246,"rejected":54},
+      {"miner":"miner-2","submits":299,"accepted":263,"rejected":36},
+      {"miner":"miner-3","submits":299,"accepted":230,"rejected":69},
+      {"miner":"miner-4","submits":299,"accepted":247,"rejected":52}
+    ]
+  },
+  "rich_node_state": [
+    {"node":"n1","height":1199,"selected_tip":"tip-1","state_root":"root-1","accepted_hash_set_digest":"digest-1","sync":{"state":"synced","stage":"steady","canonical_node_gap":0,"harness_observed_gap":0,"sync_observability_incomplete":false},"storage":{"coherent_storage_invariant":true,"memory_count":1199,"persisted_count":1199,"memory_digest":"mem-1","persisted_digest":"store-1","mismatch_source":"none","generation":1199,"digest":"digest-1"},"network_gaps":{"missing_parent_requests_sent":0,"missing_parent_responses_received":0,"pending_block_requests":0,"inv_hashes_requested":0},"storage_gaps":{"storage_only_hashes":[],"memory_only_hashes":[],"mismatch_source":"none"},"correlated_request_counters":{"getblock_requests_sent":0,"getblock_responses_correlated":0,"duplicate_correlated_response_total":0,"unknown_request_response_total":0},"selected_tip_inventory":{"selected_tip":"tip-1","known":true},"selected_segment_session_metrics":{"requested":0,"received":0,"applied":0}}
+  ]
+}

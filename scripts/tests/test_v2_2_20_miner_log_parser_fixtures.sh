@@ -79,3 +79,24 @@ assert_metric "$parsed" local_miner_templates_received 1227
 assert_metric "$parsed" local_miner_submits_total 1227
 assert_metric "$parsed" local_miner_submits_accepted 1033
 assert_metric "$parsed" local_miner_submits_rejected 194
+
+python3 - <<'PY' "$TMP_DIR/current-5n4m.log"
+import sys
+p=sys.argv[1]
+miners=[(300,246,54),(299,263,36),(299,230,69),(299,247,52)]
+with open(p,'w') as f:
+    h=0
+    for m,(submits,accepted,rejected) in enumerate(miners,1):
+        for i in range(submits + (1 if m in (1,2) else 0)):
+            f.write(f"INFO template_received miner={m} block_template_hash=current-{m}-{i}\n")
+        for i in range(accepted):
+            f.write(f"INFO submit_result: accepted=true rejected=false reason_code=none block_hash=current-a-{m}-{i} height={h}\n"); h+=1
+        for i in range(rejected):
+            f.write(f"WARN submit_result: accepted=false rejected=true reason_code=stale_template block_hash=current-r-{m}-{i} height={h}\n"); h+=1
+PY
+parsed="$(run_fixture "$TMP_DIR/current-5n4m.log")"
+assert_metric "$parsed" local_miner_templates_received 1199
+assert_metric "$parsed" local_miner_submits_total 1197
+assert_metric "$parsed" local_miner_submits_accepted 986
+assert_metric "$parsed" local_miner_submits_rejected 211
+printf '%s\n' "$parsed" | jq -eR 'select(startswith("local_miner_submits_rejected_by_reason=")) | sub("^local_miner_submits_rejected_by_reason='"'"'";"") | sub("'"'"'$";"") | fromjson | . == [{"reason":"stale_template","count":211}]' >/dev/null
