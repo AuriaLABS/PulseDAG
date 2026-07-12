@@ -5417,8 +5417,8 @@ mod tests {
 
     fn build_test_chain(chain_id: &str, length: usize) -> pulsedag_core::ChainState {
         use pulsedag_core::{
-            accept_block, build_candidate_block, build_coinbase_transaction, genesis::init_chain_state,
-            pow::dev_mine_header, refresh_block_consensus_ids,
+            accept_block, build_candidate_block, build_coinbase_transaction,
+            genesis::init_chain_state, pow::dev_mine_header, refresh_block_consensus_ids,
             refresh_block_consensus_ids_with_state, AcceptSource,
         };
         let mut state = init_chain_state(chain_id.to_string());
@@ -5442,8 +5442,7 @@ mod tests {
             assert!(mined, "failed to mine block at height {i}");
             block.header = header;
             refresh_block_consensus_ids(&mut block);
-            accept_block(block, &mut state, AcceptSource::LocalMining)
-                .expect("accept mined block");
+            accept_block(block, &mut state, AcceptSource::LocalMining).expect("accept mined block");
         }
         state
     }
@@ -5519,8 +5518,7 @@ mod tests {
             "auto_prune must remove at least one block; got blocks_pruned_total=0"
         );
         assert_eq!(
-            report.retained_storage_hash_digest,
-            report.retained_memory_hash_digest,
+            report.retained_storage_hash_digest, report.retained_memory_hash_digest,
             "retained storage and memory digests must match after auto_prune"
         );
         assert!(
@@ -5591,8 +5589,7 @@ mod tests {
             "restarted node selected tip must match original"
         );
         assert_eq!(
-            restored.dag.ordered_dag_tip,
-            state.dag.ordered_dag_tip,
+            restored.dag.ordered_dag_tip, state.dag.ordered_dag_tip,
             "restarted node ordered DAG tip must match original"
         );
         let tip_hash = chain_best_tip(&restored);
@@ -5622,8 +5619,7 @@ mod tests {
             "no storage-only retained hashes after restart"
         );
         assert_eq!(
-            restart_report.retained_storage_hash_digest,
-            restart_report.retained_memory_hash_digest,
+            restart_report.retained_storage_hash_digest, restart_report.retained_memory_hash_digest,
             "retained digests must match after restart"
         );
 
@@ -5642,7 +5638,10 @@ mod tests {
         let offline_boundary_height = offline_state.dag.best_height;
 
         let report = storage
-            .prune_blocks_with_retained_set(&offline_state, offline_boundary_height.saturating_sub(3))
+            .prune_blocks_with_retained_set(
+                &offline_state,
+                offline_boundary_height.saturating_sub(3),
+            )
             .expect("non-zero prune before offline window");
         assert!(
             report.blocks_pruned_total > 0,
@@ -5651,9 +5650,8 @@ mod tests {
         drop(storage);
 
         use pulsedag_core::{
-            accept_block, build_candidate_block, build_coinbase_transaction,
-            pow::dev_mine_header, refresh_block_consensus_ids,
-            refresh_block_consensus_ids_with_state, AcceptSource,
+            accept_block, build_candidate_block, build_coinbase_transaction, pow::dev_mine_header,
+            refresh_block_consensus_ids, refresh_block_consensus_ids_with_state, AcceptSource,
         };
         let mut network_state = offline_state.clone();
         for i in (offline_boundary_height + 1)..=(offline_boundary_height + 4) {
@@ -5698,13 +5696,11 @@ mod tests {
             "rejoined node selected tip must match network after catch-up"
         );
         assert_eq!(
-            caught_up.dag.ordered_dag_tip,
-            network_state.dag.ordered_dag_tip,
+            caught_up.dag.ordered_dag_tip, network_state.dag.ordered_dag_tip,
             "rejoined node ordered DAG tip must match network"
         );
         assert_eq!(
-            caught_up.dag.best_height,
-            network_state.dag.best_height,
+            caught_up.dag.best_height, network_state.dag.best_height,
             "rejoined node best height must match network"
         );
 
