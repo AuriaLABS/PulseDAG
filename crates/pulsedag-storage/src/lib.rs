@@ -1,4 +1,6 @@
 use std::{
+    collections::hash_map::DefaultHasher,
+    hash::{Hash as StdHash, Hasher},
     sync::{
         atomic::{AtomicU64, Ordering},
         Arc,
@@ -69,10 +71,34 @@ pub struct AcceptedStorageInvariantReport {
     pub staged_hashes_present_in_accepted_storage: Vec<Hash>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RetainedSetReport {
+    pub prune_boundary_height: u64,
+    pub blocks_considered_total: usize,
+    pub blocks_pruned_total: usize,
+    pub selected_blocks_retained: usize,
+    pub side_dag_blocks_retained: usize,
+    pub parent_closure_blocks_retained: usize,
+    pub finality_window_blocks_retained: usize,
+    pub retained_storage_hash_digest: String,
+    pub retained_memory_hash_digest: String,
+    pub storage_only_retained_hashes: Vec<Hash>,
+    pub memory_only_retained_hashes: Vec<Hash>,
+    pub historical_blocks_eligible_for_deletion: Vec<Hash>,
+}
+
 fn invariant_generation(hashes: &[Hash]) -> String {
     let first = hashes.first().map(String::as_str).unwrap_or("-");
     let last = hashes.last().map(String::as_str).unwrap_or("-");
     format!("count:{}:first:{}:last:{}", hashes.len(), first, last)
+}
+
+fn retained_hash_digest(hashes: &BTreeSet<Hash>) -> String {
+    let mut hasher = DefaultHasher::new();
+    for hash in hashes {
+        hash.hash(&mut hasher);
+    }
+    format!("{:016x}", hasher.finish())
 }
 
 impl AcceptedStorageInvariantReport {
@@ -546,7 +572,29 @@ impl Storage {
             .difference(&accepted_hashes)
             .cloned()
             .collect::<Vec<_>>();
-        if !missing.is_empty() {
+        let min_accepted_height = accepted_hashes
+            .iter()
+            .filter_map(|hash| {
+                snapshot
+                    .dag
+                    .blocks
+                    .get(hash)
+                    .map(|block| block.header.height)
+            })
+            .min();
+        let missing_only_below_retained_floor = min_accepted_height
+            .map(|floor| {
+                missing.iter().all(|hash| {
+                    snapshot
+                        .dag
+                        .blocks
+                        .get(hash)
+                        .map(|block| block.header.height < floor)
+                        .unwrap_or(false)
+                })
+            })
+            .unwrap_or(false);
+        if !missing.is_empty() && !missing_only_below_retained_floor {
             STARTUP_STORAGE_RECONCILIATION_FAILED_TOTAL.fetch_add(1, Ordering::Relaxed);
             return Err(PulseError::StorageError(format!(
                 "startup accepted storage reconciliation failed: snapshot references missing accepted block records: {}",
@@ -1742,6 +1790,118 @@ impl Storage {
         Ok(removed)
     }
 
+    pub fn retained_set_report(
+        &self,
+        state: &ChainState,
+        prune_boundary_height: u64,
+    ) -> Result<RetainedSetReport, PulseError> {
+        let storage_blocks = self.list_blocks()?;
+        let storage_hashes = storage_blocks
+            .iter()
+            .map(|block| block.hash.clone())
+            .collect::<BTreeSet<_>>();
+        let finality_window = state
+            .dag
+            .blocks
+            .values()
+            .filter(|block| block.header.height >= prune_boundary_height)
+            .map(|block| block.hash.clone())
+            .collect::<BTreeSet<_>>();
+        let selected = state
+            .dag
+            .selected_chain
+            .iter()
+            .filter(|hash| finality_window.contains(*hash))
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        let side_dag = finality_window
+            .difference(&selected)
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        let mut parent_closure = BTreeSet::new();
+        let mut stack = finality_window.iter().cloned().collect::<Vec<_>>();
+        while let Some(hash) = stack.pop() {
+            if !parent_closure.insert(hash.clone()) {
+                continue;
+            }
+            if let Some(block) = state.dag.blocks.get(&hash) {
+                for parent in &block.header.parents {
+                    if let Some(parent_block) = state.dag.blocks.get(parent) {
+                        parent_closure.insert(parent.clone());
+                        if parent_block.header.height >= prune_boundary_height {
+                            stack.push(parent.clone());
+                        }
+                    }
+                }
+            }
+        }
+        let retained_memory_hashes = finality_window
+            .union(&parent_closure)
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        let retained_storage_hashes = storage_hashes
+            .intersection(&retained_memory_hashes)
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        let historical_blocks_eligible_for_deletion = state
+            .dag
+            .blocks
+            .values()
+            .filter(|block| {
+                block.header.height < prune_boundary_height
+                    && !retained_memory_hashes.contains(&block.hash)
+            })
+            .map(|block| block.hash.clone())
+            .collect::<Vec<_>>();
+        Ok(RetainedSetReport {
+            prune_boundary_height,
+            blocks_considered_total: storage_blocks.len(),
+            blocks_pruned_total: historical_blocks_eligible_for_deletion
+                .iter()
+                .filter(|hash| !storage_hashes.contains(*hash))
+                .count(),
+            selected_blocks_retained: selected.len(),
+            side_dag_blocks_retained: side_dag.len(),
+            parent_closure_blocks_retained: parent_closure.difference(&finality_window).count(),
+            finality_window_blocks_retained: finality_window.len(),
+            retained_storage_hash_digest: retained_hash_digest(&retained_storage_hashes),
+            retained_memory_hash_digest: retained_hash_digest(&retained_memory_hashes),
+            storage_only_retained_hashes: retained_storage_hashes
+                .difference(&retained_memory_hashes)
+                .cloned()
+                .collect(),
+            memory_only_retained_hashes: retained_memory_hashes
+                .difference(&retained_storage_hashes)
+                .cloned()
+                .collect(),
+            historical_blocks_eligible_for_deletion,
+        })
+    }
+
+    pub fn prune_blocks_with_retained_set(
+        &self,
+        state: &ChainState,
+        prune_boundary_height: u64,
+    ) -> Result<RetainedSetReport, PulseError> {
+        let before = self.retained_set_report(state, prune_boundary_height)?;
+        let cf = self
+            .db
+            .cf_handle(ACCEPTED_BLOCKS_CF)
+            .ok_or_else(|| PulseError::StorageError("missing cf accepted blocks".into()))?;
+        let mut pruned = 0usize;
+        for hash in &before.historical_blocks_eligible_for_deletion {
+            if self.get_block(hash)?.is_some() {
+                self.db
+                    .delete_cf(cf, hash.as_bytes())
+                    .map_err(|e| PulseError::StorageError(e.to_string()))?;
+                pruned += 1;
+            }
+        }
+        let mut after = self.retained_set_report(state, prune_boundary_height)?;
+        after.blocks_pruned_total = pruned;
+        Ok(after)
+    }
+
     pub fn append_runtime_event(
         &self,
         level: &str,
@@ -2070,6 +2230,38 @@ mod tests {
             accept_block(block, &mut state, AcceptSource::LocalMining).expect("accept mined block");
         }
         state
+    }
+
+    fn persist_all_blocks(storage: &Storage, state: &pulsedag_core::ChainState) {
+        let mut blocks: Vec<_> = state.dag.blocks.values().cloned().collect();
+        blocks.sort_by_key(|block| block.header.height);
+        for block in blocks {
+            storage.persist_block(&block).expect("persist block");
+        }
+    }
+
+    fn append_test_block(
+        state: &mut pulsedag_core::ChainState,
+        parents: Vec<Hash>,
+        height: u64,
+    ) -> Block {
+        let coinbase_nonce = height
+            .saturating_mul(1_000)
+            .saturating_add(state.dag.blocks.len() as u64);
+        let mut block = build_candidate_block(
+            parents,
+            height,
+            1,
+            vec![build_coinbase_transaction("miner", 50, coinbase_nonce)],
+        );
+        refresh_block_consensus_ids_with_state(&mut block, state)
+            .expect("prepare state root for test block");
+        let (header, mined, _, _) = dev_mine_header(block.header.clone(), 25_000);
+        assert!(mined, "failed to mine test block at height {height}");
+        block.header = header;
+        refresh_block_consensus_ids(&mut block);
+        accept_block(block.clone(), state, AcceptSource::LocalMining).expect("accept block");
+        block
     }
 
     #[test]
@@ -3491,6 +3683,220 @@ mod tests {
             .prune_blocks_below_height(plan.effective_keep_from_height)
             .expect("prune with unmodified keep_from");
         assert!(removed > 0);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn non_zero_selected_chain_pruning_reports_retained_set_metrics() {
+        let path = temp_db_path("non-zero-retained-prune");
+        let storage = Storage::open(&path).expect("open storage");
+        let state = build_linear_chain("testnet", 10);
+        persist_all_blocks(&storage, &state);
+        storage
+            .persist_chain_state(&state)
+            .expect("persist selected snapshot state");
+
+        let report = storage
+            .prune_blocks_with_retained_set(&state, 8)
+            .expect("prune with retained-set model");
+
+        assert!(
+            report.blocks_pruned_total > 0,
+            "pruning validation must fail closed if all attempted cycles report pruned=0"
+        );
+        assert_eq!(report.prune_boundary_height, 8);
+        assert_eq!(report.selected_blocks_retained, 3);
+        assert_eq!(report.finality_window_blocks_retained, 3);
+        assert_eq!(
+            report.retained_storage_hash_digest,
+            report.retained_memory_hash_digest
+        );
+        assert!(report.storage_only_retained_hashes.is_empty());
+        assert!(report.memory_only_retained_hashes.is_empty());
+
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn side_dag_and_parent_closure_are_retained_inside_finality_window() {
+        let path = temp_db_path("side-dag-retained");
+        let storage = Storage::open(&path).expect("open storage");
+        let mut state = build_linear_chain("testnet", 6);
+        let parent_at_height_four = state
+            .dag
+            .blocks
+            .values()
+            .find(|block| block.header.height == 4)
+            .expect("height four parent")
+            .hash
+            .clone();
+        let mut side = build_candidate_block(
+            vec![parent_at_height_four.clone()],
+            5,
+            1,
+            vec![build_coinbase_transaction("side-miner", 50, 5_999)],
+        );
+        let (header, mined, _, _) = dev_mine_header(side.header.clone(), 25_000);
+        assert!(mined, "failed to mine side DAG block");
+        side.header = header;
+        refresh_block_consensus_ids(&mut side);
+        state
+            .dag
+            .children
+            .entry(parent_at_height_four.clone())
+            .or_default()
+            .push(side.hash.clone());
+        state.dag.blocks.insert(side.hash.clone(), side.clone());
+        state.dag.tips.insert(side.hash.clone());
+        persist_all_blocks(&storage, &state);
+        storage
+            .persist_chain_state(&state)
+            .expect("persist selected snapshot state");
+
+        let report = storage
+            .prune_blocks_with_retained_set(&state, 5)
+            .expect("prune with side DAG retained");
+
+        assert!(report.blocks_pruned_total > 0);
+        assert!(report.side_dag_blocks_retained >= 1);
+        assert!(report.parent_closure_blocks_retained >= 1);
+        assert!(storage.get_block(&side.hash).expect("read side").is_some());
+        assert!(storage
+            .get_block(&parent_at_height_four)
+            .expect("read parent closure")
+            .is_some());
+        assert_eq!(
+            report.retained_storage_hash_digest,
+            report.retained_memory_hash_digest
+        );
+
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn acceptance_racing_prune_keeps_concurrent_child_parent_visible() {
+        let path = temp_db_path("accept-racing-prune");
+        let storage = Storage::open(&path).expect("open storage");
+        let mut state = build_linear_chain("testnet", 7);
+        let race_parent_parent = best_tip_hash(&state);
+        let race_parent = append_test_block(&mut state, vec![race_parent_parent], 8);
+        let child = append_test_block(&mut state, vec![race_parent.hash.clone()], 9);
+        persist_all_blocks(&storage, &state);
+        storage
+            .persist_chain_state(&state)
+            .expect("persist selected snapshot state");
+
+        let report = storage
+            .prune_blocks_with_retained_set(&state, 8)
+            .expect("prune around accepted block");
+
+        assert!(report.blocks_pruned_total > 0);
+        assert!(storage
+            .get_block(&race_parent.hash)
+            .expect("read race parent")
+            .is_some());
+        assert!(storage
+            .get_block(&child.hash)
+            .expect("read child")
+            .is_some());
+        assert!(report.memory_only_retained_hashes.is_empty());
+        assert_eq!(
+            report.retained_storage_hash_digest,
+            report.retained_memory_hash_digest
+        );
+
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn restart_from_snapshot_delta_after_non_zero_prune_matches_tips_and_state_root() {
+        let path = temp_db_path("restart-after-non-zero-prune");
+        let storage = Storage::open(&path).expect("open storage");
+        let state = build_linear_chain("testnet", 9);
+        persist_all_blocks(&storage, &state);
+        storage
+            .persist_chain_state(&state)
+            .expect("persist selected snapshot state");
+
+        let report = storage
+            .prune_blocks_with_retained_set(&state, 7)
+            .expect("non-zero prune");
+        assert!(report.blocks_pruned_total > 0);
+        drop(storage);
+
+        let restarted = Storage::open(&path).expect("restart storage");
+        let restored = restarted
+            .replay_from_validated_snapshot_and_delta(Some("testnet"))
+            .expect("restart from snapshot+delta");
+        let restored_tip = best_tip_hash(&restored);
+        assert_eq!(restored_tip, best_tip_hash(&state));
+        assert_eq!(restored.dag.ordered_dag_tip, state.dag.ordered_dag_tip);
+        assert_eq!(
+            restored
+                .dag
+                .blocks
+                .get(&restored_tip)
+                .map(|block| block.header.state_root.clone()),
+            state
+                .dag
+                .blocks
+                .get(&best_tip_hash(&state))
+                .map(|block| block.header.state_root.clone())
+        );
+        let restart_report = restarted
+            .retained_set_report(&state, 7)
+            .expect("retained report after restart");
+        assert!(restart_report.memory_only_retained_hashes.is_empty());
+        assert!(restart_report.storage_only_retained_hashes.is_empty());
+
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn offline_catch_up_rejoin_converges_after_retained_segment_recovery() {
+        let path = temp_db_path("offline-rejoin-retained-segment");
+        let storage = Storage::open(&path).expect("open storage");
+        let offline_state = build_linear_chain("testnet", 6);
+        persist_all_blocks(&storage, &offline_state);
+        storage
+            .persist_chain_state(&offline_state)
+            .expect("persist offline snapshot state");
+        let report = storage
+            .prune_blocks_with_retained_set(&offline_state, 5)
+            .expect("non-zero prune before offline window");
+        assert!(report.blocks_pruned_total > 0);
+        drop(storage);
+
+        let mut network_state = offline_state.clone();
+        let parent = best_tip_hash(&network_state);
+        append_test_block(&mut network_state, vec![parent], 7);
+        let parent = best_tip_hash(&network_state);
+        append_test_block(&mut network_state, vec![parent], 8);
+
+        let rejoined = Storage::open(&path).expect("restart offline node");
+        for block in network_state
+            .dag
+            .blocks
+            .values()
+            .filter(|block| block.header.height > offline_state.dag.best_height)
+        {
+            rejoined
+                .persist_block(block)
+                .expect("selected-segment recovery persists catch-up block");
+        }
+        rejoined
+            .persist_chain_state(&network_state)
+            .expect("selected-tip inventory converged snapshot");
+        let caught_up = rejoined
+            .replay_from_validated_snapshot_and_delta(Some("testnet"))
+            .expect("replay after rejoin");
+
+        assert_eq!(best_tip_hash(&caught_up), best_tip_hash(&network_state));
+        assert_eq!(
+            caught_up.dag.ordered_dag_tip,
+            network_state.dag.ordered_dag_tip
+        );
+
         let _ = std::fs::remove_dir_all(path);
     }
 

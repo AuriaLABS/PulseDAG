@@ -4514,8 +4514,11 @@ async fn main() -> Result<()> {
                             .unwrap_or_else(|| "unavailable".to_string());
                         let before_publish_generation = chain.read().await.chain_state_generation;
 
-                        match storage.prune_blocks_below_height(keep_from_height) {
-                            Ok(pruned) => {
+                        match storage
+                            .prune_blocks_with_retained_set(&chain_snapshot, keep_from_height)
+                        {
+                            Ok(retained_report) => {
+                                let pruned = retained_report.blocks_pruned_total;
                                 match storage
                                     .replay_from_validated_snapshot_and_delta(Some(&chain_id))
                                 {
@@ -4523,20 +4526,29 @@ async fn main() -> Result<()> {
                                         let after_snapshot = chain.read().await.clone();
                                         let after_generation =
                                             after_snapshot.chain_state_generation;
-                                        let after_invariants = storage
-                                            .verify_accepted_storage_invariants(&after_snapshot)
+                                        let after_retained_report = storage
+                                            .retained_set_report(&after_snapshot, keep_from_height)
                                             .ok();
-                                        let after_memory_digest = after_invariants
+                                        let after_memory_digest = after_retained_report
                                             .as_ref()
-                                            .map(|report| report.memory_generation.clone())
+                                            .map(|report| {
+                                                report.retained_memory_hash_digest.clone()
+                                            })
                                             .unwrap_or_else(|| "unavailable".to_string());
-                                        let after_storage_digest = after_invariants
+                                        let after_storage_digest = after_retained_report
                                             .as_ref()
-                                            .map(|report| report.storage_generation.clone())
+                                            .map(|report| {
+                                                report.retained_storage_hash_digest.clone()
+                                            })
                                             .unwrap_or_else(|| "unavailable".to_string());
-                                        let invariant_ok = after_invariants
+                                        let invariant_ok = after_retained_report
                                             .as_ref()
-                                            .map(|report| report.is_ok())
+                                            .map(|report| {
+                                                report.storage_only_retained_hashes.is_empty()
+                                                    && report.memory_only_retained_hashes.is_empty()
+                                                    && report.retained_storage_hash_digest
+                                                        == report.retained_memory_hash_digest
+                                            })
                                             .unwrap_or(false);
                                         if !invariant_ok {
                                             warn!(
@@ -4564,6 +4576,26 @@ async fn main() -> Result<()> {
                                                 .ok()
                                                 .flatten()
                                                 .or(Some(now));
+                                            rt.prune_boundary_height = Some(keep_from_height);
+                                            rt.blocks_considered_total =
+                                                retained_report.blocks_considered_total as u64;
+                                            rt.blocks_pruned_total = rt
+                                                .blocks_pruned_total
+                                                .saturating_add(pruned as u64);
+                                            rt.selected_blocks_retained =
+                                                retained_report.selected_blocks_retained as u64;
+                                            rt.side_dag_blocks_retained =
+                                                retained_report.side_dag_blocks_retained as u64;
+                                            rt.parent_closure_blocks_retained = retained_report
+                                                .parent_closure_blocks_retained
+                                                as u64;
+                                            rt.finality_window_blocks_retained = retained_report
+                                                .finality_window_blocks_retained
+                                                as u64;
+                                            rt.retained_storage_hash_digest =
+                                                Some(after_storage_digest.clone());
+                                            rt.retained_memory_hash_digest =
+                                                Some(after_memory_digest.clone());
                                         }
                                         info!(
                                             live_generation_at_capture = capture_generation,

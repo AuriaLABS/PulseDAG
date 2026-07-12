@@ -1089,6 +1089,24 @@ pub struct NodeRuntimeStats {
     pub last_snapshot_unix: Option<u64>,
     pub last_prune_height: Option<u64>,
     pub last_prune_unix: Option<u64>,
+    #[serde(default)]
+    pub prune_boundary_height: Option<u64>,
+    #[serde(default)]
+    pub blocks_considered_total: u64,
+    #[serde(default)]
+    pub blocks_pruned_total: u64,
+    #[serde(default)]
+    pub selected_blocks_retained: u64,
+    #[serde(default)]
+    pub side_dag_blocks_retained: u64,
+    #[serde(default)]
+    pub parent_closure_blocks_retained: u64,
+    #[serde(default)]
+    pub finality_window_blocks_retained: u64,
+    #[serde(default)]
+    pub retained_storage_hash_digest: Option<String>,
+    #[serde(default)]
+    pub retained_memory_hash_digest: Option<String>,
     pub sync_pipeline: SyncPipelineStatus,
 }
 
