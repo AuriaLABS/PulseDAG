@@ -303,12 +303,13 @@ struct SelectedSegmentSession {
     accepted_applied_hashes: HashSet<String>,
     current_chunk: Vec<String>,
     locator_fingerprint: String,
-    started_at_unix: u64,
+    _started_at_unix: u64,
     updated_at_unix: u64,
     state: SelectedSegmentSessionState,
 }
 
 impl SelectedSegmentSession {
+    #[allow(clippy::too_many_arguments)]
     fn new(
         session_id: u64,
         peer_id: String,
@@ -343,7 +344,7 @@ impl SelectedSegmentSession {
             accepted_applied_hashes: HashSet::new(),
             current_chunk: Vec::new(),
             locator_fingerprint: locator.join(","),
-            started_at_unix: now,
+            _started_at_unix: now,
             updated_at_unix: now,
             state: SelectedSegmentSessionState::RequestingHeaders,
         })

@@ -1303,15 +1303,28 @@ mod tests {
     #[test]
     fn validate_block_accepts_coinbase_reward_with_fees() {
         let mut state = init_chain_state("test".to_string());
-        let (key, outpoint) = fund_signing_key(&mut state, 14, "fund-fee-reward", 0, 100);
-        let fee_tx = signed_tx(&key, vec![outpoint], vec![output("receiver", 80)], 20, 1);
-        let parents = vec![state.dag.genesis_hash.clone()];
+        let key = signing_key(14);
+        let funding_address = address_from_public_key(&public_key_hex(&key));
+        let mut funding_block = build_candidate_block(
+            vec![state.dag.genesis_hash.clone()],
+            1,
+            1,
+            vec![build_coinbase_transaction(&funding_address, 50, 102)],
+        );
+        refresh_block_consensus_ids_with_state(&mut funding_block, &state).unwrap();
+        apply_block(&funding_block, &mut state).unwrap();
+        let outpoint = OutPoint {
+            txid: funding_block.transactions[0].txid.clone(),
+            index: 0,
+        };
+        let fee_tx = signed_tx(&key, vec![outpoint], vec![output("receiver", 30)], 20, 1);
+        let parents = vec![funding_block.hash.clone()];
         let mut block = build_candidate_block(
             parents,
-            1,
+            2,
             1,
             vec![
-                build_coinbase_transaction("miner1", block_subsidy(1) + 20, 102),
+                build_coinbase_transaction("miner1", block_subsidy(2) + 20, 103),
                 fee_tx,
             ],
         );
@@ -1398,14 +1411,12 @@ mod tests {
     #[test]
     fn validate_block_accepts_valid_multi_parent_block() {
         let mut state = init_chain_state("test".to_string());
-        let mut parent = structurally_valid_block(&state);
-        parent.hash = "parent-block".to_string();
-        parent.header.timestamp = current_ts();
-        state.dag.blocks.insert(parent.hash.clone(), parent.clone());
+        let parent = structurally_valid_block(&state);
+        apply_block(&parent, &mut state).unwrap();
 
         let parents = vec![state.dag.genesis_hash.clone(), parent.hash.clone()];
         let mut block = build_candidate_block(parents, 2, 1, vec![coinbase(2)]);
-        block.header.timestamp = parent.header.timestamp;
+        block.header.timestamp = parent.header.timestamp + 1;
         refresh_block_consensus_ids_with_state(&mut block, &state).unwrap();
 
         assert!(validate_block(&block, &state).is_ok());
