@@ -1303,15 +1303,31 @@ mod tests {
     #[test]
     fn validate_block_accepts_coinbase_reward_with_fees() {
         let mut state = init_chain_state("test".to_string());
-        let (key, outpoint) = fund_signing_key(&mut state, 14, "fund-fee-reward", 0, 100);
-        let fee_tx = signed_tx(&key, vec![outpoint], vec![output("receiver", 80)], 20, 1);
-        let parents = vec![state.dag.genesis_hash.clone()];
+        // Fund the signing key via a properly applied block so the UTXO is in the ancestor chain.
+        let key = signing_key(14);
+        let miner_address = address_from_public_key(&public_key_hex(&key));
+        // Funding coinbase must not exceed block_subsidy(1) = 50.
+        let funding_coinbase = build_coinbase_transaction(&miner_address, block_subsidy(1), 14);
+        let funding_outpoint = OutPoint {
+            txid: funding_coinbase.txid.clone(),
+            index: 0,
+        };
+        let mut funding_block =
+            build_candidate_block(vec![state.dag.genesis_hash.clone()], 1, 1, vec![
+                funding_coinbase,
+            ]);
+        refresh_block_consensus_ids_with_state(&mut funding_block, &state).unwrap();
+        apply_block(&funding_block, &mut state).unwrap();
+
+        // fee_tx spends the full 50-unit coinbase: 30 to receiver + fee 20.
+        let fee_tx =
+            signed_tx(&key, vec![funding_outpoint], vec![output("receiver", 30)], 20, 1);
         let mut block = build_candidate_block(
-            parents,
-            1,
+            vec![funding_block.hash.clone()],
+            2,
             1,
             vec![
-                build_coinbase_transaction("miner1", block_subsidy(1) + 20, 102),
+                build_coinbase_transaction("miner1", block_subsidy(2) + 20, 102),
                 fee_tx,
             ],
         );
@@ -1398,14 +1414,27 @@ mod tests {
     #[test]
     fn validate_block_accepts_valid_multi_parent_block() {
         let mut state = init_chain_state("test".to_string());
-        let mut parent = structurally_valid_block(&state);
-        parent.hash = "parent-block".to_string();
-        parent.header.timestamp = current_ts();
-        state.dag.blocks.insert(parent.hash.clone(), parent.clone());
+        // Build two concurrent blocks at height 1 (both before either is applied, so each
+        // uses the genesis-only parent context for its state root).
+        let parent_a = structurally_valid_block(&state);
+        let mut parent_b =
+            build_candidate_block(vec![state.dag.genesis_hash.clone()], 1, 1, vec![
+                coinbase(99),
+            ]);
+        refresh_block_consensus_ids_with_state(&mut parent_b, &state).unwrap();
+        // Apply both; legacy UTXO rebuild selects one as the chain tip.
+        apply_block(&parent_a, &mut state).unwrap();
+        apply_block(&parent_b, &mut state).unwrap();
 
-        let parents = vec![state.dag.genesis_hash.clone(), parent.hash.clone()];
-        let mut block = build_candidate_block(parents, 2, 1, vec![coinbase(2)]);
-        block.header.timestamp = parent.header.timestamp;
+        // Build a height-2 block with both height-1 blocks as parents.
+        let ts = parent_a.header.timestamp.max(parent_b.header.timestamp);
+        let mut block = build_candidate_block(
+            vec![parent_a.hash.clone(), parent_b.hash.clone()],
+            2,
+            1,
+            vec![coinbase(2)],
+        );
+        block.header.timestamp = ts;
         refresh_block_consensus_ids_with_state(&mut block, &state).unwrap();
 
         assert!(validate_block(&block, &state).is_ok());
