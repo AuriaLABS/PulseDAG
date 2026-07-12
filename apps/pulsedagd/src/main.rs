@@ -66,12 +66,16 @@ struct FinalQuiescenceCleanupResult {
     quarantined_missing_parent_entries: usize,
 }
 
-fn run_final_quiescence_orphan_cleanup(
+fn run_final_quiescence_orphan_cleanup<F>(
     chain: &mut pulsedag_core::ChainState,
     now_ms: u64,
     no_progress_ms: u64,
     limit: usize,
-) -> FinalQuiescenceCleanupResult {
+    mut accepted_storage_contains: F,
+) -> FinalQuiescenceCleanupResult
+where
+    F: FnMut(&pulsedag_core::Hash) -> Result<Option<u64>, pulsedag_core::PulseError>,
+{
     if chain.orphan_blocks.is_empty() || limit == 0 {
         return FinalQuiescenceCleanupResult {
             active_missing_parent_entries: chain.orphan_parent_index.len(),
@@ -90,12 +94,19 @@ fn run_final_quiescence_orphan_cleanup(
 
     pulsedag_core::rebuild_orphan_parent_index(chain);
     let first = pulsedag_core::adopt_ready_orphans_with_result(chain, AcceptSource::P2p, None);
-    let residual = pulsedag_core::terminalize_residual_waiting_missing_parents(
+    let residual = match pulsedag_core::terminalize_residual_waiting_missing_parents_guarded(
         chain,
         now_ms,
         no_progress_ms,
         limit,
-    );
+        &mut accepted_storage_contains,
+    ) {
+        Ok(residual) => residual,
+        Err(e) => {
+            warn!(error = %e, "accepted_state_memory_loss prevented final-quiescence terminalization");
+            pulsedag_core::ResidualMissingParentTerminalResult::default()
+        }
+    };
     let pruned_terminal_missing_parent_entries =
         pulsedag_core::prune_historical_terminal_missing_parents(
             chain,
@@ -1760,15 +1771,22 @@ async fn main() -> Result<()> {
                                     pulsedag_core::DEFAULT_ORPHAN_MAX_AGE_MS,
                                     ORPHAN_RECOVERY_REVALIDATE_EVICT_LIMIT,
                                 );
-                                let residual =
-                                    pulsedag_core::terminalize_residual_waiting_missing_parents(
-                                        &mut guard,
-                                        now_millis(),
-                                        pulsedag_core::DEFAULT_ORPHAN_MAX_AGE_MS,
-                                        ORPHAN_RECOVERY_REVALIDATE_EVICT_LIMIT,
-                                    );
-                                residual_waiting_terminal = residual.transitioned_parents;
-                                residual_waiting_evicted = residual.evicted_orphans;
+                                let residual = pulsedag_core::terminalize_residual_waiting_missing_parents_guarded(
+                                    &mut guard,
+                                    now_millis(),
+                                    pulsedag_core::DEFAULT_ORPHAN_MAX_AGE_MS,
+                                    ORPHAN_RECOVERY_REVALIDATE_EVICT_LIMIT,
+                                    |hash| storage.get_block(hash).map(|block| block.map(|b| b.header.height)),
+                                );
+                                match residual {
+                                    Ok(residual) => {
+                                        residual_waiting_terminal = residual.transitioned_parents;
+                                        residual_waiting_evicted = residual.evicted_orphans;
+                                    }
+                                    Err(e) => {
+                                        warn!(error = %e, "accepted_state_memory_loss prevented orphan-recovery terminalization");
+                                    }
+                                }
                                 if evicted > 0 || residual_waiting_terminal > 0 {
                                     match storage.persist_chain_state(&guard) {
                                         Ok(()) => {}
@@ -4277,6 +4295,11 @@ async fn main() -> Result<()> {
                                 now.saturating_mul(1_000),
                                 FINAL_QUIESCENCE_NO_PROGRESS_SECS.saturating_mul(1_000),
                                 FINAL_QUIESCENCE_CLEANUP_LIMIT,
+                                |hash| {
+                                    storage
+                                        .get_block(hash)
+                                        .map(|block| block.map(|b| b.header.height))
+                                },
                             );
                             if cleanup.reprocess_attempts > 0
                                 || cleanup.reprocess_success > 0
@@ -4432,19 +4455,63 @@ async fn main() -> Result<()> {
                             continue;
                         }
 
+                        let capture_generation = chain_snapshot.chain_state_generation;
+                        let before_invariants = storage
+                            .verify_accepted_storage_invariants(&chain_snapshot)
+                            .ok();
+                        let before_memory_digest = before_invariants
+                            .as_ref()
+                            .map(|report| report.memory_generation.clone())
+                            .unwrap_or_else(|| "unavailable".to_string());
+                        let before_storage_digest = before_invariants
+                            .as_ref()
+                            .map(|report| report.storage_generation.clone())
+                            .unwrap_or_else(|| "unavailable".to_string());
+                        let before_publish_generation = chain.read().await.chain_state_generation;
+
                         match storage.prune_blocks_below_height(keep_from_height) {
                             Ok(pruned) => {
                                 match storage
                                     .replay_from_validated_snapshot_and_delta(Some(&chain_id))
                                 {
                                     Ok(rebuilt) => {
-                                        {
-                                            let mut chain_guard = chain.write().await;
-                                            *chain_guard = rebuilt.clone();
+                                        let after_snapshot = chain.read().await.clone();
+                                        let after_generation =
+                                            after_snapshot.chain_state_generation;
+                                        let after_invariants = storage
+                                            .verify_accepted_storage_invariants(&after_snapshot)
+                                            .ok();
+                                        let after_memory_digest = after_invariants
+                                            .as_ref()
+                                            .map(|report| report.memory_generation.clone())
+                                            .unwrap_or_else(|| "unavailable".to_string());
+                                        let after_storage_digest = after_invariants
+                                            .as_ref()
+                                            .map(|report| report.storage_generation.clone())
+                                            .unwrap_or_else(|| "unavailable".to_string());
+                                        let invariant_ok = after_invariants
+                                            .as_ref()
+                                            .map(|report| report.is_ok())
+                                            .unwrap_or(false);
+                                        if !invariant_ok {
+                                            warn!(
+                                                capture_generation,
+                                                captured_snapshot_generation = rebuilt.chain_state_generation,
+                                                before_publish_generation,
+                                                after_generation,
+                                                before_memory_digest = %before_memory_digest,
+                                                after_memory_digest = %after_memory_digest,
+                                                before_storage_digest = %before_storage_digest,
+                                                after_storage_digest = %after_storage_digest,
+                                                "auto prune invariant violation after durable prune; live ChainState was not overwritten"
+                                            );
+                                            let _ = storage.append_runtime_event("error", "prune_auto_invariant_failed", "auto prune invariant failed after durable prune; live ChainState was not overwritten");
+                                            continue;
                                         }
                                         {
                                             let mut rt = runtime.write().await;
-                                            rt.last_prune_height = Some(rebuilt.dag.best_height);
+                                            rt.last_prune_height =
+                                                Some(after_snapshot.dag.best_height);
                                             rt.last_prune_unix = Some(now);
                                             rt.last_snapshot_height = Some(rebuilt.dag.best_height);
                                             rt.last_snapshot_unix = storage
@@ -4454,12 +4521,20 @@ async fn main() -> Result<()> {
                                                 .or(Some(now));
                                         }
                                         info!(
-                                            best_height = rebuilt.dag.best_height,
+                                            live_generation_at_capture = capture_generation,
+                                            captured_snapshot_generation = rebuilt.chain_state_generation,
+                                            live_generation_before_publish = before_publish_generation,
+                                            live_generation_after = after_generation,
+                                            before_memory_digest = %before_memory_digest,
+                                            after_memory_digest = %after_memory_digest,
+                                            before_storage_digest = %before_storage_digest,
+                                            after_storage_digest = %after_storage_digest,
+                                            best_height = after_snapshot.dag.best_height,
                                             pruned,
                                             keep_from_height,
-                                            "auto prune completed and snapshot+delta verified"
+                                            "auto prune completed and snapshot+delta verified without publishing captured snapshot to live ChainState"
                                         );
-                                        let _ = storage.append_runtime_event("info", "prune_auto", &format!("auto prune removed {} blocks below {}; snapshot+delta verified at height {}", pruned, keep_from_height, rebuilt.dag.best_height));
+                                        let _ = storage.append_runtime_event("info", "prune_auto", &format!("auto prune removed {} blocks below {}; snapshot+delta verified at live height {}; live ChainState not overwritten", pruned, keep_from_height, after_snapshot.dag.best_height));
                                     }
                                     Err(e) => {
                                         warn!(error = %e, best_height, keep_from_height, "auto prune snapshot+delta verification failed");
@@ -4858,7 +4933,8 @@ mod tests {
             *received_at = 1_000;
         }
 
-        let cleanup = run_final_quiescence_orphan_cleanup(&mut chain, 60_000, 45_000, 8);
+        let cleanup =
+            run_final_quiescence_orphan_cleanup(&mut chain, 60_000, 45_000, 8, |_| Ok(None));
 
         assert_eq!(cleanup.terminalized_missing_parents, 1);
         assert_eq!(cleanup.quarantined_missing_parents, 1);
@@ -4877,13 +4953,61 @@ mod tests {
             *received_at = 50_000;
         }
 
-        let cleanup = run_final_quiescence_orphan_cleanup(&mut chain, 60_000, 45_000, 8);
+        let cleanup =
+            run_final_quiescence_orphan_cleanup(&mut chain, 60_000, 45_000, 8, |_| Ok(None));
 
         assert_eq!(cleanup.terminalized_missing_parents, 0);
         assert_eq!(cleanup.active_missing_parent_entries, 1);
         assert_eq!(pulsedag_core::pending_missing_parent_count(&chain), 1);
         assert!(chain.orphan_parent_index.contains_key("missing-fresh"));
         assert!(chain.terminal_missing_parents.is_empty());
+    }
+
+    #[test]
+    fn final_quiescence_cleanup_guards_evidence_hashes_from_terminalization() {
+        let evidence = [
+            (
+                "2c70391875090605fab8c25be0259d21872937b3e3ab1c53715e25632b912c21",
+                611,
+            ),
+            (
+                "f2b549562f1b13972e1d22b25718d30a34ed637e59a5726890c2545cca9d6292",
+                610,
+            ),
+            (
+                "aa48c0b40f90f1834a666e8447093a6e4fb2963b761758cecaa4679a5fed23e1",
+                610,
+            ),
+            (
+                "aa48c0b40f90f1834a666e8447093a6e4fb2963b761758cecaa4679a5fed23e1",
+                610,
+            ),
+        ];
+
+        for (idx, (hash, height)) in evidence.into_iter().enumerate() {
+            let mut chain = pulsedag_core::genesis::init_chain_state("test-chain".to_string());
+            let orphan = test_orphan(&format!("evidence-child-{idx}"), vec![hash], height + 1);
+            pulsedag_core::queue_orphan_block(&mut chain, orphan, vec![hash.to_string()]);
+            for received_at in chain.orphan_received_at_ms.values_mut() {
+                *received_at = 1_000;
+            }
+
+            let cleanup =
+                run_final_quiescence_orphan_cleanup(&mut chain, 60_000, 45_000, 8, |candidate| {
+                    if candidate == hash {
+                        Ok(Some(height))
+                    } else {
+                        Ok(None)
+                    }
+                });
+
+            assert_eq!(cleanup.terminalized_missing_parents, 0);
+            assert_eq!(cleanup.active_missing_parent_entries, 1);
+            assert!(chain.terminal_missing_parents.is_empty());
+            assert_eq!(chain.accepted_hash_lost_from_memory_total, 1);
+            assert_eq!(chain.last_lost_accepted_hash.as_deref(), Some(hash));
+            assert_eq!(chain.last_lost_accepted_height, Some(height));
+        }
     }
 
     #[test]
@@ -4898,7 +5022,8 @@ mod tests {
             *received_at = 1_000;
         }
 
-        let cleanup = run_final_quiescence_orphan_cleanup(&mut chain, 60_000, 45_000, 8);
+        let cleanup =
+            run_final_quiescence_orphan_cleanup(&mut chain, 60_000, 45_000, 8, |_| Ok(None));
 
         assert!(cleanup.reprocess_attempts >= 1);
         assert_eq!(cleanup.terminalized_missing_parents, 1);
