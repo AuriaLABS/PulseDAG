@@ -7,13 +7,18 @@ on:
         description: Exact commit/ref to validate; blank uses the triggering SHA
         required: false
         type: string
+      test_compile_timeout_minutes:
+        description: Maximum runtime for compiling all workspace tests without running them
+        required: false
+        default: '30'
+        type: string
       package_test_timeout_minutes:
-        description: Maximum runtime for each workspace package test suite
+        description: Maximum execution runtime for each already-compiled workspace package test suite
         required: false
         default: '10'
         type: string
       p2p_real_runtime_test_timeout_seconds:
-        description: Maximum runtime for the isolated real-swarm P2P initialization test
+        description: Maximum execution runtime for the already-compiled isolated real-swarm P2P test
         required: false
         default: '120'
         type: string
@@ -37,6 +42,10 @@ on:
       candidate_sha:
         description: Exact commit/ref to validate
         required: true
+        type: string
+      test_compile_timeout_minutes:
+        required: false
+        default: '30'
         type: string
       package_test_timeout_minutes:
         required: false
@@ -72,7 +81,7 @@ env:
 
 jobs:
   workspace:
-    name: fmt / check / package tests / clippy
+    name: fmt / check / compile tests / package tests / clippy
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     steps:
@@ -122,8 +131,21 @@ jobs:
           timeout --signal=TERM --kill-after=30s "${CHECK_TIMEOUT_MINUTES}m" \
             cargo check --workspace --locked 2>&1 | tee ci-evidence/workspace/cargo-check.log
 
-      - name: cargo test per workspace package with timeout diagnostics
+      - name: Compile all workspace tests without running them
+        id: test_compile
+        continue-on-error: true
+        shell: bash
+        env:
+          TEST_COMPILE_TIMEOUT_MINUTES: ${{ inputs.test_compile_timeout_minutes || '30' }}
+        run: |
+          set -o pipefail
+          timeout --signal=TERM --kill-after=30s "${TEST_COMPILE_TIMEOUT_MINUTES}m" \
+            cargo test --workspace --locked --no-run 2>&1 \
+            | tee ci-evidence/workspace/cargo-test-compile.log
+
+      - name: cargo test per workspace package with execution timeout diagnostics
         id: test
+        if: steps.test_compile.outcome == 'success'
         continue-on-error: true
         shell: bash
         env:
@@ -173,7 +195,7 @@ jobs:
               echo "package=$package"
               echo "exit_code=$rc"
               echo "timed_out=$timed_out"
-              echo "timeout=$timeout_value"
+              echo "execution_timeout=$timeout_value"
               echo "test_threads=$TEST_THREADS"
               echo
               echo '## process table'
@@ -199,7 +221,7 @@ jobs:
             started_epoch="$(date +%s)"
 
             echo "::group::${case_name}"
-            echo "package=${package} timeout=${timeout_value} test_threads=${TEST_THREADS}"
+            echo "package=${package} execution_timeout=${timeout_value} test_threads=${TEST_THREADS}"
             set +e
             timeout --signal=TERM --kill-after=30s "$timeout_value" \
               stdbuf -oL -eL "$@" 2>&1 | tee "$log"
@@ -275,6 +297,24 @@ jobs:
 
           exit "$overall_rc"
 
+      - name: Record package tests skipped after compile failure
+        if: always() && steps.test_compile.outcome != 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > ci-evidence/workspace/test-results.json <<'JSON'
+          {
+            "cases": [],
+            "case_count": 0,
+            "package_count": 0,
+            "passed": 0,
+            "failed": 1,
+            "timed_out": 0,
+            "result": "FAIL",
+            "reason": "workspace test compilation failed or timed out"
+          }
+          JSON
+
       - name: cargo clippy --workspace --all-targets -- -D warnings
         id: clippy
         continue-on-error: true
@@ -293,6 +333,7 @@ jobs:
         env:
           FMT_RESULT: ${{ steps.fmt.outcome }}
           CHECK_RESULT: ${{ steps.check.outcome }}
+          TEST_COMPILE_RESULT: ${{ steps.test_compile.outcome }}
           TEST_RESULT: ${{ steps.test.outcome }}
           CLIPPY_RESULT: ${{ steps.clippy.outcome }}
         run: |
@@ -304,6 +345,7 @@ jobs:
           checks = {
               'fmt': os.environ['FMT_RESULT'],
               'check': os.environ['CHECK_RESULT'],
+              'test_compile': os.environ['TEST_COMPILE_RESULT'],
               'test': os.environ['TEST_RESULT'],
               'clippy': os.environ['CLIPPY_RESULT'],
           }
@@ -352,14 +394,17 @@ jobs:
         env:
           FMT_RESULT: ${{ steps.fmt.outcome }}
           CHECK_RESULT: ${{ steps.check.outcome }}
+          TEST_COMPILE_RESULT: ${{ steps.test_compile.outcome }}
           TEST_RESULT: ${{ steps.test.outcome }}
           CLIPPY_RESULT: ${{ steps.clippy.outcome }}
         run: |
           set -euo pipefail
-          printf 'fmt=%s check=%s test=%s clippy=%s\n' "$FMT_RESULT" "$CHECK_RESULT" "$TEST_RESULT" "$CLIPPY_RESULT"
+          printf 'fmt=%s check=%s test_compile=%s test=%s clippy=%s\n' \
+            "$FMT_RESULT" "$CHECK_RESULT" "$TEST_COMPILE_RESULT" "$TEST_RESULT" "$CLIPPY_RESULT"
           jq -e '.result == "PASS" and .package_tests.result == "PASS" and .package_tests.timed_out == 0' \
             ci-evidence/workspace/evidence_manifest.json >/dev/null
           [[ "$FMT_RESULT" == success ]]
           [[ "$CHECK_RESULT" == success ]]
+          [[ "$TEST_COMPILE_RESULT" == success ]]
           [[ "$TEST_RESULT" == success ]]
           [[ "$CLIPPY_RESULT" == success ]]
