@@ -91,10 +91,8 @@ jobs:
             local label="$1" script="$2" base="$3"
             shift 3
             echo "=== running $label on $commit ==="
-            set +e
             env RUN_ID="$label" OUT_DIR="$base" "$@" bash "$script" 2>&1 | tee "$root/${label}.workflow.log"
             local rc=${PIPESTATUS[0]}
-            set -e
             printf '%s\n' "$rc" > "$root/${label}.exit-code.txt"
             return "$rc"
           }
@@ -115,7 +113,6 @@ jobs:
           printf '%s\n' "$rc2" > "$root/gate-2m.exit-code.txt"
 
           rc4=99
-          manifest4="$root/4m/gate-4m/evidence_manifest.json"
           if (( rc1 == 0 && rc2 == 0 )) && [[ -s "$manifest1" && -s "$manifest2" ]]; then
             run_stage gate-4m scripts/v2_2_20_private_5n_4m_rehearsal.sh "$root/4m" PRIOR_GATE_C_MANIFEST="$manifest1" PRIOR_GATE_D_MANIFEST="$manifest2"
             rc4=$?
@@ -133,6 +130,12 @@ jobs:
             '5N/2M': root/'2m'/'gate-2m',
             '5N/4M': root/'4m'/'gate-4m',
           }
+          def sha256_file(path):
+            digest = hashlib.sha256()
+            with path.open('rb') as source:
+              for chunk in iter(lambda: source.read(1024 * 1024), b''):
+                digest.update(chunk)
+            return digest.hexdigest()
           index = {'gate':'v2.3.0-staged-network','candidate_commit':commit,'stages':{},'public_testnet_ready':False}
           all_pass = True
           for name, directory in stages.items():
@@ -146,10 +149,7 @@ jobs:
             else:
               entry['result'] = 'MISSING'
               entry['manifest_commit'] = None
-            if tar_path.exists():
-              entry['sha256'] = hashlib.sha256(tar_path.read_bytes()).hexdigest()
-            else:
-              entry['sha256'] = None
+            entry['sha256'] = sha256_file(tar_path) if tar_path.exists() else None
             entry['same_commit'] = bool(entry['manifest_commit']) and commit.startswith(str(entry['manifest_commit']))
             if entry['result'] != 'PASS' or not entry['same_commit'] or not entry['sha256']:
               all_pass = False
