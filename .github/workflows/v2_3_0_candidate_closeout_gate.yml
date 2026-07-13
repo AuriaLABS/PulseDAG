@@ -33,7 +33,7 @@ on:
       package_test_timeout_minutes:
         description: Maximum runtime for each workspace package test suite
         required: false
-        default: '20'
+        default: '10'
         type: string
       test_threads:
         description: Rust test threads per package; use 1 for deterministic diagnosis
