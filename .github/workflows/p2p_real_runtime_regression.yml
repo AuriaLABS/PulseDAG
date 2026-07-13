@@ -128,11 +128,11 @@ jobs:
                 printf '\n### tid=%s\n' "$tid"
                 printf 'wchan='; cat "$task/wchan" 2>/dev/null || true
                 sed -n '1,35p' "$task/status" 2>/dev/null || true
-                cat "$task/stack" 2>/dev/null || true
+                sudo -n cat "$task/stack" 2>/dev/null || true
               done
               echo
               echo '## gdb all-thread backtrace'
-              timeout 25s gdb -q -batch \
+              timeout 25s sudo -n gdb -q -batch \
                 -ex 'set pagination off' \
                 -ex 'set print thread-events off' \
                 -ex 'thread apply all bt full' \
