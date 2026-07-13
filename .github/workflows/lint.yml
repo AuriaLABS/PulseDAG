@@ -69,36 +69,39 @@ jobs:
           Path('crates/pulsedag-p2p/CI_DEADLOCK_FIX_PENDING.md').unlink(missing_ok=True)
           Path('.github/workflows/apply_p2p_redial_deadlock_fix.yml').unlink(missing_ok=True)
 
-          Path('.github/workflows/lint.yml').write_text('''name: Lint
-
-on:
-  pull_request:
-
-jobs:
-  lint:
-    runs-on: ubuntu-latest
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy, rustfmt
-
-      - name: Cargo.lock hygiene check
-        run: |
-          set -euo pipefail
-          if ! cargo metadata --locked --format-version 1 >/dev/null; then
-            echo "::error::Cargo.lock is out of sync. Run 'cargo generate-lockfile' (or intentional 'cargo update') and commit Cargo.lock."
-            exit 1
-          fi
-
-      - name: Format check
-        run: cargo fmt --all -- --check
-
-      - name: Clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
-''')
+          original_lint = '\n'.join([
+              'name: Lint',
+              '',
+              'on:',
+              '  pull_request:',
+              '',
+              'jobs:',
+              '  lint:',
+              '    runs-on: ubuntu-latest',
+              '',
+              '    steps:',
+              '      - uses: actions/checkout@v4',
+              '',
+              '      - uses: dtolnay/rust-toolchain@stable',
+              '        with:',
+              '          components: clippy, rustfmt',
+              '',
+              '      - name: Cargo.lock hygiene check',
+              '        run: |',
+              '          set -euo pipefail',
+              '          if ! cargo metadata --locked --format-version 1 >/dev/null; then',
+              '            echo "::error::Cargo.lock is out of sync. Run \'cargo generate-lockfile\' (or intentional \'cargo update\') and commit Cargo.lock."',
+              '            exit 1',
+              '          fi',
+              '',
+              '      - name: Format check',
+              '        run: cargo fmt --all -- --check',
+              '',
+              '      - name: Clippy',
+              '        run: cargo clippy --all-targets --all-features -- -D warnings',
+              '',
+          ])
+          Path('.github/workflows/lint.yml').write_text(original_lint)
           PY
 
           git config user.name github-actions[bot]
