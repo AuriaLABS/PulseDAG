@@ -1,0 +1,188 @@
+name: v2.3.0 prune restart and rejoin gate
+
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_sha:
+        description: Exact commit/ref to validate; blank uses the triggering SHA
+        required: false
+        type: string
+      evidence_mode:
+        description: Runtime closeout requires non-zero pruning and a real node restart/rejoin
+        required: true
+        default: runtime-closeout
+        type: choice
+        options:
+          - runtime-closeout
+          - test-gate
+  workflow_call:
+    inputs:
+      candidate_sha:
+        required: true
+        type: string
+      evidence_mode:
+        required: false
+        default: runtime-closeout
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: v2-3-0-prune-restart-${{ inputs.candidate_sha || github.sha }}-${{ inputs.evidence_mode || 'runtime-closeout' }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  prune-restart-rejoin:
+    name: retained set / snapshot restart / offline rejoin
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - name: Checkout candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.candidate_sha || github.sha }}
+          fetch-depth: 1
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Prepare evidence directory
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ci-evidence/prune-restart/runtime
+          git rev-parse HEAD > ci-evidence/prune-restart/candidate-sha.txt
+          chmod +x scripts/v2_3_0_04_prune_restart_rejoin_evidence.sh
+
+      - name: Run retained-set test gate
+        id: testgate
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -o pipefail
+          scripts/v2_3_0_04_prune_restart_rejoin_evidence.sh 2>&1 | tee ci-evidence/prune-restart/test-gate.log
+
+      - name: Require focused runtime-test coverage
+        id: coverage
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test -p pulsedag-storage --locked -- --list 2>&1 | tee ci-evidence/prune-restart/storage-test-list.log
+          nonzero="$(grep -Eic 'non_zero.*prun|prun.*non_zero' ci-evidence/prune-restart/storage-test-list.log || true)"
+          restart="$(grep -Eic 'restart.*snapshot|snapshot.*restart' ci-evidence/prune-restart/storage-test-list.log || true)"
+          rejoin="$(grep -Eic 'offline.*rejoin|rejoin.*offline' ci-evidence/prune-restart/storage-test-list.log || true)"
+          printf 'non_zero_prune_tests=%s\nrestart_tests=%s\nrejoin_tests=%s\n' "$nonzero" "$restart" "$rejoin" | tee ci-evidence/prune-restart/test-coverage.txt
+          (( nonzero > 0 ))
+          (( restart > 0 ))
+          (( rejoin > 0 ))
+
+      - name: Run real prune/restart/rejoin driver
+        id: runtime
+        if: inputs.evidence_mode == 'runtime-closeout'
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          driver='scripts/v2_3_0_prune_restart_rejoin_runtime.sh'
+          if [[ ! -x "$driver" ]]; then
+            echo "Required runtime driver is missing or not executable: $driver" >&2
+            echo 'Cargo tests alone are not operational restart/rejoin evidence.' >&2
+            exit 44
+          fi
+          OUT_DIR="$PWD/ci-evidence/prune-restart/runtime" "$driver" 2>&1 | tee ci-evidence/prune-restart/runtime-driver.log
+
+      - name: Validate runtime evidence semantics
+        id: semantics
+        if: inputs.evidence_mode == 'runtime-closeout' && steps.runtime.outcome == 'success'
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          manifest='ci-evidence/prune-restart/runtime/evidence_manifest.json'
+          jq -e '
+            .result == "PASS" and
+            .evidence_kind == "runtime" and
+            .blocks_pruned_total > 0 and
+            .retained_storage_hash_digest == .retained_memory_hash_digest and
+            .snapshot_delta_restart_executed == true and
+            .restart_selected_tip_matches == true and
+            .restart_state_root_matches == true and
+            .offline_advance_blocks > 0 and
+            .rejoin_executed == true and
+            .rejoin_converged == true and
+            .final_storage_memory_consistent == true and
+            .public_testnet_ready == false
+          ' "$manifest" >/dev/null
+
+      - name: Build prune gate manifest and checksums
+        if: always()
+        shell: bash
+        env:
+          EVIDENCE_MODE: ${{ inputs.evidence_mode || 'runtime-closeout' }}
+          TEST_GATE_RESULT: ${{ steps.testgate.outcome }}
+          COVERAGE_RESULT: ${{ steps.coverage.outcome }}
+          RUNTIME_RESULT: ${{ steps.runtime.outcome }}
+          SEMANTICS_RESULT: ${{ steps.semantics.outcome }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib, subprocess
+          root = pathlib.Path('ci-evidence/prune-restart')
+          mode = os.environ['EVIDENCE_MODE']
+          outcomes = {
+            'retained_set_test_gate':os.environ['TEST_GATE_RESULT'],
+            'focused_test_coverage':os.environ['COVERAGE_RESULT'],
+            'runtime_driver':os.environ['RUNTIME_RESULT'],
+            'runtime_evidence_semantics':os.environ['SEMANTICS_RESULT'],
+          }
+          unit_pass = outcomes['retained_set_test_gate'] == 'success' and outcomes['focused_test_coverage'] == 'success'
+          runtime_pass = outcomes['runtime_driver'] == 'success' and outcomes['runtime_evidence_semantics'] == 'success'
+          closeout = mode == 'runtime-closeout' and unit_pass and runtime_pass
+          diagnostic = mode == 'test-gate' and unit_pass
+          manifest = {
+            'gate':'v2.3.0-prune-restart-rejoin',
+            'candidate_commit':subprocess.check_output(['git','rev-parse','HEAD'], text=True).strip(),
+            'evidence_mode':mode,
+            'result':'PASS' if (closeout or diagnostic) else 'FAIL',
+            'closeout_eligible':closeout,
+            'outcomes':outcomes,
+            'public_testnet_ready':False,
+          }
+          (root/'gate_manifest.json').write_text(json.dumps(manifest, indent=2)+'\n')
+          lines=[]
+          for path in sorted(root.rglob('*')):
+            if path.is_file() and path.name != 'SHA256SUMS':
+              lines.append(f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.relative_to(root)}")
+          (root/'SHA256SUMS').write_text('\n'.join(lines)+'\n')
+          PY
+
+      - name: Upload prune/restart/rejoin evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v2_3_0_prune_restart_rejoin_${{ github.run_id }}
+          path: ci-evidence/prune-restart
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Enforce prune/restart/rejoin gate
+        if: always()
+        shell: bash
+        env:
+          EVIDENCE_MODE: ${{ inputs.evidence_mode || 'runtime-closeout' }}
+        run: |
+          set -euo pipefail
+          jq -e '.result == "PASS"' ci-evidence/prune-restart/gate_manifest.json >/dev/null
+          if [[ "$EVIDENCE_MODE" == runtime-closeout ]]; then
+            jq -e '.closeout_eligible == true' ci-evidence/prune-restart/gate_manifest.json >/dev/null
+          fi
