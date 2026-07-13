@@ -1,0 +1,99 @@
+name: v2.3.0 lag-injection selected-segment evidence
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "schema_ci validates artifact shape; real must execute the operator-driven lag drill and is expected to fail until implemented"
+        required: true
+        default: schema_ci
+        type: choice
+        options:
+          - schema_ci
+          - real
+      min_selected_gap:
+        description: "Minimum selected-height gap to prove before reconnecting the lagging node"
+        required: true
+        default: "96"
+
+permissions:
+  contents: read
+
+jobs:
+  lag-injection-selected-segment:
+    name: lag-injection selected-segment (${{ inputs.mode }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      CARGO_TERM_COLOR: always
+      MIN_SELECTED_GAP: ${{ inputs.min_selected_gap }}
+      CI_MODE: ${{ inputs.mode == 'schema_ci' && '1' || '0' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Make scripts executable
+        shell: bash
+        run: chmod +x scripts/*.sh
+
+      - name: Build release binaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --release --locked
+
+      - name: Run lag-injection selected-segment evidence script
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "mode=${{ inputs.mode }}"
+          echo "CI_MODE=${CI_MODE}"
+          echo "MIN_SELECTED_GAP=${MIN_SELECTED_GAP}"
+          echo "commit=$(git rev-parse HEAD)"
+          if [[ "${{ inputs.mode }}" == "schema_ci" ]]; then
+            echo "schema_ci mode only validates evidence shape. It is not a closeout PASS for real lag recovery."
+          else
+            echo "real mode must isolate/reconnect a node and prove selected-segment recovery."
+          fi
+          bash scripts/v2_3_0_lag_injection_selected_segment.sh
+
+      - name: Stage lag evidence
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ci-evidence
+          if [[ -d artifacts/private-testnet/v2_3_0/lag-injection-selected-segment ]]; then
+            tar -czf ci-evidence/lag-injection-selected-segment-artifacts.tar.gz -C artifacts/private-testnet/v2_3_0 lag-injection-selected-segment
+            sha256sum ci-evidence/lag-injection-selected-segment-artifacts.tar.gz > ci-evidence/lag-injection-selected-segment-artifacts.tar.gz.sha256
+          else
+            echo "No lag-injection artifact directory produced" > ci-evidence/lag-injection-selected-segment-missing.txt
+          fi
+          {
+            echo "gate=v2.3.0-lag-injection-selected-segment"
+            echo "mode=${{ inputs.mode }}"
+            echo "ci_mode=${CI_MODE}"
+            echo "min_selected_gap=${MIN_SELECTED_GAP}"
+            echo "commit=$(git rev-parse HEAD)"
+            echo "public_testnet_ready=false"
+            echo "recorded_at_utc=$(date -u +%FT%TZ)"
+            if [[ "${{ inputs.mode }}" == "schema_ci" ]]; then
+              echo "closeout_result=SCHEMA_ONLY_NOT_CLOSEOUT_PASS"
+            else
+              echo "closeout_result=REAL_GATE_RESULT_FROM_JOB_STATUS"
+            fi
+          } > ci-evidence/lag-injection-selected-segment-metadata.txt
+
+      - name: Upload lag-injection selected-segment evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: v2_3_0_lag_injection_selected_segment_${{ inputs.mode }}
+          path: ci-evidence/
+          if-no-files-found: error
