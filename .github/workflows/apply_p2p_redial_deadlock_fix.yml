@@ -1,0 +1,92 @@
+name: Apply P2P redial deadlock fix
+
+on:
+  push:
+    branches:
+      - agent/harden-workspace-test-timeouts
+    paths:
+      - '.github/workflows/apply_p2p_redial_deadlock_fix.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  apply-fix:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v4
+        with:
+          ref: agent/harden-workspace-test-timeouts
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Apply exact mutex-scope fix
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('crates/pulsedag-p2p/src/lib.rs')
+          source = path.read_text()
+          old = '''                    } else if let Ok(mut guard) = inner.lock() {
+                        pending_bootnode_dials.insert(*peer_id);
+                        bootnode_redial_backoff_secs.insert(*peer_id, 1);
+                        bootnode_next_redial_at.insert(*peer_id, now.saturating_add(1));
+                        guard.pending_bootnode_dials.insert(peer_id.to_string());
+                        guard.pending_bootnode_dial_started_at.insert(peer_id.to_string(), now);
+                        guard.bootnode_redial_backoff_secs.insert(peer_id.to_string(), 1);
+                        guard.bootnode_next_redial_at.insert(peer_id.to_string(), now.saturating_add(1));
+                        guard.bootnode_redial_successes = guard.bootnode_redial_successes.saturating_add(1);
+                        note_swarm_event(&inner, format!("dial-success:redial:{peer_id}"));
+                    }
+'''
+          new = '''                    } else {
+                        if let Ok(mut guard) = inner.lock() {
+                            pending_bootnode_dials.insert(*peer_id);
+                            bootnode_redial_backoff_secs.insert(*peer_id, 1);
+                            bootnode_next_redial_at.insert(*peer_id, now.saturating_add(1));
+                            guard.pending_bootnode_dials.insert(peer_id.to_string());
+                            guard.pending_bootnode_dial_started_at.insert(peer_id.to_string(), now);
+                            guard.bootnode_redial_backoff_secs.insert(peer_id.to_string(), 1);
+                            guard.bootnode_next_redial_at.insert(peer_id.to_string(), now.saturating_add(1));
+                            guard.bootnode_redial_successes =
+                                guard.bootnode_redial_successes.saturating_add(1);
+                        }
+                        note_swarm_event(&inner, format!("dial-success:redial:{peer_id}"));
+                    }
+'''
+          count = source.count(old)
+          if count != 1:
+              raise SystemExit(f'expected exactly one deadlocking block, found {count}')
+          path.write_text(source.replace(old, new, 1))
+          PY
+          rm .github/workflows/apply_p2p_redial_deadlock_fix.yml
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Validate source fix
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fmt --all -- --check
+          cargo test -p pulsedag-p2p --locked --no-run
+          timeout --signal=TERM --kill-after=30s 120s \
+            cargo test -p pulsedag-p2p --locked \
+              real_runtime_mode_initializes_without_loopback_labeling -- \
+              --nocapture --test-threads=1
+
+      - name: Commit source fix and remove one-shot workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add crates/pulsedag-p2p/src/lib.rs .github/workflows/apply_p2p_redial_deadlock_fix.yml
+          git diff --cached --check
+          git commit -m 'fix(p2p): avoid recursive lock during redial success'
+          git push origin HEAD:agent/harden-workspace-test-timeouts
