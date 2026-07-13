@@ -1,23 +1,24 @@
 name: Apply P2P redial deadlock fix
 
 on:
-  push:
-    branches:
-      - agent/harden-workspace-test-timeouts
+  pull_request:
+    types: [opened, synchronize, reopened]
     paths:
       - '.github/workflows/apply_p2p_redial_deadlock_fix.yml'
 
 permissions:
   contents: write
+  pull-requests: read
 
 jobs:
   apply-fix:
+    if: github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-24.04
     steps:
-      - name: Checkout branch
+      - name: Checkout pull-request branch
         uses: actions/checkout@v4
         with:
-          ref: agent/harden-workspace-test-timeouts
+          ref: ${{ github.event.pull_request.head.ref }}
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -89,4 +90,4 @@ jobs:
           git add crates/pulsedag-p2p/src/lib.rs .github/workflows/apply_p2p_redial_deadlock_fix.yml
           git diff --cached --check
           git commit -m 'fix(p2p): avoid recursive lock during redial success'
-          git push origin HEAD:agent/harden-workspace-test-timeouts
+          git push origin HEAD:${{ github.event.pull_request.head.ref }}
