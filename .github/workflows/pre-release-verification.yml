@@ -16,17 +16,36 @@ on:
       - 'Cargo.toml'
       - 'Cargo.lock'
 
+permissions:
+  contents: read
+
 jobs:
+  workspace-validation:
+    uses: ./.github/workflows/v2_3_0_workspace_validation.yml
+    with:
+      candidate_sha: ${{ github.event.pull_request.head.sha || github.sha }}
+      test_compile_timeout_minutes: '30'
+      package_test_timeout_minutes: '10'
+      p2p_real_runtime_test_timeout_seconds: '120'
+      test_threads: '1'
+      check_timeout_minutes: '20'
+      clippy_timeout_minutes: '30'
+
   verify:
     name: verify-pre-burn-in-readiness
+    needs: workspace-validation
     runs-on: ubuntu-latest
+    timeout-minutes: 120
     env:
       RELEASE_TAG: ${{ github.event.inputs.release_tag || 'v2.2.5' }}
       RUST_TEST_THREADS: 1
       NODE_URL: http://127.0.0.1:8080
     steps:
-      - name: Checkout
+      - name: Checkout validated candidate
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 1
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -53,25 +72,22 @@ jobs:
           echo "disk usage after cleanup:"
           df -h
 
-      - name: Verify workspace tests
-        run: cargo test --workspace
-
-      - name: Verify pulsedag-rpc tests
-        run: cargo test -p pulsedag-rpc --all-targets
-
-      - name: Verify pulsedag-p2p tests
-        run: cargo test -p pulsedag-p2p
-
       - name: Verify standalone miner crate build surface
-        run: cargo check --locked -p pulsedag-miner
+        run: |
+          timeout --signal=TERM --kill-after=30s 20m \
+            cargo check --locked -p pulsedag-miner
 
       - name: Build release binaries (node + standalone miner)
-        run: cargo build --locked --release --bin pulsedagd --bin pulsedag-miner
+        run: |
+          timeout --signal=TERM --kill-after=30s 45m \
+            cargo build --locked --release --bin pulsedagd --bin pulsedag-miner
 
       - name: Verify node startup smoke
         run: |
           set -euo pipefail
           nohup cargo run -p pulsedagd > node.log 2>&1 &
+          node_pid=$!
+          trap 'kill "$node_pid" 2>/dev/null || true' EXIT
           for i in {1..45}; do
             if curl -sSf "${NODE_URL}/health" >/dev/null; then
               echo "node startup smoke passed"
@@ -87,20 +103,22 @@ jobs:
       - name: Verify external standalone miner one-shot
         run: |
           set -euo pipefail
-          cargo run -p pulsedag-miner -- \
-            --node "${NODE_URL}" \
-            --miner-address preburnin-smoke \
-            --max-tries 12000
+          timeout --signal=TERM --kill-after=30s 10m \
+            cargo run -p pulsedag-miner -- \
+              --node "${NODE_URL}" \
+              --miner-address preburnin-smoke \
+              --max-tries 12000
 
       - name: Verify standalone operator flow helper
         run: |
           set -euo pipefail
-          scripts/release/standalone_operator_smoke.sh \
-            --miner-address preburnin-operator \
-            --node-url "${NODE_URL}" \
-            --max-tries 5000 \
-            --threads 1 \
-            --wait-seconds 45
+          timeout --signal=TERM --kill-after=30s 10m \
+            scripts/release/standalone_operator_smoke.sh \
+              --miner-address preburnin-operator \
+              --node-url "${NODE_URL}" \
+              --max-tries 5000 \
+              --threads 1 \
+              --wait-seconds 45
 
       - name: Package release artifacts
         run: |

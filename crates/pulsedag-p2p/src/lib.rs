@@ -5798,15 +5798,18 @@ async fn run_libp2p_real_runtime(
                             guard.last_bootnode_dial_error = Some(e.to_string());
                         }
                         note_swarm_event(&inner, format!("dial-failure:redial:{peer_id}:{e}"));
-                    } else if let Ok(mut guard) = inner.lock() {
-                        pending_bootnode_dials.insert(*peer_id);
-                        bootnode_redial_backoff_secs.insert(*peer_id, 1);
-                        bootnode_next_redial_at.insert(*peer_id, now.saturating_add(1));
-                        guard.pending_bootnode_dials.insert(peer_id.to_string());
-                        guard.pending_bootnode_dial_started_at.insert(peer_id.to_string(), now);
-                        guard.bootnode_redial_backoff_secs.insert(peer_id.to_string(), 1);
-                        guard.bootnode_next_redial_at.insert(peer_id.to_string(), now.saturating_add(1));
-                        guard.bootnode_redial_successes = guard.bootnode_redial_successes.saturating_add(1);
+                    } else {
+                        if let Ok(mut guard) = inner.lock() {
+                            pending_bootnode_dials.insert(*peer_id);
+                            bootnode_redial_backoff_secs.insert(*peer_id, 1);
+                            bootnode_next_redial_at.insert(*peer_id, now.saturating_add(1));
+                            guard.pending_bootnode_dials.insert(peer_id.to_string());
+                            guard.pending_bootnode_dial_started_at.insert(peer_id.to_string(), now);
+                            guard.bootnode_redial_backoff_secs.insert(peer_id.to_string(), 1);
+                            guard.bootnode_next_redial_at.insert(peer_id.to_string(), now.saturating_add(1));
+                            guard.bootnode_redial_successes =
+                                guard.bootnode_redial_successes.saturating_add(1);
+                        }
                         note_swarm_event(&inner, format!("dial-success:redial:{peer_id}"));
                     }
                 }

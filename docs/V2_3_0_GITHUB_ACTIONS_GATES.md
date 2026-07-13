@@ -43,6 +43,7 @@ Inputs:
 - staged mining duration and quiescence wait;
 - minimum selected-height gap, default `96`;
 - package test timeout, default `10` minutes for each workspace package;
+- isolated real-swarm P2P initialization timeout, default `120` seconds;
 - Rust test threads per package, default `1`;
 - independent timeouts for `cargo check` and `cargo clippy`.
 
@@ -70,22 +71,35 @@ cargo test -p <package> --locked -- --nocapture --test-threads=<n>
 
 Each package has its own timeout. The gate continues after a failure or timeout so that Clippy, the manifest and the evidence upload still run.
 
-For every package it records:
+The cancelled candidate run `29241831089` identified one specific stalled test:
+
+```text
+pulsedag_p2p::tests::real_runtime_mode_initializes_without_loopback_labeling
+```
+
+The P2P package is therefore executed in two explicit cases:
+
+1. the remaining `pulsedag-p2p` suite with that test skipped;
+2. the real-swarm initialization test alone, with `--test-threads=1` and its own short hard timeout.
+
+This is isolation, not a waiver: the workspace gate remains failed unless the isolated test exits successfully. If it times out, any surviving `pulsedag_p2p` test process is terminated before the workflow continues.
+
+For every test case it records:
 
 - start and end timestamps;
 - duration;
 - exit code;
 - `PASS`, `FAIL`, or `TIMEOUT`;
-- complete package test log.
+- complete test log.
 
-A failed or timed-out package also produces a diagnostic file containing:
+A failed or timed-out case also produces a diagnostic file containing:
 
 - process table;
 - process tree;
 - listening sockets;
 - the final 400 lines of test output.
 
-The final `test-results.json` identifies the exact package that failed or stalled. Any timeout makes the workspace gate fail; it is never treated as a waiver or an acceptable retry.
+The final `test-results.json` identifies the exact package and case that failed or stalled. Any timeout makes the workspace gate fail; it is never treated as a waiver or an acceptable retry.
 
 ## Evidence artifacts
 

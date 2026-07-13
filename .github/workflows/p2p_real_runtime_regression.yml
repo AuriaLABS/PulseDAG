@@ -1,0 +1,158 @@
+name: P2P real-swarm initialization regression
+
+on:
+  pull_request:
+    paths:
+      - 'crates/pulsedag-p2p/**'
+      - '.github/workflows/p2p_real_runtime_regression.yml'
+      - '.github/workflows/v2_3_0_workspace_validation.yml'
+  workflow_dispatch:
+    inputs:
+      candidate_sha:
+        description: Exact commit/ref to validate; blank uses the triggering SHA
+        required: false
+        type: string
+      compile_timeout_minutes:
+        description: Maximum runtime for compiling the P2P test binary
+        required: false
+        default: '15'
+        type: string
+      runtime_timeout_seconds:
+        description: Maximum execution runtime for the isolated test after compilation
+        required: false
+        default: '120'
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: p2p-real-runtime-regression-${{ github.event.pull_request.number || inputs.candidate_sha || github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  isolated-real-swarm-test:
+    name: real_runtime_mode_initializes_without_loopback_labeling
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Checkout candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.candidate_sha || github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 1
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Record candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ci-evidence/p2p-real-runtime
+          git rev-parse HEAD | tee ci-evidence/p2p-real-runtime/candidate-sha.txt
+
+      - name: Compile P2P tests without running them
+        id: compile
+        continue-on-error: true
+        shell: bash
+        env:
+          COMPILE_TIMEOUT_MINUTES: ${{ inputs.compile_timeout_minutes || '15' }}
+        run: |
+          set -o pipefail
+          timeout --signal=TERM --kill-after=30s "${COMPILE_TIMEOUT_MINUTES}m" \
+            cargo test -p pulsedag-p2p --locked --no-run 2>&1 \
+            | tee ci-evidence/p2p-real-runtime/compile.log
+
+      - name: Run isolated real-swarm test
+        id: test
+        if: steps.compile.outcome == 'success'
+        continue-on-error: true
+        shell: bash
+        env:
+          RUNTIME_TIMEOUT_SECONDS: ${{ inputs.runtime_timeout_seconds || '120' }}
+          RUST_BACKTRACE: '1'
+        run: |
+          set -o pipefail
+          set +e
+          timeout --signal=TERM --kill-after=30s "${RUNTIME_TIMEOUT_SECONDS}s" \
+            stdbuf -oL -eL cargo test -p pulsedag-p2p --locked \
+              real_runtime_mode_initializes_without_loopback_labeling -- \
+              --nocapture --test-threads=1 2>&1 \
+            | tee ci-evidence/p2p-real-runtime/test.log
+          rc=${PIPESTATUS[0]}
+          set -e
+          printf '%s\n' "$rc" > ci-evidence/p2p-real-runtime/exit-code.txt
+          if (( rc == 0 )); then
+            printf 'PASS\n' > ci-evidence/p2p-real-runtime/result.txt
+          elif (( rc == 124 || rc == 137 )); then
+            printf 'TIMEOUT\n' > ci-evidence/p2p-real-runtime/result.txt
+          else
+            printf 'FAIL\n' > ci-evidence/p2p-real-runtime/result.txt
+          fi
+          exit 0
+
+      - name: Record compile failure
+        if: always() && steps.compile.outcome != 'success'
+        shell: bash
+        run: |
+          printf '2\n' > ci-evidence/p2p-real-runtime/exit-code.txt
+          printf 'COMPILE_FAIL\n' > ci-evidence/p2p-real-runtime/result.txt
+
+      - name: Capture failure or timeout diagnostics
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          root=ci-evidence/p2p-real-runtime
+          result="$(cat "$root/result.txt" 2>/dev/null || echo UNKNOWN)"
+          if [[ "$result" != PASS ]]; then
+            {
+              echo "timestamp_utc=$(date -u +%FT%TZ)"
+              echo "result=$result"
+              echo "exit_code=$(cat "$root/exit-code.txt" 2>/dev/null || echo 1)"
+              echo
+              echo '## process table'
+              ps -eo pid,ppid,pgid,stat,etime,pcpu,pmem,comm,args || true
+              echo
+              echo '## process tree'
+              command -v pstree >/dev/null 2>&1 && pstree -ap || true
+              echo
+              echo '## listening sockets'
+              command -v ss >/dev/null 2>&1 && ss -ltnp || true
+              echo
+              echo '## final compile output'
+              tail -n 200 "$root/compile.log" 2>/dev/null || true
+              echo
+              echo '## final test output'
+              tail -n 400 "$root/test.log" 2>/dev/null || true
+            } > "$root/diagnostics.txt"
+          fi
+          checksum_tmp="$root/SHA256SUMS.tmp"
+          find "$root" -maxdepth 1 -type f ! -name 'SHA256SUMS*' -print0 \
+            | sort -z \
+            | xargs -0 -r sha256sum > "$checksum_tmp"
+          mv "$checksum_tmp" "$root/SHA256SUMS"
+
+      - name: Upload focused evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: p2p_real_runtime_regression_${{ github.run_id }}
+          path: ci-evidence/p2p-real-runtime
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Enforce isolated test
+        if: always()
+        shell: bash
+        env:
+          COMPILE_RESULT: ${{ steps.compile.outcome }}
+        run: |
+          set -euo pipefail
+          [[ "$COMPILE_RESULT" == success ]]
+          [[ "$(cat ci-evidence/p2p-real-runtime/result.txt)" == PASS ]]
+          [[ "$(cat ci-evidence/p2p-real-runtime/exit-code.txt)" == 0 ]]
