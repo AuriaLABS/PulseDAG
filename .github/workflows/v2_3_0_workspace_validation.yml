@@ -216,7 +216,8 @@ jobs:
             local case_name="$1" package="$2" timeout_value="$3" slug="$4"
             shift 4
             local log="$root/tests/${slug}.log"
-            local started_utc started_epoch ended_utc duration_seconds rc timed_out
+            local started_utc started_epoch ended_utc duration_seconds rc timed_out required_test
+            required_test="${REQUIRED_EXECUTED_TEST:-}"
             started_utc="$(date -u +%FT%TZ)"
             started_epoch="$(date +%s)"
 
@@ -232,6 +233,39 @@ jobs:
             timed_out=false
             if (( rc == 124 || rc == 137 )); then
               timed_out=true
+            fi
+            if [[ -n "$required_test" && "$timed_out" != true && "$rc" == 0 ]]; then
+              if ! python3 - "$log" "$required_test" <<'PY'
+          import pathlib, re, sys
+          log_path = pathlib.Path(sys.argv[1])
+          required_test = sys.argv[2]
+          text = log_path.read_text(errors='replace')
+          running_counts = [int(match) for match in re.findall(r'^running (\d+) tests?$', text, re.MULTILINE)]
+          escaped = re.escape(required_test)
+          executed = re.search(
+              rf'^test .*{escaped}.* \.\.\. (ok|FAILED)$',
+              text,
+              re.MULTILINE,
+          )
+          ignored = re.search(
+              rf'^test .*{escaped}.* \.\.\. ignored$',
+              text,
+              re.MULTILINE,
+          )
+          if not running_counts or max(running_counts) < 1:
+              print(f"Required test {required_test!r} did not run: no nonzero libtest running count found.", file=sys.stderr)
+              sys.exit(1)
+          if ignored:
+              print(f"Required test {required_test!r} was ignored instead of executed.", file=sys.stderr)
+              sys.exit(1)
+          if not executed:
+              print(f"Required test {required_test!r} did not produce an executed libtest result line.", file=sys.stderr)
+              sys.exit(1)
+          print(f"Required test {required_test!r} executed and was not ignored.")
+          PY
+              then
+                rc=1
+              fi
             fi
 
             write_result "$case_name" "$package" "$rc" "$timed_out" "$started_utc" "$ended_utc" "$duration_seconds" "$log"
@@ -259,7 +293,7 @@ jobs:
                   --nocapture --test-threads="$TEST_THREADS" \
                   --skip real_runtime_mode_initializes_without_loopback_labeling
 
-              run_case \
+              REQUIRED_EXECUTED_TEST=real_runtime_mode_initializes_without_loopback_labeling run_case \
                 'pulsedag-p2p real_runtime_mode_initializes_without_loopback_labeling' \
                 "$package" "${P2P_REAL_RUNTIME_TEST_TIMEOUT_SECONDS}s" "${slug}_real_runtime_init" \
                 cargo test -p "$package" --locked \
