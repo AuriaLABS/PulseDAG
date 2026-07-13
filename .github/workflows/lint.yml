@@ -3,37 +3,10 @@ name: Lint
 on:
   pull_request:
 
-permissions:
-  contents: write
-  pull-requests: read
-
 jobs:
-  apply-confirmed-p2p-fix:
-    if: github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout pull-request branch
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.pull_request.head.ref }}
-          fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Apply exact confirmed source patch
-        run: python3 scripts/ci/apply_p2p_redial_deadlock_fix.py
-
-      - name: Commit source fix and cleanup
-        run: |
-          set -euo pipefail
-          git config user.name github-actions[bot]
-          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add -A
-          git diff --cached --check
-          git commit -m 'fix(p2p): avoid recursive lock during redial success'
-          git push origin HEAD:${{ github.event.pull_request.head.ref }}
-
   lint:
     runs-on: ubuntu-latest
+
     steps:
       - uses: actions/checkout@v4
 
