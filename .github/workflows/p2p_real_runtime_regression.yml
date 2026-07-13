@@ -12,8 +12,13 @@ on:
         description: Exact commit/ref to validate; blank uses the triggering SHA
         required: false
         type: string
+      compile_timeout_minutes:
+        description: Maximum runtime for compiling the P2P test binary
+        required: false
+        default: '15'
+        type: string
       timeout_seconds:
-        description: Hard timeout for the isolated test
+        description: Hard timeout for executing the already-compiled isolated test
         required: false
         default: '120'
         type: string
@@ -29,7 +34,7 @@ jobs:
   isolated-real-swarm-test:
     name: real_runtime_mode_initializes_without_loopback_labeling
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 25
     steps:
       - name: Checkout candidate
         uses: actions/checkout@v4
@@ -43,8 +48,28 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
+      - name: Record candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ci-evidence/p2p-real-runtime
+          git rev-parse HEAD | tee ci-evidence/p2p-real-runtime/candidate-sha.txt
+
+      - name: Compile P2P tests without running them
+        id: compile
+        continue-on-error: true
+        shell: bash
+        env:
+          COMPILE_TIMEOUT_MINUTES: ${{ inputs.compile_timeout_minutes || '15' }}
+        run: |
+          set -o pipefail
+          timeout --signal=TERM --kill-after=30s "${COMPILE_TIMEOUT_MINUTES}m" \
+            cargo test -p pulsedag-p2p --locked --no-run 2>&1 \
+            | tee ci-evidence/p2p-real-runtime/compile.log
+
       - name: Run isolated real-swarm initialization test
         id: test
+        if: steps.compile.outcome == 'success'
         continue-on-error: true
         shell: bash
         env:
@@ -52,8 +77,6 @@ jobs:
           RUST_BACKTRACE: '1'
         run: |
           set -o pipefail
-          mkdir -p ci-evidence/p2p-real-runtime
-          git rev-parse HEAD | tee ci-evidence/p2p-real-runtime/candidate-sha.txt
           set +e
           timeout --signal=TERM --kill-after=30s "${TEST_TIMEOUT_SECONDS}s" \
             stdbuf -oL -eL cargo test -p pulsedag-p2p --locked \
@@ -75,12 +98,19 @@ jobs:
       - name: Capture failure or timeout diagnostics
         if: always()
         shell: bash
+        env:
+          COMPILE_RESULT: ${{ steps.compile.outcome }}
         run: |
           set -euo pipefail
+          if [[ "$COMPILE_RESULT" != success ]]; then
+            printf '2\n' > ci-evidence/p2p-real-runtime/exit-code.txt
+            printf 'COMPILE_FAIL\n' > ci-evidence/p2p-real-runtime/result.txt
+          fi
           rc="$(cat ci-evidence/p2p-real-runtime/exit-code.txt 2>/dev/null || echo 1)"
           if [[ "$rc" != 0 ]]; then
             {
               echo "timestamp_utc=$(date -u +%FT%TZ)"
+              echo "compile_result=$COMPILE_RESULT"
               echo "exit_code=$rc"
               echo "result=$(cat ci-evidence/p2p-real-runtime/result.txt 2>/dev/null || echo UNKNOWN)"
               echo
@@ -93,8 +123,11 @@ jobs:
               echo '## listening sockets'
               command -v ss >/dev/null 2>&1 && ss -ltnp || true
               echo
+              echo '## final compile output'
+              tail -n 200 ci-evidence/p2p-real-runtime/compile.log 2>/dev/null || true
+              echo
               echo '## final test output'
-              tail -n 400 ci-evidence/p2p-real-runtime/test.log || true
+              tail -n 400 ci-evidence/p2p-real-runtime/test.log 2>/dev/null || true
             } > ci-evidence/p2p-real-runtime/diagnostics.txt
             pkill -TERM -f 'target/debug/deps/pulsedag_p2p-' 2>/dev/null || true
             sleep 2
@@ -116,7 +149,10 @@ jobs:
       - name: Enforce isolated test
         if: always()
         shell: bash
+        env:
+          COMPILE_RESULT: ${{ steps.compile.outcome }}
         run: |
           set -euo pipefail
+          [[ "$COMPILE_RESULT" == success ]]
           [[ "$(cat ci-evidence/p2p-real-runtime/result.txt)" == PASS ]]
           [[ "$(cat ci-evidence/p2p-real-runtime/exit-code.txt)" == 0 ]]
