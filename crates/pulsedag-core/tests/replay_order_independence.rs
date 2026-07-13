@@ -4,10 +4,11 @@ use pulsedag_core::apply::apply_block;
 use pulsedag_core::genesis::init_chain_state;
 use pulsedag_core::{
     accept_block_with_result, adopt_ready_orphans, assert_dag_consistent_for_tests,
-    build_candidate_block, build_coinbase_transaction, missing_block_parents, preferred_tip_hash,
-    queue_orphan_block, rebuild_state_from_blocks, rebuild_state_from_snapshot_and_blocks,
-    refresh_block_consensus_ids_with_state, AcceptSource, Block, BlockAcceptanceResult, ChainState,
-    Hash, OutPoint, Utxo,
+    build_candidate_block, build_coinbase_transaction, merge_set_digest, missing_block_parents,
+    ordered_dag_digest, preferred_tip_hash, queue_orphan_block, rebuild_state_from_blocks,
+    rebuild_state_from_snapshot_and_blocks, refresh_block_consensus_ids_with_state,
+    selection_digest, state_digest, AcceptSource, Block, BlockAcceptanceResult, ChainState, Hash,
+    OutPoint, Utxo,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -104,6 +105,58 @@ fn normalize_chain_state_for_comparison(state: &ChainState) -> NormalizedChainSt
     }
 }
 
+fn assert_replay_states_equal(
+    left_label: &str,
+    left: &ChainState,
+    right_label: &str,
+    right: &ChainState,
+) {
+    let left_accepted = left.dag.blocks.keys().cloned().collect::<BTreeSet<_>>();
+    let right_accepted = right.dag.blocks.keys().cloned().collect::<BTreeSet<_>>();
+    assert_eq!(
+        left_accepted, right_accepted,
+        "accepted block set diverged between {left_label} and {right_label}"
+    );
+    assert_eq!(
+        preferred_tip_hash(left),
+        preferred_tip_hash(right),
+        "selected tip diverged between {left_label} and {right_label}"
+    );
+    assert_eq!(
+        left.dag.selected_chain, right.dag.selected_chain,
+        "selected chain diverged between {left_label} and {right_label}"
+    );
+    assert_eq!(
+        left.dag.ordered_dag, right.dag.ordered_dag,
+        "ordered DAG diverged between {left_label} and {right_label}"
+    );
+    assert_eq!(
+        ordered_dag_digest(left),
+        ordered_dag_digest(right),
+        "ordered DAG digest diverged between {left_label} and {right_label}"
+    );
+    assert_eq!(
+        state_digest(left).unwrap(),
+        state_digest(right).unwrap(),
+        "UTXO/state root diverged between {left_label} and {right_label}"
+    );
+    assert_eq!(
+        merge_set_digest(left),
+        merge_set_digest(right),
+        "merge-set digest diverged between {left_label} and {right_label}"
+    );
+    assert_eq!(
+        selection_digest(left),
+        selection_digest(right),
+        "selection digest diverged between {left_label} and {right_label}"
+    );
+    assert_eq!(
+        normalize_chain_state_for_comparison(left),
+        normalize_chain_state_for_comparison(right),
+        "normalized children/tip/UTXO indexes diverged between {left_label} and {right_label}"
+    );
+}
+
 fn normalized_utxo(utxo: &Utxo) -> NormalizedUtxo {
     NormalizedUtxo {
         address: utxo.address.clone(),
@@ -185,20 +238,20 @@ fn sibling_merge_blocks(state: &ChainState) -> (Block, Block, Block) {
         10,
         21,
     );
-    let mut after_a1 = state.clone();
-    apply_block(&sibling_a1, &mut after_a1).unwrap();
     let sibling_a2 = test_block(
-        &after_a1,
+        state,
         "replay-sibling-a2",
         vec![state.dag.genesis_hash.clone()],
         1,
         10,
         22,
     );
-    let mut after_a2 = after_a1.clone();
-    apply_block(&sibling_a2, &mut after_a2).unwrap();
+    let mut canonical_merge_state = state.clone();
+    for sibling in [&sibling_a1, &sibling_a2] {
+        apply_block(sibling, &mut canonical_merge_state).unwrap();
+    }
     let merge = test_block(
-        &after_a2,
+        &canonical_merge_state,
         "replay-merge-multi-parent",
         vec![sibling_a1.hash.clone(), sibling_a2.hash.clone()],
         2,
@@ -218,13 +271,9 @@ fn deterministic_equal_height_siblings(state: &ChainState) -> (Block, Block) {
             30,
             first_nonce,
         );
-        let mut after_first = state.clone();
-        if apply_block(&first, &mut after_first).is_err() {
-            continue;
-        }
         for second_nonce in 200..260 {
             let second = test_block(
-                &after_first,
+                state,
                 "replay-equal-height-second",
                 vec![state.dag.genesis_hash.clone()],
                 1,
@@ -283,17 +332,14 @@ fn replay_sibling_order_and_multi_parent_merge_are_equivalent() {
     accept_valid(&mut a1_then_a2, a2.clone());
     accept_valid(&mut a1_then_a2, merge.clone());
 
-    let mut a2_then_a1 = init_chain_state("replay-a2-then-a1".to_string());
-    assert_ne!(
-        accept_block_with_result(a2, &mut a2_then_a1, AcceptSource::P2p),
-        BlockAcceptanceResult::Accepted
-    );
-    assert_eq!(
-        normalize_chain_state_for_comparison(&a2_then_a1),
-        normalize_chain_state_for_comparison(&init_chain_state("replay-a2-then-a1".to_string()))
-    );
+    let mut a2_then_a1 = init_chain_state("replay-a1-then-a2".to_string());
+    accept_valid(&mut a2_then_a1, a2);
+    accept_valid(&mut a2_then_a1, a1);
+    accept_valid(&mut a2_then_a1, merge.clone());
+
     assert!(a1_then_a2.dag.blocks.contains_key(&merge.hash));
     assert_eq!(preferred_tip_hash(&a1_then_a2), Some(merge.hash.clone()));
+    assert_replay_states_equal("a1_then_a2", &a1_then_a2, "a2_then_a1", &a2_then_a1);
     assert_dag_consistent_for_tests(&a1_then_a2);
     assert_dag_consistent_for_tests(&a2_then_a1);
 }
@@ -350,13 +396,11 @@ fn replay_rebuild_equal_height_blocks_is_independent_of_input_order() {
         rebuild_state_from_blocks("replay-equal-height-order".to_string(), vec![second, first])
             .unwrap();
 
-    assert_eq!(
-        preferred_tip_hash(&sorted_input),
-        preferred_tip_hash(&reversed_input)
-    );
-    assert_eq!(
-        normalize_chain_state_for_comparison(&sorted_input),
-        normalize_chain_state_for_comparison(&reversed_input)
+    assert_replay_states_equal(
+        "sorted_input",
+        &sorted_input,
+        "reversed_input",
+        &reversed_input,
     );
     assert_dag_consistent_for_tests(&sorted_input);
     assert_dag_consistent_for_tests(&reversed_input);
@@ -375,13 +419,11 @@ fn snapshot_delta_rebuild_equal_height_blocks_is_independent_of_input_order() {
     let reversed_input =
         rebuild_state_from_snapshot_and_blocks(snapshot, vec![second, first]).unwrap();
 
-    assert_eq!(
-        preferred_tip_hash(&sorted_input),
-        preferred_tip_hash(&reversed_input)
-    );
-    assert_eq!(
-        normalize_chain_state_for_comparison(&sorted_input),
-        normalize_chain_state_for_comparison(&reversed_input)
+    assert_replay_states_equal(
+        "sorted_input",
+        &sorted_input,
+        "reversed_input",
+        &reversed_input,
     );
     assert_dag_consistent_for_tests(&sorted_input);
     assert_dag_consistent_for_tests(&reversed_input);
@@ -393,24 +435,14 @@ fn replay_rebuild_sorts_child_before_parent_input_into_same_selected_tip() {
     let (parent, child) = parent_child_blocks(&state);
 
     let parent_first = rebuild_state_from_blocks(
-        "replay-rebuild-parent-first".to_string(),
+        "replay-rebuild-order".to_string(),
         vec![parent.clone(), child.clone()],
     )
     .unwrap();
-    let child_first = rebuild_state_from_blocks(
-        "replay-rebuild-child-first".to_string(),
-        vec![child, parent],
-    )
-    .unwrap();
+    let child_first =
+        rebuild_state_from_blocks("replay-rebuild-order".to_string(), vec![child, parent]).unwrap();
 
-    assert_eq!(
-        preferred_tip_hash(&parent_first),
-        preferred_tip_hash(&child_first)
-    );
-    assert_eq!(
-        normalize_chain_state_for_comparison(&parent_first),
-        normalize_chain_state_for_comparison(&child_first)
-    );
+    assert_replay_states_equal("parent_first", &parent_first, "child_first", &child_first);
     assert_dag_consistent_for_tests(&parent_first);
     assert_dag_consistent_for_tests(&child_first);
 }

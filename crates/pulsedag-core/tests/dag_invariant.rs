@@ -199,9 +199,8 @@ fn dag_invariant_accepting_siblings_preserves_blocks_and_deterministic_tips() {
     let genesis = state.dag.genesis_hash.clone();
     let sibling_a = test_block(&state, "sibling-a", vec![genesis.clone()], 1, 1);
     let sibling_a_hash = sibling_a.hash.clone();
-    let mut sibling_b = test_block(&state, "sibling-b", vec![genesis], 1, 1);
+    let sibling_b = test_block(&state, "sibling-b", vec![genesis], 1, 1);
     accept_test_block(&mut state, sibling_a);
-    refresh_block_consensus_ids_with_state(&mut sibling_b, &state).unwrap();
     let sibling_b_hash = sibling_b.hash.clone();
     accept_test_block(&mut state, sibling_b);
 

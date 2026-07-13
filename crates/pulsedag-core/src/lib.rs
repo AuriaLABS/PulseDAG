@@ -74,8 +74,8 @@ pub use apply::{
 };
 
 pub use mempool::{
-    combined_pressure_tier, mempool_pressure_bps, pressure_tier_from_bps, reconcile_mempool,
-    MempoolPressureTier, MempoolReconcileResult,
+    canonical_mempool_txids, combined_pressure_tier, mempool_pressure_bps, pressure_tier_from_bps,
+    reconcile_mempool, MempoolPressureTier, MempoolReconcileResult,
 };
 
 pub use ghostdag::{
