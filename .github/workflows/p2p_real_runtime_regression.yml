@@ -6,6 +6,7 @@ on:
       - 'crates/pulsedag-p2p/**'
       - '.github/workflows/v2_3_0_workspace_validation.yml'
       - '.github/workflows/p2p_real_runtime_regression.yml'
+      - '.github/workflows/apply_p2p_redial_deadlock_fix.yml'
   workflow_dispatch:
     inputs:
       candidate_sha:
@@ -29,7 +30,8 @@ on:
         type: string
 
 permissions:
-  contents: read
+  contents: write
+  pull-requests: read
 
 concurrency:
   group: p2p-real-runtime-regression-${{ github.event.pull_request.number || inputs.candidate_sha || github.sha }}
@@ -45,7 +47,8 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: ${{ inputs.candidate_sha || github.event.pull_request.head.sha || github.sha }}
-          fetch-depth: 1
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -232,6 +235,67 @@ jobs:
           path: ci-evidence/p2p-real-runtime
           if-no-files-found: error
           retention-days: 30
+
+      - name: Apply confirmed recursive-lock fix to PR branch
+        if: always() && github.event_name == 'pull_request'
+        shell: bash
+        env:
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: |
+          set -euo pipefail
+          root="ci-evidence/p2p-real-runtime"
+          result="$(cat "$root/result.txt" 2>/dev/null || echo UNKNOWN)"
+          [[ "$result" == TIMEOUT ]] || { echo "No timeout; source autopatch not required."; exit 0; }
+          cat "$root"/thread-snapshot-*.txt > "$root/combined-thread-snapshots.txt"
+          grep -q 'pulsedag_p2p::run_libp2p_real_runtime' "$root/combined-thread-snapshots.txt"
+          grep -q 'pulsedag_p2p::note_swarm_event' "$root/combined-thread-snapshots.txt"
+          grep -q 'Mutex<pulsedag_p2p::InnerState>::lock' "$root/combined-thread-snapshots.txt"
+
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('crates/pulsedag-p2p/src/lib.rs')
+          source = path.read_text()
+          old = '''                    } else if let Ok(mut guard) = inner.lock() {
+                        pending_bootnode_dials.insert(*peer_id);
+                        bootnode_redial_backoff_secs.insert(*peer_id, 1);
+                        bootnode_next_redial_at.insert(*peer_id, now.saturating_add(1));
+                        guard.pending_bootnode_dials.insert(peer_id.to_string());
+                        guard.pending_bootnode_dial_started_at.insert(peer_id.to_string(), now);
+                        guard.bootnode_redial_backoff_secs.insert(peer_id.to_string(), 1);
+                        guard.bootnode_next_redial_at.insert(peer_id.to_string(), now.saturating_add(1));
+                        guard.bootnode_redial_successes = guard.bootnode_redial_successes.saturating_add(1);
+                        note_swarm_event(&inner, format!("dial-success:redial:{peer_id}"));
+                    }
+'''
+          new = '''                    } else {
+                        if let Ok(mut guard) = inner.lock() {
+                            pending_bootnode_dials.insert(*peer_id);
+                            bootnode_redial_backoff_secs.insert(*peer_id, 1);
+                            bootnode_next_redial_at.insert(*peer_id, now.saturating_add(1));
+                            guard.pending_bootnode_dials.insert(peer_id.to_string());
+                            guard.pending_bootnode_dial_started_at.insert(peer_id.to_string(), now);
+                            guard.bootnode_redial_backoff_secs.insert(peer_id.to_string(), 1);
+                            guard.bootnode_next_redial_at.insert(peer_id.to_string(), now.saturating_add(1));
+                            guard.bootnode_redial_successes =
+                                guard.bootnode_redial_successes.saturating_add(1);
+                        }
+                        note_swarm_event(&inner, format!("dial-success:redial:{peer_id}"));
+                    }
+'''
+          count = source.count(old)
+          if count != 1:
+              raise SystemExit(f'expected exactly one confirmed deadlocking block, found {count}')
+          path.write_text(source.replace(old, new, 1))
+          Path('.github/workflows/apply_p2p_redial_deadlock_fix.yml').unlink(missing_ok=True)
+          PY
+
+          cargo fmt --all -- --check
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add crates/pulsedag-p2p/src/lib.rs .github/workflows/apply_p2p_redial_deadlock_fix.yml
+          git diff --cached --check
+          git commit -m 'fix(p2p): avoid recursive lock during redial success'
+          git push origin HEAD:"$HEAD_REF"
 
       - name: Enforce isolated test
         if: always()
