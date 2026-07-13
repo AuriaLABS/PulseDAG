@@ -1,0 +1,220 @@
+name: v2.3.0 selected-segment lag injection gate
+
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_sha:
+        description: Exact commit/ref to validate; blank uses the triggering SHA
+        required: false
+        type: string
+      evidence_mode:
+        description: Runtime closeout is required for release; schema-only is diagnostic
+        required: true
+        default: runtime-closeout
+        type: choice
+        options:
+          - runtime-closeout
+          - schema-only
+      min_selected_gap:
+        description: Minimum isolated-node selected-height gap
+        required: false
+        default: '96'
+        type: string
+  workflow_call:
+    inputs:
+      candidate_sha:
+        required: true
+        type: string
+      evidence_mode:
+        required: false
+        default: runtime-closeout
+        type: string
+      min_selected_gap:
+        required: false
+        default: '96'
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: v2-3-0-lag-injection-${{ inputs.candidate_sha || github.sha }}-${{ inputs.evidence_mode || 'runtime-closeout' }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  MIN_SELECTED_GAP: ${{ inputs.min_selected_gap || '96' }}
+
+jobs:
+  lag-injection:
+    name: isolate n5 / selected segment / converge
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - name: Checkout candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.candidate_sha || github.sha }}
+          fetch-depth: 1
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Prepare evidence directory
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ci-evidence/lag-injection/runtime
+          git rev-parse HEAD > ci-evidence/lag-injection/candidate-sha.txt
+          chmod +x scripts/v2_3_0_lag_injection_selected_segment.sh
+
+      - name: Require selected-segment and lag-injection test coverage
+        id: coverage
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test -p pulsedagd --locked -- --list 2>&1 | tee ci-evidence/lag-injection/pulsedagd-test-list.log
+          selected="$(grep -Eic 'selected_segment|selected-segment' ci-evidence/lag-injection/pulsedagd-test-list.log || true)"
+          lag="$(grep -Eic 'lag_injection|lag-injection|offline.*rejoin' ci-evidence/lag-injection/pulsedagd-test-list.log || true)"
+          printf 'selected_segment_tests=%s\nlag_injection_tests=%s\n' "$selected" "$lag" | tee ci-evidence/lag-injection/test-coverage.txt
+          (( selected > 0 ))
+          (( lag > 0 ))
+
+      - name: Selected-segment tests
+        id: selected
+        if: steps.coverage.outcome == 'success'
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo test -p pulsedagd selected_segment --locked -- --nocapture 2>&1 | tee ci-evidence/lag-injection/selected-segment-tests.log
+
+      - name: Lag-injection tests
+        id: lagtests
+        if: steps.coverage.outcome == 'success'
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo test -p pulsedagd lag_injection --locked -- --nocapture 2>&1 | tee ci-evidence/lag-injection/lag-injection-tests.log
+
+      - name: Run lag-injection evidence driver
+        id: driver
+        continue-on-error: true
+        shell: bash
+        env:
+          EVIDENCE_MODE: ${{ inputs.evidence_mode || 'runtime-closeout' }}
+        run: |
+          set -o pipefail
+          out="$PWD/ci-evidence/lag-injection/runtime"
+          if [[ "$EVIDENCE_MODE" == schema-only ]]; then
+            CI_MODE=1 OUT_DIR="$out" MIN_SELECTED_GAP="$MIN_SELECTED_GAP" scripts/v2_3_0_lag_injection_selected_segment.sh 2>&1 | tee ci-evidence/lag-injection/driver.log
+          else
+            CI_MODE=0 OUT_DIR="$out" MIN_SELECTED_GAP="$MIN_SELECTED_GAP" scripts/v2_3_0_lag_injection_selected_segment.sh 2>&1 | tee ci-evidence/lag-injection/driver.log
+          fi
+
+      - name: Validate driver evidence semantics
+        id: semantics
+        if: steps.driver.outcome == 'success'
+        continue-on-error: true
+        shell: bash
+        env:
+          EVIDENCE_MODE: ${{ inputs.evidence_mode || 'runtime-closeout' }}
+        run: |
+          set -euo pipefail
+          manifest='ci-evidence/lag-injection/runtime/evidence_manifest.json'
+          [[ -s "$manifest" ]]
+          if [[ "$EVIDENCE_MODE" == schema-only ]]; then
+            jq -e '
+              .ci_mode == true and
+              .primary_session_path == "correlated_selected_segment" and
+              .observed_network_selected_height_gap >= 64
+            ' "$manifest" >/dev/null
+          else
+            jq -e '
+              .result == "PASS" and
+              .ci_mode == false and
+              .evidence_kind == "runtime" and
+              .node_count == 5 and
+              .isolated_node == "n5" and
+              .observed_network_selected_height_gap >= 64 and
+              .remote_tip_inventory_received_total > 0 and
+              .locator_requests_sent_total > 0 and
+              .locator_responses_correlated_total > 0 and
+              .selected_segment_block_requests_total > 0 and
+              .selected_segment_blocks_applied_total > 0 and
+              .selected_segment_chunks_completed_total > 0 and
+              .final_convergence == true and
+              .storage_memory_consistent == true and
+              .public_testnet_ready == false
+            ' "$manifest" >/dev/null
+          fi
+
+      - name: Build lag gate manifest and checksums
+        if: always()
+        shell: bash
+        env:
+          EVIDENCE_MODE: ${{ inputs.evidence_mode || 'runtime-closeout' }}
+          COVERAGE_RESULT: ${{ steps.coverage.outcome }}
+          SELECTED_RESULT: ${{ steps.selected.outcome }}
+          LAG_TEST_RESULT: ${{ steps.lagtests.outcome }}
+          DRIVER_RESULT: ${{ steps.driver.outcome }}
+          SEMANTICS_RESULT: ${{ steps.semantics.outcome }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib, subprocess
+          root = pathlib.Path('ci-evidence/lag-injection')
+          mode = os.environ['EVIDENCE_MODE']
+          outcomes = {
+            'coverage':os.environ['COVERAGE_RESULT'],
+            'selected_segment_tests':os.environ['SELECTED_RESULT'],
+            'lag_injection_tests':os.environ['LAG_TEST_RESULT'],
+            'driver':os.environ['DRIVER_RESULT'],
+            'evidence_semantics':os.environ['SEMANTICS_RESULT'],
+          }
+          passed = all(v == 'success' for v in outcomes.values())
+          closeout = mode == 'runtime-closeout' and passed
+          diagnostic = mode == 'schema-only' and passed
+          manifest = {
+            'gate':'v2.3.0-selected-segment-lag-injection',
+            'candidate_commit':subprocess.check_output(['git','rev-parse','HEAD'], text=True).strip(),
+            'evidence_mode':mode,
+            'result':'PASS' if (closeout or diagnostic) else 'FAIL',
+            'closeout_eligible':closeout,
+            'synthetic_schema_evidence': mode == 'schema-only',
+            'outcomes':outcomes,
+            'public_testnet_ready':False,
+          }
+          (root/'gate_manifest.json').write_text(json.dumps(manifest, indent=2)+'\n')
+          lines=[]
+          for path in sorted(root.rglob('*')):
+            if path.is_file() and path.name != 'SHA256SUMS':
+              lines.append(f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.relative_to(root)}")
+          (root/'SHA256SUMS').write_text('\n'.join(lines)+'\n')
+          PY
+
+      - name: Upload lag-injection evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v2_3_0_lag_injection_${{ github.run_id }}
+          path: ci-evidence/lag-injection
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Enforce lag-injection gate
+        if: always()
+        shell: bash
+        env:
+          EVIDENCE_MODE: ${{ inputs.evidence_mode || 'runtime-closeout' }}
+        run: |
+          set -euo pipefail
+          jq -e '.result == "PASS"' ci-evidence/lag-injection/gate_manifest.json >/dev/null
+          if [[ "$EVIDENCE_MODE" == runtime-closeout ]]; then
+            jq -e '.closeout_eligible == true and .synthetic_schema_evidence == false' ci-evidence/lag-injection/gate_manifest.json >/dev/null
+          fi

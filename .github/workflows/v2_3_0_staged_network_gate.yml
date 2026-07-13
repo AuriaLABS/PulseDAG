@@ -1,0 +1,199 @@
+name: v2.3.0 staged 5N network gate
+
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_sha:
+        description: Exact commit/ref to validate; blank uses the triggering SHA
+        required: false
+        type: string
+      duration_secs:
+        description: Mining duration for each stage
+        required: false
+        default: '600'
+        type: string
+      quiescence_wait_secs:
+        description: Quiescence wait for each stage
+        required: false
+        default: '180'
+        type: string
+  workflow_call:
+    inputs:
+      candidate_sha:
+        required: true
+        type: string
+      duration_secs:
+        required: false
+        default: '600'
+        type: string
+      quiescence_wait_secs:
+        required: false
+        default: '180'
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: v2-3-0-staged-network-${{ inputs.candidate_sha || github.sha }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  DURATION_SECS: ${{ inputs.duration_secs || '600' }}
+  QUIESCENCE_WAIT_SECS: ${{ inputs.quiescence_wait_secs || '180' }}
+  GLOBAL_DEADLINE_SECS: '2700'
+  REHEARSAL_STEP_TIMEOUT_SECS: '3000'
+
+jobs:
+  staged-network:
+    name: 5N/1M -> 5N/2M -> 5N/4M
+    runs-on: ubuntu-24.04
+    timeout-minutes: 210
+    steps:
+      - name: Checkout candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.candidate_sha || github.sha }}
+          fetch-depth: 1
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Make evidence scripts executable
+        shell: bash
+        run: chmod +x scripts/*.sh
+
+      - name: cargo build --release --locked
+        id: build
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p ci-evidence/staged
+          cargo build --release --locked 2>&1 | tee ci-evidence/staged/cargo-build-release.log
+
+      - name: Run staged rehearsals on the same commit
+        id: staged
+        if: steps.build.outcome == 'success'
+        shell: bash
+        run: |
+          set -uo pipefail
+          root="$PWD/ci-evidence/staged"
+          mkdir -p "$root/1m" "$root/2m" "$root/4m"
+          commit="$(git rev-parse HEAD)"
+          printf '%s\n' "$commit" > "$root/candidate-sha.txt"
+
+          run_stage() {
+            local label="$1" script="$2" base="$3"
+            shift 3
+            echo "=== running $label on $commit ==="
+            env RUN_ID="$label" OUT_DIR="$base" "$@" bash "$script" 2>&1 | tee "$root/${label}.workflow.log"
+            local rc=${PIPESTATUS[0]}
+            printf '%s\n' "$rc" > "$root/${label}.exit-code.txt"
+            return "$rc"
+          }
+
+          set +e
+          run_stage gate-1m scripts/v2_2_20_private_5n_1m_rehearsal.sh "$root/1m"
+          rc1=$?
+          manifest1="$root/1m/gate-1m/evidence_manifest.json"
+
+          rc2=99
+          manifest2="$root/2m/gate-2m/evidence_manifest.json"
+          if (( rc1 == 0 )) && [[ -s "$manifest1" ]]; then
+            run_stage gate-2m scripts/v2_2_20_private_5n_2m_rehearsal.sh "$root/2m" PRIOR_GATE_C_MANIFEST="$manifest1"
+            rc2=$?
+          else
+            echo '5N/2M skipped because 5N/1M did not produce a strict PASS manifest.' | tee "$root/gate-2m.workflow.log"
+          fi
+          printf '%s\n' "$rc2" > "$root/gate-2m.exit-code.txt"
+
+          rc4=99
+          if (( rc1 == 0 && rc2 == 0 )) && [[ -s "$manifest1" && -s "$manifest2" ]]; then
+            run_stage gate-4m scripts/v2_2_20_private_5n_4m_rehearsal.sh "$root/4m" PRIOR_GATE_C_MANIFEST="$manifest1" PRIOR_GATE_D_MANIFEST="$manifest2"
+            rc4=$?
+          else
+            echo '5N/4M skipped because an earlier staged gate did not pass.' | tee "$root/gate-4m.workflow.log"
+          fi
+          printf '%s\n' "$rc4" > "$root/gate-4m.exit-code.txt"
+          set -e
+
+          python3 - "$root" "$commit" <<'PY'
+          import hashlib, json, pathlib, sys
+          root = pathlib.Path(sys.argv[1]); commit = sys.argv[2]
+          stages = {
+            '5N/1M': root/'1m'/'gate-1m',
+            '5N/2M': root/'2m'/'gate-2m',
+            '5N/4M': root/'4m'/'gate-4m',
+          }
+          def sha256_file(path):
+            digest = hashlib.sha256()
+            with path.open('rb') as source:
+              for chunk in iter(lambda: source.read(1024 * 1024), b''):
+                digest.update(chunk)
+            return digest.hexdigest()
+          index = {'gate':'v2.3.0-staged-network','candidate_commit':commit,'stages':{},'public_testnet_ready':False}
+          all_pass = True
+          for name, directory in stages.items():
+            manifest_path = directory/'evidence_manifest.json'
+            tar_path = directory/'evidence.tar.gz'
+            entry = {'manifest_path':str(manifest_path),'archive_path':str(tar_path)}
+            if manifest_path.exists():
+              manifest = json.loads(manifest_path.read_text())
+              entry['result'] = manifest.get('result')
+              entry['manifest_commit'] = manifest.get('git_commit') or manifest.get('commit')
+            else:
+              entry['result'] = 'MISSING'
+              entry['manifest_commit'] = None
+            entry['sha256'] = sha256_file(tar_path) if tar_path.exists() else None
+            entry['same_commit'] = bool(entry['manifest_commit']) and commit.startswith(str(entry['manifest_commit']))
+            if entry['result'] != 'PASS' or not entry['same_commit'] or not entry['sha256']:
+              all_pass = False
+            index['stages'][name] = entry
+          index['result'] = 'PASS' if all_pass else 'FAIL'
+          (root/'staged_evidence_index.json').write_text(json.dumps(index, indent=2)+'\n')
+          (root/'SHA256SUMS').write_text('\n'.join(
+            f"{entry['sha256']}  {entry['archive_path']}" for entry in index['stages'].values() if entry['sha256']
+          )+'\n')
+          PY
+          exit 0
+
+      - name: Build missing staged index after build failure
+        if: always() && steps.build.outcome != 'success'
+        shell: bash
+        run: |
+          mkdir -p ci-evidence/staged
+          printf '{"gate":"v2.3.0-staged-network","result":"FAIL","reason":"release build failed","candidate_commit":"%s","public_testnet_ready":false}\n' "$(git rev-parse HEAD)" > ci-evidence/staged/staged_evidence_index.json
+
+      - name: Upload staged evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v2_3_0_staged_network_${{ github.run_id }}
+          path: |
+            ci-evidence/staged/**/*.workflow.log
+            ci-evidence/staged/**/*.exit-code.txt
+            ci-evidence/staged/**/evidence_manifest.json
+            ci-evidence/staged/**/evidence-summary.md
+            ci-evidence/staged/**/evidence.tar.gz
+            ci-evidence/staged/**/evidence.tar.gz.sha256
+            ci-evidence/staged/staged_evidence_index.json
+            ci-evidence/staged/SHA256SUMS
+            ci-evidence/staged/cargo-build-release.log
+            ci-evidence/staged/candidate-sha.txt
+          if-no-files-found: warn
+          retention-days: 90
+
+      - name: Enforce strict staged gate
+        if: always()
+        shell: bash
+        env:
+          BUILD_RESULT: ${{ steps.build.outcome }}
+        run: |
+          set -euo pipefail
+          [[ "$BUILD_RESULT" == success ]]
+          jq -e '.result == "PASS" and all(.stages[]; .result == "PASS" and .same_commit == true and (.sha256 | length == 64))' ci-evidence/staged/staged_evidence_index.json >/dev/null

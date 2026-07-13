@@ -1,0 +1,149 @@
+name: v2.3.0 workspace validation gate
+
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_sha:
+        description: Exact commit/ref to validate; blank uses the triggering SHA
+        required: false
+        type: string
+  workflow_call:
+    inputs:
+      candidate_sha:
+        description: Exact commit/ref to validate
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: v2-3-0-workspace-${{ inputs.candidate_sha || github.sha }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  workspace:
+    name: fmt / check / test / clippy
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - name: Checkout candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.candidate_sha || github.sha }}
+          fetch-depth: 1
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy,rustfmt
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Record candidate metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ci-evidence/workspace
+          git rev-parse HEAD | tee ci-evidence/workspace/candidate-sha.txt
+          printf 'VERSION=' | tee ci-evidence/workspace/version.txt
+          cat VERSION | tee -a ci-evidence/workspace/version.txt
+          cargo metadata --format-version 1 --no-deps > ci-evidence/workspace/cargo-metadata.json
+
+      - name: cargo fmt --all -- --check
+        id: fmt
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo fmt --all -- --check 2>&1 | tee ci-evidence/workspace/cargo-fmt.log
+
+      - name: cargo check --workspace --locked
+        id: check
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo check --workspace --locked 2>&1 | tee ci-evidence/workspace/cargo-check.log
+
+      - name: cargo test --workspace --locked
+        id: test
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo test --workspace --locked 2>&1 | tee ci-evidence/workspace/cargo-test.log
+
+      - name: cargo clippy --workspace --all-targets -- -D warnings
+        id: clippy
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo clippy --workspace --all-targets -- -D warnings 2>&1 | tee ci-evidence/workspace/cargo-clippy.log
+
+      - name: Build workspace evidence manifest
+        if: always()
+        shell: bash
+        env:
+          FMT_RESULT: ${{ steps.fmt.outcome }}
+          CHECK_RESULT: ${{ steps.check.outcome }}
+          TEST_RESULT: ${{ steps.test.outcome }}
+          CLIPPY_RESULT: ${{ steps.clippy.outcome }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib, subprocess
+          root = pathlib.Path('ci-evidence/workspace')
+          commit = subprocess.check_output(['git','rev-parse','HEAD'], text=True).strip()
+          checks = {
+              'fmt': os.environ['FMT_RESULT'],
+              'check': os.environ['CHECK_RESULT'],
+              'test': os.environ['TEST_RESULT'],
+              'clippy': os.environ['CLIPPY_RESULT'],
+          }
+          result = 'PASS' if all(v == 'success' for v in checks.values()) else 'FAIL'
+          manifest = {
+              'gate': 'v2.3.0-workspace-validation',
+              'candidate_commit': commit,
+              'result': result,
+              'checks': checks,
+              'version_file': pathlib.Path('VERSION').read_text().strip(),
+              'public_testnet_ready': False,
+          }
+          (root / 'evidence_manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
+          for path in sorted(root.iterdir()):
+              if path.is_file() and path.name != 'SHA256SUMS':
+                  digest = hashlib.sha256(path.read_bytes()).hexdigest()
+                  with (root / 'SHA256SUMS').open('a') as out:
+                      out.write(f'{digest}  {path.name}\n')
+          PY
+
+      - name: Upload workspace evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v2_3_0_workspace_validation_${{ github.run_id }}
+          path: ci-evidence/workspace
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Enforce workspace gate
+        if: always()
+        shell: bash
+        env:
+          FMT_RESULT: ${{ steps.fmt.outcome }}
+          CHECK_RESULT: ${{ steps.check.outcome }}
+          TEST_RESULT: ${{ steps.test.outcome }}
+          CLIPPY_RESULT: ${{ steps.clippy.outcome }}
+        run: |
+          set -euo pipefail
+          printf 'fmt=%s check=%s test=%s clippy=%s\n' "$FMT_RESULT" "$CHECK_RESULT" "$TEST_RESULT" "$CLIPPY_RESULT"
+          [[ "$FMT_RESULT" == success ]]
+          [[ "$CHECK_RESULT" == success ]]
+          [[ "$TEST_RESULT" == success ]]
+          [[ "$CLIPPY_RESULT" == success ]]
