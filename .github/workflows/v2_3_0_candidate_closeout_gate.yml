@@ -30,13 +30,18 @@ on:
         required: false
         default: '96'
         type: string
+      test_compile_timeout_minutes:
+        description: Maximum runtime for compiling all workspace tests without running them
+        required: false
+        default: '30'
+        type: string
       package_test_timeout_minutes:
-        description: Maximum runtime for each workspace package test suite
+        description: Maximum execution runtime for each already-compiled workspace package test suite
         required: false
         default: '10'
         type: string
       p2p_real_runtime_test_timeout_seconds:
-        description: Maximum runtime for the isolated real-swarm P2P initialization test
+        description: Maximum execution runtime for the already-compiled isolated real-swarm P2P test
         required: false
         default: '120'
         type: string
@@ -68,6 +73,7 @@ jobs:
     uses: ./.github/workflows/v2_3_0_workspace_validation.yml
     with:
       candidate_sha: ${{ inputs.candidate_sha || github.sha }}
+      test_compile_timeout_minutes: ${{ inputs.test_compile_timeout_minutes }}
       package_test_timeout_minutes: ${{ inputs.package_test_timeout_minutes }}
       p2p_real_runtime_test_timeout_seconds: ${{ inputs.p2p_real_runtime_test_timeout_seconds }}
       test_threads: ${{ inputs.test_threads }}
