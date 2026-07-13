@@ -30,6 +30,26 @@ on:
         required: false
         default: '96'
         type: string
+      package_test_timeout_minutes:
+        description: Maximum runtime for each workspace package test suite
+        required: false
+        default: '20'
+        type: string
+      test_threads:
+        description: Rust test threads per package; use 1 for deterministic diagnosis
+        required: false
+        default: '1'
+        type: string
+      check_timeout_minutes:
+        description: Maximum runtime for cargo check
+        required: false
+        default: '20'
+        type: string
+      clippy_timeout_minutes:
+        description: Maximum runtime for cargo clippy
+        required: false
+        default: '30'
+        type: string
 
 permissions:
   contents: read
@@ -43,6 +63,10 @@ jobs:
     uses: ./.github/workflows/v2_3_0_workspace_validation.yml
     with:
       candidate_sha: ${{ inputs.candidate_sha || github.sha }}
+      package_test_timeout_minutes: ${{ inputs.package_test_timeout_minutes }}
+      test_threads: ${{ inputs.test_threads }}
+      check_timeout_minutes: ${{ inputs.check_timeout_minutes }}
+      clippy_timeout_minutes: ${{ inputs.clippy_timeout_minutes }}
 
   staged-network:
     needs: workspace
