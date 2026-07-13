@@ -10,7 +10,12 @@ on:
       package_test_timeout_minutes:
         description: Maximum runtime for each workspace package test suite
         required: false
-        default: '20'
+        default: '10'
+        type: string
+      p2p_real_runtime_test_timeout_seconds:
+        description: Maximum runtime for the isolated real-swarm P2P initialization test
+        required: false
+        default: '120'
         type: string
       test_threads:
         description: Rust test threads per package; use 1 for deterministic diagnosis
@@ -35,7 +40,11 @@ on:
         type: string
       package_test_timeout_minutes:
         required: false
-        default: '20'
+        default: '10'
+        type: string
+      p2p_real_runtime_test_timeout_seconds:
+        required: false
+        default: '120'
         type: string
       test_threads:
         required: false
@@ -118,7 +127,8 @@ jobs:
         continue-on-error: true
         shell: bash
         env:
-          PACKAGE_TEST_TIMEOUT_MINUTES: ${{ inputs.package_test_timeout_minutes || '20' }}
+          PACKAGE_TEST_TIMEOUT_MINUTES: ${{ inputs.package_test_timeout_minutes || '10' }}
+          P2P_REAL_RUNTIME_TEST_TIMEOUT_SECONDS: ${{ inputs.p2p_real_runtime_test_timeout_seconds || '120' }}
           TEST_THREADS: ${{ inputs.test_threads || '1' }}
         run: |
           set -uo pipefail
@@ -133,32 +143,13 @@ jobs:
             exit 2
           fi
 
-          for package in "${packages[@]}"; do
-            slug="$(printf '%s' "$package" | tr -c 'A-Za-z0-9._-' '_')"
-            log="$root/tests/${slug}.log"
-            diagnostic="$root/diagnostics/${slug}.txt"
-            started_utc="$(date -u +%FT%TZ)"
-            started_epoch="$(date +%s)"
-
-            echo "::group::cargo test -p ${package}"
-            echo "package=${package} timeout=${PACKAGE_TEST_TIMEOUT_MINUTES}m test_threads=${TEST_THREADS}"
-            set +e
-            timeout --signal=TERM --kill-after=30s "${PACKAGE_TEST_TIMEOUT_MINUTES}m" \
-              stdbuf -oL -eL cargo test -p "$package" --locked -- \
-                --nocapture --test-threads="$TEST_THREADS" 2>&1 | tee "$log"
-            rc=${PIPESTATUS[0]}
-            set -u
-            ended_utc="$(date -u +%FT%TZ)"
-            duration_seconds=$(( $(date +%s) - started_epoch ))
-            timed_out=false
-            if (( rc == 124 || rc == 137 )); then
-              timed_out=true
-            fi
-
-            python3 - "$results_jsonl" "$package" "$rc" "$timed_out" "$started_utc" "$ended_utc" "$duration_seconds" "$log" <<'PY'
+          write_result() {
+            local case_name="$1" package="$2" rc="$3" timed_out="$4" started_utc="$5" ended_utc="$6" duration_seconds="$7" log="$8"
+            python3 - "$results_jsonl" "$case_name" "$package" "$rc" "$timed_out" "$started_utc" "$ended_utc" "$duration_seconds" "$log" <<'PY'
           import json, pathlib, sys
-          path, package, rc, timed_out, started, ended, duration, log = sys.argv[1:]
+          path, case_name, package, rc, timed_out, started, ended, duration, log = sys.argv[1:]
           record = {
+              'case': case_name,
               'package': package,
               'exit_code': int(rc),
               'result': 'PASS' if int(rc) == 0 else 'TIMEOUT' if timed_out == 'true' else 'FAIL',
@@ -171,32 +162,93 @@ jobs:
           with pathlib.Path(path).open('a') as out:
               out.write(json.dumps(record, sort_keys=True) + '\n')
           PY
+          }
 
+          capture_diagnostics() {
+            local slug="$1" case_name="$2" package="$3" rc="$4" timed_out="$5" timeout_value="$6" log="$7"
+            local diagnostic="$root/diagnostics/${slug}.txt"
+            {
+              echo "timestamp_utc=$(date -u +%FT%TZ)"
+              echo "case=$case_name"
+              echo "package=$package"
+              echo "exit_code=$rc"
+              echo "timed_out=$timed_out"
+              echo "timeout=$timeout_value"
+              echo "test_threads=$TEST_THREADS"
+              echo
+              echo '## process table'
+              ps -eo pid,ppid,pgid,stat,etime,pcpu,pmem,comm,args || true
+              echo
+              echo '## process tree'
+              command -v pstree >/dev/null 2>&1 && pstree -ap || true
+              echo
+              echo '## listening sockets'
+              command -v ss >/dev/null 2>&1 && ss -ltnp || true
+              echo
+              echo '## final test output'
+              tail -n 400 "$log" || true
+            } > "$diagnostic"
+          }
+
+          run_case() {
+            local case_name="$1" package="$2" timeout_value="$3" slug="$4"
+            shift 4
+            local log="$root/tests/${slug}.log"
+            local started_utc started_epoch ended_utc duration_seconds rc timed_out
+            started_utc="$(date -u +%FT%TZ)"
+            started_epoch="$(date +%s)"
+
+            echo "::group::${case_name}"
+            echo "package=${package} timeout=${timeout_value} test_threads=${TEST_THREADS}"
+            set +e
+            timeout --signal=TERM --kill-after=30s "$timeout_value" \
+              stdbuf -oL -eL "$@" 2>&1 | tee "$log"
+            rc=${PIPESTATUS[0]}
+            set -u
+            ended_utc="$(date -u +%FT%TZ)"
+            duration_seconds=$(( $(date +%s) - started_epoch ))
+            timed_out=false
+            if (( rc == 124 || rc == 137 )); then
+              timed_out=true
+            fi
+
+            write_result "$case_name" "$package" "$rc" "$timed_out" "$started_utc" "$ended_utc" "$duration_seconds" "$log"
             if (( rc != 0 )); then
               overall_rc=1
-              {
-                echo "timestamp_utc=$(date -u +%FT%TZ)"
-                echo "package=$package"
-                echo "exit_code=$rc"
-                echo "timed_out=$timed_out"
-                echo "timeout_minutes=$PACKAGE_TEST_TIMEOUT_MINUTES"
-                echo "test_threads=$TEST_THREADS"
-                echo
-                echo '## process table'
-                ps -eo pid,ppid,pgid,stat,etime,pcpu,pmem,comm,args || true
-                echo
-                echo '## process tree'
-                command -v pstree >/dev/null 2>&1 && pstree -ap || true
-                echo
-                echo '## listening sockets'
-                command -v ss >/dev/null 2>&1 && ss -ltnp || true
-                echo
-                echo '## final test output'
-                tail -n 400 "$log" || true
-              } > "$diagnostic"
+              capture_diagnostics "$slug" "$case_name" "$package" "$rc" "$timed_out" "$timeout_value" "$log"
+              if [[ "$package" == "pulsedag-p2p" && "$timed_out" == true ]]; then
+                pkill -TERM -f 'target/debug/deps/pulsedag_p2p-' 2>/dev/null || true
+                sleep 2
+                pkill -KILL -f 'target/debug/deps/pulsedag_p2p-' 2>/dev/null || true
+              fi
             fi
-            echo "package=${package} exit_code=${rc} timed_out=${timed_out} duration_seconds=${duration_seconds}"
+            echo "case=${case_name} package=${package} exit_code=${rc} timed_out=${timed_out} duration_seconds=${duration_seconds}"
             echo '::endgroup::'
+            return 0
+          }
+
+          for package in "${packages[@]}"; do
+            slug="$(printf '%s' "$package" | tr -c 'A-Za-z0-9._-' '_')"
+            if [[ "$package" == "pulsedag-p2p" ]]; then
+              run_case \
+                'pulsedag-p2p package tests excluding isolated real-swarm initialization' \
+                "$package" "${PACKAGE_TEST_TIMEOUT_MINUTES}m" "${slug}_remaining" \
+                cargo test -p "$package" --locked -- \
+                  --nocapture --test-threads="$TEST_THREADS" \
+                  --skip real_runtime_mode_initializes_without_loopback_labeling
+
+              run_case \
+                'pulsedag-p2p real_runtime_mode_initializes_without_loopback_labeling' \
+                "$package" "${P2P_REAL_RUNTIME_TEST_TIMEOUT_SECONDS}s" "${slug}_real_runtime_init" \
+                cargo test -p "$package" --locked \
+                  real_runtime_mode_initializes_without_loopback_labeling -- \
+                  --nocapture --test-threads=1
+            else
+              run_case \
+                "${package} package tests" "$package" "${PACKAGE_TEST_TIMEOUT_MINUTES}m" "$slug" \
+                cargo test -p "$package" --locked -- \
+                  --nocapture --test-threads="$TEST_THREADS"
+            fi
           done
 
           python3 - "$results_jsonl" "$root/test-results.json" <<'PY'
@@ -204,8 +256,9 @@ jobs:
           source, destination = map(pathlib.Path, sys.argv[1:])
           records = [json.loads(line) for line in source.read_text().splitlines() if line.strip()]
           summary = {
-              'packages': records,
-              'package_count': len(records),
+              'cases': records,
+              'case_count': len(records),
+              'package_count': len({item['package'] for item in records}),
               'passed': sum(item['result'] == 'PASS' for item in records),
               'failed': sum(item['result'] == 'FAIL' for item in records),
               'timed_out': sum(item['result'] == 'TIMEOUT' for item in records),
@@ -213,6 +266,12 @@ jobs:
           }
           destination.write_text(json.dumps(summary, indent=2) + '\n')
           PY
+
+          {
+            echo '## Workspace package tests'
+            echo
+            jq -r '.cases[] | "- `\(.case)`: **\(.result)** (\(.duration_seconds)s, exit \(.exit_code))"' "$root/test-results.json"
+          } >> "$GITHUB_STEP_SUMMARY"
 
           exit "$overall_rc"
 
@@ -250,7 +309,7 @@ jobs:
           }
           test_results_path = root / 'test-results.json'
           test_results = json.loads(test_results_path.read_text()) if test_results_path.exists() else {
-              'result':'MISSING','package_count':0,'passed':0,'failed':0,'timed_out':0,'packages':[]
+              'result':'MISSING','case_count':0,'package_count':0,'passed':0,'failed':0,'timed_out':0,'cases':[]
           }
           result = 'PASS' if all(v == 'success' for v in checks.values()) and test_results.get('result') == 'PASS' else 'FAIL'
           manifest = {
