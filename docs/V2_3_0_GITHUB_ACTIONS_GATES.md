@@ -42,7 +42,7 @@ Inputs:
 - `mode=diagnostic`: allows contract/schema checks but always records `NO_GO`;
 - staged mining duration and quiescence wait;
 - minimum selected-height gap, default `96`;
-- package test timeout, default `20` minutes for each workspace package;
+- package test timeout, default `10` minutes for each workspace package;
 - Rust test threads per package, default `1`;
 - independent timeouts for `cargo check` and `cargo clippy`.
 
