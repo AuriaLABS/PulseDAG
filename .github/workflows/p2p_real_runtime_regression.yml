@@ -22,6 +22,11 @@ on:
         required: false
         default: '120'
         type: string
+      stack_snapshot_seconds:
+        description: Capture a debugger thread snapshot after this many seconds
+        required: false
+        default: '15'
+        type: string
 
 permissions:
   contents: read
@@ -48,6 +53,16 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
+      - name: Ensure debugger is available
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v gdb >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y gdb
+          fi
+          gdb --version | head -n1
+
       - name: Record candidate
         shell: bash
         run: |
@@ -66,32 +81,103 @@ jobs:
           timeout --signal=TERM --kill-after=30s "${COMPILE_TIMEOUT_MINUTES}m" \
             cargo test -p pulsedag-p2p --locked --no-run 2>&1 \
             | tee ci-evidence/p2p-real-runtime/compile.log
+          test_bin="$(find target/debug/deps -maxdepth 1 -type f -perm -111 -name 'pulsedag_p2p-*' | sort | head -n1)"
+          [[ -n "$test_bin" ]]
+          printf '%s\n' "$test_bin" > ci-evidence/p2p-real-runtime/test-binary.txt
 
-      - name: Run isolated real-swarm initialization test
+      - name: Run isolated test and capture live thread snapshots
         id: test
         if: steps.compile.outcome == 'success'
         continue-on-error: true
         shell: bash
         env:
           TEST_TIMEOUT_SECONDS: ${{ inputs.timeout_seconds || '120' }}
+          STACK_SNAPSHOT_SECONDS: ${{ inputs.stack_snapshot_seconds || '15' }}
           RUST_BACKTRACE: '1'
         run: |
-          set -o pipefail
-          set +e
-          timeout --signal=TERM --kill-after=30s "${TEST_TIMEOUT_SECONDS}s" \
-            stdbuf -oL -eL cargo test -p pulsedag-p2p --locked \
-              real_runtime_mode_initializes_without_loopback_labeling -- \
-              --nocapture --test-threads=1 2>&1 \
-            | tee ci-evidence/p2p-real-runtime/test.log
-          rc=${PIPESTATUS[0]}
-          set -e
-          printf '%s\n' "$rc" > ci-evidence/p2p-real-runtime/exit-code.txt
-          if (( rc == 124 || rc == 137 )); then
-            printf 'TIMEOUT\n' > ci-evidence/p2p-real-runtime/result.txt
-          elif (( rc == 0 )); then
-            printf 'PASS\n' > ci-evidence/p2p-real-runtime/result.txt
+          set -uo pipefail
+          root="ci-evidence/p2p-real-runtime"
+          log="$root/test.log"
+          test_bin="$(cat "$root/test-binary.txt")"
+          started="$(date +%s)"
+          deadline=$((started + TEST_TIMEOUT_SECONDS))
+          snapshot_at=$((started + STACK_SNAPSHOT_SECONDS))
+          snapshot_done=0
+          timed_out=0
+
+          stdbuf -oL -eL "$test_bin" \
+            --exact tests::real_runtime_mode_initializes_without_loopback_labeling \
+            --nocapture --test-threads=1 > "$log" 2>&1 &
+          test_pid=$!
+          printf '%s\n' "$test_pid" > "$root/test-pid.txt"
+          echo "test_pid=$test_pid test_binary=$test_bin timeout_seconds=$TEST_TIMEOUT_SECONDS"
+
+          capture_threads() {
+            local suffix="$1"
+            {
+              echo "timestamp_utc=$(date -u +%FT%TZ)"
+              echo "pid=$test_pid"
+              echo
+              echo '## ps'
+              ps -L -p "$test_pid" -o pid,tid,ppid,pgid,stat,etime,pcpu,pmem,wchan:32,comm,args || true
+              echo
+              echo '## proc task state'
+              for task in /proc/"$test_pid"/task/*; do
+                [[ -d "$task" ]] || continue
+                tid="${task##*/}"
+                printf '\n### tid=%s\n' "$tid"
+                printf 'wchan='; cat "$task/wchan" 2>/dev/null || true
+                sed -n '1,35p' "$task/status" 2>/dev/null || true
+                cat "$task/stack" 2>/dev/null || true
+              done
+              echo
+              echo '## gdb all-thread backtrace'
+              timeout 25s gdb -q -batch \
+                -ex 'set pagination off' \
+                -ex 'set print thread-events off' \
+                -ex 'thread apply all bt full' \
+                -p "$test_pid" || true
+              echo
+              echo '## current test log'
+              tail -n 200 "$log" 2>/dev/null || true
+            } > "$root/thread-snapshot-${suffix}.txt" 2>&1
+          }
+
+          while kill -0 "$test_pid" 2>/dev/null; do
+            now="$(date +%s)"
+            if (( snapshot_done == 0 && now >= snapshot_at )); then
+              capture_threads "${STACK_SNAPSHOT_SECONDS}s"
+              snapshot_done=1
+            fi
+            if (( now >= deadline )); then
+              timed_out=1
+              capture_threads "timeout"
+              kill -TERM "$test_pid" 2>/dev/null || true
+              sleep 3
+              kill -0 "$test_pid" 2>/dev/null && kill -KILL "$test_pid" 2>/dev/null || true
+              break
+            fi
+            sleep 1
+          done
+
+          if (( timed_out == 1 )); then
+            wait "$test_pid" 2>/dev/null || true
+            rc=124
           else
-            printf 'FAIL\n' > ci-evidence/p2p-real-runtime/result.txt
+            set +e
+            wait "$test_pid"
+            rc=$?
+            set -u
+          fi
+
+          cat "$log" || true
+          printf '%s\n' "$rc" > "$root/exit-code.txt"
+          if (( rc == 124 || rc == 137 )); then
+            printf 'TIMEOUT\n' > "$root/result.txt"
+          elif (( rc == 0 )); then
+            printf 'PASS\n' > "$root/result.txt"
+          else
+            printf 'FAIL\n' > "$root/result.txt"
           fi
           exit 0
 
@@ -102,17 +188,18 @@ jobs:
           COMPILE_RESULT: ${{ steps.compile.outcome }}
         run: |
           set -euo pipefail
+          root="ci-evidence/p2p-real-runtime"
           if [[ "$COMPILE_RESULT" != success ]]; then
-            printf '2\n' > ci-evidence/p2p-real-runtime/exit-code.txt
-            printf 'COMPILE_FAIL\n' > ci-evidence/p2p-real-runtime/result.txt
+            printf '2\n' > "$root/exit-code.txt"
+            printf 'COMPILE_FAIL\n' > "$root/result.txt"
           fi
-          rc="$(cat ci-evidence/p2p-real-runtime/exit-code.txt 2>/dev/null || echo 1)"
+          rc="$(cat "$root/exit-code.txt" 2>/dev/null || echo 1)"
           if [[ "$rc" != 0 ]]; then
             {
               echo "timestamp_utc=$(date -u +%FT%TZ)"
               echo "compile_result=$COMPILE_RESULT"
               echo "exit_code=$rc"
-              echo "result=$(cat ci-evidence/p2p-real-runtime/result.txt 2>/dev/null || echo UNKNOWN)"
+              echo "result=$(cat "$root/result.txt" 2>/dev/null || echo UNKNOWN)"
               echo
               echo '## process table'
               ps -eo pid,ppid,pgid,stat,etime,pcpu,pmem,comm,args || true
@@ -124,18 +211,18 @@ jobs:
               command -v ss >/dev/null 2>&1 && ss -ltnp || true
               echo
               echo '## final compile output'
-              tail -n 200 ci-evidence/p2p-real-runtime/compile.log 2>/dev/null || true
+              tail -n 200 "$root/compile.log" 2>/dev/null || true
               echo
               echo '## final test output'
-              tail -n 400 ci-evidence/p2p-real-runtime/test.log 2>/dev/null || true
-            } > ci-evidence/p2p-real-runtime/diagnostics.txt
+              tail -n 400 "$root/test.log" 2>/dev/null || true
+            } > "$root/diagnostics.txt"
             pkill -TERM -f 'target/debug/deps/pulsedag_p2p-' 2>/dev/null || true
             sleep 2
             pkill -KILL -f 'target/debug/deps/pulsedag_p2p-' 2>/dev/null || true
           fi
-          sha256sum ci-evidence/p2p-real-runtime/* > ci-evidence/p2p-real-runtime/SHA256SUMS.tmp || true
-          grep -v 'SHA256SUMS' ci-evidence/p2p-real-runtime/SHA256SUMS.tmp > ci-evidence/p2p-real-runtime/SHA256SUMS || true
-          rm -f ci-evidence/p2p-real-runtime/SHA256SUMS.tmp
+          sha256sum "$root"/* > "$root/SHA256SUMS.tmp" || true
+          grep -v 'SHA256SUMS' "$root/SHA256SUMS.tmp" > "$root/SHA256SUMS" || true
+          rm -f "$root/SHA256SUMS.tmp"
 
       - name: Upload focused evidence
         if: always()
