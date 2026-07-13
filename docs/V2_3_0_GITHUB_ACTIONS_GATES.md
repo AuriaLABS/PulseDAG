@@ -8,7 +8,7 @@ They do not change `VERSION`, do not claim public-testnet readiness, and do not 
 
 | Workflow | Purpose | Closeout behavior |
 |---|---|---|
-| `v2_3_0_workspace_validation.yml` | `fmt`, workspace check, tests and clippy | Strict: every command must pass. |
+| `v2_3_0_workspace_validation.yml` | `fmt`, workspace check, bounded package-by-package tests and clippy | Strict: every command and package suite must pass; timeouts produce diagnostics. |
 | `v2_3_0_staged_network_gate.yml` | Runs `5N/1M -> 5N/2M -> 5N/4M` sequentially | Strict: every stage must PASS, use the same commit and produce an archive checksum. |
 | `v2_3_0_mempool_tx_relay_gate.yml` | Mempool bounds, relay coverage and five-node transaction drill | `unit-contract` is diagnostic. `runtime-closeout` requires real five-node evidence. |
 | `v2_3_0_lag_injection_gate.yml` | Selected-tip inventory and selected-segment lag recovery | `schema-only` is synthetic and never closeout-eligible. `runtime-closeout` requires an actual isolated node. |
@@ -41,7 +41,10 @@ Inputs:
 - `mode=runtime-closeout`: required for a GO decision;
 - `mode=diagnostic`: allows contract/schema checks but always records `NO_GO`;
 - staged mining duration and quiescence wait;
-- minimum selected-height gap, default `96`.
+- minimum selected-height gap, default `96`;
+- package test timeout, default `20` minutes for each workspace package;
+- Rust test threads per package, default `1`;
+- independent timeouts for `cargo check` and `cargo clippy`.
 
 The final decision artifact contains:
 
@@ -56,6 +59,33 @@ The final decision artifact contains:
 ```
 
 `closeout_eligible=true` is impossible in diagnostic mode.
+
+## Bounded workspace tests
+
+The workspace gate does not run one unbounded `cargo test --workspace` process. It discovers workspace packages from `cargo metadata` and executes each package independently:
+
+```text
+cargo test -p <package> --locked -- --nocapture --test-threads=<n>
+```
+
+Each package has its own timeout. The gate continues after a failure or timeout so that Clippy, the manifest and the evidence upload still run.
+
+For every package it records:
+
+- start and end timestamps;
+- duration;
+- exit code;
+- `PASS`, `FAIL`, or `TIMEOUT`;
+- complete package test log.
+
+A failed or timed-out package also produces a diagnostic file containing:
+
+- process table;
+- process tree;
+- listening sockets;
+- the final 400 lines of test output.
+
+The final `test-results.json` identifies the exact package that failed or stalled. Any timeout makes the workspace gate fail; it is never treated as a waiver or an acceptable retry.
 
 ## Evidence artifacts
 
