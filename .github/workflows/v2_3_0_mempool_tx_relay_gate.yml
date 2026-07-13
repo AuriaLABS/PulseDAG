@@ -1,0 +1,192 @@
+name: v2.3.0 mempool and transaction relay gate
+
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_sha:
+        description: Exact commit/ref to validate; blank uses the triggering SHA
+        required: false
+        type: string
+      evidence_mode:
+        description: Unit contract is diagnostic; runtime closeout requires a real five-node drill
+        required: true
+        default: runtime-closeout
+        type: choice
+        options:
+          - runtime-closeout
+          - unit-contract
+  workflow_call:
+    inputs:
+      candidate_sha:
+        required: true
+        type: string
+      evidence_mode:
+        required: false
+        default: runtime-closeout
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: v2-3-0-mempool-relay-${{ inputs.candidate_sha || github.sha }}-${{ inputs.evidence_mode || 'runtime-closeout' }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  mempool-relay:
+    name: mempool bounds / relay / cleanup
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    steps:
+      - name: Checkout candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.candidate_sha || github.sha }}
+          fetch-depth: 1
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Prepare evidence directory
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ci-evidence/mempool-relay/runtime
+          git rev-parse HEAD > ci-evidence/mempool-relay/candidate-sha.txt
+
+      - name: Core bounded mempool tests
+        id: core
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo test -p pulsedag-core mempool --locked -- --nocapture 2>&1 | tee ci-evidence/mempool-relay/core-mempool-tests.log
+
+      - name: Require transaction-relay test coverage
+        id: coverage
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test -p pulsedag-p2p --locked -- --list 2>&1 | tee ci-evidence/mempool-relay/p2p-test-list.log
+          count="$(grep -Eic 'new_transaction|transaction.*relay|relay.*transaction|relay.*dedup|dedup.*relay' ci-evidence/mempool-relay/p2p-test-list.log || true)"
+          printf '%s\n' "$count" | tee ci-evidence/mempool-relay/relay-test-count.txt
+          if (( count < 1 )); then
+            echo 'No transaction-relay/deduplication tests were discovered in pulsedag-p2p.' >&2
+            exit 42
+          fi
+
+      - name: P2P transaction relay tests
+        id: p2p
+        if: steps.coverage.outcome == 'success'
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo test -p pulsedag-p2p --locked -- --nocapture 2>&1 | tee ci-evidence/mempool-relay/p2p-relay-tests.log
+
+      - name: RPC mempool metrics tests
+        id: rpc
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo test -p pulsedag-rpc mempool --locked -- --nocapture 2>&1 | tee ci-evidence/mempool-relay/rpc-mempool-tests.log
+
+      - name: Run real five-node transaction relay drill
+        id: runtime
+        if: inputs.evidence_mode == 'runtime-closeout'
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          driver='scripts/v2_3_0_mempool_tx_relay_evidence.sh'
+          if [[ ! -x "$driver" ]]; then
+            echo "Required runtime driver is missing or not executable: $driver" >&2
+            echo 'Unit mempool tests cannot substitute for five-node relay evidence.' >&2
+            exit 43
+          fi
+          OUT_DIR="$PWD/ci-evidence/mempool-relay/runtime" "$driver" 2>&1 | tee ci-evidence/mempool-relay/runtime-drill.log
+          manifest='ci-evidence/mempool-relay/runtime/evidence_manifest.json'
+          jq -e '
+            .result == "PASS" and
+            .evidence_kind == "runtime" and
+            .node_count == 5 and
+            .relay_converged == true and
+            .duplicate_suppression == true and
+            .capacity_rejection_taxonomy == true and
+            .confirmation_cleanup == true and
+            .deterministic_final_mempool_sets == true and
+            .public_testnet_ready == false
+          ' "$manifest" >/dev/null
+
+      - name: Build gate manifest and checksums
+        if: always()
+        shell: bash
+        env:
+          EVIDENCE_MODE: ${{ inputs.evidence_mode || 'runtime-closeout' }}
+          CORE_RESULT: ${{ steps.core.outcome }}
+          COVERAGE_RESULT: ${{ steps.coverage.outcome }}
+          P2P_RESULT: ${{ steps.p2p.outcome }}
+          RPC_RESULT: ${{ steps.rpc.outcome }}
+          RUNTIME_RESULT: ${{ steps.runtime.outcome }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib, subprocess
+          root = pathlib.Path('ci-evidence/mempool-relay')
+          mode = os.environ['EVIDENCE_MODE']
+          outcomes = {
+            'core_mempool': os.environ['CORE_RESULT'],
+            'relay_test_coverage': os.environ['COVERAGE_RESULT'],
+            'p2p_tests': os.environ['P2P_RESULT'],
+            'rpc_metrics_tests': os.environ['RPC_RESULT'],
+            'runtime_drill': os.environ['RUNTIME_RESULT'],
+          }
+          unit_pass = all(outcomes[k] == 'success' for k in ('core_mempool','relay_test_coverage','p2p_tests','rpc_metrics_tests'))
+          runtime_pass = outcomes['runtime_drill'] == 'success'
+          closeout = mode == 'runtime-closeout' and unit_pass and runtime_pass
+          diagnostic = mode == 'unit-contract' and unit_pass
+          manifest = {
+            'gate':'v2.3.0-mempool-transaction-relay',
+            'candidate_commit':subprocess.check_output(['git','rev-parse','HEAD'], text=True).strip(),
+            'evidence_mode':mode,
+            'result':'PASS' if (closeout or diagnostic) else 'FAIL',
+            'closeout_eligible':closeout,
+            'outcomes':outcomes,
+            'public_testnet_ready':False,
+          }
+          (root/'gate_manifest.json').write_text(json.dumps(manifest, indent=2)+'\n')
+          lines=[]
+          for path in sorted(root.rglob('*')):
+            if path.is_file() and path.name != 'SHA256SUMS':
+              lines.append(f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.relative_to(root)}")
+          (root/'SHA256SUMS').write_text('\n'.join(lines)+'\n')
+          PY
+
+      - name: Upload mempool/relay evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v2_3_0_mempool_tx_relay_${{ github.run_id }}
+          path: ci-evidence/mempool-relay
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Enforce mempool/relay gate
+        if: always()
+        shell: bash
+        env:
+          EVIDENCE_MODE: ${{ inputs.evidence_mode || 'runtime-closeout' }}
+        run: |
+          set -euo pipefail
+          jq -e '.result == "PASS"' ci-evidence/mempool-relay/gate_manifest.json >/dev/null
+          if [[ "$EVIDENCE_MODE" == runtime-closeout ]]; then
+            jq -e '.closeout_eligible == true' ci-evidence/mempool-relay/gate_manifest.json >/dev/null
+          fi
