@@ -1,0 +1,86 @@
+name: v2.3.0 mempool tx relay validation
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  mempool-tx-relay:
+    name: mempool bounds and transaction relay
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    env:
+      CARGO_TERM_COLOR: always
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Prepare evidence directory
+        shell: bash
+        run: mkdir -p ci-evidence
+
+      - name: Build workspace
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --workspace --locked 2>&1 | tee ci-evidence/cargo-build-workspace.log
+
+      - name: Core mempool tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test -p pulsedag-core mempool --locked 2>&1 | tee ci-evidence/core-mempool-tests.log
+
+      - name: P2P transaction relay tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test -p pulsedag-p2p transaction --locked 2>&1 | tee ci-evidence/p2p-transaction-tests.log
+
+      - name: RPC mempool tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test -p pulsedag-rpc mempool --locked 2>&1 | tee ci-evidence/rpc-mempool-tests.log
+
+      - name: Workspace mempool regression sweep
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --workspace --locked mempool 2>&1 | tee ci-evidence/workspace-mempool-tests.log
+
+      - name: Record validation metadata
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "gate=v2.3.0-mempool-tx-relay"
+            echo "commit=$(git rev-parse HEAD)"
+            echo "branch=$(git rev-parse --abbrev-ref HEAD)"
+            echo "version=$(cat VERSION 2>/dev/null || echo unknown)"
+            echo "required_mempool_transactions=4096"
+            echo "required_spent_outpoints=8192"
+            echo "public_testnet_ready=false"
+            echo "recorded_at_utc=$(date -u +%FT%TZ)"
+          } > ci-evidence/mempool-tx-relay-metadata.txt
+          tar -czf ci-evidence/mempool-tx-relay-evidence.tar.gz -C ci-evidence .
+          sha256sum ci-evidence/mempool-tx-relay-evidence.tar.gz > ci-evidence/mempool-tx-relay-evidence.tar.gz.sha256
+
+      - name: Upload mempool tx relay evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: v2_3_0_mempool_tx_relay_validation
+          path: ci-evidence/
+          if-no-files-found: error
