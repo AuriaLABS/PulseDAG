@@ -1,0 +1,76 @@
+name: v2.3.0 workspace validation
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  workspace-validation:
+    name: fmt / check / test / clippy
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      CARGO_TERM_COLOR: always
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Prepare evidence directory
+        shell: bash
+        run: mkdir -p ci-evidence
+
+      - name: cargo fmt --all -- --check
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fmt --all -- --check 2>&1 | tee ci-evidence/cargo-fmt.log
+
+      - name: cargo check --workspace --locked
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo check --workspace --locked 2>&1 | tee ci-evidence/cargo-check-workspace.log
+
+      - name: cargo test --workspace --locked
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --workspace --locked 2>&1 | tee ci-evidence/cargo-test-workspace.log
+
+      - name: cargo clippy --workspace --all-targets -- -D warnings
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo clippy --workspace --all-targets -- -D warnings 2>&1 | tee ci-evidence/cargo-clippy-workspace.log
+
+      - name: Record validation metadata
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "commit=$(git rev-parse HEAD)"
+            echo "branch=$(git rev-parse --abbrev-ref HEAD)"
+            echo "version=$(cat VERSION 2>/dev/null || echo unknown)"
+            cargo metadata --format-version 1 --no-deps 2>/dev/null | jq -r '"workspace_package_version=" + (.packages[0].version // "unknown")' || true
+            echo "public_testnet_ready=false"
+            echo "recorded_at_utc=$(date -u +%FT%TZ)"
+          } > ci-evidence/workspace-validation-metadata.txt
+
+      - name: Upload workspace validation logs
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: v2_3_0_workspace_validation
+          path: ci-evidence/
+          if-no-files-found: error
