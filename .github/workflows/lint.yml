@@ -19,95 +19,15 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Apply source fix and restore temporary CI files
-        shell: bash
+      - name: Apply exact confirmed source patch
+        run: python3 scripts/ci/apply_p2p_redial_deadlock_fix.py
+
+      - name: Commit source fix and cleanup
         run: |
           set -euo pipefail
-          marker='crates/pulsedag-p2p/CI_DEADLOCK_FIX_PENDING.md'
-          if [[ ! -f "$marker" ]]; then
-            echo 'Temporary repair marker is absent; nothing to apply.'
-            exit 0
-          fi
-
-          python3 - <<'PY'
-          from pathlib import Path
-
-          source_path = Path('crates/pulsedag-p2p/src/lib.rs')
-          source = source_path.read_text()
-          old = '''                    } else if let Ok(mut guard) = inner.lock() {
-                        pending_bootnode_dials.insert(*peer_id);
-                        bootnode_redial_backoff_secs.insert(*peer_id, 1);
-                        bootnode_next_redial_at.insert(*peer_id, now.saturating_add(1));
-                        guard.pending_bootnode_dials.insert(peer_id.to_string());
-                        guard.pending_bootnode_dial_started_at.insert(peer_id.to_string(), now);
-                        guard.bootnode_redial_backoff_secs.insert(peer_id.to_string(), 1);
-                        guard.bootnode_next_redial_at.insert(peer_id.to_string(), now.saturating_add(1));
-                        guard.bootnode_redial_successes = guard.bootnode_redial_successes.saturating_add(1);
-                        note_swarm_event(&inner, format!("dial-success:redial:{peer_id}"));
-                    }
-'''
-          new = '''                    } else {
-                        if let Ok(mut guard) = inner.lock() {
-                            pending_bootnode_dials.insert(*peer_id);
-                            bootnode_redial_backoff_secs.insert(*peer_id, 1);
-                            bootnode_next_redial_at.insert(*peer_id, now.saturating_add(1));
-                            guard.pending_bootnode_dials.insert(peer_id.to_string());
-                            guard.pending_bootnode_dial_started_at.insert(peer_id.to_string(), now);
-                            guard.bootnode_redial_backoff_secs.insert(peer_id.to_string(), 1);
-                            guard.bootnode_next_redial_at.insert(peer_id.to_string(), now.saturating_add(1));
-                            guard.bootnode_redial_successes =
-                                guard.bootnode_redial_successes.saturating_add(1);
-                        }
-                        note_swarm_event(&inner, format!("dial-success:redial:{peer_id}"));
-                    }
-'''
-          count = source.count(old)
-          if count != 1:
-              raise SystemExit(f'expected exactly one confirmed recursive-lock block, found {count}')
-          source_path.write_text(source.replace(old, new, 1))
-
-          Path('crates/pulsedag-p2p/CI_DEADLOCK_FIX_PENDING.md').unlink(missing_ok=True)
-          Path('.github/workflows/apply_p2p_redial_deadlock_fix.yml').unlink(missing_ok=True)
-
-          original_lint = '\n'.join([
-              'name: Lint',
-              '',
-              'on:',
-              '  pull_request:',
-              '',
-              'jobs:',
-              '  lint:',
-              '    runs-on: ubuntu-latest',
-              '',
-              '    steps:',
-              '      - uses: actions/checkout@v4',
-              '',
-              '      - uses: dtolnay/rust-toolchain@stable',
-              '        with:',
-              '          components: clippy, rustfmt',
-              '',
-              '      - name: Cargo.lock hygiene check',
-              '        run: |',
-              '          set -euo pipefail',
-              '          if ! cargo metadata --locked --format-version 1 >/dev/null; then',
-              '            echo "::error::Cargo.lock is out of sync. Run \'cargo generate-lockfile\' (or intentional \'cargo update\') and commit Cargo.lock."',
-              '            exit 1',
-              '          fi',
-              '',
-              '      - name: Format check',
-              '        run: cargo fmt --all -- --check',
-              '',
-              '      - name: Clippy',
-              '        run: cargo clippy --all-targets --all-features -- -D warnings',
-              '',
-          ])
-          Path('.github/workflows/lint.yml').write_text(original_lint)
-          PY
-
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add crates/pulsedag-p2p/src/lib.rs .github/workflows/lint.yml
-          git add -A crates/pulsedag-p2p/CI_DEADLOCK_FIX_PENDING.md .github/workflows/apply_p2p_redial_deadlock_fix.yml
+          git add -A
           git diff --cached --check
           git commit -m 'fix(p2p): avoid recursive lock during redial success'
           git push origin HEAD:${{ github.event.pull_request.head.ref }}
