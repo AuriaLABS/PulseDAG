@@ -35,6 +35,11 @@ on:
         required: false
         default: '10'
         type: string
+      p2p_real_runtime_test_timeout_seconds:
+        description: Maximum runtime for the isolated real-swarm P2P initialization test
+        required: false
+        default: '120'
+        type: string
       test_threads:
         description: Rust test threads per package; use 1 for deterministic diagnosis
         required: false
@@ -64,6 +69,7 @@ jobs:
     with:
       candidate_sha: ${{ inputs.candidate_sha || github.sha }}
       package_test_timeout_minutes: ${{ inputs.package_test_timeout_minutes }}
+      p2p_real_runtime_test_timeout_seconds: ${{ inputs.p2p_real_runtime_test_timeout_seconds }}
       test_threads: ${{ inputs.test_threads }}
       check_timeout_minutes: ${{ inputs.check_timeout_minutes }}
       clippy_timeout_minutes: ${{ inputs.clippy_timeout_minutes }}
