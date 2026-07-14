@@ -40,6 +40,7 @@ jobs:
       RELEASE_TAG: ${{ github.event.inputs.release_tag || 'v2.2.5' }}
       RUST_TEST_THREADS: 1
       NODE_URL: http://127.0.0.1:8080
+      NODE_PID_FILE: node.pid
     steps:
       - name: Checkout validated candidate
         uses: actions/checkout@v4
@@ -81,17 +82,25 @@ jobs:
         run: |
           timeout --signal=TERM --kill-after=30s 45m \
             cargo build --locked --release --bin pulsedagd --bin pulsedag-miner
+          test -x target/release/pulsedagd
+          test -x target/release/pulsedag-miner
 
       - name: Verify node startup smoke
         run: |
           set -euo pipefail
-          test -x target/release/pulsedagd
-          nohup target/release/pulsedagd > node.log 2>&1 &
+          : > node.log
+          nohup env RUST_LOG_STYLE=never target/release/pulsedagd > node.log 2>&1 &
           node_pid=$!
-          trap 'kill "$node_pid" 2>/dev/null || true; wait "$node_pid" 2>/dev/null || true' EXIT
-          for i in {1..45}; do
-            if curl -sSf "${NODE_URL}/health" >/dev/null; then
-              echo "node startup smoke passed"
+          echo "$node_pid" > "$NODE_PID_FILE"
+
+          for i in {1..60}; do
+            if ! kill -0 "$node_pid" 2>/dev/null; then
+              echo "node startup smoke failed: release binary exited before health became available" >&2
+              tail -n 100 node.log >&2 || true
+              exit 1
+            fi
+            if curl --fail --silent --show-error --connect-timeout 1 --max-time 3 "${NODE_URL}/health" >/dev/null; then
+              echo "node startup smoke passed using target/release/pulsedagd"
               exit 0
             fi
             if ! kill -0 "$node_pid" 2>/dev/null; then
@@ -102,15 +111,21 @@ jobs:
             fi
             sleep 2
           done
-          echo "node startup smoke failed: ${NODE_URL}/health unavailable" >&2
+          echo "node startup smoke failed: ${NODE_URL}/health unavailable after 120 seconds" >&2
+          echo "process state:" >&2
+          ps -fp "$node_pid" >&2 || true
           echo "last node.log lines:" >&2
-          tail -n 120 node.log >&2 || true
+          tail -n 100 node.log >&2 || true
           exit 1
 
       - name: Verify external standalone miner one-shot
         run: |
           set -euo pipefail
           test -x target/release/pulsedag-miner
+          test -s "$NODE_PID_FILE"
+          node_pid="$(cat "$NODE_PID_FILE")"
+          kill -0 "$node_pid" 2>/dev/null
+          curl --fail --silent --show-error --connect-timeout 1 --max-time 3 "${NODE_URL}/health" >/dev/null
           timeout --signal=TERM --kill-after=30s 10m \
             target/release/pulsedag-miner \
               --node "${NODE_URL}" \
@@ -120,6 +135,9 @@ jobs:
       - name: Verify standalone operator flow helper
         run: |
           set -euo pipefail
+          test -s "$NODE_PID_FILE"
+          node_pid="$(cat "$NODE_PID_FILE")"
+          kill -0 "$node_pid" 2>/dev/null
           timeout --signal=TERM --kill-after=30s 10m \
             scripts/release/standalone_operator_smoke.sh \
               --miner-address preburnin-operator \
@@ -222,3 +240,15 @@ jobs:
           python scripts/release/verify_release_artifacts.py --help >/dev/null
           python scripts/p2p_sync_rpc_baselines.py --help >/dev/null
           echo "python entrypoints verified"
+
+      - name: Stop smoke node
+        if: always()
+        run: |
+          set +e
+          if [ -s "$NODE_PID_FILE" ]; then
+            node_pid="$(cat "$NODE_PID_FILE")"
+            kill "$node_pid" 2>/dev/null || true
+            wait "$node_pid" 2>/dev/null || true
+          fi
+          echo "last node.log lines:"
+          tail -n 100 node.log 2>/dev/null || true
