@@ -46,11 +46,15 @@ write_manifest(){
   [[ -f "$OUT_DIR/rejection_evidence.json" ]] && rejection="$(cat "$OUT_DIR/rejection_evidence.json")"
   [[ -f "$OUT_DIR/confirmation_evidence.json" ]] && confirmation="$(cat "$OUT_DIR/confirmation_evidence.json")"
   [[ -f "$OUT_DIR/topology_evidence.json" ]] && topology_evidence="$(cat "$OUT_DIR/topology_evidence.json")"
+  local failures_json="[]"
+  if ((${#FAILURES[@]})); then
+    failures_json="$(printf '%s\n' "${FAILURES[@]}" | jq -R . | jq -s .)"
+  fi
   jq -n --arg result "$result" --arg commit "$(git rev-parse HEAD)" --arg start "$START_UTC" --arg end "$end_utc" --arg digest "$final_digest" \
     --argjson node_count "$NODE_COUNT" --argjson submitted "$submitted" --argjson confirmed "$confirmed" --argjson per_nodes "$per_nodes" \
     --argjson relay "$relay" --argjson dedupe "$dedupe" --argjson capacity "$capacity" --argjson cleanup "$cleanup" --argjson deterministic "$deterministic" --argjson topology "$topology" \
     --argjson duplicate_evidence "$duplicate_evidence" --argjson rejection "$rejection" --argjson confirmation "$confirmation" --argjson topology_evidence "$topology_evidence" \
-    --argjson failures "$(printf '%s\n' "${FAILURES[@]:-}" | jq -R . | jq -s .)" \
+    --argjson failures "$failures_json" \
     '{result:$result,evidence_kind:"runtime",candidate_commit:$commit,node_count:$node_count,relay_converged:$relay,duplicate_suppression:$dedupe,capacity_rejection_taxonomy:$capacity,confirmation_cleanup:$cleanup,deterministic_final_mempool_sets:$deterministic,submitted_txids:$submitted,confirmed_txids:$confirmed,final_mempool_digest:$digest,public_testnet_ready:false,per_node_final:$per_nodes,topology_status:{required_peers_per_node:4,stable:$topology,nodes:$topology_evidence},duplicate_evidence:$duplicate_evidence,rejection:$rejection,confirmation_evidence:$confirmation,timestamps:{start_utc:$start,end_utc:$end},failure_reasons:$failures}' > "$OUT_DIR/evidence_manifest.json"
 }
 
@@ -58,7 +62,31 @@ log "building release binaries"
 cargo build -p pulsedagd -p pulsedag-miner --release --locked 2>&1 | tee "$OUT_DIR/build.log"
 [[ -x "$NODE_BIN" && -x "$MINER_BIN" ]] || { echo "release binaries missing" >&2; exit 3; }
 
-start_node(){ local i="$1" boot="$2" data="$OUT_DIR/data/n$i"; mkdir -p "$data"; local args=("$NODE_BIN" --network private --rpc-listen "127.0.0.1:$((BASE_RPC_PORT+i))" --p2p-listen "/ip4/127.0.0.1/tcp/$((BASE_P2P_PORT+i))"); [[ -n "$boot" ]] && args+=(--bootnode "$boot"); log "start n$i ${args[*]}"; PULSEDAG_CHAIN_ID="$CHAIN_ID" PULSEDAG_ROCKSDB_PATH="$data/rocksdb" PULSEDAG_API_PROFILE=local_dev PULSEDAG_P2P_MODE=libp2p-real PULSEDAG_P2P_MDNS=false PULSEDAG_P2P_KADEMLIA=true PULSEDAG_MEMPOOL_MAX_TRANSACTIONS="$REHEARSAL_MEMPOOL_CAPACITY" RUST_LOG="pulsedagd=info,pulsedag_p2p=info" RUST_LOG_STYLE=never "${args[@]}" > "$OUT_DIR/logs/n$i.log" 2>&1 & NODE_PIDS+=("$!"); }
+start_node() {
+  local i="$1"
+  local boot="$2"
+  local data="$OUT_DIR/data/n$i"
+  local args=(
+    "$NODE_BIN"
+    --network private
+    --rpc-listen "127.0.0.1:$((BASE_RPC_PORT+i))"
+    --p2p-listen "/ip4/127.0.0.1/tcp/$((BASE_P2P_PORT+i))"
+  )
+  [[ -n "$boot" ]] && args+=(--bootnode "$boot")
+  mkdir -p "$data"
+  log "start n$i ${args[*]}"
+  PULSEDAG_CHAIN_ID="$CHAIN_ID" \
+  PULSEDAG_ROCKSDB_PATH="$data/rocksdb" \
+  PULSEDAG_API_PROFILE=local_dev \
+  PULSEDAG_P2P_MODE=libp2p-real \
+  PULSEDAG_P2P_MDNS=false \
+  PULSEDAG_P2P_KADEMLIA=true \
+  PULSEDAG_MEMPOOL_MAX_TRANSACTIONS="$REHEARSAL_MEMPOOL_CAPACITY" \
+  RUST_LOG="pulsedagd=info,pulsedag_p2p=info" \
+  RUST_LOG_STYLE=never \
+    "${args[@]}" > "$OUT_DIR/logs/n$i.log" 2>&1 &
+  NODE_PIDS+=("$!")
+}
 start_node 1 ""
 pulsedag_wait_http_ok "$(rpc_url 1)/p2p/status" "$OUT_DIR/endpoints/n1-p2p-bootstrap.json" "$STARTUP_TIMEOUT" || { fail "n1 p2p status unavailable"; write_manifest FAIL; exit 1; }
 PEER_ID="$(jq -r '.data.peer_id // .data.local_peer_id // empty' "$OUT_DIR/endpoints/n1-p2p-bootstrap.json")"
