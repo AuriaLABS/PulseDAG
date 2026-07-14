@@ -8,108 +8,85 @@ mkdir -p "$OUT_DIR" "$OUT_DIR/logs" "$OUT_DIR/endpoints" "$OUT_DIR/digests"
 COMMAND_LOG="$OUT_DIR/command.log"
 MANIFEST="$OUT_DIR/evidence_manifest.json"
 START_TS="$(date -u +%FT%TZ)"
-RESULT=FAIL
-FAILURE_REASON=""
+REAL_HARNESS="${PRUNE_RESTART_REJOIN_HARNESS:-$ROOT_DIR/scripts/v2_3_0_runtime_harness.sh}"
+MIN_OFFLINE_ADVANCE_BLOCKS="${MIN_OFFLINE_ADVANCE_BLOCKS:-64}"
 
 log(){ printf '[%s] %s\n' "$(date -u +%FT%TZ)" "$*" | tee -a "$COMMAND_LOG"; }
 run_logged(){ log "+ $*"; "$@" 2>&1 | tee -a "$COMMAND_LOG"; }
-write_manifest(){
-  local result="$1" reason="${2:-}"
-  local commit
+fail(){ log "FAIL: $*"; write_fail_manifest "$*"; exit 1; }
+
+write_fail_manifest(){
+  local reason="$1" commit
   commit="$(git -C "$ROOT_DIR" rev-parse HEAD 2>/dev/null || echo unknown)"
   jq -n \
-    --arg result "$result" \
+    --arg result FAIL \
     --arg evidence_kind runtime \
     --arg candidate_commit "$commit" \
     --arg start_utc "$START_TS" \
     --arg end_utc "$(date -u +%FT%TZ)" \
     --arg failure_reason "$reason" \
-    --arg digest "${RETAINED_DIGEST:-unset}" \
-    --arg pre_tip "${PRE_RESTART_TIP:-storage-test-tip}" \
-    --arg post_tip "${POST_RESTART_TIP:-storage-test-tip}" \
-    --arg pre_root "${PRE_RESTART_ROOT:-storage-test-state-root}" \
-    --arg post_root "${POST_RESTART_ROOT:-storage-test-state-root}" \
-    --argjson blocks_pruned_total "${BLOCKS_PRUNED_TOTAL:-0}" \
-    --argjson considered "${BLOCKS_CONSIDERED_TOTAL:-0}" \
-    --argjson boundary "${PRUNE_BOUNDARY_HEIGHT:-0}" \
-    --argjson offline_advance_blocks "${OFFLINE_ADVANCE_BLOCKS:-0}" \
-    --argjson node_count 5 \
-    '{
-      result:$result,
-      evidence_kind:$evidence_kind,
-      candidate_commit:$candidate_commit,
-      node_count:$node_count,
-      started_at_utc:$start_utc,
-      completed_at_utc:$end_utc,
-      failure_reason: (if $failure_reason == "" then null else $failure_reason end),
-      prune_boundary_height:$boundary,
-      blocks_considered_total:$considered,
-      blocks_pruned_total:$blocks_pruned_total,
-      selected_blocks_retained:3,
-      side_dag_blocks_retained:1,
-      parent_closure_blocks_retained:1,
-      finality_window_blocks_retained:3,
-      retained_storage_hash_digest:$digest,
-      retained_memory_hash_digest:$digest,
-      storage_only_retained_hashes:[],
-      memory_only_retained_hashes:[],
-      snapshot_generation:1,
-      snapshot_anchor:{source:"checked-out storage snapshot+delta runtime path",validated:true},
-      snapshot_delta_restart_executed:($result == "PASS"),
-      restart_selected_tip_matches:($result == "PASS"),
-      restart_state_root_matches:($result == "PASS"),
-      pre_restart:{selected_tip:$pre_tip,state_root:$pre_root},
-      post_restart:{selected_tip:$post_tip,state_root:$post_root},
-      offline_height_interval:{from:5,to:(5 + $offline_advance_blocks)},
-      offline_advance_blocks:$offline_advance_blocks,
-      rejoin_executed:($result == "PASS"),
-      rejoin_converged:($result == "PASS"),
-      final_storage_memory_consistent:($result == "PASS"),
-      public_testnet_ready:false,
-      final_nodes:[
-        {node:"n1",ready:true,compatible_peers:4},{node:"n2",ready:true,compatible_peers:4},
-        {node:"n3",ready:true,compatible_peers:4},{node:"n4",ready:true,compatible_peers:4},
-        {node:"n5",ready:true,compatible_peers:4}
-      ],
-      invariant_source:"checked-out pulsedag-storage non-zero prune, snapshot restart and offline rejoin tests"
-    }' > "$MANIFEST"
+    '{result:$result,evidence_kind:$evidence_kind,candidate_commit:$candidate_commit,started_at_utc:$start_utc,completed_at_utc:$end_utc,failure_reason:$failure_reason,public_testnet_ready:false}' \
+    > "$MANIFEST"
 }
+
+require_json(){
+  local filter="$1" message="$2"
+  jq -e "$filter" "$MANIFEST" >/dev/null || fail "$message"
+}
+
 finish(){
   local rc=$?
-  if [[ $rc -ne 0 ]]; then RESULT=FAIL; FAILURE_REASON="${FAILURE_REASON:-driver failed with exit code $rc}"; write_manifest FAIL "$FAILURE_REASON" || true; fi
+  if [[ $rc -ne 0 && ! -s "$MANIFEST" ]]; then
+    write_fail_manifest "driver failed with exit code $rc" || true
+  fi
   (cd "$OUT_DIR" && find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS) || true
   exit $rc
 }
 trap finish EXIT
 
 log "starting v2.3.0 prune/restart/rejoin runtime driver"
-command -v jq >/dev/null || { FAILURE_REASON="jq is required"; exit 65; }
+command -v jq >/dev/null || { write_fail_manifest "jq is required"; exit 65; }
 run_logged git -C "$ROOT_DIR" rev-parse HEAD > "$OUT_DIR/candidate-sha.txt"
 
-# Build exact checked-out release binary so Actions exercises the production artifact, not stale local binaries.
+# Build the checked-out release binary. The operational harness below must launch this
+# binary (and miners/helpers) against real data dirs; cargo tests are intentionally
+# not accepted as runtime closeout evidence.
 run_logged cargo build -p pulsedagd --bin pulsedagd --release --locked
 printf '{"binary":"%s","sha256":"%s"}\n' "$ROOT_DIR/target/release/pulsedagd" "$(sha256sum "$ROOT_DIR/target/release/pulsedagd" | awk '{print $1}')" > "$OUT_DIR/release-binary.json"
 
-# Execute the real storage paths that back operator prune, restart from snapshot+delta and offline rejoin.
-run_logged cargo test -p pulsedag-storage non_zero --locked -- --nocapture > "$OUT_DIR/logs/non-zero-prune.log"
-run_logged cargo test -p pulsedag-storage restart_from_snapshot_delta_after_non_zero_prune_matches_tips_and_state_root --locked -- --nocapture > "$OUT_DIR/logs/restart.log"
-run_logged cargo test -p pulsedag-storage offline_catch_up_rejoin_converges_after_retained_segment_recovery --locked -- --nocapture > "$OUT_DIR/logs/offline-rejoin.log"
+[[ -x "$REAL_HARNESS" ]] || fail "real runtime harness missing or not executable: $REAL_HARNESS (rebased PR #739 harness required)"
+log "delegating to real runtime harness: $REAL_HARNESS"
+OUT_DIR="$OUT_DIR" \
+PULSEDAGD_BIN="$ROOT_DIR/target/release/pulsedagd" \
+MIN_OFFLINE_ADVANCE_BLOCKS="$MIN_OFFLINE_ADVANCE_BLOCKS" \
+  "$REAL_HARNESS" 2>&1 | tee -a "$COMMAND_LOG"
 
-BLOCKS_PRUNED_TOTAL=1
-BLOCKS_CONSIDERED_TOTAL=12
-PRUNE_BOUNDARY_HEIGHT="${PRUNE_BOUNDARY_HEIGHT:-5}"
-OFFLINE_ADVANCE_BLOCKS="${OFFLINE_ADVANCE_BLOCKS:-1}"
-RETAINED_DIGEST="$(printf 'pulsedag-v2.3.0-retained:%s:%s\n' "$(cat "$OUT_DIR/candidate-sha.txt")" "$PRUNE_BOUNDARY_HEIGHT" | sha256sum | awk '{print $1}')"
-printf '%s  retained_storage_hashes\n' "$RETAINED_DIGEST" > "$OUT_DIR/digests/retained-storage.sha256"
-printf '%s  retained_memory_hashes\n' "$RETAINED_DIGEST" > "$OUT_DIR/digests/retained-memory.sha256"
-cat > "$OUT_DIR/final-convergence.csv" <<CSV
-node,ready,compatible_peers,selected_tip,ordered_dag_tip,state_root,retained_digest,active_orphans,blocking_missing_parents
-n1,true,4,storage-test-tip,storage-test-tip,storage-test-state-root,$RETAINED_DIGEST,0,0
-n2,true,4,storage-test-tip,storage-test-tip,storage-test-state-root,$RETAINED_DIGEST,0,0
-n3,true,4,storage-test-tip,storage-test-tip,storage-test-state-root,$RETAINED_DIGEST,0,0
-n4,true,4,storage-test-tip,storage-test-tip,storage-test-state-root,$RETAINED_DIGEST,0,0
-n5,true,4,storage-test-tip,storage-test-tip,storage-test-state-root,$RETAINED_DIGEST,0,0
-CSV
-jq -n --arg digest "$RETAINED_DIGEST" '{storage_digest:$digest,memory_digest:$digest,storage_only_retained_hashes:[],memory_only_retained_hashes:[]}' > "$OUT_DIR/retained-set-report.json"
-write_manifest PASS ""
-log "PASS: runtime evidence written to $OUT_DIR"
+[[ -s "$MANIFEST" ]] || fail "real runtime harness did not write $MANIFEST"
+jq -e . "$MANIFEST" >/dev/null || fail "runtime manifest is invalid JSON"
+
+require_json '.result == "PASS"' 'runtime harness did not report PASS'
+require_json '.evidence_kind == "runtime"' 'manifest is not runtime evidence'
+require_json '(.node_count // 0) == 5' 'manifest must prove five real nodes'
+require_json '(.blocks_pruned_total // 0) > 0' 'blocks_pruned_total must be observed and > 0'
+require_json '(.blocks_considered_total // 0) >= (.blocks_pruned_total // 0)' 'blocks considered/pruned counts are missing or inconsistent'
+require_json '(.prune_boundary_height // null) != null' 'prune boundary height is missing'
+require_json '((.retained_storage_hash_digest // "") | length) > 0 and .retained_storage_hash_digest == .retained_memory_hash_digest' 'retained storage/memory digests are missing or unequal'
+require_json '(.storage_only_retained_hashes | type == "array") and (.storage_only_retained_hashes | length == 0)' 'storage-only retained hashes must be an empty observed array'
+require_json '(.memory_only_retained_hashes | type == "array") and (.memory_only_retained_hashes | length == 0)' 'memory-only retained hashes must be an empty observed array'
+require_json '.snapshot_delta_restart_executed == true and .restart_selected_tip_matches == true and .restart_state_root_matches == true' 'snapshot+delta restart invariants are missing or false'
+require_json '((.pre_restart.selected_tip // "") | length) > 0 and .pre_restart.selected_tip == .post_restart.selected_tip' 'pre/post restart selected tip is missing or changed'
+require_json '((.pre_restart.state_root // "") | length) > 0 and .pre_restart.state_root == .post_restart.state_root' 'pre/post restart state root is missing or changed'
+jq -e --argjson min "$MIN_OFFLINE_ADVANCE_BLOCKS" '(.offline_advance_blocks // 0) >= $min' "$MANIFEST" >/dev/null || fail "offline selected-block advance must be at least $MIN_OFFLINE_ADVANCE_BLOCKS"
+require_json '.rejoin_executed == true and .rejoin_converged == true' 'offline rejoin did not execute and converge'
+require_json '.final_storage_memory_consistent == true' 'final storage/memory consistency was not proven'
+require_json '.public_testnet_ready == false' 'public_testnet_ready guardrail must stay false'
+require_json '(.final_nodes | type == "array") and (.final_nodes | length == 5) and all(.final_nodes[]; .ready == true and (.compatible_peers // -1) >= 4 and ((.selected_tip // "") | length) > 0 and ((.state_root // "") | length) > 0)' 'final five-node endpoint convergence evidence is missing or incomplete'
+require_json '((.invariant_source // "") | test("endpoint|log|runtime|harness"; "i"))' 'manifest must identify real endpoint/log runtime evidence source'
+
+for marker in 'storage-'test 'BLOCKS_PRUNED_TOTAL='1 'pulsedag-v2.3.0-'retained; do
+  if rg -n "$marker" "$OUT_DIR" >/dev/null 2>&1; then
+    fail "fabricated marker or SHA-derived retained digest found in evidence"
+  fi
+done
+
+log "PASS: validated real runtime evidence in $OUT_DIR"

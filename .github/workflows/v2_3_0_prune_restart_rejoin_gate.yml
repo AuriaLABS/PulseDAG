@@ -117,11 +117,13 @@ jobs:
             .snapshot_delta_restart_executed == true and
             .restart_selected_tip_matches == true and
             .restart_state_root_matches == true and
-            .offline_advance_blocks > 0 and
+            .offline_advance_blocks >= 64 and
             .rejoin_executed == true and
             .rejoin_converged == true and
             .final_storage_memory_consistent == true and
-            .public_testnet_ready == false
+            .public_testnet_ready == false and
+            (.final_nodes | type == "array") and (.final_nodes | length == 5) and
+            all(.final_nodes[]; .ready == true and (.compatible_peers // -1) >= 4 and ((.selected_tip // "") | length) > 0 and ((.state_root // "") | length) > 0)
           ' "$manifest" >/dev/null
 
       - name: Build prune gate manifest and checksums
