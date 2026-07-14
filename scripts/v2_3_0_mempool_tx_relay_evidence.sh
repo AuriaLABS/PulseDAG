@@ -66,7 +66,23 @@ PEER_ID="$(jq -r '.data.peer_id // .data.local_peer_id // empty' "$OUT_DIR/endpo
 BOOT="/ip4/127.0.0.1/tcp/$((BASE_P2P_PORT+1))/p2p/$PEER_ID"; echo "$BOOT" > "$OUT_DIR/bootnode.txt"
 for i in 2 3 4 5; do start_node "$i" "$BOOT"; done
 for i in $(seq 1 "$NODE_COUNT"); do pulsedag_wait_http_ok "$(rpc_url "$i")/status" "$OUT_DIR/endpoints/n${i}-status-ready.json" "$STARTUP_TIMEOUT" || fail "n$i rpc readiness failed"; done
-topology_ok=0; start=$(date +%s); while (( $(date +%s) - start < CONVERGENCE_TIMEOUT )); do capture_node topology; topology_ok=1; topo="[]"; for i in $(seq 1 "$NODE_COUNT"); do peers=$(jq -r '[.data.connected_peers? // empty, .data.peer_count? // empty, .data.peers? // [] | length] | max // 0' "$OUT_DIR/endpoints/topology/n${i}-p2p-status.json" 2>/dev/null || echo 0); topo="$(jq --arg node "n$i" --argjson peers "$peers" '. + [{node:$node,connected_peers:$peers}]' <<<"$topo")"; (( peers >= NODE_COUNT - 1 )) || topology_ok=0; done; echo "$topo" > "$OUT_DIR/topology_evidence.json"; (( topology_ok == 1 )) && break; sleep 2; done
+
+topology_ok=0
+start=$(date +%s)
+while (( $(date +%s) - start < CONVERGENCE_TIMEOUT )); do
+  capture_node topology
+  topology_ok=1
+  topo="[]"
+  for i in $(seq 1 "$NODE_COUNT"); do
+    peers="$(jq -r '[((.data.connected_peers? // []) | length),(.data.peer_count? // 0),((.data.peers? // []) | length)] | max // 0' "$OUT_DIR/endpoints/topology/n${i}-p2p-status.json" 2>/dev/null || echo 0)"
+    [[ "$peers" =~ ^[0-9]+$ ]] || peers=0
+    topo="$(jq --arg node "n$i" --argjson peers "$peers" '. + [{node:$node,connected_peers:$peers}]' <<<"$topo")"
+    (( peers >= NODE_COUNT - 1 )) || topology_ok=0
+  done
+  echo "$topo" > "$OUT_DIR/topology_evidence.json"
+  (( topology_ok == 1 )) && break
+  sleep 2
+done
 if (( topology_ok == 1 )); then touch "$OUT_DIR/topology_stable.proof"; else fail "topology did not stabilize with four peers per node"; fi
 capture_node before_submit
 
@@ -86,21 +102,52 @@ post_json "$(rpc_url 1)/wallet/transfer" "$TRANSFER_BODY" "$OUT_DIR/tx/submit-n1
 TXID="$(jq -r '.data.txid // empty' "$OUT_DIR/tx/submit-n1.json")"; [[ -n "$TXID" ]] || { fail "no submitted txid"; write_manifest FAIL; exit 1; }
 jq -n --arg txid "$TXID" '[$txid]' > "$OUT_DIR/submitted_txids.json"
 
-relay_ok=0; start=$(date +%s); while (( $(date +%s) - start < CONVERGENCE_TIMEOUT )); do capture_node after_relay; relay_ok=1; for i in $(seq 1 "$NODE_COUNT"); do jq -e --arg txid "$TXID" '(.data.txids // []) | index($txid)' "$OUT_DIR/endpoints/after_relay/n${i}-mempool.json" >/dev/null || relay_ok=0; done; (( relay_ok == 1 )) && break; sleep 2; done
+relay_ok=0
+start=$(date +%s)
+while (( $(date +%s) - start < CONVERGENCE_TIMEOUT )); do
+  capture_node after_relay
+  relay_ok=1
+  for i in $(seq 1 "$NODE_COUNT"); do
+    jq -e --arg txid "$TXID" '(.data.txids // []) | index($txid)' "$OUT_DIR/endpoints/after_relay/n${i}-mempool.json" >/dev/null || relay_ok=0
+  done
+  (( relay_ok == 1 )) && break
+  sleep 2
+done
 if (( relay_ok == 1 )); then touch "$OUT_DIR/relay_converged.proof"; else fail "txid did not relay to all five mempools"; fi
+
 DUP_BODY="$(jq -ce '{transaction:.data.transaction} | select(.transaction != null)' "$OUT_DIR/tx/submit-n1.json")" || { fail "wallet transfer did not return a duplicate-submittable transaction"; write_manifest FAIL; exit 1; }
+capture_node before_duplicate
 post_json "$(rpc_url 2)/tx/submit" "$DUP_BODY" "$OUT_DIR/tx/duplicate-submit-n2.json" || true
+sleep 2
 capture_node after_duplicate
 dupe_counts="[]"
-for i in $(seq 1 "$NODE_COUNT"); do count=$(jq -r --arg txid "$TXID" '(.data.txids // []) | map(select(. == $txid)) | length' "$OUT_DIR/endpoints/after_duplicate/n${i}-mempool.json"); dupe_counts="$(jq --arg node "n$i" --argjson count "$count" '. + [{node:$node,count:$count}]' <<<"$dupe_counts")"; [[ "$count" = 1 ]] || fail "duplicate count on n$i was $count"; done
-dupe_code="$(jq -r '.error.code // ""' "$OUT_DIR/tx/duplicate-submit-n2.json")"; dupe_msg="$(jq -r '.error.message // .data.txid // ""' "$OUT_DIR/tx/duplicate-submit-n2.json")"
-if [[ "$dupe_code" == "TX_REJECTED" && "$dupe_msg" == *duplicate* ]]; then
-  jq -n --arg via n2 --slurpfile response "$OUT_DIR/tx/duplicate-submit-n2.json" --argjson counts "$dupe_counts" '{resubmitted_via:$via,response:$response[0],per_node_duplicate_counts:$counts,bounded:true}' > "$OUT_DIR/duplicate_evidence.json"
+counter_deltas="[]"
+publish_unchanged=true
+for i in $(seq 1 "$NODE_COUNT"); do
+  count="$(jq -r --arg txid "$TXID" '(.data.txids // []) | map(select(. == $txid)) | length' "$OUT_DIR/endpoints/after_duplicate/n${i}-mempool.json")"
+  dupe_counts="$(jq --arg node "n$i" --argjson count "$count" '. + [{node:$node,count:$count}]' <<<"$dupe_counts")"
+  [[ "$count" = 1 ]] || fail "duplicate count on n$i was $count"
+  before_file="$OUT_DIR/endpoints/before_duplicate/n${i}-p2p-status.json"
+  after_file="$OUT_DIR/endpoints/after_duplicate/n${i}-p2p-status.json"
+  before_publish="$(jq -r '.data.publish_attempts // 0' "$before_file")"
+  after_publish="$(jq -r '.data.publish_attempts // 0' "$after_file")"
+  before_inbound="$(jq -r '.data.inbound_duplicates_suppressed // 0' "$before_file")"
+  after_inbound="$(jq -r '.data.inbound_duplicates_suppressed // 0' "$after_file")"
+  before_outbound="$(jq -r '.data.outbound_duplicates_suppressed // 0' "$before_file")"
+  after_outbound="$(jq -r '.data.outbound_duplicates_suppressed // 0' "$after_file")"
+  [[ "$after_publish" == "$before_publish" ]] || publish_unchanged=false
+  counter_deltas="$(jq --arg node "n$i" --argjson publish_before "$before_publish" --argjson publish_after "$after_publish" --argjson inbound_before "$before_inbound" --argjson inbound_after "$after_inbound" --argjson outbound_before "$before_outbound" --argjson outbound_after "$after_outbound" '. + [{node:$node,publish_attempts_before:$publish_before,publish_attempts_after:$publish_after,inbound_duplicates_suppressed_before:$inbound_before,inbound_duplicates_suppressed_after:$inbound_after,outbound_duplicates_suppressed_before:$outbound_before,outbound_duplicates_suppressed_after:$outbound_after}]' <<<"$counter_deltas")"
+done
+
+dupe_code="$(jq -r '.error.code // ""' "$OUT_DIR/tx/duplicate-submit-n2.json")"
+dupe_msg="$(jq -r '.error.message // .data.txid // ""' "$OUT_DIR/tx/duplicate-submit-n2.json")"
+if [[ "$dupe_code" == "TX_REJECTED" && "$dupe_msg" == *duplicate* && "$publish_unchanged" == true ]]; then
+  jq -n --arg via n2 --slurpfile response "$OUT_DIR/tx/duplicate-submit-n2.json" --argjson counts "$dupe_counts" --argjson counter_deltas "$counter_deltas" '{resubmitted_via:$via,response:$response[0],per_node_duplicate_counts:$counts,p2p_counter_deltas:$counter_deltas,publish_attempts_unchanged:true,retransmission_observed:false,bounded:true}' > "$OUT_DIR/duplicate_evidence.json"
   touch "$OUT_DIR/duplicate_suppression.proof"
 else
-  fail "duplicate submit response did not prove duplicate rejection: code=$dupe_code message=$dupe_msg"
+  fail "duplicate submit did not prove bounded suppression without retransmission: code=$dupe_code message=$dupe_msg publish_unchanged=$publish_unchanged"
 fi
-# Capacity rejection through the private rehearsal cap: create a second accepted tx, then a third rejected tx.
+
 post_json "$(rpc_url 1)/wallet/new" '{}' "$OUT_DIR/tx/recipient2-wallet.json"; TO2="$(jq -r '.data.address' "$OUT_DIR/tx/recipient2-wallet.json")"
 post_json "$(rpc_url 1)/wallet/transfer" "{\"from\":\"$FROM2\",\"to\":\"$TO2\",\"amount\":1,\"fee\":1,\"private_key\":\"$PRIV2\"}" "$OUT_DIR/tx/capacity-fill.json" || true
 post_json "$(rpc_url 1)/wallet/new" '{}' "$OUT_DIR/tx/recipient3-wallet.json"; TO3="$(jq -r '.data.address' "$OUT_DIR/tx/recipient3-wallet.json")"
