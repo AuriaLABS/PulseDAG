@@ -144,12 +144,15 @@ run_runtime_evidence() {
     .external_miners == 4 and
     .isolated_node == "n5" and
     .observed_network_selected_height_gap >= (.configured_min_selected_height_gap // .configured_min_gap) and
+    .canonical_network_selected_height_gap == .observed_network_selected_height_gap and
     .remote_tip_inventory_received_total > 0 and
+    .remote_tip_inventory_accepted_total > 0 and
     .locator_requests_sent_total > 0 and
     .locator_responses_correlated_total > 0 and
     .selected_segment_block_requests_total > 0 and
     .selected_segment_blocks_applied_total > 0 and
     .selected_segment_chunks_completed_total > 0 and
+    .peer_addressed_getblock_sent_total >= .selected_segment_block_requests_total and
     .primary_session_path == "correlated_selected_segment" and
     .broadcast_getblock_primary_path == false and
     .final_convergence == true and
