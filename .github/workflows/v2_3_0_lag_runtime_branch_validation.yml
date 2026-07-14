@@ -4,6 +4,13 @@ on:
   push:
     branches:
       - agent/v2-3-0-real-lag-runtime
+  pull_request:
+    paths:
+      - '.github/workflows/v2_3_0_lag_injection_gate.yml'
+      - '.github/workflows/v2_3_0_lag_runtime_branch_validation.yml'
+      - 'scripts/lib/v2_3_0_runtime_harness.sh'
+      - 'scripts/tests/test_v2_3_0_real_lag_runtime_harness.sh'
+      - 'scripts/v2_3_0_lag_injection_selected_segment.sh'
   workflow_dispatch:
 
 permissions:
@@ -13,6 +20,6 @@ jobs:
   lag-runtime:
     uses: ./.github/workflows/v2_3_0_lag_injection_gate.yml
     with:
-      candidate_sha: ${{ github.sha }}
+      candidate_sha: ${{ github.event.pull_request.head.sha || github.sha }}
       evidence_mode: runtime-closeout
       min_selected_gap: '96'
