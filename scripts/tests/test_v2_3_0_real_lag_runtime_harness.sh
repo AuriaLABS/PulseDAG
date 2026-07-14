@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
+trap 'rc=$?; echo "lag runtime contract test failed at line $LINENO (rc=$rc)" >&2; exit $rc' ERR
 
 ROOT_DIR="$(git rev-parse --show-toplevel)"
 HARNESS="$ROOT_DIR/scripts/lib/v2_3_0_runtime_harness.sh"
 WRAPPER="$ROOT_DIR/scripts/v2_3_0_lag_injection_selected_segment.sh"
 
+echo "checking shell syntax"
 bash -n "$HARNESS"
 bash -n "$WRAPPER"
 
@@ -12,7 +14,7 @@ bash -n "$WRAPPER"
 source "$HARNESS"
 declare -F v2_3_0_run_lag_injection_selected_segment_drill >/dev/null
 
-# The diagnostic path must remain synthetic and ineligible for closeout.
+echo "checking synthetic schema guardrails"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 CI_MODE=1 OUT_DIR="$tmp/schema" MIN_SELECTED_GAP=64 "$WRAPPER" >/dev/null
@@ -25,7 +27,7 @@ jq -e '
   .public_testnet_ready == false
 ' "$tmp/schema/evidence_manifest.json" >/dev/null
 
-# The runtime function must reject underspecified or weakened drills before launch.
+echo "checking weakened runtime invocation is rejected"
 set +e
 v2_3_0_run_lag_injection_selected_segment_drill \
   --out-dir "$tmp/invalid" \
@@ -38,8 +40,8 @@ rc=$?
 set -e
 [[ "$rc" -eq 64 ]]
 
-# Guard against replacing operational isolation/correlation with placeholders.
-grep -q 'iptables -I OUTPUT -m owner --uid-owner' "$HARNESS"
+echo "checking operational evidence anchors"
+grep -Eq 'iptables -I OUTPUT( 1)? -m owner --uid-owner' "$HARNESS"
 grep -q -- '--consensus-mode ghostdag_dev' "$HARNESS"
 grep -q 'n5-health-during-isolation.json' "$HARNESS"
 grep -q 'selected_segment_block_requests_total' "$HARNESS"
