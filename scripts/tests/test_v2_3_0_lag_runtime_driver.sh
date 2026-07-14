@@ -1,0 +1,100 @@
+#!/usr/bin/env bash
+set -euo pipefail
+ROOT_DIR="$(git rev-parse --show-toplevel)"
+cd "$ROOT_DIR"
+DRIVER="scripts/v2_3_0_lag_injection_selected_segment.sh"
+HARNESS="scripts/lib/v2_3_0_runtime_harness.sh"
+
+bash -n "$DRIVER"
+bash -n "$HARNESS"
+source "$HARNESS"
+declare -F v2_3_0_run_lag_injection_selected_segment_drill >/dev/null
+
+grep -Fq 'kill -STOP "$n5_pid"' "$HARNESS"
+grep -Fq 'kill -CONT "$n5_pid"' "$HARNESS"
+grep -Fq 'ss -K state established' "$HARNESS"
+grep -Fq 'queued_gossip_discarded' "$HARNESS"
+grep -Fq 'canonical_gap_sample > canonical_gap_max' "$HARNESS"
+grep -Fq 'harness_gap_sample > harness_gap_max' "$HARNESS"
+grep -Fq 'canonical_gap_max" == "$observed_gap' "$HARNESS"
+grep -Fq 'selected_segment_header_requests_total' "$HARNESS"
+grep -Fq 'selected_segment_headers_received_total' "$HARNESS"
+grep -Fq 'selected_segment_block_requests_total' "$HARNESS"
+grep -Fq 'selected_segment_blocks_applied_total' "$HARNESS"
+grep -Fq 'selected_segment_chunks_completed_total' "$HARNESS"
+grep -Fq 'peer_addressed_getblock_sent_total' "$HARNESS"
+grep -Fq 'peer_addressed_getblock_delta" -lt "$block_requests_delta' "$HARNESS"
+grep -Fq 'remote_tip_inventory_accepted_total' "$HARNESS"
+grep -Fq 'closeout_eligible:true' "$HARNESS"
+grep -Fq 'public_testnet_ready:false' "$HARNESS"
+grep -Fq '_v230_lag_package_failure' "$HARNESS"
+
+if grep -Fq 'canonical_gap_max=$(( canonical_gap_max > observed_gap' "$HARNESS"; then
+  echo "canonical gap must come from runtime observations, not be forced to the harness gap" >&2
+  exit 1
+fi
+if grep -Fq '$r.node_operational_ready // $r.private_conservative_ready' "$HARNESS"; then
+  echo "readiness booleans must use logical OR rather than null coalescing" >&2
+  exit 1
+fi
+
+tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
+cat > "$tmp/manifest.json" <<'JSON'
+{
+  "result":"PASS",
+  "evidence_kind":"runtime",
+  "ci_mode":false,
+  "node_count":5,
+  "external_miners":4,
+  "isolated_node":"n5",
+  "configured_min_selected_height_gap":96,
+  "observed_network_selected_height_gap":96,
+  "canonical_network_selected_height_gap":96,
+  "remote_tip_inventory_received_total":4,
+  "remote_tip_inventory_accepted_total":4,
+  "locator_requests_sent_total":1,
+  "locator_responses_correlated_total":1,
+  "selected_segment_block_requests_total":96,
+  "selected_segment_blocks_applied_total":96,
+  "selected_segment_chunks_completed_total":3,
+  "peer_addressed_getblock_sent_total":96,
+  "primary_session_path":"correlated_selected_segment",
+  "broadcast_getblock_primary_path":false,
+  "final_convergence":true,
+  "storage_memory_consistent":true,
+  "public_testnet_ready":false,
+  "closeout_eligible":true,
+  "synthetic_schema_evidence":false,
+  "pending_selected_segment_requests":0,
+  "final_orphan_count":0,
+  "final_missing_parent_blockers":0
+}
+JSON
+jq -e '
+  .result == "PASS" and
+  .evidence_kind == "runtime" and
+  .ci_mode == false and
+  .node_count == 5 and
+  .external_miners == 4 and
+  .isolated_node == "n5" and
+  .observed_network_selected_height_gap == .canonical_network_selected_height_gap and
+  .observed_network_selected_height_gap >= .configured_min_selected_height_gap and
+  .remote_tip_inventory_received_total > 0 and
+  .remote_tip_inventory_accepted_total > 0 and
+  .locator_requests_sent_total > 0 and
+  .locator_responses_correlated_total > 0 and
+  .selected_segment_block_requests_total > 0 and
+  .selected_segment_blocks_applied_total > 0 and
+  .selected_segment_chunks_completed_total > 0 and
+  .peer_addressed_getblock_sent_total >= .selected_segment_block_requests_total and
+  .primary_session_path == "correlated_selected_segment" and
+  .broadcast_getblock_primary_path == false and
+  .final_convergence == true and
+  .storage_memory_consistent == true and
+  .public_testnet_ready == false and
+  .closeout_eligible == true and
+  .synthetic_schema_evidence == false and
+  .pending_selected_segment_requests == 0 and
+  .final_orphan_count == 0 and
+  .final_missing_parent_blockers == 0
+' "$tmp/manifest.json" >/dev/null
