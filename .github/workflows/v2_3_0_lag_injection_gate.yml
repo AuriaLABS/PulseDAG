@@ -70,9 +70,20 @@ jobs:
           mkdir -p ci-evidence/lag-injection/runtime
           git rev-parse HEAD > ci-evidence/lag-injection/candidate-sha.txt
           chmod +x scripts/v2_3_0_lag_injection_selected_segment.sh
+          chmod +x scripts/tests/test_v2_3_0_real_lag_runtime_harness.sh
+
+      - name: Validate lag runtime driver contract
+        id: contract
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -o pipefail
+          scripts/tests/test_v2_3_0_real_lag_runtime_harness.sh \
+            2>&1 | tee ci-evidence/lag-injection/runtime-contract-tests.log
 
       - name: Require selected-segment and lag-injection test coverage
         id: coverage
+        if: steps.contract.outcome == 'success'
         continue-on-error: true
         shell: bash
         run: |
@@ -104,6 +115,7 @@ jobs:
 
       - name: Run lag-injection evidence driver
         id: driver
+        if: steps.contract.outcome == 'success'
         continue-on-error: true
         shell: bash
         env:
@@ -131,25 +143,40 @@ jobs:
           if [[ "$EVIDENCE_MODE" == schema-only ]]; then
             jq -e '
               .ci_mode == true and
+              .closeout_eligible == false and
+              .synthetic_schema_evidence == true and
               .primary_session_path == "correlated_selected_segment" and
-              .observed_network_selected_height_gap >= 64
+              .observed_network_selected_height_gap >= 64 and
+              .public_testnet_ready == false
             ' "$manifest" >/dev/null
           else
             jq -e '
               .result == "PASS" and
               .ci_mode == false and
               .evidence_kind == "runtime" and
+              .closeout_eligible == true and
+              .synthetic_schema_evidence == false and
               .node_count == 5 and
+              .external_miners == 4 and
               .isolated_node == "n5" and
-              .observed_network_selected_height_gap >= 64 and
+              .observed_network_selected_height_gap >= (.configured_min_selected_height_gap // 64) and
               .remote_tip_inventory_received_total > 0 and
+              .remote_tip_inventory_accepted_total > 0 and
               .locator_requests_sent_total > 0 and
               .locator_responses_correlated_total > 0 and
               .selected_segment_block_requests_total > 0 and
               .selected_segment_blocks_applied_total > 0 and
               .selected_segment_chunks_completed_total > 0 and
+              .primary_session_path == "correlated_selected_segment" and
+              .broadcast_getblock_primary_path == false and
               .final_convergence == true and
               .storage_memory_consistent == true and
+              .pending_selected_segment_requests == 0 and
+              .final_orphan_count == 0 and
+              .final_missing_parent_blockers == 0 and
+              .process_continuity.n5_same_process == true and
+              .process_continuity.n5_same_peer_id == true and
+              .process_continuity.rpc_remained_available_during_isolation == true and
               .public_testnet_ready == false
             ' "$manifest" >/dev/null
           fi
@@ -159,6 +186,7 @@ jobs:
         shell: bash
         env:
           EVIDENCE_MODE: ${{ inputs.evidence_mode || 'runtime-closeout' }}
+          CONTRACT_RESULT: ${{ steps.contract.outcome }}
           COVERAGE_RESULT: ${{ steps.coverage.outcome }}
           SELECTED_RESULT: ${{ steps.selected.outcome }}
           LAG_TEST_RESULT: ${{ steps.lagtests.outcome }}
@@ -171,6 +199,7 @@ jobs:
           root = pathlib.Path('ci-evidence/lag-injection')
           mode = os.environ['EVIDENCE_MODE']
           outcomes = {
+            'runtime_contract':os.environ['CONTRACT_RESULT'],
             'coverage':os.environ['COVERAGE_RESULT'],
             'selected_segment_tests':os.environ['SELECTED_RESULT'],
             'lag_injection_tests':os.environ['LAG_TEST_RESULT'],
