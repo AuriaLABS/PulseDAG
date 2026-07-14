@@ -10,6 +10,9 @@ bash -n "$HARNESS"
 source "$HARNESS"
 declare -F v2_3_0_run_lag_injection_selected_segment_drill >/dev/null
 
+grep -Fq '.canonical_network_selected_height_gap == .observed_network_selected_height_gap' "$DRIVER"
+grep -Fq '.remote_tip_inventory_accepted_total > 0' "$DRIVER"
+grep -Fq '.peer_addressed_getblock_sent_total >= .selected_segment_block_requests_total' "$DRIVER"
 grep -Fq 'kill -STOP "$n5_pid"' "$HARNESS"
 grep -Fq 'kill -CONT "$n5_pid"' "$HARNESS"
 grep -Fq 'ss -K state established' "$HARNESS"
