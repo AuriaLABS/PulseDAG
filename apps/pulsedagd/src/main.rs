@@ -357,13 +357,13 @@ impl LagInjectionEvidenceConfig {
         if self.configured_min_gap < MIN_GAP_FLOOR {
             return Err("configured_gap_below_floor");
         }
+        if self.observed_network_gap != self.canonical_network_gap {
+            return Err("canonical_gap_disagrees_with_harness_gap");
+        }
         if self.observed_network_gap < self.configured_min_gap
             || self.canonical_network_gap < self.configured_min_gap
         {
             return Err("network_gap_below_configured_minimum");
-        }
-        if self.observed_network_gap != self.canonical_network_gap {
-            return Err("canonical_gap_disagrees_with_harness_gap");
         }
         if self.peer_count_per_node.len() != 5
             || self.peer_count_per_node.values().any(|count| *count != 4)
@@ -5462,6 +5462,22 @@ mod tests {
             evidence.validate(),
             Err("canonical_gap_disagrees_with_harness_gap")
         );
+
+        evidence.observed_network_gap = 95;
+        evidence.canonical_network_gap = 95;
+        assert_eq!(
+            evidence.validate(),
+            Err("network_gap_below_configured_minimum")
+        );
+
+        evidence.observed_network_gap = 97;
+        evidence.canonical_network_gap = 96;
+        assert_eq!(
+            evidence.validate(),
+            Err("canonical_gap_disagrees_with_harness_gap")
+        );
+
+        evidence.observed_network_gap = 96;
         evidence.canonical_network_gap = 96;
         evidence.transition_events = vec!["remote_inventory_accepted"];
         assert_eq!(evidence.validate(), Err("missing_mandatory_transition"));
