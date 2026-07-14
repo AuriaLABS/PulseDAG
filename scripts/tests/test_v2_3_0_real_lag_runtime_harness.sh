@@ -28,16 +28,17 @@ jq -e '
 ' "$tmp/schema/evidence_manifest.json" >/dev/null
 
 echo "checking weakened runtime invocation is rejected"
-set +e
-v2_3_0_run_lag_injection_selected_segment_drill \
+if v2_3_0_run_lag_injection_selected_segment_drill \
   --out-dir "$tmp/invalid" \
   --run-id invalid \
   --min-selected-gap 63 \
   --isolated-node n5 \
   --node-count 5 \
-  --miner-count 4 >/dev/null 2>&1
-rc=$?
-set -e
+  --miner-count 4 >/dev/null 2>&1; then
+  rc=0
+else
+  rc=$?
+fi
 [[ "$rc" -eq 64 ]]
 
 echo "checking operational evidence anchors"
