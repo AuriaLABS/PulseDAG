@@ -85,26 +85,34 @@ jobs:
       - name: Verify node startup smoke
         run: |
           set -euo pipefail
-          nohup cargo run -p pulsedagd > node.log 2>&1 &
+          test -x target/release/pulsedagd
+          nohup target/release/pulsedagd > node.log 2>&1 &
           node_pid=$!
-          trap 'kill "$node_pid" 2>/dev/null || true' EXIT
+          trap 'kill "$node_pid" 2>/dev/null || true; wait "$node_pid" 2>/dev/null || true' EXIT
           for i in {1..45}; do
             if curl -sSf "${NODE_URL}/health" >/dev/null; then
               echo "node startup smoke passed"
               exit 0
             fi
+            if ! kill -0 "$node_pid" 2>/dev/null; then
+              echo "node process exited before health became available" >&2
+              echo "last node.log lines:" >&2
+              tail -n 120 node.log >&2 || true
+              exit 1
+            fi
             sleep 2
           done
           echo "node startup smoke failed: ${NODE_URL}/health unavailable" >&2
           echo "last node.log lines:" >&2
-          tail -n 50 node.log >&2 || true
+          tail -n 120 node.log >&2 || true
           exit 1
 
       - name: Verify external standalone miner one-shot
         run: |
           set -euo pipefail
+          test -x target/release/pulsedag-miner
           timeout --signal=TERM --kill-after=30s 10m \
-            cargo run -p pulsedag-miner -- \
+            target/release/pulsedag-miner \
               --node "${NODE_URL}" \
               --miner-address preburnin-smoke \
               --max-tries 12000
