@@ -110,7 +110,7 @@ pub async fn post_wallet_transfer<S: RpcStateLike>(
             }
             Json(ApiResponse::ok(WalletTransferData {
                 accepted: true,
-                txid: tx.txid,
+                txid: tx.txid.clone(),
                 from: req.from,
                 to: req.to,
                 amount: req.amount,
