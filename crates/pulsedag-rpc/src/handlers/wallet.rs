@@ -26,6 +26,7 @@ pub struct WalletTransferData {
     pub total_input: u64,
     pub change: u64,
     pub mempool_size: usize,
+    pub transaction: pulsedag_core::types::Transaction,
 }
 
 pub async fn post_wallet_new<S: RpcStateLike>(
@@ -109,7 +110,7 @@ pub async fn post_wallet_transfer<S: RpcStateLike>(
             }
             Json(ApiResponse::ok(WalletTransferData {
                 accepted: true,
-                txid: tx.txid,
+                txid: tx.txid.clone(),
                 from: req.from,
                 to: req.to,
                 amount: req.amount,
@@ -117,6 +118,7 @@ pub async fn post_wallet_transfer<S: RpcStateLike>(
                 total_input: built.total_input,
                 change: built.change,
                 mempool_size,
+                transaction: tx,
             }))
         }
         Err(e) => Json(ApiResponse::err("TX_REJECTED", e.to_string())),

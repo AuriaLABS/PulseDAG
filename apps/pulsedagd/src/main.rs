@@ -1256,6 +1256,16 @@ async fn main() -> Result<()> {
     let snapshot_exists = storage.snapshot_exists().unwrap_or(false);
     let persisted_blocks = storage.list_blocks().unwrap_or_default();
     let mut chain_state = storage.load_or_init_genesis(cfg.chain_id.clone())?;
+    if cfg.network_profile == "private" || cfg.network_profile.starts_with("rehearsal") {
+        if let Ok(raw) = std::env::var("PULSEDAG_MEMPOOL_MAX_TRANSACTIONS") {
+            if let Ok(limit) = raw.parse::<usize>() {
+                if limit > 0 {
+                    chain_state.mempool.max_transactions = limit;
+                    chain_state.mempool.max_spent_outpoints = limit.saturating_mul(2).max(1);
+                }
+            }
+        }
+    }
     chain_state.dag.consensus_mode = cfg.consensus_mode;
     chain_state.dag.selected_parent_policy = if cfg.consensus_mode.ghostdag_metadata_active() {
         pulsedag_core::SelectedParentPolicy::GhostdagInspired

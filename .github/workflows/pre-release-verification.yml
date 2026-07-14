@@ -103,6 +103,12 @@ jobs:
               echo "node startup smoke passed using target/release/pulsedagd"
               exit 0
             fi
+            if ! kill -0 "$node_pid" 2>/dev/null; then
+              echo "node process exited before health became available" >&2
+              echo "last node.log lines:" >&2
+              tail -n 120 node.log >&2 || true
+              exit 1
+            fi
             sleep 2
           done
           echo "node startup smoke failed: ${NODE_URL}/health unavailable after 120 seconds" >&2
