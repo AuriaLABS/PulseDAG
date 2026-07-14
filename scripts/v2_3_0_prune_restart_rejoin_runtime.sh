@@ -9,7 +9,6 @@ COMMAND_LOG="$OUT_DIR/command.log"
 MANIFEST="$OUT_DIR/evidence_manifest.json"
 START_TS="$(date -u +%FT%TZ)"
 REAL_HARNESS="${PRUNE_RESTART_REJOIN_HARNESS:-$ROOT_DIR/scripts/lib/v2_3_0_runtime_harness.sh}"
-REAL_HARNESS_FUNCTION="v2_3_0_run_prune_restart_rejoin_drill"
 MIN_OFFLINE_ADVANCE_BLOCKS="${MIN_OFFLINE_ADVANCE_BLOCKS:-64}"
 
 log(){ printf '[%s] %s\n' "$(date -u +%FT%TZ)" "$*" | tee -a "$COMMAND_LOG"; }
@@ -49,22 +48,29 @@ log "starting v2.3.0 prune/restart/rejoin runtime driver"
 command -v jq >/dev/null || { write_fail_manifest "jq is required"; exit 65; }
 run_logged git -C "$ROOT_DIR" rev-parse HEAD > "$OUT_DIR/candidate-sha.txt"
 
-# Build the checked-out release binary. The operational harness below must launch this
-# binary (and miners/helpers) against real data dirs; cargo tests are intentionally
-# not accepted as runtime closeout evidence.
-run_logged cargo build -p pulsedagd --bin pulsedagd --release --locked
-printf '{"binary":"%s","sha256":"%s"}\n' "$ROOT_DIR/target/release/pulsedagd" "$(sha256sum "$ROOT_DIR/target/release/pulsedagd" | awk '{print $1}')" > "$OUT_DIR/release-binary.json"
+# Build the checked-out release binaries. Cargo tests are intentionally not accepted
+# as runtime closeout evidence; the sourced harness must launch these exact artifacts.
+run_logged cargo build -p pulsedagd -p pulsedag-miner --release --locked
+printf '{"node_binary":"%s","node_sha256":"%s","miner_binary":"%s","miner_sha256":"%s"}\n' \
+  "$ROOT_DIR/target/release/pulsedagd" "$(sha256sum "$ROOT_DIR/target/release/pulsedagd" | awk '{print $1}')" \
+  "$ROOT_DIR/target/release/pulsedag-miner" "$(sha256sum "$ROOT_DIR/target/release/pulsedag-miner" | awk '{print $1}')" \
+  > "$OUT_DIR/release-binaries.json"
 
-[[ -f "$REAL_HARNESS" ]] || fail "real runtime harness missing: $REAL_HARNESS (rebased PR #739 shared harness required)"
-log "sourcing shared runtime harness: $REAL_HARNESS"
-# shellcheck source=scripts/lib/v2_3_0_runtime_harness.sh
+[[ -r "$REAL_HARNESS" ]] || fail "real runtime harness missing or unreadable: $REAL_HARNESS (stacked PR #739 harness required)"
+# shellcheck source=/dev/null
 source "$REAL_HARNESS"
-declare -F "$REAL_HARNESS_FUNCTION" >/dev/null || fail "shared runtime harness does not define $REAL_HARNESS_FUNCTION"
-log "running shared runtime drill function: $REAL_HARNESS_FUNCTION"
-OUT_DIR="$OUT_DIR" \
-PULSEDAGD_BIN="$ROOT_DIR/target/release/pulsedagd" \
-MIN_OFFLINE_ADVANCE_BLOCKS="$MIN_OFFLINE_ADVANCE_BLOCKS" \
-  "$REAL_HARNESS_FUNCTION" 2>&1 | tee -a "$COMMAND_LOG"
+declare -F v2_3_0_run_prune_restart_rejoin_drill >/dev/null || \
+  fail "$REAL_HARNESS does not define v2_3_0_run_prune_restart_rejoin_drill"
+
+log "delegating to real prune/restart/rejoin function from $REAL_HARNESS"
+v2_3_0_run_prune_restart_rejoin_drill \
+  --out-dir "$OUT_DIR" \
+  --node-bin "$ROOT_DIR/target/release/pulsedagd" \
+  --miner-bin "$ROOT_DIR/target/release/pulsedag-miner" \
+  --node-count 5 \
+  --offline-node n5 \
+  --min-offline-advance-blocks "$MIN_OFFLINE_ADVANCE_BLOCKS" \
+  2>&1 | tee -a "$COMMAND_LOG"
 
 [[ -s "$MANIFEST" ]] || fail "real runtime harness did not write $MANIFEST"
 jq -e . "$MANIFEST" >/dev/null || fail "runtime manifest is invalid JSON"
