@@ -81,17 +81,29 @@ jobs:
         run: |
           timeout --signal=TERM --kill-after=30s 45m \
             cargo build --locked --release --bin pulsedagd --bin pulsedag-miner
+          test -x target/release/pulsedagd
+          test -x target/release/pulsedag-miner
 
       - name: Verify node startup smoke
         run: |
           set -euo pipefail
-          test -x target/release/pulsedagd
-          nohup target/release/pulsedagd > node.log 2>&1 &
+          : > node.log
+          nohup env RUST_LOG_STYLE=never target/release/pulsedagd > node.log 2>&1 &
           node_pid=$!
-          trap 'kill "$node_pid" 2>/dev/null || true; wait "$node_pid" 2>/dev/null || true' EXIT
-          for i in {1..45}; do
-            if curl -sSf "${NODE_URL}/health" >/dev/null; then
-              echo "node startup smoke passed"
+          cleanup() {
+            kill "$node_pid" 2>/dev/null || true
+            wait "$node_pid" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+
+          for i in {1..60}; do
+            if ! kill -0 "$node_pid" 2>/dev/null; then
+              echo "node startup smoke failed: release binary exited before health became available" >&2
+              tail -n 100 node.log >&2 || true
+              exit 1
+            fi
+            if curl --fail --silent --show-error --connect-timeout 1 --max-time 3 "${NODE_URL}/health" >/dev/null; then
+              echo "node startup smoke passed using target/release/pulsedagd"
               exit 0
             fi
             if ! kill -0 "$node_pid" 2>/dev/null; then
@@ -102,9 +114,11 @@ jobs:
             fi
             sleep 2
           done
-          echo "node startup smoke failed: ${NODE_URL}/health unavailable" >&2
+          echo "node startup smoke failed: ${NODE_URL}/health unavailable after 120 seconds" >&2
+          echo "process state:" >&2
+          ps -fp "$node_pid" >&2 || true
           echo "last node.log lines:" >&2
-          tail -n 120 node.log >&2 || true
+          tail -n 100 node.log >&2 || true
           exit 1
 
       - name: Verify external standalone miner one-shot
