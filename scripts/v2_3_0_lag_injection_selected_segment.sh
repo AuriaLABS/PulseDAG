@@ -158,6 +158,34 @@ run_runtime_evidence() {
     echo "FATAL: runtime harness evidence failed closeout semantics; refusing closeout" >&2
     exit 1
   }
+  python3 - "$OUT_DIR" "$MANIFEST_JSON" <<'PY'
+import json, os, pathlib, re, sys
+out = pathlib.Path(sys.argv[1])
+manifest = json.loads(pathlib.Path(sys.argv[2]).read_text())
+self_pid = os.getppid()
+for path in sorted((out / 'pids').glob('n*.pid')):
+    pid_text = path.read_text().strip()
+    if not pid_text.isdigit():
+        raise SystemExit(f'{path} does not contain a numeric node pid')
+    pid = int(pid_text)
+    if pid in {os.getpid(), self_pid}:
+        raise SystemExit(f'{path} contains the validator/shell pid, not pulsedagd')
+    exe = pathlib.Path(f'/proc/{pid}/exe')
+    if not exe.exists() or 'pulsedagd' not in os.path.basename(os.readlink(exe)):
+        raise SystemExit(f'{path} pid {pid} is not a live pulsedagd process')
+if len(list((out / 'pids').glob('n*.pid'))) != 5:
+    raise SystemExit('runtime evidence must include five live node pid files')
+for node in manifest.get('final_state_by_node', []):
+    for key in ('selected_tip', 'ordered_dag_tip', 'state_root'):
+        value = str(node.get(key, ''))
+        if not value or re.search(r'^(synthetic|tip-|fake|prefabricated)', value):
+            raise SystemExit(f'{node.get("node")} has prefabricated {key}: {value}')
+counts = [manifest.get(k) for k in ('remote_tip_inventory_received_total','locator_requests_sent_total','locator_responses_correlated_total','selected_segment_block_requests_total','selected_segment_blocks_applied_total','selected_segment_chunks_completed_total')]
+if len(set(counts)) == 1:
+    raise SystemExit('selected-segment counters are constant across all fields')
+if not (manifest['selected_segment_block_requests_total'] >= manifest['selected_segment_chunks_completed_total'] and manifest['selected_segment_blocks_applied_total'] <= manifest['selected_segment_block_requests_total']):
+    raise SystemExit('selected-segment counters are not correlated')
+PY
 }
 
 archive_evidence() {
