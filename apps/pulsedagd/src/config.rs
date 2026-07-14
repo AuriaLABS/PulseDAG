@@ -969,6 +969,12 @@ mod tests {
         ENV_LOCK.get_or_init(|| Mutex::new(()))
     }
 
+    fn env_guard() -> std::sync::MutexGuard<'static, ()> {
+        env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     fn clear_test_env() {
         for key in [
             "PULSEDAG_CONFIG_PROFILE",
@@ -1008,7 +1014,7 @@ mod tests {
 
     #[test]
     fn loads_dev_profile_defaults() {
-        let _guard = env_lock().lock().expect("env lock");
+        let _guard = env_guard();
         clear_test_env();
         std::env::set_var("PULSEDAG_CONFIG_PROFILE", "dev");
         let cfg = Config::from_env().expect("config");
@@ -1022,7 +1028,7 @@ mod tests {
 
     #[test]
     fn target_block_interval_is_guarded_to_consensus_sixty_seconds() {
-        let _guard = env_lock().lock().expect("env lock");
+        let _guard = env_guard();
         clear_test_env();
         std::env::set_var("PULSEDAG_CONFIG_PROFILE", "local");
         std::env::set_var("PULSEDAG_TARGET_BLOCK_INTERVAL_SECS", "30");
@@ -1035,7 +1041,7 @@ mod tests {
 
     #[test]
     fn experimental_fast_cadence_requires_ghostdag_flag() {
-        let _guard = env_lock().lock().expect("env lock");
+        let _guard = env_guard();
         clear_test_env();
         std::env::set_var("PULSEDAG_EXPERIMENTAL_FAST_CADENCE", "true");
         let err = Config::from_env().expect_err("fast cadence must be gated");
@@ -1045,8 +1051,8 @@ mod tests {
     }
 
     #[test]
-    fn experimental_flags_unlock_millisecond_cadence_and_limits() {
-        let _guard = env_lock().lock().expect("env lock");
+    fn experimental_flags_keep_fast_cadence_guarded_and_apply_limits() {
+        let _guard = env_guard();
         clear_test_env();
         let mut cfg = Config::defaults_for_profile(ConfigProfile::Local);
         cfg.apply_cli_args(vec![
@@ -1070,8 +1076,16 @@ mod tests {
         .expect("experimental config");
 
         assert!(cfg.experimental_ghostdag_selection);
-        assert!(cfg.experimental_fast_cadence);
-        assert_eq!(cfg.target_block_interval_ms, 250);
+        assert_eq!(cfg.consensus_mode, ConsensusMode::GhostdagDev);
+        assert!(!cfg.experimental_fast_cadence);
+        assert_eq!(
+            cfg.target_block_interval_ms,
+            pulsedag_core::CONSENSUS_TARGET_BLOCK_INTERVAL_SECS * 1_000
+        );
+        assert_eq!(
+            cfg.target_block_interval_secs,
+            pulsedag_core::CONSENSUS_TARGET_BLOCK_INTERVAL_SECS
+        );
         assert_eq!(cfg.max_parallel_tips, 8);
         assert_eq!(cfg.max_merge_set_size, 64);
         assert_eq!(cfg.max_orphan_count, 2048);
@@ -1082,7 +1096,7 @@ mod tests {
 
     #[test]
     fn loads_testnet_profile_defaults() {
-        let _guard = env_lock().lock().expect("env lock");
+        let _guard = env_guard();
         clear_test_env();
         std::env::set_var("PULSEDAG_CONFIG_PROFILE", "testnet");
         let cfg = Config::from_env().expect("config");
@@ -1097,7 +1111,7 @@ mod tests {
 
     #[test]
     fn loads_private_profile_defaults() {
-        let _guard = env_lock().lock().expect("env lock");
+        let _guard = env_guard();
         clear_test_env();
         std::env::set_var("PULSEDAG_CONFIG_PROFILE", "private");
         let cfg = Config::from_env().expect("config");
@@ -1109,7 +1123,7 @@ mod tests {
 
     #[test]
     fn loads_operator_profile_defaults() {
-        let _guard = env_lock().lock().expect("env lock");
+        let _guard = env_guard();
         clear_test_env();
         std::env::set_var("PULSEDAG_CONFIG_PROFILE", "operator");
         let cfg = Config::from_env().expect("config");
@@ -1124,7 +1138,7 @@ mod tests {
 
     #[test]
     fn explicit_overrides_take_precedence() {
-        let _guard = env_lock().lock().expect("env lock");
+        let _guard = env_guard();
         clear_test_env();
         std::env::set_var("PULSEDAG_CONFIG_PROFILE", "operator");
         std::env::set_var("PULSEDAG_P2P_MODE", "memory");
@@ -1140,7 +1154,7 @@ mod tests {
 
     #[test]
     fn cli_network_then_rpc_override_is_preserved() {
-        let _guard = env_lock().lock().expect("env lock");
+        let _guard = env_guard();
         clear_test_env();
         let mut cfg = Config::defaults_for_profile(ConfigProfile::Dev);
         cfg.apply_cli_args(vec![
@@ -1156,7 +1170,7 @@ mod tests {
 
     #[test]
     fn cli_rpc_then_network_override_is_preserved() {
-        let _guard = env_lock().lock().expect("env lock");
+        let _guard = env_guard();
         clear_test_env();
         let mut cfg = Config::defaults_for_profile(ConfigProfile::Dev);
         cfg.apply_cli_args(vec![
@@ -1172,7 +1186,7 @@ mod tests {
 
     #[test]
     fn cli_private_profile_keeps_p2p_and_bootnode_overrides() {
-        let _guard = env_lock().lock().expect("env lock");
+        let _guard = env_guard();
         clear_test_env();
         let mut cfg = Config::defaults_for_profile(ConfigProfile::Dev);
         cfg.apply_cli_args(vec![
@@ -1193,7 +1207,7 @@ mod tests {
 
     #[test]
     fn cli_back_compat_bind_aliases_apply() {
-        let _guard = env_lock().lock().expect("env lock");
+        let _guard = env_guard();
         clear_test_env();
         let mut cfg = Config::defaults_for_profile(ConfigProfile::Dev);
         cfg.apply_cli_args(vec![
@@ -1209,7 +1223,7 @@ mod tests {
 
     #[test]
     fn cli_profile_defaults_apply_without_overrides() {
-        let _guard = env_lock().lock().expect("env lock");
+        let _guard = env_guard();
         clear_test_env();
         let mut cfg = Config::defaults_for_profile(ConfigProfile::Dev);
         cfg.apply_cli_args(vec!["--network".to_string(), "private".to_string()])
@@ -1220,7 +1234,7 @@ mod tests {
 
     #[test]
     fn rehearsal_profiles_load_expected_defaults() {
-        let _guard = env_lock().lock().expect("env lock");
+        let _guard = env_guard();
         clear_test_env();
         let rehearsal_a = Config::defaults_for_profile(ConfigProfile::RehearsalA);
         assert_eq!(rehearsal_a.network_profile, "rehearsal-a");
@@ -1252,7 +1266,7 @@ mod tests {
 
     #[test]
     fn rehearsal_profiles_share_chain_and_separate_data_dirs() {
-        let _guard = env_lock().lock().expect("env lock");
+        let _guard = env_guard();
         clear_test_env();
         let rehearsal_a = Config::defaults_for_profile(ConfigProfile::RehearsalA);
         let rehearsal_b = Config::defaults_for_profile(ConfigProfile::RehearsalB);
@@ -1267,7 +1281,7 @@ mod tests {
 
     #[test]
     fn rehearsal_cli_overrides_preserve_explicit_values() {
-        let _guard = env_lock().lock().expect("env lock");
+        let _guard = env_guard();
         clear_test_env();
         let mut cfg = Config::defaults_for_profile(ConfigProfile::Dev);
         cfg.apply_cli_args(vec![
@@ -1296,7 +1310,7 @@ mod tests {
 
     #[test]
     fn invalid_profile_fails_clearly() {
-        let _guard = env_lock().lock().expect("env lock");
+        let _guard = env_guard();
         clear_test_env();
         std::env::set_var("PULSEDAG_CONFIG_PROFILE", "invalid");
         let err = Config::from_env().expect_err("invalid profile should fail");
@@ -1309,7 +1323,7 @@ mod tests {
 
     #[test]
     fn admin_defaults_disabled_by_default() {
-        let _guard = env_lock().lock().expect("env lock");
+        let _guard = env_guard();
         clear_test_env();
         std::env::set_var("PULSEDAG_CONFIG_PROFILE", "dev");
         std::env::set_var("PULSEDAG_RPC_BIND", "0.0.0.0:8080");
@@ -1332,7 +1346,7 @@ mod tests {
 
     #[test]
     fn admin_remote_bind_requires_unsafe_override() {
-        let _guard = env_lock().lock().expect("env lock");
+        let _guard = env_guard();
         clear_test_env();
         std::env::set_var("PULSEDAG_CONFIG_PROFILE", "operator");
         std::env::set_var("PULSEDAG_ADMIN_ENABLED", "true");
@@ -1351,7 +1365,7 @@ mod tests {
 
     #[test]
     fn default_bind_is_localhost_safe() {
-        let _guard = env_lock().lock().expect("env lock");
+        let _guard = env_guard();
         clear_test_env();
         std::env::set_var("PULSEDAG_CONFIG_PROFILE", "dev");
         let cfg = Config::from_env().expect("config");
@@ -1360,7 +1374,7 @@ mod tests {
 
     #[test]
     fn public_bind_requires_explicit_api_profile() {
-        let _guard = env_lock().lock().expect("env lock");
+        let _guard = env_guard();
         clear_test_env();
         std::env::set_var("PULSEDAG_CONFIG_PROFILE", "dev");
         std::env::set_var("PULSEDAG_RPC_BIND", "0.0.0.0:8080");
@@ -1378,7 +1392,7 @@ mod tests {
 
     #[test]
     fn wildcard_cors_is_rejected() {
-        let _guard = env_lock().lock().expect("env lock");
+        let _guard = env_guard();
         clear_test_env();
         std::env::set_var("PULSEDAG_CONFIG_PROFILE", "dev");
         std::env::set_var("PULSEDAG_ADMIN_ENABLED", "true");
@@ -1388,7 +1402,7 @@ mod tests {
     }
     #[test]
     fn admin_env_override_takes_precedence() {
-        let _guard = env_lock().lock().expect("env lock");
+        let _guard = env_guard();
         clear_test_env();
         std::env::set_var("PULSEDAG_CONFIG_PROFILE", "operator");
         std::env::set_var("PULSEDAG_RPC_BIND", "127.0.0.1:8080");
@@ -1406,7 +1420,7 @@ mod tests {
 
     #[test]
     fn missing_chain_id_is_rejected() {
-        let _guard = env_lock().lock().expect("env lock");
+        let _guard = env_guard();
         clear_test_env();
         std::env::set_var("PULSEDAG_CONFIG_PROFILE", "dev");
         std::env::set_var("PULSEDAG_CHAIN_ID", "   ");
@@ -1416,7 +1430,7 @@ mod tests {
 
     #[test]
     fn short_auth_token_is_rejected() {
-        let _guard = env_lock().lock().expect("env lock");
+        let _guard = env_guard();
         clear_test_env();
         std::env::set_var("PULSEDAG_CONFIG_PROFILE", "operator");
         std::env::set_var("PULSEDAG_OPERATOR_AUTH_TOKEN", "short-token");
@@ -1426,7 +1440,7 @@ mod tests {
 
     #[test]
     fn public_safe_rate_limit_disabled_requires_explicit_override() {
-        let _guard = env_lock().lock().expect("env lock");
+        let _guard = env_guard();
         clear_test_env();
         std::env::set_var("PULSEDAG_CONFIG_PROFILE", "operator");
         std::env::set_var("PULSEDAG_API_PROFILE", "public_safe");
@@ -1439,7 +1453,7 @@ mod tests {
 
     #[test]
     fn config_safety_summary_reports_warning_for_public_bind_without_explicit_profile() {
-        let _guard = env_lock().lock().expect("env lock");
+        let _guard = env_guard();
         clear_test_env();
         let cfg = Config::defaults_for_profile(ConfigProfile::Operator);
         let summary = cfg.config_safety_summary();

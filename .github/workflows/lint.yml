@@ -3,73 +3,7 @@ name: Lint
 on:
   pull_request:
 
-permissions:
-  contents: write
-  pull-requests: read
-
 jobs:
-  apply-pulsedagd-regression-fix:
-    if: github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: ubuntu-24.04
-    timeout-minutes: 50
-    steps:
-      - name: Checkout pull-request branch
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.pull_request.head.ref }}
-          fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Apply exact source patch
-        shell: bash
-        run: |
-          set -euo pipefail
-          task='docs/codex_tasks/fix_pulsedagd_workspace_regressions.md'
-          if [[ ! -f "$task" ]]; then
-            echo 'Task already completed by another implementation.'
-            exit 0
-          fi
-          python3 scripts/apply_pulsedagd_workspace_regression_fix.py
-
-      - name: Install Rust
-        if: hashFiles('docs/codex_tasks/fix_pulsedagd_workspace_regressions.md') != ''
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
-
-      - name: Cache cargo
-        if: hashFiles('docs/codex_tasks/fix_pulsedagd_workspace_regressions.md') != ''
-        uses: Swatinem/rust-cache@v2
-
-      - name: Validate focused and package tests
-        if: hashFiles('docs/codex_tasks/fix_pulsedagd_workspace_regressions.md') != ''
-        shell: bash
-        run: |
-          set -euo pipefail
-          cargo fmt --all -- --check
-          cargo test -p pulsedagd config::tests --locked -- --nocapture --test-threads=1
-          cargo test -p pulsedagd lag_injection_evidence --locked -- --nocapture --test-threads=1
-          cargo test -p pulsedagd --locked -- --nocapture --test-threads=1
-          cargo check --workspace --locked
-          cargo clippy --workspace --all-targets -- -D warnings
-
-      - name: Commit validated fix and restore CI
-        if: hashFiles('docs/codex_tasks/fix_pulsedagd_workspace_regressions.md') != ''
-        shell: bash
-        run: |
-          set -euo pipefail
-          git show origin/main:.github/workflows/lint.yml > .github/workflows/lint.yml
-          rm -f docs/codex_tasks/fix_pulsedagd_workspace_regressions.md
-          rm -f .github/workflows/apply_pulsedagd_workspace_regression_fix.yml
-          rm -f scripts/apply_pulsedagd_workspace_regression_fix.py
-          git config user.name github-actions[bot]
-          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add apps/pulsedagd/src/config.rs apps/pulsedagd/src/main.rs .github/workflows/lint.yml
-          git add -A docs/codex_tasks/fix_pulsedagd_workspace_regressions.md .github/workflows/apply_pulsedagd_workspace_regression_fix.yml scripts/apply_pulsedagd_workspace_regression_fix.py
-          git diff --cached --check
-          git commit -m 'test(pulsedagd): align guarded cadence and lag diagnostics'
-          git push origin HEAD:${{ github.event.pull_request.head.ref }}
-
   lint:
     runs-on: ubuntu-latest
 
