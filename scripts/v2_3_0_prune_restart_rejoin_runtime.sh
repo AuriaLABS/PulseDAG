@@ -8,7 +8,8 @@ mkdir -p "$OUT_DIR" "$OUT_DIR/logs" "$OUT_DIR/endpoints" "$OUT_DIR/digests"
 COMMAND_LOG="$OUT_DIR/command.log"
 MANIFEST="$OUT_DIR/evidence_manifest.json"
 START_TS="$(date -u +%FT%TZ)"
-REAL_HARNESS="${PRUNE_RESTART_REJOIN_HARNESS:-$ROOT_DIR/scripts/v2_3_0_runtime_harness.sh}"
+REAL_HARNESS="${PRUNE_RESTART_REJOIN_HARNESS:-$ROOT_DIR/scripts/lib/v2_3_0_runtime_harness.sh}"
+REAL_HARNESS_FUNCTION="v2_3_0_run_prune_restart_rejoin_drill"
 MIN_OFFLINE_ADVANCE_BLOCKS="${MIN_OFFLINE_ADVANCE_BLOCKS:-64}"
 
 log(){ printf '[%s] %s\n' "$(date -u +%FT%TZ)" "$*" | tee -a "$COMMAND_LOG"; }
@@ -54,12 +55,16 @@ run_logged git -C "$ROOT_DIR" rev-parse HEAD > "$OUT_DIR/candidate-sha.txt"
 run_logged cargo build -p pulsedagd --bin pulsedagd --release --locked
 printf '{"binary":"%s","sha256":"%s"}\n' "$ROOT_DIR/target/release/pulsedagd" "$(sha256sum "$ROOT_DIR/target/release/pulsedagd" | awk '{print $1}')" > "$OUT_DIR/release-binary.json"
 
-[[ -x "$REAL_HARNESS" ]] || fail "real runtime harness missing or not executable: $REAL_HARNESS (rebased PR #739 harness required)"
-log "delegating to real runtime harness: $REAL_HARNESS"
+[[ -f "$REAL_HARNESS" ]] || fail "real runtime harness missing: $REAL_HARNESS (rebased PR #739 shared harness required)"
+log "sourcing shared runtime harness: $REAL_HARNESS"
+# shellcheck source=scripts/lib/v2_3_0_runtime_harness.sh
+source "$REAL_HARNESS"
+declare -F "$REAL_HARNESS_FUNCTION" >/dev/null || fail "shared runtime harness does not define $REAL_HARNESS_FUNCTION"
+log "running shared runtime drill function: $REAL_HARNESS_FUNCTION"
 OUT_DIR="$OUT_DIR" \
 PULSEDAGD_BIN="$ROOT_DIR/target/release/pulsedagd" \
 MIN_OFFLINE_ADVANCE_BLOCKS="$MIN_OFFLINE_ADVANCE_BLOCKS" \
-  "$REAL_HARNESS" 2>&1 | tee -a "$COMMAND_LOG"
+  "$REAL_HARNESS_FUNCTION" 2>&1 | tee -a "$COMMAND_LOG"
 
 [[ -s "$MANIFEST" ]] || fail "real runtime harness did not write $MANIFEST"
 jq -e . "$MANIFEST" >/dev/null || fail "runtime manifest is invalid JSON"
