@@ -9,6 +9,7 @@ COMMAND_LOG="$OUT_DIR/command.log"
 MANIFEST="$OUT_DIR/evidence_manifest.json"
 START_TS="$(date -u +%FT%TZ)"
 REAL_HARNESS="${PRUNE_RESTART_REJOIN_HARNESS:-$ROOT_DIR/scripts/lib/v2_3_0_runtime_harness.sh}"
+TASK04_HARNESS="${PRUNE_RESTART_REJOIN_TASK04_HARNESS:-$ROOT_DIR/scripts/lib/v2_3_0_prune_restart_rejoin_harness.sh}"
 MIN_OFFLINE_ADVANCE_BLOCKS="${MIN_OFFLINE_ADVANCE_BLOCKS:-64}"
 
 log(){ printf '[%s] %s\n' "$(date -u +%FT%TZ)" "$*" | tee -a "$COMMAND_LOG"; }
@@ -54,13 +55,16 @@ printf '{"node_binary":"%s","node_sha256":"%s","miner_binary":"%s","miner_sha256
   "$ROOT_DIR/target/release/pulsedag-miner" "$(sha256sum "$ROOT_DIR/target/release/pulsedag-miner" | awk '{print $1}')" \
   > "$OUT_DIR/release-binaries.json"
 
-[[ -r "$REAL_HARNESS" ]] || fail "real runtime harness missing or unreadable: $REAL_HARNESS"
+[[ -r "$REAL_HARNESS" ]] || fail "shared runtime harness missing or unreadable: $REAL_HARNESS"
+[[ -r "$TASK04_HARNESS" ]] || fail "Task 04 runtime harness missing or unreadable: $TASK04_HARNESS"
 # shellcheck source=/dev/null
 source "$REAL_HARNESS"
+# shellcheck source=/dev/null
+source "$TASK04_HARNESS"
 declare -F v2_3_0_run_prune_restart_rejoin_drill >/dev/null || \
-  fail "$REAL_HARNESS does not define v2_3_0_run_prune_restart_rejoin_drill"
+  fail "$TASK04_HARNESS does not define v2_3_0_run_prune_restart_rejoin_drill"
 
-log "delegating to real prune/restart/rejoin function from $REAL_HARNESS"
+log "delegating to real prune/restart/rejoin function from $TASK04_HARNESS"
 v2_3_0_run_prune_restart_rejoin_drill \
   --out-dir "$OUT_DIR" \
   --node-bin "$ROOT_DIR/target/release/pulsedagd" \
