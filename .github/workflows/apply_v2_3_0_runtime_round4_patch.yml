@@ -32,147 +32,19 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
-      - name: Apply fail-closed patches
-        id: apply
-        continue-on-error: true
+      - name: Apply fail-closed source patches
         run: |
-          set +e
-          (
-            set -euo pipefail
-            python3 scripts/lib/apply_v2_3_0_runtime_round4_patch.py
-            python3 - <<'PY'
-          from pathlib import Path
+          set -euo pipefail
+          python3 scripts/lib/apply_v2_3_0_runtime_round4_patch.py
+          python3 scripts/lib/apply_v2_3_0_runtime_round4_followup.py
+          python3 -m py_compile \
+            scripts/lib/apply_v2_3_0_runtime_round4_patch.py \
+            scripts/lib/apply_v2_3_0_runtime_round4_followup.py \
+            scripts/tests/test_v2_3_0_selected_segment_source_semantics.py
 
-          def replace_once(path, old, new, label):
-              path = Path(path)
-              text = path.read_text()
-              count = text.count(old)
-              print(f"{label}: matches={count}")
-              if count != 1:
-                  raise SystemExit(f"{path}: expected one {label} match, found {count}")
-              path.write_text(text.replace(old, new, 1))
-
-          replace_once(
-              'apps/pulsedagd/src/main.rs',
-              """                            let canonical_gap = remote_height.saturating_sub(local_height);
-                            rt.selected_segment_gap_blocks = canonical_gap;
-                            rt.network_selected_height_gap =
-                                rt.network_selected_height_gap.max(canonical_gap);
-              """,
-              """                            rt.selected_segment_gap_blocks =
-                                remote_height.saturating_sub(local_height);
-              """,
-              'invalid runtime canonical-gap field',
-          )
-          replace_once(
-              'crates/pulsedag-rpc/src/handlers/metrics.rs',
-              '    handlers::canonical_sync::build_canonical_sync_state,\n',
-              """    handlers::canonical_sync::{
-        build_canonical_sync_state_with_remote_evidence,
-        remote_sync_evidence_from_p2p_status,
-    },
-              """,
-              'canonical sync imports',
-          )
-          replace_once(
-              'crates/pulsedag-rpc/src/handlers/metrics.rs',
-              """    let canonical_sync = build_canonical_sync_state(
-        chain,
-        runtime,
-        chain.dag.blocks.len(),
-        now_unix,
-        p2p_status
-            .as_ref()
-            .and_then(|snapshot| snapshot.status.selected_sync_peer.clone()),
-    );
-              """,
-              """    let remote_sync_evidence = remote_sync_evidence_from_p2p_status(
-        p2p_status.as_ref().map(|snapshot| &snapshot.status),
-        now_unix,
-    );
-    let canonical_sync = build_canonical_sync_state_with_remote_evidence(
-        chain,
-        runtime,
-        chain.dag.blocks.len(),
-        now_unix,
-        p2p_status
-            .as_ref()
-            .and_then(|snapshot| snapshot.status.selected_sync_peer.clone()),
-        &remote_sync_evidence,
-    );
-              """,
-              'metrics canonical sync evidence wiring',
-          )
-          replace_once(
-              'scripts/tests/test_v2_3_0_lag_runtime_driver.sh',
-              'NODE_MAIN="apps/pulsedagd/src/main.rs"\n',
-              'NODE_MAIN="apps/pulsedagd/src/main.rs"\nMETRICS="crates/pulsedag-rpc/src/handlers/metrics.rs"\n',
-              'metrics source path',
-          )
-          replace_once(
-              'scripts/tests/test_v2_3_0_lag_runtime_driver.sh',
-              """grep -Fq 'let mut selected_segment_completed = false;' "$NODE_MAIN"
-grep -Fq 'selected_segment_session = None;' "$NODE_MAIN"
-grep -Fq 'rt.active_session_remaining_blocks = 0;' "$NODE_MAIN"
-grep -Fq 'rt.peer_addressed_getblock_sent_total = rt' "$NODE_MAIN"
-grep -Fq 'rt.network_selected_height_gap.max(canonical_gap)' "$NODE_MAIN"
-              """,
-              'python3 scripts/tests/test_v2_3_0_selected_segment_source_semantics.py "$NODE_MAIN" "$METRICS"\n',
-              'selected-segment source assertions',
-          )
-          replace_once(
-              'scripts/tests/test_v2_3_0_lag_runtime_driver.sh',
-              'grep -Fq \'ss -K state established\' "$tmp/patched-harness.sh"\n',
-              '',
-              'obsolete literal ss invocation assertion',
-          )
-          Path('scripts/tests/test_v2_3_0_selected_segment_source_semantics.py').write_text("""#!/usr/bin/env python3
-          import re
-          import sys
-          from pathlib import Path
-
-          node = Path(sys.argv[1]).read_text()
-          metrics = Path(sys.argv[2]).read_text()
-          checks = [
-              (node, r"let\\s+mut\\s+selected_segment_completed\\s*=\\s*false", "completion flag"),
-              (node, r"selected_segment_session\\s*=\\s*None", "session cleared"),
-              (node, r"active_session_remaining_blocks\\s*=\\s*0", "remaining cleared"),
-              (node, r"peer_addressed_getblock_sent_total\\s*=\\s*rt\\s*\\.peer_addressed_getblock_sent_total\\s*\\.saturating_add\\(1\\)", "peer addressed accounting"),
-              (node, r"selected_segment_gap_blocks\\s*=\\s*remote_height\\s*\\.saturating_sub\\(local_height\\)", "selected gap"),
-              (metrics, r"remote_sync_evidence_from_p2p_status\\s*\\(", "remote evidence"),
-              (metrics, r"build_canonical_sync_state_with_remote_evidence\\s*\\(", "canonical builder"),
-              (metrics, r"&remote_sync_evidence", "evidence supplied"),
-          ]
-          missing = [label for source, pattern, label in checks if not re.search(pattern, source)]
-          if missing:
-              raise SystemExit("missing safeguards: " + ", ".join(missing))
-          """)
-          PY
-            python3 -m py_compile \
-              scripts/lib/apply_v2_3_0_runtime_round4_patch.py \
-              scripts/tests/test_v2_3_0_selected_segment_source_semantics.py
-          ) > apply.log 2>&1
-          rc=$?
-          cat apply.log
-          exit "$rc"
-
-      - name: Upload apply diagnostics
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: runtime-round4-apply-${{ github.run_id }}
-          path: apply.log
-          if-no-files-found: warn
-          retention-days: 7
-
-      - name: Require patch application
-        if: steps.apply.outcome != 'success'
-        run: exit 1
-
-      - name: Format and validate source contracts
-        if: steps.apply.outcome == 'success'
+      - name: Format and validate contracts
         run: |
-          set -euxo pipefail
+          set -euo pipefail
           cargo fmt --all
           cargo fmt --all -- --check
           bash -n scripts/v2_3_0_prune_restart_rejoin_runtime.sh
@@ -184,24 +56,20 @@ grep -Fq 'rt.network_selected_height_gap.max(canonical_gap)' "$NODE_MAIN"
           git diff --check
 
       - name: Verify confirmed mempool cleanup
-        if: steps.apply.outcome == 'success'
         run: cargo test -p pulsedag-core --test confirmed_mempool_cleanup --locked -- --nocapture
 
       - name: Verify canonical sync tests
-        if: steps.apply.outcome == 'success'
         run: cargo test -p pulsedag-rpc canonical_sync --locked -- --nocapture
 
       - name: Verify pulsedagd compiles
-        if: steps.apply.outcome == 'success'
         run: cargo check -p pulsedagd --locked
 
       - name: Publish validated source commit
-        if: steps.apply.outcome == 'success'
         run: |
           set -euo pipefail
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git rm \
+          git rm --ignore-unmatch \
             .github/workflows/apply_v2_3_0_runtime_round4_patch.yml \
             .github/workflows/finalize_v2_3_0_runtime_round4_patch.yml \
             scripts/lib/apply_v2_3_0_runtime_round4_patch.py \
