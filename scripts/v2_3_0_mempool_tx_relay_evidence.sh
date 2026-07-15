@@ -47,9 +47,7 @@ write_manifest(){
   [[ -f "$OUT_DIR/confirmation_evidence.json" ]] && confirmation="$(cat "$OUT_DIR/confirmation_evidence.json")"
   [[ -f "$OUT_DIR/topology_evidence.json" ]] && topology_evidence="$(cat "$OUT_DIR/topology_evidence.json")"
   local failures_json="[]"
-  if ((${#FAILURES[@]})); then
-    failures_json="$(printf '%s\n' "${FAILURES[@]}" | jq -R . | jq -s .)"
-  fi
+  if ((${#FAILURES[@]})); then failures_json="$(printf '%s\n' "${FAILURES[@]}" | jq -R . | jq -s .)"; fi
   jq -n --arg result "$result" --arg commit "$(git rev-parse HEAD)" --arg start "$START_UTC" --arg end "$end_utc" --arg digest "$final_digest" \
     --argjson node_count "$NODE_COUNT" --argjson submitted "$submitted" --argjson confirmed "$confirmed" --argjson per_nodes "$per_nodes" \
     --argjson relay "$relay" --argjson dedupe "$dedupe" --argjson capacity "$capacity" --argjson cleanup "$cleanup" --argjson deterministic "$deterministic" --argjson topology "$topology" \
@@ -66,18 +64,14 @@ start_node() {
   local i="$1"
   local boot="$2"
   local data="$OUT_DIR/data/n$i"
-  local args=(
-    "$NODE_BIN"
-    --network private
-    --rpc-listen "127.0.0.1:$((BASE_RPC_PORT+i))"
-    --p2p-listen "/ip4/127.0.0.1/tcp/$((BASE_P2P_PORT+i))"
-  )
+  local args=("$NODE_BIN" --network private --rpc-listen "127.0.0.1:$((BASE_RPC_PORT+i))" --p2p-listen "/ip4/127.0.0.1/tcp/$((BASE_P2P_PORT+i))")
   [[ -n "$boot" ]] && args+=(--bootnode "$boot")
   mkdir -p "$data"
   log "start n$i ${args[*]}"
   PULSEDAG_CHAIN_ID="$CHAIN_ID" \
   PULSEDAG_ROCKSDB_PATH="$data/rocksdb" \
   PULSEDAG_API_PROFILE=local_dev \
+  PULSEDAG_ADMIN_ENABLED=true \
   PULSEDAG_P2P_MODE=libp2p-real \
   PULSEDAG_P2P_MDNS=false \
   PULSEDAG_P2P_KADEMLIA=true \
@@ -99,8 +93,7 @@ topology_ok=0
 start=$(date +%s)
 while (( $(date +%s) - start < CONVERGENCE_TIMEOUT )); do
   capture_node topology
-  topology_ok=1
-  topo="[]"
+  topology_ok=1; topo="[]"
   for i in $(seq 1 "$NODE_COUNT"); do
     peers="$(jq -r '[((.data.connected_peers? // []) | length),(.data.peer_count? // 0),((.data.peers? // []) | length)] | max // 0' "$OUT_DIR/endpoints/topology/n${i}-p2p-status.json" 2>/dev/null || echo 0)"
     [[ "$peers" =~ ^[0-9]+$ ]] || peers=0
@@ -130,14 +123,10 @@ post_json "$(rpc_url 1)/wallet/transfer" "$TRANSFER_BODY" "$OUT_DIR/tx/submit-n1
 TXID="$(jq -r '.data.txid // empty' "$OUT_DIR/tx/submit-n1.json")"; [[ -n "$TXID" ]] || { fail "no submitted txid"; write_manifest FAIL; exit 1; }
 jq -n --arg txid "$TXID" '[$txid]' > "$OUT_DIR/submitted_txids.json"
 
-relay_ok=0
-start=$(date +%s)
+relay_ok=0; start=$(date +%s)
 while (( $(date +%s) - start < CONVERGENCE_TIMEOUT )); do
-  capture_node after_relay
-  relay_ok=1
-  for i in $(seq 1 "$NODE_COUNT"); do
-    jq -e --arg txid "$TXID" '(.data.txids // []) | index($txid)' "$OUT_DIR/endpoints/after_relay/n${i}-mempool.json" >/dev/null || relay_ok=0
-  done
+  capture_node after_relay; relay_ok=1
+  for i in $(seq 1 "$NODE_COUNT"); do jq -e --arg txid "$TXID" '(.data.txids // []) | index($txid)' "$OUT_DIR/endpoints/after_relay/n${i}-mempool.json" >/dev/null || relay_ok=0; done
   (( relay_ok == 1 )) && break
   sleep 2
 done
@@ -148,29 +137,23 @@ capture_node before_duplicate
 post_json "$(rpc_url 2)/tx/submit" "$DUP_BODY" "$OUT_DIR/tx/duplicate-submit-n2.json" || true
 sleep 2
 capture_node after_duplicate
-dupe_counts="[]"
-counter_deltas="[]"
-publish_unchanged=true
+dupe_counts="[]"; counter_deltas="[]"; publish_unchanged=true
 for i in $(seq 1 "$NODE_COUNT"); do
   count="$(jq -r --arg txid "$TXID" '(.data.txids // []) | map(select(. == $txid)) | length' "$OUT_DIR/endpoints/after_duplicate/n${i}-mempool.json")"
   dupe_counts="$(jq --arg node "n$i" --argjson count "$count" '. + [{node:$node,count:$count}]' <<<"$dupe_counts")"
   [[ "$count" = 1 ]] || fail "duplicate count on n$i was $count"
-  before_file="$OUT_DIR/endpoints/before_duplicate/n${i}-p2p-status.json"
-  after_file="$OUT_DIR/endpoints/after_duplicate/n${i}-p2p-status.json"
-  before_publish="$(jq -r '.data.publish_attempts // 0' "$before_file")"
-  after_publish="$(jq -r '.data.publish_attempts // 0' "$after_file")"
-  before_inbound="$(jq -r '.data.inbound_duplicates_suppressed // 0' "$before_file")"
-  after_inbound="$(jq -r '.data.inbound_duplicates_suppressed // 0' "$after_file")"
-  before_outbound="$(jq -r '.data.outbound_duplicates_suppressed // 0' "$before_file")"
-  after_outbound="$(jq -r '.data.outbound_duplicates_suppressed // 0' "$after_file")"
+  before_file="$OUT_DIR/endpoints/before_duplicate/n${i}-p2p-status.json"; after_file="$OUT_DIR/endpoints/after_duplicate/n${i}-p2p-status.json"
+  before_publish="$(jq -r '.data.publish_attempts // 0' "$before_file")"; after_publish="$(jq -r '.data.publish_attempts // 0' "$after_file")"
+  before_inbound="$(jq -r '.data.inbound_duplicates_suppressed // 0' "$before_file")"; after_inbound="$(jq -r '.data.inbound_duplicates_suppressed // 0' "$after_file")"
+  before_outbound="$(jq -r '.data.outbound_duplicates_suppressed // 0' "$before_file")"; after_outbound="$(jq -r '.data.outbound_duplicates_suppressed // 0' "$after_file")"
   [[ "$after_publish" == "$before_publish" ]] || publish_unchanged=false
   counter_deltas="$(jq --arg node "n$i" --argjson publish_before "$before_publish" --argjson publish_after "$after_publish" --argjson inbound_before "$before_inbound" --argjson inbound_after "$after_inbound" --argjson outbound_before "$before_outbound" --argjson outbound_after "$after_outbound" '. + [{node:$node,publish_attempts_before:$publish_before,publish_attempts_after:$publish_after,inbound_duplicates_suppressed_before:$inbound_before,inbound_duplicates_suppressed_after:$inbound_after,outbound_duplicates_suppressed_before:$outbound_before,outbound_duplicates_suppressed_after:$outbound_after}]' <<<"$counter_deltas")"
 done
 
 dupe_code="$(jq -r '.error.code // ""' "$OUT_DIR/tx/duplicate-submit-n2.json")"
 dupe_msg="$(jq -r '.error.message // .data.txid // ""' "$OUT_DIR/tx/duplicate-submit-n2.json")"
-if [[ "$dupe_code" == "TX_REJECTED" && "$dupe_msg" == *duplicate* && "$publish_unchanged" == true ]]; then
-  jq -n --arg via n2 --slurpfile response "$OUT_DIR/tx/duplicate-submit-n2.json" --argjson counts "$dupe_counts" --argjson counter_deltas "$counter_deltas" '{resubmitted_via:$via,response:$response[0],per_node_duplicate_counts:$counts,p2p_counter_deltas:$counter_deltas,publish_attempts_unchanged:true,retransmission_observed:false,bounded:true}' > "$OUT_DIR/duplicate_evidence.json"
+if [[ "$dupe_code" == "TX_REJECTED" && ( "$dupe_msg" == *duplicate* || "$dupe_msg" == *"already exists"* ) && "$publish_unchanged" == true ]]; then
+  jq -n --arg via n2 --arg taxonomy duplicate_transaction --slurpfile response "$OUT_DIR/tx/duplicate-submit-n2.json" --argjson counts "$dupe_counts" --argjson counter_deltas "$counter_deltas" '{resubmitted_via:$via,taxonomy:$taxonomy,response:$response[0],per_node_duplicate_counts:$counts,p2p_counter_deltas:$counter_deltas,publish_attempts_unchanged:true,retransmission_observed:false,bounded:true}' > "$OUT_DIR/duplicate_evidence.json"
   touch "$OUT_DIR/duplicate_suppression.proof"
 else
   fail "duplicate submit did not prove bounded suppression without retransmission: code=$dupe_code message=$dupe_msg publish_unchanged=$publish_unchanged"
@@ -179,31 +162,44 @@ fi
 post_json "$(rpc_url 1)/wallet/new" '{}' "$OUT_DIR/tx/recipient2-wallet.json"; TO2="$(jq -r '.data.address' "$OUT_DIR/tx/recipient2-wallet.json")"
 post_json "$(rpc_url 1)/wallet/transfer" "{\"from\":\"$FROM2\",\"to\":\"$TO2\",\"amount\":1,\"fee\":1,\"private_key\":\"$PRIV2\"}" "$OUT_DIR/tx/capacity-fill.json" || true
 post_json "$(rpc_url 1)/wallet/new" '{}' "$OUT_DIR/tx/recipient3-wallet.json"; TO3="$(jq -r '.data.address' "$OUT_DIR/tx/recipient3-wallet.json")"
-post_json "$(rpc_url 1)/wallet/transfer" "{\"from\":\"$FROM3\",\"to\":\"$TO3\",\"amount\":1,\"fee\":1,\"private_key\":\"$PRIV3\"}" "$OUT_DIR/tx/capacity-reject.json" || true
+# A zero-fee candidate is strictly lower priority than the two resident fee-1
+# transactions, so the bounded mempool must reject it rather than evicting one.
+post_json "$(rpc_url 1)/wallet/transfer" "{\"from\":\"$FROM3\",\"to\":\"$TO3\",\"amount\":1,\"fee\":0,\"private_key\":\"$PRIV3\"}" "$OUT_DIR/tx/capacity-reject.json" || true
 cap_code="$(jq -r '.error.code // ""' "$OUT_DIR/tx/capacity-reject.json")"; cap_reason="$(jq -r '.error.message // ""' "$OUT_DIR/tx/capacity-reject.json")"
 if [[ "$cap_code" == "TX_REJECTED" && ( "$cap_reason" == *"backpressure active"* || "$cap_reason" == *"capacity exceeded"* || "$cap_reason" == *"mempool pressure"* ) ]]; then
-  jq -n --slurpfile response "$OUT_DIR/tx/capacity-reject.json" --arg code "$cap_code" --arg reason "$cap_reason" '{code:$code,reason:$reason,response:$response[0],bounded:true,private_rehearsal_capacity_override:true,taxonomy:"mempool_capacity"}' > "$OUT_DIR/rejection_evidence.json"
+  jq -n --slurpfile response "$OUT_DIR/tx/capacity-reject.json" --arg code "$cap_code" --arg reason "$cap_reason" '{code:$code,reason:$reason,response:$response[0],bounded:true,private_rehearsal_capacity_override:true,candidate_fee:0,taxonomy:"mempool_capacity"}' > "$OUT_DIR/rejection_evidence.json"
   touch "$OUT_DIR/capacity_rejection_taxonomy.proof"
 else
   fail "capacity rejection did not return specific capacity taxonomy: code=$cap_code reason=$cap_reason"
 fi
+
 post_json "$(rpc_url 1)/mine" "{\"miner_address\":\"$FROM\",\"pow_max_tries\":1000000}" "$OUT_DIR/tx/confirm-mine.json"
-sleep 5
-capture_node after_confirmation
-confirmations="[]"; common_hash=""; common_height=""; cleanup_ok=1
-for i in $(seq 1 "$NODE_COUNT"); do
-  curl -fsS --connect-timeout 2 --max-time 10 "$(rpc_url "$i")/txs/$TXID" > "$OUT_DIR/endpoints/after_confirmation/n${i}-tx-$TXID.json" || cleanup_ok=0
-  jq -e --arg txid "$TXID" '((.data.txids // []) | index($txid)) == null' "$OUT_DIR/endpoints/after_confirmation/n${i}-mempool.json" >/dev/null || { fail "confirmed tx remained in n$i mempool"; cleanup_ok=0; }
-  is_confirmed="$(jq -r '.data.is_confirmed // false' "$OUT_DIR/endpoints/after_confirmation/n${i}-tx-$TXID.json" 2>/dev/null)"; block_hash="$(jq -r '.data.block_hash // ""' "$OUT_DIR/endpoints/after_confirmation/n${i}-tx-$TXID.json" 2>/dev/null)"; block_height="$(jq -r '.data.block_height // ""' "$OUT_DIR/endpoints/after_confirmation/n${i}-tx-$TXID.json" 2>/dev/null)"
-  [[ "$is_confirmed" == true && -n "$block_hash" && -n "$block_height" ]] || { fail "n$i did not report confirmed tx with block hash/height"; cleanup_ok=0; }
-  [[ -z "$common_hash" || "$common_hash" == "$block_hash" ]] || { fail "n$i confirmation block hash differed"; cleanup_ok=0; }
-  [[ -z "$common_height" || "$common_height" == "$block_height" ]] || { fail "n$i confirmation block height differed"; cleanup_ok=0; }
-  common_hash="$block_hash"; common_height="$block_height"
-  confirmations="$(jq --arg node "n$i" --arg txid "$TXID" --arg block_hash "$block_hash" --argjson block_height "${block_height:-0}" '. + [{node:$node,txid:$txid,block_hash:$block_hash,block_height:$block_height}]' <<<"$confirmations")"
+CONFIRM_BLOCK_HASH="$(jq -r '.data.block_hash // empty' "$OUT_DIR/tx/confirm-mine.json")"
+CONFIRM_BLOCK_HEIGHT="$(jq -r '.data.height // empty' "$OUT_DIR/tx/confirm-mine.json")"
+[[ -n "$CONFIRM_BLOCK_HASH" && "$CONFIRM_BLOCK_HEIGHT" =~ ^[0-9]+$ ]] || fail "confirmation mine response omitted block hash/height"
+confirmation_ok=0; start=$(date +%s)
+while (( $(date +%s) - start < CONVERGENCE_TIMEOUT )); do
+  capture_node after_confirmation
+  confirmation_ok=1
+  for i in $(seq 1 "$NODE_COUNT"); do
+    block_file="$OUT_DIR/endpoints/after_confirmation/n${i}-block-$CONFIRM_BLOCK_HASH-transactions.json"
+    curl -fsS --connect-timeout 2 --max-time 10 "$(rpc_url "$i")/blocks/$CONFIRM_BLOCK_HASH/transactions" > "$block_file" || { confirmation_ok=0; continue; }
+    jq -e --arg txid "$TXID" 'any(.data.transactions[]?; .txid == $txid and .is_confirmed == true)' "$block_file" >/dev/null || confirmation_ok=0
+    jq -e --arg txid "$TXID" '((.data.txids // []) | index($txid)) == null' "$OUT_DIR/endpoints/after_confirmation/n${i}-mempool.json" >/dev/null || confirmation_ok=0
+  done
+  (( confirmation_ok == 1 )) && break
+  sleep 2
 done
+confirmations="[]"
+if (( confirmation_ok == 1 )); then
+  for i in $(seq 1 "$NODE_COUNT"); do confirmations="$(jq --arg node "n$i" --arg txid "$TXID" --arg block_hash "$CONFIRM_BLOCK_HASH" --argjson block_height "$CONFIRM_BLOCK_HEIGHT" '. + [{node:$node,txid:$txid,block_hash:$block_hash,block_height:$block_height,source:"block-transactions-endpoint"}]' <<<"$confirmations")"; done
+  touch "$OUT_DIR/confirmation_cleanup.proof"
+else
+  fail "confirmed transaction was not present in the mined block and absent from all five mempools"
+fi
 jq -n --arg txid "$TXID" '[$txid]' > "$OUT_DIR/confirmed_txids.json"
 echo "$confirmations" > "$OUT_DIR/confirmation_evidence.json"
-(( cleanup_ok == 1 )) && touch "$OUT_DIR/confirmation_cleanup.proof"
+
 capture_node final
 for i in $(seq 1 "$NODE_COUNT"); do pulsedag_json_txids_sorted "$OUT_DIR/endpoints/final/n${i}-mempool.json" > "$OUT_DIR/sets/n${i}-final-txids.txt"; digest=$(pulsedag_sha256_file "$OUT_DIR/sets/n${i}-final-txids.txt"); jq -n --arg node "n$i" --arg digest "$digest" --slurpfile txids <(jq -R . "$OUT_DIR/sets/n${i}-final-txids.txt" | jq -s .) '{node:$node,digest:$digest,txids:$txids[0]}' > "$OUT_DIR/sets/n${i}.json"; done
 jq -s . "$OUT_DIR"/sets/n*.json > "$OUT_DIR/per_node_final.json"
