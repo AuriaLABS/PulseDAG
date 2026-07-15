@@ -44,10 +44,32 @@ jobs:
           from pathlib import Path
           path = Path('scripts/tests/test_v2_3_0_lag_runtime_driver.sh')
           text = path.read_text()
-          old = "grep -Fq 'rt.peer_addressed_getblock_sent_total = rt' \"$NODE_MAIN\""
-          new = "grep -Fq 'rt.peer_addressed_getblock_sent_total' \"$NODE_MAIN\""
+          old = '''grep -Fq 'let mut selected_segment_completed = false;' "$NODE_MAIN"
+          grep -Fq 'selected_segment_session = None;' "$NODE_MAIN"
+          grep -Fq 'rt.active_session_remaining_blocks = 0;' "$NODE_MAIN"
+          grep -Fq 'rt.peer_addressed_getblock_sent_total = rt' "$NODE_MAIN"
+          grep -Fq 'rt.network_selected_height_gap.max(canonical_gap)' "$NODE_MAIN"
+          '''
+          new = '''python3 - "$NODE_MAIN" <<'PY_SOURCE'
+          import re
+          import sys
+          from pathlib import Path
+
+          source = Path(sys.argv[1]).read_text()
+          checks = {
+              "completion flag": r"let\s+mut\s+selected_segment_completed\s*=\s*false",
+              "session cleared": r"selected_segment_session\s*=\s*None",
+              "remaining blocks cleared": r"active_session_remaining_blocks\s*=\s*0",
+              "peer-addressed request counted": r"peer_addressed_getblock_sent_total\s*=\s*rt\s*\.peer_addressed_getblock_sent_total\s*\.saturating_add\(1\)",
+              "canonical gap retained": r"network_selected_height_gap\s*=\s*rt\s*\.network_selected_height_gap\s*\.max\(canonical_gap\)",
+          }
+          missing = [label for label, pattern in checks.items() if not re.search(pattern, source)]
+          if missing:
+              raise SystemExit("missing selected-segment source safeguards: " + ", ".join(missing))
+          PY_SOURCE
+          '''
           if text.count(old) != 1:
-              raise SystemExit(f'expected one rustfmt-sensitive peer counter assertion, found {text.count(old)}')
+              raise SystemExit(f'expected one selected-segment grep block, found {text.count(old)}')
           path.write_text(text.replace(old, new, 1))
           PY
 
