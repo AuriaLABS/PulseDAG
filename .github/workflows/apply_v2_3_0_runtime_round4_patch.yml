@@ -1,9 +1,6 @@
 name: Apply v2.3.0 runtime round-4 fixes
 
 on:
-  push:
-    branches:
-      - agent/fix-v2-3-0-runtime-closeout-round-4
   pull_request:
     branches:
       - main
@@ -12,8 +9,8 @@ permissions:
   contents: write
 
 concurrency:
-  group: apply-v2-3-0-runtime-round4
-  cancel-in-progress: false
+  group: apply-v2-3-0-runtime-round4-${{ github.sha }}
+  cancel-in-progress: true
 
 jobs:
   apply-and-validate:
