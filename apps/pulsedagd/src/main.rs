@@ -3393,7 +3393,6 @@ async fn main() -> Result<()> {
                         } else {
                             selected_requests
                         };
-                        let planned_request_count = requests.len() as u64;
                         let mut issued_selected_request_count = 0u64;
                         for hash in requests {
                             if block_requests.should_issue_getblock_for_peers(
