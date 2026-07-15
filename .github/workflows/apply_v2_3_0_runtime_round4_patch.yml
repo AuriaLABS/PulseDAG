@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - agent/fix-v2-3-0-runtime-closeout-round-4
+  pull_request:
+    branches:
+      - main
 
 permissions:
   contents: write
