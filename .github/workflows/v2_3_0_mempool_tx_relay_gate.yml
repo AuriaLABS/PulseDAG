@@ -104,6 +104,10 @@ jobs:
         if: inputs.evidence_mode == 'runtime-closeout'
         continue-on-error: true
         shell: bash
+        env:
+          # The drill binds RPC to loopback and needs local operator wallet routes
+          # to fund and submit the runtime transactions.
+          PULSEDAG_ADMIN_ENABLED: 'true'
         run: |
           set -euo pipefail
           driver='scripts/v2_3_0_mempool_tx_relay_evidence.sh'
