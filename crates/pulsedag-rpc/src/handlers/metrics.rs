@@ -16,7 +16,9 @@ use crate::{
     api::{
         record_rpc_handler_degraded, record_rpc_handler_timeout_avoided, record_rpc_snapshot_stale,
     },
-    handlers::canonical_sync::build_canonical_sync_state,
+    handlers::canonical_sync::{
+        build_canonical_sync_state_with_remote_evidence, remote_sync_evidence_from_p2p_status,
+    },
 };
 
 #[derive(Debug, serde::Serialize)]
@@ -366,7 +368,11 @@ pub async fn get_metrics<S: RpcStateLike>(
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    let canonical_sync = build_canonical_sync_state(
+    let remote_sync_evidence = remote_sync_evidence_from_p2p_status(
+        p2p_status.as_ref().map(|snapshot| &snapshot.status),
+        now_unix,
+    );
+    let canonical_sync = build_canonical_sync_state_with_remote_evidence(
         chain,
         runtime,
         chain.dag.blocks.len(),
@@ -374,6 +380,7 @@ pub async fn get_metrics<S: RpcStateLike>(
         p2p_status
             .as_ref()
             .and_then(|snapshot| snapshot.status.selected_sync_peer.clone()),
+        &remote_sync_evidence,
     );
 
     Json(ApiResponse::ok(MetricsData {

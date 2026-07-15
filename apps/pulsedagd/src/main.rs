@@ -2942,6 +2942,7 @@ async fn main() -> Result<()> {
                                 block.header.height.saturating_sub(accepted_height);
                             let accepted_tip = pulsedag_core::preferred_tip_hash(&guard)
                                 .unwrap_or_else(|| guard.dag.genesis_hash.clone());
+                            let mut selected_segment_completed = false;
                             {
                                 let mut rt = runtime.write().await;
                                 if final_height_reconcile_block {
@@ -3005,16 +3006,19 @@ async fn main() -> Result<()> {
                                 rt.accepted_p2p_blocks += 1;
                                 rt.blockdata_received = rt.blockdata_received.saturating_add(1);
                                 rt.blockdata_accepted = rt.blockdata_accepted.saturating_add(1);
-                                if selected_segment_session
-                                    .as_mut()
-                                    .map(|session| session.mark_applied(&block.hash, now_unix()))
-                                    .unwrap_or(false)
-                                {
-                                    rt.sync_state =
-                                        DagSyncStage::ApplyingSelectedSegment.as_str().to_string();
-                                    rt.selected_segment_blocks_applied_total =
-                                        rt.selected_segment_blocks_applied_total.saturating_add(1);
-                                    if let Some(session) = selected_segment_session.as_mut() {
+                                if let Some(session) = selected_segment_session.as_mut() {
+                                    if session.mark_applied(&block.hash, now_unix()) {
+                                        rt.sync_state = DagSyncStage::ApplyingSelectedSegment
+                                            .as_str()
+                                            .to_string();
+                                        rt.selected_segment_blocks_applied_total = rt
+                                            .selected_segment_blocks_applied_total
+                                            .saturating_add(1);
+                                        rt.active_session_applied_blocks =
+                                            session.accepted_applied_hashes.len() as u64;
+                                        rt.active_session_remaining_blocks = session
+                                            .remote_selected_height
+                                            .saturating_sub(guard.dag.best_height);
                                         let selected_tip =
                                             pulsedag_core::preferred_tip_hash(&guard)
                                                 .unwrap_or_else(|| guard.dag.genesis_hash.clone());
@@ -3025,12 +3029,19 @@ async fn main() -> Result<()> {
                                             && selected_tip == session.remote_selected_tip
                                         {
                                             session.state = SelectedSegmentSessionState::Complete;
+                                            selected_segment_completed = true;
                                             rt.sync_state = DagSyncStage::SelectedSegmentComplete
                                                 .as_str()
                                                 .to_string();
                                             rt.selected_segment_chunks_completed_total = rt
                                                 .selected_segment_chunks_completed_total
                                                 .saturating_add(1);
+                                            rt.active_session_remaining_blocks = 0;
+                                            rt.active_session_id = None;
+                                            rt.active_session_peer = None;
+                                            rt.active_session_remote_tip = None;
+                                            rt.active_session_remote_height = 0;
+                                            rt.active_session_common_ancestor = None;
                                         }
                                     }
                                 }
@@ -3062,17 +3073,22 @@ async fn main() -> Result<()> {
                                 rt.oldest_missing_parent_age_secs = ages
                                     .1
                                     .max(block_requests.oldest_pending_age_secs(now_unix()));
-                                rt.sync_state = if guard.orphan_blocks.is_empty() {
-                                    "synced"
+                                rt.sync_state = if selected_segment_completed {
+                                    DagSyncStage::SelectedSegmentComplete.as_str().to_string()
+                                } else if guard.orphan_blocks.is_empty() {
+                                    "synced".to_string()
                                 } else {
-                                    "catching_up"
-                                }
-                                .to_string();
+                                    "catching_up".to_string()
+                                };
                                 if guard.orphan_blocks.is_empty() {
                                     rt.sync_catchup_completed =
                                         rt.sync_catchup_completed.saturating_add(1);
                                 }
                                 rt.sync_pipeline.complete_cycle(now_unix());
+                            }
+                            if selected_segment_completed {
+                                selected_segment_session = None;
+                                selected_segment_locator_state.lock().await.pending_locator = None;
                             }
                             if adopted > 0 {
                                 info!(
@@ -3378,27 +3394,42 @@ async fn main() -> Result<()> {
                             selected_requests
                         };
                         let planned_request_count = requests.len() as u64;
+                        let mut issued_selected_request_count = 0u64;
                         for hash in requests {
                             if block_requests.should_issue_getblock_for_peers(
                                 &hash,
                                 now_unix(),
                                 active_peer_ids(&p2p),
                             ) {
+                                let mut peer_addressed_request_succeeded = false;
                                 if let Some(ref p2p) = p2p {
-                                    let result = if let Some(session) =
+                                    let (result, peer_addressed) = if let Some(session) =
                                         selected_segment_session.as_ref().filter(|session| {
                                             session.current_chunk.iter().any(|item| item == &hash)
                                         }) {
-                                        p2p.request_block_from(&session.peer_id, &hash).map(|_| ())
+                                        (
+                                            p2p.request_block_from(&session.peer_id, &hash)
+                                                .map(|_| ()),
+                                            true,
+                                        )
                                     } else {
-                                        p2p.request_block(&hash)
+                                        (p2p.request_block(&hash), false)
                                     };
-                                    if let Err(e) = result {
-                                        warn!(error = %e, block_hash = %hash, "failed issuing header-driven GetBlock request");
+                                    match result {
+                                        Ok(()) => peer_addressed_request_succeeded = peer_addressed,
+                                        Err(e) => {
+                                            warn!(error = %e, block_hash = %hash, "failed issuing header-driven GetBlock request");
+                                        }
                                     }
                                 }
                                 let mut rt = runtime.write().await;
                                 rt.getblock_sent = rt.getblock_sent.saturating_add(1);
+                                if peer_addressed_request_succeeded {
+                                    issued_selected_request_count =
+                                        issued_selected_request_count.saturating_add(1);
+                                    rt.peer_addressed_getblock_sent_total =
+                                        rt.peer_addressed_getblock_sent_total.saturating_add(1);
+                                }
                                 rt.pending_block_requests = block_requests.pending.len();
                                 rt.inflight_block_requests = block_requests.pending.len();
                                 rt.pending_block_request_hashes = block_requests.pending_hashes();
@@ -3441,19 +3472,19 @@ async fn main() -> Result<()> {
                                     .saturating_add(headers.len() as u64);
                                 rt.active_session_requested_blocks = rt
                                     .active_session_requested_blocks
-                                    .saturating_add(planned_request_count);
+                                    .saturating_add(issued_selected_request_count);
                                 rt.active_session_remaining_blocks = session
                                     .remote_selected_height
                                     .saturating_sub(session.common_ancestor_height)
                                     .saturating_sub(rt.active_session_applied_blocks);
                             }
                             match selected_segment_validation {
-                                Some(Ok(())) if planned_request_count > 0 => {
+                                Some(Ok(())) if issued_selected_request_count > 0 => {
                                     rt.sync_state =
                                         DagSyncStage::RequestingSelectedBlocks.as_str().to_string();
                                     rt.selected_segment_block_requests_total = rt
                                         .selected_segment_block_requests_total
-                                        .saturating_add(planned_request_count);
+                                        .saturating_add(issued_selected_request_count);
                                     rt.final_quiescence_selected_sync_blocked_reason =
                                         Some("selected_segment_request_sent".to_string());
                                 }
@@ -3492,7 +3523,7 @@ async fn main() -> Result<()> {
                         }
                         rt.final_quiescence_missing_segment_request_total = rt
                             .final_quiescence_missing_segment_request_total
-                            .saturating_add(planned_request_count);
+                            .saturating_add(issued_selected_request_count);
                         rt.block_fetch_scheduler_queue_depth = fetch_scheduler.queue_depth();
                         rt.block_fetch_scheduler_inflight_by_peer =
                             block_requests.inflight_by_peer();
