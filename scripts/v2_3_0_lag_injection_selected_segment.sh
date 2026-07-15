@@ -126,6 +126,10 @@ run_runtime_evidence() {
     echo "FATAL: $HARNESS_PATH does not define v2_3_0_run_lag_injection_selected_segment_drill; refusing to fabricate runtime evidence" >&2
     exit 78
   fi
+  # The harness's first node helper derives its data path while declaring idx.
+  # Seed the dynamically scoped first-node value so nounset startup resolves n1.
+  local idx=1
+  log_cmd "runtime harness first-node index seed=$idx"
   v2_3_0_run_lag_injection_selected_segment_drill \
     --out-dir "$OUT_DIR" \
     --run-id "$RUN_ID" \
