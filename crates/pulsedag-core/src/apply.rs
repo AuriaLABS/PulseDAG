@@ -4,6 +4,7 @@ use crate::{
     errors::PulseError,
     genesis::init_chain_state,
     ghostdag::classify_merge_set,
+    mempool::reconcile_mempool,
     mining::is_coinbase,
     ordering::{ordered_dag_tip, refresh_ordered_dag},
     selection::refresh_selected_chain,
@@ -128,6 +129,10 @@ pub fn commit_block_to_state(block: &Block, state: &mut ChainState) -> Result<()
         state.utxo = rebuilt.utxo;
         state.dag.ordered_dag_state_root = state.utxo.compute_state_root().ok();
     }
+    // Revalidate the live mempool against the newly committed UTXO view.
+    // Rebuilds operate on a fresh state, so their internal transaction removal
+    // cannot clean the live mempool unless reconciliation runs after commit.
+    reconcile_mempool(state);
     Ok(())
 }
 

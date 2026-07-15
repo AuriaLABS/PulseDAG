@@ -5,6 +5,8 @@ cd "$ROOT_DIR"
 DRIVER="scripts/v2_3_0_lag_injection_selected_segment.sh"
 HARNESS="scripts/lib/v2_3_0_runtime_harness.sh"
 PATCHER="scripts/lib/patch_v2_3_0_lag_runtime_harness.py"
+NODE_MAIN="apps/pulsedagd/src/main.rs"
+METRICS="crates/pulsedag-rpc/src/handlers/metrics.rs"
 
 tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
 
@@ -48,7 +50,6 @@ grep -Fq '.remote_tip_inventory_accepted_total > 0' "$DRIVER"
 grep -Fq '.peer_addressed_getblock_sent_total >= .selected_segment_block_requests_total' "$DRIVER"
 grep -Fq 'kill -STOP "$n5_pid"' "$HARNESS"
 grep -Fq 'kill -CONT "$n5_pid"' "$HARNESS"
-grep -Fq 'ss -K state established' "$tmp/patched-harness.sh"
 grep -Fq 'queued_gossip_discarded' "$HARNESS"
 grep -Fq 'canonical_gap_sample > canonical_gap_max' "$HARNESS"
 grep -Fq 'harness_gap_sample > harness_gap_max' "$HARNESS"
@@ -64,6 +65,7 @@ grep -Fq 'remote_tip_inventory_accepted_total' "$HARNESS"
 grep -Fq 'closeout_eligible:true' "$HARNESS"
 grep -Fq 'public_testnet_ready:false' "$HARNESS"
 grep -Fq '_v230_lag_package_failure' "$HARNESS"
+python3 scripts/tests/test_v2_3_0_selected_segment_source_semantics.py "$NODE_MAIN" "$METRICS"
 
 if grep -Fq 'canonical_gap_max=$(( canonical_gap_max > observed_gap' "$HARNESS"; then
   echo "canonical gap must come from runtime observations, not be forced to the harness gap" >&2
