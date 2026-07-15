@@ -41,14 +41,22 @@ jobs:
           python3 scripts/lib/apply_v2_3_0_runtime_round4_patch.py
           python3 -m py_compile scripts/lib/apply_v2_3_0_runtime_round4_patch.py
 
-      - name: Format and static validation
+      - name: Format patched Rust
         run: |
-          set -euo pipefail
+          set -euxo pipefail
           cargo fmt --all
           cargo fmt --all -- --check
+
+      - name: Validate patched shell contracts
+        run: |
+          set -euxo pipefail
           bash -n scripts/v2_3_0_prune_restart_rejoin_runtime.sh
           bash -n scripts/tests/test_v2_3_0_lag_runtime_driver.sh
-          bash scripts/tests/test_v2_3_0_lag_runtime_driver.sh
+          bash -x scripts/tests/test_v2_3_0_lag_runtime_driver.sh
+
+      - name: Check patch whitespace
+        run: |
+          set -euxo pipefail
           git diff --check
 
       - name: Verify confirmed mempool cleanup
