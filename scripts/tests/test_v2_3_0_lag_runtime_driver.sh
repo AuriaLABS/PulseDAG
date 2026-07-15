@@ -4,11 +4,37 @@ ROOT_DIR="$(git rev-parse --show-toplevel)"
 cd "$ROOT_DIR"
 DRIVER="scripts/v2_3_0_lag_injection_selected_segment.sh"
 HARNESS="scripts/lib/v2_3_0_runtime_harness.sh"
+PATCHER="scripts/lib/patch_v2_3_0_lag_runtime_harness.py"
+
+tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
 
 bash -n "$DRIVER"
 bash -n "$HARNESS"
-source "$HARNESS"
+python3 -m py_compile "$PATCHER"
+python3 "$PATCHER" "$HARNESS" "$tmp/patched-harness.sh"
+bash -n "$tmp/patched-harness.sh"
+source "$tmp/patched-harness.sh"
 declare -F v2_3_0_run_lag_injection_selected_segment_drill >/dev/null
+
+if grep -Fq 'local idx="$1" boot="$2" data="$out_dir/data/n$idx"' "$tmp/patched-harness.sh"; then
+  echo "patched harness must not expand idx while declaring it" >&2
+  exit 1
+fi
+if grep -Fq 'details="${3:-{}}"' "$tmp/patched-harness.sh"; then
+  echo "patched harness must not append a stray JSON brace" >&2
+  exit 1
+fi
+if grep -Fq "trap '_v230_lag_unexpected_exit \$?' EXIT" "$tmp/patched-harness.sh"; then
+  echo "patched harness must not retain a function-local EXIT trap" >&2
+  exit 1
+fi
+grep -Fq 'local data="$out_dir/data/n$idx"' "$tmp/patched-harness.sh"
+grep -Fq '[[ -n "$details" ]] || details='"'"'{}'"'"'' "$tmp/patched-harness.sh"
+grep -Fq "trap '_v230_lag_unexpected_exit \$?' ERR" "$tmp/patched-harness.sh"
+
+# The normalizer is idempotent so an externally supplied fixed harness remains usable.
+python3 "$PATCHER" "$tmp/patched-harness.sh" "$tmp/patched-harness-second.sh"
+cmp "$tmp/patched-harness.sh" "$tmp/patched-harness-second.sh"
 
 grep -Fq '.canonical_network_selected_height_gap == .observed_network_selected_height_gap' "$DRIVER"
 grep -Fq '.remote_tip_inventory_accepted_total > 0' "$DRIVER"
@@ -41,7 +67,6 @@ if grep -Fq '$r.node_operational_ready // $r.private_conservative_ready' "$HARNE
   exit 1
 fi
 
-tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
 cat > "$tmp/manifest.json" <<'JSON'
 {
   "result":"PASS",
