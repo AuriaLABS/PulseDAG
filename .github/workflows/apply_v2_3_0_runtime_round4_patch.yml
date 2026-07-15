@@ -42,18 +42,30 @@ jobs:
           python3 -m py_compile scripts/lib/apply_v2_3_0_runtime_round4_patch.py
           python3 - <<'PY'
           from pathlib import Path
-          path = Path('scripts/tests/test_v2_3_0_lag_runtime_driver.sh')
-          text = path.read_text()
+
+          contract = Path('scripts/tests/test_v2_3_0_lag_runtime_driver.sh')
+          text = contract.read_text()
           old = '''grep -Fq 'let mut selected_segment_completed = false;' "$NODE_MAIN"
           grep -Fq 'selected_segment_session = None;' "$NODE_MAIN"
           grep -Fq 'rt.active_session_remaining_blocks = 0;' "$NODE_MAIN"
           grep -Fq 'rt.peer_addressed_getblock_sent_total = rt' "$NODE_MAIN"
           grep -Fq 'rt.network_selected_height_gap.max(canonical_gap)' "$NODE_MAIN"
           '''
-          new = '''python3 - "$NODE_MAIN" <<'PY_SOURCE'
+          new = 'python3 scripts/tests/test_v2_3_0_selected_segment_source_semantics.py "$NODE_MAIN"\n'
+          if text.count(old) != 1:
+              raise SystemExit(f'expected one selected-segment grep block, found {text.count(old)}')
+          contract.write_text(text.replace(old, new, 1))
+
+          source_test = Path('scripts/tests/test_v2_3_0_selected_segment_source_semantics.py')
+          source_test.write_text(r'''#!/usr/bin/env python3
+          from __future__ import annotations
+
           import re
           import sys
           from pathlib import Path
+
+          if len(sys.argv) != 2:
+              raise SystemExit(f"usage: {sys.argv[0]} apps/pulsedagd/src/main.rs")
 
           source = Path(sys.argv[1]).read_text()
           checks = {
@@ -66,12 +78,9 @@ jobs:
           missing = [label for label, pattern in checks.items() if not re.search(pattern, source)]
           if missing:
               raise SystemExit("missing selected-segment source safeguards: " + ", ".join(missing))
-          PY_SOURCE
-          '''
-          if text.count(old) != 1:
-              raise SystemExit(f'expected one selected-segment grep block, found {text.count(old)}')
-          path.write_text(text.replace(old, new, 1))
+          ''')
           PY
+          python3 -m py_compile scripts/tests/test_v2_3_0_selected_segment_source_semantics.py
 
       - name: Format patched Rust
         run: |
@@ -79,11 +88,20 @@ jobs:
           cargo fmt --all
           cargo fmt --all -- --check
 
-      - name: Validate patched shell contracts
+      - name: Validate shell syntax
         run: |
           set -euxo pipefail
           bash -n scripts/v2_3_0_prune_restart_rejoin_runtime.sh
           bash -n scripts/tests/test_v2_3_0_lag_runtime_driver.sh
+
+      - name: Validate selected-segment source semantics
+        run: |
+          set -euxo pipefail
+          python3 scripts/tests/test_v2_3_0_selected_segment_source_semantics.py apps/pulsedagd/src/main.rs
+
+      - name: Validate lag runtime contract
+        run: |
+          set -euxo pipefail
           bash -x scripts/tests/test_v2_3_0_lag_runtime_driver.sh
 
       - name: Check patch whitespace
@@ -112,6 +130,7 @@ jobs:
             crates/pulsedag-core/src/apply.rs \
             crates/pulsedag-core/tests/confirmed_mempool_cleanup.rs \
             scripts/tests/test_v2_3_0_lag_runtime_driver.sh \
+            scripts/tests/test_v2_3_0_selected_segment_source_semantics.py \
             .github/workflows/v2_3_0_prune_restart_rejoin_gate.yml
           git diff --cached --check
           git commit -m 'Fix runtime mempool cleanup and selected-segment closeout'
