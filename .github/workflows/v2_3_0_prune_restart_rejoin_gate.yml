@@ -94,12 +94,12 @@ jobs:
         run: |
           set -euo pipefail
           driver='scripts/v2_3_0_prune_restart_rejoin_runtime.sh'
-          if [[ ! -x "$driver" ]]; then
-            echo "Required runtime driver is missing or not executable: $driver" >&2
+          if [[ ! -r "$driver" ]]; then
+            echo "Required runtime driver is missing or unreadable: $driver" >&2
             echo 'Cargo tests alone are not operational restart/rejoin evidence.' >&2
             exit 44
           fi
-          OUT_DIR="$PWD/ci-evidence/prune-restart/runtime" "$driver" 2>&1 | tee ci-evidence/prune-restart/runtime-driver.log
+          OUT_DIR="$PWD/ci-evidence/prune-restart/runtime" bash "$driver" 2>&1 | tee ci-evidence/prune-restart/runtime-driver.log
 
       - name: Validate runtime evidence semantics
         id: semantics
