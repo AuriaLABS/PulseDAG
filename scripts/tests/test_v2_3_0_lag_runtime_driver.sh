@@ -28,9 +28,16 @@ if grep -Fq "trap '_v230_lag_unexpected_exit \$?' EXIT" "$tmp/patched-harness.sh
   echo "patched harness must not retain a function-local EXIT trap" >&2
   exit 1
 fi
+if grep -Fq "index(\$0, token) {print \$4}" "$tmp/patched-harness.sh"; then
+  echo "socket isolation must not treat ss field 4 as the local endpoint" >&2
+  exit 1
+fi
 grep -Fq 'local data="$out_dir/data/n$idx"' "$tmp/patched-harness.sh"
 grep -Fq '[[ -n "$details" ]] || details='"'"'{}'"'"'' "$tmp/patched-harness.sh"
 grep -Fq "trap '_v230_lag_unexpected_exit \$?' ERR" "$tmp/patched-harness.sh"
+grep -Fq 'index($0, token) {print $(NF-2) "\t" $(NF-1)}' "$tmp/patched-harness.sh"
+grep -Fq '"${ss_cmd[@]}" -K state established src "$local_endpoint" dst "$peer_endpoint"' "$tmp/patched-harness.sh"
+grep -Fq '[[ -z "$remaining" ]] && return 0' "$tmp/patched-harness.sh"
 
 # The normalizer is idempotent so an externally supplied fixed harness remains usable.
 python3 "$PATCHER" "$tmp/patched-harness.sh" "$tmp/patched-harness-second.sh"
@@ -41,7 +48,7 @@ grep -Fq '.remote_tip_inventory_accepted_total > 0' "$DRIVER"
 grep -Fq '.peer_addressed_getblock_sent_total >= .selected_segment_block_requests_total' "$DRIVER"
 grep -Fq 'kill -STOP "$n5_pid"' "$HARNESS"
 grep -Fq 'kill -CONT "$n5_pid"' "$HARNESS"
-grep -Fq 'ss -K state established' "$HARNESS"
+grep -Fq 'ss -K state established' "$tmp/patched-harness.sh"
 grep -Fq 'queued_gossip_discarded' "$HARNESS"
 grep -Fq 'canonical_gap_sample > canonical_gap_max' "$HARNESS"
 grep -Fq 'harness_gap_sample > harness_gap_max' "$HARNESS"
