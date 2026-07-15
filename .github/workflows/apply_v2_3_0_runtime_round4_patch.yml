@@ -40,18 +40,92 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
 
+          def replace_once(path: Path, old: str, new: str, label: str) -> None:
+              text = path.read_text()
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"{path}: expected one {label} match, found {count}")
+              path.write_text(text.replace(old, new, 1))
+
+          main = Path('apps/pulsedagd/src/main.rs')
+          replace_once(
+              main,
+              '''                            let canonical_gap = remote_height.saturating_sub(local_height);
+                                          rt.selected_segment_gap_blocks = canonical_gap;
+                                          rt.network_selected_height_gap =
+                                              rt.network_selected_height_gap.max(canonical_gap);
+              ''',
+              '''                            rt.selected_segment_gap_blocks =
+                                              remote_height.saturating_sub(local_height);
+              ''',
+              'invalid runtime canonical-gap field',
+          )
+
+          metrics = Path('crates/pulsedag-rpc/src/handlers/metrics.rs')
+          replace_once(
+              metrics,
+              '    handlers::canonical_sync::build_canonical_sync_state,\n',
+              '''    handlers::canonical_sync::{
+                  build_canonical_sync_state_with_remote_evidence,
+                  remote_sync_evidence_from_p2p_status,
+              },
+              ''',
+              'canonical sync imports',
+          )
+          replace_once(
+              metrics,
+              '''    let canonical_sync = build_canonical_sync_state(
+                  chain,
+                  runtime,
+                  chain.dag.blocks.len(),
+                  now_unix,
+                  p2p_status
+                      .as_ref()
+                      .and_then(|snapshot| snapshot.status.selected_sync_peer.clone()),
+              );
+              ''',
+              '''    let remote_sync_evidence = remote_sync_evidence_from_p2p_status(
+                  p2p_status.as_ref().map(|snapshot| &snapshot.status),
+                  now_unix,
+              );
+              let canonical_sync = build_canonical_sync_state_with_remote_evidence(
+                  chain,
+                  runtime,
+                  chain.dag.blocks.len(),
+                  now_unix,
+                  p2p_status
+                      .as_ref()
+                      .and_then(|snapshot| snapshot.status.selected_sync_peer.clone()),
+                  &remote_sync_evidence,
+              );
+              ''',
+              'metrics canonical sync evidence wiring',
+          )
+
           contract = Path('scripts/tests/test_v2_3_0_lag_runtime_driver.sh')
-          text = contract.read_text()
-          old = '''grep -Fq 'let mut selected_segment_completed = false;' "$NODE_MAIN"
-          grep -Fq 'selected_segment_session = None;' "$NODE_MAIN"
-          grep -Fq 'rt.active_session_remaining_blocks = 0;' "$NODE_MAIN"
-          grep -Fq 'rt.peer_addressed_getblock_sent_total = rt' "$NODE_MAIN"
-          grep -Fq 'rt.network_selected_height_gap.max(canonical_gap)' "$NODE_MAIN"
-          '''
-          new = 'python3 scripts/tests/test_v2_3_0_selected_segment_source_semantics.py "$NODE_MAIN"\n'
-          if text.count(old) != 1:
-              raise SystemExit(f'expected one selected-segment grep block, found {text.count(old)}')
-          contract.write_text(text.replace(old, new, 1))
+          replace_once(
+              contract,
+              'NODE_MAIN="apps/pulsedagd/src/main.rs"\n',
+              'NODE_MAIN="apps/pulsedagd/src/main.rs"\nMETRICS="crates/pulsedag-rpc/src/handlers/metrics.rs"\n',
+              'metrics source path',
+          )
+          replace_once(
+              contract,
+              '''grep -Fq 'let mut selected_segment_completed = false;' "$NODE_MAIN"
+              grep -Fq 'selected_segment_session = None;' "$NODE_MAIN"
+              grep -Fq 'rt.active_session_remaining_blocks = 0;' "$NODE_MAIN"
+              grep -Fq 'rt.peer_addressed_getblock_sent_total = rt' "$NODE_MAIN"
+              grep -Fq 'rt.network_selected_height_gap.max(canonical_gap)' "$NODE_MAIN"
+              ''',
+              'python3 scripts/tests/test_v2_3_0_selected_segment_source_semantics.py "$NODE_MAIN" "$METRICS"\n',
+              'selected-segment source assertions',
+          )
+          replace_once(
+              contract,
+              'grep -Fq \'ss -K state established\' "$tmp/patched-harness.sh"\n',
+              '',
+              'obsolete literal ss invocation assertion',
+          )
 
           source_test = Path('scripts/tests/test_v2_3_0_selected_segment_source_semantics.py')
           source_test.write_text(r'''#!/usr/bin/env python3
@@ -61,20 +135,40 @@ jobs:
           import sys
           from pathlib import Path
 
-          if len(sys.argv) != 2:
-              raise SystemExit(f"usage: {sys.argv[0]} apps/pulsedagd/src/main.rs")
+          if len(sys.argv) != 3:
+              raise SystemExit(
+                  f"usage: {sys.argv[0]} apps/pulsedagd/src/main.rs "
+                  "crates/pulsedag-rpc/src/handlers/metrics.rs"
+              )
 
-          source = Path(sys.argv[1]).read_text()
-          checks = {
+          node_source = Path(sys.argv[1]).read_text()
+          metrics_source = Path(sys.argv[2]).read_text()
+          node_checks = {
               "completion flag": r"let\s+mut\s+selected_segment_completed\s*=\s*false",
               "session cleared": r"selected_segment_session\s*=\s*None",
               "remaining blocks cleared": r"active_session_remaining_blocks\s*=\s*0",
               "peer-addressed request counted": r"peer_addressed_getblock_sent_total\s*=\s*rt\s*\.peer_addressed_getblock_sent_total\s*\.saturating_add\(1\)",
-              "canonical gap retained": r"network_selected_height_gap\s*=\s*rt\s*\.network_selected_height_gap\s*\.max\(canonical_gap\)",
+              "selected segment gap retained": r"selected_segment_gap_blocks\s*=\s*remote_height\s*\.saturating_sub\(local_height\)",
           }
-          missing = [label for label, pattern in checks.items() if not re.search(pattern, source)]
+          metrics_checks = {
+              "remote evidence extraction": r"remote_sync_evidence_from_p2p_status\s*\(",
+              "canonical evidence-aware builder": r"build_canonical_sync_state_with_remote_evidence\s*\(",
+              "remote evidence supplied": r"&remote_sync_evidence\s*,?\s*\)",
+          }
+          missing = [
+              f"node: {label}"
+              for label, pattern in node_checks.items()
+              if not re.search(pattern, node_source)
+          ]
+          missing.extend(
+              f"metrics: {label}"
+              for label, pattern in metrics_checks.items()
+              if not re.search(pattern, metrics_source)
+          )
           if missing:
-              raise SystemExit("missing selected-segment source safeguards: " + ", ".join(missing))
+              raise SystemExit(
+                  "missing selected-segment source safeguards: " + ", ".join(missing)
+              )
           ''')
           PY
           python3 -m py_compile scripts/tests/test_v2_3_0_selected_segment_source_semantics.py
@@ -94,7 +188,9 @@ jobs:
       - name: Validate selected-segment source semantics
         run: |
           set -euxo pipefail
-          python3 scripts/tests/test_v2_3_0_selected_segment_source_semantics.py apps/pulsedagd/src/main.rs
+          python3 scripts/tests/test_v2_3_0_selected_segment_source_semantics.py \
+            apps/pulsedagd/src/main.rs \
+            crates/pulsedag-rpc/src/handlers/metrics.rs
 
       - name: Validate lag runtime contract
         id: lag_contract
@@ -118,6 +214,13 @@ jobs:
           set -o pipefail
           cargo test -p pulsedag-core --test confirmed_mempool_cleanup --locked -- --nocapture 2>&1 | tee mempool-cleanup.log
 
+      - name: Verify canonical sync tests
+        id: canonical_sync_tests
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          cargo test -p pulsedag-rpc canonical_sync --locked -- --nocapture 2>&1 | tee canonical-sync-tests.log
+
       - name: Verify pulsedagd compiles
         id: pulsedagd_compile
         continue-on-error: true
@@ -133,21 +236,24 @@ jobs:
           path: |
             lag-contract.trace
             mempool-cleanup.log
+            canonical-sync-tests.log
             pulsedagd-check.log
           if-no-files-found: warn
           retention-days: 7
 
       - name: Publish validated source commit
-        if: steps.lag_contract.outcome == 'success' && steps.mempool_cleanup.outcome == 'success' && steps.pulsedagd_compile.outcome == 'success'
+        if: steps.lag_contract.outcome == 'success' && steps.mempool_cleanup.outcome == 'success' && steps.canonical_sync_tests.outcome == 'success' && steps.pulsedagd_compile.outcome == 'success'
         run: |
           set -euo pipefail
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git rm .github/workflows/apply_v2_3_0_runtime_round4_patch.yml
           git rm scripts/lib/apply_v2_3_0_runtime_round4_patch.py
+          git rm .runtime-round4-trigger
           git add apps/pulsedagd/src/main.rs \
             crates/pulsedag-core/src/apply.rs \
             crates/pulsedag-core/tests/confirmed_mempool_cleanup.rs \
+            crates/pulsedag-rpc/src/handlers/metrics.rs \
             scripts/tests/test_v2_3_0_lag_runtime_driver.sh \
             scripts/tests/test_v2_3_0_selected_segment_source_semantics.py \
             .github/workflows/v2_3_0_prune_restart_rejoin_gate.yml
@@ -160,9 +266,11 @@ jobs:
         env:
           LAG_CONTRACT: ${{ steps.lag_contract.outcome }}
           MEMPOOL_CLEANUP: ${{ steps.mempool_cleanup.outcome }}
+          CANONICAL_SYNC_TESTS: ${{ steps.canonical_sync_tests.outcome }}
           PULSEDAGD_COMPILE: ${{ steps.pulsedagd_compile.outcome }}
         run: |
           set -euo pipefail
           [[ "$LAG_CONTRACT" == success ]]
           [[ "$MEMPOOL_CLEANUP" == success ]]
+          [[ "$CANONICAL_SYNC_TESTS" == success ]]
           [[ "$PULSEDAGD_COMPILE" == success ]]
