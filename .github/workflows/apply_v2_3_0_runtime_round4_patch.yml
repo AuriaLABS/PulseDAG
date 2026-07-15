@@ -40,6 +40,16 @@ jobs:
           set -euo pipefail
           python3 scripts/lib/apply_v2_3_0_runtime_round4_patch.py
           python3 -m py_compile scripts/lib/apply_v2_3_0_runtime_round4_patch.py
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('scripts/tests/test_v2_3_0_lag_runtime_driver.sh')
+          text = path.read_text()
+          old = "grep -Fq 'rt.peer_addressed_getblock_sent_total = rt' \"$NODE_MAIN\""
+          new = "grep -Fq 'rt.peer_addressed_getblock_sent_total' \"$NODE_MAIN\""
+          if text.count(old) != 1:
+              raise SystemExit(f'expected one rustfmt-sensitive peer counter assertion, found {text.count(old)}')
+          path.write_text(text.replace(old, new, 1))
+          PY
 
       - name: Format patched Rust
         run: |
