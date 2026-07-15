@@ -7,6 +7,8 @@ OUT_DIR="${OUT_DIR:-$ROOT_DIR/artifacts/private-testnet/v2_3_0/lag-injection-sel
 MIN_SELECTED_GAP="${MIN_SELECTED_GAP:-96}"
 CI_MODE="${CI_MODE:-0}"
 HARNESS_PATH="${V2_3_0_RUNTIME_HARNESS:-$ROOT_DIR/scripts/lib/v2_3_0_runtime_harness.sh}"
+HARNESS_PATCHER="$ROOT_DIR/scripts/lib/patch_v2_3_0_lag_runtime_harness.py"
+PATCHED_HARNESS="$OUT_DIR/runtime-harness.patched.sh"
 MANIFEST_JSON="$OUT_DIR/evidence_manifest.json"
 TIMELINE_JSON="$OUT_DIR/transition_timeline.json"
 FINAL_TABLE="$OUT_DIR/final_convergence_table.md"
@@ -30,7 +32,7 @@ log_cmd() { printf '[%s] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >> "$COMMAN
 archive_evidence() {
   (
     cd "$OUT_DIR"
-    tar -czf "$TARBALL" evidence_manifest.json transition_timeline.json gap_timeline.json topology_samples.json selected_segment_counter_summary.json final_convergence_table.md command-log.txt endpoints logs miners pids 2>/dev/null || true
+    tar -czf "$TARBALL" evidence_manifest.json transition_timeline.json gap_timeline.json topology_samples.json selected_segment_counter_summary.json final_convergence_table.md command-log.txt runtime-harness.patched.sh endpoints logs miners pids 2>/dev/null || true
     [[ -f evidence.tar.gz ]] && sha256sum evidence.tar.gz > "$SHA_FILE"
     find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > "$SHA256SUMS"
   )
@@ -114,22 +116,33 @@ json.dump({
 PY
 }
 
+prepare_runtime_harness() {
+  command -v python3 >/dev/null || {
+    echo "FATAL: python3 is required to normalize the runtime harness" >&2
+    exit 78
+  }
+  [[ -r "$HARNESS_PATCHER" ]] || {
+    echo "FATAL: runtime harness patcher is missing: $HARNESS_PATCHER" >&2
+    exit 78
+  }
+  python3 "$HARNESS_PATCHER" "$HARNESS_PATH" "$PATCHED_HARNESS"
+  bash -n "$PATCHED_HARNESS"
+  log_cmd "normalized runtime harness source=$HARNESS_PATH output=$PATCHED_HARNESS"
+}
+
 run_runtime_evidence() {
   log_cmd "runtime drill requested with min selected-height gap >= $MIN_SELECTED_GAP"
   if [[ ! -r "$HARNESS_PATH" ]]; then
     echo "FATAL: runtime-closeout requires $HARNESS_PATH; refusing to fabricate runtime evidence" >&2
     exit 78
   fi
+  prepare_runtime_harness
   # shellcheck source=/dev/null
-  source "$HARNESS_PATH"
+  source "$PATCHED_HARNESS"
   if ! declare -F v2_3_0_run_lag_injection_selected_segment_drill >/dev/null; then
-    echo "FATAL: $HARNESS_PATH does not define v2_3_0_run_lag_injection_selected_segment_drill; refusing to fabricate runtime evidence" >&2
+    echo "FATAL: $PATCHED_HARNESS does not define v2_3_0_run_lag_injection_selected_segment_drill; refusing to fabricate runtime evidence" >&2
     exit 78
   fi
-  # The harness's first node helper derives its data path while declaring idx.
-  # Seed the dynamically scoped first-node value so nounset startup resolves n1.
-  local idx=1
-  log_cmd "runtime harness first-node index seed=$idx"
   v2_3_0_run_lag_injection_selected_segment_drill \
     --out-dir "$OUT_DIR" \
     --run-id "$RUN_ID" \
