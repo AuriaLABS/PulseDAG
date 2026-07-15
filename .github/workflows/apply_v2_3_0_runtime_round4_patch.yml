@@ -100,9 +100,14 @@ jobs:
           python3 scripts/tests/test_v2_3_0_selected_segment_source_semantics.py apps/pulsedagd/src/main.rs
 
       - name: Validate lag runtime contract
+        id: lag_contract
+        continue-on-error: true
         run: |
-          set -euxo pipefail
-          bash -x scripts/tests/test_v2_3_0_lag_runtime_driver.sh
+          set +e
+          bash -x scripts/tests/test_v2_3_0_lag_runtime_driver.sh > lag-contract.trace 2>&1
+          rc=$?
+          tail -n 160 lag-contract.trace
+          exit "$rc"
 
       - name: Check patch whitespace
         run: |
@@ -110,16 +115,33 @@ jobs:
           git diff --check
 
       - name: Verify confirmed mempool cleanup
+        id: mempool_cleanup
+        continue-on-error: true
         run: |
-          set -euo pipefail
-          cargo test -p pulsedag-core --test confirmed_mempool_cleanup --locked -- --nocapture
+          set -o pipefail
+          cargo test -p pulsedag-core --test confirmed_mempool_cleanup --locked -- --nocapture 2>&1 | tee mempool-cleanup.log
 
       - name: Verify pulsedagd compiles
+        id: pulsedagd_compile
+        continue-on-error: true
         run: |
-          set -euo pipefail
-          cargo check -p pulsedagd --locked
+          set -o pipefail
+          cargo check -p pulsedagd --locked 2>&1 | tee pulsedagd-check.log
+
+      - name: Upload patch diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: runtime-round4-diagnostics-${{ github.run_id }}
+          path: |
+            lag-contract.trace
+            mempool-cleanup.log
+            pulsedagd-check.log
+          if-no-files-found: warn
+          retention-days: 7
 
       - name: Publish validated source commit
+        if: steps.lag_contract.outcome == 'success' && steps.mempool_cleanup.outcome == 'success' && steps.pulsedagd_compile.outcome == 'success'
         run: |
           set -euo pipefail
           git config user.name github-actions[bot]
@@ -135,3 +157,15 @@ jobs:
           git diff --cached --check
           git commit -m 'Fix runtime mempool cleanup and selected-segment closeout'
           git push origin HEAD:agent/fix-v2-3-0-runtime-closeout-round-4
+
+      - name: Enforce patch validation
+        if: always()
+        env:
+          LAG_CONTRACT: ${{ steps.lag_contract.outcome }}
+          MEMPOOL_CLEANUP: ${{ steps.mempool_cleanup.outcome }}
+          PULSEDAGD_COMPILE: ${{ steps.pulsedagd_compile.outcome }}
+        run: |
+          set -euo pipefail
+          [[ "$LAG_CONTRACT" == success ]]
+          [[ "$MEMPOOL_CLEANUP" == success ]]
+          [[ "$PULSEDAGD_COMPILE" == success ]]
