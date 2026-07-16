@@ -1,6 +1,6 @@
 use anyhow::{anyhow, Context, Result};
 use pulsedag_api::ApiResponse;
-use pulsedag_core::types::{Block, BlockHeader};
+use pulsedag_core::types::{compute_block_hash, Block, BlockHeader};
 use pulsedag_miner::{verify_backend_result_with_core, CpuMiningBackend, MiningBackend};
 #[cfg(feature = "gpu")]
 use pulsedag_miner::{GpuBackendConfig, GpuMiningBackend};
@@ -276,6 +276,11 @@ struct TemplateFreshness {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LoopRefreshDecision {
     RefreshWork,
+}
+
+fn apply_mined_header(block: &mut Block, mined_header: BlockHeader) {
+    block.header = mined_header;
+    block.hash = compute_block_hash(&block.header);
 }
 
 #[tokio::main]
@@ -613,7 +618,7 @@ async fn mine_once(
     .await?;
     let mut verified_header = block.header.clone();
     verified_header.nonce = mining.header.nonce;
-    block.header = verified_header;
+    apply_mined_header(&mut block, verified_header);
     telemetry.record_mining_result(mining.tries, mining.hashes_per_sec);
     telemetry.log("mining_result");
 
@@ -828,10 +833,11 @@ async fn mine_header_with_backend(
 #[cfg(test)]
 mod tests {
     use super::{
-        default_worker_id, evaluate_template_freshness, loop_refresh_decision_after_outcome,
-        mining_backend, parse_args_from, should_skip_stale_submit, submit_rejection_action, usage,
-        BackendKind, Block, BlockHeader, Config, LoopRefreshDecision, MineOnceOutcome,
-        MinerTelemetry, SubmitRequest, TemplateSkipReason,
+        apply_mined_header, default_worker_id, evaluate_template_freshness,
+        loop_refresh_decision_after_outcome, mining_backend, parse_args_from,
+        should_skip_stale_submit, submit_rejection_action, usage, BackendKind, Block, BlockHeader,
+        Config, LoopRefreshDecision, MineOnceOutcome, MinerTelemetry, SubmitRequest,
+        TemplateSkipReason,
     };
 
     fn telemetry_test_config() -> Config {
@@ -1216,5 +1222,34 @@ mod tests {
         let v = serde_json::to_value(&req).expect("serialize");
         assert_eq!(v["template_id"], "tpl-1");
         assert!(v["block"].is_object());
+    }
+
+    #[test]
+    fn nonzero_mined_nonce_recomputes_canonical_block_hash() {
+        let header = BlockHeader {
+            version: 1,
+            parents: vec!["p".into()],
+            timestamp: 1,
+            nonce: 0,
+            difficulty: 1,
+            merkle_root: "m".into(),
+            state_root: "s".into(),
+            blue_score: 1,
+            height: 1,
+        };
+        let template_hash = pulsedag_core::types::compute_block_hash(&header);
+        let mut block = Block {
+            hash: template_hash.clone(),
+            header: header.clone(),
+            transactions: vec![],
+        };
+        let mut mined_header = header;
+        mined_header.nonce = 1;
+        apply_mined_header(&mut block, mined_header);
+        assert_eq!(
+            block.hash,
+            pulsedag_core::types::compute_block_hash(&block.header)
+        );
+        assert_ne!(block.hash, template_hash);
     }
 }

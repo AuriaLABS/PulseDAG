@@ -71,6 +71,8 @@ const ORPHAN_RECOVERY_REVALIDATE_EVICT_LIMIT: usize = 32;
 const DEDICATED_RPC_RUNTIME_WORKER_THREADS: usize = 2;
 const FINAL_QUIESCENCE_NO_PROGRESS_SECS: u64 = 45;
 const FINAL_QUIESCENCE_CLEANUP_LIMIT: usize = 64;
+const SELECTED_SEGMENT_PRIORITY_GAP_BLOCKS: u64 = 64;
+const SELECTED_LOCATOR_PRIORITY_GRACE_SECS: u64 = 60;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct FinalQuiescenceCleanupResult {
@@ -165,6 +167,17 @@ where
 
 fn final_quiescence_reconcile_pending(total: u64, success: u64, blocked: u64) -> bool {
     total > success.saturating_add(blocked)
+}
+
+fn selected_segment_recovery_has_priority(
+    session_active: bool,
+    pending_requested_at_unix: Option<u64>,
+    now_unix: u64,
+) -> bool {
+    session_active
+        || pending_requested_at_unix.is_some_and(|requested_at| {
+            now_unix.saturating_sub(requested_at) <= SELECTED_LOCATOR_PRIORITY_GRACE_SECS
+        })
 }
 
 fn final_height_reconcile_rejection_reason(acceptance: &BlockAcceptanceResult) -> &'static str {
@@ -504,7 +517,7 @@ impl Default for SelectedSegmentLimits {
             )
             .ok()
             .and_then(|value| value.parse::<usize>().ok())
-            .unwrap_or(32)
+            .unwrap_or(128)
             .clamp(1, 128),
             max_segment_bytes: std::env::var("PULSEDAG_SELECTED_SEGMENT_MAX_BYTES")
                 .ok()
@@ -2467,13 +2480,26 @@ async fn main() -> Result<()> {
                                     pending_hashes_for_scheduler(&block_requests),
                                 )
                             };
+                            let selected_segment_priority = {
+                                let guard = selected_segment_locator_state.lock().await;
+                                selected_segment_recovery_has_priority(
+                                    selected_segment_session.is_some(),
+                                    guard
+                                        .pending_locator
+                                        .as_ref()
+                                        .map(|pending| pending.requested_at_unix),
+                                    now_unix(),
+                                )
+                            };
                             let plan = fetch_scheduler.next_requests(&known, &pending, 8);
                             for request_hash in plan.requests {
-                                if block_requests.should_issue_getblock_for_peers(
-                                    &request_hash,
-                                    now_unix(),
-                                    active_peer_ids(&p2p),
-                                ) {
+                                if !selected_segment_priority
+                                    && block_requests.should_issue_getblock_for_peers(
+                                        &request_hash,
+                                        now_unix(),
+                                        active_peer_ids(&p2p),
+                                    )
+                                {
                                     if let Some(ref p2p) = p2p {
                                         if let Err(e) = p2p.request_block(&request_hash) {
                                             warn!(error = %e, block_hash = %request_hash, "failed issuing dependency-aware GetBlock request");
@@ -2644,13 +2670,26 @@ async fn main() -> Result<()> {
                                     block.hash, missing_parents
                                 ),
                             );
+                            let selected_segment_priority = {
+                                let guard = selected_segment_locator_state.lock().await;
+                                selected_segment_recovery_has_priority(
+                                    selected_segment_session.is_some(),
+                                    guard
+                                        .pending_locator
+                                        .as_ref()
+                                        .map(|pending| pending.requested_at_unix),
+                                    now_unix(),
+                                )
+                            };
                             let mut missing_parent_requests_issued = 0usize;
                             for parent in &missing_parents {
-                                if block_requests.should_issue_getblock_for_peers(
-                                    parent,
-                                    now_unix(),
-                                    active_peer_ids(&p2p),
-                                ) {
+                                if !selected_segment_priority
+                                    && block_requests.should_issue_getblock_for_peers(
+                                        parent,
+                                        now_unix(),
+                                        active_peer_ids(&p2p),
+                                    )
+                                {
                                     let mut request_sent = false;
                                     if let Some(ref p2p) = p2p {
                                         if let Err(e) = p2p.request_block(parent) {
@@ -3191,14 +3230,27 @@ async fn main() -> Result<()> {
                                 pending_hashes_for_scheduler(&block_requests),
                             )
                         };
+                        let selected_segment_priority = {
+                            let guard = selected_segment_locator_state.lock().await;
+                            selected_segment_recovery_has_priority(
+                                selected_segment_session.is_some(),
+                                guard
+                                    .pending_locator
+                                    .as_ref()
+                                    .map(|pending| pending.requested_at_unix),
+                                now_unix(),
+                            )
+                        };
                         let plan = fetch_scheduler.next_requests(&known, &pending, 8);
                         let mut issued_requests = 0u64;
                         for hash in plan.requests {
-                            if block_requests.should_issue_getblock_for_peers(
-                                &hash,
-                                now_unix(),
-                                active_peer_ids(&p2p),
-                            ) {
+                            if !selected_segment_priority
+                                && block_requests.should_issue_getblock_for_peers(
+                                    &hash,
+                                    now_unix(),
+                                    active_peer_ids(&p2p),
+                                )
+                            {
                                 if let Some(ref p2p) = p2p {
                                     if let Err(e) = p2p.request_block(&hash) {
                                         warn!(error = %e, block_hash = %hash, "failed issuing inventory GetBlock request");
@@ -3631,6 +3683,17 @@ async fn main() -> Result<()> {
                             }
                             .to_string();
                         }
+                        let selected_segment_priority = {
+                            let guard = selected_segment_locator_state.lock().await;
+                            selected_segment_recovery_has_priority(
+                                selected_segment_session.is_some(),
+                                guard
+                                    .pending_locator
+                                    .as_ref()
+                                    .map(|pending| pending.requested_at_unix),
+                                now_unix(),
+                            )
+                        };
                         for tip in unknown_tips {
                             let final_height_pending = {
                                 let rt = runtime.read().await;
@@ -3672,6 +3735,12 @@ async fn main() -> Result<()> {
                                     .saturating_add(1);
                                 rt.final_quiescence_selected_sync_total =
                                     rt.final_quiescence_selected_sync_total.saturating_add(1);
+                            }
+                            if selected_segment_priority {
+                                let mut rt = runtime.write().await;
+                                rt.final_quiescence_selected_sync_blocked_reason =
+                                    Some("selected_locator_priority".to_string());
+                                continue;
                             }
                             let readiness = block_requests.classify_getblock_for_peers(
                                 &tip,
@@ -4270,6 +4339,86 @@ async fn main() -> Result<()> {
                 previous_accepted_p2p_blocks = rt.accepted_p2p_blocks;
                 previous_accepted_mined_blocks = rt.accepted_mined_blocks;
                 drop(rt);
+
+                let proactive_selected_locator = p2p_status.as_ref().and_then(|status| {
+                    status
+                        .remote_selected_tip_inventory
+                        .iter()
+                        .filter(|remote| remote.connected && remote.direct_request_capable)
+                        .filter(|remote| {
+                            remote.selected_height.saturating_sub(best_height)
+                                >= SELECTED_SEGMENT_PRIORITY_GAP_BLOCKS
+                        })
+                        .max_by_key(|remote| remote.selected_height)
+                        .map(|remote| (remote.peer_id.clone(), remote.selected_height))
+                });
+                if let (Some((peer_id, remote_height)), Some(p2p_handle)) =
+                    (proactive_selected_locator, p2p.as_ref())
+                {
+                    let active_session = runtime.read().await.active_session_id.is_some();
+                    let priority_already_active = {
+                        let guard = selected_segment_locator_state.lock().await;
+                        selected_segment_recovery_has_priority(
+                            active_session,
+                            guard
+                                .pending_locator
+                                .as_ref()
+                                .map(|pending| pending.requested_at_unix),
+                            now,
+                        )
+                    };
+                    if !priority_already_active {
+                        let selected_locator = {
+                            let guard = chain.read().await;
+                            guard
+                                .dag
+                                .selected_chain
+                                .iter()
+                                .rev()
+                                .take(32)
+                                .cloned()
+                                .collect::<Vec<_>>()
+                        };
+                        let selected_limits = SelectedSegmentLimits::default();
+                        let selected_locator_request_id = {
+                            let guard = selected_segment_locator_state.lock().await;
+                            guard.next_request_id
+                        };
+                        let selected_locator_requested = p2p_handle
+                            .request_headers(
+                                &selected_locator,
+                                None,
+                                selected_limits.headers_per_chunk,
+                            )
+                            .is_ok();
+                        if selected_locator_requested {
+                            let mut guard = selected_segment_locator_state.lock().await;
+                            guard.next_request_id = guard.next_request_id.saturating_add(1);
+                            guard.pending_locator = Some(PendingSelectedLocator {
+                                request_id: selected_locator_request_id,
+                                peer_id: peer_id.clone(),
+                                locator: selected_locator,
+                                requested_at_unix: now,
+                            });
+                            let mut rt = runtime.write().await;
+                            rt.selected_segment_gap_blocks = rt
+                                .selected_segment_gap_blocks
+                                .max(remote_height.saturating_sub(best_height));
+                            rt.dag_sync_selected_chain_locator_total =
+                                rt.dag_sync_selected_chain_locator_total.saturating_add(1);
+                            rt.selected_segment_header_requests_total =
+                                rt.selected_segment_header_requests_total.saturating_add(1);
+                            rt.header_requests_sent = rt.header_requests_sent.saturating_add(1);
+                            rt.sync_state = "locating_common_ancestor".to_string();
+                            info!(
+                                peer = %peer_id,
+                                local_height = best_height,
+                                remote_height,
+                                "large remote selected-height gap activated selected-segment priority"
+                            );
+                        }
+                    }
+                }
 
                 if final_quiescence_due {
                     let selected_chain_gate = SelectedChainSyncGate {
@@ -5320,6 +5469,16 @@ mod tests {
                 height,
             },
         }
+    }
+
+    #[test]
+    fn selected_segment_priority_is_bounded_and_closeout_capacity_covers_gap() {
+        assert!(selected_segment_recovery_has_priority(true, None, 100));
+        assert!(selected_segment_recovery_has_priority(false, Some(80), 100));
+        assert!(!selected_segment_recovery_has_priority(false, Some(1), 100));
+        let limits = SelectedSegmentLimits::default();
+        assert!(limits.max_inflight_blocks_per_peer >= 96);
+        assert!(limits.max_inflight_blocks_per_peer <= 128);
     }
 
     #[test]
