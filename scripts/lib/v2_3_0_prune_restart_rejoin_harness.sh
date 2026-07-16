@@ -211,16 +211,34 @@ v2_3_0_run_prune_restart_rejoin_drill() (
   for ((idx=2; idx<=node_count; idx++)); do _v230_wait_height "$idx" "$target_height"; done
   _v230_wait_final_convergence || { echo "pre-prune convergence failed" >&2; exit 1; }
 
-  local prune_rows='[]' runtime_rows='[]' snapshot_file prune_file runtime_file
+  local prune_rows='[]' runtime_rows='[]' snapshot_file prune_file checks_file
   for ((idx=1; idx<=node_count; idx++)); do
     snapshot_file="$endpoint_dir/n${idx}-snapshot-create.json"
     prune_file="$endpoint_dir/n${idx}-prune.json"
-    runtime_file="$endpoint_dir/n${idx}-post-prune-runtime.json"
+    checks_file="$endpoint_dir/n${idx}-post-prune-checks.json"
     _v230_http_post "$(_v230_rpc_url "$idx")/snapshot/create" '{}' | tee "$snapshot_file" | jq -e '.data.snapshot_exists == true' >/dev/null
     _v230_http_post "$(_v230_rpc_url "$idx")/admin/prune" "{\"keep_recent_blocks\":$keep_recent}" | tee "$prune_file" | jq -e '(.data.pruned_block_count // 0) > 0 and .data.replay_verified == true' >/dev/null
-    _v230_http_get "$(_v230_rpc_url "$idx")/runtime" | tee "$runtime_file" | jq -e '(.data.blocks_pruned_total // 0) > 0 and ((.data.retained_storage_hash_digest // "") | length) > 0 and .data.retained_storage_hash_digest == .data.retained_memory_hash_digest and ((.data.storage_only_retained_hashes // []) | length) == 0 and ((.data.memory_only_retained_hashes // []) | length) == 0' >/dev/null
+    _v230_http_get "$(_v230_rpc_url "$idx")/checks" | tee "$checks_file" | jq -e '
+      .data.overall_ok == true and
+      ((.data.checks // [] | map(select(.name == "storage_consistency")) | first // {}) as $s |
+        $s.ok == true and
+        ($s.accepted_storage_count // 0) > 0 and
+        $s.accepted_storage_count == $s.in_memory_dag_count and
+        (($s.accepted_hash_set_digest // "") | length) > 0 and
+        $s.memory_generation == $s.storage_generation and
+        (($s.storage_only_hashes // []) | length) == 0 and
+        (($s.memory_only_hashes // []) | length) == 0)' >/dev/null
     prune_rows="$(jq --arg node "n$idx" --slurpfile prune "$prune_file" '. + [{node:$node,pruned:($prune[0].data.pruned_block_count // 0),keep_from_height:$prune[0].data.keep_from_height}]' <<< "$prune_rows")"
-    runtime_rows="$(jq --arg node "n$idx" --slurpfile runtime "$runtime_file" '. + [{node:$node,data:$runtime[0].data}]' <<< "$runtime_rows")"
+    runtime_rows="$(jq --arg node "n$idx" --slurpfile prune "$prune_file" --slurpfile checks "$checks_file" '
+      ($checks[0].data.checks // [] | map(select(.name == "storage_consistency")) | first // {}) as $s |
+      . + [{node:$node,data:{
+        blocks_pruned_total:($prune[0].data.pruned_block_count // 0),
+        blocks_considered_total:($s.accepted_storage_count // 0),
+        retained_storage_hash_digest:($s.storage_generation // ""),
+        retained_memory_hash_digest:($s.memory_generation // ""),
+        storage_only_retained_hashes:($s.storage_only_hashes // []),
+        memory_only_retained_hashes:($s.memory_only_hashes // [])
+      }}]' <<< "$runtime_rows")"
   done
   echo "$prune_rows" > "$out_dir/prune-results.json"
   echo "$runtime_rows" > "$out_dir/post-prune-runtime-results.json"
@@ -270,17 +288,24 @@ v2_3_0_run_prune_restart_rejoin_drill() (
     status_file="$endpoint_dir/n${idx}-final-status.json"
     readiness_file="$endpoint_dir/n${idx}-final-readiness.json"
     p2p_file="$endpoint_dir/n${idx}-final-p2p.json"
-    final_runtime_file="$endpoint_dir/n${idx}-final-runtime.json"
+    final_runtime_file="$endpoint_dir/n${idx}-final-checks.json"
     _v230_http_get "$(_v230_rpc_url "$idx")/status" > "$status_file"
     _v230_http_get "$(_v230_rpc_url "$idx")/readiness" > "$readiness_file"
     _v230_http_get "$(_v230_rpc_url "$idx")/p2p/status" > "$p2p_file"
-    _v230_http_get "$(_v230_rpc_url "$idx")/runtime" > "$final_runtime_file"
+    _v230_http_get "$(_v230_rpc_url "$idx")/checks" > "$final_runtime_file"
     tip="$(jq -r '.data.selected_tip // .data.tip // .data.last_block_hash // ""' "$status_file")"
     root="$(jq -r '.data.ordered_dag_state_root // .data.state_root // ""' "$status_file")"
     peers="$(jq -r '[((.data.connected_peers? // []) | length),(.data.peer_count? // 0),(.data.connected_peer_count? // 0),((.data.peers? // []) | length)] | max // 0' "$p2p_file")"
     ready="$(jq -r '(.data.node_operational_ready == true or .data.private_conservative_ready == true or .data.ghostdag_dev_ready == true)' "$readiness_file")"
     final_nodes="$(jq --arg node "n$idx" --arg tip "$tip" --arg root "$root" --argjson peers "$peers" --argjson ready "$ready" '. + [{node:$node,ready:$ready,compatible_peers:$peers,selected_tip:$tip,state_root:$root}]' <<< "$final_nodes")"
-    final_runtime="$(jq --arg node "n$idx" --slurpfile runtime "$final_runtime_file" '. + [{node:$node,data:$runtime[0].data}]' <<< "$final_runtime")"
+    final_runtime="$(jq --arg node "n$idx" --slurpfile checks "$final_runtime_file" '
+      ($checks[0].data.checks // [] | map(select(.name == "storage_consistency")) | first // {}) as $s |
+      . + [{node:$node,data:{
+        retained_storage_hash_digest:($s.storage_generation // ""),
+        retained_memory_hash_digest:($s.memory_generation // ""),
+        storage_only_retained_hashes:($s.storage_only_hashes // []),
+        memory_only_retained_hashes:($s.memory_only_hashes // [])
+      }}]' <<< "$final_runtime")"
   done
   echo "$final_nodes" > "$out_dir/final-nodes.json"
   echo "$final_runtime" > "$out_dir/final-runtime-results.json"
