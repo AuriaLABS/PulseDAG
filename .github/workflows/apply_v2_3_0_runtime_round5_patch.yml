@@ -33,12 +33,34 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Apply fail-closed source patch
+        id: apply
+        continue-on-error: true
         run: |
-          set -euo pipefail
-          python3 -m py_compile scripts/lib/apply_v2_3_0_runtime_round5_patch.py
-          python3 scripts/lib/apply_v2_3_0_runtime_round5_patch.py
+          set +e
+          (
+            set -euo pipefail
+            python3 -m py_compile scripts/lib/apply_v2_3_0_runtime_round5_patch.py
+            python3 scripts/lib/apply_v2_3_0_runtime_round5_patch.py
+          ) > round5-apply.log 2>&1
+          rc=$?
+          cat round5-apply.log
+          exit "$rc"
+
+      - name: Upload patch diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: runtime-round5-apply-${{ github.run_id }}
+          path: round5-apply.log
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Require patch application
+        if: steps.apply.outcome != 'success'
+        run: exit 1
 
       - name: Format and validate source
+        if: steps.apply.outcome == 'success'
         run: |
           set -euo pipefail
           cargo fmt --all
@@ -46,23 +68,27 @@ jobs:
           git diff --check
 
       - name: Verify miner canonical hash regression
+        if: steps.apply.outcome == 'success'
         run: |
           set -euo pipefail
           cargo test -p pulsedag-miner --locked -- --nocapture
 
       - name: Verify selected-segment regressions
+        if: steps.apply.outcome == 'success'
         run: |
           set -euo pipefail
           cargo test -p pulsedagd selected_segment --locked -- --nocapture
           bash scripts/tests/test_v2_3_0_lag_runtime_driver.sh
 
       - name: Verify binaries compile cleanly
+        if: steps.apply.outcome == 'success'
         run: |
           set -euo pipefail
           cargo check -p pulsedag-miner -p pulsedagd --locked
           cargo clippy -p pulsedag-miner -p pulsedagd --all-targets --locked -- -D warnings
 
       - name: Publish validated source commit
+        if: steps.apply.outcome == 'success'
         run: |
           set -euo pipefail
           git config user.name github-actions[bot]
