@@ -57,7 +57,6 @@ jobs:
           rc=$?
           echo "$rc" > /tmp/runtime-round6-apply.rc
           cat /tmp/runtime-round6-apply.log
-          rm -f "$patcher"
           exit "$rc"
 
       - name: Upload patch diagnostics
@@ -68,6 +67,7 @@ jobs:
           path: |
             /tmp/runtime-round6-apply.log
             /tmp/runtime-round6-apply.rc
+            scripts/lib/apply_runtime_round6.py
           if-no-files-found: error
           retention-days: 7
 
