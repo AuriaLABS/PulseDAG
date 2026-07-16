@@ -37,7 +37,8 @@ jobs:
         continue-on-error: true
         run: |
           set +e
-          base64 -d scripts/lib/runtime_round6_patch.py.gz.b64 | gzip -d > /tmp/apply_runtime_round6.py
+          patcher="scripts/lib/apply_runtime_round6.py"
+          base64 -d scripts/lib/runtime_round6_patch.py.gz.b64 | gzip -d > "$patcher"
           decode_rc=$?
           if (( decode_rc != 0 )); then
             echo "failed decoding runtime round-6 patcher rc=$decode_rc" > /tmp/runtime-round6-apply.log
@@ -45,17 +46,18 @@ jobs:
             cat /tmp/runtime-round6-apply.log
             exit "$decode_rc"
           fi
-          python3 -m py_compile /tmp/apply_runtime_round6.py > /tmp/runtime-round6-apply.log 2>&1
+          python3 -m py_compile "$patcher" > /tmp/runtime-round6-apply.log 2>&1
           compile_rc=$?
           if (( compile_rc != 0 )); then
             echo "$compile_rc" > /tmp/runtime-round6-apply.rc
             cat /tmp/runtime-round6-apply.log
             exit "$compile_rc"
           fi
-          python3 /tmp/apply_runtime_round6.py >> /tmp/runtime-round6-apply.log 2>&1
+          python3 "$patcher" >> /tmp/runtime-round6-apply.log 2>&1
           rc=$?
           echo "$rc" > /tmp/runtime-round6-apply.rc
           cat /tmp/runtime-round6-apply.log
+          rm -f "$patcher"
           exit "$rc"
 
       - name: Upload patch diagnostics
