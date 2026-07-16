@@ -141,6 +141,7 @@ jobs:
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add \
             apps/pulsedagd/src/main.rs \
+            apps/pulsedagd/src/block_request.rs \
             scripts/lib/v2_3_0_runtime_harness.sh \
             scripts/lib/v2_3_0_prune_restart_rejoin_harness.sh \
             scripts/tests/test_v2_3_0_lag_runtime_driver.sh \
