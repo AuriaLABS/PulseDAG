@@ -39,6 +39,8 @@ jobs:
           set +e
           (
             set -euo pipefail
+            python3 -m py_compile scripts/lib/fix_v2_3_0_runtime_round5_patcher.py
+            python3 scripts/lib/fix_v2_3_0_runtime_round5_patcher.py
             python3 -m py_compile scripts/lib/apply_v2_3_0_runtime_round5_patch.py
             python3 scripts/lib/apply_v2_3_0_runtime_round5_patch.py
           ) > round5-apply.log 2>&1
