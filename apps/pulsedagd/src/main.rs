@@ -586,6 +586,19 @@ fn selected_segment_request_order(headers: &[HeaderInventory], limit: usize) -> 
         .collect()
 }
 
+fn selected_segment_request_candidates(
+    headers: &[HeaderInventory],
+    limits: SelectedSegmentLimits,
+    accepted: &HashSet<String>,
+    pending: &HashSet<String>,
+) -> Vec<String> {
+    selected_segment_request_order(headers, limits.headers_per_chunk)
+        .into_iter()
+        .filter(|hash| !accepted.contains(hash) && !pending.contains(hash))
+        .take(limits.max_inflight_blocks_per_peer)
+        .collect()
+}
+
 fn auto_prune_should_fire(
     best_height: u64,
     last_prune_height: Option<u64>,
@@ -3046,13 +3059,23 @@ async fn main() -> Result<()> {
                                 rt.blockdata_received = rt.blockdata_received.saturating_add(1);
                                 rt.blockdata_accepted = rt.blockdata_accepted.saturating_add(1);
                                 if let Some(session) = selected_segment_session.as_mut() {
-                                    if session.mark_applied(&block.hash, now_unix()) {
+                                    let applied_at = now_unix();
+                                    let mut selected_applied = 0u64;
+                                    if session.mark_applied(&block.hash, applied_at) {
+                                        selected_applied = selected_applied.saturating_add(1);
+                                    }
+                                    for adopted_hash in &adopted_hashes {
+                                        if session.mark_applied(adopted_hash, applied_at) {
+                                            selected_applied = selected_applied.saturating_add(1);
+                                        }
+                                    }
+                                    if selected_applied > 0 {
                                         rt.sync_state = DagSyncStage::ApplyingSelectedSegment
                                             .as_str()
                                             .to_string();
                                         rt.selected_segment_blocks_applied_total = rt
                                             .selected_segment_blocks_applied_total
-                                            .saturating_add(1);
+                                            .saturating_add(selected_applied);
                                         rt.active_session_applied_blocks =
                                             session.accepted_applied_hashes.len() as u64;
                                         rt.active_session_remaining_blocks = session
@@ -3393,21 +3416,12 @@ async fn main() -> Result<()> {
                                 }
                             }
                             if let Some(session) = selected_segment_session.as_mut() {
-                                let accepted = known.clone();
-                                let staged = fetch_scheduler.queued_hashes();
-                                let candidates = selected_segment_request_order(
+                                let candidates = selected_segment_request_candidates(
                                     &headers,
-                                    selected_limits.headers_per_chunk,
-                                )
-                                .into_iter()
-                                .filter(|hash| {
-                                    !accepted.contains(hash)
-                                        && !staged.contains(hash)
-                                        && !pending.contains(hash)
-                                        && !session.requested_hashes.contains(hash)
-                                })
-                                .take(selected_limits.max_inflight_blocks_per_peer)
-                                .collect::<Vec<_>>();
+                                    selected_limits,
+                                    &known,
+                                    &pending,
+                                );
                                 session.missing_hashes = candidates.clone();
                                 session.current_chunk = candidates.clone();
                                 session.state = SelectedSegmentSessionState::RequestingBlocks;
@@ -3429,9 +3443,6 @@ async fn main() -> Result<()> {
                                             }
                                         }
                                     }
-                                }
-                                for hash in &candidates {
-                                    session.requested_hashes.insert(hash.clone());
                                 }
                                 candidates
                             } else {
@@ -3469,8 +3480,15 @@ async fn main() -> Result<()> {
                                     match result {
                                         Ok(()) => peer_addressed_request_succeeded = peer_addressed,
                                         Err(e) => {
+                                            block_requests.resolve(&hash);
                                             warn!(error = %e, block_hash = %hash, "failed issuing header-driven GetBlock request");
                                         }
+                                    }
+                                }
+                                if peer_addressed_request_succeeded {
+                                    if let Some(session) = selected_segment_session.as_mut() {
+                                        session.requested_hashes.insert(hash.clone());
+                                        session.updated_at_unix = now_unix();
                                     }
                                 }
                                 let mut rt = runtime.write().await;
@@ -5479,6 +5497,30 @@ mod tests {
         let limits = SelectedSegmentLimits::default();
         assert!(limits.max_inflight_blocks_per_peer >= 96);
         assert!(limits.max_inflight_blocks_per_peer <= 128);
+    }
+
+    #[test]
+    fn selected_segment_candidates_survive_generic_scheduler_staging() {
+        let headers = vec![
+            selected_test_header("b1", "common", 514),
+            selected_test_header("b2", "b1", 515),
+        ];
+        let limits = SelectedSegmentLimits {
+            headers_per_chunk: 128,
+            max_inflight_blocks_per_peer: 128,
+            max_segment_bytes: 4 * 1024 * 1024,
+        };
+        let accepted = HashSet::from(["common".to_string()]);
+        let pending = HashSet::new();
+        assert_eq!(
+            selected_segment_request_candidates(&headers, limits, &accepted, &pending),
+            vec!["b1".to_string(), "b2".to_string()]
+        );
+        let pending = HashSet::from(["b1".to_string()]);
+        assert_eq!(
+            selected_segment_request_candidates(&headers, limits, &accepted, &pending),
+            vec!["b2".to_string()]
+        );
     }
 
     #[test]

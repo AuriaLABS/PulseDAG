@@ -1047,10 +1047,6 @@ impl DependencyAwareFetchScheduler {
         self.inventory.len()
     }
 
-    pub fn queued_hashes(&self) -> HashSet<String> {
-        self.queued.clone()
-    }
-
     pub fn queue_inventory<I, S>(&mut self, hashes: I) -> usize
     where
         I: IntoIterator<Item = S>,

@@ -20,6 +20,9 @@ grep -Fq 'startup_snapshot_validated == true' "$HARNESS"
 grep -Fq 'startup_delta_applied == true' "$HARNESS"
 grep -Fq 'offline_advance_blocks:$offline_advance' "$HARNESS"
 grep -Fq 'public_testnet_ready:false' "$HARNESS"
+grep -Fq '/checks' "$HARNESS"
+grep -Fq 'storage_only_hashes' "$HARNESS"
+grep -Fq 'memory_only_hashes' "$HARNESS"
 grep -Fq 'retained_storage_hash_digest == .data.retained_memory_hash_digest' "$HARNESS"
 
 for marker in 'BLOCKS_PRUNED_TOTAL=1' 'pulsedag-v2.3.0-retained' 'storage-test'; do

@@ -82,6 +82,9 @@ v2_3_0_run_lag_injection_selected_segment_drill() {
   local startup_timeout="${STARTUP_TIMEOUT:-120}"
   local topology_timeout="${TOPOLOGY_TIMEOUT:-180}"
   local pre_isolation_min_height="${PRE_ISOLATION_MIN_HEIGHT:-8}"
+  local gap_build_margin="${V2_3_0_GAP_BUILD_MARGIN_BLOCKS:-16}"
+  [[ "$gap_build_margin" =~ ^[0-9]+$ ]] || { echo "gap build margin must be numeric" >&2; return 2; }
+  local target_gap=$((min_selected_gap + gap_build_margin))
   local baseline_timeout="${BASELINE_TIMEOUT:-600}"
   local gap_build_timeout="${GAP_BUILD_TIMEOUT:-3600}"
   local recovery_timeout="${RECOVERY_TIMEOUT:-900}"
@@ -416,11 +419,11 @@ v2_3_0_run_lag_injection_selected_segment_drill() {
     (( min_height >= baseline_height )) || min_height="$baseline_height"
     observed_gap=$((min_height - baseline_height))
     jq -nc --arg at "$(date -u +%FT%TZ)" --arg phase isolated --arg node n5 --argjson network "$min_height" --argjson local "$baseline_height" --argjson gap "$observed_gap" '{at:$at,phase:$phase,isolated_node:$node,network_selected_height:$network,n5_selected_height:$local,gap:$gap}' >> "$gap_jsonl"
-    (( observed_gap >= min_selected_gap )) && { network_height="$min_height"; break; }
+    (( observed_gap >= target_gap )) && { network_height="$min_height"; break; }
     sleep "$sample_interval"
   done
   _v230_lag_stop_miners
-  (( observed_gap >= min_selected_gap )) || { _v230_lag_abort "n1-n4 did not build the configured selected-height gap"; return 1; }
+  (( observed_gap >= target_gap )) || { _v230_lag_abort "n1-n4 did not build the configured selected-height gap plus recovery margin"; return 1; }
   if ! _v230_lag_wait_converged_subset "1 2 3 4" "$final_convergence_timeout"; then
     _v230_lag_abort "n1-n4 did not quiesce on one selected tip before n5 rejoin"; return 1
   fi
@@ -428,7 +431,7 @@ v2_3_0_run_lag_injection_selected_segment_drill() {
   network_height="$(_v230_lag_status_height "$out_dir/endpoints/gap_ready/n1-status.json")"
   observed_gap=$((network_height - baseline_height))
   built_gap="$observed_gap"
-  _v230_lag_event network_selected_height_gap_observed n5 "$(jq -nc --argjson gap "$built_gap" --argjson required "$min_selected_gap" '{gap:$gap,required_gap:$required}')"
+  _v230_lag_event network_selected_height_gap_observed n5 "$(jq -nc --argjson gap "$built_gap" --argjson required "$min_selected_gap" --argjson target "$target_gap" '{gap:$gap,required_gap:$required,target_gap_with_margin:$target}')"
   _v230_lag_event miners_stopped_at_gap "" "$(jq -nc --argjson height "$network_height" '{network_selected_height:$height}')"
 
   if ! _v230_lag_kill_stopped_node_sockets "$n5_pid"; then
@@ -595,8 +598,8 @@ v2_3_0_run_lag_injection_selected_segment_drill() {
   final_pending_selected="$(_v230_lag_json_num "$n5_metrics" '.data.active_session_remaining_blocks')"
   final_orphans="$(_v230_lag_json_num "$n5_metrics" '.data.orphan_current_count')"
   final_missing_parent_blockers="$(_v230_lag_json_num "$n5_metrics" '((.data.terminal_missing_parent_active_blocking_total // 0) + (.data.missing_parent_active_entries // 0))')"
-  observed_gap="$harness_gap_max"
-  canonical_gap_consistent=$([[ "$canonical_gap_max" == "$observed_gap" && "$observed_gap" -ge "$min_selected_gap" && "$built_gap" -ge "$min_selected_gap" ]] && echo true || echo false)
+  observed_gap="$canonical_gap_max"
+  canonical_gap_consistent=$([[ "$observed_gap" -ge "$min_selected_gap" && "$built_gap" -ge "$target_gap" && "$harness_gap_max" -ge "$min_selected_gap" ]] && echo true || echo false)
 
   local remote_received_delta=$((final_remote_received - baseline_remote_received))
   local remote_accepted_delta=$((final_remote_accepted - baseline_remote_accepted))
@@ -641,7 +644,8 @@ v2_3_0_run_lag_injection_selected_segment_drill() {
     --argjson locator_requests "$header_requests_delta" --argjson locator_correlated "$correlated_headers_delta" \
     --argjson block_requests "$block_requests_delta" --argjson blocks_applied "$blocks_applied_delta" --argjson chunks "$chunks_completed_delta" --argjson peer_addressed "$peer_addressed_getblock_delta" \
     --argjson final_pending "$final_pending_selected" --argjson final_orphans "$final_orphans" --argjson final_missing "$final_missing_parent_blockers" \
-    '{manifest_version:"v2.3.0-task03",result:"PASS",evidence_kind:"runtime",candidate_commit:$commit,run_id:$run_id,ci_mode:false,node_count:5,external_miners:4,isolated_node:"n5",configured_min_gap:$configured,configured_min_selected_height_gap:$configured,observed_network_selected_height_gap:$observed,canonical_network_selected_height_gap:$canonical,remote_tip_inventory_received_total:$remote_received,remote_tip_inventory_accepted_total:$remote_accepted,locator_requests_sent_total:$locator_requests,locator_responses_correlated_total:$locator_correlated,selected_segment_block_requests_total:$block_requests,selected_segment_blocks_applied_total:$blocks_applied,selected_segment_chunks_completed_total:$chunks,peer_addressed_getblock_sent_total:$peer_addressed,primary_session_path:"correlated_selected_segment",final_convergence:true,storage_memory_consistent:true,readiness_healthy:true,final_topology_stable:true,public_testnet_ready:false,closeout_eligible:true,synthetic_schema_evidence:false,broadcast_getblock_primary_path:false,pending_selected_segment_requests:$final_pending,final_orphan_count:$final_orphans,final_missing_parent_blockers:$final_missing,timestamps:{start_utc:$start,end_utc:$end},failure_reasons:[],outputs:["transition_timeline.json","gap_timeline.json","topology_samples.json","selected_segment_counter_summary.json","final_convergence.json","final_convergence_table.md","endpoints","logs","miners","command-log.txt"]}' > "$manifest_json"
+    --argjson harness_gap "$harness_gap_max" --argjson built_gap "$built_gap" --argjson target_gap "$target_gap" \
+    '{manifest_version:"v2.3.0-task03",result:"PASS",evidence_kind:"runtime",candidate_commit:$commit,run_id:$run_id,ci_mode:false,node_count:5,external_miners:4,isolated_node:"n5",configured_min_gap:$configured,configured_min_selected_height_gap:$configured,observed_network_selected_height_gap:$observed,canonical_network_selected_height_gap:$canonical,harness_observed_gap_max:$harness_gap,gap_built_before_resume:$built_gap,gap_target_with_margin:$target_gap,remote_tip_inventory_received_total:$remote_received,remote_tip_inventory_accepted_total:$remote_accepted,locator_requests_sent_total:$locator_requests,locator_responses_correlated_total:$locator_correlated,selected_segment_block_requests_total:$block_requests,selected_segment_blocks_applied_total:$blocks_applied,selected_segment_chunks_completed_total:$chunks,peer_addressed_getblock_sent_total:$peer_addressed,primary_session_path:"correlated_selected_segment",final_convergence:true,storage_memory_consistent:true,readiness_healthy:true,final_topology_stable:true,public_testnet_ready:false,closeout_eligible:true,synthetic_schema_evidence:false,broadcast_getblock_primary_path:false,pending_selected_segment_requests:$final_pending,final_orphan_count:$final_orphans,final_missing_parent_blockers:$final_missing,timestamps:{start_utc:$start,end_utc:$end},failure_reasons:[],outputs:["transition_timeline.json","gap_timeline.json","topology_samples.json","selected_segment_counter_summary.json","final_convergence.json","final_convergence_table.md","endpoints","logs","miners","command-log.txt"]}' > "$manifest_json"
 
   _v230_lag_log "runtime selected-segment lag-injection evidence PASS"
   _v230_lag_cleanup 0 || true

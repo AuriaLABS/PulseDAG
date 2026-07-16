@@ -10,11 +10,18 @@ checks = [
     (node, r"selected_segment_session\s*=\s*None", "session cleared"),
     (node, r"active_session_remaining_blocks\s*=\s*0", "remaining cleared"),
     (node, r"peer_addressed_getblock_sent_total\s*=\s*rt\s*\.peer_addressed_getblock_sent_total\s*\.saturating_add\(1\)", "peer addressed accounting"),
+    (node, r"selected_segment_request_candidates\s*\(", "selected request candidates"),
+    (node, r"block_requests\.resolve\(&hash\);\s*warn!", "failed selected request released"),
+    (node, r"for\s+adopted_hash\s+in\s+&adopted_hashes", "adopted selected blocks accounted"),
     (node, r"selected_segment_gap_blocks\s*=\s*remote_height\s*\.saturating_sub\(local_height\)", "selected gap"),
     (metrics, r"remote_sync_evidence_from_p2p_status\s*\(", "remote evidence"),
     (metrics, r"build_canonical_sync_state_with_remote_evidence\s*\(", "canonical builder"),
     (metrics, r"&remote_sync_evidence", "evidence supplied"),
 ]
 missing = [label for source, pattern, label in checks if not re.search(pattern, source)]
+if "!staged.contains(hash)" in node:
+    missing.append("generic scheduler staging still suppresses selected requests")
+if re.search(r"for\s+hash\s+in\s+&candidates\s*\{\s*session\.requested_hashes\.insert", node):
+    missing.append("selected hashes marked requested before transport success")
 if missing:
     raise SystemExit("missing safeguards: " + ", ".join(missing))
