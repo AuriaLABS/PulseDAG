@@ -33,11 +33,47 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Apply fail-closed source patch
+        id: apply
+        continue-on-error: true
+        run: |
+          set +e
+          base64 -d scripts/lib/runtime_round6_patch.py.gz.b64 | gzip -d > /tmp/apply_runtime_round6.py
+          decode_rc=$?
+          if (( decode_rc != 0 )); then
+            echo "failed decoding runtime round-6 patcher rc=$decode_rc" > /tmp/runtime-round6-apply.log
+            echo "$decode_rc" > /tmp/runtime-round6-apply.rc
+            cat /tmp/runtime-round6-apply.log
+            exit "$decode_rc"
+          fi
+          python3 -m py_compile /tmp/apply_runtime_round6.py > /tmp/runtime-round6-apply.log 2>&1
+          compile_rc=$?
+          if (( compile_rc != 0 )); then
+            echo "$compile_rc" > /tmp/runtime-round6-apply.rc
+            cat /tmp/runtime-round6-apply.log
+            exit "$compile_rc"
+          fi
+          python3 /tmp/apply_runtime_round6.py >> /tmp/runtime-round6-apply.log 2>&1
+          rc=$?
+          echo "$rc" > /tmp/runtime-round6-apply.rc
+          cat /tmp/runtime-round6-apply.log
+          exit "$rc"
+
+      - name: Upload patch diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: runtime-round6-apply-${{ github.run_id }}
+          path: |
+            /tmp/runtime-round6-apply.log
+            /tmp/runtime-round6-apply.rc
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Require patch application
         run: |
           set -euo pipefail
-          base64 -d scripts/lib/runtime_round6_patch.py.gz.b64 | gzip -d > /tmp/apply_runtime_round6.py
-          python3 -m py_compile /tmp/apply_runtime_round6.py
-          python3 /tmp/apply_runtime_round6.py
+          test -s /tmp/runtime-round6-apply.rc
+          test "$(cat /tmp/runtime-round6-apply.rc)" = 0
 
       - name: Format and validate source
         run: |
