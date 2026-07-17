@@ -46,19 +46,31 @@ jobs:
 
       - name: Format and structural checks
         run: |
-          set -euo pipefail
-          cargo fmt --all
-          cargo fmt --all -- --check
-          git diff --check
-          grep -q 'selected_segment_chunks_are_strictly_sequential_for_64_plus_49' apps/pulsedagd/src/main.rs
-          grep -q 'complete_current_chunk_if_applied' apps/pulsedagd/src/main.rs
-          grep -q 'compact_snapshot_to_retained_blocks' crates/pulsedag-core/src/lib.rs
-          grep -q 'valid_prune_checkpoint' crates/pulsedag-storage/src/lib.rs
-          grep -q 'commit_compact_prune' crates/pulsedag-storage/src/lib.rs
-          grep -q 'compact_prune_97_to_24_restarts_with_identical_tip_and_state_root' crates/pulsedag-storage/src/lib.rs
-          grep -q 'commit_compact_prune' crates/pulsedag-rpc/src/handlers/pruning.rs
-          ! grep -q 'pub prune_checkpoint:' crates/pulsedag-core/src/state.rs
-          ! grep -q 'session.current_chunk = candidates.clone()' apps/pulsedagd/src/main.rs
+          set +e
+          : > /tmp/structural.log
+          check() {
+            label="$1"
+            shift
+            printf 'START %s\n' "$label" | tee -a /tmp/structural.log
+            "$@" >> /tmp/structural.log 2>&1
+            rc=$?
+            printf 'RESULT %s %s\n' "$label" "$rc" | tee -a /tmp/structural.log
+            return "$rc"
+          }
+          check cargo-fmt cargo fmt --all || exit $?
+          check cargo-fmt-check cargo fmt --all -- --check || exit $?
+          check git-diff-check git diff --check || exit $?
+          check selected-64-plus-49 grep -q 'selected_segment_chunks_are_strictly_sequential_for_64_plus_49' apps/pulsedagd/src/main.rs || exit $?
+          check chunk-close grep -q 'complete_current_chunk_if_applied' apps/pulsedagd/src/main.rs || exit $?
+          check core-reexport grep -q 'compact_snapshot_to_retained_blocks' crates/pulsedag-core/src/lib.rs || exit $?
+          check prune-checkpoint grep -q 'valid_prune_checkpoint' crates/pulsedag-storage/src/lib.rs || exit $?
+          check atomic-prune-storage grep -q 'commit_compact_prune' crates/pulsedag-storage/src/lib.rs || exit $?
+          check restart-regression grep -q 'compact_prune_97_to_24_restarts_with_identical_tip_and_state_root' crates/pulsedag-storage/src/lib.rs || exit $?
+          check atomic-prune-handler grep -q 'commit_compact_prune' crates/pulsedag-rpc/src/handlers/pruning.rs || exit $?
+          if grep -q 'pub prune_checkpoint:' crates/pulsedag-core/src/state.rs; then echo 'RESULT bincode-layout-unchanged 1' | tee -a /tmp/structural.log; exit 1; fi
+          echo 'RESULT bincode-layout-unchanged 0' | tee -a /tmp/structural.log
+          if grep -q 'session.current_chunk = candidates.clone()' apps/pulsedagd/src/main.rs; then echo 'RESULT stale-chunk-assignment-absent 1' | tee -a /tmp/structural.log; exit 1; fi
+          echo 'RESULT stale-chunk-assignment-absent 0' | tee -a /tmp/structural.log
 
       - name: Selected-segment Rust tests
         run: |
@@ -105,6 +117,7 @@ jobs:
             crates/pulsedag-core/src/replay.rs
             crates/pulsedag-storage/src/lib.rs
             crates/pulsedag-rpc/src/handlers/pruning.rs
+            /tmp/structural.log
             /tmp/selected-segment.log
             /tmp/compact-prune.log
 
