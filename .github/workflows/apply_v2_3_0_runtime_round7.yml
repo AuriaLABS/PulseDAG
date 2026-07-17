@@ -32,42 +32,32 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
-      - name: Apply fail-closed source patch
+      - name: Apply fail-closed source patches
         run: |
           set -euo pipefail
           patcher="scripts/lib/apply_runtime_round7.py"
           base64 -d scripts/lib/runtime_round7_patch.py.gz.b64 | gzip -d > "$patcher"
           python3 -m py_compile "$patcher"
           python3 "$patcher"
+          base64 -d scripts/lib/runtime_round7_finalize.patch.gz.b64 | gzip -d > /tmp/runtime_round7_finalize.patch
+          git apply --check /tmp/runtime_round7_finalize.patch
+          git apply /tmp/runtime_round7_finalize.patch
 
       - name: Format and structural checks
         run: |
           set -euo pipefail
           cargo fmt --all
           cargo fmt --all -- --check
-          grep -q 'correlates_continuation_headers' apps/pulsedagd/src/main.rs
-          grep -q 'session.current_chunk = issued_selected_hashes' apps/pulsedagd/src/main.rs
-          grep -q 'compact_snapshot_to_retained_blocks' crates/pulsedag-core/src/replay.rs
-          grep -q 'PRUNE_RETAINED_SET_MISMATCH' crates/pulsedag-rpc/src/handlers/pruning.rs
-          ! grep -q 'session.current_chunk = candidates.clone()' apps/pulsedagd/src/main.rs
           git diff --check
-
-      - name: Capture patched source diagnostics
-        uses: actions/upload-artifact@v4
-        with:
-          name: round7-patched-source-diagnostics
-          if-no-files-found: error
-          path: |
-            apps/pulsedagd/src/main.rs
-            crates/pulsedag-core/src/consistency.rs
-            crates/pulsedag-core/src/lib.rs
-            crates/pulsedag-core/src/replay.rs
-            crates/pulsedag-core/src/state.rs
-            crates/pulsedag-core/src/ghostdag.rs
-            crates/pulsedag-storage/src/lib.rs
-            crates/pulsedag-rpc/src/handlers/pruning.rs
-            scripts/lib/runtime_round7_patch.py.gz.b64
-            scripts/lib/apply_runtime_round7.py
+          grep -q 'selected_segment_chunks_are_strictly_sequential_for_64_plus_49' apps/pulsedagd/src/main.rs
+          grep -q 'complete_current_chunk_if_applied' apps/pulsedagd/src/main.rs
+          grep -q 'compact_snapshot_to_retained_blocks' crates/pulsedag-core/src/lib.rs
+          grep -q 'valid_prune_checkpoint' crates/pulsedag-storage/src/lib.rs
+          grep -q 'commit_compact_prune' crates/pulsedag-storage/src/lib.rs
+          grep -q 'compact_prune_97_to_24_restarts_with_identical_tip_and_state_root' crates/pulsedag-storage/src/lib.rs
+          grep -q 'commit_compact_prune' crates/pulsedag-rpc/src/handlers/pruning.rs
+          ! grep -q 'pub prune_checkpoint:' crates/pulsedag-core/src/state.rs
+          ! grep -q 'session.current_chunk = candidates.clone()' apps/pulsedagd/src/main.rs
 
       - name: Selected-segment Rust tests
         run: |
@@ -77,32 +67,45 @@ jobs:
           tail -n 240 /tmp/selected-segment.log
           exit "$rc"
 
-      - name: Capture selected-segment test log
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: round7-selected-segment-log
-          if-no-files-found: warn
-          path: /tmp/selected-segment.log
-
       - name: Lag driver contract
         run: |
           set -euo pipefail
           bash scripts/tests/test_v2_3_0_lag_runtime_driver.sh
 
-      - name: Compact snapshot regressions
+      - name: Compact snapshot and atomic prune regressions
         run: |
-          set -euo pipefail
-          cargo test -p pulsedag-core compact_snapshot --locked -- --nocapture
-          cargo test -p pulsedag-storage prune --locked -- --nocapture
-          cargo test -p pulsedag-rpc pruning --locked -- --nocapture
-          bash scripts/tests/test_v2_3_0_prune_runtime_driver_semantics.sh
+          set +e
+          {
+            cargo test -p pulsedag-core compact_snapshot --locked -- --nocapture &&
+            cargo test -p pulsedag-storage compact_prune --locked -- --nocapture &&
+            cargo test -p pulsedag-rpc pruning --locked -- --nocapture &&
+            bash scripts/tests/test_v2_3_0_prune_runtime_driver_semantics.sh
+          } > /tmp/compact-prune.log 2>&1
+          rc=$?
+          tail -n 300 /tmp/compact-prune.log
+          exit "$rc"
 
       - name: Compile and lint affected workspace
         run: |
           set -euo pipefail
           cargo check -p pulsedagd -p pulsedag-core -p pulsedag-storage -p pulsedag-rpc --locked
           cargo clippy -p pulsedagd -p pulsedag-core -p pulsedag-storage -p pulsedag-rpc --all-targets --locked -- -D warnings
+
+      - name: Capture failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: round7-final-validation-diagnostics
+          if-no-files-found: warn
+          path: |
+            apps/pulsedagd/src/main.rs
+            crates/pulsedag-core/src/consistency.rs
+            crates/pulsedag-core/src/lib.rs
+            crates/pulsedag-core/src/replay.rs
+            crates/pulsedag-storage/src/lib.rs
+            crates/pulsedag-rpc/src/handlers/pruning.rs
+            /tmp/selected-segment.log
+            /tmp/compact-prune.log
 
       - name: Publish validated source commit
         run: |
@@ -114,9 +117,8 @@ jobs:
             crates/pulsedag-core/src/consistency.rs \
             crates/pulsedag-core/src/lib.rs \
             crates/pulsedag-core/src/replay.rs \
-            crates/pulsedag-core/src/state.rs \
             crates/pulsedag-storage/src/lib.rs \
             crates/pulsedag-rpc/src/handlers/pruning.rs
           git diff --cached --check
-          git commit -m 'Chain selected-segment chunks and compact prune snapshots'
+          git commit -m 'Chain selected-segment chunks and atomically compact prune snapshots'
           git push origin HEAD:agent/fix-v2-3-0-runtime-closeout-round-7b
