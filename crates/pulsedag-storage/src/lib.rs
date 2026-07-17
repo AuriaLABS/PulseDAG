@@ -9,7 +9,6 @@ use std::{
 };
 
 use pulsedag_core::{
-    compact_snapshot_to_retained_blocks,
     errors::PulseError,
     genesis::init_chain_state,
     rebuild_state_from_blocks, rebuild_state_from_snapshot_and_blocks,
