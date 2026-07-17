@@ -40,16 +40,16 @@ jobs:
           python3 -m py_compile "$patcher"
           python3 "$patcher"
 
-      - name: Format source
+      - name: Format and structural checks
         run: |
           set -euo pipefail
           cargo fmt --all
           cargo fmt --all -- --check
-
-      - name: Verify source semantics
-        run: |
-          set -euo pipefail
-          python3 scripts/tests/test_v2_3_0_runtime_round7_source_semantics.py
+          grep -q 'correlates_continuation_headers' apps/pulsedagd/src/main.rs
+          grep -q 'session.current_chunk = issued_selected_hashes' apps/pulsedagd/src/main.rs
+          grep -q 'compact_snapshot_to_retained_blocks' crates/pulsedag-core/src/replay.rs
+          grep -q 'PRUNE_RETAINED_SET_MISMATCH' crates/pulsedag-rpc/src/handlers/pruning.rs
+          ! grep -q 'session.current_chunk = candidates.clone()' apps/pulsedagd/src/main.rs
           git diff --check
 
       - name: Selected-segment regressions
@@ -79,8 +79,7 @@ jobs:
           git add \
             apps/pulsedagd/src/main.rs \
             crates/pulsedag-core/src/replay.rs \
-            crates/pulsedag-rpc/src/handlers/pruning.rs \
-            scripts/tests/test_v2_3_0_runtime_round7_source_semantics.py
+            crates/pulsedag-rpc/src/handlers/pruning.rs
           git diff --cached --check
           git commit -m 'Chain selected-segment chunks and compact prune snapshots'
           git push origin HEAD:agent/fix-v2-3-0-runtime-closeout-round-7b
