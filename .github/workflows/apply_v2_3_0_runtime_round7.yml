@@ -43,6 +43,16 @@ jobs:
           base64 -d scripts/lib/runtime_round7_finalize.patch.gz.b64 | gzip -d > /tmp/runtime_round7_finalize.patch
           git apply --check /tmp/runtime_round7_finalize.patch
           git apply /tmp/runtime_round7_finalize.patch
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path("crates/pulsedag-core/src/replay.rs")
+          text = path.read_text()
+          old = "let hashes = compact.dag.blocks.keys().cloned().collect::<HashSet<_>>();"
+          new = "let hashes = compact.dag.blocks.keys().cloned().collect::<std::collections::HashSet<_>>();"
+          if text.count(old) != 1:
+              raise SystemExit(f"expected exactly one compact snapshot HashSet test expression, found {text.count(old)}")
+          path.write_text(text.replace(old, new))
+          PY
 
       - name: Format and structural checks
         run: |
