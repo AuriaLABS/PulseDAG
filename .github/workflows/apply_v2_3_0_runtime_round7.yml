@@ -54,8 +54,11 @@ jobs:
 
       - name: Selected-segment Rust tests
         run: |
-          set -euo pipefail
-          cargo test -p pulsedagd selected_segment --locked -- --nocapture
+          set +e
+          cargo test -p pulsedagd selected_segment --locked -- --nocapture > /tmp/selected-segment.log 2>&1
+          rc=$?
+          tail -n 180 /tmp/selected-segment.log
+          exit "$rc"
 
       - name: Lag driver contract
         run: |
