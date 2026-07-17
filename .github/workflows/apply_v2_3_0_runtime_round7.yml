@@ -71,6 +71,9 @@ jobs:
             apps/pulsedagd/src/main.rs
             crates/pulsedag-core/src/lib.rs
             crates/pulsedag-core/src/replay.rs
+            crates/pulsedag-core/src/state.rs
+            crates/pulsedag-core/src/ghostdag.rs
+            crates/pulsedag-storage/src/lib.rs
             crates/pulsedag-rpc/src/handlers/pruning.rs
             /tmp/selected-segment.log
 
@@ -83,14 +86,15 @@ jobs:
         run: |
           set -euo pipefail
           cargo test -p pulsedag-core compact_snapshot --locked -- --nocapture
+          cargo test -p pulsedag-storage prune --locked -- --nocapture
           cargo test -p pulsedag-rpc pruning --locked -- --nocapture
           bash scripts/tests/test_v2_3_0_prune_runtime_driver_semantics.sh
 
       - name: Compile and lint affected workspace
         run: |
           set -euo pipefail
-          cargo check -p pulsedagd -p pulsedag-core -p pulsedag-rpc --locked
-          cargo clippy -p pulsedagd -p pulsedag-core -p pulsedag-rpc --all-targets --locked -- -D warnings
+          cargo check -p pulsedagd -p pulsedag-core -p pulsedag-storage -p pulsedag-rpc --locked
+          cargo clippy -p pulsedagd -p pulsedag-core -p pulsedag-storage -p pulsedag-rpc --all-targets --locked -- -D warnings
 
       - name: Publish validated source commit
         run: |
@@ -101,6 +105,7 @@ jobs:
             apps/pulsedagd/src/main.rs \
             crates/pulsedag-core/src/lib.rs \
             crates/pulsedag-core/src/replay.rs \
+            crates/pulsedag-storage/src/lib.rs \
             crates/pulsedag-rpc/src/handlers/pruning.rs
           git diff --cached --check
           git commit -m 'Chain selected-segment chunks and compact prune snapshots'
