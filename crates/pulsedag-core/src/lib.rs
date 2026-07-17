@@ -41,9 +41,10 @@ pub use retarget::{
 };
 
 pub use replay::{
-    merge_set_digest, ordered_dag_digest, rebuild_state_from_blocks,
-    rebuild_state_from_blocks_defensive, rebuild_state_from_snapshot_and_blocks, selection_digest,
-    sort_blocks_for_deterministic_replay, state_digest, ReplayDefensiveReport,
+    compact_snapshot_to_retained_blocks, merge_set_digest, ordered_dag_digest,
+    rebuild_state_from_blocks, rebuild_state_from_blocks_defensive,
+    rebuild_state_from_snapshot_and_blocks, selection_digest, sort_blocks_for_deterministic_replay,
+    state_digest, ReplayDefensiveReport,
 };
 
 pub use pow::{

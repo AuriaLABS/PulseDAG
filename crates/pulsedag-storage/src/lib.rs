@@ -9,6 +9,7 @@ use std::{
 };
 
 use pulsedag_core::{
+    compact_snapshot_to_retained_blocks,
     errors::PulseError,
     genesis::init_chain_state,
     rebuild_state_from_blocks, rebuild_state_from_snapshot_and_blocks,
@@ -131,6 +132,12 @@ pub struct SnapshotMetadata {
     pub selected_tip: String,
     pub state_root: String,
     pub created_at: u64,
+    #[serde(default)]
+    pub prune_boundary_height: Option<u64>,
+    #[serde(default)]
+    pub original_genesis_hash: Option<Hash>,
+    #[serde(default)]
+    pub omitted_parent_hashes: Vec<Hash>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -268,11 +275,29 @@ impl Storage {
         hasher.finish()
     }
 
+    fn valid_prune_checkpoint(metadata: &SnapshotMetadata, state: &ChainState) -> bool {
+        let Some(boundary_height) = metadata.prune_boundary_height else {
+            return false;
+        };
+        boundary_height > 0
+            && metadata.original_genesis_hash.as_deref() == Some(state.dag.genesis_hash.as_str())
+            && !metadata.omitted_parent_hashes.is_empty()
+            && !state.dag.blocks.contains_key(&state.dag.genesis_hash)
+            && state
+                .dag
+                .blocks
+                .values()
+                .map(|block| block.header.height)
+                .min()
+                == Some(boundary_height)
+    }
+
     fn detect_lineage_issues(
         snapshot_hashes: &std::collections::BTreeSet<String>,
         persisted_hashes: &std::collections::BTreeSet<String>,
         persisted_blocks: &[Block],
         snapshot_best_height: u64,
+        prune_metadata: Option<&SnapshotMetadata>,
     ) -> Vec<(String, String)> {
         let mut issues = Vec::new();
         for block in persisted_blocks {
@@ -288,13 +313,22 @@ impl Storage {
             }
             for parent in &block.header.parents {
                 if !snapshot_hashes.contains(parent) && !persisted_hashes.contains(parent) {
-                    issues.push((
-                        "MISSING_PARENT".to_string(),
-                        format!(
-                            "persisted block {} references missing parent {}",
-                            block.hash, parent
-                        ),
-                    ));
+                    let checkpoint_parent = prune_metadata.is_some_and(|metadata| {
+                        metadata.prune_boundary_height == Some(block.header.height)
+                            && metadata
+                                .omitted_parent_hashes
+                                .iter()
+                                .any(|hash| hash == parent)
+                    });
+                    if !checkpoint_parent {
+                        issues.push((
+                            "MISSING_PARENT".to_string(),
+                            format!(
+                                "persisted block {} references missing parent {}",
+                                block.hash, parent
+                            ),
+                        ));
+                    }
                 }
             }
         }
@@ -379,14 +413,21 @@ impl Storage {
         let snapshot = self
             .load_chain_state()?
             .ok_or_else(|| PulseError::StorageError("validated snapshot missing".to_string()))?;
+        let metadata = self.snapshot_metadata()?.ok_or_else(|| {
+            PulseError::StorageError(
+                "snapshot metadata missing; restore gate requires metadata".into(),
+            )
+        })?;
         Self::verify_snapshot_metadata_for_state(
-            self.snapshot_metadata()?,
+            Some(metadata.clone()),
             &snapshot,
             expected_chain_id,
         )?;
-        if !snapshot.dag.blocks.contains_key(&snapshot.dag.genesis_hash) {
+        if !snapshot.dag.blocks.contains_key(&snapshot.dag.genesis_hash)
+            && !Self::valid_prune_checkpoint(&metadata, &snapshot)
+        {
             return Err(PulseError::StorageError(
-                "validated snapshot missing genesis block".to_string(),
+                "validated snapshot missing genesis block and valid prune metadata".to_string(),
             ));
         }
         let snapshot_max_height = snapshot
@@ -418,6 +459,7 @@ impl Storage {
             &persisted_hashes,
             &blocks,
             snapshot.dag.best_height,
+            Some(&metadata),
         );
         if let Some((_, message)) = lineage_issues.first() {
             return Err(PulseError::StorageError(message.clone()));
@@ -938,6 +980,31 @@ impl Storage {
             .get(&selected_tip)
             .map(|block| block.header.state_root.clone())
             .unwrap_or_else(|| "unknown".to_string());
+        let prune_boundary_height = if state.dag.blocks.contains_key(&state.dag.genesis_hash) {
+            None
+        } else {
+            state
+                .dag
+                .blocks
+                .values()
+                .map(|block| block.header.height)
+                .min()
+        };
+        let mut omitted_parent_hashes = prune_boundary_height
+            .map(|boundary| {
+                state
+                    .dag
+                    .blocks
+                    .values()
+                    .filter(|block| block.header.height == boundary)
+                    .flat_map(|block| block.header.parents.iter().cloned())
+                    .filter(|parent| !state.dag.blocks.contains_key(parent))
+                    .collect::<BTreeSet<_>>()
+                    .into_iter()
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        omitted_parent_hashes.sort();
         SnapshotMetadata {
             chain_id: state.chain_id.clone(),
             schema_version: STORAGE_SCHEMA_VERSION,
@@ -945,6 +1012,9 @@ impl Storage {
             selected_tip,
             state_root,
             created_at,
+            prune_boundary_height,
+            original_genesis_hash: prune_boundary_height.map(|_| state.dag.genesis_hash.clone()),
+            omitted_parent_hashes,
         }
     }
 
@@ -1000,6 +1070,9 @@ impl Storage {
         if metadata.best_height != computed.best_height
             || metadata.selected_tip != computed.selected_tip
             || metadata.state_root != computed.state_root
+            || metadata.prune_boundary_height != computed.prune_boundary_height
+            || metadata.original_genesis_hash != computed.original_genesis_hash
+            || metadata.omitted_parent_hashes != computed.omitted_parent_hashes
         {
             return Err(PulseError::StorageError(format!(
                 "snapshot metadata mismatch: expected height={} tip={} state_root={}, got height={} tip={} state_root={}",
@@ -1195,10 +1268,11 @@ impl Storage {
             .dag
             .blocks
             .contains_key(&bundle.snapshot.dag.genesis_hash)
+            && !Self::valid_prune_checkpoint(&bundle.snapshot_metadata, &bundle.snapshot)
         {
             issues.push(SnapshotVerificationIssue {
                 code: "SNAPSHOT_BUNDLE_MISSING_GENESIS".to_string(),
-                message: "snapshot in bundle is missing genesis block".to_string(),
+                message: "snapshot is missing genesis and valid prune metadata".to_string(),
             });
         }
 
@@ -1259,6 +1333,7 @@ impl Storage {
                 &persisted_hashes,
                 &bundle.persisted_blocks,
                 bundle.snapshot.dag.best_height,
+                Some(&bundle.snapshot_metadata),
             )
         };
         let lineage_issue_count = lineage_issues.len();
@@ -1315,6 +1390,12 @@ impl Storage {
         if bundle.snapshot_metadata.best_height != expected_metadata.best_height
             || bundle.snapshot_metadata.selected_tip != expected_metadata.selected_tip
             || bundle.snapshot_metadata.state_root != expected_metadata.state_root
+            || bundle.snapshot_metadata.prune_boundary_height
+                != expected_metadata.prune_boundary_height
+            || bundle.snapshot_metadata.original_genesis_hash
+                != expected_metadata.original_genesis_hash
+            || bundle.snapshot_metadata.omitted_parent_hashes
+                != expected_metadata.omitted_parent_hashes
         {
             issues.push(SnapshotVerificationIssue {
                 code: "SNAPSHOT_BUNDLE_METADATA_STATE_ROOT_MISMATCH".to_string(),
@@ -1679,11 +1760,13 @@ impl Storage {
                     .keys()
                     .cloned()
                     .collect::<std::collections::BTreeSet<_>>();
+                let metadata = self.snapshot_metadata().ok().flatten();
                 Self::detect_lineage_issues(
                     &snapshot_hashes,
                     &block_hashes,
                     &blocks,
                     snapshot_state.dag.best_height,
+                    metadata.as_ref(),
                 )
                 .is_empty()
             } else {
@@ -1770,6 +1853,94 @@ impl Storage {
             }
             None => Ok(None),
         }
+    }
+
+    /// Atomically replace the persisted snapshot and accepted block table with
+    /// one verified retained set. Callers must hold the chain mutation lock.
+    pub fn commit_compact_prune(
+        &self,
+        compact_state: &ChainState,
+        retained_hashes: &BTreeSet<Hash>,
+        expected_generation: u64,
+    ) -> Result<usize, PulseError> {
+        self.commit_compact_prune_with_write(
+            compact_state,
+            retained_hashes,
+            expected_generation,
+            |db, batch| {
+                db.write(batch)
+                    .map_err(|e| PulseError::StorageError(e.to_string()))
+            },
+        )
+    }
+
+    fn commit_compact_prune_with_write<F>(
+        &self,
+        compact_state: &ChainState,
+        retained_hashes: &BTreeSet<Hash>,
+        expected_generation: u64,
+        write_batch: F,
+    ) -> Result<usize, PulseError>
+    where
+        F: FnOnce(&Arc<DB>, WriteBatch) -> Result<(), PulseError>,
+    {
+        let current_generation = self.accepted_storage_generation()?;
+        if current_generation != expected_generation {
+            return Err(PulseError::StorageError(format!(
+                "accepted storage generation changed during prune: expected {}, found {}",
+                expected_generation, current_generation
+            )));
+        }
+        let state_hashes = compact_state
+            .dag
+            .blocks
+            .keys()
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        if &state_hashes != retained_hashes {
+            return Err(PulseError::StorageError(format!(
+                "compact state retained set has {} hashes but commit requested {}",
+                state_hashes.len(),
+                retained_hashes.len()
+            )));
+        }
+
+        let blocks_cf = self
+            .db
+            .cf_handle(ACCEPTED_BLOCKS_CF)
+            .ok_or_else(|| PulseError::StorageError("missing cf accepted blocks".into()))?;
+        let meta_cf = self
+            .db
+            .cf_handle("meta")
+            .ok_or_else(|| PulseError::StorageError("missing cf meta".into()))?;
+        let persisted_blocks = self.list_blocks()?;
+        let persisted_hashes = persisted_blocks
+            .iter()
+            .map(|block| block.hash.clone())
+            .collect::<BTreeSet<_>>();
+        let missing = retained_hashes
+            .difference(&persisted_hashes)
+            .cloned()
+            .collect::<Vec<_>>();
+        if !missing.is_empty() {
+            return Err(PulseError::StorageError(format!(
+                "compact prune retained hashes are absent from accepted storage: {}",
+                missing.join(",")
+            )));
+        }
+
+        let mut batch = WriteBatch::default();
+        let mut removed = 0usize;
+        for block in persisted_blocks {
+            if !retained_hashes.contains(&block.hash) {
+                batch.delete_cf(&blocks_cf, block.hash.as_bytes());
+                removed = removed.saturating_add(1);
+            }
+        }
+        self.stage_accepted_storage_generation_advance(&mut batch, &meta_cf)?;
+        self.stage_chain_state_snapshot(&mut batch, &meta_cf, compact_state)?;
+        write_batch(&self.db, batch)?;
+        Ok(removed)
     }
 
     pub fn prune_blocks_below_height(&self, keep_from_height: u64) -> Result<usize, PulseError> {
@@ -2002,14 +2173,15 @@ mod tests {
         STARTUP_STORAGE_RECONCILIATION_TOTAL, STORAGE_SCHEMA_VERSION, STORAGE_SCHEMA_VERSION_KEY,
     };
     use std::{
-        collections::{HashMap, HashSet},
+        collections::{BTreeSet, HashMap, HashSet},
         sync::atomic::Ordering,
     };
 
     use proptest::prelude::*;
     use pulsedag_core::{
         accept::{accept_block, AcceptSource},
-        build_candidate_block, build_coinbase_transaction, dev_mine_header,
+        build_candidate_block, build_coinbase_transaction, compact_snapshot_to_retained_blocks,
+        dev_mine_header,
         errors::PulseError,
         genesis::init_chain_state,
         refresh_block_consensus_ids, refresh_block_consensus_ids_with_state,
@@ -3566,6 +3738,134 @@ mod tests {
                 .contains("snapshot and anchor metadata"),
             "reason should describe missing anchor constraint"
         );
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn compact_prune_batch_failure_leaves_snapshot_and_blocks_unchanged() {
+        let path = temp_db_path("compact-prune-atomic-failure");
+        let storage = Storage::open(&path).expect("open storage");
+        let state = build_linear_chain("testnet", 12);
+        persist_all_blocks(&storage, &state);
+        storage
+            .persist_chain_state(&state)
+            .expect("persist baseline snapshot");
+        let retained_blocks = storage
+            .list_blocks()
+            .expect("list blocks")
+            .into_iter()
+            .filter(|block| block.header.height >= 7)
+            .collect::<Vec<_>>();
+        let compact = compact_snapshot_to_retained_blocks(state.clone(), &retained_blocks)
+            .expect("compact snapshot");
+        let retained_hashes = retained_blocks
+            .iter()
+            .map(|block| block.hash.clone())
+            .collect::<BTreeSet<_>>();
+        let generation = storage.accepted_storage_generation().expect("generation");
+        let before_blocks = storage.list_blocks().expect("before blocks");
+        let before_snapshot = storage
+            .load_chain_state()
+            .expect("load snapshot")
+            .expect("snapshot");
+
+        let err = storage
+            .commit_compact_prune_with_write(
+                &compact,
+                &retained_hashes,
+                generation,
+                |_db, _batch| Err(PulseError::StorageError("injected write failure".into())),
+            )
+            .expect_err("injected batch failure");
+        assert!(err.to_string().contains("injected write failure"));
+        assert_eq!(
+            storage
+                .list_blocks()
+                .expect("after blocks")
+                .into_iter()
+                .map(|block| block.hash)
+                .collect::<Vec<_>>(),
+            before_blocks
+                .into_iter()
+                .map(|block| block.hash)
+                .collect::<Vec<_>>()
+        );
+        let after_snapshot = storage
+            .load_chain_state()
+            .expect("load after snapshot")
+            .expect("after snapshot");
+        assert_eq!(
+            after_snapshot.dag.blocks.len(),
+            before_snapshot.dag.blocks.len()
+        );
+        assert_eq!(
+            after_snapshot.dag.best_height,
+            before_snapshot.dag.best_height
+        );
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn compact_prune_97_to_24_restarts_with_identical_tip_and_state_root() {
+        let path = temp_db_path("compact-prune-97-to-24");
+        let storage = Storage::open(&path).expect("open storage");
+        let state = build_linear_chain("testnet", 96);
+        persist_all_blocks(&storage, &state);
+        storage
+            .persist_chain_state(&state)
+            .expect("persist baseline snapshot");
+        assert_eq!(storage.block_count().expect("baseline count"), 97);
+        let retained_blocks = storage
+            .list_blocks()
+            .expect("list blocks")
+            .into_iter()
+            .filter(|block| block.header.height >= 73)
+            .collect::<Vec<_>>();
+        assert_eq!(retained_blocks.len(), 24);
+        let compact = compact_snapshot_to_retained_blocks(state.clone(), &retained_blocks)
+            .expect("compact snapshot");
+        let retained_hashes = retained_blocks
+            .iter()
+            .map(|block| block.hash.clone())
+            .collect::<BTreeSet<_>>();
+        let generation = storage.accepted_storage_generation().expect("generation");
+        let removed = storage
+            .commit_compact_prune(&compact, &retained_hashes, generation)
+            .expect("atomic compact prune");
+        assert_eq!(removed, 73);
+        assert_eq!(storage.block_count().expect("retained count"), 24);
+        let metadata = storage
+            .snapshot_metadata()
+            .expect("snapshot metadata")
+            .expect("metadata exists");
+        assert_eq!(metadata.prune_boundary_height, Some(73));
+        assert_eq!(
+            metadata.original_genesis_hash.as_deref(),
+            Some(state.dag.genesis_hash.as_str())
+        );
+        assert!(!metadata.omitted_parent_hashes.is_empty());
+        let invariants = storage
+            .verify_accepted_storage_invariants(&compact)
+            .expect("retained invariants");
+        assert!(invariants.is_ok());
+        let expected_tip = best_tip_hash(&state);
+        let expected_state_root = state.utxo.compute_state_root().expect("state root");
+        drop(storage);
+
+        let restarted = Storage::open(&path).expect("restart storage");
+        let restored = restarted
+            .replay_from_validated_snapshot_and_delta(Some("testnet"))
+            .expect("restore compact snapshot");
+        assert_eq!(restored.dag.blocks.len(), 24);
+        assert_eq!(best_tip_hash(&restored), expected_tip);
+        assert_eq!(
+            restored
+                .utxo
+                .compute_state_root()
+                .expect("restored state root"),
+            expected_state_root
+        );
+        assert!(pulsedag_core::dag_consistency_issues(&restored).is_empty());
         let _ = std::fs::remove_dir_all(path);
     }
 
