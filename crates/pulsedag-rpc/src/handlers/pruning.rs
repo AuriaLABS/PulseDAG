@@ -146,8 +146,7 @@ pub async fn post_prune_chain<S: RpcStateLike>(
             Ok(count) => count,
             Err(e) => return Json(ApiResponse::err("PRUNE_ATOMIC_COMMIT_ERROR", e.to_string())),
         };
-    *chain = compact.clone();
-    let invariant_report = match state.storage().verify_accepted_storage_invariants(&chain) {
+    let invariant_report = match state.storage().verify_accepted_storage_invariants(&compact) {
         Ok(report) => report,
         Err(e) => {
             return Json(ApiResponse::err(
@@ -165,6 +164,7 @@ pub async fn post_prune_chain<S: RpcStateLike>(
             ),
         ));
     }
+    *chain = compact.clone();
     drop(chain);
 
     let now = SystemTime::now()

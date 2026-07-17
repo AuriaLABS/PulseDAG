@@ -23,8 +23,10 @@ for token in [
     assert token in replay, token
 for token in [
     "compact_snapshot_to_retained_blocks(chain.clone(), &retained_blocks)",
+    "verify_accepted_storage_invariants(&compact)",
     "PRUNE_RETAINED_SET_MISMATCH",
     "!invariant_report.is_ok()",
 ]:
     assert token in prune, token
+assert prune.index("verify_accepted_storage_invariants(&compact)") < prune.index("*chain = compact.clone()")
 assert "session.current_chunk = candidates.clone()" not in main
