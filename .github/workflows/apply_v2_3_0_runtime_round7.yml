@@ -39,6 +39,7 @@ jobs:
           base64 -d scripts/lib/runtime_round7_patch.py.gz.b64 | gzip -d > "$patcher"
           python3 -m py_compile "$patcher"
           python3 "$patcher"
+          cargo fmt --all
           base64 -d scripts/lib/runtime_round7_finalize.patch.gz.b64 | gzip -d > /tmp/runtime_round7_finalize.patch
           git apply --check /tmp/runtime_round7_finalize.patch
           git apply /tmp/runtime_round7_finalize.patch
