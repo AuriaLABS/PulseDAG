@@ -40,11 +40,15 @@ jobs:
           python3 -m py_compile "$patcher"
           python3 "$patcher"
 
-      - name: Format and source semantics
+      - name: Format source
         run: |
           set -euo pipefail
           cargo fmt --all
           cargo fmt --all -- --check
+
+      - name: Verify source semantics
+        run: |
+          set -euo pipefail
           python3 scripts/tests/test_v2_3_0_runtime_round7_source_semantics.py
           git diff --check
 
