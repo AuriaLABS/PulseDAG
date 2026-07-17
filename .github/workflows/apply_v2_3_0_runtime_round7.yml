@@ -52,10 +52,14 @@ jobs:
           ! grep -q 'session.current_chunk = candidates.clone()' apps/pulsedagd/src/main.rs
           git diff --check
 
-      - name: Selected-segment regressions
+      - name: Selected-segment Rust tests
         run: |
           set -euo pipefail
           cargo test -p pulsedagd selected_segment --locked -- --nocapture
+
+      - name: Lag driver contract
+        run: |
+          set -euo pipefail
           bash scripts/tests/test_v2_3_0_lag_runtime_driver.sh
 
       - name: Compact snapshot regressions
