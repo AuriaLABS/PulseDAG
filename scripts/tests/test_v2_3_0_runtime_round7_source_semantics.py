@@ -22,6 +22,7 @@ for token in [
 ]:
     assert token in replay, token
 for token in [
+    "persisted_state_root != live_state_root",
     "compact_snapshot_to_retained_blocks(chain.clone(), &retained_blocks)",
     "verify_accepted_storage_invariants(&compact)",
     "PRUNE_RETAINED_SET_MISMATCH",

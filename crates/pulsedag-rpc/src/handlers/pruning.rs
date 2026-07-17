@@ -76,8 +76,22 @@ pub async fn post_prune_chain<S: RpcStateLike>(
         }
         Err(e) => return Json(ApiResponse::err("SNAPSHOT_READ_ERROR", e.to_string())),
     };
+    let persisted_state_root = match persisted_snapshot.utxo.compute_state_root() {
+        Ok(root) => root,
+        Err(e) => {
+            return Json(ApiResponse::err(
+                "PRUNE_SNAPSHOT_STATE_ROOT_ERROR",
+                e.to_string(),
+            ))
+        }
+    };
+    let live_state_root = match chain.utxo.compute_state_root() {
+        Ok(root) => root,
+        Err(e) => return Json(ApiResponse::err("PRUNE_STATE_ROOT_ERROR", e.to_string())),
+    };
     if persisted_snapshot.dag.best_height != chain.dag.best_height
         || preferred_tip_hash(&persisted_snapshot) != preferred_tip_hash(&chain)
+        || persisted_state_root != live_state_root
     {
         return Json(ApiResponse::err(
             "PRUNE_SNAPSHOT_STALE",
@@ -108,10 +122,7 @@ pub async fn post_prune_chain<S: RpcStateLike>(
         .map(|block| block.hash.clone())
         .collect::<BTreeSet<_>>();
     let before_tip = preferred_tip_hash(&chain);
-    let before_state_root = match chain.utxo.compute_state_root() {
-        Ok(root) => root,
-        Err(e) => return Json(ApiResponse::err("PRUNE_STATE_ROOT_ERROR", e.to_string())),
-    };
+    let before_state_root = live_state_root;
     let compact = match compact_snapshot_to_retained_blocks(chain.clone(), &retained_blocks) {
         Ok(compact) => compact,
         Err(e) => {
