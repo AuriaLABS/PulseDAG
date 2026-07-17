@@ -1,0 +1,82 @@
+name: Apply v2.3.0 runtime round-7 fixes
+
+on:
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+concurrency:
+  group: apply-v2-3-0-runtime-round7-${{ github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  apply-and-validate:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - name: Checkout patch branch
+        uses: actions/checkout@v4
+        with:
+          ref: agent/fix-v2-3-0-runtime-closeout-round-7b
+          fetch-depth: 0
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt,clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Apply fail-closed source patch
+        run: |
+          set -euo pipefail
+          patcher="scripts/lib/apply_runtime_round7.py"
+          base64 -d scripts/lib/runtime_round7_patch.py.gz.b64 | gzip -d > "$patcher"
+          python3 -m py_compile "$patcher"
+          python3 "$patcher"
+
+      - name: Format and source semantics
+        run: |
+          set -euo pipefail
+          cargo fmt --all
+          cargo fmt --all -- --check
+          python3 scripts/tests/test_v2_3_0_runtime_round7_source_semantics.py
+          git diff --check
+
+      - name: Selected-segment regressions
+        run: |
+          set -euo pipefail
+          cargo test -p pulsedagd selected_segment --locked -- --nocapture
+          bash scripts/tests/test_v2_3_0_lag_runtime_driver.sh
+
+      - name: Compact snapshot regressions
+        run: |
+          set -euo pipefail
+          cargo test -p pulsedag-core compact_snapshot --locked -- --nocapture
+          cargo test -p pulsedag-rpc pruning --locked -- --nocapture
+          bash scripts/tests/test_v2_3_0_prune_runtime_driver_semantics.sh
+
+      - name: Compile and lint affected workspace
+        run: |
+          set -euo pipefail
+          cargo check -p pulsedagd -p pulsedag-core -p pulsedag-rpc --locked
+          cargo clippy -p pulsedagd -p pulsedag-core -p pulsedag-rpc --all-targets --locked -- -D warnings
+
+      - name: Publish validated source commit
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add \
+            apps/pulsedagd/src/main.rs \
+            crates/pulsedag-core/src/replay.rs \
+            crates/pulsedag-rpc/src/handlers/pruning.rs \
+            scripts/tests/test_v2_3_0_runtime_round7_source_semantics.py
+          git diff --cached --check
+          git commit -m 'Chain selected-segment chunks and compact prune snapshots'
+          git push origin HEAD:agent/fix-v2-3-0-runtime-closeout-round-7b
