@@ -52,17 +52,7 @@ jobs:
           ! grep -q 'session.current_chunk = candidates.clone()' apps/pulsedagd/src/main.rs
           git diff --check
 
-      - name: Selected-segment Rust tests
-        id: selected_tests
-        run: |
-          set +e
-          cargo test -p pulsedagd selected_segment --locked -- --nocapture > /tmp/selected-segment.log 2>&1
-          rc=$?
-          tail -n 240 /tmp/selected-segment.log
-          exit "$rc"
-
       - name: Capture patched source diagnostics
-        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: round7-patched-source-diagnostics
@@ -75,7 +65,22 @@ jobs:
             crates/pulsedag-core/src/ghostdag.rs
             crates/pulsedag-storage/src/lib.rs
             crates/pulsedag-rpc/src/handlers/pruning.rs
-            /tmp/selected-segment.log
+
+      - name: Selected-segment Rust tests
+        run: |
+          set +e
+          cargo test -p pulsedagd selected_segment --locked -- --nocapture > /tmp/selected-segment.log 2>&1
+          rc=$?
+          tail -n 240 /tmp/selected-segment.log
+          exit "$rc"
+
+      - name: Capture selected-segment test log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: round7-selected-segment-log
+          if-no-files-found: warn
+          path: /tmp/selected-segment.log
 
       - name: Lag driver contract
         run: |
