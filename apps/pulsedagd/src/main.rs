@@ -478,6 +478,52 @@ impl SelectedSegmentSession {
             && common_ancestor == Some(self.common_ancestor.as_str())
     }
 
+    fn correlates_continuation_headers(
+        &self,
+        peer_id: Option<&str>,
+        locator: &[String],
+        locator_request_id: u64,
+    ) -> bool {
+        peer_id == Some(self.peer_id.as_str())
+            && self.locator_request_id == locator_request_id
+            && self.locator_fingerprint == locator.join(",")
+            && !matches!(
+                self.state,
+                SelectedSegmentSessionState::Complete | SelectedSegmentSessionState::Failed
+            )
+    }
+
+    fn can_start_chunk(&self) -> bool {
+        self.current_chunk.is_empty()
+            && !matches!(
+                self.state,
+                SelectedSegmentSessionState::Complete | SelectedSegmentSessionState::Failed
+            )
+    }
+
+    fn start_chunk(&mut self, hashes: Vec<String>, now: u64) -> bool {
+        if hashes.is_empty() || !self.can_start_chunk() {
+            return false;
+        }
+        self.current_chunk = hashes;
+        self.state = SelectedSegmentSessionState::RequestingBlocks;
+        self.updated_at_unix = now;
+        true
+    }
+
+    fn complete_current_chunk_if_applied(&mut self) -> bool {
+        if self.current_chunk.is_empty()
+            || !self
+                .current_chunk
+                .iter()
+                .all(|hash| self.accepted_applied_hashes.contains(hash))
+        {
+            return false;
+        }
+        self.current_chunk.clear();
+        true
+    }
+
     fn contains_hash(&self, hash: &str) -> bool {
         self.expected_header_hashes
             .iter()
@@ -3081,6 +3127,11 @@ async fn main() -> Result<()> {
                                         rt.active_session_remaining_blocks = session
                                             .remote_selected_height
                                             .saturating_sub(guard.dag.best_height);
+                                        if session.complete_current_chunk_if_applied() {
+                                            rt.selected_segment_chunks_completed_total = rt
+                                                .selected_segment_chunks_completed_total
+                                                .saturating_add(1);
+                                        }
                                         let selected_tip =
                                             pulsedag_core::preferred_tip_hash(&guard)
                                                 .unwrap_or_else(|| guard.dag.genesis_hash.clone());
@@ -3095,9 +3146,6 @@ async fn main() -> Result<()> {
                                             rt.sync_state = DagSyncStage::SelectedSegmentComplete
                                                 .as_str()
                                                 .to_string();
-                                            rt.selected_segment_chunks_completed_total = rt
-                                                .selected_segment_chunks_completed_total
-                                                .saturating_add(1);
                                             rt.active_session_remaining_blocks = 0;
                                             rt.active_session_id = None;
                                             rt.active_session_peer = None;
@@ -3373,6 +3421,10 @@ async fn main() -> Result<()> {
                                     &pending_locator,
                                     pending_request_id,
                                     common_ancestor.as_deref(),
+                                ) || session.correlates_continuation_headers(
+                                    peer_id.as_deref(),
+                                    &pending_locator,
+                                    pending_request_id,
                                 )
                             })
                             .unwrap_or(false);
@@ -3393,8 +3445,9 @@ async fn main() -> Result<()> {
                             )
                         };
                         let plan = fetch_scheduler.next_requests(&known, &pending, 8);
-                        let selected_requests = if (session_correlated
-                            || (selected_segment_session.is_none() && pending_peer_matches))
+                        let selected_session_owns_headers = session_correlated
+                            || (selected_segment_session.is_none() && pending_peer_matches);
+                        let selected_requests = if selected_session_owns_headers
                             && matches!(selected_segment_validation, Some(Ok(())))
                         {
                             if selected_segment_session.is_none() {
@@ -3416,47 +3469,62 @@ async fn main() -> Result<()> {
                                 }
                             }
                             if let Some(session) = selected_segment_session.as_mut() {
-                                let candidates = selected_segment_request_candidates(
-                                    &headers,
-                                    selected_limits,
-                                    &known,
-                                    &pending,
-                                );
-                                session.missing_hashes = candidates.clone();
-                                session.current_chunk = candidates.clone();
-                                session.state = SelectedSegmentSessionState::RequestingBlocks;
-                                session.updated_at_unix = now_unix();
-                                {
-                                    let mut guard = chain.write().await;
-                                    let now_ms = now_unix().saturating_mul(1_000);
-                                    for item in headers
-                                        .iter()
-                                        .filter(|item| candidates.contains(&item.hash))
+                                if !session.can_start_chunk() {
+                                    Vec::new()
+                                } else {
+                                    for item in &headers {
+                                        if !session.expected_header_hashes.contains(&item.hash) {
+                                            session.expected_header_hashes.push(item.hash.clone());
+                                        }
+                                        if item.header.height > session.remote_selected_height {
+                                            session.remote_selected_tip = item.hash.clone();
+                                            session.remote_selected_height = item.header.height;
+                                        }
+                                    }
+                                    let candidates = selected_segment_request_candidates(
+                                        &headers,
+                                        selected_limits,
+                                        &known,
+                                        &pending,
+                                    );
+                                    session.missing_hashes = candidates.clone();
+                                    session.state = SelectedSegmentSessionState::RequestingBlocks;
+                                    session.updated_at_unix = now_unix();
                                     {
-                                        for parent in &item.header.parents {
-                                            if !known.contains(parent) {
-                                                pulsedag_core::mark_selected_segment_required_parent(
-                                                    &mut guard,
-                                                    parent,
-                                                    now_ms,
-                                                );
+                                        let mut guard = chain.write().await;
+                                        let now_ms = now_unix().saturating_mul(1_000);
+                                        for item in headers
+                                            .iter()
+                                            .filter(|item| candidates.contains(&item.hash))
+                                        {
+                                            for parent in &item.header.parents {
+                                                if !known.contains(parent) {
+                                                    pulsedag_core::mark_selected_segment_required_parent(
+                                                        &mut guard,
+                                                        parent,
+                                                        now_ms,
+                                                    );
+                                                }
                                             }
                                         }
                                     }
+                                    candidates
                                 }
-                                candidates
                             } else {
                                 Vec::new()
                             }
                         } else {
                             Vec::new()
                         };
-                        let requests = if selected_requests.is_empty() {
-                            plan.requests
-                        } else {
+                        let selected_request_hashes =
+                            selected_requests.iter().cloned().collect::<HashSet<_>>();
+                        let requests = if selected_session_owns_headers {
                             selected_requests
+                        } else {
+                            plan.requests
                         };
                         let mut issued_selected_request_count = 0u64;
+                        let mut issued_selected_hashes = Vec::new();
                         for hash in requests {
                             if block_requests.should_issue_getblock_for_peers(
                                 &hash,
@@ -3466,9 +3534,10 @@ async fn main() -> Result<()> {
                                 let mut peer_addressed_request_succeeded = false;
                                 if let Some(ref p2p) = p2p {
                                     let (result, peer_addressed) = if let Some(session) =
-                                        selected_segment_session.as_ref().filter(|session| {
-                                            session.current_chunk.iter().any(|item| item == &hash)
-                                        }) {
+                                        selected_segment_session
+                                            .as_ref()
+                                            .filter(|_| selected_request_hashes.contains(&hash))
+                                    {
                                         (
                                             p2p.request_block_from(&session.peer_id, &hash)
                                                 .map(|_| ()),
@@ -3488,6 +3557,7 @@ async fn main() -> Result<()> {
                                 if peer_addressed_request_succeeded {
                                     if let Some(session) = selected_segment_session.as_mut() {
                                         session.requested_hashes.insert(hash.clone());
+                                        issued_selected_hashes.push(hash.clone());
                                         session.updated_at_unix = now_unix();
                                     }
                                 }
@@ -3502,6 +3572,20 @@ async fn main() -> Result<()> {
                                 rt.pending_block_requests = block_requests.pending.len();
                                 rt.inflight_block_requests = block_requests.pending.len();
                                 rt.pending_block_request_hashes = block_requests.pending_hashes();
+                            }
+                        }
+                        if !issued_selected_hashes.is_empty() {
+                            if let Some(session) = selected_segment_session.as_mut() {
+                                let issued_hashes_for_rollback = issued_selected_hashes.clone();
+                                if !session.start_chunk(issued_selected_hashes, now_unix()) {
+                                    for hash in issued_hashes_for_rollback {
+                                        block_requests.resolve(&hash);
+                                    }
+                                    warn!(
+                                        session_id = session.session_id,
+                                        "selected-segment refused to overwrite an active chunk"
+                                    );
+                                }
                             }
                         }
                         let mut rt = runtime.write().await;
@@ -5615,6 +5699,47 @@ mod tests {
         assert_eq!(state_root, "sr");
         assert_eq!(session.accepted_applied_hashes.len(), 65);
         assert_eq!(session.state, SelectedSegmentSessionState::Complete);
+    }
+
+    #[test]
+    fn selected_segment_chunks_are_strictly_sequential_for_64_plus_49() {
+        let mut headers = Vec::new();
+        let mut parent = "common".to_string();
+        for height in 1..=113 {
+            let hash = format!("selected-{height:03}");
+            headers.push(selected_test_header(&hash, &parent, height));
+            parent = hash;
+        }
+        let locator = vec!["common".to_string()];
+        let mut session = SelectedSegmentSession::new(
+            9,
+            "peer-a".to_string(),
+            "common".to_string(),
+            0,
+            &headers,
+            &locator,
+            17,
+            1_000,
+        )
+        .expect("session");
+        let ordered = selected_segment_request_order(&headers, 113);
+        let first = ordered[..64].to_vec();
+        let second = ordered[64..].to_vec();
+        assert!(session.start_chunk(first.clone(), 1_001));
+        assert!(!session.start_chunk(second.clone(), 1_002));
+        for hash in &first {
+            session.requested_hashes.insert(hash.clone());
+            assert!(session.mark_applied(hash, 2_000));
+        }
+        assert!(session.complete_current_chunk_if_applied());
+        assert!(session.start_chunk(second.clone(), 2_001));
+        for hash in &second {
+            session.requested_hashes.insert(hash.clone());
+            assert!(session.mark_applied(hash, 3_000));
+        }
+        assert!(session.complete_current_chunk_if_applied());
+        assert!(session.current_chunk.is_empty());
+        assert_eq!(session.accepted_applied_hashes.len(), 113);
     }
 
     #[test]

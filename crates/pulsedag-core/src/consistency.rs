@@ -25,7 +25,17 @@ use crate::{
 pub fn dag_consistency_issues(state: &ChainState) -> Vec<String> {
     let mut issues = Vec::new();
 
-    if !state.dag.blocks.contains_key(&state.dag.genesis_hash) {
+    let retained_floor = state
+        .dag
+        .blocks
+        .values()
+        .map(|block| block.header.height)
+        .min()
+        .unwrap_or(0);
+    let compact_pruned_snapshot = !state.dag.blocks.contains_key(&state.dag.genesis_hash)
+        && !state.dag.blocks.is_empty()
+        && retained_floor > 0;
+    if !state.dag.blocks.contains_key(&state.dag.genesis_hash) && !compact_pruned_snapshot {
         issues.push(format!(
             "genesis {} is missing from block store",
             state.dag.genesis_hash
@@ -107,10 +117,14 @@ pub fn dag_consistency_issues(state: &ChainState) -> Vec<String> {
                         expected_height.max(parent_block.header.height.saturating_add(1));
                 }
                 None => {
-                    issues.push(format!(
-                        "block {} references missing parent {}",
-                        block.hash, parent
-                    ));
+                    let checkpoint_parent =
+                        compact_pruned_snapshot && block.header.height == retained_floor;
+                    if !checkpoint_parent {
+                        issues.push(format!(
+                            "block {} references missing parent {}",
+                            block.hash, parent
+                        ));
+                    }
                 }
             }
         }

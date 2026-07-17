@@ -1,12 +1,40 @@
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::{
+    collections::BTreeSet,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use axum::{extract::State, Json};
-use pulsedag_core::rebuild_state_from_snapshot_and_blocks;
+use pulsedag_core::{
+    compact_snapshot_to_retained_blocks, preferred_tip_hash,
+    rebuild_state_from_snapshot_and_blocks, state::ChainState,
+};
 use serde::Deserialize;
 
 use crate::{api::ApiResponse, api::RpcStateLike};
 
 const MIN_SAFE_ROLLBACK_BLOCKS: u64 = 16;
+
+fn matching_snapshot_live_state_root(
+    persisted_snapshot: &ChainState,
+    live_chain: &ChainState,
+) -> Result<Option<String>, String> {
+    let persisted_state_root = persisted_snapshot
+        .utxo
+        .compute_state_root()
+        .map_err(|e| e.to_string())?;
+    let live_state_root = live_chain
+        .utxo
+        .compute_state_root()
+        .map_err(|e| e.to_string())?;
+    if persisted_snapshot.dag.best_height == live_chain.dag.best_height
+        && preferred_tip_hash(persisted_snapshot) == preferred_tip_hash(live_chain)
+        && persisted_state_root == live_state_root
+    {
+        Ok(Some(live_state_root))
+    } else {
+        Ok(None)
+    }
+}
 
 #[derive(Debug, Deserialize)]
 pub struct PruneRequest {
@@ -35,13 +63,13 @@ pub async fn post_prune_chain<S: RpcStateLike>(
             .max(1)
     };
 
+    // The write lock is the mutation barrier for block acceptance and pruning.
+    // Storage generation checks provide a second fail-closed guard.
     let chain_handle = state.chain();
-    let chain_guard = chain_handle.read().await;
-    let best_height = chain_guard.dag.best_height;
+    let mut chain = chain_handle.write().await;
+    let best_height = chain.dag.best_height;
     let requested_keep_from_height =
         best_height.saturating_sub(prune_keep_recent_blocks.saturating_sub(1));
-    drop(chain_guard);
-
     let safety_plan = match state.storage().plan_prune_with_safety(
         requested_keep_from_height,
         best_height,
@@ -50,7 +78,6 @@ pub async fn post_prune_chain<S: RpcStateLike>(
         Ok(plan) => plan,
         Err(e) => return Json(ApiResponse::err("SNAPSHOT_READ_ERROR", e.to_string())),
     };
-
     let keep_from_height = safety_plan.effective_keep_from_height;
     if !safety_plan.can_prune {
         let reason = safety_plan
@@ -61,7 +88,8 @@ pub async fn post_prune_chain<S: RpcStateLike>(
             .append_runtime_event("warn", "prune_rejected", &reason);
         return Json(ApiResponse::err("PRUNE_REQUIRES_VALID_SNAPSHOT", reason));
     }
-    let snapshot = match state.storage().load_chain_state() {
+
+    let persisted_snapshot = match state.storage().load_chain_state() {
         Ok(Some(snapshot)) => snapshot,
         Ok(None) => {
             return Json(ApiResponse::err(
@@ -71,89 +99,106 @@ pub async fn post_prune_chain<S: RpcStateLike>(
         }
         Err(e) => return Json(ApiResponse::err("SNAPSHOT_READ_ERROR", e.to_string())),
     };
-    let snapshot_validated = true;
+    let live_state_root = match matching_snapshot_live_state_root(&persisted_snapshot, &chain) {
+        Ok(Some(root)) => root,
+        Ok(None) => {
+            return Json(ApiResponse::err(
+                "PRUNE_SNAPSHOT_STALE",
+                "persisted snapshot does not match the mutation-locked live chain".to_string(),
+            ))
+        }
+        Err(e) => return Json(ApiResponse::err("PRUNE_STATE_ROOT_ERROR", e)),
+    };
 
+    let expected_generation = match state.storage().accepted_storage_generation() {
+        Ok(generation) => generation,
+        Err(e) => {
+            return Json(ApiResponse::err(
+                "PRUNE_GENERATION_READ_ERROR",
+                e.to_string(),
+            ))
+        }
+    };
     let pre_prune_blocks = match state.storage().list_blocks() {
-        Ok(v) => v,
+        Ok(blocks) => blocks,
         Err(e) => return Json(ApiResponse::err("PRUNE_BLOCKS_READ_ERROR", e.to_string())),
     };
-    let retained_blocks: Vec<_> = pre_prune_blocks
-        .into_iter()
-        .filter(|b| b.header.height >= keep_from_height)
-        .collect();
-
-    let precheck_rebuilt = match rebuild_state_from_snapshot_and_blocks(
-        snapshot.clone(),
-        retained_blocks,
-    ) {
-        Ok(v) => v,
+    let retained_blocks = pre_prune_blocks
+        .iter()
+        .filter(|block| block.header.height >= keep_from_height)
+        .cloned()
+        .collect::<Vec<_>>();
+    let retained_hashes = retained_blocks
+        .iter()
+        .map(|block| block.hash.clone())
+        .collect::<BTreeSet<_>>();
+    let before_tip = preferred_tip_hash(&chain);
+    let before_state_root = live_state_root;
+    let compact = match compact_snapshot_to_retained_blocks(chain.clone(), &retained_blocks) {
+        Ok(compact) => compact,
         Err(e) => {
-            let _ = state.storage().append_runtime_event(
-                "error",
-                "prune_snapshot_delta_precheck_failed",
-                &format!(
-                    "snapshot+delta precheck failed before prune (snapshot_height={}, keep_from_height={}): {}",
-                    snapshot.dag.best_height, keep_from_height, e
-                ),
-            );
             return Json(ApiResponse::err(
-                "PRUNE_SNAPSHOT_DELTA_PRECHECK_FAILED",
+                "PRUNE_RETAINED_SET_COMPACTION_FAILED",
                 e.to_string(),
-            ));
+            ))
         }
     };
-
-    if let Err(e) = state.storage().persist_chain_state(&precheck_rebuilt) {
-        return Json(ApiResponse::err("PRUNE_STATE_PERSIST_ERROR", e.to_string()));
+    if compact.dag.blocks.len() != retained_hashes.len()
+        || preferred_tip_hash(&compact) != before_tip
+        || compact.utxo.compute_state_root().ok().as_deref() != Some(before_state_root.as_str())
+    {
+        return Json(ApiResponse::err(
+            "PRUNE_COMPACT_STATE_INVARIANT_FAILED",
+            "compact snapshot changed retained count, selected tip, or state root".to_string(),
+        ));
+    }
+    if let Err(e) = rebuild_state_from_snapshot_and_blocks(compact.clone(), retained_blocks.clone())
+    {
+        return Json(ApiResponse::err(
+            "PRUNE_SNAPSHOT_DELTA_PRECHECK_FAILED",
+            e.to_string(),
+        ));
     }
 
-    let pruned_block_count = match state.storage().prune_blocks_below_height(keep_from_height) {
-        Ok(v) => v,
-        Err(e) => return Json(ApiResponse::err("PRUNE_ERROR", e.to_string())),
-    };
-
-    let post_prune_blocks = match state.storage().list_blocks() {
-        Ok(v) => v,
-        Err(e) => return Json(ApiResponse::err("PRUNE_BLOCKS_READ_ERROR", e.to_string())),
-    };
-    let rebuilt = match rebuild_state_from_snapshot_and_blocks(snapshot.clone(), post_prune_blocks)
-    {
-        Ok(v) => v,
+    let pruned_block_count =
+        match state
+            .storage()
+            .commit_compact_prune(&compact, &retained_hashes, expected_generation)
+        {
+            Ok(count) => count,
+            Err(e) => return Json(ApiResponse::err("PRUNE_ATOMIC_COMMIT_ERROR", e.to_string())),
+        };
+    let invariant_report = match state.storage().verify_accepted_storage_invariants(&compact) {
+        Ok(report) => report,
         Err(e) => {
-            let _ = state.storage().append_runtime_event(
-                "error",
-                "prune_snapshot_delta_postprune_failed",
-                &format!(
-                    "snapshot+delta rebuild failed after prune (snapshot_height={}, keep_from_height={}): {}",
-                    snapshot.dag.best_height, keep_from_height, e
-                ),
-            );
             return Json(ApiResponse::err(
-                "PRUNE_SNAPSHOT_DELTA_POSTPRUNE_FAILED",
+                "PRUNE_RETAINED_SET_CHECK_ERROR",
                 e.to_string(),
-            ));
+            ))
         }
     };
-    if let Err(e) = state.storage().persist_chain_state(&rebuilt) {
-        return Json(ApiResponse::err("PRUNE_STATE_PERSIST_ERROR", e.to_string()));
+    if !invariant_report.is_ok() {
+        return Json(ApiResponse::err(
+            "PRUNE_RETAINED_SET_MISMATCH",
+            format!(
+                "storage retained {} blocks but compact snapshot retained {}",
+                invariant_report.accepted_storage_count, invariant_report.in_memory_dag_count
+            ),
+        ));
     }
-
-    {
-        let chain_handle = state.chain();
-        let mut chain = chain_handle.write().await;
-        *chain = rebuilt.clone();
-    }
+    *chain = compact.clone();
+    drop(chain);
 
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
+        .map(|duration| duration.as_secs())
         .unwrap_or(0);
     {
         let runtime_handle = state.runtime();
         let mut runtime = runtime_handle.write().await;
-        runtime.last_prune_height = Some(rebuilt.dag.best_height);
+        runtime.last_prune_height = Some(compact.dag.best_height);
         runtime.last_prune_unix = Some(now);
-        runtime.last_snapshot_height = Some(rebuilt.dag.best_height);
+        runtime.last_snapshot_height = Some(compact.dag.best_height);
         runtime.last_snapshot_unix = state
             .storage()
             .snapshot_captured_at_unix()
@@ -161,28 +206,27 @@ pub async fn post_prune_chain<S: RpcStateLike>(
             .flatten()
             .or(Some(now));
     }
-
     let _ = state.storage().append_runtime_event(
         "info",
         "prune_manual",
         &format!(
-            "manual prune removed {} blocks below {}; requested_keep_from={} minimum_safe_keep_from={} min_safe_rollback_blocks={} snapshot+delta verified at height {} (snapshot_height={})",
+            "atomic compact prune removed {} blocks below {}; retained={} requested_keep_from={} minimum_safe_keep_from={} min_safe_rollback_blocks={} height={}",
             pruned_block_count,
             keep_from_height,
+            retained_hashes.len(),
             safety_plan.requested_keep_from_height,
             safety_plan.minimum_safe_keep_from_height,
             MIN_SAFE_ROLLBACK_BLOCKS,
-            rebuilt.dag.best_height,
-            snapshot.dag.best_height
+            compact.dag.best_height,
         ),
     );
 
     Json(ApiResponse::ok(PruneData {
         pruned_block_count,
         keep_from_height,
-        best_height: rebuilt.dag.best_height,
+        best_height: compact.dag.best_height,
         snapshot_required: true,
-        snapshot_validated,
+        snapshot_validated: true,
         replay_verified: true,
     }))
 }
