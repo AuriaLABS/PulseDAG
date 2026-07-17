@@ -59,12 +59,15 @@ jobs:
           if-no-files-found: error
           path: |
             apps/pulsedagd/src/main.rs
+            crates/pulsedag-core/src/consistency.rs
             crates/pulsedag-core/src/lib.rs
             crates/pulsedag-core/src/replay.rs
             crates/pulsedag-core/src/state.rs
             crates/pulsedag-core/src/ghostdag.rs
             crates/pulsedag-storage/src/lib.rs
             crates/pulsedag-rpc/src/handlers/pruning.rs
+            scripts/lib/runtime_round7_patch.py.gz.b64
+            scripts/lib/apply_runtime_round7.py
 
       - name: Selected-segment Rust tests
         run: |
@@ -108,8 +111,10 @@ jobs:
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add \
             apps/pulsedagd/src/main.rs \
+            crates/pulsedag-core/src/consistency.rs \
             crates/pulsedag-core/src/lib.rs \
             crates/pulsedag-core/src/replay.rs \
+            crates/pulsedag-core/src/state.rs \
             crates/pulsedag-storage/src/lib.rs \
             crates/pulsedag-rpc/src/handlers/pruning.rs
           git diff --cached --check
