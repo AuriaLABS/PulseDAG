@@ -5,13 +5,36 @@ use std::{
 
 use axum::{extract::State, Json};
 use pulsedag_core::{
-    compact_snapshot_to_retained_blocks, preferred_tip_hash, rebuild_state_from_snapshot_and_blocks,
+    compact_snapshot_to_retained_blocks, preferred_tip_hash,
+    rebuild_state_from_snapshot_and_blocks, state::ChainState,
 };
 use serde::Deserialize;
 
 use crate::{api::ApiResponse, api::RpcStateLike};
 
 const MIN_SAFE_ROLLBACK_BLOCKS: u64 = 16;
+
+fn matching_snapshot_live_state_root(
+    persisted_snapshot: &ChainState,
+    live_chain: &ChainState,
+) -> Result<Option<String>, String> {
+    let persisted_state_root = persisted_snapshot
+        .utxo
+        .compute_state_root()
+        .map_err(|e| e.to_string())?;
+    let live_state_root = live_chain
+        .utxo
+        .compute_state_root()
+        .map_err(|e| e.to_string())?;
+    if persisted_snapshot.dag.best_height == live_chain.dag.best_height
+        && preferred_tip_hash(persisted_snapshot) == preferred_tip_hash(live_chain)
+        && persisted_state_root == live_state_root
+    {
+        Ok(Some(live_state_root))
+    } else {
+        Ok(None)
+    }
+}
 
 #[derive(Debug, Deserialize)]
 pub struct PruneRequest {
@@ -76,28 +99,16 @@ pub async fn post_prune_chain<S: RpcStateLike>(
         }
         Err(e) => return Json(ApiResponse::err("SNAPSHOT_READ_ERROR", e.to_string())),
     };
-    let persisted_state_root = match persisted_snapshot.utxo.compute_state_root() {
-        Ok(root) => root,
-        Err(e) => {
+    let live_state_root = match matching_snapshot_live_state_root(&persisted_snapshot, &chain) {
+        Ok(Some(root)) => root,
+        Ok(None) => {
             return Json(ApiResponse::err(
-                "PRUNE_SNAPSHOT_STATE_ROOT_ERROR",
-                e.to_string(),
+                "PRUNE_SNAPSHOT_STALE",
+                "persisted snapshot does not match the mutation-locked live chain".to_string(),
             ))
         }
+        Err(e) => return Json(ApiResponse::err("PRUNE_STATE_ROOT_ERROR", e)),
     };
-    let live_state_root = match chain.utxo.compute_state_root() {
-        Ok(root) => root,
-        Err(e) => return Json(ApiResponse::err("PRUNE_STATE_ROOT_ERROR", e.to_string())),
-    };
-    if persisted_snapshot.dag.best_height != chain.dag.best_height
-        || preferred_tip_hash(&persisted_snapshot) != preferred_tip_hash(&chain)
-        || persisted_state_root != live_state_root
-    {
-        return Json(ApiResponse::err(
-            "PRUNE_SNAPSHOT_STALE",
-            "persisted snapshot does not match the mutation-locked live chain".to_string(),
-        ));
-    }
 
     let expected_generation = match state.storage().accepted_storage_generation() {
         Ok(generation) => generation,
