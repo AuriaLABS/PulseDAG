@@ -36,12 +36,15 @@ jobs:
             git apply .github/patches/pr755_frontier_after_selected.patch
           fi
           cargo fmt --all
-      - name: Validate selected-to-frontier transition
+      - name: Selected-segment regressions
+        shell: bash
+        run: cargo test --locked -p pulsedagd selected_segment -- --nocapture
+      - name: Lag-injection contract regressions
+        shell: bash
+        run: cargo test --locked -p pulsedagd lag_injection -- --nocapture
+      - name: Verify selected-to-frontier source ordering
         shell: bash
         run: |
-          set -euo pipefail
-          cargo test --locked -p pulsedagd selected_segment -- --nocapture
-          cargo test --locked -p pulsedagd lag_injection -- --nocapture
           python3 - <<'PY'
           from pathlib import Path
           source = Path('apps/pulsedagd/src/main.rs').read_text()
@@ -56,7 +59,9 @@ jobs:
           canonical_gap = source.index('rt.network_selected_height_gap', selected_gap)
           assert observed < selected_gap < canonical_gap
           PY
-          cargo clippy --workspace --all-targets -- -D warnings
+      - name: Workspace clippy
+        shell: bash
+        run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Publish validated frontier fix
         shell: bash
         run: |
