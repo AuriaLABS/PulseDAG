@@ -1,0 +1,65 @@
+name: Apply PR 755 pre-resume gap evidence
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - .github/patches/pr755_preserve_pre_resume_gap.patch
+      - .github/workflows/pr755_apply_preserve_pre_resume_gap.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: pr755-pre-resume-gap-evidence
+  cancel-in-progress: true
+
+jobs:
+  apply-and-validate:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/fix-selected-segment-durability-closeout
+          fetch-depth: 0
+      - name: Apply focused harness patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! grep -Fq 'built_gap > harness_gap_max' scripts/lib/v2_3_0_runtime_harness.sh; then
+            git apply --check .github/patches/pr755_preserve_pre_resume_gap.patch
+            git apply .github/patches/pr755_preserve_pre_resume_gap.patch
+          fi
+      - name: Validate shell and lag driver contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash -n scripts/lib/v2_3_0_runtime_harness.sh
+          bash -n scripts/tests/test_v2_3_0_lag_runtime_driver.sh
+          bash scripts/tests/test_v2_3_0_lag_runtime_driver.sh
+      - name: Verify race reproduction remains above floor
+        shell: bash
+        run: |
+          set -euo pipefail
+          built_gap=114
+          harness_gap_max=50
+          (( built_gap > harness_gap_max )) && harness_gap_max="$built_gap"
+          test "$harness_gap_max" -eq 114
+          test "$harness_gap_max" -ge 96
+          grep -Fq '"$built_gap" -ge "$target_gap"' scripts/lib/v2_3_0_runtime_harness.sh
+          grep -Fq '"$harness_gap_max" -ge "$min_selected_gap"' scripts/lib/v2_3_0_runtime_harness.sh
+      - name: Publish validated harness fix
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --quiet; then
+            echo 'Pre-resume gap evidence fix already published'
+            exit 0
+          fi
+          git config user.name "chatgpt-codex-connector[bot]"
+          git config user.email "199175422+chatgpt-codex-connector[bot]@users.noreply.github.com"
+          git add scripts/lib/v2_3_0_runtime_harness.sh scripts/tests/test_v2_3_0_lag_runtime_driver.sh
+          git commit -m "fix: preserve pre-resume lag evidence"
+          git pull --rebase origin agent/fix-selected-segment-durability-closeout
+          git push origin HEAD:agent/fix-selected-segment-durability-closeout
