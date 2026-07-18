@@ -24,6 +24,7 @@ jobs:
             crates/pulsedag-storage/src/lib.rs
             crates/pulsedag-rpc/src/handlers/checks.rs
             crates/pulsedag-rpc/src/handlers/pruning.rs
+            crates/pulsedag-p2p/src/lib.rs
             scripts/tests/test_v2_3_0_selected_segment_source_semantics.py
           if-no-files-found: error
           retention-days: 1
