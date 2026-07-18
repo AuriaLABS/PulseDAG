@@ -43,6 +43,10 @@ pub async fn get_node_checks<S: RpcStateLike>(
         Ok(report) => report,
         Err(e) => return Json(ApiResponse::err("STORAGE_ERROR", e.to_string())),
     };
+    let chain_anchor_valid = match state.storage().chain_anchor_valid(&chain) {
+        Ok(valid) => valid,
+        Err(e) => return Json(ApiResponse::err("STORAGE_ERROR", e.to_string())),
+    };
     let p2p_status = state.p2p().and_then(|p| p.status().ok());
     let peer_count = p2p_status
         .as_ref()
@@ -105,9 +109,21 @@ pub async fn get_node_checks<S: RpcStateLike>(
             },
         },
         NodeCheckItem {
-            name: "genesis_present".into(),
-            ok: chain.dag.blocks.contains_key(&chain.dag.genesis_hash),
-            detail: chain.dag.genesis_hash.clone(),
+            name: "chain_anchor_valid".into(),
+            ok: chain_anchor_valid,
+            detail: if chain.dag.blocks.contains_key(&chain.dag.genesis_hash) {
+                format!("genesis present: {}", chain.dag.genesis_hash)
+            } else if chain_anchor_valid {
+                format!(
+                    "valid compact prune checkpoint for genesis {}",
+                    chain.dag.genesis_hash
+                )
+            } else {
+                format!(
+                    "missing chain anchor for genesis {}",
+                    chain.dag.genesis_hash
+                )
+            },
             accepted_storage_count: None,
             in_memory_dag_count: None,
             storage_only_hashes: None,

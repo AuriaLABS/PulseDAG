@@ -291,6 +291,16 @@ impl Storage {
                 == Some(boundary_height)
     }
 
+    pub fn chain_anchor_valid(&self, state: &ChainState) -> Result<bool, PulseError> {
+        if state.dag.blocks.contains_key(&state.dag.genesis_hash) {
+            return Ok(true);
+        }
+        Ok(self
+            .snapshot_metadata()?
+            .as_ref()
+            .is_some_and(|metadata| Self::valid_prune_checkpoint(metadata, state)))
+    }
+
     fn detect_lineage_issues(
         snapshot_hashes: &std::collections::BTreeSet<String>,
         persisted_hashes: &std::collections::BTreeSet<String>,
@@ -931,6 +941,80 @@ impl Storage {
             db.write(batch)
                 .map_err(|e| PulseError::StorageError(e.to_string()))
         })
+    }
+
+    /// Atomically persist every newly adopted accepted block together with the
+    /// chain snapshot that references them. This prevents orphan adoption from
+    /// advancing the in-memory DAG beyond the durable accepted-block table.
+    pub fn persist_blocks_and_chain_state(
+        &self,
+        blocks: &[Block],
+        state: &ChainState,
+    ) -> Result<(), PulseError> {
+        self.persist_blocks_and_chain_state_with_write(blocks, state, |db, batch| {
+            db.write(batch)
+                .map_err(|e| PulseError::StorageError(e.to_string()))
+        })
+    }
+
+    fn persist_blocks_and_chain_state_with_write<F>(
+        &self,
+        blocks: &[Block],
+        state: &ChainState,
+        write_batch: F,
+    ) -> Result<(), PulseError>
+    where
+        F: FnOnce(&Arc<DB>, WriteBatch) -> Result<(), PulseError>,
+    {
+        let blocks_cf = self
+            .db
+            .cf_handle(ACCEPTED_BLOCKS_CF)
+            .ok_or_else(|| PulseError::StorageError("missing cf accepted blocks".into()))?;
+        let meta_cf = self
+            .db
+            .cf_handle("meta")
+            .ok_or_else(|| PulseError::StorageError("missing cf meta".into()))?;
+        let mut seen = BTreeSet::new();
+        let mut batch = WriteBatch::default();
+        for block in blocks {
+            if !seen.insert(block.hash.clone()) {
+                return Err(PulseError::StorageError(format!(
+                    "accepted block batch contains duplicate hash {}",
+                    block.hash
+                )));
+            }
+            let Some(state_block) = state.dag.blocks.get(&block.hash) else {
+                return Err(PulseError::StorageError(format!(
+                    "accepted block {} is absent from the committed chain state",
+                    block.hash
+                )));
+            };
+            if serde_json::to_vec(state_block)
+                .map_err(|e| PulseError::StorageError(e.to_string()))?
+                != serde_json::to_vec(block).map_err(|e| PulseError::StorageError(e.to_string()))?
+            {
+                return Err(PulseError::StorageError(format!(
+                    "accepted block {} differs from the committed chain state",
+                    block.hash
+                )));
+            }
+            batch.put_cf(
+                &blocks_cf,
+                block.hash.as_bytes(),
+                serde_json::to_vec(block).map_err(|e| PulseError::StorageError(e.to_string()))?,
+            );
+        }
+        if !blocks.is_empty() {
+            self.stage_accepted_storage_generation_advance(&mut batch, &meta_cf)?;
+        }
+        self.stage_chain_state_snapshot(&mut batch, &meta_cf, state)?;
+        match write_batch(&self.db, batch) {
+            Ok(()) => Ok(()),
+            Err(err) => {
+                BLOCK_COMMIT_BATCH_FAILED_TOTAL.fetch_add(1, Ordering::Relaxed);
+                Err(err)
+            }
+        }
     }
 
     fn persist_block_and_chain_state_with_write<F>(
@@ -2587,6 +2671,104 @@ mod tests {
     }
 
     #[test]
+    fn adopted_block_batch_and_snapshot_advance_atomically() {
+        let path = temp_db_path("adopted-batch-round-trip");
+        let storage = Storage::open(&path).expect("open storage");
+        let mut state = init_chain_state("testnet".to_string());
+        let genesis = state
+            .dag
+            .blocks
+            .get(&best_tip_hash(&state))
+            .cloned()
+            .expect("genesis block");
+        storage
+            .persist_block_and_chain_state(&genesis, &state)
+            .expect("persist genesis");
+
+        let block1 = append_test_block(&mut state, vec![genesis.hash.clone()], 1);
+        let block2 = append_test_block(&mut state, vec![block1.hash.clone()], 2);
+        storage
+            .persist_blocks_and_chain_state(&[block1.clone(), block2.clone()], &state)
+            .expect("persist adopted batch");
+
+        assert!(storage
+            .get_block(&block1.hash)
+            .expect("block1 lookup")
+            .is_some());
+        assert!(storage
+            .get_block(&block2.hash)
+            .expect("block2 lookup")
+            .is_some());
+        let snapshot = storage
+            .load_chain_state()
+            .expect("load snapshot")
+            .expect("snapshot present");
+        assert_eq!(snapshot.dag.best_height, 2);
+        assert_eq!(best_tip_hash(&snapshot), block2.hash);
+
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn adopted_block_batch_failure_leaves_blocks_and_snapshot_unchanged() {
+        let path = temp_db_path("adopted-batch-interruption");
+        let storage = Storage::open(&path).expect("open storage");
+        let mut state = init_chain_state("testnet".to_string());
+        let genesis = state
+            .dag
+            .blocks
+            .get(&best_tip_hash(&state))
+            .cloned()
+            .expect("genesis block");
+        storage
+            .persist_block_and_chain_state(&genesis, &state)
+            .expect("persist genesis");
+        let snapshot_before = storage
+            .load_chain_state()
+            .expect("load snapshot before")
+            .expect("snapshot before present");
+
+        let block1 = append_test_block(&mut state, vec![genesis.hash.clone()], 1);
+        let block2 = append_test_block(&mut state, vec![block1.hash.clone()], 2);
+        let err = storage
+            .persist_blocks_and_chain_state_with_write(
+                &[block1.clone(), block2.clone()],
+                &state,
+                |_db, _batch| {
+                    Err(PulseError::StorageError(
+                        "simulated adopted batch interruption".to_string(),
+                    ))
+                },
+            )
+            .expect_err("batch interruption must fail");
+        assert!(err
+            .to_string()
+            .contains("simulated adopted batch interruption"));
+        assert!(storage
+            .get_block(&block1.hash)
+            .expect("block1 lookup")
+            .is_none());
+        assert!(storage
+            .get_block(&block2.hash)
+            .expect("block2 lookup")
+            .is_none());
+        let snapshot_after = storage
+            .load_chain_state()
+            .expect("load snapshot after")
+            .expect("snapshot after present");
+        assert_eq!(
+            snapshot_after.dag.best_height,
+            snapshot_before.dag.best_height
+        );
+        assert_eq!(
+            best_tip_hash(&snapshot_after),
+            best_tip_hash(&snapshot_before)
+        );
+
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
     fn restart_recovers_cleanly_from_legacy_partial_persisted_advancement() {
         let path = temp_db_path("restart-recovers-partial");
         let storage = Storage::open(&path).expect("open storage");
@@ -3843,6 +4025,9 @@ mod tests {
             Some(state.dag.genesis_hash.as_str())
         );
         assert!(!metadata.omitted_parent_hashes.is_empty());
+        assert!(storage
+            .chain_anchor_valid(&compact)
+            .expect("compact chain anchor"));
         let invariants = storage
             .verify_accepted_storage_invariants(&compact)
             .expect("retained invariants");

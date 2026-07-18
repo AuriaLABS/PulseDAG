@@ -59,6 +59,39 @@ fn local_tip_inventory_status(chain: &pulsedag_core::ChainState) -> TipInventory
         inventory_generation: 0,
     }
 }
+
+fn commit_candidate_chain_state(
+    storage: &Storage,
+    current: &mut pulsedag_core::ChainState,
+    candidate: pulsedag_core::ChainState,
+    adopted_hashes: &[pulsedag_core::Hash],
+    state_changed: bool,
+) -> std::result::Result<(), pulsedag_core::errors::PulseError> {
+    if !state_changed {
+        return Ok(());
+    }
+    let mut seen = HashSet::new();
+    let adopted_blocks = adopted_hashes
+        .iter()
+        .filter(|hash| seen.insert((*hash).clone()))
+        .map(|hash| {
+            candidate.dag.blocks.get(hash).cloned().ok_or_else(|| {
+                pulsedag_core::errors::PulseError::StorageError(format!(
+                    "adopted block {} is missing from candidate chain state",
+                    hash
+                ))
+            })
+        })
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    if adopted_blocks.is_empty() {
+        storage.persist_chain_state(&candidate)?;
+    } else {
+        storage.persist_blocks_and_chain_state(&adopted_blocks, &candidate)?;
+    }
+    *current = candidate;
+    Ok(())
+}
+
 use tokio::sync::{oneshot, Mutex, RwLock};
 use tokio::time::{sleep, Duration};
 
@@ -478,19 +511,41 @@ impl SelectedSegmentSession {
             && common_ancestor == Some(self.common_ancestor.as_str())
     }
 
-    fn correlates_continuation_headers(
+    fn correlates_pending_header_page(
         &self,
         peer_id: Option<&str>,
-        locator: &[String],
-        locator_request_id: u64,
+        pending: Option<&PendingSelectedLocator>,
+        common_ancestor: Option<&str>,
     ) -> bool {
+        let Some(pending) = pending else {
+            return false;
+        };
         peer_id == Some(self.peer_id.as_str())
-            && self.locator_request_id == locator_request_id
-            && self.locator_fingerprint == locator.join(",")
-            && !matches!(
-                self.state,
-                SelectedSegmentSessionState::Complete | SelectedSegmentSessionState::Failed
-            )
+            && pending.peer_id == self.peer_id
+            && common_ancestor.is_some_and(|hash| {
+                hash == self.common_ancestor.as_str() || self.accepted_applied_hashes.contains(hash)
+            })
+            && self.can_start_chunk()
+    }
+
+    fn accept_header_page(
+        &mut self,
+        pending: &PendingSelectedLocator,
+        headers: &[HeaderInventory],
+        now: u64,
+    ) {
+        self.locator_request_id = pending.request_id;
+        self.locator_fingerprint = pending.locator.join(",");
+        for item in headers {
+            if !self.expected_header_hashes.contains(&item.hash) {
+                self.expected_header_hashes.push(item.hash.clone());
+            }
+            if item.header.height > self.remote_selected_height {
+                self.remote_selected_tip = item.hash.clone();
+                self.remote_selected_height = item.header.height;
+            }
+        }
+        self.updated_at_unix = now;
     }
 
     fn can_start_chunk(&self) -> bool {
@@ -1889,6 +1944,7 @@ async fn main() -> Result<()> {
                             }
                         } else {
                             let rebuilt = pulsedag_core::rebuild_orphan_parent_index(&mut guard);
+                            let mut adopted_candidate = guard.clone();
                             info!(
                                 event = if forced_reindex {
                                     "orphan_parent_index_forced_reindex"
@@ -1902,30 +1958,39 @@ async fn main() -> Result<()> {
                                     rebuilt.unindexed_missing_parent_entries,
                                 "rebuilt orphan parent index from queued orphan block parents"
                             );
-                            let mut adopted_hashes = Vec::new();
                             let adoption = pulsedag_core::adopt_ready_orphans_with_result(
-                                &mut guard,
+                                &mut adopted_candidate,
                                 AcceptSource::P2p,
                                 None,
                             );
-                            let adopted = adoption.accepted;
-                            let retried = adoption.retried;
+                            let mut adopted = adoption.accepted;
+                            let mut retried = adoption.retried;
                             let failure_reasons = adoption.failure_reasons;
-                            adopted_hashes.extend(adoption.accepted_hashes);
-                            let persist_failed = if retried > 0 {
-                                match storage.persist_chain_state(&guard) {
-                                    Ok(()) => false,
+                            let adopted_hashes = adoption.accepted_hashes;
+                            let mut persist_failed = if retried > 0 {
+                                match commit_candidate_chain_state(
+                                    &storage,
+                                    &mut guard,
+                                    adopted_candidate,
+                                    &adopted_hashes,
+                                    true,
+                                ) {
+                                    Ok(()) => {
+                                        for hash in &adopted_hashes {
+                                            block_requests.resolve(hash);
+                                        }
+                                        false
+                                    }
                                     Err(e) => {
-                                        warn!(error = %e, retried, adopted, "failed persisting chain state after recovery orphan reprocess");
+                                        warn!(error = %e, retried, adopted, "failed atomically persisting recovery-adopted blocks and chain state");
+                                        adopted = 0;
+                                        retried = 0;
                                         true
                                     }
                                 }
                             } else {
                                 false
                             };
-                            for hash in adopted_hashes {
-                                block_requests.resolve(&hash);
-                            }
 
                             let roots = orphan_recovery_roots(&guard);
                             let roots_discovered = roots.len();
@@ -1979,40 +2044,60 @@ async fn main() -> Result<()> {
                                         *root_classification_counts.get("evictable").unwrap_or(&0),
                                     "orphan missing-parent reindex found no requestable roots"
                                 );
-                                let revalidated_backlog =
-                                    pulsedag_core::revalidate_orphan_backlog(&mut guard);
-                                stale = stale.saturating_add(
-                                    revalidated_backlog.stale_missing_parent_entries,
+                                let mut cleanup_candidate = guard.clone();
+                                let revalidated_backlog = pulsedag_core::revalidate_orphan_backlog(
+                                    &mut cleanup_candidate,
                                 );
-                                revalidated = true;
-                                evicted = pulsedag_core::evict_stale_orphans_bounded(
-                                    &mut guard,
+                                let cleanup_stale =
+                                    revalidated_backlog.stale_missing_parent_entries;
+                                let cleanup_evicted = pulsedag_core::evict_stale_orphans_bounded(
+                                    &mut cleanup_candidate,
                                     now_millis(),
                                     pulsedag_core::DEFAULT_ORPHAN_MAX_AGE_MS,
                                     ORPHAN_RECOVERY_REVALIDATE_EVICT_LIMIT,
                                 );
                                 let residual = pulsedag_core::terminalize_residual_waiting_missing_parents_guarded(
-                                    &mut guard,
+                                    &mut cleanup_candidate,
                                     now_millis(),
                                     pulsedag_core::DEFAULT_ORPHAN_MAX_AGE_MS,
                                     ORPHAN_RECOVERY_REVALIDATE_EVICT_LIMIT,
                                     |hash| storage.get_block(hash).map(|block| block.map(|b| b.header.height)),
                                 );
-                                match residual {
+                                let (cleanup_terminal, cleanup_residual_evicted) = match residual {
                                     Ok(residual) => {
-                                        residual_waiting_terminal = residual.transitioned_parents;
-                                        residual_waiting_evicted = residual.evicted_orphans;
+                                        (residual.transitioned_parents, residual.evicted_orphans)
                                     }
                                     Err(e) => {
                                         warn!(error = %e, "accepted_state_memory_loss prevented orphan-recovery terminalization");
+                                        (0, 0)
                                     }
-                                }
-                                if evicted > 0 || residual_waiting_terminal > 0 {
-                                    match storage.persist_chain_state(&guard) {
-                                        Ok(()) => {}
-                                        Err(e) => {
-                                            warn!(error = %e, evicted, residual_waiting_terminal, "failed persisting chain state after residual missing-parent eviction")
-                                        }
+                                };
+                                let cleanup_requires_persist = cleanup_evicted > 0
+                                    || cleanup_terminal > 0
+                                    || cleanup_residual_evicted > 0;
+                                let cleanup_commit = if cleanup_requires_persist {
+                                    commit_candidate_chain_state(
+                                        &storage,
+                                        &mut guard,
+                                        cleanup_candidate,
+                                        &[],
+                                        true,
+                                    )
+                                } else {
+                                    *guard = cleanup_candidate;
+                                    Ok(())
+                                };
+                                match cleanup_commit {
+                                    Ok(()) => {
+                                        stale = stale.saturating_add(cleanup_stale);
+                                        revalidated = true;
+                                        evicted = cleanup_evicted;
+                                        residual_waiting_terminal = cleanup_terminal;
+                                        residual_waiting_evicted = cleanup_residual_evicted;
+                                    }
+                                    Err(e) => {
+                                        persist_failed = true;
+                                        warn!(error = %e, cleanup_evicted, cleanup_terminal, "failed atomically persisting orphan recovery cleanup state");
                                     }
                                 }
                             }
@@ -3012,13 +3097,18 @@ async fn main() -> Result<()> {
                                     }
                                 }
                                 if retried > 0 {
-                                    match storage.persist_chain_state(&adopted_guard) {
+                                    match commit_candidate_chain_state(
+                                        &storage,
+                                        &mut guard,
+                                        adopted_guard,
+                                        &adopted_hashes,
+                                        true,
+                                    ) {
                                         Ok(()) => {
-                                            *guard = adopted_guard;
                                             (adopted, retried, adopted_hashes, failure_reasons)
                                         }
                                         Err(e) => {
-                                            warn!(error = %e, block_hash = %block.hash, adopted, "failed persisting chain state after inbound orphan adoption; keeping orphans queued in memory");
+                                            warn!(error = %e, block_hash = %block.hash, adopted, "failed atomically persisting adopted orphan blocks and chain state; keeping orphans queued in memory");
                                             let _ = storage.append_runtime_event(
                                                 "warn",
                                                 "peer_orphan_adoption_persist_failed",
@@ -3421,10 +3511,10 @@ async fn main() -> Result<()> {
                                     &pending_locator,
                                     pending_request_id,
                                     common_ancestor.as_deref(),
-                                ) || session.correlates_continuation_headers(
+                                ) || session.correlates_pending_header_page(
                                     peer_id.as_deref(),
-                                    &pending_locator,
-                                    pending_request_id,
+                                    pending_selected_locator.as_ref(),
+                                    common_ancestor.as_deref(),
                                 )
                             })
                             .unwrap_or(false);
@@ -3472,14 +3562,8 @@ async fn main() -> Result<()> {
                                 if !session.can_start_chunk() {
                                     Vec::new()
                                 } else {
-                                    for item in &headers {
-                                        if !session.expected_header_hashes.contains(&item.hash) {
-                                            session.expected_header_hashes.push(item.hash.clone());
-                                        }
-                                        if item.header.height > session.remote_selected_height {
-                                            session.remote_selected_tip = item.hash.clone();
-                                            session.remote_selected_height = item.header.height;
-                                        }
+                                    if let Some(pending) = pending_selected_locator.as_ref() {
+                                        session.accept_header_page(pending, &headers, now_unix());
                                     }
                                     let candidates = selected_segment_request_candidates(
                                         &headers,
@@ -3589,9 +3673,8 @@ async fn main() -> Result<()> {
                             }
                         }
                         let mut rt = runtime.write().await;
-                        let headers_correlated = (session_correlated
-                            || (selected_segment_session.is_some() && pending_peer_matches))
-                            && !headers.is_empty();
+                        let headers_correlated =
+                            selected_session_owns_headers && !headers.is_empty();
                         if headers_correlated {
                             rt.final_quiescence_selected_locator_success_total = rt
                                 .final_quiescence_selected_locator_success_total
@@ -4440,6 +4523,7 @@ async fn main() -> Result<()> {
                 previous_best_height = best_height;
                 previous_accepted_p2p_blocks = rt.accepted_p2p_blocks;
                 previous_accepted_mined_blocks = rt.accepted_mined_blocks;
+                let active_selected_session_peer = rt.active_session_peer.clone();
                 drop(rt);
 
                 let proactive_selected_locator = p2p_status.as_ref().and_then(|status| {
@@ -4555,11 +4639,21 @@ async fn main() -> Result<()> {
                                             .collect::<Vec<_>>()
                                     };
                                     let selected_limits = SelectedSegmentLimits::default();
-                                    let selected_locator_peer = status
-                                        .direct_request_capable_peers
-                                        .iter()
-                                        .find(|peer| status.connected_peers.contains(*peer))
-                                        .cloned();
+                                    let selected_locator_peer = active_selected_session_peer
+                                        .clone()
+                                        .filter(|peer| {
+                                            status.connected_peers.contains(peer)
+                                                && status
+                                                    .direct_request_capable_peers
+                                                    .contains(peer)
+                                        })
+                                        .or_else(|| {
+                                            status
+                                                .direct_request_capable_peers
+                                                .iter()
+                                                .find(|peer| status.connected_peers.contains(*peer))
+                                                .cloned()
+                                        });
                                     let selected_locator_request_id = {
                                         let guard = selected_segment_locator_state.lock().await;
                                         guard.next_request_id
@@ -5710,29 +5804,78 @@ mod tests {
             headers.push(selected_test_header(&hash, &parent, height));
             parent = hash;
         }
+        let first_headers = &headers[..64];
+        let second_headers = &headers[64..];
         let locator = vec!["common".to_string()];
         let mut session = SelectedSegmentSession::new(
             9,
             "peer-a".to_string(),
             "common".to_string(),
             0,
-            &headers,
+            first_headers,
             &locator,
             17,
             1_000,
         )
         .expect("session");
-        let ordered = selected_segment_request_order(&headers, 113);
-        let first = ordered[..64].to_vec();
-        let second = ordered[64..].to_vec();
+        let limits = SelectedSegmentLimits {
+            headers_per_chunk: 128,
+            max_inflight_blocks_per_peer: 128,
+            max_segment_bytes: 4 * 1024 * 1024,
+        };
+        let accepted_first = HashSet::from(["common".to_string()]);
+        let first = selected_segment_request_candidates(
+            first_headers,
+            limits,
+            &accepted_first,
+            &HashSet::new(),
+        );
+        assert_eq!(first.len(), 64);
         assert!(session.start_chunk(first.clone(), 1_001));
-        assert!(!session.start_chunk(second.clone(), 1_002));
         for hash in &first {
             session.requested_hashes.insert(hash.clone());
             assert!(session.mark_applied(hash, 2_000));
         }
         assert!(session.complete_current_chunk_if_applied());
-        assert!(session.start_chunk(second.clone(), 2_001));
+
+        let continuation_locator = vec!["selected-064".to_string()];
+        let continuation = PendingSelectedLocator {
+            request_id: 18,
+            peer_id: "peer-a".to_string(),
+            locator: continuation_locator.clone(),
+            requested_at_unix: 2_001,
+        };
+        let mut accepted_second = HashSet::from(["common".to_string()]);
+        accepted_second.extend(first.iter().cloned());
+        assert_eq!(
+            validate_selected_header_segment("selected-064", second_headers, &accepted_second,),
+            Ok(())
+        );
+        assert!(!session.is_active_for_headers(
+            Some("peer-a"),
+            &continuation_locator,
+            18,
+            Some("selected-064"),
+        ));
+        assert!(session.correlates_pending_header_page(
+            Some("peer-a"),
+            Some(&continuation),
+            Some("selected-064"),
+        ));
+        assert!(!session.correlates_pending_header_page(
+            Some("peer-b"),
+            Some(&continuation),
+            Some("selected-064"),
+        ));
+        session.accept_header_page(&continuation, second_headers, 2_002);
+        let second = selected_segment_request_candidates(
+            second_headers,
+            limits,
+            &accepted_second,
+            &HashSet::new(),
+        );
+        assert_eq!(second.len(), 49);
+        assert!(session.start_chunk(second.clone(), 2_003));
         for hash in &second {
             session.requested_hashes.insert(hash.clone());
             assert!(session.mark_applied(hash, 3_000));
@@ -5740,6 +5883,10 @@ mod tests {
         assert!(session.complete_current_chunk_if_applied());
         assert!(session.current_chunk.is_empty());
         assert_eq!(session.accepted_applied_hashes.len(), 113);
+        assert_eq!(session.remote_selected_tip, "selected-113");
+        assert_eq!(session.remote_selected_height, 113);
+        assert_eq!(session.locator_request_id, 18);
+        assert_eq!(session.locator_fingerprint, continuation_locator.join(","));
     }
 
     #[test]
