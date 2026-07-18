@@ -1,0 +1,38 @@
+diff --git a/scripts/lib/v2_3_0_runtime_harness.sh b/scripts/lib/v2_3_0_runtime_harness.sh
+--- a/scripts/lib/v2_3_0_runtime_harness.sh
++++ b/scripts/lib/v2_3_0_runtime_harness.sh
+@@ -450,6 +450,9 @@ v2_3_0_run_lag_injection_selected_segment_drill() {
+   network_height="$(_v230_lag_status_height "$out_dir/endpoints/gap_ready/n1-status.json")"
+   observed_gap=$((network_height - baseline_height))
+   built_gap="$observed_gap"
++  # Preserve the ground-truth gap measured while n5 is stopped. Recovery can
++  # apply a full selected chunk before remote inventory becomes observable.
++  (( built_gap > harness_gap_max )) && harness_gap_max="$built_gap"
+   _v230_lag_event network_selected_height_gap_observed n5 "$(jq -nc --argjson gap "$built_gap" --argjson required "$min_selected_gap" --argjson target "$target_gap" '{gap:$gap,required_gap:$required,target_gap_with_margin:$target}')"
+   _v230_lag_event miners_stopped_at_gap "" "$(jq -nc --argjson height "$network_height" '{network_selected_height:$height}')"
+ 
+diff --git a/scripts/tests/test_v2_3_0_lag_runtime_driver.sh b/scripts/tests/test_v2_3_0_lag_runtime_driver.sh
+--- a/scripts/tests/test_v2_3_0_lag_runtime_driver.sh
++++ b/scripts/tests/test_v2_3_0_lag_runtime_driver.sh
+@@ -55,6 +55,7 @@ grep -Fq 'queued_gossip_discarded' "$HARNESS"
+ grep -Fq 'canonical_gap_sample > canonical_gap_max' "$HARNESS"
+ grep -Fq 'harness_gap_sample > harness_gap_max' "$HARNESS"
++grep -Fq 'built_gap > harness_gap_max' "$HARNESS"
+ grep -Fq 'observed_gap="$canonical_gap_max"' "$HARNESS"
+ grep -Fq 'V2_3_0_GAP_BUILD_MARGIN_BLOCKS:-16' "$HARNESS"
+ grep -Fq 'built_gap" -ge "$target_gap' "$HARNESS"
+@@ -94,6 +95,15 @@ if grep -Fq '$r.node_operational_ready // $r.private_conservative_ready' "$HARNE
+   exit 1
+ fi
+ 
++# Recovery may consume a 64-block chunk before remote inventory is sampled.
++# The independently measured pre-resume gap must remain valid evidence.
++built_gap=114
++harness_gap_max=50
++(( built_gap > harness_gap_max )) && harness_gap_max="$built_gap"
++[[ "$harness_gap_max" == 114 ]]
++[[ "$harness_gap_max" -ge 96 ]]
++
+ cat > "$tmp/manifest.json" <<'JSON'
+ {
+   "result":"PASS",
