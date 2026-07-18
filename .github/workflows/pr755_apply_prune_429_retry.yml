@@ -23,14 +23,68 @@ jobs:
         with:
           ref: agent/fix-selected-segment-durability-closeout
           fetch-depth: 0
-      - name: Apply focused harness patch
+      - uses: Swatinem/rust-cache@v2
+      - name: Apply exact harness edit
         shell: bash
         run: |
           set -euo pipefail
-          if ! grep -q 'v2_3_0_prune_miner_retryable_log' scripts/lib/v2_3_0_prune_restart_rejoin_harness.sh; then
-            git apply --check .github/patches/pr755_prune_429_retry.patch
-            git apply .github/patches/pr755_prune_429_retry.patch
-          fi
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('scripts/lib/v2_3_0_prune_restart_rejoin_harness.sh')
+          text = path.read_text()
+          if 'v2_3_0_prune_miner_retryable_log()' not in text:
+              anchor = '# fail-closed driver and intentionally remains separate from the Task 03 harness.\n\n'
+              helper = '''v2_3_0_prune_miner_retryable_log() {
+            local log_file="${1:?missing miner log path}"
+            grep -q '429 Too Many Requests' "$log_file"
+          }
+
+          '''
+              if text.count(anchor) != 1:
+                  raise SystemExit('unexpected helper insertion anchor')
+              text = text.replace(anchor, anchor + helper, 1)
+          old = '''  _v230_mine_block(){
+            local label="$1" before after deadline latest
+            before="$(_v230_height 1)"
+            "$miner_bin" --node "$(_v230_rpc_url 1)" --miner-address "v230-task04-$label" --max-tries 1000000 > "$miner_dir/$label.log" 2>&1
+            deadline=$(( $(date +%s) + 60 ))
+          '''
+          new = '''  _v230_mine_block(){
+            local label="$1" before after deadline latest attempt max_attempts retry_wait miner_log mined=0
+            before="$(_v230_height 1)"
+            max_attempts="${V2_3_0_MINER_429_MAX_ATTEMPTS:-20}"
+            retry_wait="${V2_3_0_MINER_429_RETRY_WAIT_SECS:-3}"
+            [[ "$max_attempts" =~ ^[0-9]+$ && "$max_attempts" -ge 1 ]] || { echo "V2_3_0_MINER_429_MAX_ATTEMPTS must be at least 1" >&2; return 1; }
+            [[ "$retry_wait" =~ ^[0-9]+$ && "$retry_wait" -ge 1 ]] || { echo "V2_3_0_MINER_429_RETRY_WAIT_SECS must be at least 1" >&2; return 1; }
+            miner_log="$miner_dir/$label.log"
+            : > "$miner_log"
+            for ((attempt=1; attempt<=max_attempts; attempt++)); do
+              printf '\\n[%s] miner attempt %d/%d\\n' "$(date -u +%FT%TZ)" "$attempt" "$max_attempts" >> "$miner_log"
+              if "$miner_bin" --node "$(_v230_rpc_url 1)" --miner-address "v230-task04-$label" --max-tries 1000000 >> "$miner_log" 2>&1; then
+                mined=1
+                break
+              fi
+              if v2_3_0_prune_miner_retryable_log "$miner_log"; then
+                _v230_prune_log "mining submit rate limited for $label attempt=$attempt/$max_attempts; retrying after ${retry_wait}s"
+                sleep "$retry_wait"
+                continue
+              fi
+              tail -80 "$miner_log" >&2 || true
+              return 1
+            done
+            (( mined == 1 )) || {
+              echo "external miner remained rate limited for $label after $max_attempts attempts" >&2
+              tail -80 "$miner_log" >&2 || true
+              return 1
+            }
+            deadline=$(( $(date +%s) + 60 ))
+          '''
+          if old in text:
+              text = text.replace(old, new, 1)
+          elif 'V2_3_0_MINER_429_MAX_ATTEMPTS' not in text:
+              raise SystemExit('unexpected mining helper source')
+          path.write_text(text)
+          PY
       - name: Validate bounded retry semantics
         shell: bash
         run: |
