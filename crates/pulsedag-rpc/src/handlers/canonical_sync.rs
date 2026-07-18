@@ -71,6 +71,23 @@ fn counters_coherent(runtime: &NodeRuntimeStats) -> bool {
             <= runtime.sync_pipeline.counters.blocks_requested
 }
 
+fn active_selected_segment_gap(runtime: &NodeRuntimeStats) -> u64 {
+    let selected_recovery_active = runtime.active_session_id.is_some()
+        || matches!(
+            runtime.sync_state.as_str(),
+            "locating_common_ancestor"
+                | "selected_chain_locator_sync"
+                | "requesting_selected_headers"
+                | "requesting_selected_blocks"
+                | "applying_selected_segment"
+        );
+    if selected_recovery_active {
+        runtime.selected_segment_gap_blocks
+    } else {
+        0
+    }
+}
+
 fn local_selected_height(chain: &ChainState) -> u64 {
     chain
         .dag
@@ -147,9 +164,11 @@ pub fn build_canonical_sync_state_with_remote_evidence(
     let best_remote = select_remote_sync_evidence(&chain.chain_id, now_unix, remote_evidence);
     let best_remote_selected_height = best_remote.as_ref().map(|ev| ev.selected_height);
     let best_remote_selected_tip = best_remote.as_ref().and_then(|ev| ev.selected_tip.clone());
-    let network_selected_height_gap = best_remote_selected_height
+    let instantaneous_network_selected_height_gap = best_remote_selected_height
         .unwrap_or(local_selected_height)
         .saturating_sub(local_selected_height);
+    let network_selected_height_gap =
+        instantaneous_network_selected_height_gap.max(active_selected_segment_gap(runtime));
     let network_selected_tip_mismatch = best_remote_selected_tip.is_some()
         && local_selected_tip.is_some()
         && best_remote_selected_tip != local_selected_tip;
@@ -503,6 +522,39 @@ mod tests {
         assert_eq!(state.live_sync_error_active, 1);
         assert!(state.sync_live_error.is_some());
     }
+    #[test]
+    fn active_selected_segment_preserves_initial_gap_until_frontier() {
+        let chain = chain_at_selected_height(72);
+        let evidence = vec![fresh_remote("peer-a", 120)];
+        let mut runtime = NodeRuntimeStats {
+            sync_state: "requesting_selected_blocks".into(),
+            selected_segment_gap_blocks: 112,
+            active_session_id: Some(7),
+            ..NodeRuntimeStats::default()
+        };
+        let active = build_canonical_sync_state_with_remote_evidence(
+            &chain,
+            &runtime,
+            chain.dag.blocks.len(),
+            1_000,
+            None,
+            &evidence,
+        );
+        assert_eq!(active.network_selected_height_gap, 112);
+
+        runtime.active_session_id = None;
+        runtime.sync_state = "dag_frontier_tips_sync".into();
+        let frontier = build_canonical_sync_state_with_remote_evidence(
+            &chain,
+            &runtime,
+            chain.dag.blocks.len(),
+            1_000,
+            None,
+            &evidence,
+        );
+        assert_eq!(frontier.network_selected_height_gap, 48);
+    }
+
     #[test]
     fn p2p_status_remote_inventory_produces_n5_style_gap() {
         let status = P2pStatus {

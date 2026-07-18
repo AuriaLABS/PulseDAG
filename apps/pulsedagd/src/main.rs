@@ -3420,6 +3420,22 @@ async fn main() -> Result<()> {
                             if selected_segment_completed {
                                 selected_segment_session = None;
                                 selected_segment_locator_state.lock().await.pending_locator = None;
+                                if let Some(ref p2p_handle) = p2p {
+                                    if let Err(e) = p2p_handle.request_tips() {
+                                        warn!(
+                                            error = %e,
+                                            "failed requesting DAG frontier tips after selected-segment completion"
+                                        );
+                                    } else {
+                                        let mut rt = runtime.write().await;
+                                        rt.sync_state =
+                                            DagSyncStage::DagFrontierTips.as_str().to_string();
+                                        info!(
+                                            event = "selected_segment_frontier_reconcile_requested",
+                                            "selected segment complete; requested fresh tips for lateral DAG frontier reconciliation"
+                                        );
+                                    }
+                                }
                             }
                             if adopted > 0 {
                                 info!(
