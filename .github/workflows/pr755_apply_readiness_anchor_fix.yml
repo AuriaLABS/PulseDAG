@@ -11,6 +11,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: pr755-compact-readiness-anchor-fix
+  cancel-in-progress: true
+
 jobs:
   apply-and-validate:
     runs-on: ubuntu-24.04
