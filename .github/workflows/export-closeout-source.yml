@@ -1,0 +1,26 @@
+name: export-closeout-source
+
+on:
+  push:
+    branches:
+      - agent/fix-selected-segment-durability-closeout
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/upload-artifact@v4
+        with:
+          name: closeout-source-${{ github.run_id }}
+          path: |
+            apps/pulsedagd/src/main.rs
+            crates/pulsedag-storage/src/lib.rs
+            crates/pulsedag-rpc/src/handlers/checks.rs
+            crates/pulsedag-rpc/src/handlers/pruning.rs
+            scripts/tests/test_v2_3_0_selected_segment_source_semantics.py
+          if-no-files-found: error
+          retention-days: 1
