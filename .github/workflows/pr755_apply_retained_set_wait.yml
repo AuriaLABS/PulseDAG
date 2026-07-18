@@ -1,4 +1,5 @@
 name: Apply PR 755 retained-set convergence wait
+# Relaunched after archiving the focused lag PASS so this validation is visible.
 
 on:
   pull_request:
