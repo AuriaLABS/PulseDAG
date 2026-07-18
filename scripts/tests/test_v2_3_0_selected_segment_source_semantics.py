@@ -3,6 +3,11 @@ import re
 import sys
 from pathlib import Path
 
+if len(sys.argv) != 3:
+    raise SystemExit(
+        f"usage: {Path(sys.argv[0]).name} <node-main.rs> <metrics.rs>"
+    )
+
 node = Path(sys.argv[1]).read_text()
 metrics = Path(sys.argv[2]).read_text()
 checks = [
