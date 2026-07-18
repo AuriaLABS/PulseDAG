@@ -1,0 +1,35 @@
+diff --git a/apps/pulsedagd/src/main.rs b/apps/pulsedagd/src/main.rs
+--- a/apps/pulsedagd/src/main.rs
++++ b/apps/pulsedagd/src/main.rs
+@@ -2780,6 +2780,8 @@
+                                     let mut rt = runtime.write().await;
+                                     rt.selected_segment_gap_blocks =
+                                         rt.selected_segment_gap_blocks.max(observed_gap);
++                                    rt.network_selected_height_gap =
++                                        rt.network_selected_height_gap.max(observed_gap);
+                                     rt.dag_sync_selected_chain_locator_total =
+                                         rt.dag_sync_selected_chain_locator_total.saturating_add(1);
+                                     rt.selected_segment_header_requests_total =
+@@ -3420,6 +3422,22 @@
+                             if selected_segment_completed {
+                                 selected_segment_session = None;
+                                 selected_segment_locator_state.lock().await.pending_locator = None;
++                                if let Some(ref p2p_handle) = p2p {
++                                    if let Err(e) = p2p_handle.request_tips() {
++                                        warn!(
++                                            error = %e,
++                                            "failed requesting DAG frontier tips after selected-segment completion"
++                                        );
++                                    } else {
++                                        let mut rt = runtime.write().await;
++                                        rt.sync_state =
++                                            DagSyncStage::DagFrontierTips.as_str().to_string();
++                                        info!(
++                                            event = "selected_segment_frontier_reconcile_requested",
++                                            "selected segment complete; requested fresh tips for lateral DAG frontier reconciliation"
++                                        );
++                                    }
++                                }
+                             }
+                             if adopted > 0 {
+                                 info!(
