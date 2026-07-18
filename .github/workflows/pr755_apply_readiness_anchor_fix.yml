@@ -1,0 +1,56 @@
+name: Apply PR 755 compact readiness anchor fix
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - .github/patches/pr755_readiness_anchor.patch
+      - .github/workflows/pr755_apply_readiness_anchor_fix.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply-and-validate:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/fix-selected-segment-durability-closeout
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy,rustfmt
+      - name: Apply focused readiness patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! grep -q 'fn consensus_status_category' crates/pulsedag-rpc/src/handlers/readiness.rs; then
+            git apply --check .github/patches/pr755_readiness_anchor.patch
+            git apply .github/patches/pr755_readiness_anchor.patch
+          fi
+          cargo fmt --all
+      - name: Validate compact anchor readiness
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked -p pulsedag-rpc consensus_readiness_accepts_valid_compact_prune_anchor
+          cargo test --locked -p pulsedag-rpc consensus_readiness_rejects_missing_chain_anchor
+          cargo test --locked -p pulsedag-rpc consensus_readiness_preserves_rejection_warning
+          cargo test --locked -p pulsedag-storage compact_prune_97_to_24_restarts_with_identical_tip_and_state_root
+          cargo clippy --workspace --all-targets -- -D warnings
+      - name: Publish validated readiness fix
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --quiet; then
+            echo 'Compact readiness anchor fix already published'
+            exit 0
+          fi
+          git config user.name "chatgpt-codex-connector[bot]"
+          git config user.email "199175422+chatgpt-codex-connector[bot]@users.noreply.github.com"
+          git add crates/pulsedag-rpc/src/handlers/readiness.rs
+          git commit -m "fix: accept validated compact chain anchor in readiness"
+          git pull --rebase origin agent/fix-selected-segment-durability-closeout
+          git push origin HEAD:agent/fix-selected-segment-durability-closeout
