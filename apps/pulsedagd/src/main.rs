@@ -29,7 +29,7 @@ use pulsedag_core::reconcile_mempool;
 use pulsedag_p2p::{
     build_p2p_stack, default_p2p_identity_path,
     messages::{HeaderInventory, TipInventoryStatus},
-    InboundEvent, Libp2pConfig, Libp2pRuntimeMode, P2pHandle, P2pMode,
+    InboundEvent, Libp2pConfig, Libp2pRuntimeMode, P2pHandle, P2pMode, P2pStatus,
 };
 use pulsedag_rpc::api::{
     capture_and_store_node_rpc_snapshot, NodeRpcSnapshotStore, NodeRuntimeStats,
@@ -58,6 +58,26 @@ fn local_tip_inventory_status(chain: &pulsedag_core::ChainState) -> TipInventory
             .unwrap_or(0),
         inventory_generation: 0,
     }
+}
+
+fn selected_locator_peer_for_reconcile(
+    status: &P2pStatus,
+    local: &TipInventoryStatus,
+) -> Option<String> {
+    let local_height = local.selected_height.unwrap_or_default();
+    status
+        .remote_selected_tip_inventory
+        .iter()
+        .filter(|remote| remote.connected && remote.direct_request_capable)
+        .filter(|remote| {
+            remote.selected_height > local_height
+                || (remote.selected_height == local_height
+                    && (remote.selected_tip != local.selected_tip
+                        || remote.ordered_dag_tip != local.ordered_dag_tip
+                        || remote.state_root_digest != local.state_root_digest))
+        })
+        .max_by_key(|remote| remote.selected_height)
+        .map(|remote| remote.peer_id.clone())
 }
 
 fn commit_candidate_chain_state(
@@ -4523,7 +4543,6 @@ async fn main() -> Result<()> {
                 previous_best_height = best_height;
                 previous_accepted_p2p_blocks = rt.accepted_p2p_blocks;
                 previous_accepted_mined_blocks = rt.accepted_mined_blocks;
-                let active_selected_session_peer = rt.active_session_peer.clone();
                 drop(rt);
 
                 let proactive_selected_locator = p2p_status.as_ref().and_then(|status| {
@@ -4626,34 +4645,24 @@ async fn main() -> Result<()> {
                                         final_quiescence_all_reachable_peers_connected(&status);
                                     let same_height_tip_reconcile_ready =
                                         all_reachable_peers_connected;
-                                    let requested = p2p.request_tips().is_ok();
-                                    let selected_locator = {
+                                    let (selected_locator, local_inventory) = {
                                         let guard = chain.read().await;
-                                        guard
-                                            .dag
-                                            .selected_chain
-                                            .iter()
-                                            .rev()
-                                            .take(32)
-                                            .cloned()
-                                            .collect::<Vec<_>>()
+                                        (
+                                            guard
+                                                .dag
+                                                .selected_chain
+                                                .iter()
+                                                .rev()
+                                                .take(32)
+                                                .cloned()
+                                                .collect::<Vec<_>>(),
+                                            local_tip_inventory_status(&guard),
+                                        )
                                     };
                                     let selected_limits = SelectedSegmentLimits::default();
-                                    let selected_locator_peer = active_selected_session_peer
-                                        .clone()
-                                        .filter(|peer| {
-                                            status.connected_peers.contains(peer)
-                                                && status
-                                                    .direct_request_capable_peers
-                                                    .contains(peer)
-                                        })
-                                        .or_else(|| {
-                                            status
-                                                .direct_request_capable_peers
-                                                .iter()
-                                                .find(|peer| status.connected_peers.contains(*peer))
-                                                .cloned()
-                                        });
+                                    let selected_locator_peer =
+                                        selected_locator_peer_for_reconcile(&status, &local_inventory);
+                                    let selected_locator_needed = selected_locator_peer.is_some();
                                     let selected_locator_request_id = {
                                         let guard = selected_segment_locator_state.lock().await;
                                         guard.next_request_id
@@ -4680,7 +4689,11 @@ async fn main() -> Result<()> {
                                                     requested_at_unix: now_unix(),
                                                 }
                                             });
+                                    } else if !selected_locator_needed {
+                                        selected_segment_locator_state.lock().await.pending_locator =
+                                            None;
                                     }
+                                    let requested = p2p.request_tips().is_ok();
                                     let mut rt = runtime.write().await;
                                     rt.final_quiescence_tip_reconcile_total =
                                         rt.final_quiescence_tip_reconcile_total.saturating_add(1);
@@ -4738,24 +4751,31 @@ async fn main() -> Result<()> {
                                                 Some("request_tips_failed".to_string());
                                         }
                                     }
-                                    rt.final_quiescence_selected_locator_request_total = rt
-                                        .final_quiescence_selected_locator_request_total
-                                        .saturating_add(1);
-                                    rt.dag_sync_selected_chain_locator_total =
-                                        rt.dag_sync_selected_chain_locator_total.saturating_add(1);
-                                    if selected_locator_requested {
-                                        rt.sync_state = DagSyncStage::RequestingSelectedHeaders
-                                            .as_str()
-                                            .to_string();
-                                        rt.selected_segment_header_requests_total = rt
-                                            .selected_segment_header_requests_total
+                                    if selected_locator_needed {
+                                        rt.final_quiescence_selected_locator_request_total = rt
+                                            .final_quiescence_selected_locator_request_total
                                             .saturating_add(1);
-                                    } else {
-                                        rt.final_quiescence_selected_sync_blocked_total = rt
-                                            .final_quiescence_selected_sync_blocked_total
+                                        rt.dag_sync_selected_chain_locator_total = rt
+                                            .dag_sync_selected_chain_locator_total
                                             .saturating_add(1);
-                                        rt.final_quiescence_selected_sync_blocked_reason =
-                                            Some("selected_locator_request_failed".to_string());
+                                        if selected_locator_requested {
+                                            rt.sync_state = DagSyncStage::RequestingSelectedHeaders
+                                                .as_str()
+                                                .to_string();
+                                            rt.selected_segment_header_requests_total = rt
+                                                .selected_segment_header_requests_total
+                                                .saturating_add(1);
+                                        } else {
+                                            rt.final_quiescence_selected_sync_blocked_total = rt
+                                                .final_quiescence_selected_sync_blocked_total
+                                                .saturating_add(1);
+                                            rt.final_quiescence_selected_sync_blocked_reason =
+                                                Some("selected_locator_request_failed".to_string());
+                                        }
+                                    } else if requested {
+                                        rt.sync_state =
+                                            DagSyncStage::DagFrontierTips.as_str().to_string();
+                                        rt.final_quiescence_selected_sync_blocked_reason = None;
                                     }
                                 }
                                 Ok(_) => {
@@ -5313,6 +5333,75 @@ mod tests {
                 "missing_parent_recovery",
                 "merge_set_block_recovery"
             ]
+        );
+    }
+
+    #[test]
+    fn final_quiescence_skips_selected_locator_when_selected_state_matches() {
+        let local = TipInventoryStatus {
+            chain_id: "test-chain".to_string(),
+            selected_tip: Some("tip-a".to_string()),
+            selected_height: Some(128),
+            selected_blue_score: Some(128),
+            ordered_dag_tip: Some("tip-a".to_string()),
+            state_root_digest: Some("root-a".to_string()),
+            observed_at_unix: 1,
+            inventory_generation: 1,
+        };
+        let status = P2pStatus {
+            connected_peers: vec!["peer-a".to_string()],
+            direct_request_capable_peers: vec!["peer-a".to_string()],
+            remote_selected_tip_inventory: vec![pulsedag_p2p::RemoteSelectedTipStatus {
+                peer_id: "peer-a".to_string(),
+                chain_id: "test-chain".to_string(),
+                selected_tip: Some("tip-a".to_string()),
+                selected_height: 128,
+                selected_blue_score: Some(128),
+                ordered_dag_tip: Some("tip-a".to_string()),
+                state_root_digest: Some("root-a".to_string()),
+                connected: true,
+                direct_request_capable: true,
+                ..pulsedag_p2p::RemoteSelectedTipStatus::default()
+            }],
+            ..P2pStatus::default()
+        };
+
+        assert_eq!(selected_locator_peer_for_reconcile(&status, &local), None);
+    }
+
+    #[test]
+    fn final_quiescence_requests_selected_locator_for_ahead_peer() {
+        let local = TipInventoryStatus {
+            chain_id: "test-chain".to_string(),
+            selected_tip: Some("tip-a".to_string()),
+            selected_height: Some(128),
+            selected_blue_score: Some(128),
+            ordered_dag_tip: Some("tip-a".to_string()),
+            state_root_digest: Some("root-a".to_string()),
+            observed_at_unix: 1,
+            inventory_generation: 1,
+        };
+        let status = P2pStatus {
+            connected_peers: vec!["peer-a".to_string()],
+            direct_request_capable_peers: vec!["peer-a".to_string()],
+            remote_selected_tip_inventory: vec![pulsedag_p2p::RemoteSelectedTipStatus {
+                peer_id: "peer-a".to_string(),
+                chain_id: "test-chain".to_string(),
+                selected_tip: Some("tip-b".to_string()),
+                selected_height: 129,
+                selected_blue_score: Some(129),
+                ordered_dag_tip: Some("tip-b".to_string()),
+                state_root_digest: Some("root-b".to_string()),
+                connected: true,
+                direct_request_capable: true,
+                ..pulsedag_p2p::RemoteSelectedTipStatus::default()
+            }],
+            ..P2pStatus::default()
+        };
+
+        assert_eq!(
+            selected_locator_peer_for_reconcile(&status, &local),
+            Some("peer-a".to_string())
         );
     }
 

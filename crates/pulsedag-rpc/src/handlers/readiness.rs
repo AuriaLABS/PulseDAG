@@ -110,6 +110,42 @@ fn status_reasons(
     }
 }
 
+fn sync_status_category(
+    runtime: &crate::api::NodeRuntimeStats,
+    p2p_mode: &str,
+) -> ReadinessCategory {
+    let current_failure =
+        runtime.sync_state == "degraded" || runtime.sync_pipeline.last_error.is_some();
+    status_reasons(
+        if current_failure {
+            vec![format!(
+                "sync degraded: state={} last_error={} phase_failures={}",
+                runtime.sync_state,
+                runtime
+                    .sync_pipeline
+                    .last_error
+                    .clone()
+                    .unwrap_or_else(|| "none".to_string()),
+                runtime.sync_pipeline.counters.phase_failures
+            )]
+        } else {
+            Vec::new()
+        },
+        if !current_failure && runtime.sync_pipeline.counters.phase_failures > 5 {
+            vec![format!(
+                "sync recovered after {} historical phase failure(s): state={} last_error=none",
+                runtime.sync_pipeline.counters.phase_failures, runtime.sync_state
+            )]
+        } else {
+            Vec::new()
+        },
+        format!(
+            "sync state healthy: {} (p2p_mode={})",
+            runtime.sync_state, p2p_mode
+        ),
+    )
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ReadinessDimensions {
     node_operational_ready: bool,
@@ -722,32 +758,7 @@ pub async fn get_readiness<S: RpcStateLike>(
 
     categories.insert(
         "sync_status".to_string(),
-        if runtime.sync_state == "degraded"
-            || runtime.sync_pipeline.last_error.is_some()
-            || runtime.sync_pipeline.counters.phase_failures > 5
-        {
-            category(
-                ReadinessStatus::Fail,
-                vec![format!(
-                    "sync degraded: state={} last_error={} phase_failures={}",
-                    runtime.sync_state,
-                    runtime
-                        .sync_pipeline
-                        .last_error
-                        .clone()
-                        .unwrap_or_else(|| "none".to_string()),
-                    runtime.sync_pipeline.counters.phase_failures
-                )],
-            )
-        } else {
-            category(
-                ReadinessStatus::Pass,
-                vec![format!(
-                    "sync state healthy: {} (p2p_mode={})",
-                    runtime.sync_state, p2p_mode
-                )],
-            )
-        },
+        sync_status_category(&runtime, &p2p_mode),
     );
 
     if runtime.external_mining_rejected_chain_id_mismatch > 0 {
@@ -1006,6 +1017,32 @@ mod tests {
             },
         );
         assert_eq!(super::overall_status(&categories), ReadinessStatus::Fail);
+    }
+
+    #[test]
+    fn historical_sync_failures_warn_after_current_recovery() {
+        let mut runtime = crate::api::NodeRuntimeStats::default();
+        runtime.sync_state = "selected_segment_complete".to_string();
+        runtime.sync_pipeline.counters.phase_failures = 107;
+        runtime.sync_pipeline.last_error = None;
+
+        let category = sync_status_category(&runtime, "libp2p-real");
+
+        assert_eq!(category.status, ReadinessStatus::Warn);
+        assert!(category.reasons[0].contains("historical phase failure"));
+    }
+
+    #[test]
+    fn current_sync_error_still_blocks_readiness() {
+        let mut runtime = crate::api::NodeRuntimeStats::default();
+        runtime.sync_state = "degraded".to_string();
+        runtime.sync_pipeline.counters.phase_failures = 7;
+        runtime.sync_pipeline.last_error = Some("missing parent recovery stalled".to_string());
+
+        let category = sync_status_category(&runtime, "libp2p-real");
+
+        assert_eq!(category.status, ReadinessStatus::Fail);
+        assert!(category.reasons[0].contains("missing parent recovery stalled"));
     }
 
     #[test]
