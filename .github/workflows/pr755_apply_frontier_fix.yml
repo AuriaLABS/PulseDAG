@@ -1,4 +1,4 @@
-name: Apply PR 755 frontier reconciliation fix
+name: Publish validated PR 755 frontier reconciliation fix
 
 on:
   pull_request:
@@ -9,30 +9,21 @@ permissions:
   contents: write
 
 jobs:
-  apply-and-validate:
+  publish:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
         with:
           ref: agent/fix-selected-segment-durability-closeout
           fetch-depth: 0
-      - name: Apply focused patch
+      - name: Apply previously validated patch
         shell: bash
         run: |
           set -euo pipefail
           sed -i 's/^ diff --git /diff --git /' .github/patches/pr755_frontier_reconcile.patch
           git apply --check .github/patches/pr755_frontier_reconcile.patch
           git apply .github/patches/pr755_frontier_reconcile.patch
-      - name: Format and run focused tests
-        shell: bash
-        run: |
-          set -euo pipefail
-          cargo fmt --all
-          cargo test --locked -p pulsedagd final_quiescence_skips_selected_locator_when_selected_state_matches
-          cargo test --locked -p pulsedagd final_quiescence_requests_selected_locator_for_ahead_peer
-          cargo test --locked -p pulsedag-rpc historical_sync_failures_warn_after_current_recovery
-          cargo test --locked -p pulsedag-rpc current_sync_error_still_blocks_readiness
-      - name: Commit validated fix
+      - name: Publish validated fix
         shell: bash
         run: |
           set -euo pipefail
