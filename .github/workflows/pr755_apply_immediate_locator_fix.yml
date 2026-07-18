@@ -1,0 +1,51 @@
+name: Apply PR 755 immediate selected locator fix
+
+on:
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  apply-and-validate:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/fix-selected-segment-durability-closeout
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy,rustfmt
+      - name: Apply focused patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! grep -q 'fn selected_locator_peer_for_priority_gap' apps/pulsedagd/src/main.rs; then
+            git apply --check .github/patches/pr755_immediate_locator.patch
+            git apply .github/patches/pr755_immediate_locator.patch
+          fi
+          cargo fmt --all
+      - name: Validate locator ownership and selected-segment regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked -p pulsedagd tip_inventory_priority_selects_peer_before_generic_tip_fetch
+          cargo test --locked -p pulsedagd first_valid_peer_can_own_broadcast_selected_locator_response
+          cargo test --locked -p pulsedagd selected_segment -- --nocapture
+          cargo clippy --workspace --all-targets -- -D warnings
+      - name: Publish validated fix
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --quiet; then
+            echo 'Immediate locator fix already published'
+            exit 0
+          fi
+          git config user.name "chatgpt-codex-connector[bot]"
+          git config user.email "199175422+chatgpt-codex-connector[bot]@users.noreply.github.com"
+          git add apps/pulsedagd/src/main.rs
+          git commit -m "fix: prioritize selected locator on remote tip inventory"
+          git push origin HEAD:agent/fix-selected-segment-durability-closeout
