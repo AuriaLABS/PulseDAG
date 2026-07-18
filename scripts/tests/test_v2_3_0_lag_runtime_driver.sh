@@ -53,6 +53,7 @@ grep -Fq 'kill -CONT "$n5_pid"' "$HARNESS"
 grep -Fq 'queued_gossip_discarded' "$HARNESS"
 grep -Fq 'canonical_gap_sample > canonical_gap_max' "$HARNESS"
 grep -Fq 'harness_gap_sample > harness_gap_max' "$HARNESS"
+grep -Fq 'built_gap > harness_gap_max' "$HARNESS"
 grep -Fq 'observed_gap="$canonical_gap_max"' "$HARNESS"
 grep -Fq 'V2_3_0_GAP_BUILD_MARGIN_BLOCKS:-16' "$HARNESS"
 grep -Fq 'built_gap" -ge "$target_gap' "$HARNESS"
@@ -91,6 +92,14 @@ if grep -Fq '$r.node_operational_ready // $r.private_conservative_ready' "$HARNE
   echo "readiness booleans must use logical OR rather than null coalescing" >&2
   exit 1
 fi
+
+# Recovery may consume a 64-block chunk before remote inventory is sampled.
+# The independently measured pre-resume gap must remain valid evidence.
+built_gap=114
+harness_gap_max=50
+(( built_gap > harness_gap_max )) && harness_gap_max="$built_gap"
+[[ "$harness_gap_max" == 114 ]]
+[[ "$harness_gap_max" -ge 96 ]]
 
 cat > "$tmp/manifest.json" <<'JSON'
 {

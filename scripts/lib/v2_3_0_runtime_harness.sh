@@ -437,6 +437,9 @@ v2_3_0_run_lag_injection_selected_segment_drill() {
   network_height="$(_v230_lag_status_height "$out_dir/endpoints/gap_ready/n1-status.json")"
   observed_gap=$((network_height - baseline_height))
   built_gap="$observed_gap"
+  # Preserve the ground-truth gap measured while n5 is stopped. Recovery can
+  # apply a full selected chunk before remote inventory becomes observable.
+  (( built_gap > harness_gap_max )) && harness_gap_max="$built_gap"
   _v230_lag_event network_selected_height_gap_observed n5 "$(jq -nc --argjson gap "$built_gap" --argjson required "$min_selected_gap" --argjson target "$target_gap" '{gap:$gap,required_gap:$required,target_gap_with_margin:$target}')"
   _v230_lag_event miners_stopped_at_gap "" "$(jq -nc --argjson height "$network_height" '{network_selected_height:$height}')"
 
