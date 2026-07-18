@@ -146,6 +146,39 @@ fn sync_status_category(
     )
 }
 
+fn consensus_status_category(
+    chain_anchor_valid: bool,
+    physical_genesis_present: bool,
+    selected_tip_available: bool,
+    accepted_blocks: u64,
+    rejected_blocks: u64,
+) -> ReadinessCategory {
+    status_reasons(
+        if !chain_anchor_valid {
+            vec![
+                "neither physical genesis nor a validated compact-prune checkpoint anchors the chain"
+                    .to_string(),
+            ]
+        } else if !selected_tip_available {
+            vec!["no deterministic selected tip is available".to_string()]
+        } else {
+            Vec::new()
+        },
+        if rejected_blocks > accepted_blocks && rejected_blocks > 0 {
+            vec![format!(
+                "rejected blocks ({rejected_blocks}) exceed accepted blocks ({accepted_blocks}) since startup"
+            )]
+        } else {
+            Vec::new()
+        },
+        if physical_genesis_present {
+            "consensus tip selection and physical genesis anchor are available"
+        } else {
+            "consensus tip selection and validated compact-prune anchor are available"
+        },
+    )
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ReadinessDimensions {
     node_operational_ready: bool,
@@ -363,6 +396,10 @@ pub async fn get_readiness<S: RpcStateLike>(
             return Json(ApiResponse::err("STATE_LOCK_BUSY", e));
         }
     };
+    let chain_anchor_valid = match state.storage().chain_anchor_valid(&chain) {
+        Ok(valid) => valid,
+        Err(e) => return Json(ApiResponse::err("STORAGE_ERROR", e.to_string())),
+    };
     let runtime_handle = state.runtime();
     let runtime = match read_runtime_for_rpc(&runtime_handle, "/readiness").await {
         Ok(runtime) => runtime,
@@ -444,25 +481,12 @@ pub async fn get_readiness<S: RpcStateLike>(
 
     categories.insert(
         "consensus".to_string(),
-        status_reasons(
-            if !chain.dag.blocks.contains_key(&chain.dag.genesis_hash) {
-                vec!["genesis block missing from in-memory dag".to_string()]
-            } else if selected_tip.is_none() {
-                vec!["no deterministic selected tip is available".to_string()]
-            } else {
-                Vec::new()
-            },
-            if runtime.pulsedag_blocks_rejected_total > runtime.pulsedag_blocks_accepted_total
-                && runtime.pulsedag_blocks_rejected_total > 0
-            {
-                vec![format!(
-                    "rejected blocks ({}) exceed accepted blocks ({}) since startup",
-                    runtime.pulsedag_blocks_rejected_total, runtime.pulsedag_blocks_accepted_total
-                )]
-            } else {
-                Vec::new()
-            },
-            "consensus tip selection and genesis anchor are available",
+        consensus_status_category(
+            chain_anchor_valid,
+            chain.dag.blocks.contains_key(&chain.dag.genesis_hash),
+            selected_tip.is_some(),
+            runtime.pulsedag_blocks_accepted_total,
+            runtime.pulsedag_blocks_rejected_total,
         ),
     );
     if chain.dag.consensus_mode == pulsedag_core::ConsensusMode::GhostdagDev {
@@ -1047,6 +1071,30 @@ mod tests {
 
         assert_eq!(category.status, ReadinessStatus::Fail);
         assert!(category.reasons[0].contains("missing parent recovery stalled"));
+    }
+
+    #[test]
+    fn consensus_readiness_accepts_valid_compact_prune_anchor() {
+        let category = consensus_status_category(true, false, true, 100, 0);
+
+        assert_eq!(category.status, ReadinessStatus::Pass);
+        assert!(category.reasons[0].contains("compact-prune anchor"));
+    }
+
+    #[test]
+    fn consensus_readiness_rejects_missing_chain_anchor() {
+        let category = consensus_status_category(false, false, true, 100, 0);
+
+        assert_eq!(category.status, ReadinessStatus::Fail);
+        assert!(category.reasons[0].contains("neither physical genesis"));
+    }
+
+    #[test]
+    fn consensus_readiness_preserves_rejection_warning() {
+        let category = consensus_status_category(true, true, true, 1, 2);
+
+        assert_eq!(category.status, ReadinessStatus::Warn);
+        assert!(category.reasons[0].contains("rejected blocks (2)"));
     }
 
     #[test]
