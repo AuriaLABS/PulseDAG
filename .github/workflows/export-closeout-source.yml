@@ -1,6 +1,9 @@
 name: export-closeout-source
 
 on:
+  pull_request:
+    branches:
+      - main
   push:
     branches:
       - agent/fix-selected-segment-durability-closeout
