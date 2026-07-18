@@ -1,0 +1,122 @@
+name: v2.2.20 PR 755 final closeout
+
+on:
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-755-v2-2-20-final-acff84f4bfd76112c717cd773d718c798cf3997a
+  cancel-in-progress: false
+
+env:
+  CANDIDATE_SHA: acff84f4bfd76112c717cd773d718c798cf3997a
+
+jobs:
+  workspace:
+    uses: ./.github/workflows/v2_3_0_workspace_validation.yml
+    with:
+      candidate_sha: acff84f4bfd76112c717cd773d718c798cf3997a
+      test_compile_timeout_minutes: '30'
+      package_test_timeout_minutes: '10'
+      p2p_real_runtime_test_timeout_seconds: '120'
+      test_threads: '1'
+      check_timeout_minutes: '20'
+      clippy_timeout_minutes: '30'
+
+  staged-network:
+    needs: workspace
+    uses: ./.github/workflows/v2_3_0_staged_network_gate.yml
+    with:
+      candidate_sha: acff84f4bfd76112c717cd773d718c798cf3997a
+      duration_secs: '600'
+      quiescence_wait_secs: '180'
+
+  mempool-relay:
+    needs: workspace
+    uses: ./.github/workflows/v2_3_0_mempool_tx_relay_gate.yml
+    with:
+      candidate_sha: acff84f4bfd76112c717cd773d718c798cf3997a
+      evidence_mode: runtime-closeout
+
+  lag-injection:
+    needs: workspace
+    uses: ./.github/workflows/v2_3_0_lag_injection_gate.yml
+    with:
+      candidate_sha: acff84f4bfd76112c717cd773d718c798cf3997a
+      evidence_mode: runtime-closeout
+      min_selected_gap: '96'
+
+  prune-restart-rejoin:
+    needs: workspace
+    uses: ./.github/workflows/v2_3_0_prune_restart_rejoin_gate.yml
+    with:
+      candidate_sha: acff84f4bfd76112c717cd773d718c798cf3997a
+      evidence_mode: runtime-closeout
+
+  final-decision:
+    name: v2.2.20 closeout decision
+    if: always()
+    needs:
+      - workspace
+      - staged-network
+      - mempool-relay
+      - lag-injection
+      - prune-restart-rejoin
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Create final closeout manifest
+        shell: bash
+        env:
+          WORKSPACE_RESULT: ${{ needs.workspace.result }}
+          STAGED_RESULT: ${{ needs.staged-network.result }}
+          MEMPOOL_RESULT: ${{ needs.mempool-relay.result }}
+          LAG_RESULT: ${{ needs.lag-injection.result }}
+          PRUNE_RESULT: ${{ needs.prune-restart-rejoin.result }}
+        run: |
+          set -euo pipefail
+          mkdir -p ci-evidence/v2.2.20-final-closeout
+          python3 - <<'PY'
+          import json, os, pathlib
+          results = {
+              "workspace": os.environ["WORKSPACE_RESULT"],
+              "staged_network_1m_2m_4m": os.environ["STAGED_RESULT"],
+              "mempool_transaction_relay": os.environ["MEMPOOL_RESULT"],
+              "selected_segment_lag_injection": os.environ["LAG_RESULT"],
+              "prune_restart_rejoin": os.environ["PRUNE_RESULT"],
+          }
+          passed = all(value == "success" for value in results.values())
+          manifest = {
+              "gate": "v2.2.20-final-closeout",
+              "requested_candidate": "acff84f4bfd76112c717cd773d718c798cf3997a",
+              "mode": "runtime-closeout",
+              "results": results,
+              "result": "PASS" if passed else "FAIL",
+              "closeout_eligible": passed,
+              "decision": "GO_TO_START_V2_3_0_REVIEW" if passed else "NO_GO",
+              "public_testnet_ready": False,
+              "thirty_day_public_testnet_clock_started": False,
+          }
+          path = pathlib.Path("ci-evidence/v2.2.20-final-closeout/evidence_manifest.json")
+          path.write_text(json.dumps(manifest, indent=2) + "\n")
+          PY
+          sha256sum ci-evidence/v2.2.20-final-closeout/evidence_manifest.json \
+            > ci-evidence/v2.2.20-final-closeout/SHA256SUMS
+
+      - name: Upload final closeout evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v2_2_20_pr755_final_closeout_${{ github.run_id }}
+          path: ci-evidence/v2.2.20-final-closeout
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Enforce final closeout decision
+        run: |
+          set -euo pipefail
+          jq -e '.result == "PASS" and .closeout_eligible == true and .decision == "GO_TO_START_V2_3_0_REVIEW" and .public_testnet_ready == false and .thirty_day_public_testnet_clock_started == false' \
+            ci-evidence/v2.2.20-final-closeout/evidence_manifest.json >/dev/null
