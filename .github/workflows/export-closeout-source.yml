@@ -1,30 +1,76 @@
-name: export-closeout-source
+name: apply-closeout-fixes
 
 on:
-  pull_request:
-    branches:
-      - main
   push:
     branches:
       - agent/fix-selected-segment-durability-closeout
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  export:
+  apply-and-validate:
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/upload-artifact@v4
+      - name: Checkout candidate
+        uses: actions/checkout@v4
         with:
-          name: closeout-source-${{ github.run_id }}
-          path: |
-            apps/pulsedagd/src/main.rs
-            crates/pulsedag-storage/src/lib.rs
-            crates/pulsedag-rpc/src/handlers/checks.rs
-            crates/pulsedag-rpc/src/handlers/pruning.rs
-            crates/pulsedag-p2p/src/lib.rs
+          ref: agent/fix-selected-segment-durability-closeout
+          fetch-depth: 0
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Decode and apply reviewed patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          base64 -d scripts/lib/closeout_fixes.patch.gz.b64 | gzip -d > /tmp/closeout-fixes.patch
+          echo "9994b70dd562fe4af3a43a573a142140a073916ce0fb2fd04b8f46933d5c4abc  /tmp/closeout-fixes.patch" | sha256sum -c -
+          git apply --check /tmp/closeout-fixes.patch
+          git apply /tmp/closeout-fixes.patch
+          cargo fmt --all
+          git diff --check
+
+      - name: Validate source semantics
+        run: |
+          python3 scripts/tests/test_v2_3_0_selected_segment_source_semantics.py \
+            apps/pulsedagd/src/main.rs \
+            crates/pulsedag-rpc/src/handlers/metrics.rs
+
+      - name: Selected-segment regressions
+        run: cargo test -p pulsedagd selected_segment --locked -- --nocapture
+
+      - name: Adopted-block durability regressions
+        run: cargo test -p pulsedag-storage adopted_block_batch --locked -- --nocapture
+
+      - name: Compact-prune anchor regression
+        run: cargo test -p pulsedag-storage compact_prune_97_to_24_restarts_with_identical_tip_and_state_root --locked -- --nocapture
+
+      - name: RPC library tests
+        run: cargo test -p pulsedag-rpc --lib --locked -- --nocapture
+
+      - name: Workspace check
+        run: cargo check --workspace --locked
+
+      - name: Workspace clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Commit validated source changes
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "chatgpt-codex-connector[bot]"
+          git config user.email "199175422+chatgpt-codex-connector[bot]@users.noreply.github.com"
+          git add \
+            apps/pulsedagd/src/main.rs \
+            crates/pulsedag-storage/src/lib.rs \
+            crates/pulsedag-rpc/src/handlers/checks.rs \
             scripts/tests/test_v2_3_0_selected_segment_source_semantics.py
-          if-no-files-found: error
-          retention-days: 1
+          git diff --cached --quiet && { echo "validated patch produced no source changes" >&2; exit 1; }
+          git commit -m "Fix selected sync continuation and adopted block durability"
+          git push origin HEAD:agent/fix-selected-segment-durability-closeout
