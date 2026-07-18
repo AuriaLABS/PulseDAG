@@ -8,7 +8,10 @@ use crate::{
     },
     expected_difficulty,
     mining::{current_ts, is_coinbase},
-    selection::{calculate_selected_parent, rebuild_selected_chain_from_tip, sorted_tip_hashes},
+    selection::{
+        calculate_selected_parent, preferred_tip_hash, rebuild_selected_chain_from_tip,
+        sorted_tip_hashes,
+    },
     state::ChainState,
     tx::{compute_txid, verify_transaction_signatures},
     types::{compute_block_hash, compute_merkle_root, Block, Hash, OutPoint, Transaction},
@@ -369,6 +372,18 @@ pub fn parent_state_context(block: &Block, state: &ChainState) -> Result<ChainSt
             parent_hash: parent_hash.clone(),
         })?;
 
+    // The live UTXO set is already the canonical state at the preferred tip. Replaying
+    // from genesis is both unnecessary and incorrect after compact pruning, where older
+    // selected-chain blocks are intentionally absent while the snapshot UTXO remains
+    // authoritative. Keep replay for side-branch parents, whose historical context must
+    // still be rebuilt independently.
+    if preferred_tip_hash(state).as_ref() == Some(&parent_hash) {
+        let mut context = state.clone();
+        context.mempool.transactions.clear();
+        context.mempool.spent_outpoints.clear();
+        return Ok(context);
+    }
+
     let mut context = crate::genesis::init_chain_state(state.chain_id.clone());
     context.dag.consensus_mode = state.dag.consensus_mode;
     context.dag.selected_parent_policy = state.dag.selected_parent_policy;
@@ -455,6 +470,7 @@ mod tests {
     use crate::{
         accept::{accept_transaction_with_result, AcceptSource, TxAcceptanceResult},
         apply::apply_block,
+        compact_snapshot_to_retained_blocks,
         genesis::{genesis_transaction, init_chain_state},
         mining::{
             build_candidate_block, build_coinbase_transaction, refresh_block_consensus_ids,
@@ -1193,6 +1209,34 @@ mod tests {
             }
             other => panic!("expected invalid state root, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn compact_pruned_selected_tip_validates_next_block_from_snapshot_utxo() {
+        let mut state = init_chain_state("compact-pruned-parent-context".to_string());
+        for nonce in 1..=20 {
+            let block = mined_next_block(&state, 1, 500 + nonce);
+            apply_block(&block, &mut state).unwrap();
+        }
+
+        let keep_from_height = state.dag.best_height.saturating_sub(3);
+        let retained_blocks = state
+            .dag
+            .blocks
+            .values()
+            .filter(|block| block.header.height >= keep_from_height)
+            .cloned()
+            .collect::<Vec<_>>();
+        let compact = compact_snapshot_to_retained_blocks(state, &retained_blocks).unwrap();
+        assert!(!compact.dag.blocks.contains_key(&compact.dag.genesis_hash));
+
+        let next = mined_next_block(&compact, 1, 900);
+        assert!(validate_block(&next, &compact).is_ok());
+        let context = parent_state_context(&next, &compact).unwrap();
+        assert_eq!(
+            compute_post_state_root(&next, &context).unwrap(),
+            next.header.state_root
+        );
     }
 
     #[test]
