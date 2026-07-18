@@ -9,17 +9,17 @@ permissions:
   contents: read
 
 concurrency:
-  group: pr-755-v2-2-20-final-7e5622cd79e03cf8df009bc5056a9484b83fa73d
+  group: pr-755-v2-2-20-final-ebd825a3aecde90cacdb6ed5279cebd35783ed39
   cancel-in-progress: false
 
 env:
-  CANDIDATE_SHA: 7e5622cd79e03cf8df009bc5056a9484b83fa73d
+  CANDIDATE_SHA: ebd825a3aecde90cacdb6ed5279cebd35783ed39
 
 jobs:
   workspace:
     uses: ./.github/workflows/v2_3_0_workspace_validation.yml
     with:
-      candidate_sha: 7e5622cd79e03cf8df009bc5056a9484b83fa73d
+      candidate_sha: ebd825a3aecde90cacdb6ed5279cebd35783ed39
       test_compile_timeout_minutes: '30'
       package_test_timeout_minutes: '10'
       p2p_real_runtime_test_timeout_seconds: '120'
@@ -31,7 +31,7 @@ jobs:
     needs: workspace
     uses: ./.github/workflows/v2_3_0_staged_network_gate.yml
     with:
-      candidate_sha: 7e5622cd79e03cf8df009bc5056a9484b83fa73d
+      candidate_sha: ebd825a3aecde90cacdb6ed5279cebd35783ed39
       duration_secs: '600'
       quiescence_wait_secs: '180'
 
@@ -39,14 +39,14 @@ jobs:
     needs: workspace
     uses: ./.github/workflows/v2_3_0_mempool_tx_relay_gate.yml
     with:
-      candidate_sha: 7e5622cd79e03cf8df009bc5056a9484b83fa73d
+      candidate_sha: ebd825a3aecde90cacdb6ed5279cebd35783ed39
       evidence_mode: runtime-closeout
 
   lag-injection:
     needs: workspace
     uses: ./.github/workflows/v2_3_0_lag_injection_gate.yml
     with:
-      candidate_sha: 7e5622cd79e03cf8df009bc5056a9484b83fa73d
+      candidate_sha: ebd825a3aecde90cacdb6ed5279cebd35783ed39
       evidence_mode: runtime-closeout
       min_selected_gap: '96'
 
@@ -54,7 +54,7 @@ jobs:
     needs: workspace
     uses: ./.github/workflows/v2_3_0_prune_restart_rejoin_gate.yml
     with:
-      candidate_sha: 7e5622cd79e03cf8df009bc5056a9484b83fa73d
+      candidate_sha: ebd825a3aecde90cacdb6ed5279cebd35783ed39
       evidence_mode: runtime-closeout
 
   final-decision:
@@ -91,7 +91,7 @@ jobs:
           passed = all(value == "success" for value in results.values())
           manifest = {
               "gate": "v2.2.20-final-closeout",
-              "requested_candidate": "7e5622cd79e03cf8df009bc5056a9484b83fa73d",
+              "requested_candidate": "ebd825a3aecde90cacdb6ed5279cebd35783ed39",
               "mode": "runtime-closeout",
               "results": results,
               "result": "PASS" if passed else "FAIL",
