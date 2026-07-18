@@ -1,9 +1,9 @@
 name: PR 755 source snapshot
 
 on:
-  push:
+  pull_request:
     branches:
-      - agent/fix-selected-segment-durability-closeout
+      - main
 
 permissions:
   contents: read
@@ -14,6 +14,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 1
       - name: Archive source tree
         shell: bash
@@ -23,7 +24,7 @@ jobs:
       - name: Upload source tree
         uses: actions/upload-artifact@v4
         with:
-          name: pulsedag-pr755-source-${{ github.sha }}
+          name: pulsedag-pr755-source-${{ github.event.pull_request.head.sha }}
           path: pulsedag-pr755-source.tar.gz
           if-no-files-found: error
           retention-days: 7
