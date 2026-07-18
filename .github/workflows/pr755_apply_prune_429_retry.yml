@@ -1,0 +1,72 @@
+name: Apply PR 755 bounded prune miner retry
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - .github/patches/pr755_prune_429_retry.patch
+      - .github/workflows/pr755_apply_prune_429_retry.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: pr755-bounded-prune-miner-retry
+  cancel-in-progress: true
+
+jobs:
+  apply-and-validate:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/fix-selected-segment-durability-closeout
+          fetch-depth: 0
+      - name: Apply focused harness patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! grep -q 'v2_3_0_prune_miner_retryable_log' scripts/lib/v2_3_0_prune_restart_rejoin_harness.sh; then
+            git apply --check .github/patches/pr755_prune_429_retry.patch
+            git apply .github/patches/pr755_prune_429_retry.patch
+          fi
+      - name: Validate bounded retry semantics
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash -n scripts/lib/v2_3_0_prune_restart_rejoin_harness.sh
+          source scripts/lib/v2_3_0_prune_restart_rejoin_harness.sh
+          retry_log="$(mktemp)"
+          fatal_log="$(mktemp)"
+          trap 'rm -f "$retry_log" "$fatal_log"' EXIT
+          printf 'HTTP status client error (429 Too Many Requests)\n' > "$retry_log"
+          printf 'state root mismatch\n' > "$fatal_log"
+          v2_3_0_prune_miner_retryable_log "$retry_log"
+          if v2_3_0_prune_miner_retryable_log "$fatal_log"; then
+            echo 'non-429 failure was incorrectly classified as retryable' >&2
+            exit 1
+          fi
+          grep -q 'V2_3_0_MINER_429_MAX_ATTEMPTS:-20' scripts/lib/v2_3_0_prune_restart_rejoin_harness.sh
+          grep -q 'V2_3_0_MINER_429_RETRY_WAIT_SECS:-3' scripts/lib/v2_3_0_prune_restart_rejoin_harness.sh
+          grep -q 'minimum offline advance must be at least 64' scripts/lib/v2_3_0_prune_restart_rejoin_harness.sh
+          grep -q 'offline_advance >= min_offline' scripts/lib/v2_3_0_prune_restart_rejoin_harness.sh
+      - name: Run compact-prune regression
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked -p pulsedag-storage compact_prune_97_to_24_restarts_with_identical_tip_and_state_root
+      - name: Publish validated harness fix
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --quiet; then
+            echo 'Bounded prune miner retry already published'
+            exit 0
+          fi
+          git config user.name "chatgpt-codex-connector[bot]"
+          git config user.email "199175422+chatgpt-codex-connector[bot]@users.noreply.github.com"
+          git add scripts/lib/v2_3_0_prune_restart_rejoin_harness.sh
+          git commit -m "ci: retry transient prune miner rate limits"
+          git pull --rebase origin agent/fix-selected-segment-durability-closeout
+          git push origin HEAD:agent/fix-selected-segment-durability-closeout
