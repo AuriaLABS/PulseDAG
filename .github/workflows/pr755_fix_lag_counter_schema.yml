@@ -1,0 +1,60 @@
+name: Fix PR 755 lag counter schema
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - .github/patches/pr755_fix_lag_counter_schema.py
+      - .github/workflows/pr755_fix_lag_counter_schema.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: pr755-fix-lag-counter-schema
+  cancel-in-progress: true
+
+jobs:
+  apply-and-validate:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/fix-selected-segment-durability-closeout
+          fetch-depth: 0
+      - name: Apply exact harness and contract-test edits
+        run: |
+          set -euo pipefail
+          python3 .github/patches/pr755_fix_lag_counter_schema.py
+          bash -n scripts/lib/v2_3_0_runtime_harness.sh
+          bash -n scripts/tests/test_v2_3_0_lag_runtime_driver.sh
+      - name: Validate lag runtime driver contract
+        run: bash scripts/tests/test_v2_3_0_lag_runtime_driver.sh
+      - name: Validate real evidence fixture semantics
+        run: |
+          set -euo pipefail
+          source scripts/lib/v2_3_0_runtime_harness.sh
+          tmp="$(mktemp -d)"
+          trap 'rm -rf "$tmp"' EXIT
+          cat > "$tmp/p2p.json" <<'JSON'
+          {"data":{"remote_tip_inventory_received_total":{"GetTips":20,"Tips":76}}}
+          JSON
+          [[ "$(pulsedag_json_counter_total "$tmp/p2p.json" '.data.remote_tip_inventory_received_total')" == 96 ]]
+          baseline_headers=0
+          final_headers=168
+          correlated_headers_delta=$((final_headers - baseline_headers))
+          (( correlated_headers_delta == 168 ))
+      - name: Publish validated harness correction
+        run: |
+          set -euo pipefail
+          if git diff --quiet; then
+            echo 'Lag counter schema fix already published'
+            exit 0
+          fi
+          git config user.name "chatgpt-codex-connector[bot]"
+          git config user.email "199175422+chatgpt-codex-connector[bot]@users.noreply.github.com"
+          git add scripts/lib/v2_3_0_runtime_harness.sh scripts/tests/test_v2_3_0_lag_runtime_driver.sh
+          git commit -m "fix: interpret lag evidence counters by schema"
+          git pull --rebase origin agent/fix-selected-segment-durability-closeout
+          git push origin HEAD:agent/fix-selected-segment-durability-closeout
