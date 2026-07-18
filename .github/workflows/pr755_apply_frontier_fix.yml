@@ -1,12 +1,9 @@
 name: Apply PR 755 frontier reconciliation fix
 
 on:
-  push:
+  pull_request:
     branches:
-      - agent/fix-selected-segment-durability-closeout
-    paths:
-      - .github/patches/pr755_frontier_reconcile.patch
-      - .github/workflows/pr755_apply_frontier_fix.yml
+      - main
 
 permissions:
   contents: write
