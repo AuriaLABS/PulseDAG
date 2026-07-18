@@ -21,22 +21,32 @@ if "pulsedag_json_counter_total()" not in harness:
         raise SystemExit("top-level JSON helper anchor not found")
     harness = harness.replace(anchor, anchor + helper, 1)
 
-received_old = '''_v230_lag_json_num "$out_dir/endpoints/pre_isolation/n5-p2p-status.json" '.data.remote_tip_inventory_received_total' '''.strip()
-received_new = '''pulsedag_json_counter_total "$out_dir/endpoints/pre_isolation/n5-p2p-status.json" '.data.remote_tip_inventory_received_total' '''.strip()
-if received_old in harness:
-    harness = harness.replace(received_old, received_new, 1)
-elif received_new not in harness:
-    raise SystemExit("baseline remote inventory counter anchor not found")
-
-recovery_old = '''_v230_lag_json_num "$p2p_file" '.data.remote_tip_inventory_received_total' '''.strip()
-recovery_new = '''pulsedag_json_counter_total "$p2p_file" '.data.remote_tip_inventory_received_total' '''.strip()
-count = harness.count(recovery_old)
-if count == 2:
-    harness = harness.replace(recovery_old, recovery_new)
-elif count == 0 and harness.count(recovery_new) == 2:
-    pass
-else:
-    raise SystemExit(f"expected two recovery/final remote counter anchors, found {count}")
+replacements = [
+    (
+        '''_v230_lag_json_num "$out_dir/endpoints/pre_isolation/n5-p2p-status.json" '.data.remote_tip_inventory_received_total' '''.strip(),
+        '''pulsedag_json_counter_total "$out_dir/endpoints/pre_isolation/n5-p2p-status.json" '.data.remote_tip_inventory_received_total' '''.strip(),
+        "baseline remote inventory counter",
+    ),
+    (
+        '''_v230_lag_json_num "$p2p_file" '.data.remote_tip_inventory_received_total' '''.strip(),
+        '''pulsedag_json_counter_total "$p2p_file" '.data.remote_tip_inventory_received_total' '''.strip(),
+        "recovery remote inventory counter",
+    ),
+    (
+        '''_v230_lag_json_num "$n5_p2p" '.data.remote_tip_inventory_received_total' '''.strip(),
+        '''pulsedag_json_counter_total "$n5_p2p" '.data.remote_tip_inventory_received_total' '''.strip(),
+        "final remote inventory counter",
+    ),
+]
+for old, new, label in replacements:
+    old_count = harness.count(old)
+    new_count = harness.count(new)
+    if old_count == 1 and new_count == 0:
+        harness = harness.replace(old, new, 1)
+    elif old_count == 0 and new_count == 1:
+        pass
+    else:
+        raise SystemExit(f"{label} anchor mismatch: old={old_count} new={new_count}")
 
 seen_old = '''    if (( seen_headers == 0 && final_headers_received > baseline_headers_received && final_headers_received - baseline_headers_received > final_uncorrelated_headers - baseline_uncorrelated_headers )); then
 '''
