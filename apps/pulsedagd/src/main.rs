@@ -4660,8 +4660,10 @@ async fn main() -> Result<()> {
                                         )
                                     };
                                     let selected_limits = SelectedSegmentLimits::default();
-                                    let selected_locator_peer =
-                                        selected_locator_peer_for_reconcile(&status, &local_inventory);
+                                    let selected_locator_peer = selected_locator_peer_for_reconcile(
+                                        &status,
+                                        &local_inventory,
+                                    );
                                     let selected_locator_needed = selected_locator_peer.is_some();
                                     let selected_locator_request_id = {
                                         let guard = selected_segment_locator_state.lock().await;
@@ -4690,8 +4692,10 @@ async fn main() -> Result<()> {
                                                 }
                                             });
                                     } else if !selected_locator_needed {
-                                        selected_segment_locator_state.lock().await.pending_locator =
-                                            None;
+                                        selected_segment_locator_state
+                                            .lock()
+                                            .await
+                                            .pending_locator = None;
                                     }
                                     let requested = p2p.request_tips().is_ok();
                                     let mut rt = runtime.write().await;
