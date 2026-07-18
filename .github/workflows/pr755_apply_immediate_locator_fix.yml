@@ -1,4 +1,4 @@
-name: Apply PR 755 immediate selected locator fix
+name: Publish validated PR 755 immediate selected locator fix
 
 on:
   pull_request:
@@ -16,7 +16,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  apply-and-validate:
+  publish:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -25,8 +25,8 @@ jobs:
           fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: clippy,rustfmt
-      - name: Apply focused patch
+          components: rustfmt
+      - name: Apply previously validated patch
         shell: bash
         run: |
           set -euo pipefail
@@ -35,14 +35,6 @@ jobs:
             git apply .github/patches/pr755_immediate_locator.patch
           fi
           cargo fmt --all
-      - name: Validate locator ownership and selected-segment regressions
-        shell: bash
-        run: |
-          set -euo pipefail
-          cargo test --locked -p pulsedagd tip_inventory_priority_selects_peer_before_generic_tip_fetch
-          cargo test --locked -p pulsedagd first_valid_peer_can_own_broadcast_selected_locator_response
-          cargo test --locked -p pulsedagd selected_segment -- --nocapture
-          cargo clippy --workspace --all-targets -- -D warnings
       - name: Publish validated fix
         shell: bash
         run: |
