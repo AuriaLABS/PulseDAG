@@ -19,12 +19,27 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy,rustfmt
-      - name: Apply focused patch
+      - name: Apply focused source edit
         shell: bash
         run: |
           set -euo pipefail
-          git apply --check .github/patches/pr755_clippy_test_init.patch
-          git apply .github/patches/pr755_clippy_test_init.patch
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('crates/pulsedag-rpc/src/handlers/readiness.rs')
+          text = path.read_text()
+          replacements = {
+              '        let mut runtime = crate::api::NodeRuntimeStats::default();\n        runtime.sync_state = "selected_segment_complete".to_string();':
+              '        let mut runtime = crate::api::NodeRuntimeStats {\n            sync_state: "selected_segment_complete".to_string(),\n            ..Default::default()\n        };',
+              '        let mut runtime = crate::api::NodeRuntimeStats::default();\n        runtime.sync_state = "degraded".to_string();':
+              '        let mut runtime = crate::api::NodeRuntimeStats {\n            sync_state: "degraded".to_string(),\n            ..Default::default()\n        };',
+          }
+          for old, new in replacements.items():
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'expected one source match, found {count}: {old!r}')
+              text = text.replace(old, new)
+          path.write_text(text)
+          PY
           cargo fmt --all
       - name: Validate tests and clippy
         shell: bash
