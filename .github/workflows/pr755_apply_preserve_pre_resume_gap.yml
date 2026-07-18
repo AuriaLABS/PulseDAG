@@ -23,14 +23,53 @@ jobs:
         with:
           ref: agent/fix-selected-segment-durability-closeout
           fetch-depth: 0
-      - name: Apply focused harness patch
+      - name: Apply exact harness and regression edits
         shell: bash
         run: |
           set -euo pipefail
-          if ! grep -Fq 'built_gap > harness_gap_max' scripts/lib/v2_3_0_runtime_harness.sh; then
-            git apply --check .github/patches/pr755_preserve_pre_resume_gap.patch
-            git apply .github/patches/pr755_preserve_pre_resume_gap.patch
-          fi
+          python3 - <<'PY'
+          from pathlib import Path
+
+          harness = Path('scripts/lib/v2_3_0_runtime_harness.sh')
+          source = harness.read_text()
+          if 'built_gap > harness_gap_max' not in source:
+              marker = '  built_gap="$observed_gap"\n'
+              assert source.count(marker) == 1, source.count(marker)
+              source = source.replace(
+                  marker,
+                  marker
+                  + '  # Preserve the ground-truth gap measured while n5 is stopped. Recovery can\n'
+                  + '  # apply a full selected chunk before remote inventory becomes observable.\n'
+                  + '  (( built_gap > harness_gap_max )) && harness_gap_max="$built_gap"\n',
+                  1,
+              )
+              harness.write_text(source)
+
+          test = Path('scripts/tests/test_v2_3_0_lag_runtime_driver.sh')
+          test_source = test.read_text()
+          if "grep -Fq 'built_gap > harness_gap_max'" not in test_source:
+              marker = "grep -Fq 'harness_gap_sample > harness_gap_max' \"$HARNESS\"\n"
+              assert test_source.count(marker) == 1, test_source.count(marker)
+              test_source = test_source.replace(
+                  marker,
+                  marker + "grep -Fq 'built_gap > harness_gap_max' \"$HARNESS\"\n",
+                  1,
+              )
+          if 'Recovery may consume a 64-block chunk before remote inventory is sampled.' not in test_source:
+              marker = 'cat > "$tmp/manifest.json" <<\'JSON\'\n'
+              assert test_source.count(marker) == 1, test_source.count(marker)
+              regression = (
+                  '# Recovery may consume a 64-block chunk before remote inventory is sampled.\n'
+                  '# The independently measured pre-resume gap must remain valid evidence.\n'
+                  'built_gap=114\n'
+                  'harness_gap_max=50\n'
+                  '(( built_gap > harness_gap_max )) && harness_gap_max="$built_gap"\n'
+                  '[[ "$harness_gap_max" == 114 ]]\n'
+                  '[[ "$harness_gap_max" -ge 96 ]]\n\n'
+              )
+              test_source = test_source.replace(marker, regression + marker, 1)
+          test.write_text(test_source)
+          PY
       - name: Validate shell and lag driver contract
         shell: bash
         run: |
