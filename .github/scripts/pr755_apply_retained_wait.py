@@ -1,0 +1,54 @@
+from pathlib import Path
+
+harness = Path("scripts/lib/v2_3_0_runtime_harness.sh")
+source = harness.read_text()
+start_marker = "  _v230_lag_wait_converged_subset() {\n"
+end_marker = "  _v230_lag_kill_stopped_node_sockets() {\n"
+start = source.index(start_marker)
+end = source.index(end_marker, start)
+replacement = r'''  _v230_lag_wait_converged_subset() {
+    local nodes="$1" timeout="$2" deadline idx file checks_file height tip digest memory_count persisted_count coherent heights="" tips="" digests=""
+    deadline=$(( $(date +%s) + timeout ))
+    while (( $(date +%s) < deadline )); do
+      heights=""; tips=""; digests=""
+      local storage_ok=1
+      for idx in $nodes; do
+        file="$out_dir/endpoints/converge-n${idx}.json"
+        checks_file="$out_dir/endpoints/converge-n${idx}-checks.json"
+        curl -fsS --connect-timeout 1 --max-time 5 "$(_v230_lag_rpc_url "$idx")/status" > "$file.tmp" 2>/dev/null && mv "$file.tmp" "$file" || { heights+=" 0"; tips+=$'\n'; digests+=$'\n'; storage_ok=0; continue; }
+        curl -fsS --connect-timeout 1 --max-time 5 "$(_v230_lag_rpc_url "$idx")/checks" > "$checks_file.tmp" 2>/dev/null && mv "$checks_file.tmp" "$checks_file" || { digests+=$'\n'; storage_ok=0; continue; }
+        height="$(_v230_lag_status_height "$file")"
+        tip="$(_v230_lag_status_tip "$file")"
+        digest="$(jq -r '(.data // .) as $d | ($d.checks // [] | map(select(.name == "storage_consistency")) | first // {}) as $s | $s.accepted_hash_set_digest // $d.accepted_hash_set_digest // ""' "$checks_file" 2>/dev/null || true)"
+        memory_count="$(_v230_lag_json_num "$checks_file" '(.data // .) as $d | ($d.checks // [] | map(select(.name == "storage_consistency")) | first // {}) as $s | $s.in_memory_dag_count // $s.memory_count // $d.in_memory_dag_count // $d.memory_count')"
+        persisted_count="$(_v230_lag_json_num "$checks_file" '(.data // .) as $d | ($d.checks // [] | map(select(.name == "storage_consistency")) | first // {}) as $s | $s.accepted_storage_count // $s.persisted_count // $d.accepted_storage_count // $d.persisted_count')"
+        coherent="$(jq -r '(.data // .) as $d | ($d.checks // [] | map(select(.name == "storage_consistency")) | first // {}) as $s | $s.ok // $d.overall_ok // false' "$checks_file" 2>/dev/null || echo false)"
+        [[ "$coherent" == true && "$memory_count" == "$persisted_count" && "$memory_count" -gt 0 && -n "$digest" ]] || storage_ok=0
+        heights+=" $height"
+        tips+="$tip"$'\n'
+        digests+="$digest"$'\n'
+      done
+      local distinct_heights distinct_tips distinct_digests
+      distinct_heights="$(tr ' ' '\n' <<< "$heights" | awk 'NF' | sort -u | wc -l | tr -d ' ')"
+      distinct_tips="$(printf '%s' "$tips" | awk 'NF' | sort -u | wc -l | tr -d ' ')"
+      distinct_digests="$(printf '%s' "$digests" | awk 'NF' | sort -u | wc -l | tr -d ' ')"
+      [[ "$distinct_heights" == 1 && "$distinct_tips" == 1 && "$distinct_digests" == 1 && "$storage_ok" == 1 ]] && return 0
+      sleep "$sample_interval"
+    done
+    return 1
+  }
+'''
+if "distinct_digests" not in source[start:end]:
+    harness.write_text(source[:start] + replacement + source[end:])
+
+test = Path("scripts/tests/test_v2_3_0_lag_runtime_driver.sh")
+test_source = test.read_text()
+marker = "grep -Fq 'built_gap > harness_gap_max' \"$HARNESS\"\n"
+additions = (
+    "grep -Fq 'accepted_hash_set_digest' \"$HARNESS\"\n"
+    "grep -Fq 'distinct_digests' \"$HARNESS\"\n"
+    "grep -Fq '\"$memory_count\" == \"$persisted_count\"' \"$HARNESS\"\n"
+)
+if "grep -Fq 'distinct_digests'" not in test_source:
+    assert test_source.count(marker) == 1, test_source.count(marker)
+    test.write_text(test_source.replace(marker, marker + additions, 1))
