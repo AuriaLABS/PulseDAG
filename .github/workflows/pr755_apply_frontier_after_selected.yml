@@ -1,0 +1,73 @@
+name: Apply PR 755 frontier reconciliation
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - .github/patches/pr755_frontier_after_selected.patch
+      - .github/workflows/pr755_apply_frontier_after_selected.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: pr755-frontier-after-selected
+  cancel-in-progress: true
+
+jobs:
+  apply-and-validate:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/fix-selected-segment-durability-closeout
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy,rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - name: Apply focused frontier patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! grep -q 'selected_segment_frontier_reconcile_requested' apps/pulsedagd/src/main.rs; then
+            git apply --check .github/patches/pr755_frontier_after_selected.patch
+            git apply .github/patches/pr755_frontier_after_selected.patch
+          fi
+          cargo fmt --all
+      - name: Validate selected-to-frontier transition
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked -p pulsedagd selected_segment -- --nocapture
+          cargo test --locked -p pulsedagd lag_injection -- --nocapture
+          python3 - <<'PY'
+          from pathlib import Path
+          source = Path('apps/pulsedagd/src/main.rs').read_text()
+          completion = source.index('if selected_segment_completed {')
+          clear_session = source.index('selected_segment_session = None;', completion)
+          request_tips = source.index('p2p_handle.request_tips()', clear_session)
+          frontier_stage = source.index('DagSyncStage::DagFrontierTips', request_tips)
+          event = source.index('selected_segment_frontier_reconcile_requested', frontier_stage)
+          assert completion < clear_session < request_tips < frontier_stage < event
+          observed = source.index('let observed_gap =')
+          selected_gap = source.index('rt.selected_segment_gap_blocks', observed)
+          canonical_gap = source.index('rt.network_selected_height_gap', selected_gap)
+          assert observed < selected_gap < canonical_gap
+          PY
+          cargo clippy --workspace --all-targets -- -D warnings
+      - name: Publish validated frontier fix
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --quiet; then
+            echo 'Frontier reconciliation fix already published'
+            exit 0
+          fi
+          git config user.name "chatgpt-codex-connector[bot]"
+          git config user.email "199175422+chatgpt-codex-connector[bot]@users.noreply.github.com"
+          git add apps/pulsedagd/src/main.rs
+          git commit -m "fix: reconcile DAG frontier after selected sync"
+          git pull --rebase origin agent/fix-selected-segment-durability-closeout
+          git push origin HEAD:agent/fix-selected-segment-durability-closeout
