@@ -4,6 +4,9 @@ on:
   pull_request:
     branches:
       - main
+    paths:
+      - .github/patches/pr755_immediate_locator.patch
+      - .github/workflows/pr755_apply_immediate_locator_fix.yml
 
 permissions:
   contents: write
