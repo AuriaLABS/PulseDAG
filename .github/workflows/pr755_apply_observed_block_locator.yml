@@ -27,14 +27,144 @@ jobs:
         with:
           components: clippy,rustfmt
       - uses: Swatinem/rust-cache@v2
-      - name: Apply focused locator patch
+      - name: Apply exact locator edit
         shell: bash
         run: |
           set -euo pipefail
-          if ! grep -q 'fn observed_block_requires_selected_locator' apps/pulsedagd/src/main.rs; then
-            git apply --check .github/patches/pr755_observed_block_locator.patch
-            git apply .github/patches/pr755_observed_block_locator.patch
-          fi
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('apps/pulsedagd/src/main.rs')
+          text = path.read_text()
+
+          if 'fn observed_block_requires_selected_locator(' not in text:
+              anchor = 'fn selected_locator_peer_for_reconcile(\n'
+              helper = (
+                  'fn observed_block_requires_selected_locator(\n'
+                  '    local_height: u64,\n'
+                  '    observed_height: u64,\n'
+                  '    minimum_gap: u64,\n'
+                  '    priority_active: bool,\n'
+                  ') -> bool {\n'
+                  '    !priority_active && observed_height.saturating_sub(local_height) >= minimum_gap\n'
+                  '}\n\n'
+              )
+              if text.count(anchor) != 1:
+                  raise SystemExit('unexpected helper anchor')
+              text = text.replace(anchor, helper + anchor, 1)
+
+          activation_marker = 'observed remote block gap activated selected-segment priority before missing-parent recovery'
+          if activation_marker not in text:
+              handler = '                    InboundEvent::Block(block) => {\n'
+              activation = (
+                  '                        let local_height = {\n'
+                  '                            let guard = chain.read().await;\n'
+                  '                            guard.dag.best_height\n'
+                  '                        };\n'
+                  '                        let now = now_unix();\n'
+                  '                        let priority_active = {\n'
+                  '                            let guard = selected_segment_locator_state.lock().await;\n'
+                  '                            selected_segment_recovery_has_priority(\n'
+                  '                                selected_segment_session.is_some(),\n'
+                  '                                guard\n'
+                  '                                    .pending_locator\n'
+                  '                                    .as_ref()\n'
+                  '                                    .map(|pending| pending.requested_at_unix),\n'
+                  '                                now,\n'
+                  '                            )\n'
+                  '                        };\n'
+                  '                        if observed_block_requires_selected_locator(\n'
+                  '                            local_height,\n'
+                  '                            block.header.height,\n'
+                  '                            SELECTED_SEGMENT_PRIORITY_GAP_BLOCKS,\n'
+                  '                            priority_active,\n'
+                  '                        ) {\n'
+                  '                            if let Some(ref p2p_handle) = p2p {\n'
+                  '                                let selected_locator = {\n'
+                  '                                    let guard = chain.read().await;\n'
+                  '                                    guard\n'
+                  '                                        .dag\n'
+                  '                                        .selected_chain\n'
+                  '                                        .iter()\n'
+                  '                                        .rev()\n'
+                  '                                        .take(32)\n'
+                  '                                        .cloned()\n'
+                  '                                        .collect::<Vec<_>>()\n'
+                  '                                };\n'
+                  '                                let selected_limits = SelectedSegmentLimits::default();\n'
+                  '                                let selected_locator_request_id = {\n'
+                  '                                    let guard = selected_segment_locator_state.lock().await;\n'
+                  '                                    guard.next_request_id\n'
+                  '                                };\n'
+                  '                                if p2p_handle\n'
+                  '                                    .request_headers(\n'
+                  '                                        &selected_locator,\n'
+                  '                                        None,\n'
+                  '                                        selected_limits.headers_per_chunk,\n'
+                  '                                    )\n'
+                  '                                    .is_ok()\n'
+                  '                                {\n'
+                  '                                    let mut locator_guard =\n'
+                  '                                        selected_segment_locator_state.lock().await;\n'
+                  '                                    locator_guard.next_request_id =\n'
+                  '                                        locator_guard.next_request_id.saturating_add(1);\n'
+                  '                                    locator_guard.pending_locator = Some(PendingSelectedLocator {\n'
+                  '                                        request_id: selected_locator_request_id,\n'
+                  '                                        peer_id: "broadcast-observed-block-gap".to_string(),\n'
+                  '                                        locator: selected_locator,\n'
+                  '                                        requested_at_unix: now,\n'
+                  '                                    });\n'
+                  '                                    drop(locator_guard);\n'
+                  '                                    let observed_gap =\n'
+                  '                                        block.header.height.saturating_sub(local_height);\n'
+                  '                                    let mut rt = runtime.write().await;\n'
+                  '                                    rt.selected_segment_gap_blocks =\n'
+                  '                                        rt.selected_segment_gap_blocks.max(observed_gap);\n'
+                  '                                    rt.dag_sync_selected_chain_locator_total = rt\n'
+                  '                                        .dag_sync_selected_chain_locator_total\n'
+                  '                                        .saturating_add(1);\n'
+                  '                                    rt.selected_segment_header_requests_total = rt\n'
+                  '                                        .selected_segment_header_requests_total\n'
+                  '                                        .saturating_add(1);\n'
+                  '                                    rt.header_requests_sent =\n'
+                  '                                        rt.header_requests_sent.saturating_add(1);\n'
+                  '                                    rt.sync_state = "locating_common_ancestor".to_string();\n'
+                  '                                    info!(\n'
+                  '                                        local_height,\n'
+                  '                                        observed_height = block.header.height,\n'
+                  '                                        observed_gap,\n'
+                  '                                        "observed remote block gap activated selected-segment priority before missing-parent recovery"\n'
+                  '                                    );\n'
+                  '                                }\n'
+                  '                            }\n'
+                  '                        }\n'
+              )
+              if text.count(handler) != 1:
+                  raise SystemExit('unexpected block handler anchor')
+              text = text.replace(handler, handler + activation, 1)
+
+          test_name = 'fn observed_block_gap_activates_selected_locator_before_getblock_fallback()'
+          if test_name not in text:
+              anchor = '    #[test]\n    fn tip_inventory_priority_selects_peer_before_generic_tip_fetch() {\n'
+              tests = (
+                  '    #[test]\n'
+                  '    fn observed_block_gap_activates_selected_locator_before_getblock_fallback() {\n'
+                  '        assert!(observed_block_requires_selected_locator(10, 109, 96, false));\n'
+                  '        assert!(!observed_block_requires_selected_locator(10, 105, 96, false));\n'
+                  '        assert!(!observed_block_requires_selected_locator(10, 109, 96, true));\n'
+                  '    }\n\n'
+                  '    #[test]\n'
+                  '    fn observed_block_gap_uses_saturating_height_difference() {\n'
+                  '        assert!(!observed_block_requires_selected_locator(109, 10, 96, false));\n'
+                  '        assert!(observed_block_requires_selected_locator(10, 106, 96, false));\n'
+                  '    }\n\n'
+              )
+              if text.count(anchor) != 1:
+                  raise SystemExit('unexpected test insertion anchor')
+              text = text.replace(anchor, tests + anchor, 1)
+
+          path.write_text(text)
+          PY
           cargo fmt --all
       - name: Validate pre-fallback locator activation
         shell: bash
