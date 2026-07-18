@@ -37,8 +37,23 @@ jobs:
           fi
           cargo fmt --all
       - name: Selected-segment regressions
+        id: selected
+        continue-on-error: true
         shell: bash
-        run: cargo test --locked -p pulsedagd selected_segment -- --nocapture
+        run: |
+          set -o pipefail
+          cargo test --locked -p pulsedagd selected_segment -- --nocapture 2>&1 | tee selected-segment.log
+      - name: Upload selected-segment diagnostic
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr755-selected-segment-diagnostic-${{ github.run_id }}
+          path: selected-segment.log
+          if-no-files-found: error
+      - name: Enforce selected-segment regressions
+        if: always()
+        shell: bash
+        run: test '${{ steps.selected.outcome }}' = 'success'
       - name: Lag-injection contract regressions
         shell: bash
         run: cargo test --locked -p pulsedagd lag_injection -- --nocapture
