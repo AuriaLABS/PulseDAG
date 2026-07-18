@@ -1,0 +1,131 @@
+diff --git a/apps/pulsedagd/src/main.rs b/apps/pulsedagd/src/main.rs
+--- a/apps/pulsedagd/src/main.rs
++++ b/apps/pulsedagd/src/main.rs
+@@ -75,6 +75,15 @@ fn selected_locator_peer_for_priority_gap(
+         .map(|remote| (remote.peer_id.clone(), remote.selected_height))
+ }
+ 
++fn observed_block_requires_selected_locator(
++    local_height: u64,
++    observed_height: u64,
++    minimum_gap: u64,
++    priority_active: bool,
++) -> bool {
++    !priority_active && observed_height.saturating_sub(local_height) >= minimum_gap
++}
++
+ fn selected_locator_peer_for_reconcile(
+     status: &P2pStatus,
+     local: &TipInventoryStatus,
+@@ -2710,6 +2719,78 @@ async fn main() -> Result<()> {
+                         }
+                     }
+                     InboundEvent::Block(block) => {
++                        let local_height = {
++                            let guard = chain.read().await;
++                            guard.dag.best_height
++                        };
++                        let now = now_unix();
++                        let priority_active = {
++                            let guard = selected_segment_locator_state.lock().await;
++                            selected_segment_recovery_has_priority(
++                                selected_segment_session.is_some(),
++                                guard
++                                    .pending_locator
++                                    .as_ref()
++                                    .map(|pending| pending.requested_at_unix),
++                                now,
++                            )
++                        };
++                        if observed_block_requires_selected_locator(
++                            local_height,
++                            block.header.height,
++                            SELECTED_SEGMENT_PRIORITY_GAP_BLOCKS,
++                            priority_active,
++                        ) {
++                            if let Some(ref p2p_handle) = p2p {
++                                let selected_locator = {
++                                    let guard = chain.read().await;
++                                    guard
++                                        .dag
++                                        .selected_chain
++                                        .iter()
++                                        .rev()
++                                        .take(32)
++                                        .cloned()
++                                        .collect::<Vec<_>>()
++                                };
++                                let selected_limits = SelectedSegmentLimits::default();
++                                let selected_locator_request_id = {
++                                    let guard = selected_segment_locator_state.lock().await;
++                                    guard.next_request_id
++                                };
++                                if p2p_handle
++                                    .request_headers(
++                                        &selected_locator,
++                                        None,
++                                        selected_limits.headers_per_chunk,
++                                    )
++                                    .is_ok()
++                                {
++                                    let mut locator_guard =
++                                        selected_segment_locator_state.lock().await;
++                                    locator_guard.next_request_id =
++                                        locator_guard.next_request_id.saturating_add(1);
++                                    locator_guard.pending_locator = Some(PendingSelectedLocator {
++                                        request_id: selected_locator_request_id,
++                                        peer_id: "broadcast-observed-block-gap".to_string(),
++                                        locator: selected_locator,
++                                        requested_at_unix: now,
++                                    });
++                                    drop(locator_guard);
++                                    let observed_gap =
++                                        block.header.height.saturating_sub(local_height);
++                                    let mut rt = runtime.write().await;
++                                    rt.selected_segment_gap_blocks =
++                                        rt.selected_segment_gap_blocks.max(observed_gap);
++                                    rt.dag_sync_selected_chain_locator_total = rt
++                                        .dag_sync_selected_chain_locator_total
++                                        .saturating_add(1);
++                                    rt.selected_segment_header_requests_total = rt
++                                        .selected_segment_header_requests_total
++                                        .saturating_add(1);
++                                    rt.header_requests_sent =
++                                        rt.header_requests_sent.saturating_add(1);
++                                    rt.sync_state = "locating_common_ancestor".to_string();
++                                    info!(
++                                        local_height,
++                                        observed_height = block.header.height,
++                                        observed_gap,
++                                        "observed remote block gap activated selected-segment priority before missing-parent recovery"
++                                    );
++                                }
++                            }
++                        }
+                         let final_height_reconcile_block =
+                             final_quiescence_higher_tip_requests.contains(&block.hash);
+                         let final_same_height_reconcile_block =
+@@ -5450,6 +5531,27 @@ mod tests {
+     }
+ 
+     #[test]
++    fn observed_block_gap_activates_selected_locator_before_getblock_fallback() {
++        assert!(observed_block_requires_selected_locator(10, 109, 96, false));
++        assert!(!observed_block_requires_selected_locator(10, 105, 96, false));
++        assert!(!observed_block_requires_selected_locator(10, 109, 96, true));
++    }
++
++    #[test]
++    fn observed_block_gap_uses_saturating_height_difference() {
++        assert!(!observed_block_requires_selected_locator(
++            109, 10, 96, false,
++        ));
++        assert!(observed_block_requires_selected_locator(
++            10, 106, 96, false,
++        ));
++    }
++
++    #[test]
+     fn tip_inventory_priority_selects_peer_before_generic_tip_fetch() {
+         let status = P2pStatus {
+             remote_selected_tip_inventory: vec![
