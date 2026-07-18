@@ -6,6 +6,7 @@ on:
       - main
     paths:
       - .github/patches/pr755_frontier_after_selected.patch
+      - .github/patches/pr755_apply_frontier.py
       - .github/workflows/pr755_apply_frontier_after_selected.yml
 
 permissions:
@@ -28,140 +29,17 @@ jobs:
           components: clippy,rustfmt
       - uses: Swatinem/rust-cache@v2
       - name: Apply exact frontier and canonical-gap edits
-        shell: bash
         run: |
           set -euo pipefail
-          python3 - <<'PY'
-          from pathlib import Path
-
-          main_path = Path('apps/pulsedagd/src/main.rs')
-          main = main_path.read_text()
-          if 'selected_segment_frontier_reconcile_requested' not in main:
-              old = '''                            if selected_segment_completed {
-                                  selected_segment_session = None;
-                                  selected_segment_locator_state.lock().await.pending_locator = None;
-                              }
-'''
-              new = '''                            if selected_segment_completed {
-                                  selected_segment_session = None;
-                                  selected_segment_locator_state.lock().await.pending_locator = None;
-                                  if let Some(ref p2p_handle) = p2p {
-                                      if let Err(e) = p2p_handle.request_tips() {
-                                          warn!(
-                                              error = %e,
-                                              "failed requesting DAG frontier tips after selected-segment completion"
-                                          );
-                                      } else {
-                                          let mut rt = runtime.write().await;
-                                          rt.sync_state =
-                                              DagSyncStage::DagFrontierTips.as_str().to_string();
-                                          info!(
-                                              event = "selected_segment_frontier_reconcile_requested",
-                                              "selected segment complete; requested fresh tips for lateral DAG frontier reconciliation"
-                                          );
-                                      }
-                                  }
-                              }
-'''
-              if old not in main:
-                  raise SystemExit('selected-segment completion anchor not found')
-              main = main.replace(old, new, 1)
-              main_path.write_text(main)
-
-          canonical_path = Path('crates/pulsedag-rpc/src/handlers/canonical_sync.rs')
-          canonical = canonical_path.read_text()
-          if 'fn active_selected_segment_gap' not in canonical:
-              anchor = 'fn local_selected_height(chain: &ChainState) -> u64 {'
-              helper = '''fn active_selected_segment_gap(runtime: &NodeRuntimeStats) -> u64 {
-              let selected_recovery_active = runtime.active_session_id.is_some()
-                  || matches!(
-                      runtime.sync_state.as_str(),
-                      "locating_common_ancestor"
-                          | "selected_chain_locator_sync"
-                          | "requesting_selected_headers"
-                          | "requesting_selected_blocks"
-                          | "applying_selected_segment"
-                  );
-              if selected_recovery_active {
-                  runtime.selected_segment_gap_blocks
-              } else {
-                  0
-              }
-          }
-
-          '''
-              if anchor not in canonical:
-                  raise SystemExit('canonical helper anchor not found')
-              canonical = canonical.replace(anchor, helper + anchor, 1)
-
-              old_gap = '''    let network_selected_height_gap = best_remote_selected_height
-                  .unwrap_or(local_selected_height)
-                  .saturating_sub(local_selected_height);
-          '''
-              new_gap = '''    let instantaneous_network_selected_height_gap = best_remote_selected_height
-                  .unwrap_or(local_selected_height)
-                  .saturating_sub(local_selected_height);
-              let network_selected_height_gap = instantaneous_network_selected_height_gap
-                  .max(active_selected_segment_gap(runtime));
-          '''
-              if old_gap not in canonical:
-                  raise SystemExit('canonical gap anchor not found')
-              canonical = canonical.replace(old_gap, new_gap, 1)
-
-              test_anchor = '''    #[test]
-              fn p2p_status_remote_inventory_produces_n5_style_gap() {
-          '''
-              test = '''    #[test]
-              fn active_selected_segment_preserves_initial_gap_until_frontier() {
-                  let chain = chain_at_selected_height(72);
-                  let evidence = vec![fresh_remote("peer-a", 120)];
-                  let mut runtime = NodeRuntimeStats {
-                      sync_state: "requesting_selected_blocks".into(),
-                      selected_segment_gap_blocks: 112,
-                      active_session_id: Some(7),
-                      ..NodeRuntimeStats::default()
-                  };
-                  let active = build_canonical_sync_state_with_remote_evidence(
-                      &chain,
-                      &runtime,
-                      chain.dag.blocks.len(),
-                      1_000,
-                      None,
-                      &evidence,
-                  );
-                  assert_eq!(active.network_selected_height_gap, 112);
-
-                  runtime.active_session_id = None;
-                  runtime.sync_state = "dag_frontier_tips_sync".into();
-                  let frontier = build_canonical_sync_state_with_remote_evidence(
-                      &chain,
-                      &runtime,
-                      chain.dag.blocks.len(),
-                      1_000,
-                      None,
-                      &evidence,
-                  );
-                  assert_eq!(frontier.network_selected_height_gap, 48);
-              }
-
-          '''
-              if test_anchor not in canonical:
-                  raise SystemExit('canonical test anchor not found')
-              canonical = canonical.replace(test_anchor, test + test_anchor, 1)
-              canonical_path.write_text(canonical)
-          PY
+          python3 .github/patches/pr755_apply_frontier.py
           cargo fmt --all
       - name: Selected-segment regressions
-        shell: bash
         run: cargo test --locked -p pulsedagd selected_segment -- --nocapture
       - name: Canonical active-gap regression
-        shell: bash
         run: cargo test --locked -p pulsedag-rpc active_selected_segment_preserves_initial_gap_until_frontier -- --nocapture
       - name: Lag-injection contract regressions
-        shell: bash
         run: cargo test --locked -p pulsedagd lag_injection -- --nocapture
       - name: Verify selected-to-frontier source ordering
-        shell: bash
         run: |
           python3 - <<'PY'
           from pathlib import Path
@@ -180,10 +58,8 @@ jobs:
           assert helper < initial_gap < instantaneous < combine
           PY
       - name: Workspace clippy
-        shell: bash
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Publish validated frontier fix
-        shell: bash
         run: |
           set -euo pipefail
           if git diff --quiet; then
