@@ -6,6 +6,7 @@ on:
       - agent/fix-selected-segment-durability-closeout
     paths:
       - .github/patches/pr755_frontier_reconcile.patch
+      - .github/workflows/pr755_apply_frontier_fix.yml
 
 permissions:
   contents: write
@@ -22,6 +23,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          sed -i 's/^ diff --git /diff --git /' .github/patches/pr755_frontier_reconcile.patch
           git apply --check .github/patches/pr755_frontier_reconcile.patch
           git apply .github/patches/pr755_frontier_reconcile.patch
       - name: Format and run focused tests
