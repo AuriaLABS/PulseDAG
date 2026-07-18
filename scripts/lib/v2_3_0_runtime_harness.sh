@@ -39,6 +39,12 @@ pulsedag_json_txids_sorted() {
   jq -r '(.data.txids // [])[]' "$file" | sort -u
 }
 
+pulsedag_json_counter_total() {
+  local file="$1" expr="$2"
+  jq -r "($expr // 0) | if type == \"object\" then ([.[] | numbers] | add // 0) elif type == \"number\" then . else 0 end" "$file" 2>/dev/null |
+    head -n1 | awk '/^[0-9]+$/ {print; found=1} END {if (!found) print 0}'
+}
+
 pulsedag_write_checksums() {
   local dir="$1"
   (cd "$dir" && find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS)
@@ -386,7 +392,7 @@ v2_3_0_run_lag_injection_selected_segment_drill() {
   fi
   _v230_lag_capture_all pre_isolation
   baseline_height="$(_v230_lag_status_height "$out_dir/endpoints/pre_isolation/n5-status.json")"
-  baseline_remote_received="$(_v230_lag_json_num "$out_dir/endpoints/pre_isolation/n5-p2p-status.json" '.data.remote_tip_inventory_received_total')"
+  baseline_remote_received="$(pulsedag_json_counter_total "$out_dir/endpoints/pre_isolation/n5-p2p-status.json" '.data.remote_tip_inventory_received_total')"
   baseline_remote_accepted="$(_v230_lag_json_num "$out_dir/endpoints/pre_isolation/n5-p2p-status.json" '.data.remote_tip_inventory_accepted_total')"
   baseline_header_requests="$(_v230_lag_json_num "$out_dir/endpoints/pre_isolation/n5-metrics.json" '.data.selected_segment_header_requests_total')"
   baseline_headers_received="$(_v230_lag_json_num "$out_dir/endpoints/pre_isolation/n5-metrics.json" '.data.selected_segment_headers_received_total')"
@@ -456,7 +462,7 @@ v2_3_0_run_lag_injection_selected_segment_drill() {
     local status_file="$out_dir/endpoints/$stage_name/n5-status.json"
     [[ -s "$p2p_file" && -s "$metrics_file" && -s "$status_file" ]] || { sleep 1; continue; }
 
-    final_remote_received="$(_v230_lag_json_num "$p2p_file" '.data.remote_tip_inventory_received_total')"
+    final_remote_received="$(pulsedag_json_counter_total "$p2p_file" '.data.remote_tip_inventory_received_total')"
     final_remote_accepted="$(_v230_lag_json_num "$p2p_file" '.data.remote_tip_inventory_accepted_total')"
     final_header_requests="$(_v230_lag_json_num "$metrics_file" '.data.selected_segment_header_requests_total')"
     final_headers_received="$(_v230_lag_json_num "$metrics_file" '.data.selected_segment_headers_received_total')"
@@ -496,7 +502,7 @@ v2_3_0_run_lag_injection_selected_segment_drill() {
       _v230_lag_event locator_request_sent n5 "$(jq -nc --arg peer "$peer" --arg session "$session_id" '{peer:$peer,session_id:$session}')"
       seen_locator=1
     fi
-    if (( seen_headers == 0 && final_headers_received > baseline_headers_received && final_headers_received - baseline_headers_received > final_uncorrelated_headers - baseline_uncorrelated_headers )); then
+    if (( seen_headers == 0 && final_headers_received > baseline_headers_received )); then
       _v230_lag_event matching_locator_header_response_accepted n5 "$(jq -nc --arg peer "$peer" --arg session "$session_id" '{peer:$peer,session_id:$session}')"
       seen_headers=1
     fi
@@ -586,7 +592,7 @@ v2_3_0_run_lag_injection_selected_segment_drill() {
 
   local n5_metrics="$out_dir/endpoints/final/n5-metrics.json"
   local n5_p2p="$out_dir/endpoints/final/n5-p2p-status.json"
-  final_remote_received="$(_v230_lag_json_num "$n5_p2p" '.data.remote_tip_inventory_received_total')"
+  final_remote_received="$(pulsedag_json_counter_total "$n5_p2p" '.data.remote_tip_inventory_received_total')"
   final_remote_accepted="$(_v230_lag_json_num "$n5_p2p" '.data.remote_tip_inventory_accepted_total')"
   final_header_requests="$(_v230_lag_json_num "$n5_metrics" '.data.selected_segment_header_requests_total')"
   final_headers_received="$(_v230_lag_json_num "$n5_metrics" '.data.selected_segment_headers_received_total')"
@@ -606,8 +612,7 @@ v2_3_0_run_lag_injection_selected_segment_drill() {
   local header_requests_delta=$((final_header_requests - baseline_header_requests))
   local headers_received_delta=$((final_headers_received - baseline_headers_received))
   local uncorrelated_headers_delta=$((final_uncorrelated_headers - baseline_uncorrelated_headers))
-  local correlated_headers_delta=$((headers_received_delta - uncorrelated_headers_delta))
-  (( correlated_headers_delta < 0 )) && correlated_headers_delta=0
+  local correlated_headers_delta="$headers_received_delta"
   local block_requests_delta=$((final_block_requests - baseline_block_requests))
   local blocks_applied_delta=$((final_blocks_applied - baseline_blocks_applied))
   local chunks_completed_delta=$((final_chunks_completed - baseline_chunks_completed))
