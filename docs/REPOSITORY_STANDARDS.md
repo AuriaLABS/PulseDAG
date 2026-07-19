@@ -74,4 +74,4 @@ Curated evidence summaries may be committed when they are small, reviewed, check
 5. Run `bash scripts/repository_hygiene.sh --strict`.
 6. Attach the cleanup report and note any intentionally retained exception.
 
-The hygiene gate is fail-closed for tracked generated files, secret-like files, broken active-document links, missing referenced scripts/configuration, version inconsistency, and detectable non-English code comments.
+The hygiene gate is fail-closed for tracked generated files, secret-like files, broken active-document links, missing referenced scripts or configuration files, version inconsistency, and detectable non-English code comments.
