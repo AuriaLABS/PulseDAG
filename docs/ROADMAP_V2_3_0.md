@@ -43,13 +43,13 @@ Establish a clean repository structure, contribution guide, English-only code-co
 
 ### Task 09 — Node lifecycle and bootstrap scripts
 
-Status: **ACTIVE**.
+Status: **MERGED** in PR `#758`.
 
 Add idempotent start/stop/status/upgrade/rollback helpers, persistent directory ownership checks, PID/log handling, bootnode resolution, immutable release manifests, health-gated upgrades, automatic failed-upgrade rollback, and safe restart semantics.
 
 ### Task 10 — Metrics and dashboard baseline
 
-Status: **PLANNED**.
+Status: **ACTIVE**.
 
 Publish a versioned metrics inventory, Prometheus scrape example, dashboard definitions, alert thresholds, and evidence that all five private-testnet nodes expose the required health, P2P, sync, mining, mempool, snapshot, and prune signals.
 
