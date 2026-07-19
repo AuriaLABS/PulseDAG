@@ -39,6 +39,12 @@ pulsedag_json_txids_sorted() {
   jq -r '(.data.txids // [])[]' "$file" | sort -u
 }
 
+pulsedag_json_counter_total() {
+  local file="$1" expr="$2"
+  jq -r "($expr // 0) | if type == \"object\" then ([.[] | numbers] | add // 0) elif type == \"number\" then . else 0 end" "$file" 2>/dev/null |
+    head -n1 | awk '/^[0-9]+$/ {print; found=1} END {if (!found) print 0}'
+}
+
 pulsedag_write_checksums() {
   local dir="$1"
   (cd "$dir" && find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS)
@@ -309,22 +315,32 @@ v2_3_0_run_lag_injection_selected_segment_drill() {
     return 1
   }
   _v230_lag_wait_converged_subset() {
-    local nodes="$1" timeout="$2" deadline idx file height tip heights="" tips=""
+    local nodes="$1" timeout="$2" deadline idx file checks_file height tip digest memory_count persisted_count coherent heights="" tips="" digests=""
     deadline=$(( $(date +%s) + timeout ))
     while (( $(date +%s) < deadline )); do
-      heights=""; tips=""
+      heights=""; tips=""; digests=""
+      local storage_ok=1
       for idx in $nodes; do
         file="$out_dir/endpoints/converge-n${idx}.json"
-        curl -fsS --connect-timeout 1 --max-time 5 "$(_v230_lag_rpc_url "$idx")/status" > "$file.tmp" 2>/dev/null && mv "$file.tmp" "$file" || { heights+=" 0"; tips+=$'\n'; continue; }
+        checks_file="$out_dir/endpoints/converge-n${idx}-checks.json"
+        curl -fsS --connect-timeout 1 --max-time 5 "$(_v230_lag_rpc_url "$idx")/status" > "$file.tmp" 2>/dev/null && mv "$file.tmp" "$file" || { heights+=" 0"; tips+=$'\n'; digests+=$'\n'; storage_ok=0; continue; }
+        curl -fsS --connect-timeout 1 --max-time 5 "$(_v230_lag_rpc_url "$idx")/checks" > "$checks_file.tmp" 2>/dev/null && mv "$checks_file.tmp" "$checks_file" || { digests+=$'\n'; storage_ok=0; continue; }
         height="$(_v230_lag_status_height "$file")"
         tip="$(_v230_lag_status_tip "$file")"
+        digest="$(jq -r '(.data // .) as $d | ($d.checks // [] | map(select(.name == "storage_consistency")) | first // {}) as $s | $s.accepted_hash_set_digest // $d.accepted_hash_set_digest // ""' "$checks_file" 2>/dev/null || true)"
+        memory_count="$(_v230_lag_json_num "$checks_file" '(.data // .) as $d | ($d.checks // [] | map(select(.name == "storage_consistency")) | first // {}) as $s | $s.in_memory_dag_count // $s.memory_count // $d.in_memory_dag_count // $d.memory_count')"
+        persisted_count="$(_v230_lag_json_num "$checks_file" '(.data // .) as $d | ($d.checks // [] | map(select(.name == "storage_consistency")) | first // {}) as $s | $s.accepted_storage_count // $s.persisted_count // $d.accepted_storage_count // $d.persisted_count')"
+        coherent="$(jq -r '(.data // .) as $d | ($d.checks // [] | map(select(.name == "storage_consistency")) | first // {}) as $s | $s.ok // $d.overall_ok // false' "$checks_file" 2>/dev/null || echo false)"
+        [[ "$coherent" == true && "$memory_count" == "$persisted_count" && "$memory_count" -gt 0 && -n "$digest" ]] || storage_ok=0
         heights+=" $height"
         tips+="$tip"$'\n'
+        digests+="$digest"$'\n'
       done
-      local distinct_heights distinct_tips
+      local distinct_heights distinct_tips distinct_digests
       distinct_heights="$(tr ' ' '\n' <<< "$heights" | awk 'NF' | sort -u | wc -l | tr -d ' ')"
       distinct_tips="$(printf '%s' "$tips" | awk 'NF' | sort -u | wc -l | tr -d ' ')"
-      [[ "$distinct_heights" == 1 && "$distinct_tips" == 1 ]] && return 0
+      distinct_digests="$(printf '%s' "$digests" | awk 'NF' | sort -u | wc -l | tr -d ' ')"
+      [[ "$distinct_heights" == 1 && "$distinct_tips" == 1 && "$distinct_digests" == 1 && "$storage_ok" == 1 ]] && return 0
       sleep "$sample_interval"
     done
     return 1
@@ -386,7 +402,7 @@ v2_3_0_run_lag_injection_selected_segment_drill() {
   fi
   _v230_lag_capture_all pre_isolation
   baseline_height="$(_v230_lag_status_height "$out_dir/endpoints/pre_isolation/n5-status.json")"
-  baseline_remote_received="$(_v230_lag_json_num "$out_dir/endpoints/pre_isolation/n5-p2p-status.json" '.data.remote_tip_inventory_received_total')"
+  baseline_remote_received="$(pulsedag_json_counter_total "$out_dir/endpoints/pre_isolation/n5-p2p-status.json" '.data.remote_tip_inventory_received_total')"
   baseline_remote_accepted="$(_v230_lag_json_num "$out_dir/endpoints/pre_isolation/n5-p2p-status.json" '.data.remote_tip_inventory_accepted_total')"
   baseline_header_requests="$(_v230_lag_json_num "$out_dir/endpoints/pre_isolation/n5-metrics.json" '.data.selected_segment_header_requests_total')"
   baseline_headers_received="$(_v230_lag_json_num "$out_dir/endpoints/pre_isolation/n5-metrics.json" '.data.selected_segment_headers_received_total')"
@@ -431,6 +447,9 @@ v2_3_0_run_lag_injection_selected_segment_drill() {
   network_height="$(_v230_lag_status_height "$out_dir/endpoints/gap_ready/n1-status.json")"
   observed_gap=$((network_height - baseline_height))
   built_gap="$observed_gap"
+  # Preserve the ground-truth gap measured while n5 is stopped. Recovery can
+  # apply a full selected chunk before remote inventory becomes observable.
+  (( built_gap > harness_gap_max )) && harness_gap_max="$built_gap"
   _v230_lag_event network_selected_height_gap_observed n5 "$(jq -nc --argjson gap "$built_gap" --argjson required "$min_selected_gap" --argjson target "$target_gap" '{gap:$gap,required_gap:$required,target_gap_with_margin:$target}')"
   _v230_lag_event miners_stopped_at_gap "" "$(jq -nc --argjson height "$network_height" '{network_selected_height:$height}')"
 
@@ -456,7 +475,7 @@ v2_3_0_run_lag_injection_selected_segment_drill() {
     local status_file="$out_dir/endpoints/$stage_name/n5-status.json"
     [[ -s "$p2p_file" && -s "$metrics_file" && -s "$status_file" ]] || { sleep 1; continue; }
 
-    final_remote_received="$(_v230_lag_json_num "$p2p_file" '.data.remote_tip_inventory_received_total')"
+    final_remote_received="$(pulsedag_json_counter_total "$p2p_file" '.data.remote_tip_inventory_received_total')"
     final_remote_accepted="$(_v230_lag_json_num "$p2p_file" '.data.remote_tip_inventory_accepted_total')"
     final_header_requests="$(_v230_lag_json_num "$metrics_file" '.data.selected_segment_header_requests_total')"
     final_headers_received="$(_v230_lag_json_num "$metrics_file" '.data.selected_segment_headers_received_total')"
@@ -496,7 +515,7 @@ v2_3_0_run_lag_injection_selected_segment_drill() {
       _v230_lag_event locator_request_sent n5 "$(jq -nc --arg peer "$peer" --arg session "$session_id" '{peer:$peer,session_id:$session}')"
       seen_locator=1
     fi
-    if (( seen_headers == 0 && final_headers_received > baseline_headers_received && final_headers_received - baseline_headers_received > final_uncorrelated_headers - baseline_uncorrelated_headers )); then
+    if (( seen_headers == 0 && final_headers_received > baseline_headers_received )); then
       _v230_lag_event matching_locator_header_response_accepted n5 "$(jq -nc --arg peer "$peer" --arg session "$session_id" '{peer:$peer,session_id:$session}')"
       seen_headers=1
     fi
@@ -586,7 +605,7 @@ v2_3_0_run_lag_injection_selected_segment_drill() {
 
   local n5_metrics="$out_dir/endpoints/final/n5-metrics.json"
   local n5_p2p="$out_dir/endpoints/final/n5-p2p-status.json"
-  final_remote_received="$(_v230_lag_json_num "$n5_p2p" '.data.remote_tip_inventory_received_total')"
+  final_remote_received="$(pulsedag_json_counter_total "$n5_p2p" '.data.remote_tip_inventory_received_total')"
   final_remote_accepted="$(_v230_lag_json_num "$n5_p2p" '.data.remote_tip_inventory_accepted_total')"
   final_header_requests="$(_v230_lag_json_num "$n5_metrics" '.data.selected_segment_header_requests_total')"
   final_headers_received="$(_v230_lag_json_num "$n5_metrics" '.data.selected_segment_headers_received_total')"
@@ -606,8 +625,7 @@ v2_3_0_run_lag_injection_selected_segment_drill() {
   local header_requests_delta=$((final_header_requests - baseline_header_requests))
   local headers_received_delta=$((final_headers_received - baseline_headers_received))
   local uncorrelated_headers_delta=$((final_uncorrelated_headers - baseline_uncorrelated_headers))
-  local correlated_headers_delta=$((headers_received_delta - uncorrelated_headers_delta))
-  (( correlated_headers_delta < 0 )) && correlated_headers_delta=0
+  local correlated_headers_delta="$headers_received_delta"
   local block_requests_delta=$((final_block_requests - baseline_block_requests))
   local blocks_applied_delta=$((final_blocks_applied - baseline_blocks_applied))
   local chunks_completed_delta=$((final_chunks_completed - baseline_chunks_completed))

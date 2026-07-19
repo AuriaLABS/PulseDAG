@@ -29,7 +29,7 @@ use pulsedag_core::reconcile_mempool;
 use pulsedag_p2p::{
     build_p2p_stack, default_p2p_identity_path,
     messages::{HeaderInventory, TipInventoryStatus},
-    InboundEvent, Libp2pConfig, Libp2pRuntimeMode, P2pHandle, P2pMode,
+    InboundEvent, Libp2pConfig, Libp2pRuntimeMode, P2pHandle, P2pMode, P2pStatus,
 };
 use pulsedag_rpc::api::{
     capture_and_store_node_rpc_snapshot, NodeRpcSnapshotStore, NodeRuntimeStats,
@@ -59,6 +59,91 @@ fn local_tip_inventory_status(chain: &pulsedag_core::ChainState) -> TipInventory
         inventory_generation: 0,
     }
 }
+
+fn selected_locator_peer_for_priority_gap(
+    status: &P2pStatus,
+    local_height: u64,
+    minimum_gap: u64,
+) -> Option<(String, u64)> {
+    status
+        .remote_selected_tip_inventory
+        .iter()
+        .filter(|remote| remote.connected && remote.direct_request_capable)
+        .filter(|remote| remote.selected_height.saturating_sub(local_height) >= minimum_gap)
+        .max_by_key(|remote| remote.selected_height)
+        .map(|remote| (remote.peer_id.clone(), remote.selected_height))
+}
+
+fn observed_block_requires_selected_locator(
+    local_height: u64,
+    observed_height: u64,
+    minimum_gap: u64,
+    priority_active: bool,
+) -> bool {
+    !priority_active && observed_height.saturating_sub(local_height) >= minimum_gap
+}
+
+fn selected_locator_peer_for_reconcile(
+    status: &P2pStatus,
+    local: &TipInventoryStatus,
+) -> Option<String> {
+    let local_height = local.selected_height.unwrap_or_default();
+    status
+        .remote_selected_tip_inventory
+        .iter()
+        .filter(|remote| remote.connected && remote.direct_request_capable)
+        .filter(|remote| {
+            remote.selected_height > local_height
+                || (remote.selected_height == local_height
+                    && (remote.selected_tip != local.selected_tip
+                        || remote.ordered_dag_tip != local.ordered_dag_tip
+                        || remote.state_root_digest != local.state_root_digest))
+        })
+        .max_by_key(|remote| remote.selected_height)
+        .map(|remote| remote.peer_id.clone())
+}
+
+fn selected_headers_own_broadcast_locator(
+    session_active: bool,
+    pending_locator: bool,
+    response_peer: Option<&str>,
+    session_correlated: bool,
+) -> bool {
+    session_correlated || (!session_active && pending_locator && response_peer.is_some())
+}
+
+fn commit_candidate_chain_state(
+    storage: &Storage,
+    current: &mut pulsedag_core::ChainState,
+    candidate: pulsedag_core::ChainState,
+    adopted_hashes: &[pulsedag_core::Hash],
+    state_changed: bool,
+) -> std::result::Result<(), pulsedag_core::errors::PulseError> {
+    if !state_changed {
+        return Ok(());
+    }
+    let mut seen = HashSet::new();
+    let adopted_blocks = adopted_hashes
+        .iter()
+        .filter(|hash| seen.insert((*hash).clone()))
+        .map(|hash| {
+            candidate.dag.blocks.get(hash).cloned().ok_or_else(|| {
+                pulsedag_core::errors::PulseError::StorageError(format!(
+                    "adopted block {} is missing from candidate chain state",
+                    hash
+                ))
+            })
+        })
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    if adopted_blocks.is_empty() {
+        storage.persist_chain_state(&candidate)?;
+    } else {
+        storage.persist_blocks_and_chain_state(&adopted_blocks, &candidate)?;
+    }
+    *current = candidate;
+    Ok(())
+}
+
 use tokio::sync::{oneshot, Mutex, RwLock};
 use tokio::time::{sleep, Duration};
 
@@ -478,19 +563,41 @@ impl SelectedSegmentSession {
             && common_ancestor == Some(self.common_ancestor.as_str())
     }
 
-    fn correlates_continuation_headers(
+    fn correlates_pending_header_page(
         &self,
         peer_id: Option<&str>,
-        locator: &[String],
-        locator_request_id: u64,
+        pending: Option<&PendingSelectedLocator>,
+        common_ancestor: Option<&str>,
     ) -> bool {
+        let Some(pending) = pending else {
+            return false;
+        };
         peer_id == Some(self.peer_id.as_str())
-            && self.locator_request_id == locator_request_id
-            && self.locator_fingerprint == locator.join(",")
-            && !matches!(
-                self.state,
-                SelectedSegmentSessionState::Complete | SelectedSegmentSessionState::Failed
-            )
+            && pending.peer_id == self.peer_id
+            && common_ancestor.is_some_and(|hash| {
+                hash == self.common_ancestor.as_str() || self.accepted_applied_hashes.contains(hash)
+            })
+            && self.can_start_chunk()
+    }
+
+    fn accept_header_page(
+        &mut self,
+        pending: &PendingSelectedLocator,
+        headers: &[HeaderInventory],
+        now: u64,
+    ) {
+        self.locator_request_id = pending.request_id;
+        self.locator_fingerprint = pending.locator.join(",");
+        for item in headers {
+            if !self.expected_header_hashes.contains(&item.hash) {
+                self.expected_header_hashes.push(item.hash.clone());
+            }
+            if item.header.height > self.remote_selected_height {
+                self.remote_selected_tip = item.hash.clone();
+                self.remote_selected_height = item.header.height;
+            }
+        }
+        self.updated_at_unix = now;
     }
 
     fn can_start_chunk(&self) -> bool {
@@ -1889,6 +1996,7 @@ async fn main() -> Result<()> {
                             }
                         } else {
                             let rebuilt = pulsedag_core::rebuild_orphan_parent_index(&mut guard);
+                            let mut adopted_candidate = guard.clone();
                             info!(
                                 event = if forced_reindex {
                                     "orphan_parent_index_forced_reindex"
@@ -1902,30 +2010,39 @@ async fn main() -> Result<()> {
                                     rebuilt.unindexed_missing_parent_entries,
                                 "rebuilt orphan parent index from queued orphan block parents"
                             );
-                            let mut adopted_hashes = Vec::new();
                             let adoption = pulsedag_core::adopt_ready_orphans_with_result(
-                                &mut guard,
+                                &mut adopted_candidate,
                                 AcceptSource::P2p,
                                 None,
                             );
-                            let adopted = adoption.accepted;
-                            let retried = adoption.retried;
+                            let mut adopted = adoption.accepted;
+                            let mut retried = adoption.retried;
                             let failure_reasons = adoption.failure_reasons;
-                            adopted_hashes.extend(adoption.accepted_hashes);
-                            let persist_failed = if retried > 0 {
-                                match storage.persist_chain_state(&guard) {
-                                    Ok(()) => false,
+                            let adopted_hashes = adoption.accepted_hashes;
+                            let mut persist_failed = if retried > 0 {
+                                match commit_candidate_chain_state(
+                                    &storage,
+                                    &mut guard,
+                                    adopted_candidate,
+                                    &adopted_hashes,
+                                    true,
+                                ) {
+                                    Ok(()) => {
+                                        for hash in &adopted_hashes {
+                                            block_requests.resolve(hash);
+                                        }
+                                        false
+                                    }
                                     Err(e) => {
-                                        warn!(error = %e, retried, adopted, "failed persisting chain state after recovery orphan reprocess");
+                                        warn!(error = %e, retried, adopted, "failed atomically persisting recovery-adopted blocks and chain state");
+                                        adopted = 0;
+                                        retried = 0;
                                         true
                                     }
                                 }
                             } else {
                                 false
                             };
-                            for hash in adopted_hashes {
-                                block_requests.resolve(&hash);
-                            }
 
                             let roots = orphan_recovery_roots(&guard);
                             let roots_discovered = roots.len();
@@ -1979,40 +2096,60 @@ async fn main() -> Result<()> {
                                         *root_classification_counts.get("evictable").unwrap_or(&0),
                                     "orphan missing-parent reindex found no requestable roots"
                                 );
-                                let revalidated_backlog =
-                                    pulsedag_core::revalidate_orphan_backlog(&mut guard);
-                                stale = stale.saturating_add(
-                                    revalidated_backlog.stale_missing_parent_entries,
+                                let mut cleanup_candidate = guard.clone();
+                                let revalidated_backlog = pulsedag_core::revalidate_orphan_backlog(
+                                    &mut cleanup_candidate,
                                 );
-                                revalidated = true;
-                                evicted = pulsedag_core::evict_stale_orphans_bounded(
-                                    &mut guard,
+                                let cleanup_stale =
+                                    revalidated_backlog.stale_missing_parent_entries;
+                                let cleanup_evicted = pulsedag_core::evict_stale_orphans_bounded(
+                                    &mut cleanup_candidate,
                                     now_millis(),
                                     pulsedag_core::DEFAULT_ORPHAN_MAX_AGE_MS,
                                     ORPHAN_RECOVERY_REVALIDATE_EVICT_LIMIT,
                                 );
                                 let residual = pulsedag_core::terminalize_residual_waiting_missing_parents_guarded(
-                                    &mut guard,
+                                    &mut cleanup_candidate,
                                     now_millis(),
                                     pulsedag_core::DEFAULT_ORPHAN_MAX_AGE_MS,
                                     ORPHAN_RECOVERY_REVALIDATE_EVICT_LIMIT,
                                     |hash| storage.get_block(hash).map(|block| block.map(|b| b.header.height)),
                                 );
-                                match residual {
+                                let (cleanup_terminal, cleanup_residual_evicted) = match residual {
                                     Ok(residual) => {
-                                        residual_waiting_terminal = residual.transitioned_parents;
-                                        residual_waiting_evicted = residual.evicted_orphans;
+                                        (residual.transitioned_parents, residual.evicted_orphans)
                                     }
                                     Err(e) => {
                                         warn!(error = %e, "accepted_state_memory_loss prevented orphan-recovery terminalization");
+                                        (0, 0)
                                     }
-                                }
-                                if evicted > 0 || residual_waiting_terminal > 0 {
-                                    match storage.persist_chain_state(&guard) {
-                                        Ok(()) => {}
-                                        Err(e) => {
-                                            warn!(error = %e, evicted, residual_waiting_terminal, "failed persisting chain state after residual missing-parent eviction")
-                                        }
+                                };
+                                let cleanup_requires_persist = cleanup_evicted > 0
+                                    || cleanup_terminal > 0
+                                    || cleanup_residual_evicted > 0;
+                                let cleanup_commit = if cleanup_requires_persist {
+                                    commit_candidate_chain_state(
+                                        &storage,
+                                        &mut guard,
+                                        cleanup_candidate,
+                                        &[],
+                                        true,
+                                    )
+                                } else {
+                                    *guard = cleanup_candidate;
+                                    Ok(())
+                                };
+                                match cleanup_commit {
+                                    Ok(()) => {
+                                        stale = stale.saturating_add(cleanup_stale);
+                                        revalidated = true;
+                                        evicted = cleanup_evicted;
+                                        residual_waiting_terminal = cleanup_terminal;
+                                        residual_waiting_evicted = cleanup_residual_evicted;
+                                    }
+                                    Err(e) => {
+                                        persist_failed = true;
+                                        warn!(error = %e, cleanup_evicted, cleanup_terminal, "failed atomically persisting orphan recovery cleanup state");
                                     }
                                 }
                             }
@@ -2580,6 +2717,85 @@ async fn main() -> Result<()> {
                         }
                     }
                     InboundEvent::Block(block) => {
+                        let local_height = {
+                            let guard = chain.read().await;
+                            guard.dag.best_height
+                        };
+                        let now = now_unix();
+                        let priority_active = {
+                            let guard = selected_segment_locator_state.lock().await;
+                            selected_segment_recovery_has_priority(
+                                selected_segment_session.is_some(),
+                                guard
+                                    .pending_locator
+                                    .as_ref()
+                                    .map(|pending| pending.requested_at_unix),
+                                now,
+                            )
+                        };
+                        if observed_block_requires_selected_locator(
+                            local_height,
+                            block.header.height,
+                            SELECTED_SEGMENT_PRIORITY_GAP_BLOCKS,
+                            priority_active,
+                        ) {
+                            if let Some(ref p2p_handle) = p2p {
+                                let selected_locator = {
+                                    let guard = chain.read().await;
+                                    guard
+                                        .dag
+                                        .selected_chain
+                                        .iter()
+                                        .rev()
+                                        .take(32)
+                                        .cloned()
+                                        .collect::<Vec<_>>()
+                                };
+                                let selected_limits = SelectedSegmentLimits::default();
+                                let selected_locator_request_id = {
+                                    let guard = selected_segment_locator_state.lock().await;
+                                    guard.next_request_id
+                                };
+                                if p2p_handle
+                                    .request_headers(
+                                        &selected_locator,
+                                        None,
+                                        selected_limits.headers_per_chunk,
+                                    )
+                                    .is_ok()
+                                {
+                                    let mut locator_guard =
+                                        selected_segment_locator_state.lock().await;
+                                    locator_guard.next_request_id =
+                                        locator_guard.next_request_id.saturating_add(1);
+                                    locator_guard.pending_locator = Some(PendingSelectedLocator {
+                                        request_id: selected_locator_request_id,
+                                        peer_id: "broadcast-observed-block-gap".to_string(),
+                                        locator: selected_locator,
+                                        requested_at_unix: now,
+                                    });
+                                    drop(locator_guard);
+                                    let observed_gap =
+                                        block.header.height.saturating_sub(local_height);
+                                    let mut rt = runtime.write().await;
+                                    rt.selected_segment_gap_blocks =
+                                        rt.selected_segment_gap_blocks.max(observed_gap);
+                                    rt.dag_sync_selected_chain_locator_total =
+                                        rt.dag_sync_selected_chain_locator_total.saturating_add(1);
+                                    rt.selected_segment_header_requests_total =
+                                        rt.selected_segment_header_requests_total.saturating_add(1);
+                                    rt.header_requests_sent =
+                                        rt.header_requests_sent.saturating_add(1);
+                                    rt.sync_state = "locating_common_ancestor".to_string();
+                                    info!(
+                                        local_height,
+                                        observed_height = block.header.height,
+                                        observed_gap,
+                                        "observed remote block gap activated selected-segment priority before missing-parent recovery"
+                                    );
+                                }
+                            }
+                        }
                         let final_height_reconcile_block =
                             final_quiescence_higher_tip_requests.contains(&block.hash);
                         let final_same_height_reconcile_block =
@@ -3012,13 +3228,18 @@ async fn main() -> Result<()> {
                                     }
                                 }
                                 if retried > 0 {
-                                    match storage.persist_chain_state(&adopted_guard) {
+                                    match commit_candidate_chain_state(
+                                        &storage,
+                                        &mut guard,
+                                        adopted_guard,
+                                        &adopted_hashes,
+                                        true,
+                                    ) {
                                         Ok(()) => {
-                                            *guard = adopted_guard;
                                             (adopted, retried, adopted_hashes, failure_reasons)
                                         }
                                         Err(e) => {
-                                            warn!(error = %e, block_hash = %block.hash, adopted, "failed persisting chain state after inbound orphan adoption; keeping orphans queued in memory");
+                                            warn!(error = %e, block_hash = %block.hash, adopted, "failed atomically persisting adopted orphan blocks and chain state; keeping orphans queued in memory");
                                             let _ = storage.append_runtime_event(
                                                 "warn",
                                                 "peer_orphan_adoption_persist_failed",
@@ -3199,6 +3420,22 @@ async fn main() -> Result<()> {
                             if selected_segment_completed {
                                 selected_segment_session = None;
                                 selected_segment_locator_state.lock().await.pending_locator = None;
+                                if let Some(ref p2p_handle) = p2p {
+                                    if let Err(e) = p2p_handle.request_tips() {
+                                        warn!(
+                                            error = %e,
+                                            "failed requesting DAG frontier tips after selected-segment completion"
+                                        );
+                                    } else {
+                                        let mut rt = runtime.write().await;
+                                        rt.sync_state =
+                                            DagSyncStage::DagFrontierTips.as_str().to_string();
+                                        info!(
+                                            event = "selected_segment_frontier_reconcile_requested",
+                                            "selected segment complete; requested fresh tips for lateral DAG frontier reconciliation"
+                                        );
+                                    }
+                                }
                             }
                             if adopted > 0 {
                                 info!(
@@ -3409,10 +3646,6 @@ async fn main() -> Result<()> {
                             .as_ref()
                             .map(|pending| pending.locator.clone())
                             .unwrap_or_default();
-                        let pending_peer_matches = pending_selected_locator
-                            .as_ref()
-                            .map(|pending| peer_id.as_deref() == Some(pending.peer_id.as_str()))
-                            .unwrap_or(false);
                         let session_correlated = selected_segment_session
                             .as_ref()
                             .map(|session| {
@@ -3421,10 +3654,10 @@ async fn main() -> Result<()> {
                                     &pending_locator,
                                     pending_request_id,
                                     common_ancestor.as_deref(),
-                                ) || session.correlates_continuation_headers(
+                                ) || session.correlates_pending_header_page(
                                     peer_id.as_deref(),
-                                    &pending_locator,
-                                    pending_request_id,
+                                    pending_selected_locator.as_ref(),
+                                    common_ancestor.as_deref(),
                                 )
                             })
                             .unwrap_or(false);
@@ -3445,8 +3678,13 @@ async fn main() -> Result<()> {
                             )
                         };
                         let plan = fetch_scheduler.next_requests(&known, &pending, 8);
-                        let selected_session_owns_headers = session_correlated
-                            || (selected_segment_session.is_none() && pending_peer_matches);
+                        let selected_locator_pending = pending_selected_locator.is_some();
+                        let selected_session_owns_headers = selected_headers_own_broadcast_locator(
+                            selected_segment_session.is_some(),
+                            selected_locator_pending,
+                            peer_id.as_deref(),
+                            session_correlated,
+                        );
                         let selected_requests = if selected_session_owns_headers
                             && matches!(selected_segment_validation, Some(Ok(())))
                         {
@@ -3472,14 +3710,8 @@ async fn main() -> Result<()> {
                                 if !session.can_start_chunk() {
                                     Vec::new()
                                 } else {
-                                    for item in &headers {
-                                        if !session.expected_header_hashes.contains(&item.hash) {
-                                            session.expected_header_hashes.push(item.hash.clone());
-                                        }
-                                        if item.header.height > session.remote_selected_height {
-                                            session.remote_selected_tip = item.hash.clone();
-                                            session.remote_selected_height = item.header.height;
-                                        }
+                                    if let Some(pending) = pending_selected_locator.as_ref() {
+                                        session.accept_header_page(pending, &headers, now_unix());
                                     }
                                     let candidates = selected_segment_request_candidates(
                                         &headers,
@@ -3518,11 +3750,16 @@ async fn main() -> Result<()> {
                         };
                         let selected_request_hashes =
                             selected_requests.iter().cloned().collect::<HashSet<_>>();
-                        let requests = if selected_session_owns_headers {
-                            selected_requests
-                        } else {
-                            plan.requests
-                        };
+                        let requests =
+                            if selected_locator_pending || selected_segment_session.is_some() {
+                                if selected_session_owns_headers {
+                                    selected_requests
+                                } else {
+                                    Vec::new()
+                                }
+                            } else {
+                                plan.requests
+                            };
                         let mut issued_selected_request_count = 0u64;
                         let mut issued_selected_hashes = Vec::new();
                         for hash in requests {
@@ -3589,9 +3826,8 @@ async fn main() -> Result<()> {
                             }
                         }
                         let mut rt = runtime.write().await;
-                        let headers_correlated = (session_correlated
-                            || (selected_segment_session.is_some() && pending_peer_matches))
-                            && !headers.is_empty();
+                        let headers_correlated =
+                            selected_session_owns_headers && !headers.is_empty();
                         if headers_correlated {
                             rt.final_quiescence_selected_locator_success_total = rt
                                 .final_quiescence_selected_locator_success_total
@@ -3715,6 +3951,90 @@ async fn main() -> Result<()> {
                         }
                     }
                     InboundEvent::Tips { tips } => {
+                        let local_height = {
+                            let guard = chain.read().await;
+                            guard.dag.best_height
+                        };
+                        let immediate_selected_locator = p2p
+                            .as_ref()
+                            .and_then(|handle| handle.status().ok())
+                            .and_then(|status| {
+                                selected_locator_peer_for_priority_gap(
+                                    &status,
+                                    local_height,
+                                    SELECTED_SEGMENT_PRIORITY_GAP_BLOCKS,
+                                )
+                            });
+                        if let (Some((peer_id, remote_height)), Some(p2p_handle)) =
+                            (immediate_selected_locator, p2p.as_ref())
+                        {
+                            let now = now_unix();
+                            let priority_already_active = {
+                                let guard = selected_segment_locator_state.lock().await;
+                                selected_segment_recovery_has_priority(
+                                    selected_segment_session.is_some(),
+                                    guard
+                                        .pending_locator
+                                        .as_ref()
+                                        .map(|pending| pending.requested_at_unix),
+                                    now,
+                                )
+                            };
+                            if !priority_already_active {
+                                let selected_locator = {
+                                    let guard = chain.read().await;
+                                    guard
+                                        .dag
+                                        .selected_chain
+                                        .iter()
+                                        .rev()
+                                        .take(32)
+                                        .cloned()
+                                        .collect::<Vec<_>>()
+                                };
+                                let selected_limits = SelectedSegmentLimits::default();
+                                let selected_locator_request_id = {
+                                    let guard = selected_segment_locator_state.lock().await;
+                                    guard.next_request_id
+                                };
+                                if p2p_handle
+                                    .request_headers(
+                                        &selected_locator,
+                                        None,
+                                        selected_limits.headers_per_chunk,
+                                    )
+                                    .is_ok()
+                                {
+                                    let mut guard = selected_segment_locator_state.lock().await;
+                                    guard.next_request_id = guard.next_request_id.saturating_add(1);
+                                    guard.pending_locator = Some(PendingSelectedLocator {
+                                        request_id: selected_locator_request_id,
+                                        peer_id: peer_id.clone(),
+                                        locator: selected_locator,
+                                        requested_at_unix: now,
+                                    });
+                                    drop(guard);
+                                    let mut rt = runtime.write().await;
+                                    rt.selected_segment_gap_blocks = rt
+                                        .selected_segment_gap_blocks
+                                        .max(remote_height.saturating_sub(local_height));
+                                    rt.dag_sync_selected_chain_locator_total =
+                                        rt.dag_sync_selected_chain_locator_total.saturating_add(1);
+                                    rt.selected_segment_header_requests_total =
+                                        rt.selected_segment_header_requests_total.saturating_add(1);
+                                    rt.header_requests_sent =
+                                        rt.header_requests_sent.saturating_add(1);
+                                    rt.sync_state = "locating_common_ancestor".to_string();
+                                    info!(
+                                        peer = %peer_id,
+                                        local_height,
+                                        remote_height,
+                                        "remote tip inventory activated selected-segment priority before generic tip fetch"
+                                    );
+                                }
+                            }
+                        }
+
                         let unknown_tips = {
                             let guard = chain.read().await;
                             tips.into_iter()
@@ -4443,16 +4763,11 @@ async fn main() -> Result<()> {
                 drop(rt);
 
                 let proactive_selected_locator = p2p_status.as_ref().and_then(|status| {
-                    status
-                        .remote_selected_tip_inventory
-                        .iter()
-                        .filter(|remote| remote.connected && remote.direct_request_capable)
-                        .filter(|remote| {
-                            remote.selected_height.saturating_sub(best_height)
-                                >= SELECTED_SEGMENT_PRIORITY_GAP_BLOCKS
-                        })
-                        .max_by_key(|remote| remote.selected_height)
-                        .map(|remote| (remote.peer_id.clone(), remote.selected_height))
+                    selected_locator_peer_for_priority_gap(
+                        status,
+                        best_height,
+                        SELECTED_SEGMENT_PRIORITY_GAP_BLOCKS,
+                    )
                 });
                 if let (Some((peer_id, remote_height)), Some(p2p_handle)) =
                     (proactive_selected_locator, p2p.as_ref())
@@ -4542,24 +4857,26 @@ async fn main() -> Result<()> {
                                         final_quiescence_all_reachable_peers_connected(&status);
                                     let same_height_tip_reconcile_ready =
                                         all_reachable_peers_connected;
-                                    let requested = p2p.request_tips().is_ok();
-                                    let selected_locator = {
+                                    let (selected_locator, local_inventory) = {
                                         let guard = chain.read().await;
-                                        guard
-                                            .dag
-                                            .selected_chain
-                                            .iter()
-                                            .rev()
-                                            .take(32)
-                                            .cloned()
-                                            .collect::<Vec<_>>()
+                                        (
+                                            guard
+                                                .dag
+                                                .selected_chain
+                                                .iter()
+                                                .rev()
+                                                .take(32)
+                                                .cloned()
+                                                .collect::<Vec<_>>(),
+                                            local_tip_inventory_status(&guard),
+                                        )
                                     };
                                     let selected_limits = SelectedSegmentLimits::default();
-                                    let selected_locator_peer = status
-                                        .direct_request_capable_peers
-                                        .iter()
-                                        .find(|peer| status.connected_peers.contains(*peer))
-                                        .cloned();
+                                    let selected_locator_peer = selected_locator_peer_for_reconcile(
+                                        &status,
+                                        &local_inventory,
+                                    );
+                                    let selected_locator_needed = selected_locator_peer.is_some();
                                     let selected_locator_request_id = {
                                         let guard = selected_segment_locator_state.lock().await;
                                         guard.next_request_id
@@ -4586,7 +4903,13 @@ async fn main() -> Result<()> {
                                                     requested_at_unix: now_unix(),
                                                 }
                                             });
+                                    } else if !selected_locator_needed {
+                                        selected_segment_locator_state
+                                            .lock()
+                                            .await
+                                            .pending_locator = None;
                                     }
+                                    let requested = p2p.request_tips().is_ok();
                                     let mut rt = runtime.write().await;
                                     rt.final_quiescence_tip_reconcile_total =
                                         rt.final_quiescence_tip_reconcile_total.saturating_add(1);
@@ -4644,24 +4967,31 @@ async fn main() -> Result<()> {
                                                 Some("request_tips_failed".to_string());
                                         }
                                     }
-                                    rt.final_quiescence_selected_locator_request_total = rt
-                                        .final_quiescence_selected_locator_request_total
-                                        .saturating_add(1);
-                                    rt.dag_sync_selected_chain_locator_total =
-                                        rt.dag_sync_selected_chain_locator_total.saturating_add(1);
-                                    if selected_locator_requested {
-                                        rt.sync_state = DagSyncStage::RequestingSelectedHeaders
-                                            .as_str()
-                                            .to_string();
-                                        rt.selected_segment_header_requests_total = rt
-                                            .selected_segment_header_requests_total
+                                    if selected_locator_needed {
+                                        rt.final_quiescence_selected_locator_request_total = rt
+                                            .final_quiescence_selected_locator_request_total
                                             .saturating_add(1);
-                                    } else {
-                                        rt.final_quiescence_selected_sync_blocked_total = rt
-                                            .final_quiescence_selected_sync_blocked_total
+                                        rt.dag_sync_selected_chain_locator_total = rt
+                                            .dag_sync_selected_chain_locator_total
                                             .saturating_add(1);
-                                        rt.final_quiescence_selected_sync_blocked_reason =
-                                            Some("selected_locator_request_failed".to_string());
+                                        if selected_locator_requested {
+                                            rt.sync_state = DagSyncStage::RequestingSelectedHeaders
+                                                .as_str()
+                                                .to_string();
+                                            rt.selected_segment_header_requests_total = rt
+                                                .selected_segment_header_requests_total
+                                                .saturating_add(1);
+                                        } else {
+                                            rt.final_quiescence_selected_sync_blocked_total = rt
+                                                .final_quiescence_selected_sync_blocked_total
+                                                .saturating_add(1);
+                                            rt.final_quiescence_selected_sync_blocked_reason =
+                                                Some("selected_locator_request_failed".to_string());
+                                        }
+                                    } else if requested {
+                                        rt.sync_state =
+                                            DagSyncStage::DagFrontierTips.as_str().to_string();
+                                        rt.final_quiescence_selected_sync_blocked_reason = None;
                                     }
                                 }
                                 Ok(_) => {
@@ -5223,6 +5553,149 @@ mod tests {
     }
 
     #[test]
+    fn observed_block_gap_activates_selected_locator_before_getblock_fallback() {
+        assert!(observed_block_requires_selected_locator(10, 109, 96, false));
+        assert!(!observed_block_requires_selected_locator(
+            10, 105, 96, false
+        ));
+        assert!(!observed_block_requires_selected_locator(10, 109, 96, true));
+    }
+
+    #[test]
+    fn observed_block_gap_uses_saturating_height_difference() {
+        assert!(!observed_block_requires_selected_locator(
+            109, 10, 96, false
+        ));
+        assert!(observed_block_requires_selected_locator(10, 106, 96, false));
+    }
+
+    #[test]
+    fn tip_inventory_priority_selects_peer_before_generic_tip_fetch() {
+        let status = P2pStatus {
+            remote_selected_tip_inventory: vec![
+                pulsedag_p2p::RemoteSelectedTipStatus {
+                    peer_id: "peer-small-gap".to_string(),
+                    selected_height: 150,
+                    connected: true,
+                    direct_request_capable: true,
+                    ..Default::default()
+                },
+                pulsedag_p2p::RemoteSelectedTipStatus {
+                    peer_id: "peer-large-gap".to_string(),
+                    selected_height: 220,
+                    connected: true,
+                    direct_request_capable: true,
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+
+        assert_eq!(
+            selected_locator_peer_for_priority_gap(&status, 120, 64),
+            Some(("peer-large-gap".to_string(), 220))
+        );
+        assert_eq!(
+            selected_locator_peer_for_priority_gap(&status, 190, 64),
+            None
+        );
+    }
+
+    #[test]
+    fn first_valid_peer_can_own_broadcast_selected_locator_response() {
+        assert!(selected_headers_own_broadcast_locator(
+            false,
+            true,
+            Some("peer-b"),
+            false,
+        ));
+        assert!(!selected_headers_own_broadcast_locator(
+            false, true, None, false,
+        ));
+        assert!(!selected_headers_own_broadcast_locator(
+            true,
+            true,
+            Some("peer-b"),
+            false,
+        ));
+        assert!(selected_headers_own_broadcast_locator(
+            true,
+            true,
+            Some("peer-a"),
+            true,
+        ));
+    }
+
+    #[test]
+    fn final_quiescence_skips_selected_locator_when_selected_state_matches() {
+        let local = TipInventoryStatus {
+            chain_id: "test-chain".to_string(),
+            selected_tip: Some("tip-a".to_string()),
+            selected_height: Some(128),
+            selected_blue_score: Some(128),
+            ordered_dag_tip: Some("tip-a".to_string()),
+            state_root_digest: Some("root-a".to_string()),
+            observed_at_unix: 1,
+            inventory_generation: 1,
+        };
+        let status = P2pStatus {
+            connected_peers: vec!["peer-a".to_string()],
+            direct_request_capable_peers: vec!["peer-a".to_string()],
+            remote_selected_tip_inventory: vec![pulsedag_p2p::RemoteSelectedTipStatus {
+                peer_id: "peer-a".to_string(),
+                chain_id: "test-chain".to_string(),
+                selected_tip: Some("tip-a".to_string()),
+                selected_height: 128,
+                selected_blue_score: Some(128),
+                ordered_dag_tip: Some("tip-a".to_string()),
+                state_root_digest: Some("root-a".to_string()),
+                connected: true,
+                direct_request_capable: true,
+                ..pulsedag_p2p::RemoteSelectedTipStatus::default()
+            }],
+            ..P2pStatus::default()
+        };
+
+        assert_eq!(selected_locator_peer_for_reconcile(&status, &local), None);
+    }
+
+    #[test]
+    fn final_quiescence_requests_selected_locator_for_ahead_peer() {
+        let local = TipInventoryStatus {
+            chain_id: "test-chain".to_string(),
+            selected_tip: Some("tip-a".to_string()),
+            selected_height: Some(128),
+            selected_blue_score: Some(128),
+            ordered_dag_tip: Some("tip-a".to_string()),
+            state_root_digest: Some("root-a".to_string()),
+            observed_at_unix: 1,
+            inventory_generation: 1,
+        };
+        let status = P2pStatus {
+            connected_peers: vec!["peer-a".to_string()],
+            direct_request_capable_peers: vec!["peer-a".to_string()],
+            remote_selected_tip_inventory: vec![pulsedag_p2p::RemoteSelectedTipStatus {
+                peer_id: "peer-a".to_string(),
+                chain_id: "test-chain".to_string(),
+                selected_tip: Some("tip-b".to_string()),
+                selected_height: 129,
+                selected_blue_score: Some(129),
+                ordered_dag_tip: Some("tip-b".to_string()),
+                state_root_digest: Some("root-b".to_string()),
+                connected: true,
+                direct_request_capable: true,
+                ..pulsedag_p2p::RemoteSelectedTipStatus::default()
+            }],
+            ..P2pStatus::default()
+        };
+
+        assert_eq!(
+            selected_locator_peer_for_reconcile(&status, &local),
+            Some("peer-a".to_string())
+        );
+    }
+
+    #[test]
     fn selected_chain_sync_gate_blocks_during_zero_peer_and_recovery_states() {
         for gate in [
             SelectedChainSyncGate {
@@ -5710,29 +6183,78 @@ mod tests {
             headers.push(selected_test_header(&hash, &parent, height));
             parent = hash;
         }
+        let first_headers = &headers[..64];
+        let second_headers = &headers[64..];
         let locator = vec!["common".to_string()];
         let mut session = SelectedSegmentSession::new(
             9,
             "peer-a".to_string(),
             "common".to_string(),
             0,
-            &headers,
+            first_headers,
             &locator,
             17,
             1_000,
         )
         .expect("session");
-        let ordered = selected_segment_request_order(&headers, 113);
-        let first = ordered[..64].to_vec();
-        let second = ordered[64..].to_vec();
+        let limits = SelectedSegmentLimits {
+            headers_per_chunk: 128,
+            max_inflight_blocks_per_peer: 128,
+            max_segment_bytes: 4 * 1024 * 1024,
+        };
+        let accepted_first = HashSet::from(["common".to_string()]);
+        let first = selected_segment_request_candidates(
+            first_headers,
+            limits,
+            &accepted_first,
+            &HashSet::new(),
+        );
+        assert_eq!(first.len(), 64);
         assert!(session.start_chunk(first.clone(), 1_001));
-        assert!(!session.start_chunk(second.clone(), 1_002));
         for hash in &first {
             session.requested_hashes.insert(hash.clone());
             assert!(session.mark_applied(hash, 2_000));
         }
         assert!(session.complete_current_chunk_if_applied());
-        assert!(session.start_chunk(second.clone(), 2_001));
+
+        let continuation_locator = vec!["selected-064".to_string()];
+        let continuation = PendingSelectedLocator {
+            request_id: 18,
+            peer_id: "peer-a".to_string(),
+            locator: continuation_locator.clone(),
+            requested_at_unix: 2_001,
+        };
+        let mut accepted_second = HashSet::from(["common".to_string()]);
+        accepted_second.extend(first.iter().cloned());
+        assert_eq!(
+            validate_selected_header_segment("selected-064", second_headers, &accepted_second,),
+            Ok(())
+        );
+        assert!(!session.is_active_for_headers(
+            Some("peer-a"),
+            &continuation_locator,
+            18,
+            Some("selected-064"),
+        ));
+        assert!(session.correlates_pending_header_page(
+            Some("peer-a"),
+            Some(&continuation),
+            Some("selected-064"),
+        ));
+        assert!(!session.correlates_pending_header_page(
+            Some("peer-b"),
+            Some(&continuation),
+            Some("selected-064"),
+        ));
+        session.accept_header_page(&continuation, second_headers, 2_002);
+        let second = selected_segment_request_candidates(
+            second_headers,
+            limits,
+            &accepted_second,
+            &HashSet::new(),
+        );
+        assert_eq!(second.len(), 49);
+        assert!(session.start_chunk(second.clone(), 2_003));
         for hash in &second {
             session.requested_hashes.insert(hash.clone());
             assert!(session.mark_applied(hash, 3_000));
@@ -5740,6 +6262,10 @@ mod tests {
         assert!(session.complete_current_chunk_if_applied());
         assert!(session.current_chunk.is_empty());
         assert_eq!(session.accepted_applied_hashes.len(), 113);
+        assert_eq!(session.remote_selected_tip, "selected-113");
+        assert_eq!(session.remote_selected_height, 113);
+        assert_eq!(session.locator_request_id, 18);
+        assert_eq!(session.locator_fingerprint, continuation_locator.join(","));
     }
 
     #[test]

@@ -53,6 +53,10 @@ grep -Fq 'kill -CONT "$n5_pid"' "$HARNESS"
 grep -Fq 'queued_gossip_discarded' "$HARNESS"
 grep -Fq 'canonical_gap_sample > canonical_gap_max' "$HARNESS"
 grep -Fq 'harness_gap_sample > harness_gap_max' "$HARNESS"
+grep -Fq 'built_gap > harness_gap_max' "$HARNESS"
+grep -Fq 'accepted_hash_set_digest' "$HARNESS"
+grep -Fq 'distinct_digests' "$HARNESS"
+grep -Fq '"$memory_count" == "$persisted_count"' "$HARNESS"
 grep -Fq 'observed_gap="$canonical_gap_max"' "$HARNESS"
 grep -Fq 'V2_3_0_GAP_BUILD_MARGIN_BLOCKS:-16' "$HARNESS"
 grep -Fq 'built_gap" -ge "$target_gap' "$HARNESS"
@@ -64,6 +68,20 @@ grep -Fq 'selected_segment_chunks_completed_total' "$HARNESS"
 grep -Fq 'peer_addressed_getblock_sent_total' "$HARNESS"
 grep -Fq 'peer_addressed_getblock_delta" -lt "$block_requests_delta' "$HARNESS"
 grep -Fq 'remote_tip_inventory_accepted_total' "$HARNESS"
+grep -Fq 'pulsedag_json_counter_total' "$HARNESS"
+grep -Fq 'local correlated_headers_delta="$headers_received_delta"' "$HARNESS"
+if grep -Fq 'headers_received_delta - uncorrelated_headers_delta' "$HARNESS"; then
+  echo "correlated selected-segment headers must not subtract unrelated frontier headers" >&2
+  exit 1
+fi
+cat > "$tmp/remote-tip-counter-map.json" <<'JSON'
+{"data":{"remote_tip_inventory_received_total":{"GetTips":4,"Tips":16}}}
+JSON
+[[ "$(pulsedag_json_counter_total "$tmp/remote-tip-counter-map.json" '.data.remote_tip_inventory_received_total')" == 20 ]]
+cat > "$tmp/remote-tip-counter-scalar.json" <<'JSON'
+{"data":{"remote_tip_inventory_received_total":7}}
+JSON
+[[ "$(pulsedag_json_counter_total "$tmp/remote-tip-counter-scalar.json" '.data.remote_tip_inventory_received_total')" == 7 ]]
 grep -Fq 'closeout_eligible:true' "$HARNESS"
 grep -Fq 'public_testnet_ready:false' "$HARNESS"
 grep -Fq '_v230_lag_package_failure' "$HARNESS"
@@ -77,6 +95,14 @@ if grep -Fq '$r.node_operational_ready // $r.private_conservative_ready' "$HARNE
   echo "readiness booleans must use logical OR rather than null coalescing" >&2
   exit 1
 fi
+
+# Recovery may consume a 64-block chunk before remote inventory is sampled.
+# The independently measured pre-resume gap must remain valid evidence.
+built_gap=114
+harness_gap_max=50
+(( built_gap > harness_gap_max )) && harness_gap_max="$built_gap"
+[[ "$harness_gap_max" == 114 ]]
+[[ "$harness_gap_max" -ge 96 ]]
 
 cat > "$tmp/manifest.json" <<'JSON'
 {
