@@ -1,38 +1,59 @@
-# PulseDAG v2.2 Runbook Index
+# PulseDAG v2.3.0 Private-Testnet Runbook Index
 
-This index consolidates the v2.2.6 operator package for recovery, rebuild, restore, maintenance, and staging safety workflows.
+## Purpose
 
-## Start here (decision flow)
-1. **Node unhealthy or degraded?** Start with `docs/runbooks/MAINTENANCE_SELF_CHECK.md`.
-2. **Peer loss / partition symptoms?** Use `docs/runbooks/P2P_RECOVERY.md`.
-3. **State rebuild or restore required?** Use `docs/runbooks/RECOVERY_ORCHESTRATION.md`.
-4. **Need deeper rebuild details?** Use `docs/runbooks/REBUILD_FROM_SNAPSHOT_AND_DELTA.md`.
-5. **Need restore drill and RTO evidence?** Use `docs/runbooks/SNAPSHOT_RESTORE.md`.
-6. **Need crash/restart/churn validation evidence?** Use `docs/runbooks/CHAOS_RESTART_RECOVERY_SUITE.md`.
-7. **Need startup-mode interpretation and fallback counters?** Use `docs/runbooks/FAST_BOOT_AND_FALLBACK.md`.
-8. **Need prune/snapshot integration validation command?** Use `scripts/pruning-snapshot-integration-evidence.sh`.
-9. **Need private-testnet drill prep wrappers?** Use `docs/runbooks/SNAPSHOT_PRUNE_RESTORE_DRILL.md`.
+This index is the active operator entrypoint for v2.3.0 private-testnet operations. Historical v2.2 procedures remain available where they still describe a supported recovery mechanism, but v2.3.0 lifecycle, observability, incident, security, and evidence procedures take precedence.
 
-## Core runbooks
-- `docs/runbooks/MAINTENANCE_SELF_CHECK.md` — routine operator self-check, drift checks, and pre-maintenance safety gates.
-- `docs/runbooks/P2P_RECOVERY.md` — peer-loss / topology recovery and rejoin checklist.
-- `docs/runbooks/RECOVERY_ORCHESTRATION.md` — recovery triage matrix (recovery vs rebuild vs restore).
-- `docs/runbooks/REBUILD_FROM_SNAPSHOT_AND_DELTA.md` — snapshot + delta rebuild workflow and post-checks.
-- `docs/runbooks/SNAPSHOT_RESTORE.md` — restore drill procedure, fallback expectations, and RTO evidence.
-- `docs/runbooks/SNAPSHOT_PRUNE_RESTORE_DRILL.md` — private-testnet prep and guarded wrappers for snapshot/prune/restore drills.
-- `docs/runbooks/CHAOS_RESTART_RECOVERY_SUITE.md` — repeatable crash/restart/churn/recovery validation suite and evidence workflow.
-- `docs/runbooks/FAST_BOOT_AND_FALLBACK.md` — fast-boot behavior, fallback signals, and when to escalate.
+This index does not authorize a public testnet, a release tag, a version bump, or the start of the 30-day public-testnet clock.
 
-## Staging safety
-- `docs/runbooks/STAGING_UPGRADE.md` — staged upgrade validation path.
-- `docs/runbooks/STAGING_ROLLBACK.md` — rollback decision and execution path.
+## Start here
 
-## Public testnet readiness gate
-- `docs/runbooks/FINAL_POW_PUBLIC_TESTNET_DRY_RUN.md` — final multi-node, multi-miner dry-run and go/no-go gate before public testnet open.
+1. **Routine bootstrap, lifecycle, miner attachment, upgrade, rollback, or evidence?** Use `docs/runbooks/V2_3_0_PRIVATE_TESTNET_OPERATIONS.md`.
+2. **Active incident or severity decision?** Use `docs/runbooks/V2_3_0_INCIDENT_RESPONSE.md`.
+3. **RPC abuse, disk pressure, credential exposure, or identity rotation?** Use `docs/runbooks/V2_3_0_SECURITY_AND_CAPACITY.md`.
+4. **Node unhealthy or degraded?** Use `docs/runbooks/MAINTENANCE_SELF_CHECK.md`.
+5. **Peer loss or partition symptoms?** Use `docs/runbooks/P2P_RECOVERY.md`.
+6. **Lag, missing parents, convergence, or recovery choice?** Use `docs/runbooks/RECOVERY_ORCHESTRATION.md`.
+7. **Snapshot/replay rebuild required?** Use `docs/runbooks/REBUILD_FROM_SNAPSHOT_AND_DELTA.md`.
+8. **Snapshot restore drill and RTO evidence?** Use `docs/runbooks/SNAPSHOT_RESTORE.md`.
 
-## Evidence and operations support docs
-- `docs/checklists/V2_2_6_BURNIN_CLOSEOUT.md` — final v2.2.6 burn-in closeout checklist and evidence index.
+## v2.3.0 operator baseline
+
+- `docs/runbooks/V2_3_0_PRIVATE_TESTNET_OPERATIONS.md` — bootstrap, external miner, routine checks, lifecycle, upgrade/rollback, state protection, evidence, and decommissioning.
+- `docs/runbooks/V2_3_0_INCIDENT_RESPONSE.md` — SEV-1 through SEV-4, roles, evidence custody, containment, recovery, communications, and closure.
+- `docs/runbooks/V2_3_0_SECURITY_AND_CAPACITY.md` — RPC abuse, disk pressure, identity/token rotation, and monitoring-network access.
+- `scripts/private_testnet/node_lifecycle.py` — supported node install/start/stop/status/restart/upgrade/rollback controller.
+- `scripts/private_testnet/runtime_metrics_exporter.py` — supported private monitoring exporter.
+- `scripts/private_testnet/collect_incident_evidence.py` — redacted, checksummed incident evidence collector.
+- `ops/observability/v2.3.0/README.md` — Prometheus, Grafana, alert, and metric baseline.
+- `docs/dashboard/README.md` — active dashboard entrypoint.
+- `docs/dashboard/ALERTS.md` — active alert catalog and first-response mapping.
+
+## Recovery runbooks
+
+- `docs/runbooks/MAINTENANCE_SELF_CHECK.md` — read-only health, drift, and maintenance checks.
+- `docs/runbooks/P2P_RECOVERY.md` — peer loss, partition, topology recovery, and rejoin.
+- `docs/runbooks/RECOVERY_ORCHESTRATION.md` — choose recovery, rebuild, or restore.
+- `docs/runbooks/REBUILD_FROM_SNAPSHOT_AND_DELTA.md` — snapshot plus delta rebuild and post-checks.
+- `docs/runbooks/SNAPSHOT_RESTORE.md` — restore procedure, fallback expectations, and RTO evidence.
+- `docs/runbooks/SNAPSHOT_PRUNE_RESTORE_DRILL.md` — guarded private-testnet snapshot/prune/restore drill.
+- `docs/runbooks/CHAOS_RESTART_RECOVERY_SUITE.md` — crash, restart, churn, and recovery validation.
+- `docs/runbooks/FAST_BOOT_AND_FALLBACK.md` — fast-boot and fallback signal interpretation.
+
+## Upgrade compatibility material
+
+The Task 09 lifecycle controller is the active v2.3.0 mechanism. These v2.2 runbooks remain indexed because release regressions and historical operator flows still reference them:
+
+- `docs/runbooks/STAGING_UPGRADE.md`
+- `docs/runbooks/STAGING_ROLLBACK.md`
+
+## Evidence and release support
+
 - `docs/RELEASE_EVIDENCE.md` — release evidence bundle requirements.
-- `docs/BURN_IN_14D.md` — 14-day burn-in requirements.
-- `docs/dashboard/README.md` — operator dashboard package.
-- `docs/dashboard/ALERTS.md` — official alert catalog and first-response mapping.
+- `docs/checklists/V2_2_6_BURNIN_CLOSEOUT.md` — historical v2.2.6 burn-in closeout evidence.
+- `docs/BURN_IN_14D.md` — historical 14-day burn-in requirements.
+- `docs/runbooks/FINAL_POW_PUBLIC_TESTNET_DRY_RUN.md` — historical public-testnet prerequisite material; not an active launch authorization.
+
+## Escalation rule
+
+An unresolved SEV-1 integrity/security incident, replay gap, convergence failure, credential exposure, or destructive recovery without evidence is a private-testnet no-go. Runbook completion never changes `public_testnet_ready=false` or starts/backdates the public-testnet clock.
