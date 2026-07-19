@@ -1,17 +1,41 @@
 # Rust build output
 /target/
 **/*.rs.bk
+*.profraw
+*.profdata
 
 # PulseDAG local runtime data
 /data/
 /logs/
 /run/
 /artifacts/
+/ci-evidence/
+*.pid
+*.pid.lock
 
 # Local env files
 .env
 .env.*
 !.env.example
+.envrc
+.direnv/
+
+# Python caches and coverage
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+/htmlcov/
+/coverage/
+
+# JavaScript tooling and coverage
+/node_modules/
+.npm/
+.yarn/
+lcov.info
 
 # Generated release/rehearsal evidence artifacts
 # Keep curated Markdown evidence and summaries tracked; ignore bulky runtime/log output.
