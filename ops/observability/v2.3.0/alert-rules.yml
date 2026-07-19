@@ -1,0 +1,143 @@
+groups:
+  - name: pulsedag-private-testnet-v2.3.0
+    interval: 15s
+    rules:
+      - alert: PulseDAGExporterDown
+        expr: up{job="pulsedag-private-testnet"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          surface: observability
+        annotations:
+          summary: PulseDAG exporter is unreachable
+          runbook: docs/runbooks/MAINTENANCE_SELF_CHECK.md
+
+      - alert: PulseDAGRPCCollectionFailed
+        expr: pulsedag_exporter_scrape_success == 0
+        for: 1m
+        labels:
+          severity: critical
+          surface: rpc
+        annotations:
+          summary: One or more required PulseDAG RPC surfaces cannot be collected
+          runbook: docs/runbooks/MAINTENANCE_SELF_CHECK.md
+
+      - alert: PulseDAGRPCStatusStale
+        expr: pulsedag_node_rpc_response_stale == 1
+        for: 2m
+        labels:
+          severity: warning
+          surface: rpc
+        annotations:
+          summary: Node status is being served from stale data
+          runbook: docs/runbooks/MAINTENANCE_SELF_CHECK.md
+
+      - alert: PulseDAGNoConnectedPeers
+        expr: pulsedag_node_peer_count < 1
+        for: 3m
+        labels:
+          severity: critical
+          surface: p2p
+        annotations:
+          summary: Private-testnet node has no connected peers
+          runbook: docs/runbooks/P2P_RECOVERY.md
+
+      - alert: PulseDAGP2PStatusDegraded
+        expr: pulsedag_node_p2p_status_degraded == 1
+        for: 3m
+        labels:
+          severity: warning
+          surface: p2p
+        annotations:
+          summary: P2P status reports a degraded condition
+          runbook: docs/runbooks/P2P_RECOVERY.md
+
+      - alert: PulseDAGSyncConsistencyFailure
+        expr: pulsedag_sync_consistency_ok == 0 or pulsedag_sync_consistency_issue_count > 0
+        for: 1m
+        labels:
+          severity: critical
+          surface: sync
+        annotations:
+          summary: Node sync consistency checks are failing
+          runbook: docs/runbooks/RECOVERY_ORCHESTRATION.md
+
+      - alert: PulseDAGSyncLagHigh
+        expr: pulsedag_sync_lag_blocks > 100
+        for: 5m
+        labels:
+          severity: warning
+          surface: sync
+        annotations:
+          summary: Node remains more than 100 blocks behind the observed network height
+          runbook: docs/runbooks/RECOVERY_ORCHESTRATION.md
+
+      - alert: PulseDAGSyncLagCritical
+        expr: pulsedag_sync_lag_blocks > 500
+        for: 5m
+        labels:
+          severity: critical
+          surface: sync
+        annotations:
+          summary: Node remains more than 500 blocks behind the observed network height
+          runbook: docs/runbooks/REBUILD_FROM_SNAPSHOT_AND_DELTA.md
+
+      - alert: PulseDAGMissingParentBacklog
+        expr: pulsedag_sync_pending_missing_parents > 128
+        for: 5m
+        labels:
+          severity: warning
+          surface: sync
+        annotations:
+          summary: Missing-parent recovery backlog exceeds the private-testnet baseline
+          runbook: docs/runbooks/RECOVERY_ORCHESTRATION.md
+
+      - alert: PulseDAGMempoolOrphanPressure
+        expr: pulsedag_mempool_orphan_transactions / clamp_min(pulsedag_mempool_orphan_limit, 1) > 0.8
+        for: 5m
+        labels:
+          severity: warning
+          surface: mempool
+        annotations:
+          summary: Orphan transaction pool exceeds 80 percent of its configured limit
+          runbook: docs/runbooks/MAINTENANCE_SELF_CHECK.md
+
+      - alert: PulseDAGSnapshotMissing
+        expr: pulsedag_node_snapshot_exists == 0
+        for: 15m
+        labels:
+          severity: warning
+          surface: storage
+        annotations:
+          summary: Node has no persisted snapshot
+          runbook: docs/runbooks/SNAPSHOT_RESTORE.md
+
+      - alert: PulseDAGStorageReplayGap
+        expr: pulsedag_sync_storage_replay_gap > 0
+        for: 5m
+        labels:
+          severity: critical
+          surface: storage
+        annotations:
+          summary: Persisted and in-memory chain state have a replay gap
+          runbook: docs/runbooks/REBUILD_FROM_SNAPSHOT_AND_DELTA.md
+
+      - alert: PulseDAGPoWProductionSlow
+        expr: pulsedag_pow_average_block_interval_seconds > 90
+        for: 10m
+        labels:
+          severity: warning
+          surface: mining
+        annotations:
+          summary: Average block interval is above 90 seconds
+          runbook: docs/runbooks/MAINTENANCE_SELF_CHECK.md
+
+      - alert: PulseDAGPoWProductionTooFast
+        expr: pulsedag_pow_average_block_interval_seconds > 0 and pulsedag_pow_average_block_interval_seconds < 30
+        for: 10m
+        labels:
+          severity: warning
+          surface: mining
+        annotations:
+          summary: Average block interval is below 30 seconds
+          runbook: docs/runbooks/MAINTENANCE_SELF_CHECK.md

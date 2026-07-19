@@ -1,0 +1,123 @@
+name: v2.3.0 observability baseline
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - ops/observability/v2.3.0/**
+      - docs/dashboard/README.md
+      - docs/codex_tasks/v2_3_0_10_observability_baseline.md
+      - scripts/private_testnet/runtime_metrics_exporter.py
+      - scripts/tests/test_v2_3_0_observability.sh
+      - scripts/validate_observability_package.py
+      - scripts/validate_v2_3_0_observability.py
+      - .github/workflows/v2_3_0_observability.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  observability-contract:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout candidate
+        uses: actions/checkout@v4
+
+      - name: Preserve version and readiness guardrails
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(tr -d '\r\n' < VERSION)" = "v2.2.20"
+          test "$(awk '/^version = / {gsub(/"/, "", $3); print $3; exit}' Cargo.toml)" = "2.2.20"
+
+      - name: Validate syntax and English comments
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile \
+            scripts/private_testnet/runtime_metrics_exporter.py \
+            scripts/validate_observability_package.py \
+            scripts/validate_v2_3_0_observability.py
+          bash -n scripts/tests/test_v2_3_0_observability.sh
+          python3 scripts/check_code_comment_language.py \
+            scripts/private_testnet/runtime_metrics_exporter.py \
+            scripts/validate_observability_package.py \
+            scripts/validate_v2_3_0_observability.py \
+            scripts/tests/test_v2_3_0_observability.sh
+
+      - name: Run observability contract regression
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ci-evidence/v2.3.0-task10
+          bash scripts/tests/test_v2_3_0_observability.sh \
+            | tee ci-evidence/v2.3.0-task10/observability-contract.log
+
+      - name: Run repository hygiene
+        shell: bash
+        run: bash scripts/repository_hygiene.sh --strict
+
+      - name: Build Task 10 evidence manifest
+        shell: bash
+        env:
+          CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          output = Path("ci-evidence/v2.3.0-task10")
+          manifest = {
+              "gate": "v2.3.0-observability-baseline",
+              "candidate_sha": os.environ["CANDIDATE_SHA"],
+              "result": "PASS",
+              "rust_field_grounded": True,
+              "prometheus_exporter": True,
+              "five_node_scrape": True,
+              "grafana_dashboard": True,
+              "alert_rules": True,
+              "runbook_links_valid": True,
+              "sensitive_labels_excluded": True,
+              "public_testnet_ready": False,
+              "thirty_day_public_testnet_clock_started": False,
+          }
+          (output / "observability-manifest.json").write_text(
+              json.dumps(manifest, indent=2) + "\n",
+              encoding="utf-8",
+          )
+          PY
+          sha256sum \
+            ops/observability/v2.3.0/* \
+            ci-evidence/v2.3.0-task10/* \
+            > ci-evidence/v2.3.0-task10/SHA256SUMS
+
+      - name: Enforce Task 10 manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          jq -e '
+            .gate == "v2.3.0-observability-baseline" and
+            .result == "PASS" and
+            .rust_field_grounded == true and
+            .prometheus_exporter == true and
+            .five_node_scrape == true and
+            .grafana_dashboard == true and
+            .alert_rules == true and
+            .runbook_links_valid == true and
+            .sensitive_labels_excluded == true and
+            .public_testnet_ready == false and
+            .thirty_day_public_testnet_clock_started == false
+          ' ci-evidence/v2.3.0-task10/observability-manifest.json >/dev/null
+
+      - name: Upload Task 10 evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v2_3_0_task10_observability_${{ github.run_id }}
+          path: ci-evidence/v2.3.0-task10
+          if-no-files-found: error
+          retention-days: 90

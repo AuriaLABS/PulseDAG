@@ -1,0 +1,43 @@
+global:
+  scrape_interval: 15s
+  scrape_timeout: 5s
+  evaluation_interval: 15s
+
+rule_files:
+  - alert-rules.yml
+
+scrape_configs:
+  - job_name: pulsedag-private-testnet
+    metrics_path: /metrics
+    scheme: http
+    static_configs:
+      - targets:
+          - seed-1.example.net:9108
+        labels:
+          network: private-testnet-v2.3.0
+          node: seed-1
+          role: seed
+      - targets:
+          - node-1.example.net:9108
+        labels:
+          network: private-testnet-v2.3.0
+          node: node-1
+          role: node
+      - targets:
+          - node-2.example.net:9108
+        labels:
+          network: private-testnet-v2.3.0
+          node: node-2
+          role: node
+      - targets:
+          - node-3.example.net:9108
+        labels:
+          network: private-testnet-v2.3.0
+          node: node-3
+          role: node
+      - targets:
+          - node-4.example.net:9108
+        labels:
+          network: private-testnet-v2.3.0
+          node: node-4
+          role: node
