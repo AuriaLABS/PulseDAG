@@ -49,13 +49,13 @@ Add idempotent start/stop/status/upgrade/rollback helpers, persistent directory 
 
 ### Task 10 — Metrics and dashboard baseline
 
-Status: **ACTIVE**.
+Status: **MERGED** in PR `#759`.
 
 Publish a versioned metrics inventory, Prometheus scrape example, dashboard definitions, alert thresholds, and evidence that all five private-testnet nodes expose the required health, P2P, sync, mining, mempool, snapshot, and prune signals.
 
 ### Task 11 — Operator and incident runbooks
 
-Status: **PLANNED**.
+Status: **ACTIVE**.
 
 Document bootstrap, miner attachment, backup/restore, partition recovery, high orphan/missing-parent response, disk pressure, RPC abuse, identity rotation, rollback, evidence collection, and incident severity/ownership.
 
