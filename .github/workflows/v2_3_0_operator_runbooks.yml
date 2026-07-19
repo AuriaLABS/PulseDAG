@@ -4,7 +4,6 @@ on:
   pull_request:
     branches:
       - main
-      - agent/v2-3-0-10-observability-baseline
     paths:
       - docs/runbooks/**
       - docs/codex_tasks/v2_3_0_11_operator_incident_runbooks.md
