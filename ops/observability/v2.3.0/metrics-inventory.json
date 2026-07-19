@@ -1,0 +1,65 @@
+{
+  "schema_version": 1,
+  "release_line": "v2.3.0",
+  "description": "Private-testnet operator metrics exported from stable PulseDAG RPC response fields.",
+  "endpoints": {
+    "/status": {
+      "rust_file": "crates/pulsedag-rpc/src/handlers/status.rs",
+      "rust_struct": "NodeStatusData"
+    },
+    "/sync/status": {
+      "rust_file": "crates/pulsedag-rpc/src/handlers/sync.rs",
+      "rust_struct": "SyncStatusData"
+    },
+    "/tx/mempool": {
+      "rust_file": "crates/pulsedag-rpc/src/handlers/tx.rs",
+      "rust_struct": "MempoolData"
+    },
+    "/pow/health": {
+      "rust_file": "crates/pulsedag-rpc/src/handlers/pow_health.rs",
+      "rust_struct": "PowHealthData"
+    }
+  },
+  "metrics": [
+    {"name": "pulsedag_node_best_height", "type": "gauge", "endpoint": "/status", "field": "best_height", "help": "Highest accepted local block height."},
+    {"name": "pulsedag_node_uptime_seconds", "type": "gauge", "endpoint": "/status", "field": "uptime_secs", "help": "Node process uptime in seconds."},
+    {"name": "pulsedag_node_block_count", "type": "gauge", "endpoint": "/status", "field": "block_count", "help": "Accepted blocks held in local memory."},
+    {"name": "pulsedag_node_tip_count", "type": "gauge", "endpoint": "/status", "field": "tip_count", "help": "Current DAG tip count."},
+    {"name": "pulsedag_node_orphan_count", "type": "gauge", "endpoint": "/status", "field": "orphan_count", "help": "Current orphan block count."},
+    {"name": "pulsedag_node_mempool_size", "type": "gauge", "endpoint": "/status", "field": "mempool_size", "help": "Current mempool transaction count from node status."},
+    {"name": "pulsedag_node_peer_count", "type": "gauge", "endpoint": "/status", "field": "peer_count", "help": "Connected P2P peer count."},
+    {"name": "pulsedag_node_rpc_response_degraded", "type": "gauge", "endpoint": "/status", "field": "rpc_response_degraded", "help": "Whether status is served from a degraded response path."},
+    {"name": "pulsedag_node_rpc_response_stale", "type": "gauge", "endpoint": "/status", "field": "rpc_response_stale", "help": "Whether status data is stale."},
+    {"name": "pulsedag_node_p2p_status_degraded", "type": "gauge", "endpoint": "/status", "field": "p2p_status_degraded", "help": "Whether the P2P status surface is degraded."},
+    {"name": "pulsedag_node_snapshot_exists", "type": "gauge", "endpoint": "/status", "field": "snapshot_exists", "help": "Whether a persisted snapshot exists."},
+    {"name": "pulsedag_node_snapshot_height", "type": "gauge", "endpoint": "/status", "field": "snapshot_height", "help": "Persisted snapshot height when available.", "optional": true},
+    {"name": "pulsedag_node_persisted_block_count", "type": "gauge", "endpoint": "/status", "field": "persisted_block_count", "help": "Persisted block count."},
+    {"name": "pulsedag_node_prune_keep_from_height", "type": "gauge", "endpoint": "/status", "field": "recommended_keep_from_height", "help": "Recommended lowest retained block height."},
+
+    {"name": "pulsedag_sync_pending_block_requests", "type": "gauge", "endpoint": "/sync/status", "field": "pending_block_requests", "help": "Pending block request count."},
+    {"name": "pulsedag_sync_inflight_block_requests", "type": "gauge", "endpoint": "/sync/status", "field": "inflight_block_requests", "help": "In-flight block request count."},
+    {"name": "pulsedag_sync_pending_missing_parents", "type": "gauge", "endpoint": "/sync/status", "field": "pending_missing_parents", "help": "Missing-parent requests awaiting resolution."},
+    {"name": "pulsedag_sync_consistency_ok", "type": "gauge", "endpoint": "/sync/status", "field": "consistency_ok", "help": "Whether sync consistency checks pass."},
+    {"name": "pulsedag_sync_consistency_issue_count", "type": "gauge", "endpoint": "/sync/status", "field": "consistency_issue_count", "help": "Detected sync consistency issue count."},
+    {"name": "pulsedag_sync_lag_blocks", "type": "gauge", "endpoint": "/sync/status", "field": "lag_blocks", "help": "Estimated blocks behind the selected network height."},
+    {"name": "pulsedag_sync_catchup_progress_ratio", "type": "gauge", "endpoint": "/sync/status", "field": "catchup_progress_bps", "scale": 0.0001, "help": "Bounded catch-up progress ratio from 0 to 1."},
+    {"name": "pulsedag_sync_network_selected_height_gap", "type": "gauge", "endpoint": "/sync/status", "field": "network_selected_height_gap", "help": "Gap between local and best observed selected height."},
+    {"name": "pulsedag_sync_storage_replay_gap", "type": "gauge", "endpoint": "/sync/status", "field": "storage_replay_gap", "help": "Persisted-to-memory replay gap."},
+    {"name": "pulsedag_sync_live_error_active", "type": "gauge", "endpoint": "/sync/status", "field": "live_sync_error_active", "help": "Whether a live sync error is active."},
+    {"name": "pulsedag_sync_missing_parent_timeouts_total", "type": "counter", "endpoint": "/sync/status", "field": "missing_parent_request_timeouts", "help": "Cumulative missing-parent request timeouts."},
+    {"name": "pulsedag_sync_missing_parent_fallbacks_total", "type": "counter", "endpoint": "/sync/status", "field": "missing_parent_request_fallbacks", "help": "Cumulative missing-parent fallback attempts."},
+
+    {"name": "pulsedag_mempool_transactions", "type": "gauge", "endpoint": "/tx/mempool", "field": "transaction_count", "help": "Transactions currently in the main mempool."},
+    {"name": "pulsedag_mempool_orphan_transactions", "type": "gauge", "endpoint": "/tx/mempool", "field": "orphan_transaction_count", "help": "Transactions currently in the orphan pool."},
+    {"name": "pulsedag_mempool_orphan_limit", "type": "gauge", "endpoint": "/tx/mempool", "field": "orphan_limit", "help": "Configured orphan transaction limit."},
+    {"name": "pulsedag_mempool_orphaned_total", "type": "counter", "endpoint": "/tx/mempool", "field": "orphaned_total", "help": "Cumulative transactions moved into the orphan pool."},
+    {"name": "pulsedag_mempool_orphan_promoted_total", "type": "counter", "endpoint": "/tx/mempool", "field": "orphan_promoted_total", "help": "Cumulative orphan transactions promoted to the main mempool."},
+    {"name": "pulsedag_mempool_orphan_dropped_total", "type": "counter", "endpoint": "/tx/mempool", "field": "orphan_dropped_total", "help": "Cumulative orphan transactions dropped."},
+    {"name": "pulsedag_mempool_orphan_pruned_total", "type": "counter", "endpoint": "/tx/mempool", "field": "orphan_pruned_total", "help": "Cumulative orphan transactions pruned."},
+
+    {"name": "pulsedag_pow_snapshot_count", "type": "gauge", "endpoint": "/pow/health", "field": "snapshot_count", "help": "Number of persisted PoW metric snapshots."},
+    {"name": "pulsedag_pow_suggested_difficulty", "type": "gauge", "endpoint": "/pow/health", "field": "latest_suggested_difficulty", "help": "Latest suggested PoW difficulty."},
+    {"name": "pulsedag_pow_average_block_interval_seconds", "type": "gauge", "endpoint": "/pow/health", "field": "latest_avg_block_interval_secs", "help": "Latest measured average block interval in seconds."},
+    {"name": "pulsedag_pow_health_status", "type": "enum", "endpoint": "/pow/health", "field": "status", "values": ["ok", "warn", "degraded"], "help": "PoW health state represented as one-hot status labels."}
+  ]
+}
