@@ -1,63 +1,52 @@
 # Known Limitations v2.2.20
 
-This document records the current known limitations for `v2.2.20` active hardening. It must be read with `docs/VERSION_MATRIX.md`, `docs/CLOSING_CHECKLIST_V2_2_20.md`, and the committed evidence documents.
+Date: 2026-07-19 UTC
+
+This document records the final limitation state for the closed `v2.2.20` hardening milestone. It must be read with `docs/CLOSING_CHECKLIST_V2_2_20.md` and `docs/V2_2_20_FINAL_EVIDENCE_INDEX.md`.
 
 ## Scope and guardrails
 
-- `v2.2.20` is an active hardening milestone, not a release-readiness declaration.
-- `public_testnet_ready=false` remains the only allowed public-testnet signal.
-- This document does not claim public-testnet live status, public-testnet readiness, or `v2.3.0` readiness.
-- No limitation below authorizes a consensus-rule change, PoW semantic change, smart-contract enablement, pool-logic enablement, or `VERSION` bump.
+- `v2.2.20` hardening is closed with `GO_TO_START_V2_3_0_REVIEW`.
+- `VERSION` remains `v2.2.20`; the Cargo workspace remains `2.2.20`.
+- `public_testnet_ready=false` remains mandatory.
+- The 30-day public-testnet clock has not started.
+- This document does not authorize a version bump, public-testnet launch, smart-contract enablement, embedded pool logic, or a production-readiness claim.
 
-## Remaining limitations that block closeout unless resolved or waived
+## Closeout blockers resolved by final evidence
 
-| Limitation | Current state | Required exit evidence |
+| Historical limitation | Final state | Replacement evidence |
 |---|---|---|
-| `5N/2M` accepted-block recovery | The latest recorded `5N/2M` evidence improved peer visibility, convergence, and backlog drain, but failed because accepted blocks remained `0`. | Replacement `5N/2M` evidence after all remaining `v2.2.20` hardening PRs with accepted blocks, archive, checksum, final node table, miner accept/reject summary, and no regression in peer/orphan/final-tip behavior; or a complete non-readiness waiver. |
-| `5N/4M` stress recovery | The latest recorded `v2.2.20` stress evidence is still `OBSERVE_FAIL`, with all-zero peer visibility, orphan and pending-missing-parent saturation, and divergent tips. | Replacement `5N/4M` evidence that is PASS, or an accepted bounded limitation with measured divergence, peer visibility, RPC liveness, orphan/missing-parent backlog, owner, reviewer, UTC approval, expiry, and exit criteria. |
-| Snapshot/restore closeout artifact | The deterministic drill is documented, but closeout requires an attached drill artifact/checksum or formal waiver. | Snapshot creation/restore bundle, checksums, restored node health/readiness, timing metrics, and evidence manifest; or waiver with owner, UTC approval, scope, expiry, and exit criteria. |
-| Final CI/workspace validation artifact | The closeout requires validation logs for the evaluated merge commit and version guards proving `VERSION=v2.2.20` and root Cargo workspace version `2.2.20`. | Accepted logs or CI artifacts for `cat VERSION`, Cargo workspace version inspection, `cargo fmt --all -- --check`, `cargo check --workspace --locked`, `cargo test --workspace --locked`, and `cargo clippy --workspace --all-targets -- -D warnings`. |
+| `5N/2M` accepted-block recovery | RESOLVED FOR CLOSEOUT | Strict PASS in run `29662737906`; archive sha256 `39fcd1168b65b6e4009b847cffa93b776a5c59012e38706c119612c463a44207`. |
+| `5N/4M` stress recovery | RESOLVED FOR CLOSEOUT | Strict PASS in run `29662737906`; archive sha256 `77786930c5f78f4fdbb1703c6a0a68e18385c71009a373fe06066afc483c41bf`. |
+| Snapshot/restore and offline rejoin confidence | RESOLVED FOR CLOSEOUT | `v2_3_0_prune_restart_rejoin_29662737906`, digest `sha256:097995cd80e2a371a229c664292c0a81d0e044f6b9d86494ebd566d4591275a0`. |
+| Selected-segment continuation and retained-set convergence | RESOLVED FOR CLOSEOUT | `v2_3_0_lag_injection_29662737906`, digest `sha256:85362dcb69643ba657109f7b374c274fd09f199d3331b5cb839484a09c4add21`. |
+| Final workspace validation | RESOLVED FOR CLOSEOUT | `v2_3_0_workspace_validation_29662737906`, digest `sha256:b44c550899cc3e3552df5cb3bd6dffb290cbcb8e649903c2d60884a6f5098aa1`. |
 
-## Out-of-scope non-readiness areas
+No waiver was required for these items.
 
-The following are not active `v2.2.20` code blockers by themselves. They remain future-public-testnet or future-product scope and cannot be used as readiness claims without separate evidence and approval.
+## Remaining non-readiness limitations
 
-| Area | Current scope | Required future evidence before any claim |
+The following remain outside the closed `v2.2.20` hardening scope and must not be interpreted as active closeout blockers or as completed readiness work.
+
+| Area | Current limitation | Required future evidence |
 |---|---|---|
-| Public RPC exposure | RPC endpoints remain private/localhost by default; public exposure is out of scope for this closeout. | Public-testnet-specific security/RPC exposure review, authn/authz posture, firewall/listener config, secret-redaction check, and operator sign-off. |
-| Long-run public operation | Private rehearsals do not provide long-run public-testnet burn-in. | Separate public-testnet go/no-go authorization and at least 30 consecutive UTC days of burn-in evidence after launch authorization. |
-| Kaspa/GHOSTDAG compatibility assertions | Deterministic DAG behavior does not prove full Kaspa/GHOSTDAG compatibility. | Canonical compatibility implementation and explicit tests/evidence before any compatibility claim. |
-| GPU mining | GPU paths remain optional/scaffold-only unless a canonical tested kHeavyHash GPU kernel and evidence are included. | Canonical GPU kernel implementation, deterministic validation, and miner evidence before any production-ready GPU claim. |
+| Public RPC exposure | RPC remains private/localhost-oriented; public exposure has not been authorized. | Security review, authentication/authorization posture, listener and firewall configuration, secret-redaction review, abuse controls and operator sign-off. |
+| Public-testnet launch | Private five-node rehearsals do not authorize a public launch. | Separate launch GO/NO-GO with bootnodes, network isolation, deployment, rollback, monitoring and incident-response evidence. |
+| 30-day burn-in | The clock has not started. | At least 30 consecutive UTC days after an explicitly authorized public-testnet launch. |
+| Kaspa/GHOSTDAG compatibility | Deterministic DAG behavior does not prove full compatibility. | Canonical compatibility implementation and dedicated interoperability evidence. |
+| GPU mining | GPU support remains optional/scaffold-level unless separately proven. | Canonical tested kernel, deterministic validation and operational miner evidence. |
+| `v2.3.0` version bump | Review may start, but the bump is not authorized by the closeout. | Separate explicit maintainer approval after review of scope, release controls and remaining non-readiness work. |
 
-## Limitations resolved or narrowed by PRs #600-#605
+## Incident and waiver status
 
-| PR | Hardening area | Limitation status |
-|---|---|---|
-| `#600` | Kaspa-style orphan-root recovery | Narrowed the orphan-root recovery limitation by adding explicit orphan-root recovery behavior. It still requires replacement `5N/2M` and `5N/4M` evidence before closeout. |
-| `#601` | Isolate `submit_block` from status paths | Narrowed RPC/status coupling risk by separating mining submission pressure from status paths. Stress evidence is still required to prove final-capture liveness. |
-| `#602` | Bound concurrent mining submit requests | Narrowed unbounded submit concurrency risk. Closeout still needs accepted-block evidence and queue/backpressure observations. |
-| `#603` | Rate-limit-aware orphan recovery plan | Resolved the missing documented follow-up for rate-limit-aware orphan recovery by recording the plan. Runtime evidence remains required. |
-| `#604` | Rate-limit-aware block request recovery in the submit-isolation branch | Narrowed parent-fetch/orphan recovery retry risk by making block request recovery rate-limit aware. Replacement staged evidence remains required. |
-| `#605` | Bound RPC liveness endpoint handlers | Narrowed RPC liveness starvation risk by bounding liveness endpoint handlers. Replacement stress evidence must prove the endpoints remain captureable under load. |
+The decision-scoped ledger is `artifacts/v2_2_20/closeout_decision/incident_waiver_ledger.md`.
 
-## Limitations resolved or narrowed by PRs #606 and later
+- Unresolved Sev-1 closeout blockers: none identified.
+- Closeout waivers: none.
+- Accepted bounded limitations required for closeout: none; all mandatory gates passed.
 
-| PR | Hardening area | Limitation status |
-|---|---|---|
-| `#606` | Lock-free liveness snapshot | Further narrowed RPC liveness starvation risk by allowing stale/degraded snapshots instead of blocking evidence endpoints. |
-| `#607` | Bounded mining submit actor | Further narrowed mining-submit backpressure risk by routing submissions through a bounded actor. |
-| `#609` | Deterministic orphan recovery supervisor | Further narrowed orphan-recovery ambiguity by adding deterministic supervision. Replacement evidence must show backlog behavior. |
-| `#610` | Peer retention under stress | Further narrowed peer drop-to-zero risk. Replacement `5N/4M` evidence must prove whether peer visibility remains non-zero. |
-| `#611` | Deterministic snapshot restore drill | Added the required restore evidence track, but closeout still needs an artifact or waiver. |
-| `#612` | Mining submit tests aligned with actor semantics | Narrowed regression-test mismatch for bounded submit behavior. |
-| `#613` | Windows and Docker rehearsal hardening | Narrowed environment ambiguity by hardening preflight and Docker execution. |
-| `#614` | Evidence manifest completion | Narrowed evidence-review ambiguity by requiring self-classifying evidence manifests for rehearsal bundles. |
-| Later `v2.2.20` hardening PRs | Evidence-driven closeout only | Must remain in `v2.2.20`, preserve consensus and PoW semantics, and update this table or the closeout index with whether each prior limitation is resolved, narrowed, or still blocked. |
+## Decision reference
 
-## Closeout decision reference
+The final decision is `GO_TO_START_V2_3_0_REVIEW`, recorded in `artifacts/v2_2_20/closeout_decision/final_decision.md`.
 
-The final closeout evidence index is `docs/V2_2_20_FINAL_EVIDENCE_INDEX.md`. It records `NO_GO` as of 2026-06-12 because the remaining closeout blockers above have no complete replacement evidence or waiver in this repository.
-
-## Closeout interpretation
-
-Resolved or narrowed limitations are not public-testnet readiness evidence by themselves. A limitation is considered resolved for closeout only when the relevant replacement evidence or complete waiver is recorded; otherwise it remains a `v2.2.20` blocker. They must be paired with the closeout checklist, replacement private rehearsal bundles, checksums, waivers where applicable, and a final `GO/NO-GO` decision.
+This is permission to begin review, not a claim that `v2.3.0` or a public testnet is ready.
