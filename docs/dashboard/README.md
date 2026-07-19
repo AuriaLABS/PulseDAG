@@ -25,6 +25,10 @@ The compatibility command below delegates to the same active validator:
 python3 scripts/validate_observability_package.py
 ```
 
+## Migration from the legacy package
+
+The former **Operator Dashboard Package (v2.2)** is retained only as historical compatibility material in Git history and legacy dashboard assets. It is not the active private-testnet source of truth. New operator configuration must use the versioned v2.3.0 package above.
+
 ## Supported operator surfaces
 
 The v2.3.0 package exports a bounded inventory from four stable read-only RPC endpoints:
