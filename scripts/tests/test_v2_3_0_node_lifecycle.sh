@@ -114,6 +114,24 @@ common=(
 )
 
 "${common[@]}" install --binary "$tmp_dir/pulsedagd-v1" --release-id v1 >/dev/null
+
+malicious_env="$tmp_dir/malicious.env"
+marker="$tmp_dir/must-not-exist"
+cp "$env_file" "$malicious_env"
+printf 'PULSEDAG_CHAIN_ID=$(touch %s)\n' "$marker" >> "$malicious_env"
+if python3 "$controller" \
+  --root "$lifecycle_root" \
+  --env-file "$malicious_env" \
+  --preflight-script "$preflight" \
+  verify >/dev/null 2>&1; then
+  echo "expected shell expansion in environment data to fail" >&2
+  exit 1
+fi
+if [[ -e "$marker" ]]; then
+  echo "environment data executed shell code" >&2
+  exit 1
+fi
+
 "${common[@]}" verify >/dev/null
 "${common[@]}" start > "$tmp_dir/start-v1.json"
 jq -e '.result == "PASS" and .changed == true and .release_id == "v1"' "$tmp_dir/start-v1.json" >/dev/null
