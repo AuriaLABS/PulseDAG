@@ -35,13 +35,20 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python3 -m py_compile scripts/private_testnet/node_lifecycle.py
+          python3 -m py_compile \
+            scripts/private_testnet/lifecycle_core.py \
+            scripts/private_testnet/lifecycle_service.py \
+            scripts/private_testnet/node_lifecycle.py
           bash -n scripts/private_testnet/node_lifecycle.sh
           bash -n scripts/tests/test_v2_3_0_node_lifecycle.sh
+          bash -n scripts/v2_3_0_private_testnet_preflight.sh
           python3 scripts/check_code_comment_language.py \
+            scripts/private_testnet/lifecycle_core.py \
+            scripts/private_testnet/lifecycle_service.py \
             scripts/private_testnet/node_lifecycle.py \
             scripts/private_testnet/node_lifecycle.sh \
-            scripts/tests/test_v2_3_0_node_lifecycle.sh
+            scripts/tests/test_v2_3_0_node_lifecycle.sh \
+            scripts/v2_3_0_private_testnet_preflight.sh
 
       - name: Run lifecycle contract regression
         shell: bash
@@ -71,6 +78,8 @@ jobs:
               "gate": "v2.3.0-node-lifecycle",
               "candidate_sha": os.environ["CANDIDATE_SHA"],
               "result": "PASS",
+              "modular_implementation": True,
+              "safe_environment_parser": True,
               "install_idempotent": True,
               "start_stop_idempotent": True,
               "healthy_upgrade": True,
@@ -96,6 +105,8 @@ jobs:
           jq -e '
             .gate == "v2.3.0-node-lifecycle" and
             .result == "PASS" and
+            .modular_implementation == true and
+            .safe_environment_parser == true and
             .install_idempotent == true and
             .start_stop_idempotent == true and
             .healthy_upgrade == true and
