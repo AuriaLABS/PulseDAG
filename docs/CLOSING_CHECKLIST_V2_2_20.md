@@ -1,94 +1,55 @@
 # v2.2.20 Closing Checklist
 
-This checklist closes `v2.2.20` active hardening only. It must not be used to claim public-testnet live status, public-testnet readiness, or `v2.3.0` readiness.
+Date: 2026-07-19 UTC
+
+This checklist closes `v2.2.20` active hardening only. It does not claim public-testnet launch, public-testnet readiness, or `v2.3.0` release readiness.
+
+## Evaluated closeout
+
+- Functional candidate: `e65c6c199e07214303b49f7863f5b4988a8ce107`
+- Fix PR: `#755`
+- Merge commit: `bbca0735b50f56dadb05747aa408ea88b3f1a900`
+- Final Actions run: `29662737906`
+- Final artifact: `v2_2_20_pr755_final_closeout_29662737906`
+- Final artifact digest: `sha256:90d4ccb28c04231bb64daa61b911914d21f16041edccb888f06310f6f768a873`
+- Final manifest checksum: `30cfa1c273bce7c93f60ca9c9c4a17f99130b598be007554dd88095024c7bf3a`
 
 ## Required closeout evidence
 
-| Gate | Required state | Evidence path / notes |
+| Gate | Result | Evidence |
 |---|---|---|
-| Version guard | PASS | Attach `cat VERSION` showing `v2.2.20`, root Cargo `[workspace.package] version = "2.2.20"`, and a diff proving no `v2.3.0` bump is included. |
-| Public-testnet signal guard | PASS | `public_testnet_ready=false` remains the required value for all closeout materials; any true/ready/live assertion is automatic **NO-GO**. |
-| Workspace validation | PASS | Attach logs for `cargo fmt --all -- --check`, `cargo check --workspace --locked`, `cargo test --workspace --locked`, and `cargo clippy --workspace --all-targets -- -D warnings`. |
-| `5N/1M baseline` | PASS | Attach private evidence archive, sha256, manifest, final node table, convergence metrics, orphan/missing-parent counts, peer counts, and miner accept/reject summary. |
-| `5N/2M intermediate` | PASS or approved non-readiness waiver | Attach replacement evidence after all remaining `v2.2.20` hardening PRs. If non-PASS, waiver must explicitly say public-testnet readiness and `v2.3.0` readiness are not claimed. |
-| `5N/4M stress` | PASS or accepted non-blocking limitation | Attach replacement stress evidence after PRs `#600`-`#614` and any later `v2.2.20` hardening PRs, including RPC liveness/final-capture behavior, peer visibility, final tips, orphan/missing-parent backlog, miner metrics, archive, sha256, and manifest. |
-| Snapshot/restore | PASS or approved waiver | Attach deterministic restore drill evidence from `docs/SNAPSHOT_RESTORE_DRILL_V2_2_20.md`, or waiver. |
-| Known limitations | PASS | Attach decision-scoped mapping from `docs/KNOWN_LIMITATIONS_V2_2_20.md` showing remaining limitations, resolved/narrowed limitations, owners, expiry, and exit criteria. |
-| Incident ledger | PASS | Attach incident list proving no unresolved Sev-1 consensus/sync/security blocker. |
-| Evidence integrity | PASS | Every referenced bundle has an archive, checksum, evaluated commit, UTC timestamp, and reproducible command or workflow name. |
+| Version guard | PASS | `VERSION=v2.2.20`; root Cargo workspace version `2.2.20`; no version bump in the evaluated candidate. |
+| Public-testnet signal guard | PASS | Final manifest records `public_testnet_ready=false` and `thirty_day_public_testnet_clock_started=false`. |
+| Workspace validation | PASS | Artifact `v2_3_0_workspace_validation_29662737906`; digest `sha256:b44c550899cc3e3552df5cb3bd6dffb290cbcb8e649903c2d60884a6f5098aa1`. |
+| `5N/1M` baseline | PASS | Staged archive checksum `930c4c9699c80bc60add6e4a488ef486c08dd2f4ccbdbaafb1cb3cb165506374`. |
+| `5N/2M` intermediate | PASS | Replacement staged archive checksum `39fcd1168b65b6e4009b847cffa93b776a5c59012e38706c119612c463a44207`. |
+| `5N/4M` stress | PASS | Replacement staged archive checksum `77786930c5f78f4fdbb1703c6a0a68e18385c71009a373fe06066afc483c41bf`. |
+| Staged evidence integrity | PASS | Artifact `v2_3_0_staged_network_29662737906`; digest `sha256:cee4c8d31d944e5790e04c1bb10b1fc9e028489a6527b056790863619a61ad82`; all stages match the evaluated candidate. |
+| Mempool/transaction relay | PASS | Artifact `v2_3_0_mempool_tx_relay_29662737906`; digest `sha256:89ab41db4cad24a2d01be96200de20790fa826eba797d50998f7a7f991af2461`. |
+| Selected-segment lag recovery | PASS | Artifact `v2_3_0_lag_injection_29662737906`; digest `sha256:85362dcb69643ba657109f7b374c274fd09f199d3331b5cb839484a09c4add21`. |
+| Prune/restart/rejoin and restore confidence | PASS | Artifact `v2_3_0_prune_restart_rejoin_29662737906`; digest `sha256:097995cd80e2a371a229c664292c0a81d0e044f6b9d86494ebd566d4591275a0`. |
+| Incident and waiver ledger | PASS | `artifacts/v2_2_20/closeout_decision/incident_waiver_ledger.md`; no unresolved Sev-1 closeout blocker and no waiver used. |
 
-## Waiver requirements
+## Final decision
 
-Waivers are allowed only for `v2.2.20` hardening closeout scope. They cannot convert a non-PASS gate into public-testnet readiness or `v2.3.0` readiness.
+Decision: `GO_TO_START_V2_3_0_REVIEW`
 
-A waiver is valid only when it records all of the following:
+All mandatory closeout gates passed on the same functional candidate. The historical `5N/2M`, `5N/4M`, restore-confidence, selected-segment and final-workspace blockers have replacement PASS evidence, so no closeout waiver is required.
 
-- gate name and exact non-PASS condition;
-- owner and reviewer;
-- UTC approval date;
-- evaluated commit and branch;
-- scope and explicit exclusions;
-- expiry date or event;
-- exit criteria;
-- risk classification;
-- statement that the waiver does not authorize public-testnet readiness, public-testnet live status, or `v2.3.0` readiness.
+The decision records permission to start the formal `v2.3.0` review only. It does **not** authorize changing `VERSION`, tagging or publishing `v2.3.0`, enabling smart contracts, adding embedded pool logic, or launching a public testnet.
 
-Missing waiver metadata is automatic **NO-GO** for the affected gate.
+## Guardrails after closeout
 
-## GO/NO-GO rules
+- `VERSION` remains `v2.2.20`.
+- Cargo workspace version remains `2.2.20`.
+- `public_testnet_ready=false` remains mandatory.
+- The 30-day public-testnet clock has not started and must not be backdated.
+- A `2.3.0` version bump requires a separate explicit maintainer approval after this closeout.
 
-### `GO_TO_START_V2_3_0_REVIEW`
+## Decision records
 
-Allowed only when:
-
-- all mandatory evidence gates are PASS, or any non-PASS gate has a complete waiver that is explicitly non-readiness and non-public-testnet;
-- `5N/1M` is PASS;
-- `5N/2M` has replacement evidence after all remaining `v2.2.20` hardening PRs, or a complete non-readiness waiver;
-- `5N/4M` has replacement evidence after PRs `#600`-`#614` and any later `v2.2.20` hardening PRs, and any non-PASS outcome is accepted as a bounded limitation;
-- no unresolved Sev-1 consensus/sync/security blocker exists;
-- `VERSION` remains `v2.2.20` and Cargo workspace version remains `2.2.20`;
-- `public_testnet_ready=false` remains the only public-testnet signal.
-
-### `NO_GO`
-
-Required when any of the following is true:
-
-- missing `5N/1M` evidence;
-- missing replacement `5N/2M` evidence or missing waiver for a non-PASS result;
-- missing replacement `5N/4M` evidence or missing accepted limitation for a non-PASS result;
-- evidence archive, checksum, evaluated commit, or manifest is missing for a required bundle;
-- unresolved Sev-1 consensus/sync/security blocker exists;
-- `VERSION` or Cargo workspace version is bumped without explicit maintainer approval;
-- any document claims public-testnet ready, public-testnet live, or `v2.3.0` ready status;
-- a waiver omits owner, reviewer, UTC approval, scope, expiry, exit criteria, or the required non-readiness statement.
-
-### `WAIVED_WITH_REASON`
-
-Allowed only for explicitly scoped non-PASS gates that are not public-testnet readiness gates. The final decision must list each waiver and explain why it is safe for `v2.2.20` hardening closeout only.
-
-
-## Final v2.2.20 evidence index
-
-The final closeout index is `docs/V2_2_20_FINAL_EVIDENCE_INDEX.md`. As of 2026-06-12, the recorded decision is `NO_GO`, not `GO_TO_START_V2_3_0_REVIEW`, because the repository does not yet contain acceptable replacement or waiver evidence for all required closeout gates.
-
-Current blockers recorded by the index:
-
-- `5N/2M intermediate` remains non-PASS because the latest accepted evidence failed the accepted-block gate.
-- `5N/4M stress` remains observe-only/non-PASS without an accepted bounded limitation.
-- Snapshot restore automation is documented, but a final closeout restore bundle/checksum or waiver is not attached.
-- Final CI/workspace validation artifacts must be attached for the evaluated closeout commit.
-
-This `NO_GO` preserves `public_testnet_ready=false`, makes no public-testnet live claim, and makes no `v2.3.0` readiness claim.
-
-## Final decision record
-
-Record the final decision at `artifacts/v2_2_20/closeout_decision/final_decision.md` with:
-
-- `GO_TO_START_V2_3_0_REVIEW`, `NO_GO`, or `WAIVED_WITH_REASON`;
-- evaluated commit and branch;
-- reviewer and UTC date;
-- evidence bundle paths and checksums;
-- incident and waiver ledger links;
-- explicit statement that `public_testnet_ready=false` remains unchanged;
-- explicit statement that the decision does not claim public-testnet readiness or public-testnet live status;
-- explicit statement that any future `v2.3.0` work starts from a separate start decision and no `VERSION` bump is included here.
+- `docs/V2_2_20_FINAL_EVIDENCE_INDEX.md`
+- `docs/KNOWN_LIMITATIONS_V2_2_20.md`
+- `artifacts/v2_2_20/closeout_decision/final_decision.md`
+- `artifacts/v2_2_20/closeout_decision/v2_3_0_start_decision.md`
+- `artifacts/v2_2_20/closeout_decision/incident_waiver_ledger.md`
