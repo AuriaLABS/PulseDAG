@@ -1,10 +1,15 @@
 # v2.2.20 Final Hardening Evidence Index
 
-Date: 2026-06-18
+Date: 2026-07-19 UTC
 
-This is the final `v2.2.20` hardening closeout index. It records the evidence that exists, the checksums that were provided with that evidence, the known waivers or missing artifacts, and the decision for whether a future `v2.3.0` review may start.
+This index records the final evidence used to close `v2.2.20` active hardening and authorize the start of a formal `v2.3.0` review. It does not bump versions or claim public-testnet readiness.
 
-This index is evidence-only. It does **not** bump `VERSION`, does **not** change consensus rules or PoW semantics, does **not** add smart contracts, does **not** add pool logic, does **not** change miner architecture, does **not** claim public-testnet live status, and does **not** claim public-testnet readiness.
+## Evaluated candidate
+
+- Candidate: `e65c6c199e07214303b49f7863f5b4988a8ce107`
+- Pull request: `#755`
+- Merge commit: `bbca0735b50f56dadb05747aa408ea88b3f1a900`
+- Final workflow run: `29662737906`
 
 ## Release-control guardrails
 
@@ -12,45 +17,43 @@ This index is evidence-only. It does **not** bump `VERSION`, does **not** change
 |---|---|---|---|
 | `VERSION` | `v2.2.20` | `v2.2.20` | PASS |
 | Cargo workspace version | `2.2.20` | `2.2.20` | PASS |
-| Public-testnet signal | `public_testnet_ready=false` | `public_testnet_ready=false` | PASS |
-| Public-testnet live claim | Forbidden | No live claim is made by this index. | PASS |
-| `v2.3.0` readiness claim | Forbidden | No readiness claim is made by this index. | PASS |
+| Public-testnet signal | `public_testnet_ready=false` | `false` | PASS |
+| 30-day clock | Not started | `thirty_day_public_testnet_clock_started=false` | PASS |
+| Public-testnet launch claim | Forbidden | Not made | PASS |
+| `v2.3.0` version bump | Separate approval required | Not included | PASS |
 
 ## Final evidence matrix
 
-| Gate | Result for closeout | Artifact / evidence reference | Checksum / integrity reference | Closeout interpretation |
-|---|---|---|---|---|
-| `5N/1M baseline` | PASS | `docs/V2_2_20_5N_1M_BASELINE_EVIDENCE.md`; uploaded artifact `v2_2_20_5n_1m_baseline_evidence (3).zip`; inner archive `evidence.tar.gz` | inner archive sha256 `4de50edfba42e11bd75abac0ae242baf1d9239fbfe6aa6104d5c325fa2f18c6e` | Accepted as the `v2.2.20` baseline regression guard. |
-| `5N/2M intermediate` | FAIL, improved; not closeout-pass | `docs/V2_2_20_5N_2M_INTERMEDIATE_EVIDENCE.md`; local artifact `artifacts/v2_2_20/private_5n_2m_rehearsal/20260607T074320Z/evidence.tar.gz` | archive sha256 `98ac709013b051f85ba400c050b971f606e6feda96c249480754e9928a541d5d` | Peer visibility, final-tip convergence, and backlog drain improved, but accepted blocks remained `0`; replacement PASS evidence or a complete waiver is still missing. |
-| `5N/4M stress` | OBSERVE_FAIL; not closeout-pass | `docs/V2_2_20_FIRST_STRESS_EVIDENCE.md`; uploaded artifact `v2_2_20_5n_4m_stress_observe_evidence.zip`; inner archive `evidence.tar.gz` | inner archive sha256 `321e260bf57daf9c25106d9eac8bf7ec01172488ee7a6a4be29b6d23771d7a2e`; artifact zip sha256 `8574e1ae856be675773e3da4d42f022cc140cadd27869fa6aa5b2906670c6939` | Stress evidence remains diagnostic only: peer visibility collapsed to zero, orphan/pending-missing-parent backlogs saturated, and tips remained divergent. Replacement post-hardening evidence or an accepted bounded limitation is still missing. |
-| Snapshot restore drill | AUTOMATED; run artifact required per execution | `docs/SNAPSHOT_RESTORE_DRILL_V2_2_20.md`; script `scripts/v2_2_20_snapshot_restore_drill.sh`; expected artifacts `artifacts/v2_2_20_snapshot_restore/<RUN_ID>/evidence_manifest.json`, `snapshot_bundle.bin.sha256`, `evidence.tar.gz`, and `evidence.tar.gz.sha256` | Per-run `evidence_manifest.json` records `snapshot_sha256`; `snapshot_bundle.bin.sha256` and `evidence.tar.gz.sha256` provide artifact checksums. | The deterministic drill is documented and automated for v2.2.20 evidence attachment; each closeout run must attach the generated manifest and checksums. |
-| CI/workspace validation | PASS locally for this PR; final CI artifact still required for evaluated merge commit | Commands run on 2026-06-12 UTC from repository root: `cargo fmt --all -- --check`; `cargo check --workspace --locked`; `cargo test --workspace --locked`; `cargo clippy --workspace --all-targets -- -D warnings` | Terminal transcript from this PR run; external CI artifact/checksum to be attached by release manager for the evaluated merge commit. | Local workspace validation passed for this docs-only closeout PR, but mergeability still depends on acceptable CI or release-manager validation evidence for the final evaluated commit. |
+| Gate | Result | Artifact | Integrity reference |
+|---|---|---|---|
+| Workspace validation | PASS | `v2_3_0_workspace_validation_29662737906` | artifact digest `sha256:b44c550899cc3e3552df5cb3bd6dffb290cbcb8e649903c2d60884a6f5098aa1` |
+| `5N/1M` staged baseline | PASS | `v2_3_0_staged_network_29662737906` | archive sha256 `930c4c9699c80bc60add6e4a488ef486c08dd2f4ccbdbaafb1cb3cb165506374` |
+| `5N/2M` staged intermediate | PASS | `v2_3_0_staged_network_29662737906` | archive sha256 `39fcd1168b65b6e4009b847cffa93b776a5c59012e38706c119612c463a44207` |
+| `5N/4M` staged stress | PASS | `v2_3_0_staged_network_29662737906` | archive sha256 `77786930c5f78f4fdbb1703c6a0a68e18385c71009a373fe06066afc483c41bf` |
+| Staged index | PASS | `v2_3_0_staged_network_29662737906` | artifact digest `sha256:cee4c8d31d944e5790e04c1bb10b1fc9e028489a6527b056790863619a61ad82`; all three manifests match the evaluated candidate |
+| Mempool and transaction relay | PASS | `v2_3_0_mempool_tx_relay_29662737906` | artifact digest `sha256:89ab41db4cad24a2d01be96200de20790fa826eba797d50998f7a7f991af2461` |
+| Selected-segment lag injection | PASS | `v2_3_0_lag_injection_29662737906` | artifact digest `sha256:85362dcb69643ba657109f7b374c274fd09f199d3331b5cb839484a09c4add21` |
+| Prune/restart/rejoin | PASS | `v2_3_0_prune_restart_rejoin_29662737906` | artifact digest `sha256:097995cd80e2a371a229c664292c0a81d0e044f6b9d86494ebd566d4591275a0` |
+| Final decision | PASS | `v2_2_20_pr755_final_closeout_29662737906` | artifact digest `sha256:90d4ccb28c04231bb64daa61b911914d21f16041edccb888f06310f6f768a873`; manifest sha256 `30cfa1c273bce7c93f60ca9c9c4a17f99130b598be007554dd88095024c7bf3a` |
 
-## Waiver and limitation ledger
+## Replacement of historical blockers
 
-No complete closeout waiver is recorded in this repository for any non-PASS gate. Therefore the non-PASS `5N/2M`, non-PASS `5N/4M`, missing snapshot artifact, and missing final CI artifact are treated as blockers for a GO decision.
+The final run replaces the earlier non-PASS evidence rather than waiving it:
 
-Remaining real limitations are maintained in `docs/KNOWN_LIMITATIONS_V2_2_20.md`. Fixed or narrowed historical blockers are not restated as active blockers unless replacement evidence is still required.
+1. `5N/2M` now has a strict PASS manifest with accepted mining activity and same-candidate archive integrity.
+2. `5N/4M` now has a strict PASS manifest with same-candidate archive integrity.
+3. Selected-segment lag recovery passes with correlated multi-chunk recovery and full retained-set convergence.
+4. Prune/restart/rejoin passes with durable storage and restored/rejoined node checks.
+5. Workspace format, check, package tests and clippy pass on the evaluated candidate.
 
-## GO/NO-GO decision
+## Incident and waiver ledger
 
-### Decision: `NO_GO`
+No waiver was used. The reviewed closeout evidence contains no unresolved Sev-1 consensus, sync, storage or security blocker. The decision-scoped ledger is `artifacts/v2_2_20/closeout_decision/incident_waiver_ledger.md`.
 
-`GO_TO_START_V2_3_0_REVIEW` is **not** recorded because the closeout criteria are not met.
+## Final decision
 
-Specific blockers:
+### `GO_TO_START_V2_3_0_REVIEW`
 
-1. `5N/2M intermediate` is not closeout-pass: the latest evidence failed the accepted-block gate with `MINER_NO_ACCEPTED_BLOCKS`, and no complete non-readiness waiver is recorded.
-2. `5N/4M stress` is not closeout-pass: the latest stress evidence is `OBSERVE_FAIL`, and no accepted bounded limitation with owner, reviewer, UTC approval date, expiry, and exit criteria is recorded.
-3. Snapshot restore now has deterministic automation and checksum manifest requirements; a final evaluated closeout run still must attach the generated restore artifact/checksum or record a formal waiver.
-4. Final CI/workspace validation artifacts for the evaluated closeout merge commit must be attached and accepted before this evidence can support any future review start decision; local validation for this PR passed on 2026-06-12 UTC but is not a substitute for final evaluated-merge evidence.
+The `v2.2.20` hardening closeout criteria are met. This permits the formal `v2.3.0` review to begin.
 
-## Allowed next state
-
-The only allowed public-testnet signal remains:
-
-```text
-public_testnet_ready=false
-```
-
-A future PR may replace this `NO_GO` only after it attaches acceptable missing evidence or complete waivers and still keeps `VERSION=v2.2.20` unless separately approved later.
+It does not authorize a `2.3.0` version bump, release tag, public-testnet launch, public-testnet readiness claim, or start of the 30-day burn-in clock. Those require separate decisions and evidence.
