@@ -1,0 +1,93 @@
+name: Repository hygiene
+
+on:
+  pull_request:
+    paths:
+      - apps/**
+      - crates/**
+      - scripts/**
+      - configs/**
+      - docs/**
+      - README.md
+      - CONTRIBUTING.md
+      - VERSION
+      - Cargo.toml
+      - .editorconfig
+      - .gitignore
+      - .github/pull_request_template.md
+      - .github/workflows/repository_hygiene.yml
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  hygiene:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout candidate
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Preserve version and readiness guardrails
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(tr -d '\r\n' < VERSION)" = "v2.2.20"
+          test "$(awk '/^version = / {gsub(/"/, "", $3); print $3; exit}' Cargo.toml)" = "2.2.20"
+
+      - name: Validate script syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash -n scripts/repository_hygiene.sh
+          bash -n scripts/list_cleanup_candidates.sh
+          bash -n scripts/validate_repo_cleanup.sh
+          bash -n scripts/tests/test_repository_hygiene.sh
+          python3 -m py_compile \
+            scripts/check_code_comment_language.py \
+            scripts/repository_hygiene.py
+
+      - name: Run repository hygiene regression
+        shell: bash
+        run: bash scripts/tests/test_repository_hygiene.sh
+
+      - name: Build cleanup inventory
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/list_cleanup_candidates.sh --write-artifact
+          mkdir -p ci-evidence/repository-hygiene
+          cp artifacts/repository-hygiene/cleanup-candidates.txt \
+            ci-evidence/repository-hygiene/cleanup-candidates.txt
+          OUT_DIR=ci-evidence/repository-hygiene \
+            bash scripts/repository_hygiene.sh --report
+          sha256sum ci-evidence/repository-hygiene/* \
+            > ci-evidence/repository-hygiene/SHA256SUMS
+
+      - name: Enforce hygiene manifest
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          jq -e '
+            .gate == "repository-hygiene" and
+            .result == "PASS" and
+            .failure_count == 0 and
+            .public_testnet_ready == false and
+            .thirty_day_public_testnet_clock_started == false
+          ' ci-evidence/repository-hygiene/repository-hygiene.json >/dev/null
+
+      - name: Upload repository hygiene evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: repository_hygiene_${{ github.run_id }}
+          path: ci-evidence/repository-hygiene
+          if-no-files-found: error
+          retention-days: 90
