@@ -146,6 +146,6 @@ The v2.2.13 audit explicitly records these limits:
 
 Related v2.2.13 files:
 
-- [Closing Checklist v2.2.13](CLOSING_CHECKLIST_V2_2_13.md)
-- [Release Notes v2.2.13](RELEASE_NOTES_V2_2_13.md)
+- [Closing Checklist v2.2.13](archive/v2_2_history/CLOSING_CHECKLIST_V2_2_13.md)
+- [Release Notes v2.2.13](archive/v2_2_history/RELEASE_NOTES_V2_2_13.md)
 - [Version Matrix](VERSION_MATRIX.md)
