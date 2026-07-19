@@ -1,0 +1,79 @@
+name: v2.3.0 private-testnet bootstrap
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - configs/private-testnet/**
+      - docs/ROADMAP_V2_3_0.md
+      - docs/codex_tasks/v2_3_0_07_private_testnet_bootstrap.md
+      - scripts/v2_3_0_private_testnet_preflight.sh
+      - scripts/tests/test_v2_3_0_private_testnet_preflight.sh
+      - .github/workflows/v2_3_0_private_testnet_bootstrap.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  bootstrap-contract:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout candidate
+        uses: actions/checkout@v4
+
+      - name: Preserve v2.2.20 version guard
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(tr -d '\r\n' < VERSION)" = "v2.2.20"
+          test "$(awk '/^version = / {gsub(/\"/, "", $3); print $3; exit}' Cargo.toml)" = "2.2.20"
+
+      - name: Validate shell syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash -n scripts/v2_3_0_private_testnet_preflight.sh
+          bash -n scripts/tests/test_v2_3_0_private_testnet_preflight.sh
+
+      - name: Run bootstrap contract regression
+        shell: bash
+        run: bash scripts/tests/test_v2_3_0_private_testnet_preflight.sh
+
+      - name: Build seed and node evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT_DIR=ci-evidence/v2.3.0-task07/seed \
+            bash scripts/v2_3_0_private_testnet_preflight.sh \
+              configs/private-testnet/seed.env.example
+          OUT_DIR=ci-evidence/v2.3.0-task07/node \
+            bash scripts/v2_3_0_private_testnet_preflight.sh \
+              configs/private-testnet/node.env.example
+          sha256sum \
+            ci-evidence/v2.3.0-task07/seed/private-testnet-preflight.json \
+            ci-evidence/v2.3.0-task07/node/private-testnet-preflight.json \
+            > ci-evidence/v2.3.0-task07/SHA256SUMS
+
+      - name: Enforce fail-closed manifests
+        shell: bash
+        run: |
+          set -euo pipefail
+          for manifest in ci-evidence/v2.3.0-task07/*/private-testnet-preflight.json; do
+            jq -e '
+              .gate == "v2.3.0-private-testnet-bootstrap-preflight" and
+              .result == "PASS" and
+              .public_testnet_ready == false and
+              .thirty_day_public_testnet_clock_started == false
+            ' "$manifest" >/dev/null
+          done
+
+      - name: Upload Task 07 evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v2_3_0_task07_private_testnet_bootstrap_${{ github.run_id }}
+          path: ci-evidence/v2.3.0-task07
+          if-no-files-found: error
+          retention-days: 90
