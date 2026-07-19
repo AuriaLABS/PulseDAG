@@ -24,6 +24,52 @@ check() {
   fi
 }
 
+trim() {
+  local value="$1"
+  value="${value#"${value%%[![:space:]]*}"}"
+  value="${value%"${value##*[![:space:]]}"}"
+  printf '%s' "$value"
+}
+
+load_env_file() {
+  local raw line key value line_number=0
+  while IFS= read -r raw || [[ -n "$raw" ]]; do
+    line_number=$((line_number + 1))
+    line="$(trim "$raw")"
+    [[ -z "$line" || "$line" == \#* ]] && continue
+    if [[ "$line" == export\ * ]]; then
+      line="$(trim "${line#export }")"
+    fi
+    if [[ "$line" != *=* ]]; then
+      printf 'invalid environment line %d: expected KEY=VALUE\n' "$line_number" >&2
+      return 2
+    fi
+
+    key="$(trim "${line%%=*}")"
+    value="$(trim "${line#*=}")"
+    if [[ ! "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+      printf 'invalid environment key on line %d: %s\n' "$line_number" "$key" >&2
+      return 2
+    fi
+
+    if [[ "$value" == \"* || "$value" == \'* ]]; then
+      if (( ${#value} < 2 )) || [[ "${value: -1}" != "${value:0:1}" ]]; then
+        printf 'mismatched quotes on environment line %d\n' "$line_number" >&2
+        return 2
+      fi
+      value="${value:1:${#value}-2}"
+    fi
+
+    if [[ "$value" == *'$('* || "$value" == *'${'* || "$value" == *'`'* ]]; then
+      printf 'shell expansion is not allowed on environment line %d\n' "$line_number" >&2
+      return 2
+    fi
+
+    printf -v "$key" '%s' "$value"
+    export "$key"
+  done < "$ENV_FILE"
+}
+
 require_nonempty() {
   local name="$1"
   [[ -n "${!name:-}" ]]
@@ -58,10 +104,7 @@ is_loopback_rpc_bind() {
   [[ "$value" =~ ^(127\.0\.0\.1|\[::1\]|localhost):[0-9]+$ ]]
 }
 
-set -a
-# shellcheck disable=SC1090
-source "$ENV_FILE"
-set +a
+load_env_file
 
 role="${PULSEDAG_PRIVATE_TESTNET_ROLE:-}"
 bootstrap="${PULSEDAG_P2P_BOOTSTRAP:-}"
