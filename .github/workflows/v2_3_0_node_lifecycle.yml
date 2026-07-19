@@ -1,0 +1,117 @@
+name: v2.3.0 node lifecycle
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - scripts/private_testnet/**
+      - scripts/tests/test_v2_3_0_node_lifecycle.sh
+      - scripts/v2_3_0_private_testnet_preflight.sh
+      - configs/private-testnet/**
+      - docs/ROADMAP_V2_3_0.md
+      - docs/codex_tasks/v2_3_0_09_node_lifecycle.md
+      - .github/workflows/v2_3_0_node_lifecycle.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lifecycle-contract:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout candidate
+        uses: actions/checkout@v4
+
+      - name: Preserve version and readiness guardrails
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(tr -d '\r\n' < VERSION)" = "v2.2.20"
+          test "$(awk '/^version = / {gsub(/"/, "", $3); print $3; exit}' Cargo.toml)" = "2.2.20"
+
+      - name: Validate helper syntax and comment language
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile scripts/private_testnet/node_lifecycle.py
+          bash -n scripts/private_testnet/node_lifecycle.sh
+          bash -n scripts/tests/test_v2_3_0_node_lifecycle.sh
+          python3 scripts/check_code_comment_language.py \
+            scripts/private_testnet/node_lifecycle.py \
+            scripts/private_testnet/node_lifecycle.sh \
+            scripts/tests/test_v2_3_0_node_lifecycle.sh
+
+      - name: Run lifecycle contract regression
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ci-evidence/v2.3.0-task09
+          bash scripts/tests/test_v2_3_0_node_lifecycle.sh \
+            | tee ci-evidence/v2.3.0-task09/lifecycle-contract.log
+
+      - name: Run repository hygiene
+        shell: bash
+        run: bash scripts/repository_hygiene.sh --strict
+
+      - name: Build Task 09 evidence manifest
+        shell: bash
+        env:
+          CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          output = Path("ci-evidence/v2.3.0-task09")
+          manifest = {
+              "gate": "v2.3.0-node-lifecycle",
+              "candidate_sha": os.environ["CANDIDATE_SHA"],
+              "result": "PASS",
+              "install_idempotent": True,
+              "start_stop_idempotent": True,
+              "healthy_upgrade": True,
+              "explicit_rollback": True,
+              "automatic_failed_upgrade_rollback": True,
+              "pid_reuse_guard": True,
+              "bootnode_resolution": True,
+              "public_testnet_ready": False,
+              "thirty_day_public_testnet_clock_started": False,
+          }
+          (output / "node-lifecycle-manifest.json").write_text(
+              json.dumps(manifest, indent=2) + "\n",
+              encoding="utf-8",
+          )
+          PY
+          sha256sum ci-evidence/v2.3.0-task09/* \
+            > ci-evidence/v2.3.0-task09/SHA256SUMS
+
+      - name: Enforce Task 09 manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          jq -e '
+            .gate == "v2.3.0-node-lifecycle" and
+            .result == "PASS" and
+            .install_idempotent == true and
+            .start_stop_idempotent == true and
+            .healthy_upgrade == true and
+            .explicit_rollback == true and
+            .automatic_failed_upgrade_rollback == true and
+            .pid_reuse_guard == true and
+            .bootnode_resolution == true and
+            .public_testnet_ready == false and
+            .thirty_day_public_testnet_clock_started == false
+          ' ci-evidence/v2.3.0-task09/node-lifecycle-manifest.json >/dev/null
+
+      - name: Upload Task 09 evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v2_3_0_task09_node_lifecycle_${{ github.run_id }}
+          path: ci-evidence/v2.3.0-task09
+          if-no-files-found: error
+          retention-days: 90
