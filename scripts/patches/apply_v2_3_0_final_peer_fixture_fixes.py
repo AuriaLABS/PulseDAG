@@ -27,18 +27,12 @@ def replace_in_test(test_name: str, old: str, new: str) -> None:
 replace_in_test(
     "degraded_peers_are_cooled_down_without_starving_healthy_peers",
     """        state.active_connections.insert("peer-healthy".into(), 1);
-        state
-            .active_connections
-            .insert("peer-degraded-a".into(), 1);
-        state
-            .active_connections
-            .insert("peer-degraded-b".into(), 1);
+        state.active_connections.insert("peer-degraded-a".into(), 1);
+        state.active_connections.insert("peer-degraded-b".into(), 1);
 
 """,
     """        state.active_connections.insert("peer-healthy".into(), 1);
-        state
-            .active_connections
-            .insert("peer-degraded-a".into(), 1);
+        state.active_connections.insert("peer-degraded-a".into(), 1);
 
 """,
 )
