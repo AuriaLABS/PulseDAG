@@ -1,0 +1,56 @@
+name: v2.3.0 apply direct peer accounting patch
+
+on:
+  push:
+    branches:
+      - agent/v2-3-0-12-direct-peer-accounting
+    paths:
+      - scripts/patches/apply_v2_3_0_direct_peer_accounting.py
+      - scripts/patches/finalize_v2_3_0_direct_peer_accounting.py
+      - .github/workflows/v2_3_0_apply_direct_peer_accounting_patch.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply-reviewed-source-rewrite:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout patch branch
+        uses: actions/checkout@v4
+        with:
+          ref: agent/v2-3-0-12-direct-peer-accounting
+          fetch-depth: 0
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Apply exact reviewed rewrite
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/patches/apply_v2_3_0_direct_peer_accounting.py
+          python3 scripts/patches/finalize_v2_3_0_direct_peer_accounting.py
+          cargo fmt --all
+          git diff --check
+          test -n "$(git status --porcelain crates/pulsedag-p2p/src/lib.rs)"
+
+      - name: Commit rewritten runtime and regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add crates/pulsedag-p2p/src/lib.rs
+          git commit -m "v2.3.0 Task 12: require direct sessions for connected peers"
+          git push origin HEAD:agent/v2-3-0-12-direct-peer-accounting
+
+      - name: Run PulseDAG P2P regression suite
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout --signal=TERM --kill-after=30s 30m \
+            cargo test --locked -p pulsedag-p2p --lib
