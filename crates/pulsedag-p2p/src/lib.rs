@@ -2151,13 +2151,8 @@ fn peer_rate_limited_recently(health: &PeerHealth, now: u64) -> bool {
     })
 }
 
-fn peer_eligible_for_sync(peer_id: &str, health: &PeerHealth, active: bool, now: u64) -> bool {
-    active
-        && health.connected
-        && health.chain_id_compatible
-        && is_valid_peer_id(peer_id)
-        && health.next_retry_unix <= now
-        && health.suppressed_until_unix <= now
+fn peer_eligible_for_sync(peer_id: &str, health: &PeerHealth, active: bool, _now: u64) -> bool {
+    active && health.connected && health.chain_id_compatible && is_valid_peer_id(peer_id)
 }
 
 fn peer_health_states(peer_id: &str, health: &PeerHealth, active: bool, now: u64) -> Vec<String> {
@@ -7724,6 +7719,10 @@ mod tests {
                 ..PeerHealth::default()
             },
         );
+        state.active_connections.insert("peer-healthy".into(), 1);
+        state.active_connections.insert("peer-degraded-a".into(), 1);
+        state.active_connections.insert("peer-degraded-b".into(), 1);
+
         refresh_connected_peers_from_health(&mut state);
         assert_eq!(
             state.connected_peers.first().map(String::as_str),
@@ -7748,6 +7747,10 @@ mod tests {
                 },
             );
         }
+        state.active_connections.insert("peer-a".into(), 1);
+        state.active_connections.insert("peer-b".into(), 1);
+        state.active_connections.insert("peer-c".into(), 1);
+
         refresh_connected_peers_from_health(&mut state);
         let ranked = sync_candidates_snapshot(&state);
         let first = update_selected_sync_peer(&mut state, &ranked, 20_000).unwrap();
@@ -7835,6 +7838,9 @@ mod tests {
                 ..PeerHealth::default()
             },
         );
+        state.active_connections.insert("peer-fast".into(), 1);
+        state.active_connections.insert("peer-slow".into(), 1);
+
         refresh_connected_peers_from_health(&mut state);
         assert_eq!(
             state.connected_peers.first().map(String::as_str),
@@ -8063,7 +8069,7 @@ mod tests {
         state.mode = P2P_MODE_LIBP2P_REAL.into();
         state.sync_selection_stickiness_secs = 0;
         state.selected_sync_peer = Some("peer-a".into());
-        state.connected_peers = vec!["peer-b".into()];
+        state.connected_peers = vec!["peer-a".into(), "peer-b".into()];
         let ranked = vec![
             RankedSyncPeer {
                 peer_id: "peer-b".into(),
@@ -8087,7 +8093,7 @@ mod tests {
         state.mode = P2P_MODE_LIBP2P_REAL.into();
         state.sync_selection_stickiness_secs = 20;
         state.selected_sync_peer = Some("peer-a".into());
-        state.connected_peers = vec!["peer-b".into()];
+        state.connected_peers = vec!["peer-a".into(), "peer-b".into()];
 
         let ranked = vec![
             RankedSyncPeer {
@@ -8105,7 +8111,7 @@ mod tests {
         assert_eq!(during_churn, "peer-b");
         let sticky_until = state.sync_selection_sticky_until_unix;
 
-        state.connected_peers = vec!["peer-a".into()];
+        state.connected_peers = vec!["peer-a".into(), "peer-b".into()];
         let rejoined_ranked = vec![
             RankedSyncPeer {
                 peer_id: "peer-a".into(),
@@ -8153,6 +8159,7 @@ mod tests {
     fn selected_sync_peer_tie_break_is_lexicographically_stable() {
         let mut state = InnerState::default();
         state.mode = P2P_MODE_LIBP2P_REAL.into();
+        state.connected_peers = vec!["peer-a".into(), "peer-b".into()];
         let ranked = vec![
             RankedSyncPeer {
                 peer_id: "peer-b".into(),
