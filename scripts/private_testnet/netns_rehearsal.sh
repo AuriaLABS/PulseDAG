@@ -89,9 +89,9 @@ PROVISION_LOG="$EVIDENCE_ROOT/provisioning.log"
 MINER_LOG="$EVIDENCE_ROOT/external-miner.log"
 NETWORK_LOG="$EVIDENCE_ROOT/network-state.log"
 
-for command in git realpath sudo ip ping ss python3 timeout tee install; do
+for command in git realpath sudo ip ping ss python3 timeout tee install curl jq; do
   command -v "$command" >/dev/null
- done
+done
 for required in \
   "$NODE_BINARY" \
   "$MINER_BINARY" \
@@ -156,8 +156,15 @@ sudo -n git config --system --add safe.directory "$WORKSPACE"
 sudo -n install -m 0755 "$FAULT_SOURCE" "$FAULT_HOOK"
 create_topology
 
-for index in "${!NODE_NAMES[@]}"; do
-  write_node_environment "$index"
+write_node_environment 0
+install_node_release 0
+start_seed_for_identity
+seed_peer_id="$(read_seed_peer_id)"
+printf '%s\n' "$seed_peer_id" > "$EVIDENCE_ROOT/seed-peer-id.txt"
+echo "Seed PeerId resolved: $seed_peer_id"
+
+for index in 1 2 3 4; do
+  write_node_environment "$index" "$seed_peer_id"
   install_node_release "$index"
 done
 
