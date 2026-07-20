@@ -82,13 +82,16 @@ NETWORK_LIBRARY="$WORKSPACE/scripts/private_testnet/netns_network.sh"
 NODE_LIBRARY="$WORKSPACE/scripts/private_testnet/netns_nodes.sh"
 INVENTORY_WRITER="$WORKSPACE/scripts/private_testnet/netns_inventory.py"
 FAULT_SOURCE="$WORKSPACE/scripts/private_testnet/netns_fault.sh"
-FAULT_HOOK="/usr/local/sbin/pulsedag-task12-netns-fault"
+FAULT_HOOK="$STATE_ROOT/bin/netns_fault.sh"
 INVENTORY="$EVIDENCE_ROOT/inventory.json"
 CONTROLLER_EVIDENCE="$EVIDENCE_ROOT/controller"
 PROVISION_LOG="$EVIDENCE_ROOT/provisioning.log"
 MINER_LOG="$EVIDENCE_ROOT/external-miner.log"
 NETWORK_LOG="$EVIDENCE_ROOT/network-state.log"
 
+for command in git realpath sudo ip ping ss python3 timeout tee install; do
+  command -v "$command" >/dev/null
+ done
 for required in \
   "$NODE_BINARY" \
   "$MINER_BINARY" \
@@ -139,8 +142,16 @@ external_miner_loop() {
 
 echo "Preparing isolated Task 12 topology for candidate $CANDIDATE_SHA"
 remove_previous_topology
-sudo -n rm -rf "$STATE_ROOT"
-sudo -n install -d -m 0750 "$STATE_ROOT" "$STATE_ROOT/nodes" "$STATE_ROOT/fault"
+if sudo -n test -L "$STATE_ROOT"; then
+  echo "refusing to remove symlinked Task 12 state root: $STATE_ROOT" >&2
+  exit 1
+fi
+sudo -n rm -rf --one-file-system "$STATE_ROOT"
+sudo -n install -d -m 0750 \
+  "$STATE_ROOT" \
+  "$STATE_ROOT/bin" \
+  "$STATE_ROOT/nodes" \
+  "$STATE_ROOT/fault"
 sudo -n git config --system --add safe.directory "$WORKSPACE"
 sudo -n install -m 0755 "$FAULT_SOURCE" "$FAULT_HOOK"
 create_topology
