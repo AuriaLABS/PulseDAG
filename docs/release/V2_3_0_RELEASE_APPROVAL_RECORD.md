@@ -25,7 +25,7 @@ This approval authorizes only a separate versioned release-candidate pull reques
 4. reruns every required workspace, P2P, RPC/release, packaging, smoke, evidence, lifecycle, observability, runbook, and repository-hygiene gate on the exact candidate SHA;
 5. records a final private-testnet release decision before any tag or publication.
 
-This approval does not authorize a `v2.3.0` tag, GitHub Release publication, public-testnet launch, `public_testnet_ready=true`, smart contracts, or the start/backdating of the 30-day public-testnet clock.
+This approval does not authorize a `v2.3.0` tag, GitHub Release publication, public-testnet launch, a public-testnet readiness claim, smart contracts, or the start/backdating of the 30-day public-testnet clock.
 
 ## Remaining risks and required follow-up
 
