@@ -39,11 +39,20 @@ grep -Fq '"transport": ["sudo", "-n", "ip", "netns", "exec", namespace]' "$INVEN
 grep -Fq '"target": "node-4"' "$INVENTORY"
 grep -Fq 'ip link set dev "$INTERFACE" down' "$FAULT"
 grep -Fq 'ip link set dev "$INTERFACE" up' "$FAULT"
+grep -Fq 'ss -Ktn state established' "$FAULT"
+grep -Fq 'sport = :$P2P_PORT or dport = :$P2P_PORT' "$FAULT"
+grep -Fq 'connections_after="$(p2p_established_count)"' "$FAULT"
+grep -Fq 'failed to destroy isolated PulseDAG P2P sockets' "$FAULT"
 
 destructive_pattern='iptables[[:space:]]+-F|nft[[:space:]]+flush|'
 destructive_pattern+='ip[[:space:]]+netns[[:space:]]+delete[[:space:]]+all'
 if grep -Eq "$destructive_pattern" "$RUNNER" "$NETWORK" "$NODES" "$FAULT"; then
   echo "destructive network cleanup detected" >&2
+  exit 1
+fi
+
+if grep -Eq 'ss[[:space:]]+-K[^\n]*state[[:space:]]+established[[:space:]]*$' "$FAULT"; then
+  echo "unscoped established-socket destruction detected" >&2
   exit 1
 fi
 
