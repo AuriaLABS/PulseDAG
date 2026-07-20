@@ -3,11 +3,12 @@
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
+import sys
 import tempfile
 import unittest
-import sys
 from pathlib import Path
 from typing import Sequence
 
@@ -88,7 +89,7 @@ class FakeExecutor:
                     "consistency_ok": True,
                     "consistency_issue_count": 0,
                     "storage_replay_gap": 0,
-                    "live_sync_error_active": False,
+                    "live_sync_error_active": 0,
                 }
             else:
                 data = {"status": "ok"}
@@ -121,7 +122,7 @@ class RehearsalTests(unittest.TestCase):
             with self.assertRaisesRegex(module.RehearsalError, "loopback-only"):
                 module.load_inventory(path)
 
-    def test_fake_rehearsal_emits_verified_go_bundle(self) -> None:
+    def test_fake_rehearsal_accepts_numeric_sync_counter_and_emits_go(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             inventory = module.load_inventory(self.write_inventory(root))
@@ -146,6 +147,20 @@ class RehearsalTests(unittest.TestCase):
             with self.assertRaisesRegex(module.RehearsalError, "checksum mismatch"):
                 module.verify_evidence(out_dir)
 
+    def test_duplicate_checksum_path_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            inventory = module.load_inventory(self.write_inventory(root))
+            out_dir = root / "evidence"
+            runner = module.RehearsalRunner(inventory, out_dir, executor=FakeExecutor())
+            self.assertEqual(runner.run(), 0)
+            checksums = out_dir / "SHA256SUMS"
+            original = checksums.read_text(encoding="utf-8")
+            duplicate = original.splitlines()[0]
+            checksums.write_text(original + duplicate + "\n", encoding="utf-8")
+            with self.assertRaisesRegex(module.RehearsalError, "duplicate checksum path"):
+                module.verify_evidence(out_dir)
+
     def test_go_requires_all_mandatory_phases(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -161,7 +176,6 @@ class RehearsalTests(unittest.TestCase):
                 "thirty_day_public_testnet_clock_started": False,
             }
             (root / "decision.json").write_text(json.dumps(decision), encoding="utf-8")
-            import hashlib
             digest = hashlib.sha256((root / "decision.json").read_bytes()).hexdigest()
             (root / "SHA256SUMS").write_text(f"{digest}  decision.json\n", encoding="utf-8")
             with self.assertRaisesRegex(module.RehearsalError, "missing phases"):
