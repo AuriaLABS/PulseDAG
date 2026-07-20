@@ -257,7 +257,7 @@ jobs:
           rm -rf final
           mkdir -p final
           files=$(find artifacts -type f | wc -l)
-          test "$files" -gt 0
+          test "$files" -eq 18
           duplicate_names=$(find artifacts -type f -printf '%f\n' | sort | uniq -d)
           if [ -n "$duplicate_names" ]; then
             echo "duplicate candidate asset names:" >&2
@@ -273,7 +273,7 @@ jobs:
           shopt -s nullglob
           release_files=(final/*.tar.gz final/*.zip)
           checksum_files=(final/*.sha256)
-          manifest_files=(final/*.json)
+          manifest_files=(final/*.tar.gz.json final/*.zip.json)
           test "${#release_files[@]}" -eq 6
           test "${#checksum_files[@]}" -eq 6
           test "${#manifest_files[@]}" -eq 6
@@ -300,7 +300,7 @@ jobs:
           from pathlib import Path
 
           manifests = []
-          for path in sorted(glob.glob("final/*.json")):
+          for path in sorted(glob.glob("final/*.tar.gz.json") + glob.glob("final/*.zip.json")):
               with open(path, "r", encoding="utf-8") as handle:
                   manifests.append(json.load(handle))
           out = {
@@ -343,6 +343,23 @@ jobs:
             --consolidated-checksums final/SHA256SUMS.txt \
             --provenance-summary final/release-candidate-provenance.json
 
+      - name: Enforce isolated candidate bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(find final -maxdepth 1 -type f | wc -l)" -eq 21
+          while IFS= read -r path; do
+            name=$(basename "$path")
+            case "$name" in
+              *.tar.gz|*.zip|*.tar.gz.sha256|*.zip.sha256|*.tar.gz.json|*.zip.json|SHA256SUMS.txt|INSTALL-VERIFY.md|release-candidate-provenance.json)
+                ;;
+              *)
+                echo "unexpected file in candidate bundle: $name" >&2
+                exit 1
+                ;;
+            esac
+          done < <(find final -maxdepth 1 -type f -print | sort)
+
       - name: Enforce no publication authorization
         shell: bash
         run: |
@@ -362,6 +379,15 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: v2_3_0_candidate_consolidated_${{ github.run_id }}
-          path: final
+          path: |
+            final/*.tar.gz
+            final/*.zip
+            final/*.tar.gz.sha256
+            final/*.zip.sha256
+            final/*.tar.gz.json
+            final/*.zip.json
+            final/SHA256SUMS.txt
+            final/INSTALL-VERIFY.md
+            final/release-candidate-provenance.json
           if-no-files-found: error
           retention-days: 180
