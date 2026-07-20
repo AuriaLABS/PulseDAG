@@ -247,7 +247,7 @@ jobs:
       - name: Download platform bundles
         uses: actions/download-artifact@v4
         with:
-          pattern: v2_3_0_candidate_*_${{ github.run_id }}
+          pattern: v2_3_0_candidate_*-x86_64_${{ github.run_id }}
           path: artifacts
 
       - name: Flatten candidate assets
