@@ -1,0 +1,175 @@
+name: v2.3.0 multi-host private-testnet rehearsal
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - configs/private-testnet/rehearsal.inventory.example.json
+      - docs/ROADMAP_V2_3_0.md
+      - docs/codex_tasks/v2_3_0_12_multi_host_rehearsal.md
+      - docs/runbooks/INDEX.md
+      - docs/runbooks/V2_3_0_PRIVATE_TESTNET_REHEARSAL.md
+      - scripts/private_testnet/README.md
+      - scripts/private_testnet/multi_host_rehearsal.py
+      - scripts/tests/test_v2_3_0_multi_host_rehearsal.py
+      - .github/workflows/v2_3_0_multi_host_rehearsal.yml
+  workflow_dispatch:
+    inputs:
+      run_live:
+        description: Run the protected live five-node rehearsal
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  contract:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout candidate
+        uses: actions/checkout@v4
+
+      - name: Preserve version and readiness guardrails
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(tr -d '\r\n' < VERSION)" = "v2.2.20"
+          test "$(awk '/^version = / {gsub(/"/, "", $3); print $3; exit}' Cargo.toml)" = "2.2.20"
+
+      - name: Validate syntax and English comments
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile \
+            scripts/private_testnet/multi_host_rehearsal.py \
+            scripts/tests/test_v2_3_0_multi_host_rehearsal.py
+          python3 scripts/check_code_comment_language.py \
+            scripts/private_testnet/multi_host_rehearsal.py \
+            scripts/tests/test_v2_3_0_multi_host_rehearsal.py
+
+      - name: Validate example inventory
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/private_testnet/multi_host_rehearsal.py \
+            validate-inventory \
+            --inventory configs/private-testnet/rehearsal.inventory.example.json
+
+      - name: Run rehearsal contract regression
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ci-evidence/v2.3.0-task12-contract
+          python3 scripts/tests/test_v2_3_0_multi_host_rehearsal.py 2>&1 \
+            | tee ci-evidence/v2.3.0-task12-contract/regression.log
+
+      - name: Run repository hygiene
+        shell: bash
+        run: bash scripts/repository_hygiene.sh --strict
+
+      - name: Upload contract evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v2_3_0_task12_contract_${{ github.run_id }}
+          path: ci-evidence/v2.3.0-task12-contract
+          if-no-files-found: error
+          retention-days: 90
+
+  live-rehearsal:
+    if: github.event_name == 'workflow_dispatch' && inputs.run_live
+    needs: contract
+    runs-on:
+      - self-hosted
+      - linux
+      - pulsedag-private-testnet
+    environment: pulsedag-private-testnet-rehearsal
+    timeout-minutes: 90
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v4
+
+      - name: Configure protected SSH material
+        shell: bash
+        env:
+          SSH_KEY: ${{ secrets.PULSEDAG_V2_3_0_REHEARSAL_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.PULSEDAG_V2_3_0_REHEARSAL_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          test -n "$SSH_KEY"
+          test -n "$KNOWN_HOSTS"
+          install -d -m 0700 "$HOME/.ssh"
+          printf '%s\n' "$SSH_KEY" > "$HOME/.ssh/id_ed25519"
+          printf '%s\n' "$KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          chmod 0600 "$HOME/.ssh/id_ed25519" "$HOME/.ssh/known_hosts"
+
+      - name: Materialize and validate protected inventory
+        shell: bash
+        env:
+          INVENTORY_B64: ${{ secrets.PULSEDAG_V2_3_0_REHEARSAL_INVENTORY_B64 }}
+        run: |
+          set -euo pipefail
+          test -n "$INVENTORY_B64"
+          install -d -m 0700 "$RUNNER_TEMP/pulsedag-task12"
+          printf '%s' "$INVENTORY_B64" | base64 --decode \
+            > "$RUNNER_TEMP/pulsedag-task12/inventory.json"
+          chmod 0600 "$RUNNER_TEMP/pulsedag-task12/inventory.json"
+          jq -e --arg sha "$GITHUB_SHA" '.candidate_sha == $sha' \
+            "$RUNNER_TEMP/pulsedag-task12/inventory.json" >/dev/null
+          python3 scripts/private_testnet/multi_host_rehearsal.py \
+            validate-inventory \
+            --inventory "$RUNNER_TEMP/pulsedag-task12/inventory.json"
+
+      - name: Run fail-closed live rehearsal
+        shell: bash
+        run: |
+          set +e
+          evidence="ci-evidence/v2.3.0-task12/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          mkdir -p "$(dirname "$evidence")"
+          python3 scripts/private_testnet/multi_host_rehearsal.py \
+            run \
+            --inventory "$RUNNER_TEMP/pulsedag-task12/inventory.json" \
+            --out-dir "$evidence"
+          rc=$?
+          echo "PULSEDAG_TASK12_EVIDENCE=$evidence" >> "$GITHUB_ENV"
+          echo "PULSEDAG_TASK12_RC=$rc" >> "$GITHUB_ENV"
+          exit 0
+
+      - name: Verify evidence checksums and guardrails
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${PULSEDAG_TASK12_EVIDENCE:-}"
+          python3 scripts/private_testnet/multi_host_rehearsal.py \
+            verify-evidence \
+            --evidence-dir "$PULSEDAG_TASK12_EVIDENCE"
+
+      - name: Upload live rehearsal evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v2_3_0_task12_live_${{ github.sha }}_${{ github.run_id }}_${{ github.run_attempt }}
+          path: ci-evidence/v2.3.0-task12
+          if-no-files-found: error
+          retention-days: 180
+
+      - name: Enforce private-testnet GO decision
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "${PULSEDAG_TASK12_RC:-1}" -eq 0
+          jq -e '
+            .gate == "v2.3.0-multi-host-private-testnet-rehearsal" and
+            .candidate_sha == "${{ github.sha }}" and
+            .node_count == 5 and
+            .decision == "GO" and
+            .failure == null and
+            .version_bump_authorized == false and
+            .public_testnet_ready == false and
+            .thirty_day_public_testnet_clock_started == false
+          ' "$PULSEDAG_TASK12_EVIDENCE/decision.json" >/dev/null
