@@ -1,0 +1,69 @@
+{
+  "schema_version": 1,
+  "network_profile": "private-testnet-v2.3.0",
+  "chain_id": "pulsedag-private-v2.3.0",
+  "candidate_sha": "0000000000000000000000000000000000000000",
+  "nodes": [
+    {
+      "name": "seed-1",
+      "role": "seed",
+      "transport": ["ssh", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes", "pulsedag@seed-1.example.net"],
+      "transport_mode": "ssh",
+      "repo_root": "/opt/pulsedag/source",
+      "env_file": "/etc/pulsedag/private-testnet.env",
+      "lifecycle_root": "/var/lib/pulsedag/lifecycle",
+      "rpc_url": "http://127.0.0.1:8280"
+    },
+    {
+      "name": "node-1",
+      "role": "node",
+      "transport": ["ssh", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes", "pulsedag@node-1.example.net"],
+      "transport_mode": "ssh",
+      "repo_root": "/opt/pulsedag/source",
+      "env_file": "/etc/pulsedag/private-testnet.env",
+      "lifecycle_root": "/var/lib/pulsedag/lifecycle",
+      "rpc_url": "http://127.0.0.1:8280"
+    },
+    {
+      "name": "node-2",
+      "role": "node",
+      "transport": ["ssh", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes", "pulsedag@node-2.example.net"],
+      "transport_mode": "ssh",
+      "repo_root": "/opt/pulsedag/source",
+      "env_file": "/etc/pulsedag/private-testnet.env",
+      "lifecycle_root": "/var/lib/pulsedag/lifecycle",
+      "rpc_url": "http://127.0.0.1:8280"
+    },
+    {
+      "name": "node-3",
+      "role": "node",
+      "transport": ["ssh", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes", "pulsedag@node-3.example.net"],
+      "transport_mode": "ssh",
+      "repo_root": "/opt/pulsedag/source",
+      "env_file": "/etc/pulsedag/private-testnet.env",
+      "lifecycle_root": "/var/lib/pulsedag/lifecycle",
+      "rpc_url": "http://127.0.0.1:8280"
+    },
+    {
+      "name": "node-4",
+      "role": "node",
+      "transport": ["ssh", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes", "pulsedag@node-4.example.net"],
+      "transport_mode": "ssh",
+      "repo_root": "/opt/pulsedag/source",
+      "env_file": "/etc/pulsedag/private-testnet.env",
+      "lifecycle_root": "/var/lib/pulsedag/lifecycle",
+      "rpc_url": "http://127.0.0.1:8280"
+    }
+  ],
+  "fault": {
+    "target": "node-4",
+    "isolate_command": ["/usr/local/sbin/pulsedag-rehearsal-network", "isolate"],
+    "restore_command": ["/usr/local/sbin/pulsedag-rehearsal-network", "restore"]
+  },
+  "thresholds": {
+    "max_height_spread": 2,
+    "min_progress_blocks": 3,
+    "poll_interval_seconds": 5,
+    "phase_timeout_seconds": 300
+  }
+}

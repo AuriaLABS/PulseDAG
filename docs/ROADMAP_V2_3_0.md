@@ -1,6 +1,6 @@
 # ROADMAP v2.3.0 — Private Testnet Operations
 
-Date: 2026-07-19 UTC
+Date: 2026-07-20 UTC
 
 ## Starting point
 
@@ -55,19 +55,19 @@ Publish a versioned metrics inventory, Prometheus scrape example, dashboard defi
 
 ### Task 11 — Operator and incident runbooks
 
-Status: **ACTIVE**.
+Status: **MERGED** in PR `#761`.
 
 Document bootstrap, miner attachment, backup/restore, partition recovery, high orphan/missing-parent response, disk pressure, RPC abuse, identity rotation, rollback, evidence collection, and incident severity/ownership.
 
 ### Task 12 — Multi-host private-testnet rehearsal
 
-Status: **PLANNED**.
+Status: **ACTIVE**.
 
-Run the topology on separate hosts or isolated network namespaces, prove stable discovery and convergence, exercise restart/partition/rejoin, record checksummed evidence, and produce an explicit private-testnet GO/NO-GO decision.
+Run the topology on separate hosts or isolated network namespaces, prove stable discovery and convergence, exercise external mining, restart, partition, restore, and rejoin, record checksummed evidence, and produce an explicit private-testnet GO/NO-GO decision for one exact candidate commit. Merging the rehearsal tooling alone does not satisfy this task; a real protected execution must produce verified `GO` evidence.
 
 ### Task 13 — Version and release decision
 
-Status: **BLOCKED** pending Tasks 07–12 and separate maintainer approval.
+Status: **BLOCKED** pending a verified Task 12 `GO` bundle and separate maintainer approval.
 
 Only after Tasks 07–12 pass and a maintainer explicitly approves the release proposal: update `VERSION`/Cargo to `2.3.0`, generate release notes and artifacts, rerun all candidate gates, and record a release decision. This task does not authorize public-testnet launch.
 

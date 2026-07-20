@@ -82,6 +82,37 @@ Explicit rollback:
 "${lifecycle[@]}" rollback
 ```
 
+## Multi-host rehearsal controller
+
+`multi_host_rehearsal.py` is the Task 12 controller for one exact five-node candidate. It validates an operator-owned inventory, executes Task 07 preflight and Task 09 lifecycle commands through structured remote transports, collects loopback RPC evidence, proves external-mining progress, exercises restart and bounded P2P isolation, and writes a checksummed GO/NO-GO bundle.
+
+Validate the example contract:
+
+```bash
+python3 scripts/private_testnet/multi_host_rehearsal.py \
+  validate-inventory \
+  --inventory configs/private-testnet/rehearsal.inventory.example.json
+```
+
+Run only after following `docs/runbooks/V2_3_0_PRIVATE_TESTNET_REHEARSAL.md`:
+
+```bash
+python3 scripts/private_testnet/multi_host_rehearsal.py \
+  run \
+  --inventory /secure/pulsedag/v2.3.0-rehearsal.json \
+  --out-dir /var/lib/pulsedag/rehearsals/<candidate-sha>-<utc-run-id>
+```
+
+Verify copied evidence:
+
+```bash
+python3 scripts/private_testnet/multi_host_rehearsal.py \
+  verify-evidence \
+  --evidence-dir /var/lib/pulsedag/rehearsals/<candidate-sha>-<utc-run-id>
+```
+
+The controller never reads environment-file contents or archives secrets. A Task 12 private-testnet `GO` does not authorize a version bump, public-testnet launch, or the 30-day clock.
+
 ## Safety properties
 
 - Environment files are parsed as data; shell expansion and command substitution are rejected.
@@ -91,16 +122,21 @@ Explicit rollback:
 - PID reuse is detected using Linux process start ticks; a mismatched live PID is never signalled.
 - Logs, PID files, lifecycle state, release checksums, and timestamps are persisted outside the repository.
 - Reusing a release identifier with different binary content is rejected.
-- `VERSION`, release publication, public-testnet readiness, and the 30-day clock are outside this controller's authority.
+- Rehearsal fault hooks use explicit argv arrays and must preserve SSH, loopback RPC, and recovery access.
+- `VERSION`, release publication, public-testnet readiness, and the 30-day clock are outside these controllers' authority.
 
 ## Development contract
 
 Run:
 
 ```bash
-python3 -m py_compile scripts/private_testnet/node_lifecycle.py
+python3 -m py_compile \
+  scripts/private_testnet/node_lifecycle.py \
+  scripts/private_testnet/multi_host_rehearsal.py \
+  scripts/tests/test_v2_3_0_multi_host_rehearsal.py
 bash -n scripts/private_testnet/node_lifecycle.sh
 bash scripts/tests/test_v2_3_0_node_lifecycle.sh
+python3 scripts/tests/test_v2_3_0_multi_host_rehearsal.py
 ```
 
-Code comments, docstrings, diagnostics, and operator documentation must remain in English.
+Code comments, docstrings, diagnostics, evidence fields, and operator documentation must remain in English.
