@@ -106,7 +106,7 @@ jobs:
             --run-id "${{ github.run_id }}" \
             --run-attempt "${{ github.run_attempt }}" \
             --include-file README.md \
-            --include-file docs/INSTALL_BINARIES_V2_2_19.md
+            --include-file docs/INSTALL_BINARIES_V2_3_0.md
 
           python scripts/release/package_release_artifacts.py \
             --binary "${miner_binary}" \
@@ -118,7 +118,7 @@ jobs:
             --run-id "${{ github.run_id }}" \
             --run-attempt "${{ github.run_attempt }}" \
             --include-file README.md \
-            --include-file docs/INSTALL_BINARIES_V2_2_19.md
+            --include-file docs/INSTALL_BINARIES_V2_3_0.md
 
       - name: Verify packaged standalone miner assets (unpack + smoke)
         shell: bash
