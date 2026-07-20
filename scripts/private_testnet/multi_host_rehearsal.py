@@ -362,7 +362,13 @@ class RehearsalRunner:
             require(sync.get("consistency_ok") is True, f"{node.name}: sync consistency failed")
             require(sync.get("consistency_issue_count") == 0, f"{node.name}: sync consistency issues are present")
             require(sync.get("storage_replay_gap") == 0, f"{node.name}: storage replay gap is non-zero")
-            require(sync.get("live_sync_error_active") is False, f"{node.name}: live sync error is active")
+            live_sync_error_active = sync.get("live_sync_error_active")
+            require(
+                isinstance(live_sync_error_active, int)
+                and not isinstance(live_sync_error_active, bool)
+                and live_sync_error_active == 0,
+                f"{node.name}: live sync error is active",
+            )
             height = status.get("best_height")
             peer_count = status.get("peer_count")
             require(isinstance(height, int) and height >= 0, f"{node.name}: invalid best_height")
@@ -566,6 +572,7 @@ def verify_evidence(path: Path) -> None:
             and ".." not in Path(relative).parts,
             "invalid checksum path",
         )
+        require(relative not in expected, f"duplicate checksum path: {relative}")
         expected[relative] = digest
     require("decision.json" in expected, "decision.json checksum is missing")
     actual = {
