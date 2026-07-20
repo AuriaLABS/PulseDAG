@@ -7,17 +7,20 @@ NODES="scripts/private_testnet/netns_nodes.sh"
 INVENTORY="scripts/private_testnet/netns_inventory.py"
 FAULT="scripts/private_testnet/netns_fault.sh"
 CONTROLLER="scripts/private_testnet/multi_host_rehearsal.py"
+BOOTNODES="scripts/private_testnet/lifecycle_bootnodes.py"
+LIFECYCLE_SERVICE="scripts/private_testnet/lifecycle_service.py"
 
 bash -n "$RUNNER"
 bash -n "$NETWORK"
 bash -n "$NODES"
 bash -n "$FAULT"
-python3 - "$INVENTORY" <<'PY'
+python3 - "$INVENTORY" "$BOOTNODES" "$LIFECYCLE_SERVICE" <<'PY'
 import sys
 from pathlib import Path
 
-path = Path(sys.argv[1])
-compile(path.read_text(encoding="utf-8"), str(path), "exec")
+for raw in sys.argv[1:]:
+    path = Path(raw)
+    compile(path.read_text(encoding="utf-8"), str(path), "exec")
 PY
 bash "$RUNNER" --help >/dev/null
 
@@ -29,6 +32,9 @@ grep -Fq 'PULSEDAG_P2P_KADEMLIA=true' "$NODES"
 grep -Fq 'PULSEDAG_RPC_BIND=127.0.0.1:$RPC_PORT' "$NODES"
 grep -Fq 'PULSEDAG_PUBLIC_TESTNET_READY=false' "$NODES"
 grep -Fq 'PULSEDAG_THIRTY_DAY_PUBLIC_TESTNET_CLOCK_STARTED=false' "$NODES"
+grep -Fq '/tcp/$P2P_PORT/p2p/$seed_peer_id' "$NODES"
+grep -Fq '/p2p/status' "$NODES"
+grep -Fq 'seed_peer_id="$(read_seed_peer_id)"' "$RUNNER"
 grep -Fq '"transport": ["sudo", "-n", "ip", "netns", "exec", namespace]' "$INVENTORY"
 grep -Fq '"target": "node-4"' "$INVENTORY"
 grep -Fq 'ip link set dev "$INTERFACE" down' "$FAULT"
@@ -65,7 +71,7 @@ python3 "$INVENTORY" \
   --candidate-sha "$candidate_sha" \
   --workspace /opt/pulsedag/source \
   --state-root /var/lib/pulsedag-task12-netns \
-  --fault-hook /usr/local/sbin/pulsedag-task12-netns-fault
+  --fault-hook /var/lib/pulsedag-task12-netns/bin/netns_fault.sh
 python3 "$CONTROLLER" validate-inventory --inventory "$temporary/inventory.json"
 
 echo "v2.3.0 isolated namespace rehearsal contract: PASS"
