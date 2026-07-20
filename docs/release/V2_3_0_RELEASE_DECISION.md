@@ -2,16 +2,25 @@
 
 ## Current decision
 
-`PENDING_MAINTAINER_DECISION`
+`APPROVE_RELEASE_CANDIDATE`
 
-## Proposal under review
+This decision authorizes the exact versioned release-candidate pull request and its required validation. It does not authorize a tag, GitHub Release publication, public-testnet launch, or the start/backdating of the 30-day public-testnet clock.
 
-- Base tag: `v2.2.20`.
-- Base commit: `14a1c38249830ee6912d8e70d6d223126cf7f63b`.
-- Task 13 activation baseline: `928c25b81ed13b539d9d2b5930609cc97430b9a3`.
-- Exact proposal SHA: recorded by the Task 13 proposal workflow.
-- Proposal document: `docs/release/V2_3_0_RELEASE_PROPOSAL.md`.
-- Draft release notes: `docs/release/V2_3_0_RELEASE_NOTES_DRAFT.md`.
+## Decision record
+
+- Maintainer: `kalekoi`.
+- Decision date: `2026-07-20 UTC`.
+- Validated proposal SHA: `4a3d4e3df587f9bd6f438ddd7359a5148f0cff8e`.
+- Proposal merge commit: `fec0b304a2544245826e5f799d9932d157818d43`.
+- Approval record: `docs/release/V2_3_0_RELEASE_APPROVAL_RECORD.md`.
+- Proposal workflow run: `29775577934`.
+- Proposal artifact SHA-256: `3394b467734f9064e86ea342030344938d9d1e74964d3176321ab4c6545a3b6f`.
+
+## Rationale
+
+Task 12 produced an independently reviewed protected private-testnet `GO`. The Task 13 proposal bound the full change inventory, compatibility and rollback statement, release-note draft, supported artifact matrix, and fail-closed exact-candidate gate plan to one validated proposal SHA. The downloaded proposal artifact and portable checksum manifest verified successfully.
+
+No unresolved consensus, storage-format, chain-state, miner-protocol, dependency, or public-testnet-scope change was identified in the proposal. The only changed Rust runtime crate file since `v2.2.20` is `crates/pulsedag-p2p/src/lib.rs`, and that change is covered by complete P2P library and real-swarm regression gates.
 
 ## Accepted prerequisite
 
@@ -23,34 +32,32 @@ Task 12 protected private-testnet `GO`:
 - all nine mandatory phases `PASS`;
 - 56/56 controller checksums verified;
 - independent 55-snapshot endpoint audit passed;
-- `version_bump_authorized=false` preserved.
+- `public_testnet_ready=false` preserved;
+- public-testnet clock not started.
 
-## Required decision outcomes
+## Authorization effect
 
-Replace `PENDING_MAINTAINER_DECISION` with exactly one of:
+`APPROVE_RELEASE_CANDIDATE` authorizes this separate follow-up candidate to:
 
-- `APPROVE_RELEASE_CANDIDATE`;
-- `REQUEST_CHANGES`;
-- `NO_GO`.
+1. change `VERSION` from `v2.2.20` to `v2.3.0`;
+2. change workspace Cargo package versions from `2.2.20` to `2.3.0`;
+3. regenerate `Cargo.lock` without dependency upgrades;
+4. finalize release notes and candidate metadata;
+5. rerun every required CI, P2P, release, packaging, smoke, evidence, and hygiene gate on the exact versioned candidate.
 
-A decision update must include the maintainer, date, exact proposal SHA, rationale, unresolved risks, and required follow-up.
+## Remaining risks and required follow-up
 
-## Approval effect
+- The exact versioned candidate must pass all post-bump gates.
+- Release archives, manifests, checksums, and provenance attestations must be generated and independently reviewed.
+- Any dependency drift, smoke failure, replay/storage inconsistency, packaging mismatch, or unresolved SEV-1 incident changes the final decision to `NO_GO` or `REQUEST_CHANGES`.
+- A final private-testnet release decision must be recorded before any tag or publication.
 
-`APPROVE_RELEASE_CANDIDATE` authorizes only a separate follow-up PR that:
+## Candidate state
 
-1. changes `VERSION` from `v2.2.20` to `v2.3.0`;
-2. changes Cargo package versions from `2.2.20` to `2.3.0`;
-3. updates final release notes and candidate metadata;
-4. reruns every required CI, P2P, release, packaging, smoke, evidence, and hygiene gate on the exact versioned candidate;
-5. records the final private-testnet release decision before any tag or publication.
-
-Approval does not authorize a public testnet or start the 30-day public-testnet clock.
-
-## Current guardrails
-
-- `VERSION=v2.2.20`.
-- Cargo version `2.2.20`.
+- `VERSION=v2.3.0`.
+- Cargo workspace version `2.3.0`.
+- `version_bump_authorized=true`.
+- Final release decision: `PENDING_FINAL_CANDIDATE_EVIDENCE`.
 - No `v2.3.0` tag.
 - No v2.3.0 artifact publication.
 - `public_testnet_ready=false`.
