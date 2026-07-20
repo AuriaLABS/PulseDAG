@@ -94,9 +94,19 @@ is_absolute_persistent_path() {
   [[ "$value" == /* ]] && [[ "$value" != /tmp/* ]] && [[ "$value" != /run/* ]]
 }
 
-is_multiaddr() {
+is_tcp_multiaddr() {
   local value="$1"
   [[ "$value" =~ ^/(ip4|ip6|dns4|dns6)/[^/]+/tcp/[0-9]+$ ]]
+}
+
+is_bootnode_multiaddr() {
+  local value="$1"
+  [[ "$value" =~ ^/(ip4|ip6|dns4|dns6)/[^/]+/tcp/[0-9]+/p2p/[^/]+$ ]]
+}
+
+without_peer_id() {
+  local value="$1"
+  printf '%s' "${value%/p2p/*}"
 }
 
 is_loopback_rpc_bind() {
@@ -121,8 +131,8 @@ check "real P2P is enabled" is_true "${PULSEDAG_P2P_ENABLED:-false}"
 check "P2P mode is libp2p-real" test "${PULSEDAG_P2P_MODE:-}" = "libp2p-real"
 check "mDNS is disabled for multi-host operation" is_false "${PULSEDAG_P2P_MDNS:-true}"
 check "Kademlia is enabled" is_true "${PULSEDAG_P2P_KADEMLIA:-false}"
-check "P2P listen address is a TCP multiaddr" is_multiaddr "${PULSEDAG_P2P_LISTEN:-}"
-check "public P2P address is a TCP multiaddr" is_multiaddr "$public_multiaddr"
+check "P2P listen address is a TCP multiaddr" is_tcp_multiaddr "${PULSEDAG_P2P_LISTEN:-}"
+check "public P2P address is a TCP multiaddr" is_tcp_multiaddr "$public_multiaddr"
 check "identity key path is present" require_nonempty PULSEDAG_P2P_IDENTITY_KEY
 check "identity key path is absolute and persistent" is_absolute_persistent_path "${PULSEDAG_P2P_IDENTITY_KEY:-}"
 check "RocksDB path is present" require_nonempty PULSEDAG_ROCKSDB_PATH
@@ -141,8 +151,9 @@ else
   IFS=',' read -r -a bootnodes <<< "$bootstrap"
   for bootnode in "${bootnodes[@]}"; do
     bootnode="${bootnode//[[:space:]]/}"
-    check "bootnode is a TCP multiaddr: $bootnode" is_multiaddr "$bootnode"
-    check "node does not bootstrap to itself: $bootnode" test "$bootnode" != "$public_multiaddr"
+    check "bootnode includes a libp2p peer id: $bootnode" is_bootnode_multiaddr "$bootnode"
+    check "node does not bootstrap to itself: $bootnode" \
+      test "$(without_peer_id "$bootnode")" != "$(without_peer_id "$public_multiaddr")"
   done
 fi
 

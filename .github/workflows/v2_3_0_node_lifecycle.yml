@@ -37,6 +37,7 @@ jobs:
           set -euo pipefail
           python3 -m py_compile \
             scripts/private_testnet/lifecycle_core.py \
+            scripts/private_testnet/lifecycle_bootnodes.py \
             scripts/private_testnet/lifecycle_service.py \
             scripts/private_testnet/node_lifecycle.py
           bash -n scripts/private_testnet/node_lifecycle.sh
@@ -44,6 +45,7 @@ jobs:
           bash -n scripts/v2_3_0_private_testnet_preflight.sh
           python3 scripts/check_code_comment_language.py \
             scripts/private_testnet/lifecycle_core.py \
+            scripts/private_testnet/lifecycle_bootnodes.py \
             scripts/private_testnet/lifecycle_service.py \
             scripts/private_testnet/node_lifecycle.py \
             scripts/private_testnet/node_lifecycle.sh \

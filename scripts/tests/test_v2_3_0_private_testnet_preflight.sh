@@ -28,6 +28,15 @@ cp "$TMP_DIR/node.env" "$TMP_DIR/no-bootnode.env"
 sed -i 's#^PULSEDAG_P2P_BOOTSTRAP=.*#PULSEDAG_P2P_BOOTSTRAP=#' "$TMP_DIR/no-bootnode.env"
 expect_fail "$TMP_DIR/no-bootnode.env"
 
+cp "$TMP_DIR/node.env" "$TMP_DIR/missing-peer-id.env"
+sed -i 's#/p2p/[^,]*##' "$TMP_DIR/missing-peer-id.env"
+expect_fail "$TMP_DIR/missing-peer-id.env"
+
+cp "$TMP_DIR/node.env" "$TMP_DIR/self-bootstrap.env"
+sed -i 's#^PULSEDAG_PUBLIC_P2P_MULTIADDR=.*#PULSEDAG_PUBLIC_P2P_MULTIADDR=/dns4/seed-1.example.net/tcp/32333#' \
+  "$TMP_DIR/self-bootstrap.env"
+expect_fail "$TMP_DIR/self-bootstrap.env"
+
 cp "$TMP_DIR/node.env" "$TMP_DIR/mdns.env"
 sed -i 's/^PULSEDAG_P2P_MDNS=false/PULSEDAG_P2P_MDNS=true/' "$TMP_DIR/mdns.env"
 expect_fail "$TMP_DIR/mdns.env"

@@ -9,6 +9,7 @@ lifecycle_root="$tmp_dir/lifecycle"
 env_file="$tmp_dir/node.env"
 preflight="$repo_root/scripts/v2_3_0_private_testnet_preflight.sh"
 controller="$repo_root/scripts/private_testnet/node_lifecycle.py"
+seed_peer_id="12D3KooWQ6qJfRkGZK5m7pXvT9cN2sA4bH8uE3yD1LwM"
 
 cleanup() {
   python3 "$controller" \
@@ -38,7 +39,7 @@ PULSEDAG_CONSENSUS_MODE=legacy
 PULSEDAG_P2P_ENABLED=true
 PULSEDAG_P2P_MODE=libp2p-real
 PULSEDAG_P2P_LISTEN=/ip4/0.0.0.0/tcp/32333
-PULSEDAG_P2P_BOOTSTRAP=/dns4/localhost/tcp/32333
+PULSEDAG_P2P_BOOTSTRAP=/dns4/localhost/tcp/32333/p2p/${seed_peer_id}
 PULSEDAG_P2P_MDNS=false
 PULSEDAG_P2P_KADEMLIA=true
 PULSEDAG_P2P_IDENTITY_KEY=/var/lib/pulsedag-task09/identity.key
@@ -132,7 +133,11 @@ if [[ -e "$marker" ]]; then
   exit 1
 fi
 
-"${common[@]}" verify >/dev/null
+"${common[@]}" verify > "$tmp_dir/verify.json"
+jq -e --arg peer "$seed_peer_id" \
+  '.result == "PASS" and .bootnodes[0].peer_id == $peer' \
+  "$tmp_dir/verify.json" >/dev/null
+
 "${common[@]}" start > "$tmp_dir/start-v1.json"
 jq -e '.result == "PASS" and .changed == true and .release_id == "v1"' "$tmp_dir/start-v1.json" >/dev/null
 

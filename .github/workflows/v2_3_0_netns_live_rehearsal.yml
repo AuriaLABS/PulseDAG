@@ -1,0 +1,169 @@
+name: v2.3.0 isolated-namespace live rehearsal
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - configs/private-testnet/node.env.example
+      - scripts/v2_3_0_private_testnet_preflight.sh
+      - scripts/private_testnet/lifecycle_bootnodes.py
+      - scripts/private_testnet/lifecycle_service.py
+      - scripts/private_testnet/netns_rehearsal.sh
+      - scripts/private_testnet/netns_network.sh
+      - scripts/private_testnet/netns_nodes.sh
+      - scripts/private_testnet/netns_inventory.py
+      - scripts/private_testnet/netns_fault.sh
+      - scripts/tests/test_v2_3_0_private_testnet_preflight.sh
+      - scripts/tests/test_v2_3_0_node_lifecycle.sh
+      - scripts/tests/test_v2_3_0_netns_rehearsal.sh
+      - docs/runbooks/V2_3_0_NETNS_REHEARSAL.md
+      - .github/workflows/v2_3_0_netns_live_rehearsal.yml
+  push:
+    branches:
+      - main
+    paths:
+      - configs/private-testnet/node.env.example
+      - scripts/v2_3_0_private_testnet_preflight.sh
+      - scripts/private_testnet/lifecycle_bootnodes.py
+      - scripts/private_testnet/lifecycle_service.py
+      - scripts/private_testnet/netns_rehearsal.sh
+      - scripts/private_testnet/netns_network.sh
+      - scripts/private_testnet/netns_nodes.sh
+      - scripts/private_testnet/netns_inventory.py
+      - scripts/private_testnet/netns_fault.sh
+      - scripts/tests/test_v2_3_0_private_testnet_preflight.sh
+      - scripts/tests/test_v2_3_0_node_lifecycle.sh
+      - scripts/tests/test_v2_3_0_netns_rehearsal.sh
+      - docs/runbooks/V2_3_0_NETNS_REHEARSAL.md
+      - .github/workflows/v2_3_0_netns_live_rehearsal.yml
+  workflow_dispatch:
+    inputs:
+      run_live:
+        description: Run the exact checked-out candidate in five isolated Linux network namespaces
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  contract:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout candidate
+        uses: actions/checkout@v4
+
+      - name: Validate namespace and bootstrap contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/tests/test_v2_3_0_netns_rehearsal.sh
+          bash scripts/tests/test_v2_3_0_private_testnet_preflight.sh
+          bash scripts/tests/test_v2_3_0_node_lifecycle.sh
+
+      - name: Validate English comments
+        shell: bash
+        run: |
+          python3 scripts/check_code_comment_language.py \
+            scripts/v2_3_0_private_testnet_preflight.sh \
+            scripts/private_testnet/lifecycle_bootnodes.py \
+            scripts/private_testnet/lifecycle_service.py \
+            scripts/private_testnet/netns_rehearsal.sh \
+            scripts/private_testnet/netns_network.sh \
+            scripts/private_testnet/netns_nodes.sh \
+            scripts/private_testnet/netns_inventory.py \
+            scripts/private_testnet/netns_fault.sh \
+            scripts/tests/test_v2_3_0_private_testnet_preflight.sh \
+            scripts/tests/test_v2_3_0_node_lifecycle.sh \
+            scripts/tests/test_v2_3_0_netns_rehearsal.sh
+
+      - name: Preserve release guardrails
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(tr -d '\r\n' < VERSION)" = "v2.2.20"
+          test "$(awk '/^version = / {gsub(/"/, "", $3); print $3; exit}' Cargo.toml)" = "2.2.20"
+
+      - name: Run repository hygiene
+        shell: bash
+        run: bash scripts/repository_hygiene.sh --strict
+
+  live-netns-rehearsal:
+    if: >-
+      github.event_name == 'push' ||
+      (github.event_name == 'workflow_dispatch' && inputs.run_live)
+    needs: contract
+    runs-on: ubuntu-24.04
+    environment: pulsedag-private-testnet-rehearsal
+    timeout-minutes: 75
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install namespace tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes iproute2 iputils-ping jq curl
+
+      - name: Build exact node and external miner
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout --signal=TERM --kill-after=30s 45m \
+            cargo build --locked --release --bin pulsedagd --bin pulsedag-miner
+          test -x target/release/pulsedagd
+          test -x target/release/pulsedag-miner
+
+      - name: Run fail-closed five-namespace rehearsal
+        shell: bash
+        run: |
+          set +e
+          evidence="$RUNNER_TEMP/pulsedag-task12-netns/${GITHUB_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          mkdir -p "$evidence"
+          bash scripts/private_testnet/netns_rehearsal.sh \
+            --candidate-sha "$GITHUB_SHA" \
+            --workspace "$GITHUB_WORKSPACE" \
+            --evidence-root "$evidence"
+          rc=$?
+          echo "PULSEDAG_TASK12_NETNS_EVIDENCE=$evidence" >> "$GITHUB_ENV"
+          echo "PULSEDAG_TASK12_NETNS_RC=$rc" >> "$GITHUB_ENV"
+          exit 0
+
+      - name: Upload namespace rehearsal evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v2_3_0_task12_netns_${{ github.sha }}_${{ github.run_id }}_${{ github.run_attempt }}
+          path: ${{ runner.temp }}/pulsedag-task12-netns
+          if-no-files-found: error
+          retention-days: 180
+
+      - name: Enforce verified private-testnet GO
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "${PULSEDAG_TASK12_NETNS_RC:-1}" -eq 0
+          python3 scripts/private_testnet/multi_host_rehearsal.py \
+            verify-evidence \
+            --evidence-dir "$PULSEDAG_TASK12_NETNS_EVIDENCE/controller"
+          jq -e --arg sha "$GITHUB_SHA" '
+            .gate == "v2.3.0-multi-host-private-testnet-rehearsal" and
+            .candidate_sha == $sha and
+            .node_count == 5 and
+            .decision == "GO" and
+            .failure == null and
+            .version_bump_authorized == false and
+            .public_testnet_ready == false and
+            .thirty_day_public_testnet_clock_started == false
+          ' "$PULSEDAG_TASK12_NETNS_EVIDENCE/controller/decision.json" >/dev/null

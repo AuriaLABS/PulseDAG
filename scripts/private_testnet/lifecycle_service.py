@@ -10,6 +10,7 @@ import subprocess
 import time
 from pathlib import Path
 
+from lifecycle_bootnodes import resolve_bootnodes
 from lifecycle_core import (
     Layout,
     LifecycleError,
@@ -23,7 +24,6 @@ from lifecycle_core import (
     process_exists,
     process_start_ticks,
     read_state,
-    resolve_bootnodes,
     resolved_release,
     run_preflight,
     sha256_file,
