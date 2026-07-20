@@ -89,6 +89,11 @@ def current_decision(text: str) -> str:
     return match.group(1)
 
 
+def contains_true_assignment(text: str, key: str) -> bool:
+    pattern = rf"(?m)^\s*(?:[-*]\s*)?`?{re.escape(key)}=true`?(?:[.,;:]?\s*)$"
+    return re.search(pattern, text) is not None
+
+
 def parse_lock(text: str, label: str) -> list[dict[str, Any]]:
     try:
         parsed = tomllib.loads(text)
@@ -266,7 +271,7 @@ def validate(out_dir: Path | None) -> dict[str, object]:
         CANDIDATE_WORKFLOW,
         (
             "v2.3.0 exact release candidate",
-            "cargo metadata --format-version 1",
+            "cargo metadata --locked --format-version 1",
             "validate_v2_3_0_release_candidate.py",
             "x86_64-unknown-linux-gnu",
             "x86_64-pc-windows-msvc",
@@ -280,9 +285,12 @@ def validate(out_dir: Path | None) -> dict[str, object]:
         ("notes", notes_text),
         ("install", install_text),
     ):
-        require("public_testnet_ready=true" not in text, f"{label} claims public readiness")
         require(
-            "thirty_day_public_testnet_clock_started=true" not in text,
+            not contains_true_assignment(text, "public_testnet_ready"),
+            f"{label} claims public readiness",
+        )
+        require(
+            not contains_true_assignment(text, "thirty_day_public_testnet_clock_started"),
             f"{label} claims the public-testnet clock started",
         )
 
