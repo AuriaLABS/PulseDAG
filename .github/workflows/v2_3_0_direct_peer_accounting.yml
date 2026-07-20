@@ -1,0 +1,100 @@
+name: v2.3.0 direct peer accounting
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - crates/pulsedag-p2p/src/lib.rs
+      - .github/workflows/v2_3_0_direct_peer_accounting.yml
+  push:
+    branches:
+      - main
+    paths:
+      - crates/pulsedag-p2p/src/lib.rs
+      - .github/workflows/v2_3_0_direct_peer_accounting.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  direct-peer-accounting-contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Preserve release guardrails
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(tr -d '\r\n' < VERSION)" = "v2.2.20"
+          test "$(awk '/^version = / {gsub(/"/, "", $3); print $3; exit}' Cargo.toml)" = "2.2.20"
+
+      - name: Run complete PulseDAG P2P library suite
+        shell: bash
+        run: |
+          set +e
+          mkdir -p ci-evidence/v2.3.0-direct-peer-accounting
+          timeout --signal=TERM --kill-after=30s 30m \
+            cargo test --locked -p pulsedag-p2p --lib \
+            2>&1 | tee ci-evidence/v2.3.0-direct-peer-accounting/p2p-suite.log
+          rc=${PIPESTATUS[0]}
+          echo "P2P_SUITE_RC=$rc" >> "$GITHUB_ENV"
+          exit 0
+
+      - name: Build focused failure summary
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          log=ci-evidence/v2.3.0-direct-peer-accounting/p2p-suite.log
+          summary=ci-evidence/v2.3.0-direct-peer-accounting/failure-summary.txt
+          {
+            echo "candidate=${{ github.event.pull_request.head.sha || github.sha }}"
+            echo "exit_code=${P2P_SUITE_RC:-1}"
+            echo
+            grep -E '^(failures:|---- .* stdout ----|test result:|error: test failed|[[:space:]]+[A-Za-z0-9_:]+$)' \
+              "$log" | tail -n 160 || true
+            echo
+            echo "--- final log lines ---"
+            tail -n 120 "$log" || true
+          } > "$summary"
+          cat "$summary"
+
+      - name: Upload P2P suite diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v2_3_0_direct_peer_accounting_${{ github.run_id }}
+          path: ci-evidence/v2.3.0-direct-peer-accounting
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Enforce complete P2P suite
+        if: always()
+        shell: bash
+        run: test "${P2P_SUITE_RC:-1}" -eq 0
+
+      - name: Enforce direct-session regression coverage
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -Fq 'fn indirect_gossip_author_does_not_become_a_connected_transport_peer()' \
+            crates/pulsedag-p2p/src/lib.rs
+          grep -Fq 'fn real_transport_session_controls_connected_and_selected_sync_surfaces()' \
+            crates/pulsedag-p2p/src/lib.rs
+          grep -Fq 'active_peer_ids.contains(&peer.peer_id)' crates/pulsedag-p2p/src/lib.rs
+          grep -Fq 'direct_transport_required' crates/pulsedag-p2p/src/lib.rs
+
+      - name: Run repository hygiene
+        shell: bash
+        run: bash scripts/repository_hygiene.sh --strict
