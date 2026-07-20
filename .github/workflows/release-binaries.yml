@@ -204,6 +204,7 @@ jobs:
         run: |
           set -euo pipefail
           shopt -s nullglob
+          rm -rf final
           mkdir -p final
 
           source_files=(artifacts/*/*)
