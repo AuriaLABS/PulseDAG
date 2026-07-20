@@ -26,9 +26,13 @@ The runner creates:
   `/var/lib/pulsedag-task12-netns`;
 - one external standalone miner inside the seed namespace.
 
-The selected fault target is `node-4`. Its reviewed hook changes only its
-namespace-local `eth0` link. Loopback RPC and host-side recovery through
-`ip netns exec` remain available while the P2P path is isolated.
+The selected fault target is `node-4`. Its reviewed hook takes only its
+namespace-local `eth0` link down and destroys only established TCP sockets
+whose source or destination port is the PulseDAG P2P port `32333`. Destroying
+the local socket state is required because Linux may otherwise retain a TCP
+session after link-down for longer than the bounded partition window. Loopback
+RPC, the node process, and host-side recovery through `ip netns exec` remain
+available throughout the isolation.
 
 ## Safety properties
 
@@ -68,7 +72,8 @@ The uploaded artifact contains:
 - external miner logs;
 - final namespace address, route, and listener snapshots;
 - per-node process logs;
-- the fault-hook log;
+- the fault-hook log, including P2P connection counts before and after
+  isolation;
 - a run summary preserving
   `public_testnet_ready=false` and
   `thirty_day_public_testnet_clock_started=false`.
