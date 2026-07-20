@@ -1,0 +1,44 @@
+name: v2.3.0 apply direct peer fixture fixes
+
+on:
+  push:
+    branches:
+      - agent/v2-3-0-12-direct-peer-accounting
+    paths:
+      - scripts/patches/apply_v2_3_0_direct_peer_fixture_fixes.py
+      - .github/workflows/v2_3_0_apply_direct_peer_fixture_fixes.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply-reviewed-fixture-fixes:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout patch branch
+        uses: actions/checkout@v4
+        with:
+          ref: agent/v2-3-0-12-direct-peer-accounting
+          fetch-depth: 0
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Apply exact source and fixture corrections
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/patches/apply_v2_3_0_direct_peer_fixture_fixes.py
+          cargo fmt --all
+          git diff --check
+          test -n "$(git status --porcelain crates/pulsedag-p2p/src/lib.rs)"
+
+      - name: Commit corrected runtime fixtures
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add crates/pulsedag-p2p/src/lib.rs
+          git commit -m "v2.3.0 Task 12: preserve active peer recovery semantics"
+          git push origin HEAD:agent/v2-3-0-12-direct-peer-accounting
