@@ -1094,7 +1094,7 @@ impl Default for PeerHealth {
             score: 100,
             fail_streak: 0,
             next_retry_unix: 0,
-            connected: true,
+            connected: false,
             last_seen_unix: None,
             remote_chain_id: None,
             chain_id_compatible: true,
@@ -2152,15 +2152,17 @@ fn peer_rate_limited_recently(health: &PeerHealth, now: u64) -> bool {
 }
 
 fn peer_eligible_for_sync(peer_id: &str, health: &PeerHealth, active: bool, now: u64) -> bool {
-    health.connected
+    active
+        && health.connected
         && health.chain_id_compatible
         && is_valid_peer_id(peer_id)
-        && (active || (health.next_retry_unix <= now && health.suppressed_until_unix <= now))
+        && health.next_retry_unix <= now
+        && health.suppressed_until_unix <= now
 }
 
 fn peer_health_states(peer_id: &str, health: &PeerHealth, active: bool, now: u64) -> Vec<String> {
     let mut states = Vec::new();
-    if health.connected {
+    if active && health.connected {
         states.push("connected".to_string());
     }
     if active {
@@ -2204,8 +2206,13 @@ fn peer_recovery_snapshot(state: &InnerState) -> PeerRecoverySnapshot {
         .peer_book
         .iter()
         .map(|(peer_id, health)| {
-            let active = state.active_connections.get(peer_id).copied().unwrap_or(0) > 0;
-            let eligible_for_sync = peer_eligible_for_sync(peer_id, health, active, now);
+            let direct_active = state.active_connections.get(peer_id).copied().unwrap_or(0) > 0;
+            let transport_active = if mode_connected_peers_are_real_network(&state.mode) {
+                direct_active
+            } else {
+                health.connected
+            };
+            let eligible_for_sync = peer_eligible_for_sync(peer_id, health, transport_active, now);
             PeerRecoveryStatus {
                 peer_id: peer_id.clone(),
                 chain_id: health.remote_chain_id.clone(),
@@ -2220,7 +2227,7 @@ fn peer_recovery_snapshot(state: &InnerState) -> PeerRecoverySnapshot {
                 lifecycle_tier: peer_lifecycle_tier(health, now).to_string(),
                 recovery_tier: peer_recovery_tier(health, now).to_string(),
                 recovery_reason: peer_recovery_reason(health, now),
-                connected: health.connected,
+                connected: transport_active && health.connected,
                 last_seen_unix: health.last_seen_unix,
                 last_successful_connect_unix: health.last_successful_connect_unix,
                 next_retry_unix: health.next_retry_unix,
@@ -2236,7 +2243,7 @@ fn peer_recovery_snapshot(state: &InnerState) -> PeerRecoverySnapshot {
                 last_error: health.last_error.clone(),
                 last_error_unix: health.last_error_unix,
                 last_error_source: health.last_error_source.clone(),
-                health_states: peer_health_states(peer_id, health, active, now),
+                health_states: peer_health_states(peer_id, health, transport_active, now),
                 eligible_for_sync,
                 last_successful_block_unix: health.last_successful_block_unix,
                 last_rate_limited_unix: health.last_rate_limited_unix,
@@ -2382,7 +2389,9 @@ fn sync_candidates_snapshot(state: &InnerState) -> Vec<RankedSyncPeer> {
             peer_id: peer_id.clone(),
             score: health.score,
             fail_streak: health.fail_streak,
-            connected: health.connected,
+            connected: health.connected
+                && (!mode_connected_peers_are_real_network(&state.mode)
+                    || state.active_connections.get(peer_id).copied().unwrap_or(0) > 0),
             next_retry_unix: health.next_retry_unix,
             suppressed_until_unix: health.suppressed_until_unix,
             recovery_success_count: health.recovery_success_count,
@@ -2550,7 +2559,8 @@ fn refresh_connected_peers_from_health(state: &mut InnerState) {
                 .peer_book
                 .get(&peer.peer_id)
                 .map(|health| {
-                    health.connected
+                    active_peer_ids.contains(&peer.peer_id)
+                        && health.connected
                         && health.chain_id_compatible
                         && (peer.excluded_until_unix.is_none()
                             || active_peer_ids.contains(&peer.peer_id))
@@ -2713,10 +2723,14 @@ fn update_selected_sync_peer(
             .map(|peer| peer.rank_score)
             .unwrap_or(i64::MIN / 2)
     };
+    let direct_transport_required = mode_connected_peers_are_real_network(&state.mode);
     let preferred = sync_candidates
         .iter()
         .filter(|candidate| is_valid_peer_id(&candidate.peer_id))
         .filter(|candidate| candidate.excluded_until_unix.is_none())
+        .filter(|candidate| {
+            !direct_transport_required || state.connected_peers.contains(&candidate.peer_id)
+        })
         .max_by(|a, b| {
             a.rank_score
                 .cmp(&b.rank_score)
@@ -2740,9 +2754,10 @@ fn update_selected_sync_peer(
         .as_ref()
         .map(|peer| {
             state.connected_peers.contains(peer)
-                || sync_candidates.iter().any(|candidate| {
-                    candidate.peer_id == *peer && candidate.excluded_until_unix.is_none()
-                })
+                || (!direct_transport_required
+                    && sync_candidates.iter().any(|candidate| {
+                        candidate.peer_id == *peer && candidate.excluded_until_unix.is_none()
+                    }))
         })
         .unwrap_or(false);
     let sticky_active = state.sync_selection_sticky_until_unix > now;
@@ -7850,6 +7865,8 @@ mod tests {
             },
         );
 
+        state.active_connections.insert("peer-live".into(), 1);
+
         refresh_connected_peers_from_health(&mut state);
 
         assert_eq!(state.connected_peers, vec!["peer-live".to_string()]);
@@ -7870,6 +7887,9 @@ mod tests {
                 },
             );
         }
+
+        state.active_connections.insert("peer-a".into(), 1);
+        state.active_connections.insert("peer-b".into(), 1);
 
         refresh_connected_peers_from_health(&mut state);
         assert_eq!(state.connected_peers.len(), 2);
@@ -7895,6 +7915,14 @@ mod tests {
                     ..PeerHealth::default()
                 },
             );
+        }
+
+        for peer in peers_bucket_0
+            .iter()
+            .take(2)
+            .chain(peers_bucket_1.iter().take(2))
+        {
+            state.active_connections.insert(peer.clone(), 1);
         }
 
         refresh_connected_peers_from_health(&mut state);
@@ -7964,6 +7992,9 @@ mod tests {
             },
         );
 
+        state.active_connections.insert("healthy-a".into(), 1);
+        state.active_connections.insert("healthy-b".into(), 1);
+
         refresh_connected_peers_from_health(&mut state);
         let ranked = sync_candidates_snapshot(&state);
         let selected = update_selected_sync_peer(&mut state, &ranked, 42).unwrap();
@@ -8017,6 +8048,8 @@ mod tests {
                 ..PeerHealth::default()
             },
         );
+        state.active_connections.insert("peer-primary".into(), 1);
+
         refresh_connected_peers_from_health(&mut state);
         let ranked = sync_candidates_snapshot(&state);
         let selected = update_selected_sync_peer(&mut state, &ranked, 1_000).unwrap();
@@ -8172,6 +8205,8 @@ mod tests {
                 ..PeerHealth::default()
             },
         );
+        state.active_connections.insert("peer-healthy".into(), 1);
+
         refresh_connected_peers_from_health(&mut state);
         let ranked = sync_candidates_snapshot(&state);
 
@@ -8598,9 +8633,72 @@ mod inventory_tests {
             },
         );
 
+        state.active_connections.insert("peer-compatible".into(), 1);
+        state
+            .active_connections
+            .insert("peer-wrong-chain".into(), 1);
+
         refresh_connected_peers_from_health(&mut state);
 
         assert_eq!(state.connected_peers, vec!["peer-compatible".to_string()]);
+    }
+
+    #[test]
+    fn indirect_gossip_author_does_not_become_a_connected_transport_peer() {
+        let mut state = InnerState {
+            mode: P2P_MODE_LIBP2P_REAL.into(),
+            ..InnerState::default()
+        };
+        let peer = "peer-indirect-gossip";
+        score_peer_message_outcome(&mut state, peer, PeerMessageOutcome::ValidRelay, now_unix());
+
+        refresh_connected_peers_from_health(&mut state);
+        let recovery = peer_recovery_snapshot(&state).13;
+
+        assert!(state
+            .peer_book
+            .get(peer)
+            .is_some_and(|health| !health.connected));
+        assert!(state.connected_peers.is_empty());
+        assert!(recovery
+            .iter()
+            .any(|entry| entry.peer_id == peer && !entry.connected && !entry.eligible_for_sync));
+    }
+
+    #[test]
+    fn real_transport_session_controls_connected_and_selected_sync_surfaces() {
+        let mut state = InnerState {
+            mode: P2P_MODE_LIBP2P_REAL.into(),
+            sync_selection_stickiness_secs: 30,
+            ..InnerState::default()
+        };
+        let peer = "peer-direct-session";
+        state.peer_book.insert(
+            peer.into(),
+            PeerHealth {
+                connected: true,
+                chain_id_compatible: true,
+                ..PeerHealth::default()
+            },
+        );
+        state.active_connections.insert(peer.into(), 1);
+
+        refresh_connected_peers_from_health(&mut state);
+        let ranked = sync_candidates_snapshot(&state);
+        assert_eq!(state.connected_peers, vec![peer.to_string()]);
+        assert_eq!(
+            update_selected_sync_peer(&mut state, &ranked, now_unix()).as_deref(),
+            Some(peer)
+        );
+
+        state.active_connections.clear();
+        refresh_connected_peers_from_health(&mut state);
+        let ranked = sync_candidates_snapshot(&state);
+        assert!(state.connected_peers.is_empty());
+        assert_eq!(
+            update_selected_sync_peer(&mut state, &ranked, now_unix()),
+            None
+        );
     }
 
     #[test]
@@ -9143,6 +9241,9 @@ mod deterministic_p2p_sync_coverage_tests {
                 ..PeerHealth::default()
             },
         );
+
+        state.active_connections.insert("peer-a".into(), 1);
+        state.active_connections.insert("peer-b".into(), 1);
 
         refresh_connected_peers_from_health(&mut state);
         assert_eq!(state.connected_peers.len(), 2);
