@@ -2,16 +2,22 @@
 
 write_node_environment() {
   local index="$1"
+  local seed_peer_id="${2:-}"
   local node="${NODE_NAMES[$index]}"
   local role="node"
-  local bootstrap="/ip4/${NODE_IPS[0]}/tcp/$P2P_PORT"
+  local bootstrap=""
   local node_root="$STATE_ROOT/nodes/$node"
   local env_file="$node_root/node.env"
   local temporary
 
   if [[ "$index" -eq 0 ]]; then
     role="seed"
-    bootstrap=""
+  else
+    [[ -n "$seed_peer_id" && "$seed_peer_id" != */* ]] || {
+      echo "ordinary node configuration requires a seed PeerId" >&2
+      return 1
+    }
+    bootstrap="/ip4/${NODE_IPS[0]}/tcp/$P2P_PORT/p2p/$seed_peer_id"
   fi
 
   sudo -n install -d -m 0750 "$node_root" "$node_root/data" "$node_root/lifecycle"
@@ -64,6 +70,38 @@ install_node_release() {
       install \
       --binary "$NODE_BINARY" \
       --release-id "$RELEASE_ID"
+}
+
+start_seed_for_identity() {
+  local node_root="$STATE_ROOT/nodes/${NODE_NAMES[0]}"
+  sudo -n ip netns exec "${NAMESPACES[0]}" \
+    python3 "$LIFECYCLE" \
+      --root "$node_root/lifecycle" \
+      --env-file "$node_root/node.env" \
+      --preflight-script "$PREFLIGHT" \
+      --health-timeout 120 \
+      start >/dev/null
+}
+
+read_seed_peer_id() {
+  local deadline=$((SECONDS + 120))
+  local peer_id=""
+  while (( SECONDS < deadline )); do
+    peer_id="$(
+      sudo -n ip netns exec "${NAMESPACES[0]}" \
+        curl --fail --silent --show-error --connect-timeout 1 --max-time 3 \
+          "http://127.0.0.1:$RPC_PORT/p2p/status" 2>/dev/null \
+        | jq -r '.data.local_node_id // .data.peer_id // empty' 2>/dev/null \
+        || true
+    )"
+    if [[ -n "$peer_id" && "$peer_id" != "null" && "$peer_id" != */* ]]; then
+      printf '%s\n' "$peer_id"
+      return 0
+    fi
+    sleep 1
+  done
+  echo "seed PeerId was not available from /p2p/status within 120 seconds" >&2
+  return 1
 }
 
 collect_node_evidence() {
