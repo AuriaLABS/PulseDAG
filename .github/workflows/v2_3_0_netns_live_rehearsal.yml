@@ -123,7 +123,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: v2_3_0_task12_netns_${{ github.sha }}_${{ github.run_id }}_${{ github.run_attempt }}
-          path: ${{ env.PULSEDAG_TASK12_NETNS_EVIDENCE }}
+          path: ${{ runner.temp }}/pulsedag-task12-netns
           if-no-files-found: error
           retention-days: 180
 
