@@ -61,15 +61,35 @@ Document bootstrap, miner attachment, backup/restore, partition recovery, high o
 
 ### Task 12 — Multi-host private-testnet rehearsal
 
-Status: **ACTIVE**.
+Status: **COMPLETE**. Tooling and runtime corrections merged through PRs `#762`, `#764`, `#766`, `#767`, and `#768`; the protected live workflow recorded an independently reviewed `GO`.
 
-Run the topology on separate hosts or isolated network namespaces, prove stable discovery and convergence, exercise external mining, restart, partition, restore, and rejoin, record checksummed evidence, and produce an explicit private-testnet GO/NO-GO decision for one exact candidate commit. Merging the rehearsal tooling alone does not satisfy this task; a real protected execution must produce verified `GO` evidence.
+Accepted evidence:
+
+- candidate `22fa09b19da2893fa73b91b198b26675bd1e6e32`;
+- workflow run `29773225491`;
+- artifact `v2_3_0_task12_netns_22fa09b19da2893fa73b91b198b26675bd1e6e32_29773225491_1`;
+- artifact SHA-256 `a31246a014e88287e653b732c5edf54af08d26f5d0ffac19f60b49f369db88ce`;
+- 56 unique controller checksum entries verified with no duplicates;
+- all nine mandatory phases `PASS` with `failure=null`;
+- `version_bump_authorized=false`, `public_testnet_ready=false`, and `thirty_day_public_testnet_clock_started=false` preserved.
+
+The rehearsal proved five-node baseline convergence, external mining before and after faults, ordinary-node restart/rejoin, zero direct peers during bounded target isolation, exact restoration, final convergence, healthy endpoint surfaces, and zero replay or storage consistency gaps.
 
 ### Task 13 — Version and release decision
 
-Status: **BLOCKED** pending a verified Task 12 `GO` bundle and separate maintainer approval.
+Status: **ACTIVE — RELEASE-DECISION PROPOSAL ONLY**.
 
-Only after Tasks 07–12 pass and a maintainer explicitly approves the release proposal: update `VERSION`/Cargo to `2.3.0`, generate release notes and artifacts, rerun all candidate gates, and record a release decision. This task does not authorize public-testnet launch.
+Task 12 `GO` satisfies the operational prerequisite to prepare a separate v2.3.0 release-decision proposal. Proposal review must confirm the exact candidate scope, all required CI and artifact gates, release-note content, rollback compatibility, unresolved-severity review, and explicit maintainer authorization.
+
+Until that separate authorization is recorded:
+
+- do not update `VERSION` or Cargo from `2.2.20`;
+- do not create a `v2.3.0` tag or publish release artifacts;
+- do not claim public-testnet readiness;
+- do not start or backdate the 30-day public-testnet clock;
+- do not introduce or enable smart contracts.
+
+Only after the proposal is explicitly approved may a follow-up candidate PR update `VERSION`/Cargo to `2.3.0`, generate release notes and artifacts, rerun every required gate on that exact candidate, and record the final private-testnet release decision. Task 13 does not authorize public-testnet launch.
 
 ## Completion criteria
 
