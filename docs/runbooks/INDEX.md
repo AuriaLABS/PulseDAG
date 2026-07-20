@@ -10,22 +10,25 @@ This index does not authorize a public testnet, a release tag, a version bump, o
 
 1. **Routine bootstrap, lifecycle, miner attachment, upgrade, rollback, or evidence?** Use `docs/runbooks/V2_3_0_PRIVATE_TESTNET_OPERATIONS.md`.
 2. **Running the final five-node multi-host rehearsal?** Use `docs/runbooks/V2_3_0_PRIVATE_TESTNET_REHEARSAL.md`.
-3. **Active incident or severity decision?** Use `docs/runbooks/V2_3_0_INCIDENT_RESPONSE.md`.
-4. **RPC abuse, disk pressure, credential exposure, or identity rotation?** Use `docs/runbooks/V2_3_0_SECURITY_AND_CAPACITY.md`.
-5. **Node unhealthy or degraded?** Use `docs/runbooks/MAINTENANCE_SELF_CHECK.md`.
-6. **Peer loss or partition symptoms?** Use `docs/runbooks/P2P_RECOVERY.md`.
-7. **Lag, missing parents, convergence, or recovery choice?** Use `docs/runbooks/RECOVERY_ORCHESTRATION.md`.
-8. **Snapshot/replay rebuild required?** Use `docs/runbooks/REBUILD_FROM_SNAPSHOT_AND_DELTA.md`.
-9. **Snapshot restore drill and RTO evidence?** Use `docs/runbooks/SNAPSHOT_RESTORE.md`.
+3. **Running the isolated Linux namespace implementation?** Use `docs/runbooks/V2_3_0_NETNS_REHEARSAL.md`.
+4. **Active incident or severity decision?** Use `docs/runbooks/V2_3_0_INCIDENT_RESPONSE.md`.
+5. **RPC abuse, disk pressure, credential exposure, or identity rotation?** Use `docs/runbooks/V2_3_0_SECURITY_AND_CAPACITY.md`.
+6. **Node unhealthy or degraded?** Use `docs/runbooks/MAINTENANCE_SELF_CHECK.md`.
+7. **Peer loss or partition symptoms?** Use `docs/runbooks/P2P_RECOVERY.md`.
+8. **Lag, missing parents, convergence, or recovery choice?** Use `docs/runbooks/RECOVERY_ORCHESTRATION.md`.
+9. **Snapshot/replay rebuild required?** Use `docs/runbooks/REBUILD_FROM_SNAPSHOT_AND_DELTA.md`.
+10. **Snapshot restore drill and RTO evidence?** Use `docs/runbooks/SNAPSHOT_RESTORE.md`.
 
 ## v2.3.0 operator baseline
 
 - `docs/runbooks/V2_3_0_PRIVATE_TESTNET_OPERATIONS.md` — bootstrap, external miner, routine checks, lifecycle, upgrade/rollback, state protection, evidence, and decommissioning.
 - `docs/runbooks/V2_3_0_PRIVATE_TESTNET_REHEARSAL.md` — exact-candidate five-node rehearsal, restart, bounded partition, rejoin, GO/NO-GO, and immutable evidence.
+- `docs/runbooks/V2_3_0_NETNS_REHEARSAL.md` — ephemeral five-namespace topology, external mining, hard timeout, cleanup, and Actions evidence.
 - `docs/runbooks/V2_3_0_INCIDENT_RESPONSE.md` — SEV-1 through SEV-4, roles, evidence custody, containment, recovery, communications, and closure.
 - `docs/runbooks/V2_3_0_SECURITY_AND_CAPACITY.md` — RPC abuse, disk pressure, identity/token rotation, and monitoring-network access.
 - `scripts/private_testnet/node_lifecycle.py` — supported node install/start/stop/status/restart/upgrade/rollback controller.
 - `scripts/private_testnet/multi_host_rehearsal.py` — supported five-node private-testnet rehearsal and evidence verifier.
+- `scripts/private_testnet/netns_rehearsal.sh` — supported isolated-namespace Task 12 runner for ephemeral Linux Actions hosts.
 - `scripts/private_testnet/runtime_metrics_exporter.py` — supported private monitoring exporter.
 - `scripts/private_testnet/collect_incident_evidence.py` — redacted, checksummed incident evidence collector.
 - `ops/observability/v2.3.0/README.md` — Prometheus, Grafana, alert, and metric baseline.
