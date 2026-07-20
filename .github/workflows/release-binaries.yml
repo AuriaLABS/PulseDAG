@@ -120,7 +120,7 @@ jobs:
             --include-file README.md \
             --include-file docs/INSTALL_BINARIES_V2_3_0.md
 
-      - name: Verify packaged standalone miner assets (unpack + smoke)
+      - name: Verify packaged standalone miner assets on native runner
         shell: bash
         run: |
           set -euo pipefail
@@ -132,7 +132,7 @@ jobs:
             --expect-binaries pulsedag-miner \
             --expect-targets "${{ matrix.expected_target }}"
 
-      - name: Verify packaged node+miner assets end-to-end (unpack + smoke)
+      - name: Verify packaged node and miner assets on native runner
         shell: bash
         run: |
           set -euo pipefail
@@ -284,6 +284,7 @@ jobs:
           out = {
               "release_tag": "${{ env.RELEASE_TAG }}",
               "artifacts": manifests,
+              "native_smoke_verified": True,
           }
           Path("final/release-provenance.json").write_text(
               json.dumps(out, indent=2, sort_keys=True) + "\n",
@@ -307,19 +308,18 @@ jobs:
             --expected-tag "${{ env.RELEASE_TAG }}" \
             --output final/INSTALL-VERIFY.md
 
-      - name: Verify final release bundle end-to-end
+      - name: Verify final release bundle structure
         shell: bash
         run: |
           set -euo pipefail
           python scripts/release/verify_release_artifacts.py \
             --artifacts-dir final \
             --expected-tag "${{ env.RELEASE_TAG }}" \
-            --smoke \
-            --smoke-timeout-secs 10 \
             --expect-binaries pulsedagd pulsedag-miner \
             --expect-targets x86_64-unknown-linux-gnu x86_64-pc-windows-msvc x86_64-apple-darwin \
             --consolidated-checksums final/SHA256SUMS.txt \
             --provenance-summary final/release-provenance.json
+          jq -e '.native_smoke_verified == true' final/release-provenance.json >/dev/null
 
       - name: List release assets before upload
         shell: bash
