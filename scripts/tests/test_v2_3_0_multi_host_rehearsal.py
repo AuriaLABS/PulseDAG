@@ -60,6 +60,9 @@ class FakeExecutor:
         self.status_calls = 0
         self.isolated = False
 
+    def peer_count(self, node: module.Node) -> int:
+        return 0 if self.isolated and node.name == "node-4" else 1
+
     def __call__(self, node: module.Node, argv: Sequence[str], _timeout: float) -> str:
         if tuple(argv[:2]) == ("/usr/local/sbin/fault-hook", "isolate"):
             self.isolated = True
@@ -70,10 +73,20 @@ class FakeExecutor:
         if len(argv) >= 2 and argv[0] == "python3" and argv[1] == "-c":
             url = argv[-2]
             endpoint = "/" + url.split("/", 3)[-1] if url.count("/") >= 3 else "/"
-            if endpoint == "/status":
+            peer_count = self.peer_count(node)
+            isolated_target = self.isolated and node.name == "node-4"
+            if endpoint == "/health":
+                data = {
+                    "status": "ok",
+                    "process_alive": True,
+                    "listener_alive": True,
+                    "chain_id": module.EXPECTED_CHAIN_ID,
+                    "last_consistency_audit_ok": True,
+                    "last_consistency_audit_issue_count": 0,
+                }
+            elif endpoint == "/status":
                 round_index = self.status_calls // module.EXPECTED_NODE_COUNT
                 self.status_calls += 1
-                peer_count = 0 if self.isolated and node.name == "node-4" else 1
                 data = {
                     "chain_id": module.EXPECTED_CHAIN_ID,
                     "best_height": 100 + (round_index * 2),
@@ -86,11 +99,35 @@ class FakeExecutor:
                 }
             elif endpoint == "/sync/status":
                 data = {
+                    "rpc_response_degraded": False,
+                    "rpc_response_stale": False,
+                    "chain_id": module.EXPECTED_CHAIN_ID,
+                    "p2p_mode": "libp2p-real",
                     "consistency_ok": True,
                     "consistency_issue_count": 0,
                     "storage_replay_gap": 0,
+                    "storage_memory_mismatch": False,
                     "live_sync_error_active": 0,
+                    "p2p_ready_for_private_rehearsal": not isolated_target,
+                    "readiness_reasons": ["no connected peers"] if isolated_target else [],
+                    "sync_state": "synced",
+                    "catchup_stage": "steady",
+                    "network_selected_tip_mismatch": False,
+                    "network_selected_height_gap": 0,
                 }
+            elif endpoint == "/p2p/status":
+                data = {
+                    "chain_id": module.EXPECTED_CHAIN_ID,
+                    "mode": "libp2p-real",
+                    "connected_peers_are_real_network": True,
+                    "p2p_status_stale": False,
+                    "p2p_status_degraded": False,
+                    "peer_count": peer_count,
+                    "p2p_ready_for_private_rehearsal": not isolated_target,
+                    "readiness_reasons": ["no connected peers"] if isolated_target else [],
+                }
+            elif endpoint == "/checks":
+                data = {"overall_ok": True, "checks": []}
             else:
                 data = {"status": "ok"}
             return json.dumps(data)
@@ -106,6 +143,10 @@ class RehearsalTests(unittest.TestCase):
         path = root / "inventory.json"
         path.write_text(json.dumps(payload or inventory_payload()), encoding="utf-8")
         return path
+
+    def build_runner(self, root: Path) -> module.RehearsalRunner:
+        inventory = module.load_inventory(self.write_inventory(root))
+        return module.RehearsalRunner(inventory, root / "evidence", executor=FakeExecutor())
 
     def test_inventory_requires_five_nodes_and_loopback_rpc(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -125,41 +166,54 @@ class RehearsalTests(unittest.TestCase):
     def test_fake_rehearsal_accepts_numeric_sync_counter_and_emits_go(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
-            inventory = module.load_inventory(self.write_inventory(root))
-            out_dir = root / "evidence"
-            runner = module.RehearsalRunner(inventory, out_dir, executor=FakeExecutor())
+            runner = self.build_runner(root)
             self.assertEqual(runner.run(), 0)
-            manifest = json.loads((out_dir / "decision.json").read_text(encoding="utf-8"))
+            manifest = json.loads((runner.out_dir / "decision.json").read_text(encoding="utf-8"))
             self.assertEqual(manifest["decision"], "GO")
             self.assertFalse(manifest["public_testnet_ready"])
             self.assertFalse(manifest["thirty_day_public_testnet_clock_started"])
-            module.verify_evidence(out_dir)
+            module.verify_evidence(runner.out_dir)
+
+    def test_failed_node_checks_prevent_convergence(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            runner = self.build_runner(root)
+            snapshot = runner.snapshot("checks-failure")
+            snapshot["node-2"]["/checks"]["overall_ok"] = False
+            with self.assertRaisesRegex(module.RehearsalError, "node checks failed"):
+                runner.validate_convergence(snapshot)
+
+    def test_non_target_readiness_failure_prevents_convergence(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            runner = self.build_runner(root)
+            snapshot = runner.snapshot("readiness-failure")
+            snapshot["node-2"]["/sync/status"]["p2p_ready_for_private_rehearsal"] = False
+            snapshot["node-2"]["/sync/status"]["readiness_reasons"] = ["pending block request"]
+            with self.assertRaisesRegex(module.RehearsalError, "sync readiness failed"):
+                runner.validate_convergence(snapshot)
 
     def test_checksum_tampering_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
-            inventory = module.load_inventory(self.write_inventory(root))
-            out_dir = root / "evidence"
-            runner = module.RehearsalRunner(inventory, out_dir, executor=FakeExecutor())
+            runner = self.build_runner(root)
             self.assertEqual(runner.run(), 0)
-            decision = out_dir / "decision.json"
+            decision = runner.out_dir / "decision.json"
             decision.write_text(decision.read_text(encoding="utf-8") + " ", encoding="utf-8")
             with self.assertRaisesRegex(module.RehearsalError, "checksum mismatch"):
-                module.verify_evidence(out_dir)
+                module.verify_evidence(runner.out_dir)
 
     def test_duplicate_checksum_path_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
-            inventory = module.load_inventory(self.write_inventory(root))
-            out_dir = root / "evidence"
-            runner = module.RehearsalRunner(inventory, out_dir, executor=FakeExecutor())
+            runner = self.build_runner(root)
             self.assertEqual(runner.run(), 0)
-            checksums = out_dir / "SHA256SUMS"
+            checksums = runner.out_dir / "SHA256SUMS"
             original = checksums.read_text(encoding="utf-8")
             duplicate = original.splitlines()[0]
             checksums.write_text(original + duplicate + "\n", encoding="utf-8")
             with self.assertRaisesRegex(module.RehearsalError, "duplicate checksum path"):
-                module.verify_evidence(out_dir)
+                module.verify_evidence(runner.out_dir)
 
     def test_go_requires_all_mandatory_phases(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
