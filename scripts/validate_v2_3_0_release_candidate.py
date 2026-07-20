@@ -325,6 +325,12 @@ def main() -> int:
     try:
         manifest = validate(args.out_dir)
     except ValidationError as exc:
+        if args.out_dir is not None:
+            args.out_dir.mkdir(parents=True, exist_ok=True)
+            (args.out_dir / "validation-error.txt").write_text(
+                f"FAIL: {exc}\n",
+                encoding="utf-8",
+            )
         print(f"FAIL: {exc}")
         return 1
     print(json.dumps(manifest, indent=2, sort_keys=True))
