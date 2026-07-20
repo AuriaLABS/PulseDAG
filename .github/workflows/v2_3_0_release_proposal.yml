@@ -1,0 +1,93 @@
+name: v2.3.0 release decision proposal
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - VERSION
+      - Cargo.toml
+      - Cargo.lock
+      - docs/INSTALL_BINARIES_V2_3_0.md
+      - docs/release/**
+      - docs/codex_tasks/v2_3_0_13_version_release_decision.md
+      - scripts/validate_v2_3_0_release_proposal.py
+      - .github/workflows/release-binaries.yml
+      - .github/workflows/v2_3_0_release_proposal.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  proposal-contract:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout exact proposal candidate
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fetch immutable base tag
+        shell: bash
+        run: git fetch --force --tags origin v2.2.20
+
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Validate Task 13 proposal
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/validate_v2_3_0_release_proposal.py \
+            --out-dir ci-evidence/v2.3.0-task13-proposal
+
+      - name: Validate English comments
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/check_code_comment_language.py \
+            scripts/validate_v2_3_0_release_proposal.py
+
+      - name: Run repository hygiene
+        shell: bash
+        run: bash scripts/repository_hygiene.sh --strict
+
+      - name: Enforce proposal manifest
+        shell: bash
+        env:
+          CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          jq -e --arg sha "$CANDIDATE_SHA" '
+            .gate == "v2.3.0-release-decision-proposal" and
+            .candidate_sha == $sha and
+            .base_tag == "v2.2.20" and
+            .base_sha == "14a1c38249830ee6912d8e70d6d223126cf7f63b" and
+            .runtime_crate_files == ["crates/pulsedag-p2p/src/lib.rs"] and
+            .version == "v2.2.20" and
+            .cargo_version == "2.2.20" and
+            .decision == "PENDING_MAINTAINER_DECISION" and
+            .version_bump_authorized == false and
+            .public_testnet_ready == false and
+            .thirty_day_public_testnet_clock_started == false and
+            .result == "PASS"
+          ' ci-evidence/v2.3.0-task13-proposal/release-proposal-manifest.json >/dev/null
+
+      - name: Build evidence checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          sha256sum ci-evidence/v2.3.0-task13-proposal/release-proposal-manifest.json \
+            > ci-evidence/v2.3.0-task13-proposal/SHA256SUMS
+
+      - name: Upload Task 13 proposal evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v2_3_0_task13_release_proposal_${{ github.run_id }}
+          path: ci-evidence/v2.3.0-task13-proposal
+          if-no-files-found: error
+          retention-days: 90
