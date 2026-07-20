@@ -12,6 +12,7 @@ on:
       - CONTRIBUTING.md
       - VERSION
       - Cargo.toml
+      - Cargo.lock
       - .editorconfig
       - .gitignore
       - .github/pull_request_template.md
@@ -37,8 +38,25 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test "$(tr -d '\r\n' < VERSION)" = "v2.2.20"
-          test "$(awk '/^version = / {gsub(/"/, "", $3); print $3; exit}' Cargo.toml)" = "2.2.20"
+          version=$(tr -d '\r\n' < VERSION)
+          cargo_version=$(awk '/^version = / {gsub(/"/, "", $3); print $3; exit}' Cargo.toml)
+          case "${version}:${cargo_version}" in
+            v2.2.20:2.2.20)
+              ;;
+            v2.3.0:2.3.0)
+              grep -Fq '`APPROVE_RELEASE_CANDIDATE`' docs/release/V2_3_0_RELEASE_DECISION.md
+              grep -Fq '`version_bump_authorized=true`' docs/release/V2_3_0_RELEASE_DECISION.md
+              grep -Fq '`public_testnet_ready=false`' docs/release/V2_3_0_RELEASE_DECISION.md
+              grep -Fq '`thirty_day_public_testnet_clock_started=false`' docs/release/V2_3_0_RELEASE_DECISION.md
+              test -f docs/release/V2_3_0_RELEASE_APPROVAL_RECORD.md
+              test -f scripts/validate_v2_3_0_release_candidate.py
+              test -f .github/workflows/v2_3_0_release_candidate.yml
+              ;;
+            *)
+              echo "unsupported VERSION/Cargo pair: ${version}/${cargo_version}" >&2
+              exit 1
+              ;;
+          esac
 
       - name: Validate script syntax
         shell: bash
@@ -50,7 +68,8 @@ jobs:
           bash -n scripts/tests/test_repository_hygiene.sh
           python3 -m py_compile \
             scripts/check_code_comment_language.py \
-            scripts/repository_hygiene.py
+            scripts/repository_hygiene.py \
+            scripts/validate_v2_3_0_release_candidate.py
 
       - name: Run repository hygiene regression
         shell: bash
