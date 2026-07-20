@@ -6,6 +6,8 @@ on:
       - main
     paths:
       - configs/private-testnet/node.env.example
+      - crates/pulsedag-p2p/src/lib.rs
+      - crates/pulsedag-rpc/src/handlers/p2p.rs
       - scripts/v2_3_0_private_testnet_preflight.sh
       - scripts/private_testnet/lifecycle_bootnodes.py
       - scripts/private_testnet/lifecycle_service.py
@@ -24,6 +26,8 @@ on:
       - main
     paths:
       - configs/private-testnet/node.env.example
+      - crates/pulsedag-p2p/src/lib.rs
+      - crates/pulsedag-rpc/src/handlers/p2p.rs
       - scripts/v2_3_0_private_testnet_preflight.sh
       - scripts/private_testnet/lifecycle_bootnodes.py
       - scripts/private_testnet/lifecycle_service.py
@@ -113,6 +117,36 @@ jobs:
               '',
               'This is private-testnet evidence only. `public_testnet_ready=false` and the 30-day public-testnet clock remains not started.'
             ].join('\n');
+            const startMarker = '<!-- task12-latest-live-run:start -->';
+            const endMarker = '<!-- task12-latest-live-run:end -->';
+            const latest = [
+              startMarker,
+              '## Latest Task 12 live rehearsal',
+              '',
+              `- Candidate: \`${context.sha}\``,
+              `- Workflow run: ${runUrl}`,
+              '- State: **running or waiting for protected environment approval**',
+              '- Evidence artifact: pending',
+              '',
+              '`public_testnet_ready=false`; the 30-day public-testnet clock remains not started.',
+              endMarker
+            ].join('\n');
+            const issue = await github.rest.issues.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: 763
+            });
+            const currentBody = issue.data.body || '';
+            const markerPattern = new RegExp(`${startMarker}[\\s\\S]*?${endMarker}`, 'm');
+            const nextBody = markerPattern.test(currentBody)
+              ? currentBody.replace(markerPattern, latest)
+              : `${currentBody.trim()}\n\n${latest}`.trim();
+            await github.rest.issues.update({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: 763,
+              body: nextBody
+            });
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -236,6 +270,38 @@ jobs:
               'A maintainer must review the uploaded checksummed evidence before Task 12 is closed or Task 13 is proposed.',
               '`public_testnet_ready=false`; the 30-day public-testnet clock remains not started.'
             ].join('\n');
+            const startMarker = '<!-- task12-latest-live-run:start -->';
+            const endMarker = '<!-- task12-latest-live-run:end -->';
+            const latest = [
+              startMarker,
+              '## Latest Task 12 live rehearsal',
+              '',
+              `- Candidate: \`${context.sha}\``,
+              `- Workflow run: ${runUrl}`,
+              `- Live job result: \`${result}\``,
+              `- Verdict: **${verdict}**`,
+              `- Evidence artifact: \`${artifact}\``,
+              '',
+              'Independent review of the uploaded checksummed evidence is required before Task 12 is closed.',
+              '`public_testnet_ready=false`; the 30-day public-testnet clock remains not started.',
+              endMarker
+            ].join('\n');
+            const issue = await github.rest.issues.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: 763
+            });
+            const currentBody = issue.data.body || '';
+            const markerPattern = new RegExp(`${startMarker}[\\s\\S]*?${endMarker}`, 'm');
+            const nextBody = markerPattern.test(currentBody)
+              ? currentBody.replace(markerPattern, latest)
+              : `${currentBody.trim()}\n\n${latest}`.trim();
+            await github.rest.issues.update({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: 763,
+              body: nextBody
+            });
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
