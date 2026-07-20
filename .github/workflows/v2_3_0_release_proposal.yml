@@ -77,12 +77,16 @@ jobs:
             .result == "PASS"
           ' ci-evidence/v2.3.0-task13-proposal/release-proposal-manifest.json >/dev/null
 
-      - name: Build evidence checksums
+      - name: Build portable evidence checksums
         shell: bash
         run: |
           set -euo pipefail
-          sha256sum ci-evidence/v2.3.0-task13-proposal/release-proposal-manifest.json \
-            > ci-evidence/v2.3.0-task13-proposal/SHA256SUMS
+          evidence_dir=ci-evidence/v2.3.0-task13-proposal
+          (
+            cd "$evidence_dir"
+            sha256sum release-proposal-manifest.json > SHA256SUMS
+            sha256sum -c SHA256SUMS
+          )
 
       - name: Upload Task 13 proposal evidence
         if: always()
