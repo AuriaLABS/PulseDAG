@@ -254,6 +254,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          rm -rf final
           mkdir -p final
           files=$(find artifacts -type f | wc -l)
           test "$files" -gt 0
