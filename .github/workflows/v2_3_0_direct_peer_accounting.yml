@@ -42,9 +42,47 @@ jobs:
       - name: Run complete PulseDAG P2P library suite
         shell: bash
         run: |
-          set -euo pipefail
+          set +e
+          mkdir -p ci-evidence/v2.3.0-direct-peer-accounting
           timeout --signal=TERM --kill-after=30s 30m \
-            cargo test --locked -p pulsedag-p2p --lib
+            cargo test --locked -p pulsedag-p2p --lib \
+            2>&1 | tee ci-evidence/v2.3.0-direct-peer-accounting/p2p-suite.log
+          rc=${PIPESTATUS[0]}
+          echo "P2P_SUITE_RC=$rc" >> "$GITHUB_ENV"
+          exit 0
+
+      - name: Build focused failure summary
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          log=ci-evidence/v2.3.0-direct-peer-accounting/p2p-suite.log
+          summary=ci-evidence/v2.3.0-direct-peer-accounting/failure-summary.txt
+          {
+            echo "candidate=${{ github.event.pull_request.head.sha || github.sha }}"
+            echo "exit_code=${P2P_SUITE_RC:-1}"
+            echo
+            grep -E '^(failures:|---- .* stdout ----|test result:|error: test failed|[[:space:]]+[A-Za-z0-9_:]+$)' \
+              "$log" | tail -n 160 || true
+            echo
+            echo "--- final log lines ---"
+            tail -n 120 "$log" || true
+          } > "$summary"
+          cat "$summary"
+
+      - name: Upload P2P suite diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v2_3_0_direct_peer_accounting_${{ github.run_id }}
+          path: ci-evidence/v2.3.0-direct-peer-accounting
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Enforce complete P2P suite
+        if: always()
+        shell: bash
+        run: test "${P2P_SUITE_RC:-1}" -eq 0
 
       - name: Enforce direct-session regression coverage
         shell: bash
