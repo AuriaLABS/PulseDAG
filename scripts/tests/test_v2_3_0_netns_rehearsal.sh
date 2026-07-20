@@ -6,12 +6,19 @@ NETWORK="scripts/private_testnet/netns_network.sh"
 NODES="scripts/private_testnet/netns_nodes.sh"
 INVENTORY="scripts/private_testnet/netns_inventory.py"
 FAULT="scripts/private_testnet/netns_fault.sh"
+CONTROLLER="scripts/private_testnet/multi_host_rehearsal.py"
 
 bash -n "$RUNNER"
 bash -n "$NETWORK"
 bash -n "$NODES"
 bash -n "$FAULT"
-python3 -m py_compile "$INVENTORY"
+python3 - "$INVENTORY" <<'PY'
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+compile(path.read_text(encoding="utf-8"), str(path), "exec")
+PY
 bash "$RUNNER" --help >/dev/null
 
 grep -Fq 'timeout --signal=TERM --kill-after=30s 35m' "$RUNNER"
@@ -49,5 +56,16 @@ if len(values) != 5 or len(set(values)) != 5:
 if values[0] != "10.230.0.10":
     raise SystemExit("seed IP changed unexpectedly")
 PY
+
+temporary="$(mktemp -d)"
+trap 'rm -rf "$temporary"' EXIT
+candidate_sha="$(printf 'a%.0s' {1..40})"
+python3 "$INVENTORY" \
+  --output "$temporary/inventory.json" \
+  --candidate-sha "$candidate_sha" \
+  --workspace /opt/pulsedag/source \
+  --state-root /var/lib/pulsedag-task12-netns \
+  --fault-hook /usr/local/sbin/pulsedag-task12-netns-fault
+python3 "$CONTROLLER" validate-inventory --inventory "$temporary/inventory.json"
 
 echo "v2.3.0 isolated namespace rehearsal contract: PASS"
