@@ -1,5 +1,9 @@
 # v2.3.0 Task 12 — Multi-host private-testnet rehearsal
 
+## Status
+
+**COMPLETE** — protected live `GO` accepted on 2026-07-20 UTC after independent artifact and endpoint review.
+
 ## Goal
 
 Run one reproducible five-node private-testnet rehearsal on separate hosts or genuinely isolated network namespaces, exercise external mining, restart, partition, restore, and rejoin, and produce a checksummed private-testnet GO/NO-GO evidence bundle.
@@ -14,7 +18,7 @@ Run one reproducible five-node private-testnet rehearsal on separate hosts or ge
 - One ordinary-node lifecycle restart followed by convergence.
 - One bounded P2P isolation and restore hook followed by rejoin and convergence.
 - Immutable JSON evidence, an explicit `GO` or `NO-GO`, and SHA-256 checksums.
-- Deterministic fake-transport regression coverage and a manual protected Actions gate for the real rehearsal.
+- Deterministic fake-transport regression coverage and a protected Actions gate for the real rehearsal.
 - English comments, diagnostics, evidence fields, and operator documentation.
 
 ## Acceptance criteria
@@ -34,16 +38,29 @@ Run one reproducible five-node private-testnet rehearsal on separate hosts or ge
 13. Any failure produces `NO-GO`, exits non-zero, and preserves `public_testnet_ready=false` and the unstarted 30-day public-testnet clock.
 14. Repository hygiene, syntax, unit regression, and evidence-verifier checks pass.
 
+## Accepted evidence
+
+- Candidate: `22fa09b19da2893fa73b91b198b26675bd1e6e32`.
+- Workflow run: `29773225491`.
+- Artifact: `v2_3_0_task12_netns_22fa09b19da2893fa73b91b198b26675bd1e6e32_29773225491_1`.
+- Artifact SHA-256: `a31246a014e88287e653b732c5edf54af08d26f5d0ffac19f60b49f369db88ce`.
+- Controller manifest: 56 unique entries, zero duplicate paths, 56/56 checksums verified.
+- Decision: `GO`, `failure=null`, five nodes, exact candidate SHA.
+- Mandatory phases: preflight, start, baseline convergence, pre-fault external mining, restart/rejoin, bounded partition, partition restore/rejoin, final convergence, and post-fault external mining all `PASS`.
+- Independent endpoint audit: 55/55 snapshots passed health, checks, real-P2P, sync-consistency, replay-gap, storage/memory, freshness, and degradation assertions.
+- Isolation proof: the target retained process and loopback RPC access while direct P2P sessions fell from one to zero; the exact link was restored and the node rejoined.
+- Final guardrails: `version_bump_authorized=false`, `public_testnet_ready=false`, and `thirty_day_public_testnet_clock_started=false`.
+
 ## Guardrails
 
-- The live rehearsal is manual and runs only from a protected self-hosted environment with private network reachability.
+- The live rehearsal runs only from a protected environment with genuinely isolated network namespaces or equivalent private network reachability.
 - The controller never reads or archives environment-file contents, identity keys, wallet material, authorization headers, or operator tokens.
 - Fault hooks are explicit absolute argv arrays. Shell command strings are not accepted.
-- Isolation must affect only the target node's P2P path. SSH, loopback RPC, and out-of-band recovery access must remain available.
+- Isolation affects only the target node's P2P path. Loopback RPC and out-of-band recovery access remain available.
 - Mining remains external to the node. No embedded pool logic is introduced.
-- No consensus, storage-format, node RPC, miner protocol, smart-contract, version, or release-tag change.
+- No storage-format, miner protocol, smart-contract, version, or release-tag change is authorized by this task.
 - A private-testnet `GO` does not authorize a public testnet and does not start or backdate the 30-day public-testnet clock.
 
 ## Follow-up
 
-Task 13 may propose the v2.3.0 version and release decision only after a real Task 12 evidence bundle records `GO` for the exact candidate SHA and a maintainer separately approves the release proposal.
+Task 13 may prepare a separate v2.3.0 version and release-decision proposal. No version bump, release tag, artifact publication, public-testnet readiness claim, or public-testnet clock action is authorized until that proposal receives explicit maintainer approval and its exact candidate reruns every required gate.
