@@ -12,8 +12,10 @@ on:
       - docs/release/**
       - docs/codex_tasks/v2_3_0_13_version_release_decision.md
       - scripts/validate_v2_3_0_release_proposal.py
+      - scripts/validate_v2_3_0_release_candidate.py
       - .github/workflows/release-binaries.yml
       - .github/workflows/v2_3_0_release_proposal.yml
+      - .github/workflows/v2_3_0_release_candidate.yml
   workflow_dispatch:
 
 permissions:
@@ -23,22 +25,48 @@ jobs:
   proposal-contract:
     runs-on: ubuntu-24.04
     steps:
-      - name: Checkout exact proposal candidate
+      - name: Checkout exact candidate
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
 
+      - name: Detect Task 13 phase
+        id: phase
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(tr -d '\r\n' < VERSION)
+          case "$version" in
+            v2.2.20)
+              echo "proposal=true" >> "$GITHUB_OUTPUT"
+              ;;
+            v2.3.0)
+              grep -Fq '`APPROVE_RELEASE_CANDIDATE`' docs/release/V2_3_0_RELEASE_DECISION.md
+              test -f docs/release/V2_3_0_RELEASE_APPROVAL_RECORD.md
+              test -f scripts/validate_v2_3_0_release_candidate.py
+              test -f .github/workflows/v2_3_0_release_candidate.yml
+              echo "proposal=false" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "unsupported Task 13 version state: $version" >&2
+              exit 1
+              ;;
+          esac
+
       - name: Fetch immutable base tag
+        if: steps.phase.outputs.proposal == 'true'
         shell: bash
         run: git fetch --force --tags origin v2.2.20
 
       - name: Install Python
+        if: steps.phase.outputs.proposal == 'true'
         uses: actions/setup-python@v5
         with:
           python-version: "3.x"
 
       - name: Validate Task 13 proposal
+        if: steps.phase.outputs.proposal == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -49,14 +77,18 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python3 scripts/check_code_comment_language.py \
-            scripts/validate_v2_3_0_release_proposal.py
+          files=(scripts/validate_v2_3_0_release_proposal.py)
+          if [ -f scripts/validate_v2_3_0_release_candidate.py ]; then
+            files+=(scripts/validate_v2_3_0_release_candidate.py)
+          fi
+          python3 scripts/check_code_comment_language.py "${files[@]}"
 
       - name: Run repository hygiene
         shell: bash
         run: bash scripts/repository_hygiene.sh --strict
 
       - name: Enforce proposal manifest
+        if: steps.phase.outputs.proposal == 'true'
         shell: bash
         env:
           CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
@@ -78,6 +110,7 @@ jobs:
           ' ci-evidence/v2.3.0-task13-proposal/release-proposal-manifest.json >/dev/null
 
       - name: Build portable evidence checksums
+        if: steps.phase.outputs.proposal == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -89,10 +122,19 @@ jobs:
           )
 
       - name: Upload Task 13 proposal evidence
-        if: always()
+        if: steps.phase.outputs.proposal == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: v2_3_0_task13_release_proposal_${{ github.run_id }}
           path: ci-evidence/v2.3.0-task13-proposal
           if-no-files-found: error
           retention-days: 90
+
+      - name: Confirm approved candidate handoff
+        if: steps.phase.outputs.proposal != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(tr -d '\r\n' < VERSION)" = "v2.3.0"
+          grep -Fq '`APPROVE_RELEASE_CANDIDATE`' docs/release/V2_3_0_RELEASE_DECISION.md
+          echo "Task 13 proposal gate handed off to the exact candidate workflow."
