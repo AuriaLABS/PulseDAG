@@ -22,50 +22,7 @@ permissions:
   contents: read
 
 jobs:
-  synchronize-lockfile:
-    if: >-
-      github.event_name == 'pull_request' &&
-      github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: write
-    outputs:
-      lock_updated: ${{ steps.sync.outputs.lock_updated }}
-    steps:
-      - name: Checkout exact candidate branch
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.head_ref }}
-          fetch-depth: 0
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Resolve lockfile without dependency upgrades
-        id: sync
-        shell: bash
-        run: |
-          set -euo pipefail
-          cargo metadata --format-version 1 >/dev/null
-          git diff --check
-          if git diff --quiet -- Cargo.lock; then
-            echo "lock_updated=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add Cargo.lock
-          git commit -m "v2.3.0 Task 13: synchronize candidate lockfile"
-          git push origin "HEAD:${GITHUB_HEAD_REF}"
-          echo "lock_updated=true" >> "$GITHUB_OUTPUT"
-
   candidate-contract:
-    needs: synchronize-lockfile
-    if: >-
-      always() &&
-      (needs.synchronize-lockfile.result == 'skipped' ||
-       (needs.synchronize-lockfile.result == 'success' &&
-        needs.synchronize-lockfile.outputs.lock_updated != 'true'))
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout exact candidate
@@ -86,9 +43,12 @@ jobs:
         with:
           python-version: "3.x"
 
-      - name: Enforce deterministic Cargo metadata
+      - name: Enforce committed deterministic Cargo metadata
         shell: bash
-        run: cargo metadata --locked --format-version 1 >/dev/null
+        run: |
+          set -euo pipefail
+          cargo metadata --locked --format-version 1 >/dev/null
+          git diff --exit-code -- Cargo.lock
 
       - name: Validate exact v2.3.0 candidate
         shell: bash
@@ -237,7 +197,7 @@ jobs:
             --include-file README.md \
             --include-file docs/INSTALL_BINARIES_V2_3_0.md
 
-      - name: Verify packaged candidate assets
+      - name: Verify packaged candidate assets on native runner
         shell: bash
         run: |
           set -euo pipefail
@@ -348,6 +308,7 @@ jobs:
               "release_tag": "v2.3.0",
               "artifact_count": 6,
               "artifacts": manifests,
+              "native_smoke_verified": True,
               "final_release_decision": "PENDING_FINAL_CANDIDATE_EVIDENCE",
               "tag_authorized": False,
               "publication_authorized": False,
@@ -369,15 +330,13 @@ jobs:
             --expected-tag v2.3.0 \
             --output final/INSTALL-VERIFY.md
 
-      - name: Verify consolidated candidate bundle
+      - name: Verify consolidated candidate structure
         shell: bash
         run: |
           set -euo pipefail
           python scripts/release/verify_release_artifacts.py \
             --artifacts-dir final \
             --expected-tag v2.3.0 \
-            --smoke \
-            --smoke-timeout-secs 10 \
             --expect-binaries pulsedagd pulsedag-miner \
             --expect-targets x86_64-unknown-linux-gnu x86_64-pc-windows-msvc x86_64-apple-darwin \
             --consolidated-checksums final/SHA256SUMS.txt \
@@ -390,6 +349,7 @@ jobs:
           jq -e '
             .gate == "v2.3.0-release-candidate-artifacts" and
             .artifact_count == 6 and
+            .native_smoke_verified == true and
             .final_release_decision == "PENDING_FINAL_CANDIDATE_EVIDENCE" and
             .tag_authorized == false and
             .publication_authorized == false and
