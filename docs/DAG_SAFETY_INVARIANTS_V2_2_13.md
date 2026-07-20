@@ -144,8 +144,8 @@ The v2.2.13 audit explicitly records these limits:
 
 ## Documentation cross-check
 
-Related v2.2.13 files:
+Related immutable v2.2.13 tag material:
 
-- [Closing Checklist v2.2.13](archive/v2_2_history/CLOSING_CHECKLIST_V2_2_13.md)
-- [Release Notes v2.2.13](archive/v2_2_history/RELEASE_NOTES_V2_2_13.md)
+- [Closing Checklist v2.2.13](https://github.com/AuriaLABS/PulseDAG/blob/v2.2.13/docs/CLOSING_CHECKLIST_V2_2_13.md)
+- [Release Notes v2.2.13](https://github.com/AuriaLABS/PulseDAG/blob/v2.2.13/docs/RELEASE_NOTES_V2_2_13.md)
 - [Version Matrix](VERSION_MATRIX.md)
