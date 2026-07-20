@@ -343,13 +343,32 @@ class RehearsalRunner:
         *,
         allow_isolated_target: bool = False,
     ) -> dict[str, Any]:
-        """Validate chain identity, real P2P, sync consistency, and height spread."""
+        """Validate health, storage, real P2P, sync readiness, and height spread."""
 
         heights: dict[str, int] = {}
         peer_counts: dict[str, int] = {}
         for node in self.inventory.nodes:
+            health = snapshot[node.name]["/health"]
             status = snapshot[node.name]["/status"]
             sync = snapshot[node.name]["/sync/status"]
+            p2p = snapshot[node.name]["/p2p/status"]
+            checks = snapshot[node.name]["/checks"]
+            isolated_target = allow_isolated_target and node.name == self.inventory.fault_target
+
+            require(health.get("status") == "ok", f"{node.name}: health status is not ok")
+            require(health.get("process_alive") is True, f"{node.name}: process is not alive")
+            require(health.get("listener_alive") is True, f"{node.name}: RPC listener is not alive")
+            require(health.get("chain_id") == EXPECTED_CHAIN_ID, f"{node.name}: health chain_id is unexpected")
+            require(
+                health.get("last_consistency_audit_ok") is True,
+                f"{node.name}: last consistency audit failed",
+            )
+            require(
+                health.get("last_consistency_audit_issue_count") == 0,
+                f"{node.name}: last consistency audit has issues",
+            )
+            require(checks.get("overall_ok") is True, f"{node.name}: node checks failed")
+
             require(status.get("chain_id") == EXPECTED_CHAIN_ID, f"{node.name}: unexpected chain_id")
             require(status.get("p2p_mode") == "libp2p-real", f"{node.name}: p2p_mode is not libp2p-real")
             require(
@@ -359,9 +378,15 @@ class RehearsalRunner:
             require(status.get("rpc_response_degraded") is False, f"{node.name}: degraded status response")
             require(status.get("rpc_response_stale") is False, f"{node.name}: stale status response")
             require(status.get("p2p_status_degraded") is False, f"{node.name}: degraded P2P status")
+
+            require(sync.get("rpc_response_degraded") is False, f"{node.name}: degraded sync response")
+            require(sync.get("rpc_response_stale") is False, f"{node.name}: stale sync response")
+            require(sync.get("chain_id") == EXPECTED_CHAIN_ID, f"{node.name}: sync chain_id is unexpected")
+            require(sync.get("p2p_mode") == "libp2p-real", f"{node.name}: sync P2P mode is not libp2p-real")
             require(sync.get("consistency_ok") is True, f"{node.name}: sync consistency failed")
             require(sync.get("consistency_issue_count") == 0, f"{node.name}: sync consistency issues are present")
             require(sync.get("storage_replay_gap") == 0, f"{node.name}: storage replay gap is non-zero")
+            require(sync.get("storage_memory_mismatch") is False, f"{node.name}: storage and memory differ")
             live_sync_error_active = sync.get("live_sync_error_active")
             require(
                 isinstance(live_sync_error_active, int)
@@ -369,16 +394,56 @@ class RehearsalRunner:
                 and live_sync_error_active == 0,
                 f"{node.name}: live sync error is active",
             )
+
+            require(p2p.get("chain_id") == EXPECTED_CHAIN_ID, f"{node.name}: P2P chain_id is unexpected")
+            require(p2p.get("mode") == "libp2p-real", f"{node.name}: P2P endpoint mode is not libp2p-real")
+            require(
+                p2p.get("connected_peers_are_real_network") is True,
+                f"{node.name}: P2P endpoint does not report real peers",
+            )
+            require(p2p.get("p2p_status_stale") is False, f"{node.name}: P2P endpoint is stale")
+            require(p2p.get("p2p_status_degraded") is False, f"{node.name}: P2P endpoint is degraded")
+
             height = status.get("best_height")
             peer_count = status.get("peer_count")
+            p2p_peer_count = p2p.get("peer_count")
             require(isinstance(height, int) and height >= 0, f"{node.name}: invalid best_height")
             require(isinstance(peer_count, int) and peer_count >= 0, f"{node.name}: invalid peer_count")
+            require(
+                isinstance(p2p_peer_count, int) and p2p_peer_count >= 0,
+                f"{node.name}: invalid P2P endpoint peer_count",
+            )
             heights[node.name] = height
             peer_counts[node.name] = peer_count
-            if allow_isolated_target and node.name == self.inventory.fault_target:
-                require(peer_count == 0, f"{node.name}: fault target still has peers")
+
+            if isolated_target:
+                require(peer_count == 0, f"{node.name}: fault target still has status peers")
+                require(p2p_peer_count == 0, f"{node.name}: fault target still has P2P endpoint peers")
             else:
-                require(peer_count >= 1, f"{node.name}: expected at least one peer")
+                require(peer_count >= 1, f"{node.name}: expected at least one status peer")
+                require(p2p_peer_count >= 1, f"{node.name}: expected at least one P2P endpoint peer")
+                require(
+                    sync.get("p2p_ready_for_private_rehearsal") is True,
+                    f"{node.name}: sync readiness failed: {sync.get('readiness_reasons')}",
+                )
+                require(
+                    p2p.get("p2p_ready_for_private_rehearsal") is True,
+                    f"{node.name}: P2P readiness failed: {p2p.get('readiness_reasons')}",
+                )
+                require(sync.get("sync_state") == "synced", f"{node.name}: sync state is not synced")
+                require(sync.get("catchup_stage") == "steady", f"{node.name}: catchup stage is not steady")
+                require(
+                    sync.get("network_selected_tip_mismatch") is False,
+                    f"{node.name}: selected tip differs from the best remote tip",
+                )
+                network_gap = sync.get("network_selected_height_gap")
+                require(
+                    isinstance(network_gap, int)
+                    and not isinstance(network_gap, bool)
+                    and 0 <= network_gap <= self.inventory.max_height_spread,
+                    f"{node.name}: network selected-height gap is invalid or excessive",
+                )
+
         considered = [
             height
             for name, height in heights.items()
