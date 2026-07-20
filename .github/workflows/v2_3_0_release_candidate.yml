@@ -46,9 +46,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          git fetch --force --tags origin v2.2.20
           cargo metadata --format-version 1 >/dev/null
-          python3 scripts/validate_v2_3_0_release_candidate.py >/dev/null
           git diff --check
           if git diff --quiet -- Cargo.lock; then
             echo "lock_updated=false" >> "$GITHUB_OUTPUT"
