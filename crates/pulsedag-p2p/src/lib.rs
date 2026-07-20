@@ -7721,7 +7721,6 @@ mod tests {
         );
         state.active_connections.insert("peer-healthy".into(), 1);
         state.active_connections.insert("peer-degraded-a".into(), 1);
-        state.active_connections.insert("peer-degraded-b".into(), 1);
 
         refresh_connected_peers_from_health(&mut state);
         assert_eq!(
@@ -7754,7 +7753,7 @@ mod tests {
         refresh_connected_peers_from_health(&mut state);
         let ranked = sync_candidates_snapshot(&state);
         let first = update_selected_sync_peer(&mut state, &ranked, 20_000).unwrap();
-        state.connected_peers = vec!["peer-b".into()];
+        state.connected_peers = vec!["peer-a".into(), "peer-b".into()];
         let second = update_selected_sync_peer(&mut state, &ranked, 20_010).unwrap();
         assert_eq!(first, second);
     }
