@@ -1,47 +1,48 @@
-# Release Evidence Policy (v2.2.18 private-testnet RC preparation)
+# PulseDAG v2.3.0 release evidence policy
 
-## v2.2.17 gate
-v2.2.18 may proceed only when v2.2.17 is:
-- **CLOSED_WITH_EVIDENCE**, or
-- **WAIVED_WITH_REASON**.
+## Current candidate
 
-Current v2.2.17 state: **WAIVED_WITH_REASON**.
-Reference: `docs/CLOSING_CHECKLIST_V2_2_17.md`.
+- Repository version: `v2.3.0`.
+- Cargo workspace version: `2.3.0`.
+- Exact validated candidate: `629b35fe2dcf27bebfa4ac9ad51458ce255221d0`.
+- Candidate workflow: `29800778099`.
+- Consolidated artifact: `v2_3_0_candidate_consolidated_29800778099`.
+- Consolidated artifact SHA-256: `770c7fb5415ae6c6ec5c983162cc146f43cd63fd44afe22af2aa99cb0841c8f6`.
+- Final private-testnet release decision: `PENDING_FINAL_CANDIDATE_EVIDENCE`.
 
-## v2.2.18 evidence location
-- `artifacts/v2_2_18_private_rc/local-3n-1m/<run_id>/`
+## Required evidence classes
 
-## Required outputs
-- preflight summary and version captures
-- node/miner logs
-- endpoint captures
-- smoke summary
-- evidence tarball + sha256
+A release decision must be bound to one exact candidate SHA and include:
+
+1. deterministic Cargo metadata and lockfile validation;
+2. workspace format, check, test, and Clippy results;
+3. P2P, lifecycle, observability, RPC, release, runbook, and repository-hygiene gates;
+4. native Linux, Windows, and macOS node/miner builds;
+5. native smoke verification on every target platform;
+6. per-archive manifests and SHA-256 files;
+7. consolidated `SHA256SUMS.txt`, install verification, and provenance summary;
+8. independent review of the downloaded evidence bundle;
+9. explicit tag and publication authorization state.
+
+## Artifact rules
+
+- Node and standalone miner archives are separate release assets.
+- Every archive has a matching `.sha256` and `.json` manifest.
+- Native binaries are smoke-tested only on their native runner.
+- Consolidation verifies archive structure, manifests, checksums, target coverage, and provenance without executing foreign-platform binaries.
+- Evidence artifacts are retained independently of a GitHub Release.
 
 ## Guardrails
-- Do not claim PASS without evidence path.
-- Do not claim consensus/PoW changes, smart contracts, pool logic, v2.3.0 readiness, or v3.0 readiness.
 
-## Release smoke verification hardening
-- `scripts/release/verify_release_artifacts.py --smoke` now enforces bounded command runtime via `--smoke-timeout-secs` (default: 10s).
-- `pulsedagd --help/-h` and `pulsedagd --version/-V` are immediate-exit commands and are safe for release smoke checks.
-- `release-binaries` workflow now applies job-level timeouts and smoke-step command timeouts, so verification fails fast instead of hanging indefinitely.
+Current evidence does not by itself authorize:
 
+- creating the `v2.3.0` tag;
+- publishing a GitHub Release;
+- launching a public testnet;
+- setting `public_testnet_ready=true`;
+- starting or backdating the 30-day public-testnet clock;
+- smart contracts or pool logic.
 
-## v2.2.19 RPC metadata/readiness evidence checklist
-- Capture `/release` and verify:
-  - `pow_algorithm == "kHeavyHash"`
-  - `pow_engine == "canonical_core"`
-  - no `sha256d` string in payload
-- Capture `/readiness` and verify effective runtime values:
-  - `effective_rpc_bind`
-  - `effective_api_profile`
-  - `admin_enabled`
-  - `storage_path_class`
-  - `peer_health`
-  - `mining_templates_available`
-- Capture `/status` and verify:
-  - `best_height`, `selected_tip`, `block_count`
-  - `chain_id`/`network_id`
-  - `peer_summary`
-  - `uptime_secs`
+## Historical evidence
+
+v2.2.x evidence remains valid as historical provenance and as the immutable baseline used by v2.3.0 gates. It is indexed through [`archive/README.md`](archive/README.md) and must not be presented as current operator guidance.

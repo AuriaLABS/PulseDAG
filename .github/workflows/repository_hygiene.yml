@@ -13,10 +13,12 @@ on:
       - VERSION
       - Cargo.toml
       - Cargo.lock
+      - Dockerfile.rehearsal
+      - docker-compose.rehearsal.yml
       - .editorconfig
       - .gitignore
       - .github/pull_request_template.md
-      - .github/workflows/repository_hygiene.yml
+      - .github/workflows/**
   push:
     branches:
       - main
@@ -34,31 +36,21 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Preserve version and readiness guardrails
+      - name: Preserve v2.3.0 version and readiness guardrails
         shell: bash
         run: |
           set -euo pipefail
-          version=$(tr -d '\r\n' < VERSION)
-          cargo_version=$(awk '/^version = / {gsub(/"/, "", $3); print $3; exit}' Cargo.toml)
-          case "${version}:${cargo_version}" in
-            v2.2.20:2.2.20)
-              ;;
-            v2.3.0:2.3.0)
-              grep -Fq '`APPROVE_RELEASE_CANDIDATE`' docs/release/V2_3_0_RELEASE_DECISION.md
-              grep -Fq '`version_bump_authorized=true`' docs/release/V2_3_0_RELEASE_DECISION.md
-              grep -Fq '`public_testnet_ready=false`' docs/release/V2_3_0_RELEASE_DECISION.md
-              grep -Fq '`thirty_day_public_testnet_clock_started=false`' docs/release/V2_3_0_RELEASE_DECISION.md
-              test -f docs/release/V2_3_0_RELEASE_APPROVAL_RECORD.md
-              test -f scripts/validate_v2_3_0_release_candidate.py
-              test -f .github/workflows/v2_3_0_release_candidate.yml
-              ;;
-            *)
-              echo "unsupported VERSION/Cargo pair: ${version}/${cargo_version}" >&2
-              exit 1
-              ;;
-          esac
+          test "$(tr -d '\r\n' < VERSION)" = "v2.3.0"
+          test "$(awk '/^version = / {gsub(/"/, "", $3); print $3; exit}' Cargo.toml)" = "2.3.0"
+          grep -Fq '`APPROVE_RELEASE_CANDIDATE`' docs/release/V2_3_0_RELEASE_DECISION.md
+          grep -Fq '`version_bump_authorized=true`' docs/release/V2_3_0_RELEASE_DECISION.md
+          grep -Fq '`public_testnet_ready=false`' docs/release/V2_3_0_RELEASE_DECISION.md
+          grep -Fq '`thirty_day_public_testnet_clock_started=false`' docs/release/V2_3_0_RELEASE_DECISION.md
+          test -f docs/release/V2_3_0_RELEASE_APPROVAL_RECORD.md
+          test -f scripts/validate_v2_3_0_release_candidate.py
+          test -f .github/workflows/v2_3_0_release_candidate.yml
 
-      - name: Validate script syntax
+      - name: Validate maintenance syntax
         shell: bash
         run: |
           set -euo pipefail
@@ -69,13 +61,14 @@ jobs:
           python3 -m py_compile \
             scripts/check_code_comment_language.py \
             scripts/repository_hygiene.py \
+            scripts/repository_version_surface_audit.py \
             scripts/validate_v2_3_0_release_candidate.py
 
       - name: Run repository hygiene regression
         shell: bash
         run: bash scripts/tests/test_repository_hygiene.sh
 
-      - name: Build cleanup inventory
+      - name: Build cleanup and version-surface evidence
         if: always()
         shell: bash
         run: |
@@ -84,12 +77,14 @@ jobs:
           mkdir -p ci-evidence/repository-hygiene
           cp artifacts/repository-hygiene/cleanup-candidates.txt \
             ci-evidence/repository-hygiene/cleanup-candidates.txt
+          python3 scripts/repository_version_surface_audit.py --report \
+            > ci-evidence/repository-hygiene/version-surface-audit.txt 2>&1
           OUT_DIR=ci-evidence/repository-hygiene \
-            bash scripts/repository_hygiene.sh --report
+            python3 scripts/repository_hygiene.py --report
           sha256sum ci-evidence/repository-hygiene/* \
             > ci-evidence/repository-hygiene/SHA256SUMS
 
-      - name: Enforce hygiene manifest
+      - name: Enforce hygiene manifest and version surface
         if: always()
         shell: bash
         run: |
@@ -101,6 +96,10 @@ jobs:
             .public_testnet_ready == false and
             .thirty_day_public_testnet_clock_started == false
           ' ci-evidence/repository-hygiene/repository-hygiene.json >/dev/null
+          grep -Fq '[PASS] active repository surfaces identify v2.3.0 consistently' \
+            ci-evidence/repository-hygiene/version-surface-audit.txt
+          grep -Fq '[PASS] historical documents and workflows are outside active roots' \
+            ci-evidence/repository-hygiene/version-surface-audit.txt
 
       - name: Upload repository hygiene evidence
         if: always()

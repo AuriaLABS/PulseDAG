@@ -4,70 +4,57 @@
 
 | Area | Value |
 |---|---|
-| VERSION file | `v2.2.20` |
-| Cargo workspace version | `2.2.20` |
-| Current milestone | `v2.2.20` active hardening; all remaining hardening PRs stay in this milestone until closeout passes |
-| Current state | **CLOSEOUT EVIDENCE RECORDED; NO_GO TO START V2.3.0 REVIEW** |
-| Readiness claims | No `v2.3.0` readiness claim; no `v3.0` readiness claim; no public-testnet launch claim |
-| Public testnet signal | `public_testnet_ready=false` (mandatory; no live/ready claim) |
+| VERSION file | `v2.3.0` |
+| Cargo workspace version | `2.3.0` |
+| Current milestone | v2.3.0 private-testnet release candidate |
+| Candidate state | Exact versioned candidate merged; final private-testnet release decision pending |
+| Final decision | `PENDING_FINAL_CANDIDATE_EVIDENCE` |
+| Tag | No `v2.3.0` tag created |
+| Publication | GitHub Release publication not authorized |
+| Public testnet | `public_testnet_ready=false` |
+| 30-day clock | Not started |
 
-## v2.2.x progression status
+## Version progression
 
 | Version | Scope | Status |
 |---|---|---|
-| `v2.2.17` | API/operator/security hardening closeout | Historical baseline |
-| `v2.2.18` | Private-testnet RC preparation and evidence gates | Historical baseline |
-| `v2.2.19` | Private hardening / pre-public-testnet preparation | **CLOSED_WITH_DOCKER_EVIDENCE; `5N/4M` accepted as observe-only limitation for that milestone** |
-| `v2.2.20` | Remaining hardening PRs, bounded evidence capture, orphan/peer/RPC/mining-submit stress diagnosis, and closeout checklist | **CLOSEOUT EVIDENCE RECORDED; `NO_GO` until missing evidence or waivers are accepted** |
-| `v2.3.0` | Future readiness review start only after `v2.2.20` closeout | **NOT STARTED; not ready; no public-testnet readiness claim** |
+| `v2.2.17` | API, operator, and security hardening | Historical |
+| `v2.2.18` | Private-testnet RC preparation and evidence gates | Historical |
+| `v2.2.19` | Private hardening and operator rehearsal | Historical |
+| `v2.2.20` | Final v2.2 hardening, protected rehearsal, and closeout evidence | Historical baseline for v2.3.0 |
+| `v2.3.0` | Current private-testnet release candidate | Active |
 
-## v2.2.20 evidence matrix
+Historical documents are retained through [the archive index](archive/README.md). They are evidence and provenance, not current operator instructions.
 
-Status meanings: `PASS` may support `v2.2.20` closeout, `FAIL`/`OBSERVE_FAIL` are not closeout-pass, and `MISSING` requires evidence or a complete non-readiness waiver.
+## v2.3.0 accepted evidence
 
-The final `v2.2.20` evidence index is `docs/V2_2_20_FINAL_EVIDENCE_INDEX.md` and records `NO_GO` as of 2026-06-12. The evidence below is private rehearsal and closeout evidence only. It does **not** authorize a public-testnet launch, does **not** start burn-in, does **not** bump `VERSION`, and does **not** declare `v2.3.0` readiness.
-
-| Evidence gate | Current status | Evidence / interpretation |
+| Gate | Status | Reference |
 |---|---|---|
-| `5N/1M baseline` | **PASS / closeout-eligible** | Accepted `v2.2.20` baseline evidence is recorded in `docs/V2_2_20_5N_1M_BASELINE_EVIDENCE.md`. This remains the mandatory regression guard, but it does not imply `v2.3.0` or public-testnet readiness. |
-| `5N/2M intermediate` | **FAIL, improved / not closeout-pass** | Latest recorded `v2.2.20` evidence at merge commit `b6950201cd24ed8067c0b5dd228486047a1c27e0` cleared the prior peer/orphan/final-tip failure signature, but failed the accepted-block gate with `MINER_NO_ACCEPTED_BLOCKS`. See `docs/V2_2_20_5N_2M_INTERMEDIATE_EVIDENCE.md`. Replacement evidence after all remaining `v2.2.20` hardening PRs, or a complete non-readiness waiver, is required before closeout can pass. |
-| `5N/4M stress` | **OBSERVE_FAIL / evidence-only until replaced** | First `v2.2.20` measured stress evidence at commit `6633962c07bb1ccfc8c9e15b8763faf0402f45a6` retained peer collapse, saturated orphan and pending-missing-parent backlogs, and divergent final tips. See `docs/V2_2_20_FIRST_STRESS_EVIDENCE.md`. PRs `#600`-`#614` and any later `v2.2.20` hardening must be validated by a replacement stress bundle or accepted bounded limitation before this gate can be closed. |
-| Snapshot/restore drill | **MISSING closeout artifact / waiver required** | `docs/SNAPSHOT_RESTORE_DRILL_V2_2_20.md` defines the deterministic restore evidence track. Closeout still needs the drill artifact/checksum or an approved waiver. |
-| Workspace validation | **PASS locally for final docs PR; CI artifact still required for evaluated merge commit** | `cargo fmt --all -- --check`, `cargo check --workspace --locked`, `cargo test --workspace --locked`, and `cargo clippy --workspace --all-targets -- -D warnings` passed locally on 2026-06-12 UTC; final CI/release-manager evidence must still be attached for the evaluated merge commit. |
+| Protected five-node private-testnet rehearsal | `GO` | `docs/ROADMAP_V2_3_0.md` and Task 12 evidence records |
+| Exact candidate contract | `PASS` | Candidate workflow `29800778099` |
+| Linux x86_64 package and native smoke | `PASS` | Candidate workflow `29800778099` |
+| Windows x86_64 package and native smoke | `PASS` | Candidate workflow `29800778099` |
+| macOS x86_64 package and native smoke | `PASS` | Candidate workflow `29800778099` |
+| Consolidated six-archive bundle | `PASS` | `v2_3_0_candidate_consolidated_29800778099` |
+| Workspace format/check/tests/Clippy | `PASS` | Pre-burn-in verification on the exact candidate |
+| RPC and release validation | `PASS` | Exact candidate checks |
+| Repository hygiene | `PASS` | Exact candidate checks |
 
-## v2.2.20 hardening scope retained in this milestone
+## Current authorization boundary
 
-All remaining hardening PRs stay in `v2.2.20`. The closeout scope includes:
+`APPROVE_RELEASE_CANDIDATE` authorized the versioned candidate and its validation only. It did not authorize:
 
-- preserving `5N/1M` baseline behavior;
-- recovering `5N/2M` mined-chain advancement while preserving visible peers, one final tip, and drained orphan/missing-parent queues;
-- replacing the first `5N/4M` observe failure with bounded, reviewable stress evidence;
-- keeping RPC liveness/readiness/status endpoints responsive enough to capture evidence under stress;
-- making orphan recovery, parent fetch, peer retention, and mining-submit queues bounded and diagnosable;
-- recording snapshot/restore evidence or a formal waiver;
-- maintaining `VERSION=v2.2.20`, Cargo workspace version `2.2.20`, and `public_testnet_ready=false`.
+- creating the `v2.3.0` tag;
+- publishing a GitHub Release;
+- launching a public testnet;
+- setting `public_testnet_ready=true`;
+- starting or backdating the 30-day public-testnet clock;
+- introducing smart contracts or pool logic.
 
-## v2.3.0 start prerequisites
+A separate final private-testnet release decision is required before tag creation or publication.
 
-Formal `v2.3.0` readiness work can start only after `v2.2.20` closeout is complete and reviewed. These prerequisites do **not** authorize a public-testnet launch and do **not** make a public-testnet readiness claim.
+## Repository version rule
 
-| Gate | Required outcome | Evidence expectation |
-|---|---|---|
-| v2.2.20 closeout decision | PASS | `docs/CLOSING_CHECKLIST_V2_2_20.md` completed with a `GO_TO_START_V2_3_0_REVIEW` decision, evaluated commit, reviewer, UTC date, evidence paths, and unresolved-waiver ledger. |
-| Version guard | PASS | `VERSION` remains `v2.2.20`; Cargo workspace version remains `2.2.20`; no `v2.3.0` version bump diff exists. |
-| Build/tests | PASS | `cargo fmt --all -- --check`, `cargo check --workspace --locked`, `cargo test --workspace --locked`, and `cargo clippy --workspace --all-targets -- -D warnings` logs for the closeout commit. |
-| `5N/1M baseline` | PASS | Private convergence evidence with quiescence metrics, final-tip diversity, orphan/missing-parent counts, miner accept/reject data, archive, and checksum. |
-| `5N/2M intermediate` | PASS, or explicit release-manager waiver only if marked non-public-testnet and non-readiness | Replacement evidence after the hardening PRs, including accepted-block behavior. A non-PASS result blocks public-testnet readiness and blocks any claim that `v2.3.0` is ready. |
-| `5N/4M stress` | PASS or accepted non-blocking limitation | Stress evidence with measured divergence/orphan pressure/missing-parent backlog/RPC liveness; any non-PASS result needs owner, UTC approval, scope, expiry, and exit criteria. |
-| Known limitations | PASS | `docs/KNOWN_LIMITATIONS_V2_2_20.md` separates remaining limitations from limitations resolved by PRs `#600`-`#605` and later PRs. |
-| Incident/waiver ledger | PASS | No unresolved Sev-1 consensus/sync/security blocker; every waiver has owner, UTC approval, scope, expiry, and exit criteria. |
+Active repository surfaces must identify `v2.3.0` as the current version.
 
-## Public-testnet readiness rule
-
-`public_testnet_ready` must remain `false`. A public-testnet-ready or public-testnet-live claim is forbidden from `v2.2.20` private rehearsal evidence alone.
-
-Changing the signal requires a separate public-testnet go/no-go decision that proves all launch evidence, including security/RPC exposure review, chain isolation, operator runbooks, release artifacts, rollback evidence, node readiness captures, and accepted limitation posture.
-
-## 30-day burn-in rule
-
-A burn-in pass requires at least 30 consecutive UTC days of public-testnet evidence **after** a separate public-testnet launch authorization. No `v2.2.20` private hardening run starts that burn-in clock.
+References to v2.2.x are allowed only when clearly labelled as historical baselines, migration inputs, compatibility notes, or archive links.

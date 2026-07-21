@@ -1,111 +1,87 @@
-# v2.3.0 Repository Cleanup Plan
+# v2.3.0 repository cleanup and organization
 
-Date: 2026-07-19 UTC
+Date: 2026-07-21 UTC
 
 ## Objective
 
-Reduce repository clutter and maintenance friction without deleting required release evidence, breaking operational workflows, or mixing repository restructuring with protocol changes.
+Keep active repository surfaces aligned with `v2.3.0`, separate historical evidence from current operator guidance, and prevent stale-version regressions without changing protocol behavior.
 
-## Current audit result
+## Completed in this cleanup
 
-The Task 08 hygiene audit confirms:
+- Replaced the stale v2.2.20 repository README with a current v2.3.0 entrypoint.
+- Rebuilt `docs/VERSION_MATRIX.md` around the active v2.3.0 candidate state.
+- Added a canonical documentation index at `docs/README.md`.
+- Repaired the historical archive index and bound it to the immutable pre-cleanup commit.
+- Updated the current runbook, release-evidence policy, and standalone-miner documentation.
+- Added v2.3.0 staged-rehearsal and Docker entrypoints.
+- Updated active workflows and container surfaces to use v2.3.0 names and evidence paths.
+- Removed confirmed v2.2.9-v2.2.20 documents from the active `docs/` root.
+- Removed completed v2.2.20 evidence workflows from the active workflow directory.
+- Classified retained version-pinned scripts and private-testnet configurations as compatibility or historical evidence.
+- Added a fail-closed active-version surface audit to repository hygiene.
 
-- no tracked build output, logs, temporary archives, PID files, or editor metadata;
-- no tracked secret-like configuration or private-key filenames;
-- no detectable Spanish technical comments in the scanned source and maintenance surfaces;
-- current version metadata is consistent;
-- current documentation links and referenced script/configuration paths resolve after the v2.2.13 link repair.
+## Historical preservation
 
-The remaining cleanup candidates are primarily historical version-specific documents and scripts, plus large source modules that need controlled decomposition rather than deletion.
+The complete repository state before this cleanup is preserved at:
 
-## Classification rules
+`4bee533d97708d5166024839c02277d913438448`
 
-Every candidate receives one of these dispositions before it is moved or removed:
+The historical index is `docs/archive/README.md`. Historical material is never relabelled as v2.3.0 evidence.
 
-- `KEEP_ACTIVE`: current specification, workflow, runbook, release gate, or supported operator tool.
-- `ARCHIVE_EVIDENCE`: historical roadmap, release note, closeout record, rehearsal procedure, or evidence helper retained for traceability.
-- `CONSOLIDATE`: duplicate or overlapping documentation whose unique content must be merged into one canonical document before removal.
-- `REFACTOR`: active source or script that is valid but too large or too tightly coupled.
-- `REMOVE_GENERATED`: generated/runtime/editor content that must never be tracked.
-- `REMOVE_OBSOLETE`: superseded material with no active reference and no unique evidence value.
+## Active v2.3.0 surfaces
 
-Unclassified files are not deleted.
+- `README.md`
+- `docs/README.md`
+- `docs/ROADMAP_V2_3_0.md`
+- `docs/VERSION_MATRIX.md`
+- `docs/RUNBOOK.md`
+- `docs/RELEASE_EVIDENCE.md`
+- `docs/INSTALL_BINARIES_V2_3_0.md`
+- `docs/runbooks/V2_3_0_PRIVATE_TESTNET_OPERATIONS.md`
+- `docs/release/`
+- active `.github/workflows/v2_3_0_*` gates
+- current or neutral script entrypoints documented in `scripts/README.md`
 
-## Active v2.3.0 material
+## Compatibility surfaces
 
-The following remain active during the v2.3.0 cycle:
+Some v2.2.x scripts and configurations remain because they reproduce accepted evidence or are implementation engines behind current v2.3.0 wrappers.
 
-- `docs/ROADMAP_V2_3_0.md`;
-- `docs/V2_3_0_GITHUB_ACTIONS_GATES.md` while its workflows remain active;
-- `docs/V2_3_0_PUBLIC_TESTNET_DECISION_TEMPLATE.md` and `docs/V2_3_0_READINESS_DECISION_INPUTS.md` as future decision inputs, without implying readiness;
-- `docs/V2_3_0_START_CHECKLIST.md` while it reflects the current review sequence;
-- current `v2_3_0_*` runtime/evidence scripts referenced by active workflows;
-- private-testnet configuration templates and Task 07 bootstrap validation.
+- Script classification: `scripts/LEGACY_COMPATIBILITY_V2_3_0.md`.
+- Configuration classification: `configs/private-testnet/LEGACY_COMPATIBILITY_V2_3_0.md`.
 
-## Historical document candidates
+Active documentation and workflows must not invoke those legacy paths directly.
 
-Version-specific v2.2 closeout, release, preflight, rehearsal, and evidence documents still located directly under `docs/` are `ARCHIVE_EVIDENCE` candidates. They should move to a versioned archive only after:
+## Enforced repository rules
 
-1. all active references are identified;
-2. links are rewritten to the archive location;
-3. the archive index is updated;
-4. current docs no longer present the material as active guidance;
-5. repository hygiene and release workflows pass on the resulting commit.
+`bash scripts/repository_hygiene.sh --strict` now verifies:
 
-The cleanup inventory generated by `scripts/list_cleanup_candidates.sh` is the authoritative candidate list for each pass.
+1. `VERSION=v2.3.0` and Cargo workspace version `2.3.0`;
+2. primary active documents contain exact v2.3.0 markers;
+3. active documents do not advertise a stale v2.2.x baseline;
+4. historical v2.2.x documents do not remain in the active docs root;
+5. v2.2.x workflows do not remain active;
+6. retained legacy script/configuration families are explicitly classified;
+7. local links and referenced current paths resolve;
+8. generated files, secret-like paths, path collisions, and non-English technical comments are rejected.
 
-## Historical script candidates
+## Follow-up refactoring debt
 
-Older `v2_2_*` and `v2-2-*` scripts require individual reference classification:
+The following are behavior-preserving refactoring candidates, not cleanup deletions:
 
-- scripts invoked by active workflows or current evidence procedures remain `KEEP_ACTIVE` until replaced;
-- completed rehearsal launchers and version-specific manual helpers become `ARCHIVE_EVIDENCE` candidates;
-- duplicate wrappers become `CONSOLIDATE` candidates;
-- scripts that create runtime output in tracked paths must be fixed before archival;
-- a script may be removed only when no workflow, current document, or supported operator procedure references it.
+- extraction of the accepted staged-rehearsal engines from version-pinned v2.2.20 files into neutral modules;
+- decomposition of `crates/pulsedag-p2p/src/lib.rs`;
+- decomposition of `apps/pulsedagd/src/main.rs`;
+- decomposition of large storage and RPC modules.
 
-## Large-module refactoring candidates
+Each refactoring requires dedicated regression coverage and must not be mixed with protocol changes.
 
-The inventory reports several modules above 1,200 lines. Size alone is not a deletion criterion. These are `REFACTOR` candidates, prioritised by change frequency and coupling:
+## Completion boundary
 
-1. `crates/pulsedag-p2p/src/lib.rs`;
-2. `apps/pulsedagd/src/main.rs`;
-3. `crates/pulsedag-storage/src/lib.rs`;
-4. large RPC handler modules;
-5. large consensus/mempool/orphan modules;
-6. the v2.2.20 5N/4M rehearsal harness.
+This cleanup changes repository organization and active documentation only. It does not authorize:
 
-Refactoring PRs must preserve behavior, expose clear module boundaries, retain regression coverage, and avoid protocol changes unless explicitly scoped.
-
-## English comment migration
-
-New and modified comments are English-only immediately. Existing source is scanned by `scripts/check_code_comment_language.py` using conservative markers. Any future finding must be resolved by:
-
-- rewriting the technical comment in English; or
-- adding `language-check: allow` only for an intentional localized user-facing fixture.
-
-The suppression marker is not valid for ordinary developer comments.
-
-## Execution order
-
-1. Merge Task 08 governance, hygiene, inventory, and language policy.
-2. Archive one coherent documentation family per PR, updating all links and indexes.
-3. Classify and archive obsolete script families only after reference scans and workflow validation.
-4. Consolidate duplicate active runbooks and release procedures.
-5. Split large modules through behavior-preserving refactoring PRs.
-6. Run the strict hygiene gate after every cleanup pass.
-
-## Completion criteria
-
-Repository cleanup is considered complete for v2.3.0 when:
-
-- no generated/runtime/secret-like material is tracked;
-- active docs contain only current guidance and formal decision inputs;
-- historical documents and scripts are indexed under archive paths;
-- every remaining root-level versioned artifact has an explicit `KEEP_ACTIVE` reason;
-- current docs contain no broken or stale references;
-- code comments satisfy the English-language policy;
-- large-module refactoring debt is either completed or recorded as owned follow-up work;
-- the repository hygiene workflow is green on the release candidate.
-
-This plan does not authorize a version bump, release publication, public-testnet launch, or the start of the 30-day public-testnet clock.
+- creating the `v2.3.0` tag;
+- publishing a GitHub Release;
+- launching a public testnet;
+- setting `public_testnet_ready=true`;
+- starting or backdating the 30-day public-testnet clock;
+- smart contracts or pool logic.

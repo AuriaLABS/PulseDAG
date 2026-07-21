@@ -1,7 +1,8 @@
 FROM rust:1-bookworm
 
 ENV DEBIAN_FRONTEND=noninteractive \
-    CARGO_TERM_COLOR=always
+    CARGO_TERM_COLOR=always \
+    PULSEDAG_REHEARSAL_VERSION=v2.3.0
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
@@ -24,8 +25,11 @@ RUN apt-get update \
 WORKDIR /workspace
 COPY . .
 
-RUN chmod +x /workspace/scripts/docker_v2_2_20_rehearsal.sh \
+RUN chmod +x /workspace/scripts/docker_v2_3_0_rehearsal.sh \
+    /workspace/scripts/v2_3_0_private_5n_1m_rehearsal.sh \
+    /workspace/scripts/v2_3_0_private_5n_2m_rehearsal.sh \
+    /workspace/scripts/v2_3_0_private_5n_4m_rehearsal.sh \
     && cargo build --workspace --release --locked
 
-ENTRYPOINT ["/workspace/scripts/docker_v2_2_20_rehearsal.sh"]
+ENTRYPOINT ["/workspace/scripts/docker_v2_3_0_rehearsal.sh"]
 CMD ["5n1m"]

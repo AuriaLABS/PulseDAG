@@ -3,13 +3,14 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.rehearsal
-    image: pulsedag:v2.2.20-rehearsal
+    image: pulsedag:v2.3.0-rehearsal
     environment:
+      PULSEDAG_REHEARSAL_VERSION: v2.3.0
       REHEARSAL_GATE: ${REHEARSAL_GATE:-5n1m}
       DURATION_SECS: ${DURATION_SECS:-600}
       QUIESCENCE_WAIT_SECS: ${QUIESCENCE_WAIT_SECS:-180}
       GLOBAL_DEADLINE_SECS: ${GLOBAL_DEADLINE_SECS:-2700}
-      OUT_DIR: /workspace/artifacts/v2_2_20/${REHEARSAL_OUT_DIR:-docker_rehearsal}
+      OUT_DIR: /workspace/artifacts/v2_3_0/${REHEARSAL_OUT_DIR:-docker_rehearsal}
       RUST_BACKTRACE: ${RUST_BACKTRACE:-1}
     volumes:
       - ./artifacts:/workspace/artifacts

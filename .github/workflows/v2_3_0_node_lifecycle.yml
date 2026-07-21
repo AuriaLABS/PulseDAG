@@ -10,6 +10,7 @@ on:
       - scripts/v2_3_0_private_testnet_preflight.sh
       - configs/private-testnet/**
       - docs/ROADMAP_V2_3_0.md
+      - docs/release/V2_3_0_RELEASE_DECISION.md
       - docs/codex_tasks/v2_3_0_09_node_lifecycle.md
       - .github/workflows/v2_3_0_node_lifecycle.yml
   workflow_dispatch:
@@ -24,12 +25,16 @@ jobs:
       - name: Checkout candidate
         uses: actions/checkout@v4
 
-      - name: Preserve version and readiness guardrails
+      - name: Preserve v2.3.0 version and readiness guardrails
         shell: bash
         run: |
           set -euo pipefail
-          test "$(tr -d '\r\n' < VERSION)" = "v2.2.20"
-          test "$(awk '/^version = / {gsub(/"/, "", $3); print $3; exit}' Cargo.toml)" = "2.2.20"
+          test "$(tr -d '\r\n' < VERSION)" = "v2.3.0"
+          test "$(awk '/^version = / {gsub(/"/, "", $3); print $3; exit}' Cargo.toml)" = "2.3.0"
+          grep -Fq '`APPROVE_RELEASE_CANDIDATE`' docs/release/V2_3_0_RELEASE_DECISION.md
+          grep -Fq '`version_bump_authorized=true`' docs/release/V2_3_0_RELEASE_DECISION.md
+          grep -Fq '`public_testnet_ready=false`' docs/release/V2_3_0_RELEASE_DECISION.md
+          grep -Fq '`thirty_day_public_testnet_clock_started=false`' docs/release/V2_3_0_RELEASE_DECISION.md
 
       - name: Validate helper syntax and comment language
         shell: bash
