@@ -57,7 +57,7 @@ The Task 09 lifecycle controller is the active v2.3.0 mechanism. These v2.2 runb
 
 - `docs/RELEASE_EVIDENCE.md` — release evidence bundle requirements.
 - `docs/codex_tasks/v2_3_0_12_multi_host_rehearsal.md` — Task 12 deliverables, acceptance criteria, and guardrails.
-- `docs/checklists/V2_2_6_BURNIN_CLOSEOUT.md` — historical v2.2.6 burn-in closeout evidence.
+- `docs/checklists/V2_3_0_PRIVATE_RELEASE_CLOSEOUT.md` — active private-release closeout checklist.
 - `docs/BURN_IN_14D.md` — historical 14-day burn-in requirements.
 - `docs/runbooks/FINAL_POW_PUBLIC_TESTNET_DRY_RUN.md` — historical public-testnet prerequisite material; not an active launch authorization.
 
