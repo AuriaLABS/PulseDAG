@@ -5,32 +5,20 @@ from pathlib import Path
 
 path = Path(".github/workflows/v2_3_0_release_candidate.yml")
 text = path.read_text(encoding="utf-8")
-old = '''      - name: Flatten candidate assets
-        shell: bash
-        run: |
-          set -euo pipefail
-          rm -rf final
-          mkdir -p final
-          files=$(find artifacts -type f | wc -l)
-          test "$files" -eq 18
-          duplicate_names=$(find artifacts -type f -printf '%f\\n' | sort | uniq -d)
-          if [ -n "$duplicate_names" ]; then
-            echo "duplicate candidate asset names:" >&2
-            echo "$duplicate_names" >&2
-            exit 1
-          fi
-          find artifacts -type f -exec cp "{}" final/ \
-;
-'''
-new = '''      - name: Flatten candidate assets
+start_marker = "      - name: Flatten candidate assets\n"
+end_marker = "      - name: Verify checksums and manifests\n"
+start = text.find(start_marker)
+end = text.find(end_marker, start + len(start_marker))
+if start < 0 or end < 0 or end <= start:
+    raise SystemExit("candidate flatten workflow block was not found")
+replacement = '''      - name: Flatten candidate assets
         shell: bash
         run: |
           set -euo pipefail
           python3 scripts/release/flatten_candidate_assets.py \
             --source artifacts \
             --dest final
+
 '''
-if old not in text:
-    raise SystemExit("expected candidate flatten block was not found")
-text = text.replace(old, new, 1)
+text = text[:start] + replacement + text[end:]
 path.write_text(text, encoding="utf-8")
