@@ -55,4 +55,6 @@ A separate final private-testnet release decision is required before tag creatio
 
 ## Repository version rule
 
-Active repository surfaces must identify `v2.3.0` as the current version. References to v2.2.x are allowed only when they are clearly historical, immutable baselines, migration inputs, compatibility notes, or archive links.
+Active repository surfaces must identify `v2.3.0` as the current version.
+
+References to v2.2.x are allowed only when clearly labelled as historical baselines, migration inputs, compatibility notes, or archive links.
