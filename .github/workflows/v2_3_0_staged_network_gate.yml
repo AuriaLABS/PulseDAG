@@ -98,14 +98,14 @@ jobs:
           }
 
           set +e
-          run_stage gate-1m scripts/v2_2_20_private_5n_1m_rehearsal.sh "$root/1m"
+          run_stage gate-1m scripts/v2_3_0_private_5n_1m_rehearsal.sh "$root/1m"
           rc1=$?
           manifest1="$root/1m/gate-1m/evidence_manifest.json"
 
           rc2=99
           manifest2="$root/2m/gate-2m/evidence_manifest.json"
           if (( rc1 == 0 )) && [[ -s "$manifest1" ]]; then
-            run_stage gate-2m scripts/v2_2_20_private_5n_2m_rehearsal.sh "$root/2m" PRIOR_GATE_C_MANIFEST="$manifest1"
+            run_stage gate-2m scripts/v2_3_0_private_5n_2m_rehearsal.sh "$root/2m" PRIOR_GATE_C_MANIFEST="$manifest1"
             rc2=$?
           else
             echo '5N/2M skipped because 5N/1M did not produce a strict PASS manifest.' | tee "$root/gate-2m.workflow.log"
@@ -114,7 +114,7 @@ jobs:
 
           rc4=99
           if (( rc1 == 0 && rc2 == 0 )) && [[ -s "$manifest1" && -s "$manifest2" ]]; then
-            run_stage gate-4m scripts/v2_2_20_private_5n_4m_rehearsal.sh "$root/4m" PRIOR_GATE_C_MANIFEST="$manifest1" PRIOR_GATE_D_MANIFEST="$manifest2"
+            run_stage gate-4m scripts/v2_3_0_private_5n_4m_rehearsal.sh "$root/4m" PRIOR_GATE_C_MANIFEST="$manifest1" PRIOR_GATE_D_MANIFEST="$manifest2"
             rc4=$?
           else
             echo '5N/4M skipped because an earlier staged gate did not pass.' | tee "$root/gate-4m.workflow.log"

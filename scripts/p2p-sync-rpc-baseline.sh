@@ -3,7 +3,7 @@ set -euo pipefail
 
 BASE_URL="${1:-http://127.0.0.1:8080}"
 
-python3 scripts/p2p_sync_rpc_baselines.py \
+python3 scripts/p2p_sync_rpc_baselines_v2_3_0.py \
   --base-url "${BASE_URL}" \
   --iterations 30 \
   --sync-stable-polls 5 \

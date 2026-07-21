@@ -1,66 +1,39 @@
 # PulseDAG v2.3.0 Private-Testnet Runbook Index
 
-## Purpose
+This is the active operator entrypoint for v2.3.0. It does not authorize a public testnet, tag publication, or the start of the 30-day public-testnet clock.
 
-This index is the active operator entrypoint for v2.3.0 private-testnet operations. Historical v2.2 procedures remain available where they still describe a supported recovery mechanism, but v2.3.0 lifecycle, observability, incident, security, evidence, and rehearsal procedures take precedence.
+## Primary operations
 
-This index does not authorize a public testnet, a release tag, a version bump, or the start of the 30-day public-testnet clock.
+- `V2_3_0_PRIVATE_TESTNET_OPERATIONS.md` — bootstrap, external miner, lifecycle, upgrade, rollback, state protection, and evidence.
+- `V2_3_0_PRIVATE_TESTNET_REHEARSAL.md` — five-node rehearsal, restart, partition, rejoin, and GO/NO-GO evidence.
+- `V2_3_0_NETNS_REHEARSAL.md` — isolated Linux namespace rehearsal.
+- `V2_3_0_INCIDENT_RESPONSE.md` — severity model, roles, containment, recovery, and closure.
+- `V2_3_0_SECURITY_AND_CAPACITY.md` — RPC pressure, disk capacity, identity rotation, and monitoring access.
 
-## Start here
+## Recovery
 
-1. **Routine bootstrap, lifecycle, miner attachment, upgrade, rollback, or evidence?** Use `docs/runbooks/V2_3_0_PRIVATE_TESTNET_OPERATIONS.md`.
-2. **Running the final five-node multi-host rehearsal?** Use `docs/runbooks/V2_3_0_PRIVATE_TESTNET_REHEARSAL.md`.
-3. **Running the isolated Linux namespace implementation?** Use `docs/runbooks/V2_3_0_NETNS_REHEARSAL.md`.
-4. **Active incident or severity decision?** Use `docs/runbooks/V2_3_0_INCIDENT_RESPONSE.md`.
-5. **RPC abuse, disk pressure, credential exposure, or identity rotation?** Use `docs/runbooks/V2_3_0_SECURITY_AND_CAPACITY.md`.
-6. **Node unhealthy or degraded?** Use `docs/runbooks/MAINTENANCE_SELF_CHECK.md`.
-7. **Peer loss or partition symptoms?** Use `docs/runbooks/P2P_RECOVERY.md`.
-8. **Lag, missing parents, convergence, or recovery choice?** Use `docs/runbooks/RECOVERY_ORCHESTRATION.md`.
-9. **Snapshot/replay rebuild required?** Use `docs/runbooks/REBUILD_FROM_SNAPSHOT_AND_DELTA.md`.
-10. **Snapshot restore drill and RTO evidence?** Use `docs/runbooks/SNAPSHOT_RESTORE.md`.
+- `MAINTENANCE_SELF_CHECK.md`
+- `P2P_RECOVERY.md`
+- `RECOVERY_ORCHESTRATION.md`
+- `REBUILD_FROM_SNAPSHOT_AND_DELTA.md`
+- `SNAPSHOT_RESTORE.md`
+- `SNAPSHOT_PRUNE_RESTORE_DRILL.md`
+- `CHAOS_RESTART_RECOVERY_SUITE.md`
+- `FAST_BOOT_AND_FALLBACK.md`
 
-## v2.3.0 operator baseline
+## Upgrade compatibility
 
-- `docs/runbooks/V2_3_0_PRIVATE_TESTNET_OPERATIONS.md` — bootstrap, external miner, routine checks, lifecycle, upgrade/rollback, state protection, evidence, and decommissioning.
-- `docs/runbooks/V2_3_0_PRIVATE_TESTNET_REHEARSAL.md` — exact-candidate five-node rehearsal, restart, bounded partition, rejoin, GO/NO-GO, and immutable evidence.
-- `docs/runbooks/V2_3_0_NETNS_REHEARSAL.md` — ephemeral five-namespace topology, external mining, hard timeout, cleanup, and Actions evidence.
-- `docs/runbooks/V2_3_0_INCIDENT_RESPONSE.md` — SEV-1 through SEV-4, roles, evidence custody, containment, recovery, communications, and closure.
-- `docs/runbooks/V2_3_0_SECURITY_AND_CAPACITY.md` — RPC abuse, disk pressure, identity/token rotation, and monitoring-network access.
-- `scripts/private_testnet/node_lifecycle.py` — supported node install/start/stop/status/restart/upgrade/rollback controller.
-- `scripts/private_testnet/multi_host_rehearsal.py` — supported five-node private-testnet rehearsal and evidence verifier.
-- `scripts/private_testnet/netns_rehearsal.sh` — supported isolated-namespace Task 12 runner for ephemeral Linux Actions hosts.
-- `scripts/private_testnet/runtime_metrics_exporter.py` — supported private monitoring exporter.
-- `scripts/private_testnet/collect_incident_evidence.py` — redacted, checksummed incident evidence collector.
-- `ops/observability/v2.3.0/README.md` — Prometheus, Grafana, alert, and metric baseline.
-- `docs/dashboard/README.md` — active dashboard entrypoint.
-- `docs/dashboard/ALERTS.md` — active alert catalog and first-response mapping.
+- `STAGING_UPGRADE.md`
+- `STAGING_ROLLBACK.md`
 
-## Recovery runbooks
+The v2.3.0 lifecycle controller remains the active upgrade and rollback mechanism.
 
-- `docs/runbooks/MAINTENANCE_SELF_CHECK.md` — read-only health, drift, and maintenance checks.
-- `docs/runbooks/P2P_RECOVERY.md` — peer loss, partition, topology recovery, and rejoin.
-- `docs/runbooks/RECOVERY_ORCHESTRATION.md` — choose recovery, rebuild, or restore.
-- `docs/runbooks/REBUILD_FROM_SNAPSHOT_AND_DELTA.md` — snapshot plus delta rebuild and post-checks.
-- `docs/runbooks/SNAPSHOT_RESTORE.md` — restore procedure, fallback expectations, and RTO evidence.
-- `docs/runbooks/SNAPSHOT_PRUNE_RESTORE_DRILL.md` — guarded private-testnet snapshot/prune/restore drill.
-- `docs/runbooks/CHAOS_RESTART_RECOVERY_SUITE.md` — crash, restart, churn, and recovery validation.
-- `docs/runbooks/FAST_BOOT_AND_FALLBACK.md` — fast-boot and fallback signal interpretation.
+## Evidence and observability
 
-## Upgrade compatibility material
+- `docs/RELEASE_EVIDENCE.md`
+- `docs/checklists/V2_3_0_PRIVATE_TESTNET_RELEASE_CLOSEOUT.md`
+- `docs/dashboard/README.md`
+- `scripts/private_testnet/collect_incident_evidence.py`
+- `ops/observability/v2.3.0/README.md`
 
-The Task 09 lifecycle controller is the active v2.3.0 mechanism. These v2.2 runbooks remain indexed because release regressions and historical operator flows still reference them:
-
-- `docs/runbooks/STAGING_UPGRADE.md`
-- `docs/runbooks/STAGING_ROLLBACK.md`
-
-## Evidence and release support
-
-- `docs/RELEASE_EVIDENCE.md` — release evidence bundle requirements.
-- `docs/codex_tasks/v2_3_0_12_multi_host_rehearsal.md` — Task 12 deliverables, acceptance criteria, and guardrails.
-- `docs/checklists/V2_2_6_BURNIN_CLOSEOUT.md` — historical v2.2.6 burn-in closeout evidence.
-- `docs/BURN_IN_14D.md` — historical 14-day burn-in requirements.
-- `docs/runbooks/FINAL_POW_PUBLIC_TESTNET_DRY_RUN.md` — historical public-testnet prerequisite material; not an active launch authorization.
-
-## Escalation rule
-
-An unresolved SEV-1 integrity/security incident, replay gap, convergence failure, credential exposure, destructive recovery without evidence, or failed Task 12 restore/rejoin is a private-testnet no-go. Runbook completion and a private-testnet `GO` never change `public_testnet_ready=false` or start/backdate the public-testnet clock.
+An unresolved integrity, security, storage, convergence, recovery, or evidence failure is a private-testnet NO-GO. Private-testnet completion never changes `public_testnet_ready=false` or starts/backdates the 30-day public-testnet clock.

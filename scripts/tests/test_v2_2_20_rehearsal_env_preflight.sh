@@ -10,7 +10,8 @@ bash -n \
   scripts/v2_2_20_private_5n_2m_rehearsal.sh \
   scripts/v2_2_20_private_5n_4m_rehearsal.sh \
   scripts/v2_2_20_staged_private_network_gates.sh \
-  scripts/docker_v2_2_20_rehearsal.sh
+  scripts/docker_v2_2_20_rehearsal.sh \
+  scripts/docker_v2_3_0_rehearsal.sh
 
 rg -q 'ENV_FAIL: missing dependency' scripts/v2_2_20_preflight_check.sh
 rg -q 'failure_class: \$FAILURE_CLASS' scripts/v2_2_20_private_5n_4m_rehearsal.sh
@@ -19,7 +20,6 @@ rg -Fq '"failure_class":"$(classify_failure_class)"' scripts/v2_2_20_private_5n_
 rg -q 'extract_bootnode_peer_id' scripts/v2_2_20_private_5n_4m_rehearsal.sh
 rg -q 'jq missing; cannot parse n1 /p2p/status JSON' scripts/v2_2_20_private_5n_4m_rehearsal.sh
 rg -q 'JSON schema mismatch; expected \.data\.peer_id or \.data\.local_node_id' scripts/v2_2_20_private_5n_4m_rehearsal.sh
-rg -q 'PowerShell does not support Bash-style inline environment assignment' docs/DOCKER_REHEARSALS_V2_2_20.md
 rg -q 'evidence_manifest.json' scripts/v2_2_20_private_5n_4m_rehearsal.sh
 rg -q 'RPC_ALIVE_LISTENER_TIMEOUT count' scripts/v2_2_20_private_5n_4m_rehearsal.sh
 rg -q 'orphan_recovery_classification_counters' scripts/v2_2_20_private_5n_4m_rehearsal.sh
@@ -29,8 +29,13 @@ rg -q 'terminal_missing_parent_entries' scripts/v2_2_20_private_5n_4m_rehearsal.
 rg -q 'blockdata_not_found' scripts/v2_2_20_private_5n_4m_rehearsal.sh
 rg -q 'Gate B: replay determinism digests' scripts/v2_2_20_staged_private_network_gates.sh
 rg -q 'FAST_CADENCE_EXPERIMENTAL=1' scripts/v2_2_20_staged_private_network_gates.sh
-rg -q 'Interpreting self-classifying evidence bundles' docs/DOCKER_REHEARSALS_V2_2_20.md
-rg -q 'Docker Compose from PowerShell' docs/DOCKER_REHEARSALS_V2_2_20.md
+
+# Current v2.3.0 public surfaces wrap the retained compatibility engine.
+rg -q 'PULSEDAG_REHEARSAL_VERSION=v2.3.0' Dockerfile.rehearsal
+rg -q 'docker_v2_3_0_rehearsal.sh' Dockerfile.rehearsal
+rg -q 'pulsedag:v2.3.0-rehearsal' docker-compose.rehearsal.yml
+rg -q 'artifacts/v2_3_0/' docker-compose.rehearsal.yml
+rg -q 'docker_v2_2_20_rehearsal.sh' scripts/docker_v2_3_0_rehearsal.sh
 
 TMP_BIN=$(mktemp -d)
 TMP_OUT=$(mktemp -d)
@@ -62,4 +67,4 @@ set -e
 rg -q 'ENV_FAIL: missing dependency: Docker CLI for Docker-mode rehearsal' "$TMP_OUT/missing-docker.err"
 rg -q 'failure_class: environment' "$TMP_OUT/missing-docker/preflight-summary.md"
 
-echo "v2.2.20 rehearsal environment preflight validation passed"
+echo "v2.3.0 Docker surface and retained rehearsal preflight validation passed"
