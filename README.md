@@ -1,31 +1,45 @@
-# PulseDAG v2.2.20 active hardening / pre-public-testnet preparation
+# PulseDAG v2.3.0
 
-## Current milestone
-- **v2.2.20 active hardening / pre-public-testnet preparation / pending evidence**.
+PulseDAG is in the **v2.3.0 private-testnet release-candidate** stage.
 
-## Execution gate
-- v2.2.20 execution evidence is allowed only when version files prove `v2.2.20` / `2.2.20`.
-- v2.2.20 can proceed only if v2.2.19 evidence is recorded and v2.2.18 is **CLOSED_WITH_EVIDENCE** or **WAIVED_WITH_REASON**.
+## Current state
 
-## Guardrails
-- No consensus changes.
-- No PoW semantic changes.
-- No smart contracts.
-- No pool logic.
-- Miner remains external.
-- GPU optional/scaffold only unless canonical kernel evidence exists.
-- No v2.3.0 readiness claim.
-- No v3.0 readiness claim.
-- Keep `public_testnet_ready=false` until explicit public-testnet gates pass.
-- Do not bump `VERSION` unless explicit maintainer approval is recorded after gate evidence.
+- Repository version: `v2.3.0`.
+- Cargo workspace version: `2.3.0`.
+- External standalone miner: supported and packaged separately from `pulsedagd`.
+- Release-candidate validation: completed on the exact approved candidate.
+- Final private-testnet release decision: `PENDING_FINAL_CANDIDATE_EVIDENCE`.
+- `v2.3.0` tag: not created.
+- GitHub Release publication: not authorized.
+- `public_testnet_ready=false`.
+- The 30-day public-testnet clock has not started.
+- Smart contracts and pool logic remain outside the current scope.
 
-## References
-- `docs/DOCKER_REHEARSALS_V2_2_20.md`
-- `docs/V2_2_20_START.md`
-- `docs/V2_2_19_PREFLIGHT.md`
-- `docs/CLOSING_CHECKLIST_V2_2_19.md`
-- `docs/RELEASE_NOTES_V2_2_19.md`
-- `docs/RELEASE_EVIDENCE.md`
-- `docs/VERSION_MATRIX.md`
-- `docs/V2_3_0_START_CHECKLIST.md`
-- `docs/V2_3_0_READINESS_DECISION_INPUTS.md`
+## Start here
+
+- [Documentation index](docs/README.md)
+- [v2.3.0 roadmap](docs/ROADMAP_V2_3_0.md)
+- [Version matrix](docs/VERSION_MATRIX.md)
+- [Operator runbook](docs/RUNBOOK.md)
+- [Private-testnet operations](docs/runbooks/V2_3_0_PRIVATE_TESTNET_OPERATIONS.md)
+- [Binary installation and verification](docs/INSTALL_BINARIES_V2_3_0.md)
+- [Release notes](docs/release/V2_3_0_RELEASE_NOTES.md)
+- [Release decision](docs/release/V2_3_0_RELEASE_DECISION.md)
+- [Historical archive](docs/archive/README.md)
+
+## Development
+
+```bash
+cargo fmt --all -- --check
+cargo check --workspace --locked
+cargo test --workspace --locked
+cargo clippy --workspace --all-targets -- -D warnings
+```
+
+Repository structure and stale-version checks are enforced by:
+
+```bash
+bash scripts/repository_hygiene.sh --strict
+```
+
+Historical v2.2.x evidence is retained for traceability under the archive policy. It is not current operator guidance and must not be presented as the active repository version.

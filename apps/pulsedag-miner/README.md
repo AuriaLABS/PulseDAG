@@ -1,94 +1,58 @@
-# pulsedag-miner
+# pulsedag-miner v2.3.0
 
-Minero externo oficial de PulseDAG.
+`pulsedag-miner` is the official external standalone miner for PulseDAG.
 
-Especificación PoW canónica congelada: `docs/POW_SPEC_FINAL.md`.
-Guía operativa/auditoría del flujo actual: `docs/POW_CURRENT_PATH.md`.
+Canonical references:
 
-## Alcance cerrado
+- [`docs/POW_SPEC_FINAL.md`](../../docs/POW_SPEC_FINAL.md)
+- [`docs/POW_CURRENT_PATH.md`](../../docs/POW_CURRENT_PATH.md)
+- [`docs/INSTALL_BINARIES_V2_3_0.md`](../../docs/INSTALL_BINARIES_V2_3_0.md)
 
-Este binario **no** contiene lógica de pool.
+## Scope
 
-Solo hace tres cosas:
-1. pedir un template al nodo
-2. resolver PoW fuera del nodo
-3. enviar el bloque resuelto al nodo
+The miner performs three operations:
 
-## Empaquetado de release
+1. request a mining template from a node;
+2. solve PoW outside the node;
+3. submit the solved block to the node.
 
-En los releases oficiales, este binario se publica como artefacto **standalone** separado de `pulsedagd`, con nombre `pulsedag-miner-<tag>-<target>.*`, checksum `.sha256` y manifiesto `.json` por artefacto.
+It does not implement pool logic, shares, payouts, accounting, or server-side pool coordination.
 
-## Uso
-
-```bash
-cargo run -p pulsedag-miner -- --miner-address TU_DIRECCION
-```
-
-Modo bucle:
+## Run from source
 
 ```bash
-cargo run -p pulsedag-miner -- --miner-address TU_DIRECCION --loop --sleep-ms 1500 \
-  --refresh-before-expiry-ms 1000
-```
-
-Con nodo explícito:
-
-```bash
-cargo run -p pulsedag-miner -- --node http://127.0.0.1:8080 --miner-address TU_DIRECCION --loop
-```
-
-Con multi-thread explícito:
-
-```bash
-cargo run -p pulsedag-miner -- --node http://127.0.0.1:8080 --miner-address TU_DIRECCION --threads 4 --max-tries 500000 --loop --sleep-ms 1000 --refresh-before-expiry-ms 1000
-```
-
-## Uso como binario standalone de release
-
-Después de descargar el artefacto oficial del release (`pulsedag-miner-<tag>-<target>.*`):
-
-```bash
-tar -xzf pulsedag-miner-v2.2.5-x86_64-unknown-linux-gnu.tar.gz
-./pulsedag-miner-v2.2.5-x86_64-unknown-linux-gnu/pulsedag-miner --help
-./pulsedag-miner-v2.2.5-x86_64-unknown-linux-gnu/pulsedag-miner \
+cargo run --locked -p pulsedag-miner -- \
   --node http://127.0.0.1:8080 \
-  --miner-address TU_DIRECCION \
+  --miner-address YOUR_ADDRESS \
   --threads 4 \
-  --max-tries 50000 \
+  --max-tries 500000 \
   --loop \
-  --sleep-ms 1500 \
+  --sleep-ms 1000 \
   --refresh-before-expiry-ms 1000
 ```
 
-Notas de operador:
-- El binario se puede ejecutar de forma independiente del árbol de código (`cargo` no es requerido para operación en release).
-- El flujo oficial sigue siendo template -> PoW -> submit contra el nodo.
-- No existe soporte de pool en este binario.
-- El backend CPU es el predeterminado; el backend GPU opcional se documenta en [`GPU.md`](GPU.md).
+## Run a release binary
 
-## Minería GPU opcional
+Official archives use the pattern:
 
-La minería GPU es **opcional**. La minería CPU sigue siendo el backend predeterminado y la referencia obligatoria para operación normal y evidencia de v2.2.16.
+`pulsedag-miner-v2.3.0-<target>.*`
 
-El backend GPU es experimental hasta completar la evidencia de cierre de v2.2.16, está protegido por feature flag y solo vive en el minero externo standalone. No agrega lógica de pool, shares ni payouts.
-
-Documentación completa: [`GPU.md`](GPU.md).
-
-Build experimental con GPU:
+Linux example:
 
 ```bash
-cargo build -p pulsedag-miner --release --features gpu
+tar -xzf pulsedag-miner-v2.3.0-x86_64-unknown-linux-gnu.tar.gz
+./pulsedag-miner-v2.3.0-x86_64-unknown-linux-gnu/pulsedag-miner --help
+./pulsedag-miner-v2.3.0-x86_64-unknown-linux-gnu/pulsedag-miner \
+  --node http://127.0.0.1:8080 \
+  --miner-address YOUR_ADDRESS \
+  --threads 4 \
+  --loop \
+  --sleep-ms 1500
 ```
 
-Ejemplo de ejecución con GPU:
+Each archive is accompanied by a `.sha256` checksum and `.json` provenance manifest. The release binary runs independently of the source tree and does not require Cargo.
 
-```bash
-./target/release/pulsedag-miner --node http://127.0.0.1:18080 --miner-address <addr> --backend gpu --loop
-```
-
-Regla de seguridad: cada nonce encontrado por GPU debe verificarse por la ruta PoW canónica CPU/core antes de enviarse al nodo.
-
-## Flags soportadas
+## Supported flags
 
 - `--node`
 - `--miner-address`
@@ -97,53 +61,44 @@ Regla de seguridad: cada nonce encontrado por GPU debe verificarse por la ruta P
 - `--sleep-ms`
 - `--threads`
 - `--refresh-before-expiry-ms`
-- `--backend` (`cpu` por defecto; `gpu` requiere `--features gpu`)
-- `--gpu-device` (solo para backend GPU)
+- `--backend`
+- `--gpu-device`
 - `--heartbeat` / `--no-heartbeat`
 - `--worker-id`
 
-## Fuera de alcance
+## CPU and GPU backends
 
-- pool
-- shares
-- payouts
-- accounting
-- lógica de servidor
+The CPU backend is the default and the canonical operational reference.
 
-## Algoritmo PoW
-
-- El identificador de algoritmo permanece como `kHeavyHash`.
-- La codificación exacta del preimage, endianness, target y regla de aceptación está congelada en `docs/POW_SPEC_FINAL.md`.
-
-## Benchmark y baseline de operador
-
-Para ejecutar benchmarks repetibles y revisar baseline CPU/hilos, ver `docs/POW_OPERATOR_BASELINES.md` y `scripts/pow-bench.sh`.
-
-## Smoke flow de operador (node + miner standalone)
-
-Para un smoke reproducible de empaquetado + flujo externo:
+The optional GPU backend is feature-gated:
 
 ```bash
-scripts/release/standalone_operator_smoke.sh --miner-address TU_DIRECCION
+cargo build --locked -p pulsedag-miner --release --features gpu
+./target/release/pulsedag-miner \
+  --node http://127.0.0.1:8080 \
+  --miner-address YOUR_ADDRESS \
+  --backend gpu \
+  --loop
 ```
 
-Este helper valida artefactos standalone y corre un smoke corto de nodo + minero externo, sin introducir lógica de pool.
+Every nonce produced by a GPU backend must be verified through the canonical CPU/core PoW path before submission. GPU support remains optional and does not change consensus or add pool functionality. See [`GPU.md`](GPU.md).
 
-## Coordinación multithread (determinística)
+## Deterministic multi-thread search
 
-La búsqueda de nonce usa una programación *strided* por worker:
+Worker `t` searches the strided nonce sequence:
 
-- worker `t` explora `nonce = t, t + T, t + 2T, ...` (siendo `T = --threads` efectivo)
-- esto reduce solapamiento obvio de búsqueda entre hilos
-- conserva comportamiento repetible para smoke/benchmark cuando no hay solución (mismo fallback al último nonce intentado)
+`nonce = t, t + T, t + 2T, ...`
 
-El flujo operativo no cambia: **template -> mine -> submit**.
+where `T` is the effective thread count. This limits obvious overlap and preserves a reproducible search schedule.
 
+## Operator smoke
 
-## Selección de backend de minería
+```bash
+scripts/release/standalone_operator_smoke.sh --miner-address YOUR_ADDRESS
+```
 
-- `--backend cpu`: fuerza backend CPU (predeterminado y estable para v2.2.19).
-- `--backend gpu`: solicita backend GPU; si no está compilado/disponible falla con error claro y acción sugerida.
-- `--backend auto`: intenta GPU solo cuando está compilado y se inicializa correctamente; en otro caso activa fallback explícito a CPU.
+This validates packaged standalone artifacts and a short node-plus-external-miner flow.
 
-`v2.2.19` no declara minería GPU de producción: GPU permanece como scaffold/opcional hasta que exista kernel canónico verificado con evidencia reproducible.
+## Release boundary
+
+The repository is at `v2.3.0`, but tag creation and GitHub Release publication still require a separate final private-testnet release decision. This guide does not authorize a public-testnet launch.
