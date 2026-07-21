@@ -196,7 +196,7 @@ jobs:
       - name: Verify p2p sync/rpc baseline harness syntax
         run: |
           set -euo pipefail
-          python -m py_compile scripts/p2p_sync_rpc_baselines.py
+          python -m py_compile scripts/p2p_sync_rpc_baselines_v2_3_0.py
 
       - name: Verify pre-burn-in docs, evidence, and checklist references
         run: |
@@ -207,10 +207,12 @@ jobs:
             docs/BURN_IN_GATE.md
             docs/checklists/V2_3_0_PRIVATE_TESTNET_RELEASE_CLOSEOUT.md
             docs/checklists/PUBLIC_TESTNET_OPERATOR_ENTRY_CHECKLIST.md
+            docs/benchmarks/P2P_SYNC_RPC_BASELINE_METHODOLOGY_V2_3_0.md
+            docs/benchmarks/P2P_SYNC_RPC_BASELINE_OUTPUT_TEMPLATE_V2_3_0.md
             scripts/release/standalone_operator_smoke.sh
             scripts/release/verify_release_artifacts.py
             scripts/hot-path-baseline.sh
-            scripts/p2p_sync_rpc_baselines.py
+            scripts/p2p_sync_rpc_baselines_v2_3_0.py
           )
 
           for path in "${required[@]}"; do
@@ -238,7 +240,7 @@ jobs:
 
           python scripts/release/package_release_artifacts.py --help >/dev/null
           python scripts/release/verify_release_artifacts.py --help >/dev/null
-          python scripts/p2p_sync_rpc_baselines.py --help >/dev/null
+          python scripts/p2p_sync_rpc_baselines_v2_3_0.py --help >/dev/null
           echo "python entrypoints verified"
 
       - name: Stop smoke node
