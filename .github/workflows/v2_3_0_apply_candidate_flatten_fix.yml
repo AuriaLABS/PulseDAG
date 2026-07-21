@@ -1,0 +1,40 @@
+name: v2.3.0 apply candidate flatten fix
+
+on:
+  push:
+    branches:
+      - agent/v2-3-0-13-versioned-candidate
+    paths:
+      - scripts/patches/apply_v2_3_0_candidate_flatten_fix.py
+      - .github/workflows/v2_3_0_apply_candidate_flatten_fix.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply-fix:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout candidate branch
+        uses: actions/checkout@v4
+        with:
+          ref: agent/v2-3-0-13-versioned-candidate
+          fetch-depth: 0
+
+      - name: Apply deterministic flatten fix
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/patches/apply_v2_3_0_candidate_flatten_fix.py
+          git diff --check
+          grep -Fq 'scripts/release/flatten_candidate_assets.py' .github/workflows/v2_3_0_release_candidate.yml
+
+      - name: Commit workflow fix
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .github/workflows/v2_3_0_release_candidate.yml
+          git commit -m "v2.3.0 Task 13: harden candidate asset consolidation"
+          git push origin HEAD:agent/v2-3-0-13-versioned-candidate
