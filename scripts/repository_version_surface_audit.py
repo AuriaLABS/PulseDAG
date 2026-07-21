@@ -24,6 +24,7 @@ ACTIVE_CLAIM_FILES = [
     Path("docs/VERSION_MATRIX.md"),
     Path("docs/RUNBOOK.md"),
     Path("docs/RELEASE_EVIDENCE.md"),
+    Path("docs/BURN_IN_GATE.md"),
     Path("apps/pulsedag-miner/README.md"),
 ]
 
@@ -32,11 +33,18 @@ LEGACY_SCRIPT_FAMILIES = [
     "scripts/docker_v2_2_*",
     "scripts/windows/v2_2_*",
     "scripts/tests/test_v2_2_*",
+    "scripts/v2-2-*",
+    "scripts/*_v2_2_*",
 ]
 
 LEGACY_CONFIG_FAMILIES = [
     "configs/private-testnet/v2_2_*/*",
 ]
+
+ACTIVE_DOC_EXCLUDED_ROOTS = {
+    Path("docs/archive"),
+    Path("docs/codex_tasks"),
+}
 
 
 def parse_args() -> argparse.Namespace:
@@ -58,6 +66,10 @@ def tracked_files() -> list[str]:
         ["git", "ls-files", "-z"], check=True, capture_output=True
     )
     return [entry.decode("utf-8") for entry in result.stdout.split(b"\0") if entry]
+
+
+def is_excluded_active_doc(path: Path) -> bool:
+    return any(root == path or root in path.parents for root in ACTIVE_DOC_EXCLUDED_ROOTS)
 
 
 def require_family_manifest(
@@ -105,6 +117,10 @@ def main() -> int:
         ],
         Path("docs/RUNBOOK.md"): ["# PulseDAG v2.3.0 operator runbook"],
         Path("docs/RELEASE_EVIDENCE.md"): ["# PulseDAG v2.3.0 release evidence policy"],
+        Path("docs/BURN_IN_GATE.md"): ["# v2.3.0 public-testnet burn-in gate"],
+        Path("docs/checklists/V2_3_0_PRIVATE_TESTNET_RELEASE_CLOSEOUT.md"): [
+            "# v2.3.0 private-testnet release closeout checklist"
+        ],
         Path("apps/pulsedag-miner/README.md"): ["# pulsedag-miner v2.3.0"],
     }
     for path, markers in required_markers.items():
@@ -126,9 +142,11 @@ def main() -> int:
 
     docs_root = Path("docs")
     if docs_root.is_dir():
-        for path in sorted(docs_root.iterdir()):
-            if path.is_file() and HISTORICAL_DOC.search(path.name):
-                failures.append(f"historical document remains in active docs root: {path}")
+        for path in sorted(docs_root.rglob("*")):
+            if not path.is_file() or is_excluded_active_doc(path):
+                continue
+            if HISTORICAL_DOC.search(path.name):
+                failures.append(f"historical document remains in active docs tree: {path}")
 
     workflow_root = Path(".github/workflows")
     if workflow_root.is_dir():
