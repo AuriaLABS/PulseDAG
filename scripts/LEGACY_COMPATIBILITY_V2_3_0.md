@@ -8,6 +8,7 @@ Version-pinned v2.2.x helpers retained in this repository are compatibility or h
 - `scripts/v2_3_0_private_5n_2m_rehearsal.sh`
 - `scripts/v2_3_0_private_5n_4m_rehearsal.sh`
 - `scripts/docker_v2_3_0_rehearsal.sh`
+- `scripts/p2p_sync_rpc_baselines_v2_3_0.py`
 - current `scripts/v2_3_0_*` tools referenced by active workflows
 - neutral tools under `scripts/release/` and repository maintenance entrypoints
 
@@ -19,6 +20,7 @@ Version-pinned v2.2.x helpers retained in this repository are compatibility or h
 - `scripts/tests/test_v2_2_*`: historical and compatibility regressions.
 - `scripts/v2-2-*`: hyphenated historical release helpers.
 - `scripts/*_v2_2_*`: suffix-versioned historical helpers.
+- `scripts/p2p_sync_rpc_baselines.py`: retained v2.2.4 measurement engine used only through `p2p_sync_rpc_baselines_v2_3_0.py`, which rewrites run IDs, report identity, and CLI description to v2.3.0.
 
 ## Rules
 
