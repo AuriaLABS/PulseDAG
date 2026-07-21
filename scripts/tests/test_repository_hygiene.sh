@@ -7,10 +7,13 @@ cd "$repo_root"
 bash -n scripts/repository_hygiene.sh
 bash -n scripts/list_cleanup_candidates.sh
 bash -n scripts/validate_repo_cleanup.sh
+bash -n scripts/tests/test_v2_3_0_rehearsal_identity.sh
 python3 -m py_compile \
   scripts/check_code_comment_language.py \
   scripts/repository_hygiene.py \
   scripts/repository_version_surface_audit.py
+
+bash scripts/tests/test_v2_3_0_rehearsal_identity.sh
 
 tmp_dir="$(mktemp -d)"
 trap 'rm -rf "$tmp_dir"' EXIT
