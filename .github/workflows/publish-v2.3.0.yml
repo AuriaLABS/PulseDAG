@@ -41,11 +41,10 @@ jobs:
 
           issue = json.load(open("issue-777.json", encoding="utf-8"))
           body = issue.get("body") or ""
-
           if issue.get("state") != "closed":
               raise SystemExit("issue #777 is not closed")
 
-          required_literals = [
+          required = [
               "7e43225f01ac05d15e5f1e3f1550d7850bf18cbc",
               "29854712585",
               "sha256:7c56b92c8b1a1f3974473ba83380061cbf16129a223b909bef20976fc674ee02",
@@ -55,9 +54,9 @@ jobs:
               "- `public_testnet_ready=false` remains unchanged.",
               "- `thirty_day_public_testnet_clock_started=false` remains unchanged.",
           ]
-          for literal in required_literals:
-              if literal not in body:
-                  raise SystemExit(f"missing authorization evidence: {literal}")
+          for value in required:
+              if value not in body:
+                  raise SystemExit(f"missing authorization evidence: {value}")
 
           fields = {
               "release rollback owner": r"- \[x\] Release rollback owner: `([^`]+)`",
@@ -122,36 +121,60 @@ jobs:
           for record in records:
               archive = root / record["archive"]
               assert archive.is_file(), archive
-              digest = hashlib.sha256(archive.read_bytes()).hexdigest()
-              assert digest == record["archive_sha256"]
+              assert hashlib.sha256(archive.read_bytes()).hexdigest() == record["archive_sha256"]
               assert record["tag"] == "v2.3.0"
               assert record["provenance"]["commit"] == expected_sha
               assert str(record["provenance"]["github_run_id"]) == expected_run
               manifest = root / f'{record["archive"]}.json'
               assert manifest.is_file(), manifest
-              manifest_record = json.loads(manifest.read_text())
-              assert manifest_record == record
+              assert json.loads(manifest.read_text()) == record
           PY
 
-      - name: Verify existing tag and release state
+      - name: Reconcile exact tag and release state
         id: release_state
         shell: bash
         run: |
           set -euo pipefail
+
+          release_exists=false
+          if gh release view "${TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            release_exists=true
+          fi
+
+          tag_exists=false
+          tag_sha=""
           if gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${TAG}" > existing-tag.json 2>/dev/null; then
+            tag_exists=true
             tag_type=$(jq -r '.object.type' existing-tag.json)
             tag_sha=$(jq -r '.object.sha' existing-tag.json)
             if [ "${tag_type}" = "tag" ]; then
               tag_sha=$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${tag_sha}" --jq '.object.sha')
             fi
-            test "${tag_sha}" = "${CANDIDATE_SHA}"
           fi
 
-          if gh release view "${TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
-            echo "exists=true" >> "${GITHUB_OUTPUT}"
-          else
-            echo "exists=false" >> "${GITHUB_OUTPUT}"
+          if [ "${tag_exists}" = true ] && [ "${tag_sha}" != "${CANDIDATE_SHA}" ]; then
+            if [ "${release_exists}" = true ]; then
+              echo "Refusing to move ${TAG}: a published release already exists and the tag points to ${tag_sha}." >&2
+              exit 1
+            fi
+
+            echo "Repairing unpublished stale tag ${TAG}: ${tag_sha} -> ${CANDIDATE_SHA}"
+            gh api --method PATCH \
+              "repos/${GITHUB_REPOSITORY}/git/refs/tags/${TAG}" \
+              -f sha="${CANDIDATE_SHA}" \
+              -F force=true >/dev/null
           fi
+
+          if gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${TAG}" > verified-tag.json 2>/dev/null; then
+            verified_type=$(jq -r '.object.type' verified-tag.json)
+            verified_sha=$(jq -r '.object.sha' verified-tag.json)
+            if [ "${verified_type}" = "tag" ]; then
+              verified_sha=$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${verified_sha}" --jq '.object.sha')
+            fi
+            test "${verified_sha}" = "${CANDIDATE_SHA}"
+          fi
+
+          echo "exists=${release_exists}" >> "${GITHUB_OUTPUT}"
 
       - name: Build release notes
         shell: bash
@@ -215,12 +238,14 @@ jobs:
           gh release view "${TAG}" \
             --repo "${GITHUB_REPOSITORY}" \
             --json tagName,isDraft,isPrerelease,assets,url > published-release.json
+          gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${TAG}" > published-tag.json
 
           python - <<'PY'
           import json
           from pathlib import Path
 
           release = json.loads(Path("published-release.json").read_text())
+          tag = json.loads(Path("published-tag.json").read_text())
           expected_assets = sorted(path.name for path in Path("dist").iterdir() if path.is_file())
           actual_assets = sorted(asset["name"] for asset in release["assets"])
 
@@ -228,6 +253,8 @@ jobs:
           assert release["isDraft"] is False
           assert release["isPrerelease"] is False
           assert actual_assets == expected_assets, (actual_assets, expected_assets)
+          assert tag["object"]["type"] == "commit"
+          assert tag["object"]["sha"] == "7e43225f01ac05d15e5f1e3f1550d7850bf18cbc"
           print(release["url"])
           PY
 
@@ -238,10 +265,12 @@ jobs:
           python - <<'PY'
           import json
           import os
+          import textwrap
           from pathlib import Path
 
           release = json.loads(Path("published-release.json").read_text())
-          body = f"""<!-- pulsedag-v2.3.0-release-publication -->
+          body = textwrap.dedent(f"""\
+          <!-- pulsedag-v2.3.0-release-publication -->
           ## PulseDAG v2.3.0 published
 
           The approved private-testnet release has been published and independently rechecked by workflow run `{os.environ['GITHUB_RUN_ID']}`.
@@ -255,7 +284,7 @@ jobs:
           - Publication workflow: {os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}
 
           Safety boundary remains unchanged: `public_testnet_ready=false` and `thirty_day_public_testnet_clock_started=false`.
-          """
+          """)
           Path("release-confirmation.md").write_text(body, encoding="utf-8")
           PY
 
@@ -270,6 +299,17 @@ jobs:
               -f body="$(cat release-confirmation.md)" >/dev/null
           fi
 
+          failure_marker='<!-- pulsedag-v2.3.0-release-publication-failure -->'
+          failure_id=$(gh api "repos/${GITHUB_REPOSITORY}/issues/777/comments?per_page=100" \
+            --jq ".[] | select(.body | contains(\"${failure_marker}\")) | .id" | tail -n 1)
+          if [ -n "${failure_id}" ]; then
+            gh api --method PATCH "repos/${GITHUB_REPOSITORY}/issues/comments/${failure_id}" \
+              -f body="${failure_marker}
+          ## Previous publication attempt resolved
+
+          The earlier failed attempt was superseded by successful workflow run ${GITHUB_RUN_ID}." >/dev/null
+          fi
+
       - name: Record publication failure in issue 777
         if: failure()
         continue-on-error: true
@@ -277,9 +317,11 @@ jobs:
         run: |
           python - <<'PY'
           import os
+          import textwrap
           from pathlib import Path
 
-          body = f"""<!-- pulsedag-v2.3.0-release-publication-failure -->
+          body = textwrap.dedent(f"""\
+          <!-- pulsedag-v2.3.0-release-publication-failure -->
           ## PulseDAG v2.3.0 publication failed
 
           Publication workflow `{os.environ['GITHUB_RUN_ID']}` did not complete successfully.
@@ -287,7 +329,7 @@ jobs:
           Review: {os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}
 
           No public-testnet authorization is implied or changed.
-          """
+          """)
           Path("release-failure.md").write_text(body, encoding="utf-8")
           PY
 
