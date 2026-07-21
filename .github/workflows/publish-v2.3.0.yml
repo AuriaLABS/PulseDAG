@@ -1,0 +1,216 @@
+name: Publish approved v2.3.0 release
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/publish-v2.3.0.yml
+
+permissions:
+  actions: read
+  contents: write
+  issues: read
+
+concurrency:
+  group: publish-v2.3.0
+  cancel-in-progress: false
+
+env:
+  TAG: v2.3.0
+  CANDIDATE_SHA: 7e43225f01ac05d15e5f1e3f1550d7850bf18cbc
+  CANDIDATE_RUN_ID: "29854712585"
+  CANDIDATE_ARTIFACT: v2_3_0_candidate_consolidated_29854712585
+
+jobs:
+  publish:
+    name: Verify authorization and publish binaries
+    if: github.repository == 'AuriaLABS/PulseDAG'
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Verify final authorization issue
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api "repos/${GITHUB_REPOSITORY}/issues/777" > issue-777.json
+          python - <<'PY'
+          import json
+          import re
+
+          issue = json.load(open("issue-777.json", encoding="utf-8"))
+          body = issue.get("body") or ""
+
+          if issue.get("state") != "closed":
+              raise SystemExit("issue #777 is not closed")
+
+          required_literals = [
+              "7e43225f01ac05d15e5f1e3f1550d7850bf18cbc",
+              "29854712585",
+              "sha256:7c56b92c8b1a1f3974473ba83380061cbf16129a223b909bef20976fc674ee02",
+              "- [x] `APPROVE_TAG_AND_PUBLICATION`",
+              "- [ ] `REQUEST_CHANGES`",
+              "- [ ] `NO_GO`",
+              "- `public_testnet_ready=false` remains unchanged.",
+              "- `thirty_day_public_testnet_clock_started=false` remains unchanged.",
+          ]
+          for literal in required_literals:
+              if literal not in body:
+                  raise SystemExit(f"missing authorization evidence: {literal}")
+
+          fields = {
+              "release rollback owner": r"- \[x\] Release rollback owner: `([^`]+)`",
+              "operations owner": r"- \[x\] Operations owner: `([^`]+)`",
+              "maintainer": r"- \[x\] Maintainer: `([^`]+)`",
+              "decision date": r"- \[x\] Decision date \(UTC\): `([^`]+)`",
+          }
+          for label, pattern in fields.items():
+              match = re.search(pattern, body)
+              if not match or not match.group(1).strip() or "___" in match.group(1):
+                  raise SystemExit(f"missing completed {label}")
+          PY
+
+      - name: Download exact consolidated candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          gh run download "${CANDIDATE_RUN_ID}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --name "${CANDIDATE_ARTIFACT}" \
+            --dir dist
+
+      - name: Verify candidate checksums and provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f dist/SHA256SUMS.txt
+          test -f dist/INSTALL-VERIFY.md
+          test -f dist/release-candidate-provenance.json
+
+          archive_count=$(find dist -maxdepth 1 -type f \( -name '*.tar.gz' -o -name '*.zip' \) | wc -l)
+          test "${archive_count}" -eq 6
+
+          (
+            cd dist
+            sha256sum -c SHA256SUMS.txt
+            for checksum in *.sha256; do
+              sha256sum -c "${checksum}"
+            done
+          )
+
+          python - <<'PY'
+          import hashlib
+          import json
+          from pathlib import Path
+
+          root = Path("dist")
+          provenance = json.loads((root / "release-candidate-provenance.json").read_text())
+          expected_sha = "7e43225f01ac05d15e5f1e3f1550d7850bf18cbc"
+          expected_run = "29854712585"
+
+          assert provenance["candidate_sha"] == expected_sha
+          assert provenance["release_tag"] == "v2.3.0"
+          assert provenance["artifact_count"] == 6
+          assert provenance["native_smoke_verified"] is True
+          assert provenance["public_testnet_ready"] is False
+          assert provenance["thirty_day_public_testnet_clock_started"] is False
+
+          records = provenance["artifacts"]
+          assert len(records) == 6
+          for record in records:
+              archive = root / record["archive"]
+              assert archive.is_file(), archive
+              digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+              assert digest == record["archive_sha256"]
+              assert record["tag"] == "v2.3.0"
+              assert record["provenance"]["commit"] == expected_sha
+              assert str(record["provenance"]["github_run_id"]) == expected_run
+              manifest = root / f'{record["archive"]}.json'
+              assert manifest.is_file(), manifest
+              manifest_record = json.loads(manifest.read_text())
+              assert manifest_record == record
+          PY
+
+      - name: Ensure tag is either absent or exact
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${TAG}" > existing-tag.json 2>/dev/null; then
+            existing_sha=$(jq -r '.object.sha' existing-tag.json)
+            test "${existing_sha}" = "${CANDIDATE_SHA}"
+          fi
+
+          if gh release view "${TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            echo "Release ${TAG} already exists; refusing to overwrite it."
+            exit 1
+          fi
+
+      - name: Build release notes
+        shell: bash
+        run: |
+          cat > release-notes.md <<'EOF'
+          # PulseDAG v2.3.0
+
+          This is the approved **private-testnet release** of PulseDAG v2.3.0.
+
+          ## Verified release identity
+
+          - Exact source candidate: `7e43225f01ac05d15e5f1e3f1550d7850bf18cbc`
+          - Exact-candidate workflow: `29854712585`
+          - Consolidated workflow artifact SHA-256: `7c56b92c8b1a1f3974473ba83380061cbf16129a223b909bef20976fc674ee02`
+          - Final authorization: issue #777 — `APPROVE_TAG_AND_PUBLICATION`
+          - Technical closeout: PR #776
+
+          ## Downloads
+
+          Native `pulsedagd` node and standalone `pulsedag-miner` archives are provided for:
+
+          - Linux x86_64 GNU
+          - Windows x86_64 MSVC
+          - macOS x86_64 Intel
+
+          Each archive is accompanied by an individual SHA-256 file and provenance manifest. Use `SHA256SUMS.txt` and `INSTALL-VERIFY.md` to verify and install the binaries.
+
+          ## Scope boundary
+
+          This release does **not** authorize a public-testnet launch or smart contracts.
+
+          - `public_testnet_ready=false`
+          - `thirty_day_public_testnet_clock_started=false`
+          - The 30-day clock begins only at the first separately authorized public-testnet launch.
+          EOF
+
+      - name: Create release and upload verified assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release create "${TAG}" dist/* \
+            --repo "${GITHUB_REPOSITORY}" \
+            --target "${CANDIDATE_SHA}" \
+            --title "PulseDAG v2.3.0" \
+            --notes-file release-notes.md
+
+      - name: Verify published release
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release view "${TAG}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --json tagName,isDraft,isPrerelease,assets,url > published-release.json
+
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          release = json.loads(Path("published-release.json").read_text())
+          expected_assets = sorted(path.name for path in Path("dist").iterdir() if path.is_file())
+          actual_assets = sorted(asset["name"] for asset in release["assets"])
+
+          assert release["tagName"] == "v2.3.0"
+          assert release["isDraft"] is False
+          assert release["isPrerelease"] is False
+          assert actual_assets == expected_assets, (actual_assets, expected_assets)
+          print(release["url"])
+          PY
