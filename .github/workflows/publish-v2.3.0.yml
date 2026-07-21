@@ -10,7 +10,7 @@ on:
 permissions:
   actions: read
   contents: write
-  issues: read
+  issues: write
 
 concurrency:
   group: publish-v2.3.0
@@ -133,18 +133,24 @@ jobs:
               assert manifest_record == record
           PY
 
-      - name: Ensure tag is either absent or exact
+      - name: Verify existing tag and release state
+        id: release_state
         shell: bash
         run: |
           set -euo pipefail
           if gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${TAG}" > existing-tag.json 2>/dev/null; then
-            existing_sha=$(jq -r '.object.sha' existing-tag.json)
-            test "${existing_sha}" = "${CANDIDATE_SHA}"
+            tag_type=$(jq -r '.object.type' existing-tag.json)
+            tag_sha=$(jq -r '.object.sha' existing-tag.json)
+            if [ "${tag_type}" = "tag" ]; then
+              tag_sha=$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${tag_sha}" --jq '.object.sha')
+            fi
+            test "${tag_sha}" = "${CANDIDATE_SHA}"
           fi
 
           if gh release view "${TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
-            echo "Release ${TAG} already exists; refusing to overwrite it."
-            exit 1
+            echo "exists=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "exists=false" >> "${GITHUB_OUTPUT}"
           fi
 
       - name: Build release notes
@@ -183,6 +189,7 @@ jobs:
           EOF
 
       - name: Create release and upload verified assets
+        if: steps.release_state.outputs.exists != 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -191,6 +198,15 @@ jobs:
             --target "${CANDIDATE_SHA}" \
             --title "PulseDAG v2.3.0" \
             --notes-file release-notes.md
+
+      - name: Reconcile assets on existing release
+        if: steps.release_state.outputs.exists == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release upload "${TAG}" dist/* \
+            --repo "${GITHUB_REPOSITORY}" \
+            --clobber
 
       - name: Verify published release
         shell: bash
@@ -214,3 +230,64 @@ jobs:
           assert actual_assets == expected_assets, (actual_assets, expected_assets)
           print(release["url"])
           PY
+
+      - name: Record successful publication in issue 777
+        shell: bash
+        run: |
+          set -euo pipefail
+          release_url=$(jq -r '.url' published-release.json)
+          asset_count=$(jq '.assets | length' published-release.json)
+          marker='<!-- pulsedag-v2.3.0-release-publication -->'
+          cat > release-confirmation.md <<EOF
+          ${marker}
+          ## PulseDAG v2.3.0 published
+
+          The approved private-testnet release has been published and independently rechecked by workflow run `${GITHUB_RUN_ID}`.
+
+          - Release: ${release_url}
+          - Tag: `v2.3.0`
+          - Exact candidate: `7e43225f01ac05d15e5f1e3f1550d7850bf18cbc`
+          - Candidate workflow: `29854712585`
+          - Published assets: `${asset_count}`
+          - Aggregate candidate artifact digest: `sha256:7c56b92c8b1a1f3974473ba83380061cbf16129a223b909bef20976fc674ee02`
+          - Publication workflow: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
+
+          Safety boundary remains unchanged: `public_testnet_ready=false` and `thirty_day_public_testnet_clock_started=false`.
+          EOF
+
+          existing_id=$(gh api "repos/${GITHUB_REPOSITORY}/issues/777/comments?per_page=100" \
+            --jq ".[] | select(.body | contains(\"${marker}\")) | .id" | tail -n 1)
+          if [ -n "${existing_id}" ]; then
+            gh api --method PATCH "repos/${GITHUB_REPOSITORY}/issues/comments/${existing_id}" \
+              -f body="$(cat release-confirmation.md)" >/dev/null
+          else
+            gh api --method POST "repos/${GITHUB_REPOSITORY}/issues/777/comments" \
+              -f body="$(cat release-confirmation.md)" >/dev/null
+          fi
+
+      - name: Record publication failure in issue 777
+        if: failure()
+        continue-on-error: true
+        shell: bash
+        run: |
+          marker='<!-- pulsedag-v2.3.0-release-publication-failure -->'
+          cat > release-failure.md <<EOF
+          ${marker}
+          ## PulseDAG v2.3.0 publication failed
+
+          Publication workflow `${GITHUB_RUN_ID}` did not complete successfully.
+
+          Review: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
+
+          No public-testnet authorization is implied or changed.
+          EOF
+
+          existing_id=$(gh api "repos/${GITHUB_REPOSITORY}/issues/777/comments?per_page=100" \
+            --jq ".[] | select(.body | contains(\"${marker}\")) | .id" | tail -n 1)
+          if [ -n "${existing_id}" ]; then
+            gh api --method PATCH "repos/${GITHUB_REPOSITORY}/issues/comments/${existing_id}" \
+              -f body="$(cat release-failure.md)" >/dev/null
+          else
+            gh api --method POST "repos/${GITHUB_REPOSITORY}/issues/777/comments" \
+              -f body="$(cat release-failure.md)" >/dev/null
+          fi
