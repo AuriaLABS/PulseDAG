@@ -9,6 +9,12 @@
 - `v2_3_0_private_5n_4m_rehearsal.sh`
 - `docker_v2_3_0_rehearsal.sh`
 
+### Baseline and performance evidence
+
+- `p2p_sync_rpc_baselines_v2_3_0.py`
+- `p2p-sync-rpc-baseline.sh`
+- `hot-path-baseline.sh`
+
 ### Release and verification
 
 - `release/package_release_artifacts.py`
