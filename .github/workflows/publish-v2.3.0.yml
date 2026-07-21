@@ -235,26 +235,31 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          release_url=$(jq -r '.url' published-release.json)
-          asset_count=$(jq '.assets | length' published-release.json)
-          marker='<!-- pulsedag-v2.3.0-release-publication -->'
-          cat > release-confirmation.md <<EOF
-          ${marker}
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          release = json.loads(Path("published-release.json").read_text())
+          body = f"""<!-- pulsedag-v2.3.0-release-publication -->
           ## PulseDAG v2.3.0 published
 
-          The approved private-testnet release has been published and independently rechecked by workflow run `${GITHUB_RUN_ID}`.
+          The approved private-testnet release has been published and independently rechecked by workflow run `{os.environ['GITHUB_RUN_ID']}`.
 
-          - Release: ${release_url}
+          - Release: {release['url']}
           - Tag: `v2.3.0`
           - Exact candidate: `7e43225f01ac05d15e5f1e3f1550d7850bf18cbc`
           - Candidate workflow: `29854712585`
-          - Published assets: `${asset_count}`
+          - Published assets: `{len(release['assets'])}`
           - Aggregate candidate artifact digest: `sha256:7c56b92c8b1a1f3974473ba83380061cbf16129a223b909bef20976fc674ee02`
-          - Publication workflow: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
+          - Publication workflow: {os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}
 
           Safety boundary remains unchanged: `public_testnet_ready=false` and `thirty_day_public_testnet_clock_started=false`.
-          EOF
+          """
+          Path("release-confirmation.md").write_text(body, encoding="utf-8")
+          PY
 
+          marker='<!-- pulsedag-v2.3.0-release-publication -->'
           existing_id=$(gh api "repos/${GITHUB_REPOSITORY}/issues/777/comments?per_page=100" \
             --jq ".[] | select(.body | contains(\"${marker}\")) | .id" | tail -n 1)
           if [ -n "${existing_id}" ]; then
@@ -270,18 +275,23 @@ jobs:
         continue-on-error: true
         shell: bash
         run: |
-          marker='<!-- pulsedag-v2.3.0-release-publication-failure -->'
-          cat > release-failure.md <<EOF
-          ${marker}
+          python - <<'PY'
+          import os
+          from pathlib import Path
+
+          body = f"""<!-- pulsedag-v2.3.0-release-publication-failure -->
           ## PulseDAG v2.3.0 publication failed
 
-          Publication workflow `${GITHUB_RUN_ID}` did not complete successfully.
+          Publication workflow `{os.environ['GITHUB_RUN_ID']}` did not complete successfully.
 
-          Review: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
+          Review: {os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}
 
           No public-testnet authorization is implied or changed.
-          EOF
+          """
+          Path("release-failure.md").write_text(body, encoding="utf-8")
+          PY
 
+          marker='<!-- pulsedag-v2.3.0-release-publication-failure -->'
           existing_id=$(gh api "repos/${GITHUB_REPOSITORY}/issues/777/comments?per_page=100" \
             --jq ".[] | select(.body | contains(\"${marker}\")) | .id" | tail -n 1)
           if [ -n "${existing_id}" ]; then
