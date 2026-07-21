@@ -10,8 +10,15 @@ Provide the canonical day-to-day operating sequence for a multi-host PulseDAG pr
 - Node RPC remains loopback-only.
 - Mining remains external to the node; no embedded pool logic.
 - Smart contracts remain disabled and out of scope.
-- `VERSION` and Cargo remain `2.2.20` until a separate release decision.
-- This runbook does not authorize a public testnet or start the 30-day public-testnet clock.
+- The active candidate identifies itself as `VERSION=v2.3.0` with Cargo workspace version `2.3.0`.
+- This runbook does not authorize a tag, publication, public-testnet launch, or the start/backdating of the 30-day public-testnet clock.
+- `public_testnet_ready=false` remains mandatory until a separate public-testnet decision explicitly changes it.
+
+## Candidate binding and evidence
+
+Before private-testnet release closeout, record one exact candidate SHA and run the required lifecycle, recovery, packaging, smoke, evidence, and repository gates against that SHA. Evidence from an earlier candidate remains historical and must not be silently relabelled after active documentation, workflow, packaging, or operator-entrypoint changes.
+
+An evidence-only closeout update may reference the already tested candidate, but it must not change runtime code or packaged release inputs. Any later change to runtime code, `README.md`, `docs/INSTALL_BINARIES_V2_3_0.md`, packaging scripts, release workflows, or release metadata requires a new exact-candidate evidence run.
 
 ## Host layout
 
@@ -145,9 +152,10 @@ After upgrade or rollback, verify height monotonicity, sync consistency, peer re
 
 ## 5. Snapshot, prune, restore, and backup
 
-- Use `docs/runbooks/SNAPSHOT_RESTORE.md` for snapshot restore.
+- Use `docs/runbooks/SNAPSHOT_RESTORE.md` for snapshot restore and candidate-scoped RTO evidence.
 - Use `docs/runbooks/SNAPSHOT_PRUNE_RESTORE_DRILL.md` for the guarded private-testnet drill.
 - Use `docs/runbooks/REBUILD_FROM_SNAPSHOT_AND_DELTA.md` when replay or persisted-state divergence requires rebuild.
+- Run the selected recovery drill against the exact release candidate and attach pre-action, post-action, timing, consistency, and readiness evidence to the closeout record.
 - Do not prune without a valid snapshot when `PULSEDAG_PRUNE_REQUIRE_SNAPSHOT=true`.
 - Back up identity material separately from RocksDB and snapshot data.
 - Never copy a live RocksDB directory without the supported snapshot/backup procedure.

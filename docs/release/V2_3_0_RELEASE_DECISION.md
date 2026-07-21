@@ -45,10 +45,19 @@ Task 12 protected private-testnet `GO`:
 4. finalize release notes and candidate metadata;
 5. rerun every required CI, P2P, release, packaging, smoke, evidence, and hygiene gate on the exact versioned candidate.
 
+## Post-cleanup exact-candidate refresh
+
+Repository cleanup PR `#775` was merged after the first successful versioned-candidate packaging run. It changed active documentation, release checks, workflows, Docker surfaces, and operator entrypoints while declaring no protocol or dependency change. Therefore the earlier candidate run remains useful historical evidence but is not the final post-cleanup exact-candidate artifact set.
+
+PR `#776` corrects the active v2.3.0 operations and recovery identity, records closeout progress, and requests a fresh exact-candidate workflow on its final evaluated head. The refreshed workflow must rebuild and natively smoke-test Linux, Windows, and macOS node/miner archives, regenerate checksums and manifests, produce provenance and install-verification evidence, and preserve all release/public-testnet guardrails.
+
+This refresh request does not change the current decision and does not authorize tagging or publication. The exact candidate SHA, workflow run, artifact names, digests, and independent review result remain pending until the refreshed run completes and is recorded outside the tested candidate commit or in a later evidence-only closeout record.
+
 ## Remaining risks and required follow-up
 
-- The exact versioned candidate must pass all post-bump gates.
-- Release archives, manifests, checksums, and provenance attestations must be generated and independently reviewed.
+- The post-cleanup exact versioned candidate must pass all required gates.
+- Release archives, manifests, checksums, native smoke results, and provenance attestations must be generated and independently reviewed for that exact candidate.
+- Snapshot, restore, rebuild, and reconciliation evidence must be bound to the exact candidate or explicitly accepted as a non-blocking limitation with owner, expiry, and exit criteria.
 - Any dependency drift, smoke failure, replay/storage inconsistency, packaging mismatch, or unresolved SEV-1 incident changes the final decision to `NO_GO` or `REQUEST_CHANGES`.
 - A final private-testnet release decision must be recorded before any tag or publication.
 
