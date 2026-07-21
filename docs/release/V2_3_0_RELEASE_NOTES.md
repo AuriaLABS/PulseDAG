@@ -1,6 +1,6 @@
-# PulseDAG v2.3.0 release notes — draft
+# PulseDAG v2.3.0 release notes
 
-> Draft only. These notes do not represent a published release and do not authorize a version bump or tag.
+> Release-candidate notes. Publication remains blocked until the exact versioned candidate passes every required gate and a final private-testnet release decision is recorded.
 
 ## Overview
 
@@ -25,7 +25,7 @@ v2.3.0 prepares PulseDAG for repeatable private-testnet operations. The release 
 
 ### Accurate real-network peer semantics
 
-- Connected-peer counts in `libp2p-real` mode now require active transport sessions.
+- Connected-peer counts in `libp2p-real` mode require active transport sessions.
 - Indirect gossipsub authors no longer appear as directly connected peers or direct sync candidates.
 - Direct connection establishment and closure control connected and selected-sync surfaces.
 - Complete P2P library and real-swarm regression coverage protects ranking, recovery, hysteresis, diversity, and connection budgets.
@@ -86,15 +86,15 @@ No storage-format migration is included. Preserve persistent identity, RocksDB, 
 
 Mining remains external. Install and operate `pulsedag-miner` separately from `pulsedagd`.
 
-## Release assets planned
+## Release assets
 
-Separate node and standalone-miner archives for:
+The exact candidate must produce separate node and standalone-miner archives for:
 
 - Linux x86_64;
 - Windows x86_64;
 - macOS x86_64.
 
-Each archive must include a checksum, build manifest, provenance attestation, and successful unpack-and-smoke evidence. Follow `docs/INSTALL_BINARIES_V2_3_0.md` only after an approved v2.3.0 release is published.
+Each archive requires a checksum, build manifest, provenance attestation, and successful unpack-and-smoke evidence. Follow `docs/INSTALL_BINARIES_V2_3_0.md` only after the final v2.3.0 release is published.
 
 ## Known limitations
 
@@ -108,8 +108,11 @@ Each archive must include a checksum, build manifest, provenance attestation, an
 
 Do not bypass checksum, manifest, provenance, preflight, health, replay, storage-consistency, or release gates. Any SEV-1 consensus, sync, storage, credential, identity, or release incident is a no-go.
 
-## Decision state
+## Candidate decision state
 
-`PENDING_MAINTAINER_DECISION`
-
-A separate explicit approval is required before changing `VERSION` or Cargo to 2.3.0. After that change, all exact-candidate gates must run again before any tag or publication.
+- Maintainer proposal decision: `APPROVE_RELEASE_CANDIDATE`.
+- Version bump: authorized and applied to the candidate.
+- Final private-testnet release decision: `PENDING_FINAL_CANDIDATE_EVIDENCE`.
+- Tag and publication: not authorized yet.
+- `public_testnet_ready=false`.
+- `thirty_day_public_testnet_clock_started=false`.

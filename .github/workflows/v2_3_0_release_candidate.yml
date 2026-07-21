@@ -1,0 +1,386 @@
+name: v2.3.0 exact release candidate
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - VERSION
+      - Cargo.toml
+      - Cargo.lock
+      - docs/INSTALL_BINARIES_V2_3_0.md
+      - docs/ROADMAP_V2_3_0.md
+      - docs/release/**
+      - scripts/validate_v2_3_0_release_candidate.py
+      - scripts/release/**
+      - .github/workflows/release-binaries.yml
+      - .github/workflows/v2_3_0_release_candidate.yml
+      - .github/workflows/v2_3_0_release_proposal.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  candidate-contract:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+
+      - name: Fetch immutable base tag
+        shell: bash
+        run: git fetch --force --tags origin v2.2.20
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Enforce committed deterministic Cargo metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo metadata --locked --format-version 1 >/dev/null
+          git diff --exit-code -- Cargo.lock
+
+      - name: Validate exact v2.3.0 candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/validate_v2_3_0_release_candidate.py \
+            --out-dir ci-evidence/v2.3.0-release-candidate
+
+      - name: Validate English comments
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/check_code_comment_language.py \
+            scripts/validate_v2_3_0_release_candidate.py \
+            scripts/release/flatten_candidate_assets.py
+
+      - name: Run repository hygiene
+        shell: bash
+        run: bash scripts/repository_hygiene.sh --strict
+
+      - name: Enforce candidate manifest
+        shell: bash
+        env:
+          CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          manifest=ci-evidence/v2.3.0-release-candidate/release-candidate-manifest.json
+          jq -e --arg sha "$CANDIDATE_SHA" '
+            .gate == "v2.3.0-exact-release-candidate" and
+            .candidate_sha == $sha and
+            .base_tag == "v2.2.20" and
+            .base_sha == "14a1c38249830ee6912d8e70d6d223126cf7f63b" and
+            .proposal_sha == "4a3d4e3df587f9bd6f438ddd7359a5148f0cff8e" and
+            .runtime_crate_files == ["crates/pulsedag-p2p/src/lib.rs"] and
+            .version == "v2.3.0" and
+            .cargo_version == "2.3.0" and
+            .lockfile.workspace_version == "2.3.0" and
+            .lockfile.dependency_drift == false and
+            .proposal_decision == "APPROVE_RELEASE_CANDIDATE" and
+            .final_release_decision == "PENDING_FINAL_CANDIDATE_EVIDENCE" and
+            .version_bump_authorized == true and
+            .tag_authorized == false and
+            .publication_authorized == false and
+            .public_testnet_ready == false and
+            .thirty_day_public_testnet_clock_started == false and
+            .result == "PASS"
+          ' "$manifest" >/dev/null
+
+      - name: Build portable contract checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          evidence_dir=ci-evidence/v2.3.0-release-candidate
+          (
+            cd "$evidence_dir"
+            sha256sum release-candidate-manifest.json > SHA256SUMS
+            sha256sum -c SHA256SUMS
+          )
+
+      - name: Upload candidate contract evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v2_3_0_candidate_contract_${{ github.run_id }}
+          path: ci-evidence/v2.3.0-release-candidate
+          if-no-files-found: error
+          retention-days: 180
+
+  package-candidate:
+    needs: candidate-contract
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x86_64
+            os: ubuntu-latest
+            expected_target: x86_64-unknown-linux-gnu
+          - name: windows-x86_64
+            os: windows-latest
+            expected_target: x86_64-pc-windows-msvc
+          - name: macos-x86_64
+            os: macos-15-intel
+            expected_target: x86_64-apple-darwin
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 75
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Validate locked metadata
+        shell: bash
+        run: cargo metadata --locked --format-version 1 >/dev/null
+
+      - name: Build node and standalone miner
+        shell: bash
+        run: cargo build --locked --release --bin pulsedagd --bin pulsedag-miner
+
+      - name: Package candidate assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            node_binary=target/release/pulsedagd.exe
+            miner_binary=target/release/pulsedag-miner.exe
+          else
+            node_binary=target/release/pulsedagd
+            miner_binary=target/release/pulsedag-miner
+          fi
+          python scripts/release/package_release_artifacts.py \
+            --binary "$node_binary" \
+            --output-dir dist \
+            --tag v2.3.0 \
+            --bin-name pulsedagd \
+            --repository "${{ github.repository }}" \
+            --commit "${{ github.event.pull_request.head.sha || github.sha }}" \
+            --run-id "${{ github.run_id }}" \
+            --run-attempt "${{ github.run_attempt }}" \
+            --include-file README.md \
+            --include-file docs/INSTALL_BINARIES_V2_3_0.md
+          python scripts/release/package_release_artifacts.py \
+            --binary "$miner_binary" \
+            --output-dir dist \
+            --tag v2.3.0 \
+            --bin-name pulsedag-miner \
+            --repository "${{ github.repository }}" \
+            --commit "${{ github.event.pull_request.head.sha || github.sha }}" \
+            --run-id "${{ github.run_id }}" \
+            --run-attempt "${{ github.run_attempt }}" \
+            --include-file README.md \
+            --include-file docs/INSTALL_BINARIES_V2_3_0.md
+
+      - name: Verify packaged candidate assets on native runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/release/verify_release_artifacts.py \
+            --artifacts-dir dist \
+            --expected-tag v2.3.0 \
+            --smoke \
+            --smoke-timeout-secs 10 \
+            --expect-binaries pulsedagd pulsedag-miner \
+            --expect-targets "${{ matrix.expected_target }}"
+
+      - name: Attest candidate archives
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            dist/*.tar.gz
+            dist/*.zip
+
+      - name: Upload candidate platform bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: v2_3_0_candidate_${{ matrix.name }}_${{ github.run_id }}
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/*.sha256
+            dist/*.json
+          if-no-files-found: error
+          retention-days: 180
+
+  consolidate-candidate:
+    needs: package-candidate
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Download platform bundles
+        uses: actions/download-artifact@v4
+        with:
+          pattern: v2_3_0_candidate_*-x86_64_${{ github.run_id }}
+          path: artifacts
+
+      - name: Flatten candidate assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/release/flatten_candidate_assets.py \
+            --source artifacts \
+            --dest final
+
+      - name: Verify checksums and manifests
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          release_files=(final/*.tar.gz final/*.zip)
+          checksum_files=(final/*.sha256)
+          manifest_files=(final/*.tar.gz.json final/*.zip.json)
+          test "${#release_files[@]}" -eq 6
+          test "${#checksum_files[@]}" -eq 6
+          test "${#manifest_files[@]}" -eq 6
+          for checksum in "${checksum_files[@]}"; do
+            (cd final && sha256sum -c "$(basename "$checksum")")
+          done
+          {
+            printf '# Consolidated checksums for v2.3.0 candidate\n'
+            for file in "${release_files[@]}"; do
+              (cd final && sha256sum "$(basename "$file")")
+            done
+          } > final/SHA256SUMS.txt
+
+      - name: Build candidate provenance summary
+        shell: bash
+        env:
+          CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import glob
+          import json
+          import os
+          from pathlib import Path
+
+          manifests = []
+          for path in sorted(glob.glob("final/*.tar.gz.json") + glob.glob("final/*.zip.json")):
+              with open(path, "r", encoding="utf-8") as handle:
+                  manifests.append(json.load(handle))
+          out = {
+              "gate": "v2.3.0-release-candidate-artifacts",
+              "candidate_sha": os.environ["CANDIDATE_SHA"],
+              "release_tag": "v2.3.0",
+              "artifact_count": 6,
+              "artifacts": manifests,
+              "native_smoke_verified": True,
+              "final_release_decision": "PENDING_FINAL_CANDIDATE_EVIDENCE",
+              "tag_authorized": False,
+              "publication_authorized": False,
+              "public_testnet_ready": False,
+              "thirty_day_public_testnet_clock_started": False,
+          }
+          Path("final/release-candidate-provenance.json").write_text(
+              json.dumps(out, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+      - name: Generate install verification guide
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/release/render_install_guide.py \
+            --artifacts-dir final \
+            --expected-tag v2.3.0 \
+            --output final/INSTALL-VERIFY.md
+
+      - name: Verify consolidated candidate structure
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/release/verify_release_artifacts.py \
+            --artifacts-dir final \
+            --expected-tag v2.3.0 \
+            --expect-binaries pulsedagd pulsedag-miner \
+            --expect-targets x86_64-unknown-linux-gnu x86_64-pc-windows-msvc x86_64-apple-darwin \
+            --consolidated-checksums final/SHA256SUMS.txt \
+            --provenance-summary final/release-candidate-provenance.json
+
+      - name: Enforce isolated candidate bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(find final -maxdepth 1 -type f | wc -l)" -eq 21
+          while IFS= read -r path; do
+            name=$(basename "$path")
+            case "$name" in
+              *.tar.gz|*.zip|*.tar.gz.sha256|*.zip.sha256|*.tar.gz.json|*.zip.json|SHA256SUMS.txt|INSTALL-VERIFY.md|release-candidate-provenance.json)
+                ;;
+              *)
+                echo "unexpected file in candidate bundle: $name" >&2
+                exit 1
+                ;;
+            esac
+          done < <(find final -maxdepth 1 -type f -print | sort)
+
+      - name: Enforce no publication authorization
+        shell: bash
+        run: |
+          set -euo pipefail
+          jq -e '
+            .gate == "v2.3.0-release-candidate-artifacts" and
+            .artifact_count == 6 and
+            .native_smoke_verified == true and
+            .final_release_decision == "PENDING_FINAL_CANDIDATE_EVIDENCE" and
+            .tag_authorized == false and
+            .publication_authorized == false and
+            .public_testnet_ready == false and
+            .thirty_day_public_testnet_clock_started == false
+          ' final/release-candidate-provenance.json >/dev/null
+
+      - name: Upload consolidated candidate evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: v2_3_0_candidate_consolidated_${{ github.run_id }}
+          path: |
+            final/*.tar.gz
+            final/*.zip
+            final/*.tar.gz.sha256
+            final/*.zip.sha256
+            final/*.tar.gz.json
+            final/*.zip.json
+            final/SHA256SUMS.txt
+            final/INSTALL-VERIFY.md
+            final/release-candidate-provenance.json
+          if-no-files-found: error
+          retention-days: 180

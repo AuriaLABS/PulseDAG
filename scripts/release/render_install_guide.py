@@ -6,6 +6,34 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+from typing import Any
+
+ASSET_MANIFEST_FIELDS = {
+    "archive",
+    "archive_sha256",
+    "binary",
+    "tag",
+    "target",
+}
+
+
+def load_asset_manifests(artifacts_dir: Path) -> list[dict[str, Any]]:
+    """Load per-asset manifests while ignoring aggregate provenance summaries."""
+    manifests: list[dict[str, Any]] = []
+    for path in sorted(artifacts_dir.glob("*.json")):
+        value = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(value, dict):
+            raise SystemExit(f"JSON evidence is not an object: {path.name}")
+        present = ASSET_MANIFEST_FIELDS.intersection(value)
+        if not present:
+            continue
+        missing = ASSET_MANIFEST_FIELDS.difference(value)
+        if missing:
+            raise SystemExit(
+                f"Incomplete asset manifest {path.name}: missing {sorted(missing)}"
+            )
+        manifests.append(value)
+    return manifests
 
 
 def main() -> None:
@@ -15,12 +43,9 @@ def main() -> None:
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
 
-    manifests = []
-    for path in sorted(args.artifacts_dir.glob("*.json")):
-        manifests.append(json.loads(path.read_text(encoding="utf-8")))
-
+    manifests = load_asset_manifests(args.artifacts_dir)
     if not manifests:
-        raise SystemExit("No manifest files found")
+        raise SystemExit("No asset manifest files found")
 
     for manifest in manifests:
         if manifest.get("tag") != args.expected_tag:
