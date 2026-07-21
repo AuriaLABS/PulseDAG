@@ -2,7 +2,7 @@
 set -euo pipefail
 
 if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
-  exec python3 scripts/p2p_sync_rpc_baselines.py --help
+  exec python3 scripts/p2p_sync_rpc_baselines_v2_3_0.py --help
 fi
 
 args=()
@@ -12,7 +12,7 @@ if [[ "${1:-}" != "" && "${1:-}" != --* ]]; then
   args+=(--base-url "$base_url")
 fi
 
-exec python3 scripts/p2p_sync_rpc_baselines.py \
+exec python3 scripts/p2p_sync_rpc_baselines_v2_3_0.py \
   "${args[@]}" \
   --iterations 30 \
   --sync-stable-polls 5 \
