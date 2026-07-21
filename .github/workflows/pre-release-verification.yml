@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: "Release tag under verification (example: v2.2.5-rc1)"
+        description: "Release tag under verification (example: v2.3.0-rc1)"
         required: false
-        default: "v2.2.5"
+        default: "v2.3.0"
         type: string
   pull_request:
     paths:
@@ -37,7 +37,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 120
     env:
-      RELEASE_TAG: ${{ github.event.inputs.release_tag || 'v2.2.5' }}
+      RELEASE_TAG: ${{ github.event.inputs.release_tag || 'v2.3.0' }}
       RUST_TEST_THREADS: 1
       NODE_URL: http://127.0.0.1:8080
       NODE_PID_FILE: node.pid
@@ -205,7 +205,7 @@ jobs:
             docs/release/ARTIFACTS.md
             docs/RELEASE_EVIDENCE.md
             docs/BURN_IN_GATE.md
-            docs/checklists/V2_2_5_BURNIN_CLOSEOUT.md
+            docs/checklists/V2_3_0_PRIVATE_TESTNET_RELEASE_CLOSEOUT.md
             docs/checklists/PUBLIC_TESTNET_OPERATOR_ENTRY_CHECKLIST.md
             scripts/release/standalone_operator_smoke.sh
             scripts/release/verify_release_artifacts.py
