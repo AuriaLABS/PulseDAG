@@ -14,22 +14,23 @@ Use this checklist to record the final private-testnet release decision for the 
 - Current `main`: `f9f88c3536dccbeed92b1ae7c1eae82871458588` from PR `#775`.
 - Previously packaged candidate: `629b35fe2dcf27bebfa4ac9ad51458ce255221d0`.
 - PR `#775` was merged after the packaged candidate and changed active documentation, workflows, Docker surfaces, release checks, and operator entrypoints. It declared no protocol or dependency changes, but the final exact candidate and its publication evidence must still be rebound to one final SHA.
+- PR `#776` now corrects the active v2.3.0 operations/recovery identity and changes `docs/release/V2_3_0_RELEASE_DECISION.md`, which requests a fresh exact-candidate workflow for the final evaluated PR head.
 - Current release state remains `PENDING_FINAL_CANDIDATE_EVIDENCE`.
 - `public_testnet_ready=false` and `thirty_day_public_testnet_clock_started=false` remain mandatory.
 
 ## Candidate identity
 
-- [ ] Exact final candidate commit recorded. Current `main` is `f9f88c3536dccbeed92b1ae7c1eae82871458588`; the earlier packaged candidate `629b35fe2dcf27bebfa4ac9ad51458ce255221d0` is retained as prior evidence but is not the current `main` SHA.
+- [ ] Exact final candidate commit recorded. Current `main` is `f9f88c3536dccbeed92b1ae7c1eae82871458588`; the earlier packaged candidate `629b35fe2dcf27bebfa4ac9ad51458ce255221d0` is retained as prior evidence but is not the current post-cleanup candidate.
 - [x] `VERSION=v2.3.0` and Cargo workspace version `2.3.0` verified.
 - [x] Approval record and proposal SHA verified: decision `APPROVE_RELEASE_CANDIDATE`, proposal SHA `4a3d4e3df587f9bd6f438ddd7359a5148f0cff8e`, proposal merge commit `fec0b304a2544245826e5f799d9932d157818d43`.
-- [ ] Candidate evidence workflow and artifact digests recorded for the exact final candidate. Previous run `29800778099` is recorded below and must be rerun or explicitly rebound to the final SHA under the release policy.
+- [ ] Candidate evidence workflow and artifact digests recorded for the exact final candidate. Previous run `29800778099` is recorded below; the post-cleanup refresh requested by PR `#776` must complete and be reviewed.
 - [x] No dependency drift beyond the approved workspace version update. The exact-candidate contract passed for `629b35fe2dcf27bebfa4ac9ad51458ce255221d0`, and PR `#775` declared no protocol or dependency changes.
 
 ## Required candidate evidence
 
 - [x] Repository hygiene and active-version surface audit pass. PR `#775` head `bb66b6d9efbf0bc65fbbceea18dd3280fd3d6af7` passed workflow run `29834891685` before being merged to `main` as `f9f88c3536dccbeed92b1ae7c1eae82871458588`.
 - [x] Workspace format, locked check, all package tests, and Clippy pass. The earlier exact candidate passed run `29800778225`; the post-cleanup tree also passed pre-burn-in run `29834893035` and Lint run `29834892551`.
-- [ ] P2P, lifecycle, bootstrap, observability, RPC, release, and runbook gates pass as one final-candidate bundle. Most component gates are green, but the canonical operations runbook still contains a stale pre-bump `VERSION`/Cargo statement and active snapshot-recovery material remains labelled as v2.2 compatibility guidance.
+- [ ] P2P, lifecycle, bootstrap, observability, RPC, release, and runbook gates pass as one final-candidate bundle. Active operations, snapshot/restore, guarded drill, and snapshot+delta rebuild documentation are now candidate-scoped for v2.3.0 in PR `#776`; the refreshed gates remain to be reviewed on one exact head.
 - [ ] Linux, Windows, and macOS node/miner archives are built on native runners for the exact final candidate. Previous candidate run `29800778099` passed all three native packaging jobs.
 - [ ] Native smoke tests pass for each target on the exact final candidate. Previous candidate run `29800778099` passed native asset verification on Linux, Windows, and macOS.
 - [ ] Every archive has a matching SHA-256 file and provenance manifest for the exact final candidate. Previous candidate evidence exists and is recorded below.
@@ -42,7 +43,7 @@ Use this checklist to record the final private-testnet release decision for the 
 - [x] Installation and checksum instructions are current for v2.3.0 in `docs/INSTALL_BINARIES_V2_3_0.md`.
 - [x] Node lifecycle install/start/stop/upgrade/rollback procedures pass. Post-cleanup lifecycle workflow run `29834892286` passed.
 - [x] Bootnode addresses include the complete `/p2p/<peer-id>` component. The Task 12 topology contract and post-cleanup bootstrap workflow run `29834892270` passed.
-- [ ] Snapshot, restore, rebuild, and reconciliation procedures are documented and tested for the final v2.3.0 candidate. The procedures exist, but the active recovery documents still carry v2.2 identity/evidence wording and need an explicit v2.3.0 candidate-scoped closure.
+- [ ] Snapshot, restore, rebuild, and reconciliation procedures are documented and tested for the final v2.3.0 candidate. The active procedures are now documented with v2.3.0 identity, loopback RPC examples, candidate binding, evidence requirements, RTO, reconciliation, and failure criteria; a fresh candidate-scoped execution bundle is still required.
 - [x] External miner operation is documented; pool logic remains outside the node.
 - [ ] Release rollback owner and decision path are recorded. The lifecycle rollback path exists, but the named owner and final release decision path are not yet signed off in this checklist.
 
@@ -116,9 +117,9 @@ The 30-day clock must not start or be backdated before the first public-testnet 
 
 ## Remaining blockers before a final decision
 
-1. Nominate and record one exact final candidate SHA after PR `#775`.
-2. Rerun the exact-candidate native packaging, smoke, checksum, manifest, provenance, and consolidation workflow on that SHA.
-3. Correct the stale v2.2 identity wording in the active v2.3.0 operations/recovery documentation and rerun the runbook gate.
+1. Nominate and record one exact final candidate SHA after the PR `#776` changes stabilize.
+2. Complete and independently review the refreshed exact-candidate native packaging, smoke, checksum, manifest, provenance, and consolidation workflow.
+3. Run and retain candidate-scoped snapshot/restore/rebuild/reconciliation evidence, or record an explicit non-blocking waiver with owner, expiry, and exit criteria.
 4. Record a final incident/waiver ledger proving no unresolved SEV-1 blocker.
 5. Assign the release rollback owner and complete sign-off.
 6. Record exactly one final private-testnet release decision.
