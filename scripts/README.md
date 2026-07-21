@@ -9,6 +9,8 @@
 - `v2_3_0_private_5n_4m_rehearsal.sh`
 - `docker_v2_3_0_rehearsal.sh`
 
+The three staged wrappers route through `v2_3_0_private_rehearsal_compat.sh`. The adapter preserves the accepted compatibility engine while changing its visible evidence identity and default artifact root to v2.3.0. Current workflows must not invoke a v2.2.x stage wrapper directly.
+
 ### Baseline and performance evidence
 
 - `p2p_sync_rpc_baselines_v2_3_0.py`
