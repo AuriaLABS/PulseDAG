@@ -62,7 +62,8 @@ jobs:
         run: |
           set -euo pipefail
           python3 scripts/check_code_comment_language.py \
-            scripts/validate_v2_3_0_release_candidate.py
+            scripts/validate_v2_3_0_release_candidate.py \
+            scripts/release/flatten_candidate_assets.py
 
       - name: Run repository hygiene
         shell: bash
@@ -254,17 +255,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          rm -rf final
-          mkdir -p final
-          files=$(find artifacts -type f | wc -l)
-          test "$files" -eq 18
-          duplicate_names=$(find artifacts -type f -printf '%f\n' | sort | uniq -d)
-          if [ -n "$duplicate_names" ]; then
-            echo "duplicate candidate asset names:" >&2
-            echo "$duplicate_names" >&2
-            exit 1
-          fi
-          find artifacts -type f -exec cp "{}" final/ \;
+          python3 scripts/release/flatten_candidate_assets.py \
+            --source artifacts \
+            --dest final
 
       - name: Verify checksums and manifests
         shell: bash
