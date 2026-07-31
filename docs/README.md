@@ -1,6 +1,6 @@
 # PulseDAG documentation
 
-Active documentation targets the `v2.3.0` private-testnet release candidate.
+Active release documentation targets the `v2.3.0` private-testnet line. Planning for `v2.4.0` is active on the `release/2.4.0` branch and does not authorize a version bump, tag, or public-testnet launch.
 
 ## Operator documentation
 
@@ -22,6 +22,7 @@ Active documentation targets the `v2.3.0` private-testnet release candidate.
 
 ## Planning and decisions
 
+- [`ROADMAP_V2_4_0.md`](ROADMAP_V2_4_0.md)
 - [`ROADMAP_V2_3_0.md`](ROADMAP_V2_3_0.md)
 - [`VERSION_MATRIX.md`](VERSION_MATRIX.md)
 - [`V2_3_0_GITHUB_ACTIONS_GATES.md`](V2_3_0_GITHUB_ACTIONS_GATES.md)
@@ -36,4 +37,4 @@ Active documentation targets the `v2.3.0` private-testnet release candidate.
 - [`archive/README.md`](archive/README.md)
 - [`codex_tasks/`](codex_tasks/)
 
-Active documents must identify v2.3.0. Historical v2.2.x evidence belongs in the archive or immutable Git history. Public-testnet readiness remains false until a separate explicit launch decision.
+v2.4.0 planning must preserve the approved v2.3.0 operational baseline until a separate release decision authorizes implementation and version changes. Historical v2.2.x evidence belongs in the archive or immutable Git history. Public-testnet readiness remains false until a separate explicit launch decision.
