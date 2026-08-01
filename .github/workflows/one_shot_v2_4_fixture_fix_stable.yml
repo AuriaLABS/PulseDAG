@@ -1,0 +1,295 @@
+name: one-shot v2.4 stable fixture migration
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - .github/workflows/one_shot_v2_4_fixture_fix_stable.yml
+
+permissions:
+  contents: write
+
+jobs:
+  migrate-fixtures:
+    if: github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.ref == 'release/2.4.0'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout release branch
+        uses: actions/checkout@v4
+        with:
+          ref: release/2.4.0
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Apply stable fixture migration
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          import subprocess
+
+          def replace_once(path: str, old: str, new: str) -> None:
+              file = Path(path)
+              text = file.read_text()
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"{path}: expected one match, found {count}: {old[:100]!r}")
+              file.write_text(text.replace(old, new, 1))
+
+          def replace_test(path: str, name: str, body: str) -> None:
+              file = Path(path)
+              text = file.read_text()
+              pattern = re.compile(
+                  rf"(?ms)^    #\[test\]\n    fn {re.escape(name)}\(\) \{{.*?^    \}}\n"
+              )
+              text, count = pattern.subn(body.rstrip() + "\n", text, count=1)
+              if count != 1:
+                  raise SystemExit(f"{path}: test function not found: {name}")
+              file.write_text(text)
+
+          # Known-good first pass from the historical staging commit.
+          workflow = subprocess.check_output(
+              ['git', 'show', '4e4484c3086ade4f42a11edcedee078c822e3d0c:.github/workflows/one_shot_v2_4_fixture_fix.yml'],
+              text=True,
+          )
+          marker = "          python3 - <<'PY'\n"
+          start = workflow.index(marker) + len(marker)
+          end = workflow.index("\n          PY\n", start)
+          embedded = workflow[start:end]
+          script = "\n".join(
+              line[10:] if line.startswith("          ") else line
+              for line in embedded.splitlines()
+          )
+          script = script.replace(
+              "build_candidate_block, build_coinbase_transaction, dev_mine_header,\\n            refresh_block_consensus_ids, refresh_block_consensus_ids_with_state,\\n",
+              "build_candidate_block, build_coinbase_transaction,\\n            refresh_block_consensus_ids, refresh_block_consensus_ids_with_state,\\n",
+          )
+          script = script.replace(
+              "let (header, mined, _, _) = dev_mine_header(",
+              "let (header, mined, _, _) = crate::dev_mine_header(",
+          )
+          exec(compile(script, 'first_pass_fixture_migration.py', 'exec'), {})
+
+          accept = 'crates/pulsedag-core/src/accept.rs'
+          replace_test(accept, 'accepts_block_with_valid_pow', '''    #[test]
+    fn accepts_block_with_valid_pow() {
+        let mut state = init_chain_state("test".to_string());
+        let block = valid_acceptance_block(&state, "valid-pow", 1);
+
+        assert!(accept_block(block, &mut state, AcceptSource::P2p).is_ok());
+    }
+''')
+          replace_test(accept, 'duplicate_block_returns_duplicate_outcome', '''    #[test]
+    fn duplicate_block_returns_duplicate_outcome() {
+        let mut state = init_chain_state("test".to_string());
+        let block = valid_acceptance_block(&state, "duplicate", 1);
+        assert!(accept_block(block.clone(), &mut state, AcceptSource::P2p).is_ok());
+        let outcome = accept_block_with_result(block, &mut state, AcceptSource::P2p);
+        assert_eq!(outcome, BlockAcceptanceResult::Duplicate);
+    }
+''')
+          replace_test(accept, 'invalid_transaction_in_peer_block_returns_invalid_transaction_outcome', '''    #[test]
+    fn invalid_transaction_in_peer_block_returns_invalid_transaction_outcome() {
+        let mut state = init_chain_state("test".to_string());
+        let block = invalid_transaction_acceptance_block(&state);
+
+        let outcome = accept_block_with_result(block, &mut state, AcceptSource::P2p);
+        assert_eq!(outcome, BlockAcceptanceResult::InvalidTransaction);
+    }
+''')
+          replace_test(accept, 'peer_block_and_mining_submit_share_canonical_acceptance_outcomes', '''    #[test]
+    fn peer_block_and_mining_submit_share_canonical_acceptance_outcomes() {
+        let mut peer_state = init_chain_state("agreement".to_string());
+        let mut mining_state = init_chain_state("agreement".to_string());
+        let block = valid_acceptance_block(&peer_state, "agreement", 1);
+
+        let peer_outcome =
+            accept_block_with_result(block.clone(), &mut peer_state, AcceptSource::P2p);
+        let mining_outcome =
+            accept_block_with_result(block, &mut mining_state, AcceptSource::LocalMining);
+
+        assert_eq!(peer_outcome, BlockAcceptanceResult::Accepted);
+        assert_eq!(peer_outcome, mining_outcome);
+        assert!(peer_state
+            .dag
+            .blocks
+            .contains_key(&peer_state.dag.tips.iter().next().unwrap().clone()));
+        assert!(mining_state
+            .dag
+            .blocks
+            .contains_key(&mining_state.dag.tips.iter().next().unwrap().clone()));
+    }
+''')
+          replace_test(accept, 'mutated_block_returns_invalid_structure', '''    #[test]
+    fn mutated_block_returns_invalid_structure() {
+        let mut state = init_chain_state("test".to_string());
+        let parents = vec![state.dag.genesis_hash.clone()];
+        let mut txs = vec![build_coinbase_transaction("miner1", 50, 1)];
+        let mut spend = txs[0].clone();
+        spend.txid = "mutated".to_string();
+        txs.push(spend);
+        let difficulty = crate::expected_difficulty(&state);
+        let mut block = build_candidate_block(parents, 1, difficulty, txs);
+        let (header, mined, _, _) = crate::dev_mine_header(block.header.clone(), 200_000);
+        assert!(mined, "expected malformed fixture to satisfy consensus PoW");
+        block.header = header;
+        block.hash = "mutated-block".to_string();
+        let outcome = accept_block_with_result(block, &mut state, AcceptSource::P2p);
+        assert_eq!(outcome, BlockAcceptanceResult::Malformed);
+    }
+''')
+
+          # Validation test-local refresh functions always leave the final header mined.
+          validation = 'crates/pulsedag-core/src/validation.rs'
+          replace_once(
+              validation,
+              '''            build_candidate_block as raw_build_candidate_block, build_coinbase_transaction,
+            refresh_block_consensus_ids, refresh_block_consensus_ids_with_state,
+''',
+              '''            build_candidate_block as raw_build_candidate_block, build_coinbase_transaction,
+            refresh_block_consensus_ids as raw_refresh_block_consensus_ids,
+            refresh_block_consensus_ids_with_state as raw_refresh_block_consensus_ids_with_state,
+''',
+          )
+          replace_once(
+              validation,
+              '''    fn coinbase(nonce: u64) -> Transaction {
+        build_coinbase_transaction("miner1", 50, nonce)
+    }
+
+''',
+              '''    fn coinbase(nonce: u64) -> Transaction {
+        build_coinbase_transaction("miner1", 50, nonce)
+    }
+
+    fn mine_current_header(block: &mut Block) {
+        let (header, mined, _, _) = crate::dev_mine_header(block.header.clone(), 200_000);
+        assert!(mined, "expected validation fixture to satisfy consensus PoW");
+        block.header = header;
+        raw_refresh_block_consensus_ids(block);
+    }
+
+    fn refresh_block_consensus_ids(block: &mut Block) {
+        raw_refresh_block_consensus_ids(block);
+        mine_current_header(block);
+    }
+
+    fn refresh_block_consensus_ids_with_state(
+        block: &mut Block,
+        state: &ChainState,
+    ) -> Result<(), PulseError> {
+        raw_refresh_block_consensus_ids_with_state(block, state)?;
+        mine_current_header(block);
+        Ok(())
+    }
+
+''',
+          )
+          # These tests intentionally create invalid difficulty/target and must not remine it.
+          vtext = Path(validation).read_text()
+          vtext = vtext.replace(
+              'block.header.difficulty = 1;\n        refresh_block_consensus_ids(&mut block);',
+              'block.header.difficulty = 1;\n        raw_refresh_block_consensus_ids(&mut block);',
+              1,
+          )
+          vtext = vtext.replace(
+              'block.header.difficulty = stale_template_difficulty;\n        refresh_block_consensus_ids(&mut block);',
+              'block.header.difficulty = stale_template_difficulty;\n        raw_refresh_block_consensus_ids(&mut block);',
+              1,
+          )
+          vtext = vtext.replace(
+              'block.header.difficulty = 0x0100_0000;\n        refresh_block_consensus_ids(&mut block);',
+              'block.header.difficulty = 0x0100_0000;\n        raw_refresh_block_consensus_ids(&mut block);',
+              1,
+          )
+          Path(validation).write_text(vtext)
+
+          # Storage fixtures use the same deterministic refresh-and-mine rule.
+          storage = 'crates/pulsedag-storage/src/lib.rs'
+          replace_once(
+              storage,
+              '''        refresh_block_consensus_ids, refresh_block_consensus_ids_with_state,
+''',
+              '''        refresh_block_consensus_ids as raw_refresh_block_consensus_ids,
+        refresh_block_consensus_ids_with_state as raw_refresh_block_consensus_ids_with_state,
+''',
+          )
+          sfile = Path(storage)
+          stext = sfile.read_text()
+          marker = '''    fn build_candidate_block(
+        parents: Vec<Hash>,
+        height: u64,
+        difficulty: u32,
+        transactions: Vec<pulsedag_core::types::Transaction>,
+    ) -> Block {
+        let difficulty = if difficulty == 1 {
+            pulsedag_core::retarget::CONSENSUS_POW_LIMIT_BITS
+        } else {
+            difficulty
+        };
+        raw_build_candidate_block(parents, height, difficulty, transactions)
+    }
+
+'''
+          wrappers = marker + '''    fn mine_current_header(block: &mut Block) {
+        let (header, mined, _, _) = dev_mine_header(block.header.clone(), 200_000);
+        assert!(mined, "expected storage fixture to satisfy consensus PoW");
+        block.header = header;
+        raw_refresh_block_consensus_ids(block);
+    }
+
+    fn refresh_block_consensus_ids(block: &mut Block) {
+        raw_refresh_block_consensus_ids(block);
+        mine_current_header(block);
+    }
+
+    fn refresh_block_consensus_ids_with_state(
+        block: &mut Block,
+        state: &pulsedag_core::ChainState,
+    ) -> Result<(), PulseError> {
+        raw_refresh_block_consensus_ids_with_state(block, state)?;
+        mine_current_header(block);
+        Ok(())
+    }
+
+'''
+          if stext.count(marker) != 1:
+              raise SystemExit('storage build wrapper marker not found exactly once')
+          sfile.write_text(stext.replace(marker, wrappers, 1))
+          PY
+
+          cargo fmt --all
+
+      - name: Run affected package tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked -p pulsedag-core --lib
+          cargo test --locked -p pulsedag-storage --lib
+          cargo test --locked -p pulsedagd --bin pulsedagd
+
+      - name: Commit clean fixture migration
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm .github/workflows/one_shot_v2_4_fixture_fix.yml
+          rm .github/workflows/one_shot_v2_4_fixture_fix_retry.yml
+          rm .github/workflows/one_shot_v2_4_fixture_fix_round3.yml
+          rm .github/workflows/one_shot_v2_4_fixture_fix_final.yml
+          rm .github/workflows/one_shot_v2_4_fixture_fix_stable.yml
+          git config user.name "PulseDAG CI"
+          git config user.email "actions@users.noreply.github.com"
+          git add crates/pulsedag-core/src/accept.rs \
+                  crates/pulsedag-core/src/orphans.rs \
+                  crates/pulsedag-core/src/validation.rs \
+                  crates/pulsedag-storage/src/lib.rs \
+                  apps/pulsedagd/src/main.rs \
+                  .github/workflows/one_shot_v2_4_fixture_fix.yml \
+                  .github/workflows/one_shot_v2_4_fixture_fix_retry.yml \
+                  .github/workflows/one_shot_v2_4_fixture_fix_round3.yml \
+                  .github/workflows/one_shot_v2_4_fixture_fix_final.yml \
+                  .github/workflows/one_shot_v2_4_fixture_fix_stable.yml
+          git commit -m "test: migrate fixtures to v2.4 consensus bits"
+          git push origin HEAD:release/2.4.0
