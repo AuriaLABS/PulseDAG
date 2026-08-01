@@ -52,7 +52,7 @@ replacement = '''    #[test]
                 pulsedag_core::expected_difficulty(&network_state),
                 vec![build_coinbase_transaction("miner", 50, i * 1000)],
             );
-            block.header.timestamp = parent_timestamp.saturating_add(60).max(1);
+            block.header.timestamp = pulsedag_core::current_ts().max(parent_timestamp);
             refresh_block_consensus_ids_with_state(&mut block, &network_state)
                 .expect("prepare catch-up block state root");
             let (header, mined, _, _) = dev_mine_header(block.header.clone(), 1_000_000);
