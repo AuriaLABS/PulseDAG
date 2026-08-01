@@ -62,7 +62,7 @@ pub fn genesis_block() -> Block {
             version: 1,
             parents: vec![],
             timestamp: 0,
-            difficulty: 1,
+            difficulty: crate::retarget::CONSENSUS_POW_LIMIT_BITS,
             nonce: 0,
             merkle_root: compute_merkle_root(&txs),
             state_root,
