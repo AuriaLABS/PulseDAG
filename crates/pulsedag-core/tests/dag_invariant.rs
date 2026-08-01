@@ -2,9 +2,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{LazyLock, Mutex};
 
 use pulsedag_core::genesis::init_chain_state;
+use pulsedag_core::pow::dev_mine_header;
 use pulsedag_core::{
     accept_block_with_result, assert_dag_consistent_for_tests, build_candidate_block,
-    build_coinbase_transaction, refresh_block_consensus_ids,
+    build_coinbase_transaction, expected_difficulty, refresh_block_consensus_ids,
     refresh_block_consensus_ids_with_state, sorted_tip_hashes, AcceptSource, Block,
     BlockAcceptanceResult, ChainState, Hash,
 };
@@ -151,10 +152,14 @@ fn test_block(
         50,
         height,
     )];
-    let mut block = build_candidate_block(parents, height, 1, txs);
+    let mut block = build_candidate_block(parents, height, expected_difficulty(state), txs);
     block.header.timestamp = timestamp;
     block.header.blue_score = height;
     refresh_block_consensus_ids_with_state(&mut block, state).unwrap();
+    let (header, mined, _, _) = dev_mine_header(block.header.clone(), 1_000_000);
+    assert!(mined, "expected DAG invariant fixture to satisfy consensus PoW");
+    block.header = header;
+    refresh_block_consensus_ids(&mut block);
     block
 }
 
