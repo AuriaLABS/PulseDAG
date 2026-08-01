@@ -2,8 +2,24 @@ use axum::{extract::State, Json};
 
 use crate::{api::ApiResponse, api::RpcStateLike};
 
+/// Compact compatibility hint embedded in mining template and mining job responses.
 #[derive(Debug, serde::Serialize)]
 pub struct PowMetricsData {
+    pub algorithm: String,
+    pub window_size: usize,
+    pub best_height: u64,
+    pub observed_block_count: usize,
+    pub avg_block_interval_secs: u64,
+    pub suggested_difficulty: u64,
+    pub target_u64: u64,
+    pub target_block_interval_secs: u64,
+    pub retarget_multiplier_bps: u64,
+    pub notes: Vec<String>,
+}
+
+/// Canonical consensus diagnostics returned by the dedicated `/pow` endpoint.
+#[derive(Debug, serde::Serialize)]
+pub struct ConsensusPowMetricsData {
     pub algorithm: String,
     pub window_size: usize,
     pub best_height: u64,
@@ -32,12 +48,12 @@ pub struct PowMetricsData {
 
 pub async fn get_pow_metrics<S: RpcStateLike>(
     State(state): State<S>,
-) -> Json<ApiResponse<PowMetricsData>> {
+) -> Json<ApiResponse<ConsensusPowMetricsData>> {
     let chain_handle = state.chain();
     let chain = chain_handle.read().await;
     let snapshot = pulsedag_core::consensus_difficulty_snapshot(&chain);
 
-    Json(ApiResponse::ok(PowMetricsData {
+    Json(ApiResponse::ok(ConsensusPowMetricsData {
         algorithm: pulsedag_core::selected_pow_name().to_string(),
         window_size: snapshot.policy.window_size,
         best_height: snapshot.best_height,
