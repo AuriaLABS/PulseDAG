@@ -25,7 +25,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   hygiene:
@@ -109,79 +109,3 @@ jobs:
           path: ci-evidence/repository-hygiene
           if-no-files-found: error
           retention-days: 90
-
-  migrate-v2-4-fixtures:
-    if: github.event_name == 'pull_request' && github.event.pull_request.head.ref == 'release/2.4.0'
-    runs-on: ubuntu-24.04
-    steps:
-      - name: Checkout release branch
-        uses: actions/checkout@v4
-        with:
-          ref: release/2.4.0
-          fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Apply deterministic fixture migration
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 - <<'PY'
-          import subprocess
-
-          source = subprocess.check_output(
-              ['git', 'show', '164559b913ee2e9e95df15b91475911d248a5060:.github/workflows/one_shot_v2_4_fixture_fix_stable.yml'],
-              text=True,
-          )
-          marker = "          python3 - <<'PY'\n"
-          start = source.index(marker) + len(marker)
-          end = source.index("\n          PY\n", start)
-          script = "\n".join(
-              line[10:] if line.startswith("          ") else line
-              for line in source[start:end].splitlines()
-          )
-          old = '''    if count != 1:
-        raise SystemExit(f"{path}: expected one match, found {count}: {old[:100]!r}")
-    file.write_text(text.replace(old, new, 1))
-'''
-          new = '''    if count == 0 and "refresh_block_consensus_ids" in old:
-        updated = text.replace(
-            "refresh_block_consensus_ids,\\n",
-            "refresh_block_consensus_ids as raw_refresh_block_consensus_ids,\\n",
-            1,
-        ).replace(
-            "refresh_block_consensus_ids_with_state,\\n",
-            "refresh_block_consensus_ids_with_state as raw_refresh_block_consensus_ids_with_state,\\n",
-            1,
-        )
-        if updated != text:
-            file.write_text(updated)
-            return
-    if count != 1:
-        raise SystemExit(f"{path}: expected one match, found {count}: {old[:100]!r}")
-    file.write_text(text.replace(old, new, 1))
-'''
-          if old not in script:
-              raise SystemExit('replace_once body not found in stable migration')
-          script = script.replace(old, new, 1)
-          exec(compile(script, 'stable_fixture_migration.py', 'exec'), {})
-          PY
-          cargo fmt --all
-
-      - name: Run affected package tests
-        shell: bash
-        run: |
-          set -euo pipefail
-          cargo test --locked -p pulsedag-core --lib
-          cargo test --locked -p pulsedag-storage --lib
-          cargo test --locked -p pulsedagd --bin pulsedagd
-
-      - name: Publish clean fixture migration
-        shell: bash
-        run: |
-          set -euo pipefail
-          git checkout 8f611f2e24f2397c435b24e9ccd443553dc0a9a4 -- .github/workflows/repository_hygiene.yml
-          git config user.name "PulseDAG CI"
-          git config user.email "actions@users.noreply.github.com"
-          git add -A
-          git commit -m "test: migrate fixtures to v2.4 consensus bits"
-          git push origin HEAD:release/2.4.0
