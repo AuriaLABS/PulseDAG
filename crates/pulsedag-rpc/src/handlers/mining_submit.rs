@@ -1724,6 +1724,7 @@ mod tests {
         let (mined_header, mined, _, _) = dev_mine_header(block.header.clone(), 100_000);
         assert!(mined, "expected test block to satisfy dev pow");
         block.header = mined_header;
+        refresh_block_consensus_ids_with_state(&mut block, &chain).unwrap();
         block
     }
 
@@ -1741,6 +1742,10 @@ mod tests {
         let (mined_header, mined, _, _) = dev_mine_header(block.header.clone(), 100_000);
         assert!(mined, "expected mined template header");
         block.header = mined_header;
+        {
+            let chain = state.chain.read().await;
+            refresh_block_consensus_ids_with_state(&mut block, &chain).unwrap();
+        }
         (template.template_id, block)
     }
 
