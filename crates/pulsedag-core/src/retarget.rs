@@ -226,8 +226,7 @@ fn consensus_retarget_multiplier_bps(avg_block_interval_secs: u64) -> u64 {
     }
 
     let deviation = raw as i64 - BPS_DENOMINATOR as i64;
-    let damped = BPS_DENOMINATOR as i64
-        + (deviation / CONSENSUS_RETARGET_DAMPING_DIVISOR as i64);
+    let damped = BPS_DENOMINATOR as i64 + (deviation / CONSENSUS_RETARGET_DAMPING_DIVISOR as i64);
     (damped as u64).clamp(CONSENSUS_RETARGET_MIN_BPS, CONSENSUS_RETARGET_MAX_BPS)
 }
 
@@ -258,11 +257,7 @@ fn limbs_to_target(limbs: &[u64; 4]) -> PowTarget {
     target
 }
 
-fn scale_target_ratio(
-    target: &PowTarget,
-    numerator: u64,
-    denominator: u64,
-) -> (PowTarget, bool) {
+fn scale_target_ratio(target: &PowTarget, numerator: u64, denominator: u64) -> (PowTarget, bool) {
     let limbs = target_to_limbs(target);
     let mut product = [0u64; 5];
     let mut carry = 0u128;
@@ -311,8 +306,7 @@ fn consensus_adjust_target_for_interval(
     let (scaled, overflow) =
         scale_target_ratio(&bounded_current, target_multiplier_bps, BPS_DENOMINATOR);
     let scaled_was_above_pow_limit = overflow || scaled > pow_limit;
-    let target_was_clamped_to_pow_limit =
-        current_was_above_pow_limit || scaled_was_above_pow_limit;
+    let target_was_clamped_to_pow_limit = current_was_above_pow_limit || scaled_was_above_pow_limit;
     let bounded = if scaled_was_above_pow_limit {
         pow_limit
     } else if scaled < min_target {
@@ -341,12 +335,7 @@ mod tests {
         types::{Block, BlockHeader},
     };
 
-    fn append_header_only_block(
-        state: &mut ChainState,
-        height: u64,
-        timestamp: u64,
-        bits: u32,
-    ) {
+    fn append_header_only_block(state: &mut ChainState, height: u64, timestamp: u64, bits: u32) {
         let parent = state
             .dag
             .selected_chain
@@ -473,7 +462,10 @@ mod tests {
         append_header_only_block(&mut state, 1, 1_700_000_000, CONSENSUS_POW_LIMIT_BITS);
         let one = consensus_difficulty_snapshot(&state);
         assert_eq!(one.observed_block_count, 1);
-        assert_eq!(one.avg_block_interval_secs, CONSENSUS_TARGET_BLOCK_INTERVAL_SECS);
+        assert_eq!(
+            one.avg_block_interval_secs,
+            CONSENSUS_TARGET_BLOCK_INTERVAL_SECS
+        );
 
         append_header_only_block(&mut state, 2, 1_700_000_010, CONSENSUS_POW_LIMIT_BITS);
         let two = consensus_difficulty_snapshot(&state);
@@ -506,7 +498,10 @@ mod tests {
         );
 
         let after = consensus_difficulty_snapshot(&state);
-        assert_eq!(after.avg_block_interval_secs, baseline.avg_block_interval_secs);
+        assert_eq!(
+            after.avg_block_interval_secs,
+            baseline.avg_block_interval_secs
+        );
         assert_eq!(after.expected_bits, baseline.expected_bits);
     }
 
