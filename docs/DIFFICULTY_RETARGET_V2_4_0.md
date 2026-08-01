@@ -50,6 +50,8 @@ The compatibility field name `expected_difficulty` remains in existing response 
 
 Consensus first derives the observed selected-chain interval. Genesis height `0` and timestamp `0` are excluded.
 
+When at least one real interval exists but second-level timestamp averaging produces `0`, consensus clamps the observed interval to `1` second so an ultra-fast chain still hardens. The 60-second target fallback is used only when no interval has been observed.
+
 The existing work multiplier remains:
 
 ```text
@@ -84,17 +86,22 @@ Side-branch blocks must not influence the next target merely because they have a
 
 After pruning or snapshot recovery, every node must derive the same retained selected-chain window and next compact bits.
 
+Block validation derives expected bits from the canonical state at the selected parent. This keeps valid side branches independent from a newer preferred tip while preserving identical rules for templates, peer blocks, and locally mined blocks.
+
 ## 6. Consensus/RPC single source of truth
 
 These surfaces consume `consensus_difficulty_snapshot`:
 
 - block-template construction;
 - block validation through `expected_difficulty`;
-- `/pow` metrics.
+- `/pow/metrics`;
+- `/pow/policy`;
+- `/pow/dashboard`;
+- `/pow/metrics/capture`.
 
 Environment variables used by older development diagnostics do not alter v2.4.0 consensus parameters.
 
-`/pow` exposes:
+The `/pow/*` diagnostics expose the canonical consensus view, including:
 
 - current and suggested compact bits;
 - current, suggested, and PoW-limit targets;
@@ -119,6 +126,7 @@ Preserving an existing chain would require an explicit activation height and exa
 The release gate must prove:
 
 - the easiest target hardens under one-second blocks;
+- real zero-second observations clamp to one second instead of falling back to the target interval;
 - a legacy `difficulty=1` tip cannot remain trapped;
 - stable 60-second intervals preserve compact bits;
 - slow blocks relax target without crossing the PoW limit;
@@ -129,7 +137,7 @@ The release gate must prove:
 - snapshot/restart/pruning preserve the next target;
 - two nodes with identical selected-chain history produce byte-identical target hex.
 
-Mining fixtures must recompute the canonical block hash and state-dependent consensus identifiers after nonce selection. This prevents a test from accidentally submitting a header whose nonce changed after the block identity was calculated.
+Mining fixtures must use the expected compact bits for their parent context, produce timestamps valid for that context, mine a valid nonce, and then recompute the canonical block hash and state-dependent consensus identifiers. This prevents tests from passing through legacy `difficulty=1` assumptions or submitting a header whose identity changed after nonce selection.
 
 ## 9. Release block
 
