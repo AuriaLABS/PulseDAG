@@ -1,0 +1,64 @@
+name: one-shot v2.4 fixture migration
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - .github/workflows/one_shot_v2_4_fixture_migration.yml
+
+permissions:
+  contents: write
+
+jobs:
+  migrate-fixtures:
+    if: github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.ref == 'release/2.4.0'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout release branch
+        uses: actions/checkout@v4
+        with:
+          ref: release/2.4.0
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Apply deterministic fixture migration
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import subprocess
+
+          source = subprocess.check_output(
+              ['git', 'show', '164559b913ee2e9e95df15b91475911d248a5060:.github/workflows/one_shot_v2_4_fixture_fix_stable.yml'],
+              text=True,
+          )
+          marker = "          python3 - <<'PY'\n"
+          start = source.index(marker) + len(marker)
+          end = source.index("\n          PY\n", start)
+          embedded = source[start:end]
+          script = "\n".join(
+              line[10:] if line.startswith("          ") else line
+              for line in embedded.splitlines()
+          )
+          exec(compile(script, 'stable_fixture_migration.py', 'exec'), {})
+          PY
+          cargo fmt --all
+
+      - name: Run affected package tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked -p pulsedag-core --lib
+          cargo test --locked -p pulsedag-storage --lib
+          cargo test --locked -p pulsedagd --bin pulsedagd
+
+      - name: Commit clean fixture migration
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm .github/workflows/one_shot_v2_4_fixture_migration.yml
+          git config user.name "PulseDAG CI"
+          git config user.email "actions@users.noreply.github.com"
+          git add -A
+          git commit -m "test: migrate fixtures to v2.4 consensus bits"
+          git push origin HEAD:release/2.4.0
