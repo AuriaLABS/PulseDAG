@@ -1,0 +1,82 @@
+name: one-shot v2.4 fixture migration final
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - .github/workflows/one_shot_v2_4_fixture_fix_final.yml
+
+permissions:
+  contents: write
+
+jobs:
+  migrate-fixtures:
+    if: github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.ref == 'release/2.4.0'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout release branch
+        uses: actions/checkout@v4
+        with:
+          ref: release/2.4.0
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Apply round-three migration
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          source = Path('.github/workflows/one_shot_v2_4_fixture_fix_round3.yml').read_text()
+          marker = "          python3 - <<'PY'\n"
+          start = source.index(marker) + len(marker)
+          end = source.index("\n          PY\n", start)
+          embedded = source[start:end]
+          script = "\n".join(
+              line[10:] if line.startswith("          ") else line
+              for line in embedded.splitlines()
+          )
+          script = script.replace(
+              "from pathlib import Path\n",
+              "from pathlib import Path\nimport subprocess\n",
+              1,
+          )
+          script = script.replace(
+              "workflow = Path('.github/workflows/one_shot_v2_4_fixture_fix.yml').read_text()",
+              "workflow = subprocess.check_output(['git', 'show', '4e4484c3086ade4f42a11edcedee078c822e3d0c:.github/workflows/one_shot_v2_4_fixture_fix.yml'], text=True)",
+              1,
+          )
+          exec(compile(script, 'round_three_fixture_migration.py', 'exec'), {})
+          PY
+          cargo fmt --all
+
+      - name: Run affected package tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked -p pulsedag-core --lib
+          cargo test --locked -p pulsedag-storage --lib
+          cargo test --locked -p pulsedagd --bin pulsedagd
+
+      - name: Commit clean fixture migration
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm .github/workflows/one_shot_v2_4_fixture_fix.yml
+          rm .github/workflows/one_shot_v2_4_fixture_fix_retry.yml
+          rm .github/workflows/one_shot_v2_4_fixture_fix_round3.yml
+          rm .github/workflows/one_shot_v2_4_fixture_fix_final.yml
+          git config user.name "PulseDAG CI"
+          git config user.email "actions@users.noreply.github.com"
+          git add crates/pulsedag-core/src/accept.rs \
+                  crates/pulsedag-core/src/orphans.rs \
+                  crates/pulsedag-core/src/validation.rs \
+                  crates/pulsedag-storage/src/lib.rs \
+                  apps/pulsedagd/src/main.rs \
+                  .github/workflows/one_shot_v2_4_fixture_fix.yml \
+                  .github/workflows/one_shot_v2_4_fixture_fix_retry.yml \
+                  .github/workflows/one_shot_v2_4_fixture_fix_round3.yml \
+                  .github/workflows/one_shot_v2_4_fixture_fix_final.yml
+          git commit -m "test: migrate fixtures to v2.4 consensus bits"
+          git push origin HEAD:release/2.4.0
