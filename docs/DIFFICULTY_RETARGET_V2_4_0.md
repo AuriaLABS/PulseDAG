@@ -129,6 +129,8 @@ The release gate must prove:
 - snapshot/restart/pruning preserve the next target;
 - two nodes with identical selected-chain history produce byte-identical target hex.
 
+Mining fixtures must recompute the canonical block hash and state-dependent consensus identifiers after nonce selection. This prevents a test from accidentally submitting a header whose nonce changed after the block identity was calculated.
+
 ## 9. Release block
 
 Task 18 and issue `#786` are consensus release blockers for v2.4.0.
