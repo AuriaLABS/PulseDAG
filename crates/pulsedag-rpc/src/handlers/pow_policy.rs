@@ -22,21 +22,21 @@ pub async fn get_pow_policy<S: RpcStateLike>(
 ) -> Json<ApiResponse<PowPolicyData>> {
     let chain_handle = state.chain();
     let chain = chain_handle.read().await;
-    let snapshot = pulsedag_core::dev_difficulty_snapshot(&chain);
+    let snapshot = pulsedag_core::consensus_difficulty_snapshot(&chain);
 
     Json(ApiResponse::ok(PowPolicyData {
-        algorithm: snapshot.algorithm.to_string(),
+        algorithm: pulsedag_core::selected_pow_name().to_string(),
         best_height: snapshot.best_height,
-        current_dev_difficulty: snapshot.current_difficulty,
-        recommended_dev_difficulty: snapshot.suggested_difficulty,
-        suggested_difficulty: snapshot.suggested_difficulty,
-        target_u64: snapshot.target_u64,
+        current_dev_difficulty: u64::from(snapshot.current_bits),
+        recommended_dev_difficulty: u64::from(snapshot.expected_bits),
+        suggested_difficulty: u64::from(snapshot.expected_bits),
+        target_u64: snapshot.expected_target_u64,
         target_block_interval_secs: snapshot.policy.target_block_interval_secs,
         window_size: snapshot.policy.window_size,
         max_future_drift_secs: snapshot.policy.max_future_drift_secs,
         retarget_multiplier_bps: snapshot.retarget_multiplier_bps,
         notes: vec![
-            "This is a development difficulty policy".to_string(),
+            "This endpoint reports the canonical consensus difficulty policy".to_string(),
             format!(
                 "Current target is 1 block every {} seconds",
                 snapshot.policy.target_block_interval_secs

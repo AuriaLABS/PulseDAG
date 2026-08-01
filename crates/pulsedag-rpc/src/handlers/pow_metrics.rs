@@ -17,7 +17,7 @@ pub struct PowMetricsData {
     pub notes: Vec<String>,
 }
 
-/// Canonical consensus diagnostics returned by the dedicated `/pow` endpoint.
+/// Canonical consensus diagnostics returned by the `/pow/metrics` endpoint.
 #[derive(Debug, serde::Serialize)]
 pub struct ConsensusPowMetricsData {
     pub algorithm: String,

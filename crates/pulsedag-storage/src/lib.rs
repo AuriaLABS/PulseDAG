@@ -2263,11 +2263,12 @@ mod tests {
     use proptest::prelude::*;
     use pulsedag_core::{
         accept::{accept_block, AcceptSource},
-        build_candidate_block, build_coinbase_transaction, compact_snapshot_to_retained_blocks,
-        dev_mine_header,
+        build_candidate_block as raw_build_candidate_block, build_coinbase_transaction,
+        compact_snapshot_to_retained_blocks, dev_mine_header,
         errors::PulseError,
         genesis::init_chain_state,
-        refresh_block_consensus_ids, refresh_block_consensus_ids_with_state,
+        refresh_block_consensus_ids as raw_refresh_block_consensus_ids,
+        refresh_block_consensus_ids_with_state as raw_refresh_block_consensus_ids_with_state,
         state::{ContractRuntimeState, Mempool, UtxoState},
         types::{Block, Hash},
     };
@@ -2280,6 +2281,41 @@ mod tests {
             .min()
             .cloned()
             .unwrap_or_else(|| state.dag.genesis_hash.clone())
+    }
+
+    fn build_candidate_block(
+        parents: Vec<Hash>,
+        height: u64,
+        difficulty: u32,
+        transactions: Vec<pulsedag_core::types::Transaction>,
+    ) -> Block {
+        let difficulty = if difficulty == 1 {
+            pulsedag_core::retarget::CONSENSUS_POW_LIMIT_BITS
+        } else {
+            difficulty
+        };
+        raw_build_candidate_block(parents, height, difficulty, transactions)
+    }
+
+    fn mine_current_header(block: &mut Block) {
+        let (header, mined, _, _) = dev_mine_header(block.header.clone(), 200_000);
+        assert!(mined, "expected storage fixture to satisfy consensus PoW");
+        block.header = header;
+        raw_refresh_block_consensus_ids(block);
+    }
+
+    fn refresh_block_consensus_ids(block: &mut Block) {
+        raw_refresh_block_consensus_ids(block);
+        mine_current_header(block);
+    }
+
+    fn refresh_block_consensus_ids_with_state(
+        block: &mut Block,
+        state: &pulsedag_core::ChainState,
+    ) -> Result<(), PulseError> {
+        raw_refresh_block_consensus_ids_with_state(block, state)?;
+        mine_current_header(block);
+        Ok(())
     }
 
     fn temp_db_path(test_name: &str) -> String {
@@ -2470,18 +2506,21 @@ mod tests {
         let mut state = init_chain_state(chain_id.to_string());
         for i in 1..=blocks_to_add {
             let parent = best_tip_hash(&state);
+            let parent_timestamp = state
+                .dag
+                .blocks
+                .get(&parent)
+                .map(|block| block.header.timestamp)
+                .unwrap_or(0);
             let mut block = build_candidate_block(
                 vec![parent],
                 i as u64,
-                1,
+                pulsedag_core::expected_difficulty(&state),
                 vec![build_coinbase_transaction("miner", 50, i as u64)],
             );
+            block.header.timestamp = parent_timestamp.saturating_add(60).max(1);
             refresh_block_consensus_ids_with_state(&mut block, &state)
-                .expect("prepare state root for test block");
-            let (header, mined, _, _) = dev_mine_header(block.header.clone(), 25_000);
-            assert!(mined, "failed to mine test block at height {}", i);
-            block.header = header;
-            refresh_block_consensus_ids(&mut block);
+                .expect("prepare and mine state-aware test block");
             accept_block(block, &mut state, AcceptSource::LocalMining).expect("accept mined block");
         }
         state
@@ -2500,21 +2539,24 @@ mod tests {
         parents: Vec<Hash>,
         height: u64,
     ) -> Block {
+        let newest_parent_timestamp = parents
+            .iter()
+            .filter_map(|parent| state.dag.blocks.get(parent))
+            .map(|block| block.header.timestamp)
+            .max()
+            .unwrap_or(0);
         let coinbase_nonce = height
             .saturating_mul(1_000)
             .saturating_add(state.dag.blocks.len() as u64);
         let mut block = build_candidate_block(
             parents,
             height,
-            1,
+            pulsedag_core::expected_difficulty(state),
             vec![build_coinbase_transaction("miner", 50, coinbase_nonce)],
         );
+        block.header.timestamp = newest_parent_timestamp.saturating_add(60).max(1);
         refresh_block_consensus_ids_with_state(&mut block, state)
-            .expect("prepare state root for test block");
-        let (header, mined, _, _) = dev_mine_header(block.header.clone(), 25_000);
-        assert!(mined, "failed to mine test block at height {height}");
-        block.header = header;
-        refresh_block_consensus_ids(&mut block);
+            .expect("prepare and mine state-aware test block");
         accept_block(block.clone(), state, AcceptSource::LocalMining).expect("accept block");
         block
     }
@@ -2831,18 +2873,22 @@ mod tests {
             .expect("persist genesis");
 
         for height in 1..=3 {
+            let parent = best_tip_hash(&state);
+            let parent_timestamp = state
+                .dag
+                .blocks
+                .get(&parent)
+                .map(|block| block.header.timestamp)
+                .unwrap_or(0);
             let mut block = build_candidate_block(
-                vec![best_tip_hash(&state)],
+                vec![parent],
                 height,
-                1,
+                pulsedag_core::expected_difficulty(&state),
                 vec![build_coinbase_transaction("miner", 50, height)],
             );
+            block.header.timestamp = parent_timestamp.saturating_add(60).max(1);
             refresh_block_consensus_ids_with_state(&mut block, &state)
-                .expect("prepare state root for test block");
-            let (header, mined, _, _) = dev_mine_header(block.header.clone(), 25_000);
-            assert!(mined, "failed to mine test block at height {}", height);
-            block.header = header;
-            refresh_block_consensus_ids(&mut block);
+                .expect("prepare and mine state-aware test block");
             accept_block(block.clone(), &mut state, AcceptSource::LocalMining)
                 .expect("accept block");
             storage
@@ -3590,18 +3636,22 @@ mod tests {
         let storage = Storage::open(&path).expect("open storage");
         let snapshot = build_linear_chain("testnet", 2);
         let mut final_state = snapshot.clone();
+        let parent = best_tip_hash(&snapshot);
+        let parent_timestamp = snapshot
+            .dag
+            .blocks
+            .get(&parent)
+            .map(|block| block.header.timestamp)
+            .unwrap_or(0);
         let mut side = build_candidate_block(
-            vec![best_tip_hash(&snapshot)],
+            vec![parent],
             3,
-            1,
+            pulsedag_core::expected_difficulty(&snapshot),
             vec![build_coinbase_transaction("side", 50, 30)],
         );
+        side.header.timestamp = parent_timestamp.saturating_add(60).max(1);
         refresh_block_consensus_ids_with_state(&mut side, &final_state)
-            .expect("prepare side block");
-        let (header, mined, _, _) = dev_mine_header(side.header.clone(), 25_000);
-        assert!(mined, "failed to mine side-dag block");
-        side.header = header;
-        refresh_block_consensus_ids(&mut side);
+            .expect("prepare and mine side block");
         accept_block(side.clone(), &mut final_state, AcceptSource::LocalMining)
             .expect("accept side block");
         let bundle = Storage::snapshot_bundle_for_state(

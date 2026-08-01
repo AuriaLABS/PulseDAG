@@ -930,8 +930,16 @@ mod tests {
     fn valid_acceptance_block(state: &ChainState, _hash: &str, coinbase_nonce: u64) -> Block {
         let parents = vec![state.dag.genesis_hash.clone()];
         let txs = vec![build_coinbase_transaction("miner1", 50, coinbase_nonce)];
-        let mut block = build_candidate_block(parents, 1, 1, txs);
+        let difficulty = crate::expected_difficulty(state);
+        let mut block = build_candidate_block(parents, 1, difficulty, txs);
         refresh_block_consensus_ids_with_state(&mut block, state).unwrap();
+        let (header, mined, _, _) = crate::dev_mine_header(block.header.clone(), 200_000);
+        assert!(
+            mined,
+            "expected acceptance fixture to satisfy consensus PoW"
+        );
+        block.header = header;
+        refresh_block_consensus_ids(&mut block);
         block
     }
 
@@ -970,12 +978,22 @@ mod tests {
         };
         invalid_spend.txid = crate::tx::compute_txid(&invalid_spend);
         let parents = vec![state.dag.genesis_hash.clone()];
-        build_candidate_block(parents, 1, 1, vec![coinbase, invalid_spend])
+        let difficulty = crate::expected_difficulty(state);
+        let mut block =
+            build_candidate_block(parents, 1, difficulty, vec![coinbase, invalid_spend]);
+        let (header, mined, _, _) = crate::dev_mine_header(block.header.clone(), 200_000);
+        assert!(
+            mined,
+            "expected invalid-transaction fixture to satisfy consensus PoW"
+        );
+        block.header = header;
+        refresh_block_consensus_ids(&mut block);
+        block
     }
 
     fn malformed_acceptance_block(state: &ChainState) -> Block {
         let mut block = valid_acceptance_block(state, "taxonomy-malformed", 14);
-        block.header.parents.clear();
+        block.hash = "malformed-block".to_string();
         block
     }
 
@@ -1208,10 +1226,7 @@ mod tests {
     #[test]
     fn accepts_block_with_valid_pow() {
         let mut state = init_chain_state("test".to_string());
-        let parents = vec![state.dag.genesis_hash.clone()];
-        let txs = vec![build_coinbase_transaction("miner1", 50, 1)];
-        let mut block = build_candidate_block(parents, 1, 1, txs);
-        refresh_block_consensus_ids_with_state(&mut block, &state).unwrap();
+        let block = valid_acceptance_block(&state, "valid-pow", 1);
 
         assert!(accept_block(block, &mut state, AcceptSource::P2p).is_ok());
     }
@@ -1219,10 +1234,7 @@ mod tests {
     #[test]
     fn duplicate_block_returns_duplicate_outcome() {
         let mut state = init_chain_state("test".to_string());
-        let parents = vec![state.dag.genesis_hash.clone()];
-        let txs = vec![build_coinbase_transaction("miner1", 50, 1)];
-        let mut block = build_candidate_block(parents, 1, 1, txs);
-        refresh_block_consensus_ids_with_state(&mut block, &state).unwrap();
+        let block = valid_acceptance_block(&state, "duplicate", 1);
         assert!(accept_block(block.clone(), &mut state, AcceptSource::P2p).is_ok());
         let outcome = accept_block_with_result(block, &mut state, AcceptSource::P2p);
         assert_eq!(outcome, BlockAcceptanceResult::Duplicate);
@@ -1240,28 +1252,7 @@ mod tests {
     #[test]
     fn invalid_transaction_in_peer_block_returns_invalid_transaction_outcome() {
         let mut state = init_chain_state("test".to_string());
-        let parents = vec![state.dag.genesis_hash.clone()];
-        let coinbase = build_coinbase_transaction("miner1", 50, 1);
-        let mut invalid_spend = crate::types::Transaction {
-            txid: String::new(),
-            version: 1,
-            inputs: vec![crate::types::TxInput {
-                previous_output: crate::types::OutPoint {
-                    txid: "missing-utxo".to_string(),
-                    index: 0,
-                },
-                public_key: "not-a-valid-public-key".to_string(),
-                signature: "not-a-valid-signature".to_string(),
-            }],
-            outputs: vec![crate::types::TxOutput {
-                address: "receiver".to_string(),
-                amount: 1,
-            }],
-            fee: 0,
-            nonce: 1,
-        };
-        invalid_spend.txid = crate::tx::compute_txid(&invalid_spend);
-        let block = build_candidate_block(parents, 1, 1, vec![coinbase, invalid_spend]);
+        let block = invalid_transaction_acceptance_block(&state);
 
         let outcome = accept_block_with_result(block, &mut state, AcceptSource::P2p);
         assert_eq!(outcome, BlockAcceptanceResult::InvalidTransaction);
@@ -1269,12 +1260,9 @@ mod tests {
 
     #[test]
     fn peer_block_and_mining_submit_share_canonical_acceptance_outcomes() {
-        let parents = vec![init_chain_state("agreement".to_string()).dag.genesis_hash];
-        let txs = vec![build_coinbase_transaction("miner1", 50, 1)];
         let mut peer_state = init_chain_state("agreement".to_string());
         let mut mining_state = init_chain_state("agreement".to_string());
-        let mut block = build_candidate_block(parents, 1, 1, txs);
-        refresh_block_consensus_ids_with_state(&mut block, &peer_state).unwrap();
+        let block = valid_acceptance_block(&peer_state, "agreement", 1);
 
         let peer_outcome =
             accept_block_with_result(block.clone(), &mut peer_state, AcceptSource::P2p);
@@ -1354,7 +1342,11 @@ mod tests {
         let mut spend = txs[0].clone();
         spend.txid = "mutated".to_string();
         txs.push(spend);
-        let mut block = build_candidate_block(parents, 1, 1, txs);
+        let difficulty = crate::expected_difficulty(&state);
+        let mut block = build_candidate_block(parents, 1, difficulty, txs);
+        let (header, mined, _, _) = crate::dev_mine_header(block.header.clone(), 200_000);
+        assert!(mined, "expected malformed fixture to satisfy consensus PoW");
+        block.header = header;
         block.hash = "mutated-block".to_string();
         let outcome = accept_block_with_result(block, &mut state, AcceptSource::P2p);
         assert_eq!(outcome, BlockAcceptanceResult::Malformed);

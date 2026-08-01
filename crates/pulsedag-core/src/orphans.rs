@@ -867,13 +867,18 @@ mod tests {
         _hash: &str,
         nonce: u64,
     ) -> Block {
+        let difficulty = crate::expected_difficulty(state);
         let mut block = build_candidate_block(
             parents,
             height,
-            1,
+            difficulty,
             vec![build_coinbase_transaction("miner", 50, nonce)],
         );
         refresh_block_consensus_ids_with_state(&mut block, state).unwrap();
+        let (header, mined, _, _) = crate::dev_mine_header(block.header.clone(), 200_000);
+        assert!(mined, "expected orphan fixture to satisfy consensus PoW");
+        block.header = header;
+        refresh_block_consensus_ids(&mut block);
         block
     }
 

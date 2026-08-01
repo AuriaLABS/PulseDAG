@@ -22,13 +22,13 @@ pub async fn post_pow_metrics_capture<S: RpcStateLike>(
 ) -> Json<ApiResponse<PowMetricsCaptureData>> {
     let chain_handle = state.chain();
     let chain = chain_handle.read().await;
-    let snapshot = pulsedag_core::dev_difficulty_snapshot(&chain);
+    let snapshot = pulsedag_core::consensus_difficulty_snapshot(&chain);
     let best_height = snapshot.best_height;
     let window_size = snapshot.policy.window_size;
     let observed_block_count = snapshot.observed_block_count;
     let avg_block_interval_secs = snapshot.avg_block_interval_secs;
-    let suggested_difficulty = snapshot.suggested_difficulty;
-    let target_u64 = snapshot.target_u64;
+    let suggested_difficulty = u64::from(snapshot.expected_bits);
+    let target_u64 = snapshot.expected_target_u64;
     let target_block_interval_secs = snapshot.policy.target_block_interval_secs;
     let retarget_multiplier_bps = snapshot.retarget_multiplier_bps;
 
@@ -60,7 +60,7 @@ pub async fn post_pow_metrics_capture<S: RpcStateLike>(
     let persisted = latest_ok && history_ok;
 
     Json(ApiResponse::ok(PowMetricsCaptureData {
-        algorithm: snapshot.algorithm.to_string(),
+        algorithm: pulsedag_core::selected_pow_name().to_string(),
         best_height,
         observed_block_count,
         avg_block_interval_secs,

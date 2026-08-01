@@ -61,10 +61,11 @@ pub fn consensus_difficulty_snapshot(state: &ChainState) -> ConsensusDifficultyS
         policy.window_size,
         policy.use_median,
     );
-    let avg_block_interval_secs = if interval == 0 {
+    let observed_intervals = observed_block_count.saturating_sub(1);
+    let avg_block_interval_secs = if observed_intervals == 0 {
         policy.target_block_interval_secs
     } else {
-        interval
+        interval.max(1)
     };
     let current_bits = consensus_current_bits_for_chain(state);
     let current_target = target_from_bits(current_bits);
@@ -73,7 +74,6 @@ pub fn consensus_difficulty_snapshot(state: &ChainState) -> ConsensusDifficultyS
         consensus_target_multiplier_bps_from_work_multiplier(retarget_multiplier_bps);
     let (expected_bits, expected_target, target_was_clamped_to_pow_limit) =
         consensus_adjust_target_for_interval(current_bits, avg_block_interval_secs);
-    let observed_intervals = observed_block_count.saturating_sub(1);
     let raw_multiplier_bps = policy
         .target_block_interval_secs
         .saturating_mul(BPS_DENOMINATOR)
@@ -430,6 +430,18 @@ mod tests {
         assert!(expected < pow_limit);
         assert_ne!(snapshot.expected_bits, CONSENSUS_POW_LIMIT_BITS);
         assert_eq!(snapshot.target_multiplier_bps, 8_000);
+    }
+
+    #[test]
+    fn zero_second_intervals_harden_instead_of_falling_back_to_target() {
+        let state = state_with_fixed_interval_tip(CONSENSUS_POW_LIMIT_BITS, 0, 25);
+        let snapshot = consensus_difficulty_snapshot(&state);
+
+        assert_eq!(snapshot.avg_block_interval_secs, 1);
+        assert_eq!(snapshot.retarget_multiplier_bps, CONSENSUS_RETARGET_MAX_BPS);
+        assert_eq!(snapshot.target_multiplier_bps, 8_000);
+        assert!(snapshot.expected_bits != CONSENSUS_POW_LIMIT_BITS);
+        assert!(target_from_bits(snapshot.expected_bits) < consensus_pow_limit_target());
     }
 
     #[test]

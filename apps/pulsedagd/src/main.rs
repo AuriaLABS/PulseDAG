@@ -6539,7 +6539,7 @@ mod tests {
 
     fn build_test_chain(chain_id: &str, length: usize) -> pulsedag_core::ChainState {
         use pulsedag_core::{
-            accept_block, build_candidate_block, build_coinbase_transaction,
+            accept_block, build_candidate_block, build_coinbase_transaction, expected_difficulty,
             genesis::init_chain_state, pow::dev_mine_header, refresh_block_consensus_ids,
             refresh_block_consensus_ids_with_state, AcceptSource,
         };
@@ -6555,7 +6555,7 @@ mod tests {
             let mut block = build_candidate_block(
                 vec![parent],
                 i as u64,
-                1,
+                expected_difficulty(&state),
                 vec![build_coinbase_transaction("miner", 50, i as u64)],
             );
             refresh_block_consensus_ids_with_state(&mut block, &state)
@@ -6778,15 +6778,22 @@ mod tests {
         let mut network_state = offline_state.clone();
         for i in (offline_boundary_height + 1)..=(offline_boundary_height + 4) {
             let parent = chain_best_tip(&network_state);
+            let parent_timestamp = network_state
+                .dag
+                .blocks
+                .get(&parent)
+                .map(|block| block.header.timestamp)
+                .unwrap_or(0);
             let mut block = build_candidate_block(
                 vec![parent],
                 i,
-                1,
+                pulsedag_core::expected_difficulty(&network_state),
                 vec![build_coinbase_transaction("miner", 50, i * 1000)],
             );
+            block.header.timestamp = pulsedag_core::current_ts().max(parent_timestamp);
             refresh_block_consensus_ids_with_state(&mut block, &network_state)
-                .expect("prepare state root");
-            let (header, mined, _, _) = dev_mine_header(block.header.clone(), 25_000);
+                .expect("prepare catch-up block state root");
+            let (header, mined, _, _) = dev_mine_header(block.header.clone(), 1_000_000);
             assert!(mined, "failed to mine catch-up block at height {i}");
             block.header = header;
             refresh_block_consensus_ids(&mut block);
@@ -6823,7 +6830,15 @@ mod tests {
         );
         assert_eq!(
             caught_up.dag.best_height, network_state.dag.best_height,
-            "rejoined node best height must match network"
+            "rejoined node height must match network after catch-up"
+        );
+        assert_eq!(
+            caught_up.utxo.compute_state_root().expect("caught-up root"),
+            network_state
+                .utxo
+                .compute_state_root()
+                .expect("network root"),
+            "rejoined node state root must match network after catch-up"
         );
 
         let _ = std::fs::remove_dir_all(path);
