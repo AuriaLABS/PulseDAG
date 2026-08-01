@@ -34,6 +34,7 @@ replacement = '''    #[test]
 
         use pulsedag_core::{
             accept_block, build_candidate_block, build_coinbase_transaction,
+            pow::dev_mine_header, refresh_block_consensus_ids,
             refresh_block_consensus_ids_with_state, AcceptSource,
         };
         let mut network_state = offline_state.clone();
@@ -53,7 +54,11 @@ replacement = '''    #[test]
             );
             block.header.timestamp = parent_timestamp.saturating_add(60).max(1);
             refresh_block_consensus_ids_with_state(&mut block, &network_state)
-                .expect("prepare and mine catch-up block");
+                .expect("prepare catch-up block state root");
+            let (header, mined, _, _) = dev_mine_header(block.header.clone(), 1_000_000);
+            assert!(mined, "failed to mine catch-up block at height {i}");
+            block.header = header;
+            refresh_block_consensus_ids(&mut block);
             accept_block(block, &mut network_state, AcceptSource::P2p)
                 .expect("accept catch-up block");
         }
