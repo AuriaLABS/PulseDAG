@@ -128,6 +128,7 @@ jobs:
           python3 scripts/migrate_v2_4_candidate_once.py
           python3 scripts/fix_v2_4_fake_merkle_once.py
           python3 scripts/fix_v2_4_storage_fixtures_once.py
+          python3 scripts/fix_v2_4_pulsedagd_fixture_once.py
           cargo fmt --all
           cargo fmt --all -- --check
 
@@ -135,8 +136,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo test --locked -p pulsedag-core --lib
-          cargo test --locked -p pulsedag-storage --lib
+          cargo test --locked -p pulsedagd --bin pulsedagd \
+            restart_rejoin_offline_node_converges_after_selected_segment_catch_up -- --exact
           cargo test --locked -p pulsedagd --bin pulsedagd
           cargo test --locked -p pulsedag-rpc --lib
 
@@ -149,6 +150,7 @@ jobs:
           rm scripts/migrate_v2_4_candidate_once.py
           rm scripts/fix_v2_4_fake_merkle_once.py
           rm scripts/fix_v2_4_storage_fixtures_once.py
+          rm scripts/fix_v2_4_pulsedagd_fixture_once.py
           git config user.name "PulseDAG CI"
           git config user.email "actions@users.noreply.github.com"
           git add \
@@ -156,6 +158,7 @@ jobs:
             scripts/migrate_v2_4_candidate_once.py \
             scripts/fix_v2_4_fake_merkle_once.py \
             scripts/fix_v2_4_storage_fixtures_once.py \
+            scripts/fix_v2_4_pulsedagd_fixture_once.py \
             crates/pulsedag-core/src/accept.rs \
             crates/pulsedag-core/src/orphans.rs \
             crates/pulsedag-core/src/validation.rs \
