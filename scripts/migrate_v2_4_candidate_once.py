@@ -40,7 +40,9 @@ def replace_test(path: str, name: str, body: str) -> None:
 
 
 def extract_embedded_python(commit: str, workflow_path: str) -> str:
-    workflow = subprocess.check_output(["git", "show", f"{commit}:{workflow_path}"], text=True)
+    workflow = subprocess.check_output(
+        ["git", "show", f"{commit}:{workflow_path}"], text=True
+    )
     marker = "          python3 - <<'PY'\n"
     start = workflow.index(marker) + len(marker)
     end = workflow.index("\n          PY\n", start)
@@ -131,6 +133,21 @@ replace_test(
     }
 ''',
 )
+replace_once(
+    accept,
+    '''    fn malformed_acceptance_block(state: &ChainState) -> Block {
+        let mut block = valid_acceptance_block(state, "taxonomy-malformed", 14);
+        block.header.parents.clear();
+        block
+    }
+''',
+    '''    fn malformed_acceptance_block(state: &ChainState) -> Block {
+        let mut block = valid_acceptance_block(state, "taxonomy-malformed", 14);
+        block.hash = "malformed-block".to_string();
+        block
+    }
+''',
+)
 replace_test(
     accept,
     "mutated_block_returns_invalid_structure",
@@ -155,6 +172,21 @@ replace_test(
 )
 
 validation = "crates/pulsedag-core/src/validation.rs"
+replace_once(
+    validation,
+    '''    let expected_difficulty = expected_difficulty(state);
+    if block.header.difficulty != expected_difficulty {
+''',
+    '''    let parent_context = parent_state_context(block, state)?;
+    let expected_difficulty = expected_difficulty(&parent_context);
+    if block.header.difficulty != expected_difficulty {
+''',
+)
+replace_once(
+    validation,
+    "    let parent_context = parent_state_context(block, state)?;\n    validate_created_utxo_outpoints(block, &parent_context)?;\n",
+    "    validate_created_utxo_outpoints(block, &parent_context)?;\n",
+)
 regex_once(
     validation,
     r"build_candidate_block as raw_build_candidate_block,\s*build_coinbase_transaction,\s*refresh_block_consensus_ids,\s*refresh_block_consensus_ids_with_state,",
