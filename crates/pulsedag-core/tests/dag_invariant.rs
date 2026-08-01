@@ -157,7 +157,10 @@ fn test_block(
     block.header.blue_score = height;
     refresh_block_consensus_ids_with_state(&mut block, state).unwrap();
     let (header, mined, _, _) = dev_mine_header(block.header.clone(), 1_000_000);
-    assert!(mined, "expected DAG invariant fixture to satisfy consensus PoW");
+    assert!(
+        mined,
+        "expected DAG invariant fixture to satisfy consensus PoW"
+    );
     block.header = header;
     refresh_block_consensus_ids(&mut block);
     block
