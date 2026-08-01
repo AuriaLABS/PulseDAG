@@ -127,6 +127,7 @@ jobs:
           set -euo pipefail
           python3 scripts/migrate_v2_4_candidate_once.py
           python3 scripts/fix_v2_4_fake_merkle_once.py
+          python3 scripts/fix_v2_4_storage_fixtures_once.py
           cargo fmt --all
           cargo fmt --all -- --check
 
@@ -147,12 +148,14 @@ jobs:
             > .github/workflows/repository_hygiene.yml
           rm scripts/migrate_v2_4_candidate_once.py
           rm scripts/fix_v2_4_fake_merkle_once.py
+          rm scripts/fix_v2_4_storage_fixtures_once.py
           git config user.name "PulseDAG CI"
           git config user.email "actions@users.noreply.github.com"
           git add \
             .github/workflows/repository_hygiene.yml \
             scripts/migrate_v2_4_candidate_once.py \
             scripts/fix_v2_4_fake_merkle_once.py \
+            scripts/fix_v2_4_storage_fixtures_once.py \
             crates/pulsedag-core/src/accept.rs \
             crates/pulsedag-core/src/orphans.rs \
             crates/pulsedag-core/src/validation.rs \
