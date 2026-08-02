@@ -1,5 +1,6 @@
 use anyhow::{bail, Result};
 use pulsedag_core::ConsensusMode;
+use std::{net::SocketAddr, path::Path};
 
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -121,6 +122,7 @@ impl Config {
         cfg.validate_api_exposure()?;
         cfg.validate_cors_policy()?;
         cfg.validate_security_hardening()?;
+        cfg.validate_single_node_mode()?;
         Ok(cfg)
     }
 
@@ -718,6 +720,7 @@ impl Config {
         self.validate_api_exposure()?;
         self.validate_cors_policy()?;
         self.validate_security_hardening()?;
+        self.validate_single_node_mode()?;
         Ok(())
     }
 
@@ -798,6 +801,95 @@ impl Config {
                 bail!("invalid config: public_safe profile cannot disable RPC rate limiting. Set PULSEDAG_RPC_RATE_LIMIT_REQUESTS_PER_MINUTE to a non-zero value or explicitly acknowledge risk with PULSEDAG_RPC_RATE_LIMIT_UNSAFE_ALLOW_DISABLED=true");
             }
         }
+        Ok(())
+    }
+
+    fn validate_single_node_mode(&self) -> Result<()> {
+        let enabled = read_env_bool("PULSEDAG_SINGLE_NODE_MODE", false);
+        let role = std::env::var("PULSEDAG_PRIVATE_TESTNET_ROLE").unwrap_or_default();
+
+        if !enabled {
+            if role.trim().eq_ignore_ascii_case("single") {
+                bail!(
+                    "invalid single-node config: PULSEDAG_PRIVATE_TESTNET_ROLE=single requires PULSEDAG_SINGLE_NODE_MODE=true"
+                );
+            }
+            return Ok(());
+        }
+
+        if role.trim() != "single" {
+            bail!(
+                "invalid single-node config: PULSEDAG_PRIVATE_TESTNET_ROLE must be exactly 'single'"
+            );
+        }
+        if self.network_profile != "private-testnet-v2.3.0" {
+            bail!(
+                "invalid single-node config: PULSEDAG_NETWORK_PROFILE must be private-testnet-v2.3.0"
+            );
+        }
+        if self.chain_id != "pulsedag-private-v2.3.0" {
+            bail!("invalid single-node config: PULSEDAG_CHAIN_ID must be pulsedag-private-v2.3.0");
+        }
+        if self.consensus_mode != ConsensusMode::Legacy {
+            bail!("invalid single-node config: consensus mode must remain legacy");
+        }
+        if self.p2p_enabled {
+            bail!("invalid single-node config: P2P must remain disabled");
+        }
+        if !self.p2p_bootstrap.is_empty() {
+            bail!("invalid single-node config: bootnodes must remain empty");
+        }
+        if self.p2p_mdns {
+            bail!("invalid single-node config: mDNS must remain disabled");
+        }
+        if std::env::var("PULSEDAG_PUBLIC_P2P_MULTIADDR")
+            .map(|value| !value.trim().is_empty())
+            .unwrap_or(false)
+        {
+            bail!("invalid single-node config: public P2P advertisement must remain empty");
+        }
+
+        let rpc_bind = self.rpc_bind.parse::<SocketAddr>().map_err(|_| {
+            anyhow::anyhow!(
+                "invalid single-node config: PULSEDAG_RPC_BIND must be a numeric socket address"
+            )
+        })?;
+        if !rpc_bind.ip().is_loopback() {
+            bail!("invalid single-node config: RPC bind must use a loopback IP address");
+        }
+        if !matches!(
+            self.api_profile,
+            ApiExposureProfile::PrivateOperator | ApiExposureProfile::LocalDev
+        ) {
+            bail!("invalid single-node config: API profile must be private_operator or local_dev");
+        }
+
+        let rocksdb_path = Path::new(&self.rocksdb_path);
+        if !rocksdb_path.is_absolute()
+            || rocksdb_path == Path::new("/tmp")
+            || rocksdb_path.starts_with("/tmp")
+            || rocksdb_path == Path::new("/run")
+            || rocksdb_path.starts_with("/run")
+        {
+            bail!(
+                "invalid single-node config: PULSEDAG_ROCKSDB_PATH must be absolute and persistent"
+            );
+        }
+        if !self.prune_require_snapshot {
+            bail!("invalid single-node config: snapshot-gated pruning must remain enabled");
+        }
+
+        for key in [
+            "PULSEDAG_PUBLIC_TESTNET_READY",
+            "PULSEDAG_THIRTY_DAY_PUBLIC_TESTNET_CLOCK_STARTED",
+            "PULSEDAG_MULTI_HOST_REHEARSAL",
+            "PULSEDAG_CONTRACTS_ENABLED",
+        ] {
+            if read_env_bool(key, false) {
+                bail!("invalid single-node config: {key} must not be true");
+            }
+        }
+
         Ok(())
     }
 
@@ -991,6 +1083,7 @@ mod tests {
             "PULSEDAG_TARGET_BLOCK_INTERVAL_MS",
             "PULSEDAG_EXPERIMENTAL_GHOSTDAG_SELECTION",
             "PULSEDAG_EXPERIMENTAL_FAST_CADENCE",
+            "PULSEDAG_CONSENSUS_MODE",
             "PULSEDAG_MAX_PARALLEL_TIPS",
             "PULSEDAG_MAX_MERGE_SET_SIZE",
             "PULSEDAG_MAX_ORPHAN_COUNT",
@@ -1007,9 +1100,43 @@ mod tests {
             "PULSEDAG_RPC_CORS_UNSAFE_ALLOW_WILDCARD_WITH_ADMIN",
             "PULSEDAG_RPC_RATE_LIMIT_UNSAFE_ALLOW_DISABLED",
             "PULSEDAG_OPERATOR_AUTH_TOKEN",
+            "PULSEDAG_SINGLE_NODE_MODE",
+            "PULSEDAG_PRIVATE_TESTNET_ROLE",
+            "PULSEDAG_P2P_BOOTSTRAP",
+            "PULSEDAG_PUBLIC_P2P_MULTIADDR",
+            "PULSEDAG_ROCKSDB_PATH",
+            "PULSEDAG_PRUNE_REQUIRE_SNAPSHOT",
+            "PULSEDAG_PUBLIC_TESTNET_READY",
+            "PULSEDAG_THIRTY_DAY_PUBLIC_TESTNET_CLOCK_STARTED",
+            "PULSEDAG_MULTI_HOST_REHEARSAL",
+            "PULSEDAG_CONTRACTS_ENABLED",
         ] {
             std::env::remove_var(key);
         }
+    }
+
+    fn set_valid_single_node_env() {
+        std::env::set_var("PULSEDAG_CONFIG_PROFILE", "private");
+        std::env::set_var("PULSEDAG_SINGLE_NODE_MODE", "true");
+        std::env::set_var("PULSEDAG_PRIVATE_TESTNET_ROLE", "single");
+        std::env::set_var("PULSEDAG_NETWORK_PROFILE", "private-testnet-v2.3.0");
+        std::env::set_var("PULSEDAG_CHAIN_ID", "pulsedag-private-v2.3.0");
+        std::env::set_var("PULSEDAG_CONSENSUS_MODE", "legacy");
+        std::env::set_var("PULSEDAG_P2P_ENABLED", "false");
+        std::env::set_var("PULSEDAG_P2P_BOOTSTRAP", "");
+        std::env::set_var("PULSEDAG_P2P_MDNS", "false");
+        std::env::set_var("PULSEDAG_PUBLIC_P2P_MULTIADDR", "");
+        std::env::set_var("PULSEDAG_RPC_BIND", "127.0.0.1:8280");
+        std::env::set_var("PULSEDAG_API_PROFILE", "private_operator");
+        std::env::set_var(
+            "PULSEDAG_ROCKSDB_PATH",
+            "/var/lib/pulsedag/single-node/rocksdb",
+        );
+        std::env::set_var("PULSEDAG_PRUNE_REQUIRE_SNAPSHOT", "true");
+        std::env::set_var("PULSEDAG_PUBLIC_TESTNET_READY", "false");
+        std::env::set_var("PULSEDAG_THIRTY_DAY_PUBLIC_TESTNET_CLOCK_STARTED", "false");
+        std::env::set_var("PULSEDAG_MULTI_HOST_REHEARSAL", "false");
+        std::env::set_var("PULSEDAG_CONTRACTS_ENABLED", "false");
     }
 
     #[test]
@@ -1449,6 +1576,68 @@ mod tests {
         assert!(err
             .to_string()
             .contains("PULSEDAG_RPC_RATE_LIMIT_UNSAFE_ALLOW_DISABLED=true"));
+    }
+
+    #[test]
+    fn explicit_single_node_profile_is_enforced_by_runtime_config() {
+        let _guard = env_guard();
+        clear_test_env();
+        set_valid_single_node_env();
+
+        let cfg = Config::from_env().expect("valid explicit single-node profile");
+        assert!(!cfg.p2p_enabled);
+        assert!(cfg.p2p_bootstrap.is_empty());
+        assert_eq!(cfg.rpc_bind, "127.0.0.1:8280");
+    }
+
+    #[test]
+    fn single_node_role_without_mode_fails_closed() {
+        let _guard = env_guard();
+        clear_test_env();
+        std::env::set_var("PULSEDAG_PRIVATE_TESTNET_ROLE", "single");
+
+        let err = Config::from_env().expect_err("single role without mode must fail");
+        assert!(err
+            .to_string()
+            .contains("requires PULSEDAG_SINGLE_NODE_MODE=true"));
+    }
+
+    #[test]
+    fn single_node_mode_rejects_hostname_rpc_bind() {
+        let _guard = env_guard();
+        clear_test_env();
+        set_valid_single_node_env();
+        std::env::set_var("PULSEDAG_RPC_BIND", "localhost:8280");
+
+        let err = Config::from_env().expect_err("hostname bind must fail closed");
+        assert!(err.to_string().contains("numeric socket address"));
+    }
+
+    #[test]
+    fn single_node_mode_rejects_cli_p2p_activation() {
+        let _guard = env_guard();
+        clear_test_env();
+        set_valid_single_node_env();
+        let mut cfg = Config::from_env().expect("valid explicit single-node profile");
+
+        let err = cfg
+            .apply_cli_args(vec![
+                "--bootnode".to_string(),
+                "/ip4/127.0.0.1/tcp/32333".to_string(),
+            ])
+            .expect_err("CLI must not reactivate P2P in single-node mode");
+        assert!(err.to_string().contains("P2P must remain disabled"));
+    }
+
+    #[test]
+    fn single_node_mode_rejects_ephemeral_storage_roots() {
+        let _guard = env_guard();
+        clear_test_env();
+        set_valid_single_node_env();
+        std::env::set_var("PULSEDAG_ROCKSDB_PATH", "/tmp");
+
+        let err = Config::from_env().expect_err("ephemeral storage root must fail");
+        assert!(err.to_string().contains("absolute and persistent"));
     }
 
     #[test]

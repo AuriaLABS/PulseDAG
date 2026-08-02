@@ -1,7 +1,8 @@
 use pulsedag_core::{
     accept_block_to_dag_metadata, accept_block_with_result, adopt_ready_orphans,
-    build_candidate_block, build_coinbase_transaction, merge_set_digest, missing_block_parents,
-    ordered_dag_digest, queue_orphan_block, rebuild_state_from_snapshot_and_blocks,
+    build_candidate_block, build_coinbase_transaction, dev_mine_header, expected_difficulty,
+    merge_set_digest, missing_block_parents, ordered_dag_digest, queue_orphan_block,
+    rebuild_state_from_snapshot_and_blocks, refresh_block_consensus_ids,
     refresh_block_consensus_ids_with_state, refresh_ordered_dag_phase,
     refresh_selected_chain_phase, selection_digest, state_digest, terminal_missing_parent_count,
     AcceptSource, Block, BlockAcceptanceResult, ChainState, ConsensusMode, Hash,
@@ -85,10 +86,18 @@ fn block(
     miner: &str,
 ) -> Block {
     let txs = vec![build_coinbase_transaction(miner, 50, nonce)];
-    let mut block = build_candidate_block(parents, height, 1, txs);
+    let difficulty = expected_difficulty(state);
+    let mut block = build_candidate_block(parents, height, difficulty, txs);
     block.header.timestamp = timestamp;
     block.header.nonce = nonce;
     refresh_block_consensus_ids_with_state(&mut block, state).unwrap();
+    let (header, mined, _, _) = dev_mine_header(block.header.clone(), 1_000_000);
+    assert!(
+        mined,
+        "expected replay determinism fixture to satisfy consensus PoW"
+    );
+    block.header = header;
+    refresh_block_consensus_ids(&mut block);
     block
 }
 

@@ -1,7 +1,7 @@
 use crate::api::{ApiResponse, MineRequest, RpcStateLike};
 use axum::{extract::State, Json};
 use pulsedag_core::{
-    accept_block, dev_difficulty_snapshot, dev_mine_header, dev_pow_accepts, dev_target_u64,
+    accept_block, consensus_difficulty_snapshot, dev_mine_header, dev_pow_accepts,
     mining::{
         build_candidate_block, build_coinbase_transaction, refresh_block_consensus_ids_with_state,
     },
@@ -49,9 +49,10 @@ pub async fn post_mine_preview<S: RpcStateLike>(
     let next_height = chain.dag.best_height + 1;
     let coinbase_amount = 50;
     let mempool_tx_count = chain.mempool.transactions.len();
-    let snapshot = dev_difficulty_snapshot(&chain);
-    let difficulty = snapshot.suggested_difficulty;
-    let header_difficulty = u32::try_from(difficulty).unwrap_or(u32::MAX);
+    let snapshot = consensus_difficulty_snapshot(&chain);
+    let header_difficulty = snapshot.expected_bits;
+    let difficulty = u64::from(header_difficulty);
+    let pow_target_u64 = snapshot.expected_target_u64;
     let mut candidate = build_candidate_block(
         parent_hashes.clone(),
         next_height,
@@ -68,7 +69,6 @@ pub async fn post_mine_preview<S: RpcStateLike>(
     let max_tries = req.pow_max_tries.unwrap_or(10_000).min(1_000_000);
     let (mined_header, _accepted, pow_tries, pow_hash) =
         dev_mine_header(candidate.header.clone(), max_tries);
-    let pow_target_u64 = dev_target_u64(mined_header.difficulty as u64);
     let pow_accepted_dev = dev_pow_accepts(&mined_header);
     let final_nonce = mined_header.nonce;
 
@@ -97,8 +97,10 @@ pub async fn post_mine<S: RpcStateLike>(
     let parents = chain.dag.tips.iter().cloned().collect::<Vec<_>>();
     let height = chain.dag.best_height + 1;
     let reward = 50;
-    let snapshot = dev_difficulty_snapshot(&chain);
-    let difficulty = snapshot.suggested_difficulty;
+    let snapshot = consensus_difficulty_snapshot(&chain);
+    let header_difficulty = snapshot.expected_bits;
+    let difficulty = u64::from(header_difficulty);
+    let pow_target_u64 = snapshot.expected_target_u64;
     let mut txs = vec![build_coinbase_transaction(
         &req.miner_address,
         reward,
@@ -112,7 +114,6 @@ pub async fn post_mine<S: RpcStateLike>(
         .collect::<Vec<_>>();
     mempool_txs.sort_by(|a, b| a.txid.cmp(&b.txid));
     txs.extend(mempool_txs);
-    let header_difficulty = u32::try_from(difficulty).unwrap_or(u32::MAX);
     let mut block = build_candidate_block(parents.clone(), height, header_difficulty, txs);
     if let Err(e) = refresh_block_consensus_ids_with_state(&mut block, &chain) {
         return Json(ApiResponse::err("STATE_ROOT_ERROR", e.to_string()));
@@ -134,7 +135,6 @@ pub async fn post_mine<S: RpcStateLike>(
             if let Some(p2p) = state.p2p() {
                 let _ = p2p.broadcast_block(&block);
             }
-            let pow_target_u64 = dev_target_u64(block.header.difficulty as u64);
             let pow_accepted_dev = dev_pow_accepts(&block.header);
             let final_nonce = block.header.nonce;
             Json(ApiResponse::ok(MineData {

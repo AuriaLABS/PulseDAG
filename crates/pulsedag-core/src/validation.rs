@@ -6,7 +6,6 @@ use crate::{
         InvalidStateRootClassification, InvalidStateRootDiagnostics, InvalidStateRootError,
         PulseError,
     },
-    expected_difficulty,
     mining::{current_ts, is_coinbase},
     selection::{
         calculate_selected_parent, preferred_tip_hash, rebuild_selected_chain_from_tip,
@@ -219,7 +218,19 @@ pub fn validate_block(block: &Block, state: &ChainState) -> Result<(), PulseErro
             block.header.height, expected_height
         )));
     }
-    let expected_difficulty = expected_difficulty(state);
+    let selected_parent = selected_parent_for_state_validation(block, state).ok_or_else(|| {
+        PulseError::ParentStateContextUnavailable {
+            block_hash: block.hash.clone(),
+            parent_hash: block.header.parents.first().cloned().unwrap_or_default(),
+        }
+    })?;
+    let expected_difficulty =
+        crate::retarget::expected_difficulty_for_parent(state, &selected_parent).ok_or_else(
+            || PulseError::ParentStateContextUnavailable {
+                block_hash: block.hash.clone(),
+                parent_hash: selected_parent.clone(),
+            },
+        )?;
     if block.header.difficulty != expected_difficulty {
         return Err(PulseError::InvalidBlock(format!(
             "invalid consensus difficulty {}, expected {}",
@@ -267,9 +278,13 @@ pub fn validate_block(block: &Block, state: &ChainState) -> Result<(), PulseErro
             return Err(PulseError::InvalidTxid);
         }
     }
+    validate_coinbase_reward(block)?;
+
+    // Rebuilding side-parent state can clone or replay a large chain. Keep it behind all
+    // state-independent structure, commitment, difficulty, and PoW checks so malformed
+    // peer blocks cannot force expensive historical work.
     let parent_context = parent_state_context(block, state)?;
     validate_created_utxo_outpoints(block, &parent_context)?;
-    validate_coinbase_reward(block)?;
 
     let computed_state_root = compute_post_state_root(block, &parent_context)?;
     if computed_state_root != block.header.state_root {
@@ -473,8 +488,9 @@ mod tests {
         compact_snapshot_to_retained_blocks,
         genesis::{genesis_transaction, init_chain_state},
         mining::{
-            build_candidate_block, build_coinbase_transaction, refresh_block_consensus_ids,
-            refresh_block_consensus_ids_with_state,
+            build_candidate_block as raw_build_candidate_block, build_coinbase_transaction,
+            refresh_block_consensus_ids as raw_refresh_block_consensus_ids,
+            refresh_block_consensus_ids_with_state as raw_refresh_block_consensus_ids_with_state,
         },
         tx::{address_from_public_key, compute_txid, signing_message},
         types::{TxInput, TxOutput, Utxo},
@@ -483,6 +499,44 @@ mod tests {
 
     fn coinbase(nonce: u64) -> Transaction {
         build_coinbase_transaction("miner1", 50, nonce)
+    }
+
+    fn mine_current_header(block: &mut Block) {
+        let (header, mined, _, _) = crate::dev_mine_header(block.header.clone(), 200_000);
+        assert!(
+            mined,
+            "expected validation fixture to satisfy consensus PoW"
+        );
+        block.header = header;
+        raw_refresh_block_consensus_ids(block);
+    }
+
+    fn refresh_block_consensus_ids(block: &mut Block) {
+        raw_refresh_block_consensus_ids(block);
+        mine_current_header(block);
+    }
+
+    fn refresh_block_consensus_ids_with_state(
+        block: &mut Block,
+        state: &ChainState,
+    ) -> Result<(), PulseError> {
+        raw_refresh_block_consensus_ids_with_state(block, state)?;
+        mine_current_header(block);
+        Ok(())
+    }
+
+    fn build_candidate_block(
+        parents: Vec<crate::types::Hash>,
+        height: u64,
+        difficulty: u32,
+        transactions: Vec<crate::types::Transaction>,
+    ) -> crate::types::Block {
+        let difficulty = if difficulty == 1 {
+            crate::retarget::CONSENSUS_POW_LIMIT_BITS
+        } else {
+            difficulty
+        };
+        raw_build_candidate_block(parents, height, difficulty, transactions)
     }
 
     fn structurally_valid_block(state: &ChainState) -> Block {
@@ -537,6 +591,11 @@ mod tests {
     }
 
     fn mined_next_block(state: &ChainState, difficulty: u32, nonce: u64) -> Block {
+        let difficulty = if difficulty == 1 {
+            crate::expected_difficulty(state)
+        } else {
+            difficulty
+        };
         let mut parents = state.dag.tips.iter().cloned().collect::<Vec<_>>();
         parents.sort();
         let height = state.dag.best_height + 1;
@@ -941,33 +1000,91 @@ mod tests {
 
     #[test]
     fn validate_block_accepts_expected_consensus_difficulty() {
-        let state = state_with_tip_difficulty(2);
-        assert_eq!(crate::expected_difficulty(&state), 2);
-        let block = mined_next_block(&state, 2, 90);
+        let expected = crate::retarget::CONSENSUS_POW_LIMIT_BITS;
+        let state = state_with_tip_difficulty(expected);
+        assert_eq!(crate::expected_difficulty(&state), expected);
+        let block = mined_next_block(&state, expected, 90);
 
         validate_block(&block, &state).expect("expected consensus difficulty block to validate");
     }
 
     #[test]
     fn validate_block_rejects_lower_than_expected_difficulty() {
-        let state = state_with_tip_difficulty(2);
-        let block = mined_next_block(&state, 1, 91);
+        let expected = crate::retarget::CONSENSUS_POW_LIMIT_BITS;
+        let state = state_with_tip_difficulty(expected);
+        let mut block = mined_next_block(&state, expected, 91);
+        block.header.difficulty = 1;
+        raw_refresh_block_consensus_ids(&mut block);
 
         assert_invalid_block_contains(
             validate_block(&block, &state),
-            "invalid consensus difficulty 1, expected 2",
+            &format!("invalid consensus difficulty 1, expected {expected}"),
         );
     }
 
     #[test]
     fn validate_block_rejects_stale_template_difficulty() {
-        let state = state_with_tip_difficulty(4);
+        let expected = crate::retarget::CONSENSUS_POW_LIMIT_BITS;
+        let state = state_with_tip_difficulty(expected);
         let stale_template_difficulty = 2;
-        let block = mined_next_block(&state, stale_template_difficulty, 92);
+        let mut block = mined_next_block(&state, expected, 92);
+        block.header.difficulty = stale_template_difficulty;
+        raw_refresh_block_consensus_ids(&mut block);
 
         assert_invalid_block_contains(
             validate_block(&block, &state),
-            "invalid consensus difficulty 2, expected 4",
+            &format!(
+                "invalid consensus difficulty {stale_template_difficulty}, expected {expected}"
+            ),
+        );
+    }
+
+    #[test]
+    fn validate_block_rejects_invalid_difficulty_before_side_parent_replay() {
+        let mut state = init_chain_state("difficulty-fast-reject".to_string());
+        let main_tip = structurally_valid_block(&state);
+        apply_block(&main_tip, &mut state).unwrap();
+
+        let side_hash = "side-parent-with-invalid-state".to_string();
+        let mut side_tx = non_coinbase_tx("side-parent-invalid-tx");
+        side_tx.txid = compute_txid(&side_tx);
+        state.dag.blocks.insert(
+            side_hash.clone(),
+            Block {
+                hash: side_hash.clone(),
+                header: crate::types::BlockHeader {
+                    version: 1,
+                    parents: vec![state.dag.genesis_hash.clone()],
+                    timestamp: current_ts().saturating_sub(1),
+                    difficulty: crate::retarget::CONSENSUS_POW_LIMIT_BITS,
+                    nonce: 0,
+                    merkle_root: compute_merkle_root(std::slice::from_ref(&side_tx)),
+                    state_root: "side-state".to_string(),
+                    blue_score: 1,
+                    height: 1,
+                },
+                transactions: vec![side_tx],
+            },
+        );
+        state
+            .dag
+            .selected_parents
+            .insert(side_hash.clone(), Some(state.dag.genesis_hash.clone()));
+
+        let mut block = build_candidate_block(vec![side_hash], 2, 1, vec![coinbase(93)]);
+        block.header.difficulty = 1;
+        raw_refresh_block_consensus_ids(&mut block);
+
+        assert!(matches!(
+            parent_state_context(&block, &state),
+            Err(PulseError::UtxoNotFound)
+        ));
+        assert_invalid_block_contains(
+            validate_block(&block, &state),
+            &format!(
+                "invalid consensus difficulty 1, expected {}",
+                crate::retarget::CONSENSUS_POW_LIMIT_BITS
+            ),
         );
     }
 
@@ -1128,6 +1245,12 @@ mod tests {
         let state = init_chain_state("test".to_string());
         let mut block = structurally_valid_block(&state);
         block.header.merkle_root = "not-the-canonical-merkle-root".to_string();
+        let (header, mined, _, _) = crate::dev_mine_header(block.header.clone(), 200_000);
+        assert!(
+            mined,
+            "expected fake-merkle fixture to satisfy consensus PoW"
+        );
+        block.header = header;
         block.hash = compute_block_hash(&block.header);
 
         assert_invalid_block_contains(validate_block(&block, &state), "merkle root mismatch");
@@ -1313,10 +1436,26 @@ mod tests {
 
     #[test]
     fn validate_block_rejects_duplicate_outpoint_outputs() {
-        let state = init_chain_state("test".to_string());
+        let mut state = init_chain_state("test".to_string());
         let parents = vec![state.dag.genesis_hash.clone()];
-        let mut block = build_candidate_block(parents, 1, 1, vec![genesis_transaction()]);
+        let mut block = build_candidate_block(parents, 1, 1, vec![coinbase(106)]);
         refresh_block_consensus_ids(&mut block);
+
+        let output = &block.transactions[0].outputs[0];
+        let duplicate_outpoint = OutPoint {
+            txid: block.transactions[0].txid.clone(),
+            index: 0,
+        };
+        state.utxo.utxos.insert(
+            duplicate_outpoint.clone(),
+            Utxo {
+                outpoint: duplicate_outpoint,
+                address: output.address.clone(),
+                amount: output.amount,
+                coinbase: true,
+                height: block.header.height,
+            },
+        );
 
         assert_validation_error(validate_block(&block, &state), |err| {
             matches!(err, PulseError::DuplicateUtxoOutpoint(_))
@@ -1461,9 +1600,12 @@ mod tests {
         let parents = vec![state.dag.genesis_hash.clone(), parent.hash.clone()];
         let mut block = build_candidate_block(parents, 2, 1, vec![coinbase(2)]);
         block.header.timestamp = parent.header.timestamp + 1;
-        refresh_block_consensus_ids_with_state(&mut block, &state).unwrap();
+        let parent_context = parent_state_context(&block, &state).unwrap();
+        block.header.difficulty = crate::expected_difficulty(&parent_context);
+        refresh_block_consensus_ids_with_state(&mut block, &parent_context).unwrap();
 
-        assert!(validate_block(&block, &state).is_ok());
+        validate_block(&block, &state)
+            .expect("valid multi-parent fixture should use the selected parent context");
     }
 
     #[test]
@@ -1484,7 +1626,7 @@ mod tests {
         block.header.nonce = 0;
         refresh_block_consensus_ids_with_state(&mut block, &state).unwrap();
         block.header.difficulty = 0x0100_0000;
-        refresh_block_consensus_ids(&mut block);
+        raw_refresh_block_consensus_ids(&mut block);
 
         assert_invalid_block_contains(
             validate_block(&block, &state),

@@ -1,8 +1,7 @@
 use crate::api::{ApiResponse, MineRequest, RpcStateLike};
 use axum::{extract::State, Json};
 use pulsedag_core::{
-    accept_block, dev_mine_header, dev_pow_accepts, dev_recommended_difficulty_for_chain,
-    dev_target_u64,
+    accept_block, consensus_difficulty_snapshot, dev_mine_header, dev_pow_accepts,
     mining::{
         build_candidate_block, build_coinbase_transaction, refresh_block_consensus_ids_with_state,
     },
@@ -25,10 +24,6 @@ pub struct PowMineCaptureData {
     pub snapshot_path: String,
 }
 
-fn suggested_difficulty_from_recent(chain: &pulsedag_core::ChainState) -> u64 {
-    dev_recommended_difficulty_for_chain(chain)
-}
-
 pub async fn post_pow_mine_capture<S: RpcStateLike>(
     State(state): State<S>,
     Json(req): Json<MineRequest>,
@@ -38,14 +33,17 @@ pub async fn post_pow_mine_capture<S: RpcStateLike>(
     let height = chain.dag.best_height + 1;
     let parents = chain.dag.tips.iter().cloned().collect::<Vec<_>>();
     let reward = 50;
-    let difficulty = suggested_difficulty_from_recent(&chain);
+    let snapshot = consensus_difficulty_snapshot(&chain);
+    let header_difficulty = snapshot.expected_bits;
+    let difficulty = u64::from(header_difficulty);
+    let target_u64 = snapshot.expected_target_u64;
     let mut txs = vec![build_coinbase_transaction(
         &req.miner_address,
         reward,
         height,
     )];
     txs.extend(chain.mempool.transactions.values().cloned());
-    let mut block = build_candidate_block(parents, height, difficulty as u32, txs);
+    let mut block = build_candidate_block(parents, height, header_difficulty, txs);
     if let Err(e) = refresh_block_consensus_ids_with_state(&mut block, &chain) {
         return Json(ApiResponse::err("STATE_ROOT_ERROR", e.to_string()));
     }
@@ -74,7 +72,7 @@ pub async fn post_pow_mine_capture<S: RpcStateLike>(
                 "pow_accepted_dev": pow_accepted_dev,
                 "pow_tries": pow_tries,
                 "final_nonce": final_nonce,
-                "target_u64": dev_target_u64(difficulty),
+                "target_u64": target_u64,
             });
             let _ = fs::write(
                 &snapshot_path,

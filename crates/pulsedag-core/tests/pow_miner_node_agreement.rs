@@ -1,8 +1,8 @@
 use pulsedag_core::genesis::init_chain_state;
 use pulsedag_core::pow::{compare_pow_hash_to_target, target_from_bits};
 use pulsedag_core::{
-    accept_block, mine_header, pow_accepts, pow_hash_hex, pow_target_u64, verify_work,
-    AcceptSource, BlockHeader,
+    accept_block, dev_mine_header, expected_difficulty, mine_header, pow_accepts, pow_hash_hex,
+    pow_target_u64, refresh_block_consensus_ids, verify_work, AcceptSource, BlockHeader,
 };
 use pulsedag_core::{
     build_candidate_block, build_coinbase_transaction, refresh_block_consensus_ids_with_state,
@@ -63,8 +63,16 @@ fn duplicate_block_is_reported_as_duplicate() {
     let mut state = init_chain_state("pow-dup".to_string());
     let parents = vec![state.dag.genesis_hash.clone()];
     let txs = vec![build_coinbase_transaction("miner1", 50, 1)];
-    let mut block = build_candidate_block(parents, 1, 1, txs);
+    let difficulty = expected_difficulty(&state);
+    let mut block = build_candidate_block(parents, 1, difficulty, txs);
     refresh_block_consensus_ids_with_state(&mut block, &state).unwrap();
+    let (header, mined, _, _) = dev_mine_header(block.header.clone(), 1_000_000);
+    assert!(
+        mined,
+        "expected duplicate-block fixture to satisfy consensus PoW"
+    );
+    block.header = header;
+    refresh_block_consensus_ids(&mut block);
 
     let first = accept_block(block.clone(), &mut state, AcceptSource::P2p);
     assert!(first.is_ok());

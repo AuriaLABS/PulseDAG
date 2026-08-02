@@ -1,0 +1,88 @@
+name: v2.4.0 single-node operator profile
+
+on:
+  pull_request:
+    branches:
+      - release/2.4.0
+    paths:
+      - configs/single-node/**
+      - docs/ROADMAP_V2_4_0.md
+      - docs/codex_tasks/v2_4_0_14_single_node_profile.md
+      - docs/runbooks/V2_4_0_SINGLE_NODE_OPERATIONS.md
+      - scripts/v2_4_0_single_node_preflight.sh
+      - scripts/tests/test_v2_4_0_single_node_preflight.sh
+      - scripts/v2_3_0_private_testnet_preflight.sh
+      - scripts/tests/test_v2_3_0_private_testnet_preflight.sh
+      - .github/workflows/v2_4_0_single_node_profile.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  single-node-contract:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout candidate
+        uses: actions/checkout@v4
+
+      - name: Preserve approved version and readiness guardrails
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(tr -d '\r\n' < VERSION)" = "v2.3.0"
+          test "$(awk '/^version = / {gsub(/"/, "", $3); print $3; exit}' Cargo.toml)" = "2.3.0"
+          grep -Fq 'public_testnet_ready=false' docs/ROADMAP_V2_4_0.md
+          grep -Fq '30-day public-testnet clock remains not started' docs/ROADMAP_V2_4_0.md
+          grep -Fq 'Smart contracts remain disabled' docs/ROADMAP_V2_4_0.md
+
+      - name: Validate shell syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash -n scripts/v2_4_0_single_node_preflight.sh
+          bash -n scripts/tests/test_v2_4_0_single_node_preflight.sh
+
+      - name: Run explicit single-node contract regression
+        shell: bash
+        run: bash scripts/tests/test_v2_4_0_single_node_preflight.sh
+
+      - name: Preserve v2.3.0 multi-host preflight behavior
+        shell: bash
+        run: bash scripts/tests/test_v2_3_0_private_testnet_preflight.sh
+
+      - name: Build single-node evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT_DIR=ci-evidence/v2.4.0-task14 \
+            bash scripts/v2_4_0_single_node_preflight.sh \
+              configs/single-node/single-node.env.example
+          sha256sum \
+            ci-evidence/v2.4.0-task14/single-node-preflight.json \
+            > ci-evidence/v2.4.0-task14/SHA256SUMS
+
+      - name: Enforce fail-closed manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          jq -e '
+            .gate == "v2.4.0-single-node-operator-preflight" and
+            .operator_mode == "single-node" and
+            .result == "PASS" and
+            .p2p_enabled == false and
+            .connected_peers_expected == false and
+            .isolated_mining_authorized == true and
+            .public_testnet_ready == false and
+            .thirty_day_public_testnet_clock_started == false and
+            .contracts_enabled == false
+          ' ci-evidence/v2.4.0-task14/single-node-preflight.json >/dev/null
+
+      - name: Upload Task 14 evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v2_4_0_task14_single_node_profile_${{ github.run_id }}
+          path: ci-evidence/v2.4.0-task14
+          if-no-files-found: error
+          retention-days: 90
