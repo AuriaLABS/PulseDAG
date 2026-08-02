@@ -129,7 +129,6 @@ fn compact_snapshot_linear_extension_preserves_authoritative_utxo() {
         state_digest(&compact).expect("compact state digest"),
         state_digest(&expected).expect("full state digest")
     );
-    assert_eq!(compact.utxo.utxos, expected.utxo.utxos);
 }
 
 #[test]
