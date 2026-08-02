@@ -89,6 +89,58 @@ pub fn apply_transaction(
     Ok(())
 }
 
+fn selected_chain_extends_with_block(
+    previous_selected_chain: &[Hash],
+    selected_chain: &[Hash],
+    block_hash: &Hash,
+) -> bool {
+    selected_chain.len() == previous_selected_chain.len().saturating_add(1)
+        && selected_chain.starts_with(previous_selected_chain)
+        && selected_chain.last() == Some(block_hash)
+}
+
+fn commit_legacy_compact_snapshot_state(
+    block: &Block,
+    state: &mut ChainState,
+    previous_selected_chain: &[Hash],
+) -> Result<(), PulseError> {
+    if state.dag.selected_chain == previous_selected_chain {
+        state.dag.ordered_dag_state_root = state.utxo.compute_state_root().ok();
+        return Ok(());
+    }
+
+    if !selected_chain_extends_with_block(
+        previous_selected_chain,
+        &state.dag.selected_chain,
+        &block.hash,
+    ) {
+        return Err(PulseError::StorageError(format!(
+            "compact snapshot selected-chain transition requires unavailable historical state: previous_tip={} candidate={} selected_tip={}",
+            previous_selected_chain.last().map(String::as_str).unwrap_or("-"),
+            block.hash,
+            state
+                .dag
+                .selected_chain
+                .last()
+                .map(String::as_str)
+                .unwrap_or("-")
+        )));
+    }
+
+    for tx in &block.transactions {
+        apply_transaction(tx, state, block.header.height)?;
+    }
+    let state_root = state.utxo.compute_state_root()?;
+    if state_root != block.header.state_root {
+        return Err(PulseError::Internal(format!(
+            "compact snapshot incremental state root mismatch for block {}: computed {}, expected {}",
+            block.hash, state_root, block.header.state_root
+        )));
+    }
+    state.dag.ordered_dag_state_root = Some(state_root);
+    Ok(())
+}
+
 pub fn commit_block_to_state(block: &Block, state: &mut ChainState) -> Result<(), PulseError> {
     if state.dag.consensus_mode == ConsensusMode::GhostdagDev {
         accept_block_to_dag_metadata(block, state)?;
@@ -104,30 +156,37 @@ pub fn commit_block_to_state(block: &Block, state: &mut ChainState) -> Result<()
         };
         commit_rebuilt_state(state, rebuilt);
     } else {
+        let compact_snapshot = !state.dag.blocks.contains_key(&state.dag.genesis_hash);
+        let previous_selected_chain = compact_snapshot.then(|| state.dag.selected_chain.clone());
+
         accept_block_to_dag_metadata(block, state)?;
         refresh_selected_chain(state);
         state.dag.ordered_dag = state.dag.selected_chain.clone();
         state.dag.ordering_version = "legacy".to_string();
         state.dag.ordered_dag_tip = state.dag.ordered_dag.last().cloned();
 
-        let mut rebuilt = init_chain_state(state.chain_id.clone());
-        rebuilt.dag.consensus_mode = state.dag.consensus_mode;
-        rebuilt.dag.selected_parent_policy = state.dag.selected_parent_policy;
-        for hash in &state.dag.selected_chain {
-            if hash == &state.dag.genesis_hash {
-                continue;
+        if let Some(previous_selected_chain) = previous_selected_chain {
+            commit_legacy_compact_snapshot_state(block, state, &previous_selected_chain)?;
+        } else {
+            let mut rebuilt = init_chain_state(state.chain_id.clone());
+            rebuilt.dag.consensus_mode = state.dag.consensus_mode;
+            rebuilt.dag.selected_parent_policy = state.dag.selected_parent_policy;
+            for hash in &state.dag.selected_chain {
+                if hash == &state.dag.genesis_hash {
+                    continue;
+                }
+                let selected_block = state.dag.blocks.get(hash).ok_or_else(|| {
+                    PulseError::Internal(format!("selected chain references missing block {hash}"))
+                })?;
+                for tx in &selected_block.transactions {
+                    apply_transaction(tx, &mut rebuilt, selected_block.header.height)?;
+                }
+                accept_block_to_dag_metadata(selected_block, &mut rebuilt)?;
+                refresh_selected_chain(&mut rebuilt);
             }
-            let selected_block = state.dag.blocks.get(hash).ok_or_else(|| {
-                PulseError::Internal(format!("selected chain references missing block {hash}"))
-            })?;
-            for tx in &selected_block.transactions {
-                apply_transaction(tx, &mut rebuilt, selected_block.header.height)?;
-            }
-            accept_block_to_dag_metadata(selected_block, &mut rebuilt)?;
-            refresh_selected_chain(&mut rebuilt);
+            state.utxo = rebuilt.utxo;
+            state.dag.ordered_dag_state_root = state.utxo.compute_state_root().ok();
         }
-        state.utxo = rebuilt.utxo;
-        state.dag.ordered_dag_state_root = state.utxo.compute_state_root().ok();
     }
     // Revalidate the live mempool against the newly committed UTXO view.
     // Rebuilds operate on a fresh state, so their internal transaction removal
