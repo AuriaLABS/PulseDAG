@@ -143,6 +143,8 @@ The template, diagnostics, and validator must agree byte-for-byte on the next ta
 6. canonical block validation and acceptance;
 7. persistence before broadcast.
 
+Within canonical block validation, parent selection and the bounded 20-block DAG retarget window are evaluated before any selected-parent UTXO clone or side-branch state replay. Incorrect compact bits or invalid PoW therefore fail on header metadata alone; full parent-state reconstruction is deferred until transaction and state-root validation actually require it. Compact-pruned selected tips retain the known parent tail and stop cleanly at the pruned boundary.
+
 The 24-hour burn-in also showed that a client-facing submit timeout can occur after eventual block acceptance. A timeout is therefore not sufficient evidence of rejection. Task 17 requires unknown-finality reconciliation by block hash.
 
 ## 8) Compatibility boundary
