@@ -253,6 +253,7 @@ enum ExternalMiningRejectKind {
     InvalidTimestamp,
     InvalidCoinbase,
     InvalidMerkleOrPayload,
+    ParentStateContextUnavailable,
     MalformedSerialization,
     UnknownValidationError,
     InternalError,
@@ -278,6 +279,11 @@ fn classify_rejected_validation_message(message: &str) -> (&'static str, Externa
         (
             "invalid_merkle_or_payload",
             ExternalMiningRejectKind::InvalidMerkleOrPayload,
+        )
+    } else if lower.contains("parent state context unavailable") {
+        (
+            "parent_state_context_unavailable",
+            ExternalMiningRejectKind::ParentStateContextUnavailable,
         )
     } else if lower.contains("invalid state root")
         && lower.contains("classification=stale_template")
@@ -438,6 +444,9 @@ async fn record_external_mining_rejection<S: RpcStateLike>(
             ExternalMiningRejectKind::InvalidTimestamp => "invalid_timestamp",
             ExternalMiningRejectKind::InvalidCoinbase => "invalid_coinbase",
             ExternalMiningRejectKind::InvalidMerkleOrPayload => "invalid_merkle_or_payload",
+            ExternalMiningRejectKind::ParentStateContextUnavailable => {
+                "parent_state_context_unavailable"
+            }
             ExternalMiningRejectKind::MalformedSerialization => "malformed_serialization",
             ExternalMiningRejectKind::UnknownValidationError => "unknown_validation_error",
             ExternalMiningRejectKind::InternalError => "internal_error",
@@ -456,6 +465,9 @@ async fn record_external_mining_rejection<S: RpcStateLike>(
         ExternalMiningRejectKind::InvalidTimestamp => "invalid_timestamp",
         ExternalMiningRejectKind::InvalidCoinbase => "invalid_coinbase",
         ExternalMiningRejectKind::InvalidMerkleOrPayload => "invalid_merkle_or_payload",
+        ExternalMiningRejectKind::ParentStateContextUnavailable => {
+            "parent_state_context_unavailable"
+        }
         ExternalMiningRejectKind::MalformedSerialization => "malformed_serialization",
         ExternalMiningRejectKind::UnknownValidationError => "unknown_validation_error",
         ExternalMiningRejectKind::InternalError => "internal_error",
@@ -497,6 +509,7 @@ async fn record_external_mining_rejection<S: RpcStateLike>(
         | ExternalMiningRejectKind::InvalidTimestamp
         | ExternalMiningRejectKind::InvalidCoinbase
         | ExternalMiningRejectKind::InvalidMerkleOrPayload
+        | ExternalMiningRejectKind::ParentStateContextUnavailable
         | ExternalMiningRejectKind::MalformedSerialization
         | ExternalMiningRejectKind::UnknownValidationError => {
             runtime.external_mining_rejected_invalid_block = runtime
@@ -522,6 +535,9 @@ async fn record_external_mining_rejection<S: RpcStateLike>(
         ExternalMiningRejectKind::InvalidTimestamp => "invalid_timestamp",
         ExternalMiningRejectKind::InvalidCoinbase => "invalid_coinbase",
         ExternalMiningRejectKind::InvalidMerkleOrPayload => "invalid_merkle_or_payload",
+        ExternalMiningRejectKind::ParentStateContextUnavailable => {
+            "parent_state_context_unavailable"
+        }
         ExternalMiningRejectKind::MalformedSerialization => "malformed_serialization",
         ExternalMiningRejectKind::UnknownValidationError => "unknown_validation_error",
         ExternalMiningRejectKind::InternalError => "internal_error",
@@ -1392,10 +1408,11 @@ async fn perform_orphan_adoption<S: RpcStateLike>(state: &S, block_hash: &str) -
 #[cfg(test)]
 mod tests {
     use super::{
-        persist_then_broadcast_mined_block, post_mining_submit_with_actor, record_actor_timeout,
-        record_submit_completed, record_submit_inflight, record_submit_phase,
-        record_submit_started, MiningSubmitActorHandle, MiningSubmitData, MiningSubmitState,
-        SubmitBlockCommand, SubmitBlockResponse,
+        classify_rejected_validation_message, persist_then_broadcast_mined_block,
+        post_mining_submit_with_actor, record_actor_timeout, record_submit_completed,
+        record_submit_inflight, record_submit_phase, record_submit_started,
+        MiningSubmitActorHandle, MiningSubmitData, MiningSubmitState, SubmitBlockCommand,
+        SubmitBlockResponse,
     };
     use crate::{
         api::{
@@ -2189,6 +2206,14 @@ mod tests {
             .is_some_and(|msg| msg.contains("score=")));
     }
 
+    #[test]
+    fn parent_state_context_unavailable_has_stable_rpc_reason_code() {
+        let (reason_code, _kind) = classify_rejected_validation_message(
+            "parent state context unavailable for block b parent p",
+        );
+        assert_eq!(reason_code, "parent_state_context_unavailable");
+    }
+
     #[tokio::test]
     async fn mining_submit_rejection_taxonomy_is_stable() {
         let stable_codes = [
@@ -2199,6 +2224,7 @@ mod tests {
             "invalid_timestamp",
             "invalid_coinbase",
             "invalid_merkle_or_payload",
+            "parent_state_context_unavailable",
             "malformed_serialization",
             "duplicate_block",
             "storage_rejected",
@@ -2210,6 +2236,7 @@ mod tests {
         assert!(stable_codes.contains(&"stale_template"));
         assert!(stable_codes.contains(&"invalid_pow"));
         assert!(stable_codes.contains(&"duplicate_block"));
+        assert!(stable_codes.contains(&"parent_state_context_unavailable"));
         assert!(stable_codes.contains(&"malformed_serialization"));
     }
 
