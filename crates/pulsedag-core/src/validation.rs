@@ -1436,10 +1436,26 @@ mod tests {
 
     #[test]
     fn validate_block_rejects_duplicate_outpoint_outputs() {
-        let state = init_chain_state("test".to_string());
+        let mut state = init_chain_state("test".to_string());
         let parents = vec![state.dag.genesis_hash.clone()];
-        let mut block = build_candidate_block(parents, 1, 1, vec![genesis_transaction()]);
+        let mut block = build_candidate_block(parents, 1, 1, vec![coinbase(106)]);
         refresh_block_consensus_ids(&mut block);
+
+        let output = &block.transactions[0].outputs[0];
+        let duplicate_outpoint = OutPoint {
+            txid: block.transactions[0].txid.clone(),
+            index: 0,
+        };
+        state.utxo.utxos.insert(
+            duplicate_outpoint.clone(),
+            Utxo {
+                outpoint: duplicate_outpoint,
+                address: output.address.clone(),
+                amount: output.amount,
+                coinbase: true,
+                height: block.header.height,
+            },
+        );
 
         assert_validation_error(validate_block(&block, &state), |err| {
             matches!(err, PulseError::DuplicateUtxoOutpoint(_))
