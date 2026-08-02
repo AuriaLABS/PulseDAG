@@ -18,7 +18,7 @@ The harness now supports explicit hot-path groups:
 
 - `sync` → `/sync/status`, `/sync/lag`, `/runtime/status`
 - `relay` → `/p2p/status`, `/runtime/status`
-- `mempool` → `/tx/mempool`, `/runtime/status`
+- `mempool` → `/mempool`, `/runtime/status`
 - `mining` → `/pow/health`, `/runtime/status`
 - `recovery` → `/status`, `/sync/status`, `/runtime/status`
 

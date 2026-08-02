@@ -13,7 +13,7 @@ The runtime exporter is `scripts/private_testnet/runtime_metrics_exporter.py`. I
 
 - `GET /status`
 - `GET /sync/status`
-- `GET /tx/mempool`
+- `GET /mempool`
 - `GET /pow/health`
 
 ## Start one exporter per node

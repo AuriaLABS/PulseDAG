@@ -74,7 +74,7 @@ RPC_URL=http://127.0.0.1:8280
    curl --fail --silent "$RPC_URL/status" | jq
    curl --fail --silent "$RPC_URL/readiness" | jq
    curl --fail --silent "$RPC_URL/p2p/status" | jq
-   curl --fail --silent "$RPC_URL/tx/mempool" | jq
+   curl --fail --silent "$RPC_URL/mempool" | jq
    curl --fail --silent "$RPC_URL/runtime/events?limit=50" | jq
    ```
 

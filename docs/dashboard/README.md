@@ -35,7 +35,7 @@ The v2.3.0 package exports a bounded inventory from four stable read-only RPC en
 
 - node, P2P, snapshot, and pruning state from `GET /status`;
 - convergence, lag, consistency, and recovery state from `GET /sync/status`;
-- main and orphan mempool state from `GET /tx/mempool`;
+- main and orphan mempool state from `GET /mempool`;
 - PoW cadence and snapshot health from `GET /pow/health`.
 
 Dashboard and alert metric references are checked against the versioned inventory, and inventory fields are checked against their Rust response structures.

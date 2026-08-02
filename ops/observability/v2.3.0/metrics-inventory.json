@@ -11,7 +11,7 @@
       "rust_file": "crates/pulsedag-rpc/src/handlers/sync.rs",
       "rust_struct": "SyncStatusData"
     },
-    "/tx/mempool": {
+    "/mempool": {
       "rust_file": "crates/pulsedag-rpc/src/handlers/tx.rs",
       "rust_struct": "MempoolData"
     },
@@ -49,13 +49,13 @@
     {"name": "pulsedag_sync_missing_parent_timeouts_total", "type": "counter", "endpoint": "/sync/status", "field": "missing_parent_request_timeouts", "help": "Cumulative missing-parent request timeouts."},
     {"name": "pulsedag_sync_missing_parent_fallbacks_total", "type": "counter", "endpoint": "/sync/status", "field": "missing_parent_request_fallbacks", "help": "Cumulative missing-parent fallback attempts."},
 
-    {"name": "pulsedag_mempool_transactions", "type": "gauge", "endpoint": "/tx/mempool", "field": "transaction_count", "help": "Transactions currently in the main mempool."},
-    {"name": "pulsedag_mempool_orphan_transactions", "type": "gauge", "endpoint": "/tx/mempool", "field": "orphan_transaction_count", "help": "Transactions currently in the orphan pool."},
-    {"name": "pulsedag_mempool_orphan_limit", "type": "gauge", "endpoint": "/tx/mempool", "field": "orphan_limit", "help": "Configured orphan transaction limit."},
-    {"name": "pulsedag_mempool_orphaned_total", "type": "counter", "endpoint": "/tx/mempool", "field": "orphaned_total", "help": "Cumulative transactions moved into the orphan pool."},
-    {"name": "pulsedag_mempool_orphan_promoted_total", "type": "counter", "endpoint": "/tx/mempool", "field": "orphan_promoted_total", "help": "Cumulative orphan transactions promoted to the main mempool."},
-    {"name": "pulsedag_mempool_orphan_dropped_total", "type": "counter", "endpoint": "/tx/mempool", "field": "orphan_dropped_total", "help": "Cumulative orphan transactions dropped."},
-    {"name": "pulsedag_mempool_orphan_pruned_total", "type": "counter", "endpoint": "/tx/mempool", "field": "orphan_pruned_total", "help": "Cumulative orphan transactions pruned."},
+    {"name": "pulsedag_mempool_transactions", "type": "gauge", "endpoint": "/mempool", "field": "transaction_count", "help": "Transactions currently in the main mempool."},
+    {"name": "pulsedag_mempool_orphan_transactions", "type": "gauge", "endpoint": "/mempool", "field": "orphan_transaction_count", "help": "Transactions currently in the orphan pool."},
+    {"name": "pulsedag_mempool_orphan_limit", "type": "gauge", "endpoint": "/mempool", "field": "orphan_limit", "help": "Configured orphan transaction limit."},
+    {"name": "pulsedag_mempool_orphaned_total", "type": "counter", "endpoint": "/mempool", "field": "orphaned_total", "help": "Cumulative transactions moved into the orphan pool."},
+    {"name": "pulsedag_mempool_orphan_promoted_total", "type": "counter", "endpoint": "/mempool", "field": "orphan_promoted_total", "help": "Cumulative orphan transactions promoted to the main mempool."},
+    {"name": "pulsedag_mempool_orphan_dropped_total", "type": "counter", "endpoint": "/mempool", "field": "orphan_dropped_total", "help": "Cumulative orphan transactions dropped."},
+    {"name": "pulsedag_mempool_orphan_pruned_total", "type": "counter", "endpoint": "/mempool", "field": "orphan_pruned_total", "help": "Cumulative orphan transactions pruned."},
 
     {"name": "pulsedag_pow_snapshot_count", "type": "gauge", "endpoint": "/pow/health", "field": "snapshot_count", "help": "Number of persisted PoW metric snapshots."},
     {"name": "pulsedag_pow_suggested_difficulty", "type": "gauge", "endpoint": "/pow/health", "field": "latest_suggested_difficulty", "help": "Latest suggested PoW difficulty."},
