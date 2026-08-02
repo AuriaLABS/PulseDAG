@@ -1,3 +1,4 @@
+use pulsedag_core::apply::commit_block_to_state;
 use pulsedag_core::genesis::init_chain_state;
 use pulsedag_core::pow::dev_mine_header;
 use pulsedag_core::retarget::expected_difficulty_for_parent;
@@ -132,8 +133,8 @@ fn compact_snapshot_linear_extension_preserves_authoritative_utxo() {
 }
 
 #[test]
-fn compact_snapshot_non_selected_side_block_keeps_canonical_utxo() {
-    let baseline = build_linear_chain("compact-side-block", 25);
+fn compact_snapshot_side_parent_validation_rejects_without_mutation() {
+    let baseline = build_linear_chain("compact-side-validation", 25);
     let parent = block_hash_at_height(&baseline, 23);
     let parent_timestamp = baseline.dag.blocks[&parent].header.timestamp;
     let side = build_mined_block(
@@ -147,13 +148,21 @@ fn compact_snapshot_non_selected_side_block_keeps_canonical_utxo() {
 
     let mut compact = compact_last_blocks(&baseline, 20);
     let selected_before = compact.dag.selected_chain.clone();
-    let digest_before = state_digest(&compact).expect("digest before side block");
-    accept(&mut compact, side.clone());
+    let digest_before = state_digest(&compact).expect("digest before side validation");
+    let outcome = accept_block_with_result(side.clone(), &mut compact, AcceptSource::P2p);
 
-    assert!(compact.dag.blocks.contains_key(&side.hash));
+    match outcome {
+        BlockAcceptanceResult::Rejected(reason) => assert!(
+            reason.contains("invalid state root")
+                || reason.contains("parent state context unavailable"),
+            "unexpected compact side-parent rejection: {reason}"
+        ),
+        other => panic!("expected compact side-parent rejection, got {other:?}"),
+    }
+    assert!(!compact.dag.blocks.contains_key(&side.hash));
     assert_eq!(compact.dag.selected_chain, selected_before);
     assert_eq!(
-        state_digest(&compact).expect("digest after side block"),
+        state_digest(&compact).expect("digest after side validation"),
         digest_before
     );
 }
@@ -196,26 +205,31 @@ fn compact_snapshot_reorg_requiring_pruned_history_fails_closed() {
     accept(&mut branch_builder, side_26.clone());
 
     let mut compact = compact_last_blocks(&baseline, 20);
-    accept(&mut compact, side_24);
-    accept(&mut compact, side_25);
-    let selected_before = compact.dag.selected_chain.clone();
-    let digest_before = state_digest(&compact).expect("digest before rejected reorg");
+    let canonical_digest = state_digest(&compact).expect("canonical compact digest");
+    let canonical_selected_chain = compact.dag.selected_chain.clone();
 
-    let outcome = accept_block_with_result(side_26.clone(), &mut compact, AcceptSource::P2p);
-    match outcome {
-        BlockAcceptanceResult::Rejected(reason) => assert!(
-            reason.contains(
-                "compact snapshot selected-chain transition requires unavailable historical state"
-            ),
-            "unexpected rejection reason: {reason}"
+    commit_block_to_state(&side_24, &mut compact).expect("commit non-selected side block 24");
+    commit_block_to_state(&side_25, &mut compact).expect("commit non-selected side block 25");
+    assert_eq!(compact.dag.selected_chain, canonical_selected_chain);
+    assert_eq!(
+        state_digest(&compact).expect("digest after non-selected side commits"),
+        canonical_digest
+    );
+
+    let mut rejected_working = compact.clone();
+    let err = commit_block_to_state(&side_26, &mut rejected_working)
+        .expect_err("compact reorg must fail closed before publication");
+    assert!(
+        err.to_string().contains(
+            "compact snapshot selected-chain transition requires unavailable historical state"
         ),
-        other => panic!("expected fail-closed compact reorg rejection, got {other:?}"),
-    }
+        "unexpected compact reorg error: {err}"
+    );
 
     assert!(!compact.dag.blocks.contains_key(&side_26.hash));
-    assert_eq!(compact.dag.selected_chain, selected_before);
+    assert_eq!(compact.dag.selected_chain, canonical_selected_chain);
     assert_eq!(
         state_digest(&compact).expect("digest after rejected reorg"),
-        digest_before
+        canonical_digest
     );
 }
