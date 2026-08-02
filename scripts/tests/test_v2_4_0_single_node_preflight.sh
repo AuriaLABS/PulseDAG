@@ -23,6 +23,18 @@ expect_fail() {
 cp "$REFERENCE" "$TMP_DIR/valid.env"
 expect_pass "$TMP_DIR/valid.env"
 
+cp "$REFERENCE" "$TMP_DIR/local-dev.env"
+sed -i 's/^PULSEDAG_API_PROFILE=private_operator/PULSEDAG_API_PROFILE=local_dev/' "$TMP_DIR/local-dev.env"
+expect_pass "$TMP_DIR/local-dev.env"
+
+cp "$REFERENCE" "$TMP_DIR/unrelated-key.env"
+printf '\nPATH=/tmp/untrusted-bin\n' >> "$TMP_DIR/unrelated-key.env"
+expect_fail "$TMP_DIR/unrelated-key.env"
+
+cp "$REFERENCE" "$TMP_DIR/bash-env.env"
+printf '\nBASH_ENV=/tmp/untrusted-shell-init\n' >> "$TMP_DIR/bash-env.env"
+expect_fail "$TMP_DIR/bash-env.env"
+
 cp "$REFERENCE" "$TMP_DIR/implicit.env"
 sed -i 's/^PULSEDAG_SINGLE_NODE_MODE=true/PULSEDAG_SINGLE_NODE_MODE=false/' "$TMP_DIR/implicit.env"
 expect_fail "$TMP_DIR/implicit.env"
