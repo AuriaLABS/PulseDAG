@@ -47,8 +47,9 @@ load_env_file() {
 
     key="$(trim "${line%%=*}")"
     value="$(trim "${line#*=}")"
-    if [[ ! "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
-      printf 'invalid environment key on line %d: %s\n' "$line_number" "$key" >&2
+    if [[ ! "$key" =~ ^PULSEDAG_[A-Z0-9_]+$ ]]; then
+      printf 'invalid environment key on line %d: only PULSEDAG_* keys are allowed: %s\n' \
+        "$line_number" "$key" >&2
       return 2
     fi
 
@@ -94,6 +95,17 @@ is_absolute_persistent_path() {
   [[ "$value" == /* ]] && [[ "$value" != /tmp/* ]] && [[ "$value" != /run/* ]]
 }
 
+is_supported_api_profile() {
+  local value="$1"
+  [[ "$value" == "private_operator" || "$value" == "local_dev" ]]
+}
+
+has_minimum_length() {
+  local value="$1"
+  local minimum="$2"
+  (( ${#value} >= minimum ))
+}
+
 load_env_file
 
 single_node_mode="${PULSEDAG_SINGLE_NODE_MODE:-false}"
@@ -113,7 +125,7 @@ check "P2P is disabled by policy" is_false "${PULSEDAG_P2P_ENABLED:-true}"
 check "bootnodes are empty" test -z "$bootstrap"
 check "public P2P advertisement is empty" test -z "$public_multiaddr"
 check "RPC is loopback-only" is_loopback_rpc_bind "${PULSEDAG_RPC_BIND:-}"
-check "API profile is private_operator or local_dev" bash -c '[[ "$1" == private_operator || "$1" == local_dev ]]' _ "${PULSEDAG_API_PROFILE:-}"
+check "API profile is private_operator or local_dev" is_supported_api_profile "${PULSEDAG_API_PROFILE:-}"
 check "RocksDB path is present" test -n "${PULSEDAG_ROCKSDB_PATH:-}"
 check "RocksDB path is absolute and persistent" is_absolute_persistent_path "${PULSEDAG_ROCKSDB_PATH:-}"
 check "snapshot-gated pruning is enabled" is_true "${PULSEDAG_PRUNE_REQUIRE_SNAPSHOT:-false}"
@@ -129,7 +141,7 @@ case "${PULSEDAG_CONFIG_PROFILE:-}" in
 esac
 
 if is_true "$admin_enabled"; then
-  check "admin token is at least 16 characters" bash -c '(( ${#1} >= 16 ))' _ "$operator_token"
+  check "admin token is at least 16 characters" has_minimum_length "$operator_token" 16
 else
   check "admin endpoints remain disabled" true
 fi
