@@ -6,12 +6,17 @@ on:
       - release/2.4.0
     paths:
       - .github/workflows/_temporary_fix_duplicate_outpoint_fixture.yml
+  pull_request:
+    branches:
+      - main
+    paths:
+      - .github/workflows/_temporary_fix_duplicate_outpoint_fixture.yml
 
 permissions:
   contents: write
 
 concurrency:
-  group: one-shot-duplicate-outpoint-fixture
+  group: one-shot-duplicate-outpoint-fixture-${{ github.event_name }}
   cancel-in-progress: false
 
 jobs:
@@ -100,6 +105,7 @@ jobs:
           fi
 
       - name: Commit tested fixture fix
+        if: github.event_name == 'push'
         shell: bash
         run: |
           set -euo pipefail
