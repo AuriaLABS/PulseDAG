@@ -1,11 +1,6 @@
-name: One-shot issue 788 fix
+name: Issue 788 trusted applicator trigger
 
 on:
-  push:
-    branches:
-      - feature/2.4.0-parent-state-context-unavailable
-    paths:
-      - .github/workflows/_temporary_issue_788_fix.yml
   pull_request:
     branches:
       - release/2.4.0
@@ -13,66 +8,11 @@ on:
       - .github/workflows/_temporary_issue_788_fix.yml
 
 permissions:
-  contents: write
-
-concurrency:
-  group: one-shot-issue-788
-  cancel-in-progress: false
+  contents: read
 
 jobs:
-  apply-test-publish:
-    if: github.repository == 'AuriaLABS/PulseDAG' && github.event_name == 'pull_request'
+  marker:
+    if: false
     runs-on: ubuntu-24.04
     steps:
-      - name: Checkout feature branch
-        uses: actions/checkout@v4
-        with:
-          ref: feature/2.4.0-parent-state-context-unavailable
-          fetch-depth: 0
-
-      - name: Apply issue 788 patch
-        shell: bash
-        env:
-          PATCH_GZ_B64: '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'
-        run: |
-          set -euo pipefail
-          printf '%s' "$PATCH_GZ_B64" | base64 -d | gzip -d > /tmp/issue-788.patch
-          git apply --check /tmp/issue-788.patch
-          git apply /tmp/issue-788.patch
-
-      - name: Format workspace
-        run: cargo fmt --all
-
-      - name: Check affected crates
-        run: cargo check -p pulsedag-core -p pulsedag-rpc
-
-      - name: Test compact snapshot regressions
-        run: cargo test -p pulsedag-core --test compact_snapshot_commit -- --nocapture
-
-      - name: Test RPC rejection taxonomy
-        run: cargo test -p pulsedag-rpc parent_state_context_unavailable_has_stable_rpc_reason_code -- --nocapture
-
-      - name: Remove one-shot workflow and verify scope
-        shell: bash
-        run: |
-          set -euo pipefail
-          rm .github/workflows/_temporary_issue_788_fix.yml
-          git diff --check
-          allowed='^(crates/pulsedag-core/src/validation\.rs|crates/pulsedag-core/tests/compact_snapshot_commit\.rs|crates/pulsedag-rpc/src/handlers/mining_submit\.rs|\.github/workflows/_temporary_issue_788_fix\.yml)$'
-          unexpected="$(git status --short | awk '{print $2}' | grep -Ev "$allowed" || true)"
-          if [[ -n "$unexpected" ]]; then
-            printf 'unexpected changed paths:\n%s\n' "$unexpected" >&2
-            exit 1
-          fi
-
-      - name: Commit tested fix
-        shell: bash
-        run: |
-          set -euo pipefail
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add -A
-          git commit -m 'fix: classify pruned side-parent context as unavailable'
-          git push origin HEAD:feature/2.4.0-parent-state-context-unavailable
-
-# trusted base workflow trigger
+      - run: echo "The trusted base workflow applies and validates the issue 788 patch."
