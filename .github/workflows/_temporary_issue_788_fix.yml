@@ -74,3 +74,5 @@ jobs:
           git add -A
           git commit -m 'fix: classify pruned side-parent context as unavailable'
           git push origin HEAD:feature/2.4.0-parent-state-context-unavailable
+
+# trusted base workflow trigger
