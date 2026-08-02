@@ -1,0 +1,110 @@
+name: One-shot duplicate outpoint fixture fix
+
+on:
+  push:
+    branches:
+      - release/2.4.0
+    paths:
+      - .github/workflows/_temporary_fix_duplicate_outpoint_fixture.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: one-shot-duplicate-outpoint-fixture
+  cancel-in-progress: false
+
+jobs:
+  fix-test-publish:
+    if: github.repository == 'AuriaLABS/PulseDAG'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - name: Replace ambiguous duplicate-outpoint fixture
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('crates/pulsedag-core/src/validation.rs')
+          text = path.read_text()
+          old = '''    fn validate_block_rejects_duplicate_outpoint_outputs() {
+              let state = init_chain_state("test".to_string());
+              let parents = vec![state.dag.genesis_hash.clone()];
+              let mut block = build_candidate_block(parents, 1, 1, vec![genesis_transaction()]);
+              refresh_block_consensus_ids(&mut block);
+
+              assert_validation_error(validate_block(&block, &state), |err| {
+                  matches!(err, PulseError::DuplicateUtxoOutpoint(_))
+              });
+          }
+          '''
+          new = '''    fn validate_block_rejects_duplicate_outpoint_outputs() {
+              let mut state = init_chain_state("test".to_string());
+              let parents = vec![state.dag.genesis_hash.clone()];
+              let mut block = build_candidate_block(parents, 1, 1, vec![coinbase(106)]);
+              refresh_block_consensus_ids(&mut block);
+
+              let output = &block.transactions[0].outputs[0];
+              let duplicate_outpoint = OutPoint {
+                  txid: block.transactions[0].txid.clone(),
+                  index: 0,
+              };
+              state.utxo.utxos.insert(
+                  duplicate_outpoint.clone(),
+                  Utxo {
+                      outpoint: duplicate_outpoint,
+                      address: output.address.clone(),
+                      amount: output.amount,
+                      coinbase: true,
+                      height: block.header.height,
+                  },
+              );
+
+              assert_validation_error(validate_block(&block, &state), |err| {
+                  matches!(err, PulseError::DuplicateUtxoOutpoint(_))
+              });
+          }
+          '''
+          if old not in text:
+              raise SystemExit('expected duplicate-outpoint fixture was not found')
+          path.write_text(text.replace(old, new))
+          PY
+
+      - name: Format workspace
+        run: cargo fmt --all
+
+      - name: Test duplicate-outpoint regression
+        run: cargo test -p pulsedag-core validate_block_rejects_duplicate_outpoint_outputs -- --nocapture
+
+      - name: Test excessive-reward regression remains distinct
+        run: cargo test -p pulsedag-core validate_block_rejects_excessive_coinbase_reward -- --nocapture
+
+      - name: Remove one-shot workflow and verify patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm .github/workflows/_temporary_fix_duplicate_outpoint_fixture.yml
+          git diff --check
+          changed="$(git status --short | awk '{print $2}' | sort)"
+          expected=$'.github/workflows/_temporary_fix_duplicate_outpoint_fixture.yml\ncrates/pulsedag-core/src/validation.rs'
+          if [[ "$changed" != "$expected" ]]; then
+            printf 'unexpected changed paths:\n%s\n' "$changed" >&2
+            exit 1
+          fi
+
+      - name: Commit tested fixture fix
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'test: isolate duplicate outpoint validation fixture'
+          git push origin HEAD:release/2.4.0
