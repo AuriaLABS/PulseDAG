@@ -6,7 +6,6 @@ use crate::{
         InvalidStateRootClassification, InvalidStateRootDiagnostics, InvalidStateRootError,
         PulseError,
     },
-    expected_difficulty,
     mining::{current_ts, is_coinbase},
     selection::{
         calculate_selected_parent, preferred_tip_hash, rebuild_selected_chain_from_tip,
@@ -219,8 +218,19 @@ pub fn validate_block(block: &Block, state: &ChainState) -> Result<(), PulseErro
             block.header.height, expected_height
         )));
     }
-    let parent_context = parent_state_context(block, state)?;
-    let expected_difficulty = expected_difficulty(&parent_context);
+    let selected_parent = selected_parent_for_state_validation(block, state).ok_or_else(|| {
+        PulseError::ParentStateContextUnavailable {
+            block_hash: block.hash.clone(),
+            parent_hash: block.header.parents.first().cloned().unwrap_or_default(),
+        }
+    })?;
+    let expected_difficulty =
+        crate::retarget::expected_difficulty_for_parent(state, &selected_parent).ok_or_else(|| {
+            PulseError::ParentStateContextUnavailable {
+                block_hash: block.hash.clone(),
+                parent_hash: selected_parent.clone(),
+            }
+        })?;
     if block.header.difficulty != expected_difficulty {
         return Err(PulseError::InvalidBlock(format!(
             "invalid consensus difficulty {}, expected {}",
@@ -234,6 +244,7 @@ pub fn validate_block(block: &Block, state: &ChainState) -> Result<(), PulseErro
             reason.code()
         ))
     })?;
+    let parent_context = parent_state_context(block, state)?;
     if block.header.timestamp < newest_parent_timestamp {
         return Err(PulseError::InvalidBlock(format!(
             "timestamp {} is older than newest parent {}",
@@ -1020,6 +1031,55 @@ mod tests {
             validate_block(&block, &state),
             &format!(
                 "invalid consensus difficulty {stale_template_difficulty}, expected {expected}"
+            ),
+        );
+    }
+
+    #[test]
+    fn validate_block_rejects_invalid_difficulty_before_side_parent_replay() {
+        let mut state = init_chain_state("difficulty-fast-reject".to_string());
+        let main_tip = structurally_valid_block(&state);
+        apply_block(&main_tip, &mut state).unwrap();
+
+        let side_hash = "side-parent-with-invalid-state".to_string();
+        let mut side_tx = non_coinbase_tx("side-parent-invalid-tx");
+        side_tx.txid = compute_txid(&side_tx);
+        state.dag.blocks.insert(
+            side_hash.clone(),
+            Block {
+                hash: side_hash.clone(),
+                header: crate::types::BlockHeader {
+                    version: 1,
+                    parents: vec![state.dag.genesis_hash.clone()],
+                    timestamp: current_ts().saturating_sub(1),
+                    difficulty: crate::retarget::CONSENSUS_POW_LIMIT_BITS,
+                    nonce: 0,
+                    merkle_root: compute_merkle_root(std::slice::from_ref(&side_tx)),
+                    state_root: "side-state".to_string(),
+                    blue_score: 1,
+                    height: 1,
+                },
+                transactions: vec![side_tx],
+            },
+        );
+        state.dag.selected_parents.insert(
+            side_hash.clone(),
+            Some(state.dag.genesis_hash.clone()),
+        );
+
+        let mut block = build_candidate_block(vec![side_hash], 2, 1, vec![coinbase(93)]);
+        block.header.difficulty = 1;
+        raw_refresh_block_consensus_ids(&mut block);
+
+        assert!(matches!(
+            parent_state_context(&block, &state),
+            Err(PulseError::UtxoNotFound)
+        ));
+        assert_invalid_block_contains(
+            validate_block(&block, &state),
+            &format!(
+                "invalid consensus difficulty 1, expected {}",
+                crate::retarget::CONSENSUS_POW_LIMIT_BITS
             ),
         );
     }
