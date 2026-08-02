@@ -6,9 +6,8 @@ use crate::{
 };
 use axum::{extract::State, Json};
 use pulsedag_core::{
-    accept_block, build_candidate_block, build_coinbase_transaction,
-    consensus_difficulty_snapshot, pow_validation_result, refresh_block_consensus_ids_with_state,
-    AcceptSource,
+    accept_block, build_candidate_block, build_coinbase_transaction, consensus_difficulty_snapshot,
+    pow_validation_result, refresh_block_consensus_ids_with_state, AcceptSource,
 };
 use std::{
     fs,
@@ -107,9 +106,7 @@ pub async fn post_claim_mining_job<S: RpcStateLike>(
         target_u64: snapshot.expected_target_u64,
         target_block_interval_secs: snapshot.policy.target_block_interval_secs,
         retarget_multiplier_bps: snapshot.retarget_multiplier_bps,
-        notes: vec![
-            "Mining job uses the canonical consensus retarget snapshot".to_string(),
-        ],
+        notes: vec!["Mining job uses the canonical consensus retarget snapshot".to_string()],
     };
 
     Json(ApiResponse::ok(ClaimMiningJobData {

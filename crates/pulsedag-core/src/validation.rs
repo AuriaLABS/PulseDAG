@@ -244,7 +244,6 @@ pub fn validate_block(block: &Block, state: &ChainState) -> Result<(), PulseErro
             reason.code()
         ))
     })?;
-    let parent_context = parent_state_context(block, state)?;
     if block.header.timestamp < newest_parent_timestamp {
         return Err(PulseError::InvalidBlock(format!(
             "timestamp {} is older than newest parent {}",
@@ -279,8 +278,13 @@ pub fn validate_block(block: &Block, state: &ChainState) -> Result<(), PulseErro
             return Err(PulseError::InvalidTxid);
         }
     }
-    validate_created_utxo_outpoints(block, &parent_context)?;
     validate_coinbase_reward(block)?;
+
+    // Rebuilding side-parent state can clone or replay a large chain. Keep it behind all
+    // state-independent structure, commitment, difficulty, and PoW checks so malformed
+    // peer blocks cannot force expensive historical work.
+    let parent_context = parent_state_context(block, state)?;
+    validate_created_utxo_outpoints(block, &parent_context)?;
 
     let computed_state_root = compute_post_state_root(block, &parent_context)?;
     if computed_state_root != block.header.state_root {
