@@ -18,11 +18,7 @@ fn next_block(state: &ChainState, timestamp: u64, nonce: u64) -> Block {
     let parent = preferred_tip_hash(state).expect("chain should have a preferred tip");
     let height = state.dag.best_height.saturating_add(1);
     let difficulty = expected_difficulty(state);
-    let coinbase = build_coinbase_transaction(
-        &format!("agreement-miner-{height}"),
-        50,
-        nonce,
-    );
+    let coinbase = build_coinbase_transaction(&format!("agreement-miner-{height}"), 50, nonce);
     let mut block = build_candidate_block(vec![parent], height, difficulty, vec![coinbase]);
     block.header.timestamp = timestamp;
     refresh_block_consensus_ids_with_state(&mut block, state)
@@ -76,8 +72,7 @@ fn assert_consensus_agreement(label: &str, expected: &ChainState, actual: &Chain
         "current bits diverged for {label}"
     );
     assert_eq!(
-        expected_snapshot.avg_block_interval_secs,
-        actual_snapshot.avg_block_interval_secs,
+        expected_snapshot.avg_block_interval_secs, actual_snapshot.avg_block_interval_secs,
         "observed interval diverged for {label}"
     );
     assert_eq!(
@@ -105,7 +100,10 @@ fn retarget_is_identical_after_restart_pruning_delta_replay_and_second_node_repl
 
     let snapshot_point = canonical.clone();
     let snapshot_consensus = consensus_difficulty_snapshot(&snapshot_point);
-    assert_eq!(snapshot_consensus.observed_block_count, RETAINED_RETARGET_BLOCKS);
+    assert_eq!(
+        snapshot_consensus.observed_block_count,
+        RETAINED_RETARGET_BLOCKS
+    );
     assert_ne!(
         snapshot_consensus.expected_bits,
         pulsedag_core::retarget::CONSENSUS_POW_LIMIT_BITS,
@@ -116,7 +114,11 @@ fn retarget_is_identical_after_restart_pruning_delta_replay_and_second_node_repl
     assert_eq!(retained.len(), RETAINED_RETARGET_BLOCKS);
     let compact_snapshot = compact_snapshot_to_retained_blocks(snapshot_point.clone(), &retained)
         .expect("selected-chain snapshot should compact to the retarget window");
-    assert_consensus_agreement("compact snapshot at prune boundary", &snapshot_point, &compact_snapshot);
+    assert_consensus_agreement(
+        "compact snapshot at prune boundary",
+        &snapshot_point,
+        &compact_snapshot,
+    );
 
     let mut delta_blocks = Vec::new();
     for height in 26..=30_u64 {
@@ -133,7 +135,11 @@ fn retarget_is_identical_after_restart_pruning_delta_replay_and_second_node_repl
     let restored_from_pruned =
         rebuild_state_from_snapshot_and_blocks(compact_snapshot, delta_blocks.clone())
             .expect("pruned snapshot plus canonical delta should rebuild");
-    assert_consensus_agreement("pruned snapshot plus delta replay", &canonical, &restored_from_pruned);
+    assert_consensus_agreement(
+        "pruned snapshot plus delta replay",
+        &canonical,
+        &restored_from_pruned,
+    );
 
     let second_node = rebuild_state_from_blocks(CHAIN_ID.to_string(), all_blocks.clone())
         .expect("second node should replay the identical selected-chain history");
