@@ -146,7 +146,7 @@ fn consensus_recent_blocks_from_parent<'a>(
     window_size: usize,
 ) -> Option<Vec<&'a Block>> {
     let limit = window_size.max(2);
-    let mut recent = Vec::with_capacity(limit);
+    let mut recent: Vec<&Block> = Vec::with_capacity(limit);
     let mut cursor = Some(parent_hash.clone());
     let mut saw_known_block = false;
 

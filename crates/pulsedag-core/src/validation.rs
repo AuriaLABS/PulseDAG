@@ -225,12 +225,12 @@ pub fn validate_block(block: &Block, state: &ChainState) -> Result<(), PulseErro
         }
     })?;
     let expected_difficulty =
-        crate::retarget::expected_difficulty_for_parent(state, &selected_parent).ok_or_else(|| {
-            PulseError::ParentStateContextUnavailable {
+        crate::retarget::expected_difficulty_for_parent(state, &selected_parent).ok_or_else(
+            || PulseError::ParentStateContextUnavailable {
                 block_hash: block.hash.clone(),
                 parent_hash: selected_parent.clone(),
-            }
-        })?;
+            },
+        )?;
     if block.header.difficulty != expected_difficulty {
         return Err(PulseError::InvalidBlock(format!(
             "invalid consensus difficulty {}, expected {}",
@@ -1062,10 +1062,10 @@ mod tests {
                 transactions: vec![side_tx],
             },
         );
-        state.dag.selected_parents.insert(
-            side_hash.clone(),
-            Some(state.dag.genesis_hash.clone()),
-        );
+        state
+            .dag
+            .selected_parents
+            .insert(side_hash.clone(), Some(state.dag.genesis_hash.clone()));
 
         let mut block = build_candidate_block(vec![side_hash], 2, 1, vec![coinbase(93)]);
         block.header.difficulty = 1;
