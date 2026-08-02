@@ -205,7 +205,9 @@ fn compact_snapshot_reorg_requiring_pruned_history_fails_closed() {
     let outcome = accept_block_with_result(side_26.clone(), &mut compact, AcceptSource::P2p);
     match outcome {
         BlockAcceptanceResult::Rejected(reason) => assert!(
-            reason.contains("compact snapshot selected-chain transition requires unavailable historical state"),
+            reason.contains(
+                "compact snapshot selected-chain transition requires unavailable historical state"
+            ),
             "unexpected rejection reason: {reason}"
         ),
         other => panic!("expected fail-closed compact reorg rejection, got {other:?}"),
