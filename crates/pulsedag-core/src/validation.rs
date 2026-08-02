@@ -1520,9 +1520,12 @@ mod tests {
         let parents = vec![state.dag.genesis_hash.clone(), parent.hash.clone()];
         let mut block = build_candidate_block(parents, 2, 1, vec![coinbase(2)]);
         block.header.timestamp = parent.header.timestamp + 1;
-        refresh_block_consensus_ids_with_state(&mut block, &state).unwrap();
+        let parent_context = parent_state_context(&block, &state).unwrap();
+        block.header.difficulty = crate::expected_difficulty(&parent_context);
+        refresh_block_consensus_ids_with_state(&mut block, &parent_context).unwrap();
 
-        assert!(validate_block(&block, &state).is_ok());
+        validate_block(&block, &state)
+            .expect("valid multi-parent fixture should use the selected parent context");
     }
 
     #[test]

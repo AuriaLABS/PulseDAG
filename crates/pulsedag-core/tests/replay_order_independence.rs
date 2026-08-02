@@ -4,11 +4,11 @@ use pulsedag_core::apply::apply_block;
 use pulsedag_core::genesis::init_chain_state;
 use pulsedag_core::{
     accept_block_with_result, adopt_ready_orphans, assert_dag_consistent_for_tests,
-    build_candidate_block, build_coinbase_transaction, merge_set_digest, missing_block_parents,
-    ordered_dag_digest, preferred_tip_hash, queue_orphan_block, rebuild_state_from_blocks,
-    rebuild_state_from_snapshot_and_blocks, refresh_block_consensus_ids_with_state,
-    selection_digest, state_digest, AcceptSource, Block, BlockAcceptanceResult, ChainState, Hash,
-    OutPoint, Utxo,
+    build_candidate_block, build_coinbase_transaction, dev_mine_header, expected_difficulty,
+    merge_set_digest, missing_block_parents, ordered_dag_digest, preferred_tip_hash,
+    queue_orphan_block, rebuild_state_from_blocks, rebuild_state_from_snapshot_and_blocks,
+    refresh_block_consensus_ids, refresh_block_consensus_ids_with_state, selection_digest,
+    state_digest, AcceptSource, Block, BlockAcceptanceResult, ChainState, Hash, OutPoint, Utxo,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -179,11 +179,19 @@ fn test_block(
         50,
         nonce,
     )];
-    let mut block = build_candidate_block(parents, height, 1, txs);
+    let difficulty = expected_difficulty(state);
+    let mut block = build_candidate_block(parents, height, difficulty, txs);
     block.header.timestamp = timestamp;
     block.header.nonce = nonce;
     block.header.blue_score = height;
     refresh_block_consensus_ids_with_state(&mut block, state).unwrap();
+    let (header, mined, _, _) = dev_mine_header(block.header.clone(), 1_000_000);
+    assert!(
+        mined,
+        "expected replay-order fixture to satisfy consensus PoW"
+    );
+    block.header = header;
+    refresh_block_consensus_ids(&mut block);
     block
 }
 
