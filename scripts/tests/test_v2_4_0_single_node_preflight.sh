@@ -20,6 +20,15 @@ expect_fail() {
   fi
 }
 
+expect_fail_with_env() {
+  local file="$1"
+  shift
+  if env "$@" bash "$PREFLIGHT" "$file" >/dev/null 2>&1; then
+    echo "expected preflight failure for $file with inherited environment" >&2
+    exit 1
+  fi
+}
+
 cp "$REFERENCE" "$TMP_DIR/valid.env"
 expect_pass "$TMP_DIR/valid.env"
 
@@ -38,6 +47,10 @@ expect_fail "$TMP_DIR/bash-env.env"
 cp "$REFERENCE" "$TMP_DIR/implicit.env"
 sed -i 's/^PULSEDAG_SINGLE_NODE_MODE=true/PULSEDAG_SINGLE_NODE_MODE=false/' "$TMP_DIR/implicit.env"
 expect_fail "$TMP_DIR/implicit.env"
+
+cp "$REFERENCE" "$TMP_DIR/missing-mode.env"
+sed -i '/^PULSEDAG_SINGLE_NODE_MODE=/d' "$TMP_DIR/missing-mode.env"
+expect_fail_with_env "$TMP_DIR/missing-mode.env" PULSEDAG_SINGLE_NODE_MODE=true
 
 cp "$REFERENCE" "$TMP_DIR/seed-role.env"
 sed -i 's/^PULSEDAG_PRIVATE_TESTNET_ROLE=single/PULSEDAG_PRIVATE_TESTNET_ROLE=seed/' "$TMP_DIR/seed-role.env"
@@ -59,6 +72,10 @@ cp "$REFERENCE" "$TMP_DIR/public-rpc.env"
 sed -i 's/^PULSEDAG_RPC_BIND=.*/PULSEDAG_RPC_BIND=0.0.0.0:8280/' "$TMP_DIR/public-rpc.env"
 expect_fail "$TMP_DIR/public-rpc.env"
 
+cp "$REFERENCE" "$TMP_DIR/hostname-rpc.env"
+sed -i 's/^PULSEDAG_RPC_BIND=.*/PULSEDAG_RPC_BIND=localhost:8280/' "$TMP_DIR/hostname-rpc.env"
+expect_fail "$TMP_DIR/hostname-rpc.env"
+
 cp "$REFERENCE" "$TMP_DIR/public-ready.env"
 sed -i 's/^PULSEDAG_PUBLIC_TESTNET_READY=false/PULSEDAG_PUBLIC_TESTNET_READY=true/' "$TMP_DIR/public-ready.env"
 expect_fail "$TMP_DIR/public-ready.env"
@@ -78,6 +95,14 @@ expect_fail "$TMP_DIR/contracts.env"
 cp "$REFERENCE" "$TMP_DIR/tmp-storage.env"
 sed -i 's#^PULSEDAG_ROCKSDB_PATH=.*#PULSEDAG_ROCKSDB_PATH=/tmp/pulsedag#' "$TMP_DIR/tmp-storage.env"
 expect_fail "$TMP_DIR/tmp-storage.env"
+
+cp "$REFERENCE" "$TMP_DIR/tmp-root-storage.env"
+sed -i 's#^PULSEDAG_ROCKSDB_PATH=.*#PULSEDAG_ROCKSDB_PATH=/tmp#' "$TMP_DIR/tmp-root-storage.env"
+expect_fail "$TMP_DIR/tmp-root-storage.env"
+
+cp "$REFERENCE" "$TMP_DIR/run-root-storage.env"
+sed -i 's#^PULSEDAG_ROCKSDB_PATH=.*#PULSEDAG_ROCKSDB_PATH=/run#' "$TMP_DIR/run-root-storage.env"
+expect_fail "$TMP_DIR/run-root-storage.env"
 
 OUT_DIR="$TMP_DIR/evidence" bash "$PREFLIGHT" "$TMP_DIR/valid.env" >/dev/null
 grep -q '"result": "PASS"' "$TMP_DIR/evidence/single-node-preflight.json"
