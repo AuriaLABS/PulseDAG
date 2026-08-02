@@ -31,6 +31,13 @@ trim() {
   printf '%s' "$value"
 }
 
+clear_pulsedag_environment() {
+  local key
+  for key in ${!PULSEDAG_@}; do
+    unset "$key"
+  done
+}
+
 load_env_file() {
   local raw line key value line_number=0
   while IFS= read -r raw || [[ -n "$raw" ]]; do
@@ -87,12 +94,16 @@ is_false() {
 
 is_loopback_rpc_bind() {
   local value="$1"
-  [[ "$value" =~ ^(127\.0\.0\.1|\[::1\]|localhost):[0-9]+$ ]]
+  [[ "$value" =~ ^127\.0\.0\.1:[0-9]+$ || "$value" =~ ^\[::1\]:[0-9]+$ ]]
 }
 
 is_absolute_persistent_path() {
   local value="$1"
-  [[ "$value" == /* ]] && [[ "$value" != /tmp/* ]] && [[ "$value" != /run/* ]]
+  [[ "$value" == /* ]] &&
+    [[ "$value" != /tmp ]] &&
+    [[ "$value" != /tmp/* ]] &&
+    [[ "$value" != /run ]] &&
+    [[ "$value" != /run/* ]]
 }
 
 is_supported_api_profile() {
@@ -106,6 +117,7 @@ has_minimum_length() {
   (( ${#value} >= minimum ))
 }
 
+clear_pulsedag_environment
 load_env_file
 
 single_node_mode="${PULSEDAG_SINGLE_NODE_MODE:-false}"
