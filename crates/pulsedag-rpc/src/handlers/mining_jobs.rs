@@ -6,8 +6,9 @@ use crate::{
 };
 use axum::{extract::State, Json};
 use pulsedag_core::{
-    accept_block, build_candidate_block, build_coinbase_transaction, dev_difficulty_snapshot,
-    pow_validation_result, refresh_block_consensus_ids_with_state, AcceptSource,
+    accept_block, build_candidate_block, build_coinbase_transaction,
+    consensus_difficulty_snapshot, pow_validation_result, refresh_block_consensus_ids_with_state,
+    AcceptSource,
 };
 use std::{
     fs,
@@ -64,8 +65,9 @@ pub async fn post_claim_mining_job<S: RpcStateLike>(
     let height = chain.dag.best_height + 1;
     let mut parents = chain.dag.tips.iter().cloned().collect::<Vec<_>>();
     parents.sort();
-    let snapshot = dev_difficulty_snapshot(&chain);
-    let difficulty = snapshot.suggested_difficulty;
+    let snapshot = consensus_difficulty_snapshot(&chain);
+    let header_difficulty = snapshot.expected_bits;
+    let difficulty = u64::from(header_difficulty);
     let reward = 50;
     let template_id = format!("{}:{}", height, parents.join(","));
     let mut txs = vec![build_coinbase_transaction(
@@ -74,7 +76,6 @@ pub async fn post_claim_mining_job<S: RpcStateLike>(
         height,
     )];
     txs.extend(chain.mempool.transactions.values().cloned());
-    let header_difficulty = u32::try_from(difficulty).unwrap_or(u32::MAX);
     let mut block = build_candidate_block(parents, height, header_difficulty, txs);
     if let Err(e) = refresh_block_consensus_ids_with_state(&mut block, &chain) {
         return Json(ApiResponse::err("STATE_ROOT_ERROR", e.to_string()));
@@ -102,11 +103,13 @@ pub async fn post_claim_mining_job<S: RpcStateLike>(
         window_size: snapshot.policy.window_size,
         observed_block_count: snapshot.observed_block_count,
         avg_block_interval_secs: snapshot.avg_block_interval_secs,
-        suggested_difficulty: snapshot.suggested_difficulty,
-        target_u64: snapshot.target_u64,
+        suggested_difficulty: difficulty,
+        target_u64: snapshot.expected_target_u64,
         target_block_interval_secs: snapshot.policy.target_block_interval_secs,
         retarget_multiplier_bps: snapshot.retarget_multiplier_bps,
-        notes: vec!["Mining template uses centralized runtime retarget policy".to_string()],
+        notes: vec![
+            "Mining job uses the canonical consensus retarget snapshot".to_string(),
+        ],
     };
 
     Json(ApiResponse::ok(ClaimMiningJobData {
@@ -116,7 +119,7 @@ pub async fn post_claim_mining_job<S: RpcStateLike>(
         worker_id: req.worker_id,
         expires_at_unix,
         block,
-        target_u64: snapshot.target_u64,
+        target_u64: snapshot.expected_target_u64,
         share_difficulty,
         metrics_hint,
     }))
