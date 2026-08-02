@@ -1,6 +1,7 @@
 use crate::{
     pow::{bits_from_target, pow_target_u64, target_from_bits, target_hex, PowTarget},
     state::ChainState,
+    types::{Block, Hash},
 };
 
 pub const CONSENSUS_TARGET_BLOCK_INTERVAL_SECS: u64 = 60;
@@ -55,19 +56,11 @@ pub struct ConsensusDifficultySnapshot {
 
 pub fn consensus_difficulty_snapshot(state: &ChainState) -> ConsensusDifficultySnapshot {
     let policy = consensus_difficulty_policy();
-    let observed_block_count = consensus_observed_block_count(state, policy.window_size);
-    let interval = consensus_recent_block_interval_secs_with_mode(
-        state,
-        policy.window_size,
-        policy.use_median,
-    );
+    let recent_blocks = consensus_recent_blocks(state, policy.window_size);
+    let observed_block_count = recent_blocks.len();
+    let avg_block_interval_secs = consensus_average_block_interval_secs(&recent_blocks, &policy);
     let observed_intervals = observed_block_count.saturating_sub(1);
-    let avg_block_interval_secs = if observed_intervals == 0 {
-        policy.target_block_interval_secs
-    } else {
-        interval.max(1)
-    };
-    let current_bits = consensus_current_bits_for_chain(state);
+    let current_bits = consensus_current_bits_from_blocks(&recent_blocks);
     let current_target = target_from_bits(current_bits);
     let retarget_multiplier_bps = consensus_retarget_multiplier_bps(avg_block_interval_secs);
     let target_multiplier_bps =
@@ -135,7 +128,7 @@ fn consensus_min_target() -> PowTarget {
     target_from_bits(CONSENSUS_MIN_TARGET_BITS)
 }
 
-fn consensus_recent_blocks(state: &ChainState, window_size: usize) -> Vec<&crate::types::Block> {
+fn consensus_recent_blocks(state: &ChainState, window_size: usize) -> Vec<&Block> {
     state
         .dag
         .selected_chain
@@ -147,8 +140,33 @@ fn consensus_recent_blocks(state: &ChainState, window_size: usize) -> Vec<&crate
         .collect()
 }
 
-fn consensus_recent_intervals_secs(state: &ChainState, window_size: usize) -> Vec<u64> {
-    let window = consensus_recent_blocks(state, window_size);
+fn consensus_recent_blocks_from_parent<'a>(
+    state: &'a ChainState,
+    parent_hash: &Hash,
+    window_size: usize,
+) -> Option<Vec<&'a Block>> {
+    let limit = window_size.max(2);
+    let mut recent = Vec::with_capacity(limit);
+    let mut cursor = Some(parent_hash.clone());
+
+    while let Some(hash) = cursor {
+        let block = state.dag.blocks.get(&hash)?;
+        if recent.iter().any(|known| known.hash == block.hash) {
+            break;
+        }
+        if block.header.height > 0 && block.header.timestamp > 0 {
+            recent.push(block);
+            if recent.len() >= limit {
+                break;
+            }
+        }
+        cursor = state.dag.selected_parents.get(&hash).cloned().flatten();
+    }
+
+    Some(recent)
+}
+
+fn consensus_recent_intervals_secs(window: &[&Block]) -> Vec<u64> {
     let mut intervals = Vec::new();
     for pair in window.windows(2) {
         let newer = pair[0].header.timestamp;
@@ -171,12 +189,8 @@ fn consensus_median(values: &mut [u64]) -> u64 {
     }
 }
 
-fn consensus_recent_block_interval_secs_with_mode(
-    state: &ChainState,
-    window_size: usize,
-    use_median: bool,
-) -> u64 {
-    let mut intervals = consensus_recent_intervals_secs(state, window_size);
+fn consensus_recent_block_interval_secs_with_mode(window: &[&Block], use_median: bool) -> u64 {
+    let mut intervals = consensus_recent_intervals_secs(window);
     if intervals.is_empty() {
         return 0;
     }
@@ -187,13 +201,20 @@ fn consensus_recent_block_interval_secs_with_mode(
     }
 }
 
-fn consensus_current_bits_for_chain(state: &ChainState) -> u32 {
-    state
-        .dag
-        .selected_chain
+fn consensus_average_block_interval_secs(
+    recent_blocks: &[&Block],
+    policy: &ConsensusDifficultyPolicy,
+) -> u64 {
+    if recent_blocks.len() < 2 {
+        policy.target_block_interval_secs
+    } else {
+        consensus_recent_block_interval_secs_with_mode(recent_blocks, policy.use_median).max(1)
+    }
+}
+
+fn consensus_current_bits_from_blocks(recent_blocks: &[&Block]) -> u32 {
+    recent_blocks
         .iter()
-        .rev()
-        .filter_map(|hash| state.dag.blocks.get(hash))
         .find(|block| block.header.height > 0)
         .map(|block| block.header.difficulty)
         .unwrap_or(CONSENSUS_POW_LIMIT_BITS)
@@ -206,10 +227,6 @@ fn consensus_difficulty_policy() -> ConsensusDifficultyPolicy {
         use_median: CONSENSUS_DIFFICULTY_USE_MEDIAN,
         max_future_drift_secs: CONSENSUS_MAX_FUTURE_DRIFT_SECS,
     }
-}
-
-fn consensus_observed_block_count(state: &ChainState, window_size: usize) -> usize {
-    consensus_recent_blocks(state, window_size).len()
 }
 
 fn consensus_retarget_multiplier_bps(avg_block_interval_secs: u64) -> u64 {
@@ -323,6 +340,15 @@ pub fn expected_difficulty(state: &ChainState) -> u32 {
     consensus_difficulty_snapshot(state).expected_bits
 }
 
+pub fn expected_difficulty_for_parent(state: &ChainState, parent_hash: &Hash) -> Option<u32> {
+    let policy = consensus_difficulty_policy();
+    let recent_blocks =
+        consensus_recent_blocks_from_parent(state, parent_hash, policy.window_size)?;
+    let avg_block_interval_secs = consensus_average_block_interval_secs(&recent_blocks, &policy);
+    let current_bits = consensus_current_bits_from_blocks(&recent_blocks);
+    Some(consensus_adjust_target_for_interval(current_bits, avg_block_interval_secs).0)
+}
+
 pub fn expected_target_u64(state: &ChainState) -> u64 {
     consensus_difficulty_snapshot(state).expected_target_u64
 }
@@ -385,6 +411,39 @@ mod tests {
         state
     }
 
+    fn append_side_header_only_block(
+        state: &mut ChainState,
+        parent: Hash,
+        height: u64,
+        timestamp: u64,
+        bits: u32,
+    ) -> Hash {
+        let hash = format!("retarget-side-{height}");
+        state.dag.blocks.insert(
+            hash.clone(),
+            Block {
+                hash: hash.clone(),
+                header: BlockHeader {
+                    version: 1,
+                    parents: vec![parent.clone()],
+                    timestamp,
+                    difficulty: bits,
+                    nonce: 0,
+                    merkle_root: format!("side-merkle-{height}"),
+                    state_root: format!("side-state-{height}"),
+                    blue_score: height,
+                    height,
+                },
+                transactions: Vec::new(),
+            },
+        );
+        state
+            .dag
+            .selected_parents
+            .insert(hash.clone(), Some(parent));
+        hash
+    }
+
     #[test]
     fn consensus_snapshot_uses_sixty_second_target_and_compact_pow_limit() {
         let state = init_chain_state("test".to_string());
@@ -404,6 +463,42 @@ mod tests {
         let expected = expected_difficulty(&state);
         let target = expected_target_u64(&state);
         assert_eq!(target, crate::target_from_compact(expected));
+    }
+
+    #[test]
+    fn parent_scoped_expected_bits_match_selected_tip_snapshot() {
+        let state = state_with_fixed_interval_tip(0x1f00_ffff, 60, 25);
+        let tip = state
+            .dag
+            .selected_chain
+            .last()
+            .expect("selected chain has a tip");
+
+        assert_eq!(
+            expected_difficulty_for_parent(&state, tip),
+            Some(expected_difficulty(&state))
+        );
+    }
+
+    #[test]
+    fn parent_scoped_expected_bits_follow_side_branch_metadata() {
+        let mut state = state_with_fixed_interval_tip(0x1f00_ffff, 60, 25);
+        let mut parent = state.dag.genesis_hash.clone();
+        let start = 1_800_000_000;
+        for height in 1..=4 {
+            parent = append_side_header_only_block(
+                &mut state,
+                parent,
+                height,
+                start + height,
+                CONSENSUS_POW_LIMIT_BITS,
+            );
+        }
+
+        let side_expected = expected_difficulty_for_parent(&state, &parent)
+            .expect("side parent should have a DAG-only retarget window");
+        assert_ne!(side_expected, expected_difficulty(&state));
+        assert!(target_from_bits(side_expected) < consensus_pow_limit_target());
     }
 
     #[test]
