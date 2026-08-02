@@ -27,18 +27,33 @@ pub async fn get_pow_dashboard<S: RpcStateLike>(
     let target_block_interval_secs = snapshot.policy.target_block_interval_secs;
 
     let mut avg_block_interval_secs = snapshot.avg_block_interval_secs;
+    let mut retarget_multiplier_bps = snapshot.retarget_multiplier_bps;
     let mut health_status = "ok".to_string();
     if let Ok(bytes) = fs::read("./data/metrics/pow-latest.json") {
         if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) {
-            avg_block_interval_secs = value
-                .get("avg_block_interval_secs")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0);
-            if avg_block_interval_secs > 90
-                || (avg_block_interval_secs > 0 && avg_block_interval_secs < 30)
-            {
-                health_status = "warn".to_string();
+            match (
+                value
+                    .get("avg_block_interval_secs")
+                    .and_then(|v| v.as_u64()),
+                value
+                    .get("retarget_multiplier_bps")
+                    .and_then(|v| v.as_u64()),
+            ) {
+                (Some(persisted_interval), Some(persisted_multiplier)) => {
+                    avg_block_interval_secs = persisted_interval;
+                    retarget_multiplier_bps = persisted_multiplier;
+                    if avg_block_interval_secs > 90
+                        || (avg_block_interval_secs > 0 && avg_block_interval_secs < 30)
+                    {
+                        health_status = "warn".to_string();
+                    }
+                }
+                _ => {
+                    health_status = "degraded".to_string();
+                }
             }
+        } else {
+            health_status = "degraded".to_string();
         }
     } else {
         health_status = "degraded".to_string();
@@ -55,8 +70,6 @@ pub async fn get_pow_dashboard<S: RpcStateLike>(
             }
         }
     }
-
-    let retarget_multiplier_bps = snapshot.retarget_multiplier_bps;
 
     Json(ApiResponse::ok(PowDashboardData {
         algorithm: pulsedag_core::selected_pow_name().to_string(),
