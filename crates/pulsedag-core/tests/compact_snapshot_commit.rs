@@ -4,7 +4,7 @@ use pulsedag_core::pow::dev_mine_header;
 use pulsedag_core::retarget::expected_difficulty_for_parent;
 use pulsedag_core::{
     accept_block_with_result, build_candidate_block, build_coinbase_transaction,
-    compact_snapshot_to_retained_blocks, refresh_block_consensus_ids,
+    compact_snapshot_to_retained_blocks, parent_state_context, refresh_block_consensus_ids,
     refresh_block_consensus_ids_with_state, state_digest, AcceptSource, Block,
     BlockAcceptanceResult, ChainState, Hash,
 };
@@ -45,7 +45,9 @@ fn build_mined_block(
         vec![build_coinbase_transaction(miner, 50, coinbase_nonce)],
     );
     block.header.timestamp = timestamp;
-    refresh_block_consensus_ids_with_state(&mut block, state)
+    let context = parent_state_context(&block, state)
+        .expect("rebuild the exact selected-parent state for the block fixture");
+    refresh_block_consensus_ids_with_state(&mut block, &context)
         .expect("prepare state-aware block fixture");
     let (header, mined, _, _) = dev_mine_header(block.header.clone(), 1_000_000);
     assert!(mined, "expected compact snapshot fixture to satisfy PoW");
