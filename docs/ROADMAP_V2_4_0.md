@@ -36,7 +36,7 @@ v2.4.0 is focused on explicit operator modes, route-contract enforcement, contro
 
 ### Task 14 — Explicit single-node operator profile
 
-Status: **PLANNED**.
+Status: **ACTIVE** in issue `#784` on branch `feature/2.4.0-single-node-profile`.
 
 Add a first-class single-node profile for local development, deterministic burn-in, and operator validation.
 
