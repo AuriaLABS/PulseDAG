@@ -148,10 +148,17 @@ fn consensus_recent_blocks_from_parent<'a>(
     let limit = window_size.max(2);
     let mut recent = Vec::with_capacity(limit);
     let mut cursor = Some(parent_hash.clone());
+    let mut saw_known_block = false;
 
     while let Some(hash) = cursor {
-        let block = state.dag.blocks.get(&hash)?;
-        if recent.iter().any(|known| known.hash == block.hash) {
+        let Some(block) = state.dag.blocks.get(&hash) else {
+            break;
+        };
+        saw_known_block = true;
+        if recent
+            .iter()
+            .any(|known| known.hash.as_str() == hash.as_str())
+        {
             break;
         }
         if block.header.height > 0 && block.header.timestamp > 0 {
@@ -163,7 +170,7 @@ fn consensus_recent_blocks_from_parent<'a>(
         cursor = state.dag.selected_parents.get(&hash).cloned().flatten();
     }
 
-    Some(recent)
+    saw_known_block.then_some(recent)
 }
 
 fn consensus_recent_intervals_secs(window: &[&Block]) -> Vec<u64> {
@@ -499,6 +506,23 @@ mod tests {
             .expect("side parent should have a DAG-only retarget window");
         assert_ne!(side_expected, expected_difficulty(&state));
         assert!(target_from_bits(side_expected) < consensus_pow_limit_target());
+    }
+
+    #[test]
+    fn parent_scoped_expected_bits_tolerate_pruned_ancestor_tail() {
+        let mut state = state_with_fixed_interval_tip(0x1f00_ffff, 60, 4);
+        let tip = state
+            .dag
+            .selected_chain
+            .last()
+            .cloned()
+            .expect("selected chain has a tip");
+        state
+            .dag
+            .selected_parents
+            .insert(tip.clone(), Some("pruned-selected-ancestor".to_string()));
+
+        assert!(expected_difficulty_for_parent(&state, &tip).is_some());
     }
 
     #[test]
