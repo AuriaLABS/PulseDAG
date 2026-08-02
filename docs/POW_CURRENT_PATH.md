@@ -170,6 +170,8 @@ Before v2.4.0 approval, evidence must show:
 - no cadence dependence on miner sleep;
 - multi-node convergence on the same target history.
 
+Consensus test fixtures that construct acceptable blocks must derive compact bits from the same selected-parent state context used by validation, mine a valid nonce, and only then refresh the canonical block identity. Legacy `difficulty=1` fixtures are invalid on the v2.4.0 candidate and must not be used to bypass the target-based acceptance path.
+
 ## 10) Non-goals
 
 - replacing kHeavyHash;
