@@ -6,6 +6,11 @@ on:
       - feature/2.4.0-parent-state-context-unavailable
     paths:
       - .github/workflows/_temporary_issue_788_fix.yml
+  pull_request:
+    branches:
+      - release/2.4.0
+    paths:
+      - .github/workflows/_temporary_issue_788_fix.yml
 
 permissions:
   contents: write
@@ -16,13 +21,13 @@ concurrency:
 
 jobs:
   apply-test-publish:
-    if: github.repository == 'AuriaLABS/PulseDAG'
+    if: github.repository == 'AuriaLABS/PulseDAG' && github.event_name == 'pull_request'
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout feature branch
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.sha }}
+          ref: feature/2.4.0-parent-state-context-unavailable
           fetch-depth: 0
 
       - name: Apply issue 788 patch
