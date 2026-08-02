@@ -16,3 +16,5 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - run: echo "A trusted base workflow applies and validates the observability route fix."
+
+# trusted base workflow trigger
