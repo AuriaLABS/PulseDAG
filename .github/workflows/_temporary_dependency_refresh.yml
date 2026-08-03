@@ -11,7 +11,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: temporary-dependency-refresh-v5
+  group: temporary-dependency-refresh-v6
   cancel-in-progress: true
 
 jobs:
@@ -41,14 +41,15 @@ jobs:
           text = path.read_text()
           old = 'libp2p = { version = "0.54",'
           new = 'libp2p = { version = "0.56",'
-          if old not in text:
-              raise SystemExit(f'expected dependency declaration not found: {old}')
-          path.write_text(text.replace(old, new, 1))
+          if old in text:
+              path.write_text(text.replace(old, new, 1))
+          elif new not in text:
+              raise SystemExit('supported libp2p dependency declaration not found')
           PY
           cargo update -p libp2p --precise 0.56.0
-          cargo update -p anyhow@1.0.102 --precise 1.0.104
-          cargo update -p crossbeam-epoch@0.9.18 --precise 0.9.20
-          cargo update -p event-listener@5.4.1 --precise 5.4.2
+          cargo update -p anyhow --precise 1.0.104
+          cargo update -p crossbeam-epoch --precise 0.9.20
+          cargo update -p event-listener --precise 5.4.2
           cargo metadata --locked --format-version 1 >/dev/null
           cargo fmt --all -- --check
           cargo check --locked -p pulsedag-p2p --all-targets
