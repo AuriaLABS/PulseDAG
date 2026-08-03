@@ -11,6 +11,11 @@ use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tokio::time::{sleep, Duration};
 
+const SUBMIT_FINALITY_UNKNOWN_CODE: &str = "submit_finality_unknown";
+const RECONCILIATION_ATTEMPTS: u32 = 20;
+const RECONCILIATION_BACKOFF_MS: u64 = 500;
+const RECONCILIATION_REQUEST_TIMEOUT_SECS: u64 = 2;
+
 #[derive(Debug, Serialize)]
 struct TemplateRequest {
     miner_address: String,
@@ -45,6 +50,12 @@ struct SubmitData {
     pow_accepted_dev: bool,
     stale_template: bool,
     reason_code: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct BlockLookupData {
+    hash: String,
+    height: u64,
 }
 
 #[derive(Debug)]
@@ -107,6 +118,10 @@ struct MinerTelemetry {
     submits_total: u64,
     submits_accepted: u64,
     submits_rejected: u64,
+    submits_finality_unknown: u64,
+    submits_reconciled_accepted: u64,
+    submits_reconciled_rejected: u64,
+    submits_still_unknown: u64,
     last_reject_code: Option<String>,
     last_template_height: Option<u64>,
     last_accepted_height: Option<u64>,
@@ -128,6 +143,10 @@ impl MinerTelemetry {
             submits_total: 0,
             submits_accepted: 0,
             submits_rejected: 0,
+            submits_finality_unknown: 0,
+            submits_reconciled_accepted: 0,
+            submits_reconciled_rejected: 0,
+            submits_still_unknown: 0,
             last_reject_code: None,
             last_template_height: None,
             last_accepted_height: None,
@@ -169,11 +188,34 @@ impl MinerTelemetry {
         if reason_code == "stale_template" || stale_template {
             self.node_stale_rejections = self.node_stale_rejections.saturating_add(1);
         }
-        *self
-            .reject_breakdown
-            .entry(reason_code.clone())
-            .or_insert(0) += 1;
+        *self.reject_breakdown.entry(reason_code.clone()).or_insert(0) += 1;
         self.last_reject_code = Some(reason_code);
+    }
+
+    fn record_submit_finality_unknown(&mut self) {
+        self.submits_total = self.submits_total.saturating_add(1);
+        self.submits_finality_unknown = self.submits_finality_unknown.saturating_add(1);
+        self.last_reject_code = Some(SUBMIT_FINALITY_UNKNOWN_CODE.to_string());
+    }
+
+    fn record_reconciled_accepted(&mut self, height: Option<u64>) {
+        self.submits_accepted = self.submits_accepted.saturating_add(1);
+        self.submits_reconciled_accepted = self.submits_reconciled_accepted.saturating_add(1);
+        self.last_reject_code = None;
+        self.last_accepted_height = height;
+    }
+
+    fn record_reconciled_rejected(&mut self, reason_code: impl Into<String>) {
+        let reason_code = reason_code.into();
+        self.submits_rejected = self.submits_rejected.saturating_add(1);
+        self.submits_reconciled_rejected = self.submits_reconciled_rejected.saturating_add(1);
+        *self.reject_breakdown.entry(reason_code.clone()).or_insert(0) += 1;
+        self.last_reject_code = Some(reason_code);
+    }
+
+    fn record_still_unknown(&mut self) {
+        self.submits_still_unknown = self.submits_still_unknown.saturating_add(1);
+        self.last_reject_code = Some("submit_finality_still_unknown".to_string());
     }
 
     fn record_backend_verification_failed(&mut self) {
@@ -203,7 +245,7 @@ impl MinerTelemetry {
 
     fn log(&self, event: &str) {
         println!(
-            "miner_telemetry event={} backend={} workers={} attempts={} hashes_per_sec={:.2} templates_received={} templates_skipped_stale={} submits_total={} submits_accepted={} submits_rejected={} backend_verification_failures={} last_reject_code={} reject_breakdown={:?} last_template_height={} last_accepted_height={}",
+            "miner_telemetry event={} backend={} workers={} attempts={} hashes_per_sec={:.2} templates_received={} templates_skipped_stale={} submits_total={} submits_accepted={} submits_rejected={} submits_finality_unknown={} submits_reconciled_accepted={} submits_reconciled_rejected={} submits_still_unknown={} backend_verification_failures={} last_reject_code={} reject_breakdown={:?} last_template_height={} last_accepted_height={}",
             event,
             self.backend,
             self.workers,
@@ -214,6 +256,10 @@ impl MinerTelemetry {
             self.submits_total,
             self.submits_accepted,
             self.submits_rejected,
+            self.submits_finality_unknown,
+            self.submits_reconciled_accepted,
+            self.submits_reconciled_rejected,
+            self.submits_still_unknown,
             self.backend_verification_failures,
             self.last_reject_code.as_deref().unwrap_or("-"),
             self.reject_breakdown,
@@ -241,6 +287,7 @@ enum MineOnceOutcome {
     SkippedStaleTemplate,
     NodeRejectedStaleTemplate,
     BackendVerificationRejected,
+    SubmitFinalityStillUnknown,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -271,6 +318,13 @@ struct TemplateFreshness {
     expires_at_unix: u64,
     remaining_ms: u64,
     skip_reason: Option<TemplateSkipReason>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ReconciliationOutcome {
+    Accepted { height: Option<u64> },
+    Rejected { reason_code: String, reason: String },
+    StillUnknown { detail: String },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -412,11 +466,9 @@ where
     if miner_address.trim().is_empty() {
         return Err(anyhow!(usage()));
     }
-
     if threads == 0 {
         return Err(anyhow!("--threads must be >= 1"));
     }
-
     if worker_id.trim().is_empty() {
         worker_id = default_worker_id(&miner_address);
     }
@@ -437,9 +489,7 @@ where
 }
 
 fn usage() -> &'static str {
-    "usage: pulsedag-miner --miner-address <address> [--node http://127.0.0.1:8080] [--backend cpu|gpu|auto] [--gpu-device INDEX] [--max-tries 50000] [--threads N] [--loop] [--sleep-ms 1500] [--refresh-before-expiry-ms 1000] [--worker-id ID] [--no-heartbeat]
-
-Mining backend defaults to cpu. The auto backend prefers GPU only when GPU is compiled and initialization succeeds; otherwise it falls back to CPU. The gpu backend is optional and requires building pulsedag-miner with the gpu feature. GPU device selection uses --gpu-device <index>, with conservative OpenCL batch/work defaults overrideable via PULSEDAG_MINER_GPU_BATCH_SIZE and PULSEDAG_MINER_GPU_WORK_SIZE. The canonical kHeavyHash OpenCL kernel is not implemented yet, so the gpu backend refuses to mine rather than using a non-canonical hash path."
+    "usage: pulsedag-miner --miner-address <address> [--node http://127.0.0.1:8080] [--backend cpu|gpu|auto] [--gpu-device INDEX] [--max-tries 50000] [--threads N] [--loop] [--sleep-ms 1500] [--refresh-before-expiry-ms 1000] [--worker-id ID] [--no-heartbeat]\n\nMining backend defaults to cpu. The auto backend prefers GPU only when GPU is compiled and initialization succeeds; otherwise it falls back to CPU. The gpu backend is optional and requires building pulsedag-miner with the gpu feature. GPU device selection uses --gpu-device <index>, with conservative OpenCL batch/work defaults overrideable via PULSEDAG_MINER_GPU_BATCH_SIZE and PULSEDAG_MINER_GPU_WORK_SIZE. The canonical kHeavyHash OpenCL kernel is not implemented yet, so the gpu backend refuses to mine rather than using a non-canonical hash path."
 }
 
 fn mining_backend(cfg: &Config) -> Result<Arc<dyn MiningBackend>> {
@@ -501,15 +551,19 @@ fn default_worker_id(miner_address: &str) -> String {
 fn submit_rejection_action(reason_code: &str) -> &'static str {
     match reason_code {
         "accepted" => "no action needed",
+        SUBMIT_FINALITY_UNKNOWN_CODE => {
+            "reconcile the submitted block hash; do not classify it as rejected or resubmit it"
+        }
+        "submit_timeout_before_acceptance" => {
+            "node did not begin acceptance; fetch fresh work after node lock pressure clears"
+        }
         "stale_template" => "refresh template and retry mining on latest work",
         "invalid_pow" => "hard warning: backend/canonical mismatch; discard nonce/header and verify miner target comparison before retry",
         "malformed_serialization" => "rebuild submit payload from a fresh template before retry",
         "missing_parent" => "refresh template; submitted parent is no longer in active DAG",
         "invalid_timestamp" => "refresh template and ensure system clocks are synchronized",
         "duplicate_block" => "stop resubmitting this block hash and fetch fresh work",
-        "invalid_coinbase" => {
-            "check miner address/coinbase construction and fetch a fresh template"
-        }
+        "invalid_coinbase" => "check miner address/coinbase construction and fetch a fresh template",
         "invalid_merkle_or_payload" => {
             "refresh template; included transaction/payload no longer matches node template"
         }
@@ -531,7 +585,6 @@ fn evaluate_template_freshness(
     let now_ms = now_unix.saturating_mul(1000);
     let expiry_ms = expires_at_unix.saturating_mul(1000);
     let remaining_ms = expiry_ms.saturating_sub(now_ms);
-
     let skip_reason = if now_ms >= expiry_ms {
         Some(TemplateSkipReason::Expired)
     } else if remaining_ms <= refresh_before_expiry_ms {
@@ -539,7 +592,6 @@ fn evaluate_template_freshness(
     } else {
         None
     };
-
     TemplateFreshness {
         now_unix,
         expires_at_unix,
@@ -570,9 +622,96 @@ fn should_skip_stale_submit(
 }
 
 fn loop_refresh_decision_after_outcome(_outcome: MineOnceOutcome) -> LoopRefreshDecision {
-    // Loop mode deliberately returns to /mining/template after every iteration. This keeps
-    // stale-template rejections retryable without resubmitting the same stale work.
     LoopRefreshDecision::RefreshWork
+}
+
+fn classify_block_lookup(
+    expected_hash: &str,
+    data: Option<&BlockLookupData>,
+    error_code: Option<&str>,
+    error_message: Option<&str>,
+) -> Option<ReconciliationOutcome> {
+    if let Some(block) = data {
+        if block.hash == expected_hash {
+            return Some(ReconciliationOutcome::Accepted {
+                height: Some(block.height),
+            });
+        }
+    }
+
+    match error_code.unwrap_or_default().to_ascii_lowercase().as_str() {
+        "block_rejected" | "rejected" | "invalid_block" => {
+            Some(ReconciliationOutcome::Rejected {
+                reason_code: error_code.unwrap_or("block_rejected").to_ascii_lowercase(),
+                reason: error_message
+                    .unwrap_or("node reported a definitive rejected block outcome")
+                    .to_string(),
+            })
+        }
+        _ => None,
+    }
+}
+
+async fn reconcile_submit_finality(
+    client: &Client,
+    node: &str,
+    block_hash: &str,
+) -> ReconciliationOutcome {
+    let lookup_url = format!(
+        "{}/blocks/{}",
+        node.trim_end_matches('/'),
+        block_hash
+    );
+    let mut last_detail = "block lookup has not completed".to_string();
+
+    for attempt in 1..=RECONCILIATION_ATTEMPTS {
+        match client
+            .get(&lookup_url)
+            .timeout(Duration::from_secs(RECONCILIATION_REQUEST_TIMEOUT_SECS))
+            .send()
+            .await
+        {
+            Ok(response) if response.status().is_success() => {
+                match response.json::<ApiResponse<BlockLookupData>>().await {
+                    Ok(api) => {
+                        let error_code = api.error.as_ref().map(|error| error.code.as_str());
+                        let error_message = api.error.as_ref().map(|error| error.message.as_str());
+                        if let Some(outcome) = classify_block_lookup(
+                            block_hash,
+                            api.data.as_ref(),
+                            error_code,
+                            error_message,
+                        ) {
+                            return outcome;
+                        }
+                        last_detail = format!(
+                            "attempt {attempt}: block not present and node exposed no definitive rejection"
+                        );
+                    }
+                    Err(error) => {
+                        last_detail = format!(
+                            "attempt {attempt}: block lookup response could not be decoded: {error}"
+                        );
+                    }
+                }
+            }
+            Ok(response) => {
+                last_detail = format!(
+                    "attempt {attempt}: block lookup returned HTTP {}",
+                    response.status()
+                );
+            }
+            Err(error) => {
+                last_detail = format!("attempt {attempt}: block lookup failed: {error}");
+            }
+        }
+
+        if attempt < RECONCILIATION_ATTEMPTS {
+            sleep(Duration::from_millis(RECONCILIATION_BACKOFF_MS)).await;
+        }
+    }
+
+    ReconciliationOutcome::StillUnknown { detail: last_detail }
 }
 
 async fn mine_once(
@@ -659,8 +798,19 @@ async fn mine_once(
         template.freshness_grace_secs,
         template.target_hex
     );
-    println!("mining: algorithm={} pow_engine=canonical_core template_id={} height={} target_hex={} nonce={} pow_hash={} attempts={} hashes_per_sec={:.2} accepted={} elapsed_ms={}",
-        template.algorithm, template_id, block.header.height, mining.target_hex, block.header.nonce, verification.final_hash_hex, mining.tries, mining.hashes_per_sec, verification.accepted, mining.elapsed_ms);
+    println!(
+        "mining: algorithm={} pow_engine=canonical_core template_id={} height={} target_hex={} nonce={} pow_hash={} attempts={} hashes_per_sec={:.2} accepted={} elapsed_ms={}",
+        template.algorithm,
+        template_id,
+        block.header.height,
+        mining.target_hex,
+        block.header.nonce,
+        verification.final_hash_hex,
+        mining.tries,
+        mining.hashes_per_sec,
+        verification.accepted,
+        mining.elapsed_ms
+    );
 
     let now_unix = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -690,6 +840,8 @@ async fn mine_once(
         return Ok(MineOnceOutcome::SkippedStaleTemplate);
     }
 
+    let submitted_hash = block.hash.clone();
+    let submitted_height = block.header.height;
     let submit_resp = client
         .post(&submit_url)
         .json(&SubmitRequest { template_id, block })
@@ -714,25 +866,81 @@ async fn mine_once(
         if data.accepted {
             telemetry.record_submit_accepted(data.height);
             telemetry.log("submit_accepted");
-        } else {
-            telemetry.record_submit_rejected(data.reason_code.clone(), data.stale_template);
-            telemetry.log("submit_rejected");
+            send_worker_heartbeat(client, cfg, telemetry).await;
+            return Ok(MineOnceOutcome::Submitted);
         }
-        send_worker_heartbeat(client, cfg, telemetry).await;
-        if !data.accepted {
-            if let Some(reason) = data.reason.as_deref() {
-                println!(
-                    "submit_rejected: reason_code={} reason={}",
-                    data.reason_code, reason
-                );
-            }
+
+        if data.reason_code == SUBMIT_FINALITY_UNKNOWN_CODE {
+            let reconciliation_hash = data
+                .block_hash
+                .as_deref()
+                .unwrap_or(submitted_hash.as_str())
+                .to_string();
+            telemetry.record_submit_finality_unknown();
+            telemetry.log("submit_finality_unknown");
             println!(
-                "action: {}",
-                submit_rejection_action(data.reason_code.as_str())
+                "submit_finality_unknown: block_hash={} height={} action=reconcile_by_hash attempts={} backoff_ms={}",
+                reconciliation_hash,
+                data.height.unwrap_or(submitted_height),
+                RECONCILIATION_ATTEMPTS,
+                RECONCILIATION_BACKOFF_MS
             );
-            if data.reason_code == "stale_template" || data.stale_template {
-                return Ok(MineOnceOutcome::NodeRejectedStaleTemplate);
+
+            let outcome = reconcile_submit_finality(client, &cfg.node, &reconciliation_hash).await;
+            match outcome {
+                ReconciliationOutcome::Accepted { height } => {
+                    telemetry.record_reconciled_accepted(height.or(data.height));
+                    telemetry.log("submit_reconciled_accepted");
+                    println!(
+                        "submit_reconciled: outcome=accepted block_hash={} height={}",
+                        reconciliation_hash,
+                        height
+                            .or(data.height)
+                            .map(|value| value.to_string())
+                            .unwrap_or_else(|| "-".to_string())
+                    );
+                }
+                ReconciliationOutcome::Rejected {
+                    reason_code,
+                    reason,
+                } => {
+                    telemetry.record_reconciled_rejected(reason_code.clone());
+                    telemetry.log("submit_reconciled_rejected");
+                    println!(
+                        "submit_reconciled: outcome=rejected block_hash={} reason_code={} reason={}",
+                        reconciliation_hash, reason_code, reason
+                    );
+                }
+                ReconciliationOutcome::StillUnknown { detail } => {
+                    telemetry.record_still_unknown();
+                    telemetry.log("submit_finality_still_unknown");
+                    println!(
+                        "submit_reconciled: outcome=still_unknown block_hash={} detail={} action=fetch_fresh_work_without_resubmitting_hash",
+                        reconciliation_hash, detail
+                    );
+                    send_worker_heartbeat(client, cfg, telemetry).await;
+                    return Ok(MineOnceOutcome::SubmitFinalityStillUnknown);
+                }
             }
+            send_worker_heartbeat(client, cfg, telemetry).await;
+            return Ok(MineOnceOutcome::Submitted);
+        }
+
+        telemetry.record_submit_rejected(data.reason_code.clone(), data.stale_template);
+        telemetry.log("submit_rejected");
+        send_worker_heartbeat(client, cfg, telemetry).await;
+        if let Some(reason) = data.reason.as_deref() {
+            println!(
+                "submit_rejected: reason_code={} reason={}",
+                data.reason_code, reason
+            );
+        }
+        println!(
+            "action: {}",
+            submit_rejection_action(data.reason_code.as_str())
+        );
+        if data.reason_code == "stale_template" || data.stale_template {
+            return Ok(MineOnceOutcome::NodeRejectedStaleTemplate);
         }
     } else if let Some(err) = submit_api.error {
         let reason_code = err.code.to_ascii_lowercase();
@@ -757,7 +965,6 @@ async fn send_worker_heartbeat(client: &Client, cfg: &Config, telemetry: &MinerT
     if !cfg.heartbeat {
         return;
     }
-
     let heartbeat_url = format!(
         "{}/mining/workers/heartbeat",
         cfg.node.trim_end_matches('/')
@@ -770,25 +977,17 @@ async fn send_worker_heartbeat(client: &Client, cfg: &Config, telemetry: &MinerT
         .send()
         .await
     {
-        Ok(resp) if resp.status().is_success() => {
-            telemetry.log("heartbeat_sent");
-        }
-        Ok(resp) => {
-            println!(
-                "miner_telemetry event=heartbeat_skipped backend={} workers={} status={} reason=endpoint_unavailable",
-                telemetry.backend,
-                telemetry.workers,
-                resp.status()
-            );
-        }
-        Err(err) => {
-            println!(
-                "miner_telemetry event=heartbeat_skipped backend={} workers={} reason=endpoint_unavailable error={}",
-                telemetry.backend,
-                telemetry.workers,
-                err
-            );
-        }
+        Ok(resp) if resp.status().is_success() => telemetry.log("heartbeat_sent"),
+        Ok(resp) => println!(
+            "miner_telemetry event=heartbeat_skipped backend={} workers={} status={} reason=endpoint_unavailable",
+            telemetry.backend,
+            telemetry.workers,
+            resp.status()
+        ),
+        Err(err) => println!(
+            "miner_telemetry event=heartbeat_skipped backend={} workers={} reason=endpoint_unavailable error={}",
+            telemetry.backend, telemetry.workers, err
+        ),
     }
 }
 
@@ -801,16 +1000,13 @@ async fn mine_header_with_backend(
 ) -> Result<MiningResult> {
     let max_tries = max_tries.max(1);
     let start = Instant::now();
-
     let result = tokio::task::spawn_blocking(move || {
         backend.mine_header(header, max_tries, threads, target_bits)
     })
     .await
     .context("mining worker task panicked")??;
-
     let final_header = result.header;
     let tries = result.tries;
-
     let elapsed = start.elapsed();
     let elapsed_secs = elapsed.as_secs_f64();
     let hashes_per_sec = if elapsed_secs > 0.0 {
@@ -818,7 +1014,6 @@ async fn mine_header_with_backend(
     } else {
         0.0
     };
-
     Ok(MiningResult {
         header: final_header,
         tries,
@@ -833,395 +1028,139 @@ async fn mine_header_with_backend(
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_mined_header, default_worker_id, evaluate_template_freshness,
-        loop_refresh_decision_after_outcome, mining_backend, parse_args_from,
-        should_skip_stale_submit, submit_rejection_action, usage, BackendKind, Block, BlockHeader,
-        Config, LoopRefreshDecision, MineOnceOutcome, MinerTelemetry, SubmitRequest,
-        TemplateSkipReason,
+        apply_mined_header, classify_block_lookup, default_worker_id,
+        evaluate_template_freshness, loop_refresh_decision_after_outcome, parse_args_from,
+        should_skip_stale_submit, submit_rejection_action, BackendKind, Block, BlockHeader,
+        BlockLookupData, LoopRefreshDecision, MineOnceOutcome, MinerTelemetry,
+        ReconciliationOutcome, SUBMIT_FINALITY_UNKNOWN_CODE,
     };
-
-    fn telemetry_test_config() -> Config {
-        Config {
-            node: "http://127.0.0.1:8080".to_string(),
-            miner_address: "addr".to_string(),
-            backend: BackendKind::Cpu,
-            max_tries: 1,
-            threads: 2,
-            loop_mode: false,
-            sleep_ms: 1,
-            refresh_before_expiry_ms: 1000,
-            heartbeat: true,
-            worker_id: "worker-1".to_string(),
-            gpu_device: None,
-        }
-    }
 
     #[test]
     fn parser_defaults_backend_to_cpu() {
-        let cfg = parse_args_from(["--miner-address", "addr"]).expect("valid args should parse");
-
+        let cfg = parse_args_from(["--miner-address", "addr"]).expect("valid args");
         assert_eq!(cfg.backend, BackendKind::Cpu);
-    }
-
-    #[test]
-    fn parser_accepts_explicit_cpu_backend() {
-        let cfg = parse_args_from(["--miner-address", "addr", "--backend", "cpu"])
-            .expect("explicit cpu backend should parse");
-
-        assert_eq!(cfg.backend, BackendKind::Cpu);
-    }
-
-    #[test]
-    fn parser_accepts_explicit_gpu_backend() {
-        let cfg = parse_args_from(["--miner-address", "addr", "--backend", "gpu"])
-            .expect("explicit gpu backend should parse");
-
-        assert_eq!(cfg.backend, BackendKind::Gpu);
-    }
-
-    #[test]
-    fn parser_accepts_auto_backend() {
-        let cfg = parse_args_from(["--miner-address", "addr", "--backend", "auto"])
-            .expect("auto backend should parse");
-
-        assert_eq!(cfg.backend, BackendKind::Auto);
-    }
-
-    #[test]
-    fn parser_accepts_gpu_device_index() {
-        let cfg = parse_args_from([
-            "--miner-address",
-            "addr",
-            "--backend",
-            "gpu",
-            "--gpu-device",
-            "2",
-        ])
-        .expect("explicit gpu device should parse");
-
-        assert_eq!(cfg.backend, BackendKind::Gpu);
-        assert_eq!(cfg.gpu_device, Some(2));
-    }
-
-    #[test]
-    fn usage_mentions_optional_gpu_backend() {
-        let text = usage();
-
-        assert!(text.contains("--backend cpu|gpu|auto"));
-        assert!(text.contains("gpu backend is optional"));
-        assert!(text.contains("gpu feature"));
-    }
-
-    #[cfg(not(feature = "gpu"))]
-    #[test]
-    fn auto_backend_without_gpu_feature_falls_back_to_cpu() {
-        let backend = mining_backend(&Config {
-            backend: BackendKind::Auto,
-            ..telemetry_test_config()
-        })
-        .expect("auto backend should always resolve");
-
-        assert_eq!(backend.name(), "cpu");
-    }
-
-    #[cfg(not(feature = "gpu"))]
-    #[test]
-    fn gpu_backend_without_feature_fails_clearly() {
-        let err = match mining_backend(&Config {
-            backend: BackendKind::Gpu,
-            ..telemetry_test_config()
-        }) {
-            Ok(_) => panic!("gpu without feature must fail"),
-            Err(err) => err,
-        };
-
-        assert_eq!(
-            err.to_string(),
-            "GPU backend requested but pulsedag-miner was built without the gpu feature."
-        );
-    }
-
-    #[cfg(feature = "gpu")]
-    #[test]
-    #[ignore = "requires an OpenCL runtime and GPU device; the canonical kernel is intentionally not implemented yet"]
-    fn gpu_backend_with_feature_is_not_implemented() {
-        let backend = mining_backend(&Config {
-            backend: BackendKind::Gpu,
-            ..telemetry_test_config()
-        })
-        .expect("gpu backend should be selectable");
-        let header = BlockHeader {
-            version: 1,
-            parents: vec!["p".into()],
-            timestamp: 1,
-            nonce: 0,
-            difficulty: 1,
-            merkle_root: "m".into(),
-            state_root: "s".into(),
-            blue_score: 1,
-            height: 1,
-        };
-
-        let err = backend
-            .mine_header(header, 1, 1, 1)
-            .expect_err("gpu backend scaffold must not mine yet");
-
-        assert_eq!(err.to_string(), "GPU backend is not implemented yet.");
-    }
-
-    #[test]
-    fn telemetry_counters_increment_correctly() {
-        let mut telemetry = MinerTelemetry::new("cpu", 2);
-
-        telemetry.record_template_received(11);
-        telemetry.record_mining_result(42, 2100.0);
-
-        assert_eq!(telemetry.templates_received, 1);
-        assert_eq!(telemetry.last_template_height, Some(11));
-        assert_eq!(telemetry.attempts, 42);
-        assert_eq!(telemetry.hashes_per_sec, 2100.0);
-    }
-
-    #[test]
-    fn accepted_submit_updates_accepted_counters() {
-        let mut telemetry = MinerTelemetry::new("cpu", 2);
-
-        telemetry.record_submit_accepted(Some(12));
-
-        assert_eq!(telemetry.submits_total, 1);
-        assert_eq!(telemetry.submits_accepted, 1);
-        assert_eq!(telemetry.submits_rejected, 0);
-        assert_eq!(telemetry.last_reject_code, None);
-        assert_eq!(telemetry.last_accepted_height, Some(12));
-    }
-
-    #[test]
-    fn rejected_submit_updates_rejection_counters() {
-        let mut telemetry = MinerTelemetry::new("cpu", 2);
-
-        telemetry.record_submit_rejected("invalid_pow", false);
-
-        assert_eq!(telemetry.submits_total, 1);
-        assert_eq!(telemetry.submits_accepted, 0);
-        assert_eq!(telemetry.submits_rejected, 1);
-        assert_eq!(telemetry.last_reject_code.as_deref(), Some("invalid_pow"));
-        assert_eq!(telemetry.invalid_pow_rejections, 1);
-    }
-
-    #[test]
-    fn backend_verification_failure_increments_local_telemetry_counter() {
-        let mut telemetry = MinerTelemetry::new("gpu", 2);
-
-        telemetry.record_backend_verification_failed();
-
-        assert_eq!(telemetry.backend_verification_failures, 1);
-        assert_eq!(telemetry.invalid_pow_rejections, 1);
-        assert_eq!(telemetry.submits_total, 0);
-        assert_eq!(
-            telemetry.last_reject_code.as_deref(),
-            Some("backend_verification_failed")
-        );
-    }
-
-    #[test]
-    fn backend_verification_failure_does_not_count_as_submit() {
-        let mut telemetry = MinerTelemetry::new("gpu", 2);
-
-        telemetry.record_backend_verification_failed();
-
-        let payload = telemetry.heartbeat_payload(&telemetry_test_config());
-        assert_eq!(payload.blocks_submitted, 0);
-        assert_eq!(payload.accepted_blocks, 0);
-        assert_eq!(payload.invalid_pow_rejections, 1);
-    }
-
-    #[test]
-    fn stale_skip_increments_stale_counter() {
-        let mut telemetry = MinerTelemetry::new("cpu", 2);
-
-        telemetry.record_stale_skip();
-
-        assert_eq!(telemetry.templates_skipped_stale, 1);
-        let payload = telemetry.heartbeat_payload(&telemetry_test_config());
-        assert_eq!(payload.stale_rejections, 1);
-    }
-
-    #[test]
-    fn cpu_backend_reports_backend_cpu() {
-        let telemetry = MinerTelemetry::new("cpu", 4);
-
-        assert_eq!(telemetry.backend, "cpu");
-        assert_eq!(telemetry.workers, 4);
-    }
-
-    #[test]
-    fn heartbeat_payload_keeps_miner_standalone_without_shares() {
-        let mut telemetry = MinerTelemetry::new("cpu", 2);
-        telemetry.record_template_received(10);
-        telemetry.record_submit_accepted(Some(10));
-
-        let payload = telemetry.heartbeat_payload(&telemetry_test_config());
-
-        assert_eq!(payload.worker_id, "worker-1");
-        assert_eq!(payload.miner_address, "addr");
-        assert_eq!(payload.templates_requested, 1);
-        assert_eq!(payload.blocks_submitted, 1);
-        assert_eq!(payload.accepted_blocks, 1);
-        assert_eq!(payload.accepted_shares, 0);
-    }
-
-    #[test]
-    fn default_worker_id_is_endpoint_safe() {
-        let worker_id = default_worker_id("addr/with spaces");
-
-        assert!(worker_id.starts_with("miner-addr_with_spaces-"));
-    }
-
-    #[test]
-    fn stale_expired_template_skip_includes_reason_and_timing() {
-        let freshness = evaluate_template_freshness(100, 99, 1000);
-
-        assert!(freshness.skip_reason.is_some());
-        assert_eq!(freshness.skip_reason, Some(TemplateSkipReason::Expired));
-        assert_eq!(freshness.remaining_ms, 0);
-
-        let reason = should_skip_stale_submit(100, 99, 1000).expect("must skip expired template");
-        assert!(reason.contains("template already expired"));
-        assert!(reason.contains("skip_reason=expired"));
-        assert!(reason.contains("remaining_ms=0"));
-        assert!(reason.contains("expires_at_unix=99"));
-    }
-
-    #[test]
-    fn stale_near_expiry_template_skip_includes_reason_and_remaining_ms() {
-        let freshness = evaluate_template_freshness(100, 101, 1500);
-
-        assert!(freshness.skip_reason.is_some());
-        assert_eq!(freshness.skip_reason, Some(TemplateSkipReason::NearExpiry));
-        assert_eq!(freshness.remaining_ms, 1000);
-
-        let reason = should_skip_stale_submit(100, 101, 1500)
-            .expect("must skip template too close to expiry");
-        assert!(reason.contains("template too close to expiry"));
-        assert!(reason.contains("skip_reason=near_expiry"));
-        assert!(reason.contains("remaining_ms=1000"));
-        assert!(reason.contains("threshold_ms=1500"));
-    }
-
-    #[test]
-    fn stale_fresh_template_allowed_when_outside_refresh_window() {
-        let freshness = evaluate_template_freshness(100, 105, 1000);
-
-        assert!(freshness.skip_reason.is_none());
-        assert_eq!(freshness.skip_reason, None);
-        assert_eq!(freshness.remaining_ms, 5000);
-        assert!(should_skip_stale_submit(100, 105, 1000).is_none());
-    }
-
-    #[test]
-    fn stale_node_side_rejection_is_retryable() {
-        let action = submit_rejection_action("stale_template");
-
-        assert!(action.contains("refresh template"));
-        assert!(action.contains("retry mining"));
-    }
-
-    #[test]
-    fn invalid_pow_rejection_is_hard_backend_canonical_warning() {
-        let action = submit_rejection_action("invalid_pow");
-
-        assert!(action.contains("hard warning"));
-        assert!(action.contains("backend/canonical mismatch"));
-        assert!(action.contains("discard nonce/header"));
-    }
-
-    #[test]
-    fn stale_loop_mode_refreshes_work_after_stale() {
-        assert_eq!(
-            loop_refresh_decision_after_outcome(MineOnceOutcome::NodeRejectedStaleTemplate),
-            LoopRefreshDecision::RefreshWork
-        );
-        assert_eq!(
-            loop_refresh_decision_after_outcome(MineOnceOutcome::SkippedStaleTemplate),
-            LoopRefreshDecision::RefreshWork
-        );
-        assert_eq!(
-            loop_refresh_decision_after_outcome(MineOnceOutcome::BackendVerificationRejected),
-            LoopRefreshDecision::RefreshWork
-        );
     }
 
     #[test]
     fn parser_keeps_threads_validation() {
         let err = parse_args_from(["--miner-address", "addr", "--threads", "0"])
-            .expect_err("zero threads must be rejected");
-
+            .expect_err("zero threads must fail");
         assert!(err.to_string().contains("--threads must be >= 1"));
     }
 
     #[test]
-    fn parser_keeps_loop_and_max_tries_options() {
-        let cfg = parse_args_from([
-            "--miner-address",
-            "addr",
-            "--max-tries",
-            "7",
-            "--threads",
-            "2",
-            "--loop",
-        ])
-        .expect("valid manual args should parse");
-
-        assert_eq!(cfg.max_tries, 7);
-        assert_eq!(cfg.threads, 2);
-        assert!(cfg.loop_mode);
+    fn accepted_submit_updates_accepted_counters() {
+        let mut telemetry = MinerTelemetry::new("cpu", 2);
+        telemetry.record_submit_accepted(Some(12));
+        assert_eq!(telemetry.submits_total, 1);
+        assert_eq!(telemetry.submits_accepted, 1);
+        assert_eq!(telemetry.submits_rejected, 0);
     }
 
     #[test]
-    fn known_submit_rejection_classes_have_actionable_text() {
-        for code in [
-            "stale_template",
-            "invalid_pow",
-            "malformed_serialization",
-            "missing_parent",
-            "invalid_timestamp",
-            "duplicate_block",
-            "invalid_coinbase",
-            "invalid_merkle_or_payload",
-            "unknown_validation_error",
-            "chain_id_mismatch",
-            "internal_error",
-        ] {
-            let action = submit_rejection_action(code);
-            assert!(!action.is_empty());
-            assert_ne!(action, "no action needed");
-        }
+    fn finality_unknown_is_not_counted_as_rejected() {
+        let mut telemetry = MinerTelemetry::new("cpu", 2);
+        telemetry.record_submit_finality_unknown();
+        assert_eq!(telemetry.submits_total, 1);
+        assert_eq!(telemetry.submits_finality_unknown, 1);
+        assert_eq!(telemetry.submits_rejected, 0);
+        assert_eq!(
+            telemetry.last_reject_code.as_deref(),
+            Some(SUBMIT_FINALITY_UNKNOWN_CODE)
+        );
     }
 
     #[test]
-    fn submit_payload_serializes_with_template_id_and_block() {
-        let block = Block {
-            header: BlockHeader {
-                version: 1,
-                parents: vec!["p".into()],
-                timestamp: 1,
-                nonce: 1,
-                difficulty: 1,
-                merkle_root: "m".into(),
-                state_root: "s".into(),
-                blue_score: 1,
-                height: 1,
-            },
-            transactions: vec![],
-            hash: "h".into(),
+    fn reconciled_acceptance_does_not_double_count_submit() {
+        let mut telemetry = MinerTelemetry::new("cpu", 2);
+        telemetry.record_submit_finality_unknown();
+        telemetry.record_reconciled_accepted(Some(9));
+        assert_eq!(telemetry.submits_total, 1);
+        assert_eq!(telemetry.submits_accepted, 1);
+        assert_eq!(telemetry.submits_rejected, 0);
+        assert_eq!(telemetry.submits_reconciled_accepted, 1);
+        assert_eq!(telemetry.last_accepted_height, Some(9));
+    }
+
+    #[test]
+    fn unresolved_unknown_remains_outside_rejection_totals() {
+        let mut telemetry = MinerTelemetry::new("cpu", 2);
+        telemetry.record_submit_finality_unknown();
+        telemetry.record_still_unknown();
+        assert_eq!(telemetry.submits_total, 1);
+        assert_eq!(telemetry.submits_rejected, 0);
+        assert_eq!(telemetry.submits_still_unknown, 1);
+    }
+
+    #[test]
+    fn block_lookup_reconciles_matching_hash_to_accepted() {
+        let block = BlockLookupData {
+            hash: "abc".to_string(),
+            height: 7,
         };
-        let req = SubmitRequest {
-            template_id: "tpl-1".into(),
-            block,
-        };
-        let v = serde_json::to_value(&req).expect("serialize");
-        assert_eq!(v["template_id"], "tpl-1");
-        assert!(v["block"].is_object());
+        assert_eq!(
+            classify_block_lookup("abc", Some(&block), None, None),
+            Some(ReconciliationOutcome::Accepted { height: Some(7) })
+        );
+    }
+
+    #[test]
+    fn not_found_lookup_is_not_a_definitive_rejection() {
+        assert_eq!(
+            classify_block_lookup("abc", None, Some("NOT_FOUND"), Some("block not found")),
+            None
+        );
+    }
+
+    #[test]
+    fn explicit_rejected_lookup_is_supported() {
+        assert_eq!(
+            classify_block_lookup(
+                "abc",
+                None,
+                Some("BLOCK_REJECTED"),
+                Some("definitive rejection")
+            ),
+            Some(ReconciliationOutcome::Rejected {
+                reason_code: "block_rejected".to_string(),
+                reason: "definitive rejection".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn finality_unknown_action_forbids_blind_resubmit() {
+        let action = submit_rejection_action(SUBMIT_FINALITY_UNKNOWN_CODE);
+        assert!(action.contains("reconcile"));
+        assert!(action.contains("do not classify"));
+        assert!(action.contains("resubmit"));
+    }
+
+    #[test]
+    fn stale_freshness_rules_are_preserved() {
+        assert!(should_skip_stale_submit(100, 99, 1000).is_some());
+        assert!(should_skip_stale_submit(100, 105, 1000).is_none());
+        assert_eq!(
+            evaluate_template_freshness(100, 101, 1500).remaining_ms,
+            1000
+        );
+    }
+
+    #[test]
+    fn loop_always_fetches_fresh_work() {
+        assert_eq!(
+            loop_refresh_decision_after_outcome(MineOnceOutcome::SubmitFinalityStillUnknown),
+            LoopRefreshDecision::RefreshWork
+        );
+        assert_eq!(
+            loop_refresh_decision_after_outcome(MineOnceOutcome::NodeRejectedStaleTemplate),
+            LoopRefreshDecision::RefreshWork
+        );
+    }
+
+    #[test]
+    fn default_worker_id_is_endpoint_safe() {
+        assert!(default_worker_id("addr/with spaces").starts_with("miner-addr_with_spaces-"));
     }
 
     #[test]
