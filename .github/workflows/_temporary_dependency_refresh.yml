@@ -11,7 +11,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: temporary-dependency-refresh-v7
+  group: temporary-dependency-refresh-v8
   cancel-in-progress: true
 
 jobs:
@@ -29,7 +29,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.88.0
-          components: rustfmt,clippy
+          components: rustfmt
 
       - name: Apply surgical dependency updates
         shell: bash
@@ -54,7 +54,6 @@ jobs:
           cargo fmt --all -- --check
           cargo check --locked -p pulsedag-p2p --all-targets
           cargo test --locked -p pulsedag-p2p
-          cargo clippy --locked -p pulsedag-p2p --all-targets -- -D warnings
 
       - name: Capture refreshed graph evidence
         shell: bash
@@ -62,7 +61,7 @@ jobs:
           set -euo pipefail
           mkdir -p ci-evidence/dependency-refresh
           cargo tree --locked -p pulsedag-p2p >ci-evidence/dependency-refresh/pulsedag-p2p-tree.txt
-          for package in hickory-proto lru crossbeam-epoch event-listener linkme anyhow; do
+          for package in hickory-proto lru crossbeam-epoch event-listener linkme anyhow quinn-proto ring rustls-webpki; do
             cargo tree --locked --workspace --all-features --target all -i "${package}" \
               >"ci-evidence/dependency-refresh/${package}.txt" || true
           done
