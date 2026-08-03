@@ -1,0 +1,44 @@
+name: Temporary format submit-finality branch
+
+on:
+  push:
+    branches:
+      - fix/2.4.0-submit-finality
+    paths:
+      - .github/workflows/_temporary_format_submit_finality.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: temporary-format-submit-finality
+  cancel-in-progress: false
+
+jobs:
+  format-and-remove-self:
+    if: github.repository == 'AuriaLABS/PulseDAG'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout implementation branch
+        uses: actions/checkout@v4
+        with:
+          ref: fix/2.4.0-submit-finality
+          fetch-depth: 0
+
+      - name: Install rustfmt
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Format Rust sources and remove temporary workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fmt --all
+          rm .github/workflows/_temporary_format_submit_finality.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git diff --cached --check
+          git commit -m 'style: format submit-finality implementation'
+          git push origin HEAD:fix/2.4.0-submit-finality
