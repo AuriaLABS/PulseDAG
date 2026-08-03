@@ -1,9 +1,9 @@
 name: Temporary dependency refresh
 
 on:
-  push:
+  pull_request:
     branches:
-      - security/2.4.0-dependency-remediation
+      - release/2.4.0
     paths:
       - .github/workflows/_temporary_dependency_refresh.yml
 
@@ -11,12 +11,12 @@ permissions:
   contents: write
 
 concurrency:
-  group: temporary-dependency-refresh-v2
+  group: temporary-dependency-refresh-v3
   cancel-in-progress: true
 
 jobs:
   refresh-validate-and-remove-self:
-    if: github.repository == 'AuriaLABS/PulseDAG'
+    if: github.repository == 'AuriaLABS/PulseDAG' && github.head_ref == 'security/2.4.0-dependency-remediation'
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout remediation branch
