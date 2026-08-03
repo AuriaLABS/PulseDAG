@@ -1,0 +1,168 @@
+name: Temporary remove unused mDNS dependency
+
+on:
+  pull_request:
+    branches:
+      - release/2.4.0
+    paths:
+      - .github/workflows/_temporary_remove_unused_mdns.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: temporary-remove-unused-mdns
+  cancel-in-progress: true
+
+jobs:
+  patch-validate-and-remove-self:
+    if: github.repository == 'AuriaLABS/PulseDAG' && github.head_ref == 'security/2.4.0-dependency-remediation'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout remediation branch
+        uses: actions/checkout@v4
+        with:
+          ref: security/2.4.0-dependency-remediation
+          fetch-depth: 0
+
+      - name: Install pinned Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.88.0
+          components: rustfmt
+
+      - name: Remove unused mDNS surface and patch Quinn
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          manifest = Path('crates/pulsedag-p2p/Cargo.toml')
+          text = manifest.read_text()
+          old = '"kad", "mdns", "macros"'
+          new = '"kad", "macros"'
+          if text.count(old) != 1:
+              raise SystemExit(f'expected one mDNS feature entry, found {text.count(old)}')
+          manifest.write_text(text.replace(old, new, 1))
+
+          p2p = Path('crates/pulsedag-p2p/src/lib.rs')
+          text = p2p.read_text()
+          old = '        state.mdns = cfg.enable_mdns;\n'
+          new = '        state.mdns = false;\n'
+          if text.count(old) != 1:
+              raise SystemExit(f'expected one mDNS status assignment, found {text.count(old)}')
+          p2p.write_text(text.replace(old, new, 1))
+
+          config = Path('apps/pulsedagd/src/config.rs')
+          text = config.read_text()
+          enabled_defaults = text.count('                p2p_mdns: true,\n')
+          if enabled_defaults < 1:
+              raise SystemExit('expected at least one enabled mDNS profile default')
+          text = text.replace(
+              '                p2p_mdns: true,\n',
+              '                p2p_mdns: false,\n',
+          )
+
+          validation = '    fn validate_security_hardening(&self) -> Result<()> {\n'
+          replacement = '''    fn validate_security_hardening(&self) -> Result<()> {
+        if self.p2p_mdns {
+            bail!(
+                "invalid config: PULSEDAG_P2P_MDNS=true is unsupported in v2.4.0; use explicit bootnodes and Kademlia discovery"
+            );
+        }
+'''
+          if text.count(validation) != 1:
+              raise SystemExit(f'expected one security validator, found {text.count(validation)}')
+          text = text.replace(validation, replacement, 1)
+
+          assertion_anchor = '''        assert_eq!(cfg.p2p_connection_slot_budget, 24);
+        assert!(cfg.auto_prune_enabled);
+'''
+          assertion_replacement = '''        assert_eq!(cfg.p2p_connection_slot_budget, 24);
+        assert!(!cfg.p2p_mdns);
+        assert!(cfg.auto_prune_enabled);
+'''
+          if text.count(assertion_anchor) != 1:
+              raise SystemExit('testnet profile assertion anchor not found exactly once')
+          text = text.replace(assertion_anchor, assertion_replacement, 1)
+
+          test_anchor = '''    #[test]
+    fn loads_private_profile_defaults() {
+'''
+          test_replacement = '''    #[test]
+    fn rejects_mdns_enablement_until_a_real_behaviour_is_implemented() {
+        let _guard = env_guard();
+        clear_test_env();
+        std::env::set_var("PULSEDAG_CONFIG_PROFILE", "testnet");
+        std::env::set_var("PULSEDAG_P2P_MDNS", "true");
+        let error = Config::from_env().expect_err("mDNS must fail closed");
+        assert!(error.to_string().contains("PULSEDAG_P2P_MDNS=true is unsupported"));
+    }
+
+    #[test]
+    fn loads_private_profile_defaults() {
+'''
+          if text.count(test_anchor) != 1:
+              raise SystemExit('private profile test anchor not found exactly once')
+          config.write_text(text.replace(test_anchor, test_replacement, 1))
+          PY
+
+          cargo update -p libp2p --precise 0.56.0
+          cargo update -p quinn-proto@0.11.14 --precise 0.11.15
+          cargo metadata --locked --format-version 1 >/dev/null
+          cargo fmt --all
+
+      - name: Validate dependency and runtime contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked -p pulsedag-p2p
+          cargo test --locked -p pulsedagd config::tests
+          cargo check --locked -p pulsedag-p2p --all-targets
+          cargo check --locked -p pulsedagd --all-targets
+          if cargo tree --locked --workspace --all-features --target all -i hickory-proto > /tmp/hickory-tree.txt 2>&1; then
+            cat /tmp/hickory-tree.txt
+            echo 'hickory-proto remains reachable after removing the unused mDNS feature' >&2
+            exit 1
+          fi
+          grep -A2 'name = "quinn-proto"' Cargo.lock | grep 'version = "0.11.15"'
+
+      - name: Capture remediation evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ci-evidence/dependency-final-remediation
+          cargo tree --locked -p pulsedag-p2p >ci-evidence/dependency-final-remediation/p2p-tree.txt
+          cargo tree --locked --workspace --all-features --target all -i quinn-proto \
+            >ci-evidence/dependency-final-remediation/quinn-proto.txt || true
+          {
+            echo "source_sha=${GITHUB_SHA}"
+            echo "rustc=$(rustc --version)"
+            echo "cargo=$(cargo --version)"
+            echo "cargo_lock_sha256=$(sha256sum Cargo.lock | awk '{print $1}')"
+            echo "mdns_feature_present=$(grep -c '\"mdns\"' crates/pulsedag-p2p/Cargo.toml || true)"
+            echo "hickory_lock_entries=$(grep -c 'name = \"hickory-proto\"' Cargo.lock || true)"
+          } >ci-evidence/dependency-final-remediation/provenance.txt
+          sha256sum ci-evidence/dependency-final-remediation/* \
+            >ci-evidence/dependency-final-remediation/SHA256SUMS
+
+      - name: Commit code-only remediation
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm .github/workflows/_temporary_remove_unused_mdns.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add Cargo.lock crates/pulsedag-p2p/Cargo.toml crates/pulsedag-p2p/src/lib.rs apps/pulsedagd/src/config.rs .github/workflows/_temporary_remove_unused_mdns.yml
+          git diff --cached --check
+          git commit -m 'security: remove unsupported mDNS dependency'
+          git push origin HEAD:security/2.4.0-dependency-remediation
+
+      - name: Upload remediation evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: dependency_final_remediation_${{ github.run_id }}
+          path: ci-evidence/dependency-final-remediation
+          if-no-files-found: error
+          retention-days: 90
