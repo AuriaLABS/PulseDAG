@@ -188,7 +188,10 @@ impl MinerTelemetry {
         if reason_code == "stale_template" || stale_template {
             self.node_stale_rejections = self.node_stale_rejections.saturating_add(1);
         }
-        *self.reject_breakdown.entry(reason_code.clone()).or_insert(0) += 1;
+        *self
+            .reject_breakdown
+            .entry(reason_code.clone())
+            .or_insert(0) += 1;
         self.last_reject_code = Some(reason_code);
     }
 
@@ -209,7 +212,10 @@ impl MinerTelemetry {
         let reason_code = reason_code.into();
         self.submits_rejected = self.submits_rejected.saturating_add(1);
         self.submits_reconciled_rejected = self.submits_reconciled_rejected.saturating_add(1);
-        *self.reject_breakdown.entry(reason_code.clone()).or_insert(0) += 1;
+        *self
+            .reject_breakdown
+            .entry(reason_code.clone())
+            .or_insert(0) += 1;
         self.last_reject_code = Some(reason_code);
     }
 
@@ -640,14 +646,12 @@ fn classify_block_lookup(
     }
 
     match error_code.unwrap_or_default().to_ascii_lowercase().as_str() {
-        "block_rejected" | "rejected" | "invalid_block" => {
-            Some(ReconciliationOutcome::Rejected {
-                reason_code: error_code.unwrap_or("block_rejected").to_ascii_lowercase(),
-                reason: error_message
-                    .unwrap_or("node reported a definitive rejected block outcome")
-                    .to_string(),
-            })
-        }
+        "block_rejected" | "rejected" | "invalid_block" => Some(ReconciliationOutcome::Rejected {
+            reason_code: error_code.unwrap_or("block_rejected").to_ascii_lowercase(),
+            reason: error_message
+                .unwrap_or("node reported a definitive rejected block outcome")
+                .to_string(),
+        }),
         _ => None,
     }
 }
@@ -657,11 +661,7 @@ async fn reconcile_submit_finality(
     node: &str,
     block_hash: &str,
 ) -> ReconciliationOutcome {
-    let lookup_url = format!(
-        "{}/blocks/{}",
-        node.trim_end_matches('/'),
-        block_hash
-    );
+    let lookup_url = format!("{}/blocks/{}", node.trim_end_matches('/'), block_hash);
     let mut last_detail = "block lookup has not completed".to_string();
 
     for attempt in 1..=RECONCILIATION_ATTEMPTS {
@@ -711,7 +711,9 @@ async fn reconcile_submit_finality(
         }
     }
 
-    ReconciliationOutcome::StillUnknown { detail: last_detail }
+    ReconciliationOutcome::StillUnknown {
+        detail: last_detail,
+    }
 }
 
 async fn mine_once(
@@ -1028,11 +1030,11 @@ async fn mine_header_with_backend(
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_mined_header, classify_block_lookup, default_worker_id,
-        evaluate_template_freshness, loop_refresh_decision_after_outcome, parse_args_from,
-        should_skip_stale_submit, submit_rejection_action, BackendKind, Block, BlockHeader,
-        BlockLookupData, LoopRefreshDecision, MineOnceOutcome, MinerTelemetry,
-        ReconciliationOutcome, SUBMIT_FINALITY_UNKNOWN_CODE,
+        apply_mined_header, classify_block_lookup, default_worker_id, evaluate_template_freshness,
+        loop_refresh_decision_after_outcome, parse_args_from, should_skip_stale_submit,
+        submit_rejection_action, BackendKind, Block, BlockHeader, BlockLookupData,
+        LoopRefreshDecision, MineOnceOutcome, MinerTelemetry, ReconciliationOutcome,
+        SUBMIT_FINALITY_UNKNOWN_CODE,
     };
 
     #[test]
