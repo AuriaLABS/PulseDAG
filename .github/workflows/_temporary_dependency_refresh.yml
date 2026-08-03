@@ -11,7 +11,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: temporary-dependency-refresh-v3
+  group: temporary-dependency-refresh-v4
   cancel-in-progress: true
 
 jobs:
@@ -37,10 +37,10 @@ jobs:
           set -euo pipefail
           python - <<'PY'
           from pathlib import Path
-          path = Path('Cargo.toml')
+          path = Path('crates/pulsedag-p2p/Cargo.toml')
           text = path.read_text()
-          old = 'libp2p = "0.54"'
-          new = 'libp2p = "0.56"'
+          old = 'libp2p = { version = "0.54",'
+          new = 'libp2p = { version = "0.56",'
           if old not in text:
               raise SystemExit(f'expected dependency declaration not found: {old}')
           path.write_text(text.replace(old, new, 1))
@@ -74,7 +74,7 @@ jobs:
           rm .github/workflows/_temporary_dependency_refresh.yml
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add Cargo.toml Cargo.lock .github/workflows/_temporary_dependency_refresh.yml
+          git add crates/pulsedag-p2p/Cargo.toml Cargo.lock .github/workflows/_temporary_dependency_refresh.yml
           git diff --cached --check
           git commit -m 'security: refresh dependency graph and libp2p'
           git push origin HEAD:security/2.4.0-dependency-remediation
