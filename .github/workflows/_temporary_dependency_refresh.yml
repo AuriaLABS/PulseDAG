@@ -11,7 +11,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: temporary-dependency-refresh-v4
+  group: temporary-dependency-refresh-v5
   cancel-in-progress: true
 
 jobs:
@@ -29,9 +29,9 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.88.0
-          components: rustfmt
+          components: rustfmt,clippy
 
-      - name: Upgrade libp2p and regenerate lockfile
+      - name: Apply surgical dependency updates
         shell: bash
         run: |
           set -euo pipefail
@@ -45,27 +45,33 @@ jobs:
               raise SystemExit(f'expected dependency declaration not found: {old}')
           path.write_text(text.replace(old, new, 1))
           PY
-          rm Cargo.lock
-          cargo generate-lockfile
+          cargo update -p libp2p --precise 0.56.0
+          cargo update -p anyhow@1.0.102 --precise 1.0.104
+          cargo update -p crossbeam-epoch@0.9.18 --precise 0.9.20
+          cargo update -p event-listener@5.4.1 --precise 5.4.2
           cargo metadata --locked --format-version 1 >/dev/null
           cargo fmt --all -- --check
           cargo check --locked -p pulsedag-p2p --all-targets
+          cargo test --locked -p pulsedag-p2p
+          cargo clippy --locked -p pulsedag-p2p --all-targets -- -D warnings
 
       - name: Capture refreshed graph evidence
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p ci-evidence/dependency-refresh
-          cargo tree --locked -p pulsedag-p2p \
-            >ci-evidence/dependency-refresh/pulsedag-p2p-tree.txt
+          cargo tree --locked -p pulsedag-p2p >ci-evidence/dependency-refresh/pulsedag-p2p-tree.txt
+          for package in hickory-proto lru crossbeam-epoch event-listener linkme anyhow; do
+            cargo tree --locked --workspace --all-features --target all -i "${package}" \
+              >"ci-evidence/dependency-refresh/${package}.txt" || true
+          done
           {
             echo "source_sha=${GITHUB_SHA}"
             echo "rustc=$(rustc --version)"
             echo "cargo=$(cargo --version)"
             echo "cargo_lock_sha256=$(sha256sum Cargo.lock | awk '{print $1}')"
           } | tee ci-evidence/dependency-refresh/provenance.txt
-          sha256sum ci-evidence/dependency-refresh/* \
-            >ci-evidence/dependency-refresh/SHA256SUMS
+          sha256sum ci-evidence/dependency-refresh/* >ci-evidence/dependency-refresh/SHA256SUMS
 
       - name: Remove temporary workflow and commit validated refresh
         shell: bash
@@ -76,7 +82,7 @@ jobs:
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add crates/pulsedag-p2p/Cargo.toml Cargo.lock .github/workflows/_temporary_dependency_refresh.yml
           git diff --cached --check
-          git commit -m 'security: refresh dependency graph and libp2p'
+          git commit -m 'security: update vulnerable dependency graph'
           git push origin HEAD:security/2.4.0-dependency-remediation
 
       - name: Upload refresh graph evidence
