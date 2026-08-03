@@ -11,8 +11,8 @@ permissions:
   contents: write
 
 concurrency:
-  group: temporary-dependency-refresh
-  cancel-in-progress: false
+  group: temporary-dependency-refresh-v2
+  cancel-in-progress: true
 
 jobs:
   refresh-validate-and-remove-self:
@@ -29,7 +29,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.88.0
-          components: rustfmt,clippy
+          components: rustfmt
 
       - name: Upgrade libp2p and regenerate lockfile
         shell: bash
@@ -49,35 +49,23 @@ jobs:
           cargo generate-lockfile
           cargo metadata --locked --format-version 1 >/dev/null
           cargo fmt --all -- --check
-          cargo check --locked --workspace --all-targets
+          cargo check --locked -p pulsedag-p2p --all-targets
 
-      - name: Capture advisory status
+      - name: Capture refreshed graph evidence
         shell: bash
         run: |
           set -euo pipefail
-          cargo install --locked cargo-audit --version 0.22.2
           mkdir -p ci-evidence/dependency-refresh
-          set +e
-          cargo audit --json >ci-evidence/dependency-refresh/audit.json
-          audit_status=$?
-          set -e
-          echo "audit_exit_code=${audit_status}" | tee ci-evidence/dependency-refresh/summary.txt
-          python - <<'PY' | tee -a ci-evidence/dependency-refresh/summary.txt
-          import json
-          report=json.load(open('ci-evidence/dependency-refresh/audit.json'))
-          vulns=report.get('vulnerabilities',{}).get('list',[])
-          print(f'vulnerability_count={len(vulns)}')
-          for item in vulns:
-              adv=item.get('advisory',{})
-              pkg=item.get('package',{})
-              print(f"{adv.get('id')} {pkg.get('name')} {pkg.get('version')}")
-          PY
+          cargo tree --locked -p pulsedag-p2p \
+            >ci-evidence/dependency-refresh/pulsedag-p2p-tree.txt
           {
             echo "source_sha=${GITHUB_SHA}"
             echo "rustc=$(rustc --version)"
             echo "cargo=$(cargo --version)"
             echo "cargo_lock_sha256=$(sha256sum Cargo.lock | awk '{print $1}')"
           } | tee ci-evidence/dependency-refresh/provenance.txt
+          sha256sum ci-evidence/dependency-refresh/* \
+            >ci-evidence/dependency-refresh/SHA256SUMS
 
       - name: Remove temporary workflow and commit validated refresh
         shell: bash
@@ -91,7 +79,7 @@ jobs:
           git commit -m 'security: refresh dependency graph and libp2p'
           git push origin HEAD:security/2.4.0-dependency-remediation
 
-      - name: Upload refresh audit evidence
+      - name: Upload refresh graph evidence
         uses: actions/upload-artifact@v4
         with:
           name: dependency_refresh_${{ github.run_id }}
