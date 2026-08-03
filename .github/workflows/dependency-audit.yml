@@ -1,0 +1,88 @@
+name: Dependency security audit
+
+on:
+  pull_request:
+    paths:
+      - Cargo.toml
+      - Cargo.lock
+      - apps/**/Cargo.toml
+      - crates/**/Cargo.toml
+      - .github/workflows/dependency-audit.yml
+      - SECURITY.md
+  push:
+    branches:
+      - main
+      - release/2.4.0
+    paths:
+      - Cargo.toml
+      - Cargo.lock
+      - apps/**/Cargo.toml
+      - crates/**/Cargo.toml
+      - .github/workflows/dependency-audit.yml
+      - SECURITY.md
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dependency-audit-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rustsec:
+    name: RustSec Cargo.lock audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout candidate
+        uses: actions/checkout@v4
+
+      - name: Install pinned Rust toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.88.0 --profile minimal --no-self-update
+          rustup default 1.88.0
+          rustc --version
+          cargo --version
+
+      - name: Install pinned cargo-audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo install cargo-audit --version 0.22.2 --locked
+          cargo audit --version
+
+      - name: Audit locked dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ci-evidence/dependency-audit
+          cargo audit --json \
+            | tee ci-evidence/dependency-audit/cargo-audit.json
+
+      - name: Record audit provenance
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ci-evidence/dependency-audit
+          {
+            echo "source_sha=${GITHUB_SHA}"
+            echo "rustc=$(rustc --version 2>/dev/null || true)"
+            echo "cargo=$(cargo --version 2>/dev/null || true)"
+            echo "cargo_audit=$(cargo audit --version 2>/dev/null || true)"
+            echo "cargo_lock_sha256=$(sha256sum Cargo.lock | awk '{print $1}')"
+          } > ci-evidence/dependency-audit/provenance.txt
+          sha256sum ci-evidence/dependency-audit/* \
+            > ci-evidence/dependency-audit/SHA256SUMS
+
+      - name: Upload dependency-audit evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dependency_audit_${{ github.run_id }}
+          path: ci-evidence/dependency-audit
+          if-no-files-found: error
+          retention-days: 90
