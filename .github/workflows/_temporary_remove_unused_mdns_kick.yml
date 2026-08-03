@@ -1,4 +1,4 @@
-name: Temporary remove unused mDNS kick
+name: Temporary remove unused mDNS kick v2
 
 on:
   push:
@@ -12,7 +12,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: temporary-remove-unused-mdns-kick
+  group: temporary-remove-unused-mdns-kick-v2
   cancel-in-progress: true
 
 jobs:
