@@ -1,0 +1,85 @@
+name: Temporary mDNS remediation diagnostic
+
+on:
+  pull_request:
+    branches:
+      - release/2.4.0
+    paths:
+      - .github/workflows/_temporary_mdns_diagnostic.yml
+      - scripts/_temporary_remove_unused_mdns.py
+
+permissions:
+  contents: read
+
+concurrency:
+  group: temporary-mdns-remediation-diagnostic
+  cancel-in-progress: true
+
+jobs:
+  diagnose:
+    if: github.repository == 'AuriaLABS/PulseDAG' && github.head_ref == 'security/2.4.0-dependency-remediation'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - name: Checkout remediation branch
+        uses: actions/checkout@v4
+        with:
+          ref: security/2.4.0-dependency-remediation
+
+      - name: Install pinned Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.88.0
+          components: rustfmt
+
+      - name: Run isolated checks and capture all results
+        shell: bash
+        continue-on-error: true
+        run: |
+          set +e
+          mkdir -p ci-evidence/mdns-diagnostic
+          summary=ci-evidence/mdns-diagnostic/summary.txt
+          : >"${summary}"
+
+          run_check() {
+            name="$1"
+            shift
+            echo "===== ${name} =====" | tee -a "${summary}"
+            "$@" >"ci-evidence/mdns-diagnostic/${name}.log" 2>&1
+            status=$?
+            echo "${name}_exit_code=${status}" | tee -a "${summary}"
+            tail -n 80 "ci-evidence/mdns-diagnostic/${name}.log" | tee -a "${summary}"
+            return 0
+          }
+
+          run_check apply_patch python scripts/_temporary_remove_unused_mdns.py
+          run_check update_libp2p cargo update -p libp2p --precise 0.56.0
+          run_check update_quinn cargo update -p quinn-proto@0.11.14 --precise 0.11.15
+          run_check metadata cargo metadata --locked --format-version 1
+          run_check format cargo fmt --all -- --check
+          run_check p2p_tests cargo test --locked -p pulsedag-p2p
+          run_check config_tests cargo test --locked -p pulsedagd config::tests
+          run_check p2p_check cargo check --locked -p pulsedag-p2p --all-targets
+          run_check daemon_check cargo check --locked -p pulsedagd --all-targets
+          run_check hickory_tree cargo tree --locked --workspace --all-features --target all -i hickory-proto
+          run_check quinn_tree cargo tree --locked --workspace --all-features --target all -i quinn-proto
+
+          {
+            echo "source_sha=${GITHUB_SHA}"
+            echo "rustc=$(rustc --version 2>/dev/null || true)"
+            echo "cargo=$(cargo --version 2>/dev/null || true)"
+            echo "cargo_lock_sha256=$(sha256sum Cargo.lock | awk '{print $1}')"
+            echo "mdns_feature_entries=$(grep -c '\"mdns\"' crates/pulsedag-p2p/Cargo.toml || true)"
+            echo "hickory_lock_entries=$(grep -c 'name = \"hickory-proto\"' Cargo.lock || true)"
+            grep -A2 'name = "quinn-proto"' Cargo.lock || true
+          } | tee ci-evidence/mdns-diagnostic/provenance.txt
+          sha256sum ci-evidence/mdns-diagnostic/* >ci-evidence/mdns-diagnostic/SHA256SUMS
+
+      - name: Upload diagnostic evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mdns_diagnostic_${{ github.run_id }}
+          path: ci-evidence/mdns-diagnostic
+          if-no-files-found: error
+          retention-days: 30
