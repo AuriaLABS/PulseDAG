@@ -1,0 +1,100 @@
+name: Temporary dependency refresh
+
+on:
+  push:
+    branches:
+      - security/2.4.0-dependency-remediation
+    paths:
+      - .github/workflows/_temporary_dependency_refresh.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: temporary-dependency-refresh
+  cancel-in-progress: false
+
+jobs:
+  refresh-validate-and-remove-self:
+    if: github.repository == 'AuriaLABS/PulseDAG'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout remediation branch
+        uses: actions/checkout@v4
+        with:
+          ref: security/2.4.0-dependency-remediation
+          fetch-depth: 0
+
+      - name: Install pinned Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.88.0
+          components: rustfmt,clippy
+
+      - name: Upgrade libp2p and regenerate lockfile
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('Cargo.toml')
+          text = path.read_text()
+          old = 'libp2p = "0.54"'
+          new = 'libp2p = "0.56"'
+          if old not in text:
+              raise SystemExit(f'expected dependency declaration not found: {old}')
+          path.write_text(text.replace(old, new, 1))
+          PY
+          rm Cargo.lock
+          cargo generate-lockfile
+          cargo metadata --locked --format-version 1 >/dev/null
+          cargo fmt --all -- --check
+          cargo check --locked --workspace --all-targets
+
+      - name: Capture advisory status
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo install --locked cargo-audit --version 0.22.2
+          mkdir -p ci-evidence/dependency-refresh
+          set +e
+          cargo audit --json >ci-evidence/dependency-refresh/audit.json
+          audit_status=$?
+          set -e
+          echo "audit_exit_code=${audit_status}" | tee ci-evidence/dependency-refresh/summary.txt
+          python - <<'PY' | tee -a ci-evidence/dependency-refresh/summary.txt
+          import json
+          report=json.load(open('ci-evidence/dependency-refresh/audit.json'))
+          vulns=report.get('vulnerabilities',{}).get('list',[])
+          print(f'vulnerability_count={len(vulns)}')
+          for item in vulns:
+              adv=item.get('advisory',{})
+              pkg=item.get('package',{})
+              print(f"{adv.get('id')} {pkg.get('name')} {pkg.get('version')}")
+          PY
+          {
+            echo "source_sha=${GITHUB_SHA}"
+            echo "rustc=$(rustc --version)"
+            echo "cargo=$(cargo --version)"
+            echo "cargo_lock_sha256=$(sha256sum Cargo.lock | awk '{print $1}')"
+          } | tee ci-evidence/dependency-refresh/provenance.txt
+
+      - name: Remove temporary workflow and commit validated refresh
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm .github/workflows/_temporary_dependency_refresh.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add Cargo.toml Cargo.lock .github/workflows/_temporary_dependency_refresh.yml
+          git diff --cached --check
+          git commit -m 'security: refresh dependency graph and libp2p'
+          git push origin HEAD:security/2.4.0-dependency-remediation
+
+      - name: Upload refresh audit evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: dependency_refresh_${{ github.run_id }}
+          path: ci-evidence/dependency-refresh
+          if-no-files-found: error
+          retention-days: 30
