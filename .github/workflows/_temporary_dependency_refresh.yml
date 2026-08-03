@@ -11,7 +11,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: temporary-dependency-refresh-v6
+  group: temporary-dependency-refresh-v7
   cancel-in-progress: true
 
 jobs:
@@ -49,7 +49,7 @@ jobs:
           cargo update -p libp2p --precise 0.56.0
           cargo update -p anyhow --precise 1.0.104
           cargo update -p crossbeam-epoch --precise 0.9.20
-          cargo update -p event-listener --precise 5.4.2
+          cargo update -p event-listener@5.4.1 --precise 5.4.2
           cargo metadata --locked --format-version 1 >/dev/null
           cargo fmt --all -- --check
           cargo check --locked -p pulsedag-p2p --all-targets
