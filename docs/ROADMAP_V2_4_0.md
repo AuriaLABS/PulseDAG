@@ -13,6 +13,8 @@ It is not itself a launch authorization. Until issue #781 records an explicit `G
 - `contracts_enabled=false`;
 - Day 0 is not defined.
 
+The 30-day public-testnet clock remains not started. Smart contracts remain disabled.
+
 The 24-hour private burn-in in #789 must run only after all intended repository changes are merged and one exact replacement candidate SHA is frozen. The original candidate `d6bdb86bec42ec36514c0a41748cdabc413a5b79` was invalidated before operational start and must not be reused.
 
 ## Guardrails
