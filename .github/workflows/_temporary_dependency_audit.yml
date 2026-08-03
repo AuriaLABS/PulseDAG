@@ -1,6 +1,11 @@
 name: Temporary dependency security audit
 
 on:
+  push:
+    branches:
+      - security/2.4.0-dependency-remediation
+    paths:
+      - .github/workflows/_temporary_dependency_audit.yml
   pull_request:
     branches:
       - release/2.4.0
@@ -13,12 +18,12 @@ permissions:
   contents: read
 
 concurrency:
-  group: temporary-dependency-audit-${{ github.head_ref }}
+  group: temporary-dependency-audit-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   rustsec:
-    if: github.repository == 'AuriaLABS/PulseDAG' && github.head_ref == 'security/2.4.0-dependency-remediation'
+    if: github.repository == 'AuriaLABS/PulseDAG' && (github.head_ref == 'security/2.4.0-dependency-remediation' || github.ref_name == 'security/2.4.0-dependency-remediation')
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
