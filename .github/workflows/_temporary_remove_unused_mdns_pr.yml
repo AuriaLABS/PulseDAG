@@ -12,7 +12,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: temporary-remove-unused-mdns-pr
+  group: temporary-remove-unused-mdns-pr-final
   cancel-in-progress: true
 
 jobs:
@@ -39,6 +39,7 @@ jobs:
           python scripts/_temporary_remove_unused_mdns.py
           cargo update -p libp2p --precise 0.56.0
           cargo update -p quinn-proto@0.11.14 --precise 0.11.15
+          cargo update -p hickory-proto@0.25.2 --precise 0.26.1
           cargo metadata --locked --format-version 1 >/dev/null
           cargo fmt --all
 
@@ -50,11 +51,14 @@ jobs:
           cargo test --locked -p pulsedagd config::tests
           cargo check --locked -p pulsedag-p2p --all-targets
           cargo check --locked -p pulsedagd --all-targets
-          if cargo tree --locked --workspace --all-features --target all -i hickory-proto > /tmp/hickory-tree.txt 2>&1; then
+          cargo tree --locked --workspace --all-features --target all -i hickory-proto \
+            > /tmp/hickory-tree.txt 2>&1 || true
+          if grep -q '^hickory-proto v' /tmp/hickory-tree.txt; then
             cat /tmp/hickory-tree.txt
             echo 'hickory-proto remains reachable after removing the unused mDNS feature' >&2
             exit 1
           fi
+          grep -A2 'name = "hickory-proto"' Cargo.lock | grep 'version = "0.26.1"'
           grep -A2 'name = "quinn-proto"' Cargo.lock | grep 'version = "0.11.15"'
 
       - name: Capture remediation evidence
@@ -63,15 +67,19 @@ jobs:
           set -euo pipefail
           mkdir -p ci-evidence/dependency-final-remediation
           cargo tree --locked -p pulsedag-p2p >ci-evidence/dependency-final-remediation/p2p-tree.txt
+          cargo tree --locked --workspace --all-features --target all -i hickory-proto \
+            >ci-evidence/dependency-final-remediation/hickory-proto.txt 2>&1 || true
           cargo tree --locked --workspace --all-features --target all -i quinn-proto \
-            >ci-evidence/dependency-final-remediation/quinn-proto.txt || true
+            >ci-evidence/dependency-final-remediation/quinn-proto.txt 2>&1 || true
           {
             echo "source_sha=${GITHUB_SHA}"
             echo "rustc=$(rustc --version)"
             echo "cargo=$(cargo --version)"
             echo "cargo_lock_sha256=$(sha256sum Cargo.lock | awk '{print $1}')"
             echo "mdns_feature_present=$(grep -c '\"mdns\"' crates/pulsedag-p2p/Cargo.toml || true)"
-            echo "hickory_lock_entries=$(grep -c 'name = \"hickory-proto\"' Cargo.lock || true)"
+            echo "hickory_reachable=$(grep -c '^hickory-proto v' ci-evidence/dependency-final-remediation/hickory-proto.txt || true)"
+            grep -A2 'name = "hickory-proto"' Cargo.lock || true
+            grep -A2 'name = "quinn-proto"' Cargo.lock || true
           } >ci-evidence/dependency-final-remediation/provenance.txt
           sha256sum ci-evidence/dependency-final-remediation/* \
             >ci-evidence/dependency-final-remediation/SHA256SUMS
@@ -80,6 +88,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          rm -f .github/workflows/_temporary_dependency_audit.yml
+          rm -f .github/workflows/_temporary_mdns_diagnostic.yml
           rm -f .github/workflows/_temporary_remove_unused_mdns.yml
           rm -f .github/workflows/_temporary_remove_unused_mdns_kick.yml
           rm .github/workflows/_temporary_remove_unused_mdns_pr.yml
