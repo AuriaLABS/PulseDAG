@@ -85,19 +85,17 @@ jobs:
           RUN_ID: ${{ steps.dispatch.outputs.run_id }}
         run: |
           set -euo pipefail
-          body="$(cat <<EOF
-Exact combined v2.4.0 burn-in candidate frozen and dispatched for full validation.
-
-- Branch: \`release/2.4.0\`
-- Candidate SHA: \`${CANDIDATE_SHA}\`
-- Pre-burn-in workflow run: \`${RUN_ID}\`
-- Run URL: https://github.com/AuriaLABS/PulseDAG/actions/runs/${RUN_ID}
-- Includes merged fixes from #790 and #791.
-- Temporary dispatch workflow removed before the candidate SHA was published.
-
-Do not start or combine operational burn-in evidence until this exact run completes successfully.
-EOF
-)"
+          body="$(printf '%s\n' \
+            'Exact combined v2.4.0 burn-in candidate frozen and dispatched for full validation.' \
+            '' \
+            "- Branch: \`release/2.4.0\`" \
+            "- Candidate SHA: \`${CANDIDATE_SHA}\`" \
+            "- Pre-burn-in workflow run: \`${RUN_ID}\`" \
+            "- Run URL: https://github.com/AuriaLABS/PulseDAG/actions/runs/${RUN_ID}" \
+            '- Includes merged fixes from #790 and #791.' \
+            '- Temporary dispatch workflow removed before the candidate SHA was published.' \
+            '' \
+            'Do not start or combine operational burn-in evidence until this exact run completes successfully.')"
           jq -n --arg body "$body" '{body: $body}' > /tmp/comment.json
           curl --fail-with-body --silent --show-error --location \
             --request POST \
