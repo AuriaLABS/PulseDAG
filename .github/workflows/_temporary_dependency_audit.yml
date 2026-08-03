@@ -1,0 +1,87 @@
+name: Temporary dependency security audit
+
+on:
+  pull_request:
+    branches:
+      - release/2.4.0
+    paths:
+      - Cargo.lock
+      - crates/pulsedag-p2p/Cargo.toml
+      - .github/workflows/_temporary_dependency_audit.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: temporary-dependency-audit-${{ github.head_ref }}
+  cancel-in-progress: true
+
+jobs:
+  rustsec:
+    if: github.repository == 'AuriaLABS/PulseDAG' && github.head_ref == 'security/2.4.0-dependency-remediation'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout remediated graph
+        uses: actions/checkout@v4
+
+      - name: Install pinned Rust
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.88.0 --profile minimal --no-self-update
+          rustup default 1.88.0
+
+      - name: Install pinned cargo-audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo install cargo-audit --version 0.22.2 --locked
+
+      - name: Audit committed lockfile
+        id: audit
+        shell: bash
+        run: |
+          set -uo pipefail
+          mkdir -p ci-evidence/dependency-audit
+          cargo audit --json >ci-evidence/dependency-audit/cargo-audit.json
+          status=$?
+          echo "exit_code=${status}" >> "$GITHUB_OUTPUT"
+          python - <<'PY' | tee ci-evidence/dependency-audit/summary.txt
+          import json
+          report = json.load(open('ci-evidence/dependency-audit/cargo-audit.json'))
+          vulnerabilities = report.get('vulnerabilities', {}).get('list', [])
+          print(f'vulnerability_count={len(vulnerabilities)}')
+          for item in vulnerabilities:
+              advisory = item.get('advisory', {})
+              package = item.get('package', {})
+              print(f"{advisory.get('id')} {package.get('name')} {package.get('version')}")
+          PY
+          exit 0
+
+      - name: Record provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "source_sha=${GITHUB_SHA}"
+            echo "rustc=$(rustc --version)"
+            echo "cargo=$(cargo --version)"
+            echo "cargo_audit=$(cargo audit --version)"
+            echo "cargo_lock_sha256=$(sha256sum Cargo.lock | awk '{print $1}')"
+            echo "audit_exit_code=${{ steps.audit.outputs.exit_code }}"
+          } >ci-evidence/dependency-audit/provenance.txt
+          sha256sum ci-evidence/dependency-audit/* >ci-evidence/dependency-audit/SHA256SUMS
+
+      - name: Upload audit evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: dependency_audit_${{ github.run_id }}
+          path: ci-evidence/dependency-audit
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Enforce zero vulnerabilities
+        shell: bash
+        run: |
+          test "${{ steps.audit.outputs.exit_code }}" = "0"
