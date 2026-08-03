@@ -17,7 +17,7 @@ This methodology defines repeatable operator measurements for restart/rejoin rec
    - `GET /sync/status`
    - `GET /p2p/status`
    - `GET /blocks/latest`
-   - `GET /tx/mempool`
+   - `GET /mempool`
    - `GET /address/ping`
 3. Selected-peer stabilization and sync lag.
 4. Optional restore, replay, and recovery command timing.

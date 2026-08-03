@@ -33,14 +33,14 @@ DEFAULT_ENDPOINTS = [
     "/sync/status",
     "/p2p/status",
     "/blocks/latest",
-    "/tx/mempool",
+    "/mempool",
     "/address/ping",
 ]
 
 HOT_PATH_GROUPS: dict[str, list[str]] = {
     "sync": ["/sync/status", "/sync/lag", "/runtime/status"],
     "relay": ["/p2p/status", "/runtime/status"],
-    "mempool": ["/tx/mempool", "/runtime/status"],
+    "mempool": ["/mempool", "/runtime/status"],
     "mining": ["/pow/health", "/runtime/status"],
     "recovery": ["/status", "/sync/status", "/runtime/status"],
 }

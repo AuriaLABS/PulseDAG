@@ -112,7 +112,7 @@ curl --fail --silent http://127.0.0.1:8280/status | jq
 curl --fail --silent http://127.0.0.1:8280/sync/status | jq
 curl --fail --silent http://127.0.0.1:8280/sync/verify | jq
 curl --fail --silent http://127.0.0.1:8280/p2p/status | jq
-curl --fail --silent http://127.0.0.1:8280/tx/mempool | jq
+curl --fail --silent http://127.0.0.1:8280/mempool | jq
 curl --fail --silent http://127.0.0.1:8280/pow/health | jq
 ```
 
