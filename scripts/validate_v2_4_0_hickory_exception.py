@@ -4,9 +4,12 @@
 from __future__ import annotations
 
 import datetime as dt
+import json
+import os
 import re
 import subprocess
 import sys
+import tempfile
 import tomllib
 from pathlib import Path
 
@@ -24,12 +27,13 @@ EXPECTED_LIBP2P_FEATURES = {
     "ping",
 }
 FORBIDDEN_FEATURES = {"dns", "mdns", "quic"}
-FORBIDDEN_ACTIVE_PACKAGES = {
+FORBIDDEN_COMPILED_PACKAGES = {
     "hickory-proto",
     "hickory-resolver",
     "libp2p-dns",
     "libp2p-mdns",
 }
+COMPILE_ROOTS = ("pulsedag-p2p", "pulsedagd")
 REVIEW_DEADLINE = dt.date(2026, 8, 31)
 
 
@@ -47,28 +51,61 @@ def package_versions(lock_text: str, package: str) -> list[str]:
     return versions
 
 
-def activated_tree(package: str) -> str:
-    command = [
-        "cargo",
-        "tree",
-        "--locked",
-        "-p",
-        package,
-        "--edges",
-        "normal",
-    ]
-    result = subprocess.run(
-        command,
-        cwd=ROOT,
-        check=False,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-    )
+def package_name_from_id(package_id: object) -> str:
+    value = str(package_id)
+    match = re.search(r"#([^#@/ ]+)@[^# ]+$", value)
+    if match:
+        return match.group(1)
+    match = re.search(r"/([^/ ]+)\s+[^ ]+\s+\(", value)
+    if match:
+        return match.group(1)
+    return value
+
+
+def compile_clean_and_capture(package: str, evidence_dir: Path) -> set[str]:
+    """Compile one root in an empty target and return emitted package names."""
+
+    with tempfile.TemporaryDirectory(prefix=f"pulsedag-{package}-") as target_dir:
+        env = os.environ.copy()
+        env["CARGO_TARGET_DIR"] = target_dir
+        command = [
+            "cargo",
+            "check",
+            "--locked",
+            "-p",
+            package,
+            "--message-format=json-render-diagnostics",
+        ]
+        result = subprocess.run(
+            command,
+            cwd=ROOT,
+            env=env,
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+
+    (evidence_dir / f"{package}-compiler-messages.jsonl").write_text(result.stdout)
+    (evidence_dir / f"{package}-compiler-stderr.txt").write_text(result.stderr)
     if result.returncode != 0:
-        sys.stderr.write(result.stdout)
-        fail(f"cargo tree failed for {package}")
-    return result.stdout
+        sys.stderr.write(result.stderr)
+        fail(f"clean cargo check failed for {package}")
+
+    compiled: set[str] = set()
+    for line_number, line in enumerate(result.stdout.splitlines(), start=1):
+        try:
+            message = json.loads(line)
+        except json.JSONDecodeError:
+            fail(f"non-JSON cargo message for {package} at line {line_number}")
+        if message.get("reason") != "compiler-artifact":
+            continue
+        compiled.add(package_name_from_id(message.get("package_id", "")))
+
+    (evidence_dir / f"{package}-compiled-packages.txt").write_text(
+        "\n".join(sorted(compiled)) + "\n"
+    )
+    return compiled
 
 
 def main() -> None:
@@ -122,16 +159,13 @@ def main() -> None:
 
     evidence_dir = ROOT / "ci-evidence" / "dependency-final-remediation"
     evidence_dir.mkdir(parents=True, exist_ok=True)
-    for package in ("pulsedag-p2p", "pulsedagd"):
-        tree = activated_tree(package)
-        (evidence_dir / f"{package}-normal-tree.txt").write_text(tree)
-        active = sorted(
-            name
-            for name in FORBIDDEN_ACTIVE_PACKAGES
-            if re.search(rf"(^|[\s├└│]){re.escape(name)} v", tree, re.MULTILINE)
-        )
-        if active:
-            fail(f"{package} activates forbidden packages: {active}")
+    compiled_by_root: dict[str, set[str]] = {}
+    for package in COMPILE_ROOTS:
+        compiled = compile_clean_and_capture(package, evidence_dir)
+        compiled_by_root[package] = compiled
+        forbidden = sorted(compiled & FORBIDDEN_COMPILED_PACKAGES)
+        if forbidden:
+            fail(f"{package} actually compiles forbidden packages: {forbidden}")
 
     decision = (
         ROOT / "docs" / "security" / "V2_4_0_HICKORY_REACHABILITY_EXCEPTION.md"
@@ -157,14 +191,23 @@ def main() -> None:
                 f"libp2p_version={version}",
                 f"libp2p_features={','.join(sorted(features))}",
                 "hickory_proto_locked=0.25.2",
-                "hickory_active_in_node=false",
-                "hickory_active_in_p2p=false",
+                "hickory_compiled_in_node=false",
+                "hickory_compiled_in_p2p=false",
+                "libp2p_dns_compiled=false",
+                "libp2p_mdns_compiled=false",
                 "quinn_proto_locked=0.11.15",
+                *(
+                    f"compiled_package_count_{root}={len(compiled_by_root[root])}"
+                    for root in COMPILE_ROOTS
+                ),
                 "",
             ]
         )
     )
-    print("PASS: v2.4.0 Hickory exception remains narrow, unreachable and unexpired")
+    print(
+        "PASS: v2.4.0 Hickory exception remains narrow, "
+        "not compiled and unexpired"
+    )
 
 
 if __name__ == "__main__":
