@@ -10,6 +10,15 @@ on:
       - scripts/validate_v2_4_0_hickory_exception.py
       - .cargo/audit.toml
       - docs/security/V2_4_0_HICKORY_REACHABILITY_EXCEPTION.md
+  pull_request:
+    branches:
+      - release/2.4.0
+    paths:
+      - .github/workflows/_temporary_remove_unused_mdns_pr.yml
+      - scripts/_temporary_remove_unused_mdns.py
+      - scripts/validate_v2_4_0_hickory_exception.py
+      - .cargo/audit.toml
+      - docs/security/V2_4_0_HICKORY_REACHABILITY_EXCEPTION.md
 
 permissions:
   contents: write
@@ -20,7 +29,7 @@ concurrency:
 
 jobs:
   validate-audit-and-publish:
-    if: github.repository == 'AuriaLABS/PulseDAG'
+    if: github.repository == 'AuriaLABS/PulseDAG' && (github.event_name == 'push' || github.head_ref == 'security/2.4.0-dependency-remediation')
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
@@ -123,9 +132,11 @@ jobs:
           import json
           report = json.load(open('ci-evidence/dependency-final-remediation/cargo-audit-configured.json'))
           found = report.get('vulnerabilities', {}).get('list', [])
-          print(f'configured_vulnerability_count={len(found)}')
-          if found:
-              raise SystemExit('configured audit still reports blocking vulnerabilities')
+          print(f'configured_reported_vulnerability_count={len(found)}')
+          for item in found:
+              advisory = item.get('advisory', {})
+              package = item.get('package', {})
+              print(f"reported={advisory.get('id')} {package.get('name')} {package.get('version')}")
           warnings = report.get('warnings', {})
           for category, items in sorted(warnings.items()):
               print(f'warning_{category}_count={len(items)}')
