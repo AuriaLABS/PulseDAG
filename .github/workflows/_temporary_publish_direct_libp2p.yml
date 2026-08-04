@@ -1,0 +1,284 @@
+name: Temporary publish direct libp2p remediation
+
+on:
+  pull_request:
+    branches:
+      - release/2.4.0
+    paths:
+      - .github/workflows/_temporary_publish_direct_libp2p.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: temporary-publish-direct-libp2p
+  cancel-in-progress: true
+
+jobs:
+  apply-validate-audit-and-clean:
+    if: github.repository == 'AuriaLABS/PulseDAG' && github.head_ref == 'security/2.4.0-direct-libp2p-remediation'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Checkout isolated remediation branch
+        uses: actions/checkout@v4
+        with:
+          ref: security/2.4.0-direct-libp2p-remediation
+          fetch-depth: 0
+
+      - name: Install pinned Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.88.0
+          components: rustfmt
+
+      - name: Apply validated direct-subcrate migration
+        shell: bash
+        run: |
+          set -euo pipefail
+          sed -n "/python - <<'PY'/,/^          PY$/p" \
+            .github/workflows/_temporary_direct_libp2p_probe.yml \
+            | sed '1d;$d;s/^          //' > /tmp/apply_direct_libp2p.py
+          test -s /tmp/apply_direct_libp2p.py
+          python /tmp/apply_direct_libp2p.py
+
+      - name: Make discovery capabilities fail closed
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          def replace_once(text: str, old: str, new: str, label: str) -> str:
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"{label}: expected one match, found {count}")
+              return text.replace(old, new, 1)
+
+          config = Path('apps/pulsedagd/src/config.rs')
+          text = config.read_text()
+          mdns_defaults = text.count('p2p_mdns: true,')
+          kad_defaults = text.count('p2p_kademlia: true,')
+          if mdns_defaults == 0 or kad_defaults == 0:
+              raise SystemExit(
+                  f'expected enabled discovery defaults before hardening; mdns={mdns_defaults} kad={kad_defaults}'
+              )
+          text = text.replace('p2p_mdns: true,', 'p2p_mdns: false,')
+          text = text.replace('p2p_kademlia: true,', 'p2p_kademlia: false,')
+          text = replace_once(
+              text,
+              '        cfg.apply_experimental_guards()?;\n        cfg.validate_api_exposure()?;\n',
+              '        cfg.apply_experimental_guards()?;\n'
+              '        cfg.validate_p2p_discovery_capabilities()?;\n'
+              '        cfg.validate_api_exposure()?;\n',
+              'from_env validation sequence',
+          )
+          text = replace_once(
+              text,
+              '        self.apply_experimental_guards()?;\n        self.validate_api_exposure()?;\n',
+              '        self.apply_experimental_guards()?;\n'
+              '        self.validate_p2p_discovery_capabilities()?;\n'
+              '        self.validate_api_exposure()?;\n',
+              'CLI validation sequence',
+          )
+          method_anchor = '    fn validate_api_exposure(&self) -> Result<()> {\n'
+          method = '''    fn validate_p2p_discovery_capabilities(&self) -> Result<()> {
+              if self.p2p_mdns {
+                  bail!("invalid P2P discovery config: PULSEDAG_P2P_MDNS=true is unsupported in v2.4.0 because PulseBehaviour does not implement mDNS; configure explicit bootnodes");
+              }
+              if self.p2p_kademlia {
+                  bail!("invalid P2P discovery config: PULSEDAG_P2P_KADEMLIA=true is unsupported in v2.4.0 because PulseBehaviour does not implement Kademlia; configure explicit bootnodes");
+              }
+              Ok(())
+          }
+
+          '''.replace('          ', '')
+          text = replace_once(text, method_anchor, method + method_anchor, 'discovery validation method')
+          text = replace_once(
+              text,
+              '            "PULSEDAG_P2P_MDNS",\n',
+              '            "PULSEDAG_P2P_MDNS",\n            "PULSEDAG_P2P_KADEMLIA",\n',
+              'test environment cleanup',
+          )
+          test = r'''
+
+              #[test]
+              fn unsupported_discovery_capabilities_fail_closed() {
+                  let _guard = env_guard();
+                  clear_test_env();
+                  unsafe {
+                      std::env::set_var("PULSEDAG_CONFIG_PROFILE", "operator");
+                      std::env::set_var("PULSEDAG_P2P_MDNS", "true");
+                  }
+                  let mdns = Config::from_env().expect_err("mDNS must fail closed");
+                  assert!(mdns.to_string().contains("PULSEDAG_P2P_MDNS=true is unsupported"));
+
+                  clear_test_env();
+                  unsafe {
+                      std::env::set_var("PULSEDAG_CONFIG_PROFILE", "operator");
+                      std::env::set_var("PULSEDAG_P2P_KADEMLIA", "true");
+                  }
+                  let kademlia = Config::from_env().expect_err("Kademlia must fail closed");
+                  assert!(
+                      kademlia
+                          .to_string()
+                          .contains("PULSEDAG_P2P_KADEMLIA=true is unsupported")
+                  );
+                  clear_test_env();
+              }
+          '''
+          head, separator, tail = text.rpartition('\n}')
+          if not separator or tail.strip():
+              raise SystemExit('could not locate config test module closure')
+          config.write_text(head + test + '\n}\n')
+
+          p2p = Path('crates/pulsedag-p2p/src/lib.rs')
+          text = p2p.read_text()
+          text = replace_once(
+              text,
+              '        P2pMode::Libp2p(cfg) => {\n            let (handle, inbound_rx) = Libp2pHandle::new(cfg)?;\n',
+              '        P2pMode::Libp2p(cfg) => {\n'
+              '            if cfg.enable_mdns || cfg.enable_kademlia {\n'
+              '                return Err(PulseError::Internal(\n'
+              '                    "mDNS and Kademlia flags are unsupported until PulseBehaviour implements those discovery behaviours".into(),\n'
+              '                ));\n'
+              '            }\n'
+              '            let (handle, inbound_rx) = Libp2pHandle::new(cfg)?;\n',
+              'library discovery guard',
+          )
+          text = text.replace('enable_mdns: true,', 'enable_mdns: false,')
+          text = text.replace('enable_kademlia: true,', 'enable_kademlia: false,')
+          library_test = r'''
+
+          #[cfg(test)]
+          mod unsupported_discovery_capability_tests {
+              use super::*;
+
+              fn config(enable_mdns: bool, enable_kademlia: bool) -> Libp2pConfig {
+                  Libp2pConfig {
+                      chain_id: "unsupported-discovery-test".to_string(),
+                      listen_addr: "/ip4/127.0.0.1/tcp/0".to_string(),
+                      bootstrap: Vec::new(),
+                      enable_mdns,
+                      enable_kademlia,
+                      connection_slot_budget: 8,
+                      sync_selection_stickiness_secs: 30,
+                      runtime: Libp2pRuntimeMode::Real,
+                      identity_path: None,
+                  }
+              }
+
+              #[test]
+              fn build_rejects_unimplemented_discovery_flags() {
+                  for cfg in [config(true, false), config(false, true)] {
+                      let error = build_p2p_stack(P2pMode::Libp2p(cfg))
+                          .expect_err("unimplemented discovery capability must fail closed");
+                      assert!(error.to_string().contains("unsupported"));
+                  }
+              }
+          }
+          '''
+          p2p.write_text(text.rstrip() + library_test + '\n')
+
+          for root in [Path('configs')]:
+              if not root.exists():
+                  continue
+              for path in root.rglob('*'):
+                  if not path.is_file():
+                      continue
+                  try:
+                      value = path.read_text()
+                  except UnicodeDecodeError:
+                      continue
+                  updated = value.replace('PULSEDAG_P2P_MDNS=true', 'PULSEDAG_P2P_MDNS=false')
+                  updated = updated.replace('PULSEDAG_P2P_KADEMLIA=true', 'PULSEDAG_P2P_KADEMLIA=false')
+                  if updated != value:
+                      path.write_text(updated)
+          PY
+
+          cargo update --workspace
+          cargo update -p quinn-proto@0.11.14 --precise 0.11.15
+          cargo fmt --all
+          cargo metadata --locked --format-version 1 >/dev/null
+
+      - name: Validate code, configuration and real swarm
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo check --locked -p pulsedag-p2p --all-targets
+          cargo check --locked -p pulsedagd --all-targets
+          cargo test --locked -p pulsedag-p2p
+          cargo test --locked -p pulsedagd config::tests
+          timeout --signal=TERM --kill-after=30s 180s \
+            cargo test --locked -p pulsedag-p2p \
+              real_runtime_mode_initializes_without_loopback_labeling -- \
+              --nocapture --test-threads=1
+
+      - name: Verify remediated dependency graph
+        shell: bash
+        run: |
+          set -euo pipefail
+          for package in libp2p libp2p-mdns libp2p-dns hickory-proto hickory-resolver; do
+            if grep -q "name = \"${package}\"" Cargo.lock; then
+              echo "${package} remains in Cargo.lock" >&2
+              exit 1
+            fi
+          done
+          grep -A3 'name = "quinn-proto"' Cargo.lock | grep 'version = "0.11.15"'
+          ! grep -R --line-number --fixed-strings 'PULSEDAG_P2P_MDNS=true' configs
+          ! grep -R --line-number --fixed-strings 'PULSEDAG_P2P_KADEMLIA=true' configs
+          cargo tree --locked -p pulsedag-p2p > /tmp/pulsedag-p2p-tree.txt
+
+      - name: Install pinned cargo-audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo install cargo-audit --version 0.22.2 --locked
+
+      - name: Enforce zero RustSec vulnerabilities
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ci-evidence/direct-libp2p-remediation
+          cargo audit --json \
+            | tee ci-evidence/direct-libp2p-remediation/cargo-audit.json
+          cp /tmp/pulsedag-p2p-tree.txt ci-evidence/direct-libp2p-remediation/pulsedag-p2p-tree.txt
+          {
+            echo "source_sha=${GITHUB_SHA}"
+            echo "rustc=$(rustc --version)"
+            echo "cargo=$(cargo --version)"
+            echo "cargo_audit=$(cargo audit --version)"
+            echo "advisory_db_sha=$(git -C \"${HOME}/.cargo/advisory-db\" rev-parse HEAD 2>/dev/null || true)"
+            echo "cargo_lock_sha256=$(sha256sum Cargo.lock | awk '{print $1}')"
+          } > ci-evidence/direct-libp2p-remediation/provenance.txt
+          sha256sum ci-evidence/direct-libp2p-remediation/* \
+            > ci-evidence/direct-libp2p-remediation/SHA256SUMS
+
+      - name: Publish permanent code only
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f .github/workflows/_temporary_dependency_audit.yml
+          rm -f .github/workflows/_temporary_mdns_diagnostic.yml
+          rm -f .github/workflows/_temporary_remove_unused_mdns.yml
+          rm -f .github/workflows/_temporary_remove_unused_mdns_kick.yml
+          rm -f .github/workflows/_temporary_remove_unused_mdns_pr.yml
+          rm -f .github/workflows/_temporary_direct_libp2p_probe.yml
+          rm .github/workflows/_temporary_publish_direct_libp2p.yml
+          rm -f scripts/_temporary_remove_unused_mdns.py
+          rm -rf ci-evidence/direct-libp2p-remediation
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git diff --cached --check
+          git commit -m 'security: replace libp2p umbrella with audited subcrates'
+          git push origin HEAD:security/2.4.0-direct-libp2p-remediation
+
+      - name: Upload remediation evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: direct_libp2p_remediation_${{ github.run_id }}
+          path: ci-evidence/direct-libp2p-remediation
+          if-no-files-found: warn
+          retention-days: 90
