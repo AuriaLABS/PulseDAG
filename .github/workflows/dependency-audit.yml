@@ -1,0 +1,143 @@
+name: Dependency security audit
+
+on:
+  pull_request:
+    branches:
+      - main
+      - release/2.4.0
+  push:
+    branches:
+      - main
+      - release/2.4.0
+    paths:
+      - Cargo.toml
+      - Cargo.lock
+      - apps/**/Cargo.toml
+      - crates/**/Cargo.toml
+      - .cargo/audit.toml
+      - scripts/validate_v2_4_0_hickory_exception.py
+      - docs/security/V2_4_0_HICKORY_REACHABILITY_EXCEPTION.md
+      - .github/workflows/dependency-audit.yml
+      - SECURITY.md
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dependency-audit-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rustsec:
+    name: RustSec and reachability gate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    steps:
+      - name: Checkout candidate
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install pinned Rust toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.88.0 --profile minimal --no-self-update
+          rustup default 1.88.0
+          rustc --version
+          cargo --version
+
+      - name: Validate bounded Hickory exception
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/validate_v2_4_0_hickory_exception.py
+          mkdir -p ci-evidence/dependency-audit
+          for evidence in ci-evidence/dependency-final-remediation/*; do
+            cp "${evidence}" \
+              "ci-evidence/dependency-audit/reachability-$(basename "${evidence}")"
+          done
+
+      - name: Install pinned cargo-audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo install cargo-audit --version 0.22.2 --locked
+          cargo audit --version
+
+      - name: Prove raw advisory scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ci-evidence/dependency-audit
+          mv .cargo/audit.toml /tmp/pulsedag-audit.toml
+          trap 'mv /tmp/pulsedag-audit.toml .cargo/audit.toml' EXIT
+          set +e
+          cargo audit --json >ci-evidence/dependency-audit/cargo-audit-raw.json
+          raw_status=$?
+          set -e
+          mv /tmp/pulsedag-audit.toml .cargo/audit.toml
+          trap - EXIT
+          test "${raw_status}" != "0"
+          python - <<'PY' | tee ci-evidence/dependency-audit/raw-summary.txt
+          import json
+
+          report = json.load(open('ci-evidence/dependency-audit/cargo-audit-raw.json'))
+          vulnerabilities = report.get('vulnerabilities', {}).get('list', [])
+          observed = {
+              (
+                  item.get('advisory', {}).get('id'),
+                  item.get('package', {}).get('name'),
+                  item.get('package', {}).get('version'),
+              )
+              for item in vulnerabilities
+          }
+          expected = {
+              ('RUSTSEC-2026-0118', 'hickory-proto', '0.25.2'),
+              ('RUSTSEC-2026-0119', 'hickory-proto', '0.25.2'),
+          }
+          print(f'raw_vulnerability_count={len(vulnerabilities)}')
+          for advisory, package, version in sorted(observed):
+              print(f'{advisory} {package} {version}')
+          if observed != expected:
+              raise SystemExit(f'unexpected raw vulnerability set: {sorted(observed)}')
+          PY
+
+      - name: Enforce configured audit policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo audit --json \
+            | tee ci-evidence/dependency-audit/cargo-audit-configured.json
+
+      - name: Record audit provenance
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ci-evidence/dependency-audit
+          {
+            echo "source_sha=${GITHUB_SHA}"
+            echo "rustc=$(rustc --version 2>/dev/null || true)"
+            echo "cargo=$(cargo --version 2>/dev/null || true)"
+            echo "cargo_audit=$(cargo audit --version 2>/dev/null || true)"
+            echo "advisory_db_sha=$(git -C \"${HOME}/.cargo/advisory-db\" rev-parse HEAD 2>/dev/null || true)"
+            echo "cargo_lock_sha256=$(sha256sum Cargo.lock | awk '{print $1}')"
+            echo "audit_config_sha256=$(sha256sum .cargo/audit.toml | awk '{print $1}')"
+            echo "exception_record_sha256=$(sha256sum docs/security/V2_4_0_HICKORY_REACHABILITY_EXCEPTION.md | awk '{print $1}')"
+          } >ci-evidence/dependency-audit/provenance.txt
+          find ci-evidence/dependency-audit -maxdepth 1 -type f ! -name SHA256SUMS \
+            -print0 | sort -z | xargs -0 sha256sum \
+            >ci-evidence/dependency-audit/SHA256SUMS
+
+      - name: Upload dependency-audit evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dependency_audit_${{ github.run_id }}
+          path: ci-evidence/dependency-audit
+          if-no-files-found: error
+          retention-days: 90

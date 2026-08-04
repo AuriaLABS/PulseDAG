@@ -136,7 +136,7 @@ impl Config {
                 p2p_mode: "memory".into(),
                 p2p_listen: "/ip4/0.0.0.0/tcp/30333".into(),
                 p2p_bootstrap: Vec::new(),
-                p2p_mdns: true,
+                p2p_mdns: false,
                 p2p_kademlia: true,
                 p2p_identity_key: None,
                 p2p_connection_slot_budget: 8,
@@ -179,7 +179,7 @@ impl Config {
                 p2p_mode: "libp2p-dev".into(),
                 p2p_listen: "/ip4/127.0.0.1/tcp/31333".into(),
                 p2p_bootstrap: Vec::new(),
-                p2p_mdns: true,
+                p2p_mdns: false,
                 p2p_kademlia: true,
                 p2p_identity_key: None,
                 p2p_connection_slot_budget: 12,
@@ -265,7 +265,7 @@ impl Config {
                 p2p_mode: "libp2p-real".into(),
                 p2p_listen: "/ip4/0.0.0.0/tcp/30333".into(),
                 p2p_bootstrap: Vec::new(),
-                p2p_mdns: true,
+                p2p_mdns: false,
                 p2p_kademlia: true,
                 p2p_identity_key: None,
                 p2p_connection_slot_budget: 24,
@@ -778,6 +778,11 @@ impl Config {
     }
 
     fn validate_security_hardening(&self) -> Result<()> {
+        if self.p2p_mdns {
+            bail!(
+                "invalid config: PULSEDAG_P2P_MDNS=true is unsupported in v2.4.0; use explicit bootnodes and Kademlia discovery"
+            );
+        }
         if self.chain_id.trim().is_empty() {
             bail!(
                 "invalid config: PULSEDAG_CHAIN_ID is required and cannot be empty; set a stable chain id (for example: pulsedag-testnet)"
@@ -1231,9 +1236,22 @@ mod tests {
         assert!(cfg.p2p_enabled);
         assert_eq!(cfg.p2p_mode, "libp2p-real");
         assert_eq!(cfg.p2p_connection_slot_budget, 24);
+        assert!(!cfg.p2p_mdns);
         assert!(cfg.auto_prune_enabled);
         assert_eq!(cfg.prune_keep_recent_blocks, 500);
         assert!(!cfg.admin_enabled);
+    }
+
+    #[test]
+    fn rejects_mdns_enablement_until_a_real_behaviour_is_implemented() {
+        let _guard = env_guard();
+        clear_test_env();
+        std::env::set_var("PULSEDAG_CONFIG_PROFILE", "testnet");
+        std::env::set_var("PULSEDAG_P2P_MDNS", "true");
+        let error = Config::from_env().expect_err("mDNS must fail closed");
+        assert!(error
+            .to_string()
+            .contains("PULSEDAG_P2P_MDNS=true is unsupported"));
     }
 
     #[test]
