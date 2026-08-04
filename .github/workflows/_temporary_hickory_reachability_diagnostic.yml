@@ -1,0 +1,138 @@
+name: Temporary Hickory reachability diagnostic
+
+on:
+  push:
+    branches:
+      - security/2.4.0-dependency-remediation
+    paths:
+      - .github/workflows/_temporary_hickory_reachability_diagnostic.yml
+  pull_request:
+    branches:
+      - release/2.4.0
+    paths:
+      - .github/workflows/_temporary_hickory_reachability_diagnostic.yml
+      - crates/**/Cargo.toml
+      - apps/**/Cargo.toml
+      - Cargo.toml
+      - Cargo.lock
+
+permissions:
+  contents: read
+
+concurrency:
+  group: temporary-hickory-reachability-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  diagnose:
+    if: github.repository == 'AuriaLABS/PulseDAG'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout candidate
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install pinned Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.88.0
+
+      - name: Capture manifests and feature trees
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ci-evidence/hickory-reachability
+          {
+            echo "event=${GITHUB_EVENT_NAME}"
+            echo "source_sha=${GITHUB_SHA}"
+            echo "head_ref=${GITHUB_HEAD_REF:-}"
+            echo "base_ref=${GITHUB_BASE_REF:-}"
+            echo "merge_base=$(git merge-base HEAD origin/release/2.4.0 2>/dev/null || true)"
+            grep -RIn --include='Cargo.toml' 'libp2p' . || true
+          } >ci-evidence/hickory-reachability/context.txt
+
+          cargo metadata --locked --format-version 1 \
+            >ci-evidence/hickory-reachability/metadata.json
+          cargo tree --locked -p pulsedag-p2p --edges normal --no-dedupe \
+            >ci-evidence/hickory-reachability/p2p-normal-tree.txt
+          cargo tree --locked -p pulsedag-p2p --edges features --no-dedupe \
+            >ci-evidence/hickory-reachability/p2p-feature-tree.txt
+          cargo tree --locked -p pulsedagd --edges normal --no-dedupe \
+            >ci-evidence/hickory-reachability/daemon-normal-tree.txt
+          cargo tree --locked -p pulsedagd --edges features --no-dedupe \
+            >ci-evidence/hickory-reachability/daemon-feature-tree.txt
+
+          for package in libp2p-dns libp2p-mdns hickory-resolver hickory-proto; do
+            for root in pulsedag-p2p pulsedagd; do
+              set +e
+              cargo tree --locked -p "${root}" --edges features --invert "${package}" \
+                >"ci-evidence/hickory-reachability/${root}-${package}-inverse-features.txt" 2>&1
+              status=$?
+              set -e
+              echo "exit_code=${status}" \
+                >>"ci-evidence/hickory-reachability/${root}-${package}-inverse-features.txt"
+            done
+          done
+
+      - name: Prove compiled crate set from a clean target
+        shell: bash
+        run: |
+          set -euo pipefail
+          export CARGO_TARGET_DIR="${RUNNER_TEMP}/pulsedag-hickory-reachability-target"
+          rm -rf "${CARGO_TARGET_DIR}"
+          cargo check --locked -p pulsedag-p2p -vv \
+            >ci-evidence/hickory-reachability/p2p-check-verbose.txt 2>&1
+          cargo check --locked -p pulsedagd -vv \
+            >ci-evidence/hickory-reachability/daemon-check-verbose.txt 2>&1
+
+          python - <<'PY' | tee ci-evidence/hickory-reachability/compiled-summary.txt
+          from pathlib import Path
+          import re
+
+          forbidden = {
+              'hickory_proto': 'hickory-proto',
+              'hickory_resolver': 'hickory-resolver',
+              'libp2p_dns': 'libp2p-dns',
+              'libp2p_mdns': 'libp2p-mdns',
+          }
+          observed = set()
+          for filename in ('p2p-check-verbose.txt', 'daemon-check-verbose.txt'):
+              text = Path('ci-evidence/hickory-reachability', filename).read_text()
+              for crate_name, package_name in forbidden.items():
+                  if re.search(rf'--crate-name[ =]+{re.escape(crate_name)}(?:\s|$)', text):
+                      observed.add(package_name)
+          print('compiled_forbidden=' + ','.join(sorted(observed)))
+          if observed:
+              raise SystemExit(f'forbidden crates were actually compiled: {sorted(observed)}')
+          PY
+
+      - name: Summarize feature activation
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY' | tee ci-evidence/hickory-reachability/feature-summary.txt
+          from pathlib import Path
+          import re
+
+          names = ('libp2p-dns', 'libp2p-mdns', 'hickory-resolver', 'hickory-proto')
+          for filename in ('p2p-feature-tree.txt', 'daemon-feature-tree.txt'):
+              path = Path('ci-evidence/hickory-reachability', filename)
+              text = path.read_text() if path.exists() else ''
+              print(filename)
+              for name in names:
+                  print(f'  {name}_listed={bool(re.search(rf"(^|[\\s├└│]){re.escape(name)} v", text, re.MULTILINE))}')
+          PY
+          sha256sum ci-evidence/hickory-reachability/* \
+            >ci-evidence/hickory-reachability/SHA256SUMS
+
+      - name: Upload diagnostic evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hickory_reachability_${{ github.event_name }}_${{ github.run_id }}
+          path: ci-evidence/hickory-reachability
+          if-no-files-found: error
+          retention-days: 30
