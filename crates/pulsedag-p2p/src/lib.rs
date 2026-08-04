@@ -1785,7 +1785,7 @@ impl Libp2pHandle {
         refresh_connected_peers_from_health(&mut state);
         state.topics = topics.clone();
         state.subscriptions_active = topics.len();
-        state.mdns = cfg.enable_mdns;
+        state.mdns = false;
         state.kademlia = cfg.enable_kademlia;
         state.runtime_started = true;
         let inner = Arc::new(Mutex::new(state));
