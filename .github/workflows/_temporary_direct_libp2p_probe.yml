@@ -79,6 +79,17 @@ jobs:
               'if let Protocol::P2p(id) = protocol {',
               1,
           )
+          behaviour_anchor = '#[derive(NetworkBehaviour)]\nstruct PulseBehaviour {'
+          behaviour_replacement = (
+              '#[derive(NetworkBehaviour)]\n'
+              '#[behaviour(prelude = "libp2p_swarm::derive_prelude")]\n'
+              'struct PulseBehaviour {'
+          )
+          if text.count(behaviour_anchor) != 1:
+              raise SystemExit(
+                  f'expected one PulseBehaviour derive anchor, found {text.count(behaviour_anchor)}'
+              )
+          text = text.replace(behaviour_anchor, behaviour_replacement, 1)
 
           pattern = re.compile(
               r'    let mut swarm = match SwarmBuilder::with_existing_identity\(local_key\).*?\n    };\n\n    let listen_addr',
