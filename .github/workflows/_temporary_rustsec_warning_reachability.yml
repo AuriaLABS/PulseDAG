@@ -7,12 +7,18 @@ on:
     paths:
       - scripts/analyze_v2_4_0_rustsec_warnings.py
       - .github/workflows/_temporary_rustsec_warning_reachability.yml
+  pull_request:
+    branches:
+      - release/2.4.0
+    paths:
+      - scripts/analyze_v2_4_0_rustsec_warnings.py
+      - .github/workflows/_temporary_rustsec_warning_reachability.yml
 
 permissions:
   contents: read
 
 concurrency:
-  group: temporary-rustsec-warning-reachability-${{ github.ref }}
+  group: temporary-rustsec-warning-reachability-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
