@@ -1,0 +1,148 @@
+name: Temporary direct libp2p subcrate probe
+
+on:
+  pull_request:
+    branches:
+      - release/2.4.0
+    paths:
+      - .github/workflows/_temporary_direct_libp2p_probe.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: temporary-direct-libp2p-probe-isolated
+  cancel-in-progress: true
+
+jobs:
+  compile-and-test:
+    if: github.repository == 'AuriaLABS/PulseDAG' && github.head_ref == 'security/2.4.0-direct-libp2p-remediation'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout isolated remediation branch
+        uses: actions/checkout@v4
+        with:
+          ref: security/2.4.0-direct-libp2p-remediation
+
+      - name: Install pinned Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.88.0
+          components: rustfmt
+
+      - name: Replace umbrella crate with used subcrates
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          import re
+
+          manifest = Path('crates/pulsedag-p2p/Cargo.toml')
+          text = manifest.read_text()
+          old = 'libp2p = { version = "0.56", default-features = false, features = ["tokio", "gossipsub", "identify", "kad", "mdns", "macros", "tcp", "noise", "yamux", "ping"] }'
+          new = '''futures = "0.3"
+          libp2p-core = "0.43.2"
+          libp2p-identity = { version = "0.2.13", features = ["ed25519", "peerid", "rand"] }
+          libp2p-swarm = { version = "0.47.1", features = ["tokio", "macros"] }
+          libp2p-gossipsub = "0.49.5"
+          libp2p-ping = "0.47.0"
+          libp2p-tcp = { version = "0.44.1", features = ["tokio"] }
+          libp2p-noise = "0.46.1"
+          libp2p-yamux = "0.47.0"'''.replace('          ', '')
+          if text.count(old) != 1:
+              raise SystemExit(f'expected one umbrella dependency, found {text.count(old)}')
+          manifest.write_text(text.replace(old, new, 1))
+
+          source = Path('crates/pulsedag-p2p/src/lib.rs')
+          text = source.read_text()
+          old_imports = '''use libp2p::futures::StreamExt;
+          use libp2p::gossipsub::{self, MessageAuthenticity, ValidationMode};
+          use libp2p::ping;
+          use libp2p::swarm::{NetworkBehaviour, SwarmEvent};
+          use libp2p::{identity, Multiaddr, PeerId, SwarmBuilder};'''.replace('          ', '')
+          new_imports = '''use futures::StreamExt;
+          use libp2p_core::{multiaddr::Protocol, transport::upgrade, Multiaddr, Transport};
+          use libp2p_gossipsub::{self as gossipsub, MessageAuthenticity, ValidationMode};
+          use libp2p_identity::{self as identity, PeerId};
+          use libp2p_noise as noise;
+          use libp2p_ping as ping;
+          use libp2p_swarm::{Config as SwarmConfig, NetworkBehaviour, Swarm, SwarmEvent};
+          use libp2p_tcp as tcp;
+          use libp2p_yamux as yamux;'''.replace('          ', '')
+          if text.count(old_imports) != 1:
+              raise SystemExit(f'expected one libp2p import block, found {text.count(old_imports)}')
+          text = text.replace(old_imports, new_imports, 1)
+          text = text.replace(
+              'if let libp2p::multiaddr::Protocol::P2p(id) = protocol {',
+              'if let Protocol::P2p(id) = protocol {',
+              1,
+          )
+
+          pattern = re.compile(
+              r'    let mut swarm = match SwarmBuilder::with_existing_identity\(local_key\).*?\n    };\n\n    let listen_addr',
+              re.DOTALL,
+          )
+          replacement = '''    let noise = match noise::Config::new(&local_key) {
+              Ok(config) => config,
+              Err(e) => {
+                  note_swarm_event(&inner, format!("swarm-init-failed:transport:{e}"));
+                  return;
+              }
+          };
+          let transport = tcp::tokio::Transport::new(tcp::Config::default())
+              .upgrade(upgrade::Version::V1Lazy)
+              .authenticate(noise)
+              .multiplex(yamux::Config::default())
+              .boxed();
+          let behaviour = PulseBehaviour {
+              gossipsub: gossip,
+              ping,
+          };
+          let mut swarm = Swarm::new(
+              transport,
+              behaviour,
+              local_key.public().to_peer_id(),
+              SwarmConfig::with_tokio_executor()
+                  .with_idle_connection_timeout(StdDuration::from_secs(300)),
+          );
+
+          let listen_addr'''.replace('          ', '')
+          text, count = pattern.subn(replacement, text, count=1)
+          if count != 1:
+              raise SystemExit(f'expected one SwarmBuilder block, found {count}')
+          source.write_text(text)
+          PY
+
+          cargo update --workspace
+          cargo update -p quinn-proto@0.11.14 --precise 0.11.15
+          cargo fmt --all
+          cargo metadata --locked --format-version 1 >/dev/null
+
+      - name: Compile direct-subcrate transport
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo check --locked -p pulsedag-p2p --all-targets
+          cargo check --locked -p pulsedagd --all-targets
+
+      - name: Run P2P and configuration tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked -p pulsedag-p2p
+          cargo test --locked -p pulsedagd config::tests
+
+      - name: Verify vulnerable umbrella graph is absent
+        shell: bash
+        run: |
+          set -euo pipefail
+          for package in libp2p libp2p-mdns libp2p-dns hickory-proto hickory-resolver; do
+            if grep -q "name = \"${package}\"" Cargo.lock; then
+              echo "${package} remains in Cargo.lock" >&2
+              exit 1
+            fi
+          done
+          grep -A3 'name = "quinn-proto"' Cargo.lock | grep 'version = "0.11.15"'
+          cargo tree --locked -p pulsedag-p2p
