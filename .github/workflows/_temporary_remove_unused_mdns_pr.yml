@@ -1,22 +1,170 @@
-name: Temporary remove unused mDNS PR
+name: Temporary finalize dependency remediation
 
 on:
-  pull_request:
+  push:
     branches:
-      - release/2.4.0
+      - security/2.4.0-dependency-remediation
     paths:
       - .github/workflows/_temporary_remove_unused_mdns_pr.yml
+      - scripts/_temporary_remove_unused_mdns.py
+      - scripts/validate_v2_4_0_hickory_exception.py
+      - .cargo/audit.toml
+      - docs/security/V2_4_0_HICKORY_REACHABILITY_EXCEPTION.md
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
-  group: temporary-remove-unused-mdns-pr-prune-optional-lock-20260804
+  group: temporary-finalize-dependency-remediation-20260804
   cancel-in-progress: true
 
 jobs:
-  disabled-manual-lock-pruning:
-    if: ${{ false }}
+  validate-audit-and-publish:
+    if: github.repository == 'AuriaLABS/PulseDAG'
     runs-on: ubuntu-24.04
+    timeout-minutes: 90
     steps:
-      - run: echo 'Manual Cargo.lock and checksum editing is disabled; Cargo must resolve the graph.'
+      - name: Checkout remediation branch
+        uses: actions/checkout@v4
+        with:
+          ref: security/2.4.0-dependency-remediation
+          fetch-depth: 0
+
+      - name: Install pinned Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.88.0
+          components: rustfmt
+
+      - name: Apply supported remediation
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/_temporary_remove_unused_mdns.py
+          cargo update -p quinn-proto@0.11.14 --precise 0.11.15
+          cargo metadata --locked --format-version 1 >/dev/null
+          cargo fmt --all
+          git diff --check
+
+      - name: Create exact clean candidate commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f .github/workflows/_temporary_dependency_audit.yml
+          rm -f .github/workflows/_temporary_mdns_diagnostic.yml
+          rm -f .github/workflows/_temporary_remove_unused_mdns.yml
+          rm -f .github/workflows/_temporary_remove_unused_mdns_kick.yml
+          rm .github/workflows/_temporary_remove_unused_mdns_pr.yml
+          rm scripts/_temporary_remove_unused_mdns.py
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git diff --cached --check
+          git commit -m 'security: complete supported dependency remediation'
+          echo "candidate_sha=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+
+      - name: Validate exact candidate contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${candidate_sha}"
+          python scripts/validate_v2_4_0_hickory_exception.py
+          cargo test --locked -p pulsedag-p2p
+          cargo test --locked -p pulsedagd config::tests
+          cargo check --locked -p pulsedag-p2p --all-targets
+          cargo check --locked -p pulsedagd --all-targets
+          cargo fmt --all -- --check
+
+      - name: Install pinned cargo-audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo install cargo-audit --version 0.22.2 --locked
+
+      - name: Prove raw advisory scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ci-evidence/dependency-final-remediation
+          mv .cargo/audit.toml /tmp/pulsedag-audit.toml
+          set +e
+          cargo audit --json >ci-evidence/dependency-final-remediation/cargo-audit-raw.json
+          raw_status=$?
+          set -e
+          mv /tmp/pulsedag-audit.toml .cargo/audit.toml
+          test "${raw_status}" != "0"
+          python - <<'PY' | tee ci-evidence/dependency-final-remediation/raw-audit-summary.txt
+          import json
+          report = json.load(open('ci-evidence/dependency-final-remediation/cargo-audit-raw.json'))
+          found = report.get('vulnerabilities', {}).get('list', [])
+          observed = {
+              (item.get('advisory', {}).get('id'), item.get('package', {}).get('name'), item.get('package', {}).get('version'))
+              for item in found
+          }
+          expected = {
+              ('RUSTSEC-2026-0118', 'hickory-proto', '0.25.2'),
+              ('RUSTSEC-2026-0119', 'hickory-proto', '0.25.2'),
+          }
+          print(f'raw_vulnerability_count={len(found)}')
+          for item in sorted(observed):
+              print(' '.join(str(value) for value in item))
+          if observed != expected:
+              raise SystemExit(f'unexpected raw advisory set: {sorted(observed)}')
+          PY
+
+      - name: Enforce configured RustSec gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo audit --json \
+            >ci-evidence/dependency-final-remediation/cargo-audit-configured.json
+          python - <<'PY' | tee ci-evidence/dependency-final-remediation/configured-audit-summary.txt
+          import json
+          report = json.load(open('ci-evidence/dependency-final-remediation/cargo-audit-configured.json'))
+          found = report.get('vulnerabilities', {}).get('list', [])
+          print(f'configured_vulnerability_count={len(found)}')
+          if found:
+              raise SystemExit('configured audit still reports blocking vulnerabilities')
+          warnings = report.get('warnings', {})
+          for category, items in sorted(warnings.items()):
+              print(f'warning_{category}_count={len(items)}')
+          PY
+
+      - name: Record exact-candidate provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${candidate_sha}"
+          git diff --exit-code
+          git diff --cached --exit-code
+          {
+            echo "source_sha=$(git rev-parse HEAD)"
+            echo "expected_source_sha=${candidate_sha}"
+            echo "rustc=$(rustc --version)"
+            echo "cargo=$(cargo --version)"
+            echo "cargo_audit=$(cargo audit --version)"
+            echo "cargo_lock_sha256=$(sha256sum Cargo.lock | awk '{print $1}')"
+            echo "audit_config_sha256=$(sha256sum .cargo/audit.toml | awk '{print $1}')"
+            echo "exception_record_sha256=$(sha256sum docs/security/V2_4_0_HICKORY_REACHABILITY_EXCEPTION.md | awk '{print $1}')"
+            grep -A3 'name = "libp2p"' Cargo.lock || true
+            grep -A3 'name = "hickory-proto"' Cargo.lock || true
+            grep -A3 'name = "quinn-proto"' Cargo.lock || true
+          } >ci-evidence/dependency-final-remediation/provenance.txt
+          sha256sum ci-evidence/dependency-final-remediation/* \
+            >ci-evidence/dependency-final-remediation/SHA256SUMS
+
+      - name: Publish exact clean candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${candidate_sha}"
+          git push origin HEAD:security/2.4.0-dependency-remediation
+
+      - name: Upload final remediation evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dependency_final_remediation_${{ github.run_id }}
+          path: ci-evidence/dependency-final-remediation
+          if-no-files-found: warn
+          retention-days: 90
