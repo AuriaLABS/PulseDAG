@@ -25,11 +25,14 @@ Every other vulnerability remains blocking.
 
 ## Why the package remains in Cargo.lock
 
-PulseDAG uses the upstream `libp2p 0.56.0` umbrella crate. Cargo records the
-umbrella crate's optional DNS and mDNS dependency families in `Cargo.lock` even
-when PulseDAG does not select those features. Removing those package records by
-hand makes the lockfile invalid; regenerating the complete lockfile introduces
-unrelated dependency drift in the Kaspa/workflow stack.
+PulseDAG uses the upstream `libp2p 0.56.0` umbrella crate. Cargo resolves
+optional dependency versions into `Cargo.lock` so they remain available if a
+feature is selected later, then performs a separate feature-resolution pass for
+the actual build. PulseDAG does not select the DNS or mDNS features.
+
+Removing those package records by hand makes the lockfile invalid; regenerating
+the complete lockfile introduces unrelated dependency drift in the
+Kaspa/workflow stack.
 
 As of 2026-08-04, `libp2p 0.56.0` is the latest upstream rust-libp2p release.
 There is therefore no newer supported umbrella release to adopt for this
@@ -49,9 +52,14 @@ The runtime contract additionally:
 - rejects `PULSEDAG_P2P_MDNS=true` at configuration validation;
 - uses explicit bootnodes and Kademlia for discovery.
 
-The repository validator fails unless both the `pulsedag-p2p` and `pulsedagd`
-normal dependency trees exclude `hickory-proto`, `hickory-resolver`,
-`libp2p-dns` and `libp2p-mdns`.
+The repository validator compiles `pulsedag-p2p` and `pulsedagd` independently
+from empty Cargo target directories and parses Cargo's `compiler-artifact`
+messages. It fails if either build actually compiles `hickory-proto`,
+`hickory-resolver`, `libp2p-dns` or `libp2p-mdns`.
+
+This is intentionally stronger than treating every package recorded in
+`Cargo.lock` or displayed by an approximate dependency-tree view as executable
+reachability.
 
 ## Mandatory controls
 
@@ -63,12 +71,13 @@ SHA. It enforces:
 - the expected locked Hickory version `0.25.2`;
 - patched `quinn-proto 0.11.15`;
 - fail-closed daemon configuration and runtime status;
-- no Hickory/DNS/mDNS packages in the activated node or P2P dependency trees;
+- clean, locked compiler-artifact evidence proving no Hickory/DNS/mDNS package
+  is compiled into the P2P crate or node;
 - an unexpired review deadline.
 
 The pinned `cargo-audit 0.22.2` gate must then exit successfully with the
-repository configuration. Its JSON evidence and provenance remain attached to
-the exact candidate.
+repository configuration. Its raw and configured JSON evidence, exact compiler
+messages and provenance remain attached to the exact candidate.
 
 ## Removal plan
 
