@@ -51,6 +51,7 @@ jobs:
         run: |
           set -euo pipefail
           rm -f .github/workflows/_temporary_dependency_audit.yml
+          rm -f .github/workflows/_temporary_direct_libp2p_probe.yml
           rm -f .github/workflows/_temporary_mdns_diagnostic.yml
           rm -f .github/workflows/_temporary_remove_unused_mdns.yml
           rm -f .github/workflows/_temporary_remove_unused_mdns_kick.yml
