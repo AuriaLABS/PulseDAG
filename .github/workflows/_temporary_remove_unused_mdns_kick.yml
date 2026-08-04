@@ -1,4 +1,5 @@
-name: Temporary remove unused mDNS kick v2
+# Maintainer-triggered remediation run
+name: Temporary remove unused mDNS kick v3
 
 on:
   push:
@@ -12,7 +13,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: temporary-remove-unused-mdns-kick-v2
+  group: temporary-remove-unused-mdns-kick-v3
   cancel-in-progress: true
 
 jobs:
