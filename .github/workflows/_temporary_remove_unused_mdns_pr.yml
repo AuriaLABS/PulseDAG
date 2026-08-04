@@ -12,7 +12,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: temporary-remove-unused-mdns-pr-workspace-prune-final-20260804
+  group: temporary-remove-unused-mdns-pr-regenerate-lock-final-20260804
   cancel-in-progress: true
 
 jobs:
@@ -32,13 +32,15 @@ jobs:
           toolchain: 1.88.0
           components: rustfmt
 
-      - name: Apply dependency remediation
+      - name: Apply dependency remediation and regenerate lockfile
         shell: bash
         run: |
           set -euo pipefail
           python scripts/_temporary_remove_unused_mdns.py
-          cargo update --workspace
-          cargo update -p quinn-proto@0.11.14 --precise 0.11.15
+          rm Cargo.lock
+          cargo generate-lockfile
+          cargo update -p libp2p --precise 0.56.0
+          cargo update -p quinn-proto --precise 0.11.15
           cargo metadata --locked --format-version 1 >/dev/null
           cargo fmt --all
 
@@ -58,13 +60,14 @@ jobs:
             exit 1
           fi
           if grep -q 'name = "hickory-proto"' Cargo.lock; then
-            echo 'hickory-proto remains in Cargo.lock after conservative workspace prune' >&2
+            echo 'hickory-proto remains in regenerated Cargo.lock' >&2
             exit 1
           fi
           if grep -q 'name = "libp2p-mdns"' Cargo.lock; then
-            echo 'libp2p-mdns remains in Cargo.lock after conservative workspace prune' >&2
+            echo 'libp2p-mdns remains in regenerated Cargo.lock' >&2
             exit 1
           fi
+          grep -A2 'name = "libp2p"' Cargo.lock | grep 'version = "0.56.0"'
           grep -A2 'name = "quinn-proto"' Cargo.lock | grep 'version = "0.11.15"'
 
       - name: Capture remediation evidence
@@ -86,6 +89,7 @@ jobs:
             echo "libp2p_mdns_lock_entries=$(grep -c 'name = \"libp2p-mdns\"' Cargo.lock || true)"
             echo "hickory_lock_entries=$(grep -c 'name = \"hickory-proto\"' Cargo.lock || true)"
             echo "hickory_reachable=$(grep -c '^hickory-proto v' ci-evidence/dependency-final-remediation/hickory-proto.txt || true)"
+            grep -A2 'name = "libp2p"' Cargo.lock || true
             grep -A2 'name = "quinn-proto"' Cargo.lock || true
           } >ci-evidence/dependency-final-remediation/provenance.txt
           sha256sum ci-evidence/dependency-final-remediation/* \
