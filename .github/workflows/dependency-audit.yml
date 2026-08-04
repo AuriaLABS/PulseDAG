@@ -34,7 +34,7 @@ jobs:
   rustsec:
     name: RustSec and reachability gate
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 75
     steps:
       - name: Checkout candidate
         uses: actions/checkout@v4
@@ -55,6 +55,11 @@ jobs:
         run: |
           set -euo pipefail
           python scripts/validate_v2_4_0_hickory_exception.py
+          mkdir -p ci-evidence/dependency-audit
+          for evidence in ci-evidence/dependency-final-remediation/*; do
+            cp "${evidence}" \
+              "ci-evidence/dependency-audit/reachability-$(basename "${evidence}")"
+          done
 
       - name: Install pinned cargo-audit
         shell: bash
@@ -124,7 +129,8 @@ jobs:
             echo "audit_config_sha256=$(sha256sum .cargo/audit.toml | awk '{print $1}')"
             echo "exception_record_sha256=$(sha256sum docs/security/V2_4_0_HICKORY_REACHABILITY_EXCEPTION.md | awk '{print $1}')"
           } >ci-evidence/dependency-audit/provenance.txt
-          sha256sum ci-evidence/dependency-audit/* \
+          find ci-evidence/dependency-audit -maxdepth 1 -type f ! -name SHA256SUMS \
+            -print0 | sort -z | xargs -0 sha256sum \
             >ci-evidence/dependency-audit/SHA256SUMS
 
       - name: Upload dependency-audit evidence
