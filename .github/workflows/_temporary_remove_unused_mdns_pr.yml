@@ -12,7 +12,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: temporary-remove-unused-mdns-pr-workspace-prune
+  group: temporary-remove-unused-mdns-pr-workspace-prune-final-20260804
   cancel-in-progress: true
 
 jobs:
