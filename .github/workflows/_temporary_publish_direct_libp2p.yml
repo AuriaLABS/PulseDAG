@@ -11,7 +11,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: temporary-publish-direct-libp2p
+  group: temporary-publish-direct-libp2p-final
   cancel-in-progress: true
 
 jobs:
@@ -82,17 +82,18 @@ jobs:
               'CLI validation sequence',
           )
           method_anchor = '    fn validate_api_exposure(&self) -> Result<()> {\n'
-          method = '''    fn validate_p2p_discovery_capabilities(&self) -> Result<()> {
-              if self.p2p_mdns {
-                  bail!("invalid P2P discovery config: PULSEDAG_P2P_MDNS=true is unsupported in v2.4.0 because PulseBehaviour does not implement mDNS; configure explicit bootnodes");
-              }
-              if self.p2p_kademlia {
-                  bail!("invalid P2P discovery config: PULSEDAG_P2P_KADEMLIA=true is unsupported in v2.4.0 because PulseBehaviour does not implement Kademlia; configure explicit bootnodes");
-              }
-              Ok(())
-          }
-
-          '''.replace('          ', '')
+          method = (
+              '    fn validate_p2p_discovery_capabilities(&self) -> Result<()> {\n'
+              '        if self.p2p_mdns {\n'
+              '            bail!("invalid P2P discovery config: PULSEDAG_P2P_MDNS=true is unsupported in v2.4.0 because PulseBehaviour does not implement mDNS; configure explicit bootnodes");\n'
+              '        }\n'
+              '        if self.p2p_kademlia {\n'
+              '            bail!("invalid P2P discovery config: PULSEDAG_P2P_KADEMLIA=true is unsupported in v2.4.0 because PulseBehaviour does not implement Kademlia; configure explicit bootnodes");\n'
+              '        }\n'
+              '        Ok(())\n'
+              '    }\n'
+              '\n'
+          )
           text = replace_once(text, method_anchor, method + method_anchor, 'discovery validation method')
           text = replace_once(
               text,
@@ -100,37 +101,37 @@ jobs:
               '            "PULSEDAG_P2P_MDNS",\n            "PULSEDAG_P2P_KADEMLIA",\n',
               'test environment cleanup',
           )
-          test = r'''
-
-              #[test]
-              fn unsupported_discovery_capabilities_fail_closed() {
-                  let _guard = env_guard();
-                  clear_test_env();
-                  unsafe {
-                      std::env::set_var("PULSEDAG_CONFIG_PROFILE", "operator");
-                      std::env::set_var("PULSEDAG_P2P_MDNS", "true");
-                  }
-                  let mdns = Config::from_env().expect_err("mDNS must fail closed");
-                  assert!(mdns.to_string().contains("PULSEDAG_P2P_MDNS=true is unsupported"));
-
-                  clear_test_env();
-                  unsafe {
-                      std::env::set_var("PULSEDAG_CONFIG_PROFILE", "operator");
-                      std::env::set_var("PULSEDAG_P2P_KADEMLIA", "true");
-                  }
-                  let kademlia = Config::from_env().expect_err("Kademlia must fail closed");
-                  assert!(
-                      kademlia
-                          .to_string()
-                          .contains("PULSEDAG_P2P_KADEMLIA=true is unsupported")
-                  );
-                  clear_test_env();
-              }
-          '''
+          config_test = (
+              '\n'
+              '    #[test]\n'
+              '    fn unsupported_discovery_capabilities_fail_closed() {\n'
+              '        let _guard = env_guard();\n'
+              '        clear_test_env();\n'
+              '        unsafe {\n'
+              '            std::env::set_var("PULSEDAG_CONFIG_PROFILE", "operator");\n'
+              '            std::env::set_var("PULSEDAG_P2P_MDNS", "true");\n'
+              '        }\n'
+              '        let mdns = Config::from_env().expect_err("mDNS must fail closed");\n'
+              '        assert!(mdns.to_string().contains("PULSEDAG_P2P_MDNS=true is unsupported"));\n'
+              '\n'
+              '        clear_test_env();\n'
+              '        unsafe {\n'
+              '            std::env::set_var("PULSEDAG_CONFIG_PROFILE", "operator");\n'
+              '            std::env::set_var("PULSEDAG_P2P_KADEMLIA", "true");\n'
+              '        }\n'
+              '        let kademlia = Config::from_env().expect_err("Kademlia must fail closed");\n'
+              '        assert!(\n'
+              '            kademlia\n'
+              '                .to_string()\n'
+              '                .contains("PULSEDAG_P2P_KADEMLIA=true is unsupported")\n'
+              '        );\n'
+              '        clear_test_env();\n'
+              '    }\n'
+          )
           head, separator, tail = text.rpartition('\n}')
           if not separator or tail.strip():
               raise SystemExit('could not locate config test module closure')
-          config.write_text(head + test + '\n}\n')
+          config.write_text(head + config_test + '\n}\n')
 
           p2p = Path('crates/pulsedag-p2p/src/lib.rs')
           text = p2p.read_text()
@@ -148,41 +149,42 @@ jobs:
           )
           text = text.replace('enable_mdns: true,', 'enable_mdns: false,')
           text = text.replace('enable_kademlia: true,', 'enable_kademlia: false,')
-          library_test = r'''
+          library_test = (
+              '\n\n'
+              '#[cfg(test)]\n'
+              'mod unsupported_discovery_capability_tests {\n'
+              '    use super::*;\n'
+              '\n'
+              '    fn config(enable_mdns: bool, enable_kademlia: bool) -> Libp2pConfig {\n'
+              '        Libp2pConfig {\n'
+              '            chain_id: "unsupported-discovery-test".to_string(),\n'
+              '            listen_addr: "/ip4/127.0.0.1/tcp/0".to_string(),\n'
+              '            bootstrap: Vec::new(),\n'
+              '            enable_mdns,\n'
+              '            enable_kademlia,\n'
+              '            connection_slot_budget: 8,\n'
+              '            sync_selection_stickiness_secs: 30,\n'
+              '            runtime: Libp2pRuntimeMode::Real,\n'
+              '            identity_path: None,\n'
+              '        }\n'
+              '    }\n'
+              '\n'
+              '    #[test]\n'
+              '    fn build_rejects_unimplemented_discovery_flags() {\n'
+              '        for cfg in [config(true, false), config(false, true)] {\n'
+              '            let error = match build_p2p_stack(P2pMode::Libp2p(cfg)) {\n'
+              '                Ok(_) => panic!("unimplemented discovery capability must fail closed"),\n'
+              '                Err(error) => error,\n'
+              '            };\n'
+              '            assert!(error.to_string().contains("unsupported"));\n'
+              '        }\n'
+              '    }\n'
+              '}\n'
+          )
+          p2p.write_text(text.rstrip() + library_test)
 
-          #[cfg(test)]
-          mod unsupported_discovery_capability_tests {
-              use super::*;
-
-              fn config(enable_mdns: bool, enable_kademlia: bool) -> Libp2pConfig {
-                  Libp2pConfig {
-                      chain_id: "unsupported-discovery-test".to_string(),
-                      listen_addr: "/ip4/127.0.0.1/tcp/0".to_string(),
-                      bootstrap: Vec::new(),
-                      enable_mdns,
-                      enable_kademlia,
-                      connection_slot_budget: 8,
-                      sync_selection_stickiness_secs: 30,
-                      runtime: Libp2pRuntimeMode::Real,
-                      identity_path: None,
-                  }
-              }
-
-              #[test]
-              fn build_rejects_unimplemented_discovery_flags() {
-                  for cfg in [config(true, false), config(false, true)] {
-                      let error = build_p2p_stack(P2pMode::Libp2p(cfg))
-                          .expect_err("unimplemented discovery capability must fail closed");
-                      assert!(error.to_string().contains("unsupported"));
-                  }
-              }
-          }
-          '''
-          p2p.write_text(text.rstrip() + library_test + '\n')
-
-          for root in [Path('configs')]:
-              if not root.exists():
-                  continue
+          root = Path('configs')
+          if root.exists():
               for path in root.rglob('*'):
                   if not path.is_file():
                       continue
@@ -254,6 +256,14 @@ jobs:
           sha256sum ci-evidence/direct-libp2p-remediation/* \
             > ci-evidence/direct-libp2p-remediation/SHA256SUMS
 
+      - name: Upload remediation evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: direct_libp2p_remediation_${{ github.run_id }}
+          path: ci-evidence/direct-libp2p-remediation
+          if-no-files-found: error
+          retention-days: 90
+
       - name: Publish permanent code only
         shell: bash
         run: |
@@ -273,12 +283,3 @@ jobs:
           git diff --cached --check
           git commit -m 'security: replace libp2p umbrella with audited subcrates'
           git push origin HEAD:security/2.4.0-direct-libp2p-remediation
-
-      - name: Upload remediation evidence
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: direct_libp2p_remediation_${{ github.run_id }}
-          path: ci-evidence/direct-libp2p-remediation
-          if-no-files-found: warn
-          retention-days: 90
