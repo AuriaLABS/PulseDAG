@@ -63,7 +63,7 @@ jobs:
           use libp2p::swarm::{NetworkBehaviour, SwarmEvent};
           use libp2p::{identity, Multiaddr, PeerId, SwarmBuilder};'''.replace('          ', '')
           new_imports = '''use futures::StreamExt;
-          use libp2p_core::{multiaddr::Protocol, transport::upgrade, Multiaddr, Transport};
+          use libp2p_core::{multiaddr::Protocol, upgrade, Multiaddr, Transport};
           use libp2p_gossipsub::{self as gossipsub, MessageAuthenticity, ValidationMode};
           use libp2p_identity::{self as identity, PeerId};
           use libp2p_noise as noise;
