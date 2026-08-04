@@ -119,6 +119,7 @@ impl Config {
             cfg.api_profile = ApiExposureProfile::from_env_value(&v)?;
         }
         cfg.apply_experimental_guards()?;
+        cfg.validate_p2p_discovery_capabilities()?;
         cfg.validate_api_exposure()?;
         cfg.validate_cors_policy()?;
         cfg.validate_security_hardening()?;
@@ -136,8 +137,8 @@ impl Config {
                 p2p_mode: "memory".into(),
                 p2p_listen: "/ip4/0.0.0.0/tcp/30333".into(),
                 p2p_bootstrap: Vec::new(),
-                p2p_mdns: true,
-                p2p_kademlia: true,
+                p2p_mdns: false,
+                p2p_kademlia: false,
                 p2p_identity_key: None,
                 p2p_connection_slot_budget: 8,
                 rocksdb_path: "./data/rocksdb".into(),
@@ -179,8 +180,8 @@ impl Config {
                 p2p_mode: "libp2p-dev".into(),
                 p2p_listen: "/ip4/127.0.0.1/tcp/31333".into(),
                 p2p_bootstrap: Vec::new(),
-                p2p_mdns: true,
-                p2p_kademlia: true,
+                p2p_mdns: false,
+                p2p_kademlia: false,
                 p2p_identity_key: None,
                 p2p_connection_slot_budget: 12,
                 rocksdb_path: "./data/local/rocksdb".into(),
@@ -223,7 +224,7 @@ impl Config {
                 p2p_listen: "/ip4/0.0.0.0/tcp/32333".into(),
                 p2p_bootstrap: Vec::new(),
                 p2p_mdns: false,
-                p2p_kademlia: true,
+                p2p_kademlia: false,
                 p2p_identity_key: None,
                 p2p_connection_slot_budget: 32,
                 rocksdb_path: "./data/private/rocksdb".into(),
@@ -265,8 +266,8 @@ impl Config {
                 p2p_mode: "libp2p-real".into(),
                 p2p_listen: "/ip4/0.0.0.0/tcp/30333".into(),
                 p2p_bootstrap: Vec::new(),
-                p2p_mdns: true,
-                p2p_kademlia: true,
+                p2p_mdns: false,
+                p2p_kademlia: false,
                 p2p_identity_key: None,
                 p2p_connection_slot_budget: 24,
                 rocksdb_path: "./data/rocksdb".into(),
@@ -309,7 +310,7 @@ impl Config {
                 p2p_listen: "/ip4/0.0.0.0/tcp/18181".into(),
                 p2p_bootstrap: Vec::new(),
                 p2p_mdns: false,
-                p2p_kademlia: true,
+                p2p_kademlia: false,
                 p2p_identity_key: None,
                 p2p_connection_slot_budget: 32,
                 rocksdb_path: "./data/rehearsal-a/rocksdb".into(),
@@ -352,7 +353,7 @@ impl Config {
                 p2p_listen: "/ip4/0.0.0.0/tcp/18182".into(),
                 p2p_bootstrap: vec!["/ip4/127.0.0.1/tcp/18181".into()],
                 p2p_mdns: false,
-                p2p_kademlia: true,
+                p2p_kademlia: false,
                 p2p_identity_key: None,
                 p2p_connection_slot_budget: 32,
                 rocksdb_path: "./data/rehearsal-b/rocksdb".into(),
@@ -398,7 +399,7 @@ impl Config {
                     "/ip4/127.0.0.1/tcp/18182".into(),
                 ],
                 p2p_mdns: false,
-                p2p_kademlia: true,
+                p2p_kademlia: false,
                 p2p_identity_key: None,
                 p2p_connection_slot_budget: 32,
                 rocksdb_path: "./data/rehearsal-c/rocksdb".into(),
@@ -441,7 +442,7 @@ impl Config {
                 p2p_listen: "/ip4/0.0.0.0/tcp/30333".into(),
                 p2p_bootstrap: Vec::new(),
                 p2p_mdns: false,
-                p2p_kademlia: true,
+                p2p_kademlia: false,
                 p2p_identity_key: None,
                 p2p_connection_slot_budget: 32,
                 rocksdb_path: "./data/rocksdb".into(),
@@ -717,6 +718,7 @@ impl Config {
         }
         self.apply_admin_default_or_env_override();
         self.apply_experimental_guards()?;
+        self.validate_p2p_discovery_capabilities()?;
         self.validate_api_exposure()?;
         self.validate_cors_policy()?;
         self.validate_security_hardening()?;
@@ -737,6 +739,16 @@ impl Config {
         self.target_block_interval_secs = self.target_block_interval_ms.div_ceil(1_000).max(1);
         if !self.experimental_ghostdag_selection {
             self.max_parallel_tips = 1;
+        }
+        Ok(())
+    }
+
+    fn validate_p2p_discovery_capabilities(&self) -> Result<()> {
+        if self.p2p_mdns {
+            bail!("invalid P2P discovery config: PULSEDAG_P2P_MDNS=true is unsupported in v2.4.0 because PulseBehaviour does not implement mDNS; configure explicit bootnodes");
+        }
+        if self.p2p_kademlia {
+            bail!("invalid P2P discovery config: PULSEDAG_P2P_KADEMLIA=true is unsupported in v2.4.0 because PulseBehaviour does not implement Kademlia; configure explicit bootnodes");
         }
         Ok(())
     }
@@ -1077,6 +1089,7 @@ mod tests {
             "PULSEDAG_P2P_MODE",
             "PULSEDAG_P2P_CONNECTION_SLOT_BUDGET",
             "PULSEDAG_P2P_MDNS",
+            "PULSEDAG_P2P_KADEMLIA",
             "PULSEDAG_AUTO_PRUNE_ENABLED",
             "PULSEDAG_PRUNE_KEEP_RECENT_BLOCKS",
             "PULSEDAG_TARGET_BLOCK_INTERVAL_SECS",
@@ -1648,5 +1661,29 @@ mod tests {
         let summary = cfg.config_safety_summary();
         assert!(summary.contains("warning"));
         assert!(summary.contains("0.0.0.0"));
+    }
+    #[test]
+    fn unsupported_discovery_capabilities_fail_closed() {
+        let _guard = env_guard();
+        clear_test_env();
+        unsafe {
+            std::env::set_var("PULSEDAG_CONFIG_PROFILE", "operator");
+            std::env::set_var("PULSEDAG_P2P_MDNS", "true");
+        }
+        let mdns = Config::from_env().expect_err("mDNS must fail closed");
+        assert!(mdns
+            .to_string()
+            .contains("PULSEDAG_P2P_MDNS=true is unsupported"));
+
+        clear_test_env();
+        unsafe {
+            std::env::set_var("PULSEDAG_CONFIG_PROFILE", "operator");
+            std::env::set_var("PULSEDAG_P2P_KADEMLIA", "true");
+        }
+        let kademlia = Config::from_env().expect_err("Kademlia must fail closed");
+        assert!(kademlia
+            .to_string()
+            .contains("PULSEDAG_P2P_KADEMLIA=true is unsupported"));
+        clear_test_env();
     }
 }

@@ -7,11 +7,15 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration as StdDuration, SystemTime, UNIX_EPOCH};
 
-use libp2p::futures::StreamExt;
-use libp2p::gossipsub::{self, MessageAuthenticity, ValidationMode};
-use libp2p::ping;
-use libp2p::swarm::{NetworkBehaviour, SwarmEvent};
-use libp2p::{identity, Multiaddr, PeerId, SwarmBuilder};
+use futures::StreamExt;
+use libp2p_core::{multiaddr::Protocol, upgrade, Multiaddr, Transport};
+use libp2p_gossipsub::{self as gossipsub, MessageAuthenticity, ValidationMode};
+use libp2p_identity::{self as identity, PeerId};
+use libp2p_noise as noise;
+use libp2p_ping as ping;
+use libp2p_swarm::{Config as SwarmConfig, NetworkBehaviour, Swarm, SwarmEvent};
+use libp2p_tcp as tcp;
+use libp2p_yamux as yamux;
 use pulsedag_core::{
     errors::PulseError,
     rank_sync_candidates,
@@ -5070,6 +5074,7 @@ async fn run_libp2p_runtime(
 }
 
 #[derive(NetworkBehaviour)]
+#[behaviour(prelude = "libp2p_swarm::derive_prelude")]
 struct PulseBehaviour {
     gossipsub: gossipsub::Behaviour,
     ping: ping::Behaviour,
@@ -5079,7 +5084,7 @@ fn parse_bootnode_multiaddr(input: &str) -> Option<(PeerId, Multiaddr)> {
     let address = input.parse::<Multiaddr>().ok()?;
     let mut peer_id = None;
     for protocol in address.iter() {
-        if let libp2p::multiaddr::Protocol::P2p(id) = protocol {
+        if let Protocol::P2p(id) = protocol {
             peer_id = Some(id);
         }
     }
@@ -5415,32 +5420,29 @@ async fn run_libp2p_real_runtime(
 
     let ping = ping::Behaviour::new(ping::Config::new());
 
-    let mut swarm = match SwarmBuilder::with_existing_identity(local_key)
-        .with_tokio()
-        .with_tcp(
-            libp2p::tcp::Config::default(),
-            libp2p::noise::Config::new,
-            libp2p::yamux::Config::default,
-        ) {
-        Ok(builder) => match builder.with_behaviour(|_| PulseBehaviour {
-            gossipsub: gossip,
-            ping,
-        }) {
-            Ok(builder) => builder
-                .with_swarm_config(|cfg| {
-                    cfg.with_idle_connection_timeout(StdDuration::from_secs(300))
-                })
-                .build(),
-            Err(e) => {
-                note_swarm_event(&inner, format!("swarm-init-failed:behaviour:{e}"));
-                return;
-            }
-        },
+    let noise = match noise::Config::new(&local_key) {
+        Ok(config) => config,
         Err(e) => {
             note_swarm_event(&inner, format!("swarm-init-failed:transport:{e}"));
             return;
         }
     };
+    let transport = tcp::tokio::Transport::new(tcp::Config::default())
+        .upgrade(upgrade::Version::V1Lazy)
+        .authenticate(noise)
+        .multiplex(yamux::Config::default())
+        .boxed();
+    let behaviour = PulseBehaviour {
+        gossipsub: gossip,
+        ping,
+    };
+    let mut swarm = Swarm::new(
+        transport,
+        behaviour,
+        local_key.public().to_peer_id(),
+        SwarmConfig::with_tokio_executor()
+            .with_idle_connection_timeout(StdDuration::from_secs(300)),
+    );
 
     let listen_addr = match cfg.listen_addr.parse::<Multiaddr>() {
         Ok(addr) => addr,
@@ -6396,6 +6398,11 @@ pub fn build_p2p_stack(mode: P2pMode) -> Result<P2pStack, PulseError> {
             })
         }
         P2pMode::Libp2p(cfg) => {
+            if cfg.enable_mdns || cfg.enable_kademlia {
+                return Err(PulseError::Internal(
+                    "mDNS and Kademlia flags are unsupported until PulseBehaviour implements those discovery behaviours".into(),
+                ));
+            }
             let (handle, inbound_rx) = Libp2pHandle::new(cfg)?;
             Ok(P2pStack {
                 handle: Arc::new(handle),
@@ -10606,5 +10613,35 @@ mod deterministic_p2p_sync_coverage_tests {
 
         prune_remote_tip_inventory(&mut state, 100 + TIP_INVENTORY_TTL_SECS + 1);
         assert!(state.remote_selected_tip_inventory.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod unsupported_discovery_capability_tests {
+    use super::*;
+
+    fn config(enable_mdns: bool, enable_kademlia: bool) -> Libp2pConfig {
+        Libp2pConfig {
+            chain_id: "unsupported-discovery-test".to_string(),
+            listen_addr: "/ip4/127.0.0.1/tcp/0".to_string(),
+            bootstrap: Vec::new(),
+            enable_mdns,
+            enable_kademlia,
+            connection_slot_budget: 8,
+            sync_selection_stickiness_secs: 30,
+            runtime: Libp2pRuntimeMode::RealSwarm,
+            identity_path: None,
+        }
+    }
+
+    #[test]
+    fn build_rejects_unimplemented_discovery_flags() {
+        for cfg in [config(true, false), config(false, true)] {
+            let error = match build_p2p_stack(P2pMode::Libp2p(cfg)) {
+                Ok(_) => panic!("unimplemented discovery capability must fail closed"),
+                Err(error) => error,
+            };
+            assert!(error.to_string().contains("unsupported"));
+        }
     }
 }
