@@ -2,13 +2,9 @@ name: Dependency security audit
 
 on:
   pull_request:
-    paths:
-      - Cargo.toml
-      - Cargo.lock
-      - apps/**/Cargo.toml
-      - crates/**/Cargo.toml
-      - .github/workflows/dependency-audit.yml
-      - SECURITY.md
+    branches:
+      - main
+      - release/2.4.0
   push:
     branches:
       - main
@@ -20,6 +16,8 @@ on:
       - crates/**/Cargo.toml
       - .github/workflows/dependency-audit.yml
       - SECURITY.md
+  schedule:
+    - cron: '17 3 * * *'
   workflow_dispatch:
 
 permissions:
@@ -37,6 +35,8 @@ jobs:
     steps:
       - name: Checkout candidate
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Install pinned Rust toolchain
         shell: bash
@@ -73,6 +73,7 @@ jobs:
             echo "rustc=$(rustc --version 2>/dev/null || true)"
             echo "cargo=$(cargo --version 2>/dev/null || true)"
             echo "cargo_audit=$(cargo audit --version 2>/dev/null || true)"
+            echo "advisory_db_sha=$(git -C \"${HOME}/.cargo/advisory-db\" rev-parse HEAD 2>/dev/null || true)"
             echo "cargo_lock_sha256=$(sha256sum Cargo.lock | awk '{print $1}')"
           } > ci-evidence/dependency-audit/provenance.txt
           sha256sum ci-evidence/dependency-audit/* \
