@@ -6,151 +6,17 @@ on:
       - release/2.4.0
     paths:
       - .github/workflows/_temporary_remove_unused_mdns_pr.yml
-      - scripts/_temporary_remove_unused_mdns.py
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: temporary-remove-unused-mdns-pr-prune-optional-lock-20260804
   cancel-in-progress: true
 
 jobs:
-  patch-validate-audit-and-clean:
-    if: github.repository == 'AuriaLABS/PulseDAG' && github.head_ref == 'security/2.4.0-dependency-remediation'
+  disabled-manual-lock-pruning:
+    if: ${{ false }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
     steps:
-      - name: Checkout remediation branch
-        uses: actions/checkout@v4
-        with:
-          ref: security/2.4.0-dependency-remediation
-          fetch-depth: 0
-
-      - name: Install pinned Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: 1.88.0
-          components: rustfmt
-
-      - name: Apply focused optional-dependency pruning
-        shell: bash
-        run: |
-          set -euo pipefail
-          python scripts/_temporary_remove_unused_mdns.py
-          cargo metadata --locked --format-version 1 >/dev/null
-          cargo fmt --all
-          git diff --check
-
-      - name: Validate dependency and runtime contract
-        shell: bash
-        run: |
-          set -euo pipefail
-          cargo test --locked -p pulsedag-p2p
-          cargo test --locked -p pulsedagd config::tests
-          cargo check --locked -p pulsedag-p2p --all-targets
-          cargo check --locked -p pulsedagd --all-targets
-          if grep -q 'name = "hickory-proto"' Cargo.lock; then
-            echo 'hickory-proto remains in the focused lock graph' >&2
-            exit 1
-          fi
-          if grep -q 'name = "hickory-resolver"' Cargo.lock; then
-            echo 'hickory-resolver remains in the focused lock graph' >&2
-            exit 1
-          fi
-          if grep -q 'name = "libp2p-mdns"' Cargo.lock; then
-            echo 'libp2p-mdns remains in the focused lock graph' >&2
-            exit 1
-          fi
-          if grep -q 'name = "libp2p-dns"' Cargo.lock; then
-            echo 'libp2p-dns remains in the focused lock graph' >&2
-            exit 1
-          fi
-          grep -A3 'name = "libp2p"' Cargo.lock | grep 'version = "0.56.0"'
-          grep -A3 'name = "quinn-proto"' Cargo.lock | grep 'version = "0.11.15"'
-
-      - name: Create exact clean candidate commit
-        shell: bash
-        run: |
-          set -euo pipefail
-          rm -f .github/workflows/_temporary_dependency_audit.yml
-          rm -f .github/workflows/_temporary_mdns_diagnostic.yml
-          rm -f .github/workflows/_temporary_remove_unused_mdns.yml
-          rm -f .github/workflows/_temporary_remove_unused_mdns_kick.yml
-          rm .github/workflows/_temporary_remove_unused_mdns_pr.yml
-          rm scripts/_temporary_remove_unused_mdns.py
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add -A
-          git diff --cached --check
-          git commit -m 'security: remove unused DNS and mDNS dependency chains'
-          echo "candidate_sha=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
-
-      - name: Install pinned cargo-audit
-        shell: bash
-        run: |
-          set -euo pipefail
-          cargo install cargo-audit --version 0.22.2 --locked
-
-      - name: Audit exact clean candidate
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p ci-evidence/dependency-final-remediation
-          cargo audit --json >ci-evidence/dependency-final-remediation/cargo-audit.json
-          python - <<'PY' | tee ci-evidence/dependency-final-remediation/audit-summary.txt
-          import json
-          report = json.load(open('ci-evidence/dependency-final-remediation/cargo-audit.json'))
-          vulnerabilities = report.get('vulnerabilities', {}).get('list', [])
-          print(f'vulnerability_count={len(vulnerabilities)}')
-          for item in vulnerabilities:
-              advisory = item.get('advisory', {})
-              package = item.get('package', {})
-              print(f"{advisory.get('id')} {package.get('name')} {package.get('version')}")
-          warnings = report.get('warnings', {})
-          for category, items in warnings.items():
-              print(f'warning_{category}_count={len(items)}')
-          if vulnerabilities:
-              raise SystemExit('exact clean candidate still contains vulnerabilities')
-          PY
-
-      - name: Capture exact-candidate evidence
-        shell: bash
-        run: |
-          set -euo pipefail
-          cargo tree --locked -p pulsedag-p2p >ci-evidence/dependency-final-remediation/p2p-tree.txt
-          {
-            echo "source_sha=$(git rev-parse HEAD)"
-            echo "expected_source_sha=${candidate_sha}"
-            echo "dirty=$(test -z "$(git status --porcelain)" && echo false || echo true)"
-            echo "rustc=$(rustc --version)"
-            echo "cargo=$(cargo --version)"
-            echo "cargo_audit=$(cargo audit --version)"
-            echo "cargo_lock_sha256=$(sha256sum Cargo.lock | awk '{print $1}')"
-            echo "mdns_feature_present=$(grep -c '\"mdns\"' crates/pulsedag-p2p/Cargo.toml || true)"
-            echo "libp2p_dns_lock_entries=$(grep -c 'name = \"libp2p-dns\"' Cargo.lock || true)"
-            echo "libp2p_mdns_lock_entries=$(grep -c 'name = \"libp2p-mdns\"' Cargo.lock || true)"
-            echo "hickory_resolver_lock_entries=$(grep -c 'name = \"hickory-resolver\"' Cargo.lock || true)"
-            echo "hickory_proto_lock_entries=$(grep -c 'name = \"hickory-proto\"' Cargo.lock || true)"
-            grep -A3 'name = "libp2p"' Cargo.lock || true
-            grep -A3 'name = "quinn-proto"' Cargo.lock || true
-          } >ci-evidence/dependency-final-remediation/provenance.txt
-          test "$(git rev-parse HEAD)" = "${candidate_sha}"
-          sha256sum ci-evidence/dependency-final-remediation/* \
-            >ci-evidence/dependency-final-remediation/SHA256SUMS
-
-      - name: Publish exact clean candidate
-        shell: bash
-        run: |
-          set -euo pipefail
-          test "$(git rev-parse HEAD)" = "${candidate_sha}"
-          git push origin HEAD:security/2.4.0-dependency-remediation
-
-      - name: Upload remediation evidence
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: dependency_final_remediation_${{ github.run_id }}
-          path: ci-evidence/dependency-final-remediation
-          if-no-files-found: warn
-          retention-days: 90
+      - run: echo 'Manual Cargo.lock and checksum editing is disabled; Cargo must resolve the graph.'
