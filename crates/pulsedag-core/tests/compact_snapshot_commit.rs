@@ -151,14 +151,19 @@ fn compact_snapshot_side_parent_validation_rejects_without_mutation() {
     let mut compact = compact_last_blocks(&baseline, 20);
     let selected_before = compact.dag.selected_chain.clone();
     let digest_before = state_digest(&compact).expect("digest before side validation");
-    let outcome = accept_block_with_result(side.clone(), &mut compact, AcceptSource::P2p);
 
+    let outcome = accept_block_with_result(side.clone(), &mut compact, AcceptSource::P2p);
     match outcome {
-        BlockAcceptanceResult::Rejected(reason) => assert!(
-            reason.contains("invalid state root")
-                || reason.contains("parent state context unavailable"),
-            "unexpected compact side-parent rejection: {reason}"
-        ),
+        BlockAcceptanceResult::Rejected(reason) => {
+            assert!(
+                reason.contains("parent state context unavailable"),
+                "unexpected compact side-parent rejection: {reason}"
+            );
+            assert!(
+                !reason.contains("invalid state root"),
+                "pruned history must not be mislabeled as a true invalid root: {reason}"
+            );
+        }
         other => panic!("expected compact side-parent rejection, got {other:?}"),
     }
     assert!(!compact.dag.blocks.contains_key(&side.hash));

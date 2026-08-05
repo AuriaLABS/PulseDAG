@@ -1,0 +1,13 @@
+# PulseDAG v2.4.0 RustSec policy.
+#
+# These are narrow, time-bounded non-reachability exceptions for optional
+# dependencies locked by the libp2p 0.56.0 umbrella crate. They are enforced by
+# scripts/validate_v2_4_0_hickory_exception.py and documented in
+# docs/security/V2_4_0_HICKORY_REACHABILITY_EXCEPTION.md.
+
+[advisories]
+ignore = [
+  "RUSTSEC-2026-0118",
+  "RUSTSEC-2026-0119",
+]
+informational_warnings = ["unmaintained", "unsound"]

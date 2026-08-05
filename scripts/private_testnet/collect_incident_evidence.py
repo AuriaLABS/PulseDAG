@@ -31,7 +31,7 @@ DEFAULT_ENDPOINTS = (
     "/sync/verify",
     "/p2p/status",
     "/p2p/peers",
-    "/tx/mempool",
+    "/mempool",
     "/pow/health",
     "/snapshot",
     "/maintenance/report",

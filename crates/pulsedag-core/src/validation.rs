@@ -399,6 +399,19 @@ pub fn parent_state_context(block: &Block, state: &ChainState) -> Result<ChainSt
         return Ok(context);
     }
 
+    // A compact snapshot keeps the canonical UTXO at the preferred tip, but it does not
+    // retain an exact historical UTXO for arbitrary side parents. Replaying only the
+    // retained suffix from a fresh genesis state produces a plausible but incomplete
+    // context and can misclassify a valid side-parent block as a true invalid state root.
+    // Until retained checkpoints or undo data can reconstruct that parent exactly, fail
+    // closed with the explicit unavailable-context error.
+    if !state.dag.blocks.contains_key(&state.dag.genesis_hash) {
+        return Err(PulseError::ParentStateContextUnavailable {
+            block_hash: block.hash.clone(),
+            parent_hash,
+        });
+    }
+
     let mut context = crate::genesis::init_chain_state(state.chain_id.clone());
     context.dag.consensus_mode = state.dag.consensus_mode;
     context.dag.selected_parent_policy = state.dag.selected_parent_policy;

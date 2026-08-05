@@ -23,7 +23,7 @@ Use this template to compare startup, restart, churn, rejoin, and recovery runs.
 | `/sync/status` | | | | |
 | `/p2p/status` | | | | |
 | `/blocks/latest` | | | | |
-| `/tx/mempool` | | | | |
+| `/mempool` | | | | |
 | `/address/ping` | | | | |
 
 ## Selected-peer and sync stabilization

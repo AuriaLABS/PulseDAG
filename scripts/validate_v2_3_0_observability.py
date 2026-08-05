@@ -16,8 +16,10 @@ DASHBOARD = PACKAGE / "grafana-dashboard.json"
 ALERTS = PACKAGE / "alert-rules.yml"
 PROMETHEUS = PACKAGE / "prometheus-scrape.example.yml"
 EXPORTER = ROOT / "scripts/private_testnet/runtime_metrics_exporter.py"
+ROUTES = ROOT / "crates/pulsedag-rpc/src/routes.rs"
 METRIC_TOKEN = re.compile(r"\b(?:pulsedag_[a-z0-9_]+|up|clamp_min)\b")
 FIELD_LINE = re.compile(r"pub\s+([A-Za-z0-9_]+)\s*:")
+ROUTE_PATH = re.compile(r'\.route\(\s*"([^"\n]+)"')
 PROM_TARGET = re.compile(r"^\s*-\s+([A-Za-z0-9_.-]+:9108)\s*$")
 RUNBOOK = re.compile(r"^\s*runbook:\s*(\S+)\s*$")
 EXPR = re.compile(r"^\s*expr:\s*(.+?)\s*$")
@@ -72,6 +74,12 @@ def rust_struct_fields(path: Path, struct_name: str) -> set[str]:
     }
 
 
+def registered_rpc_routes() -> set[str]:
+    """Extract concrete route paths registered by the Axum router."""
+
+    return set(ROUTE_PATH.findall(ROUTES.read_text(encoding="utf-8")))
+
+
 def expressions_from_dashboard(payload: dict[str, Any]) -> list[str]:
     """Collect every Grafana PromQL expression, including template queries."""
 
@@ -104,7 +112,12 @@ def validate_inventory(validation: Validation, inventory: dict[str, Any]) -> set
     validation.require(isinstance(metrics, list) and bool(metrics), "metric inventory exists")
 
     endpoint_fields: dict[str, set[str]] = {}
+    registered_routes = registered_rpc_routes()
     for endpoint, spec in endpoint_specs.items():
+        validation.require(
+            endpoint in registered_routes,
+            f"inventory endpoint is registered by the RPC router: {endpoint}",
+        )
         try:
             file_path = ROOT / spec["rust_file"]
             endpoint_fields[endpoint] = rust_struct_fields(file_path, spec["rust_struct"])
@@ -209,7 +222,7 @@ def validate_prometheus(validation: Validation) -> None:
 def validate_files(validation: Validation) -> None:
     """Require all canonical package files and exporter entrypoints."""
 
-    required = [INVENTORY, DASHBOARD, ALERTS, PROMETHEUS, EXPORTER]
+    required = [INVENTORY, DASHBOARD, ALERTS, PROMETHEUS, EXPORTER, ROUTES]
     for path in required:
         validation.require(path.is_file(), f"required observability file exists: {path.relative_to(ROOT)}")
 
