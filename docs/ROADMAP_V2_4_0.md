@@ -25,6 +25,8 @@ The 24-hour private burn-in in #789 must run only after all intended repository 
 - Multi-node safety remains fail-closed by default.
 - Single-node mining requires the explicit validated operator profile.
 - Consensus parameters are version/network constants and are not operator environment settings.
+- The private v2.4.0 burn-in identity is `private-testnet-v2.4.0` / `pulsedag-private-v2.4.0`; v2.3.0 identities and databases must not be reused.
+- The operator contract is [`V2_4_0_PRIVATE_BURN_IN_OPERATOR_PROFILE.md`](V2_4_0_PRIVATE_BURN_IN_OPERATOR_PROFILE.md).
 - Mining remains an external application.
 - High-cadence/GHOSTDAG activation and smart contracts remain out of scope.
 - Credentials, keys, wallet seeds, tokens, runtime databases and unrestricted endpoints must not be committed or attached to evidence.

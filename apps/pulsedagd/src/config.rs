@@ -827,13 +827,13 @@ impl Config {
                 "invalid single-node config: PULSEDAG_PRIVATE_TESTNET_ROLE must be exactly 'single'"
             );
         }
-        if self.network_profile != "private-testnet-v2.3.0" {
+        if self.network_profile != "private-testnet-v2.4.0" {
             bail!(
-                "invalid single-node config: PULSEDAG_NETWORK_PROFILE must be private-testnet-v2.3.0"
+                "invalid single-node config: PULSEDAG_NETWORK_PROFILE must be private-testnet-v2.4.0"
             );
         }
-        if self.chain_id != "pulsedag-private-v2.3.0" {
-            bail!("invalid single-node config: PULSEDAG_CHAIN_ID must be pulsedag-private-v2.3.0");
+        if self.chain_id != "pulsedag-private-v2.4.0" {
+            bail!("invalid single-node config: PULSEDAG_CHAIN_ID must be pulsedag-private-v2.4.0");
         }
         if self.consensus_mode != ConsensusMode::Legacy {
             bail!("invalid single-node config: consensus mode must remain legacy");
@@ -1124,8 +1124,8 @@ mod tests {
         std::env::set_var("PULSEDAG_CONFIG_PROFILE", "private");
         std::env::set_var("PULSEDAG_SINGLE_NODE_MODE", "true");
         std::env::set_var("PULSEDAG_PRIVATE_TESTNET_ROLE", "single");
-        std::env::set_var("PULSEDAG_NETWORK_PROFILE", "private-testnet-v2.3.0");
-        std::env::set_var("PULSEDAG_CHAIN_ID", "pulsedag-private-v2.3.0");
+        std::env::set_var("PULSEDAG_NETWORK_PROFILE", "private-testnet-v2.4.0");
+        std::env::set_var("PULSEDAG_CHAIN_ID", "pulsedag-private-v2.4.0");
         std::env::set_var("PULSEDAG_CONSENSUS_MODE", "legacy");
         std::env::set_var("PULSEDAG_P2P_ENABLED", "false");
         std::env::set_var("PULSEDAG_P2P_BOOTSTRAP", "");
@@ -1606,6 +1606,28 @@ mod tests {
         assert!(!cfg.p2p_enabled);
         assert!(cfg.p2p_bootstrap.is_empty());
         assert_eq!(cfg.rpc_bind, "127.0.0.1:8280");
+    }
+
+    #[test]
+    fn single_node_mode_rejects_stale_v2_3_identity() {
+        let _guard = env_guard();
+        clear_test_env();
+        set_valid_single_node_env();
+        std::env::set_var("PULSEDAG_NETWORK_PROFILE", "private-testnet-v2.3.0");
+
+        let err = Config::from_env().expect_err("stale v2.3 network profile must fail");
+        assert!(err
+            .to_string()
+            .contains("PULSEDAG_NETWORK_PROFILE must be private-testnet-v2.4.0"));
+
+        clear_test_env();
+        set_valid_single_node_env();
+        std::env::set_var("PULSEDAG_CHAIN_ID", "pulsedag-private-v2.3.0");
+
+        let err = Config::from_env().expect_err("stale v2.3 chain id must fail");
+        assert!(err
+            .to_string()
+            .contains("PULSEDAG_CHAIN_ID must be pulsedag-private-v2.4.0"));
     }
 
     #[test]
