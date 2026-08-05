@@ -115,6 +115,7 @@ struct MinerTelemetry {
     hashes_per_sec: f64,
     templates_received: u64,
     templates_skipped_stale: u64,
+    search_exhaustions: u64,
     submits_total: u64,
     submits_accepted: u64,
     submits_rejected: u64,
@@ -140,6 +141,7 @@ impl MinerTelemetry {
             hashes_per_sec: 0.0,
             templates_received: 0,
             templates_skipped_stale: 0,
+            search_exhaustions: 0,
             submits_total: 0,
             submits_accepted: 0,
             submits_rejected: 0,
@@ -169,6 +171,10 @@ impl MinerTelemetry {
 
     fn record_stale_skip(&mut self) {
         self.templates_skipped_stale = self.templates_skipped_stale.saturating_add(1);
+    }
+
+    fn record_search_exhausted(&mut self) {
+        self.search_exhaustions = self.search_exhaustions.saturating_add(1);
     }
 
     fn record_submit_accepted(&mut self, height: Option<u64>) {
@@ -251,7 +257,7 @@ impl MinerTelemetry {
 
     fn log(&self, event: &str) {
         println!(
-            "miner_telemetry event={} backend={} workers={} attempts={} hashes_per_sec={:.2} templates_received={} templates_skipped_stale={} submits_total={} submits_accepted={} submits_rejected={} submits_finality_unknown={} submits_reconciled_accepted={} submits_reconciled_rejected={} submits_still_unknown={} backend_verification_failures={} last_reject_code={} reject_breakdown={:?} last_template_height={} last_accepted_height={}",
+            "miner_telemetry event={} backend={} workers={} attempts={} hashes_per_sec={:.2} templates_received={} templates_skipped_stale={} search_exhaustions={} submits_total={} submits_accepted={} submits_rejected={} submits_finality_unknown={} submits_reconciled_accepted={} submits_reconciled_rejected={} submits_still_unknown={} backend_verification_failures={} last_reject_code={} reject_breakdown={:?} last_template_height={} last_accepted_height={}",
             event,
             self.backend,
             self.workers,
@@ -259,6 +265,7 @@ impl MinerTelemetry {
             self.hashes_per_sec,
             self.templates_received,
             self.templates_skipped_stale,
+            self.search_exhaustions,
             self.submits_total,
             self.submits_accepted,
             self.submits_rejected,
@@ -281,6 +288,7 @@ impl MinerTelemetry {
 
 struct MiningResult {
     header: BlockHeader,
+    accepted: bool,
     tries: u64,
     elapsed_ms: u128,
     hashes_per_sec: f64,
@@ -290,6 +298,7 @@ struct MiningResult {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MineOnceOutcome {
     Submitted,
+    SearchExhausted,
     SkippedStaleTemplate,
     NodeRejectedStaleTemplate,
     BackendVerificationRejected,
@@ -757,11 +766,27 @@ async fn mine_once(
         target_bits,
     )
     .await?;
+    telemetry.record_mining_result(mining.tries, mining.hashes_per_sec);
+    telemetry.log("mining_result");
+
+    if !mining.accepted {
+        println!(
+            "miner_search_exhausted: backend={} height={} attempts={} max_tries={} target_hex={} action=refresh_work",
+            backend_name,
+            block.header.height,
+            mining.tries,
+            cfg.max_tries,
+            mining.target_hex
+        );
+        telemetry.record_search_exhausted();
+        telemetry.log("search_exhausted");
+        send_worker_heartbeat(client, cfg, telemetry).await;
+        return Ok(MineOnceOutcome::SearchExhausted);
+    }
+
     let mut verified_header = block.header.clone();
     verified_header.nonce = mining.header.nonce;
     apply_mined_header(&mut block, verified_header);
-    telemetry.record_mining_result(mining.tries, mining.hashes_per_sec);
-    telemetry.log("mining_result");
 
     let verification = match verify_backend_result_with_core(&block.header, target_bits) {
         Ok(verification) => verification,
@@ -1007,6 +1032,7 @@ async fn mine_header_with_backend(
     })
     .await
     .context("mining worker task panicked")??;
+    let accepted = result.accepted;
     let final_header = result.header;
     let tries = result.tries;
     let elapsed = start.elapsed();
@@ -1018,6 +1044,7 @@ async fn mine_header_with_backend(
     };
     Ok(MiningResult {
         header: final_header,
+        accepted,
         tries,
         elapsed_ms: elapsed.as_millis(),
         hashes_per_sec,
@@ -1057,6 +1084,67 @@ mod tests {
         assert_eq!(telemetry.submits_total, 1);
         assert_eq!(telemetry.submits_accepted, 1);
         assert_eq!(telemetry.submits_rejected, 0);
+    }
+
+    #[test]
+    fn search_exhaustion_is_not_counted_as_invalid_pow() {
+        let mut telemetry = MinerTelemetry::new("cpu", 2);
+
+        telemetry.record_search_exhausted();
+
+        assert_eq!(telemetry.search_exhaustions, 1);
+        assert_eq!(telemetry.backend_verification_failures, 0);
+        assert_eq!(telemetry.invalid_pow_rejections, 0);
+        assert_eq!(telemetry.submits_total, 0);
+        assert_eq!(telemetry.submits_rejected, 0);
+        assert_eq!(
+            loop_refresh_decision_after_outcome(MineOnceOutcome::SearchExhausted),
+            LoopRefreshDecision::RefreshWork
+        );
+    }
+
+    #[tokio::test]
+    async fn mining_result_preserves_backend_search_exhaustion() {
+        let target_bits = 0x01000001;
+        let header = BlockHeader {
+            version: 1,
+            parents: vec!["p".into()],
+            timestamp: 1,
+            nonce: 0,
+            difficulty: target_bits,
+            merkle_root: "m".into(),
+            state_root: "s".into(),
+            blue_score: 1,
+            height: 1,
+        };
+
+        let result = super::mine_header_with_backend(
+            std::sync::Arc::new(super::CpuMiningBackend),
+            header,
+            1,
+            1,
+            target_bits,
+        )
+        .await
+        .expect("mining task");
+
+        assert!(!result.accepted);
+        assert_eq!(result.tries, 1);
+    }
+
+    #[test]
+    fn backend_verification_failure_remains_a_hard_invalid_pow_signal() {
+        let mut telemetry = MinerTelemetry::new("cpu", 2);
+
+        telemetry.record_backend_verification_failed();
+
+        assert_eq!(telemetry.search_exhaustions, 0);
+        assert_eq!(telemetry.backend_verification_failures, 1);
+        assert_eq!(telemetry.invalid_pow_rejections, 1);
+        assert_eq!(
+            telemetry.last_reject_code.as_deref(),
+            Some("backend_verification_failed")
+        );
     }
 
     #[test]
