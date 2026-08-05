@@ -1,0 +1,137 @@
+name: v2.4.0 private chain identity
+
+on:
+  pull_request:
+    branches:
+      - main
+      - release/2.4.0
+    paths:
+      - '.github/workflows/v2_4_0_private_identity.yml'
+      - 'apps/pulsedagd/**'
+      - 'configs/private-testnet/**'
+      - 'configs/single-node/**'
+      - 'crates/pulsedag-p2p/src/messages.rs'
+      - 'docs/ROADMAP_V2_4_0.md'
+      - 'docs/V2_4_0_PRIVATE_BURN_IN_OPERATOR_PROFILE.md'
+      - 'scripts/private_testnet/**'
+      - 'scripts/v2_4_0_single_node_preflight.sh'
+      - 'scripts/validate_v2_4_0_private_chain_identity.py'
+  push:
+    branches:
+      - main
+      - release/2.4.0
+    paths:
+      - '.github/workflows/v2_4_0_private_identity.yml'
+      - 'apps/pulsedagd/**'
+      - 'configs/private-testnet/**'
+      - 'configs/single-node/**'
+      - 'crates/pulsedag-p2p/src/messages.rs'
+      - 'docs/ROADMAP_V2_4_0.md'
+      - 'docs/V2_4_0_PRIVATE_BURN_IN_OPERATOR_PROFILE.md'
+      - 'scripts/private_testnet/**'
+      - 'scripts/v2_4_0_single_node_preflight.sh'
+      - 'scripts/validate_v2_4_0_private_chain_identity.py'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: v2-4-0-private-chain-identity-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  identity-contract:
+    name: private identity contract
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout candidate
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install pinned Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.88.0
+          components: rustfmt
+
+      - name: Validate versioned identity surfaces
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/validate_v2_4_0_private_chain_identity.py
+          bash -n scripts/v2_4_0_single_node_preflight.sh
+          bash -n scripts/private_testnet/netns_nodes.sh
+          python -m py_compile \
+            scripts/private_testnet/multi_host_rehearsal.py \
+            scripts/private_testnet/netns_inventory.py \
+            scripts/validate_v2_4_0_private_chain_identity.py
+
+      - name: Execute single-node preflight
+        shell: bash
+        run: |
+          set -euo pipefail
+          evidence_dir="ci-evidence/v2-4-0-private-identity"
+          mkdir -p "${evidence_dir}"
+          OUT_DIR="${evidence_dir}" \
+            bash scripts/v2_4_0_single_node_preflight.sh \
+              configs/single-node/single-node.env.example
+          python - "${evidence_dir}/single-node-preflight.json" <<'PY'
+          import json
+          import pathlib
+          import sys
+
+          report = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+          expected = {
+              "result": "PASS",
+              "network_profile": "private-testnet-v2.4.0",
+              "chain_id": "pulsedag-private-v2.4.0",
+              "p2p_enabled": False,
+              "public_testnet_ready": False,
+              "thirty_day_public_testnet_clock_started": False,
+              "contracts_enabled": False,
+          }
+          for key, value in expected.items():
+              if report.get(key) != value:
+                  raise SystemExit(
+                      f"unexpected preflight value {key}={report.get(key)!r}; expected {value!r}"
+                  )
+          PY
+
+      - name: Run focused runtime tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fmt --all -- --check
+          cargo test --locked -p pulsedagd single_node_mode -- --test-threads=1
+          cargo test --locked -p pulsedagd explicit_single_node_profile_is_enforced_by_runtime_config -- --test-threads=1
+
+      - name: Record evidence provenance
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          evidence_dir="ci-evidence/v2-4-0-private-identity"
+          mkdir -p "${evidence_dir}"
+          {
+            echo "source_sha=${GITHUB_SHA}"
+            echo "rustc=$(rustc --version 2>/dev/null || true)"
+            echo "cargo=$(cargo --version 2>/dev/null || true)"
+            echo "network_profile=private-testnet-v2.4.0"
+            echo "chain_id=pulsedag-private-v2.4.0"
+            echo "public_testnet_ready=false"
+            echo "thirty_day_public_testnet_clock_started=false"
+          } >"${evidence_dir}/provenance.txt"
+          find "${evidence_dir}" -maxdepth 1 -type f ! -name SHA256SUMS \
+            -print0 | sort -z | xargs -0 sha256sum \
+            >"${evidence_dir}/SHA256SUMS"
+
+      - name: Upload identity evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v2_4_0_private_identity_${{ github.run_id }}
+          path: ci-evidence/v2-4-0-private-identity
+          if-no-files-found: error
+          retention-days: 90

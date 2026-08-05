@@ -25,8 +25,8 @@ write_node_environment() {
   cat > "$temporary" <<EOF
 PULSEDAG_PRIVATE_TESTNET_ROLE=$role
 PULSEDAG_CONFIG_PROFILE=private
-PULSEDAG_NETWORK_PROFILE=private-testnet-v2.3.0
-PULSEDAG_CHAIN_ID=pulsedag-private-v2.3.0
+PULSEDAG_NETWORK_PROFILE=private-testnet-v2.4.0
+PULSEDAG_CHAIN_ID=pulsedag-private-v2.4.0
 PULSEDAG_CONSENSUS_MODE=legacy
 PULSEDAG_P2P_ENABLED=true
 PULSEDAG_P2P_MODE=libp2p-real
