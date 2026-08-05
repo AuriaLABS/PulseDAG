@@ -19,8 +19,25 @@ expect_fail() {
   fi
 }
 
+# Active examples must remain on the dedicated v2.4.0 identity. Historical
+# v2.3.0 compatibility is tested only against isolated temporary fixtures.
+grep -q '^PULSEDAG_NETWORK_PROFILE=private-testnet-v2.4.0$' \
+  "$ROOT_DIR/configs/private-testnet/seed.env.example"
+grep -q '^PULSEDAG_CHAIN_ID=pulsedag-private-v2.4.0$' \
+  "$ROOT_DIR/configs/private-testnet/seed.env.example"
+grep -q '^PULSEDAG_NETWORK_PROFILE=private-testnet-v2.4.0$' \
+  "$ROOT_DIR/configs/private-testnet/node.env.example"
+grep -q '^PULSEDAG_CHAIN_ID=pulsedag-private-v2.4.0$' \
+  "$ROOT_DIR/configs/private-testnet/node.env.example"
+
 cp "$ROOT_DIR/configs/private-testnet/seed.env.example" "$TMP_DIR/seed.env"
 cp "$ROOT_DIR/configs/private-testnet/node.env.example" "$TMP_DIR/node.env"
+for fixture in "$TMP_DIR/seed.env" "$TMP_DIR/node.env"; do
+  sed -i \
+    -e 's/^PULSEDAG_NETWORK_PROFILE=.*/PULSEDAG_NETWORK_PROFILE=private-testnet-v2.3.0/' \
+    -e 's/^PULSEDAG_CHAIN_ID=.*/PULSEDAG_CHAIN_ID=pulsedag-private-v2.3.0/' \
+    "$fixture"
+done
 expect_pass "$TMP_DIR/seed.env"
 expect_pass "$TMP_DIR/node.env"
 
@@ -61,4 +78,4 @@ OUT_DIR="$TMP_DIR/evidence" bash "$PREFLIGHT" "$TMP_DIR/node.env" >/dev/null
 grep -q '"result": "PASS"' "$TMP_DIR/evidence/private-testnet-preflight.json"
 grep -q '"public_testnet_ready": false' "$TMP_DIR/evidence/private-testnet-preflight.json"
 
-echo "PASS: v2.3.0 private-testnet preflight contract"
+echo "PASS: isolated historical v2.3.0 private-testnet preflight contract"
