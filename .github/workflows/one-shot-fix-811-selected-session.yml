@@ -1,0 +1,353 @@
+name: one-shot fix 811 selected session
+
+on:
+  push:
+    branches:
+      - fix/rejoin-catchup-stall-811
+
+permissions:
+  contents: write
+
+jobs:
+  patch-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Apply selected-session correlation and rearm fix
+        shell: python
+        run: |
+          from pathlib import Path
+
+          path = Path("apps/pulsedagd/src/main.rs")
+          text = path.read_text()
+
+          def replace_once(old: str, new: str, label: str):
+              global text
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"{label}: expected exactly one match, found {count}")
+              text = text.replace(old, new, 1)
+
+          replace_once(
+              "const SELECTED_LOCATOR_PRIORITY_GRACE_SECS: u64 = 60;\n",
+              "const SELECTED_LOCATOR_PRIORITY_GRACE_SECS: u64 = 60;\nconst SELECTED_SEGMENT_NO_PROGRESS_REARM_SECS: u64 = 30;\n",
+              "rearm constant",
+          )
+
+          replace_once(
+              '''fn selected_headers_own_broadcast_locator(
+              session_active: bool,
+              pending_locator: bool,
+              response_peer: Option<&str>,
+              session_correlated: bool,
+          ) -> bool {
+              session_correlated || (!session_active && pending_locator && response_peer.is_some())
+          }
+          ''',
+              '''fn selected_headers_own_broadcast_locator(
+              session_active: bool,
+              pending_locator: bool,
+              response_peer: Option<&str>,
+              session_correlated: bool,
+              pending_locator_matches_common_ancestor: bool,
+          ) -> bool {
+              session_correlated
+                  || (!session_active
+                      && pending_locator
+                      && response_peer.is_some()
+                      && pending_locator_matches_common_ancestor)
+          }
+
+          fn pending_selected_locator_matches_common_ancestor(
+              pending: Option<&PendingSelectedLocator>,
+              common_ancestor: Option<&str>,
+          ) -> bool {
+              let (Some(pending), Some(common_ancestor)) = (pending, common_ancestor) else {
+                  return false;
+              };
+              pending
+                  .locator
+                  .iter()
+                  .any(|hash| hash == common_ancestor)
+          }
+          ''',
+              "selected locator ownership",
+          )
+
+          replace_once(
+              '''    fn mark_applied(&mut self, hash: &str, now: u64) -> bool {
+              if self.contains_hash(hash) {
+                  self.accepted_applied_hashes.insert(hash.to_string());
+                  self.received_hashes.insert(hash.to_string());
+                  self.updated_at_unix = now;
+                  self.state = SelectedSegmentSessionState::Applying;
+                  true
+              } else {
+                  false
+              }
+          }
+          }
+          ''',
+              '''    fn mark_applied(&mut self, hash: &str, now: u64) -> bool {
+              if self.contains_hash(hash) {
+                  self.accepted_applied_hashes.insert(hash.to_string());
+                  self.received_hashes.insert(hash.to_string());
+                  self.updated_at_unix = now;
+                  self.state = SelectedSegmentSessionState::Applying;
+                  true
+              } else {
+                  false
+              }
+          }
+
+          fn no_progress_expired(&self, now: u64, timeout_secs: u64) -> bool {
+              !matches!(
+                  self.state,
+                  SelectedSegmentSessionState::Complete | SelectedSegmentSessionState::Failed
+              ) && now.saturating_sub(self.updated_at_unix) >= timeout_secs
+          }
+          }
+
+          fn selected_segment_session_should_rearm(
+              session: Option<&SelectedSegmentSession>,
+              pending_block_requests: usize,
+              now: u64,
+          ) -> bool {
+              pending_block_requests == 0
+                  && session.is_some_and(|session| {
+                      session.no_progress_expired(now, SELECTED_SEGMENT_NO_PROGRESS_REARM_SECS)
+                  })
+          }
+          ''',
+              "selected session expiry helper",
+          )
+
+          replace_once(
+              '''                recovery_tick = recovery_tick.saturating_add(1);
+          ''',
+              '''                if selected_segment_session_should_rearm(
+                  selected_segment_session.as_ref(),
+                  block_requests.pending.len(),
+                  now,
+              ) {
+                  if let Some(stale_session) = selected_segment_session.take() {
+                      let no_progress_secs = now.saturating_sub(stale_session.updated_at_unix);
+                      selected_segment_locator_state.lock().await.pending_locator = None;
+                      {
+                          let mut rt = runtime.write().await;
+                          rt.selected_segment_restarts_total =
+                              rt.selected_segment_restarts_total.saturating_add(1);
+                          rt.selected_segment_gap_blocks = 0;
+                          rt.active_session_id = None;
+                          rt.active_session_peer = None;
+                          rt.active_session_remote_tip = None;
+                          rt.active_session_remote_height = 0;
+                          rt.active_session_common_ancestor = None;
+                          rt.active_session_requested_headers = 0;
+                          rt.active_session_received_headers = 0;
+                          rt.active_session_requested_blocks = 0;
+                          rt.active_session_received_blocks = 0;
+                          rt.active_session_applied_blocks = 0;
+                          rt.active_session_remaining_blocks = 0;
+                          rt.final_quiescence_selected_sync_blocked_reason =
+                              Some("selected_segment_no_progress_rearm".to_string());
+                          rt.sync_state = "requesting_tips".to_string();
+                      }
+                      if let Some(ref p2p_handle) = p2p {
+                          if let Err(e) = p2p_handle.request_tips() {
+                              warn!(
+                                  error = %e,
+                                  session_id = stale_session.session_id,
+                                  peer = %stale_session.peer_id,
+                                  "failed requesting fresh tips after stale selected-segment rearm"
+                              );
+                          } else {
+                              let mut rt = runtime.write().await;
+                              rt.tips_requested = rt.tips_requested.saturating_add(1);
+                          }
+                      }
+                      warn!(
+                          event = "selected_segment_no_progress_rearm",
+                          session_id = stale_session.session_id,
+                          peer = %stale_session.peer_id,
+                          no_progress_secs,
+                          "expired stale selected-segment session and requested fresh tip reconciliation"
+                      );
+                  }
+              }
+
+              recovery_tick = recovery_tick.saturating_add(1);
+          ''',
+              "event-loop selected session rearm",
+          )
+
+          replace_once(
+              '''                        let selected_locator_pending = pending_selected_locator.is_some();
+              let selected_session_owns_headers = selected_headers_own_broadcast_locator(
+                  selected_segment_session.is_some(),
+                  selected_locator_pending,
+                  peer_id.as_deref(),
+                  session_correlated,
+              );
+          ''',
+              '''                        let selected_locator_pending = pending_selected_locator.is_some();
+              let pending_locator_matches_common_ancestor =
+                  pending_selected_locator_matches_common_ancestor(
+                      pending_selected_locator.as_ref(),
+                      common_ancestor.as_deref(),
+                  );
+              let selected_session_owns_headers = selected_headers_own_broadcast_locator(
+                  selected_segment_session.is_some(),
+                  selected_locator_pending,
+                  peer_id.as_deref(),
+                  session_correlated,
+                  pending_locator_matches_common_ancestor,
+              );
+          ''',
+              "header correlation callsite",
+          )
+
+          replace_once(
+              '''        assert!(selected_headers_own_broadcast_locator(
+              false,
+              true,
+              Some("peer-b"),
+              false,
+          ));
+          assert!(!selected_headers_own_broadcast_locator(
+              false, true, None, false,
+          ));
+          assert!(!selected_headers_own_broadcast_locator(
+              true,
+              true,
+              Some("peer-b"),
+              false,
+          ));
+          assert!(selected_headers_own_broadcast_locator(
+              true,
+              true,
+              Some("peer-a"),
+              true,
+          ));
+          ''',
+              '''        assert!(selected_headers_own_broadcast_locator(
+              false,
+              true,
+              Some("peer-b"),
+              false,
+              true,
+          ));
+          assert!(!selected_headers_own_broadcast_locator(
+              false, true, None, false, true,
+          ));
+          assert!(!selected_headers_own_broadcast_locator(
+              true,
+              true,
+              Some("peer-b"),
+              false,
+              true,
+          ));
+          assert!(selected_headers_own_broadcast_locator(
+              true,
+              true,
+              Some("peer-a"),
+              true,
+              false,
+          ));
+          assert!(!selected_headers_own_broadcast_locator(
+              false,
+              true,
+              Some("peer-b"),
+              false,
+              false,
+          ));
+          ''',
+              "existing locator ownership test",
+          )
+
+          marker = '''    #[test]
+          fn selected_segment_candidates_survive_generic_scheduler_staging() {
+          '''
+          if text.count(marker) != 1:
+              raise SystemExit("selected-session test insertion marker not found exactly once")
+          tests = '''    #[test]
+          fn unrelated_header_page_cannot_hijack_pending_selected_locator() {
+              let pending = PendingSelectedLocator {
+                  request_id: 7,
+                  peer_id: "peer-a".to_string(),
+                  locator: vec!["local-1296".to_string(), "local-1295".to_string()],
+                  requested_at_unix: 100,
+              };
+
+              assert!(pending_selected_locator_matches_common_ancestor(
+                  Some(&pending),
+                  Some("local-1296"),
+              ));
+              assert!(!pending_selected_locator_matches_common_ancestor(
+                  Some(&pending),
+                  Some("genesis"),
+              ));
+              assert!(!selected_headers_own_broadcast_locator(
+                  false,
+                  true,
+                  Some("peer-a"),
+                  false,
+                  false,
+              ));
+          }
+
+          #[test]
+          fn stale_selected_segment_rearms_only_after_no_progress_and_no_inflight_requests() {
+              let headers = vec![selected_test_header("b1", "common", 1)];
+              let locator = vec!["common".to_string()];
+              let session = SelectedSegmentSession::new(
+                  1,
+                  "peer-a".to_string(),
+                  "common".to_string(),
+                  0,
+                  &headers,
+                  &locator,
+                  1,
+                  100,
+              )
+              .expect("session");
+
+              assert!(!selected_segment_session_should_rearm(Some(&session), 0, 129));
+              assert!(selected_segment_session_should_rearm(Some(&session), 0, 130));
+              assert!(!selected_segment_session_should_rearm(Some(&session), 1, 200));
+              assert!(!selected_segment_session_should_rearm(None, 0, 200));
+          }
+
+          '''
+          text = text.replace(marker, tests + marker, 1)
+
+          path.write_text(text)
+
+      - name: Format
+        run: cargo fmt --all
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run selected-session regressions
+        run: cargo test -p pulsedagd selected_segment -- --nocapture
+
+      - name: Run locator correlation regression
+        run: cargo test -p pulsedagd unrelated_header_page_cannot_hijack_pending_selected_locator -- --nocapture
+
+      - name: Verify diff
+        run: git diff --check
+
+      - name: Commit tested patch and remove one-shot workflow
+        run: |
+          rm .github/workflows/one-shot-fix-811-selected-session.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add apps/pulsedagd/src/main.rs .github/workflows/one-shot-fix-811-selected-session.yml
+          git commit -m "fix(sync): rearm stale selected-segment recovery"
+          git push origin HEAD:fix/rejoin-catchup-stall-811
