@@ -39,8 +39,7 @@ jobs:
               "rearm constant",
           )
 
-          replace_once(
-              '''fn selected_headers_own_broadcast_locator(
+          ownership = '''fn selected_headers_own_broadcast_locator(
               session_active: bool,
               pending_locator: bool,
               response_peer: Option<&str>,
@@ -48,21 +47,10 @@ jobs:
           ) -> bool {
               session_correlated || (!session_active && pending_locator && response_peer.is_some())
           }
-          ''',
-              '''fn selected_headers_own_broadcast_locator(
-              session_active: bool,
-              pending_locator: bool,
-              response_peer: Option<&str>,
-              session_correlated: bool,
-              pending_locator_matches_common_ancestor: bool,
-          ) -> bool {
-              session_correlated
-                  || (!session_active
-                      && pending_locator
-                      && response_peer.is_some()
-                      && pending_locator_matches_common_ancestor)
-          }
-
+          '''
+          replace_once(
+              ownership,
+              ownership + '''
           fn pending_selected_locator_matches_common_ancestor(
               pending: Option<&PendingSelectedLocator>,
               common_ancestor: Option<&str>,
@@ -70,47 +58,23 @@ jobs:
               let (Some(pending), Some(common_ancestor)) = (pending, common_ancestor) else {
                   return false;
               };
-              pending
-                  .locator
-                  .iter()
-                  .any(|hash| hash == common_ancestor)
+              pending.locator.iter().any(|hash| hash == common_ancestor)
           }
           ''',
-              "selected locator ownership",
+              "pending locator correlation helper",
           )
 
+          impl_end = "\n}\n\nimpl Default for SelectedSegmentLimits"
           replace_once(
-              '''    fn mark_applied(&mut self, hash: &str, now: u64) -> bool {
-              if self.contains_hash(hash) {
-                  self.accepted_applied_hashes.insert(hash.to_string());
-                  self.received_hashes.insert(hash.to_string());
-                  self.updated_at_unix = now;
-                  self.state = SelectedSegmentSessionState::Applying;
-                  true
-              } else {
-                  false
-              }
-          }
-          }
-          ''',
-              '''    fn mark_applied(&mut self, hash: &str, now: u64) -> bool {
-              if self.contains_hash(hash) {
-                  self.accepted_applied_hashes.insert(hash.to_string());
-                  self.received_hashes.insert(hash.to_string());
-                  self.updated_at_unix = now;
-                  self.state = SelectedSegmentSessionState::Applying;
-                  true
-              } else {
-                  false
-              }
-          }
+              impl_end,
+              '''
 
-          fn no_progress_expired(&self, now: u64, timeout_secs: u64) -> bool {
-              !matches!(
-                  self.state,
-                  SelectedSegmentSessionState::Complete | SelectedSegmentSessionState::Failed
-              ) && now.saturating_sub(self.updated_at_unix) >= timeout_secs
-          }
+              fn no_progress_expired(&self, now: u64, timeout_secs: u64) -> bool {
+                  !matches!(
+                      self.state,
+                      SelectedSegmentSessionState::Complete | SelectedSegmentSessionState::Failed
+                  ) && now.saturating_sub(self.updated_at_unix) >= timeout_secs
+              }
           }
 
           fn selected_segment_session_should_rearm(
@@ -123,13 +87,13 @@ jobs:
                       session.no_progress_expired(now, SELECTED_SEGMENT_NO_PROGRESS_REARM_SECS)
                   })
           }
-          ''',
+
+          impl Default for SelectedSegmentLimits''',
               "selected session expiry helper",
           )
 
           replace_once(
-              '''                recovery_tick = recovery_tick.saturating_add(1);
-          ''',
+              "                recovery_tick = recovery_tick.saturating_add(1);\n",
               '''                if selected_segment_session_should_rearm(
                   selected_segment_session.as_ref(),
                   block_requests.pending.len(),
@@ -186,15 +150,16 @@ jobs:
               "event-loop selected session rearm",
           )
 
-          replace_once(
-              '''                        let selected_locator_pending = pending_selected_locator.is_some();
+          callsite = '''                        let selected_locator_pending = pending_selected_locator.is_some();
               let selected_session_owns_headers = selected_headers_own_broadcast_locator(
                   selected_segment_session.is_some(),
                   selected_locator_pending,
                   peer_id.as_deref(),
                   session_correlated,
               );
-          ''',
+          '''
+          replace_once(
+              callsite,
               '''                        let selected_locator_pending = pending_selected_locator.is_some();
               let pending_locator_matches_common_ancestor =
                   pending_selected_locator_matches_common_ancestor(
@@ -206,68 +171,9 @@ jobs:
                   selected_locator_pending,
                   peer_id.as_deref(),
                   session_correlated,
-                  pending_locator_matches_common_ancestor,
-              );
+              ) && (session_correlated || pending_locator_matches_common_ancestor);
           ''',
               "header correlation callsite",
-          )
-
-          replace_once(
-              '''        assert!(selected_headers_own_broadcast_locator(
-              false,
-              true,
-              Some("peer-b"),
-              false,
-          ));
-          assert!(!selected_headers_own_broadcast_locator(
-              false, true, None, false,
-          ));
-          assert!(!selected_headers_own_broadcast_locator(
-              true,
-              true,
-              Some("peer-b"),
-              false,
-          ));
-          assert!(selected_headers_own_broadcast_locator(
-              true,
-              true,
-              Some("peer-a"),
-              true,
-          ));
-          ''',
-              '''        assert!(selected_headers_own_broadcast_locator(
-              false,
-              true,
-              Some("peer-b"),
-              false,
-              true,
-          ));
-          assert!(!selected_headers_own_broadcast_locator(
-              false, true, None, false, true,
-          ));
-          assert!(!selected_headers_own_broadcast_locator(
-              true,
-              true,
-              Some("peer-b"),
-              false,
-              true,
-          ));
-          assert!(selected_headers_own_broadcast_locator(
-              true,
-              true,
-              Some("peer-a"),
-              true,
-              false,
-          ));
-          assert!(!selected_headers_own_broadcast_locator(
-              false,
-              true,
-              Some("peer-b"),
-              false,
-              false,
-          ));
-          ''',
-              "existing locator ownership test",
           )
 
           marker = '''    #[test]
@@ -292,13 +198,16 @@ jobs:
                   Some(&pending),
                   Some("genesis"),
               ));
-              assert!(!selected_headers_own_broadcast_locator(
+              let owns_unrelated = selected_headers_own_broadcast_locator(
                   false,
                   true,
                   Some("peer-a"),
                   false,
-                  false,
-              ));
+              ) && pending_selected_locator_matches_common_ancestor(
+                  Some(&pending),
+                  Some("genesis"),
+              );
+              assert!(!owns_unrelated);
           }
 
           #[test]
@@ -325,7 +234,6 @@ jobs:
 
           '''
           text = text.replace(marker, tests + marker, 1)
-
           path.write_text(text)
 
       - name: Format
