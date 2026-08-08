@@ -15,7 +15,6 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-
       - uses: dtolnay/rust-toolchain@stable
 
       - name: Apply selected-session correlation and rearm fix
@@ -26,14 +25,14 @@ jobs:
           path = Path("apps/pulsedagd/src/main.rs")
           text = path.read_text()
 
-          def replace_once(old: str, new: str, label: str):
+          def once(old, new, label):
               global text
-              count = text.count(old)
-              if count != 1:
-                  raise SystemExit(f"{label}: expected exactly one match, found {count}")
+              n = text.count(old)
+              if n != 1:
+                  raise SystemExit(f"{label}: expected 1 match, found {n}")
               text = text.replace(old, new, 1)
 
-          replace_once(
+          once(
               "const SELECTED_LOCATOR_PRIORITY_GRACE_SECS: u64 = 60;\n",
               "const SELECTED_LOCATOR_PRIORITY_GRACE_SECS: u64 = 60;\nconst SELECTED_SEGMENT_NO_PROGRESS_REARM_SECS: u64 = 30;\n",
               "rearm constant",
@@ -48,7 +47,7 @@ jobs:
               session_correlated || (!session_active && pending_locator && response_peer.is_some())
           }
           '''
-          replace_once(
+          once(
               ownership,
               ownership + '''
           fn pending_selected_locator_matches_common_ancestor(
@@ -61,12 +60,11 @@ jobs:
               pending.locator.iter().any(|hash| hash == common_ancestor)
           }
           ''',
-              "pending locator correlation helper",
+              "locator correlation helper",
           )
 
-          impl_end = "\n}\n\nimpl Default for SelectedSegmentLimits"
-          replace_once(
-              impl_end,
+          once(
+              "\n}\n\nimpl Default for SelectedSegmentLimits",
               '''
 
               fn no_progress_expired(&self, now: u64, timeout_secs: u64) -> bool {
@@ -89,10 +87,10 @@ jobs:
           }
 
           impl Default for SelectedSegmentLimits''',
-              "selected session expiry helper",
+              "session expiry helper",
           )
 
-          replace_once(
+          once(
               "                recovery_tick = recovery_tick.saturating_add(1);\n",
               '''                if selected_segment_session_should_rearm(
                   selected_segment_session.as_ref(),
@@ -147,40 +145,37 @@ jobs:
 
               recovery_tick = recovery_tick.saturating_add(1);
           ''',
-              "event-loop selected session rearm",
+              "event loop rearm",
           )
 
-          callsite = '''                        let selected_locator_pending = pending_selected_locator.is_some();
-              let selected_session_owns_headers = selected_headers_own_broadcast_locator(
-                  selected_segment_session.is_some(),
-                  selected_locator_pending,
-                  peer_id.as_deref(),
-                  session_correlated,
-              );
-          '''
-          replace_once(
-              callsite,
-              '''                        let selected_locator_pending = pending_selected_locator.is_some();
-              let pending_locator_matches_common_ancestor =
-                  pending_selected_locator_matches_common_ancestor(
-                      pending_selected_locator.as_ref(),
-                      common_ancestor.as_deref(),
-                  );
-              let selected_session_owns_headers = selected_headers_own_broadcast_locator(
-                  selected_segment_session.is_some(),
-                  selected_locator_pending,
-                  peer_id.as_deref(),
-                  session_correlated,
-              ) && (session_correlated || pending_locator_matches_common_ancestor);
-          ''',
-              "header correlation callsite",
-          )
+          pending_anchor = "let selected_locator_pending = pending_selected_locator.is_some();"
+          pending_pos = text.index(pending_anchor)
+          call_token = "let selected_session_owns_headers = selected_headers_own_broadcast_locator("
+          call_pos = text.index(call_token, pending_pos)
+          next_pos = text.index("let selected_requests =", call_pos)
+          if call_pos > next_pos:
+              raise SystemExit("selected-session callsite anchors out of order")
+          line_start = text.rfind("\n", 0, call_pos) + 1
+          indent = text[line_start:call_pos]
+          call_end = text.index(");", call_pos, next_pos) + 2
+          replacement = f'''{indent}let pending_locator_matches_common_ancestor =
+          {indent}    pending_selected_locator_matches_common_ancestor(
+          {indent}        pending_selected_locator.as_ref(),
+          {indent}        common_ancestor.as_deref(),
+          {indent}    );
+          {indent}let selected_session_owns_headers = selected_headers_own_broadcast_locator(
+          {indent}    selected_segment_session.is_some(),
+          {indent}    selected_locator_pending,
+          {indent}    peer_id.as_deref(),
+          {indent}    session_correlated,
+          {indent}) && (session_correlated || pending_locator_matches_common_ancestor);'''
+          text = text[:line_start] + replacement + text[call_end:]
 
-          marker = '''    #[test]
-          fn selected_segment_candidates_survive_generic_scheduler_staging() {
-          '''
-          if text.count(marker) != 1:
-              raise SystemExit("selected-session test insertion marker not found exactly once")
+          test_name = "fn selected_segment_candidates_survive_generic_scheduler_staging()"
+          test_pos = text.index(test_name)
+          insert_pos = text.rfind("    #[test]", 0, test_pos)
+          if insert_pos < 0:
+              raise SystemExit("test insertion anchor missing")
           tests = '''    #[test]
           fn unrelated_header_page_cannot_hijack_pending_selected_locator() {
               let pending = PendingSelectedLocator {
@@ -189,23 +184,16 @@ jobs:
                   locator: vec!["local-1296".to_string(), "local-1295".to_string()],
                   requested_at_unix: 100,
               };
-
               assert!(pending_selected_locator_matches_common_ancestor(
-                  Some(&pending),
-                  Some("local-1296"),
+                  Some(&pending), Some("local-1296")
               ));
               assert!(!pending_selected_locator_matches_common_ancestor(
-                  Some(&pending),
-                  Some("genesis"),
+                  Some(&pending), Some("genesis")
               ));
               let owns_unrelated = selected_headers_own_broadcast_locator(
-                  false,
-                  true,
-                  Some("peer-a"),
-                  false,
+                  false, true, Some("peer-a"), false,
               ) && pending_selected_locator_matches_common_ancestor(
-                  Some(&pending),
-                  Some("genesis"),
+                  Some(&pending), Some("genesis")
               );
               assert!(!owns_unrelated);
           }
@@ -225,7 +213,6 @@ jobs:
                   100,
               )
               .expect("session");
-
               assert!(!selected_segment_session_should_rearm(Some(&session), 0, 129));
               assert!(selected_segment_session_should_rearm(Some(&session), 0, 130));
               assert!(!selected_segment_session_should_rearm(Some(&session), 1, 200));
@@ -233,24 +220,19 @@ jobs:
           }
 
           '''
-          text = text.replace(marker, tests + marker, 1)
+          text = text[:insert_pos] + tests + text[insert_pos:]
           path.write_text(text)
 
       - name: Format
         run: cargo fmt --all
-
       - name: Check formatting
         run: cargo fmt --all -- --check
-
       - name: Run selected-session regressions
         run: cargo test -p pulsedagd selected_segment -- --nocapture
-
       - name: Run locator correlation regression
         run: cargo test -p pulsedagd unrelated_header_page_cannot_hijack_pending_selected_locator -- --nocapture
-
       - name: Verify diff
         run: git diff --check
-
       - name: Commit tested patch and remove one-shot workflow
         run: |
           rm .github/workflows/one-shot-fix-811-selected-session.yml
