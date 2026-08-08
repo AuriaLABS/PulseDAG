@@ -71,7 +71,9 @@ impl DependencyAwareFetchScheduler {
 
         while combined.requests.len() < max {
             let remaining = max.saturating_sub(combined.requests.len());
-            let plan = self.inner.next_requests(known_blocks, &scheduled, remaining);
+            let plan = self
+                .inner
+                .next_requests(known_blocks, &scheduled, remaining);
             combined.parent_first_requests = combined
                 .parent_first_requests
                 .saturating_add(plan.parent_first_requests);
@@ -134,9 +136,21 @@ mod tests {
 
         let plan = scheduler.next_requests(&HashSet::new(), &HashSet::new(), 8);
 
-        let root = plan.requests.iter().position(|hash| hash == "root").unwrap();
-        let parent = plan.requests.iter().position(|hash| hash == "parent").unwrap();
-        let child = plan.requests.iter().position(|hash| hash == "child").unwrap();
+        let root = plan
+            .requests
+            .iter()
+            .position(|hash| hash == "root")
+            .unwrap();
+        let parent = plan
+            .requests
+            .iter()
+            .position(|hash| hash == "parent")
+            .unwrap();
+        let child = plan
+            .requests
+            .iter()
+            .position(|hash| hash == "child")
+            .unwrap();
         assert!(root < parent);
         assert!(parent < child);
         assert!(plan.deferred.is_empty());
