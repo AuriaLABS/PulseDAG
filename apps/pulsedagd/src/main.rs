@@ -112,6 +112,16 @@ fn selected_headers_own_broadcast_locator(
     session_correlated || (!session_active && pending_locator && response_peer.is_some())
 }
 
+fn pending_selected_locator_matches_common_ancestor(
+    pending: Option<&PendingSelectedLocator>,
+    common_ancestor: Option<&str>,
+) -> bool {
+    let (Some(pending), Some(common_ancestor)) = (pending, common_ancestor) else {
+        return false;
+    };
+    pending.locator.iter().any(|hash| hash == common_ancestor)
+}
+
 fn commit_candidate_chain_state(
     storage: &Storage,
     current: &mut pulsedag_core::ChainState,
@@ -158,6 +168,7 @@ const FINAL_QUIESCENCE_NO_PROGRESS_SECS: u64 = 45;
 const FINAL_QUIESCENCE_CLEANUP_LIMIT: usize = 64;
 const SELECTED_SEGMENT_PRIORITY_GAP_BLOCKS: u64 = 64;
 const SELECTED_LOCATOR_PRIORITY_GRACE_SECS: u64 = 60;
+const SELECTED_SEGMENT_NO_PROGRESS_REARM_SECS: u64 = 30;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct FinalQuiescenceCleanupResult {
@@ -655,6 +666,24 @@ impl SelectedSegmentSession {
             false
         }
     }
+
+    fn no_progress_expired(&self, now: u64, timeout_secs: u64) -> bool {
+        !matches!(
+            self.state,
+            SelectedSegmentSessionState::Complete | SelectedSegmentSessionState::Failed
+        ) && now.saturating_sub(self.updated_at_unix) >= timeout_secs
+    }
+}
+
+fn selected_segment_session_should_rearm(
+    session: Option<&SelectedSegmentSession>,
+    pending_block_requests: usize,
+    now: u64,
+) -> bool {
+    pending_block_requests == 0
+        && session.is_some_and(|session| {
+            session.no_progress_expired(now, SELECTED_SEGMENT_NO_PROGRESS_REARM_SECS)
+        })
 }
 
 impl Default for SelectedSegmentLimits {
@@ -1972,6 +2001,57 @@ async fn main() -> Result<()> {
                         }
                     }
                 }
+                if selected_segment_session_should_rearm(
+                    selected_segment_session.as_ref(),
+                    block_requests.pending.len(),
+                    now,
+                ) {
+                    if let Some(stale_session) = selected_segment_session.take() {
+                        let no_progress_secs = now.saturating_sub(stale_session.updated_at_unix);
+                        selected_segment_locator_state.lock().await.pending_locator = None;
+                        {
+                            let mut rt = runtime.write().await;
+                            rt.selected_segment_restarts_total =
+                                rt.selected_segment_restarts_total.saturating_add(1);
+                            rt.selected_segment_gap_blocks = 0;
+                            rt.active_session_id = None;
+                            rt.active_session_peer = None;
+                            rt.active_session_remote_tip = None;
+                            rt.active_session_remote_height = 0;
+                            rt.active_session_common_ancestor = None;
+                            rt.active_session_requested_headers = 0;
+                            rt.active_session_received_headers = 0;
+                            rt.active_session_requested_blocks = 0;
+                            rt.active_session_received_blocks = 0;
+                            rt.active_session_applied_blocks = 0;
+                            rt.active_session_remaining_blocks = 0;
+                            rt.final_quiescence_selected_sync_blocked_reason =
+                                Some("selected_segment_no_progress_rearm".to_string());
+                            rt.sync_state = "requesting_tips".to_string();
+                        }
+                        if let Some(ref p2p_handle) = p2p {
+                            if let Err(e) = p2p_handle.request_tips() {
+                                warn!(
+                                    error = %e,
+                                    session_id = stale_session.session_id,
+                                    peer = %stale_session.peer_id,
+                                    "failed requesting fresh tips after stale selected-segment rearm"
+                                );
+                            } else {
+                                let mut rt = runtime.write().await;
+                                rt.tips_requested = rt.tips_requested.saturating_add(1);
+                            }
+                        }
+                        warn!(
+                            event = "selected_segment_no_progress_rearm",
+                            session_id = stale_session.session_id,
+                            peer = %stale_session.peer_id,
+                            no_progress_secs,
+                            "expired stale selected-segment session and requested fresh tip reconciliation"
+                        );
+                    }
+                }
+
                 recovery_tick = recovery_tick.saturating_add(1);
                 if recovery_tick.is_multiple_of(5) {
                     let tick_started = Instant::now();
@@ -3679,12 +3759,18 @@ async fn main() -> Result<()> {
                         };
                         let plan = fetch_scheduler.next_requests(&known, &pending, 8);
                         let selected_locator_pending = pending_selected_locator.is_some();
+                        let pending_locator_matches_common_ancestor =
+                            pending_selected_locator_matches_common_ancestor(
+                                pending_selected_locator.as_ref(),
+                                common_ancestor.as_deref(),
+                            );
                         let selected_session_owns_headers = selected_headers_own_broadcast_locator(
                             selected_segment_session.is_some(),
                             selected_locator_pending,
                             peer_id.as_deref(),
                             session_correlated,
-                        );
+                        ) && (session_correlated
+                            || pending_locator_matches_common_ancestor);
                         let selected_requests = if selected_session_owns_headers
                             && matches!(selected_segment_validation, Some(Ok(())))
                         {
@@ -6054,6 +6140,64 @@ mod tests {
         let limits = SelectedSegmentLimits::default();
         assert!(limits.max_inflight_blocks_per_peer >= 96);
         assert!(limits.max_inflight_blocks_per_peer <= 128);
+    }
+
+    #[test]
+    fn unrelated_header_page_cannot_hijack_pending_selected_locator() {
+        let pending = PendingSelectedLocator {
+            request_id: 7,
+            peer_id: "peer-a".to_string(),
+            locator: vec!["local-1296".to_string(), "local-1295".to_string()],
+            requested_at_unix: 100,
+        };
+        assert!(pending_selected_locator_matches_common_ancestor(
+            Some(&pending),
+            Some("local-1296")
+        ));
+        assert!(!pending_selected_locator_matches_common_ancestor(
+            Some(&pending),
+            Some("genesis")
+        ));
+        let owns_unrelated =
+            selected_headers_own_broadcast_locator(false, true, Some("peer-a"), false)
+                && pending_selected_locator_matches_common_ancestor(
+                    Some(&pending),
+                    Some("genesis"),
+                );
+        assert!(!owns_unrelated);
+    }
+
+    #[test]
+    fn stale_selected_segment_rearms_only_after_no_progress_and_no_inflight_requests() {
+        let headers = vec![selected_test_header("b1", "common", 1)];
+        let locator = vec!["common".to_string()];
+        let session = SelectedSegmentSession::new(
+            1,
+            "peer-a".to_string(),
+            "common".to_string(),
+            0,
+            &headers,
+            &locator,
+            1,
+            100,
+        )
+        .expect("session");
+        assert!(!selected_segment_session_should_rearm(
+            Some(&session),
+            0,
+            129
+        ));
+        assert!(selected_segment_session_should_rearm(
+            Some(&session),
+            0,
+            130
+        ));
+        assert!(!selected_segment_session_should_rearm(
+            Some(&session),
+            1,
+            200
+        ));
+        assert!(!selected_segment_session_should_rearm(None, 0, 200));
     }
 
     #[test]
