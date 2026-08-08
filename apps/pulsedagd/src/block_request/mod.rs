@@ -1,4 +1,3 @@
-#[path = "block_request_impl.rs"]
 mod implementation;
 
 use std::collections::HashSet;
