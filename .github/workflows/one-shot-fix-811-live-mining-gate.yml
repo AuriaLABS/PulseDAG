@@ -18,7 +18,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Apply patch
         run: python .github/scripts/fix_811_live_mining_gate.py
-      - name: Format
+      - name: Format patch
+        run: cargo fmt --all
+      - name: Format check
         run: cargo fmt --all -- --check
       - name: Diff sanity
         run: git diff --check
