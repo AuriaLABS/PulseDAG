@@ -18,8 +18,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
 
       - name: Apply live-state mining gate patch
-        shell: python
+        shell: bash
         run: |
+          python - <<'PY'
           from pathlib import Path
           import re
 
@@ -98,16 +99,16 @@ jobs:
           if n != 1:
               raise SystemExit(f"mining gate replacement expected 1 match, found {n}")
 
-          text = text.replace(
-              '''        current_template_state, mining_template_unavailable_reason, template_freshness_window,
+          old_import = '''        current_template_state, mining_template_unavailable_reason, template_freshness_window,
               template_id_for_state, template_ordered_transactions, TEMPLATE_FRESHNESS_GRACE_SECS,
-''',
-              '''        current_template_state, mining_recovery_active, mining_template_unavailable_reason,
+'''
+          new_import = '''        current_template_state, mining_recovery_active, mining_template_unavailable_reason,
               template_freshness_window, template_id_for_state, template_ordered_transactions,
               TEMPLATE_FRESHNESS_GRACE_SECS,
-''',
-              1,
-          )
+'''
+          if old_import not in text:
+              raise SystemExit("test import anchor not found")
+          text = text.replace(old_import, new_import, 1)
 
           anchor = '''    #[tokio::test]
               async fn isolated_mining_node_does_not_get_template_when_p2p_zero_peer() {
@@ -139,6 +140,7 @@ jobs:
               raise SystemExit("test insertion anchor not found")
           text = text.replace(anchor, tests + anchor, 1)
           path.write_text(text)
+          PY
 
       - name: Format
         run: cargo fmt --all -- --check
@@ -146,8 +148,11 @@ jobs:
       - name: Diff sanity
         run: git diff --check
 
-      - name: Test mining gate
-        run: cargo test -p pulsedag-rpc live_missing_parent_state_still_blocks_mining stale_runtime_missing_parent_counters_do_not_block_clean_chain_template -- --nocapture
+      - name: Test live recovery predicate
+        run: cargo test -p pulsedag-rpc live_missing_parent_state_still_blocks_mining -- --nocapture
+
+      - name: Test stale runtime counter regression
+        run: cargo test -p pulsedag-rpc stale_runtime_missing_parent_counters_do_not_block_clean_chain_template -- --nocapture
 
       - name: Test mining template module
         run: cargo test -p pulsedag-rpc mining_template -- --nocapture
