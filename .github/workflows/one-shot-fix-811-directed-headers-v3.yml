@@ -1,0 +1,439 @@
+name: one-shot fix 811 directed headers v3
+
+on:
+  push:
+    branches:
+      - fix/rejoin-catchup-stall-811
+
+permissions:
+  contents: write
+
+jobs:
+  patch-test-commit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Apply directed GetHeaders patch
+        shell: python
+        run: |
+          from pathlib import Path
+          import re
+
+          def sub1(text, pattern, replacement, label, flags=re.S):
+              text2, n = re.subn(pattern, lambda m: replacement, text, count=1, flags=flags)
+              if n != 1:
+                  raise SystemExit(f"{label}: expected 1 match, found {n}")
+              return text2
+
+          def sub_exact(text, old, new, label, count=1):
+              n = text.count(old)
+              if n != count:
+                  raise SystemExit(f"{label}: expected {count} matches, found {n}")
+              return text.replace(old, new)
+
+          def insert_before_fn(text, fn_name, addition, label, start=0):
+              marker = f"fn {fn_name}("
+              pos = text.find(marker, start)
+              if pos < 0:
+                  raise SystemExit(f"{label}: {marker} not found")
+              line = text.rfind("\n", 0, pos) + 1
+              return text[:line] + addition + text[line:]
+
+          # ---------- wire schema ----------
+          path = Path("crates/pulsedag-p2p/src/messages.rs")
+          text = path.read_text()
+          text = sub1(
+              text,
+              r"GetHeaders\s*\{\s*chain_id: String,\s*locator: Vec<Hash>,\s*stop_hash: Option<Hash>,\s*limit: usize,\s*\},",
+              '''GetHeaders {
+                  chain_id: String,
+                  locator: Vec<Hash>,
+                  stop_hash: Option<Hash>,
+                  limit: usize,
+                  #[serde(default)]
+                  requested_peer_id: Option<String>,
+              },''',
+              "wire GetHeaders target",
+          )
+          text = sub1(
+              text,
+              r'''NetworkMessage::GetHeaders\s*\{\s*chain_id: "testnet"\.into\(\),\s*locator: vec!\["parent"\.into\(\)\],\s*stop_hash: Some\(block\.hash\.clone\(\)\),\s*limit: 64,\s*\},''',
+              '''NetworkMessage::GetHeaders {
+                      chain_id: "testnet".into(),
+                      locator: vec!["parent".into()],
+                      stop_hash: Some(block.hash.clone()),
+                      limit: 64,
+                      requested_peer_id: None,
+                  },''',
+              "wire test constructor",
+          )
+          compat = '''    #[test]
+              fn get_headers_target_is_backward_compatible() {
+                  let legacy = br#"{"type":"GetHeaders","chain_id":"testnet","locator":["parent"],"stop_hash":null,"limit":64}"#;
+                  let decoded: NetworkMessage =
+                      serde_json::from_slice(legacy).expect("legacy GetHeaders decodes");
+                  match decoded {
+                      NetworkMessage::GetHeaders { requested_peer_id, .. } => {
+                          assert_eq!(requested_peer_id, None);
+                      }
+                      _ => panic!("unexpected message"),
+                  }
+
+                  let directed = NetworkMessage::GetHeaders {
+                      chain_id: "testnet".into(),
+                      locator: vec!["parent".into()],
+                      stop_hash: None,
+                      limit: 64,
+                      requested_peer_id: Some("peer-a".into()),
+                  };
+                  let encoded = serde_json::to_vec(&directed).expect("directed GetHeaders encodes");
+                  let decoded: NetworkMessage =
+                      serde_json::from_slice(&encoded).expect("directed GetHeaders decodes");
+                  match decoded {
+                      NetworkMessage::GetHeaders { requested_peer_id, .. } => {
+                          assert_eq!(requested_peer_id.as_deref(), Some("peer-a"));
+                      }
+                      _ => panic!("unexpected message"),
+                  }
+              }
+
+          '''
+          text = insert_before_fn(text, "rejects_malformed_payloads_during_decode", compat, "wire compat test")
+          path.write_text(text)
+
+          # ---------- p2p transport ----------
+          path = Path("crates/pulsedag-p2p/src/lib.rs")
+          text = path.read_text()
+
+          # Trait method: default unsupported, mirroring request_block_from.
+          trait_anchor = '''    fn send_headers(&self, _headers: &[HeaderInventory]) -> Result<(), PulseError> {
+          '''
+          directed_trait = '''    fn request_headers_from(
+              &self,
+              _peer_id: &str,
+              _locator: &[PulseHash],
+              _stop_hash: Option<&PulseHash>,
+              _limit: usize,
+          ) -> Result<(), PulseError> {
+              Err(PulseError::Internal(
+                  "peer-addressed GetHeaders is not supported by this p2p handle".into(),
+              ))
+          }
+          '''
+          text = sub_exact(text, trait_anchor, directed_trait + trait_anchor, "trait directed GetHeaders")
+
+          # Outbound message carries the optional target.
+          text = sub1(
+              text,
+              r"GetHeaders\s*\{\s*locator: Vec<PulseHash>,\s*stop_hash: Option<PulseHash>,\s*limit: usize,\s*\},",
+              '''GetHeaders {
+                  locator: Vec<PulseHash>,
+                  stop_hash: Option<PulseHash>,
+                  limit: usize,
+                  requested_peer_id: Option<String>,
+              },''',
+              "outbound target field",
+          )
+
+          # Priority queue must preserve the target.
+          text = sub1(
+              text,
+              r'''OutboundMessage::GetHeaders\s*\{\s*locator,\s*stop_hash,\s*limit,\s*\}\s*=>\s*\{\s*queue\.blocks\.push_back\(OutboundMessage::GetHeaders\s*\{\s*locator,\s*stop_hash,\s*limit,\s*\}\);\s*\}''',
+              '''OutboundMessage::GetHeaders {
+                  locator,
+                  stop_hash,
+                  limit,
+                  requested_peer_id,
+              } => {
+                  queue.blocks.push_back(OutboundMessage::GetHeaders {
+                      locator,
+                      stop_hash,
+                      limit,
+                      requested_peer_id,
+                  });
+              }''',
+              "queue preserves GetHeaders target",
+          )
+
+          # Dispatcher: only the selected peer serves a directed request.
+          dispatch_pattern = r'''NetworkMessage::GetHeaders\s*\{\s*chain_id,\s*locator,\s*stop_hash,\s*limit,\s*\}\s*=>\s*\{'''
+          dispatch_replacement = '''NetworkMessage::GetHeaders {
+                  chain_id,
+                  locator,
+                  stop_hash,
+                  limit,
+                  requested_peer_id,
+              } => {
+                  let targets_local_peer = requested_peer_id.as_ref().is_none_or(|peer| {
+                      inner
+                          .lock()
+                          .map(|guard| peer == &guard.peer_id)
+                          .unwrap_or(false)
+                  });
+                  if !targets_local_peer {
+                      return;
+                  }'''
+          text = sub1(text, dispatch_pattern, dispatch_replacement, "directed GetHeaders dispatcher")
+
+          # Broadcast request_headers gets target=None in Libp2p implementation.
+          lib_start = text.index("impl P2pHandle for Libp2pHandle")
+          req_start = text.index("    fn request_headers(", lib_start)
+          send_start = text.index("    fn send_headers(", req_start)
+          section = text[req_start:send_start]
+          section = sub1(
+              section,
+              r'''OutboundMessage::GetHeaders\s*\{\s*locator: locator\.to_vec\(\),\s*stop_hash: stop_hash\.cloned\(\),\s*limit,\s*\},''',
+              '''OutboundMessage::GetHeaders {
+                      locator: locator.to_vec(),
+                      stop_hash: stop_hash.cloned(),
+                      limit,
+                      requested_peer_id: None,
+                  },''',
+              "Libp2p broadcast target",
+          )
+          text = text[:req_start] + section + text[send_start:]
+
+          # Directed implementation inserted next to request_headers.
+          lib_start = text.index("impl P2pHandle for Libp2pHandle")
+          req_start = text.index("    fn request_headers(", lib_start)
+          send_start = text.index("    fn send_headers(", req_start)
+          directed_impl = '''    fn request_headers_from(
+              &self,
+              peer_id: &str,
+              locator: &[PulseHash],
+              stop_hash: Option<&PulseHash>,
+              limit: usize,
+          ) -> Result<(), PulseError> {
+              {
+                  let mut inner = self
+                      .inner
+                      .lock()
+                      .map_err(|_| PulseError::Internal("p2p lock poisoned".into()))?;
+                  if inner.active_connections.get(peer_id).copied().unwrap_or(0) == 0 {
+                      return Err(PulseError::Internal(format!(
+                          "peer {peer_id} is not a direct request-capable session"
+                      )));
+                  }
+                  inner.header_requests_sent = inner.header_requests_sent.saturating_add(1);
+              }
+              self.queue_sync_message(
+                  OutboundMessage::GetHeaders {
+                      locator: locator.to_vec(),
+                      stop_hash: stop_hash.cloned(),
+                      limit,
+                      requested_peer_id: Some(peer_id.to_string()),
+                  },
+                  "get-headers-from",
+              )
+          }
+
+          '''
+          text = text[:send_start] + directed_impl + text[send_start:]
+
+          # Memory mode can use existing simulated request path.
+          mem_start = text.index("impl P2pHandle for MemoryP2pHandle")
+          mem_req = text.find("    fn request_headers(", mem_start)
+          if mem_req >= 0:
+              mem_send = text.index("    fn send_headers(", mem_req)
+              mem_directed = '''    fn request_headers_from(
+                  &self,
+                  _peer_id: &str,
+                  locator: &[PulseHash],
+                  stop_hash: Option<&PulseHash>,
+                  limit: usize,
+              ) -> Result<(), PulseError> {
+                  self.request_headers(locator, stop_hash, limit)
+              }
+
+              '''
+              text = text[:mem_send] + mem_directed + text[mem_send:]
+
+          # Both libp2p runtimes consume OutboundMessage::GetHeaders. Add target to
+          # the match binding, dedup id, and NetworkMessage wire payload.
+          old_arm = "OutboundMessage::GetHeaders { locator, stop_hash, limit } => {"
+          arm_count = text.count(old_arm)
+          if arm_count != 2:
+              raise SystemExit(f"runtime GetHeaders arms: expected 2, found {arm_count}")
+          text = text.replace(
+              old_arm,
+              "OutboundMessage::GetHeaders { locator, stop_hash, limit, requested_peer_id } => {",
+          )
+
+          old_id = 'let message_id = format!("sync:get-headers:{}:{stop_part}:{limit}", locator.join(","));'
+          if text.count(old_id) != 2:
+              raise SystemExit(f"runtime GetHeaders message ids: expected 2, found {text.count(old_id)}")
+          text = text.replace(
+              old_id,
+              'let target_part = requested_peer_id.as_deref().unwrap_or("broadcast");\n                        let message_id = format!("sync:get-headers:{target_part}:{}:{stop_part}:{limit}", locator.join(","));',
+          )
+
+          old_wire = 'let wire = serde_json::to_vec(&NetworkMessage::GetHeaders { chain_id: cfg.chain_id.clone(), locator, stop_hash, limit });'
+          if text.count(old_wire) != 2:
+              raise SystemExit(f"runtime GetHeaders wire constructors: expected 2, found {text.count(old_wire)}")
+          text = text.replace(
+              old_wire,
+              'let wire = serde_json::to_vec(&NetworkMessage::GetHeaders { chain_id: cfg.chain_id.clone(), locator, stop_hash, limit, requested_peer_id });',
+          )
+
+          # Unit test the transport-level target retention without a live swarm.
+          p2p_test = '''    #[test]
+              fn peer_addressed_get_headers_preserves_target_peer() {
+                  let (outbound_tx, mut outbound_rx) = mpsc::unbounded_channel();
+                  let inner = Arc::new(Mutex::new(InnerState {
+                      active_connections: HashMap::from([("peer-a".to_string(), 1)]),
+                      ..InnerState::default()
+                  }));
+                  let handle = Libp2pHandle { inner, outbound_tx };
+                  handle
+                      .request_headers_from("peer-a", &["local-tip".to_string()], None, 128)
+                      .expect("directed GetHeaders queues");
+                  match outbound_rx.try_recv().expect("queued message") {
+                      OutboundMessage::GetHeaders {
+                          requested_peer_id,
+                          locator,
+                          limit,
+                          ..
+                      } => {
+                          assert_eq!(requested_peer_id.as_deref(), Some("peer-a"));
+                          assert_eq!(locator, vec!["local-tip".to_string()]);
+                          assert_eq!(limit, 128);
+                      }
+                      _ => panic!("unexpected outbound message"),
+                  }
+              }
+
+          '''
+          text = insert_before_fn(
+              text,
+              "connected_peers_truth_flag_is_mode_dependent",
+              p2p_test,
+              "p2p directed target test",
+          )
+          path.write_text(text)
+
+          # ---------- node selected-segment caller ----------
+          path = Path("apps/pulsedagd/src/main.rs")
+          text = path.read_text()
+
+          # A directed locator response must come from the peer we selected.
+          commit_anchor = "fn commit_candidate_chain_state("
+          peer_helper = '''fn pending_selected_locator_accepts_response_peer(
+              pending: Option<&PendingSelectedLocator>,
+              response_peer: Option<&str>,
+          ) -> bool {
+              let (Some(pending), Some(response_peer)) = (pending, response_peer) else {
+                  return false;
+              };
+              pending.peer_id == "broadcast-observed-block-gap" || pending.peer_id == response_peer
+          }
+
+          '''
+          if text.count(commit_anchor) != 1:
+              raise SystemExit("main helper anchor missing")
+          text = text.replace(commit_anchor, peer_helper + commit_anchor, 1)
+
+          text = sub1(
+              text,
+              r'''let selected_session_owns_headers = selected_headers_own_broadcast_locator\(\s*selected_segment_session\.is_some\(\),\s*selected_locator_pending,\s*peer_id\.as_deref\(\),\s*session_correlated,\s*\) && \(session_correlated\s*\|\| pending_locator_matches_common_ancestor\);''',
+              '''let pending_locator_accepts_response_peer =
+                              pending_selected_locator_accepts_response_peer(
+                                  pending_selected_locator.as_ref(),
+                                  peer_id.as_deref(),
+                              );
+                          let selected_session_owns_headers = selected_headers_own_broadcast_locator(
+                              selected_segment_session.is_some(),
+                              selected_locator_pending,
+                              peer_id.as_deref(),
+                              session_correlated,
+                          ) && (session_correlated
+                              || (pending_locator_matches_common_ancestor
+                                  && pending_locator_accepts_response_peer));''',
+              "selected locator response peer correlation",
+          )
+
+          def direct_first_request_after(text, anchor, peer_expr, label):
+              start = text.find(anchor)
+              if start < 0:
+                  raise SystemExit(f"{label}: anchor missing")
+              call = text.find(".request_headers(", start)
+              if call < 0:
+                  raise SystemExit(f"{label}: request_headers missing")
+              end = call + len(".request_headers(")
+              return text[:call] + ".request_headers_from(\n" + peer_expr + text[end:]
+
+          text = direct_first_request_after(
+              text,
+              "let immediate_selected_locator =",
+              "                                        &peer_id,\n",
+              "immediate selected locator",
+          )
+          text = direct_first_request_after(
+              text,
+              "let proactive_selected_locator =",
+              "                                &peer_id,\n",
+              "proactive selected locator",
+          )
+          text = direct_first_request_after(
+              text,
+              "let selected_locator_peer = selected_locator_peer_for_reconcile",
+              "                                                selected_locator_peer.as_deref().unwrap_or_default(),\n",
+              "final quiescence selected locator",
+          )
+
+          peer_test = '''    #[test]
+              fn pending_selected_locator_rejects_wrong_response_peer() {
+                  let pending = PendingSelectedLocator {
+                      request_id: 8,
+                      peer_id: "peer-a".to_string(),
+                      locator: vec!["local-1296".to_string()],
+                      requested_at_unix: 100,
+                  };
+                  assert!(pending_selected_locator_accepts_response_peer(
+                      Some(&pending),
+                      Some("peer-a")
+                  ));
+                  assert!(!pending_selected_locator_accepts_response_peer(
+                      Some(&pending),
+                      Some("peer-b")
+                  ));
+                  let broadcast = PendingSelectedLocator {
+                      peer_id: "broadcast-observed-block-gap".to_string(),
+                      ..pending
+                  };
+                  assert!(pending_selected_locator_accepts_response_peer(
+                      Some(&broadcast),
+                      Some("peer-b")
+                  ));
+              }
+
+          '''
+          text = insert_before_fn(
+              text,
+              "stale_selected_segment_rearms_only_after_no_progress_and_no_inflight_requests",
+              peer_test,
+              "selected response peer test",
+          )
+          path.write_text(text)
+
+      - name: Format
+        run: cargo fmt --all
+      - name: Diff sanity
+        run: git diff --check
+      - name: Test p2p wire and transport
+        run: cargo test -p pulsedag-p2p
+      - name: Test selected segment
+        run: cargo test -p pulsedagd selected_segment -- --nocapture
+      - name: Check node
+        run: cargo check -p pulsedagd
+      - name: Commit tested source patch
+        run: |
+          rm .github/workflows/one-shot-fix-811-directed-headers-v3.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add crates/pulsedag-p2p/src/messages.rs crates/pulsedag-p2p/src/lib.rs apps/pulsedagd/src/main.rs .github/workflows/one-shot-fix-811-directed-headers-v3.yml
+          git commit -m "fix(sync): direct selected header recovery to chosen peer"
+          git push origin HEAD:fix/rejoin-catchup-stall-811
