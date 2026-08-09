@@ -740,6 +740,17 @@ pub trait P2pHandle: Send + Sync {
     ) -> Result<(), PulseError> {
         Ok(())
     }
+    fn request_headers_from(
+        &self,
+        _peer_id: &str,
+        _locator: &[PulseHash],
+        _stop_hash: Option<&PulseHash>,
+        _limit: usize,
+    ) -> Result<(), PulseError> {
+        Err(PulseError::Internal(
+            "peer-addressed GetHeaders is not supported by this p2p handle".into(),
+        ))
+    }
     fn send_headers(&self, _headers: &[HeaderInventory]) -> Result<(), PulseError> {
         Ok(())
     }
@@ -839,6 +850,7 @@ enum OutboundMessage {
         locator: Vec<PulseHash>,
         stop_hash: Option<PulseHash>,
         limit: usize,
+        requested_peer_id: Option<String>,
     },
     Headers(Vec<HeaderInventory>),
     GetBlockHeaders(Vec<PulseHash>),
@@ -1352,6 +1364,16 @@ impl P2pHandle for MemoryP2pHandle {
         inner.header_requests_sent = inner.header_requests_sent.saturating_add(1);
         inner.last_message_kind = Some("get-headers".into());
         Ok(())
+    }
+
+    fn request_headers_from(
+        &self,
+        _peer_id: &str,
+        locator: &[PulseHash],
+        stop_hash: Option<&PulseHash>,
+        limit: usize,
+    ) -> Result<(), PulseError> {
+        self.request_headers(locator, stop_hash, limit)
     }
 
     fn send_headers(&self, headers: &[HeaderInventory]) -> Result<(), PulseError> {
@@ -2834,11 +2856,13 @@ fn enqueue_outbound_message(
             locator,
             stop_hash,
             limit,
+            requested_peer_id,
         } => {
             queue.blocks.push_back(OutboundMessage::GetHeaders {
                 locator,
                 stop_hash,
                 limit,
+                requested_peer_id,
             });
         }
         OutboundMessage::Headers(headers) => {
@@ -4091,6 +4115,10 @@ fn sort_headers_parents_first(headers: &mut [BlockHeaderAnnouncement]) {
     });
 }
 
+fn get_headers_targets_local_peer(requested_peer_id: Option<&str>, local_peer_id: &str) -> bool {
+    requested_peer_id.is_none_or(|peer| peer == local_peer_id)
+}
+
 fn dispatch_network_message(
     expected_chain_id: &str,
     bytes: &[u8],
@@ -4423,7 +4451,15 @@ fn dispatch_network_message(
             locator,
             stop_hash,
             limit,
+            requested_peer_id,
         } => {
+            let local_peer_id = inner
+                .lock()
+                .map(|guard| guard.peer_id.clone())
+                .unwrap_or_default();
+            if !get_headers_targets_local_peer(requested_peer_id.as_deref(), &local_peer_id) {
+                return;
+            }
             if chain_id != expected_chain_id {
                 if let Ok(mut guard) = inner.lock() {
                     guard.inbound_chain_mismatch_dropped += 1;
@@ -4973,11 +5009,12 @@ async fn run_libp2p_runtime(
                         let wire = serde_json::to_vec(&NetworkMessage::InvBlock { chain_id: cfg.chain_id.clone(), hashes });
                         (wire, topic_name, "inv-block", message_id)
                     }
-                    OutboundMessage::GetHeaders { locator, stop_hash, limit } => {
+                    OutboundMessage::GetHeaders { locator, stop_hash, limit, requested_peer_id } => {
                         let topic_name = format!("{}-sync", cfg.chain_id);
                         let stop_part = stop_hash.as_deref().unwrap_or("none");
-                        let message_id = format!("sync:get-headers:{}:{stop_part}:{limit}", locator.join(","));
-                        let wire = serde_json::to_vec(&NetworkMessage::GetHeaders { chain_id: cfg.chain_id.clone(), locator, stop_hash, limit });
+                        let target_part = requested_peer_id.as_deref().unwrap_or("broadcast");
+                        let message_id = format!("sync:get-headers:{target_part}:{}:{stop_part}:{limit}", locator.join(","));
+                        let wire = serde_json::to_vec(&NetworkMessage::GetHeaders { chain_id: cfg.chain_id.clone(), locator, stop_hash, limit, requested_peer_id });
                         (wire, topic_name, "get-headers", message_id)
                     }
                     OutboundMessage::Headers(headers) => {
@@ -5536,11 +5573,12 @@ async fn run_libp2p_real_runtime(
                         let wire = serde_json::to_vec(&NetworkMessage::InvBlock { chain_id: cfg.chain_id.clone(), hashes });
                         (wire, topic_name, "inv-block", message_id)
                     }
-                    OutboundMessage::GetHeaders { locator, stop_hash, limit } => {
+                    OutboundMessage::GetHeaders { locator, stop_hash, limit, requested_peer_id } => {
                         let topic_name = format!("{}-sync", cfg.chain_id);
                         let stop_part = stop_hash.as_deref().unwrap_or("none");
-                        let message_id = format!("sync:get-headers:{}:{stop_part}:{limit}", locator.join(","));
-                        let wire = serde_json::to_vec(&NetworkMessage::GetHeaders { chain_id: cfg.chain_id.clone(), locator, stop_hash, limit });
+                        let target_part = requested_peer_id.as_deref().unwrap_or("broadcast");
+                        let message_id = format!("sync:get-headers:{target_part}:{}:{stop_part}:{limit}", locator.join(","));
+                        let wire = serde_json::to_vec(&NetworkMessage::GetHeaders { chain_id: cfg.chain_id.clone(), locator, stop_hash, limit, requested_peer_id });
                         (wire, topic_name, "get-headers", message_id)
                     }
                     OutboundMessage::Headers(headers) => {
@@ -6051,8 +6089,39 @@ impl P2pHandle for Libp2pHandle {
                 locator: locator.to_vec(),
                 stop_hash: stop_hash.cloned(),
                 limit,
+                requested_peer_id: None,
             },
             "get-headers",
+        )
+    }
+
+    fn request_headers_from(
+        &self,
+        peer_id: &str,
+        locator: &[PulseHash],
+        stop_hash: Option<&PulseHash>,
+        limit: usize,
+    ) -> Result<(), PulseError> {
+        {
+            let mut inner = self
+                .inner
+                .lock()
+                .map_err(|_| PulseError::Internal("p2p lock poisoned".into()))?;
+            if inner.active_connections.get(peer_id).copied().unwrap_or(0) == 0 {
+                return Err(PulseError::Internal(format!(
+                    "peer {peer_id} is not a direct request-capable session"
+                )));
+            }
+            inner.header_requests_sent = inner.header_requests_sent.saturating_add(1);
+        }
+        self.queue_sync_message(
+            OutboundMessage::GetHeaders {
+                locator: locator.to_vec(),
+                stop_hash: stop_hash.cloned(),
+                limit,
+                requested_peer_id: Some(peer_id.to_string()),
+            },
+            "get-headers-from",
         )
     }
 
@@ -6950,6 +7019,34 @@ mod tests {
         assert!(!relay_outbound_tx_for_test(&mut guard, "tx-churn", 2_042));
         assert_eq!(guard.tx_outbound_recovery_relayed, 2);
         assert!(guard.tx_outbound_duplicates_suppressed >= 3);
+    }
+
+    #[test]
+    fn directed_get_headers_targets_only_selected_peer() {
+        assert!(get_headers_targets_local_peer(None, "peer-b"));
+        assert!(get_headers_targets_local_peer(Some("peer-a"), "peer-a"));
+        assert!(!get_headers_targets_local_peer(Some("peer-a"), "peer-b"));
+
+        let inner = Arc::new(Mutex::new(InnerState::default()));
+        let mut queue = OutboundPriorityQueue::default();
+        enqueue_outbound_message(
+            &inner,
+            &mut queue,
+            OutboundMessage::GetHeaders {
+                locator: vec!["tip".to_string()],
+                stop_hash: None,
+                limit: 128,
+                requested_peer_id: Some("peer-a".to_string()),
+            },
+        );
+        match queue.blocks.pop_front().expect("queued") {
+            OutboundMessage::GetHeaders {
+                requested_peer_id, ..
+            } => {
+                assert_eq!(requested_peer_id.as_deref(), Some("peer-a"));
+            }
+            _ => panic!("unexpected message"),
+        }
     }
 
     #[test]

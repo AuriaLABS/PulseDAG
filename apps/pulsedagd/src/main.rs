@@ -122,6 +122,16 @@ fn pending_selected_locator_matches_common_ancestor(
     pending.locator.iter().any(|hash| hash == common_ancestor)
 }
 
+fn pending_selected_locator_accepts_response_peer(
+    pending: Option<&PendingSelectedLocator>,
+    response_peer: Option<&str>,
+) -> bool {
+    let (Some(pending), Some(response_peer)) = (pending, response_peer) else {
+        return false;
+    };
+    pending.peer_id == "broadcast-observed-block-gap" || pending.peer_id == response_peer
+}
+
 fn commit_candidate_chain_state(
     storage: &Storage,
     current: &mut pulsedag_core::ChainState,
@@ -3764,13 +3774,19 @@ async fn main() -> Result<()> {
                                 pending_selected_locator.as_ref(),
                                 common_ancestor.as_deref(),
                             );
+                        let pending_locator_accepts_response_peer =
+                            pending_selected_locator_accepts_response_peer(
+                                pending_selected_locator.as_ref(),
+                                peer_id.as_deref(),
+                            );
                         let selected_session_owns_headers = selected_headers_own_broadcast_locator(
                             selected_segment_session.is_some(),
                             selected_locator_pending,
                             peer_id.as_deref(),
                             session_correlated,
                         ) && (session_correlated
-                            || pending_locator_matches_common_ancestor);
+                            || (pending_locator_matches_common_ancestor
+                                && pending_locator_accepts_response_peer));
                         let selected_requests = if selected_session_owns_headers
                             && matches!(selected_segment_validation, Some(Ok(())))
                         {
@@ -4084,7 +4100,8 @@ async fn main() -> Result<()> {
                                     guard.next_request_id
                                 };
                                 if p2p_handle
-                                    .request_headers(
+                                    .request_headers_from(
+                                        &peer_id,
                                         &selected_locator,
                                         None,
                                         selected_limits.headers_per_chunk,
@@ -4888,7 +4905,8 @@ async fn main() -> Result<()> {
                             guard.next_request_id
                         };
                         let selected_locator_requested = p2p_handle
-                            .request_headers(
+                            .request_headers_from(
+                                &peer_id,
                                 &selected_locator,
                                 None,
                                 selected_limits.headers_per_chunk,
@@ -4970,7 +4988,10 @@ async fn main() -> Result<()> {
                                     let selected_locator_requested = selected_locator_peer
                                         .is_some()
                                         && p2p
-                                            .request_headers(
+                                            .request_headers_from(
+                                                selected_locator_peer
+                                                    .as_deref()
+                                                    .unwrap_or_default(),
                                                 &selected_locator,
                                                 None,
                                                 selected_limits.headers_per_chunk,
@@ -6165,6 +6186,32 @@ mod tests {
                     Some("genesis"),
                 );
         assert!(!owns_unrelated);
+    }
+
+    #[test]
+    fn pending_selected_locator_rejects_wrong_response_peer() {
+        let pending = PendingSelectedLocator {
+            request_id: 8,
+            peer_id: "peer-a".to_string(),
+            locator: vec!["local-1296".to_string()],
+            requested_at_unix: 100,
+        };
+        assert!(pending_selected_locator_accepts_response_peer(
+            Some(&pending),
+            Some("peer-a")
+        ));
+        assert!(!pending_selected_locator_accepts_response_peer(
+            Some(&pending),
+            Some("peer-b")
+        ));
+        let broadcast = PendingSelectedLocator {
+            peer_id: "broadcast-observed-block-gap".to_string(),
+            ..pending
+        };
+        assert!(pending_selected_locator_accepts_response_peer(
+            Some(&broadcast),
+            Some("peer-b")
+        ));
     }
 
     #[test]
