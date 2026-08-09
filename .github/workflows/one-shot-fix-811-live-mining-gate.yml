@@ -16,157 +16,27 @@ jobs:
         with:
           fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
-
-      - name: Apply live-state mining gate patch
-        shell: bash
-        run: |
-          python - <<'PY'
-          from pathlib import Path
-          import re
-
-          path = Path("crates/pulsedag-rpc/src/handlers/mining_template.rs")
-          text = path.read_text()
-
-          pattern = r'''async fn mining_template_unavailable_reason<S: RpcStateLike>\(state: &S\) -> Option<String> \{.*?\n\}\n\npub async fn post_mining_template'''
-          replacement = '''fn mining_recovery_active(
-              sync_state: &str,
-              pending_missing_parents: usize,
-              orphan_backlog_waiting_missing_parent: usize,
-          ) -> bool {
-              matches!(
-                  sync_state,
-                  "missing_parent" | "missing_parent_recovery" | "orphan_recovery"
-              ) || pending_missing_parents > 0
-                  || orphan_backlog_waiting_missing_parent > 0
-          }
-
-          async fn mining_template_unavailable_reason<S: RpcStateLike>(state: &S) -> Option<String> {
-              let (sync_state, live_sync_error) = {
-                  let runtime_handle = state.runtime();
-                  let runtime = runtime_handle.read().await;
-                  (
-                      runtime.sync_state.clone(),
-                      runtime.sync_pipeline.last_error.is_some(),
-                  )
-              };
-
-              // Mining readiness must use live chain recovery state. Runtime counters are
-              // telemetry mirrors and can briefly remain stale after orphan/missing-parent
-              // cleanup has completed.
-              let (pending_missing_parents, orphan_backlog_waiting_missing_parent) = {
-                  let chain_handle = state.chain();
-                  let chain = chain_handle.read().await;
-                  let orphan_backlog = pulsedag_core::classify_orphan_backlog(&chain);
-                  (
-                      pulsedag_core::pending_missing_parent_count(&chain),
-                      orphan_backlog.waiting_missing_parent,
-                  )
-              };
-
-              if mining_recovery_active(
-                  &sync_state,
-                  pending_missing_parents,
-                  orphan_backlog_waiting_missing_parent,
-              ) {
-                  return Some(format!(
-                      "mining template unavailable while sync_state={} missing_parent/orphan recovery is active",
-                      sync_state
-                  ));
-              }
-              if sync_state == "degraded" || live_sync_error {
-                  return Some(format!(
-                      "mining template unavailable while readiness snapshot is degraded: sync_state={}",
-                      sync_state
-                  ));
-              }
-
-              let status = state.p2p()?.status().ok()?;
-              (status.runtime_started
-                  && mode_connected_peers_are_real_network(&status.mode)
-                  && status.connected_peers.is_empty()
-                  && (!status.bootnodes_configured.is_empty() || !status.listening.is_empty()))
-              .then(|| {
-                  format!(
-                      "mining template unavailable while p2p is enabled with peer_count=0; diagnostics={}",
-                      status.asymmetric_connectivity_diagnostics.join("|")
-                  )
-              })
-          }
-
-          pub async fn post_mining_template'''
-
-          text, n = re.subn(pattern, replacement, text, count=1, flags=re.S)
-          if n != 1:
-              raise SystemExit(f"mining gate replacement expected 1 match, found {n}")
-
-          old_import = '''        current_template_state, mining_template_unavailable_reason, template_freshness_window,
-              template_id_for_state, template_ordered_transactions, TEMPLATE_FRESHNESS_GRACE_SECS,
-'''
-          new_import = '''        current_template_state, mining_recovery_active, mining_template_unavailable_reason,
-              template_freshness_window, template_id_for_state, template_ordered_transactions,
-              TEMPLATE_FRESHNESS_GRACE_SECS,
-'''
-          if old_import not in text:
-              raise SystemExit("test import anchor not found")
-          text = text.replace(old_import, new_import, 1)
-
-          anchor = '''    #[tokio::test]
-              async fn isolated_mining_node_does_not_get_template_when_p2p_zero_peer() {
-'''
-          tests = '''    #[test]
-              fn live_missing_parent_state_still_blocks_mining() {
-                  assert!(mining_recovery_active("missing_parent_recovery", 0, 0));
-                  assert!(mining_recovery_active("requesting_blocks", 1, 0));
-                  assert!(mining_recovery_active("requesting_blocks", 0, 1));
-                  assert!(!mining_recovery_active("requesting_blocks", 0, 0));
-              }
-
-              #[tokio::test]
-              async fn stale_runtime_missing_parent_counters_do_not_block_clean_chain_template() {
-                  let state = test_state_with_status(P2pStatus::default());
-                  {
-                      let mut runtime = state.runtime.write().await;
-                      runtime.sync_state = "requesting_blocks".to_string();
-                      runtime.pending_missing_parents = 3;
-                      runtime.orphan_backlog_waiting_missing_parent = 2;
-                  }
-
-                  let reason = mining_template_unavailable_reason(&state).await;
-                  assert_eq!(reason, None);
-              }
-
-          '''
-          if anchor not in text:
-              raise SystemExit("test insertion anchor not found")
-          text = text.replace(anchor, tests + anchor, 1)
-          path.write_text(text)
-          PY
-
+      - name: Apply patch
+        run: python .github/scripts/fix_811_live_mining_gate.py
       - name: Format
         run: cargo fmt --all -- --check
-
       - name: Diff sanity
         run: git diff --check
-
-      - name: Test live recovery predicate
+      - name: Live recovery predicate
         run: cargo test -p pulsedag-rpc live_missing_parent_state_still_blocks_mining -- --nocapture
-
-      - name: Test stale runtime counter regression
+      - name: Stale runtime regression
         run: cargo test -p pulsedag-rpc stale_runtime_missing_parent_counters_do_not_block_clean_chain_template -- --nocapture
-
-      - name: Test mining template module
+      - name: Mining template tests
         run: cargo test -p pulsedag-rpc mining_template -- --nocapture
-
-      - name: Check node
+      - name: Node check
         run: cargo check -p pulsedagd
-
       - name: Commit tested patch
-        shell: bash
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git rm .github/workflows/one-shot-fix-811-live-mining-gate.yml
+          git rm .github/scripts/fix_811_live_mining_gate.py
           git add crates/pulsedag-rpc/src/handlers/mining_template.rs
           git commit -m "fix(sync): gate mining on live recovery state"
           git push origin HEAD:fix/rejoin-catchup-stall-811
