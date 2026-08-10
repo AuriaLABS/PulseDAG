@@ -807,6 +807,7 @@ fn validate_selected_header_segment(
     Ok(())
 }
 
+#[cfg(test)]
 fn selected_segment_request_order(headers: &[HeaderInventory], limit: usize) -> Vec<String> {
     let mut ordered = headers.iter().collect::<Vec<_>>();
     ordered.sort_by(|a, b| {
