@@ -58,8 +58,8 @@ text, count = pattern.subn(
     "build_selected_chain_locator(&guard.dag.selected_chain, SELECTED_CHAIN_LOCATOR_MAX_ENTRIES)",
     text,
 )
-if count != 3:
-    raise SystemExit(f"expected 3 selected locator constructions, replaced {count}")
+if count != 5:
+    raise SystemExit(f"expected 5 selected locator constructions, replaced {count}")
 
 old = '''    let locator_heights = locator
         .iter()
