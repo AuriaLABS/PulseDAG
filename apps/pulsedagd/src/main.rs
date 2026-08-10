@@ -215,6 +215,7 @@ const DEDICATED_RPC_RUNTIME_WORKER_THREADS: usize = 2;
 const FINAL_QUIESCENCE_NO_PROGRESS_SECS: u64 = 45;
 const FINAL_QUIESCENCE_CLEANUP_LIMIT: usize = 64;
 const SELECTED_SEGMENT_PRIORITY_GAP_BLOCKS: u64 = 64;
+const SELECTED_REJOIN_REARM_MIN_GAP_BLOCKS: u64 = 1;
 const SELECTED_LOCATOR_PRIORITY_GRACE_SECS: u64 = 60;
 const SELECTED_SEGMENT_NO_PROGRESS_REARM_SECS: u64 = 30;
 
@@ -737,6 +738,17 @@ fn selected_segment_session_should_rearm(
     pending_block_requests == 0
         && session.is_some_and(|session| {
             session.no_progress_expired(now, SELECTED_SEGMENT_NO_PROGRESS_REARM_SECS)
+        })
+}
+
+fn selected_segment_continuation_needed(
+    session: Option<&SelectedSegmentSession>,
+    local_selected_height: u64,
+    chunk_completed: bool,
+) -> bool {
+    chunk_completed
+        && session.is_some_and(|session| {
+            session.can_start_chunk() && local_selected_height < session.remote_selected_height
         })
 }
 
@@ -3451,6 +3463,7 @@ async fn main() -> Result<()> {
                             let accepted_tip = pulsedag_core::preferred_tip_hash(&guard)
                                 .unwrap_or_else(|| guard.dag.genesis_hash.clone());
                             let mut selected_segment_completed = false;
+                            let mut selected_segment_chunk_completed = false;
                             {
                                 let mut rt = runtime.write().await;
                                 if final_height_reconcile_block {
@@ -3538,6 +3551,7 @@ async fn main() -> Result<()> {
                                             .remote_selected_height
                                             .saturating_sub(guard.dag.best_height);
                                         if session.complete_current_chunk_if_applied() {
+                                            selected_segment_chunk_completed = true;
                                             rt.selected_segment_chunks_completed_total = rt
                                                 .selected_segment_chunks_completed_total
                                                 .saturating_add(1);
@@ -3595,6 +3609,8 @@ async fn main() -> Result<()> {
                                     .max(block_requests.oldest_pending_age_secs(now_unix()));
                                 rt.sync_state = if selected_segment_completed {
                                     DagSyncStage::SelectedSegmentComplete.as_str().to_string()
+                                } else if selected_segment_session.is_some() {
+                                    DagSyncStage::ApplyingSelectedSegment.as_str().to_string()
                                 } else if guard.orphan_blocks.is_empty() {
                                     "synced".to_string()
                                 } else {
@@ -3606,6 +3622,89 @@ async fn main() -> Result<()> {
                                 }
                                 rt.sync_pipeline.complete_cycle(now_unix());
                             }
+                            if selected_segment_continuation_needed(
+                                selected_segment_session.as_ref(),
+                                guard.dag.best_height,
+                                selected_segment_chunk_completed,
+                            ) {
+                                let (peer_id, remote_height) = selected_segment_session
+                                    .as_ref()
+                                    .map(|session| {
+                                        (session.peer_id.clone(), session.remote_selected_height)
+                                    })
+                                    .expect("continuation requires active selected session");
+                                let selected_locator = guard
+                                    .dag
+                                    .selected_chain
+                                    .iter()
+                                    .rev()
+                                    .take(32)
+                                    .cloned()
+                                    .collect::<Vec<_>>();
+                                let selected_limits = SelectedSegmentLimits::default();
+                                let request_id = {
+                                    let locator_state = selected_segment_locator_state.lock().await;
+                                    locator_state.next_request_id
+                                };
+                                if let Some(ref p2p_handle) = p2p {
+                                    match p2p_handle.request_headers_from(
+                                        &peer_id,
+                                        &selected_locator,
+                                        None,
+                                        selected_limits.headers_per_chunk,
+                                    ) {
+                                        Ok(()) => {
+                                            let requested_at = now_unix();
+                                            {
+                                                let mut locator_state =
+                                                    selected_segment_locator_state.lock().await;
+                                                locator_state.next_request_id =
+                                                    locator_state.next_request_id.saturating_add(1);
+                                                locator_state.pending_locator =
+                                                    Some(PendingSelectedLocator {
+                                                        request_id,
+                                                        peer_id: peer_id.clone(),
+                                                        locator: selected_locator,
+                                                        requested_at_unix: requested_at,
+                                                    });
+                                            }
+                                            if let Some(session) = selected_segment_session.as_mut()
+                                            {
+                                                session.state =
+                                                    SelectedSegmentSessionState::RequestingHeaders;
+                                                session.updated_at_unix = requested_at;
+                                            }
+                                            let mut rt = runtime.write().await;
+                                            rt.selected_segment_header_requests_total = rt
+                                                .selected_segment_header_requests_total
+                                                .saturating_add(1);
+                                            rt.header_requests_sent =
+                                                rt.header_requests_sent.saturating_add(1);
+                                            rt.sync_state = DagSyncStage::RequestingSelectedHeaders
+                                                .as_str()
+                                                .to_string();
+                                            info!(
+                                                event = "selected_segment_chunk_continuation",
+                                                peer = %peer_id,
+                                                local_height = guard.dag.best_height,
+                                                remote_height,
+                                                request_id,
+                                                "selected chunk completed below remote tip; requested next selected header page"
+                                            );
+                                        }
+                                        Err(e) => {
+                                            warn!(
+                                                error = %e,
+                                                peer = %peer_id,
+                                                local_height = guard.dag.best_height,
+                                                remote_height,
+                                                "failed requesting selected header continuation after chunk completion"
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+
                             if selected_segment_completed {
                                 selected_segment_session = None;
                                 selected_segment_locator_state.lock().await.pending_locator = None;
@@ -4160,7 +4259,7 @@ async fn main() -> Result<()> {
                                 selected_locator_peer_for_priority_gap(
                                     &status,
                                     local_height,
-                                    SELECTED_SEGMENT_PRIORITY_GAP_BLOCKS,
+                                    SELECTED_REJOIN_REARM_MIN_GAP_BLOCKS,
                                 )
                             });
                         if let (Some((peer_id, remote_height)), Some(p2p_handle)) =
@@ -6388,6 +6487,70 @@ mod tests {
         let next = vec![selected_test_header("b2", "b1", 2)];
         assert!(session.accept_header_page(&pending, &next, 201));
         assert_eq!(session.updated_at_unix, 201);
+    }
+
+    #[test]
+    fn small_rejoin_gap_reactivates_selected_locator_after_rearm() {
+        let status = P2pStatus {
+            remote_selected_tip_inventory: vec![pulsedag_p2p::RemoteSelectedTipStatus {
+                peer_id: "peer-a".to_string(),
+                selected_height: 1306,
+                connected: true,
+                direct_request_capable: true,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        assert_eq!(
+            selected_locator_peer_for_priority_gap(
+                &status,
+                1303,
+                SELECTED_REJOIN_REARM_MIN_GAP_BLOCKS,
+            ),
+            Some(("peer-a".to_string(), 1306))
+        );
+    }
+
+    #[test]
+    fn selected_segment_completed_chunk_below_remote_tip_requires_continuation() {
+        let headers = vec![
+            selected_test_header("b1", "common", 1),
+            selected_test_header("b2", "b1", 2),
+            selected_test_header("b3", "b2", 3),
+        ];
+        let locator = vec!["common".to_string()];
+        let mut session = SelectedSegmentSession::new(
+            1,
+            "peer-a".to_string(),
+            "common".to_string(),
+            0,
+            &headers,
+            &locator,
+            1,
+            100,
+        )
+        .expect("session");
+        assert!(session.start_chunk(vec!["b1".to_string(), "b2".to_string()], 101));
+        session.mark_applied("b1", 102);
+        session.mark_applied("b2", 103);
+        assert!(session.complete_current_chunk_if_applied());
+
+        assert!(selected_segment_continuation_needed(
+            Some(&session),
+            2,
+            true
+        ));
+        assert!(!selected_segment_continuation_needed(
+            Some(&session),
+            3,
+            true
+        ));
+        assert!(!selected_segment_continuation_needed(
+            Some(&session),
+            2,
+            false
+        ));
     }
 
     #[test]
