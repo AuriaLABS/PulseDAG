@@ -54,6 +54,8 @@ pub enum NetworkMessage {
         locator: Vec<Hash>,
         stop_hash: Option<Hash>,
         limit: usize,
+        #[serde(default)]
+        requested_peer_id: Option<String>,
     },
     Headers {
         chain_id: String,
@@ -260,6 +262,7 @@ mod tests {
                 locator: vec!["parent".into()],
                 stop_hash: Some(block.hash.clone()),
                 limit: 64,
+                requested_peer_id: None,
             },
             NetworkMessage::Headers {
                 chain_id: "testnet".into(),
@@ -328,6 +331,34 @@ mod tests {
                 serde_json::from_slice(&encoded).expect("message deserializes");
             assert_eq!(message_kind(&decoded), message_kind(&message));
             assert_eq!(chain_id(&decoded), "testnet");
+        }
+    }
+
+    #[test]
+    fn get_headers_target_is_backward_compatible() {
+        let legacy = br#"{"type":"GetHeaders","chain_id":"testnet","locator":["parent"],"stop_hash":null,"limit":64}"#;
+        let decoded: NetworkMessage = serde_json::from_slice(legacy).expect("legacy GetHeaders");
+        match decoded {
+            NetworkMessage::GetHeaders {
+                requested_peer_id, ..
+            } => assert_eq!(requested_peer_id, None),
+            _ => panic!("unexpected message"),
+        }
+
+        let directed = NetworkMessage::GetHeaders {
+            chain_id: "testnet".into(),
+            locator: vec!["parent".into()],
+            stop_hash: None,
+            limit: 64,
+            requested_peer_id: Some("peer-a".into()),
+        };
+        let encoded = serde_json::to_vec(&directed).expect("encode");
+        let decoded: NetworkMessage = serde_json::from_slice(&encoded).expect("decode");
+        match decoded {
+            NetworkMessage::GetHeaders {
+                requested_peer_id, ..
+            } => assert_eq!(requested_peer_id.as_deref(), Some("peer-a")),
+            _ => panic!("unexpected message"),
         }
     }
 

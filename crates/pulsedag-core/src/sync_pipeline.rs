@@ -130,6 +130,10 @@ pub struct SyncPipelineStatus {
     pub counters: SyncProgressCounters,
 }
 
+fn is_recoverable_missing_parent_failure(message: &str) -> bool {
+    message.starts_with("orphaned block ") && message.contains(" missing parents ")
+}
+
 impl SyncPipelineStatus {
     pub fn begin_cycle(&mut self, now_unix: u64) {
         if self.phase == SyncPhase::Idle || self.phase == SyncPhase::CatchUpCompletion {
@@ -181,7 +185,11 @@ impl SyncPipelineStatus {
         self.fallback_count = self.fallback_count.saturating_add(1);
         self.counters.phase_failures = self.counters.phase_failures.saturating_add(1);
         let message = message.into();
-        self.last_error = Some(message.clone());
+        if is_recoverable_missing_parent_failure(&message) {
+            self.last_error = None;
+        } else {
+            self.last_error = Some(message.clone());
+        }
         self.last_fallback_reason = Some(message);
         self.transition_to(SyncPhase::PeerSelection, now_unix);
     }
@@ -279,6 +287,22 @@ mod tests {
         assert_eq!(status.phase, SyncPhase::PeerSelection);
         assert_eq!(status.counters.phase_failures, 1);
         assert_eq!(status.last_error.as_deref(), Some("block fetch timeout"));
+    }
+
+    #[test]
+    fn recoverable_missing_parent_fallback_does_not_latch_liveness_error() {
+        let mut status = SyncPipelineStatus::default();
+        status.begin_cycle(40);
+        status.observe_headers(1, 41);
+        status.request_blocks(1, 42);
+        let message = "orphaned block child-hash missing parents [\"parent-hash\"]";
+        status.fallback_after_failure(message, 43);
+
+        assert_eq!(status.phase, SyncPhase::PeerSelection);
+        assert_eq!(status.counters.phase_failures, 1);
+        assert_eq!(status.fallback_count, 1);
+        assert_eq!(status.last_error, None);
+        assert_eq!(status.last_fallback_reason.as_deref(), Some(message));
     }
 
     #[test]

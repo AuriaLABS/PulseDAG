@@ -5,7 +5,10 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use super::canonical_sync::build_canonical_sync_state;
+use super::canonical_sync::{
+    build_canonical_sync_state_with_remote_evidence, remote_sync_evidence_from_p2p_status,
+    CanonicalSyncState,
+};
 use crate::api::{
     fresh_or_cached_node_rpc_snapshot, p2p_status_for_rpc, read_chain_for_rpc,
     read_runtime_for_rpc, ApiResponse, NodeRpcSnapshot, RpcStateLike, SyncRebuildRequest,
@@ -176,6 +179,24 @@ fn cache_sync_status_response(data: &SyncStatusData) {
     {
         *cache = Some(data.clone());
     }
+}
+
+fn build_sync_status_canonical_state(
+    chain: &pulsedag_core::ChainState,
+    runtime: &crate::api::NodeRuntimeStats,
+    persisted_block_count: usize,
+    now_unix: u64,
+    p2p_status: Option<&pulsedag_p2p::P2pStatus>,
+) -> CanonicalSyncState {
+    let remote_evidence = remote_sync_evidence_from_p2p_status(p2p_status, now_unix);
+    build_canonical_sync_state_with_remote_evidence(
+        chain,
+        runtime,
+        persisted_block_count,
+        now_unix,
+        p2p_status.and_then(|status| status.selected_sync_peer.clone()),
+        &remote_evidence,
+    )
 }
 
 fn cached_sync_missing_response(reason: String) -> Option<SyncMissingData> {
@@ -417,14 +438,12 @@ pub async fn get_sync_status<S: RpcStateLike>(
         .as_ref()
         .map(|snapshot| snapshot.status.mode.clone())
         .unwrap_or_else(|| "disabled".to_string());
-    let canonical_sync = build_canonical_sync_state(
+    let canonical_sync = build_sync_status_canonical_state(
         &chain,
         &runtime,
         persisted_block_count,
         now_unix,
-        p2p_status
-            .as_ref()
-            .and_then(|snapshot| snapshot.status.selected_sync_peer.clone()),
+        p2p_status.as_ref().map(|snapshot| &snapshot.status),
     );
     let mut readiness_reasons = Vec::new();
     if !p2p_enabled {
@@ -903,7 +922,7 @@ mod tests {
 
     use crate::api::{NodeRuntimeStats, RpcStateLike};
 
-    use super::{get_sync_missing, get_sync_status};
+    use super::{build_sync_status_canonical_state, get_sync_missing, get_sync_status};
 
     #[derive(Clone)]
     struct TestState {
@@ -936,6 +955,47 @@ mod tests {
             .map(|d| d.as_nanos())
             .unwrap_or(0);
         std::env::temp_dir().join(format!("pulsedag-{name}-{unique}"))
+    }
+
+    #[test]
+    fn sync_status_canonical_state_uses_fresh_remote_tip_inventory() {
+        let chain = pulsedag_core::genesis::init_chain_state("testnet-dev".to_string());
+        let runtime = crate::api::NodeRuntimeStats::default();
+        let status = pulsedag_p2p::P2pStatus {
+            chain_id: "testnet-dev".to_string(),
+            connected_peers: vec!["peer-a".to_string()],
+            direct_request_capable_peers: vec!["peer-a".to_string()],
+            remote_selected_tip_inventory: vec![pulsedag_p2p::RemoteSelectedTipStatus {
+                peer_id: "peer-a".to_string(),
+                chain_id: "testnet-dev".to_string(),
+                selected_tip: Some("remote-3".to_string()),
+                selected_height: 3,
+                selected_blue_score: Some(3),
+                ordered_dag_tip: Some("ordered-3".to_string()),
+                state_root_digest: Some("root-3".to_string()),
+                observed_at_unix: 1_000,
+                inventory_generation: 1,
+                age_secs: 0,
+                direct_request_capable: true,
+                connected: true,
+                ..pulsedag_p2p::RemoteSelectedTipStatus::default()
+            }],
+            ..pulsedag_p2p::P2pStatus::default()
+        };
+
+        let canonical = build_sync_status_canonical_state(
+            &chain,
+            &runtime,
+            chain.dag.blocks.len(),
+            1_000,
+            Some(&status),
+        );
+
+        assert_eq!(canonical.best_remote_selected_height, Some(3));
+        assert_eq!(canonical.network_selected_height_gap, 3);
+        assert_eq!(canonical.sync_state, "locating_common_ancestor");
+        assert_eq!(canonical.catchup_stage, "discovering");
+        assert_ne!(canonical.sync_state, "synced");
     }
 
     #[tokio::test]

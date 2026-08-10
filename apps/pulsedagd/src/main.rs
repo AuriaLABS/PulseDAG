@@ -112,6 +112,64 @@ fn selected_headers_own_broadcast_locator(
     session_correlated || (!session_active && pending_locator && response_peer.is_some())
 }
 
+fn pending_selected_locator_matches_common_ancestor(
+    pending: Option<&PendingSelectedLocator>,
+    common_ancestor: Option<&str>,
+) -> bool {
+    let (Some(pending), Some(common_ancestor)) = (pending, common_ancestor) else {
+        return false;
+    };
+    pending.locator.iter().any(|hash| hash == common_ancestor)
+}
+
+fn pending_selected_locator_accepts_response_peer(
+    pending: Option<&PendingSelectedLocator>,
+    response_peer: Option<&str>,
+) -> bool {
+    let (Some(pending), Some(response_peer)) = (pending, response_peer) else {
+        return false;
+    };
+    pending.peer_id == "broadcast-observed-block-gap" || pending.peer_id == response_peer
+}
+
+fn selected_common_ancestor_for_headers(
+    headers: &[HeaderInventory],
+    known_blocks: &HashSet<String>,
+    pending: Option<&PendingSelectedLocator>,
+) -> Option<String> {
+    let first = headers.first()?;
+    if let Some(pending) = pending {
+        if let Some(parent) = first.header.parents.iter().find(|parent| {
+            known_blocks.contains(*parent)
+                && pending
+                    .locator
+                    .iter()
+                    .any(|locator_hash| locator_hash == *parent)
+        }) {
+            return Some(parent.clone());
+        }
+    }
+    first
+        .header
+        .parents
+        .iter()
+        .find(|parent| known_blocks.contains(*parent))
+        .cloned()
+}
+
+fn pending_selected_locator_should_rearm(
+    pending: Option<&PendingSelectedLocator>,
+    session_active: bool,
+    pending_block_requests: usize,
+    now: u64,
+) -> bool {
+    !session_active
+        && pending_block_requests == 0
+        && pending.is_some_and(|pending| {
+            now.saturating_sub(pending.requested_at_unix) >= SELECTED_SEGMENT_NO_PROGRESS_REARM_SECS
+        })
+}
+
 fn commit_candidate_chain_state(
     storage: &Storage,
     current: &mut pulsedag_core::ChainState,
@@ -157,7 +215,9 @@ const DEDICATED_RPC_RUNTIME_WORKER_THREADS: usize = 2;
 const FINAL_QUIESCENCE_NO_PROGRESS_SECS: u64 = 45;
 const FINAL_QUIESCENCE_CLEANUP_LIMIT: usize = 64;
 const SELECTED_SEGMENT_PRIORITY_GAP_BLOCKS: u64 = 64;
+const SELECTED_REJOIN_REARM_MIN_GAP_BLOCKS: u64 = 1;
 const SELECTED_LOCATOR_PRIORITY_GRACE_SECS: u64 = 60;
+const SELECTED_SEGMENT_NO_PROGRESS_REARM_SECS: u64 = 30;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct FinalQuiescenceCleanupResult {
@@ -585,19 +645,25 @@ impl SelectedSegmentSession {
         pending: &PendingSelectedLocator,
         headers: &[HeaderInventory],
         now: u64,
-    ) {
+    ) -> bool {
         self.locator_request_id = pending.request_id;
         self.locator_fingerprint = pending.locator.join(",");
+        let mut progressed = false;
         for item in headers {
             if !self.expected_header_hashes.contains(&item.hash) {
                 self.expected_header_hashes.push(item.hash.clone());
+                progressed = true;
             }
             if item.header.height > self.remote_selected_height {
                 self.remote_selected_tip = item.hash.clone();
                 self.remote_selected_height = item.header.height;
+                progressed = true;
             }
         }
-        self.updated_at_unix = now;
+        if progressed {
+            self.updated_at_unix = now;
+        }
+        progressed
     }
 
     fn can_start_chunk(&self) -> bool {
@@ -655,6 +721,35 @@ impl SelectedSegmentSession {
             false
         }
     }
+
+    fn no_progress_expired(&self, now: u64, timeout_secs: u64) -> bool {
+        !matches!(
+            self.state,
+            SelectedSegmentSessionState::Complete | SelectedSegmentSessionState::Failed
+        ) && now.saturating_sub(self.updated_at_unix) >= timeout_secs
+    }
+}
+
+fn selected_segment_session_should_rearm(
+    session: Option<&SelectedSegmentSession>,
+    pending_block_requests: usize,
+    now: u64,
+) -> bool {
+    pending_block_requests == 0
+        && session.is_some_and(|session| {
+            session.no_progress_expired(now, SELECTED_SEGMENT_NO_PROGRESS_REARM_SECS)
+        })
+}
+
+fn selected_segment_continuation_needed(
+    session: Option<&SelectedSegmentSession>,
+    local_selected_height: u64,
+    chunk_completed: bool,
+) -> bool {
+    chunk_completed
+        && session.is_some_and(|session| {
+            session.can_start_chunk() && local_selected_height < session.remote_selected_height
+        })
 }
 
 impl Default for SelectedSegmentLimits {
@@ -711,19 +806,20 @@ fn validate_selected_header_segment(
         {
             return Err("cycle");
         }
-        if item
+        if !item
             .header
             .parents
             .iter()
-            .any(|parent| !staged.contains(parent))
+            .any(|parent| staged.contains(parent))
         {
-            return Err("unknown_or_unstaged_parent");
+            return Err("no_known_or_staged_parent");
         }
         staged.insert(item.hash.clone());
     }
     Ok(())
 }
 
+#[cfg(test)]
 fn selected_segment_request_order(headers: &[HeaderInventory], limit: usize) -> Vec<String> {
     let mut ordered = headers.iter().collect::<Vec<_>>();
     ordered.sort_by(|a, b| {
@@ -745,11 +841,20 @@ fn selected_segment_request_candidates(
     accepted: &HashSet<String>,
     pending: &HashSet<String>,
 ) -> Vec<String> {
-    selected_segment_request_order(headers, limits.headers_per_chunk)
-        .into_iter()
-        .filter(|hash| !accepted.contains(hash) && !pending.contains(hash))
-        .take(limits.max_inflight_blocks_per_peer)
-        .collect()
+    let mut scheduler = DependencyAwareFetchScheduler::with_limit(
+        limits
+            .headers_per_chunk
+            .saturating_mul(2)
+            .max(limits.max_inflight_blocks_per_peer),
+    );
+    scheduler.queue_headers(headers.iter().map(|item| HeaderFetchCandidate {
+        hash: item.hash.clone(),
+        parents: item.header.parents.clone(),
+        height: item.header.height,
+    }));
+    scheduler
+        .next_requests(accepted, pending, limits.max_inflight_blocks_per_peer)
+        .requests
 }
 
 fn auto_prune_should_fire(
@@ -1972,6 +2077,102 @@ async fn main() -> Result<()> {
                         }
                     }
                 }
+                let stale_pending_locator = {
+                    let mut guard = selected_segment_locator_state.lock().await;
+                    if pending_selected_locator_should_rearm(
+                        guard.pending_locator.as_ref(),
+                        selected_segment_session.is_some(),
+                        block_requests.pending.len(),
+                        now,
+                    ) {
+                        guard.pending_locator.take()
+                    } else {
+                        None
+                    }
+                };
+                if let Some(stale_locator) = stale_pending_locator {
+                    {
+                        let mut rt = runtime.write().await;
+                        rt.selected_segment_restarts_total =
+                            rt.selected_segment_restarts_total.saturating_add(1);
+                        rt.selected_segment_gap_blocks = 0;
+                        rt.final_quiescence_selected_sync_blocked_reason =
+                            Some("selected_locator_no_progress_rearm".to_string());
+                        rt.sync_state = "requesting_tips".to_string();
+                    }
+                    if let Some(ref p2p_handle) = p2p {
+                        if let Err(e) = p2p_handle.request_tips() {
+                            warn!(
+                                error = %e,
+                                request_id = stale_locator.request_id,
+                                peer = %stale_locator.peer_id,
+                                "failed requesting fresh tips after stale selected locator rearm"
+                            );
+                        } else {
+                            let mut rt = runtime.write().await;
+                            rt.tips_requested = rt.tips_requested.saturating_add(1);
+                        }
+                    }
+                    warn!(
+                        event = "selected_locator_no_progress_rearm",
+                        request_id = stale_locator.request_id,
+                        peer = %stale_locator.peer_id,
+                        no_progress_secs = now.saturating_sub(stale_locator.requested_at_unix),
+                        "expired stale selected locator and requested fresh tip reconciliation"
+                    );
+                }
+
+                if selected_segment_session_should_rearm(
+                    selected_segment_session.as_ref(),
+                    block_requests.pending.len(),
+                    now,
+                ) {
+                    if let Some(stale_session) = selected_segment_session.take() {
+                        let no_progress_secs = now.saturating_sub(stale_session.updated_at_unix);
+                        selected_segment_locator_state.lock().await.pending_locator = None;
+                        {
+                            let mut rt = runtime.write().await;
+                            rt.selected_segment_restarts_total =
+                                rt.selected_segment_restarts_total.saturating_add(1);
+                            rt.selected_segment_gap_blocks = 0;
+                            rt.active_session_id = None;
+                            rt.active_session_peer = None;
+                            rt.active_session_remote_tip = None;
+                            rt.active_session_remote_height = 0;
+                            rt.active_session_common_ancestor = None;
+                            rt.active_session_requested_headers = 0;
+                            rt.active_session_received_headers = 0;
+                            rt.active_session_requested_blocks = 0;
+                            rt.active_session_received_blocks = 0;
+                            rt.active_session_applied_blocks = 0;
+                            rt.active_session_remaining_blocks = 0;
+                            rt.final_quiescence_selected_sync_blocked_reason =
+                                Some("selected_segment_no_progress_rearm".to_string());
+                            rt.sync_state = "requesting_tips".to_string();
+                        }
+                        if let Some(ref p2p_handle) = p2p {
+                            if let Err(e) = p2p_handle.request_tips() {
+                                warn!(
+                                    error = %e,
+                                    session_id = stale_session.session_id,
+                                    peer = %stale_session.peer_id,
+                                    "failed requesting fresh tips after stale selected-segment rearm"
+                                );
+                            } else {
+                                let mut rt = runtime.write().await;
+                                rt.tips_requested = rt.tips_requested.saturating_add(1);
+                            }
+                        }
+                        warn!(
+                            event = "selected_segment_no_progress_rearm",
+                            session_id = stale_session.session_id,
+                            peer = %stale_session.peer_id,
+                            no_progress_secs,
+                            "expired stale selected-segment session and requested fresh tip reconciliation"
+                        );
+                    }
+                }
+
                 recovery_tick = recovery_tick.saturating_add(1);
                 if recovery_tick.is_multiple_of(5) {
                     let tick_started = Instant::now();
@@ -3262,6 +3463,7 @@ async fn main() -> Result<()> {
                             let accepted_tip = pulsedag_core::preferred_tip_hash(&guard)
                                 .unwrap_or_else(|| guard.dag.genesis_hash.clone());
                             let mut selected_segment_completed = false;
+                            let mut selected_segment_chunk_completed = false;
                             {
                                 let mut rt = runtime.write().await;
                                 if final_height_reconcile_block {
@@ -3349,6 +3551,7 @@ async fn main() -> Result<()> {
                                             .remote_selected_height
                                             .saturating_sub(guard.dag.best_height);
                                         if session.complete_current_chunk_if_applied() {
+                                            selected_segment_chunk_completed = true;
                                             rt.selected_segment_chunks_completed_total = rt
                                                 .selected_segment_chunks_completed_total
                                                 .saturating_add(1);
@@ -3406,6 +3609,8 @@ async fn main() -> Result<()> {
                                     .max(block_requests.oldest_pending_age_secs(now_unix()));
                                 rt.sync_state = if selected_segment_completed {
                                     DagSyncStage::SelectedSegmentComplete.as_str().to_string()
+                                } else if selected_segment_session.is_some() {
+                                    DagSyncStage::ApplyingSelectedSegment.as_str().to_string()
                                 } else if guard.orphan_blocks.is_empty() {
                                     "synced".to_string()
                                 } else {
@@ -3417,6 +3622,89 @@ async fn main() -> Result<()> {
                                 }
                                 rt.sync_pipeline.complete_cycle(now_unix());
                             }
+                            if selected_segment_continuation_needed(
+                                selected_segment_session.as_ref(),
+                                guard.dag.best_height,
+                                selected_segment_chunk_completed,
+                            ) {
+                                let (peer_id, remote_height) = selected_segment_session
+                                    .as_ref()
+                                    .map(|session| {
+                                        (session.peer_id.clone(), session.remote_selected_height)
+                                    })
+                                    .expect("continuation requires active selected session");
+                                let selected_locator = guard
+                                    .dag
+                                    .selected_chain
+                                    .iter()
+                                    .rev()
+                                    .take(32)
+                                    .cloned()
+                                    .collect::<Vec<_>>();
+                                let selected_limits = SelectedSegmentLimits::default();
+                                let request_id = {
+                                    let locator_state = selected_segment_locator_state.lock().await;
+                                    locator_state.next_request_id
+                                };
+                                if let Some(ref p2p_handle) = p2p {
+                                    match p2p_handle.request_headers_from(
+                                        &peer_id,
+                                        &selected_locator,
+                                        None,
+                                        selected_limits.headers_per_chunk,
+                                    ) {
+                                        Ok(()) => {
+                                            let requested_at = now_unix();
+                                            {
+                                                let mut locator_state =
+                                                    selected_segment_locator_state.lock().await;
+                                                locator_state.next_request_id =
+                                                    locator_state.next_request_id.saturating_add(1);
+                                                locator_state.pending_locator =
+                                                    Some(PendingSelectedLocator {
+                                                        request_id,
+                                                        peer_id: peer_id.clone(),
+                                                        locator: selected_locator,
+                                                        requested_at_unix: requested_at,
+                                                    });
+                                            }
+                                            if let Some(session) = selected_segment_session.as_mut()
+                                            {
+                                                session.state =
+                                                    SelectedSegmentSessionState::RequestingHeaders;
+                                                session.updated_at_unix = requested_at;
+                                            }
+                                            let mut rt = runtime.write().await;
+                                            rt.selected_segment_header_requests_total = rt
+                                                .selected_segment_header_requests_total
+                                                .saturating_add(1);
+                                            rt.header_requests_sent =
+                                                rt.header_requests_sent.saturating_add(1);
+                                            rt.sync_state = DagSyncStage::RequestingSelectedHeaders
+                                                .as_str()
+                                                .to_string();
+                                            info!(
+                                                event = "selected_segment_chunk_continuation",
+                                                peer = %peer_id,
+                                                local_height = guard.dag.best_height,
+                                                remote_height,
+                                                request_id,
+                                                "selected chunk completed below remote tip; requested next selected header page"
+                                            );
+                                        }
+                                        Err(e) => {
+                                            warn!(
+                                                error = %e,
+                                                peer = %peer_id,
+                                                local_height = guard.dag.best_height,
+                                                remote_height,
+                                                "failed requesting selected header continuation after chunk completion"
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+
                             if selected_segment_completed {
                                 selected_segment_session = None;
                                 selected_segment_locator_state.lock().await.pending_locator = None;
@@ -3609,17 +3897,18 @@ async fn main() -> Result<()> {
                     }
                     InboundEvent::Headers { peer_id, headers } => {
                         let selected_limits = SelectedSegmentLimits::default();
+                        let pending_selected_locator = {
+                            let guard = selected_segment_locator_state.lock().await;
+                            guard.pending_locator.clone()
+                        };
                         let (known_blocks_for_segment, common_ancestor, common_ancestor_height) = {
                             let guard = chain.read().await;
                             let known = known_hashes_for_scheduler(&guard);
-                            let common = headers.first().and_then(|first| {
-                                first
-                                    .header
-                                    .parents
-                                    .iter()
-                                    .find(|parent| known.contains(*parent))
-                                    .cloned()
-                            });
+                            let common = selected_common_ancestor_for_headers(
+                                &headers,
+                                &known,
+                                pending_selected_locator.as_ref(),
+                            );
                             let height = common
                                 .as_ref()
                                 .and_then(|hash| guard.dag.blocks.get(hash))
@@ -3634,10 +3923,6 @@ async fn main() -> Result<()> {
                                 &known_blocks_for_segment,
                             )
                         });
-                        let pending_selected_locator = {
-                            let guard = selected_segment_locator_state.lock().await;
-                            guard.pending_locator.clone()
-                        };
                         let pending_request_id = pending_selected_locator
                             .as_ref()
                             .map(|pending| pending.request_id)
@@ -3679,12 +3964,24 @@ async fn main() -> Result<()> {
                         };
                         let plan = fetch_scheduler.next_requests(&known, &pending, 8);
                         let selected_locator_pending = pending_selected_locator.is_some();
+                        let pending_locator_matches_common_ancestor =
+                            pending_selected_locator_matches_common_ancestor(
+                                pending_selected_locator.as_ref(),
+                                common_ancestor.as_deref(),
+                            );
+                        let pending_locator_accepts_response_peer =
+                            pending_selected_locator_accepts_response_peer(
+                                pending_selected_locator.as_ref(),
+                                peer_id.as_deref(),
+                            );
                         let selected_session_owns_headers = selected_headers_own_broadcast_locator(
                             selected_segment_session.is_some(),
                             selected_locator_pending,
                             peer_id.as_deref(),
                             session_correlated,
-                        );
+                        ) && (session_correlated
+                            || (pending_locator_matches_common_ancestor
+                                && pending_locator_accepts_response_peer));
                         let selected_requests = if selected_session_owns_headers
                             && matches!(selected_segment_validation, Some(Ok(())))
                         {
@@ -3962,7 +4259,7 @@ async fn main() -> Result<()> {
                                 selected_locator_peer_for_priority_gap(
                                     &status,
                                     local_height,
-                                    SELECTED_SEGMENT_PRIORITY_GAP_BLOCKS,
+                                    SELECTED_REJOIN_REARM_MIN_GAP_BLOCKS,
                                 )
                             });
                         if let (Some((peer_id, remote_height)), Some(p2p_handle)) =
@@ -3998,7 +4295,8 @@ async fn main() -> Result<()> {
                                     guard.next_request_id
                                 };
                                 if p2p_handle
-                                    .request_headers(
+                                    .request_headers_from(
+                                        &peer_id,
                                         &selected_locator,
                                         None,
                                         selected_limits.headers_per_chunk,
@@ -4802,7 +5100,8 @@ async fn main() -> Result<()> {
                             guard.next_request_id
                         };
                         let selected_locator_requested = p2p_handle
-                            .request_headers(
+                            .request_headers_from(
+                                &peer_id,
                                 &selected_locator,
                                 None,
                                 selected_limits.headers_per_chunk,
@@ -4877,14 +5176,31 @@ async fn main() -> Result<()> {
                                         &local_inventory,
                                     );
                                     let selected_locator_needed = selected_locator_peer.is_some();
+                                    let active_session =
+                                        runtime.read().await.active_session_id.is_some();
+                                    let selected_locator_already_active = {
+                                        let guard = selected_segment_locator_state.lock().await;
+                                        selected_segment_recovery_has_priority(
+                                            active_session,
+                                            guard
+                                                .pending_locator
+                                                .as_ref()
+                                                .map(|pending| pending.requested_at_unix),
+                                            now,
+                                        )
+                                    };
                                     let selected_locator_request_id = {
                                         let guard = selected_segment_locator_state.lock().await;
                                         guard.next_request_id
                                     };
                                     let selected_locator_requested = selected_locator_peer
                                         .is_some()
+                                        && !selected_locator_already_active
                                         && p2p
-                                            .request_headers(
+                                            .request_headers_from(
+                                                selected_locator_peer
+                                                    .as_deref()
+                                                    .unwrap_or_default(),
                                                 &selected_locator,
                                                 None,
                                                 selected_limits.headers_per_chunk,
@@ -6057,6 +6373,254 @@ mod tests {
     }
 
     #[test]
+    fn unrelated_header_page_cannot_hijack_pending_selected_locator() {
+        let pending = PendingSelectedLocator {
+            request_id: 7,
+            peer_id: "peer-a".to_string(),
+            locator: vec!["local-1296".to_string(), "local-1295".to_string()],
+            requested_at_unix: 100,
+        };
+        assert!(pending_selected_locator_matches_common_ancestor(
+            Some(&pending),
+            Some("local-1296")
+        ));
+        assert!(!pending_selected_locator_matches_common_ancestor(
+            Some(&pending),
+            Some("genesis")
+        ));
+        let owns_unrelated =
+            selected_headers_own_broadcast_locator(false, true, Some("peer-a"), false)
+                && pending_selected_locator_matches_common_ancestor(
+                    Some(&pending),
+                    Some("genesis"),
+                );
+        assert!(!owns_unrelated);
+    }
+
+    #[test]
+    fn pending_selected_locator_rejects_wrong_response_peer() {
+        let pending = PendingSelectedLocator {
+            request_id: 8,
+            peer_id: "peer-a".to_string(),
+            locator: vec!["local-1296".to_string()],
+            requested_at_unix: 100,
+        };
+        assert!(pending_selected_locator_accepts_response_peer(
+            Some(&pending),
+            Some("peer-a")
+        ));
+        assert!(!pending_selected_locator_accepts_response_peer(
+            Some(&pending),
+            Some("peer-b")
+        ));
+        let broadcast = PendingSelectedLocator {
+            peer_id: "broadcast-observed-block-gap".to_string(),
+            ..pending
+        };
+        assert!(pending_selected_locator_accepts_response_peer(
+            Some(&broadcast),
+            Some("peer-b")
+        ));
+    }
+
+    #[test]
+    fn selected_segment_common_ancestor_prefers_pending_locator_parent() {
+        let pending = PendingSelectedLocator {
+            request_id: 9,
+            peer_id: "peer-a".to_string(),
+            locator: vec!["selected-1298".to_string()],
+            requested_at_unix: 100,
+        };
+        let mut header = selected_test_header("selected-1299", "merge-known", 1299);
+        header.header.parents.push("selected-1298".to_string());
+        let known = HashSet::from(["merge-known".to_string(), "selected-1298".to_string()]);
+        assert_eq!(
+            selected_common_ancestor_for_headers(&[header], &known, Some(&pending)).as_deref(),
+            Some("selected-1298")
+        );
+    }
+
+    #[test]
+    fn selected_segment_fetches_unknown_merge_parent_before_selected_child() {
+        let mut header = selected_test_header("selected-1299", "selected-1298", 1299);
+        header.header.parents.push("merge-parent".to_string());
+        let headers = vec![header];
+        let known = HashSet::from(["selected-1298".to_string()]);
+        assert_eq!(
+            validate_selected_header_segment("selected-1298", &headers, &known),
+            Ok(())
+        );
+        let limits = SelectedSegmentLimits {
+            headers_per_chunk: 128,
+            max_inflight_blocks_per_peer: 128,
+            max_segment_bytes: 4 * 1024 * 1024,
+        };
+        assert_eq!(
+            selected_segment_request_candidates(&headers, limits, &known, &HashSet::new()),
+            vec!["merge-parent".to_string(), "selected-1299".to_string()]
+        );
+    }
+
+    #[test]
+    fn selected_segment_duplicate_header_page_does_not_refresh_progress_clock() {
+        let headers = vec![selected_test_header("b1", "common", 1)];
+        let locator = vec!["common".to_string()];
+        let pending = PendingSelectedLocator {
+            request_id: 1,
+            peer_id: "peer-a".to_string(),
+            locator: locator.clone(),
+            requested_at_unix: 100,
+        };
+        let mut session = SelectedSegmentSession::new(
+            1,
+            "peer-a".to_string(),
+            "common".to_string(),
+            0,
+            &headers,
+            &locator,
+            1,
+            100,
+        )
+        .expect("session");
+        assert!(!session.accept_header_page(&pending, &headers, 200));
+        assert_eq!(session.updated_at_unix, 100);
+        let next = vec![selected_test_header("b2", "b1", 2)];
+        assert!(session.accept_header_page(&pending, &next, 201));
+        assert_eq!(session.updated_at_unix, 201);
+    }
+
+    #[test]
+    fn small_rejoin_gap_reactivates_selected_locator_after_rearm() {
+        let status = P2pStatus {
+            remote_selected_tip_inventory: vec![pulsedag_p2p::RemoteSelectedTipStatus {
+                peer_id: "peer-a".to_string(),
+                selected_height: 1306,
+                connected: true,
+                direct_request_capable: true,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        assert_eq!(
+            selected_locator_peer_for_priority_gap(
+                &status,
+                1303,
+                SELECTED_REJOIN_REARM_MIN_GAP_BLOCKS,
+            ),
+            Some(("peer-a".to_string(), 1306))
+        );
+    }
+
+    #[test]
+    fn selected_segment_completed_chunk_below_remote_tip_requires_continuation() {
+        let headers = vec![
+            selected_test_header("b1", "common", 1),
+            selected_test_header("b2", "b1", 2),
+            selected_test_header("b3", "b2", 3),
+        ];
+        let locator = vec!["common".to_string()];
+        let mut session = SelectedSegmentSession::new(
+            1,
+            "peer-a".to_string(),
+            "common".to_string(),
+            0,
+            &headers,
+            &locator,
+            1,
+            100,
+        )
+        .expect("session");
+        assert!(session.start_chunk(vec!["b1".to_string(), "b2".to_string()], 101));
+        session.mark_applied("b1", 102);
+        session.mark_applied("b2", 103);
+        assert!(session.complete_current_chunk_if_applied());
+
+        assert!(selected_segment_continuation_needed(
+            Some(&session),
+            2,
+            true
+        ));
+        assert!(!selected_segment_continuation_needed(
+            Some(&session),
+            3,
+            true
+        ));
+        assert!(!selected_segment_continuation_needed(
+            Some(&session),
+            2,
+            false
+        ));
+    }
+
+    #[test]
+    fn selected_segment_stale_pending_locator_rearms_without_session() {
+        let pending = PendingSelectedLocator {
+            request_id: 11,
+            peer_id: "peer-a".to_string(),
+            locator: vec!["local".to_string()],
+            requested_at_unix: 100,
+        };
+        assert!(!pending_selected_locator_should_rearm(
+            Some(&pending),
+            false,
+            0,
+            129
+        ));
+        assert!(pending_selected_locator_should_rearm(
+            Some(&pending),
+            false,
+            0,
+            130
+        ));
+        assert!(!pending_selected_locator_should_rearm(
+            Some(&pending),
+            true,
+            0,
+            200
+        ));
+        assert!(!pending_selected_locator_should_rearm(
+            Some(&pending),
+            false,
+            1,
+            200
+        ));
+    }
+
+    #[test]
+    fn stale_selected_segment_rearms_only_after_no_progress_and_no_inflight_requests() {
+        let headers = vec![selected_test_header("b1", "common", 1)];
+        let locator = vec!["common".to_string()];
+        let session = SelectedSegmentSession::new(
+            1,
+            "peer-a".to_string(),
+            "common".to_string(),
+            0,
+            &headers,
+            &locator,
+            1,
+            100,
+        )
+        .expect("session");
+        assert!(!selected_segment_session_should_rearm(
+            Some(&session),
+            0,
+            129
+        ));
+        assert!(selected_segment_session_should_rearm(
+            Some(&session),
+            0,
+            130
+        ));
+        assert!(!selected_segment_session_should_rearm(
+            Some(&session),
+            1,
+            200
+        ));
+        assert!(!selected_segment_session_should_rearm(None, 0, 200));
+    }
+
+    #[test]
     fn selected_segment_candidates_survive_generic_scheduler_staging() {
         let headers = vec![
             selected_test_header("b1", "common", 514),
@@ -6112,6 +6676,14 @@ mod tests {
         assert_eq!(
             validate_selected_header_segment("common", &dup, &known),
             Err("duplicate_hash")
+        );
+        let disconnected = vec![
+            selected_test_header("b1", "common", 514),
+            selected_test_header("b2", "unknown", 515),
+        ];
+        assert_eq!(
+            validate_selected_header_segment("common", &disconnected, &known),
+            Err("no_known_or_staged_parent")
         );
     }
 
