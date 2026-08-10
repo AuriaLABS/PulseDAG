@@ -1,11 +1,10 @@
-name: fix-811 canonical remote evidence
+name: fix-811 remaining rejoin validation
 
 on:
   push:
     branches:
       - fix/rejoin-catchup-stall-811
     paths:
-      - .github/workflows/fix-811-canonical-remote-evidence.yml
       - .github/scripts/fix_811_wire_remote_sync_evidence.py
 
 permissions:
@@ -21,7 +20,7 @@ jobs:
           ref: fix/rejoin-catchup-stall-811
           fetch-depth: 0
 
-      - name: Apply canonical remote evidence patch
+      - name: Apply remaining rejoin patch
         run: python .github/scripts/fix_811_wire_remote_sync_evidence.py
 
       - name: Format
@@ -36,6 +35,12 @@ jobs:
       - name: Canonical sync regressions
         run: cargo test -p pulsedag-rpc canonical_sync -- --nocapture
 
+      - name: Selected segment regressions
+        run: cargo test -p pulsedagd selected_segment -- --nocapture
+
+      - name: Small-gap rejoin regressions
+        run: cargo test -p pulsedagd small_rejoin -- --nocapture
+
       - name: Clippy RPC and daemon
         run: cargo clippy -p pulsedag-rpc -p pulsedagd --all-targets --all-features -- -D warnings
 
@@ -48,8 +53,8 @@ jobs:
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add crates/pulsedag-rpc/src/handlers/sync.rs
+          git add crates/pulsedag-rpc/src/handlers/sync.rs apps/pulsedagd/src/main.rs
           git rm .github/scripts/fix_811_wire_remote_sync_evidence.py
           git rm .github/workflows/fix-811-canonical-remote-evidence.yml
-          git commit -m "fix(sync): retain fresh remote tip evidence in status"
+          git commit -m "fix(sync): continue selected rejoin to remote tip"
           git push origin HEAD:fix/rejoin-catchup-stall-811
