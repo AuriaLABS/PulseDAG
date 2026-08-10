@@ -1,0 +1,48 @@
+name: fix-811 remaining rejoin validation
+
+on:
+  push:
+    branches:
+      - fix/rejoin-catchup-stall-811
+    paths:
+      - .github/workflows/fix-811-remaining-rejoin-validation.yml
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v4
+        with:
+          ref: fix/rejoin-catchup-stall-811
+          fetch-depth: 0
+
+      - name: Apply remaining rejoin patch
+        run: python3 .github/tmp/fix_811_remaining_rejoin.py
+
+      - name: Format
+        run: cargo fmt --all
+
+      - name: Diff check
+        run: git diff --check
+
+      - name: Selected segment regressions
+        run: cargo test -p pulsedagd selected_segment -- --nocapture
+
+      - name: Daemon compile check
+        run: cargo check -p pulsedagd
+
+      - name: Commit validated source and remove temporary harness
+        shell: bash
+        run: |
+          rm -f .github/tmp/fix_811_remaining_rejoin.py
+          rm -f .github/workflows/fix-811-remaining-rejoin-validation.yml
+          git add -A
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "fix(sync): recover selected rejoin through merge parents"
+          git push origin HEAD:fix/rejoin-catchup-stall-811
