@@ -30,105 +30,84 @@ jobs:
           path = Path('crates/pulsedag-rpc/src/handlers/canonical_sync.rs')
           text = path.read_text()
 
-          old = '''    let stale_sync_error_suppressed_total =
-              u64::from(historical_error.is_some() && !live_error_active);
-          let no_blockers = lag_blocks == 0
-              && !network_selected_tip_mismatch
-          '''
-          new = '''    let stale_sync_error_suppressed_total =
-              u64::from(historical_error.is_some() && !live_error_active);
-          let retained_history_gap_active = runtime
-              .final_quiescence_selected_sync_blocked_reason
-              .as_deref()
-              == Some("retained_history_gap");
-          let no_blockers = !retained_history_gap_active
-              && lag_blocks == 0
-              && !network_selected_tip_mismatch
-          '''
+          old = '    let no_blockers = lag_blocks == 0\n'
+          new = (
+              '    let retained_history_gap_active = runtime\n'
+              '        .final_quiescence_selected_sync_blocked_reason\n'
+              '        .as_deref()\n'
+              '        == Some("retained_history_gap");\n'
+              '    let no_blockers = !retained_history_gap_active\n'
+              '        && lag_blocks == 0\n'
+          )
           if text.count(old) != 1:
               raise SystemExit(f'no_blockers anchor count={text.count(old)}')
           text = text.replace(old, new, 1)
 
-          old = '''    let (sync_state, catchup_stage, recovery_reason) = if no_blockers
-              && coherent
-              && !live_error_active
-          {
-              ("synced".to_string(), "steady".to_string(), None)
-          } else if live_error_active || !coherent {
-          '''
-          new = '''    let (sync_state, catchup_stage, recovery_reason) = if retained_history_gap_active {
-              (
-                  "selected_segment_failed".to_string(),
-                  "degraded".to_string(),
-                  Some("selected header sync blocked: retained_history_gap".to_string()),
-              )
-          } else if no_blockers && coherent && !live_error_active {
-              ("synced".to_string(), "steady".to_string(), None)
-          } else if live_error_active || !coherent {
-          '''
+          old = '    let (sync_state, catchup_stage, recovery_reason) = if no_blockers\n'
+          new = (
+              '    let (sync_state, catchup_stage, recovery_reason) = if retained_history_gap_active {\n'
+              '        (\n'
+              '            "selected_segment_failed".to_string(),\n'
+              '            "degraded".to_string(),\n'
+              '            Some("selected header sync blocked: retained_history_gap".to_string()),\n'
+              '        )\n'
+              '    } else if no_blockers\n'
+          )
           if text.count(old) != 1:
               raise SystemExit(f'canonical branch anchor count={text.count(old)}')
           text = text.replace(old, new, 1)
 
-          old = '''        assert_eq!(state.sync_state, "locating_common_ancestor");
-              assert_eq!(state.catchup_stage, "discovering");
-          }
-          }
-          '''
-          new = '''        assert_eq!(state.sync_state, "locating_common_ancestor");
-              assert_eq!(state.catchup_stage, "discovering");
-          }
-
-          #[test]
-          fn retained_history_gap_prevents_canonical_synced_state_when_remote_evidence_ages_out() {
-              let chain = chain_at_selected_height(611);
-              let runtime = NodeRuntimeStats {
-                  sync_state: "selected_segment_failed".into(),
-                  final_quiescence_selected_sync_blocked_reason: Some(
-                      "retained_history_gap".into(),
-                  ),
-                  ..NodeRuntimeStats::default()
-              };
-              let stale_remote = RemoteSelectedTipEvidence {
-                  observed_at_unix: 900,
-                  ..fresh_remote("peer-a", 1311)
-              };
-
-              let stale = build_canonical_sync_state_with_remote_evidence(
-                  &chain,
-                  &runtime,
-                  chain.dag.blocks.len(),
-                  1_000,
-                  None,
-                  &[stale_remote],
-              );
-              assert_eq!(stale.best_remote_selected_height, None);
-              assert_eq!(stale.sync_state, "selected_segment_failed");
-              assert_eq!(stale.catchup_stage, "degraded");
-              assert_eq!(
-                  stale.recovery_reason.as_deref(),
-                  Some("selected header sync blocked: retained_history_gap")
-              );
-              assert_ne!(stale.sync_state, "synced");
-
-              let fresh = build_canonical_sync_state_with_remote_evidence(
-                  &chain,
-                  &runtime,
-                  chain.dag.blocks.len(),
-                  1_000,
-                  None,
-                  &[fresh_remote("peer-a", 1311)],
-              );
-              assert_eq!(fresh.best_remote_selected_height, Some(1311));
-              assert_eq!(fresh.sync_state, "selected_segment_failed");
-              assert_eq!(fresh.catchup_stage, "degraded");
-              assert_ne!(fresh.sync_state, "synced");
-          }
-          }
-          '''
-          if text.count(old) != 1:
-              raise SystemExit(f'test-tail anchor count={text.count(old)}')
-          text = text.replace(old, new, 1)
+          test = (
+              '\n    #[test]\n'
+              '    fn retained_history_gap_prevents_canonical_synced_state_when_remote_evidence_ages_out() {\n'
+              '        let chain = chain_at_selected_height(611);\n'
+              '        let runtime = NodeRuntimeStats {\n'
+              '            sync_state: "selected_segment_failed".into(),\n'
+              '            final_quiescence_selected_sync_blocked_reason: Some(\n'
+              '                "retained_history_gap".into(),\n'
+              '            ),\n'
+              '            ..NodeRuntimeStats::default()\n'
+              '        };\n'
+              '        let stale_remote = RemoteSelectedTipEvidence {\n'
+              '            observed_at_unix: 900,\n'
+              '            ..fresh_remote("peer-a", 1311)\n'
+              '        };\n'
+              '\n'
+              '        let stale = build_canonical_sync_state_with_remote_evidence(\n'
+              '            &chain,\n'
+              '            &runtime,\n'
+              '            chain.dag.blocks.len(),\n'
+              '            1_000,\n'
+              '            None,\n'
+              '            &[stale_remote],\n'
+              '        );\n'
+              '        assert_eq!(stale.best_remote_selected_height, None);\n'
+              '        assert_eq!(stale.sync_state, "selected_segment_failed");\n'
+              '        assert_eq!(stale.catchup_stage, "degraded");\n'
+              '        assert_eq!(\n'
+              '            stale.recovery_reason.as_deref(),\n'
+              '            Some("selected header sync blocked: retained_history_gap")\n'
+              '        );\n'
+              '        assert_ne!(stale.sync_state, "synced");\n'
+              '\n'
+              '        let fresh = build_canonical_sync_state_with_remote_evidence(\n'
+              '            &chain,\n'
+              '            &runtime,\n'
+              '            chain.dag.blocks.len(),\n'
+              '            1_000,\n'
+              '            None,\n'
+              '            &[fresh_remote("peer-a", 1311)],\n'
+              '        );\n'
+              '        assert_eq!(fresh.best_remote_selected_height, Some(1311));\n'
+              '        assert_eq!(fresh.sync_state, "selected_segment_failed");\n'
+              '        assert_eq!(fresh.catchup_stage, "degraded");\n'
+              '        assert_ne!(fresh.sync_state, "synced");\n'
+              '    }\n'
+          )
+          insert_at = text.rfind('\n}')
+          if insert_at < 0:
+              raise SystemExit('module closing brace not found')
+          text = text[:insert_at] + test + text[insert_at:]
 
           path.write_text(text)
           print('applied canonical retained-history-gap state patch')
