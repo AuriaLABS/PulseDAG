@@ -1,0 +1,73 @@
+name: Validate combined #812 locator and metadata repairs
+
+on:
+  push:
+    branches:
+      - fix/fresh-node-orphan-recovery-812
+    paths:
+      - .github/workflows/fix-812-combined-locator-metadata.yml
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v4
+        with:
+          ref: fix/fresh-node-orphan-recovery-812
+          fetch-depth: 0
+
+      - name: Apply side-locator resolver patch
+        run: python3 scripts/apply-fix-812-resolve-side-locator.py
+
+      - name: Apply deterministic selected-parent startup audit
+        run: python3 scripts/apply-fix-812-deterministic-selected-parent-audit.py
+
+      - name: Format
+        run: cargo fmt --all
+
+      - name: Diff check
+        run: git diff --check
+
+      - name: Header request locator regressions
+        run: cargo test -p pulsedagd headers_for_request_ -- --nocapture
+
+      - name: Startup selected metadata regressions
+        run: cargo test -p pulsedagd startup_selected_chain_metadata_repair_ -- --nocapture
+
+      - name: Requested-peer fallback regression
+        run: cargo test -p pulsedagd requested_peer_fallback_common_ancestor_can_own_selected_headers -- --nocapture
+
+      - name: Known-header continuation regression
+        run: cargo test -p pulsedagd selected_segment_known_header_page_continues_toward_advertised_tip -- --nocapture
+
+      - name: Deep locator regression
+        run: cargo test -p pulsedagd selected_chain_locator_spans_long_fresh_node_divergence -- --nocapture
+
+      - name: Selected segment regressions
+        run: cargo test -p pulsedagd selected_segment -- --nocapture
+
+      - name: Clippy
+        run: cargo clippy -p pulsedagd --all-targets --all-features -- -D warnings
+
+      - name: Check
+        run: cargo check -p pulsedagd
+
+      - name: Commit validated source and remove temporary validation files
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f scripts/apply-fix-812-resolve-side-locator.py
+          rm -f scripts/apply-fix-812-deterministic-selected-parent-audit.py
+          rm -f .github/workflows/fix-812-side-locator-resolver.yml
+          rm -f .github/workflows/fix-812-combined-locator-metadata.yml
+          git add -A
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "fix(sync): resolve retained locators and audit selected metadata"
+          git pull --rebase origin fix/fresh-node-orphan-recovery-812
+          git push origin HEAD:fix/fresh-node-orphan-recovery-812
