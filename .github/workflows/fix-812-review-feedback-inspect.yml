@@ -1,0 +1,32 @@
+name: Inspect #815 review feedback anchors
+
+on:
+  push:
+    branches:
+      - fix/fresh-node-orphan-recovery-812
+    paths:
+      - .github/workflows/fix-812-review-feedback-inspect.yml
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/fresh-node-orphan-recovery-812
+          fetch-depth: 0
+      - name: Print anchors
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo '=== retained_history_gap_peers ==='
+          grep -n -C 6 'retained_history_gap_peers' apps/pulsedagd/src/main.rs || true
+          echo '=== final_quiescence_selected_sync_blocked_reason ==='
+          grep -n -C 4 'final_quiescence_selected_sync_blocked_reason' apps/pulsedagd/src/main.rs crates/pulsedag-rpc/src/handlers/canonical_sync.rs crates/pulsedag-rpc/src/api.rs || true
+          echo '=== selected_header_discovery_continuation_anchor tests/calls ==='
+          grep -n -C 8 'selected_header_discovery_continuation_anchor' apps/pulsedagd/src/main.rs || true
+          echo '=== selected segment success/clear vicinity ==='
+          grep -n -C 8 -E 'selected_segment.*success|retained_history_gap_peers\.clear|SelectedSegmentSessionState::Complete' apps/pulsedagd/src/main.rs || true
