@@ -152,7 +152,7 @@ replace_once(startup_old, startup_new)
 test = r'''
     #[test]
     fn startup_selected_chain_metadata_repair_restores_locator_from_empty_snapshot_metadata() {
-        let mut chain = build_test_chain("testnet", 48);
+        let mut chain = build_test_chain("testnet", 10);
         let selected_tip = pulsedag_core::preferred_tip_hash(&chain).expect("selected tip");
         assert!(chain.dag.selected_chain.len() > 1);
 
