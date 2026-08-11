@@ -1033,6 +1033,8 @@ pub struct NodeRuntimeStats {
     #[serde(default)]
     pub selected_segment_uncorrelated_headers_total: u64,
     #[serde(default)]
+    pub selected_segment_retained_history_gap_peer_count: usize,
+    #[serde(default)]
     pub active_session_id: Option<u64>,
     #[serde(default)]
     pub active_session_peer: Option<String>,
