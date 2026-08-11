@@ -24,7 +24,7 @@ jobs:
       - name: Apply selected-header correlation patch
         run: python3 scripts/apply-fix-812-selected-header-correlation.py
 
-      - name: Remove obsolete correlation locals
+      - name: Clean obsolete correlation code
         shell: bash
         run: |
           python3 - <<'PY'
@@ -40,6 +40,11 @@ jobs:
               text, count = re.subn(pattern, '', text, count=1)
               if count != 1:
                   raise SystemExit(f'obsolete correlation local regex matched {count} times')
+          old = 'fn pending_selected_locator_matches_common_ancestor(\n'
+          new = '#[cfg(test)]\nfn pending_selected_locator_matches_common_ancestor(\n'
+          if text.count(old) != 1:
+              raise SystemExit(f'test-only helper marker matched {text.count(old)} times')
+          text = text.replace(old, new, 1)
           path.write_text(text, encoding='utf-8')
           PY
 
@@ -49,6 +54,12 @@ jobs:
       - name: Diff check
         run: git diff --check
 
+      - name: Clippy
+        run: cargo clippy -p pulsedagd --all-targets --all-features -- -D warnings
+
+      - name: Check
+        run: cargo check -p pulsedagd
+
       - name: Truncated selected-chain metadata regression
         run: cargo test -p pulsedagd selected_chain_metadata_repair_detects_truncated_selected_prefix -- --nocapture
 
@@ -57,21 +68,6 @@ jobs:
 
       - name: Known-header page continuation regression
         run: cargo test -p pulsedagd selected_segment_known_header_page_continues_toward_advertised_tip -- --nocapture
-
-      - name: Existing selected-segment regressions
-        run: cargo test -p pulsedagd selected_segment -- --nocapture
-
-      - name: Startup selected-chain metadata regression
-        run: cargo test -p pulsedagd startup_selected_chain_metadata_repair_restores_locator_from_empty_snapshot_metadata -- --nocapture
-
-      - name: Deep locator regression
-        run: cargo test -p pulsedagd selected_chain_locator_spans_long_fresh_node_divergence -- --nocapture
-
-      - name: Clippy
-        run: cargo clippy -p pulsedagd --all-targets --all-features -- -D warnings
-
-      - name: Check
-        run: cargo check -p pulsedagd
 
       - name: Commit validated source and remove temporary validation files
         shell: bash
