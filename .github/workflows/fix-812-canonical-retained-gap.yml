@@ -1,0 +1,174 @@
+name: Validate #812 canonical retained-history-gap state
+
+on:
+  push:
+    branches:
+      - fix/fresh-node-orphan-recovery-812
+    paths:
+      - .github/workflows/fix-812-canonical-retained-gap.yml
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v4
+        with:
+          ref: fix/fresh-node-orphan-recovery-812
+          fetch-depth: 0
+
+      - name: Apply canonical retained-history-gap state patch
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('crates/pulsedag-rpc/src/handlers/canonical_sync.rs')
+          text = path.read_text()
+
+          old = '''    let stale_sync_error_suppressed_total =
+              u64::from(historical_error.is_some() && !live_error_active);
+          let no_blockers = lag_blocks == 0
+              && !network_selected_tip_mismatch
+          '''
+          new = '''    let stale_sync_error_suppressed_total =
+              u64::from(historical_error.is_some() && !live_error_active);
+          let retained_history_gap_active = runtime
+              .final_quiescence_selected_sync_blocked_reason
+              .as_deref()
+              == Some("retained_history_gap");
+          let no_blockers = !retained_history_gap_active
+              && lag_blocks == 0
+              && !network_selected_tip_mismatch
+          '''
+          if text.count(old) != 1:
+              raise SystemExit(f'no_blockers anchor count={text.count(old)}')
+          text = text.replace(old, new, 1)
+
+          old = '''    let (sync_state, catchup_stage, recovery_reason) = if no_blockers
+              && coherent
+              && !live_error_active
+          {
+              ("synced".to_string(), "steady".to_string(), None)
+          } else if live_error_active || !coherent {
+          '''
+          new = '''    let (sync_state, catchup_stage, recovery_reason) = if retained_history_gap_active {
+              (
+                  "selected_segment_failed".to_string(),
+                  "degraded".to_string(),
+                  Some("selected header sync blocked: retained_history_gap".to_string()),
+              )
+          } else if no_blockers && coherent && !live_error_active {
+              ("synced".to_string(), "steady".to_string(), None)
+          } else if live_error_active || !coherent {
+          '''
+          if text.count(old) != 1:
+              raise SystemExit(f'canonical branch anchor count={text.count(old)}')
+          text = text.replace(old, new, 1)
+
+          old = '''        assert_eq!(state.sync_state, "locating_common_ancestor");
+              assert_eq!(state.catchup_stage, "discovering");
+          }
+          }
+          '''
+          new = '''        assert_eq!(state.sync_state, "locating_common_ancestor");
+              assert_eq!(state.catchup_stage, "discovering");
+          }
+
+          #[test]
+          fn retained_history_gap_prevents_canonical_synced_state_when_remote_evidence_ages_out() {
+              let chain = chain_at_selected_height(611);
+              let runtime = NodeRuntimeStats {
+                  sync_state: "selected_segment_failed".into(),
+                  final_quiescence_selected_sync_blocked_reason: Some(
+                      "retained_history_gap".into(),
+                  ),
+                  ..NodeRuntimeStats::default()
+              };
+              let stale_remote = RemoteSelectedTipEvidence {
+                  observed_at_unix: 900,
+                  ..fresh_remote("peer-a", 1311)
+              };
+
+              let stale = build_canonical_sync_state_with_remote_evidence(
+                  &chain,
+                  &runtime,
+                  chain.dag.blocks.len(),
+                  1_000,
+                  None,
+                  &[stale_remote],
+              );
+              assert_eq!(stale.best_remote_selected_height, None);
+              assert_eq!(stale.sync_state, "selected_segment_failed");
+              assert_eq!(stale.catchup_stage, "degraded");
+              assert_eq!(
+                  stale.recovery_reason.as_deref(),
+                  Some("selected header sync blocked: retained_history_gap")
+              );
+              assert_ne!(stale.sync_state, "synced");
+
+              let fresh = build_canonical_sync_state_with_remote_evidence(
+                  &chain,
+                  &runtime,
+                  chain.dag.blocks.len(),
+                  1_000,
+                  None,
+                  &[fresh_remote("peer-a", 1311)],
+              );
+              assert_eq!(fresh.best_remote_selected_height, Some(1311));
+              assert_eq!(fresh.sync_state, "selected_segment_failed");
+              assert_eq!(fresh.catchup_stage, "degraded");
+              assert_ne!(fresh.sync_state, "synced");
+          }
+          }
+          '''
+          if text.count(old) != 1:
+              raise SystemExit(f'test-tail anchor count={text.count(old)}')
+          text = text.replace(old, new, 1)
+
+          path.write_text(text)
+          print('applied canonical retained-history-gap state patch')
+          PY
+
+      - name: Format
+        run: cargo fmt --all
+
+      - name: Diff check
+        run: git diff --check
+
+      - name: Canonical retained-gap regression
+        run: cargo test -p pulsedag-rpc retained_history_gap_prevents_canonical_synced_state_when_remote_evidence_ages_out -- --nocapture
+
+      - name: Canonical sync regressions
+        run: cargo test -p pulsedag-rpc canonical_sync -- --nocapture
+
+      - name: Existing retained-gap daemon regressions
+        run: cargo test -p pulsedagd retained_history_gap -- --nocapture
+
+      - name: RPC clippy
+        run: cargo clippy -p pulsedag-rpc --all-targets --all-features -- -D warnings
+
+      - name: Daemon clippy
+        run: cargo clippy -p pulsedagd --all-targets --all-features -- -D warnings
+
+      - name: RPC check
+        run: cargo check -p pulsedag-rpc
+
+      - name: Daemon check
+        run: cargo check -p pulsedagd
+
+      - name: Commit validated source and remove temporary workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f .github/workflows/fix-812-canonical-retained-gap.yml
+          git add -A
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "fix(sync): preserve pruned-gap failure in canonical status"
+          git pull --rebase origin fix/fresh-node-orphan-recovery-812
+          git push origin HEAD:fix/fresh-node-orphan-recovery-812
