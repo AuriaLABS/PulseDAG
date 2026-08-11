@@ -1,0 +1,67 @@
+name: Validate #812 selected-header correlation
+
+on:
+  push:
+    branches:
+      - fix/fresh-node-orphan-recovery-812
+    paths:
+      - .github/workflows/fix-812-selected-header-correlation.yml
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v4
+        with:
+          ref: fix/fresh-node-orphan-recovery-812
+          fetch-depth: 0
+
+      - name: Apply selected-header correlation patch
+        run: python3 scripts/apply-fix-812-selected-header-correlation.py
+
+      - name: Format
+        run: cargo fmt --all
+
+      - name: Diff check
+        run: git diff --check
+
+      - name: Truncated selected-chain metadata regression
+        run: cargo test -p pulsedagd selected_chain_metadata_repair_detects_truncated_selected_prefix -- --nocapture
+
+      - name: Requested-peer fallback correlation regression
+        run: cargo test -p pulsedagd requested_peer_fallback_common_ancestor_can_own_selected_headers -- --nocapture
+
+      - name: Known-header page continuation regression
+        run: cargo test -p pulsedagd selected_segment_known_header_page_continues_toward_advertised_tip -- --nocapture
+
+      - name: Existing selected-segment regressions
+        run: cargo test -p pulsedagd selected_segment -- --nocapture
+
+      - name: Startup selected-chain metadata regression
+        run: cargo test -p pulsedagd startup_selected_chain_metadata_repair_restores_locator_from_empty_snapshot_metadata -- --nocapture
+
+      - name: Deep locator regression
+        run: cargo test -p pulsedagd selected_chain_locator_spans_long_fresh_node_divergence -- --nocapture
+
+      - name: Clippy
+        run: cargo clippy -p pulsedagd --all-targets --all-features -- -D warnings
+
+      - name: Check
+        run: cargo check -p pulsedagd
+
+      - name: Commit validated source and remove temporary validation files
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f scripts/apply-fix-812-selected-header-correlation.py
+          rm -f .github/workflows/fix-812-selected-header-correlation.yml
+          git add -A
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "fix(sync): correlate and advance selected header discovery"
+          git push origin HEAD:fix/fresh-node-orphan-recovery-812
