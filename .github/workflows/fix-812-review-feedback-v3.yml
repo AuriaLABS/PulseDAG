@@ -1,0 +1,64 @@
+name: Validate #815 review feedback fixes
+
+on:
+  push:
+    branches:
+      - fix/fresh-node-orphan-recovery-812
+    paths:
+      - .github/workflows/fix-812-review-feedback-v3.yml
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v4
+        with:
+          ref: fix/fresh-node-orphan-recovery-812
+          fetch-depth: 0
+      - name: Apply review fixes
+        run: python3 scripts/apply-fix-812-review-feedback.py
+      - name: Format
+        run: cargo fmt --all
+      - name: Diff check
+        run: git diff --check
+      - name: Continuation anchor regressions
+        run: |
+          cargo test -p pulsedagd selected_segment_known_header_page_continues_toward_advertised_tip -- --nocapture
+          cargo test -p pulsedagd selected_header_discovery_waits_for_pending_tail_before_continuing -- --nocapture
+      - name: Selected-tip retained-gap regression
+        run: cargo test -p pulsedagd retained_gap_uses_selected_tip_height_not_taller_side_height -- --nocapture
+      - name: Existing retained-gap daemon regressions
+        run: cargo test -p pulsedagd retained_history_gap -- --nocapture
+      - name: Canonical dedicated retained-gap regression
+        run: cargo test -p pulsedag-rpc retained_history_gap_prevents_canonical_synced_state_when_remote_evidence_ages_out -- --nocapture
+      - name: Canonical sync regressions
+        run: cargo test -p pulsedag-rpc canonical_sync -- --nocapture
+      - name: Selected-segment regressions
+        run: cargo test -p pulsedagd selected_segment -- --nocapture
+      - name: RPC clippy
+        run: cargo clippy -p pulsedag-rpc --all-targets --all-features -- -D warnings
+      - name: Daemon clippy
+        run: cargo clippy -p pulsedagd --all-targets --all-features -- -D warnings
+      - name: RPC check
+        run: cargo check -p pulsedag-rpc
+      - name: Daemon check
+        run: cargo check -p pulsedagd
+      - name: Commit validated source and clean temporary files
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f .github/workflows/fix-812-review-feedback-inspect.yml
+          rm -f .github/workflows/fix-812-review-feedback-v2.yml
+          rm -f .github/workflows/fix-812-review-feedback-v3.yml
+          rm -f scripts/apply-fix-812-review-feedback.py
+          git add -A
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "fix(sync): address selected-sync review feedback"
+          git pull --rebase origin fix/fresh-node-orphan-recovery-812
+          git push origin HEAD:fix/fresh-node-orphan-recovery-812
