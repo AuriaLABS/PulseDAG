@@ -29,22 +29,18 @@ jobs:
         run: |
           python3 - <<'PY'
           from pathlib import Path
+          import re
           path = Path('apps/pulsedagd/src/main.rs')
           text = path.read_text(encoding='utf-8')
-          old = '''                        let pending_locator_matches_common_ancestor =
-                              pending_selected_locator_matches_common_ancestor(
-                                  pending_selected_locator.as_ref(),
-                                  common_ancestor.as_deref(),
-                              );
-                          let pending_locator_accepts_response_peer =
-                              pending_selected_locator_accepts_response_peer(
-                                  pending_selected_locator.as_ref(),
-                                  peer_id.as_deref(),
-                              );
-          '''
-          if text.count(old) != 1:
-              raise SystemExit(f'obsolete correlation locals: expected 1 match, got {text.count(old)}')
-          path.write_text(text.replace(old, '', 1), encoding='utf-8')
+          patterns = [
+              r'\n\s*let pending_locator_matches_common_ancestor =\s*\n\s*pending_selected_locator_matches_common_ancestor\(\s*\n\s*pending_selected_locator\.as_ref\(\),\s*\n\s*common_ancestor\.as_deref\(\),\s*\n\s*\);',
+              r'\n\s*let pending_locator_accepts_response_peer =\s*\n\s*pending_selected_locator_accepts_response_peer\(\s*\n\s*pending_selected_locator\.as_ref\(\),\s*\n\s*peer_id\.as_deref\(\),\s*\n\s*\);',
+          ]
+          for pattern in patterns:
+              text, count = re.subn(pattern, '', text, count=1)
+              if count != 1:
+                  raise SystemExit(f'obsolete correlation local regex matched {count} times')
+          path.write_text(text, encoding='utf-8')
           PY
 
       - name: Format
