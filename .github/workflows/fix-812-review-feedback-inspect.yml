@@ -26,9 +26,7 @@ jobs:
         run: |
           python3 - <<'PY'
           from pathlib import Path
-
-          main_path = Path('apps/pulsedagd/src/main.rs')
-          main = main_path.read_text()
+          import re
 
           def replace_once(text, old, new, label):
               count = text.count(old)
@@ -36,9 +34,9 @@ jobs:
                   raise SystemExit(f'{label} anchor count={count}')
               return text.replace(old, new, 1)
 
-          # P2 #1: continuation locators must only advance from a tail header
-          # that is already locally accepted. If the page tail is still pending,
-          # wait for it instead of treating the in-flight hash as a known anchor.
+          main_path = Path('apps/pulsedagd/src/main.rs')
+          main = main_path.read_text()
+
           old = '''fn selected_header_discovery_continuation_anchor(
               session: Option<&SelectedSegmentSession>,
               headers: &[HeaderInventory],
@@ -81,23 +79,17 @@ jobs:
           '''
           main = replace_once(main, old, new, 'continuation helper')
 
-          old = '''                            selected_header_discovery_continuation_anchor(
-                                      selected_segment_session.as_ref(),
-                                      &headers,
-                                      &selected_requests,
-                                  )
-          '''
-          new = '''                            selected_header_discovery_continuation_anchor(
-                                      selected_segment_session.as_ref(),
-                                      &headers,
-                                      &selected_requests,
-                                      &known,
-                                  )
-          '''
-          main = replace_once(main, old, new, 'continuation call')
+          pattern = re.compile(
+              r'(selected_header_discovery_continuation_anchor\(\n'
+              r'\s+selected_segment_session\.as_ref\(\),\n'
+              r'\s+&headers,\n'
+              r'\s+&selected_requests,\n)'
+              r'(\s+\))'
+          )
+          main, count = pattern.subn(r'\1                                &known,\n\2', main, count=1)
+          if count != 1:
+              raise SystemExit(f'continuation call regex count={count}')
 
-          # P2 #2: retained-gap detection is selected-chain logic, so compare
-          # against the selected tip height, not a taller side-DAG best_height.
           marker = 'fn selected_locator_peer_for_priority_gap(\n'
           helper = '''fn local_selected_tip_height(chain: &pulsedag_core::ChainState) -> u64 {
               chain
@@ -111,16 +103,16 @@ jobs:
 
           '''
           if main.count(marker) != 1:
-              raise SystemExit(f'local selected height insertion marker count={main.count(marker)}')
+              raise SystemExit(f'local-selected-height marker count={main.count(marker)}')
           main = main.replace(marker, helper + marker, 1)
 
-          old = '                            (known, common, height, guard.dag.best_height)\n'
-          new = '                            (known, common, height, local_selected_tip_height(&guard))\n'
-          main = replace_once(main, old, new, 'retained gap local selected height')
+          main = replace_once(
+              main,
+              '                            (known, common, height, guard.dag.best_height)\n',
+              '                            (known, common, height, local_selected_tip_height(&guard))\n',
+              'selected height call',
+          )
 
-          # P2 #3: mirror the durable retained-gap peer set into runtime stats.
-          # Canonical RPC state must not infer active retained-gap state from a
-          # mutable last-diagnostic string.
           old = '''                        let mut rt = runtime.write().await;
                                   if issued_selected_header_continuation {
           '''
@@ -133,7 +125,7 @@ jobs:
                                       retained_history_gap_peer_count;
                                   if issued_selected_header_continuation {
           '''
-          main = replace_once(main, old, new, 'runtime retained-gap count update')
+          main = replace_once(main, old, new, 'runtime retained-gap count')
 
           old = '''                                {
                                               let mut locator_state =
@@ -157,8 +149,6 @@ jobs:
           '''
           main = replace_once(main, old, new, 'runtime retained-gap clear')
 
-          # Update the existing known-page continuation regression to provide
-          # the accepted set explicitly.
           old = '''        session.update_remote_target(Some("remote-700"), 700);
 
                   assert_eq!(
@@ -183,7 +173,7 @@ jobs:
                       Some("b3".to_string())
                   );
           '''
-          main = replace_once(main, old, new, 'known-page continuation test')
+          main = replace_once(main, old, new, 'known-page test')
 
           marker = '''    #[test]
               fn unrelated_header_page_cannot_hijack_pending_selected_locator() {
@@ -197,25 +187,15 @@ jobs:
                   ];
                   let locator = vec!["common".to_string()];
                   let mut session = SelectedSegmentSession::new(
-                      1,
-                      "peer-a".to_string(),
-                      "common".to_string(),
-                      0,
-                      &headers,
-                      &locator,
-                      1,
-                      100,
+                      1, "peer-a".to_string(), "common".to_string(), 0,
+                      &headers, &locator, 1, 100,
                   )
                   .expect("session");
                   session.update_remote_target(Some("remote-700"), 700);
                   let known = HashSet::from(["b1".to_string(), "b2".to_string()]);
-
                   assert_eq!(
                       selected_header_discovery_continuation_anchor(
-                          Some(&session),
-                          &headers,
-                          &[],
-                          &known,
+                          Some(&session), &headers, &[], &known,
                       ),
                       None
                   );
@@ -223,7 +203,7 @@ jobs:
 
           '''
           if main.count(marker) != 1:
-              raise SystemExit(f'pending-tail test marker count={main.count(marker)}')
+              raise SystemExit(f'pending-tail marker count={main.count(marker)}')
           main = main.replace(marker, test + marker, 1)
 
           marker = '''    #[test]
@@ -234,10 +214,7 @@ jobs:
                   let mut chain = pulsedag_core::genesis::init_chain_state("testnet-dev".to_string());
                   let genesis = chain.dag.genesis_hash.clone();
                   let selected = test_orphan("selected-5", vec![genesis.as_str()], 5);
-                  chain
-                      .dag
-                      .blocks
-                      .insert(selected.hash.clone(), selected.clone());
+                  chain.dag.blocks.insert(selected.hash.clone(), selected.clone());
                   chain.dag.selected_chain.push(selected.hash.clone());
                   chain.dag.best_height = 10;
                   let pending = PendingSelectedLocator {
@@ -248,68 +225,68 @@ jobs:
                       retained_history_gap: false,
                   };
                   let headers = vec![selected_test_header("remote-7", "pruned-6", 7)];
-
                   assert_eq!(local_selected_tip_height(&chain), 5);
                   assert!(selected_headers_indicate_retained_history_gap(
                       &headers,
                       local_selected_tip_height(&chain),
-                      Some(&pending),
-                      Some("peer-a"),
-                      None,
-                      false,
+                      Some(&pending), Some("peer-a"), None, false,
                   ));
                   assert!(!selected_headers_indicate_retained_history_gap(
                       &headers,
                       chain.dag.best_height,
-                      Some(&pending),
-                      Some("peer-a"),
-                      None,
-                      false,
+                      Some(&pending), Some("peer-a"), None, false,
                   ));
               }
 
           '''
           if main.count(marker) != 1:
-              raise SystemExit(f'selected-tip-height test marker count={main.count(marker)}')
+              raise SystemExit(f'selected-tip marker count={main.count(marker)}')
           main = main.replace(marker, test + marker, 1)
           main_path.write_text(main)
 
           api_path = Path('crates/pulsedag-rpc/src/api.rs')
           api = api_path.read_text()
-          old = '''    #[serde(default)]
+          api = replace_once(
+              api,
+              '''    #[serde(default)]
               pub selected_segment_uncorrelated_headers_total: u64,
               #[serde(default)]
               pub active_session_id: Option<u64>,
-          '''
-          new = '''    #[serde(default)]
+          ''',
+              '''    #[serde(default)]
               pub selected_segment_uncorrelated_headers_total: u64,
               #[serde(default)]
               pub selected_segment_retained_history_gap_peer_count: usize,
               #[serde(default)]
               pub active_session_id: Option<u64>,
-          '''
-          api = replace_once(api, old, new, 'runtime stats retained-gap field')
+          ''',
+              'runtime retained-gap field',
+          )
           api_path.write_text(api)
 
           canonical_path = Path('crates/pulsedag-rpc/src/handlers/canonical_sync.rs')
           canonical = canonical_path.read_text()
-          old = '''    let retained_history_gap_active = runtime
+          canonical = replace_once(
+              canonical,
+              '''    let retained_history_gap_active = runtime
               .final_quiescence_selected_sync_blocked_reason
               .as_deref()
               == Some("retained_history_gap");
-          '''
-          new = '''    let retained_history_gap_active =
+          ''',
+              '''    let retained_history_gap_active =
               runtime.selected_segment_retained_history_gap_peer_count > 0;
-          '''
-          canonical = replace_once(canonical, old, new, 'canonical dedicated retained-gap state')
-
-          old = '''        let runtime = NodeRuntimeStats {
+          ''',
+              'canonical dedicated state',
+          )
+          canonical = replace_once(
+              canonical,
+              '''        let runtime = NodeRuntimeStats {
                       sync_state: "selected_segment_failed".into(),
                       final_quiescence_selected_sync_blocked_reason: Some("retained_history_gap".into()),
                       ..NodeRuntimeStats::default()
                   };
-          '''
-          new = '''        let runtime = NodeRuntimeStats {
+          ''',
+              '''        let runtime = NodeRuntimeStats {
                       sync_state: "selected_segment_failed".into(),
                       selected_segment_retained_history_gap_peer_count: 1,
                       final_quiescence_selected_sync_blocked_reason: Some(
@@ -317,51 +294,40 @@ jobs:
                       ),
                       ..NodeRuntimeStats::default()
                   };
-          '''
-          canonical = replace_once(canonical, old, new, 'canonical retained-gap regression state')
+          ''',
+              'canonical overwritten-reason regression',
+          )
           canonical_path.write_text(canonical)
 
-          print('applied all three #815 P2 review fixes')
+          print('applied all #815 P2 review fixes')
           PY
 
       - name: Format
         run: cargo fmt --all
-
       - name: Diff check
         run: git diff --check
-
       - name: Continuation anchor regressions
         run: |
           cargo test -p pulsedagd selected_segment_known_header_page_continues_toward_advertised_tip -- --nocapture
           cargo test -p pulsedagd selected_header_discovery_waits_for_pending_tail_before_continuing -- --nocapture
-
       - name: Selected-tip retained-gap regression
         run: cargo test -p pulsedagd retained_gap_uses_selected_tip_height_not_taller_side_height -- --nocapture
-
       - name: Existing retained-gap daemon regressions
         run: cargo test -p pulsedagd retained_history_gap -- --nocapture
-
       - name: Canonical dedicated retained-gap regression
         run: cargo test -p pulsedag-rpc retained_history_gap_prevents_canonical_synced_state_when_remote_evidence_ages_out -- --nocapture
-
       - name: Canonical sync regressions
         run: cargo test -p pulsedag-rpc canonical_sync -- --nocapture
-
       - name: Selected-segment regressions
         run: cargo test -p pulsedagd selected_segment -- --nocapture
-
       - name: RPC clippy
         run: cargo clippy -p pulsedag-rpc --all-targets --all-features -- -D warnings
-
       - name: Daemon clippy
         run: cargo clippy -p pulsedagd --all-targets --all-features -- -D warnings
-
       - name: RPC check
         run: cargo check -p pulsedag-rpc
-
       - name: Daemon check
         run: cargo check -p pulsedagd
-
       - name: Commit validated source and remove temporary workflow
         shell: bash
         run: |
