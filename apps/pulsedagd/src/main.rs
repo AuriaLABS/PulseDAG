@@ -64,11 +64,13 @@ fn selected_locator_peer_for_priority_gap(
     status: &P2pStatus,
     local_height: u64,
     minimum_gap: u64,
+    excluded_peers: &HashSet<String>,
 ) -> Option<(String, u64)> {
     status
         .remote_selected_tip_inventory
         .iter()
         .filter(|remote| remote.connected && remote.direct_request_capable)
+        .filter(|remote| !excluded_peers.contains(&remote.peer_id))
         .filter(|remote| remote.selected_height.saturating_sub(local_height) >= minimum_gap)
         .max_by_key(|remote| remote.selected_height)
         .map(|remote| (remote.peer_id.clone(), remote.selected_height))
@@ -86,12 +88,14 @@ fn observed_block_requires_selected_locator(
 fn selected_locator_peer_for_reconcile(
     status: &P2pStatus,
     local: &TipInventoryStatus,
+    excluded_peers: &HashSet<String>,
 ) -> Option<String> {
     let local_height = local.selected_height.unwrap_or_default();
     status
         .remote_selected_tip_inventory
         .iter()
         .filter(|remote| remote.connected && remote.direct_request_capable)
+        .filter(|remote| !excluded_peers.contains(&remote.peer_id))
         .filter(|remote| {
             remote.selected_height > local_height
                 || (remote.selected_height == local_height
@@ -282,6 +286,26 @@ fn pending_selected_locator_accepts_response_common_ancestor(
         && pending_selected_locator_accepts_response_peer(pending, response_peer)
 }
 
+fn selected_headers_indicate_retained_history_gap(
+    headers: &[HeaderInventory],
+    local_selected_height: u64,
+    pending: Option<&PendingSelectedLocator>,
+    response_peer: Option<&str>,
+    common_ancestor: Option<&str>,
+    session_active: bool,
+) -> bool {
+    if session_active || common_ancestor.is_some() {
+        return false;
+    }
+    let (Some(first), Some(pending), Some(response_peer)) =
+        (headers.first(), pending, response_peer)
+    else {
+        return false;
+    };
+    pending.peer_id == response_peer
+        && first.header.height > local_selected_height.saturating_add(1)
+}
+
 fn selected_common_ancestor_for_headers(
     headers: &[HeaderInventory],
     known_blocks: &HashSet<String>,
@@ -316,7 +340,9 @@ fn pending_selected_locator_should_rearm(
     !session_active
         && pending_block_requests == 0
         && pending.is_some_and(|pending| {
-            now.saturating_sub(pending.requested_at_unix) >= SELECTED_SEGMENT_NO_PROGRESS_REARM_SECS
+            !pending.retained_history_gap
+                && now.saturating_sub(pending.requested_at_unix)
+                    >= SELECTED_SEGMENT_NO_PROGRESS_REARM_SECS
         })
 }
 
@@ -466,13 +492,33 @@ fn final_quiescence_reconcile_pending(total: u64, success: u64, blocked: u64) ->
 
 fn selected_segment_recovery_has_priority(
     session_active: bool,
-    pending_requested_at_unix: Option<u64>,
+    pending: Option<&PendingSelectedLocator>,
     now_unix: u64,
 ) -> bool {
     session_active
-        || pending_requested_at_unix.is_some_and(|requested_at| {
-            now_unix.saturating_sub(requested_at) <= SELECTED_LOCATOR_PRIORITY_GRACE_SECS
+        || pending.is_some_and(|pending| {
+            pending.retained_history_gap
+                || now_unix.saturating_sub(pending.requested_at_unix)
+                    <= SELECTED_LOCATOR_PRIORITY_GRACE_SECS
         })
+}
+
+fn selected_segment_request_already_active_for_peer(
+    session_active: bool,
+    pending: Option<&PendingSelectedLocator>,
+    candidate_peer: Option<&str>,
+    now_unix: u64,
+) -> bool {
+    if session_active {
+        return true;
+    }
+    if pending.is_some_and(|pending| {
+        pending.retained_history_gap
+            && candidate_peer.is_some_and(|candidate| candidate != pending.peer_id)
+    }) {
+        return false;
+    }
+    selected_segment_recovery_has_priority(false, pending, now_unix)
 }
 
 fn final_height_reconcile_rejection_reason(acceptance: &BlockAcceptanceResult) -> &'static str {
@@ -588,12 +634,14 @@ struct PendingSelectedLocator {
     peer_id: String,
     locator: Vec<String>,
     requested_at_unix: u64,
+    retained_history_gap: bool,
 }
 
 #[derive(Debug, Default)]
 struct SelectedSegmentLocatorState {
     next_request_id: u64,
     pending_locator: Option<PendingSelectedLocator>,
+    retained_history_gap_peers: HashSet<String>,
 }
 
 struct SelectedSegmentSession {
@@ -2100,6 +2148,7 @@ async fn main() -> Result<()> {
     let selected_segment_locator_state = Arc::new(Mutex::new(SelectedSegmentLocatorState {
         next_request_id: 1,
         pending_locator: None,
+        retained_history_gap_peers: HashSet::new(),
     }));
 
     if let Some(mut rx) = inbound_rx {
@@ -3125,10 +3174,7 @@ async fn main() -> Result<()> {
                                 let guard = selected_segment_locator_state.lock().await;
                                 selected_segment_recovery_has_priority(
                                     selected_segment_session.is_some(),
-                                    guard
-                                        .pending_locator
-                                        .as_ref()
-                                        .map(|pending| pending.requested_at_unix),
+                                    guard.pending_locator.as_ref(),
                                     now_unix(),
                                 )
                             };
@@ -3171,10 +3217,7 @@ async fn main() -> Result<()> {
                             let guard = selected_segment_locator_state.lock().await;
                             selected_segment_recovery_has_priority(
                                 selected_segment_session.is_some(),
-                                guard
-                                    .pending_locator
-                                    .as_ref()
-                                    .map(|pending| pending.requested_at_unix),
+                                guard.pending_locator.as_ref(),
                                 now,
                             )
                         };
@@ -3214,6 +3257,7 @@ async fn main() -> Result<()> {
                                         peer_id: "broadcast-observed-block-gap".to_string(),
                                         locator: selected_locator,
                                         requested_at_unix: now,
+                                        retained_history_gap: false,
                                     });
                                     drop(locator_guard);
                                     let observed_gap =
@@ -3390,10 +3434,7 @@ async fn main() -> Result<()> {
                                 let guard = selected_segment_locator_state.lock().await;
                                 selected_segment_recovery_has_priority(
                                     selected_segment_session.is_some(),
-                                    guard
-                                        .pending_locator
-                                        .as_ref()
-                                        .map(|pending| pending.requested_at_unix),
+                                    guard.pending_locator.as_ref(),
                                     now_unix(),
                                 )
                             };
@@ -3902,6 +3943,7 @@ async fn main() -> Result<()> {
                                                         peer_id: peer_id.clone(),
                                                         locator: selected_locator,
                                                         requested_at_unix: requested_at,
+                                                        retained_history_gap: false,
                                                     });
                                             }
                                             if let Some(session) = selected_segment_session.as_mut()
@@ -3943,7 +3985,12 @@ async fn main() -> Result<()> {
 
                             if selected_segment_completed {
                                 selected_segment_session = None;
-                                selected_segment_locator_state.lock().await.pending_locator = None;
+                                {
+                                    let mut locator_state =
+                                        selected_segment_locator_state.lock().await;
+                                    locator_state.pending_locator = None;
+                                    locator_state.retained_history_gap_peers.clear();
+                                }
                                 if let Some(ref p2p_handle) = p2p {
                                     if let Err(e) = p2p_handle.request_tips() {
                                         warn!(
@@ -4066,10 +4113,7 @@ async fn main() -> Result<()> {
                             let guard = selected_segment_locator_state.lock().await;
                             selected_segment_recovery_has_priority(
                                 selected_segment_session.is_some(),
-                                guard
-                                    .pending_locator
-                                    .as_ref()
-                                    .map(|pending| pending.requested_at_unix),
+                                guard.pending_locator.as_ref(),
                                 now_unix(),
                             )
                         };
@@ -4137,7 +4181,12 @@ async fn main() -> Result<()> {
                             let guard = selected_segment_locator_state.lock().await;
                             guard.pending_locator.clone()
                         };
-                        let (known_blocks_for_segment, common_ancestor, common_ancestor_height) = {
+                        let (
+                            known_blocks_for_segment,
+                            common_ancestor,
+                            common_ancestor_height,
+                            local_selected_height,
+                        ) = {
                             let guard = chain.read().await;
                             let known = known_hashes_for_scheduler(&guard);
                             let common = selected_common_ancestor_for_headers(
@@ -4150,7 +4199,7 @@ async fn main() -> Result<()> {
                                 .and_then(|hash| guard.dag.blocks.get(hash))
                                 .map(|block| block.header.height)
                                 .unwrap_or(0);
-                            (known, common, height)
+                            (known, common, height, guard.dag.best_height)
                         };
                         let selected_segment_validation = common_ancestor.as_ref().map(|common| {
                             validate_selected_header_segment(
@@ -4159,6 +4208,54 @@ async fn main() -> Result<()> {
                                 &known_blocks_for_segment,
                             )
                         });
+                        let retained_history_gap = selected_headers_indicate_retained_history_gap(
+                            &headers,
+                            local_selected_height,
+                            pending_selected_locator.as_ref(),
+                            peer_id.as_deref(),
+                            common_ancestor.as_deref(),
+                            selected_segment_session.is_some(),
+                        );
+                        let first_remote_header_height =
+                            headers.first().map(|item| item.header.height).unwrap_or(0);
+                        let retained_history_gap_newly_detected = if retained_history_gap {
+                            if let Some(response_peer) = peer_id.as_ref() {
+                                let mut guard = selected_segment_locator_state.lock().await;
+                                let inserted = guard
+                                    .retained_history_gap_peers
+                                    .insert(response_peer.clone());
+                                if let Some(pending) = guard
+                                    .pending_locator
+                                    .as_mut()
+                                    .filter(|pending| pending.peer_id == *response_peer)
+                                {
+                                    pending.retained_history_gap = true;
+                                }
+                                inserted
+                            } else {
+                                false
+                            }
+                        } else {
+                            false
+                        };
+                        if retained_history_gap_newly_detected {
+                            let response_peer = peer_id.as_deref().unwrap_or("unknown");
+                            warn!(
+                                event = "selected_retained_history_gap_detected",
+                                peer = %response_peer,
+                                local_selected_height,
+                                first_remote_header_height,
+                                "requested peer's retained header page begins above the local attach point; header sync cannot bridge pruned history"
+                            );
+                            let _ = storage.append_runtime_event(
+                                "warn",
+                                "selected_retained_history_gap_detected",
+                                &format!(
+                                    "peer={} local_selected_height={} first_remote_header_height={}",
+                                    response_peer, local_selected_height, first_remote_header_height
+                                ),
+                            );
+                        }
                         let pending_request_id = pending_selected_locator
                             .as_ref()
                             .map(|pending| pending.request_id)
@@ -4203,7 +4300,9 @@ async fn main() -> Result<()> {
                                 height: item.header.height,
                             })
                             .collect::<Vec<_>>();
-                        fetch_scheduler.queue_headers(candidates);
+                        if !retained_history_gap {
+                            fetch_scheduler.queue_headers(candidates);
+                        }
                         let (known, pending) = {
                             let guard = chain.read().await;
                             (
@@ -4340,6 +4439,7 @@ async fn main() -> Result<()> {
                                         peer_id: continuation_peer.clone(),
                                         locator: continuation_locator,
                                         requested_at_unix: requested_at,
+                                        retained_history_gap: false,
                                     });
                                 }
                                 if let Some(session) = selected_segment_session.as_mut() {
@@ -4510,8 +4610,22 @@ async fn main() -> Result<()> {
                             rt.selected_segment_uncorrelated_headers_total = rt
                                 .selected_segment_uncorrelated_headers_total
                                 .saturating_add(headers.len() as u64);
+                            if retained_history_gap {
+                                rt.sync_state =
+                                    DagSyncStage::SelectedSegmentFailed.as_str().to_string();
+                                rt.final_quiescence_selected_sync_blocked_reason =
+                                    Some("retained_history_gap".to_string());
+                                if retained_history_gap_newly_detected {
+                                    let entry = rt
+                                        .selected_segment_failure_total
+                                        .entry("retained_history_gap".to_string())
+                                        .or_insert(0);
+                                    *entry = entry.saturating_add(1);
+                                }
+                            }
                         }
                         if !headers_correlated
+                            && !retained_history_gap
                             && final_quiescence_reconcile_pending(
                                 rt.final_quiescence_selected_sync_total,
                                 rt.final_quiescence_selected_sync_success_total,
@@ -4573,6 +4687,10 @@ async fn main() -> Result<()> {
                             let guard = chain.read().await;
                             guard.dag.best_height
                         };
+                        let retained_history_gap_peers = {
+                            let guard = selected_segment_locator_state.lock().await;
+                            guard.retained_history_gap_peers.clone()
+                        };
                         let immediate_selected_locator = p2p
                             .as_ref()
                             .and_then(|handle| handle.status().ok())
@@ -4581,6 +4699,7 @@ async fn main() -> Result<()> {
                                     &status,
                                     local_height,
                                     SELECTED_REJOIN_REARM_MIN_GAP_BLOCKS,
+                                    &retained_history_gap_peers,
                                 )
                             });
                         if let (Some((peer_id, remote_height)), Some(p2p_handle)) =
@@ -4589,12 +4708,10 @@ async fn main() -> Result<()> {
                             let now = now_unix();
                             let priority_already_active = {
                                 let guard = selected_segment_locator_state.lock().await;
-                                selected_segment_recovery_has_priority(
+                                selected_segment_request_already_active_for_peer(
                                     selected_segment_session.is_some(),
-                                    guard
-                                        .pending_locator
-                                        .as_ref()
-                                        .map(|pending| pending.requested_at_unix),
+                                    guard.pending_locator.as_ref(),
+                                    Some(peer_id.as_str()),
                                     now,
                                 )
                             };
@@ -4627,6 +4744,7 @@ async fn main() -> Result<()> {
                                         peer_id: peer_id.clone(),
                                         locator: selected_locator,
                                         requested_at_unix: now,
+                                        retained_history_gap: false,
                                     });
                                     drop(guard);
                                     let mut rt = runtime.write().await;
@@ -4650,6 +4768,10 @@ async fn main() -> Result<()> {
                             }
                         }
 
+                        let retained_history_gap_active = {
+                            let guard = selected_segment_locator_state.lock().await;
+                            !guard.retained_history_gap_peers.is_empty()
+                        };
                         let unknown_tips = {
                             let guard = chain.read().await;
                             tips.into_iter()
@@ -4713,7 +4835,9 @@ async fn main() -> Result<()> {
                                     rt.final_quiescence_tip_reconcile_blocked_reason = None;
                                 }
                             }
-                            rt.sync_state = if unknown_tips.is_empty() {
+                            rt.sync_state = if retained_history_gap_active {
+                                DagSyncStage::SelectedSegmentFailed.as_str()
+                            } else if unknown_tips.is_empty() {
                                 "synced"
                             } else {
                                 "requesting_blocks"
@@ -4724,10 +4848,7 @@ async fn main() -> Result<()> {
                             let guard = selected_segment_locator_state.lock().await;
                             selected_segment_recovery_has_priority(
                                 selected_segment_session.is_some(),
-                                guard
-                                    .pending_locator
-                                    .as_ref()
-                                    .map(|pending| pending.requested_at_unix),
+                                guard.pending_locator.as_ref(),
                                 now_unix(),
                             )
                         };
@@ -4775,8 +4896,14 @@ async fn main() -> Result<()> {
                             }
                             if selected_segment_priority {
                                 let mut rt = runtime.write().await;
-                                rt.final_quiescence_selected_sync_blocked_reason =
-                                    Some("selected_locator_priority".to_string());
+                                rt.final_quiescence_selected_sync_blocked_reason = Some(
+                                    if retained_history_gap_active {
+                                        "retained_history_gap"
+                                    } else {
+                                        "selected_locator_priority"
+                                    }
+                                    .to_string(),
+                                );
                                 continue;
                             }
                             let readiness = block_requests.classify_getblock_for_peers(
@@ -5377,11 +5504,16 @@ async fn main() -> Result<()> {
                 previous_accepted_mined_blocks = rt.accepted_mined_blocks;
                 drop(rt);
 
+                let retained_history_gap_peers = {
+                    let guard = selected_segment_locator_state.lock().await;
+                    guard.retained_history_gap_peers.clone()
+                };
                 let proactive_selected_locator = p2p_status.as_ref().and_then(|status| {
                     selected_locator_peer_for_priority_gap(
                         status,
                         best_height,
                         SELECTED_SEGMENT_PRIORITY_GAP_BLOCKS,
+                        &retained_history_gap_peers,
                     )
                 });
                 if let (Some((peer_id, remote_height)), Some(p2p_handle)) =
@@ -5390,12 +5522,10 @@ async fn main() -> Result<()> {
                     let active_session = runtime.read().await.active_session_id.is_some();
                     let priority_already_active = {
                         let guard = selected_segment_locator_state.lock().await;
-                        selected_segment_recovery_has_priority(
+                        selected_segment_request_already_active_for_peer(
                             active_session,
-                            guard
-                                .pending_locator
-                                .as_ref()
-                                .map(|pending| pending.requested_at_unix),
+                            guard.pending_locator.as_ref(),
+                            Some(peer_id.as_str()),
                             now,
                         )
                     };
@@ -5428,6 +5558,7 @@ async fn main() -> Result<()> {
                                 peer_id: peer_id.clone(),
                                 locator: selected_locator,
                                 requested_at_unix: now,
+                                retained_history_gap: false,
                             });
                             let mut rt = runtime.write().await;
                             rt.selected_segment_gap_blocks = rt
@@ -5480,21 +5611,28 @@ async fn main() -> Result<()> {
                                         )
                                     };
                                     let selected_limits = SelectedSegmentLimits::default();
+                                    let retained_history_gap_peers = {
+                                        let guard = selected_segment_locator_state.lock().await;
+                                        guard.retained_history_gap_peers.clone()
+                                    };
                                     let selected_locator_peer = selected_locator_peer_for_reconcile(
                                         &status,
                                         &local_inventory,
+                                        &retained_history_gap_peers,
                                     );
-                                    let selected_locator_needed = selected_locator_peer.is_some();
+                                    let selected_locator_blocked_by_retained_history_gap =
+                                        selected_locator_peer.is_none()
+                                            && !retained_history_gap_peers.is_empty();
+                                    let selected_locator_needed = selected_locator_peer.is_some()
+                                        || selected_locator_blocked_by_retained_history_gap;
                                     let active_session =
                                         runtime.read().await.active_session_id.is_some();
                                     let selected_locator_already_active = {
                                         let guard = selected_segment_locator_state.lock().await;
-                                        selected_segment_recovery_has_priority(
+                                        selected_segment_request_already_active_for_peer(
                                             active_session,
-                                            guard
-                                                .pending_locator
-                                                .as_ref()
-                                                .map(|pending| pending.requested_at_unix),
+                                            guard.pending_locator.as_ref(),
+                                            selected_locator_peer.as_deref(),
                                             now,
                                         )
                                     };
@@ -5526,6 +5664,7 @@ async fn main() -> Result<()> {
                                                     peer_id,
                                                     locator: selected_locator.clone(),
                                                     requested_at_unix: now_unix(),
+                                                    retained_history_gap: false,
                                                 }
                                             });
                                     } else if !selected_locator_needed {
@@ -5610,8 +5749,19 @@ async fn main() -> Result<()> {
                                             rt.final_quiescence_selected_sync_blocked_total = rt
                                                 .final_quiescence_selected_sync_blocked_total
                                                 .saturating_add(1);
-                                            rt.final_quiescence_selected_sync_blocked_reason =
-                                                Some("selected_locator_request_failed".to_string());
+                                            rt.final_quiescence_selected_sync_blocked_reason = Some(
+                                                if selected_locator_blocked_by_retained_history_gap
+                                                {
+                                                    "retained_history_gap".to_string()
+                                                } else {
+                                                    "selected_locator_request_failed".to_string()
+                                                },
+                                            );
+                                            if selected_locator_blocked_by_retained_history_gap {
+                                                rt.sync_state = DagSyncStage::SelectedSegmentFailed
+                                                    .as_str()
+                                                    .to_string();
+                                            }
                                         }
                                     } else if requested {
                                         rt.sync_state =
@@ -6217,12 +6367,17 @@ mod tests {
         };
 
         assert_eq!(
-            selected_locator_peer_for_priority_gap(&status, 120, 64),
+            selected_locator_peer_for_priority_gap(&status, 120, 64, &HashSet::new()),
             Some(("peer-large-gap".to_string(), 220))
         );
         assert_eq!(
-            selected_locator_peer_for_priority_gap(&status, 190, 64),
+            selected_locator_peer_for_priority_gap(&status, 190, 64, &HashSet::new()),
             None
+        );
+        let excluded = HashSet::from(["peer-large-gap".to_string()]);
+        assert_eq!(
+            selected_locator_peer_for_priority_gap(&status, 120, 20, &excluded),
+            Some(("peer-small-gap".to_string(), 150))
         );
     }
 
@@ -6281,7 +6436,10 @@ mod tests {
             ..P2pStatus::default()
         };
 
-        assert_eq!(selected_locator_peer_for_reconcile(&status, &local), None);
+        assert_eq!(
+            selected_locator_peer_for_reconcile(&status, &local, &HashSet::new()),
+            None
+        );
     }
 
     #[test]
@@ -6315,7 +6473,7 @@ mod tests {
         };
 
         assert_eq!(
-            selected_locator_peer_for_reconcile(&status, &local),
+            selected_locator_peer_for_reconcile(&status, &local, &HashSet::new()),
             Some("peer-a".to_string())
         );
     }
@@ -6672,13 +6830,122 @@ mod tests {
     }
 
     #[test]
-    fn selected_segment_priority_is_bounded_and_closeout_capacity_covers_gap() {
+    fn selected_segment_priority_is_bounded_and_retained_gap_is_terminal_for_same_peer() {
+        let fresh = PendingSelectedLocator {
+            request_id: 1,
+            peer_id: "peer-a".to_string(),
+            locator: vec!["local".to_string()],
+            requested_at_unix: 80,
+            retained_history_gap: false,
+        };
+        let stale = PendingSelectedLocator {
+            requested_at_unix: 1,
+            ..fresh.clone()
+        };
+        let retained_gap = PendingSelectedLocator {
+            retained_history_gap: true,
+            ..stale.clone()
+        };
         assert!(selected_segment_recovery_has_priority(true, None, 100));
-        assert!(selected_segment_recovery_has_priority(false, Some(80), 100));
-        assert!(!selected_segment_recovery_has_priority(false, Some(1), 100));
+        assert!(selected_segment_recovery_has_priority(
+            false,
+            Some(&fresh),
+            100
+        ));
+        assert!(!selected_segment_recovery_has_priority(
+            false,
+            Some(&stale),
+            100
+        ));
+        assert!(selected_segment_recovery_has_priority(
+            false,
+            Some(&retained_gap),
+            10_000
+        ));
+        assert!(selected_segment_request_already_active_for_peer(
+            false,
+            Some(&retained_gap),
+            Some("peer-a"),
+            10_000,
+        ));
+        assert!(!selected_segment_request_already_active_for_peer(
+            false,
+            Some(&retained_gap),
+            Some("peer-b"),
+            10_000,
+        ));
         let limits = SelectedSegmentLimits::default();
         assert!(limits.max_inflight_blocks_per_peer >= 96);
         assert!(limits.max_inflight_blocks_per_peer <= 128);
+    }
+
+    #[test]
+    fn retained_history_gap_is_detected_only_for_exact_requested_peer_without_attach_point() {
+        let pending = PendingSelectedLocator {
+            request_id: 812,
+            peer_id: "peer-a".to_string(),
+            locator: vec!["local-611".to_string()],
+            requested_at_unix: 100,
+            retained_history_gap: false,
+        };
+        let headers = vec![selected_test_header("remote-783", "pruned-782", 783)];
+        assert!(selected_headers_indicate_retained_history_gap(
+            &headers,
+            611,
+            Some(&pending),
+            Some("peer-a"),
+            None,
+            false,
+        ));
+        assert!(!selected_headers_indicate_retained_history_gap(
+            &headers,
+            611,
+            Some(&pending),
+            Some("peer-b"),
+            None,
+            false,
+        ));
+        assert!(!selected_headers_indicate_retained_history_gap(
+            &headers,
+            611,
+            Some(&pending),
+            Some("peer-a"),
+            Some("local-611"),
+            false,
+        ));
+        assert!(!selected_headers_indicate_retained_history_gap(
+            &[selected_test_header("remote-612", "local-611", 612)],
+            611,
+            Some(&pending),
+            Some("peer-a"),
+            None,
+            false,
+        ));
+        assert!(!selected_headers_indicate_retained_history_gap(
+            &headers,
+            611,
+            Some(&pending),
+            Some("peer-a"),
+            None,
+            true,
+        ));
+    }
+
+    #[test]
+    fn retained_history_gap_locator_does_not_rearm_after_timeout() {
+        let pending = PendingSelectedLocator {
+            request_id: 813,
+            peer_id: "peer-a".to_string(),
+            locator: vec!["local-611".to_string()],
+            requested_at_unix: 100,
+            retained_history_gap: true,
+        };
+        assert!(!pending_selected_locator_should_rearm(
+            Some(&pending),
+            false,
+            0,
+            10_000,
+        ));
     }
 
     #[test]
@@ -6688,6 +6955,7 @@ mod tests {
             peer_id: "peer-a".to_string(),
             locator: vec!["local-611".to_string(), "local-300".to_string()],
             requested_at_unix: 100,
+            retained_history_gap: false,
         };
         assert!(!pending_selected_locator_matches_common_ancestor(
             Some(&pending),
@@ -6743,6 +7011,7 @@ mod tests {
             peer_id: "peer-a".to_string(),
             locator: vec!["b3".to_string()],
             requested_at_unix: 101,
+            retained_history_gap: false,
         };
         assert!(session.correlates_pending_header_page(Some("peer-a"), Some(&pending), Some("b3")));
         assert!(!session.correlates_pending_header_page(
@@ -6759,6 +7028,7 @@ mod tests {
             peer_id: "peer-a".to_string(),
             locator: vec!["local-1296".to_string(), "local-1295".to_string()],
             requested_at_unix: 100,
+            retained_history_gap: false,
         };
         assert!(pending_selected_locator_matches_common_ancestor(
             Some(&pending),
@@ -6784,6 +7054,7 @@ mod tests {
             peer_id: "peer-a".to_string(),
             locator: vec!["local-1296".to_string()],
             requested_at_unix: 100,
+            retained_history_gap: false,
         };
         assert!(pending_selected_locator_accepts_response_peer(
             Some(&pending),
@@ -6810,6 +7081,7 @@ mod tests {
             peer_id: "peer-a".to_string(),
             locator: vec!["selected-1298".to_string()],
             requested_at_unix: 100,
+            retained_history_gap: false,
         };
         let mut header = selected_test_header("selected-1299", "merge-known", 1299);
         header.header.parents.push("selected-1298".to_string());
@@ -6850,6 +7122,7 @@ mod tests {
             peer_id: "peer-a".to_string(),
             locator: locator.clone(),
             requested_at_unix: 100,
+            retained_history_gap: false,
         };
         let mut session = SelectedSegmentSession::new(
             1,
@@ -6887,6 +7160,7 @@ mod tests {
                 &status,
                 1303,
                 SELECTED_REJOIN_REARM_MIN_GAP_BLOCKS,
+                &HashSet::new(),
             ),
             Some(("peer-a".to_string(), 1306))
         );
@@ -6940,6 +7214,7 @@ mod tests {
             peer_id: "peer-a".to_string(),
             locator: vec!["local".to_string()],
             requested_at_unix: 100,
+            retained_history_gap: false,
         };
         assert!(!pending_selected_locator_should_rearm(
             Some(&pending),
@@ -7175,6 +7450,7 @@ mod tests {
             peer_id: "peer-a".to_string(),
             locator: continuation_locator.clone(),
             requested_at_unix: 2_001,
+            retained_history_gap: false,
         };
         let mut accepted_second = HashSet::from(["common".to_string()]);
         accepted_second.extend(first.iter().cloned());
