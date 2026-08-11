@@ -22,7 +22,9 @@ jobs:
           fetch-depth: 0
 
       - name: Apply retained-history-gap patch
-        run: python3 scripts/apply-fix-812-retained-history-gap.py
+        run: |
+          python3 scripts/apply-fix-812-retained-history-gap.py
+          python3 scripts/fix-812-retained-history-gap-init.py
 
       - name: Format
         run: cargo fmt --all
@@ -33,14 +35,14 @@ jobs:
       - name: Retained history gap regressions
         run: cargo test -p pulsedagd retained_history_gap -- --nocapture
 
-      - name: Selected locator peer regressions
-        run: cargo test -p pulsedagd selected_locator_peer_ -- --nocapture
+      - name: Selected locator peer rotation regression
+        run: cargo test -p pulsedagd tip_inventory_priority_selects_peer_before_generic_tip_fetch -- --nocapture
 
       - name: Selected segment priority regressions
         run: cargo test -p pulsedagd selected_segment_priority -- --nocapture
 
       - name: Pending selected locator rearm regression
-        run: cargo test -p pulsedagd pending_selected_locator_rearms_without_session_after_timeout -- --nocapture
+        run: cargo test -p pulsedagd selected_segment_stale_pending_locator_rearms_without_session -- --nocapture
 
       - name: Existing selected segment regressions
         run: cargo test -p pulsedagd selected_segment -- --nocapture
@@ -62,6 +64,7 @@ jobs:
         run: |
           set -euo pipefail
           rm -f scripts/apply-fix-812-retained-history-gap.py
+          rm -f scripts/fix-812-retained-history-gap-init.py
           rm -f .github/workflows/fix-812-retained-history-gap.yml
           git add -A
           git config user.name "github-actions[bot]"
