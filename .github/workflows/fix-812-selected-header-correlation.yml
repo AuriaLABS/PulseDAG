@@ -24,6 +24,29 @@ jobs:
       - name: Apply selected-header correlation patch
         run: python3 scripts/apply-fix-812-selected-header-correlation.py
 
+      - name: Remove obsolete correlation locals
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('apps/pulsedagd/src/main.rs')
+          text = path.read_text(encoding='utf-8')
+          old = '''                        let pending_locator_matches_common_ancestor =
+                              pending_selected_locator_matches_common_ancestor(
+                                  pending_selected_locator.as_ref(),
+                                  common_ancestor.as_deref(),
+                              );
+                          let pending_locator_accepts_response_peer =
+                              pending_selected_locator_accepts_response_peer(
+                                  pending_selected_locator.as_ref(),
+                                  peer_id.as_deref(),
+                              );
+          '''
+          if text.count(old) != 1:
+              raise SystemExit(f'obsolete correlation locals: expected 1 match, got {text.count(old)}')
+          path.write_text(text.replace(old, '', 1), encoding='utf-8')
+          PY
+
       - name: Format
         run: cargo fmt --all
 
