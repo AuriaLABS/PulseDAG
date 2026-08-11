@@ -103,6 +103,25 @@ fn selected_locator_peer_for_reconcile(
         .map(|remote| remote.peer_id.clone())
 }
 
+fn deterministic_selected_parent_for_block(
+    block: &pulsedag_core::Block,
+    chain: &pulsedag_core::ChainState,
+) -> Option<String> {
+    if block.hash == chain.dag.genesis_hash {
+        None
+    } else if chain.dag.consensus_mode.ghostdag_metadata_active() {
+        pulsedag_core::calculate_selected_parent(block, chain)
+    } else {
+        block
+            .header
+            .parents
+            .iter()
+            .filter(|parent| chain.dag.blocks.contains_key(*parent))
+            .max()
+            .cloned()
+    }
+}
+
 fn selected_chain_metadata_needs_repair(chain: &pulsedag_core::ChainState) -> bool {
     let Some(selected_tip) = pulsedag_core::preferred_tip_hash(chain) else {
         return false;
@@ -130,6 +149,17 @@ fn selected_chain_metadata_needs_repair(chain: &pulsedag_core::ChainState) -> bo
             .get(&window[1])
             .and_then(|parent| parent.as_ref())
             != Some(&window[0])
+    }) {
+        return true;
+    }
+    if chain.dag.blocks.values().any(|block| {
+        chain
+            .dag
+            .selected_parents
+            .get(&block.hash)
+            .cloned()
+            .flatten()
+            != deterministic_selected_parent_for_block(block, chain)
     }) {
         return true;
     }
@@ -165,19 +195,7 @@ fn repair_selected_chain_metadata_if_needed(chain: &mut pulsedag_core::ChainStat
 
     let mut selected_parents = HashMap::with_capacity(ordered_blocks.len());
     for block in ordered_blocks {
-        let selected_parent = if block.hash == chain.dag.genesis_hash {
-            None
-        } else if chain.dag.consensus_mode.ghostdag_metadata_active() {
-            pulsedag_core::calculate_selected_parent(&block, chain)
-        } else {
-            block
-                .header
-                .parents
-                .iter()
-                .filter(|parent| chain.dag.blocks.contains_key(*parent))
-                .max()
-                .cloned()
-        };
+        let selected_parent = deterministic_selected_parent_for_block(&block, chain);
         selected_parents.insert(block.hash, selected_parent);
     }
 
@@ -1521,6 +1539,40 @@ fn now_millis() -> u64 {
         .unwrap_or(0)
 }
 
+fn selected_ancestor_for_locator_hash(
+    chain: &pulsedag_core::state::ChainState,
+    selected: &HashSet<String>,
+    locator_hash: &str,
+) -> Option<String> {
+    let mut current = locator_hash.to_string();
+    let mut visited = HashSet::new();
+    while visited.insert(current.clone()) {
+        if selected.contains(&current) {
+            return Some(current);
+        }
+        current = chain
+            .dag
+            .selected_parents
+            .get(&current)
+            .and_then(|parent| parent.as_ref())?
+            .clone();
+    }
+    None
+}
+
+fn selected_locator_start_height(
+    chain: &pulsedag_core::state::ChainState,
+    locator: &[String],
+    selected: &HashSet<String>,
+) -> u64 {
+    locator
+        .iter()
+        .filter_map(|hash| selected_ancestor_for_locator_hash(chain, selected, hash))
+        .filter_map(|hash| chain.dag.blocks.get(&hash).map(|block| block.header.height))
+        .max()
+        .unwrap_or(0)
+}
+
 fn headers_for_request(
     chain: &pulsedag_core::state::ChainState,
     locator: &[String],
@@ -1528,13 +1580,8 @@ fn headers_for_request(
     limit: usize,
 ) -> Vec<HeaderInventory> {
     let limit = limit.clamp(1, 512);
-    let selected: HashSet<_> = chain.dag.selected_chain.iter().cloned().collect();
-    let start_height = locator
-        .iter()
-        .filter(|hash| selected.contains(*hash))
-        .filter_map(|hash| chain.dag.blocks.get(hash).map(|block| block.header.height))
-        .max()
-        .unwrap_or(0);
+    let selected: HashSet<String> = chain.dag.selected_chain.iter().cloned().collect();
+    let start_height = selected_locator_start_height(chain, locator, &selected);
     let mut blocks = chain
         .dag
         .blocks
@@ -7828,6 +7875,45 @@ mod tests {
     }
 
     #[test]
+    fn startup_selected_chain_metadata_repair_detects_stale_side_selected_parent() {
+        let mut chain = build_test_chain("startup-side-selected-parent", 8);
+        assert!(chain.dag.selected_chain.len() >= 5);
+        assert!(!selected_chain_metadata_needs_repair(&chain));
+
+        let template_hash = chain.dag.selected_chain[3].clone();
+        let mut side = chain
+            .dag
+            .blocks
+            .get(&template_hash)
+            .cloned()
+            .expect("selected template block");
+        side.hash = "stale-side-selected-parent".to_string();
+        side.header.height = side.header.height.saturating_sub(1);
+        let expected_parent = deterministic_selected_parent_for_block(&side, &chain);
+        assert!(expected_parent.is_some());
+        let side_hash = side.hash.clone();
+        chain.dag.blocks.insert(side_hash.clone(), side);
+        chain.dag.selected_parents.insert(side_hash.clone(), None);
+
+        assert_eq!(
+            chain.dag.selected_chain.last(),
+            pulsedag_core::preferred_tip_hash(&chain).as_ref()
+        );
+        assert!(selected_chain_metadata_needs_repair(&chain));
+        assert!(repair_selected_chain_metadata_if_needed(&mut chain));
+        assert!(!selected_chain_metadata_needs_repair(&chain));
+        assert_eq!(
+            chain
+                .dag
+                .selected_parents
+                .get(&side_hash)
+                .cloned()
+                .flatten(),
+            expected_parent
+        );
+    }
+
+    #[test]
     fn selected_chain_locator_spans_long_fresh_node_divergence() {
         let selected_chain = (0..=611)
             .map(|height| format!("selected-{height}"))
@@ -7847,6 +7933,82 @@ mod tests {
             }),
             "locator must reach well beyond the previous contiguous 32-block window"
         );
+    }
+
+    #[test]
+    fn headers_for_request_resolves_side_locator_to_selected_ancestor() {
+        let mut chain = build_test_chain("headers-side-locator-ancestor", 5);
+        assert!(chain.dag.selected_chain.len() >= 4);
+
+        let selected_ancestor = chain.dag.selected_chain[1].clone();
+        let expected_first = chain.dag.selected_chain[2].clone();
+        let mut side = chain
+            .dag
+            .blocks
+            .get(&expected_first)
+            .cloned()
+            .expect("selected block");
+        side.hash = "side-dag-only-locator".to_string();
+        side.header.height = 10_000;
+        let side_hash = side.hash.clone();
+        chain.dag.blocks.insert(side_hash.clone(), side);
+        chain
+            .dag
+            .selected_parents
+            .insert(side_hash.clone(), Some(selected_ancestor.clone()));
+
+        assert!(!chain.dag.selected_chain.contains(&side_hash));
+        assert_eq!(
+            selected_ancestor_for_locator_hash(
+                &chain,
+                &chain.dag.selected_chain.iter().cloned().collect(),
+                &side_hash,
+            ),
+            Some(selected_ancestor.clone())
+        );
+
+        let headers = headers_for_request(&chain, &[side_hash], None, 16);
+        assert!(!headers.is_empty());
+        assert_eq!(headers[0].hash, expected_first);
+    }
+
+    #[test]
+    fn headers_for_request_walks_multiple_side_selected_parents() {
+        let mut chain = build_test_chain("headers-side-locator-chain", 6);
+        assert!(chain.dag.selected_chain.len() >= 5);
+
+        let selected_ancestor = chain.dag.selected_chain[1].clone();
+        let expected_first = chain.dag.selected_chain[2].clone();
+        let template = chain
+            .dag
+            .blocks
+            .get(&expected_first)
+            .cloned()
+            .expect("selected block");
+
+        let mut side_one = template.clone();
+        side_one.hash = "side-one".to_string();
+        side_one.header.height = 9_000;
+        let side_one_hash = side_one.hash.clone();
+        chain.dag.blocks.insert(side_one_hash.clone(), side_one);
+        chain
+            .dag
+            .selected_parents
+            .insert(side_one_hash.clone(), Some(selected_ancestor.clone()));
+
+        let mut side_two = template;
+        side_two.hash = "side-two".to_string();
+        side_two.header.height = 10_000;
+        let side_two_hash = side_two.hash.clone();
+        chain.dag.blocks.insert(side_two_hash.clone(), side_two);
+        chain
+            .dag
+            .selected_parents
+            .insert(side_two_hash.clone(), Some(side_one_hash));
+
+        let headers = headers_for_request(&chain, &[side_two_hash], None, 16);
+        assert!(!headers.is_empty());
+        assert_eq!(headers[0].hash, expected_first);
     }
 
     #[test]
