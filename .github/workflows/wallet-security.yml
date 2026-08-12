@@ -1,0 +1,72 @@
+name: Wallet security validation
+
+on:
+  pull_request:
+    branches:
+      - main
+      - release/2.4.0
+    paths:
+      - crates/pulsedag-wallet/**
+      - crates/pulsedag-core/src/tx.rs
+      - crates/pulsedag-core/src/types.rs
+      - Cargo.toml
+      - Cargo.lock
+      - .github/workflows/wallet-security.yml
+  push:
+    branches:
+      - main
+      - release/2.4.0
+    paths:
+      - crates/pulsedag-wallet/**
+      - crates/pulsedag-core/src/tx.rs
+      - crates/pulsedag-core/src/types.rs
+      - Cargo.toml
+      - Cargo.lock
+      - .github/workflows/wallet-security.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wallet-security-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  wallet-security:
+    name: wallet tests / clippy
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout candidate
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install pinned Rust toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.88.0 --profile minimal --component clippy --no-self-update
+          rustup default 1.88.0
+          rustc --version
+          cargo --version
+
+      - name: Validate Cargo.lock
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo metadata --locked --format-version 1 >/dev/null
+
+      - name: Run wallet tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked -p pulsedag-wallet --all-targets
+
+      - name: Clippy wallet crate
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo clippy --locked -p pulsedag-wallet --all-targets -- -D warnings
