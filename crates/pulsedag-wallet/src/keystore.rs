@@ -20,7 +20,8 @@ pub const KEYSTORE_MIN_CIPHERTEXT_BYTES: usize = 16;
 pub struct WalletKeystoreEnvelope {
     pub format: String,
     pub version: u32,
-    pub network: String,
+    pub network_profile: String,
+    pub chain_id: String,
     pub address: String,
     pub kdf: WalletKdfMetadata,
     pub cipher: WalletCipherMetadata,
@@ -87,7 +88,8 @@ impl WalletKeystoreEnvelope {
         if self.version != KEYSTORE_VERSION {
             return Err(WalletKeystoreFormatError::UnsupportedVersion(self.version));
         }
-        require_nonempty("network", &self.network)?;
+        require_nonempty("network_profile", &self.network_profile)?;
+        require_nonempty("chain_id", &self.chain_id)?;
         require_nonempty("address", &self.address)?;
 
         if self.kdf.algorithm != KEYSTORE_KDF_ARGON2ID {
@@ -172,7 +174,8 @@ mod tests {
         WalletKeystoreEnvelope {
             format: KEYSTORE_FORMAT.to_string(),
             version: KEYSTORE_VERSION,
-            network: "pulsedag-public-testnet-v2.4.0-candidate".to_string(),
+            network_profile: "public-testnet-v2.4.0-candidate".to_string(),
+            chain_id: "pulsedag-public-testnet-v2.4.0-candidate".to_string(),
             address: "pulse1exampleaddress".to_string(),
             kdf: WalletKdfMetadata {
                 algorithm: KEYSTORE_KDF_ARGON2ID.to_string(),
@@ -200,6 +203,29 @@ mod tests {
 
         assert_eq!(decoded, envelope);
         decoded.validate_structure().expect("decoded envelope");
+    }
+
+    #[test]
+    fn network_profile_and_chain_id_are_both_required() {
+        let mut envelope = sample_envelope();
+        envelope.network_profile.clear();
+        assert!(matches!(
+            envelope.validate_structure(),
+            Err(WalletKeystoreFormatError::InvalidField {
+                field: "network_profile",
+                ..
+            })
+        ));
+
+        let mut envelope = sample_envelope();
+        envelope.chain_id.clear();
+        assert!(matches!(
+            envelope.validate_structure(),
+            Err(WalletKeystoreFormatError::InvalidField {
+                field: "chain_id",
+                ..
+            })
+        ));
     }
 
     #[test]
