@@ -206,10 +206,7 @@ pub fn build_canonical_sync_state_with_remote_evidence(
         .flatten();
     let stale_sync_error_suppressed_total =
         u64::from(historical_error.is_some() && !live_error_active);
-    let retained_history_gap_active = runtime
-        .final_quiescence_selected_sync_blocked_reason
-        .as_deref()
-        == Some("retained_history_gap");
+    let retained_history_gap_active = runtime.selected_segment_retained_history_gap_peer_count > 0;
     let no_blockers = !retained_history_gap_active
         && lag_blocks == 0
         && !network_selected_tip_mismatch
@@ -606,7 +603,10 @@ mod tests {
         let chain = chain_at_selected_height(611);
         let runtime = NodeRuntimeStats {
             sync_state: "selected_segment_failed".into(),
-            final_quiescence_selected_sync_blocked_reason: Some("retained_history_gap".into()),
+            selected_segment_retained_history_gap_peer_count: 1,
+            final_quiescence_selected_sync_blocked_reason: Some(
+                "selected_segment_no_progress_rearm".into(),
+            ),
             ..NodeRuntimeStats::default()
         };
         let stale_remote = RemoteSelectedTipEvidence {

@@ -60,6 +60,16 @@ fn local_tip_inventory_status(chain: &pulsedag_core::ChainState) -> TipInventory
     }
 }
 
+fn local_selected_tip_height(chain: &pulsedag_core::ChainState) -> u64 {
+    chain
+        .dag
+        .selected_chain
+        .last()
+        .and_then(|hash| chain.dag.blocks.get(hash))
+        .map(|block| block.header.height)
+        .unwrap_or(chain.dag.best_height)
+}
+
 fn selected_locator_peer_for_priority_gap(
     status: &P2pStatus,
     local_height: u64,
@@ -969,6 +979,7 @@ fn selected_header_discovery_continuation_anchor(
     session: Option<&SelectedSegmentSession>,
     headers: &[HeaderInventory],
     selected_requests: &[String],
+    known_blocks: &HashSet<String>,
 ) -> Option<String> {
     if !selected_requests.is_empty() {
         return None;
@@ -980,6 +991,9 @@ fn selected_header_discovery_continuation_anchor(
             .cmp(&b.header.height)
             .then_with(|| a.hash.cmp(&b.hash))
     })?;
+    if !known_blocks.contains(&furthest.hash) {
+        return None;
+    }
     (furthest.header.height < session.remote_selected_height).then(|| furthest.hash.clone())
 }
 
@@ -3991,6 +4005,10 @@ async fn main() -> Result<()> {
                                     locator_state.pending_locator = None;
                                     locator_state.retained_history_gap_peers.clear();
                                 }
+                                {
+                                    let mut rt = runtime.write().await;
+                                    rt.selected_segment_retained_history_gap_peer_count = 0;
+                                }
                                 if let Some(ref p2p_handle) = p2p {
                                     if let Err(e) = p2p_handle.request_tips() {
                                         warn!(
@@ -4199,7 +4217,7 @@ async fn main() -> Result<()> {
                                 .and_then(|hash| guard.dag.blocks.get(hash))
                                 .map(|block| block.header.height)
                                 .unwrap_or(0);
-                            (known, common, height, guard.dag.best_height)
+                            (known, common, height, local_selected_tip_height(&guard))
                         };
                         let selected_segment_validation = common_ancestor.as_ref().map(|common| {
                             validate_selected_header_segment(
@@ -4403,6 +4421,7 @@ async fn main() -> Result<()> {
                                 selected_segment_session.as_ref(),
                                 &headers,
                                 &selected_requests,
+                                &known,
                             )
                             .and_then(|anchor| {
                                 selected_segment_session
@@ -4533,7 +4552,13 @@ async fn main() -> Result<()> {
                                 }
                             }
                         }
+                        let retained_history_gap_peer_count = {
+                            let guard = selected_segment_locator_state.lock().await;
+                            guard.retained_history_gap_peers.len()
+                        };
                         let mut rt = runtime.write().await;
+                        rt.selected_segment_retained_history_gap_peer_count =
+                            retained_history_gap_peer_count;
                         if issued_selected_header_continuation {
                             rt.selected_segment_header_requests_total =
                                 rt.selected_segment_header_requests_total.saturating_add(1);
@@ -6998,9 +7023,10 @@ mod tests {
         )
         .expect("session");
         session.update_remote_target(Some("remote-700"), 700);
+        let known = HashSet::from(["b1".to_string(), "b2".to_string(), "b3".to_string()]);
 
         assert_eq!(
-            selected_header_discovery_continuation_anchor(Some(&session), &headers, &[]),
+            selected_header_discovery_continuation_anchor(Some(&session), &headers, &[], &known),
             Some("b3".to_string())
         );
         assert_eq!(session.remote_selected_height, 700);
@@ -7019,6 +7045,33 @@ mod tests {
             Some(&pending),
             Some("b3")
         ));
+    }
+
+    #[test]
+    fn selected_header_discovery_waits_for_pending_tail_before_continuing() {
+        let headers = vec![
+            selected_test_header("b1", "common", 1),
+            selected_test_header("b2", "b1", 2),
+            selected_test_header("b3", "b2", 3),
+        ];
+        let locator = vec!["common".to_string()];
+        let mut session = SelectedSegmentSession::new(
+            1,
+            "peer-a".to_string(),
+            "common".to_string(),
+            0,
+            &headers,
+            &locator,
+            1,
+            100,
+        )
+        .expect("session");
+        session.update_remote_target(Some("remote-700"), 700);
+        let known = HashSet::from(["b1".to_string(), "b2".to_string()]);
+        assert_eq!(
+            selected_header_discovery_continuation_anchor(Some(&session), &headers, &[], &known),
+            None
+        );
     }
 
     #[test]
@@ -7071,6 +7124,44 @@ mod tests {
         assert!(pending_selected_locator_accepts_response_peer(
             Some(&broadcast),
             Some("peer-b")
+        ));
+    }
+
+    #[test]
+    fn retained_gap_uses_selected_tip_height_not_taller_side_height() {
+        let mut chain = pulsedag_core::genesis::init_chain_state("testnet-dev".to_string());
+        let genesis = chain.dag.genesis_hash.clone();
+        let selected = test_orphan("selected-5", vec![genesis.as_str()], 5);
+        chain
+            .dag
+            .blocks
+            .insert(selected.hash.clone(), selected.clone());
+        chain.dag.selected_chain.push(selected.hash.clone());
+        chain.dag.best_height = 10;
+        let pending = PendingSelectedLocator {
+            request_id: 1,
+            peer_id: "peer-a".to_string(),
+            locator: vec![selected.hash.clone()],
+            requested_at_unix: 100,
+            retained_history_gap: false,
+        };
+        let headers = vec![selected_test_header("remote-7", "pruned-6", 7)];
+        assert_eq!(local_selected_tip_height(&chain), 5);
+        assert!(selected_headers_indicate_retained_history_gap(
+            &headers,
+            local_selected_tip_height(&chain),
+            Some(&pending),
+            Some("peer-a"),
+            None,
+            false,
+        ));
+        assert!(!selected_headers_indicate_retained_history_gap(
+            &headers,
+            chain.dag.best_height,
+            Some(&pending),
+            Some("peer-a"),
+            None,
+            false,
         ));
     }
 
