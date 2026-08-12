@@ -205,10 +205,10 @@ mod tests {
     #[test]
     fn unknown_fields_are_rejected_fail_closed() {
         let mut value = serde_json::to_value(sample_envelope()).expect("serialize envelope");
-        value
-            .as_object_mut()
-            .expect("envelope object")
-            .insert("future_secret_hint".to_string(), serde_json::json!("ignored?"));
+        value.as_object_mut().expect("envelope object").insert(
+            "future_secret_hint".to_string(),
+            serde_json::json!("ignored?"),
+        );
 
         let encoded = serde_json::to_string(&value).expect("encode modified envelope");
         let error = serde_json::from_str::<WalletKeystoreEnvelope>(&encoded)
