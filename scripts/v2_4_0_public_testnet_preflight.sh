@@ -171,6 +171,13 @@ cors="$(get_value PULSEDAG_RPC_CORS_ALLOWLIST)"
 require_persistent_path PULSEDAG_ROCKSDB_PATH
 require_true PULSEDAG_PERSIST_SNAPSHOT_ON_START
 require_true PULSEDAG_PRUNE_REQUIRE_SNAPSHOT
+if [[ "${role}" == "seed" ]]; then
+  # Until v2.4 gains a reviewed checkpoint/state-sync bootstrap path, public bootnodes
+  # must retain complete history so a fresh node always has a viable synchronization peer.
+  require_false PULSEDAG_AUTO_PRUNE_ENABLED
+else
+  require_true PULSEDAG_AUTO_PRUNE_ENABLED
+fi
 
 # This script validates a candidate/rehearsal configuration before launch authorization.
 require_false PULSEDAG_PUBLIC_TESTNET_READY
