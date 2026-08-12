@@ -99,6 +99,21 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
+      - name: Reclaim runner disk space for workspace validation
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "disk usage before cleanup:"
+          df -h
+
+          sudo rm -rf /usr/local/lib/android || true
+          sudo rm -rf /opt/ghc || true
+          sudo rm -rf /opt/hostedtoolcache/CodeQL || true
+          sudo apt-get clean || true
+
+          echo "disk usage after cleanup:"
+          df -h
+
       - name: Record candidate metadata
         shell: bash
         run: |
