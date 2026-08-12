@@ -36,6 +36,7 @@ PULSEDAG_RPC_RATE_LIMIT_PER_IP=true
 PULSEDAG_RPC_CORS_ALLOWLIST=https://explorer.example.net
 PULSEDAG_ROCKSDB_PATH=/var/lib/pulsedag/public-testnet/node-1/rocksdb
 PULSEDAG_PERSIST_SNAPSHOT_ON_START=true
+PULSEDAG_AUTO_PRUNE_ENABLED=true
 PULSEDAG_PRUNE_REQUIRE_SNAPSHOT=true
 PULSEDAG_PUBLIC_TESTNET_READY=false
 PULSEDAG_THIRTY_DAY_PUBLIC_TESTNET_CLOCK_STARTED=false
@@ -51,6 +52,7 @@ write_valid_seed() {
   sed -i 's|PULSEDAG_P2P_IDENTITY_KEY=.*|PULSEDAG_P2P_IDENTITY_KEY=/var/lib/pulsedag/public-testnet/seed-1/identity.key|' "${path}"
   sed -i 's|PULSEDAG_PUBLIC_P2P_MULTIADDR=.*|PULSEDAG_PUBLIC_P2P_MULTIADDR=/dns4/seed-1.example.net/tcp/30333/p2p/12D3KooWSeedOne111111111111111111111111111111111|' "${path}"
   sed -i 's|PULSEDAG_ROCKSDB_PATH=.*|PULSEDAG_ROCKSDB_PATH=/var/lib/pulsedag/public-testnet/seed-1/rocksdb|' "${path}"
+  sed -i 's/PULSEDAG_AUTO_PRUNE_ENABLED=true/PULSEDAG_AUTO_PRUNE_ENABLED=false/' "${path}"
 }
 
 expect_pass() {
@@ -124,5 +126,15 @@ case_file="${TMP_DIR}/placeholder.env"
 cp "${NODE}" "${case_file}"
 sed -i 's|PULSEDAG_PUBLIC_P2P_MULTIADDR=.*|PULSEDAG_PUBLIC_P2P_MULTIADDR=/dns4/node.example.net/tcp/30333/p2p/REPLACE_WITH_PEER_ID|' "${case_file}"
 expect_fail "still contains a REPLACE_* placeholder" "${case_file}"
+
+case_file="${TMP_DIR}/pruned-seed.env"
+cp "${SEED}" "${case_file}"
+sed -i 's/PULSEDAG_AUTO_PRUNE_ENABLED=false/PULSEDAG_AUTO_PRUNE_ENABLED=true/' "${case_file}"
+expect_fail "PULSEDAG_AUTO_PRUNE_ENABLED must be 'false'" "${case_file}"
+
+case_file="${TMP_DIR}/archival-node.env"
+cp "${NODE}" "${case_file}"
+sed -i 's/PULSEDAG_AUTO_PRUNE_ENABLED=true/PULSEDAG_AUTO_PRUNE_ENABLED=false/' "${case_file}"
+expect_fail "PULSEDAG_AUTO_PRUNE_ENABLED must be 'true'" "${case_file}"
 
 printf 'PASS: v2.4.0 public-testnet preflight regression suite\n'
