@@ -202,7 +202,13 @@ mod tests {
     #[test]
     fn serialized_schema_has_no_plaintext_secret_fields() {
         let encoded = serde_json::to_string(&sample_envelope()).expect("serialize envelope");
-        for forbidden in ["private_key", "mnemonic", "seed_phrase", "password", "secret_key"] {
+        for forbidden in [
+            "private_key",
+            "mnemonic",
+            "seed_phrase",
+            "password",
+            "secret_key",
+        ] {
             assert!(
                 !encoded.contains(forbidden),
                 "keystore schema unexpectedly contains plaintext-secret field {forbidden}"
@@ -216,7 +222,9 @@ mod tests {
         envelope.version = KEYSTORE_VERSION + 1;
         assert_eq!(
             envelope.validate_structure(),
-            Err(WalletKeystoreFormatError::UnsupportedVersion(KEYSTORE_VERSION + 1))
+            Err(WalletKeystoreFormatError::UnsupportedVersion(
+                KEYSTORE_VERSION + 1
+            ))
         );
     }
 
