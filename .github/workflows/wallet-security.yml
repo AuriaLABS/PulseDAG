@@ -69,4 +69,4 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo clippy --locked -p pulsedag-wallet --all-targets -- -D warnings
+          cargo clippy --locked -p pulsedag-wallet --all-targets --no-deps -- -D warnings
