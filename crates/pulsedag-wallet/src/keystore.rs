@@ -16,6 +16,7 @@ pub const KEYSTORE_MIN_CIPHERTEXT_BYTES: usize = 16;
 /// change after the reviewed Argon2id/XChaCha20-Poly1305 dependency update is
 /// committed together with `Cargo.lock`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct WalletKeystoreEnvelope {
     pub format: String,
     pub version: u32,
@@ -27,6 +28,7 @@ pub struct WalletKeystoreEnvelope {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct WalletKdfMetadata {
     pub algorithm: String,
     pub memory_kib: u32,
@@ -36,6 +38,7 @@ pub struct WalletKdfMetadata {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct WalletCipherMetadata {
     pub algorithm: String,
     pub nonce_hex: String,
@@ -197,6 +200,20 @@ mod tests {
 
         assert_eq!(decoded, envelope);
         decoded.validate_structure().expect("decoded envelope");
+    }
+
+    #[test]
+    fn unknown_fields_are_rejected_fail_closed() {
+        let mut value = serde_json::to_value(sample_envelope()).expect("serialize envelope");
+        value
+            .as_object_mut()
+            .expect("envelope object")
+            .insert("future_secret_hint".to_string(), serde_json::json!("ignored?"));
+
+        let encoded = serde_json::to_string(&value).expect("encode modified envelope");
+        let error = serde_json::from_str::<WalletKeystoreEnvelope>(&encoded)
+            .expect_err("unknown keystore fields must be rejected");
+        assert!(error.to_string().contains("unknown field"));
     }
 
     #[test]
