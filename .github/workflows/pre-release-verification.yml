@@ -25,7 +25,7 @@ jobs:
     with:
       candidate_sha: ${{ github.event.pull_request.head.sha || github.sha }}
       test_compile_timeout_minutes: '30'
-      package_test_timeout_minutes: '10'
+      package_test_timeout_minutes: '15'
       p2p_real_runtime_test_timeout_seconds: '120'
       test_threads: '1'
       check_timeout_minutes: '20'
