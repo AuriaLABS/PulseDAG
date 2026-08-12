@@ -39,7 +39,9 @@ impl From<String> for SecretString {
 
 impl fmt::Debug for SecretString {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_tuple("SecretString").field(&REDACTED_SECRET).finish()
+        f.debug_tuple("SecretString")
+            .field(&REDACTED_SECRET)
+            .finish()
     }
 }
 
