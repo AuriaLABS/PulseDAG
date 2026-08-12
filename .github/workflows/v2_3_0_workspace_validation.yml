@@ -91,14 +91,6 @@ jobs:
           ref: ${{ inputs.candidate_sha || github.sha }}
           fetch-depth: 1
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy,rustfmt
-
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
-
       - name: Reclaim runner disk space for workspace validation
         shell: bash
         run: |
@@ -113,6 +105,14 @@ jobs:
 
           echo "disk usage after cleanup:"
           df -h
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy,rustfmt
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
 
       - name: Record candidate metadata
         shell: bash
