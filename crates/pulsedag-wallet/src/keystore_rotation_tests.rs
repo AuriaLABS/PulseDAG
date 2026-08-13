@@ -1,3 +1,7 @@
+use std::{fs, path::PathBuf};
+
+use rand::{rngs::OsRng, RngCore};
+
 use super::*;
 use crate::{
     decrypt_private_key, WalletKeystoreCryptoError, WalletSecretKey, ED25519_SECRET_KEY_BYTES,
