@@ -571,7 +571,7 @@ mod tests {
     }
 
     fn public_key() -> String {
-        "11".repeat(32)
+        "ab".repeat(32)
     }
 
     fn sender_address() -> String {
