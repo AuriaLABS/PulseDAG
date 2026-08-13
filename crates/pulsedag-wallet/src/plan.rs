@@ -126,8 +126,7 @@ impl WalletSpendPolicy {
         }
 
         let fee_scaled = u128::from(intent.fee) * 10_000_u128;
-        let allowed_scaled =
-            u128::from(intent.amount) * u128::from(self.max_fee_bps_of_amount);
+        let allowed_scaled = u128::from(intent.amount) * u128::from(self.max_fee_bps_of_amount);
         if fee_scaled > allowed_scaled {
             return Err(policy_violation(
                 "fee",
@@ -245,10 +244,7 @@ impl WalletTransactionPlan {
                 })
             })?;
         if selected_total != self.total_input {
-            return Err(invalid_plan(
-                "total_input",
-                "does not match selected UTXOs",
-            ));
+            return Err(invalid_plan("total_input", "does not match selected UTXOs"));
         }
         if self.total_input < target {
             return Err(invalid_plan(
@@ -258,10 +254,7 @@ impl WalletTransactionPlan {
         }
         let expected_change = self.total_input - target;
         if expected_change != self.change {
-            return Err(invalid_plan(
-                "change",
-                "does not match reviewed intent",
-            ));
+            return Err(invalid_plan("change", "does not match reviewed intent"));
         }
 
         if self.transaction.inputs.len() != self.selected_utxos.len() {
@@ -569,7 +562,7 @@ fn validate_canonical_public_key(public_key_hex: &str) -> Result<(), WalletPlanE
             reason: "must encode exactly 32 bytes",
         });
     }
-    if hex::encode(&decoded) != public_key_hex {
+    if hex::encode(decoded) != public_key_hex {
         return Err(WalletPlanError::InvalidPublicKey {
             reason: "must use canonical lowercase hexadecimal encoding",
         });
@@ -652,16 +645,18 @@ mod tests {
     #[test]
     fn signing_preparation_attaches_public_key_after_network_check() {
         let plan = sample_plan();
+        let expected_public_key = public_key();
         let prepared = plan
-            .prepare_signing(&identity("pulsedag-public-testnet"), &public_key())
+            .prepare_signing(
+                &identity("pulsedag-public-testnet"),
+                &expected_public_key,
+            )
             .expect("prepare signing");
 
         assert!(prepared.transaction.txid.is_empty());
-        assert!(prepared
-            .transaction
-            .inputs
-            .iter()
-            .all(|input| input.public_key == public_key() && input.signature.is_empty()));
+        assert!(prepared.transaction.inputs.iter().all(|input| {
+            input.public_key == expected_public_key && input.signature.is_empty()
+        }));
         assert_eq!(
             prepared.signing_message,
             hex::encode(signing_message(&prepared.transaction))
@@ -687,6 +682,20 @@ mod tests {
     }
 
     #[test]
+    fn canonical_public_key_encoding_is_required() {
+        let plan = sample_plan();
+        let uppercase = public_key().to_uppercase();
+        assert!(matches!(
+            plan.prepare_signing(&identity("pulsedag-public-testnet"), &uppercase),
+            Err(WalletPlanError::InvalidPublicKey { .. })
+        ));
+        assert!(matches!(
+            plan.prepare_signing(&identity("pulsedag-public-testnet"), "11"),
+            Err(WalletPlanError::InvalidPublicKey { .. })
+        ));
+    }
+
+    #[test]
     fn spend_policy_rejects_excessive_fee_and_input_count() {
         let fee_error = build_transaction_plan(
             identity("pulsedag-public-testnet"),
@@ -699,7 +708,10 @@ mod tests {
             42,
         )
         .expect_err("absolute fee cap must be enforced");
-        assert!(matches!(fee_error, WalletPlanError::PolicyViolation { .. }));
+        assert!(matches!(
+            fee_error,
+            WalletPlanError::PolicyViolation { .. }
+        ));
 
         let input_error = build_transaction_plan(
             identity("pulsedag-public-testnet"),
@@ -724,7 +736,10 @@ mod tests {
             42,
         )
         .expect_err("input cap must be enforced");
-        assert!(matches!(input_error, WalletPlanError::PolicyViolation { .. }));
+        assert!(matches!(
+            input_error,
+            WalletPlanError::PolicyViolation { .. }
+        ));
     }
 
     #[test]
@@ -777,7 +792,9 @@ mod tests {
         let mut plan = sample_plan();
         let duplicate = plan.selected_utxos[0].clone();
         plan.selected_utxos.push(duplicate.clone());
-        plan.transaction.inputs.push(plan.transaction.inputs[0].clone());
+        plan.transaction
+            .inputs
+            .push(plan.transaction.inputs[0].clone());
         plan.total_input = plan.total_input.saturating_add(duplicate.amount);
         plan.change = plan.change.saturating_add(duplicate.amount);
         assert!(plan.validate_structure().is_err());
