@@ -142,10 +142,8 @@ pub fn decrypt_private_key(
     }
 
     let derived_key = derive_key(password, &envelope.kdf)?;
-    let nonce = decode_hex_array::<KEYSTORE_NONCE_BYTES>(
-        "cipher.nonce_hex",
-        &envelope.cipher.nonce_hex,
-    )?;
+    let nonce =
+        decode_hex_array::<KEYSTORE_NONCE_BYTES>("cipher.nonce_hex", &envelope.cipher.nonce_hex)?;
     let ciphertext = hex::decode(&envelope.ciphertext_hex).map_err(|_| {
         WalletKeystoreCryptoError::Format(invalid(
             "ciphertext_hex",
@@ -212,8 +210,7 @@ fn encrypt_private_key_with_material(
         .map_err(|_| WalletKeystoreCryptoError::CipherInitializationFailed)?;
     let mut secret_payload = Zeroizing::new([0_u8; KEYSTORE_V1_PLAINTEXT_BYTES]);
     secret_payload[..KEYSTORE_V1_SECRET_MAGIC.len()].copy_from_slice(KEYSTORE_V1_SECRET_MAGIC);
-    secret_payload[KEYSTORE_V1_SECRET_MAGIC.len()..]
-        .copy_from_slice(secret_key.expose_secret());
+    secret_payload[KEYSTORE_V1_SECRET_MAGIC.len()..].copy_from_slice(secret_key.expose_secret());
 
     let ciphertext = cipher
         .encrypt(
@@ -253,16 +250,13 @@ fn derive_key(
     Ok(output)
 }
 
-fn decode_secret_payload(
-    plaintext: &[u8],
-) -> Result<WalletSecretKey, WalletKeystoreCryptoError> {
+fn decode_secret_payload(plaintext: &[u8]) -> Result<WalletSecretKey, WalletKeystoreCryptoError> {
     if plaintext.len() != KEYSTORE_V1_PLAINTEXT_BYTES
         || &plaintext[..KEYSTORE_V1_SECRET_MAGIC.len()] != KEYSTORE_V1_SECRET_MAGIC
     {
         return Err(WalletKeystoreCryptoError::InvalidSecretPayload);
     }
-    let secret_bytes: [u8; ED25519_SECRET_KEY_BYTES] = plaintext
-        [KEYSTORE_V1_SECRET_MAGIC.len()..]
+    let secret_bytes: [u8; ED25519_SECRET_KEY_BYTES] = plaintext[KEYSTORE_V1_SECRET_MAGIC.len()..]
         .try_into()
         .map_err(|_| WalletKeystoreCryptoError::InvalidSecretPayload)?;
     Ok(WalletSecretKey::from_bytes(secret_bytes))
@@ -306,9 +300,9 @@ fn decode_hex_array<const N: usize>(
     let decoded = hex::decode(value).map_err(|_| {
         WalletKeystoreCryptoError::Format(invalid(field, "must contain hexadecimal data only"))
     })?;
-    decoded.try_into().map_err(|_| {
-        WalletKeystoreCryptoError::Format(invalid(field, "unexpected encoded length"))
-    })
+    decoded
+        .try_into()
+        .map_err(|_| WalletKeystoreCryptoError::Format(invalid(field, "unexpected encoded length")))
 }
 
 #[cfg(test)]
@@ -317,8 +311,7 @@ mod tests {
 
     use super::*;
     use crate::keystore::{
-        KEYSTORE_KDF_MAX_MEMORY_KIB, KEYSTORE_KDF_MIN_ITERATIONS,
-        KEYSTORE_KDF_MIN_MEMORY_KIB,
+        KEYSTORE_KDF_MAX_MEMORY_KIB, KEYSTORE_KDF_MIN_ITERATIONS, KEYSTORE_KDF_MIN_MEMORY_KIB,
     };
 
     const TEST_PASSWORD: &str = "test-wallet-password";
@@ -354,10 +347,7 @@ mod tests {
         let envelope = encrypted_fixture();
         let recovered = decrypt_private_key(&envelope, &SecretString::new(TEST_PASSWORD))
             .expect("correct password decrypts");
-        assert_eq!(
-            recovered.expose_secret(),
-            &[0x42; ED25519_SECRET_KEY_BYTES]
-        );
+        assert_eq!(recovered.expose_secret(), &[0x42; ED25519_SECRET_KEY_BYTES]);
         assert_eq!(
             hex::decode(&envelope.ciphertext_hex)
                 .expect("ciphertext hex")
@@ -417,7 +407,9 @@ mod tests {
             envelope.cipher.nonce_hex.len(),
             KEYSTORE_NONCE_BYTES.saturating_mul(2)
         );
-        envelope.validate_structure().expect("valid production envelope");
+        envelope
+            .validate_structure()
+            .expect("valid production envelope");
     }
 
     #[test]

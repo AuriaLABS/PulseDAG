@@ -14,12 +14,8 @@ pub use keystore::{
     KEYSTORE_SALT_BYTES, KEYSTORE_V1_CIPHERTEXT_BYTES, KEYSTORE_V1_PLAINTEXT_BYTES,
     KEYSTORE_VERSION,
 };
-pub use keystore_crypto::{
-    decrypt_private_key, encrypt_private_key, WalletKeystoreCryptoError,
-};
-pub use secrets::{
-    SecretString, WalletSecretKey, ED25519_SECRET_KEY_BYTES, REDACTED_SECRET,
-};
+pub use keystore_crypto::{decrypt_private_key, encrypt_private_key, WalletKeystoreCryptoError};
+pub use secrets::{SecretString, WalletSecretKey, ED25519_SECRET_KEY_BYTES, REDACTED_SECRET};
 
 use serde::{Deserialize, Serialize};
 

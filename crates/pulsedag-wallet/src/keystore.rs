@@ -124,17 +124,13 @@ pub(crate) fn validate_kdf_metadata(
     if kdf.algorithm != KEYSTORE_KDF_ARGON2ID {
         return Err(WalletKeystoreFormatError::UnsupportedKdf);
     }
-    if !(KEYSTORE_KDF_MIN_MEMORY_KIB..=KEYSTORE_KDF_MAX_MEMORY_KIB)
-        .contains(&kdf.memory_kib)
-    {
+    if !(KEYSTORE_KDF_MIN_MEMORY_KIB..=KEYSTORE_KDF_MAX_MEMORY_KIB).contains(&kdf.memory_kib) {
         return Err(invalid(
             "kdf.memory_kib",
             "outside supported v1 memory-cost bounds",
         ));
     }
-    if !(KEYSTORE_KDF_MIN_ITERATIONS..=KEYSTORE_KDF_MAX_ITERATIONS)
-        .contains(&kdf.iterations)
-    {
+    if !(KEYSTORE_KDF_MIN_ITERATIONS..=KEYSTORE_KDF_MAX_ITERATIONS).contains(&kdf.iterations) {
         return Err(invalid(
             "kdf.iterations",
             "outside supported v1 iteration-count bounds",
@@ -149,10 +145,7 @@ pub(crate) fn validate_kdf_metadata(
     require_hex_len("kdf.salt_hex", &kdf.salt_hex, KEYSTORE_SALT_BYTES)
 }
 
-pub(crate) fn invalid(
-    field: &'static str,
-    reason: &'static str,
-) -> WalletKeystoreFormatError {
+pub(crate) fn invalid(field: &'static str, reason: &'static str) -> WalletKeystoreFormatError {
     WalletKeystoreFormatError::InvalidField { field, reason }
 }
 
@@ -180,8 +173,8 @@ pub(crate) fn require_hex_len(
     if value.len() != expected_bytes.saturating_mul(2) {
         return Err(invalid(field, "unexpected encoded length"));
     }
-    let decoded = hex::decode(value)
-        .map_err(|_| invalid(field, "must contain hexadecimal data only"))?;
+    let decoded =
+        hex::decode(value).map_err(|_| invalid(field, "must contain hexadecimal data only"))?;
     if hex::encode(decoded) != value {
         return Err(invalid(
             field,
