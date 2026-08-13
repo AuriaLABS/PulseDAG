@@ -5,6 +5,7 @@ on:
     branches:
       - main
       - release/2.4.0
+      - 'wallet/**'
     paths:
       - crates/pulsedag-wallet/**
       - crates/pulsedag-core/src/tx.rs
