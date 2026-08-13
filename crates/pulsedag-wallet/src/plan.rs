@@ -1,7 +1,7 @@
 use std::{error::Error, fmt};
 
 use pulsedag_core::{
-    compute_txid,
+    address_from_public_key, compute_txid,
     errors::PulseError,
     signing_message,
     types::{Transaction, Utxo},
@@ -157,6 +157,10 @@ pub enum WalletNoncePolicy {
 }
 
 /// Compact data a wallet UI/CLI can render immediately before authorization.
+///
+/// `unsigned_template_txid` identifies the unsigned, keyless transaction
+/// template only. It is deliberately not named `txid`: PulseDAG v1 recomputes
+/// the broadcast transaction id after public keys and signatures are attached.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct WalletReviewSummary {
@@ -170,14 +174,28 @@ pub struct WalletReviewSummary {
     pub total_input: u64,
     pub input_count: usize,
     pub nonce: u64,
-    pub txid: String,
+    pub unsigned_template_txid: String,
+}
+
+/// Exact public-key-bound bytes that a local/offline signer is asked to sign.
+///
+/// This structure contains no private key. `transaction.txid` is empty because
+/// the final broadcast txid cannot be known until signatures are attached.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WalletSigningPreparation {
+    pub network: WalletNetworkIdentity,
+    pub review: WalletReviewSummary,
+    pub spend_policy: WalletSpendPolicy,
+    pub transaction: Transaction,
+    pub signing_message: String,
 }
 
 /// Reviewable, serializable unsigned transaction plan for the wallet UI/CLI.
 ///
 /// `network` is wallet metadata and is deliberately kept outside the current
-/// consensus signing preimage. The wallet must call `verify_remote_identity`
-/// against the node/relay it will use before exposing a sign/broadcast action.
+/// consensus signing preimage. The wallet must call `prepare_signing` with the
+/// observed node/relay identity immediately before exposing a sign action.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WalletTransactionPlan {
@@ -189,7 +207,6 @@ pub struct WalletTransactionPlan {
     pub selected_utxos: Vec<SelectedUtxo>,
     pub total_input: u64,
     pub change: u64,
-    pub signing_message: String,
 }
 
 impl WalletTransactionPlan {
@@ -307,17 +324,10 @@ impl WalletTransactionPlan {
             }
         }
 
-        let expected_message = hex::encode(signing_message(&self.transaction));
-        if expected_message != self.signing_message {
-            return Err(invalid_plan(
-                "signing_message",
-                "does not match unsigned transaction",
-            ));
-        }
         if compute_txid(&self.transaction) != self.transaction.txid {
             return Err(invalid_plan(
                 "transaction.txid",
-                "does not match transaction bytes",
+                "does not match unsigned transaction template",
             ));
         }
 
@@ -337,7 +347,7 @@ impl WalletTransactionPlan {
             total_input: self.total_input,
             input_count: self.selected_utxos.len(),
             nonce: self.transaction.nonce,
-            txid: self.transaction.txid.clone(),
+            unsigned_template_txid: self.transaction.txid.clone(),
         })
     }
 
@@ -356,6 +366,44 @@ impl WalletTransactionPlan {
         self.validate_structure()?;
         self.network.ensure_matches(keystore)
     }
+
+    /// Bind the exact unsigned transaction to the sender public key and return
+    /// the bytes that must be signed. Network identity is checked in the same
+    /// call so a UI/CLI cannot accidentally prepare signing for a mismatched
+    /// node or relay.
+    pub fn prepare_signing(
+        &self,
+        observed: &WalletNetworkIdentity,
+        public_key_hex: &str,
+    ) -> Result<WalletSigningPreparation, WalletPlanError> {
+        self.verify_remote_identity(observed)?;
+        validate_canonical_public_key(public_key_hex)?;
+
+        let derived_address = address_from_public_key(public_key_hex);
+        if derived_address != self.intent.from {
+            return Err(WalletPlanError::PublicKeyAddressMismatch {
+                expected_address: self.intent.from.clone(),
+                derived_address,
+            });
+        }
+
+        let review = self.review_summary()?;
+        let mut transaction = self.transaction.clone();
+        transaction.txid.clear();
+        for input in &mut transaction.inputs {
+            input.public_key = public_key_hex.to_string();
+            input.signature.clear();
+        }
+        let signing_message = hex::encode(signing_message(&transaction));
+
+        Ok(WalletSigningPreparation {
+            network: self.network.clone(),
+            review,
+            spend_policy: self.spend_policy.clone(),
+            transaction,
+            signing_message,
+        })
+    }
 }
 
 #[derive(Debug)]
@@ -371,6 +419,13 @@ pub enum WalletPlanError {
     PolicyViolation {
         rule: &'static str,
         reason: &'static str,
+    },
+    InvalidPublicKey {
+        reason: &'static str,
+    },
+    PublicKeyAddressMismatch {
+        expected_address: String,
+        derived_address: String,
     },
     NetworkMismatch {
         expected_network_profile: String,
@@ -393,6 +448,16 @@ impl fmt::Display for WalletPlanError {
             Self::PolicyViolation { rule, reason } => {
                 write!(f, "wallet spend policy violation {rule}: {reason}")
             }
+            Self::InvalidPublicKey { reason } => {
+                write!(f, "invalid wallet public key: {reason}")
+            }
+            Self::PublicKeyAddressMismatch {
+                expected_address,
+                derived_address,
+            } => write!(
+                f,
+                "wallet public key does not control sender address: expected {expected_address}, derived {derived_address}"
+            ),
             Self::NetworkMismatch {
                 expected_network_profile,
                 expected_chain_id,
@@ -426,7 +491,7 @@ impl From<PulseError> for WalletPlanError {
 /// and nonce.
 ///
 /// This function does not alter PulseDAG consensus serialization or signing
-/// semantics. In particular, `network` is not added to `signing_message`.
+/// semantics. In particular, `network` is not added to the signing preimage.
 pub fn build_transaction_plan(
     network: WalletNetworkIdentity,
     spend_policy: WalletSpendPolicy,
@@ -468,7 +533,6 @@ fn plan_from_build(
         selected_utxos: built.selected_utxos,
         total_input: built.total_input,
         change: built.change,
-        signing_message: built.signing_message,
     }
 }
 
@@ -496,9 +560,29 @@ fn validate_identity_field(field: &'static str, value: &str) -> Result<(), Walle
     Ok(())
 }
 
+fn validate_canonical_public_key(public_key_hex: &str) -> Result<(), WalletPlanError> {
+    let decoded = hex::decode(public_key_hex).map_err(|_| WalletPlanError::InvalidPublicKey {
+        reason: "must be hexadecimal",
+    })?;
+    if decoded.len() != 32 {
+        return Err(WalletPlanError::InvalidPublicKey {
+            reason: "must encode exactly 32 bytes",
+        });
+    }
+    if hex::encode(&decoded) != public_key_hex {
+        return Err(WalletPlanError::InvalidPublicKey {
+            reason: "must use canonical lowercase hexadecimal encoding",
+        });
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
-    use pulsedag_core::types::{OutPoint, Utxo};
+    use pulsedag_core::{
+        address_from_public_key, signing_message,
+        types::{OutPoint, Utxo},
+    };
 
     use super::*;
 
@@ -510,13 +594,21 @@ mod tests {
         WalletSpendPolicy::new(100, 1_000, 8).expect("valid policy")
     }
 
+    fn public_key() -> String {
+        "11".repeat(32)
+    }
+
+    fn sender_address() -> String {
+        address_from_public_key(&public_key())
+    }
+
     fn sample_utxo() -> Utxo {
         Utxo {
             outpoint: OutPoint {
                 txid: "11".repeat(32),
                 index: 0,
             },
-            address: "pulse1sender".to_string(),
+            address: sender_address(),
             amount: 1_000,
             coinbase: false,
             height: 10,
@@ -527,7 +619,7 @@ mod tests {
         build_transaction_plan(
             identity("pulsedag-public-testnet"),
             policy(),
-            "pulse1sender",
+            &sender_address(),
             "pulse1recipient",
             400,
             10,
@@ -549,6 +641,7 @@ mod tests {
         assert_eq!(review.to, "pulse1recipient");
         assert_eq!(review.fee, 10);
         assert_eq!(review.input_count, 1);
+        assert_eq!(review.unsigned_template_txid, plan.transaction.txid);
         assert_eq!(
             plan.nonce_policy,
             WalletNoncePolicy::ExplicitCallerProvidedV1
@@ -557,11 +650,48 @@ mod tests {
     }
 
     #[test]
+    fn signing_preparation_attaches_public_key_after_network_check() {
+        let plan = sample_plan();
+        let prepared = plan
+            .prepare_signing(&identity("pulsedag-public-testnet"), &public_key())
+            .expect("prepare signing");
+
+        assert!(prepared.transaction.txid.is_empty());
+        assert!(prepared
+            .transaction
+            .inputs
+            .iter()
+            .all(|input| input.public_key == public_key() && input.signature.is_empty()));
+        assert_eq!(
+            prepared.signing_message,
+            hex::encode(signing_message(&prepared.transaction))
+        );
+        assert_ne!(
+            prepared.signing_message,
+            hex::encode(signing_message(&plan.transaction))
+        );
+    }
+
+    #[test]
+    fn signing_preparation_rejects_wrong_network_or_public_key() {
+        let plan = sample_plan();
+        assert!(plan
+            .prepare_signing(&identity("pulsedag-private-testnet"), &public_key())
+            .is_err());
+
+        let other_public_key = "22".repeat(32);
+        assert!(matches!(
+            plan.prepare_signing(&identity("pulsedag-public-testnet"), &other_public_key),
+            Err(WalletPlanError::PublicKeyAddressMismatch { .. })
+        ));
+    }
+
+    #[test]
     fn spend_policy_rejects_excessive_fee_and_input_count() {
         let fee_error = build_transaction_plan(
             identity("pulsedag-public-testnet"),
             WalletSpendPolicy::new(5, 10_000, 8).expect("policy"),
-            "pulse1sender",
+            &sender_address(),
             "pulse1recipient",
             400,
             10,
@@ -574,7 +704,7 @@ mod tests {
         let input_error = build_transaction_plan(
             identity("pulsedag-public-testnet"),
             WalletSpendPolicy::new(100, 10_000, 1).expect("policy"),
-            "pulse1sender",
+            &sender_address(),
             "pulse1recipient",
             1_500,
             0,
@@ -585,7 +715,7 @@ mod tests {
                         txid: "22".repeat(32),
                         index: 0,
                     },
-                    address: "pulse1sender".to_string(),
+                    address: sender_address(),
                     amount: 1_000,
                     coinbase: false,
                     height: 11,
@@ -602,7 +732,7 @@ mod tests {
         let error = build_transaction_plan(
             identity("pulsedag-public-testnet"),
             WalletSpendPolicy::new(1_000, 100, 8).expect("policy"),
-            "pulse1sender",
+            &sender_address(),
             "pulse1recipient",
             400,
             10,
@@ -637,13 +767,8 @@ mod tests {
         assert!(plan.validate_structure().is_err());
 
         let mut plan = sample_plan();
-        plan.signing_message = "00".repeat(32);
-        assert!(plan.validate_structure().is_err());
-
-        let mut plan = sample_plan();
         plan.transaction.inputs[0].signature = "unexpected-signature".to_string();
         plan.transaction.txid = compute_txid(&plan.transaction);
-        plan.signing_message = hex::encode(signing_message(&plan.transaction));
         assert!(plan.validate_structure().is_err());
     }
 
@@ -659,12 +784,12 @@ mod tests {
     }
 
     #[test]
-    fn v1_signing_message_is_not_claimed_to_be_chain_bound() {
+    fn v1_signing_preimage_is_not_claimed_to_be_chain_bound() {
         let public_plan = sample_plan();
         let private_plan = build_transaction_plan(
             identity("pulsedag-private-testnet"),
             policy(),
-            "pulse1sender",
+            &sender_address(),
             "pulse1recipient",
             400,
             10,
@@ -674,7 +799,10 @@ mod tests {
         .expect("private plan");
 
         assert_eq!(public_plan.transaction.txid, private_plan.transaction.txid);
-        assert_eq!(public_plan.signing_message, private_plan.signing_message);
+        assert_eq!(
+            signing_message(&public_plan.transaction),
+            signing_message(&private_plan.transaction)
+        );
         assert!(public_plan
             .verify_remote_identity(&private_plan.network)
             .is_err());
