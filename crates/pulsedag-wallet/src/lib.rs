@@ -1,3 +1,10 @@
+mod plan;
+
+pub use plan::{
+    build_transaction_plan, WalletNetworkIdentity, WalletNoncePolicy, WalletPlanError,
+    WalletTransactionPlan,
+};
+
 use serde::{Deserialize, Serialize};
 
 use pulsedag_core::{
