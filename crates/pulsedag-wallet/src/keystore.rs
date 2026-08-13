@@ -152,7 +152,7 @@ fn require_hex_min_len(
     value: &str,
     minimum_bytes: usize,
 ) -> Result<(), WalletKeystoreFormatError> {
-    if value.len() < minimum_bytes.saturating_mul(2) || value.len() % 2 != 0 {
+    if value.len() < minimum_bytes.saturating_mul(2) || !value.len().is_multiple_of(2) {
         return Err(invalid(field, "encoded value is too short or malformed"));
     }
     require_hex(field, value)
