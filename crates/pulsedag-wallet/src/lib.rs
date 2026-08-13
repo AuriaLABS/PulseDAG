@@ -5,6 +5,7 @@ mod keystore_crypto;
 mod keystore_persistence;
 mod keystore_rotation;
 mod secrets;
+mod session_v1;
 
 pub use keystore::{
     WalletCipherMetadata, WalletKdfMetadata, WalletKeystoreEnvelope, WalletKeystoreFormatError,
@@ -23,6 +24,11 @@ pub use keystore_persistence::{
 };
 pub use keystore_rotation::{rotate_keystore_password, WalletKeystoreRotationError};
 pub use secrets::{SecretString, WalletSecretKey, ED25519_SECRET_KEY_BYTES, REDACTED_SECRET};
+pub use session_v1::{
+    WalletSession, WalletSessionError, WalletSessionIdentity, WalletSessionLockState,
+    WalletSessionStatus, WalletUnlockPolicy, WalletUnlockPolicyError, WALLET_UNLOCK_MAX_FAILURES,
+    WALLET_UNLOCK_MAX_LOCKOUT, WALLET_UNLOCK_MAX_TIMEOUT,
+};
 
 use serde::{Deserialize, Serialize};
 
