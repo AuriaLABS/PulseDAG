@@ -115,10 +115,19 @@ impl WalletSession {
         &self,
         action: impl FnOnce(&WalletSecretKey) -> R,
     ) -> Result<R, WalletSessionError> {
-        if self.enforce_wall_clock().is_none() {
-            return Err(WalletSessionError::Locked);
-        }
-        let result = lock_core(&self.inner).with_unlocked_secret(action);
+        let result = {
+            let mut core = lock_core(&self.inner);
+            let wall_check = {
+                let mut wall = lock_wall(&self.wall);
+                inspect_wall_clock(&mut wall, SystemTime::now())
+            };
+            if !matches!(wall_check, WallClockCheck::Active(_)) {
+                core.lock();
+                self.wall.wake.notify_all();
+                return Err(WalletSessionError::Locked);
+            }
+            core.with_unlocked_secret(action)
+        };
         self.enforce_wall_clock();
         result
     }
