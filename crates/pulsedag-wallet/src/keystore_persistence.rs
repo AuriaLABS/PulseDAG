@@ -53,9 +53,14 @@ impl fmt::Display for WalletKeystorePersistenceError {
             Self::UnsafePath(reason) => write!(f, "unsafe wallet keystore path: {reason}"),
             Self::Locked => f.write_str("wallet keystore is locked by another process"),
             Self::AlreadyExists => f.write_str("wallet keystore already exists; overwrite refused"),
-            Self::RandomnessUnavailable => f.write_str("operating-system randomness is unavailable"),
+            Self::RandomnessUnavailable => {
+                f.write_str("operating-system randomness is unavailable")
+            }
             Self::TooLarge { limit, actual } => {
-                write!(f, "wallet keystore too large ({actual} bytes > {limit} bytes)")
+                write!(
+                    f,
+                    "wallet keystore too large ({actual} bytes > {limit} bytes)"
+                )
             }
             Self::Format(error) => write!(f, "invalid wallet keystore structure: {error}"),
             Self::Json(_) => f.write_str("wallet keystore JSON is invalid"),
@@ -106,7 +111,10 @@ impl WalletKeystoreFile {
             .parent()
             .filter(|parent| !parent.as_os_str().is_empty())
             .unwrap_or_else(|| Path::new("."));
-        if !fs::metadata(parent).map_err(|e| ioerr("inspect parent", e))?.is_dir() {
+        if !fs::metadata(parent)
+            .map_err(|e| ioerr("inspect parent", e))?
+            .is_dir()
+        {
             return Err(WalletKeystorePersistenceError::InvalidPath(
                 "parent must be an existing directory",
             ));
@@ -165,8 +173,8 @@ impl WalletKeystoreFile {
         if self.target_exists()? {
             return Err(WalletKeystorePersistenceError::AlreadyExists);
         }
-        let mut payload = serde_json::to_vec_pretty(envelope)
-            .map_err(WalletKeystorePersistenceError::Json)?;
+        let mut payload =
+            serde_json::to_vec_pretty(envelope).map_err(WalletKeystorePersistenceError::Json)?;
         payload.push(b'\n');
         ensure_size(payload.len() as u64)?;
 
@@ -197,11 +205,11 @@ impl WalletKeystoreFile {
 
     fn target_exists(&self) -> Result<bool, WalletKeystorePersistenceError> {
         match fs::symlink_metadata(&self.path) {
-            Ok(meta) if meta.file_type().is_symlink() => Err(
-                WalletKeystorePersistenceError::UnsafePath(
+            Ok(meta) if meta.file_type().is_symlink() => {
+                Err(WalletKeystorePersistenceError::UnsafePath(
                     "keystore target must not be a symbolic link",
-                ),
-            ),
+                ))
+            }
             Ok(_) => Ok(true),
             Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(false),
             Err(e) => Err(ioerr("inspect keystore target", e)),
@@ -209,19 +217,19 @@ impl WalletKeystoreFile {
     }
 
     fn create_temp(&self) -> Result<(PathBuf, File), WalletKeystorePersistenceError> {
-        let name = self.path.file_name().ok_or(
-            WalletKeystorePersistenceError::InvalidPath("a file name is required"),
-        )?;
+        let name = self
+            .path
+            .file_name()
+            .ok_or(WalletKeystorePersistenceError::InvalidPath(
+                "a file name is required",
+            ))?;
         for _ in 0..TEMP_ATTEMPTS {
             let mut random = [0_u8; 8];
             OsRng
                 .try_fill_bytes(&mut random)
                 .map_err(|_| WalletKeystorePersistenceError::RandomnessUnavailable)?;
-            let temp_path = control_path(
-                &self.parent,
-                name,
-                &format!(".tmp-{}", hex::encode(random)),
-            );
+            let temp_path =
+                control_path(&self.parent, name, &format!(".tmp-{}", hex::encode(random)));
             match open_private(&temp_path, true) {
                 Ok(file) => return Ok((temp_path, file)),
                 Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
@@ -443,7 +451,9 @@ mod tests {
         let directory = dir("cleanup");
         let path = directory.join("temp");
         fs::write(&path, b"ciphertext").expect("write temp");
-        { let _cleanup = TempCleanup::new(path.clone()); }
+        {
+            let _cleanup = TempCleanup::new(path.clone());
+        }
         assert!(!path.exists());
         let _ = fs::remove_dir_all(directory);
     }
