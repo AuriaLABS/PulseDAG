@@ -112,6 +112,31 @@ pub fn encrypt_private_key(
     secret_key: &WalletSecretKey,
     password: &SecretString,
 ) -> Result<WalletKeystoreEnvelope, WalletKeystoreCryptoError> {
+    encrypt_private_key_with_kdf_costs(
+        network_profile,
+        chain_id,
+        address,
+        secret_key,
+        password,
+        KEYSTORE_KDF_DEFAULT_MEMORY_KIB,
+        KEYSTORE_KDF_DEFAULT_ITERATIONS,
+        KEYSTORE_KDF_DEFAULT_LANES,
+    )
+}
+
+/// Internal re-encryption primitive for password rotation/migration. The
+/// caller supplies already-reviewed v1 KDF costs while this function always
+/// generates fresh OS-CSPRNG salt and nonce material.
+pub(crate) fn encrypt_private_key_with_kdf_costs(
+    network_profile: &str,
+    chain_id: &str,
+    address: &str,
+    secret_key: &WalletSecretKey,
+    password: &SecretString,
+    memory_kib: u32,
+    iterations: u32,
+    lanes: u32,
+) -> Result<WalletKeystoreEnvelope, WalletKeystoreCryptoError> {
     if password.is_empty() {
         return Err(WalletKeystoreCryptoError::EmptyPassword);
     }
@@ -134,9 +159,9 @@ pub fn encrypt_private_key(
         secret_key,
         password,
         KdfMaterial {
-            memory_kib: KEYSTORE_KDF_DEFAULT_MEMORY_KIB,
-            iterations: KEYSTORE_KDF_DEFAULT_ITERATIONS,
-            lanes: KEYSTORE_KDF_DEFAULT_LANES,
+            memory_kib,
+            iterations,
+            lanes,
             salt,
         },
         nonce,
