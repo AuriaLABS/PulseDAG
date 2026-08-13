@@ -647,10 +647,7 @@ mod tests {
         let plan = sample_plan();
         let expected_public_key = public_key();
         let prepared = plan
-            .prepare_signing(
-                &identity("pulsedag-public-testnet"),
-                &expected_public_key,
-            )
+            .prepare_signing(&identity("pulsedag-public-testnet"), &expected_public_key)
             .expect("prepare signing");
 
         assert!(prepared.transaction.txid.is_empty());
@@ -708,10 +705,7 @@ mod tests {
             42,
         )
         .expect_err("absolute fee cap must be enforced");
-        assert!(matches!(
-            fee_error,
-            WalletPlanError::PolicyViolation { .. }
-        ));
+        assert!(matches!(fee_error, WalletPlanError::PolicyViolation { .. }));
 
         let input_error = build_transaction_plan(
             identity("pulsedag-public-testnet"),
