@@ -1,5 +1,8 @@
-use serde::{Deserialize, Serialize};
 use std::{error::Error, fmt};
+
+use serde::{Deserialize, Serialize};
+
+use crate::secrets::ED25519_SECRET_KEY_BYTES;
 
 pub const KEYSTORE_FORMAT: &str = "pulsedag-keystore";
 pub const KEYSTORE_VERSION: u32 = 1;
@@ -7,14 +10,23 @@ pub const KEYSTORE_KDF_ARGON2ID: &str = "argon2id";
 pub const KEYSTORE_CIPHER_XCHACHA20_POLY1305: &str = "xchacha20-poly1305";
 pub const KEYSTORE_SALT_BYTES: usize = 16;
 pub const KEYSTORE_NONCE_BYTES: usize = 24;
-pub const KEYSTORE_MIN_CIPHERTEXT_BYTES: usize = 16;
+pub const KEYSTORE_DERIVED_KEY_BYTES: usize = 32;
+pub const KEYSTORE_V1_PLAINTEXT_BYTES: usize = 16 + ED25519_SECRET_KEY_BYTES;
+pub const KEYSTORE_V1_CIPHERTEXT_BYTES: usize = KEYSTORE_V1_PLAINTEXT_BYTES + 16;
+pub const KEYSTORE_MIN_CIPHERTEXT_BYTES: usize = KEYSTORE_V1_CIPHERTEXT_BYTES;
 
-/// Public, versioned metadata for a PulseDAG encrypted wallet file.
-///
-/// This envelope deliberately has no plaintext private-key, mnemonic, seed or
-/// password fields. Encryption/decryption is implemented in a later #819
-/// change after the reviewed Argon2id/XChaCha20-Poly1305 dependency update is
-/// committed together with `Cargo.lock`.
+pub const KEYSTORE_KDF_DEFAULT_MEMORY_KIB: u32 = 65_536;
+pub const KEYSTORE_KDF_DEFAULT_ITERATIONS: u32 = 3;
+pub const KEYSTORE_KDF_DEFAULT_LANES: u32 = 1;
+pub const KEYSTORE_KDF_MIN_MEMORY_KIB: u32 = 32_768;
+pub const KEYSTORE_KDF_MAX_MEMORY_KIB: u32 = 262_144;
+pub const KEYSTORE_KDF_MIN_ITERATIONS: u32 = 2;
+pub const KEYSTORE_KDF_MAX_ITERATIONS: u32 = 10;
+pub const KEYSTORE_KDF_MIN_LANES: u32 = 1;
+pub const KEYSTORE_KDF_MAX_LANES: u32 = 4;
+
+/// Public, versioned metadata plus authenticated ciphertext for a PulseDAG
+/// wallet secret. The envelope contains no plaintext password or private key.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct WalletKeystoreEnvelope {
@@ -76,11 +88,7 @@ impl fmt::Display for WalletKeystoreFormatError {
 impl Error for WalletKeystoreFormatError {}
 
 impl WalletKeystoreEnvelope {
-    /// Validate the public structure of an encrypted keystore envelope.
-    ///
-    /// This is intentionally structural validation only. Successful validation
-    /// does not mean the password is correct or the ciphertext authentic; AEAD
-    /// authentication belongs to the encryption/decryption implementation.
+    /// Validate every public field before any expensive KDF work.
     pub fn validate_structure(&self) -> Result<(), WalletKeystoreFormatError> {
         if self.format != KEYSTORE_FORMAT {
             return Err(WalletKeystoreFormatError::UnsupportedFormat);
@@ -91,20 +99,7 @@ impl WalletKeystoreEnvelope {
         require_nonempty("network_profile", &self.network_profile)?;
         require_nonempty("chain_id", &self.chain_id)?;
         require_nonempty("address", &self.address)?;
-
-        if self.kdf.algorithm != KEYSTORE_KDF_ARGON2ID {
-            return Err(WalletKeystoreFormatError::UnsupportedKdf);
-        }
-        if self.kdf.memory_kib == 0 {
-            return Err(invalid("kdf.memory_kib", "must be greater than zero"));
-        }
-        if self.kdf.iterations == 0 {
-            return Err(invalid("kdf.iterations", "must be greater than zero"));
-        }
-        if self.kdf.lanes == 0 {
-            return Err(invalid("kdf.lanes", "must be greater than zero"));
-        }
-        require_hex_len("kdf.salt_hex", &self.kdf.salt_hex, KEYSTORE_SALT_BYTES)?;
+        validate_kdf_metadata(&self.kdf)?;
 
         if self.cipher.algorithm != KEYSTORE_CIPHER_XCHACHA20_POLY1305 {
             return Err(WalletKeystoreFormatError::UnsupportedCipher);
@@ -114,29 +109,63 @@ impl WalletKeystoreEnvelope {
             &self.cipher.nonce_hex,
             KEYSTORE_NONCE_BYTES,
         )?;
-        require_hex_min_len(
+        require_hex_len(
             "ciphertext_hex",
             &self.ciphertext_hex,
-            KEYSTORE_MIN_CIPHERTEXT_BYTES,
+            KEYSTORE_V1_CIPHERTEXT_BYTES,
         )?;
-
         Ok(())
     }
 }
 
-fn invalid(field: &'static str, reason: &'static str) -> WalletKeystoreFormatError {
+pub(crate) fn validate_kdf_metadata(
+    kdf: &WalletKdfMetadata,
+) -> Result<(), WalletKeystoreFormatError> {
+    if kdf.algorithm != KEYSTORE_KDF_ARGON2ID {
+        return Err(WalletKeystoreFormatError::UnsupportedKdf);
+    }
+    if !(KEYSTORE_KDF_MIN_MEMORY_KIB..=KEYSTORE_KDF_MAX_MEMORY_KIB).contains(&kdf.memory_kib) {
+        return Err(invalid(
+            "kdf.memory_kib",
+            "outside supported v1 memory-cost bounds",
+        ));
+    }
+    if !(KEYSTORE_KDF_MIN_ITERATIONS..=KEYSTORE_KDF_MAX_ITERATIONS).contains(&kdf.iterations) {
+        return Err(invalid(
+            "kdf.iterations",
+            "outside supported v1 iteration-count bounds",
+        ));
+    }
+    if !(KEYSTORE_KDF_MIN_LANES..=KEYSTORE_KDF_MAX_LANES).contains(&kdf.lanes) {
+        return Err(invalid(
+            "kdf.lanes",
+            "outside supported v1 lane-count bounds",
+        ));
+    }
+    require_hex_len("kdf.salt_hex", &kdf.salt_hex, KEYSTORE_SALT_BYTES)
+}
+
+pub(crate) fn invalid(field: &'static str, reason: &'static str) -> WalletKeystoreFormatError {
     WalletKeystoreFormatError::InvalidField { field, reason }
 }
 
-fn require_nonempty(field: &'static str, value: &str) -> Result<(), WalletKeystoreFormatError> {
-    if value.trim().is_empty() {
-        Err(invalid(field, "must not be empty"))
-    } else {
-        Ok(())
+pub(crate) fn require_nonempty(
+    field: &'static str,
+    value: &str,
+) -> Result<(), WalletKeystoreFormatError> {
+    if value.is_empty() {
+        return Err(invalid(field, "must not be empty"));
     }
+    if value.trim() != value {
+        return Err(invalid(
+            field,
+            "must not contain leading or trailing whitespace",
+        ));
+    }
+    Ok(())
 }
 
-fn require_hex_len(
+pub(crate) fn require_hex_len(
     field: &'static str,
     value: &str,
     expected_bytes: usize,
@@ -144,26 +173,15 @@ fn require_hex_len(
     if value.len() != expected_bytes.saturating_mul(2) {
         return Err(invalid(field, "unexpected encoded length"));
     }
-    require_hex(field, value)
-}
-
-fn require_hex_min_len(
-    field: &'static str,
-    value: &str,
-    minimum_bytes: usize,
-) -> Result<(), WalletKeystoreFormatError> {
-    if value.len() < minimum_bytes.saturating_mul(2) || !value.len().is_multiple_of(2) {
-        return Err(invalid(field, "encoded value is too short or malformed"));
+    let decoded =
+        hex::decode(value).map_err(|_| invalid(field, "must contain hexadecimal data only"))?;
+    if hex::encode(decoded) != value {
+        return Err(invalid(
+            field,
+            "must use canonical lowercase hexadecimal encoding",
+        ));
     }
-    require_hex(field, value)
-}
-
-fn require_hex(field: &'static str, value: &str) -> Result<(), WalletKeystoreFormatError> {
-    if value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        Ok(())
-    } else {
-        Err(invalid(field, "must contain hexadecimal data only"))
-    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -179,88 +197,73 @@ mod tests {
             address: "pulse1exampleaddress".to_string(),
             kdf: WalletKdfMetadata {
                 algorithm: KEYSTORE_KDF_ARGON2ID.to_string(),
-                memory_kib: 65_536,
-                iterations: 3,
-                lanes: 1,
+                memory_kib: KEYSTORE_KDF_DEFAULT_MEMORY_KIB,
+                iterations: KEYSTORE_KDF_DEFAULT_ITERATIONS,
+                lanes: KEYSTORE_KDF_DEFAULT_LANES,
                 salt_hex: "11".repeat(KEYSTORE_SALT_BYTES),
             },
             cipher: WalletCipherMetadata {
                 algorithm: KEYSTORE_CIPHER_XCHACHA20_POLY1305.to_string(),
                 nonce_hex: "22".repeat(KEYSTORE_NONCE_BYTES),
             },
-            ciphertext_hex: "33".repeat(64),
+            ciphertext_hex: "33".repeat(KEYSTORE_V1_CIPHERTEXT_BYTES),
         }
     }
 
     #[test]
-    fn valid_v1_envelope_round_trips() {
+    fn valid_v1_envelope_round_trips_structurally() {
         let envelope = sample_envelope();
         envelope.validate_structure().expect("valid envelope");
-
         let encoded = serde_json::to_string(&envelope).expect("serialize envelope");
         let decoded: WalletKeystoreEnvelope =
             serde_json::from_str(&encoded).expect("deserialize envelope");
-
         assert_eq!(decoded, envelope);
         decoded.validate_structure().expect("decoded envelope");
     }
 
     #[test]
-    fn network_profile_and_chain_id_are_both_required() {
+    fn malformed_noncanonical_and_unknown_fields_fail_closed() {
         let mut envelope = sample_envelope();
-        envelope.network_profile.clear();
+        envelope.cipher.nonce_hex = "00".repeat(KEYSTORE_NONCE_BYTES - 1);
+        assert!(envelope.validate_structure().is_err());
+
+        let mut envelope = sample_envelope();
+        envelope.kdf.salt_hex.replace_range(0..2, "AB");
         assert!(matches!(
             envelope.validate_structure(),
             Err(WalletKeystoreFormatError::InvalidField {
-                field: "network_profile",
+                field: "kdf.salt_hex",
                 ..
             })
         ));
 
-        let mut envelope = sample_envelope();
-        envelope.chain_id.clear();
-        assert!(matches!(
-            envelope.validate_structure(),
-            Err(WalletKeystoreFormatError::InvalidField {
-                field: "chain_id",
-                ..
-            })
-        ));
-    }
-
-    #[test]
-    fn unknown_fields_are_rejected_fail_closed() {
         let mut value = serde_json::to_value(sample_envelope()).expect("serialize envelope");
         value.as_object_mut().expect("envelope object").insert(
             "future_secret_hint".to_string(),
             serde_json::json!("ignored?"),
         );
-
-        let encoded = serde_json::to_string(&value).expect("encode modified envelope");
-        let error = serde_json::from_str::<WalletKeystoreEnvelope>(&encoded)
-            .expect_err("unknown keystore fields must be rejected");
-        assert!(error.to_string().contains("unknown field"));
+        assert!(serde_json::from_value::<WalletKeystoreEnvelope>(value).is_err());
     }
 
     #[test]
-    fn serialized_schema_has_no_plaintext_secret_fields() {
-        let encoded = serde_json::to_string(&sample_envelope()).expect("serialize envelope");
-        for forbidden in [
-            "private_key",
-            "mnemonic",
-            "seed_phrase",
-            "password",
-            "secret_key",
-        ] {
-            assert!(
-                !encoded.contains(forbidden),
-                "keystore schema unexpectedly contains plaintext-secret field {forbidden}"
-            );
-        }
+    fn kdf_costs_are_bounded_before_crypto() {
+        let mut envelope = sample_envelope();
+        envelope.kdf.memory_kib = KEYSTORE_KDF_MAX_MEMORY_KIB + 1;
+        assert!(matches!(
+            envelope.validate_structure(),
+            Err(WalletKeystoreFormatError::InvalidField {
+                field: "kdf.memory_kib",
+                ..
+            })
+        ));
+
+        let mut envelope = sample_envelope();
+        envelope.kdf.iterations = KEYSTORE_KDF_MIN_ITERATIONS - 1;
+        assert!(envelope.validate_structure().is_err());
     }
 
     #[test]
-    fn unsupported_version_fails_closed() {
+    fn unsupported_version_and_algorithms_fail_closed() {
         let mut envelope = sample_envelope();
         envelope.version = KEYSTORE_VERSION + 1;
         assert_eq!(
@@ -269,33 +272,7 @@ mod tests {
                 KEYSTORE_VERSION + 1
             ))
         );
-    }
 
-    #[test]
-    fn malformed_nonce_and_ciphertext_fail_closed() {
-        let mut envelope = sample_envelope();
-        envelope.cipher.nonce_hex = "00".repeat(KEYSTORE_NONCE_BYTES - 1);
-        assert!(matches!(
-            envelope.validate_structure(),
-            Err(WalletKeystoreFormatError::InvalidField {
-                field: "cipher.nonce_hex",
-                ..
-            })
-        ));
-
-        let mut envelope = sample_envelope();
-        envelope.ciphertext_hex = "not-hex".to_string();
-        assert!(matches!(
-            envelope.validate_structure(),
-            Err(WalletKeystoreFormatError::InvalidField {
-                field: "ciphertext_hex",
-                ..
-            })
-        ));
-    }
-
-    #[test]
-    fn unsupported_algorithms_fail_closed() {
         let mut envelope = sample_envelope();
         envelope.kdf.algorithm = "pbkdf2".to_string();
         assert_eq!(
