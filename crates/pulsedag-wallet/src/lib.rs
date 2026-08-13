@@ -5,7 +5,7 @@ mod keystore_crypto;
 mod keystore_persistence;
 mod keystore_rotation;
 mod secrets;
-mod session_clock;
+mod session_clock_v2;
 mod session_v1;
 use session_v1 as session_core;
 
@@ -26,7 +26,7 @@ pub use keystore_persistence::{
 };
 pub use keystore_rotation::{rotate_keystore_password, WalletKeystoreRotationError};
 pub use secrets::{SecretString, WalletSecretKey, ED25519_SECRET_KEY_BYTES, REDACTED_SECRET};
-pub use session_clock::WalletSession;
+pub use session_clock_v2::WalletSession;
 pub use session_v1::{
     WalletSessionError, WalletSessionIdentity, WalletSessionLockState, WalletSessionStatus,
     WalletUnlockPolicy, WalletUnlockPolicyError, WALLET_UNLOCK_MAX_FAILURES,
