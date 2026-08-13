@@ -8,9 +8,7 @@ use crate::{
     session_core::WalletSession as CoreWalletSession, SecretString, WalletKeystoreFile,
     WalletSecretKey,
 };
-use crate::{
-    WalletSessionError, WalletSessionLockState, WalletSessionStatus, WalletUnlockPolicy,
-};
+use crate::{WalletSessionError, WalletSessionLockState, WalletSessionStatus, WalletUnlockPolicy};
 
 const WALL_CLOCK_POLL_INTERVAL: Duration = Duration::from_secs(1);
 
@@ -33,13 +31,6 @@ enum WallClockCheck {
     ExpiredOrDiscontinuous,
 }
 
-/// Public wallet session boundary with two independent expiry signals.
-///
-/// The core session uses `Instant`. This outer guard additionally tracks a
-/// `SystemTime` deadline because Rust does not guarantee that suspend time is
-/// reflected by `Instant` on every platform. A wall-clock rollback while the
-/// wallet is unlocked also fails closed. The watchdog polls at a bounded
-/// interval so a resumed process re-checks the civil deadline promptly.
 pub struct WalletSession {
     policy: WalletUnlockPolicy,
     inner: Arc<Mutex<CoreWalletSession>>,
@@ -49,8 +40,7 @@ pub struct WalletSession {
 
 impl WalletSession {
     pub fn new(policy: WalletUnlockPolicy) -> Result<Self, WalletSessionError> {
-        let core = CoreWalletSession::new(policy)?;
-        let inner = Arc::new(Mutex::new(core));
+        let inner = Arc::new(Mutex::new(CoreWalletSession::new(policy)?));
         let wall = Arc::new(WallClockShared {
             state: Mutex::new(WallClockState {
                 deadline: None,
@@ -59,14 +49,12 @@ impl WalletSession {
             }),
             wake: Condvar::new(),
         });
-
         let worker_inner = Arc::clone(&inner);
         let worker_wall = Arc::clone(&wall);
         let worker = thread::Builder::new()
             .name("pulsedag-wallet-wall-clock".into())
             .spawn(move || wall_clock_worker(worker_inner, worker_wall))
             .map_err(WalletSessionError::WorkerSpawn)?;
-
         Ok(Self {
             policy,
             inner,
@@ -101,12 +89,10 @@ impl WalletSession {
         password: &SecretString,
     ) -> Result<WalletSessionStatus, WalletSessionError> {
         self.enforce_wall_clock();
-
         let wall_now = SystemTime::now();
         let wall_deadline = wall_now
             .checked_add(self.policy.unlock_timeout())
             .ok_or(WalletSessionError::TimeoutOverflow)?;
-
         {
             let mut core = lock_core(&self.inner);
             core.unlock(keystore, password)?;
@@ -122,15 +108,9 @@ impl WalletSession {
 
     pub fn lock(&mut self) -> bool {
         self.clear_wall_deadline();
-        let mut core = lock_core(&self.inner);
-        core.lock()
+        lock_core(&self.inner).lock()
     }
 
-    /// Execute one local operation while both expiry guards are active.
-    ///
-    /// An operation that started before expiry may finish while holding the
-    /// core session lock. The session is checked again immediately afterward,
-    /// so no later operation can start with an expired or discontinuous clock.
     pub fn with_unlocked_secret<R>(
         &self,
         action: impl FnOnce(&WalletSecretKey) -> R,
@@ -138,10 +118,7 @@ impl WalletSession {
         if self.enforce_wall_clock().is_none() {
             return Err(WalletSessionError::Locked);
         }
-        let result = {
-            let core = lock_core(&self.inner);
-            core.with_unlocked_secret(action)
-        };
+        let result = lock_core(&self.inner).with_unlocked_secret(action);
         self.enforce_wall_clock();
         result
     }
@@ -162,8 +139,7 @@ impl WalletSession {
             WallClockCheck::Inactive => None,
             WallClockCheck::Active(remaining) => Some(remaining),
             WallClockCheck::ExpiredOrDiscontinuous => {
-                let mut core = lock_core(&self.inner);
-                core.lock();
+                lock_core(&self.inner).lock();
                 None
             }
         }
@@ -181,8 +157,7 @@ impl Drop for WalletSession {
         if let Some(worker) = self.worker.take() {
             let _ = worker.join();
         }
-        let mut core = lock_core(&self.inner);
-        core.lock();
+        lock_core(&self.inner).lock();
     }
 }
 
@@ -191,14 +166,12 @@ fn inspect_wall_clock(state: &mut WallClockState, now: SystemTime) -> WallClockC
         state.last_observed = now;
         return WallClockCheck::Inactive;
     };
-
     let rolled_back = now.duration_since(state.last_observed).is_err();
     state.last_observed = now;
     if rolled_back || now.duration_since(deadline).is_ok() {
         state.deadline = None;
         return WallClockCheck::ExpiredOrDiscontinuous;
     }
-
     WallClockCheck::Active(deadline.duration_since(now).unwrap_or(Duration::ZERO))
 }
 
@@ -221,7 +194,6 @@ fn wall_clock_worker(inner: Arc<Mutex<CoreWalletSession>>, wall: Arc<WallClockSh
         if state.shutdown {
             return;
         }
-
         match inspect_wall_clock(&mut state, SystemTime::now()) {
             WallClockCheck::Inactive => {
                 state = wall
@@ -231,10 +203,7 @@ fn wall_clock_worker(inner: Arc<Mutex<CoreWalletSession>>, wall: Arc<WallClockSh
             }
             WallClockCheck::ExpiredOrDiscontinuous => {
                 drop(state);
-                {
-                    let mut core = lock_core(&inner);
-                    core.lock();
-                }
+                lock_core(&inner).lock();
                 state = lock_wall(&wall);
             }
             WallClockCheck::Active(remaining) => {
