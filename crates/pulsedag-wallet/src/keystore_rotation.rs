@@ -104,5 +104,5 @@ pub fn rotate_keystore_password(
 mod fs_backend;
 
 #[cfg(all(test, unix))]
-#[path = "keystore_rotation_tests.rs"]
+#[path = "keystore_rotation_tests_compact.rs"]
 mod tests;
