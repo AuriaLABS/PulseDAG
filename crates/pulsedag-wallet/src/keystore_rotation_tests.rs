@@ -29,9 +29,11 @@ fn fixture(label: &str) -> (PathBuf, PathBuf, WalletKeystoreFile) {
         &address,
         &secret,
         &SecretString::new(OLD),
-        KEYSTORE_KDF_MIN_MEMORY_KIB,
-        KEYSTORE_KDF_MIN_ITERATIONS,
-        1,
+        KeystoreKdfCosts::new(
+            KEYSTORE_KDF_MIN_MEMORY_KIB,
+            KEYSTORE_KDF_MIN_ITERATIONS,
+            1,
+        ),
     )
     .expect("encrypt fixture");
     let session = WalletKeystoreFile::try_acquire(&path).expect("lock fixture");
