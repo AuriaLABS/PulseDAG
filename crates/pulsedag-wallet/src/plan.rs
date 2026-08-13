@@ -1,6 +1,11 @@
 use std::{error::Error, fmt};
 
-use pulsedag_core::{errors::PulseError, types::Utxo};
+use pulsedag_core::{
+    compute_txid,
+    errors::PulseError,
+    signing_message,
+    types::{Transaction, Utxo},
+};
 use serde::{Deserialize, Serialize};
 
 use crate::{build_transaction, BuildTxResponse, SelectedUtxo};
@@ -53,6 +58,27 @@ impl WalletNetworkIdentity {
     }
 }
 
+/// Human-reviewable payment intent kept next to the unsigned transaction.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct WalletTransactionIntent {
+    pub from: String,
+    pub to: String,
+    pub amount: u64,
+    pub fee: u64,
+}
+
+impl WalletTransactionIntent {
+    fn validate(&self) -> Result<(), WalletPlanError> {
+        validate_identity_field("intent.from", &self.from)?;
+        validate_identity_field("intent.to", &self.to)?;
+        if self.amount == 0 {
+            return Err(invalid_plan("intent.amount", "must be greater than zero"));
+        }
+        Ok(())
+    }
+}
+
 /// v1 wallet nonce policy.
 ///
 /// The caller must supply the nonce explicitly. There is intentionally no
@@ -73,8 +99,9 @@ pub enum WalletNoncePolicy {
 #[serde(deny_unknown_fields)]
 pub struct WalletTransactionPlan {
     pub network: WalletNetworkIdentity,
+    pub intent: WalletTransactionIntent,
     pub nonce_policy: WalletNoncePolicy,
-    pub transaction: pulsedag_core::types::Transaction,
+    pub transaction: Transaction,
     pub selected_utxos: Vec<SelectedUtxo>,
     pub total_input: u64,
     pub change: u64,
@@ -82,10 +109,79 @@ pub struct WalletTransactionPlan {
 }
 
 impl WalletTransactionPlan {
+    /// Validate that serialized review metadata still matches the unsigned tx.
+    pub fn validate_structure(&self) -> Result<(), WalletPlanError> {
+        self.network.validate()?;
+        self.intent.validate()?;
+
+        if self.transaction.version != 1 {
+            return Err(invalid_plan("transaction.version", "unsupported wallet transaction version"));
+        }
+        if self.transaction.fee != self.intent.fee {
+            return Err(invalid_plan("transaction.fee", "does not match reviewed intent"));
+        }
+
+        let target = self
+            .intent
+            .amount
+            .checked_add(self.intent.fee)
+            .ok_or_else(|| invalid_plan("intent.amount", "amount plus fee overflows"))?;
+        let selected_total = self.selected_utxos.iter().try_fold(0_u64, |total, selected| {
+            total
+                .checked_add(selected.amount)
+                .ok_or_else(|| invalid_plan("selected_utxos", "selected amount total overflows"))
+        })?;
+        if selected_total != self.total_input {
+            return Err(invalid_plan("total_input", "does not match selected UTXOs"));
+        }
+        if self.total_input < target {
+            return Err(invalid_plan("total_input", "does not cover amount plus fee"));
+        }
+        let expected_change = self.total_input - target;
+        if expected_change != self.change {
+            return Err(invalid_plan("change", "does not match reviewed intent"));
+        }
+
+        if self.transaction.inputs.len() != self.selected_utxos.len() {
+            return Err(invalid_plan("transaction.inputs", "does not match selected UTXOs"));
+        }
+        for (input, selected) in self.transaction.inputs.iter().zip(&self.selected_utxos) {
+            if input.previous_output != selected.outpoint {
+                return Err(invalid_plan("transaction.inputs", "outpoint does not match selected UTXO"));
+            }
+        }
+
+        let expected_output_count = if self.change > 0 { 2 } else { 1 };
+        if self.transaction.outputs.len() != expected_output_count {
+            return Err(invalid_plan("transaction.outputs", "unexpected output count"));
+        }
+        let recipient = &self.transaction.outputs[0];
+        if recipient.address != self.intent.to || recipient.amount != self.intent.amount {
+            return Err(invalid_plan("transaction.outputs", "recipient output does not match intent"));
+        }
+        if self.change > 0 {
+            let change = &self.transaction.outputs[1];
+            if change.address != self.intent.from || change.amount != self.change {
+                return Err(invalid_plan("transaction.outputs", "change output does not match intent"));
+            }
+        }
+
+        let expected_message = hex::encode(signing_message(&self.transaction));
+        if expected_message != self.signing_message {
+            return Err(invalid_plan("signing_message", "does not match unsigned transaction"));
+        }
+        if compute_txid(&self.transaction) != self.transaction.txid {
+            return Err(invalid_plan("transaction.txid", "does not match transaction bytes"));
+        }
+
+        Ok(())
+    }
+
     pub fn verify_remote_identity(
         &self,
         observed: &WalletNetworkIdentity,
     ) -> Result<(), WalletPlanError> {
+        self.validate_structure()?;
         self.network.ensure_matches(observed)
     }
 
@@ -93,6 +189,7 @@ impl WalletTransactionPlan {
         &self,
         keystore: &WalletNetworkIdentity,
     ) -> Result<(), WalletPlanError> {
+        self.validate_structure()?;
         self.network.ensure_matches(keystore)
     }
 }
@@ -100,6 +197,10 @@ impl WalletTransactionPlan {
 #[derive(Debug)]
 pub enum WalletPlanError {
     InvalidIdentityField {
+        field: &'static str,
+        reason: &'static str,
+    },
+    InvalidPlanField {
         field: &'static str,
         reason: &'static str,
     },
@@ -117,6 +218,9 @@ impl fmt::Display for WalletPlanError {
         match self {
             Self::InvalidIdentityField { field, reason } => {
                 write!(f, "invalid wallet network identity field {field}: {reason}")
+            }
+            Self::InvalidPlanField { field, reason } => {
+                write!(f, "invalid wallet transaction plan field {field}: {reason}")
             }
             Self::NetworkMismatch {
                 expected_network_profile,
@@ -161,16 +265,27 @@ pub fn build_transaction_plan(
     nonce: u64,
 ) -> Result<WalletTransactionPlan, WalletPlanError> {
     network.validate()?;
+    let intent = WalletTransactionIntent {
+        from: from.to_string(),
+        to: to.to_string(),
+        amount,
+        fee,
+    };
+    intent.validate()?;
     let built = build_transaction(from, to, amount, fee, available_utxos, nonce)?;
-    Ok(plan_from_build(network, built))
+    let plan = plan_from_build(network, intent, built);
+    plan.validate_structure()?;
+    Ok(plan)
 }
 
 fn plan_from_build(
     network: WalletNetworkIdentity,
+    intent: WalletTransactionIntent,
     built: BuildTxResponse,
 ) -> WalletTransactionPlan {
     WalletTransactionPlan {
         network,
+        intent,
         nonce_policy: WalletNoncePolicy::ExplicitCallerProvidedV1,
         transaction: built.transaction,
         selected_utxos: built.selected_utxos,
@@ -178,6 +293,10 @@ fn plan_from_build(
         change: built.change,
         signing_message: built.signing_message,
     }
+}
+
+fn invalid_plan(field: &'static str, reason: &'static str) -> WalletPlanError {
+    WalletPlanError::InvalidPlanField { field, reason }
 }
 
 fn validate_identity_field(field: &'static str, value: &str) -> Result<(), WalletPlanError> {
@@ -219,9 +338,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn transaction_plan_preserves_explicit_nonce() {
-        let plan = build_transaction_plan(
+    fn sample_plan() -> WalletTransactionPlan {
+        build_transaction_plan(
             identity("pulsedag-public-testnet"),
             "pulse1sender",
             "pulse1recipient",
@@ -230,13 +348,21 @@ mod tests {
             &[sample_utxo()],
             42,
         )
-        .expect("build plan");
+        .expect("build plan")
+    }
+
+    #[test]
+    fn transaction_plan_preserves_explicit_nonce_and_intent() {
+        let plan = sample_plan();
 
         assert_eq!(plan.transaction.nonce, 42);
+        assert_eq!(plan.intent.amount, 400);
+        assert_eq!(plan.intent.fee, 10);
         assert_eq!(
             plan.nonce_policy,
             WalletNoncePolicy::ExplicitCallerProvidedV1
         );
+        plan.validate_structure().expect("valid plan");
     }
 
     #[test]
@@ -257,17 +383,19 @@ mod tests {
     }
 
     #[test]
+    fn tampered_review_metadata_is_rejected() {
+        let mut plan = sample_plan();
+        plan.intent.amount = 399;
+        assert!(plan.validate_structure().is_err());
+
+        let mut plan = sample_plan();
+        plan.signing_message = "00".repeat(32);
+        assert!(plan.validate_structure().is_err());
+    }
+
+    #[test]
     fn v1_signing_message_is_not_claimed_to_be_chain_bound() {
-        let public_plan = build_transaction_plan(
-            identity("pulsedag-public-testnet"),
-            "pulse1sender",
-            "pulse1recipient",
-            400,
-            10,
-            &[sample_utxo()],
-            42,
-        )
-        .expect("public plan");
+        let public_plan = sample_plan();
         let private_plan = build_transaction_plan(
             identity("pulsedag-private-testnet"),
             "pulse1sender",
