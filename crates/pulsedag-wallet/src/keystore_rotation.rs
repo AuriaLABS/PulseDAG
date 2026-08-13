@@ -25,9 +25,15 @@ pub enum WalletKeystoreRotationError {
     AtomicReplacementUnsupported,
     UnsafePath(&'static str),
     RandomnessUnavailable,
-    TooLarge { limit: u64, actual: u64 },
+    TooLarge {
+        limit: u64,
+        actual: u64,
+    },
     Json(serde_json::Error),
-    Io { operation: &'static str, source: io::Error },
+    Io {
+        operation: &'static str,
+        source: io::Error,
+    },
     PublishedButDirectorySyncFailed(io::Error),
 }
 
@@ -158,7 +164,10 @@ fn replace_existing_atomically(
     {
         return Err(io_error(
             "verify temporary replacement permissions",
-            io::Error::new(io::ErrorKind::PermissionDenied, "replacement permissions are not 0600"),
+            io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "replacement permissions are not 0600",
+            ),
         ));
     }
     temp.sync_all()
@@ -224,7 +233,10 @@ fn create_private_temp(
     }
     Err(io_error(
         "allocate temporary replacement name",
-        io::Error::new(io::ErrorKind::AlreadyExists, "temporary replacement name collisions"),
+        io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "temporary replacement name collisions",
+        ),
     ))
 }
 
