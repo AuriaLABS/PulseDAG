@@ -2,7 +2,8 @@ mod plan;
 
 pub use plan::{
     build_transaction_plan, WalletNetworkIdentity, WalletNoncePolicy, WalletPlanError,
-    WalletReviewSummary, WalletSpendPolicy, WalletTransactionIntent, WalletTransactionPlan,
+    WalletReviewSummary, WalletSigningPreparation, WalletSpendPolicy, WalletTransactionIntent,
+    WalletTransactionPlan,
 };
 
 use serde::{Deserialize, Serialize};
