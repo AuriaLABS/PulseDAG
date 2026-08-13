@@ -2,6 +2,7 @@
 
 mod keystore;
 mod keystore_crypto;
+mod keystore_persistence;
 mod secrets;
 
 pub use keystore::{
@@ -15,6 +16,10 @@ pub use keystore::{
     KEYSTORE_VERSION,
 };
 pub use keystore_crypto::{decrypt_private_key, encrypt_private_key, WalletKeystoreCryptoError};
+pub use keystore_persistence::{
+    WalletKeystoreDirectorySyncStatus, WalletKeystoreFile, WalletKeystorePermissionStatus,
+    WalletKeystorePersistenceError, WalletKeystorePersistenceReport, KEYSTORE_FILE_MAX_BYTES,
+};
 pub use secrets::{SecretString, WalletSecretKey, ED25519_SECRET_KEY_BYTES, REDACTED_SECRET};
 
 use serde::{Deserialize, Serialize};
