@@ -1,6 +1,6 @@
 #![forbid(unsafe_code)]
 
-mod deterministic;
+mod deterministic_v2;
 mod keystore;
 mod keystore_crypto;
 mod keystore_persistence;
@@ -10,11 +10,11 @@ mod session_clock;
 mod session_v1;
 use session_v1 as session_core;
 
-pub use deterministic::{
-    derive_network_component, derive_wallet_key, generate_wallet_mnemonic, WalletDerivedKey,
+pub use deterministic_v2::{
+    derive_network_components, derive_wallet_key, generate_wallet_mnemonic, WalletDerivedKey,
     WalletDerivationBranch, WalletDeterministicError, WalletNetworkContext,
     WALLET_DERIVATION_DOMAIN, WALLET_DERIVATION_MAX_INDEX, WALLET_DERIVATION_VERSION,
-    WALLET_MNEMONIC_WORDS,
+    WALLET_MNEMONIC_WORDS, WALLET_NETWORK_COMPONENTS,
 };
 pub use keystore::{
     WalletCipherMetadata, WalletKdfMetadata, WalletKeystoreEnvelope, WalletKeystoreFormatError,
