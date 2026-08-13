@@ -5,6 +5,8 @@ use chacha20poly1305::{
     aead::{Aead, KeyInit, Payload},
     XChaCha20Poly1305, XNonce,
 };
+use ed25519_dalek::SigningKey;
+use pulsedag_core::address_from_public_key;
 use rand::{rngs::OsRng, RngCore};
 use serde::Serialize;
 use zeroize::Zeroizing;
@@ -29,6 +31,10 @@ const KEYSTORE_V1_SECRET_MAGIC: &[u8; 16] = b"PULSEDAG-KEY-V1\0";
 pub enum WalletKeystoreCryptoError {
     Format(WalletKeystoreFormatError),
     EmptyPassword,
+    AddressKeyMismatch {
+        expected_address: String,
+        derived_address: String,
+    },
     RandomnessUnavailable,
     KdfFailed,
     CipherInitializationFailed,
@@ -43,6 +49,13 @@ impl fmt::Display for WalletKeystoreCryptoError {
         match self {
             Self::Format(error) => write!(f, "invalid PulseDAG keystore: {error}"),
             Self::EmptyPassword => f.write_str("wallet keystore password must not be empty"),
+            Self::AddressKeyMismatch {
+                expected_address,
+                derived_address,
+            } => write!(
+                f,
+                "wallet keystore key/address mismatch: expected {expected_address}, derived {derived_address}"
+            ),
             Self::RandomnessUnavailable => {
                 f.write_str("operating-system randomness is unavailable")
             }
@@ -102,6 +115,7 @@ pub fn encrypt_private_key(
     if password.is_empty() {
         return Err(WalletKeystoreCryptoError::EmptyPassword);
     }
+    ensure_secret_matches_address(secret_key, address)?;
 
     let mut salt = [0_u8; KEYSTORE_SALT_BYTES];
     let mut nonce = [0_u8; KEYSTORE_NONCE_BYTES];
@@ -163,8 +177,9 @@ pub fn decrypt_private_key(
         )
         .map_err(|_| WalletKeystoreCryptoError::AuthenticationFailed)?;
     let plaintext = Zeroizing::new(plaintext);
-
-    decode_secret_payload(&plaintext)
+    let secret_key = decode_secret_payload(&plaintext)?;
+    ensure_secret_matches_address(&secret_key, &envelope.address)?;
+    Ok(secret_key)
 }
 
 fn encrypt_private_key_with_material(
@@ -180,6 +195,7 @@ fn encrypt_private_key_with_material(
     if password.is_empty() {
         return Err(WalletKeystoreCryptoError::EmptyPassword);
     }
+    ensure_secret_matches_address(secret_key, context.address)?;
 
     let kdf = WalletKdfMetadata {
         algorithm: KEYSTORE_KDF_ARGON2ID.to_string(),
@@ -250,6 +266,26 @@ fn derive_key(
     Ok(output)
 }
 
+fn derived_address(secret_key: &WalletSecretKey) -> String {
+    let signing_key = SigningKey::from_bytes(secret_key.expose_secret());
+    let public_key_hex = hex::encode(signing_key.verifying_key().to_bytes());
+    address_from_public_key(&public_key_hex)
+}
+
+fn ensure_secret_matches_address(
+    secret_key: &WalletSecretKey,
+    expected_address: &str,
+) -> Result<(), WalletKeystoreCryptoError> {
+    let derived_address = derived_address(secret_key);
+    if derived_address == expected_address {
+        return Ok(());
+    }
+    Err(WalletKeystoreCryptoError::AddressKeyMismatch {
+        expected_address: expected_address.to_string(),
+        derived_address,
+    })
+}
+
 fn decode_secret_payload(plaintext: &[u8]) -> Result<WalletSecretKey, WalletKeystoreCryptoError> {
     if plaintext.len() != KEYSTORE_V1_PLAINTEXT_BYTES
         || &plaintext[..KEYSTORE_V1_SECRET_MAGIC.len()] != KEYSTORE_V1_SECRET_MAGIC
@@ -316,16 +352,21 @@ mod tests {
 
     const TEST_PASSWORD: &str = "test-wallet-password";
 
+    fn test_key(byte: u8) -> WalletSecretKey {
+        WalletSecretKey::from_bytes([byte; ED25519_SECRET_KEY_BYTES])
+    }
+
     fn encrypted_fixture() -> WalletKeystoreEnvelope {
         static FIXTURE: OnceLock<WalletKeystoreEnvelope> = OnceLock::new();
         FIXTURE
             .get_or_init(|| {
-                let key = WalletSecretKey::from_bytes([0x42; ED25519_SECRET_KEY_BYTES]);
+                let key = test_key(0x42);
+                let address = derived_address(&key);
                 encrypt_private_key_with_material(
                     KeystoreContext {
                         network_profile: "public-testnet-v2.4.0-candidate",
                         chain_id: "pulsedag-public-testnet-v2.4.0-candidate",
-                        address: "pulse1exampleaddress",
+                        address: &address,
                     },
                     &key,
                     &SecretString::new(TEST_PASSWORD),
@@ -348,12 +389,28 @@ mod tests {
         let recovered = decrypt_private_key(&envelope, &SecretString::new(TEST_PASSWORD))
             .expect("correct password decrypts");
         assert_eq!(recovered.expose_secret(), &[0x42; ED25519_SECRET_KEY_BYTES]);
+        assert_eq!(envelope.address, derived_address(&recovered));
         assert_eq!(
             hex::decode(&envelope.ciphertext_hex)
                 .expect("ciphertext hex")
                 .len(),
             KEYSTORE_V1_CIPHERTEXT_BYTES
         );
+    }
+
+    #[test]
+    fn wrong_address_is_rejected_before_encryption() {
+        let key = test_key(0x42);
+        assert!(matches!(
+            encrypt_private_key(
+                "public-testnet",
+                "pulsedag-public-testnet",
+                "pulse1wrongaddress",
+                &key,
+                &SecretString::new(TEST_PASSWORD),
+            ),
+            Err(WalletKeystoreCryptoError::AddressKeyMismatch { .. })
+        ));
     }
 
     #[test]
@@ -386,16 +443,18 @@ mod tests {
 
     #[test]
     fn production_encryption_uses_v1_defaults_and_random_material() {
-        let key = WalletSecretKey::from_bytes([0x24; ED25519_SECRET_KEY_BYTES]);
+        let key = test_key(0x24);
+        let address = derived_address(&key);
         let envelope = encrypt_private_key(
             "public-testnet-v2.4.0-candidate",
             "pulsedag-public-testnet-v2.4.0-candidate",
-            "pulse1productionexample",
+            &address,
             &key,
             &SecretString::new("production-test-password"),
         )
         .expect("production envelope encrypts");
 
+        assert_eq!(envelope.address, address);
         assert_eq!(envelope.kdf.memory_kib, KEYSTORE_KDF_DEFAULT_MEMORY_KIB);
         assert_eq!(envelope.kdf.iterations, KEYSTORE_KDF_DEFAULT_ITERATIONS);
         assert_eq!(envelope.kdf.lanes, KEYSTORE_KDF_DEFAULT_LANES);
@@ -448,14 +507,15 @@ mod tests {
 
     #[test]
     fn empty_password_is_rejected() {
-        let key = WalletSecretKey::from_bytes([0x55; ED25519_SECRET_KEY_BYTES]);
+        let key = test_key(0x55);
+        let address = derived_address(&key);
         assert!(matches!(
             encrypt_private_key(
                 "public-testnet",
                 "pulsedag-public-testnet",
-                "pulse1example",
+                &address,
                 &key,
-                &SecretString::new("")
+                &SecretString::new(""),
             ),
             Err(WalletKeystoreCryptoError::EmptyPassword)
         ));
