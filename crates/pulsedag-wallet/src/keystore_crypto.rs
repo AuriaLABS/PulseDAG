@@ -96,6 +96,31 @@ struct KeystoreContext<'a> {
 }
 
 #[derive(Clone, Copy)]
+pub(crate) struct KeystoreKdfCosts {
+    memory_kib: u32,
+    iterations: u32,
+    lanes: u32,
+}
+
+impl KeystoreKdfCosts {
+    pub(crate) const fn new(memory_kib: u32, iterations: u32, lanes: u32) -> Self {
+        Self {
+            memory_kib,
+            iterations,
+            lanes,
+        }
+    }
+
+    const fn v1_defaults() -> Self {
+        Self::new(
+            KEYSTORE_KDF_DEFAULT_MEMORY_KIB,
+            KEYSTORE_KDF_DEFAULT_ITERATIONS,
+            KEYSTORE_KDF_DEFAULT_LANES,
+        )
+    }
+}
+
+#[derive(Clone, Copy)]
 struct KdfMaterial {
     memory_kib: u32,
     iterations: u32,
@@ -118,9 +143,7 @@ pub fn encrypt_private_key(
         address,
         secret_key,
         password,
-        KEYSTORE_KDF_DEFAULT_MEMORY_KIB,
-        KEYSTORE_KDF_DEFAULT_ITERATIONS,
-        KEYSTORE_KDF_DEFAULT_LANES,
+        KeystoreKdfCosts::v1_defaults(),
     )
 }
 
@@ -133,9 +156,7 @@ pub(crate) fn encrypt_private_key_with_kdf_costs(
     address: &str,
     secret_key: &WalletSecretKey,
     password: &SecretString,
-    memory_kib: u32,
-    iterations: u32,
-    lanes: u32,
+    costs: KeystoreKdfCosts,
 ) -> Result<WalletKeystoreEnvelope, WalletKeystoreCryptoError> {
     if password.is_empty() {
         return Err(WalletKeystoreCryptoError::EmptyPassword);
@@ -159,9 +180,9 @@ pub(crate) fn encrypt_private_key_with_kdf_costs(
         secret_key,
         password,
         KdfMaterial {
-            memory_kib,
-            iterations,
-            lanes,
+            memory_kib: costs.memory_kib,
+            iterations: costs.iterations,
+            lanes: costs.lanes,
             salt,
         },
         nonce,
