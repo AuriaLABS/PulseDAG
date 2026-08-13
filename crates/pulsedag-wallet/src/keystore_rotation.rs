@@ -24,7 +24,10 @@ pub enum WalletKeystoreRotationError {
     AtomicReplacementUnsupported,
     UnsafePath(&'static str),
     RandomnessUnavailable,
-    TooLarge { limit: u64, actual: u64 },
+    TooLarge {
+        limit: u64,
+        actual: u64,
+    },
     Json(serde_json::Error),
     Io {
         operation: &'static str,
@@ -123,18 +126,15 @@ fn replace_existing_atomically(
     path: &Path,
     replacement: &crate::WalletKeystoreEnvelope,
 ) -> Result<WalletKeystorePersistenceReport, WalletKeystoreRotationError> {
-    use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
     replacement
         .validate_structure()
         .map_err(WalletKeystorePersistenceError::from)?;
 
-    let name = path
-        .file_name()
-        .filter(|name| !name.is_empty())
-        .ok_or(WalletKeystoreRotationError::UnsafePath(
-            "a keystore file name is required",
-        ))?;
+    let name = path.file_name().filter(|name| !name.is_empty()).ok_or(
+        WalletKeystoreRotationError::UnsafePath("a keystore file name is required"),
+    )?;
     let parent = path
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
@@ -192,9 +192,7 @@ fn replace_existing_atomically(
     cleanup.disarm();
 
     if let Err(source) = File::open(parent).and_then(|directory| directory.sync_all()) {
-        return Err(WalletKeystoreRotationError::PublishedButDirectorySyncFailed(
-            source,
-        ));
+        return Err(WalletKeystoreRotationError::PublishedButDirectorySyncFailed(source));
     }
 
     Ok(WalletKeystorePersistenceReport {
@@ -205,7 +203,8 @@ fn replace_existing_atomically(
 
 #[cfg(unix)]
 fn ensure_regular_existing_target(path: &Path) -> Result<(), WalletKeystoreRotationError> {
-    let metadata = fs::symlink_metadata(path).map_err(|source| io_error("inspect keystore", source))?;
+    let metadata =
+        fs::symlink_metadata(path).map_err(|source| io_error("inspect keystore", source))?;
     if metadata.file_type().is_symlink() {
         return Err(WalletKeystoreRotationError::UnsafePath(
             "keystore target must not be a symbolic link",
@@ -231,17 +230,9 @@ fn create_private_temp(
         OsRng
             .try_fill_bytes(&mut random)
             .map_err(|_| WalletKeystoreRotationError::RandomnessUnavailable)?;
-        let temp_path = control_path(
-            parent,
-            name,
-            &format!(".rotate-{}", hex::encode(random)),
-        );
+        let temp_path = control_path(parent, name, &format!(".rotate-{}", hex::encode(random)));
         let mut options = OpenOptions::new();
-        options
-            .read(true)
-            .write(true)
-            .create_new(true)
-            .mode(0o600);
+        options.read(true).write(true).create_new(true).mode(0o600);
         match options.open(&temp_path) {
             Ok(file) => return Ok((temp_path, file)),
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
@@ -387,7 +378,10 @@ mod tests {
 
         let recovered = decrypt_private_key(&after, &SecretString::new(NEW_PASSWORD))
             .expect("new password decrypts");
-        assert_eq!(recovered.expose_secret(), &[0x5au8; ED25519_SECRET_KEY_BYTES]);
+        assert_eq!(
+            recovered.expose_secret(),
+            &[0x5au8; ED25519_SECRET_KEY_BYTES]
+        );
         assert!(matches!(
             decrypt_private_key(&after, &SecretString::new(OLD_PASSWORD)),
             Err(WalletKeystoreCryptoError::AuthenticationFailed)
