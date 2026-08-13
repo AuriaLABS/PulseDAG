@@ -1,10 +1,14 @@
-mod plan;
+#![forbid(unsafe_code)]
 
-pub use plan::{
-    build_transaction_plan, WalletNetworkIdentity, WalletNoncePolicy, WalletPlanError,
-    WalletReviewSummary, WalletSigningPreparation, WalletSpendPolicy, WalletTransactionIntent,
-    WalletTransactionPlan,
+mod keystore;
+mod secrets;
+
+pub use keystore::{
+    WalletCipherMetadata, WalletKdfMetadata, WalletKeystoreEnvelope, WalletKeystoreFormatError,
+    KEYSTORE_CIPHER_XCHACHA20_POLY1305, KEYSTORE_FORMAT, KEYSTORE_KDF_ARGON2ID,
+    KEYSTORE_MIN_CIPHERTEXT_BYTES, KEYSTORE_NONCE_BYTES, KEYSTORE_SALT_BYTES, KEYSTORE_VERSION,
 };
+pub use secrets::{SecretString, REDACTED_SECRET};
 
 use serde::{Deserialize, Serialize};
 
