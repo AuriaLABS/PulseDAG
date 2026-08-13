@@ -1,11 +1,11 @@
 #![forbid(unsafe_code)]
 
 mod keystore;
+mod keystore_crypto;
 mod secrets;
 
 pub use keystore::{
-    decrypt_private_key, encrypt_private_key, WalletCipherMetadata, WalletKdfMetadata,
-    WalletKeystoreCryptoError, WalletKeystoreEnvelope, WalletKeystoreFormatError,
+    WalletCipherMetadata, WalletKdfMetadata, WalletKeystoreEnvelope, WalletKeystoreFormatError,
     KEYSTORE_CIPHER_XCHACHA20_POLY1305, KEYSTORE_DERIVED_KEY_BYTES, KEYSTORE_FORMAT,
     KEYSTORE_KDF_ARGON2ID, KEYSTORE_KDF_DEFAULT_ITERATIONS, KEYSTORE_KDF_DEFAULT_LANES,
     KEYSTORE_KDF_DEFAULT_MEMORY_KIB, KEYSTORE_KDF_MAX_ITERATIONS, KEYSTORE_KDF_MAX_LANES,
@@ -13,6 +13,9 @@ pub use keystore::{
     KEYSTORE_KDF_MIN_MEMORY_KIB, KEYSTORE_MIN_CIPHERTEXT_BYTES, KEYSTORE_NONCE_BYTES,
     KEYSTORE_SALT_BYTES, KEYSTORE_V1_CIPHERTEXT_BYTES, KEYSTORE_V1_PLAINTEXT_BYTES,
     KEYSTORE_VERSION,
+};
+pub use keystore_crypto::{
+    decrypt_private_key, encrypt_private_key, WalletKeystoreCryptoError,
 };
 pub use secrets::{
     SecretString, WalletSecretKey, ED25519_SECRET_KEY_BYTES, REDACTED_SECRET,
