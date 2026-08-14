@@ -1,14 +1,44 @@
 #![forbid(unsafe_code)]
 
+mod deterministic;
 mod keystore;
+mod keystore_crypto;
+mod keystore_persistence;
+mod keystore_rotation;
 mod secrets;
+mod session_clock;
+mod session_v1;
+use session_v1 as session_core;
 
+pub use deterministic::{
+    derive_network_components, derive_wallet_key, generate_wallet_mnemonic, WalletDerivationBranch,
+    WalletDerivedKey, WalletDeterministicError, WalletNetworkContext, WALLET_DERIVATION_DOMAIN,
+    WALLET_DERIVATION_MAX_INDEX, WALLET_DERIVATION_VERSION, WALLET_MNEMONIC_WORDS,
+    WALLET_NETWORK_COMPONENTS,
+};
 pub use keystore::{
     WalletCipherMetadata, WalletKdfMetadata, WalletKeystoreEnvelope, WalletKeystoreFormatError,
-    KEYSTORE_CIPHER_XCHACHA20_POLY1305, KEYSTORE_FORMAT, KEYSTORE_KDF_ARGON2ID,
-    KEYSTORE_MIN_CIPHERTEXT_BYTES, KEYSTORE_NONCE_BYTES, KEYSTORE_SALT_BYTES, KEYSTORE_VERSION,
+    KEYSTORE_CIPHER_XCHACHA20_POLY1305, KEYSTORE_DERIVED_KEY_BYTES, KEYSTORE_FORMAT,
+    KEYSTORE_KDF_ARGON2ID, KEYSTORE_KDF_DEFAULT_ITERATIONS, KEYSTORE_KDF_DEFAULT_LANES,
+    KEYSTORE_KDF_DEFAULT_MEMORY_KIB, KEYSTORE_KDF_MAX_ITERATIONS, KEYSTORE_KDF_MAX_LANES,
+    KEYSTORE_KDF_MAX_MEMORY_KIB, KEYSTORE_KDF_MIN_ITERATIONS, KEYSTORE_KDF_MIN_LANES,
+    KEYSTORE_KDF_MIN_MEMORY_KIB, KEYSTORE_MIN_CIPHERTEXT_BYTES, KEYSTORE_NONCE_BYTES,
+    KEYSTORE_SALT_BYTES, KEYSTORE_V1_CIPHERTEXT_BYTES, KEYSTORE_V1_PLAINTEXT_BYTES,
+    KEYSTORE_VERSION,
 };
-pub use secrets::{SecretString, REDACTED_SECRET};
+pub use keystore_crypto::{decrypt_private_key, encrypt_private_key, WalletKeystoreCryptoError};
+pub use keystore_persistence::{
+    WalletKeystoreDirectorySyncStatus, WalletKeystoreFile, WalletKeystorePermissionStatus,
+    WalletKeystorePersistenceError, WalletKeystorePersistenceReport, KEYSTORE_FILE_MAX_BYTES,
+};
+pub use keystore_rotation::{rotate_keystore_password, WalletKeystoreRotationError};
+pub use secrets::{SecretString, WalletSecretKey, ED25519_SECRET_KEY_BYTES, REDACTED_SECRET};
+pub use session_clock::WalletSession;
+pub use session_v1::{
+    WalletSessionError, WalletSessionIdentity, WalletSessionLockState, WalletSessionStatus,
+    WalletUnlockPolicy, WalletUnlockPolicyError, WALLET_UNLOCK_MAX_FAILURES,
+    WALLET_UNLOCK_MAX_LOCKOUT, WALLET_UNLOCK_MAX_TIMEOUT,
+};
 
 use serde::{Deserialize, Serialize};
 
