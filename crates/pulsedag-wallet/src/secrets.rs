@@ -66,9 +66,7 @@ impl WalletSeed {
 
 impl fmt::Debug for WalletSeed {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_tuple("WalletSeed")
-            .field(&REDACTED_SECRET)
-            .finish()
+        f.debug_tuple("WalletSeed").field(&REDACTED_SECRET).finish()
     }
 }
 
