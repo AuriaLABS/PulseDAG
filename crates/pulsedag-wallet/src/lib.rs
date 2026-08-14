@@ -5,13 +5,15 @@ mod keystore;
 mod keystore_crypto;
 mod keystore_persistence;
 mod keystore_rotation;
+mod keystore_seed;
 mod secrets;
 mod session_clock;
 mod session_v1;
 use session_v1 as session_core;
 
 pub use deterministic::{
-    derive_network_components, derive_wallet_key, generate_wallet_mnemonic, WalletDerivationBranch,
+    derive_network_components, derive_wallet_key, derive_wallet_key_from_seed,
+    generate_wallet_mnemonic, wallet_seed_from_mnemonic, WalletDerivationBranch,
     WalletDerivedKey, WalletDeterministicError, WalletNetworkContext, WALLET_DERIVATION_DOMAIN,
     WALLET_DERIVATION_MAX_INDEX, WALLET_DERIVATION_VERSION, WALLET_MNEMONIC_WORDS,
     WALLET_NETWORK_COMPONENTS,
@@ -23,7 +25,8 @@ pub use keystore::{
     KEYSTORE_KDF_DEFAULT_MEMORY_KIB, KEYSTORE_KDF_MAX_ITERATIONS, KEYSTORE_KDF_MAX_LANES,
     KEYSTORE_KDF_MAX_MEMORY_KIB, KEYSTORE_KDF_MIN_ITERATIONS, KEYSTORE_KDF_MIN_LANES,
     KEYSTORE_KDF_MIN_MEMORY_KIB, KEYSTORE_MIN_CIPHERTEXT_BYTES, KEYSTORE_NONCE_BYTES,
-    KEYSTORE_SALT_BYTES, KEYSTORE_V1_CIPHERTEXT_BYTES, KEYSTORE_V1_PLAINTEXT_BYTES,
+    KEYSTORE_SALT_BYTES, KEYSTORE_SEED_VERSION, KEYSTORE_V1_CIPHERTEXT_BYTES,
+    KEYSTORE_V1_PLAINTEXT_BYTES, KEYSTORE_V2_CIPHERTEXT_BYTES, KEYSTORE_V2_PLAINTEXT_BYTES,
     KEYSTORE_VERSION,
 };
 pub use keystore_crypto::{decrypt_private_key, encrypt_private_key, WalletKeystoreCryptoError};
@@ -32,7 +35,11 @@ pub use keystore_persistence::{
     WalletKeystorePersistenceError, WalletKeystorePersistenceReport, KEYSTORE_FILE_MAX_BYTES,
 };
 pub use keystore_rotation::{rotate_keystore_password, WalletKeystoreRotationError};
-pub use secrets::{SecretString, WalletSecretKey, ED25519_SECRET_KEY_BYTES, REDACTED_SECRET};
+pub use keystore_seed::{decrypt_wallet_seed, encrypt_wallet_seed};
+pub use secrets::{
+    SecretString, WalletSecretKey, WalletSeed, ED25519_SECRET_KEY_BYTES, REDACTED_SECRET,
+    WALLET_SEED_BYTES,
+};
 pub use session_clock::WalletSession;
 pub use session_v1::{
     WalletSessionError, WalletSessionIdentity, WalletSessionLockState, WalletSessionStatus,
