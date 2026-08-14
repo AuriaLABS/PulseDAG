@@ -7,8 +7,10 @@ use std::{
 };
 
 use crate::{
-    decrypt_private_key, SecretString, WalletKeystoreCryptoError, WalletKeystoreFile,
-    WalletKeystorePersistenceError, WalletSecretKey,
+    decrypt_private_key, decrypt_wallet_seed, derive_wallet_key_from_seed, SecretString,
+    WalletDerivedKey, WalletDerivationBranch, WalletDeterministicError, WalletKeystoreCryptoError,
+    WalletKeystoreFile, WalletKeystorePersistenceError, WalletNetworkContext, WalletSecretKey,
+    WalletSeed, KEYSTORE_SEED_VERSION, KEYSTORE_VERSION,
 };
 
 pub const WALLET_UNLOCK_MAX_TIMEOUT: Duration = Duration::from_secs(24 * 60 * 60);
@@ -119,10 +121,12 @@ pub enum WalletSessionError {
     WorkerSpawn(io::Error),
     AlreadyUnlocked,
     Locked,
+    WrongSecretKind,
     RateLimited { retry_after: Duration },
     TimeoutOverflow,
     Persistence(WalletKeystorePersistenceError),
     Crypto(WalletKeystoreCryptoError),
+    Deterministic(WalletDeterministicError),
 }
 
 impl fmt::Display for WalletSessionError {
@@ -131,6 +135,9 @@ impl fmt::Display for WalletSessionError {
             Self::WorkerSpawn(_) => f.write_str("wallet unlock expiry worker could not start"),
             Self::AlreadyUnlocked => f.write_str("wallet session is already unlocked"),
             Self::Locked => f.write_str("wallet session is locked"),
+            Self::WrongSecretKind => {
+                f.write_str("wallet session secret kind does not support this operation")
+            }
             Self::RateLimited { retry_after } => write!(
                 f,
                 "wallet unlock attempts are rate-limited for another {} ms",
@@ -139,6 +146,7 @@ impl fmt::Display for WalletSessionError {
             Self::TimeoutOverflow => f.write_str("wallet unlock deadline could not be represented"),
             Self::Persistence(error) => write!(f, "wallet keystore access failed: {error}"),
             Self::Crypto(error) => write!(f, "wallet unlock failed: {error}"),
+            Self::Deterministic(error) => write!(f, "wallet deterministic derivation failed: {error}"),
         }
     }
 }
@@ -149,6 +157,7 @@ impl Error for WalletSessionError {
             Self::WorkerSpawn(error) => Some(error),
             Self::Persistence(error) => Some(error),
             Self::Crypto(error) => Some(error),
+            Self::Deterministic(error) => Some(error),
             _ => None,
         }
     }
@@ -166,8 +175,19 @@ impl From<WalletKeystoreCryptoError> for WalletSessionError {
     }
 }
 
+impl From<WalletDeterministicError> for WalletSessionError {
+    fn from(value: WalletDeterministicError) -> Self {
+        Self::Deterministic(value)
+    }
+}
+
+enum UnlockedSecret {
+    PrivateKey(WalletSecretKey),
+    Seed(WalletSeed),
+}
+
 struct UnlockedState {
-    secret_key: WalletSecretKey,
+    secret: UnlockedSecret,
     identity: WalletSessionIdentity,
     expires_at: Instant,
 }
@@ -242,8 +262,13 @@ impl WalletSession {
         }
 
         let envelope = keystore.load()?;
-        let secret_key = match decrypt_private_key(&envelope, password) {
-            Ok(secret_key) => secret_key,
+        let secret_result = match envelope.version {
+            KEYSTORE_VERSION => decrypt_private_key(&envelope, password).map(UnlockedSecret::PrivateKey),
+            KEYSTORE_SEED_VERSION => decrypt_wallet_seed(&envelope, password).map(UnlockedSecret::Seed),
+            _ => Err(WalletKeystoreCryptoError::InvalidSecretPayload),
+        };
+        let secret = match secret_result {
+            Ok(secret) => secret,
             Err(error) => {
                 if matches!(error, WalletKeystoreCryptoError::AuthenticationFailed) {
                     self.record_authentication_failure(Instant::now())?;
@@ -265,7 +290,7 @@ impl WalletSession {
         state.consecutive_failures = 0;
         state.blocked_until = None;
         state.unlocked = Some(UnlockedState {
-            secret_key,
+            secret,
             identity,
             expires_at,
         });
@@ -280,10 +305,9 @@ impl WalletSession {
         was_unlocked
     }
 
-    /// Execute one local operation with the decrypted key while holding the
-    /// session state lock. The deadline prevents new operations after expiry;
-    /// an operation that began before the deadline is allowed to finish, then
-    /// the secret is immediately discarded if the deadline elapsed meanwhile.
+    /// Execute one local operation with the decrypted v1 key while holding the
+    /// session state lock. Deterministic-seed sessions reject this operation
+    /// with `WrongSecretKind` rather than exposing raw seed material.
     pub fn with_unlocked_secret<R>(
         &self,
         action: impl FnOnce(&WalletSecretKey) -> R,
@@ -293,7 +317,41 @@ impl WalletSession {
         expire_if_needed(&mut state, now);
         let result = {
             let unlocked = state.unlocked.as_ref().ok_or(WalletSessionError::Locked)?;
-            action(&unlocked.secret_key)
+            match &unlocked.secret {
+                UnlockedSecret::PrivateKey(secret_key) => action(secret_key),
+                UnlockedSecret::Seed(_) => return Err(WalletSessionError::WrongSecretKind),
+            }
+        };
+        expire_if_needed(&mut state, Instant::now());
+        Ok(result)
+    }
+
+    /// Derive one child key from an unlocked deterministic seed and execute a
+    /// bounded local operation with it. The network context is reconstructed
+    /// exclusively from authenticated keystore identity; callers cannot inject
+    /// a different network. The derived key is not retained by session state.
+    pub fn with_derived_key<R>(
+        &self,
+        account: u32,
+        branch: WalletDerivationBranch,
+        index: u32,
+        action: impl FnOnce(&WalletDerivedKey) -> R,
+    ) -> Result<R, WalletSessionError> {
+        let now = Instant::now();
+        let mut state = lock_state(&self.shared);
+        expire_if_needed(&mut state, now);
+        let result = {
+            let unlocked = state.unlocked.as_ref().ok_or(WalletSessionError::Locked)?;
+            let seed = match &unlocked.secret {
+                UnlockedSecret::Seed(seed) => seed,
+                UnlockedSecret::PrivateKey(_) => return Err(WalletSessionError::WrongSecretKind),
+            };
+            let network = WalletNetworkContext::new(
+                unlocked.identity.network_profile.clone(),
+                unlocked.identity.chain_id.clone(),
+            )?;
+            let derived = derive_wallet_key_from_seed(seed, &network, account, branch, index)?;
+            action(&derived)
         };
         expire_if_needed(&mut state, Instant::now());
         Ok(result)
@@ -401,3 +459,7 @@ fn expiry_worker(shared: Arc<SessionShared>) {
 #[cfg(test)]
 #[path = "session_tests_v1.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "session_seed_tests.rs"]
+mod seed_tests;
