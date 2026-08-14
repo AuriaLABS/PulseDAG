@@ -1,4 +1,6 @@
+#[cfg(not(feature = "legacy-wallet-rpc"))]
 use crate::api::{ApiResponse, RpcStateLike};
+#[cfg(not(feature = "legacy-wallet-rpc"))]
 use axum::{extract::State, http::StatusCode, Json};
 
 #[cfg(not(feature = "legacy-wallet-rpc"))]
