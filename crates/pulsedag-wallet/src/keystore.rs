@@ -141,10 +141,7 @@ pub(crate) fn validate_kdf_metadata(
         ));
     }
     if !(KEYSTORE_KDF_MIN_LANES..=KEYSTORE_KDF_MAX_LANES).contains(&kdf.lanes) {
-        return Err(invalid(
-            "kdf.lanes",
-            "outside supported lane-count bounds",
-        ));
+        return Err(invalid("kdf.lanes", "outside supported lane-count bounds"));
     }
     require_hex_len("kdf.salt_hex", &kdf.salt_hex, KEYSTORE_SALT_BYTES)
 }
