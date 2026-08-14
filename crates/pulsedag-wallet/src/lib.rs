@@ -63,6 +63,14 @@ pub struct SelectedUtxo {
     pub amount: u64,
 }
 
+/// Legacy low-level result for an unsigned transaction template.
+///
+/// The returned transaction still has empty input public keys/signatures.
+/// Consequently `transaction.txid` is an unsigned-template identifier, not the
+/// final broadcast txid, and `signing_message` is not the final message a signer
+/// must sign because PulseDAG v1 includes input public keys in that preimage.
+/// Professional wallet flows should use `build_transaction_plan` followed by
+/// `WalletTransactionPlan::prepare_signing` instead.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BuildTxResponse {
     pub transaction: Transaction,
@@ -85,6 +93,11 @@ pub fn select_utxos(utxos: &[Utxo], target: u64) -> Result<(Vec<Utxo>, u64), Pul
     Err(PulseError::InsufficientFunds)
 }
 
+/// Build the historical low-level unsigned transaction template.
+///
+/// This function is retained for existing callers. It does not attach the
+/// sender public key, so callers must not treat the returned `signing_message`
+/// or `transaction.txid` as final signing/broadcast identifiers.
 pub fn build_transaction(
     from: &str,
     to: &str,
