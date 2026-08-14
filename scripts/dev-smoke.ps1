@@ -1,17 +1,20 @@
 $ErrorActionPreference = "Stop"
 
-Write-Host "== PulseDAG v0.8.1 smoke test =="
+Write-Host "== PulseDAG v0.8.1 smoke test (legacy wallet RPC compatibility) =="
 
 $env:PULSEDAG_CHAIN_ID="pulsedag-devnet"
 $env:PULSEDAG_RPC_BIND="127.0.0.1:8080"
 $env:PULSEDAG_P2P_ENABLED="true"
 $env:PULSEDAG_P2P_MODE="memory"
 $env:PULSEDAG_ROCKSDB_PATH=".\data\rocksdb"
+$env:PULSEDAG_ADMIN_ENABLED="true"
 $env:RUST_LOG="info"
 
 Remove-Item -Recurse -Force .\data\rocksdb -ErrorAction SilentlyContinue
 
-$p = Start-Process cargo -ArgumentList "run -p pulsedagd" -PassThru -WindowStyle Hidden
+# This historical smoke flow intentionally opts into the non-default legacy
+# wallet RPC compatibility surface. Normal pulsedagd builds remain keyless.
+$p = Start-Process cargo -ArgumentList "run -p pulsedagd --features legacy-wallet-rpc" -PassThru -WindowStyle Hidden
 Start-Sleep -Seconds 3
 
 try {
