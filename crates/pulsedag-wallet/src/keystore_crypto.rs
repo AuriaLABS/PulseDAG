@@ -191,12 +191,17 @@ pub(crate) fn encrypt_private_key_with_kdf_costs(
 
 /// Authenticate and decrypt one Ed25519 secret key. Wrong passwords and any
 /// AEAD-protected metadata/ciphertext tampering intentionally collapse to the
-/// same `AuthenticationFailed` error.
+/// same `AuthenticationFailed` error. Non-v1 secret kinds are rejected before
+/// KDF work so callers cannot mistake a deterministic seed keystore for a bad
+/// private-key password.
 pub fn decrypt_private_key(
     envelope: &WalletKeystoreEnvelope,
     password: &SecretString,
 ) -> Result<WalletSecretKey, WalletKeystoreCryptoError> {
     envelope.validate_structure()?;
+    if envelope.version != KEYSTORE_VERSION {
+        return Err(WalletKeystoreCryptoError::InvalidSecretPayload);
+    }
     if password.is_empty() {
         return Err(WalletKeystoreCryptoError::EmptyPassword);
     }
@@ -442,6 +447,17 @@ mod tests {
                 .len(),
             KEYSTORE_V1_CIPHERTEXT_BYTES
         );
+    }
+
+    #[test]
+    fn v1_decryptor_rejects_seed_keystore_before_authentication() {
+        let mut envelope = encrypted_fixture();
+        envelope.version = crate::KEYSTORE_SEED_VERSION;
+        envelope.ciphertext_hex = "00".repeat(crate::KEYSTORE_V2_CIPHERTEXT_BYTES);
+        assert!(matches!(
+            decrypt_private_key(&envelope, &SecretString::new(TEST_PASSWORD)),
+            Err(WalletKeystoreCryptoError::InvalidSecretPayload)
+        ));
     }
 
     #[test]
