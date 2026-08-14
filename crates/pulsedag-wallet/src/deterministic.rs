@@ -218,10 +218,7 @@ pub fn derive_network_components(
     out
 }
 
-fn validate_metadata(
-    field: &'static str,
-    value: &str,
-) -> Result<(), WalletDeterministicError> {
+fn validate_metadata(field: &'static str, value: &str) -> Result<(), WalletDeterministicError> {
     if value.is_empty() || value.trim() != value {
         return Err(WalletDeterministicError::InvalidMetadata(field));
     }
@@ -262,7 +259,8 @@ fn derive_slip10_ed25519(seed: &[u8; 64], components: &[u32]) -> Zeroizing<[u8; 
 }
 
 fn hmac_sha512(key: &[u8], data: &[u8]) -> Zeroizing<[u8; 64]> {
-    let mut mac = HmacSha512::new_from_slice(key).expect("HMAC-SHA512 accepts arbitrary key length");
+    let mut mac =
+        HmacSha512::new_from_slice(key).expect("HMAC-SHA512 accepts arbitrary key length");
     mac.update(data);
     let bytes = mac.finalize().into_bytes();
     let mut out = Zeroizing::new([0u8; 64]);
@@ -379,10 +377,38 @@ mod tests {
         let other_network = WalletNetworkContext::new("private-operator", "pulsedag-private")
             .expect("other network");
         let variants = [
-            derive_wallet_key(&mnemonic, None, &network, 4, WalletDerivationBranch::Receive, 7),
-            derive_wallet_key(&mnemonic, None, &network, 3, WalletDerivationBranch::Change, 7),
-            derive_wallet_key(&mnemonic, None, &network, 3, WalletDerivationBranch::Receive, 8),
-            derive_wallet_key(&mnemonic, None, &other_network, 3, WalletDerivationBranch::Receive, 7),
+            derive_wallet_key(
+                &mnemonic,
+                None,
+                &network,
+                4,
+                WalletDerivationBranch::Receive,
+                7,
+            ),
+            derive_wallet_key(
+                &mnemonic,
+                None,
+                &network,
+                3,
+                WalletDerivationBranch::Change,
+                7,
+            ),
+            derive_wallet_key(
+                &mnemonic,
+                None,
+                &network,
+                3,
+                WalletDerivationBranch::Receive,
+                8,
+            ),
+            derive_wallet_key(
+                &mnemonic,
+                None,
+                &other_network,
+                3,
+                WalletDerivationBranch::Receive,
+                7,
+            ),
         ];
         for variant in variants {
             assert_ne!(baseline.address(), variant.expect("variant").address());
