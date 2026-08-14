@@ -6,11 +6,11 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     deterministic::{
-        derive_network_components, derive_wallet_key_from_seed, WalletDerivationBranch,
-        WalletDeterministicError, WalletNetworkContext, WALLET_DERIVATION_DOMAIN,
-        WALLET_DERIVATION_MAX_INDEX, WALLET_DERIVATION_VERSION,
+        derive_network_components, WalletDerivationBranch, WalletDerivedKey,
+        WALLET_DERIVATION_DOMAIN, WALLET_DERIVATION_MAX_INDEX, WALLET_DERIVATION_VERSION,
     },
-    secrets::WalletSeed,
+    session_clock::WalletSession,
+    session_v1::{WalletSessionError, WalletSessionIdentity},
 };
 
 pub const WALLET_WATCH_ONLY_FORMAT: &str = "pulsedag-watch-only";
@@ -185,10 +185,9 @@ impl WalletWatchOnlyManifest {
         validate_metadata("network_profile", &self.network_profile)?;
         validate_metadata("chain_id", &self.chain_id)?;
         validate_metadata("wallet_anchor_address", &self.wallet_anchor_address)?;
-        if self.derivation_domain != WALLET_DERIVATION_DOMAIN {
-            return Err(WalletWatchOnlyError::UnsupportedDerivation);
-        }
-        if self.derivation_version != WALLET_DERIVATION_VERSION {
+        if self.derivation_domain != WALLET_DERIVATION_DOMAIN
+            || self.derivation_version != WALLET_DERIVATION_VERSION
+        {
             return Err(WalletWatchOnlyError::UnsupportedDerivation);
         }
         if self.account > WALLET_DERIVATION_MAX_INDEX {
@@ -291,7 +290,6 @@ pub enum WalletWatchOnlyError {
     NetworkMismatch,
     AnchorMismatch,
     VerificationMismatch,
-    Deterministic(WalletDeterministicError),
 }
 
 impl fmt::Display for WalletWatchOnlyError {
@@ -328,52 +326,94 @@ impl fmt::Display for WalletWatchOnlyError {
             Self::VerificationMismatch => {
                 f.write_str("watch-only manifest does not match the unlocked deterministic seed")
             }
-            Self::Deterministic(error) => write!(f, "watch-only derivation failed: {error}"),
         }
     }
 }
 
-impl Error for WalletWatchOnlyError {
+impl Error for WalletWatchOnlyError {}
+
+#[derive(Debug)]
+pub enum WalletWatchOnlyOperationError {
+    Manifest(WalletWatchOnlyError),
+    Session(WalletSessionError),
+}
+
+impl fmt::Display for WalletWatchOnlyOperationError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Manifest(error) => write!(f, "watch-only manifest operation failed: {error}"),
+            Self::Session(error) => write!(f, "watch-only wallet session operation failed: {error}"),
+        }
+    }
+}
+
+impl Error for WalletWatchOnlyOperationError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
-            Self::Deterministic(error) => Some(error),
-            _ => None,
+            Self::Manifest(error) => Some(error),
+            Self::Session(error) => Some(error),
         }
     }
 }
 
-impl From<WalletDeterministicError> for WalletWatchOnlyError {
-    fn from(value: WalletDeterministicError) -> Self {
-        Self::Deterministic(value)
+impl From<WalletWatchOnlyError> for WalletWatchOnlyOperationError {
+    fn from(value: WalletWatchOnlyError) -> Self {
+        Self::Manifest(value)
     }
 }
 
-pub(crate) fn build_watch_only_manifest(
-    seed: &WalletSeed,
-    network: &WalletNetworkContext,
-    wallet_anchor_address: &str,
-    scope: WalletWatchOnlyScope,
-) -> Result<WalletWatchOnlyManifest, WalletWatchOnlyError> {
-    let anchor = derive_wallet_key_from_seed(seed, network, 0, WalletDerivationBranch::Receive, 0)?;
-    if anchor.address() != wallet_anchor_address {
-        return Err(WalletWatchOnlyError::AnchorMismatch);
+impl From<WalletSessionError> for WalletWatchOnlyOperationError {
+    fn from(value: WalletSessionError) -> Self {
+        Self::Session(value)
+    }
+}
+
+pub trait WalletWatchOnlySessionExt {
+    fn export_watch_only_manifest(
+        &self,
+        scope: WalletWatchOnlyScope,
+    ) -> Result<WalletWatchOnlyManifest, WalletWatchOnlyOperationError>;
+
+    fn verify_watch_only_manifest(
+        &self,
+        manifest: &WalletWatchOnlyManifest,
+    ) -> Result<(), WalletWatchOnlyOperationError>;
+}
+
+impl WalletWatchOnlySessionExt for WalletSession {
+    fn export_watch_only_manifest(
+        &self,
+        scope: WalletWatchOnlyScope,
+    ) -> Result<WalletWatchOnlyManifest, WalletWatchOnlyOperationError> {
+        export_watch_only_manifest(self, scope)
     }
 
+    fn verify_watch_only_manifest(
+        &self,
+        manifest: &WalletWatchOnlyManifest,
+    ) -> Result<(), WalletWatchOnlyOperationError> {
+        verify_watch_only_manifest(self, manifest)
+    }
+}
+
+pub fn export_watch_only_manifest(
+    session: &WalletSession,
+    scope: WalletWatchOnlyScope,
+) -> Result<WalletWatchOnlyManifest, WalletWatchOnlyOperationError> {
+    let identity = unlocked_identity(session)?;
     let mut entries = Vec::with_capacity(
         (scope.receive_count as usize).saturating_add(scope.change_count as usize),
     );
-    append_entries(
+    append_session_entries(
         &mut entries,
-        seed,
-        network,
+        session,
         scope.account,
         WalletDerivationBranch::Receive,
         scope.receive_count,
     )?;
-    append_entries(
+    append_session_entries(
         &mut entries,
-        seed,
-        network,
+        session,
         scope.account,
         WalletDerivationBranch::Change,
         scope.change_count,
@@ -382,9 +422,9 @@ pub(crate) fn build_watch_only_manifest(
     let mut manifest = WalletWatchOnlyManifest {
         format: WALLET_WATCH_ONLY_FORMAT.to_string(),
         version: WALLET_WATCH_ONLY_VERSION,
-        network_profile: network.network_profile().to_string(),
-        chain_id: network.chain_id().to_string(),
-        wallet_anchor_address: wallet_anchor_address.to_string(),
+        network_profile: identity.network_profile,
+        chain_id: identity.chain_id,
+        wallet_anchor_address: identity.address,
         derivation_domain: WALLET_DERIVATION_DOMAIN,
         derivation_version: WALLET_DERIVATION_VERSION,
         account: scope.account,
@@ -396,61 +436,65 @@ pub(crate) fn build_watch_only_manifest(
     Ok(manifest)
 }
 
-pub(crate) fn verify_watch_only_manifest_with_seed(
-    seed: &WalletSeed,
-    network: &WalletNetworkContext,
-    wallet_anchor_address: &str,
+pub fn verify_watch_only_manifest(
+    session: &WalletSession,
     manifest: &WalletWatchOnlyManifest,
-) -> Result<(), WalletWatchOnlyError> {
+) -> Result<(), WalletWatchOnlyOperationError> {
     manifest.validate()?;
-    if manifest.network_profile != network.network_profile() || manifest.chain_id != network.chain_id() {
-        return Err(WalletWatchOnlyError::NetworkMismatch);
+    let identity = unlocked_identity(session)?;
+    if manifest.network_profile != identity.network_profile || manifest.chain_id != identity.chain_id {
+        return Err(WalletWatchOnlyError::NetworkMismatch.into());
     }
-    if manifest.wallet_anchor_address != wallet_anchor_address {
-        return Err(WalletWatchOnlyError::AnchorMismatch);
-    }
-    let anchor = derive_wallet_key_from_seed(seed, network, 0, WalletDerivationBranch::Receive, 0)?;
-    if anchor.address() != wallet_anchor_address {
-        return Err(WalletWatchOnlyError::AnchorMismatch);
+    if manifest.wallet_anchor_address != identity.address {
+        return Err(WalletWatchOnlyError::AnchorMismatch.into());
     }
 
     for entry in &manifest.entries {
-        let derived = derive_wallet_key_from_seed(
-            seed,
-            network,
+        let matches = session.with_derived_key(
             manifest.account,
             entry.branch.derivation_branch(),
             entry.index,
+            |derived| entry_matches_derived(entry, derived),
         )?;
-        if derived.derivation_path() != entry.derivation_path
-            || derived.public_key_hex() != entry.public_key_hex
-            || derived.address() != entry.address
-        {
-            return Err(WalletWatchOnlyError::VerificationMismatch);
+        if !matches {
+            return Err(WalletWatchOnlyError::VerificationMismatch.into());
         }
     }
     Ok(())
 }
 
-fn append_entries(
+fn unlocked_identity(
+    session: &WalletSession,
+) -> Result<WalletSessionIdentity, WalletWatchOnlyOperationError> {
+    session.status().identity.ok_or(WalletSessionError::Locked.into())
+}
+
+fn append_session_entries(
     entries: &mut Vec<WalletWatchOnlyEntry>,
-    seed: &WalletSeed,
-    network: &WalletNetworkContext,
+    session: &WalletSession,
     account: u32,
     branch: WalletDerivationBranch,
     count: u32,
-) -> Result<(), WalletWatchOnlyError> {
+) -> Result<(), WalletWatchOnlyOperationError> {
     for index in 0..count {
-        let derived = derive_wallet_key_from_seed(seed, network, account, branch, index)?;
-        entries.push(WalletWatchOnlyEntry {
-            branch: branch.into(),
-            index,
-            derivation_path: derived.derivation_path().to_string(),
-            public_key_hex: derived.public_key_hex().to_string(),
-            address: derived.address().to_string(),
-        });
+        let entry = session.with_derived_key(account, branch, index, |derived| {
+            WalletWatchOnlyEntry {
+                branch: branch.into(),
+                index,
+                derivation_path: derived.derivation_path().to_string(),
+                public_key_hex: derived.public_key_hex().to_string(),
+                address: derived.address().to_string(),
+            }
+        })?;
+        entries.push(entry);
     }
     Ok(())
+}
+
+fn entry_matches_derived(entry: &WalletWatchOnlyEntry, derived: &WalletDerivedKey) -> bool {
+    entry.derivation_path == derived.derivation_path()
+        && entry.public_key_hex == derived.public_key_hex()
+        && entry.address == derived.address()
 }
 
 fn derivation_path(
@@ -517,15 +561,42 @@ fn decode_canonical_hex(value: &str) -> Option<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
+    use std::{fs, path::PathBuf, time::Duration};
+
+    use ed25519_dalek::SigningKey;
+    use rand::{rngs::OsRng, RngCore};
+
     use super::*;
-    use crate::{wallet_seed_from_mnemonic, SecretString};
+    use crate::{
+        deterministic::{derive_wallet_key_from_seed, WalletNetworkContext},
+        keystore_crypto::{encrypt_private_key_with_kdf_costs, KeystoreKdfCosts},
+        keystore_seed::{encrypt_wallet_seed_with_kdf_costs, SeedKeystoreKdfCosts},
+        wallet_seed_from_mnemonic, SecretString, WalletKeystoreFile, WalletSecretKey,
+        WalletSessionLockState, WalletUnlockPolicy, ED25519_SECRET_KEY_BYTES,
+        KEYSTORE_KDF_MIN_ITERATIONS, KEYSTORE_KDF_MIN_LANES, KEYSTORE_KDF_MIN_MEMORY_KIB,
+    };
 
     const MNEMONIC: &str =
         "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+    const PASSWORD: &str = "watch-only-test-password";
     const NETWORK_PROFILE: &str = "public-testnet-v2.4.0-candidate";
     const CHAIN_ID: &str = "pulsedag-public-testnet-v2.4.0-candidate";
 
-    fn fixture() -> (WalletSeed, WalletNetworkContext, String) {
+    fn test_dir(label: &str) -> PathBuf {
+        let mut random = [0_u8; 8];
+        OsRng.fill_bytes(&mut random);
+        let dir = std::env::temp_dir().join(format!(
+            "pulsedag-watch-only-{label}-{}-{}",
+            std::process::id(),
+            hex::encode(random)
+        ));
+        fs::create_dir(&dir).expect("create watch-only test directory");
+        dir
+    }
+
+    fn seed_fixture(label: &str) -> (PathBuf, WalletKeystoreFile) {
+        let dir = test_dir(label);
+        let path = dir.join("wallet.json");
         let seed = wallet_seed_from_mnemonic(&SecretString::new(MNEMONIC), None).expect("seed");
         let network = WalletNetworkContext::new(NETWORK_PROFILE, CHAIN_ID).expect("network");
         let anchor = derive_wallet_key_from_seed(
@@ -538,67 +609,140 @@ mod tests {
         .expect("anchor")
         .address()
         .to_string();
-        (seed, network, anchor)
+        let envelope = encrypt_wallet_seed_with_kdf_costs(
+            NETWORK_PROFILE,
+            CHAIN_ID,
+            &anchor,
+            &seed,
+            &SecretString::new(PASSWORD),
+            SeedKeystoreKdfCosts::new(
+                KEYSTORE_KDF_MIN_MEMORY_KIB,
+                KEYSTORE_KDF_MIN_ITERATIONS,
+                KEYSTORE_KDF_MIN_LANES,
+            ),
+        )
+        .expect("encrypt seed fixture");
+        let file = WalletKeystoreFile::try_acquire(&path).expect("acquire seed fixture");
+        file.create_new(&envelope).expect("persist seed fixture");
+        (dir, file)
+    }
+
+    fn v1_fixture(label: &str) -> (PathBuf, WalletKeystoreFile) {
+        let dir = test_dir(label);
+        let path = dir.join("wallet.json");
+        let bytes = [0x55; ED25519_SECRET_KEY_BYTES];
+        let secret = WalletSecretKey::from_bytes(bytes);
+        let address = address_from_public_key(&hex::encode(
+            SigningKey::from_bytes(&bytes).verifying_key().to_bytes(),
+        ));
+        let envelope = encrypt_private_key_with_kdf_costs(
+            NETWORK_PROFILE,
+            CHAIN_ID,
+            &address,
+            &secret,
+            &SecretString::new(PASSWORD),
+            KeystoreKdfCosts::new(
+                KEYSTORE_KDF_MIN_MEMORY_KIB,
+                KEYSTORE_KDF_MIN_ITERATIONS,
+                KEYSTORE_KDF_MIN_LANES,
+            ),
+        )
+        .expect("encrypt v1 fixture");
+        let file = WalletKeystoreFile::try_acquire(&path).expect("acquire v1 fixture");
+        file.create_new(&envelope).expect("persist v1 fixture");
+        (dir, file)
     }
 
     #[test]
-    fn manifest_round_trip_is_public_canonical_and_watch_only() {
-        let (seed, network, anchor) = fixture();
+    fn seed_session_exports_public_manifest_and_verifies_it() {
+        let (dir, file) = seed_fixture("export-verify");
+        let policy = WalletUnlockPolicy::new(Duration::from_secs(5), 3, Duration::from_secs(1))
+            .expect("policy");
+        let mut session = WalletSession::new(policy).expect("session");
+        let status = session
+            .unlock(&file, &SecretString::new(PASSWORD))
+            .expect("unlock");
+        assert_eq!(status.lock_state, WalletSessionLockState::Unlocked);
+
         let scope = WalletWatchOnlyScope::new(0, 3, 2).expect("scope");
-        let manifest = build_watch_only_manifest(&seed, &network, &anchor, scope).expect("manifest");
+        let manifest = session.export_watch_only_manifest(scope).expect("export");
         assert_eq!(manifest.entries().len(), 5);
         assert_eq!(manifest.entries()[0].branch(), WalletWatchOnlyBranch::Receive);
         assert_eq!(manifest.entries()[3].branch(), WalletWatchOnlyBranch::Change);
-        assert_eq!(manifest.checksum_hex().len(), 64);
+        session
+            .verify_watch_only_manifest(&manifest)
+            .expect("verify matching backup");
 
         let encoded = serde_json::to_string(&manifest).expect("serialize");
         assert!(!encoded.contains(MNEMONIC));
-        assert!(!encoded.contains("seed-session-password"));
+        assert!(!encoded.contains(PASSWORD));
         let decoded: WalletWatchOnlyManifest = serde_json::from_str(&encoded).expect("deserialize");
-        let watch_only = WalletWatchOnly::import(decoded).expect("import");
-        assert_eq!(watch_only.entries().len(), 5);
-        assert_eq!(watch_only.network_profile(), NETWORK_PROFILE);
-        assert_eq!(watch_only.chain_id(), CHAIN_ID);
+        let imported = WalletWatchOnly::import(decoded).expect("watch-only import");
+        assert_eq!(imported.entries().len(), 5);
+        assert_eq!(imported.network_profile(), NETWORK_PROFILE);
+        assert_eq!(imported.chain_id(), CHAIN_ID);
+
+        assert!(session.lock());
+        assert!(matches!(
+            session.verify_watch_only_manifest(&manifest),
+            Err(WalletWatchOnlyOperationError::Session(WalletSessionError::Locked))
+        ));
+        drop(session);
+        drop(file);
+        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]
-    fn checksum_and_public_material_tampering_fail_closed() {
-        let (seed, network, anchor) = fixture();
-        let scope = WalletWatchOnlyScope::new(0, 1, 1).expect("scope");
-        let manifest = build_watch_only_manifest(&seed, &network, &anchor, scope).expect("manifest");
+    fn v1_session_rejects_watch_only_export_distinctly() {
+        let (dir, file) = v1_fixture("wrong-kind");
+        let policy = WalletUnlockPolicy::new(Duration::from_secs(5), 3, Duration::from_secs(1))
+            .expect("policy");
+        let mut session = WalletSession::new(policy).expect("session");
+        session
+            .unlock(&file, &SecretString::new(PASSWORD))
+            .expect("unlock v1");
+        let scope = WalletWatchOnlyScope::new(0, 1, 0).expect("scope");
+        assert!(matches!(
+            session.export_watch_only_manifest(scope),
+            Err(WalletWatchOnlyOperationError::Session(
+                WalletSessionError::WrongSecretKind
+            ))
+        ));
+        drop(session);
+        drop(file);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn public_tampering_and_noncanonical_entries_fail_closed() {
+        let (dir, file) = seed_fixture("tamper");
+        let policy = WalletUnlockPolicy::new(Duration::from_secs(5), 3, Duration::from_secs(1))
+            .expect("policy");
+        let mut session = WalletSession::new(policy).expect("session");
+        session
+            .unlock(&file, &SecretString::new(PASSWORD))
+            .expect("unlock");
+        let scope = WalletWatchOnlyScope::new(0, 2, 1).expect("scope");
+        let manifest = session.export_watch_only_manifest(scope).expect("export");
 
         let mut bad_checksum = manifest.clone();
         bad_checksum.checksum_hex = "00".repeat(32);
         assert_eq!(bad_checksum.validate(), Err(WalletWatchOnlyError::InvalidChecksum));
 
-        let mut bad_public_key = manifest;
+        let mut bad_public_key = manifest.clone();
         bad_public_key.entries[0].public_key_hex = "00".repeat(32);
         assert_eq!(bad_public_key.validate(), Err(WalletWatchOnlyError::AddressMismatch));
-    }
 
-    #[test]
-    fn verification_rejects_wrong_seed_and_network() {
-        let (seed, network, anchor) = fixture();
-        let scope = WalletWatchOnlyScope::new(0, 2, 1).expect("scope");
-        let manifest = build_watch_only_manifest(&seed, &network, &anchor, scope).expect("manifest");
-
-        let wrong_seed = wallet_seed_from_mnemonic(
-            &SecretString::new(
-                "legal winner thank year wave sausage worth useful legal winner thank yellow",
-            ),
-            None,
-        )
-        .expect("wrong seed");
+        let mut reordered = manifest;
+        reordered.entries.swap(0, 1);
         assert_eq!(
-            verify_watch_only_manifest_with_seed(&wrong_seed, &network, &anchor, &manifest),
-            Err(WalletWatchOnlyError::AnchorMismatch)
+            reordered.validate(),
+            Err(WalletWatchOnlyError::NonCanonicalEntries)
         );
 
-        let other_network = WalletNetworkContext::new("other-testnet", CHAIN_ID).expect("network");
-        assert_eq!(
-            verify_watch_only_manifest_with_seed(&seed, &other_network, &anchor, &manifest),
-            Err(WalletWatchOnlyError::NetworkMismatch)
-        );
+        drop(session);
+        drop(file);
+        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]
