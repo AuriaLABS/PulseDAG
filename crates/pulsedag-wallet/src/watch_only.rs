@@ -212,12 +212,8 @@ impl WalletWatchOnlyManifest {
             }
             previous = Some(current);
 
-            let expected_path = derivation_path(
-                network_components,
-                self.account,
-                entry.branch,
-                entry.index,
-            );
+            let expected_path =
+                derivation_path(network_components, self.account, entry.branch, entry.index);
             if entry.derivation_path != expected_path {
                 return Err(WalletWatchOnlyError::InvalidDerivationPath);
             }
@@ -304,9 +300,14 @@ impl fmt::Display for WalletWatchOnlyError {
             }
             Self::InvalidMetadata(field) => write!(f, "invalid watch-only metadata: {field}"),
             Self::EmptyManifest => f.write_str("watch-only manifest contains no public entries"),
-            Self::TooManyEntries => f.write_str("watch-only manifest exceeds the bounded entry limit"),
+            Self::TooManyEntries => {
+                f.write_str("watch-only manifest exceeds the bounded entry limit")
+            }
             Self::IndexOutOfRange(field) => {
-                write!(f, "watch-only derivation index exceeds the hardened range: {field}")
+                write!(
+                    f,
+                    "watch-only derivation index exceeds the hardened range: {field}"
+                )
             }
             Self::NonCanonicalEntries => {
                 f.write_str("watch-only entries are duplicated or not in canonical order")
@@ -342,7 +343,9 @@ impl fmt::Display for WalletWatchOnlyOperationError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Manifest(error) => write!(f, "watch-only manifest operation failed: {error}"),
-            Self::Session(error) => write!(f, "watch-only wallet session operation failed: {error}"),
+            Self::Session(error) => {
+                write!(f, "watch-only wallet session operation failed: {error}")
+            }
         }
     }
 }
@@ -442,7 +445,9 @@ pub fn verify_watch_only_manifest(
 ) -> Result<(), WalletWatchOnlyOperationError> {
     manifest.validate()?;
     let identity = unlocked_identity(session)?;
-    if manifest.network_profile != identity.network_profile || manifest.chain_id != identity.chain_id {
+    if manifest.network_profile != identity.network_profile
+        || manifest.chain_id != identity.chain_id
+    {
         return Err(WalletWatchOnlyError::NetworkMismatch.into());
     }
     if manifest.wallet_anchor_address != identity.address {
@@ -466,7 +471,10 @@ pub fn verify_watch_only_manifest(
 fn unlocked_identity(
     session: &WalletSession,
 ) -> Result<WalletSessionIdentity, WalletWatchOnlyOperationError> {
-    session.status().identity.ok_or(WalletSessionError::Locked.into())
+    session
+        .status()
+        .identity
+        .ok_or(WalletSessionError::Locked.into())
 }
 
 fn append_session_entries(
@@ -477,15 +485,14 @@ fn append_session_entries(
     count: u32,
 ) -> Result<(), WalletWatchOnlyOperationError> {
     for index in 0..count {
-        let entry = session.with_derived_key(account, branch, index, |derived| {
-            WalletWatchOnlyEntry {
+        let entry =
+            session.with_derived_key(account, branch, index, |derived| WalletWatchOnlyEntry {
                 branch: branch.into(),
                 index,
                 derivation_path: derived.derivation_path().to_string(),
                 public_key_hex: derived.public_key_hex().to_string(),
                 address: derived.address().to_string(),
-            }
-        })?;
+            })?;
         entries.push(entry);
     }
     Ok(())
@@ -599,16 +606,11 @@ mod tests {
         let path = dir.join("wallet.json");
         let seed = wallet_seed_from_mnemonic(&SecretString::new(MNEMONIC), None).expect("seed");
         let network = WalletNetworkContext::new(NETWORK_PROFILE, CHAIN_ID).expect("network");
-        let anchor = derive_wallet_key_from_seed(
-            &seed,
-            &network,
-            0,
-            WalletDerivationBranch::Receive,
-            0,
-        )
-        .expect("anchor")
-        .address()
-        .to_string();
+        let anchor =
+            derive_wallet_key_from_seed(&seed, &network, 0, WalletDerivationBranch::Receive, 0)
+                .expect("anchor")
+                .address()
+                .to_string();
         let envelope = encrypt_wallet_seed_with_kdf_costs(
             NETWORK_PROFILE,
             CHAIN_ID,
@@ -667,8 +669,14 @@ mod tests {
         let scope = WalletWatchOnlyScope::new(0, 3, 2).expect("scope");
         let manifest = session.export_watch_only_manifest(scope).expect("export");
         assert_eq!(manifest.entries().len(), 5);
-        assert_eq!(manifest.entries()[0].branch(), WalletWatchOnlyBranch::Receive);
-        assert_eq!(manifest.entries()[3].branch(), WalletWatchOnlyBranch::Change);
+        assert_eq!(
+            manifest.entries()[0].branch(),
+            WalletWatchOnlyBranch::Receive
+        );
+        assert_eq!(
+            manifest.entries()[3].branch(),
+            WalletWatchOnlyBranch::Change
+        );
         session
             .verify_watch_only_manifest(&manifest)
             .expect("verify matching backup");
@@ -685,7 +693,9 @@ mod tests {
         assert!(session.lock());
         assert!(matches!(
             session.verify_watch_only_manifest(&manifest),
-            Err(WalletWatchOnlyOperationError::Session(WalletSessionError::Locked))
+            Err(WalletWatchOnlyOperationError::Session(
+                WalletSessionError::Locked
+            ))
         ));
         drop(session);
         drop(file);
@@ -727,11 +737,17 @@ mod tests {
 
         let mut bad_checksum = manifest.clone();
         bad_checksum.checksum_hex = "00".repeat(32);
-        assert_eq!(bad_checksum.validate(), Err(WalletWatchOnlyError::InvalidChecksum));
+        assert_eq!(
+            bad_checksum.validate(),
+            Err(WalletWatchOnlyError::InvalidChecksum)
+        );
 
         let mut bad_public_key = manifest.clone();
         bad_public_key.entries[0].public_key_hex = "00".repeat(32);
-        assert_eq!(bad_public_key.validate(), Err(WalletWatchOnlyError::AddressMismatch));
+        assert_eq!(
+            bad_public_key.validate(),
+            Err(WalletWatchOnlyError::AddressMismatch)
+        );
 
         let mut reordered = manifest;
         reordered.entries.swap(0, 1);
