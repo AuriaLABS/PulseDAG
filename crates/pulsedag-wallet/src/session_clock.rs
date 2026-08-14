@@ -5,8 +5,8 @@ use std::{
 };
 
 use crate::{
-    session_core::WalletSession as CoreWalletSession, SecretString, WalletKeystoreFile,
-    WalletSecretKey,
+    session_core::WalletSession as CoreWalletSession, SecretString, WalletDerivationBranch,
+    WalletDerivedKey, WalletKeystoreFile, WalletSecretKey,
 };
 use crate::{WalletSessionError, WalletSessionLockState, WalletSessionStatus, WalletUnlockPolicy};
 
@@ -127,6 +127,30 @@ impl WalletSession {
                 return Err(WalletSessionError::Locked);
             }
             core.with_unlocked_secret(action)
+        };
+        self.enforce_wall_clock();
+        result
+    }
+
+    pub fn with_derived_key<R>(
+        &self,
+        account: u32,
+        branch: WalletDerivationBranch,
+        index: u32,
+        action: impl FnOnce(&WalletDerivedKey) -> R,
+    ) -> Result<R, WalletSessionError> {
+        let result = {
+            let mut core = lock_core(&self.inner);
+            let wall_check = {
+                let mut wall = lock_wall(&self.wall);
+                inspect_wall_clock(&mut wall, SystemTime::now())
+            };
+            if !matches!(wall_check, WallClockCheck::Active(_)) {
+                core.lock();
+                self.wall.wake.notify_all();
+                return Err(WalletSessionError::Locked);
+            }
+            core.with_derived_key(account, branch, index, action)
         };
         self.enforce_wall_clock();
         result
