@@ -448,7 +448,9 @@ mod tests {
         let (expected_seed, network, _) = fixture();
 
         let session = WalletKeystoreFile::try_acquire(&path).expect("acquire seed keystore");
-        session.create_new(&expected).expect("persist seed keystore");
+        session
+            .create_new(&expected)
+            .expect("persist seed keystore");
         rotate_keystore_password(&session, &current_password, &new_password)
             .expect("rotate seed keystore password");
 
@@ -470,14 +472,9 @@ mod tests {
         ));
         let restored = decrypt_wallet_seed(&rotated, &new_password).expect("decrypt rotated seed");
         assert_eq!(restored.expose_secret(), expected_seed.expose_secret());
-        let derived = derive_wallet_key_from_seed(
-            &restored,
-            &network,
-            0,
-            WalletDerivationBranch::Change,
-            2,
-        )
-        .expect("derive from rotated seed");
+        let derived =
+            derive_wallet_key_from_seed(&restored, &network, 0, WalletDerivationBranch::Change, 2)
+                .expect("derive from rotated seed");
         assert_eq!(
             derived.address(),
             "pulse116db0da992b6a80cb5aa9541fa63eb404755f183"
