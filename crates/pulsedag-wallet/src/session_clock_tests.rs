@@ -1,4 +1,8 @@
-use std::{fs, path::PathBuf, time::{Duration, SystemTime}};
+use std::{
+    fs,
+    path::PathBuf,
+    time::{Duration, SystemTime},
+};
 
 use rand::{rngs::OsRng, RngCore};
 
