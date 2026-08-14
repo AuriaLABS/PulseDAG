@@ -68,7 +68,10 @@ async fn response(app: axum::Router, request: Request<Body>) -> (StatusCode, Str
     let body = to_bytes(response.into_body(), usize::MAX)
         .await
         .expect("response body");
-    (status, String::from_utf8(body.to_vec()).expect("utf8 response"))
+    (
+        status,
+        String::from_utf8(body.to_vec()).expect("utf8 response"),
+    )
 }
 
 #[tokio::test]
@@ -101,7 +104,11 @@ async fn default_admin_router_keeps_legacy_wallet_contract_fail_closed() {
                 .expect("request"),
         )
         .await;
-        assert_eq!(status, StatusCode::NOT_FOUND, "unexpected status for {path}");
+        assert_eq!(
+            status,
+            StatusCode::NOT_FOUND,
+            "unexpected status for {path}"
+        );
         assert!(
             body.contains("legacy_wallet_rpc_disabled"),
             "missing keyless tombstone error for {path}: {body}"
