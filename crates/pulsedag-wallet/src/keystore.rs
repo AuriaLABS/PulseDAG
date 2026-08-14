@@ -2,10 +2,13 @@ use std::{error::Error, fmt};
 
 use serde::{Deserialize, Serialize};
 
-use crate::secrets::ED25519_SECRET_KEY_BYTES;
+use crate::secrets::{ED25519_SECRET_KEY_BYTES, WALLET_SEED_BYTES};
 
 pub const KEYSTORE_FORMAT: &str = "pulsedag-keystore";
+/// Legacy single-key keystore version. Kept stable for v1 read compatibility.
 pub const KEYSTORE_VERSION: u32 = 1;
+/// Deterministic BIP-39 seed keystore version. Version implies secret kind.
+pub const KEYSTORE_SEED_VERSION: u32 = 2;
 pub const KEYSTORE_KDF_ARGON2ID: &str = "argon2id";
 pub const KEYSTORE_CIPHER_XCHACHA20_POLY1305: &str = "xchacha20-poly1305";
 pub const KEYSTORE_SALT_BYTES: usize = 16;
@@ -13,6 +16,8 @@ pub const KEYSTORE_NONCE_BYTES: usize = 24;
 pub const KEYSTORE_DERIVED_KEY_BYTES: usize = 32;
 pub const KEYSTORE_V1_PLAINTEXT_BYTES: usize = 16 + ED25519_SECRET_KEY_BYTES;
 pub const KEYSTORE_V1_CIPHERTEXT_BYTES: usize = KEYSTORE_V1_PLAINTEXT_BYTES + 16;
+pub const KEYSTORE_V2_PLAINTEXT_BYTES: usize = 16 + WALLET_SEED_BYTES;
+pub const KEYSTORE_V2_CIPHERTEXT_BYTES: usize = KEYSTORE_V2_PLAINTEXT_BYTES + 16;
 pub const KEYSTORE_MIN_CIPHERTEXT_BYTES: usize = KEYSTORE_V1_CIPHERTEXT_BYTES;
 
 pub const KEYSTORE_KDF_DEFAULT_MEMORY_KIB: u32 = 65_536;
@@ -26,7 +31,8 @@ pub const KEYSTORE_KDF_MIN_LANES: u32 = 1;
 pub const KEYSTORE_KDF_MAX_LANES: u32 = 4;
 
 /// Public, versioned metadata plus authenticated ciphertext for a PulseDAG
-/// wallet secret. The envelope contains no plaintext password or private key.
+/// wallet secret. Version 1 contains one Ed25519 private key; version 2 contains
+/// a 64-byte deterministic BIP-39 seed. Neither version stores mnemonic words.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct WalletKeystoreEnvelope {
@@ -93,9 +99,11 @@ impl WalletKeystoreEnvelope {
         if self.format != KEYSTORE_FORMAT {
             return Err(WalletKeystoreFormatError::UnsupportedFormat);
         }
-        if self.version != KEYSTORE_VERSION {
-            return Err(WalletKeystoreFormatError::UnsupportedVersion(self.version));
-        }
+        let ciphertext_bytes = match self.version {
+            KEYSTORE_VERSION => KEYSTORE_V1_CIPHERTEXT_BYTES,
+            KEYSTORE_SEED_VERSION => KEYSTORE_V2_CIPHERTEXT_BYTES,
+            version => return Err(WalletKeystoreFormatError::UnsupportedVersion(version)),
+        };
         require_nonempty("network_profile", &self.network_profile)?;
         require_nonempty("chain_id", &self.chain_id)?;
         require_nonempty("address", &self.address)?;
@@ -109,11 +117,7 @@ impl WalletKeystoreEnvelope {
             &self.cipher.nonce_hex,
             KEYSTORE_NONCE_BYTES,
         )?;
-        require_hex_len(
-            "ciphertext_hex",
-            &self.ciphertext_hex,
-            KEYSTORE_V1_CIPHERTEXT_BYTES,
-        )?;
+        require_hex_len("ciphertext_hex", &self.ciphertext_hex, ciphertext_bytes)?;
         Ok(())
     }
 }
@@ -127,19 +131,19 @@ pub(crate) fn validate_kdf_metadata(
     if !(KEYSTORE_KDF_MIN_MEMORY_KIB..=KEYSTORE_KDF_MAX_MEMORY_KIB).contains(&kdf.memory_kib) {
         return Err(invalid(
             "kdf.memory_kib",
-            "outside supported v1 memory-cost bounds",
+            "outside supported memory-cost bounds",
         ));
     }
     if !(KEYSTORE_KDF_MIN_ITERATIONS..=KEYSTORE_KDF_MAX_ITERATIONS).contains(&kdf.iterations) {
         return Err(invalid(
             "kdf.iterations",
-            "outside supported v1 iteration-count bounds",
+            "outside supported iteration-count bounds",
         ));
     }
     if !(KEYSTORE_KDF_MIN_LANES..=KEYSTORE_KDF_MAX_LANES).contains(&kdf.lanes) {
         return Err(invalid(
             "kdf.lanes",
-            "outside supported v1 lane-count bounds",
+            "outside supported lane-count bounds",
         ));
     }
     require_hex_len("kdf.salt_hex", &kdf.salt_hex, KEYSTORE_SALT_BYTES)
@@ -222,6 +226,23 @@ mod tests {
     }
 
     #[test]
+    fn valid_v2_seed_envelope_is_structurally_distinct() {
+        let mut envelope = sample_envelope();
+        envelope.version = KEYSTORE_SEED_VERSION;
+        envelope.ciphertext_hex = "44".repeat(KEYSTORE_V2_CIPHERTEXT_BYTES);
+        envelope.validate_structure().expect("valid seed envelope");
+
+        envelope.ciphertext_hex = "44".repeat(KEYSTORE_V1_CIPHERTEXT_BYTES);
+        assert!(matches!(
+            envelope.validate_structure(),
+            Err(WalletKeystoreFormatError::InvalidField {
+                field: "ciphertext_hex",
+                ..
+            })
+        ));
+    }
+
+    #[test]
     fn malformed_noncanonical_and_unknown_fields_fail_closed() {
         let mut envelope = sample_envelope();
         envelope.cipher.nonce_hex = "00".repeat(KEYSTORE_NONCE_BYTES - 1);
@@ -265,11 +286,11 @@ mod tests {
     #[test]
     fn unsupported_version_and_algorithms_fail_closed() {
         let mut envelope = sample_envelope();
-        envelope.version = KEYSTORE_VERSION + 1;
+        envelope.version = KEYSTORE_SEED_VERSION + 1;
         assert_eq!(
             envelope.validate_structure(),
             Err(WalletKeystoreFormatError::UnsupportedVersion(
-                KEYSTORE_VERSION + 1
+                KEYSTORE_SEED_VERSION + 1
             ))
         );
 
