@@ -29,42 +29,53 @@ pub fn operator_stage() -> String {
 }
 
 pub async fn get_release_info() -> Json<ApiResponse<ReleaseInfoData>> {
+    let mut capabilities = vec![
+        "keyless_node".into(),
+        "external_miner_protocol".into(),
+        "mempool".into(),
+        "explorer_api".into(),
+        "sync_diagnostics".into(),
+        "storage_snapshot_inspection".into(),
+        "p2p_observability".into(),
+        "release_readiness_checks".into(),
+        "contracts_disabled".into(),
+    ];
+    let mut core_endpoints = vec![
+        "/health".into(),
+        "/status".into(),
+        "/dashboard".into(),
+        "/blocks".into(),
+        "/txs".into(),
+        "/address/:address".into(),
+        "/mine".into(),
+        "/mining/template".into(),
+        "/mining/submit".into(),
+        "/snapshot".into(),
+        "/sync/status".into(),
+        "/sync/verify".into(),
+        "/p2p/status".into(),
+        "/p2p/peers".into(),
+        "/p2p/propagation".into(),
+        "/checks".into(),
+        "/readiness".into(),
+    ];
+
+    #[cfg(feature = "legacy-wallet-rpc")]
+    {
+        capabilities.push("legacy_wallet_rpc_dev_only".into());
+        core_endpoints.extend([
+            "/wallet/new".into(),
+            "/wallet/sign".into(),
+            "/wallet/transfer".into(),
+        ]);
+    }
+
     Json(ApiResponse::ok(ReleaseInfoData {
         version: repo_version(),
         git_commit: std::option_env!("GIT_COMMIT").map(|v| v.to_string()),
         build_profile: std::option_env!("PROFILE").map(|v| v.to_string()),
-        capabilities: vec![
-            "wallets".into(),
-            "external_miner_protocol".into(),
-            "mempool".into(),
-            "explorer_api".into(),
-            "sync_diagnostics".into(),
-            "storage_snapshot_inspection".into(),
-            "p2p_observability".into(),
-            "release_readiness_checks".into(),
-            "contracts_disabled".into(),
-        ],
-        core_endpoints: vec![
-            "/health".into(),
-            "/status".into(),
-            "/dashboard".into(),
-            "/blocks".into(),
-            "/txs".into(),
-            "/address/:address".into(),
-            "/mine".into(),
-            "/wallet/new".into(),
-            "/wallet/transfer".into(),
-            "/mining/template".into(),
-            "/mining/submit".into(),
-            "/snapshot".into(),
-            "/sync/status".into(),
-            "/sync/verify".into(),
-            "/p2p/status".into(),
-            "/p2p/peers".into(),
-            "/p2p/propagation".into(),
-            "/checks".into(),
-            "/readiness".into(),
-        ],
+        capabilities,
+        core_endpoints,
         api_profile: redact_if_sensitive_key_value(
             "PULSEDAG_API_PROFILE",
             &std::env::var("PULSEDAG_API_PROFILE").unwrap_or_else(|_| "local_dev".into()),
@@ -147,6 +158,7 @@ mod tests {
         assert!(dashboard_json.contains("PulseDAG Operator Overview (v2.2)"));
         assert!(datasource.contains("PulseDAG-Prometheus"));
     }
+
     #[test]
     fn release_metadata_reports_kheavyhash_and_not_sha256d() {
         let release = include_str!("release.rs");
