@@ -247,8 +247,9 @@ fn ensure_seed_matches_address(
 ) -> Result<(), WalletKeystoreCryptoError> {
     let network = WalletNetworkContext::new(network_profile, chain_id)
         .map_err(|_| WalletKeystoreCryptoError::InvalidSecretPayload)?;
-    let derived = derive_wallet_key_from_seed(seed, &network, 0, WalletDerivationBranch::Receive, 0)
-        .map_err(|_| WalletKeystoreCryptoError::InvalidSecretPayload)?;
+    let derived =
+        derive_wallet_key_from_seed(seed, &network, 0, WalletDerivationBranch::Receive, 0)
+            .map_err(|_| WalletKeystoreCryptoError::InvalidSecretPayload)?;
     if derived.address() == expected_address {
         return Ok(());
     }
@@ -333,16 +334,11 @@ mod tests {
             "pulsedag-public-testnet-v2.4.0-candidate",
         )
         .expect("network");
-        let address = derive_wallet_key_from_seed(
-            &seed,
-            &network,
-            0,
-            WalletDerivationBranch::Receive,
-            0,
-        )
-        .expect("anchor")
-        .address()
-        .to_string();
+        let address =
+            derive_wallet_key_from_seed(&seed, &network, 0, WalletDerivationBranch::Receive, 0)
+                .expect("anchor")
+                .address()
+                .to_string();
         (seed, network, address)
     }
 
@@ -376,15 +372,13 @@ mod tests {
         let (expected, network, _) = fixture();
         assert_eq!(seed.expose_secret(), expected.expose_secret());
 
-        let derived = derive_wallet_key_from_seed(
-            &seed,
-            &network,
-            0,
-            WalletDerivationBranch::Change,
-            2,
-        )
-        .expect("derive after reopen");
-        assert_eq!(derived.address(), "pulse116db0da992b6a80cb5aa9541fa63eb404755f183");
+        let derived =
+            derive_wallet_key_from_seed(&seed, &network, 0, WalletDerivationBranch::Change, 2)
+                .expect("derive after reopen");
+        assert_eq!(
+            derived.address(),
+            "pulse116db0da992b6a80cb5aa9541fa63eb404755f183"
+        );
 
         let serialized = serde_json::to_string(&envelope).expect("serialize");
         assert!(!serialized.contains(VECTOR_MNEMONIC));
