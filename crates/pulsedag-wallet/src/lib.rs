@@ -13,8 +13,8 @@ use session_v1 as session_core;
 
 pub use deterministic::{
     derive_network_components, derive_wallet_key, derive_wallet_key_from_seed,
-    generate_wallet_mnemonic, wallet_seed_from_mnemonic, WalletDerivationBranch,
-    WalletDerivedKey, WalletDeterministicError, WalletNetworkContext, WALLET_DERIVATION_DOMAIN,
+    generate_wallet_mnemonic, wallet_seed_from_mnemonic, WalletDerivationBranch, WalletDerivedKey,
+    WalletDeterministicError, WalletNetworkContext, WALLET_DERIVATION_DOMAIN,
     WALLET_DERIVATION_MAX_INDEX, WALLET_DERIVATION_VERSION, WALLET_MNEMONIC_WORDS,
     WALLET_NETWORK_COMPONENTS,
 };
