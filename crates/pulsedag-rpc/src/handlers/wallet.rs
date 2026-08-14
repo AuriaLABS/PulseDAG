@@ -85,7 +85,8 @@ mod legacy {
         State(_state): State<S>,
         Json(req): Json<WalletSignRequest>,
     ) -> Json<ApiResponse<WalletSignData>> {
-        let msg_bytes = hex::decode(&req.message).unwrap_or_else(|_| req.message.as_bytes().to_vec());
+        let msg_bytes =
+            hex::decode(&req.message).unwrap_or_else(|_| req.message.as_bytes().to_vec());
         match sign_message(&req.private_key, &msg_bytes) {
             Ok(signature) => Json(ApiResponse::ok(WalletSignData { signature })),
             Err(e) => Json(ApiResponse::err("SIGN_ERROR", e.to_string())),
@@ -131,7 +132,8 @@ mod legacy {
             .into_iter()
             .filter_map(|op| chain.utxo.utxos.get(&op).cloned())
             .collect::<Vec<_>>();
-        let built = match build_transaction(&req.from, &req.to, req.amount, req.fee, &available, 1) {
+        let built = match build_transaction(&req.from, &req.to, req.amount, req.fee, &available, 1)
+        {
             Ok(v) => v,
             Err(e) => return Json(ApiResponse::err("BUILD_ERROR", e.to_string())),
         };
@@ -212,8 +214,7 @@ mod legacy {
                 .expect("signature hex")
                 .try_into()
                 .expect("signature length");
-            let verifying_key =
-                VerifyingKey::from_bytes(&public_key_bytes).expect("verifying key");
+            let verifying_key = VerifyingKey::from_bytes(&public_key_bytes).expect("verifying key");
             let signature = Signature::from_bytes(&signature_bytes);
             verifying_key
                 .verify(&signing_message(&signed), &signature)
