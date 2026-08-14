@@ -8,9 +8,8 @@ use super::*;
 use crate::{
     keystore_crypto::{encrypt_private_key_with_kdf_costs, KeystoreKdfCosts},
     keystore_seed::{encrypt_wallet_seed_with_kdf_costs, SeedKeystoreKdfCosts},
-    wallet_seed_from_mnemonic, WalletDerivationBranch, WalletSecretKey,
-    ED25519_SECRET_KEY_BYTES, KEYSTORE_KDF_MIN_ITERATIONS, KEYSTORE_KDF_MIN_LANES,
-    KEYSTORE_KDF_MIN_MEMORY_KIB,
+    wallet_seed_from_mnemonic, WalletDerivationBranch, WalletSecretKey, ED25519_SECRET_KEY_BYTES,
+    KEYSTORE_KDF_MIN_ITERATIONS, KEYSTORE_KDF_MIN_LANES, KEYSTORE_KDF_MIN_MEMORY_KIB,
 };
 
 const MNEMONIC: &str =
@@ -94,7 +93,10 @@ fn seed_session_derives_golden_children_without_exposing_raw_seed() {
         .unlock(&file, &SecretString::new(PASSWORD))
         .expect("unlock seed session");
     assert_eq!(status.lock_state, WalletSessionLockState::Unlocked);
-    assert_eq!(status.identity.as_ref().expect("identity").address, RECEIVE_0);
+    assert_eq!(
+        status.identity.as_ref().expect("identity").address,
+        RECEIVE_0
+    );
 
     assert!(matches!(
         session.with_unlocked_secret(|_| ()),
