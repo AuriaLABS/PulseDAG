@@ -7,7 +7,7 @@ use pulsedag_core::address_from_public_key;
 use sha2::{Digest, Sha256, Sha512};
 use zeroize::Zeroizing;
 
-use crate::{SecretString, WalletSecretKey};
+use crate::{SecretString, WalletSecretKey, WalletSeed};
 
 pub const WALLET_MNEMONIC_WORDS: usize = 24;
 pub const WALLET_DERIVATION_DOMAIN: u32 = 0x5055_4c53; // ASCII "PULS"
@@ -139,6 +139,20 @@ pub fn generate_wallet_mnemonic() -> Result<SecretString, WalletDeterministicErr
     Ok(SecretString::new(mnemonic.to_string()))
 }
 
+/// Convert BIP-39 backup material into the 64-byte binary seed that may be
+/// encrypted at rest. The mnemonic and optional passphrase are not retained.
+pub fn wallet_seed_from_mnemonic(
+    mnemonic_secret: &SecretString,
+    bip39_passphrase: Option<&SecretString>,
+) -> Result<WalletSeed, WalletDeterministicError> {
+    let mnemonic = Mnemonic::parse_in(Language::English, mnemonic_secret.expose_secret())
+        .map_err(|_| WalletDeterministicError::InvalidMnemonic)?;
+    let passphrase = bip39_passphrase
+        .map(SecretString::expose_secret)
+        .unwrap_or("");
+    Ok(WalletSeed::from_bytes(mnemonic.to_seed(passphrase)))
+}
+
 /// Restore one deterministic PulseDAG Ed25519 child from BIP-39 backup material.
 ///
 /// Frozen v1 path:
@@ -154,15 +168,22 @@ pub fn derive_wallet_key(
     branch: WalletDerivationBranch,
     index: u32,
 ) -> Result<WalletDerivedKey, WalletDeterministicError> {
+    let seed = wallet_seed_from_mnemonic(mnemonic_secret, bip39_passphrase)?;
+    derive_wallet_key_from_seed(&seed, network, account, branch, index)
+}
+
+/// Derive one deterministic PulseDAG Ed25519 child from an already-normalized
+/// BIP-39 seed. This is the normal path after encrypted seed persistence has
+/// replaced the initialization-time mnemonic.
+pub fn derive_wallet_key_from_seed(
+    seed: &WalletSeed,
+    network: &WalletNetworkContext,
+    account: u32,
+    branch: WalletDerivationBranch,
+    index: u32,
+) -> Result<WalletDerivedKey, WalletDeterministicError> {
     validate_index("account", account)?;
     validate_index("index", index)?;
-
-    let mnemonic = Mnemonic::parse_in(Language::English, mnemonic_secret.expose_secret())
-        .map_err(|_| WalletDeterministicError::InvalidMnemonic)?;
-    let passphrase = bip39_passphrase
-        .map(SecretString::expose_secret)
-        .unwrap_or("");
-    let seed = Zeroizing::new(mnemonic.to_seed(passphrase));
 
     let net = network.network_components;
     let components = [
@@ -176,7 +197,7 @@ pub fn derive_wallet_key(
         branch.component(),
         index,
     ];
-    let secret_bytes = derive_slip10_ed25519(&seed, &components);
+    let secret_bytes = derive_slip10_ed25519(seed.expose_secret(), &components);
     let signing_key = SigningKey::from_bytes(&secret_bytes);
     let public_key_hex = hex::encode(signing_key.verifying_key().to_bytes());
     let address = address_from_public_key(&public_key_hex);
@@ -357,6 +378,26 @@ mod tests {
                 index as u32,
             )
             .expect("change vector");
+            assert_eq!(key.address(), *expected);
+        }
+    }
+
+    #[test]
+    fn binary_seed_survives_mnemonic_lifetime_and_preserves_sequence() {
+        let seed = {
+            let mnemonic = SecretString::new(VECTOR_MNEMONIC);
+            wallet_seed_from_mnemonic(&mnemonic, None).expect("seed")
+        };
+        let network = vector_network();
+        for (index, expected) in RECEIVE_ADDRESSES.iter().enumerate() {
+            let key = derive_wallet_key_from_seed(
+                &seed,
+                &network,
+                0,
+                WalletDerivationBranch::Receive,
+                index as u32,
+            )
+            .expect("seed receive vector");
             assert_eq!(key.address(), *expected);
         }
     }
