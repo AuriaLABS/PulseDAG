@@ -4,6 +4,7 @@ use zeroize::Zeroizing;
 /// Stable marker used whenever wallet secret material is formatted.
 pub const REDACTED_SECRET: &str = "[REDACTED]";
 pub const ED25519_SECRET_KEY_BYTES: usize = 32;
+pub const WALLET_SEED_BYTES: usize = 64;
 
 /// Explicit in-memory boundary for wallet secret text.
 ///
@@ -42,6 +43,36 @@ impl fmt::Debug for SecretString {
 }
 
 impl fmt::Display for SecretString {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(REDACTED_SECRET)
+    }
+}
+
+/// Zeroizing in-memory BIP-39 seed bytes used by deterministic wallet logic.
+///
+/// The original mnemonic is never retained here. This type intentionally does
+/// not implement `Clone` or serialization and formatting is always redacted.
+pub struct WalletSeed(Zeroizing<[u8; WALLET_SEED_BYTES]>);
+
+impl WalletSeed {
+    pub fn from_bytes(bytes: [u8; WALLET_SEED_BYTES]) -> Self {
+        Self(Zeroizing::new(bytes))
+    }
+
+    pub fn expose_secret(&self) -> &[u8; WALLET_SEED_BYTES] {
+        &self.0
+    }
+}
+
+impl fmt::Debug for WalletSeed {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("WalletSeed")
+            .field(&REDACTED_SECRET)
+            .finish()
+    }
+}
+
+impl fmt::Display for WalletSeed {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(REDACTED_SECRET)
     }
@@ -101,6 +132,19 @@ mod tests {
         let secret = SecretString::new("expected-secret");
         assert_eq!(secret.expose_secret(), "expected-secret");
         assert!(!secret.is_empty());
+    }
+
+    #[test]
+    fn wallet_seed_formatting_is_always_redacted() {
+        let seed = WalletSeed::from_bytes([0xcdu8; WALLET_SEED_BYTES]);
+        let leaked_hex = "cd".repeat(WALLET_SEED_BYTES);
+        let debug = format!("{seed:?}");
+        let display = format!("{seed}");
+        assert!(debug.contains(REDACTED_SECRET));
+        assert!(display.contains(REDACTED_SECRET));
+        assert!(!debug.contains(&leaked_hex));
+        assert!(!display.contains(&leaked_hex));
+        assert_eq!(seed.expose_secret(), &[0xcdu8; WALLET_SEED_BYTES]);
     }
 
     #[test]
