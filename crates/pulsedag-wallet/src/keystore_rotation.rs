@@ -1,10 +1,12 @@
 use std::{error::Error, fmt, io};
 
 use crate::{
-    decrypt_private_key,
+    decrypt_private_key, decrypt_wallet_seed,
     keystore_crypto::{encrypt_private_key_with_kdf_costs, KeystoreKdfCosts},
-    SecretString, WalletKeystoreCryptoError, WalletKeystoreFile, WalletKeystorePersistenceError,
-    WalletKeystorePersistenceReport,
+    keystore_seed::{encrypt_wallet_seed_with_kdf_costs, SeedKeystoreKdfCosts},
+    SecretString, WalletKeystoreCryptoError, WalletKeystoreFile, WalletKeystoreFormatError,
+    WalletKeystorePersistenceError, WalletKeystorePersistenceReport, KEYSTORE_SEED_VERSION,
+    KEYSTORE_VERSION,
 };
 
 #[derive(Debug)]
@@ -76,7 +78,7 @@ impl From<WalletKeystoreCryptoError> for WalletKeystoreRotationError {
 }
 
 /// Re-encrypt an existing keystore with a new password while preserving the
-/// secret, authenticated identity, and authenticated Argon2 cost policy.
+/// secret kind, authenticated identity, and authenticated Argon2 cost policy.
 /// Salt, nonce, and ciphertext are regenerated with OS randomness.
 pub fn rotate_keystore_password(
     session: &WalletKeystoreFile,
@@ -84,19 +86,44 @@ pub fn rotate_keystore_password(
     new_password: &SecretString,
 ) -> Result<WalletKeystorePersistenceReport, WalletKeystoreRotationError> {
     let current = session.load()?;
-    let secret_key = decrypt_private_key(&current, current_password)?;
-    let replacement = encrypt_private_key_with_kdf_costs(
-        &current.network_profile,
-        &current.chain_id,
-        &current.address,
-        &secret_key,
-        new_password,
-        KeystoreKdfCosts::new(
-            current.kdf.memory_kib,
-            current.kdf.iterations,
-            current.kdf.lanes,
-        ),
-    )?;
+    let replacement = match current.version {
+        KEYSTORE_VERSION => {
+            let secret_key = decrypt_private_key(&current, current_password)?;
+            encrypt_private_key_with_kdf_costs(
+                &current.network_profile,
+                &current.chain_id,
+                &current.address,
+                &secret_key,
+                new_password,
+                KeystoreKdfCosts::new(
+                    current.kdf.memory_kib,
+                    current.kdf.iterations,
+                    current.kdf.lanes,
+                ),
+            )?
+        }
+        KEYSTORE_SEED_VERSION => {
+            let seed = decrypt_wallet_seed(&current, current_password)?;
+            encrypt_wallet_seed_with_kdf_costs(
+                &current.network_profile,
+                &current.chain_id,
+                &current.address,
+                &seed,
+                new_password,
+                SeedKeystoreKdfCosts::new(
+                    current.kdf.memory_kib,
+                    current.kdf.iterations,
+                    current.kdf.lanes,
+                ),
+            )?
+        }
+        version => {
+            return Err(WalletKeystoreCryptoError::Format(
+                WalletKeystoreFormatError::UnsupportedVersion(version),
+            )
+            .into())
+        }
+    };
     fs_backend::replace_existing_atomically(session.path(), &replacement)
 }
 
