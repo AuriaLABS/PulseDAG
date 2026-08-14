@@ -316,10 +316,13 @@ fn decode_hex_array<const N: usize>(
 
 #[cfg(test)]
 mod tests {
+    use std::{fs, path::PathBuf};
+
     use super::*;
     use crate::{
-        wallet_seed_from_mnemonic, SecretString, WalletDerivationBranch, WalletNetworkContext,
-        KEYSTORE_KDF_MIN_ITERATIONS, KEYSTORE_KDF_MIN_LANES, KEYSTORE_KDF_MIN_MEMORY_KIB,
+        rotate_keystore_password, wallet_seed_from_mnemonic, SecretString, WalletDerivationBranch,
+        WalletKeystoreFile, WalletNetworkContext, KEYSTORE_KDF_MIN_ITERATIONS,
+        KEYSTORE_KDF_MIN_LANES, KEYSTORE_KDF_MIN_MEMORY_KIB,
     };
 
     const VECTOR_MNEMONIC: &str =
@@ -361,6 +364,19 @@ mod tests {
             [0x42; KEYSTORE_NONCE_BYTES],
         )
         .expect("encrypt fixture")
+    }
+
+    fn test_dir(label: &str) -> PathBuf {
+        let mut random = [0_u8; 8];
+        let mut rng = OsRng;
+        rng.fill_bytes(&mut random);
+        let path = std::env::temp_dir().join(format!(
+            "pulsedag-wallet-seed-{label}-{}-{}",
+            std::process::id(),
+            hex::encode(random)
+        ));
+        fs::create_dir(&path).expect("create seed keystore test directory");
+        path
     }
 
     #[test]
@@ -416,5 +432,58 @@ mod tests {
             ),
             Err(WalletKeystoreCryptoError::AddressKeyMismatch { .. })
         ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn password_rotation_preserves_v2_seed_kind_and_restore_parity() {
+        let directory = test_dir("rotation");
+        let path = directory.join("wallet.json");
+        let current_password = SecretString::new(TEST_PASSWORD);
+        let new_password = SecretString::new("seed-wallet-password-rotated");
+        let expected = encrypted_fixture();
+        let original_salt = expected.kdf.salt_hex.clone();
+        let original_nonce = expected.cipher.nonce_hex.clone();
+        let original_ciphertext = expected.ciphertext_hex.clone();
+        let (expected_seed, network, _) = fixture();
+
+        let session = WalletKeystoreFile::try_acquire(&path).expect("acquire seed keystore");
+        session.create_new(&expected).expect("persist seed keystore");
+        rotate_keystore_password(&session, &current_password, &new_password)
+            .expect("rotate seed keystore password");
+
+        let rotated = session.load().expect("load rotated seed keystore");
+        assert_eq!(rotated.version, KEYSTORE_SEED_VERSION);
+        assert_eq!(rotated.network_profile, expected.network_profile);
+        assert_eq!(rotated.chain_id, expected.chain_id);
+        assert_eq!(rotated.address, expected.address);
+        assert_eq!(rotated.kdf.memory_kib, expected.kdf.memory_kib);
+        assert_eq!(rotated.kdf.iterations, expected.kdf.iterations);
+        assert_eq!(rotated.kdf.lanes, expected.kdf.lanes);
+        assert_ne!(rotated.kdf.salt_hex, original_salt);
+        assert_ne!(rotated.cipher.nonce_hex, original_nonce);
+        assert_ne!(rotated.ciphertext_hex, original_ciphertext);
+
+        assert!(matches!(
+            decrypt_wallet_seed(&rotated, &current_password),
+            Err(WalletKeystoreCryptoError::AuthenticationFailed)
+        ));
+        let restored = decrypt_wallet_seed(&rotated, &new_password).expect("decrypt rotated seed");
+        assert_eq!(restored.expose_secret(), expected_seed.expose_secret());
+        let derived = derive_wallet_key_from_seed(
+            &restored,
+            &network,
+            0,
+            WalletDerivationBranch::Change,
+            2,
+        )
+        .expect("derive from rotated seed");
+        assert_eq!(
+            derived.address(),
+            "pulse116db0da992b6a80cb5aa9541fa63eb404755f183"
+        );
+
+        drop(session);
+        fs::remove_dir_all(directory).expect("remove seed keystore test directory");
     }
 }
