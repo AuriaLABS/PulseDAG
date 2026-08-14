@@ -9,6 +9,7 @@ mod keystore_seed;
 mod secrets;
 mod session_clock;
 mod session_v1;
+mod watch_only;
 use session_v1 as session_core;
 
 pub use deterministic::{
@@ -45,6 +46,12 @@ pub use session_v1::{
     WalletSessionError, WalletSessionIdentity, WalletSessionLockState, WalletSessionStatus,
     WalletUnlockPolicy, WalletUnlockPolicyError, WALLET_UNLOCK_MAX_FAILURES,
     WALLET_UNLOCK_MAX_LOCKOUT, WALLET_UNLOCK_MAX_TIMEOUT,
+};
+pub use watch_only::{
+    export_watch_only_manifest, verify_watch_only_manifest, WalletWatchOnly, WalletWatchOnlyBranch,
+    WalletWatchOnlyEntry, WalletWatchOnlyError, WalletWatchOnlyManifest,
+    WalletWatchOnlyOperationError, WalletWatchOnlyScope, WalletWatchOnlySessionExt,
+    WALLET_WATCH_ONLY_FORMAT, WALLET_WATCH_ONLY_MAX_ENTRIES, WALLET_WATCH_ONLY_VERSION,
 };
 
 use serde::{Deserialize, Serialize};
