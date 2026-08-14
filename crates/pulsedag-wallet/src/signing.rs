@@ -234,16 +234,11 @@ mod tests {
         let path = dir.join("wallet.json");
         let seed = wallet_seed_from_mnemonic(&SecretString::new(MNEMONIC), None).expect("seed");
         let network = WalletNetworkContext::new(NETWORK_PROFILE, CHAIN_ID).expect("network");
-        let anchor = derive_wallet_key_from_seed(
-            &seed,
-            &network,
-            0,
-            WalletDerivationBranch::Receive,
-            0,
-        )
-        .expect("anchor")
-        .address()
-        .to_string();
+        let anchor =
+            derive_wallet_key_from_seed(&seed, &network, 0, WalletDerivationBranch::Receive, 0)
+                .expect("anchor")
+                .address()
+                .to_string();
         let envelope = encrypt_wallet_seed_with_kdf_costs(
             NETWORK_PROFILE,
             CHAIN_ID,
