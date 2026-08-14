@@ -381,7 +381,7 @@ mod tests {
         ));
         drop(locked);
 
-        let mut session = WalletSession::new(policy(Duration::from_millis(120))).expect("session");
+        let mut session = WalletSession::new(policy(Duration::from_secs(5))).expect("session");
         session
             .unlock(&file, &SecretString::new(PASSWORD))
             .expect("unlock");
@@ -392,11 +392,19 @@ mod tests {
                 WalletPlanError::NetworkMismatch { .. }
             ))
         ));
+        assert!(session.lock());
+        drop(session);
+
+        let mut expiring =
+            WalletSession::new(policy(Duration::from_millis(120))).expect("expiring session");
+        expiring
+            .unlock(&file, &SecretString::new(PASSWORD))
+            .expect("unlock expiring session");
         thread::sleep(Duration::from_millis(180));
         assert!(matches!(
-            session.sign_transaction_plan(&plan, WalletPlanSigner::LegacyV1),
+            expiring.sign_transaction_plan(&plan, WalletPlanSigner::LegacyV1),
             Err(WalletPlanSigningError::Session(WalletSessionError::Locked))
         ));
-        cleanup(dir, file, session);
+        cleanup(dir, file, expiring);
     }
 }
