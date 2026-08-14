@@ -105,8 +105,8 @@ jobs:
         continue-on-error: true
         shell: bash
         env:
-          # The drill binds RPC to loopback and needs local operator wallet routes
-          # to fund and submit the runtime transactions.
+          # The drill binds RPC to loopback and needs the explicitly non-default
+          # legacy wallet compatibility surface to fund runtime transactions.
           PULSEDAG_ADMIN_ENABLED: 'true'
         run: |
           set -euo pipefail
@@ -116,6 +116,21 @@ jobs:
             echo 'Unit mempool tests cannot substitute for five-node relay evidence.' >&2
             exit 43
           fi
+
+          # Keep the historical driver byte-for-byte focused on its evidence
+          # logic while making its obsolete wallet dependency explicit in this
+          # compatibility-only workflow invocation.
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('scripts/v2_3_0_mempool_tx_relay_evidence.sh')
+          text = path.read_text()
+          old = 'cargo build -p pulsedagd -p pulsedag-miner --release --locked 2>&1 | tee "$OUT_DIR/build.log"'
+          new = 'cargo build -p pulsedagd --release --locked --features legacy-wallet-rpc 2>&1 | tee "$OUT_DIR/build.log"\ncargo build -p pulsedag-miner --release --locked 2>&1 | tee -a "$OUT_DIR/build.log"'
+          if old not in text:
+              raise SystemExit('historical relay driver build command changed; review legacy-wallet-rpc opt-in')
+          path.write_text(text.replace(old, new, 1))
+          PY
+
           OUT_DIR="$PWD/ci-evidence/mempool-relay/runtime" "$driver" 2>&1 | tee ci-evidence/mempool-relay/runtime-drill.log
           manifest='ci-evidence/mempool-relay/runtime/evidence_manifest.json'
           jq -e '
