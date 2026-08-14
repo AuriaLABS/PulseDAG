@@ -8,7 +8,7 @@ use std::{
 
 use crate::{
     decrypt_private_key, decrypt_wallet_seed, derive_wallet_key_from_seed, SecretString,
-    WalletDerivedKey, WalletDerivationBranch, WalletDeterministicError, WalletKeystoreCryptoError,
+    WalletDerivationBranch, WalletDerivedKey, WalletDeterministicError, WalletKeystoreCryptoError,
     WalletKeystoreFile, WalletKeystorePersistenceError, WalletNetworkContext, WalletSecretKey,
     WalletSeed, KEYSTORE_SEED_VERSION, KEYSTORE_VERSION,
 };
@@ -146,7 +146,9 @@ impl fmt::Display for WalletSessionError {
             Self::TimeoutOverflow => f.write_str("wallet unlock deadline could not be represented"),
             Self::Persistence(error) => write!(f, "wallet keystore access failed: {error}"),
             Self::Crypto(error) => write!(f, "wallet unlock failed: {error}"),
-            Self::Deterministic(error) => write!(f, "wallet deterministic derivation failed: {error}"),
+            Self::Deterministic(error) => {
+                write!(f, "wallet deterministic derivation failed: {error}")
+            }
         }
     }
 }
@@ -263,8 +265,12 @@ impl WalletSession {
 
         let envelope = keystore.load()?;
         let secret_result = match envelope.version {
-            KEYSTORE_VERSION => decrypt_private_key(&envelope, password).map(UnlockedSecret::PrivateKey),
-            KEYSTORE_SEED_VERSION => decrypt_wallet_seed(&envelope, password).map(UnlockedSecret::Seed),
+            KEYSTORE_VERSION => {
+                decrypt_private_key(&envelope, password).map(UnlockedSecret::PrivateKey)
+            }
+            KEYSTORE_SEED_VERSION => {
+                decrypt_wallet_seed(&envelope, password).map(UnlockedSecret::Seed)
+            }
             _ => Err(WalletKeystoreCryptoError::InvalidSecretPayload),
         };
         let secret = match secret_result {
