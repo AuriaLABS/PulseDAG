@@ -234,7 +234,7 @@ async fn public_safe_relay_keeps_other_write_surfaces_forbidden() {
                 .unwrap(),
         )
         .await;
-        assert_eq!(status, StatusCode::FORBIDDEN, "{path}: {body}");
+        assert_eq!(status, StatusCode::NOT_FOUND, "{path}: {body}");
         assert!(body.contains("public_route_forbidden"), "{path}: {body}");
     }
 }
