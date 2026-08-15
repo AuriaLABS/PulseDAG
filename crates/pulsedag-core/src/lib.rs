@@ -5,6 +5,7 @@ pub mod consistency;
 pub mod errors;
 pub mod genesis;
 pub mod ghostdag;
+pub mod ghostdag_v1;
 pub mod mempool;
 pub mod mining;
 pub mod ordering;
@@ -100,6 +101,13 @@ pub use mempool::{
 pub use ghostdag::{
     calculate_merge_set, classify_merge_set, classify_merge_set_with_k, MergeSetClassification,
     MergeSetColor, MergeSetDiagnostics, DEFAULT_MERGE_SET_K,
+};
+
+pub use ghostdag_v1::{
+    calculate_bounded_merge_set_v1, classify_merge_set_v1, BoundedMergeSetV1,
+    GhostdagV1Classification, GhostdagV1Error, GhostdagV1Limits, GHOSTDAG_V1_K,
+    GHOSTDAG_V1_MAX_ANCESTOR_VISITS, GHOSTDAG_V1_MAX_MERGE_SET_BLOCKS,
+    GHOSTDAG_V1_MAX_RELATION_VISITS,
 };
 
 pub use selection::{
