@@ -1,5 +1,3 @@
-#![cfg(not(feature = "legacy-wallet-rpc"))]
-
 use std::{
     path::PathBuf,
     sync::Arc,
@@ -75,7 +73,7 @@ async fn response(app: axum::Router, request: Request<Body>) -> (StatusCode, Str
 }
 
 #[tokio::test]
-async fn default_admin_router_keeps_legacy_wallet_contract_fail_closed() {
+async fn admin_router_keeps_removed_wallet_contract_fail_closed() {
     let token = "keyless-node-test-token";
     let app = routes::router_with_profile::<TestState>(
         ApiExposureProfile::PrivateOperator,
@@ -110,8 +108,8 @@ async fn default_admin_router_keeps_legacy_wallet_contract_fail_closed() {
             "unexpected status for {path}"
         );
         assert!(
-            body.contains("legacy_wallet_rpc_disabled"),
-            "missing keyless tombstone error for {path}: {body}"
+            body.contains("legacy_wallet_rpc_removed"),
+            "missing removed-wallet tombstone error for {path}: {body}"
         );
         assert!(!body.contains(token));
         assert!(!body.contains("private_key"));
@@ -119,7 +117,7 @@ async fn default_admin_router_keeps_legacy_wallet_contract_fail_closed() {
 }
 
 #[tokio::test]
-async fn default_release_metadata_advertises_keyless_node_not_wallet_custody() {
+async fn release_metadata_advertises_keyless_node_and_signed_relay_only() {
     let app = routes::router_with_profile::<TestState>(
         ApiExposureProfile::PrivateOperator,
         false,
@@ -138,6 +136,9 @@ async fn default_release_metadata_advertises_keyless_node_not_wallet_custody() {
     .await;
     assert_eq!(status, StatusCode::OK);
     assert!(body.contains("keyless_node"));
+    assert!(body.contains("signed_transaction_relay"));
+    assert!(body.contains("/api/v1/tx/submit"));
+    assert!(!body.contains("legacy_wallet_rpc_dev_only"));
     assert!(!body.contains("\"wallets\""));
     assert!(!body.contains("/wallet/new"));
     assert!(!body.contains("/wallet/sign"));
