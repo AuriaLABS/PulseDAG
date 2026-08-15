@@ -40,9 +40,10 @@ pub use keystore_persistence::{
 pub use keystore_rotation::{rotate_keystore_password, WalletKeystoreRotationError};
 pub use keystore_seed::{decrypt_wallet_seed, encrypt_wallet_seed};
 pub use plan::{
-    build_transaction_plan, WalletNetworkIdentity, WalletNoncePolicy, WalletPlanError,
-    WalletReviewSummary, WalletSigningPreparation, WalletSpendPolicy, WalletTransactionIntent,
-    WalletTransactionPlan,
+    build_deterministic_transaction_plan, build_transaction_plan, derive_wallet_plan_nonce_v1,
+    WalletNetworkIdentity, WalletNoncePolicy, WalletPlanError, WalletReviewSummary,
+    WalletSigningPreparation, WalletSpendPolicy, WalletTransactionIntent, WalletTransactionPlan,
+    WALLET_NONCE_DOMAIN_V1,
 };
 pub use secrets::{
     SecretString, WalletSecretKey, WalletSeed, ED25519_SECRET_KEY_BYTES, REDACTED_SECRET,
@@ -94,8 +95,8 @@ pub struct SelectedUtxo {
 /// Consequently `transaction.txid` is an unsigned-template identifier, not the
 /// final broadcast txid, and `signing_message` is not the final message a signer
 /// must sign because PulseDAG v1 includes input public keys in that preimage.
-/// Professional wallet flows should use `build_transaction_plan` followed by
-/// `WalletTransactionPlan::prepare_signing` instead.
+/// Professional wallet flows should use `build_deterministic_transaction_plan`
+/// followed by `WalletTransactionPlan::prepare_signing` instead.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BuildTxResponse {
     pub transaction: Transaction,

@@ -86,7 +86,7 @@ for address in "$FROM" "$FROM2" "$FROM3" "$TO" "$TO2" "$TO3"; do
 done
 
 wallet_sign(){
-  local index="$1" to="$2" amount="$3" fee="$4" nonce="$5" utxos="$6" out="$7"
+  local index="$1" to="$2" amount="$3" fee="$4" utxos="$5" out="$6"
   printf '%s\n' "$WALLET_PASSWORD" | "$WALLET_BIN" sign \
     --keystore "$WALLET_DIR/wallet.json" \
     --utxos-file "$utxos" \
@@ -95,7 +95,6 @@ wallet_sign(){
     --to "$to" \
     --amount "$amount" \
     --fee "$fee" \
-    --nonce "$nonce" \
     --account 0 \
     --branch receive \
     --index "$index" > "$out"
@@ -156,7 +155,7 @@ curl -fsS --connect-timeout 2 --max-time 20 "$(rpc_url 1)/address/$FROM/utxos" >
 curl -fsS --connect-timeout 2 --max-time 20 "$(rpc_url 1)/address/$FROM2/utxos" > "$WALLET_DIR/funding2-utxos.json"
 curl -fsS --connect-timeout 2 --max-time 20 "$(rpc_url 1)/address/$FROM3/utxos" > "$WALLET_DIR/funding3-utxos.json"
 
-wallet_sign 0 "$TO" 1 1 1 "$WALLET_DIR/funding-utxos.json" "$OUT_DIR/tx/submit-n1-request.json"
+wallet_sign 0 "$TO" 1 1 "$WALLET_DIR/funding-utxos.json" "$OUT_DIR/tx/submit-n1-request.json"
 post_json "$(rpc_url 1)/api/v1/tx/submit" "$(cat "$OUT_DIR/tx/submit-n1-request.json")" "$OUT_DIR/tx/submit-n1.json"
 TXID="$(jq -r '.data.txid // empty' "$OUT_DIR/tx/submit-n1.json")"; [[ -n "$TXID" ]] || { fail "no submitted txid"; write_manifest FAIL; exit 1; }
 jq -n --arg txid "$TXID" '[$txid]' > "$OUT_DIR/submitted_txids.json"
@@ -197,11 +196,11 @@ else
   fail "duplicate submit did not prove bounded suppression without retransmission: code=$dupe_code message=$dupe_msg publish_unchanged=$publish_unchanged"
 fi
 
-wallet_sign 1 "$TO2" 1 1 1 "$WALLET_DIR/funding2-utxos.json" "$OUT_DIR/tx/capacity-fill-request.json"
+wallet_sign 1 "$TO2" 1 1 "$WALLET_DIR/funding2-utxos.json" "$OUT_DIR/tx/capacity-fill-request.json"
 post_json "$(rpc_url 1)/api/v1/tx/submit" "$(cat "$OUT_DIR/tx/capacity-fill-request.json")" "$OUT_DIR/tx/capacity-fill.json" || true
 # A zero-fee candidate is strictly lower priority than the two resident fee-1
 # transactions, so the bounded mempool must reject it rather than evicting one.
-wallet_sign 2 "$TO3" 1 0 1 "$WALLET_DIR/funding3-utxos.json" "$OUT_DIR/tx/capacity-reject-request.json"
+wallet_sign 2 "$TO3" 1 0 "$WALLET_DIR/funding3-utxos.json" "$OUT_DIR/tx/capacity-reject-request.json"
 post_json "$(rpc_url 1)/api/v1/tx/submit" "$(cat "$OUT_DIR/tx/capacity-reject-request.json")" "$OUT_DIR/tx/capacity-reject.json" || true
 cap_code="$(jq -r '.error.code // ""' "$OUT_DIR/tx/capacity-reject.json")"; cap_reason="$(jq -r '.error.message // ""' "$OUT_DIR/tx/capacity-reject.json")"
 if [[ "$cap_code" == "TX_REJECTED" && ( "$cap_reason" == *"backpressure active"* || "$cap_reason" == *"capacity exceeded"* || "$cap_reason" == *"mempool pressure"* ) ]]; then

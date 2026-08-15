@@ -66,7 +66,6 @@ try {
     "--to", $receiver,
     "--amount", "10",
     "--fee", "1",
-    "--nonce", "1",
     "--account", "0",
     "--branch", "receive",
     "--index", "0"

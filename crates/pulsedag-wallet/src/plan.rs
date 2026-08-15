@@ -7,8 +7,11 @@ use pulsedag_core::{
     types::{Transaction, Utxo},
 };
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
-use crate::{build_transaction, BuildTxResponse, SelectedUtxo};
+use crate::{build_transaction, select_utxos, BuildTxResponse, SelectedUtxo};
+
+pub const WALLET_NONCE_DOMAIN_V1: &str = "PulseDAG:wallet-plan-nonce:v1";
 
 /// Wallet-visible identity of the chain a keystore or transaction plan expects.
 ///
@@ -157,6 +160,7 @@ impl WalletSpendPolicy {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum WalletNoncePolicy {
+    DeterministicPlanV1,
     ExplicitCallerProvidedV1,
 }
 
@@ -283,6 +287,16 @@ impl WalletTransactionPlan {
                 return Err(invalid_plan(
                     "selected_utxos",
                     "contains a duplicate outpoint",
+                ));
+            }
+        }
+
+        if self.nonce_policy == WalletNoncePolicy::DeterministicPlanV1 {
+            let expected_nonce = derive_wallet_plan_nonce_v1(&self.intent, &self.selected_utxos)?;
+            if self.transaction.nonce != expected_nonce {
+                return Err(invalid_plan(
+                    "transaction.nonce",
+                    "does not match deterministic wallet nonce policy",
                 ));
             }
         }
@@ -468,8 +482,90 @@ impl From<PulseError> for WalletPlanError {
     }
 }
 
-/// Build a keyless v1 plan from a reviewable intent. Network identity and spend
-/// policy are explicit, and the nonce is always supplied by the caller.
+/// Derive the wallet-only v1 plan nonce from the reviewed intent and the exact
+/// selected inputs. The nonce is a deterministic plan identifier/salt, not an
+/// account sequence, anti-replay primitive, or cryptographic chain binding.
+pub fn derive_wallet_plan_nonce_v1(
+    intent: &WalletTransactionIntent,
+    selected_utxos: &[SelectedUtxo],
+) -> Result<u64, WalletPlanError> {
+    intent.validate()?;
+    if selected_utxos.is_empty() {
+        return Err(invalid_plan(
+            "selected_utxos",
+            "deterministic nonce requires at least one selected input",
+        ));
+    }
+
+    let mut hasher = Sha256::new();
+    hasher.update(WALLET_NONCE_DOMAIN_V1.as_bytes());
+    hasher.update(1_u32.to_be_bytes());
+    hash_len_prefixed(&mut hasher, intent.from.as_bytes());
+    hash_len_prefixed(&mut hasher, intent.to.as_bytes());
+    hasher.update(intent.amount.to_be_bytes());
+    hasher.update(intent.fee.to_be_bytes());
+    hasher.update((selected_utxos.len() as u64).to_be_bytes());
+
+    for (index, selected) in selected_utxos.iter().enumerate() {
+        if selected_utxos[..index]
+            .iter()
+            .any(|prior| prior.outpoint == selected.outpoint)
+        {
+            return Err(invalid_plan(
+                "selected_utxos",
+                "contains a duplicate outpoint",
+            ));
+        }
+        hash_len_prefixed(&mut hasher, selected.outpoint.txid.as_bytes());
+        hasher.update(selected.outpoint.index.to_be_bytes());
+        hasher.update(selected.amount.to_be_bytes());
+    }
+
+    let digest = hasher.finalize();
+    Ok(u64::from_be_bytes(digest[..8].try_into().expect(
+        "SHA-256 digest always contains eight nonce bytes",
+    )))
+}
+
+/// Build the supported wallet v1 plan with a deterministic nonce. Identical
+/// intent plus identical selected inputs produces the same nonce and unsigned
+/// template identifier for safe retry/resubmission. Any recipient, amount, fee,
+/// or selected-input change produces a distinct nonce with overwhelming
+/// probability. Network identity is deliberately not part of this hash because
+/// v1 signatures are not cryptographically chain-bound; identity is verified
+/// separately and fail-closed before signing.
+pub fn build_deterministic_transaction_plan(
+    network: WalletNetworkIdentity,
+    spend_policy: WalletSpendPolicy,
+    intent: WalletTransactionIntent,
+    available_utxos: &[Utxo],
+) -> Result<WalletTransactionPlan, WalletPlanError> {
+    network.validate()?;
+    intent.validate()?;
+    spend_policy.validate_intent(&intent)?;
+    let target = intent
+        .amount
+        .checked_add(intent.fee)
+        .ok_or_else(|| invalid_plan("intent.amount", "amount plus fee overflows"))?;
+    let (selected, _) = select_utxos(available_utxos, target)?;
+    spend_policy.validate_input_count(selected.len())?;
+    let selected_utxos = selected
+        .iter()
+        .map(|utxo| SelectedUtxo {
+            outpoint: utxo.outpoint.clone(),
+            amount: utxo.amount,
+        })
+        .collect::<Vec<_>>();
+    let nonce = derive_wallet_plan_nonce_v1(&intent, &selected_utxos)?;
+    let mut plan = build_transaction_plan(network, spend_policy, intent, available_utxos, nonce)?;
+    plan.nonce_policy = WalletNoncePolicy::DeterministicPlanV1;
+    plan.validate_structure()?;
+    Ok(plan)
+}
+
+/// Low-level compatibility builder. Supported wallet application flows should
+/// prefer `build_deterministic_transaction_plan`; this function retains explicit
+/// caller-provided v1 nonce construction for compatibility and protocol tests.
 pub fn build_transaction_plan(
     network: WalletNetworkIdentity,
     spend_policy: WalletSpendPolicy,
@@ -510,6 +606,11 @@ fn plan_from_build(
         total_input: built.total_input,
         change: built.change,
     }
+}
+
+fn hash_len_prefixed(hasher: &mut Sha256, bytes: &[u8]) {
+    hasher.update((bytes.len() as u64).to_be_bytes());
+    hasher.update(bytes);
 }
 
 fn invalid_plan(field: &'static str, reason: &'static str) -> WalletPlanError {
@@ -607,6 +708,16 @@ mod tests {
         .expect("build plan")
     }
 
+    fn deterministic_plan() -> WalletTransactionPlan {
+        build_deterministic_transaction_plan(
+            identity("pulsedag-public-testnet"),
+            policy(),
+            intent(400, 10),
+            &[utxo("11", 1_000, 10)],
+        )
+        .expect("build deterministic plan")
+    }
+
     #[test]
     fn plan_preserves_reviewed_intent_nonce_and_template_id() {
         let plan = sample_plan();
@@ -621,6 +732,93 @@ mod tests {
             plan.nonce_policy,
             WalletNoncePolicy::ExplicitCallerProvidedV1
         );
+    }
+
+    #[test]
+    fn deterministic_nonce_vector_is_frozen() {
+        let intent = WalletTransactionIntent::new("pulse1sender", "pulse1recipient", 400, 10)
+            .expect("vector intent");
+        let selected = vec![SelectedUtxo {
+            outpoint: OutPoint {
+                txid: "11".repeat(32),
+                index: 0,
+            },
+            amount: 1_000,
+        }];
+        assert_eq!(
+            derive_wallet_plan_nonce_v1(&intent, &selected).expect("nonce vector"),
+            9_904_313_366_048_028_006
+        );
+    }
+
+    #[test]
+    fn deterministic_retry_and_plan_change_semantics_are_stable() {
+        let available = [utxo("11", 1_000, 10), utxo("22", 1_000, 11)];
+        let first = build_deterministic_transaction_plan(
+            identity("pulsedag-public-testnet"),
+            policy(),
+            intent(400, 10),
+            &available,
+        )
+        .expect("first deterministic plan");
+        let retry = build_deterministic_transaction_plan(
+            identity("pulsedag-public-testnet"),
+            policy(),
+            intent(400, 10),
+            &available,
+        )
+        .expect("retry deterministic plan");
+        assert_eq!(first.nonce_policy, WalletNoncePolicy::DeterministicPlanV1);
+        assert_eq!(first.transaction.nonce, retry.transaction.nonce);
+        assert_eq!(first.transaction.txid, retry.transaction.txid);
+
+        let destination_change = build_deterministic_transaction_plan(
+            identity("pulsedag-public-testnet"),
+            policy(),
+            WalletTransactionIntent::new(sender_address(), "pulse1other", 400, 10)
+                .expect("destination-change intent"),
+            &available,
+        )
+        .expect("destination-change plan");
+        let amount_change = build_deterministic_transaction_plan(
+            identity("pulsedag-public-testnet"),
+            policy(),
+            intent(401, 10),
+            &available,
+        )
+        .expect("amount-change plan");
+        let fee_change = build_deterministic_transaction_plan(
+            identity("pulsedag-public-testnet"),
+            policy(),
+            intent(400, 11),
+            &available,
+        )
+        .expect("fee-change plan");
+        let input_change = build_deterministic_transaction_plan(
+            identity("pulsedag-public-testnet"),
+            policy(),
+            intent(1_500, 10),
+            &available,
+        )
+        .expect("input-change plan");
+
+        for changed in [destination_change, amount_change, fee_change, input_change] {
+            assert_ne!(first.transaction.nonce, changed.transaction.nonce);
+        }
+    }
+
+    #[test]
+    fn deterministic_plan_round_trip_and_nonce_tamper_are_checked() {
+        let plan = deterministic_plan();
+        let json = serde_json::to_string(&plan).expect("serialize deterministic plan");
+        let mut decoded: WalletTransactionPlan =
+            serde_json::from_str(&json).expect("deserialize deterministic plan");
+        assert_eq!(decoded.nonce_policy, WalletNoncePolicy::DeterministicPlanV1);
+        decoded.validate_structure().expect("validate round trip");
+
+        decoded.transaction.nonce ^= 1;
+        decoded.transaction.txid = compute_txid(&decoded.transaction);
+        assert!(decoded.validate_structure().is_err());
     }
 
     #[test]
@@ -737,15 +935,18 @@ mod tests {
 
     #[test]
     fn v1_signing_preimage_is_not_claimed_to_be_chain_bound() {
-        let public_plan = sample_plan();
-        let private_plan = build_transaction_plan(
+        let public_plan = deterministic_plan();
+        let private_plan = build_deterministic_transaction_plan(
             identity("pulsedag-private-testnet"),
             policy(),
             intent(400, 10),
             &[utxo("11", 1_000, 10)],
-            42,
         )
         .expect("private plan");
+        assert_eq!(
+            public_plan.transaction.nonce,
+            private_plan.transaction.nonce
+        );
         assert_eq!(public_plan.transaction.txid, private_plan.transaction.txid);
         assert_eq!(
             signing_message(&public_plan.transaction),
