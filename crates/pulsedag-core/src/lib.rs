@@ -1,5 +1,6 @@
 pub mod accept;
 pub mod apply;
+pub mod consensus_metadata;
 pub mod consistency;
 pub mod errors;
 pub mod genesis;
@@ -73,6 +74,11 @@ pub use pow::{
 pub use protocol::{
     ProtocolActivationIdentity, ProtocolConsensusMode, BLOCK_HEADER_VERSION_V1,
     BLOCK_HEADER_VERSION_V2,
+};
+
+pub use consensus_metadata::{
+    BlockConsensusMetadataV1, BlueScoreSemantics, ConsensusMetadataSnapshotV1,
+    CONSENSUS_METADATA_SCHEMA_VERSION,
 };
 
 pub use ordering::{
