@@ -274,6 +274,9 @@ pub struct MetricsData {
     pub runtime_lock_busy_total: BTreeMap<String, u64>,
     pub degraded_snapshot_returned_total: BTreeMap<String, u64>,
     pub rpc_accept_backlog_observed: u64,
+    pub rpc_rate_limit_rejected_total: u64,
+    pub rpc_rate_limit_evictions_total: u64,
+    pub rpc_rate_limit_tracked_keys: u64,
     pub oldest_inflight_rpc_handler_age_ms: u64,
     pub node_rpc_snapshot: NodeRpcSnapshotMetrics,
     pub rpc_liveness_current_degraded: bool,
@@ -894,6 +897,9 @@ pub async fn get_metrics<S: RpcStateLike>(
             .degraded_snapshot_returned_total
             .clone(),
         rpc_accept_backlog_observed: node_snapshot_metrics.rpc_accept_backlog_observed,
+        rpc_rate_limit_rejected_total: node_snapshot_metrics.rpc_rate_limit_rejected_total,
+        rpc_rate_limit_evictions_total: node_snapshot_metrics.rpc_rate_limit_evictions_total,
+        rpc_rate_limit_tracked_keys: node_snapshot_metrics.rpc_rate_limit_tracked_keys,
         oldest_inflight_rpc_handler_age_ms: node_snapshot_metrics
             .oldest_inflight_rpc_handler_age_ms,
         node_rpc_snapshot: node_snapshot_metrics,

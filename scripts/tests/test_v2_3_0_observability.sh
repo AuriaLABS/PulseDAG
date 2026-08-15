@@ -80,7 +80,7 @@ POW = {
 RESPONSES = {
     "/status": STATUS,
     "/sync/status": SYNC,
-    "/tx/mempool": MEMPOOL,
+    "/mempool": MEMPOOL,
     "/pow/health": POW,
 }
 

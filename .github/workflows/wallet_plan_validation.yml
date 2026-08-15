@@ -1,0 +1,32 @@
+name: Wallet transaction-plan validation
+
+on:
+  pull_request:
+    paths:
+      - "crates/pulsedag-wallet/**"
+      - ".github/workflows/wallet_plan_validation.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wallet-plan-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  wallet-plan:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout candidate
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Validate locked dependency graph
+        run: cargo metadata --locked --format-version 1 >/dev/null
+
+      - name: Execute pulsedag-wallet tests
+        run: cargo test -p pulsedag-wallet --locked

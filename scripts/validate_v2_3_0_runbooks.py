@@ -153,7 +153,7 @@ def validate_collector_contract(validation: Validation) -> None:
         "/sync/status",
         "/sync/verify",
         "/p2p/status",
-        "/tx/mempool",
+        "/mempool",
         "/pow/health",
         "/snapshot",
     ):

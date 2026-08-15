@@ -44,8 +44,8 @@ def main() -> int:
         })
     payload = {
         "schema_version": 1,
-        "network_profile": "private-testnet-v2.3.0",
-        "chain_id": "pulsedag-private-v2.3.0",
+        "network_profile": "private-testnet-v2.4.0",
+        "chain_id": "pulsedag-private-v2.4.0",
         "candidate_sha": args.candidate_sha,
         "nodes": nodes,
         "fault": {

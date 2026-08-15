@@ -28,6 +28,9 @@ static RPC_HANDLER_DEGRADED_TOTAL: AtomicU64 = AtomicU64::new(0);
 static RPC_HANDLER_TIMEOUT_AVOIDED_TOTAL: AtomicU64 = AtomicU64::new(0);
 static RPC_ALIVE_LISTENER_TIMEOUT_TOTAL: AtomicU64 = AtomicU64::new(0);
 static RPC_ACCEPT_BACKLOG_OBSERVED: AtomicU64 = AtomicU64::new(0);
+static RPC_RATE_LIMIT_REJECTED_TOTAL: AtomicU64 = AtomicU64::new(0);
+static RPC_RATE_LIMIT_EVICTIONS_TOTAL: AtomicU64 = AtomicU64::new(0);
+static RPC_RATE_LIMIT_TRACKED_KEYS: AtomicU64 = AtomicU64::new(0);
 static RPC_INFLIGHT_HANDLER_SEQ: AtomicU64 = AtomicU64::new(1);
 static RPC_INFLIGHT_HANDLERS: OnceLock<Mutex<BTreeMap<u64, (String, u64)>>> = OnceLock::new();
 static RPC_HANDLER_TIMEOUT_BY_ENDPOINT: OnceLock<Mutex<BTreeMap<String, u64>>> = OnceLock::new();
@@ -226,6 +229,9 @@ pub struct NodeRpcSnapshotMetrics {
     pub runtime_lock_busy_total: BTreeMap<String, u64>,
     pub degraded_snapshot_returned_total: BTreeMap<String, u64>,
     pub rpc_accept_backlog_observed: u64,
+    pub rpc_rate_limit_rejected_total: u64,
+    pub rpc_rate_limit_evictions_total: u64,
+    pub rpc_rate_limit_tracked_keys: u64,
     pub oldest_inflight_rpc_handler_age_ms: u64,
     pub health_handler_duration_ms: u64,
     pub health_snapshot_age_ms: u64,
@@ -259,6 +265,9 @@ pub fn node_rpc_snapshot_metrics_excluding(
         runtime_lock_busy_total: endpoint_counts(&RUNTIME_LOCK_BUSY_BY_ENDPOINT),
         degraded_snapshot_returned_total: endpoint_counts(&DEGRADED_SNAPSHOT_BY_ENDPOINT),
         rpc_accept_backlog_observed: RPC_ACCEPT_BACKLOG_OBSERVED.load(Ordering::Relaxed),
+        rpc_rate_limit_rejected_total: RPC_RATE_LIMIT_REJECTED_TOTAL.load(Ordering::Relaxed),
+        rpc_rate_limit_evictions_total: RPC_RATE_LIMIT_EVICTIONS_TOTAL.load(Ordering::Relaxed),
+        rpc_rate_limit_tracked_keys: RPC_RATE_LIMIT_TRACKED_KEYS.load(Ordering::Relaxed),
         oldest_inflight_rpc_handler_age_ms: oldest_inflight_rpc_handler_age_ms_excluding(
             excluded_inflight_endpoint,
         ),
@@ -361,6 +370,18 @@ pub fn record_degraded_snapshot_returned(endpoint: &str) {
 
 pub fn record_rpc_accept_backlog_observed(observed: u64) {
     RPC_ACCEPT_BACKLOG_OBSERVED.fetch_max(observed, Ordering::Relaxed);
+}
+
+pub fn record_rpc_rate_limit_rejected() {
+    RPC_RATE_LIMIT_REJECTED_TOTAL.fetch_add(1, Ordering::Relaxed);
+}
+
+pub fn record_rpc_rate_limit_eviction() {
+    RPC_RATE_LIMIT_EVICTIONS_TOTAL.fetch_add(1, Ordering::Relaxed);
+}
+
+pub fn record_rpc_rate_limit_tracked_keys(tracked: u64) {
+    RPC_RATE_LIMIT_TRACKED_KEYS.store(tracked, Ordering::Relaxed);
 }
 
 pub fn begin_rpc_handler(endpoint: &str) -> u64 {
@@ -1011,6 +1032,8 @@ pub struct NodeRuntimeStats {
     pub selected_segment_peer_rotations_total: u64,
     #[serde(default)]
     pub selected_segment_uncorrelated_headers_total: u64,
+    #[serde(default)]
+    pub selected_segment_retained_history_gap_peer_count: usize,
     #[serde(default)]
     pub active_session_id: Option<u64>,
     #[serde(default)]

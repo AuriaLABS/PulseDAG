@@ -91,6 +91,21 @@ jobs:
           ref: ${{ inputs.candidate_sha || github.sha }}
           fetch-depth: 1
 
+      - name: Reclaim runner disk space for workspace validation
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "disk usage before cleanup:"
+          df -h
+
+          sudo rm -rf /usr/local/lib/android || true
+          sudo rm -rf /opt/ghc || true
+          sudo rm -rf /opt/hostedtoolcache/CodeQL || true
+          sudo apt-get clean || true
+
+          echo "disk usage after cleanup:"
+          df -h
+
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:

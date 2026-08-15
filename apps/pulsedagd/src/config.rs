@@ -136,7 +136,7 @@ impl Config {
                 p2p_mode: "memory".into(),
                 p2p_listen: "/ip4/0.0.0.0/tcp/30333".into(),
                 p2p_bootstrap: Vec::new(),
-                p2p_mdns: true,
+                p2p_mdns: false,
                 p2p_kademlia: true,
                 p2p_identity_key: None,
                 p2p_connection_slot_budget: 8,
@@ -179,7 +179,7 @@ impl Config {
                 p2p_mode: "libp2p-dev".into(),
                 p2p_listen: "/ip4/127.0.0.1/tcp/31333".into(),
                 p2p_bootstrap: Vec::new(),
-                p2p_mdns: true,
+                p2p_mdns: false,
                 p2p_kademlia: true,
                 p2p_identity_key: None,
                 p2p_connection_slot_budget: 12,
@@ -265,7 +265,7 @@ impl Config {
                 p2p_mode: "libp2p-real".into(),
                 p2p_listen: "/ip4/0.0.0.0/tcp/30333".into(),
                 p2p_bootstrap: Vec::new(),
-                p2p_mdns: true,
+                p2p_mdns: false,
                 p2p_kademlia: true,
                 p2p_identity_key: None,
                 p2p_connection_slot_budget: 24,
@@ -778,6 +778,11 @@ impl Config {
     }
 
     fn validate_security_hardening(&self) -> Result<()> {
+        if self.p2p_mdns {
+            bail!(
+                "invalid config: PULSEDAG_P2P_MDNS=true is unsupported in v2.4.0; use explicit bootnodes and Kademlia discovery"
+            );
+        }
         if self.chain_id.trim().is_empty() {
             bail!(
                 "invalid config: PULSEDAG_CHAIN_ID is required and cannot be empty; set a stable chain id (for example: pulsedag-testnet)"
@@ -822,13 +827,13 @@ impl Config {
                 "invalid single-node config: PULSEDAG_PRIVATE_TESTNET_ROLE must be exactly 'single'"
             );
         }
-        if self.network_profile != "private-testnet-v2.3.0" {
+        if self.network_profile != "private-testnet-v2.4.0" {
             bail!(
-                "invalid single-node config: PULSEDAG_NETWORK_PROFILE must be private-testnet-v2.3.0"
+                "invalid single-node config: PULSEDAG_NETWORK_PROFILE must be private-testnet-v2.4.0"
             );
         }
-        if self.chain_id != "pulsedag-private-v2.3.0" {
-            bail!("invalid single-node config: PULSEDAG_CHAIN_ID must be pulsedag-private-v2.3.0");
+        if self.chain_id != "pulsedag-private-v2.4.0" {
+            bail!("invalid single-node config: PULSEDAG_CHAIN_ID must be pulsedag-private-v2.4.0");
         }
         if self.consensus_mode != ConsensusMode::Legacy {
             bail!("invalid single-node config: consensus mode must remain legacy");
@@ -1119,8 +1124,8 @@ mod tests {
         std::env::set_var("PULSEDAG_CONFIG_PROFILE", "private");
         std::env::set_var("PULSEDAG_SINGLE_NODE_MODE", "true");
         std::env::set_var("PULSEDAG_PRIVATE_TESTNET_ROLE", "single");
-        std::env::set_var("PULSEDAG_NETWORK_PROFILE", "private-testnet-v2.3.0");
-        std::env::set_var("PULSEDAG_CHAIN_ID", "pulsedag-private-v2.3.0");
+        std::env::set_var("PULSEDAG_NETWORK_PROFILE", "private-testnet-v2.4.0");
+        std::env::set_var("PULSEDAG_CHAIN_ID", "pulsedag-private-v2.4.0");
         std::env::set_var("PULSEDAG_CONSENSUS_MODE", "legacy");
         std::env::set_var("PULSEDAG_P2P_ENABLED", "false");
         std::env::set_var("PULSEDAG_P2P_BOOTSTRAP", "");
@@ -1231,9 +1236,22 @@ mod tests {
         assert!(cfg.p2p_enabled);
         assert_eq!(cfg.p2p_mode, "libp2p-real");
         assert_eq!(cfg.p2p_connection_slot_budget, 24);
+        assert!(!cfg.p2p_mdns);
         assert!(cfg.auto_prune_enabled);
         assert_eq!(cfg.prune_keep_recent_blocks, 500);
         assert!(!cfg.admin_enabled);
+    }
+
+    #[test]
+    fn rejects_mdns_enablement_until_a_real_behaviour_is_implemented() {
+        let _guard = env_guard();
+        clear_test_env();
+        std::env::set_var("PULSEDAG_CONFIG_PROFILE", "testnet");
+        std::env::set_var("PULSEDAG_P2P_MDNS", "true");
+        let error = Config::from_env().expect_err("mDNS must fail closed");
+        assert!(error
+            .to_string()
+            .contains("PULSEDAG_P2P_MDNS=true is unsupported"));
     }
 
     #[test]
@@ -1588,6 +1606,28 @@ mod tests {
         assert!(!cfg.p2p_enabled);
         assert!(cfg.p2p_bootstrap.is_empty());
         assert_eq!(cfg.rpc_bind, "127.0.0.1:8280");
+    }
+
+    #[test]
+    fn single_node_mode_rejects_stale_v2_3_identity() {
+        let _guard = env_guard();
+        clear_test_env();
+        set_valid_single_node_env();
+        std::env::set_var("PULSEDAG_NETWORK_PROFILE", "private-testnet-v2.3.0");
+
+        let err = Config::from_env().expect_err("stale v2.3 network profile must fail");
+        assert!(err
+            .to_string()
+            .contains("PULSEDAG_NETWORK_PROFILE must be private-testnet-v2.4.0"));
+
+        clear_test_env();
+        set_valid_single_node_env();
+        std::env::set_var("PULSEDAG_CHAIN_ID", "pulsedag-private-v2.3.0");
+
+        let err = Config::from_env().expect_err("stale v2.3 chain id must fail");
+        assert!(err
+            .to_string()
+            .contains("PULSEDAG_CHAIN_ID must be pulsedag-private-v2.4.0"));
     }
 
     #[test]

@@ -1,233 +1,188 @@
-# ROADMAP v2.4.0 — Operator Modes and Runtime Resilience
+# ROADMAP v2.4.0 — Public-testnet candidate completion
 
-Date: 2026-08-01 UTC
+Date: 2026-08-03 UTC
 
-## Starting point
+## Purpose
 
-The v2.3.0 private-testnet line established repeatable multi-host bootstrap, lifecycle tooling, observability, incident runbooks, and protected rehearsal evidence.
+v2.4.0 completes the node, miner, storage, observability, security and operator work required to make PulseDAG eligible for a public-testnet GO decision.
 
-A real Windows + Docker Desktop single-node burn-in then exposed five release-relevant gaps:
+It is not itself a launch authorization. Until issue #781 records an explicit `GO_PUBLIC_TESTNET` decision and the public network actually starts:
 
-1. intentional single-node mining is blocked by the zero-peer mining-template guard when real P2P is enabled;
-2. the versioned metrics inventory can drift from the registered RPC route surface, degrading exporter health;
-3. sustained high-cadence mining can make liveness endpoints serve stale cached snapshots when the chain read lock remains busy;
-4. mining submissions can time out at the RPC boundary after the same block has already been accepted;
-5. consensus difficulty can remain permanently trapped at `1`, making miner delay—not consensus—the effective block clock.
+- `public_testnet_ready=false`;
+- `thirty_day_public_testnet_clock_started=false`;
+- `contracts_enabled=false`;
+- Day 0 is not defined.
 
-Issue `#783` records the first two gaps. Issue `#786` records the consensus retarget defect. The lock-contention and late-submit behavior were reproduced during the same 24-hour burn-in.
+The 30-day public-testnet clock remains not started. Smart contracts remain disabled.
 
-v2.4.0 is focused on explicit operator modes, route-contract enforcement, control-plane resilience, submission finality, and correct target-based difficulty regulation. It is not a smart-contract release and it does not authorize public-testnet launch.
+The 24-hour private burn-in in #789 must run only after all intended repository changes are merged and one exact replacement candidate SHA is frozen. The original candidate `d6bdb86bec42ec36514c0a41748cdabc413a5b79` was invalidated before operational start and must not be reused.
 
 ## Guardrails
 
-- `VERSION` and Cargo remain at the currently approved release until a separate v2.4.0 release decision authorizes a bump.
-- No `v2.4.0` tag or release artifact may be published from this roadmap branch without explicit maintainer approval.
-- `public_testnet_ready=false` remains mandatory.
-- The 30-day public-testnet clock remains not started and must not be backdated.
-- Multi-node private-testnet safety remains fail-closed by default.
-- Any single-node mode must be explicit, validated, and impossible to enable accidentally through an empty bootnode list alone.
-- Consensus retarget parameters are fixed by network/version and cannot be changed by operator environment variables.
-- Mining remains an external application; no embedded pool logic is introduced.
-- Smart contracts remain disabled and out of scope.
-- Code comments, developer documentation, commits, and pull-request descriptions remain English-only.
-- Credentials, private keys, local runtime state, generated burn-in output, and operator-specific configuration must not be committed.
+- `VERSION` and Cargo package versions remain at the currently approved value until the final v2.4.0 release decision.
+- No v2.4.0 tag, release artifact or public endpoint is authorized by this roadmap.
+- Evidence from different source SHAs must never be combined.
+- Multi-node safety remains fail-closed by default.
+- Single-node mining requires the explicit validated operator profile.
+- Consensus parameters are version/network constants and are not operator environment settings.
+- The private v2.4.0 burn-in identity is `private-testnet-v2.4.0` / `pulsedag-private-v2.4.0`; v2.3.0 identities and databases must not be reused.
+- The operator contract is [`V2_4_0_PRIVATE_BURN_IN_OPERATOR_PROFILE.md`](V2_4_0_PRIVATE_BURN_IN_OPERATOR_PROFILE.md).
+- Mining remains an external application.
+- High-cadence/GHOSTDAG activation and smart contracts remain out of scope.
+- Credentials, keys, wallet seeds, tokens, runtime databases and unrestricted endpoints must not be committed or attached to evidence.
 
-## Active v2.4.0 work sequence
+## Completed implementation
 
 ### Task 14 — Explicit single-node operator profile
 
-Status: **ACTIVE** in issue `#784` on branch `feature/2.4.0-single-node-profile`.
+Status: **COMPLETE**. Issue #784 is closed.
 
-Add a first-class single-node profile for local development, deterministic burn-in, and operator validation.
-
-Required behavior:
-
-- explicit configuration such as `PULSEDAG_SINGLE_NODE_MODE=true` or an equivalent typed profile;
-- P2P disabled or isolated by policy, not by ad hoc operator patching;
-- loopback-only RPC by default;
-- no bootnode requirement;
-- clear startup identity showing that the node is intentionally isolated;
-- no public-testnet readiness claim;
-- deterministic transition path back to the normal private multi-node profile.
-
-The profile must fail validation if combined with contradictory public or multi-host settings.
+The profile is explicit and fail-closed. It requires intentional single-node configuration, P2P isolation, no bootnodes, loopback RPC and persistent storage. Empty bootnodes or seed role alone do not activate isolated mining.
 
 ### Task 15 — Topology-aware mining-template availability
 
-Status: **PLANNED**. Tracks issue `#783`.
+Status: **COMPLETE**. The corresponding portion of #783 is closed.
 
-Split the current zero-peer mining guard into explicit topology semantics:
-
-- ordinary private/testnet nodes continue to reject mining templates while unexpectedly isolated;
-- an explicitly configured single-node profile may mine with `peer_count=0`;
-- seed status alone must not silently bypass the guard;
-- template errors must expose a stable reason code and actionable operator message;
-- switching from single-node to multi-node operation must restore the normal isolation guard.
-
-Required tests:
-
-- single-node profile + zero peers -> template available;
-- ordinary node + zero peers -> template unavailable;
-- seed without explicit single-node profile + zero peers -> existing safety behavior preserved;
-- degraded sync, missing-parent recovery, or orphan recovery -> template unavailable in every profile.
+- explicit single-node profile + zero peers: mining templates may be issued;
+- ordinary node + unexpected zero peers: mining remains unavailable;
+- seed role alone does not bypass isolation safety;
+- degraded sync, missing-parent recovery and orphan-recovery gates remain authoritative.
 
 ### Task 16 — RPC route and metrics-inventory contract
 
-Status: **PLANNED**. Tracks issue `#783`.
+Status: **COMPLETE**. Issue #783 is closed; route alignment was finalized in PR #791.
 
-Prevent route drift between the v2.4.0 RPC router and all versioned observability inventories.
+The official mempool inventory uses the registered `/mempool` route. CI enforces route/inventory consistency and exporter health behavior.
 
-Required changes:
+### Task 17 — Liveness and mining-submit finality
 
-- correct the mempool inventory endpoint to the registered route;
-- add a machine-readable route manifest or equivalent test fixture;
-- validate every exporter endpoint against the router in CI;
-- validate that every required inventory field exists in the endpoint response contract;
-- keep exporter `/metrics` available during partial collection failure while making `/health` diagnostics identify the failing endpoint;
-- add a release gate that rejects stale or unregistered inventory paths.
+Status: **IMPLEMENTED; FINAL CANDIDATE VALIDATION PENDING**.
 
-Acceptance requires exporter `/health` to return HTTP 200 against a healthy node with the official v2.4.0 inventory.
+Liveness endpoints use cached bounded snapshots rather than waiting indefinitely for chain/runtime/storage locks. Backlog tests verify bounded response and no accumulating in-flight handlers.
 
-### Task 17 — Liveness and submission finality under sustained mining load
+PR #797 defines the submit-finality contract:
 
-Status: **PLANNED**.
+- `submit_timeout_before_acceptance` is definitive non-acceptance;
+- `submit_finality_unknown` means the serialized actor may still complete;
+- the miner reconciles the submitted block by hash;
+- unresolved unknown finality is never counted as a definitive rejection;
+- the same block hash is not blindly resubmitted;
+- parent-state-context-unavailable evidence has a dedicated metric.
 
-Harden `/health`, `/status`, `/p2p/status`, exporter collection, and `/mining/submit` against chain-lock contention and delayed actor completion.
+See [`V2_4_0_MINING_SUBMIT_FINALITY.md`](V2_4_0_MINING_SUBMIT_FINALITY.md).
 
-Required investigation and changes:
+Issue #793 remains open until the final post-security release SHA passes the complete matrix and is recorded as the replacement #789 candidate.
 
-- measure chain read/write lock hold time during template creation, block acceptance, persistence, snapshotting, and pruning;
-- keep bounded liveness endpoints responsive without reporting misleading zeroed fields;
-- separate immutable or atomically published status data from expensive chain reads where practical;
-- define stale and degraded thresholds per endpoint;
-- ensure cached snapshots retain coherent generation, height, tip, persistence, and contract-state fields;
-- expose lock-contention, snapshot-age, submit-queue, and post-accept latency metrics;
-- distinguish timeout before acceptance from timeout with unknown finality;
-- make miners reconcile an unknown submit by block hash before recording a rejection;
-- add stress coverage with sustained external mining and concurrent Prometheus scrapes.
+### Task 18 — Canonical target retarget
 
-Minimum acceptance target:
+Status: **COMPLETE IN CODE; PRIVATE EVIDENCE PENDING**. Issue #786 is closed.
 
-- no liveness timeout or stale-snapshot degradation during a bounded 60-second-cadence burn-in;
-- no accepted block counted as a definitive miner rejection;
-- bounded, explicitly characterized behavior under intentionally extreme cadence;
-- mining and persistence continue without accepted-state loss, orphan growth, or storage repair.
+The implementation uses deterministic canonical compact target bits, fixed network parameters, selected-chain interval history, a 60-second target interval, a 20-block window, an 8 percent deadband, damping and bounded adjustment. Template, validation and PoW diagnostics consume the same consensus snapshot.
 
-### Task 18 — Canonical target retarget and mining cadence safety
+The private burn-in must still demonstrate real hardening/relaxation, restart parity, pruning parity and byte-identical multi-node next-target calculations.
 
-Status: **ACTIVE — CONSENSUS RELEASE BLOCKER**. Tracks issue `#786`.
+### Task 19 — Storage, pruning and parent-context safety
 
-Replace integer-difficulty adjustment with deterministic canonical 256-bit target adjustment.
+Status: **IMPLEMENTED; PRIVATE RECOVERY EVIDENCE PENDING**.
 
-Required consensus behavior:
+Snapshot export/verification, compact pruning, startup reconciliation, retained-set reporting and restore tooling are present. Issue #788 is closed: unavailable historical side-parent state now fails explicitly as `ParentStateContextUnavailable` rather than being mislabeled as a true invalid state root.
 
-- target interval fixed at 60 seconds;
-- observation window taken only from the selected chain;
-- genesis height/timestamp excluded from interval signal;
-- compact target bits used as the canonical header representation;
-- a fixed v2.4.0 PoW limit defines the easiest allowed target;
-- fast blocks reduce target and increase work;
-- slow blocks increase target without exceeding the PoW limit;
-- the easiest allowed target can harden immediately and cannot become an absorbing state;
-- fixed-width deterministic arithmetic with no floating point;
-- block template, `/pow`, and validation consume the same consensus snapshot;
-- environment variables cannot change consensus retarget parameters.
+Exact historical side-parent reconstruction after compact pruning remains a documented limitation until a checkpoint/undo/historical-overlay design is implemented.
 
-Operator behavior:
+## Active completion work
 
-- document the difference between consensus target interval, miner polling delay, and observed block cadence;
-- publish current/suggested bits, target hex, PoW limit, selected-chain interval, work multiplier, target multiplier, and clamp diagnostics;
-- provide safe polling/backoff defaults without using miner sleep as a block clock;
-- retain bounded high-cadence stress tests behind an explicit non-consensus test profile.
+### Task 20 — Dependency and public-safe security baseline
 
-Required tests:
+Status: **ACTIVE**. Tracks #796 and #798.
 
-- legacy `difficulty=1` history transitions to a harder compact target under fast blocks;
-- easiest target + one-second blocks -> strictly harder next target;
-- stable 60-second history -> unchanged bits;
-- slow history -> easier target, clamped to PoW limit;
-- side branches do not affect the selected-chain calculation;
-- genesis timestamp zero does not contaminate early signal;
-- snapshot, restart, pruning, and multi-node replay produce identical next bits;
-- template, metrics, miner, and validator agree byte-for-byte.
+Required before public-testnet GO:
 
-Compatibility:
+- `SECURITY.md` and a confidential reporting path;
+- testnet-funds and non-production-custody disclaimer;
+- pinned dependency vulnerability audit;
+- zero unresolved reachable vulnerabilities in the frozen release graph;
+- documented, version-specific reachability analysis for any temporary exception;
+- least-privilege workflow review;
+- admin/operator control plane excluded from public exposure;
+- fixed public request limits, per-IP limits and CORS policy.
 
-- this is an explicit consensus-rule change;
-- the preferred private-testnet rollout is a clean v2.4.0 chain restart;
-- preserving an old chain requires a separately reviewed activation height;
-- no mixed-version implicit transition is allowed.
+The first audit correctly identified lockfile vulnerabilities. They must be remediated or dispositioned with evidence; the audit gate must not be weakened to obtain a green result.
 
-Design and implementation contract: [`DIFFICULTY_RETARGET_V2_4_0.md`](DIFFICULTY_RETARGET_V2_4_0.md).
+### Task 21 — Documentation, release identity and artifacts
 
-### Task 19 — Reference operator packaging and recovery
+Status: **ACTIVE**. Tracks #792 and #794.
 
-Status: **PLANNED**.
+Before candidate freeze:
 
-Publish a maintained reference deployment for one-node local burn-in without making platform-specific packaging part of consensus.
+- reconcile roadmaps and runbooks;
+- define seed, node, observer and miner configuration examples;
+- define upgrade and rollback procedures;
+- define supported public API and known limitations;
+- leave final SHA, genesis, chain ID, bootnodes, artifact digests and operator timestamps as `TBD`.
 
-Scope:
+After all code/security changes and private evidence pass:
 
-- Docker Compose reference stack for node, external CPU miner, exporter, Prometheus, and Grafana;
-- offline wallet generation with the private key excluded from miner and node containers;
-- PowerShell-compatible lifecycle scripts without PowerShell 7-only APIs;
-- idempotent start, status, logs, stop, restart, and backup flows;
-- loopback-only RPC and local-only P2P defaults;
-- documented migration from single-node mode to a real multi-host private topology;
-- no committed credentials, wallets, generated data, or host-specific addresses.
+- update `VERSION` and workspace/package versions consistently to 2.4.0;
+- freeze genesis, network ID and consensus constants;
+- build Linux and Windows node/miner artifacts;
+- record SHA-256 digests for source, binaries, archives, images, genesis and configuration;
+- validate install/start/mining/restart/rollback from packaged artifacts;
+- publish release notes and known limitations.
 
-Reference packaging must consume official repository artifacts and configuration contracts rather than carrying permanent downstream patches.
+### Task 22 — Final private candidate and 24-hour burn-in
 
-### Task 20 — v2.4.0 burn-in and compatibility matrix
+Status: **BLOCKED**. Controlled by #789.
 
-Status: **BLOCKED ON TASKS 14–19**.
+Freeze one exact SHA only after Tasks 20 and 21 stop advancing the branch. Then run:
 
-Run the exact v2.4.0 candidate through both isolated and networked scenarios.
+- clean single-node baseline with external CPU miner;
+- 24 contiguous hours on the unchanged candidate;
+- real target movement and coherent node/miner submit telemetry;
+- controlled restart;
+- snapshot export and verification;
+- compact prune and post-prune restart;
+- restore drill;
+- second clean node sync through real P2P;
+- offline/rejoin and consensus-value comparison.
 
-Required matrix:
+Any code/config consensus change, unexplained restart or invalidating database reset restarts the clock.
 
-- single-node 24-hour burn-in with consensus-regulated cadence;
-- bounded high-cadence contention test;
-- restart and snapshot recovery with the same wallet and node identity;
-- exporter and dashboard continuity across restart;
-- transition from explicit single-node profile to ordinary private multi-node profile;
-- existing five-node private-testnet bootstrap and fault-recovery regression;
-- selected-chain target agreement across every node;
-- zero accepted-state loss, zero unresolved storage inconsistency, and no silent route-contract drift.
+### Task 23 — Five-node/four-miner launch rehearsal
 
-Evidence must identify the exact commit, workflow run, artifact checksums, configuration profile, block range, accepted/unknown/rejected submission counts, target/bits history, snapshot ages, and final consistency state.
+Status: **BLOCKED ON #789**. Tracks #794.
 
-### Task 21 — Version and release decision
+Use five real node processes and four external miners across at least two independent failure domains. Complete seed restart, ordinary-node restart, miner restart, disconnect/rejoin, node isolation/rejoin, snapshot/restore and clean-node catch-up. Prove convergence of selected tip, height, compact bits, target and canonical state digest.
 
-Status: **BLOCKED ON TASKS 14–20**.
+### Task 24 — Public-testnet decision and launch
 
-Prepare a separate release-decision proposal only after every required implementation, CI, compatibility, and burn-in gate passes on the same candidate.
+Status: **BLOCKED**. Controlled exclusively by #781.
 
-The proposal must confirm:
+After all implementation, security, private burn-in, rehearsal, infrastructure and operator evidence is complete, record exactly one decision:
 
-- issues `#783` and `#786` are resolved or explicitly dispositioned;
-- single-node mode is explicit and documented;
-- ordinary multi-node isolation safety remains intact;
-- exporter route contracts are CI-enforced;
-- accepted mining submissions cannot be misreported as definitive rejections;
-- liveness remains bounded under the accepted operating envelope;
-- selected-chain retarget converges without miner-delay cadence control;
-- no severity-1 consensus, storage, sync, security, or key-management blocker remains;
-- rollback compatibility and operator migration are documented;
-- public-testnet readiness and the 30-day clock remain unchanged unless separately authorized.
+- `GO_PUBLIC_TESTNET`;
+- `DELAY_PUBLIC_TESTNET`;
+- `NO_GO_PUBLIC_TESTNET`.
 
-Only after explicit approval may a follow-up candidate update `VERSION` and Cargo to `2.4.0`, generate release notes and artifacts, and create the release tag.
+Only after GO may operators expose the official public network, record the first accepted public block and start Day 0. Smart contracts remain blocked until at least 30 accepted public-testnet days complete and a separate approval is recorded.
 
-## Completion criteria
+## Final v2.4.0 completion criteria
 
-v2.4.0 is complete only when Tasks 14–21 are merged or formally dispositioned, their required tests and evidence pass on the exact release candidate, the existing v2.3.0 multi-host guarantees remain green, issue `#786` is closed with deterministic agreement evidence, no unresolved severity-1 blocker exists, and the final private-testnet release decision is recorded.
+v2.4.0 is eligible for public-testnet GO only when:
+
+- all blocking code and security defects are closed;
+- dependency audit and workflow security gates pass on the exact release SHA;
+- #789 records a private PASS with complete evidence;
+- the five-node/four-miner rehearsal passes;
+- public infrastructure, monitoring, incident response and backup ownership are recorded;
+- release identity and artifacts are reproducible and checksummed;
+- no unresolved Sev-1 consensus, storage, replay, sync, mining, security or operator-safety issue remains;
+- #781 records the final decision.
 
 ## Out of scope
 
-- public-testnet launch;
-- starting or backdating the 30-day public-testnet clock;
 - smart-contract activation;
-- GPU mining enablement without a canonical verified kernel;
+- high-cadence/full-GHOSTDAG production activation;
+- mainnet or production custody readiness;
 - pool protocols or embedded pool services;
-- replacing kHeavyHash;
-- weakening ordinary-node isolation safeguards for operator convenience.
+- enabling an unverified GPU mining kernel;
+- weakening ordinary-node isolation, finality or storage safeguards for convenience.

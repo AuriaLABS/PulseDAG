@@ -19,6 +19,8 @@ pub struct TipInventoryStatus {
     pub chain_id: String,
     pub selected_tip: Option<Hash>,
     pub selected_height: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prune_boundary_height: Option<u64>,
     pub selected_blue_score: Option<u64>,
     pub ordered_dag_tip: Option<Hash>,
     pub state_root_digest: Option<String>,
@@ -54,6 +56,8 @@ pub enum NetworkMessage {
         locator: Vec<Hash>,
         stop_hash: Option<Hash>,
         limit: usize,
+        #[serde(default)]
+        requested_peer_id: Option<String>,
     },
     Headers {
         chain_id: String,
@@ -260,6 +264,7 @@ mod tests {
                 locator: vec!["parent".into()],
                 stop_hash: Some(block.hash.clone()),
                 limit: 64,
+                requested_peer_id: None,
             },
             NetworkMessage::Headers {
                 chain_id: "testnet".into(),
@@ -332,6 +337,34 @@ mod tests {
     }
 
     #[test]
+    fn get_headers_target_is_backward_compatible() {
+        let legacy = br#"{"type":"GetHeaders","chain_id":"testnet","locator":["parent"],"stop_hash":null,"limit":64}"#;
+        let decoded: NetworkMessage = serde_json::from_slice(legacy).expect("legacy GetHeaders");
+        match decoded {
+            NetworkMessage::GetHeaders {
+                requested_peer_id, ..
+            } => assert_eq!(requested_peer_id, None),
+            _ => panic!("unexpected message"),
+        }
+
+        let directed = NetworkMessage::GetHeaders {
+            chain_id: "testnet".into(),
+            locator: vec!["parent".into()],
+            stop_hash: None,
+            limit: 64,
+            requested_peer_id: Some("peer-a".into()),
+        };
+        let encoded = serde_json::to_vec(&directed).expect("encode");
+        let decoded: NetworkMessage = serde_json::from_slice(&encoded).expect("decode");
+        match decoded {
+            NetworkMessage::GetHeaders {
+                requested_peer_id, ..
+            } => assert_eq!(requested_peer_id.as_deref(), Some("peer-a")),
+            _ => panic!("unexpected message"),
+        }
+    }
+
+    #[test]
     fn rejects_malformed_payloads_during_decode() {
         let malformed_json = br#"{"type":"GetBlock","chain_id":"testnet","hash":42}"#;
         assert!(serde_json::from_slice::<NetworkMessage>(malformed_json).is_err());
@@ -372,6 +405,7 @@ mod selected_tip_inventory_wire_tests {
             chain_id: "testnet-dev".into(),
             selected_tip: Some("tip-741".into()),
             selected_height: Some(741),
+            prune_boundary_height: None,
             selected_blue_score: Some(741),
             ordered_dag_tip: Some("ordered-741".into()),
             state_root_digest: Some("state-root".into()),
@@ -395,5 +429,41 @@ mod selected_tip_inventory_wire_tests {
             }
             other => panic!("unexpected decoded message: {other:?}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod prune_boundary_wire_compat_tests {
+    use super::*;
+
+    #[test]
+    fn legacy_tip_inventory_without_prune_boundary_decodes_as_unknown() {
+        let json = r#"{
+            "chain_id":"legacy-chain",
+            "selected_tip":null,
+            "selected_height":42,
+            "selected_blue_score":null,
+            "ordered_dag_tip":null,
+            "state_root_digest":null,
+            "observed_at_unix":1,
+            "inventory_generation":2
+        }"#;
+        let decoded: TipInventoryStatus = serde_json::from_str(json).expect("legacy inventory");
+        assert_eq!(decoded.prune_boundary_height, None);
+    }
+
+    #[test]
+    fn archival_tip_inventory_serializes_zero_boundary_explicitly() {
+        let inventory = TipInventoryStatus {
+            chain_id: "archive-chain".to_string(),
+            selected_height: Some(10),
+            prune_boundary_height: Some(0),
+            ..TipInventoryStatus::default()
+        };
+        let json = serde_json::to_value(&inventory).expect("inventory json");
+        assert_eq!(
+            json.get("prune_boundary_height").and_then(|v| v.as_u64()),
+            Some(0)
+        );
     }
 }

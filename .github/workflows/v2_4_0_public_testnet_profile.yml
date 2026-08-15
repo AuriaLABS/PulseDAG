@@ -1,0 +1,47 @@
+name: v2.4.0 public-testnet profile contract
+
+on:
+  pull_request:
+    paths:
+      - 'configs/public-testnet/**'
+      - 'scripts/v2_4_0_public_testnet_preflight.sh'
+      - 'scripts/tests/test_v2_4_0_public_testnet_preflight.sh'
+      - '.github/workflows/v2_4_0_public_testnet_profile.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  public-testnet-profile:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate shell syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash -n scripts/v2_4_0_public_testnet_preflight.sh
+          bash -n scripts/tests/test_v2_4_0_public_testnet_preflight.sh
+
+      - name: Run fail-closed profile regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/tests/test_v2_4_0_public_testnet_preflight.sh
+
+      - name: Verify examples remain pre-GO templates
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q '^PULSEDAG_API_PROFILE=public_safe$' configs/public-testnet/seed.env.example
+          grep -q '^PULSEDAG_API_PROFILE=public_safe$' configs/public-testnet/node.env.example
+          grep -q '^PULSEDAG_ADMIN_ENABLED=false$' configs/public-testnet/seed.env.example
+          grep -q '^PULSEDAG_ADMIN_ENABLED=false$' configs/public-testnet/node.env.example
+          grep -q '^PULSEDAG_PUBLIC_TESTNET_READY=false$' configs/public-testnet/seed.env.example
+          grep -q '^PULSEDAG_PUBLIC_TESTNET_READY=false$' configs/public-testnet/node.env.example
+          grep -q 'REPLACE_WITH_FINAL_PUBLIC_TESTNET_PROFILE' configs/public-testnet/seed.env.example
+          grep -q 'REPLACE_WITH_FINAL_PUBLIC_TESTNET_PROFILE' configs/public-testnet/node.env.example

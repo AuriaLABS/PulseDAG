@@ -17,8 +17,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
-EXPECTED_NETWORK_PROFILE = "private-testnet-v2.3.0"
-EXPECTED_CHAIN_ID = "pulsedag-private-v2.3.0"
+EXPECTED_NETWORK_PROFILE = "private-testnet-v2.4.0"
+EXPECTED_CHAIN_ID = "pulsedag-private-v2.4.0"
 EXPECTED_NODE_COUNT = 5
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,31}$")
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")

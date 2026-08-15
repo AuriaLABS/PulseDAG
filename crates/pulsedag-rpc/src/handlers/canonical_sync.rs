@@ -206,7 +206,9 @@ pub fn build_canonical_sync_state_with_remote_evidence(
         .flatten();
     let stale_sync_error_suppressed_total =
         u64::from(historical_error.is_some() && !live_error_active);
-    let no_blockers = lag_blocks == 0
+    let retained_history_gap_active = runtime.selected_segment_retained_history_gap_peer_count > 0;
+    let no_blockers = !retained_history_gap_active
+        && lag_blocks == 0
         && !network_selected_tip_mismatch
         && !has_orphan_work
         && pending_missing_parents == 0
@@ -223,10 +225,13 @@ pub fn build_canonical_sync_state_with_remote_evidence(
             .map(|ts| now_unix.saturating_sub(ts) > 120)
             .unwrap_or(false);
 
-    let (sync_state, catchup_stage, recovery_reason) = if no_blockers
-        && coherent
-        && !live_error_active
-    {
+    let (sync_state, catchup_stage, recovery_reason) = if retained_history_gap_active {
+        (
+            "selected_segment_failed".to_string(),
+            "degraded".to_string(),
+            Some("selected header sync blocked: retained_history_gap".to_string()),
+        )
+    } else if no_blockers && coherent && !live_error_active {
         ("synced".to_string(), "steady".to_string(), None)
     } else if live_error_active || !coherent {
         (
@@ -566,6 +571,7 @@ mod tests {
                 chain_id: "testnet-dev".into(),
                 selected_tip: Some("remote-741".into()),
                 selected_height: 741,
+                prune_boundary_height: None,
                 selected_blue_score: Some(741),
                 ordered_dag_tip: Some("ordered-741".into()),
                 state_root_digest: Some("state-root-741".into()),
@@ -592,5 +598,51 @@ mod tests {
         assert_eq!(state.network_selected_height_gap, 24);
         assert_eq!(state.sync_state, "locating_common_ancestor");
         assert_eq!(state.catchup_stage, "discovering");
+    }
+    #[test]
+    fn retained_history_gap_prevents_canonical_synced_state_when_remote_evidence_ages_out() {
+        let chain = chain_at_selected_height(611);
+        let runtime = NodeRuntimeStats {
+            sync_state: "selected_segment_failed".into(),
+            selected_segment_retained_history_gap_peer_count: 1,
+            final_quiescence_selected_sync_blocked_reason: Some(
+                "selected_segment_no_progress_rearm".into(),
+            ),
+            ..NodeRuntimeStats::default()
+        };
+        let stale_remote = RemoteSelectedTipEvidence {
+            observed_at_unix: 900,
+            ..fresh_remote("peer-a", 1311)
+        };
+
+        let stale = build_canonical_sync_state_with_remote_evidence(
+            &chain,
+            &runtime,
+            chain.dag.blocks.len(),
+            1_000,
+            None,
+            &[stale_remote],
+        );
+        assert_eq!(stale.best_remote_selected_height, None);
+        assert_eq!(stale.sync_state, "selected_segment_failed");
+        assert_eq!(stale.catchup_stage, "degraded");
+        assert_eq!(
+            stale.recovery_reason.as_deref(),
+            Some("selected header sync blocked: retained_history_gap")
+        );
+        assert_ne!(stale.sync_state, "synced");
+
+        let fresh = build_canonical_sync_state_with_remote_evidence(
+            &chain,
+            &runtime,
+            chain.dag.blocks.len(),
+            1_000,
+            None,
+            &[fresh_remote("peer-a", 1311)],
+        );
+        assert_eq!(fresh.best_remote_selected_height, Some(1311));
+        assert_eq!(fresh.sync_state, "selected_segment_failed");
+        assert_eq!(fresh.catchup_stage, "degraded");
+        assert_ne!(fresh.sync_state, "synced");
     }
 }

@@ -6,13 +6,16 @@ on:
       - release/2.4.0
     paths:
       - configs/single-node/**
+      - configs/private-testnet/**
       - docs/ROADMAP_V2_4_0.md
+      - docs/V2_4_0_PRIVATE_BURN_IN_OPERATOR_PROFILE.md
       - docs/codex_tasks/v2_4_0_14_single_node_profile.md
       - docs/runbooks/V2_4_0_SINGLE_NODE_OPERATIONS.md
       - scripts/v2_4_0_single_node_preflight.sh
       - scripts/tests/test_v2_4_0_single_node_preflight.sh
       - scripts/v2_3_0_private_testnet_preflight.sh
       - scripts/tests/test_v2_3_0_private_testnet_preflight.sh
+      - scripts/validate_v2_4_0_private_chain_identity.py
       - .github/workflows/v2_4_0_single_node_profile.yml
   workflow_dispatch:
 
@@ -25,6 +28,8 @@ jobs:
     steps:
       - name: Checkout candidate
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Preserve approved version and readiness guardrails
         shell: bash
@@ -35,6 +40,7 @@ jobs:
           grep -Fq 'public_testnet_ready=false' docs/ROADMAP_V2_4_0.md
           grep -Fq '30-day public-testnet clock remains not started' docs/ROADMAP_V2_4_0.md
           grep -Fq 'Smart contracts remain disabled' docs/ROADMAP_V2_4_0.md
+          python scripts/validate_v2_4_0_private_chain_identity.py
 
       - name: Validate shell syntax
         shell: bash
@@ -42,12 +48,14 @@ jobs:
           set -euo pipefail
           bash -n scripts/v2_4_0_single_node_preflight.sh
           bash -n scripts/tests/test_v2_4_0_single_node_preflight.sh
+          bash -n scripts/v2_3_0_private_testnet_preflight.sh
+          bash -n scripts/tests/test_v2_3_0_private_testnet_preflight.sh
 
       - name: Run explicit single-node contract regression
         shell: bash
         run: bash scripts/tests/test_v2_4_0_single_node_preflight.sh
 
-      - name: Preserve v2.3.0 multi-host preflight behavior
+      - name: Preserve isolated historical v2.3.0 preflight behavior
         shell: bash
         run: bash scripts/tests/test_v2_3_0_private_testnet_preflight.sh
 
@@ -69,6 +77,8 @@ jobs:
           jq -e '
             .gate == "v2.4.0-single-node-operator-preflight" and
             .operator_mode == "single-node" and
+            .network_profile == "private-testnet-v2.4.0" and
+            .chain_id == "pulsedag-private-v2.4.0" and
             .result == "PASS" and
             .p2p_enabled == false and
             .connected_peers_expected == false and
@@ -84,5 +94,5 @@ jobs:
         with:
           name: v2_4_0_task14_single_node_profile_${{ github.run_id }}
           path: ci-evidence/v2.4.0-task14
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 90

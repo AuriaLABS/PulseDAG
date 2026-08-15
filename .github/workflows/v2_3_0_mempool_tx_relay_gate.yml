@@ -105,8 +105,6 @@ jobs:
         continue-on-error: true
         shell: bash
         env:
-          # The drill binds RPC to loopback and needs local operator wallet routes
-          # to fund and submit the runtime transactions.
           PULSEDAG_ADMIN_ENABLED: 'true'
         run: |
           set -euo pipefail
@@ -116,6 +114,15 @@ jobs:
             echo 'Unit mempool tests cannot substitute for five-node relay evidence.' >&2
             exit 43
           fi
+
+          # The rehearsal now builds the normal keyless node and signs funding
+          # transactions locally with the pulsedag-wallet harness. No source
+          # rewrite or legacy wallet-RPC feature is permitted here.
+          if grep -nE 'legacy-wallet-rpc|/wallet/(new|sign|transfer)' "$driver"; then
+            echo 'Runtime relay driver still depends on legacy wallet RPC.' >&2
+            exit 44
+          fi
+
           OUT_DIR="$PWD/ci-evidence/mempool-relay/runtime" "$driver" 2>&1 | tee ci-evidence/mempool-relay/runtime-drill.log
           manifest='ci-evidence/mempool-relay/runtime/evidence_manifest.json'
           jq -e '
