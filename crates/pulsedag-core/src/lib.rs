@@ -3,6 +3,7 @@ pub mod apply;
 pub mod consensus_metadata;
 pub mod consistency;
 pub mod errors;
+pub mod finality_v2;
 pub mod genesis;
 pub mod ghostdag;
 pub mod ghostdag_v1;
@@ -83,6 +84,11 @@ pub use protocol::{
 pub use consensus_metadata::{
     BlockConsensusMetadataV1, BlueScoreSemantics, ConsensusMetadataSnapshotV1,
     CONSENSUS_METADATA_SCHEMA_VERSION,
+};
+
+pub use finality_v2::{
+    derive_finality_boundary_v1, FinalityBoundaryV1, FinalityV2Error,
+    GHOSTDAG_V1_FINALITY_POLICY_VERSION,
 };
 
 pub use ordering::{
