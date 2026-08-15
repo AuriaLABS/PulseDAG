@@ -10664,6 +10664,19 @@ mod deterministic_p2p_sync_coverage_tests {
         let status = &state.remote_selected_tip_inventory["peer-a"].status;
         assert_eq!(status.inventory_generation, 2);
         assert_eq!(status.selected_height, 602);
+
+        let mut with_boundary = tip_inventory_for_test(3, 13);
+        with_boundary.prune_boundary_height = Some(321);
+        assert!(note_remote_tip_inventory(
+            &mut state,
+            "peer-a",
+            with_boundary,
+            14,
+            "Tips"
+        ));
+        let status = &state.remote_selected_tip_inventory["peer-a"].status;
+        assert_eq!(status.inventory_generation, 3);
+        assert_eq!(status.prune_boundary_height, Some(321));
     }
 
     #[test]

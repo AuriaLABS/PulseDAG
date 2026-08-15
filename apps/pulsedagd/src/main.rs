@@ -40,6 +40,10 @@ use pulsedag_rpc::routes::{
 };
 use pulsedag_storage::Storage;
 
+// Derive the advertised history floor from selected-parent continuity that is actually
+// present in memory. After a pruned restart, the first missing selected parent keeps
+// the boundary at the retained floor; isolated older anchors cannot make the node
+// advertise archival history accidentally.
 fn retained_selected_history_boundary(chain: &pulsedag_core::ChainState) -> Option<u64> {
     let mut current = pulsedag_core::preferred_tip_hash(chain)?;
 
@@ -8456,6 +8460,73 @@ mod tests {
         );
         assert_eq!(headers[0].hash, expected_first);
     }
+
+    #[test]
+    fn retained_history_boundary_advertises_genesis_and_full_history() {
+        let genesis = pulsedag_core::genesis::init_chain_state("boundary-genesis".to_string());
+        assert_eq!(retained_selected_history_boundary(&genesis), Some(0));
+        assert_eq!(
+            local_tip_inventory_status(&genesis).prune_boundary_height,
+            Some(0)
+        );
+
+        let full = build_test_chain("boundary-full-history", 5);
+        assert_eq!(retained_selected_history_boundary(&full), Some(0));
+        assert_eq!(
+            local_tip_inventory_status(&full).prune_boundary_height,
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn retained_history_boundary_reports_contiguous_pruned_floor_with_old_anchor() {
+        let mut chain = build_test_chain("boundary-pruned-history", 6);
+        assert!(chain.dag.selected_chain.len() >= 5);
+
+        let boundary_index = 3usize;
+        let boundary_hash = chain.dag.selected_chain[boundary_index].clone();
+        let boundary_height = chain
+            .dag
+            .blocks
+            .get(&boundary_hash)
+            .expect("retained boundary block")
+            .header
+            .height;
+        let genesis_hash = chain.dag.genesis_hash.clone();
+        let removed = chain.dag.selected_chain[1..boundary_index].to_vec();
+        for hash in removed {
+            assert!(chain.dag.blocks.remove(&hash).is_some());
+        }
+
+        assert!(
+            chain.dag.blocks.contains_key(&genesis_hash),
+            "old genesis anchor intentionally remains present"
+        );
+        assert!(chain.dag.blocks.contains_key(&boundary_hash));
+        assert_eq!(
+            retained_selected_history_boundary(&chain),
+            Some(boundary_height)
+        );
+        assert_eq!(
+            local_tip_inventory_status(&chain).prune_boundary_height,
+            Some(boundary_height)
+        );
+    }
+
+    #[test]
+    fn retained_history_boundary_is_unknown_for_empty_selected_state() {
+        let mut empty = pulsedag_core::genesis::init_chain_state("boundary-empty".to_string());
+        empty.dag.blocks.clear();
+        empty.dag.tips.clear();
+        empty.dag.selected_chain.clear();
+        empty.dag.selected_parents.clear();
+
+        assert_eq!(retained_selected_history_boundary(&empty), None);
+        assert_eq!(
+            local_tip_inventory_status(&empty).prune_boundary_height,
+            None
+        );
+    }
 }
 
 #[cfg(test)]
@@ -8490,6 +8561,30 @@ mod prune_boundary_peer_selection_tests {
         assert_eq!(
             selected_locator_peer_for_priority_gap(&status, 0, 1, &HashSet::new()),
             Some(("archival".to_string(), 300))
+        );
+    }
+
+    #[test]
+    fn prune_boundary_selection_returns_none_when_all_known_peers_are_incompatible() {
+        let status = P2pStatus {
+            remote_selected_tip_inventory: vec![
+                remote("too-new-a", 500, Some(2)),
+                remote("too-new-b", 700, Some(100)),
+            ],
+            ..Default::default()
+        };
+        assert_eq!(
+            selected_locator_peer_for_priority_gap(&status, 0, 1, &HashSet::new()),
+            None
+        );
+
+        let local = TipInventoryStatus {
+            selected_height: Some(0),
+            ..Default::default()
+        };
+        assert_eq!(
+            selected_locator_peer_for_reconcile(&status, &local, &HashSet::new()),
+            None
         );
     }
 
