@@ -121,7 +121,7 @@ def main() -> int:
 
     required_markers = {
         Path("README.md"): ["# PulseDAG v2.4.0", "`public_testnet_ready=false`"],
-        Path("docs/README.md"): ["active release-preparation target is **v2.4.0**"],
+        Path("docs/README.md"): ["active software release is **v2.4.0**"],
         Path("docs/VERSION_MATRIX.md"): [
             "| VERSION file | `v2.4.0` |",
             "| Cargo workspace version | `2.4.0` |",
@@ -134,7 +134,7 @@ def main() -> int:
         Path("docs/release/V2_4_0_RELEASE_NOTES.md"): ["# PulseDAG v2.4.0 release notes"],
         Path("docs/release/V2_4_0_RELEASE_DECISION.md"): [
             "# PulseDAG v2.4.0 release decision",
-            "PREPARE_VERSIONED_RELEASE_CANDIDATE",
+            "APPROVE_TAG_AND_PUBLICATION",
         ],
         Path("docs/checklists/V2_4_0_PRIVATE_TESTNET_RELEASE_CLOSEOUT.md"): [
             "# v2.4.0 private-testnet release closeout checklist"
