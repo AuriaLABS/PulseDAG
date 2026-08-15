@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Existing tag to publish (for example: v1.2.3)"
+        description: "Existing tag to publish (for example: v2.4.0)"
         required: true
         type: string
 
@@ -106,7 +106,7 @@ jobs:
             --run-id "${{ github.run_id }}" \
             --run-attempt "${{ github.run_attempt }}" \
             --include-file README.md \
-            --include-file docs/INSTALL_BINARIES_V2_3_0.md
+            --include-file docs/INSTALL_BINARIES_V2_4_0.md
 
           python scripts/release/package_release_artifacts.py \
             --binary "${miner_binary}" \
@@ -118,7 +118,7 @@ jobs:
             --run-id "${{ github.run_id }}" \
             --run-attempt "${{ github.run_attempt }}" \
             --include-file README.md \
-            --include-file docs/INSTALL_BINARIES_V2_3_0.md
+            --include-file docs/INSTALL_BINARIES_V2_4_0.md
 
       - name: Verify packaged standalone miner assets on native runner
         shell: bash

@@ -10,11 +10,16 @@ import subprocess
 import sys
 from pathlib import Path
 
+# v2.2 document/workflow families remain explicitly legacy-classified. v2.3 release
+# material is retained in-place as release provenance and must not be interpreted as an
+# active version claim merely because its filename contains V2_3_0.
 HISTORICAL_DOC = re.compile(r"(?:^|_)V?2_2_(?:\d+)(?:_|\.|$)", re.IGNORECASE)
 HISTORICAL_WORKFLOW = re.compile(r"^v2_2_\d+_", re.IGNORECASE)
 STALE_ACTIVE_CLAIM = re.compile(
-    r"(?:^#\s+PulseDAG\s+v2\.2\.|current\s+(?:milestone|baseline|version)[^\n]*v2\.2\.|"
-    r"repository\s+version[^\n]*v2\.2\.|cargo\s+workspace\s+version[^\n]*2\.2\.)",
+    r"(?:^#\s+PulseDAG\s+v2\.(?:2|3)\.|"
+    r"current\s+(?:milestone|baseline|version)[^\n]*v2\.(?:2|3)\.|"
+    r"repository\s+version[^\n]*v2\.(?:2|3)\.|"
+    r"cargo\s+workspace\s+version[^\n]*2\.(?:2|3)\.)",
     re.IGNORECASE | re.MULTILINE,
 )
 
@@ -25,6 +30,11 @@ ACTIVE_CLAIM_FILES = [
     Path("docs/RUNBOOK.md"),
     Path("docs/RELEASE_EVIDENCE.md"),
     Path("docs/BURN_IN_GATE.md"),
+    Path("docs/release/ARTIFACTS.md"),
+    Path("docs/INSTALL_BINARIES_V2_4_0.md"),
+    Path("docs/release/V2_4_0_RELEASE_NOTES.md"),
+    Path("docs/release/V2_4_0_RELEASE_DECISION.md"),
+    Path("docs/checklists/V2_4_0_PRIVATE_TESTNET_RELEASE_CLOSEOUT.md"),
     Path("apps/pulsedag-miner/README.md"),
 ]
 
@@ -106,22 +116,30 @@ def main() -> int:
 
     version = Path("VERSION").read_text(encoding="utf-8").strip()
     cargo = cargo_version()
-    if version != "v2.3.0" or cargo != "2.3.0":
-        failures.append(f"expected v2.3.0/2.3.0, found {version}/{cargo or 'missing'}")
+    if version != "v2.4.0" or cargo != "2.4.0":
+        failures.append(f"expected v2.4.0/2.4.0, found {version}/{cargo or 'missing'}")
 
     required_markers = {
-        Path("README.md"): ["# PulseDAG v2.3.0", "PENDING_FINAL_CANDIDATE_EVIDENCE"],
+        Path("README.md"): ["# PulseDAG v2.4.0", "`public_testnet_ready=false`"],
+        Path("docs/README.md"): ["active release-preparation target is **v2.4.0**"],
         Path("docs/VERSION_MATRIX.md"): [
-            "| VERSION file | `v2.3.0` |",
-            "| Cargo workspace version | `2.3.0` |",
+            "| VERSION file | `v2.4.0` |",
+            "| Cargo workspace version | `2.4.0` |",
         ],
-        Path("docs/RUNBOOK.md"): ["# PulseDAG v2.3.0 operator runbook"],
-        Path("docs/RELEASE_EVIDENCE.md"): ["# PulseDAG v2.3.0 release evidence policy"],
-        Path("docs/BURN_IN_GATE.md"): ["# v2.3.0 public-testnet burn-in gate"],
-        Path("docs/checklists/V2_3_0_PRIVATE_TESTNET_RELEASE_CLOSEOUT.md"): [
-            "# v2.3.0 private-testnet release closeout checklist"
+        Path("docs/RUNBOOK.md"): ["# PulseDAG v2.4.0 operator runbook"],
+        Path("docs/RELEASE_EVIDENCE.md"): ["# PulseDAG v2.4.0 release evidence policy"],
+        Path("docs/BURN_IN_GATE.md"): ["# v2.4.0 public-testnet burn-in gate"],
+        Path("docs/release/ARTIFACTS.md"): ["# Release artifacts and checksums (v2.4.0)"],
+        Path("docs/INSTALL_BINARIES_V2_4_0.md"): ["# Install binaries v2.4.0"],
+        Path("docs/release/V2_4_0_RELEASE_NOTES.md"): ["# PulseDAG v2.4.0 release notes"],
+        Path("docs/release/V2_4_0_RELEASE_DECISION.md"): [
+            "# PulseDAG v2.4.0 release decision",
+            "PREPARE_VERSIONED_RELEASE_CANDIDATE",
         ],
-        Path("apps/pulsedag-miner/README.md"): ["# pulsedag-miner v2.3.0"],
+        Path("docs/checklists/V2_4_0_PRIVATE_TESTNET_RELEASE_CLOSEOUT.md"): [
+            "# v2.4.0 private-testnet release closeout checklist"
+        ],
+        Path("apps/pulsedag-miner/README.md"): ["# pulsedag-miner v2.4.0"],
     }
     for path, markers in required_markers.items():
         if not path.is_file():
@@ -146,13 +164,13 @@ def main() -> int:
             if not path.is_file() or is_excluded_active_doc(path):
                 continue
             if HISTORICAL_DOC.search(path.name):
-                failures.append(f"historical document remains in active docs tree: {path}")
+                failures.append(f"historical v2.2 document remains in active docs tree: {path}")
 
     workflow_root = Path(".github/workflows")
     if workflow_root.is_dir():
         for path in sorted(workflow_root.iterdir()):
             if path.is_file() and HISTORICAL_WORKFLOW.search(path.name):
-                failures.append(f"historical workflow remains active: {path}")
+                failures.append(f"historical v2.2 workflow remains active: {path}")
 
     paths = tracked_files()
     require_family_manifest(
@@ -177,8 +195,9 @@ def main() -> int:
     for warning in warnings:
         print(f"[WARN] {warning}", file=sys.stderr)
     if not failures:
-        print("[PASS] active repository surfaces identify v2.3.0 consistently")
-        print("[PASS] historical documents and workflows are outside active roots")
+        print("[PASS] active repository surfaces identify v2.4.0 consistently")
+        print("[PASS] v2.3 release material is retained as provenance, not active-version state")
+        print("[PASS] v2.2 historical documents and workflows remain outside active roots")
 
     if failures and not args.report:
         return 1

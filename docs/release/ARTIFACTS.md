@@ -1,94 +1,93 @@
-# Release artifacts and checksums (v2.2.6)
+# Release artifacts and checksums (v2.4.0)
 
 ## Scope guardrails
+
 This guide is limited to release engineering and operator packaging workflow.
 
-- No consensus behavior changes.
+- No consensus behavior is changed by packaging.
 - Miner remains external and standalone.
+- Node release builds are keyless and do not provide raw-private-key wallet RPC custody.
 - No pool logic is introduced.
+- Packaging/publication does not authorize public-testnet launch.
 
 ## Cargo.lock policy for CI and release builds
-Release engineering now uses an explicit lockfile policy:
 
-- `Cargo.lock` is a committed release input and must be up to date with workspace manifests.
-- CI/release workflows run an early fail-fast lock validation (`cargo metadata --locked`) before build/test packaging work.
-- Release builds run with `cargo build --locked` to prevent silent lockfile mutation.
+`Cargo.lock` is a committed release input and must be synchronized with workspace manifests. Release workflows fail fast with `cargo metadata --locked` and build with `--locked` so dependency resolution cannot drift silently.
 
-This keeps release dependency resolution deterministic and reproducible across reruns and platforms.
+For the v2.4.0 version bump, update only the local PulseDAG workspace package versions required by the workspace version change. Do not combine the mechanical version bump with unrelated dependency upgrades.
 
 ### Intentional dependency change procedure
-If dependency resolution must change, do it as a deliberate source change:
 
-1. Update manifests as needed.
-2. Regenerate/update lockfile (`cargo generate-lockfile` or targeted `cargo update`).
-3. Commit the `Cargo.lock` diff in the same PR.
-4. Let CI validate the updated lockfile in locked mode.
+If dependency resolution must change:
 
-Follow-up policy decision (if needed): whether to also enforce `--locked` in all non-release build/test jobs. Current policy enforces fail-fast lock drift checks broadly and strict locked mode in release builds.
+1. update manifests intentionally;
+2. regenerate/update the lockfile;
+3. commit the lockfile diff with the dependency change;
+4. rerun the full dependency/RustSec and exact-SHA release validation matrix.
 
 ## Asset naming convention
+
 The `release-binaries` workflow publishes two standalone binary families per target:
 
-- Node: `pulsedagd-<tag>-<target>.tar.gz` (Linux/macOS) or `.zip` (Windows)
-- External miner: `pulsedag-miner-<tag>-<target>.tar.gz` (Linux/macOS) or `.zip` (Windows)
+- Node: `pulsedagd-<tag>-<target>.tar.gz` (Linux/macOS) or `.zip` (Windows).
+- External miner: `pulsedag-miner-<tag>-<target>.tar.gz` (Linux/macOS) or `.zip` (Windows).
 
-Examples:
-- `pulsedagd-v2.2.6-x86_64-unknown-linux-gnu.tar.gz`
-- `pulsedag-miner-v2.2.6-x86_64-unknown-linux-gnu.tar.gz`
-- `pulsedagd-v2.2.6-x86_64-pc-windows-msvc.zip`
-- `pulsedag-miner-v2.2.6-x86_64-pc-windows-msvc.zip`
+v2.4.0 examples:
 
-Each archive contains a single top-level folder matching the archive stem, with exactly one binary inside (`pulsedagd` or `pulsedag-miner`).
+- `pulsedagd-v2.4.0-x86_64-unknown-linux-gnu.tar.gz`;
+- `pulsedag-miner-v2.4.0-x86_64-unknown-linux-gnu.tar.gz`;
+- `pulsedagd-v2.4.0-x86_64-pc-windows-msvc.zip`;
+- `pulsedag-miner-v2.4.0-x86_64-pc-windows-msvc.zip`;
+- `pulsedagd-v2.4.0-x86_64-apple-darwin.tar.gz`;
+- `pulsedag-miner-v2.4.0-x86_64-apple-darwin.tar.gz`.
 
-`pulsedag-miner` remains external and standalone; release packaging does not introduce any pool behavior or pool-facing interfaces.
+Each archive contains a single top-level folder matching the archive stem, with the expected binary inside. `pulsedag-miner` remains external and standalone.
 
-## Checksum outputs
+If an official `pulsedag-wallet` executable is later added to the v2.4.0 publication set, extend the release workflow and allowlist explicitly; do not smuggle it into an existing node/miner archive.
+
+## Checksum and provenance outputs
+
 For every archive the workflow emits:
 
-- Per-asset checksum sidecar: `<archive>.sha256`
-- Per-asset manifest metadata: `<archive>.json`
-- Consolidated checksum list across all archives: `SHA256SUMS.txt`
-- Consolidated provenance summary: `release-provenance.json`
-- Generated operator install verification guide: `INSTALL-VERIFY.md`
+- `<archive>.sha256`;
+- `<archive>.json` build manifest;
+- GitHub build-provenance attestation;
+- consolidated `SHA256SUMS.txt`;
+- consolidated `release-provenance.json`;
+- generated `INSTALL-VERIFY.md`.
 
-In addition, each platform archive is attested in GitHub artifact attestations using the release workflow identity (OIDC-backed provenance).
-The workflow now performs end-to-end verification in both jobs: it validates every archive, checksum sidecar, and manifest; unpacks each archive; and runs basic smoke commands on unpacked `pulsedagd` and `pulsedag-miner` binaries before publish.
-
-Release CI also includes a miner-only verification path (`cargo check -p pulsedag-miner` plus packaged-miner smoke validation) so standalone miner changes are validated independently from full node packaging.
-
-Per-archive JSON manifests now include:
-- `archive_sha256`
-- `archive_size_bytes`
-- `provenance.repository`
-- `provenance.commit`
-- `provenance.github_run_id`
-- `provenance.github_run_attempt`
+Per-archive manifests include archive digest/size plus repository, commit and workflow-run provenance. The publish job re-verifies the downloaded artifact set before release creation/upload.
 
 ## CI end-to-end verification flow
-`release-binaries` validates packaged assets twice:
 
-1. **Build job (`dist/`)**
-   - Runs miner-only compile verification: `cargo check --locked -p pulsedag-miner`.
-   - Builds both binaries for release packaging: `cargo build --locked --release --bin pulsedagd --bin pulsedag-miner`.
-   - Verifies `<archive>.sha256` matches archive bytes.
-   - Verifies `<archive>.json` metadata (`archive`, digest, size, tag, provenance).
-   - Runs miner-only packaged verification (`--expect-binaries pulsedag-miner`) with unpack + smoke.
-   - Runs node+miner packaged verification (`--expect-binaries pulsedagd pulsedag-miner`) with unpack + smoke.
-   - Node expectations still include the RocksDB-backed storage compile path as part of full node build/package validation.
+### Build job
 
-2. **Publish job (`final/`)**
-   - Re-verifies per-archive checksums and manifests after artifact download/flattening.
-   - Builds and validates `SHA256SUMS.txt`.
-   - Builds and validates `release-provenance.json` against all per-archive manifests.
-   - Generates `INSTALL-VERIFY.md` from manifest metadata so operator verification snippets always match shipped archives.
-   - Repeats unpack + smoke checks for node and miner release assets.
+- validate `Cargo.lock` in locked mode;
+- verify standalone miner crate build surface;
+- build node and miner release binaries;
+- package each binary with the exact requested tag/target identity;
+- verify checksum and manifest metadata;
+- unpack and smoke-test the standalone miner;
+- unpack and smoke-test the node/miner asset set;
+- attest release archives;
+- upload the native artifact bundle.
+
+### Publish job
+
+- download and flatten matrix artifacts while rejecting duplicate filenames;
+- verify every archive/checksum/manifest pair;
+- build and verify `SHA256SUMS.txt` and `release-provenance.json`;
+- generate `INSTALL-VERIFY.md`;
+- verify the final allowlisted bundle structure;
+- create/upload the GitHub Release only after all validation steps pass.
 
 ## Operator verification before upgrade
+
 From a release download directory:
 
 ```bash
-sha256sum -c pulsedagd-v2.2.6-x86_64-unknown-linux-gnu.tar.gz.sha256
-sha256sum -c pulsedag-miner-v2.2.6-x86_64-unknown-linux-gnu.tar.gz.sha256
+sha256sum -c pulsedagd-v2.4.0-x86_64-unknown-linux-gnu.tar.gz.sha256
+sha256sum -c pulsedag-miner-v2.4.0-x86_64-unknown-linux-gnu.tar.gz.sha256
 sha256sum -c SHA256SUMS.txt --ignore-missing
 ```
 
@@ -98,39 +97,22 @@ Optional provenance spot-check:
 jq '.artifacts[] | {archive, archive_sha256, provenance}' release-provenance.json
 ```
 
-Install verification guide (release-generated):
+Then follow `INSTALL-VERIFY.md` and [`../INSTALL_BINARIES_V2_4_0.md`](../INSTALL_BINARIES_V2_4_0.md). Do not deploy an archive with a checksum/provenance mismatch.
 
-```bash
-cat INSTALL-VERIFY.md
-```
+## Repeatable standalone operator smoke flow
 
-Then unpack and stage:
-
-```bash
-tar -xzf pulsedagd-v2.2.6-x86_64-unknown-linux-gnu.tar.gz
-./pulsedagd-v2.2.6-x86_64-unknown-linux-gnu/pulsedagd --version
-
-tar -xzf pulsedag-miner-v2.2.6-x86_64-unknown-linux-gnu.tar.gz
-./pulsedag-miner-v2.2.6-x86_64-unknown-linux-gnu/pulsedag-miner --help
-```
-
-## Repeatable standalone operator smoke flow (node + miner)
-For a practical standalone operator flow (without introducing pool semantics):
-
-1. Verify release sidecars and manifests as above.
-2. Run a short local smoke using external miner behavior only:
+For a practical local node + external-miner smoke:
 
 ```bash
 scripts/release/standalone_operator_smoke.sh --miner-address YOUR_ADDRESS
 ```
 
-What this smoke does:
-- confirms standalone binary surfaces are callable (`pulsedagd --version`, `pulsedag-miner --help`);
-- starts a local node and waits for `/status`;
-- runs one external miner probe (`template -> nonce search -> submit`) with bounded tries.
-
-This flow is intentionally operator-focused: miner stays external/standalone, and no pool logic or consensus changes are introduced.
+This confirms the standalone binary surfaces, starts a local node, waits for status/health, and runs a bounded external-miner template/search/submit probe. It does not introduce pool behavior or public launch authorization.
 
 ## Rollback packaging guidance
-Keep the previously known-good archive and its `.sha256` file in the same artifact store used for staging evidence.
-If rollback is required, verify checksum again before redeploying the old binary.
+
+Keep the previously known-good archive, checksum and provenance material in the staging/evidence store. If rollback is required, verify the old asset again before redeploying it. Preserve persistent identity and storage according to the approved rollback/recovery procedure.
+
+## Release boundary
+
+The v2.4.0 tag and GitHub Release remain blocked until the exact versioned candidate is approved. Publication still does not set `GO_PUBLIC_TESTNET`, Day 0, the 30-day clock, contracts, or production/mainnet custody state.

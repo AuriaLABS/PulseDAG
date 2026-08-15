@@ -1,0 +1,63 @@
+name: v2.4.0 release promotion
+
+on:
+  push:
+    branches:
+      - release/2.4.0
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  promote:
+    name: Promote exact v2.4.0 SHA
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout exact release branch SHA
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify v2.4.0 release authorization and identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(tr -d '\r\n' < VERSION)" = "v2.4.0"
+          test "$(awk '/^version = / {gsub(/"/, "", $3); print $3; exit}' Cargo.toml)" = "2.4.0"
+          python scripts/repository_version_surface_audit.py --strict
+          grep -Fq '`APPROVE_TAG_AND_PUBLICATION`' docs/release/V2_4_0_RELEASE_DECISION.md
+          grep -Fq '`public_testnet_ready=false`' docs/release/V2_4_0_RELEASE_DECISION.md
+          grep -Fq '`thirty_day_public_testnet_clock_started=false`' docs/release/V2_4_0_RELEASE_DECISION.md
+
+      - name: Create immutable v2.4.0 tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="v2.4.0"
+          existing="$(git ls-remote --refs origin "refs/tags/${tag}" | awk '{print $1}')"
+          if [ -n "${existing}" ]; then
+            if [ "${existing}" != "${GITHUB_SHA}" ]; then
+              echo "::error::${tag} already exists at ${existing}; refusing to move immutable release tag to ${GITHUB_SHA}."
+              exit 1
+            fi
+            echo "${tag} already points to ${GITHUB_SHA}; no tag mutation required."
+          else
+            git tag "${tag}" "${GITHUB_SHA}"
+            git push origin "refs/tags/${tag}"
+            echo "created ${tag} -> ${GITHUB_SHA}"
+          fi
+
+      - name: Dispatch official release-binaries workflow
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh workflow run release-binaries.yml \
+            --repo "${GH_REPO}" \
+            --ref release/2.4.0 \
+            -f tag=v2.4.0
+          echo "dispatched release-binaries.yml for v2.4.0 at ${GITHUB_SHA}"

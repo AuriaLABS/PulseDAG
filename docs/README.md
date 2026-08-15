@@ -1,41 +1,34 @@
 # PulseDAG documentation
 
-Active release documentation targets the `v2.3.0` private-testnet line. Planning and implementation for `v2.4.0` are active on the `release/2.4.0` branch and do not authorize a version bump, tag, or public-testnet launch.
+The active software release is **v2.4.0**. Older v2.3.x and v2.2.x material remains available as historical release evidence, compatibility documentation, or archived operator context; it must not be mistaken for the active version contract.
 
-## Operator documentation
+## v2.4.0 release and operations
 
-- [`RUNBOOK.md`](RUNBOOK.md)
-- [`runbooks/V2_3_0_PRIVATE_TESTNET_OPERATIONS.md`](runbooks/V2_3_0_PRIVATE_TESTNET_OPERATIONS.md)
-- [`INSTALL_BINARIES_V2_3_0.md`](INSTALL_BINARIES_V2_3_0.md)
-- [`API_V1.md`](API_V1.md)
-- [`POW_SPEC_FINAL.md`](POW_SPEC_FINAL.md)
-- [`POW_CURRENT_PATH.md`](POW_CURRENT_PATH.md)
+- [Roadmap](ROADMAP_V2_4_0.md)
+- [Difficulty retarget contract](DIFFICULTY_RETARGET_V2_4_0.md)
+- [Version matrix](VERSION_MATRIX.md)
+- [Operator runbook](RUNBOOK.md)
+- [Single-node private burn-in operations](runbooks/V2_4_0_SINGLE_NODE_OPERATIONS.md)
+- [Binary installation and verification](INSTALL_BINARIES_V2_4_0.md)
+- [Release evidence policy](RELEASE_EVIDENCE.md)
+- [Burn-in gate](BURN_IN_GATE.md)
+- [Release notes](release/V2_4_0_RELEASE_NOTES.md)
+- [Release decision](release/V2_4_0_RELEASE_DECISION.md)
+- [Private-testnet release closeout](checklists/V2_4_0_PRIVATE_TESTNET_RELEASE_CLOSEOUT.md)
+- [Public-testnet operator entry checklist](checklists/PUBLIC_TESTNET_OPERATOR_ENTRY_CHECKLIST.md)
 
-## Evidence and closeout
+## Release boundary
 
-- [`RELEASE_EVIDENCE.md`](RELEASE_EVIDENCE.md)
-- [`checklists/V2_3_0_PRIVATE_TESTNET_RELEASE_CLOSEOUT.md`](checklists/V2_3_0_PRIVATE_TESTNET_RELEASE_CLOSEOUT.md)
-- [`BURN_IN_GATE.md`](BURN_IN_GATE.md)
-- [`checklists/PUBLIC_TESTNET_OPERATOR_ENTRY_CHECKLIST.md`](checklists/PUBLIC_TESTNET_OPERATOR_ENTRY_CHECKLIST.md)
-- [`benchmarks/P2P_SYNC_RPC_BASELINE_METHODOLOGY_V2_3_0.md`](benchmarks/P2P_SYNC_RPC_BASELINE_METHODOLOGY_V2_3_0.md)
-- [`benchmarks/P2P_SYNC_RPC_BASELINE_OUTPUT_TEMPLATE_V2_3_0.md`](benchmarks/P2P_SYNC_RPC_BASELINE_OUTPUT_TEMPLATE_V2_3_0.md)
+The v2.4.0 software release is authorized independently from public-testnet launch. Until the separate launch-control decision and actual public launch are recorded:
 
-## Planning and decisions
+- `public_testnet_ready=false`;
+- `thirty_day_public_testnet_clock_started=false`;
+- `contracts_enabled=false`.
 
-- [`ROADMAP_V2_4_0.md`](ROADMAP_V2_4_0.md)
-- [`DIFFICULTY_RETARGET_V2_4_0.md`](DIFFICULTY_RETARGET_V2_4_0.md)
-- [`ROADMAP_V2_3_0.md`](ROADMAP_V2_3_0.md)
-- [`VERSION_MATRIX.md`](VERSION_MATRIX.md)
-- [`V2_3_0_GITHUB_ACTIONS_GATES.md`](V2_3_0_GITHUB_ACTIONS_GATES.md)
-- [`release/V2_3_0_RELEASE_NOTES.md`](release/V2_3_0_RELEASE_NOTES.md)
-- [`release/V2_3_0_RELEASE_DECISION.md`](release/V2_3_0_RELEASE_DECISION.md)
-- [`release/V2_3_0_RELEASE_APPROVAL_RECORD.md`](release/V2_3_0_RELEASE_APPROVAL_RECORD.md)
+Any source or fixed launch-configuration change after an exact-SHA validation freeze requires the affected validation and operational evidence to be regenerated on the new exact SHA.
 
-## Maintenance and history
+## Historical material
 
-- [`REPOSITORY_STANDARDS.md`](REPOSITORY_STANDARDS.md)
-- [`REPOSITORY_CLEANUP_PLAN_V2_3_0.md`](REPOSITORY_CLEANUP_PLAN_V2_3_0.md)
-- [`archive/README.md`](archive/README.md)
-- [`codex_tasks/`](codex_tasks/)
-
-v2.4.0 work must preserve the approved v2.3.0 operational baseline until a separate release decision authorizes version changes. Consensus changes require a clean private-testnet restart or an explicitly reviewed activation boundary. Historical v2.2.x evidence belongs in the archive or immutable Git history. Public-testnet readiness remains false until a separate explicit launch decision.
+- [Historical archive](archive/README.md)
+- v2.3.0 release, installation, operations, evidence, and closeout documents are retained for provenance and compatibility.
+- v2.2.x material remains historical unless an active document explicitly references it as a supported compatibility surface.

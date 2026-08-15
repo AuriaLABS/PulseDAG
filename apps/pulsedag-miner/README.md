@@ -1,104 +1,41 @@
-# pulsedag-miner v2.3.0
+# pulsedag-miner v2.4.0
 
-`pulsedag-miner` is the official external standalone miner for PulseDAG.
+`pulsedag-miner` is the standalone external miner for PulseDAG v2.4.0. Mining remains outside `pulsedagd`; pool logic, shares, payouts and accounting are not node responsibilities.
 
-Canonical references:
-
-- [`docs/POW_SPEC_FINAL.md`](../../docs/POW_SPEC_FINAL.md)
-- [`docs/POW_CURRENT_PATH.md`](../../docs/POW_CURRENT_PATH.md)
-- [`docs/INSTALL_BINARIES_V2_3_0.md`](../../docs/INSTALL_BINARIES_V2_3_0.md)
-
-## Scope
-
-The miner performs three operations:
-
-1. request a mining template from a node;
-2. solve PoW outside the node;
-3. submit the solved block to the node.
-
-It does not implement pool logic, shares, payouts, accounting, or server-side pool coordination.
-
-## Run from source
+## Build
 
 ```bash
-cargo run --locked -p pulsedag-miner -- \
-  --node http://127.0.0.1:8080 \
-  --miner-address YOUR_ADDRESS \
-  --threads 4 \
-  --max-tries 500000 \
-  --loop \
-  --sleep-ms 1000 \
-  --refresh-before-expiry-ms 1000
+cargo build --locked --release -p pulsedag-miner
 ```
 
-## Run a release binary
-
-Official archives use the pattern:
-
-`pulsedag-miner-v2.3.0-<target>.*`
-
-Linux example:
+## Run
 
 ```bash
-tar -xzf pulsedag-miner-v2.3.0-x86_64-unknown-linux-gnu.tar.gz
-./pulsedag-miner-v2.3.0-x86_64-unknown-linux-gnu/pulsedag-miner --help
-./pulsedag-miner-v2.3.0-x86_64-unknown-linux-gnu/pulsedag-miner \
+target/release/pulsedag-miner \
   --node http://127.0.0.1:8080 \
   --miner-address YOUR_ADDRESS \
   --threads 4 \
   --loop \
-  --sleep-ms 1500
+  --sleep-ms 1500 \
+  --max-tries 50000
 ```
 
-Each archive is accompanied by a `.sha256` checksum and `.json` provenance manifest. The release binary runs independently of the source tree and does not require Cargo.
+Use a node endpoint/profile that explicitly permits mining operations. The public-safe listener is not an operator/mining control plane.
 
-## Supported flags
+The miner distinguishes ordinary nonce-search exhaustion from canonical backend verification failure and treats unknown submit finality as non-final pending bounded reconciliation. Do not count unresolved finality as a definitive node rejection and do not blindly resubmit stale work.
 
-- `--node`
-- `--miner-address`
-- `--max-tries`
-- `--loop`
-- `--sleep-ms`
-- `--threads`
-- `--refresh-before-expiry-ms`
-- `--backend`
-- `--gpu-device`
-- `--heartbeat` / `--no-heartbeat`
-- `--worker-id`
+## Release artifacts
 
-## CPU and GPU backends
+The canonical installation and checksum instructions are in [`docs/INSTALL_BINARIES_V2_4_0.md`](../../docs/INSTALL_BINARIES_V2_4_0.md).
 
-The CPU backend is the default and the canonical operational reference.
+Expected release archive names include the version and target triple, for example:
 
-The optional GPU backend is feature-gated:
+- `pulsedag-miner-v2.4.0-x86_64-unknown-linux-gnu.tar.gz`;
+- `pulsedag-miner-v2.4.0-x86_64-pc-windows-msvc.zip`;
+- `pulsedag-miner-v2.4.0-x86_64-apple-darwin.tar.gz`.
 
-```bash
-cargo build --locked -p pulsedag-miner --release --features gpu
-./target/release/pulsedag-miner \
-  --node http://127.0.0.1:8080 \
-  --miner-address YOUR_ADDRESS \
-  --backend gpu \
-  --loop
-```
-
-Every nonce produced by a GPU backend must be verified through the canonical CPU/core PoW path before submission. GPU support remains optional and does not change consensus or add pool functionality. See [`GPU.md`](GPU.md).
-
-## Deterministic multi-thread search
-
-Worker `t` searches the strided nonce sequence:
-
-`nonce = t, t + T, t + 2T, ...`
-
-where `T` is the effective thread count. This limits obvious overlap and preserves a reproducible search schedule.
-
-## Operator smoke
-
-```bash
-scripts/release/standalone_operator_smoke.sh --miner-address YOUR_ADDRESS
-```
-
-This validates packaged standalone artifacts and a short node-plus-external-miner flow.
+Every published archive must have the matching SHA-256 file and build manifest/provenance required by the release workflow.
 
 ## Release boundary
 
-The repository is at `v2.3.0`, but tag creation and GitHub Release publication still require a separate final private-testnet release decision. This guide does not authorize a public-testnet launch.
+The v2.4.0 tag and GitHub Release are authorized once the exact software-release candidate passes the required release gates. Publication does not authorize public-testnet launch, Day 0, the 30-day public-testnet clock, contracts, or production/mainnet custody.

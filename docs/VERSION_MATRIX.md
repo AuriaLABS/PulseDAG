@@ -1,60 +1,50 @@
-# PulseDAG Version Matrix
+# PulseDAG version matrix
 
-## Current baseline
+## Current active baseline
 
-| Area | Value |
-|---|---|
-| VERSION file | `v2.3.0` |
-| Cargo workspace version | `2.3.0` |
-| Current milestone | v2.3.0 private-testnet release candidate |
-| Candidate state | Exact versioned candidate merged; final private-testnet release decision pending |
-| Final decision | `PENDING_FINAL_CANDIDATE_EVIDENCE` |
-| Tag | No `v2.3.0` tag created |
-| Publication | GitHub Release publication not authorized |
-| Public testnet | `public_testnet_ready=false` |
-| 30-day clock | Not started |
+| Surface | Active value |
+| --- | --- |
+| VERSION file | `v2.4.0` |
+| Cargo workspace version | `2.4.0` |
+| Current milestone | v2.4.0 software release |
+| Release decision | `APPROVE_TAG_AND_PUBLICATION` after final exact-SHA release gates |
+| Authoritative release identity | immutable commit referenced by tag `v2.4.0` |
+| `public_testnet_ready` | `false` |
+| `thirty_day_public_testnet_clock_started` | `false` |
+| `contracts_enabled` | `false` |
+
+The pre-bump implementation baseline was validated on exact SHA `8a1a5f74e03eae695e76bf8a84ddc9d48f94db34`. That evidence remains historical provenance. The published v2.4.0 release identity is defined by the immutable `v2.4.0` tag and its attached artifact provenance.
 
 ## Version progression
 
-| Version | Scope | Status |
-|---|---|---|
-| `v2.2.17` | API, operator, and security hardening | Historical |
-| `v2.2.18` | Private-testnet RC preparation and evidence gates | Historical |
-| `v2.2.19` | Private hardening and operator rehearsal | Historical |
-| `v2.2.20` | Final v2.2 hardening, protected rehearsal, and closeout evidence | Historical baseline for v2.3.0 |
-| `v2.3.0` | Current private-testnet release candidate | Active |
+| Version | Status | Scope |
+| --- | --- | --- |
+| v2.2.x | Historical | Earlier private-testnet development and evidence |
+| v2.3.0 | Historical release baseline | Previous private-testnet release and operational evidence |
+| v2.4.0 | Active software release | Consensus retarget hardening, sync/recovery, public-safe RPC, security gates, professional wallet boundary, release/infrastructure rehearsal |
 
-Historical documents are retained through [the archive index](archive/README.md). They are evidence and provenance, not current operator instructions.
+## v2.4.0 identity
 
-## v2.3.0 accepted evidence
+Private v2.4.0 validation uses the dedicated identity:
 
-| Gate | Status | Reference |
-|---|---|---|
-| Protected five-node private-testnet rehearsal | `GO` | `docs/ROADMAP_V2_3_0.md` and Task 12 evidence records |
-| Exact candidate contract | `PASS` | Candidate workflow `29800778099` |
-| Linux x86_64 package and native smoke | `PASS` | Candidate workflow `29800778099` |
-| Windows x86_64 package and native smoke | `PASS` | Candidate workflow `29800778099` |
-| macOS x86_64 package and native smoke | `PASS` | Candidate workflow `29800778099` |
-| Consolidated six-archive bundle | `PASS` | `v2_3_0_candidate_consolidated_29800778099` |
-| Workspace format/check/tests/Clippy | `PASS` | Pre-burn-in verification on the exact candidate |
-| RPC and release validation | `PASS` | Exact candidate checks |
-| Repository hygiene | `PASS` | Exact candidate checks |
+- network profile: `private-testnet-v2.4.0`;
+- chain ID: `pulsedag-private-v2.4.0`;
+- consensus mode: `legacy` where required by the supported v2.4 single-parent/tip policy.
 
-## Current authorization boundary
+Final public-testnet chain identity, genesis/configuration digests, bootnodes, launch timestamp and Day 0 must be frozen and recorded by the separate launch process. They must not be inferred from a private candidate or from the software release tag alone.
 
-`APPROVE_RELEASE_CANDIDATE` authorized the versioned candidate and its validation only. It did not authorize:
+## Release authorization boundary
 
-- creating the `v2.3.0` tag;
-- publishing a GitHub Release;
-- launching a public testnet;
-- setting `public_testnet_ready=true`;
-- starting or backdating the 30-day public-testnet clock;
-- introducing smart contracts or pool logic.
+The v2.4.0 software tag and GitHub Release are authorized once the final exact-SHA software-release gates pass. This authorization does not imply:
 
-A separate final private-testnet release decision is required before tag creation or publication.
+- `GO_PUBLIC_TESTNET`;
+- public ingress or Day 0;
+- start or backdating of the 30-day public-testnet clock;
+- smart-contract activation;
+- production/mainnet custody claims.
+
+Public launch authorization remains a separate explicit decision after the required private burn-in, recovery drills, 5-node/4-miner rehearsal, security disposition, release identity freeze and infrastructure evidence are complete.
 
 ## Repository version rule
 
-Active repository surfaces must identify `v2.3.0` as the current version.
-
-References to v2.2.x are allowed only when clearly labelled as historical baselines, migration inputs, compatibility notes, or archive links.
+Active release surfaces must identify v2.4.0. References to v2.3.0 or earlier are allowed only when they are clearly historical, compatibility-related, immutable evidence, or named legacy helpers/workflows whose identity is intentionally retained.
