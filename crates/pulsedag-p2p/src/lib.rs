@@ -448,6 +448,8 @@ pub struct RemoteSelectedTipStatus {
     pub chain_id: String,
     pub selected_tip: Option<PulseHash>,
     pub selected_height: u64,
+    #[serde(default)]
+    pub prune_boundary_height: Option<u64>,
     pub selected_blue_score: Option<u64>,
     pub ordered_dag_tip: Option<PulseHash>,
     pub state_root_digest: Option<String>,
@@ -1967,6 +1969,7 @@ fn note_remote_tip_inventory(
                     chain_id: inventory.chain_id,
                     selected_tip: inventory.selected_tip,
                     selected_height,
+                    prune_boundary_height: inventory.prune_boundary_height,
                     selected_blue_score: inventory.selected_blue_score,
                     ordered_dag_tip: inventory.ordered_dag_tip,
                     state_root_digest: inventory.state_root_digest,
@@ -10608,6 +10611,7 @@ mod deterministic_p2p_sync_coverage_tests {
             state_root_digest: Some(format!("state-{generation}")),
             observed_at_unix,
             inventory_generation: generation,
+            prune_boundary_height: Some(0),
         }
     }
 
@@ -10660,6 +10664,7 @@ mod deterministic_p2p_sync_coverage_tests {
         let status = &state.remote_selected_tip_inventory["peer-a"].status;
         assert_eq!(status.inventory_generation, 2);
         assert_eq!(status.selected_height, 602);
+        assert_eq!(status.prune_boundary_height, Some(0));
     }
 
     #[test]

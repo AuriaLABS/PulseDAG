@@ -40,6 +40,35 @@ use pulsedag_rpc::routes::{
 };
 use pulsedag_storage::Storage;
 
+fn local_retained_selected_history_boundary(chain: &pulsedag_core::ChainState) -> Option<u64> {
+    let selected_chain = &chain.dag.selected_chain;
+    let mut current_hash = selected_chain.last()?;
+    let mut current_block = chain.dag.blocks.get(current_hash)?;
+
+    for previous_hash in selected_chain.iter().rev().skip(1) {
+        let Some(previous_block) = chain.dag.blocks.get(previous_hash) else {
+            break;
+        };
+        let selected_parent = chain
+            .dag
+            .selected_parents
+            .get(current_hash)
+            .and_then(|parent| parent.as_ref());
+        let height_is_contiguous = previous_block
+            .header
+            .height
+            .checked_add(1)
+            .is_some_and(|height| height == current_block.header.height);
+        if selected_parent != Some(previous_hash) || !height_is_contiguous {
+            break;
+        }
+        current_hash = previous_hash;
+        current_block = previous_block;
+    }
+
+    Some(current_block.header.height)
+}
+
 fn local_tip_inventory_status(chain: &pulsedag_core::ChainState) -> TipInventoryStatus {
     let selected_tip = pulsedag_core::preferred_tip_hash(chain);
     let selected_block = selected_tip
@@ -49,6 +78,7 @@ fn local_tip_inventory_status(chain: &pulsedag_core::ChainState) -> TipInventory
         chain_id: chain.chain_id.clone(),
         selected_tip,
         selected_height: selected_block.map(|block| block.header.height),
+        prune_boundary_height: local_retained_selected_history_boundary(chain),
         selected_blue_score: selected_block.map(|block| block.header.blue_score),
         ordered_dag_tip: chain.dag.ordered_dag_tip.clone(),
         state_root_digest: chain.dag.ordered_dag_state_root.clone(),
@@ -70,6 +100,15 @@ fn local_selected_tip_height(chain: &pulsedag_core::ChainState) -> u64 {
         .unwrap_or(chain.dag.best_height)
 }
 
+fn selected_locator_peer_can_bridge(
+    remote: &pulsedag_p2p::RemoteSelectedTipStatus,
+    local_height: u64,
+) -> bool {
+    remote
+        .prune_boundary_height
+        .is_none_or(|boundary| boundary <= local_height.saturating_add(1))
+}
+
 fn selected_locator_peer_for_priority_gap(
     status: &P2pStatus,
     local_height: u64,
@@ -81,8 +120,14 @@ fn selected_locator_peer_for_priority_gap(
         .iter()
         .filter(|remote| remote.connected && remote.direct_request_capable)
         .filter(|remote| !excluded_peers.contains(&remote.peer_id))
+        .filter(|remote| selected_locator_peer_can_bridge(remote, local_height))
         .filter(|remote| remote.selected_height.saturating_sub(local_height) >= minimum_gap)
-        .max_by_key(|remote| remote.selected_height)
+        .max_by_key(|remote| {
+            (
+                remote.prune_boundary_height.is_some(),
+                remote.selected_height,
+            )
+        })
         .map(|remote| (remote.peer_id.clone(), remote.selected_height))
 }
 
@@ -106,6 +151,7 @@ fn selected_locator_peer_for_reconcile(
         .iter()
         .filter(|remote| remote.connected && remote.direct_request_capable)
         .filter(|remote| !excluded_peers.contains(&remote.peer_id))
+        .filter(|remote| selected_locator_peer_can_bridge(remote, local_height))
         .filter(|remote| {
             remote.selected_height > local_height
                 || (remote.selected_height == local_height
@@ -113,7 +159,12 @@ fn selected_locator_peer_for_reconcile(
                         || remote.ordered_dag_tip != local.ordered_dag_tip
                         || remote.state_root_digest != local.state_root_digest))
         })
-        .max_by_key(|remote| remote.selected_height)
+        .max_by_key(|remote| {
+            (
+                remote.prune_boundary_height.is_some(),
+                remote.selected_height,
+            )
+        })
         .map(|remote| remote.peer_id.clone())
 }
 
@@ -6370,6 +6421,189 @@ mod tests {
     }
 
     #[test]
+    fn retained_history_boundary_tracks_continuous_selected_suffix() {
+        let mut empty = pulsedag_core::genesis::init_chain_state("empty-boundary".to_string());
+        empty.dag.selected_chain.clear();
+        assert_eq!(local_retained_selected_history_boundary(&empty), None);
+
+        let mut chain = pulsedag_core::genesis::init_chain_state("retained-boundary".to_string());
+        let genesis = chain.dag.genesis_hash.clone();
+        assert_eq!(local_retained_selected_history_boundary(&chain), Some(0));
+
+        let b1 = test_orphan("b1", vec![&genesis], 1);
+        let b2 = test_orphan("b2", vec!["b1"], 2);
+        let b3 = test_orphan("b3", vec!["b2"], 3);
+        for block in [&b1, &b2, &b3] {
+            chain.dag.blocks.insert(block.hash.clone(), block.clone());
+        }
+        chain
+            .dag
+            .selected_parents
+            .insert("b1".to_string(), Some(genesis.clone()));
+        chain
+            .dag
+            .selected_parents
+            .insert("b2".to_string(), Some("b1".to_string()));
+        chain
+            .dag
+            .selected_parents
+            .insert("b3".to_string(), Some("b2".to_string()));
+        chain.dag.selected_chain = vec![
+            genesis.clone(),
+            "b1".to_string(),
+            "b2".to_string(),
+            "b3".to_string(),
+        ];
+        assert_eq!(local_retained_selected_history_boundary(&chain), Some(0));
+
+        chain.dag.blocks.remove("b1");
+        chain.dag.selected_chain = vec![genesis.clone(), "b2".to_string(), "b3".to_string()];
+        chain
+            .dag
+            .selected_parents
+            .insert("b2".to_string(), Some(genesis));
+        assert_eq!(local_retained_selected_history_boundary(&chain), Some(2));
+
+        chain.dag.selected_parents.insert("b2".to_string(), None);
+        assert_eq!(local_retained_selected_history_boundary(&chain), Some(2));
+    }
+
+    #[test]
+    fn retained_history_peer_selection_filters_incompatible_and_prefers_explicit() {
+        let status = P2pStatus {
+            remote_selected_tip_inventory: vec![
+                pulsedag_p2p::RemoteSelectedTipStatus {
+                    peer_id: "legacy-higher".to_string(),
+                    selected_height: 300,
+                    prune_boundary_height: None,
+                    connected: true,
+                    direct_request_capable: true,
+                    ..Default::default()
+                },
+                pulsedag_p2p::RemoteSelectedTipStatus {
+                    peer_id: "pruned-compatible".to_string(),
+                    selected_height: 220,
+                    prune_boundary_height: Some(121),
+                    connected: true,
+                    direct_request_capable: true,
+                    ..Default::default()
+                },
+                pulsedag_p2p::RemoteSelectedTipStatus {
+                    peer_id: "pruned-incompatible".to_string(),
+                    selected_height: 400,
+                    prune_boundary_height: Some(122),
+                    connected: true,
+                    direct_request_capable: true,
+                    ..Default::default()
+                },
+            ],
+            ..P2pStatus::default()
+        };
+
+        assert_eq!(
+            selected_locator_peer_for_priority_gap(&status, 120, 64, &HashSet::new()),
+            Some(("pruned-compatible".to_string(), 220))
+        );
+
+        let all_incompatible = P2pStatus {
+            remote_selected_tip_inventory: vec![pulsedag_p2p::RemoteSelectedTipStatus {
+                peer_id: "cannot-bridge".to_string(),
+                selected_height: 400,
+                prune_boundary_height: Some(122),
+                connected: true,
+                direct_request_capable: true,
+                ..Default::default()
+            }],
+            ..P2pStatus::default()
+        };
+        assert_eq!(
+            selected_locator_peer_for_priority_gap(&all_incompatible, 120, 64, &HashSet::new(),),
+            None
+        );
+
+        let legacy_only = P2pStatus {
+            remote_selected_tip_inventory: vec![pulsedag_p2p::RemoteSelectedTipStatus {
+                peer_id: "legacy-fallback".to_string(),
+                selected_height: 240,
+                prune_boundary_height: None,
+                connected: true,
+                direct_request_capable: true,
+                ..Default::default()
+            }],
+            ..P2pStatus::default()
+        };
+        assert_eq!(
+            selected_locator_peer_for_priority_gap(&legacy_only, 120, 64, &HashSet::new()),
+            Some(("legacy-fallback".to_string(), 240))
+        );
+    }
+
+    #[test]
+    fn reconcile_uses_same_retained_history_compatibility_rule() {
+        let local = TipInventoryStatus {
+            chain_id: "test-chain".to_string(),
+            selected_tip: Some("local-tip".to_string()),
+            selected_height: Some(120),
+            prune_boundary_height: Some(0),
+            selected_blue_score: Some(120),
+            ordered_dag_tip: Some("local-tip".to_string()),
+            state_root_digest: Some("local-root".to_string()),
+            observed_at_unix: 1,
+            inventory_generation: 1,
+        };
+        let status = P2pStatus {
+            remote_selected_tip_inventory: vec![
+                pulsedag_p2p::RemoteSelectedTipStatus {
+                    peer_id: "legacy-higher".to_string(),
+                    selected_height: 300,
+                    prune_boundary_height: None,
+                    connected: true,
+                    direct_request_capable: true,
+                    ..Default::default()
+                },
+                pulsedag_p2p::RemoteSelectedTipStatus {
+                    peer_id: "pruned-compatible".to_string(),
+                    selected_height: 220,
+                    prune_boundary_height: Some(121),
+                    connected: true,
+                    direct_request_capable: true,
+                    ..Default::default()
+                },
+                pulsedag_p2p::RemoteSelectedTipStatus {
+                    peer_id: "pruned-incompatible".to_string(),
+                    selected_height: 400,
+                    prune_boundary_height: Some(122),
+                    connected: true,
+                    direct_request_capable: true,
+                    ..Default::default()
+                },
+            ],
+            ..P2pStatus::default()
+        };
+
+        assert_eq!(
+            selected_locator_peer_for_reconcile(&status, &local, &HashSet::new()),
+            Some("pruned-compatible".to_string())
+        );
+
+        let incompatible_only = P2pStatus {
+            remote_selected_tip_inventory: vec![pulsedag_p2p::RemoteSelectedTipStatus {
+                peer_id: "cannot-bridge".to_string(),
+                selected_height: 400,
+                prune_boundary_height: Some(122),
+                connected: true,
+                direct_request_capable: true,
+                ..Default::default()
+            }],
+            ..P2pStatus::default()
+        };
+        assert_eq!(
+            selected_locator_peer_for_reconcile(&incompatible_only, &local, &HashSet::new()),
+            None
+        );
+    }
+
+    #[test]
     fn tip_inventory_priority_selects_peer_before_generic_tip_fetch() {
         let status = P2pStatus {
             remote_selected_tip_inventory: vec![
@@ -6437,6 +6671,7 @@ mod tests {
             chain_id: "test-chain".to_string(),
             selected_tip: Some("tip-a".to_string()),
             selected_height: Some(128),
+            prune_boundary_height: Some(0),
             selected_blue_score: Some(128),
             ordered_dag_tip: Some("tip-a".to_string()),
             state_root_digest: Some("root-a".to_string()),
@@ -6473,6 +6708,7 @@ mod tests {
             chain_id: "test-chain".to_string(),
             selected_tip: Some("tip-a".to_string()),
             selected_height: Some(128),
+            prune_boundary_height: Some(0),
             selected_blue_score: Some(128),
             ordered_dag_tip: Some("tip-a".to_string()),
             state_root_digest: Some("root-a".to_string()),

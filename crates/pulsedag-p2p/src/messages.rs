@@ -19,6 +19,8 @@ pub struct TipInventoryStatus {
     pub chain_id: String,
     pub selected_tip: Option<Hash>,
     pub selected_height: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prune_boundary_height: Option<u64>,
     pub selected_blue_score: Option<u64>,
     pub ordered_dag_tip: Option<Hash>,
     pub state_root_digest: Option<String>,
@@ -391,6 +393,27 @@ mod tests {
             message_id_for_block(&block_with_different_body)
         );
     }
+    #[test]
+    fn tip_inventory_prune_boundary_is_backward_compatible() {
+        let legacy = br#"{"chain_id":"testnet-dev","selected_tip":null,"selected_height":null,"selected_blue_score":null,"ordered_dag_tip":null,"state_root_digest":null,"observed_at_unix":0,"inventory_generation":1}"#;
+        let decoded: TipInventoryStatus =
+            serde_json::from_slice(legacy).expect("legacy tip inventory decodes");
+        assert_eq!(decoded.prune_boundary_height, None);
+    }
+
+    #[test]
+    fn tip_inventory_archival_boundary_serializes_explicit_zero() {
+        let archival = TipInventoryStatus {
+            prune_boundary_height: Some(0),
+            ..TipInventoryStatus::default()
+        };
+        let encoded = serde_json::to_value(&archival).expect("archival inventory serializes");
+        assert_eq!(encoded["prune_boundary_height"].as_u64(), Some(0));
+
+        let unknown = serde_json::to_value(TipInventoryStatus::default())
+            .expect("unknown-capability inventory serializes");
+        assert!(unknown.get("prune_boundary_height").is_none());
+    }
 }
 
 #[cfg(test)]
@@ -403,6 +426,7 @@ mod selected_tip_inventory_wire_tests {
             chain_id: "testnet-dev".into(),
             selected_tip: Some("tip-741".into()),
             selected_height: Some(741),
+            prune_boundary_height: Some(120),
             selected_blue_score: Some(741),
             ordered_dag_tip: Some("ordered-741".into()),
             state_root_digest: Some("state-root".into()),
