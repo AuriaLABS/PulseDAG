@@ -10606,6 +10606,7 @@ mod deterministic_p2p_sync_coverage_tests {
             chain_id: "test-chain".to_string(),
             selected_tip: Some(format!("selected-{generation}")),
             selected_height: Some(600 + generation),
+            prune_boundary_height: None,
             selected_blue_score: Some(700 + generation),
             ordered_dag_tip: Some(format!("ordered-{generation}")),
             state_root_digest: Some(format!("state-{generation}")),

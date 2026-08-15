@@ -405,6 +405,7 @@ mod selected_tip_inventory_wire_tests {
             chain_id: "testnet-dev".into(),
             selected_tip: Some("tip-741".into()),
             selected_height: Some(741),
+            prune_boundary_height: None,
             selected_blue_score: Some(741),
             ordered_dag_tip: Some("ordered-741".into()),
             state_root_digest: Some("state-root".into()),
