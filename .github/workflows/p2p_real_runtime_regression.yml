@@ -161,19 +161,13 @@ jobs:
 
           main = Path("apps/pulsedagd/src/main.rs")
           text = main.read_text()
-          old = '''let Some(previous_block) = chain.dag.blocks.get(previous_hash) else {
-            return None;
-        };'''
-          new = '''let Some(previous_block) = chain.dag.blocks.get(previous_hash) else {
-            break;
-        };'''
+          old = "let Some(previous_block) = chain.dag.blocks.get(previous_hash) else {\n            return None;\n        };"
+          new = "let Some(previous_block) = chain.dag.blocks.get(previous_hash) else {\n            break;\n        };"
           if old not in text:
               raise SystemExit("expected retained-history missing-block branch not found")
           text = text.replace(old, new, 1)
-          old = '''.prune_boundary_height
-        .map_or(true, |boundary| boundary <= local_height.saturating_add(1))'''
-          new = '''.prune_boundary_height
-        .is_none_or(|boundary| boundary <= local_height.saturating_add(1))'''
+          old = ".prune_boundary_height\n        .map_or(true, |boundary| boundary <= local_height.saturating_add(1))"
+          new = ".prune_boundary_height\n        .is_none_or(|boundary| boundary <= local_height.saturating_add(1))"
           if old not in text:
               raise SystemExit("expected compatibility predicate not found")
           main.write_text(text.replace(old, new, 1))
