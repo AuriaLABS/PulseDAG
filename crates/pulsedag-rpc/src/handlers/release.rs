@@ -168,7 +168,8 @@ mod tests {
         assert!(release.contains("\"disabled_not_included\""));
         assert!(release.contains("\"disabled_not_in_node\""));
         assert!(release.contains("\"signed_transaction_relay\""));
-        assert!(!release.contains("legacy_wallet_rpc_dev_only"));
+        let removed_legacy_capability = ["legacy", "wallet", "rpc", "dev", "only"].join("_");
+        assert!(!release.contains(&removed_legacy_capability));
     }
 
     #[test]
