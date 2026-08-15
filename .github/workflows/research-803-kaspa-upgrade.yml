@@ -1,0 +1,88 @@
+name: research-803-kaspa-upgrade
+
+on:
+  push:
+    branches:
+      - research/803-kaspa-supported-upgrade
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - kaspa: "1.1.0"
+            rust: "1.88.0"
+          - kaspa: "2.0.0"
+            rust: "1.91.0"
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install candidate Rust
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install "${{ matrix.rust }}" --profile minimal --no-self-update
+          rustup default "${{ matrix.rust }}"
+          rustc --version
+          cargo --version
+      - name: Set candidate direct Kaspa line
+        shell: bash
+        env:
+          KASPA_VERSION: ${{ matrix.kaspa }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          p = Path('crates/pulsedag-core/Cargo.toml')
+          text = p.read_text()
+          v = os.environ['KASPA_VERSION']
+          text = text.replace('kaspa-hashes = "0.15.0"', f'kaspa-hashes = "{v}"')
+          text = text.replace('kaspa-pow = "0.15.0"', f'kaspa-pow = "{v}"')
+          if f'kaspa-hashes = "{v}"' not in text or f'kaspa-pow = "{v}"' not in text:
+              raise SystemExit('failed replacing direct Kaspa versions')
+          p.write_text(text)
+          PY
+          git diff -- crates/pulsedag-core/Cargo.toml
+      - name: Resolve candidate graph
+        id: resolve
+        shell: bash
+        run: |
+          set +e
+          cargo check -p pulsedag-core 2>&1 | tee /tmp/cargo-check.log
+          rc=${PIPESTATUS[0]}
+          echo "check_rc=$rc" >> "$GITHUB_OUTPUT"
+          echo "CARGO_CHECK_RC=$rc"
+          exit 0
+      - name: Inspect warning packages and reverse trees
+        shell: bash
+        run: |
+          set +e
+          echo '=== resolved Kaspa packages ==='
+          grep -A3 -E '^name = "kaspa-(hashes|pow|core|consensus-core|consensus-client|utils)"$' Cargo.lock || true
+          echo '=== atty lock entry ==='
+          grep -A8 -E '^name = "atty"$' Cargo.lock || echo 'ATTY_ABSENT_FROM_LOCK'
+          echo '=== linkme lock entry ==='
+          grep -A8 -E '^name = "linkme"$' Cargo.lock || echo 'LINKME_ABSENT_FROM_LOCK'
+          echo '=== intertrait lock entry ==='
+          grep -A8 -E '^name = "intertrait"$' Cargo.lock || echo 'INTERTRAIT_ABSENT_FROM_LOCK'
+          echo '=== workflow-log lock entry ==='
+          grep -A8 -E '^name = "workflow-log"$' Cargo.lock || echo 'WORKFLOW_LOG_ABSENT_FROM_LOCK'
+          echo '=== cargo tree -i atty ==='
+          cargo tree -p pulsedag-core -i atty || echo 'ATTY_NOT_IN_PULSEDAG_CORE_TREE'
+          echo '=== cargo tree -i linkme ==='
+          cargo tree -p pulsedag-core -i linkme || echo 'LINKME_NOT_IN_PULSEDAG_CORE_TREE'
+          echo '=== cargo tree -i intertrait ==='
+          cargo tree -p pulsedag-core -i intertrait || echo 'INTERTRAIT_NOT_IN_PULSEDAG_CORE_TREE'
+      - name: Candidate summary
+        shell: bash
+        run: |
+          echo "candidate_kaspa=${{ matrix.kaspa }}"
+          echo "candidate_rust=${{ matrix.rust }}"
+          echo "cargo_check_rc=${{ steps.resolve.outputs.check_rc }}"
+          test "${{ steps.resolve.outputs.check_rc }}" = "0"
