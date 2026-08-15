@@ -31,7 +31,10 @@ pub use state::{
     SelectedParentPolicy, UtxoState,
 };
 pub use tx::{
-    address_from_public_key, compute_txid, signing_message, verify_transaction_signatures,
+    address_from_public_key, canonical_transaction_bytes_v2,
+    canonical_unsigned_transaction_bytes_v2, compute_txid, compute_txid_v2, signing_message,
+    signing_message_v2, verify_transaction_signatures, verify_transaction_signatures_v2,
+    TRANSACTION_VERSION_V1, TRANSACTION_VERSION_V2,
 };
 pub use types::*;
 
