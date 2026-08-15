@@ -21,16 +21,36 @@ Implemented foundations include:
 - same-directory temporary-file publication with file sync before rename;
 - 64 KiB file-size bounds and strict schema validation;
 - Unix owner-only (`0600`) keystore/lock permissions and parent-directory sync;
+- a dedicated local recovery/watch-only `pulsedag-wallet` application boundary;
 - a repository-only local signing harness for smoke/rehearsal automation;
 - keyless node operation with signed-transaction-only relay submission.
 
 Still pending before an official end-user wallet is ready:
 
 - replacement/password-rotation and migration UX;
-- account/history persistence and wallet application UX;
+- balance/history/network-client state and spend UX;
+- offline plan import/export and official send/sign/broadcast commands;
 - platform-specific packaged-wallet hardening and restore testing;
 - final fee/coin-selection policy and broader custody review;
 - protocol-level replay/RBF/submission-identity/signing-domain decisions tracked in #821.
+
+## Local recovery and watch-only application
+
+The `pulsedag-wallet` executable is the first end-user-shaped local application boundary. Its current scope is intentionally non-spending and does not require node/admin RPC access.
+
+Supported commands:
+
+- `restore --keystore <path> --network-profile <profile> --chain-id <id>` restores a deterministic v2 seed keystore from BIP-39 material;
+- `address --keystore <path> --account <n> --branch <receive|change> --index <n>` derives one public address from an unlocked deterministic v2 keystore;
+- `watch-export --keystore <path> --account <n> --receive-count <n> --change-count <n>` emits the bounded public watch-only manifest;
+- `watch-import --manifest <path>` validates/imports a public watch-only manifest and reports public metadata only; it has no signing capability;
+- `backup-verify --keystore <path> --manifest <path>` verifies a public watch-only backup manifest against the authenticated deterministic seed and network identity.
+
+Secrets are never accepted as command-line options. `restore` reads three line-framed stdin values: wallet password, mnemonic, then an optional BIP-39 passphrase (blank or absent means none). `address`, `watch-export`, and `backup-verify` read one wallet-password line from stdin. `watch-import` consumes no secret.
+
+The restore path persists only the encrypted deterministic seed envelope and refuses to overwrite an existing keystore. Mnemonic/passphrase/password/private-key/seed material is not included in JSON output. Current machine-readable output is deliberately public metadata only.
+
+There are no official `send`, `sign`, `broadcast`, `balance`, or `history` commands in this boundary yet. Transaction spending remains dependent on the broader #819 work and the protocol-level decisions still tracked in #821.
 
 ## Persistence boundary
 
