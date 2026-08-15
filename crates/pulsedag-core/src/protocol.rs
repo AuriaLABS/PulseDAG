@@ -141,7 +141,10 @@ mod tests {
 
         assert_eq!(identity.chain_id, state.chain_id);
         assert_eq!(identity.genesis_hash, state.dag.genesis_hash);
-        assert_eq!(identity.transaction_protocol_version, TRANSACTION_VERSION_V1);
+        assert_eq!(
+            identity.transaction_protocol_version,
+            TRANSACTION_VERSION_V1
+        );
         assert_eq!(
             identity.block_header_protocol_version,
             BLOCK_HEADER_VERSION_V1
@@ -159,7 +162,10 @@ mod tests {
             "ghostdag-order-v1",
         );
 
-        assert_eq!(identity.transaction_protocol_version, TRANSACTION_VERSION_V2);
+        assert_eq!(
+            identity.transaction_protocol_version,
+            TRANSACTION_VERSION_V2
+        );
         assert_eq!(
             identity.block_header_protocol_version,
             BLOCK_HEADER_VERSION_V2
