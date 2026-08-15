@@ -18,6 +18,7 @@ pub mod retarget;
 pub mod selection;
 pub mod selection_v2;
 pub mod state;
+pub mod state_replay_v2;
 pub mod sync_pipeline;
 pub mod tx;
 pub mod tx_submission;
@@ -90,6 +91,10 @@ pub use ordering::{
 
 pub use ordering_v2::{
     derive_ordered_dag_v2, OrderedDagV2, OrderingV2Error, GHOSTDAG_V1_ORDERING_VERSION,
+};
+
+pub use state_replay_v2::{
+    rebuild_authoritative_state_v2, StateReplayV2, StateReplayV2Diagnostics,
 };
 
 pub use apply::{
