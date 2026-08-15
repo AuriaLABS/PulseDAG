@@ -1,3 +1,6 @@
+#[path = "../pulsedag_wallet_relay.rs"]
+mod pulsedag_wallet_relay;
+
 use std::{
     collections::HashMap,
     env,
@@ -8,7 +11,7 @@ use std::{
     time::Duration,
 };
 
-use pulsedag_core::types::{Transaction, Utxo};
+use pulsedag_core::types::Utxo;
 use pulsedag_wallet::{
     build_deterministic_transaction_plan, derive_wallet_key_from_seed, encrypt_wallet_seed,
     wallet_seed_from_mnemonic, SecretString, WalletDerivationBranch, WalletKeystoreFile,
@@ -17,6 +20,7 @@ use pulsedag_wallet::{
     WalletTransactionIntent, WalletTransactionPlan, WalletUnlockPolicy, WalletWatchOnly,
     WalletWatchOnlyManifest, WalletWatchOnlyScope, WalletWatchOnlySessionExt,
 };
+use pulsedag_wallet_relay::{broadcast_signed, parse_signed_broadcast, RelayEnvelope};
 use serde::{Deserialize, Serialize};
 
 const CLI_UNLOCK_TIMEOUT: Duration = Duration::from_secs(60);
@@ -35,6 +39,7 @@ enum Command {
     BackupVerify(BackupVerifyArgs),
     TxPreview(TxPreviewArgs),
     TxSign(TxSignArgs),
+    TxBroadcast(TxBroadcastArgs),
 }
 
 #[derive(Debug)]
@@ -97,6 +102,12 @@ struct TxSignArgs {
     index: u32,
 }
 
+#[derive(Debug)]
+struct TxBroadcastArgs {
+    signed: PathBuf,
+    relay: String,
+}
+
 #[derive(Debug, Serialize)]
 struct RestoreOutput {
     network_profile: String,
@@ -152,11 +163,6 @@ struct TxSignOutput {
     review: WalletReviewSummary,
     final_txid: String,
     relay: RelayEnvelope,
-}
-
-#[derive(Debug, Serialize)]
-struct RelayEnvelope {
-    transaction: Transaction,
 }
 
 #[derive(Debug, Deserialize)]
@@ -261,7 +267,7 @@ fn branch_name(branch: WalletDerivationBranch) -> &'static str {
 
 fn expected_command_error() -> io::Error {
     invalid_input(
-        "expected command: restore, address, watch-export, watch-import, backup-verify, tx-preview, or tx-sign",
+        "expected command: restore, address, watch-export, watch-import, backup-verify, tx-preview, tx-sign, or tx-broadcast",
     )
 }
 
@@ -355,6 +361,13 @@ fn parse_command_from(args: impl Iterator<Item = String>) -> CliResult<Command> 
                 account: parse_u32("--account", &required(&flags, "account")?)?,
                 branch: parse_branch(&required(&flags, "branch")?)?,
                 index: parse_u32("--index", &required(&flags, "index")?)?,
+            }))
+        }
+        "tx-broadcast" => {
+            reject_unknown(&flags, &["signed", "relay"])?;
+            Ok(Command::TxBroadcast(TxBroadcastArgs {
+                signed: PathBuf::from(required(&flags, "signed")?),
+                relay: required(&flags, "relay")?,
             }))
         }
         _ => Err(expected_command_error().into()),
@@ -668,7 +681,7 @@ fn write_json<T: Serialize>(value: &T) -> CliResult<()> {
     Ok(())
 }
 
-fn run() -> CliResult<()> {
+async fn run() -> CliResult<()> {
     match parse_command()? {
         Command::Restore(args) => {
             let secrets = read_restore_secrets_from_stdin()?;
@@ -695,11 +708,17 @@ fn run() -> CliResult<()> {
             let password = read_password_from_stdin()?;
             write_json(&run_tx_sign(args, &password)?)
         }
+        Command::TxBroadcast(args) => {
+            let bytes = read_bounded_json(&args.signed, "signed transaction envelope")?;
+            let signed = parse_signed_broadcast(&bytes)?;
+            write_json(&broadcast_signed(&args.relay, signed).await?)
+        }
     }
 }
 
-fn main() {
-    if let Err(error) = run() {
+#[tokio::main]
+async fn main() {
+    if let Err(error) = run().await {
         eprintln!("pulsedag-wallet: {error}");
         std::process::exit(1);
     }
@@ -789,6 +808,16 @@ mod tests {
             "secret"
         ]))
         .is_err());
+        assert!(parse_command_from(args(&[
+            "tx-broadcast",
+            "--signed",
+            "signed.json",
+            "--relay",
+            "https://relay.example",
+            "--password",
+            "secret"
+        ]))
+        .is_err());
     }
 
     #[test]
@@ -842,6 +871,17 @@ mod tests {
             ]))
             .unwrap(),
             Command::TxSign(_)
+        ));
+        assert!(matches!(
+            parse_command_from(args(&[
+                "tx-broadcast",
+                "--signed",
+                "signed.json",
+                "--relay",
+                "https://relay.example"
+            ]))
+            .unwrap(),
+            Command::TxBroadcast(_)
         ));
     }
 
