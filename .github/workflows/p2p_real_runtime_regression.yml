@@ -142,7 +142,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: p2p_real_runtime_regression_${{ github.run_id }}
-          path: ci-evidence/p2p-real-runtime
+          path: |
+            ci-evidence/p2p-real-runtime
+            ci-evidence/workspace/patch-824
           if-no-files-found: error
           retention-days: 30
 
