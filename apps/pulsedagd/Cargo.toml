@@ -3,11 +3,6 @@ name = "pulsedagd"
 version.workspace = true
 edition = "2021"
 
-[features]
-default = []
-# Development/rehearsal compatibility only. Normal release builds stay keyless.
-legacy-wallet-rpc = ["pulsedag-rpc/legacy-wallet-rpc"]
-
 [dependencies]
 anyhow = "1"
 axum = "0.7"
