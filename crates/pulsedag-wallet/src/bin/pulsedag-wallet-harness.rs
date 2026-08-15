@@ -240,7 +240,10 @@ fn unlock_policy() -> HarnessResult<WalletUnlockPolicy> {
 }
 
 fn ensure_parent_exists(path: &Path) -> HarnessResult<()> {
-    if let Some(parent) = path.parent().filter(|parent| !parent.as_os_str().is_empty()) {
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
         fs::create_dir_all(parent)?;
     }
     Ok(())
@@ -251,13 +254,8 @@ fn run_init(args: InitArgs, password: &SecretString) -> HarnessResult<InitOutput
     let network = WalletNetworkContext::new(&args.network_profile, &args.chain_id)?;
     let mnemonic = generate_wallet_mnemonic()?;
     let seed = wallet_seed_from_mnemonic(&mnemonic, None)?;
-    let anchor = derive_wallet_key_from_seed(
-        &seed,
-        &network,
-        0,
-        WalletDerivationBranch::Receive,
-        0,
-    )?;
+    let anchor =
+        derive_wallet_key_from_seed(&seed, &network, 0, WalletDerivationBranch::Receive, 0)?;
     let envelope = encrypt_wallet_seed(
         &args.network_profile,
         &args.chain_id,
@@ -265,6 +263,7 @@ fn run_init(args: InitArgs, password: &SecretString) -> HarnessResult<InitOutput
         &seed,
         password,
     )?;
+    drop(anchor);
     let keystore = WalletKeystoreFile::try_acquire(&args.keystore)?;
     keystore.create_new(&envelope)?;
 
@@ -278,17 +277,15 @@ fn run_init(args: InitArgs, password: &SecretString) -> HarnessResult<InitOutput
     session.unlock(&keystore, password)?;
     let mut receive = Vec::with_capacity(args.receive_count as usize);
     for index in 0..args.receive_count {
-        let public = session.with_derived_key(
-            0,
-            WalletDerivationBranch::Receive,
-            index,
-            |derived| PublicAddress {
-                index,
-                address: derived.address().to_string(),
-                public_key: derived.public_key_hex().to_string(),
-                derivation_path: derived.derivation_path().to_string(),
-            },
-        )?;
+        let public =
+            session.with_derived_key(0, WalletDerivationBranch::Receive, index, |derived| {
+                PublicAddress {
+                    index,
+                    address: derived.address().to_string(),
+                    public_key: derived.public_key_hex().to_string(),
+                    derivation_path: derived.derivation_path().to_string(),
+                }
+            })?;
         receive.push(public);
     }
     session.lock();
@@ -317,8 +314,14 @@ fn load_address_utxos(path: &Path, expected_address: &str) -> HarnessResult<Vec<
     if data.address != expected_address {
         return Err(invalid_input("UTXO response address does not match selected signer").into());
     }
-    if data.utxos.iter().any(|utxo| utxo.address != expected_address) {
-        return Err(invalid_input("UTXO response contains an entry for a different address").into());
+    if data
+        .utxos
+        .iter()
+        .any(|utxo| utxo.address != expected_address)
+    {
+        return Err(
+            invalid_input("UTXO response contains an entry for a different address").into(),
+        );
     }
     Ok(data.utxos)
 }
@@ -336,12 +339,10 @@ fn run_sign(args: SignArgs, password: &SecretString) -> HarnessResult<RelayEnvel
     let observed_network = WalletNetworkIdentity::new(identity.network_profile, identity.chain_id)?;
     expected_network.ensure_matches(&observed_network)?;
 
-    let signer_address = session.with_derived_key(
-        args.account,
-        args.branch,
-        args.index,
-        |derived| derived.address().to_string(),
-    )?;
+    let signer_address =
+        session.with_derived_key(args.account, args.branch, args.index, |derived| {
+            derived.address().to_string()
+        })?;
     let available_utxos = load_address_utxos(&args.utxos_file, &signer_address)?;
     let intent = WalletTransactionIntent::new(&signer_address, args.to, args.amount, args.fee)?;
     let spend_policy = WalletSpendPolicy::new(args.fee, 10_000, HARNESS_MAX_INPUTS)?;
