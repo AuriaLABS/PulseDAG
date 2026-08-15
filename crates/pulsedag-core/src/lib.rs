@@ -9,6 +9,7 @@ pub mod mining;
 pub mod ordering;
 pub mod orphans;
 pub mod pow;
+pub mod protocol;
 pub mod replay;
 pub mod retarget;
 pub mod selection;
@@ -65,6 +66,11 @@ pub use pow::{
     CanonicalPowMaterial, CanonicalPowTarget, DevDifficultyPolicy, DevDifficultySnapshot,
     PowAlgorithm, PowEngine, PowEvaluation, PowHeaderPreimage, PowRejectReason,
     PowTargetComparison, PowValidationResult, POW_HEADER_PREIMAGE_VERSION,
+};
+
+pub use protocol::{
+    ProtocolActivationIdentity, ProtocolConsensusMode, BLOCK_HEADER_VERSION_V1,
+    BLOCK_HEADER_VERSION_V2,
 };
 
 pub use ordering::{
