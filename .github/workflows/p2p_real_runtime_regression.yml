@@ -173,6 +173,11 @@ jobs:
           main.write_text(text.replace(old, new, 1))
           PY
 
+          # The temporary build script has already generated the staged files.
+          # Remove it before validating the real patch so Cargo/Clippy cannot
+          # try to apply the generator a second time.
+          rm -f crates/pulsedag-p2p/build.rs
+
           cargo fmt --all
           cargo fmt --all -- --check
           cargo test -p pulsedag-p2p --locked
@@ -183,7 +188,6 @@ jobs:
           git fetch origin release/2.4.0
           git checkout origin/release/2.4.0 -- .github/workflows/p2p_real_runtime_regression.yml
           rm -f .github/workflows/tmp-824-apply.yml
-          rm -f crates/pulsedag-p2p/build.rs
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
