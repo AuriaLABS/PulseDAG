@@ -522,11 +522,9 @@ pub fn derive_wallet_plan_nonce_v1(
     }
 
     let digest = hasher.finalize();
-    Ok(u64::from_be_bytes(
-        digest[..8]
-            .try_into()
-            .expect("SHA-256 digest always contains eight nonce bytes"),
-    ))
+    Ok(u64::from_be_bytes(digest[..8].try_into().expect(
+        "SHA-256 digest always contains eight nonce bytes",
+    )))
 }
 
 /// Build the supported wallet v1 plan with a deterministic nonce. Identical
@@ -945,7 +943,10 @@ mod tests {
             &[utxo("11", 1_000, 10)],
         )
         .expect("private plan");
-        assert_eq!(public_plan.transaction.nonce, private_plan.transaction.nonce);
+        assert_eq!(
+            public_plan.transaction.nonce,
+            private_plan.transaction.nonce
+        );
         assert_eq!(public_plan.transaction.txid, private_plan.transaction.txid);
         assert_eq!(
             signing_message(&public_plan.transaction),
