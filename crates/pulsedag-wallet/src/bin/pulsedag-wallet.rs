@@ -211,10 +211,7 @@ fn parse_command_from(args: impl Iterator<Item = String>) -> CliResult<Command> 
             Ok(Command::WatchExport(WatchExportArgs {
                 keystore: PathBuf::from(required(&flags, "keystore")?),
                 account: parse_u32("--account", &required(&flags, "account")?)?,
-                receive_count: parse_u32(
-                    "--receive-count",
-                    &required(&flags, "receive-count")?,
-                )?,
+                receive_count: parse_u32("--receive-count", &required(&flags, "receive-count")?)?,
                 change_count: parse_u32("--change-count", &required(&flags, "change-count")?)?,
             }))
         }
@@ -332,10 +329,7 @@ fn unlocked_session(
 fn run_restore(args: RestoreArgs, secrets: RestoreSecrets) -> CliResult<RestoreOutput> {
     ensure_parent_exists(&args.keystore)?;
     let network = WalletNetworkContext::new(&args.network_profile, &args.chain_id)?;
-    let seed = wallet_seed_from_mnemonic(
-        &secrets.mnemonic,
-        secrets.bip39_passphrase.as_ref(),
-    )?;
+    let seed = wallet_seed_from_mnemonic(&secrets.mnemonic, secrets.bip39_passphrase.as_ref())?;
     let anchor =
         derive_wallet_key_from_seed(&seed, &network, 0, WalletDerivationBranch::Receive, 0)?;
     let anchor_address = anchor.address().to_string();
@@ -475,7 +469,11 @@ mod tests {
     use super::*;
 
     fn args(values: &[&str]) -> impl Iterator<Item = String> {
-        values.iter().map(|value| (*value).to_string()).collect::<Vec<_>>().into_iter()
+        values
+            .iter()
+            .map(|value| (*value).to_string())
+            .collect::<Vec<_>>()
+            .into_iter()
     }
 
     #[test]
