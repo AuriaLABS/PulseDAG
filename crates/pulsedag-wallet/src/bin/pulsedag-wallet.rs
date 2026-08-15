@@ -442,8 +442,7 @@ fn read_bounded_json(path: &Path, label: &'static str) -> CliResult<Vec<u8>> {
     }
     if metadata.len() > CLI_JSON_INPUT_MAX_BYTES {
         return Err(invalid_input(format!(
-            "{label} exceeds {} byte input limit",
-            CLI_JSON_INPUT_MAX_BYTES
+            "{label} exceeds {CLI_JSON_INPUT_MAX_BYTES} byte input limit"
         ))
         .into());
     }
