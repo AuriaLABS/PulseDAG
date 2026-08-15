@@ -28,10 +28,10 @@ pub fn operator_stage() -> String {
     format!("v{major}.{minor}-readiness")
 }
 
-#[cfg(not(feature = "legacy-wallet-rpc"))]
 fn release_capabilities() -> Vec<String> {
     vec![
         "keyless_node".into(),
+        "signed_transaction_relay".into(),
         "external_miner_protocol".into(),
         "mempool".into(),
         "explorer_api".into(),
@@ -43,23 +43,6 @@ fn release_capabilities() -> Vec<String> {
     ]
 }
 
-#[cfg(feature = "legacy-wallet-rpc")]
-fn release_capabilities() -> Vec<String> {
-    vec![
-        "keyless_node".into(),
-        "legacy_wallet_rpc_dev_only".into(),
-        "external_miner_protocol".into(),
-        "mempool".into(),
-        "explorer_api".into(),
-        "sync_diagnostics".into(),
-        "storage_snapshot_inspection".into(),
-        "p2p_observability".into(),
-        "release_readiness_checks".into(),
-        "contracts_disabled".into(),
-    ]
-}
-
-#[cfg(not(feature = "legacy-wallet-rpc"))]
 fn release_core_endpoints() -> Vec<String> {
     vec![
         "/health".into(),
@@ -68,33 +51,9 @@ fn release_core_endpoints() -> Vec<String> {
         "/blocks".into(),
         "/txs".into(),
         "/address/:address".into(),
+        "/address/:address/utxos".into(),
+        "/api/v1/tx/submit".into(),
         "/mine".into(),
-        "/mining/template".into(),
-        "/mining/submit".into(),
-        "/snapshot".into(),
-        "/sync/status".into(),
-        "/sync/verify".into(),
-        "/p2p/status".into(),
-        "/p2p/peers".into(),
-        "/p2p/propagation".into(),
-        "/checks".into(),
-        "/readiness".into(),
-    ]
-}
-
-#[cfg(feature = "legacy-wallet-rpc")]
-fn release_core_endpoints() -> Vec<String> {
-    vec![
-        "/health".into(),
-        "/status".into(),
-        "/dashboard".into(),
-        "/blocks".into(),
-        "/txs".into(),
-        "/address/:address".into(),
-        "/mine".into(),
-        "/wallet/new".into(),
-        "/wallet/sign".into(),
-        "/wallet/transfer".into(),
         "/mining/template".into(),
         "/mining/submit".into(),
         "/snapshot".into(),
@@ -208,6 +167,8 @@ mod tests {
         assert!(release.contains("\"external_standalone_miner\""));
         assert!(release.contains("\"disabled_not_included\""));
         assert!(release.contains("\"disabled_not_in_node\""));
+        assert!(release.contains("\"signed_transaction_relay\""));
+        assert!(!release.contains("legacy_wallet_rpc_dev_only"));
     }
 
     #[test]
