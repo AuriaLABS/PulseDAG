@@ -10,7 +10,7 @@ use std::{
 
 use pulsedag_core::types::{Transaction, Utxo};
 use pulsedag_wallet::{
-    build_transaction_plan, derive_wallet_key_from_seed, encrypt_wallet_seed,
+    build_deterministic_transaction_plan, derive_wallet_key_from_seed, encrypt_wallet_seed,
     generate_wallet_mnemonic, wallet_seed_from_mnemonic, SecretString, WalletDerivationBranch,
     WalletKeystoreFile, WalletNetworkContext, WalletNetworkIdentity, WalletPlanSigner,
     WalletPlanSigningSessionExt, WalletSession, WalletSpendPolicy, WalletTransactionIntent,
@@ -49,7 +49,6 @@ struct SignArgs {
     to: String,
     amount: u64,
     fee: u64,
-    nonce: u64,
     account: u32,
     branch: WalletDerivationBranch,
     index: u32,
@@ -194,7 +193,6 @@ fn parse_command() -> HarnessResult<Command> {
                     "to",
                     "amount",
                     "fee",
-                    "nonce",
                     "account",
                     "branch",
                     "index",
@@ -208,7 +206,6 @@ fn parse_command() -> HarnessResult<Command> {
                 to: required(&flags, "to")?,
                 amount: parse_u64("--amount", &required(&flags, "amount")?)?,
                 fee: parse_u64("--fee", &required(&flags, "fee")?)?,
-                nonce: parse_u64("--nonce", &required(&flags, "nonce")?)?,
                 account: parse_u32("--account", &required(&flags, "account")?)?,
                 branch: parse_branch(&required(&flags, "branch")?)?,
                 index: parse_u32("--index", &required(&flags, "index")?)?,
@@ -346,12 +343,11 @@ fn run_sign(args: SignArgs, password: &SecretString) -> HarnessResult<RelayEnvel
     let available_utxos = load_address_utxos(&args.utxos_file, &signer_address)?;
     let intent = WalletTransactionIntent::new(&signer_address, args.to, args.amount, args.fee)?;
     let spend_policy = WalletSpendPolicy::new(args.fee, 10_000, HARNESS_MAX_INPUTS)?;
-    let plan = build_transaction_plan(
+    let plan = build_deterministic_transaction_plan(
         expected_network,
         spend_policy,
         intent,
         &available_utxos,
-        args.nonce,
     )?;
     let signed = session.sign_transaction_plan(
         &plan,

@@ -17,7 +17,7 @@ Implemented foundations include:
 - create-new/load keystore persistence with a session-scoped advisory file lock;
 - bounded timed wallet lock/unlock state;
 - watch-only backup manifest export and verification;
-- reviewed transaction plans and bounded local signing;
+- reviewed transaction plans, deterministic wallet-plan nonces, and bounded local signing;
 - same-directory temporary-file publication with file sync before rename;
 - 64 KiB file-size bounds and strict schema validation;
 - Unix owner-only (`0600`) keystore/lock permissions and parent-directory sync;
@@ -30,7 +30,7 @@ Still pending before an official end-user wallet is ready:
 - account/history persistence and wallet application UX;
 - platform-specific packaged-wallet hardening and restore testing;
 - final fee/coin-selection policy and broader custody review;
-- protocol-level nonce/replay/RBF/submission-identity/signing-domain decisions tracked in #821.
+- protocol-level replay/RBF/submission-identity/signing-domain decisions tracked in #821.
 
 ## Persistence boundary
 
@@ -44,19 +44,23 @@ On platforms where the Unix permission or directory-sync guarantees are not avai
 
 ## Transaction construction
 
-```rust
-use pulsedag_wallet::build_transaction;
+Supported wallet application flows should use `build_deterministic_transaction_plan`. Its v1 nonce is a deterministic wallet-plan identifier/salt derived under the fixed domain `PulseDAG:wallet-plan-nonce:v1` from transaction version, sender, recipient, amount, fee, and the exact selected UTXO outpoints/amounts in plan order.
 
-let built = build_transaction(
-    "pulse1sender",
-    "pulse1recipient",
-    100,
-    1,
+That gives stable retry behavior: rebuilding the same intent with the same selected inputs produces the same nonce and unsigned template id. Changing the recipient, amount, fee, or selected input set changes the nonce. The nonce is **not** an account sequence, consensus replay barrier, or cryptographic chain binding. Network/chain identity remains a separate fail-closed wallet check before signing, and PulseDAG v1 signing bytes still do not include that identity.
+
+The low-level `build_transaction_plan(..., nonce)` API remains available for compatibility and protocol tests, where the caller intentionally controls the v1 nonce.
+
+```rust
+use pulsedag_wallet::build_deterministic_transaction_plan;
+
+let plan = build_deterministic_transaction_plan(
+    network_identity,
+    spend_policy,
+    intent,
     &available_utxos,
-    nonce,
 )?;
 
-println!("unsigned txid: {}", built.transaction.txid);
+println!("reviewed nonce: {}", plan.transaction.nonce);
 ```
 
 The current first-fit selector is a construction primitive, not the final privacy/coin-selection policy.
@@ -67,6 +71,6 @@ Wallet custody and signing stay local to the wallet boundary. The node/relay doe
 
 After local signing, an online wallet or relay client may submit the fully formed signed transaction to the canonical public endpoint `POST /api/v1/tx/submit`. That endpoint is a transaction-admission boundary only: it does not build the transaction, choose inputs or fees, create nonce policy, or sign on the caller's behalf.
 
-The historical `/wallet/new`, `/wallet/sign` and `/wallet/transfer` names are permanent fail-closed tombstones; there is no compatibility feature that restores raw-key node signing. The repository's `pulsedag-wallet-harness` signs smoke/rehearsal transactions locally and accepts its keystore password through stdin only.
+The historical `/wallet/new`, `/wallet/sign` and `/wallet/transfer` names are permanent fail-closed tombstones; there is no compatibility feature that restores raw-key node signing. The repository's `pulsedag-wallet-harness` signs smoke/rehearsal transactions locally, derives the supported deterministic v1 wallet nonce internally, and accepts its keystore password through stdin only.
 
-The unversioned `/tx/submit` compatibility path is not part of the `PublicSafe` wallet contract. Transaction nonce/replay/RBF and consensus signing-domain semantics remain a separate protocol decision tracked by #821.
+The unversioned `/tx/submit` compatibility path is not part of the `PublicSafe` wallet contract. Protocol replay/RBF and consensus signing-domain semantics remain a separate decision tracked by #821.
