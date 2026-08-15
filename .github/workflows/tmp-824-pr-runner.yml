@@ -1,0 +1,55 @@
+name: Temporary #824 PR runner
+
+on:
+  pull_request:
+    branches:
+      - release/2.4.0
+
+permissions:
+  contents: write
+
+jobs:
+  patch-and-test:
+    if: github.head_ref == 'sync/2.4.x-retained-history-824'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: sync/2.4.x-retained-history-824
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Apply #824 patch from scoped script
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          source = Path('.github/workflows/tmp-824-retained-history-patch.yml').read_text().splitlines()
+          start = next(i for i, line in enumerate(source) if line.strip() == "python3 - <<'PY'") + 1
+          end = next(i for i in range(start, len(source)) if source[i].strip() == 'PY')
+          script_lines = source[start:end]
+          prefix = min(len(line) - len(line.lstrip()) for line in script_lines if line.strip())
+          script = '\n'.join(line[prefix:] if line.strip() else '' for line in script_lines)
+          exec(compile(script, 'tmp-824-patch.py', 'exec'))
+          PY
+
+          cargo fmt --all
+          cargo fmt --all -- --check
+          cargo test -p pulsedag-p2p
+          cargo test -p pulsedagd
+          git diff --check
+
+      - name: Commit patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add crates/pulsedag-p2p/src/messages.rs crates/pulsedag-p2p/src/lib.rs apps/pulsedagd/src/main.rs
+          git commit -m "sync: advertise retained-history boundary (#824)"
+          git push origin HEAD:sync/2.4.x-retained-history-824
