@@ -1,0 +1,210 @@
+name: v2.4.0 publish verified artifacts
+
+on:
+  push:
+    branches:
+      - release-publish/v2.4.0
+    paths:
+      - .github/workflows/v2_4_0_release_publish_recovery.yml
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  publish:
+    name: Publish verified v2.4.0 bundles
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      RELEASE_TAG: v2.4.0
+      EXPECTED_SHA: 995b7b200afc90f705eece6c37a16b7a4fc294ec
+      SOURCE_RUN_ID: '31900723029'
+    steps:
+      - name: Checkout immutable v2.4.0 source
+        uses: actions/checkout@v4
+        with:
+          ref: v2.4.0
+          fetch-depth: 1
+
+      - name: Verify immutable release identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${EXPECTED_SHA}"
+          test "$(tr -d '\r\n' < VERSION)" = "v2.4.0"
+          test "$(awk '/^version = / {gsub(/"/, "", $3); print $3; exit}' Cargo.toml)" = "2.4.0"
+          git fetch --no-tags origin "refs/tags/${RELEASE_TAG}:refs/tags/${RELEASE_TAG}"
+          test "$(git rev-parse "refs/tags/${RELEASE_TAG}^{commit}")" = "${EXPECTED_SHA}"
+
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Download exact verified build artifacts
+        uses: actions/download-artifact@v8
+        with:
+          run-id: ${{ env.SOURCE_RUN_ID }}
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          path: release-downloads
+
+      - name: Isolate and verify source bundles
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -d release-downloads/linux-x86_64
+          test -d release-downloads/windows-x86_64
+          test -d release-downloads/macos-x86_64
+          test "$(find release-downloads -mindepth 1 -maxdepth 1 -type d | wc -l)" -eq 3
+
+          rm -rf final
+          mkdir final
+          find release-downloads -type f -exec cp "{}" final/ \;
+
+          duplicate_names=$(find release-downloads -type f -printf '%f\n' | sort | uniq -d)
+          if [ -n "${duplicate_names}" ]; then
+            echo "::error::Duplicate artifact filenames detected:"
+            echo "${duplicate_names}"
+            exit 1
+          fi
+
+          test "$(find final -maxdepth 1 -type f | wc -l)" -eq 18
+          test "$(find final -maxdepth 1 -type f \( -name '*.tar.gz' -o -name '*.zip' \) | wc -l)" -eq 6
+          test "$(find final -maxdepth 1 -type f -name '*.sha256' | wc -l)" -eq 6
+          test "$(find final -maxdepth 1 -type f \( -name '*.tar.gz.json' -o -name '*.zip.json' \) | wc -l)" -eq 6
+
+      - name: Verify archive checksums and provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          for checksum in final/*.sha256; do
+            (cd final && sha256sum -c "$(basename "${checksum}")")
+          done
+
+          python - <<'PY'
+          import glob
+          import json
+          import os
+          from pathlib import Path
+
+          expected_sha = os.environ["EXPECTED_SHA"]
+          expected_tag = os.environ["RELEASE_TAG"]
+          source_run = os.environ["SOURCE_RUN_ID"]
+          expected_targets = {
+              "x86_64-unknown-linux-gnu",
+              "x86_64-pc-windows-msvc",
+              "x86_64-apple-darwin",
+          }
+          expected_bins = {"pulsedagd", "pulsedag-miner"}
+
+          manifests = []
+          seen = set()
+          for path in sorted(glob.glob("final/*.tar.gz.json") + glob.glob("final/*.zip.json")):
+              data = json.loads(Path(path).read_text(encoding="utf-8"))
+              if data.get("tag") != expected_tag:
+                  raise SystemExit(f"wrong tag in {path}: {data.get('tag')}")
+              prov = data.get("provenance", {})
+              if prov.get("commit") != expected_sha:
+                  raise SystemExit(f"wrong commit in {path}: {prov.get('commit')}")
+              if str(prov.get("github_run_id")) != source_run:
+                  raise SystemExit(f"wrong source run in {path}: {prov.get('github_run_id')}")
+              binary = data.get("binary", "")
+              binary = binary[:-4] if binary.endswith(".exe") else binary
+              key = (binary, data.get("target"))
+              if binary not in expected_bins or data.get("target") not in expected_targets:
+                  raise SystemExit(f"unexpected artifact identity in {path}: {key}")
+              if key in seen:
+                  raise SystemExit(f"duplicate artifact identity: {key}")
+              seen.add(key)
+              manifests.append(data)
+
+          expected = {(b, t) for b in expected_bins for t in expected_targets}
+          if seen != expected:
+              raise SystemExit(f"incomplete release matrix: {sorted(expected - seen)}")
+
+          Path("final/release-provenance.json").write_text(
+              json.dumps(
+                  {
+                      "release_tag": expected_tag,
+                      "release_commit": expected_sha,
+                      "source_workflow_run_id": source_run,
+                      "native_smoke_verified": True,
+                      "artifacts": manifests,
+                  },
+                  indent=2,
+                  sort_keys=True,
+              ) + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+          {
+            printf '# Consolidated checksums for %s\n' "${RELEASE_TAG}"
+            for archive in final/*.tar.gz final/*.zip; do
+              (cd final && sha256sum "$(basename "${archive}")")
+            done
+          } > final/SHA256SUMS.txt
+
+      - name: Generate and verify final release bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/release/render_install_guide.py \
+            --artifacts-dir final \
+            --expected-tag "${RELEASE_TAG}" \
+            --output final/INSTALL-VERIFY.md
+
+          python scripts/release/verify_release_artifacts.py \
+            --artifacts-dir final \
+            --expected-tag "${RELEASE_TAG}" \
+            --expect-binaries pulsedagd pulsedag-miner \
+            --expect-targets x86_64-unknown-linux-gnu x86_64-pc-windows-msvc x86_64-apple-darwin \
+            --consolidated-checksums final/SHA256SUMS.txt \
+            --provenance-summary final/release-provenance.json
+
+          jq -e ".release_tag == \"${RELEASE_TAG}\" and .release_commit == \"${EXPECTED_SHA}\" and .source_workflow_run_id == \"${SOURCE_RUN_ID}\" and .native_smoke_verified == true" final/release-provenance.json >/dev/null
+
+          test "$(find final -maxdepth 1 -type f | wc -l)" -eq 21
+          while IFS= read -r path; do
+            name=$(basename "$path")
+            case "$name" in
+              *.tar.gz|*.zip|*.tar.gz.sha256|*.zip.sha256|*.tar.gz.json|*.zip.json|SHA256SUMS.txt|INSTALL-VERIFY.md|release-provenance.json) ;;
+              *) echo "unexpected file in release bundle: ${name}" >&2; exit 1 ;;
+            esac
+          done < <(find final -maxdepth 1 -type f -print | sort)
+
+      - name: Publish GitHub Release v2.4.0
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=(
+            final/*.tar.gz
+            final/*.zip
+            final/*.tar.gz.sha256
+            final/*.zip.sha256
+            final/*.tar.gz.json
+            final/*.zip.json
+            final/SHA256SUMS.txt
+            final/INSTALL-VERIFY.md
+            final/release-provenance.json
+          )
+          test "${#files[@]}" -eq 21
+
+          if gh release view "${RELEASE_TAG}" --repo "${GH_REPO}" >/dev/null 2>&1; then
+            gh release upload "${RELEASE_TAG}" "${files[@]}" --clobber --repo "${GH_REPO}"
+          else
+            gh release create "${RELEASE_TAG}" \
+              --repo "${GH_REPO}" \
+              --title "PulseDAG v2.4.0" \
+              --notes-file docs/release/V2_4_0_RELEASE_NOTES.md
+            gh release upload "${RELEASE_TAG}" "${files[@]}" --clobber --repo "${GH_REPO}"
+          fi
+
+          gh release view "${RELEASE_TAG}" --repo "${GH_REPO}" --json tagName,targetCommitish,isDraft,isPrerelease,url >/tmp/release.json
+          jq -e '.tagName == "v2.4.0" and .isDraft == false and .isPrerelease == false' /tmp/release.json >/dev/null
