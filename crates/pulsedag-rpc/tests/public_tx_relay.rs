@@ -123,17 +123,9 @@ fn valid_signed_transaction() -> Transaction {
     tx
 }
 
-fn public_relay_app(
-    state: TestState,
-    limits: Option<RpcHardeningLimits>,
-) -> axum::Router {
-    routes::router_with_profile::<TestState>(
-        ApiExposureProfile::PublicSafe,
-        false,
-        None,
-        limits,
-    )
-    .with_state(state)
+fn public_relay_app(state: TestState, limits: Option<RpcHardeningLimits>) -> axum::Router {
+    routes::router_with_profile::<TestState>(ApiExposureProfile::PublicSafe, false, None, limits)
+        .with_state(state)
 }
 
 async fn call(app: axum::Router, req: Request<Body>) -> (StatusCode, String) {
@@ -308,7 +300,11 @@ async fn public_safe_relay_enforces_per_ip_rate_limit() {
         .body(Body::from("{}"))
         .unwrap();
     let (second_status, second_body) = call(app, second).await;
-    assert_eq!(second_status, StatusCode::TOO_MANY_REQUESTS, "{second_body}");
+    assert_eq!(
+        second_status,
+        StatusCode::TOO_MANY_REQUESTS,
+        "{second_body}"
+    );
     assert!(second_body.contains("rate_limited"), "{second_body}");
 }
 
