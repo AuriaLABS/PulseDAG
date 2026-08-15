@@ -340,10 +340,7 @@ fn parse_command_from(args: impl Iterator<Item = String>) -> CliResult<Command> 
                 amount: parse_u64("--amount", &required(&flags, "amount")?)?,
                 fee: parse_u64("--fee", &required(&flags, "fee")?)?,
                 max_fee: parse_u64("--max-fee", &required(&flags, "max-fee")?)?,
-                max_fee_bps: parse_u32(
-                    "--max-fee-bps",
-                    &required(&flags, "max-fee-bps")?,
-                )?,
+                max_fee_bps: parse_u32("--max-fee-bps", &required(&flags, "max-fee-bps")?)?,
                 max_inputs: parse_usize("--max-inputs", &required(&flags, "max-inputs")?)?,
                 account: parse_u32("--account", &required(&flags, "account")?)?,
                 branch: parse_branch(&required(&flags, "branch")?)?,
@@ -351,10 +348,7 @@ fn parse_command_from(args: impl Iterator<Item = String>) -> CliResult<Command> 
             }))
         }
         "tx-sign" => {
-            reject_unknown(
-                &flags,
-                &["keystore", "plan", "account", "branch", "index"],
-            )?;
+            reject_unknown(&flags, &["keystore", "plan", "account", "branch", "index"])?;
             Ok(Command::TxSign(TxSignArgs {
                 keystore: PathBuf::from(required(&flags, "keystore")?),
                 plan: PathBuf::from(required(&flags, "plan")?),
@@ -470,10 +464,9 @@ fn read_transaction_plan(path: &Path) -> CliResult<WalletTransactionPlan> {
         .map_err(|_| invalid_input("wallet transaction plan JSON is invalid"))?;
     plan.validate_structure()?;
     if plan.nonce_policy != WalletNoncePolicy::DeterministicPlanV1 {
-        return Err(invalid_input(
-            "wallet CLI signs deterministic_plan_v1 transaction plans only",
-        )
-        .into());
+        return Err(
+            invalid_input("wallet CLI signs deterministic_plan_v1 transaction plans only").into(),
+        );
     }
     Ok(plan)
 }
@@ -892,10 +885,8 @@ mod tests {
 
     #[test]
     fn address_utxo_parser_rejects_cross_address_entries() {
-        let dir = std::env::temp_dir().join(format!(
-            "pulsedag-wallet-cli-utxo-{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("pulsedag-wallet-cli-utxo-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
         let path = dir.join("utxos.json");
         let response = serde_json::json!({
@@ -921,18 +912,16 @@ mod tests {
 
     #[test]
     fn transaction_plan_json_is_validated_on_import() {
-        let dir = std::env::temp_dir().join(format!(
-            "pulsedag-wallet-cli-plan-{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("pulsedag-wallet-cli-plan-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
         let path = dir.join("plan.json");
         let from = "pulse1sender";
         let network = WalletNetworkIdentity::new("public-testnet", "pulsedag-public-testnet")
             .expect("network");
         let policy = WalletSpendPolicy::new(100, 1_000, 8).expect("policy");
-        let intent = WalletTransactionIntent::new(from, "pulse1recipient", 400, 10)
-            .expect("intent");
+        let intent =
+            WalletTransactionIntent::new(from, "pulse1recipient", 400, 10).expect("intent");
         let available = vec![Utxo {
             outpoint: OutPoint {
                 txid: "11".repeat(32),
