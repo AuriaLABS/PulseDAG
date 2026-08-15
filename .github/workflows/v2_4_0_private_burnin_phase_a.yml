@@ -1,0 +1,163 @@
+name: v2.4.0 private burn-in phase A launch
+
+on:
+  push:
+    branches:
+      - ops/v2.4.0-burnin-8a1a5f74
+    paths:
+      - ops/burnin/v2_4_0_phase_a_remote.sh
+      - .github/workflows/v2_4_0_private_burnin_phase_a.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  launch-phase-a:
+    runs-on:
+      - self-hosted
+      - linux
+      - pulsedag-private-testnet
+    environment: pulsedag-private-testnet-rehearsal
+    timeout-minutes: 90
+    env:
+      CANDIDATE_SHA: 8a1a5f74e03eae695e76bf8a84ddc9d48f94db34
+      REPO_URL: https://github.com/AuriaLABS/PulseDAG.git
+    steps:
+      - name: Checkout operations branch
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Configure protected SSH material
+        shell: bash
+        env:
+          SSH_KEY: ${{ secrets.PULSEDAG_V2_3_0_REHEARSAL_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.PULSEDAG_V2_3_0_REHEARSAL_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          test -n "$SSH_KEY"
+          test -n "$KNOWN_HOSTS"
+          install -d -m 0700 "$HOME/.ssh"
+          printf '%s\n' "$SSH_KEY" > "$HOME/.ssh/id_ed25519"
+          printf '%s\n' "$KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          chmod 0600 "$HOME/.ssh/id_ed25519" "$HOME/.ssh/known_hosts"
+
+      - name: Select protected burn-in host
+        shell: bash
+        env:
+          INVENTORY_B64: ${{ secrets.PULSEDAG_V2_3_0_REHEARSAL_INVENTORY_B64 }}
+        run: |
+          set -euo pipefail
+          test -n "$INVENTORY_B64"
+          work="$RUNNER_TEMP/pulsedag-v2.4.0-phase-a"
+          install -d -m 0700 "$work"
+          printf '%s' "$INVENTORY_B64" | base64 --decode > "$work/inventory.json"
+          chmod 0600 "$work/inventory.json"
+
+          node_index="$(jq -r '[.nodes | to_entries[] | select(.value.transport_mode == "ssh") | .key][0] // empty' "$work/inventory.json")"
+          test -n "$node_index"
+          jq -r --argjson i "$node_index" '.nodes[$i].transport[]' "$work/inventory.json" > "$work/transport.txt"
+          host_label="$(jq -r --argjson i "$node_index" '.nodes[$i].name' "$work/inventory.json")"
+          test -n "$host_label"
+          printf '%s\n' "$host_label" > "$work/host-label.txt"
+          printf 'BURNIN_WORK=%s\n' "$work" >> "$GITHUB_ENV"
+
+      - name: Verify remote access without changing state
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t ssh_argv < "$BURNIN_WORK/transport.txt"
+          "${ssh_argv[@]}" 'set -e; command -v git; command -v cargo; command -v curl; command -v python3; printf "remote-preflight-ok\\n"'
+
+      - name: Launch exact-SHA private burn-in Phase A
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t ssh_argv < "$BURNIN_WORK/transport.txt"
+          host_label="$(cat "$BURNIN_WORK/host-label.txt")"
+          run_id="${CANDIDATE_SHA:0:12}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          printf '%s\n' "$run_id" > "$BURNIN_WORK/run-id.txt"
+          printf -v remote_cmd 'bash -s -- %q %q %q %q' "$CANDIDATE_SHA" "$run_id" "$host_label" "$REPO_URL"
+          "${ssh_argv[@]}" "$remote_cmd" < ops/burnin/v2_4_0_phase_a_remote.sh \
+            2>&1 | tee "$BURNIN_WORK/launch.log"
+
+      - name: Retrieve start record and initial evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t ssh_argv < "$BURNIN_WORK/transport.txt"
+          run_id="$(cat "$BURNIN_WORK/run-id.txt")"
+          printf -v start_cmd 'cat "$HOME/pulsedag-burnin-v2.4.0/%s/state/start.json"' "$run_id"
+          "${ssh_argv[@]}" "$start_cmd" > "$BURNIN_WORK/start.json"
+          jq -e --arg sha "$CANDIDATE_SHA" '
+            .gate == "v2.4.0-private-burnin-phase-a-start" and
+            .candidate_sha == $sha and
+            .network_profile == "private-testnet-v2.4.0" and
+            .chain_id == "pulsedag-private-v2.4.0" and
+            .public_testnet_ready == false and
+            .thirty_day_public_testnet_clock_started == false and
+            .contracts_enabled == false
+          ' "$BURNIN_WORK/start.json" >/dev/null
+
+          printf -v tar_cmd 'cd "$HOME/pulsedag-burnin-v2.4.0/%s" && tar -czf - evidence state/start.json state/clock-start-utc.txt state/candidate.sha state/host-label.txt' "$run_id"
+          "${ssh_argv[@]}" "$tar_cmd" > "$BURNIN_WORK/initial-evidence.tar.gz"
+          sha256sum "$BURNIN_WORK/initial-evidence.tar.gz" > "$BURNIN_WORK/initial-evidence.tar.gz.sha256"
+
+      - name: Record actual UTC start in issue 789
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 - "$BURNIN_WORK/start.json" "$BURNIN_WORK/issue-comment.json" <<'PY'
+          import json, sys
+          start = json.load(open(sys.argv[1], encoding='utf-8'))
+          body = f"""## v2.4.0 private burn-in Phase A — CLOCK STARTED
+
+The operational 24-hour clock has started on a protected remote host after the exact frozen candidate passed the final gate and the Phase A host passed its fail-closed preflight.
+
+- Candidate SHA: `{start['candidate_sha']}`
+- Run ID: `{start['run_id']}`
+- Host label: `{start['host_label']}`
+- Actual UTC clock start: **`{start['clock_start_utc']}`**
+- Network profile: `{start['network_profile']}`
+- Chain ID: `{start['chain_id']}`
+- Consensus mode: `{start['consensus_mode']}`
+- Sanitized config SHA-256: `{start['config_sha256']}`
+- Node binary SHA-256: `{start['node_sha256']}`
+- Miner binary SHA-256: `{start['miner_sha256']}`
+- Node/miner/exporter/monitor processes: verified alive at the clock boundary
+- Fresh isolated RocksDB path: unique to this run
+- Public-testnet readiness: `false`
+- 30-day public-testnet clock: `false`
+- Contracts: disabled
+
+Phase A monitoring is recording versioned RPC snapshots, exporter health/metrics, process resource state, disk usage and RocksDB size every five minutes on the remote host. Do not combine evidence from any other candidate SHA or burn-in run. Any invalidating source/config/database drift resets this clock.
+"""
+          json.dump({'body': body}, open(sys.argv[2], 'w', encoding='utf-8'))
+          PY
+          curl -fsS \
+            -X POST \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            https://api.github.com/repos/AuriaLABS/PulseDAG/issues/789/comments \
+            --data-binary "@$BURNIN_WORK/issue-comment.json" \
+            > "$BURNIN_WORK/issue-comment-response.json"
+          jq -e '.id and .html_url' "$BURNIN_WORK/issue-comment-response.json" >/dev/null
+
+      - name: Upload sanitized start evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v2_4_0_phase_a_start_${{ env.CANDIDATE_SHA }}_${{ github.run_id }}_${{ github.run_attempt }}
+          path: |
+            ${{ env.BURNIN_WORK }}/start.json
+            ${{ env.BURNIN_WORK }}/launch.log
+            ${{ env.BURNIN_WORK }}/initial-evidence.tar.gz
+            ${{ env.BURNIN_WORK }}/initial-evidence.tar.gz.sha256
+            ${{ env.BURNIN_WORK }}/issue-comment-response.json
+          if-no-files-found: warn
+          retention-days: 180
