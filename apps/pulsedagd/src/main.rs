@@ -109,7 +109,7 @@ fn selected_history_peer_compatible(
 ) -> bool {
     remote
         .prune_boundary_height
-        .map_or(true, |boundary| boundary <= local_height.saturating_add(1))
+        .is_none_or(|boundary| boundary <= local_height.saturating_add(1))
 }
 
 fn selected_locator_peer_for_priority_gap(
