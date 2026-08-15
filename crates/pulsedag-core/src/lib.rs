@@ -9,6 +9,7 @@ pub mod ghostdag_v1;
 pub mod mempool;
 pub mod mining;
 pub mod ordering;
+pub mod ordering_v2;
 pub mod orphans;
 pub mod pow;
 pub mod protocol;
@@ -85,6 +86,10 @@ pub use consensus_metadata::{
 
 pub use ordering::{
     derive_ordered_dag, ordered_dag_tip, refresh_ordered_dag, DAG_ORDERING_VERSION,
+};
+
+pub use ordering_v2::{
+    derive_ordered_dag_v2, OrderedDagV2, OrderingV2Error, GHOSTDAG_V1_ORDERING_VERSION,
 };
 
 pub use apply::{
