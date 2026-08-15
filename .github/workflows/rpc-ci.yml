@@ -21,11 +21,18 @@ jobs:
       - name: Run full default keyless pulsedag-rpc suite
         run: cargo test -p pulsedag-rpc --all-targets
 
-      - name: Build explicit legacy wallet RPC compatibility surface
-        run: cargo test -p pulsedag-rpc --all-targets --features legacy-wallet-rpc --no-run
-
-      - name: Run explicit legacy wallet RPC compatibility suite
-        run: cargo test -p pulsedag-rpc --all-targets --features legacy-wallet-rpc
+      - name: Prove legacy wallet RPC feature is removed
+        shell: bash
+        run: |
+          set -euo pipefail
+          if grep -R --line-number --fixed-strings 'legacy-wallet-rpc' apps/pulsedagd/Cargo.toml crates/pulsedag-rpc/Cargo.toml crates/pulsedag-rpc/src; then
+            echo 'legacy-wallet-rpc compatibility feature is still present' >&2
+            exit 1
+          fi
+          if grep -R --line-number -E 'struct Wallet(Sign|Transfer)Request|private_key' crates/pulsedag-rpc/src/handlers/wallet.rs; then
+            echo 'raw-key wallet RPC implementation is still present' >&2
+            exit 1
+          fi
 
   release-readiness-tests:
     runs-on: ubuntu-latest

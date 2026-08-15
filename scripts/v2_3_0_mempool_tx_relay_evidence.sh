@@ -17,6 +17,9 @@ REHEARSAL_MEMPOOL_CAPACITY="${REHEARSAL_MEMPOOL_CAPACITY:-2}"
 CHAIN_ID="v2_3_0_mempool_runtime_$(date +%s)_$$"
 NODE_BIN="$ROOT_DIR/target/release/pulsedagd"
 MINER_BIN="$ROOT_DIR/target/release/pulsedag-miner"
+WALLET_BIN="$ROOT_DIR/target/release/pulsedag-wallet-harness"
+WALLET_DIR=""
+WALLET_PASSWORD=""
 mkdir -p "$OUT_DIR" "$OUT_DIR/logs" "$OUT_DIR/endpoints" "$OUT_DIR/tx" "$OUT_DIR/sets" "$OUT_DIR/data"
 COMMAND_LOG="$OUT_DIR/command.log"
 FAILURES=()
@@ -27,7 +30,7 @@ fail(){ FAILURES+=("$*"); log "FAIL: $*"; }
 rpc_url(){ local i="$1"; echo "http://127.0.0.1:$((BASE_RPC_PORT+i))"; }
 post_json(){ local url="$1" body="$2" out="$3"; curl -fsS --connect-timeout 2 --max-time 20 -H 'content-type: application/json' -d "$body" "$url" | tee "$out" >/dev/null; }
 capture_node(){ local stage="$1" i url; for i in $(seq 1 "$NODE_COUNT"); do url="$(rpc_url "$i")"; for ep in mempool p2p/status p2p/topology sync/status checks runtime; do mkdir -p "$OUT_DIR/endpoints/$stage"; curl -fsS --connect-timeout 2 --max-time 10 "$url/$ep" > "$OUT_DIR/endpoints/$stage/n${i}-${ep//\//-}.json" || true; done; done; }
-cleanup(){ local rc=$? i; set +e; for pid in "${NODE_PIDS[@]:-}"; do kill "$pid" 2>/dev/null || true; done; for pid in "${NODE_PIDS[@]:-}"; do wait "$pid" 2>/dev/null || true; done; for i in $(seq 1 "$NODE_COUNT"); do pulsedag_wait_port_closed "$((BASE_RPC_PORT+i))" 20 || true; pulsedag_wait_port_closed "$((BASE_P2P_PORT+i))" 20 || true; done; if [[ ! -f "$OUT_DIR/evidence_manifest.json" ]]; then write_manifest FAIL; fi; pulsedag_write_checksums "$OUT_DIR" || true; exit "$rc"; }
+cleanup(){ local rc=$? i; set +e; for pid in "${NODE_PIDS[@]:-}"; do kill "$pid" 2>/dev/null || true; done; for pid in "${NODE_PIDS[@]:-}"; do wait "$pid" 2>/dev/null || true; done; for i in $(seq 1 "$NODE_COUNT"); do pulsedag_wait_port_closed "$((BASE_RPC_PORT+i))" 20 || true; pulsedag_wait_port_closed "$((BASE_P2P_PORT+i))" 20 || true; done; WALLET_PASSWORD=""; [[ -n "${WALLET_DIR:-}" ]] && rm -rf "$WALLET_DIR"; if [[ ! -f "$OUT_DIR/evidence_manifest.json" ]]; then write_manifest FAIL; fi; pulsedag_write_checksums "$OUT_DIR" || true; exit "$rc"; }
 trap cleanup EXIT
 write_manifest(){
   local result="$1" end_utc final_digest="" per_nodes="[]" submitted="[]" confirmed="[]" relay=false dedupe=false capacity=false cleanup=false deterministic=false topology=false duplicate_evidence="{}" rejection="{}" confirmation="[]" topology_evidence="[]"
@@ -56,9 +59,47 @@ write_manifest(){
     '{result:$result,evidence_kind:"runtime",candidate_commit:$commit,node_count:$node_count,relay_converged:$relay,duplicate_suppression:$dedupe,capacity_rejection_taxonomy:$capacity,confirmation_cleanup:$cleanup,deterministic_final_mempool_sets:$deterministic,submitted_txids:$submitted,confirmed_txids:$confirmed,final_mempool_digest:$digest,public_testnet_ready:false,per_node_final:$per_nodes,topology_status:{required_peers_per_node:4,stable:$topology,nodes:$topology_evidence},duplicate_evidence:$duplicate_evidence,rejection:$rejection,confirmation_evidence:$confirmation,timestamps:{start_utc:$start,end_utc:$end},failure_reasons:$failures}' > "$OUT_DIR/evidence_manifest.json"
 }
 
-log "building release binaries"
+log "building release binaries and local wallet harness"
 cargo build -p pulsedagd -p pulsedag-miner --release --locked 2>&1 | tee "$OUT_DIR/build.log"
-[[ -x "$NODE_BIN" && -x "$MINER_BIN" ]] || { echo "release binaries missing" >&2; exit 3; }
+cargo build -p pulsedag-wallet --bin pulsedag-wallet-harness --release --locked 2>&1 | tee -a "$OUT_DIR/build.log"
+[[ -x "$NODE_BIN" && -x "$MINER_BIN" && -x "$WALLET_BIN" ]] || { echo "release binaries missing" >&2; exit 3; }
+
+WALLET_DIR="$(mktemp -d "${TMPDIR:-/tmp}/pulsedag-relay-wallet.XXXXXX")"
+WALLET_PASSWORD="$(python3 - <<'PY'
+import secrets
+print(secrets.token_hex(32))
+PY
+)"
+printf '%s\n' "$WALLET_PASSWORD" | "$WALLET_BIN" init \
+  --keystore "$WALLET_DIR/wallet.json" \
+  --network-profile private \
+  --chain-id "$CHAIN_ID" \
+  --receive-count 6 > "$WALLET_DIR/public-addresses.json"
+FROM="$(jq -r '.receive[0].address' "$WALLET_DIR/public-addresses.json")"
+FROM2="$(jq -r '.receive[1].address' "$WALLET_DIR/public-addresses.json")"
+FROM3="$(jq -r '.receive[2].address' "$WALLET_DIR/public-addresses.json")"
+TO="$(jq -r '.receive[3].address' "$WALLET_DIR/public-addresses.json")"
+TO2="$(jq -r '.receive[4].address' "$WALLET_DIR/public-addresses.json")"
+TO3="$(jq -r '.receive[5].address' "$WALLET_DIR/public-addresses.json")"
+for address in "$FROM" "$FROM2" "$FROM3" "$TO" "$TO2" "$TO3"; do
+  [[ -n "$address" && "$address" != null ]] || { echo "local wallet harness omitted a derived address" >&2; exit 4; }
+done
+
+wallet_sign(){
+  local index="$1" to="$2" amount="$3" fee="$4" nonce="$5" utxos="$6" out="$7"
+  printf '%s\n' "$WALLET_PASSWORD" | "$WALLET_BIN" sign \
+    --keystore "$WALLET_DIR/wallet.json" \
+    --utxos-file "$utxos" \
+    --network-profile private \
+    --chain-id "$CHAIN_ID" \
+    --to "$to" \
+    --amount "$amount" \
+    --fee "$fee" \
+    --nonce "$nonce" \
+    --account 0 \
+    --branch receive \
+    --index "$index" > "$out"
+}
 
 start_node() {
   local i="$1"
@@ -107,19 +148,16 @@ done
 if (( topology_ok == 1 )); then touch "$OUT_DIR/topology_stable.proof"; else fail "topology did not stabilize with four peers per node"; fi
 capture_node before_submit
 
-post_json "$(rpc_url 1)/wallet/new" '{}' "$OUT_DIR/tx/funding-wallet.json"
-post_json "$(rpc_url 1)/wallet/new" '{}' "$OUT_DIR/tx/funding2-wallet.json"
-post_json "$(rpc_url 1)/wallet/new" '{}' "$OUT_DIR/tx/funding3-wallet.json"
-post_json "$(rpc_url 1)/wallet/new" '{}' "$OUT_DIR/tx/recipient-wallet.json"
-FROM="$(jq -r '.data.address' "$OUT_DIR/tx/funding-wallet.json")"; PRIV="$(jq -r '.data.private_key' "$OUT_DIR/tx/funding-wallet.json")"; TO="$(jq -r '.data.address' "$OUT_DIR/tx/recipient-wallet.json")"
-FROM2="$(jq -r '.data.address' "$OUT_DIR/tx/funding2-wallet.json")"; PRIV2="$(jq -r '.data.private_key' "$OUT_DIR/tx/funding2-wallet.json")"
-FROM3="$(jq -r '.data.address' "$OUT_DIR/tx/funding3-wallet.json")"; PRIV3="$(jq -r '.data.private_key' "$OUT_DIR/tx/funding3-wallet.json")"
 post_json "$(rpc_url 1)/mine" "{\"miner_address\":\"$FROM\",\"pow_max_tries\":1000000}" "$OUT_DIR/tx/funding-mine.json"
 post_json "$(rpc_url 1)/mine" "{\"miner_address\":\"$FROM2\",\"pow_max_tries\":1000000}" "$OUT_DIR/tx/funding2-mine.json"
 post_json "$(rpc_url 1)/mine" "{\"miner_address\":\"$FROM3\",\"pow_max_tries\":1000000}" "$OUT_DIR/tx/funding3-mine.json"
 sleep 3
-TRANSFER_BODY="{\"from\":\"$FROM\",\"to\":\"$TO\",\"amount\":1,\"fee\":1,\"private_key\":\"$PRIV\"}"
-post_json "$(rpc_url 1)/wallet/transfer" "$TRANSFER_BODY" "$OUT_DIR/tx/submit-n1.json"
+curl -fsS --connect-timeout 2 --max-time 20 "$(rpc_url 1)/address/$FROM/utxos" > "$WALLET_DIR/funding-utxos.json"
+curl -fsS --connect-timeout 2 --max-time 20 "$(rpc_url 1)/address/$FROM2/utxos" > "$WALLET_DIR/funding2-utxos.json"
+curl -fsS --connect-timeout 2 --max-time 20 "$(rpc_url 1)/address/$FROM3/utxos" > "$WALLET_DIR/funding3-utxos.json"
+
+wallet_sign 0 "$TO" 1 1 1 "$WALLET_DIR/funding-utxos.json" "$OUT_DIR/tx/submit-n1-request.json"
+post_json "$(rpc_url 1)/api/v1/tx/submit" "$(cat "$OUT_DIR/tx/submit-n1-request.json")" "$OUT_DIR/tx/submit-n1.json"
 TXID="$(jq -r '.data.txid // empty' "$OUT_DIR/tx/submit-n1.json")"; [[ -n "$TXID" ]] || { fail "no submitted txid"; write_manifest FAIL; exit 1; }
 jq -n --arg txid "$TXID" '[$txid]' > "$OUT_DIR/submitted_txids.json"
 
@@ -132,9 +170,9 @@ while (( $(date +%s) - start < CONVERGENCE_TIMEOUT )); do
 done
 if (( relay_ok == 1 )); then touch "$OUT_DIR/relay_converged.proof"; else fail "txid did not relay to all five mempools"; fi
 
-DUP_BODY="$(jq -ce '{transaction:.data.transaction} | select(.transaction != null)' "$OUT_DIR/tx/submit-n1.json")" || { fail "wallet transfer did not return a duplicate-submittable transaction"; write_manifest FAIL; exit 1; }
+DUP_BODY="$(cat "$OUT_DIR/tx/submit-n1-request.json")"
 capture_node before_duplicate
-post_json "$(rpc_url 2)/tx/submit" "$DUP_BODY" "$OUT_DIR/tx/duplicate-submit-n2.json" || true
+post_json "$(rpc_url 2)/api/v1/tx/submit" "$DUP_BODY" "$OUT_DIR/tx/duplicate-submit-n2.json" || true
 sleep 2
 capture_node after_duplicate
 dupe_counts="[]"; counter_deltas="[]"; publish_unchanged=true
@@ -159,12 +197,12 @@ else
   fail "duplicate submit did not prove bounded suppression without retransmission: code=$dupe_code message=$dupe_msg publish_unchanged=$publish_unchanged"
 fi
 
-post_json "$(rpc_url 1)/wallet/new" '{}' "$OUT_DIR/tx/recipient2-wallet.json"; TO2="$(jq -r '.data.address' "$OUT_DIR/tx/recipient2-wallet.json")"
-post_json "$(rpc_url 1)/wallet/transfer" "{\"from\":\"$FROM2\",\"to\":\"$TO2\",\"amount\":1,\"fee\":1,\"private_key\":\"$PRIV2\"}" "$OUT_DIR/tx/capacity-fill.json" || true
-post_json "$(rpc_url 1)/wallet/new" '{}' "$OUT_DIR/tx/recipient3-wallet.json"; TO3="$(jq -r '.data.address' "$OUT_DIR/tx/recipient3-wallet.json")"
+wallet_sign 1 "$TO2" 1 1 1 "$WALLET_DIR/funding2-utxos.json" "$OUT_DIR/tx/capacity-fill-request.json"
+post_json "$(rpc_url 1)/api/v1/tx/submit" "$(cat "$OUT_DIR/tx/capacity-fill-request.json")" "$OUT_DIR/tx/capacity-fill.json" || true
 # A zero-fee candidate is strictly lower priority than the two resident fee-1
 # transactions, so the bounded mempool must reject it rather than evicting one.
-post_json "$(rpc_url 1)/wallet/transfer" "{\"from\":\"$FROM3\",\"to\":\"$TO3\",\"amount\":1,\"fee\":0,\"private_key\":\"$PRIV3\"}" "$OUT_DIR/tx/capacity-reject.json" || true
+wallet_sign 2 "$TO3" 1 0 1 "$WALLET_DIR/funding3-utxos.json" "$OUT_DIR/tx/capacity-reject-request.json"
+post_json "$(rpc_url 1)/api/v1/tx/submit" "$(cat "$OUT_DIR/tx/capacity-reject-request.json")" "$OUT_DIR/tx/capacity-reject.json" || true
 cap_code="$(jq -r '.error.code // ""' "$OUT_DIR/tx/capacity-reject.json")"; cap_reason="$(jq -r '.error.message // ""' "$OUT_DIR/tx/capacity-reject.json")"
 if [[ "$cap_code" == "TX_REJECTED" && ( "$cap_reason" == *"backpressure active"* || "$cap_reason" == *"capacity exceeded"* || "$cap_reason" == *"mempool pressure"* ) ]]; then
   jq -n --slurpfile response "$OUT_DIR/tx/capacity-reject.json" --arg code "$cap_code" --arg reason "$cap_reason" '{code:$code,reason:$reason,response:$response[0],bounded:true,private_rehearsal_capacity_override:true,candidate_fee:0,taxonomy:"mempool_capacity"}' > "$OUT_DIR/rejection_evidence.json"

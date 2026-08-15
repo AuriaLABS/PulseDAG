@@ -3,11 +3,6 @@ name = "pulsedag-rpc"
 version.workspace = true
 edition = "2021"
 
-[features]
-default = []
-# Development/rehearsal compatibility only. Normal node builds must remain keyless.
-legacy-wallet-rpc = ["dep:ed25519-dalek", "dep:pulsedag-crypto"]
-
 [dependencies]
 axum = "0.7"
 tokio = { version = "1", features = ["full"] }
@@ -16,6 +11,8 @@ serde_json = "1"
 async-stream = "0.3"
 futures-core = "0.3"
 hex = "0.4"
+# Lockfile-compatible inert optional dependencies. No RPC feature or handler
+# activates these; raw-key wallet signing has been removed from the crate.
 ed25519-dalek = { version = "2", optional = true }
 tracing = "0.1"
 sha3 = "0.10"

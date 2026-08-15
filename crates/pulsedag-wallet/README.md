@@ -10,23 +10,27 @@ Implemented foundations include:
 
 - unsigned transaction construction and basic first-fit UTXO selection;
 - explicit secret wrappers with redacted formatting and zeroizing storage;
-- a strict versioned keystore v1 envelope;
+- versioned encrypted private-key and deterministic-seed keystores;
 - Argon2id + XChaCha20-Poly1305 encryption with authenticated network/account metadata;
+- deterministic hardened Ed25519 derivation and mnemonic restore primitives;
 - Ed25519 key/address consistency checks;
 - create-new/load keystore persistence with a session-scoped advisory file lock;
+- bounded timed wallet lock/unlock state;
+- watch-only backup manifest export and verification;
+- reviewed transaction plans and bounded local signing;
 - same-directory temporary-file publication with file sync before rename;
 - 64 KiB file-size bounds and strict schema validation;
-- Unix owner-only (`0600`) keystore/lock permissions and parent-directory sync.
+- Unix owner-only (`0600`) keystore/lock permissions and parent-directory sync;
+- a repository-only local signing harness for smoke/rehearsal automation;
+- keyless node operation with signed-transaction-only relay submission.
 
 Still pending before an official end-user wallet is ready:
 
-- replacement/password-rotation and migration writes;
-- deterministic seed/mnemonic restore and account derivation;
-- timed wallet lock/unlock state;
+- replacement/password-rotation and migration UX;
 - account/history persistence and wallet application UX;
 - platform-specific packaged-wallet hardening and restore testing;
-- migration away from legacy raw-private-key node RPC handlers;
-- final fee/coin-selection policy and broader custody review.
+- final fee/coin-selection policy and broader custody review;
+- protocol-level nonce/replay/RBF/submission-identity/signing-domain decisions tracked in #821.
 
 ## Persistence boundary
 
@@ -59,8 +63,10 @@ The current first-fit selector is a construction primitive, not the final privac
 
 ## Broadcast boundary
 
-Wallet custody and signing stay local to the wallet boundary. The public node/relay does not receive a private key, mnemonic, seed, wallet password, decrypted keystore payload, or `WalletSession` in order to broadcast a payment.
+Wallet custody and signing stay local to the wallet boundary. The node/relay does not receive a private key, mnemonic, seed, wallet password, decrypted keystore payload, or `WalletSession` in order to broadcast a payment.
 
 After local signing, an online wallet or relay client may submit the fully formed signed transaction to the canonical public endpoint `POST /api/v1/tx/submit`. That endpoint is a transaction-admission boundary only: it does not build the transaction, choose inputs or fees, create nonce policy, or sign on the caller's behalf.
+
+The historical `/wallet/new`, `/wallet/sign` and `/wallet/transfer` names are permanent fail-closed tombstones; there is no compatibility feature that restores raw-key node signing. The repository's `pulsedag-wallet-harness` signs smoke/rehearsal transactions locally and accepts its keystore password through stdin only.
 
 The unversioned `/tx/submit` compatibility path is not part of the `PublicSafe` wallet contract. Transaction nonce/replay/RBF and consensus signing-domain semantics remain a separate protocol decision tracked by #821.
