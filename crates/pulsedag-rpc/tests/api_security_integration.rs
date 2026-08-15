@@ -251,7 +251,6 @@ async fn public_safe_router_enforces_negative_route_body_and_liveness_contract()
 
     for path in [
         "/tx/submit",
-        "/api/v1/tx/submit",
         "/tx/build",
         "/api/v1/tx/build",
         "/mine",
@@ -290,6 +289,17 @@ async fn public_safe_router_enforces_negative_route_body_and_liveness_contract()
             "missing code for {path}"
         );
     }
+
+    let (relay_wrong_method_status, _) = call(
+        tiny_app.clone(),
+        Request::builder()
+            .method("GET")
+            .uri("/api/v1/tx/submit")
+            .body(Body::empty())
+            .expect("request"),
+    )
+    .await;
+    assert_eq!(relay_wrong_method_status, StatusCode::METHOD_NOT_ALLOWED);
 
     let (oversized_status, oversized_body) = call(
         tiny_app.clone(),
