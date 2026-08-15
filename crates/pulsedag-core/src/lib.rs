@@ -14,6 +14,7 @@ pub mod protocol;
 pub mod replay;
 pub mod retarget;
 pub mod selection;
+pub mod selection_v2;
 pub mod state;
 pub mod sync_pipeline;
 pub mod tx;
@@ -104,6 +105,11 @@ pub use ghostdag::{
 pub use selection::{
     calculate_selected_parent, legacy_preferred_tip_hash, preferred_tip_hash,
     refresh_selected_chain, sorted_legacy_tip_hashes, sorted_tip_hashes,
+};
+
+pub use selection_v2::{
+    calculate_selected_parent_v1, calculate_selected_tip_v1, compare_selection_scores_v1,
+    rebuild_selected_chain_v1, SelectionScoreV1, SelectionV2Error, GHOSTDAG_V1_MAX_PARENTS,
 };
 
 pub use consistency::{assert_dag_consistent_for_tests, dag_consistency_issues};
