@@ -448,6 +448,8 @@ pub struct RemoteSelectedTipStatus {
     pub chain_id: String,
     pub selected_tip: Option<PulseHash>,
     pub selected_height: u64,
+    #[serde(default)]
+    pub prune_boundary_height: Option<u64>,
     pub selected_blue_score: Option<u64>,
     pub ordered_dag_tip: Option<PulseHash>,
     pub state_root_digest: Option<String>,
@@ -1967,6 +1969,7 @@ fn note_remote_tip_inventory(
                     chain_id: inventory.chain_id,
                     selected_tip: inventory.selected_tip,
                     selected_height,
+                    prune_boundary_height: inventory.prune_boundary_height,
                     selected_blue_score: inventory.selected_blue_score,
                     ordered_dag_tip: inventory.ordered_dag_tip,
                     state_root_digest: inventory.state_root_digest,
@@ -10603,6 +10606,7 @@ mod deterministic_p2p_sync_coverage_tests {
             chain_id: "test-chain".to_string(),
             selected_tip: Some(format!("selected-{generation}")),
             selected_height: Some(600 + generation),
+            prune_boundary_height: None,
             selected_blue_score: Some(700 + generation),
             ordered_dag_tip: Some(format!("ordered-{generation}")),
             state_root_digest: Some(format!("state-{generation}")),
@@ -10660,6 +10664,19 @@ mod deterministic_p2p_sync_coverage_tests {
         let status = &state.remote_selected_tip_inventory["peer-a"].status;
         assert_eq!(status.inventory_generation, 2);
         assert_eq!(status.selected_height, 602);
+
+        let mut with_boundary = tip_inventory_for_test(3, 13);
+        with_boundary.prune_boundary_height = Some(321);
+        assert!(note_remote_tip_inventory(
+            &mut state,
+            "peer-a",
+            with_boundary,
+            14,
+            "Tips"
+        ));
+        let status = &state.remote_selected_tip_inventory["peer-a"].status;
+        assert_eq!(status.inventory_generation, 3);
+        assert_eq!(status.prune_boundary_height, Some(321));
     }
 
     #[test]

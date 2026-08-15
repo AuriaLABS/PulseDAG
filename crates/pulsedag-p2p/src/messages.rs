@@ -19,6 +19,8 @@ pub struct TipInventoryStatus {
     pub chain_id: String,
     pub selected_tip: Option<Hash>,
     pub selected_height: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prune_boundary_height: Option<u64>,
     pub selected_blue_score: Option<u64>,
     pub ordered_dag_tip: Option<Hash>,
     pub state_root_digest: Option<String>,
@@ -403,6 +405,7 @@ mod selected_tip_inventory_wire_tests {
             chain_id: "testnet-dev".into(),
             selected_tip: Some("tip-741".into()),
             selected_height: Some(741),
+            prune_boundary_height: None,
             selected_blue_score: Some(741),
             ordered_dag_tip: Some("ordered-741".into()),
             state_root_digest: Some("state-root".into()),
@@ -426,5 +429,41 @@ mod selected_tip_inventory_wire_tests {
             }
             other => panic!("unexpected decoded message: {other:?}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod prune_boundary_wire_compat_tests {
+    use super::*;
+
+    #[test]
+    fn legacy_tip_inventory_without_prune_boundary_decodes_as_unknown() {
+        let json = r#"{
+            "chain_id":"legacy-chain",
+            "selected_tip":null,
+            "selected_height":42,
+            "selected_blue_score":null,
+            "ordered_dag_tip":null,
+            "state_root_digest":null,
+            "observed_at_unix":1,
+            "inventory_generation":2
+        }"#;
+        let decoded: TipInventoryStatus = serde_json::from_str(json).expect("legacy inventory");
+        assert_eq!(decoded.prune_boundary_height, None);
+    }
+
+    #[test]
+    fn archival_tip_inventory_serializes_zero_boundary_explicitly() {
+        let inventory = TipInventoryStatus {
+            chain_id: "archive-chain".to_string(),
+            selected_height: Some(10),
+            prune_boundary_height: Some(0),
+            ..TipInventoryStatus::default()
+        };
+        let json = serde_json::to_value(&inventory).expect("inventory json");
+        assert_eq!(
+            json.get("prune_boundary_height").and_then(|v| v.as_u64()),
+            Some(0)
+        );
     }
 }

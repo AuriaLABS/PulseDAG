@@ -40,6 +40,38 @@ use pulsedag_rpc::routes::{
 };
 use pulsedag_storage::Storage;
 
+// Derive the advertised history floor from selected-parent continuity that is actually
+// present in memory. After a pruned restart, the first missing selected parent keeps
+// the boundary at the retained floor; isolated older anchors cannot make the node
+// advertise archival history accidentally.
+fn retained_selected_history_boundary(chain: &pulsedag_core::ChainState) -> Option<u64> {
+    let mut current = pulsedag_core::preferred_tip_hash(chain)?;
+
+    loop {
+        let block = chain.dag.blocks.get(&current)?;
+        let boundary_height = block.header.height;
+        if current == chain.dag.genesis_hash {
+            return Some(0);
+        }
+
+        let Some(parent) = chain
+            .dag
+            .selected_parents
+            .get(&current)
+            .and_then(|parent| parent.as_ref())
+        else {
+            return Some(boundary_height);
+        };
+        let Some(parent_block) = chain.dag.blocks.get(parent) else {
+            return Some(boundary_height);
+        };
+        if parent_block.header.height.saturating_add(1) != block.header.height {
+            return Some(boundary_height);
+        }
+        current = parent.clone();
+    }
+}
+
 fn local_tip_inventory_status(chain: &pulsedag_core::ChainState) -> TipInventoryStatus {
     let selected_tip = pulsedag_core::preferred_tip_hash(chain);
     let selected_block = selected_tip
@@ -49,6 +81,7 @@ fn local_tip_inventory_status(chain: &pulsedag_core::ChainState) -> TipInventory
         chain_id: chain.chain_id.clone(),
         selected_tip,
         selected_height: selected_block.map(|block| block.header.height),
+        prune_boundary_height: retained_selected_history_boundary(chain),
         selected_blue_score: selected_block.map(|block| block.header.blue_score),
         ordered_dag_tip: chain.dag.ordered_dag_tip.clone(),
         state_root_digest: chain.dag.ordered_dag_state_root.clone(),
@@ -70,6 +103,15 @@ fn local_selected_tip_height(chain: &pulsedag_core::ChainState) -> u64 {
         .unwrap_or(chain.dag.best_height)
 }
 
+fn selected_history_peer_compatible(
+    remote: &pulsedag_p2p::RemoteSelectedTipStatus,
+    local_height: u64,
+) -> bool {
+    remote
+        .prune_boundary_height
+        .is_none_or(|boundary| boundary <= local_height.saturating_add(1))
+}
+
 fn selected_locator_peer_for_priority_gap(
     status: &P2pStatus,
     local_height: u64,
@@ -82,7 +124,13 @@ fn selected_locator_peer_for_priority_gap(
         .filter(|remote| remote.connected && remote.direct_request_capable)
         .filter(|remote| !excluded_peers.contains(&remote.peer_id))
         .filter(|remote| remote.selected_height.saturating_sub(local_height) >= minimum_gap)
-        .max_by_key(|remote| remote.selected_height)
+        .filter(|remote| selected_history_peer_compatible(remote, local_height))
+        .max_by_key(|remote| {
+            (
+                remote.prune_boundary_height.is_some(),
+                remote.selected_height,
+            )
+        })
         .map(|remote| (remote.peer_id.clone(), remote.selected_height))
 }
 
@@ -106,6 +154,7 @@ fn selected_locator_peer_for_reconcile(
         .iter()
         .filter(|remote| remote.connected && remote.direct_request_capable)
         .filter(|remote| !excluded_peers.contains(&remote.peer_id))
+        .filter(|remote| selected_history_peer_compatible(remote, local_height))
         .filter(|remote| {
             remote.selected_height > local_height
                 || (remote.selected_height == local_height
@@ -113,7 +162,12 @@ fn selected_locator_peer_for_reconcile(
                         || remote.ordered_dag_tip != local.ordered_dag_tip
                         || remote.state_root_digest != local.state_root_digest))
         })
-        .max_by_key(|remote| remote.selected_height)
+        .max_by_key(|remote| {
+            (
+                remote.prune_boundary_height.is_some(),
+                remote.selected_height,
+            )
+        })
         .map(|remote| remote.peer_id.clone())
 }
 
@@ -6437,6 +6491,7 @@ mod tests {
             chain_id: "test-chain".to_string(),
             selected_tip: Some("tip-a".to_string()),
             selected_height: Some(128),
+            prune_boundary_height: None,
             selected_blue_score: Some(128),
             ordered_dag_tip: Some("tip-a".to_string()),
             state_root_digest: Some("root-a".to_string()),
@@ -6473,6 +6528,7 @@ mod tests {
             chain_id: "test-chain".to_string(),
             selected_tip: Some("tip-a".to_string()),
             selected_height: Some(128),
+            prune_boundary_height: None,
             selected_blue_score: Some(128),
             ordered_dag_tip: Some("tip-a".to_string()),
             state_root_digest: Some("root-a".to_string()),
@@ -8403,5 +8459,176 @@ mod tests {
             "selected ancestor must win over side-DAG locator height"
         );
         assert_eq!(headers[0].hash, expected_first);
+    }
+
+    #[test]
+    fn retained_history_boundary_advertises_genesis_and_full_history() {
+        let genesis = pulsedag_core::genesis::init_chain_state("boundary-genesis".to_string());
+        assert_eq!(retained_selected_history_boundary(&genesis), Some(0));
+        assert_eq!(
+            local_tip_inventory_status(&genesis).prune_boundary_height,
+            Some(0)
+        );
+
+        let full = build_test_chain("boundary-full-history", 5);
+        assert_eq!(retained_selected_history_boundary(&full), Some(0));
+        assert_eq!(
+            local_tip_inventory_status(&full).prune_boundary_height,
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn retained_history_boundary_reports_contiguous_pruned_floor_with_old_anchor() {
+        let mut chain = build_test_chain("boundary-pruned-history", 6);
+        assert!(chain.dag.selected_chain.len() >= 5);
+
+        let boundary_index = 3usize;
+        let boundary_hash = chain.dag.selected_chain[boundary_index].clone();
+        let boundary_height = chain
+            .dag
+            .blocks
+            .get(&boundary_hash)
+            .expect("retained boundary block")
+            .header
+            .height;
+        let genesis_hash = chain.dag.genesis_hash.clone();
+        let removed = chain.dag.selected_chain[1..boundary_index].to_vec();
+        for hash in removed {
+            assert!(chain.dag.blocks.remove(&hash).is_some());
+        }
+
+        assert!(
+            chain.dag.blocks.contains_key(&genesis_hash),
+            "old genesis anchor intentionally remains present"
+        );
+        assert!(chain.dag.blocks.contains_key(&boundary_hash));
+        assert_eq!(
+            retained_selected_history_boundary(&chain),
+            Some(boundary_height)
+        );
+        assert_eq!(
+            local_tip_inventory_status(&chain).prune_boundary_height,
+            Some(boundary_height)
+        );
+    }
+
+    #[test]
+    fn retained_history_boundary_is_unknown_for_empty_selected_state() {
+        let mut empty = pulsedag_core::genesis::init_chain_state("boundary-empty".to_string());
+        empty.dag.blocks.clear();
+        empty.dag.tips.clear();
+        empty.dag.selected_chain.clear();
+        empty.dag.selected_parents.clear();
+
+        assert_eq!(retained_selected_history_boundary(&empty), None);
+        assert_eq!(
+            local_tip_inventory_status(&empty).prune_boundary_height,
+            None
+        );
+    }
+}
+
+#[cfg(test)]
+mod prune_boundary_peer_selection_tests {
+    use super::*;
+
+    fn remote(
+        peer_id: &str,
+        selected_height: u64,
+        prune_boundary_height: Option<u64>,
+    ) -> pulsedag_p2p::RemoteSelectedTipStatus {
+        pulsedag_p2p::RemoteSelectedTipStatus {
+            peer_id: peer_id.to_string(),
+            selected_height,
+            prune_boundary_height,
+            connected: true,
+            direct_request_capable: true,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn prune_boundary_priority_selection_rejects_incompatible_and_prefers_known_compatible() {
+        let status = P2pStatus {
+            remote_selected_tip_inventory: vec![
+                remote("incompatible", 500, Some(100)),
+                remote("legacy-unknown", 450, None),
+                remote("archival", 300, Some(0)),
+            ],
+            ..Default::default()
+        };
+        assert_eq!(
+            selected_locator_peer_for_priority_gap(&status, 0, 1, &HashSet::new()),
+            Some(("archival".to_string(), 300))
+        );
+    }
+
+    #[test]
+    fn prune_boundary_selection_returns_none_when_all_known_peers_are_incompatible() {
+        let status = P2pStatus {
+            remote_selected_tip_inventory: vec![
+                remote("too-new-a", 500, Some(2)),
+                remote("too-new-b", 700, Some(100)),
+            ],
+            ..Default::default()
+        };
+        assert_eq!(
+            selected_locator_peer_for_priority_gap(&status, 0, 1, &HashSet::new()),
+            None
+        );
+
+        let local = TipInventoryStatus {
+            selected_height: Some(0),
+            ..Default::default()
+        };
+        assert_eq!(
+            selected_locator_peer_for_reconcile(&status, &local, &HashSet::new()),
+            None
+        );
+    }
+
+    #[test]
+    fn prune_boundary_priority_selection_keeps_unknown_as_fallback() {
+        let status = P2pStatus {
+            remote_selected_tip_inventory: vec![remote("legacy-unknown", 50, None)],
+            ..Default::default()
+        };
+        assert_eq!(
+            selected_locator_peer_for_priority_gap(&status, 0, 1, &HashSet::new()),
+            Some(("legacy-unknown".to_string(), 50))
+        );
+    }
+
+    #[test]
+    fn prune_boundary_priority_selection_accepts_pruned_peer_with_overlap() {
+        let status = P2pStatus {
+            remote_selected_tip_inventory: vec![remote("overlap", 250, Some(151))],
+            ..Default::default()
+        };
+        assert_eq!(
+            selected_locator_peer_for_priority_gap(&status, 150, 1, &HashSet::new()),
+            Some(("overlap".to_string(), 250))
+        );
+    }
+
+    #[test]
+    fn prune_boundary_reconcile_uses_same_compatibility_rule() {
+        let local = TipInventoryStatus {
+            selected_height: Some(0),
+            ..Default::default()
+        };
+        let status = P2pStatus {
+            remote_selected_tip_inventory: vec![
+                remote("incompatible", 500, Some(100)),
+                remote("legacy-unknown", 450, None),
+                remote("archival", 300, Some(0)),
+            ],
+            ..Default::default()
+        };
+        assert_eq!(
+            selected_locator_peer_for_reconcile(&status, &local, &HashSet::new()),
+            Some("archival".to_string())
+        );
     }
 }
