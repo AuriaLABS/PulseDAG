@@ -16,6 +16,7 @@ pub mod selection;
 pub mod state;
 pub mod sync_pipeline;
 pub mod tx;
+pub mod tx_submission;
 pub mod types;
 pub mod validation;
 
@@ -37,6 +38,7 @@ pub use tx::{
     signing_message_v2, verify_transaction_signatures, verify_transaction_signatures_v2,
     TRANSACTION_VERSION_V1, TRANSACTION_VERSION_V2,
 };
+pub use tx_submission::compute_submission_id_v2;
 pub use types::*;
 
 pub use retarget::{
