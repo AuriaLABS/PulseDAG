@@ -1,0 +1,33 @@
+name: fix-824-rpc-literal
+
+on:
+  push:
+    branches:
+      - fix/2.4.x-prune-boundary-824
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Apply RPC literal compatibility fix
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/fix_824_rpc_literal.py
+          cargo fmt --all
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "test: complete #824 RPC literal compatibility"
+          git push origin HEAD:fix/2.4.x-prune-boundary-824
+      - name: Full lint validation
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo clippy --all-targets --all-features -- -D warnings
