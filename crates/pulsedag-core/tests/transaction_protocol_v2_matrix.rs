@@ -1,10 +1,10 @@
 use ed25519_dalek::{Signer, SigningKey};
 use pulsedag_core::{
     address_from_public_key, classify_transaction_version, compute_txid, compute_txid_v2,
-    genesis::init_chain_state, signing_message, signing_message_v2, validate_transaction_for_protocol,
-    ChainState, ProtocolActivationIdentity, PulseError, Transaction, TransactionRejectionClass,
-    TransactionValidationPath, TxInput, TxOutput, Utxo, OutPoint, GHOSTDAG_V1_ORDERING_VERSION,
-    TRANSACTION_VERSION_V1, TRANSACTION_VERSION_V2,
+    genesis::init_chain_state, signing_message, signing_message_v2,
+    validate_transaction_for_protocol, ChainState, OutPoint, ProtocolActivationIdentity,
+    PulseError, Transaction, TransactionRejectionClass, TransactionValidationPath, TxInput,
+    TxOutput, Utxo, GHOSTDAG_V1_ORDERING_VERSION, TRANSACTION_VERSION_V1, TRANSACTION_VERSION_V2,
 };
 
 fn funded_state(chain_id: &str) -> (ChainState, SigningKey, OutPoint, String) {
@@ -97,12 +97,7 @@ fn legacy_v1_and_activated_v2_each_validate_on_their_explicit_path() {
     let legacy_identity = ProtocolActivationIdentity::legacy_from_state(&state);
     validate_transaction_for_protocol(&v1, &state, &legacy_identity).unwrap();
 
-    let v2 = signed_v2_transaction(
-        &signing_key,
-        &outpoint,
-        &public_key,
-        "pulsedag-matrix",
-    );
+    let v2 = signed_v2_transaction(&signing_key, &outpoint, &public_key, "pulsedag-matrix");
     let activated_identity = ProtocolActivationIdentity::activated_v2(
         state.chain_id.clone(),
         state.dag.genesis_hash.clone(),
@@ -115,12 +110,7 @@ fn legacy_v1_and_activated_v2_each_validate_on_their_explicit_path() {
 fn protocol_paths_reject_the_other_known_transaction_version_before_utxo_work() {
     let (state, signing_key, outpoint, public_key) = funded_state("pulsedag-matrix");
     let v1 = signed_v1_transaction(&signing_key, &outpoint, &public_key);
-    let v2 = signed_v2_transaction(
-        &signing_key,
-        &outpoint,
-        &public_key,
-        "pulsedag-matrix",
-    );
+    let v2 = signed_v2_transaction(&signing_key, &outpoint, &public_key, "pulsedag-matrix");
 
     let legacy_identity = ProtocolActivationIdentity::legacy_from_state(&state);
     assert!(matches!(
@@ -144,12 +134,8 @@ fn protocol_paths_reject_the_other_known_transaction_version_before_utxo_work() 
 #[test]
 fn v2_transaction_signed_for_another_chain_fails_on_the_active_chain() {
     let (state, signing_key, outpoint, public_key) = funded_state("pulsedag-testnet-v2");
-    let wrong_chain_tx = signed_v2_transaction(
-        &signing_key,
-        &outpoint,
-        &public_key,
-        "pulsedag-private-v2",
-    );
+    let wrong_chain_tx =
+        signed_v2_transaction(&signing_key, &outpoint, &public_key, "pulsedag-private-v2");
     let identity = ProtocolActivationIdentity::activated_v2(
         state.chain_id.clone(),
         state.dag.genesis_hash.clone(),
