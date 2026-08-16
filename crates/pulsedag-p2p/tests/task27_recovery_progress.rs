@@ -22,8 +22,20 @@ fn observation() -> RecoveryProgressObservationV1 {
 fn positive_gap_with_empty_queues_requires_rescheduling_then_degrades() {
     let current = observation();
     let mut tracker = RecoveryProgressTrackerV1::new(3);
-    assert!(matches!(tracker.observe(current), RecoveryProgressDecisionV1::ScheduleRecovery { stagnant_cycles: 1, .. }));
-    assert!(matches!(tracker.observe(current), RecoveryProgressDecisionV1::ScheduleRecovery { stagnant_cycles: 2, .. }));
+    assert!(matches!(
+        tracker.observe(current),
+        RecoveryProgressDecisionV1::ScheduleRecovery {
+            stagnant_cycles: 1,
+            ..
+        }
+    ));
+    assert!(matches!(
+        tracker.observe(current),
+        RecoveryProgressDecisionV1::ScheduleRecovery {
+            stagnant_cycles: 2,
+            ..
+        }
+    ));
     assert_eq!(
         tracker.observe(current),
         RecoveryProgressDecisionV1::Degraded {
@@ -42,7 +54,10 @@ fn response_and_reprocess_traffic_without_success_is_not_fake_progress() {
     first.orphan_count = 4;
     first.missing_parent_responses = 10;
     first.orphan_reprocess_attempts = 10;
-    assert!(matches!(tracker.observe(first), RecoveryProgressDecisionV1::ContinueRecovery { .. }));
+    assert!(matches!(
+        tracker.observe(first),
+        RecoveryProgressDecisionV1::ContinueRecovery { .. }
+    ));
 
     let mut second = first;
     second.missing_parent_responses = 20;
@@ -65,7 +80,10 @@ fn real_progress_resets_stagnation() {
 
     let mut height = first;
     height.local_selected_height = 101;
-    assert_eq!(tracker.observe(height), RecoveryProgressDecisionV1::Productive { gap: 4 });
+    assert_eq!(
+        tracker.observe(height),
+        RecoveryProgressDecisionV1::Productive { gap: 4 }
+    );
     assert_eq!(tracker.stagnant_cycles(), 0);
 
     let mut backlog = height;
@@ -74,11 +92,17 @@ fn real_progress_resets_stagnation() {
     tracker.observe(backlog);
     let mut drained = backlog;
     drained.pending_missing_parents = 4;
-    assert!(matches!(tracker.observe(drained), RecoveryProgressDecisionV1::Productive { .. }));
+    assert!(matches!(
+        tracker.observe(drained),
+        RecoveryProgressDecisionV1::Productive { .. }
+    ));
 
     let mut succeeded = drained;
     succeeded.orphan_reprocess_successes = 1;
-    assert!(matches!(tracker.observe(succeeded), RecoveryProgressDecisionV1::Productive { .. }));
+    assert!(matches!(
+        tracker.observe(succeeded),
+        RecoveryProgressDecisionV1::Productive { .. }
+    ));
 }
 
 #[test]
@@ -86,7 +110,10 @@ fn incompatible_peer_does_not_authorize_v2_recovery() {
     let mut tracker = RecoveryProgressTrackerV1::new(3);
     let mut current = observation();
     current.compatible_peer_available = false;
-    assert_eq!(tracker.observe(current), RecoveryProgressDecisionV1::AwaitCompatiblePeer { gap: 5 });
+    assert_eq!(
+        tracker.observe(current),
+        RecoveryProgressDecisionV1::AwaitCompatiblePeer { gap: 5 }
+    );
     assert_eq!(tracker.stagnant_cycles(), 0);
 }
 
@@ -96,6 +123,9 @@ fn zero_gap_resets_without_claiming_finality() {
     tracker.observe(observation());
     let mut current = observation();
     current.network_selected_height = Some(100);
-    assert_eq!(tracker.observe(current), RecoveryProgressDecisionV1::NoPositiveGap);
+    assert_eq!(
+        tracker.observe(current),
+        RecoveryProgressDecisionV1::NoPositiveGap
+    );
     assert_eq!(tracker.stagnant_cycles(), 0);
 }
