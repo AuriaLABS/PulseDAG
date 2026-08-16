@@ -54,10 +54,13 @@ fn response_and_reprocess_traffic_without_success_is_not_fake_progress() {
     first.orphan_count = 4;
     first.missing_parent_responses = 10;
     first.orphan_reprocess_attempts = 10;
-    assert!(matches!(
+    assert_eq!(
         tracker.observe(first),
-        RecoveryProgressDecisionV1::ContinueRecovery { .. }
-    ));
+        RecoveryProgressDecisionV1::ContinueRecovery {
+            gap: 5,
+            stagnant_cycles: 1,
+        }
+    );
 
     let mut second = first;
     second.missing_parent_responses = 20;
