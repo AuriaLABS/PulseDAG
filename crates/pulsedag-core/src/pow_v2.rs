@@ -144,20 +144,24 @@ mod tests {
     fn v2_adapter_reuses_canonical_target_and_kheavyhash_semantics() {
         let header = sample_header();
         let v2 = canonical_pow_v2_adapter();
-        let material = v2
-            .pre_pow_material(&header, "pulsedag-testnet")
-            .unwrap();
+        let material = v2.pre_pow_material(&header, "pulsedag-testnet").unwrap();
         let attempt = v2.evaluate_material_with_nonce(&material, header.nonce);
 
         assert_eq!(v2.algorithm(), canonical_pow_adapter().algorithm());
-        assert_eq!(v2.algorithm_name(), canonical_pow_adapter().algorithm_name());
+        assert_eq!(
+            v2.algorithm_name(),
+            canonical_pow_adapter().algorithm_name()
+        );
         assert_eq!(v2.engine_name(), canonical_pow_adapter().engine_name());
         assert_eq!(
             material.target,
             canonical_pow_adapter().target_from_compact_bits(header.difficulty)
         );
         assert_eq!(attempt.final_hash.nonce, header.nonce);
-        assert_eq!(attempt.final_hash.hash_hex, hex::encode(attempt.final_hash.hash));
+        assert_eq!(
+            attempt.final_hash.hash_hex,
+            hex::encode(attempt.final_hash.hash)
+        );
     }
 
     #[test]
