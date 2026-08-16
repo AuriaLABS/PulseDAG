@@ -5,6 +5,12 @@ use serde::{Deserialize, Serialize};
 
 use pulsedag_core::types::{Block, BlockHeader, Hash, Transaction};
 
+pub use dag_sync_v2::{
+    DagFrontierEntryV1, DagFrontierResponseV1, DagSyncContractError, SelectedChainLocatorV1,
+    MAX_DAG_FRONTIER_ENTRIES, MAX_DAG_FRONTIER_PARENTS, MAX_DAG_FRONTIER_REQUIRED_CONTEXT,
+    MAX_SELECTED_CHAIN_LOCATOR_HASHES, MAX_SELECTED_CHAIN_SUFFIX_HASHES,
+    P2P_DAG_SYNC_CONTRACT_VERSION,
+};
 pub use protocol_v2::{
     require_protocol_compatibility_v1, ProtocolCapabilitiesV1, ProtocolCapabilityHandshakeV1,
     ProtocolCompatibilityError, P2P_PROTOCOL_CAPABILITIES_VERSION,
