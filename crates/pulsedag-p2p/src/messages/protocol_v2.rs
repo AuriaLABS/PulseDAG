@@ -282,6 +282,112 @@ impl ProtocolPeerRouterV1 {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProtocolPeerSessionErrorV1 {
+    LocalCapabilities(ProtocolCompatibilityError),
+    LocalChainIdMismatch { expected: String, observed: String },
+    LocalCapabilitiesUnavailable,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProtocolPeerSessionObservationV1 {
+    LegacyNoCapabilities,
+    Compatible,
+    Incompatible(ProtocolCompatibilityError),
+}
+
+/// Runtime-owned Task 27 negotiation state.
+///
+/// This type intentionally contains no transport or async behavior. The live
+/// libp2p loop can keep one instance in its existing mutex-protected state and
+/// feed it capability observations keyed by the authenticated peer id. Local
+/// protocol identity must be configured explicitly from the node's real
+/// activation state; it is never synthesized from `chain_id` alone.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ProtocolPeerSessionV1 {
+    local_capabilities: Option<ProtocolCapabilitiesV1>,
+    router: ProtocolPeerRouterV1,
+}
+
+impl ProtocolPeerSessionV1 {
+    pub fn local_capabilities(&self) -> Option<&ProtocolCapabilitiesV1> {
+        self.local_capabilities.as_ref()
+    }
+
+    pub fn configure_local_capabilities(
+        &mut self,
+        expected_chain_id: &str,
+        capabilities: ProtocolCapabilitiesV1,
+    ) -> Result<(), ProtocolPeerSessionErrorV1> {
+        capabilities
+            .validate_shape()
+            .map_err(ProtocolPeerSessionErrorV1::LocalCapabilities)?;
+        if capabilities.protocol_identity.chain_id != expected_chain_id {
+            return Err(ProtocolPeerSessionErrorV1::LocalChainIdMismatch {
+                expected: expected_chain_id.to_string(),
+                observed: capabilities.protocol_identity.chain_id.clone(),
+            });
+        }
+        self.local_capabilities = Some(capabilities);
+        self.router = ProtocolPeerRouterV1::default();
+        Ok(())
+    }
+
+    pub fn observe_remote_capabilities(
+        &mut self,
+        peer_id: &str,
+        remote: Option<ProtocolCapabilitiesV1>,
+    ) -> Result<ProtocolPeerSessionObservationV1, ProtocolPeerSessionErrorV1> {
+        let Some(remote) = remote else {
+            self.router.mark_peer_unknown(peer_id);
+            return Ok(ProtocolPeerSessionObservationV1::LegacyNoCapabilities);
+        };
+        let local = self
+            .local_capabilities
+            .as_ref()
+            .ok_or(ProtocolPeerSessionErrorV1::LocalCapabilitiesUnavailable)?;
+        let compatibility = self
+            .router
+            .observe_remote_capabilities(peer_id.to_string(), local, remote);
+        Ok(match compatibility {
+            ProtocolPeerCompatibilityV1::Unknown => {
+                unreachable!("concrete capability observation cannot remain unknown")
+            }
+            ProtocolPeerCompatibilityV1::Compatible => {
+                ProtocolPeerSessionObservationV1::Compatible
+            }
+            ProtocolPeerCompatibilityV1::Incompatible(error) => {
+                ProtocolPeerSessionObservationV1::Incompatible(error)
+            }
+        })
+    }
+
+    pub fn compatibility(&self, peer_id: &str) -> ProtocolPeerCompatibilityV1 {
+        self.router.compatibility(peer_id)
+    }
+
+    pub fn route(
+        &self,
+        peer_id: &str,
+        message_class: ProtocolMessageClassV1,
+    ) -> ProtocolPeerRouteDecisionV1 {
+        self.router.route(peer_id, message_class)
+    }
+
+    pub fn eligible_v2_peers(&self) -> Vec<String> {
+        self.router.eligible_v2_peers()
+    }
+
+    pub fn peer_disconnected(&mut self, peer_id: &str) {
+        self.router.remove_peer(peer_id);
+    }
+
+    pub fn reset_local_capabilities(&mut self) {
+        self.local_capabilities = None;
+        self.router = ProtocolPeerRouterV1::default();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -541,5 +647,119 @@ mod tests {
         assert!(router.eligible_v2_peers().is_empty());
         assert!(router.remove_peer("peer-v2"));
         assert!(!router.remove_peer("peer-v2"));
+    }
+
+    #[test]
+    fn peer_session_requires_real_local_identity_before_observation() {
+        let mut session = ProtocolPeerSessionV1::default();
+        assert_eq!(
+            session.observe_remote_capabilities(
+                "peer-v2",
+                Some(capabilities("pulsedag-testnet")),
+            ),
+            Err(ProtocolPeerSessionErrorV1::LocalCapabilitiesUnavailable)
+        );
+        assert_eq!(
+            session.compatibility("peer-v2"),
+            ProtocolPeerCompatibilityV1::Unknown
+        );
+    }
+
+    #[test]
+    fn peer_session_configures_valid_local_identity_and_routes_compatible_peer() {
+        let local = capabilities("pulsedag-testnet");
+        let mut session = ProtocolPeerSessionV1::default();
+        assert_eq!(
+            session.configure_local_capabilities("pulsedag-testnet", local.clone()),
+            Ok(())
+        );
+        assert_eq!(session.local_capabilities(), Some(&local));
+        assert_eq!(
+            session.observe_remote_capabilities("peer-v2", Some(local)),
+            Ok(ProtocolPeerSessionObservationV1::Compatible)
+        );
+        assert_eq!(
+            session
+                .route("peer-v2", ProtocolMessageClassV1::ProtocolV2Sync)
+                .action,
+            ProtocolPeerRouteActionV1::SendProtocolV2
+        );
+        assert_eq!(session.eligible_v2_peers(), vec!["peer-v2".to_string()]);
+    }
+
+    #[test]
+    fn peer_session_legacy_observation_and_disconnect_revoke_v2_authorization() {
+        let local = capabilities("pulsedag-testnet");
+        let mut session = ProtocolPeerSessionV1::default();
+        session
+            .configure_local_capabilities("pulsedag-testnet", local.clone())
+            .unwrap();
+        session
+            .observe_remote_capabilities("peer-v2", Some(local))
+            .unwrap();
+
+        assert_eq!(
+            session.observe_remote_capabilities("peer-v2", None),
+            Ok(ProtocolPeerSessionObservationV1::LegacyNoCapabilities)
+        );
+        assert_eq!(
+            session.compatibility("peer-v2"),
+            ProtocolPeerCompatibilityV1::Unknown
+        );
+        assert!(!session
+            .route("peer-v2", ProtocolMessageClassV1::ProtocolV2Sync)
+            .penalize_peer);
+
+        session.peer_disconnected("peer-v2");
+        assert_eq!(
+            session.compatibility("peer-v2"),
+            ProtocolPeerCompatibilityV1::Unknown
+        );
+    }
+
+    #[test]
+    fn peer_session_rejects_wrong_local_chain_and_falls_back_for_remote_identity_mismatch() {
+        let local = capabilities("pulsedag-testnet");
+        let mut session = ProtocolPeerSessionV1::default();
+        assert_eq!(
+            session.configure_local_capabilities("different-chain", local.clone()),
+            Err(ProtocolPeerSessionErrorV1::LocalChainIdMismatch {
+                expected: "different-chain".to_string(),
+                observed: "pulsedag-testnet".to_string(),
+            })
+        );
+
+        session
+            .configure_local_capabilities("pulsedag-testnet", local.clone())
+            .unwrap();
+        let mut remote = local;
+        remote.protocol_identity.genesis_hash = "22".repeat(32);
+        assert_eq!(
+            session.observe_remote_capabilities("peer-other", Some(remote)),
+            Ok(ProtocolPeerSessionObservationV1::Incompatible(
+                ProtocolCompatibilityError::ProtocolIdentityMismatch
+            ))
+        );
+        let route = session.route("peer-other", ProtocolMessageClassV1::ProtocolV2Sync);
+        assert_eq!(route.action, ProtocolPeerRouteActionV1::UseLegacyFallback);
+        assert!(!route.penalize_peer);
+    }
+
+    #[test]
+    fn peer_session_local_reset_clears_all_authorization() {
+        let local = capabilities("pulsedag-testnet");
+        let mut session = ProtocolPeerSessionV1::default();
+        session
+            .configure_local_capabilities("pulsedag-testnet", local.clone())
+            .unwrap();
+        session
+            .observe_remote_capabilities("peer-v2", Some(local))
+            .unwrap();
+        session.reset_local_capabilities();
+        assert!(session.local_capabilities().is_none());
+        assert_eq!(
+            session.compatibility("peer-v2"),
+            ProtocolPeerCompatibilityV1::Unknown
+        );
     }
 }
