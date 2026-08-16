@@ -79,9 +79,10 @@ pub fn validate_block_header_v2_shape(
     Ok(())
 }
 
-pub fn canonical_block_header_bytes_v2(
+fn canonical_block_header_material_v2(
     header: &BlockHeader,
     chain_id: &str,
+    include_nonce: bool,
 ) -> Result<Vec<u8>, PulseError> {
     validate_block_header_v2_shape(header, chain_id)?;
 
@@ -92,12 +93,28 @@ pub fn canonical_block_header_bytes_v2(
     encode_parent_vec(&mut out, &header.parents);
     out.extend_from_slice(&header.timestamp.to_le_bytes());
     out.extend_from_slice(&header.difficulty.to_le_bytes());
-    out.extend_from_slice(&header.nonce.to_le_bytes());
+    if include_nonce {
+        out.extend_from_slice(&header.nonce.to_le_bytes());
+    }
     encode_len_prefixed_str(&mut out, &header.merkle_root);
     encode_len_prefixed_str(&mut out, &header.state_root);
     out.extend_from_slice(&header.blue_score.to_le_bytes());
     out.extend_from_slice(&header.height.to_le_bytes());
     Ok(out)
+}
+
+pub fn canonical_block_header_bytes_v2(
+    header: &BlockHeader,
+    chain_id: &str,
+) -> Result<Vec<u8>, PulseError> {
+    canonical_block_header_material_v2(header, chain_id, true)
+}
+
+pub fn canonical_mining_preimage_bytes_v2(
+    header: &BlockHeader,
+    chain_id: &str,
+) -> Result<Vec<u8>, PulseError> {
+    canonical_block_header_material_v2(header, chain_id, false)
 }
 
 pub fn compute_block_hash_v2(header: &BlockHeader, chain_id: &str) -> Result<BlockId, PulseError> {
@@ -154,12 +171,66 @@ mod tests {
     }
 
     #[test]
+    fn v2_mining_preimage_golden_vectors_are_chain_bound() {
+        let header = sample_header(
+            BLOCK_HEADER_VERSION_V2,
+            vec!["11".repeat(32), "22".repeat(32)],
+        );
+        let testnet = canonical_mining_preimage_bytes_v2(&header, "pulsedag-testnet").unwrap();
+        let private = canonical_mining_preimage_bytes_v2(&header, "pulsedag-private").unwrap();
+
+        assert_eq!(testnet.len(), 356);
+        assert_eq!(private.len(), 356);
+        assert_eq!(
+            hex::encode(Sha256::digest(&testnet)),
+            "7d10b1c9c93a444c9424b34c028ccc4d95f8feeaa82769da42304636892a5c1e"
+        );
+        assert_eq!(
+            hex::encode(Sha256::digest(&private)),
+            "3bc47ac6314674695f81f5bc10f11eedebb814c979276c22782421f65d84bc8a"
+        );
+        assert_ne!(testnet, private);
+    }
+
+    #[test]
+    fn v2_mining_preimage_excludes_only_nonce_material() {
+        let header = sample_header(
+            BLOCK_HEADER_VERSION_V2,
+            vec!["11".repeat(32), "22".repeat(32)],
+        );
+        let mut different_nonce = header.clone();
+        different_nonce.nonce = header.nonce + 1;
+
+        assert_eq!(
+            canonical_mining_preimage_bytes_v2(&header, "pulsedag-testnet").unwrap(),
+            canonical_mining_preimage_bytes_v2(&different_nonce, "pulsedag-testnet").unwrap()
+        );
+        assert_ne!(
+            canonical_block_header_bytes_v2(&header, "pulsedag-testnet").unwrap(),
+            canonical_block_header_bytes_v2(&different_nonce, "pulsedag-testnet").unwrap()
+        );
+    }
+
+    #[test]
     fn local_parent_permutations_canonicalize_to_one_vector() {
         let forward = vec!["11".repeat(32), "22".repeat(32)];
         let reverse = vec!["22".repeat(32), "11".repeat(32)];
         assert_eq!(
             canonicalize_block_parents_v2(&forward).unwrap(),
             canonicalize_block_parents_v2(&reverse).unwrap()
+        );
+    }
+
+    #[test]
+    fn canonicalized_parent_permutations_produce_one_v2_preimage() {
+        let forward = canonicalize_block_parents_v2(&["11".repeat(32), "22".repeat(32)]).unwrap();
+        let reverse = canonicalize_block_parents_v2(&["22".repeat(32), "11".repeat(32)]).unwrap();
+        let a = sample_header(BLOCK_HEADER_VERSION_V2, forward);
+        let b = sample_header(BLOCK_HEADER_VERSION_V2, reverse);
+
+        assert_eq!(
+            canonical_mining_preimage_bytes_v2(&a, "pulsedag-testnet").unwrap(),
+            canonical_mining_preimage_bytes_v2(&b, "pulsedag-testnet").unwrap()
         );
     }
 
@@ -173,6 +244,7 @@ mod tests {
             canonical_block_header_bytes_v2(&header, "pulsedag-testnet"),
             Err(PulseError::InvalidBlock(message)) if message.contains("canonical ascending order")
         ));
+        assert!(canonical_mining_preimage_bytes_v2(&header, "pulsedag-testnet").is_err());
     }
 
     #[test]
@@ -189,14 +261,20 @@ mod tests {
     fn wrong_version_empty_chain_and_parentless_non_genesis_fail_closed() {
         let v1 = sample_header(1, vec!["11".repeat(32)]);
         assert!(canonical_block_header_bytes_v2(&v1, "pulsedag-testnet").is_err());
+        assert!(canonical_mining_preimage_bytes_v2(&v1, "pulsedag-testnet").is_err());
 
         let v2 = sample_header(BLOCK_HEADER_VERSION_V2, vec!["11".repeat(32)]);
         assert!(matches!(
             canonical_block_header_bytes_v2(&v2, ""),
             Err(PulseError::ChainIdMismatch)
         ));
+        assert!(matches!(
+            canonical_mining_preimage_bytes_v2(&v2, ""),
+            Err(PulseError::ChainIdMismatch)
+        ));
 
         let parentless = sample_header(BLOCK_HEADER_VERSION_V2, vec![]);
         assert!(canonical_block_header_bytes_v2(&parentless, "pulsedag-testnet").is_err());
+        assert!(canonical_mining_preimage_bytes_v2(&parentless, "pulsedag-testnet").is_err());
     }
 }
