@@ -147,9 +147,7 @@ pub fn plan_protocol_sync_dispatch_v1(
 
     let action = if matches!(wire, ProtocolSyncWireV1::CapabilityHandshake(_)) {
         match router.compatibility(peer_id) {
-            ProtocolPeerCompatibilityV1::Compatible => {
-                ProtocolSyncDispatchActionV1::SendProtocolV2
-            }
+            ProtocolPeerCompatibilityV1::Compatible => ProtocolSyncDispatchActionV1::SendProtocolV2,
             ProtocolPeerCompatibilityV1::Unknown => {
                 ProtocolSyncDispatchActionV1::AdvertiseCapabilitiesViaLegacyCarrier
             }
@@ -363,7 +361,10 @@ mod tests {
         ] {
             let plan = plan_protocol_sync_dispatch_v1(&router, "peer-old", &wire, CHAIN_ID)
                 .expect("valid wire plans");
-            assert_eq!(plan.action, ProtocolSyncDispatchActionV1::HoldForCapabilities);
+            assert_eq!(
+                plan.action,
+                ProtocolSyncDispatchActionV1::HoldForCapabilities
+            );
             assert!(!plan.penalize_peer);
         }
     }
