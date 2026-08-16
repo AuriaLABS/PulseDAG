@@ -10,6 +10,7 @@ pub mod ghostdag_v1;
 pub mod header_v2;
 pub mod mempool;
 pub mod mining;
+pub mod mining_v2;
 pub mod ordering;
 pub mod ordering_v2;
 pub mod orphans;
@@ -177,6 +178,10 @@ pub use orphans::{
 pub use mining::{
     build_candidate_block, build_coinbase_transaction, current_ts, is_coinbase,
     refresh_block_consensus_ids, refresh_block_consensus_ids_with_state,
+};
+pub use mining_v2::{
+    build_candidate_block_v2, build_coinbase_transaction_v2, refresh_block_consensus_ids_v2,
+    CandidateBlockV2Spec,
 };
 pub use sync_pipeline::{
     rank_sync_candidates, RankedSyncPeer, SyncPeerCandidate, SyncPhase, SyncPipelineStatus,
