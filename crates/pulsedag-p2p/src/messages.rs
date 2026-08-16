@@ -1,6 +1,7 @@
 pub mod dag_sync_v2;
 pub mod frontier_reconcile_v1;
 pub mod protocol_v2;
+pub mod recovery_progress_v1;
 pub mod selected_locator_v1;
 pub mod sync_wire_v2;
 
@@ -20,6 +21,10 @@ pub use frontier_reconcile_v1::{
 pub use protocol_v2::{
     require_protocol_compatibility_v1, ProtocolCapabilitiesV1, ProtocolCapabilityHandshakeV1,
     ProtocolCompatibilityError, P2P_PROTOCOL_CAPABILITIES_VERSION,
+};
+pub use recovery_progress_v1::{
+    RecoveryProgressDecisionV1, RecoveryProgressObservationV1, RecoveryProgressReasonV1,
+    RecoveryProgressTrackerV1,
 };
 pub use selected_locator_v1::{
     build_selected_chain_locator_v1, resolve_selected_common_ancestor_v1, SelectedCommonAncestorV1,
