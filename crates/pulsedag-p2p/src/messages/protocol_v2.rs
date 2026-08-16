@@ -251,11 +251,9 @@ impl ProtocolPeerRouterV1 {
                     ProtocolPeerRouteActionV1::SendProtocolV2,
                 )
             }
-            ProtocolPeerCompatibilityV1::Unknown => {
-                ProtocolPeerRouteDecisionV1::without_penalty(
-                    ProtocolPeerRouteActionV1::HoldForCapabilities,
-                )
-            }
+            ProtocolPeerCompatibilityV1::Unknown => ProtocolPeerRouteDecisionV1::without_penalty(
+                ProtocolPeerRouteActionV1::HoldForCapabilities,
+            ),
             ProtocolPeerCompatibilityV1::Incompatible(_) => {
                 ProtocolPeerRouteDecisionV1::without_penalty(
                     ProtocolPeerRouteActionV1::UseLegacyFallback,
@@ -273,7 +271,10 @@ impl ProtocolPeerRouterV1 {
     }
 
     pub fn mark_peer_unknown(&mut self, peer_id: &str) {
-        self.peers.entry(peer_id.to_string()).or_default().mark_unknown();
+        self.peers
+            .entry(peer_id.to_string())
+            .or_default()
+            .mark_unknown();
     }
 
     pub fn remove_peer(&mut self, peer_id: &str) -> bool {
@@ -519,7 +520,8 @@ mod tests {
         let mut router = ProtocolPeerRouterV1::default();
         router.observe_remote_capabilities("peer-v2", &local, local.clone());
         assert_eq!(
-            router.route("peer-v2", ProtocolMessageClassV1::ProtocolV2Sync)
+            router
+                .route("peer-v2", ProtocolMessageClassV1::ProtocolV2Sync)
                 .action,
             ProtocolPeerRouteActionV1::SendProtocolV2
         );
