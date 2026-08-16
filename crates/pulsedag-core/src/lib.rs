@@ -18,6 +18,7 @@ pub mod pow;
 pub mod pow_protocol;
 pub mod pow_v2;
 pub mod protocol;
+pub mod protocol_persistence;
 pub mod replay;
 pub mod retarget;
 pub mod selection;
@@ -98,6 +99,9 @@ pub use pow_v2::{canonical_pow_v2_adapter, CanonicalPowV2Adapter};
 pub use protocol::{
     ProtocolActivationIdentity, ProtocolConsensusMode, BLOCK_HEADER_VERSION_V1,
     BLOCK_HEADER_VERSION_V2,
+};
+pub use protocol_persistence::{
+    ProtocolActivationRecordV1, PROTOCOL_ACTIVATION_RECORD_SCHEMA_VERSION,
 };
 
 pub use header_v2::{
