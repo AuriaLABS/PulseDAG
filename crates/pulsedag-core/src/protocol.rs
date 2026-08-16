@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use crate::{
     ordering::DAG_ORDERING_VERSION,
@@ -8,6 +9,8 @@ use crate::{
 
 pub const BLOCK_HEADER_VERSION_V1: u32 = 1;
 pub const BLOCK_HEADER_VERSION_V2: u32 = 2;
+pub const PROTOCOL_ACTIVATION_IDENTITY_FINGERPRINT_DOMAIN: &[u8] =
+    b"PulseDAG:protocol-activation-identity:v1";
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -62,6 +65,12 @@ pub struct ProtocolActivationIdentity {
     pub dag_ordering_version: String,
 }
 
+fn encode_len_prefixed(out: &mut Vec<u8>, value: &[u8]) {
+    let len = u32::try_from(value.len()).expect("protocol identity field exceeds u32::MAX");
+    out.extend_from_slice(&len.to_le_bytes());
+    out.extend_from_slice(value);
+}
+
 impl ProtocolActivationIdentity {
     /// Identity for current historical/runtime v1 semantics. This preserves
     /// the configured runtime consensus mode but always records v1 transaction
@@ -112,6 +121,30 @@ impl ProtocolActivationIdentity {
             return Err("DAG ordering version must not be empty".into());
         }
         Ok(())
+    }
+
+    /// Canonical byte representation used only to compare/persist protocol
+    /// activation identity. This is separate from transaction/header consensus
+    /// serialization and does not activate any protocol mode.
+    pub fn canonical_fingerprint_bytes(&self) -> Result<Vec<u8>, String> {
+        self.validate()?;
+
+        let mut out = Vec::with_capacity(192);
+        encode_len_prefixed(&mut out, PROTOCOL_ACTIVATION_IDENTITY_FINGERPRINT_DOMAIN);
+        encode_len_prefixed(&mut out, self.chain_id.as_bytes());
+        encode_len_prefixed(&mut out, self.genesis_hash.as_bytes());
+        out.extend_from_slice(&self.transaction_protocol_version.to_le_bytes());
+        out.extend_from_slice(&self.block_header_protocol_version.to_le_bytes());
+        encode_len_prefixed(&mut out, self.consensus_mode.as_str().as_bytes());
+        encode_len_prefixed(&mut out, self.dag_ordering_version.as_bytes());
+        Ok(out)
+    }
+
+    /// Stable SHA-256 compatibility fingerprint for storage/snapshot/P2P gates.
+    pub fn fingerprint(&self) -> Result<String, String> {
+        Ok(hex::encode(Sha256::digest(
+            self.canonical_fingerprint_bytes()?,
+        )))
     }
 
     pub fn legacy_default_for_chain(
@@ -189,5 +222,75 @@ mod tests {
         );
 
         assert_ne!(a, b);
+        assert_ne!(a.fingerprint().unwrap(), b.fingerprint().unwrap());
+    }
+
+    #[test]
+    fn activated_v2_fingerprint_has_a_frozen_golden_vector() {
+        let identity = ProtocolActivationIdentity::activated_v2(
+            "pulsedag-testnet-v2",
+            "genesis-v2",
+            "ghostdag-order-v1",
+        );
+
+        let bytes = identity.canonical_fingerprint_bytes().unwrap();
+        assert_eq!(bytes.len(), 125);
+        assert_eq!(
+            identity.fingerprint().unwrap(),
+            "793cc7ba13c579514ef08f33a79160906e9a2cedd610ea958344d3d8e2c26209"
+        );
+    }
+
+    #[test]
+    fn every_protocol_identity_component_changes_the_fingerprint() {
+        let base = ProtocolActivationIdentity::activated_v2(
+            "pulsedag-testnet-v2",
+            "genesis-v2",
+            "ghostdag-order-v1",
+        );
+        let base_fingerprint = base.fingerprint().unwrap();
+
+        let mut variants = Vec::new();
+
+        let mut value = base.clone();
+        value.chain_id.push_str("-other");
+        variants.push(value);
+
+        let mut value = base.clone();
+        value.genesis_hash.push_str("-other");
+        variants.push(value);
+
+        let mut value = base.clone();
+        value.transaction_protocol_version += 1;
+        variants.push(value);
+
+        let mut value = base.clone();
+        value.block_header_protocol_version += 1;
+        variants.push(value);
+
+        let mut value = base.clone();
+        value.consensus_mode = ProtocolConsensusMode::Legacy;
+        variants.push(value);
+
+        let mut value = base.clone();
+        value.dag_ordering_version.push_str("-other");
+        variants.push(value);
+
+        for variant in variants {
+            assert_ne!(variant.fingerprint().unwrap(), base_fingerprint);
+        }
+    }
+
+    #[test]
+    fn invalid_identity_cannot_be_fingerprinted() {
+        let mut identity = ProtocolActivationIdentity::activated_v2(
+            "pulsedag-testnet-v2",
+            "genesis-v2",
+            "ghostdag-order-v1",
+        );
+        identity.chain_id.clear();
+
+        assert!(identity.canonical_fingerprint_bytes().is_err());
+        assert!(identity.fingerprint().is_err());
     }
 }
