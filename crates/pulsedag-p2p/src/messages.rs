@@ -20,7 +20,9 @@ pub use frontier_reconcile_v1::{
 };
 pub use protocol_v2::{
     require_protocol_compatibility_v1, ProtocolCapabilitiesV1, ProtocolCapabilityHandshakeV1,
-    ProtocolCompatibilityError, P2P_PROTOCOL_CAPABILITIES_VERSION,
+    ProtocolCompatibilityError, ProtocolMessageClassV1, ProtocolPeerCompatibilityV1,
+    ProtocolPeerRouteActionV1, ProtocolPeerRouteDecisionV1, ProtocolPeerRouterV1,
+    ProtocolPeerStateV1, P2P_PROTOCOL_CAPABILITIES_VERSION,
 };
 pub use recovery_progress_v1::{
     RecoveryProgressDecisionV1, RecoveryProgressObservationV1, RecoveryProgressReasonV1,
@@ -30,7 +32,10 @@ pub use selected_locator_v1::{
     build_selected_chain_locator_v1, resolve_selected_common_ancestor_v1, SelectedCommonAncestorV1,
     SelectedLocatorError, SELECTED_LOCATOR_LINEAR_WINDOW,
 };
-pub use sync_wire_v2::{ProtocolSyncWireError, ProtocolSyncWireV1};
+pub use sync_wire_v2::{
+    plan_protocol_sync_dispatch_v1, ProtocolSyncDispatchActionV1, ProtocolSyncDispatchPlanV1,
+    ProtocolSyncWireError, ProtocolSyncWireV1,
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HeaderInventory {
