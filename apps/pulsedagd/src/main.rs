@@ -40,6 +40,38 @@ use pulsedag_rpc::routes::{
 };
 use pulsedag_storage::Storage;
 
+fn startup_protocol_restore_identity(
+    chain_id: &str,
+    consensus_mode: pulsedag_core::ConsensusMode,
+) -> Option<pulsedag_core::ProtocolActivationIdentity> {
+    if consensus_mode != pulsedag_core::ConsensusMode::Legacy {
+        return None;
+    }
+    let canonical_state = pulsedag_core::genesis::init_chain_state(chain_id.to_string());
+    Some(pulsedag_core::ProtocolActivationIdentity::legacy_from_state(&canonical_state))
+}
+
+#[cfg(test)]
+mod protocol_restore_startup_tests {
+    use super::*;
+
+    #[test]
+    fn protocol_bound_startup_restore_is_legacy_only() {
+        let legacy = startup_protocol_restore_identity(
+            "pulsedag-testnet",
+            pulsedag_core::ConsensusMode::Legacy,
+        )
+        .expect("legacy startup must derive a protocol restore identity");
+        assert_eq!(legacy.chain_id, "pulsedag-testnet");
+
+        assert!(startup_protocol_restore_identity(
+            "pulsedag-testnet",
+            pulsedag_core::ConsensusMode::GhostdagDev,
+        )
+        .is_none());
+    }
+}
+
 fn local_tip_inventory_status(chain: &pulsedag_core::ChainState) -> TipInventoryStatus {
     let selected_tip = pulsedag_core::preferred_tip_hash(chain);
     let selected_block = selected_tip
@@ -1434,7 +1466,12 @@ async fn main() -> Result<()> {
 
     let snapshot_exists = storage.snapshot_exists().unwrap_or(false);
     let persisted_blocks = storage.list_blocks().unwrap_or_default();
-    let mut chain_state = storage.load_or_init_genesis(cfg.chain_id.clone())?;
+    let startup_protocol_identity =
+        startup_protocol_restore_identity(&cfg.chain_id, cfg.consensus_mode);
+    let mut chain_state = match startup_protocol_identity.as_ref() {
+        Some(expected) => storage.load_or_init_genesis_for_protocol(expected)?,
+        None => storage.load_or_init_genesis(cfg.chain_id.clone())?,
+    };
     if cfg.network_profile == "private" || cfg.network_profile.starts_with("rehearsal") {
         if let Ok(raw) = std::env::var("PULSEDAG_MEMPOOL_MAX_TRANSACTIONS") {
             if let Ok(limit) = raw.parse::<usize>() {
@@ -1496,7 +1533,10 @@ async fn main() -> Result<()> {
             info!(snapshot_exists = snapshot_exists, persisted_block_count = persisted_blocks.len(), in_memory_block_count = in_memory_block_count, startup_persisted_max_height, startup_consistency_issue_count, reason = %reason, "rebuilding chain state from persisted blocks on startup");
             startup_recovery_mode = "replayed_blocks".to_string();
             startup_rebuild_reason = Some(reason);
-            chain_state = storage.replay_blocks_or_init(cfg.chain_id.clone())?;
+            chain_state = match startup_protocol_identity.as_ref() {
+                Some(expected) => storage.replay_blocks_or_init_for_protocol(expected)?,
+                None => storage.replay_blocks_or_init(cfg.chain_id.clone())?,
+            };
         }
     }
 

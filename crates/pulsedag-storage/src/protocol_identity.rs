@@ -1,6 +1,6 @@
 use pulsedag_core::{
     errors::PulseError, verify_protocol_restore_identity, ProtocolActivationIdentity,
-    ProtocolActivationRecordV1, ProtocolRestoreIdentityGate,
+    ProtocolActivationRecordV1, ProtocolConsensusMode, ProtocolRestoreIdentityGate,
 };
 use rocksdb::WriteBatch;
 
@@ -10,6 +10,29 @@ pub const PROTOCOL_ACTIVATION_STORAGE_KEY: &[u8] = b"protocol_activation_record_
 
 fn storage_error(message: impl Into<String>) -> PulseError {
     PulseError::StorageError(message.into())
+}
+
+pub(crate) fn canonical_current_legacy_identity_from_state(
+    state: &pulsedag_core::ChainState,
+) -> Result<ProtocolActivationIdentity, PulseError> {
+    let observed = ProtocolActivationIdentity::legacy_from_state(state);
+    let canonical = ProtocolActivationIdentity::legacy_default_for_chain(
+        state.chain_id.clone(),
+        state.dag.genesis_hash.clone(),
+    );
+    if observed == canonical {
+        return Ok(canonical);
+    }
+
+    let mut historical_runtime = canonical.clone();
+    historical_runtime.dag_ordering_version = "legacy".to_string();
+    if observed == historical_runtime {
+        return Ok(canonical);
+    }
+
+    Err(storage_error(
+        "unsupported current-legacy DAG ordering identity; refusing protocol normalization",
+    ))
 }
 
 impl Storage {
@@ -58,7 +81,12 @@ impl Storage {
         &self,
         state: &pulsedag_core::ChainState,
     ) -> Result<ProtocolActivationRecordV1, PulseError> {
-        let identity = ProtocolActivationIdentity::legacy_from_state(state);
+        let observed = ProtocolActivationIdentity::legacy_from_state(state);
+        let identity = if observed.consensus_mode == ProtocolConsensusMode::Legacy {
+            canonical_current_legacy_identity_from_state(state)?
+        } else {
+            observed
+        };
         let record = ProtocolActivationRecordV1::from_identity(identity).map_err(storage_error)?;
         let meta_cf = self
             .db
@@ -162,6 +190,47 @@ mod tests {
             storage.load_chain_state().unwrap().unwrap().chain_id,
             state.chain_id
         );
+
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn legacy_runtime_ordering_marker_persists_canonical_identity() {
+        let path = temp_db_path("legacy-runtime-ordering");
+        let storage = Storage::open(&path).unwrap();
+        let mut state = init_chain_state("pulsedag-testnet".to_string());
+        let expected = ProtocolActivationIdentity::legacy_from_state(&state);
+        state.dag.ordering_version = "legacy".to_string();
+
+        let written = storage
+            .persist_chain_state_with_protocol_record(&state)
+            .unwrap();
+
+        assert_eq!(written.identity, expected);
+        assert_eq!(
+            storage
+                .protocol_activation_record()
+                .unwrap()
+                .unwrap()
+                .identity,
+            expected
+        );
+
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn unknown_legacy_runtime_ordering_marker_fails_closed() {
+        let path = temp_db_path("legacy-runtime-ordering-unknown");
+        let storage = Storage::open(&path).unwrap();
+        let mut state = init_chain_state("pulsedag-testnet".to_string());
+        state.dag.ordering_version = "unexpected-ordering".to_string();
+
+        assert!(storage
+            .persist_chain_state_with_protocol_record(&state)
+            .is_err());
 
         drop(storage);
         let _ = std::fs::remove_dir_all(path);
