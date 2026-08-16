@@ -3,6 +3,9 @@ name = "pulsedag-storage"
 version.workspace = true
 edition = "2021"
 
+[lib]
+path = "src/root.rs"
+
 [dependencies]
 pulsedag-core = { path = "../pulsedag-core" }
 rocksdb = "0.22"
