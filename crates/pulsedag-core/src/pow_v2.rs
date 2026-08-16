@@ -108,7 +108,7 @@ pub fn canonical_pow_v2_adapter() -> CanonicalPowV2Adapter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{protocol::BLOCK_HEADER_VERSION_V2, TRANSACTION_VERSION_V1};
+    use crate::protocol::{BLOCK_HEADER_VERSION_V1, BLOCK_HEADER_VERSION_V2};
 
     fn sample_header() -> BlockHeader {
         BlockHeader {
@@ -192,7 +192,7 @@ mod tests {
     fn wrong_header_version_and_empty_chain_fail_closed() {
         let adapter = canonical_pow_v2_adapter();
         let mut legacy = sample_header();
-        legacy.version = TRANSACTION_VERSION_V1;
+        legacy.version = BLOCK_HEADER_VERSION_V1;
         assert!(adapter
             .pre_pow_material(&legacy, "pulsedag-testnet")
             .is_err());
