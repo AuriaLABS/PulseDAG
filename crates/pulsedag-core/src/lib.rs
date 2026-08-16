@@ -101,7 +101,8 @@ pub use protocol::{
     BLOCK_HEADER_VERSION_V2,
 };
 pub use protocol_persistence::{
-    ProtocolActivationRecordV1, PROTOCOL_ACTIVATION_RECORD_SCHEMA_VERSION,
+    verify_protocol_restore_identity, ProtocolActivationRecordV1, ProtocolRestoreIdentityGate,
+    PROTOCOL_ACTIVATION_RECORD_SCHEMA_VERSION,
 };
 
 pub use header_v2::{
