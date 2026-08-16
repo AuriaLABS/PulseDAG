@@ -1,0 +1,58 @@
+name: task27-protocol-sync-carrier
+
+on:
+  push:
+    branches:
+      - feature/2.4.0-task27-protocol-sync-carrier
+
+permissions:
+  contents: write
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/2.4.0-task27-protocol-sync-carrier
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Export and verify targeted legacy-decodable sync carrier
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('crates/pulsedag-p2p/src/messages.rs')
+          text = path.read_text()
+          module_anchor = 'pub mod sync_wire_v2;\n'
+          if module_anchor not in text:
+              raise SystemExit('sync_wire_v2 module anchor not found')
+          text = text.replace(module_anchor, 'pub mod sync_carrier_v1;\n' + module_anchor, 1)
+          export_anchor = '''pub use selected_locator_v1::{
+              build_selected_chain_locator_v1, resolve_selected_common_ancestor_v1, SelectedCommonAncestorV1,
+              SelectedLocatorError, SELECTED_LOCATOR_LINEAR_WINDOW,
+          };
+          '''
+          export = '''pub use sync_carrier_v1::{
+              attach_protocol_sync_carrier_v1, decode_network_message_with_protocol_sync_v1,
+              encode_network_message_with_protocol_sync_v1, DecodedNetworkMessageWithProtocolSyncV1,
+              ProtocolSyncCarrierErrorV1, ProtocolSyncCarrierV1, PROTOCOL_SYNC_EXTENSION_FIELD_V1,
+          };
+          '''
+          if export_anchor not in text:
+              raise SystemExit('selected locator export anchor not found')
+          text = text.replace(export_anchor, export_anchor + export, 1)
+          path.write_text(text)
+          PY
+          cargo fmt --all
+          cargo test -p pulsedag-p2p sync_carrier_v1 --lib
+          cargo check -p pulsedag-p2p
+          cargo fmt --all -- --check
+          rm -f .github/workflows/task27-protocol-sync-carrier.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "p2p: export targeted protocol sync carrier"
+          git push origin HEAD:feature/2.4.0-task27-protocol-sync-carrier
