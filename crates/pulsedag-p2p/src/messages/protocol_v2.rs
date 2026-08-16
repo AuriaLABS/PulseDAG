@@ -112,6 +112,60 @@ pub fn require_protocol_compatibility_v1(
     Ok(())
 }
 
+/// Per-peer capability state used to decide whether remote data is eligible for
+/// authoritative v2 sync. Incompatibility is a routing decision, not a peer ban:
+/// callers may continue using legacy/safe capabilities where Task 22 permits it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum ProtocolPeerCompatibilityV1 {
+    #[default]
+    Unknown,
+    Compatible,
+    Incompatible(ProtocolCompatibilityError),
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ProtocolPeerStateV1 {
+    remote_capabilities: Option<ProtocolCapabilitiesV1>,
+    compatibility: ProtocolPeerCompatibilityV1,
+}
+
+impl ProtocolPeerStateV1 {
+    pub fn remote_capabilities(&self) -> Option<&ProtocolCapabilitiesV1> {
+        self.remote_capabilities.as_ref()
+    }
+
+    pub fn compatibility(&self) -> &ProtocolPeerCompatibilityV1 {
+        &self.compatibility
+    }
+
+    pub fn can_use_v2_sync(&self) -> bool {
+        matches!(self.compatibility, ProtocolPeerCompatibilityV1::Compatible)
+    }
+
+    /// Record one remote capability observation. A syntactically valid but
+    /// incompatible peer remains represented explicitly and is merely excluded
+    /// from authoritative v2 sync by `can_use_v2_sync`.
+    pub fn observe_remote_capabilities(
+        &mut self,
+        local: &ProtocolCapabilitiesV1,
+        remote: ProtocolCapabilitiesV1,
+    ) -> &ProtocolPeerCompatibilityV1 {
+        self.compatibility = match require_protocol_compatibility_v1(local, &remote) {
+            Ok(()) => ProtocolPeerCompatibilityV1::Compatible,
+            Err(error) => ProtocolPeerCompatibilityV1::Incompatible(error),
+        };
+        self.remote_capabilities = Some(remote);
+        &self.compatibility
+    }
+
+    /// Return the peer to the legacy/unknown state after disconnect, capability
+    /// expiry, or a mixed-version fallback that has not negotiated v2.
+    pub fn mark_unknown(&mut self) {
+        self.remote_capabilities = None;
+        self.compatibility = ProtocolPeerCompatibilityV1::Unknown;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -206,5 +260,55 @@ mod tests {
                 remote: true
             })
         );
+    }
+
+    #[test]
+    fn peer_state_starts_unknown_and_does_not_authorize_v2_sync() {
+        let state = ProtocolPeerStateV1::default();
+        assert_eq!(state.compatibility(), &ProtocolPeerCompatibilityV1::Unknown);
+        assert!(state.remote_capabilities().is_none());
+        assert!(!state.can_use_v2_sync());
+    }
+
+    #[test]
+    fn peer_state_authorizes_only_exact_compatible_v2_capabilities() {
+        let local = capabilities("pulsedag-testnet");
+        let mut state = ProtocolPeerStateV1::default();
+        let observed = state.observe_remote_capabilities(&local, local.clone());
+
+        assert_eq!(observed, &ProtocolPeerCompatibilityV1::Compatible);
+        assert_eq!(state.remote_capabilities(), Some(&local));
+        assert!(state.can_use_v2_sync());
+    }
+
+    #[test]
+    fn incompatible_peer_is_retained_but_excluded_from_v2_sync() {
+        let local = capabilities("pulsedag-testnet");
+        let mut remote = local.clone();
+        remote.protocol_identity.dag_ordering_version = "different-ordering".to_string();
+        let mut state = ProtocolPeerStateV1::default();
+        let observed = state.observe_remote_capabilities(&local, remote.clone());
+
+        assert_eq!(
+            observed,
+            &ProtocolPeerCompatibilityV1::Incompatible(
+                ProtocolCompatibilityError::ProtocolIdentityMismatch
+            )
+        );
+        assert_eq!(state.remote_capabilities(), Some(&remote));
+        assert!(!state.can_use_v2_sync());
+    }
+
+    #[test]
+    fn peer_state_can_return_to_unknown_for_legacy_fallback() {
+        let local = capabilities("pulsedag-testnet");
+        let mut state = ProtocolPeerStateV1::default();
+        state.observe_remote_capabilities(&local, local.clone());
+        assert!(state.can_use_v2_sync());
+
+        state.mark_unknown();
+        assert_eq!(state.compatibility(), &ProtocolPeerCompatibilityV1::Unknown);
+        assert!(state.remote_capabilities().is_none());
+        assert!(!state.can_use_v2_sync());
     }
 }
