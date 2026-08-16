@@ -1,3 +1,4 @@
+pub mod capability_carrier_v1;
 pub mod dag_sync_v2;
 pub mod frontier_reconcile_v1;
 pub mod protocol_v2;
@@ -9,6 +10,11 @@ use serde::{Deserialize, Serialize};
 
 use pulsedag_core::types::{Block, BlockHeader, Hash, Transaction};
 
+pub use capability_carrier_v1::{
+    decode_network_message_with_capabilities_v1, encode_network_message_with_capabilities_v1,
+    DecodedNetworkMessageWithCapabilitiesV1, ProtocolCapabilityCarrierErrorV1,
+    PROTOCOL_CAPABILITY_EXTENSION_FIELD_V1,
+};
 pub use dag_sync_v2::{
     DagFrontierEntryV1, DagFrontierResponseV1, DagSyncContractError, SelectedChainLocatorV1,
     MAX_DAG_FRONTIER_ENTRIES, MAX_DAG_FRONTIER_PARENTS, MAX_DAG_FRONTIER_REQUIRED_CONTEXT,
@@ -166,6 +172,27 @@ impl NetworkMessage {
             NetworkMessage::Block { .. } => "Block",
             NetworkMessage::Reject { .. } => "Reject",
             NetworkMessage::Error { .. } => "Error",
+        }
+    }
+
+    pub fn chain_id(&self) -> &str {
+        match self {
+            NetworkMessage::NewTransaction { chain_id, .. }
+            | NetworkMessage::NewBlock { chain_id, .. }
+            | NetworkMessage::BlockAnnounce { chain_id, .. }
+            | NetworkMessage::NewBlockHash { chain_id, .. }
+            | NetworkMessage::InvBlock { chain_id, .. }
+            | NetworkMessage::GetHeaders { chain_id, .. }
+            | NetworkMessage::Headers { chain_id, .. }
+            | NetworkMessage::GetTips { chain_id, .. }
+            | NetworkMessage::Tips { chain_id, .. }
+            | NetworkMessage::GetBlockHeaders { chain_id, .. }
+            | NetworkMessage::BlockHeaders { chain_id, .. }
+            | NetworkMessage::GetBlock { chain_id, .. }
+            | NetworkMessage::BlockData { chain_id, .. }
+            | NetworkMessage::Block { chain_id, .. }
+            | NetworkMessage::Reject { chain_id, .. }
+            | NetworkMessage::Error { chain_id, .. } => chain_id,
         }
     }
 }
@@ -363,6 +390,7 @@ mod tests {
                 serde_json::from_slice(&encoded).expect("message deserializes");
             assert_eq!(message_kind(&decoded), message_kind(&message));
             assert_eq!(chain_id(&decoded), "testnet");
+            assert_eq!(decoded.chain_id(), "testnet");
         }
     }
 
