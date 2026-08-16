@@ -22,6 +22,7 @@ pub mod state;
 pub mod state_replay_v2;
 pub mod sync_pipeline;
 pub mod tx;
+pub mod tx_protocol;
 pub mod tx_submission;
 pub mod types;
 pub mod validation;
@@ -44,6 +45,10 @@ pub use tx::{
     canonical_unsigned_transaction_bytes_v2, compute_txid, compute_txid_v2, signing_message,
     signing_message_v2, validate_transaction_version_v1, verify_transaction_signatures,
     verify_transaction_signatures_v2, TRANSACTION_VERSION_V1, TRANSACTION_VERSION_V2,
+};
+pub use tx_protocol::{
+    resolve_transaction_validation_path, validate_transaction_for_protocol,
+    TransactionValidationPath,
 };
 pub use tx_submission::compute_submission_id_v2;
 pub use types::*;
