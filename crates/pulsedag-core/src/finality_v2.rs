@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    ordering_v2::{derive_ordered_dag_v2, OrderingV2Error},
+    ordering_v2::{derive_ordered_dag_v2, OrderingV2Error, GHOSTDAG_V1_ORDERING_VERSION},
     protocol::ProtocolActivationIdentity,
     state::ChainState,
     types::Hash,
@@ -58,6 +58,12 @@ pub struct FinalityBoundaryV1 {
 /// v2.4 ordering context must validate. A compact state missing parents,
 /// classification, selected-chain metadata, or blue-work therefore fails
 /// closed through `derive_ordered_dag_v2` rather than inventing a boundary.
+///
+/// The returned manifest is bound to the frozen activated-v2 protocol identity
+/// even while the live `ChainState` runtime mode remains legacy/non-activating.
+/// This prevents a GHOSTDAG-v1 ordering/finality artifact from being mislabeled
+/// as a legacy restore artifact merely because runtime activation has not yet
+/// occurred.
 pub fn derive_finality_boundary_v1(
     state: &ChainState,
 ) -> Result<FinalityBoundaryV1, FinalityV2Error> {
@@ -81,7 +87,11 @@ pub fn derive_finality_boundary_v1(
 
     Ok(FinalityBoundaryV1 {
         policy_version: GHOSTDAG_V1_FINALITY_POLICY_VERSION.to_string(),
-        protocol_identity: ProtocolActivationIdentity::legacy_from_state(state),
+        protocol_identity: ProtocolActivationIdentity::activated_v2(
+            state.chain_id.clone(),
+            state.dag.genesis_hash.clone(),
+            GHOSTDAG_V1_ORDERING_VERSION,
+        ),
         boundary_hash: state.dag.genesis_hash.clone(),
         boundary_height: genesis.header.height,
         selected_tip: state.dag.selected_chain.last().cloned(),
@@ -167,7 +177,13 @@ mod tests {
     fn initial_policy_is_genesis_boundary_and_prunes_nothing() {
         let state = complete_diamond(false);
         let boundary = derive_finality_boundary_v1(&state).unwrap();
+        let expected_identity = ProtocolActivationIdentity::activated_v2(
+            state.chain_id.clone(),
+            state.dag.genesis_hash.clone(),
+            GHOSTDAG_V1_ORDERING_VERSION,
+        );
 
+        assert_eq!(boundary.protocol_identity, expected_identity);
         assert_eq!(boundary.boundary_hash, state.dag.genesis_hash);
         assert_eq!(boundary.boundary_height, 0);
         assert!(!boundary.pruning_enabled);
