@@ -13,7 +13,9 @@ fn temp_db_path(test_name: &str) -> String {
         .map(|duration| duration.as_nanos())
         .unwrap_or(0);
     std::env::temp_dir()
-        .join(format!("pulsedag-task26-protocol-snapshot-{test_name}-{unique}"))
+        .join(format!(
+            "pulsedag-task26-protocol-snapshot-{test_name}-{unique}"
+        ))
         .to_string_lossy()
         .into_owned()
 }

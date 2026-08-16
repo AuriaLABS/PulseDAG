@@ -131,7 +131,8 @@ pub use ordering_v2::{
 };
 
 pub use state_replay_v2::{
-    rebuild_authoritative_state_v2, StateReplayV2, StateReplayV2Diagnostics,
+    materialize_authoritative_state_v2, rebuild_authoritative_state_v2,
+    verify_authoritative_state_snapshot_v2, StateReplayV2, StateReplayV2Diagnostics,
 };
 
 pub use apply::{
