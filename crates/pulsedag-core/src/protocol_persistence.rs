@@ -1,6 +1,10 @@
 use serde::{Deserialize, Serialize};
 
-use crate::{protocol::ProtocolActivationIdentity, state::ChainState};
+use crate::{
+    protocol::{ProtocolActivationIdentity, ProtocolConsensusMode, BLOCK_HEADER_VERSION_V1},
+    state::ChainState,
+    tx::TRANSACTION_VERSION_V1,
+};
 
 pub const PROTOCOL_ACTIVATION_RECORD_SCHEMA_VERSION: u32 = 1;
 
@@ -14,6 +18,21 @@ pub struct ProtocolActivationRecordV1 {
     pub schema_version: u32,
     pub identity: ProtocolActivationIdentity,
     pub fingerprint: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProtocolRestoreIdentityGate {
+    LegacySchema1Compatibility,
+    VerifiedRecordV1,
+}
+
+impl ProtocolRestoreIdentityGate {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::LegacySchema1Compatibility => "legacy_schema1_compatibility",
+            Self::VerifiedRecordV1 => "verified_record_v1",
+        }
+    }
 }
 
 impl ProtocolActivationRecordV1 {
@@ -70,6 +89,37 @@ impl ProtocolActivationRecordV1 {
             ));
         }
         Ok(())
+    }
+}
+
+/// Classify whether persisted state is safe to restore under an explicit
+/// protocol expectation. A missing activation record is tolerated only for
+/// historical v1 identities; activated or mixed identities fail closed.
+pub fn verify_protocol_restore_identity(
+    record: Option<&ProtocolActivationRecordV1>,
+    expected: &ProtocolActivationIdentity,
+) -> Result<ProtocolRestoreIdentityGate, String> {
+    expected.validate()?;
+
+    if let Some(record) = record {
+        record.verify_expected(expected)?;
+        return Ok(ProtocolRestoreIdentityGate::VerifiedRecordV1);
+    }
+
+    let legacy_compatible = expected.transaction_protocol_version == TRANSACTION_VERSION_V1
+        && expected.block_header_protocol_version == BLOCK_HEADER_VERSION_V1
+        && matches!(
+            expected.consensus_mode,
+            ProtocolConsensusMode::Legacy | ProtocolConsensusMode::GhostdagDev
+        );
+
+    if legacy_compatible {
+        Ok(ProtocolRestoreIdentityGate::LegacySchema1Compatibility)
+    } else {
+        Err(
+            "protocol activation record missing for non-legacy restore expectation; refusing fallback"
+                .into(),
+        )
     }
 }
 
@@ -173,5 +223,67 @@ mod tests {
         for variant in variants {
             assert!(record.verify_expected(&variant).is_err());
         }
+    }
+
+    #[test]
+    fn missing_record_is_allowed_only_for_explicit_legacy_identity() {
+        let state = init_chain_state("pulsedag-testnet".to_string());
+        let expected = ProtocolActivationIdentity::legacy_from_state(&state);
+
+        assert_eq!(
+            verify_protocol_restore_identity(None, &expected).unwrap(),
+            ProtocolRestoreIdentityGate::LegacySchema1Compatibility
+        );
+    }
+
+    #[test]
+    fn missing_record_is_rejected_for_activated_v2_identity() {
+        let expected = ProtocolActivationIdentity::activated_v2(
+            "pulsedag-testnet-v2",
+            "genesis-v2",
+            GHOSTDAG_V1_ORDERING_VERSION,
+        );
+
+        assert!(verify_protocol_restore_identity(None, &expected).is_err());
+    }
+
+    #[test]
+    fn missing_record_is_rejected_for_mixed_nonlegacy_identity() {
+        let state = init_chain_state("pulsedag-testnet".to_string());
+        let mut expected = ProtocolActivationIdentity::legacy_from_state(&state);
+        expected.block_header_protocol_version = BLOCK_HEADER_VERSION_V2;
+
+        assert!(verify_protocol_restore_identity(None, &expected).is_err());
+    }
+
+    #[test]
+    fn present_record_requires_exact_identity_and_reports_verified_gate() {
+        let expected = ProtocolActivationIdentity::activated_v2(
+            "pulsedag-testnet-v2",
+            "genesis-v2",
+            GHOSTDAG_V1_ORDERING_VERSION,
+        );
+        let record = ProtocolActivationRecordV1::from_identity(expected.clone()).unwrap();
+
+        assert_eq!(
+            verify_protocol_restore_identity(Some(&record), &expected).unwrap(),
+            ProtocolRestoreIdentityGate::VerifiedRecordV1
+        );
+
+        let mut wrong = expected;
+        wrong.chain_id.push_str("-other");
+        assert!(verify_protocol_restore_identity(Some(&record), &wrong).is_err());
+    }
+
+    #[test]
+    fn restore_gate_labels_are_stable() {
+        assert_eq!(
+            ProtocolRestoreIdentityGate::LegacySchema1Compatibility.as_str(),
+            "legacy_schema1_compatibility"
+        );
+        assert_eq!(
+            ProtocolRestoreIdentityGate::VerifiedRecordV1.as_str(),
+            "verified_record_v1"
+        );
     }
 }
