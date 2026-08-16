@@ -2,6 +2,7 @@ include!("lib.rs");
 
 mod protocol_bundle;
 mod protocol_identity;
+mod protocol_restore;
 
 pub use protocol_bundle::{
     ProtocolSnapshotExportBundleV2, PROTOCOL_SNAPSHOT_BUNDLE_FORMAT_VERSION,
