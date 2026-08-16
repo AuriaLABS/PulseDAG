@@ -1,4 +1,5 @@
 pub mod dag_sync_v2;
+pub mod frontier_reconcile_v1;
 pub mod protocol_v2;
 pub mod selected_locator_v1;
 pub mod sync_wire_v2;
@@ -12,6 +13,9 @@ pub use dag_sync_v2::{
     MAX_DAG_FRONTIER_ENTRIES, MAX_DAG_FRONTIER_PARENTS, MAX_DAG_FRONTIER_REQUIRED_CONTEXT,
     MAX_SELECTED_CHAIN_LOCATOR_HASHES, MAX_SELECTED_CHAIN_SUFFIX_HASHES,
     P2P_DAG_SYNC_CONTRACT_VERSION,
+};
+pub use frontier_reconcile_v1::{
+    plan_dag_frontier_reconciliation_v1, DagFrontierReconcileError, DagFrontierReconcilePlanV1,
 };
 pub use protocol_v2::{
     require_protocol_compatibility_v1, ProtocolCapabilitiesV1, ProtocolCapabilityHandshakeV1,
