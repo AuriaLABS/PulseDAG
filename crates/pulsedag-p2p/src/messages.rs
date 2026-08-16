@@ -1,3 +1,4 @@
+pub mod dag_sync_v2;
 pub mod protocol_v2;
 
 use serde::{Deserialize, Serialize};
