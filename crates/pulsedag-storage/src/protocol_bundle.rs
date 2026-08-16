@@ -133,7 +133,9 @@ mod tests {
             .map(|duration| duration.as_nanos())
             .unwrap_or(0);
         std::env::temp_dir()
-            .join(format!("pulsedag-storage-protocol-bundle-{test_name}-{unique}"))
+            .join(format!(
+                "pulsedag-storage-protocol-bundle-{test_name}-{unique}"
+            ))
             .to_string_lossy()
             .into_owned()
     }
@@ -152,7 +154,10 @@ mod tests {
             .export_protocol_snapshot_bundle_v2(&expected)
             .unwrap();
 
-        assert_eq!(bundle.format_version, PROTOCOL_SNAPSHOT_BUNDLE_FORMAT_VERSION);
+        assert_eq!(
+            bundle.format_version,
+            PROTOCOL_SNAPSHOT_BUNDLE_FORMAT_VERSION
+        );
         assert_eq!(bundle.legacy_bundle.format_version, 1);
         assert_eq!(bundle.activation_record.identity, expected);
         assert!(report.restore_guarantees_explicit);
