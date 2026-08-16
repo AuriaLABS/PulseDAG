@@ -1,5 +1,6 @@
 pub mod dag_sync_v2;
 pub mod protocol_v2;
+pub mod sync_wire_v2;
 
 use serde::{Deserialize, Serialize};
 
@@ -15,6 +16,7 @@ pub use protocol_v2::{
     require_protocol_compatibility_v1, ProtocolCapabilitiesV1, ProtocolCapabilityHandshakeV1,
     ProtocolCompatibilityError, P2P_PROTOCOL_CAPABILITIES_VERSION,
 };
+pub use sync_wire_v2::{ProtocolSyncWireError, ProtocolSyncWireV1};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HeaderInventory {
