@@ -532,4 +532,18 @@ mod tests {
         assert_ne!(k2.blue_score, k3.blue_score);
         assert_ne!(k2.blue_work, k3.blue_work);
     }
+
+    #[test]
+    fn real_relation_visit_counter_accepts_exact_limit_and_rejects_one_more() {
+        let mut visits = GHOSTDAG_V1_MAX_RELATION_VISITS - 1;
+        consume_visit(&mut visits, GHOSTDAG_V1_MAX_RELATION_VISITS, true)
+            .expect("the exact frozen relation-visit budget must be accepted");
+        assert_eq!(visits, GHOSTDAG_V1_MAX_RELATION_VISITS);
+        assert_eq!(
+            consume_visit(&mut visits, GHOSTDAG_V1_MAX_RELATION_VISITS, true,),
+            Err(GhostdagV1Error::RelationVisitLimitExceeded {
+                max: GHOSTDAG_V1_MAX_RELATION_VISITS,
+            })
+        );
+    }
 }
