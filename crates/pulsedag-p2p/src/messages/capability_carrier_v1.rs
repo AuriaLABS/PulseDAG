@@ -416,7 +416,8 @@ mod tests {
         transport
             .configure_local_capabilities(CHAIN_ID, local.clone())
             .unwrap();
-        let v2_wire = encode_network_message_with_capabilities_v1(&get_tips(), Some(&local)).unwrap();
+        let v2_wire =
+            encode_network_message_with_capabilities_v1(&get_tips(), Some(&local)).unwrap();
         transport.decode_from_peer("peer", &v2_wire).unwrap();
         assert_eq!(
             transport
@@ -446,7 +447,8 @@ mod tests {
         transport
             .configure_local_capabilities(CHAIN_ID, local.clone())
             .unwrap();
-        let v2_wire = encode_network_message_with_capabilities_v1(&get_tips(), Some(&local)).unwrap();
+        let v2_wire =
+            encode_network_message_with_capabilities_v1(&get_tips(), Some(&local)).unwrap();
         transport.decode_from_peer("peer", &v2_wire).unwrap();
 
         let ordinary = NetworkMessage::InvBlock {
