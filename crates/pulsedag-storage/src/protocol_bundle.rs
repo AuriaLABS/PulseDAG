@@ -2,9 +2,13 @@ use pulsedag_core::{
     errors::PulseError, ProtocolActivationIdentity, ProtocolActivationRecordV1,
     ProtocolRestoreIdentityGate,
 };
+use rocksdb::WriteBatch;
 use serde::{Deserialize, Serialize};
 
-use super::{SnapshotExportBundle, SnapshotVerificationReport, Storage};
+use super::{
+    protocol_identity::PROTOCOL_ACTIVATION_STORAGE_KEY, SnapshotExportBundle,
+    SnapshotVerificationReport, Storage, ACCEPTED_BLOCKS_CF,
+};
 
 pub const PROTOCOL_SNAPSHOT_BUNDLE_FORMAT_VERSION: u32 = 2;
 
@@ -120,6 +124,58 @@ impl Storage {
         }
         Ok(report)
     }
+
+    /// Verify the complete protocol-bound bundle before mutation, then replace
+    /// accepted blocks, snapshot metadata/state, and the activation sidecar in
+    /// one RocksDB batch. Any identity or bundle verification failure returns
+    /// before durable state is changed.
+    pub fn import_protocol_snapshot_bundle_v2(
+        &self,
+        bundle: ProtocolSnapshotExportBundleV2,
+        expected: &ProtocolActivationIdentity,
+    ) -> Result<SnapshotVerificationReport, PulseError> {
+        let report = self.verify_protocol_snapshot_bundle_v2(&bundle, expected)?;
+        let blocks_cf = self
+            .db
+            .cf_handle(ACCEPTED_BLOCKS_CF)
+            .ok_or_else(|| storage_error("missing cf accepted blocks"))?;
+        let meta_cf = self
+            .db
+            .cf_handle("meta")
+            .ok_or_else(|| storage_error("missing cf meta"))?;
+        let existing_blocks = self.list_blocks()?;
+        let mut batch = WriteBatch::default();
+
+        for block in existing_blocks {
+            batch.delete_cf(&blocks_cf, block.hash.as_bytes());
+        }
+        for block in &bundle.legacy_bundle.persisted_blocks {
+            batch.put_cf(
+                &blocks_cf,
+                block.hash.as_bytes(),
+                serde_json::to_vec(block).map_err(|error| storage_error(error.to_string()))?,
+            );
+        }
+        self.stage_chain_state_snapshot_with_captured_at(
+            &mut batch,
+            &meta_cf,
+            &bundle.legacy_bundle.snapshot,
+            bundle
+                .legacy_bundle
+                .snapshot_captured_at_unix
+                .unwrap_or(bundle.legacy_bundle.exported_at_unix),
+        )?;
+        batch.put_cf(
+            &meta_cf,
+            PROTOCOL_ACTIVATION_STORAGE_KEY,
+            serde_json::to_vec(&bundle.activation_record)
+                .map_err(|error| storage_error(error.to_string()))?,
+        );
+        self.db
+            .write(batch)
+            .map_err(|error| storage_error(error.to_string()))?;
+        Ok(report)
+    }
 }
 
 #[cfg(test)]
@@ -218,5 +274,89 @@ mod tests {
 
         drop(storage);
         let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn protocol_bundle_v2_import_persists_snapshot_and_identity_atomically() {
+        let source_path = temp_db_path("import-source");
+        let target_path = temp_db_path("import-target");
+        let source = Storage::open(&source_path).unwrap();
+        let target = Storage::open(&target_path).unwrap();
+        let state = init_chain_state("pulsedag-testnet".to_string());
+        let expected = ProtocolActivationIdentity::legacy_from_state(&state);
+        source
+            .persist_chain_state_with_protocol_record(&state)
+            .unwrap();
+        let (bundle, _) = source
+            .export_protocol_snapshot_bundle_v2(&expected)
+            .unwrap();
+
+        let report = target
+            .import_protocol_snapshot_bundle_v2(bundle, &expected)
+            .unwrap();
+
+        assert!(report.restore_guarantees_explicit);
+        assert_eq!(
+            target.load_chain_state().unwrap().unwrap().chain_id,
+            state.chain_id
+        );
+        assert_eq!(
+            target
+                .protocol_activation_record()
+                .unwrap()
+                .unwrap()
+                .identity,
+            expected
+        );
+        assert!(target.protocol_snapshot_sidecar_complete().unwrap());
+
+        drop(source);
+        drop(target);
+        let _ = std::fs::remove_dir_all(source_path);
+        let _ = std::fs::remove_dir_all(target_path);
+    }
+
+    #[test]
+    fn protocol_bundle_v2_failed_verification_leaves_target_unchanged() {
+        let source_path = temp_db_path("preverify-source");
+        let target_path = temp_db_path("preverify-target");
+        let source = Storage::open(&source_path).unwrap();
+        let target = Storage::open(&target_path).unwrap();
+        let source_state = init_chain_state("pulsedag-testnet".to_string());
+        let expected = ProtocolActivationIdentity::legacy_from_state(&source_state);
+        source
+            .persist_chain_state_with_protocol_record(&source_state)
+            .unwrap();
+        let (mut bundle, _) = source
+            .export_protocol_snapshot_bundle_v2(&expected)
+            .unwrap();
+        bundle.format_version += 1;
+
+        let target_state = init_chain_state("pulsedag-private".to_string());
+        let target_identity = ProtocolActivationIdentity::legacy_from_state(&target_state);
+        target
+            .persist_chain_state_with_protocol_record(&target_state)
+            .unwrap();
+
+        assert!(target
+            .import_protocol_snapshot_bundle_v2(bundle, &expected)
+            .is_err());
+        assert_eq!(
+            target.load_chain_state().unwrap().unwrap().chain_id,
+            target_state.chain_id
+        );
+        assert_eq!(
+            target
+                .protocol_activation_record()
+                .unwrap()
+                .unwrap()
+                .identity,
+            target_identity
+        );
+
+        drop(source);
+        drop(target);
+        let _ = std::fs::remove_dir_all(source_path);
+        let _ = std::fs::remove_dir_all(target_path);
     }
 }
