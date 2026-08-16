@@ -113,10 +113,7 @@ mod tests {
         assert!(value["data"].is_null());
         assert_eq!(value["error"]["code"], Value::from("TX_REJECTED"));
         assert_eq!(value["error"]["message"], Value::from("invalid transaction"));
-        assert_eq!(
-            value["error"]["classification"],
-            Value::from("invalid_signature")
-        );
+        assert_eq!(value["error"]["classification"], Value::from("invalid_signature"));
         assert!(value["meta"].is_object());
     }
 }
