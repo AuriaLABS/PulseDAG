@@ -12,6 +12,8 @@ pub struct ApiResponse<T> {
 pub struct ApiError {
     pub code: String,
     pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub classification: Option<String>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -34,6 +36,24 @@ impl<T> ApiResponse<T> {
             error: Some(ApiError {
                 code: code.into(),
                 message: message.into(),
+                classification: None,
+            }),
+            meta: ApiMeta::default(),
+        }
+    }
+
+    pub fn err_classified(
+        code: impl Into<String>,
+        message: impl Into<String>,
+        classification: impl Into<String>,
+    ) -> Self {
+        Self {
+            ok: false,
+            data: None,
+            error: Some(ApiError {
+                code: code.into(),
+                message: message.into(),
+                classification: Some(classification.into()),
             }),
             meta: ApiMeta::default(),
         }
@@ -80,6 +100,26 @@ mod tests {
         assert!(value["data"].is_null());
         assert_eq!(value["error"]["code"], Value::from("BAD_REQUEST"));
         assert_eq!(value["error"]["message"], Value::from("invalid payload"));
+        assert!(value["error"].get("classification").is_none());
+        assert!(value["meta"].is_object());
+    }
+
+    #[test]
+    fn api_response_classified_error_is_additive() {
+        let resp: ApiResponse<u64> =
+            ApiResponse::err_classified("TX_REJECTED", "invalid transaction", "invalid_signature");
+        let value = serde_json::to_value(&resp).unwrap();
+        assert_eq!(value["ok"], Value::Bool(false));
+        assert!(value["data"].is_null());
+        assert_eq!(value["error"]["code"], Value::from("TX_REJECTED"));
+        assert_eq!(
+            value["error"]["message"],
+            Value::from("invalid transaction")
+        );
+        assert_eq!(
+            value["error"]["classification"],
+            Value::from("invalid_signature")
+        );
         assert!(value["meta"].is_object());
     }
 }
