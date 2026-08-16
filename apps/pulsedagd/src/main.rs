@@ -5177,6 +5177,8 @@ async fn main() -> Result<()> {
         let runtime = app_state.runtime.clone();
         let storage = app_state.storage.clone();
         let chain_id = cfg.chain_id.clone();
+        let protocol_restore_identity =
+            startup_protocol_restore_identity(&cfg.chain_id, cfg.consensus_mode);
         tokio::spawn(async move {
             loop {
                 sleep(Duration::from_secs(5)).await;
@@ -5291,14 +5293,42 @@ async fn main() -> Result<()> {
                             .unwrap_or_else(|| "unavailable".to_string());
                         let before_publish_generation = chain.read().await.chain_state_generation;
 
+                        if let Some(expected) = protocol_restore_identity.as_ref() {
+                            if let Err(e) = storage.verify_protocol_restore_preflight(expected) {
+                                warn!(
+                                    error = %e,
+                                    best_height,
+                                    keep_from_height,
+                                    "auto prune protocol preflight failed before durable prune"
+                                );
+                                let _ = storage.append_runtime_event(
+                                    "error",
+                                    "prune_auto_protocol_preflight_failed",
+                                    &format!(
+                                        "auto prune protocol preflight failed at height {} before pruning: {}",
+                                        best_height, e
+                                    ),
+                                );
+                                continue;
+                            }
+                        }
+
                         match storage
                             .prune_blocks_with_retained_set(&chain_snapshot, keep_from_height)
                         {
                             Ok(retained_report) => {
                                 let pruned = retained_report.blocks_pruned_total;
-                                match storage
-                                    .replay_from_validated_snapshot_and_delta(Some(&chain_id))
+                                let replay_result = if let Some(expected) =
+                                    protocol_restore_identity.as_ref()
                                 {
+                                    storage.replay_from_validated_snapshot_and_delta_for_protocol(
+                                        expected,
+                                    )
+                                } else {
+                                    storage
+                                        .replay_from_validated_snapshot_and_delta(Some(&chain_id))
+                                };
+                                match replay_result {
                                     Ok(rebuilt) => {
                                         let after_snapshot = chain.read().await.clone();
                                         let after_generation =
