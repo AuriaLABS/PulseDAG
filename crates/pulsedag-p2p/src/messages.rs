@@ -4,6 +4,7 @@ pub mod frontier_reconcile_v1;
 pub mod protocol_v2;
 pub mod recovery_progress_v1;
 pub mod selected_locator_v1;
+pub mod sync_carrier_v1;
 pub mod sync_wire_v2;
 
 use serde::{Deserialize, Serialize};
@@ -37,6 +38,11 @@ pub use recovery_progress_v1::{
 pub use selected_locator_v1::{
     build_selected_chain_locator_v1, resolve_selected_common_ancestor_v1, SelectedCommonAncestorV1,
     SelectedLocatorError, SELECTED_LOCATOR_LINEAR_WINDOW,
+};
+pub use sync_carrier_v1::{
+    attach_protocol_sync_carrier_v1, decode_network_message_with_protocol_sync_v1,
+    encode_network_message_with_protocol_sync_v1, DecodedNetworkMessageWithProtocolSyncV1,
+    ProtocolSyncCarrierErrorV1, ProtocolSyncCarrierV1, PROTOCOL_SYNC_EXTENSION_FIELD_V1,
 };
 pub use sync_wire_v2::{
     plan_protocol_sync_dispatch_v1, ProtocolSyncDispatchActionV1, ProtocolSyncDispatchPlanV1,

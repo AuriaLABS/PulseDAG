@@ -75,8 +75,7 @@ pub fn attach_protocol_sync_carrier_v1(
         serde_json::to_value(carrier)
             .map_err(|error| ProtocolSyncCarrierErrorV1::Json(error.to_string()))?,
     );
-    serde_json::to_vec(&value)
-        .map_err(|error| ProtocolSyncCarrierErrorV1::Json(error.to_string()))
+    serde_json::to_vec(&value).map_err(|error| ProtocolSyncCarrierErrorV1::Json(error.to_string()))
 }
 
 /// Encode a legacy network message with an optional targeted Task 27 sync
@@ -196,11 +195,9 @@ mod tests {
     #[test]
     fn legacy_decoder_ignores_targeted_sync_extension() {
         let message = tips();
-        let encoded = encode_network_message_with_protocol_sync_v1(
-            &message,
-            Some(&carrier(CHAIN_ID)),
-        )
-        .unwrap();
+        let encoded =
+            encode_network_message_with_protocol_sync_v1(&message, Some(&carrier(CHAIN_ID)))
+                .unwrap();
         let legacy: NetworkMessage = serde_json::from_slice(&encoded).unwrap();
         assert_eq!(legacy.kind(), "Tips");
         assert_eq!(legacy.chain_id(), CHAIN_ID);
@@ -221,11 +218,8 @@ mod tests {
 
     #[test]
     fn capability_and_protocol_sync_extensions_compose_without_losing_either() {
-        let capability_encoded = encode_network_message_with_capabilities_v1(
-            &tips(),
-            Some(&capabilities()),
-        )
-        .unwrap();
+        let capability_encoded =
+            encode_network_message_with_capabilities_v1(&tips(), Some(&capabilities())).unwrap();
         let expected_sync = carrier(CHAIN_ID);
         let combined =
             attach_protocol_sync_carrier_v1(&capability_encoded, &expected_sync).unwrap();
