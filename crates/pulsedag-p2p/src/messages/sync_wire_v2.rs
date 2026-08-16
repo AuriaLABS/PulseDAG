@@ -47,9 +47,10 @@ impl ProtocolSyncWireV1 {
             Self::CapabilityHandshake(ProtocolCapabilityHandshakeV1::GetProtocolCapabilities {
                 chain_id,
             })
-            | Self::CapabilityHandshake(
-                ProtocolCapabilityHandshakeV1::ProtocolCapabilities { chain_id, .. },
-            ) => chain_id,
+            | Self::CapabilityHandshake(ProtocolCapabilityHandshakeV1::ProtocolCapabilities {
+                chain_id,
+                ..
+            }) => chain_id,
             Self::SelectedChainLocator(locator) => &locator.protocol_identity.chain_id,
             Self::DagFrontier(frontier) => &frontier.protocol_identity.chain_id,
         }
