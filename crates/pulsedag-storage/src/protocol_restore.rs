@@ -3,7 +3,7 @@ use pulsedag_core::{
     ProtocolRestoreIdentityGate,
 };
 
-use super::Storage;
+use super::{protocol_identity::canonical_current_legacy_identity_from_state, Storage};
 
 fn storage_error(message: impl Into<String>) -> PulseError {
     PulseError::StorageError(message.into())
@@ -14,7 +14,7 @@ fn verify_current_legacy_runtime_identity(
 ) -> Result<(), PulseError> {
     expected.validate().map_err(storage_error)?;
     let canonical_state = init_chain_state(expected.chain_id.clone());
-    let canonical = ProtocolActivationIdentity::legacy_from_state(&canonical_state);
+    let canonical = canonical_current_legacy_identity_from_state(&canonical_state)?;
     if &canonical != expected {
         return Err(storage_error(
             "protocol-bound restore execution is only available for the canonical current legacy runtime identity; refusing legacy fallback",
@@ -51,7 +51,7 @@ impl Storage {
     ) -> Result<pulsedag_core::ChainState, PulseError> {
         self.verify_protocol_restore_preflight(expected)?;
         let state = self.load_or_init_genesis(expected.chain_id.clone())?;
-        let actual = ProtocolActivationIdentity::legacy_from_state(&state);
+        let actual = canonical_current_legacy_identity_from_state(&state)?;
         if &actual != expected {
             return Err(storage_error(
                 "restored chain state does not match expected protocol activation identity",
@@ -72,7 +72,7 @@ impl Storage {
     ) -> Result<pulsedag_core::ChainState, PulseError> {
         self.verify_protocol_restore_preflight(expected)?;
         let state = self.replay_blocks_or_init(expected.chain_id.clone())?;
-        let actual = ProtocolActivationIdentity::legacy_from_state(&state);
+        let actual = canonical_current_legacy_identity_from_state(&state)?;
         if &actual != expected {
             return Err(storage_error(
                 "replayed chain state does not match expected protocol activation identity",
@@ -127,6 +127,35 @@ mod tests {
                 .unwrap(),
             ProtocolRestoreIdentityGate::VerifiedRecordV1
         );
+        assert_eq!(
+            storage
+                .protocol_activation_record()
+                .unwrap()
+                .unwrap()
+                .identity,
+            expected
+        );
+
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn post_genesis_legacy_ordering_marker_restores_under_canonical_identity() {
+        let path = temp_db_path("legacy-post-genesis-ordering");
+        let storage = Storage::open(&path).unwrap();
+        let mut state = init_chain_state("pulsedag-testnet".to_string());
+        let expected = ProtocolActivationIdentity::legacy_from_state(&state);
+        state.dag.ordering_version = "legacy".to_string();
+        storage
+            .persist_chain_state_with_protocol_record(&state)
+            .unwrap();
+
+        let restored = storage
+            .load_or_init_genesis_for_protocol(&expected)
+            .unwrap();
+
+        assert_eq!(restored.dag.ordering_version, "legacy");
         assert_eq!(
             storage
                 .protocol_activation_record()
