@@ -2,7 +2,8 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     DagFrontierResponseV1, DagSyncContractError, ProtocolCapabilityHandshakeV1,
-    ProtocolCompatibilityError, SelectedChainLocatorV1,
+    ProtocolCompatibilityError, ProtocolMessageClassV1, ProtocolPeerCompatibilityV1,
+    ProtocolPeerRouteActionV1, ProtocolPeerRouterV1, SelectedChainLocatorV1,
 };
 
 /// Canonical v2.4 protocol-sync payload carried by the live P2P transport.
@@ -106,6 +107,78 @@ impl ProtocolSyncWireV1 {
         }
         Ok(())
     }
+}
+
+/// Side-effect-free dispatch result consumed by the eventual live transport.
+///
+/// `AdvertiseCapabilitiesViaLegacyCarrier` is deliberately distinct from
+/// `SendProtocolV2`: an unknown peer must not receive a new undecodable wire
+/// variant merely to discover whether it supports that variant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProtocolSyncDispatchActionV1 {
+    SendProtocolV2,
+    AdvertiseCapabilitiesViaLegacyCarrier,
+    HoldForCapabilities,
+    UseLegacyFallback,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProtocolSyncDispatchPlanV1 {
+    pub peer_id: String,
+    pub wire_kind: String,
+    pub action: ProtocolSyncDispatchActionV1,
+    pub penalize_peer: bool,
+}
+
+/// Plan one outbound protocol-sync payload without performing network I/O.
+///
+/// The payload is shape/chain validated first. Capability negotiation for an
+/// unknown peer is required to use a backward-compatible carrier; locator and
+/// frontier payloads are held until exact capability compatibility is known.
+/// Incompatible peers remain eligible for legacy-safe fallback and are never
+/// penalized merely for being a different supported version.
+pub fn plan_protocol_sync_dispatch_v1(
+    router: &ProtocolPeerRouterV1,
+    peer_id: &str,
+    wire: &ProtocolSyncWireV1,
+    expected_chain_id: &str,
+) -> Result<ProtocolSyncDispatchPlanV1, ProtocolSyncWireError> {
+    wire.validate_for_chain(expected_chain_id)?;
+
+    let action = if matches!(wire, ProtocolSyncWireV1::CapabilityHandshake(_)) {
+        match router.compatibility(peer_id) {
+            ProtocolPeerCompatibilityV1::Compatible => ProtocolSyncDispatchActionV1::SendProtocolV2,
+            ProtocolPeerCompatibilityV1::Unknown => {
+                ProtocolSyncDispatchActionV1::AdvertiseCapabilitiesViaLegacyCarrier
+            }
+            ProtocolPeerCompatibilityV1::Incompatible(_) => {
+                ProtocolSyncDispatchActionV1::UseLegacyFallback
+            }
+        }
+    } else {
+        match router
+            .route(peer_id, ProtocolMessageClassV1::ProtocolV2Sync)
+            .action
+        {
+            ProtocolPeerRouteActionV1::SendProtocolV2 => {
+                ProtocolSyncDispatchActionV1::SendProtocolV2
+            }
+            ProtocolPeerRouteActionV1::HoldForCapabilities => {
+                ProtocolSyncDispatchActionV1::HoldForCapabilities
+            }
+            ProtocolPeerRouteActionV1::UseLegacyFallback
+            | ProtocolPeerRouteActionV1::SendLegacySafe => {
+                ProtocolSyncDispatchActionV1::UseLegacyFallback
+            }
+        }
+    };
+
+    Ok(ProtocolSyncDispatchPlanV1 {
+        peer_id: peer_id.to_string(),
+        wire_kind: wire.kind().to_string(),
+        action,
+        penalize_peer: false,
+    })
 }
 
 #[cfg(test)]
@@ -256,6 +329,86 @@ mod tests {
             Err(ProtocolSyncWireError::DagSync(
                 DagSyncContractError::OrderingVersionMismatch { .. }
             ))
+        ));
+    }
+
+    #[test]
+    fn unknown_peer_uses_legacy_carrier_for_capability_probe() {
+        let router = ProtocolPeerRouterV1::default();
+        let wire = ProtocolSyncWireV1::CapabilityHandshake(
+            ProtocolCapabilityHandshakeV1::GetProtocolCapabilities {
+                chain_id: CHAIN_ID.to_string(),
+            },
+        );
+
+        assert_eq!(
+            plan_protocol_sync_dispatch_v1(&router, "peer-old", &wire, CHAIN_ID),
+            Ok(ProtocolSyncDispatchPlanV1 {
+                peer_id: "peer-old".to_string(),
+                wire_kind: "CapabilityHandshake".to_string(),
+                action: ProtocolSyncDispatchActionV1::AdvertiseCapabilitiesViaLegacyCarrier,
+                penalize_peer: false,
+            })
+        );
+    }
+
+    #[test]
+    fn unknown_peer_never_receives_locator_or_frontier_v2_bytes() {
+        let router = ProtocolPeerRouterV1::default();
+        for wire in [
+            ProtocolSyncWireV1::SelectedChainLocator(locator(CHAIN_ID)),
+            ProtocolSyncWireV1::DagFrontier(frontier(CHAIN_ID)),
+        ] {
+            let plan = plan_protocol_sync_dispatch_v1(&router, "peer-old", &wire, CHAIN_ID)
+                .expect("valid wire plans");
+            assert_eq!(
+                plan.action,
+                ProtocolSyncDispatchActionV1::HoldForCapabilities
+            );
+            assert!(!plan.penalize_peer);
+        }
+    }
+
+    #[test]
+    fn compatible_peer_can_receive_locator_and_frontier_v2() {
+        let local = capabilities(CHAIN_ID);
+        let mut router = ProtocolPeerRouterV1::default();
+        router.observe_remote_capabilities("peer-v2", &local, local.clone());
+
+        for wire in [
+            ProtocolSyncWireV1::SelectedChainLocator(locator(CHAIN_ID)),
+            ProtocolSyncWireV1::DagFrontier(frontier(CHAIN_ID)),
+        ] {
+            let plan = plan_protocol_sync_dispatch_v1(&router, "peer-v2", &wire, CHAIN_ID)
+                .expect("valid wire plans");
+            assert_eq!(plan.action, ProtocolSyncDispatchActionV1::SendProtocolV2);
+            assert!(!plan.penalize_peer);
+        }
+    }
+
+    #[test]
+    fn incompatible_peer_falls_back_without_protocol_penalty() {
+        let local = capabilities(CHAIN_ID);
+        let mut remote = local.clone();
+        remote.supports_dag_frontier = false;
+        let mut router = ProtocolPeerRouterV1::default();
+        router.observe_remote_capabilities("peer-old", &local, remote);
+
+        let wire = ProtocolSyncWireV1::SelectedChainLocator(locator(CHAIN_ID));
+        let plan = plan_protocol_sync_dispatch_v1(&router, "peer-old", &wire, CHAIN_ID)
+            .expect("valid wire plans");
+        assert_eq!(plan.action, ProtocolSyncDispatchActionV1::UseLegacyFallback);
+        assert!(!plan.penalize_peer);
+    }
+
+    #[test]
+    fn dispatch_rejects_wrong_chain_before_peer_routing() {
+        let router = ProtocolPeerRouterV1::default();
+        let wire = ProtocolSyncWireV1::SelectedChainLocator(locator("different-chain"));
+
+        assert!(matches!(
+            plan_protocol_sync_dispatch_v1(&router, "peer", &wire, CHAIN_ID),
+            Err(ProtocolSyncWireError::ChainIdMismatch { .. })
         ));
     }
 }
