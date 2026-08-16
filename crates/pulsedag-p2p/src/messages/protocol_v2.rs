@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use pulsedag_core::ProtocolActivationIdentity;
 use serde::{Deserialize, Serialize};
 
@@ -166,6 +168,119 @@ impl ProtocolPeerStateV1 {
     }
 }
 
+/// Message classes used by the runtime to avoid sending undecodable v2 sync
+/// traffic to legacy or not-yet-negotiated peers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProtocolMessageClassV1 {
+    LegacySafe,
+    ProtocolV2Sync,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProtocolPeerRouteActionV1 {
+    SendLegacySafe,
+    SendProtocolV2,
+    HoldForCapabilities,
+    UseLegacyFallback,
+}
+
+/// Routing decision deliberately separates compatibility from peer reputation.
+/// A version/capability mismatch is not, by itself, evidence of peer misconduct.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProtocolPeerRouteDecisionV1 {
+    pub action: ProtocolPeerRouteActionV1,
+    pub penalize_peer: bool,
+}
+
+impl ProtocolPeerRouteDecisionV1 {
+    fn without_penalty(action: ProtocolPeerRouteActionV1) -> Self {
+        Self {
+            action,
+            penalize_peer: false,
+        }
+    }
+}
+
+/// Deterministic per-peer routing registry for Task 27 mixed-version behavior.
+///
+/// The registry does not own connections and does not send messages. It gives
+/// the live dispatcher a single fail-closed policy boundary:
+///
+/// - legacy-safe traffic remains available to unknown/incompatible peers;
+/// - v2 sync traffic is emitted only to exact-compatible peers;
+/// - unknown peers hold v2 traffic until capability negotiation completes;
+/// - incompatible peers fall back to legacy-safe capabilities without penalty;
+/// - eligible-v2 peer ordering is deterministic by peer id.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ProtocolPeerRouterV1 {
+    peers: BTreeMap<String, ProtocolPeerStateV1>,
+}
+
+impl ProtocolPeerRouterV1 {
+    pub fn observe_remote_capabilities(
+        &mut self,
+        peer_id: impl Into<String>,
+        local: &ProtocolCapabilitiesV1,
+        remote: ProtocolCapabilitiesV1,
+    ) -> ProtocolPeerCompatibilityV1 {
+        let state = self.peers.entry(peer_id.into()).or_default();
+        state.observe_remote_capabilities(local, remote).clone()
+    }
+
+    pub fn compatibility(&self, peer_id: &str) -> ProtocolPeerCompatibilityV1 {
+        self.peers
+            .get(peer_id)
+            .map(|state| state.compatibility().clone())
+            .unwrap_or_default()
+    }
+
+    pub fn route(
+        &self,
+        peer_id: &str,
+        message_class: ProtocolMessageClassV1,
+    ) -> ProtocolPeerRouteDecisionV1 {
+        if message_class == ProtocolMessageClassV1::LegacySafe {
+            return ProtocolPeerRouteDecisionV1::without_penalty(
+                ProtocolPeerRouteActionV1::SendLegacySafe,
+            );
+        }
+
+        match self.compatibility(peer_id) {
+            ProtocolPeerCompatibilityV1::Compatible => {
+                ProtocolPeerRouteDecisionV1::without_penalty(
+                    ProtocolPeerRouteActionV1::SendProtocolV2,
+                )
+            }
+            ProtocolPeerCompatibilityV1::Unknown => {
+                ProtocolPeerRouteDecisionV1::without_penalty(
+                    ProtocolPeerRouteActionV1::HoldForCapabilities,
+                )
+            }
+            ProtocolPeerCompatibilityV1::Incompatible(_) => {
+                ProtocolPeerRouteDecisionV1::without_penalty(
+                    ProtocolPeerRouteActionV1::UseLegacyFallback,
+                )
+            }
+        }
+    }
+
+    pub fn eligible_v2_peers(&self) -> Vec<String> {
+        self.peers
+            .iter()
+            .filter(|(_, state)| state.can_use_v2_sync())
+            .map(|(peer_id, _)| peer_id.clone())
+            .collect()
+    }
+
+    pub fn mark_peer_unknown(&mut self, peer_id: &str) {
+        self.peers.entry(peer_id.to_string()).or_default().mark_unknown();
+    }
+
+    pub fn remove_peer(&mut self, peer_id: &str) -> bool {
+        self.peers.remove(peer_id).is_some()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -310,5 +425,119 @@ mod tests {
         assert_eq!(state.compatibility(), &ProtocolPeerCompatibilityV1::Unknown);
         assert!(state.remote_capabilities().is_none());
         assert!(!state.can_use_v2_sync());
+    }
+
+    #[test]
+    fn unknown_peer_never_receives_protocol_v2_before_negotiation() {
+        let router = ProtocolPeerRouterV1::default();
+
+        assert_eq!(
+            router.route("legacy-peer", ProtocolMessageClassV1::ProtocolV2Sync),
+            ProtocolPeerRouteDecisionV1 {
+                action: ProtocolPeerRouteActionV1::HoldForCapabilities,
+                penalize_peer: false,
+            }
+        );
+        assert_eq!(
+            router.route("legacy-peer", ProtocolMessageClassV1::LegacySafe),
+            ProtocolPeerRouteDecisionV1 {
+                action: ProtocolPeerRouteActionV1::SendLegacySafe,
+                penalize_peer: false,
+            }
+        );
+    }
+
+    #[test]
+    fn exact_compatible_peer_is_the_only_v2_send_route() {
+        let local = capabilities("pulsedag-testnet");
+        let mut router = ProtocolPeerRouterV1::default();
+        assert_eq!(
+            router.observe_remote_capabilities("peer-v2", &local, local.clone()),
+            ProtocolPeerCompatibilityV1::Compatible
+        );
+
+        assert_eq!(
+            router.route("peer-v2", ProtocolMessageClassV1::ProtocolV2Sync),
+            ProtocolPeerRouteDecisionV1 {
+                action: ProtocolPeerRouteActionV1::SendProtocolV2,
+                penalize_peer: false,
+            }
+        );
+        assert_eq!(router.eligible_v2_peers(), vec!["peer-v2".to_string()]);
+    }
+
+    #[test]
+    fn incompatible_peer_falls_back_without_false_penalty() {
+        let local = capabilities("pulsedag-testnet");
+        let mut remote = local.clone();
+        remote.supports_dag_frontier = false;
+        let mut router = ProtocolPeerRouterV1::default();
+
+        assert_eq!(
+            router.observe_remote_capabilities("peer-old", &local, remote),
+            ProtocolPeerCompatibilityV1::Incompatible(
+                ProtocolCompatibilityError::DagFrontierCapabilityMissing
+            )
+        );
+        assert_eq!(
+            router.route("peer-old", ProtocolMessageClassV1::ProtocolV2Sync),
+            ProtocolPeerRouteDecisionV1 {
+                action: ProtocolPeerRouteActionV1::UseLegacyFallback,
+                penalize_peer: false,
+            }
+        );
+        assert_eq!(
+            router.route("peer-old", ProtocolMessageClassV1::LegacySafe),
+            ProtocolPeerRouteDecisionV1 {
+                action: ProtocolPeerRouteActionV1::SendLegacySafe,
+                penalize_peer: false,
+            }
+        );
+    }
+
+    #[test]
+    fn eligible_v2_peer_order_is_deterministic() {
+        let local = capabilities("pulsedag-testnet");
+        let mut router = ProtocolPeerRouterV1::default();
+        for peer in ["peer-z", "peer-a", "peer-m"] {
+            router.observe_remote_capabilities(peer, &local, local.clone());
+        }
+
+        assert_eq!(
+            router.eligible_v2_peers(),
+            vec![
+                "peer-a".to_string(),
+                "peer-m".to_string(),
+                "peer-z".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn disconnect_or_capability_expiry_returns_peer_to_hold_state() {
+        let local = capabilities("pulsedag-testnet");
+        let mut router = ProtocolPeerRouterV1::default();
+        router.observe_remote_capabilities("peer-v2", &local, local.clone());
+        assert_eq!(
+            router.route("peer-v2", ProtocolMessageClassV1::ProtocolV2Sync)
+                .action,
+            ProtocolPeerRouteActionV1::SendProtocolV2
+        );
+
+        router.mark_peer_unknown("peer-v2");
+        assert_eq!(
+            router.compatibility("peer-v2"),
+            ProtocolPeerCompatibilityV1::Unknown
+        );
+        assert_eq!(
+            router.route("peer-v2", ProtocolMessageClassV1::ProtocolV2Sync),
+            ProtocolPeerRouteDecisionV1 {
+                action: ProtocolPeerRouteActionV1::HoldForCapabilities,
+                penalize_peer: false,
+            }
+        );
+        assert!(router.eligible_v2_peers().is_empty());
+        assert!(router.remove_peer("peer-v2"));
+        assert!(!router.remove_peer("peer-v2"));
     }
 }
