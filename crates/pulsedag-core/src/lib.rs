@@ -7,6 +7,7 @@ pub mod finality_v2;
 pub mod genesis;
 pub mod ghostdag;
 pub mod ghostdag_v1;
+pub mod header_v2;
 pub mod mempool;
 pub mod mining;
 pub mod ordering;
@@ -89,6 +90,11 @@ pub use pow::{
 pub use protocol::{
     ProtocolActivationIdentity, ProtocolConsensusMode, BLOCK_HEADER_VERSION_V1,
     BLOCK_HEADER_VERSION_V2,
+};
+
+pub use header_v2::{
+    canonical_block_header_bytes_v2, canonicalize_block_parents_v2, compute_block_hash_v2,
+    validate_block_header_v2_shape,
 };
 
 pub use consensus_metadata::{
