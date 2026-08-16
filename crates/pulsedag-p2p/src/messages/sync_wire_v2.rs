@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 
+use super::protocol_v2::ProtocolPeerSessionV1;
 use super::{
     DagFrontierResponseV1, DagSyncContractError, ProtocolCapabilityHandshakeV1,
     ProtocolCompatibilityError, ProtocolMessageClassV1, ProtocolPeerCompatibilityV1,
@@ -130,6 +131,25 @@ pub struct ProtocolSyncDispatchPlanV1 {
     pub penalize_peer: bool,
 }
 
+/// Inbound authorization is deliberately separate from payload validation.
+/// A syntactically valid locator/frontier is not authoritative unless the
+/// authenticated peer already negotiated exact Task 27 capabilities.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProtocolSyncInboundActionV1 {
+    AcceptProtocolV2,
+    HoldUntilCapabilitiesKnown,
+    UseLegacyFallback,
+    UseLegacyCapabilityCarrier,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProtocolSyncInboundDecisionV1 {
+    pub peer_id: String,
+    pub wire_kind: String,
+    pub action: ProtocolSyncInboundActionV1,
+    pub penalize_peer: bool,
+}
+
 /// Plan one outbound protocol-sync payload without performing network I/O.
 ///
 /// The payload is shape/chain validated first. Capability negotiation for an
@@ -181,6 +201,48 @@ pub fn plan_protocol_sync_dispatch_v1(
     })
 }
 
+/// Gate one decoded inbound Task 27 sync payload against both its chain identity
+/// and the negotiated state of the authenticated peer.
+///
+/// Chain/payload validation always runs first. Capability handshakes themselves
+/// are not accepted as direct v2 bootstrap traffic: mixed-version bootstrap uses
+/// the backward-compatible GetTips/Tips carrier. Unknown and incompatible peers
+/// are routed away from authoritative v2 sync without a false reputation penalty.
+pub fn gate_protocol_sync_inbound_v1(
+    session: &ProtocolPeerSessionV1,
+    peer_id: &str,
+    wire: &ProtocolSyncWireV1,
+    expected_chain_id: &str,
+) -> Result<ProtocolSyncInboundDecisionV1, ProtocolSyncWireError> {
+    wire.validate_for_chain(expected_chain_id)?;
+
+    let action = match wire {
+        ProtocolSyncWireV1::CapabilityHandshake(_) => {
+            ProtocolSyncInboundActionV1::UseLegacyCapabilityCarrier
+        }
+        ProtocolSyncWireV1::SelectedChainLocator(_) | ProtocolSyncWireV1::DagFrontier(_) => {
+            match session.compatibility(peer_id) {
+                ProtocolPeerCompatibilityV1::Compatible => {
+                    ProtocolSyncInboundActionV1::AcceptProtocolV2
+                }
+                ProtocolPeerCompatibilityV1::Unknown => {
+                    ProtocolSyncInboundActionV1::HoldUntilCapabilitiesKnown
+                }
+                ProtocolPeerCompatibilityV1::Incompatible(_) => {
+                    ProtocolSyncInboundActionV1::UseLegacyFallback
+                }
+            }
+        }
+    };
+
+    Ok(ProtocolSyncInboundDecisionV1 {
+        peer_id: peer_id.to_string(),
+        wire_kind: wire.kind().to_string(),
+        action,
+        penalize_peer: false,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -213,6 +275,32 @@ mod tests {
             supports_consensus_metadata: true,
             high_cadence_allowed: false,
         }
+    }
+
+    fn compatible_session() -> ProtocolPeerSessionV1 {
+        let local = capabilities(CHAIN_ID);
+        let mut session = ProtocolPeerSessionV1::default();
+        session
+            .configure_local_capabilities(CHAIN_ID, local.clone())
+            .unwrap();
+        session
+            .observe_remote_capabilities("peer-v2", Some(local))
+            .unwrap();
+        session
+    }
+
+    fn incompatible_session() -> ProtocolPeerSessionV1 {
+        let local = capabilities(CHAIN_ID);
+        let mut remote = local.clone();
+        remote.supports_dag_frontier = false;
+        let mut session = ProtocolPeerSessionV1::default();
+        session
+            .configure_local_capabilities(CHAIN_ID, local)
+            .unwrap();
+        session
+            .observe_remote_capabilities("peer-old", Some(remote))
+            .unwrap();
+        session
     }
 
     fn locator(chain_id: &str) -> SelectedChainLocatorV1 {
@@ -408,6 +496,84 @@ mod tests {
 
         assert!(matches!(
             plan_protocol_sync_dispatch_v1(&router, "peer", &wire, CHAIN_ID),
+            Err(ProtocolSyncWireError::ChainIdMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn inbound_locator_and_frontier_require_exact_compatible_peer() {
+        let session = compatible_session();
+        for wire in [
+            ProtocolSyncWireV1::SelectedChainLocator(locator(CHAIN_ID)),
+            ProtocolSyncWireV1::DagFrontier(frontier(CHAIN_ID)),
+        ] {
+            assert_eq!(
+                gate_protocol_sync_inbound_v1(&session, "peer-v2", &wire, CHAIN_ID),
+                Ok(ProtocolSyncInboundDecisionV1 {
+                    peer_id: "peer-v2".to_string(),
+                    wire_kind: wire.kind().to_string(),
+                    action: ProtocolSyncInboundActionV1::AcceptProtocolV2,
+                    penalize_peer: false,
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn inbound_unknown_peer_is_held_without_false_penalty() {
+        let session = ProtocolPeerSessionV1::default();
+        let wire = ProtocolSyncWireV1::SelectedChainLocator(locator(CHAIN_ID));
+        assert_eq!(
+            gate_protocol_sync_inbound_v1(&session, "peer-unknown", &wire, CHAIN_ID),
+            Ok(ProtocolSyncInboundDecisionV1 {
+                peer_id: "peer-unknown".to_string(),
+                wire_kind: "SelectedChainLocator".to_string(),
+                action: ProtocolSyncInboundActionV1::HoldUntilCapabilitiesKnown,
+                penalize_peer: false,
+            })
+        );
+    }
+
+    #[test]
+    fn inbound_incompatible_peer_falls_back_without_false_penalty() {
+        let session = incompatible_session();
+        let wire = ProtocolSyncWireV1::DagFrontier(frontier(CHAIN_ID));
+        assert_eq!(
+            gate_protocol_sync_inbound_v1(&session, "peer-old", &wire, CHAIN_ID),
+            Ok(ProtocolSyncInboundDecisionV1 {
+                peer_id: "peer-old".to_string(),
+                wire_kind: "DagFrontier".to_string(),
+                action: ProtocolSyncInboundActionV1::UseLegacyFallback,
+                penalize_peer: false,
+            })
+        );
+    }
+
+    #[test]
+    fn inbound_direct_capability_handshake_uses_legacy_carrier_boundary() {
+        let session = ProtocolPeerSessionV1::default();
+        let wire = ProtocolSyncWireV1::CapabilityHandshake(
+            ProtocolCapabilityHandshakeV1::GetProtocolCapabilities {
+                chain_id: CHAIN_ID.to_string(),
+            },
+        );
+        assert_eq!(
+            gate_protocol_sync_inbound_v1(&session, "peer", &wire, CHAIN_ID),
+            Ok(ProtocolSyncInboundDecisionV1 {
+                peer_id: "peer".to_string(),
+                wire_kind: "CapabilityHandshake".to_string(),
+                action: ProtocolSyncInboundActionV1::UseLegacyCapabilityCarrier,
+                penalize_peer: false,
+            })
+        );
+    }
+
+    #[test]
+    fn inbound_wrong_chain_fails_before_peer_authorization() {
+        let session = compatible_session();
+        let wire = ProtocolSyncWireV1::SelectedChainLocator(locator("different-chain"));
+        assert!(matches!(
+            gate_protocol_sync_inbound_v1(&session, "peer-v2", &wire, CHAIN_ID),
             Err(ProtocolSyncWireError::ChainIdMismatch { .. })
         ));
     }
