@@ -5,7 +5,7 @@ use pulsedag_core::{
     errors::PulseError,
     signing_message, signing_message_v2,
     types::{Address, OutPoint, Transaction, TxInput, TxOutput, Utxo},
-    TRANSACTION_VERSION_V2,
+    TransactionRejectionClass, TRANSACTION_VERSION_V2,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -29,6 +29,61 @@ pub struct BuildTxResponse {
     pub total_input: u64,
     pub change: u64,
     pub signing_message: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WalletSubmissionState {
+    Accepted,
+    Duplicate,
+    Conflict,
+    Rejected,
+    Confirmed,
+    /// Reserved for a future protocol that explicitly enables replacement.
+    /// v2.4.0 has RBF disabled and no reconciliation path produces this state.
+    Replaced,
+}
+
+impl WalletSubmissionState {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Accepted => "accepted",
+            Self::Duplicate => "duplicate",
+            Self::Conflict => "conflict",
+            Self::Rejected => "rejected",
+            Self::Confirmed => "confirmed",
+            Self::Replaced => "replaced",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WalletSubmissionObservation {
+    Accepted,
+    Rejected(TransactionRejectionClass),
+    Confirmed,
+}
+
+pub fn reconcile_wallet_submission(
+    previous: Option<WalletSubmissionState>,
+    observation: WalletSubmissionObservation,
+) -> WalletSubmissionState {
+    if previous == Some(WalletSubmissionState::Confirmed) {
+        return WalletSubmissionState::Confirmed;
+    }
+
+    match observation {
+        WalletSubmissionObservation::Accepted => WalletSubmissionState::Accepted,
+        WalletSubmissionObservation::Rejected(TransactionRejectionClass::Duplicate) => {
+            WalletSubmissionState::Duplicate
+        }
+        WalletSubmissionObservation::Rejected(TransactionRejectionClass::Conflict) => {
+            WalletSubmissionState::Conflict
+        }
+        WalletSubmissionObservation::Rejected(_) => WalletSubmissionState::Rejected,
+        WalletSubmissionObservation::Confirmed => WalletSubmissionState::Confirmed,
+    }
 }
 
 pub fn select_utxos(utxos: &[Utxo], target: u64) -> Result<(Vec<Utxo>, u64), PulseError> {
@@ -114,8 +169,6 @@ fn build_response(
     }
 }
 
-/// Frozen legacy wallet builder. This remains transaction v1 and intentionally
-/// does not gain chain binding.
 pub fn build_transaction(
     from: &str,
     to: &str,
@@ -131,11 +184,6 @@ pub fn build_transaction(
     Ok(build_response(tx, &selected, total_input, change, message))
 }
 
-/// Explicit chain-bound v2 wallet builder.
-///
-/// This API is non-activating: callers must choose it deliberately and provide
-/// the exact canonical chain id. Existing callers of `build_transaction` remain
-/// on the frozen v1 path until the v2.4 activation gate is wired.
 pub fn build_transaction_v2(
     chain_id: &str,
     from: &str,
@@ -173,6 +221,95 @@ mod tests {
             amount,
             coinbase: false,
             height: 1,
+        }
+    }
+
+    #[test]
+    fn wallet_submission_state_codes_are_stable() {
+        let cases = [
+            (WalletSubmissionState::Accepted, "accepted"),
+            (WalletSubmissionState::Duplicate, "duplicate"),
+            (WalletSubmissionState::Conflict, "conflict"),
+            (WalletSubmissionState::Rejected, "rejected"),
+            (WalletSubmissionState::Confirmed, "confirmed"),
+            (WalletSubmissionState::Replaced, "replaced"),
+        ];
+
+        for (state, expected) in cases {
+            assert_eq!(state.as_str(), expected);
+        }
+    }
+
+    #[test]
+    fn duplicate_conflict_and_generic_rejections_remain_distinct() {
+        assert_eq!(
+            reconcile_wallet_submission(
+                Some(WalletSubmissionState::Accepted),
+                WalletSubmissionObservation::Rejected(TransactionRejectionClass::Duplicate),
+            ),
+            WalletSubmissionState::Duplicate
+        );
+        assert_eq!(
+            reconcile_wallet_submission(
+                Some(WalletSubmissionState::Accepted),
+                WalletSubmissionObservation::Rejected(TransactionRejectionClass::Conflict),
+            ),
+            WalletSubmissionState::Conflict
+        );
+        assert_eq!(
+            reconcile_wallet_submission(
+                None,
+                WalletSubmissionObservation::Rejected(TransactionRejectionClass::InvalidSignature),
+            ),
+            WalletSubmissionState::Rejected
+        );
+    }
+
+    #[test]
+    fn confirmed_is_terminal_for_submission_reconciliation() {
+        for observation in [
+            WalletSubmissionObservation::Accepted,
+            WalletSubmissionObservation::Rejected(TransactionRejectionClass::Duplicate),
+            WalletSubmissionObservation::Rejected(TransactionRejectionClass::Conflict),
+            WalletSubmissionObservation::Rejected(TransactionRejectionClass::InvalidTxid),
+            WalletSubmissionObservation::Confirmed,
+        ] {
+            assert_eq!(
+                reconcile_wallet_submission(Some(WalletSubmissionState::Confirmed), observation),
+                WalletSubmissionState::Confirmed
+            );
+        }
+    }
+
+    #[test]
+    fn v2_4_reconciliation_never_produces_replaced() {
+        let rejection_classes = [
+            TransactionRejectionClass::UnsupportedTransactionVersion,
+            TransactionRejectionClass::InactiveTransactionVersion,
+            TransactionRejectionClass::WrongChainDomain,
+            TransactionRejectionClass::InvalidTxid,
+            TransactionRejectionClass::InvalidSignature,
+            TransactionRejectionClass::Duplicate,
+            TransactionRejectionClass::Conflict,
+            TransactionRejectionClass::Orphan,
+            TransactionRejectionClass::MalformedTransaction,
+            TransactionRejectionClass::InsufficientFunds,
+            TransactionRejectionClass::MempoolFull,
+        ];
+
+        assert_ne!(
+            reconcile_wallet_submission(None, WalletSubmissionObservation::Accepted),
+            WalletSubmissionState::Replaced
+        );
+        assert_ne!(
+            reconcile_wallet_submission(None, WalletSubmissionObservation::Confirmed),
+            WalletSubmissionState::Replaced
+        );
+        for class in rejection_classes {
+            assert_ne!(
+                reconcile_wallet_submission(None, WalletSubmissionObservation::Rejected(class)),
+                WalletSubmissionState::Replaced
+            );
         }
     }
 
