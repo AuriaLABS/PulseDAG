@@ -1,6 +1,13 @@
+pub mod protocol_v2;
+
 use serde::{Deserialize, Serialize};
 
 use pulsedag_core::types::{Block, BlockHeader, Hash, Transaction};
+
+pub use protocol_v2::{
+    require_protocol_compatibility_v1, ProtocolCapabilitiesV1, ProtocolCapabilityHandshakeV1,
+    ProtocolCompatibilityError, P2P_PROTOCOL_CAPABILITIES_VERSION,
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HeaderInventory {
