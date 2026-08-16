@@ -108,6 +108,21 @@ pub fn canonical_transaction_bytes(tx: &Transaction) -> Vec<u8> {
     out
 }
 
+/// Explicit admission guard for the frozen legacy transaction path.
+///
+/// Historical v1 canonical serialization remains callable for replay and
+/// deterministic fixtures, but ordinary v1 validation must fail closed rather
+/// than interpreting a newer transaction version through v1 signature rules.
+pub fn validate_transaction_version_v1(tx: &Transaction) -> Result<(), PulseError> {
+    if tx.version != TRANSACTION_VERSION_V1 {
+        return Err(PulseError::InvalidTransaction(format!(
+            "legacy transaction validation requires version {TRANSACTION_VERSION_V1}, got {}",
+            tx.version
+        )));
+    }
+    Ok(())
+}
+
 fn validate_v2_domain(tx: &Transaction, chain_id: &str) -> Result<(), PulseError> {
     if tx.version != TRANSACTION_VERSION_V2 {
         return Err(PulseError::InvalidTransaction(format!(
@@ -237,6 +252,7 @@ pub fn verify_transaction_signatures(
     tx: &Transaction,
     state: &ChainState,
 ) -> Result<(), PulseError> {
+    validate_transaction_version_v1(tx)?;
     let message = signing_message(tx);
     verify_transaction_signatures_with_message(tx, state, &message)
 }
@@ -336,6 +352,18 @@ mod tests {
         assert!(matches!(
             signing_message_v2(&v2, ""),
             Err(PulseError::ChainIdMismatch)
+        ));
+    }
+
+    #[test]
+    fn legacy_signature_verification_rejects_non_v1_before_utxo_lookup() {
+        let state = crate::genesis::init_chain_state("pulsedag-testnet".to_string());
+        let v2 = sample_transaction(TRANSACTION_VERSION_V2);
+
+        assert!(matches!(
+            verify_transaction_signatures(&v2, &state),
+            Err(PulseError::InvalidTransaction(message))
+                if message.contains("legacy transaction validation requires version 1")
         ));
     }
 }
