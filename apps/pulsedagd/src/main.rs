@@ -1196,6 +1196,8 @@ use tracing_subscriber::EnvFilter;
 enum SnapshotBundleCommand {
     Export(PathBuf),
     Import(PathBuf),
+    ExportProtocolV2(PathBuf),
+    ImportProtocolV2(PathBuf),
 }
 
 fn parse_snapshot_bundle_command(args: &[String]) -> Result<Option<SnapshotBundleCommand>> {
@@ -1221,6 +1223,24 @@ fn parse_snapshot_bundle_command(args: &[String]) -> Result<Option<SnapshotBundl
                 }
                 command = Some(SnapshotBundleCommand::Import(PathBuf::from(path)));
             }
+            "--snapshot-export-protocol-v2" => {
+                let path = iter.next().ok_or_else(|| {
+                    anyhow::anyhow!("--snapshot-export-protocol-v2 requires a path")
+                })?;
+                if command.is_some() {
+                    anyhow::bail!("only one snapshot bundle command may be provided");
+                }
+                command = Some(SnapshotBundleCommand::ExportProtocolV2(PathBuf::from(path)));
+            }
+            "--snapshot-import-protocol-v2" => {
+                let path = iter.next().ok_or_else(|| {
+                    anyhow::anyhow!("--snapshot-import-protocol-v2 requires a path")
+                })?;
+                if command.is_some() {
+                    anyhow::bail!("only one snapshot bundle command may be provided");
+                }
+                command = Some(SnapshotBundleCommand::ImportProtocolV2(PathBuf::from(path)));
+            }
             _ => {}
         }
     }
@@ -1230,6 +1250,7 @@ fn parse_snapshot_bundle_command(args: &[String]) -> Result<Option<SnapshotBundl
 fn run_snapshot_bundle_command(
     storage: &Storage,
     chain_id: &str,
+    protocol_identity: Option<&pulsedag_core::ProtocolActivationIdentity>,
     command: SnapshotBundleCommand,
 ) -> Result<()> {
     match command {
@@ -1245,6 +1266,7 @@ fn run_snapshot_bundle_command(
                 serde_json::to_string_pretty(&serde_json::json!({
                     "ok": true,
                     "action": "snapshot_export",
+                    "format_version": 1,
                     "path": path,
                     "verification": report,
                 }))?
@@ -1260,6 +1282,54 @@ fn run_snapshot_bundle_command(
                 serde_json::to_string_pretty(&serde_json::json!({
                     "ok": true,
                     "action": "snapshot_import",
+                    "format_version": 1,
+                    "path": path,
+                    "verification": report,
+                }))?
+            );
+        }
+        SnapshotBundleCommand::ExportProtocolV2(path) => {
+            let expected = protocol_identity.ok_or_else(|| {
+                anyhow::anyhow!(
+                    "protocol snapshot v2 export requires the canonical Legacy protocol identity; experimental GhostdagDev remains on snapshot bundle v1"
+                )
+            })?;
+            if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+                std::fs::create_dir_all(parent)?;
+            }
+            let (bundle, report) = storage.export_protocol_snapshot_bundle_v2(expected)?;
+            let file = std::fs::File::create(&path)?;
+            bincode::serialize_into(BufWriter::new(file), &bundle)?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "ok": true,
+                    "action": "snapshot_export_protocol_v2",
+                    "format_version": pulsedag_storage::PROTOCOL_SNAPSHOT_BUNDLE_FORMAT_VERSION,
+                    "protocol_fingerprint": bundle.activation_record.fingerprint,
+                    "path": path,
+                    "verification": report,
+                }))?
+            );
+        }
+        SnapshotBundleCommand::ImportProtocolV2(path) => {
+            let expected = protocol_identity.ok_or_else(|| {
+                anyhow::anyhow!(
+                    "protocol snapshot v2 import requires the canonical Legacy protocol identity; experimental GhostdagDev remains on snapshot bundle v1"
+                )
+            })?;
+            let file = std::fs::File::open(&path)?;
+            let bundle: pulsedag_storage::ProtocolSnapshotExportBundleV2 =
+                bincode::deserialize_from(BufReader::new(file))?;
+            let fingerprint = bundle.activation_record.fingerprint.clone();
+            let report = storage.import_protocol_snapshot_bundle_v2(bundle, expected)?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "ok": true,
+                    "action": "snapshot_import_protocol_v2",
+                    "format_version": pulsedag_storage::PROTOCOL_SNAPSHOT_BUNDLE_FORMAT_VERSION,
+                    "protocol_fingerprint": fingerprint,
                     "path": path,
                     "verification": report,
                 }))?
@@ -1267,6 +1337,62 @@ fn run_snapshot_bundle_command(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod snapshot_bundle_cli_tests {
+    use super::*;
+
+    #[test]
+    fn protocol_v2_snapshot_flags_are_explicit_and_legacy_flags_stay_unchanged() {
+        assert_eq!(
+            parse_snapshot_bundle_command(&[
+                "--snapshot-export".to_string(),
+                "legacy.bin".to_string(),
+            ])
+            .unwrap(),
+            Some(SnapshotBundleCommand::Export(PathBuf::from("legacy.bin")))
+        );
+        assert_eq!(
+            parse_snapshot_bundle_command(&[
+                "--snapshot-import".to_string(),
+                "legacy.bin".to_string(),
+            ])
+            .unwrap(),
+            Some(SnapshotBundleCommand::Import(PathBuf::from("legacy.bin")))
+        );
+        assert_eq!(
+            parse_snapshot_bundle_command(&[
+                "--snapshot-export-protocol-v2".to_string(),
+                "protocol-v2.bin".to_string(),
+            ])
+            .unwrap(),
+            Some(SnapshotBundleCommand::ExportProtocolV2(PathBuf::from(
+                "protocol-v2.bin"
+            )))
+        );
+        assert_eq!(
+            parse_snapshot_bundle_command(&[
+                "--snapshot-import-protocol-v2".to_string(),
+                "protocol-v2.bin".to_string(),
+            ])
+            .unwrap(),
+            Some(SnapshotBundleCommand::ImportProtocolV2(PathBuf::from(
+                "protocol-v2.bin"
+            )))
+        );
+    }
+
+    #[test]
+    fn snapshot_parser_rejects_mixed_legacy_and_protocol_v2_commands() {
+        assert!(parse_snapshot_bundle_command(&[
+            "--snapshot-export".to_string(),
+            "legacy.bin".to_string(),
+            "--snapshot-import-protocol-v2".to_string(),
+            "protocol-v2.bin".to_string(),
+        ])
+        .is_err());
+    }
 }
 
 fn now_unix() -> u64 {
@@ -1415,7 +1541,7 @@ fn update_orphan_backlog_classification(
 }
 
 fn usage() -> &'static str {
-    "usage: pulsedagd [--network dev|testnet|mainnet] [--rpc-listen HOST:PORT] [--p2p-listen MULTIADDR] [--bootnode MULTIADDR] [--peer MULTIADDR] [--p2p-identity-key PATH] [--snapshot-export PATH|--snapshot-import PATH] [--help] [--version]"
+    "usage: pulsedagd [--network dev|testnet|mainnet] [--rpc-listen HOST:PORT] [--p2p-listen MULTIADDR] [--bootnode MULTIADDR] [--peer MULTIADDR] [--p2p-identity-key PATH] [--snapshot-export PATH|--snapshot-import PATH|--snapshot-export-protocol-v2 PATH|--snapshot-import-protocol-v2 PATH] [--help] [--version]"
 }
 
 fn print_help_and_exit() {
@@ -1460,7 +1586,9 @@ async fn main() -> Result<()> {
     }
     let storage = Arc::new(Storage::open(&cfg.rocksdb_path)?);
     if let Some(command) = snapshot_bundle_command {
-        run_snapshot_bundle_command(&storage, &cfg.chain_id, command)?;
+        let protocol_identity =
+            startup_protocol_restore_identity(&cfg.chain_id, cfg.consensus_mode);
+        run_snapshot_bundle_command(&storage, &cfg.chain_id, protocol_identity.as_ref(), command)?;
         return Ok(());
     }
 
