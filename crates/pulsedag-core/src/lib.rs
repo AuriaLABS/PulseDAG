@@ -1,4 +1,5 @@
 pub mod accept;
+pub mod acceptance_v2;
 pub mod apply;
 pub mod consensus_metadata;
 pub mod consistency;
@@ -39,6 +40,7 @@ pub use accept::{
     accept_transaction_with_result, mutate_chain_state_serialized, AcceptSource,
     AtomicBlockAcceptance, BlockAcceptanceResult, ChainStateMutationOutcome, TxAcceptanceResult,
 };
+pub use acceptance_v2::{commit_ghostdag_v1_metadata_for_activated_v2, ActivatedV2MetadataCommit};
 pub use errors::{
     InvalidStateRootClassification, InvalidStateRootDiagnostics, InvalidStateRootError, PulseError,
 };
