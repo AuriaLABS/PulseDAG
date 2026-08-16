@@ -15,6 +15,7 @@ pub mod ordering;
 pub mod ordering_v2;
 pub mod orphans;
 pub mod pow;
+pub mod pow_protocol;
 pub mod pow_v2;
 pub mod protocol;
 pub mod replay;
@@ -88,7 +89,10 @@ pub use pow::{
     PowAlgorithm, PowEngine, PowEvaluation, PowHeaderPreimage, PowRejectReason,
     PowTargetComparison, PowValidationResult, POW_HEADER_PREIMAGE_VERSION,
 };
-
+pub use pow_protocol::{
+    evaluate_pow_for_protocol, resolve_pow_validation_path, validate_pow_for_protocol,
+    PowValidationPath,
+};
 pub use pow_v2::{canonical_pow_v2_adapter, CanonicalPowV2Adapter};
 
 pub use protocol::{
