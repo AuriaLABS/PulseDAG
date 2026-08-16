@@ -346,16 +346,14 @@ impl ProtocolPeerSessionV1 {
             .local_capabilities
             .as_ref()
             .ok_or(ProtocolPeerSessionErrorV1::LocalCapabilitiesUnavailable)?;
-        let compatibility = self
-            .router
-            .observe_remote_capabilities(peer_id.to_string(), local, remote);
+        let compatibility =
+            self.router
+                .observe_remote_capabilities(peer_id.to_string(), local, remote);
         Ok(match compatibility {
             ProtocolPeerCompatibilityV1::Unknown => {
                 unreachable!("concrete capability observation cannot remain unknown")
             }
-            ProtocolPeerCompatibilityV1::Compatible => {
-                ProtocolPeerSessionObservationV1::Compatible
-            }
+            ProtocolPeerCompatibilityV1::Compatible => ProtocolPeerSessionObservationV1::Compatible,
             ProtocolPeerCompatibilityV1::Incompatible(error) => {
                 ProtocolPeerSessionObservationV1::Incompatible(error)
             }
@@ -653,10 +651,7 @@ mod tests {
     fn peer_session_requires_real_local_identity_before_observation() {
         let mut session = ProtocolPeerSessionV1::default();
         assert_eq!(
-            session.observe_remote_capabilities(
-                "peer-v2",
-                Some(capabilities("pulsedag-testnet")),
-            ),
+            session.observe_remote_capabilities("peer-v2", Some(capabilities("pulsedag-testnet")),),
             Err(ProtocolPeerSessionErrorV1::LocalCapabilitiesUnavailable)
         );
         assert_eq!(
@@ -706,9 +701,11 @@ mod tests {
             session.compatibility("peer-v2"),
             ProtocolPeerCompatibilityV1::Unknown
         );
-        assert!(!session
-            .route("peer-v2", ProtocolMessageClassV1::ProtocolV2Sync)
-            .penalize_peer);
+        assert!(
+            !session
+                .route("peer-v2", ProtocolMessageClassV1::ProtocolV2Sync)
+                .penalize_peer
+        );
 
         session.peer_disconnected("peer-v2");
         assert_eq!(
