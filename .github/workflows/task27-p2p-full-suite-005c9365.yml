@@ -1,0 +1,21 @@
+name: task27-p2p-full-suite-005c9365
+
+on:
+  push:
+    branches:
+      - ci/task27-p2p-full-suite-005c9365
+
+permissions:
+  contents: read
+
+jobs:
+  p2p-full-suite:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 005c9365537afe05e269432658742d1093d95991
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Run complete pulsedag-p2p test suite
+        run: cargo test -p pulsedag-p2p
