@@ -60,6 +60,22 @@ Integer widths, length-prefix widths, and little-endian conventions must be froz
 
 The mining-preimage-v2 path must use the same domain identity and canonical parent vector, while excluding only the miner-controlled nonce material required by the PoW engine contract. It must not silently call the v1 mining-preimage encoder.
 
+## Core implementation surface
+
+The non-activating core implementation freezes the header-v2 byte encoding as follows:
+
+- string and byte-field length prefixes are unsigned 32-bit little-endian integers;
+- parent-vector count is an unsigned 32-bit little-endian integer;
+- `header_version` and `difficulty` are unsigned 32-bit little-endian integers;
+- `timestamp`, `nonce`, `blue_score`, and `height` are unsigned 64-bit little-endian integers;
+- `chain_id`, parent hashes, `merkle_root`, and `state_root` are encoded as exact length-prefixed UTF-8 bytes without normalization;
+- `canonicalize_block_parents_v2` is the local assembly helper for deterministic parent ordering;
+- `validate_block_header_v2_shape` fail-closes received v2 headers that violate the version, chain-domain, parent-count, uniqueness, non-empty, or canonical-order requirements;
+- `canonical_block_header_bytes_v2` is the separate v2 canonical serialization path;
+- `compute_block_hash_v2` hashes only that v2 canonical byte sequence and does not reinterpret the historical v1 hash path.
+
+The v2 mining-preimage serializer remains a separate follow-up surface. It must reuse the same frozen domain, widths, chain identity, and canonical parent vector while excluding only nonce material. No PoW engine, miner, block-validation, or activation path is switched by the header-hash implementation slice.
+
 ## Fail-closed requirements
 
 Header-v2/hash or mining-preimage-v2 APIs must reject at least:
