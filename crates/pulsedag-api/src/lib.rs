@@ -106,19 +106,13 @@ mod tests {
 
     #[test]
     fn api_response_classified_error_is_additive() {
-        let resp: ApiResponse<u64> = ApiResponse::err_classified(
-            "TX_REJECTED",
-            "invalid transaction",
-            "invalid_signature",
-        );
+        let resp: ApiResponse<u64> =
+            ApiResponse::err_classified("TX_REJECTED", "invalid transaction", "invalid_signature");
         let value = serde_json::to_value(&resp).unwrap();
         assert_eq!(value["ok"], Value::Bool(false));
         assert!(value["data"].is_null());
         assert_eq!(value["error"]["code"], Value::from("TX_REJECTED"));
-        assert_eq!(
-            value["error"]["message"],
-            Value::from("invalid transaction")
-        );
+        assert_eq!(value["error"]["message"], Value::from("invalid transaction"));
         assert_eq!(
             value["error"]["classification"],
             Value::from("invalid_signature")
