@@ -36,10 +36,20 @@ pub enum RecoveryProgressReasonV1 {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RecoveryProgressDecisionV1 {
     NoPositiveGap,
-    AwaitCompatiblePeer { gap: u64 },
-    Productive { gap: u64 },
-    ScheduleRecovery { gap: u64, stagnant_cycles: u32 },
-    ContinueRecovery { gap: u64, stagnant_cycles: u32 },
+    AwaitCompatiblePeer {
+        gap: u64,
+    },
+    Productive {
+        gap: u64,
+    },
+    ScheduleRecovery {
+        gap: u64,
+        stagnant_cycles: u32,
+    },
+    ContinueRecovery {
+        gap: u64,
+        stagnant_cycles: u32,
+    },
     Degraded {
         gap: u64,
         stagnant_cycles: u32,
