@@ -4,7 +4,7 @@ use crate::{
     apply::apply_transaction,
     errors::PulseError,
     genesis::init_chain_state,
-    ordering_v2::{derive_ordered_dag_v2, OrderedDagV2},
+    ordering_v2::{derive_ordered_dag_v2, OrderedDagV2, GHOSTDAG_V1_ORDERING_VERSION},
     state::{ChainState, UtxoState},
     types::Hash,
 };
@@ -98,6 +98,74 @@ pub fn rebuild_authoritative_state_v2(state: &ChainState) -> Result<StateReplayV
         ordered_dag,
         diagnostics,
     })
+}
+
+/// Materialize a canonical, self-consistent v2.4 snapshot state without
+/// mutating the caller's live runtime state.
+///
+/// The authoritative UTXO is rebuilt from the frozen total DAG order, then the
+/// snapshot-only ordering/state-root fields are populated from that same replay.
+/// Runtime consensus mode and other operational state remain unchanged.
+pub fn materialize_authoritative_state_v2(state: &ChainState) -> Result<ChainState, PulseError> {
+    let replay = rebuild_authoritative_state_v2(state)?;
+    let mut materialized = state.clone();
+    materialized.utxo = replay.utxo.clone();
+    materialized.dag.ordered_dag = replay.ordered_dag.blocks.clone();
+    materialized.dag.ordering_version = GHOSTDAG_V1_ORDERING_VERSION.to_string();
+    materialized.dag.ordered_dag_tip = replay.diagnostics.ordered_dag_tip.clone();
+    materialized.dag.ordered_dag_state_root = Some(replay.diagnostics.state_root.clone());
+    materialized.dag.ordered_dag_conflict_diagnostics =
+        replay.diagnostics.conflict_diagnostics.clone();
+    Ok(materialized)
+}
+
+/// Verify that a persisted/restored v2.4 snapshot is already materialized from
+/// the same authoritative ordering and transactional replay it claims.
+///
+/// This is deliberately stricter than merely recomputing a valid state: stale
+/// legacy ordering fields or a stale UTXO payload are rejected rather than
+/// silently normalized during restore.
+pub fn verify_authoritative_state_snapshot_v2(
+    state: &ChainState,
+) -> Result<StateReplayV2Diagnostics, PulseError> {
+    let replay = rebuild_authoritative_state_v2(state)?;
+    let observed_state_root = state.utxo.compute_state_root()?;
+
+    if state.dag.ordering_version != GHOSTDAG_V1_ORDERING_VERSION {
+        return Err(PulseError::NonDeterministicState(format!(
+            "v2.4 snapshot ordering version {} does not match {}",
+            state.dag.ordering_version, GHOSTDAG_V1_ORDERING_VERSION
+        )));
+    }
+    if state.dag.ordered_dag != replay.ordered_dag.blocks {
+        return Err(PulseError::NonDeterministicState(
+            "v2.4 snapshot ordered DAG does not match authoritative recomputation".to_string(),
+        ));
+    }
+    if state.dag.ordered_dag_tip != replay.diagnostics.ordered_dag_tip {
+        return Err(PulseError::NonDeterministicState(
+            "v2.4 snapshot ordered DAG tip does not match authoritative recomputation".to_string(),
+        ));
+    }
+    if state.dag.ordered_dag_state_root.as_deref() != Some(replay.diagnostics.state_root.as_str()) {
+        return Err(PulseError::NonDeterministicState(
+            "v2.4 snapshot recorded state root does not match authoritative recomputation"
+                .to_string(),
+        ));
+    }
+    if observed_state_root != replay.diagnostics.state_root {
+        return Err(PulseError::NonDeterministicState(
+            "v2.4 snapshot UTXO state root does not match authoritative recomputation".to_string(),
+        ));
+    }
+    if state.dag.ordered_dag_conflict_diagnostics != replay.diagnostics.conflict_diagnostics {
+        return Err(PulseError::NonDeterministicState(
+            "v2.4 snapshot conflict diagnostics do not match authoritative recomputation"
+                .to_string(),
+        ));
+    }
+
+    Ok(replay.diagnostics)
 }
 
 #[cfg(test)]

@@ -1,5 +1,6 @@
 use pulsedag_core::{
-    errors::PulseError, ProtocolActivationIdentity, ProtocolActivationRecordV1,
+    derive_finality_boundary_v1, errors::PulseError, verify_authoritative_state_snapshot_v2,
+    ProtocolActivationIdentity, ProtocolActivationRecordV1, ProtocolConsensusMode,
     ProtocolRestoreIdentityGate,
 };
 use rocksdb::WriteBatch;
@@ -122,6 +123,34 @@ impl Storage {
         if !report.restore_guarantees_explicit {
             return Err(verification_error(&report));
         }
+
+        if expected.consensus_mode == ProtocolConsensusMode::GhostdagV1 {
+            let diagnostics = verify_authoritative_state_snapshot_v2(
+                &bundle.legacy_bundle.snapshot,
+            )
+            .map_err(|error| {
+                storage_error(format!(
+                    "activated-v2 snapshot is not authoritatively materialized: {error:?}"
+                ))
+            })?;
+            let finality =
+                derive_finality_boundary_v1(&bundle.legacy_bundle.snapshot).map_err(|error| {
+                    storage_error(format!(
+                        "activated-v2 snapshot finality boundary is not derivable: {error:?}"
+                    ))
+                })?;
+            if finality.protocol_identity != *expected {
+                return Err(storage_error(
+                    "activated-v2 snapshot finality identity does not match envelope identity",
+                ));
+            }
+            if finality.ordered_dag_digest != diagnostics.ordered_dag_digest {
+                return Err(storage_error(
+                    "activated-v2 snapshot finality digest does not match authoritative ordering",
+                ));
+            }
+        }
+
         Ok(report)
     }
 
