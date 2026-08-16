@@ -23,6 +23,7 @@ pub mod state_replay_v2;
 pub mod sync_pipeline;
 pub mod tx;
 pub mod tx_protocol;
+pub mod tx_rejection;
 pub mod tx_submission;
 pub mod types;
 pub mod validation;
@@ -49,6 +50,9 @@ pub use tx::{
 pub use tx_protocol::{
     resolve_transaction_validation_path, validate_transaction_for_protocol,
     TransactionValidationPath,
+};
+pub use tx_rejection::{
+    classify_transaction_version, classify_typed_transaction_error, TransactionRejectionClass,
 };
 pub use tx_submission::compute_submission_id_v2;
 pub use types::*;
