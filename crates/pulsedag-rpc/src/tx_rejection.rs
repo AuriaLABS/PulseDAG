@@ -21,7 +21,7 @@ pub fn classify_legacy_rpc_transaction_rejection(
         return Some(class);
     }
 
-    classify_typed_transaction_error(error).or_else(|| match error {
+    classify_typed_transaction_error(error).or(match error {
         PulseError::InvalidTransaction(_) => Some(TransactionRejectionClass::MalformedTransaction),
         _ => None,
     })
