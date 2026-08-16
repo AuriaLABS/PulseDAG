@@ -49,6 +49,31 @@ fn verify_activated_v2_metadata_identity(
     Ok(())
 }
 
+fn verify_activated_v2_genesis_metadata(state: &ChainState) -> Result<(), PulseError> {
+    let genesis = &state.dag.genesis_hash;
+    if state
+        .dag
+        .merge_set_blues
+        .get(genesis)
+        .is_some_and(|hashes| !hashes.is_empty())
+    {
+        return Err(PulseError::InvalidBlock(
+            "activated-v2 genesis merge-set blue metadata must be empty".to_string(),
+        ));
+    }
+    if state
+        .dag
+        .merge_set_reds
+        .get(genesis)
+        .is_some_and(|hashes| !hashes.is_empty())
+    {
+        return Err(PulseError::InvalidBlock(
+            "activated-v2 genesis merge-set red metadata must be empty".to_string(),
+        ));
+    }
+    Ok(())
+}
+
 fn validate_metadata_candidate(
     block: &Block,
     state: &ChainState,
@@ -121,9 +146,17 @@ pub fn commit_ghostdag_v1_metadata_for_activated_v2(
     identity: &ProtocolActivationIdentity,
 ) -> Result<ActivatedV2MetadataCommit, PulseError> {
     verify_activated_v2_metadata_identity(state, identity)?;
+    verify_activated_v2_genesis_metadata(state)?;
     let classification = validate_metadata_candidate(block, state, identity)?;
 
     let mut working = state.clone();
+    let genesis_hash = working.dag.genesis_hash.clone();
+    working
+        .dag
+        .merge_set_blues
+        .entry(genesis_hash.clone())
+        .or_default();
+    working.dag.merge_set_reds.entry(genesis_hash).or_default();
     for parent in &block.header.parents {
         working.dag.tips.remove(parent);
         let children = working.dag.children.entry(parent.clone()).or_default();
@@ -248,7 +281,20 @@ mod tests {
         assert_eq!(committed.classification.blue_score, 1);
         assert_eq!(committed.classification.blue_work, 1);
         assert_eq!(committed.selected_tip, Some(block.hash.clone()));
-        assert_eq!(committed.selected_chain, vec![genesis, block.hash.clone()]);
+        assert_eq!(
+            committed.selected_chain,
+            vec![genesis.clone(), block.hash.clone()]
+        );
+        assert!(state
+            .dag
+            .merge_set_blues
+            .get(&genesis)
+            .is_some_and(Vec::is_empty));
+        assert!(state
+            .dag
+            .merge_set_reds
+            .get(&genesis)
+            .is_some_and(Vec::is_empty));
         assert_eq!(state.dag.selected_chain, committed.selected_chain);
         assert_eq!(
             state.dag.selected_parents.get(&block.hash),
@@ -287,6 +333,31 @@ mod tests {
             state.dag.merge_set_reds.get(&merge.hash),
             Some(&committed.classification.reds)
         );
+    }
+
+    #[test]
+    fn nonempty_genesis_classification_fails_atomically() {
+        let mut state = init_chain_state(CHAIN_ID.to_string());
+        let expected_identity = identity(&state);
+        let genesis = state.dag.genesis_hash.clone();
+        let block = candidate_for_state(&state, vec![genesis.clone()], 21, None);
+        state
+            .dag
+            .merge_set_blues
+            .insert(genesis, vec!["invalid-genesis-blue".to_string()]);
+        let before = bincode::serialize(&state).unwrap();
+
+        assert!(matches!(
+            commit_ghostdag_v1_metadata_for_activated_v2(
+                &block,
+                &mut state,
+                &expected_identity,
+            ),
+            Err(PulseError::InvalidBlock(message))
+                if message.contains("genesis merge-set blue metadata must be empty")
+        ));
+        assert_eq!(bincode::serialize(&state).unwrap(), before);
+        assert!(!state.dag.blocks.contains_key(&block.hash));
     }
 
     #[test]
