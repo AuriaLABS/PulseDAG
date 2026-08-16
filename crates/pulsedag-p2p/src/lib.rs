@@ -21,9 +21,10 @@ use pulsedag_core::{
 use tokio::sync::mpsc;
 use tokio::time::{sleep, Duration};
 
+use crate::messages::capability_carrier_v1::ProtocolCapabilityTransportV1;
 use crate::messages::{
     message_id_for_block, message_id_for_tx, topic_names, BlockHeaderAnnouncement, HeaderInventory,
-    NetworkMessage, TipInventoryStatus,
+    NetworkMessage, ProtocolCapabilitiesV1, TipInventoryStatus,
 };
 
 pub const P2P_MODE_MEMORY_SIMULATED: &str = "memory-simulated";
@@ -697,6 +698,14 @@ pub struct PeerAddressedBlockRequest {
 }
 
 pub trait P2pHandle: Send + Sync {
+    fn configure_protocol_capabilities_v1(
+        &self,
+        _capabilities: ProtocolCapabilitiesV1,
+    ) -> Result<(), PulseError> {
+        Err(PulseError::Internal(
+            "protocol-v2 capabilities are not supported by this p2p handle".into(),
+        ))
+    }
     fn broadcast_transaction(&self, tx: &Transaction) -> Result<(), PulseError>;
     fn broadcast_block(&self, block: &Block) -> Result<(), PulseError>;
     fn update_tip_inventory(&self, _inventory: TipInventoryStatus) -> Result<(), PulseError> {
@@ -867,6 +876,7 @@ struct InnerState {
     publish_attempts: usize,
     inbound_messages: usize,
     chain_id: String,
+    protocol_capability_transport: ProtocolCapabilityTransportV1,
     connected_peers: Vec<String>,
     seen_message_ids: HashSet<String>,
     queued_messages: usize,
@@ -1155,6 +1165,23 @@ impl MemoryP2pHandle {
 }
 
 impl P2pHandle for MemoryP2pHandle {
+    fn configure_protocol_capabilities_v1(
+        &self,
+        capabilities: ProtocolCapabilitiesV1,
+    ) -> Result<(), PulseError> {
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| PulseError::Internal("p2p lock poisoned".into()))?;
+        let chain_id = inner.chain_id.clone();
+        inner
+            .protocol_capability_transport
+            .configure_local_capabilities(&chain_id, capabilities)
+            .map_err(|error| {
+                PulseError::Internal(format!("invalid protocol-v2 p2p capabilities: {error:?}"))
+            })
+    }
+
     fn update_tip_inventory(&self, inventory: TipInventoryStatus) -> Result<(), PulseError> {
         let mut inner = self
             .inner
@@ -4091,6 +4118,63 @@ fn sort_headers_parents_first(headers: &mut [BlockHeaderAnnouncement]) {
     });
 }
 
+fn encode_network_message_for_transport(
+    inner: &Arc<Mutex<InnerState>>,
+    message: &NetworkMessage,
+) -> Result<Vec<u8>, serde_json::Error> {
+    if matches!(
+        message,
+        NetworkMessage::GetTips { .. } | NetworkMessage::Tips { .. }
+    ) {
+        let guard = inner
+            .lock()
+            .map_err(|_| <serde_json::Error as serde::ser::Error>::custom("p2p lock poisoned"))?;
+        return guard
+            .protocol_capability_transport
+            .encode_tip_message(message)
+            .map_err(|error| {
+                <serde_json::Error as serde::ser::Error>::custom(format!(
+                    "protocol capability transport encode failed: {error:?}"
+                ))
+            });
+    }
+    serde_json::to_vec(message)
+}
+
+fn decode_network_message_for_transport(
+    bytes: &[u8],
+    source_peer: Option<&str>,
+    expected_chain_id: &str,
+    inner: &Arc<Mutex<InnerState>>,
+) -> Result<NetworkMessage, String> {
+    let legacy_message =
+        serde_json::from_slice::<NetworkMessage>(bytes).map_err(|error| error.to_string())?;
+
+    // Preserve the existing chain-mismatch accounting/reputation path. A
+    // cross-chain message is never eligible to mutate capability state.
+    if legacy_message.chain_id() != expected_chain_id {
+        return Ok(legacy_message);
+    }
+
+    if let Some(peer_id) = source_peer {
+        let mut guard = inner.lock().map_err(|_| "p2p lock poisoned".to_string())?;
+        if guard
+            .protocol_capability_transport
+            .local_capabilities()
+            .is_some()
+        {
+            return guard
+                .protocol_capability_transport
+                .decode_from_peer(peer_id, bytes)
+                .map(|decoded| decoded.message)
+                .map_err(|error| {
+                    format!("protocol capability transport decode failed: {error:?}")
+                });
+        }
+    }
+    Ok(legacy_message)
+}
+
 fn dispatch_network_message(
     expected_chain_id: &str,
     bytes: &[u8],
@@ -4098,7 +4182,7 @@ fn dispatch_network_message(
     inner: &Arc<Mutex<InnerState>>,
     inbound_tx: &mpsc::UnboundedSender<InboundEvent>,
 ) {
-    let parsed = serde_json::from_slice::<NetworkMessage>(bytes);
+    let parsed = decode_network_message_for_transport(bytes, source_peer, expected_chain_id, inner);
     let msg = match parsed {
         Ok(v) => v,
         Err(_) => {
@@ -4990,14 +5074,14 @@ async fn run_libp2p_runtime(
                     OutboundMessage::GetTips => {
                         let topic_name = format!("{}-sync", cfg.chain_id);
                         let inventory = inner.lock().ok().and_then(|mut guard| current_tip_inventory_for_send(&mut guard, &cfg.chain_id, "GetTips"));
-                        let wire = serde_json::to_vec(&NetworkMessage::GetTips { chain_id: cfg.chain_id.clone(), inventory });
+                        let wire = encode_network_message_for_transport(&inner, &NetworkMessage::GetTips { chain_id: cfg.chain_id.clone(), inventory });
                         (wire, topic_name, "get-tips", "sync:get-tips".to_string())
                     }
                     OutboundMessage::Tips(tips) => {
                         let topic_name = format!("{}-sync", cfg.chain_id);
                         let message_id = format!("sync:tips:{}", tips.join(","));
                         let inventory = inner.lock().ok().and_then(|mut guard| current_tip_inventory_for_send(&mut guard, &cfg.chain_id, "Tips"));
-                        let wire = serde_json::to_vec(&NetworkMessage::Tips { chain_id: cfg.chain_id.clone(), tips, inventory });
+                        let wire = encode_network_message_for_transport(&inner, &NetworkMessage::Tips { chain_id: cfg.chain_id.clone(), tips, inventory });
                         (wire, topic_name, "tips", message_id)
                     }
                     OutboundMessage::GetBlockHeaders(hashes) => {
@@ -5051,7 +5135,7 @@ async fn run_libp2p_runtime(
                 }
             }
             _ = sleep(Duration::from_secs(5)) => {
-                let heartbeat = serde_json::to_vec(&NetworkMessage::GetTips {
+                let heartbeat = encode_network_message_for_transport(&inner, &NetworkMessage::GetTips {
                     chain_id: cfg.chain_id.clone(),
                     inventory: inner.lock().ok().and_then(|mut guard| current_tip_inventory_for_send(&mut guard, &cfg.chain_id, "GetTips")),
                 });
@@ -5282,6 +5366,9 @@ fn handle_connection_closed(
         );
         if remaining_count == 0 {
             guard.last_peer_state_transition = Some(format!("{peer_key}:disconnected"));
+            guard
+                .protocol_capability_transport
+                .peer_disconnected(&peer_key);
             guard.active_connections.remove(&peer_key);
             if let Some(entry) = guard.remote_selected_tip_inventory.get_mut(&peer_key) {
                 entry.status.connected = false;
@@ -5553,14 +5640,14 @@ async fn run_libp2p_real_runtime(
                     OutboundMessage::GetTips => {
                         let topic_name = format!("{}-sync", cfg.chain_id);
                         let inventory = inner.lock().ok().and_then(|mut guard| current_tip_inventory_for_send(&mut guard, &cfg.chain_id, "GetTips"));
-                        let wire = serde_json::to_vec(&NetworkMessage::GetTips { chain_id: cfg.chain_id.clone(), inventory });
+                        let wire = encode_network_message_for_transport(&inner, &NetworkMessage::GetTips { chain_id: cfg.chain_id.clone(), inventory });
                         (wire, topic_name, "get-tips", "sync:get-tips".to_string())
                     }
                     OutboundMessage::Tips(tips) => {
                         let topic_name = format!("{}-sync", cfg.chain_id);
                         let message_id = format!("sync:tips:{}", tips.join(","));
                         let inventory = inner.lock().ok().and_then(|mut guard| current_tip_inventory_for_send(&mut guard, &cfg.chain_id, "Tips"));
-                        let wire = serde_json::to_vec(&NetworkMessage::Tips { chain_id: cfg.chain_id.clone(), tips, inventory });
+                        let wire = encode_network_message_for_transport(&inner, &NetworkMessage::Tips { chain_id: cfg.chain_id.clone(), tips, inventory });
                         (wire, topic_name, "tips", message_id)
                     }
                     OutboundMessage::GetBlockHeaders(hashes) => {
@@ -5625,7 +5712,7 @@ async fn run_libp2p_real_runtime(
                         note_swarm_event(&inner, format!("peer-connected:{direction}:{peer_id}"));
                         handle_connection_established(&inner, &mut pending_bootnode_dials, &peer_id, direction);
                         let topic = gossipsub::IdentTopic::new(format!("{}-sync", cfg.chain_id));
-                        if let Ok(bytes) = serde_json::to_vec(&NetworkMessage::GetTips {
+                        if let Ok(bytes) = encode_network_message_for_transport(&inner, &NetworkMessage::GetTips {
                             chain_id: cfg.chain_id.clone(),
                             inventory: inner
                                 .lock()
@@ -5873,6 +5960,23 @@ impl Libp2pHandle {
 }
 
 impl P2pHandle for Libp2pHandle {
+    fn configure_protocol_capabilities_v1(
+        &self,
+        capabilities: ProtocolCapabilitiesV1,
+    ) -> Result<(), PulseError> {
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| PulseError::Internal("p2p lock poisoned".into()))?;
+        let chain_id = inner.chain_id.clone();
+        inner
+            .protocol_capability_transport
+            .configure_local_capabilities(&chain_id, capabilities)
+            .map_err(|error| {
+                PulseError::Internal(format!("invalid protocol-v2 p2p capabilities: {error:?}"))
+            })
+    }
+
     fn update_tip_inventory(&self, inventory: TipInventoryStatus) -> Result<(), PulseError> {
         let mut inner = self
             .inner
@@ -8711,10 +8815,13 @@ mod inventory_tests {
     fn per_peer_inbound_message_budget_rate_limits_noisy_peer() {
         let inner = Arc::new(Mutex::new(InnerState::default()));
         let (inbound_tx, _inbound_rx) = mpsc::unbounded_channel();
-        let wire = serde_json::to_vec(&NetworkMessage::GetTips {
-            chain_id: "testnet".into(),
-            inventory: None,
-        })
+        let wire = encode_network_message_for_transport(
+            &inner,
+            &NetworkMessage::GetTips {
+                chain_id: "testnet".into(),
+                inventory: None,
+            },
+        )
         .expect("serialize get tips");
 
         for _ in 0..=PEER_MAX_INBOUND_MESSAGES_PER_WINDOW {
@@ -8942,11 +9049,14 @@ mod inventory_tests {
     fn tips_message_delivers_remote_tips_for_catchup_requests() {
         let inner = Arc::new(Mutex::new(InnerState::default()));
         let (inbound_tx, mut inbound_rx) = mpsc::unbounded_channel();
-        let wire = serde_json::to_vec(&NetworkMessage::Tips {
-            chain_id: "testnet".into(),
-            tips: vec!["remote-tip-1".into(), "remote-tip-2".into()],
-            inventory: None,
-        })
+        let wire = encode_network_message_for_transport(
+            &inner,
+            &NetworkMessage::Tips {
+                chain_id: "testnet".into(),
+                tips: vec!["remote-tip-1".into(), "remote-tip-2".into()],
+                inventory: None,
+            },
+        )
         .expect("serialize tips");
 
         dispatch_network_message("testnet", &wire, None, &inner, &inbound_tx);
@@ -9126,11 +9236,14 @@ mod deterministic_p2p_sync_coverage_tests {
         let (handle, _rx) = MemoryP2pHandle::new("testnet".into(), vec!["peer-sync".into()]);
         handle.request_tips().expect("gettips broadcast");
         let (inbound_tx, mut inbound_rx) = mpsc::unbounded_channel();
-        let wire = serde_json::to_vec(&NetworkMessage::Tips {
-            chain_id: "testnet".into(),
-            tips: vec!["local-tip".into(), "remote-tip".into()],
-            inventory: None,
-        })
+        let wire = encode_network_message_for_transport(
+            &inner,
+            &NetworkMessage::Tips {
+                chain_id: "testnet".into(),
+                tips: vec!["local-tip".into(), "remote-tip".into()],
+                inventory: None,
+            },
+        )
         .expect("serialize tips");
 
         dispatch_network_message("testnet", &wire, Some("peer-sync"), &inner, &inbound_tx);
@@ -10606,5 +10719,195 @@ mod deterministic_p2p_sync_coverage_tests {
 
         prune_remote_tip_inventory(&mut state, 100 + TIP_INVENTORY_TTL_SECS + 1);
         assert!(state.remote_selected_tip_inventory.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod task27_live_capability_io_tests {
+    use super::*;
+    use crate::messages::{
+        ProtocolMessageClassV1, ProtocolPeerRouteActionV1, P2P_PROTOCOL_CAPABILITIES_VERSION,
+    };
+    use pulsedag_core::{
+        ProtocolActivationIdentity, CONSENSUS_METADATA_SCHEMA_VERSION,
+        GHOSTDAG_V1_FINALITY_POLICY_VERSION, GHOSTDAG_V1_ORDERING_VERSION,
+    };
+
+    const CHAIN_ID: &str = "task27-live-capability-io";
+
+    fn capabilities() -> ProtocolCapabilitiesV1 {
+        ProtocolCapabilitiesV1 {
+            capabilities_version: P2P_PROTOCOL_CAPABILITIES_VERSION,
+            protocol_identity: ProtocolActivationIdentity::activated_v2(
+                CHAIN_ID.to_string(),
+                "11".repeat(32),
+                GHOSTDAG_V1_ORDERING_VERSION.to_string(),
+            ),
+            consensus_metadata_schema_version: CONSENSUS_METADATA_SCHEMA_VERSION,
+            finality_policy_version: GHOSTDAG_V1_FINALITY_POLICY_VERSION.to_string(),
+            supports_dag_frontier: true,
+            supports_consensus_metadata: true,
+            high_cadence_allowed: false,
+        }
+    }
+
+    fn get_tips() -> NetworkMessage {
+        NetworkMessage::GetTips {
+            chain_id: CHAIN_ID.to_string(),
+            inventory: None,
+        }
+    }
+
+    #[test]
+    fn unconfigured_codec_preserves_legacy_tip_bytes() {
+        let inner = Arc::new(Mutex::new(InnerState::default()));
+        let message = get_tips();
+        assert_eq!(
+            encode_network_message_for_transport(&inner, &message).unwrap(),
+            serde_json::to_vec(&message).unwrap()
+        );
+    }
+
+    #[test]
+    fn authenticated_carrier_authorizes_peer_after_explicit_local_configuration() {
+        let inner = Arc::new(Mutex::new(InnerState::default()));
+        {
+            let mut guard = inner.lock().unwrap();
+            guard.chain_id = CHAIN_ID.to_string();
+            guard
+                .protocol_capability_transport
+                .configure_local_capabilities(CHAIN_ID, capabilities())
+                .unwrap();
+        }
+        let mut remote = ProtocolCapabilityTransportV1::default();
+        remote
+            .configure_local_capabilities(CHAIN_ID, capabilities())
+            .unwrap();
+        let wire = remote.encode_tip_message(&get_tips()).unwrap();
+        let (inbound_tx, mut inbound_rx) = mpsc::unbounded_channel();
+
+        dispatch_network_message(CHAIN_ID, &wire, Some("peer-v2"), &inner, &inbound_tx);
+
+        assert!(matches!(inbound_rx.try_recv(), Ok(InboundEvent::GetTips)));
+        let guard = inner.lock().unwrap();
+        assert_eq!(
+            guard
+                .protocol_capability_transport
+                .route("peer-v2", ProtocolMessageClassV1::ProtocolV2Sync)
+                .action,
+            ProtocolPeerRouteActionV1::SendProtocolV2
+        );
+    }
+
+    #[test]
+    fn unauthenticated_carrier_cannot_create_peer_authorization() {
+        let inner = Arc::new(Mutex::new(InnerState::default()));
+        {
+            let mut guard = inner.lock().unwrap();
+            guard.chain_id = CHAIN_ID.to_string();
+            guard
+                .protocol_capability_transport
+                .configure_local_capabilities(CHAIN_ID, capabilities())
+                .unwrap();
+        }
+        let mut remote = ProtocolCapabilityTransportV1::default();
+        remote
+            .configure_local_capabilities(CHAIN_ID, capabilities())
+            .unwrap();
+        let wire = remote.encode_tip_message(&get_tips()).unwrap();
+        let (inbound_tx, mut inbound_rx) = mpsc::unbounded_channel();
+
+        dispatch_network_message(CHAIN_ID, &wire, None, &inner, &inbound_tx);
+
+        assert!(matches!(inbound_rx.try_recv(), Ok(InboundEvent::GetTips)));
+        let guard = inner.lock().unwrap();
+        assert!(guard
+            .protocol_capability_transport
+            .eligible_v2_peers()
+            .is_empty());
+    }
+
+    #[test]
+    fn authenticated_cross_chain_tip_preserves_chain_mismatch_accounting() {
+        let inner = Arc::new(Mutex::new(InnerState::default()));
+        {
+            let mut guard = inner.lock().unwrap();
+            guard.chain_id = CHAIN_ID.to_string();
+            guard
+                .protocol_capability_transport
+                .configure_local_capabilities(CHAIN_ID, capabilities())
+                .unwrap();
+        }
+        let wire = serde_json::to_vec(&NetworkMessage::GetTips {
+            chain_id: "different-chain".to_string(),
+            inventory: None,
+        })
+        .unwrap();
+        let (inbound_tx, mut inbound_rx) = mpsc::unbounded_channel();
+
+        dispatch_network_message(
+            CHAIN_ID,
+            &wire,
+            Some("peer-wrong-chain"),
+            &inner,
+            &inbound_tx,
+        );
+
+        assert!(inbound_rx.try_recv().is_err());
+        let guard = inner.lock().unwrap();
+        assert_eq!(guard.inbound_chain_mismatch_dropped, 1);
+        assert_eq!(guard.inbound_decode_failed, 0);
+        assert!(guard
+            .protocol_capability_transport
+            .eligible_v2_peers()
+            .is_empty());
+    }
+
+    #[test]
+    fn final_transport_disconnect_revokes_v2_authorization() {
+        let peer_key = identity::Keypair::generate_ed25519();
+        let peer_id = PeerId::from(peer_key.public());
+        let peer = peer_id.to_string();
+        let inner = Arc::new(Mutex::new(InnerState::default()));
+        {
+            let mut guard = inner.lock().unwrap();
+            guard.chain_id = CHAIN_ID.to_string();
+            guard.active_connections.insert(peer.clone(), 1);
+            guard
+                .protocol_capability_transport
+                .configure_local_capabilities(CHAIN_ID, capabilities())
+                .unwrap();
+            let mut remote = ProtocolCapabilityTransportV1::default();
+            remote
+                .configure_local_capabilities(CHAIN_ID, capabilities())
+                .unwrap();
+            let wire = remote.encode_tip_message(&get_tips()).unwrap();
+            guard
+                .protocol_capability_transport
+                .decode_from_peer(&peer, &wire)
+                .unwrap();
+        }
+
+        let mut pending = HashSet::new();
+        let mut next_redial = HashMap::new();
+        let mut backoff = HashMap::new();
+        assert!(handle_connection_closed(
+            &inner,
+            &mut pending,
+            &mut next_redial,
+            &mut backoff,
+            &peer_id,
+            "test-disconnect".to_string(),
+            "outbound",
+        ));
+
+        let guard = inner.lock().unwrap();
+        assert_eq!(
+            guard
+                .protocol_capability_transport
+                .route(&peer, ProtocolMessageClassV1::ProtocolV2Sync)
+                .action,
+            ProtocolPeerRouteActionV1::HoldForCapabilities
+        );
     }
 }
