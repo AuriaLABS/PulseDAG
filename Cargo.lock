@@ -3895,6 +3895,7 @@ dependencies = [
 name = "pulsedag-core"
 version = "2.3.0"
 dependencies = [
+ "bincode",
  "criterion",
  "ed25519-dalek",
  "hex",
