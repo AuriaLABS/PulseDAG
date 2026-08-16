@@ -124,14 +124,9 @@ mod tests {
         let mut reverse_spec = forward_spec.clone();
         reverse_spec.parents.reverse();
 
-        let forward = build_candidate_block_v2(
-            forward_spec,
-            vec![tx.clone()],
-            "pulsedag-testnet",
-        )
-        .unwrap();
-        let reverse =
-            build_candidate_block_v2(reverse_spec, vec![tx], "pulsedag-testnet").unwrap();
+        let forward =
+            build_candidate_block_v2(forward_spec, vec![tx.clone()], "pulsedag-testnet").unwrap();
+        let reverse = build_candidate_block_v2(reverse_spec, vec![tx], "pulsedag-testnet").unwrap();
 
         assert_eq!(forward.header.parents, reverse.header.parents);
         assert_eq!(forward.hash, reverse.hash);
