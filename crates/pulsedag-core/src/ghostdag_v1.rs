@@ -67,6 +67,17 @@ pub struct GhostdagV1Classification {
     pub merge_set: Vec<Hash>,
     pub blues: Vec<Hash>,
     pub reds: Vec<Hash>,
+    /// Deterministic score for the candidate itself. The candidate header must
+    /// commit this value before the v2 block hash is finalized.
+    pub blue_score: u64,
+    /// Deterministic cumulative work metadata for subsequent selection.
+    ///
+    /// V1 deliberately freezes the same cumulative unit semantics used by the
+    /// existing PulseDAG metadata path: selected-parent work plus one unit for
+    /// the candidate and one unit per accepted blue merge-set member. Any
+    /// future PoW-weighted reinterpretation requires a separately versioned
+    /// consensus rule rather than changing this calculator in place.
+    pub blue_work: u128,
     pub k: usize,
     pub ancestor_visits: usize,
     pub relation_visits: usize,
@@ -252,6 +263,40 @@ fn classification_digest(
     hex::encode(hasher.finalize())
 }
 
+fn derive_score_work_v1(
+    selected_parent: &Option<Hash>,
+    blues: &[Hash],
+    state: &ChainState,
+) -> Result<(u64, u128), GhostdagV1Error> {
+    let (selected_parent_score, selected_parent_work) = match selected_parent {
+        Some(hash) => {
+            let parent = state
+                .dag
+                .blocks
+                .get(hash)
+                .ok_or_else(|| GhostdagV1Error::MissingBlock { hash: hash.clone() })?;
+            let work = state
+                .dag
+                .blue_work
+                .get(hash)
+                .copied()
+                .ok_or_else(|| GhostdagV1Error::MissingBlueWork { hash: hash.clone() })?;
+            (parent.header.blue_score, work)
+        }
+        None => (0, 0),
+    };
+    let blue_count_score = u64::try_from(blues.len()).unwrap_or(u64::MAX);
+    let blue_count_work = blues.len() as u128;
+    Ok((
+        selected_parent_score
+            .saturating_add(1)
+            .saturating_add(blue_count_score),
+        selected_parent_work
+            .saturating_add(1)
+            .saturating_add(blue_count_work),
+    ))
+}
+
 fn classify_merge_set_with_limits(
     block: &Block,
     state: &ChainState,
@@ -311,6 +356,7 @@ fn classify_merge_set_with_limits(
             reds.push(candidate.clone());
         }
     }
+    let (blue_score, blue_work) = derive_score_work_v1(&bounded.selected_parent, &blues, state)?;
     let digest = classification_digest(
         &bounded.selected_parent,
         &merge_set,
@@ -323,6 +369,8 @@ fn classify_merge_set_with_limits(
         merge_set,
         blues,
         reds,
+        blue_score,
+        blue_work,
         k: limits.k,
         ancestor_visits: bounded.ancestor_visits,
         relation_visits,
@@ -401,6 +449,8 @@ mod tests {
         assert_eq!(a.merge_set, vec!["p1", "p2", "p3"]);
         assert_eq!(a.blues, vec!["p1", "p2"]);
         assert_eq!(a.reds, vec!["p3"]);
+        assert_eq!(a.blue_score, 43);
+        assert_eq!(a.blue_work, 403);
     }
 
     #[test]
@@ -479,5 +529,7 @@ mod tests {
         .unwrap();
         assert_ne!(k2.reds, k3.reds);
         assert_ne!(k2.classification_digest, k3.classification_digest);
+        assert_ne!(k2.blue_score, k3.blue_score);
+        assert_ne!(k2.blue_work, k3.blue_work);
     }
 }
