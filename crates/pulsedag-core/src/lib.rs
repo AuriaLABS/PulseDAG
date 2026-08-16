@@ -93,8 +93,8 @@ pub use protocol::{
 };
 
 pub use header_v2::{
-    canonical_block_header_bytes_v2, canonicalize_block_parents_v2, compute_block_hash_v2,
-    validate_block_header_v2_shape,
+    canonical_block_header_bytes_v2, canonical_mining_preimage_bytes_v2,
+    canonicalize_block_parents_v2, compute_block_hash_v2, validate_block_header_v2_shape,
 };
 
 pub use consensus_metadata::{
