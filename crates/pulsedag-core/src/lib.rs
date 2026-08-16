@@ -25,6 +25,7 @@ pub mod tx;
 pub mod tx_submission;
 pub mod types;
 pub mod validation;
+pub mod validation_v2;
 
 pub use accept::{
     accept_block, accept_block_atomically, accept_block_with_result, accept_transaction,
@@ -169,3 +170,4 @@ pub use validation::{
     total_block_fees, validate_coinbase_reward, validate_created_utxo_outpoints,
     INITIAL_BLOCK_SUBSIDY, SUBSIDY_HALVING_INTERVAL,
 };
+pub use validation_v2::validate_transaction_v2;
