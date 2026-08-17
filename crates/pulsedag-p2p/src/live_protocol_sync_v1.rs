@@ -4,6 +4,11 @@ use crate::messages::{
     ProtocolMessageClassV1, ProtocolPeerRouteActionV1, ProtocolSyncCarrierV1,
 };
 
+/// Keep targeted Task 27 carriers below the default live gossipsub transmit ceiling.
+/// The check is performed on the complete legacy `Tips` carrier, including the
+/// capability extension and the targeted protocol-sync extension, before queueing.
+pub(super) const PROTOCOL_SYNC_TRANSPORT_MAX_BYTES_V1: usize = 60 * 1024;
+
 pub(super) fn protocol_sync_peer_is_authorized(state: &InnerState, peer_id: &str) -> bool {
     let connected = state.active_connections.get(peer_id).copied().unwrap_or(0) > 0
         || state.connected_peers.iter().any(|peer| peer == peer_id);
@@ -13,6 +18,43 @@ pub(super) fn protocol_sync_peer_is_authorized(state: &InnerState, peer_id: &str
             .route(peer_id, ProtocolMessageClassV1::ProtocolV2Sync)
             .action
             == ProtocolPeerRouteActionV1::SendProtocolV2
+}
+
+fn encode_protocol_sync_for_state(
+    state: &InnerState,
+    peer_id: &str,
+    wire: &ProtocolSyncWireV1,
+) -> Result<Vec<u8>, PulseError> {
+    let inventory = current_tip_inventory(state, &state.chain_id);
+    let tips = inventory
+        .as_ref()
+        .and_then(|inventory| inventory.selected_tip.clone())
+        .into_iter()
+        .collect::<Vec<_>>();
+    let base = state
+        .protocol_capability_transport
+        .encode_tip_message(&NetworkMessage::Tips {
+            chain_id: state.chain_id.clone(),
+            tips,
+            inventory,
+        })
+        .map_err(|error| {
+            PulseError::Internal(format!(
+                "protocol-v2 sync capability carrier encode failed: {error:?}"
+            ))
+        })?;
+    attach_protocol_sync_carrier_v1(
+        &base,
+        &ProtocolSyncCarrierV1 {
+            target_peer_id: peer_id.to_string(),
+            wire: wire.clone(),
+        },
+    )
+    .map_err(|error| {
+        PulseError::Internal(format!(
+            "protocol-v2 sync carrier encode failed: {error:?}"
+        ))
+    })
 }
 
 pub(super) fn validate_protocol_sync_send(
@@ -33,6 +75,14 @@ pub(super) fn validate_protocol_sync_send(
     if !protocol_sync_peer_is_authorized(state, peer_id) {
         return Err(PulseError::Internal(format!(
             "peer {peer_id} is not authorized for exact-compatible protocol-v2 sync"
+        )));
+    }
+    let encoded = encode_protocol_sync_for_state(state, peer_id, wire)?;
+    if encoded.len() > PROTOCOL_SYNC_TRANSPORT_MAX_BYTES_V1 {
+        return Err(PulseError::Internal(format!(
+            "protocol-v2 sync carrier exceeds live transport byte budget: encoded={} maximum={}",
+            encoded.len(),
+            PROTOCOL_SYNC_TRANSPORT_MAX_BYTES_V1
         )));
     }
     Ok(())
@@ -77,7 +127,7 @@ pub(super) fn encode_protocol_sync_for_transport(
             inventory,
         },
     )?;
-    attach_protocol_sync_carrier_v1(
+    let encoded = attach_protocol_sync_carrier_v1(
         &base,
         &ProtocolSyncCarrierV1 {
             target_peer_id: peer_id.to_string(),
@@ -88,7 +138,15 @@ pub(super) fn encode_protocol_sync_for_transport(
         <serde_json::Error as serde::ser::Error>::custom(format!(
             "protocol-v2 sync carrier encode failed: {error:?}"
         ))
-    })
+    })?;
+    if encoded.len() > PROTOCOL_SYNC_TRANSPORT_MAX_BYTES_V1 {
+        return Err(<serde_json::Error as serde::ser::Error>::custom(format!(
+            "protocol-v2 sync carrier exceeds live transport byte budget after queueing: encoded={} maximum={}",
+            encoded.len(),
+            PROTOCOL_SYNC_TRANSPORT_MAX_BYTES_V1
+        )));
+    }
+    Ok(encoded)
 }
 
 pub(super) fn authorized_protocol_sync_from_tip(
@@ -117,8 +175,8 @@ pub(super) fn authorized_protocol_sync_from_tip(
 mod tests {
     use super::*;
     use crate::messages::{
-        ProtocolCapabilitiesV1, ProtocolCapabilityHandshakeV1, SelectedChainLocatorV1,
-        P2P_DAG_SYNC_CONTRACT_VERSION, P2P_PROTOCOL_CAPABILITIES_VERSION,
+        DagFrontierResponseV1, ProtocolCapabilitiesV1, ProtocolCapabilityHandshakeV1,
+        SelectedChainLocatorV1, P2P_DAG_SYNC_CONTRACT_VERSION, P2P_PROTOCOL_CAPABILITIES_VERSION,
     };
     use pulsedag_core::{
         ProtocolActivationIdentity, CONSENSUS_METADATA_SCHEMA_VERSION,
@@ -159,6 +217,24 @@ mod tests {
             protocol_identity: capabilities().protocol_identity,
             selected_tip: "tip".to_string(),
             locator: vec!["tip".to_string(), "ancestor".to_string()],
+        })
+    }
+
+    fn oversized_frontier_wire() -> ProtocolSyncWireV1 {
+        let anchor = "00".repeat(32);
+        let required_context = (0_u64..1_024)
+            .map(|index| format!("{index:064x}"))
+            .collect::<Vec<_>>();
+        ProtocolSyncWireV1::DagFrontier(DagFrontierResponseV1 {
+            contract_version: P2P_DAG_SYNC_CONTRACT_VERSION,
+            protocol_identity: capabilities().protocol_identity,
+            consensus_metadata_schema_version: CONSENSUS_METADATA_SCHEMA_VERSION,
+            ordering_version: GHOSTDAG_V1_ORDERING_VERSION.to_string(),
+            common_ancestor: anchor.clone(),
+            selected_tip: anchor.clone(),
+            selected_chain_suffix: vec![anchor],
+            required_context,
+            frontier: Vec::new(),
         })
     }
 
@@ -240,6 +316,21 @@ mod tests {
             rx.try_recv(),
             Ok(OutboundMessage::ProtocolSync { peer_id, .. }) if peer_id == REMOTE_PEER
         ));
+    }
+
+    #[test]
+    fn oversized_protocol_sync_is_rejected_before_live_queueing() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let handle = Libp2pHandle {
+            inner: exact_session_inner(),
+            outbound_tx: tx,
+        };
+
+        let error = handle
+            .send_protocol_sync_v1(REMOTE_PEER, &oversized_frontier_wire())
+            .expect_err("oversized protocol sync must fail before queueing");
+        assert!(format!("{error}").contains("exceeds live transport byte budget"));
+        assert!(rx.try_recv().is_err());
     }
 
     #[test]
