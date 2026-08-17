@@ -25,6 +25,11 @@ pub(super) fn validate_protocol_sync_send(
             "invalid protocol-v2 sync payload for live transport: {error:?}"
         ))
     })?;
+    if matches!(wire, ProtocolSyncWireV1::CapabilityHandshake(_)) {
+        return Err(PulseError::Internal(
+            "capability handshake must use the legacy-decodable capability carrier".into(),
+        ));
+    }
     if !protocol_sync_peer_is_authorized(state, peer_id) {
         return Err(PulseError::Internal(format!(
             "peer {peer_id} is not authorized for exact-compatible protocol-v2 sync"
@@ -112,8 +117,8 @@ pub(super) fn authorized_protocol_sync_from_tip(
 mod tests {
     use super::*;
     use crate::messages::{
-        ProtocolCapabilitiesV1, SelectedChainLocatorV1, P2P_DAG_SYNC_CONTRACT_VERSION,
-        P2P_PROTOCOL_CAPABILITIES_VERSION,
+        ProtocolCapabilitiesV1, ProtocolCapabilityHandshakeV1, SelectedChainLocatorV1,
+        P2P_DAG_SYNC_CONTRACT_VERSION, P2P_PROTOCOL_CAPABILITIES_VERSION,
     };
     use pulsedag_core::{
         ProtocolActivationIdentity, CONSENSUS_METADATA_SCHEMA_VERSION,
@@ -155,6 +160,14 @@ mod tests {
             selected_tip: "tip".to_string(),
             locator: vec!["tip".to_string(), "ancestor".to_string()],
         })
+    }
+
+    fn handshake_wire() -> ProtocolSyncWireV1 {
+        ProtocolSyncWireV1::CapabilityHandshake(
+            ProtocolCapabilityHandshakeV1::GetProtocolCapabilities {
+                chain_id: CHAIN_ID.to_string(),
+            },
+        )
     }
 
     fn exact_session_inner() -> Arc<Mutex<InnerState>> {
@@ -227,6 +240,21 @@ mod tests {
             rx.try_recv(),
             Ok(OutboundMessage::ProtocolSync { peer_id, .. }) if peer_id == REMOTE_PEER
         ));
+    }
+
+    #[test]
+    fn capability_handshake_is_rejected_before_live_sync_queueing() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let handle = Libp2pHandle {
+            inner: exact_session_inner(),
+            outbound_tx: tx,
+        };
+
+        let error = handle
+            .send_protocol_sync_v1(REMOTE_PEER, &handshake_wire())
+            .expect_err("handshake must stay on the legacy capability carrier");
+        assert!(format!("{error}").contains("legacy-decodable capability carrier"));
+        assert!(rx.try_recv().is_err());
     }
 
     #[test]
