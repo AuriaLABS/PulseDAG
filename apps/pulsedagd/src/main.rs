@@ -7,7 +7,10 @@ use std::{
     io::{BufReader, BufWriter},
     net::SocketAddr,
     path::PathBuf,
-    sync::Arc,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
@@ -29,9 +32,11 @@ use pulsedag_core::reconcile_mempool;
 use pulsedag_p2p::{
     build_p2p_stack, default_p2p_identity_path,
     messages::{
-        build_dag_frontier_response_v1, plan_dag_frontier_reconciliation_v1, HeaderInventory,
-        ProtocolSyncWireV1, TipInventoryStatus, MAX_DAG_FRONTIER_ENTRIES,
-        MAX_DAG_FRONTIER_REQUIRED_CONTEXT, MAX_SELECTED_CHAIN_SUFFIX_HASHES,
+        build_dag_frontier_response_v1, build_selected_chain_locator_v1,
+        plan_dag_frontier_reconciliation_v1, HeaderInventory, ProtocolSyncWireV1,
+        RecoveryProgressDecisionV1, RecoveryProgressObservationV1, RecoveryProgressTrackerV1,
+        TipInventoryStatus, MAX_DAG_FRONTIER_ENTRIES, MAX_DAG_FRONTIER_REQUIRED_CONTEXT,
+        MAX_SELECTED_CHAIN_SUFFIX_HASHES,
     },
     InboundEvent, Libp2pConfig, Libp2pRuntimeMode, P2pHandle, P2pMode, P2pStatus,
 };
@@ -53,6 +58,42 @@ fn startup_protocol_restore_identity(
     }
     let canonical_state = pulsedag_core::genesis::init_chain_state(chain_id.to_string());
     Some(pulsedag_core::ProtocolActivationIdentity::legacy_from_state(&canonical_state))
+}
+
+#[cfg(test)]
+mod task27_rejoin_runtime_tests {
+    use super::*;
+    use pulsedag_p2p::RemoteSelectedTipStatus;
+
+    fn remote(peer_id: &str, selected_height: u64) -> RemoteSelectedTipStatus {
+        RemoteSelectedTipStatus {
+            peer_id: peer_id.to_string(),
+            selected_height,
+            connected: true,
+            direct_request_capable: true,
+            ..RemoteSelectedTipStatus::default()
+        }
+    }
+
+    #[test]
+    fn task27_rejoin_uses_only_exact_eligible_peer_with_highest_gap() {
+        let status = P2pStatus {
+            remote_selected_tip_inventory: vec![
+                remote("legacy-high", 500),
+                remote("v2-b", 220),
+                remote("v2-a", 220),
+                remote("v2-low", 210),
+            ],
+            ..P2pStatus::default()
+        };
+        let eligible = vec!["v2-a".to_string(), "v2-b".to_string(), "v2-low".to_string()];
+
+        assert_eq!(
+            task27_rejoin_peer_for_gap(&status, &eligible, 200),
+            Some(("v2-a".to_string(), 220))
+        );
+        assert_eq!(task27_rejoin_peer_for_gap(&status, &eligible, 220), None);
+    }
 }
 
 #[cfg(test)]
@@ -139,6 +180,25 @@ fn selected_locator_peer_for_reconcile(
         .map(|remote| remote.peer_id.clone())
 }
 
+fn task27_rejoin_peer_for_gap(
+    status: &P2pStatus,
+    eligible_v2_peers: &[String],
+    local_height: u64,
+) -> Option<(String, u64)> {
+    let eligible = eligible_v2_peers
+        .iter()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>();
+    status
+        .remote_selected_tip_inventory
+        .iter()
+        .filter(|remote| remote.connected && remote.direct_request_capable)
+        .filter(|remote| eligible.contains(remote.peer_id.as_str()))
+        .filter(|remote| remote.selected_height > local_height)
+        .map(|remote| (remote.peer_id.clone(), remote.selected_height))
+        .max_by(|a, b| a.1.cmp(&b.1).then_with(|| b.0.cmp(&a.0)))
+}
+
 fn selected_headers_own_broadcast_locator(
     session_active: bool,
     pending_locator: bool,
@@ -197,6 +257,15 @@ const FINAL_QUIESCENCE_NO_PROGRESS_SECS: u64 = 45;
 const FINAL_QUIESCENCE_CLEANUP_LIMIT: usize = 64;
 const SELECTED_SEGMENT_PRIORITY_GAP_BLOCKS: u64 = 64;
 const SELECTED_LOCATOR_PRIORITY_GRACE_SECS: u64 = 60;
+const TASK27_REJOIN_MAX_STAGNANT_CYCLES: u32 = 30;
+const TASK27_LOCATOR_RESPONSE_TIMEOUT_SECS: u64 = 8;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PendingTask27Locator {
+    peer_id: String,
+    selected_tip: String,
+    sent_at_unix: u64,
+}
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct FinalQuiescenceCleanupResult {
@@ -1927,6 +1996,7 @@ async fn main() -> Result<()> {
         next_request_id: 1,
         pending_locator: None,
     }));
+    let task27_recovery_active = Arc::new(AtomicBool::new(false));
 
     if let Some(mut rx) = inbound_rx {
         let chain = app_state.chain.clone();
@@ -1934,6 +2004,7 @@ async fn main() -> Result<()> {
         let runtime = app_state.runtime.clone();
         let p2p = app_state.p2p.clone();
         let selected_segment_locator_state = selected_segment_locator_state.clone();
+        let task27_recovery_active = task27_recovery_active.clone();
         let max_orphan_count = cfg.max_orphan_count;
         tokio::spawn(async move {
             let mut block_requests = BlockRequestTracker::with_limits(
@@ -1947,6 +2018,10 @@ async fn main() -> Result<()> {
             let mut frontier_fetch_scheduler =
                 DependencyAwareFetchScheduler::with_limit(MAX_DAG_FRONTIER_FETCH_QUEUE_DEPTH);
             let mut pending_dag_frontier_peer: Option<String> = None;
+            let mut pending_task27_locator: Option<PendingTask27Locator> = None;
+            let mut task27_recovery_tracker =
+                RecoveryProgressTrackerV1::new(TASK27_REJOIN_MAX_STAGNANT_CYCLES);
+            let mut task27_last_eligible_v2_peers = Vec::<String>::new();
             let mut final_quiescence_higher_tip_requests: HashSet<String> = HashSet::new();
             let mut final_quiescence_same_height_tip_requests: HashSet<String> = HashSet::new();
             let mut selected_segment_session: Option<SelectedSegmentSession> = None;
@@ -2573,9 +2648,235 @@ async fn main() -> Result<()> {
                             .pending_locator
                             .as_ref()
                             .map(|pending| pending.requested_at_unix),
-                        now_unix(),
+                        now,
                     )
                 };
+                let eligible_v2_peers = p2p
+                    .as_ref()
+                    .and_then(|handle| handle.protocol_sync_eligible_peers_v1().ok())
+                    .unwrap_or_default();
+                if eligible_v2_peers != task27_last_eligible_v2_peers {
+                    task27_recovery_tracker =
+                        RecoveryProgressTrackerV1::new(TASK27_REJOIN_MAX_STAGNANT_CYCLES);
+                    task27_last_eligible_v2_peers = eligible_v2_peers.clone();
+                    if pending_task27_locator.as_ref().is_some_and(|pending| {
+                        !eligible_v2_peers
+                            .iter()
+                            .any(|peer| peer == &pending.peer_id)
+                    }) {
+                        pending_task27_locator = None;
+                    }
+                }
+                if let Some(pending) = pending_task27_locator.as_ref() {
+                    if now.saturating_sub(pending.sent_at_unix)
+                        >= TASK27_LOCATOR_RESPONSE_TIMEOUT_SECS
+                    {
+                        warn!(
+                            peer = %pending.peer_id,
+                            selected_tip = %pending.selected_tip,
+                            "Task 27 locator response timed out; recovery may replan"
+                        );
+                        pending_task27_locator = None;
+                    }
+                }
+                let p2p_status = p2p.as_ref().and_then(|handle| handle.status().ok());
+                let (local_selected_height, pending_missing_parents, orphan_count) = {
+                    let guard = chain.read().await;
+                    let inventory = local_tip_inventory_status(&guard);
+                    (
+                        inventory.selected_height.unwrap_or(guard.dag.best_height),
+                        pulsedag_core::pending_missing_parent_count(&guard),
+                        guard.orphan_blocks.len(),
+                    )
+                };
+                let task27_rejoin_candidate = p2p_status.as_ref().and_then(|status| {
+                    task27_rejoin_peer_for_gap(status, &eligible_v2_peers, local_selected_height)
+                });
+                let network_selected_height =
+                    task27_rejoin_candidate.as_ref().map(|(_, height)| *height);
+                let (
+                    missing_parent_responses,
+                    orphan_reprocess_attempts,
+                    orphan_reprocess_successes,
+                ) = {
+                    let rt = runtime.read().await;
+                    (
+                        rt.blockdata_not_found,
+                        rt.orphan_reprocess_attempts,
+                        rt.orphan_reprocess_success,
+                    )
+                };
+                let task27_pending_work = block_requests
+                    .pending
+                    .len()
+                    .saturating_add(fetch_scheduler.queue_depth())
+                    .saturating_add(frontier_fetch_scheduler.queue_depth())
+                    .saturating_add(usize::from(pending_dag_frontier_peer.is_some()))
+                    .saturating_add(usize::from(pending_task27_locator.is_some()))
+                    .saturating_add(usize::from(selected_segment_session.is_some()));
+                let task27_recovery_decision =
+                    task27_recovery_tracker.observe(RecoveryProgressObservationV1 {
+                        local_selected_height,
+                        network_selected_height,
+                        compatible_peer_available: !eligible_v2_peers.is_empty(),
+                        pending_requests: task27_pending_work,
+                        inflight_requests: block_requests.pending.len(),
+                        pending_missing_parents,
+                        orphan_count,
+                        missing_parent_responses,
+                        orphan_reprocess_attempts,
+                        orphan_reprocess_successes,
+                    });
+                match task27_recovery_decision {
+                    RecoveryProgressDecisionV1::NoPositiveGap => {
+                        pending_task27_locator = None;
+                        let task27_work_remaining = pending_dag_frontier_peer.is_some()
+                            || frontier_fetch_scheduler.queue_depth() > 0
+                            || !block_requests.pending.is_empty();
+                        if !task27_work_remaining {
+                            task27_recovery_active.store(false, Ordering::SeqCst);
+                        }
+                    }
+                    RecoveryProgressDecisionV1::ScheduleRecovery {
+                        gap,
+                        stagnant_cycles,
+                    } if !selected_segment_priority
+                        && pending_task27_locator.is_none()
+                        && pending_dag_frontier_peer.is_none()
+                        && frontier_fetch_scheduler.queue_depth() == 0 =>
+                    {
+                        if let (Some((peer_id, remote_height)), Some(p2p_handle)) =
+                            (task27_rejoin_candidate.clone(), p2p.as_ref())
+                        {
+                            match p2p_handle.local_protocol_capabilities_v1() {
+                                Ok(Some(local_capabilities)) => {
+                                    let selected_chain = {
+                                        let guard = chain.read().await;
+                                        guard.dag.selected_chain.clone()
+                                    };
+                                    match build_selected_chain_locator_v1(
+                                        local_capabilities.protocol_identity,
+                                        &selected_chain,
+                                    ) {
+                                        Ok(locator) => {
+                                            let selected_tip = locator.selected_tip.clone();
+                                            let locator_guard =
+                                                selected_segment_locator_state.lock().await;
+                                            let legacy_priority_now =
+                                                selected_segment_recovery_has_priority(
+                                                    selected_segment_session.is_some(),
+                                                    locator_guard
+                                                        .pending_locator
+                                                        .as_ref()
+                                                        .map(|pending| pending.requested_at_unix),
+                                                    now,
+                                                );
+                                            if !legacy_priority_now
+                                                && !task27_recovery_active.load(Ordering::SeqCst)
+                                            {
+                                                task27_recovery_active
+                                                    .store(true, Ordering::SeqCst);
+                                                let send_result = p2p_handle.send_protocol_sync_v1(
+                                                    &peer_id,
+                                                    &ProtocolSyncWireV1::SelectedChainLocator(
+                                                        locator,
+                                                    ),
+                                                );
+                                                drop(locator_guard);
+                                                match send_result {
+                                                    Ok(()) => {
+                                                        pending_task27_locator =
+                                                            Some(PendingTask27Locator {
+                                                                peer_id: peer_id.clone(),
+                                                                selected_tip: selected_tip.clone(),
+                                                                sent_at_unix: now,
+                                                            });
+                                                        let mut rt = runtime.write().await;
+                                                        rt.selected_segment_gap_blocks = rt
+                                                            .selected_segment_gap_blocks
+                                                            .max(remote_height.saturating_sub(
+                                                                local_selected_height,
+                                                            ));
+                                                        rt.dag_sync_selected_chain_locator_total = rt
+                                                            .dag_sync_selected_chain_locator_total
+                                                            .saturating_add(1);
+                                                        rt.sync_state =
+                                                            DagSyncStage::SelectedChainLocator
+                                                                .as_str()
+                                                                .to_string();
+                                                        info!(
+                                                            peer = %peer_id,
+                                                            selected_tip = %selected_tip,
+                                                            local_selected_height,
+                                                            remote_height,
+                                                            gap,
+                                                            stagnant_cycles,
+                                                            "started Task 27 bounded rejoin locator recovery"
+                                                        );
+                                                    }
+                                                    Err(error) => {
+                                                        task27_recovery_active
+                                                            .store(false, Ordering::SeqCst);
+                                                        warn!(
+                                                            peer = %peer_id,
+                                                            error = %error,
+                                                            "failed sending Task 27 rejoin locator"
+                                                        );
+                                                    }
+                                                }
+                                            } else {
+                                                drop(locator_guard);
+                                            }
+                                        }
+                                        Err(error) => {
+                                            warn!(
+                                                peer = %peer_id,
+                                                error = ?error,
+                                                "failed building Task 27 rejoin locator"
+                                            );
+                                        }
+                                    }
+                                }
+                                Ok(None) => {}
+                                Err(error) => {
+                                    warn!(
+                                        peer = %peer_id,
+                                        error = %error,
+                                        "failed reading local capabilities for Task 27 rejoin"
+                                    );
+                                }
+                            }
+                        }
+                    }
+                    RecoveryProgressDecisionV1::Degraded {
+                        gap,
+                        stagnant_cycles,
+                        reason,
+                    } => {
+                        let task27_work_remaining = pending_task27_locator.is_some()
+                            || pending_dag_frontier_peer.is_some()
+                            || frontier_fetch_scheduler.queue_depth() > 0
+                            || !block_requests.pending.is_empty();
+                        if !task27_work_remaining {
+                            task27_recovery_active.store(false, Ordering::SeqCst);
+                        }
+                        if stagnant_cycles == TASK27_REJOIN_MAX_STAGNANT_CYCLES {
+                            let mut rt = runtime.write().await;
+                            rt.sync_state = "degraded".to_string();
+                            rt.sync_failures = rt.sync_failures.saturating_add(1);
+                            warn!(
+                                gap,
+                                stagnant_cycles,
+                                reason = ?reason,
+                                "Task 27 bounded rejoin recovery became non-productive"
+                            );
+                        }
+                    }
+                    RecoveryProgressDecisionV1::AwaitCompatiblePeer { .. }
+                    | RecoveryProgressDecisionV1::Productive { .. }
+                    | RecoveryProgressDecisionV1::ContinueRecovery { .. }
+                    | RecoveryProgressDecisionV1::ScheduleRecovery { .. } => {}
+                }
                 if !selected_segment_priority {
                     if let Some(frontier_peer) = pending_dag_frontier_peer.clone() {
                         let (known, pending) = {
@@ -4282,7 +4583,9 @@ async fn main() -> Result<()> {
                                     now,
                                 )
                             };
-                            if !priority_already_active {
+                            let task27_authoritative_recovery_active =
+                                task27_recovery_active.load(Ordering::SeqCst);
+                            if !priority_already_active && !task27_authoritative_recovery_active {
                                 let selected_locator = {
                                     let guard = chain.read().await;
                                     guard
@@ -4295,44 +4598,60 @@ async fn main() -> Result<()> {
                                         .collect::<Vec<_>>()
                                 };
                                 let selected_limits = SelectedSegmentLimits::default();
-                                let selected_locator_request_id = {
-                                    let guard = selected_segment_locator_state.lock().await;
-                                    guard.next_request_id
-                                };
-                                if p2p_handle
-                                    .request_headers(
-                                        &selected_locator,
-                                        None,
-                                        selected_limits.headers_per_chunk,
-                                    )
-                                    .is_ok()
-                                {
-                                    let mut guard = selected_segment_locator_state.lock().await;
-                                    guard.next_request_id = guard.next_request_id.saturating_add(1);
-                                    guard.pending_locator = Some(PendingSelectedLocator {
-                                        request_id: selected_locator_request_id,
-                                        peer_id: peer_id.clone(),
-                                        locator: selected_locator,
-                                        requested_at_unix: now,
-                                    });
-                                    drop(guard);
-                                    let mut rt = runtime.write().await;
-                                    rt.selected_segment_gap_blocks = rt
-                                        .selected_segment_gap_blocks
-                                        .max(remote_height.saturating_sub(local_height));
-                                    rt.dag_sync_selected_chain_locator_total =
-                                        rt.dag_sync_selected_chain_locator_total.saturating_add(1);
-                                    rt.selected_segment_header_requests_total =
-                                        rt.selected_segment_header_requests_total.saturating_add(1);
-                                    rt.header_requests_sent =
-                                        rt.header_requests_sent.saturating_add(1);
-                                    rt.sync_state = "locating_common_ancestor".to_string();
-                                    info!(
-                                        peer = %peer_id,
-                                        local_height,
-                                        remote_height,
-                                        "remote tip inventory activated selected-segment priority before generic tip fetch"
-                                    );
+                                let mut locator_guard = selected_segment_locator_state.lock().await;
+                                let priority_still_inactive =
+                                    !selected_segment_recovery_has_priority(
+                                        selected_segment_session.is_some(),
+                                        locator_guard
+                                            .pending_locator
+                                            .as_ref()
+                                            .map(|pending| pending.requested_at_unix),
+                                        now,
+                                    ) && !task27_recovery_active.load(Ordering::SeqCst);
+                                if priority_still_inactive {
+                                    let selected_locator_request_id = locator_guard.next_request_id;
+                                    if p2p_handle
+                                        .request_headers(
+                                            &selected_locator,
+                                            None,
+                                            selected_limits.headers_per_chunk,
+                                        )
+                                        .is_ok()
+                                    {
+                                        locator_guard.next_request_id =
+                                            locator_guard.next_request_id.saturating_add(1);
+                                        locator_guard.pending_locator =
+                                            Some(PendingSelectedLocator {
+                                                request_id: selected_locator_request_id,
+                                                peer_id: peer_id.clone(),
+                                                locator: selected_locator,
+                                                requested_at_unix: now,
+                                            });
+                                        drop(locator_guard);
+                                        let mut rt = runtime.write().await;
+                                        rt.selected_segment_gap_blocks = rt
+                                            .selected_segment_gap_blocks
+                                            .max(remote_height.saturating_sub(local_height));
+                                        rt.dag_sync_selected_chain_locator_total = rt
+                                            .dag_sync_selected_chain_locator_total
+                                            .saturating_add(1);
+                                        rt.selected_segment_header_requests_total = rt
+                                            .selected_segment_header_requests_total
+                                            .saturating_add(1);
+                                        rt.header_requests_sent =
+                                            rt.header_requests_sent.saturating_add(1);
+                                        rt.sync_state = "locating_common_ancestor".to_string();
+                                        info!(
+                                            peer = %peer_id,
+                                            local_height,
+                                            remote_height,
+                                            "remote tip inventory activated selected-segment priority before generic tip fetch"
+                                        );
+                                    } else {
+                                        drop(locator_guard);
+                                    }
+                                } else {
+                                    drop(locator_guard);
                                 }
                             }
                         }
@@ -4416,7 +4735,7 @@ async fn main() -> Result<()> {
                                     .as_ref()
                                     .map(|pending| pending.requested_at_unix),
                                 now_unix(),
-                            )
+                            ) || task27_recovery_active.load(Ordering::SeqCst)
                         };
                         for tip in unknown_tips {
                             let final_height_pending = {
@@ -4837,6 +5156,12 @@ async fn main() -> Result<()> {
                             }
                         }
                         ProtocolSyncWireV1::DagFrontier(frontier) => {
+                            if pending_task27_locator
+                                .as_ref()
+                                .is_some_and(|pending| pending.peer_id == peer_id)
+                            {
+                                pending_task27_locator = None;
+                            }
                             if let Some(ref p2p_handle) = p2p {
                                 match p2p_handle.local_protocol_capabilities_v1() {
                                     Ok(Some(local_capabilities)) => {
@@ -4900,6 +5225,8 @@ async fn main() -> Result<()> {
                                                 } else {
                                                     pending_dag_frontier_peer =
                                                         Some(peer_id.clone());
+                                                    task27_recovery_active
+                                                        .store(true, Ordering::SeqCst);
                                                     let mut rt = runtime.write().await;
                                                     rt.sync_state = "requesting_blocks".to_string();
                                                     rt.block_fetch_scheduler_queue_depth =
@@ -5018,6 +5345,7 @@ async fn main() -> Result<()> {
         let storage = app_state.storage.clone();
         let p2p = app_state.p2p.clone();
         let selected_segment_locator_state = selected_segment_locator_state.clone();
+        let task27_recovery_active = task27_recovery_active.clone();
         tokio::spawn(async move {
             let mut previous_best_height = 0u64;
             let mut previous_accepted_p2p_blocks = 0u64;
@@ -5278,7 +5606,7 @@ async fn main() -> Result<()> {
                             now,
                         )
                     };
-                    if !priority_already_active {
+                    if !priority_already_active && !task27_recovery_active.load(Ordering::SeqCst) {
                         let selected_locator = {
                             let guard = chain.read().await;
                             guard
@@ -5291,26 +5619,35 @@ async fn main() -> Result<()> {
                                 .collect::<Vec<_>>()
                         };
                         let selected_limits = SelectedSegmentLimits::default();
-                        let selected_locator_request_id = {
-                            let guard = selected_segment_locator_state.lock().await;
-                            guard.next_request_id
-                        };
-                        let selected_locator_requested = p2p_handle
-                            .request_headers(
-                                &selected_locator,
-                                None,
-                                selected_limits.headers_per_chunk,
-                            )
-                            .is_ok();
+                        let mut locator_guard = selected_segment_locator_state.lock().await;
+                        let priority_still_inactive = !selected_segment_recovery_has_priority(
+                            active_session,
+                            locator_guard
+                                .pending_locator
+                                .as_ref()
+                                .map(|pending| pending.requested_at_unix),
+                            now,
+                        ) && !task27_recovery_active
+                            .load(Ordering::SeqCst);
+                        let selected_locator_requested = priority_still_inactive
+                            && p2p_handle
+                                .request_headers(
+                                    &selected_locator,
+                                    None,
+                                    selected_limits.headers_per_chunk,
+                                )
+                                .is_ok();
                         if selected_locator_requested {
-                            let mut guard = selected_segment_locator_state.lock().await;
-                            guard.next_request_id = guard.next_request_id.saturating_add(1);
-                            guard.pending_locator = Some(PendingSelectedLocator {
+                            let selected_locator_request_id = locator_guard.next_request_id;
+                            locator_guard.next_request_id =
+                                locator_guard.next_request_id.saturating_add(1);
+                            locator_guard.pending_locator = Some(PendingSelectedLocator {
                                 request_id: selected_locator_request_id,
                                 peer_id: peer_id.clone(),
                                 locator: selected_locator,
                                 requested_at_unix: now,
                             });
+                            drop(locator_guard);
                             let mut rt = runtime.write().await;
                             rt.selected_segment_gap_blocks = rt
                                 .selected_segment_gap_blocks
@@ -5327,6 +5664,8 @@ async fn main() -> Result<()> {
                                 remote_height,
                                 "large remote selected-height gap activated selected-segment priority"
                             );
+                        } else {
+                            drop(locator_guard);
                         }
                     }
                 }
@@ -5343,7 +5682,10 @@ async fn main() -> Result<()> {
                     // Never run final tip reconciliation while peer recovery or orphan cleanup has
                     // work left.  In particular, zero-peer recovery must be allowed to run before
                     // final sync, and selected/same-height sync must not run with peer_count=0.
-                    if cleanup_complete && selected_chain_gate.allows_selected_chain_sync() {
+                    if cleanup_complete
+                        && selected_chain_gate.allows_selected_chain_sync()
+                        && !task27_recovery_active.load(Ordering::SeqCst)
+                    {
                         if let Some(ref p2p) = p2p {
                             match p2p.status() {
                                 Ok(status) if !status.connected_peers.is_empty() => {
@@ -5371,12 +5713,11 @@ async fn main() -> Result<()> {
                                         &local_inventory,
                                     );
                                     let selected_locator_needed = selected_locator_peer.is_some();
-                                    let selected_locator_request_id = {
-                                        let guard = selected_segment_locator_state.lock().await;
-                                        guard.next_request_id
-                                    };
+                                    let mut locator_guard =
+                                        selected_segment_locator_state.lock().await;
                                     let selected_locator_requested = selected_locator_peer
                                         .is_some()
+                                        && !task27_recovery_active.load(Ordering::SeqCst)
                                         && p2p
                                             .request_headers(
                                                 &selected_locator,
@@ -5385,24 +5726,22 @@ async fn main() -> Result<()> {
                                             )
                                             .is_ok();
                                     if selected_locator_requested {
-                                        let mut guard = selected_segment_locator_state.lock().await;
-                                        guard.next_request_id =
-                                            guard.next_request_id.saturating_add(1);
-                                        guard.pending_locator =
-                                            selected_locator_peer.clone().map(|peer_id| {
-                                                PendingSelectedLocator {
-                                                    request_id: selected_locator_request_id,
-                                                    peer_id,
-                                                    locator: selected_locator.clone(),
-                                                    requested_at_unix: now_unix(),
-                                                }
+                                        let selected_locator_request_id =
+                                            locator_guard.next_request_id;
+                                        locator_guard.next_request_id =
+                                            locator_guard.next_request_id.saturating_add(1);
+                                        locator_guard.pending_locator = selected_locator_peer
+                                            .clone()
+                                            .map(|peer_id| PendingSelectedLocator {
+                                                request_id: selected_locator_request_id,
+                                                peer_id,
+                                                locator: selected_locator.clone(),
+                                                requested_at_unix: now_unix(),
                                             });
                                     } else if !selected_locator_needed {
-                                        selected_segment_locator_state
-                                            .lock()
-                                            .await
-                                            .pending_locator = None;
+                                        locator_guard.pending_locator = None;
                                     }
+                                    drop(locator_guard);
                                     let requested = p2p.request_tips().is_ok();
                                     let mut rt = runtime.write().await;
                                     rt.final_quiescence_tip_reconcile_total =
