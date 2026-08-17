@@ -2585,8 +2585,17 @@ async fn main() -> Result<()> {
                                 pending_hashes_for_scheduler(&block_requests),
                             )
                         };
+                        let frontier_peer_inflight = block_requests
+                            .inflight_by_peer()
+                            .get(&frontier_peer)
+                            .copied()
+                            .unwrap_or_default();
+                        let frontier_peer_capacity = block_requests
+                            .max_pending_per_peer()
+                            .saturating_sub(frontier_peer_inflight);
                         let request_capacity = block_requests
                             .pending_capacity_remaining()
+                            .min(frontier_peer_capacity)
                             .min(DAG_FRONTIER_FETCH_BATCH);
                         if request_capacity > 0 {
                             let plan = frontier_fetch_scheduler.next_requests(
@@ -2598,10 +2607,10 @@ async fn main() -> Result<()> {
                             let mut requeue_hashes = Vec::new();
                             let mut issued_requests = 0u64;
                             for hash in plan.requests {
-                                if !block_requests.should_issue_getblock_for_peers(
+                                if !block_requests.should_issue_getblock_from_peer(
                                     &hash,
                                     now_unix(),
-                                    [frontier_peer.clone()],
+                                    &frontier_peer,
                                 ) {
                                     requeue_hashes.push(hash);
                                     continue;
