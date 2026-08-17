@@ -117,10 +117,12 @@ replace_once(
 
 replace_once(
     """                                                } else {
-                                                    pending_dag_frontier_peer = Some(peer_id.clone());
+                                                    pending_dag_frontier_peer =
+                                                        Some(peer_id.clone());
                                                     let mut rt = runtime.write().await;""",
     """                                                } else {
-                                                    pending_dag_frontier_peer = Some(peer_id.clone());
+                                                    pending_dag_frontier_peer =
+                                                        Some(peer_id.clone());
                                                     task27_recovery_active
                                                         .store(true, Ordering::Relaxed);
                                                     let mut rt = runtime.write().await;""",
