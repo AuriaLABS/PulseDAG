@@ -2728,7 +2728,12 @@ async fn main() -> Result<()> {
                 match task27_recovery_decision {
                     RecoveryProgressDecisionV1::NoPositiveGap => {
                         pending_task27_locator = None;
-                        task27_recovery_active.store(false, Ordering::Relaxed);
+                        let task27_work_remaining = pending_dag_frontier_peer.is_some()
+                            || frontier_fetch_scheduler.queue_depth() > 0
+                            || !block_requests.pending.is_empty();
+                        if !task27_work_remaining {
+                            task27_recovery_active.store(false, Ordering::Relaxed);
+                        }
                     }
                     RecoveryProgressDecisionV1::ScheduleRecovery {
                         gap,
@@ -2823,23 +2828,30 @@ async fn main() -> Result<()> {
                         gap,
                         stagnant_cycles,
                         reason,
-                    } if stagnant_cycles == TASK27_REJOIN_MAX_STAGNANT_CYCLES => {
-                        task27_recovery_active.store(false, Ordering::Relaxed);
-                        let mut rt = runtime.write().await;
-                        rt.sync_state = "degraded".to_string();
-                        rt.sync_failures = rt.sync_failures.saturating_add(1);
-                        warn!(
-                            gap,
-                            stagnant_cycles,
-                            reason = ?reason,
-                            "Task 27 bounded rejoin recovery became non-productive"
-                        );
+                    } => {
+                        let task27_work_remaining = pending_task27_locator.is_some()
+                            || pending_dag_frontier_peer.is_some()
+                            || frontier_fetch_scheduler.queue_depth() > 0
+                            || !block_requests.pending.is_empty();
+                        if !task27_work_remaining {
+                            task27_recovery_active.store(false, Ordering::Relaxed);
+                        }
+                        if stagnant_cycles == TASK27_REJOIN_MAX_STAGNANT_CYCLES {
+                            let mut rt = runtime.write().await;
+                            rt.sync_state = "degraded".to_string();
+                            rt.sync_failures = rt.sync_failures.saturating_add(1);
+                            warn!(
+                                gap,
+                                stagnant_cycles,
+                                reason = ?reason,
+                                "Task 27 bounded rejoin recovery became non-productive"
+                            );
+                        }
                     }
                     RecoveryProgressDecisionV1::AwaitCompatiblePeer { .. }
                     | RecoveryProgressDecisionV1::Productive { .. }
                     | RecoveryProgressDecisionV1::ContinueRecovery { .. }
-                    | RecoveryProgressDecisionV1::ScheduleRecovery { .. }
-                    | RecoveryProgressDecisionV1::Degraded { .. } => {}
+                    | RecoveryProgressDecisionV1::ScheduleRecovery { .. } => {}
                 }
                 if !selected_segment_priority {
                     if let Some(frontier_peer) = pending_dag_frontier_peer.clone() {
