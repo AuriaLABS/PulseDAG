@@ -8,7 +8,9 @@ use serde::{Deserialize, Serialize};
 
 pub const P2P_DAG_SYNC_CONTRACT_VERSION: u32 = 1;
 pub const MAX_SELECTED_CHAIN_LOCATOR_HASHES: usize = 256;
-pub const MAX_SELECTED_CHAIN_SUFFIX_HASHES: usize = 4_096;
+// Keep selected-chain chunks comfortably below the live gossipsub transport ceiling.
+// Exact full-carrier sizing is enforced again before live queueing.
+pub const MAX_SELECTED_CHAIN_SUFFIX_HASHES: usize = 256;
 pub const MAX_DAG_FRONTIER_ENTRIES: usize = 4_096;
 pub const MAX_DAG_FRONTIER_REQUIRED_CONTEXT: usize = 4_096;
 pub const MAX_DAG_FRONTIER_PARENTS: usize = 64;
