@@ -77,13 +77,15 @@ mod task27_rejoin_runtime_tests {
 
     #[test]
     fn task27_rejoin_uses_only_exact_eligible_peer_with_highest_gap() {
-        let mut status = P2pStatus::default();
-        status.remote_selected_tip_inventory = vec![
-            remote("legacy-high", 500),
-            remote("v2-b", 220),
-            remote("v2-a", 220),
-            remote("v2-low", 210),
-        ];
+        let status = P2pStatus {
+            remote_selected_tip_inventory: vec![
+                remote("legacy-high", 500),
+                remote("v2-b", 220),
+                remote("v2-a", 220),
+                remote("v2-low", 210),
+            ],
+            ..P2pStatus::default()
+        };
         let eligible = vec!["v2-a".to_string(), "v2-b".to_string(), "v2-low".to_string()];
 
         assert_eq!(
