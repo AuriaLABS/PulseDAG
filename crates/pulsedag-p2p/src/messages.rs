@@ -1,6 +1,7 @@
 pub mod capability_carrier_v1;
 pub mod dag_sync_v2;
 pub mod frontier_reconcile_v1;
+pub mod frontier_response_v1;
 pub mod protocol_v2;
 pub mod recovery_progress_v1;
 pub mod selected_locator_v1;
@@ -25,6 +26,7 @@ pub use dag_sync_v2::{
 pub use frontier_reconcile_v1::{
     plan_dag_frontier_reconciliation_v1, DagFrontierReconcileError, DagFrontierReconcilePlanV1,
 };
+pub use frontier_response_v1::{build_dag_frontier_response_v1, DagFrontierBuildErrorV1};
 pub use protocol_v2::{
     require_protocol_compatibility_v1, ProtocolCapabilitiesV1, ProtocolCapabilityHandshakeV1,
     ProtocolCompatibilityError, ProtocolMessageClassV1, ProtocolPeerCompatibilityV1,
