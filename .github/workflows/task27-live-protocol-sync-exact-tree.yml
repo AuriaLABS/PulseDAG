@@ -1,0 +1,22 @@
+name: task27-live-protocol-sync-exact-tree
+
+on:
+  push:
+    branches:
+      - ci/task27-live-protocol-sync-283e27f7
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Validate exact functional tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fmt --all -- --check
+          cargo test -p pulsedag-p2p live_protocol_sync_v1 --lib
+          cargo test -p pulsedag-p2p --lib
+          cargo check -p pulsedag-p2p
