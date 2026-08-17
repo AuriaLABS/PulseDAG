@@ -1,0 +1,39 @@
+name: Fix v2.3.0 guardrails edit
+
+on:
+  push:
+    branches:
+      - agent/fix-v230-workflow-guardrails
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v4
+        with:
+          ref: agent/fix-v230-workflow-guardrails
+          fetch-depth: 0
+
+      - name: Apply exact guardrail edit
+        run: python3 .github/fix_v230_guardrails.py
+
+      - name: Remove one-shot editor files
+        run: rm .github/fix_v230_guardrails.py .github/workflows/fix-v230-guardrails-edit.yml
+
+      - name: Validate diff
+        run: |
+          git diff --check
+          git diff --stat
+          git diff -- .github/workflows/v2_3_0_netns_live_rehearsal.yml .github/workflows/v2_3_0_direct_peer_accounting.yml
+
+      - name: Commit correction
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "ci: align v2.3.0 workflow guardrails"
+          git push origin HEAD:agent/fix-v230-workflow-guardrails
