@@ -1,0 +1,40 @@
+name: Task 27 rejoin runtime edit
+
+on:
+  push:
+    branches:
+      - agent/task27-rejoin-runtime-work
+
+permissions:
+  contents: write
+
+jobs:
+  apply-rejoin-slice:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v4
+        with:
+          ref: agent/task27-rejoin-runtime-work
+          fetch-depth: 0
+
+      - name: Apply exact Task 27 edits
+        run: python3 .github/task27_rejoin_edit.py
+
+      - name: Remove one-shot editor files
+        run: rm .github/task27_rejoin_edit.py .github/workflows/task27-rejoin-edit.yml
+
+      - name: Format and validate patch shape
+        run: |
+          cargo fmt --all
+          git diff --check
+          git diff --stat
+          git diff -- apps/pulsedagd/src/main.rs crates/pulsedag-p2p/src/lib.rs | sed -n '1,460p'
+
+      - name: Commit exact source edit
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "node: initiate bounded Task 27 rejoin recovery"
+          git push origin HEAD:agent/task27-rejoin-runtime-work
