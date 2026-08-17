@@ -2,6 +2,8 @@
 
 Active release documentation targets the `v2.3.0` private-testnet line. Planning and implementation for `v2.4.0` are active on the `release/2.4.0` branch and do not authorize a version bump, tag, or public-testnet launch.
 
+The `v2.5.0` and `v2.6.0` roadmaps are approved future planning documents. Their approval does not make either version active, does not bypass the v2.4.0 release/activation gates, and does not authorize a version bump, tag, protocol activation or mainnet launch. v2.6.0 programmability remains gated on the accepted stable-public-testnet period defined by the project policy and the v2.5.0 acceptance program.
+
 ## Operator documentation
 
 - [`RUNBOOK.md`](RUNBOOK.md)
@@ -22,6 +24,8 @@ Active release documentation targets the `v2.3.0` private-testnet line. Planning
 
 ## Planning and decisions
 
+- [`ROADMAP_V2_6_0.md`](ROADMAP_V2_6_0.md) — approved future programmability/smart-contract roadmap
+- [`ROADMAP_V2_5_0.md`](ROADMAP_V2_5_0.md) — approved future scale/GPU/adversarial-resilience roadmap
 - [`ROADMAP_V2_4_0.md`](ROADMAP_V2_4_0.md)
 - [`DIFFICULTY_RETARGET_V2_4_0.md`](DIFFICULTY_RETARGET_V2_4_0.md)
 - [`ROADMAP_V2_3_0.md`](ROADMAP_V2_3_0.md)
