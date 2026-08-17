@@ -2732,7 +2732,7 @@ async fn main() -> Result<()> {
                             || frontier_fetch_scheduler.queue_depth() > 0
                             || !block_requests.pending.is_empty();
                         if !task27_work_remaining {
-                            task27_recovery_active.store(false, Ordering::Relaxed);
+                            task27_recovery_active.store(false, Ordering::SeqCst);
                         }
                     }
                     RecoveryProgressDecisionV1::ScheduleRecovery {
@@ -2770,7 +2770,7 @@ async fn main() -> Result<()> {
                                                             sent_at_unix: now,
                                                         });
                                                     task27_recovery_active
-                                                        .store(true, Ordering::Relaxed);
+                                                        .store(true, Ordering::SeqCst);
                                                     let mut rt = runtime.write().await;
                                                     rt.selected_segment_gap_blocks =
                                                         rt.selected_segment_gap_blocks.max(
@@ -2834,7 +2834,7 @@ async fn main() -> Result<()> {
                             || frontier_fetch_scheduler.queue_depth() > 0
                             || !block_requests.pending.is_empty();
                         if !task27_work_remaining {
-                            task27_recovery_active.store(false, Ordering::Relaxed);
+                            task27_recovery_active.store(false, Ordering::SeqCst);
                         }
                         if stagnant_cycles == TASK27_REJOIN_MAX_STAGNANT_CYCLES {
                             let mut rt = runtime.write().await;
@@ -4560,7 +4560,7 @@ async fn main() -> Result<()> {
                                 )
                             };
                             let task27_authoritative_recovery_active =
-                                task27_recovery_active.load(Ordering::Relaxed);
+                                task27_recovery_active.load(Ordering::SeqCst);
                             if !priority_already_active && !task27_authoritative_recovery_active {
                                 let selected_locator = {
                                     let guard = chain.read().await;
@@ -4695,7 +4695,7 @@ async fn main() -> Result<()> {
                                     .as_ref()
                                     .map(|pending| pending.requested_at_unix),
                                 now_unix(),
-                            ) || task27_recovery_active.load(Ordering::Relaxed)
+                            ) || task27_recovery_active.load(Ordering::SeqCst)
                         };
                         for tip in unknown_tips {
                             let final_height_pending = {
@@ -5186,7 +5186,7 @@ async fn main() -> Result<()> {
                                                     pending_dag_frontier_peer =
                                                         Some(peer_id.clone());
                                                     task27_recovery_active
-                                                        .store(true, Ordering::Relaxed);
+                                                        .store(true, Ordering::SeqCst);
                                                     let mut rt = runtime.write().await;
                                                     rt.sync_state = "requesting_blocks".to_string();
                                                     rt.block_fetch_scheduler_queue_depth =
@@ -5566,7 +5566,7 @@ async fn main() -> Result<()> {
                             now,
                         )
                     };
-                    if !priority_already_active && !task27_recovery_active.load(Ordering::Relaxed) {
+                    if !priority_already_active && !task27_recovery_active.load(Ordering::SeqCst) {
                         let selected_locator = {
                             let guard = chain.read().await;
                             guard
@@ -5633,7 +5633,7 @@ async fn main() -> Result<()> {
                     // final sync, and selected/same-height sync must not run with peer_count=0.
                     if cleanup_complete
                         && selected_chain_gate.allows_selected_chain_sync()
-                        && !task27_recovery_active.load(Ordering::Relaxed)
+                        && !task27_recovery_active.load(Ordering::SeqCst)
                     {
                         if let Some(ref p2p) = p2p {
                             match p2p.status() {
