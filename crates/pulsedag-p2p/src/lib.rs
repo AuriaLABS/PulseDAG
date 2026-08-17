@@ -714,6 +714,9 @@ pub trait P2pHandle: Send + Sync {
     fn local_protocol_capabilities_v1(&self) -> Result<Option<ProtocolCapabilitiesV1>, PulseError> {
         Ok(None)
     }
+    fn protocol_v2_peer_authorized_v1(&self, _peer_id: &str) -> Result<bool, PulseError> {
+        Ok(false)
+    }
     fn send_protocol_sync_v1(
         &self,
         _peer_id: &str,
@@ -1232,6 +1235,23 @@ impl P2pHandle for MemoryP2pHandle {
             .protocol_capability_transport
             .local_capabilities()
             .cloned())
+    }
+
+    fn protocol_v2_peer_authorized_v1(&self, peer_id: &str) -> Result<bool, PulseError> {
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|_| PulseError::Internal("p2p lock poisoned".into()))?;
+        Ok(matches!(
+            inner
+                .protocol_capability_transport
+                .route(
+                    peer_id,
+                    crate::messages::ProtocolMessageClassV1::ProtocolV2Sync,
+                )
+                .action,
+            crate::messages::ProtocolPeerRouteActionV1::SendProtocolV2
+        ))
     }
 
     fn update_tip_inventory(&self, inventory: TipInventoryStatus) -> Result<(), PulseError> {
@@ -6138,6 +6158,23 @@ impl P2pHandle for Libp2pHandle {
             .cloned())
     }
 
+    fn protocol_v2_peer_authorized_v1(&self, peer_id: &str) -> Result<bool, PulseError> {
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|_| PulseError::Internal("p2p lock poisoned".into()))?;
+        Ok(matches!(
+            inner
+                .protocol_capability_transport
+                .route(
+                    peer_id,
+                    crate::messages::ProtocolMessageClassV1::ProtocolV2Sync,
+                )
+                .action,
+            crate::messages::ProtocolPeerRouteActionV1::SendProtocolV2
+        ))
+    }
+
     fn update_tip_inventory(&self, inventory: TipInventoryStatus) -> Result<(), PulseError> {
         let mut inner = self
             .inner
@@ -6746,6 +6783,10 @@ mod tests {
         })
         .unwrap();
         assert_eq!(stack.handle.local_protocol_capabilities_v1().unwrap(), None);
+        assert!(!stack
+            .handle
+            .protocol_v2_peer_authorized_v1("unknown-peer")
+            .unwrap());
 
         let state = pulsedag_core::genesis::init_chain_state(chain_id.clone());
         let capabilities = ProtocolCapabilitiesV1 {
@@ -6769,6 +6810,10 @@ mod tests {
             stack.handle.local_protocol_capabilities_v1().unwrap(),
             Some(capabilities)
         );
+        assert!(!stack
+            .handle
+            .protocol_v2_peer_authorized_v1("unknown-peer")
+            .unwrap());
     }
 
     #[test]

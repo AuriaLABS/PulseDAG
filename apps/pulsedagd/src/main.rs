@@ -3,7 +3,7 @@ mod block_request;
 mod config;
 
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::{BTreeMap, BTreeSet, HashSet},
     io::{BufReader, BufWriter},
     net::SocketAddr,
     path::PathBuf,
@@ -29,7 +29,8 @@ use pulsedag_core::reconcile_mempool;
 use pulsedag_p2p::{
     build_p2p_stack, default_p2p_identity_path,
     messages::{
-        build_dag_frontier_response_v1, HeaderInventory, ProtocolSyncWireV1, TipInventoryStatus,
+        build_dag_frontier_response_v1, plan_dag_frontier_reconciliation_v1,
+        DagFrontierReconcilePlanV1, HeaderInventory, ProtocolSyncWireV1, TipInventoryStatus,
     },
     InboundEvent, Libp2pConfig, Libp2pRuntimeMode, P2pHandle, P2pMode, P2pStatus,
 };
@@ -184,6 +185,7 @@ use tokio::time::{sleep, Duration};
 const MAX_INFLIGHT_BLOCK_REQUESTS: usize = 64;
 const MAX_INFLIGHT_BLOCK_REQUESTS_PER_PEER: usize = 16;
 const MAX_FETCH_SCHEDULER_QUEUE_DEPTH: usize = 512;
+const PROTOCOL_FRONTIER_RECOVERY_BATCH_SIZE: usize = 8;
 
 const ORPHAN_RECOVERY_ROOT_REQUEST_LIMIT: usize = 16;
 const ORPHAN_RECOVERY_REVALIDATE_EVICT_LIMIT: usize = 32;
@@ -438,6 +440,158 @@ struct SelectedSegmentSession {
     _started_at_unix: u64,
     updated_at_unix: u64,
     state: SelectedSegmentSessionState,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ProtocolFrontierRecoverySession {
+    peer_id: String,
+    protocol_identity: pulsedag_core::ProtocolActivationIdentity,
+    common_ancestor: String,
+    selected_tip: String,
+    request_hashes: Vec<String>,
+    issued_hashes: HashSet<String>,
+    last_schedule_unix: u64,
+}
+
+impl ProtocolFrontierRecoverySession {
+    fn from_plan(
+        peer_id: String,
+        protocol_identity: pulsedag_core::ProtocolActivationIdentity,
+        plan: DagFrontierReconcilePlanV1,
+    ) -> Self {
+        Self {
+            peer_id,
+            protocol_identity,
+            common_ancestor: plan.common_ancestor,
+            selected_tip: plan.selected_tip,
+            request_hashes: plan.request_hashes,
+            issued_hashes: HashSet::new(),
+            last_schedule_unix: 0,
+        }
+    }
+
+    fn should_schedule(&self, now_unix: u64) -> bool {
+        now_unix > self.last_schedule_unix
+    }
+
+    fn next_request_hashes(
+        &self,
+        known: &HashSet<String>,
+        pending: &HashSet<String>,
+        max: usize,
+    ) -> Vec<String> {
+        self.request_hashes
+            .iter()
+            .filter(|hash| !known.contains(*hash) && !pending.contains(*hash))
+            .take(max)
+            .cloned()
+            .collect()
+    }
+
+    fn is_complete(&self, known: &HashSet<String>) -> bool {
+        self.request_hashes.iter().all(|hash| known.contains(hash))
+    }
+}
+
+fn clear_protocol_frontier_recovery_session(
+    session: &mut Option<ProtocolFrontierRecoverySession>,
+    block_requests: &mut BlockRequestTracker,
+) -> Option<ProtocolFrontierRecoverySession> {
+    let stale = session.take()?;
+    for hash in &stale.issued_hashes {
+        block_requests.resolve(hash);
+    }
+    Some(stale)
+}
+
+fn protocol_frontier_recovery_authorization(
+    p2p: Option<&Arc<dyn P2pHandle>>,
+    session: &ProtocolFrontierRecoverySession,
+) -> Result<(), &'static str> {
+    let Some(p2p_handle) = p2p else {
+        return Err("p2p_disabled");
+    };
+    match p2p_handle.local_protocol_capabilities_v1() {
+        Ok(Some(local_capabilities))
+            if local_capabilities.protocol_identity == session.protocol_identity =>
+        {
+            match p2p_handle.protocol_v2_peer_authorized_v1(&session.peer_id) {
+                Ok(true) => Ok(()),
+                Ok(false) => Err("peer_v2_authorization_revoked"),
+                Err(_) => Err("peer_v2_authorization_read_failed"),
+            }
+        }
+        Ok(Some(_)) => Err("local_protocol_identity_changed"),
+        Ok(None) => Err("local_protocol_identity_unconfigured"),
+        Err(_) => Err("local_protocol_identity_read_failed"),
+    }
+}
+
+#[cfg(test)]
+mod protocol_frontier_recovery_tests {
+    use super::*;
+
+    fn identity() -> pulsedag_core::ProtocolActivationIdentity {
+        pulsedag_core::ProtocolActivationIdentity::activated_v2(
+            "task27-frontier-recovery".to_string(),
+            "11".repeat(32),
+            pulsedag_core::GHOSTDAG_V1_ORDERING_VERSION.to_string(),
+        )
+    }
+
+    #[test]
+    fn protocol_frontier_recovery_preserves_backlog_beyond_generic_scheduler_limit() {
+        let request_hashes = (0..700)
+            .map(|index| format!("hash-{index:04}"))
+            .collect::<Vec<_>>();
+        let plan = DagFrontierReconcilePlanV1 {
+            common_ancestor: "ancestor".into(),
+            selected_tip: "tip".into(),
+            missing_required_context: Vec::new(),
+            missing_selected_chain: Vec::new(),
+            missing_frontier: Vec::new(),
+            request_hashes: request_hashes.clone(),
+        };
+        let session =
+            ProtocolFrontierRecoverySession::from_plan("peer-v2".into(), identity(), plan);
+        assert_eq!(session.request_hashes.len(), 700);
+        assert!(session.request_hashes.len() > MAX_FETCH_SCHEDULER_QUEUE_DEPTH);
+
+        let known = HashSet::from(["hash-0000".to_string()]);
+        let pending = HashSet::from(["hash-0001".to_string()]);
+        assert_eq!(
+            session.next_request_hashes(&known, &pending, PROTOCOL_FRONTIER_RECOVERY_BATCH_SIZE),
+            (2..10)
+                .map(|index| format!("hash-{index:04}"))
+                .collect::<Vec<_>>()
+        );
+        assert!(!session.is_complete(&known));
+    }
+
+    #[test]
+    fn protocol_frontier_recovery_windows_skip_known_and_pending_deterministically() {
+        let plan = DagFrontierReconcilePlanV1 {
+            common_ancestor: "ancestor".into(),
+            selected_tip: "tip".into(),
+            missing_required_context: Vec::new(),
+            missing_selected_chain: Vec::new(),
+            missing_frontier: Vec::new(),
+            request_hashes: vec!["a".into(), "b".into(), "c".into(), "d".into()],
+        };
+        let session =
+            ProtocolFrontierRecoverySession::from_plan("peer-v2".into(), identity(), plan);
+        let known = HashSet::from(["a".to_string(), "c".to_string()]);
+        let pending = HashSet::from(["b".to_string()]);
+        assert_eq!(session.next_request_hashes(&known, &pending, 8), vec!["d"]);
+
+        let complete = HashSet::from([
+            "a".to_string(),
+            "b".to_string(),
+            "c".to_string(),
+            "d".to_string(),
+        ]);
+        assert!(session.is_complete(&complete));
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1943,6 +2097,8 @@ async fn main() -> Result<()> {
             let mut final_quiescence_same_height_tip_requests: HashSet<String> = HashSet::new();
             let mut selected_segment_session: Option<SelectedSegmentSession> = None;
             let mut selected_segment_next_session_id: u64 = 1;
+            let mut protocol_frontier_recovery_session: Option<ProtocolFrontierRecoverySession> =
+                None;
             let mut recovery_tick: u64 = 0;
             loop {
                 let maybe_event =
@@ -1952,6 +2108,25 @@ async fn main() -> Result<()> {
                         Err(_) => None,
                     };
                 let now = now_unix();
+                if let Some(session_snapshot) = protocol_frontier_recovery_session.clone() {
+                    if let Err(reason) =
+                        protocol_frontier_recovery_authorization(p2p.as_ref(), &session_snapshot)
+                    {
+                        let stale = clear_protocol_frontier_recovery_session(
+                            &mut protocol_frontier_recovery_session,
+                            &mut block_requests,
+                        );
+                        warn!(
+                            peer = %session_snapshot.peer_id,
+                            reason,
+                            cleared_requests = stale
+                                .as_ref()
+                                .map(|session| session.issued_hashes.len())
+                                .unwrap_or_default(),
+                            "cleared protocol-v2 frontier recovery before block-request timeout processing"
+                        );
+                    }
+                }
                 let timed_out = block_requests.drain_timeouts(now);
                 let timed_out_count = timed_out
                     .retryable
@@ -2142,6 +2317,121 @@ async fn main() -> Result<()> {
                         }
                     }
                 }
+                if protocol_frontier_recovery_session
+                    .as_ref()
+                    .is_some_and(|session| session.should_schedule(now))
+                {
+                    let session_snapshot = protocol_frontier_recovery_session
+                        .as_ref()
+                        .expect("frontier recovery session checked above")
+                        .clone();
+                    if let Err(reason) =
+                        protocol_frontier_recovery_authorization(p2p.as_ref(), &session_snapshot)
+                    {
+                        let stale = clear_protocol_frontier_recovery_session(
+                            &mut protocol_frontier_recovery_session,
+                            &mut block_requests,
+                        );
+                        warn!(
+                            peer = %session_snapshot.peer_id,
+                            reason,
+                            cleared_requests = stale
+                                .as_ref()
+                                .map(|session| session.issued_hashes.len())
+                                .unwrap_or_default(),
+                            "cleared protocol-v2 frontier recovery after authorization change"
+                        );
+                    } else {
+                        let (known, pending) = {
+                            let guard = chain.read().await;
+                            (
+                                known_hashes_for_scheduler(&guard),
+                                pending_hashes_for_scheduler(&block_requests),
+                            )
+                        };
+                        if session_snapshot.is_complete(&known) {
+                            let completed = protocol_frontier_recovery_session.take();
+                            if let Some(completed) = completed {
+                                info!(
+                                    peer = %completed.peer_id,
+                                    common_ancestor = %completed.common_ancestor,
+                                    selected_tip = %completed.selected_tip,
+                                    recovered_hashes = completed.request_hashes.len(),
+                                    "protocol-v2 frontier recovery target set is locally complete"
+                                );
+                            }
+                        } else {
+                            let requests = session_snapshot.next_request_hashes(
+                                &known,
+                                &pending,
+                                PROTOCOL_FRONTIER_RECOVERY_BATCH_SIZE,
+                            );
+                            if let Some(session) = protocol_frontier_recovery_session.as_mut() {
+                                session.last_schedule_unix = now;
+                            }
+                            let mut issued = 0u64;
+                            for hash in requests {
+                                if !block_requests.should_issue_getblock_for_peers(
+                                    &hash,
+                                    now,
+                                    [session_snapshot.peer_id.clone()],
+                                ) {
+                                    continue;
+                                }
+                                let assigned_peer = block_requests
+                                    .pending
+                                    .get(&hash)
+                                    .and_then(|request| request.peer.clone());
+                                if assigned_peer.as_deref()
+                                    != Some(session_snapshot.peer_id.as_str())
+                                {
+                                    block_requests.resolve(&hash);
+                                    continue;
+                                }
+                                let Some(ref p2p_handle) = p2p else {
+                                    block_requests.resolve(&hash);
+                                    continue;
+                                };
+                                match p2p_handle
+                                    .request_block_from(&session_snapshot.peer_id, &hash)
+                                {
+                                    Ok(_) => {
+                                        issued = issued.saturating_add(1);
+                                        if let Some(session) =
+                                            protocol_frontier_recovery_session.as_mut()
+                                        {
+                                            session.issued_hashes.insert(hash.clone());
+                                        }
+                                    }
+                                    Err(error) => {
+                                        block_requests.resolve(&hash);
+                                        warn!(
+                                            peer = %session_snapshot.peer_id,
+                                            block_hash = %hash,
+                                            error = %error,
+                                            "failed issuing protocol-v2 frontier GetBlock request"
+                                        );
+                                    }
+                                }
+                            }
+                            if issued > 0 {
+                                let mut rt = runtime.write().await;
+                                rt.getblock_sent = rt.getblock_sent.saturating_add(issued);
+                                rt.peer_addressed_getblock_sent_total =
+                                    rt.peer_addressed_getblock_sent_total.saturating_add(issued);
+                                rt.dependency_fetches_scheduled =
+                                    rt.dependency_fetches_scheduled.saturating_add(issued);
+                                rt.pending_block_requests = block_requests.pending.len();
+                                rt.inflight_block_requests = block_requests.pending.len();
+                                rt.pending_block_request_hashes = block_requests.pending_hashes();
+                                rt.block_fetch_scheduler_inflight_by_peer =
+                                    block_requests.inflight_by_peer();
+                                rt.sync_state = DagSyncStage::DagFrontierTips.as_str().to_string();
+                            }
+                        }
+                    }
+                }
+
                 recovery_tick = recovery_tick.saturating_add(1);
                 if recovery_tick.is_multiple_of(5) {
                     let tick_started = Instant::now();
@@ -4705,8 +4995,105 @@ async fn main() -> Result<()> {
                             }
                         }
                         ProtocolSyncWireV1::DagFrontier(frontier) => {
-                            // Frontier reconciliation/fetch scheduling is the next Task 27 slice.
-                            let _ = frontier;
+                            let Some(ref p2p_handle) = p2p else {
+                                continue;
+                            };
+                            let local_capabilities = match p2p_handle
+                                .local_protocol_capabilities_v1()
+                            {
+                                Ok(Some(capabilities)) => capabilities,
+                                Ok(None) => {
+                                    let _ = clear_protocol_frontier_recovery_session(
+                                        &mut protocol_frontier_recovery_session,
+                                        &mut block_requests,
+                                    );
+                                    warn!(
+                                        peer = %peer_id,
+                                        "ignored protocol-v2 DAG frontier because local activated capabilities are not configured"
+                                    );
+                                    continue;
+                                }
+                                Err(error) => {
+                                    warn!(
+                                        peer = %peer_id,
+                                        error = %error,
+                                        "failed reading local protocol-v2 capabilities for DAG frontier"
+                                    );
+                                    continue;
+                                }
+                            };
+                            match p2p_handle.protocol_v2_peer_authorized_v1(&peer_id) {
+                                Ok(true) => {}
+                                Ok(false) => {
+                                    warn!(
+                                        peer = %peer_id,
+                                        "ignored protocol-v2 DAG frontier after peer authorization was revoked"
+                                    );
+                                    continue;
+                                }
+                                Err(error) => {
+                                    warn!(
+                                        peer = %peer_id,
+                                        error = %error,
+                                        "failed checking protocol-v2 peer authorization for DAG frontier"
+                                    );
+                                    continue;
+                                }
+                            }
+                            let local_known = {
+                                let guard = chain.read().await;
+                                guard.dag.blocks.keys().cloned().collect::<BTreeSet<_>>()
+                            };
+                            match plan_dag_frontier_reconciliation_v1(
+                                &local_capabilities.protocol_identity,
+                                &frontier,
+                                &local_known,
+                            ) {
+                                Ok(plan) if plan.is_complete() => {
+                                    let _ = clear_protocol_frontier_recovery_session(
+                                        &mut protocol_frontier_recovery_session,
+                                        &mut block_requests,
+                                    );
+                                    info!(
+                                        peer = %peer_id,
+                                        common_ancestor = %plan.common_ancestor,
+                                        selected_tip = %plan.selected_tip,
+                                        "protocol-v2 DAG frontier is already locally complete"
+                                    );
+                                }
+                                Ok(plan) => {
+                                    let request_count = plan.request_hashes.len();
+                                    let required_context_missing =
+                                        plan.missing_required_context.len();
+                                    let selected_chain_missing = plan.missing_selected_chain.len();
+                                    let frontier_missing = plan.missing_frontier.len();
+                                    let _ = clear_protocol_frontier_recovery_session(
+                                        &mut protocol_frontier_recovery_session,
+                                        &mut block_requests,
+                                    );
+                                    protocol_frontier_recovery_session =
+                                        Some(ProtocolFrontierRecoverySession::from_plan(
+                                            peer_id.clone(),
+                                            local_capabilities.protocol_identity.clone(),
+                                            plan,
+                                        ));
+                                    info!(
+                                        peer = %peer_id,
+                                        request_count,
+                                        required_context_missing,
+                                        selected_chain_missing,
+                                        frontier_missing,
+                                        "accepted protocol-v2 DAG frontier recovery plan"
+                                    );
+                                }
+                                Err(error) => {
+                                    warn!(
+                                        peer = %peer_id,
+                                        error = ?error,
+                                        "rejected protocol-v2 DAG frontier reconciliation input"
+                                    );
+                                }
+                            }
                         }
                         ProtocolSyncWireV1::CapabilityHandshake(_) => {
                             warn!(
