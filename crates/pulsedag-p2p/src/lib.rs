@@ -1,3 +1,4 @@
+mod live_protocol_sync_v1;
 pub mod messages;
 
 use std::collections::{HashMap, HashSet};
@@ -21,10 +22,14 @@ use pulsedag_core::{
 use tokio::sync::mpsc;
 use tokio::time::{sleep, Duration};
 
+use crate::live_protocol_sync_v1::{
+    authorized_protocol_sync_from_tip, encode_protocol_sync_for_transport,
+    validate_protocol_sync_send,
+};
 use crate::messages::capability_carrier_v1::ProtocolCapabilityTransportV1;
 use crate::messages::{
     message_id_for_block, message_id_for_tx, topic_names, BlockHeaderAnnouncement, HeaderInventory,
-    NetworkMessage, ProtocolCapabilitiesV1, TipInventoryStatus,
+    NetworkMessage, ProtocolCapabilitiesV1, ProtocolSyncWireV1, TipInventoryStatus,
 };
 
 pub const P2P_MODE_MEMORY_SIMULATED: &str = "memory-simulated";
@@ -706,6 +711,15 @@ pub trait P2pHandle: Send + Sync {
             "protocol-v2 capabilities are not supported by this p2p handle".into(),
         ))
     }
+    fn send_protocol_sync_v1(
+        &self,
+        _peer_id: &str,
+        _wire: &ProtocolSyncWireV1,
+    ) -> Result<(), PulseError> {
+        Err(PulseError::Internal(
+            "protocol-v2 sync transport is not supported by this p2p handle".into(),
+        ))
+    }
     fn broadcast_transaction(&self, tx: &Transaction) -> Result<(), PulseError>;
     fn broadcast_block(&self, block: &Block) -> Result<(), PulseError>;
     fn update_tip_inventory(&self, _inventory: TipInventoryStatus) -> Result<(), PulseError> {
@@ -835,6 +849,10 @@ pub enum InboundEvent {
         hash: Option<PulseHash>,
     },
     PeerConnected(String),
+    ProtocolSync {
+        peer_id: String,
+        wire: ProtocolSyncWireV1,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -862,6 +880,10 @@ enum OutboundMessage {
         block: Option<Block>,
         request_id: Option<String>,
         request_hash: Option<PulseHash>,
+    },
+    ProtocolSync {
+        peer_id: String,
+        wire: ProtocolSyncWireV1,
     },
 }
 
@@ -1165,6 +1187,22 @@ impl MemoryP2pHandle {
 }
 
 impl P2pHandle for MemoryP2pHandle {
+    fn send_protocol_sync_v1(
+        &self,
+        peer_id: &str,
+        wire: &ProtocolSyncWireV1,
+    ) -> Result<(), PulseError> {
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| PulseError::Internal("p2p lock poisoned".into()))?;
+        validate_protocol_sync_send(&inner, peer_id, wire)?;
+        inner.publish_attempts = inner.publish_attempts.saturating_add(1);
+        inner.broadcasted_messages = inner.broadcasted_messages.saturating_add(1);
+        inner.last_message_kind = Some(format!("protocol-sync:{}", wire.kind()));
+        Ok(())
+    }
+
     fn configure_protocol_capabilities_v1(
         &self,
         capabilities: ProtocolCapabilitiesV1,
@@ -2912,6 +2950,11 @@ fn enqueue_outbound_message(
         OutboundMessage::Tips(tips) => {
             queue.standard_txs.push_back(OutboundMessage::Tips(tips));
         }
+        OutboundMessage::ProtocolSync { peer_id, wire } => {
+            queue
+                .standard_txs
+                .push_back(OutboundMessage::ProtocolSync { peer_id, wire });
+        }
         OutboundMessage::Transaction(tx) => {
             if tx.fee >= TX_PRIORITY_FEE_THRESHOLD {
                 queue
@@ -2990,7 +3033,8 @@ fn pop_outbound_message(
             }
             OutboundMessage::Transaction(_)
             | OutboundMessage::GetTips
-            | OutboundMessage::Tips(_) => {
+            | OutboundMessage::Tips(_)
+            | OutboundMessage::ProtocolSync { .. } => {
                 guard.queued_non_block_messages = guard.queued_non_block_messages.saturating_sub(1);
                 guard.dequeued_non_block_messages =
                     guard.dequeued_non_block_messages.saturating_add(1);
@@ -4699,6 +4743,39 @@ fn dispatch_network_message(
                 }
             }
             let _ = inbound_tx.send(InboundEvent::Tips { tips });
+            match authorized_protocol_sync_from_tip(bytes, source_peer, inner) {
+                Ok(Some((peer_id, wire))) => {
+                    if let Ok(mut guard) = inner.lock() {
+                        guard.last_message_kind =
+                            Some(format!("protocol-sync-inbound:{}", wire.kind()));
+                    }
+                    let _ = inbound_tx.send(InboundEvent::ProtocolSync { peer_id, wire });
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    if let Ok(mut guard) = inner.lock() {
+                        guard.inbound_decode_failed = guard.inbound_decode_failed.saturating_add(1);
+                        guard.last_drop_reason = Some("protocol_sync_decode_failed".into());
+                        if let Some(peer) = source_peer {
+                            score_peer_message_outcome(
+                                &mut guard,
+                                peer,
+                                PeerMessageOutcome::Malformed,
+                                now_unix(),
+                            );
+                            record_peer_error(
+                                &mut guard,
+                                peer,
+                                "protocol_sync_decode_failed",
+                                error,
+                                now_unix(),
+                            );
+                            refresh_connected_peers_from_health(&mut guard);
+                            persist_peer_state_if_configured(&guard);
+                        }
+                    }
+                }
+            }
         }
 
         NetworkMessage::GetBlockHeaders { chain_id, hashes } => {
@@ -5083,6 +5160,25 @@ async fn run_libp2p_runtime(
                         let inventory = inner.lock().ok().and_then(|mut guard| current_tip_inventory_for_send(&mut guard, &cfg.chain_id, "Tips"));
                         let wire = encode_network_message_for_transport(&inner, &NetworkMessage::Tips { chain_id: cfg.chain_id.clone(), tips, inventory });
                         (wire, topic_name, "tips", message_id)
+                    }
+                    OutboundMessage::ProtocolSync {
+                        peer_id,
+                        wire: protocol_sync,
+                    } => {
+                        let topic_name = format!("{}-sync", cfg.chain_id);
+                        let payload_id = serde_json::to_string(&protocol_sync)
+                            .unwrap_or_else(|_| protocol_sync.kind().to_string());
+                        let message_id = format!(
+                            "sync:protocol-v2:{peer_id}:{}:{payload_id}",
+                            protocol_sync.kind()
+                        );
+                        let wire = encode_protocol_sync_for_transport(
+                            &inner,
+                            &cfg.chain_id,
+                            &peer_id,
+                            &protocol_sync,
+                        );
+                        (wire, topic_name, "protocol-sync-v1", message_id)
                     }
                     OutboundMessage::GetBlockHeaders(hashes) => {
                         let topic_name = format!("{}-sync", cfg.chain_id);
@@ -5650,6 +5746,25 @@ async fn run_libp2p_real_runtime(
                         let wire = encode_network_message_for_transport(&inner, &NetworkMessage::Tips { chain_id: cfg.chain_id.clone(), tips, inventory });
                         (wire, topic_name, "tips", message_id)
                     }
+                    OutboundMessage::ProtocolSync {
+                        peer_id,
+                        wire: protocol_sync,
+                    } => {
+                        let topic_name = format!("{}-sync", cfg.chain_id);
+                        let payload_id = serde_json::to_string(&protocol_sync)
+                            .unwrap_or_else(|_| protocol_sync.kind().to_string());
+                        let message_id = format!(
+                            "sync:protocol-v2:{peer_id}:{}:{payload_id}",
+                            protocol_sync.kind()
+                        );
+                        let wire = encode_protocol_sync_for_transport(
+                            &inner,
+                            &cfg.chain_id,
+                            &peer_id,
+                            &protocol_sync,
+                        );
+                        (wire, topic_name, "protocol-sync-v1", message_id)
+                    }
                     OutboundMessage::GetBlockHeaders(hashes) => {
                         let topic_name = format!("{}-sync", cfg.chain_id);
                         let message_id = format!("sync:get-block-headers:{}", hashes.join(","));
@@ -5960,6 +6075,27 @@ impl Libp2pHandle {
 }
 
 impl P2pHandle for Libp2pHandle {
+    fn send_protocol_sync_v1(
+        &self,
+        peer_id: &str,
+        wire: &ProtocolSyncWireV1,
+    ) -> Result<(), PulseError> {
+        {
+            let inner = self
+                .inner
+                .lock()
+                .map_err(|_| PulseError::Internal("p2p lock poisoned".into()))?;
+            validate_protocol_sync_send(&inner, peer_id, wire)?;
+        }
+        self.queue_sync_message(
+            OutboundMessage::ProtocolSync {
+                peer_id: peer_id.to_string(),
+                wire: wire.clone(),
+            },
+            "protocol-sync-v1",
+        )
+    }
+
     fn configure_protocol_capabilities_v1(
         &self,
         capabilities: ProtocolCapabilitiesV1,
