@@ -711,6 +711,9 @@ pub trait P2pHandle: Send + Sync {
             "protocol-v2 capabilities are not supported by this p2p handle".into(),
         ))
     }
+    fn local_protocol_capabilities_v1(&self) -> Result<Option<ProtocolCapabilitiesV1>, PulseError> {
+        Ok(None)
+    }
     fn send_protocol_sync_v1(
         &self,
         _peer_id: &str,
@@ -1218,6 +1221,17 @@ impl P2pHandle for MemoryP2pHandle {
             .map_err(|error| {
                 PulseError::Internal(format!("invalid protocol-v2 p2p capabilities: {error:?}"))
             })
+    }
+
+    fn local_protocol_capabilities_v1(&self) -> Result<Option<ProtocolCapabilitiesV1>, PulseError> {
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|_| PulseError::Internal("p2p lock poisoned".into()))?;
+        Ok(inner
+            .protocol_capability_transport
+            .local_capabilities()
+            .cloned())
     }
 
     fn update_tip_inventory(&self, inventory: TipInventoryStatus) -> Result<(), PulseError> {
@@ -6113,6 +6127,17 @@ impl P2pHandle for Libp2pHandle {
             })
     }
 
+    fn local_protocol_capabilities_v1(&self) -> Result<Option<ProtocolCapabilitiesV1>, PulseError> {
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|_| PulseError::Internal("p2p lock poisoned".into()))?;
+        Ok(inner
+            .protocol_capability_transport
+            .local_capabilities()
+            .cloned())
+    }
+
     fn update_tip_inventory(&self, inventory: TipInventoryStatus) -> Result<(), PulseError> {
         let mut inner = self
             .inner
@@ -6710,6 +6735,40 @@ mod tests {
         }
         record_outbound_tx_relay(state, id, now);
         true
+    }
+
+    #[test]
+    fn p2p_handle_exposes_only_explicitly_configured_local_protocol_capabilities() {
+        let chain_id = "task27-local-capability-read".to_string();
+        let stack = build_p2p_stack(P2pMode::Memory {
+            chain_id: chain_id.clone(),
+            peers: Vec::new(),
+        })
+        .unwrap();
+        assert_eq!(stack.handle.local_protocol_capabilities_v1().unwrap(), None);
+
+        let state = pulsedag_core::genesis::init_chain_state(chain_id.clone());
+        let capabilities = ProtocolCapabilitiesV1 {
+            capabilities_version: crate::messages::P2P_PROTOCOL_CAPABILITIES_VERSION,
+            protocol_identity: pulsedag_core::ProtocolActivationIdentity::activated_v2(
+                chain_id,
+                state.dag.genesis_hash,
+                pulsedag_core::GHOSTDAG_V1_ORDERING_VERSION.to_string(),
+            ),
+            consensus_metadata_schema_version: pulsedag_core::CONSENSUS_METADATA_SCHEMA_VERSION,
+            finality_policy_version: pulsedag_core::GHOSTDAG_V1_FINALITY_POLICY_VERSION.to_string(),
+            supports_dag_frontier: true,
+            supports_consensus_metadata: true,
+            high_cadence_allowed: false,
+        };
+        stack
+            .handle
+            .configure_protocol_capabilities_v1(capabilities.clone())
+            .unwrap();
+        assert_eq!(
+            stack.handle.local_protocol_capabilities_v1().unwrap(),
+            Some(capabilities)
+        );
     }
 
     #[test]

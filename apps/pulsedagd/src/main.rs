@@ -28,7 +28,9 @@ use pulsedag_core::accept::{
 use pulsedag_core::reconcile_mempool;
 use pulsedag_p2p::{
     build_p2p_stack, default_p2p_identity_path,
-    messages::{HeaderInventory, TipInventoryStatus},
+    messages::{
+        build_dag_frontier_response_v1, HeaderInventory, ProtocolSyncWireV1, TipInventoryStatus,
+    },
     InboundEvent, Libp2pConfig, Libp2pRuntimeMode, P2pHandle, P2pMode, P2pStatus,
 };
 use pulsedag_rpc::api::{
@@ -4631,11 +4633,88 @@ async fn main() -> Result<()> {
                             block_requests.inflight_by_peer();
                         warn!(requested_hash = ?hash, "peer returned empty BlockData; cleared inflight and issued fallback request");
                     }
-                    InboundEvent::ProtocolSync { peer_id, wire } => {
-                        // Task 27 transport is wired, but live locator/frontier scheduling remains
-                        // deliberately inactive until the dedicated recovery-coordinator slice.
-                        let _ = (peer_id, wire);
-                    }
+                    InboundEvent::ProtocolSync { peer_id, wire } => match wire {
+                        ProtocolSyncWireV1::SelectedChainLocator(locator) => {
+                            if let Some(ref p2p_handle) = p2p {
+                                match p2p_handle.local_protocol_capabilities_v1() {
+                                    Ok(Some(local_capabilities)) => {
+                                        let response = {
+                                            let guard = chain.read().await;
+                                            build_dag_frontier_response_v1(
+                                                &local_capabilities.protocol_identity,
+                                                &locator,
+                                                &guard,
+                                            )
+                                        };
+                                        match response {
+                                            Ok(Some(frontier)) => {
+                                                let selected_tip = frontier.selected_tip.clone();
+                                                let selected_suffix_len =
+                                                    frontier.selected_chain_suffix.len();
+                                                let frontier_len = frontier.frontier.len();
+                                                if let Err(error) = p2p_handle
+                                                    .send_protocol_sync_v1(
+                                                        &peer_id,
+                                                        &ProtocolSyncWireV1::DagFrontier(frontier),
+                                                    )
+                                                {
+                                                    warn!(
+                                                        peer = %peer_id,
+                                                        error = %error,
+                                                        "failed sending protocol-v2 DAG frontier response"
+                                                    );
+                                                } else {
+                                                    info!(
+                                                        peer = %peer_id,
+                                                        selected_tip = %selected_tip,
+                                                        selected_suffix_len,
+                                                        frontier_len,
+                                                        "sent protocol-v2 DAG frontier response"
+                                                    );
+                                                }
+                                            }
+                                            Ok(None) => {
+                                                warn!(
+                                                    peer = %peer_id,
+                                                    "protocol-v2 locator has no retained common ancestor; pruning-aware recovery response remains pending"
+                                                );
+                                            }
+                                            Err(error) => {
+                                                warn!(
+                                                    peer = %peer_id,
+                                                    error = ?error,
+                                                    "failed building protocol-v2 DAG frontier response"
+                                                );
+                                            }
+                                        }
+                                    }
+                                    Ok(None) => {
+                                        warn!(
+                                            peer = %peer_id,
+                                            "ignored protocol-v2 locator because local activated capabilities are not configured"
+                                        );
+                                    }
+                                    Err(error) => {
+                                        warn!(
+                                            peer = %peer_id,
+                                            error = %error,
+                                            "failed reading local protocol-v2 capabilities"
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                        ProtocolSyncWireV1::DagFrontier(frontier) => {
+                            // Frontier reconciliation/fetch scheduling is the next Task 27 slice.
+                            let _ = frontier;
+                        }
+                        ProtocolSyncWireV1::CapabilityHandshake(_) => {
+                            warn!(
+                                peer = %peer_id,
+                                "ignored direct protocol-v2 capability handshake; legacy capability carrier is required"
+                            );
+                        }
+                    },
                     InboundEvent::PeerConnected(peer) => {
                         let peers_connected = p2p
                             .as_ref()
