@@ -51,9 +51,7 @@ fn encode_protocol_sync_for_state(
         },
     )
     .map_err(|error| {
-        PulseError::Internal(format!(
-            "protocol-v2 sync carrier encode failed: {error:?}"
-        ))
+        PulseError::Internal(format!("protocol-v2 sync carrier encode failed: {error:?}"))
     })
 }
 
