@@ -7,7 +7,10 @@ use std::{
     io::{BufReader, BufWriter},
     net::SocketAddr,
     path::PathBuf,
-    sync::Arc,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
@@ -1991,6 +1994,7 @@ async fn main() -> Result<()> {
         next_request_id: 1,
         pending_locator: None,
     }));
+    let task27_recovery_active = Arc::new(AtomicBool::new(false));
 
     if let Some(mut rx) = inbound_rx {
         let chain = app_state.chain.clone();
@@ -1998,6 +2002,7 @@ async fn main() -> Result<()> {
         let runtime = app_state.runtime.clone();
         let p2p = app_state.p2p.clone();
         let selected_segment_locator_state = selected_segment_locator_state.clone();
+        let task27_recovery_active = task27_recovery_active.clone();
         let max_orphan_count = cfg.max_orphan_count;
         tokio::spawn(async move {
             let mut block_requests = BlockRequestTracker::with_limits(
@@ -2723,6 +2728,7 @@ async fn main() -> Result<()> {
                 match task27_recovery_decision {
                     RecoveryProgressDecisionV1::NoPositiveGap => {
                         pending_task27_locator = None;
+                        task27_recovery_active.store(false, Ordering::Relaxed);
                     }
                     RecoveryProgressDecisionV1::ScheduleRecovery {
                         gap,
@@ -2758,6 +2764,8 @@ async fn main() -> Result<()> {
                                                             selected_tip: selected_tip.clone(),
                                                             sent_at_unix: now,
                                                         });
+                                                    task27_recovery_active
+                                                        .store(true, Ordering::Relaxed);
                                                     let mut rt = runtime.write().await;
                                                     rt.selected_segment_gap_blocks =
                                                         rt.selected_segment_gap_blocks.max(
@@ -2816,6 +2824,7 @@ async fn main() -> Result<()> {
                         stagnant_cycles,
                         reason,
                     } if stagnant_cycles == TASK27_REJOIN_MAX_STAGNANT_CYCLES => {
+                        task27_recovery_active.store(false, Ordering::Relaxed);
                         let mut rt = runtime.write().await;
                         rt.sync_state = "degraded".to_string();
                         rt.sync_failures = rt.sync_failures.saturating_add(1);
@@ -4538,10 +4547,8 @@ async fn main() -> Result<()> {
                                     now,
                                 )
                             };
-                            let task27_authoritative_recovery_active = pending_task27_locator
-                                .is_some()
-                                || pending_dag_frontier_peer.is_some()
-                                || frontier_fetch_scheduler.queue_depth() > 0;
+                            let task27_authoritative_recovery_active =
+                                task27_recovery_active.load(Ordering::Relaxed);
                             if !priority_already_active && !task27_authoritative_recovery_active {
                                 let selected_locator = {
                                     let guard = chain.read().await;
@@ -4676,9 +4683,7 @@ async fn main() -> Result<()> {
                                     .as_ref()
                                     .map(|pending| pending.requested_at_unix),
                                 now_unix(),
-                            ) || pending_task27_locator.is_some()
-                                || pending_dag_frontier_peer.is_some()
-                                || frontier_fetch_scheduler.queue_depth() > 0
+                            ) || task27_recovery_active.load(Ordering::Relaxed)
                         };
                         for tip in unknown_tips {
                             let final_height_pending = {
@@ -5168,6 +5173,8 @@ async fn main() -> Result<()> {
                                                 } else {
                                                     pending_dag_frontier_peer =
                                                         Some(peer_id.clone());
+                                                    task27_recovery_active
+                                                        .store(true, Ordering::Relaxed);
                                                     let mut rt = runtime.write().await;
                                                     rt.sync_state = "requesting_blocks".to_string();
                                                     rt.block_fetch_scheduler_queue_depth =
@@ -5286,6 +5293,7 @@ async fn main() -> Result<()> {
         let storage = app_state.storage.clone();
         let p2p = app_state.p2p.clone();
         let selected_segment_locator_state = selected_segment_locator_state.clone();
+        let task27_recovery_active = task27_recovery_active.clone();
         tokio::spawn(async move {
             let mut previous_best_height = 0u64;
             let mut previous_accepted_p2p_blocks = 0u64;
@@ -5546,7 +5554,7 @@ async fn main() -> Result<()> {
                             now,
                         )
                     };
-                    if !priority_already_active {
+                    if !priority_already_active && !task27_recovery_active.load(Ordering::Relaxed) {
                         let selected_locator = {
                             let guard = chain.read().await;
                             guard
@@ -5611,7 +5619,10 @@ async fn main() -> Result<()> {
                     // Never run final tip reconciliation while peer recovery or orphan cleanup has
                     // work left.  In particular, zero-peer recovery must be allowed to run before
                     // final sync, and selected/same-height sync must not run with peer_count=0.
-                    if cleanup_complete && selected_chain_gate.allows_selected_chain_sync() {
+                    if cleanup_complete
+                        && selected_chain_gate.allows_selected_chain_sync()
+                        && !task27_recovery_active.load(Ordering::Relaxed)
+                    {
                         if let Some(ref p2p) = p2p {
                             match p2p.status() {
                                 Ok(status) if !status.connected_peers.is_empty() => {
