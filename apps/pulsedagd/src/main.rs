@@ -4631,6 +4631,11 @@ async fn main() -> Result<()> {
                             block_requests.inflight_by_peer();
                         warn!(requested_hash = ?hash, "peer returned empty BlockData; cleared inflight and issued fallback request");
                     }
+                    InboundEvent::ProtocolSync { peer_id, wire } => {
+                        // Task 27 transport is wired, but live locator/frontier scheduling remains
+                        // deliberately inactive until the dedicated recovery-coordinator slice.
+                        let _ = (peer_id, wire);
+                    }
                     InboundEvent::PeerConnected(peer) => {
                         let peers_connected = p2p
                             .as_ref()
