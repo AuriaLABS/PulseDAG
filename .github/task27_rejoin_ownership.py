@@ -94,10 +94,10 @@ replace_once(
 )
 
 replace_once(
-    """                            let task27_authoritative_recovery_active =
-                                pending_task27_locator.is_some()
-                                    || pending_dag_frontier_peer.is_some()
-                                    || frontier_fetch_scheduler.queue_depth() > 0;
+    """                            let task27_authoritative_recovery_active = pending_task27_locator
+                                .is_some()
+                                || pending_dag_frontier_peer.is_some()
+                                || frontier_fetch_scheduler.queue_depth() > 0;
                             if !priority_already_active && !task27_authoritative_recovery_active {""",
     """                            let task27_authoritative_recovery_active =
                                 task27_recovery_active.load(Ordering::Relaxed);
