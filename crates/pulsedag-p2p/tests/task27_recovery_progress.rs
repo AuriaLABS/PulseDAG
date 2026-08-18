@@ -7,6 +7,7 @@ fn observation() -> RecoveryProgressObservationV1 {
     RecoveryProgressObservationV1 {
         local_selected_height: 100,
         network_selected_height: Some(105),
+        same_height_divergence: false,
         compatible_peer_available: true,
         pending_requests: 0,
         inflight_requests: 0,
@@ -116,6 +117,37 @@ fn incompatible_peer_does_not_authorize_v2_recovery() {
     assert_eq!(
         tracker.observe(current),
         RecoveryProgressDecisionV1::AwaitCompatiblePeer { gap: 5 }
+    );
+    assert_eq!(tracker.stagnant_cycles(), 0);
+}
+
+#[test]
+fn same_height_divergence_is_bounded_recovery_not_a_fake_height_gap() {
+    let mut tracker = RecoveryProgressTrackerV1::new(2);
+    let mut current = observation();
+    current.network_selected_height = Some(current.local_selected_height);
+    current.same_height_divergence = true;
+
+    assert_eq!(
+        tracker.observe(current),
+        RecoveryProgressDecisionV1::ScheduleRecovery {
+            gap: 0,
+            stagnant_cycles: 1,
+        }
+    );
+    assert_eq!(
+        tracker.observe(current),
+        RecoveryProgressDecisionV1::Degraded {
+            gap: 0,
+            stagnant_cycles: 2,
+            reason: RecoveryProgressReasonV1::SameHeightDivergenceIdle,
+        }
+    );
+
+    current.same_height_divergence = false;
+    assert_eq!(
+        tracker.observe(current),
+        RecoveryProgressDecisionV1::NoPositiveGap
     );
     assert_eq!(tracker.stagnant_cycles(), 0);
 }
