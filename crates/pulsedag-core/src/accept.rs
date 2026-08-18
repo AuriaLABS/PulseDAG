@@ -424,7 +424,17 @@ fn remove_orphan_transaction(txid: &str, state: &mut ChainState) {
     state.mempool.orphan_received_order.remove(txid);
 }
 
-fn promote_ready_orphans(state: &mut ChainState, source: AcceptSource) {
+#[derive(Clone, Copy)]
+enum TransactionAdmissionValidation<'a> {
+    LegacyV1,
+    Protocol(&'a crate::protocol::ProtocolActivationIdentity),
+}
+
+fn promote_ready_orphans(
+    state: &mut ChainState,
+    source: AcceptSource,
+    validation: TransactionAdmissionValidation<'_>,
+) {
     loop {
         let mut ready = state
             .mempool
@@ -449,7 +459,15 @@ fn promote_ready_orphans(state: &mut ChainState, source: AcceptSource) {
                 continue;
             };
             remove_orphan_transaction(&txid, state);
-            match accept_transaction(tx.clone(), state, source) {
+            let result = match validation {
+                TransactionAdmissionValidation::LegacyV1 => {
+                    accept_transaction(tx.clone(), state, source)
+                }
+                TransactionAdmissionValidation::Protocol(identity) => {
+                    accept_transaction_for_protocol(tx.clone(), state, source, identity)
+                }
+            };
+            match result {
                 Ok(()) => {
                     state.mempool.counters.orphan_promoted_total = state
                         .mempool
@@ -489,6 +507,34 @@ fn mempool_needs_reconcile(state: &ChainState) -> bool {
     expected_spent != state.mempool.spent_outpoints
 }
 
+fn preflight_protocol_transaction(
+    tx: &Transaction,
+    state: &ChainState,
+    identity: &crate::protocol::ProtocolActivationIdentity,
+) -> Result<(), PulseError> {
+    crate::tx_protocol::resolve_transaction_validation_path(identity, state)?;
+    if tx.version != identity.transaction_protocol_version {
+        return Err(PulseError::InvalidTransaction(format!(
+            "protocol identity requires transaction version {}, got {}",
+            identity.transaction_protocol_version, tx.version
+        )));
+    }
+    Ok(())
+}
+
+fn validate_transaction_for_admission(
+    tx: &Transaction,
+    state: &ChainState,
+    validation: TransactionAdmissionValidation<'_>,
+) -> Result<(), PulseError> {
+    match validation {
+        TransactionAdmissionValidation::LegacyV1 => validate_transaction(tx, state),
+        TransactionAdmissionValidation::Protocol(identity) => {
+            crate::tx_protocol::validate_transaction_for_protocol(tx, state, identity)
+        }
+    }
+}
+
 pub fn accept_transaction(
     tx: Transaction,
     state: &mut ChainState,
@@ -505,10 +551,61 @@ pub fn accept_transaction(
     }
 }
 
+pub fn accept_transaction_for_protocol(
+    tx: Transaction,
+    state: &mut ChainState,
+    source: AcceptSource,
+    identity: &crate::protocol::ProtocolActivationIdentity,
+) -> Result<(), PulseError> {
+    match accept_transaction_with_result_for_protocol(tx, state, source, identity) {
+        TxAcceptanceResult::Accepted | TxAcceptanceResult::Orphan => Ok(()),
+        TxAcceptanceResult::Duplicate => Err(PulseError::TxAlreadyExists),
+        TxAcceptanceResult::Invalid(reason) if reason == "double spend" => {
+            Err(PulseError::DoubleSpend)
+        }
+        TxAcceptanceResult::Invalid(reason) => Err(PulseError::InvalidTransaction(reason)),
+        TxAcceptanceResult::Rejected(reason) => Err(PulseError::InvalidTransaction(reason)),
+    }
+}
+
 pub fn accept_transaction_with_result(
     tx: Transaction,
     state: &mut ChainState,
     source: AcceptSource,
+) -> TxAcceptanceResult {
+    accept_transaction_with_result_internal(
+        tx,
+        state,
+        source,
+        TransactionAdmissionValidation::LegacyV1,
+    )
+}
+
+pub fn accept_transaction_with_result_for_protocol(
+    tx: Transaction,
+    state: &mut ChainState,
+    source: AcceptSource,
+    identity: &crate::protocol::ProtocolActivationIdentity,
+) -> TxAcceptanceResult {
+    if let Err(err) = preflight_protocol_transaction(&tx, state, identity) {
+        state.mempool.counters.rejected_total =
+            state.mempool.counters.rejected_total.saturating_add(1);
+        return classify_tx_validation_error(err);
+    }
+
+    accept_transaction_with_result_internal(
+        tx,
+        state,
+        source,
+        TransactionAdmissionValidation::Protocol(identity),
+    )
+}
+
+fn accept_transaction_with_result_internal(
+    tx: Transaction,
+    state: &mut ChainState,
+    source: AcceptSource,
+    validation: TransactionAdmissionValidation<'_>,
 ) -> TxAcceptanceResult {
     if mempool_needs_reconcile(state) {
         reconcile_mempool(state);
@@ -522,7 +619,7 @@ pub fn accept_transaction_with_result(
         return TxAcceptanceResult::Duplicate;
     }
 
-    if let Err(err) = validate_transaction(&tx, state) {
+    if let Err(err) = validate_transaction_for_admission(&tx, state, validation) {
         if matches!(err, PulseError::UtxoNotFound) {
             store_orphan_transaction(tx, state);
             return TxAcceptanceResult::Orphan;
@@ -679,7 +776,7 @@ pub fn accept_transaction_with_result(
     state.mempool.first_seen.insert(tx.txid.clone(), sequence);
     state.mempool.transactions.insert(tx.txid.clone(), tx);
     state.mempool.counters.accepted_total = state.mempool.counters.accepted_total.saturating_add(1);
-    promote_ready_orphans(state, source);
+    promote_ready_orphans(state, source, validation);
     TxAcceptanceResult::Accepted
 }
 

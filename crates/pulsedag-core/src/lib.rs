@@ -37,7 +37,8 @@ pub mod validation_v2;
 
 pub use accept::{
     accept_block, accept_block_atomically, accept_block_with_result, accept_transaction,
-    accept_transaction_with_result, mutate_chain_state_serialized, AcceptSource,
+    accept_transaction_for_protocol, accept_transaction_with_result,
+    accept_transaction_with_result_for_protocol, mutate_chain_state_serialized, AcceptSource,
     AtomicBlockAcceptance, BlockAcceptanceResult, ChainStateMutationOutcome, TxAcceptanceResult,
 };
 pub use acceptance_v2::{commit_ghostdag_v1_metadata_for_activated_v2, ActivatedV2MetadataCommit};
@@ -170,6 +171,14 @@ pub use selection_v2::{
 
 pub use consistency::{assert_dag_consistent_for_tests, dag_consistency_issues};
 
+pub use mining::{
+    build_candidate_block, build_coinbase_transaction, current_ts, is_coinbase,
+    refresh_block_consensus_ids, refresh_block_consensus_ids_with_state,
+};
+pub use mining_v2::{
+    build_candidate_block_v2, build_coinbase_transaction_v2, refresh_block_consensus_ids_v2,
+    CandidateBlockV2Spec,
+};
 pub use orphans::{
     adopt_ready_orphans, adopt_ready_orphans_with_result, classify_orphan_backlog,
     evict_stale_orphans_bounded, mark_selected_segment_required_parent, missing_block_parents,
@@ -185,15 +194,6 @@ pub use orphans::{
     OrphanQueueResult, ResidualMissingParentTerminalResult, DEFAULT_ORPHAN_MAX_AGE_MS,
     DEFAULT_ORPHAN_MAX_COUNT, DEFAULT_ORPHAN_RECOVERY_EVICT_LIMIT,
     DEFAULT_TERMINAL_MISSING_PARENT_HISTORY_LIMIT,
-};
-
-pub use mining::{
-    build_candidate_block, build_coinbase_transaction, current_ts, is_coinbase,
-    refresh_block_consensus_ids, refresh_block_consensus_ids_with_state,
-};
-pub use mining_v2::{
-    build_candidate_block_v2, build_coinbase_transaction_v2, refresh_block_consensus_ids_v2,
-    CandidateBlockV2Spec,
 };
 pub use sync_pipeline::{
     rank_sync_candidates, RankedSyncPeer, SyncPeerCandidate, SyncPhase, SyncPipelineStatus,
