@@ -11,6 +11,7 @@ pub mod ghostdag_v1;
 pub mod header_v2;
 pub mod mempool;
 pub mod mining;
+pub mod mining_protocol;
 pub mod mining_v2;
 pub mod ordering;
 pub mod ordering_v2;
@@ -90,8 +91,8 @@ pub use pow::{
     selected_pow_name, target_from_compact, validate_pow_header, validate_pow_preimage_encoding,
     verify_work, CanonicalPowAdapter, CanonicalPowAttempt, CanonicalPowEngine, CanonicalPowHash,
     CanonicalPowMaterial, CanonicalPowTarget, DevDifficultyPolicy, DevDifficultySnapshot,
-    PowAlgorithm, PowEngine, PowEvaluation, PowHeaderPreimage, PowRejectReason,
-    PowTargetComparison, PowValidationResult, POW_HEADER_PREIMAGE_VERSION,
+    PowAlgorithm, PowEngine, PowEvaluation, PowHeaderPreimage, PowRejectReason, PowTargetComparison,
+    PowValidationResult, POW_HEADER_PREIMAGE_VERSION,
 };
 pub use pow_protocol::{
     evaluate_pow_for_protocol, resolve_pow_validation_path, validate_pow_for_protocol,
@@ -174,6 +175,10 @@ pub use consistency::{assert_dag_consistent_for_tests, dag_consistency_issues};
 pub use mining::{
     build_candidate_block, build_coinbase_transaction, current_ts, is_coinbase,
     refresh_block_consensus_ids, refresh_block_consensus_ids_with_state,
+};
+pub use mining_protocol::{
+    derive_activated_v2_mining_parent_context, ActivatedV2MiningParentContext,
+    MiningParentExclusionReasonV1, MiningParentExclusionV1,
 };
 pub use mining_v2::{
     build_candidate_block_v2, build_coinbase_transaction_v2, refresh_block_consensus_ids_v2,
