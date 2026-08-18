@@ -13,6 +13,7 @@ pub mod mempool;
 pub mod mining;
 pub mod mining_protocol;
 pub mod mining_state_v2;
+pub mod mining_template_v2;
 pub mod mining_v2;
 pub mod ordering;
 pub mod ordering_v2;
@@ -183,6 +184,10 @@ pub use mining_protocol::{
 };
 pub use mining_state_v2::{
     finalize_activated_v2_mining_candidate_state, ActivatedV2MiningStateContext,
+};
+pub use mining_template_v2::{
+    build_activated_v2_mining_template, ActivatedV2MiningTemplate, ActivatedV2MiningTemplateSpec,
+    ACTIVATED_V2_MINING_TEMPLATE_SCHEMA_VERSION,
 };
 pub use mining_v2::{
     build_candidate_block_v2, build_coinbase_transaction_v2, refresh_block_consensus_ids_v2,
