@@ -97,8 +97,8 @@ pub use pow::{
     PowTargetComparison, PowValidationResult, POW_HEADER_PREIMAGE_VERSION,
 };
 pub use pow_protocol::{
-    evaluate_pow_for_protocol, resolve_pow_validation_path, validate_pow_for_protocol,
-    PowValidationPath,
+    evaluate_pow_for_protocol, resolve_pow_identity_path, resolve_pow_validation_path,
+    validate_pow_for_protocol, PowValidationPath,
 };
 pub use pow_v2::{canonical_pow_v2_adapter, CanonicalPowV2Adapter};
 

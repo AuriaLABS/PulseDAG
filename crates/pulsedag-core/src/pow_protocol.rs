@@ -33,19 +33,9 @@ fn invalid_identity(message: impl Into<String>) -> PulseError {
     ))
 }
 
-pub fn resolve_pow_validation_path(
+fn resolve_validated_pow_identity_path(
     identity: &ProtocolActivationIdentity,
-    state: &ChainState,
 ) -> Result<PowValidationPath, PulseError> {
-    identity.validate().map_err(invalid_identity)?;
-
-    if identity.chain_id != state.chain_id {
-        return Err(PulseError::ChainIdMismatch);
-    }
-    if identity.genesis_hash != state.dag.genesis_hash {
-        return Err(invalid_identity("genesis hash does not match chain state"));
-    }
-
     match (
         identity.transaction_protocol_version,
         identity.block_header_protocol_version,
@@ -63,6 +53,37 @@ pub fn resolve_pow_validation_path(
             "mixed or unsupported transaction/header/consensus version tuple",
         )),
     }
+}
+
+/// Resolve only the protocol-version/consensus tuple carried by an activation
+/// identity. This is intentionally independent of `ChainState` so external
+/// protocol-aware components such as the standalone miner can select the exact
+/// v1/v2 PoW domain without duplicating the consensus tuple match.
+///
+/// Callers that own authoritative chain state must continue to use
+/// [`resolve_pow_validation_path`] so chain-id and genesis identity are checked
+/// before PoW evaluation.
+pub fn resolve_pow_identity_path(
+    identity: &ProtocolActivationIdentity,
+) -> Result<PowValidationPath, PulseError> {
+    identity.validate().map_err(invalid_identity)?;
+    resolve_validated_pow_identity_path(identity)
+}
+
+pub fn resolve_pow_validation_path(
+    identity: &ProtocolActivationIdentity,
+    state: &ChainState,
+) -> Result<PowValidationPath, PulseError> {
+    identity.validate().map_err(invalid_identity)?;
+
+    if identity.chain_id != state.chain_id {
+        return Err(PulseError::ChainIdMismatch);
+    }
+    if identity.genesis_hash != state.dag.genesis_hash {
+        return Err(invalid_identity("genesis hash does not match chain state"));
+    }
+
+    resolve_validated_pow_identity_path(identity)
 }
 
 pub fn evaluate_pow_for_protocol(
@@ -134,6 +155,26 @@ mod tests {
     }
 
     #[test]
+    fn identity_only_path_matches_legacy_and_activated_tuples() {
+        let state = init_chain_state("pulsedag-testnet".to_string());
+        let legacy = ProtocolActivationIdentity::legacy_from_state(&state);
+        assert_eq!(
+            resolve_pow_identity_path(&legacy).unwrap(),
+            PowValidationPath::LegacyV1
+        );
+
+        let activated = ProtocolActivationIdentity::activated_v2(
+            "pulsedag-testnet-v2",
+            "genesis-v2",
+            GHOSTDAG_V1_ORDERING_VERSION,
+        );
+        assert_eq!(
+            resolve_pow_identity_path(&activated).unwrap(),
+            PowValidationPath::ActivatedV2
+        );
+    }
+
+    #[test]
     fn legacy_identity_selects_only_v1_pow() {
         let state = init_chain_state("pulsedag-testnet".to_string());
         let identity = ProtocolActivationIdentity::legacy_from_state(&state);
@@ -192,6 +233,10 @@ mod tests {
         let state = init_chain_state("pulsedag-testnet".to_string());
         let mut identity = ProtocolActivationIdentity::legacy_from_state(&state);
         identity.block_header_protocol_version = BLOCK_HEADER_VERSION_V2;
+        assert!(matches!(
+            resolve_pow_identity_path(&identity),
+            Err(PulseError::InvalidBlock(message)) if message.contains("mixed or unsupported")
+        ));
         assert!(matches!(
             resolve_pow_validation_path(&identity, &state),
             Err(PulseError::InvalidBlock(message)) if message.contains("mixed or unsupported")
