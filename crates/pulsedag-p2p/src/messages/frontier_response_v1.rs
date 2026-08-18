@@ -8,7 +8,8 @@ use pulsedag_core::{
 use super::{
     resolve_selected_common_ancestor_v1, DagFrontierEntryV1, DagFrontierResponseV1,
     DagSyncContractError, SelectedChainLocatorV1, SelectedLocatorError,
-    MAX_SELECTED_CHAIN_SUFFIX_HASHES, P2P_DAG_SYNC_CONTRACT_VERSION,
+    MAX_DAG_FRONTIER_REQUIRED_CONTEXT, MAX_SELECTED_CHAIN_SUFFIX_HASHES,
+    P2P_DAG_SYNC_CONTRACT_VERSION,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -73,15 +74,33 @@ fn collect_required_reference(
     required: &mut BTreeSet<Hash>,
     referenced_hash: &Hash,
 ) -> Result<(), DagFrontierBuildErrorV1> {
-    if selected_suffix.contains(referenced_hash) || frontier.contains(referenced_hash) {
-        return Ok(());
+    let mut pending = vec![referenced_hash.clone()];
+    while let Some(hash) = pending.pop() {
+        if selected_suffix.contains(&hash) || frontier.contains(&hash) || required.contains(&hash) {
+            continue;
+        }
+        let block = state.dag.blocks.get(&hash).ok_or_else(|| {
+            DagFrontierBuildErrorV1::MissingReferencedContext { hash: hash.clone() }
+        })?;
+        validate_canonical_hashes(&hash, "parents", &block.header.parents)?;
+        required.insert(hash.clone());
+        if required.len() > MAX_DAG_FRONTIER_REQUIRED_CONTEXT {
+            return Err(DagFrontierBuildErrorV1::Contract(
+                DagSyncContractError::RequiredContextTooLarge {
+                    observed: required.len(),
+                    maximum: MAX_DAG_FRONTIER_REQUIRED_CONTEXT,
+                },
+            ));
+        }
+        for parent in block.header.parents.iter().rev() {
+            if !selected_suffix.contains(parent)
+                && !frontier.contains(parent)
+                && !required.contains(parent)
+            {
+                pending.push(parent.clone());
+            }
+        }
     }
-    if !state.dag.blocks.contains_key(referenced_hash) {
-        return Err(DagFrontierBuildErrorV1::MissingReferencedContext {
-            hash: referenced_hash.clone(),
-        });
-    }
-    required.insert(referenced_hash.clone());
     Ok(())
 }
 
@@ -430,7 +449,16 @@ mod tests {
         assert_eq!(response.common_ancestor, "b");
         assert_eq!(response.selected_tip, "c");
         assert_eq!(response.selected_chain_suffix, vec!["b", "c"]);
-        assert_eq!(response.required_context, vec!["ctx-a", "ctx-z"]);
+        let expected_context = [
+            state.dag.genesis_hash.clone(),
+            "ctx-a".to_string(),
+            "ctx-z".to_string(),
+        ]
+        .into_iter()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+        assert_eq!(response.required_context, expected_context);
         assert_eq!(
             response
                 .frontier
@@ -448,6 +476,46 @@ mod tests {
         assert_eq!(d.consensus.blue_work_decimal, "19");
         assert_eq!(d.consensus.merge_set_blues, vec!["ctx-a", "ctx-z"]);
         assert_eq!(response.validate_shape(), Ok(()));
+    }
+
+    #[test]
+    fn required_context_is_transitively_closed_over_parent_ancestry() {
+        let (state, identity, locator) = fixture();
+        let response = build_dag_frontier_response_v1(&identity, &locator, &state)
+            .unwrap()
+            .expect("retained common ancestor");
+        let selected = response
+            .selected_chain_suffix
+            .iter()
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        let frontier = response
+            .frontier
+            .iter()
+            .map(|entry| entry.hash.clone())
+            .collect::<BTreeSet<_>>();
+        let required = response
+            .required_context
+            .iter()
+            .cloned()
+            .collect::<BTreeSet<_>>();
+
+        assert!(required.contains(&state.dag.genesis_hash));
+        for hash in &required {
+            let block = state
+                .dag
+                .blocks
+                .get(hash)
+                .expect("required context must reference a local block");
+            for parent in &block.header.parents {
+                assert!(
+                    selected.contains(parent)
+                        || frontier.contains(parent)
+                        || required.contains(parent),
+                    "required context block {hash} has unresolved parent {parent}"
+                );
+            }
+        }
     }
 
     #[test]
