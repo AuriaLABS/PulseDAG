@@ -2,6 +2,7 @@
 pub struct RecoveryProgressObservationV1 {
     pub local_selected_height: u64,
     pub network_selected_height: Option<u64>,
+    pub same_height_divergence: bool,
     pub compatible_peer_available: bool,
     pub pending_requests: usize,
     pub inflight_requests: usize,
@@ -30,6 +31,7 @@ impl RecoveryProgressObservationV1 {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RecoveryProgressReasonV1 {
     PositiveGapIdle,
+    SameHeightDivergenceIdle,
     MissingParentCycleNoProgress,
 }
 
@@ -83,7 +85,7 @@ impl RecoveryProgressTrackerV1 {
         current: RecoveryProgressObservationV1,
     ) -> RecoveryProgressDecisionV1 {
         let gap = current.network_gap();
-        if gap == 0 {
+        if gap == 0 && !current.same_height_divergence {
             self.stagnant_cycles = 0;
             self.previous = Some(current);
             return RecoveryProgressDecisionV1::NoPositiveGap;
@@ -111,6 +113,8 @@ impl RecoveryProgressTrackerV1 {
         let active_work = current.active_work();
         let reason = if current.pending_missing_parents > 0 || current.orphan_count > 0 {
             RecoveryProgressReasonV1::MissingParentCycleNoProgress
+        } else if gap == 0 && current.same_height_divergence {
+            RecoveryProgressReasonV1::SameHeightDivergenceIdle
         } else {
             RecoveryProgressReasonV1::PositiveGapIdle
         };
