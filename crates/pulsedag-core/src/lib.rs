@@ -91,8 +91,8 @@ pub use pow::{
     selected_pow_name, target_from_compact, validate_pow_header, validate_pow_preimage_encoding,
     verify_work, CanonicalPowAdapter, CanonicalPowAttempt, CanonicalPowEngine, CanonicalPowHash,
     CanonicalPowMaterial, CanonicalPowTarget, DevDifficultyPolicy, DevDifficultySnapshot,
-    PowAlgorithm, PowEngine, PowEvaluation, PowHeaderPreimage, PowRejectReason, PowTargetComparison,
-    PowValidationResult, POW_HEADER_PREIMAGE_VERSION,
+    PowAlgorithm, PowEngine, PowEvaluation, PowHeaderPreimage, PowRejectReason,
+    PowTargetComparison, PowValidationResult, POW_HEADER_PREIMAGE_VERSION,
 };
 pub use pow_protocol::{
     evaluate_pow_for_protocol, resolve_pow_validation_path, validate_pow_for_protocol,
