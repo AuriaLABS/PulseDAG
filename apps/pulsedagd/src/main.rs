@@ -75,6 +75,21 @@ mod task27_rejoin_runtime_tests {
         }
     }
 
+    fn local_inventory(selected_height: u64) -> TipInventoryStatus {
+        TipInventoryStatus {
+            selected_height: Some(selected_height),
+            ..TipInventoryStatus::default()
+        }
+    }
+
+    fn matching_remote(peer_id: &str, local: &TipInventoryStatus) -> RemoteSelectedTipStatus {
+        let mut remote = remote(peer_id, local.selected_height.unwrap_or_default());
+        remote.selected_tip = local.selected_tip.clone();
+        remote.ordered_dag_tip = local.ordered_dag_tip.clone();
+        remote.state_root_digest = local.state_root_digest.clone();
+        remote
+    }
+
     #[test]
     fn task27_rejoin_uses_only_exact_eligible_peer_with_highest_gap() {
         let status = P2pStatus {
@@ -89,10 +104,61 @@ mod task27_rejoin_runtime_tests {
         let eligible = vec!["v2-a".to_string(), "v2-b".to_string(), "v2-low".to_string()];
 
         assert_eq!(
-            task27_rejoin_peer_for_gap(&status, &eligible, 200),
-            Some(("v2-a".to_string(), 220))
+            task27_rejoin_peer_for_reconcile(&status, &eligible, &local_inventory(200)),
+            Some(("v2-a".to_string(), 220, false))
         );
-        assert_eq!(task27_rejoin_peer_for_gap(&status, &eligible, 220), None);
+        assert_eq!(
+            task27_rejoin_peer_for_reconcile(&status, &eligible, &local_inventory(220)),
+            None
+        );
+    }
+
+    #[test]
+    fn task27_rejoin_detects_same_height_tip_order_or_state_divergence() {
+        let local = TipInventoryStatus {
+            selected_tip: Some("local-tip".to_string()),
+            selected_height: Some(220),
+            ordered_dag_tip: Some("local-order".to_string()),
+            state_root_digest: Some("local-root".to_string()),
+            ..TipInventoryStatus::default()
+        };
+        let mut v2_b = matching_remote("v2-b", &local);
+        v2_b.state_root_digest = Some("remote-root".to_string());
+        let mut v2_a = matching_remote("v2-a", &local);
+        v2_a.selected_tip = Some("remote-tip".to_string());
+        let mut legacy = matching_remote("legacy", &local);
+        legacy.ordered_dag_tip = Some("legacy-order".to_string());
+        let status = P2pStatus {
+            remote_selected_tip_inventory: vec![
+                legacy,
+                matching_remote("v2-match", &local),
+                v2_b,
+                v2_a,
+            ],
+            ..P2pStatus::default()
+        };
+        let eligible = vec![
+            "v2-a".to_string(),
+            "v2-b".to_string(),
+            "v2-match".to_string(),
+        ];
+
+        assert_eq!(
+            task27_rejoin_peer_for_reconcile(&status, &eligible, &local),
+            Some(("v2-a".to_string(), 220, true))
+        );
+
+        let matching_status = P2pStatus {
+            remote_selected_tip_inventory: vec![
+                matching_remote("v2-a", &local),
+                matching_remote("v2-b", &local),
+            ],
+            ..P2pStatus::default()
+        };
+        assert_eq!(
+            task27_rejoin_peer_for_reconcile(&matching_status, &eligible, &local),
+            None
+        );
     }
 }
 
@@ -160,6 +226,16 @@ fn observed_block_requires_selected_locator(
     !priority_active && observed_height.saturating_sub(local_height) >= minimum_gap
 }
 
+fn remote_same_height_divergence(
+    remote: &pulsedag_p2p::RemoteSelectedTipStatus,
+    local: &TipInventoryStatus,
+) -> bool {
+    remote.selected_height == local.selected_height.unwrap_or_default()
+        && (remote.selected_tip != local.selected_tip
+            || remote.ordered_dag_tip != local.ordered_dag_tip
+            || remote.state_root_digest != local.state_root_digest)
+}
+
 fn selected_locator_peer_for_reconcile(
     status: &P2pStatus,
     local: &TipInventoryStatus,
@@ -170,21 +246,18 @@ fn selected_locator_peer_for_reconcile(
         .iter()
         .filter(|remote| remote.connected && remote.direct_request_capable)
         .filter(|remote| {
-            remote.selected_height > local_height
-                || (remote.selected_height == local_height
-                    && (remote.selected_tip != local.selected_tip
-                        || remote.ordered_dag_tip != local.ordered_dag_tip
-                        || remote.state_root_digest != local.state_root_digest))
+            remote.selected_height > local_height || remote_same_height_divergence(remote, local)
         })
         .max_by_key(|remote| remote.selected_height)
         .map(|remote| remote.peer_id.clone())
 }
 
-fn task27_rejoin_peer_for_gap(
+fn task27_rejoin_peer_for_reconcile(
     status: &P2pStatus,
     eligible_v2_peers: &[String],
-    local_height: u64,
-) -> Option<(String, u64)> {
+    local: &TipInventoryStatus,
+) -> Option<(String, u64, bool)> {
+    let local_height = local.selected_height.unwrap_or_default();
     let eligible = eligible_v2_peers
         .iter()
         .map(String::as_str)
@@ -194,8 +267,16 @@ fn task27_rejoin_peer_for_gap(
         .iter()
         .filter(|remote| remote.connected && remote.direct_request_capable)
         .filter(|remote| eligible.contains(remote.peer_id.as_str()))
-        .filter(|remote| remote.selected_height > local_height)
-        .map(|remote| (remote.peer_id.clone(), remote.selected_height))
+        .filter_map(|remote| {
+            let same_height_divergence = remote_same_height_divergence(remote, local);
+            (remote.selected_height > local_height || same_height_divergence).then(|| {
+                (
+                    remote.peer_id.clone(),
+                    remote.selected_height,
+                    same_height_divergence,
+                )
+            })
+        })
         .max_by(|a, b| a.1.cmp(&b.1).then_with(|| b.0.cmp(&a.0)))
 }
 
@@ -2680,20 +2761,27 @@ async fn main() -> Result<()> {
                     }
                 }
                 let p2p_status = p2p.as_ref().and_then(|handle| handle.status().ok());
-                let (local_selected_height, pending_missing_parents, orphan_count) = {
+                let (local_inventory, local_selected_height, pending_missing_parents, orphan_count) = {
                     let guard = chain.read().await;
                     let inventory = local_tip_inventory_status(&guard);
+                    let local_selected_height =
+                        inventory.selected_height.unwrap_or(guard.dag.best_height);
                     (
-                        inventory.selected_height.unwrap_or(guard.dag.best_height),
+                        inventory,
+                        local_selected_height,
                         pulsedag_core::pending_missing_parent_count(&guard),
                         guard.orphan_blocks.len(),
                     )
                 };
                 let task27_rejoin_candidate = p2p_status.as_ref().and_then(|status| {
-                    task27_rejoin_peer_for_gap(status, &eligible_v2_peers, local_selected_height)
+                    task27_rejoin_peer_for_reconcile(status, &eligible_v2_peers, &local_inventory)
                 });
-                let network_selected_height =
-                    task27_rejoin_candidate.as_ref().map(|(_, height)| *height);
+                let network_selected_height = task27_rejoin_candidate
+                    .as_ref()
+                    .map(|(_, height, _)| *height);
+                let same_height_divergence = task27_rejoin_candidate
+                    .as_ref()
+                    .is_some_and(|(_, _, divergence)| *divergence);
                 let (
                     missing_parent_responses,
                     orphan_reprocess_attempts,
@@ -2718,6 +2806,7 @@ async fn main() -> Result<()> {
                     task27_recovery_tracker.observe(RecoveryProgressObservationV1 {
                         local_selected_height,
                         network_selected_height,
+                        same_height_divergence,
                         compatible_peer_available: !eligible_v2_peers.is_empty(),
                         pending_requests: task27_pending_work,
                         inflight_requests: block_requests.pending.len(),
@@ -2745,8 +2834,10 @@ async fn main() -> Result<()> {
                         && pending_dag_frontier_peer.is_none()
                         && frontier_fetch_scheduler.queue_depth() == 0 =>
                     {
-                        if let (Some((peer_id, remote_height)), Some(p2p_handle)) =
-                            (task27_rejoin_candidate.clone(), p2p.as_ref())
+                        if let (
+                            Some((peer_id, remote_height, same_height_divergence)),
+                            Some(p2p_handle),
+                        ) = (task27_rejoin_candidate.clone(), p2p.as_ref())
                         {
                             match p2p_handle.local_protocol_capabilities_v1() {
                                 Ok(Some(local_capabilities)) => {
@@ -2811,7 +2902,8 @@ async fn main() -> Result<()> {
                                                             remote_height,
                                                             gap,
                                                             stagnant_cycles,
-                                                            "started Task 27 bounded rejoin locator recovery"
+                                                            same_height_divergence,
+                                                            "started Task 27 bounded reconcile locator recovery"
                                                         );
                                                     }
                                                     Err(error) => {
