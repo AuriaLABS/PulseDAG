@@ -1,6 +1,11 @@
+mod template_protocol;
+
 use anyhow::{anyhow, Context, Result};
 use pulsedag_api::ApiResponse;
-use pulsedag_core::types::{compute_block_hash, Block, BlockHeader};
+use pulsedag_core::types::{Block, BlockHeader};
+use pulsedag_core::ProtocolActivationIdentity;
+use pulsedag_miner::protocol_backend::{verify_backend_result_for_protocol, ProtocolMiningBackend};
+use pulsedag_miner::protocol_pow::compute_mined_block_hash;
 use pulsedag_miner::{verify_backend_result_with_core, CpuMiningBackend, MiningBackend};
 #[cfg(feature = "gpu")]
 use pulsedag_miner::{GpuBackendConfig, GpuMiningBackend};
@@ -9,7 +14,11 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use template_protocol::validated_template_protocol_identity;
 use tokio::time::{sleep, Duration};
+
+trait RuntimeMiningBackend: MiningBackend + ProtocolMiningBackend {}
+impl<T> RuntimeMiningBackend for T where T: MiningBackend + ProtocolMiningBackend {}
 
 #[derive(Debug, Serialize)]
 struct TemplateRequest {
@@ -25,6 +34,10 @@ struct TemplateData {
     expires_at_unix: u64,
     freshness_ttl_secs: u64,
     freshness_grace_secs: u64,
+    #[serde(default)]
+    protocol_identity: Option<ProtocolActivationIdentity>,
+    #[serde(default)]
+    protocol_identity_fingerprint: Option<String>,
     block: Block,
     target_hex: String,
     compact_target: u32,
@@ -278,9 +291,14 @@ enum LoopRefreshDecision {
     RefreshWork,
 }
 
-fn apply_mined_header(block: &mut Block, mined_header: BlockHeader) {
+fn apply_mined_header(
+    block: &mut Block,
+    mined_header: BlockHeader,
+    identity: Option<&ProtocolActivationIdentity>,
+) -> Result<()> {
     block.header = mined_header;
-    block.hash = compute_block_hash(&block.header);
+    block.hash = compute_mined_block_hash(&block.header, identity)?;
+    Ok(())
 }
 
 #[tokio::main]
@@ -437,12 +455,10 @@ where
 }
 
 fn usage() -> &'static str {
-    "usage: pulsedag-miner --miner-address <address> [--node http://127.0.0.1:8080] [--backend cpu|gpu|auto] [--gpu-device INDEX] [--max-tries 50000] [--threads N] [--loop] [--sleep-ms 1500] [--refresh-before-expiry-ms 1000] [--worker-id ID] [--no-heartbeat]
-
-Mining backend defaults to cpu. The auto backend prefers GPU only when GPU is compiled and initialization succeeds; otherwise it falls back to CPU. The gpu backend is optional and requires building pulsedag-miner with the gpu feature. GPU device selection uses --gpu-device <index>, with conservative OpenCL batch/work defaults overrideable via PULSEDAG_MINER_GPU_BATCH_SIZE and PULSEDAG_MINER_GPU_WORK_SIZE. The canonical kHeavyHash OpenCL kernel is not implemented yet, so the gpu backend refuses to mine rather than using a non-canonical hash path."
+    "usage: pulsedag-miner --miner-address <address> [--node http://127.0.0.1:8080] [--backend cpu|gpu|auto] [--gpu-device INDEX] [--max-tries 50000] [--threads N] [--loop] [--sleep-ms 1500] [--refresh-before-expiry-ms 1000] [--worker-id ID] [--no-heartbeat]\n\nMining backend defaults to cpu. The auto backend prefers GPU only when GPU is compiled and initialization succeeds; otherwise it falls back to CPU. The gpu backend is optional and requires building pulsedag-miner with the gpu feature. GPU device selection uses --gpu-device <index>, with conservative OpenCL batch/work defaults overrideable via PULSEDAG_MINER_GPU_BATCH_SIZE and PULSEDAG_MINER_GPU_WORK_SIZE. The canonical kHeavyHash OpenCL kernel is not implemented yet, so the gpu backend refuses to mine rather than using a non-canonical hash path."
 }
 
-fn mining_backend(cfg: &Config) -> Result<Arc<dyn MiningBackend>> {
+fn mining_backend(cfg: &Config) -> Result<Arc<dyn RuntimeMiningBackend>> {
     match cfg.backend {
         BackendKind::Cpu => {
             println!("miner_backend requested=cpu active=cpu cpu_backend_available=true");
@@ -472,14 +488,14 @@ fn mining_backend(cfg: &Config) -> Result<Arc<dyn MiningBackend>> {
 }
 
 #[cfg(not(feature = "gpu"))]
-fn gpu_mining_backend(_device_index: Option<usize>) -> Result<Arc<dyn MiningBackend>> {
+fn gpu_mining_backend(_device_index: Option<usize>) -> Result<Arc<dyn RuntimeMiningBackend>> {
     Err(anyhow!(
         "GPU backend requested but pulsedag-miner was built without the gpu feature."
     ))
 }
 
 #[cfg(feature = "gpu")]
-fn gpu_mining_backend(device_index: Option<usize>) -> Result<Arc<dyn MiningBackend>> {
+fn gpu_mining_backend(device_index: Option<usize>) -> Result<Arc<dyn RuntimeMiningBackend>> {
     let config = GpuBackendConfig::default().with_device_index(device_index);
     Ok(Arc::new(GpuMiningBackend::new(config)?))
 }
@@ -578,7 +594,7 @@ fn loop_refresh_decision_after_outcome(_outcome: MineOnceOutcome) -> LoopRefresh
 async fn mine_once(
     client: &Client,
     cfg: &Config,
-    backend: Arc<dyn MiningBackend>,
+    backend: Arc<dyn RuntimeMiningBackend>,
     telemetry: &mut MinerTelemetry,
 ) -> Result<MineOnceOutcome> {
     let template_url = format!("{}/mining/template", cfg.node.trim_end_matches('/'));
@@ -597,6 +613,12 @@ async fn mine_once(
         .data
         .ok_or_else(|| anyhow!("template endpoint returned no data"))?;
 
+    let protocol_identity = validated_template_protocol_identity(
+        &template.block.header,
+        template.protocol_identity.as_ref(),
+        template.protocol_identity_fingerprint.as_deref(),
+    )?;
+    let protocol_identity_fingerprint = template.protocol_identity_fingerprint.clone();
     let template_id = template.template_id;
     let mut block = template.block;
     telemetry.record_template_received(block.header.height);
@@ -614,15 +636,20 @@ async fn mine_once(
         cfg.max_tries,
         cfg.threads,
         target_bits,
+        protocol_identity.clone(),
     )
     .await?;
     let mut verified_header = block.header.clone();
     verified_header.nonce = mining.header.nonce;
-    apply_mined_header(&mut block, verified_header);
+    apply_mined_header(&mut block, verified_header, protocol_identity.as_ref())?;
     telemetry.record_mining_result(mining.tries, mining.hashes_per_sec);
     telemetry.log("mining_result");
 
-    let verification = match verify_backend_result_with_core(&block.header, target_bits) {
+    let verification_result = match protocol_identity.as_ref() {
+        Some(identity) => verify_backend_result_for_protocol(&block.header, target_bits, identity),
+        None => verify_backend_result_with_core(&block.header, target_bits),
+    };
+    let verification = match verification_result {
         Ok(verification) => verification,
         Err(err) => {
             println!(
@@ -647,7 +674,7 @@ async fn mine_once(
     }
 
     println!(
-        "template received: protocol_version={} id={} height={} hash={} difficulty={} created_at={} expires_at={} ttl={}s grace={}s target_hex={}",
+        "template received: protocol_version={} id={} height={} hash={} difficulty={} created_at={} expires_at={} ttl={}s grace={}s target_hex={} protocol_identity_fingerprint={}",
         template.protocol_version,
         template_id,
         block.header.height,
@@ -657,7 +684,8 @@ async fn mine_once(
         template.expires_at_unix,
         template.freshness_ttl_secs,
         template.freshness_grace_secs,
-        template.target_hex
+        template.target_hex,
+        protocol_identity_fingerprint.as_deref().unwrap_or("legacy-v1")
     );
     println!("mining: algorithm={} pow_engine=canonical_core template_id={} height={} target_hex={} nonce={} pow_hash={} attempts={} hashes_per_sec={:.2} accepted={} elapsed_ms={}",
         template.algorithm, template_id, block.header.height, mining.target_hex, block.header.nonce, verification.final_hash_hex, mining.tries, mining.hashes_per_sec, verification.accepted, mining.elapsed_ms);
@@ -793,17 +821,21 @@ async fn send_worker_heartbeat(client: &Client, cfg: &Config, telemetry: &MinerT
 }
 
 async fn mine_header_with_backend(
-    backend: Arc<dyn MiningBackend>,
+    backend: Arc<dyn RuntimeMiningBackend>,
     header: BlockHeader,
     max_tries: u64,
     threads: usize,
     target_bits: u32,
+    identity: Option<ProtocolActivationIdentity>,
 ) -> Result<MiningResult> {
     let max_tries = max_tries.max(1);
     let start = Instant::now();
 
-    let result = tokio::task::spawn_blocking(move || {
-        backend.mine_header(header, max_tries, threads, target_bits)
+    let result = tokio::task::spawn_blocking(move || match identity.as_ref() {
+        Some(identity) => {
+            backend.mine_header_for_protocol(header, max_tries, threads, target_bits, identity)
+        }
+        None => backend.mine_header(header, max_tries, threads, target_bits),
     })
     .await
     .context("mining worker task panicked")??;
@@ -839,6 +871,7 @@ mod tests {
         Config, LoopRefreshDecision, MineOnceOutcome, MinerTelemetry, SubmitRequest,
         TemplateSkipReason,
     };
+    use pulsedag_core::{ProtocolActivationIdentity, GHOSTDAG_V1_ORDERING_VERSION};
 
     fn telemetry_test_config() -> Config {
         Config {
@@ -966,7 +999,9 @@ mod tests {
             .mine_header(header, 1, 1, 1)
             .expect_err("gpu backend scaffold must not mine yet");
 
-        assert_eq!(err.to_string(), "GPU backend is not implemented yet.");
+        assert!(err
+            .to_string()
+            .contains("canonical kHeavyHash OpenCL mining is not implemented"));
     }
 
     #[test]
@@ -1245,10 +1280,46 @@ mod tests {
         };
         let mut mined_header = header;
         mined_header.nonce = 1;
-        apply_mined_header(&mut block, mined_header);
+        apply_mined_header(&mut block, mined_header, None).unwrap();
         assert_eq!(
             block.hash,
             pulsedag_core::types::compute_block_hash(&block.header)
+        );
+        assert_ne!(block.hash, template_hash);
+    }
+
+    #[test]
+    fn activated_v2_mined_nonce_recomputes_chain_bound_block_hash() {
+        let identity = ProtocolActivationIdentity::activated_v2(
+            "pulsedag-testnet-v2",
+            "44".repeat(32),
+            GHOSTDAG_V1_ORDERING_VERSION,
+        );
+        let header = BlockHeader {
+            version: 2,
+            parents: vec!["11".repeat(32)],
+            timestamp: 1_700_000_000,
+            nonce: 0,
+            difficulty: 0x207f_ffff,
+            merkle_root: "22".repeat(32),
+            state_root: "33".repeat(32),
+            blue_score: 1,
+            height: 2,
+        };
+        let template_hash =
+            pulsedag_core::compute_block_hash_v2(&header, &identity.chain_id).unwrap();
+        let mut block = Block {
+            hash: template_hash.clone(),
+            header: header.clone(),
+            transactions: vec![],
+        };
+        let mut mined_header = header;
+        mined_header.nonce = 1;
+        apply_mined_header(&mut block, mined_header, Some(&identity)).unwrap();
+
+        assert_eq!(
+            block.hash,
+            pulsedag_core::compute_block_hash_v2(&block.header, &identity.chain_id).unwrap()
         );
         assert_ne!(block.hash, template_hash);
     }

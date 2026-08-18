@@ -48,3 +48,9 @@ jobs:
 
       - name: Activated-v2 mining template envelope
         run: cargo test --locked -p pulsedag-core mining_template_v2::tests::
+
+      - name: Standalone miner protocol-bound backend
+        run: cargo test --locked -p pulsedag-miner protocol_backend::tests::
+
+      - name: Standalone miner template identity
+        run: cargo test --locked -p pulsedag-miner template_protocol::tests::
