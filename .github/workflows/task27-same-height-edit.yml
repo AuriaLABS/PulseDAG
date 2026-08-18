@@ -2,9 +2,9 @@
 name: Task 27 same-height convergence editor
 
 on:
-  push:
+  pull_request:
     branches:
-      - agent/task27-same-height-work
+      - main
     paths:
       - scripts/task27_same_height_edit.py
       - .github/workflows/task27-same-height-edit.yml
@@ -14,6 +14,7 @@ permissions:
 
 jobs:
   apply:
+    if: github.head_ref == 'agent/task27-same-height-work'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout branch
