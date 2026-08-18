@@ -1,0 +1,44 @@
+name: v2.4.0 Task 28 acceptance
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - crates/pulsedag-core/**
+      - crates/pulsedag-rpc/**
+      - apps/pulsedag-miner/**
+      - apps/pulsedagd/**
+      - .github/workflows/task28-acceptance.yml
+  push:
+    branches:
+      - main
+    paths:
+      - crates/pulsedag-core/**
+      - crates/pulsedag-rpc/**
+      - apps/pulsedag-miner/**
+      - apps/pulsedagd/**
+      - .github/workflows/task28-acceptance.yml
+
+permissions:
+  contents: read
+
+jobs:
+  task28-acceptance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - name: Checkout candidate
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Protocol-bound transaction admission
+        run: cargo test --locked -p pulsedag-core --test task28_protocol_tx_admission
+
+      - name: Activated-v2 mining parent context
+        run: cargo test --locked -p pulsedag-core mining_protocol::tests::
