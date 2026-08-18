@@ -11,6 +11,7 @@ pub mod ghostdag_v1;
 pub mod header_v2;
 pub mod mempool;
 pub mod mining;
+pub mod mining_protocol;
 pub mod mining_v2;
 pub mod ordering;
 pub mod ordering_v2;
@@ -174,6 +175,10 @@ pub use consistency::{assert_dag_consistent_for_tests, dag_consistency_issues};
 pub use mining::{
     build_candidate_block, build_coinbase_transaction, current_ts, is_coinbase,
     refresh_block_consensus_ids, refresh_block_consensus_ids_with_state,
+};
+pub use mining_protocol::{
+    derive_activated_v2_mining_parent_context, ActivatedV2MiningParentContext,
+    MiningParentExclusionReasonV1, MiningParentExclusionV1,
 };
 pub use mining_v2::{
     build_candidate_block_v2, build_coinbase_transaction_v2, refresh_block_consensus_ids_v2,
