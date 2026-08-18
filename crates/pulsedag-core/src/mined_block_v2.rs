@@ -194,8 +194,8 @@ pub fn prepare_activated_v2_mined_block_state(
 
     let observed_state_root = materialized.utxo.compute_state_root()?;
     if observed_state_root != block.header.state_root {
-        return Err(PulseError::InvalidStateRoot(format!(
-            "activated-v2 mined block {} committed {}, authoritative replay produced {}",
+        return Err(invalid_mined_block(format!(
+            "state root mismatch for {}: committed {}, authoritative replay produced {}",
             block.hash, block.header.state_root, observed_state_root
         )));
     }
