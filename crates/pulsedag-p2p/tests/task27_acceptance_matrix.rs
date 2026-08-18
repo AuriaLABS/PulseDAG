@@ -148,13 +148,7 @@ fn build_fixture() -> Fixture {
     commit_ready(&mut source, right1.clone());
 
     let left2 = candidate(&source, "left2", vec![left1.hash.clone()], 21, Vec::new());
-    let right2 = candidate(
-        &source,
-        "right2",
-        vec![right1.hash.clone()],
-        22,
-        Vec::new(),
-    );
+    let right2 = candidate(&source, "right2", vec![right1.hash.clone()], 22, Vec::new());
     commit_ready(&mut source, left2.clone());
     commit_ready(&mut source, right2.clone());
 
@@ -278,7 +272,10 @@ fn deliver_requested_blocks(
         drain_ready_orphans(receiver, drain_order);
     }
     drain_ready_orphans(receiver, drain_order);
-    assert!(receiver.orphan_blocks.is_empty(), "all Task 27 context must resolve");
+    assert!(
+        receiver.orphan_blocks.is_empty(),
+        "all Task 27 context must resolve"
+    );
     assert!(receiver.orphan_parent_index.is_empty());
     assert!(receiver.orphan_missing_parents.is_empty());
     staged
@@ -297,12 +294,7 @@ fn sync_once(
     let response = build_dag_frontier_response_v1(&identity, &locator, source)
         .expect("valid source frontier")
         .expect("retained common ancestor");
-    let known = receiver
-        .dag
-        .blocks
-        .keys()
-        .cloned()
-        .collect::<BTreeSet<_>>();
+    let known = receiver.dag.blocks.keys().cloned().collect::<BTreeSet<_>>();
     let plan = plan_dag_frontier_reconciliation_v1(&identity, &response, &known)
         .expect("valid deterministic reconciliation plan");
     let staged = deliver_requested_blocks(
@@ -387,7 +379,10 @@ fn clean_node_catchup_fetches_transitive_context_and_converges() {
     };
     assert!(response.required_context.contains(context_parent));
     assert!(response.required_context.contains(context_tip));
-    assert!(staged > 0, "reverse delivery must exercise missing-parent staging");
+    assert!(
+        staged > 0,
+        "reverse delivery must exercise missing-parent staging"
+    );
     assert_frontier_metadata_matches(&clean, &response);
     assert_eq!(snapshot(&clean), snapshot(&fixture.source));
 }
@@ -410,7 +405,10 @@ fn delivery_order_permutations_converge_to_identical_selected_frontier_order_and
         assert_eq!(snapshot(&receiver), expected);
     }
 
-    assert!(staged_total > 0, "permutation matrix must exercise orphan recovery");
+    assert!(
+        staged_total > 0,
+        "permutation matrix must exercise orphan recovery"
+    );
 }
 
 #[test]
@@ -456,7 +454,11 @@ fn clean_offline_and_same_height_nodes_converge_without_reset() {
     for (receiver, delivery, drain) in [
         (&mut clean, DeliveryOrder::Reverse, DrainOrder::Ascending),
         (&mut offline, DeliveryOrder::EvenOdd, DrainOrder::Descending),
-        (&mut same_height, DeliveryOrder::OddEven, DrainOrder::Ascending),
+        (
+            &mut same_height,
+            DeliveryOrder::OddEven,
+            DrainOrder::Ascending,
+        ),
     ] {
         sync_once(&fixture.source, receiver, delivery, drain);
         assert_eq!(snapshot(receiver), expected);
