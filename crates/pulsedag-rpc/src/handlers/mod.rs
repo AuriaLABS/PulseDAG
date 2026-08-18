@@ -2,7 +2,11 @@ pub mod address;
 pub mod dag;
 pub mod mine;
 pub mod p2p;
+#[path = "tx_protocol.rs"]
 pub mod tx;
+#[allow(dead_code)]
+#[path = "tx.rs"]
+mod tx_legacy;
 pub mod wallet;
 
 pub mod canonical_sync;
