@@ -1,7 +1,9 @@
 use std::collections::BTreeSet;
 
 use crate::{
-    accept::{mutate_chain_state_serialized, AcceptSource, AtomicBlockAcceptance, BlockAcceptanceResult},
+    accept::{
+        mutate_chain_state_serialized, AcceptSource, AtomicBlockAcceptance, BlockAcceptanceResult,
+    },
     acceptance_v2::commit_ghostdag_v1_metadata_for_activated_v2,
     apply::apply_transaction,
     errors::PulseError,
@@ -102,12 +104,14 @@ fn validate_mined_block_envelope(
     }
 
     let expected_difficulty =
-        expected_difficulty_for_parent(state, &parent_context.selected_parent).ok_or_else(|| {
-            invalid_mined_block(format!(
-                "difficulty context unavailable for selected parent {}",
-                parent_context.selected_parent
-            ))
-        })?;
+        expected_difficulty_for_parent(state, &parent_context.selected_parent).ok_or_else(
+            || {
+                invalid_mined_block(format!(
+                    "difficulty context unavailable for selected parent {}",
+                    parent_context.selected_parent
+                ))
+            },
+        )?;
     if block.header.difficulty != expected_difficulty {
         return Err(invalid_mined_block(format!(
             "difficulty {} does not match derived {}",
@@ -119,9 +123,7 @@ fn validate_mined_block_envelope(
         return Err(invalid_mined_block("block has no coinbase transaction"));
     };
     if !is_coinbase(coinbase) {
-        return Err(invalid_mined_block(
-            "first transaction is not a coinbase",
-        ));
+        return Err(invalid_mined_block("first transaction is not a coinbase"));
     }
     if block.transactions.iter().skip(1).any(is_coinbase) {
         return Err(invalid_mined_block(
@@ -163,11 +165,7 @@ fn validate_mined_block_envelope(
     apply_transaction(coinbase, &mut transaction_context, block.header.height)?;
     for transaction in block.transactions.iter().skip(1) {
         validate_transaction_for_protocol(transaction, &transaction_context, identity)?;
-        apply_transaction(
-            transaction,
-            &mut transaction_context,
-            block.header.height,
-        )?;
+        apply_transaction(transaction, &mut transaction_context, block.header.height)?;
     }
 
     validate_pow_for_protocol(&block.header, state, identity)?;
@@ -281,8 +279,7 @@ where
 mod tests {
     use super::*;
     use crate::{
-        build_activated_v2_mining_template, compute_block_hash_v2,
-        genesis::init_chain_state,
+        build_activated_v2_mining_template, compute_block_hash_v2, genesis::init_chain_state,
         mining_template_v2::ActivatedV2MiningTemplateSpec,
         ordering_v2::GHOSTDAG_V1_ORDERING_VERSION,
     };
@@ -332,7 +329,10 @@ mod tests {
         assert_eq!(bincode::serialize(&state).unwrap(), before);
         assert!(prepared.dag.blocks.contains_key(&block.hash));
         assert_eq!(prepared.dag.ordered_dag_tip, Some(block.hash.clone()));
-        assert_eq!(prepared.utxo.compute_state_root().unwrap(), block.header.state_root);
+        assert_eq!(
+            prepared.utxo.compute_state_root().unwrap(),
+            block.header.state_root
+        );
         assert_eq!(
             prepared.dag.ordered_dag_state_root.as_deref(),
             Some(block.header.state_root.as_str())
