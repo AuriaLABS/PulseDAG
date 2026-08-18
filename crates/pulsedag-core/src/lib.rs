@@ -10,6 +10,8 @@ pub mod ghostdag;
 pub mod ghostdag_v1;
 pub mod header_v2;
 pub mod mempool;
+pub mod mempool_protocol;
+pub mod mined_block_v2;
 pub mod mining;
 pub mod mining_protocol;
 pub mod mining_state_v2;
@@ -149,6 +151,7 @@ pub use mempool::{
     canonical_mempool_txids, combined_pressure_tier, mempool_pressure_bps, pressure_tier_from_bps,
     reconcile_mempool, MempoolPressureTier, MempoolReconcileResult,
 };
+pub use mempool_protocol::reconcile_mempool_for_protocol;
 
 pub use ghostdag::{
     calculate_merge_set, classify_merge_set, classify_merge_set_with_k, MergeSetClassification,
@@ -174,6 +177,9 @@ pub use selection_v2::{
 
 pub use consistency::{assert_dag_consistent_for_tests, dag_consistency_issues};
 
+pub use mined_block_v2::{
+    accept_activated_v2_mined_block_atomically, prepare_activated_v2_mined_block_state,
+};
 pub use mining::{
     build_candidate_block, build_coinbase_transaction, current_ts, is_coinbase,
     refresh_block_consensus_ids, refresh_block_consensus_ids_with_state,
