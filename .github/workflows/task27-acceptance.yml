@@ -1,0 +1,51 @@
+name: v2.4.0 Task 27 acceptance
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - apps/pulsedagd/**
+      - crates/pulsedag-core/**
+      - crates/pulsedag-p2p/**
+      - .github/workflows/task27-acceptance.yml
+  push:
+    branches:
+      - main
+    paths:
+      - apps/pulsedagd/**
+      - crates/pulsedag-core/**
+      - crates/pulsedag-p2p/**
+      - .github/workflows/task27-acceptance.yml
+
+permissions:
+  contents: read
+
+jobs:
+  task27-acceptance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - name: Checkout candidate
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Capability and mixed-version matrix
+        run: cargo test --locked -p pulsedag-p2p --test task27_capability_session
+
+      - name: Recovery progress matrix
+        run: cargo test --locked -p pulsedag-p2p --test task27_recovery_progress
+
+      - name: Selected-chain frontier convergence matrix
+        run: cargo test --locked -p pulsedag-p2p --test task27_acceptance_matrix
+
+      - name: Runtime peer-order and same-height selector regressions
+        run: cargo test --locked -p pulsedagd task27_rejoin_runtime_tests
+
+      - name: Activated-v2 arrival-order and restart parity
+        run: cargo test --locked -p pulsedag-core --test task26_pipeline_parity
