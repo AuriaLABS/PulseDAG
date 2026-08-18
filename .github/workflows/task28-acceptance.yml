@@ -42,3 +42,6 @@ jobs:
 
       - name: Activated-v2 mining parent context
         run: cargo test --locked -p pulsedag-core mining_protocol::tests::
+
+      - name: Activated-v2 mining state root
+        run: cargo test --locked -p pulsedag-core mining_state_v2::tests::
