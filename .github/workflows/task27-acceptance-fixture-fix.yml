@@ -1,3 +1,4 @@
+# Trigger-only staging workflow; removed by the successful fixture commit.
 name: Task 27 acceptance fixture fix
 
 on:
