@@ -8,8 +8,8 @@ use crate::{
     pow_protocol::{resolve_pow_validation_path, PowValidationPath},
     protocol::{ProtocolActivationIdentity, BLOCK_HEADER_VERSION_V2},
     selection_v2::{
-        calculate_selected_tip_v1, compare_selection_scores_v1, SelectionScoreV1,
-        SelectionV2Error, GHOSTDAG_V1_MAX_PARENTS,
+        calculate_selected_tip_v1, compare_selection_scores_v1, SelectionScoreV1, SelectionV2Error,
+        GHOSTDAG_V1_MAX_PARENTS,
     },
     state::ChainState,
     types::{Block, BlockHeader, Hash},
@@ -117,11 +117,10 @@ fn candidate_for_parents(state: &ChainState, parents: Vec<Hash>) -> Result<Block
 }
 
 fn score_tip(hash: &Hash, state: &ChainState) -> Result<SelectionScoreV1, PulseError> {
-    let block = state
-        .dag
-        .blocks
-        .get(hash)
-        .ok_or_else(|| selection_error(SelectionV2Error::MissingTipBlock { hash: hash.clone() }))?;
+    let block =
+        state.dag.blocks.get(hash).ok_or_else(|| {
+            selection_error(SelectionV2Error::MissingTipBlock { hash: hash.clone() })
+        })?;
     let blue_work = state.dag.blue_work.get(hash).copied().ok_or_else(|| {
         selection_error(SelectionV2Error::MissingTipBlueWork { hash: hash.clone() })
     })?;
@@ -351,10 +350,12 @@ mod tests {
     fn missing_tip_work_fails_closed() {
         let mut state = parallel_state(&[1, 2]);
         state.dag.blue_work.remove(&hash(1));
-        assert!(derive_activated_v2_mining_parent_context(&state, &activated_identity(&state))
-            .unwrap_err()
-            .to_string()
-            .contains("MissingTipBlueWork"));
+        assert!(
+            derive_activated_v2_mining_parent_context(&state, &activated_identity(&state))
+                .unwrap_err()
+                .to_string()
+                .contains("MissingTipBlueWork")
+        );
     }
 
     #[test]
@@ -369,10 +370,9 @@ mod tests {
         assert_eq!(context.excluded_parallel_parents.len(), 3);
         assert!(context.excluded_parallel_parents.iter().all(|excluded| {
             matches!(
-                excluded.reason,
-                MiningParentExclusionReasonV1::ParentCountLimit {
-                    max: GHOSTDAG_V1_MAX_PARENTS
-                }
+                &excluded.reason,
+                MiningParentExclusionReasonV1::ParentCountLimit { max }
+                    if *max == GHOSTDAG_V1_MAX_PARENTS
             )
         }));
     }
