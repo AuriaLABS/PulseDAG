@@ -21,7 +21,7 @@ on:
       - .github/workflows/task28-acceptance.yml
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   task28-acceptance:
@@ -60,58 +60,3 @@ jobs:
 
       - name: Standalone miner template identity
         run: cargo test --locked -p pulsedag-miner template_protocol::tests::
-
-  stage-mining-submit-protocol:
-    if: github.event_name == 'pull_request' && github.head_ref == 'agent/task28-mining-submit-protocol'
-    runs-on: ubuntu-latest
-    timeout-minutes: 35
-    steps:
-      - name: Checkout staging branch
-        uses: actions/checkout@v4
-        with:
-          ref: agent/task28-mining-submit-protocol
-          fetch-depth: 0
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt,clippy
-
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
-
-      - name: Apply exact submit/template patch
-        run: python3 scripts/task28_mining_submit_protocol_patch.py
-
-      - name: Restore permanent workflow and remove staging files
-        run: |
-          git fetch origin main
-          git checkout origin/main -- .github/workflows/task28-acceptance.yml
-          rm -f .github/workflows/task28-mining-submit-protocol-staging.yml
-          rm scripts/task28_mining_submit_protocol_patch.py
-
-      - name: Format and diff check
-        run: |
-          cargo fmt --all
-          git diff --check
-
-      - name: Protocol selector tests
-        run: cargo test --locked -p pulsedag-rpc mining_submit_protocol::tests::
-
-      - name: Existing mining submit regressions
-        run: cargo test --locked -p pulsedag-rpc mining_submit::tests::
-
-      - name: Existing mining template regressions
-        run: cargo test --locked -p pulsedag-rpc mining_template::tests::
-
-      - name: RPC clippy
-        run: cargo clippy --locked -p pulsedag-rpc --all-targets -- -D warnings
-
-      - name: Commit validated wiring
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A
-          git diff --cached --exit-code && exit 1 || true
-          git commit -m "rpc: bind mining submit to protocol identity"
-          git push origin HEAD:agent/task28-mining-submit-protocol
