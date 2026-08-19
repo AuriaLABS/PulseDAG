@@ -40,6 +40,9 @@ jobs:
       - name: Protocol-bound transaction admission
         run: cargo test --locked -p pulsedag-core --test task28_protocol_tx_admission
 
+      - name: Protocol-bound mempool reconciliation
+        run: cargo test --locked -p pulsedag-core mempool_protocol::tests::
+
       - name: Activated-v2 mining parent context
         run: cargo test --locked -p pulsedag-core mining_protocol::tests::
 
@@ -48,6 +51,9 @@ jobs:
 
       - name: Activated-v2 mining template envelope
         run: cargo test --locked -p pulsedag-core mining_template_v2::tests::
+
+      - name: Activated-v2 mined block acceptance
+        run: cargo test --locked -p pulsedag-core mined_block_v2::tests::
 
       - name: Standalone miner protocol-bound backend
         run: cargo test --locked -p pulsedag-miner protocol_backend::tests::
