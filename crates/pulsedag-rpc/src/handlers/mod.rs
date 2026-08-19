@@ -89,9 +89,14 @@ pub mod pow_mine_capture;
 
 pub mod pow_auto_run;
 
+#[path = "mining_submit_protocol.rs"]
 pub mod mining_submit;
-pub(crate) mod mining_submit_protocol;
+#[path = "mining_submit.rs"]
+mod mining_submit_legacy;
+#[path = "mining_template_protocol.rs"]
 pub mod mining_template;
+#[path = "mining_template.rs"]
+mod mining_template_legacy;
 pub mod mining_workers;
 
 pub mod mining_jobs;
