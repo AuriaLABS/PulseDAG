@@ -18,6 +18,10 @@ pub(crate) struct MiningSubmitPowEvaluation {
     pub rejection_code: Option<String>,
 }
 
+fn invalid_protocol(message: impl Into<String>) -> PulseError {
+    PulseError::InvalidBlock(format!("mining submit protocol identity: {}", message.into()))
+}
+
 pub(crate) fn rpc_protocol_identity<S: RpcStateLike>(
     state: &S,
 ) -> Result<Option<ProtocolActivationIdentity>, PulseError> {
@@ -37,8 +41,8 @@ pub(crate) fn mining_submit_protocol_path(
         Some(identity) => {
             let path = resolve_pow_validation_path(identity, state)?;
             if block.header.version != identity.block_header_protocol_version {
-                return Err(PulseError::InvalidBlock(format!(
-                    "mining submit protocol identity requires block header version {}, got {}",
+                return Err(invalid_protocol(format!(
+                    "identity requires block header version {}, got {}",
                     identity.block_header_protocol_version, block.header.version
                 )));
             }
@@ -46,12 +50,79 @@ pub(crate) fn mining_submit_protocol_path(
         }
         None => {
             if block.header.version != BLOCK_HEADER_VERSION_V1 {
-                return Err(PulseError::InvalidBlock(format!(
-                    "mining submit requires explicit protocol identity for block header version {}",
+                return Err(invalid_protocol(format!(
+                    "explicit identity is required for block header version {}",
                     block.header.version
                 )));
             }
             Ok(PowValidationPath::LegacyV1)
+        }
+    }
+}
+
+pub(crate) fn validate_stored_template_protocol_identity(
+    block: &Block,
+    state: &ChainState,
+    stored_identity: Option<&ProtocolActivationIdentity>,
+    stored_fingerprint: Option<&str>,
+    local_identity: Option<&ProtocolActivationIdentity>,
+) -> Result<PowValidationPath, PulseError> {
+    match (stored_identity, stored_fingerprint) {
+        (None, None) => {
+            let path = mining_submit_protocol_path(block, state, local_identity)?;
+            if path != PowValidationPath::LegacyV1 {
+                return Err(invalid_protocol(
+                    "historical template without identity cannot authorize activated-v2 submit",
+                ));
+            }
+            Ok(path)
+        }
+        (Some(_), None) => Err(invalid_protocol(
+            "stored template identity is missing protocol_identity_fingerprint",
+        )),
+        (None, Some(_)) => Err(invalid_protocol(
+            "stored template protocol_identity_fingerprint is present without identity",
+        )),
+        (Some(stored_identity), Some(stored_fingerprint)) => {
+            let expected_fingerprint = stored_identity
+                .fingerprint()
+                .map_err(|error| invalid_protocol(format!("stored identity is invalid: {error}")))?;
+            if stored_fingerprint != expected_fingerprint {
+                return Err(invalid_protocol(format!(
+                    "stored template fingerprint mismatch: expected {expected_fingerprint}, got {stored_fingerprint}"
+                )));
+            }
+
+            let stored_path = mining_submit_protocol_path(block, state, Some(stored_identity))?;
+            match local_identity {
+                Some(local_identity) if local_identity != stored_identity => {
+                    return Err(invalid_protocol(
+                        "stored template identity does not match current local protocol identity",
+                    ));
+                }
+                None if stored_path == PowValidationPath::ActivatedV2 => {
+                    return Err(invalid_protocol(
+                        "activated-v2 stored template requires explicit current local protocol identity",
+                    ));
+                }
+                None => {
+                    let expected_legacy = ProtocolActivationIdentity::legacy_from_state(state);
+                    if stored_identity != &expected_legacy {
+                        return Err(invalid_protocol(
+                            "stored legacy template identity does not match current chain identity",
+                        ));
+                    }
+                }
+                Some(_) => {}
+            }
+
+            let local_path = mining_submit_protocol_path(block, state, local_identity)?;
+            if local_path != stored_path {
+                return Err(invalid_protocol(
+                    "stored template and local protocol identities select different submit paths",
+                ));
+            }
+            Ok(stored_path)
         }
     }
 }
@@ -151,7 +222,65 @@ mod tests {
         block.header.version = 2;
 
         let error = evaluate_mining_submit_pow(&block, &state, None).unwrap_err();
-        assert!(error.to_string().contains("requires explicit protocol identity"));
+        assert!(error.to_string().contains("explicit identity is required"));
+    }
+
+    #[test]
+    fn historical_template_without_identity_remains_legacy_only() {
+        let state = init_chain_state("task28-rpc-mining-submit".to_string());
+        let block = state
+            .dag
+            .blocks
+            .get(&state.dag.genesis_hash)
+            .cloned()
+            .unwrap();
+
+        assert_eq!(
+            validate_stored_template_protocol_identity(&block, &state, None, None, None).unwrap(),
+            PowValidationPath::LegacyV1
+        );
+    }
+
+    #[test]
+    fn stored_identity_requires_matching_fingerprint_and_local_identity() {
+        let state = init_chain_state("task28-rpc-mining-submit-v2".to_string());
+        let identity = activated_identity(&state);
+        let fingerprint = identity.fingerprint().unwrap();
+        let mut block = state
+            .dag
+            .blocks
+            .get(&state.dag.genesis_hash)
+            .cloned()
+            .unwrap();
+        block.header.version = 2;
+
+        assert!(validate_stored_template_protocol_identity(
+            &block,
+            &state,
+            Some(&identity),
+            Some("00"),
+            Some(&identity),
+        )
+        .is_err());
+        assert!(validate_stored_template_protocol_identity(
+            &block,
+            &state,
+            Some(&identity),
+            Some(&fingerprint),
+            None,
+        )
+        .is_err());
+        assert_eq!(
+            validate_stored_template_protocol_identity(
+                &block,
+                &state,
+                Some(&identity),
+                Some(&fingerprint),
+                Some(&identity),
+            )
+            .unwrap(),
+            PowValidationPath::ActivatedV2
+        );
     }
 
     #[test]
