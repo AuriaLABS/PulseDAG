@@ -12,6 +12,7 @@ on:
 permissions:
   contents: write
 
+# One-shot validator: it removes itself after the exact patch and focused tests pass.
 jobs:
   apply-and-test:
     if: github.head_ref == 'agent/task28-mining-submit-protocol'
