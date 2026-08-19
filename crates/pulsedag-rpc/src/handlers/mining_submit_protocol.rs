@@ -1,9 +1,8 @@
 use crate::api::RpcStateLike;
 use pulsedag_core::{
-    accept_activated_v2_mined_block_atomically, accept_block_atomically,
-    evaluate_pow_for_protocol, pow_validation_result, resolve_pow_validation_path, AcceptSource,
-    AtomicBlockAcceptance, Block, ChainState, PowValidationPath, ProtocolActivationIdentity,
-    PulseError, BLOCK_HEADER_VERSION_V1,
+    accept_activated_v2_mined_block_atomically, accept_block_atomically, evaluate_pow_for_protocol,
+    pow_validation_result, resolve_pow_validation_path, AcceptSource, AtomicBlockAcceptance, Block,
+    ChainState, PowValidationPath, ProtocolActivationIdentity, PulseError, BLOCK_HEADER_VERSION_V1,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -19,7 +18,10 @@ pub(crate) struct MiningSubmitPowEvaluation {
 }
 
 fn invalid_protocol(message: impl Into<String>) -> PulseError {
-    PulseError::InvalidBlock(format!("mining submit protocol identity: {}", message.into()))
+    PulseError::InvalidBlock(format!(
+        "mining submit protocol identity: {}",
+        message.into()
+    ))
 }
 
 pub(crate) fn rpc_protocol_identity<S: RpcStateLike>(
@@ -84,9 +86,9 @@ pub(crate) fn validate_stored_template_protocol_identity(
             "stored template protocol_identity_fingerprint is present without identity",
         )),
         (Some(stored_identity), Some(stored_fingerprint)) => {
-            let expected_fingerprint = stored_identity
-                .fingerprint()
-                .map_err(|error| invalid_protocol(format!("stored identity is invalid: {error}")))?;
+            let expected_fingerprint = stored_identity.fingerprint().map_err(|error| {
+                invalid_protocol(format!("stored identity is invalid: {error}"))
+            })?;
             if stored_fingerprint != expected_fingerprint {
                 return Err(invalid_protocol(format!(
                     "stored template fingerprint mismatch: expected {expected_fingerprint}, got {stored_fingerprint}"
@@ -175,13 +177,9 @@ where
     FPersist: FnMut(&Block, &ChainState) -> Result<(), PulseError>,
 {
     match mining_submit_protocol_path(&block, state, identity)? {
-        PowValidationPath::LegacyV1 => accept_block_atomically(
-            block,
-            state,
-            AcceptSource::Rpc,
-            persist,
-            |_block| Ok(()),
-        ),
+        PowValidationPath::LegacyV1 => {
+            accept_block_atomically(block, state, AcceptSource::Rpc, persist, |_block| Ok(()))
+        }
         PowValidationPath::ActivatedV2 => accept_activated_v2_mined_block_atomically(
             block,
             state,
