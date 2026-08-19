@@ -90,6 +90,7 @@ pub mod pow_mine_capture;
 pub mod pow_auto_run;
 
 pub mod mining_submit;
+pub(crate) mod mining_submit_protocol;
 pub mod mining_template;
 pub mod mining_workers;
 
