@@ -13,11 +13,11 @@ use pulsedag_core::{
 use pulsedag_p2p::mode_connected_peers_are_real_network;
 use sha3::{Digest, Keccak256};
 
+pub use super::mining_template_legacy::StoredMiningTemplate;
 pub(crate) use super::mining_template_legacy::{
     current_template_state, load_template, template_freshness_window, template_id_for_state,
     MINING_PROTOCOL_VERSION,
 };
-pub use super::mining_template_legacy::StoredMiningTemplate;
 
 const PROTOCOL_V2_PRE_POW_VERSION: u8 = 0;
 const PROTOCOL_V2_NONCE_OFFSET_NOT_APPLICABLE: usize = 0;
@@ -292,13 +292,11 @@ fn activated_v2_template_data(
             transactions,
         },
     )?;
-    let expires_at_unix = created_at_unix
-        .saturating_add(super::mining_template_legacy::TEMPLATE_TTL_SECS);
+    let expires_at_unix =
+        created_at_unix.saturating_add(super::mining_template_legacy::TEMPLATE_TTL_SECS);
     let template_id = format!(
         "v2:{}:{}:{}",
-        template.block.header.height,
-        template.block.hash,
-        template.protocol_identity_fingerprint
+        template.block.header.height, template.block.hash, template.protocol_identity_fingerprint
     );
     let pre_pow_bytes = hex::decode(&template.pre_pow_bytes_hex).map_err(|error| {
         PulseError::InvalidBlock(format!("activated-v2 pre-pow hex is invalid: {error}"))
@@ -579,8 +577,8 @@ pub async fn post_mining_template<S: RpcStateLike>(
 mod tests {
     use super::*;
     use pulsedag_core::{
-        genesis::init_chain_state, GHOSTDAG_V1_ORDERING_VERSION, BLOCK_HEADER_VERSION_V1,
-        BLOCK_HEADER_VERSION_V2,
+        genesis::init_chain_state, BLOCK_HEADER_VERSION_V1, BLOCK_HEADER_VERSION_V2,
+        GHOSTDAG_V1_ORDERING_VERSION,
     };
 
     #[test]
@@ -595,7 +593,10 @@ mod tests {
             template_protocol_path(&state, Some(&legacy)).unwrap(),
             PowValidationPath::LegacyV1
         );
-        assert_eq!(legacy.block_header_protocol_version, BLOCK_HEADER_VERSION_V1);
+        assert_eq!(
+            legacy.block_header_protocol_version,
+            BLOCK_HEADER_VERSION_V1
+        );
     }
 
     #[test]
@@ -623,9 +624,10 @@ mod tests {
         assert_eq!(duplicate_filtered, 0);
         assert_eq!(data.block.header.version, BLOCK_HEADER_VERSION_V2);
         assert_eq!(data.protocol_identity.as_ref(), Some(&activated));
+        let fingerprint = activated.fingerprint().unwrap();
         assert_eq!(
             data.protocol_identity_fingerprint.as_deref(),
-            Some(activated.fingerprint().unwrap().as_str())
+            Some(fingerprint.as_str())
         );
         assert_eq!(data.compact_target, data.block.header.difficulty);
         assert_eq!(data.target_u64, data.metrics_hint.target_u64);
