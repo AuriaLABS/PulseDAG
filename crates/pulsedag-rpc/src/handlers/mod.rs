@@ -89,8 +89,17 @@ pub mod pow_mine_capture;
 
 pub mod pow_auto_run;
 
+// Task 28 keeps protocol-aware mining facades separate from the retained legacy handlers.
+#[path = "mining_submit_guard.rs"]
 pub mod mining_submit;
+#[path = "mining_submit.rs"]
+mod mining_submit_legacy;
+#[path = "mining_submit_protocol.rs"]
+mod mining_submit_protocol;
+#[path = "mining_template_protocol.rs"]
 pub mod mining_template;
+#[path = "mining_template.rs"]
+mod mining_template_legacy;
 pub mod mining_workers;
 
 pub mod mining_jobs;
