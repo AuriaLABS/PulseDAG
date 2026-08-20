@@ -1,7 +1,8 @@
 use crate::api::{ApiResponse, GetBlockTemplateRequest, RpcStateLike};
 use axum::{extract::State, Json};
 use pulsedag_core::{
-    resolve_pow_validation_path, ChainState, PowValidationPath, ProtocolActivationIdentity, PulseError,
+    resolve_pow_validation_path, ChainState, PowValidationPath, ProtocolActivationIdentity,
+    PulseError,
 };
 
 pub(crate) use super::mining_template_legacy::{
