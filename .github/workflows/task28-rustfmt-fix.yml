@@ -1,0 +1,49 @@
+name: task28-rustfmt-fix
+
+on:
+  push:
+    branches:
+      - agent/task28-mining-submit-protocol
+
+permissions:
+  contents: write
+
+jobs:
+  rustfmt-fix:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v4
+        with:
+          ref: agent/task28-mining-submit-protocol
+          fetch-depth: 0
+
+      - name: Install Rust formatter
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Apply rustfmt and enforce scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fmt --all
+          mapfile -t changed < <(git diff --name-only)
+          for path in "${changed[@]}"; do
+            if [[ "$path" != "crates/pulsedag-rpc/src/handlers/mining_submit_protocol.rs" ]]; then
+              echo "::error::rustfmt changed unexpected path: $path"
+              exit 1
+            fi
+          done
+          git diff --check
+
+      - name: Commit formatted source and remove one-shot workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- crates/pulsedag-rpc/src/handlers/mining_submit_protocol.rs
+          git rm -- .github/workflows/task28-rustfmt-fix.yml
+          git commit -m "rpc: format protocol-bound mining submit"
+          git push origin HEAD:agent/task28-mining-submit-protocol
