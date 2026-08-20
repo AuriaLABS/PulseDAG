@@ -13,6 +13,8 @@ use pulsedag_core::{
 use pulsedag_p2p::mode_connected_peers_are_real_network;
 use sha3::{Digest, Keccak256};
 
+#[cfg(test)]
+pub(crate) use super::mining_template_legacy::store_template;
 pub use super::mining_template_legacy::StoredMiningTemplate;
 pub(crate) use super::mining_template_legacy::{
     current_template_state, load_template, template_freshness_window, template_id_for_state,
@@ -488,7 +490,8 @@ pub async fn post_mining_template<S: RpcStateLike>(
             let created_at_unix = pulsedag_core::current_ts();
             let duplicate_tx_filtered_total = {
                 let runtime_handle = state.runtime();
-                runtime_handle.read().await.duplicate_tx_filtered_total
+                let value = runtime_handle.read().await.duplicate_tx_filtered_total;
+                value
             };
             let data = {
                 let chain_handle = state.chain();
@@ -668,6 +671,9 @@ mod tests {
             value["protocol_identity_fingerprint"],
             identity.fingerprint().unwrap()
         );
-        assert_eq!(value["block"]["header"]["version"], BLOCK_HEADER_VERSION_V2);
+        assert_eq!(
+            value["block"]["header"]["version"],
+            BLOCK_HEADER_VERSION_V2
+        );
     }
 }
