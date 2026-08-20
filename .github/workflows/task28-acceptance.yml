@@ -55,6 +55,12 @@ jobs:
       - name: Activated-v2 mined block acceptance
         run: cargo test --locked -p pulsedag-core mined_block_v2::tests::
 
+      - name: RPC protocol-bound mining submit and template
+        run: |
+          cargo test --locked -p pulsedag-rpc activated_identity_rejects_legacy_submit_preflight
+          cargo test --locked -p pulsedag-rpc activated_identity_builds_chain_bound_v2_rpc_template
+          cargo test --locked -p pulsedag-rpc v2_rpc_template_serializes_identity_and_fingerprint_together
+
       - name: Standalone miner protocol-bound backend
         run: cargo test --locked -p pulsedag-miner protocol_backend::tests::
 
