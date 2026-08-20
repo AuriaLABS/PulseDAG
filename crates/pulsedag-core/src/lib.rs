@@ -17,6 +17,7 @@ pub mod mining_protocol;
 pub mod mining_state_v2;
 pub mod mining_template_v2;
 pub mod mining_v2;
+pub mod network_block_v2;
 pub mod ordering;
 pub mod ordering_v2;
 pub mod orphans;
@@ -198,6 +199,9 @@ pub use mining_template_v2::{
 pub use mining_v2::{
     build_candidate_block_v2, build_coinbase_transaction_v2, refresh_block_consensus_ids_v2,
     CandidateBlockV2Spec,
+};
+pub use network_block_v2::{
+    accept_activated_v2_p2p_block_atomically, prepare_activated_v2_p2p_block_state,
 };
 pub use orphans::{
     adopt_ready_orphans, adopt_ready_orphans_with_result, classify_orphan_backlog,
