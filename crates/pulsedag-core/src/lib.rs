@@ -201,7 +201,8 @@ pub use mining_v2::{
     CandidateBlockV2Spec,
 };
 pub use network_block_v2::{
-    accept_activated_v2_p2p_block_atomically, prepare_activated_v2_p2p_block_state,
+    accept_activated_v2_p2p_block_atomically, preflight_activated_v2_p2p_block,
+    prepare_activated_v2_p2p_block_state, ActivatedV2P2pDisposition,
 };
 pub use orphans::{
     adopt_ready_orphans, adopt_ready_orphans_with_result, classify_orphan_backlog,
