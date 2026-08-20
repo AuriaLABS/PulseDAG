@@ -671,9 +671,6 @@ mod tests {
             value["protocol_identity_fingerprint"],
             identity.fingerprint().unwrap()
         );
-        assert_eq!(
-            value["block"]["header"]["version"],
-            BLOCK_HEADER_VERSION_V2
-        );
+        assert_eq!(value["block"]["header"]["version"], BLOCK_HEADER_VERSION_V2);
     }
 }
