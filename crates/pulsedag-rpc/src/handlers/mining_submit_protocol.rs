@@ -63,9 +63,9 @@ pub(crate) fn bind_template_protocol(
         )));
     }
 
-    let mut bindings = template_protocol_bindings()
-        .lock()
-        .map_err(|_| PulseError::Internal("mining template protocol binding lock poisoned".into()))?;
+    let mut bindings = template_protocol_bindings().lock().map_err(|_| {
+        PulseError::Internal("mining template protocol binding lock poisoned".into())
+    })?;
     if !bindings.contains_key(&template_id) && bindings.len() >= MAX_TEMPLATE_PROTOCOL_BINDINGS {
         if let Some(oldest_key) = bindings.keys().next().cloned() {
             bindings.remove(&oldest_key);
@@ -317,9 +317,10 @@ fn acceptance_reason(result: &BlockAcceptanceResult) -> (&'static str, String) {
         BlockAcceptanceResult::Accepted => ("accepted", "accepted".to_string()),
         BlockAcceptanceResult::Duplicate => ("duplicate_block", "duplicate block".to_string()),
         BlockAcceptanceResult::InvalidPow => ("invalid_pow", "invalid proof of work".to_string()),
-        BlockAcceptanceResult::MissingParent => {
-            ("missing_parent", "submitted block has a missing parent".to_string())
-        }
+        BlockAcceptanceResult::MissingParent => (
+            "missing_parent",
+            "submitted block has a missing parent".to_string(),
+        ),
         BlockAcceptanceResult::InvalidTransaction => (
             "invalid_transaction",
             "submitted block contains an invalid transaction".to_string(),
@@ -353,7 +354,12 @@ async fn post_activated_v2_mining_submit<S: RpcStateLike>(
             );
         }
         Err(error) => {
-            return rejected_response(&req, "protocol_identity_unavailable", error.to_string(), None);
+            return rejected_response(
+                &req,
+                "protocol_identity_unavailable",
+                error.to_string(),
+                None,
+            );
         }
     };
 
@@ -368,7 +374,12 @@ async fn post_activated_v2_mining_submit<S: RpcStateLike>(
             );
         }
         Err(error) => {
-            return rejected_response(&req, "protocol_identity_unavailable", error.to_string(), None);
+            return rejected_response(
+                &req,
+                "protocol_identity_unavailable",
+                error.to_string(),
+                None,
+            );
         }
     };
 
