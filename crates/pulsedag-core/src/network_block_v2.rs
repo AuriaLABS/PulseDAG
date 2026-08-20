@@ -145,8 +145,8 @@ fn validate_network_block_envelope(
     let selected_parent = classification.selected_parent.ok_or_else(|| {
         invalid_network_block("ghostdag_v1 classification produced no selected parent")
     })?;
-    let expected_difficulty = expected_difficulty_for_parent(state, &selected_parent)
-        .ok_or_else(|| {
+    let expected_difficulty =
+        expected_difficulty_for_parent(state, &selected_parent).ok_or_else(|| {
             invalid_network_block(format!(
                 "difficulty context unavailable for selected parent {selected_parent}"
             ))
@@ -401,7 +401,10 @@ mod tests {
         assert!(accepted.persisted && accepted.committed && accepted.broadcast);
         assert!(persisted && broadcast);
         assert!(state.dag.blocks.contains_key(&block_hash));
-        assert_eq!(state.dag.ordered_dag_tip.as_deref(), Some(block_hash.as_str()));
+        assert_eq!(
+            state.dag.ordered_dag_tip.as_deref(),
+            Some(block_hash.as_str())
+        );
     }
 
     #[test]
