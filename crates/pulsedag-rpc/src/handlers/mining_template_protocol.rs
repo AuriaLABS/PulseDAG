@@ -9,6 +9,8 @@ pub(crate) use super::mining_template_legacy::{
     current_template_state, load_template, template_freshness_window, template_id_for_state,
     MINING_PROTOCOL_VERSION,
 };
+#[cfg(test)]
+pub(crate) use super::mining_template_legacy::store_template;
 pub use super::mining_template_legacy::{MiningTemplateData, StoredMiningTemplate};
 
 fn legacy_template_identity_for_protocol(
