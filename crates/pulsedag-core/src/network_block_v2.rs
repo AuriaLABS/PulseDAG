@@ -285,21 +285,20 @@ pub fn preflight_activated_v2_p2p_block(
     }
 
     let mut working = state.clone();
-    if let Err(error) =
-        commit_ghostdag_v1_metadata_for_activated_v2(block, &mut working, identity)
+    if let Err(error) = commit_ghostdag_v1_metadata_for_activated_v2(block, &mut working, identity)
     {
         return preflight_disposition_from_error(&error);
     }
 
     let ordered = match derive_ordered_dag_v2(&working) {
         Ok(ordered) => ordered,
-        Err(OrderingV2Error::UnclassifiedBlock { hash }) if hash == block.hash => {
+        Err(OrderingV2Error::UnclassifiedBlock { .. }) => {
             return ActivatedV2P2pDisposition::DeferredContext;
         }
         Err(error) => {
-            return ActivatedV2P2pDisposition::Rejected(BlockAcceptanceResult::Rejected(
-                format!("activated-v2 p2p preflight ordering failed: {error:?}"),
-            ));
+            return ActivatedV2P2pDisposition::Rejected(BlockAcceptanceResult::Rejected(format!(
+                "activated-v2 p2p preflight ordering failed: {error:?}"
+            )));
         }
     };
 
@@ -501,9 +500,11 @@ mod tests {
         let expected_identity = identity(&state);
 
         let main_one = mined_block_with_nonce(&state, &expected_identity, 20, "pulse1mainone");
-        state = prepare_activated_v2_p2p_block_state(&main_one, &state, &expected_identity).unwrap();
+        state =
+            prepare_activated_v2_p2p_block_state(&main_one, &state, &expected_identity).unwrap();
         let main_two = mined_block_with_nonce(&state, &expected_identity, 21, "pulse1maintwo");
-        state = prepare_activated_v2_p2p_block_state(&main_two, &state, &expected_identity).unwrap();
+        state =
+            prepare_activated_v2_p2p_block_state(&main_two, &state, &expected_identity).unwrap();
 
         let fork_state = init_chain_state(CHAIN_ID.to_string());
         let side = mined_block_with_nonce(&fork_state, &expected_identity, 99, "pulse1sidetip");
@@ -515,6 +516,31 @@ mod tests {
         assert!(
             prepare_activated_v2_p2p_block_state(&side, &state, &expected_identity).is_err(),
             "the finalizable-only path must still fail closed for an unabsorbed side tip"
+        );
+    }
+
+    #[test]
+    fn preflight_defers_parallel_candidate_when_existing_sibling_becomes_unclassified() {
+        let base = init_chain_state(CHAIN_ID.to_string());
+        let expected_identity = identity(&base);
+        let first = mined_block_with_nonce(&base, &expected_identity, 101, "pulse1siblingone");
+        let second = mined_block_with_nonce(&base, &expected_identity, 102, "pulse1siblingtwo");
+        assert_ne!(first.hash, second.hash);
+
+        // Selection ties on work/score/height choose the lowest canonical hash.
+        // Keep the higher-hash sibling live so adding the lower-hash candidate
+        // makes the existing sibling, rather than the candidate, unclassified.
+        let (existing, candidate) = if first.hash > second.hash {
+            (first, second)
+        } else {
+            (second, first)
+        };
+        let live =
+            prepare_activated_v2_p2p_block_state(&existing, &base, &expected_identity).unwrap();
+
+        assert_eq!(
+            preflight_activated_v2_p2p_block(&candidate, &live, &expected_identity),
+            ActivatedV2P2pDisposition::DeferredContext
         );
     }
 
