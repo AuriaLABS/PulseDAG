@@ -94,7 +94,10 @@ fn candidate_past_projection(block: &Block, state: &ChainState) -> Result<ChainS
         .dag
         .selected_parents
         .retain(|hash, _| past.contains(hash));
-    projected.dag.blue_work.retain(|hash, _| past.contains(hash));
+    projected
+        .dag
+        .blue_work
+        .retain(|hash, _| past.contains(hash));
     projected
         .dag
         .merge_set_diagnostics
@@ -153,17 +156,14 @@ fn candidate_past_projection(block: &Block, state: &ChainState) -> Result<ChainS
     }
 
     let selected_tip = calculate_selected_tip_v1(&projected).map_err(|error| {
-        invalid_context_block(format!(
-            "cannot select candidate-past tip: {error:?}"
-        ))
+        invalid_context_block(format!("cannot select candidate-past tip: {error:?}"))
     })?;
-    projected.dag.selected_chain = rebuild_selected_chain_v1(&projected, selected_tip).map_err(
-        |error| {
+    projected.dag.selected_chain =
+        rebuild_selected_chain_v1(&projected, selected_tip).map_err(|error| {
             invalid_context_block(format!(
                 "cannot rebuild candidate-past selected chain: {error:?}"
             ))
-        },
-    )?;
+        })?;
     projected.dag.ordered_dag.clear();
     projected.dag.ordered_dag_tip = None;
     projected.dag.ordered_dag_state_root = None;
@@ -348,7 +348,10 @@ fn validate_candidate_transactions(
 ) -> Result<(), PulseError> {
     let mut transaction_context = replay_pre_candidate_state(context, &block.hash)?;
     validate_created_utxo_outpoints(block, &transaction_context)?;
-    let coinbase = block.transactions.first().ok_or(PulseError::MissingCoinbase)?;
+    let coinbase = block
+        .transactions
+        .first()
+        .ok_or(PulseError::MissingCoinbase)?;
     apply_transaction(coinbase, &mut transaction_context, block.header.height)?;
     for transaction in block.transactions.iter().skip(1) {
         validate_transaction_for_protocol(transaction, &transaction_context, identity)?;
@@ -441,8 +444,7 @@ pub fn validate_activated_v2_p2p_block_context(
 mod tests {
     use super::*;
     use crate::{
-        build_activated_v2_mining_template,
-        genesis::init_chain_state,
+        build_activated_v2_mining_template, genesis::init_chain_state,
         mining_template_v2::ActivatedV2MiningTemplateSpec,
         network_block_v2::prepare_activated_v2_p2p_block_state,
         ordering_v2::GHOSTDAG_V1_ORDERING_VERSION,
@@ -545,8 +547,8 @@ mod tests {
             }
         }
 
-        let error = validate_activated_v2_p2p_block_context(&side, &live, &expected_identity)
-            .unwrap_err();
+        let error =
+            validate_activated_v2_p2p_block_context(&side, &live, &expected_identity).unwrap_err();
         assert!(error.to_string().contains("state root mismatch"));
     }
 
@@ -559,8 +561,8 @@ mod tests {
         block.hash = compute_block_hash_v2(&block.header, &expected_identity.chain_id).unwrap();
         let before = bincode::serialize(&base).unwrap();
 
-        let error = validate_activated_v2_p2p_block_context(&block, &base, &expected_identity)
-            .unwrap_err();
+        let error =
+            validate_activated_v2_p2p_block_context(&block, &base, &expected_identity).unwrap_err();
         assert!(error.to_string().contains("missing parent"));
         assert_eq!(bincode::serialize(&base).unwrap(), before);
     }
