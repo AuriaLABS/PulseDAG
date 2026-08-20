@@ -6,8 +6,8 @@ use pulsedag_core::{
 };
 
 pub(crate) use super::mining_template_legacy::{
-    current_template_state, load_template, store_template, template_freshness_window,
-    template_id_for_state, MINING_PROTOCOL_VERSION,
+    current_template_state, load_template, template_freshness_window, template_id_for_state,
+    MINING_PROTOCOL_VERSION,
 };
 pub use super::mining_template_legacy::{MiningTemplateData, StoredMiningTemplate};
 
