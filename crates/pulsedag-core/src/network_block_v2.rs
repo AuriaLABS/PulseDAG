@@ -285,8 +285,7 @@ pub fn preflight_activated_v2_p2p_block(
     }
 
     let mut working = state.clone();
-    if let Err(error) =
-        commit_ghostdag_v1_metadata_for_activated_v2(block, &mut working, identity)
+    if let Err(error) = commit_ghostdag_v1_metadata_for_activated_v2(block, &mut working, identity)
     {
         return preflight_disposition_from_error(&error);
     }
@@ -297,9 +296,9 @@ pub fn preflight_activated_v2_p2p_block(
             return ActivatedV2P2pDisposition::DeferredContext;
         }
         Err(error) => {
-            return ActivatedV2P2pDisposition::Rejected(BlockAcceptanceResult::Rejected(
-                format!("activated-v2 p2p preflight ordering failed: {error:?}"),
-            ));
+            return ActivatedV2P2pDisposition::Rejected(BlockAcceptanceResult::Rejected(format!(
+                "activated-v2 p2p preflight ordering failed: {error:?}"
+            )));
         }
     };
 
@@ -501,9 +500,11 @@ mod tests {
         let expected_identity = identity(&state);
 
         let main_one = mined_block_with_nonce(&state, &expected_identity, 20, "pulse1mainone");
-        state = prepare_activated_v2_p2p_block_state(&main_one, &state, &expected_identity).unwrap();
+        state =
+            prepare_activated_v2_p2p_block_state(&main_one, &state, &expected_identity).unwrap();
         let main_two = mined_block_with_nonce(&state, &expected_identity, 21, "pulse1maintwo");
-        state = prepare_activated_v2_p2p_block_state(&main_two, &state, &expected_identity).unwrap();
+        state =
+            prepare_activated_v2_p2p_block_state(&main_two, &state, &expected_identity).unwrap();
 
         let fork_state = init_chain_state(CHAIN_ID.to_string());
         let side = mined_block_with_nonce(&fork_state, &expected_identity, 99, "pulse1sidetip");
