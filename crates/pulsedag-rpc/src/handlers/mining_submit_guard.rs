@@ -2,8 +2,8 @@ use crate::api::{ApiResponse, RpcStateLike, SubmitMinedBlockRequest};
 use axum::{extract::State, Json};
 use pulsedag_core::{PowValidationPath, BLOCK_HEADER_VERSION_V1};
 
-pub use super::mining_submit_protocol::MiningSubmitData;
 pub(crate) use super::mining_submit_protocol::bind_template_protocol;
+pub use super::mining_submit_protocol::MiningSubmitData;
 
 pub async fn post_mining_submit<S: RpcStateLike>(
     State(state): State<S>,
@@ -41,7 +41,9 @@ pub async fn post_mining_submit<S: RpcStateLike>(
             Err(error) => {
                 return Json(ApiResponse::err(
                     "PROTOCOL_MISMATCH",
-                    format!("legacy mining submit does not match the active protocol identity: {error}"),
+                    format!(
+                        "legacy mining submit does not match the active protocol identity: {error}"
+                    ),
                 ));
             }
         }
@@ -72,12 +74,14 @@ mod tests {
             GHOSTDAG_V1_ORDERING_VERSION,
         );
 
-        assert!(super::super::mining_submit_protocol::mining_submit_protocol_path(
-            &block,
-            &state,
-            Some(&activated),
-        )
-        .is_err());
+        assert!(
+            super::super::mining_submit_protocol::mining_submit_protocol_path(
+                &block,
+                &state,
+                Some(&activated),
+            )
+            .is_err()
+        );
         assert_eq!(
             super::super::mining_submit_protocol::mining_submit_protocol_path(
                 &block, &state, None,
