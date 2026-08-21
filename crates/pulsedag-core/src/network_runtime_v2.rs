@@ -486,9 +486,13 @@ where
         runtime,
         identity,
         ActivatedV2P2pRuntimePersistence::new(
-            |_, _| Ok(()),
-            |candidate, prepared, _| persist_one(candidate, prepared),
-            |bundle, prepared, _| persist_bundle(bundle, prepared),
+            |_: &ChainState, _: &ActivatedV2P2pRuntime| Ok(()),
+            |candidate: &Block, prepared: &ChainState, _: &ActivatedV2P2pRuntime| {
+                persist_one(candidate, prepared)
+            },
+            |bundle: &[Block], prepared: &ChainState, _: &ActivatedV2P2pRuntime| {
+                persist_bundle(bundle, prepared)
+            },
         ),
         broadcast,
     )
@@ -590,7 +594,7 @@ mod tests {
                 return block;
             }
         }
-        panic!("expected PoW-limit fixture to find a valid nonce");
+        panic!("expected the PoW-limit fixture to find a valid nonce");
     }
 
     fn parent_child_fixture() -> (ChainState, ProtocolActivationIdentity, Block, Block) {
