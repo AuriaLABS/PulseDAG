@@ -23,7 +23,7 @@ use crate::{
 
 pub const ACTIVATED_V2_P2P_STAGING_MAX_BLOCKS: usize = 4_096;
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ActivatedV2P2pStaging {
     blocks: BTreeMap<Hash, Block>,
 }
