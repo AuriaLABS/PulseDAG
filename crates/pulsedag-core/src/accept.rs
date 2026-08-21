@@ -5,6 +5,7 @@ use crate::{
         combined_pressure_tier, mempool_pressure_bps, reconcile_mempool, MEMPOOL_PRESSURE_HIGH_BPS,
         MEMPOOL_PRESSURE_SATURATED_BPS,
     },
+    mempool_protocol::reconcile_mempool_for_protocol,
     pow_validation_result, selected_pow_name,
     state::ChainState,
     types::{Block, Transaction},
@@ -608,7 +609,20 @@ fn accept_transaction_with_result_internal(
     validation: TransactionAdmissionValidation<'_>,
 ) -> TxAcceptanceResult {
     if mempool_needs_reconcile(state) {
-        reconcile_mempool(state);
+        let reconcile_result = match validation {
+            TransactionAdmissionValidation::LegacyV1 => {
+                reconcile_mempool(state);
+                Ok(())
+            }
+            TransactionAdmissionValidation::Protocol(identity) => {
+                reconcile_mempool_for_protocol(state, identity).map(|_| ())
+            }
+        };
+        if let Err(err) = reconcile_result {
+            state.mempool.counters.rejected_total =
+                state.mempool.counters.rejected_total.saturating_add(1);
+            return classify_tx_validation_error(err);
+        }
     }
 
     if state.mempool.transactions.contains_key(&tx.txid)
