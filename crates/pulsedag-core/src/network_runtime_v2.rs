@@ -130,7 +130,6 @@ fn process_one<FPersistOne, FPersistBundle, FBroadcast>(
     state: &mut ChainState,
     runtime: &mut ActivatedV2P2pRuntime,
     identity: &ProtocolActivationIdentity,
-    queue_missing: bool,
     persist_one: &mut FPersistOne,
     persist_bundle: &mut FPersistBundle,
     broadcast: &mut FBroadcast,
@@ -150,16 +149,11 @@ where
         }
         ActivatedV2P2pStageOutcome::MissingParents {
             missing_parents, ..
-        } => {
-            if queue_missing {
-                runtime.queue_missing(block)?;
-            }
-            Ok(ActivatedV2P2pRuntimeOutcome::MissingParents {
-                block_hash,
-                missing_parents,
-                pending_count: runtime.pending_missing.len(),
-            })
-        }
+        } => Ok(ActivatedV2P2pRuntimeOutcome::MissingParents {
+            block_hash,
+            missing_parents,
+            pending_count: runtime.pending_missing.len(),
+        }),
         ActivatedV2P2pStageOutcome::ImmediatelyFinalizable(_) => {
             let acceptance = accept_activated_v2_p2p_block_atomically(
                 block,
@@ -241,7 +235,6 @@ where
                 state,
                 runtime,
                 identity,
-                false,
                 persist_one,
                 persist_bundle,
                 broadcast,
@@ -298,16 +291,20 @@ where
     FPersistBundle: FnMut(&[Block], &ChainState) -> Result<(), PulseError>,
     FBroadcast: FnMut(&Block) -> Result<(), PulseError>,
 {
-    let primary = process_one(
-        block,
+    let mut primary = process_one(
+        block.clone(),
         state,
         runtime,
         identity,
-        true,
         &mut persist_one,
         &mut persist_bundle,
         &mut broadcast,
     )?;
+
+    if let ActivatedV2P2pRuntimeOutcome::MissingParents { pending_count, .. } = &mut primary {
+        runtime.queue_missing(block)?;
+        *pending_count = runtime.pending_missing.len();
+    }
 
     let retried = if primary.made_parent_context_available() {
         retry_pending_until_stable(
