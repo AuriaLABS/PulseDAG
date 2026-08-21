@@ -93,10 +93,7 @@ struct PreparedPromotion {
 }
 
 fn invalid_staging(message: impl Into<String>) -> PulseError {
-    PulseError::InvalidBlock(format!(
-        "activated-v2 p2p staging: {}",
-        message.into()
-    ))
+    PulseError::InvalidBlock(format!("activated-v2 p2p staging: {}", message.into()))
 }
 
 fn collect_staged_closure(
@@ -287,10 +284,7 @@ fn remove_promoted_transactions_from_mempool(
                     .saturating_add(1);
             }
             for input in &transaction.inputs {
-                state
-                    .mempool
-                    .spent_outpoints
-                    .remove(&input.previous_output);
+                state.mempool.spent_outpoints.remove(&input.previous_output);
             }
         }
     }
@@ -405,7 +399,11 @@ where
 
     Ok(ActivatedV2P2pPromotion {
         anchor_hash: anchor_hash.clone(),
-        promoted_hashes: details.bundle.iter().map(|block| block.hash.clone()).collect(),
+        promoted_hashes: details
+            .bundle
+            .iter()
+            .map(|block| block.hash.clone())
+            .collect(),
         generation: mutation.generation,
         persisted: true,
         committed: true,
@@ -482,11 +480,9 @@ mod tests {
         .unwrap();
         let classification = classify_merge_set_v1(&block, state).unwrap();
         block.header.blue_score = classification.blue_score;
-        block.header.difficulty = expected_difficulty_for_parent(
-            state,
-            classification.selected_parent.as_ref().unwrap(),
-        )
-        .unwrap();
+        block.header.difficulty =
+            expected_difficulty_for_parent(state, classification.selected_parent.as_ref().unwrap())
+                .unwrap();
         block.hash = compute_block_hash_v2(&block.header, &identity.chain_id).unwrap();
 
         let mut first_state = state.clone();
@@ -499,7 +495,10 @@ mod tests {
         commit_ghostdag_v1_metadata_for_activated_v2(&block, &mut final_state, identity).unwrap();
         let final_replay = rebuild_authoritative_state_v2(&final_state).unwrap();
         assert_eq!(final_replay.diagnostics.state_root, block.header.state_root);
-        assert_eq!(final_replay.diagnostics.ordered_dag_tip, Some(block.hash.clone()));
+        assert_eq!(
+            final_replay.diagnostics.ordered_dag_tip,
+            Some(block.hash.clone())
+        );
 
         for nonce in 0..=200_000_u64 {
             block.header.nonce = nonce;
@@ -524,16 +523,11 @@ mod tests {
         let main = finalized_block(&base, &expected_identity, vec![genesis.clone()], 11);
         let side = finalized_block(&base, &expected_identity, vec![genesis], 12);
         assert_ne!(main.hash, side.hash);
-        let live =
-            prepare_activated_v2_p2p_block_state(&main, &base, &expected_identity).unwrap();
+        let live = prepare_activated_v2_p2p_block_state(&main, &base, &expected_identity).unwrap();
         let mut staging = ActivatedV2P2pStaging::default();
-        let outcome = stage_activated_v2_p2p_block(
-            side.clone(),
-            &live,
-            &mut staging,
-            &expected_identity,
-        )
-        .unwrap();
+        let outcome =
+            stage_activated_v2_p2p_block(side.clone(), &live, &mut staging, &expected_identity)
+                .unwrap();
         assert!(matches!(outcome, ActivatedV2P2pStageOutcome::Staged { .. }));
         (live, expected_identity, staging, main, side)
     }
@@ -554,20 +548,11 @@ mod tests {
         let base = crate::genesis::init_chain_state(CHAIN_ID.to_string());
         let side_state =
             prepare_activated_v2_p2p_block_state(&side, &base, &expected_identity).unwrap();
-        let child = finalized_block(
-            &side_state,
-            &expected_identity,
-            vec![side.hash.clone()],
-            21,
-        );
+        let child = finalized_block(&side_state, &expected_identity, vec![side.hash.clone()], 21);
 
-        let outcome = stage_activated_v2_p2p_block(
-            child.clone(),
-            &live,
-            &mut staging,
-            &expected_identity,
-        )
-        .unwrap();
+        let outcome =
+            stage_activated_v2_p2p_block(child.clone(), &live, &mut staging, &expected_identity)
+                .unwrap();
         match outcome {
             ActivatedV2P2pStageOutcome::Staged {
                 staged_parent_closure,
@@ -593,13 +578,8 @@ mod tests {
             vec![main.hash.clone(), side.hash.clone()],
             31,
         );
-        let outcome = stage_activated_v2_p2p_block(
-            anchor.clone(),
-            live,
-            staging,
-            identity,
-        )
-        .unwrap();
+        let outcome =
+            stage_activated_v2_p2p_block(anchor.clone(), live, staging, identity).unwrap();
         assert!(matches!(
             outcome,
             ActivatedV2P2pStageOutcome::ReadyForPromotion { .. }
@@ -610,13 +590,7 @@ mod tests {
     #[test]
     fn merge_anchor_promotes_staged_side_tip_and_state_atomically() {
         let (mut live, expected_identity, mut staging, main, side) = staged_side_fixture();
-        let anchor = stage_merge_anchor(
-            &live,
-            &expected_identity,
-            &mut staging,
-            &main,
-            &side,
-        );
+        let anchor = stage_merge_anchor(&live, &expected_identity, &mut staging, &main, &side);
         let mut persisted = false;
         let mut broadcasts = Vec::new();
 
@@ -643,7 +617,10 @@ mod tests {
 
         assert!(persisted);
         assert!(promoted.persisted && promoted.committed);
-        assert_eq!(promoted.promoted_hashes, vec![side.hash.clone(), anchor.hash.clone()]);
+        assert_eq!(
+            promoted.promoted_hashes,
+            vec![side.hash.clone(), anchor.hash.clone()]
+        );
         assert_eq!(broadcasts, promoted.promoted_hashes);
         assert_eq!(promoted.broadcast_count, 2);
         assert!(staging.is_empty());
@@ -655,13 +632,7 @@ mod tests {
     #[test]
     fn promotion_persistence_failure_leaves_live_state_and_staging_unchanged() {
         let (mut live, expected_identity, mut staging, main, side) = staged_side_fixture();
-        let anchor = stage_merge_anchor(
-            &live,
-            &expected_identity,
-            &mut staging,
-            &main,
-            &side,
-        );
+        let anchor = stage_merge_anchor(&live, &expected_identity, &mut staging, &main, &side);
         let live_before = bincode::serialize(&live).unwrap();
         let staging_before = bincode::serialize(&staging).unwrap();
         let mut broadcast = false;
@@ -671,7 +642,11 @@ mod tests {
             &mut live,
             &mut staging,
             &expected_identity,
-            |_, _| Err(PulseError::StorageError("fixture persistence failure".into())),
+            |_, _| {
+                Err(PulseError::StorageError(
+                    "fixture persistence failure".into(),
+                ))
+            },
             |_| {
                 broadcast = true;
                 Ok(())
