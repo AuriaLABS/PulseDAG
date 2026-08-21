@@ -118,7 +118,10 @@ pub struct ActivatedV2P2pDriveResult {
     pub staged_count: usize,
 }
 
-fn runtime_rejected(block_hash: Hash, result: BlockAcceptanceResult) -> ActivatedV2P2pRuntimeOutcome {
+fn runtime_rejected(
+    block_hash: Hash,
+    result: BlockAcceptanceResult,
+) -> ActivatedV2P2pRuntimeOutcome {
     ActivatedV2P2pRuntimeOutcome::Rejected { block_hash, result }
 }
 
@@ -138,12 +141,7 @@ where
     FBroadcast: FnMut(&Block) -> Result<(), PulseError>,
 {
     let block_hash = block.hash.clone();
-    let stage = stage_activated_v2_p2p_block(
-        block.clone(),
-        state,
-        &mut runtime.staging,
-        identity,
-    )?;
+    let stage = stage_activated_v2_p2p_block(block.clone(), state, &mut runtime.staging, identity)?;
 
     match stage {
         ActivatedV2P2pStageOutcome::Duplicate => {
@@ -550,7 +548,10 @@ mod tests {
         assert!(live.dag.blocks.contains_key(&parent.hash));
         assert!(live.dag.blocks.contains_key(&child.hash));
         assert!(live.orphan_blocks.is_empty());
-        assert_eq!(persisted_hashes, vec![parent.hash.clone(), child.hash.clone()]);
+        assert_eq!(
+            persisted_hashes,
+            vec![parent.hash.clone(), child.hash.clone()]
+        );
         assert_eq!(broadcasts, persisted_hashes);
     }
 
@@ -565,12 +566,7 @@ mod tests {
             prepare_activated_v2_p2p_block_state(&main, &base, &expected_identity).unwrap();
         let side_state =
             prepare_activated_v2_p2p_block_state(&side, &base, &expected_identity).unwrap();
-        let child = finalized_block(
-            &side_state,
-            &expected_identity,
-            vec![side.hash.clone()],
-            23,
-        );
+        let child = finalized_block(&side_state, &expected_identity, vec![side.hash.clone()], 23);
         let mut runtime = ActivatedV2P2pRuntime::default();
 
         let queued = drive_activated_v2_p2p_block_atomically(
@@ -640,7 +636,11 @@ mod tests {
             &mut live,
             &mut runtime,
             &expected_identity,
-            |_, _| Err(PulseError::StorageError("fixture persistence failure".into())),
+            |_, _| {
+                Err(PulseError::StorageError(
+                    "fixture persistence failure".into(),
+                ))
+            },
             |_, _| Ok(()),
             |_| Ok(()),
         )
