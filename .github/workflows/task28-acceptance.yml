@@ -67,6 +67,9 @@ jobs:
       - name: Activated-v2 P2P pending-parent runtime
         run: cargo test --locked -p pulsedag-core network_runtime_v2::tests::
 
+      - name: Daemon activated-v2 inbound block selector
+        run: cargo test --locked -p pulsedagd block_protocol::tests::
+
       - name: RPC protocol-bound mining submit and template
         run: |
           cargo test --locked -p pulsedag-rpc activated_identity_rejects_legacy_submit_preflight
