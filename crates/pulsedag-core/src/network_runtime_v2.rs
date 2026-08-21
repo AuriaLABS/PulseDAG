@@ -140,6 +140,12 @@ where
     FBroadcast: FnMut(&Block) -> Result<(), PulseError>,
 {
     let block_hash = block.hash.clone();
+    let staging_before_candidate = block
+        .header
+        .parents
+        .iter()
+        .any(|parent| runtime.staging.contains(parent))
+        .then(|| runtime.staging.clone());
     let stage = stage_activated_v2_p2p_block(block.clone(), state, &mut runtime.staging, identity)?;
 
     match stage {
@@ -185,14 +191,24 @@ where
             })
         }
         ActivatedV2P2pStageOutcome::ReadyForPromotion { .. } => {
-            let promotion = promote_activated_v2_p2p_anchor_atomically(
+            let promotion = match promote_activated_v2_p2p_anchor_atomically(
                 &block_hash,
                 state,
                 &mut runtime.staging,
                 identity,
                 |bundle, prepared| persist_bundle(bundle, prepared),
                 |candidate| broadcast(candidate),
-            )?;
+            ) {
+                Ok(promotion) => promotion,
+                Err(error) => {
+                    if !state.dag.blocks.contains_key(&block_hash) {
+                        if let Some(staging_before_candidate) = staging_before_candidate {
+                            runtime.staging = staging_before_candidate;
+                        }
+                    }
+                    return Err(error);
+                }
+            };
             runtime.pending_missing.remove(&block_hash);
             Ok(ActivatedV2P2pRuntimeOutcome::Promoted {
                 anchor_hash: promotion.anchor_hash,
@@ -605,6 +621,98 @@ mod tests {
         assert!(!live.dag.blocks.contains_key(&child.hash));
         assert!(live.orphan_blocks.is_empty());
         assert!(live.orphan_missing_parents.is_empty());
+    }
+
+    #[test]
+    fn promotion_persistence_failure_rolls_back_new_anchor_for_retry() {
+        let base = crate::genesis::init_chain_state(CHAIN_ID.to_string());
+        let expected_identity = identity(&base);
+        let genesis = base.dag.genesis_hash.clone();
+        let main = finalized_block(&base, &expected_identity, vec![genesis.clone()], 31);
+        let side = finalized_block(&base, &expected_identity, vec![genesis], 32);
+        let mut live =
+            prepare_activated_v2_p2p_block_state(&main, &base, &expected_identity).unwrap();
+        let mut runtime = ActivatedV2P2pRuntime::default();
+
+        let staged = drive_activated_v2_p2p_block_atomically(
+            side.clone(),
+            &mut live,
+            &mut runtime,
+            &expected_identity,
+            |_, _| panic!("unexpected single-block persistence for side-tip staging"),
+            |_, _| panic!("unexpected bundle persistence for side-tip staging"),
+            |_| panic!("unexpected broadcast for side-tip staging"),
+        )
+        .unwrap();
+        assert!(matches!(
+            staged.primary,
+            ActivatedV2P2pRuntimeOutcome::Staged { .. }
+        ));
+
+        let mut pre_anchor = live.clone();
+        commit_ghostdag_v1_metadata_for_activated_v2(&side, &mut pre_anchor, &expected_identity)
+            .unwrap();
+        let anchor = finalized_block(
+            &pre_anchor,
+            &expected_identity,
+            vec![main.hash.clone(), side.hash.clone()],
+            33,
+        );
+        let live_before = bincode::serialize(&live).unwrap();
+
+        let error = drive_activated_v2_p2p_block_atomically(
+            anchor.clone(),
+            &mut live,
+            &mut runtime,
+            &expected_identity,
+            |_, _| panic!("unexpected single-block persistence for merge-anchor promotion"),
+            |_, _| {
+                Err(PulseError::StorageError(
+                    "fixture promotion persistence failure".into(),
+                ))
+            },
+            |_| panic!("unexpected broadcast before promotion persistence succeeds"),
+        )
+        .unwrap_err();
+
+        assert!(matches!(error, PulseError::StorageError(_)));
+        assert_eq!(bincode::serialize(&live).unwrap(), live_before);
+        assert!(runtime.staging().contains(&side.hash));
+        assert!(!runtime.staging().contains(&anchor.hash));
+
+        let mut persisted_bundle = false;
+        let mut broadcasts = Vec::<Hash>::new();
+        let retried = drive_activated_v2_p2p_block_atomically(
+            anchor.clone(),
+            &mut live,
+            &mut runtime,
+            &expected_identity,
+            |_, _| panic!("unexpected single-block persistence for merge-anchor promotion"),
+            |bundle, _| {
+                assert_eq!(
+                    bundle.iter().map(|block| block.hash.clone()).collect::<Vec<_>>(),
+                    vec![side.hash.clone(), anchor.hash.clone()]
+                );
+                persisted_bundle = true;
+                Ok(())
+            },
+            |block| {
+                broadcasts.push(block.hash.clone());
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        assert!(persisted_bundle);
+        assert!(matches!(
+            retried.primary,
+            ActivatedV2P2pRuntimeOutcome::Promoted { ref anchor_hash, .. }
+                if anchor_hash == &anchor.hash
+        ));
+        assert_eq!(broadcasts, vec![side.hash.clone(), anchor.hash.clone()]);
+        assert!(runtime.staging().is_empty());
+        assert!(live.dag.blocks.contains_key(&side.hash));
+        assert!(live.dag.blocks.contains_key(&anchor.hash));
     }
 
     #[test]
