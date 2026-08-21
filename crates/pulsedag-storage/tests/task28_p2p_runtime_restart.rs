@@ -3,12 +3,43 @@ use pulsedag_core::{
     commit_ghostdag_v1_metadata_for_activated_v2, compute_block_hash_v2, current_ts,
     drive_activated_v2_p2p_block_with_runtime_persistence, materialize_authoritative_state_v2,
     prepare_activated_v2_p2p_block_state, rebuild_authoritative_state_v2,
-    validate_pow_for_protocol, ActivatedV2P2pRuntime, Block, CandidateBlockV2Spec, ChainState,
-    Hash, ProtocolActivationIdentity, GHOSTDAG_V1_ORDERING_VERSION,
+    validate_pow_for_protocol, ActivatedV2P2pRuntime, ActivatedV2P2pRuntimePersistence, Block,
+    CandidateBlockV2Spec, ChainState, Hash, ProtocolActivationIdentity,
+    GHOSTDAG_V1_ORDERING_VERSION,
 };
 use pulsedag_storage::Storage;
 
 const CHAIN_ID: &str = "task28-storage-p2p-runtime-restart";
+
+macro_rules! runtime_persistence {
+    ($storage:ident, $identity:ident) => {
+        ActivatedV2P2pRuntimePersistence::new(
+            |state, durable_runtime| {
+                $storage.persist_activated_v2_p2p_runtime_snapshot(
+                    &$identity,
+                    state,
+                    durable_runtime,
+                )
+            },
+            |block, state, durable_runtime| {
+                $storage.persist_activated_v2_p2p_block_and_runtime(
+                    block,
+                    &$identity,
+                    state,
+                    durable_runtime,
+                )
+            },
+            |blocks, state, durable_runtime| {
+                $storage.persist_activated_v2_p2p_blocks_and_runtime(
+                    blocks,
+                    &$identity,
+                    state,
+                    durable_runtime,
+                )
+            },
+        )
+    };
+}
 
 fn temp_db_path(test_name: &str) -> String {
     let unique = std::time::SystemTime::now()
@@ -128,25 +159,7 @@ fn pending_parent_runtime_restores_and_retries_to_empty_after_restart() {
             &mut live,
             &mut runtime,
             &identity,
-            |state, durable_runtime| {
-                storage.persist_activated_v2_p2p_runtime_snapshot(&identity, state, durable_runtime)
-            },
-            |block, state, durable_runtime| {
-                storage.persist_activated_v2_p2p_block_and_runtime(
-                    block,
-                    &identity,
-                    state,
-                    durable_runtime,
-                )
-            },
-            |blocks, state, durable_runtime| {
-                storage.persist_activated_v2_p2p_blocks_and_runtime(
-                    blocks,
-                    &identity,
-                    state,
-                    durable_runtime,
-                )
-            },
+            runtime_persistence!(storage, identity),
             |_| Ok(()),
         )
         .unwrap();
@@ -168,25 +181,7 @@ fn pending_parent_runtime_restores_and_retries_to_empty_after_restart() {
             &mut live,
             &mut runtime,
             &identity,
-            |state, durable_runtime| {
-                storage.persist_activated_v2_p2p_runtime_snapshot(&identity, state, durable_runtime)
-            },
-            |block, state, durable_runtime| {
-                storage.persist_activated_v2_p2p_block_and_runtime(
-                    block,
-                    &identity,
-                    state,
-                    durable_runtime,
-                )
-            },
-            |blocks, state, durable_runtime| {
-                storage.persist_activated_v2_p2p_blocks_and_runtime(
-                    blocks,
-                    &identity,
-                    state,
-                    durable_runtime,
-                )
-            },
+            runtime_persistence!(storage, identity),
             |_| Ok(()),
         )
         .unwrap();
@@ -239,25 +234,7 @@ fn staged_side_tip_restores_and_promotes_atomically_after_restart() {
             &mut live,
             &mut runtime,
             &identity,
-            |state, durable_runtime| {
-                storage.persist_activated_v2_p2p_runtime_snapshot(&identity, state, durable_runtime)
-            },
-            |block, state, durable_runtime| {
-                storage.persist_activated_v2_p2p_block_and_runtime(
-                    block,
-                    &identity,
-                    state,
-                    durable_runtime,
-                )
-            },
-            |blocks, state, durable_runtime| {
-                storage.persist_activated_v2_p2p_blocks_and_runtime(
-                    blocks,
-                    &identity,
-                    state,
-                    durable_runtime,
-                )
-            },
+            runtime_persistence!(storage, identity),
             |_| Ok(()),
         )
         .unwrap();
@@ -267,25 +244,7 @@ fn staged_side_tip_restores_and_promotes_atomically_after_restart() {
             &mut live,
             &mut runtime,
             &identity,
-            |state, durable_runtime| {
-                storage.persist_activated_v2_p2p_runtime_snapshot(&identity, state, durable_runtime)
-            },
-            |block, state, durable_runtime| {
-                storage.persist_activated_v2_p2p_block_and_runtime(
-                    block,
-                    &identity,
-                    state,
-                    durable_runtime,
-                )
-            },
-            |blocks, state, durable_runtime| {
-                storage.persist_activated_v2_p2p_blocks_and_runtime(
-                    blocks,
-                    &identity,
-                    state,
-                    durable_runtime,
-                )
-            },
+            runtime_persistence!(storage, identity),
             |_| Ok(()),
         )
         .unwrap();
@@ -316,25 +275,7 @@ fn staged_side_tip_restores_and_promotes_atomically_after_restart() {
             &mut live,
             &mut runtime,
             &identity,
-            |state, durable_runtime| {
-                storage.persist_activated_v2_p2p_runtime_snapshot(&identity, state, durable_runtime)
-            },
-            |block, state, durable_runtime| {
-                storage.persist_activated_v2_p2p_block_and_runtime(
-                    block,
-                    &identity,
-                    state,
-                    durable_runtime,
-                )
-            },
-            |blocks, state, durable_runtime| {
-                storage.persist_activated_v2_p2p_blocks_and_runtime(
-                    blocks,
-                    &identity,
-                    state,
-                    durable_runtime,
-                )
-            },
+            runtime_persistence!(storage, identity),
             |_| Ok(()),
         )
         .unwrap();
