@@ -11,6 +11,7 @@ use crate::{
     header_v2::{compute_block_hash_v2, validate_block_header_v2_shape},
     mempool_protocol::reconcile_mempool_for_protocol,
     mining::{current_ts, is_coinbase},
+    ordering_v2::{derive_ordered_dag_v2, OrderingV2Error},
     pow::dev_max_future_drift_secs,
     pow_protocol::{resolve_pow_validation_path, validate_pow_for_protocol, PowValidationPath},
     protocol::{ProtocolActivationIdentity, BLOCK_HEADER_VERSION_V2},
@@ -22,6 +23,15 @@ use crate::{
     types::{compute_merkle_root, Block},
     validation::{validate_coinbase_reward, validate_created_utxo_outpoints},
 };
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ActivatedV2P2pDisposition {
+    Finalizable,
+    DeferredContext,
+    MissingParent,
+    Duplicate,
+    Rejected(BlockAcceptanceResult),
+}
 
 fn invalid_network_block(message: impl Into<String>) -> PulseError {
     PulseError::InvalidBlock(format!(
@@ -68,7 +78,15 @@ fn classify_network_block_error(error: &PulseError) -> BlockAcceptanceResult {
     }
 }
 
-fn validate_network_block_envelope(
+fn preflight_disposition_from_error(error: &PulseError) -> ActivatedV2P2pDisposition {
+    match classify_network_block_error(error) {
+        BlockAcceptanceResult::Duplicate => ActivatedV2P2pDisposition::Duplicate,
+        BlockAcceptanceResult::MissingParent => ActivatedV2P2pDisposition::MissingParent,
+        result => ActivatedV2P2pDisposition::Rejected(result),
+    }
+}
+
+fn validate_network_block_staging_envelope(
     block: &Block,
     state: &ChainState,
     identity: &ProtocolActivationIdentity,
@@ -184,17 +202,50 @@ fn validate_network_block_envelope(
         if compute_txid_v2(transaction, &identity.chain_id)? != transaction.txid {
             return Err(PulseError::InvalidTxid);
         }
+
+        if !is_coinbase(transaction) {
+            if transaction.outputs.is_empty() {
+                return Err(PulseError::InvalidTransaction("no outputs".into()));
+            }
+            if transaction.inputs.is_empty() {
+                return Err(PulseError::InvalidTransaction("no inputs".into()));
+            }
+            if transaction.outputs.iter().any(|output| output.amount == 0) {
+                return Err(PulseError::InvalidTransaction("zero-value output".into()));
+            }
+            let mut seen_inputs = BTreeSet::new();
+            for input in &transaction.inputs {
+                if !seen_inputs.insert(input.previous_output.clone()) {
+                    return Err(PulseError::InvalidTransaction("duplicate input".into()));
+                }
+            }
+        }
     }
     if compute_merkle_root(&block.transactions) != block.header.merkle_root {
         return Err(invalid_network_block("merkle root mismatch"));
     }
     validate_coinbase_reward(block)?;
+    validate_pow_for_protocol(&block.header, state, identity)?;
+    Ok(())
+}
+
+fn validate_finalizable_network_block_transactions(
+    block: &Block,
+    state: &ChainState,
+    identity: &ProtocolActivationIdentity,
+) -> Result<(), PulseError> {
     validate_created_utxo_outpoints(block, state)?;
 
+    let coinbase = block
+        .transactions
+        .first()
+        .ok_or(PulseError::MissingCoinbase)?;
+
     // Validate spends against the authoritative pre-block UTXO without live
-    // mempool spent markers. This first network boundary is intentionally
-    // limited to blocks that can be finalized immediately; transient side-tip
-    // conflict staging remains a separate live P2P integration slice.
+    // mempool spent markers. This is intentionally performed only after the
+    // candidate is known to be finalizable in the current authoritative order.
+    // Deferred side tips need their own past-subDAG context and must not be
+    // rejected against a competing live UTXO projection.
     let mut transaction_context = state.clone();
     transaction_context.mempool.transactions.clear();
     transaction_context.mempool.spent_outpoints.clear();
@@ -203,9 +254,62 @@ fn validate_network_block_envelope(
         validate_transaction_for_protocol(transaction, &transaction_context, identity)?;
         apply_transaction(transaction, &mut transaction_context, block.header.height)?;
     }
-
-    validate_pow_for_protocol(&block.header, state, identity)?;
     Ok(())
+}
+
+fn validate_network_block_envelope(
+    block: &Block,
+    state: &ChainState,
+    identity: &ProtocolActivationIdentity,
+) -> Result<(), PulseError> {
+    validate_network_block_staging_envelope(block, state, identity)?;
+    validate_finalizable_network_block_transactions(block, state, identity)
+}
+
+/// Classify an activated-v2 P2P candidate before the live daemon decides
+/// whether to finalize it immediately, stage it as transient DAG context, or
+/// send it through missing-parent recovery.
+///
+/// The preflight validates only branch-independent transaction structure before
+/// determining finalizability. It deliberately defers UTXO/outpoint/signature
+/// economics for an unabsorbed side tip because validating those against the
+/// receiver's competing live branch can reject a block that is valid in its own
+/// past-subDAG context.
+pub fn preflight_activated_v2_p2p_block(
+    block: &Block,
+    state: &ChainState,
+    identity: &ProtocolActivationIdentity,
+) -> ActivatedV2P2pDisposition {
+    if let Err(error) = validate_network_block_staging_envelope(block, state, identity) {
+        return preflight_disposition_from_error(&error);
+    }
+
+    let mut working = state.clone();
+    if let Err(error) = commit_ghostdag_v1_metadata_for_activated_v2(block, &mut working, identity)
+    {
+        return preflight_disposition_from_error(&error);
+    }
+
+    let ordered = match derive_ordered_dag_v2(&working) {
+        Ok(ordered) => ordered,
+        Err(OrderingV2Error::UnclassifiedBlock { .. }) => {
+            return ActivatedV2P2pDisposition::DeferredContext;
+        }
+        Err(error) => {
+            return ActivatedV2P2pDisposition::Rejected(BlockAcceptanceResult::Rejected(format!(
+                "activated-v2 p2p preflight ordering failed: {error:?}"
+            )));
+        }
+    };
+
+    if ordered.blocks.last() != Some(&block.hash) {
+        return ActivatedV2P2pDisposition::DeferredContext;
+    }
+
+    match prepare_activated_v2_p2p_block_state(block, state, identity) {
+        Ok(_) => ActivatedV2P2pDisposition::Finalizable,
+        Err(error) => preflight_disposition_from_error(&error),
+    }
 }
 
 /// Prepare a finalizable activated-v2 block received from the network.
@@ -346,14 +450,19 @@ mod tests {
         )
     }
 
-    fn mined_block(state: &ChainState, identity: &ProtocolActivationIdentity) -> Block {
+    fn mined_block_with_nonce(
+        state: &ChainState,
+        identity: &ProtocolActivationIdentity,
+        coinbase_nonce: u64,
+        miner_address: &str,
+    ) -> Block {
         let template = build_activated_v2_mining_template(
             state,
             identity,
             ActivatedV2MiningTemplateSpec {
-                miner_address: "pulse1task28p2p".to_string(),
+                miner_address: miner_address.to_string(),
                 timestamp: current_ts(),
-                coinbase_nonce: 19,
+                coinbase_nonce,
                 transactions: Vec::new(),
             },
         )
@@ -367,6 +476,107 @@ mod tests {
             }
         }
         panic!("expected the PoW-limit fixture to find a valid nonce");
+    }
+
+    fn mined_block(state: &ChainState, identity: &ProtocolActivationIdentity) -> Block {
+        mined_block_with_nonce(state, identity, 19, "pulse1task28p2p")
+    }
+
+    #[test]
+    fn preflight_marks_immediately_orderable_candidate_finalizable() {
+        let state = init_chain_state(CHAIN_ID.to_string());
+        let expected_identity = identity(&state);
+        let block = mined_block(&state, &expected_identity);
+
+        assert_eq!(
+            preflight_activated_v2_p2p_block(&block, &state, &expected_identity),
+            ActivatedV2P2pDisposition::Finalizable
+        );
+    }
+
+    #[test]
+    fn preflight_defers_unabsorbed_side_tip_before_live_branch_utxo_validation() {
+        let mut state = init_chain_state(CHAIN_ID.to_string());
+        let expected_identity = identity(&state);
+
+        let main_one = mined_block_with_nonce(&state, &expected_identity, 20, "pulse1mainone");
+        state =
+            prepare_activated_v2_p2p_block_state(&main_one, &state, &expected_identity).unwrap();
+        let main_two = mined_block_with_nonce(&state, &expected_identity, 21, "pulse1maintwo");
+        state =
+            prepare_activated_v2_p2p_block_state(&main_two, &state, &expected_identity).unwrap();
+
+        let fork_state = init_chain_state(CHAIN_ID.to_string());
+        let side = mined_block_with_nonce(&fork_state, &expected_identity, 99, "pulse1sidetip");
+
+        assert_eq!(
+            preflight_activated_v2_p2p_block(&side, &state, &expected_identity),
+            ActivatedV2P2pDisposition::DeferredContext
+        );
+        assert!(
+            prepare_activated_v2_p2p_block_state(&side, &state, &expected_identity).is_err(),
+            "the finalizable-only path must still fail closed for an unabsorbed side tip"
+        );
+    }
+
+    #[test]
+    fn preflight_defers_parallel_candidate_when_existing_sibling_becomes_unclassified() {
+        let base = init_chain_state(CHAIN_ID.to_string());
+        let expected_identity = identity(&base);
+        let first = mined_block_with_nonce(&base, &expected_identity, 101, "pulse1siblingone");
+        let second = mined_block_with_nonce(&base, &expected_identity, 102, "pulse1siblingtwo");
+        assert_ne!(first.hash, second.hash);
+
+        // Selection ties on work/score/height choose the lowest canonical hash.
+        // Keep the higher-hash sibling live so adding the lower-hash candidate
+        // makes the existing sibling, rather than the candidate, unclassified.
+        let (existing, candidate) = if first.hash > second.hash {
+            (first, second)
+        } else {
+            (second, first)
+        };
+        let live =
+            prepare_activated_v2_p2p_block_state(&existing, &base, &expected_identity).unwrap();
+
+        assert_eq!(
+            preflight_activated_v2_p2p_block(&candidate, &live, &expected_identity),
+            ActivatedV2P2pDisposition::DeferredContext
+        );
+    }
+
+    #[test]
+    fn preflight_preserves_missing_parent_and_duplicate_boundaries() {
+        let mut state = init_chain_state(CHAIN_ID.to_string());
+        let expected_identity = identity(&state);
+        let mut missing = mined_block(&state, &expected_identity);
+        missing.header.parents = vec!["missing-parent".to_string()];
+        missing.hash = compute_block_hash_v2(&missing.header, &expected_identity.chain_id).unwrap();
+
+        assert_eq!(
+            preflight_activated_v2_p2p_block(&missing, &state, &expected_identity),
+            ActivatedV2P2pDisposition::MissingParent
+        );
+
+        let accepted = mined_block_with_nonce(&state, &expected_identity, 33, "pulse1duplicate");
+        state =
+            prepare_activated_v2_p2p_block_state(&accepted, &state, &expected_identity).unwrap();
+        assert_eq!(
+            preflight_activated_v2_p2p_block(&accepted, &state, &expected_identity),
+            ActivatedV2P2pDisposition::Duplicate
+        );
+    }
+
+    #[test]
+    fn preflight_wrong_protocol_identity_fails_closed() {
+        let state = init_chain_state(CHAIN_ID.to_string());
+        let expected_identity = identity(&state);
+        let block = mined_block(&state, &expected_identity);
+        let legacy = ProtocolActivationIdentity::legacy_from_state(&state);
+
+        assert!(matches!(
+            preflight_activated_v2_p2p_block(&block, &state, &legacy),
+            ActivatedV2P2pDisposition::Rejected(_)
+        ));
     }
 
     #[test]

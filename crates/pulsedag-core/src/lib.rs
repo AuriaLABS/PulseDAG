@@ -18,6 +18,7 @@ pub mod mining_state_v2;
 pub mod mining_template_v2;
 pub mod mining_v2;
 pub mod network_block_v2;
+pub mod network_context_v2;
 pub mod ordering;
 pub mod ordering_v2;
 pub mod orphans;
@@ -201,7 +202,12 @@ pub use mining_v2::{
     CandidateBlockV2Spec,
 };
 pub use network_block_v2::{
-    accept_activated_v2_p2p_block_atomically, prepare_activated_v2_p2p_block_state,
+    accept_activated_v2_p2p_block_atomically, preflight_activated_v2_p2p_block,
+    prepare_activated_v2_p2p_block_state, ActivatedV2P2pDisposition,
+};
+pub use network_context_v2::{
+    validate_activated_v2_p2p_block_context, ActivatedV2P2pContextDisposition,
+    ActivatedV2P2pContextValidation,
 };
 pub use orphans::{
     adopt_ready_orphans, adopt_ready_orphans_with_result, classify_orphan_backlog,
