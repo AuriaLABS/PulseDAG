@@ -1,5 +1,6 @@
 use pulsedag_core::{
-    ChainState, ProtocolActivationIdentity, GHOSTDAG_V1_ORDERING_VERSION,
+    ActivatedV2P2pDriveResult, ActivatedV2P2pRuntimeOutcome, BlockAcceptanceResult, ChainState,
+    Hash, ProtocolActivationIdentity, GHOSTDAG_V1_ORDERING_VERSION,
 };
 use pulsedag_p2p::messages::ProtocolCapabilitiesV1;
 
@@ -47,6 +48,81 @@ pub fn resolve_inbound_p2p_block_protocol(
     }
 
     Ok(InboundP2pBlockProtocol::ActivatedV2(expected))
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ActivatedV2InboundSummary {
+    pub accepted_hashes: Vec<Hash>,
+    pub staged_hashes: Vec<Hash>,
+    pub duplicate_hashes: Vec<Hash>,
+    pub missing_parents: Vec<Hash>,
+    pub rejected: Vec<(Hash, BlockAcceptanceResult)>,
+}
+
+impl ActivatedV2InboundSummary {
+    pub fn authoritative_progress(&self) -> bool {
+        !self.accepted_hashes.is_empty()
+    }
+
+    pub fn parent_context_progress(&self) -> bool {
+        self.authoritative_progress()
+            || !self.staged_hashes.is_empty()
+            || !self.duplicate_hashes.is_empty()
+    }
+
+    pub fn has_rejections(&self) -> bool {
+        !self.rejected.is_empty()
+    }
+}
+
+fn record_runtime_outcome(
+    outcome: &ActivatedV2P2pRuntimeOutcome,
+    summary: &mut ActivatedV2InboundSummary,
+) {
+    match outcome {
+        ActivatedV2P2pRuntimeOutcome::Accepted { block_hash, .. } => {
+            summary.accepted_hashes.push(block_hash.clone());
+        }
+        ActivatedV2P2pRuntimeOutcome::Staged { block_hash, .. } => {
+            summary.staged_hashes.push(block_hash.clone());
+        }
+        ActivatedV2P2pRuntimeOutcome::Promoted {
+            promoted_hashes, ..
+        } => {
+            summary.accepted_hashes.extend(promoted_hashes.iter().cloned());
+        }
+        ActivatedV2P2pRuntimeOutcome::MissingParents {
+            missing_parents, ..
+        } => {
+            summary.missing_parents.extend(missing_parents.iter().cloned());
+        }
+        ActivatedV2P2pRuntimeOutcome::Duplicate { block_hash } => {
+            summary.duplicate_hashes.push(block_hash.clone());
+        }
+        ActivatedV2P2pRuntimeOutcome::Rejected { block_hash, result } => {
+            summary.rejected.push((block_hash.clone(), result.clone()));
+        }
+    }
+}
+
+pub fn summarize_activated_v2_drive(
+    drive: &ActivatedV2P2pDriveResult,
+) -> ActivatedV2InboundSummary {
+    let mut summary = ActivatedV2InboundSummary::default();
+    record_runtime_outcome(&drive.primary, &mut summary);
+    for outcome in &drive.retried {
+        record_runtime_outcome(outcome, &mut summary);
+    }
+    for hashes in [
+        &mut summary.accepted_hashes,
+        &mut summary.staged_hashes,
+        &mut summary.duplicate_hashes,
+        &mut summary.missing_parents,
+    ] {
+        hashes.sort();
+        hashes.dedup();
+    }
+    summary
 }
 
 #[cfg(test)]
@@ -118,5 +194,60 @@ mod tests {
         let error = resolve_inbound_p2p_block_protocol(Some(&capabilities), &state)
             .expect_err("malformed capabilities must fail closed");
         assert!(error.contains("invalid local protocol capabilities"));
+    }
+
+    #[test]
+    fn drive_summary_separates_authoritative_staged_missing_and_rejected_outcomes() {
+        let drive = ActivatedV2P2pDriveResult {
+            primary: ActivatedV2P2pRuntimeOutcome::MissingParents {
+                block_hash: "child".to_string(),
+                missing_parents: vec!["p2".to_string(), "p1".to_string()],
+                pending_count: 1,
+            },
+            retried: vec![
+                ActivatedV2P2pRuntimeOutcome::Accepted {
+                    block_hash: "accepted".to_string(),
+                    generation: 2,
+                },
+                ActivatedV2P2pRuntimeOutcome::Staged {
+                    block_hash: "staged".to_string(),
+                    staged_count: 1,
+                },
+                ActivatedV2P2pRuntimeOutcome::Promoted {
+                    anchor_hash: "anchor".to_string(),
+                    promoted_hashes: vec!["side".to_string(), "anchor".to_string()],
+                    generation: 3,
+                },
+                ActivatedV2P2pRuntimeOutcome::Duplicate {
+                    block_hash: "duplicate".to_string(),
+                },
+                ActivatedV2P2pRuntimeOutcome::Rejected {
+                    block_hash: "bad".to_string(),
+                    result: BlockAcceptanceResult::Rejected("bad-v2".to_string()),
+                },
+            ],
+            pending_count: 1,
+            staged_count: 1,
+        };
+
+        let summary = summarize_activated_v2_drive(&drive);
+        assert_eq!(
+            summary.accepted_hashes,
+            vec![
+                "accepted".to_string(),
+                "anchor".to_string(),
+                "side".to_string()
+            ]
+        );
+        assert_eq!(summary.staged_hashes, vec!["staged".to_string()]);
+        assert_eq!(summary.duplicate_hashes, vec!["duplicate".to_string()]);
+        assert_eq!(
+            summary.missing_parents,
+            vec!["p1".to_string(), "p2".to_string()]
+        );
+        assert_eq!(summary.rejected.len(), 1);
+        assert!(summary.authoritative_progress());
+        assert!(summary.parent_context_progress());
+        assert!(summary.has_rejections());
     }
 }
