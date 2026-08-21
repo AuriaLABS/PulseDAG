@@ -86,6 +86,11 @@ jobs:
       - name: Wallet activated-v2 non-custodial flow
         run: cargo test --locked -p pulsedag-wallet
 
+      - name: RPC protocol-bound signed transaction submission
+        run: |
+          cargo test --locked -p pulsedag-rpc tx_rejection::tests::
+          cargo test --locked -p pulsedag-rpc tx_protocol::tests::
+
       - name: RPC protocol-bound mining submit and template
         run: |
           cargo test --locked -p pulsedag-rpc activated_identity_rejects_legacy_submit_preflight
