@@ -170,10 +170,7 @@ fn validation_state_for_selected_utxos(
 ) -> pulsedag_core::ChainState {
     let mut state = init_chain_state(plan_chain_id.to_string());
     for utxo in selected {
-        state
-            .utxo
-            .utxos
-            .insert(utxo.outpoint.clone(), utxo.clone());
+        state.utxo.utxos.insert(utxo.outpoint.clone(), utxo.clone());
         state
             .utxo
             .address_index
@@ -217,10 +214,8 @@ pub fn finalize_wallet_v2_signed_plan(
     }
     transaction.txid = compute_txid_v2(&transaction, &plan.protocol_identity.chain_id)?;
 
-    let validation_state = validation_state_for_selected_utxos(
-        &plan.protocol_identity.chain_id,
-        &plan.selected_utxos,
-    );
+    let validation_state =
+        validation_state_for_selected_utxos(&plan.protocol_identity.chain_id, &plan.selected_utxos);
     validate_transaction_v2(
         &transaction,
         &validation_state,
@@ -287,8 +282,7 @@ mod tests {
     use super::*;
     use pulsedag_core::{address_from_public_key, types::OutPoint};
 
-    const PUBLIC_KEY: &str =
-        "ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c";
+    const PUBLIC_KEY: &str = "ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c";
     const SIGNATURE: &str =
         "f3d0895cc46bcc7b3655d607588b98543b0e15c3589592f290147ae5072a0375a0933bbb97304309af21f534d5f2f992bfa16bfed7bfd8b7a5f5098e9a34cc02";
 
