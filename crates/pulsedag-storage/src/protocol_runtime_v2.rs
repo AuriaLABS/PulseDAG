@@ -2,16 +2,14 @@ use std::collections::BTreeSet;
 
 use pulsedag_core::{
     errors::PulseError, verify_authoritative_state_snapshot_v2, ActivatedV2P2pRuntime, Block,
-    ChainState, ProtocolActivationIdentity, ProtocolActivationRecordV1, ProtocolRestoreIdentityGate,
-    ACTIVATED_V2_P2P_PENDING_MAX_BLOCKS, ACTIVATED_V2_P2P_STAGING_MAX_BLOCKS,
-    GHOSTDAG_V1_ORDERING_VERSION,
+    ChainState, ProtocolActivationIdentity, ProtocolActivationRecordV1,
+    ProtocolRestoreIdentityGate, ACTIVATED_V2_P2P_PENDING_MAX_BLOCKS,
+    ACTIVATED_V2_P2P_STAGING_MAX_BLOCKS, GHOSTDAG_V1_ORDERING_VERSION,
 };
 use rocksdb::WriteBatch;
 use serde::{Deserialize, Serialize};
 
-use super::{
-    protocol_identity::PROTOCOL_ACTIVATION_STORAGE_KEY, Storage, ACCEPTED_BLOCKS_CF,
-};
+use super::{protocol_identity::PROTOCOL_ACTIVATION_STORAGE_KEY, Storage, ACCEPTED_BLOCKS_CF};
 
 pub const ACTIVATED_V2_P2P_RUNTIME_RECORD_FORMAT_VERSION: u32 = 1;
 pub const ACTIVATED_V2_P2P_RUNTIME_STORAGE_KEY: &[u8] = b"activated_v2_p2p_runtime_v1";
@@ -77,13 +75,15 @@ fn verify_runtime_against_state(
     if runtime.pending_len() > ACTIVATED_V2_P2P_PENDING_MAX_BLOCKS {
         return Err(storage_error(format!(
             "activated-v2 pending runtime count {} exceeds capacity {}",
-            runtime.pending_len(), ACTIVATED_V2_P2P_PENDING_MAX_BLOCKS
+            runtime.pending_len(),
+            ACTIVATED_V2_P2P_PENDING_MAX_BLOCKS
         )));
     }
     if runtime.staging().len() > ACTIVATED_V2_P2P_STAGING_MAX_BLOCKS {
         return Err(storage_error(format!(
             "activated-v2 staging runtime count {} exceeds capacity {}",
-            runtime.staging().len(), ACTIVATED_V2_P2P_STAGING_MAX_BLOCKS
+            runtime.staging().len(),
+            ACTIVATED_V2_P2P_STAGING_MAX_BLOCKS
         )));
     }
 
@@ -354,8 +354,7 @@ impl Storage {
 mod tests {
     use super::*;
     use pulsedag_core::{
-        genesis::init_chain_state, materialize_authoritative_state_v2,
-        ProtocolActivationIdentity,
+        genesis::init_chain_state, materialize_authoritative_state_v2, ProtocolActivationIdentity,
     };
 
     fn temp_db_path(test_name: &str) -> String {
@@ -364,7 +363,9 @@ mod tests {
             .map(|duration| duration.as_nanos())
             .unwrap_or(0);
         std::env::temp_dir()
-            .join(format!("pulsedag-storage-p2p-runtime-v2-{test_name}-{unique}"))
+            .join(format!(
+                "pulsedag-storage-p2p-runtime-v2-{test_name}-{unique}"
+            ))
             .to_string_lossy()
             .into_owned()
     }
@@ -440,10 +441,7 @@ mod tests {
             .unwrap();
 
         let meta_cf = storage.db.cf_handle("meta").unwrap();
-        let mut record = storage
-            .activated_v2_p2p_runtime_record()
-            .unwrap()
-            .unwrap();
+        let mut record = storage.activated_v2_p2p_runtime_record().unwrap().unwrap();
         record.chain_state_generation = record.chain_state_generation.saturating_add(1);
         storage
             .db
