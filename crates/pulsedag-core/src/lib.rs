@@ -20,6 +20,7 @@ pub mod mining_v2;
 pub mod network_block_v2;
 pub mod network_context_v2;
 pub mod network_runtime_v2;
+pub mod network_runtime_persistence_v2;
 pub mod network_staging_v2;
 pub mod ordering;
 pub mod ordering_v2;
@@ -215,6 +216,7 @@ pub use network_runtime_v2::{
     drive_activated_v2_p2p_block_atomically, ActivatedV2P2pDriveResult, ActivatedV2P2pRuntime,
     ActivatedV2P2pRuntimeOutcome, ACTIVATED_V2_P2P_PENDING_MAX_BLOCKS,
 };
+pub use network_runtime_persistence_v2::drive_activated_v2_p2p_block_with_runtime_persistence_atomically;
 pub use network_staging_v2::{
     promote_activated_v2_p2p_anchor_atomically, stage_activated_v2_p2p_block,
     ActivatedV2P2pPromotion, ActivatedV2P2pStageOutcome, ActivatedV2P2pStaging,
