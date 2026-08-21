@@ -63,16 +63,6 @@ impl ActivatedV2InboundSummary {
     pub fn authoritative_progress(&self) -> bool {
         !self.accepted_hashes.is_empty()
     }
-
-    pub fn parent_context_progress(&self) -> bool {
-        self.authoritative_progress()
-            || !self.staged_hashes.is_empty()
-            || !self.duplicate_hashes.is_empty()
-    }
-
-    pub fn has_rejections(&self) -> bool {
-        !self.rejected.is_empty()
-    }
 }
 
 fn record_runtime_outcome(
@@ -247,7 +237,5 @@ mod tests {
         );
         assert_eq!(summary.rejected.len(), 1);
         assert!(summary.authoritative_progress());
-        assert!(summary.parent_context_progress());
-        assert!(summary.has_rejections());
     }
 }
