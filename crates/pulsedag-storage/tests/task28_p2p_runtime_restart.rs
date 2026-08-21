@@ -66,6 +66,12 @@ fn activated_base() -> (ChainState, ProtocolActivationIdentity) {
     (state, identity)
 }
 
+fn seed_persisted_genesis(storage: &Storage, live: &ChainState) {
+    let stored = storage.load_or_init_genesis(CHAIN_ID.to_string()).unwrap();
+    assert_eq!(stored.chain_id, live.chain_id);
+    assert_eq!(stored.dag.genesis_hash, live.dag.genesis_hash);
+}
+
 fn finalized_block(
     state: &ChainState,
     identity: &ProtocolActivationIdentity,
@@ -150,6 +156,7 @@ fn pending_parent_runtime_restores_and_retries_to_empty_after_restart() {
 
     {
         let storage = Storage::open(&path).unwrap();
+        seed_persisted_genesis(&storage, &live);
         storage
             .persist_activated_v2_p2p_runtime_snapshot(&identity, &live, &runtime)
             .unwrap();
@@ -225,6 +232,7 @@ fn staged_side_tip_restores_and_promotes_atomically_after_restart() {
 
     {
         let storage = Storage::open(&path).unwrap();
+        seed_persisted_genesis(&storage, &live);
         storage
             .persist_activated_v2_p2p_runtime_snapshot(&identity, &live, &runtime)
             .unwrap();
