@@ -4404,6 +4404,10 @@ async fn main() -> Result<()> {
                                         rt.active_session_remaining_blocks = session
                                             .remote_selected_height
                                             .saturating_sub(guard.dag.best_height);
+                                        if rt.active_session_remaining_blocks > 0 {
+                                            rt.selected_segment_gap_blocks =
+                                                rt.active_session_remaining_blocks;
+                                        }
                                         if session.complete_current_chunk_if_applied() {
                                             rt.selected_segment_chunks_completed_total = rt
                                                 .selected_segment_chunks_completed_total
@@ -4424,6 +4428,7 @@ async fn main() -> Result<()> {
                                                 .as_str()
                                                 .to_string();
                                             rt.active_session_remaining_blocks = 0;
+                                            rt.selected_segment_gap_blocks = 0;
                                             rt.active_session_id = None;
                                             rt.active_session_peer = None;
                                             rt.active_session_remote_tip = None;
@@ -4922,6 +4927,10 @@ async fn main() -> Result<()> {
                                     .remote_selected_height
                                     .saturating_sub(session.common_ancestor_height)
                                     .saturating_sub(rt.active_session_applied_blocks);
+                                if rt.active_session_remaining_blocks > 0 {
+                                    rt.selected_segment_gap_blocks =
+                                        rt.active_session_remaining_blocks;
+                                }
                             }
                             match selected_segment_validation {
                                 Some(Ok(())) if issued_selected_request_count > 0 => {

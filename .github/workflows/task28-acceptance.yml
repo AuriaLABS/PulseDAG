@@ -11,6 +11,7 @@ on:
       - crates/pulsedag-wallet/**
       - apps/pulsedag-miner/**
       - apps/pulsedagd/**
+      - scripts/tests/test_v2_3_0_selected_segment_source_semantics.py
       - .github/workflows/task28-acceptance.yml
   push:
     branches:
@@ -22,6 +23,7 @@ on:
       - crates/pulsedag-wallet/**
       - apps/pulsedag-miner/**
       - apps/pulsedagd/**
+      - scripts/tests/test_v2_3_0_selected_segment_source_semantics.py
       - .github/workflows/task28-acceptance.yml
 
 permissions:
@@ -83,6 +85,9 @@ jobs:
       - name: Daemon activated-v2 runtime restore
         run: cargo test --locked -p pulsedagd activated_v2_runtime::tests::
 
+      - name: Daemon selected-segment bookkeeping parity
+        run: python3 scripts/tests/test_v2_3_0_selected_segment_source_semantics.py apps/pulsedagd/src/main.rs crates/pulsedag-rpc/src/handlers/metrics.rs
+
       - name: Wallet activated-v2 non-custodial flow
         run: cargo test --locked -p pulsedag-wallet
 
@@ -96,6 +101,9 @@ jobs:
           cargo test --locked -p pulsedag-rpc activated_identity_rejects_legacy_submit_preflight
           cargo test --locked -p pulsedag-rpc activated_identity_builds_chain_bound_v2_rpc_template
           cargo test --locked -p pulsedag-rpc v2_rpc_template_serializes_identity_and_fingerprint_together
+
+      - name: RPC final-quiescence selected-segment parity
+        run: cargo test --locked -p pulsedag-rpc canonical_sync::tests::
 
       - name: Standalone miner protocol-bound backend
         run: cargo test --locked -p pulsedag-miner protocol_backend::tests::
