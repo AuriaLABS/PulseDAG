@@ -45,6 +45,17 @@ pub struct WalletV2BroadcastEnvelope {
     pub submission_id: String,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct WalletV2PlanRequest<'a> {
+    pub public_key: &'a str,
+    pub from: &'a str,
+    pub to: &'a str,
+    pub amount: u64,
+    pub fee: u64,
+    pub available_utxos: &'a [Utxo],
+    pub nonce: u64,
+}
+
 fn wallet_protocol_error(message: impl Into<String>) -> PulseError {
     PulseError::InvalidTransaction(format!("wallet v2 protocol: {}", message.into()))
 }
@@ -103,14 +114,18 @@ fn selected_full_utxos(
 pub fn prepare_wallet_v2_signing_plan(
     expected_identity: &ProtocolActivationIdentity,
     observed_node_identity: &ProtocolActivationIdentity,
-    public_key: &str,
-    from: &str,
-    to: &str,
-    amount: u64,
-    fee: u64,
-    available_utxos: &[Utxo],
-    nonce: u64,
+    request: WalletV2PlanRequest<'_>,
 ) -> Result<WalletV2SigningPlan, PulseError> {
+    let WalletV2PlanRequest {
+        public_key,
+        from,
+        to,
+        amount,
+        fee,
+        available_utxos,
+        nonce,
+    } = request;
+
     let protocol_fingerprint =
         verify_wallet_v2_node_identity(expected_identity, observed_node_identity)?;
 
@@ -309,16 +324,20 @@ mod tests {
 
     fn plan() -> WalletV2SigningPlan {
         let identity = identity("pulsedag-testnet");
+        let source = source_address();
+        let available = [utxo("funding", 0, 10)];
         prepare_wallet_v2_signing_plan(
             &identity,
             &identity,
-            PUBLIC_KEY,
-            &source_address(),
-            "pulse1recipient",
-            7,
-            1,
-            &[utxo("funding", 0, 10)],
-            9,
+            WalletV2PlanRequest {
+                public_key: PUBLIC_KEY,
+                from: &source,
+                to: "pulse1recipient",
+                amount: 7,
+                fee: 1,
+                available_utxos: &available,
+                nonce: 9,
+            },
         )
         .expect("v2 plan")
     }
@@ -327,16 +346,20 @@ mod tests {
     fn exact_node_identity_is_required_before_plan_creation() {
         let expected = identity("pulsedag-testnet");
         let observed = identity("pulsedag-private");
+        let source = source_address();
+        let available = [utxo("funding", 0, 10)];
         let err = prepare_wallet_v2_signing_plan(
             &expected,
             &observed,
-            PUBLIC_KEY,
-            &source_address(),
-            "pulse1recipient",
-            7,
-            1,
-            &[utxo("funding", 0, 10)],
-            9,
+            WalletV2PlanRequest {
+                public_key: PUBLIC_KEY,
+                from: &source,
+                to: "pulse1recipient",
+                amount: 7,
+                fee: 1,
+                available_utxos: &available,
+                nonce: 9,
+            },
         )
         .unwrap_err();
 
@@ -364,29 +387,35 @@ mod tests {
         let source = source_address();
         let a = utxo("a", 0, 5);
         let b = utxo("b", 0, 5);
+        let first_available = [b.clone(), a.clone()];
+        let second_available = [a, b];
 
         let first = prepare_wallet_v2_signing_plan(
             &identity,
             &identity,
-            PUBLIC_KEY,
-            &source,
-            "pulse1recipient",
-            7,
-            1,
-            &[b.clone(), a.clone()],
-            9,
+            WalletV2PlanRequest {
+                public_key: PUBLIC_KEY,
+                from: &source,
+                to: "pulse1recipient",
+                amount: 7,
+                fee: 1,
+                available_utxos: &first_available,
+                nonce: 9,
+            },
         )
         .unwrap();
         let second = prepare_wallet_v2_signing_plan(
             &identity,
             &identity,
-            PUBLIC_KEY,
-            &source,
-            "pulse1recipient",
-            7,
-            1,
-            &[a, b],
-            9,
+            WalletV2PlanRequest {
+                public_key: PUBLIC_KEY,
+                from: &source,
+                to: "pulse1recipient",
+                amount: 7,
+                fee: 1,
+                available_utxos: &second_available,
+                nonce: 9,
+            },
         )
         .unwrap();
 
