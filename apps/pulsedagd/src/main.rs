@@ -1,3 +1,4 @@
+mod activated_v2_runtime;
 mod app_state;
 mod block_protocol;
 mod block_request;
@@ -15,6 +16,7 @@ use std::{
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
+use activated_v2_runtime::restore_activated_v2_p2p_runtime_for_startup;
 use anyhow::{Context, Result};
 use app_state::{
     build_operator_console_rollup, build_startup_lifecycle_events, derive_startup_path_report,
@@ -1782,7 +1784,8 @@ async fn main() -> Result<()> {
         .map(|b| b.header.height)
         .max()
         .unwrap_or(0);
-    let startup_consistency_issue_count = pulsedag_core::dag_consistency_issues(&chain_state).len();
+    let mut startup_consistency_issue_count =
+        pulsedag_core::dag_consistency_issues(&chain_state).len();
     let mut startup_recovery_mode = if snapshot_exists {
         "snapshot".to_string()
     } else if persisted_blocks.is_empty() {
@@ -1940,6 +1943,50 @@ async fn main() -> Result<()> {
         (None, None)
     };
 
+    let startup_local_protocol_capabilities = match p2p.as_ref() {
+        Some(p2p_handle) => p2p_handle
+            .local_protocol_capabilities_v1()
+            .map_err(|error| {
+                anyhow::anyhow!(
+                    "failed reading local protocol capabilities for activated-v2 runtime restore: {error}"
+                )
+            })?,
+        None => None,
+    };
+    let (restored_chain_state, startup_activated_v2_p2p_runtime, startup_activated_v2_identity) =
+        restore_activated_v2_p2p_runtime_for_startup(
+            &storage,
+            startup_local_protocol_capabilities.as_ref(),
+            chain_state,
+        )?;
+    chain_state = restored_chain_state;
+
+    if let Some(identity) = startup_activated_v2_identity.as_ref() {
+        startup_consistency_issue_count = pulsedag_core::dag_consistency_issues(&chain_state).len();
+        let reconcile_result = reconcile_mempool(&mut chain_state);
+        if !reconcile_result.removed_txids.is_empty() {
+            warn!(
+                removed_mempool_tx = reconcile_result.removed_txids.len(),
+                "removed invalid mempool transactions after activated-v2 runtime restore"
+            );
+        }
+        if cfg.persist_snapshot_on_start {
+            storage.persist_activated_v2_p2p_runtime_snapshot(
+                identity,
+                &chain_state,
+                &startup_activated_v2_p2p_runtime,
+            )?;
+        }
+        info!(
+            protocol_fingerprint = %identity
+                .fingerprint()
+                .unwrap_or_else(|_| "invalid-identity".to_string()),
+            pending_v2 = startup_activated_v2_p2p_runtime.pending_len(),
+            staged_v2 = startup_activated_v2_p2p_runtime.staging().len(),
+            "restored activated-v2 P2P runtime"
+        );
+    }
+
     let startup_report = derive_startup_path_report(
         &startup_recovery_mode,
         snapshot_exists,
@@ -2092,7 +2139,7 @@ async fn main() -> Result<()> {
         let task27_recovery_active = task27_recovery_active.clone();
         let max_orphan_count = cfg.max_orphan_count;
         tokio::spawn(async move {
-            let mut activated_v2_p2p_runtime = pulsedag_core::ActivatedV2P2pRuntime::default();
+            let mut activated_v2_p2p_runtime = startup_activated_v2_p2p_runtime;
             let mut block_requests = BlockRequestTracker::with_limits(
                 8,
                 2,
@@ -3581,24 +3628,49 @@ async fn main() -> Result<()> {
                         };
 
                         if let InboundP2pBlockProtocol::ActivatedV2(identity) = inbound_protocol {
-                            let drive = pulsedag_core::drive_activated_v2_p2p_block_atomically(
-                                block.clone(),
-                                &mut guard,
-                                &mut activated_v2_p2p_runtime,
-                                &identity,
-                                |candidate, prepared| {
-                                    storage.persist_block_and_chain_state(candidate, prepared)
-                                },
-                                |bundle, prepared| {
-                                    storage.persist_blocks_and_chain_state(bundle, prepared)
-                                },
-                                |candidate| {
-                                    if let Some(ref p2p_handle) = p2p {
-                                        p2p_handle.broadcast_block(candidate)?;
-                                    }
-                                    Ok(())
-                                },
-                            );
+                            let drive =
+                                pulsedag_core::drive_activated_v2_p2p_block_with_runtime_persistence(
+                                    block.clone(),
+                                    &mut guard,
+                                    &mut activated_v2_p2p_runtime,
+                                    &identity,
+                                    pulsedag_core::ActivatedV2P2pRuntimePersistence::new(
+                                        |state: &pulsedag_core::ChainState,
+                                         durable_runtime: &pulsedag_core::ActivatedV2P2pRuntime| {
+                                            storage.persist_activated_v2_p2p_runtime_snapshot(
+                                                &identity,
+                                                state,
+                                                durable_runtime,
+                                            )
+                                        },
+                                        |candidate: &pulsedag_core::Block,
+                                         prepared: &pulsedag_core::ChainState,
+                                         durable_runtime: &pulsedag_core::ActivatedV2P2pRuntime| {
+                                            storage.persist_activated_v2_p2p_block_and_runtime(
+                                                candidate,
+                                                &identity,
+                                                prepared,
+                                                durable_runtime,
+                                            )
+                                        },
+                                        |bundle: &[pulsedag_core::Block],
+                                         prepared: &pulsedag_core::ChainState,
+                                         durable_runtime: &pulsedag_core::ActivatedV2P2pRuntime| {
+                                            storage.persist_activated_v2_p2p_blocks_and_runtime(
+                                                bundle,
+                                                &identity,
+                                                prepared,
+                                                durable_runtime,
+                                            )
+                                        },
+                                    ),
+                                    |candidate| {
+                                        if let Some(ref p2p_handle) = p2p {
+                                            p2p_handle.broadcast_block(candidate)?;
+                                        }
+                                        Ok(())
+                                    },
+                                );
                             let drive = match drive {
                                 Ok(drive) => drive,
                                 Err(error) => {
