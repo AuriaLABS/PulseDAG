@@ -3,8 +3,8 @@ use pulsedag_core::{
     commit_ghostdag_v1_metadata_for_activated_v2, compute_block_hash_v2, current_ts,
     drive_activated_v2_p2p_block_with_runtime_persistence, materialize_authoritative_state_v2,
     prepare_activated_v2_p2p_block_state, rebuild_authoritative_state_v2,
-    validate_pow_for_protocol, ActivatedV2P2pRuntime, Block, CandidateBlockV2Spec, ChainState, Hash,
-    ProtocolActivationIdentity, GHOSTDAG_V1_ORDERING_VERSION,
+    validate_pow_for_protocol, ActivatedV2P2pRuntime, Block, CandidateBlockV2Spec, ChainState,
+    Hash, ProtocolActivationIdentity, GHOSTDAG_V1_ORDERING_VERSION,
 };
 use pulsedag_storage::Storage;
 
@@ -114,12 +114,7 @@ fn pending_parent_runtime_restores_and_retries_to_empty_after_restart() {
     let genesis = live.dag.genesis_hash.clone();
     let parent = finalized_block(&live, &identity, vec![genesis], 11);
     let parent_state = prepare_activated_v2_p2p_block_state(&parent, &live, &identity).unwrap();
-    let child = finalized_block(
-        &parent_state,
-        &identity,
-        vec![parent.hash.clone()],
-        12,
-    );
+    let child = finalized_block(&parent_state, &identity, vec![parent.hash.clone()], 12);
     let mut runtime = ActivatedV2P2pRuntime::default();
 
     {
@@ -134,11 +129,7 @@ fn pending_parent_runtime_restores_and_retries_to_empty_after_restart() {
             &mut runtime,
             &identity,
             |state, durable_runtime| {
-                storage.persist_activated_v2_p2p_runtime_snapshot(
-                    &identity,
-                    state,
-                    durable_runtime,
-                )
+                storage.persist_activated_v2_p2p_runtime_snapshot(&identity, state, durable_runtime)
             },
             |block, state, durable_runtime| {
                 storage.persist_activated_v2_p2p_block_and_runtime(
@@ -178,11 +169,7 @@ fn pending_parent_runtime_restores_and_retries_to_empty_after_restart() {
             &mut runtime,
             &identity,
             |state, durable_runtime| {
-                storage.persist_activated_v2_p2p_runtime_snapshot(
-                    &identity,
-                    state,
-                    durable_runtime,
-                )
+                storage.persist_activated_v2_p2p_runtime_snapshot(&identity, state, durable_runtime)
             },
             |block, state, durable_runtime| {
                 storage.persist_activated_v2_p2p_block_and_runtime(
@@ -253,11 +240,7 @@ fn staged_side_tip_restores_and_promotes_atomically_after_restart() {
             &mut runtime,
             &identity,
             |state, durable_runtime| {
-                storage.persist_activated_v2_p2p_runtime_snapshot(
-                    &identity,
-                    state,
-                    durable_runtime,
-                )
+                storage.persist_activated_v2_p2p_runtime_snapshot(&identity, state, durable_runtime)
             },
             |block, state, durable_runtime| {
                 storage.persist_activated_v2_p2p_block_and_runtime(
@@ -285,11 +268,7 @@ fn staged_side_tip_restores_and_promotes_atomically_after_restart() {
             &mut runtime,
             &identity,
             |state, durable_runtime| {
-                storage.persist_activated_v2_p2p_runtime_snapshot(
-                    &identity,
-                    state,
-                    durable_runtime,
-                )
+                storage.persist_activated_v2_p2p_runtime_snapshot(&identity, state, durable_runtime)
             },
             |block, state, durable_runtime| {
                 storage.persist_activated_v2_p2p_block_and_runtime(
@@ -338,11 +317,7 @@ fn staged_side_tip_restores_and_promotes_atomically_after_restart() {
             &mut runtime,
             &identity,
             |state, durable_runtime| {
-                storage.persist_activated_v2_p2p_runtime_snapshot(
-                    &identity,
-                    state,
-                    durable_runtime,
-                )
+                storage.persist_activated_v2_p2p_runtime_snapshot(&identity, state, durable_runtime)
             },
             |block, state, durable_runtime| {
                 storage.persist_activated_v2_p2p_block_and_runtime(
@@ -378,7 +353,10 @@ fn staged_side_tip_restores_and_promotes_atomically_after_restart() {
         assert!(restored_runtime.staging().is_empty());
         assert!(restored_runtime.pending_is_empty());
         assert!(restored_state.dag.blocks.contains_key(&side.hash));
-        assert!(restored_state.dag.blocks.contains_key(&promoted_anchor_hash));
+        assert!(restored_state
+            .dag
+            .blocks
+            .contains_key(&promoted_anchor_hash));
         assert_eq!(
             restored_state.dag.ordered_dag_tip.as_ref(),
             Some(&promoted_anchor_hash)
