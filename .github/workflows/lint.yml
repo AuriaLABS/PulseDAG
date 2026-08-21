@@ -27,6 +27,8 @@ jobs:
           set -euo pipefail
           python3 - <<'PY'
           from pathlib import Path
+          import re
+          import textwrap
 
           path = Path("apps/pulsedagd/src/main.rs")
           text = path.read_text()
@@ -56,18 +58,8 @@ jobs:
               "mutable startup consistency count",
           )
 
-          old_startup = """    } else {
-              info!("p2p disabled");
-              (None, None)
-          };
-
-          let startup_report = derive_startup_path_report(
-          """
-          new_startup = """    } else {
-              info!("p2p disabled");
-              (None, None)
-          };
-
+          startup_marker = "    let startup_report = derive_startup_path_report(\n"
+          restore_code = textwrap.indent(textwrap.dedent("""\
           let startup_local_protocol_capabilities = match p2p.as_ref() {
               Some(p2p_handle) => p2p_handle
                   .local_protocol_capabilities_v1()
@@ -116,12 +108,11 @@ jobs:
               );
           }
 
-          let startup_report = derive_startup_path_report(
-          """
+          """), " " * 4)
           text = replace_once(
               text,
-              old_startup,
-              new_startup,
+              startup_marker,
+              restore_code + startup_marker,
               "startup capability-gated restore",
           )
 
@@ -132,77 +123,66 @@ jobs:
               "restored runtime handoff",
           )
 
-          old_driver = """                        if let InboundP2pBlockProtocol::ActivatedV2(identity) = inbound_protocol {
-                              let drive = pulsedag_core::drive_activated_v2_p2p_block_atomically(
-                                  block.clone(),
-                                  &mut guard,
-                                  &mut activated_v2_p2p_runtime,
-                                  &identity,
-                                  |candidate, prepared| {
-                                      storage.persist_block_and_chain_state(candidate, prepared)
-                                  },
-                                  |bundle, prepared| {
-                                      storage.persist_blocks_and_chain_state(bundle, prepared)
-                                  },
-                                  |candidate| {
-                                      if let Some(ref p2p_handle) = p2p {
-                                          p2p_handle.broadcast_block(candidate)?;
-                                      }
-                                      Ok(())
-                                  },
-                              );
-          """
-          new_driver = """                        if let InboundP2pBlockProtocol::ActivatedV2(identity) = inbound_protocol {
-                              let drive =
-                                  pulsedag_core::drive_activated_v2_p2p_block_with_runtime_persistence(
-                                      block.clone(),
-                                      &mut guard,
-                                      &mut activated_v2_p2p_runtime,
-                                      &identity,
-                                      pulsedag_core::ActivatedV2P2pRuntimePersistence::new(
-                                          |state: &pulsedag_core::ChainState,
-                                           durable_runtime: &pulsedag_core::ActivatedV2P2pRuntime| {
-                                              storage.persist_activated_v2_p2p_runtime_snapshot(
-                                                  &identity,
-                                                  state,
-                                                  durable_runtime,
-                                              )
-                                          },
-                                          |candidate: &pulsedag_core::Block,
-                                           prepared: &pulsedag_core::ChainState,
-                                           durable_runtime: &pulsedag_core::ActivatedV2P2pRuntime| {
-                                              storage.persist_activated_v2_p2p_block_and_runtime(
-                                                  candidate,
-                                                  &identity,
-                                                  prepared,
-                                                  durable_runtime,
-                                              )
-                                          },
-                                          |bundle: &[pulsedag_core::Block],
-                                           prepared: &pulsedag_core::ChainState,
-                                           durable_runtime: &pulsedag_core::ActivatedV2P2pRuntime| {
-                                              storage.persist_activated_v2_p2p_blocks_and_runtime(
-                                                  bundle,
-                                                  &identity,
-                                                  prepared,
-                                                  durable_runtime,
-                                              )
-                                          },
-                                      ),
-                                      |candidate| {
-                                          if let Some(ref p2p_handle) = p2p {
-                                              p2p_handle.broadcast_block(candidate)?;
-                                          }
-                                          Ok(())
-                                      },
-                                  );
-          """
-          text = replace_once(
-              text,
-              old_driver,
-              new_driver,
-              "durable activated-v2 inbound driver",
+          driver_pattern = re.compile(
+              r"(?ms)^ {24}if let InboundP2pBlockProtocol::ActivatedV2\(identity\) = inbound_protocol \{\n"
+              r" {28}let drive = pulsedag_core::drive_activated_v2_p2p_block_atomically\(\n"
+              r".*?"
+              r"^ {28}\);\n"
+              r"(?= {28}let drive = match drive \{)"
           )
+          driver_matches = list(driver_pattern.finditer(text))
+          if len(driver_matches) != 1:
+              raise SystemExit(
+                  f"durable activated-v2 inbound driver: expected exactly one match, found {len(driver_matches)}"
+              )
+          new_driver = textwrap.indent(textwrap.dedent("""\
+          if let InboundP2pBlockProtocol::ActivatedV2(identity) = inbound_protocol {
+              let drive =
+                  pulsedag_core::drive_activated_v2_p2p_block_with_runtime_persistence(
+                      block.clone(),
+                      &mut guard,
+                      &mut activated_v2_p2p_runtime,
+                      &identity,
+                      pulsedag_core::ActivatedV2P2pRuntimePersistence::new(
+                          |state: &pulsedag_core::ChainState,
+                           durable_runtime: &pulsedag_core::ActivatedV2P2pRuntime| {
+                              storage.persist_activated_v2_p2p_runtime_snapshot(
+                                  &identity,
+                                  state,
+                                  durable_runtime,
+                              )
+                          },
+                          |candidate: &pulsedag_core::Block,
+                           prepared: &pulsedag_core::ChainState,
+                           durable_runtime: &pulsedag_core::ActivatedV2P2pRuntime| {
+                              storage.persist_activated_v2_p2p_block_and_runtime(
+                                  candidate,
+                                  &identity,
+                                  prepared,
+                                  durable_runtime,
+                              )
+                          },
+                          |bundle: &[pulsedag_core::Block],
+                           prepared: &pulsedag_core::ChainState,
+                           durable_runtime: &pulsedag_core::ActivatedV2P2pRuntime| {
+                              storage.persist_activated_v2_p2p_blocks_and_runtime(
+                                  bundle,
+                                  &identity,
+                                  prepared,
+                                  durable_runtime,
+                              )
+                          },
+                      ),
+                      |candidate| {
+                          if let Some(ref p2p_handle) = p2p {
+                              p2p_handle.broadcast_block(candidate)?;
+                          }
+                          Ok(())
+                      },
+                  );
+          """), " " * 24)
+          match = driver_matches[0]
+          text = text[:match.start()] + new_driver + text[match.end():]
 
           path.write_text(text)
           PY
@@ -245,7 +225,7 @@ jobs:
           set -euo pipefail
           git config user.name 'Task 28 wiring bot'
           git config user.email 'actions@users.noreply.github.com'
-          git show HEAD^:.github/workflows/lint.yml > .github/workflows/lint.yml
+          git show 91d1729c9b4f00e496aa5cc6f6e2d9287671ae57:.github/workflows/lint.yml > .github/workflows/lint.yml
           git rm -f .github/workflows/task28-daemon-wire-once.yml
           git add -- apps/pulsedagd/src/main.rs .github/workflows/lint.yml
           git diff --cached --check
