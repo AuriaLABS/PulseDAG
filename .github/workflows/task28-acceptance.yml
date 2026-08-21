@@ -46,6 +46,9 @@ jobs:
       - name: Protocol-bound transaction admission
         run: cargo test --locked -p pulsedag-core --test task28_protocol_tx_admission
 
+      - name: Multi-node transaction propagation and canonical inclusion parity
+        run: cargo test --locked -p pulsedag-core --test task28_multi_node_tx_parity
+
       - name: Protocol-bound mempool reconciliation
         run: cargo test --locked -p pulsedag-core mempool_protocol::tests::
 
