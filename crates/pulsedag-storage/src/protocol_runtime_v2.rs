@@ -371,7 +371,10 @@ mod tests {
     }
 
     fn activated_state() -> (ChainState, ProtocolActivationIdentity) {
-        let state = init_chain_state("task28-storage-p2p-runtime-v2".to_string());
+        let mut state = init_chain_state("task28-storage-p2p-runtime-v2".to_string());
+        let genesis = state.dag.genesis_hash.clone();
+        state.dag.merge_set_blues.insert(genesis.clone(), vec![]);
+        state.dag.merge_set_reds.insert(genesis, vec![]);
         let state = materialize_authoritative_state_v2(&state).unwrap();
         let identity = ProtocolActivationIdentity::activated_v2(
             state.chain_id.clone(),
