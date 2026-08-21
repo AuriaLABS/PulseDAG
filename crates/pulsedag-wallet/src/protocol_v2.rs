@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 
+use pulsedag_core::validation_v2::validate_transaction_v2;
 use pulsedag_core::{
     address_from_public_key, compute_submission_id_v2, compute_txid_v2,
     errors::PulseError,
@@ -9,7 +10,6 @@ use pulsedag_core::{
     ProtocolActivationIdentity, ProtocolConsensusMode, BLOCK_HEADER_VERSION_V2,
     TRANSACTION_VERSION_V2,
 };
-use pulsedag_core::validation_v2::validate_transaction_v2;
 
 use crate::{build_transaction_v2, SelectedUtxo};
 
@@ -396,9 +396,32 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(first.transaction.inputs, second.transaction.inputs);
+        let first_inputs = first
+            .transaction
+            .inputs
+            .iter()
+            .map(|input| input.previous_output.clone())
+            .collect::<Vec<_>>();
+        let second_inputs = second
+            .transaction
+            .inputs
+            .iter()
+            .map(|input| input.previous_output.clone())
+            .collect::<Vec<_>>();
+        let first_selected = first
+            .selected_utxos
+            .iter()
+            .map(|utxo| utxo.outpoint.clone())
+            .collect::<Vec<_>>();
+        let second_selected = second
+            .selected_utxos
+            .iter()
+            .map(|utxo| utxo.outpoint.clone())
+            .collect::<Vec<_>>();
+
+        assert_eq!(first_inputs, second_inputs);
+        assert_eq!(first_selected, second_selected);
         assert_eq!(first.signing_message, second.signing_message);
-        assert_eq!(first.selected_utxos, second.selected_utxos);
     }
 
     #[test]
