@@ -215,8 +215,9 @@ mod tests {
             .expect_err("mismatched identity must not fall back to legacy");
         assert!(error.contains("identity mismatch"));
 
-        let restore_error = resolve_activated_v2_runtime_restore_identity(Some(&capabilities), &state)
-            .expect_err("mismatched identity must not enable runtime restore");
+        let restore_error =
+            resolve_activated_v2_runtime_restore_identity(Some(&capabilities), &state)
+                .expect_err("mismatched identity must not enable runtime restore");
         assert!(restore_error.contains("identity mismatch"));
     }
 
@@ -230,8 +231,9 @@ mod tests {
             .expect_err("malformed capabilities must fail closed");
         assert!(error.contains("invalid local protocol capabilities"));
 
-        let restore_error = resolve_activated_v2_runtime_restore_identity(Some(&capabilities), &state)
-            .expect_err("malformed capabilities must not enable runtime restore");
+        let restore_error =
+            resolve_activated_v2_runtime_restore_identity(Some(&capabilities), &state)
+                .expect_err("malformed capabilities must not enable runtime restore");
         assert!(restore_error.contains("invalid local protocol capabilities"));
     }
 
