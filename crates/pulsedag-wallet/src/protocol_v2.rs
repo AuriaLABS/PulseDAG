@@ -6,9 +6,10 @@ use pulsedag_core::{
     genesis::init_chain_state,
     signing_message_v2,
     types::{Address, Transaction, Utxo},
-    validate_transaction_v2, ProtocolActivationIdentity, ProtocolConsensusMode,
-    BLOCK_HEADER_VERSION_V2, TRANSACTION_VERSION_V2,
+    ProtocolActivationIdentity, ProtocolConsensusMode, BLOCK_HEADER_VERSION_V2,
+    TRANSACTION_VERSION_V2,
 };
+use pulsedag_core::validation_v2::validate_transaction_v2;
 
 use crate::{build_transaction_v2, SelectedUtxo};
 
@@ -163,7 +164,10 @@ pub fn prepare_wallet_v2_signing_plan(
     })
 }
 
-fn validation_state_for_selected_utxos(plan_chain_id: &str, selected: &[Utxo]) -> pulsedag_core::ChainState {
+fn validation_state_for_selected_utxos(
+    plan_chain_id: &str,
+    selected: &[Utxo],
+) -> pulsedag_core::ChainState {
     let mut state = init_chain_state(plan_chain_id.to_string());
     for utxo in selected {
         state
@@ -191,7 +195,9 @@ pub fn finalize_wallet_v2_signed_plan(
 
     let expected_message = signing_message_v2(&plan.transaction, &plan.protocol_identity.chain_id)?;
     if hex::encode(&expected_message) != plan.signing_message {
-        return Err(wallet_protocol_error("signing plan bytes changed after preparation"));
+        return Err(wallet_protocol_error(
+            "signing plan bytes changed after preparation",
+        ));
     }
     if signatures.len() != plan.transaction.inputs.len() {
         return Err(wallet_protocol_error(format!(
@@ -221,8 +227,7 @@ pub fn finalize_wallet_v2_signed_plan(
         &plan.protocol_identity.chain_id,
     )?;
 
-    let submission_id =
-        compute_submission_id_v2(&transaction, &plan.protocol_identity.chain_id)?;
+    let submission_id = compute_submission_id_v2(&transaction, &plan.protocol_identity.chain_id)?;
 
     Ok(WalletV2SignedSubmission {
         protocol_identity: plan.protocol_identity.clone(),
