@@ -925,15 +925,19 @@ mod tests {
             &mut runtime,
             &expected_identity,
             ActivatedV2P2pRuntimePersistence::new(
-                |_, durable_runtime| {
+                |_: &ChainState, durable_runtime: &ActivatedV2P2pRuntime| {
                     snapshots.push((
                         durable_runtime.pending_len(),
                         durable_runtime.staging().len(),
                     ));
                     Ok(())
                 },
-                |_, _, _| panic!("missing-parent queue must not persist an accepted block"),
-                |_, _, _| panic!("missing-parent queue must not persist a promoted bundle"),
+                |_: &Block, _: &ChainState, _: &ActivatedV2P2pRuntime| {
+                    panic!("missing-parent queue must not persist an accepted block")
+                },
+                |_: &[Block], _: &ChainState, _: &ActivatedV2P2pRuntime| {
+                    panic!("missing-parent queue must not persist a promoted bundle")
+                },
             ),
             |_| panic!("missing-parent queue must not broadcast"),
         )
@@ -958,9 +962,13 @@ mod tests {
             &mut runtime,
             &expected_identity,
             ActivatedV2P2pRuntimePersistence::new(
-                |_, _| Ok(()),
-                |_, _, _| panic!("missing-parent queue must not persist an accepted block"),
-                |_, _, _| panic!("missing-parent queue must not persist a promoted bundle"),
+                |_: &ChainState, _: &ActivatedV2P2pRuntime| Ok(()),
+                |_: &Block, _: &ChainState, _: &ActivatedV2P2pRuntime| {
+                    panic!("missing-parent queue must not persist an accepted block")
+                },
+                |_: &[Block], _: &ChainState, _: &ActivatedV2P2pRuntime| {
+                    panic!("missing-parent queue must not persist a promoted bundle")
+                },
             ),
             |_| Ok(()),
         )
@@ -973,12 +981,14 @@ mod tests {
             &mut runtime,
             &expected_identity,
             ActivatedV2P2pRuntimePersistence::new(
-                |_, _| Ok(()),
-                |block, _, durable_runtime| {
+                |_: &ChainState, _: &ActivatedV2P2pRuntime| Ok(()),
+                |block: &Block, _: &ChainState, durable_runtime: &ActivatedV2P2pRuntime| {
                     persisted.push((block.hash.clone(), durable_runtime.pending_len()));
                     Ok(())
                 },
-                |_, _, _| panic!("finalizable parent/child path must not persist a bundle"),
+                |_: &[Block], _: &ChainState, _: &ActivatedV2P2pRuntime| {
+                    panic!("finalizable parent/child path must not persist a bundle")
+                },
             ),
             |_| Ok(()),
         )
@@ -989,6 +999,11 @@ mod tests {
             ActivatedV2P2pRuntimeOutcome::Accepted { ref block_hash, .. }
                 if block_hash == &parent.hash
         ));
+        assert!(driven.retried.iter().any(|outcome| matches!(
+            outcome,
+            ActivatedV2P2pRuntimeOutcome::Accepted { block_hash, .. }
+                if block_hash == &child.hash
+        )));
         assert_eq!(
             persisted,
             vec![(parent.hash.clone(), 1), (child.hash.clone(), 0)]
@@ -1013,12 +1028,16 @@ mod tests {
             &mut runtime,
             &expected_identity,
             ActivatedV2P2pRuntimePersistence::new(
-                |_, durable_runtime| {
+                |_: &ChainState, durable_runtime: &ActivatedV2P2pRuntime| {
                     assert!(durable_runtime.staging().contains(&side.hash));
                     Ok(())
                 },
-                |_, _, _| panic!("side-tip staging must not persist an accepted block"),
-                |_, _, _| panic!("side-tip staging must not persist a bundle"),
+                |_: &Block, _: &ChainState, _: &ActivatedV2P2pRuntime| {
+                    panic!("side-tip staging must not persist an accepted block")
+                },
+                |_: &[Block], _: &ChainState, _: &ActivatedV2P2pRuntime| {
+                    panic!("side-tip staging must not persist a bundle")
+                },
             ),
             |_| panic!("side-tip staging must not broadcast"),
         )
@@ -1041,9 +1060,11 @@ mod tests {
             &mut runtime,
             &expected_identity,
             ActivatedV2P2pRuntimePersistence::new(
-                |_, _| Ok(()),
-                |_, _, _| panic!("merge-anchor promotion must not use single-block persistence"),
-                |bundle, _, durable_runtime| {
+                |_: &ChainState, _: &ActivatedV2P2pRuntime| Ok(()),
+                |_: &Block, _: &ChainState, _: &ActivatedV2P2pRuntime| {
+                    panic!("merge-anchor promotion must not use single-block persistence")
+                },
+                |bundle: &[Block], _: &ChainState, durable_runtime: &ActivatedV2P2pRuntime| {
                     assert_eq!(
                         bundle
                             .iter()
@@ -1082,13 +1103,13 @@ mod tests {
             &mut runtime,
             &expected_identity,
             ActivatedV2P2pRuntimePersistence::new(
-                |_, _| {
+                |_: &ChainState, _: &ActivatedV2P2pRuntime| -> Result<(), PulseError> {
                     Err(PulseError::StorageError(
                         "fixture runtime sidecar persistence failure".into(),
                     ))
                 },
-                |_, _, _| Ok(()),
-                |_, _, _| Ok(()),
+                |_: &Block, _: &ChainState, _: &ActivatedV2P2pRuntime| Ok(()),
+                |_: &[Block], _: &ChainState, _: &ActivatedV2P2pRuntime| Ok(()),
             ),
             |_| Ok(()),
         )
