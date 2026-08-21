@@ -446,7 +446,8 @@ mod tests {
     fn missing_parent_is_queued_outside_legacy_orphans() {
         let (mut live, expected_identity, _parent, child) = parent_child_fixture();
         let mut runtime = ActivatedV2P2pRuntime::default();
-        let mut persisted = false;
+        let mut persisted_one = false;
+        let mut persisted_bundle = false;
         let mut broadcast = false;
 
         let driven = drive_activated_v2_p2p_block_atomically(
@@ -455,11 +456,11 @@ mod tests {
             &mut runtime,
             &expected_identity,
             |_, _| {
-                persisted = true;
+                persisted_one = true;
                 Ok(())
             },
             |_, _| {
-                persisted = true;
+                persisted_bundle = true;
                 Ok(())
             },
             |_| {
@@ -478,7 +479,8 @@ mod tests {
         assert!(runtime.staging().is_empty());
         assert!(live.orphan_blocks.is_empty());
         assert!(live.orphan_missing_parents.is_empty());
-        assert!(!persisted);
+        assert!(!persisted_one);
+        assert!(!persisted_bundle);
         assert!(!broadcast);
     }
 
@@ -498,10 +500,7 @@ mod tests {
                 persisted_hashes.push(block.hash.clone());
                 Ok(())
             },
-            |bundle, _| {
-                persisted_hashes.extend(bundle.iter().map(|block| block.hash.clone()));
-                Ok(())
-            },
+            |_, _| panic!("unexpected bundle persistence for a finalizable-only path"),
             |block| {
                 broadcasts.push(block.hash.clone());
                 Ok(())
@@ -519,10 +518,7 @@ mod tests {
                 persisted_hashes.push(block.hash.clone());
                 Ok(())
             },
-            |bundle, _| {
-                persisted_hashes.extend(bundle.iter().map(|block| block.hash.clone()));
-                Ok(())
-            },
+            |_, _| panic!("unexpected bundle persistence for a finalizable-only path"),
             |block| {
                 broadcasts.push(block.hash.clone());
                 Ok(())
