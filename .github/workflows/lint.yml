@@ -3,18 +3,12 @@ name: Lint
 on:
   pull_request:
 
-permissions:
-  contents: write
-
 jobs:
   lint:
     runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          ref: agent/task28-v2-p2p-restore-parity
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -28,19 +22,8 @@ jobs:
             exit 1
           fi
 
-      - name: Format candidate
-        run: cargo fmt --all
-
-      - name: Publish formatted Task 28 storage runtime
-        if: ${{ github.actor != 'github-actions[bot]' && github.head_ref == 'agent/task28-v2-p2p-restore-parity' }}
-        shell: bash
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -- crates/pulsedag-storage/src/protocol_runtime_v2.rs crates/pulsedag-storage/src/root.rs
-          git diff --cached --quiet && exit 0
-          git commit -m "style(storage): format activated-v2 runtime sidecar"
-          git push origin HEAD:${{ github.head_ref }}
+      - name: Format check
+        run: cargo fmt --all -- --check
 
       - name: Clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
