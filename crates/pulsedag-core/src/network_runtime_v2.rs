@@ -141,12 +141,7 @@ where
     Ok(())
 }
 
-fn process_one_with_runtime_persistence<
-    FPersistRuntime,
-    FPersistOne,
-    FPersistBundle,
-    FBroadcast,
->(
+fn process_one_with_runtime_persistence<FPersistRuntime, FPersistOne, FPersistBundle, FBroadcast>(
     block: Block,
     state: &mut ChainState,
     runtime: &mut ActivatedV2P2pRuntime,
@@ -158,10 +153,8 @@ fn process_one_with_runtime_persistence<
 ) -> Result<ActivatedV2P2pRuntimeOutcome, PulseError>
 where
     FPersistRuntime: FnMut(&ChainState, &ActivatedV2P2pRuntime) -> Result<(), PulseError>,
-    FPersistOne:
-        FnMut(&Block, &ChainState, &ActivatedV2P2pRuntime) -> Result<(), PulseError>,
-    FPersistBundle:
-        FnMut(&[Block], &ChainState, &ActivatedV2P2pRuntime) -> Result<(), PulseError>,
+    FPersistOne: FnMut(&Block, &ChainState, &ActivatedV2P2pRuntime) -> Result<(), PulseError>,
+    FPersistBundle: FnMut(&[Block], &ChainState, &ActivatedV2P2pRuntime) -> Result<(), PulseError>,
     FBroadcast: FnMut(&Block) -> Result<(), PulseError>,
 {
     let block_hash = block.hash.clone();
@@ -172,12 +165,7 @@ where
         ActivatedV2P2pStageOutcome::Duplicate => {
             let removed_pending = runtime.pending_missing.remove(&block_hash).is_some();
             if removed_pending {
-                persist_runtime_only_or_rollback(
-                    state,
-                    runtime,
-                    runtime_before,
-                    persist_runtime,
-                )?;
+                persist_runtime_only_or_rollback(state, runtime, runtime_before, persist_runtime)?;
             }
             Ok(ActivatedV2P2pRuntimeOutcome::Duplicate { block_hash })
         }
@@ -304,10 +292,8 @@ fn retry_pending_until_stable_with_runtime_persistence<
 ) -> Result<Vec<ActivatedV2P2pRuntimeOutcome>, PulseError>
 where
     FPersistRuntime: FnMut(&ChainState, &ActivatedV2P2pRuntime) -> Result<(), PulseError>,
-    FPersistOne:
-        FnMut(&Block, &ChainState, &ActivatedV2P2pRuntime) -> Result<(), PulseError>,
-    FPersistBundle:
-        FnMut(&[Block], &ChainState, &ActivatedV2P2pRuntime) -> Result<(), PulseError>,
+    FPersistOne: FnMut(&Block, &ChainState, &ActivatedV2P2pRuntime) -> Result<(), PulseError>,
+    FPersistBundle: FnMut(&[Block], &ChainState, &ActivatedV2P2pRuntime) -> Result<(), PulseError>,
     FBroadcast: FnMut(&Block) -> Result<(), PulseError>,
 {
     let mut outcomes = Vec::new();
@@ -398,10 +384,8 @@ pub fn drive_activated_v2_p2p_block_with_runtime_persistence<
 ) -> Result<ActivatedV2P2pDriveResult, PulseError>
 where
     FPersistRuntime: FnMut(&ChainState, &ActivatedV2P2pRuntime) -> Result<(), PulseError>,
-    FPersistOne:
-        FnMut(&Block, &ChainState, &ActivatedV2P2pRuntime) -> Result<(), PulseError>,
-    FPersistBundle:
-        FnMut(&[Block], &ChainState, &ActivatedV2P2pRuntime) -> Result<(), PulseError>,
+    FPersistOne: FnMut(&Block, &ChainState, &ActivatedV2P2pRuntime) -> Result<(), PulseError>,
+    FPersistBundle: FnMut(&[Block], &ChainState, &ActivatedV2P2pRuntime) -> Result<(), PulseError>,
     FBroadcast: FnMut(&Block) -> Result<(), PulseError>,
 {
     let mut primary = process_one_with_runtime_persistence(
