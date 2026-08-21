@@ -28,6 +28,35 @@ checks = [
     (metrics, r"&remote_sync_evidence", "evidence supplied"),
 ]
 missing = [label for source, pattern, label in checks if not re.search(pattern, source)]
+
+debt_mirrors = re.findall(
+    r"if\s+rt\.active_session_remaining_blocks\s*>\s*0\s*\{\s*"
+    r"rt\.selected_segment_gap_blocks\s*=\s*rt\.active_session_remaining_blocks\s*;",
+    node,
+)
+if len(debt_mirrors) != 2:
+    missing.append(
+        f"selected gap real-debt mirrors expected=2 actual={len(debt_mirrors)}"
+    )
+
+verified_clear = re.search(
+    r"session\.state\s*=\s*SelectedSegmentSessionState::Complete;.*?"
+    r"selected_segment_completed\s*=\s*true;.*?"
+    r"rt\.active_session_remaining_blocks\s*=\s*0;\s*"
+    r"rt\.selected_segment_gap_blocks\s*=\s*0;\s*"
+    r"rt\.active_session_id\s*=\s*None;",
+    node,
+    re.S,
+)
+if not verified_clear:
+    missing.append("selected gap verified-completion clear")
+
+selected_gap_clears = re.findall(r"rt\.selected_segment_gap_blocks\s*=\s*0\s*;", node)
+if len(selected_gap_clears) != 1:
+    missing.append(
+        f"selected gap cleared outside verified completion count={len(selected_gap_clears)}"
+    )
+
 if "!staged.contains(hash)" in node:
     missing.append("generic scheduler staging still suppresses selected requests")
 if re.search(r"for\s+hash\s+in\s+&candidates\s*\{\s*session\.requested_hashes\.insert", node):

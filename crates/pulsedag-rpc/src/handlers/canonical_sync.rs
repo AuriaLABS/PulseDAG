@@ -71,16 +71,46 @@ fn counters_coherent(runtime: &NodeRuntimeStats) -> bool {
             <= runtime.sync_pipeline.counters.blocks_requested
 }
 
+fn reconcile_pending(total: u64, success: u64, blocked: u64) -> bool {
+    total > success.saturating_add(blocked)
+}
+
+fn final_quiescence_pending(runtime: &NodeRuntimeStats) -> bool {
+    reconcile_pending(
+        runtime.final_quiescence_tip_reconcile_total,
+        runtime.final_quiescence_tip_reconcile_success_total,
+        runtime.final_quiescence_tip_reconcile_blocked_total,
+    ) || reconcile_pending(
+        runtime.final_quiescence_height_reconcile_total,
+        runtime.final_quiescence_height_reconcile_success_total,
+        runtime.final_quiescence_height_reconcile_blocked_total,
+    ) || reconcile_pending(
+        runtime.final_quiescence_same_height_reconcile_total,
+        runtime.final_quiescence_same_height_reconcile_success_total,
+        runtime.final_quiescence_same_height_reconcile_blocked_total,
+    ) || reconcile_pending(
+        runtime.final_quiescence_selected_sync_total,
+        runtime.final_quiescence_selected_sync_success_total,
+        runtime.final_quiescence_selected_sync_blocked_total,
+    )
+}
+
+fn selected_session_pending(runtime: &NodeRuntimeStats) -> bool {
+    runtime.active_session_id.is_some() || runtime.active_session_remaining_blocks > 0
+}
+
 fn active_selected_segment_gap(runtime: &NodeRuntimeStats) -> u64 {
-    let selected_recovery_active = runtime.active_session_id.is_some()
-        || matches!(
-            runtime.sync_state.as_str(),
-            "locating_common_ancestor"
-                | "selected_chain_locator_sync"
-                | "requesting_selected_headers"
-                | "requesting_selected_blocks"
-                | "applying_selected_segment"
-        );
+    if runtime.active_session_id.is_some() {
+        return runtime.active_session_remaining_blocks;
+    }
+    let selected_recovery_active = matches!(
+        runtime.sync_state.as_str(),
+        "locating_common_ancestor"
+            | "selected_chain_locator_sync"
+            | "requesting_selected_headers"
+            | "requesting_selected_blocks"
+            | "applying_selected_segment"
+    );
     if selected_recovery_active {
         runtime.selected_segment_gap_blocks
     } else {
@@ -206,12 +236,16 @@ pub fn build_canonical_sync_state_with_remote_evidence(
         .flatten();
     let stale_sync_error_suppressed_total =
         u64::from(historical_error.is_some() && !live_error_active);
+    let selected_session_pending = selected_session_pending(runtime);
+    let final_quiescence_pending = final_quiescence_pending(runtime);
     let no_blockers = lag_blocks == 0
         && !network_selected_tip_mismatch
         && !has_orphan_work
         && pending_missing_parents == 0
         && runtime.pending_block_requests == 0
-        && runtime.inflight_block_requests == 0;
+        && runtime.inflight_block_requests == 0
+        && !selected_session_pending
+        && !final_quiescence_pending;
     let stalled = runtime.sync_pipeline.phase != SyncPhase::Idle
         && lag_band != "aligned"
         && (lag_blocks > 0
@@ -241,6 +275,21 @@ pub fn build_canonical_sync_state_with_remote_evidence(
                             .to_string()
                     }),
             ),
+        )
+    } else if selected_session_pending || final_quiescence_pending {
+        (
+            if runtime.sync_state == "synced" {
+                "catching_up".to_string()
+            } else {
+                runtime.sync_state.clone()
+            },
+            "recovering".to_string(),
+            Some(format!(
+                "sync bookkeeping pending: active_session={} remaining_blocks={} final_quiescence_pending={}",
+                runtime.active_session_id.is_some(),
+                runtime.active_session_remaining_blocks,
+                final_quiescence_pending
+            )),
         )
     } else if lag_blocks > 2 || network_selected_tip_mismatch {
         ("locating_common_ancestor".to_string(), "discovering".to_string(), Some(format!("peer selected tip ahead: local_height={local_selected_height} remote_height={} network_gap={lag_blocks} tip_mismatch={network_selected_tip_mismatch}", best_remote_selected_height.unwrap_or(local_selected_height))))
@@ -522,14 +571,15 @@ mod tests {
         assert_eq!(state.live_sync_error_active, 1);
         assert!(state.sync_live_error.is_some());
     }
+
     #[test]
-    fn active_selected_segment_preserves_initial_gap_until_frontier() {
+    fn active_selected_segment_gap_tracks_remaining_debt_until_verified_completion() {
         let chain = chain_at_selected_height(72);
-        let evidence = vec![fresh_remote("peer-a", 120)];
         let mut runtime = NodeRuntimeStats {
             sync_state: "requesting_selected_blocks".into(),
             selected_segment_gap_blocks: 112,
             active_session_id: Some(7),
+            active_session_remaining_blocks: 40,
             ..NodeRuntimeStats::default()
         };
         let active = build_canonical_sync_state_with_remote_evidence(
@@ -538,21 +588,153 @@ mod tests {
             chain.dag.blocks.len(),
             1_000,
             None,
-            &evidence,
+            &[],
         );
-        assert_eq!(active.network_selected_height_gap, 112);
+        assert_eq!(active.network_selected_height_gap, 40);
+        assert_ne!(active.sync_state, "synced");
 
-        runtime.active_session_id = None;
-        runtime.sync_state = "dag_frontier_tips_sync".into();
-        let frontier = build_canonical_sync_state_with_remote_evidence(
+        runtime.active_session_remaining_blocks = 12;
+        let progressed = build_canonical_sync_state_with_remote_evidence(
             &chain,
             &runtime,
             chain.dag.blocks.len(),
             1_000,
             None,
-            &evidence,
+            &[],
         );
-        assert_eq!(frontier.network_selected_height_gap, 48);
+        assert_eq!(progressed.network_selected_height_gap, 12);
+        assert_ne!(progressed.sync_state, "synced");
+
+        runtime.active_session_remaining_blocks = 0;
+        let awaiting_verified_completion = build_canonical_sync_state_with_remote_evidence(
+            &chain,
+            &runtime,
+            chain.dag.blocks.len(),
+            1_000,
+            None,
+            &[],
+        );
+        assert_eq!(awaiting_verified_completion.network_selected_height_gap, 0);
+        assert_ne!(awaiting_verified_completion.sync_state, "synced");
+        assert_eq!(awaiting_verified_completion.catchup_stage, "recovering");
+
+        runtime.active_session_id = None;
+        runtime.sync_state = "dag_frontier_tips_sync".into();
+        runtime.selected_segment_gap_blocks = 0;
+        let completed = build_canonical_sync_state_with_remote_evidence(
+            &chain,
+            &runtime,
+            chain.dag.blocks.len(),
+            1_000,
+            None,
+            &[],
+        );
+        assert_eq!(completed.network_selected_height_gap, 0);
+        assert_eq!(completed.sync_state, "synced");
+    }
+
+    #[test]
+    fn selected_remaining_debt_blocks_synced_even_without_active_session_id() {
+        let chain = chain_at_selected_height(3);
+        let runtime = NodeRuntimeStats {
+            sync_state: "synced".into(),
+            active_session_remaining_blocks: 1,
+            ..NodeRuntimeStats::default()
+        };
+        let state = build_canonical_sync_state_with_remote_evidence(
+            &chain,
+            &runtime,
+            chain.dag.blocks.len(),
+            1_000,
+            None,
+            &[],
+        );
+        assert_ne!(state.sync_state, "synced");
+        assert_eq!(state.catchup_stage, "recovering");
+    }
+
+    #[test]
+    fn final_quiescence_pending_blocks_synced_until_terminal_accounting() {
+        let chain = chain_at_selected_height(3);
+        let mut runtime = NodeRuntimeStats {
+            sync_state: "synced".into(),
+            final_quiescence_selected_sync_total: 1,
+            ..NodeRuntimeStats::default()
+        };
+        let pending = build_canonical_sync_state_with_remote_evidence(
+            &chain,
+            &runtime,
+            chain.dag.blocks.len(),
+            1_000,
+            None,
+            &[],
+        );
+        assert_ne!(pending.sync_state, "synced");
+        assert_eq!(pending.catchup_stage, "recovering");
+
+        runtime.final_quiescence_selected_sync_success_total = 1;
+        let succeeded = build_canonical_sync_state_with_remote_evidence(
+            &chain,
+            &runtime,
+            chain.dag.blocks.len(),
+            1_000,
+            None,
+            &[],
+        );
+        assert_eq!(succeeded.sync_state, "synced");
+
+        runtime.final_quiescence_selected_sync_success_total = 0;
+        runtime.final_quiescence_selected_sync_blocked_total = 1;
+        let terminally_blocked = build_canonical_sync_state_with_remote_evidence(
+            &chain,
+            &runtime,
+            chain.dag.blocks.len(),
+            1_000,
+            None,
+            &[],
+        );
+        assert_eq!(terminally_blocked.sync_state, "synced");
+    }
+
+    #[test]
+    fn all_final_quiescence_families_participate_in_synced_gate() {
+        let chain = chain_at_selected_height(3);
+
+        let runtimes = [
+            NodeRuntimeStats {
+                sync_state: "synced".into(),
+                final_quiescence_tip_reconcile_total: 1,
+                ..NodeRuntimeStats::default()
+            },
+            NodeRuntimeStats {
+                sync_state: "synced".into(),
+                final_quiescence_height_reconcile_total: 1,
+                ..NodeRuntimeStats::default()
+            },
+            NodeRuntimeStats {
+                sync_state: "synced".into(),
+                final_quiescence_same_height_reconcile_total: 1,
+                ..NodeRuntimeStats::default()
+            },
+            NodeRuntimeStats {
+                sync_state: "synced".into(),
+                final_quiescence_selected_sync_total: 1,
+                ..NodeRuntimeStats::default()
+            },
+        ];
+
+        for runtime in runtimes {
+            let state = build_canonical_sync_state_with_remote_evidence(
+                &chain,
+                &runtime,
+                chain.dag.blocks.len(),
+                1_000,
+                None,
+                &[],
+            );
+            assert_ne!(state.sync_state, "synced");
+            assert_eq!(state.catchup_stage, "recovering");
+        }
     }
 
     #[test]
