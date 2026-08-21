@@ -4,19 +4,23 @@ on:
   push:
     branches:
       - agent/task28-daemon-v2-block-selector
+  pull_request:
+    branches:
+      - main
 
 permissions:
   contents: write
 
 jobs:
   patch-main:
-    if: ${{ !contains(github.event.head_commit.message, 'daemon: wire activated-v2 inbound block runtime') }}
+    if: ${{ github.actor != 'github-actions[bot]' }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout branch
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          ref: agent/task28-daemon-v2-block-selector
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
