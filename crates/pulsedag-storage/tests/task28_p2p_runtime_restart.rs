@@ -14,14 +14,14 @@ const CHAIN_ID: &str = "task28-storage-p2p-runtime-restart";
 macro_rules! runtime_persistence {
     ($storage:ident, $identity:ident) => {
         ActivatedV2P2pRuntimePersistence::new(
-            |state, durable_runtime| {
+            |state: &ChainState, durable_runtime: &ActivatedV2P2pRuntime| {
                 $storage.persist_activated_v2_p2p_runtime_snapshot(
                     &$identity,
                     state,
                     durable_runtime,
                 )
             },
-            |block, state, durable_runtime| {
+            |block: &Block, state: &ChainState, durable_runtime: &ActivatedV2P2pRuntime| {
                 $storage.persist_activated_v2_p2p_block_and_runtime(
                     block,
                     &$identity,
@@ -29,7 +29,7 @@ macro_rules! runtime_persistence {
                     durable_runtime,
                 )
             },
-            |blocks, state, durable_runtime| {
+            |blocks: &[Block], state: &ChainState, durable_runtime: &ActivatedV2P2pRuntime| {
                 $storage.persist_activated_v2_p2p_blocks_and_runtime(
                     blocks,
                     &$identity,
