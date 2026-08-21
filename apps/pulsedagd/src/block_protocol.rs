@@ -79,12 +79,16 @@ fn record_runtime_outcome(
         ActivatedV2P2pRuntimeOutcome::Promoted {
             promoted_hashes, ..
         } => {
-            summary.accepted_hashes.extend(promoted_hashes.iter().cloned());
+            summary
+                .accepted_hashes
+                .extend(promoted_hashes.iter().cloned());
         }
         ActivatedV2P2pRuntimeOutcome::MissingParents {
             missing_parents, ..
         } => {
-            summary.missing_parents.extend(missing_parents.iter().cloned());
+            summary
+                .missing_parents
+                .extend(missing_parents.iter().cloned());
         }
         ActivatedV2P2pRuntimeOutcome::Duplicate { block_hash } => {
             summary.duplicate_hashes.push(block_hash.clone());
