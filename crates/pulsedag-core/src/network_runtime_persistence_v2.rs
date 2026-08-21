@@ -133,6 +133,7 @@ mod tests {
     fn persistence_callback_observes_final_runtime_after_pending_retry() {
         let (mut live, expected, parent, child) = parent_child_fixture();
         let mut runtime = ActivatedV2P2pRuntime::default();
+        let queued_generation = live.chain_state_generation;
 
         let queued = drive_activated_v2_p2p_block_with_runtime_persistence_atomically(
             child.clone(),
@@ -141,7 +142,7 @@ mod tests {
             &expected,
             |blocks, prepared, post_runtime| {
                 assert!(blocks.is_empty());
-                assert_eq!(prepared.chain_state_generation, live.chain_state_generation);
+                assert_eq!(prepared.chain_state_generation, queued_generation);
                 assert_eq!(post_runtime.pending_len(), 1);
                 assert!(post_runtime.pending_contains(&child.hash));
                 Ok(())
@@ -218,6 +219,7 @@ mod tests {
 
         let state_before = bincode::serialize(&live).unwrap();
         let runtime_before = bincode::serialize(&runtime).unwrap();
+        let generation_before_failure = live.chain_state_generation;
         let mut broadcast_count = 0usize;
         let error = drive_activated_v2_p2p_block_with_runtime_persistence_atomically(
             parent,
@@ -227,7 +229,7 @@ mod tests {
             |blocks, prepared, post_runtime| {
                 assert_eq!(blocks.len(), 2);
                 assert!(post_runtime.pending_is_empty());
-                assert!(prepared.chain_state_generation > live.chain_state_generation);
+                assert!(prepared.chain_state_generation > generation_before_failure);
                 Err(PulseError::StorageError(
                     "fixture final runtime persistence failure".into(),
                 ))
