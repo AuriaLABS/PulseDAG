@@ -7,6 +7,7 @@ on:
     paths:
       - crates/pulsedag-core/**
       - crates/pulsedag-rpc/**
+      - crates/pulsedag-storage/**
       - apps/pulsedag-miner/**
       - apps/pulsedagd/**
       - .github/workflows/task28-acceptance.yml
@@ -16,6 +17,7 @@ on:
     paths:
       - crates/pulsedag-core/**
       - crates/pulsedag-rpc/**
+      - crates/pulsedag-storage/**
       - apps/pulsedag-miner/**
       - apps/pulsedagd/**
       - .github/workflows/task28-acceptance.yml
@@ -66,6 +68,9 @@ jobs:
 
       - name: Activated-v2 P2P pending-parent runtime
         run: cargo test --locked -p pulsedag-core network_runtime_v2::tests::
+
+      - name: Activated-v2 P2P durable runtime restore
+        run: cargo test --locked -p pulsedag-storage protocol_runtime_v2::tests::
 
       - name: Daemon activated-v2 inbound block selector
         run: cargo test --locked -p pulsedagd block_protocol::tests::
