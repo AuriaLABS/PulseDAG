@@ -1,6 +1,9 @@
 use pulsedag_core::{
-    classify_transaction_version, classify_typed_transaction_error, PulseError,
-    TransactionRejectionClass, TransactionValidationPath,
+    classify_transaction_version, classify_typed_transaction_error,
+    tx_protocol::{resolve_transaction_validation_path, validate_transaction_for_protocol},
+    validation::validate_transaction,
+    ChainState, ProtocolActivationIdentity, PulseError, Transaction, TransactionRejectionClass,
+    TransactionValidationPath, TxAcceptanceResult,
 };
 
 /// Classify a rejection from the currently-live legacy transaction admission
@@ -25,6 +28,63 @@ pub fn classify_legacy_rpc_transaction_rejection(
         PulseError::InvalidTransaction(_) => Some(TransactionRejectionClass::MalformedTransaction),
         _ => None,
     })
+}
+
+fn classify_transaction_validation_error(error: &PulseError) -> Option<TransactionRejectionClass> {
+    classify_typed_transaction_error(error).or(match error {
+        PulseError::InvalidTransaction(_) => Some(TransactionRejectionClass::MalformedTransaction),
+        _ => None,
+    })
+}
+
+/// Classify a concrete RPC admission result without parsing human-readable
+/// rejection text. Structural mempool outcomes win first; version and
+/// validator classification then recover typed v1/v2 validation failures.
+/// A `Rejected` result after successful validation is the bounded mempool
+/// capacity/backpressure outcome produced by the core admission path.
+pub fn classify_rpc_transaction_acceptance(
+    transaction: &Transaction,
+    chain: &ChainState,
+    identity: Option<&ProtocolActivationIdentity>,
+    result: &TxAcceptanceResult,
+) -> Option<TransactionRejectionClass> {
+    match result {
+        TxAcceptanceResult::Accepted => return None,
+        TxAcceptanceResult::Duplicate => return Some(TransactionRejectionClass::Duplicate),
+        TxAcceptanceResult::Orphan => return Some(TransactionRejectionClass::Orphan),
+        TxAcceptanceResult::Invalid(_) | TxAcceptanceResult::Rejected(_) => {}
+    }
+
+    let path = match identity {
+        Some(identity) => match resolve_transaction_validation_path(identity, chain) {
+            Ok(path) => path,
+            Err(error) => return classify_typed_transaction_error(&error),
+        },
+        None => TransactionValidationPath::LegacyV1,
+    };
+
+    if let Err(classification) = classify_transaction_version(path, transaction.version) {
+        return Some(classification);
+    }
+
+    let validation = match (path, identity) {
+        (TransactionValidationPath::LegacyV1, _) => validate_transaction(transaction, chain),
+        (TransactionValidationPath::ActivatedV2, Some(identity)) => {
+            validate_transaction_for_protocol(transaction, chain, identity)
+        }
+        (TransactionValidationPath::ActivatedV2, None) => return None,
+    };
+
+    match validation {
+        Err(error) => classify_transaction_validation_error(&error),
+        Ok(()) if matches!(result, TxAcceptanceResult::Rejected(_)) => {
+            Some(TransactionRejectionClass::MempoolFull)
+        }
+        Ok(()) if matches!(result, TxAcceptanceResult::Invalid(_)) => {
+            Some(TransactionRejectionClass::MalformedTransaction)
+        }
+        Ok(()) => None,
+    }
 }
 
 #[cfg(test)]
