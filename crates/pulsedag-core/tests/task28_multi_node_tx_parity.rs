@@ -6,8 +6,7 @@ use pulsedag_core::{
     compute_txid_v2, current_ts, genesis::init_chain_state, signing_message_v2,
     validate_pow_for_protocol, AcceptSource, ActivatedV2MiningTemplateSpec, Block,
     BlockAcceptanceResult, ChainState, OutPoint, ProtocolActivationIdentity, Transaction,
-    TxAcceptanceResult, TxInput, TxOutput, GHOSTDAG_V1_ORDERING_VERSION,
-    TRANSACTION_VERSION_V2,
+    TxAcceptanceResult, TxInput, TxOutput, GHOSTDAG_V1_ORDERING_VERSION, TRANSACTION_VERSION_V2,
 };
 
 const CHAIN_ID: &str = "task28-multi-node-tx-parity";
@@ -57,11 +56,7 @@ fn mine_v2_block(
     panic!("expected Task 28 dev-PoW fixture to find a valid nonce");
 }
 
-fn accept_local_mined(
-    state: &mut ChainState,
-    identity: &ProtocolActivationIdentity,
-    block: Block,
-) {
+fn accept_local_mined(state: &mut ChainState, identity: &ProtocolActivationIdentity, block: Block) {
     let accepted = accept_activated_v2_mined_block_atomically(
         block,
         state,
@@ -75,11 +70,7 @@ fn accept_local_mined(
     assert!(accepted.persisted && accepted.committed && accepted.broadcast);
 }
 
-fn accept_from_peer(
-    state: &mut ChainState,
-    identity: &ProtocolActivationIdentity,
-    block: Block,
-) {
+fn accept_from_peer(state: &mut ChainState, identity: &ProtocolActivationIdentity, block: Block) {
     let accepted = accept_activated_v2_p2p_block_atomically(
         block,
         state,
@@ -145,7 +136,10 @@ fn assert_final_parity(states: [&ChainState; 3], block: &Block, tx: &Transaction
             state.dag.ordered_dag_state_root.as_deref(),
             Some(block.header.state_root.as_str())
         );
-        assert_eq!(state.utxo.compute_state_root().unwrap(), expected_state_root);
+        assert_eq!(
+            state.utxo.compute_state_root().unwrap(),
+            expected_state_root
+        );
         assert!(state.utxo.utxos.contains_key(&recipient_outpoint));
         assert!(!state.mempool.transactions.contains_key(&tx.txid));
         assert!(!state
