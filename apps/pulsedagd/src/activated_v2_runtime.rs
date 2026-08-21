@@ -103,14 +103,14 @@ mod tests {
         let (state, identity) = activated_state();
         let capabilities = activated_capabilities(identity);
 
-        let error = restore_activated_v2_p2p_runtime_for_startup(
-            &storage,
-            Some(&capabilities),
-            state,
-        )
-        .expect_err("explicit activated-v2 capability must require a durable sidecar");
+        let error =
+            restore_activated_v2_p2p_runtime_for_startup(&storage, Some(&capabilities), state)
+                .expect_err("explicit activated-v2 capability must require a durable sidecar");
 
-        assert!(error.to_string().contains("activation record") || error.to_string().contains("sidecar"));
+        assert!(
+            error.to_string().contains("activation record")
+                || error.to_string().contains("sidecar")
+        );
         let _ = std::fs::remove_dir_all(path);
     }
 
@@ -130,12 +130,8 @@ mod tests {
         let capabilities = activated_capabilities(identity.clone());
 
         let (restored_state, restored_runtime, restored_identity) =
-            restore_activated_v2_p2p_runtime_for_startup(
-                &storage,
-                Some(&capabilities),
-                state,
-            )
-            .unwrap();
+            restore_activated_v2_p2p_runtime_for_startup(&storage, Some(&capabilities), state)
+                .unwrap();
 
         assert_eq!(restored_identity, Some(identity));
         assert_eq!(restored_state.dag.genesis_hash, genesis);
