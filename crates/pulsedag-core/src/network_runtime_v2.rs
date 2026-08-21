@@ -58,6 +58,28 @@ impl ActivatedV2P2pRuntime {
     }
 }
 
+pub struct ActivatedV2P2pRuntimePersistence<FPersistRuntime, FPersistOne, FPersistBundle> {
+    persist_runtime: FPersistRuntime,
+    persist_one: FPersistOne,
+    persist_bundle: FPersistBundle,
+}
+
+impl<FPersistRuntime, FPersistOne, FPersistBundle>
+    ActivatedV2P2pRuntimePersistence<FPersistRuntime, FPersistOne, FPersistBundle>
+{
+    pub fn new(
+        persist_runtime: FPersistRuntime,
+        persist_one: FPersistOne,
+        persist_bundle: FPersistBundle,
+    ) -> Self {
+        Self {
+            persist_runtime,
+            persist_one,
+            persist_bundle,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ActivatedV2P2pRuntimeOutcome {
     Accepted {
@@ -125,32 +147,55 @@ fn runtime_rejected(
     ActivatedV2P2pRuntimeOutcome::Rejected { block_hash, result }
 }
 
-fn process_one<FPersistOne, FPersistBundle, FBroadcast>(
+fn persist_runtime_only_or_rollback<FPersistRuntime>(
+    state: &ChainState,
+    runtime: &mut ActivatedV2P2pRuntime,
+    runtime_before: ActivatedV2P2pRuntime,
+    persist_runtime: &mut FPersistRuntime,
+) -> Result<(), PulseError>
+where
+    FPersistRuntime: FnMut(&ChainState, &ActivatedV2P2pRuntime) -> Result<(), PulseError>,
+{
+    if let Err(error) = persist_runtime(state, runtime) {
+        *runtime = runtime_before;
+        return Err(error);
+    }
+    Ok(())
+}
+
+fn process_one_with_runtime_persistence<FPersistRuntime, FPersistOne, FPersistBundle, FBroadcast>(
     block: Block,
     state: &mut ChainState,
     runtime: &mut ActivatedV2P2pRuntime,
     identity: &ProtocolActivationIdentity,
-    persist_one: &mut FPersistOne,
-    persist_bundle: &mut FPersistBundle,
+    persistence: &mut ActivatedV2P2pRuntimePersistence<
+        FPersistRuntime,
+        FPersistOne,
+        FPersistBundle,
+    >,
     broadcast: &mut FBroadcast,
 ) -> Result<ActivatedV2P2pRuntimeOutcome, PulseError>
 where
-    FPersistOne: FnMut(&Block, &ChainState) -> Result<(), PulseError>,
-    FPersistBundle: FnMut(&[Block], &ChainState) -> Result<(), PulseError>,
+    FPersistRuntime: FnMut(&ChainState, &ActivatedV2P2pRuntime) -> Result<(), PulseError>,
+    FPersistOne: FnMut(&Block, &ChainState, &ActivatedV2P2pRuntime) -> Result<(), PulseError>,
+    FPersistBundle: FnMut(&[Block], &ChainState, &ActivatedV2P2pRuntime) -> Result<(), PulseError>,
     FBroadcast: FnMut(&Block) -> Result<(), PulseError>,
 {
     let block_hash = block.hash.clone();
-    let staging_before_candidate = block
-        .header
-        .parents
-        .iter()
-        .any(|parent| runtime.staging.contains(parent))
-        .then(|| runtime.staging.clone());
+    let runtime_before = runtime.clone();
     let stage = stage_activated_v2_p2p_block(block.clone(), state, &mut runtime.staging, identity)?;
 
     match stage {
         ActivatedV2P2pStageOutcome::Duplicate => {
-            runtime.pending_missing.remove(&block_hash);
+            let removed_pending = runtime.pending_missing.remove(&block_hash).is_some();
+            if removed_pending {
+                persist_runtime_only_or_rollback(
+                    state,
+                    runtime,
+                    runtime_before,
+                    &mut persistence.persist_runtime,
+                )?;
+            }
             Ok(ActivatedV2P2pRuntimeOutcome::Duplicate { block_hash })
         }
         ActivatedV2P2pStageOutcome::MissingParents {
@@ -161,55 +206,103 @@ where
             pending_count: runtime.pending_missing.len(),
         }),
         ActivatedV2P2pStageOutcome::ImmediatelyFinalizable(_) => {
-            let acceptance = accept_activated_v2_p2p_block_atomically(
+            let pending_was_present = runtime.pending_missing.contains_key(&block_hash);
+            let mut runtime_after = runtime.clone();
+            runtime_after.pending_missing.remove(&block_hash);
+
+            let acceptance = match accept_activated_v2_p2p_block_atomically(
                 block,
                 state,
                 AcceptSource::P2p,
                 identity,
-                |candidate, prepared| persist_one(candidate, prepared),
+                |candidate, prepared| {
+                    (persistence.persist_one)(candidate, prepared, &runtime_after)
+                },
                 |candidate| broadcast(candidate),
-            )?;
+            ) {
+                Ok(acceptance) => acceptance,
+                Err(error) => {
+                    if state.dag.blocks.contains_key(&block_hash) {
+                        *runtime = runtime_after;
+                    }
+                    return Err(error);
+                }
+            };
+
             if acceptance.result.is_accepted() {
-                runtime.pending_missing.remove(&block_hash);
+                *runtime = runtime_after;
                 Ok(ActivatedV2P2pRuntimeOutcome::Accepted {
                     block_hash,
                     generation: state.chain_state_generation,
                 })
             } else if matches!(acceptance.result, BlockAcceptanceResult::Duplicate) {
-                runtime.pending_missing.remove(&block_hash);
+                *runtime = runtime_after;
+                if pending_was_present {
+                    persist_runtime_only_or_rollback(
+                        state,
+                        runtime,
+                        runtime_before,
+                        &mut persistence.persist_runtime,
+                    )?;
+                }
                 Ok(ActivatedV2P2pRuntimeOutcome::Duplicate { block_hash })
             } else {
-                runtime.pending_missing.remove(&block_hash);
+                *runtime = runtime_after;
+                if pending_was_present {
+                    persist_runtime_only_or_rollback(
+                        state,
+                        runtime,
+                        runtime_before,
+                        &mut persistence.persist_runtime,
+                    )?;
+                }
                 Ok(runtime_rejected(block_hash, acceptance.result))
             }
         }
         ActivatedV2P2pStageOutcome::Staged { staged_count, .. } => {
             runtime.pending_missing.remove(&block_hash);
+            persist_runtime_only_or_rollback(
+                state,
+                runtime,
+                runtime_before,
+                &mut persistence.persist_runtime,
+            )?;
             Ok(ActivatedV2P2pRuntimeOutcome::Staged {
                 block_hash,
                 staged_count,
             })
         }
-        ActivatedV2P2pStageOutcome::ReadyForPromotion { .. } => {
+        ActivatedV2P2pStageOutcome::ReadyForPromotion {
+            staged_parent_closure,
+            ..
+        } => {
+            let mut promoted_hashes = staged_parent_closure;
+            promoted_hashes.push(block_hash.clone());
+            let mut runtime_after = ActivatedV2P2pRuntime {
+                staging: runtime.staging.snapshot_without_hashes(&promoted_hashes),
+                pending_missing: runtime.pending_missing.clone(),
+            };
+            runtime_after.pending_missing.remove(&block_hash);
+
             let promotion = match promote_activated_v2_p2p_anchor_atomically(
                 &block_hash,
                 state,
                 &mut runtime.staging,
                 identity,
-                |bundle, prepared| persist_bundle(bundle, prepared),
+                |bundle, prepared| (persistence.persist_bundle)(bundle, prepared, &runtime_after),
                 |candidate| broadcast(candidate),
             ) {
                 Ok(promotion) => promotion,
                 Err(error) => {
-                    if !state.dag.blocks.contains_key(&block_hash) {
-                        if let Some(staging_before_candidate) = staging_before_candidate {
-                            runtime.staging = staging_before_candidate;
-                        }
+                    if state.dag.blocks.contains_key(&block_hash) {
+                        *runtime = runtime_after;
+                    } else {
+                        *runtime = runtime_before;
                     }
                     return Err(error);
                 }
             };
-            runtime.pending_missing.remove(&block_hash);
+            *runtime = runtime_after;
             Ok(ActivatedV2P2pRuntimeOutcome::Promoted {
                 anchor_hash: promotion.anchor_hash,
                 promoted_hashes: promotion.promoted_hashes,
@@ -219,17 +312,26 @@ where
     }
 }
 
-fn retry_pending_until_stable<FPersistOne, FPersistBundle, FBroadcast>(
+fn retry_pending_until_stable_with_runtime_persistence<
+    FPersistRuntime,
+    FPersistOne,
+    FPersistBundle,
+    FBroadcast,
+>(
     state: &mut ChainState,
     runtime: &mut ActivatedV2P2pRuntime,
     identity: &ProtocolActivationIdentity,
-    persist_one: &mut FPersistOne,
-    persist_bundle: &mut FPersistBundle,
+    persistence: &mut ActivatedV2P2pRuntimePersistence<
+        FPersistRuntime,
+        FPersistOne,
+        FPersistBundle,
+    >,
     broadcast: &mut FBroadcast,
 ) -> Result<Vec<ActivatedV2P2pRuntimeOutcome>, PulseError>
 where
-    FPersistOne: FnMut(&Block, &ChainState) -> Result<(), PulseError>,
-    FPersistBundle: FnMut(&[Block], &ChainState) -> Result<(), PulseError>,
+    FPersistRuntime: FnMut(&ChainState, &ActivatedV2P2pRuntime) -> Result<(), PulseError>,
+    FPersistOne: FnMut(&Block, &ChainState, &ActivatedV2P2pRuntime) -> Result<(), PulseError>,
+    FPersistBundle: FnMut(&[Block], &ChainState, &ActivatedV2P2pRuntime) -> Result<(), PulseError>,
     FBroadcast: FnMut(&Block) -> Result<(), PulseError>,
 {
     let mut outcomes = Vec::new();
@@ -246,13 +348,12 @@ where
             let Some(block) = runtime.pending_missing.get(&hash).cloned() else {
                 continue;
             };
-            match process_one(
+            match process_one_with_runtime_persistence(
                 block,
                 state,
                 runtime,
                 identity,
-                persist_one,
-                persist_bundle,
+                persistence,
                 broadcast,
             ) {
                 Ok(ActivatedV2P2pRuntimeOutcome::MissingParents { .. }) => {}
@@ -267,7 +368,14 @@ where
                         runtime.pending_missing.remove(&hash);
                         return Err(error);
                     }
+                    let runtime_before_cleanup = runtime.clone();
                     runtime.pending_missing.remove(&hash);
+                    persist_runtime_only_or_rollback(
+                        state,
+                        runtime,
+                        runtime_before_cleanup,
+                        &mut persistence.persist_runtime,
+                    )?;
                     outcomes.push(runtime_rejected(
                         hash,
                         BlockAcceptanceResult::Rejected(error.to_string()),
@@ -285,50 +393,62 @@ where
     Ok(outcomes)
 }
 
-/// Drive one activated-v2 P2P block through the finalizable/staged/missing-parent
-/// boundary and then retry any bounded pending blocks whose parent context may
-/// have become available.
+/// Drive one activated-v2 P2P block while durably binding every transient or
+/// authoritative runtime transition to the exact post-transition runtime
+/// snapshot that would be restored after a restart.
 ///
-/// Missing-parent blocks are retained only in this protocol-specific runtime
-/// queue. They are never inserted into `ChainState::orphan_blocks`, so the
-/// legacy orphan reprocessor cannot accidentally retry them through v1 block
-/// validation.
-pub fn drive_activated_v2_p2p_block_atomically<FPersistOne, FPersistBundle, FBroadcast>(
+/// `persistence.persist_runtime` is used for staging/pending-only changes that
+/// do not advance authoritative chain state. The single-block and bundle
+/// callbacks are invoked from inside the existing serialized chain-state commit
+/// boundary and receive a runtime snapshot with the accepted/promoted hashes
+/// already removed from transient queues. This lets storage commit chain state
+/// and runtime in one batch without persisting a pre-transition sidecar.
+pub fn drive_activated_v2_p2p_block_with_runtime_persistence<
+    FPersistRuntime,
+    FPersistOne,
+    FPersistBundle,
+    FBroadcast,
+>(
     block: Block,
     state: &mut ChainState,
     runtime: &mut ActivatedV2P2pRuntime,
     identity: &ProtocolActivationIdentity,
-    mut persist_one: FPersistOne,
-    mut persist_bundle: FPersistBundle,
+    mut persistence: ActivatedV2P2pRuntimePersistence<FPersistRuntime, FPersistOne, FPersistBundle>,
     mut broadcast: FBroadcast,
 ) -> Result<ActivatedV2P2pDriveResult, PulseError>
 where
-    FPersistOne: FnMut(&Block, &ChainState) -> Result<(), PulseError>,
-    FPersistBundle: FnMut(&[Block], &ChainState) -> Result<(), PulseError>,
+    FPersistRuntime: FnMut(&ChainState, &ActivatedV2P2pRuntime) -> Result<(), PulseError>,
+    FPersistOne: FnMut(&Block, &ChainState, &ActivatedV2P2pRuntime) -> Result<(), PulseError>,
+    FPersistBundle: FnMut(&[Block], &ChainState, &ActivatedV2P2pRuntime) -> Result<(), PulseError>,
     FBroadcast: FnMut(&Block) -> Result<(), PulseError>,
 {
-    let mut primary = process_one(
+    let mut primary = process_one_with_runtime_persistence(
         block.clone(),
         state,
         runtime,
         identity,
-        &mut persist_one,
-        &mut persist_bundle,
+        &mut persistence,
         &mut broadcast,
     )?;
 
     if let ActivatedV2P2pRuntimeOutcome::MissingParents { pending_count, .. } = &mut primary {
+        let runtime_before_queue = runtime.clone();
         runtime.queue_missing(block)?;
         *pending_count = runtime.pending_missing.len();
+        persist_runtime_only_or_rollback(
+            state,
+            runtime,
+            runtime_before_queue,
+            &mut persistence.persist_runtime,
+        )?;
     }
 
     let retried = if primary.made_parent_context_available() {
-        retry_pending_until_stable(
+        retry_pending_until_stable_with_runtime_persistence(
             state,
             runtime,
             identity,
-            &mut persist_one,
-            &mut persist_bundle,
+            &mut persistence,
             &mut broadcast,
         )?
     } else {
@@ -341,6 +461,41 @@ where
         pending_count: runtime.pending_missing.len(),
         staged_count: runtime.staging.len(),
     })
+}
+
+/// Backward-compatible in-memory runtime driver used by callers that have not
+/// yet wired the durable runtime sidecar. Authoritative block persistence keeps
+/// the historical callback shape; runtime-only transitions remain in memory.
+pub fn drive_activated_v2_p2p_block_atomically<FPersistOne, FPersistBundle, FBroadcast>(
+    block: Block,
+    state: &mut ChainState,
+    runtime: &mut ActivatedV2P2pRuntime,
+    identity: &ProtocolActivationIdentity,
+    mut persist_one: FPersistOne,
+    mut persist_bundle: FPersistBundle,
+    broadcast: FBroadcast,
+) -> Result<ActivatedV2P2pDriveResult, PulseError>
+where
+    FPersistOne: FnMut(&Block, &ChainState) -> Result<(), PulseError>,
+    FPersistBundle: FnMut(&[Block], &ChainState) -> Result<(), PulseError>,
+    FBroadcast: FnMut(&Block) -> Result<(), PulseError>,
+{
+    drive_activated_v2_p2p_block_with_runtime_persistence(
+        block,
+        state,
+        runtime,
+        identity,
+        ActivatedV2P2pRuntimePersistence::new(
+            |_: &ChainState, _: &ActivatedV2P2pRuntime| Ok(()),
+            |candidate: &Block, prepared: &ChainState, _: &ActivatedV2P2pRuntime| {
+                persist_one(candidate, prepared)
+            },
+            |bundle: &[Block], prepared: &ChainState, _: &ActivatedV2P2pRuntime| {
+                persist_bundle(bundle, prepared)
+            },
+        ),
+        broadcast,
+    )
 }
 
 #[cfg(test)]
@@ -439,7 +594,7 @@ mod tests {
                 return block;
             }
         }
-        panic!("expected PoW-limit fixture to find a valid nonce");
+        panic!("expected the PoW-limit fixture to find a valid nonce");
     }
 
     fn parent_child_fixture() -> (ChainState, ProtocolActivationIdentity, Block, Block) {
@@ -756,5 +911,213 @@ mod tests {
         assert!(!live.dag.blocks.contains_key(&child.hash));
         assert_eq!(bincode::serialize(&live).unwrap(), live_before);
         assert!(live.orphan_blocks.is_empty());
+    }
+
+    #[test]
+    fn durable_runtime_callback_observes_queued_missing_parent() {
+        let (mut live, expected_identity, _parent, child) = parent_child_fixture();
+        let mut runtime = ActivatedV2P2pRuntime::default();
+        let mut snapshots = Vec::<(usize, usize)>::new();
+
+        let driven = drive_activated_v2_p2p_block_with_runtime_persistence(
+            child.clone(),
+            &mut live,
+            &mut runtime,
+            &expected_identity,
+            ActivatedV2P2pRuntimePersistence::new(
+                |_: &ChainState, durable_runtime: &ActivatedV2P2pRuntime| {
+                    snapshots.push((
+                        durable_runtime.pending_len(),
+                        durable_runtime.staging().len(),
+                    ));
+                    Ok(())
+                },
+                |_: &Block, _: &ChainState, _: &ActivatedV2P2pRuntime| {
+                    panic!("missing-parent queue must not persist an accepted block")
+                },
+                |_: &[Block], _: &ChainState, _: &ActivatedV2P2pRuntime| {
+                    panic!("missing-parent queue must not persist a promoted bundle")
+                },
+            ),
+            |_| panic!("missing-parent queue must not broadcast"),
+        )
+        .unwrap();
+
+        assert!(matches!(
+            driven.primary,
+            ActivatedV2P2pRuntimeOutcome::MissingParents { .. }
+        ));
+        assert_eq!(snapshots, vec![(1, 0)]);
+        assert!(runtime.pending_contains(&child.hash));
+    }
+
+    #[test]
+    fn durable_single_block_callbacks_receive_post_transition_runtime() {
+        let (mut live, expected_identity, parent, child) = parent_child_fixture();
+        let mut runtime = ActivatedV2P2pRuntime::default();
+
+        drive_activated_v2_p2p_block_with_runtime_persistence(
+            child.clone(),
+            &mut live,
+            &mut runtime,
+            &expected_identity,
+            ActivatedV2P2pRuntimePersistence::new(
+                |_: &ChainState, _: &ActivatedV2P2pRuntime| Ok(()),
+                |_: &Block, _: &ChainState, _: &ActivatedV2P2pRuntime| {
+                    panic!("missing-parent queue must not persist an accepted block")
+                },
+                |_: &[Block], _: &ChainState, _: &ActivatedV2P2pRuntime| {
+                    panic!("missing-parent queue must not persist a promoted bundle")
+                },
+            ),
+            |_| Ok(()),
+        )
+        .unwrap();
+
+        let mut persisted = Vec::<(Hash, usize)>::new();
+        let driven = drive_activated_v2_p2p_block_with_runtime_persistence(
+            parent.clone(),
+            &mut live,
+            &mut runtime,
+            &expected_identity,
+            ActivatedV2P2pRuntimePersistence::new(
+                |_: &ChainState, _: &ActivatedV2P2pRuntime| Ok(()),
+                |block: &Block, _: &ChainState, durable_runtime: &ActivatedV2P2pRuntime| {
+                    persisted.push((block.hash.clone(), durable_runtime.pending_len()));
+                    Ok(())
+                },
+                |_: &[Block], _: &ChainState, _: &ActivatedV2P2pRuntime| {
+                    panic!("finalizable parent/child path must not persist a bundle")
+                },
+            ),
+            |_| Ok(()),
+        )
+        .unwrap();
+
+        assert!(matches!(
+            driven.primary,
+            ActivatedV2P2pRuntimeOutcome::Accepted { ref block_hash, .. }
+                if block_hash == &parent.hash
+        ));
+        assert!(driven.retried.iter().any(|outcome| matches!(
+            outcome,
+            ActivatedV2P2pRuntimeOutcome::Accepted { block_hash, .. }
+                if block_hash == &child.hash
+        )));
+        assert_eq!(
+            persisted,
+            vec![(parent.hash.clone(), 1), (child.hash.clone(), 0)]
+        );
+        assert!(runtime.pending_is_empty());
+    }
+
+    #[test]
+    fn durable_bundle_callback_receives_post_promotion_runtime() {
+        let base = crate::genesis::init_chain_state(CHAIN_ID.to_string());
+        let expected_identity = identity(&base);
+        let genesis = base.dag.genesis_hash.clone();
+        let main = finalized_block(&base, &expected_identity, vec![genesis.clone()], 41);
+        let side = finalized_block(&base, &expected_identity, vec![genesis], 42);
+        let mut live =
+            prepare_activated_v2_p2p_block_state(&main, &base, &expected_identity).unwrap();
+        let mut runtime = ActivatedV2P2pRuntime::default();
+
+        drive_activated_v2_p2p_block_with_runtime_persistence(
+            side.clone(),
+            &mut live,
+            &mut runtime,
+            &expected_identity,
+            ActivatedV2P2pRuntimePersistence::new(
+                |_: &ChainState, durable_runtime: &ActivatedV2P2pRuntime| {
+                    assert!(durable_runtime.staging().contains(&side.hash));
+                    Ok(())
+                },
+                |_: &Block, _: &ChainState, _: &ActivatedV2P2pRuntime| {
+                    panic!("side-tip staging must not persist an accepted block")
+                },
+                |_: &[Block], _: &ChainState, _: &ActivatedV2P2pRuntime| {
+                    panic!("side-tip staging must not persist a bundle")
+                },
+            ),
+            |_| panic!("side-tip staging must not broadcast"),
+        )
+        .unwrap();
+
+        let mut pre_anchor = live.clone();
+        commit_ghostdag_v1_metadata_for_activated_v2(&side, &mut pre_anchor, &expected_identity)
+            .unwrap();
+        let anchor = finalized_block(
+            &pre_anchor,
+            &expected_identity,
+            vec![main.hash.clone(), side.hash.clone()],
+            43,
+        );
+        let mut observed_post_promotion = false;
+
+        let driven = drive_activated_v2_p2p_block_with_runtime_persistence(
+            anchor.clone(),
+            &mut live,
+            &mut runtime,
+            &expected_identity,
+            ActivatedV2P2pRuntimePersistence::new(
+                |_: &ChainState, _: &ActivatedV2P2pRuntime| Ok(()),
+                |_: &Block, _: &ChainState, _: &ActivatedV2P2pRuntime| {
+                    panic!("merge-anchor promotion must not use single-block persistence")
+                },
+                |bundle: &[Block], _: &ChainState, durable_runtime: &ActivatedV2P2pRuntime| {
+                    assert_eq!(
+                        bundle
+                            .iter()
+                            .map(|block| block.hash.clone())
+                            .collect::<Vec<_>>(),
+                        vec![side.hash.clone(), anchor.hash.clone()]
+                    );
+                    assert!(durable_runtime.staging().is_empty());
+                    assert!(durable_runtime.pending_is_empty());
+                    observed_post_promotion = true;
+                    Ok(())
+                },
+            ),
+            |_| Ok(()),
+        )
+        .unwrap();
+
+        assert!(observed_post_promotion);
+        assert!(matches!(
+            driven.primary,
+            ActivatedV2P2pRuntimeOutcome::Promoted { ref anchor_hash, .. }
+                if anchor_hash == &anchor.hash
+        ));
+        assert!(runtime.staging().is_empty());
+    }
+
+    #[test]
+    fn runtime_only_persistence_failure_rolls_back_missing_parent_queue() {
+        let (mut live, expected_identity, _parent, child) = parent_child_fixture();
+        let mut runtime = ActivatedV2P2pRuntime::default();
+        let live_before = bincode::serialize(&live).unwrap();
+
+        let error = drive_activated_v2_p2p_block_with_runtime_persistence(
+            child,
+            &mut live,
+            &mut runtime,
+            &expected_identity,
+            ActivatedV2P2pRuntimePersistence::new(
+                |_: &ChainState, _: &ActivatedV2P2pRuntime| -> Result<(), PulseError> {
+                    Err(PulseError::StorageError(
+                        "fixture runtime sidecar persistence failure".into(),
+                    ))
+                },
+                |_: &Block, _: &ChainState, _: &ActivatedV2P2pRuntime| Ok(()),
+                |_: &[Block], _: &ChainState, _: &ActivatedV2P2pRuntime| Ok(()),
+            ),
+            |_| Ok(()),
+        )
+        .unwrap_err();
+
+        assert!(matches!(error, PulseError::StorageError(_)));
+        assert!(runtime.pending_is_empty());
+        assert!(runtime.staging().is_empty());
+        assert_eq!(bincode::serialize(&live).unwrap(), live_before);
     }
 }

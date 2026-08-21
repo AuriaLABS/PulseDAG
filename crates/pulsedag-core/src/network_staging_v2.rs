@@ -48,6 +48,14 @@ impl ActivatedV2P2pStaging {
     pub fn hashes(&self) -> Vec<Hash> {
         self.blocks.keys().cloned().collect()
     }
+
+    pub(crate) fn snapshot_without_hashes(&self, hashes: &[Hash]) -> Self {
+        let mut snapshot = self.clone();
+        for hash in hashes {
+            snapshot.blocks.remove(hash);
+        }
+        snapshot
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
