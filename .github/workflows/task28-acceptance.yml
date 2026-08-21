@@ -8,6 +8,7 @@ on:
       - crates/pulsedag-core/**
       - crates/pulsedag-rpc/**
       - crates/pulsedag-storage/**
+      - crates/pulsedag-wallet/**
       - apps/pulsedag-miner/**
       - apps/pulsedagd/**
       - .github/workflows/task28-acceptance.yml
@@ -18,6 +19,7 @@ on:
       - crates/pulsedag-core/**
       - crates/pulsedag-rpc/**
       - crates/pulsedag-storage/**
+      - crates/pulsedag-wallet/**
       - apps/pulsedag-miner/**
       - apps/pulsedagd/**
       - .github/workflows/task28-acceptance.yml
@@ -80,6 +82,9 @@ jobs:
 
       - name: Daemon activated-v2 runtime restore
         run: cargo test --locked -p pulsedagd activated_v2_runtime::tests::
+
+      - name: Wallet activated-v2 non-custodial flow
+        run: cargo test --locked -p pulsedag-wallet
 
       - name: RPC protocol-bound mining submit and template
         run: |
