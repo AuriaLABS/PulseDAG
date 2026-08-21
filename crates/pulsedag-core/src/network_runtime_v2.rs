@@ -289,9 +289,7 @@ where
                 state,
                 &mut runtime.staging,
                 identity,
-                |bundle, prepared| {
-                    (persistence.persist_bundle)(bundle, prepared, &runtime_after)
-                },
+                |bundle, prepared| (persistence.persist_bundle)(bundle, prepared, &runtime_after),
                 |candidate| broadcast(candidate),
             ) {
                 Ok(promotion) => promotion,
@@ -415,11 +413,7 @@ pub fn drive_activated_v2_p2p_block_with_runtime_persistence<
     state: &mut ChainState,
     runtime: &mut ActivatedV2P2pRuntime,
     identity: &ProtocolActivationIdentity,
-    mut persistence: ActivatedV2P2pRuntimePersistence<
-        FPersistRuntime,
-        FPersistOne,
-        FPersistBundle,
-    >,
+    mut persistence: ActivatedV2P2pRuntimePersistence<FPersistRuntime, FPersistOne, FPersistBundle>,
     mut broadcast: FBroadcast,
 ) -> Result<ActivatedV2P2pDriveResult, PulseError>
 where
