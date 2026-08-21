@@ -239,6 +239,7 @@ fn staged_side_tip_restores_and_promotes_atomically_after_restart() {
     let main = finalized_block(&live, &identity, vec![genesis.clone()], 21);
     let side = finalized_block(&live, &identity, vec![genesis], 22);
     let mut runtime = ActivatedV2P2pRuntime::default();
+    let promoted_anchor_hash;
 
     {
         let storage = Storage::open(&path).unwrap();
@@ -329,6 +330,7 @@ fn staged_side_tip_restores_and_promotes_atomically_after_restart() {
             vec![main.hash.clone(), side.hash.clone()],
             23,
         );
+        promoted_anchor_hash = anchor.hash.clone();
 
         drive_activated_v2_p2p_block_with_runtime_persistence(
             anchor.clone(),
@@ -376,16 +378,12 @@ fn staged_side_tip_restores_and_promotes_atomically_after_restart() {
         assert!(restored_runtime.staging().is_empty());
         assert!(restored_runtime.pending_is_empty());
         assert!(restored_state.dag.blocks.contains_key(&side.hash));
-        assert_eq!(restored_state.dag.ordered_dag_tip.as_ref(), Some(&anchor_hash(&restored_state)));
+        assert!(restored_state.dag.blocks.contains_key(&promoted_anchor_hash));
+        assert_eq!(
+            restored_state.dag.ordered_dag_tip.as_ref(),
+            Some(&promoted_anchor_hash)
+        );
     }
 
     let _ = std::fs::remove_dir_all(path);
-}
-
-fn anchor_hash(state: &ChainState) -> Hash {
-    state
-        .dag
-        .ordered_dag_tip
-        .clone()
-        .expect("promoted restart state must have an ordered DAG tip")
 }
