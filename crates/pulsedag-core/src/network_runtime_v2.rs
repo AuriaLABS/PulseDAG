@@ -690,7 +690,10 @@ mod tests {
             |_, _| panic!("unexpected single-block persistence for merge-anchor promotion"),
             |bundle, _| {
                 assert_eq!(
-                    bundle.iter().map(|block| block.hash.clone()).collect::<Vec<_>>(),
+                    bundle
+                        .iter()
+                        .map(|block| block.hash.clone())
+                        .collect::<Vec<_>>(),
                     vec![side.hash.clone(), anchor.hash.clone()]
                 );
                 persisted_bundle = true;
