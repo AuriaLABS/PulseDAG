@@ -50,6 +50,24 @@ pub fn resolve_inbound_p2p_block_protocol(
     Ok(InboundP2pBlockProtocol::ActivatedV2(expected))
 }
 
+/// Resolve whether startup is allowed to restore the durable activated-v2 P2P
+/// runtime sidecar. Sidecar presence is deliberately not an activation signal:
+/// callers must first provide the locally configured protocol capabilities.
+///
+/// `None` preserves the historical legacy startup exactly. Explicit malformed
+/// or mismatched capabilities fail closed. Only the canonical activated-v2
+/// identity returns `Some`, which callers can then pass to the strict storage
+/// restore API.
+pub fn resolve_activated_v2_runtime_restore_identity(
+    capabilities: Option<&ProtocolCapabilitiesV1>,
+    state: &ChainState,
+) -> Result<Option<ProtocolActivationIdentity>, String> {
+    match resolve_inbound_p2p_block_protocol(capabilities, state)? {
+        InboundP2pBlockProtocol::Legacy => Ok(None),
+        InboundP2pBlockProtocol::ActivatedV2(identity) => Ok(Some(identity)),
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ActivatedV2InboundSummary {
     pub accepted_hashes: Vec<Hash>,
@@ -169,6 +187,25 @@ mod tests {
     }
 
     #[test]
+    fn startup_restore_without_capabilities_stays_legacy() {
+        let state = state();
+        assert_eq!(
+            resolve_activated_v2_runtime_restore_identity(None, &state),
+            Ok(None)
+        );
+    }
+
+    #[test]
+    fn startup_restore_requires_exact_activated_identity() {
+        let state = state();
+        let capabilities = activated_capabilities(&state);
+        assert_eq!(
+            resolve_activated_v2_runtime_restore_identity(Some(&capabilities), &state),
+            Ok(Some(capabilities.protocol_identity))
+        );
+    }
+
+    #[test]
     fn mismatched_identity_fails_closed() {
         let state = state();
         let mut capabilities = activated_capabilities(&state);
@@ -177,6 +214,10 @@ mod tests {
         let error = resolve_inbound_p2p_block_protocol(Some(&capabilities), &state)
             .expect_err("mismatched identity must not fall back to legacy");
         assert!(error.contains("identity mismatch"));
+
+        let restore_error = resolve_activated_v2_runtime_restore_identity(Some(&capabilities), &state)
+            .expect_err("mismatched identity must not enable runtime restore");
+        assert!(restore_error.contains("identity mismatch"));
     }
 
     #[test]
@@ -188,6 +229,10 @@ mod tests {
         let error = resolve_inbound_p2p_block_protocol(Some(&capabilities), &state)
             .expect_err("malformed capabilities must fail closed");
         assert!(error.contains("invalid local protocol capabilities"));
+
+        let restore_error = resolve_activated_v2_runtime_restore_identity(Some(&capabilities), &state)
+            .expect_err("malformed capabilities must not enable runtime restore");
+        assert!(restore_error.contains("invalid local protocol capabilities"));
     }
 
     #[test]
