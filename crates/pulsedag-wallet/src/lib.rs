@@ -1,3 +1,5 @@
+pub mod protocol_v2;
+
 use serde::{Deserialize, Serialize};
 
 use pulsedag_core::{
