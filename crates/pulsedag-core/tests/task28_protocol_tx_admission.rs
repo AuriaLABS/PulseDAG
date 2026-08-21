@@ -144,6 +144,49 @@ fn explicit_protocol_admission_accepts_matching_v1_and_v2_transactions() {
 }
 
 #[test]
+fn activated_v2_admission_reconciles_existing_v2_mempool_with_v2_rules() {
+    let mut state = init_chain_state("task28-v2-reconcile-admission".to_string());
+    let identity = activated_identity(&state);
+
+    let first_key = signing_key(31);
+    let first_outpoint = fund_key(&mut state, "v2-reconcile-first", &first_key, 10);
+    let first = signed_v2_transaction(&first_key, first_outpoint, 31, &state.chain_id);
+    let first_txid = first.txid.clone();
+    assert_eq!(
+        accept_transaction_with_result_for_protocol(
+            first,
+            &mut state,
+            AcceptSource::Rpc,
+            &identity,
+        ),
+        TxAcceptanceResult::Accepted
+    );
+
+    // Force the admission-side bookkeeping repair path. A legacy-v1
+    // reconcile would reject the already-admitted v2 tx by its v2 txid.
+    state.mempool.spent_outpoints.clear();
+
+    let second_key = signing_key(32);
+    let second_outpoint = fund_key(&mut state, "v2-reconcile-second", &second_key, 10);
+    let second = signed_v2_transaction(&second_key, second_outpoint, 32, &state.chain_id);
+    let second_txid = second.txid.clone();
+
+    assert_eq!(
+        accept_transaction_with_result_for_protocol(
+            second,
+            &mut state,
+            AcceptSource::Rpc,
+            &identity,
+        ),
+        TxAcceptanceResult::Accepted
+    );
+    assert!(state.mempool.transactions.contains_key(&first_txid));
+    assert!(state.mempool.transactions.contains_key(&second_txid));
+    assert_eq!(state.mempool.transactions.len(), 2);
+    assert!(state.mempool.counters.reconcile_runs_total >= 1);
+}
+
+#[test]
 fn legacy_entrypoint_remains_v1_only() {
     let mut state = init_chain_state("task28-legacy-entrypoint".to_string());
     let key = signing_key(13);
