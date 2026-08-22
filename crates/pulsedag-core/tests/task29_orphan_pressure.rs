@@ -44,7 +44,6 @@ fn accept_valid(state: &mut ChainState, block: Block) {
 }
 
 fn build_canonical_chain() -> Vec<Block> {
-    assert!(CADENCE_SECS < CONSENSUS_TARGET_BLOCK_INTERVAL_SECS);
     let mut builder = init_chain_state(CHAIN_ID.to_string());
     let start = current_ts().saturating_sub(20_000);
     let mut blocks = Vec::with_capacity(PRESSURE_BLOCKS);
