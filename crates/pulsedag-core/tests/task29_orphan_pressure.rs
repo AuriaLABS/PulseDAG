@@ -77,11 +77,18 @@ fn replay_reverse_orphan_pressure(blocks: &[Block]) -> ChainState {
             "reverse delivery must classify descendant as missing-parent"
         );
         let missing = missing_block_parents(block, &state);
-        assert_eq!(missing.len(), 1, "linear fixture has one direct missing parent");
+        assert_eq!(
+            missing.len(),
+            1,
+            "linear fixture has one direct missing parent"
+        );
         assert!(queue_orphan_block(&mut state, block.clone(), missing));
         assert_eq!(state.orphan_blocks.len(), queued + 1);
         assert_eq!(state.orphan_parent_index.len(), queued + 1);
-        assert!(state.orphan_blocks.len() < 512, "pressure fixture must stay bounded");
+        assert!(
+            state.orphan_blocks.len() < 512,
+            "pressure fixture must stay bounded"
+        );
     }
 
     assert_eq!(state.orphan_blocks.len(), blocks.len() - 1);
@@ -112,7 +119,10 @@ fn assert_converged(ordered: &ChainState, pressured: &ChainState) {
     assert_eq!(ordered_dag_digest(ordered), ordered_dag_digest(pressured));
     assert_eq!(selection_digest(ordered), selection_digest(pressured));
     assert_eq!(merge_set_digest(ordered), merge_set_digest(pressured));
-    assert_eq!(state_digest(ordered).unwrap(), state_digest(pressured).unwrap());
+    assert_eq!(
+        state_digest(ordered).unwrap(),
+        state_digest(pressured).unwrap()
+    );
 
     let ordered_pow = consensus_difficulty_snapshot(ordered);
     let pressured_pow = consensus_difficulty_snapshot(pressured);
