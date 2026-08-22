@@ -1,6 +1,6 @@
 use super::mining_template::{
-    current_template_state, load_template, template_freshness_window, template_id_for_state,
-    MINING_PROTOCOL_VERSION,
+    current_template_state, load_template, template_freshness_window,
+    template_id_matches_lifecycle, MINING_PROTOCOL_VERSION,
 };
 use crate::api::{unix_now_ms, ApiResponse, RpcStateLike, SubmitMinedBlockRequest};
 use axum::{extract::State, Json};
@@ -813,7 +813,6 @@ async fn process_mining_submit(
     let lifecycle = current_template_state(&chain);
     let current_parents = lifecycle.parent_hashes.clone();
     let current_selected_tip = lifecycle.selected_tip.clone();
-    let expected_template_id = template_id_for_state(&lifecycle);
     let now_unix = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
@@ -948,7 +947,7 @@ async fn process_mining_submit(
                 ),
             ));
         }
-        if template_id != &expected_template_id {
+        if !template_id_matches_lifecycle(template_id, &lifecycle) {
             let msg = format!(
                 "reason_code={}; template lifecycle state changed",
                 StaleTemplateReason::TemplateLifecycleChanged.code()

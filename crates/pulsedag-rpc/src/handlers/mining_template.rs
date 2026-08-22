@@ -1,8 +1,11 @@
 use std::{
     collections::{BTreeSet, HashMap, HashSet},
     fs,
-    path::PathBuf,
-    sync::atomic::{AtomicU64, Ordering},
+    path::{Path, PathBuf},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Mutex, OnceLock,
+    },
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -124,7 +127,14 @@ fn default_mining_protocol_version() -> u32 {
 pub(crate) const TEMPLATE_TTL_SECS: u64 = 30;
 pub(crate) const TEMPLATE_FRESHNESS_GRACE_SECS: u64 = 2;
 const POW_NONCE_OFFSET: usize = 1 + 4;
+const MAX_STORED_MINING_TEMPLATES: usize = 1_024;
+const TEMPLATE_STORE_GC_INTERVAL: u64 = 32;
 static TEMPLATE_STORE_TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+static TEMPLATE_STORE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+fn template_store_lock() -> &'static Mutex<()> {
+    TEMPLATE_STORE_LOCK.get_or_init(|| Mutex::new(()))
+}
 
 pub(crate) fn template_freshness_window(
     created_at_unix: u64,
@@ -164,9 +174,6 @@ fn invalidation_reason_codes(
         template_freshness_window(previous.created_at_unix, previous.expires_at_unix);
     if now_unix > hard_expiry {
         reasons.push("freshness_window_elapsed");
-    }
-    if reasons.is_empty() {
-        reasons.push("lifecycle_changed");
     }
     reasons
 }
@@ -355,14 +362,103 @@ pub(crate) fn template_id_for_state(state: &TemplateLifecycleState) -> String {
     )
 }
 
-pub(crate) fn store_template(record: &StoredMiningTemplate) {
-    let dir = PathBuf::from("./data/mining_templates");
-    let _ = fs::create_dir_all(&dir);
+pub(crate) fn template_id_for_work(state: &TemplateLifecycleState, block_hash: &str) -> String {
+    let lifecycle_id = template_id_for_state(state);
+    let digest = Keccak256::digest(format!("{lifecycle_id}|{block_hash}").as_bytes());
+    format!("v1-work-{}", hex::encode(digest))
+}
+
+pub(crate) fn template_id_matches_lifecycle(
+    template_id: &str,
+    state: &TemplateLifecycleState,
+) -> bool {
+    template_id == template_id_for_state(state)
+        || (template_id.len() == 72 && template_id.starts_with("v1-work-"))
+}
+
+fn template_store_entry_count(dir: &Path) -> usize {
+    fs::read_dir(dir)
+        .ok()
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|entry| entry.path().extension().and_then(|value| value.to_str()) == Some("json"))
+        .count()
+}
+
+fn prune_template_store(dir: &Path, now_unix: u64, keep_limit: usize) -> usize {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return 0;
+    };
+    let mut removed = 0usize;
+    let mut retained = Vec::<(u64, String, PathBuf)>::new();
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let extension = path.extension().and_then(|value| value.to_str());
+        if extension == Some("tmp") {
+            if fs::remove_file(&path).is_ok() {
+                removed = removed.saturating_add(1);
+            }
+            continue;
+        }
+        if extension != Some("json") {
+            continue;
+        }
+        let stored = fs::read(&path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<StoredMiningTemplate>(&bytes).ok());
+        let Some(stored) = stored else {
+            if fs::remove_file(&path).is_ok() {
+                removed = removed.saturating_add(1);
+            }
+            continue;
+        };
+        let (_, _, hard_expiry) =
+            template_freshness_window(stored.created_at_unix, stored.expires_at_unix);
+        if now_unix > hard_expiry {
+            if fs::remove_file(&path).is_ok() {
+                removed = removed.saturating_add(1);
+            }
+            continue;
+        }
+        retained.push((stored.created_at_unix, stored.template_id, path));
+    }
+
+    retained.sort_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1)));
+    let excess = retained.len().saturating_sub(keep_limit);
+    for (_, _, path) in retained.into_iter().take(excess) {
+        if fs::remove_file(path).is_ok() {
+            removed = removed.saturating_add(1);
+        }
+    }
+    removed
+}
+
+fn store_template_in_dir_at(
+    dir: &Path,
+    record: &StoredMiningTemplate,
+    max_entries: usize,
+    now_unix: u64,
+    force_gc: bool,
+) -> usize {
+    if max_entries == 0 || fs::create_dir_all(dir).is_err() {
+        return 0;
+    }
     let filename = format!("{}.json", sanitize(&record.template_id));
     let path = dir.join(&filename);
     let unique = TEMPLATE_STORE_TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let reserve_slot = usize::from(!path.exists());
+    let existing_count = template_store_entry_count(dir);
+    let should_gc = force_gc
+        || unique.is_multiple_of(TEMPLATE_STORE_GC_INTERVAL)
+        || existing_count.saturating_add(reserve_slot) > max_entries;
+    let removed = if should_gc {
+        prune_template_store(dir, now_unix, max_entries.saturating_sub(reserve_slot))
+    } else {
+        0
+    };
     let tmp_path = dir.join(format!(".{filename}.{}.{}.tmp", std::process::id(), unique));
-
     let bytes = serde_json::to_vec_pretty(record).unwrap_or_default();
     if fs::write(&tmp_path, bytes).is_ok() {
         if fs::rename(&tmp_path, &path).is_err() {
@@ -372,13 +468,37 @@ pub(crate) fn store_template(record: &StoredMiningTemplate) {
     } else {
         let _ = fs::remove_file(&tmp_path);
     }
+    removed
+}
+
+fn load_template_from_dir(dir: &Path, template_id: &str) -> Option<StoredMiningTemplate> {
+    let path = dir.join(format!("{}.json", sanitize(template_id)));
+    let bytes = fs::read(path).ok()?;
+    serde_json::from_slice::<StoredMiningTemplate>(&bytes).ok()
+}
+
+pub(crate) fn store_template(record: &StoredMiningTemplate) {
+    let _guard = template_store_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let now_unix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0);
+    let _ = store_template_in_dir_at(
+        Path::new("./data/mining_templates"),
+        record,
+        MAX_STORED_MINING_TEMPLATES,
+        now_unix,
+        false,
+    );
 }
 
 pub(crate) fn load_template(template_id: &str) -> Option<StoredMiningTemplate> {
-    let path =
-        PathBuf::from("./data/mining_templates").join(format!("{}.json", sanitize(template_id)));
-    let bytes = fs::read(path).ok()?;
-    serde_json::from_slice::<StoredMiningTemplate>(&bytes).ok()
+    let _guard = template_store_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    load_template_from_dir(Path::new("./data/mining_templates"), template_id)
 }
 
 fn sanitize(s: &str) -> String {
@@ -439,7 +559,6 @@ pub async fn post_mining_template<S: RpcStateLike>(
     let height = lifecycle.height;
     let parents = lifecycle.parent_hashes.clone();
     let reward = 50;
-    let template_id = template_id_for_state(&lifecycle);
     let selected_tip = lifecycle.selected_tip.clone();
     let created_at_unix = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -461,6 +580,7 @@ pub async fn post_mining_template<S: RpcStateLike>(
     if let Err(e) = refresh_block_consensus_ids_with_state(&mut block, &chain) {
         return Json(ApiResponse::err("STATE_ROOT_ERROR", e.to_string()));
     }
+    let template_id = template_id_for_work(&lifecycle, &block.hash);
     let target_u64 = lifecycle.target_u64;
     let canonical_target_hex = target_hex(&target_from_bits(header_difficulty));
     let compact_target = header_difficulty;
@@ -529,22 +649,24 @@ pub async fn post_mining_template<S: RpcStateLike>(
             let reason_codes = load_template(&previous_template_id)
                 .map(|stored| invalidation_reason_codes(&stored, &lifecycle, created_at_unix))
                 .unwrap_or_else(|| vec!["previous_template_unavailable"]);
-            runtime.external_mining_templates_invalidated = runtime
-                .external_mining_templates_invalidated
-                .saturating_add(1);
-            runtime.external_mining_stale_work_detected = runtime
-                .external_mining_stale_work_detected
-                .saturating_add(1);
-            let _ = state.storage().append_runtime_event(
-                "warn",
-                "external_mining_template_invalidated",
-                &format!(
-                    "previous={} current={} reason_codes={}",
-                    previous_template_id,
-                    template_id,
-                    reason_codes.join(",")
-                ),
-            );
+            if !reason_codes.is_empty() {
+                runtime.external_mining_templates_invalidated = runtime
+                    .external_mining_templates_invalidated
+                    .saturating_add(1);
+                runtime.external_mining_stale_work_detected = runtime
+                    .external_mining_stale_work_detected
+                    .saturating_add(1);
+                let _ = state.storage().append_runtime_event(
+                    "warn",
+                    "external_mining_template_invalidated",
+                    &format!(
+                        "previous={} current={} reason_codes={}",
+                        previous_template_id,
+                        template_id,
+                        reason_codes.join(",")
+                    ),
+                );
+            }
         }
         runtime.external_mining_last_template_id = Some(template_id.clone());
         runtime.pulsedag_mining_templates_total =
@@ -626,11 +748,14 @@ pub async fn post_mining_template<S: RpcStateLike>(
 #[cfg(test)]
 mod tests {
     use super::{
-        current_template_state, mining_template_unavailable_reason, template_freshness_window,
-        template_id_for_state, template_ordered_transactions, TEMPLATE_FRESHNESS_GRACE_SECS,
+        current_template_state, load_template, load_template_from_dir,
+        mining_template_unavailable_reason, post_mining_template, store_template_in_dir_at,
+        template_freshness_window, template_id_for_state, template_id_for_work,
+        template_ordered_transactions, StoredMiningTemplate, TEMPLATE_FRESHNESS_GRACE_SECS,
         TEMPLATE_TTL_SECS,
     };
-    use crate::api::{NodeRuntimeStats, RpcStateLike};
+    use crate::api::{GetBlockTemplateRequest, NodeRuntimeStats, RpcStateLike};
+    use axum::{extract::State, Json};
     use pulsedag_core::{
         genesis::init_chain_state,
         state::{ChainState, SelectedParentPolicy},
@@ -640,6 +765,7 @@ mod tests {
     use pulsedag_p2p::{P2pHandle, P2pStatus, P2P_MODE_LIBP2P_REAL};
     use pulsedag_storage::Storage;
     use std::{
+        fs,
         path::PathBuf,
         sync::Arc,
         time::{SystemTime, UNIX_EPOCH},
@@ -748,6 +874,36 @@ mod tests {
         }
     }
 
+    fn stored_template_fixture(
+        template_id: &str,
+        created_at_unix: u64,
+        expires_at_unix: u64,
+    ) -> StoredMiningTemplate {
+        StoredMiningTemplate {
+            protocol_version: 1,
+            template_id: template_id.to_string(),
+            miner_address: "kaspa:qptask29fixture".to_string(),
+            selected_tip: Some("genesis-block".to_string()),
+            parent_hashes: vec!["genesis-block".to_string()],
+            height: 1,
+            difficulty: 1,
+            created_at_unix,
+            target_u64: 1,
+            mempool_fingerprint: "0:".to_string(),
+            mempool_tx_count: 0,
+            expires_at_unix,
+            template_txids: Vec::new(),
+            merkle_root: String::new(),
+            template_selected_parent: Some("genesis-block".to_string()),
+            template_parent_count: 1,
+            template_blue_score: 0,
+            template_merge_set_size: 0,
+            template_parallel_parents_enabled: false,
+            template_parallel_parent_exclusion_reasons: Vec::new(),
+            duplicate_tx_filtered: 0,
+        }
+    }
+
     #[test]
     fn parallel_parents_disabled_by_default() {
         let mut chain = init_chain_state("testnet-dev".to_string());
@@ -849,6 +1005,93 @@ mod tests {
             vec![fresh.txid]
         );
     }
+    #[test]
+    fn task29_work_template_ids_are_compact_and_bind_distinct_work() {
+        let chain = init_chain_state("task29-template-work-id".to_string());
+        let lifecycle = current_template_state(&chain);
+        let first = template_id_for_work(&lifecycle, "block-hash-a");
+        let second = template_id_for_work(&lifecycle, "block-hash-b");
+
+        assert_ne!(first, second);
+        assert_eq!(first.len(), 72);
+        assert!(first.starts_with("v1-work-"));
+        assert!(second.starts_with("v1-work-"));
+    }
+
+    #[test]
+    fn task29_template_store_retention_is_bounded_and_prunes_expired() {
+        let dir = temp_db_path("task29-template-retention");
+        let expired = stored_template_fixture("expired", 1, 2);
+        store_template_in_dir_at(&dir, &expired, 4, 1, true);
+
+        for index in 0..6u64 {
+            let record = stored_template_fixture(&format!("live-{index}"), 100 + index, 1_000);
+            store_template_in_dir_at(&dir, &record, 4, 200, true);
+        }
+
+        assert!(load_template_from_dir(&dir, "expired").is_none());
+        assert!(load_template_from_dir(&dir, "live-0").is_none());
+        assert!(load_template_from_dir(&dir, "live-1").is_none());
+        for index in 2..6u64 {
+            assert!(load_template_from_dir(&dir, &format!("live-{index}")).is_some());
+        }
+        let json_count = fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .filter(|entry| {
+                entry.path().extension().and_then(|value| value.to_str()) == Some("json")
+            })
+            .count();
+        assert_eq!(json_count, 4);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn task29_multi_miner_templates_keep_independent_work_records() {
+        let path = temp_db_path("task29-multi-miner-template");
+        let state = TestState {
+            chain: Arc::new(RwLock::new(init_chain_state(
+                "task29-multi-miner".to_string(),
+            ))),
+            storage: Arc::new(Storage::open(path.to_str().unwrap()).unwrap()),
+            runtime: Arc::new(RwLock::new(NodeRuntimeStats::default())),
+            p2p: None,
+        };
+
+        let Json(first_response) = post_mining_template(
+            State(state.clone()),
+            Json(GetBlockTemplateRequest {
+                miner_address: "kaspa:qptask29miner-a".to_string(),
+            }),
+        )
+        .await;
+        let first = first_response.data.expect("first template expected");
+        let Json(second_response) = post_mining_template(
+            State(state.clone()),
+            Json(GetBlockTemplateRequest {
+                miner_address: "kaspa:qptask29miner-b".to_string(),
+            }),
+        )
+        .await;
+        let second = second_response.data.expect("second template expected");
+
+        assert_ne!(first.template_id, second.template_id);
+        assert_ne!(
+            first.block.header.merkle_root,
+            second.block.header.merkle_root
+        );
+        let first_stored =
+            load_template(&first.template_id).expect("first work must remain stored");
+        let second_stored =
+            load_template(&second.template_id).expect("second work must remain stored");
+        assert_eq!(first_stored.miner_address, "kaspa:qptask29miner-a");
+        assert_eq!(second_stored.miner_address, "kaspa:qptask29miner-b");
+        let runtime = state.runtime.read().await;
+        assert_eq!(runtime.external_mining_templates_emitted, 2);
+        assert_eq!(runtime.external_mining_templates_invalidated, 0);
+        assert_eq!(runtime.external_mining_stale_work_detected, 0);
+    }
+
     #[test]
     fn template_id_changes_when_mempool_changes() {
         let mut chain = init_chain_state("testnet-dev".to_string());
