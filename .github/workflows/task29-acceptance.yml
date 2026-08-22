@@ -1,0 +1,44 @@
+name: v2.4.0 Task 29 acceptance
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - apps/pulsedagd/**
+      - crates/pulsedag-core/**
+      - crates/pulsedag-rpc/**
+      - apps/pulsedag-miner/**
+      - .github/workflows/task29-acceptance.yml
+  push:
+    branches:
+      - main
+    paths:
+      - apps/pulsedagd/**
+      - crates/pulsedag-core/**
+      - crates/pulsedag-rpc/**
+      - apps/pulsedag-miner/**
+      - .github/workflows/task29-acceptance.yml
+
+permissions:
+  contents: read
+
+jobs:
+  task29-acceptance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout candidate
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Experimental cadence configuration guard
+        run: cargo test --locked -p pulsedagd config::tests::experimental_fast_cadence
+
+      - name: Conservative target interval default
+        run: cargo test --locked -p pulsedagd config::tests::target_block_interval
