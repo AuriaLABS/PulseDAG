@@ -114,11 +114,12 @@ impl Config {
             .transpose()?
             .unwrap_or(ConfigProfile::Dev);
         let mut cfg = Self::defaults_for_profile(profile);
+        let fast_cadence_profile = cfg.network_profile.clone();
         cfg.apply_env_overrides();
         if let Ok(v) = std::env::var("PULSEDAG_API_PROFILE") {
             cfg.api_profile = ApiExposureProfile::from_env_value(&v)?;
         }
-        cfg.apply_experimental_guards()?;
+        cfg.apply_experimental_guards(&fast_cadence_profile)?;
         cfg.validate_api_exposure()?;
         cfg.validate_cors_policy()?;
         cfg.validate_security_hardening()?;
@@ -537,10 +538,8 @@ impl Config {
             .filter(|v| *v >= 1)
             .map(|secs| secs.saturating_mul(1_000))
             .unwrap_or(self.target_block_interval_ms);
-        self.target_block_interval_ms = guarded_target_block_interval_ms(
-            read_env_u64_positive("PULSEDAG_TARGET_BLOCK_INTERVAL_MS", interval_ms_default, 1),
-            self.experimental_fast_cadence,
-        );
+        self.target_block_interval_ms =
+            read_env_u64_positive("PULSEDAG_TARGET_BLOCK_INTERVAL_MS", interval_ms_default, 1);
         self.target_block_interval_secs = self.target_block_interval_ms.div_ceil(1_000).max(1);
         self.max_parallel_tips =
             read_env_usize_positive("PULSEDAG_MAX_PARALLEL_TIPS", self.max_parallel_tips, 1);
@@ -605,6 +604,13 @@ impl Config {
         I: IntoIterator<Item = String>,
     {
         let args: Vec<String> = args.into_iter().collect();
+        let mut fast_cadence_profile = match std::env::var("PULSEDAG_CONFIG_PROFILE") {
+            Ok(value) => {
+                let profile = ConfigProfile::from_env_value(&value)?;
+                Config::defaults_for_profile(profile).network_profile
+            }
+            Err(_) => self.network_profile.clone(),
+        };
 
         let mut iter = args.iter();
         while let Some(arg) = iter.next() {
@@ -613,7 +619,9 @@ impl Config {
                     .next()
                     .ok_or_else(|| anyhow::anyhow!("--network requires a value"))?;
                 let profile = ConfigProfile::from_env_value(value)?;
-                *self = Config::defaults_for_profile(profile);
+                let defaults = Config::defaults_for_profile(profile);
+                fast_cadence_profile = defaults.network_profile.clone();
+                *self = defaults;
             }
         }
 
@@ -711,12 +719,12 @@ impl Config {
                 _ => {}
             }
         }
-        self.apply_experimental_guards()?;
+        self.apply_experimental_guards(&fast_cadence_profile)?;
         if let Ok(v) = std::env::var("PULSEDAG_API_PROFILE") {
             self.api_profile = ApiExposureProfile::from_env_value(&v)?;
         }
         self.apply_admin_default_or_env_override();
-        self.apply_experimental_guards()?;
+        self.apply_experimental_guards(&fast_cadence_profile)?;
         self.validate_api_exposure()?;
         self.validate_cors_policy()?;
         self.validate_security_hardening()?;
@@ -724,12 +732,19 @@ impl Config {
         Ok(())
     }
 
-    fn apply_experimental_guards(&mut self) -> Result<()> {
+    fn apply_experimental_guards(&mut self, fast_cadence_profile: &str) -> Result<()> {
         self.experimental_ghostdag_selection = self.consensus_mode == ConsensusMode::GhostdagDev;
         if self.experimental_fast_cadence && !self.experimental_ghostdag_selection {
             bail!("--experimental-fast-cadence requires --experimental-ghostdag-selection");
         }
-        self.experimental_fast_cadence = false;
+        if self.experimental_fast_cadence
+            && !experimental_fast_cadence_profile_allowed(fast_cadence_profile)
+        {
+            bail!(
+                "--experimental-fast-cadence is not allowed for config profile '{}'; use dev, local, testnet, or rehearsal-a/b/c",
+                fast_cadence_profile
+            );
+        }
         self.target_block_interval_ms = guarded_target_block_interval_ms(
             self.target_block_interval_ms,
             self.experimental_fast_cadence,
@@ -1005,6 +1020,13 @@ fn read_env_bool(key: &str, default: bool) -> bool {
         .unwrap_or(default)
 }
 
+fn experimental_fast_cadence_profile_allowed(profile: &str) -> bool {
+    matches!(
+        profile,
+        "dev" | "local" | "testnet" | "rehearsal-a" | "rehearsal-b" | "rehearsal-c"
+    )
+}
+
 fn guarded_target_block_interval_ms(candidate: u64, experimental_fast_cadence: bool) -> u64 {
     let consensus = pulsedag_core::CONSENSUS_TARGET_BLOCK_INTERVAL_SECS.saturating_mul(1_000);
     if experimental_fast_cadence {
@@ -1178,7 +1200,7 @@ mod tests {
     }
 
     #[test]
-    fn experimental_flags_keep_fast_cadence_guarded_and_apply_limits() {
+    fn experimental_fast_cadence_cli_enables_local_profile_and_applies_limits() {
         let _guard = env_guard();
         clear_test_env();
         let mut cfg = Config::defaults_for_profile(ConfigProfile::Local);
@@ -1204,21 +1226,147 @@ mod tests {
 
         assert!(cfg.experimental_ghostdag_selection);
         assert_eq!(cfg.consensus_mode, ConsensusMode::GhostdagDev);
-        assert!(!cfg.experimental_fast_cadence);
-        assert_eq!(
-            cfg.target_block_interval_ms,
-            pulsedag_core::CONSENSUS_TARGET_BLOCK_INTERVAL_SECS * 1_000
-        );
-        assert_eq!(
-            cfg.target_block_interval_secs,
-            pulsedag_core::CONSENSUS_TARGET_BLOCK_INTERVAL_SECS
-        );
+        assert!(cfg.experimental_fast_cadence);
+        assert_eq!(cfg.target_block_interval_ms, 250);
+        assert_eq!(cfg.target_block_interval_secs, 1);
         assert_eq!(cfg.max_parallel_tips, 8);
         assert_eq!(cfg.max_merge_set_size, 64);
         assert_eq!(cfg.max_orphan_count, 2048);
         assert_eq!(cfg.max_pending_missing_parents, 1024);
         assert_eq!(cfg.max_block_mass, 2_000_000);
         assert_eq!(cfg.max_template_age_ms, 5_000);
+    }
+
+    #[test]
+    fn experimental_fast_cadence_cli_preserves_env_interval_candidate() {
+        let _guard = env_guard();
+        for (key, value, expected_ms) in [
+            ("PULSEDAG_TARGET_BLOCK_INTERVAL_MS", "250", 250_u64),
+            ("PULSEDAG_TARGET_BLOCK_INTERVAL_SECS", "2", 2_000_u64),
+        ] {
+            clear_test_env();
+            std::env::set_var("PULSEDAG_CONFIG_PROFILE", "local");
+            std::env::set_var(key, value);
+
+            let mut cfg = Config::from_env().expect("conservative base config");
+            assert!(!cfg.experimental_fast_cadence);
+            assert_eq!(
+                cfg.target_block_interval_ms,
+                pulsedag_core::CONSENSUS_TARGET_BLOCK_INTERVAL_SECS * 1_000
+            );
+
+            cfg.apply_cli_args(vec![
+                "--experimental-ghostdag-selection".to_string(),
+                "--experimental-fast-cadence".to_string(),
+            ])
+            .expect("CLI activation must retain the environment interval candidate");
+
+            assert_eq!(cfg.consensus_mode, ConsensusMode::GhostdagDev);
+            assert!(cfg.experimental_fast_cadence);
+            assert_eq!(cfg.target_block_interval_ms, expected_ms);
+            assert_eq!(cfg.target_block_interval_secs, expected_ms.div_ceil(1_000));
+        }
+        clear_test_env();
+    }
+
+    #[test]
+    fn experimental_fast_cadence_env_enables_testnet_profile() {
+        let _guard = env_guard();
+        clear_test_env();
+        std::env::set_var("PULSEDAG_CONFIG_PROFILE", "testnet");
+        std::env::set_var("PULSEDAG_CONSENSUS_MODE", "ghostdag_dev");
+        std::env::set_var("PULSEDAG_EXPERIMENTAL_FAST_CADENCE", "true");
+        std::env::set_var("PULSEDAG_TARGET_BLOCK_INTERVAL_MS", "500");
+
+        let cfg = Config::from_env().expect("explicit testnet experiment");
+        assert_eq!(cfg.consensus_mode, ConsensusMode::GhostdagDev);
+        assert!(cfg.experimental_ghostdag_selection);
+        assert!(cfg.experimental_fast_cadence);
+        assert_eq!(cfg.target_block_interval_ms, 500);
+        assert_eq!(cfg.target_block_interval_secs, 1);
+    }
+
+    #[test]
+    fn experimental_fast_cadence_rejects_private_and_operator_profile_spoofing() {
+        let _guard = env_guard();
+        for profile in ["private", "operator"] {
+            clear_test_env();
+            std::env::set_var("PULSEDAG_CONFIG_PROFILE", profile);
+            std::env::set_var("PULSEDAG_NETWORK_PROFILE", "dev");
+            let mut cfg = Config::from_env().expect("base config must load before CLI override");
+            assert_eq!(cfg.network_profile, "dev");
+            let err = cfg
+                .apply_cli_args(vec![
+                    "--experimental-ghostdag-selection".to_string(),
+                    "--experimental-fast-cadence".to_string(),
+                    "--target-block-interval-ms".to_string(),
+                    "250".to_string(),
+                ])
+                .expect_err("unsafe profile must remain fail-closed");
+            assert!(
+                err.to_string()
+                    .contains("is not allowed for config profile"),
+                "unexpected error: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn experimental_fast_cadence_explicit_cli_network_can_select_allowed_profile() {
+        let _guard = env_guard();
+        clear_test_env();
+        std::env::set_var("PULSEDAG_CONFIG_PROFILE", "operator");
+        let mut cfg = Config::from_env().expect("operator base config");
+        cfg.apply_cli_args(vec![
+            "--network".to_string(),
+            "local".to_string(),
+            "--experimental-ghostdag-selection".to_string(),
+            "--experimental-fast-cadence".to_string(),
+            "--target-block-interval-ms".to_string(),
+            "250".to_string(),
+        ])
+        .expect("explicit CLI network selection may enter an allowed experiment profile");
+        assert_eq!(cfg.network_profile, "local");
+        assert_eq!(cfg.consensus_mode, ConsensusMode::GhostdagDev);
+        assert!(cfg.experimental_fast_cadence);
+        assert_eq!(cfg.target_block_interval_ms, 250);
+    }
+
+    #[test]
+    fn experimental_fast_cadence_direct_private_config_remains_blocked_without_profile_env() {
+        let _guard = env_guard();
+        clear_test_env();
+        let mut cfg = Config::defaults_for_profile(ConfigProfile::Private);
+        let err = cfg
+            .apply_cli_args(vec![
+                "--experimental-ghostdag-selection".to_string(),
+                "--experimental-fast-cadence".to_string(),
+                "--target-block-interval-ms".to_string(),
+                "250".to_string(),
+            ])
+            .expect_err("direct private config must remain fail-closed");
+        assert!(
+            err.to_string()
+                .contains("is not allowed for config profile 'private'"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn experimental_fast_cadence_profile_allowlist_is_explicit() {
+        for profile in [
+            "dev",
+            "local",
+            "testnet",
+            "rehearsal-a",
+            "rehearsal-b",
+            "rehearsal-c",
+        ] {
+            assert!(experimental_fast_cadence_profile_allowed(profile));
+        }
+        for profile in ["private", "operator", "public", "production"] {
+            assert!(!experimental_fast_cadence_profile_allowed(profile));
+        }
     }
 
     #[test]
