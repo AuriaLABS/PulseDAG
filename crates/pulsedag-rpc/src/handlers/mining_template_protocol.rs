@@ -17,8 +17,8 @@ use sha3::{Digest, Keccak256};
 pub(crate) use super::mining_template_legacy::store_template;
 pub use super::mining_template_legacy::StoredMiningTemplate;
 pub(crate) use super::mining_template_legacy::{
-    current_template_state, load_template, template_freshness_window, template_id_for_state,
-    MINING_PROTOCOL_VERSION,
+    current_template_state, load_template, template_freshness_window,
+    template_id_matches_lifecycle, MINING_PROTOCOL_VERSION,
 };
 
 const PROTOCOL_V2_PRE_POW_VERSION: u8 = 0;
