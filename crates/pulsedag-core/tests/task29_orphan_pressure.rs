@@ -1,9 +1,10 @@
 use pulsedag_core::genesis::init_chain_state;
 use pulsedag_core::{
     accept_block_with_result, adopt_ready_orphans, assert_dag_consistent_for_tests,
-    build_candidate_block, build_coinbase_transaction, consensus_difficulty_snapshot, current_ts,
-    dev_mine_header, expected_difficulty, merge_set_digest, missing_block_parents,
-    ordered_dag_digest, preferred_tip_hash, queue_orphan_block, refresh_block_consensus_ids,
+    build_candidate_block, build_coinbase_transaction, classify_orphan_backlog,
+    consensus_difficulty_snapshot, current_ts, dev_mine_header, expected_difficulty,
+    merge_set_digest, missing_block_parents, ordered_dag_digest, preferred_tip_hash,
+    queue_orphan_block, queue_orphan_block_bounded, refresh_block_consensus_ids,
     refresh_block_consensus_ids_with_state, selection_digest, state_digest, AcceptSource, Block,
     BlockAcceptanceResult, ChainState, CONSENSUS_TARGET_BLOCK_INTERVAL_SECS,
 };
@@ -11,6 +12,7 @@ use pulsedag_core::{
 const CHAIN_ID: &str = "task29-orphan-pressure";
 const PRESSURE_BLOCKS: usize = 32;
 const CADENCE_SECS: u64 = 15;
+const TEST_ORPHAN_CAPACITY: usize = 4;
 
 fn mine_next_block(state: &ChainState, timestamp: u64, nonce_seed: u64) -> Block {
     let parent = preferred_tip_hash(state).expect("fixture must have a selected tip");
@@ -84,10 +86,6 @@ fn replay_reverse_orphan_pressure(blocks: &[Block]) -> ChainState {
         assert!(queue_orphan_block(&mut state, block.clone(), missing));
         assert_eq!(state.orphan_blocks.len(), queued + 1);
         assert_eq!(state.orphan_parent_index.len(), queued + 1);
-        assert!(
-            state.orphan_blocks.len() < 512,
-            "pressure fixture must stay bounded"
-        );
     }
 
     assert_eq!(state.orphan_blocks.len(), blocks.len() - 1);
@@ -157,4 +155,48 @@ fn accelerated_reverse_delivery_drains_bounded_orphan_pressure_and_converges() {
     );
     assert_dag_consistent_for_tests(&ordered);
     assert_dag_consistent_for_tests(&pressured);
+}
+
+#[test]
+fn configured_orphan_capacity_evicts_overflow_and_keeps_indexes_bounded() {
+    let mut state = init_chain_state(format!("{CHAIN_ID}-capacity"));
+    let mut total_evicted = 0usize;
+
+    for index in 0..TEST_ORPHAN_CAPACITY + 2 {
+        let missing_parent = format!("task29-missing-parent-{index}");
+        let block = build_candidate_block(
+            vec![missing_parent.clone()],
+            index as u64 + 1,
+            expected_difficulty(&state),
+            vec![build_coinbase_transaction(
+                &format!("task29-capacity-miner-{index}"),
+                50,
+                90_000 + index as u64,
+            )],
+        );
+        let result = queue_orphan_block_bounded(
+            &mut state,
+            block,
+            vec![missing_parent],
+            TEST_ORPHAN_CAPACITY,
+            u64::MAX,
+        );
+        total_evicted = total_evicted.saturating_add(result.evicted);
+        assert!(state.orphan_blocks.len() <= TEST_ORPHAN_CAPACITY);
+        assert!(state.orphan_parent_index.len() <= TEST_ORPHAN_CAPACITY);
+    }
+
+    assert_eq!(total_evicted, 2);
+    assert_eq!(state.orphan_blocks.len(), TEST_ORPHAN_CAPACITY);
+    assert_eq!(state.orphan_parent_index.len(), TEST_ORPHAN_CAPACITY);
+    assert_eq!(state.orphan_missing_parents.len(), TEST_ORPHAN_CAPACITY);
+
+    let classification = classify_orphan_backlog(&state);
+    assert_eq!(
+        classification.waiting_missing_parent,
+        TEST_ORPHAN_CAPACITY
+    );
+    assert_eq!(classification.retryable_ready, 0);
+    assert_eq!(classification.stale_missing_parent_entries, 0);
+    assert_eq!(classification.unindexed_missing_parent_entries, 0);
 }
