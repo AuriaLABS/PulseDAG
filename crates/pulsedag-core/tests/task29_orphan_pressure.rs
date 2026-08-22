@@ -192,10 +192,7 @@ fn configured_orphan_capacity_evicts_overflow_and_keeps_indexes_bounded() {
     assert_eq!(state.orphan_missing_parents.len(), TEST_ORPHAN_CAPACITY);
 
     let classification = classify_orphan_backlog(&state);
-    assert_eq!(
-        classification.waiting_missing_parent,
-        TEST_ORPHAN_CAPACITY
-    );
+    assert_eq!(classification.waiting_missing_parent, TEST_ORPHAN_CAPACITY);
     assert_eq!(classification.retryable_ready, 0);
     assert_eq!(classification.stale_missing_parent_entries, 0);
     assert_eq!(classification.unindexed_missing_parent_entries, 0);
