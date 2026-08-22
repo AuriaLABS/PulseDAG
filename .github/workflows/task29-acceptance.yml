@@ -45,3 +45,6 @@ jobs:
 
       - name: Controlled runtime cadence convergence envelope
         run: cargo test --locked -p pulsedag-core --test task29_high_cadence_envelope
+
+      - name: Multi-miner template identity and bounded retention
+        run: cargo test --locked -p pulsedag-rpc task29_
