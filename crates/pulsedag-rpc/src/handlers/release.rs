@@ -34,7 +34,8 @@ pub async fn get_release_info() -> Json<ApiResponse<ReleaseInfoData>> {
         git_commit: std::option_env!("GIT_COMMIT").map(|v| v.to_string()),
         build_profile: std::option_env!("PROFILE").map(|v| v.to_string()),
         capabilities: vec![
-            "wallets".into(),
+            "keyless_node".into(),
+            "signed_transaction_relay".into(),
             "external_miner_protocol".into(),
             "mempool".into(),
             "explorer_api".into(),
@@ -51,9 +52,9 @@ pub async fn get_release_info() -> Json<ApiResponse<ReleaseInfoData>> {
             "/blocks".into(),
             "/txs".into(),
             "/address/:address".into(),
+            "/tx/build".into(),
+            "/tx/submit".into(),
             "/mine".into(),
-            "/wallet/new".into(),
-            "/wallet/transfer".into(),
             "/mining/template".into(),
             "/mining/submit".into(),
             "/snapshot".into(),
@@ -147,6 +148,19 @@ mod tests {
         assert!(dashboard_json.contains("PulseDAG Operator Overview (v2.2)"));
         assert!(datasource.contains("PulseDAG-Prometheus"));
     }
+
+    #[test]
+    fn release_metadata_reports_keyless_signed_relay_surface() {
+        let release = include_str!("release.rs");
+        assert!(release.contains("\"keyless_node\""));
+        assert!(release.contains("\"signed_transaction_relay\""));
+        assert!(release.contains("\"/tx/build\""));
+        assert!(release.contains("\"/tx/submit\""));
+        assert!(!release.contains("\"wallets\""));
+        assert!(!release.contains("\"/wallet/new\""));
+        assert!(!release.contains("\"/wallet/transfer\""));
+    }
+
     #[test]
     fn release_metadata_reports_kheavyhash_and_not_sha256d() {
         let release = include_str!("release.rs");
