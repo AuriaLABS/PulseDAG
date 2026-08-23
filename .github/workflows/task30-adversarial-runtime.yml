@@ -207,7 +207,7 @@ jobs:
           retention-days: 14
 
   signed-relay-runtime:
-    name: 5N signed relay duplicate and capacity runtime
+    name: 5N signed relay duplicate conflict stale capacity runtime
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
@@ -236,7 +236,7 @@ jobs:
       - name: Run signed transaction relay runtime drill
         run: bash scripts/v2_3_0_mempool_tx_relay_evidence.sh
 
-      - name: Enforce relay, duplicate and capacity evidence
+      - name: Enforce relay, duplicate, conflict, stale and capacity evidence
         if: success()
         run: |
           set -euo pipefail
@@ -246,6 +246,8 @@ jobs:
             .node_count == 5 and
             .relay_converged == true and
             .duplicate_suppression == true and
+            .conflicting_transaction_rejection == true and
+            .stale_transaction_rejection == true and
             .capacity_rejection_taxonomy == true and
             .confirmation_cleanup == true and
             .deterministic_final_mempool_sets == true and

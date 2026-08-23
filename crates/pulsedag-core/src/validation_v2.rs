@@ -5,7 +5,7 @@ use crate::{
     state::ChainState,
     tx::{compute_txid_v2, verify_transaction_signatures_v2},
     types::Transaction,
-    validation::tx_output_amount,
+    validation::{transaction_is_confirmed, tx_output_amount},
 };
 
 /// Validate a transaction against the frozen v2 chain-bound transaction domain.
@@ -38,6 +38,9 @@ pub fn validate_transaction_v2(
 
     if compute_txid_v2(tx, chain_id)? != tx.txid {
         return Err(PulseError::InvalidTxid);
+    }
+    if transaction_is_confirmed(&tx.txid, state) {
+        return Err(PulseError::TxAlreadyExists);
     }
 
     let total_input = tx.inputs.iter().try_fold(0_u64, |acc, input| {

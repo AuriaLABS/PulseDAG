@@ -121,6 +121,12 @@ pub fn rebuild_state_from_blocks(
     Ok(state)
 }
 
+fn conflict_diagnostic_block_hash(entry: &str) -> Option<&str> {
+    entry
+        .split_whitespace()
+        .find_map(|part| part.strip_prefix("block="))
+}
+
 /// Compact a fully materialized snapshot so its in-memory DAG retained set
 /// exactly matches the blocks preserved by storage pruning.
 ///
@@ -317,7 +323,13 @@ pub fn compact_snapshot_to_retained_blocks(
             "ordered DAG tip would be removed by snapshot compaction".to_string(),
         ));
     }
-    snapshot.dag.ordered_dag_conflict_diagnostics.clear();
+    snapshot
+        .dag
+        .ordered_dag_conflict_diagnostics
+        .retain(|entry| {
+            conflict_diagnostic_block_hash(entry)
+                .is_some_and(|block_hash| retained.contains(block_hash))
+        });
     snapshot.orphan_blocks.clear();
     snapshot.orphan_missing_parents.clear();
     snapshot.orphan_parent_index.clear();

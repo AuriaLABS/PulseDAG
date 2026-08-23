@@ -127,6 +127,39 @@ pub fn missing_transaction_inputs(tx: &Transaction, state: &ChainState) -> Vec<O
         .collect()
 }
 
+fn ordered_block_skipped_transaction(txid: &str, block_hash: &str, state: &ChainState) -> bool {
+    let marker = format!(" block={block_hash} tx={txid} skipped_conflict");
+    state
+        .dag
+        .ordered_dag_conflict_diagnostics
+        .iter()
+        .any(|entry| entry.contains(&marker))
+}
+
+/// Return true only when this canonical transaction id is present in the
+/// authoritative state order and was actually applied by replay. Accepted
+/// side-DAG blocks and replay-skipped conflict losers are not confirmations.
+pub fn transaction_is_confirmed(txid: &str, state: &ChainState) -> bool {
+    let ordered_replay = state.dag.consensus_mode.ghostdag_metadata_active()
+        || state.dag.ordering_version == crate::ordering_v2::GHOSTDAG_V1_ORDERING_VERSION;
+    let canonical_order = if ordered_replay {
+        &state.dag.ordered_dag
+    } else {
+        &state.dag.selected_chain
+    };
+
+    canonical_order
+        .iter()
+        .filter_map(|hash| state.dag.blocks.get(hash))
+        .any(|block| {
+            block
+                .transactions
+                .iter()
+                .any(|confirmed| confirmed.txid == txid)
+                && (!ordered_replay || !ordered_block_skipped_transaction(txid, &block.hash, state))
+        })
+}
+
 pub fn validate_transaction(tx: &Transaction, state: &ChainState) -> Result<(), PulseError> {
     if tx.outputs.is_empty() {
         return Err(PulseError::InvalidTransaction("no outputs".into()));
@@ -145,6 +178,9 @@ pub fn validate_transaction(tx: &Transaction, state: &ChainState) -> Result<(), 
     }
     if compute_txid(tx) != tx.txid {
         return Err(PulseError::InvalidTxid);
+    }
+    if transaction_is_confirmed(&tx.txid, state) {
+        return Err(PulseError::TxAlreadyExists);
     }
 
     let total_input = tx.inputs.iter().try_fold(0_u64, |acc, input| {

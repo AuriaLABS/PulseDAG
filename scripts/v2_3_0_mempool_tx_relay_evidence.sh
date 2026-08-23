@@ -30,7 +30,7 @@ capture_node(){ local stage="$1" i url; for i in $(seq 1 "$NODE_COUNT"); do url=
 cleanup(){ local rc=$? i; set +e; for pid in "${NODE_PIDS[@]:-}"; do kill "$pid" 2>/dev/null || true; done; for pid in "${NODE_PIDS[@]:-}"; do wait "$pid" 2>/dev/null || true; done; for i in $(seq 1 "$NODE_COUNT"); do pulsedag_wait_port_closed "$((BASE_RPC_PORT+i))" 20 || true; pulsedag_wait_port_closed "$((BASE_P2P_PORT+i))" 20 || true; done; if [[ ! -f "$OUT_DIR/evidence_manifest.json" ]]; then write_manifest FAIL; fi; pulsedag_write_checksums "$OUT_DIR" || true; exit "$rc"; }
 trap cleanup EXIT
 write_manifest(){
-  local result="$1" end_utc final_digest="" per_nodes="[]" submitted="[]" confirmed="[]" relay=false dedupe=false capacity=false cleanup=false deterministic=false topology=false duplicate_evidence="{}" rejection="{}" confirmation="[]" topology_evidence="[]"
+  local result="$1" end_utc final_digest="" per_nodes="[]" submitted="[]" confirmed="[]" relay=false dedupe=false conflict=false stale=false capacity=false cleanup=false deterministic=false topology=false duplicate_evidence="{}" conflict_evidence="{}" stale_evidence="{}" rejection="{}" confirmation="[]" topology_evidence="[]"
   end_utc="$(date -u +%FT%TZ)"
   [[ -f "$OUT_DIR/final_mempool_digest.txt" ]] && final_digest="$(cat "$OUT_DIR/final_mempool_digest.txt")"
   [[ -f "$OUT_DIR/per_node_final.json" ]] && per_nodes="$(cat "$OUT_DIR/per_node_final.json")"
@@ -38,11 +38,15 @@ write_manifest(){
   [[ -f "$OUT_DIR/confirmed_txids.json" ]] && confirmed="$(cat "$OUT_DIR/confirmed_txids.json")"
   [[ -f "$OUT_DIR/relay_converged.proof" ]] && relay=true
   [[ -f "$OUT_DIR/duplicate_suppression.proof" ]] && dedupe=true
+  [[ -f "$OUT_DIR/conflicting_transaction_rejection.proof" ]] && conflict=true
+  [[ -f "$OUT_DIR/stale_transaction_rejection.proof" ]] && stale=true
   [[ -f "$OUT_DIR/capacity_rejection_taxonomy.proof" ]] && capacity=true
   [[ -f "$OUT_DIR/confirmation_cleanup.proof" ]] && cleanup=true
   [[ -f "$OUT_DIR/deterministic_final_mempool_sets.proof" ]] && deterministic=true
   [[ -f "$OUT_DIR/topology_stable.proof" ]] && topology=true
   [[ -f "$OUT_DIR/duplicate_evidence.json" ]] && duplicate_evidence="$(cat "$OUT_DIR/duplicate_evidence.json")"
+  [[ -f "$OUT_DIR/conflict_evidence.json" ]] && conflict_evidence="$(cat "$OUT_DIR/conflict_evidence.json")"
+  [[ -f "$OUT_DIR/stale_evidence.json" ]] && stale_evidence="$(cat "$OUT_DIR/stale_evidence.json")"
   [[ -f "$OUT_DIR/rejection_evidence.json" ]] && rejection="$(cat "$OUT_DIR/rejection_evidence.json")"
   [[ -f "$OUT_DIR/confirmation_evidence.json" ]] && confirmation="$(cat "$OUT_DIR/confirmation_evidence.json")"
   [[ -f "$OUT_DIR/topology_evidence.json" ]] && topology_evidence="$(cat "$OUT_DIR/topology_evidence.json")"
@@ -50,10 +54,10 @@ write_manifest(){
   if ((${#FAILURES[@]})); then failures_json="$(printf '%s\n' "${FAILURES[@]}" | jq -R . | jq -s .)"; fi
   jq -n --arg result "$result" --arg commit "$(git rev-parse HEAD)" --arg start "$START_UTC" --arg end "$end_utc" --arg digest "$final_digest" \
     --argjson node_count "$NODE_COUNT" --argjson submitted "$submitted" --argjson confirmed "$confirmed" --argjson per_nodes "$per_nodes" \
-    --argjson relay "$relay" --argjson dedupe "$dedupe" --argjson capacity "$capacity" --argjson cleanup "$cleanup" --argjson deterministic "$deterministic" --argjson topology "$topology" \
-    --argjson duplicate_evidence "$duplicate_evidence" --argjson rejection "$rejection" --argjson confirmation "$confirmation" --argjson topology_evidence "$topology_evidence" \
+    --argjson relay "$relay" --argjson dedupe "$dedupe" --argjson conflict "$conflict" --argjson stale "$stale" --argjson capacity "$capacity" --argjson cleanup "$cleanup" --argjson deterministic "$deterministic" --argjson topology "$topology" \
+    --argjson duplicate_evidence "$duplicate_evidence" --argjson conflict_evidence "$conflict_evidence" --argjson stale_evidence "$stale_evidence" --argjson rejection "$rejection" --argjson confirmation "$confirmation" --argjson topology_evidence "$topology_evidence" \
     --argjson failures "$failures_json" \
-    '{result:$result,evidence_kind:"runtime",candidate_commit:$commit,node_count:$node_count,relay_converged:$relay,duplicate_suppression:$dedupe,capacity_rejection_taxonomy:$capacity,confirmation_cleanup:$cleanup,deterministic_final_mempool_sets:$deterministic,submitted_txids:$submitted,confirmed_txids:$confirmed,final_mempool_digest:$digest,public_testnet_ready:false,per_node_final:$per_nodes,topology_status:{required_peers_per_node:4,stable:$topology,nodes:$topology_evidence},duplicate_evidence:$duplicate_evidence,rejection:$rejection,confirmation_evidence:$confirmation,timestamps:{start_utc:$start,end_utc:$end},failure_reasons:$failures}' > "$OUT_DIR/evidence_manifest.json"
+    '{result:$result,evidence_kind:"runtime",candidate_commit:$commit,node_count:$node_count,relay_converged:$relay,duplicate_suppression:$dedupe,conflicting_transaction_rejection:$conflict,stale_transaction_rejection:$stale,capacity_rejection_taxonomy:$capacity,confirmation_cleanup:$cleanup,deterministic_final_mempool_sets:$deterministic,submitted_txids:$submitted,confirmed_txids:$confirmed,final_mempool_digest:$digest,public_testnet_ready:false,per_node_final:$per_nodes,topology_status:{required_peers_per_node:4,stable:$topology,nodes:$topology_evidence},duplicate_evidence:$duplicate_evidence,conflict_evidence:$conflict_evidence,stale_evidence:$stale_evidence,rejection:$rejection,confirmation_evidence:$confirmation,timestamps:{start_utc:$start,end_utc:$end},failure_reasons:$failures}' > "$OUT_DIR/evidence_manifest.json"
 }
 
 log "building release binaries"
@@ -159,6 +163,36 @@ else
   fail "duplicate submit did not prove bounded suppression without retransmission: code=$dupe_code message=$dupe_msg publish_unchanged=$publish_unchanged"
 fi
 
+# With only the original transaction resident, build a distinct transaction
+# from the same source on n3. It must be rejected as a mempool double spend and
+# must not be published or appear on any node.
+post_json "$(rpc_url 3)/wallet/new" '{}' "$OUT_DIR/tx/conflict-recipient-wallet.json"
+CONFLICT_TO="$(jq -r '.data.address' "$OUT_DIR/tx/conflict-recipient-wallet.json")"
+CONFLICT_BODY="{\"from\":\"$FROM\",\"to\":\"$CONFLICT_TO\",\"amount\":2,\"fee\":1,\"private_key\":\"$PRIV\"}"
+capture_node before_conflict
+post_json "$(rpc_url 3)/wallet/transfer" "$CONFLICT_BODY" "$OUT_DIR/tx/conflict-submit-n3.json" || true
+sleep 2
+capture_node after_conflict
+conflict_code="$(jq -r '.error.code // ""' "$OUT_DIR/tx/conflict-submit-n3.json")"
+conflict_msg="$(jq -r '.error.message // ""' "$OUT_DIR/tx/conflict-submit-n3.json")"
+conflict_publish_unchanged=true; conflict_nodes="[]"
+for i in $(seq 1 "$NODE_COUNT"); do
+  mempool_file="$OUT_DIR/endpoints/after_conflict/n${i}-mempool.json"
+  tx_count="$(jq -r '.data.transaction_count // -1' "$mempool_file")"
+  original_count="$(jq -r --arg txid "$TXID" '(.data.txids // []) | map(select(. == $txid)) | length' "$mempool_file")"
+  before_publish="$(jq -r '.data.publish_attempts // 0' "$OUT_DIR/endpoints/before_conflict/n${i}-p2p-status.json")"
+  after_publish="$(jq -r '.data.publish_attempts // 0' "$OUT_DIR/endpoints/after_conflict/n${i}-p2p-status.json")"
+  [[ "$after_publish" == "$before_publish" ]] || conflict_publish_unchanged=false
+  [[ "$tx_count" == 1 && "$original_count" == 1 ]] || fail "conflict attempt changed n$i mempool: transaction_count=$tx_count original_count=$original_count"
+  conflict_nodes="$(jq --arg node "n$i" --argjson tx_count "$tx_count" --argjson original_count "$original_count" --argjson publish_before "$before_publish" --argjson publish_after "$after_publish" '. + [{node:$node,transaction_count:$tx_count,original_tx_count:$original_count,publish_attempts_before:$publish_before,publish_attempts_after:$publish_after}]' <<<"$conflict_nodes")"
+done
+if [[ "$conflict_code" == "TX_REJECTED" && "$conflict_msg" == *"double spend"* && "$conflict_publish_unchanged" == true ]]; then
+  jq -n --arg via n3 --arg taxonomy double_spend --slurpfile response "$OUT_DIR/tx/conflict-submit-n3.json" --argjson nodes "$conflict_nodes" '{submitted_via:$via,taxonomy:$taxonomy,response:$response[0],per_node:$nodes,publish_attempts_unchanged:true,propagation_observed:false,bounded:true}' > "$OUT_DIR/conflict_evidence.json"
+  touch "$OUT_DIR/conflicting_transaction_rejection.proof"
+else
+  fail "conflicting transaction was not rejected locally without propagation: code=$conflict_code message=$conflict_msg publish_unchanged=$conflict_publish_unchanged"
+fi
+
 post_json "$(rpc_url 1)/wallet/new" '{}' "$OUT_DIR/tx/recipient2-wallet.json"; TO2="$(jq -r '.data.address' "$OUT_DIR/tx/recipient2-wallet.json")"
 post_json "$(rpc_url 1)/wallet/transfer" "{\"from\":\"$FROM2\",\"to\":\"$TO2\",\"amount\":1,\"fee\":1,\"private_key\":\"$PRIV2\"}" "$OUT_DIR/tx/capacity-fill.json" || true
 post_json "$(rpc_url 1)/wallet/new" '{}' "$OUT_DIR/tx/recipient3-wallet.json"; TO3="$(jq -r '.data.address' "$OUT_DIR/tx/recipient3-wallet.json")"
@@ -199,6 +233,34 @@ else
 fi
 jq -n --arg txid "$TXID" '[$txid]' > "$OUT_DIR/confirmed_txids.json"
 echo "$confirmations" > "$OUT_DIR/confirmation_evidence.json"
+
+# Reinject the exact confirmed transaction on n4. A confirmed txid is stale for
+# mempool admission: it must classify as an existing transaction, never become
+# an orphan, and never be republished to peers.
+capture_node before_stale
+post_json "$(rpc_url 4)/tx/submit" "$DUP_BODY" "$OUT_DIR/tx/stale-submit-n4.json" || true
+sleep 2
+capture_node after_stale
+stale_code="$(jq -r '.error.code // ""' "$OUT_DIR/tx/stale-submit-n4.json")"
+stale_msg="$(jq -r '.error.message // ""' "$OUT_DIR/tx/stale-submit-n4.json")"
+stale_publish_unchanged=true; stale_nodes="[]"
+for i in $(seq 1 "$NODE_COUNT"); do
+  mempool_file="$OUT_DIR/endpoints/after_stale/n${i}-mempool.json"
+  original_count="$(jq -r --arg txid "$TXID" '(.data.txids // []) | map(select(. == $txid)) | length' "$mempool_file")"
+  orphan_count="$(jq -r '.data.orphan_transaction_count // -1' "$mempool_file")"
+  before_publish="$(jq -r '.data.publish_attempts // 0' "$OUT_DIR/endpoints/before_stale/n${i}-p2p-status.json")"
+  after_publish="$(jq -r '.data.publish_attempts // 0' "$OUT_DIR/endpoints/after_stale/n${i}-p2p-status.json")"
+  [[ "$after_publish" == "$before_publish" ]] || stale_publish_unchanged=false
+  [[ "$original_count" == 0 ]] || fail "stale confirmed tx re-entered n$i mempool"
+  [[ "$orphan_count" == 0 ]] || fail "stale confirmed tx contaminated n$i orphan pool: orphan_count=$orphan_count"
+  stale_nodes="$(jq --arg node "n$i" --argjson original_count "$original_count" --argjson orphan_count "$orphan_count" --argjson publish_before "$before_publish" --argjson publish_after "$after_publish" '. + [{node:$node,confirmed_tx_mempool_count:$original_count,orphan_transaction_count:$orphan_count,publish_attempts_before:$publish_before,publish_attempts_after:$publish_after}]' <<<"$stale_nodes")"
+done
+if [[ "$stale_code" == "TX_REJECTED" && "$stale_msg" == *"already exists"* && "$stale_publish_unchanged" == true ]]; then
+  jq -n --arg via n4 --arg taxonomy confirmed_transaction_already_exists --slurpfile response "$OUT_DIR/tx/stale-submit-n4.json" --argjson nodes "$stale_nodes" '{resubmitted_via:$via,taxonomy:$taxonomy,response:$response[0],per_node:$nodes,publish_attempts_unchanged:true,retransmission_observed:false,orphan_reentry_observed:false,bounded:true}' > "$OUT_DIR/stale_evidence.json"
+  touch "$OUT_DIR/stale_transaction_rejection.proof"
+else
+  fail "stale confirmed transaction was not rejected without orphaning/republication: code=$stale_code message=$stale_msg publish_unchanged=$stale_publish_unchanged"
+fi
 
 capture_node final
 for i in $(seq 1 "$NODE_COUNT"); do pulsedag_json_txids_sorted "$OUT_DIR/endpoints/final/n${i}-mempool.json" > "$OUT_DIR/sets/n${i}-final-txids.txt"; digest=$(pulsedag_sha256_file "$OUT_DIR/sets/n${i}-final-txids.txt"); jq -n --arg node "n$i" --arg digest "$digest" --slurpfile txids <(jq -R . "$OUT_DIR/sets/n${i}-final-txids.txt" | jq -s .) '{node:$node,digest:$digest,txids:$txids[0]}' > "$OUT_DIR/sets/n${i}.json"; done

@@ -65,6 +65,9 @@ jobs:
       - name: Stable v2 submission identity and fail-closed domain
         run: cargo test --locked -p pulsedag-core tx_submission::tests::
 
+      - name: Confirmed stale transaction admission is duplicate in v1 and v2
+        run: cargo test --locked -p pulsedag-core --test task30_stale_tx_admission
+
       - name: Public signed-relay and mutable RPC abuse bounds
         run: cargo test --locked -p pulsedag-rpc --test task30_public_relay_bounds
 
