@@ -1,4 +1,4 @@
-# pulsedag-miner v2.3.0
+# pulsedag-miner v2.4.0
 
 `pulsedag-miner` is the official external standalone miner for PulseDAG.
 
@@ -6,7 +6,9 @@ Canonical references:
 
 - [`docs/POW_SPEC_FINAL.md`](../../docs/POW_SPEC_FINAL.md)
 - [`docs/POW_CURRENT_PATH.md`](../../docs/POW_CURRENT_PATH.md)
-- [`docs/INSTALL_BINARIES_V2_3_0.md`](../../docs/INSTALL_BINARIES_V2_3_0.md)
+- [`docs/DIFFICULTY_RETARGET_V2_4_0.md`](../../docs/DIFFICULTY_RETARGET_V2_4_0.md)
+
+The final v2.4.0 packaged-binary installation guide and artifact digests are frozen only after Task31 exact-candidate validation.
 
 ## Scope
 
@@ -33,24 +35,18 @@ cargo run --locked -p pulsedag-miner -- \
 
 ## Run a release binary
 
-Official archives use the pattern:
+Final v2.4.0 archives will use the pattern:
 
-`pulsedag-miner-v2.3.0-<target>.*`
+`pulsedag-miner-v2.4.0-<target>.*`
 
-Linux example:
+Example after a candidate is explicitly approved and packaged:
 
 ```bash
-tar -xzf pulsedag-miner-v2.3.0-x86_64-unknown-linux-gnu.tar.gz
-./pulsedag-miner-v2.3.0-x86_64-unknown-linux-gnu/pulsedag-miner --help
-./pulsedag-miner-v2.3.0-x86_64-unknown-linux-gnu/pulsedag-miner \
-  --node http://127.0.0.1:8080 \
-  --miner-address YOUR_ADDRESS \
-  --threads 4 \
-  --loop \
-  --sleep-ms 1500
+tar -xzf pulsedag-miner-v2.4.0-x86_64-unknown-linux-gnu.tar.gz
+./pulsedag-miner-v2.4.0-x86_64-unknown-linux-gnu/pulsedag-miner --help
 ```
 
-Each archive is accompanied by a `.sha256` checksum and `.json` provenance manifest. The release binary runs independently of the source tree and does not require Cargo.
+Each approved archive requires a `.sha256` checksum and provenance manifest. The release binary runs independently of the source tree and does not require Cargo.
 
 ## Supported flags
 
@@ -97,8 +93,8 @@ where `T` is the effective thread count. This limits obvious overlap and preserv
 scripts/release/standalone_operator_smoke.sh --miner-address YOUR_ADDRESS
 ```
 
-This validates packaged standalone artifacts and a short node-plus-external-miner flow.
+This validates packaged standalone artifacts and a short node-plus-external-miner flow when run against the exact candidate package set.
 
 ## Release boundary
 
-The repository is at `v2.3.0`, but tag creation and GitHub Release publication still require a separate final private-testnet release decision. This guide does not authorize a public-testnet launch.
+The repository version is `v2.4.0`, but Task31 remains `PENDING_EXACT_CANDIDATE_EVIDENCE`. Tag creation and GitHub Release publication are not authorized, and this guide does not authorize a public-testnet launch, Day 0, default high cadence or smart contracts.
