@@ -4,8 +4,11 @@ use crate::{
     apply::apply_transaction,
     errors::PulseError,
     genesis::init_chain_state,
+    genesis_v2::init_chain_state_v2,
     ordering_v2::{derive_ordered_dag_v2, OrderedDagV2, GHOSTDAG_V1_ORDERING_VERSION},
+    protocol::{BLOCK_HEADER_VERSION_V1, BLOCK_HEADER_VERSION_V2},
     state::{ChainState, UtxoState},
+    tx::{TRANSACTION_VERSION_V1, TRANSACTION_VERSION_V2},
     types::Hash,
 };
 
@@ -24,6 +27,47 @@ pub struct StateReplayV2 {
     pub utxo: UtxoState,
     pub ordered_dag: OrderedDagV2,
     pub diagnostics: StateReplayV2Diagnostics,
+}
+
+fn replay_base_state_for_genesis(state: &ChainState) -> Result<ChainState, PulseError> {
+    let genesis = state
+        .dag
+        .blocks
+        .get(&state.dag.genesis_hash)
+        .ok_or_else(|| {
+            PulseError::NonDeterministicState("v2 replay genesis block missing".into())
+        })?;
+    let first_tx = genesis.transactions.first().ok_or_else(|| {
+        PulseError::NonDeterministicState("v2 replay genesis transaction missing".into())
+    })?;
+    if genesis
+        .transactions
+        .iter()
+        .any(|tx| tx.version != first_tx.version)
+    {
+        return Err(PulseError::NonDeterministicState(
+            "mixed transaction versions inside genesis are not supported".into(),
+        ));
+    }
+
+    match (genesis.header.version, first_tx.version) {
+        (BLOCK_HEADER_VERSION_V1, TRANSACTION_VERSION_V1) => {
+            Ok(init_chain_state(state.chain_id.clone()))
+        }
+        (BLOCK_HEADER_VERSION_V2, TRANSACTION_VERSION_V2) => {
+            let rebuilt = init_chain_state_v2(state.chain_id.clone())?;
+            if rebuilt.dag.genesis_hash != state.dag.genesis_hash {
+                return Err(PulseError::NonDeterministicState(format!(
+                    "chain-bound v2 genesis mismatch: expected {}, rebuilt {}",
+                    state.dag.genesis_hash, rebuilt.dag.genesis_hash
+                )));
+            }
+            Ok(rebuilt)
+        }
+        (header_version, transaction_version) => Err(PulseError::NonDeterministicState(format!(
+            "unsupported mixed genesis protocol versions: header={header_version} transaction={transaction_version}"
+        ))),
+    }
 }
 
 /// Replay the reserved v2.4.0 authoritative DAG order with transaction-level
@@ -45,7 +89,7 @@ pub fn rebuild_authoritative_state_v2(state: &ChainState) -> Result<StateReplayV
         ))
     })?;
 
-    let mut rebuilt = init_chain_state(state.chain_id.clone());
+    let mut rebuilt = replay_base_state_for_genesis(state)?;
     rebuilt.dag.consensus_mode = state.dag.consensus_mode;
     rebuilt.dag.selected_parent_policy = state.dag.selected_parent_policy;
 
@@ -291,6 +335,39 @@ mod tests {
             .insert("merge".into(), vec!["loser-block".into()]);
 
         state
+    }
+
+    #[test]
+    fn clean_chain_bound_v2_genesis_replays_from_v2_utxo() {
+        let state =
+            crate::genesis_v2::init_chain_state_v2("pulsedag-private-v2.4.0".to_string()).unwrap();
+        let replay = rebuild_authoritative_state_v2(&state).unwrap();
+        let expected_root = state.utxo.compute_state_root().unwrap();
+        let genesis_txid = state.dag.blocks[&state.dag.genesis_hash].transactions[0]
+            .txid
+            .clone();
+
+        assert_eq!(replay.diagnostics.state_root, expected_root);
+        assert!(replay
+            .utxo
+            .utxos
+            .keys()
+            .any(|outpoint| outpoint.txid == genesis_txid));
+        verify_authoritative_state_snapshot_v2(&state).unwrap();
+    }
+
+    #[test]
+    fn mixed_genesis_protocol_versions_fail_closed() {
+        let mut state =
+            crate::genesis_v2::init_chain_state_v2("pulsedag-private-v2.4.0".to_string()).unwrap();
+        let genesis = state.dag.genesis_hash.clone();
+        state.dag.blocks.get_mut(&genesis).unwrap().header.version = BLOCK_HEADER_VERSION_V1;
+
+        let error = rebuild_authoritative_state_v2(&state)
+            .expect_err("mixed genesis protocol versions must fail closed");
+        assert!(error
+            .to_string()
+            .contains("mixed genesis protocol versions"));
     }
 
     #[test]

@@ -1,14 +1,10 @@
 use anyhow::{bail, Result};
 use pulsedag_core::{
-    finality_v2::GHOSTDAG_V1_FINALITY_POLICY_VERSION,
-    genesis::init_chain_state,
-    genesis_v2::init_chain_state_v2,
-    ConsensusMode, ProtocolActivationIdentity, CONSENSUS_METADATA_SCHEMA_VERSION,
-    GHOSTDAG_V1_ORDERING_VERSION,
+    finality_v2::GHOSTDAG_V1_FINALITY_POLICY_VERSION, genesis::init_chain_state,
+    genesis_v2::init_chain_state_v2, ConsensusMode, ProtocolActivationIdentity,
+    CONSENSUS_METADATA_SCHEMA_VERSION, GHOSTDAG_V1_ORDERING_VERSION,
 };
-use pulsedag_p2p::messages::{
-    ProtocolCapabilitiesV1, P2P_PROTOCOL_CAPABILITIES_VERSION,
-};
+use pulsedag_p2p::messages::{ProtocolCapabilitiesV1, P2P_PROTOCOL_CAPABILITIES_VERSION};
 
 pub const STARTUP_PROTOCOL_MODE_ENV: &str = "PULSEDAG_PROTOCOL_CONSENSUS_MODE";
 
@@ -102,9 +98,9 @@ fn select_startup_protocol_for_mode(
                 supports_consensus_metadata: true,
                 high_cadence_allowed: false,
             };
-            capabilities
-                .validate_shape()
-                .map_err(|error| anyhow::anyhow!("invalid activated-v2 startup capabilities: {error:?}"))?;
+            capabilities.validate_shape().map_err(|error| {
+                anyhow::anyhow!("invalid activated-v2 startup capabilities: {error:?}")
+            })?;
             Ok(StartupProtocolSelection {
                 mode,
                 restore_identity: Some(identity),
@@ -117,9 +113,7 @@ fn select_startup_protocol_for_mode(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pulsedag_core::{
-        ProtocolConsensusMode, BLOCK_HEADER_VERSION_V2, TRANSACTION_VERSION_V2,
-    };
+    use pulsedag_core::{ProtocolConsensusMode, BLOCK_HEADER_VERSION_V2, TRANSACTION_VERSION_V2};
 
     #[test]
     fn legacy_selection_preserves_current_restore_behavior() {
@@ -157,8 +151,14 @@ mod tests {
         let capabilities = selected.local_capabilities.as_ref().unwrap();
 
         assert_eq!(identity.consensus_mode, ProtocolConsensusMode::GhostdagV1);
-        assert_eq!(identity.transaction_protocol_version, TRANSACTION_VERSION_V2);
-        assert_eq!(identity.block_header_protocol_version, BLOCK_HEADER_VERSION_V2);
+        assert_eq!(
+            identity.transaction_protocol_version,
+            TRANSACTION_VERSION_V2
+        );
+        assert_eq!(
+            identity.block_header_protocol_version,
+            BLOCK_HEADER_VERSION_V2
+        );
         assert_eq!(capabilities.protocol_identity, *identity);
         assert!(capabilities.supports_dag_frontier);
         assert!(capabilities.supports_consensus_metadata);
@@ -177,7 +177,10 @@ mod tests {
 
     #[test]
     fn startup_mode_parser_is_fail_closed() {
-        assert_eq!(StartupProtocolMode::parse("legacy").unwrap(), StartupProtocolMode::Legacy);
+        assert_eq!(
+            StartupProtocolMode::parse("legacy").unwrap(),
+            StartupProtocolMode::Legacy
+        );
         assert_eq!(
             StartupProtocolMode::parse("ghostdag_v1").unwrap(),
             StartupProtocolMode::GhostdagV1

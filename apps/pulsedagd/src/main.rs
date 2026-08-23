@@ -3,6 +3,7 @@ mod app_state;
 mod block_protocol;
 mod block_request;
 mod config;
+mod startup_protocol;
 
 use std::{
     collections::{BTreeMap, BTreeSet, HashSet},
@@ -54,17 +55,7 @@ use pulsedag_rpc::routes::{
     RpcHardeningLimits,
 };
 use pulsedag_storage::Storage;
-
-fn startup_protocol_restore_identity(
-    chain_id: &str,
-    consensus_mode: pulsedag_core::ConsensusMode,
-) -> Option<pulsedag_core::ProtocolActivationIdentity> {
-    if consensus_mode != pulsedag_core::ConsensusMode::Legacy {
-        return None;
-    }
-    let canonical_state = pulsedag_core::genesis::init_chain_state(chain_id.to_string());
-    Some(pulsedag_core::ProtocolActivationIdentity::legacy_from_state(&canonical_state))
-}
+use startup_protocol::select_startup_protocol;
 
 #[cfg(test)]
 mod task27_rejoin_runtime_tests {
@@ -165,27 +156,6 @@ mod task27_rejoin_runtime_tests {
             task27_rejoin_peer_for_reconcile(&matching_status, &eligible, &local),
             None
         );
-    }
-}
-
-#[cfg(test)]
-mod protocol_restore_startup_tests {
-    use super::*;
-
-    #[test]
-    fn protocol_bound_startup_restore_is_legacy_only() {
-        let legacy = startup_protocol_restore_identity(
-            "pulsedag-testnet",
-            pulsedag_core::ConsensusMode::Legacy,
-        )
-        .expect("legacy startup must derive a protocol restore identity");
-        assert_eq!(legacy.chain_id, "pulsedag-testnet");
-
-        assert!(startup_protocol_restore_identity(
-            "pulsedag-testnet",
-            pulsedag_core::ConsensusMode::GhostdagDev,
-        )
-        .is_none());
     }
 }
 
@@ -1747,21 +1717,30 @@ async fn main() -> Result<()> {
     } else {
         info!(summary = %config_safety_summary, "config safety summary");
     }
+    let startup_protocol = select_startup_protocol(&cfg.chain_id, cfg.consensus_mode)?;
     let storage = Arc::new(Storage::open(&cfg.rocksdb_path)?);
     if let Some(command) = snapshot_bundle_command {
-        let protocol_identity =
-            startup_protocol_restore_identity(&cfg.chain_id, cfg.consensus_mode);
-        run_snapshot_bundle_command(&storage, &cfg.chain_id, protocol_identity.as_ref(), command)?;
+        run_snapshot_bundle_command(
+            &storage,
+            &cfg.chain_id,
+            startup_protocol.restore_identity.as_ref(),
+            command,
+        )?;
         return Ok(());
     }
 
     let snapshot_exists = storage.snapshot_exists().unwrap_or(false);
     let persisted_blocks = storage.list_blocks().unwrap_or_default();
-    let startup_protocol_identity =
-        startup_protocol_restore_identity(&cfg.chain_id, cfg.consensus_mode);
-    let mut chain_state = match startup_protocol_identity.as_ref() {
-        Some(expected) => storage.load_or_init_genesis_for_protocol(expected)?,
-        None => storage.load_or_init_genesis(cfg.chain_id.clone())?,
+    let mut chain_state = if startup_protocol.activated_v2() {
+        let expected = startup_protocol.restore_identity.as_ref().ok_or_else(|| {
+            anyhow::anyhow!("activated-v2 startup selection is missing its protocol identity")
+        })?;
+        storage.load_or_init_activated_v2_p2p_runtime(expected)?.0
+    } else {
+        match startup_protocol.restore_identity.as_ref() {
+            Some(expected) => storage.load_or_init_genesis_for_protocol(expected)?,
+            None => storage.load_or_init_genesis(cfg.chain_id.clone())?,
+        }
     };
     if cfg.network_profile == "private" || cfg.network_profile.starts_with("rehearsal") {
         if let Ok(raw) = std::env::var("PULSEDAG_MEMPOOL_MAX_TRANSACTIONS") {
@@ -1824,8 +1803,13 @@ async fn main() -> Result<()> {
             let reason = rebuild_reasons.join("; ");
             info!(snapshot_exists = snapshot_exists, persisted_block_count = persisted_blocks.len(), in_memory_block_count = in_memory_block_count, startup_persisted_max_height, startup_consistency_issue_count, reason = %reason, "rebuilding chain state from persisted blocks on startup");
             startup_recovery_mode = "replayed_blocks".to_string();
-            startup_rebuild_reason = Some(reason);
-            chain_state = match startup_protocol_identity.as_ref() {
+            startup_rebuild_reason = Some(reason.clone());
+            if startup_protocol.activated_v2() {
+                return Err(anyhow::anyhow!(
+                    "activated-v2 startup consistency check requires protocol-v2 replay; refusing legacy rebuild: {reason}"
+                ));
+            }
+            chain_state = match startup_protocol.restore_identity.as_ref() {
                 Some(expected) => storage.replay_blocks_or_init_for_protocol(expected)?,
                 None => storage.replay_blocks_or_init(cfg.chain_id.clone())?,
             };
@@ -1919,6 +1903,11 @@ async fn main() -> Result<()> {
                 })?
             }
         };
+        if let Some(capabilities) = startup_protocol.local_capabilities.clone() {
+            stack
+                .handle
+                .configure_protocol_capabilities_v1(capabilities)?;
+        }
         if let Ok(status) = stack.handle.status() {
             info!(
                 configured_mode = %configured_mode,
@@ -1944,14 +1933,22 @@ async fn main() -> Result<()> {
     };
 
     let startup_local_protocol_capabilities = match p2p.as_ref() {
-        Some(p2p_handle) => p2p_handle
-            .local_protocol_capabilities_v1()
-            .map_err(|error| {
-                anyhow::anyhow!(
-                    "failed reading local protocol capabilities for activated-v2 runtime restore: {error}"
-                )
-            })?,
-        None => None,
+        Some(p2p_handle) => {
+            let observed = p2p_handle
+                .local_protocol_capabilities_v1()
+                .map_err(|error| {
+                    anyhow::anyhow!(
+                        "failed reading local protocol capabilities for activated-v2 runtime restore: {error}"
+                    )
+                })?;
+            if observed != startup_protocol.local_capabilities {
+                return Err(anyhow::anyhow!(
+                    "configured P2P protocol capabilities do not match the explicit startup protocol selection"
+                ));
+            }
+            observed
+        }
+        None => startup_protocol.local_capabilities.clone(),
     };
     let (restored_chain_state, startup_activated_v2_p2p_runtime, startup_activated_v2_identity) =
         restore_activated_v2_p2p_runtime_for_startup(
@@ -6432,8 +6429,8 @@ async fn main() -> Result<()> {
         let runtime = app_state.runtime.clone();
         let storage = app_state.storage.clone();
         let chain_id = cfg.chain_id.clone();
-        let protocol_restore_identity =
-            startup_protocol_restore_identity(&cfg.chain_id, cfg.consensus_mode);
+        let activated_v2_protocol = startup_protocol.activated_v2();
+        let protocol_restore_identity = startup_protocol.restore_identity.clone();
         tokio::spawn(async move {
             loop {
                 sleep(Duration::from_secs(5)).await;
@@ -6456,7 +6453,7 @@ async fn main() -> Result<()> {
                     (
                         rt.snapshot_auto_every_blocks,
                         rt.last_snapshot_height,
-                        rt.auto_prune_enabled,
+                        rt.auto_prune_enabled && !activated_v2_protocol,
                         rt.auto_prune_every_blocks,
                         rt.prune_keep_recent_blocks.max(1),
                         rt.last_prune_height,
