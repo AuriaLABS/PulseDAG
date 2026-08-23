@@ -151,19 +151,12 @@ fn ghostdag_conflict_loser_transaction_is_not_confirmed() {
     let loser_hash = "task30-loser-block";
     record_in_noncanonical_block(&mut state, &tx, loser_hash);
     state.dag.ordered_dag.push(loser_hash.to_string());
-    state
-        .dag
-        .ordered_dag_conflict_diagnostics
-        .push(format!(
-            "ordered_pos=1 block={loser_hash} tx={} skipped_conflict",
-            tx.txid
-        ));
+    state.dag.ordered_dag_conflict_diagnostics.push(format!(
+        "ordered_pos=1 block={loser_hash} tx={} skipped_conflict",
+        tx.txid
+    ));
 
-    assert!(state
-        .dag
-        .ordered_dag
-        .iter()
-        .any(|hash| hash == loser_hash));
+    assert!(state.dag.ordered_dag.iter().any(|hash| hash == loser_hash));
     assert!(
         !transaction_is_confirmed(&tx.txid, &state),
         "a transaction skipped by canonical DAG replay must not be treated as confirmed"
@@ -220,13 +213,10 @@ fn activated_v2_conflict_loser_is_not_confirmed() {
     record_in_noncanonical_block(&mut state, &tx, loser_hash);
     state.dag.selected_chain.push(loser_hash.to_string());
     state.dag.ordered_dag.push(loser_hash.to_string());
-    state
-        .dag
-        .ordered_dag_conflict_diagnostics
-        .push(format!(
-            "ordered_pos=1 block={loser_hash} tx={} skipped_conflict_atomic",
-            tx.txid
-        ));
+    state.dag.ordered_dag_conflict_diagnostics.push(format!(
+        "ordered_pos=1 block={loser_hash} tx={} skipped_conflict_atomic",
+        tx.txid
+    ));
 
     assert!(!state.dag.consensus_mode.ghostdag_metadata_active());
     assert!(state
@@ -234,11 +224,7 @@ fn activated_v2_conflict_loser_is_not_confirmed() {
         .selected_chain
         .iter()
         .any(|hash| hash == loser_hash));
-    assert!(state
-        .dag
-        .ordered_dag
-        .iter()
-        .any(|hash| hash == loser_hash));
+    assert!(state.dag.ordered_dag.iter().any(|hash| hash == loser_hash));
     assert!(
         !transaction_is_confirmed(&tx.txid, &state),
         "activated-v2 replay-skipped conflict loser must not be treated as confirmed"
@@ -264,13 +250,10 @@ fn compact_prune_preserves_retained_conflict_loser_semantics() {
     state.dag.best_height = 1;
     state.dag.ordered_dag = vec![state.dag.genesis_hash.clone(), loser_hash.to_string()];
     state.dag.ordered_dag_tip = Some(loser_hash.to_string());
-    state
-        .dag
-        .ordered_dag_conflict_diagnostics
-        .push(format!(
-            "ordered_pos=1 block={loser_hash} tx={} skipped_conflict_atomic",
-            tx.txid
-        ));
+    state.dag.ordered_dag_conflict_diagnostics.push(format!(
+        "ordered_pos=1 block={loser_hash} tx={} skipped_conflict_atomic",
+        tx.txid
+    ));
 
     assert!(!transaction_is_confirmed(&tx.txid, &state));
     let retained = vec![state
