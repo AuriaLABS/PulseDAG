@@ -1,3 +1,4 @@
+mod submit_finality;
 mod template_protocol;
 
 use anyhow::{anyhow, Context, Result};
@@ -14,6 +15,10 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use submit_finality::{
+    reconcile_submit_finality, ReconciliationOutcome, RECONCILIATION_ATTEMPTS,
+    RECONCILIATION_BACKOFF_MS, SUBMIT_FINALITY_UNKNOWN_CODE,
+};
 use template_protocol::validated_template_protocol_identity;
 use tokio::time::{sleep, Duration};
 
@@ -120,6 +125,10 @@ struct MinerTelemetry {
     submits_total: u64,
     submits_accepted: u64,
     submits_rejected: u64,
+    submits_finality_unknown: u64,
+    submits_reconciled_accepted: u64,
+    submits_reconciled_rejected: u64,
+    submits_still_unknown: u64,
     last_reject_code: Option<String>,
     last_template_height: Option<u64>,
     last_accepted_height: Option<u64>,
@@ -141,6 +150,10 @@ impl MinerTelemetry {
             submits_total: 0,
             submits_accepted: 0,
             submits_rejected: 0,
+            submits_finality_unknown: 0,
+            submits_reconciled_accepted: 0,
+            submits_reconciled_rejected: 0,
+            submits_still_unknown: 0,
             last_reject_code: None,
             last_template_height: None,
             last_accepted_height: None,
@@ -189,6 +202,35 @@ impl MinerTelemetry {
         self.last_reject_code = Some(reason_code);
     }
 
+    fn record_submit_finality_unknown(&mut self) {
+        self.submits_total = self.submits_total.saturating_add(1);
+        self.submits_finality_unknown = self.submits_finality_unknown.saturating_add(1);
+        self.last_reject_code = Some(SUBMIT_FINALITY_UNKNOWN_CODE.to_string());
+    }
+
+    fn record_reconciled_accepted(&mut self, height: Option<u64>) {
+        self.submits_accepted = self.submits_accepted.saturating_add(1);
+        self.submits_reconciled_accepted = self.submits_reconciled_accepted.saturating_add(1);
+        self.last_reject_code = None;
+        self.last_accepted_height = height;
+    }
+
+    fn record_reconciled_rejected(&mut self, reason_code: impl Into<String>) {
+        let reason_code = reason_code.into();
+        self.submits_rejected = self.submits_rejected.saturating_add(1);
+        self.submits_reconciled_rejected = self.submits_reconciled_rejected.saturating_add(1);
+        *self
+            .reject_breakdown
+            .entry(reason_code.clone())
+            .or_insert(0) += 1;
+        self.last_reject_code = Some(reason_code);
+    }
+
+    fn record_still_unknown(&mut self) {
+        self.submits_still_unknown = self.submits_still_unknown.saturating_add(1);
+        self.last_reject_code = Some("submit_finality_still_unknown".to_string());
+    }
+
     fn record_backend_verification_failed(&mut self) {
         self.backend_verification_failures = self.backend_verification_failures.saturating_add(1);
         self.invalid_pow_rejections = self.invalid_pow_rejections.saturating_add(1);
@@ -216,7 +258,7 @@ impl MinerTelemetry {
 
     fn log(&self, event: &str) {
         println!(
-            "miner_telemetry event={} backend={} workers={} attempts={} hashes_per_sec={:.2} templates_received={} templates_skipped_stale={} submits_total={} submits_accepted={} submits_rejected={} backend_verification_failures={} last_reject_code={} reject_breakdown={:?} last_template_height={} last_accepted_height={}",
+            "miner_telemetry event={} backend={} workers={} attempts={} hashes_per_sec={:.2} templates_received={} templates_skipped_stale={} submits_total={} submits_accepted={} submits_rejected={} submits_finality_unknown={} submits_reconciled_accepted={} submits_reconciled_rejected={} submits_still_unknown={} backend_verification_failures={} last_reject_code={} reject_breakdown={:?} last_template_height={} last_accepted_height={}",
             event,
             self.backend,
             self.workers,
@@ -227,6 +269,10 @@ impl MinerTelemetry {
             self.submits_total,
             self.submits_accepted,
             self.submits_rejected,
+            self.submits_finality_unknown,
+            self.submits_reconciled_accepted,
+            self.submits_reconciled_rejected,
+            self.submits_still_unknown,
             self.backend_verification_failures,
             self.last_reject_code.as_deref().unwrap_or("-"),
             self.reject_breakdown,
@@ -254,6 +300,7 @@ enum MineOnceOutcome {
     SkippedStaleTemplate,
     NodeRejectedStaleTemplate,
     BackendVerificationRejected,
+    SubmitFinalityStillUnknown,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -517,6 +564,12 @@ fn default_worker_id(miner_address: &str) -> String {
 fn submit_rejection_action(reason_code: &str) -> &'static str {
     match reason_code {
         "accepted" => "no action needed",
+        SUBMIT_FINALITY_UNKNOWN_CODE => {
+            "reconcile the submitted block hash; do not classify it as rejected or resubmit it"
+        }
+        "submit_timeout_before_acceptance" => {
+            "node did not begin acceptance; fetch fresh work after node lock pressure clears"
+        }
         "stale_template" => "refresh template and retry mining on latest work",
         "invalid_pow" => "hard warning: backend/canonical mismatch; discard nonce/header and verify miner target comparison before retry",
         "malformed_serialization" => "rebuild submit payload from a fresh template before retry",
@@ -587,7 +640,8 @@ fn should_skip_stale_submit(
 
 fn loop_refresh_decision_after_outcome(_outcome: MineOnceOutcome) -> LoopRefreshDecision {
     // Loop mode deliberately returns to /mining/template after every iteration. This keeps
-    // stale-template rejections retryable without resubmitting the same stale work.
+    // stale-template rejections and unresolved submit finality retryable without resubmitting
+    // the same stale or non-final work.
     LoopRefreshDecision::RefreshWork
 }
 
@@ -718,6 +772,8 @@ async fn mine_once(
         return Ok(MineOnceOutcome::SkippedStaleTemplate);
     }
 
+    let submitted_hash = block.hash.clone();
+    let submitted_height = block.header.height;
     let submit_resp = client
         .post(&submit_url)
         .json(&SubmitRequest { template_id, block })
@@ -742,25 +798,80 @@ async fn mine_once(
         if data.accepted {
             telemetry.record_submit_accepted(data.height);
             telemetry.log("submit_accepted");
-        } else {
-            telemetry.record_submit_rejected(data.reason_code.clone(), data.stale_template);
-            telemetry.log("submit_rejected");
+            send_worker_heartbeat(client, cfg, telemetry).await;
+            return Ok(MineOnceOutcome::Submitted);
         }
-        send_worker_heartbeat(client, cfg, telemetry).await;
-        if !data.accepted {
-            if let Some(reason) = data.reason.as_deref() {
-                println!(
-                    "submit_rejected: reason_code={} reason={}",
-                    data.reason_code, reason
-                );
-            }
+
+        if data.reason_code == SUBMIT_FINALITY_UNKNOWN_CODE {
+            let reconciliation_hash = data
+                .block_hash
+                .as_deref()
+                .unwrap_or(submitted_hash.as_str())
+                .to_string();
+            telemetry.record_submit_finality_unknown();
+            telemetry.log("submit_finality_unknown");
             println!(
-                "action: {}",
-                submit_rejection_action(data.reason_code.as_str())
+                "submit_finality_unknown: block_hash={} height={} action=reconcile_by_hash attempts={} backoff_ms={}",
+                reconciliation_hash,
+                data.height.unwrap_or(submitted_height),
+                RECONCILIATION_ATTEMPTS,
+                RECONCILIATION_BACKOFF_MS
             );
-            if data.reason_code == "stale_template" || data.stale_template {
-                return Ok(MineOnceOutcome::NodeRejectedStaleTemplate);
+
+            match reconcile_submit_finality(client, &cfg.node, &reconciliation_hash).await {
+                ReconciliationOutcome::Accepted { height } => {
+                    telemetry.record_reconciled_accepted(height.or(data.height));
+                    telemetry.log("submit_reconciled_accepted");
+                    println!(
+                        "submit_reconciled: outcome=accepted block_hash={} height={}",
+                        reconciliation_hash,
+                        height
+                            .or(data.height)
+                            .map(|value| value.to_string())
+                            .unwrap_or_else(|| "-".to_string())
+                    );
+                }
+                ReconciliationOutcome::Rejected {
+                    reason_code,
+                    reason,
+                } => {
+                    telemetry.record_reconciled_rejected(reason_code.clone());
+                    telemetry.log("submit_reconciled_rejected");
+                    println!(
+                        "submit_reconciled: outcome=rejected block_hash={} reason_code={} reason={}",
+                        reconciliation_hash, reason_code, reason
+                    );
+                }
+                ReconciliationOutcome::StillUnknown { detail } => {
+                    telemetry.record_still_unknown();
+                    telemetry.log("submit_finality_still_unknown");
+                    println!(
+                        "submit_reconciled: outcome=still_unknown block_hash={} detail={} action=fetch_fresh_work_without_resubmitting_hash",
+                        reconciliation_hash, detail
+                    );
+                    send_worker_heartbeat(client, cfg, telemetry).await;
+                    return Ok(MineOnceOutcome::SubmitFinalityStillUnknown);
+                }
             }
+            send_worker_heartbeat(client, cfg, telemetry).await;
+            return Ok(MineOnceOutcome::Submitted);
+        }
+
+        telemetry.record_submit_rejected(data.reason_code.clone(), data.stale_template);
+        telemetry.log("submit_rejected");
+        send_worker_heartbeat(client, cfg, telemetry).await;
+        if let Some(reason) = data.reason.as_deref() {
+            println!(
+                "submit_rejected: reason_code={} reason={}",
+                data.reason_code, reason
+            );
+        }
+        println!(
+            "action: {}",
+            submit_rejection_action(data.reason_code.as_str())
+        );
+        if data.reason_code == "stale_template" || data.stale_template {
+            return Ok(MineOnceOutcome::NodeRejectedStaleTemplate);
         }
     } else if let Some(err) = submit_api.error {
         let reason_code = err.code.to_ascii_lowercase();
@@ -869,7 +980,7 @@ mod tests {
         loop_refresh_decision_after_outcome, mining_backend, parse_args_from,
         should_skip_stale_submit, submit_rejection_action, usage, BackendKind, Block, BlockHeader,
         Config, LoopRefreshDecision, MineOnceOutcome, MinerTelemetry, SubmitRequest,
-        TemplateSkipReason,
+        TemplateSkipReason, SUBMIT_FINALITY_UNKNOWN_CODE,
     };
     use pulsedag_core::{ProtocolActivationIdentity, GHOSTDAG_V1_ORDERING_VERSION};
 
@@ -1044,6 +1155,60 @@ mod tests {
     }
 
     #[test]
+    fn task29_finality_unknown_is_not_counted_as_rejected() {
+        let mut telemetry = MinerTelemetry::new("cpu", 2);
+
+        telemetry.record_submit_finality_unknown();
+
+        assert_eq!(telemetry.submits_total, 1);
+        assert_eq!(telemetry.submits_finality_unknown, 1);
+        assert_eq!(telemetry.submits_rejected, 0);
+        assert_eq!(
+            telemetry.last_reject_code.as_deref(),
+            Some(SUBMIT_FINALITY_UNKNOWN_CODE)
+        );
+    }
+
+    #[test]
+    fn task29_reconciled_acceptance_does_not_double_count_submit() {
+        let mut telemetry = MinerTelemetry::new("cpu", 2);
+
+        telemetry.record_submit_finality_unknown();
+        telemetry.record_reconciled_accepted(Some(9));
+
+        assert_eq!(telemetry.submits_total, 1);
+        assert_eq!(telemetry.submits_accepted, 1);
+        assert_eq!(telemetry.submits_rejected, 0);
+        assert_eq!(telemetry.submits_reconciled_accepted, 1);
+        assert_eq!(telemetry.last_accepted_height, Some(9));
+    }
+
+    #[test]
+    fn task29_reconciled_rejection_does_not_double_count_submit() {
+        let mut telemetry = MinerTelemetry::new("cpu", 2);
+
+        telemetry.record_submit_finality_unknown();
+        telemetry.record_reconciled_rejected("block_rejected");
+
+        assert_eq!(telemetry.submits_total, 1);
+        assert_eq!(telemetry.submits_accepted, 0);
+        assert_eq!(telemetry.submits_rejected, 1);
+        assert_eq!(telemetry.submits_reconciled_rejected, 1);
+    }
+
+    #[test]
+    fn task29_unresolved_unknown_remains_outside_rejection_totals() {
+        let mut telemetry = MinerTelemetry::new("cpu", 2);
+
+        telemetry.record_submit_finality_unknown();
+        telemetry.record_still_unknown();
+
+        assert_eq!(telemetry.submits_total, 1);
+        assert_eq!(telemetry.submits_rejected, 0);
+        assert_eq!(telemetry.submits_still_unknown, 1);
+    }
+
+    #[test]
     fn backend_verification_failure_increments_local_telemetry_counter() {
         let mut telemetry = MinerTelemetry::new("gpu", 2);
 
@@ -1162,6 +1327,15 @@ mod tests {
     }
 
     #[test]
+    fn task29_finality_unknown_action_forbids_blind_resubmit() {
+        let action = submit_rejection_action(SUBMIT_FINALITY_UNKNOWN_CODE);
+
+        assert!(action.contains("reconcile"));
+        assert!(action.contains("do not classify"));
+        assert!(action.contains("resubmit"));
+    }
+
+    #[test]
     fn invalid_pow_rejection_is_hard_backend_canonical_warning() {
         let action = submit_rejection_action("invalid_pow");
 
@@ -1182,6 +1356,14 @@ mod tests {
         );
         assert_eq!(
             loop_refresh_decision_after_outcome(MineOnceOutcome::BackendVerificationRejected),
+            LoopRefreshDecision::RefreshWork
+        );
+    }
+
+    #[test]
+    fn task29_unresolved_finality_refreshes_work_without_resubmit() {
+        assert_eq!(
+            loop_refresh_decision_after_outcome(MineOnceOutcome::SubmitFinalityStillUnknown),
             LoopRefreshDecision::RefreshWork
         );
     }
@@ -1226,6 +1408,8 @@ mod tests {
             "unknown_validation_error",
             "chain_id_mismatch",
             "internal_error",
+            SUBMIT_FINALITY_UNKNOWN_CODE,
+            "submit_timeout_before_acceptance",
         ] {
             let action = submit_rejection_action(code);
             assert!(!action.is_empty());
