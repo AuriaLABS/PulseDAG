@@ -6,7 +6,7 @@ This runbook covers the explicit single-node operator profile introduced by v2.4
 
 It does not authorize public-testnet launch, start the 30-day public-testnet clock, enable smart contracts, or replace the ordinary private multi-host topology.
 
-The currently approved software version and private-chain identity remain v2.3.0 until a separate release decision authorizes a version change.
+The Task31 technical candidate uses the explicit v2.4.0 private-chain identity `pulsedag-private-v2.4.0` with protocol consensus mode `ghostdag_v1`. This is a candidate freeze only and does not authorize public-testnet launch.
 
 ## Safety contract
 
@@ -19,6 +19,8 @@ Single-node operation requires all of the following:
 - no public P2P advertisement;
 - loopback-only RPC;
 - persistent RocksDB storage outside `/tmp` and `/run`;
+- `PULSEDAG_PROTOCOL_CONSENSUS_MODE=ghostdag_v1`;
+- activated-v2 auto-prune disabled until protocol-v2 prune/replay is validated;
 - public-testnet readiness false;
 - the 30-day public-testnet clock not started;
 - smart contracts disabled.
@@ -56,6 +58,8 @@ A valid manifest reports:
 - `p2p_enabled=false`;
 - `connected_peers_expected=false`;
 - `isolated_mining_authorized=true`;
+- `protocol_consensus_mode=ghostdag_v1`;
+- `auto_prune_enabled=false`;
 - `public_testnet_ready=false`;
 - `thirty_day_public_testnet_clock_started=false`;
 - `contracts_enabled=false`.
@@ -78,7 +82,7 @@ Task 15 owns the mining-template guard change. Until Task 15 is implemented, pas
 6. Run the ordinary private-testnet preflight:
 
 ```bash
-bash scripts/v2_3_0_private_testnet_preflight.sh <private-env-file>
+bash scripts/v2_4_0_private_testnet_preflight.sh <private-env-file>
 ```
 
 7. Verify that the ordinary zero-peer mining protection is active again.

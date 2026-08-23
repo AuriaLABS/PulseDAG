@@ -837,13 +837,27 @@ impl Config {
                 "invalid single-node config: PULSEDAG_PRIVATE_TESTNET_ROLE must be exactly 'single'"
             );
         }
-        if self.network_profile != "private-testnet-v2.3.0" {
+        if self.network_profile != "private-testnet-v2.4.0" {
             bail!(
-                "invalid single-node config: PULSEDAG_NETWORK_PROFILE must be private-testnet-v2.3.0"
+                "invalid single-node config: PULSEDAG_NETWORK_PROFILE must be private-testnet-v2.4.0"
             );
         }
-        if self.chain_id != "pulsedag-private-v2.3.0" {
-            bail!("invalid single-node config: PULSEDAG_CHAIN_ID must be pulsedag-private-v2.3.0");
+        if self.chain_id != "pulsedag-private-v2.4.0" {
+            bail!("invalid single-node config: PULSEDAG_CHAIN_ID must be pulsedag-private-v2.4.0");
+        }
+        if std::env::var("PULSEDAG_PROTOCOL_CONSENSUS_MODE")
+            .ok()
+            .as_deref()
+            != Some("ghostdag_v1")
+        {
+            bail!(
+                "invalid single-node config: PULSEDAG_PROTOCOL_CONSENSUS_MODE must be ghostdag_v1"
+            );
+        }
+        if self.auto_prune_enabled {
+            bail!(
+                "invalid single-node config: PULSEDAG_AUTO_PRUNE_ENABLED must be false for activated v2.4 until protocol-v2 prune/replay is validated"
+            );
         }
         if self.consensus_mode != ConsensusMode::Legacy {
             bail!("invalid single-node config: consensus mode must remain legacy");
@@ -1106,6 +1120,7 @@ mod tests {
             "PULSEDAG_EXPERIMENTAL_GHOSTDAG_SELECTION",
             "PULSEDAG_EXPERIMENTAL_FAST_CADENCE",
             "PULSEDAG_CONSENSUS_MODE",
+            "PULSEDAG_PROTOCOL_CONSENSUS_MODE",
             "PULSEDAG_MAX_PARALLEL_TIPS",
             "PULSEDAG_MAX_MERGE_SET_SIZE",
             "PULSEDAG_MAX_ORPHAN_COUNT",
@@ -1141,9 +1156,11 @@ mod tests {
         std::env::set_var("PULSEDAG_CONFIG_PROFILE", "private");
         std::env::set_var("PULSEDAG_SINGLE_NODE_MODE", "true");
         std::env::set_var("PULSEDAG_PRIVATE_TESTNET_ROLE", "single");
-        std::env::set_var("PULSEDAG_NETWORK_PROFILE", "private-testnet-v2.3.0");
-        std::env::set_var("PULSEDAG_CHAIN_ID", "pulsedag-private-v2.3.0");
+        std::env::set_var("PULSEDAG_NETWORK_PROFILE", "private-testnet-v2.4.0");
+        std::env::set_var("PULSEDAG_CHAIN_ID", "pulsedag-private-v2.4.0");
         std::env::set_var("PULSEDAG_CONSENSUS_MODE", "legacy");
+        std::env::set_var("PULSEDAG_PROTOCOL_CONSENSUS_MODE", "ghostdag_v1");
+        std::env::set_var("PULSEDAG_AUTO_PRUNE_ENABLED", "false");
         std::env::set_var("PULSEDAG_P2P_ENABLED", "false");
         std::env::set_var("PULSEDAG_P2P_BOOTSTRAP", "");
         std::env::set_var("PULSEDAG_P2P_MDNS", "false");

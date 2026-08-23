@@ -3,7 +3,7 @@ set -euo pipefail
 
 ENV_FILE="${1:-}"
 if [[ -z "$ENV_FILE" || ! -f "$ENV_FILE" ]]; then
-  echo "usage: bash scripts/v2_4_0_single_node_preflight.sh <env-file>" >&2
+  echo "usage: bash scripts/v2_4_0_private_testnet_preflight.sh <env-file>" >&2
   exit 2
 fi
 
@@ -31,13 +31,6 @@ trim() {
   printf '%s' "$value"
 }
 
-clear_pulsedag_environment() {
-  local key
-  for key in ${!PULSEDAG_@}; do
-    unset "$key"
-  done
-}
-
 load_env_file() {
   local raw line key value line_number=0
   while IFS= read -r raw || [[ -n "$raw" ]]; do
@@ -54,9 +47,8 @@ load_env_file() {
 
     key="$(trim "${line%%=*}")"
     value="$(trim "${line#*=}")"
-    if [[ ! "$key" =~ ^PULSEDAG_[A-Z0-9_]+$ ]]; then
-      printf 'invalid environment key on line %d: only PULSEDAG_* keys are allowed: %s\n' \
-        "$line_number" "$key" >&2
+    if [[ ! "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+      printf 'invalid environment key on line %d: %s\n' "$line_number" "$key" >&2
       return 2
     fi
 
@@ -78,6 +70,11 @@ load_env_file() {
   done < "$ENV_FILE"
 }
 
+require_nonempty() {
+  local name="$1"
+  [[ -n "${!name:-}" ]]
+}
+
 is_true() {
   case "${1,,}" in
     1|true|yes|on) return 0 ;;
@@ -87,83 +84,88 @@ is_true() {
 
 is_false() {
   case "${1,,}" in
-    0|false|no|off|'') return 0 ;;
+    0|false|no|off) return 0 ;;
     *) return 1 ;;
   esac
 }
 
-is_loopback_rpc_bind() {
-  local value="$1"
-  [[ "$value" =~ ^127\.0\.0\.1:[0-9]+$ || "$value" =~ ^\[::1\]:[0-9]+$ ]]
-}
-
 is_absolute_persistent_path() {
   local value="$1"
-  [[ "$value" == /* ]] &&
-    [[ "$value" != /tmp ]] &&
-    [[ "$value" != /tmp/* ]] &&
-    [[ "$value" != /run ]] &&
-    [[ "$value" != /run/* ]]
+  [[ "$value" == /* ]] && [[ "$value" != /tmp/* ]] && [[ "$value" != /run/* ]]
 }
 
-is_supported_api_profile() {
+is_tcp_multiaddr() {
   local value="$1"
-  [[ "$value" == "private_operator" || "$value" == "local_dev" ]]
+  [[ "$value" =~ ^/(ip4|ip6|dns4|dns6)/[^/]+/tcp/[0-9]+$ ]]
 }
 
-has_minimum_length() {
+is_bootnode_multiaddr() {
   local value="$1"
-  local minimum="$2"
-  (( ${#value} >= minimum ))
+  [[ "$value" =~ ^/(ip4|ip6|dns4|dns6)/[^/]+/tcp/[0-9]+/p2p/[^/]+$ ]]
 }
 
-clear_pulsedag_environment
+without_peer_id() {
+  local value="$1"
+  printf '%s' "${value%/p2p/*}"
+}
+
+is_loopback_rpc_bind() {
+  local value="$1"
+  [[ "$value" =~ ^(127\.0\.0\.1|\[::1\]|localhost):[0-9]+$ ]]
+}
+
 load_env_file
 
-single_node_mode="${PULSEDAG_SINGLE_NODE_MODE:-false}"
 role="${PULSEDAG_PRIVATE_TESTNET_ROLE:-}"
 bootstrap="${PULSEDAG_P2P_BOOTSTRAP:-}"
 public_multiaddr="${PULSEDAG_PUBLIC_P2P_MULTIADDR:-}"
 admin_enabled="${PULSEDAG_ADMIN_ENABLED:-false}"
 operator_token="${PULSEDAG_OPERATOR_AUTH_TOKEN:-}"
 
-check "single-node mode is explicitly enabled" is_true "$single_node_mode"
-check "operator role is explicitly single" test "$role" = "single"
-check "config profile remains private" test "${PULSEDAG_CONFIG_PROFILE:-}" = "private"
+check "role is seed or node" bash -c '[[ "$1" == seed || "$1" == node ]]' _ "$role"
+check "config profile is private" test "${PULSEDAG_CONFIG_PROFILE:-}" = "private"
 check "network profile is private-testnet-v2.4.0" test "${PULSEDAG_NETWORK_PROFILE:-}" = "private-testnet-v2.4.0"
 check "chain id is pulsedag-private-v2.4.0" test "${PULSEDAG_CHAIN_ID:-}" = "pulsedag-private-v2.4.0"
 check "internal consensus runtime remains legacy" test "${PULSEDAG_CONSENSUS_MODE:-}" = "legacy"
 check "release protocol consensus mode is ghostdag_v1" test "${PULSEDAG_PROTOCOL_CONSENSUS_MODE:-}" = "ghostdag_v1"
-check "activated-v2 auto-prune remains disabled" is_false "${PULSEDAG_AUTO_PRUNE_ENABLED:-false}"
-check "P2P is disabled by policy" is_false "${PULSEDAG_P2P_ENABLED:-true}"
-check "bootnodes are empty" test -z "$bootstrap"
-check "public P2P advertisement is empty" test -z "$public_multiaddr"
-check "RPC is loopback-only" is_loopback_rpc_bind "${PULSEDAG_RPC_BIND:-}"
-check "API profile is private_operator or local_dev" is_supported_api_profile "${PULSEDAG_API_PROFILE:-}"
-check "RocksDB path is present" test -n "${PULSEDAG_ROCKSDB_PATH:-}"
+check "activated-v2 auto-prune remains disabled" is_false "${PULSEDAG_AUTO_PRUNE_ENABLED:-true}"
+check "real P2P is enabled" is_true "${PULSEDAG_P2P_ENABLED:-false}"
+check "P2P mode is libp2p-real" test "${PULSEDAG_P2P_MODE:-}" = "libp2p-real"
+check "mDNS is disabled for multi-host operation" is_false "${PULSEDAG_P2P_MDNS:-true}"
+check "Kademlia is enabled" is_true "${PULSEDAG_P2P_KADEMLIA:-false}"
+check "P2P listen address is a TCP multiaddr" is_tcp_multiaddr "${PULSEDAG_P2P_LISTEN:-}"
+check "public P2P address is a TCP multiaddr" is_tcp_multiaddr "$public_multiaddr"
+check "identity key path is present" require_nonempty PULSEDAG_P2P_IDENTITY_KEY
+check "identity key path is absolute and persistent" is_absolute_persistent_path "${PULSEDAG_P2P_IDENTITY_KEY:-}"
+check "RocksDB path is present" require_nonempty PULSEDAG_ROCKSDB_PATH
 check "RocksDB path is absolute and persistent" is_absolute_persistent_path "${PULSEDAG_ROCKSDB_PATH:-}"
+check "identity and RocksDB paths differ" test "${PULSEDAG_P2P_IDENTITY_KEY:-}" != "${PULSEDAG_ROCKSDB_PATH:-}"
+check "RPC remains loopback-only in Task 07" is_loopback_rpc_bind "${PULSEDAG_RPC_BIND:-}"
+check "API profile is private_operator" test "${PULSEDAG_API_PROFILE:-}" = "private_operator"
+check "RPC rate limiting is enabled" bash -c '[[ "$1" =~ ^[0-9]+$ ]] && (( 10#$1 > 0 ))' _ "${PULSEDAG_RPC_RATE_LIMIT_REQUESTS_PER_MINUTE:-0}"
+check "RPC limiting is per IP" is_true "${PULSEDAG_RPC_RATE_LIMIT_PER_IP:-false}"
 check "snapshot-gated pruning is enabled" is_true "${PULSEDAG_PRUNE_REQUIRE_SNAPSHOT:-false}"
-check "smart contracts remain disabled" is_false "${PULSEDAG_CONTRACTS_ENABLED:-false}"
 
-case "${PULSEDAG_CONFIG_PROFILE:-}" in
-  rehearsal-a|rehearsal-b|rehearsal-c)
-    check "single-node mode is not combined with a rehearsal profile" false
-    ;;
-  *)
-    check "single-node mode is not combined with a rehearsal profile" true
-    ;;
-esac
+if [[ "$role" == "seed" ]]; then
+  check "seed may start without bootnodes" true
+else
+  check "ordinary node has at least one bootnode" test -n "$bootstrap"
+  IFS=',' read -r -a bootnodes <<< "$bootstrap"
+  for bootnode in "${bootnodes[@]}"; do
+    bootnode="${bootnode//[[:space:]]/}"
+    check "bootnode includes a libp2p peer id: $bootnode" is_bootnode_multiaddr "$bootnode"
+    check "node does not bootstrap to itself: $bootnode" \
+      test "$(without_peer_id "$bootnode")" != "$(without_peer_id "$public_multiaddr")"
+  done
+fi
 
 if is_true "$admin_enabled"; then
-  check "admin token is at least 16 characters" has_minimum_length "$operator_token" 16
+  check "admin token is at least 16 characters" bash -c '(( ${#1} >= 16 ))' _ "$operator_token"
 else
   check "admin endpoints remain disabled" true
 fi
 
-for forbidden in \
-  PULSEDAG_PUBLIC_TESTNET_READY \
-  PULSEDAG_THIRTY_DAY_PUBLIC_TESTNET_CLOCK_STARTED \
-  PULSEDAG_MULTI_HOST_REHEARSAL; do
+for forbidden in PULSEDAG_PUBLIC_TESTNET_READY PULSEDAG_THIRTY_DAY_PUBLIC_TESTNET_CLOCK_STARTED; do
   value="${!forbidden:-false}"
   check "$forbidden is not true" is_false "$value"
 done
@@ -175,25 +177,19 @@ fi
 
 if [[ -n "${OUT_DIR:-}" ]]; then
   mkdir -p "$OUT_DIR"
-  cat > "$OUT_DIR/single-node-preflight.json" <<JSON
+  cat > "$OUT_DIR/private-testnet-preflight.json" <<JSON
 {
-  "gate": "v2.4.0-single-node-operator-preflight",
-  "operator_mode": "single-node",
+  "gate": "v2.4.0-private-testnet-bootstrap-preflight",
   "role": "${role}",
   "network_profile": "${PULSEDAG_NETWORK_PROFILE:-}",
   "chain_id": "${PULSEDAG_CHAIN_ID:-}",
   "protocol_consensus_mode": "${PULSEDAG_PROTOCOL_CONSENSUS_MODE:-}",
   "auto_prune_enabled": false,
-  "p2p_enabled": false,
-  "connected_peers_expected": false,
-  "rpc_bind": "${PULSEDAG_RPC_BIND:-}",
-  "isolated_mining_authorized": true,
   "checks": ${checks},
   "passes": ${passes},
   "result": "${result}",
   "public_testnet_ready": false,
-  "thirty_day_public_testnet_clock_started": false,
-  "contracts_enabled": false
+  "thirty_day_public_testnet_clock_started": false
 }
 JSON
 fi
