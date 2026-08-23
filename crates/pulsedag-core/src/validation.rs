@@ -140,8 +140,9 @@ fn ordered_block_skipped_transaction(txid: &str, block_hash: &str, state: &Chain
 /// authoritative state order and was actually applied by replay. Accepted
 /// side-DAG blocks and replay-skipped conflict losers are not confirmations.
 pub fn transaction_is_confirmed(txid: &str, state: &ChainState) -> bool {
-    let ghostdag_order = state.dag.consensus_mode.ghostdag_metadata_active();
-    let canonical_order = if ghostdag_order {
+    let ordered_replay = state.dag.consensus_mode.ghostdag_metadata_active()
+        || state.dag.ordering_version == crate::ordering_v2::GHOSTDAG_V1_ORDERING_VERSION;
+    let canonical_order = if ordered_replay {
         &state.dag.ordered_dag
     } else {
         &state.dag.selected_chain
@@ -155,7 +156,7 @@ pub fn transaction_is_confirmed(txid: &str, state: &ChainState) -> bool {
                 .transactions
                 .iter()
                 .any(|confirmed| confirmed.txid == txid)
-                && (!ghostdag_order
+                && (!ordered_replay
                     || !ordered_block_skipped_transaction(txid, &block.hash, state))
         })
 }
