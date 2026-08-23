@@ -216,3 +216,137 @@ if "startup_protocol_restore_identity" in text:
     raise SystemExit("legacy startup protocol helper reference remains after patch")
 
 path.write_text(text, encoding="utf-8")
+
+# Fix authoritative v2 replay so a clean tx2/header2 chain is never rebuilt
+# from the historical tx1/header1 genesis UTXO.
+replay_path = Path("crates/pulsedag-core/src/state_replay_v2.rs")
+replay = replay_path.read_text(encoding="utf-8")
+
+if "fn replay_base_state_for_genesis" not in replay:
+    old_imports = '''    genesis::init_chain_state,
+    ordering_v2::{derive_ordered_dag_v2, OrderedDagV2, GHOSTDAG_V1_ORDERING_VERSION},
+    state::{ChainState, UtxoState},
+    types::Hash,
+'''
+    new_imports = '''    genesis::init_chain_state,
+    genesis_v2::init_chain_state_v2,
+    ordering_v2::{derive_ordered_dag_v2, OrderedDagV2, GHOSTDAG_V1_ORDERING_VERSION},
+    protocol::{BLOCK_HEADER_VERSION_V1, BLOCK_HEADER_VERSION_V2},
+    state::{ChainState, UtxoState},
+    tx::{TRANSACTION_VERSION_V1, TRANSACTION_VERSION_V2},
+    types::Hash,
+'''
+    count = replay.count(old_imports)
+    if count != 1:
+        raise SystemExit(f"v2 replay imports: expected exactly one anchor, found {count}")
+    replay = replay.replace(old_imports, new_imports, 1)
+
+    anchor = '''pub struct StateReplayV2 {
+    pub utxo: UtxoState,
+    pub ordered_dag: OrderedDagV2,
+    pub diagnostics: StateReplayV2Diagnostics,
+}
+
+'''
+    helper = anchor + '''fn replay_base_state_for_genesis(state: &ChainState) -> Result<ChainState, PulseError> {
+    let genesis = state
+        .dag
+        .blocks
+        .get(&state.dag.genesis_hash)
+        .ok_or_else(|| PulseError::NonDeterministicState("v2 replay genesis block missing".into()))?;
+    let first_tx = genesis.transactions.first().ok_or_else(|| {
+        PulseError::NonDeterministicState("v2 replay genesis transaction missing".into())
+    })?;
+    if genesis
+        .transactions
+        .iter()
+        .any(|tx| tx.version != first_tx.version)
+    {
+        return Err(PulseError::NonDeterministicState(
+            "mixed transaction versions inside genesis are not supported".into(),
+        ));
+    }
+
+    match (genesis.header.version, first_tx.version) {
+        (BLOCK_HEADER_VERSION_V1, TRANSACTION_VERSION_V1) => {
+            Ok(init_chain_state(state.chain_id.clone()))
+        }
+        (BLOCK_HEADER_VERSION_V2, TRANSACTION_VERSION_V2) => {
+            let rebuilt = init_chain_state_v2(state.chain_id.clone())?;
+            if rebuilt.dag.genesis_hash != state.dag.genesis_hash {
+                return Err(PulseError::NonDeterministicState(format!(
+                    "chain-bound v2 genesis mismatch: expected {}, rebuilt {}",
+                    state.dag.genesis_hash, rebuilt.dag.genesis_hash
+                )));
+            }
+            Ok(rebuilt)
+        }
+        (header_version, transaction_version) => Err(PulseError::NonDeterministicState(format!(
+            "unsupported mixed genesis protocol versions: header={header_version} transaction={transaction_version}"
+        ))),
+    }
+}
+
+'''
+    count = replay.count(anchor)
+    if count != 1:
+        raise SystemExit(f"v2 replay helper anchor: expected exactly one, found {count}")
+    replay = replay.replace(anchor, helper, 1)
+
+    old_base = '''    let mut rebuilt = init_chain_state(state.chain_id.clone());
+    rebuilt.dag.consensus_mode = state.dag.consensus_mode;
+'''
+    new_base = '''    let mut rebuilt = replay_base_state_for_genesis(state)?;
+    rebuilt.dag.consensus_mode = state.dag.consensus_mode;
+'''
+    count = replay.count(old_base)
+    if count != 1:
+        raise SystemExit(f"v2 replay base state: expected exactly one anchor, found {count}")
+    replay = replay.replace(old_base, new_base, 1)
+
+if "clean_chain_bound_v2_genesis_replays_from_v2_utxo" not in replay:
+    test_anchor = '''    #[test]
+    fn conflicting_transaction_is_atomic_when_later_input_is_missing() {
+'''
+    test = '''    #[test]
+    fn clean_chain_bound_v2_genesis_replays_from_v2_utxo() {
+        let state = crate::genesis_v2::init_chain_state_v2(
+            "pulsedag-private-v2.4.0".to_string(),
+        )
+        .unwrap();
+        let replay = rebuild_authoritative_state_v2(&state).unwrap();
+        let expected_root = state.utxo.compute_state_root().unwrap();
+        let genesis_txid = state.dag.blocks[&state.dag.genesis_hash].transactions[0]
+            .txid
+            .clone();
+
+        assert_eq!(replay.diagnostics.state_root, expected_root);
+        assert!(replay
+            .utxo
+            .utxos
+            .keys()
+            .any(|outpoint| outpoint.txid == genesis_txid));
+        verify_authoritative_state_snapshot_v2(&state).unwrap();
+    }
+
+    #[test]
+    fn mixed_genesis_protocol_versions_fail_closed() {
+        let mut state = crate::genesis_v2::init_chain_state_v2(
+            "pulsedag-private-v2.4.0".to_string(),
+        )
+        .unwrap();
+        let genesis = state.dag.genesis_hash.clone();
+        state.dag.blocks.get_mut(&genesis).unwrap().header.version = BLOCK_HEADER_VERSION_V1;
+
+        let error = rebuild_authoritative_state_v2(&state)
+            .expect_err("mixed genesis protocol versions must fail closed");
+        assert!(error.to_string().contains("mixed genesis protocol versions"));
+    }
+
+''' + test_anchor
+    count = replay.count(test_anchor)
+    if count != 1:
+        raise SystemExit(f"v2 replay test anchor: expected exactly one, found {count}")
+    replay = replay.replace(test_anchor, test, 1)
+
+replay_path.write_text(replay, encoding="utf-8")
