@@ -1,0 +1,47 @@
+name: Task31 lockfile refresh
+
+on:
+  push:
+    branches:
+      - agent/task31-release-freeze
+    paths:
+      - VERSION
+      - Cargo.toml
+      - .github/workflows/task31-lockfile-refresh.yml
+
+permissions:
+  contents: write
+
+jobs:
+  refresh-lockfile:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout candidate branch
+        uses: actions/checkout@v4
+        with:
+          ref: agent/task31-release-freeze
+          fetch-depth: 0
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Refresh local workspace package versions
+        run: cargo check --workspace
+
+      - name: Show Cargo.lock delta
+        run: git diff -- Cargo.lock
+
+      - name: Commit refreshed lockfile
+        shell: bash
+        run: |
+          if git diff --quiet -- Cargo.lock; then
+            echo "Cargo.lock already current"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Cargo.lock
+          git commit -m "release: refresh Cargo.lock for 2.4.0 [skip ci]"
+          git push origin HEAD:agent/task31-release-freeze
