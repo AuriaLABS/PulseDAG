@@ -64,3 +64,6 @@ jobs:
 
       - name: Bounded runtime-event storage retention
         run: cargo test --locked -p pulsedag-storage --test task29_resource_bounds
+
+      - name: Submit-finality reconciliation without blind resubmit
+        run: cargo test --locked -p pulsedag-miner task29_
