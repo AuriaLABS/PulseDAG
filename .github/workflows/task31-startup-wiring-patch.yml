@@ -1,3 +1,4 @@
+# Temporary branch-local patcher; delete after the startup wiring commit lands.
 name: Task31 startup wiring patch
 
 on:
