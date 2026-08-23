@@ -65,6 +65,9 @@ jobs:
       - name: Stable v2 submission identity and fail-closed domain
         run: cargo test --locked -p pulsedag-core tx_submission::tests::
 
+      - name: Public signed-relay and mutable RPC abuse bounds
+        run: cargo test --locked -p pulsedag-rpc --test task30_public_relay_bounds
+
   recovery-and-capability-matrix:
     runs-on: ubuntu-latest
     timeout-minutes: 40
