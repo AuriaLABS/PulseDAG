@@ -124,7 +124,11 @@ fn legacy_side_dag_transaction_is_not_confirmed() {
     let side_hash = "task30-side-only";
     record_in_noncanonical_block(&mut state, &tx, side_hash);
 
-    assert!(!state.dag.selected_chain.iter().any(|hash| hash == side_hash));
+    assert!(!state
+        .dag
+        .selected_chain
+        .iter()
+        .any(|hash| hash == side_hash));
     assert!(
         !transaction_is_confirmed(&tx.txid, &state),
         "raw side-DAG membership must not imply canonical confirmation"
@@ -155,7 +159,11 @@ fn ghostdag_conflict_loser_transaction_is_not_confirmed() {
             tx.txid
         ));
 
-    assert!(state.dag.ordered_dag.iter().any(|hash| hash == loser_hash));
+    assert!(state
+        .dag
+        .ordered_dag
+        .iter()
+        .any(|hash| hash == loser_hash));
     assert!(
         !transaction_is_confirmed(&tx.txid, &state),
         "a transaction skipped by canonical DAG replay must not be treated as confirmed"
@@ -181,8 +189,16 @@ fn activated_v2_applied_ordered_transaction_is_confirmed() {
     state.dag.ordered_dag.push(ordered_hash.to_string());
 
     assert!(!state.dag.consensus_mode.ghostdag_metadata_active());
-    assert!(!state.dag.selected_chain.iter().any(|hash| hash == ordered_hash));
-    assert!(state.dag.ordered_dag.iter().any(|hash| hash == ordered_hash));
+    assert!(!state
+        .dag
+        .selected_chain
+        .iter()
+        .any(|hash| hash == ordered_hash));
+    assert!(state
+        .dag
+        .ordered_dag
+        .iter()
+        .any(|hash| hash == ordered_hash));
     assert!(
         transaction_is_confirmed(&tx.txid, &state),
         "activated-v2 confirmation must follow the authoritative ordered DAG even when the runtime consensus enum remains legacy"
@@ -213,8 +229,16 @@ fn activated_v2_conflict_loser_is_not_confirmed() {
         ));
 
     assert!(!state.dag.consensus_mode.ghostdag_metadata_active());
-    assert!(state.dag.selected_chain.iter().any(|hash| hash == loser_hash));
-    assert!(state.dag.ordered_dag.iter().any(|hash| hash == loser_hash));
+    assert!(state
+        .dag
+        .selected_chain
+        .iter()
+        .any(|hash| hash == loser_hash));
+    assert!(state
+        .dag
+        .ordered_dag
+        .iter()
+        .any(|hash| hash == loser_hash));
     assert!(
         !transaction_is_confirmed(&tx.txid, &state),
         "activated-v2 replay-skipped conflict loser must not be treated as confirmed"
@@ -249,14 +273,12 @@ fn compact_prune_preserves_retained_conflict_loser_semantics() {
         ));
 
     assert!(!transaction_is_confirmed(&tx.txid, &state));
-    let retained = vec![
-        state
-            .dag
-            .blocks
-            .get(loser_hash)
-            .expect("retained loser block exists")
-            .clone(),
-    ];
+    let retained = vec![state
+        .dag
+        .blocks
+        .get(loser_hash)
+        .expect("retained loser block exists")
+        .clone()];
     let compact = compact_snapshot_to_retained_blocks(state, &retained)
         .expect("compact snapshot should retain the boundary block");
 
