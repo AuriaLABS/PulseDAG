@@ -127,16 +127,37 @@ pub fn missing_transaction_inputs(tx: &Transaction, state: &ChainState) -> Vec<O
         .collect()
 }
 
-/// Return true when this canonical transaction id is already present in an
-/// accepted DAG block. Admission uses this after txid validation so stale
-/// resubmission cannot be parked as a missing-input orphan and re-broadcast.
+fn ordered_block_skipped_transaction(txid: &str, block_hash: &str, state: &ChainState) -> bool {
+    let marker = format!(" block={block_hash} tx={txid} skipped_conflict");
+    state
+        .dag
+        .ordered_dag_conflict_diagnostics
+        .iter()
+        .any(|entry| entry.contains(&marker))
+}
+
+/// Return true only when this canonical transaction id is present in the
+/// authoritative state order and was actually applied by replay. Accepted
+/// side-DAG blocks and replay-skipped conflict losers are not confirmations.
 pub fn transaction_is_confirmed(txid: &str, state: &ChainState) -> bool {
-    state.dag.blocks.values().any(|block| {
-        block
-            .transactions
-            .iter()
-            .any(|confirmed| confirmed.txid == txid)
-    })
+    let ghostdag_order = state.dag.consensus_mode.ghostdag_metadata_active();
+    let canonical_order = if ghostdag_order {
+        &state.dag.ordered_dag
+    } else {
+        &state.dag.selected_chain
+    };
+
+    canonical_order
+        .iter()
+        .filter_map(|hash| state.dag.blocks.get(hash))
+        .any(|block| {
+            block
+                .transactions
+                .iter()
+                .any(|confirmed| confirmed.txid == txid)
+                && (!ghostdag_order
+                    || !ordered_block_skipped_transaction(txid, &block.hash, state))
+        })
 }
 
 pub fn validate_transaction(tx: &Transaction, state: &ChainState) -> Result<(), PulseError> {
