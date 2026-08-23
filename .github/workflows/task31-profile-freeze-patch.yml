@@ -65,7 +65,6 @@ jobs:
             scripts/tests/test_v2_3_0_private_testnet_preflight.sh \
             scripts/v2_4_0_private_testnet_preflight.sh \
             scripts/tests/test_v2_4_0_private_testnet_preflight.sh \
-            .github/workflows/v2_4_0_single_node_profile.yml \
             docs/runbooks/V2_4_0_SINGLE_NODE_OPERATIONS.md
           if git diff --cached --quiet; then
             echo "profile freeze already applied"
