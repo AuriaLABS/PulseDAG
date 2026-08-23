@@ -2,6 +2,19 @@ name: v2.4.0 Task 30 adversarial runtime
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/task30-adversarial-runtime.yml
+      - scripts/v2_2_20_private_5n_4m_rehearsal.sh
+      - scripts/v2_3_0_lag_injection_selected_segment.sh
+      - scripts/v2_3_0_mempool_tx_relay_evidence.sh
+      - scripts/v2_3_0_prune_restart_rejoin_runtime.sh
+      - scripts/lib/v2_3_0_runtime_harness.sh
+      - scripts/lib/v2_3_0_prune_restart_rejoin_harness.sh
+      - scripts/lib/patch_v2_3_0_lag_runtime_harness.py
+      - scripts/private_testnet/**
   pull_request:
     branches:
       - main
