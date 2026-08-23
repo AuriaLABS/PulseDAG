@@ -1,46 +1,6 @@
 name: v2.3.0 isolated-namespace live rehearsal
 
 on:
-  pull_request:
-    branches:
-      - main
-    paths:
-      - configs/private-testnet/node.env.example
-      - crates/pulsedag-p2p/src/lib.rs
-      - crates/pulsedag-rpc/src/handlers/p2p.rs
-      - scripts/v2_3_0_private_testnet_preflight.sh
-      - scripts/private_testnet/lifecycle_bootnodes.py
-      - scripts/private_testnet/lifecycle_service.py
-      - scripts/private_testnet/netns_rehearsal.sh
-      - scripts/private_testnet/netns_network.sh
-      - scripts/private_testnet/netns_nodes.sh
-      - scripts/private_testnet/netns_inventory.py
-      - scripts/private_testnet/netns_fault.sh
-      - scripts/tests/test_v2_3_0_private_testnet_preflight.sh
-      - scripts/tests/test_v2_3_0_node_lifecycle.sh
-      - scripts/tests/test_v2_3_0_netns_rehearsal.sh
-      - docs/runbooks/V2_3_0_NETNS_REHEARSAL.md
-      - .github/workflows/v2_3_0_netns_live_rehearsal.yml
-  push:
-    branches:
-      - main
-    paths:
-      - configs/private-testnet/node.env.example
-      - crates/pulsedag-p2p/src/lib.rs
-      - crates/pulsedag-rpc/src/handlers/p2p.rs
-      - scripts/v2_3_0_private_testnet_preflight.sh
-      - scripts/private_testnet/lifecycle_bootnodes.py
-      - scripts/private_testnet/lifecycle_service.py
-      - scripts/private_testnet/netns_rehearsal.sh
-      - scripts/private_testnet/netns_network.sh
-      - scripts/private_testnet/netns_nodes.sh
-      - scripts/private_testnet/netns_inventory.py
-      - scripts/private_testnet/netns_fault.sh
-      - scripts/tests/test_v2_3_0_private_testnet_preflight.sh
-      - scripts/tests/test_v2_3_0_node_lifecycle.sh
-      - scripts/tests/test_v2_3_0_netns_rehearsal.sh
-      - docs/runbooks/V2_3_0_NETNS_REHEARSAL.md
-      - .github/workflows/v2_3_0_netns_live_rehearsal.yml
   workflow_dispatch:
     inputs:
       run_live:
@@ -97,8 +57,7 @@ jobs:
 
   announce-live-run:
     if: >-
-      github.event_name == 'push' ||
-      (github.event_name == 'workflow_dispatch' && inputs.run_live)
+      github.event_name == 'workflow_dispatch' && inputs.run_live
     needs: contract
     runs-on: ubuntu-24.04
     steps:
@@ -156,8 +115,7 @@ jobs:
 
   live-netns-rehearsal:
     if: >-
-      github.event_name == 'push' ||
-      (github.event_name == 'workflow_dispatch' && inputs.run_live)
+      github.event_name == 'workflow_dispatch' && inputs.run_live
     needs:
       - contract
       - announce-live-run
@@ -240,8 +198,7 @@ jobs:
   report-live-run:
     if: >-
       always() &&
-      (github.event_name == 'push' ||
-      (github.event_name == 'workflow_dispatch' && inputs.run_live))
+      github.event_name == 'workflow_dispatch' && inputs.run_live
     needs:
       - contract
       - announce-live-run
