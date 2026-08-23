@@ -156,8 +156,7 @@ pub fn transaction_is_confirmed(txid: &str, state: &ChainState) -> bool {
                 .transactions
                 .iter()
                 .any(|confirmed| confirmed.txid == txid)
-                && (!ordered_replay
-                    || !ordered_block_skipped_transaction(txid, &block.hash, state))
+                && (!ordered_replay || !ordered_block_skipped_transaction(txid, &block.hash, state))
         })
 }
 
