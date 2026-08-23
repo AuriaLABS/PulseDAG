@@ -34,9 +34,9 @@ jobs:
           set -euo pipefail
           test "$(tr -d '\r\n' < VERSION)" = "v2.4.0"
           test "$(awk '/^version = / {gsub(/"/, "", $3); print $3; exit}' Cargo.toml)" = "2.4.0"
-          grep -Fq 'public_testnet_ready=false' docs/ROADMAP_V2_4_0.md
-          grep -Fq '30-day public-testnet clock remains not started' docs/ROADMAP_V2_4_0.md
-          grep -Fq 'Smart contracts remain disabled' docs/ROADMAP_V2_4_0.md
+          grep -Fq '`public_testnet_ready=false` remains mandatory until the separate launch-control gate authorizes public launch.' docs/ROADMAP_V2_4_0.md
+          grep -Fq 'The 30-day public-testnet clock must not start or be backdated before the actual authorized public launch.' docs/ROADMAP_V2_4_0.md
+          grep -Fq 'Smart contracts remain disabled and require a separate later approval after the accepted public-testnet policy is satisfied.' docs/ROADMAP_V2_4_0.md
 
       - name: Validate shell syntax
         shell: bash
