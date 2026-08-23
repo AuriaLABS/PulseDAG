@@ -1,4 +1,6 @@
-# PulseDAG v2.3.0 operator runbook
+# PulseDAG v2.4.0 operator runbook
+
+> Task31 candidate status: `PENDING_EXACT_CANDIDATE_EVIDENCE`. The final activated-v2 startup/storage/P2P path and packaged recovery procedure are still being validated. Do not treat this runbook as release or public-testnet authorization.
 
 ## Start a node
 
@@ -65,24 +67,19 @@ Machine-readable errors include:
 - `request_too_large`;
 - `rate_limited`.
 
-## Expected `/release` identity
+## Expected release boundary
 
-```json
-{
-  "ok": true,
-  "data": {
-    "version": "v2.3.0",
-    "pow_algorithm": "kHeavyHash",
-    "pow_engine": "canonical_core",
-    "miner_mode": "external",
-    "smart_contracts": "disabled",
-    "pool_logic": "disabled_not_in_node"
-  }
-}
-```
+The final v2.4.0 candidate must report `version=v2.4.0`, external-miner mode, disabled smart contracts and an exact protocol/network identity matching the frozen candidate. Raw-private-key wallet RPC is removed from the supported node boundary; signed transactions must be produced outside the node.
+
+The exact `chain_id`, genesis hash, activation identity and artifact digests are not frozen until Task31 completes the activated-v2 startup/recovery implementation and exact-SHA validation.
 
 ## Readiness boundary
 
-`v2.3.0` is the current private-testnet release candidate. This runbook does not authorize a public-testnet launch. `public_testnet_ready` remains `false`, and the 30-day public-testnet clock has not started.
+The repository is constructing the v2.4.0 release/activation candidate. This runbook does not authorize tag creation, GitHub Release publication or public-testnet launch.
 
-For multi-node operations, use [`runbooks/V2_3_0_PRIVATE_TESTNET_OPERATIONS.md`](runbooks/V2_3_0_PRIVATE_TESTNET_OPERATIONS.md).
+- `public_testnet_ready=false`
+- `thirty_day_public_testnet_clock_started=false`
+- default high cadence remains experimental/disabled
+- `contracts_enabled=false`
+
+The v2.3.0 private-testnet operations documents remain historical/compatibility inputs only and must not be used as v2.4.0 exact-candidate evidence.
