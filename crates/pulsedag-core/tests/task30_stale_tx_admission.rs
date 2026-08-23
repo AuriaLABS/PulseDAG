@@ -165,3 +165,62 @@ fn ghostdag_conflict_loser_transaction_is_not_confirmed() {
         "conflict-loser transaction must not be rejected as an already-confirmed duplicate"
     );
 }
+
+#[test]
+fn activated_v2_applied_ordered_transaction_is_confirmed() {
+    let chain_id = "task30-v2-ordered-applied";
+    let mut state = init_chain_state(chain_id.to_string());
+    state.dag.ordering_version = GHOSTDAG_V1_ORDERING_VERSION.to_string();
+    let mut tx = transaction(TRANSACTION_VERSION_V2);
+    tx.txid = compute_txid_v2(&tx, chain_id).expect("canonical v2 txid");
+    let ordered_hash = "task30-v2-ordered-side";
+    record_in_noncanonical_block(&mut state, &tx, ordered_hash);
+    state.dag.ordered_dag.push(ordered_hash.to_string());
+
+    assert!(!state.dag.consensus_mode.ghostdag_metadata_active());
+    assert!(!state.dag.selected_chain.iter().any(|hash| hash == ordered_hash));
+    assert!(state.dag.ordered_dag.iter().any(|hash| hash == ordered_hash));
+    assert!(
+        transaction_is_confirmed(&tx.txid, &state),
+        "activated-v2 confirmation must follow the authoritative ordered DAG even when the runtime consensus enum remains legacy"
+    );
+    assert!(matches!(
+        validate_transaction_v2(&tx, &state, chain_id),
+        Err(PulseError::TxAlreadyExists)
+    ));
+}
+
+#[test]
+fn activated_v2_conflict_loser_is_not_confirmed() {
+    let chain_id = "task30-v2-conflict-loser";
+    let mut state = init_chain_state(chain_id.to_string());
+    state.dag.ordering_version = GHOSTDAG_V1_ORDERING_VERSION.to_string();
+    let mut tx = transaction(TRANSACTION_VERSION_V2);
+    tx.txid = compute_txid_v2(&tx, chain_id).expect("canonical v2 txid");
+    let loser_hash = "task30-v2-loser-block";
+    record_in_noncanonical_block(&mut state, &tx, loser_hash);
+    state.dag.selected_chain.push(loser_hash.to_string());
+    state.dag.ordered_dag.push(loser_hash.to_string());
+    state
+        .dag
+        .ordered_dag_conflict_diagnostics
+        .push(format!(
+            "ordered_pos=1 block={loser_hash} tx={} skipped_conflict_atomic",
+            tx.txid
+        ));
+
+    assert!(!state.dag.consensus_mode.ghostdag_metadata_active());
+    assert!(state.dag.selected_chain.iter().any(|hash| hash == loser_hash));
+    assert!(state.dag.ordered_dag.iter().any(|hash| hash == loser_hash));
+    assert!(
+        !transaction_is_confirmed(&tx.txid, &state),
+        "activated-v2 replay-skipped conflict loser must not be treated as confirmed"
+    );
+    assert!(
+        !matches!(
+            validate_transaction_v2(&tx, &state, chain_id),
+            Err(PulseError::TxAlreadyExists)
+        ),
+        "activated-v2 conflict loser must remain outside confirmed duplicate semantics"
+    );
+}
