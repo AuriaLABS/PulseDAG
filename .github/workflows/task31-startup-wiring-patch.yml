@@ -212,6 +212,50 @@ jobs:
               "p2p capability verification",
           )
 
+          replace_once(
+              '''        let chain_id = cfg.chain_id.clone();
+                  let protocol_restore_identity =
+                      startup_protocol_restore_identity(&cfg.chain_id, cfg.consensus_mode);
+          ''',
+              '''        let chain_id = cfg.chain_id.clone();
+                  let activated_v2_protocol = startup_protocol.activated_v2();
+                  let protocol_restore_identity = startup_protocol.restore_identity.clone();
+          ''',
+              "auto-prune protocol identity",
+          )
+
+          replace_once(
+              '''                if auto_prune_enabled && auto_prune_every > 0 && best_height > 0 {
+                      let should_prune =
+                          auto_prune_should_fire(best_height, last_prune_height, auto_prune_every);
+                      if should_prune {
+          ''',
+              '''                if auto_prune_enabled && auto_prune_every > 0 && best_height > 0 {
+                      let should_prune =
+                          auto_prune_should_fire(best_height, last_prune_height, auto_prune_every);
+                      if should_prune && activated_v2_protocol {
+                          warn!(
+                              best_height,
+                              "auto prune skipped for activated ghostdag_v1; protocol-v2 prune/replay verification is not yet enabled"
+                          );
+                          let _ = storage.append_runtime_event(
+                              "warn",
+                              "prune_auto_v2_not_enabled",
+                              &format!(
+                                  "auto prune skipped at height {} because activated-v2 prune/replay verification is not enabled",
+                                  best_height
+                              ),
+                          );
+                          continue;
+                      }
+                      if should_prune {
+          ''',
+              "activated-v2 auto-prune fail-closed guard",
+          )
+
+          if "startup_protocol_restore_identity" in text:
+              raise SystemExit("legacy startup protocol helper reference remains after patch")
+
           path.write_text(text, encoding="utf-8")
           PY
 
