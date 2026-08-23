@@ -1,0 +1,45 @@
+# Temporary branch-local exact patcher. Delete immediately after target commit lands.
+name: Task31 protocol status observability patch
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - scripts/task31_status_protocol_patch.py
+      - .github/workflows/task31-status-protocol-patch.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'agent/task31-release-freeze'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+          fetch-depth: 0
+
+      - name: Apply exact status protocol replacements
+        run: python3 scripts/task31_status_protocol_patch.py
+
+      - name: Format candidate
+        run: cargo fmt --all
+
+      - name: Verify status protocol regression
+        run: cargo test --locked -p pulsedag-rpc handlers::status::tests --no-fail-fast
+
+      - name: Commit status observability patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- crates/pulsedag-rpc/src/handlers/status.rs; then
+            echo "status protocol observability already applied"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add crates/pulsedag-rpc/src/handlers/status.rs
+          git commit -m "rpc: report durable protocol consensus mode"
+          git push origin HEAD:${{ github.head_ref }}
