@@ -159,7 +159,10 @@ mod tests {
     fn clean_v2_state_matches_activated_protocol_identity() {
         let state = init_chain_state_v2("pulsedag-private-v2.4.0".to_string()).unwrap();
         assert_eq!(state.dag.ordering_version, GHOSTDAG_V1_ORDERING_VERSION);
-        assert_eq!(state.dag.selected_parent_policy, SelectedParentPolicy::GhostdagInspired);
+        assert_eq!(
+            state.dag.selected_parent_policy,
+            SelectedParentPolicy::GhostdagInspired
+        );
         assert_eq!(state.dag.ordered_dag, vec![state.dag.genesis_hash.clone()]);
         assert!(state.dag.ordered_dag_state_root.is_some());
         assert_eq!(state.dag.blocks[&state.dag.genesis_hash].header.version, 2);
