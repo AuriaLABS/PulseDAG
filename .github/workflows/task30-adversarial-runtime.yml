@@ -1,0 +1,383 @@
+name: v2.4.0 Task 30 adversarial runtime
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/task30-adversarial-runtime.yml
+      - scripts/v2_2_20_private_5n_4m_rehearsal.sh
+      - scripts/v2_3_0_lag_injection_selected_segment.sh
+      - scripts/v2_3_0_mempool_tx_relay_evidence.sh
+      - scripts/v2_3_0_prune_restart_rejoin_runtime.sh
+      - scripts/lib/v2_3_0_runtime_harness.sh
+      - scripts/lib/v2_3_0_prune_restart_rejoin_harness.sh
+      - scripts/lib/patch_v2_3_0_lag_runtime_harness.py
+      - scripts/private_testnet/**
+  pull_request:
+    branches:
+      - main
+    paths:
+      - .github/workflows/task30-adversarial-runtime.yml
+      - scripts/v2_2_20_private_5n_4m_rehearsal.sh
+      - scripts/v2_3_0_lag_injection_selected_segment.sh
+      - scripts/v2_3_0_mempool_tx_relay_evidence.sh
+      - scripts/v2_3_0_prune_restart_rejoin_runtime.sh
+      - scripts/lib/v2_3_0_runtime_harness.sh
+      - scripts/lib/v2_3_0_prune_restart_rejoin_harness.sh
+      - scripts/lib/patch_v2_3_0_lag_runtime_harness.py
+      - scripts/private_testnet/**
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  multi-miner-convergence:
+    name: 5N/${{ matrix.miners }}M convergence
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        miners: [1, 2, 4]
+    env:
+      CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Verify exact SHA and clean checkout
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          test -z "$(git status --porcelain)"
+          printf '%s\n' "$CANDIDATE_SHA" > "$RUNNER_TEMP/candidate-sha.txt"
+
+      - name: Build release node and standalone miner
+        run: cargo build --locked --release -p pulsedagd -p pulsedag-miner
+
+      - name: Run five-node multi-miner convergence rehearsal
+        env:
+          MINER_COUNT: ${{ matrix.miners }}
+          DURATION_SECS: 600
+          P2P_CONNECT_WAIT_SECS: 120
+          QUIESCENCE_WAIT_SECS: 90
+          GLOBAL_DEADLINE_SECS: 1500
+          RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.miners }}m
+          OUT_DIR: ${{ runner.temp }}/task30/multi-${{ matrix.miners }}m
+        run: bash scripts/v2_2_20_private_5n_4m_rehearsal.sh
+
+      - name: Upload multi-miner evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: task30-5n-${{ matrix.miners }}m-${{ github.event.pull_request.head.sha || github.sha }}
+          path: |
+            ${{ runner.temp }}/task30/multi-${{ matrix.miners }}m
+            ${{ runner.temp }}/candidate-sha.txt
+          if-no-files-found: error
+          retention-days: 14
+
+  partition-restart-rejoin:
+    name: 5N partition restart rejoin
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      EVIDENCE_ROOT: ${{ runner.temp }}/task30/netns
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Verify exact SHA and clean checkout
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          test -z "$(git status --porcelain)"
+
+      - name: Verify namespace prerequisites
+        run: |
+          set -euo pipefail
+          sudo -n true
+          command -v ip
+          command -v jq
+          command -v curl
+          command -v python3
+
+      - name: Build release node and standalone miner
+        run: cargo build --locked --release -p pulsedagd -p pulsedag-miner
+
+      - name: Run isolated five-node partition and restart rehearsal
+        run: |
+          bash scripts/private_testnet/netns_rehearsal.sh \
+            --candidate-sha "$CANDIDATE_SHA" \
+            --workspace "$GITHUB_WORKSPACE" \
+            --evidence-root "$EVIDENCE_ROOT"
+
+      - name: Verify partition evidence bundle
+        if: success()
+        run: python3 scripts/private_testnet/multi_host_rehearsal.py verify-evidence --evidence-dir "$EVIDENCE_ROOT/controller"
+
+      - name: Upload partition and restart evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: task30-partition-restart-${{ github.event.pull_request.head.sha || github.sha }}
+          path: ${{ runner.temp }}/task30/netns
+          if-no-files-found: error
+          retention-days: 14
+
+  delayed-parent-selected-segment:
+    name: 5N delayed parent selected-segment recovery
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    env:
+      CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      OUT_DIR: ${{ runner.temp }}/task30/lag-selected-segment
+      RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}-lag
+      MIN_SELECTED_GAP: 64
+      CI_MODE: 0
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Verify exact SHA and clean checkout
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          test -z "$(git status --porcelain)"
+
+      - name: Run delayed-parent selected-segment runtime drill
+        run: bash scripts/v2_3_0_lag_injection_selected_segment.sh
+
+      - name: Enforce runtime closeout semantics
+        if: success()
+        run: |
+          set -euo pipefail
+          jq -e '
+            .result == "PASS" and
+            .evidence_kind == "runtime" and
+            .closeout_eligible == true and
+            .node_count == 5 and
+            .external_miners == 4 and
+            .observed_network_selected_height_gap >= 64 and
+            .final_convergence == true and
+            .storage_memory_consistent == true and
+            .pending_selected_segment_requests == 0 and
+            .final_orphan_count == 0 and
+            .final_missing_parent_blockers == 0 and
+            .public_testnet_ready == false
+          ' "$OUT_DIR/evidence_manifest.json" >/dev/null
+
+      - name: Upload delayed-parent evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: task30-delayed-parent-${{ github.event.pull_request.head.sha || github.sha }}
+          path: ${{ runner.temp }}/task30/lag-selected-segment
+          if-no-files-found: error
+          retention-days: 14
+
+  signed-relay-runtime:
+    name: 5N signed relay duplicate and capacity runtime
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      OUT_DIR: ${{ runner.temp }}/task30/mempool-relay
+      TX_COUNT: 1
+      REHEARSAL_MEMPOOL_CAPACITY: 2
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Verify exact SHA and clean checkout
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          test -z "$(git status --porcelain)"
+
+      - name: Run signed transaction relay runtime drill
+        run: bash scripts/v2_3_0_mempool_tx_relay_evidence.sh
+
+      - name: Enforce relay, duplicate and capacity evidence
+        if: success()
+        run: |
+          set -euo pipefail
+          jq -e '
+            .result == "PASS" and
+            .evidence_kind == "runtime" and
+            .node_count == 5 and
+            .relay_converged == true and
+            .duplicate_suppression == true and
+            .capacity_rejection_taxonomy == true and
+            .confirmation_cleanup == true and
+            .deterministic_final_mempool_sets == true and
+            .public_testnet_ready == false
+          ' "$OUT_DIR/evidence_manifest.json" >/dev/null
+
+      - name: Upload signed-relay evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: task30-signed-relay-${{ github.event.pull_request.head.sha || github.sha }}
+          path: ${{ runner.temp }}/task30/mempool-relay
+          if-no-files-found: error
+          retention-days: 14
+
+  prune-restart-rejoin:
+    name: 5N prune snapshot restart rejoin
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      OUT_DIR: ${{ runner.temp }}/task30/prune-restart-rejoin
+      MIN_OFFLINE_ADVANCE_BLOCKS: 64
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Verify exact SHA and clean checkout
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          test -z "$(git status --porcelain)"
+
+      - name: Run prune snapshot restart and rejoin runtime drill
+        run: bash scripts/v2_3_0_prune_restart_rejoin_runtime.sh
+
+      - name: Enforce recovery evidence
+        if: success()
+        run: |
+          set -euo pipefail
+          jq -e '
+            .result == "PASS" and
+            .evidence_kind == "runtime" and
+            .node_count == 5 and
+            .blocks_pruned_total > 0 and
+            .snapshot_delta_restart_executed == true and
+            .restart_selected_tip_matches == true and
+            .restart_state_root_matches == true and
+            .offline_advance_blocks >= 64 and
+            .rejoin_executed == true and
+            .rejoin_converged == true and
+            .final_storage_memory_consistent == true and
+            .public_testnet_ready == false
+          ' "$OUT_DIR/evidence_manifest.json" >/dev/null
+
+      - name: Upload prune and rejoin evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: task30-prune-rejoin-${{ github.event.pull_request.head.sha || github.sha }}
+          path: ${{ runner.temp }}/task30/prune-restart-rejoin
+          if-no-files-found: error
+          retention-days: 14
+
+  decision:
+    name: Task30 adversarial decision
+    runs-on: ubuntu-latest
+    if: always()
+    needs:
+      - multi-miner-convergence
+      - partition-restart-rejoin
+      - delayed-parent-selected-segment
+      - signed-relay-runtime
+      - prune-restart-rejoin
+    env:
+      CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      MULTI_MINER_RESULT: ${{ needs.multi-miner-convergence.result }}
+      PARTITION_RESULT: ${{ needs.partition-restart-rejoin.result }}
+      DELAYED_PARENT_RESULT: ${{ needs.delayed-parent-selected-segment.result }}
+      RELAY_RESULT: ${{ needs.signed-relay-runtime.result }}
+      RECOVERY_RESULT: ${{ needs.prune-restart-rejoin.result }}
+    steps:
+      - name: Write exact-candidate PASS or FAIL decision
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/task30/decision"
+          python3 - "$RUNNER_TEMP/task30/decision/decision.json" <<'PY'
+          import json
+          import os
+          import sys
+          from datetime import datetime, timezone
+
+          path = sys.argv[1]
+          results = {
+              "multi_miner_convergence": os.environ["MULTI_MINER_RESULT"],
+              "partition_restart_rejoin": os.environ["PARTITION_RESULT"],
+              "delayed_parent_selected_segment": os.environ["DELAYED_PARENT_RESULT"],
+              "signed_relay_runtime": os.environ["RELAY_RESULT"],
+              "prune_restart_rejoin": os.environ["RECOVERY_RESULT"],
+          }
+          passed = all(value == "success" for value in results.values())
+          payload = {
+              "task": "v2.4.0-task30-adversarial-runtime",
+              "candidate_sha": os.environ["CANDIDATE_SHA"],
+              "captured_at_utc": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+              "result": "PASS" if passed else "FAIL",
+              "jobs": results,
+              "public_testnet_ready": False,
+              "release_tag_authorized": False,
+              "default_high_cadence_authorized": False,
+              "smart_contract_activation_authorized": False,
+          }
+          with open(path, "w", encoding="utf-8") as handle:
+              json.dump(payload, handle, indent=2, sort_keys=True)
+              handle.write("\n")
+          PY
+          cat "$RUNNER_TEMP/task30/decision/decision.json"
+          jq -e '.result == "PASS" and .public_testnet_ready == false' "$RUNNER_TEMP/task30/decision/decision.json" >/dev/null
+
+      - name: Upload Task30 adversarial decision
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: task30-adversarial-decision-${{ github.event.pull_request.head.sha || github.sha }}
+          path: ${{ runner.temp }}/task30/decision
+          if-no-files-found: error
+          retention-days: 30
