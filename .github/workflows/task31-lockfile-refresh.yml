@@ -1,12 +1,13 @@
 name: Task31 lockfile refresh
 
 on:
-  push:
+  pull_request:
     branches:
-      - agent/task31-release-freeze
+      - main
     paths:
       - VERSION
       - Cargo.toml
+      - Cargo.lock
       - .github/workflows/task31-lockfile-refresh.yml
 
 permissions:
