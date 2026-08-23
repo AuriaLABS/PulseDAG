@@ -3,6 +3,7 @@ use pulsedag_core::{
     genesis::init_chain_state,
     ordering_v2::GHOSTDAG_V1_ORDERING_VERSION,
     protocol::ProtocolActivationIdentity,
+    state::ConsensusMode,
     tx::{compute_txid, compute_txid_v2},
     types::{OutPoint, Transaction, TxInput, TxOutput},
     validation::{transaction_is_confirmed, validate_transaction},
@@ -40,6 +41,24 @@ fn record_as_confirmed(state: &mut pulsedag_core::ChainState, tx: &Transaction) 
         .expect("genesis block exists")
         .transactions
         .push(tx.clone());
+}
+
+fn record_in_noncanonical_block(
+    state: &mut pulsedag_core::ChainState,
+    tx: &Transaction,
+    hash: &str,
+) {
+    let genesis = state.dag.genesis_hash.clone();
+    let mut block = state
+        .dag
+        .blocks
+        .get(&genesis)
+        .expect("genesis block exists")
+        .clone();
+    block.hash = hash.to_string();
+    block.header.height = 1;
+    block.transactions = vec![tx.clone()];
+    state.dag.blocks.insert(hash.to_string(), block);
 }
 
 #[test]
@@ -92,4 +111,57 @@ fn confirmed_v2_resubmission_is_duplicate_not_orphan() {
     );
     assert!(!state.mempool.transactions.contains_key(&tx.txid));
     assert!(!state.mempool.orphan_transactions.contains_key(&tx.txid));
+}
+
+#[test]
+fn legacy_side_dag_transaction_is_not_confirmed() {
+    let mut state = init_chain_state("task30-side-dag".to_string());
+    let mut tx = transaction(TRANSACTION_VERSION_V1);
+    tx.txid = compute_txid(&tx);
+    let side_hash = "task30-side-only";
+    record_in_noncanonical_block(&mut state, &tx, side_hash);
+
+    assert!(!state.dag.selected_chain.iter().any(|hash| hash == side_hash));
+    assert!(
+        !transaction_is_confirmed(&tx.txid, &state),
+        "raw side-DAG membership must not imply canonical confirmation"
+    );
+    assert!(
+        !matches!(
+            validate_transaction(&tx, &state),
+            Err(PulseError::TxAlreadyExists)
+        ),
+        "side-DAG transaction must not be rejected as an already-confirmed duplicate"
+    );
+}
+
+#[test]
+fn ghostdag_conflict_loser_transaction_is_not_confirmed() {
+    let mut state = init_chain_state("task30-conflict-loser".to_string());
+    state.dag.consensus_mode = ConsensusMode::GhostdagDev;
+    let mut tx = transaction(TRANSACTION_VERSION_V1);
+    tx.txid = compute_txid(&tx);
+    let loser_hash = "task30-loser-block";
+    record_in_noncanonical_block(&mut state, &tx, loser_hash);
+    state.dag.ordered_dag.push(loser_hash.to_string());
+    state
+        .dag
+        .ordered_dag_conflict_diagnostics
+        .push(format!(
+            "ordered_pos=1 block={loser_hash} tx={} skipped_conflict",
+            tx.txid
+        ));
+
+    assert!(state.dag.ordered_dag.iter().any(|hash| hash == loser_hash));
+    assert!(
+        !transaction_is_confirmed(&tx.txid, &state),
+        "a transaction skipped by canonical DAG replay must not be treated as confirmed"
+    );
+    assert!(
+        !matches!(
+            validate_transaction(&tx, &state),
+            Err(PulseError::TxAlreadyExists)
+        ),
+        "conflict-loser transaction must not be rejected as an already-confirmed duplicate"
+    );
 }
