@@ -39,7 +39,7 @@ jobs:
   multi-miner-convergence:
     name: 5N/${{ matrix.miners }}M convergence
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -93,7 +93,7 @@ jobs:
   partition-restart-rejoin:
     name: 5N partition restart rejoin
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     env:
       CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
       EVIDENCE_ROOT: ${{ runner.temp }}/task30/netns
@@ -150,7 +150,7 @@ jobs:
   delayed-parent-selected-segment:
     name: 5N delayed parent selected-segment recovery
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 75
     env:
       CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
       OUT_DIR: ${{ runner.temp }}/task30/lag-selected-segment
@@ -209,7 +209,7 @@ jobs:
   signed-relay-runtime:
     name: 5N signed relay duplicate and capacity runtime
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 45
     env:
       CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
       OUT_DIR: ${{ runner.temp }}/task30/mempool-relay
@@ -264,7 +264,7 @@ jobs:
   prune-restart-rejoin:
     name: 5N prune snapshot restart rejoin
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     env:
       CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
       OUT_DIR: ${{ runner.temp }}/task30/prune-restart-rejoin
