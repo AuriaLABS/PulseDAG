@@ -127,6 +127,18 @@ pub fn missing_transaction_inputs(tx: &Transaction, state: &ChainState) -> Vec<O
         .collect()
 }
 
+/// Return true when this canonical transaction id is already present in an
+/// accepted DAG block. Admission uses this after txid validation so stale
+/// resubmission cannot be parked as a missing-input orphan and re-broadcast.
+pub fn transaction_is_confirmed(txid: &str, state: &ChainState) -> bool {
+    state.dag.blocks.values().any(|block| {
+        block
+            .transactions
+            .iter()
+            .any(|confirmed| confirmed.txid == txid)
+    })
+}
+
 pub fn validate_transaction(tx: &Transaction, state: &ChainState) -> Result<(), PulseError> {
     if tx.outputs.is_empty() {
         return Err(PulseError::InvalidTransaction("no outputs".into()));
@@ -145,6 +157,9 @@ pub fn validate_transaction(tx: &Transaction, state: &ChainState) -> Result<(), 
     }
     if compute_txid(tx) != tx.txid {
         return Err(PulseError::InvalidTxid);
+    }
+    if transaction_is_confirmed(&tx.txid, state) {
+        return Err(PulseError::TxAlreadyExists);
     }
 
     let total_input = tx.inputs.iter().try_fold(0_u64, |acc, input| {
