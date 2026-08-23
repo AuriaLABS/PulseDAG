@@ -25,6 +25,7 @@ jobs:
         run: |
           python3 - <<'PY'
           from pathlib import Path
+          import re
 
           path = Path("apps/pulsedagd/src/main.rs")
           text = path.read_text(encoding="utf-8")
@@ -136,24 +137,30 @@ jobs:
               "protocol-bound genesis load",
           )
 
-          replace_once(
-              '''            chain_state = match startup_protocol_identity.as_ref() {
-                      Some(expected) => storage.replay_blocks_or_init_for_protocol(expected)?,
-                      None => storage.replay_blocks_or_init(cfg.chain_id.clone())?,
-                  };
-          ''',
-              '''            if startup_protocol.activated_v2() {
-                      return Err(anyhow::anyhow!(
-                          "activated-v2 startup consistency check requires protocol-v2 replay; refusing legacy rebuild: {reason}"
-                      ));
-                  }
-                  chain_state = match startup_protocol.restore_identity.as_ref() {
-                      Some(expected) => storage.replay_blocks_or_init_for_protocol(expected)?,
-                      None => storage.replay_blocks_or_init(cfg.chain_id.clone())?,
-                  };
-          ''',
-              "fail-closed v2 rebuild boundary",
-          )
+          if "activated-v2 startup consistency check requires protocol-v2 replay" not in text:
+              pattern = re.compile(
+                  r'(?P<i>^[ \t]+)chain_state = match startup_protocol_identity\.as_ref\(\) \{\n'
+                  r'(?P=i)[ \t]+Some\(expected\) => storage\.replay_blocks_or_init_for_protocol\(expected\)\?,\n'
+                  r'(?P=i)[ \t]+None => storage\.replay_blocks_or_init\(cfg\.chain_id\.clone\(\)\)\?,\n'
+                  r'(?P=i)\};',
+                  re.MULTILINE,
+              )
+              match = pattern.search(text)
+              if match is None:
+                  raise SystemExit("fail-closed v2 rebuild boundary: semantic anchor not found")
+              indent = match.group("i")
+              replacement = (
+                  indent + "if startup_protocol.activated_v2() {\n"
+                  + indent + "    return Err(anyhow::anyhow!(\n"
+                  + indent + "        \"activated-v2 startup consistency check requires protocol-v2 replay; refusing legacy rebuild: {reason}\"\n"
+                  + indent + "    ));\n"
+                  + indent + "}\n"
+                  + indent + "chain_state = match startup_protocol.restore_identity.as_ref() {\n"
+                  + indent + "    Some(expected) => storage.replay_blocks_or_init_for_protocol(expected)?,\n"
+                  + indent + "    None => storage.replay_blocks_or_init(cfg.chain_id.clone())?,\n"
+                  + indent + "};"
+              )
+              text = pattern.sub(replacement, text, count=1)
 
           replace_once(
               '''        };
