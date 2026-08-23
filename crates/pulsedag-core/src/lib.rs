@@ -6,6 +6,7 @@ pub mod consistency;
 pub mod errors;
 pub mod finality_v2;
 pub mod genesis;
+pub mod genesis_v2;
 pub mod ghostdag;
 pub mod ghostdag_v1;
 pub mod header_v2;
