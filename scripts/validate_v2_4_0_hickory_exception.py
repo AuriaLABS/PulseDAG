@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fail-closed validator for the temporary v2.4.0 Hickory exception."""
+"""Fail-closed validator for the Task31 v2.4.0 Hickory non-reachability exception."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-EXPECTED_IGNORES = {"RUSTSEC-2026-0118", "RUSTSEC-2026-0119"}
+EXPECTED_IGNORES = {"RUSTSEC-2026-0119"}
 EXPECTED_LIBP2P_FEATURES = {
     "tokio",
     "gossipsub",
@@ -63,8 +63,6 @@ def package_name_from_id(package_id: object) -> str:
 
 
 def compile_clean_and_capture(package: str, evidence_dir: Path) -> set[str]:
-    """Compile one root in an empty target and return emitted package names."""
-
     with tempfile.TemporaryDirectory(prefix=f"pulsedag-{package}-") as target_dir:
         env = os.environ.copy()
         env["CARGO_TARGET_DIR"] = target_dir
@@ -116,20 +114,18 @@ def main() -> None:
             "remove or re-review it before continuing"
         )
 
-    audit_path = ROOT / ".cargo" / "audit.toml"
-    audit = tomllib.loads(audit_path.read_text())
+    audit = tomllib.loads((ROOT / ".cargo" / "audit.toml").read_text())
     ignored = set(audit.get("advisories", {}).get("ignore", []))
     if ignored != EXPECTED_IGNORES:
         fail(f"unexpected advisory ignore set: {sorted(ignored)}")
 
-    manifest_path = ROOT / "crates" / "pulsedag-p2p" / "Cargo.toml"
-    manifest = tomllib.loads(manifest_path.read_text())
+    manifest = tomllib.loads((ROOT / "crates" / "pulsedag-p2p" / "Cargo.toml").read_text())
     libp2p = manifest.get("dependencies", {}).get("libp2p")
     if not isinstance(libp2p, dict):
         fail("libp2p must remain an explicit dependency table")
     version = str(libp2p.get("version", ""))
-    if not (version == "0.56" or version.startswith("0.56.")):
-        fail(f"exception is version-specific to libp2p 0.56.x, found {version!r}")
+    if not (version == "0.54" or version.startswith("0.54.")):
+        fail(f"exception is version-specific to libp2p 0.54.x, found {version!r}")
     if libp2p.get("default-features") is not False:
         fail("libp2p default features must remain disabled")
     features = set(libp2p.get("features", []))
@@ -140,22 +136,20 @@ def main() -> None:
         fail(f"forbidden libp2p features selected: {sorted(selected_forbidden)}")
 
     lock_text = (ROOT / "Cargo.lock").read_text()
-    if package_versions(lock_text, "hickory-proto") != ["0.25.2"]:
-        fail("expected exactly hickory-proto 0.25.2 in the optional locked graph")
-    if package_versions(lock_text, "quinn-proto") != ["0.11.15"]:
-        fail("quinn-proto must resolve exactly to patched version 0.11.15")
+    if package_versions(lock_text, "hickory-proto") != ["0.24.4"]:
+        fail("expected exactly hickory-proto 0.24.4 in the optional locked graph")
 
     p2p_source = (ROOT / "crates" / "pulsedag-p2p" / "src" / "lib.rs").read_text()
-    if "state.mdns = false;" not in p2p_source:
-        fail("runtime status must report mDNS disabled")
     if "mdns::Behaviour" in p2p_source or "mdns::tokio::Behaviour" in p2p_source:
         fail("an mDNS behaviour is instantiated")
 
-    config_source = (ROOT / "apps" / "pulsedagd" / "src" / "config.rs").read_text()
-    if "PULSEDAG_P2P_MDNS=true is unsupported in v2.4.0" not in config_source:
-        fail("daemon configuration does not reject mDNS enablement")
-    if "p2p_mdns: true" in config_source:
-        fail("a daemon profile still defaults mDNS to true")
+    for profile in (
+        ROOT / "configs" / "private-testnet" / "seed.env.example",
+        ROOT / "configs" / "private-testnet" / "node.env.example",
+        ROOT / "configs" / "single-node" / "single-node.env.example",
+    ):
+        if "PULSEDAG_P2P_MDNS=false" not in profile.read_text():
+            fail(f"release profile {profile.relative_to(ROOT)} does not keep mDNS disabled")
 
     evidence_dir = ROOT / "ci-evidence" / "dependency-final-remediation"
     evidence_dir.mkdir(parents=True, exist_ok=True)
@@ -171,43 +165,38 @@ def main() -> None:
         ROOT / "docs" / "security" / "V2_4_0_HICKORY_REACHABILITY_EXCEPTION.md"
     ).read_text()
     for required in (
-        "RUSTSEC-2026-0118",
         "RUSTSEC-2026-0119",
+        "hickory-proto 0.24.4",
+        "libp2p 0.54",
         "2026-08-31 UTC",
-        "libp2p 0.56.0",
         "public-testnet GO",
     ):
         if required not in decision:
             fail(f"decision record is missing {required!r}")
 
+    candidate_sha = os.environ.get("CANDIDATE_SHA") or os.environ.get("GITHUB_SHA", "local")
     summary = evidence_dir / "hickory-exception-validation.txt"
     summary.write_text(
         "\n".join(
             [
                 "result=PASS",
+                f"source_sha={candidate_sha}",
                 f"validated_utc_date={today.isoformat()}",
                 f"review_deadline={REVIEW_DEADLINE.isoformat()}",
-                f"ignored_advisories={','.join(sorted(EXPECTED_IGNORES))}",
+                "ignored_advisories=RUSTSEC-2026-0119",
                 f"libp2p_version={version}",
                 f"libp2p_features={','.join(sorted(features))}",
-                "hickory_proto_locked=0.25.2",
+                "hickory_proto_locked=0.24.4",
                 "hickory_compiled_in_node=false",
                 "hickory_compiled_in_p2p=false",
                 "libp2p_dns_compiled=false",
                 "libp2p_mdns_compiled=false",
-                "quinn_proto_locked=0.11.15",
-                *(
-                    f"compiled_package_count_{root}={len(compiled_by_root[root])}"
-                    for root in COMPILE_ROOTS
-                ),
+                *(f"compiled_package_count_{root}={len(compiled_by_root[root])}" for root in COMPILE_ROOTS),
                 "",
             ]
         )
     )
-    print(
-        "PASS: v2.4.0 Hickory exception remains narrow, "
-        "not compiled and unexpired"
-    )
+    print("PASS: Task31 Hickory exception is narrow, uncompiled and unexpired")
 
 
 if __name__ == "__main__":

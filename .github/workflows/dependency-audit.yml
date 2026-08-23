@@ -129,8 +129,7 @@ jobs:
               for item in vulnerabilities
           }
           expected_vulnerabilities = {
-              ('RUSTSEC-2026-0118', 'hickory-proto', '0.25.2'),
-              ('RUSTSEC-2026-0119', 'hickory-proto', '0.25.2'),
+              ('RUSTSEC-2026-0119', 'hickory-proto', '0.24.4'),
           }
           observed_warnings = {
               (kind, item.get('advisory', {}).get('id'), item.get('package', {}).get('name'), item.get('package', {}).get('version'))
@@ -148,7 +147,11 @@ jobs:
               ('unmaintained', 'RUSTSEC-2024-0370', 'proc-macro-error', '1.0.4'),
           }
           print(f'raw_vulnerability_count={len(vulnerabilities)}')
+          for item in sorted(observed_vulnerabilities):
+              print('vulnerability', *item)
           print(f'raw_warning_count={len(observed_warnings)}')
+          for item in sorted(observed_warnings):
+              print('warning', *item)
           if observed_vulnerabilities != expected_vulnerabilities:
               raise SystemExit(f'unexpected raw vulnerability set: {sorted(observed_vulnerabilities)}')
           if observed_warnings != expected_warnings:

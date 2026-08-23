@@ -1,103 +1,46 @@
-# v2.4.0 Hickory RustSec reachability exception
+# v2.4.0 Task31 Hickory RustSec reachability exception
 
 Status: active, temporary and fail-closed
 
 Owner: `kalekoi`
 
-Recorded: `2026-08-04 UTC`
-
 Review deadline: `2026-08-31 UTC`
 
-Hard expiry: before any public-testnet GO decision, or immediately when the
-`libp2p` version, selected feature set, P2P transport construction, ignored
-advisory set or Hickory package version changes.
+Hard expiry: before any public-testnet GO decision, or immediately when the `libp2p` version, selected feature set, P2P transport construction, ignored advisory set or Hickory package version changes.
 
 ## Decision
 
-PulseDAG temporarily ignores only these two advisories in `.cargo/audit.toml`:
+PulseDAG temporarily ignores only `RUSTSEC-2026-0119` for the locked `hickory-proto 0.24.4`, and only because the exact Task31 release build does not compile the DNS/mDNS/QUIC feature path that owns it.
 
-- `RUSTSEC-2026-0118` for `hickory-proto 0.25.2`;
-- `RUSTSEC-2026-0119` for `hickory-proto 0.25.2`.
+The companion Hickory advisories do not justify broader ignores for this graph: `RUSTSEC-2026-0118` marks releases before 0.25.0-alpha.3 unaffected, and `RUSTSEC-2025-0006` is patched on the 0.24 line beginning at 0.24.3. The repository therefore does not ignore either advisory.
 
-This is a version-specific non-reachability exception, not a claim that the
-Hickory release is safe and not a general permission to ignore RustSec output.
-Every other vulnerability remains blocking.
+This is a version-specific non-reachability exception, not a claim that Hickory is generally safe and not permission to ignore other RustSec output. Every other vulnerability remains blocking.
 
-## Why the package remains in Cargo.lock
+## Why Hickory remains in Cargo.lock
 
-PulseDAG uses the upstream `libp2p 0.56.0` umbrella crate. Cargo resolves
-optional dependency versions into `Cargo.lock` so they remain available if a
-feature is selected later, then performs a separate feature-resolution pass for
-the actual build. PulseDAG does not select the DNS or mDNS features.
+PulseDAG uses the `libp2p 0.54` umbrella crate. Cargo may retain optional component dependencies in the lock graph even when their features are not selected for the build. The Task31 P2P manifest uses `default-features = false` and selects only Tokio, TCP, Noise, Yamux, Kademlia, gossipsub, identify, macros and ping. It does not select `dns`, `mdns` or `quic`.
 
-Removing those package records by hand makes the lockfile invalid; regenerating
-the complete lockfile introduces unrelated dependency drift in the
-Kaspa/workflow stack.
+The v2.4 candidate profiles explicitly keep `PULSEDAG_P2P_MDNS=false`. The runtime source contains no mDNS behaviour construction.
 
-As of 2026-08-04, `libp2p 0.56.0` is the latest upstream rust-libp2p release.
-There is therefore no newer supported umbrella release to adopt for this
-candidate.
+## Exact-candidate non-reachability evidence
 
-## Non-reachability evidence
+`scripts/validate_v2_4_0_hickory_exception.py` compiles both `pulsedag-p2p` and `pulsedagd` independently from empty Cargo target directories and parses Cargo `compiler-artifact` messages. It fails if `hickory-proto`, `hickory-resolver`, `libp2p-dns` or `libp2p-mdns` is actually compiled.
 
-The v2.4.0 P2P manifest selects exactly the supported Tokio, TCP, Noise, Yamux,
-Kademlia, gossipsub, identify, macros and ping features. It does not select
-`dns`, `mdns` or `quic`.
+The validator also fails unless:
 
-The runtime contract additionally:
+- `.cargo/audit.toml` ignores exactly `RUSTSEC-2026-0119` and no other vulnerability;
+- libp2p remains on the reviewed 0.54 line with exactly the approved feature set;
+- `hickory-proto` remains locked exactly at 0.24.4;
+- release candidate profiles keep mDNS disabled;
+- no mDNS behaviour is instantiated;
+- the review deadline remains unexpired.
 
-- does not instantiate an mDNS `NetworkBehaviour`;
-- reports mDNS disabled;
-- defaults `PULSEDAG_P2P_MDNS` to false in every profile;
-- rejects `PULSEDAG_P2P_MDNS=true` at configuration validation;
-- uses explicit bootnodes and Kademlia for discovery.
-
-The repository validator compiles `pulsedag-p2p` and `pulsedagd` independently
-from empty Cargo target directories and parses Cargo's `compiler-artifact`
-messages. It fails if either build actually compiles `hickory-proto`,
-`hickory-resolver`, `libp2p-dns` or `libp2p-mdns`.
-
-This is intentionally stronger than treating every package recorded in
-`Cargo.lock` or displayed by an approximate dependency-tree view as executable
-reachability.
-
-## Mandatory controls
-
-`scripts/validate_v2_4_0_hickory_exception.py` must pass on the exact candidate
-SHA. It enforces:
-
-- the exact two ignored advisory IDs and no others;
-- `libp2p 0.56.x` with `mdns`, `dns` and `quic` absent from selected features;
-- the expected locked Hickory version `0.25.2`;
-- patched `quinn-proto 0.11.15`;
-- fail-closed daemon configuration and runtime status;
-- clean, locked compiler-artifact evidence proving no Hickory/DNS/mDNS package
-  is compiled into the P2P crate or node;
-- an unexpired review deadline.
-
-The pinned `cargo-audit 0.22.2` gate must then exit successfully with the
-repository configuration. Its raw and configured JSON evidence, exact compiler
-messages and provenance remain attached to the exact candidate.
+The dependency workflow records the exact candidate SHA, compiler messages, package lists, audit JSON and checksums. Evidence from older release-branch SHAs is not substituted.
 
 ## Removal plan
 
-Remove this exception and both ignored IDs as soon as one of these supported
-paths is validated:
-
-1. an upstream rust-libp2p umbrella release no longer locks an affected Hickory
-   version for disabled optional features;
-2. PulseDAG migrates from the umbrella crate to directly selected libp2p
-   component crates without changing the reviewed transport/behaviour contract;
-3. the affected Hickory packages are patched within a Cargo-resolvable,
-   upstream-supported dependency graph.
-
-Any chosen path must rerun the complete P2P, daemon, workspace, packaged-smoke,
-RustSec and pre-burn-in matrices. The private burn-in candidate must then be
-refrozen from zero.
+Remove this exception and the ignored ID as soon as an upstream-supported dependency graph no longer retains an affected optional Hickory release, or if PulseDAG changes its networking stack so the dependency becomes compiled. Any networking dependency change must rerun P2P, daemon, workspace, packaged-smoke and dependency security matrices on one exact candidate SHA.
 
 ## Authorization boundary
 
-This exception does not authorize public exposure, public-testnet GO, Day 0,
-the 30-day clock, contracts, high cadence or production custody. If this record
-expires or any invariant above changes, dependency security returns to a
-blocking state until re-reviewed.
+This exception authorizes only private technical candidate validation. It does not authorize public exposure, public-testnet GO, Day 0, the 30-day clock, contracts, high cadence or production custody. If the record expires or any invariant changes, dependency security returns to a blocking state until re-reviewed.
