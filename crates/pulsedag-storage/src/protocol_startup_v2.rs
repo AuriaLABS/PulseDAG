@@ -9,9 +9,7 @@ fn storage_error(message: impl Into<String>) -> PulseError {
     PulseError::StorageError(message.into())
 }
 
-fn derived_v2_identity(
-    state: &pulsedag_core::ChainState,
-) -> ProtocolActivationIdentity {
+fn derived_v2_identity(state: &pulsedag_core::ChainState) -> ProtocolActivationIdentity {
     ProtocolActivationIdentity::activated_v2(
         state.chain_id.clone(),
         state.dag.genesis_hash.clone(),
@@ -58,7 +56,9 @@ impl Storage {
             .blocks
             .get(&state.dag.genesis_hash)
             .cloned()
-            .ok_or_else(|| storage_error("clean v2 genesis block missing from initialized state"))?;
+            .ok_or_else(|| {
+                storage_error("clean v2 genesis block missing from initialized state")
+            })?;
         let runtime = ActivatedV2P2pRuntime::default();
         self.persist_activated_v2_p2p_blocks_and_runtime(
             std::slice::from_ref(&genesis),
@@ -75,8 +75,8 @@ impl Storage {
 mod tests {
     use super::*;
     use pulsedag_core::{
-        genesis::init_chain_state, genesis_v2::init_chain_state_v2,
-        BLOCK_HEADER_VERSION_V2, TRANSACTION_VERSION_V2,
+        genesis::init_chain_state, genesis_v2::init_chain_state_v2, BLOCK_HEADER_VERSION_V2,
+        TRANSACTION_VERSION_V2,
     };
 
     fn temp_db_path(test_name: &str) -> String {
@@ -142,7 +142,10 @@ mod tests {
             .unwrap()
             .0;
         assert_eq!(second.dag.genesis_hash, first.dag.genesis_hash);
-        assert_eq!(second.dag.ordered_dag_state_root, first.dag.ordered_dag_state_root);
+        assert_eq!(
+            second.dag.ordered_dag_state_root,
+            first.dag.ordered_dag_state_root
+        );
 
         drop(storage);
         let _ = std::fs::remove_dir_all(path);
