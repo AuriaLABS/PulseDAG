@@ -1,4 +1,4 @@
-# Temporary branch-local patcher; delete after the startup wiring commit lands.
+# Temporary branch-local patcher; delete after the startup/replay commit lands.
 name: Task31 startup wiring patch
 
 on:
@@ -22,25 +22,28 @@ jobs:
           ref: ${{ github.head_ref }}
           fetch-depth: 0
 
-      - name: Apply exact startup wiring replacements
+      - name: Apply exact startup and replay replacements
         run: python3 scripts/task31_startup_patch.py
 
       - name: Format candidate
         run: cargo fmt --all
 
-      - name: Verify focused startup modules
+      - name: Verify v2 replay genesis contract
+        run: cargo test --locked -p pulsedag-core state_replay_v2 --no-fail-fast
+
+      - name: Verify focused daemon startup modules
         run: cargo test --locked -p pulsedagd startup_protocol --no-fail-fast
 
       - name: Commit exact patch
         shell: bash
         run: |
           set -euo pipefail
-          if git diff --quiet -- apps/pulsedagd/src/main.rs; then
-            echo "startup wiring already applied"
+          if git diff --quiet -- apps/pulsedagd/src/main.rs crates/pulsedag-core/src/state_replay_v2.rs; then
+            echo "startup/replay wiring already applied"
             exit 0
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add apps/pulsedagd/src/main.rs apps/pulsedagd/src/startup_protocol.rs
-          git commit -m "daemon: wire explicit ghostdag_v1 startup selection"
+          git add apps/pulsedagd/src/main.rs apps/pulsedagd/src/startup_protocol.rs crates/pulsedag-core/src/state_replay_v2.rs
+          git commit -m "core: wire chain-bound ghostdag_v1 startup and replay"
           git push origin HEAD:${{ github.head_ref }}
