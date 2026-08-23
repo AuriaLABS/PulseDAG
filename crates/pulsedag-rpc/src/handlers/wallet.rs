@@ -28,3 +28,20 @@ pub async fn post_wallet_transfer<S: RpcStateLike>(
 ) -> (StatusCode, Json<ApiResponse<serde_json::Value>>) {
     legacy_wallet_rpc_removed()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn legacy_wallet_rpc_is_fail_closed() {
+        let (status, Json(response)) = legacy_wallet_rpc_removed();
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert!(!response.ok);
+        assert!(response.data.is_none());
+        assert_eq!(
+            response.error.as_ref().map(|error| error.code.as_str()),
+            Some("legacy_wallet_rpc_removed")
+        );
+    }
+}
