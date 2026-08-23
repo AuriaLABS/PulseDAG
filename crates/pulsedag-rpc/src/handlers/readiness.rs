@@ -11,6 +11,9 @@ use std::{
     sync::{Mutex, OnceLock},
 };
 
+const CONSERVATIVE_TARGET_BLOCK_INTERVAL_MS: u64 =
+    pulsedag_core::CONSENSUS_TARGET_BLOCK_INTERVAL_SECS * 1_000;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ReadinessStatus {
@@ -179,6 +182,60 @@ fn consensus_status_category(
     )
 }
 
+fn high_cadence_status_category(
+    consensus_mode: pulsedag_core::ConsensusMode,
+    experimental_fast_cadence: bool,
+    target_block_interval_ms: u64,
+) -> ReadinessCategory {
+    let high_cadence_allowed = consensus_mode.high_cadence_allowed();
+    if target_block_interval_ms == 0 {
+        return category(
+            ReadinessStatus::Fail,
+            vec!["target block interval is 0ms; high-cadence readiness requires a positive effective interval".to_string()],
+        );
+    }
+    let effective_fast_cadence = target_block_interval_ms < CONSERVATIVE_TARGET_BLOCK_INTERVAL_MS;
+    if effective_fast_cadence && !experimental_fast_cadence {
+        category(
+            ReadinessStatus::Fail,
+            vec![format!(
+                "effective interval {target_block_interval_ms}ms is faster than conservative {CONSERVATIVE_TARGET_BLOCK_INTERVAL_MS}ms without explicit experimental fast-cadence activation"
+            )],
+        )
+    } else if experimental_fast_cadence && !high_cadence_allowed {
+        category(
+            ReadinessStatus::Fail,
+            vec![format!(
+                "experimental fast-cadence activation requested in consensus mode {consensus_mode}, which does not allow high cadence"
+            )],
+        )
+    } else if experimental_fast_cadence && effective_fast_cadence {
+        category(
+            ReadinessStatus::Warn,
+            vec![format!(
+                "controlled experimental high cadence active at {target_block_interval_ms}ms; Task30/Task31 evidence and approval are still required before any default/public activation"
+            )],
+        )
+    } else if experimental_fast_cadence {
+        category(
+            ReadinessStatus::Warn,
+            vec![format!(
+                "experimental fast-cadence flag is enabled but effective interval {target_block_interval_ms}ms is not faster than conservative {CONSERVATIVE_TARGET_BLOCK_INTERVAL_MS}ms; fast_cadence_ready remains false"
+            )],
+        )
+    } else if high_cadence_allowed {
+        category(
+            ReadinessStatus::Pass,
+            vec!["high-cadence capability available in ghostdag_dev but inactive; explicit experimental activation is required".to_string()],
+        )
+    } else {
+        category(
+            ReadinessStatus::Pass,
+            vec!["experimental high cadence safely disabled".to_string()],
+        )
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ReadinessDimensions {
     node_operational_ready: bool,
@@ -190,9 +247,11 @@ struct ReadinessDimensions {
     release_blockers: Vec<String>,
 }
 
-fn compute_readiness_dimensions(
+fn compute_readiness_dimensions_with_fast_cadence(
     categories: &BTreeMap<String, ReadinessCategory>,
     consensus_mode: pulsedag_core::ConsensusMode,
+    experimental_fast_cadence: bool,
+    target_block_interval_ms: u64,
 ) -> ReadinessDimensions {
     let release_blockers = categories
         .iter()
@@ -212,6 +271,7 @@ fn compute_readiness_dimensions(
         "consensus",
         "critical_warnings",
         "dag",
+        "high_cadence",
         "isolated_genesis_or_height_one_node",
         "mempool",
         "p2p",
@@ -228,11 +288,16 @@ fn compute_readiness_dimensions(
         node_operational_ready && consensus_mode == pulsedag_core::ConsensusMode::Legacy;
     let ghostdag_dev_ready =
         node_operational_ready && consensus_mode == pulsedag_core::ConsensusMode::GhostdagDev;
+    let fast_cadence_ready = node_operational_ready
+        && consensus_mode.high_cadence_allowed()
+        && experimental_fast_cadence
+        && target_block_interval_ms > 0
+        && target_block_interval_ms < CONSERVATIVE_TARGET_BLOCK_INTERVAL_MS;
     ReadinessDimensions {
         node_operational_ready,
         private_conservative_ready,
         ghostdag_dev_ready,
-        fast_cadence_ready: false,
+        fast_cadence_ready,
         public_testnet_ready: false,
         ready_for_release: private_conservative_ready,
         release_blockers,
@@ -504,20 +569,11 @@ pub async fn get_readiness<S: RpcStateLike>(
     }
     categories.insert(
         "high_cadence".to_string(),
-        if chain.dag.consensus_mode.high_cadence_allowed() {
-            category(
-                ReadinessStatus::Warn,
-                vec![
-                    "high cadence enabled; dedicated fast-cadence gates are still required"
-                        .to_string(),
-                ],
-            )
-        } else {
-            category(
-                ReadinessStatus::Pass,
-                vec!["experimental high cadence safely disabled".to_string()],
-            )
-        },
+        high_cadence_status_category(
+            chain.dag.consensus_mode,
+            runtime.experimental_fast_cadence,
+            runtime.target_block_interval_ms,
+        ),
     );
 
     let mut dag_fail = Vec::new();
@@ -827,7 +883,12 @@ pub async fn get_readiness<S: RpcStateLike>(
         ),
     );
 
-    let dimensions = compute_readiness_dimensions(&categories, chain.dag.consensus_mode);
+    let dimensions = compute_readiness_dimensions_with_fast_cadence(
+        &categories,
+        chain.dag.consensus_mode,
+        runtime.experimental_fast_cadence,
+        runtime.target_block_interval_ms,
+    );
     let node_operational_ready = dimensions.node_operational_ready;
     let private_conservative_ready = dimensions.private_conservative_ready;
     let ghostdag_dev_ready = dimensions.ghostdag_dev_ready;
@@ -1109,6 +1170,100 @@ mod tests {
         assert!(!source.contains(&v300_phrase));
         assert!(!source.contains(&public_testnet_live_phrase));
     }
+
+    #[test]
+    fn task29_fast_cadence_readiness_requires_explicit_activation_and_fast_interval() {
+        let categories = BTreeMap::new();
+        let inactive = compute_readiness_dimensions_with_fast_cadence(
+            &categories,
+            pulsedag_core::ConsensusMode::GhostdagDev,
+            false,
+            5_000,
+        );
+        assert!(!inactive.fast_cadence_ready);
+
+        let conservative = compute_readiness_dimensions_with_fast_cadence(
+            &categories,
+            pulsedag_core::ConsensusMode::GhostdagDev,
+            true,
+            CONSERVATIVE_TARGET_BLOCK_INTERVAL_MS,
+        );
+        assert!(!conservative.fast_cadence_ready);
+
+        let active = compute_readiness_dimensions_with_fast_cadence(
+            &categories,
+            pulsedag_core::ConsensusMode::GhostdagDev,
+            true,
+            5_000,
+        );
+        assert!(active.node_operational_ready);
+        assert!(active.ghostdag_dev_ready);
+        assert!(active.fast_cadence_ready);
+        assert!(!active.private_conservative_ready);
+        assert!(!active.public_testnet_ready);
+        assert!(!active.ready_for_release);
+    }
+
+    #[test]
+    fn task29_fast_interval_without_explicit_flag_blocks_operational_readiness() {
+        let cadence =
+            high_cadence_status_category(pulsedag_core::ConsensusMode::GhostdagDev, false, 5_000);
+        assert_eq!(cadence.status, ReadinessStatus::Fail);
+        assert!(cadence.reasons[0].contains("without explicit experimental"));
+
+        let mut categories = BTreeMap::new();
+        categories.insert("high_cadence".to_string(), cadence);
+        let dimensions = compute_readiness_dimensions_with_fast_cadence(
+            &categories,
+            pulsedag_core::ConsensusMode::GhostdagDev,
+            false,
+            5_000,
+        );
+        assert!(!dimensions.node_operational_ready);
+        assert!(!dimensions.fast_cadence_ready);
+    }
+
+    #[test]
+    fn task29_legacy_rejects_experimental_fast_cadence_activation() {
+        let cadence =
+            high_cadence_status_category(pulsedag_core::ConsensusMode::Legacy, true, 5_000);
+        assert_eq!(cadence.status, ReadinessStatus::Fail);
+        assert!(cadence.reasons[0].contains("does not allow high cadence"));
+
+        let mut categories = BTreeMap::new();
+        categories.insert("high_cadence".to_string(), cadence);
+        let dimensions = compute_readiness_dimensions_with_fast_cadence(
+            &categories,
+            pulsedag_core::ConsensusMode::Legacy,
+            true,
+            5_000,
+        );
+        assert!(!dimensions.node_operational_ready);
+        assert!(!dimensions.fast_cadence_ready);
+        assert!(!dimensions.ready_for_release);
+    }
+
+    #[test]
+    fn task29_controlled_fast_cadence_remains_experimental_not_public_or_release() {
+        let cadence =
+            high_cadence_status_category(pulsedag_core::ConsensusMode::GhostdagDev, true, 2_000);
+        assert_eq!(cadence.status, ReadinessStatus::Warn);
+        assert!(cadence.reasons[0].contains("Task30/Task31"));
+
+        let mut categories = BTreeMap::new();
+        categories.insert("high_cadence".to_string(), cadence);
+        let dimensions = compute_readiness_dimensions_with_fast_cadence(
+            &categories,
+            pulsedag_core::ConsensusMode::GhostdagDev,
+            true,
+            2_000,
+        );
+        assert!(dimensions.node_operational_ready);
+        assert!(dimensions.fast_cadence_ready);
+        assert!(!dimensions.public_testnet_ready);
+        assert!(!dimensions.ready_for_release);
+    }
+
     #[test]
     fn legacy_high_cadence_disabled_is_operational_and_release_safe() {
         let mut categories = BTreeMap::new();
@@ -1119,8 +1274,12 @@ mod tests {
                 vec!["experimental high cadence safely disabled".to_string()],
             ),
         );
-        let dimensions =
-            compute_readiness_dimensions(&categories, pulsedag_core::ConsensusMode::Legacy);
+        let dimensions = compute_readiness_dimensions_with_fast_cadence(
+            &categories,
+            pulsedag_core::ConsensusMode::Legacy,
+            false,
+            CONSERVATIVE_TARGET_BLOCK_INTERVAL_MS,
+        );
         assert!(dimensions.node_operational_ready);
         assert!(dimensions.private_conservative_ready);
         assert!(!dimensions.fast_cadence_ready);
@@ -1130,8 +1289,12 @@ mod tests {
     #[test]
     fn ghostdag_dev_is_not_public_or_release_ready() {
         let categories = BTreeMap::new();
-        let dimensions =
-            compute_readiness_dimensions(&categories, pulsedag_core::ConsensusMode::GhostdagDev);
+        let dimensions = compute_readiness_dimensions_with_fast_cadence(
+            &categories,
+            pulsedag_core::ConsensusMode::GhostdagDev,
+            false,
+            CONSERVATIVE_TARGET_BLOCK_INTERVAL_MS,
+        );
         assert!(dimensions.node_operational_ready);
         assert!(dimensions.ghostdag_dev_ready);
         assert!(!dimensions.public_testnet_ready);
@@ -1141,14 +1304,25 @@ mod tests {
 
     #[test]
     fn runtime_blockers_fail_operational_readiness() {
-        for name in ["p2p", "sync_status", "dag", "storage", "pow"] {
+        for name in [
+            "p2p",
+            "sync_status",
+            "dag",
+            "storage",
+            "pow",
+            "high_cadence",
+        ] {
             let mut categories = BTreeMap::new();
             categories.insert(
                 name.to_string(),
                 category(ReadinessStatus::Fail, vec!["blocked".to_string()]),
             );
-            let dimensions =
-                compute_readiness_dimensions(&categories, pulsedag_core::ConsensusMode::Legacy);
+            let dimensions = compute_readiness_dimensions_with_fast_cadence(
+                &categories,
+                pulsedag_core::ConsensusMode::Legacy,
+                false,
+                CONSERVATIVE_TARGET_BLOCK_INTERVAL_MS,
+            );
             assert!(
                 !dimensions.node_operational_ready,
                 "{name} should block operational readiness"

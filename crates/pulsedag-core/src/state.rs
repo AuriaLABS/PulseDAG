@@ -82,7 +82,7 @@ impl ConsensusMode {
     }
 
     pub fn high_cadence_allowed(self) -> bool {
-        false
+        matches!(self, Self::GhostdagDev)
     }
 }
 
@@ -401,6 +401,12 @@ impl Default for MissingParentTerminalEntry {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn task29_high_cadence_capability_is_ghostdag_dev_only() {
+        assert!(!ConsensusMode::Legacy.high_cadence_allowed());
+        assert!(ConsensusMode::GhostdagDev.high_cadence_allowed());
+    }
 
     fn utxo(txid: &str, index: u32, address: &str, amount: u64, height: u64) -> (OutPoint, Utxo) {
         let outpoint = OutPoint {
