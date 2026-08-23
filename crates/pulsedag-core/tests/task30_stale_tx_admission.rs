@@ -1,5 +1,6 @@
 use pulsedag_core::{
     accept_transaction_with_result, accept_transaction_with_result_for_protocol,
+    compact_snapshot_to_retained_blocks,
     genesis::init_chain_state,
     ordering_v2::GHOSTDAG_V1_ORDERING_VERSION,
     protocol::ProtocolActivationIdentity,
@@ -56,7 +57,9 @@ fn record_in_noncanonical_block(
         .expect("genesis block exists")
         .clone();
     block.hash = hash.to_string();
+    block.header.parents = vec![genesis];
     block.header.height = 1;
+    block.header.timestamp = 1;
     block.transactions = vec![tx.clone()];
     state.dag.blocks.insert(hash.to_string(), block);
 }
@@ -222,5 +225,52 @@ fn activated_v2_conflict_loser_is_not_confirmed() {
             Err(PulseError::TxAlreadyExists)
         ),
         "activated-v2 conflict loser must remain outside confirmed duplicate semantics"
+    );
+}
+
+#[test]
+fn compact_prune_preserves_retained_conflict_loser_semantics() {
+    let chain_id = "task30-v2-pruned-conflict-loser";
+    let mut state = init_chain_state(chain_id.to_string());
+    state.dag.ordering_version = GHOSTDAG_V1_ORDERING_VERSION.to_string();
+    let mut tx = transaction(TRANSACTION_VERSION_V2);
+    tx.txid = compute_txid_v2(&tx, chain_id).expect("canonical v2 txid");
+    let loser_hash = "task30-v2-retained-loser";
+    record_in_noncanonical_block(&mut state, &tx, loser_hash);
+    state.dag.best_height = 1;
+    state.dag.ordered_dag = vec![state.dag.genesis_hash.clone(), loser_hash.to_string()];
+    state.dag.ordered_dag_tip = Some(loser_hash.to_string());
+    state
+        .dag
+        .ordered_dag_conflict_diagnostics
+        .push(format!(
+            "ordered_pos=1 block={loser_hash} tx={} skipped_conflict_atomic",
+            tx.txid
+        ));
+
+    assert!(!transaction_is_confirmed(&tx.txid, &state));
+    let retained = vec![
+        state
+            .dag
+            .blocks
+            .get(loser_hash)
+            .expect("retained loser block exists")
+            .clone(),
+    ];
+    let compact = compact_snapshot_to_retained_blocks(state, &retained)
+        .expect("compact snapshot should retain the boundary block");
+
+    assert_eq!(compact.dag.ordered_dag, vec![loser_hash.to_string()]);
+    assert!(
+        compact
+            .dag
+            .ordered_dag_conflict_diagnostics
+            .iter()
+            .any(|entry| entry.contains(&format!("block={loser_hash} tx={}", tx.txid))),
+        "compact prune must retain conflict semantics for retained ordered blocks"
+    );
+    assert!(
+        !transaction_is_confirmed(&tx.txid, &compact),
+        "retained conflict loser must remain non-confirmed after compact prune"
     );
 }
