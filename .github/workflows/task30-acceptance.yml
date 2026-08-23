@@ -1,0 +1,140 @@
+name: v2.4.0 Task 30 deterministic baseline
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - apps/pulsedagd/**
+      - apps/pulsedag-miner/**
+      - crates/pulsedag-core/**
+      - crates/pulsedag-p2p/**
+      - crates/pulsedag-rpc/**
+      - crates/pulsedag-storage/**
+      - crates/pulsedag-wallet/**
+      - .github/workflows/task30-acceptance.yml
+  push:
+    branches:
+      - main
+    paths:
+      - apps/pulsedagd/**
+      - apps/pulsedag-miner/**
+      - crates/pulsedag-core/**
+      - crates/pulsedag-p2p/**
+      - crates/pulsedag-rpc/**
+      - crates/pulsedag-storage/**
+      - crates/pulsedag-wallet/**
+      - .github/workflows/task30-acceptance.yml
+
+permissions:
+  contents: read
+
+jobs:
+  deterministic-replay-and-transactions:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - name: Checkout candidate
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Record exact candidate and clean working tree
+        run: |
+          set -euo pipefail
+          echo "candidate_sha=$(git rev-parse HEAD)"
+          test -z "$(git status --porcelain)"
+
+      - name: Deterministic DAG arrival, orphan-order and restart replay
+        run: cargo test --locked -p pulsedag-core --test task26_pipeline_parity
+
+      - name: Historical and activated protocol transaction admission
+        run: cargo test --locked -p pulsedag-core --test task28_protocol_tx_admission
+
+      - name: Multi-node transaction propagation and canonical inclusion parity
+        run: cargo test --locked -p pulsedag-core --test task28_multi_node_tx_parity
+
+      - name: Protocol-bound mempool reconciliation
+        run: cargo test --locked -p pulsedag-core mempool_protocol::tests::
+
+      - name: Stable v2 submission identity and fail-closed domain
+        run: cargo test --locked -p pulsedag-core tx_submission::tests::
+
+  recovery-and-capability-matrix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: Checkout candidate
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Record exact candidate and clean working tree
+        run: |
+          set -euo pipefail
+          echo "candidate_sha=$(git rev-parse HEAD)"
+          test -z "$(git status --porcelain)"
+
+      - name: Protocol snapshot export, verify and restore parity
+        run: cargo test --locked -p pulsedag-storage --test task26_protocol_snapshot
+
+      - name: Compact snapshot commit and finality-boundary recovery
+        run: cargo test --locked -p pulsedag-core --test compact_snapshot_commit
+
+      - name: Retarget recovery agreement remains deterministic
+        run: cargo test --locked -p pulsedag-storage --test retarget_recovery_agreement
+
+      - name: Activated-v2 durable P2P restart parity
+        run: cargo test --locked -p pulsedag-storage --test task28_p2p_runtime_restart
+
+      - name: Mixed-version capability matrix
+        run: cargo test --locked -p pulsedag-p2p --test task27_capability_session
+
+      - name: Recovery progress and retained-history peer selection matrix
+        run: cargo test --locked -p pulsedag-p2p --test task27_recovery_progress
+
+      - name: Peer-order and selected-frontier convergence matrix
+        run: cargo test --locked -p pulsedag-p2p --test task27_acceptance_matrix
+
+  experimental-pressure-regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - name: Checkout candidate
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Record exact candidate and clean working tree
+        run: |
+          set -euo pipefail
+          echo "candidate_sha=$(git rev-parse HEAD)"
+          test -z "$(git status --porcelain)"
+
+      - name: Controlled high-cadence convergence envelope
+        run: cargo test --locked -p pulsedag-core --test task29_high_cadence_envelope
+
+      - name: Delayed-parent and orphan-pressure convergence
+        run: cargo test --locked -p pulsedag-core --test task29_orphan_pressure
+
+      - name: RPC template, liveness and duplicate-suppression regressions
+        run: cargo test --locked -p pulsedag-rpc task29_
+
+      - name: Runtime-event storage resource bounds
+        run: cargo test --locked -p pulsedag-storage --test task29_resource_bounds
+
+      - name: Miner submit-finality reconciliation without blind resubmit
+        run: cargo test --locked -p pulsedag-miner task29_
