@@ -25,6 +25,22 @@ jobs:
       - name: Apply exact startup and replay replacements
         run: python3 scripts/task31_startup_patch.py
 
+      - name: Preserve rebuild reason across fail-closed v2 guard
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('apps/pulsedagd/src/main.rs')
+          text = path.read_text(encoding='utf-8')
+          old = 'startup_rebuild_reason = Some(reason);'
+          new = 'startup_rebuild_reason = Some(reason.clone());'
+          count = text.count(old)
+          if count != 1:
+              raise SystemExit(f'expected exactly one rebuild-reason move anchor, found {count}')
+          path.write_text(text.replace(old, new, 1), encoding='utf-8')
+          PY
+
       - name: Format candidate
         run: cargo fmt --all
 
