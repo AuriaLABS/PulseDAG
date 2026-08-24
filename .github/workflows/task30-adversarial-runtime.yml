@@ -96,7 +96,6 @@ jobs:
     timeout-minutes: 60
     env:
       CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-      EVIDENCE_ROOT: ${{ runner.temp }}/task30/netns
     steps:
       - name: Checkout exact candidate
         uses: actions/checkout@v4
@@ -128,6 +127,8 @@ jobs:
         run: cargo build --locked --release -p pulsedagd -p pulsedag-miner
 
       - name: Run isolated five-node partition and restart rehearsal
+        env:
+          EVIDENCE_ROOT: ${{ runner.temp }}/task30/netns
         run: |
           bash scripts/private_testnet/netns_rehearsal.sh \
             --candidate-sha "$CANDIDATE_SHA" \
@@ -136,6 +137,8 @@ jobs:
 
       - name: Verify partition evidence bundle
         if: success()
+        env:
+          EVIDENCE_ROOT: ${{ runner.temp }}/task30/netns
         run: python3 scripts/private_testnet/multi_host_rehearsal.py verify-evidence --evidence-dir "$EVIDENCE_ROOT/controller"
 
       - name: Upload partition and restart evidence
@@ -153,7 +156,6 @@ jobs:
     timeout-minutes: 75
     env:
       CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-      OUT_DIR: ${{ runner.temp }}/task30/lag-selected-segment
       RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}-lag
       MIN_SELECTED_GAP: 64
       CI_MODE: 0
@@ -176,10 +178,14 @@ jobs:
           test -z "$(git status --porcelain)"
 
       - name: Run delayed-parent selected-segment runtime drill
+        env:
+          OUT_DIR: ${{ runner.temp }}/task30/lag-selected-segment
         run: bash scripts/v2_3_0_lag_injection_selected_segment.sh
 
       - name: Enforce runtime closeout semantics
         if: success()
+        env:
+          OUT_DIR: ${{ runner.temp }}/task30/lag-selected-segment
         run: |
           set -euo pipefail
           jq -e '
@@ -212,7 +218,6 @@ jobs:
     timeout-minutes: 45
     env:
       CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-      OUT_DIR: ${{ runner.temp }}/task30/mempool-relay
       TX_COUNT: 1
       REHEARSAL_MEMPOOL_CAPACITY: 2
     steps:
@@ -234,10 +239,14 @@ jobs:
           test -z "$(git status --porcelain)"
 
       - name: Run signed transaction relay runtime drill
+        env:
+          OUT_DIR: ${{ runner.temp }}/task30/mempool-relay
         run: bash scripts/v2_3_0_mempool_tx_relay_evidence.sh
 
       - name: Enforce relay, duplicate, conflict, stale and capacity evidence
         if: success()
+        env:
+          OUT_DIR: ${{ runner.temp }}/task30/mempool-relay
         run: |
           set -euo pipefail
           jq -e '
@@ -269,7 +278,6 @@ jobs:
     timeout-minutes: 60
     env:
       CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-      OUT_DIR: ${{ runner.temp }}/task30/prune-restart-rejoin
       MIN_OFFLINE_ADVANCE_BLOCKS: 64
     steps:
       - name: Checkout exact candidate
@@ -290,10 +298,14 @@ jobs:
           test -z "$(git status --porcelain)"
 
       - name: Run prune snapshot restart and rejoin runtime drill
+        env:
+          OUT_DIR: ${{ runner.temp }}/task30/prune-restart-rejoin
         run: bash scripts/v2_3_0_prune_restart_rejoin_runtime.sh
 
       - name: Enforce recovery evidence
         if: success()
+        env:
+          OUT_DIR: ${{ runner.temp }}/task30/prune-restart-rejoin
         run: |
           set -euo pipefail
           jq -e '
