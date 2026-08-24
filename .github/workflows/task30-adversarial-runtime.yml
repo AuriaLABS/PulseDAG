@@ -40,8 +40,55 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  runtime-adapter-preflight:
+    name: Task30 runtime adapter preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Verify exact SHA and clean checkout
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          test -z "$(git status --porcelain)"
+
+      - name: Validate v2.4 preflight and runtime adapters
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/task30/adapter-preflight"
+          mkdir -p "$out"
+          python3 -m py_compile \
+            scripts/lib/patch_v2_3_0_lag_runtime_harness.py \
+            scripts/lib/patch_task30_runtime_topology.py
+          PULSEDAG_REHEARSAL_VERSION=v2.4.0 \
+          PULSEDAG_REHEARSAL_VERSION_SLUG=v2_4_0 \
+          OUT_DIR="$out/version-preflight" \
+            bash scripts/v2_2_20_preflight_check.sh
+          bash -n scripts/v2_2_20_private_5n_4m_rehearsal.sh
+          python3 scripts/lib/patch_v2_3_0_lag_runtime_harness.py \
+            scripts/lib/v2_3_0_runtime_harness.sh "$out/lag-runtime.sh"
+          python3 scripts/lib/patch_task30_runtime_topology.py relay \
+            scripts/v2_3_0_mempool_tx_relay_evidence.sh "$out/relay-runtime.sh"
+          python3 scripts/lib/patch_task30_runtime_topology.py prune-harness \
+            scripts/lib/v2_3_0_prune_restart_rejoin_harness.sh "$out/prune-harness.sh"
+          python3 scripts/lib/patch_task30_runtime_topology.py prune-driver \
+            scripts/v2_3_0_prune_restart_rejoin_runtime.sh "$out/prune-driver.sh"
+          bash -n "$out/lag-runtime.sh"
+          bash -n "$out/relay-runtime.sh"
+          bash -n "$out/prune-harness.sh"
+          bash -n "$out/prune-driver.sh"
+          rm -rf scripts/lib/__pycache__
+          test -z "$(git status --porcelain)"
+
   multi-miner-convergence:
     name: 5N/${{ matrix.miners }}M convergence
+    needs: runtime-adapter-preflight
     runs-on: ubuntu-latest
     timeout-minutes: 45
     strategy:
@@ -124,6 +171,7 @@ jobs:
 
   partition-restart-rejoin:
     name: 5N partition restart rejoin
+    needs: runtime-adapter-preflight
     runs-on: ubuntu-latest
     timeout-minutes: 60
     env:
@@ -184,6 +232,7 @@ jobs:
 
   delayed-parent-selected-segment:
     name: 5N delayed parent selected-segment recovery
+    needs: runtime-adapter-preflight
     runs-on: ubuntu-latest
     timeout-minutes: 75
     env:
@@ -246,6 +295,7 @@ jobs:
 
   signed-relay-runtime:
     name: 5N signed relay duplicate conflict stale capacity runtime
+    needs: runtime-adapter-preflight
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
@@ -313,6 +363,7 @@ jobs:
 
   prune-restart-rejoin:
     name: 5N prune snapshot restart rejoin
+    needs: runtime-adapter-preflight
     runs-on: ubuntu-latest
     timeout-minutes: 60
     env:
@@ -387,6 +438,7 @@ jobs:
     runs-on: ubuntu-latest
     if: always()
     needs:
+      - runtime-adapter-preflight
       - multi-miner-convergence
       - partition-restart-rejoin
       - delayed-parent-selected-segment
@@ -394,6 +446,7 @@ jobs:
       - prune-restart-rejoin
     env:
       CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      ADAPTER_RESULT: ${{ needs.runtime-adapter-preflight.result }}
       MULTI_MINER_RESULT: ${{ needs.multi-miner-convergence.result }}
       PARTITION_RESULT: ${{ needs.partition-restart-rejoin.result }}
       DELAYED_PARENT_RESULT: ${{ needs.delayed-parent-selected-segment.result }}
@@ -412,6 +465,7 @@ jobs:
 
           path = sys.argv[1]
           results = {
+              "runtime_adapter_preflight": os.environ["ADAPTER_RESULT"],
               "multi_miner_convergence": os.environ["MULTI_MINER_RESULT"],
               "partition_restart_rejoin": os.environ["PARTITION_RESULT"],
               "delayed_parent_selected_segment": os.environ["DELAYED_PARENT_RESULT"],
