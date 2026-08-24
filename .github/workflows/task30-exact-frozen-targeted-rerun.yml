@@ -1,0 +1,219 @@
+name: Task30 exact frozen targeted rerun
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - .github/workflows/task30-exact-frozen-targeted-rerun.yml
+
+permissions:
+  contents: read
+
+env:
+  CANDIDATE_SHA: 37f0dd6ca7aabe07341c226744f65d46bbb03d65
+
+jobs:
+  signed-relay-v24-local-signing:
+    name: 5N signed relay v2.4 local signing
+    runs-on: ubuntu-latest
+    timeout-minutes: 70
+    steps:
+      - name: Checkout control plane
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: control-plane
+          persist-credentials: false
+
+      - name: Checkout exact frozen candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.CANDIDATE_SHA }}
+          path: candidate
+          persist-credentials: false
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Verify exact candidate and control separation
+        run: |
+          set -euo pipefail
+          test "$(git -C candidate rev-parse HEAD)" = "$CANDIDATE_SHA"
+          test -z "$(git -C candidate status --porcelain)"
+          test -f control-plane/.github/task30-control/adapt_harness_v2.py
+          test -f control-plane/.github/task30-control/tx-helper/Cargo.toml
+
+      - name: Build exact candidate runtime binaries
+        working-directory: candidate
+        run: cargo build --locked --release -p pulsedagd -p pulsedag-miner
+
+      - name: Build local-only Task30 signer
+        run: |
+          set -euo pipefail
+          cargo build --release --manifest-path control-plane/.github/task30-control/tx-helper/Cargo.toml
+          test -x control-plane/.github/task30-control/tx-helper/target/release/task30-tx-helper
+          test -z "$(git -C candidate status --porcelain)"
+
+      - name: Prepare fail-closed v2.4 relay harness
+        env:
+          ADAPTED: ${{ runner.temp }}/task30-adaptation/relay/relay.sh
+        run: |
+          set -euo pipefail
+          python3 control-plane/.github/task30-control/adapt_harness_v2.py relay "$GITHUB_WORKSPACE/candidate" "$ADAPTED"
+          bash -n "$ADAPTED"
+          test -s "$(dirname "$ADAPTED")/harness.diff"
+          test -s "$(dirname "$ADAPTED")/SHA256SUMS"
+          test -z "$(git -C candidate status --porcelain)"
+
+      - name: Run signed relay duplicate conflict stale capacity drill
+        working-directory: candidate
+        env:
+          OUT_DIR: ${{ runner.temp }}/task30-targeted/signed-relay
+          TASK30_TX_HELPER: ${{ github.workspace }}/control-plane/.github/task30-control/tx-helper/target/release/task30-tx-helper
+          TX_COUNT: 1
+          REHEARSAL_MEMPOOL_CAPACITY: 2
+          STARTUP_TIMEOUT: 120
+          CONVERGENCE_TIMEOUT: 120
+        run: |
+          set -euo pipefail
+          bash "$RUNNER_TEMP/task30-adaptation/relay/relay.sh"
+          jq -e '
+            .result == "PASS" and
+            .evidence_kind == "runtime" and
+            .candidate_commit == env.CANDIDATE_SHA and
+            .node_count == 5 and
+            .relay_converged == true and
+            .duplicate_suppression == true and
+            .conflicting_transaction_rejection == true and
+            .stale_transaction_rejection == true and
+            .capacity_rejection_taxonomy == true and
+            .confirmation_cleanup == true and
+            .deterministic_final_mempool_sets == true and
+            .topology_status.stable == true and
+            .public_testnet_ready == false
+          ' "$OUT_DIR/evidence_manifest.json" >/dev/null
+          test -z "$(git status --porcelain)"
+
+      - name: Upload signed-relay runtime evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: task30-targeted-signed-relay-${{ env.CANDIDATE_SHA }}
+          path: |
+            ${{ runner.temp }}/task30-targeted/signed-relay
+            ${{ runner.temp }}/task30-adaptation/relay
+            control-plane/.github/task30-control/tx-helper/Cargo.toml
+            control-plane/.github/task30-control/tx-helper/src/main.rs
+          if-no-files-found: error
+          retention-days: 30
+
+  prune-retry-no-pow:
+    name: 5N prune restart rejoin bounded no-PoW retry
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout control plane
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: control-plane
+          persist-credentials: false
+
+      - name: Checkout exact frozen candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.CANDIDATE_SHA }}
+          path: candidate
+          persist-credentials: false
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Verify exact candidate and prepare prune harness
+        env:
+          ADAPTED: ${{ runner.temp }}/task30-adaptation/prune/prune-harness.sh
+        run: |
+          set -euo pipefail
+          test "$(git -C candidate rev-parse HEAD)" = "$CANDIDATE_SHA"
+          test -z "$(git -C candidate status --porcelain)"
+          python3 control-plane/.github/task30-control/adapt_harness_v2.py prune "$GITHUB_WORKSPACE/candidate" "$ADAPTED"
+          bash -n "$ADAPTED"
+          test -s "$(dirname "$ADAPTED")/harness.diff"
+          test -s "$(dirname "$ADAPTED")/SHA256SUMS"
+          test -z "$(git -C candidate status --porcelain)"
+
+      - name: Run prune snapshot restart and rejoin runtime drill
+        working-directory: candidate
+        env:
+          OUT_DIR: ${{ runner.temp }}/task30-targeted/prune-restart-rejoin
+          TASK30_CANDIDATE_ROOT: ${{ github.workspace }}/candidate
+          PRUNE_RESTART_REJOIN_TASK04_HARNESS: ${{ runner.temp }}/task30-adaptation/prune/prune-harness.sh
+          MIN_OFFLINE_ADVANCE_BLOCKS: 64
+          V2_3_0_MINER_429_MAX_ATTEMPTS: 20
+          V2_3_0_MINER_429_RETRY_WAIT_SECS: 1
+        run: |
+          set -euo pipefail
+          bash scripts/v2_3_0_prune_restart_rejoin_runtime.sh
+          jq -e '
+            .result == "PASS" and
+            .evidence_kind == "runtime" and
+            .candidate_commit == env.CANDIDATE_SHA and
+            .node_count == 5 and
+            .blocks_pruned_total > 0 and
+            .snapshot_delta_restart_executed == true and
+            .restart_selected_tip_matches == true and
+            .restart_state_root_matches == true and
+            .offline_advance_blocks >= 64 and
+            .rejoin_executed == true and
+            .rejoin_converged == true and
+            .final_storage_memory_consistent == true and
+            .public_testnet_ready == false
+          ' "$OUT_DIR/evidence_manifest.json" >/dev/null
+          test -z "$(git status --porcelain)"
+
+      - name: Upload prune runtime evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: task30-targeted-prune-${{ env.CANDIDATE_SHA }}
+          path: |
+            ${{ runner.temp }}/task30-targeted/prune-restart-rejoin
+            ${{ runner.temp }}/task30-adaptation/prune
+          if-no-files-found: error
+          retention-days: 30
+
+  targeted-decision:
+    name: Task30 targeted rerun decision
+    if: always()
+    needs:
+      - signed-relay-v24-local-signing
+      - prune-retry-no-pow
+    runs-on: ubuntu-latest
+    steps:
+      - name: Write fail-closed decision
+        env:
+          RELAY: ${{ needs.signed-relay-v24-local-signing.result }}
+          PRUNE: ${{ needs.prune-retry-no-pow.result }}
+        run: |
+          set -euo pipefail
+          result=FAIL
+          if [[ "$RELAY" == success && "$PRUNE" == success ]]; then result=PASS; fi
+          jq -n \
+            --arg candidate_sha "$CANDIDATE_SHA" \
+            --arg result "$result" \
+            --arg relay "$RELAY" \
+            --arg prune "$PRUNE" \
+            '{candidate_sha:$candidate_sha,result:$result,signed_relay_v24_local_signing:$relay,prune_retry_no_pow:$prune,public_testnet_ready:false,release_authorized:false,day0_authorized:false,high_cadence_default:false,smart_contracts_enabled:false}' \
+            > task30-targeted-decision.json
+          cat task30-targeted-decision.json
+          [[ "$result" == PASS ]]
+
+      - name: Upload targeted decision
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: task30-targeted-decision-${{ env.CANDIDATE_SHA }}
+          path: task30-targeted-decision.json
+          if-no-files-found: error
+          retention-days: 30
