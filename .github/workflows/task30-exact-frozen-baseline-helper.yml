@@ -1,0 +1,165 @@
+name: Task30 exact frozen deterministic baseline
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - .github/workflows/task30-exact-frozen-baseline-helper.yml
+
+permissions:
+  contents: read
+
+env:
+  CANDIDATE_SHA: 37f0dd6ca7aabe07341c226744f65d46bbb03d65
+
+jobs:
+  deterministic-replay-and-transactions:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.CANDIDATE_SHA }}
+          persist-credentials: false
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+      - name: Record exact candidate and clean working tree
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          test -z "$(git status --porcelain)"
+      - name: Deterministic DAG arrival, orphan-order and restart replay
+        run: cargo test --locked -p pulsedag-core --test task26_pipeline_parity
+      - name: Historical and activated protocol transaction admission
+        run: cargo test --locked -p pulsedag-core --test task28_protocol_tx_admission
+      - name: Multi-node transaction propagation and canonical inclusion parity
+        run: cargo test --locked -p pulsedag-core --test task28_multi_node_tx_parity
+      - name: Protocol-bound mempool reconciliation
+        run: cargo test --locked -p pulsedag-core mempool_protocol::tests::
+      - name: Stable v2 submission identity and fail-closed domain
+        run: cargo test --locked -p pulsedag-core tx_submission::tests::
+      - name: Confirmed stale transaction admission is duplicate in v1 and v2
+        run: cargo test --locked -p pulsedag-core --test task30_stale_tx_admission
+      - name: Public signed-relay and mutable RPC abuse bounds
+        run: cargo test --locked -p pulsedag-rpc --test task30_public_relay_bounds
+
+  recovery-and-capability-matrix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.CANDIDATE_SHA }}
+          persist-credentials: false
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+      - name: Record exact candidate and clean working tree
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          test -z "$(git status --porcelain)"
+      - name: Protocol snapshot export, verify and restore parity
+        run: cargo test --locked -p pulsedag-storage --test task26_protocol_snapshot
+      - name: Compact snapshot commit and finality-boundary recovery
+        run: cargo test --locked -p pulsedag-core --test compact_snapshot_commit
+      - name: Retarget recovery agreement remains deterministic
+        run: cargo test --locked -p pulsedag-storage --test retarget_recovery_agreement
+      - name: Activated-v2 durable P2P restart parity
+        run: cargo test --locked -p pulsedag-storage --test task28_p2p_runtime_restart
+      - name: Mixed-version capability matrix
+        run: cargo test --locked -p pulsedag-p2p --test task27_capability_session
+      - name: Recovery progress and retained-history peer selection matrix
+        run: cargo test --locked -p pulsedag-p2p --test task27_recovery_progress
+      - name: Peer-order and selected-frontier convergence matrix
+        run: cargo test --locked -p pulsedag-p2p --test task27_acceptance_matrix
+
+  experimental-pressure-regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.CANDIDATE_SHA }}
+          persist-credentials: false
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+      - name: Record exact candidate and clean working tree
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          test -z "$(git status --porcelain)"
+      - name: Controlled high-cadence convergence envelope
+        run: cargo test --locked -p pulsedag-core --test task29_high_cadence_envelope
+      - name: Delayed-parent and orphan-pressure convergence
+        run: cargo test --locked -p pulsedag-core --test task29_orphan_pressure
+      - name: RPC template, liveness and duplicate-suppression regressions
+        run: cargo test --locked -p pulsedag-rpc task29_
+      - name: Runtime-event storage resource bounds
+        run: cargo test --locked -p pulsedag-storage --test task29_resource_bounds
+      - name: Miner submit-finality reconciliation without blind resubmit
+        run: cargo test --locked -p pulsedag-miner task29_
+
+  decision:
+    name: Task30 exact frozen baseline decision
+    runs-on: ubuntu-latest
+    if: always()
+    needs:
+      - deterministic-replay-and-transactions
+      - recovery-and-capability-matrix
+      - experimental-pressure-regression
+    env:
+      DETERMINISTIC_RESULT: ${{ needs.deterministic-replay-and-transactions.result }}
+      RECOVERY_RESULT: ${{ needs.recovery-and-capability-matrix.result }}
+      PRESSURE_RESULT: ${{ needs.experimental-pressure-regression.result }}
+    steps:
+      - name: Write exact baseline decision
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/task30-baseline/decision"
+          python3 - "$RUNNER_TEMP/task30-baseline/decision/decision.json" <<'PY'
+          import json, os, sys
+          from datetime import datetime, timezone
+          path = sys.argv[1]
+          jobs = {
+              "deterministic_replay_and_transactions": os.environ["DETERMINISTIC_RESULT"],
+              "recovery_and_capability_matrix": os.environ["RECOVERY_RESULT"],
+              "experimental_pressure_regression": os.environ["PRESSURE_RESULT"],
+          }
+          passed = all(value == "success" for value in jobs.values())
+          payload = {
+              "task": "v2.4.0-task30-deterministic-baseline-exact-frozen-candidate",
+              "candidate_sha": os.environ["CANDIDATE_SHA"],
+              "control_plane_ref": os.environ.get("GITHUB_REF"),
+              "control_plane_sha": os.environ.get("GITHUB_SHA"),
+              "captured_at_utc": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+              "result": "PASS" if passed else "FAIL",
+              "jobs": jobs,
+              "public_testnet_ready": False,
+              "release_tag_authorized": False,
+              "default_high_cadence_authorized": False,
+              "smart_contract_activation_authorized": False,
+          }
+          with open(path, "w", encoding="utf-8") as handle:
+              json.dump(payload, handle, indent=2, sort_keys=True)
+              handle.write("\n")
+          PY
+          cat "$RUNNER_TEMP/task30-baseline/decision/decision.json"
+          jq -e '.candidate_sha == "37f0dd6ca7aabe07341c226744f65d46bbb03d65" and .result == "PASS" and .public_testnet_ready == false' "$RUNNER_TEMP/task30-baseline/decision/decision.json" >/dev/null
+      - name: Upload exact baseline decision
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: task30-baseline-decision-${{ env.CANDIDATE_SHA }}
+          path: ${{ runner.temp }}/task30-baseline/decision
+          if-no-files-found: error
+          retention-days: 30
