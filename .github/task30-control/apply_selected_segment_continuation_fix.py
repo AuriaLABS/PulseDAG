@@ -128,9 +128,8 @@ def main() -> int:
                                     if !issued_hashes.is_empty() {
                                         let issued_at = now_unix();
                                         let mut chunk_started = false;
-                                        if let Some(session) = selected_segment_session
-                                            .as_mut()
-                                            .filter(|session| {
+                                        if let Some(session) =
+                                            selected_segment_session.as_mut().filter(|session| {
                                                 session.session_id == session_id
                                                     && session.peer_id == peer_id
                                             })
@@ -159,7 +158,8 @@ def main() -> int:
                                             rt.final_quiescence_missing_segment_request_total = rt
                                                 .final_quiescence_missing_segment_request_total
                                                 .saturating_add(issued_count);
-                                            rt.pending_block_requests = block_requests.pending.len();
+                                            rt.pending_block_requests =
+                                                block_requests.pending.len();
                                             rt.inflight_block_requests =
                                                 block_requests.pending.len();
                                             rt.pending_block_request_hashes =
