@@ -1,10 +1,5 @@
 #!/usr/bin/env python3
-"""Capture exact v2.4.0 RustSec warning reachability evidence.
-
-The script distinguishes packages recorded in Cargo.lock from packages for
-which Cargo emits compiler artifacts when building the native node and
-standalone miner from empty target directories.
-"""
+"""Capture exact v2.4.0 RustSec warning reachability evidence."""
 
 from __future__ import annotations
 
@@ -41,6 +36,8 @@ WARNING_PACKAGES = (
     WarningPackage("linkme", "0.2.10", ("RUSTSEC-2024-0407",)),
     WarningPackage("paste", "1.0.15", ("RUSTSEC-2024-0436",)),
     WarningPackage("proc-macro-error", "1.0.4", ("RUSTSEC-2024-0370",)),
+    WarningPackage("ring", "0.16.20", ("RUSTSEC-2025-0010",)),
+    WarningPackage("lru", "0.12.5", ("RUSTSEC-2026-0002", "RUSTSEC-2026-0253")),
 )
 
 DEFAULT_ROOTS = ("pulsedagd", "pulsedag-miner")
@@ -48,15 +45,8 @@ DEFAULT_ROOTS = ("pulsedagd", "pulsedag-miner")
 
 def run(command: list[str], *, env: dict[str, str] | None = None, check: bool = True) -> subprocess.CompletedProcess[str]:
     result = subprocess.run(
-        command,
-        cwd=ROOT,
-        env=env,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        check=False,
+        command, cwd=ROOT, env=env, text=True, encoding="utf-8", errors="replace",
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
     )
     if check and result.returncode != 0:
         sys.stderr.write(result.stdout)
@@ -72,8 +62,7 @@ def cargo_metadata() -> dict[str, Any]:
 def package_index(metadata: dict[str, Any]) -> dict[str, dict[str, str]]:
     return {
         str(package["id"]): {
-            "name": str(package["name"]),
-            "version": str(package["version"]),
+            "name": str(package["name"]), "version": str(package["version"]),
             "source": str(package.get("source") or "workspace"),
         }
         for package in metadata["packages"]
@@ -104,11 +93,8 @@ def compile_root(root: str, evidence_dir: Path, packages_by_id: dict[str, dict[s
         package = packages_by_id.get(package_id, {"name": package_id, "version": "unknown", "source": "unknown"})
         target = message.get("target") or {}
         artifacts.append({
-            **package,
-            "target_name": target.get("name"),
-            "target_kinds": target.get("kind", []),
-            "crate_types": target.get("crate_types", []),
-            "features": sorted(message.get("features", [])),
+            **package, "target_name": target.get("name"), "target_kinds": target.get("kind", []),
+            "crate_types": target.get("crate_types", []), "features": sorted(message.get("features", [])),
             "fresh": bool(message.get("fresh", False)),
         })
 
@@ -127,10 +113,8 @@ def reverse_trees(evidence_dir: Path) -> dict[str, dict[str, Any]]:
         filename = f"reverse-{package.name}-{package.version}.txt"
         (evidence_dir / filename).write_text(result.stdout + result.stderr, encoding="utf-8")
         output[package.name] = {
-            "version": package.version,
-            "advisory_ids": list(package.advisory_ids),
-            "command_exit_code": result.returncode,
-            "tree_file": filename,
+            "version": package.version, "advisory_ids": list(package.advisory_ids),
+            "command_exit_code": result.returncode, "tree_file": filename,
         }
     return output
 
@@ -168,15 +152,11 @@ def main() -> None:
 
     source_sha = os.environ.get("PULSEDAG_CANDIDATE_SHA") or os.environ.get("GITHUB_SHA", "local")
     summary = {
-        "source_sha": source_sha,
-        "runner_os": os.environ.get("RUNNER_OS", platform.system()),
-        "platform": platform.platform(),
-        "python": sys.version,
-        "roots": list(roots),
+        "source_sha": source_sha, "runner_os": os.environ.get("RUNNER_OS", platform.system()),
+        "platform": platform.platform(), "python": sys.version, "roots": list(roots),
         "warnings": {
             package.name: {
-                "version": package.version,
-                "advisory_ids": list(package.advisory_ids),
+                "version": package.version, "advisory_ids": list(package.advisory_ids),
                 "reverse_tree": trees[package.name],
                 "compiled_by_root": {root: warning_reachability[root][package.name] for root in roots},
             }
@@ -188,7 +168,7 @@ def main() -> None:
 
     human_lines = [f"source_sha={source_sha}", f"runner_os={summary['runner_os']}", f"platform={summary['platform']}"]
     for package in WARNING_PACKAGES:
-        human_lines.append(f"{package.cargo_spec}")
+        human_lines.append(package.cargo_spec)
         for root in roots:
             matches = warning_reachability[root][package.name]
             kinds = sorted({kind for match in matches for kind in match.get("target_kinds", [])})

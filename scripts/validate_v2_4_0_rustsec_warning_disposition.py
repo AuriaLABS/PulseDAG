@@ -23,24 +23,21 @@ EXPECTED_WARNINGS = {
     ("RUSTSEC-2024-0407", "linkme", "0.2.10", "unsound"),
     ("RUSTSEC-2024-0436", "paste", "1.0.15", "unmaintained"),
     ("RUSTSEC-2024-0370", "proc-macro-error", "1.0.4", "unmaintained"),
+    ("RUSTSEC-2025-0010", "ring", "0.16.20", "unmaintained"),
+    ("RUSTSEC-2026-0002", "lru", "0.12.5", "unsound"),
+    ("RUSTSEC-2026-0253", "lru", "0.12.5", "unsound"),
 }
 
-EXPECTED_LOCKED_PACKAGES = {
-    "async-std": "1.13.2",
-    "atty": "0.2.14",
-    "bincode": "1.3.3",
-    "instant": "0.1.13",
-    "linkme": "0.2.10",
-    "paste": "1.0.15",
-    "proc-macro-error": "1.0.4",
-    "workflow-core": "0.18.0",
-    "workflow-log": "0.18.0",
-    "workflow-core-macros": "0.18.0",
-    "workflow-wasm-macros": "0.18.0",
-    "hexplay": "0.3.0",
-    "intertrait": "0.2.2",
-    "kaspa-core": "0.15.0",
+EXPECTED_LOCKED_VERSIONS = {
+    "async-std": {"1.13.2"}, "atty": {"0.2.14"}, "bincode": {"1.3.3"},
+    "instant": {"0.1.13"}, "linkme": {"0.2.10"}, "paste": {"1.0.15"},
+    "proc-macro-error": {"1.0.4"}, "ring": {"0.16.20", "0.17.14"},
+    "lru": {"0.12.5"}, "workflow-core": {"0.18.0"}, "workflow-log": {"0.18.0"},
+    "workflow-core-macros": {"0.18.0"}, "workflow-wasm-macros": {"0.18.0"},
+    "hexplay": {"0.3.0"}, "intertrait": {"0.2.2"}, "kaspa-core": {"0.15.0"},
 }
+REQUIRED_PATCHED = {"crossbeam-epoch": "0.9.20", "anyhow": "1.0.103", "event-listener": "5.4.2"}
+FORBIDDEN_OLD = {"crossbeam-epoch": "0.9.18", "anyhow": "1.0.102", "event-listener": "5.4.1"}
 
 EXPECTED_LINUX_COMPILED = {
     "async-std": {"pulsedagd": True, "pulsedag-miner": True},
@@ -50,6 +47,8 @@ EXPECTED_LINUX_COMPILED = {
     "linkme": {"pulsedagd": True, "pulsedag-miner": True},
     "paste": {"pulsedagd": True, "pulsedag-miner": False},
     "proc-macro-error": {"pulsedagd": True, "pulsedag-miner": True},
+    "ring": {"pulsedagd": False, "pulsedag-miner": False},
+    "lru": {"pulsedagd": True, "pulsedag-miner": False},
 }
 
 
@@ -79,14 +78,9 @@ def direct_dependency_version(manifest: Path, dependency: str) -> str:
 
 def assert_no_custom_global_allocator() -> None:
     result = subprocess.run(
-        ["git", "grep", "-n", "global_allocator", "--", "*.rs"],
-        cwd=ROOT,
-        check=False,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        ["git", "grep", "-n", "global_allocator", "--", "*.rs"], cwd=ROOT,
+        check=False, text=True, encoding="utf-8", errors="replace",
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
     )
     if result.returncode not in (0, 1):
         fail(f"git grep failed: {result.stderr.strip()}")
@@ -100,10 +94,17 @@ def main() -> None:
         fail(f"disposition expired on {REVIEW_DEADLINE.isoformat()}; remove or re-review every warning before continuing")
 
     lock_versions = package_versions((ROOT / "Cargo.lock").read_text(encoding="utf-8"))
-    for package, expected_version in EXPECTED_LOCKED_PACKAGES.items():
-        observed = lock_versions.get(package, [])
-        if observed != [expected_version]:
-            fail(f"expected exactly {package} {expected_version}, found {observed or 'nothing'}")
+    for package, expected_versions in EXPECTED_LOCKED_VERSIONS.items():
+        observed = set(lock_versions.get(package, []))
+        if observed != expected_versions:
+            fail(f"expected {package} versions {sorted(expected_versions)}, found {sorted(observed) or 'nothing'}")
+    for package, expected_version in REQUIRED_PATCHED.items():
+        observed = set(lock_versions.get(package, []))
+        if expected_version not in observed:
+            fail(f"required patched {package} {expected_version} is missing; found {sorted(observed)}")
+    for package, old_version in FORBIDDEN_OLD.items():
+        if old_version in set(lock_versions.get(package, [])):
+            fail(f"previous vulnerable {package} {old_version} returned to Cargo.lock")
 
     if direct_dependency_version(ROOT / "apps" / "pulsedagd" / "Cargo.toml", "bincode") not in {"1", "1.3", "1.3.3"}:
         fail("pulsedagd bincode dependency changed; storage disposition needs review")
@@ -151,10 +152,10 @@ def main() -> None:
 
     document = (ROOT / "docs" / "security" / "V2_4_0_RUSTSEC_WARNING_DISPOSITION.md").read_text(encoding="utf-8")
     for required in (
-        "Review deadline: `2026-08-31 UTC`",
-        "public-testnet blockers",
+        "Review deadline: `2026-08-31 UTC`", "public-testnet blockers",
         "Windows exact-candidate revalidation remains pending",
         "No warning ID is added to `.cargo/audit.toml`.",
+        "`crossbeam-epoch 0.9.20`", "`anyhow 1.0.103`", "`event-listener 5.4.2`",
     ):
         if required not in document:
             fail(f"disposition record is missing required text: {required!r}")
@@ -165,17 +166,12 @@ def main() -> None:
 
     validation = evidence_dir / "validation.txt"
     validation.write_text("\n".join([
-        "result=PASS",
-        f"source_sha={summary.get('source_sha')}",
-        f"validated_utc_date={today.isoformat()}",
+        "result=PASS", f"source_sha={summary.get('source_sha')}", f"validated_utc_date={today.isoformat()}",
         f"review_deadline={REVIEW_DEADLINE.isoformat()}",
         "authorization=task31-technical-candidate-private-only",
-        "linux_exact_candidate_reachability=true",
-        "windows_exact_candidate_revalidation_pending=true",
-        "public_testnet_unsound_blockers=atty@0.2.14,linkme@0.2.10",
-        "custom_global_allocator=false",
-        "warning_count=8",
-        "",
+        "linux_exact_candidate_reachability=true", "windows_exact_candidate_revalidation_pending=true",
+        "public_testnet_unsound_blockers=atty@0.2.14,linkme@0.2.10,lru@0.12.5",
+        "custom_global_allocator=false", "warning_count=11", "",
     ]), encoding="utf-8")
     print("PASS: Task31 RustSec warning disposition is exact, visible, unexpired and private-only")
 

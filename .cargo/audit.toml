@@ -1,13 +1,19 @@
 # PulseDAG v2.4.0 RustSec policy.
 #
-# The only vulnerability ignore is a narrow, time-bounded non-reachability
-# exception for hickory-proto 0.24.4 retained in Cargo.lock by the libp2p 0.54
-# umbrella dependency. Release builds compile libp2p without dns/mdns/quic and
-# the exception validator proves Hickory is absent from exact-candidate compiler
-# artifacts before cargo-audit policy is accepted.
+# Vulnerability ignores are limited to exact package versions retained only in
+# unselected optional libp2p branches. The exact-candidate dependency gate
+# recompiles pulsedag-p2p, pulsedagd and pulsedag-miner from empty target
+# directories and rejects the policy if any vulnerable version is compiled.
+#
+# Review deadline: 2026-08-31 UTC. No informational warning is ignored.
 
 [advisories]
 ignore = [
+  "RUSTSEC-2025-0009",
+  "RUSTSEC-2026-0098",
+  "RUSTSEC-2026-0099",
+  "RUSTSEC-2026-0104",
   "RUSTSEC-2026-0119",
+  "RUSTSEC-2026-0258",
 ]
 informational_warnings = ["unmaintained", "unsound"]
