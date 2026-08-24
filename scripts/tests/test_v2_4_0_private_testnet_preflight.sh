@@ -53,6 +53,14 @@ cp "$TMP_DIR/node.env" "$TMP_DIR/auto-prune.env"
 sed -i 's/^PULSEDAG_AUTO_PRUNE_ENABLED=false/PULSEDAG_AUTO_PRUNE_ENABLED=true/' "$TMP_DIR/auto-prune.env"
 expect_fail "$TMP_DIR/auto-prune.env"
 
+cp "$TMP_DIR/node.env" "$TMP_DIR/volatile-rocksdb-root.env"
+sed -i 's#^PULSEDAG_ROCKSDB_PATH=.*#PULSEDAG_ROCKSDB_PATH=/tmp#' "$TMP_DIR/volatile-rocksdb-root.env"
+expect_fail "$TMP_DIR/volatile-rocksdb-root.env"
+
+cp "$TMP_DIR/node.env" "$TMP_DIR/volatile-identity-root.env"
+sed -i 's#^PULSEDAG_P2P_IDENTITY_KEY=.*#PULSEDAG_P2P_IDENTITY_KEY=/run#' "$TMP_DIR/volatile-identity-root.env"
+expect_fail "$TMP_DIR/volatile-identity-root.env"
+
 cp "$TMP_DIR/node.env" "$TMP_DIR/remote-rpc.env"
 sed -i 's/^PULSEDAG_RPC_BIND=.*/PULSEDAG_RPC_BIND=0.0.0.0:8280/' "$TMP_DIR/remote-rpc.env"
 expect_fail "$TMP_DIR/remote-rpc.env"

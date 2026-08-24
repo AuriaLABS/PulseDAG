@@ -91,7 +91,11 @@ is_false() {
 
 is_absolute_persistent_path() {
   local value="$1"
-  [[ "$value" == /* ]] && [[ "$value" != /tmp/* ]] && [[ "$value" != /run/* ]]
+  [[ "$value" == /* ]] \
+    && [[ "$value" != /tmp ]] \
+    && [[ "$value" != /tmp/* ]] \
+    && [[ "$value" != /run ]] \
+    && [[ "$value" != /run/* ]]
 }
 
 is_tcp_multiaddr() {

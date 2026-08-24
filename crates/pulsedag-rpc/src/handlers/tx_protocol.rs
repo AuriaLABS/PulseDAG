@@ -19,11 +19,7 @@ pub use super::tx_legacy::{
 fn rpc_protocol_identity<S: RpcStateLike>(
     state: &S,
 ) -> Result<Option<ProtocolActivationIdentity>, PulseError> {
-    let Some(p2p) = state.p2p() else {
-        return Ok(None);
-    };
-    p2p.local_protocol_capabilities_v1()
-        .map(|capabilities| capabilities.map(|capabilities| capabilities.protocol_identity))
+    super::mining_submit_protocol::rpc_protocol_identity(state)
 }
 
 fn accept_rpc_transaction(

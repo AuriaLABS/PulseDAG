@@ -88,14 +88,34 @@ fn load_template_protocol(template_id: &str) -> Result<Option<BoundTemplateProto
         .map_err(|_| PulseError::Internal("mining template protocol binding lock poisoned".into()))
 }
 
+fn resolve_rpc_protocol_identity(
+    p2p_identity: Option<ProtocolActivationIdentity>,
+    durable_identity: Option<ProtocolActivationIdentity>,
+) -> Result<Option<ProtocolActivationIdentity>, PulseError> {
+    match (p2p_identity, durable_identity) {
+        (Some(p2p), Some(durable)) if p2p != durable => Err(PulseError::Internal(format!(
+            "RPC protocol identity mismatch between P2P capabilities and durable activation record: p2p={p2p:?} durable={durable:?}"
+        ))),
+        (Some(p2p), _) => Ok(Some(p2p)),
+        (None, Some(durable)) => Ok(Some(durable)),
+        (None, None) => Ok(None),
+    }
+}
+
 pub(crate) fn rpc_protocol_identity<S: RpcStateLike>(
     state: &S,
 ) -> Result<Option<ProtocolActivationIdentity>, PulseError> {
-    let Some(p2p) = state.p2p() else {
-        return Ok(None);
+    let p2p_identity = match state.p2p() {
+        Some(p2p) => p2p
+            .local_protocol_capabilities_v1()?
+            .map(|capabilities| capabilities.protocol_identity),
+        None => None,
     };
-    p2p.local_protocol_capabilities_v1()
-        .map(|capabilities| capabilities.map(|capabilities| capabilities.protocol_identity))
+    let durable_identity = state
+        .storage()
+        .protocol_activation_record()?
+        .map(|record| record.identity);
+    resolve_rpc_protocol_identity(p2p_identity, durable_identity)
 }
 
 pub(crate) fn mining_submit_protocol_path(
@@ -396,6 +416,31 @@ async fn post_activated_v2_mining_submit<S: RpcStateLike>(
         }
     };
 
+    let storage = state.storage();
+    let (durable_chain, activated_v2_runtime) =
+        match storage.load_activated_v2_p2p_runtime_snapshot(&local_identity) {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                return rejected_response(
+                    &req,
+                    "storage_rejected",
+                    format!("activated-v2 runtime sidecar is unavailable or invalid: {error}"),
+                    None,
+                );
+            }
+        };
+    if durable_chain.chain_state_generation != chain.chain_state_generation
+        || durable_chain.dag.best_height != chain.dag.best_height
+        || preferred_tip_hash(&durable_chain) != preferred_tip_hash(&chain)
+    {
+        return rejected_response(
+            &req,
+            "storage_rejected",
+            "activated-v2 durable runtime snapshot does not match the current in-memory chain state",
+            None,
+        );
+    }
+
     let path = match validate_stored_template_protocol_identity(
         &req.block,
         &chain,
@@ -445,7 +490,14 @@ async fn post_activated_v2_mining_submit<S: RpcStateLike>(
         req.block.clone(),
         &mut chain,
         Some(&local_identity),
-        |block, chain| state.storage().persist_block_and_chain_state(block, chain),
+        |block, committed_chain| {
+            storage.persist_activated_v2_p2p_block_and_runtime(
+                block,
+                &local_identity,
+                committed_chain,
+                &activated_v2_runtime,
+            )
+        },
     ) {
         Ok(acceptance) => acceptance,
         Err(error) => {
@@ -654,5 +706,95 @@ mod tests {
         assert!(acceptance.result.is_accepted());
         assert!(persisted);
         assert!(state.dag.blocks.contains_key(&expected_hash));
+    }
+
+    #[test]
+    fn rpc_identity_falls_back_to_durable_activation_without_p2p() {
+        let state = init_chain_state("task31-rpc-durable-identity".to_string());
+        let identity = activated_identity(&state);
+        assert_eq!(
+            resolve_rpc_protocol_identity(None, Some(identity.clone())).unwrap(),
+            Some(identity)
+        );
+    }
+
+    #[test]
+    fn rpc_identity_rejects_p2p_and_durable_mismatch() {
+        let state = init_chain_state("task31-rpc-identity-mismatch".to_string());
+        let legacy = ProtocolActivationIdentity::legacy_from_state(&state);
+        let activated = activated_identity(&state);
+        assert!(resolve_rpc_protocol_identity(Some(legacy), Some(activated)).is_err());
+    }
+
+    #[test]
+    fn activated_v2_mined_block_persistence_keeps_runtime_sidecar_restartable() {
+        let path = std::env::temp_dir().join(format!(
+            "pulsedag-task31-mined-v2-sidecar-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let storage = pulsedag_storage::Storage::open(path.to_str().unwrap()).unwrap();
+        let mut state =
+            pulsedag_core::genesis_v2::init_chain_state_v2("task31-mined-v2-sidecar".to_string())
+                .unwrap();
+        let identity = activated_identity(&state);
+        let runtime = pulsedag_core::ActivatedV2P2pRuntime::default();
+        storage
+            .persist_activated_v2_p2p_runtime_snapshot(&identity, &state, &runtime)
+            .unwrap();
+
+        let template = build_activated_v2_mining_template(
+            &state,
+            &identity,
+            ActivatedV2MiningTemplateSpec {
+                miner_address: "pulse1task31rpcminer".to_string(),
+                timestamp: current_ts(),
+                coinbase_nonce: 31,
+                transactions: Vec::new(),
+            },
+        )
+        .unwrap();
+        let mut block = template.block;
+        for nonce in 0..=200_000_u64 {
+            block.header.nonce = nonce;
+            block.hash = compute_block_hash_v2(&block.header, &identity.chain_id).unwrap();
+            if validate_pow_for_protocol(&block.header, &state, &identity).is_ok() {
+                break;
+            }
+        }
+        assert!(validate_pow_for_protocol(&block.header, &state, &identity).is_ok());
+        let accepted_hash = block.hash.clone();
+
+        let acceptance = accept_mined_block_for_protocol(
+            block,
+            &mut state,
+            Some(&identity),
+            |persisted_block, committed_state| {
+                storage.persist_activated_v2_p2p_block_and_runtime(
+                    persisted_block,
+                    &identity,
+                    committed_state,
+                    &runtime,
+                )
+            },
+        )
+        .unwrap();
+        assert!(acceptance.result.is_accepted());
+
+        let (restored, restored_runtime) = storage
+            .load_activated_v2_p2p_runtime_snapshot(&identity)
+            .unwrap();
+        assert_eq!(
+            restored.chain_state_generation,
+            state.chain_state_generation
+        );
+        assert!(restored.dag.blocks.contains_key(&accepted_hash));
+        assert!(restored_runtime.pending_is_empty());
+        assert!(restored_runtime.staging().is_empty());
+
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
     }
 }
