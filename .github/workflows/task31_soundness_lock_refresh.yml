@@ -30,7 +30,7 @@ jobs:
           set -euo pipefail
           cp Cargo.lock /tmp/Cargo.lock.before
           cargo update -p anyhow --precise 1.0.103
-          cargo update -p event-listener --precise 5.4.2
+          cargo update -p event-listener@5.4.1 --precise 5.4.2
           python - <<'PY'
           import tomllib
           def packages(path):
