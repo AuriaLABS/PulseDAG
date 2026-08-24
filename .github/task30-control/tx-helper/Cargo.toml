@@ -11,3 +11,7 @@ pulsedag-core = { path = "../../../../candidate/crates/pulsedag-core" }
 ed25519-dalek = "2"
 hex = "0.4"
 serde_json = "1"
+# Constrain the standalone helper to the wasm-bindgen family locked by the
+# v2.4 candidate. Without this, isolated Cargo resolution drifted to 0.2.127
+# and broke workflow-core 0.18.0 before any Task30 relay runtime started.
+wasm-bindgen = "=0.2.118"
