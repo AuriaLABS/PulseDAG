@@ -79,7 +79,7 @@ jobs:
       - name: Remove temporary control plane and verify final tree scope
         run: |
           set -euo pipefail
-          git rm \
+          git rm -f \
             .github/task30-control/apply_selected_segment_continuation_fix.py \
             .github/workflows/task30-apply-selected-segment-fix.yml
           git add apps/pulsedagd/src/main.rs
