@@ -124,6 +124,29 @@ def main() -> int:
         "stopped-node socket destruction",
     )
 
+    text = replace_once_or_confirm(
+        text,
+        "        (( peers >= 4 )) || ok=0",
+        "        if (( idx == 1 )); then\n"
+        "          (( peers >= 4 )) || ok=0\n"
+        "        else\n"
+        "          (( peers >= 1 )) || ok=0\n"
+        "        fi",
+        "star topology peer thresholds",
+    )
+    text = replace_once_or_confirm(
+        text,
+        '  if ! _v230_lag_wait_topology; then _v230_lag_abort "topology did not stabilize at four peers per node"; return 1; fi',
+        '  if ! _v230_lag_wait_topology; then _v230_lag_abort "topology did not stabilize with n1>=4 and non-root>=1 peers"; return 1; fi',
+        "star topology failure text",
+    )
+    text = replace_once_or_confirm(
+        text,
+        '  _v230_lag_event stable_four_peer_topology "" \'{"required_peers_per_node":4}\'',
+        '  _v230_lag_event stable_star_topology "" \'{"root_required_peers":4,"non_root_required_peers":1}\'',
+        "star topology event",
+    )
+
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(text)
     return 0
