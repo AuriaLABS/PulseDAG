@@ -68,8 +68,4 @@ exact-candidate evidence.
 
 ## Authorization boundary
 
-These exceptions do not resolve the reachable warning/public-GO blockers
-tracked in `V2_4_0_RUSTSEC_WARNING_DISPOSITION.md` or issue #803. Windows
-exact-candidate security revalidation remains pending. No public-testnet GO,
-Day 0, clock start, high-cadence default, contracts activation, release tag, or
-publication is authorized by this record.
+These exceptions do not resolve the reachable warning/public-GO blockers tracked in `V2_4_0_RUSTSEC_WARNING_DISPOSITION.md` or issue #803. Windows exact-candidate security revalidation remains pending. No public-testnet GO, Day 0, clock start, high-cadence default, contracts activation, release tag, or publication is authorized by this record.
