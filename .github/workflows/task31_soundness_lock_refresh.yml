@@ -1,0 +1,67 @@
+name: Task31 soundness lock refresh
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - .github/workflows/task31_soundness_lock_refresh.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: task31-soundness-lock-refresh-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  refresh:
+    if: github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.ref == 'agent/task31-release-freeze'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout candidate branch
+        uses: actions/checkout@v4
+        with:
+          ref: agent/task31-release-freeze
+          fetch-depth: 0
+
+      - name: Refresh only patch-level soundness fixes
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Cargo.lock /tmp/Cargo.lock.before
+          cargo update -p anyhow --precise 1.0.103
+          cargo update -p event-listener --precise 5.4.2
+          python - <<'PY'
+          import tomllib
+          def packages(path):
+              with open(path, 'rb') as f:
+                  data = tomllib.load(f)
+              return {(p['name'], p['version']): p for p in data.get('package', [])}
+          before = packages('/tmp/Cargo.lock.before')
+          after = packages('Cargo.lock')
+          expected_removed = {('anyhow','1.0.102'), ('event-listener','5.4.1')}
+          expected_added = {('anyhow','1.0.103'), ('event-listener','5.4.2')}
+          removed = set(before) - set(after)
+          added = set(after) - set(before)
+          if removed != expected_removed or added != expected_added:
+              raise SystemExit(f'unexpected package drift: removed={sorted(removed)} added={sorted(added)}')
+          for old,new in [(('anyhow','1.0.102'),('anyhow','1.0.103')), (('event-listener','5.4.1'),('event-listener','5.4.2'))]:
+              b=dict(before[old]); a=dict(after[new])
+              for x in (b,a):
+                  x.pop('version',None); x.pop('checksum',None)
+              if b != a:
+                  raise SystemExit(f'unexpected dependency/metadata drift for {old[0]}')
+          print('PASS: only anyhow and event-listener patch versions changed')
+          PY
+          git diff -- Cargo.lock
+
+      - name: Commit exact lock refresh
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- Cargo.lock; then exit 0; fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add Cargo.lock
+          git commit -m 'security: patch reachable soundness dependencies [skip ci]'
+          git push origin HEAD:agent/task31-release-freeze
