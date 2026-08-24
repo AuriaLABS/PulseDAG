@@ -47,6 +47,16 @@ jobs:
       - name: Apply fail-closed source fix
         run: |
           set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('.github/task30-control/apply_selected_segment_continuation_fix.py')
+          text = path.read_text()
+          old = '                                                Ok(()) => true,'
+          new = '                                                Ok(_) => true,'
+          if text.count(old) != 1:
+              raise SystemExit(f'expected exactly one request_block_from return-type patch target, found {text.count(old)}')
+          path.write_text(text.replace(old, new, 1))
+          PY
           python3 .github/task30-control/apply_selected_segment_continuation_fix.py \
             apps/pulsedagd/src/main.rs
           git diff --check
