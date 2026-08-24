@@ -7,6 +7,7 @@ on:
       - main
     paths:
       - .github/workflows/task30-adversarial-runtime.yml
+      - scripts/v2_2_20_preflight_check.sh
       - scripts/v2_2_20_private_5n_4m_rehearsal.sh
       - scripts/v2_3_0_lag_injection_selected_segment.sh
       - scripts/v2_3_0_mempool_tx_relay_evidence.sh
@@ -14,12 +15,14 @@ on:
       - scripts/lib/v2_3_0_runtime_harness.sh
       - scripts/lib/v2_3_0_prune_restart_rejoin_harness.sh
       - scripts/lib/patch_v2_3_0_lag_runtime_harness.py
+      - scripts/lib/patch_task30_runtime_topology.py
       - scripts/private_testnet/**
   pull_request:
     branches:
       - main
     paths:
       - .github/workflows/task30-adversarial-runtime.yml
+      - scripts/v2_2_20_preflight_check.sh
       - scripts/v2_2_20_private_5n_4m_rehearsal.sh
       - scripts/v2_3_0_lag_injection_selected_segment.sh
       - scripts/v2_3_0_mempool_tx_relay_evidence.sh
@@ -27,6 +30,7 @@ on:
       - scripts/lib/v2_3_0_runtime_harness.sh
       - scripts/lib/v2_3_0_prune_restart_rejoin_harness.sh
       - scripts/lib/patch_v2_3_0_lag_runtime_harness.py
+      - scripts/lib/patch_task30_runtime_topology.py
       - scripts/private_testnet/**
 
 permissions:
@@ -77,6 +81,8 @@ jobs:
           GLOBAL_DEADLINE_SECS: 1500
           RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.miners }}m
           OUT_DIR: ${{ runner.temp }}/task30/multi-${{ matrix.miners }}m
+          PULSEDAG_REHEARSAL_VERSION: v2.4.0
+          PULSEDAG_REHEARSAL_VERSION_SLUG: v2_4_0
         run: bash scripts/v2_2_20_private_5n_4m_rehearsal.sh
 
       - name: Upload multi-miner evidence
@@ -241,7 +247,14 @@ jobs:
       - name: Run signed transaction relay runtime drill
         env:
           OUT_DIR: ${{ runner.temp }}/task30/mempool-relay
-        run: bash scripts/v2_3_0_mempool_tx_relay_evidence.sh
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/task30/runtime-scripts"
+          patched="$RUNNER_TEMP/task30/runtime-scripts/mempool-relay.sh"
+          python3 scripts/lib/patch_task30_runtime_topology.py relay \
+            scripts/v2_3_0_mempool_tx_relay_evidence.sh "$patched"
+          bash -n "$patched"
+          bash "$patched"
 
       - name: Enforce relay, duplicate, conflict, stale and capacity evidence
         if: success()
@@ -300,7 +313,18 @@ jobs:
       - name: Run prune snapshot restart and rejoin runtime drill
         env:
           OUT_DIR: ${{ runner.temp }}/task30/prune-restart-rejoin
-        run: bash scripts/v2_3_0_prune_restart_rejoin_runtime.sh
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/task30/runtime-scripts"
+          patched_harness="$RUNNER_TEMP/task30/runtime-scripts/prune-harness.sh"
+          patched_driver="$RUNNER_TEMP/task30/runtime-scripts/prune-driver.sh"
+          python3 scripts/lib/patch_task30_runtime_topology.py prune-harness \
+            scripts/lib/v2_3_0_prune_restart_rejoin_harness.sh "$patched_harness"
+          python3 scripts/lib/patch_task30_runtime_topology.py prune-driver \
+            scripts/v2_3_0_prune_restart_rejoin_runtime.sh "$patched_driver"
+          bash -n "$patched_harness"
+          bash -n "$patched_driver"
+          PRUNE_RESTART_REJOIN_TASK04_HARNESS="$patched_harness" bash "$patched_driver"
 
       - name: Enforce recovery evidence
         if: success()
