@@ -1,0 +1,11 @@
+[package]
+name = "task30-tx-helper"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+pulsedag-core = { path = "../../../../candidate/crates/pulsedag-core" }
+ed25519-dalek = "2"
+hex = "0.4"
+serde_json = "1"
