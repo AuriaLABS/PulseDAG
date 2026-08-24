@@ -23,62 +23,39 @@ jobs:
       matrix:
         miners: [1, 2, 4]
     steps:
+      - name: Checkout control plane
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: control-plane
+          persist-credentials: false
       - name: Checkout exact frozen candidate
         uses: actions/checkout@v4
         with:
           ref: ${{ env.CANDIDATE_SHA }}
+          path: candidate
           persist-credentials: false
-
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache cargo
+      - name: Cache candidate cargo
         uses: Swatinem/rust-cache@v2
-
-      - name: Verify exact SHA and clean checkout
-        run: |
-          set -euo pipefail
-          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
-          test -z "$(git status --porcelain)"
-
-      - name: Prepare fail-closed Task30 harness adaptation
+        with:
+          workspaces: candidate -> target
+      - name: Verify candidate and prepare harness
         env:
           ADAPT_DIR: ${{ runner.temp }}/task30-adaptation/multi-${{ matrix.miners }}m
         run: |
           set -euo pipefail
+          test "$(git -C candidate rev-parse HEAD)" = "$CANDIDATE_SHA"
+          test -z "$(git -C candidate status --porcelain)"
+          python3 -m py_compile control-plane/.github/task30-control/adapt_harness.py
           mkdir -p "$ADAPT_DIR"
-          cp scripts/v2_2_20_private_5n_4m_rehearsal.sh "$ADAPT_DIR/rehearsal.sh"
-          python3 - "$ADAPT_DIR/rehearsal.sh" <<'PY'
-          from pathlib import Path
-          import sys
-          path = Path(sys.argv[1])
-          text = path.read_text()
-          replacements = [
-              (
-                  'ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"',
-                  'ROOT_DIR="${GITHUB_WORKSPACE:?GITHUB_WORKSPACE is required for Task30 adaptation}"',
-                  'workspace root',
-              ),
-              (
-                  'OUT_DIR="$OUT_DIR" run_with_global_timeout preflight "$ROOT_DIR/scripts/v2_2_20_preflight_check.sh"',
-                  'echo "Task30 harness adaptation: historical v2.2.20 release-surface preflight skipped; exact v2.4.0 SHA/version is verified by the control plane"\nprintf "%s\\n" "candidate_sha=$REPO_COMMIT_FULL" "historical_preflight_skipped=true" > "$OUT_DIR/task30-harness-adaptation.txt"',
-                  'historical release-surface preflight',
-              ),
-          ]
-          for old, new, label in replacements:
-              count = text.count(old)
-              if count != 1:
-                  raise SystemExit(f'{label} patch precondition failed: expected 1 occurrence, got {count}')
-              text = text.replace(old, new, 1)
-          path.write_text(text)
-          PY
+          python3 control-plane/.github/task30-control/adapt_harness.py multi "$GITHUB_WORKSPACE/candidate" "$ADAPT_DIR/rehearsal.sh"
           bash -n "$ADAPT_DIR/rehearsal.sh"
-          diff -u scripts/v2_2_20_private_5n_4m_rehearsal.sh "$ADAPT_DIR/rehearsal.sh" > "$ADAPT_DIR/harness.diff" || test $? -eq 1
-          sha256sum scripts/v2_2_20_private_5n_4m_rehearsal.sh "$ADAPT_DIR/rehearsal.sh" > "$ADAPT_DIR/SHA256SUMS"
-          test -z "$(git status --porcelain)"
-
       - name: Run five-node multi-miner convergence rehearsal
+        working-directory: candidate
         env:
+          TASK30_CANDIDATE_ROOT: ${{ github.workspace }}/candidate
           MINER_COUNT: ${{ matrix.miners }}
           DURATION_SECS: 600
           P2P_CONNECT_WAIT_SECS: 120
@@ -91,8 +68,7 @@ jobs:
           set -euo pipefail
           bash "$ADAPTED_SCRIPT"
           test -z "$(git status --porcelain)"
-
-      - name: Upload multi-miner evidence and harness adaptation
+      - name: Upload multi-miner evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -112,40 +88,39 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: ${{ env.CANDIDATE_SHA }}
+          path: candidate
           persist-credentials: false
-
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache cargo
+      - name: Cache candidate cargo
         uses: Swatinem/rust-cache@v2
-
-      - name: Verify exact SHA and clean checkout
+        with:
+          workspaces: candidate -> target
+      - name: Verify exact SHA and prerequisites
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
-          test -z "$(git status --porcelain)"
+          test "$(git -C candidate rev-parse HEAD)" = "$CANDIDATE_SHA"
+          test -z "$(git -C candidate status --porcelain)"
           sudo -n true
           command -v ip
           command -v jq
           command -v curl
           command -v python3
-
       - name: Build release node and standalone miner
+        working-directory: candidate
         run: cargo build --locked --release -p pulsedagd -p pulsedag-miner
-
       - name: Run isolated five-node partition and restart rehearsal
+        working-directory: candidate
         env:
           EVIDENCE_ROOT: ${{ runner.temp }}/task30/netns
         run: |
           set -euo pipefail
           bash scripts/private_testnet/netns_rehearsal.sh \
             --candidate-sha "$CANDIDATE_SHA" \
-            --workspace "$GITHUB_WORKSPACE" \
+            --workspace "$PWD" \
             --evidence-root "$EVIDENCE_ROOT"
           python3 scripts/private_testnet/multi_host_rehearsal.py verify-evidence --evidence-dir "$EVIDENCE_ROOT/controller"
           test -z "$(git status --porcelain)"
-
       - name: Upload partition evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -160,65 +135,36 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
+      - name: Checkout control plane
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: control-plane
+          persist-credentials: false
       - name: Checkout exact frozen candidate
         uses: actions/checkout@v4
         with:
           ref: ${{ env.CANDIDATE_SHA }}
+          path: candidate
           persist-credentials: false
-
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache cargo
+      - name: Cache candidate cargo
         uses: Swatinem/rust-cache@v2
-
-      - name: Verify exact SHA and clean checkout
-        run: |
-          set -euo pipefail
-          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
-          test -z "$(git status --porcelain)"
-
-      - name: Prepare explicit K5 lag harness adaptation
+        with:
+          workspaces: candidate -> target
+      - name: Verify candidate and prepare explicit K5 harness
         env:
           ADAPT_DIR: ${{ runner.temp }}/task30-adaptation/delayed-parent
         run: |
           set -euo pipefail
+          test "$(git -C candidate rev-parse HEAD)" = "$CANDIDATE_SHA"
+          test -z "$(git -C candidate status --porcelain)"
           mkdir -p "$ADAPT_DIR"
-          cp scripts/lib/v2_3_0_runtime_harness.sh "$ADAPT_DIR/runtime-harness.sh"
-          python3 - "$ADAPT_DIR/runtime-harness.sh" <<'PY'
-          from pathlib import Path
-          import sys
-          path = Path(sys.argv[1])
-          text = path.read_text()
-          old_decl = '  local peer_id boot idx'
-          new_decl = '  local peer_id boot boot_list node_boot idx'
-          if text.count(old_decl) != 1:
-              raise SystemExit(f'lag local declaration patch precondition failed: {text.count(old_decl)}')
-          text = text.replace(old_decl, new_decl, 1)
-          old_loop = '  for idx in 2 3 4 5; do _v230_lag_start_node "$idx" "$boot"; done'
-          new_loop = '''  boot_list="$boot"
-          for idx in 2 3 4 5; do
-            _v230_lag_start_node "$idx" "$boot_list"
-            if ! pulsedag_wait_http_ok "$(_v230_lag_rpc_url "$idx")/p2p/status" "$out_dir/endpoints/n${idx}-p2p-bootstrap.json" "$startup_timeout"; then
-              _v230_lag_abort "n$idx p2p bootstrap status unavailable during explicit K5 wiring"; return 1
-            fi
-            peer_id="$(jq -r '.data.peer_id // .data.local_peer_id // .data.local_node_id // empty' "$out_dir/endpoints/n${idx}-p2p-bootstrap.json")"
-            [[ -n "$peer_id" ]] || { _v230_lag_abort "unable to extract n$idx peer id during explicit K5 wiring"; return 1; }
-            node_boot="/ip4/127.0.0.1/tcp/$((base_p2p_port + idx))/p2p/$peer_id"
-            boot_list="${boot_list},${node_boot}"
-          done
-          printf '%s\\n' "$boot_list" > "$out_dir/bootnodes-explicit-k5.txt"'''
-          if text.count(old_loop) != 1:
-              raise SystemExit(f'lag startup loop patch precondition failed: {text.count(old_loop)}')
-          text = text.replace(old_loop, new_loop, 1)
-          path.write_text(text)
-          PY
+          python3 control-plane/.github/task30-control/adapt_harness.py lag "$GITHUB_WORKSPACE/candidate" "$ADAPT_DIR/runtime-harness.sh"
           bash -n "$ADAPT_DIR/runtime-harness.sh"
-          diff -u scripts/lib/v2_3_0_runtime_harness.sh "$ADAPT_DIR/runtime-harness.sh" > "$ADAPT_DIR/harness.diff" || test $? -eq 1
-          sha256sum scripts/lib/v2_3_0_runtime_harness.sh "$ADAPT_DIR/runtime-harness.sh" > "$ADAPT_DIR/SHA256SUMS"
-          test -z "$(git status --porcelain)"
-
       - name: Run delayed-parent selected-segment runtime drill
+        working-directory: candidate
         env:
           OUT_DIR: ${{ runner.temp }}/task30/lag-selected-segment
           RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}-lag-k5
@@ -229,22 +175,15 @@ jobs:
           set -euo pipefail
           bash scripts/v2_3_0_lag_injection_selected_segment.sh
           jq -e '
-            .result == "PASS" and
-            .evidence_kind == "runtime" and
-            .closeout_eligible == true and
-            .node_count == 5 and
-            .external_miners == 4 and
-            .observed_network_selected_height_gap >= 64 and
-            .final_convergence == true and
-            .storage_memory_consistent == true and
-            .pending_selected_segment_requests == 0 and
-            .final_orphan_count == 0 and
-            .final_missing_parent_blockers == 0 and
+            .result == "PASS" and .evidence_kind == "runtime" and
+            .closeout_eligible == true and .node_count == 5 and .external_miners == 4 and
+            .observed_network_selected_height_gap >= 64 and .final_convergence == true and
+            .storage_memory_consistent == true and .pending_selected_segment_requests == 0 and
+            .final_orphan_count == 0 and .final_missing_parent_blockers == 0 and
             .public_testnet_ready == false
           ' "$OUT_DIR/evidence_manifest.json" >/dev/null
           test -z "$(git status --porcelain)"
-
-      - name: Upload delayed-parent evidence and harness adaptation
+      - name: Upload delayed-parent evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -260,57 +199,36 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
+      - name: Checkout control plane
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: control-plane
+          persist-credentials: false
       - name: Checkout exact frozen candidate
         uses: actions/checkout@v4
         with:
           ref: ${{ env.CANDIDATE_SHA }}
+          path: candidate
           persist-credentials: false
-
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache cargo
+      - name: Cache candidate cargo
         uses: Swatinem/rust-cache@v2
-
-      - name: Verify exact SHA and clean checkout
-        run: |
-          set -euo pipefail
-          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
-          test -z "$(git status --porcelain)"
-
-      - name: Prepare explicit K5 signed-relay driver adaptation
+        with:
+          workspaces: candidate -> target
+      - name: Verify candidate and prepare explicit K5 driver
         env:
           ADAPT_DIR: ${{ runner.temp }}/task30-adaptation/signed-relay
         run: |
           set -euo pipefail
+          test "$(git -C candidate rev-parse HEAD)" = "$CANDIDATE_SHA"
+          test -z "$(git -C candidate status --porcelain)"
           mkdir -p "$ADAPT_DIR"
-          cp scripts/v2_3_0_mempool_tx_relay_evidence.sh "$ADAPT_DIR/relay.sh"
-          python3 - "$ADAPT_DIR/relay.sh" <<'PY'
-          from pathlib import Path
-          import sys
-          path = Path(sys.argv[1])
-          text = path.read_text()
-          old = 'for i in 2 3 4 5; do start_node "$i" "$BOOT"; done'
-          new = '''BOOT_LIST="$BOOT"
-          for i in 2 3 4 5; do
-            start_node "$i" "$BOOT_LIST"
-            pulsedag_wait_http_ok "$(rpc_url "$i")/p2p/status" "$OUT_DIR/endpoints/n${i}-p2p-bootstrap.json" "$STARTUP_TIMEOUT" || { fail "n$i p2p bootstrap status unavailable during explicit K5 wiring"; write_manifest FAIL; exit 1; }
-            PEER_I="$(jq -r '.data.peer_id // .data.local_peer_id // empty' "$OUT_DIR/endpoints/n${i}-p2p-bootstrap.json")"
-            [[ -n "$PEER_I" ]] || { fail "unable to extract n$i peer id during explicit K5 wiring"; write_manifest FAIL; exit 1; }
-            BOOT_I="/ip4/127.0.0.1/tcp/$((BASE_P2P_PORT+i))/p2p/$PEER_I"
-            BOOT_LIST="${BOOT_LIST},${BOOT_I}"
-          done
-          printf '%s\\n' "$BOOT_LIST" > "$OUT_DIR/bootnodes-explicit-k5.txt"'''
-          if text.count(old) != 1:
-              raise SystemExit(f'relay startup loop patch precondition failed: {text.count(old)}')
-          path.write_text(text.replace(old, new, 1))
-          PY
+          python3 control-plane/.github/task30-control/adapt_harness.py relay "$GITHUB_WORKSPACE/candidate" "$ADAPT_DIR/relay.sh"
           bash -n "$ADAPT_DIR/relay.sh"
-          diff -u scripts/v2_3_0_mempool_tx_relay_evidence.sh "$ADAPT_DIR/relay.sh" > "$ADAPT_DIR/harness.diff" || test $? -eq 1
-          sha256sum scripts/v2_3_0_mempool_tx_relay_evidence.sh "$ADAPT_DIR/relay.sh" > "$ADAPT_DIR/SHA256SUMS"
-          test -z "$(git status --porcelain)"
-
       - name: Run signed transaction relay runtime drill
+        working-directory: candidate
         env:
           OUT_DIR: ${{ runner.temp }}/task30/mempool-relay
           TX_COUNT: 1
@@ -320,23 +238,16 @@ jobs:
           set -euo pipefail
           bash "$ADAPTED_DRIVER"
           jq -e '
-            .result == "PASS" and
-            .evidence_kind == "runtime" and
-            .node_count == 5 and
-            .relay_converged == true and
-            .duplicate_suppression == true and
-            .conflicting_transaction_rejection == true and
-            .stale_transaction_rejection == true and
-            .capacity_rejection_taxonomy == true and
-            .confirmation_cleanup == true and
+            .result == "PASS" and .evidence_kind == "runtime" and .node_count == 5 and
+            .relay_converged == true and .duplicate_suppression == true and
+            .conflicting_transaction_rejection == true and .stale_transaction_rejection == true and
+            .capacity_rejection_taxonomy == true and .confirmation_cleanup == true and
             .deterministic_final_mempool_sets == true and
-            .topology_status.required_peers_per_node == 4 and
-            .topology_status.stable == true and
+            .topology_status.required_peers_per_node == 4 and .topology_status.stable == true and
             .public_testnet_ready == false
           ' "$OUT_DIR/evidence_manifest.json" >/dev/null
           test -z "$(git status --porcelain)"
-
-      - name: Upload signed-relay evidence and harness adaptation
+      - name: Upload signed-relay evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -352,87 +263,38 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
+      - name: Checkout control plane
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: control-plane
+          persist-credentials: false
       - name: Checkout exact frozen candidate
         uses: actions/checkout@v4
         with:
           ref: ${{ env.CANDIDATE_SHA }}
+          path: candidate
           persist-credentials: false
-
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache cargo
+      - name: Cache candidate cargo
         uses: Swatinem/rust-cache@v2
-
-      - name: Verify exact SHA and clean checkout
-        run: |
-          set -euo pipefail
-          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
-          test -z "$(git status --porcelain)"
-
-      - name: Prepare explicit K5 prune harness adaptation
+        with:
+          workspaces: candidate -> target
+      - name: Verify candidate and prepare explicit K5 harness
         env:
           ADAPT_DIR: ${{ runner.temp }}/task30-adaptation/prune
         run: |
           set -euo pipefail
+          test "$(git -C candidate rev-parse HEAD)" = "$CANDIDATE_SHA"
+          test -z "$(git -C candidate status --porcelain)"
           mkdir -p "$ADAPT_DIR"
-          cp scripts/lib/v2_3_0_prune_restart_rejoin_harness.sh "$ADAPT_DIR/prune-harness.sh"
-          python3 - "$ADAPT_DIR/prune-harness.sh" <<'PY'
-          from pathlib import Path
-          import sys
-          path = Path(sys.argv[1])
-          text = path.read_text()
-          replacements = [
-              ('  local -a node_pids=()', '  local -a node_pids=() bootnodes=()', 'bootnode array declaration'),
-              (
-                  '    (( idx > 1 )) && args+=(--bootnode "$bootnode_1")',
-                  '''    local bootstrap="" j
-          for ((j=1; j<=node_count; j++)); do
-            (( j == idx )) && continue
-            [[ -n "${bootnodes[$j]:-}" ]] || continue
-            bootstrap="${bootstrap:+${bootstrap},}${bootnodes[$j]}"
-          done
-          [[ -n "$bootstrap" ]] && args+=(--bootnode "$bootstrap")''',
-                  'per-node bootstrap list',
-              ),
-              ('  local idx peer_id target_height', '  local idx peer_id target_height', 'startup locals'),
-          ]
-          for old, new, label in replacements[:2]:
-              count = text.count(old)
-              if count != 1:
-                  raise SystemExit(f'{label} patch precondition failed: {count}')
-              text = text.replace(old, new, 1)
-          old_start = '''  bootnode_1="/ip4/127.0.0.1/tcp/$(_v230_p2p_port 1)/p2p/$peer_id"
-          echo "$bootnode_1" > "$out_dir/bootnode.txt"
-          for ((idx=2; idx<=node_count; idx++)); do
-            _v230_start_node "$idx"
-            _v230_wait_endpoint "$idx" /health
-            _v230_wait_endpoint "$idx" /p2p/status
-          done'''
-          new_start = '''  bootnode_1="/ip4/127.0.0.1/tcp/$(_v230_p2p_port 1)/p2p/$peer_id"
-          bootnodes[1]="$bootnode_1"
-          echo "$bootnode_1" > "$out_dir/bootnode.txt"
-          for ((idx=2; idx<=node_count; idx++)); do
-            _v230_start_node "$idx"
-            _v230_wait_endpoint "$idx" /health
-            _v230_wait_endpoint "$idx" /p2p/status
-            peer_id="$(_v230_http_get "$(_v230_rpc_url "$idx")/p2p/status" | jq -er '.data.peer_id // .data.local_peer_id')"
-            bootnodes[$idx]="/ip4/127.0.0.1/tcp/$(_v230_p2p_port "$idx")/p2p/$peer_id"
-          done
-          printf '%s\\n' "${bootnodes[@]}" > "$out_dir/bootnodes-explicit-k5.txt"'''
-          count = text.count(old_start)
-          if count != 1:
-              raise SystemExit(f'prune startup block patch precondition failed: {count}')
-          text = text.replace(old_start, new_start, 1)
-          path.write_text(text)
-          PY
+          python3 control-plane/.github/task30-control/adapt_harness.py prune "$GITHUB_WORKSPACE/candidate" "$ADAPT_DIR/prune-harness.sh"
           bash -n "$ADAPT_DIR/prune-harness.sh"
-          diff -u scripts/lib/v2_3_0_prune_restart_rejoin_harness.sh "$ADAPT_DIR/prune-harness.sh" > "$ADAPT_DIR/harness.diff" || test $? -eq 1
-          sha256sum scripts/lib/v2_3_0_prune_restart_rejoin_harness.sh "$ADAPT_DIR/prune-harness.sh" > "$ADAPT_DIR/SHA256SUMS"
-          test -z "$(git status --porcelain)"
-
       - name: Run prune snapshot restart and rejoin runtime drill
+        working-directory: candidate
         env:
+          TASK30_CANDIDATE_ROOT: ${{ github.workspace }}/candidate
           OUT_DIR: ${{ runner.temp }}/task30/prune-restart-rejoin
           MIN_OFFLINE_ADVANCE_BLOCKS: 64
           PRUNE_RESTART_REJOIN_TASK04_HARNESS: ${{ runner.temp }}/task30-adaptation/prune/prune-harness.sh
@@ -440,23 +302,15 @@ jobs:
           set -euo pipefail
           bash scripts/v2_3_0_prune_restart_rejoin_runtime.sh
           jq -e '
-            .result == "PASS" and
-            .evidence_kind == "runtime" and
-            .node_count == 5 and
-            .blocks_pruned_total > 0 and
-            .snapshot_delta_restart_executed == true and
-            .restart_selected_tip_matches == true and
-            .restart_state_root_matches == true and
-            .offline_advance_blocks >= 64 and
-            .rejoin_executed == true and
-            .rejoin_converged == true and
+            .result == "PASS" and .evidence_kind == "runtime" and .node_count == 5 and
+            .blocks_pruned_total > 0 and .snapshot_delta_restart_executed == true and
+            .restart_selected_tip_matches == true and .restart_state_root_matches == true and
+            .offline_advance_blocks >= 64 and .rejoin_executed == true and .rejoin_converged == true and
             .final_storage_memory_consistent == true and
-            all(.final_nodes[]; (.compatible_peers // -1) >= 4) and
-            .public_testnet_ready == false
+            all(.final_nodes[]; (.compatible_peers // -1) >= 4) and .public_testnet_ready == false
           ' "$OUT_DIR/evidence_manifest.json" >/dev/null
           test -z "$(git status --porcelain)"
-
-      - name: Upload prune evidence and harness adaptation
+      - name: Upload prune evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -523,7 +377,6 @@ jobs:
           PY
           cat "$RUNNER_TEMP/task30-rerun/decision/decision.json"
           jq -e '.candidate_sha == "37f0dd6ca7aabe07341c226744f65d46bbb03d65" and .result == "PASS" and .public_testnet_ready == false' "$RUNNER_TEMP/task30-rerun/decision/decision.json" >/dev/null
-
       - name: Upload corrected Task30 decision
         if: always()
         uses: actions/upload-artifact@v4
