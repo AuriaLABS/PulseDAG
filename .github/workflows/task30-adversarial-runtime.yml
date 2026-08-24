@@ -85,6 +85,32 @@ jobs:
           PULSEDAG_REHEARSAL_VERSION_SLUG: v2_4_0
         run: bash scripts/v2_2_20_private_5n_4m_rehearsal.sh
 
+      - name: Enforce exact Task30 multi-miner gate
+        env:
+          MINER_COUNT: ${{ matrix.miners }}
+          OUT_DIR: ${{ runner.temp }}/task30/multi-${{ matrix.miners }}m
+        run: |
+          set -euo pipefail
+          run_dir="$(cat "$OUT_DIR/current-run-dir.txt")"
+          manifest="$run_dir/evidence_manifest.json"
+          jq -e --argjson miners "$MINER_COUNT" '
+            .result == "PASS" and
+            .overall_result == "PASS" and
+            .node_count == 5 and
+            .miner_count == $miners and
+            .startup_result == "PASS" and
+            .convergence_result == "PASS" and
+            .consensus_state_result == "PASS" and
+            .storage_consistency_result == "PASS" and
+            .readiness_result == "PASS" and
+            .post_quiescence.distinct_tips == 1 and
+            .post_quiescence.worst_lag_from_max_height == 0 and
+            (if $miners == 1 then .gates.baseline_5n_1m == "PASS"
+             elif $miners == 2 then .gates.intermediate_5n_2m == "PASS"
+             elif $miners == 4 then .gates.stress_5n_4m == "PASS"
+             else false end)
+          ' "$manifest" >/dev/null
+
       - name: Upload multi-miner evidence
         if: always()
         uses: actions/upload-artifact@v4
