@@ -1,1 +1,0 @@
-Temporary exact-head CI retrigger for Task30 #995. This file is deleted immediately; it must not remain in the PR tree.
