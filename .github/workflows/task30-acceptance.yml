@@ -13,6 +13,9 @@ on:
       - crates/pulsedag-rpc/**
       - crates/pulsedag-storage/**
       - crates/pulsedag-wallet/**
+      - scripts/v2_2_20_preflight_check.sh
+      - scripts/lib/patch_v2_3_0_lag_runtime_harness.py
+      - scripts/lib/patch_task30_runtime_topology.py
       - .github/workflows/task30-acceptance.yml
       - .github/workflows/task30-adversarial-runtime.yml
   push:
@@ -26,6 +29,9 @@ on:
       - crates/pulsedag-rpc/**
       - crates/pulsedag-storage/**
       - crates/pulsedag-wallet/**
+      - scripts/v2_2_20_preflight_check.sh
+      - scripts/lib/patch_v2_3_0_lag_runtime_harness.py
+      - scripts/lib/patch_task30_runtime_topology.py
       - .github/workflows/task30-acceptance.yml
       - .github/workflows/task30-adversarial-runtime.yml
 
