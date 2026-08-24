@@ -6,6 +6,11 @@ on:
       - agent/task30-dispatch-helper
     paths:
       - .github/workflows/task30-exact-main-dispatch-helper.yml
+  pull_request:
+    branches:
+      - main
+    paths:
+      - .github/workflows/task30-exact-main-dispatch-helper.yml
 
 permissions:
   contents: read
