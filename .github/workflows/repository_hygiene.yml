@@ -36,19 +36,19 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Preserve v2.3.0 version and readiness guardrails
+      - name: Preserve v2.4.0 candidate and readiness guardrails
         shell: bash
         run: |
           set -euo pipefail
-          test "$(tr -d '\r\n' < VERSION)" = "v2.3.0"
-          test "$(awk '/^version = / {gsub(/"/, "", $3); print $3; exit}' Cargo.toml)" = "2.3.0"
-          grep -Fq '`APPROVE_RELEASE_CANDIDATE`' docs/release/V2_3_0_RELEASE_DECISION.md
-          grep -Fq '`version_bump_authorized=true`' docs/release/V2_3_0_RELEASE_DECISION.md
-          grep -Fq '`public_testnet_ready=false`' docs/release/V2_3_0_RELEASE_DECISION.md
-          grep -Fq '`thirty_day_public_testnet_clock_started=false`' docs/release/V2_3_0_RELEASE_DECISION.md
-          test -f docs/release/V2_3_0_RELEASE_APPROVAL_RECORD.md
-          test -f scripts/validate_v2_3_0_release_candidate.py
-          test -f .github/workflows/v2_3_0_release_candidate.yml
+          test "$(tr -d '\r\n' < VERSION)" = "v2.4.0"
+          test "$(awk '/^version = / {gsub(/"/, "", $3); print $3; exit}' Cargo.toml)" = "2.4.0"
+          grep -Fq 'PENDING_EXACT_CANDIDATE_EVIDENCE' README.md
+          grep -Fq '`public_testnet_ready=false`' README.md
+          grep -Fq '`thirty_day_public_testnet_clock_started=false`' README.md
+          grep -Fq '`contracts_enabled=false`' README.md
+          test -f docs/ROADMAP_V2_4_0.md
+          test -f docs/PROTOCOL_ACTIVATION_V2_4_0.md
+          test -f scripts/repository_version_surface_audit.py
 
       - name: Validate maintenance syntax
         shell: bash
@@ -61,8 +61,7 @@ jobs:
           python3 -m py_compile \
             scripts/check_code_comment_language.py \
             scripts/repository_hygiene.py \
-            scripts/repository_version_surface_audit.py \
-            scripts/validate_v2_3_0_release_candidate.py
+            scripts/repository_version_surface_audit.py
 
       - name: Run repository hygiene regression
         shell: bash
@@ -96,7 +95,7 @@ jobs:
             .public_testnet_ready == false and
             .thirty_day_public_testnet_clock_started == false
           ' ci-evidence/repository-hygiene/repository-hygiene.json >/dev/null
-          grep -Fq '[PASS] active repository surfaces identify v2.3.0 consistently' \
+          grep -Fq '[PASS] active repository surfaces identify v2.4.0 consistently' \
             ci-evidence/repository-hygiene/version-surface-audit.txt
           grep -Fq '[PASS] historical documents and workflows are outside active roots' \
             ci-evidence/repository-hygiene/version-surface-audit.txt

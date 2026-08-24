@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-PREFLIGHT="$ROOT_DIR/scripts/v2_3_0_private_testnet_preflight.sh"
+PREFLIGHT="$ROOT_DIR/scripts/v2_4_0_private_testnet_preflight.sh"
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT
 
@@ -21,12 +21,6 @@ expect_fail() {
 
 cp "$ROOT_DIR/configs/private-testnet/seed.env.example" "$TMP_DIR/seed.env"
 cp "$ROOT_DIR/configs/private-testnet/node.env.example" "$TMP_DIR/node.env"
-for file in "$TMP_DIR/seed.env" "$TMP_DIR/node.env"; do
-  sed -i 's/private-testnet-v2.4.0/private-testnet-v2.3.0/g' "$file"
-  sed -i 's/pulsedag-private-v2.4.0/pulsedag-private-v2.3.0/g' "$file"
-  sed -i '/^PULSEDAG_PROTOCOL_CONSENSUS_MODE=/d' "$file"
-  sed -i 's/^PULSEDAG_AUTO_PRUNE_ENABLED=false/PULSEDAG_AUTO_PRUNE_ENABLED=true/' "$file"
-done
 expect_pass "$TMP_DIR/seed.env"
 expect_pass "$TMP_DIR/node.env"
 
@@ -51,6 +45,22 @@ cp "$TMP_DIR/node.env" "$TMP_DIR/chain.env"
 sed -i 's/^PULSEDAG_CHAIN_ID=.*/PULSEDAG_CHAIN_ID=wrong-chain/' "$TMP_DIR/chain.env"
 expect_fail "$TMP_DIR/chain.env"
 
+cp "$TMP_DIR/node.env" "$TMP_DIR/legacy-protocol.env"
+sed -i 's/^PULSEDAG_PROTOCOL_CONSENSUS_MODE=ghostdag_v1/PULSEDAG_PROTOCOL_CONSENSUS_MODE=legacy/' "$TMP_DIR/legacy-protocol.env"
+expect_fail "$TMP_DIR/legacy-protocol.env"
+
+cp "$TMP_DIR/node.env" "$TMP_DIR/auto-prune.env"
+sed -i 's/^PULSEDAG_AUTO_PRUNE_ENABLED=false/PULSEDAG_AUTO_PRUNE_ENABLED=true/' "$TMP_DIR/auto-prune.env"
+expect_fail "$TMP_DIR/auto-prune.env"
+
+cp "$TMP_DIR/node.env" "$TMP_DIR/volatile-rocksdb-root.env"
+sed -i 's#^PULSEDAG_ROCKSDB_PATH=.*#PULSEDAG_ROCKSDB_PATH=/tmp#' "$TMP_DIR/volatile-rocksdb-root.env"
+expect_fail "$TMP_DIR/volatile-rocksdb-root.env"
+
+cp "$TMP_DIR/node.env" "$TMP_DIR/volatile-identity-root.env"
+sed -i 's#^PULSEDAG_P2P_IDENTITY_KEY=.*#PULSEDAG_P2P_IDENTITY_KEY=/run#' "$TMP_DIR/volatile-identity-root.env"
+expect_fail "$TMP_DIR/volatile-identity-root.env"
+
 cp "$TMP_DIR/node.env" "$TMP_DIR/remote-rpc.env"
 sed -i 's/^PULSEDAG_RPC_BIND=.*/PULSEDAG_RPC_BIND=0.0.0.0:8280/' "$TMP_DIR/remote-rpc.env"
 expect_fail "$TMP_DIR/remote-rpc.env"
@@ -66,5 +76,7 @@ expect_fail "$TMP_DIR/public-claim.env"
 OUT_DIR="$TMP_DIR/evidence" bash "$PREFLIGHT" "$TMP_DIR/node.env" >/dev/null
 grep -q '"result": "PASS"' "$TMP_DIR/evidence/private-testnet-preflight.json"
 grep -q '"public_testnet_ready": false' "$TMP_DIR/evidence/private-testnet-preflight.json"
+grep -q '"protocol_consensus_mode": "ghostdag_v1"' "$TMP_DIR/evidence/private-testnet-preflight.json"
+grep -q '"auto_prune_enabled": false' "$TMP_DIR/evidence/private-testnet-preflight.json"
 
-echo "PASS: v2.3.0 private-testnet preflight contract"
+echo "PASS: v2.4.0 private-testnet preflight contract"

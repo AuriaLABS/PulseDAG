@@ -1,17 +1,6 @@
 name: v2.3.0 private-testnet bootstrap
 
 on:
-  pull_request:
-    branches:
-      - main
-    paths:
-      - configs/private-testnet/**
-      - docs/ROADMAP_V2_3_0.md
-      - docs/release/V2_3_0_RELEASE_DECISION.md
-      - docs/codex_tasks/v2_3_0_07_private_testnet_bootstrap.md
-      - scripts/v2_3_0_private_testnet_preflight.sh
-      - scripts/tests/test_v2_3_0_private_testnet_preflight.sh
-      - .github/workflows/v2_3_0_private_testnet_bootstrap.yml
   workflow_dispatch:
 
 permissions:

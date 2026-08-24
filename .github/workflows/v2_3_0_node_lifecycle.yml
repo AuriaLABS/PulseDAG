@@ -1,18 +1,6 @@
 name: v2.3.0 node lifecycle
 
 on:
-  pull_request:
-    branches:
-      - main
-    paths:
-      - scripts/private_testnet/**
-      - scripts/tests/test_v2_3_0_node_lifecycle.sh
-      - scripts/v2_3_0_private_testnet_preflight.sh
-      - configs/private-testnet/**
-      - docs/ROADMAP_V2_3_0.md
-      - docs/release/V2_3_0_RELEASE_DECISION.md
-      - docs/codex_tasks/v2_3_0_09_node_lifecycle.md
-      - .github/workflows/v2_3_0_node_lifecycle.yml
   workflow_dispatch:
 
 permissions:

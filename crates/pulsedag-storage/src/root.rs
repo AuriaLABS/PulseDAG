@@ -4,6 +4,7 @@ mod protocol_bundle;
 mod protocol_identity;
 mod protocol_restore;
 mod protocol_runtime_v2;
+mod protocol_startup_v2;
 
 pub use protocol_bundle::{
     ProtocolSnapshotExportBundleV2, PROTOCOL_SNAPSHOT_BUNDLE_FORMAT_VERSION,

@@ -1,17 +1,6 @@
 name: v2.3.0 operator and incident runbooks
 
 on:
-  pull_request:
-    branches:
-      - main
-    paths:
-      - docs/runbooks/**
-      - docs/codex_tasks/v2_3_0_11_operator_incident_runbooks.md
-      - scripts/private_testnet/collect_incident_evidence.py
-      - scripts/tests/test_v2_3_0_operator_runbooks.sh
-      - scripts/validate_v2_3_0_runbooks.py
-      - ops/observability/v2.3.0/alert-rules.yml
-      - .github/workflows/v2_3_0_operator_runbooks.yml
   workflow_dispatch:
 
 permissions:

@@ -60,6 +60,14 @@ cp "$REFERENCE" "$TMP_DIR/p2p-enabled.env"
 sed -i 's/^PULSEDAG_P2P_ENABLED=false/PULSEDAG_P2P_ENABLED=true/' "$TMP_DIR/p2p-enabled.env"
 expect_fail "$TMP_DIR/p2p-enabled.env"
 
+cp "$REFERENCE" "$TMP_DIR/legacy-protocol.env"
+sed -i 's/^PULSEDAG_PROTOCOL_CONSENSUS_MODE=ghostdag_v1/PULSEDAG_PROTOCOL_CONSENSUS_MODE=legacy/' "$TMP_DIR/legacy-protocol.env"
+expect_fail "$TMP_DIR/legacy-protocol.env"
+
+cp "$REFERENCE" "$TMP_DIR/auto-prune.env"
+sed -i 's/^PULSEDAG_AUTO_PRUNE_ENABLED=false/PULSEDAG_AUTO_PRUNE_ENABLED=true/' "$TMP_DIR/auto-prune.env"
+expect_fail "$TMP_DIR/auto-prune.env"
+
 cp "$REFERENCE" "$TMP_DIR/bootnode.env"
 sed -i 's#^PULSEDAG_P2P_BOOTSTRAP=.*#PULSEDAG_P2P_BOOTSTRAP=/dns4/seed.example.net/tcp/32333/p2p/12D3KooWExample#' "$TMP_DIR/bootnode.env"
 expect_fail "$TMP_DIR/bootnode.env"
@@ -107,6 +115,8 @@ expect_fail "$TMP_DIR/run-root-storage.env"
 OUT_DIR="$TMP_DIR/evidence" bash "$PREFLIGHT" "$TMP_DIR/valid.env" >/dev/null
 grep -q '"result": "PASS"' "$TMP_DIR/evidence/single-node-preflight.json"
 grep -q '"operator_mode": "single-node"' "$TMP_DIR/evidence/single-node-preflight.json"
+grep -q '"protocol_consensus_mode": "ghostdag_v1"' "$TMP_DIR/evidence/single-node-preflight.json"
+grep -q '"auto_prune_enabled": false' "$TMP_DIR/evidence/single-node-preflight.json"
 grep -q '"isolated_mining_authorized": true' "$TMP_DIR/evidence/single-node-preflight.json"
 grep -q '"public_testnet_ready": false' "$TMP_DIR/evidence/single-node-preflight.json"
 grep -q '"contracts_enabled": false' "$TMP_DIR/evidence/single-node-preflight.json"

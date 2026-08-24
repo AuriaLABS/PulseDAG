@@ -94,9 +94,9 @@ checksum = "940b3a0ca603d1eade50a4846a2afffd5ef57a9feac2c0e2ec2e14f9ead76000"
 
 [[package]]
 name = "anyhow"
-version = "1.0.102"
+version = "1.0.103"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
+checksum = "2a4385e2e34eb35d6b3efe798b9eb88096925d87726c0798709bf56d9ed84af3"
 
 [[package]]
 name = "arc-swap"
@@ -244,7 +244,7 @@ version = "3.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "290f7f2596bd5b78a9fec8088ccd89180d7f9f55b94b0576823bbbdc72ee8311"
 dependencies = [
- "event-listener 5.4.1",
+ "event-listener 5.4.2",
  "event-listener-strategy",
  "pin-project-lite",
 ]
@@ -956,9 +956,9 @@ dependencies = [
 
 [[package]]
 name = "crossbeam-epoch"
-version = "0.9.18"
+version = "0.9.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5b82ac4a3c2ca9c3460964f020e1402edd5753411d7737aa39c3714ad1b5420e"
+checksum = "2d6914041f254d6e9176c01941b21115dcfb7089e55135a35411081bd106ef3f"
 dependencies = [
  "crossbeam-utils",
 ]
@@ -1272,11 +1272,10 @@ checksum = "0206175f82b8d6bf6652ff7d71a1e27fd2e4efde587fd368662814d6ec1d9ce0"
 
 [[package]]
 name = "event-listener"
-version = "5.4.1"
+version = "5.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e13b66accf52311f30a0db42147dadea9850cb48cd070028831ae5f5d4b856ab"
+checksum = "5a23add41df1562121a9393cb065eab5146a1242410f23a644851e90cfd669d2"
 dependencies = [
- "concurrent-queue",
  "parking",
  "pin-project-lite",
 ]
@@ -1287,7 +1286,7 @@ version = "0.5.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8be9f3dfaaffdae2972880079a491a1a8bb7cbed0b8dd7a347f668b4150a3b93"
 dependencies = [
- "event-listener 5.4.1",
+ "event-listener 5.4.2",
  "pin-project-lite",
 ]
 
@@ -3884,7 +3883,7 @@ dependencies = [
 
 [[package]]
 name = "pulsedag-api"
-version = "2.3.0"
+version = "2.4.0"
 dependencies = [
  "pulsedag-core",
  "serde",
@@ -3893,7 +3892,7 @@ dependencies = [
 
 [[package]]
 name = "pulsedag-core"
-version = "2.3.0"
+version = "2.4.0"
 dependencies = [
  "bincode",
  "criterion",
@@ -3911,7 +3910,7 @@ dependencies = [
 
 [[package]]
 name = "pulsedag-crypto"
-version = "2.3.0"
+version = "2.4.0"
 dependencies = [
  "ed25519-dalek",
  "hex",
@@ -3921,7 +3920,7 @@ dependencies = [
 
 [[package]]
 name = "pulsedag-miner"
-version = "2.3.0"
+version = "2.4.0"
 dependencies = [
  "anyhow",
  "hex",
@@ -3936,7 +3935,7 @@ dependencies = [
 
 [[package]]
 name = "pulsedag-p2p"
-version = "2.3.0"
+version = "2.4.0"
 dependencies = [
  "libp2p",
  "pulsedag-core",
@@ -3948,7 +3947,7 @@ dependencies = [
 
 [[package]]
 name = "pulsedag-rpc"
-version = "2.3.0"
+version = "2.4.0"
 dependencies = [
  "async-stream",
  "axum",
@@ -3974,7 +3973,7 @@ dependencies = [
 
 [[package]]
 name = "pulsedag-storage"
-version = "2.3.0"
+version = "2.4.0"
 dependencies = [
  "bincode",
  "proptest",
@@ -3986,7 +3985,7 @@ dependencies = [
 
 [[package]]
 name = "pulsedag-wallet"
-version = "2.3.0"
+version = "2.4.0"
 dependencies = [
  "hex",
  "pulsedag-core",
@@ -3996,7 +3995,7 @@ dependencies = [
 
 [[package]]
 name = "pulsedagd"
-version = "2.3.0"
+version = "2.4.0"
 dependencies = [
  "anyhow",
  "axum",

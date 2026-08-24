@@ -4,57 +4,56 @@
 
 | Area | Value |
 |---|---|
-| VERSION file | `v2.3.0` |
-| Cargo workspace version | `2.3.0` |
-| Current milestone | v2.3.0 private-testnet release candidate |
-| Candidate state | Exact versioned candidate merged; final private-testnet release decision pending |
-| Final decision | `PENDING_FINAL_CANDIDATE_EVIDENCE` |
-| Tag | No `v2.3.0` tag created |
+| VERSION file | `v2.4.0` |
+| Cargo workspace version | `2.4.0` |
+| Current milestone | v2.4.0 Task31 release/activation candidate construction |
+| Candidate state | Moving candidate; exact final SHA not frozen |
+| Final decision | `PENDING_EXACT_CANDIDATE_EVIDENCE` |
+| Protocol target | transaction v2 + block-header v2 + `ghostdag_v1` |
+| Chain identity | Fresh v2.4 chain/genesis identity required; final digest not frozen |
+| Release scope | node + standalone miner; no official custody wallet in the current candidate |
+| High cadence | experimental/disabled by default |
+| Tag | No `v2.4.0` tag created |
 | Publication | GitHub Release publication not authorized |
 | Public testnet | `public_testnet_ready=false` |
-| 30-day clock | Not started |
+| 30-day clock | `thirty_day_public_testnet_clock_started=false` |
+| Smart contracts | `contracts_enabled=false` |
 
 ## Version progression
 
 | Version | Scope | Status |
 |---|---|---|
-| `v2.2.17` | API, operator, and security hardening | Historical |
-| `v2.2.18` | Private-testnet RC preparation and evidence gates | Historical |
-| `v2.2.19` | Private hardening and operator rehearsal | Historical |
-| `v2.2.20` | Final v2.2 hardening, protected rehearsal, and closeout evidence | Historical baseline for v2.3.0 |
-| `v2.3.0` | Current private-testnet release candidate | Active |
+| `v2.2.x` | Earlier private-testnet hardening and rehearsal | Historical |
+| `v2.3.0` | Previous private-testnet release-candidate baseline | Historical baseline / compatibility evidence |
+| `v2.4.0` | Versioned transaction/header protocol, GHOSTDAG stack, adversarial validation and final release activation | Active candidate construction |
+| `v2.5.0` | Future scale/GPU/adversarial-resilience program | Future planning |
+| `v2.6.0` | Future programmability program | Future planning |
 
-Historical documents are retained through [the archive index](archive/README.md). They are evidence and provenance, not current operator instructions.
+## v2.4.0 evidence state
 
-## v2.3.0 accepted evidence
+Tasks 22–29 are completed. Task30 produced deterministic/adversarial validation for the pre-Task31 integrated candidate, but any release-freeze change that affects the candidate requires the affected evidence to be rerun on the final exact SHA. Task31 is therefore not allowed to combine old release-branch evidence with the moving candidate.
 
-| Gate | Status | Reference |
-|---|---|---|
-| Protected five-node private-testnet rehearsal | `GO` | `docs/ROADMAP_V2_3_0.md` and Task 12 evidence records |
-| Exact candidate contract | `PASS` | Candidate workflow `29800778099` |
-| Linux x86_64 package and native smoke | `PASS` | Candidate workflow `29800778099` |
-| Windows x86_64 package and native smoke | `PASS` | Candidate workflow `29800778099` |
-| macOS x86_64 package and native smoke | `PASS` | Candidate workflow `29800778099` |
-| Consolidated six-archive bundle | `PASS` | `v2_3_0_candidate_consolidated_29800778099` |
-| Workspace format/check/tests/Clippy | `PASS` | Pre-burn-in verification on the exact candidate |
-| RPC and release validation | `PASS` | Exact candidate checks |
-| Repository hygiene | `PASS` | Exact candidate checks |
+The current Task31 candidate is explicitly closing release blockers including:
+
+- removal of raw-private-key wallet RPC behavior from the normal node;
+- consistent `v2.4.0` VERSION/Cargo/repository identity;
+- retirement of active v2.3-only release gates;
+- explicit chain-bound v2 genesis/startup/storage/P2P activation wiring;
+- exact-candidate packaging, recovery and release evidence.
 
 ## Current authorization boundary
 
-`APPROVE_RELEASE_CANDIDATE` authorized the versioned candidate and its validation only. It did not authorize:
+`PENDING_EXACT_CANDIDATE_EVIDENCE` means none of the following is authorized:
 
-- creating the `v2.3.0` tag;
+- creating the `v2.4.0` tag;
 - publishing a GitHub Release;
-- launching a public testnet;
+- launching the public testnet or recording Day 0;
 - setting `public_testnet_ready=true`;
 - starting or backdating the 30-day public-testnet clock;
-- introducing smart contracts or pool logic.
-
-A separate final private-testnet release decision is required before tag creation or publication.
+- enabling high cadence by default;
+- enabling smart contracts;
+- claiming an official end-user custody wallet is part of this node/miner candidate.
 
 ## Repository version rule
 
-Active repository surfaces must identify `v2.3.0` as the current version.
-
-References to v2.2.x are allowed only when clearly labelled as historical baselines, migration inputs, compatibility notes, or archive links.
+Primary active repository surfaces must identify `v2.4.0` / `2.4.0` consistently and must preserve the pending/no-GO guardrails above. References to earlier versions are allowed only when clearly presented as historical baselines, compatibility inputs, migration evidence, or archive material.

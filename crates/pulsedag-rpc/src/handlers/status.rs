@@ -43,6 +43,7 @@ pub struct NodeStatusData {
     pub ordered_dag_rebuild_failed_total: u64,
     pub ordered_dag_state_root: Option<String>,
     pub consensus_mode: String,
+    pub protocol_consensus_mode: String,
     pub ghostdag_metadata_active: bool,
     pub high_cadence_allowed: bool,
     pub tip_count: usize,
@@ -119,7 +120,10 @@ fn repo_version() -> String {
     include_str!("../../../../VERSION").trim().to_string()
 }
 
-fn status_from_rpc_snapshot(snapshot: NodeRpcSnapshot) -> NodeStatusData {
+fn status_from_rpc_snapshot(
+    snapshot: NodeRpcSnapshot,
+    protocol_consensus_mode: String,
+) -> NodeStatusData {
     let peer_summary = format!(
         "peer_count={} semantics=cached_snapshot",
         snapshot.peer_count
@@ -145,6 +149,7 @@ fn status_from_rpc_snapshot(snapshot: NodeRpcSnapshot) -> NodeStatusData {
         ordered_dag_rebuild_failed_total: 0,
         ordered_dag_state_root: None,
         consensus_mode: pulsedag_core::ConsensusMode::Legacy.to_string(),
+        protocol_consensus_mode,
         ghostdag_metadata_active: false,
         high_cadence_allowed: false,
         tip_count: snapshot.tip.as_ref().map(|_| 1).unwrap_or(0),
@@ -292,9 +297,17 @@ fn snapshot_chain(chain: &ChainState) -> StatusStateSnapshot {
 pub async fn get_status<S: RpcStateLike>(
     State(state): State<S>,
 ) -> Json<ApiResponse<NodeStatusData>> {
+    let protocol_consensus_mode = match state.storage().protocol_activation_record() {
+        Ok(Some(record)) => record.identity.consensus_mode.to_string(),
+        Ok(None) => pulsedag_core::ProtocolConsensusMode::Legacy.to_string(),
+        Err(error) => return Json(ApiResponse::err("STORAGE_ERROR", error.to_string())),
+    };
     let liveness_snapshot = fresh_or_cached_node_rpc_snapshot(&state, "/status").await;
     if liveness_snapshot.degraded || liveness_snapshot.stale {
-        return Json(ApiResponse::ok(status_from_rpc_snapshot(liveness_snapshot)));
+        return Json(ApiResponse::ok(status_from_rpc_snapshot(
+            liveness_snapshot,
+            protocol_consensus_mode,
+        )));
     }
     let snapshot_exists = match state.storage().snapshot_exists() {
         Ok(v) => v,
@@ -433,6 +446,7 @@ pub async fn get_status<S: RpcStateLike>(
         ordered_dag_rebuild_failed_total: chain_snapshot.ordered_dag_rebuild_failed_total,
         ordered_dag_state_root: chain_snapshot.ordered_dag_state_root,
         consensus_mode: chain_snapshot.consensus_mode,
+        protocol_consensus_mode,
         ghostdag_metadata_active: chain_snapshot.ghostdag_metadata_active,
         high_cadence_allowed: chain_snapshot.high_cadence_allowed,
         tip_count: chain_snapshot.tip_count,
@@ -509,7 +523,10 @@ mod tests {
         handlers::readiness::get_readiness,
     };
     use axum::{extract::State, Json};
-    use pulsedag_core::ChainState;
+    use pulsedag_core::{
+        genesis_v2::init_chain_state_v2, ActivatedV2P2pRuntime, ChainState,
+        ProtocolActivationIdentity,
+    };
     use pulsedag_p2p::{
         P2pHandle, P2pStatus, P2P_MODE_LIBP2P_DEV_LOOPBACK_SKELETON, P2P_MODE_LIBP2P_REAL,
         P2P_MODE_MEMORY_SIMULATED,
@@ -597,6 +614,36 @@ mod tests {
             storage,
             runtime: Arc::new(RwLock::new(runtime)),
             p2p: Some(Arc::new(TestP2pHandle { status })),
+            rpc_snapshot: NodeRpcSnapshotStore::new(snapshot),
+        }
+    }
+
+    fn mk_activated_v2_state() -> TestState {
+        let path = temp_db_path("status-activated-v2");
+        let storage = Arc::new(Storage::open(path.to_str().expect("utf8 temp path")).unwrap());
+        let chain = init_chain_state_v2("pulsedag-private-v2.4.0".to_string()).unwrap();
+        let identity = ProtocolActivationIdentity::activated_v2(
+            chain.chain_id.clone(),
+            chain.dag.genesis_hash.clone(),
+            chain.dag.ordering_version.clone(),
+        );
+        storage
+            .persist_activated_v2_p2p_runtime_snapshot(
+                &identity,
+                &chain,
+                &ActivatedV2P2pRuntime::default(),
+            )
+            .unwrap();
+        let runtime = NodeRuntimeStats {
+            sync_state: "idle".to_string(),
+            ..NodeRuntimeStats::default()
+        };
+        let snapshot = build_node_rpc_snapshot(&chain, &runtime, None);
+        TestState {
+            chain: Arc::new(RwLock::new(chain)),
+            storage,
+            runtime: Arc::new(RwLock::new(runtime)),
+            p2p: None,
             rpc_snapshot: NodeRpcSnapshotStore::new(snapshot),
         }
     }
@@ -778,6 +825,17 @@ mod tests {
             configured_bootnode_peer_ids: Vec::new(),
             ..P2pStatus::default()
         }
+    }
+
+    #[tokio::test]
+    async fn status_reports_protocol_identity_separately_from_internal_consensus() {
+        let Json(resp) = get_status(State(mk_activated_v2_state())).await;
+        let data = resp.data.expect("activated-v2 status data should exist");
+
+        assert!(resp.ok);
+        assert_eq!(data.consensus_mode, "legacy");
+        assert_eq!(data.protocol_consensus_mode, "ghostdag_v1");
+        assert!(!data.high_cadence_allowed);
     }
 
     #[tokio::test]
