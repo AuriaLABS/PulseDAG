@@ -55,7 +55,6 @@ task30_mine_until_block(){
   return 1
 }'''
     text = replace_once(text, old_post, new_post, "relay helper insertion")
-
     old_initial = r'''post_json "$(rpc_url 1)/wallet/new" '{}' "$OUT_DIR/tx/funding-wallet.json"
 post_json "$(rpc_url 1)/wallet/new" '{}' "$OUT_DIR/tx/funding2-wallet.json"
 post_json "$(rpc_url 1)/wallet/new" '{}' "$OUT_DIR/tx/funding3-wallet.json"
@@ -89,10 +88,8 @@ TXID="$(jq -r '.transaction.txid // empty' "$OUT_DIR/tx/submit-n1-body.json")"; 
 jq -e '.ok == true and .data.accepted == true' "$OUT_DIR/tx/submit-n1.json" >/dev/null || { fail "signed transaction was not accepted on n1"; write_manifest FAIL; exit 1; }
 jq -n --arg txid "$TXID" '[$txid]' > "$OUT_DIR/submitted_txids.json"'''
     text = replace_once(text, old_initial, new_initial, "relay retired wallet RPC initial flow")
-
     old_dup = r'''DUP_BODY="$(jq -ce '{transaction:.data.transaction} | select(.transaction != null)' "$OUT_DIR/tx/submit-n1.json")" || { fail "wallet transfer did not return a duplicate-submittable transaction"; write_manifest FAIL; exit 1; }'''
     text = replace_once(text, old_dup, 'DUP_BODY="$(cat "$OUT_DIR/tx/submit-n1-body.json")"', "relay duplicate body source")
-
     old_conflict = r'''post_json "$(rpc_url 3)/wallet/new" '{}' "$OUT_DIR/tx/conflict-recipient-wallet.json"
 CONFLICT_TO="$(jq -r '.data.address' "$OUT_DIR/tx/conflict-recipient-wallet.json")"
 CONFLICT_BODY="{\"from\":\"$FROM\",\"to\":\"$CONFLICT_TO\",\"amount\":2,\"fee\":1,\"private_key\":\"$PRIV\"}"
@@ -104,7 +101,6 @@ task30_build_signed 3 11 "$FROM" "$CONFLICT_TO" 2 1 conflict-submit-n3
 capture_node before_conflict
 post_json "$(rpc_url 3)/tx/submit" "$(cat "$OUT_DIR/tx/conflict-submit-n3-body.json")" "$OUT_DIR/tx/conflict-submit-n3.json" || true'''
     text = replace_once(text, old_conflict, new_conflict, "relay retired wallet RPC conflict flow")
-
     old_capacity = r'''post_json "$(rpc_url 1)/wallet/new" '{}' "$OUT_DIR/tx/recipient2-wallet.json"; TO2="$(jq -r '.data.address' "$OUT_DIR/tx/recipient2-wallet.json")"
 post_json "$(rpc_url 1)/wallet/transfer" "{\"from\":\"$FROM2\",\"to\":\"$TO2\",\"amount\":1,\"fee\":1,\"private_key\":\"$PRIV2\"}" "$OUT_DIR/tx/capacity-fill.json" || true
 post_json "$(rpc_url 1)/wallet/new" '{}' "$OUT_DIR/tx/recipient3-wallet.json"; TO3="$(jq -r '.data.address' "$OUT_DIR/tx/recipient3-wallet.json")"
@@ -120,7 +116,6 @@ TO3="$(task30_address 24)"
 task30_build_signed 1 13 "$FROM3" "$TO3" 1 0 capacity-reject
 post_json "$(rpc_url 1)/tx/submit" "$(cat "$OUT_DIR/tx/capacity-reject-body.json")" "$OUT_DIR/tx/capacity-reject.json" || true'''
     text = replace_once(text, old_capacity, new_capacity, "relay retired wallet RPC capacity flow")
-
     old_confirm = r'''post_json "$(rpc_url 1)/mine" "{\"miner_address\":\"$FROM\",\"pow_max_tries\":1000000}" "$OUT_DIR/tx/confirm-mine.json"'''
     text = replace_once(text, old_confirm, 'task30_mine_until_block 1 "$FROM" confirm-mine || { write_manifest FAIL; exit 1; }', "relay bounded confirmation mining")
     return text
@@ -261,7 +256,10 @@ fn main() {
                 eprintln!("tx/build returned transaction without inputs");
                 process::exit(67);
             }
-            for input in &mut tx.inputs { input.public_key = public_key.clone(); input.signature.clear(); }
+            for input in &mut tx.inputs {
+                input.public_key = public_key.clone();
+                input.signature.clear();
+            }
             let message = signing_message(&tx);
             let signature = hex::encode(key.sign(&message).to_bytes());
             for input in &mut tx.inputs { input.signature = signature.clone(); }
