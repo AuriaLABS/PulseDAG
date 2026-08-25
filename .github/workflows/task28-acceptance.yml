@@ -50,43 +50,43 @@ jobs:
         run: cargo test --locked -p pulsedag-core --test task28_multi_node_tx_parity
 
       - name: Protocol-bound mempool reconciliation
-        run: cargo test --locked -p pulsedag-core mempool_protocol::tests::
+        run: 'cargo test --locked -p pulsedag-core mempool_protocol::tests::'
 
       - name: Activated-v2 mining parent context
-        run: cargo test --locked -p pulsedag-core mining_protocol::tests::
+        run: 'cargo test --locked -p pulsedag-core mining_protocol::tests::'
 
       - name: Activated-v2 mining state root
-        run: cargo test --locked -p pulsedag-core mining_state_v2::tests::
+        run: 'cargo test --locked -p pulsedag-core mining_state_v2::tests::'
 
       - name: Activated-v2 mining template envelope
-        run: cargo test --locked -p pulsedag-core mining_template_v2::tests::
+        run: 'cargo test --locked -p pulsedag-core mining_template_v2::tests::'
 
       - name: Activated-v2 mined block acceptance
-        run: cargo test --locked -p pulsedag-core mined_block_v2::tests::
+        run: 'cargo test --locked -p pulsedag-core mined_block_v2::tests::'
 
       - name: Activated-v2 P2P finalizable block acceptance
-        run: cargo test --locked -p pulsedag-core network_block_v2::tests::
+        run: 'cargo test --locked -p pulsedag-core network_block_v2::tests::'
 
       - name: Activated-v2 P2P past-context validation
-        run: cargo test --locked -p pulsedag-core network_context_v2::tests::
+        run: 'cargo test --locked -p pulsedag-core network_context_v2::tests::'
 
       - name: Activated-v2 P2P staged-parent promotion
-        run: cargo test --locked -p pulsedag-core network_staging_v2::tests::
+        run: 'cargo test --locked -p pulsedag-core network_staging_v2::tests::'
 
       - name: Activated-v2 P2P pending-parent runtime
-        run: cargo test --locked -p pulsedag-core network_runtime_v2::tests::
+        run: 'cargo test --locked -p pulsedag-core network_runtime_v2::tests::'
 
       - name: Activated-v2 P2P durable runtime restore
-        run: cargo test --locked -p pulsedag-storage protocol_runtime_v2::tests::
+        run: 'cargo test --locked -p pulsedag-storage protocol_runtime_v2::tests::'
 
       - name: Activated-v2 P2P restart parity integration
         run: cargo test --locked -p pulsedag-storage --test task28_p2p_runtime_restart
 
       - name: Daemon activated-v2 inbound block selector
-        run: cargo test --locked -p pulsedagd block_protocol::tests::
+        run: 'cargo test --locked -p pulsedagd block_protocol::tests::'
 
       - name: Daemon activated-v2 runtime restore
-        run: cargo test --locked -p pulsedagd activated_v2_runtime::tests::
+        run: 'cargo test --locked -p pulsedagd activated_v2_runtime::tests::'
 
       - name: Daemon selected-segment bookkeeping parity
         run: python3 scripts/tests/test_v2_3_0_selected_segment_source_semantics.py apps/pulsedagd/src/main.rs crates/pulsedag-rpc/src/handlers/metrics.rs
@@ -106,10 +106,10 @@ jobs:
           cargo test --locked -p pulsedag-rpc v2_rpc_template_serializes_identity_and_fingerprint_together
 
       - name: RPC final-quiescence selected-segment parity
-        run: cargo test --locked -p pulsedag-rpc canonical_sync::tests::
+        run: 'cargo test --locked -p pulsedag-rpc canonical_sync::tests::'
 
       - name: Standalone miner protocol-bound backend
-        run: cargo test --locked -p pulsedag-miner protocol_backend::tests::
+        run: 'cargo test --locked -p pulsedag-miner protocol_backend::tests::'
 
       - name: Standalone miner template identity
-        run: cargo test --locked -p pulsedag-miner template_protocol::tests::
+        run: 'cargo test --locked -p pulsedag-miner template_protocol::tests::'
