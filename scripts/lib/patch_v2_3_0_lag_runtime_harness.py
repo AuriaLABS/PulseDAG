@@ -146,6 +146,16 @@ def main() -> int:
         '  _v230_lag_event stable_star_topology "" \'{"root_required_peers":4,"non_root_required_peers":1}\'',
         "star topology event",
     )
+    text = replace_once_or_confirm(
+        text,
+        '    [[ "$peers" -ge 4 ]] || topology_ok=0',
+        '    if (( idx == 1 )); then\n'
+        '      (( peers >= 4 )) || topology_ok=0\n'
+        '    else\n'
+        '      (( peers >= 1 )) || topology_ok=0\n'
+        '    fi',
+        "final star topology peer thresholds",
+    )
 
     text = replace_once_or_confirm(
         text,
