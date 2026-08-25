@@ -9,12 +9,21 @@ before the actual consensus/recovery assertions run.
 This adapter never edits the checked-out source. It emits a deterministic copy
 under the caller-provided output path and refuses to continue unless every
 expected historical form is present with the exact count documented below.
+The v2.4 compatibility adapter is then applied to the same temporary copy, so
+retired wallet RPCs and miner no-submit outcomes remain independently fail-closed.
 """
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
+
+from patch_task30_v24_runtime_compat import (
+    emit_relay_helper,
+    patch_prune as patch_v24_prune,
+    patch_relay as patch_v24_relay,
+)
 
 
 def replace_exact(text: str, old: str, new: str, count: int, label: str) -> str:
@@ -128,6 +137,27 @@ def patch_prune_driver(text: str) -> str:
     return text
 
 
+def prepare_relay_runtime(text: str) -> str:
+    text = patch_v24_relay(text)
+    runner_temp = os.environ.get("RUNNER_TEMP")
+    if not runner_temp:
+        raise SystemExit("RUNNER_TEMP is required for Task30 relay helper generation")
+    workspace = Path(os.environ.get("GITHUB_WORKSPACE", Path.cwd())).resolve()
+    emit_relay_helper(workspace, Path(runner_temp) / "task30/tx-helper")
+    return replace_exact(
+        text,
+        'log "building release binaries"',
+        'helper_dir="${RUNNER_TEMP:?RUNNER_TEMP is required}/task30/tx-helper"\n'
+        'CARGO_TARGET_DIR="$ROOT_DIR/target" cargo build --release --manifest-path "$helper_dir/Cargo.toml" || { fail "v2.4 local signing helper build failed"; write_manifest FAIL; exit 1; }\n'
+        'TASK30_TX_HELPER="$ROOT_DIR/target/release/task30-tx-helper"\n'
+        'export TASK30_TX_HELPER\n'
+        '[[ -x "$TASK30_TX_HELPER" ]] || { fail "v2.4 local signing helper binary missing"; write_manifest FAIL; exit 1; }\n'
+        'log "building release binaries"',
+        1,
+        "relay local signing helper build",
+    )
+
+
 def main() -> int:
     if len(sys.argv) != 4:
         print(
@@ -142,9 +172,9 @@ def main() -> int:
     text = source.read_text(encoding="utf-8")
 
     if mode == "relay":
-        text = patch_relay(text)
+        text = prepare_relay_runtime(patch_relay(text))
     elif mode == "prune-harness":
-        text = patch_prune_harness(text)
+        text = patch_v24_prune(patch_prune_harness(text))
     elif mode == "prune-driver":
         text = patch_prune_driver(text)
     else:
