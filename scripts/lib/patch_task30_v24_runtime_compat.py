@@ -91,12 +91,7 @@ jq -n --arg txid "$TXID" '[$txid]' > "$OUT_DIR/submitted_txids.json"'''
     text = replace_once(text, old_initial, new_initial, "relay retired wallet RPC initial flow")
 
     old_dup = r'''DUP_BODY="$(jq -ce '{transaction:.data.transaction} | select(.transaction != null)' "$OUT_DIR/tx/submit-n1.json")" || { fail "wallet transfer did not return a duplicate-submittable transaction"; write_manifest FAIL; exit 1; }'''
-    text = replace_once(
-        text,
-        old_dup,
-        'DUP_BODY="$(cat "$OUT_DIR/tx/submit-n1-body.json")"',
-        "relay duplicate body source",
-    )
+    text = replace_once(text, old_dup, 'DUP_BODY="$(cat "$OUT_DIR/tx/submit-n1-body.json")"', "relay duplicate body source")
 
     old_conflict = r'''post_json "$(rpc_url 3)/wallet/new" '{}' "$OUT_DIR/tx/conflict-recipient-wallet.json"
 CONFLICT_TO="$(jq -r '.data.address' "$OUT_DIR/tx/conflict-recipient-wallet.json")"
@@ -127,12 +122,7 @@ post_json "$(rpc_url 1)/tx/submit" "$(cat "$OUT_DIR/tx/capacity-reject-body.json
     text = replace_once(text, old_capacity, new_capacity, "relay retired wallet RPC capacity flow")
 
     old_confirm = r'''post_json "$(rpc_url 1)/mine" "{\"miner_address\":\"$FROM\",\"pow_max_tries\":1000000}" "$OUT_DIR/tx/confirm-mine.json"'''
-    text = replace_once(
-        text,
-        old_confirm,
-        'task30_mine_until_block 1 "$FROM" confirm-mine || { write_manifest FAIL; exit 1; }',
-        "relay bounded confirmation mining",
-    )
+    text = replace_once(text, old_confirm, 'task30_mine_until_block 1 "$FROM" confirm-mine || { write_manifest FAIL; exit 1; }', "relay bounded confirmation mining")
     return text
 
 
@@ -161,38 +151,22 @@ def patch_prune(text: str) -> str:
       printf '\n[%s] miner attempt %d/%d\n' "$(date -u +%FT%TZ)" "$attempt" "$max_attempts" >> "$miner_log"
       if "$miner_bin" --node "$(_v230_rpc_url 1)" --miner-address "v230-task04-$label" --max-tries 1000000 > "$attempt_log" 2>&1; then
         cat "$attempt_log" >> "$miner_log"
-        if grep -q 'submit_result: accepted=true' "$attempt_log"; then
-          mined=1
-          break
-        fi
+        if grep -q 'submit_result: accepted=true' "$attempt_log"; then mined=1; break; fi
         if grep -Eq 'backend_verification_failed:.*hash_above_target|backend_verification_failed.*hash_above_target' "$attempt_log"; then
-          _v230_prune_log "no PoW solution within 1000000 tries for $label attempt=$attempt/$max_attempts; retrying after ${retry_wait}s"
-          sleep "$retry_wait"
-          continue
+          _v230_prune_log "no PoW solution within 1000000 tries for $label attempt=$attempt/$max_attempts; retrying after ${retry_wait}s"; sleep "$retry_wait"; continue
         fi
         if grep -Eq 'template_skipped_stale|skip_reason[=:][[:space:]]*(expired|near_expiry)|skip_reason.*(expired|near_expiry)' "$attempt_log"; then
-          _v230_prune_log "miner skipped stale/near-expiry template for $label attempt=$attempt/$max_attempts; retrying after ${retry_wait}s"
-          sleep "$retry_wait"
-          continue
+          _v230_prune_log "miner skipped stale/near-expiry template for $label attempt=$attempt/$max_attempts; retrying after ${retry_wait}s"; sleep "$retry_wait"; continue
         fi
-        echo "external miner exited successfully without an accepted submit or explicit retryable outcome for $label" >&2
-        tail -80 "$attempt_log" >&2 || true
-        return 1
+        echo "external miner exited successfully without an accepted submit or explicit retryable outcome for $label" >&2; tail -80 "$attempt_log" >&2 || true; return 1
       fi
       cat "$attempt_log" >> "$miner_log"
       if v2_3_0_prune_miner_retryable_log "$attempt_log"; then
-        _v230_prune_log "mining submit rate limited for $label attempt=$attempt/$max_attempts; retrying after ${retry_wait}s"
-        sleep "$retry_wait"
-        continue
+        _v230_prune_log "mining submit rate limited for $label attempt=$attempt/$max_attempts; retrying after ${retry_wait}s"; sleep "$retry_wait"; continue
       fi
-      tail -80 "$attempt_log" >&2 || true
-      return 1
+      tail -80 "$attempt_log" >&2 || true; return 1
     done
-    (( mined == 1 )) || {
-      echo "external miner failed to produce an accepted block for $label after $max_attempts bounded attempts" >&2
-      tail -80 "$miner_log" >&2 || true
-      return 1
-    }'''
+    (( mined == 1 )) || { echo "external miner failed to produce an accepted block for $label after $max_attempts bounded attempts" >&2; tail -80 "$miner_log" >&2 || true; return 1; }'''
     return replace_once(text, old_mining, new_mining, "prune accepted-submit bounded retry")
 
 
@@ -200,135 +174,47 @@ def emit_relay_helper(root: Path, target: Path) -> None:
     core = (root / "crates/pulsedag-core").resolve()
     if not (core / "Cargo.toml").is_file():
         raise SystemExit(f"Task30 relay helper missing candidate core manifest: {core}/Cargo.toml")
-
-    target.mkdir(parents=True, exist_ok=True)
-    (target / "src").mkdir(parents=True, exist_ok=True)
-    cargo = f'''[package]
-name = "task30-tx-helper"
-version = "0.1.0"
-edition = "2021"
-publish = false
-
-[workspace]
-
-[dependencies]
-pulsedag-core = {{ path = "{core.as_posix()}" }}
-ed25519-dalek = "=2.2.0"
-hex = "=0.4.3"
-serde_json = "=1.0.149"
-wasm-bindgen = "=0.2.118"
-'''
+    target.mkdir(parents=True, exist_ok=True); (target / "src").mkdir(parents=True, exist_ok=True)
+    cargo = f'''[package]\nname = "task30-tx-helper"\nversion = "0.1.0"\nedition = "2021"\npublish = false\n\n[workspace]\n\n[dependencies]\npulsedag-core = {{ path = "{core.as_posix()}" }}\ned25519-dalek = "=2.2.0"\nhex = "=0.4.3"\nserde_json = "=1.0.149"\nwasm-bindgen = "=0.2.118"\n'''
     main_rs = r'''use ed25519_dalek::{Signer, SigningKey};
 use pulsedag_core::{address_from_public_key, compute_txid, signing_message, Transaction};
 use std::{env, fs, process};
-
-fn usage() -> ! {
-    eprintln!("usage: task30-tx-helper address SEED_U8 | sign SEED_U8 BUILD_RESPONSE_JSON");
-    process::exit(64);
-}
-
-fn key(seed: &str) -> SigningKey {
-    let seed: u8 = seed.parse().unwrap_or_else(|_| {
-        eprintln!("SEED_U8 must be an integer in 0..=255");
-        process::exit(64);
-    });
-    SigningKey::from_bytes(&[seed; 32])
-}
-
-fn public_key_hex(key: &SigningKey) -> String {
-    hex::encode(key.verifying_key().to_bytes())
-}
-
+fn usage() -> ! { eprintln!("usage: task30-tx-helper address SEED_U8 | sign SEED_U8 BUILD_RESPONSE_JSON"); process::exit(64); }
+fn key(seed: &str) -> SigningKey { let seed: u8 = seed.parse().unwrap_or_else(|_| { eprintln!("SEED_U8 must be an integer in 0..=255"); process::exit(64); }); SigningKey::from_bytes(&[seed; 32]) }
+fn public_key_hex(key: &SigningKey) -> String { hex::encode(key.verifying_key().to_bytes()) }
 fn main() {
-    let args = env::args().collect::<Vec<_>>();
-    match args.as_slice() {
-        [_, cmd, seed] if cmd == "address" => {
-            let key = key(seed);
-            println!("{}", address_from_public_key(&public_key_hex(&key)));
-        }
-        [_, cmd, seed, build_path] if cmd == "sign" => {
-            let key = key(seed);
-            let public_key = public_key_hex(&key);
-            let raw = fs::read_to_string(build_path).unwrap_or_else(|error| {
-                eprintln!("failed reading build response {build_path}: {error}");
-                process::exit(65);
-            });
-            let value: serde_json::Value = serde_json::from_str(&raw).unwrap_or_else(|error| {
-                eprintln!("invalid build response JSON: {error}");
-                process::exit(65);
-            });
-            if value.get("ok").and_then(|v| v.as_bool()) != Some(true) {
-                eprintln!("tx/build did not return ok=true: {value}");
-                process::exit(66);
-            }
-            let tx_value = value
-                .get("data")
-                .and_then(|v| v.get("transaction"))
-                .cloned()
-                .unwrap_or_else(|| {
-                    eprintln!("tx/build response omitted data.transaction: {value}");
-                    process::exit(66);
-                });
-            let mut tx: Transaction = serde_json::from_value(tx_value).unwrap_or_else(|error| {
-                eprintln!("invalid transaction in tx/build response: {error}");
-                process::exit(66);
-            });
-            if tx.version != 1 {
-                eprintln!("Task30 legacy runtime signer expected transaction version 1, got {}", tx.version);
-                process::exit(67);
-            }
-            if tx.inputs.is_empty() {
-                eprintln!("tx/build returned transaction without inputs");
-                process::exit(67);
-            }
-            for input in &mut tx.inputs {
-                input.public_key = public_key.clone();
-                input.signature.clear();
-            }
-            let message = signing_message(&tx);
-            let signature = hex::encode(key.sign(&message).to_bytes());
-            for input in &mut tx.inputs {
-                input.signature = signature.clone();
-            }
-            tx.txid = compute_txid(&tx);
-            println!("{}", serde_json::json!({"transaction": tx}));
-        }
-        _ => usage(),
-    }
-}
-'''
-    (target / "Cargo.toml").write_text(cargo, encoding="utf-8")
-    (target / "src/main.rs").write_text(main_rs, encoding="utf-8")
+ let args = env::args().collect::<Vec<_>>(); match args.as_slice() {
+  [_, cmd, seed] if cmd == "address" => { let key = key(seed); println!("{}", address_from_public_key(&public_key_hex(&key))); }
+  [_, cmd, seed, build_path] if cmd == "sign" => {
+   let key = key(seed); let public_key = public_key_hex(&key);
+   let raw = fs::read_to_string(build_path).unwrap_or_else(|error| { eprintln!("failed reading build response {build_path}: {error}"); process::exit(65); });
+   let value: serde_json::Value = serde_json::from_str(&raw).unwrap_or_else(|error| { eprintln!("invalid build response JSON: {error}"); process::exit(65); });
+   if value.get("ok").and_then(|v| v.as_bool()) != Some(true) { eprintln!("tx/build did not return ok=true: {value}"); process::exit(66); }
+   let tx_value = value.get("data").and_then(|v| v.get("transaction")).cloned().unwrap_or_else(|| { eprintln!("tx/build response omitted data.transaction: {value}"); process::exit(66); });
+   let mut tx: Transaction = serde_json::from_value(tx_value).unwrap_or_else(|error| { eprintln!("invalid transaction in tx/build response: {error}"); process::exit(66); });
+   if tx.version != 1 { eprintln!("Task30 legacy runtime signer expected transaction version 1, got {}", tx.version); process::exit(67); }
+   if tx.inputs.is_empty() { eprintln!("tx/build returned transaction without inputs"); process::exit(67); }
+   for input in &mut tx.inputs { input.public_key = public_key.clone(); input.signature.clear(); }
+   let message = signing_message(&tx); let signature = hex::encode(key.sign(&message).to_bytes());
+   for input in &mut tx.inputs { input.signature = signature.clone(); }
+   tx.txid = compute_txid(&tx); println!("{}", serde_json::json!({"transaction": tx}));
+  }
+  _ => usage(),
+ }
+}'''
+    (target / "Cargo.toml").write_text(cargo, encoding="utf-8"); (target / "src/main.rs").write_text(main_rs, encoding="utf-8")
 
 
 def main() -> int:
     if len(sys.argv) != 4:
-        print(
-            f"usage: {sys.argv[0]} relay|prune|relay-helper INPUT OUTPUT",
-            file=sys.stderr,
-        )
-        return 64
-
-    mode, input_name, output_name = sys.argv[1:]
-    source = Path(input_name)
-    target = Path(output_name)
-
-    if mode == "relay-helper":
-        emit_relay_helper(source.resolve(), target.resolve())
-        return 0
-
+        print(f"usage: {sys.argv[0]} relay|prune|relay-helper INPUT OUTPUT", file=sys.stderr); return 64
+    mode, input_name, output_name = sys.argv[1:]; source = Path(input_name); target = Path(output_name)
+    if mode == "relay-helper": emit_relay_helper(source.resolve(), target.resolve()); return 0
     text = source.read_text(encoding="utf-8")
-    if mode == "relay":
-        text = patch_relay(text)
-    elif mode == "prune":
-        text = patch_prune(text)
-    else:
-        raise SystemExit(f"unsupported Task30 v2.4 compatibility mode: {mode}")
-
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(text, encoding="utf-8")
-    return 0
+    if mode == "relay": text = patch_relay(text)
+    elif mode == "prune": text = patch_prune(text)
+    else: raise SystemExit(f"unsupported Task30 v2.4 compatibility mode: {mode}")
+    target.parent.mkdir(parents=True, exist_ok=True); target.write_text(text, encoding="utf-8"); return 0
 
 
-if __name__ == "__main__":
-    raise SystemExit(main())
+if __name__ == "__main__": raise SystemExit(main())
