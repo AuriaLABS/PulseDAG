@@ -10,6 +10,11 @@ if [[ "${1:-}" == "--docker-mode" || "${REHEARSAL_DOCKER_MODE:-0}" == "1" ]]; th
   docker_mode=1
 fi
 
+expected_version="${PULSEDAG_REHEARSAL_VERSION:-v2.2.20}"
+expected_cargo_version="${expected_version#v}"
+expected_version_slug="${PULSEDAG_REHEARSAL_VERSION_SLUG:-${expected_version#v}}"
+expected_version_slug="${expected_version_slug//./_}"
+
 ver="unknown"
 cargo_ver="unknown"
 ref="unknown"
@@ -94,8 +99,10 @@ write_evidence(){
   summary_result=$([[ $fail -eq 0 ]] && echo PASS || echo FAIL)
 
   cat > "$OUT_DIR/preflight-summary.md" <<SUM
-# v2.2.20 preflight
+# $expected_version rehearsal preflight
 
+- expected_version: $expected_version
+- expected_version_slug: $expected_version_slug
 - ref: $ref
 - commit: $commit
 - version: $ver
@@ -131,17 +138,38 @@ if command -v git >/dev/null 2>&1; then
   fi
 fi
 
+echo "Expected rehearsal version: $expected_version"
 echo "Git ref: $ref"
 echo "Git commit: $commit"
 
-check "VERSION == v2.2.20" test "$ver" = "v2.2.20"
-check "Cargo workspace version == 2.2.20" test "$cargo_ver" = "2.2.20"
+check "VERSION == $expected_version" test "$ver" = "$expected_version"
+check "Cargo workspace version == $expected_cargo_version" test "$cargo_ver" = "$expected_cargo_version"
 
-required_docs=(
-  "docs/VERSION_MATRIX.md"
-  "docs/V2_2_20_START.md"
-  "docs/V2_2_20_FIRST_STRESS_EVIDENCE.md"
-)
+required_docs=()
+claim_files=()
+case "$expected_version" in
+  v2.2.20)
+    required_docs=(
+      "docs/VERSION_MATRIX.md"
+      "docs/V2_2_20_START.md"
+      "docs/V2_2_20_FIRST_STRESS_EVIDENCE.md"
+    )
+    claim_files=(README.md docs/VERSION_MATRIX.md docs/V2_2_20_START.md docs/V2_2_20_FIRST_STRESS_EVIDENCE.md)
+    ;;
+  v2.4.0)
+    required_docs=(
+      "docs/VERSION_MATRIX.md"
+      "docs/PROTOCOL_ACTIVATION_V2_4_0.md"
+      "docs/ROADMAP_V2_4_0.md"
+    )
+    claim_files=(README.md docs/VERSION_MATRIX.md docs/PROTOCOL_ACTIVATION_V2_4_0.md docs/ROADMAP_V2_4_0.md)
+    ;;
+  *)
+    echo "FAIL: unsupported rehearsal preflight version: $expected_version" >&2
+    fail=1
+    ;;
+esac
+
 required_scripts=(
   "scripts/v2_2_20_preflight_check.sh"
   "scripts/v2_2_20_private_5n_1m_rehearsal.sh"
@@ -155,9 +183,9 @@ for f in "${required_scripts[@]}"; do
   check "exists script: $f" test -f "$f"
 done
 
-claim_files=(README.md docs/VERSION_MATRIX.md docs/V2_2_20_START.md docs/V2_2_20_FIRST_STRESS_EVIDENCE.md)
-
-check "no v2.3.0 readiness claim detected" check_no_claim "(v2\\.3\\.0 is ready|ready for v2\\.3\\.0|v2\\.3\\.0 readiness:[[:space:]]*yes|v2\\.3\\.0 ready)" "${claim_files[@]}"
+if [[ "$expected_version" == "v2.2.20" ]]; then
+  check "no v2.3.0 readiness claim detected" check_no_claim "(v2\\.3\\.0 is ready|ready for v2\\.3\\.0|v2\\.3\\.0 readiness:[[:space:]]*yes|v2\\.3\\.0 ready)" "${claim_files[@]}"
+fi
 
 check "no v3.0 readiness claim detected" check_no_claim "(v3\\.0(\\.0)? is ready|ready for v3\\.0(\\.0)?|v3\\.0 readiness:[[:space:]]*yes|v3\\.0 ready)" "${claim_files[@]}"
 
@@ -169,7 +197,7 @@ else
   check "no production GPU mining claim unless real backend implemented+tested" check_no_claim "(production gpu mining (is )?(live|ready)|gpu mining ready for production|production-ready gpu mining|gpu miner production ready|gpu mining in production)" "${claim_files[@]}"
 fi
 
-claim_scan_summary=$([[ $fail -eq 0 ]] && echo "PASS: no forbidden readiness claims" || echo "FAIL: forbidden readiness claim detected")
+claim_scan_summary=$([[ $fail -eq 0 ]] && echo "PASS: no forbidden readiness claims" || echo "FAIL: preflight or readiness-claim check failed")
 
 summary_result=$([[ $fail -eq 0 ]] && echo PASS || echo FAIL)
 echo "SUMMARY: ${summary_result} (${passes}/${checks} explicit checks passed)"

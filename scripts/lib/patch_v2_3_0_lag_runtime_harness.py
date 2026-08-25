@@ -124,6 +124,90 @@ def main() -> int:
         "stopped-node socket destruction",
     )
 
+    text = replace_once_or_confirm(
+        text,
+        "        (( peers >= 4 )) || ok=0",
+        "        if (( idx == 1 )); then\n"
+        "          (( peers >= 4 )) || ok=0\n"
+        "        else\n"
+        "          (( peers >= 1 )) || ok=0\n"
+        "        fi",
+        "star topology peer thresholds",
+    )
+    text = replace_once_or_confirm(
+        text,
+        '  if ! _v230_lag_wait_topology; then _v230_lag_abort "topology did not stabilize at four peers per node"; return 1; fi',
+        '  if ! _v230_lag_wait_topology; then _v230_lag_abort "topology did not stabilize with n1>=4 and non-root>=1 peers"; return 1; fi',
+        "star topology failure text",
+    )
+    text = replace_once_or_confirm(
+        text,
+        '  _v230_lag_event stable_four_peer_topology "" \'{"required_peers_per_node":4}\'',
+        '  _v230_lag_event stable_star_topology "" \'{"root_required_peers":4,"non_root_required_peers":1}\'',
+        "star topology event",
+    )
+    text = replace_once_or_confirm(
+        text,
+        '    [[ "$peers" -ge 4 ]] || topology_ok=0',
+        '    if (( idx == 1 )); then\n'
+        '      (( peers >= 4 )) || topology_ok=0\n'
+        '    else\n'
+        '      (( peers >= 1 )) || topology_ok=0\n'
+        '    fi',
+        "final star topology peer thresholds",
+    )
+
+    text = replace_once_or_confirm(
+        text,
+        '''  # Preserve the ground-truth gap measured while n5 is stopped. Recovery can
+  # apply a full selected chunk before remote inventory becomes observable.
+  (( built_gap > harness_gap_max )) && harness_gap_max="$built_gap"''',
+        '''  # Preserve the ground-truth gap measured from canonical selected heights
+  # while n5 is SIGSTOPed and n1-n4 have already quiesced. Recovery can apply
+  # a full selected chunk before the transient network-gap metric is sampled.
+  (( built_gap > harness_gap_max )) && harness_gap_max="$built_gap"
+  (( built_gap > canonical_gap_max )) && canonical_gap_max="$built_gap"''',
+        "canonical selected-height gap proof",
+    )
+
+    text = replace_once_or_confirm(
+        text,
+        '''    if (( seen_session == 0 )) && [[ -n "$session_id" ]]; then
+      _v230_lag_event selected_segment_session_active n5 "$(jq -nc --arg peer "$peer" --arg session "$session_id" '{peer:$peer,session_id:$session}')"
+      seen_session=1
+      selected_session_seen=true
+    fi''',
+        '''    if (( seen_session == 0 )); then
+      if [[ -n "$session_id" ]]; then
+        _v230_lag_event selected_segment_session_active n5 "$(jq -nc --arg peer "$peer" --arg session "$session_id" '{peer:$peer,session_id:$session,correlation_proof:"active_session_id"}')"
+        seen_session=1
+        selected_session_seen=true
+      elif [[ -n "$peer" ]] && ((
+        seen_inventory == 1 &&
+        seen_locator == 1 &&
+        seen_headers == 1 &&
+        final_block_requests > baseline_block_requests &&
+        final_blocks_applied > baseline_blocks_applied &&
+        final_chunks_completed > baseline_chunks_completed &&
+        final_peer_addressed_getblock > baseline_peer_addressed_getblock &&
+        final_peer_addressed_getblock - baseline_peer_addressed_getblock >= final_block_requests - baseline_block_requests
+      )); then
+        _v230_lag_event selected_segment_session_correlated_by_counters n5 "$(jq -nc \
+          --arg peer "$peer" \
+          --argjson locator_requests "$((final_header_requests - baseline_header_requests))" \
+          --argjson correlated_headers "$((final_headers_received - baseline_headers_received))" \
+          --argjson block_requests "$((final_block_requests - baseline_block_requests))" \
+          --argjson blocks_applied "$((final_blocks_applied - baseline_blocks_applied))" \
+          --argjson chunks "$((final_chunks_completed - baseline_chunks_completed))" \
+          --argjson peer_addressed "$((final_peer_addressed_getblock - baseline_peer_addressed_getblock))" \
+          '{peer:$peer,correlation_proof:"typed_selected_segment_counter_deltas",locator_requests:$locator_requests,correlated_headers:$correlated_headers,block_requests:$block_requests,blocks_applied:$blocks_applied,chunks_completed:$chunks,peer_addressed_getblock_sent:$peer_addressed}')"
+        seen_session=1
+        selected_session_seen=true
+      fi
+    fi''',
+        "selected-segment session counter correlation",
+    )
+
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(text)
     return 0

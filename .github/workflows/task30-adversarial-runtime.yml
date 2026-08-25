@@ -7,6 +7,7 @@ on:
       - main
     paths:
       - .github/workflows/task30-adversarial-runtime.yml
+      - scripts/v2_2_20_preflight_check.sh
       - scripts/v2_2_20_private_5n_4m_rehearsal.sh
       - scripts/v2_3_0_lag_injection_selected_segment.sh
       - scripts/v2_3_0_mempool_tx_relay_evidence.sh
@@ -14,12 +15,14 @@ on:
       - scripts/lib/v2_3_0_runtime_harness.sh
       - scripts/lib/v2_3_0_prune_restart_rejoin_harness.sh
       - scripts/lib/patch_v2_3_0_lag_runtime_harness.py
+      - scripts/lib/patch_task30_runtime_topology.py
       - scripts/private_testnet/**
   pull_request:
     branches:
       - main
     paths:
       - .github/workflows/task30-adversarial-runtime.yml
+      - scripts/v2_2_20_preflight_check.sh
       - scripts/v2_2_20_private_5n_4m_rehearsal.sh
       - scripts/v2_3_0_lag_injection_selected_segment.sh
       - scripts/v2_3_0_mempool_tx_relay_evidence.sh
@@ -27,6 +30,7 @@ on:
       - scripts/lib/v2_3_0_runtime_harness.sh
       - scripts/lib/v2_3_0_prune_restart_rejoin_harness.sh
       - scripts/lib/patch_v2_3_0_lag_runtime_harness.py
+      - scripts/lib/patch_task30_runtime_topology.py
       - scripts/private_testnet/**
 
 permissions:
@@ -36,8 +40,55 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  runtime-adapter-preflight:
+    name: Task30 runtime adapter preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Verify exact SHA and clean checkout
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          test -z "$(git status --porcelain)"
+
+      - name: Validate v2.4 preflight and runtime adapters
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/task30/adapter-preflight"
+          mkdir -p "$out"
+          python3 -m py_compile \
+            scripts/lib/patch_v2_3_0_lag_runtime_harness.py \
+            scripts/lib/patch_task30_runtime_topology.py
+          PULSEDAG_REHEARSAL_VERSION=v2.4.0 \
+          PULSEDAG_REHEARSAL_VERSION_SLUG=v2_4_0 \
+          OUT_DIR="$out/version-preflight" \
+            bash scripts/v2_2_20_preflight_check.sh
+          bash -n scripts/v2_2_20_private_5n_4m_rehearsal.sh
+          python3 scripts/lib/patch_v2_3_0_lag_runtime_harness.py \
+            scripts/lib/v2_3_0_runtime_harness.sh "$out/lag-runtime.sh"
+          python3 scripts/lib/patch_task30_runtime_topology.py relay \
+            scripts/v2_3_0_mempool_tx_relay_evidence.sh "$out/relay-runtime.sh"
+          python3 scripts/lib/patch_task30_runtime_topology.py prune-harness \
+            scripts/lib/v2_3_0_prune_restart_rejoin_harness.sh "$out/prune-harness.sh"
+          python3 scripts/lib/patch_task30_runtime_topology.py prune-driver \
+            scripts/v2_3_0_prune_restart_rejoin_runtime.sh "$out/prune-driver.sh"
+          bash -n "$out/lag-runtime.sh"
+          bash -n "$out/relay-runtime.sh"
+          bash -n "$out/prune-harness.sh"
+          bash -n "$out/prune-driver.sh"
+          rm -rf scripts/lib/__pycache__
+          test -z "$(git status --porcelain)"
+
   multi-miner-convergence:
     name: 5N/${{ matrix.miners }}M convergence
+    needs: runtime-adapter-preflight
     runs-on: ubuntu-latest
     timeout-minutes: 45
     strategy:
@@ -77,7 +128,35 @@ jobs:
           GLOBAL_DEADLINE_SECS: 1500
           RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.miners }}m
           OUT_DIR: ${{ runner.temp }}/task30/multi-${{ matrix.miners }}m
+          PULSEDAG_REHEARSAL_VERSION: v2.4.0
+          PULSEDAG_REHEARSAL_VERSION_SLUG: v2_4_0
         run: bash scripts/v2_2_20_private_5n_4m_rehearsal.sh
+
+      - name: Enforce exact Task30 multi-miner gate
+        env:
+          MINER_COUNT: ${{ matrix.miners }}
+          OUT_DIR: ${{ runner.temp }}/task30/multi-${{ matrix.miners }}m
+        run: |
+          set -euo pipefail
+          run_dir="$(cat "$OUT_DIR/current-run-dir.txt")"
+          manifest="$run_dir/evidence_manifest.json"
+          jq -e --argjson miners "$MINER_COUNT" '
+            .result == "PASS" and
+            .overall_result == "PASS" and
+            .node_count == 5 and
+            .miner_count == $miners and
+            .startup_result == "PASS" and
+            .convergence_result == "PASS" and
+            .consensus_state_result == "PASS" and
+            .storage_consistency_result == "PASS" and
+            .readiness_result == "PASS" and
+            .post_quiescence.distinct_tips == 1 and
+            .post_quiescence.worst_lag_from_max_height == 0 and
+            (if $miners == 1 then .gates.baseline_5n_1m == "PASS"
+             elif $miners == 2 then .gates.intermediate_5n_2m == "PASS"
+             elif $miners == 4 then .gates.stress_5n_4m == "PASS"
+             else false end)
+          ' "$manifest" >/dev/null
 
       - name: Upload multi-miner evidence
         if: always()
@@ -92,11 +171,11 @@ jobs:
 
   partition-restart-rejoin:
     name: 5N partition restart rejoin
+    needs: runtime-adapter-preflight
     runs-on: ubuntu-latest
     timeout-minutes: 60
     env:
       CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-      EVIDENCE_ROOT: ${{ runner.temp }}/task30/netns
     steps:
       - name: Checkout exact candidate
         uses: actions/checkout@v4
@@ -128,6 +207,8 @@ jobs:
         run: cargo build --locked --release -p pulsedagd -p pulsedag-miner
 
       - name: Run isolated five-node partition and restart rehearsal
+        env:
+          EVIDENCE_ROOT: ${{ runner.temp }}/task30/netns
         run: |
           bash scripts/private_testnet/netns_rehearsal.sh \
             --candidate-sha "$CANDIDATE_SHA" \
@@ -136,6 +217,8 @@ jobs:
 
       - name: Verify partition evidence bundle
         if: success()
+        env:
+          EVIDENCE_ROOT: ${{ runner.temp }}/task30/netns
         run: python3 scripts/private_testnet/multi_host_rehearsal.py verify-evidence --evidence-dir "$EVIDENCE_ROOT/controller"
 
       - name: Upload partition and restart evidence
@@ -149,11 +232,11 @@ jobs:
 
   delayed-parent-selected-segment:
     name: 5N delayed parent selected-segment recovery
+    needs: runtime-adapter-preflight
     runs-on: ubuntu-latest
     timeout-minutes: 75
     env:
       CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-      OUT_DIR: ${{ runner.temp }}/task30/lag-selected-segment
       RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}-lag
       MIN_SELECTED_GAP: 64
       CI_MODE: 0
@@ -176,10 +259,14 @@ jobs:
           test -z "$(git status --porcelain)"
 
       - name: Run delayed-parent selected-segment runtime drill
+        env:
+          OUT_DIR: ${{ runner.temp }}/task30/lag-selected-segment
         run: bash scripts/v2_3_0_lag_injection_selected_segment.sh
 
       - name: Enforce runtime closeout semantics
         if: success()
+        env:
+          OUT_DIR: ${{ runner.temp }}/task30/lag-selected-segment
         run: |
           set -euo pipefail
           jq -e '
@@ -208,11 +295,11 @@ jobs:
 
   signed-relay-runtime:
     name: 5N signed relay duplicate conflict stale capacity runtime
+    needs: runtime-adapter-preflight
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
       CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-      OUT_DIR: ${{ runner.temp }}/task30/mempool-relay
       TX_COUNT: 1
       REHEARSAL_MEMPOOL_CAPACITY: 2
     steps:
@@ -234,10 +321,21 @@ jobs:
           test -z "$(git status --porcelain)"
 
       - name: Run signed transaction relay runtime drill
-        run: bash scripts/v2_3_0_mempool_tx_relay_evidence.sh
+        env:
+          OUT_DIR: ${{ runner.temp }}/task30/mempool-relay
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/task30/runtime-scripts"
+          patched="$RUNNER_TEMP/task30/runtime-scripts/mempool-relay.sh"
+          python3 scripts/lib/patch_task30_runtime_topology.py relay \
+            scripts/v2_3_0_mempool_tx_relay_evidence.sh "$patched"
+          bash -n "$patched"
+          bash "$patched"
 
       - name: Enforce relay, duplicate, conflict, stale and capacity evidence
         if: success()
+        env:
+          OUT_DIR: ${{ runner.temp }}/task30/mempool-relay
         run: |
           set -euo pipefail
           jq -e '
@@ -265,12 +363,13 @@ jobs:
 
   prune-restart-rejoin:
     name: 5N prune snapshot restart rejoin
+    needs: runtime-adapter-preflight
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 240
     env:
       CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-      OUT_DIR: ${{ runner.temp }}/task30/prune-restart-rejoin
       MIN_OFFLINE_ADVANCE_BLOCKS: 64
+      V2_3_0_MINER_429_MAX_ATTEMPTS: 60
     steps:
       - name: Checkout exact candidate
         uses: actions/checkout@v4
@@ -290,10 +389,25 @@ jobs:
           test -z "$(git status --porcelain)"
 
       - name: Run prune snapshot restart and rejoin runtime drill
-        run: bash scripts/v2_3_0_prune_restart_rejoin_runtime.sh
+        env:
+          OUT_DIR: ${{ runner.temp }}/task30/prune-restart-rejoin
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/task30/runtime-scripts"
+          patched_harness="$RUNNER_TEMP/task30/runtime-scripts/prune-harness.sh"
+          patched_driver="$RUNNER_TEMP/task30/runtime-scripts/prune-driver.sh"
+          python3 scripts/lib/patch_task30_runtime_topology.py prune-harness \
+            scripts/lib/v2_3_0_prune_restart_rejoin_harness.sh "$patched_harness"
+          python3 scripts/lib/patch_task30_runtime_topology.py prune-driver \
+            scripts/v2_3_0_prune_restart_rejoin_runtime.sh "$patched_driver"
+          bash -n "$patched_harness"
+          bash -n "$patched_driver"
+          PRUNE_RESTART_REJOIN_TASK04_HARNESS="$patched_harness" bash "$patched_driver"
 
       - name: Enforce recovery evidence
         if: success()
+        env:
+          OUT_DIR: ${{ runner.temp }}/task30/prune-restart-rejoin
         run: |
           set -euo pipefail
           jq -e '
@@ -325,6 +439,7 @@ jobs:
     runs-on: ubuntu-latest
     if: always()
     needs:
+      - runtime-adapter-preflight
       - multi-miner-convergence
       - partition-restart-rejoin
       - delayed-parent-selected-segment
@@ -332,6 +447,7 @@ jobs:
       - prune-restart-rejoin
     env:
       CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      ADAPTER_RESULT: ${{ needs.runtime-adapter-preflight.result }}
       MULTI_MINER_RESULT: ${{ needs.multi-miner-convergence.result }}
       PARTITION_RESULT: ${{ needs.partition-restart-rejoin.result }}
       DELAYED_PARENT_RESULT: ${{ needs.delayed-parent-selected-segment.result }}
@@ -350,6 +466,7 @@ jobs:
 
           path = sys.argv[1]
           results = {
+              "runtime_adapter_preflight": os.environ["ADAPTER_RESULT"],
               "multi_miner_convergence": os.environ["MULTI_MINER_RESULT"],
               "partition_restart_rejoin": os.environ["PARTITION_RESULT"],
               "delayed_parent_selected_segment": os.environ["DELAYED_PARENT_RESULT"],
