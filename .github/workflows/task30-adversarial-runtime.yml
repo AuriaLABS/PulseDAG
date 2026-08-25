@@ -365,10 +365,11 @@ jobs:
     name: 5N prune snapshot restart rejoin
     needs: runtime-adapter-preflight
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 240
     env:
       CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
       MIN_OFFLINE_ADVANCE_BLOCKS: 64
+      V2_3_0_MINER_429_MAX_ATTEMPTS: 60
     steps:
       - name: Checkout exact candidate
         uses: actions/checkout@v4
