@@ -72,8 +72,19 @@ def patch_prune_harness(text: str) -> str:
         "        else\n"
         "          (( peers >= 1 )) || ok=0\n"
         "        fi",
-        2,
-        "prune startup/final star topology",
+        1,
+        "prune startup star topology",
+    )
+    text = replace_exact(
+        text,
+        '        [[ "$peers" =~ ^[0-9]+$ ]] && (( peers >= node_count - 1 )) || ok=0',
+        "        if (( idx == 1 )); then\n"
+        '          [[ "$peers" =~ ^[0-9]+$ ]] && (( peers >= node_count - 1 )) || ok=0\n'
+        "        else\n"
+        '          [[ "$peers" =~ ^[0-9]+$ ]] && (( peers >= 1 )) || ok=0\n'
+        "        fi",
+        1,
+        "prune final convergence star topology",
     )
     text = replace_exact(
         text,
