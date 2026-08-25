@@ -68,10 +68,10 @@ jobs:
         run: cargo test --locked -p pulsedag-core --test task28_multi_node_tx_parity
 
       - name: Protocol-bound mempool reconciliation
-        run: cargo test --locked -p pulsedag-core mempool_protocol::tests::
+        run: 'cargo test --locked -p pulsedag-core mempool_protocol::tests::'
 
       - name: Stable v2 submission identity and fail-closed domain
-        run: cargo test --locked -p pulsedag-core tx_submission::tests::
+        run: 'cargo test --locked -p pulsedag-core tx_submission::tests::'
 
       - name: Confirmed stale transaction admission is duplicate in v1 and v2
         run: cargo test --locked -p pulsedag-core --test task30_stale_tx_admission
