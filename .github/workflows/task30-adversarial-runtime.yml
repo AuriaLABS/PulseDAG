@@ -7,6 +7,7 @@ on:
       - main
     paths:
       - .github/workflows/task30-adversarial-runtime.yml
+      - .github/workflows/task30-acceptance.yml
       - scripts/v2_2_20_preflight_check.sh
       - scripts/v2_2_20_private_5n_4m_rehearsal.sh
       - scripts/v2_3_0_lag_injection_selected_segment.sh
@@ -16,12 +17,14 @@ on:
       - scripts/lib/v2_3_0_prune_restart_rejoin_harness.sh
       - scripts/lib/patch_v2_3_0_lag_runtime_harness.py
       - scripts/lib/patch_task30_runtime_topology.py
+      - scripts/lib/patch_task30_v24_runtime_compat.py
       - scripts/private_testnet/**
   pull_request:
     branches:
       - main
     paths:
       - .github/workflows/task30-adversarial-runtime.yml
+      - .github/workflows/task30-acceptance.yml
       - scripts/v2_2_20_preflight_check.sh
       - scripts/v2_2_20_private_5n_4m_rehearsal.sh
       - scripts/v2_3_0_lag_injection_selected_segment.sh
@@ -31,6 +34,7 @@ on:
       - scripts/lib/v2_3_0_prune_restart_rejoin_harness.sh
       - scripts/lib/patch_v2_3_0_lag_runtime_harness.py
       - scripts/lib/patch_task30_runtime_topology.py
+      - scripts/lib/patch_task30_v24_runtime_compat.py
       - scripts/private_testnet/**
 
 permissions:
