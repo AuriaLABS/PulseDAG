@@ -71,8 +71,16 @@ cleanup() {
 trap cleanup EXIT
 
 status_file() {
-  local path="$1"
-  curl --fail --silent --show-error --connect-timeout 1 --max-time 5 "$NODE_URL/status" | jq -e '.data != null' > "$path"
+  local path="$1" tmp="${1}.tmp"
+  if ! curl --fail --silent --show-error --connect-timeout 1 --max-time 5 "$NODE_URL/status" > "$tmp"; then
+    rm -f "$tmp"
+    return 1
+  fi
+  if ! jq -e '.data != null' "$tmp" >/dev/null; then
+    rm -f "$tmp"
+    return 1
+  fi
+  mv "$tmp" "$path"
 }
 
 validate_live_status() {
