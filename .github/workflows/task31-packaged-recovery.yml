@@ -1,0 +1,182 @@
+name: v2.4.0 Task 31 packaged recovery
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/task31-packaged-recovery.yml'
+      - 'scripts/private_testnet/task31_packaged_recovery.sh'
+      - 'scripts/release/package_release_artifacts.py'
+      - 'scripts/release/verify_release_artifacts.py'
+      - 'scripts/v2_4_0_single_node_preflight.sh'
+      - 'apps/pulsedagd/**'
+      - 'apps/pulsedag-miner/**'
+      - 'crates/pulsedag-core/**'
+      - 'crates/pulsedag-rpc/**'
+      - 'crates/pulsedag-storage/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'VERSION'
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/task31-packaged-recovery.yml'
+      - 'scripts/private_testnet/task31_packaged_recovery.sh'
+      - 'scripts/release/package_release_artifacts.py'
+      - 'scripts/release/verify_release_artifacts.py'
+      - 'scripts/v2_4_0_single_node_preflight.sh'
+      - 'apps/pulsedagd/**'
+      - 'apps/pulsedag-miner/**'
+      - 'crates/pulsedag-core/**'
+      - 'crates/pulsedag-rpc/**'
+      - 'crates/pulsedag-storage/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'VERSION'
+
+permissions:
+  contents: read
+
+jobs:
+  packaged-recovery:
+    name: packaged node/miner restart recovery
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    env:
+      CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      NODE_URL: http://127.0.0.1:18080
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 1
+
+      - name: Verify exact SHA and clean checkout
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          test -z "$(git status --porcelain)"
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Validate recovery harness syntax
+        run: bash -n scripts/private_testnet/task31_packaged_recovery.sh
+
+      - name: Build exact-candidate release node and miner
+        run: |
+          timeout --signal=TERM --kill-after=30s 45m \
+            cargo build --locked --release --bin pulsedagd --bin pulsedag-miner
+          test -x target/release/pulsedagd
+          test -x target/release/pulsedag-miner
+
+      - name: Package exact-candidate node and miner
+        run: |
+          set -euo pipefail
+          rm -rf dist extracted .task31-packaged-recovery
+          mkdir -p dist extracted .task31-packaged-recovery
+          tag="v2.4.0-task31-candidate"
+          python scripts/release/package_release_artifacts.py \
+            --binary target/release/pulsedagd \
+            --output-dir dist \
+            --tag "$tag" \
+            --bin-name pulsedagd \
+            --repository "$GITHUB_REPOSITORY" \
+            --commit "$CANDIDATE_SHA" \
+            --run-id "$GITHUB_RUN_ID" \
+            --run-attempt "$GITHUB_RUN_ATTEMPT"
+          python scripts/release/package_release_artifacts.py \
+            --binary target/release/pulsedag-miner \
+            --output-dir dist \
+            --tag "$tag" \
+            --bin-name pulsedag-miner \
+            --repository "$GITHUB_REPOSITORY" \
+            --commit "$CANDIDATE_SHA" \
+            --run-id "$GITHUB_RUN_ID" \
+            --run-attempt "$GITHUB_RUN_ATTEMPT"
+          python scripts/release/verify_release_artifacts.py \
+            --artifacts-dir dist \
+            --expected-tag "$tag" \
+            --smoke \
+            --expect-binaries pulsedagd pulsedag-miner \
+            --expect-targets x86_64-unknown-linux-gnu
+          jq -e --arg sha "$CANDIDATE_SHA" '.provenance.commit == $sha' dist/pulsedagd-*.tar.gz.json >/dev/null
+          jq -e --arg sha "$CANDIDATE_SHA" '.provenance.commit == $sha' dist/pulsedag-miner-*.tar.gz.json >/dev/null
+          (cd dist && sha256sum -c pulsedagd-*.tar.gz.sha256)
+          (cd dist && sha256sum -c pulsedag-miner-*.tar.gz.sha256)
+
+      - name: Extract packaged binaries
+        id: extract
+        run: |
+          set -euo pipefail
+          node_archive="$(find dist -maxdepth 1 -type f -name 'pulsedagd-*.tar.gz' -print -quit)"
+          miner_archive="$(find dist -maxdepth 1 -type f -name 'pulsedag-miner-*.tar.gz' -print -quit)"
+          test -n "$node_archive"
+          test -n "$miner_archive"
+          tar -xzf "$node_archive" -C extracted
+          tar -xzf "$miner_archive" -C extracted
+          node_bin="$(find extracted -type f -name pulsedagd -print -quit)"
+          miner_bin="$(find extracted -type f -name pulsedag-miner -print -quit)"
+          test -x "$node_bin"
+          test -x "$miner_bin"
+          case "$(realpath "$node_bin")" in "$GITHUB_WORKSPACE"/target/*) exit 1 ;; esac
+          case "$(realpath "$miner_bin")" in "$GITHUB_WORKSPACE"/target/*) exit 1 ;; esac
+          echo "node_bin=$(realpath "$node_bin")" >> "$GITHUB_OUTPUT"
+          echo "miner_bin=$(realpath "$miner_bin")" >> "$GITHUB_OUTPUT"
+
+      - name: Run packaged activated-v2 recovery drill
+        env:
+          NODE_BIN: ${{ steps.extract.outputs.node_bin }}
+          MINER_BIN: ${{ steps.extract.outputs.miner_bin }}
+          OUT_DIR: ${{ github.workspace }}/.task31-packaged-recovery/evidence
+          DATA_ROOT: ${{ github.workspace }}/.task31-packaged-recovery/state
+          RPC_BIND: 127.0.0.1:18080
+          MINE_TIMEOUT_SECS: 420
+          MAX_TRIES: 1000000
+          THREADS: 2
+        run: bash scripts/private_testnet/task31_packaged_recovery.sh
+
+      - name: Enforce exact-candidate packaged recovery evidence
+        run: |
+          set -euo pipefail
+          evidence=.task31-packaged-recovery/evidence/evidence.json
+          jq -e --arg sha "$CANDIDATE_SHA" '
+            .candidate_sha == $sha and
+            .package_execution == true and
+            .source_tree_binary_execution == false and
+            .chain_id == "pulsedag-private-v2.4.0" and
+            .protocol_consensus_mode == "ghostdag_v1" and
+            .recovered_height > .initial_height and
+            .same_storage_restart == true and
+            .restart_tip_parity == true and
+            .restart_state_root_parity == true and
+            .restart_persisted_count_parity == true and
+            .public_testnet_ready == false and
+            .release_tag_authorized == false and
+            .default_high_cadence_authorized == false and
+            .smart_contract_activation_authorized == false and
+            .result == "PASS"
+          ' "$evidence" >/dev/null
+
+      - name: Upload packaged recovery evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: task31-packaged-recovery-${{ github.event.pull_request.head.sha || github.sha }}
+          retention-days: 14
+          if-no-files-found: error
+          path: |
+            .task31-packaged-recovery/evidence
+            dist/*.sha256
+            dist/*.json
