@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 DEFAULT_INVENTORY = Path("ops/observability/v2.3.0/metrics-inventory.json")
+SUPPORTED_RELEASE_LINES = {"v2.3.0", "v2.4.0"}
 
 
 class ExporterError(RuntimeError):
@@ -21,11 +22,15 @@ class ExporterError(RuntimeError):
 
 
 def load_inventory(path: Path) -> dict[str, Any]:
-    """Load and minimally validate the versioned metric inventory."""
+    """Load and minimally validate one supported versioned metric inventory."""
 
     payload = json.loads(path.read_text(encoding="utf-8"))
-    if payload.get("release_line") != "v2.3.0":
-        raise ExporterError("metrics inventory must target release line v2.3.0")
+    release_line = payload.get("release_line")
+    if release_line not in SUPPORTED_RELEASE_LINES:
+        raise ExporterError(
+            f"metrics inventory targets unsupported release line {release_line!r}; "
+            f"supported={sorted(SUPPORTED_RELEASE_LINES)}"
+        )
     metrics = payload.get("metrics")
     if not isinstance(metrics, list) or not metrics:
         raise ExporterError("metrics inventory must contain a non-empty metrics list")

@@ -71,13 +71,15 @@ Peers that send messages for a different `chain_id` are penalized and are not co
 
 ## Admin/operator endpoints
 
-Operator routes are mounted under `/admin` when admin routing is enabled. Their historical top-level aliases are also only registered when admin routing is enabled.
+Operator routes are mounted under `/admin` only when admin routing is explicitly enabled. Their historical top-level aliases are also only registered when admin routing is enabled.
 
-Admin routing is controlled by `PULSEDAG_ADMIN_ENABLED` and the bind/profile defaults in `pulsedagd`:
+Admin routing is controlled by `PULSEDAG_ADMIN_ENABLED` and the exposure checks in `pulsedagd`:
 
-- Enabled by default for local/dev-style operation (`dev`, `local`, rehearsal profiles, or localhost RPC binds).
-- Disabled by default for public operator/testnet/private binds such as `0.0.0.0:8080`.
-- Can be explicitly set with `PULSEDAG_ADMIN_ENABLED=true` or `PULSEDAG_ADMIN_ENABLED=false`.
+- Admin is disabled by default for **all** profiles and RPC binds.
+- Enabling admin is an explicit operator action with `PULSEDAG_ADMIN_ENABLED=true`.
+- `public_safe` and `disabled_admin` reject startup when admin is enabled.
+- A non-local RPC bind cannot use the implicit `local_dev` exposure profile.
+- The supported public-testnet baseline keeps admin/operator RPC on loopback or private management infrastructure; the unsafe remote-admin override is not part of the public-safe deployment profile.
 
 ### Dangerous or sensitive endpoints
 
@@ -107,12 +109,24 @@ New integrations should use `/api/v1/...`. Existing clients can continue using t
 
 ## RPC security profiles (v2.2.19 hardening)
 
-PulseDAG now supports four explicit RPC exposure profiles for public-testnet readiness, without enabling public testnet by default:
+PulseDAG supports four explicit RPC exposure profiles for public-testnet readiness, without enabling public testnet by default:
 
 - `local_dev`: localhost-oriented development profile.
 - `private_operator`: private/local operator use; admin routes remain disabled unless explicitly enabled.
 - `public_safe`: public-read surface only; admin/operator/dangerous routes are not mounted.
 - `disabled_admin`: full public/private route set except admin routes are always disabled.
+
+### Public-safe hardening defaults
+
+For `public_safe`, the built-in guarded-route defaults are:
+
+- request body limit: **128 KiB**;
+- rate limit: **30 requests per 60 seconds**;
+- rate-limit key: **per client IP** when connection information is available;
+- wildcard CORS origin (`*`): **rejected**; use an explicit allowlist;
+- admin routes: **not mounted**.
+
+`public_safe` also rejects a zero request-rate limit unless an explicit unsafe override is supplied. Unsafe overrides are not part of the supported public-testnet baseline and must not be used to claim #794/#781 readiness.
 
 ### Public exposure warning
 

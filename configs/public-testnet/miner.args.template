@@ -1,0 +1,18 @@
+# PRE-GO pulsedag-miner CLI argument template.
+# pulsedag-miner uses CLI flags. Replace every placeholder only after the exact
+# release/network freeze and explicit GO_PUBLIC_TESTNET in #781.
+--node
+__TASK31_FREEZE_REQUIRED__
+--miner-address
+__TASK31_FREEZE_REQUIRED__
+--threads
+4
+--max-tries
+1000000
+--loop
+--sleep-ms
+250
+--refresh-before-expiry-ms
+1000
+--backend
+cpu

@@ -1,4 +1,4 @@
-name: v2.3.0 observability baseline
+name: v2.3.0 observability compatibility
 
 on:
   pull_request:
@@ -21,16 +21,29 @@ permissions:
 jobs:
   observability-contract:
     runs-on: ubuntu-24.04
+    env:
+      CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
     steps:
-      - name: Checkout candidate
+      - name: Checkout exact candidate
         uses: actions/checkout@v4
+        with:
+          ref: ${{ env.CANDIDATE_SHA }}
+          persist-credentials: false
 
-      - name: Preserve version and readiness guardrails
+      - name: Preserve current release and historical compatibility guardrails
         shell: bash
         run: |
           set -euo pipefail
-          test "$(tr -d '\r\n' < VERSION)" = "v2.2.20"
-          test "$(awk '/^version = / {gsub(/"/, "", $3); print $3; exit}' Cargo.toml)" = "2.2.20"
+          test "$(git rev-parse HEAD)" = "${CANDIDATE_SHA}"
+          test "$(tr -d '\r\n' < VERSION)" = "v2.4.0"
+          test "$(awk '/^version = / {gsub(/"/, "", $3); print $3; exit}' Cargo.toml)" = "2.4.0"
+          grep -Fq '"release_line": "v2.3.0"' ops/observability/v2.3.0/metrics-inventory.json
+          grep -Fq 'SUPPORTED_RELEASE_LINES' scripts/private_testnet/runtime_metrics_exporter.py
+          grep -Fq '"v2.3.0"' scripts/private_testnet/runtime_metrics_exporter.py
+          grep -Fq '"v2.4.0"' scripts/private_testnet/runtime_metrics_exporter.py
+          grep -Fq '`public_testnet_ready=false`' README.md
+          grep -Fq '`thirty_day_public_testnet_clock_started=false`' README.md
+          mkdir -p ci-evidence/v2.3.0-task10
 
       - name: Validate syntax and English comments
         shell: bash
@@ -47,11 +60,10 @@ jobs:
             scripts/validate_v2_3_0_observability.py \
             scripts/tests/test_v2_3_0_observability.sh
 
-      - name: Run observability contract regression
+      - name: Run historical v2.3 observability regression
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p ci-evidence/v2.3.0-task10
           bash scripts/tests/test_v2_3_0_observability.sh \
             | tee ci-evidence/v2.3.0-task10/observability-contract.log
 
@@ -59,10 +71,8 @@ jobs:
         shell: bash
         run: bash scripts/repository_hygiene.sh --strict
 
-      - name: Build Task 10 evidence manifest
+      - name: Build compatibility evidence manifest
         shell: bash
-        env:
-          CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           set -euo pipefail
           python3 - <<'PY'
@@ -72,9 +82,12 @@ jobs:
 
           output = Path("ci-evidence/v2.3.0-task10")
           manifest = {
-              "gate": "v2.3.0-observability-baseline",
+              "gate": "v2.3.0-observability-compatibility",
               "candidate_sha": os.environ["CANDIDATE_SHA"],
+              "current_release_line": "v2.4.0",
+              "historical_inventory_line": "v2.3.0",
               "result": "PASS",
+              "historical_regression_preserved": True,
               "rust_field_grounded": True,
               "prometheus_exporter": True,
               "five_node_scrape": True,
@@ -92,16 +105,24 @@ jobs:
           PY
           sha256sum \
             ops/observability/v2.3.0/* \
-            ci-evidence/v2.3.0-task10/* \
+            scripts/private_testnet/runtime_metrics_exporter.py \
+            scripts/tests/test_v2_3_0_observability.sh \
+            scripts/validate_v2_3_0_observability.py \
+            ci-evidence/v2.3.0-task10/observability-contract.log \
+            ci-evidence/v2.3.0-task10/observability-manifest.json \
             > ci-evidence/v2.3.0-task10/SHA256SUMS
 
-      - name: Enforce Task 10 manifest
+      - name: Enforce compatibility manifest
         shell: bash
         run: |
           set -euo pipefail
           jq -e '
-            .gate == "v2.3.0-observability-baseline" and
+            .gate == "v2.3.0-observability-compatibility" and
+            .candidate_sha == env.CANDIDATE_SHA and
+            .current_release_line == "v2.4.0" and
+            .historical_inventory_line == "v2.3.0" and
             .result == "PASS" and
+            .historical_regression_preserved == true and
             .rust_field_grounded == true and
             .prometheus_exporter == true and
             .five_node_scrape == true and
@@ -113,11 +134,11 @@ jobs:
             .thirty_day_public_testnet_clock_started == false
           ' ci-evidence/v2.3.0-task10/observability-manifest.json >/dev/null
 
-      - name: Upload Task 10 evidence
+      - name: Upload compatibility evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: v2_3_0_task10_observability_${{ github.run_id }}
+          name: v2_3_0_observability_compatibility_${{ github.run_id }}
           path: ci-evidence/v2.3.0-task10
           if-no-files-found: error
           retention-days: 90
