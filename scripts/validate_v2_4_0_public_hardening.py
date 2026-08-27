@@ -149,6 +149,45 @@ def main() -> None:
         "pulsedag_mining_submit_actor_timeout_total",
         "pulsedag_sync_selected_tip_mismatch",
         "pulsedag_rpc_liveness_current_degraded",
+        "pulsedag_node_uptime_seconds",
+    )
+    require(
+        "ops/observability/v2.4.0/alert-rules.yml",
+        "PulseDAGSelectedTipMismatch",
+        "PulseDAGSnapshotVerificationStableFailure",
+        "PulseDAGPeerIsolation",
+        "PulseDAGMiningSubmitActorTimeout",
+    )
+    require(
+        "ops/observability/v2.4.0/alert-rules-operations.yml",
+        "PulseDAGSubmitFinalityUnknown",
+        "pulsedag_mining_submit_actor_timeout_total",
+        "PulseDAGSharedStateLockStarvation",
+        "pulsedag_rpc_liveness_current_degraded",
+        "pulsedag_rpc_oldest_inflight_handler_age_ms",
+        "PulseDAGUnexpectedRestart",
+        "pulsedag_node_uptime_seconds",
+        "PulseDAGDiskPressure",
+        "node_filesystem_avail_bytes",
+        "node_filesystem_size_bytes",
+    )
+    require(
+        "ops/observability/v2.4.0/prometheus-scrape.example.yml",
+        "alert-rules-operations.yml",
+        "pulsedag-v2.4.0-host",
+        ":9100",
+        "network: private-testnet-v2.4.0",
+    )
+    require(
+        "ops/observability/v2.4.0/HOST_METRICS.md",
+        "node_exporter",
+        "node_filesystem_avail_bytes",
+        "node_filesystem_size_bytes",
+        "pulsedag_node_uptime_seconds",
+        "PulseDAGUnexpectedRestart",
+        "PulseDAGSharedStateLockStarvation",
+        "PulseDAGSubmitFinalityUnknown",
+        "private management/monitoring network",
     )
     require(
         "docs/API_V1.md",
