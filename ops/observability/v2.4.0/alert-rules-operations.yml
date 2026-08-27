@@ -1,0 +1,35 @@
+groups:
+  - name: pulsedag-v2.4.0-operational-safety
+    interval: 15s
+    rules:
+      - alert: PulseDAGSubmitFinalityUnknown
+        expr: increase(pulsedag_mining_submit_actor_timeout_total[5m]) > 0
+        for: 0m
+        labels: {severity: critical, surface: mining}
+        annotations:
+          summary: Mining submit finality became unknown after actor response timeout
+          runbook: docs/runbooks/V2_4_0_PUBLIC_TESTNET_PREP.md
+
+      - alert: PulseDAGSharedStateLockStarvation
+        expr: (pulsedag_rpc_liveness_current_degraded == 1) and (pulsedag_rpc_oldest_inflight_handler_age_ms > 5000)
+        for: 2m
+        labels: {severity: critical, surface: runtime}
+        annotations:
+          summary: Shared-state lock starvation is degrading RPC liveness; investigate chain/runtime writers
+          runbook: docs/runbooks/MAINTENANCE_SELF_CHECK.md
+
+      - alert: PulseDAGUnexpectedRestart
+        expr: resets(pulsedag_node_uptime_seconds[15m]) > 0
+        for: 0m
+        labels: {severity: critical, surface: process}
+        annotations:
+          summary: Node uptime decreased, indicating an unexpected process restart unless a planned drill is active
+          runbook: docs/runbooks/V2_4_0_PUBLIC_TESTNET_PREP.md
+
+      - alert: PulseDAGDiskPressure
+        expr: min by (instance, network, node, role) (node_filesystem_avail_bytes{fstype!~"tmpfs|devtmpfs|overlay|squashfs|ramfs"} / node_filesystem_size_bytes{fstype!~"tmpfs|devtmpfs|overlay|squashfs|ramfs"}) < 0.15
+        for: 10m
+        labels: {severity: critical, surface: storage}
+        annotations:
+          summary: Host filesystem free capacity is below fifteen percent; verify the PulseDAG RocksDB/snapshot volume immediately
+          runbook: ops/observability/v2.4.0/HOST_METRICS.md
