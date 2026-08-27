@@ -1,0 +1,187 @@
+groups:
+  - name: pulsedag-v2.4.0-release-candidate
+    interval: 15s
+    rules:
+      - alert: PulseDAGExporterDown
+        expr: up{job="pulsedag-v2.4.0"} == 0
+        for: 2m
+        labels: {severity: critical, surface: observability}
+        annotations:
+          summary: PulseDAG exporter is unreachable
+          runbook: docs/runbooks/MAINTENANCE_SELF_CHECK.md
+
+      - alert: PulseDAGRPCCollectionFailed
+        expr: pulsedag_exporter_scrape_success == 0
+        for: 1m
+        labels: {severity: critical, surface: rpc}
+        annotations:
+          summary: One or more required public-safe RPC surfaces cannot be collected
+          runbook: docs/runbooks/MAINTENANCE_SELF_CHECK.md
+
+      - alert: PulseDAGRPCStatusStale
+        expr: pulsedag_node_rpc_response_stale == 1
+        for: 2m
+        labels: {severity: warning, surface: rpc}
+        annotations:
+          summary: Node status is stale
+          runbook: docs/runbooks/MAINTENANCE_SELF_CHECK.md
+
+      - alert: PulseDAGCommitPublishMismatch
+        expr: pulsedag_chain_commit_publish_mismatch_total > 0
+        for: 0m
+        labels: {severity: critical, surface: consensus}
+        annotations:
+          summary: Accepted commit publish-state mismatch observed
+          runbook: docs/runbooks/RECOVERY_ORCHESTRATION.md
+
+      - alert: PulseDAGAcceptedHashLost
+        expr: pulsedag_chain_accepted_hash_lost_total > 0
+        for: 0m
+        labels: {severity: critical, surface: consensus}
+        annotations:
+          summary: Accepted block hash was lost from memory
+          runbook: docs/runbooks/RECOVERY_ORCHESTRATION.md
+
+      - alert: PulseDAGInvalidStateRoot
+        expr: pulsedag_state_invalid_root_total > 0
+        for: 0m
+        labels: {severity: critical, surface: state}
+        annotations:
+          summary: Canonical state-root rejection observed
+          runbook: docs/runbooks/RECOVERY_ORCHESTRATION.md
+
+      - alert: PulseDAGParentStateContextUnavailable
+        expr: pulsedag_state_parent_context_unavailable_total > 0
+        for: 0m
+        labels: {severity: critical, surface: state}
+        annotations:
+          summary: Parent state context could not be reconstructed
+          runbook: docs/runbooks/REBUILD_FROM_SNAPSHOT_AND_DELTA.md
+
+      - alert: PulseDAGSnapshotVerificationStableFailure
+        expr: pulsedag_state_snapshot_verification_stable_failure_total > 0
+        for: 0m
+        labels: {severity: critical, surface: storage}
+        annotations:
+          summary: Stable snapshot verification failure observed
+          runbook: docs/runbooks/SNAPSHOT_RESTORE.md
+
+      - alert: PulseDAGMiningSubmitActorTimeout
+        expr: pulsedag_mining_submit_actor_timeout_total > 0
+        for: 0m
+        labels: {severity: critical, surface: mining}
+        annotations:
+          summary: Serialized mining-submit actor timed out
+          runbook: docs/runbooks/MAINTENANCE_SELF_CHECK.md
+
+      - alert: PulseDAGMiningSubmitActorQueueFull
+        expr: pulsedag_mining_submit_actor_queue_full_total > 0
+        for: 0m
+        labels: {severity: critical, surface: mining}
+        annotations:
+          summary: Mining-submit actor queue reached capacity
+          runbook: docs/runbooks/MAINTENANCE_SELF_CHECK.md
+
+      - alert: PulseDAGMiningSubmitPendingOld
+        expr: pulsedag_mining_submit_actor_oldest_pending_age_ms > 5000
+        for: 1m
+        labels: {severity: warning, surface: mining}
+        annotations:
+          summary: Oldest pending mining submit exceeds five seconds
+          runbook: docs/runbooks/MAINTENANCE_SELF_CHECK.md
+
+      - alert: PulseDAGBlockProductionStopped
+        expr: increase(pulsedag_mining_blocks_accepted_total[10m]) == 0
+        for: 10m
+        labels: {severity: critical, surface: mining}
+        annotations:
+          summary: No block was accepted during the continuous-mining window
+          runbook: docs/runbooks/MAINTENANCE_SELF_CHECK.md
+
+      - alert: PulseDAGPeerIsolation
+        expr: pulsedag_p2p_peer_zero_duration_seconds > 180
+        for: 0m
+        labels: {severity: critical, surface: p2p}
+        annotations:
+          summary: Node has remained without peers for more than three minutes
+          runbook: docs/runbooks/P2P_RECOVERY.md
+
+      - alert: PulseDAGLowEffectivePeers
+        expr: pulsedag_p2p_peer_effective_count < 2
+        for: 5m
+        labels: {severity: warning, surface: p2p}
+        annotations:
+          summary: Effective peer count remains below two
+          runbook: docs/runbooks/P2P_RECOVERY.md
+
+      - alert: PulseDAGRecoveryQueueDrop
+        expr: pulsedag_recovery_queue_dropped_total > 0
+        for: 0m
+        labels: {severity: warning, surface: p2p}
+        annotations:
+          summary: P2P recovery work was dropped
+          runbook: docs/runbooks/P2P_RECOVERY.md
+
+      - alert: PulseDAGSelectedTipMismatch
+        expr: pulsedag_sync_selected_tip_mismatch == 1
+        for: 1m
+        labels: {severity: critical, surface: sync}
+        annotations:
+          summary: Local and canonical remote selected tips disagree
+          runbook: docs/runbooks/RECOVERY_ORCHESTRATION.md
+
+      - alert: PulseDAGStorageReplayGap
+        expr: pulsedag_sync_storage_replay_gap > 0
+        for: 1m
+        labels: {severity: critical, surface: storage}
+        annotations:
+          summary: Persisted and in-memory replay state have a gap
+          runbook: docs/runbooks/REBUILD_FROM_SNAPSHOT_AND_DELTA.md
+
+      - alert: PulseDAGSelectedSegmentGap
+        expr: pulsedag_sync_selected_segment_gap_blocks > 0
+        for: 5m
+        labels: {severity: warning, surface: sync}
+        annotations:
+          summary: Selected-chain segment recovery remains incomplete
+          runbook: docs/runbooks/RECOVERY_ORCHESTRATION.md
+
+      - alert: PulseDAGQuiescenceTipDivergence
+        expr: pulsedag_sync_final_quiescence_distinct_tips_after > 1
+        for: 1m
+        labels: {severity: critical, surface: consensus}
+        annotations:
+          summary: More than one selected tip remains after final-quiescence reconciliation
+          runbook: docs/runbooks/RECOVERY_ORCHESTRATION.md
+
+      - alert: PulseDAGRPCLivenessDegraded
+        expr: pulsedag_rpc_liveness_current_degraded == 1
+        for: 1m
+        labels: {severity: critical, surface: rpc}
+        annotations:
+          summary: RPC liveness is currently degraded
+          runbook: docs/runbooks/MAINTENANCE_SELF_CHECK.md
+
+      - alert: PulseDAGOldInflightRPC
+        expr: pulsedag_rpc_oldest_inflight_handler_age_ms > 5000
+        for: 1m
+        labels: {severity: warning, surface: rpc}
+        annotations:
+          summary: An RPC handler has remained in flight for more than five seconds
+          runbook: docs/runbooks/MAINTENANCE_SELF_CHECK.md
+
+      - alert: PulseDAGMempoolOrphanPressure
+        expr: pulsedag_mempool_orphan_transactions / clamp_min(pulsedag_mempool_orphan_limit, 1) > 0.8
+        for: 5m
+        labels: {severity: warning, surface: mempool}
+        annotations:
+          summary: Orphan transaction pool exceeds eighty percent of its configured limit
+          runbook: docs/runbooks/MAINTENANCE_SELF_CHECK.md
+
+      - alert: PulseDAGSnapshotMissing
+        expr: pulsedag_node_snapshot_exists == 0
+        for: 15m
+        labels: {severity: warning, surface: storage}
+        annotations:
+          summary: Node has no persisted snapshot
+          runbook: docs/runbooks/SNAPSHOT_RESTORE.md

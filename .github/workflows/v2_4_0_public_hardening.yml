@@ -1,0 +1,144 @@
+name: v2.4.0 public hardening gate
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - SECURITY.md
+      - configs/private-testnet/miner.env.example
+      - configs/public-testnet/**
+      - docs/API_V1.md
+      - docs/dashboard/README.md
+      - docs/runbooks/V2_4_0_PUBLIC_TESTNET_PREP.md
+      - docs/release/V2_4_0_KNOWN_LIMITATIONS.md
+      - docs/release/V2_4_0_RELEASE_NOTES.md
+      - ops/observability/v2.4.0/**
+      - scripts/private_testnet/runtime_metrics_exporter.py
+      - scripts/validate_v2_4_0_public_hardening.py
+      - scripts/validate_v2_4_0_observability.py
+      - scripts/validate_observability_package.py
+      - scripts/tests/test_v2_4_0_observability.sh
+      - .github/workflows/v2_4_0_public_hardening.yml
+  push:
+    branches:
+      - main
+    paths:
+      - SECURITY.md
+      - configs/private-testnet/miner.env.example
+      - configs/public-testnet/**
+      - docs/API_V1.md
+      - docs/dashboard/README.md
+      - docs/runbooks/V2_4_0_PUBLIC_TESTNET_PREP.md
+      - docs/release/V2_4_0_KNOWN_LIMITATIONS.md
+      - docs/release/V2_4_0_RELEASE_NOTES.md
+      - ops/observability/v2.4.0/**
+      - scripts/private_testnet/runtime_metrics_exporter.py
+      - scripts/validate_v2_4_0_public_hardening.py
+      - scripts/validate_v2_4_0_observability.py
+      - scripts/validate_observability_package.py
+      - scripts/tests/test_v2_4_0_observability.sh
+      - .github/workflows/v2_4_0_public_hardening.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: v2.4.0-public-hardening-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: Fail-closed public-safety and observability prep
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.CANDIDATE_SHA }}
+          persist-credentials: false
+
+      - name: Verify exact checkout and public hardening
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${CANDIDATE_SHA}"
+          python -m py_compile scripts/validate_v2_4_0_public_hardening.py
+          python scripts/validate_v2_4_0_public_hardening.py
+
+      - name: Validate v2.4 observability package
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            scripts/validate_v2_4_0_observability.py \
+            scripts/validate_observability_package.py \
+            scripts/private_testnet/runtime_metrics_exporter.py
+          python scripts/validate_v2_4_0_observability.py
+          bash scripts/tests/test_v2_4_0_observability.sh
+          bash scripts/tests/test_v2_3_0_observability.sh
+
+      - name: Verify release-note no-GO boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -Fq 'NOT RELEASED / NOT ACTIVATED' docs/release/V2_4_0_RELEASE_NOTES.md
+          grep -Fq 'no official end-user custody wallet' docs/release/V2_4_0_RELEASE_NOTES.md
+          grep -Fq '#803' docs/release/V2_4_0_RELEASE_NOTES.md
+          grep -Fq 'GO_PUBLIC_TESTNET' docs/release/V2_4_0_RELEASE_NOTES.md
+          grep -Fq 'public_testnet_ready=false' docs/release/V2_4_0_RELEASE_NOTES.md
+          grep -Fq 'thirty_day_public_testnet_clock_started=false' docs/release/V2_4_0_RELEASE_NOTES.md
+
+      - name: Record no-GO evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ci-evidence/public-hardening
+          {
+            echo "candidate_sha=${CANDIDATE_SHA}"
+            echo "checked_out_sha=$(git rev-parse HEAD)"
+            echo "public_testnet_ready=false"
+            echo "thirty_day_public_testnet_clock_started=false"
+            echo "default_high_cadence_authorized=false"
+            echo "smart_contract_activation_authorized=false"
+            echo "official_end_user_custody_wallet=false"
+            echo "observability_release_line=v2.4.0"
+            echo "result=PASS"
+          } > ci-evidence/public-hardening/provenance.txt
+          sha256sum \
+            SECURITY.md \
+            configs/private-testnet/miner.env.example \
+            configs/public-testnet/README.md \
+            configs/public-testnet/seed.env.template \
+            configs/public-testnet/node.env.template \
+            configs/public-testnet/observer.env.template \
+            configs/public-testnet/miner.args.template \
+            docs/API_V1.md \
+            docs/dashboard/README.md \
+            docs/runbooks/V2_4_0_PUBLIC_TESTNET_PREP.md \
+            docs/release/V2_4_0_KNOWN_LIMITATIONS.md \
+            docs/release/V2_4_0_RELEASE_NOTES.md \
+            ops/observability/v2.4.0/README.md \
+            ops/observability/v2.4.0/metrics-inventory.json \
+            ops/observability/v2.4.0/prometheus-scrape.example.yml \
+            ops/observability/v2.4.0/alert-rules.yml \
+            ops/observability/v2.4.0/grafana-dashboard.json \
+            scripts/private_testnet/runtime_metrics_exporter.py \
+            scripts/validate_v2_4_0_public_hardening.py \
+            scripts/validate_v2_4_0_observability.py \
+            scripts/validate_observability_package.py \
+            scripts/tests/test_v2_4_0_observability.sh \
+            .github/workflows/v2_4_0_public_hardening.yml \
+            > ci-evidence/public-hardening/SHA256SUMS
+
+      - name: Upload public-hardening evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: v2_4_0_public_hardening_${{ github.run_id }}
+          path: ci-evidence/public-hardening
+          if-no-files-found: error
+          retention-days: 180
