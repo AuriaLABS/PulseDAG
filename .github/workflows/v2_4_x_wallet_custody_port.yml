@@ -1,0 +1,112 @@
+name: v2.4.x wallet custody port probe
+
+on:
+  push:
+    branches:
+      - feature/v2.4.x-wallet-custody-foundation
+    paths:
+      - Cargo.lock
+      - crates/pulsedag-wallet/**
+      - .github/workflows/v2_4_x_wallet_custody_port.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: v2.4.x-wallet-custody-port
+  cancel-in-progress: true
+
+env:
+  PORT_BASE_SHA: c84c3258ce3a1254c40f17ad7ab29402cb413a92
+
+jobs:
+  probe:
+    name: Preserve protocol-v2 and validate custody foundation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout port branch
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Fail-closed port boundary preflight
+        shell: bash
+        run: |
+          set -euo pipefail
+          git cat-file -e "${PORT_BASE_SHA}^{commit}"
+          test "$(git merge-base HEAD "${PORT_BASE_SHA}")" = "${PORT_BASE_SHA}"
+
+          base_protocol_blob="$(git rev-parse "${PORT_BASE_SHA}:crates/pulsedag-wallet/src/protocol_v2.rs")"
+          head_protocol_blob="$(git rev-parse "HEAD:crates/pulsedag-wallet/src/protocol_v2.rs")"
+          test "${base_protocol_blob}" = "${head_protocol_blob}"
+
+          for forbidden in \
+            crates/pulsedag-wallet/src/plan.rs \
+            crates/pulsedag-wallet/src/signing.rs \
+            crates/pulsedag-wallet/src/session_v1.rs \
+            crates/pulsedag-wallet/src/session_clock.rs \
+            crates/pulsedag-wallet/src/pulsedag_wallet_relay.rs \
+            crates/pulsedag-wallet/src/bin/pulsedag-wallet.rs; do
+            test ! -e "${forbidden}"
+          done
+
+          allowed_re='^(Cargo.lock|crates/pulsedag-wallet/(Cargo.toml|src/(lib.rs|protocol_v2.rs|secrets.rs|deterministic.rs|keystore.rs|keystore_crypto.rs|keystore_persistence.rs|keystore_seed.rs))|\.github/workflows/v2_4_x_wallet_custody_port.yml)$'
+          while IFS= read -r path; do
+            [[ "${path}" =~ ${allowed_re} ]] || { echo "unexpected port delta: ${path}" >&2; exit 1; }
+          done < <(git diff --name-only "${PORT_BASE_SHA}...HEAD")
+
+          echo "PASS: v2.4.x custody port is isolated and protocol_v2.rs is unchanged."
+
+      - name: Install pinned Rust toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.88.0 --profile minimal --component rustfmt clippy --no-self-update
+          rustup default 1.88.0
+          rustc --version
+          cargo --version
+
+      - name: Resolve dependency delta and validate wallet crate
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ci-evidence/wallet-v2.4.x-port
+          cp Cargo.lock /tmp/Cargo.lock.before
+          cargo check -p pulsedag-wallet
+          cargo test -p pulsedag-wallet
+          cargo clippy -p pulsedag-wallet --all-targets -- -D warnings
+          cargo fmt --all -- --check
+
+          if cmp -s /tmp/Cargo.lock.before Cargo.lock; then
+            echo "LOCK_CHANGED=false" >> "${GITHUB_ENV}"
+            printf 'false\n' > ci-evidence/wallet-v2.4.x-port/lock-changed.txt
+          else
+            echo "LOCK_CHANGED=true" >> "${GITHUB_ENV}"
+            printf 'true\n' > ci-evidence/wallet-v2.4.x-port/lock-changed.txt
+          fi
+          cp Cargo.lock ci-evidence/wallet-v2.4.x-port/Cargo.lock.proposed
+          git diff -- Cargo.lock > ci-evidence/wallet-v2.4.x-port/Cargo.lock.diff || true
+
+      - name: Upload dependency and validation evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: v2.4.x-wallet-custody-port-probe
+          path: ci-evidence/wallet-v2.4.x-port
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Require committed frozen lock before PR
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${LOCK_CHANGED:-true}" != "false" ]]; then
+            echo "Cargo.lock changed during the probe. Consume the proposed lock artifact, review the dependency delta, commit it, and rerun." >&2
+            exit 2
+          fi
+          cargo check -p pulsedag-wallet --locked
+          cargo test -p pulsedag-wallet --locked
+          echo "PASS: custody foundation compiles/tests with frozen Cargo.lock."
