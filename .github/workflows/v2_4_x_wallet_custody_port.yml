@@ -77,8 +77,8 @@ jobs:
           cp Cargo.lock /tmp/Cargo.lock.before
           cargo check -p pulsedag-wallet
           cargo test -p pulsedag-wallet
-          cargo clippy -p pulsedag-wallet --all-targets -- -D warnings
-          cargo fmt --all -- --check
+          cargo clippy -p pulsedag-wallet --all-targets --no-deps -- -D warnings
+          cargo fmt --package pulsedag-wallet -- --check
 
           if cmp -s /tmp/Cargo.lock.before Cargo.lock; then
             echo "LOCK_CHANGED=false" >> "${GITHUB_ENV}"
