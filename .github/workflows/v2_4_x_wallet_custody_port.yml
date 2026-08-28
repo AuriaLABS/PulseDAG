@@ -11,7 +11,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: v2.4.x-wallet-custody-port
@@ -19,6 +19,8 @@ concurrency:
 
 env:
   PORT_BASE_SHA: c84c3258ce3a1254c40f17ad7ab29402cb413a92
+  REVIEWED_LOCK_SHA256: 45c16d1422c7b9998cb7b4141cb9a1a17784f0baaed3aeb55681f1bc49e0f8ad
+  REVIEWED_LOCK_GIT_BLOB: 99b4b2a4910687de846849f95903a09ecee95972
 
 jobs:
   probe:
@@ -30,7 +32,7 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           fetch-depth: 0
-          persist-credentials: false
+          persist-credentials: true
 
       - name: Fail-closed port boundary preflight
         shell: bash
@@ -99,14 +101,34 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-      - name: Require committed frozen lock before PR
+      - name: Freeze reviewed Cargo.lock or verify frozen lock
         shell: bash
         run: |
           set -euo pipefail
-          if [[ "${LOCK_CHANGED:-true}" != "false" ]]; then
-            echo "Cargo.lock changed during the probe. Consume the proposed lock artifact, review the dependency delta, commit it, and rerun." >&2
-            exit 2
+          if [[ "${LOCK_CHANGED:-true}" == "true" ]]; then
+            actual_sha256="$(sha256sum Cargo.lock | awk '{print $1}')"
+            actual_blob="$(git hash-object Cargo.lock)"
+            test "${actual_sha256}" = "${REVIEWED_LOCK_SHA256}"
+            test "${actual_blob}" = "${REVIEWED_LOCK_GIT_BLOB}"
+
+            mapfile -t tracked_changes < <(git diff --name-only)
+            test "${#tracked_changes[@]}" -eq 1
+            test "${tracked_changes[0]}" = "Cargo.lock"
+
+            remote_head="$(git ls-remote origin "refs/heads/${GITHUB_REF_NAME}" | cut -f1)"
+            test "${remote_head}" = "${GITHUB_SHA}"
+
+            git config user.name 'github-actions[bot]'
+            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+            git add Cargo.lock
+            git commit -m 'wallet: freeze custody foundation dependency lock'
+            git push origin "HEAD:${GITHUB_REF_NAME}"
+            echo "PASS: committed the exact reviewed Cargo.lock artifact; a fresh locked run will follow."
+            exit 0
           fi
+
+          test "$(sha256sum Cargo.lock | awk '{print $1}')" = "${REVIEWED_LOCK_SHA256}"
+          test "$(git hash-object Cargo.lock)" = "${REVIEWED_LOCK_GIT_BLOB}"
           cargo check -p pulsedag-wallet --locked
           cargo test -p pulsedag-wallet --locked
-          echo "PASS: custody foundation compiles/tests with frozen Cargo.lock."
+          echo "PASS: custody foundation compiles/tests with the frozen reviewed Cargo.lock."
