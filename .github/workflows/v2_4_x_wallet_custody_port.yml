@@ -64,7 +64,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          rustup toolchain install 1.88.0 --profile minimal --component rustfmt clippy --no-self-update
+          rustup toolchain install 1.88.0 --profile minimal --component rustfmt --component clippy --no-self-update
           rustup default 1.88.0
           rustc --version
           cargo --version
