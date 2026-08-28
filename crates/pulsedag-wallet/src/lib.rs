@@ -5,8 +5,8 @@ mod keystore;
 mod keystore_crypto;
 mod keystore_persistence;
 mod keystore_seed;
-mod secrets;
 pub mod protocol_v2;
+mod secrets;
 
 pub use deterministic::{
     derive_network_components, derive_wallet_key, derive_wallet_key_from_seed,
