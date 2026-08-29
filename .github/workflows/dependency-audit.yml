@@ -125,7 +125,7 @@ jobs:
           report = json.load(open('ci-evidence/dependency-audit/cargo-audit-raw.json'))
           vulnerabilities = report.get('vulnerabilities', {}).get('list', [])
           observed_vulnerabilities = {
-              (item.get('advisory', {}).get('id'), item.get('package', {}).get('name'), item.get('package', {}).get('version'))
+              ((item.get('advisory') or {}).get('id'), (item.get('package') or {}).get('name'), (item.get('package') or {}).get('version'))
               for item in vulnerabilities
           }
           expected_vulnerabilities = {
@@ -136,12 +136,7 @@ jobs:
               ('RUSTSEC-2026-0119', 'hickory-proto', '0.24.4'),
               ('RUSTSEC-2026-0258', 'h2', '0.3.27'),
           }
-          observed_warnings = {
-              (kind, item.get('advisory', {}).get('id'), item.get('package', {}).get('name'), item.get('package', {}).get('version'))
-              for kind, items in report.get('warnings', {}).items()
-              for item in items
-          }
-          expected_warnings = {
+          expected_advisory_warnings = {
               ('unmaintained', 'RUSTSEC-2025-0052', 'async-std', '1.13.2'),
               ('unmaintained', 'RUSTSEC-2024-0375', 'atty', '0.2.14'),
               ('unsound', 'RUSTSEC-2021-0145', 'atty', '0.2.14'),
@@ -154,16 +149,47 @@ jobs:
               ('unsound', 'RUSTSEC-2026-0002', 'lru', '0.12.5'),
               ('unsound', 'RUSTSEC-2026-0253', 'lru', '0.12.5'),
           }
+
+          warnings = report.get('warnings', {})
+          allowed_warning_kinds = {'unmaintained', 'unsound', 'yanked'}
+          if not set(warnings).issubset(allowed_warning_kinds):
+              raise SystemExit(f'unexpected raw warning kinds: {sorted(warnings)}')
+
+          observed_advisory_warnings = set()
+          for kind in ('unmaintained', 'unsound'):
+              for item in warnings.get(kind, []):
+                  advisory = item.get('advisory') or {}
+                  package = item.get('package') or {}
+                  if not advisory.get('id'):
+                      raise SystemExit(f'{kind} warning missing advisory id: {item!r}')
+                  observed_advisory_warnings.add(
+                      (kind, advisory.get('id'), package.get('name'), package.get('version'))
+                  )
+
+          observed_yanked = set()
+          for item in warnings.get('yanked', []):
+              if item.get('advisory') is not None:
+                  raise SystemExit(f'yanked warning unexpectedly carries advisory data: {item!r}')
+              package = item.get('package') or {}
+              observed_yanked.add((package.get('name'), package.get('version')))
+          expected_yanked = {('chacha20', '0.10.0')}
+
           print(f'raw_vulnerability_count={len(vulnerabilities)}')
           for item in sorted(observed_vulnerabilities):
               print('vulnerability', *item)
-          print(f'raw_warning_count={len(observed_warnings)}')
-          for item in sorted(observed_warnings):
+          print(f'raw_advisory_warning_count={len(observed_advisory_warnings)}')
+          for item in sorted(observed_advisory_warnings):
               print('warning', *item)
+          print(f'raw_yanked_count={len(observed_yanked)}')
+          for item in sorted(observed_yanked):
+              print('yanked', *item)
+
           if observed_vulnerabilities != expected_vulnerabilities:
               raise SystemExit(f'unexpected raw vulnerability set: {sorted(observed_vulnerabilities)}')
-          if observed_warnings != expected_warnings:
-              raise SystemExit(f'unexpected raw warning set: {sorted(observed_warnings)}')
+          if observed_advisory_warnings != expected_advisory_warnings:
+              raise SystemExit(f'unexpected raw advisory warning set: {sorted(observed_advisory_warnings)}')
+          if observed_yanked != expected_yanked:
+              raise SystemExit(f'unexpected raw yanked set: {sorted(observed_yanked)}')
           PY
 
       - name: Enforce configured audit policy
