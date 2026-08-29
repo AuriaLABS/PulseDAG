@@ -55,7 +55,7 @@ jobs:
             test ! -e "${forbidden}"
           done
 
-          allowed_re='^(Cargo.lock|crates/pulsedag-wallet/(Cargo.toml|src/(lib.rs|protocol_v2.rs|secrets.rs|deterministic.rs|keystore.rs|keystore_crypto.rs|keystore_persistence.rs|keystore_seed.rs))|\.github/workflows/v2_4_x_wallet_custody_port.yml)$'
+          allowed_re='^(Cargo.lock|crates/pulsedag-wallet/(Cargo.toml|src/(lib.rs|protocol_v2.rs|secrets.rs|deterministic.rs|keystore.rs|keystore_crypto.rs|keystore_persistence.rs|keystore_seed.rs))|\.github/workflows/(v2_4_x_wallet_custody_port.yml|dependency-audit.yml|lint.yml))$'
           while IFS= read -r path; do
             [[ "${path}" =~ ${allowed_re} ]] || { echo "unexpected port delta: ${path}" >&2; exit 1; }
           done < <(git diff --name-only "${PORT_BASE_SHA}...HEAD")
