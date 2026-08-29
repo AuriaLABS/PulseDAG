@@ -4,9 +4,13 @@ mod deterministic;
 mod keystore;
 mod keystore_crypto;
 mod keystore_persistence;
+mod keystore_rotation;
 mod keystore_seed;
 pub mod protocol_v2;
 mod secrets;
+mod session_clock;
+mod session_v1;
+use session_v1 as session_core;
 
 pub use deterministic::{
     derive_network_components, derive_wallet_key, derive_wallet_key_from_seed,
@@ -31,10 +35,17 @@ pub use keystore_persistence::{
     WalletKeystoreDirectorySyncStatus, WalletKeystoreFile, WalletKeystorePermissionStatus,
     WalletKeystorePersistenceError, WalletKeystorePersistenceReport, KEYSTORE_FILE_MAX_BYTES,
 };
+pub use keystore_rotation::{rotate_keystore_password, WalletKeystoreRotationError};
 pub use keystore_seed::{decrypt_wallet_seed, encrypt_wallet_seed};
 pub use secrets::{
     SecretString, WalletSecretKey, WalletSeed, ED25519_SECRET_KEY_BYTES, REDACTED_SECRET,
     WALLET_SEED_BYTES,
+};
+pub use session_clock::WalletSession;
+pub use session_v1::{
+    WalletSessionError, WalletSessionIdentity, WalletSessionLockState, WalletSessionStatus,
+    WalletUnlockPolicy, WalletUnlockPolicyError, WALLET_UNLOCK_MAX_FAILURES,
+    WALLET_UNLOCK_MAX_LOCKOUT, WALLET_UNLOCK_MAX_TIMEOUT,
 };
 
 use serde::{Deserialize, Serialize};
