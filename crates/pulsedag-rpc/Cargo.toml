@@ -25,6 +25,7 @@ pulsedag-storage = { path = "../pulsedag-storage" }
 pulsedag-api = { path = "../pulsedag-api" }
 
 [dev-dependencies]
+ed25519-dalek = "2"
 proptest = "1"
 pulsedag-miner = { path = "../../apps/pulsedag-miner" }
 tower = { version = "0.5", features = ["util"] }
