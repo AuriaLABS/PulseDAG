@@ -232,9 +232,9 @@ pub fn derive_network_components(
     update_len_prefixed(&mut hasher, chain_id.as_bytes());
     let digest = hasher.finalize();
     let mut out = [0u32; WALLET_NETWORK_COMPONENTS];
-    for (slot, chunk) in out.iter_mut().zip(digest[..16].chunks_exact(4)) {
-        *slot = u32::from_be_bytes(chunk.try_into().expect("four-byte SHA-256 chunk"))
-            & WALLET_DERIVATION_MAX_INDEX;
+    let (chunks, _) = digest[..16].as_chunks::<4>();
+    for (slot, chunk) in out.iter_mut().zip(chunks) {
+        *slot = u32::from_be_bytes(*chunk) & WALLET_DERIVATION_MAX_INDEX;
     }
     out
 }
