@@ -94,17 +94,37 @@ async fn task30_public_signed_relay_and_mutable_rpc_abuse_are_bounded() {
     )
     .with_state(test_state("public-safe"));
 
-    for uri in ["/tx/submit", "/api/v1/tx/submit"] {
-        let (status, _) = call(public_app.clone(), json_post(uri, "{}")).await;
+    let (status, body) = call(public_app.clone(), json_post("/api/v1/tx/submit", "{}")).await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "public-safe versioned relay must expose only the strict signed-transaction envelope: {body}"
+    );
+    assert!(body.contains("invalid_transaction_payload"), "{body}");
+
+    for uri in [
+        "/tx/submit",
+        "/api/v1/tx/build",
+        "/wallet/new",
+        "/api/v1/wallet/new",
+        "/admin/diagnostics",
+        "/mine",
+        "/api/v1/mining/submit",
+        "/snapshot/create",
+        "/prune",
+        "/sync/rebuild",
+    ] {
+        let (status, body) = call(public_app.clone(), json_post(uri, "{}")).await;
         assert_eq!(
             status,
             StatusCode::NOT_FOUND,
-            "public-safe profile must not expose signed transaction submission at {uri}"
+            "public-safe profile must keep mutable RPC surface forbidden at {uri}: {body}"
         );
+        assert!(body.contains("public_route_forbidden"), "{uri}: {body}");
     }
 
     let body_limited_app = pulsedag_rpc::routes::router_with_profile::<TestState>(
-        ApiExposureProfile::PrivateOperator,
+        ApiExposureProfile::PublicSafe,
         false,
         None,
         Some(RpcHardeningLimits {
@@ -115,7 +135,7 @@ async fn task30_public_signed_relay_and_mutable_rpc_abuse_are_bounded() {
     .with_state(test_state("body-limit"));
     let oversized = Request::builder()
         .method("POST")
-        .uri("/tx/submit")
+        .uri("/api/v1/tx/submit")
         .header("content-type", "application/json")
         .header("content-length", "128")
         .body(Body::from(
@@ -127,7 +147,7 @@ async fn task30_public_signed_relay_and_mutable_rpc_abuse_are_bounded() {
     assert!(body.contains("request_too_large"));
 
     let rate_limited_app = pulsedag_rpc::routes::router_with_profile::<TestState>(
-        ApiExposureProfile::PrivateOperator,
+        ApiExposureProfile::PublicSafe,
         false,
         None,
         Some(RpcHardeningLimits {
@@ -142,15 +162,23 @@ async fn task30_public_signed_relay_and_mutable_rpc_abuse_are_bounded() {
     .with_state(test_state("rate-limit"));
 
     for attempt in 1..=2 {
-        let (status, _) = call(rate_limited_app.clone(), json_post("/tx/submit", "{}")).await;
+        let (status, _) = call(
+            rate_limited_app.clone(),
+            json_post("/api/v1/tx/submit", "{}"),
+        )
+        .await;
         assert_ne!(
             status,
             StatusCode::TOO_MANY_REQUESTS,
-            "attempt {attempt} must remain inside the configured mutable-RPC budget"
+            "attempt {attempt} must remain inside the configured public relay budget"
         );
     }
 
-    let (status, body) = call(rate_limited_app.clone(), json_post("/tx/submit", "{}")).await;
+    let (status, body) = call(
+        rate_limited_app.clone(),
+        json_post("/api/v1/tx/submit", "{}"),
+    )
+    .await;
     assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
     assert!(body.contains("rate_limited"));
 
@@ -166,6 +194,30 @@ async fn task30_public_signed_relay_and_mutable_rpc_abuse_are_bounded() {
     assert_eq!(
         status,
         StatusCode::OK,
-        "liveness/read-plane status must remain available after mutable-RPC rate limiting"
+        "liveness/read-plane status must remain available after public relay rate limiting"
     );
+
+    let cors_app = pulsedag_rpc::routes::router_with_profile::<TestState>(
+        ApiExposureProfile::PublicSafe,
+        false,
+        None,
+        Some(RpcHardeningLimits {
+            request_body_limit_bytes: 1024,
+            rate_limit: None,
+        }),
+    )
+    .with_state(test_state("cors-deny"));
+    let (status, body) = call(
+        cors_app,
+        Request::builder()
+            .method("POST")
+            .uri("/api/v1/tx/submit")
+            .header("origin", "https://evil.example")
+            .header("content-type", "application/json")
+            .body(Body::from("{}"))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert!(body.contains("cors_origin_denied"), "{body}");
 }
