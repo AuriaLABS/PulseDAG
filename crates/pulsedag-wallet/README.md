@@ -45,11 +45,11 @@ cargo test -p pulsedag-wallet
 - **No built-in persistence:** Wallet implementation is storage-agnostic; use `pulsedag-storage` for production persistence.
 - **Key management:** Private keys should be encrypted at rest in production.
 
-## Local recovery and watch-only application
+## Local wallet application
 
-The `pulsedag-wallet` executable is the first end-user-shaped local application boundary. Its current scope is intentionally non-spending and does not require node/admin RPC access.
+The `pulsedag-wallet` executable is the local custody/application boundary. It does not require node/admin RPC access and never sends raw private keys, seeds, mnemonics, passwords, decrypted keystore payloads, or `WalletSession` material to a node.
 
-Supported commands:
+Supported recovery/read-only commands:
 
 - `restore --keystore <path> --network-profile <profile> --chain-id <id>` restores a deterministic v2 seed keystore from BIP-39 material;
 - `address --keystore <path> --account <n> --branch <receive|change> --index <n>` derives one public address from an unlocked deterministic v2 keystore;
@@ -57,11 +57,18 @@ Supported commands:
 - `watch-import --manifest <path>` validates/imports a public watch-only manifest and reports public metadata only; it has no signing capability;
 - `backup-verify --keystore <path> --manifest <path>` verifies a public watch-only backup manifest against the authenticated deterministic seed and network identity.
 
-Secrets are never accepted as command-line options. `restore` reads three line-framed stdin values: wallet password, mnemonic, then an optional BIP-39 passphrase (blank or absent means none). `address`, `watch-export`, and `backup-verify` read one wallet-password line from stdin. `watch-import` consumes no secret.
+Supported local transaction commands:
 
-The restore path persists only the encrypted deterministic seed envelope and refuses to overwrite an existing keystore. Mnemonic/passphrase/password/private-key/seed material is not included in JSON output. Current machine-readable output is deliberately public metadata only.
+- `tx-preview --keystore <path> --utxos-file <path> --network-profile <profile> --chain-id <id> --to <address> --amount <n> --fee <n> --max-fee <n> --max-fee-bps <n> --max-inputs <n> --account <n> --branch <receive|change> --index <n>` unlocks only long enough to derive the selected public signer, verifies the expected network identity, validates a local address-UTXO snapshot, builds `DeterministicPlanV1`, and emits the canonical `WalletReviewSummary` plus the unsigned plan;
+- `tx-sign --keystore <path> --plan <path> --account <n> --branch <receive|change> --index <n>` validates an imported unsigned plan, refuses non-deterministic/manual nonce policy, signs only through the bounded `WalletSession` deterministic child, and emits network/review metadata plus a signed relay envelope containing the final transaction.
 
-There are no official `send`, `sign`, `broadcast`, `balance`, or `history` commands in this boundary yet. Transaction spending remains dependent on the broader #819 work and the protocol-level decisions still tracked in #821.
+Secrets are never accepted as command-line options. `restore` reads three line-framed stdin values: wallet password, mnemonic, then an optional BIP-39 passphrase (blank or absent means none). `address`, `watch-export`, `backup-verify`, `tx-preview`, and `tx-sign` read one wallet-password line from stdin. `watch-import` consumes no secret.
+
+Local JSON inputs are bounded to 4 MiB before parsing. Transaction-plan import re-runs structural validation and the official CLI signs only `DeterministicPlanV1`; low-level `ExplicitCallerProvidedV1` remains available only as a compatibility/protocol-test API. UTXO snapshots must identify exactly the selected signer address and may not contain entries for another address.
+
+The restore path persists only the encrypted deterministic seed envelope and refuses to overwrite an existing keystore. Mnemonic/passphrase/password/private-key/seed material is not included in JSON output. Transaction preview and signed outputs contain public transaction metadata only.
+
+`tx-preview` and `tx-sign` deliberately form a two-step local/offline authorization flow. There is still no live `balance`, `history`, automatic UTXO discovery, pending-state persistence, or network `broadcast` command in this CLI. A caller may separately submit the emitted fully signed transaction to the existing public signed-transaction relay only after independently verifying the target network/relay identity.
 
 ## Broadcast boundary
 
