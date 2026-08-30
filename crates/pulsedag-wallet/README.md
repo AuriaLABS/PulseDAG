@@ -45,6 +45,24 @@ cargo test -p pulsedag-wallet
 - **No built-in persistence:** Wallet implementation is storage-agnostic; use `pulsedag-storage` for production persistence.
 - **Key management:** Private keys should be encrypted at rest in production.
 
+## Local recovery and watch-only application
+
+The `pulsedag-wallet` executable is the first end-user-shaped local application boundary. Its current scope is intentionally non-spending and does not require node/admin RPC access.
+
+Supported commands:
+
+- `restore --keystore <path> --network-profile <profile> --chain-id <id>` restores a deterministic v2 seed keystore from BIP-39 material;
+- `address --keystore <path> --account <n> --branch <receive|change> --index <n>` derives one public address from an unlocked deterministic v2 keystore;
+- `watch-export --keystore <path> --account <n> --receive-count <n> --change-count <n>` emits the bounded public watch-only manifest;
+- `watch-import --manifest <path>` validates/imports a public watch-only manifest and reports public metadata only; it has no signing capability;
+- `backup-verify --keystore <path> --manifest <path>` verifies a public watch-only backup manifest against the authenticated deterministic seed and network identity.
+
+Secrets are never accepted as command-line options. `restore` reads three line-framed stdin values: wallet password, mnemonic, then an optional BIP-39 passphrase (blank or absent means none). `address`, `watch-export`, and `backup-verify` read one wallet-password line from stdin. `watch-import` consumes no secret.
+
+The restore path persists only the encrypted deterministic seed envelope and refuses to overwrite an existing keystore. Mnemonic/passphrase/password/private-key/seed material is not included in JSON output. Current machine-readable output is deliberately public metadata only.
+
+There are no official `send`, `sign`, `broadcast`, `balance`, or `history` commands in this boundary yet. Transaction spending remains dependent on the broader #819 work and the protocol-level decisions still tracked in #821.
+
 ## Broadcast boundary
 
 Wallet custody and signing stay local to the wallet boundary. The public node/relay does not receive a private key, mnemonic, seed, wallet password, decrypted keystore payload, or `WalletSession` in order to broadcast a payment.
