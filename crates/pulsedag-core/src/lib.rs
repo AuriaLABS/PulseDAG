@@ -12,6 +12,7 @@ pub mod ghostdag_v1;
 pub mod header_v2;
 pub mod mempool;
 pub mod mempool_protocol;
+pub mod monetary_policy;
 pub mod mined_block_v2;
 pub mod mining;
 pub mod mining_protocol;
