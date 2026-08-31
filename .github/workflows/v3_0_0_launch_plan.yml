@@ -5,10 +5,13 @@ on:
     branches:
       - main
     paths:
+      - README.md
       - SECURITY.md
       - configs/v3-launch/**
       - configs/public-testnet/README.md
+      - docs/README.md
       - docs/ROADMAP_V3_0_0.md
+      - docs/ROADMAP_V3_0_LONG_LIVED_CORE.md
       - docs/runbooks/V3_0_0_DUAL_NETWORK_LAUNCH.md
       - docs/runbooks/V2_4_0_PUBLIC_TESTNET_PREP.md
       - scripts/validate_v3_0_0_launch_plan.py
@@ -18,10 +21,13 @@ on:
     branches:
       - main
     paths:
+      - README.md
       - SECURITY.md
       - configs/v3-launch/**
       - configs/public-testnet/README.md
+      - docs/README.md
       - docs/ROADMAP_V3_0_0.md
+      - docs/ROADMAP_V3_0_LONG_LIVED_CORE.md
       - docs/runbooks/V3_0_0_DUAL_NETWORK_LAUNCH.md
       - docs/runbooks/V2_4_0_PUBLIC_TESTNET_PREP.md
       - scripts/validate_v3_0_0_launch_plan.py
@@ -79,10 +85,13 @@ jobs:
             echo "result=PASS"
           } > ci-evidence/v3-launch-plan/provenance.txt
           sha256sum \
+            README.md \
             SECURITY.md \
             configs/v3-launch/README.md \
             configs/public-testnet/README.md \
+            docs/README.md \
             docs/ROADMAP_V3_0_0.md \
+            docs/ROADMAP_V3_0_LONG_LIVED_CORE.md \
             docs/runbooks/V3_0_0_DUAL_NETWORK_LAUNCH.md \
             docs/runbooks/V2_4_0_PUBLIC_TESTNET_PREP.md \
             scripts/validate_v3_0_0_launch_plan.py \
