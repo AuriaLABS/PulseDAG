@@ -46,6 +46,8 @@ The v3 monetary index is **not** ordinary height and is **not** raw block-header
 
 Economic time is derived only from the versioned cadence segment table. Each segment is `(activation_score, target_interval_ns)`, and a segment activating at score `S` governs transition `S -> S+1` and later transitions until the next activation. This makes a cadence change continuous: past economic time is never repriced.
 
+The consensus BPS change and monetary interval change activate at the same monetary score. A transition that changes only one side is invalid.
+
 Reference intervals are:
 
 - 1 BPS / ~1 s: `1_000_000_000 ns` per score transition;
