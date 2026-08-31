@@ -125,7 +125,7 @@ jobs:
           report = json.load(open('ci-evidence/dependency-audit/cargo-audit-raw.json'))
           vulnerabilities = report.get('vulnerabilities', {}).get('list', [])
           observed_vulnerabilities = {
-              (item.get('advisory', {}).get('id'), item.get('package', {}).get('name'), item.get('package', {}).get('version'))
+              ((item.get('advisory') or {}).get('id'), (item.get('package') or {}).get('name'), (item.get('package') or {}).get('version'))
               for item in vulnerabilities
           }
           expected_vulnerabilities = {
@@ -137,7 +137,7 @@ jobs:
               ('RUSTSEC-2026-0258', 'h2', '0.3.27'),
           }
           observed_warnings = {
-              (kind, item.get('advisory', {}).get('id'), item.get('package', {}).get('name'), item.get('package', {}).get('version'))
+              (kind, (item.get('advisory') or {}).get('id'), (item.get('package') or {}).get('name'), (item.get('package') or {}).get('version'))
               for kind, items in report.get('warnings', {}).items()
               for item in items
           }
@@ -153,17 +153,23 @@ jobs:
               ('unmaintained', 'RUSTSEC-2025-0010', 'ring', '0.16.20'),
               ('unsound', 'RUSTSEC-2026-0002', 'lru', '0.12.5'),
               ('unsound', 'RUSTSEC-2026-0253', 'lru', '0.12.5'),
+              # cargo-audit represents yanked packages without an advisory object.
+              # Keep the exact package/version visible and fail on any drift.
+              ('yanked', None, 'chacha20', '0.10.0'),
           }
           print(f'raw_vulnerability_count={len(vulnerabilities)}')
           for item in sorted(observed_vulnerabilities):
               print('vulnerability', *item)
           print(f'raw_warning_count={len(observed_warnings)}')
-          for item in sorted(observed_warnings):
+          for item in sorted(observed_warnings, key=lambda value: tuple('' if part is None else str(part) for part in value)):
               print('warning', *item)
           if observed_vulnerabilities != expected_vulnerabilities:
               raise SystemExit(f'unexpected raw vulnerability set: {sorted(observed_vulnerabilities)}')
           if observed_warnings != expected_warnings:
-              raise SystemExit(f'unexpected raw warning set: {sorted(observed_warnings)}')
+              raise SystemExit(
+                  'unexpected raw warning set: '
+                  + repr(sorted(observed_warnings, key=lambda value: tuple('' if part is None else str(part) for part in value)))
+              )
           PY
 
       - name: Enforce configured audit policy
