@@ -11,6 +11,8 @@ on:
       - configs/public-testnet/README.md
       - docs/README.md
       - docs/VERSION_MATRIX.md
+      - docs/ROADMAP_V2_5_0.md
+      - docs/ROADMAP_V2_6_0.md
       - docs/ROADMAP_V3_0_0.md
       - docs/ROADMAP_V3_0_LONG_LIVED_CORE.md
       - docs/runbooks/V3_0_0_DUAL_NETWORK_LAUNCH.md
@@ -28,6 +30,8 @@ on:
       - configs/public-testnet/README.md
       - docs/README.md
       - docs/VERSION_MATRIX.md
+      - docs/ROADMAP_V2_5_0.md
+      - docs/ROADMAP_V2_6_0.md
       - docs/ROADMAP_V3_0_0.md
       - docs/ROADMAP_V3_0_LONG_LIVED_CORE.md
       - docs/runbooks/V3_0_0_DUAL_NETWORK_LAUNCH.md
@@ -46,7 +50,7 @@ concurrency:
 
 jobs:
   validate:
-    name: Validate Q4 dual-network launch authority
+    name: Validate integrated v2.5 + v2.6 -> v3.0.0 launch authority
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     env:
@@ -64,7 +68,7 @@ jobs:
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "${CANDIDATE_SHA}"
 
-      - name: Validate v3 launch plan
+      - name: Validate integrated v3 launch plan
         shell: bash
         run: |
           set -euo pipefail
@@ -81,8 +85,13 @@ jobs:
             echo "target_release=v3.0.0"
             echo "launch_window=Q4-2026"
             echo "launch_model=mainnet-plus-parallel-testnet"
+            echo "v2_5_scope_incorporated=true"
+            echo "v2_6_scope_incorporated=true"
+            echo "smart_contracts_in_v3_scope=true"
+            echo "nvidia_gpu_required=true"
+            echo "amd_gpu_required=true"
             echo "standalone_public_testnet_first=false"
-            echo "pre_mainnet_30_day_testnet_clock_required=false"
+            echo "pre_mainnet_30_day_public_testnet_clock_required=false"
             echo "final_authority_issue=781"
             echo "result=PASS"
           } > ci-evidence/v3-launch-plan/provenance.txt
@@ -93,6 +102,8 @@ jobs:
             configs/public-testnet/README.md \
             docs/README.md \
             docs/VERSION_MATRIX.md \
+            docs/ROADMAP_V2_5_0.md \
+            docs/ROADMAP_V2_6_0.md \
             docs/ROADMAP_V3_0_0.md \
             docs/ROADMAP_V3_0_LONG_LIVED_CORE.md \
             docs/runbooks/V3_0_0_DUAL_NETWORK_LAUNCH.md \
