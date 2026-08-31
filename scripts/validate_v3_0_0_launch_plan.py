@@ -80,6 +80,15 @@ def main() -> None:
     require(
         "docs/MONETARY_POLICY_V3_0_0.md",
         "# PulseDAG v3.0.0 monetary policy",
+        "MAINNET POLICY APPROVED / IMPLEMENTATION + TESTNET FREEZE PENDING",
+        "maximum supply: **1,000,000,000.00000000 coins**",
+        "genesis-issued spendable mainnet supply: **0 coins**",
+        "year-1 mining budget: **500,000,000.00000000 coins**",
+        "50% every one economic year",
+        "31,536,000 economic seconds (365 days)",
+        "coinbase maturity: **3,600 economic seconds",
+        "consensus fee burn: **0%**",
+        "MAX_SUPPLY_ATOMS = 100_000_000_000_000_000",
         "Current implementation baseline",
         "GENESIS_SUPPLY = 1_000_000_000",
         "INITIAL_BLOCK_SUBSIDY = 50",
@@ -115,6 +124,12 @@ def main() -> None:
     manifest = require(
         "docs/V3_0_0_LAUNCH_MANIFEST.md",
         "Launch state:",
+        "Policy version: `v3.0.0-mainnet-policy-v1`",
+        "Maximum mainnet supply: `1,000,000,000.00000000 coins`",
+        "Mainnet genesis-issued supply: `0 coins`",
+        "Year-1 mining budget: `500,000,000.00000000 coins`",
+        "Annual subsidy reduction: `50% every 31,536,000 economic seconds (365 days)`",
+        "Coinbase maturity: `3,600 economic seconds`",
         "Monetary policy freeze",
         "Mainnet genesis and network identity",
         "Parallel-testnet genesis and network identity",
@@ -248,7 +263,7 @@ def main() -> None:
     if not (ROOT / "scripts/validate_v3_0_0_network_freeze.py").is_file():
         fail("missing monetary/genesis/network freeze validator")
 
-    print("PASS: integrated v2.5 + v2.6 -> v3.0.0 Q4 dual-network launch authority is internally consistent")
+    print("PASS: integrated v2.5 + v2.6 + approved v3 mainnet monetary policy -> v3.0.0 Q4 dual-network launch authority is internally consistent")
 
 
 if __name__ == "__main__":
