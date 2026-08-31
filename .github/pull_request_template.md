@@ -12,6 +12,7 @@
 - Operator/user impact:
 - Compatibility impact:
 - v3.0.0 launch impact: <!-- launch-blocking / launch-enabling / post-launch / historical-only -->
+- Workstream impact: <!-- v2.5 scale/GPU / v2.6 programmability / wallet / security / release / infrastructure -->
 - Network impact: <!-- none / mainnet / parallel testnet / both -->
 
 ## Risk and rollback
@@ -30,15 +31,20 @@
 - [ ] No credentials, generated runtime data, wallet secrets, or temporary patch files are included.
 - [ ] Exact candidate SHA/evidence scope is recorded when this change affects release or launch behavior.
 
-## v3.0.0 launch guardrails
+## Integrated v3.0.0 launch guardrails
 
 - [ ] No existing v2.4.x tag/binary/evidence is relabeled as v3.0.0.
+- [ ] The incorporated v2.5 scale/resilience/GPU requirements are not silently weakened or removed.
+- [ ] The incorporated v2.6 programmability/smart-contract requirements are not silently weakened or removed.
 - [ ] No unsupported launch/readiness claim is introduced.
 - [ ] No mainnet/testnet chain ID, genesis, bootnode peer ID, DNS endpoint or production secret is invented before its freeze record.
-- [ ] Mainnet and parallel-testnet identities remain explicitly separated when this PR touches network identity, P2P, wallet signing, relay or configuration.
-- [ ] Any release-candidate-affecting change identifies which burn-in/rehearsal/security/package evidence must be rerun.
-- [ ] No embedded pool logic in the standalone miner.
-- [ ] No smart-contract runtime enablement unless included in a separately reviewed/frozen launch or activation decision.
+- [ ] Mainnet and parallel-testnet identities remain explicitly separated when this PR touches network identity, P2P, wallet signing, relay, contracts/proofs or configuration.
+- [ ] Any release-candidate-affecting change identifies which replay, burn-in, rehearsal, security, GPU, wallet or programmability evidence must be rerun.
+- [ ] CPU/NVIDIA/AMD PoW equivalence remains canonical where mining code is affected.
+- [ ] No embedded pool logic, share accounting, vardiff or payouts are added to the standalone miner/node.
+- [ ] Smart-contract/programming changes remain bound to the frozen v3 transaction/VM/proof/resource/activation contracts.
+- [ ] Contract/application/proof execution remains deterministic and resource bounded.
+- [ ] No cross-network signing/application-domain replay path is introduced.
 
 ## Remaining limitations
 
