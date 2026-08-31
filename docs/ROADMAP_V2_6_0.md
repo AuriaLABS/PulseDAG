@@ -1,126 +1,121 @@
-# ROADMAP v2.6.0 — Programmability, Smart Contracts and Verifiable Applications
+# ROADMAP v2.6.0 — Programmability, Smart Contracts and Verifiable Applications Workstream for v3.0.0
 
-Status: **APPROVED FUTURE ROADMAP**
+Status: **APPROVED MANDATORY V3.0.0 WORKSTREAM**
 
-Approval date: 2026-08-17 UTC
+Original approval date: 2026-08-17 UTC
+Integration rebaseline: 2026-08-31 UTC
 
 ## Purpose
 
-v2.6.0 introduces PulseDAG programmability after the v2.5.0 scale, GPU-mining and public-testnet acceptance program has completed. The design direction is inspired by the modern Kaspa programmability model: keep the L1 DAG/UTXO consensus core small and deterministic, add UTXO-native covenant/script capabilities for bounded on-chain rules, and support more complex application execution through explicitly versioned verifiable-program / based-application mechanisms rather than turning every full node into an unbounded global application VM.
+v2.6.0 is the mandatory programmability engineering milestone on the path to PulseDAG v3.0.0. Its technical scope is incorporated into the authoritative `ROADMAP_V3_0_0.md` acceptance matrix.
 
-This is an architectural direction, not a compatibility claim with Kaspa and not an authorization to copy unstable external APIs or implementations. PulseDAG specifications, transaction formats, proof domains, state commitments and activation rules remain independently versioned and reviewed.
+The intended path is:
 
-v2.6.0 implementation must not begin until the accepted stable-public-testnet gate required by the project policy has completed. The intended predecessor evidence is the v2.5.0 public-testnet 30-day acceptance gate.
+`v2.4.x -> v2.5.0 scale/resilience -> v2.6.0 programmability -> v3.0.0 integrated release`
+
+The design keeps the L1 DAG/UTXO consensus core deterministic and bounded, adds UTXO-native programmable rules, and supports more complex verifiable applications through explicitly versioned mechanisms rather than forcing unbounded global application execution into every full node.
+
+This document no longer requires completion of a standalone public-testnet 30-day clock before programmability work begins. The v2.5 technical workstream remains the predecessor milestone, while public mainnet and parallel testnet launch together only after the integrated v3.0.0 GO decision.
 
 ## Non-negotiable principles
 
 - UTXO/DAG consensus remains the authoritative ordering and settlement layer.
-- Smart-contract semantics are explicitly versioned and activated; no silent mutation of existing transaction or UTXO semantics.
-- Simple programmable spending rules should use bounded UTXO-native covenant/script mechanisms.
+- Smart-contract semantics are explicitly versioned/activated; no silent mutation of existing transaction/UTXO semantics.
+- Simple programmable spending rules use bounded UTXO-native covenant/script mechanisms.
 - Complex applications must not force every L1 node to execute unlimited arbitrary workloads.
-- All consensus-visible execution and proof verification is deterministic and resource-bounded.
-- Cross-network replay is prevented by chain/network/domain binding.
-- Contract state, token supply and application commitments must be replayable and auditable.
+- All consensus-visible execution and proof verification is deterministic and resource bounded.
+- Cross-network replay is prevented by chain/network/application/domain binding.
+- Contract state, token supply and application commitments are replayable/auditable.
 - CPU, memory, state growth and proof-verification cost are explicitly metered/bounded.
-- Mining remains external to the node and continues to receive deterministic transaction/contract fees through the normal block-template path.
-- **Pool servers, pool protocols, share accounting, vardiff, worker management and payout systems are external third-party projects and are not part of PulseDAG v2.6.0.**
-- v2.6.0 does not authorize mainnet launch.
+- Mining remains external to the node and receives deterministic ordinary + programmable fees through the normal template path.
+- Pool servers/protocols/share accounting/vardiff/worker management/payouts remain external third-party projects.
+- This workstream does not by itself authorize public launch; #781 is the sole final launch authority.
 
 ## Dependency spine
 
 ```text
-v2.5.0 final GO + accepted 30-day public-testnet gate
-                         |
-                         v
-                      Task 51
-                         |
-              +----------+-----------+
-              |                      |
-              v                      v
-           Tasks 52-55            Tasks 57-59
-        Covenants/VM core      Verifiable apps/proofs
-              |                      |
-              +----------+-----------+
-                         v
-                      Task 56
-                         |
-                         v
-                    Tasks 60-64
-                         |
-                         v
-                      Task 65
-                         |
-                         v
-                      Task 66
-                         |
-                         v
-                      Task 67
-                         |
-                         v
-                      Task 68
-                         |
-                         v
-                      Task 69
+v2.5 workstream PASS
+        |
+        v
+     Task 51
+        |
+   +----+-----+
+   v          v
+Tasks 52-55  Tasks 57-59
+   |          |
+   +----+-----+
+        v
+     Task 56
+        |
+   Tasks 60-64
+        |
+     Task 65
+        |
+     Task 66
+        |
+     Task 67
+        |
+     Task 68
+        |
+     Task 69
+        |
+        v
+ v3.0.0 final integration/GO
 ```
 
 ## Tasks
 
-### Task 51 — v2.6.0 programmability activation contract
+### Task 51 — Programmability activation contract
 
 Freeze the complete programmability scope before implementation lands.
 
 Required outcomes:
 
-- exact accepted v2.5.0 baseline and evidence identity;
-- proof that the prerequisite accepted public-testnet stability period is complete;
+- exact accepted v2.5 workstream baseline/evidence identity;
 - transaction/script/contract versioning rules;
-- activation height/condition and mixed-version behavior;
-- chain/network/domain separation rules;
-- storage, snapshot and pruning compatibility boundaries;
+- activation condition and mixed-version behavior;
+- chain/network/application/domain separation;
+- storage/snapshot/pruning compatibility boundaries;
 - rollback/downgrade boundary;
 - execution/resource accounting model;
-- contract-state commitment model;
+- contract/application state-commitment model;
 - proof-system versioning policy;
 - evidence invalidation rules;
-- explicit statement that no downstream task may invent conflicting activation semantics.
+- no downstream task may invent conflicting activation semantics.
 
 ### Task 52 — UTXO Covenants v1
 
-Introduce bounded UTXO-native programmable spending conditions.
-
-Initial capability targets may include:
+Initial accepted capabilities may include:
 
 - advanced timelocks;
 - vault policies;
-- programmable multisignature conditions;
+- programmable multisignature;
 - escrow;
 - atomic-swap primitives;
 - payment-channel primitives;
 - controlled asset issuance/spending constraints;
 - successor-output/state-continuation rules.
 
-Covenants must be deterministic, statically bounded enough for consensus validation, and unable to access non-deterministic host resources.
+Covenants must be deterministic, statically/resource bounded and unable to access non-deterministic host resources.
 
 ### Task 53 — Contract Transaction v3
 
-Define an explicitly versioned programmable transaction format without mutating Transaction Protocol v2 in place.
+Define a versioned programmable transaction format without silently mutating Transaction Protocol v2.
 
-Required fields/semantics include as appropriate:
+Required fields/semantics as applicable:
 
 - covenant/contract inputs and outputs;
 - execution/state commitments;
-- application/contract namespace and version identity;
+- application/contract namespace and version;
 - payload commitment;
 - declared compute/resource budgets;
-- proof commitments where used;
+- proof commitments;
 - stable transaction/submission identity;
 - canonical serialization/signing/txid derivation;
 - chain/network/domain binding;
-- deterministic rejection and replay rules.
+- deterministic rejection/replay rules.
 
 ### Task 54 — PulseScript
-
-Create a PulseDAG-native source language/toolchain for bounded programmable spending and contract logic.
 
 Required properties:
 
@@ -128,7 +123,7 @@ Required properties:
 - static typing;
 - no floating-point consensus behavior;
 - explicit integer/overflow semantics;
-- bounded/analysable resource constructs;
+- bounded/analyzable resource constructs;
 - reproducible compiler output;
 - versioned compiler/bytecode/script format;
 - ABI/interface description;
@@ -137,35 +132,29 @@ Required properties:
 
 ### Task 55 — Deterministic Contract VM
 
-Provide a bounded deterministic execution environment for contract logic that exceeds simple covenant primitives but remains appropriate for L1 verification.
-
 Requirements:
 
-- deterministic integer-only consensus arithmetic unless another exact representation is formally specified;
+- deterministic integer-only consensus arithmetic unless another exact representation is formally frozen;
 - deterministic memory/stack behavior;
 - instruction/compute metering;
 - memory, stack, recursion/call-depth and state-access limits;
 - deterministic failure codes;
-- no filesystem, external networking, wall-clock time, host randomness or hardware-dependent semantics;
+- no filesystem, external networking, wall-clock, host randomness or hardware-dependent consensus semantics;
 - reproducible execution across supported architectures;
-- differential test vectors across implementations/platforms.
+- differential vectors across implementations/platforms.
 
 ### Task 56 — Parallel contract execution on the DAG
 
-Use PulseDAG canonical ordering and explicit state-access declarations to execute independent programmable operations in parallel where correctness permits.
-
 Required outcomes:
 
-- deterministic read/write set model or equivalent conflict declaration;
-- parallel execution only for non-conflicting state transitions;
-- canonical conflict resolution through the accepted DAG order;
+- deterministic read/write set or equivalent conflict declaration;
+- parallel execution only for non-conflicting transitions;
+- canonical conflict resolution through accepted DAG order;
 - deterministic rollback/re-execution when selected ordering changes inside the non-final region;
-- identical final contract/application state regardless of arrival order or local thread scheduling;
+- identical final contract/application state regardless of arrival order/local thread scheduling;
 - bounded scheduler complexity.
 
 ### Task 57 — Based Applications
-
-Define an application model in which PulseDAG L1 provides ordering, data/commitment availability as specified, and final settlement while complex application execution may occur outside the critical L1 execution path.
 
 Required outcomes:
 
@@ -175,14 +164,12 @@ Required outcomes:
 - settlement/finality semantics;
 - fraud/validity-proof policy as applicable;
 - explicit data-availability assumptions;
-- deterministic rejection of malformed or incompatible application commitments;
+- deterministic rejection of malformed/incompatible commitments;
 - no hidden trusted sequencer requirement unless explicitly declared by an application profile.
 
 ### Task 58 — PulseProgs / Verifiable Programs
 
-Create the PulseDAG-native framework for independently versioned verifiable programs.
-
-The architecture should separate at minimum:
+Separate and version at minimum:
 
 - program identity/versioning;
 - state commitments;
@@ -190,43 +177,37 @@ The architecture should separate at minimum:
 - transaction/application runtime;
 - proof/verification interface;
 - storage/indexing boundaries;
-- rollback and canonical-state transitions.
+- rollback/canonical-state transitions.
 
-PulseProgs may take conceptual inspiration from external verifiable-program architectures, but PulseDAG must not bind consensus to unstable third-party APIs or implementation details.
+PulseDAG must not bind consensus to unstable third-party APIs or implementation details.
 
 ### Task 59 — ZK verification layer
 
-Introduce a versioned proof-verification abstraction for application/state-transition proofs.
-
-Required outcomes:
+Where included in the frozen v3 scope:
 
 - proof-system/version identifiers;
 - verification-key commitments/versioning;
-- proof-size and verification-cost limits;
+- proof-size/verification-cost limits;
 - state-root/transition commitments;
 - chain/network/application domain separation;
 - replay protection;
 - golden proof/verification vectors;
-- fail-closed handling of unknown proof systems or versions;
-- ability to add future proof systems through explicit activation rather than silent substitution.
+- fail-closed unknown proof systems/versions;
+- future proof systems added only through explicit activation.
 
 ### Task 60 — Native assets and token standards
 
-Define consensus-backed programmable asset standards rather than indexer-only conventions.
-
-The roadmap should support at minimum standardized profiles for:
+Support consensus-backed programmable asset profiles for:
 
 - fungible assets;
 - unique/non-fungible assets;
 - multi-asset collections.
 
-Required semantics include deterministic mint/burn/transfer, supply caps where declared, ownership/spending rules, metadata commitments, application events and replayable total-supply accounting.
+Required semantics include deterministic mint/burn/transfer, declared supply caps, ownership/spending rules, metadata commitments, application events and replayable total-supply accounting.
 
-Names such as `PDT-20`, `PDT-721` and `PDT-1155` may be reserved as working conventions but must not imply Ethereum/EVM compatibility unless separately specified and tested.
+Names such as `PDT-20`, `PDT-721` and `PDT-1155` may be working conventions but do not imply external VM compatibility.
 
 ### Task 61 — Contract state, events, indexing and RPC
-
-Expose bounded stable APIs for programmable state without forcing consensus nodes to maintain unlimited application indexes.
 
 Required outcomes:
 
@@ -235,36 +216,32 @@ Required outcomes:
 - execution/history references;
 - event streaming;
 - asset/contract transaction status;
-- bounded pagination and resource limits;
+- bounded pagination/resource limits;
 - indexer-friendly canonical event/state-change feeds;
 - strict separation between consensus-required state and optional heavy indexes.
 
 ### Task 62 — Contract resource and fee economy
 
-Define deterministic pricing/limits for programmable workloads.
-
-The accounting model must be able to charge separately for relevant resource classes such as:
+Define deterministic pricing/limits for relevant resource classes such as:
 
 - transaction bytes;
 - compute/instructions;
-- memory where consensus-visible;
+- memory where consensus visible;
 - state reads/writes/growth;
 - proof verification;
 - other explicitly specified scarce resources.
 
-The design must not blindly copy a single-variable gas model if separate bounded resource dimensions provide safer economics.
+Do not blindly collapse all limits into one variable if separate resource dimensions provide safer deterministic economics.
 
 ### Task 63 — Contract security model
 
-Treat programmable execution as a new high-risk consensus surface.
-
-Mandatory validation areas include:
+Mandatory validation includes:
 
 - malformed bytecode/script;
 - integer/serialization edge cases;
 - replay/domain attacks;
 - reentrancy/call-graph hazards where applicable;
-- state-conflict and ordering attacks;
+- state-conflict/order attacks;
 - resource exhaustion;
 - storage/state-growth attacks;
 - oversized/malformed proof attacks;
@@ -272,13 +249,11 @@ Mandatory validation areas include:
 - DAG reorder/non-final rollback behavior;
 - compiler/runtime differential fuzzing;
 - property-based state-transition testing;
-- adversarial contract corpus and regression suite.
+- adversarial contract corpus/regressions.
 
 ### Task 64 — Mining and programmable-fee integration
 
-Integrate programmable transaction fees into the existing external-miner/template pipeline without adding pool logic.
-
-The node must deterministically compute and expose the block economics for:
+The node must deterministically compute/expose template economics for:
 
 ```text
 block subsidy
@@ -287,13 +262,13 @@ block subsidy
 + proof-verification fees where applicable
 ```
 
-Required outcomes include deterministic template accounting, miner-visible fee totals, submit validation, fee replay and no divergence between node, wallet/application tooling and canonical state.
+Required outcomes include deterministic accounting, miner-visible fee totals, submit validation and no divergence between node, wallet/application tooling and canonical state.
 
-### Task 65 — Monetary policy final candidate
+No pool logic is added.
 
-Produce the candidate monetary/economic policy that later mainnet-preparation releases can freeze.
+### Task 65 — Production monetary/economic policy candidate
 
-Record and test:
+Produce/freeze the economic policy required by final v3 integration:
 
 - maximum/target supply model as applicable;
 - emission curve;
@@ -303,15 +278,15 @@ Record and test:
 - programmable resource fees;
 - burn/recycling behavior only if explicitly approved;
 - exact total-supply calculation at arbitrary height/accepted state;
-- no hidden or implementation-dependent issuance path.
+- no hidden/implementation-dependent issuance path.
 
-This task produces a candidate policy; final mainnet freeze remains a later roadmap responsibility.
+The final production freeze is recorded with the exact v3 candidate in #794/#781.
 
-### Task 66 — Smart-contract testnet
+### Task 66 — Integrated programmability validation program
 
-Run a dedicated programmability validation program before v2.6 promotion.
+**Rebaselined from the old dedicated smart-contract public-testnet step.**
 
-Workloads must include:
+Before final v3 GO, run controlled private/release-candidate validation that exercises:
 
 - covenants;
 - PulseScript contracts;
@@ -321,17 +296,19 @@ Workloads must include:
 - intentional state conflicts;
 - invalid/malformed contracts;
 - verifiable programs / based applications;
-- ZK proof verification where implemented;
-- large state and state-growth pressure;
-- transaction spam/resource exhaustion attempts;
+- ZK proof verification where included;
+- large state/state-growth pressure;
+- transaction spam/resource exhaustion;
 - AMD/NVIDIA production mining;
 - snapshots, pruning, restart/rejoin and rolling upgrades.
 
+The permanent parallel public testnet launches with mainnet after final v3 GO and remains the public validation environment after launch.
+
 ### Task 67 — Programmability million-transaction replay
 
-Replay at least 1,000,000 programmable transactions/operations under varied valid arrival and scheduling permutations.
+Replay at least 1,000,000 programmable transactions/operations under varied valid arrival/scheduling permutations.
 
-The same canonical input history must produce byte-identical:
+Equivalent canonical histories must produce byte-identical:
 
 - canonical DAG/order;
 - contract execution outcomes;
@@ -341,19 +318,21 @@ The same canonical input history must produce byte-identical:
 - proof-verification outcomes;
 - global canonical state digest.
 
-### Task 68 — 30-day programmability burn-in
+### Task 68 — 30-day programmability exact-candidate burn-in
 
-Operate the accepted v2.6 candidate for at least 30 accepted days with programmability enabled and one exact evidence-controlled candidate identity.
+Retain the original strong long-duration requirement, but execute it as **pre-launch exact-candidate evidence**, not as a standalone public-testnet prerequisite.
+
+Before final v3 GO, accumulate at least **30 accepted days** with programmability enabled on controlled private/release-candidate infrastructure tied to one exact candidate identity.
 
 Exercise sustained normal transactions, contracts, tokens, verifiable applications/proofs, AMD/NVIDIA mining, pruning, snapshots, restarts, node rejoin, rolling upgrades and controlled failure scenarios.
 
-No unexplained consensus/application-state divergence or unresolved release-blocking Sev-1 issue may remain.
+Invalidated time may not be silently counted. No unexplained consensus/application-state divergence or unresolved workstream-blocking Sev-1 issue may remain.
 
-### Task 69 — v2.6.0 final decision
+### Task 69 — v2.6 workstream completion decision for v3
 
-Record the exact candidate SHA, protocol/transaction/VM/proof/storage versions and complete evidence bundle.
+Record the exact candidate SHA, transaction/contract/VM/proof/storage/economic identities and complete evidence bundle.
 
-Mandatory final gates:
+Mandatory gates:
 
 - activation contract PASS;
 - UTXO Covenants v1 PASS;
@@ -361,42 +340,41 @@ Mandatory final gates:
 - PulseScript PASS;
 - deterministic VM PASS;
 - parallel DAG execution PASS;
-- Based Applications model PASS;
+- Based Applications PASS;
 - PulseProgs/verifiable-program framework PASS;
-- ZK verification layer PASS where in accepted scope;
+- ZK verification PASS where included in frozen scope;
 - native asset/token standards PASS;
 - contract state/events/RPC PASS;
 - resource/fee economy PASS;
 - contract security/fuzzing PASS;
 - mining/programmable-fee integration PASS;
-- monetary-policy candidate PASS;
-- smart-contract testnet PASS;
+- monetary/economic policy PASS;
+- integrated programmability validation PASS;
 - >=1,000,000 programmable-operation replay PASS;
-- 30-day programmability burn-in PASS;
-- zero unresolved release-blocking Sev-1 issues.
+- 30-day programmability exact-candidate burn-in PASS;
+- zero unresolved workstream-blocking Sev-1 issues.
 
-Select exactly one:
+Select exactly one milestone result:
 
-- `GO_V2_6_0`;
-- `DELAY_V2_6_0`;
-- `NO_GO_V2_6_0`.
+- `V2_6_WORKSTREAM_PASS`;
+- `V2_6_WORKSTREAM_DELAY`;
+- `V2_6_WORKSTREAM_FAIL`.
+
+This result feeds the final integrated v3.0.0 acceptance matrix. It is **not** `GO_V3_DUAL_LAUNCH` and does not authorize a public network launch.
 
 ## Completion criteria
 
-v2.6.0 is complete only when Tasks 51-69 are merged or formally dispositioned under this roadmap, all mandatory deterministic/security/economic evidence is current for one exact final candidate, and Task 69 records exactly one final decision.
+The v2.6 workstream is complete only when Tasks 51-69 are merged or formally dispositioned under the integrated v3 dependency contract, all deterministic/security/economic evidence is current for one exact candidate, and Task 69 records one coherent workstream result.
 
 ## Explicitly out of scope
 
-- pool server software;
-- pool protocol implementation owned by PulseDAG;
-- share accounting;
-- vardiff;
-- worker management/authentication;
-- pool payouts or custody;
-- embedding pool services into the node or official miner;
+- pool server software/protocol implementation owned by PulseDAG;
+- share accounting/vardiff/worker management/payout custody;
+- embedding pool services into node/official miner;
 - implicit EVM compatibility;
 - copying unstable third-party programmability APIs into consensus;
 - unbounded arbitrary host execution from contracts;
-- mainnet genesis or mainnet launch.
+- final mainnet/testnet genesis freeze;
+- final public launch authorization.
 
-Third parties remain free to build mining pools or other services against PulseDAG's documented public node/miner interfaces, but those projects are outside the PulseDAG core roadmap.
+Third parties may build services against documented public interfaces, but those projects remain outside the PulseDAG core workstream.

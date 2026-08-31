@@ -1,0 +1,187 @@
+name: v3.0.0 launch-plan gate
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - README.md
+      - SECURITY.md
+      - configs/v3-launch/**
+      - configs/public-testnet/README.md
+      - docs/README.md
+      - docs/VERSION_MATRIX.md
+      - docs/ROADMAP_V2_5_0.md
+      - docs/ROADMAP_V2_6_0.md
+      - docs/ROADMAP_V3_0_0.md
+      - docs/ROADMAP_V3_0_LONG_LIVED_CORE.md
+      - docs/MONETARY_POLICY_V3_0_0.md
+      - docs/MONETARY_SCORE_V3_0_0.md
+      - docs/REWARD_SETTLEMENT_V3_0_0.md
+      - docs/FINALITY_V3_0_0.md
+      - docs/GENESIS_V3_0_0.md
+      - docs/NETWORK_PARAMETERS_V3_0_0.md
+      - docs/V3_0_0_LAUNCH_MANIFEST.md
+      - docs/runbooks/V3_0_0_GENESIS_CEREMONY.md
+      - docs/runbooks/V3_0_0_DUAL_NETWORK_LAUNCH.md
+      - docs/runbooks/V2_4_0_PUBLIC_TESTNET_PREP.md
+      - crates/pulsedag-core/src/monetary_v3.rs
+      - crates/pulsedag-core/src/reward_settlement_v3.rs
+      - crates/pulsedag-core/src/finality_v3.rs
+      - scripts/validate_v3_0_0_launch_plan.py
+      - scripts/validate_v3_0_0_network_freeze.py
+      - scripts/validate_v3_0_0_reward_settlement.py
+      - scripts/validate_v3_0_0_finality.py
+      - .github/pull_request_template.md
+      - .github/workflows/v3_0_0_launch_plan.yml
+  push:
+    branches:
+      - main
+    paths:
+      - README.md
+      - SECURITY.md
+      - configs/v3-launch/**
+      - configs/public-testnet/README.md
+      - docs/README.md
+      - docs/VERSION_MATRIX.md
+      - docs/ROADMAP_V2_5_0.md
+      - docs/ROADMAP_V2_6_0.md
+      - docs/ROADMAP_V3_0_0.md
+      - docs/ROADMAP_V3_0_LONG_LIVED_CORE.md
+      - docs/MONETARY_POLICY_V3_0_0.md
+      - docs/MONETARY_SCORE_V3_0_0.md
+      - docs/REWARD_SETTLEMENT_V3_0_0.md
+      - docs/FINALITY_V3_0_0.md
+      - docs/GENESIS_V3_0_0.md
+      - docs/NETWORK_PARAMETERS_V3_0_0.md
+      - docs/V3_0_0_LAUNCH_MANIFEST.md
+      - docs/runbooks/V3_0_0_GENESIS_CEREMONY.md
+      - docs/runbooks/V3_0_0_DUAL_NETWORK_LAUNCH.md
+      - docs/runbooks/V2_4_0_PUBLIC_TESTNET_PREP.md
+      - crates/pulsedag-core/src/monetary_v3.rs
+      - crates/pulsedag-core/src/reward_settlement_v3.rs
+      - crates/pulsedag-core/src/finality_v3.rs
+      - scripts/validate_v3_0_0_launch_plan.py
+      - scripts/validate_v3_0_0_network_freeze.py
+      - scripts/validate_v3_0_0_reward_settlement.py
+      - scripts/validate_v3_0_0_finality.py
+      - .github/pull_request_template.md
+      - .github/workflows/v3_0_0_launch_plan.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: v3.0.0-launch-plan-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: Validate integrated v2.5 + v2.6 -> v3.0.0 launch authority
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.CANDIDATE_SHA }}
+          persist-credentials: false
+
+      - name: Verify exact checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${CANDIDATE_SHA}"
+
+      - name: Validate integrated v3 launch plan
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            scripts/validate_v3_0_0_launch_plan.py \
+            scripts/validate_v3_0_0_network_freeze.py \
+            scripts/validate_v3_0_0_reward_settlement.py \
+            scripts/validate_v3_0_0_finality.py
+          python scripts/validate_v3_0_0_launch_plan.py
+          python scripts/validate_v3_0_0_reward_settlement.py | tee /tmp/v3-reward-settlement-status.txt
+          python scripts/validate_v3_0_0_finality.py | tee /tmp/v3-finality-status.txt
+          python scripts/validate_v3_0_0_network_freeze.py | tee /tmp/v3-network-freeze-status.txt
+
+      - name: Record plan provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ci-evidence/v3-launch-plan
+          cp /tmp/v3-network-freeze-status.txt ci-evidence/v3-launch-plan/network-freeze-status.txt
+          cp /tmp/v3-reward-settlement-status.txt ci-evidence/v3-launch-plan/reward-settlement-status.txt
+          cp /tmp/v3-finality-status.txt ci-evidence/v3-launch-plan/finality-status.txt
+          {
+            echo "candidate_sha=${CANDIDATE_SHA}"
+            echo "target_release=v3.0.0"
+            echo "launch_window=Q4-2026"
+            echo "launch_model=mainnet-plus-parallel-testnet"
+            echo "v2_5_scope_incorporated=true"
+            echo "v2_6_scope_incorporated=true"
+            echo "smart_contracts_in_v3_scope=true"
+            echo "nvidia_gpu_required=true"
+            echo "amd_gpu_required=true"
+            echo "monetary_policy_contract_required=true"
+            echo "monetary_score_contract_required=true"
+            echo "monetary_schedule_implementation_required=true"
+            echo "deferred_reward_settlement_required=true"
+            echo "economic_time_finality_required=true"
+            echo "deterministic_genesis_contract_required=true"
+            echo "network_parameter_freeze_required=true"
+            echo "launch_manifest_required=true"
+            echo "standalone_public_testnet_first=false"
+            echo "pre_mainnet_30_day_public_testnet_clock_required=false"
+            echo "final_authority_issue=781"
+            if grep -q 'launch_ready=true' /tmp/v3-network-freeze-status.txt; then
+              echo "launch_ready=true"
+            else
+              echo "launch_ready=false"
+            fi
+            echo "result=PASS"
+          } > ci-evidence/v3-launch-plan/provenance.txt
+          sha256sum \
+            README.md \
+            SECURITY.md \
+            configs/v3-launch/README.md \
+            configs/public-testnet/README.md \
+            docs/README.md \
+            docs/VERSION_MATRIX.md \
+            docs/ROADMAP_V2_5_0.md \
+            docs/ROADMAP_V2_6_0.md \
+            docs/ROADMAP_V3_0_0.md \
+            docs/ROADMAP_V3_0_LONG_LIVED_CORE.md \
+            docs/MONETARY_POLICY_V3_0_0.md \
+            docs/MONETARY_SCORE_V3_0_0.md \
+            docs/REWARD_SETTLEMENT_V3_0_0.md \
+            docs/FINALITY_V3_0_0.md \
+            docs/GENESIS_V3_0_0.md \
+            docs/NETWORK_PARAMETERS_V3_0_0.md \
+            docs/V3_0_0_LAUNCH_MANIFEST.md \
+            docs/runbooks/V3_0_0_GENESIS_CEREMONY.md \
+            docs/runbooks/V3_0_0_DUAL_NETWORK_LAUNCH.md \
+            docs/runbooks/V2_4_0_PUBLIC_TESTNET_PREP.md \
+            crates/pulsedag-core/src/monetary_v3.rs \
+            crates/pulsedag-core/src/reward_settlement_v3.rs \
+            crates/pulsedag-core/src/finality_v3.rs \
+            scripts/validate_v3_0_0_launch_plan.py \
+            scripts/validate_v3_0_0_network_freeze.py \
+            scripts/validate_v3_0_0_reward_settlement.py \
+            scripts/validate_v3_0_0_finality.py \
+            .github/pull_request_template.md \
+            .github/workflows/v3_0_0_launch_plan.yml \
+            > ci-evidence/v3-launch-plan/SHA256SUMS
+
+      - name: Upload v3 launch-plan evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: v3_0_0_launch_plan_${{ github.run_id }}
+          path: ci-evidence/v3-launch-plan
+          if-no-files-found: error
+          retention-days: 180

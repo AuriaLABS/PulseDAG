@@ -115,12 +115,14 @@ def main() -> int:
             f"VERSION/Cargo mismatch: found {version}/{cargo or 'missing'}"
         )
 
+    # README may describe a future launch target while the source tree still has
+    # an earlier repository/Cargo version. Require the explicit implementation
+    # state markers instead of forcing the README title to equal VERSION.
     require_markers(
         Path("README.md"),
         [
-            f"# PulseDAG {version}",
-            f"Repository version: `{version}`",
-            f"Cargo workspace version: `{cargo}`",
+            f"Repository `VERSION`: `{version}`.",
+            f"Cargo workspace version: `{cargo}`.",
             "PENDING_EXACT_CANDIDATE_EVIDENCE",
             "`public_testnet_ready=false`",
             "`thirty_day_public_testnet_clock_started=false`",
@@ -162,13 +164,15 @@ def main() -> int:
             failures,
         )
 
-    # Primary surfaces must not still identify a different release as current.
+    # Primary surfaces must not still identify a different release as the
+    # repository's current source version. Future launch targets are allowed
+    # when they are clearly presented as targets rather than current VERSION.
     for path in PRIMARY_ACTIVE_FILES:
         if not path.is_file():
             continue
         text = path.read_text(encoding="utf-8", errors="ignore")
         claims = re.findall(
-            r"(?:^#\s+PulseDAG\s+v|Repository version:\s*`v|VERSION file \| `v)(\d+\.\d+\.\d+)",
+            r"(?:Repository version:\s*`v|VERSION file \| `v)(\d+\.\d+\.\d+)",
             text,
             flags=re.IGNORECASE | re.MULTILINE,
         )

@@ -2,6 +2,8 @@
 
 Date: 2026-08-15 UTC
 
+> **Historical v2.4 program / not current public-launch authority.** The standalone-public-testnet-first sequence, separate v2.4 public-launch decision, 30-day public-testnet clock and no-smart-contract launch assumptions documented below are retained as v2.4 provenance and regression context only. They are superseded for the definitive public launch by [`ROADMAP_V3_0_0.md`](ROADMAP_V3_0_0.md): coordinated **v3.0.0 mainnet + parallel public testnet in Q4 2026**, with the v2.5 scale/resilience and v2.6 programmability workstreams incorporated as mandatory technical inputs. Final v3 launch authority is issue `#781` under the v3 freeze/manifest contract.
+
 ## Starting point
 
 The v2.3.0 private-testnet line established repeatable multi-host bootstrap, lifecycle tooling, observability, incident runbooks, and protected rehearsal evidence.
@@ -15,9 +17,11 @@ The v2.4.0 scope is now intentionally extended before final release/activation t
 
 This scope expansion means no earlier v2.4.0 candidate SHA, burn-in artifact, launch rehearsal, release identity or GO decision can be treated as final if it predates required Tasks 22–30. Evidence must be regenerated on the final exact candidate whenever the activation contract says the old evidence is invalidated.
 
-v2.4.0 remains a no-smart-contract release. Public-testnet launch remains a separate explicit decision controlled by issue `#781`.
+Historically, v2.4.0 was defined as a no-smart-contract release with a separate public-testnet launch decision controlled by issue `#781`. That sequencing is **not** the current launch plan; for v3, programmability is mandatory scope and #781 controls the coordinated mainnet + parallel-testnet decision described by `ROADMAP_V3_0_0.md`.
 
 ## Guardrails
+
+The guardrails below are retained as v2.4 implementation/provenance constraints. Public-testnet clock/readiness markers in this section are legacy compatibility state, not v3 launch requirements.
 
 - `VERSION`, Cargo package versions and release identity remain unchanged until the final Task 31 decision authorizes the v2.4.0 release/activation candidate.
 - No `v2.4.0` tag or release artifact may be published from roadmap/implementation work without explicit maintainer approval.
