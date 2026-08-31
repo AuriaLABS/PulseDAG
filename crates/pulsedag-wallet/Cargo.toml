@@ -17,3 +17,5 @@ zeroize = "1.8"
 bip39 = { version = "=2.2.2", features = ["rand", "zeroize"] }
 hmac = "0.12.1"
 sha2 = "0.10.9"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
