@@ -5,6 +5,7 @@ pub mod consensus_metadata;
 pub mod consistency;
 pub mod errors;
 pub mod finality_v2;
+pub mod finality_v3;
 pub mod genesis;
 pub mod genesis_v2;
 pub mod ghostdag;
@@ -133,6 +134,10 @@ pub use consensus_metadata::{
 pub use finality_v2::{
     derive_finality_boundary_v1, FinalityBoundaryV1, FinalityV2Error,
     GHOSTDAG_V1_FINALITY_POLICY_VERSION,
+};
+pub use finality_v3::{
+    derive_finality_decision_v3, finality_policy_digest_v3, finality_policy_identity_v3,
+    FinalityDecisionV3, FinalityPolicyV3, FinalityV3Error, FINALITY_V3_POLICY_SCHEMA_VERSION,
 };
 
 pub use ordering::{
