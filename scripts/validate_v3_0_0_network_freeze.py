@@ -81,7 +81,8 @@ def main() -> None:
         "subsidy(M) = target_issuance(economic_time(M)) - target_issuance(economic_time(M-1))",
         "start of economic year 57",
         "state-derived",
-        "both the approved 3,600 economic-second maturity and the frozen v3 finality/settlement rule",
+        "The approved maturity is 3,600 economic seconds",
+        "the reward's ordered-DAG position is protected by the frozen v3 finality/settlement policy",
         "crates/pulsedag-core/src/monetary_v3.rs",
         "overall launch state remains `PRE_FREEZE` and `launch_ready=false`",
     )
