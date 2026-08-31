@@ -15,9 +15,15 @@ on:
       - docs/ROADMAP_V2_6_0.md
       - docs/ROADMAP_V3_0_0.md
       - docs/ROADMAP_V3_0_LONG_LIVED_CORE.md
+      - docs/MONETARY_POLICY_V3_0_0.md
+      - docs/GENESIS_V3_0_0.md
+      - docs/NETWORK_PARAMETERS_V3_0_0.md
+      - docs/V3_0_0_LAUNCH_MANIFEST.md
+      - docs/runbooks/V3_0_0_GENESIS_CEREMONY.md
       - docs/runbooks/V3_0_0_DUAL_NETWORK_LAUNCH.md
       - docs/runbooks/V2_4_0_PUBLIC_TESTNET_PREP.md
       - scripts/validate_v3_0_0_launch_plan.py
+      - scripts/validate_v3_0_0_network_freeze.py
       - .github/pull_request_template.md
       - .github/workflows/v3_0_0_launch_plan.yml
   push:
@@ -34,9 +40,15 @@ on:
       - docs/ROADMAP_V2_6_0.md
       - docs/ROADMAP_V3_0_0.md
       - docs/ROADMAP_V3_0_LONG_LIVED_CORE.md
+      - docs/MONETARY_POLICY_V3_0_0.md
+      - docs/GENESIS_V3_0_0.md
+      - docs/NETWORK_PARAMETERS_V3_0_0.md
+      - docs/V3_0_0_LAUNCH_MANIFEST.md
+      - docs/runbooks/V3_0_0_GENESIS_CEREMONY.md
       - docs/runbooks/V3_0_0_DUAL_NETWORK_LAUNCH.md
       - docs/runbooks/V2_4_0_PUBLIC_TESTNET_PREP.md
       - scripts/validate_v3_0_0_launch_plan.py
+      - scripts/validate_v3_0_0_network_freeze.py
       - .github/pull_request_template.md
       - .github/workflows/v3_0_0_launch_plan.yml
   workflow_dispatch:
@@ -72,14 +84,18 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python -m py_compile scripts/validate_v3_0_0_launch_plan.py
+          python -m py_compile \
+            scripts/validate_v3_0_0_launch_plan.py \
+            scripts/validate_v3_0_0_network_freeze.py
           python scripts/validate_v3_0_0_launch_plan.py
+          python scripts/validate_v3_0_0_network_freeze.py | tee /tmp/v3-network-freeze-status.txt
 
       - name: Record plan provenance
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p ci-evidence/v3-launch-plan
+          cp /tmp/v3-network-freeze-status.txt ci-evidence/v3-launch-plan/network-freeze-status.txt
           {
             echo "candidate_sha=${CANDIDATE_SHA}"
             echo "target_release=v3.0.0"
@@ -90,9 +106,18 @@ jobs:
             echo "smart_contracts_in_v3_scope=true"
             echo "nvidia_gpu_required=true"
             echo "amd_gpu_required=true"
+            echo "monetary_policy_contract_required=true"
+            echo "deterministic_genesis_contract_required=true"
+            echo "network_parameter_freeze_required=true"
+            echo "launch_manifest_required=true"
             echo "standalone_public_testnet_first=false"
             echo "pre_mainnet_30_day_public_testnet_clock_required=false"
             echo "final_authority_issue=781"
+            if grep -q 'launch_ready=true' /tmp/v3-network-freeze-status.txt; then
+              echo "launch_ready=true"
+            else
+              echo "launch_ready=false"
+            fi
             echo "result=PASS"
           } > ci-evidence/v3-launch-plan/provenance.txt
           sha256sum \
@@ -106,9 +131,15 @@ jobs:
             docs/ROADMAP_V2_6_0.md \
             docs/ROADMAP_V3_0_0.md \
             docs/ROADMAP_V3_0_LONG_LIVED_CORE.md \
+            docs/MONETARY_POLICY_V3_0_0.md \
+            docs/GENESIS_V3_0_0.md \
+            docs/NETWORK_PARAMETERS_V3_0_0.md \
+            docs/V3_0_0_LAUNCH_MANIFEST.md \
+            docs/runbooks/V3_0_0_GENESIS_CEREMONY.md \
             docs/runbooks/V3_0_0_DUAL_NETWORK_LAUNCH.md \
             docs/runbooks/V2_4_0_PUBLIC_TESTNET_PREP.md \
             scripts/validate_v3_0_0_launch_plan.py \
+            scripts/validate_v3_0_0_network_freeze.py \
             .github/pull_request_template.md \
             .github/workflows/v3_0_0_launch_plan.yml \
             > ci-evidence/v3-launch-plan/SHA256SUMS
