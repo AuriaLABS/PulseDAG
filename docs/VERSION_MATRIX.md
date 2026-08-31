@@ -26,16 +26,20 @@
 - Existing v2.4.x binaries, tags, chain identities and evidence must not be relabeled as v3.0.0.
 - The actual `VERSION` and Cargo workspace version remain `v2.4.0` / `2.4.0` until a reviewed final v3 candidate explicitly performs the version freeze.
 
-## Version progression
+## Active version path
+
+The active release path is direct:
+
+`v2.4.x development -> v3.0.0 release candidate -> v3.0.0 definitive launch`
+
+There are no intermediate numbered release milestones required between the current v2.4.x development line and v3.0.0.
 
 | Version | Scope | Current interpretation |
 |---|---|---|
 | `v2.2.x` | Earlier private-testnet hardening and rehearsal | Historical |
 | `v2.3.0` | Private-testnet release/readiness baseline | Historical / compatibility evidence |
 | `v2.4.0` | Published protocol/node/miner validation release | Historical exact release + current repository version surface |
-| `v2.4.1` / v2.4.x follow-ups | Wallet, relay, security and integration development | Active development input toward v3 |
-| `v2.5.0` | Earlier future scale/GPU/adversarial-resilience planning | Planning requirements may be absorbed into #794; not a mandatory release rung |
-| `v2.6.0` | Earlier programmability planning | Planning requirements may be absorbed into v3 or deferred; not a mandatory release rung |
+| `v2.4.1` / v2.4.x follow-ups | Wallet, relay, security and integration development | Active development input directly toward v3.0.0 |
 | `v3.0.0` | Definitive long-lived public-launch release | **Q4 2026 target; mainnet + parallel testnet together** |
 
 ## Launch-strategy rebaseline
