@@ -1,59 +1,75 @@
 # PulseDAG Version Matrix
 
-## Current baseline
+## Current repository baseline
 
 | Area | Value |
 |---|---|
 | VERSION file | `v2.4.0` |
 | Cargo workspace version | `2.4.0` |
-| Current milestone | v2.4.0 Task31 release/activation candidate construction |
-| Candidate state | Moving candidate; exact final SHA not frozen |
-| Final decision | `PENDING_EXACT_CANDIDATE_EVIDENCE` |
-| Protocol target | transaction v2 + block-header v2 + `ghostdag_v1` |
-| Chain identity | Fresh v2.4 chain/genesis identity required; final digest not frozen |
-| Release scope | node + standalone miner; no official custody wallet in the current candidate |
-| High cadence | experimental/disabled by default |
-| Tag | No `v2.4.0` tag created |
-| Publication | GitHub Release publication not authorized |
-| Public testnet | `public_testnet_ready=false` |
-| 30-day clock | `thirty_day_public_testnet_clock_started=false` |
-| Smart contracts | `contracts_enabled=false` |
+| Current development line | v2.4.x / v2.4.1 follow-up integration toward v3 |
+| Definitive public-launch target | **v3.0.0** |
+| Target launch window | **Q4 2026 (October-December 2026)** |
+| Launch model | **mainnet + parallel public testnet in one coordinated release window** |
+| Final launch authority | #781 / `GO_V3_DUAL_LAUNCH` |
+| Protocol direction | transaction/header v2 foundations + `ghostdag_v1`, with final v3 scope still to be frozen |
+| v3 mainnet identity | `TBD` — chain ID/genesis/config/bootnodes not frozen |
+| v3 parallel-testnet identity | `TBD` — independent chain ID/genesis/config/bootnodes not frozen |
+| Production wallet | #819 gate; not yet approved for v3 production launch |
+| Security | #803 gate; final v3 exact-candidate disposition pending |
+| High cadence | separately gated; not implicitly authorized |
+| Smart contracts | separately gated unless explicitly included in the frozen v3 launch scope |
+
+## Published / historical release state
+
+- `v2.4.0` is an already published node/miner release and remains immutable historical evidence.
+- Later v2.4.x/v2.4.1 work is development and validation input toward the final v3.0.0 candidate.
+- Existing v2.4.x binaries, tags, chain identities and evidence must not be relabeled as v3.0.0.
+- The actual `VERSION` and Cargo workspace version remain `v2.4.0` / `2.4.0` until a reviewed final v3 candidate explicitly performs the version freeze.
 
 ## Version progression
 
-| Version | Scope | Status |
+| Version | Scope | Current interpretation |
 |---|---|---|
 | `v2.2.x` | Earlier private-testnet hardening and rehearsal | Historical |
-| `v2.3.0` | Previous private-testnet release-candidate baseline | Historical baseline / compatibility evidence |
-| `v2.4.0` | Versioned transaction/header protocol, GHOSTDAG stack, adversarial validation and final release activation | Active candidate construction |
-| `v2.5.0` | Future scale/GPU/adversarial-resilience program | Future planning |
-| `v2.6.0` | Future programmability program | Future planning |
+| `v2.3.0` | Private-testnet release/readiness baseline | Historical / compatibility evidence |
+| `v2.4.0` | Published protocol/node/miner validation release | Historical exact release + current repository version surface |
+| `v2.4.1` / v2.4.x follow-ups | Wallet, relay, security and integration development | Active development input toward v3 |
+| `v2.5.0` | Earlier future scale/GPU/adversarial-resilience planning | Planning requirements may be absorbed into #794; not a mandatory release rung |
+| `v2.6.0` | Earlier programmability planning | Planning requirements may be absorbed into v3 or deferred; not a mandatory release rung |
+| `v3.0.0` | Definitive long-lived public-launch release | **Q4 2026 target; mainnet + parallel testnet together** |
 
-## v2.4.0 evidence state
+## Launch-strategy rebaseline
 
-Tasks 22–29 are completed. Task30 produced deterministic/adversarial validation for the pre-Task31 integrated candidate, but any release-freeze change that affects the candidate requires the affected evidence to be rerun on the final exact SHA. Task31 is therefore not allowed to combine old release-branch evidence with the moving candidate.
+The former sequence of standalone public testnet -> Day 0 -> 30-day acceptance clock -> later production/mainnet progression is superseded.
 
-The current Task31 candidate is explicitly closing release blockers including:
+For v3.0.0:
 
-- removal of raw-private-key wallet RPC behavior from the normal node;
-- consistent `v2.4.0` VERSION/Cargo/repository identity;
-- retirement of active v2.3-only release gates;
-- explicit chain-bound v2 genesis/startup/storage/P2P activation wiring;
-- exact-candidate packaging, recovery and release evidence.
+1. freeze the exact protocol/release candidate;
+2. close #803 security and #819 production-wallet launch scope;
+3. freeze independent mainnet and parallel-testnet network identities;
+4. complete final release/adversarial/recovery/infrastructure evidence under #794;
+5. record `GO_V3_DUAL_LAUNCH`, delay or no-go only in #781;
+6. launch mainnet and parallel testnet in one coordinated release window and record independent first-block timestamps.
 
-## Current authorization boundary
+No exact day within Q4 is frozen yet.
 
-`PENDING_EXACT_CANDIDATE_EVIDENCE` means none of the following is authorized:
+## Legacy v2.4 validation markers
 
-- creating the `v2.4.0` tag;
-- publishing a GitHub Release;
-- launching the public testnet or recording Day 0;
-- setting `public_testnet_ready=true`;
-- starting or backdating the 30-day public-testnet clock;
-- enabling high cadence by default;
-- enabling smart contracts;
-- claiming an official end-user custody wallet is part of this node/miner candidate.
+Some existing repository workflows and hygiene checks still require historical v2.4 no-GO strings. They are retained temporarily for compatibility while those surfaces are migrated:
+
+- `PENDING_EXACT_CANDIDATE_EVIDENCE`;
+- `public_testnet_ready=false`;
+- `thirty_day_public_testnet_clock_started=false`;
+- `contracts_enabled=false`.
+
+These strings do **not** mean the published v2.4.0 release is unpublished, and they do not define the v3 launch state. They must not be used as a substitute for #781's v3 exact-candidate launch record.
+
+## v3.0.0 evidence rule
+
+The final v3 launch evidence must be tied to one exact release candidate and the separately frozen mainnet/testnet identities. Evidence from incompatible source SHAs, dependency graphs, protocol activation contracts, signing domains, chain identities or genesis configurations must never be combined.
+
+Any release-affecting code, dependency, storage, consensus, wallet-signing or activation change after candidate freeze requires an explicit evidence rebaseline and rerun of affected gates.
 
 ## Repository version rule
 
-Primary active repository surfaces must identify `v2.4.0` / `2.4.0` consistently and must preserve the pending/no-GO guardrails above. References to earlier versions are allowed only when clearly presented as historical baselines, compatibility inputs, migration evidence, or archive material.
+Until the final v3 version-bump change is reviewed, primary build/version surfaces must continue to identify the actual repository version `v2.4.0` / `2.4.0`. Documentation may identify **v3.0.0 as the future definitive launch target**, but must not claim that a v3 tag, binary, genesis or production network identity already exists.
