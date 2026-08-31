@@ -24,10 +24,11 @@ The section `Launch boundary — populate only after GO` is intentionally exclud
 
 ## Monetary policy freeze
 
-Approved mainnet policy parameters are already selected, but this section remains pre-freeze until the exact consensus implementation, reward-index mapping, testnet policy, vectors and digests are attached.
+Approved mainnet policy parameters and the canonical monetary-score algorithm are selected, but this section remains pre-freeze until the exact ordering/finality integration, network cadence table, testnet policy, vectors and digests are attached.
 
 - Policy version: `v3.0.0-mainnet-policy-v1`
 - `docs/MONETARY_POLICY_V3_0_0.md` SHA-256: `TBD`
+- `docs/MONETARY_SCORE_V3_0_0.md` SHA-256: `TBD`
 - Consensus monetary constants/config digest: `TBD`
 - Atomic unit/precision: `8 decimals / 100,000,000 atoms per coin`
 - Maximum mainnet supply: `1,000,000,000.00000000 coins`
@@ -37,16 +38,24 @@ Approved mainnet policy parameters are already selected, but this section remain
 - Year-1 mining budget: `500,000,000.00000000 coins`
 - Equivalent initial average emission: `~15.854895991882293252 coins/economic-second`; informational only
 - Annual subsidy reduction: `50% every 31,536,000 economic seconds (365 days)`
-- Reward-index definition: canonical reward/DAA-score-to-economic-time mapping `TBD`
+- Reward-index definition: `canonical monetary_score = authoritative ordered-DAG ordinal; genesis = 0; not height and not raw header blue_score`
+- Monetary-score source: `crates/pulsedag-core/src/monetary_v3.rs`; exact frozen source digest `TBD`
+- Economic-time mapping: versioned `(activation_score, target_interval_ns)` cadence segments
+- Initial mainnet cadence segment table: `TBD`
+- Initial parallel-testnet cadence segment table: `TBD`
+- Cadence activation rule: consensus BPS change and monetary interval change activate at the same monetary score
 - Emission schedule implementation/vector digest: `TBD`
 - Coinbase maturity: `3,600 economic seconds`
+- Reward settlement: state-derived/provisional before finality; exact settlement implementation digest `TBD`
+- Reward finality policy/version/digest: `TBD`
 - Ordinary transaction fees: `100% eligible miner/reward recipient`
 - Programmable compute/state fees: `100% eligible miner/reward recipient`
 - Proof-verification fees: `100% eligible miner/reward recipient`
 - Consensus fee burn: `0% in v3.0.0`
 - Tail emission: `none`
-- Terminal/max-supply rule: `hard cap at 100,000,000,000,000,000 atomic units; terminal residual rule implementation TBD`
+- Terminal/max-supply rule: `hard cap at 100,000,000,000,000,000 atomic units; final residual atom settled at start of economic year 57; then subsidy permanently zero`
 - Full emission-vector digest: `TBD`
+- Reordering/reward-settlement vector digest: `TBD`
 - Independent supply-accounting implementation/vector digest: `TBD`
 
 ## Mainnet genesis and network identity
@@ -127,10 +136,13 @@ Approved mainnet policy parameters are already selected, but this section remain
 - exact supply-accounting replay: `TBD`
 - subsidy-boundary vectors: `TBD`
 - annual-halving/cadence-equivalence vectors: `TBD`
-- coinbase maturity vectors: `TBD`
+- canonical monetary-score arrival-order-equivalence vectors: `TBD`
+- cadence-transition continuity vectors: `TBD`
+- provisional-reorder/final-reward-ledger vectors: `TBD`
+- coinbase economic-maturity + finality vectors: `TBD`
 - fee/program/proof accounting vectors: `TBD`
 - zero-genesis-issuance invariant: `TBD`
-- hard-cap / terminal-residual invariant: `TBD`
+- hard-cap / year-57 terminal-residual invariant: `TBD`
 - no unexplained consensus/application-state divergence: `TBD`
 
 ## Rehearsal and burn-in evidence
@@ -174,7 +186,9 @@ Before freeze all must be `PASS`:
 ## Freeze approvals
 
 - Monetary-policy parameter approval: `APPROVED` — 1B hard cap / zero premine / 500M year-1 / annual halving / 3,600s maturity / miner fees / zero burn
+- Monetary-score algorithm approval: `APPROVED` — authoritative ordered-DAG ordinal + versioned cadence segments + cumulative-difference issuance
 - Monetary-policy implementation freeze: `TBD`
+- Reward-settlement/finality freeze: `TBD`
 - Genesis ceremony approval: `TBD`
 - Consensus/release approval: `TBD`
 - Security approval: `TBD`
