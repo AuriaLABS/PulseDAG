@@ -15,6 +15,7 @@ The active launch strategy is:
 - no pre-mainnet 30-day public-testnet acceptance clock;
 - v2.5 scale/P2P/GPU/high-cadence/replay/resilience gates must be complete inside the v3 evidence set;
 - v2.6 programmability/smart-contract/VM/assets/economics/replay gates must be complete inside the v3 evidence set;
+- freeze an explicit production monetary policy, deterministic genesis and complete network-parameter manifest;
 - freeze independent mainnet/testnet chain identities, genesis, bootnodes and endpoints on one exact integrated v3.0.0 release candidate;
 - final launch authorization only through issue #781 with `GO_V3_DUAL_LAUNCH`.
 
@@ -33,8 +34,17 @@ Existing v2.4.x releases, branches and operational evidence remain development, 
 - Mainnet/public dependency-security readiness is controlled by #803.
 - Full integrated launch completion is controlled by #794.
 - Final coordinated launch decision is controlled only by #781.
+- v3.0.0 monetary policy: **PRE-FREEZE / launch-blocking**.
+- v3.0.0 production genesis: **not yet frozen**.
 - v3.0.0 mainnet chain ID/genesis/bootnodes/endpoints: `TBD` until exact freeze.
 - v3.0.0 parallel-testnet chain ID/genesis/bootnodes/endpoints: `TBD` until exact freeze.
+- `docs/V3_0_0_LAUNCH_MANIFEST.md`: `PRE_FREEZE`; therefore `launch_ready=false` by design.
+
+### Monetary/genesis baseline warning
+
+The current v2.4-derived source contains development economic/genesis behavior that is **not automatically approved for v3 mainnet**. The v3 freeze process must explicitly accept or replace it. In particular, production launch must not silently inherit the development `genesis-treasury` allocation, runtime genesis timestamp behavior, an ambiguous DAG reward index or an undefined coinbase-maturity rule.
+
+The authoritative production policy is whatever is ultimately frozen through `docs/MONETARY_POLICY_V3_0_0.md`, `docs/GENESIS_V3_0_0.md`, `docs/NETWORK_PARAMETERS_V3_0_0.md` and `docs/V3_0_0_LAUNCH_MANIFEST.md` on the exact v3.0.0 candidate.
 
 ### Legacy v2.4 validation markers
 
@@ -55,6 +65,11 @@ These markers do not mean programmability is excluded from v3. The incorporated 
 - [v2.5.0 scale/resilience source roadmap](docs/ROADMAP_V2_5_0.md)
 - [v2.6.0 programmability source roadmap](docs/ROADMAP_V2_6_0.md)
 - [v3.0 long-lived-core integration](docs/ROADMAP_V3_0_LONG_LIVED_CORE.md)
+- [v3.0.0 monetary-policy freeze contract](docs/MONETARY_POLICY_V3_0_0.md)
+- [v3.0.0 deterministic genesis contract](docs/GENESIS_V3_0_0.md)
+- [v3.0.0 network-parameter freeze](docs/NETWORK_PARAMETERS_V3_0_0.md)
+- [v3.0.0 launch manifest](docs/V3_0_0_LAUNCH_MANIFEST.md)
+- [v3.0.0 genesis ceremony](docs/runbooks/V3_0_0_GENESIS_CEREMONY.md)
 - [v3.0.0 dual-network launch runbook](docs/runbooks/V3_0_0_DUAL_NETWORK_LAUNCH.md)
 - [v3 launch configuration authority](configs/v3-launch/README.md)
 - [Security policy](SECURITY.md)
@@ -84,10 +99,13 @@ Repository structure and version-surface checks are enforced by:
 bash scripts/repository_hygiene.sh --strict
 ```
 
-The v3 launch-plan consistency contract is enforced by:
+The integrated v3 launch-plan consistency and monetary/genesis/network freeze contracts are enforced by:
 
 ```bash
 python scripts/validate_v3_0_0_launch_plan.py
+python scripts/validate_v3_0_0_network_freeze.py
 ```
 
-No historical release, public-testnet plan or old readiness flag can substitute for the exact integrated v3.0.0 scale/GPU, programmability, security, wallet, infrastructure, replay, burn-in and dual-network launch evidence required by #781/#794/#803/#819.
+`PRE_FREEZE` is a valid development state but is never launch authorization. The freeze validator only reports `launch_ready=true` after the exact launch manifest is `FROZEN`, all required fields are populated and all mandatory mainnet/testnet separation assertions pass.
+
+No historical release, public-testnet plan or old readiness flag can substitute for the exact integrated v3.0.0 scale/GPU, programmability, monetary, genesis, security, wallet, infrastructure, replay, burn-in and dual-network launch evidence required by #781/#794/#803/#819.
