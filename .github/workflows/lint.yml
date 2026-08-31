@@ -12,6 +12,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
         with:
+          toolchain: 1.88.0
           components: clippy, rustfmt
 
       - name: Cargo.lock hygiene check
