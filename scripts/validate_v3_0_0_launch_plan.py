@@ -109,15 +109,18 @@ def main() -> None:
         "`GO_V3_DUAL_LAUNCH` is invalid while any launch-required field remains `TBD`.",
     )
 
-    require(
+    manifest = require(
         "docs/V3_0_0_LAUNCH_MANIFEST.md",
-        "Launch state: **PRE_FREEZE**",
+        "Launch state:",
         "Monetary policy freeze",
         "Mainnet genesis and network identity",
         "Parallel-testnet genesis and network identity",
         "Mandatory separation assertions",
-        "#781 final-decision reference",
+        "Launch-control authority: `#781`",
+        "Launch boundary — populate only after GO",
     )
+    if "Launch state: **PRE_FREEZE**" not in manifest and "Launch state: **FROZEN**" not in manifest:
+        fail("launch manifest state must be PRE_FREEZE or FROZEN")
 
     require(
         "docs/runbooks/V3_0_0_GENESIS_CEREMONY.md",
@@ -225,6 +228,8 @@ def main() -> None:
         "Mainnet and parallel-testnet identities remain explicitly separated",
         "CPU/NVIDIA/AMD PoW equivalence",
         "Contract/application/proof execution remains deterministic and resource bounded",
+        "Production genesis uses an exact frozen timestamp/input manifest",
+        "GO_V3_DUAL_LAUNCH` is not claimed while the freeze validator reports `launch_ready=false",
     )
 
     if not (ROOT / "scripts/validate_v3_0_0_network_freeze.py").is_file():
