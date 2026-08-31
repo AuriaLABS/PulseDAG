@@ -1,6 +1,6 @@
 use axum::{
     extract::Request,
-    http::StatusCode,
+    http::{HeaderValue, Method, StatusCode},
     middleware::{from_fn, Next},
     response::{IntoResponse, Response},
     routing::{any, get, post},
@@ -137,9 +137,67 @@ enum RateKey {
     Ip(IpAddr),
 }
 
+#[derive(Debug, Clone)]
+struct RateWindow {
+    started_at: Instant,
+    count: u32,
+    sequence: u64,
+}
+
 #[derive(Debug, Default)]
 struct RateLimiter {
-    windows: HashMap<RateKey, (Instant, u32)>,
+    windows: HashMap<RateKey, RateWindow>,
+    next_sequence: u64,
+    evictions_total: u64,
+}
+
+const RPC_RATE_LIMIT_MAX_TRACKED_KEYS: usize = 4096;
+
+impl RateLimiter {
+    fn allow(&mut self, key: RateKey, cfg: &RateLimitConfig, now: Instant) -> bool {
+        let window = Duration::from_secs(cfg.window_secs.max(1));
+        self.windows
+            .retain(|_, entry| now.duration_since(entry.started_at) < window);
+
+        if !self.windows.contains_key(&key) && self.windows.len() >= RPC_RATE_LIMIT_MAX_TRACKED_KEYS
+        {
+            let oldest = self
+                .windows
+                .iter()
+                .min_by_key(|(_, entry)| (entry.started_at, entry.sequence))
+                .map(|(key, _)| key.clone());
+            if let Some(oldest) = oldest {
+                self.windows.remove(&oldest);
+                self.evictions_total = self.evictions_total.saturating_add(1);
+                crate::api::record_rpc_rate_limit_eviction();
+            }
+        }
+
+        if !self.windows.contains_key(&key) {
+            let sequence = self.next_sequence;
+            self.next_sequence = self.next_sequence.saturating_add(1);
+            self.windows.insert(
+                key.clone(),
+                RateWindow {
+                    started_at: now,
+                    count: 0,
+                    sequence,
+                },
+            );
+        }
+
+        crate::api::record_rpc_rate_limit_tracked_keys(self.windows.len() as u64);
+        let entry = self
+            .windows
+            .get_mut(&key)
+            .expect("rate-limit entry must exist after insertion");
+        if entry.count >= cfg.requests_per_window {
+            crate::api::record_rpc_rate_limit_rejected();
+            return false;
+        }
+        entry.count = entry.count.saturating_add(1);
+        true
+    }
 }
 
 impl RpcHardeningLimits {
@@ -181,20 +239,27 @@ where
     let auth = operator_auth_token;
     let limits = limits.unwrap_or_else(|| RpcHardeningLimits::for_profile(profile));
     match profile {
-        ApiExposureProfile::PublicSafe => Router::new()
-            .nest("/api/v1", public_safe_api_v1_router::<S>())
-            .merge(public_safe_compatibility_router::<S>())
-            .layer(from_fn(move |req, next| {
-                hardening_middleware(req, next, limits.clone())
-            })),
+        ApiExposureProfile::PublicSafe => {
+            let allowed_origins = Arc::new(public_safe_cors_allowed_origins());
+            Router::new()
+                .nest("/api/v1", public_safe_api_v1_router::<S>())
+                .merge(public_safe_compatibility_router::<S>())
+                .fallback(any(public_safe_forbidden_endpoint))
+                .layer(from_fn(move |req, next| {
+                    public_safe_cors_middleware(req, next, Arc::clone(&allowed_origins))
+                }))
+                .layer(from_fn(move |req, next| {
+                    hardening_middleware(req, next, limits.clone(), true)
+                }))
+        }
         ApiExposureProfile::DisabledAdmin => {
             router_with_admin(false, auth).layer(from_fn(move |req, next| {
-                hardening_middleware(req, next, limits.clone())
+                hardening_middleware(req, next, limits.clone(), false)
             }))
         }
         ApiExposureProfile::LocalDev | ApiExposureProfile::PrivateOperator => {
             router_with_admin(admin_enabled, auth).layer(from_fn(move |req, next| {
-                hardening_middleware(req, next, limits.clone())
+                hardening_middleware(req, next, limits.clone(), false)
             }))
         }
     }
@@ -205,7 +270,9 @@ const RPC_LIVENESS_TIMEOUT: Duration = Duration::from_secs(2);
 fn is_liveness_endpoint(path: &str) -> bool {
     matches!(
         path,
-        "/status"
+        "/health"
+            | "/api/v1/health"
+            | "/status"
             | "/api/v1/status"
             | "/readiness"
             | "/api/v1/readiness"
@@ -236,7 +303,80 @@ fn rpc_liveness_timeout_response(endpoint: &str) -> Response {
         .into_response()
 }
 
-async fn hardening_middleware(req: Request, next: Next, limits: RpcHardeningLimits) -> Response {
+fn parse_public_safe_cors_allowed_origins(raw: Option<&str>) -> Vec<String> {
+    raw.into_iter()
+        .flat_map(|value| value.split(',').map(str::trim).map(str::to_string))
+        .filter(|origin| !origin.is_empty() && origin != "*")
+        .collect()
+}
+
+fn public_safe_cors_allowed_origins() -> Vec<String> {
+    let raw = std::env::var("PULSEDAG_RPC_CORS_ALLOWLIST").ok();
+    parse_public_safe_cors_allowed_origins(raw.as_deref())
+}
+
+fn apply_public_safe_cors_headers(response: &mut Response, origin: &str) {
+    let Ok(origin) = HeaderValue::try_from(origin) else {
+        return;
+    };
+    response
+        .headers_mut()
+        .insert(axum::http::header::ACCESS_CONTROL_ALLOW_ORIGIN, origin);
+    response.headers_mut().insert(
+        axum::http::header::ACCESS_CONTROL_ALLOW_METHODS,
+        HeaderValue::from_static("GET, HEAD, OPTIONS"),
+    );
+    response.headers_mut().insert(
+        axum::http::header::ACCESS_CONTROL_ALLOW_HEADERS,
+        HeaderValue::from_static("Accept, Content-Type"),
+    );
+    response
+        .headers_mut()
+        .insert(axum::http::header::VARY, HeaderValue::from_static("Origin"));
+}
+
+async fn public_safe_cors_middleware(
+    req: Request,
+    next: Next,
+    allowed_origins: Arc<Vec<String>>,
+) -> Response {
+    let origin = req
+        .headers()
+        .get(axum::http::header::ORIGIN)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
+    let Some(origin) = origin else {
+        return next.run(req).await;
+    };
+
+    if !allowed_origins.iter().any(|allowed| allowed == &origin) {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(ApiResponse::<serde_json::Value>::err(
+                "cors_origin_denied",
+                "cross-origin access is not allowed for this public RPC origin",
+            )),
+        )
+            .into_response();
+    }
+
+    if req.method() == Method::OPTIONS {
+        let mut response = StatusCode::NO_CONTENT.into_response();
+        apply_public_safe_cors_headers(&mut response, &origin);
+        return response;
+    }
+
+    let mut response = next.run(req).await;
+    apply_public_safe_cors_headers(&mut response, &origin);
+    response
+}
+
+async fn hardening_middleware(
+    req: Request,
+    next: Next,
+    limits: RpcHardeningLimits,
+    apply_to_all_non_liveness: bool,
+) -> Response {
     let path = req.uri().path();
     let is_liveness = is_liveness_endpoint(path);
     let is_guarded = matches!(
@@ -258,7 +398,9 @@ async fn hardening_middleware(req: Request, next: Next, limits: RpcHardeningLimi
             | "/operator/query-pack"
             | "/admin/operator/query-pack"
     );
-    if !is_guarded {
+    let apply_body_limit = is_guarded || apply_to_all_non_liveness;
+    let apply_rate_limit = is_guarded || (apply_to_all_non_liveness && !is_liveness);
+    if !apply_body_limit && !apply_rate_limit {
         if is_liveness {
             let endpoint = path.to_string();
             let handler_id = begin_rpc_handler(&endpoint);
@@ -286,14 +428,14 @@ async fn hardening_middleware(req: Request, next: Next, limits: RpcHardeningLimi
             return (
                 StatusCode::PAYLOAD_TOO_LARGE,
                 Json(ApiResponse::<serde_json::Value>::err(
-                    "request_too_large",
+                    REQUEST_TOO_LARGE_CODE,
                     "request body exceeds configured limit",
                 )),
             )
                 .into_response();
         }
     }
-    if let Some(cfg) = &limits.rate_limit {
+    if let Some(cfg) = limits.rate_limit.as_ref().filter(|_| apply_rate_limit) {
         static LIMITER: std::sync::OnceLock<Arc<Mutex<RateLimiter>>> = std::sync::OnceLock::new();
         let limiter = LIMITER
             .get_or_init(|| Arc::new(Mutex::new(RateLimiter::default())))
@@ -307,25 +449,34 @@ async fn hardening_middleware(req: Request, next: Next, limits: RpcHardeningLimi
             RateKey::Global
         };
         let mut guard = limiter.lock().await;
-        let now = Instant::now();
-        let entry = guard.windows.entry(key).or_insert((now, 0));
-        if now.duration_since(entry.0) >= Duration::from_secs(cfg.window_secs) {
-            *entry = (now, 0);
-        }
-        if entry.1 >= cfg.requests_per_window {
+        if !guard.allow(key, cfg, Instant::now()) {
             return (
                 StatusCode::TOO_MANY_REQUESTS,
                 Json(ApiResponse::<serde_json::Value>::err(
-                    "rate_limited",
+                    RATE_LIMITED_CODE,
                     "request rate exceeded configured limit",
                 )),
             )
                 .into_response();
         }
-        entry.1 = entry.1.saturating_add(1);
     }
+    let (parts, body) = req.into_parts();
+    let body = match axum::body::to_bytes(body, limits.request_body_limit_bytes).await {
+        Ok(body) => body,
+        Err(_) => {
+            return (
+                StatusCode::PAYLOAD_TOO_LARGE,
+                Json(ApiResponse::<serde_json::Value>::err(
+                    REQUEST_TOO_LARGE_CODE,
+                    "request body exceeds configured limit",
+                )),
+            )
+                .into_response();
+        }
+    };
+    let req = Request::from_parts(parts, axum::body::Body::from(body));
     if is_liveness {
-        let endpoint = path.to_string();
+        let endpoint = req.uri().path().to_string();
         let handler_id = begin_rpc_handler(&endpoint);
         match timeout(RPC_LIVENESS_TIMEOUT, next.run(req)).await {
             Ok(response) => {
@@ -362,6 +513,44 @@ where
     }
 
     app
+}
+
+const PUBLIC_SAFE_FORBIDDEN_CODE: &str = "public_route_forbidden";
+const REQUEST_TOO_LARGE_CODE: &str = "request_too_large";
+const RATE_LIMITED_CODE: &str = "rate_limited";
+
+#[cfg(test)]
+const PUBLIC_SAFE_FORBIDDEN_ROUTE_SAMPLES: &[&str] = &[
+    "/tx/submit",
+    "/api/v1/tx/submit",
+    "/tx/build",
+    "/api/v1/tx/build",
+    "/mine",
+    "/api/v1/mine",
+    "/mining/template",
+    "/mining/submit",
+    "/mining/jobs/claim",
+    "/wallet/new",
+    "/wallet/sign",
+    "/wallet/transfer",
+    "/admin",
+    "/admin/diagnostics",
+    "/snapshot/create",
+    "/prune",
+    "/sync/rebuild",
+    "/sync/reconcile-mempool",
+    "/diagnostics",
+    "/operator/query-pack",
+];
+
+async fn public_safe_forbidden_endpoint() -> (StatusCode, Json<ApiResponse<serde_json::Value>>) {
+    (
+        StatusCode::NOT_FOUND,
+        Json(ApiResponse::err(
+            PUBLIC_SAFE_FORBIDDEN_CODE,
+            "route is not available on the public-safe RPC listener",
+        )),
+    )
 }
 
 async fn disabled_admin_endpoint() -> (StatusCode, Json<ApiResponse<serde_json::Value>>) {
@@ -638,4 +827,154 @@ async fn operator_auth_middleware(req: Request, next: Next, token: String) -> Re
             .into_response();
     }
     next.run(req).await
+}
+
+#[cfg(test)]
+mod public_safe_hardening_tests {
+    use super::{
+        is_liveness_endpoint, parse_public_safe_cors_allowed_origins, public_safe_cors_middleware,
+        RateKey, RateLimitConfig, RateLimiter, PUBLIC_SAFE_FORBIDDEN_CODE,
+        PUBLIC_SAFE_FORBIDDEN_ROUTE_SAMPLES, RATE_LIMITED_CODE, REQUEST_TOO_LARGE_CODE,
+        RPC_RATE_LIMIT_MAX_TRACKED_KEYS,
+    };
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+        middleware::from_fn,
+        routing::get,
+        Router,
+    };
+    use std::{
+        net::IpAddr,
+        str::FromStr,
+        sync::Arc,
+        time::{Duration, Instant},
+    };
+    use tower::ServiceExt;
+
+    fn config(limit: u32) -> RateLimitConfig {
+        RateLimitConfig {
+            requests_per_window: limit,
+            window_secs: 60,
+            per_ip: true,
+        }
+    }
+
+    #[test]
+    fn quota_and_expiry_are_enforced() {
+        let mut limiter = RateLimiter::default();
+        let start = Instant::now();
+        let key = RateKey::Ip(IpAddr::from_str("203.0.113.1").unwrap());
+        assert!(limiter.allow(key.clone(), &config(1), start));
+        assert!(!limiter.allow(key.clone(), &config(1), start));
+        assert!(limiter.allow(key, &config(1), start + Duration::from_secs(61)));
+    }
+
+    #[test]
+    fn state_is_bounded_under_high_cardinality() {
+        let mut limiter = RateLimiter::default();
+        let now = Instant::now();
+        for index in 0..(RPC_RATE_LIMIT_MAX_TRACKED_KEYS + 32) {
+            let key = RateKey::Ip(IpAddr::from([
+                198,
+                18,
+                ((index / 250) % 250 + 1) as u8,
+                (index % 250 + 1) as u8,
+            ]));
+            assert!(limiter.allow(key, &config(1), now));
+        }
+        assert!(limiter.windows.len() <= RPC_RATE_LIMIT_MAX_TRACKED_KEYS);
+        assert!(limiter.evictions_total > 0);
+    }
+
+    #[test]
+    fn cors_allowlist_is_explicit_and_rejects_wildcard_entries() {
+        assert!(parse_public_safe_cors_allowed_origins(None).is_empty());
+        assert_eq!(
+            parse_public_safe_cors_allowed_origins(Some(
+                " https://explorer.example , *, https://status.example, "
+            )),
+            vec![
+                "https://explorer.example".to_string(),
+                "https://status.example".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn operational_liveness_paths_bypass_public_quota() {
+        for path in [
+            "/health",
+            "/api/v1/health",
+            "/status",
+            "/readiness",
+            "/release",
+            "/metrics",
+            "/p2p/status",
+            "/sync/status",
+            "/sync/missing",
+            "/orphans",
+        ] {
+            assert!(is_liveness_endpoint(path), "missing liveness path: {path}");
+        }
+        assert!(!is_liveness_endpoint("/blocks"));
+        assert!(!is_liveness_endpoint("/tx/submit"));
+    }
+
+    #[test]
+    fn forbidden_public_route_families_are_explicit_and_non_liveness() {
+        for path in PUBLIC_SAFE_FORBIDDEN_ROUTE_SAMPLES {
+            assert!(
+                !is_liveness_endpoint(path),
+                "forbidden route became liveness: {path}"
+            );
+        }
+        assert_eq!(PUBLIC_SAFE_FORBIDDEN_CODE, "public_route_forbidden");
+        assert_eq!(REQUEST_TOO_LARGE_CODE, "request_too_large");
+        assert_eq!(RATE_LIMITED_CODE, "rate_limited");
+    }
+
+    #[tokio::test]
+    async fn public_safe_cors_middleware_enforces_exact_origin() {
+        let allowed_origins = Arc::new(vec!["https://explorer.example".to_string()]);
+        let app = Router::new()
+            .route("/health", get(|| async { StatusCode::OK }))
+            .layer(from_fn(move |req, next| {
+                public_safe_cors_middleware(req, next, Arc::clone(&allowed_origins))
+            }));
+
+        let denied = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/health")
+                    .header("origin", "https://evil.example")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(denied.status(), StatusCode::FORBIDDEN);
+
+        let allowed = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/health")
+                    .header("origin", "https://explorer.example")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(allowed.status(), StatusCode::OK);
+        assert_eq!(
+            allowed
+                .headers()
+                .get("access-control-allow-origin")
+                .and_then(|value| value.to_str().ok()),
+            Some("https://explorer.example")
+        );
+    }
 }
