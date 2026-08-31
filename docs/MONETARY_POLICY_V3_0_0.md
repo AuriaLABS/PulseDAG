@@ -51,7 +51,9 @@ where epoch 0 is the first economic year and:
 
 `epoch = floor(canonical_economic_seconds / 31_536_000)`
 
-The implementation MUST NOT use a rounded decimal rate such as `15.85489599` as consensus authority. Consensus must derive issuance from the exact annual budget using deterministic integer/rational arithmetic or an equivalent precomputed exact schedule.
+The **annual budget is consensus authority**. The decimal rate is only a human-readable average. The implementation MUST NOT use a rounded decimal rate such as `15.85489599` as the source of truth.
+
+Consensus must derive issuance from the exact annual budget using deterministic integer/rational arithmetic or an equivalent precomputed exact schedule.
 
 ### First ten annual budgets
 
