@@ -1,78 +1,120 @@
 # PulseDAG v3.0.0 roadmap and gates
 
-v3.0.0 is the stable network target for the long-lived PulseDAG core. It must be earned through evidence from the v2.2.x hardening line, the v2.3.0 private-testnet readiness decision, private testnet operation, stable testnet burn-in, and release-candidate rehearsals.
+Status: **AUTHORITATIVE Q4 2026 LAUNCH TARGET**
 
-## Target definition
+This document supersedes the old launch sequence that required a standalone public testnet and a 30-day public-testnet clock before the production network.
 
-v3.0.0 should represent a stable node core with documented consensus behavior, storage/replay recovery, P2P operation, external miner integration, operator runbooks, release artifacts, and upgrade/rollback policy. It is not a vehicle for unrelated feature expansion.
+## Launch decision
 
-## Required gate sequence
+PulseDAG targets **v3.0.0** as the definitive public-launch release in **Q4 2026 (October-December 2026)**.
 
-1. v2.2.14 foundation hardening documents and rehearses storage, replay, snapshot, mining-template, three-node, and burn-in evidence expectations.
-2. v2.3.0 makes the private-testnet readiness decision only after its required gates are satisfied.
-3. Private testnet operation completes the 14-day burn-in gate with no unresolved Sev-1 consensus, storage, replay, sync, or mining-template incidents.
-4. Stable testnet operation completes at least 30 days before smart contract implementation begins.
-5. v3 release candidates prove deterministic replay, snapshot restore, multi-node convergence, miner submit behavior, upgrade/rollback, monitoring, and operator runbook readiness.
-6. v3.0.0 is tagged only after release evidence shows every hard gate is satisfied or an explicit non-blocking waiver is recorded.
+The launch model is:
 
-## v3 hard gates
+- launch **mainnet and a parallel public testnet in the same coordinated release window**;
+- do **not** launch a standalone public testnet first;
+- do **not** require a 30-day public-testnet acceptance clock before mainnet;
+- keep private/dev/rehearsal networks as engineering and regression evidence only;
+- freeze independent mainnet and testnet network identities/genesis/configuration while keeping release provenance tied to one exact v3.0.0 candidate;
+- authorize launch only through issue #781 after all v3.0.0 gates pass.
 
-- `cargo fmt --check` and `cargo test --workspace` pass for release-candidate artifacts.
-- Multi-node rehearsals demonstrate convergence after restart, rejoin, and delayed/lagging node recovery.
-- Mining template retrieval and submit validation are stable through the external miner/node contract.
-- Snapshot export/import and restore are repeatable and documented.
-- Replay and order-independence checks show deterministic state reconstruction.
-- Storage migration and rollback expectations are documented for operators.
-- Observability exposes enough health, rejection, sync, and mining information to diagnose incidents.
-- No unresolved Sev-1 consensus, storage, replay, sync, or mining-template issue is open.
-- Release artifacts and operator runbooks are reproducible.
+No exact date inside Q4 is authorized here. The final UTC launch window is recorded only after readiness review.
 
-## v2.3.0 private testnet readiness
+## Version policy
 
-v2.3.0 is a readiness decision, not a public launch. It requires the evidence established by v2.2.14, including:
+- v2.4.0 and v2.4.1 are development/validation milestones and historical evidence inputs.
+- The definitive public launch identity is **v3.0.0**.
+- Existing v2.4.x tags, binaries, artifacts and evidence must never be relabeled as v3.0.0.
+- `VERSION`, Cargo versions and the v3.0.0 tag are frozen only on the exact final candidate.
+- Evidence from incompatible SHAs, dependency graphs, protocol activation contracts, chain identities or genesis configurations must not be combined.
 
-- Passing required Cargo checks.
-- Successful three-node rehearsal.
-- Mining template/submit validation.
-- Snapshot export/import validation.
-- Replay/order-independence validation.
-- A 14-day burn-in plan and completed results before claiming readiness.
-- Clear documentation of any known private-testnet limitations.
+## Program authority
 
-## Stable network target
+- #781 — sole final launch-control record for coordinated mainnet + parallel-testnet launch.
+- #794 — v3.0.0 implementation, release, infrastructure and rehearsal completion program.
+- #803 — dependency/security launch gate.
+- #819 — production wallet/custody readiness gate.
+- #789 — v2.4 operational evidence and regression input; not a v3.0.0 launch authorization.
 
-The stable network target for v3.0.0 requires more than a private testnet boot. It requires sustained stable-testnet behavior, incident discipline, documented recovery paths, and release-candidate artifacts that can be operated by maintainers without hidden local assumptions.
+## Mandatory sequence
 
-A stable testnet must run for at least 30 days before smart contract implementation begins. The 30-day period should include normal block production, node restarts, snapshot/restore drills, miner submit validation, monitoring review, and incident review.
+1. **Rebaseline the v3.0.0 scope**
+   - freeze intended consensus, transaction, wallet, storage, P2P, mining and activation scope;
+   - reconcile v2.4.x follow-up work into the v3 launch backlog;
+   - classify remaining work as launch-blocking, post-launch or historical.
 
-## Smart contract gate
+2. **Close protocol and security blockers**
+   - no unresolved Sev-1 consensus/state/storage/replay/sync/mining/operator-safety defects;
+   - complete #803 remediation or an explicitly reviewed mainnet/public-exposure disposition;
+   - rerun exact-SHA dependency/reachability, workflow least-privilege and secret-scanning gates.
 
-Smart contracts are post-stable-testnet work. Before the 30-day stable testnet gate completes, the project must not add:
+3. **Complete the production wallet boundary**
+   - finish the #819 custody requirements selected for launch;
+   - complete packaged create/restore/sign/send/recovery tests on supported platforms;
+   - freeze network-domain signing, replay/replacement/submission identity and fee/UTXO policy;
+   - no raw private-key custody on public node RPC.
 
-- Smart contract VM/runtime execution.
-- Contract deployment transactions.
-- Contract state transition logic.
-- Gas accounting or contract fee-market rules.
-- Contract RPC/API surfaces.
-- Contract-specific consensus rules.
+4. **Freeze one exact v3.0.0 release candidate**
+   - exact source SHA/tree;
+   - VERSION/Cargo/release metadata;
+   - reproducible node/miner/wallet artifacts with checksums and provenance;
+   - immutable protocol activation and storage compatibility boundary.
 
-Design notes may be written, but implementation must wait until the stable core has proven itself.
+5. **Freeze two independent public network identities**
+   - mainnet chain ID, network profile, genesis, consensus constants and bootnodes;
+   - parallel-testnet chain ID, network profile, genesis, consensus constants and bootnodes;
+   - separate DNS/RPC/status endpoints and persistent peer identities;
+   - no shared genesis, chain ID, signing-domain identity or accidental peer compatibility.
 
-## Miner and pool gate
+6. **Run final release rehearsals**
+   - multi-node/multi-miner convergence and adversarial recovery;
+   - restart/snapshot/prune/restore/rejoin;
+   - clean bootstrap and retained-history/checkpoint behavior;
+   - wallet transaction flow and relay isolation;
+   - resource, latency, storage, RPC, P2P and incident-response evidence;
+   - repeat affected evidence from zero after any release-candidate change.
 
-The miner remains external for v3.0.0. The node provides the mining template and submit validation surface; the miner performs work and returns submissions. This boundary keeps the node consensus surface smaller and keeps mining-device concerns out of node consensus code.
+7. **Production launch readiness review**
+   - infrastructure, backups, NTP, firewall, TLS/DNS and monitoring verified;
+   - primary and backup operators named;
+   - launch/on-call and rollback windows recorded;
+   - status/incident communication path tested;
+   - final evidence bundle and rollback plan reviewed.
 
-Pool logic is not allowed in the miner. Share accounting, payout policy, pool membership, pool authentication, and pool operator services belong in separate pool infrastructure if they are ever built.
+8. **Single coordinated decision in #781**
+   - exactly one of `GO_V3_DUAL_LAUNCH`, `DELAY_V3_DUAL_LAUNCH`, or `NO_GO_V3_DUAL_LAUNCH`;
+   - GO applies only to the exact frozen v3.0.0 artifacts and network identities.
 
-## Explicitly out of scope for v3.0.0
+9. **Launch mainnet and parallel testnet in the same release window**
+   - start/finalize seed and public node meshes for both networks;
+   - verify identity separation, peer mesh, canonical convergence, mining/submit flow, wallet/relay behavior, telemetry and public status endpoints;
+   - record independent first accepted block/height and UTC launch timestamps;
+   - publish operator/user endpoints, checksums, known limitations and security/incident routes.
 
-- Smart contracts before the 30-day stable testnet gate.
-- Embedding a miner inside the node.
-- Adding pool logic to the miner.
-- Public claims that exceed the documented consensus and network evidence.
-- Feature work that bypasses release gates or weakens operator recovery.
-- Compatibility claims with other networks unless backed by explicit specifications and tests.
+10. **Post-launch stabilization**
+    - enhanced first-24h and first-week monitoring;
+    - incident/rollback/recovery recording;
+    - testnet remains the permanent parallel validation network for upgrades;
+    - separately gated features remain disabled until separately authorized if not included in v3.0.0 scope.
 
-## Promotion rule
+## Removed legacy gates
 
-A release may be promoted to v3.0.0 only when the gate evidence is complete, current, and reviewable. If evidence is missing, stale, or contradicted by unresolved incidents, the release remains a candidate and must not be called the stable network target.
+The following are **not** prerequisites for v3.0.0 mainnet:
+
+- a standalone v2.4.x public-testnet launch;
+- the 1 September 2026 target;
+- `GO_PUBLIC_TESTNET` as the final project launch decision;
+- a 30-day public-testnet clock before mainnet.
+
+Legacy runtime/config fields such as `public_testnet_ready` and `thirty_day_public_testnet_clock_started` may remain temporarily for v2.4.x compatibility and historical validation, but they are not v3.0.0 launch authority.
+
+## Smart contracts
+
+Smart-contract activation is no longer tied mechanically to a pre-mainnet 30-day public-testnet clock. If smart contracts are included in v3.0.0, they require their own completed implementation/security/consensus gates inside the v3 release evidence. If those gates are not complete, contracts remain disabled at launch and require a separate post-launch activation decision.
+
+## Miner and pool boundary
+
+The miner remains external. The node provides mining templates and submit validation; the miner performs work and returns submissions. Pool share accounting, payouts, membership and authentication remain separate infrastructure and are not embedded into the canonical standalone miner.
+
+## Completion rule
+
+This roadmap is complete only when #781 records the exact v3.0.0 candidate, independent mainnet/testnet identities, artifact/config/genesis digests, operator review, final decision and actual launch timestamps—or records a delay/no-go with blockers and next review date.
