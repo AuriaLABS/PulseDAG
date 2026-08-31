@@ -36,7 +36,8 @@ def main() -> None:
     require(
         policy,
         policy_path,
-        "PRE-FREEZE / LAUNCH-BLOCKING UNTIL APPROVED",
+        "# PulseDAG v3.0.0 monetary policy",
+        "Current implementation baseline",
         "GENESIS_SUPPLY = 1_000_000_000",
         "INITIAL_BLOCK_SUBSIDY = 50",
         "SUBSIDY_HALVING_INTERVAL = 210_000",
@@ -52,7 +53,9 @@ def main() -> None:
     require(
         genesis,
         genesis_path,
-        "NO PRODUCTION GENESIS EXISTS YET",
+        "# PulseDAG v3.0.0 genesis contract",
+        "Required genesis inputs",
+        "Required deterministic outputs",
         "exact timestamp",
         "two clean independent executions",
         "production generator MUST reject placeholder destinations such as `genesis-treasury`",
@@ -66,9 +69,9 @@ def main() -> None:
     require(
         params,
         params_path,
-        "PRE-FREEZE / LAUNCH-BLOCKING",
-        "Mainnet identity — final values TBD",
-        "Parallel-testnet identity — final values TBD",
+        "# PulseDAG v3.0.0 network-parameter freeze",
+        "Mainnet identity",
+        "Parallel-testnet identity",
         "mainnet chain ID != testnet chain ID",
         "wallet signing/broadcast fails closed on network mismatch",
         "contract/application/proof domain separation prevents cross-network replay",
@@ -80,7 +83,7 @@ def main() -> None:
     require(
         ceremony,
         ceremony_path,
-        "PRE-FREEZE / DO NOT START PUBLIC NETWORKS",
+        "# PulseDAG v3.0.0 genesis ceremony runbook",
         "No manual edit is allowed between independent generation runs.",
         "Any mismatch is a hard stop.",
         "No difference, even one atomic unit, is acceptable.",
@@ -122,10 +125,14 @@ def main() -> None:
         return
 
     # FROZEN means the complete pre-GO identity/evidence set is immutable and
-    # ready for #781 to decide GO. Post-GO decision/first-block publication
-    # fields may still be TBD at this stage and are intentionally ignored here.
+    # ready for #781 to decide GO. The policy and network matrices themselves
+    # must also have transitioned away from placeholder values.
     if has_tbd(pre_go):
         fail("FROZEN launch manifest still contains pre-GO TBD fields")
+    if has_tbd(policy):
+        fail("FROZEN launch manifest but monetary-policy document still contains TBD fields")
+    if has_tbd(params):
+        fail("FROZEN launch manifest but network-parameter document still contains TBD fields")
 
     required_pass_assertions = (
         "Mainnet chain ID differs from testnet: `PASS`",
@@ -140,7 +147,6 @@ def main() -> None:
         if assertion not in pre_go:
             fail(f"FROZEN manifest missing separation assertion: {assertion}")
 
-    # Guard against accidentally moving launch-result fields into pre-GO freeze.
     if "#781 decision:" in pre_go or "first accepted block" in pre_go:
         fail("post-GO launch-result fields leaked into the pre-GO freeze section")
 
