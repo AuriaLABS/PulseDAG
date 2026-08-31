@@ -58,6 +58,16 @@ def main() -> None:
     )
 
     require(
+        "docs/VERSION_MATRIX.md",
+        "Definitive public-launch target | **v3.0.0**",
+        "Q4 2026 (October-December 2026)",
+        "mainnet + parallel public testnet in one coordinated release window",
+        "GO_V3_DUAL_LAUNCH",
+        "not a mandatory release rung",
+        "PENDING_EXACT_CANDIDATE_EVIDENCE",
+    )
+
+    require(
         "docs/ROADMAP_V3_0_LONG_LIVED_CORE.md",
         "SEQUENCING SUPERSEDED BY `ROADMAP_V3_0_0.md`",
         "mainnet and a parallel public testnet",
