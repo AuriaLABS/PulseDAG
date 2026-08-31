@@ -27,7 +27,11 @@ Freeze for each public network:
 - finality rule/version;
 - maximum block/transaction/script/contract/proof sizes;
 - monetary-policy version/digest;
-- reward-index definition and emission parameters;
+- canonical monetary-score algorithm/version/digest from `MONETARY_SCORE_V3_0_0.md`;
+- reward-index definition: authoritative ordered-DAG ordinal, genesis score 0;
+- production monetary cadence segment table `(activation_score, target_interval_ns)`;
+- exact cadence-activation boundary shared by consensus cadence and monetary interval;
+- reward-settlement/finality implementation version and digest;
 - coinbase maturity;
 - fee and burn/distribution rules;
 - contract/VM/proof versions and activation boundary;
@@ -35,6 +39,22 @@ Freeze for each public network:
 - pruning/checkpoint/bootstrap rules.
 
 Every consensus parameter must be included in a deterministic configuration digest or compiled-constant manifest so two nodes can prove they are on the same network contract.
+
+## Monetary score and cadence freeze
+
+The v3 monetary index is **not** ordinary height and is **not** raw block-header `blue_score`. Genesis is monetary score 0; each non-genesis position in the frozen authoritative deterministic ordered DAG receives one unique ordinal.
+
+Economic time is derived only from the versioned cadence segment table. Each segment is `(activation_score, target_interval_ns)`, and a segment activating at score `S` governs transition `S -> S+1` and later transitions until the next activation. This makes a cadence change continuous: past economic time is never repriced.
+
+Reference intervals are:
+
+- 1 BPS / ~1 s: `1_000_000_000 ns` per score transition;
+- 2 BPS / ~500 ms: `500_000_000 ns`;
+- 4 BPS / ~250 ms: `250_000_000 ns`.
+
+These are supported/reference mappings, not authorization of the final launch cadence. The exact starting cadence and activation table remain `TBD` until performance/replay evidence freezes them.
+
+A reward becomes spendable only after both the approved 3,600 economic-second maturity and the frozen v3 finality/settlement rule protect its monetary position. The legacy genesis-only finality baseline is not sufficient for production reward settlement.
 
 ## Mainnet identity — final values TBD
 
@@ -45,6 +65,9 @@ Every consensus parameter must be included in a deterministic configuration dige
 - Genesis manifest digest: `TBD`
 - Consensus/config digest: `TBD`
 - Monetary-policy digest: `TBD`
+- Monetary-score implementation digest: `TBD`
+- Initial monetary cadence segment table: `TBD`
+- Reward-settlement/finality digest: `TBD`
 - Address/HRP/prefix: `TBD`
 - Default P2P port: `TBD`
 - Public RPC/API port(s): `TBD`
@@ -64,6 +87,9 @@ Every consensus parameter must be included in a deterministic configuration dige
 - Genesis manifest digest: `TBD`
 - Consensus/config digest: `TBD`
 - Monetary-policy digest: `TBD`
+- Monetary-score implementation digest: `TBD`
+- Initial monetary cadence segment table: `TBD`
+- Reward-settlement/finality digest: `TBD`
 - Address/HRP/prefix: `TBD`
 - Default P2P port: `TBD`
 - Public RPC/API port(s): `TBD`
@@ -129,6 +155,8 @@ If checkpoints or snapshot manifests are used, freeze their trust model and veri
 
 v3.0.0 genesis-time protocol activation must be explicit. Any feature not active at genesis requires an exact activation condition/version and mixed-version behavior. Future upgrades must rehearse on parallel testnet and require separately authorized mainnet activation.
 
+A future cadence change is consensus-visible and monetary-visible. Its new target cadence and corresponding `target_interval_ns` MUST activate at the same frozen monetary score; changing one without the other is invalid.
+
 ## Required artifacts
 
 The final freeze produces:
@@ -139,6 +167,8 @@ The final freeze produces:
 - bootnode manifest;
 - DNS/public-endpoint manifest;
 - monetary-policy digest;
+- monetary-score/cadence-segment digest;
+- reward-settlement/finality digest;
 - protocol/activation manifest;
 - wallet/network-domain manifest;
 - checkpoint/bootstrap manifest where applicable.
