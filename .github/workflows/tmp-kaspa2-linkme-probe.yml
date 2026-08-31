@@ -32,7 +32,7 @@ jobs:
           rustc --version
           cargo --version
 
-      - name: Move direct Kaspa dependencies to stable 2.0.1
+      - name: Move direct Kaspa dependencies to stable upstream 2.0.1
         shell: bash
         run: |
           set -euo pipefail
@@ -41,15 +41,27 @@ jobs:
           path = Path('crates/pulsedag-core/Cargo.toml')
           text = path.read_text()
           old = text
-          text = text.replace('kaspa-hashes = "0.15.0"', 'kaspa-hashes = "2.0.1"')
-          text = text.replace('kaspa-pow = "0.15.0"', 'kaspa-pow = "2.0.1"')
+          upstream = 'https://github.com/kaspanet/rusty-kaspa'
+          rev = 'cfafeb4c093fa37a303f1b9f19c58f986b870ce3'
+          text = text.replace(
+              'kaspa-hashes = "0.15.0"',
+              f'kaspa-hashes = {{ git = "{upstream}", rev = "{rev}" }}',
+          )
+          text = text.replace(
+              'kaspa-pow = "0.15.0"',
+              f'kaspa-pow = {{ git = "{upstream}", rev = "{rev}" }}',
+          )
           if text == old:
               raise SystemExit('expected Kaspa 0.15.0 direct dependencies were not found')
           path.write_text(text)
           PY
 
-          cargo update -p kaspa-hashes@0.15.0 --precise 2.0.1
-          cargo update -p kaspa-pow@0.15.0 --precise 2.0.1
+          cargo update -p kaspa-hashes@0.15.0
+          cargo update -p kaspa-pow@0.15.0
+
+          echo '=== exact supported upstream source ==='
+          grep -n 'kaspa-\(hashes\|pow\)' crates/pulsedag-core/Cargo.toml
+          grep -n 'git+https://github.com/kaspanet/rusty-kaspa' Cargo.lock | head -n 20
 
           echo '=== old linkme path must be absent ==='
           if cargo tree --locked --workspace --all-targets -i linkme@0.2.10 >/tmp/linkme-old.txt 2>&1; then
@@ -58,7 +70,7 @@ jobs:
           fi
           echo 'linkme 0.2.10 absent'
 
-          echo '=== intertrait 0.2.2 path ==='
+          echo '=== old intertrait path must be absent ==='
           if cargo tree --locked --workspace --all-targets -i intertrait@0.2.2 >/tmp/intertrait-old.txt 2>&1; then
             cat /tmp/intertrait-old.txt
             exit 1
@@ -67,7 +79,7 @@ jobs:
 
           cargo tree --locked -p pulsedag-core | tee /tmp/pulsedag-core-tree.txt
 
-      - name: Compile consensus/PoW adapter
+      - name: Compile and test consensus/PoW adapter
         shell: bash
         run: |
           set -euo pipefail
