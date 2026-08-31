@@ -84,8 +84,8 @@ def main() -> None:
     require(
         manifest,
         manifest_path,
-        "state-derived/provisional before finality",
-        "Reward-settlement/finality implementation digest: `TBD`",
+        "state-derived/provisional before finality; exact settlement implementation digest `TBD`",
+        "Reward-settlement/finality freeze: `TBD`",
         "Launch-control authority: `#781`",
     )
 
@@ -96,6 +96,7 @@ def main() -> None:
         workflow_path,
         "docs/REWARD_SETTLEMENT_V3_0_0.md",
         "crates/pulsedag-core/src/reward_settlement_v3.rs",
+        "scripts/validate_v3_0_0_reward_settlement.py",
         "deferred_reward_settlement_required=true",
     )
 
