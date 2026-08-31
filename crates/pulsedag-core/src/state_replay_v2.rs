@@ -70,6 +70,102 @@ fn replay_base_state_for_genesis(state: &ChainState) -> Result<ChainState, Pulse
     }
 }
 
+fn compact_pruned_checkpoint_floor(state: &ChainState) -> Option<u64> {
+    if state.dag.blocks.is_empty() || state.dag.blocks.contains_key(&state.dag.genesis_hash) {
+        return None;
+    }
+    let retained_floor = state
+        .dag
+        .blocks
+        .values()
+        .map(|block| block.header.height)
+        .min()?;
+    (retained_floor > 0).then_some(retained_floor)
+}
+
+fn conflict_diagnostic_block_hash(entry: &str) -> Option<&str> {
+    entry
+        .split_whitespace()
+        .find_map(|part| part.strip_prefix("block="))
+}
+
+fn verify_compact_pruned_authoritative_checkpoint_v2(
+    state: &ChainState,
+    retained_floor: u64,
+) -> Result<StateReplayV2Diagnostics, PulseError> {
+    if state.dag.ordering_version != GHOSTDAG_V1_ORDERING_VERSION {
+        return Err(PulseError::NonDeterministicState(format!(
+            "v2.4 compact checkpoint ordering version {} does not match {}",
+            state.dag.ordering_version, GHOSTDAG_V1_ORDERING_VERSION
+        )));
+    }
+
+    for block in state.dag.blocks.values() {
+        for parent in &block.header.parents {
+            if state.dag.blocks.contains_key(parent) {
+                continue;
+            }
+            if block.header.height != retained_floor {
+                return Err(PulseError::NonDeterministicState(format!(
+                    "v2.4 compact checkpoint block {} at height {} references missing parent {} above retained floor {}",
+                    block.hash, block.header.height, parent, retained_floor
+                )));
+            }
+        }
+    }
+
+    let ordered_dag = derive_ordered_dag_v2(state).map_err(|err| {
+        PulseError::NonDeterministicState(format!(
+            "v2.4 compact checkpoint authoritative ordering unavailable: {err:?}"
+        ))
+    })?;
+    if state.dag.ordered_dag != ordered_dag.blocks {
+        return Err(PulseError::NonDeterministicState(
+            "v2.4 compact checkpoint ordered DAG does not match retained authoritative recomputation"
+                .to_string(),
+        ));
+    }
+
+    let ordered_dag_tip = ordered_dag.blocks.last().cloned();
+    if state.dag.ordered_dag_tip != ordered_dag_tip {
+        return Err(PulseError::NonDeterministicState(
+            "v2.4 compact checkpoint ordered DAG tip does not match retained authoritative recomputation"
+                .to_string(),
+        ));
+    }
+
+    let observed_state_root = state.utxo.compute_state_root()?;
+    if state.dag.ordered_dag_state_root.as_deref() != Some(observed_state_root.as_str()) {
+        return Err(PulseError::NonDeterministicState(
+            "v2.4 compact checkpoint recorded state root does not match persisted UTXO checkpoint"
+                .to_string(),
+        ));
+    }
+
+    for entry in &state.dag.ordered_dag_conflict_diagnostics {
+        let Some(block_hash) = conflict_diagnostic_block_hash(entry) else {
+            return Err(PulseError::NonDeterministicState(
+                "v2.4 compact checkpoint conflict diagnostic is missing block identity"
+                    .to_string(),
+            ));
+        };
+        if !state.dag.blocks.contains_key(block_hash) {
+            return Err(PulseError::NonDeterministicState(format!(
+                "v2.4 compact checkpoint conflict diagnostic references pruned or unknown block {block_hash}"
+            )));
+        }
+    }
+
+    Ok(StateReplayV2Diagnostics {
+        applied_transactions: 0,
+        skipped_conflicting_transactions: state.dag.ordered_dag_conflict_diagnostics.len(),
+        conflict_diagnostics: state.dag.ordered_dag_conflict_diagnostics.clone(),
+        state_root: observed_state_root,
+        ordered_dag_tip,
+        ordered_dag_digest: ordered_dag.digest,
+    })
+}
+
 /// Replay the reserved v2.4.0 authoritative DAG order with transaction-level
 /// atomicity.
 ///
@@ -166,12 +262,19 @@ pub fn materialize_authoritative_state_v2(state: &ChainState) -> Result<ChainSta
 /// Verify that a persisted/restored v2.4 snapshot is already materialized from
 /// the same authoritative ordering and transactional replay it claims.
 ///
-/// This is deliberately stricter than merely recomputing a valid state: stale
-/// legacy ordering fields or a stale UTXO payload are rejected rather than
-/// silently normalized during restore.
+/// Full snapshots are replayed from genesis. A compact-pruned checkpoint cannot
+/// replay history that was intentionally deleted, so it is instead validated
+/// against the retained authoritative DAG, the persisted checkpoint UTXO root,
+/// and the strict rule that omitted parents may occur only at the retained
+/// floor. Storage metadata remains responsible for binding that retained floor
+/// to the original genesis and omitted-parent set.
 pub fn verify_authoritative_state_snapshot_v2(
     state: &ChainState,
 ) -> Result<StateReplayV2Diagnostics, PulseError> {
+    if let Some(retained_floor) = compact_pruned_checkpoint_floor(state) {
+        return verify_compact_pruned_authoritative_checkpoint_v2(state, retained_floor);
+    }
+
     let replay = rebuild_authoritative_state_v2(state)?;
     let observed_state_root = state.utxo.compute_state_root()?;
 
@@ -217,6 +320,7 @@ mod tests {
     use super::*;
     use crate::{
         genesis::init_chain_state,
+        replay::compact_snapshot_to_retained_blocks,
         types::{Block, BlockHeader, OutPoint, Transaction, TxInput, TxOutput},
     };
 
@@ -337,6 +441,18 @@ mod tests {
         state
     }
 
+    fn compact_pruned_checkpoint_state() -> ChainState {
+        let full = materialize_authoritative_state_v2(&conflict_state(false)).unwrap();
+        let retained = full
+            .dag
+            .blocks
+            .values()
+            .filter(|block| block.header.height >= 2)
+            .cloned()
+            .collect::<Vec<_>>();
+        compact_snapshot_to_retained_blocks(full, &retained).unwrap()
+    }
+
     #[test]
     fn clean_chain_bound_v2_genesis_replays_from_v2_utxo() {
         let state =
@@ -354,6 +470,40 @@ mod tests {
             .keys()
             .any(|outpoint| outpoint.txid == genesis_txid));
         verify_authoritative_state_snapshot_v2(&state).unwrap();
+    }
+
+    #[test]
+    fn compact_pruned_checkpoint_verifies_without_requiring_deleted_genesis() {
+        let compact = compact_pruned_checkpoint_state();
+        assert!(!compact.dag.blocks.contains_key(&compact.dag.genesis_hash));
+        assert!(rebuild_authoritative_state_v2(&compact).is_err());
+
+        let diagnostics = verify_authoritative_state_snapshot_v2(&compact).unwrap();
+        assert_eq!(
+            diagnostics.state_root,
+            compact.utxo.compute_state_root().unwrap()
+        );
+        assert_eq!(diagnostics.ordered_dag_tip, compact.dag.ordered_dag_tip);
+    }
+
+    #[test]
+    fn compact_pruned_checkpoint_rejects_missing_parent_above_retained_floor() {
+        let mut compact = compact_pruned_checkpoint_state();
+        compact.dag.blocks.get_mut("merge").unwrap().header.parents = vec!["missing".into()];
+
+        let error = verify_authoritative_state_snapshot_v2(&compact)
+            .expect_err("missing parent above checkpoint floor must fail closed");
+        assert!(error.to_string().contains("missing parent"));
+    }
+
+    #[test]
+    fn compact_pruned_checkpoint_rejects_stale_state_root_commitment() {
+        let mut compact = compact_pruned_checkpoint_state();
+        compact.dag.ordered_dag_state_root = Some("00".repeat(32));
+
+        let error = verify_authoritative_state_snapshot_v2(&compact)
+            .expect_err("stale checkpoint state root must fail closed");
+        assert!(error.to_string().contains("recorded state root"));
     }
 
     #[test]
