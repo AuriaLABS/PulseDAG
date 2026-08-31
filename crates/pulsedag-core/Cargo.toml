@@ -12,8 +12,8 @@ hex = "0.4"
 ed25519-dalek = "2"
 
 sha3 = "0.10"
-kaspa-hashes = "0.15.0"
-kaspa-pow = "0.15.0"
+kaspa-hashes = { git = "https://github.com/kaspanet/rusty-kaspa", rev = "cfafeb4c093fa37a303f1b9f19c58f986b870ce3" }
+kaspa-pow = { git = "https://github.com/kaspanet/rusty-kaspa", rev = "cfafeb4c093fa37a303f1b9f19c58f986b870ce3" }
 
 [dev-dependencies]
 bincode = "1.3"
