@@ -94,12 +94,7 @@ fn compact_pruned_activated_v2_snapshot_survives_cold_restart() {
 
     let persisted_blocks = state.dag.blocks.values().cloned().collect::<Vec<_>>();
     storage
-        .persist_activated_v2_p2p_blocks_and_runtime(
-            &persisted_blocks,
-            &identity,
-            &state,
-            &runtime,
-        )
+        .persist_activated_v2_p2p_blocks_and_runtime(&persisted_blocks, &identity, &state, &runtime)
         .unwrap();
 
     let retained_blocks = persisted_blocks
