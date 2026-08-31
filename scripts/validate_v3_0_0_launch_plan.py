@@ -56,12 +56,10 @@ def main() -> None:
     require(
         "docs/ROADMAP_V2_5_0.md",
         "APPROVED MANDATORY V3.0.0 WORKSTREAM",
-        "v2.4.x -> v2.5.0 scale/resilience -> v2.6.0 programmability -> v3.0.0 integrated release",
         "P2P v3 and eclipse resistance",
         "Production GPU mining: NVIDIA + AMD/ATI",
         "Million-block deterministic DAG replay",
         "168 contiguous hours",
-        "Integrated v3 pre-launch network acceptance",
         "V2_5_WORKSTREAM_PASS",
         "It is **not** `GO_V3_DUAL_LAUNCH`",
     )
@@ -69,7 +67,6 @@ def main() -> None:
     require(
         "docs/ROADMAP_V2_6_0.md",
         "APPROVED MANDATORY V3.0.0 WORKSTREAM",
-        "v2.4.x -> v2.5.0 scale/resilience -> v2.6.0 programmability -> v3.0.0 integrated release",
         "UTXO Covenants v1",
         "Contract Transaction v3",
         "PulseScript",
@@ -82,18 +79,22 @@ def main() -> None:
 
     require(
         "docs/MONETARY_POLICY_V3_0_0.md",
-        "PRE-FREEZE / LAUNCH-BLOCKING UNTIL APPROVED",
+        "# PulseDAG v3.0.0 monetary policy",
+        "Current implementation baseline",
         "GENESIS_SUPPLY = 1_000_000_000",
         "INITIAL_BLOCK_SUBSIDY = 50",
         "SUBSIDY_HALVING_INTERVAL = 210_000",
         "canonical consensus index",
         "Coinbase maturity",
         "development `genesis-treasury` allocation is not authorized",
+        "Supply invariant",
     )
 
     require(
         "docs/GENESIS_V3_0_0.md",
-        "NO PRODUCTION GENESIS EXISTS YET",
+        "# PulseDAG v3.0.0 genesis contract",
+        "Required genesis inputs",
+        "Required deterministic outputs",
         "exact timestamp",
         "two clean independent executions",
         "production generator MUST reject placeholder destinations such as `genesis-treasury`",
@@ -102,10 +103,11 @@ def main() -> None:
 
     require(
         "docs/NETWORK_PARAMETERS_V3_0_0.md",
-        "PRE-FREEZE / LAUNCH-BLOCKING",
-        "Mainnet identity — final values TBD",
-        "Parallel-testnet identity — final values TBD",
+        "# PulseDAG v3.0.0 network-parameter freeze",
+        "Mainnet identity",
+        "Parallel-testnet identity",
         "wallet signing/broadcast fails closed on network mismatch",
+        "contract/application/proof domain separation prevents cross-network replay",
         "`GO_V3_DUAL_LAUNCH` is invalid while any launch-required field remains `TBD`.",
     )
 
@@ -124,7 +126,8 @@ def main() -> None:
 
     require(
         "docs/runbooks/V3_0_0_GENESIS_CEREMONY.md",
-        "PRE-FREEZE / DO NOT START PUBLIC NETWORKS",
+        "# PulseDAG v3.0.0 genesis ceremony runbook",
+        "No manual edit is allowed between independent generation runs.",
         "Any mismatch is a hard stop.",
         "No difference, even one atomic unit, is acceptable.",
         "Launch state` to `FROZEN`",
@@ -139,6 +142,7 @@ def main() -> None:
         "mainnet and a parallel public testnet",
         "GO_V3_DUAL_LAUNCH",
         "PENDING_EXACT_CANDIDATE_EVIDENCE",
+        "validate_v3_0_0_network_freeze.py",
     )
 
     require(
@@ -147,6 +151,10 @@ def main() -> None:
         "ROADMAP_V2_5_0.md",
         "ROADMAP_V2_6_0.md",
         "ROADMAP_V3_0_0.md",
+        "MONETARY_POLICY_V3_0_0.md",
+        "GENESIS_V3_0_0.md",
+        "NETWORK_PARAMETERS_V3_0_0.md",
+        "V3_0_0_LAUNCH_MANIFEST.md",
         "30 accepted days of programmability-enabled exact-candidate pre-launch evidence",
     )
 
@@ -156,6 +164,7 @@ def main() -> None:
         "v2.6.0 workstream incorporated into v3.0.0",
         "v2.4.x -> v2.5.0 scale/resilience workstream -> v2.6.0 programmability workstream -> v3.0.0 definitive release",
         "Mandatory technical milestone incorporated into v3.0.0",
+        "Production freeze path",
         "GO_V3_DUAL_LAUNCH",
         "PENDING_EXACT_CANDIDATE_EVIDENCE",
     )
@@ -174,9 +183,9 @@ def main() -> None:
         "docs/runbooks/V3_0_0_DUAL_NETWORK_LAUNCH.md",
         "PRE-GO / Q4 2026 TARGET / NOT LAUNCHED",
         "v2.4.x -> v2.5.0 scale/resilience -> v2.6.0 programmability -> v3.0.0 integrated release",
-        ">=1,000,000-block deterministic DAG replay",
-        ">=1,000,000 programmable-operation deterministic replay",
-        "30 accepted days of programmability-enabled exact-candidate pre-launch evidence",
+        "MONETARY_POLICY_V3_0_0.md",
+        "V3_0_0_LAUNCH_MANIFEST.md",
+        "launch_ready=true",
         "GO_V3_DUAL_LAUNCH",
         "different chain IDs",
         "different genesis blocks/hashes",
@@ -189,6 +198,8 @@ def main() -> None:
         "configs/v3-launch/README.md",
         "NOT A DEPLOYABLE CONFIGURATION",
         "mainnet + parallel public testnet",
+        "MONETARY_POLICY_V3_0_0.md",
+        "V3_0_0_LAUNCH_MANIFEST.md",
         "chain ID",
         "genesis",
         "bootnode peer IDs",
@@ -201,6 +212,8 @@ def main() -> None:
         "GO_V3_DUAL_LAUNCH",
         "CPU/NVIDIA/AMD PoW implementations",
         "contract/VM/proof execution must be deterministic",
+        "production genesis must be deterministic",
+        "validate_v3_0_0_network_freeze.py",
         "public_testnet_ready=false",
         "thirty_day_public_testnet_clock_started=false",
     )
@@ -227,9 +240,8 @@ def main() -> None:
         "v2.6 programmability/smart-contract requirements",
         "Mainnet and parallel-testnet identities remain explicitly separated",
         "CPU/NVIDIA/AMD PoW equivalence",
-        "Contract/application/proof execution remains deterministic and resource bounded",
         "Production genesis uses an exact frozen timestamp/input manifest",
-        "GO_V3_DUAL_LAUNCH` is not claimed while the freeze validator reports `launch_ready=false",
+        "freeze validator reports `launch_ready=false`",
     )
 
     if not (ROOT / "scripts/validate_v3_0_0_network_freeze.py").is_file():
