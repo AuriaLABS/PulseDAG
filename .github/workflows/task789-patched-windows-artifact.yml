@@ -1,0 +1,70 @@
+name: Task 789 patched Windows artifact
+
+on:
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows-node:
+    name: Build patched pulsedagd Windows x86_64
+    runs-on: windows-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Validate lockfile
+        shell: pwsh
+        run: cargo metadata --locked --format-version 1 | Out-Null
+
+      - name: Run Task 789 regression
+        shell: pwsh
+        run: cargo test --locked -p pulsedag-storage --test task789_pruned_v2_restart -- --nocapture
+
+      - name: Build patched node
+        shell: pwsh
+        run: cargo build --locked --release --bin pulsedagd
+
+      - name: Stage diagnostic artifact
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $out = Join-Path $env:GITHUB_WORKSPACE 'task789-windows-node'
+          New-Item -ItemType Directory -Path $out -Force | Out-Null
+          Copy-Item 'target\release\pulsedagd.exe' (Join-Path $out 'pulsedagd.exe')
+          $sha = (Get-FileHash (Join-Path $out 'pulsedagd.exe') -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$sha  pulsedagd.exe" | Set-Content (Join-Path $out 'SHA256SUMS.txt') -Encoding ascii
+          [ordered]@{
+            purpose = 'issue-789-post-prune-cold-restart-diagnostic'
+            repository = '${{ github.repository }}'
+            commit = '${{ github.event.pull_request.head.sha || github.sha }}'
+            pull_request = '${{ github.event.pull_request.number || 0 }}'
+            target = 'x86_64-pc-windows-msvc'
+            release_artifact = $false
+            public_testnet_ready = $false
+            pulsedagd_sha256 = $sha
+          } | ConvertTo-Json | Set-Content (Join-Path $out 'manifest.json') -Encoding utf8
+          Compress-Archive -Path (Join-Path $out '*') -DestinationPath (Join-Path $env:GITHUB_WORKSPACE 'task789-patched-windows-node.zip') -Force
+
+      - name: Upload diagnostic artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: task789-patched-windows-node
+          retention-days: 14
+          if-no-files-found: error
+          path: |
+            task789-patched-windows-node.zip
+            task789-windows-node/SHA256SUMS.txt
+            task789-windows-node/manifest.json

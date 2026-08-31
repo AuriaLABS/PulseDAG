@@ -342,6 +342,11 @@ impl Storage {
         let state = self
             .load_chain_state()?
             .ok_or_else(|| storage_error("activated-v2 chain snapshot missing"))?;
+        if !self.chain_anchor_valid(&state)? {
+            return Err(storage_error(
+                "activated-v2 chain snapshot has neither genesis nor a valid compact-prune checkpoint anchor",
+            ));
+        }
         let record = self
             .activated_v2_p2p_runtime_record()?
             .ok_or_else(|| storage_error("activated-v2 P2P runtime sidecar missing"))?;
