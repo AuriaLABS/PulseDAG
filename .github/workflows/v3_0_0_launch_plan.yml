@@ -28,6 +28,7 @@ on:
       - crates/pulsedag-core/src/reward_settlement_v3.rs
       - scripts/validate_v3_0_0_launch_plan.py
       - scripts/validate_v3_0_0_network_freeze.py
+      - scripts/validate_v3_0_0_reward_settlement.py
       - .github/pull_request_template.md
       - .github/workflows/v3_0_0_launch_plan.yml
   push:
@@ -57,6 +58,7 @@ on:
       - crates/pulsedag-core/src/reward_settlement_v3.rs
       - scripts/validate_v3_0_0_launch_plan.py
       - scripts/validate_v3_0_0_network_freeze.py
+      - scripts/validate_v3_0_0_reward_settlement.py
       - .github/pull_request_template.md
       - .github/workflows/v3_0_0_launch_plan.yml
   workflow_dispatch:
@@ -94,8 +96,10 @@ jobs:
           set -euo pipefail
           python -m py_compile \
             scripts/validate_v3_0_0_launch_plan.py \
-            scripts/validate_v3_0_0_network_freeze.py
+            scripts/validate_v3_0_0_network_freeze.py \
+            scripts/validate_v3_0_0_reward_settlement.py
           python scripts/validate_v3_0_0_launch_plan.py
+          python scripts/validate_v3_0_0_reward_settlement.py | tee /tmp/v3-reward-settlement-status.txt
           python scripts/validate_v3_0_0_network_freeze.py | tee /tmp/v3-network-freeze-status.txt
 
       - name: Record plan provenance
@@ -104,6 +108,7 @@ jobs:
           set -euo pipefail
           mkdir -p ci-evidence/v3-launch-plan
           cp /tmp/v3-network-freeze-status.txt ci-evidence/v3-launch-plan/network-freeze-status.txt
+          cp /tmp/v3-reward-settlement-status.txt ci-evidence/v3-launch-plan/reward-settlement-status.txt
           {
             echo "candidate_sha=${CANDIDATE_SHA}"
             echo "target_release=v3.0.0"
@@ -155,6 +160,7 @@ jobs:
             crates/pulsedag-core/src/reward_settlement_v3.rs \
             scripts/validate_v3_0_0_launch_plan.py \
             scripts/validate_v3_0_0_network_freeze.py \
+            scripts/validate_v3_0_0_reward_settlement.py \
             .github/pull_request_template.md \
             .github/workflows/v3_0_0_launch_plan.yml \
             > ci-evidence/v3-launch-plan/SHA256SUMS
