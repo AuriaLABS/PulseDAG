@@ -16,12 +16,14 @@ on:
       - docs/ROADMAP_V3_0_0.md
       - docs/ROADMAP_V3_0_LONG_LIVED_CORE.md
       - docs/MONETARY_POLICY_V3_0_0.md
+      - docs/MONETARY_SCORE_V3_0_0.md
       - docs/GENESIS_V3_0_0.md
       - docs/NETWORK_PARAMETERS_V3_0_0.md
       - docs/V3_0_0_LAUNCH_MANIFEST.md
       - docs/runbooks/V3_0_0_GENESIS_CEREMONY.md
       - docs/runbooks/V3_0_0_DUAL_NETWORK_LAUNCH.md
       - docs/runbooks/V2_4_0_PUBLIC_TESTNET_PREP.md
+      - crates/pulsedag-core/src/monetary_v3.rs
       - scripts/validate_v3_0_0_launch_plan.py
       - scripts/validate_v3_0_0_network_freeze.py
       - .github/pull_request_template.md
@@ -41,12 +43,14 @@ on:
       - docs/ROADMAP_V3_0_0.md
       - docs/ROADMAP_V3_0_LONG_LIVED_CORE.md
       - docs/MONETARY_POLICY_V3_0_0.md
+      - docs/MONETARY_SCORE_V3_0_0.md
       - docs/GENESIS_V3_0_0.md
       - docs/NETWORK_PARAMETERS_V3_0_0.md
       - docs/V3_0_0_LAUNCH_MANIFEST.md
       - docs/runbooks/V3_0_0_GENESIS_CEREMONY.md
       - docs/runbooks/V3_0_0_DUAL_NETWORK_LAUNCH.md
       - docs/runbooks/V2_4_0_PUBLIC_TESTNET_PREP.md
+      - crates/pulsedag-core/src/monetary_v3.rs
       - scripts/validate_v3_0_0_launch_plan.py
       - scripts/validate_v3_0_0_network_freeze.py
       - .github/pull_request_template.md
@@ -107,6 +111,8 @@ jobs:
             echo "nvidia_gpu_required=true"
             echo "amd_gpu_required=true"
             echo "monetary_policy_contract_required=true"
+            echo "monetary_score_contract_required=true"
+            echo "monetary_schedule_implementation_required=true"
             echo "deterministic_genesis_contract_required=true"
             echo "network_parameter_freeze_required=true"
             echo "launch_manifest_required=true"
@@ -132,12 +138,14 @@ jobs:
             docs/ROADMAP_V3_0_0.md \
             docs/ROADMAP_V3_0_LONG_LIVED_CORE.md \
             docs/MONETARY_POLICY_V3_0_0.md \
+            docs/MONETARY_SCORE_V3_0_0.md \
             docs/GENESIS_V3_0_0.md \
             docs/NETWORK_PARAMETERS_V3_0_0.md \
             docs/V3_0_0_LAUNCH_MANIFEST.md \
             docs/runbooks/V3_0_0_GENESIS_CEREMONY.md \
             docs/runbooks/V3_0_0_DUAL_NETWORK_LAUNCH.md \
             docs/runbooks/V2_4_0_PUBLIC_TESTNET_PREP.md \
+            crates/pulsedag-core/src/monetary_v3.rs \
             scripts/validate_v3_0_0_launch_plan.py \
             scripts/validate_v3_0_0_network_freeze.py \
             .github/pull_request_template.md \
