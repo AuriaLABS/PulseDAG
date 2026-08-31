@@ -98,7 +98,8 @@ def main() -> None:
         "exact timestamp",
         "two clean independent executions",
         "production generator MUST reject placeholder destinations such as `genesis-treasury`",
-        "mainnet genesis hash != testnet genesis hash",
+        "different genesis hashes",
+        "CI/freeze validator must fail if final mainnet and testnet chain IDs or genesis hashes are equal",
     )
 
     require(
