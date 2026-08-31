@@ -39,7 +39,8 @@ def main() -> None:
         "Finality alone is insufficient. Maturity alone is insufficient.",
         "no spendable reward UTXO exists",
         "production finality algorithm/version",
-        "overall launch state remains `PRE_FREEZE` and `launch_ready=false`",
+        "Overall launch state remains `PRE_FREEZE`",
+        "`launch_ready=false`",
     )
 
     impl_path = "crates/pulsedag-core/src/reward_settlement_v3.rs"
