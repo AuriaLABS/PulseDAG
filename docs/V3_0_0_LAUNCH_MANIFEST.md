@@ -24,18 +24,28 @@ The section `Launch boundary — populate only after GO` is intentionally exclud
 
 ## Monetary policy freeze
 
-- Policy version: `TBD`
+Approved mainnet policy parameters are already selected, but this section remains pre-freeze until the exact consensus implementation, reward-index mapping, testnet policy, vectors and digests are attached.
+
+- Policy version: `v3.0.0-mainnet-policy-v1`
 - `docs/MONETARY_POLICY_V3_0_0.md` SHA-256: `TBD`
 - Consensus monetary constants/config digest: `TBD`
-- Atomic unit/precision: `TBD`
-- Mainnet genesis-issued supply: `TBD`
-- Mainnet allocation manifest digest: `TBD`
-- Initial mining subsidy: `TBD`
-- Reward-index definition: `TBD`
-- Emission schedule digest: `TBD`
-- Coinbase maturity: `TBD`
-- Fee/burn/distribution policy digest: `TBD`
-- Terminal/max-supply rule: `TBD`
+- Atomic unit/precision: `8 decimals / 100,000,000 atoms per coin`
+- Maximum mainnet supply: `1,000,000,000.00000000 coins`
+- Mainnet genesis-issued supply: `0 coins`
+- Mainnet premine/treasury/foundation allocation: `0 coins`
+- Mainnet allocation manifest: `NO_SPENDABLE_GENESIS_ALLOCATIONS` — exact genesis manifest digest `TBD`
+- Year-1 mining budget: `500,000,000.00000000 coins`
+- Equivalent initial average emission: `~15.854895991882293252 coins/economic-second`; informational only
+- Annual subsidy reduction: `50% every 31,536,000 economic seconds (365 days)`
+- Reward-index definition: canonical reward/DAA-score-to-economic-time mapping `TBD`
+- Emission schedule implementation/vector digest: `TBD`
+- Coinbase maturity: `3,600 economic seconds`
+- Ordinary transaction fees: `100% eligible miner/reward recipient`
+- Programmable compute/state fees: `100% eligible miner/reward recipient`
+- Proof-verification fees: `100% eligible miner/reward recipient`
+- Consensus fee burn: `0% in v3.0.0`
+- Tail emission: `none`
+- Terminal/max-supply rule: `hard cap at 100,000,000,000,000,000 atomic units; terminal residual rule implementation TBD`
 - Full emission-vector digest: `TBD`
 - Independent supply-accounting implementation/vector digest: `TBD`
 
@@ -116,9 +126,11 @@ The section `Launch boundary — populate only after GO` is intentionally exclud
 - >=1,000,000 programmable-operation replay: `TBD`
 - exact supply-accounting replay: `TBD`
 - subsidy-boundary vectors: `TBD`
+- annual-halving/cadence-equivalence vectors: `TBD`
 - coinbase maturity vectors: `TBD`
 - fee/program/proof accounting vectors: `TBD`
-- genesis allocation invariant: `TBD`
+- zero-genesis-issuance invariant: `TBD`
+- hard-cap / terminal-residual invariant: `TBD`
 - no unexplained consensus/application-state divergence: `TBD`
 
 ## Rehearsal and burn-in evidence
@@ -161,7 +173,8 @@ Before freeze all must be `PASS`:
 
 ## Freeze approvals
 
-- Monetary-policy approval: `TBD`
+- Monetary-policy parameter approval: `APPROVED` — 1B hard cap / zero premine / 500M year-1 / annual halving / 3,600s maturity / miner fees / zero burn
+- Monetary-policy implementation freeze: `TBD`
 - Genesis ceremony approval: `TBD`
 - Consensus/release approval: `TBD`
 - Security approval: `TBD`
