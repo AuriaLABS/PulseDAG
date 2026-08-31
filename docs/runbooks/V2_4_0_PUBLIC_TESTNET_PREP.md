@@ -72,14 +72,14 @@ That transition must **not** be executed now as a project-launch step. The v3.0.
 The operational controls below remain valid inputs to the v3 launch program:
 
 - persistent P2P identity;
-- exact artifact/config/genesis digests;
+- exact artifact, configuration and genesis digests;
 - public-safe RPC isolation;
 - storage/snapshot/backup/recovery drills;
 - NTP and disk-pressure monitoring;
 - consensus/state divergence alerts;
 - mining submit-finality reconciliation;
 - incident evidence and rollback discipline;
-- no credentials, wallet seeds or private keys in committed configs/evidence.
+- no credentials, wallet seeds or private keys in committed configuration or evidence.
 
 For the definitive launch, apply those controls separately to the frozen **mainnet** and **parallel-testnet** identities defined by the v3 runbook.
 
