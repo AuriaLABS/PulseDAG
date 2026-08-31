@@ -10,6 +10,7 @@ on:
       - configs/v3-launch/**
       - configs/public-testnet/README.md
       - docs/README.md
+      - docs/VERSION_MATRIX.md
       - docs/ROADMAP_V3_0_0.md
       - docs/ROADMAP_V3_0_LONG_LIVED_CORE.md
       - docs/runbooks/V3_0_0_DUAL_NETWORK_LAUNCH.md
@@ -26,6 +27,7 @@ on:
       - configs/v3-launch/**
       - configs/public-testnet/README.md
       - docs/README.md
+      - docs/VERSION_MATRIX.md
       - docs/ROADMAP_V3_0_0.md
       - docs/ROADMAP_V3_0_LONG_LIVED_CORE.md
       - docs/runbooks/V3_0_0_DUAL_NETWORK_LAUNCH.md
@@ -90,6 +92,7 @@ jobs:
             configs/v3-launch/README.md \
             configs/public-testnet/README.md \
             docs/README.md \
+            docs/VERSION_MATRIX.md \
             docs/ROADMAP_V3_0_0.md \
             docs/ROADMAP_V3_0_LONG_LIVED_CORE.md \
             docs/runbooks/V3_0_0_DUAL_NETWORK_LAUNCH.md \
