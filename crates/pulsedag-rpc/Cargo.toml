@@ -11,18 +11,21 @@ serde_json = "1"
 async-stream = "0.3"
 futures-core = "0.3"
 hex = "0.4"
-ed25519-dalek = "2"
+# Lockfile-compatible inert optional dependencies. No RPC feature or handler
+# activates these; raw-key wallet signing has been removed from the crate.
+ed25519-dalek = { version = "2", optional = true }
 tracing = "0.1"
 sha3 = "0.10"
 
 pulsedag-core = { path = "../pulsedag-core" }
 pulsedag-wallet = { path = "../pulsedag-wallet" }
-pulsedag-crypto = { path = "../pulsedag-crypto" }
+pulsedag-crypto = { path = "../pulsedag-crypto", optional = true }
 pulsedag-p2p = { path = "../pulsedag-p2p" }
 pulsedag-storage = { path = "../pulsedag-storage" }
 pulsedag-api = { path = "../pulsedag-api" }
 
 [dev-dependencies]
+ed25519-dalek = "2"
 proptest = "1"
 pulsedag-miner = { path = "../../apps/pulsedag-miner" }
 tower = { version = "0.5", features = ["util"] }

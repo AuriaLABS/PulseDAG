@@ -4,9 +4,16 @@ mod deterministic;
 mod keystore;
 mod keystore_crypto;
 mod keystore_persistence;
+mod keystore_rotation;
 mod keystore_seed;
+mod plan;
 pub mod protocol_v2;
 mod secrets;
+mod session_clock;
+mod session_v1;
+mod signing;
+mod watch_only;
+use session_v1 as session_core;
 
 pub use deterministic::{
     derive_network_components, derive_wallet_key, derive_wallet_key_from_seed,
@@ -31,10 +38,33 @@ pub use keystore_persistence::{
     WalletKeystoreDirectorySyncStatus, WalletKeystoreFile, WalletKeystorePermissionStatus,
     WalletKeystorePersistenceError, WalletKeystorePersistenceReport, KEYSTORE_FILE_MAX_BYTES,
 };
+pub use keystore_rotation::{rotate_keystore_password, WalletKeystoreRotationError};
 pub use keystore_seed::{decrypt_wallet_seed, encrypt_wallet_seed};
+pub use plan::{
+    build_deterministic_transaction_plan, build_transaction_plan, derive_wallet_plan_nonce_v1,
+    WalletNetworkIdentity, WalletNoncePolicy, WalletPlanError, WalletReviewSummary,
+    WalletSigningPreparation, WalletSpendPolicy, WalletTransactionIntent, WalletTransactionPlan,
+    WALLET_NONCE_DOMAIN_V1,
+};
 pub use secrets::{
     SecretString, WalletSecretKey, WalletSeed, ED25519_SECRET_KEY_BYTES, REDACTED_SECRET,
     WALLET_SEED_BYTES,
+};
+pub use session_clock::WalletSession;
+pub use session_v1::{
+    WalletSessionError, WalletSessionIdentity, WalletSessionLockState, WalletSessionStatus,
+    WalletUnlockPolicy, WalletUnlockPolicyError, WALLET_UNLOCK_MAX_FAILURES,
+    WALLET_UNLOCK_MAX_LOCKOUT, WALLET_UNLOCK_MAX_TIMEOUT,
+};
+pub use signing::{
+    sign_transaction_plan, WalletPlanSigner, WalletPlanSigningError, WalletPlanSigningSessionExt,
+    WalletSignedTransaction,
+};
+pub use watch_only::{
+    export_watch_only_manifest, verify_watch_only_manifest, WalletWatchOnly, WalletWatchOnlyBranch,
+    WalletWatchOnlyEntry, WalletWatchOnlyError, WalletWatchOnlyManifest,
+    WalletWatchOnlyOperationError, WalletWatchOnlyScope, WalletWatchOnlySessionExt,
+    WALLET_WATCH_ONLY_FORMAT, WALLET_WATCH_ONLY_MAX_ENTRIES, WALLET_WATCH_ONLY_VERSION,
 };
 
 use serde::{Deserialize, Serialize};

@@ -1,4 +1,5 @@
 use std::{
+    net::SocketAddr,
     path::PathBuf,
     sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
@@ -12,7 +13,7 @@ use pulsedag_core::state::ChainState;
 use pulsedag_p2p::P2pHandle;
 use pulsedag_rpc::{
     api::{NodeRuntimeStats, RpcStateLike},
-    routes::{self, ApiExposureProfile, RpcHardeningLimits},
+    routes::{self, ApiExposureProfile, RateLimitConfig, RpcHardeningLimits},
 };
 use pulsedag_storage::Storage;
 use tokio::sync::RwLock;
@@ -220,4 +221,147 @@ async fn api_security_coverage_v2_2_17() {
         std::env::remove_var("PULSEDAG_ADMIN_ENABLED");
         std::env::remove_var("PULSEDAG_OPERATOR_AUTH_TOKEN");
     }
+}
+
+fn request_with_peer(method: &str, uri: &str, body: Body, peer: SocketAddr) -> Request<Body> {
+    let mut request = Request::builder()
+        .method(method)
+        .uri(uri)
+        .body(body)
+        .expect("request");
+    request
+        .extensions_mut()
+        .insert(axum::extract::ConnectInfo(peer));
+    request
+}
+
+#[tokio::test]
+async fn public_safe_router_enforces_negative_route_body_and_liveness_contract() {
+    let tiny_state = test_state("public-safe-route-contract");
+    let tiny_app = routes::router_with_profile::<TestState>(
+        ApiExposureProfile::PublicSafe,
+        false,
+        None,
+        Some(RpcHardeningLimits {
+            request_body_limit_bytes: 16,
+            rate_limit: None,
+        }),
+    )
+    .with_state(tiny_state);
+
+    for path in [
+        "/tx/submit",
+        "/tx/build",
+        "/api/v1/tx/build",
+        "/mine",
+        "/api/v1/mine",
+        "/mining/template",
+        "/mining/submit",
+        "/mining/jobs/claim",
+        "/wallet/new",
+        "/wallet/sign",
+        "/wallet/transfer",
+        "/admin",
+        "/admin/diagnostics",
+        "/snapshot/create",
+        "/prune",
+        "/sync/rebuild",
+        "/sync/reconcile-mempool",
+        "/diagnostics",
+        "/operator/query-pack",
+    ] {
+        let (status, body) = call(
+            tiny_app.clone(),
+            Request::builder()
+                .method("GET")
+                .uri(path)
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::NOT_FOUND,
+            "unexpected status for {path}"
+        );
+        assert!(
+            body.contains("public_route_forbidden"),
+            "missing code for {path}"
+        );
+    }
+
+    let (relay_wrong_method_status, _) = call(
+        tiny_app.clone(),
+        Request::builder()
+            .method("GET")
+            .uri("/api/v1/tx/submit")
+            .body(Body::empty())
+            .expect("request"),
+    )
+    .await;
+    assert_eq!(relay_wrong_method_status, StatusCode::METHOD_NOT_ALLOWED);
+
+    let (oversized_status, oversized_body) = call(
+        tiny_app.clone(),
+        Request::builder()
+            .method("POST")
+            .uri("/tx/submit")
+            .header("content-type", "application/json")
+            .body(Body::from("xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"))
+            .expect("request"),
+    )
+    .await;
+    assert_eq!(oversized_status, StatusCode::PAYLOAD_TOO_LARGE);
+    assert!(oversized_body.contains("request_too_large"));
+
+    let (oversized_health_status, oversized_health_body) = call(
+        tiny_app,
+        Request::builder()
+            .method("POST")
+            .uri("/health")
+            .body(Body::from("xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"))
+            .expect("request"),
+    )
+    .await;
+    assert_eq!(oversized_health_status, StatusCode::PAYLOAD_TOO_LARGE);
+    assert!(oversized_health_body.contains("request_too_large"));
+
+    let limited_state = test_state("public-safe-rate-contract");
+    let limited_app = routes::router_with_profile::<TestState>(
+        ApiExposureProfile::PublicSafe,
+        false,
+        None,
+        Some(RpcHardeningLimits {
+            request_body_limit_bytes: 128 * 1024,
+            rate_limit: Some(RateLimitConfig {
+                requests_per_window: 1,
+                window_secs: 60,
+                per_ip: true,
+            }),
+        }),
+    )
+    .with_state(limited_state);
+    let peer = SocketAddr::from(([198, 51, 100, 77], 45678));
+
+    let (first_status, _) = call(
+        limited_app.clone(),
+        request_with_peer("GET", "/api/v1/version", Body::empty(), peer),
+    )
+    .await;
+    assert_eq!(first_status, StatusCode::OK);
+
+    let (limited_status, limited_body) = call(
+        limited_app.clone(),
+        request_with_peer("GET", "/api/v1/version", Body::empty(), peer),
+    )
+    .await;
+    assert_eq!(limited_status, StatusCode::TOO_MANY_REQUESTS);
+    assert!(limited_body.contains("rate_limited"));
+
+    let (health_status, _) = call(
+        limited_app,
+        request_with_peer("GET", "/health", Body::empty(), peer),
+    )
+    .await;
+    assert_eq!(health_status, StatusCode::OK);
 }
