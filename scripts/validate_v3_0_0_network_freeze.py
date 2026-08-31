@@ -6,6 +6,7 @@ import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+LAUNCH_BOUNDARY = "## Launch boundary — populate only after GO"
 
 
 def fail(message: str) -> None:
@@ -23,6 +24,10 @@ def require(body: str, path: str, *needles: str) -> None:
     for needle in needles:
         if needle not in body:
             fail(f"{path} missing required freeze contract: {needle!r}")
+
+
+def has_tbd(body: str) -> bool:
+    return bool(re.search(r"`TBD`|:\s*TBD\b", body))
 
 
 def main() -> None:
@@ -101,20 +106,26 @@ def main() -> None:
         "Mandatory separation assertions",
         "Mainnet chain ID differs from testnet",
         "Mainnet genesis hash differs from testnet",
-        "#781 final-decision reference",
+        "Launch-control authority: `#781`",
+        "Launch boundary — populate only after GO",
         "Once `Launch state: FROZEN` is recorded",
     )
 
+    if LAUNCH_BOUNDARY not in manifest:
+        fail("launch manifest is missing the post-GO boundary marker")
+    pre_go, post_go = manifest.split(LAUNCH_BOUNDARY, 1)
+
     if state == "PRE_FREEZE":
-        if "`TBD`" not in manifest:
-            fail("PRE_FREEZE manifest unexpectedly contains no TBD launch fields")
+        if not has_tbd(pre_go):
+            fail("PRE_FREEZE manifest unexpectedly contains no pre-GO TBD fields")
         print("PASS: v3.0.0 freeze contracts are present; launch_ready=false; state=PRE_FREEZE")
         return
 
-    # FROZEN is intentionally strict. A freeze cannot coexist with unresolved
-    # placeholders or unasserted network-separation checks.
-    if re.search(r"`TBD`|:\s*TBD\b", manifest):
-        fail("FROZEN launch manifest still contains TBD fields")
+    # FROZEN means the complete pre-GO identity/evidence set is immutable and
+    # ready for #781 to decide GO. Post-GO decision/first-block publication
+    # fields may still be TBD at this stage and are intentionally ignored here.
+    if has_tbd(pre_go):
+        fail("FROZEN launch manifest still contains pre-GO TBD fields")
 
     required_pass_assertions = (
         "Mainnet chain ID differs from testnet: `PASS`",
@@ -126,13 +137,23 @@ def main() -> None:
         "Contract/proof/application replay is domain separated: `PASS`",
     )
     for assertion in required_pass_assertions:
-        if assertion not in manifest:
+        if assertion not in pre_go:
             fail(f"FROZEN manifest missing separation assertion: {assertion}")
 
-    if "#781 decision: `GO_V3_DUAL_LAUNCH`" not in manifest:
-        fail("FROZEN manifest does not bind the exact #781 GO decision")
+    # Guard against accidentally moving launch-result fields into pre-GO freeze.
+    if "#781 decision:" in pre_go or "first accepted block" in pre_go:
+        fail("post-GO launch-result fields leaked into the pre-GO freeze section")
 
-    print("PASS: v3.0.0 monetary/genesis/network freeze is complete; launch_ready=true; state=FROZEN")
+    require(
+        post_go,
+        manifest_path,
+        "#781 decision: `TBD`",
+        "Decision UTC: `TBD`",
+        "Mainnet first accepted block",
+        "Parallel-testnet first accepted block",
+    )
+
+    print("PASS: v3.0.0 monetary/genesis/network freeze is complete; launch_ready=true; state=FROZEN; awaiting #781 decision")
 
 
 if __name__ == "__main__":
