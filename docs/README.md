@@ -18,6 +18,20 @@ The v2.5.0 and v2.6.0 roadmaps are part of the path to v3.0.0, and their technic
 
 The old v2.5 standalone-public-testnet canary/30-day requirement and the old v2.6 dependency on that clock are not carried forward. Their technical acceptance gates are.
 
+## Production economy, genesis and network freeze
+
+The v3 launch is not defined by source defaults alone. These documents form the production freeze contract:
+
+- [`MONETARY_POLICY_V3_0_0.md`](MONETARY_POLICY_V3_0_0.md) — issuance, reward index, subsidy schedule, coinbase maturity, fees/burn and supply-accounting authority;
+- [`GENESIS_V3_0_0.md`](GENESIS_V3_0_0.md) — deterministic genesis inputs, outputs, allocation and independent-reproduction contract;
+- [`NETWORK_PARAMETERS_V3_0_0.md`](NETWORK_PARAMETERS_V3_0_0.md) — consensus/network identity, ports, seeds, endpoints, wallet domains, checkpoints and separation matrix;
+- [`V3_0_0_LAUNCH_MANIFEST.md`](V3_0_0_LAUNCH_MANIFEST.md) — single exact release/economic/genesis/network/artifact/evidence authority;
+- [`runbooks/V3_0_0_GENESIS_CEREMONY.md`](runbooks/V3_0_0_GENESIS_CEREMONY.md) — reproducible mainnet/testnet genesis ceremony.
+
+The launch manifest currently remains `PRE_FREEZE`. That is a valid development state but means **`launch_ready=false`**. Final GO is prohibited until the manifest is `FROZEN`, every launch-required `TBD` is resolved, all network-separation assertions pass, and the exact candidate reproduces the recorded genesis/policy/config identities.
+
+The current v2.4-derived source includes development economic/genesis behavior. It must not become mainnet policy implicitly. In particular, the production freeze must explicitly disposition the development `genesis-treasury` allocation, genesis supply constant, current subsidy/halving constants, runtime timestamp construction, canonical DAG reward index and coinbase maturity.
+
 ## Definitive v3.0.0 launch authority
 
 - [`ROADMAP_V3_0_0.md`](ROADMAP_V3_0_0.md) — authoritative integrated Q4 launch roadmap.
@@ -53,7 +67,7 @@ The published v2.4.0 release and later v2.4.x/v2.4.1 work are development, valid
 - [`POW_SPEC_FINAL.md`](POW_SPEC_FINAL.md)
 - [`POW_CURRENT_PATH.md`](POW_CURRENT_PATH.md)
 
-Production v3 operator instructions must ultimately be bound to the exact frozen v3.0.0 artifact and separate mainnet/testnet identities.
+Production v3 operator instructions must ultimately be bound to the exact frozen v3.0.0 artifact, monetary policy, genesis and separate mainnet/testnet identities.
 
 ## Evidence and launch gates
 
@@ -70,7 +84,12 @@ The integrated v3 acceptance bar includes, among other gates:
 - programmable assets/economics/security;
 - >=1,000,000 programmable-operation replay;
 - 30 accepted days of programmability-enabled exact-candidate pre-launch evidence;
+- frozen monetary policy and independent supply-accounting vectors;
+- reproducible mainnet/testnet genesis ceremony;
+- complete network-parameter/bootnode/endpoint freeze;
 - production wallet/custody and final dependency/security closeout.
+
+Static consistency is checked by `scripts/validate_v3_0_0_launch_plan.py`; freeze readiness is checked separately by `scripts/validate_v3_0_0_network_freeze.py`.
 
 ## Legacy v2.4 compatibility markers
 
@@ -89,4 +108,4 @@ These are compatibility state for old validation surfaces, not the v3 launch sta
 - [`archive/README.md`](archive/README.md)
 - [`codex_tasks/`](codex_tasks/)
 
-Historical evidence remains immutable provenance. Consensus, network, wallet and programmability changes require fresh explicitly versioned activation boundaries and exact-candidate evidence.
+Historical evidence remains immutable provenance. Consensus, monetary, genesis, network, wallet and programmability changes require fresh explicitly versioned activation boundaries and exact-candidate evidence.
