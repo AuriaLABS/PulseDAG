@@ -8,17 +8,21 @@ use std::{
     time::Duration,
 };
 
+use pulsedag_core::types::{Transaction, Utxo};
 use pulsedag_wallet::{
-    derive_wallet_key_from_seed, encrypt_wallet_seed, wallet_seed_from_mnemonic, SecretString,
-    WalletDerivationBranch, WalletKeystoreFile, WalletNetworkContext, WalletSession,
-    WalletUnlockPolicy, WalletWatchOnly, WalletWatchOnlyManifest, WalletWatchOnlyScope,
-    WalletWatchOnlySessionExt,
+    build_deterministic_transaction_plan, derive_wallet_key_from_seed, encrypt_wallet_seed,
+    wallet_seed_from_mnemonic, SecretString, WalletDerivationBranch, WalletKeystoreFile,
+    WalletNetworkContext, WalletNetworkIdentity, WalletNoncePolicy, WalletPlanSigner,
+    WalletPlanSigningSessionExt, WalletReviewSummary, WalletSession, WalletSpendPolicy,
+    WalletTransactionIntent, WalletTransactionPlan, WalletUnlockPolicy, WalletWatchOnly,
+    WalletWatchOnlyManifest, WalletWatchOnlyScope, WalletWatchOnlySessionExt,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 const CLI_UNLOCK_TIMEOUT: Duration = Duration::from_secs(60);
 const CLI_UNLOCK_MAX_FAILURES: u32 = 3;
 const CLI_UNLOCK_LOCKOUT: Duration = Duration::from_secs(1);
+const CLI_JSON_INPUT_MAX_BYTES: u64 = 4 * 1024 * 1024;
 
 type CliResult<T> = Result<T, Box<dyn Error>>;
 
@@ -29,6 +33,8 @@ enum Command {
     WatchExport(WatchExportArgs),
     WatchImport(WatchImportArgs),
     BackupVerify(BackupVerifyArgs),
+    TxPreview(TxPreviewArgs),
+    TxSign(TxSignArgs),
 }
 
 #[derive(Debug)]
@@ -63,6 +69,32 @@ struct WatchImportArgs {
 struct BackupVerifyArgs {
     keystore: PathBuf,
     manifest: PathBuf,
+}
+
+#[derive(Debug)]
+struct TxPreviewArgs {
+    keystore: PathBuf,
+    utxos_file: PathBuf,
+    network_profile: String,
+    chain_id: String,
+    to: String,
+    amount: u64,
+    fee: u64,
+    max_fee: u64,
+    max_fee_bps: u32,
+    max_inputs: usize,
+    account: u32,
+    branch: WalletDerivationBranch,
+    index: u32,
+}
+
+#[derive(Debug)]
+struct TxSignArgs {
+    keystore: PathBuf,
+    plan: PathBuf,
+    account: u32,
+    branch: WalletDerivationBranch,
+    index: u32,
 }
 
 #[derive(Debug, Serialize)]
@@ -108,6 +140,44 @@ struct BackupVerifyOutput {
     checksum_hex: String,
 }
 
+#[derive(Debug, Serialize)]
+struct TxPreviewOutput {
+    review: WalletReviewSummary,
+    plan: WalletTransactionPlan,
+}
+
+#[derive(Debug, Serialize)]
+struct TxSignOutput {
+    network: WalletNetworkIdentity,
+    review: WalletReviewSummary,
+    final_txid: String,
+    relay: RelayEnvelope,
+}
+
+#[derive(Debug, Serialize)]
+struct RelayEnvelope {
+    transaction: Transaction,
+}
+
+#[derive(Debug, Deserialize)]
+struct AddressUtxosResponse {
+    ok: bool,
+    data: Option<AddressUtxosData>,
+    error: Option<ApiError>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AddressUtxosData {
+    address: String,
+    utxos: Vec<Utxo>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ApiError {
+    code: String,
+    message: String,
+}
+
 struct RestoreSecrets {
     password: SecretString,
     mnemonic: SecretString,
@@ -122,6 +192,18 @@ fn parse_u32(name: &str, value: &str) -> CliResult<u32> {
     value
         .parse::<u32>()
         .map_err(|_| invalid_input(format!("{name} must be an unsigned 32-bit integer")).into())
+}
+
+fn parse_u64(name: &str, value: &str) -> CliResult<u64> {
+    value
+        .parse::<u64>()
+        .map_err(|_| invalid_input(format!("{name} must be an unsigned 64-bit integer")).into())
+}
+
+fn parse_usize(name: &str, value: &str) -> CliResult<usize> {
+    value
+        .parse::<usize>()
+        .map_err(|_| invalid_input(format!("{name} must be a non-negative integer")).into())
 }
 
 fn required(flags: &HashMap<String, String>, name: &str) -> CliResult<String> {
@@ -177,13 +259,15 @@ fn branch_name(branch: WalletDerivationBranch) -> &'static str {
     }
 }
 
+fn expected_command_error() -> io::Error {
+    invalid_input(
+        "expected command: restore, address, watch-export, watch-import, backup-verify, tx-preview, or tx-sign",
+    )
+}
+
 fn parse_command_from(args: impl Iterator<Item = String>) -> CliResult<Command> {
     let mut args = args;
-    let command = args.next().ok_or_else(|| {
-        invalid_input(
-            "expected command: restore, address, watch-export, watch-import, or backup-verify",
-        )
-    })?;
+    let command = args.next().ok_or_else(expected_command_error)?;
     let flags = parse_flags(args)?;
     match command.as_str() {
         "restore" => {
@@ -228,10 +312,52 @@ fn parse_command_from(args: impl Iterator<Item = String>) -> CliResult<Command> 
                 manifest: PathBuf::from(required(&flags, "manifest")?),
             }))
         }
-        _ => Err(invalid_input(
-            "expected command: restore, address, watch-export, watch-import, or backup-verify",
-        )
-        .into()),
+        "tx-preview" => {
+            reject_unknown(
+                &flags,
+                &[
+                    "keystore",
+                    "utxos-file",
+                    "network-profile",
+                    "chain-id",
+                    "to",
+                    "amount",
+                    "fee",
+                    "max-fee",
+                    "max-fee-bps",
+                    "max-inputs",
+                    "account",
+                    "branch",
+                    "index",
+                ],
+            )?;
+            Ok(Command::TxPreview(TxPreviewArgs {
+                keystore: PathBuf::from(required(&flags, "keystore")?),
+                utxos_file: PathBuf::from(required(&flags, "utxos-file")?),
+                network_profile: required(&flags, "network-profile")?,
+                chain_id: required(&flags, "chain-id")?,
+                to: required(&flags, "to")?,
+                amount: parse_u64("--amount", &required(&flags, "amount")?)?,
+                fee: parse_u64("--fee", &required(&flags, "fee")?)?,
+                max_fee: parse_u64("--max-fee", &required(&flags, "max-fee")?)?,
+                max_fee_bps: parse_u32("--max-fee-bps", &required(&flags, "max-fee-bps")?)?,
+                max_inputs: parse_usize("--max-inputs", &required(&flags, "max-inputs")?)?,
+                account: parse_u32("--account", &required(&flags, "account")?)?,
+                branch: parse_branch(&required(&flags, "branch")?)?,
+                index: parse_u32("--index", &required(&flags, "index")?)?,
+            }))
+        }
+        "tx-sign" => {
+            reject_unknown(&flags, &["keystore", "plan", "account", "branch", "index"])?;
+            Ok(Command::TxSign(TxSignArgs {
+                keystore: PathBuf::from(required(&flags, "keystore")?),
+                plan: PathBuf::from(required(&flags, "plan")?),
+                account: parse_u32("--account", &required(&flags, "account")?)?,
+                branch: parse_branch(&required(&flags, "branch")?)?,
+                index: parse_u32("--index", &required(&flags, "index")?)?,
+            }))
+        }
+        _ => Err(expected_command_error().into()),
     }
 }
 
@@ -309,12 +435,68 @@ fn ensure_parent_exists(path: &Path) -> CliResult<()> {
     Ok(())
 }
 
+fn read_bounded_json(path: &Path, label: &'static str) -> CliResult<Vec<u8>> {
+    let metadata = fs::metadata(path)?;
+    if !metadata.is_file() {
+        return Err(invalid_input(format!("{label} must be a regular file")).into());
+    }
+    if metadata.len() > CLI_JSON_INPUT_MAX_BYTES {
+        return Err(invalid_input(format!(
+            "{label} exceeds {CLI_JSON_INPUT_MAX_BYTES} byte input limit"
+        ))
+        .into());
+    }
+    Ok(fs::read(path)?)
+}
+
 fn read_manifest(path: &Path) -> CliResult<WalletWatchOnlyManifest> {
-    let bytes = fs::read(path)?;
+    let bytes = read_bounded_json(path, "watch-only manifest")?;
     let manifest = serde_json::from_slice::<WalletWatchOnlyManifest>(&bytes)
         .map_err(|_| invalid_input("watch-only manifest JSON is invalid"))?;
     manifest.validate()?;
     Ok(manifest)
+}
+
+fn read_transaction_plan(path: &Path) -> CliResult<WalletTransactionPlan> {
+    let bytes = read_bounded_json(path, "wallet transaction plan")?;
+    let plan = serde_json::from_slice::<WalletTransactionPlan>(&bytes)
+        .map_err(|_| invalid_input("wallet transaction plan JSON is invalid"))?;
+    plan.validate_structure()?;
+    if plan.nonce_policy != WalletNoncePolicy::DeterministicPlanV1 {
+        return Err(
+            invalid_input("wallet CLI signs deterministic_plan_v1 transaction plans only").into(),
+        );
+    }
+    Ok(plan)
+}
+
+fn load_address_utxos(path: &Path, expected_address: &str) -> CliResult<Vec<Utxo>> {
+    let bytes = read_bounded_json(path, "address UTXO snapshot")?;
+    let response: AddressUtxosResponse = serde_json::from_slice(&bytes)
+        .map_err(|_| invalid_input("UTXO file is not a valid address UTXO API response"))?;
+    if !response.ok {
+        let detail = response
+            .error
+            .map(|error| format!("{}: {}", error.code, error.message))
+            .unwrap_or_else(|| "unknown RPC error".to_string());
+        return Err(invalid_input(format!("UTXO API response failed: {detail}")).into());
+    }
+    let data = response
+        .data
+        .ok_or_else(|| invalid_input("UTXO API response is missing data"))?;
+    if data.address != expected_address {
+        return Err(invalid_input("UTXO response address does not match selected signer").into());
+    }
+    if data
+        .utxos
+        .iter()
+        .any(|utxo| utxo.address != expected_address)
+    {
+        return Err(
+            invalid_input("UTXO response contains an entry for a different address").into(),
+        );
+    }
+    Ok(data.utxos)
 }
 
 fn unlocked_session(
@@ -425,6 +607,59 @@ fn run_backup_verify(
     })
 }
 
+fn run_tx_preview(args: TxPreviewArgs, password: &SecretString) -> CliResult<TxPreviewOutput> {
+    let keystore = WalletKeystoreFile::try_acquire(&args.keystore)?;
+    let mut session = unlocked_session(&keystore, password)?;
+    let identity = session
+        .status()
+        .identity
+        .ok_or_else(|| invalid_input("wallet session did not expose authenticated identity"))?;
+    let keystore_network = WalletNetworkIdentity::new(identity.network_profile, identity.chain_id)?;
+    let expected_network = WalletNetworkIdentity::new(&args.network_profile, &args.chain_id)?;
+    expected_network.ensure_matches(&keystore_network)?;
+    let signer_address =
+        session.with_derived_key(args.account, args.branch, args.index, |derived| {
+            derived.address().to_string()
+        })?;
+    session.lock();
+
+    let available_utxos = load_address_utxos(&args.utxos_file, &signer_address)?;
+    let intent = WalletTransactionIntent::new(&signer_address, args.to, args.amount, args.fee)?;
+    let spend_policy = WalletSpendPolicy::new(args.max_fee, args.max_fee_bps, args.max_inputs)?;
+    let plan = build_deterministic_transaction_plan(
+        expected_network,
+        spend_policy,
+        intent,
+        &available_utxos,
+    )?;
+    let review = plan.review_summary()?;
+    Ok(TxPreviewOutput { review, plan })
+}
+
+fn run_tx_sign(args: TxSignArgs, password: &SecretString) -> CliResult<TxSignOutput> {
+    let plan = read_transaction_plan(&args.plan)?;
+    let keystore = WalletKeystoreFile::try_acquire(&args.keystore)?;
+    let mut session = unlocked_session(&keystore, password)?;
+    let signed = session.sign_transaction_plan(
+        &plan,
+        WalletPlanSigner::DeterministicV2 {
+            account: args.account,
+            branch: args.branch,
+            index: args.index,
+        },
+    )?;
+    session.lock();
+    let final_txid = signed.transaction.txid.clone();
+    Ok(TxSignOutput {
+        network: signed.network,
+        review: signed.review,
+        final_txid,
+        relay: RelayEnvelope {
+            transaction: signed.transaction,
+        },
+    })
+}
+
 fn write_json<T: Serialize>(value: &T) -> CliResult<()> {
     let stdout = io::stdout();
     let mut out = stdout.lock();
@@ -452,6 +687,14 @@ fn run() -> CliResult<()> {
             let password = read_password_from_stdin()?;
             write_json(&run_backup_verify(args, &password)?)
         }
+        Command::TxPreview(args) => {
+            let password = read_password_from_stdin()?;
+            write_json(&run_tx_preview(args, &password)?)
+        }
+        Command::TxSign(args) => {
+            let password = read_password_from_stdin()?;
+            write_json(&run_tx_sign(args, &password)?)
+        }
     }
 }
 
@@ -465,6 +708,8 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use std::io::Cursor;
+
+    use pulsedag_core::types::OutPoint;
 
     use super::*;
 
@@ -528,6 +773,76 @@ mod tests {
             "00"
         ]))
         .is_err());
+        assert!(parse_command_from(args(&[
+            "tx-sign",
+            "--keystore",
+            "wallet.json",
+            "--plan",
+            "plan.json",
+            "--account",
+            "0",
+            "--branch",
+            "receive",
+            "--index",
+            "0",
+            "--password",
+            "secret"
+        ]))
+        .is_err());
+    }
+
+    #[test]
+    fn transaction_commands_parse_explicit_policy_and_signer_path() {
+        assert!(matches!(
+            parse_command_from(args(&[
+                "tx-preview",
+                "--keystore",
+                "wallet.json",
+                "--utxos-file",
+                "utxos.json",
+                "--network-profile",
+                "public-testnet",
+                "--chain-id",
+                "pulsedag-public-testnet",
+                "--to",
+                "pulse1recipient",
+                "--amount",
+                "400",
+                "--fee",
+                "10",
+                "--max-fee",
+                "100",
+                "--max-fee-bps",
+                "1000",
+                "--max-inputs",
+                "8",
+                "--account",
+                "0",
+                "--branch",
+                "receive",
+                "--index",
+                "0"
+            ]))
+            .unwrap(),
+            Command::TxPreview(_)
+        ));
+        assert!(matches!(
+            parse_command_from(args(&[
+                "tx-sign",
+                "--keystore",
+                "wallet.json",
+                "--plan",
+                "plan.json",
+                "--account",
+                "0",
+                "--branch",
+                "receive",
+                "--index",
+                "0"
+            ]))
+            .unwrap(),
+            Command::TxSign(_)
+        ));
     }
 
     #[test]
@@ -565,5 +880,73 @@ mod tests {
             WalletDerivationBranch::Change
         ));
         assert!(parse_branch("external").is_err());
+    }
+
+    #[test]
+    fn address_utxo_parser_rejects_cross_address_entries() {
+        let dir =
+            std::env::temp_dir().join(format!("pulsedag-wallet-cli-utxo-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("utxos.json");
+        let response = serde_json::json!({
+            "ok": true,
+            "data": {
+                "address": "pulse1sender",
+                "count": 1,
+                "utxos": [{
+                    "outpoint": {"txid": "11".repeat(32), "index": 0},
+                    "address": "pulse1other",
+                    "amount": 5,
+                    "coinbase": false,
+                    "height": 1
+                }]
+            },
+            "error": null,
+            "meta": {}
+        });
+        fs::write(&path, serde_json::to_vec(&response).unwrap()).unwrap();
+        assert!(load_address_utxos(&path, "pulse1sender").is_err());
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn transaction_plan_json_is_validated_on_import() {
+        let dir =
+            std::env::temp_dir().join(format!("pulsedag-wallet-cli-plan-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("plan.json");
+        let from = "pulse1sender";
+        let network = WalletNetworkIdentity::new("public-testnet", "pulsedag-public-testnet")
+            .expect("network");
+        let policy = WalletSpendPolicy::new(100, 1_000, 8).expect("policy");
+        let intent =
+            WalletTransactionIntent::new(from, "pulse1recipient", 400, 10).expect("intent");
+        let available = vec![Utxo {
+            outpoint: OutPoint {
+                txid: "11".repeat(32),
+                index: 0,
+            },
+            address: from.to_string(),
+            amount: 1_000,
+            coinbase: false,
+            height: 1,
+        }];
+        let plan = build_deterministic_transaction_plan(network, policy, intent, &available)
+            .expect("plan");
+        fs::write(&path, serde_json::to_vec(&plan).unwrap()).unwrap();
+        assert_eq!(
+            read_transaction_plan(&path)
+                .unwrap()
+                .review_summary()
+                .unwrap(),
+            plan.review_summary().unwrap()
+        );
+
+        let mut tampered = serde_json::to_value(&plan).unwrap();
+        tampered["transaction"]["nonce"] =
+            serde_json::json!(plan.transaction.nonce.wrapping_add(1));
+        fs::write(&path, serde_json::to_vec(&tampered).unwrap()).unwrap();
+        assert!(read_transaction_plan(&path).is_err());
+        let _ = fs::remove_dir_all(dir);
     }
 }
