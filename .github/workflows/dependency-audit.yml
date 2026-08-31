@@ -10,11 +10,8 @@ on:
       - apps/**/Cargo.toml
       - crates/**/Cargo.toml
       - .cargo/audit.toml
-      - scripts/validate_v2_4_0_lock_only_rustsec_exceptions.py
-      - scripts/analyze_v2_4_0_rustsec_warnings.py
-      - scripts/validate_v2_4_0_rustsec_warning_disposition.py
-      - docs/security/V2_4_0_LOCK_ONLY_RUSTSEC_EXCEPTIONS.md
-      - docs/security/V2_4_0_RUSTSEC_WARNING_DISPOSITION.md
+      - scripts/validate_v3_dependency_security.py
+      - docs/security/V3_DEPENDENCY_SECURITY.md
       - .github/workflows/dependency-audit.yml
       - SECURITY.md
   push:
@@ -26,11 +23,8 @@ on:
       - apps/**/Cargo.toml
       - crates/**/Cargo.toml
       - .cargo/audit.toml
-      - scripts/validate_v2_4_0_lock_only_rustsec_exceptions.py
-      - scripts/analyze_v2_4_0_rustsec_warnings.py
-      - scripts/validate_v2_4_0_rustsec_warning_disposition.py
-      - docs/security/V2_4_0_LOCK_ONLY_RUSTSEC_EXCEPTIONS.md
-      - docs/security/V2_4_0_RUSTSEC_WARNING_DISPOSITION.md
+      - scripts/validate_v3_dependency_security.py
+      - docs/security/V3_DEPENDENCY_SECURITY.md
       - .github/workflows/dependency-audit.yml
       - SECURITY.md
   schedule:
@@ -67,35 +61,14 @@ jobs:
           rustc --version
           cargo --version
 
-      - name: Validate lock-only vulnerability exceptions
+      - name: Validate active v3 dependency remediation
         shell: bash
         run: |
           set -euo pipefail
-          python scripts/validate_v2_4_0_lock_only_rustsec_exceptions.py
+          python scripts/validate_v3_dependency_security.py
           mkdir -p ci-evidence/dependency-audit
-          for evidence in ci-evidence/dependency-lock-only-exceptions/*; do
-            cp "${evidence}" "ci-evidence/dependency-audit/lock-only-$(basename "${evidence}")"
-          done
-
-      - name: Capture exact-candidate RustSec warning reachability
-        env:
-          PULSEDAG_CANDIDATE_SHA: ${{ env.CANDIDATE_SHA }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          python scripts/analyze_v2_4_0_rustsec_warnings.py \
-            --evidence-dir ci-evidence/rustsec-warning-disposition
-
-      - name: Validate RustSec warning disposition
-        env:
-          PULSEDAG_CANDIDATE_SHA: ${{ env.CANDIDATE_SHA }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          python scripts/validate_v2_4_0_rustsec_warning_disposition.py
-          mkdir -p ci-evidence/dependency-audit
-          for evidence in ci-evidence/rustsec-warning-disposition/*; do
-            cp "${evidence}" "ci-evidence/dependency-audit/warning-disposition-$(basename "${evidence}")"
+          for evidence in ci-evidence/dependency-v3-security/*; do
+            cp "${evidence}" "ci-evidence/dependency-audit/v3-$(basename "${evidence}")"
           done
 
       - name: Install pinned cargo-audit
@@ -110,15 +83,11 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p ci-evidence/dependency-audit
-          mv .cargo/audit.toml /tmp/pulsedag-audit.toml
-          trap 'mv /tmp/pulsedag-audit.toml .cargo/audit.toml' EXIT
           set +e
           cargo audit --json >ci-evidence/dependency-audit/cargo-audit-raw.json
           raw_status=$?
           set -e
-          mv /tmp/pulsedag-audit.toml .cargo/audit.toml
-          trap - EXIT
-          test "${raw_status}" != "0"
+          echo "raw_exit_status=${raw_status}" >ci-evidence/dependency-audit/raw-exit-status.txt
           python - <<'PY' | tee ci-evidence/dependency-audit/raw-summary.txt
           import json
 
@@ -128,14 +97,8 @@ jobs:
               ((item.get('advisory') or {}).get('id'), (item.get('package') or {}).get('name'), (item.get('package') or {}).get('version'))
               for item in vulnerabilities
           }
-          expected_vulnerabilities = {
-              ('RUSTSEC-2025-0009', 'ring', '0.16.20'),
-              ('RUSTSEC-2026-0098', 'rustls-webpki', '0.101.7'),
-              ('RUSTSEC-2026-0099', 'rustls-webpki', '0.101.7'),
-              ('RUSTSEC-2026-0104', 'rustls-webpki', '0.101.7'),
-              ('RUSTSEC-2026-0119', 'hickory-proto', '0.24.4'),
-              ('RUSTSEC-2026-0258', 'h2', '0.3.27'),
-          }
+          expected_vulnerabilities = set()
+
           expected_advisory_warnings = {
               ('unmaintained', 'RUSTSEC-2025-0052', 'async-std', '1.13.2'),
               ('unmaintained', 'RUSTSEC-2024-0375', 'atty', '0.2.14'),
@@ -145,9 +108,6 @@ jobs:
               ('unsound', 'RUSTSEC-2024-0407', 'linkme', '0.2.10'),
               ('unmaintained', 'RUSTSEC-2024-0436', 'paste', '1.0.15'),
               ('unmaintained', 'RUSTSEC-2024-0370', 'proc-macro-error', '1.0.4'),
-              ('unmaintained', 'RUSTSEC-2025-0010', 'ring', '0.16.20'),
-              ('unsound', 'RUSTSEC-2026-0002', 'lru', '0.12.5'),
-              ('unsound', 'RUSTSEC-2026-0253', 'lru', '0.12.5'),
           }
 
           warnings = report.get('warnings', {})
@@ -213,8 +173,8 @@ jobs:
             echo "advisory_db_sha=$(git -C \"${HOME}/.cargo/advisory-db\" rev-parse HEAD 2>/dev/null || true)"
             echo "cargo_lock_sha256=$(sha256sum Cargo.lock | awk '{print $1}')"
             echo "audit_config_sha256=$(sha256sum .cargo/audit.toml | awk '{print $1}')"
-            echo "lock_only_exception_sha256=$(sha256sum docs/security/V2_4_0_LOCK_ONLY_RUSTSEC_EXCEPTIONS.md | awk '{print $1}')"
-            echo "warning_disposition_sha256=$(sha256sum docs/security/V2_4_0_RUSTSEC_WARNING_DISPOSITION.md | awk '{print $1}')"
+            echo "v3_gate_sha256=$(sha256sum scripts/validate_v3_dependency_security.py | awk '{print $1}')"
+            echo "v3_security_record_sha256=$(sha256sum docs/security/V3_DEPENDENCY_SECURITY.md | awk '{print $1}')"
           } >ci-evidence/dependency-audit/provenance.txt
           test "$(git rev-parse HEAD)" = "${CANDIDATE_SHA}"
           find ci-evidence/dependency-audit -maxdepth 1 -type f ! -name SHA256SUMS \
