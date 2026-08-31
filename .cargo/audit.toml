@@ -1,19 +1,11 @@
-# PulseDAG v2.4.0 RustSec policy.
+# PulseDAG active v3 dependency-security policy.
 #
-# Vulnerability ignores are limited to exact package versions retained only in
-# unselected optional libp2p branches. The exact-candidate dependency gate
-# recompiles pulsedag-p2p, pulsedagd and pulsedag-miner from empty target
-# directories and rejects the policy if any vulnerable version is compiled.
-#
-# Review deadline: 2026-08-31 UTC. No informational warning is ignored.
+# The historical v2.4 lock-only vulnerability exceptions expired on
+# 2026-08-31 and are not renewed here. The active development line carries
+# no vulnerability advisory ignores. Informational RustSec warnings remain
+# visible and are owned by issue #803 until removed or explicitly reviewed
+# against the exact final v3 candidate.
 
 [advisories]
-ignore = [
-  "RUSTSEC-2025-0009",
-  "RUSTSEC-2026-0098",
-  "RUSTSEC-2026-0099",
-  "RUSTSEC-2026-0104",
-  "RUSTSEC-2026-0119",
-  "RUSTSEC-2026-0258",
-]
+ignore = []
 informational_warnings = ["unmaintained", "unsound"]
