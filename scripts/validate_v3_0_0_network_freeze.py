@@ -63,6 +63,49 @@ def main() -> None:
         "No code default, test constant, private-testnet allocation or historical genesis output may silently become mainnet monetary policy.",
     )
 
+    score_path = "docs/MONETARY_SCORE_V3_0_0.md"
+    score = read(score_path)
+    require(
+        score,
+        score_path,
+        "# PulseDAG v3.0.0 canonical monetary score",
+        "ALGORITHM APPROVED / FINALITY + NETWORK CADENCE FREEZE PENDING",
+        "genesis has `monetary_score = 0`",
+        "authoritative deterministic ordered DAG",
+        "The current GHOSTDAG `blue_score`",
+        "is **not** the v3 monetary score",
+        "(activation_score, target_interval_ns)",
+        "1 BPS / ~1 s",
+        "2 BPS / ~500 ms",
+        "4 BPS / ~250 ms",
+        "subsidy(M) = target_issuance(economic_time(M)) - target_issuance(economic_time(M-1))",
+        "start of economic year 57",
+        "state-derived",
+        "both the approved 3,600 economic-second maturity and the frozen v3 finality/settlement rule",
+        "crates/pulsedag-core/src/monetary_v3.rs",
+        "overall launch state remains `PRE_FREEZE` and `launch_ready=false`",
+    )
+
+    implementation_path = "crates/pulsedag-core/src/monetary_v3.rs"
+    implementation = read(implementation_path)
+    require(
+        implementation,
+        implementation_path,
+        "MAX_SUPPLY_ATOMS: u64 = 100_000_000_000_000_000",
+        "YEAR1_MINING_BUDGET_ATOMS: u64 = 50_000_000_000_000_000",
+        "ECONOMIC_YEAR_SECONDS: u64 = 31_536_000",
+        "COINBASE_MATURITY_SECONDS: u64 = 3_600",
+        "TERMINAL_ECONOMIC_YEAR: u128 = 57",
+        "pub struct MonetaryCadenceSegment",
+        "pub fn economic_time_ns_for_score",
+        "pub fn target_issuance_atoms",
+        "pub fn subsidy_atoms_for_score",
+        "pub fn economic_maturity_reached",
+        "one_two_and_four_bps_have_identical_one_second_issuance",
+        "cadence_activation_is_continuous_and_does_not_reprice_history",
+        "year_boundary_and_terminal_residual_are_exact",
+    )
+
     genesis_path = "docs/GENESIS_V3_0_0.md"
     genesis = read(genesis_path)
     require(
@@ -86,6 +129,10 @@ def main() -> None:
         params,
         params_path,
         "# PulseDAG v3.0.0 network-parameter freeze",
+        "canonical monetary-score algorithm/version/digest",
+        "authoritative ordered-DAG ordinal, genesis score 0",
+        "(activation_score, target_interval_ns)",
+        "consensus BPS change and monetary interval change activate at the same monetary score",
         "Mainnet identity",
         "Parallel-testnet identity",
         "mainnet chain ID != testnet chain ID",
@@ -121,11 +168,16 @@ def main() -> None:
         "Release: `v3.0.0`",
         "Monetary policy freeze",
         "Policy version: `v3.0.0-mainnet-policy-v1`",
+        "docs/MONETARY_SCORE_V3_0_0.md",
         "Maximum mainnet supply: `1,000,000,000.00000000 coins`",
         "Mainnet genesis-issued supply: `0 coins`",
         "Year-1 mining budget: `500,000,000.00000000 coins`",
         "Annual subsidy reduction: `50% every 31,536,000 economic seconds (365 days)`",
+        "canonical monetary_score = authoritative ordered-DAG ordinal; genesis = 0; not height and not raw header blue_score",
+        "versioned `(activation_score, target_interval_ns)` cadence segments",
         "Coinbase maturity: `3,600 economic seconds`",
+        "state-derived/provisional before finality",
+        "start of economic year 57",
         "Consensus fee burn: `0% in v3.0.0`",
         "Mainnet genesis and network identity",
         "Parallel-testnet genesis and network identity",
@@ -144,7 +196,7 @@ def main() -> None:
     if state == "PRE_FREEZE":
         if not has_tbd(pre_go):
             fail("PRE_FREEZE manifest unexpectedly contains no pre-GO TBD fields")
-        print("PASS: v3.0.0 approved mainnet monetary policy and freeze contracts are present; launch_ready=false; state=PRE_FREEZE")
+        print("PASS: v3.0.0 approved mainnet monetary policy, monetary-score algorithm and freeze contracts are present; launch_ready=false; state=PRE_FREEZE")
         return
 
     # FROZEN means the complete pre-GO identity/evidence set is immutable and
@@ -154,6 +206,8 @@ def main() -> None:
         fail("FROZEN launch manifest still contains pre-GO TBD fields")
     if has_tbd(policy):
         fail("FROZEN launch manifest but monetary-policy document still contains TBD fields")
+    if has_tbd(score):
+        fail("FROZEN launch manifest but monetary-score document still contains TBD fields")
     if has_tbd(params):
         fail("FROZEN launch manifest but network-parameter document still contains TBD fields")
 
