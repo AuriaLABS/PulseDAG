@@ -139,8 +139,8 @@ pub fn target_issuance_atoms(economic_time_ns: u128) -> Result<u64, MonetaryV3Er
         .checked_mul(ECONOMIC_YEAR_NS)
         .ok_or(MonetaryV3Error::ArithmeticOverflow)?;
     let remaining_atoms = ceil_div_u128(remaining_numerator, remaining_denominator);
-    let remaining_atoms = u64::try_from(remaining_atoms)
-        .map_err(|_| MonetaryV3Error::ArithmeticOverflow)?;
+    let remaining_atoms =
+        u64::try_from(remaining_atoms).map_err(|_| MonetaryV3Error::ArithmeticOverflow)?;
 
     MAX_SUPPLY_ATOMS
         .checked_sub(remaining_atoms)
@@ -220,12 +220,12 @@ mod tests {
 
     #[test]
     fn one_two_and_four_bps_have_identical_one_second_issuance() {
-        let one_second_1bps = target_issuance_atoms(economic_time_ns_for_score(1, &BPS1).unwrap())
-            .unwrap();
-        let one_second_2bps = target_issuance_atoms(economic_time_ns_for_score(2, &BPS2).unwrap())
-            .unwrap();
-        let one_second_4bps = target_issuance_atoms(economic_time_ns_for_score(4, &BPS4).unwrap())
-            .unwrap();
+        let one_second_1bps =
+            target_issuance_atoms(economic_time_ns_for_score(1, &BPS1).unwrap()).unwrap();
+        let one_second_2bps =
+            target_issuance_atoms(economic_time_ns_for_score(2, &BPS2).unwrap()).unwrap();
+        let one_second_4bps =
+            target_issuance_atoms(economic_time_ns_for_score(4, &BPS4).unwrap()).unwrap();
         assert_eq!(one_second_1bps, 1_585_489_599);
         assert_eq!(one_second_1bps, one_second_2bps);
         assert_eq!(one_second_1bps, one_second_4bps);
@@ -252,9 +252,18 @@ mod tests {
                 target_interval_ns: 250_000_000,
             },
         ];
-        assert_eq!(economic_time_ns_for_score(10, &schedule).unwrap(), 10_000_000_000);
-        assert_eq!(economic_time_ns_for_score(20, &schedule).unwrap(), 15_000_000_000);
-        assert_eq!(economic_time_ns_for_score(24, &schedule).unwrap(), 16_000_000_000);
+        assert_eq!(
+            economic_time_ns_for_score(10, &schedule).unwrap(),
+            10_000_000_000
+        );
+        assert_eq!(
+            economic_time_ns_for_score(20, &schedule).unwrap(),
+            15_000_000_000
+        );
+        assert_eq!(
+            economic_time_ns_for_score(24, &schedule).unwrap(),
+            16_000_000_000
+        );
     }
 
     #[test]
