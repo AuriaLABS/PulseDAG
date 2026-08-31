@@ -37,9 +37,19 @@ def main() -> None:
         policy,
         policy_path,
         "# PulseDAG v3.0.0 monetary policy",
-        "Approved policy direction: annual economic halving",
+        "MAINNET POLICY APPROVED / IMPLEMENTATION + TESTNET FREEZE PENDING",
+        "maximum supply: **1,000,000,000.00000000 coins**",
+        "atomic precision: **8 decimal places**",
+        "genesis-issued spendable mainnet supply: **0 coins**",
+        "premine / treasury / foundation allocation: **0 coins**",
+        "year-1 mining budget: **500,000,000.00000000 coins**",
         "50% every one economic year",
         "31,536,000 economic seconds (365 days)",
+        "15.854895991882293252",
+        "coinbase maturity: **3,600 economic seconds",
+        "consensus fee burn: **0%**",
+        "tail emission after the terminal monetary schedule: **none**",
+        "MAX_SUPPLY_ATOMS = 100_000_000_000_000_000",
         "changing the public DAG cadence must not accelerate or slow the monetary schedule",
         "Current implementation baseline",
         "GENESIS_SUPPLY = 1_000_000_000",
@@ -110,6 +120,13 @@ def main() -> None:
         manifest_path,
         "Release: `v3.0.0`",
         "Monetary policy freeze",
+        "Policy version: `v3.0.0-mainnet-policy-v1`",
+        "Maximum mainnet supply: `1,000,000,000.00000000 coins`",
+        "Mainnet genesis-issued supply: `0 coins`",
+        "Year-1 mining budget: `500,000,000.00000000 coins`",
+        "Annual subsidy reduction: `50% every 31,536,000 economic seconds (365 days)`",
+        "Coinbase maturity: `3,600 economic seconds`",
+        "Consensus fee burn: `0% in v3.0.0`",
         "Mainnet genesis and network identity",
         "Parallel-testnet genesis and network identity",
         "Mandatory separation assertions",
@@ -127,7 +144,7 @@ def main() -> None:
     if state == "PRE_FREEZE":
         if not has_tbd(pre_go):
             fail("PRE_FREEZE manifest unexpectedly contains no pre-GO TBD fields")
-        print("PASS: v3.0.0 freeze contracts are present; launch_ready=false; state=PRE_FREEZE")
+        print("PASS: v3.0.0 approved mainnet monetary policy and freeze contracts are present; launch_ready=false; state=PRE_FREEZE")
         return
 
     # FROZEN means the complete pre-GO identity/evidence set is immutable and
