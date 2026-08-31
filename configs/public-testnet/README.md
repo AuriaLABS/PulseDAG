@@ -1,30 +1,45 @@
-# v2.4.0 public-testnet package templates
+# v2.4.x public-testnet package templates — legacy validation surface
 
-These files are **pre-GO templates**, not launch configuration and not a frozen public network identity.
+Status: **SUPERSEDED FOR PROJECT LAUNCH PLANNING**
 
-They deliberately contain `__TASK31_FREEZE_REQUIRED__` placeholders and keep network activation fail-closed. Until issue #781 records an explicit `GO_PUBLIC_TESTNET`, the templates must retain:
+These files are retained for v2.4.x historical/private validation and regression coverage. They are **not** the configuration authority for the definitive PulseDAG public launch.
+
+The active launch roadmap is `docs/ROADMAP_V3_0_0.md`: PulseDAG targets **v3.0.0** in **Q4 2026**, with **mainnet and a parallel public testnet launched in one coordinated release window**. There is no standalone public-testnet launch or 30-day public-testnet acceptance clock required before mainnet.
+
+## Why these templates remain fail-closed
+
+The existing v2.4.x validator expects these legacy pre-GO templates to retain:
 
 - `PULSEDAG_PUBLIC_TESTNET_READY=false`
 - `PULSEDAG_THIRTY_DAY_PUBLIC_TESTNET_CLOCK_STARTED=false`
 - `PULSEDAG_CONTRACTS_ENABLED=false`
 - `PULSEDAG_ADMIN_ENABLED=false`
 - `PULSEDAG_P2P_ENABLED=false`
+- `__TASK31_FREEZE_REQUIRED__` placeholders
 
-Do not advertise DNS names, bootnodes, public RPC, peer IDs or Day 0 from these files.
+These values preserve historical v2.4.x safety semantics only. They must not be interpreted as the current v3 launch model.
 
-## Intended roles
+Do not advertise DNS names, bootnodes, public RPC, peer IDs or a launch date from these files.
 
-- `seed.env.template`: future public seed/bootnode role.
-- `node.env.template`: future ordinary public node.
-- `observer.env.template`: future read-only public observer/RPC role.
-- `miner.args.template`: future external miner CLI arguments. `pulsedag-miner` uses CLI flags rather than a node-style env configuration.
+## Intended historical roles
 
-## Render only after the launch-control gate
+- `seed.env.template`: v2.4.x future-public-seed template.
+- `node.env.template`: v2.4.x ordinary-node template.
+- `observer.env.template`: v2.4.x read-only public observer/RPC template.
+- `miner.args.template`: v2.4.x external miner arguments.
 
-After the private burn-in and 5-node/4-miner rehearsal pass on one exact release SHA, Task31/#781 must freeze and record the source SHA, chain ID, network profile, genesis/config digests, node/miner artifact digests, bootnode peer IDs/multiaddrs and public endpoint ownership.
+## Do not promote these files to v3 production
 
-Only then may an operator copy a template to a host-local file and replace every `__TASK31_FREEZE_REQUIRED__` placeholder with the values recorded in the launch-control evidence. P2P/public exposure remains disabled until the explicit GO is recorded.
+The old workflow referenced `GO_PUBLIC_TESTNET`, Day 0 and a 30-day public-testnet clock. That sequencing is superseded.
 
-The repository validator `scripts/validate_v2_4_0_public_hardening.py` fails if a pre-GO template loses these guardrails or accidentally contains apparent credentials/private keys.
+For v3.0.0:
 
-See `docs/runbooks/V2_4_0_PUBLIC_TESTNET_PREP.md` and root `SECURITY.md`.
+- use `configs/v3-launch/README.md` as the placeholder configuration authority until exact identities are frozen;
+- freeze separate mainnet and parallel-testnet chain IDs, network profiles, genesis hashes, bootnodes and endpoints;
+- tie both networks to one exact v3.0.0 release candidate and provenance set;
+- require the final `GO_V3_DUAL_LAUNCH` decision in #781;
+- launch both networks in the coordinated Q4 release window.
+
+The repository validator `scripts/validate_v2_4_0_public_hardening.py` remains a legacy compatibility check for this v2.4.x package. It is not the v3 launch gate.
+
+See `docs/ROADMAP_V3_0_0.md`, `docs/runbooks/V3_0_0_DUAL_NETWORK_LAUNCH.md`, `configs/v3-launch/README.md` and root `SECURITY.md`.
