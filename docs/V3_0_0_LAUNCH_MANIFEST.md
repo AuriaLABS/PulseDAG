@@ -24,11 +24,13 @@ The section `Launch boundary — populate only after GO` is intentionally exclud
 
 ## Monetary policy freeze
 
-Approved mainnet policy parameters and the canonical monetary-score algorithm are selected, but this section remains pre-freeze until the exact ordering/finality integration, network cadence table, testnet policy, vectors and digests are attached.
+Approved mainnet policy parameters, canonical monetary-score algorithm, deferred-settlement architecture and economic-time finality architecture are selected, but this section remains pre-freeze until exact live state integration, network cadence/finality tables, testnet policy, vectors and digests are attached.
 
 - Policy version: `v3.0.0-mainnet-policy-v1`
 - `docs/MONETARY_POLICY_V3_0_0.md` SHA-256: `TBD`
 - `docs/MONETARY_SCORE_V3_0_0.md` SHA-256: `TBD`
+- `docs/REWARD_SETTLEMENT_V3_0_0.md` SHA-256: `TBD`
+- `docs/FINALITY_V3_0_0.md` SHA-256: `TBD`
 - Consensus monetary constants/config digest: `TBD`
 - Atomic unit/precision: `8 decimals / 100,000,000 atoms per coin`
 - Maximum mainnet supply: `1,000,000,000.00000000 coins`
@@ -47,7 +49,15 @@ Approved mainnet policy parameters and the canonical monetary-score algorithm ar
 - Emission schedule implementation/vector digest: `TBD`
 - Coinbase maturity: `3,600 economic seconds`
 - Reward settlement: state-derived/provisional before finality; exact settlement implementation digest `TBD`
+- Reward-settlement source: `crates/pulsedag-core/src/reward_settlement_v3.rs`; exact frozen source digest `TBD`
 - Reward finality policy/version/digest: `TBD`
+- Finality source: `crates/pulsedag-core/src/finality_v3.rs`; exact frozen source digest `TBD`
+- Mainnet finality delay in economic seconds: `TBD`
+- Parallel-testnet finality delay in economic seconds: `TBD`
+- Finality-conflict detection/resolution policy/version/digest: `TBD`
+- Finality persistence/snapshot schema digest: `TBD`
+- Pruning/checkpoint policy/version/digest: `TBD`
+- Pruning duration/depth and retained-context contract: `TBD`
 - Ordinary transaction fees: `100% eligible miner/reward recipient`
 - Programmable compute/state fees: `100% eligible miner/reward recipient`
 - Proof-verification fees: `100% eligible miner/reward recipient`
@@ -140,6 +150,12 @@ Approved mainnet policy parameters and the canonical monetary-score algorithm ar
 - cadence-transition continuity vectors: `TBD`
 - provisional-reorder/final-reward-ledger vectors: `TBD`
 - coinbase economic-maturity + finality vectors: `TBD`
+- finality 1/2/4-BPS economic-time equivalence vectors: `TBD`
+- finality cadence-transition continuity vectors: `TBD`
+- finality monotonic replay/restart vectors: `TBD`
+- finality protected-prefix conflict vectors: `TBD`
+- partition/rejoin finality-conflict recovery vectors: `TBD`
+- finality/pruning separation invariant: `TBD`
 - fee/program/proof accounting vectors: `TBD`
 - zero-genesis-issuance invariant: `TBD`
 - hard-cap / year-57 terminal-residual invariant: `TBD`
@@ -151,6 +167,8 @@ Approved mainnet policy parameters and the canonical monetary-score algorithm ar
 - >=168 contiguous hours exact-candidate release burn-in: `TBD`
 - 30 accepted days programmability-enabled exact-candidate evidence: `TBD`
 - snapshot/prune/restore/rejoin evidence: `TBD`
+- finality persistence/restart/rejoin evidence: `TBD`
+- finality-conflict operational drill: `TBD`
 - clean bootstrap evidence: `TBD`
 - partition/seed-loss/GPU-loss/chaos evidence: `TBD`
 
@@ -165,6 +183,7 @@ Approved mainnet policy parameters and the canonical monetary-score algorithm ar
 - DNS/TLS ownership: `TBD`
 - Firewall/admin-plane review: `TBD`
 - Monitoring/alerting dashboards and owners: `TBD`
+- Finality-conflict alert/incident owner and runbook: `TBD`
 - Backup/restore policy evidence: `TBD`
 - NTP/time-source monitoring: `TBD`
 - Incident/status communication path: `TBD`
@@ -182,11 +201,14 @@ Before freeze all must be `PASS`:
 - Wallet cross-network signing/broadcast fails closed: `TBD`
 - Miner cross-network job/submission fails closed: `TBD`
 - Contract/proof/application replay is domain separated: `TBD`
+- Mainnet/testnet finality state/policy identities cannot be silently interchanged: `TBD`
 
 ## Freeze approvals
 
 - Monetary-policy parameter approval: `APPROVED` — 1B hard cap / zero premine / 500M year-1 / annual halving / 3,600s maturity / miner fees / zero burn
 - Monetary-score algorithm approval: `APPROVED` — authoritative ordered-DAG ordinal + versioned cadence segments + cumulative-difference issuance
+- Deferred reward-settlement architecture approval: `APPROVED` — amountless chain-bound reward claim + state-derived subsidy/fees + finality+maturity settlement
+- Finality architecture approval: `APPROVED` — policy-digested economic-time delay + selected-chain anchor + ordered-prefix binding + monotonic conflict detection; production duration/conflict resolution/pruning still TBD
 - Monetary-policy implementation freeze: `TBD`
 - Reward-settlement/finality freeze: `TBD`
 - Genesis ceremony approval: `TBD`
@@ -212,6 +234,6 @@ These fields may remain `TBD` while the manifest is `FROZEN` and awaiting the #7
 
 ## Immutability rule
 
-Once `Launch state: FROZEN` is recorded, any change to source SHA, consensus, monetary policy, genesis input, chain identity, signing domain, release artifact, wallet signing behavior or security-relevant dependency requires an explicit rebaseline. A changed genesis input always creates a new network identity.
+Once `Launch state: FROZEN` is recorded, any change to source SHA, consensus, monetary policy, finality policy, genesis input, chain identity, signing domain, release artifact, wallet signing behavior or security-relevant dependency requires an explicit rebaseline. A changed genesis input always creates a new network identity.
 
 After #781 records GO and the launch occurs, fill the post-GO launch-boundary fields without changing the frozen pre-GO identity. If the launch requires changing a frozen pre-GO field, stop and rebaseline instead of editing around the freeze.
