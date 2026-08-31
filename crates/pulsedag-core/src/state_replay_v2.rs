@@ -145,8 +145,7 @@ fn verify_compact_pruned_authoritative_checkpoint_v2(
     for entry in &state.dag.ordered_dag_conflict_diagnostics {
         let Some(block_hash) = conflict_diagnostic_block_hash(entry) else {
             return Err(PulseError::NonDeterministicState(
-                "v2.4 compact checkpoint conflict diagnostic is missing block identity"
-                    .to_string(),
+                "v2.4 compact checkpoint conflict diagnostic is missing block identity".to_string(),
             ));
         };
         if !state.dag.blocks.contains_key(block_hash) {
