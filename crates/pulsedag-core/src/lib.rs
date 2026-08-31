@@ -18,6 +18,7 @@ pub mod mining_protocol;
 pub mod mining_state_v2;
 pub mod mining_template_v2;
 pub mod mining_v2;
+pub mod monetary_v3;
 pub mod network_block_v2;
 pub mod network_context_v2;
 pub mod network_runtime_v2;
