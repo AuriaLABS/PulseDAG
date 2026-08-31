@@ -436,6 +436,7 @@ mod tests {
             .dag
             .merge_set_blues
             .insert("merge".into(), vec!["loser-block".into()]);
+        state.dag.best_height = 3;
 
         state
     }
