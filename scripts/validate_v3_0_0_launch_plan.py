@@ -84,6 +84,7 @@ def main() -> None:
         "maximum supply: **1,000,000,000.00000000 coins**",
         "genesis-issued spendable mainnet supply: **0 coins**",
         "year-1 mining budget: **500,000,000.00000000 coins**",
+        "The **annual budget is consensus authority**",
         "50% every one economic year",
         "31,536,000 economic seconds (365 days)",
         "coinbase maturity: **3,600 economic seconds",
