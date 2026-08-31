@@ -53,20 +53,29 @@ def main() -> None:
 
     require(
         "docs/ROADMAP_V2_5_0.md",
-        "Network Scale, Production GPU Mining and Adversarial Resilience",
+        "APPROVED MANDATORY V3.0.0 WORKSTREAM",
+        "v2.4.x -> v2.5.0 scale/resilience -> v2.6.0 programmability -> v3.0.0 integrated release",
         "P2P v3 and eclipse resistance",
         "Production GPU mining: NVIDIA + AMD/ATI",
         "Million-block deterministic DAG replay",
+        "168 contiguous hours",
+        "Integrated v3 pre-launch network acceptance",
+        "V2_5_WORKSTREAM_PASS",
+        "not** `GO_V3_DUAL_LAUNCH`" if False else "It is **not** `GO_V3_DUAL_LAUNCH`",
     )
 
     require(
         "docs/ROADMAP_V2_6_0.md",
-        "Programmability, Smart Contracts and Verifiable Applications",
+        "APPROVED MANDATORY V3.0.0 WORKSTREAM",
+        "v2.4.x -> v2.5.0 scale/resilience -> v2.6.0 programmability -> v3.0.0 integrated release",
         "UTXO Covenants v1",
         "Contract Transaction v3",
         "PulseScript",
         "Deterministic Contract VM",
         "Programmability million-transaction replay",
+        "30-day programmability exact-candidate burn-in",
+        "V2_6_WORKSTREAM_PASS",
+        "It is **not** `GO_V3_DUAL_LAUNCH`",
     )
 
     require(
@@ -112,7 +121,10 @@ def main() -> None:
     require(
         "docs/runbooks/V3_0_0_DUAL_NETWORK_LAUNCH.md",
         "PRE-GO / Q4 2026 TARGET / NOT LAUNCHED",
-        "mainnet + parallel-testnet",
+        "v2.4.x -> v2.5.0 scale/resilience -> v2.6.0 programmability -> v3.0.0 integrated release",
+        ">=1,000,000-block deterministic DAG replay",
+        ">=1,000,000 programmable-operation deterministic replay",
+        "30 accepted days of programmability-enabled exact-candidate pre-launch evidence",
         "GO_V3_DUAL_LAUNCH",
         "different chain IDs",
         "different genesis blocks/hashes",
@@ -132,10 +144,11 @@ def main() -> None:
 
     require(
         "SECURITY.md",
-        "v3.0.0",
-        "Q4 2026",
+        "v2.5 scale/resilience/P2P/GPU-mining workstream",
+        "v2.6 programmability/smart-contract/verifiable-application workstream",
         "GO_V3_DUAL_LAUNCH",
-        "mainnet and the parallel testnet",
+        "CPU/NVIDIA/AMD PoW implementations",
+        "contract/VM/proof execution must be deterministic",
         "public_testnet_ready=false",
         "thirty_day_public_testnet_clock_started=false",
     )
@@ -158,10 +171,11 @@ def main() -> None:
 
     require(
         ".github/pull_request_template.md",
-        "v3.0.0 launch impact",
-        "mainnet / parallel testnet / both",
-        "No existing v2.4.x tag/binary/evidence is relabeled as v3.0.0",
+        "v2.5 scale/resilience/GPU requirements",
+        "v2.6 programmability/smart-contract requirements",
         "Mainnet and parallel-testnet identities remain explicitly separated",
+        "CPU/NVIDIA/AMD PoW equivalence",
+        "Contract/application/proof execution remains deterministic and resource bounded",
     )
 
     print("PASS: integrated v2.5 + v2.6 -> v3.0.0 Q4 dual-network launch authority is internally consistent")
