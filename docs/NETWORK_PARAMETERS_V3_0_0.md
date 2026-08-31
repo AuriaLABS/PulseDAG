@@ -25,6 +25,8 @@ Freeze for each public network:
 - target block cadence / accepted operating point;
 - timestamp median/future-drift rules;
 - finality rule/version;
+- finality policy digest and delay in economic seconds from `FINALITY_V3_0_0.md`;
+- finality-conflict detection and resolution policy/version/digest;
 - maximum block/transaction/script/contract/proof sizes;
 - monetary-policy version/digest;
 - canonical monetary-score algorithm/version/digest from `MONETARY_SCORE_V3_0_0.md`;
@@ -36,7 +38,8 @@ Freeze for each public network:
 - fee and burn/distribution rules;
 - contract/VM/proof versions and activation boundary;
 - storage/schema/snapshot compatibility version;
-- pruning/checkpoint/bootstrap rules.
+- pruning/checkpoint/bootstrap rules;
+- pruning policy digest and retained-context requirement, independently from finality.
 
 Every consensus parameter must be included in a deterministic configuration digest or compiled-constant manifest so two nodes can prove they are on the same network contract.
 
@@ -58,6 +61,16 @@ These are supported/reference mappings, not authorization of the final launch ca
 
 A reward becomes spendable only after both the approved 3,600 economic-second maturity and the frozen v3 finality/settlement rule protect its monetary position. The legacy genesis-only finality baseline is not sufficient for production reward settlement.
 
+## Finality, conflict and pruning freeze
+
+The v3 finality delay is specified in **economic seconds**, not raw block count. `crates/pulsedag-core/src/finality_v3.rs` derives a selected-chain anchor whose deterministic ordered-DAG position is old enough under the frozen cadence table, then binds the complete ordered prefix through that anchor.
+
+The production finality policy MUST include its deterministic parameter digest. A previously finalized prefix must be revalidated before finality advances. If the exact boundary block or protected ordered prefix changes, the node enters a finality-conflict condition and must not silently rewrite the boundary or continue materializing deferred reward UTXOs under the conflicting view.
+
+Finality and pruning are separate. Advancing finality does not by itself authorize history deletion. The production pruning/checkpoint policy must freeze its own duration/depth, retained context, proof semantics and conflict-recovery requirements.
+
+The exact mainnet/testnet finality delay, conflict-resolution policy and pruning policy remain `TBD` until adversarial partition/rejoin, replay, restore and bootstrap evidence is accepted.
+
 ## Mainnet identity — final values TBD
 
 - Profile: `TBD`
@@ -70,6 +83,13 @@ A reward becomes spendable only after both the approved 3,600 economic-second ma
 - Monetary-score implementation digest: `TBD`
 - Initial monetary cadence segment table: `TBD`
 - Reward-settlement/finality digest: `TBD`
+- Finality policy name/version: `TBD`
+- Finality policy SHA-256 digest: `TBD`
+- Finality delay in economic seconds: `TBD`
+- Finality-conflict policy/version/digest: `TBD`
+- Finality persistence/snapshot schema digest: `TBD`
+- Pruning/checkpoint policy/version/digest: `TBD`
+- Pruning duration/depth and retained-context contract: `TBD`
 - Address/HRP/prefix: `TBD`
 - Default P2P port: `TBD`
 - Public RPC/API port(s): `TBD`
@@ -92,6 +112,13 @@ A reward becomes spendable only after both the approved 3,600 economic-second ma
 - Monetary-score implementation digest: `TBD`
 - Initial monetary cadence segment table: `TBD`
 - Reward-settlement/finality digest: `TBD`
+- Finality policy name/version: `TBD`
+- Finality policy SHA-256 digest: `TBD`
+- Finality delay in economic seconds: `TBD`
+- Finality-conflict policy/version/digest: `TBD`
+- Finality persistence/snapshot schema digest: `TBD`
+- Pruning/checkpoint policy/version/digest: `TBD`
+- Pruning duration/depth and retained-context contract: `TBD`
 - Address/HRP/prefix: `TBD`
 - Default P2P port: `TBD`
 - Public RPC/API port(s): `TBD`
@@ -114,7 +141,8 @@ Before GO, automated tests must prove:
 - node handshake fails closed on network mismatch;
 - miner job/submission fails closed on network mismatch;
 - wallet signing/broadcast fails closed on network mismatch;
-- contract/application/proof domain separation prevents cross-network replay.
+- contract/application/proof domain separation prevents cross-network replay;
+- mainnet/testnet finality policy identities are explicitly network-bound or independently frozen so one network cannot silently consume the other's finality state.
 
 ## Bootstrap and peer discovery
 
@@ -141,23 +169,30 @@ Freeze:
 - event-stream limits;
 - admin/operator RPC bind policy;
 - metrics exposure policy;
-- wallet relay boundary.
+- wallet relay boundary;
+- finality-conflict visibility and any explicitly authorized recovery/control surface.
 
-Admin/operator surfaces must remain loopback/private-management by default and must not be included in public seed/RPC templates.
+Admin/operator surfaces must remain loopback/private-management by default and must not be included in public seed/RPC templates. No public RPC may silently override a frozen finality boundary.
 
 ## Wallet and address/network identity
 
 Before launch, the wallet must derive/display the active network unambiguously and bind signatures/submissions to the correct chain/domain. Freeze address encoding/prefix/HRP, network selection UX, derivation policy and transaction/contract signing domain.
 
+Wallet balance/status APIs must distinguish deferred/provisional rewards from finalized spendable reward UTXOs and must not count a provisional reward claim as spendable balance.
+
 ## Checkpoints and fast bootstrap
 
 If checkpoints or snapshot manifests are used, freeze their trust model and verification semantics. A checkpoint may accelerate bootstrap but must not silently redefine consensus. Record exact checkpoint height/score/hash/state-root and signer/attestation policy where applicable.
+
+Checkpoint/pruning imports must also prove compatibility with the frozen finality boundary and reward-settlement state. A snapshot that omits or contradicts the last persisted finality policy identity/boundary must fail closed.
 
 ## Activation and upgrades
 
 v3.0.0 genesis-time protocol activation must be explicit. Any feature not active at genesis requires an exact activation condition/version and mixed-version behavior. Future upgrades must rehearse on parallel testnet and require separately authorized mainnet activation.
 
 A future cadence change is consensus-visible and monetary-visible. Its new target cadence and corresponding `target_interval_ns` MUST activate at the same frozen monetary score; changing one without the other is invalid.
+
+A future finality-policy change is consensus-visible. It requires a new deterministic policy identity/digest, explicit activation boundary, compatibility/replay rules for the previously finalized prefix and rehearsed conflict behavior. It must not be achieved by a local configuration override on mainnet.
 
 ## Required artifacts
 
@@ -171,6 +206,10 @@ The final freeze produces:
 - monetary-policy digest;
 - monetary-score/cadence-segment digest;
 - reward-settlement/finality digest;
+- finality policy identity/digest and economic-time delay;
+- finality-conflict policy/version/digest;
+- finality persistence/snapshot schema digest;
+- pruning/checkpoint policy/version/digest and retained-context contract;
 - protocol/activation manifest;
 - wallet/network-domain manifest;
 - checkpoint/bootstrap manifest where applicable.
