@@ -4,7 +4,9 @@ Launch state: **PRE_FREEZE**
 
 This is the single human-readable authority that binds the exact v3.0.0 release candidate, monetary policy, genesis identities, network configuration, release artifacts and operations evidence used by #781.
 
-`GO_V3_DUAL_LAUNCH` MUST NOT be recorded while any required field below is `TBD`, while `Launch state` is not `FROZEN`, or while referenced evidence belongs to incompatible candidates.
+`GO_V3_DUAL_LAUNCH` MUST NOT be recorded while any **pre-GO freeze field** is `TBD`, while `Launch state` is not `FROZEN`, or while referenced evidence belongs to incompatible candidates.
+
+The section `Launch boundary — populate only after GO` is intentionally excluded from the pre-GO `TBD` prohibition. Those fields document the decision and actual launch after #781 authorizes it. Optional pre-GO items that are intentionally unsupported must be recorded explicitly as `NOT_APPLICABLE` rather than left `TBD`.
 
 ## Release identity
 
@@ -166,9 +168,11 @@ Before freeze all must be `PASS`:
 - Wallet/custody approval (#819): `TBD`
 - Operations approval: `TBD`
 - #794 completion reference: `TBD`
-- #781 final-decision reference: `TBD`
+- Launch-control authority: `#781`
 
 ## Launch boundary — populate only after GO
+
+These fields may remain `TBD` while the manifest is `FROZEN` and awaiting the #781 decision. They are not inputs to `launch_ready=true`.
 
 - #781 decision: `TBD`
 - Decision UTC: `TBD`
@@ -182,3 +186,5 @@ Before freeze all must be `PASS`:
 ## Immutability rule
 
 Once `Launch state: FROZEN` is recorded, any change to source SHA, consensus, monetary policy, genesis input, chain identity, signing domain, release artifact, wallet signing behavior or security-relevant dependency requires an explicit rebaseline. A changed genesis input always creates a new network identity.
+
+After #781 records GO and the launch occurs, fill the post-GO launch-boundary fields without changing the frozen pre-GO identity. If the launch requires changing a frozen pre-GO field, stop and rebaseline instead of editing around the freeze.
