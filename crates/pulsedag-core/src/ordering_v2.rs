@@ -242,8 +242,9 @@ fn build_priorities(
 ///
 /// The calculator is intentionally fail-closed: every accepted block must be
 /// on the selected chain or classified exactly once by a selected-chain anchor,
-/// every referenced parent must be present, every block must have blue-work
-/// metadata, and the accepted graph must be acyclic.
+/// every referenced parent must be present unless it is a historical parent
+/// committed by the retained floor of a compact-pruned checkpoint, every block
+/// must have blue-work metadata, and the retained accepted graph must be acyclic.
 ///
 /// Among currently topology-ready blocks, priority is frozen as:
 /// selected-chain anchor index, blue before red before selected-chain anchor,
@@ -253,6 +254,16 @@ pub fn derive_ordered_dag_v2(state: &ChainState) -> Result<OrderedDagV2, Orderin
     let priorities = build_priorities(state)?;
     let mut indegree = BTreeMap::<Hash, usize>::new();
     let mut children = BTreeMap::<Hash, BTreeSet<Hash>>::new();
+    let retained_floor = state
+        .dag
+        .blocks
+        .values()
+        .map(|block| block.header.height)
+        .min()
+        .unwrap_or(0);
+    let compact_pruned_checkpoint = !state.dag.blocks.is_empty()
+        && retained_floor > 0
+        && !state.dag.blocks.contains_key(&state.dag.genesis_hash);
 
     for (hash, block) in &state.dag.blocks {
         indegree.entry(hash.clone()).or_insert(0);
@@ -262,6 +273,9 @@ pub fn derive_ordered_dag_v2(state: &ChainState) -> Result<OrderedDagV2, Orderin
                 continue;
             }
             if !state.dag.blocks.contains_key(parent) {
+                if compact_pruned_checkpoint && block.header.height == retained_floor {
+                    continue;
+                }
                 return Err(OrderingV2Error::MissingParent {
                     block: hash.clone(),
                     parent: parent.clone(),
@@ -388,6 +402,19 @@ mod tests {
         state
     }
 
+    fn compact_pruned_diamond_state() -> ChainState {
+        let mut state = diamond_state(false);
+        let genesis = state.dag.genesis_hash.clone();
+        state.dag.blocks.remove(&genesis);
+        state.dag.blue_work.remove(&genesis);
+        state.dag.selected_parents.remove(&genesis);
+        state.dag.merge_set_blues.remove(&genesis);
+        state.dag.merge_set_reds.remove(&genesis);
+        state.dag.selected_chain.retain(|hash| hash != &genesis);
+        state.dag.selected_parents.insert("a".into(), None);
+        state
+    }
+
     #[test]
     fn diamond_order_is_topological_and_arrival_independent() {
         let a = derive_ordered_dag_v2(&diamond_state(false)).unwrap();
@@ -396,6 +423,26 @@ mod tests {
         assert_eq!(a, b);
         assert_eq!(a.blocks[1..], ["a", "b", "c"]);
         assert_eq!(a.ordering_version, GHOSTDAG_V1_ORDERING_VERSION);
+    }
+
+    #[test]
+    fn compact_pruned_boundary_parents_are_treated_as_checkpoint_commitments() {
+        let ordered = derive_ordered_dag_v2(&compact_pruned_diamond_state()).unwrap();
+        assert_eq!(ordered.blocks, ["a", "b", "c"]);
+    }
+
+    #[test]
+    fn compact_pruned_missing_parent_above_boundary_still_fails_closed() {
+        let mut state = compact_pruned_diamond_state();
+        state.dag.blocks.get_mut("c").unwrap().header.parents = vec!["missing".into()];
+
+        assert_eq!(
+            derive_ordered_dag_v2(&state),
+            Err(OrderingV2Error::MissingParent {
+                block: "c".into(),
+                parent: "missing".into()
+            })
+        );
     }
 
     #[test]
