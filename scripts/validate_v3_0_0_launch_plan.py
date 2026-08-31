@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fail-closed static validator for the v3.0.0 dual-network launch authority."""
+"""Fail-closed static validator for the integrated v3.0.0 launch authority."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -30,50 +30,83 @@ def main() -> None:
         "GO_V3_DUAL_LAUNCH",
         "DELAY_V3_DUAL_LAUNCH",
         "NO_GO_V3_DUAL_LAUNCH",
+        "v2.5.0 technical scope is incorporated into v3.0.0",
+        "v2.6.0 technical scope is incorporated into v3.0.0",
+        "P2P v3 and eclipse resistance",
+        "NVIDIA CUDA backend",
+        "AMD/ATI production backend",
+        "1,000,000 valid DAG blocks",
+        "168 contiguous hours",
+        "UTXO Covenants v1",
+        "Contract Transaction v3",
+        "PulseScript",
+        "Deterministic Contract VM",
+        "Based Applications",
+        "PulseProgs / Verifiable Programs",
+        "1,000,000 programmable transactions/operations",
+        "30 accepted days of programmability-enabled exact-candidate burn-in evidence",
         "1 September 2026",
-        "30-day public-testnet clock",
-        "v2.4.0 and v2.4.1",
-        "independent public network identities",
+        "30-day public-testnet clock before mainnet",
     )
-    if "standalone public testnet first" in roadmap.lower():
-        fail("roadmap reintroduced standalone-testnet-first sequencing")
+    if "v2.5.0 and v2.6.0 therefore remain useful requirement documents" not in roadmap:
+        fail("roadmap no longer preserves v2.5/v2.6 as v3 input workstreams")
+
+    require(
+        "docs/ROADMAP_V2_5_0.md",
+        "Network Scale, Production GPU Mining and Adversarial Resilience",
+        "P2P v3 and eclipse resistance",
+        "Production GPU mining: NVIDIA + AMD/ATI",
+        "Million-block deterministic DAG replay",
+    )
+
+    require(
+        "docs/ROADMAP_V2_6_0.md",
+        "Programmability, Smart Contracts and Verifiable Applications",
+        "UTXO Covenants v1",
+        "Contract Transaction v3",
+        "PulseScript",
+        "Deterministic Contract VM",
+        "Programmability million-transaction replay",
+    )
 
     require(
         "README.md",
         "definitive public-launch target is **v3.0.0 in Q4 2026**",
+        "v2.4.x -> v2.5.0 scale/resilience -> v2.6.0 programmability -> v3.0.0 integrated release",
+        "v2.5 scale/P2P/GPU/high-cadence/replay/resilience gates",
+        "v2.6 programmability/smart-contract/VM/assets/economics/replay gates",
         "mainnet and a parallel public testnet",
         "GO_V3_DUAL_LAUNCH",
         "PENDING_EXACT_CANDIDATE_EVIDENCE",
-        "public_testnet_ready=false",
-        "thirty_day_public_testnet_clock_started=false",
     )
 
     require(
         "docs/README.md",
-        "definitive public-launch target is now **v3.0.0 in Q4 2026**",
-        "GO_V3_DUAL_LAUNCH",
+        "v2.4.x -> v2.5.0 scale/resilience workstream -> v2.6.0 programmability workstream -> v3.0.0 integrated release",
+        "ROADMAP_V2_5_0.md",
+        "ROADMAP_V2_6_0.md",
         "ROADMAP_V3_0_0.md",
-        "V3_0_0_DUAL_NETWORK_LAUNCH.md",
-        "ROADMAP_V3_0_LONG_LIVED_CORE.md",
+        "30 accepted days of programmability-enabled exact-candidate pre-launch evidence",
     )
 
     require(
         "docs/VERSION_MATRIX.md",
-        "Definitive public-launch target | **v3.0.0**",
-        "Q4 2026 (October-December 2026)",
-        "mainnet + parallel public testnet in one coordinated release window",
+        "v2.5.0 workstream incorporated into v3.0.0",
+        "v2.6.0 workstream incorporated into v3.0.0",
+        "v2.4.x -> v2.5.0 scale/resilience workstream -> v2.6.0 programmability workstream -> v3.0.0 definitive release",
+        "Mandatory technical milestone incorporated into v3.0.0",
         "GO_V3_DUAL_LAUNCH",
-        "not a mandatory release rung",
         "PENDING_EXACT_CANDIDATE_EVIDENCE",
     )
 
     require(
         "docs/ROADMAP_V3_0_LONG_LIVED_CORE.md",
-        "SEQUENCING SUPERSEDED BY `ROADMAP_V3_0_0.md`",
-        "mainnet and a parallel public testnet",
-        "30-day stable-testnet burn-in before v3.0.0",
+        "v2.4.x -> v2.5.0 scale/resilience -> v2.6.0 programmability -> v3.0.0 integrated release",
+        "v2.5.0 workstream — mandatory input to v3",
+        "v2.6.0 workstream — mandatory input to v3",
+        ">=1,000,000-block deterministic DAG replay",
+        ">=1,000,000 programmable-operation deterministic replay",
         "GO_V3_DUAL_LAUNCH",
-        "not a prerequisite 30-day public launch phase",
     )
 
     require(
@@ -95,7 +128,6 @@ def main() -> None:
         "chain ID",
         "genesis",
         "bootnode peer IDs",
-        "Do not copy or promote `configs/public-testnet/`",
     )
 
     require(
@@ -132,7 +164,7 @@ def main() -> None:
         "Mainnet and parallel-testnet identities remain explicitly separated",
     )
 
-    print("PASS: v3.0.0 Q4 dual-network launch authority is internally consistent")
+    print("PASS: integrated v2.5 + v2.6 -> v3.0.0 Q4 dual-network launch authority is internally consistent")
 
 
 if __name__ == "__main__":
