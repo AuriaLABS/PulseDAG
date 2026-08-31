@@ -18,6 +18,7 @@ on:
       - docs/MONETARY_POLICY_V3_0_0.md
       - docs/MONETARY_SCORE_V3_0_0.md
       - docs/REWARD_SETTLEMENT_V3_0_0.md
+      - docs/FINALITY_V3_0_0.md
       - docs/GENESIS_V3_0_0.md
       - docs/NETWORK_PARAMETERS_V3_0_0.md
       - docs/V3_0_0_LAUNCH_MANIFEST.md
@@ -26,9 +27,11 @@ on:
       - docs/runbooks/V2_4_0_PUBLIC_TESTNET_PREP.md
       - crates/pulsedag-core/src/monetary_v3.rs
       - crates/pulsedag-core/src/reward_settlement_v3.rs
+      - crates/pulsedag-core/src/finality_v3.rs
       - scripts/validate_v3_0_0_launch_plan.py
       - scripts/validate_v3_0_0_network_freeze.py
       - scripts/validate_v3_0_0_reward_settlement.py
+      - scripts/validate_v3_0_0_finality.py
       - .github/pull_request_template.md
       - .github/workflows/v3_0_0_launch_plan.yml
   push:
@@ -48,6 +51,7 @@ on:
       - docs/MONETARY_POLICY_V3_0_0.md
       - docs/MONETARY_SCORE_V3_0_0.md
       - docs/REWARD_SETTLEMENT_V3_0_0.md
+      - docs/FINALITY_V3_0_0.md
       - docs/GENESIS_V3_0_0.md
       - docs/NETWORK_PARAMETERS_V3_0_0.md
       - docs/V3_0_0_LAUNCH_MANIFEST.md
@@ -56,9 +60,11 @@ on:
       - docs/runbooks/V2_4_0_PUBLIC_TESTNET_PREP.md
       - crates/pulsedag-core/src/monetary_v3.rs
       - crates/pulsedag-core/src/reward_settlement_v3.rs
+      - crates/pulsedag-core/src/finality_v3.rs
       - scripts/validate_v3_0_0_launch_plan.py
       - scripts/validate_v3_0_0_network_freeze.py
       - scripts/validate_v3_0_0_reward_settlement.py
+      - scripts/validate_v3_0_0_finality.py
       - .github/pull_request_template.md
       - .github/workflows/v3_0_0_launch_plan.yml
   workflow_dispatch:
@@ -97,9 +103,11 @@ jobs:
           python -m py_compile \
             scripts/validate_v3_0_0_launch_plan.py \
             scripts/validate_v3_0_0_network_freeze.py \
-            scripts/validate_v3_0_0_reward_settlement.py
+            scripts/validate_v3_0_0_reward_settlement.py \
+            scripts/validate_v3_0_0_finality.py
           python scripts/validate_v3_0_0_launch_plan.py
           python scripts/validate_v3_0_0_reward_settlement.py | tee /tmp/v3-reward-settlement-status.txt
+          python scripts/validate_v3_0_0_finality.py | tee /tmp/v3-finality-status.txt
           python scripts/validate_v3_0_0_network_freeze.py | tee /tmp/v3-network-freeze-status.txt
 
       - name: Record plan provenance
@@ -109,6 +117,7 @@ jobs:
           mkdir -p ci-evidence/v3-launch-plan
           cp /tmp/v3-network-freeze-status.txt ci-evidence/v3-launch-plan/network-freeze-status.txt
           cp /tmp/v3-reward-settlement-status.txt ci-evidence/v3-launch-plan/reward-settlement-status.txt
+          cp /tmp/v3-finality-status.txt ci-evidence/v3-launch-plan/finality-status.txt
           {
             echo "candidate_sha=${CANDIDATE_SHA}"
             echo "target_release=v3.0.0"
@@ -123,6 +132,7 @@ jobs:
             echo "monetary_score_contract_required=true"
             echo "monetary_schedule_implementation_required=true"
             echo "deferred_reward_settlement_required=true"
+            echo "economic_time_finality_required=true"
             echo "deterministic_genesis_contract_required=true"
             echo "network_parameter_freeze_required=true"
             echo "launch_manifest_required=true"
@@ -150,6 +160,7 @@ jobs:
             docs/MONETARY_POLICY_V3_0_0.md \
             docs/MONETARY_SCORE_V3_0_0.md \
             docs/REWARD_SETTLEMENT_V3_0_0.md \
+            docs/FINALITY_V3_0_0.md \
             docs/GENESIS_V3_0_0.md \
             docs/NETWORK_PARAMETERS_V3_0_0.md \
             docs/V3_0_0_LAUNCH_MANIFEST.md \
@@ -158,9 +169,11 @@ jobs:
             docs/runbooks/V2_4_0_PUBLIC_TESTNET_PREP.md \
             crates/pulsedag-core/src/monetary_v3.rs \
             crates/pulsedag-core/src/reward_settlement_v3.rs \
+            crates/pulsedag-core/src/finality_v3.rs \
             scripts/validate_v3_0_0_launch_plan.py \
             scripts/validate_v3_0_0_network_freeze.py \
             scripts/validate_v3_0_0_reward_settlement.py \
+            scripts/validate_v3_0_0_finality.py \
             .github/pull_request_template.md \
             .github/workflows/v3_0_0_launch_plan.yml \
             > ci-evidence/v3-launch-plan/SHA256SUMS
