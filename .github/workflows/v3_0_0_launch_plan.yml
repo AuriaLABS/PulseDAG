@@ -1,0 +1,99 @@
+name: v3.0.0 launch-plan gate
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - SECURITY.md
+      - configs/v3-launch/**
+      - configs/public-testnet/README.md
+      - docs/ROADMAP_V3_0_0.md
+      - docs/runbooks/V3_0_0_DUAL_NETWORK_LAUNCH.md
+      - docs/runbooks/V2_4_0_PUBLIC_TESTNET_PREP.md
+      - scripts/validate_v3_0_0_launch_plan.py
+      - .github/pull_request_template.md
+      - .github/workflows/v3_0_0_launch_plan.yml
+  push:
+    branches:
+      - main
+    paths:
+      - SECURITY.md
+      - configs/v3-launch/**
+      - configs/public-testnet/README.md
+      - docs/ROADMAP_V3_0_0.md
+      - docs/runbooks/V3_0_0_DUAL_NETWORK_LAUNCH.md
+      - docs/runbooks/V2_4_0_PUBLIC_TESTNET_PREP.md
+      - scripts/validate_v3_0_0_launch_plan.py
+      - .github/pull_request_template.md
+      - .github/workflows/v3_0_0_launch_plan.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: v3.0.0-launch-plan-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: Validate Q4 dual-network launch authority
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.CANDIDATE_SHA }}
+          persist-credentials: false
+
+      - name: Verify exact checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${CANDIDATE_SHA}"
+
+      - name: Validate v3 launch plan
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m py_compile scripts/validate_v3_0_0_launch_plan.py
+          python scripts/validate_v3_0_0_launch_plan.py
+
+      - name: Record plan provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ci-evidence/v3-launch-plan
+          {
+            echo "candidate_sha=${CANDIDATE_SHA}"
+            echo "target_release=v3.0.0"
+            echo "launch_window=Q4-2026"
+            echo "launch_model=mainnet-plus-parallel-testnet"
+            echo "standalone_public_testnet_first=false"
+            echo "pre_mainnet_30_day_testnet_clock_required=false"
+            echo "final_authority_issue=781"
+            echo "result=PASS"
+          } > ci-evidence/v3-launch-plan/provenance.txt
+          sha256sum \
+            SECURITY.md \
+            configs/v3-launch/README.md \
+            configs/public-testnet/README.md \
+            docs/ROADMAP_V3_0_0.md \
+            docs/runbooks/V3_0_0_DUAL_NETWORK_LAUNCH.md \
+            docs/runbooks/V2_4_0_PUBLIC_TESTNET_PREP.md \
+            scripts/validate_v3_0_0_launch_plan.py \
+            .github/pull_request_template.md \
+            .github/workflows/v3_0_0_launch_plan.yml \
+            > ci-evidence/v3-launch-plan/SHA256SUMS
+
+      - name: Upload v3 launch-plan evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: v3_0_0_launch_plan_${{ github.run_id }}
+          path: ci-evidence/v3-launch-plan
+          if-no-files-found: error
+          retention-days: 180
