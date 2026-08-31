@@ -1,150 +1,75 @@
 # Roadmap v3.0 — Long-Lived Functional Core
 
-v3.0 is not a marketing milestone. It is the first long-lived functional PulseDAG core that can run for years with stable node, PoW, external miner, P2P, sync, storage, snapshots, pruning policy, operator RPC, release evidence, and upgrade policy.
+Status: **SUPPLEMENTAL / SEQUENCING SUPERSEDED BY `ROADMAP_V3_0_0.md`**
 
-The v3.0 line must prefer durability, migration safety, reproducibility, and operator evidence over feature expansion. Each milestone below exists to reduce operational, consensus, sync, storage, or release risk before the next wider network commitment.
+This document preserves the long-lived-core engineering philosophy behind v3.0. It is **not** the current launch sequence.
 
-## Philosophy
+The authoritative launch roadmap is [`ROADMAP_V3_0_0.md`](ROADMAP_V3_0_0.md): PulseDAG targets **v3.0.0 in Q4 2026**, with **mainnet and a parallel public testnet launched in one coordinated release window** after the final decision in #781.
 
-- v3.0 is earned by evidence, not declared by version number.
-- The core protocol, node lifecycle, storage lifecycle, and operator workflows must be stable enough to survive long-running private and public testnet use before v3.0.0 ships.
-- Release decisions must be reversible where possible, reproducible from artifacts, and backed by documented evidence.
-- New features are subordinate to core stability until the stable core is proven.
-- Compatibility claims must be narrow, implemented, tested, and documented.
+The earlier staged sequence in which v2.5.x/v2.6.x led to a standalone public testnet and a mandatory **30-day stable-testnet burn-in before v3.0.0** is superseded. Those version labels remain historical planning references only and do not impose launch order.
 
-## Long-term sequence
+## Long-lived-core philosophy retained
 
-| Version | Purpose | Exit framing |
-| --- | --- | --- |
-| v2.2.12 | Full private-testnet rehearsal and hardening | Rehearsal evidence, runbook hardening, and multi-node/operator validation only. |
-| v2.2.13 | Consensus/DAG safety audit | DAG invariants, deterministic selection behavior, validation safety, and compatibility-claim review. |
-| v2.2.14 | Storage/replay/snapshot/restore/pruning hardening | Durable replay evidence, documented storage migrations, snapshot/restore proofs, and explicit pruning policy. |
-| v2.2.15 | Sustained P2P multi-node rehearsal | Longer-running network churn, restart/rejoin, lag recovery, and multi-node convergence evidence. |
-| v2.2.16 | Miner/node contract hardening | Stable external miner/node RPC contract; optional GPU backlog only if canonical and non-consensus-disruptive. |
-| v2.2.17 | API/operator/security hardening | Public/operator/dev RPC boundary documentation, auth/rate-limit posture, and operator diagnostics. |
-| v2.2.18 | Private-testnet RC | Final private-testnet release candidate evidence bundle and go/no-go checklist. |
-| v2.3.0 | Private-testnet readiness decision only | Decision milestone; not an automatic public launch. |
-| v2.4.x | Private-testnet stable line | Bug-fix and evidence-driven stability line for the private testnet. |
-| v2.5.x | Public-testnet preparation | Public operator documentation, bootstrap policy, monitoring, release reproducibility, and support readiness. |
-| v2.6.x | Public-testnet candidate and long soak | Candidate public network with long soak, incident tracking, rollback drills, and no unresolved Sev-1 consensus/sync incident. |
-| v2.7.x | Protocol freeze | Freeze consensus, network, storage, miner contract, and RPC boundaries except for documented safety fixes. |
-| v2.8.x | v3.0 release candidates | Reproducible artifacts, migration rehearsals, snapshot/restore evidence, and final operator sign-off. |
-| v3.0.0 | Long-lived functional core | Stable core release intended to run for years under documented upgrade, rollback, storage, and operational policies. |
+- v3.0 is earned by exact, reviewable evidence rather than by a version-number declaration;
+- durability, migration safety, reproducibility and operator recovery take priority over feature expansion;
+- consensus, storage, P2P, sync, mining, wallet and release boundaries must be documented and tested;
+- release decisions must be tied to exact source/artifact identities;
+- incompatible evidence from different SHAs, dependency graphs, chain identities or protocol activation contracts must not be combined;
+- the external miner remains separate from the node;
+- pool coordination/share accounting/payout logic remains separate infrastructure;
+- unsupported compatibility claims are prohibited.
 
-## Milestone requirements
+## Historical milestone context
 
-### v2.2.12 — Full private-testnet rehearsal and hardening
+The v2.2.x and v2.3.0 milestones established much of the evidence discipline used by the v3 program: multi-node rehearsals, replay/storage/snapshot recovery, external miner contracts, operator RPC hardening and release provenance.
 
-- Rehearse the completed private-testnet path across multiple nodes and operators.
-- Capture evidence for block propagation, transaction relay, tip exchange, restart/rejoin, and catch-up behavior.
-- Harden runbooks, dashboards, diagnostics, release evidence, and incident notation.
-- Keep the milestone as rehearsal and hardening only; do not claim private-testnet readiness.
+v2.4.x then became a substantial implementation/validation line, including protocol-v2/GHOSTDAG-style work, public-safe RPC foundations, wallet hardening and adversarial recovery evidence. Those releases and branches are retained as historical and regression inputs.
 
-### v2.2.13 — Consensus/DAG safety audit
+The previously drafted v2.5.x, v2.6.x, v2.7.x and v2.8.x sequence is no longer a mandatory version ladder. Work that remains relevant from those roadmaps is reclassified into the v3.0.0 launch program under #794.
 
-- Audit DAG invariants, deterministic tip/selection behavior, parent linkage, height/timestamp validation, missing-parent handling, and orphan adoption safety.
-- Add replay/order-independence evidence where practical.
-- Review all compatibility language and remove or qualify any unsupported Kaspa/GHOSTDAG claim.
-- Treat consensus changes as safety fixes only and require test evidence for each change.
+## v3.0.0 long-lived-core gates
 
-### v2.2.14 — Storage/replay/snapshot/restore/pruning hardening
+The long-lived-core quality bar remains mandatory even though the launch sequencing changed. v3.0.0 must not receive `GO_V3_DUAL_LAUNCH` unless the exact candidate demonstrates:
 
-- Validate deterministic node replay from persisted data.
-- Document storage schema and migration policy, including incompatible-change handling.
-- Prove snapshot creation, restore, and replay from restored state.
-- Define pruning policy, retained data boundaries, restore expectations, and operator warnings.
-- Capture evidence for corrupted or partial state handling where practical.
+- no unresolved Sev-1 consensus, state, storage, replay, sync, mining, wallet-security or operator-safety issue;
+- deterministic replay/order/state reconstruction on the final protocol contract;
+- restart, snapshot, restore, pruning and clean-bootstrap recovery;
+- multi-node/multi-miner convergence under normal and adversarial conditions;
+- reproducible node/miner/wallet release artifacts with checksums/provenance;
+- documented storage migration and rollback boundaries;
+- public/operator/development RPC boundaries and fail-closed public-safe exposure;
+- exact dependency/security/reachability review under #803;
+- production wallet/custody acceptance under #819 for the approved launch scope;
+- production infrastructure, monitoring, incident response and rollback readiness under #794;
+- independent frozen mainnet and parallel-testnet chain/genesis/network identities;
+- final launch review and `GO_V3_DUAL_LAUNCH` only in #781.
 
-### v2.2.15 — Sustained P2P multi-node rehearsal
+## Testnet role after the strategy change
 
-- Run sustained multi-node rehearsals with churn, delayed starts, restarts, temporary partitions, and rejoin events.
-- Measure sync convergence, peer diagnostics, duplicate suppression, backoff, and chain-id isolation.
-- Produce operator-readable evidence for lagging node recovery and multi-node final state agreement.
-- Keep failure modes actionable through documented logs, metrics, and RPC responses.
+The parallel public testnet is still essential, but its role changes:
 
-### v2.2.16 — Miner/node contract hardening
+- it launches alongside mainnet in the same v3.0.0 release window;
+- it remains a permanent public validation network for future upgrades;
+- future consensus/network upgrades should rehearse there before separately authorized mainnet activation;
+- it is **not** a prerequisite 30-day public launch phase that must complete before initial v3 mainnet.
 
-- Stabilize the external miner/node contract for work retrieval, submission, error semantics, and operator diagnostics.
-- Keep `pulsedag-miner` standalone and free of pool coordination logic.
-- Document supported miner API compatibility expectations and deprecation policy.
-- Track optional GPU work only as backlog unless the GPU path is canonical, deterministic at the contract boundary, and covered by evidence.
+Private and release-candidate rehearsals before launch still need sufficient duration and perturbation coverage to support the final safety decision. Duration is evidence-driven and defined by #794/#781, not by the superseded 30-day standalone-testnet rule.
 
-### v2.2.17 — API/operator/security hardening
+## Smart-contract boundary
 
-- Document public, operator, and development RPC boundaries.
-- Harden operator RPC behavior, error messages, rate-limit/auth expectations, and safe defaults.
-- Review unsafe debug endpoints, sensitive fields, and accidental public exposure risks.
-- Provide operator incident workflows that map RPC outputs to remediation steps.
+Smart contracts are not automatically enabled by the v3.0.0 version number and are not mechanically unlocked by a testnet-day counter.
 
-### v2.2.18 — Private-testnet RC
+- If smart contracts are included in the frozen v3.0.0 launch scope, their implementation, consensus, security, resource, wallet and recovery gates must be complete on the exact candidate.
+- If those gates are incomplete, contracts remain disabled at launch and require a separate later activation decision.
 
-- Assemble the private-testnet release-candidate evidence bundle.
-- Verify multi-node, multi-miner, storage, snapshot/restore, pruning, replay, RPC, and release-artifact evidence.
-- Close or explicitly waive non-blocking issues; do not waive Sev-1 consensus or sync issues.
-- Produce a go/no-go checklist for the v2.3.0 readiness decision.
+## Miner and pool boundary
 
-### v2.3.0 — Private-testnet readiness decision only
+The miner remains external for v3.0.0. The node provides mining templates and validates submissions; the miner performs work and returns submissions.
 
-- Decide whether PulseDAG is ready for an official private testnet based on v2.2.12 through v2.2.18 evidence.
-- Treat v2.3.0 as a decision and release-control milestone, not an automatic public launch.
-- Publish the exact known limitations, operator requirements, rollback plan, and evidence index.
+Pool membership, share accounting, authentication and payouts do not belong inside the canonical standalone miner.
 
-### v2.4.x — Private-testnet stable line
+## Promotion rule
 
-- Maintain the private-testnet stable line with conservative bug fixes and operator evidence updates.
-- Avoid broad feature expansion that could destabilize consensus, sync, storage, or miner contracts.
-- Track incidents, root causes, recovery times, and any required compatibility or migration notes.
+A candidate may be promoted to v3.0.0 only when the current launch evidence is complete, exact and reviewable under `ROADMAP_V3_0_0.md`, #794, #803, #819 and #781.
 
-### v2.5.x — Public-testnet preparation
-
-- Prepare public-testnet operator documentation, bootstrap policy, monitoring expectations, and support channels.
-- Verify release reproducibility and upgrade/rollback drills under private-testnet conditions.
-- Define public communication, incident severity, and network reset policies before opening participation.
-
-### v2.6.x — Public-testnet candidate and long soak
-
-- Run a public-testnet candidate with a long soak period and explicit incident tracking.
-- Require sustained multi-node and multi-miner evidence before promoting the line.
-- Resolve Sev-1 consensus/sync incidents before moving toward protocol freeze.
-- Exercise rollback, restore, and migration drills under public-testnet operating assumptions.
-
-### v2.7.x — Protocol freeze
-
-- Freeze consensus rules, P2P protocol boundaries, storage migration expectations, pruning policy, miner contract, and RPC boundaries.
-- Permit only documented safety fixes, migration fixes, or release-process fixes after freeze.
-- Require compatibility impact notes and rollback guidance for every accepted change.
-
-### v2.8.x — v3.0 release candidates
-
-- Produce one or more v3.0 release candidates with reproducible artifacts and signed evidence indexes.
-- Rehearse upgrades from supported previous lines and rollbacks where rollback remains supported.
-- Re-run snapshot/restore, replay, pruning, multi-node, multi-miner, and RPC boundary validation.
-- Publish final operator documentation and known limitations before v3.0.0.
-
-### v3.0.0 — Long-lived functional core
-
-- Ship only when the core is stable enough to run for years under documented operating assumptions.
-- Preserve compatibility and migration expectations unless a documented safety issue requires otherwise.
-- Maintain release evidence, upgrade policy, rollback policy, and storage lifecycle policy as first-class release artifacts.
-
-## v3.0.0 minimum gates
-
-v3.0.0 must not ship unless all of the following are true:
-
-- No unresolved Sev-1 consensus or sync incident remains open.
-- A completed 30-day stable testnet burn-in exists with incident notes and final sign-off.
-- Release artifacts are reproducible and documented.
-- Upgrade and rollback policy is documented, including supported paths and explicit non-supported paths.
-- Storage migration policy is documented, including schema/version handling and recovery expectations.
-- Snapshot/restore evidence exists for supported operating paths.
-- Multi-node and multi-miner evidence exists and is linked from release evidence.
-- Public, operator, and development RPC boundaries are documented.
-
-## Guardrails
-
-- Do not add smart contracts before the stable core is proven.
-- Do not add pool coordination logic inside `pulsedag-miner`.
-- Keep the miner external and standalone.
-- Do not claim full Kaspa/GHOSTDAG compatibility unless implemented, tested, and documented.
-- v2.3.0 is a readiness decision, not an automatic public launch.
-- v3.0 must prefer durability, migration safety, reproducibility, and operator evidence over feature expansion.
+Missing, stale or contradicted evidence keeps the release as a candidate and requires delay/rebaseline rather than weakening the launch gates.
