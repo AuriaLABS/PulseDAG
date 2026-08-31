@@ -1,0 +1,184 @@
+# PulseDAG v3.0.0 launch manifest
+
+Launch state: **PRE_FREEZE**
+
+This is the single human-readable authority that binds the exact v3.0.0 release candidate, monetary policy, genesis identities, network configuration, release artifacts and operations evidence used by #781.
+
+`GO_V3_DUAL_LAUNCH` MUST NOT be recorded while any required field below is `TBD`, while `Launch state` is not `FROZEN`, or while referenced evidence belongs to incompatible candidates.
+
+## Release identity
+
+- Release: `v3.0.0`
+- Exact source commit SHA: `TBD`
+- Exact source tree SHA: `TBD`
+- VERSION/Cargo identity: `TBD`
+- Protocol activation identity/digest: `TBD`
+- Transaction protocol identity/digest: `TBD`
+- DAG/GHOSTDAG ordering identity/digest: `TBD`
+- PoW identity/digest: `TBD`
+- Storage/schema/snapshot identity/digest: `TBD`
+- Contract/VM/proof identity/digest: `TBD`
+- Build/release workflow run: `TBD`
+
+## Monetary policy freeze
+
+- Policy version: `TBD`
+- `docs/MONETARY_POLICY_V3_0_0.md` SHA-256: `TBD`
+- Consensus monetary constants/config digest: `TBD`
+- Atomic unit/precision: `TBD`
+- Mainnet genesis-issued supply: `TBD`
+- Mainnet allocation manifest digest: `TBD`
+- Initial mining subsidy: `TBD`
+- Reward-index definition: `TBD`
+- Emission schedule digest: `TBD`
+- Coinbase maturity: `TBD`
+- Fee/burn/distribution policy digest: `TBD`
+- Terminal/max-supply rule: `TBD`
+- Full emission-vector digest: `TBD`
+- Independent supply-accounting implementation/vector digest: `TBD`
+
+## Mainnet genesis and network identity
+
+- Network profile: `TBD`
+- Chain ID: `TBD`
+- Network/signing domain: `TBD`
+- Address/HRP/prefix: `TBD`
+- Genesis input-manifest digest: `TBD`
+- Canonical genesis bytes SHA-256: `TBD`
+- Genesis transaction ID(s): `TBD`
+- Genesis Merkle root: `TBD`
+- Genesis initial state root: `TBD`
+- Genesis block hash: `TBD`
+- Genesis generator source/binary digest: `TBD`
+- Consensus/network config digest: `TBD`
+- Bootnode manifest digest: `TBD`
+- DNS/public endpoint manifest digest: `TBD`
+- Checkpoint/bootstrap manifest digest: `TBD`
+- Independent genesis verification evidence: `TBD`
+
+## Parallel-testnet genesis and network identity
+
+- Network profile: `TBD`
+- Chain ID: `TBD`
+- Network/signing domain: `TBD`
+- Address/HRP/prefix: `TBD`
+- Genesis input-manifest digest: `TBD`
+- Canonical genesis bytes SHA-256: `TBD`
+- Genesis transaction ID(s): `TBD`
+- Genesis Merkle root: `TBD`
+- Genesis initial state root: `TBD`
+- Genesis block hash: `TBD`
+- Genesis generator source/binary digest: `TBD`
+- Consensus/network config digest: `TBD`
+- Bootnode manifest digest: `TBD`
+- DNS/public endpoint manifest digest: `TBD`
+- Checkpoint/bootstrap manifest digest: `TBD`
+- Independent genesis verification evidence: `TBD`
+
+## Release artifacts
+
+### Node
+
+- Linux x86_64 artifact + SHA-256: `TBD`
+- Linux additional supported targets: `TBD`
+- Windows artifact + SHA-256: `TBD`
+- macOS artifact + SHA-256, if supported: `TBD`
+- Container/image digest, if official: `TBD`
+
+### Miner
+
+- CPU/reference miner artifact + SHA-256: `TBD`
+- NVIDIA artifact/runtime matrix + SHA-256: `TBD`
+- AMD/ATI artifact/runtime matrix + SHA-256: `TBD`
+- Multi-GPU validation evidence: `TBD`
+- CPU/NVIDIA/AMD equivalence-vector digest: `TBD`
+
+### Wallet and application tooling
+
+- Wallet artifact(s) + SHA-256: `TBD`
+- Wallet network-domain manifest digest: `TBD`
+- Contract/PulseScript compiler/toolchain artifacts + SHA-256: `TBD`
+- Proof/verifiable-program tooling + SHA-256 where included: `TBD`
+
+### Supply chain
+
+- SBOM digest/reference: `TBD`
+- Provenance/attestation digest/reference: `TBD`
+- Signed release manifest/reference: `TBD`
+- Dependency/reachability gate (#803) evidence: `TBD`
+- Secret scanning / workflow least-privilege evidence: `TBD`
+
+## Consensus and economic evidence
+
+- >=1,000,000-block deterministic DAG replay: `TBD`
+- >=1,000,000 programmable-operation replay: `TBD`
+- exact supply-accounting replay: `TBD`
+- subsidy-boundary vectors: `TBD`
+- coinbase maturity vectors: `TBD`
+- fee/program/proof accounting vectors: `TBD`
+- genesis allocation invariant: `TBD`
+- no unexplained consensus/application-state divergence: `TBD`
+
+## Rehearsal and burn-in evidence
+
+- >=25-node / >=16-miner adversarial rehearsal: `TBD`
+- >=168 contiguous hours exact-candidate release burn-in: `TBD`
+- 30 accepted days programmability-enabled exact-candidate evidence: `TBD`
+- snapshot/prune/restore/rejoin evidence: `TBD`
+- clean bootstrap evidence: `TBD`
+- partition/seed-loss/GPU-loss/chaos evidence: `TBD`
+
+## Production operations
+
+- Primary release owner: `TBD`
+- Primary operations owner: `TBD`
+- Backup operations owner: `TBD`
+- Security review owner/reference: `TBD`
+- Mainnet seed/bootnode ownership manifest: `TBD`
+- Testnet seed/bootnode ownership manifest: `TBD`
+- DNS/TLS ownership: `TBD`
+- Firewall/admin-plane review: `TBD`
+- Monitoring/alerting dashboards and owners: `TBD`
+- Backup/restore policy evidence: `TBD`
+- NTP/time-source monitoring: `TBD`
+- Incident/status communication path: `TBD`
+- Rollback/hard-stop procedure review: `TBD`
+- Coordinated UTC launch window: `TBD`
+
+## Mandatory separation assertions
+
+Before freeze all must be `PASS`:
+
+- Mainnet chain ID differs from testnet: `TBD`
+- Mainnet signing/network domain differs from testnet: `TBD`
+- Mainnet genesis hash differs from testnet: `TBD`
+- Mainnet/testnet peer bootstrap cannot cross-connect by default: `TBD`
+- Wallet cross-network signing/broadcast fails closed: `TBD`
+- Miner cross-network job/submission fails closed: `TBD`
+- Contract/proof/application replay is domain separated: `TBD`
+
+## Freeze approvals
+
+- Monetary-policy approval: `TBD`
+- Genesis ceremony approval: `TBD`
+- Consensus/release approval: `TBD`
+- Security approval: `TBD`
+- Wallet/custody approval (#819): `TBD`
+- Operations approval: `TBD`
+- #794 completion reference: `TBD`
+- #781 final-decision reference: `TBD`
+
+## Launch boundary — populate only after GO
+
+- #781 decision: `TBD`
+- Decision UTC: `TBD`
+- Mainnet first accepted block hash/height-or-score: `TBD`
+- Mainnet first accepted block UTC: `TBD`
+- Parallel-testnet first accepted block hash/height-or-score: `TBD`
+- Parallel-testnet first accepted block UTC: `TBD`
+- Published release/checksum reference: `TBD`
+- Published network/bootnode/endpoints reference: `TBD`
+
+## Immutability rule
+
+Once `Launch state: FROZEN` is recorded, any change to source SHA, consensus, monetary policy, genesis input, chain identity, signing domain, release artifact, wallet signing behavior or security-relevant dependency requires an explicit rebaseline. A changed genesis input always creates a new network identity.
