@@ -39,6 +39,34 @@ def main() -> None:
         fail("roadmap reintroduced standalone-testnet-first sequencing")
 
     require(
+        "README.md",
+        "definitive public-launch target is **v3.0.0 in Q4 2026**",
+        "mainnet and a parallel public testnet",
+        "GO_V3_DUAL_LAUNCH",
+        "PENDING_EXACT_CANDIDATE_EVIDENCE",
+        "public_testnet_ready=false",
+        "thirty_day_public_testnet_clock_started=false",
+    )
+
+    require(
+        "docs/README.md",
+        "definitive public-launch target is now **v3.0.0 in Q4 2026**",
+        "GO_V3_DUAL_LAUNCH",
+        "ROADMAP_V3_0_0.md",
+        "V3_0_0_DUAL_NETWORK_LAUNCH.md",
+        "ROADMAP_V3_0_LONG_LIVED_CORE.md",
+    )
+
+    require(
+        "docs/ROADMAP_V3_0_LONG_LIVED_CORE.md",
+        "SEQUENCING SUPERSEDED BY `ROADMAP_V3_0_0.md`",
+        "mainnet and a parallel public testnet",
+        "30-day stable-testnet burn-in before v3.0.0",
+        "GO_V3_DUAL_LAUNCH",
+        "not a prerequisite 30-day public launch phase",
+    )
+
+    require(
         "docs/runbooks/V3_0_0_DUAL_NETWORK_LAUNCH.md",
         "PRE-GO / Q4 2026 TARGET / NOT LAUNCHED",
         "mainnet + parallel-testnet",
