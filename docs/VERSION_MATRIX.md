@@ -6,56 +6,60 @@
 |---|---|
 | VERSION file | `v2.4.0` |
 | Cargo workspace version | `2.4.0` |
-| Current development line | v2.4.x / v2.4.1 follow-up integration toward v3 |
+| Current development line | v2.4.x / v2.4.1 |
+| Scale/resilience milestone | **v2.5.0 workstream incorporated into v3.0.0** |
+| Programmability milestone | **v2.6.0 workstream incorporated into v3.0.0** |
 | Definitive public-launch target | **v3.0.0** |
 | Target launch window | **Q4 2026 (October-December 2026)** |
 | Launch model | **mainnet + parallel public testnet in one coordinated release window** |
 | Final launch authority | #781 / `GO_V3_DUAL_LAUNCH` |
-| Protocol direction | transaction/header v2 foundations + `ghostdag_v1`, with final v3 scope still to be frozen |
 | v3 mainnet identity | `TBD` — chain ID/genesis/config/bootnodes not frozen |
 | v3 parallel-testnet identity | `TBD` — independent chain ID/genesis/config/bootnodes not frozen |
-| Production wallet | #819 gate; not yet approved for v3 production launch |
-| Security | #803 gate; final v3 exact-candidate disposition pending |
-| High cadence | separately gated; not implicitly authorized |
-| Smart contracts | separately gated unless explicitly included in the frozen v3 launch scope |
+| Production wallet | #819 gate |
+| Security | #803 gate |
+| Smart contracts | mandatory v3.0.0 scope through the incorporated v2.6 workstream |
 
 ## Published / historical release state
 
 - `v2.4.0` is an already published node/miner release and remains immutable historical evidence.
-- Later v2.4.x/v2.4.1 work is development and validation input toward the final v3.0.0 candidate.
+- v2.4.x/v2.4.1 is the active implementation base feeding the later milestone workstreams.
 - Existing v2.4.x binaries, tags, chain identities and evidence must not be relabeled as v3.0.0.
-- The actual `VERSION` and Cargo workspace version remain `v2.4.0` / `2.4.0` until a reviewed final v3 candidate explicitly performs the version freeze.
+- The repository remains on `v2.4.0` / `2.4.0` until an explicit reviewed version transition occurs.
 
-## Active version path
+## Version path to v3.0.0
 
-The active release path is direct:
+The intended development path is:
 
-`v2.4.x development -> v3.0.0 release candidate -> v3.0.0 definitive launch`
+`v2.4.x -> v2.5.0 scale/resilience workstream -> v2.6.0 programmability workstream -> v3.0.0 definitive release`
 
-There are no intermediate numbered release milestones required between the current v2.4.x development line and v3.0.0.
+The v2.5.0 and v2.6.0 roadmaps are therefore part of the route to v3.0.0. Their technical requirements are absorbed into the authoritative v3.0.0 launch roadmap so that the final release cannot omit them.
 
-| Version | Scope | Current interpretation |
+| Version/workstream | Scope | Relationship to v3.0.0 |
 |---|---|---|
-| `v2.2.x` | Earlier private-testnet hardening and rehearsal | Historical |
+| `v2.2.x` | Earlier private-testnet hardening/rehearsal | Historical |
 | `v2.3.0` | Private-testnet release/readiness baseline | Historical / compatibility evidence |
-| `v2.4.0` | Published protocol/node/miner validation release | Historical exact release + current repository version surface |
-| `v2.4.1` / v2.4.x follow-ups | Wallet, relay, security and integration development | Active development input directly toward v3.0.0 |
-| `v3.0.0` | Definitive long-lived public-launch release | **Q4 2026 target; mainnet + parallel testnet together** |
+| `v2.4.0` | Published protocol/node/miner validation release | Current repository baseline + historical exact release |
+| `v2.4.1` / v2.4.x follow-ups | Wallet, relay, security and integration | Active foundation work |
+| `v2.5.0` | P2P scale, compact relay, fast sync/pruning, deterministic mempool/fees, Mining Protocol v3, NVIDIA+AMD GPU mining, high cadence, replay, rolling upgrades, chaos, supply chain, large rehearsal and burn-in | **Mandatory technical milestone incorporated into v3.0.0** |
+| `v2.6.0` | Covenants, Contract Transaction v3, PulseScript, deterministic VM, parallel contract execution, based apps, PulseProgs/ZK, native assets, contract RPC/events, programmable fees, security, economics, replay and programmability burn-in | **Mandatory technical milestone incorporated into v3.0.0** |
+| `v3.0.0` | Integrated definitive public-launch release | **Q4 2026; mainnet + parallel testnet together** |
 
-## Launch-strategy rebaseline
+## Sequencing changes versus the older roadmaps
 
-The former sequence of standalone public testnet -> Day 0 -> 30-day acceptance clock -> later production/mainnet progression is superseded.
+The technical work from v2.5 and v2.6 remains required, but two old sequencing rules are superseded:
 
-For v3.0.0:
+- v2.5 no longer requires a standalone public-testnet canary + 30 accepted public-testnet days before the project can move toward mainnet;
+- v2.6 no longer waits for that public-testnet clock before programmability work can proceed.
 
-1. freeze the exact protocol/release candidate;
-2. close #803 security and #819 production-wallet launch scope;
-3. freeze independent mainnet and parallel-testnet network identities;
-4. complete final release/adversarial/recovery/infrastructure evidence under #794;
-5. record `GO_V3_DUAL_LAUNCH`, delay or no-go only in #781;
-6. launch mainnet and parallel testnet in one coordinated release window and record independent first-block timestamps.
+Instead, v3.0.0 consolidates the evidence:
 
-No exact day within Q4 is frozen yet.
+1. complete the v2.5 scale/resilience/GPU workstream;
+2. complete the v2.6 programmability/smart-contract workstream;
+3. freeze one exact integrated v3.0.0 candidate;
+4. satisfy the exact-candidate replay, security, wallet, large-scale rehearsal and burn-in gates;
+5. freeze independent mainnet and parallel-testnet identities;
+6. record `GO_V3_DUAL_LAUNCH`, delay or no-go only in #781;
+7. launch mainnet and parallel testnet in one coordinated Q4 release window.
 
 ## Legacy v2.4 validation markers
 
@@ -66,14 +70,12 @@ Some existing repository workflows and hygiene checks still require historical v
 - `thirty_day_public_testnet_clock_started=false`;
 - `contracts_enabled=false`.
 
-These strings do **not** mean the published v2.4.0 release is unpublished, and they do not define the v3 launch state. They must not be used as a substitute for #781's v3 exact-candidate launch record.
+These strings do not define the v3 launch state and must not substitute for #781's exact-candidate launch record.
 
 ## v3.0.0 evidence rule
 
-The final v3 launch evidence must be tied to one exact release candidate and the separately frozen mainnet/testnet identities. Evidence from incompatible source SHAs, dependency graphs, protocol activation contracts, signing domains, chain identities or genesis configurations must never be combined.
+The final v3 launch evidence must be tied to one exact integrated release candidate containing the accepted v2.5 and v2.6 workstreams and the separately frozen mainnet/testnet identities.
 
-Any release-affecting code, dependency, storage, consensus, wallet-signing or activation change after candidate freeze requires an explicit evidence rebaseline and rerun of affected gates.
+Evidence from incompatible source SHAs, dependency graphs, protocol/contract activation contracts, signing domains, chain identities or genesis configurations must never be combined.
 
-## Repository version rule
-
-Until the final v3 version-bump change is reviewed, primary build/version surfaces must continue to identify the actual repository version `v2.4.0` / `2.4.0`. Documentation may identify **v3.0.0 as the future definitive launch target**, but must not claim that a v3 tag, binary, genesis or production network identity already exists.
+Any release-affecting code, dependency, storage, consensus, GPU, wallet-signing, contract, proof-system or activation change after candidate freeze requires explicit evidence rebaseline and rerun of affected gates.
