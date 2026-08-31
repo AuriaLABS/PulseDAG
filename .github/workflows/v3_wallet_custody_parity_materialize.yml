@@ -1,0 +1,173 @@
+name: v3 wallet custody parity materialization
+
+on:
+  push:
+    branches:
+      - ops/v3-wallet-custody-parity-materialize-1fa7cfa8
+
+permissions:
+  contents: write
+
+jobs:
+  materialize:
+    name: Validate and publish v3 custody parity
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      BASE_SHA: 1fa7cfa89ad2995aeb8cf5489442fd2d0dffb54d
+      BASE_TREE: b9f4e3882cc06d6b64d649e01592e9b17d8b373b
+      MAIN_SHA: c84c3258ce3a1254c40f17ad7ab29402cb413a92
+      HISTORICAL_SHA: 35aa4d2d065b5eca0160f1fbfefa73ffb9732909
+      HISTORICAL_LOCK_BLOB: e922d076592dc36bcfdaf0f2fd043341c85d8c1c
+      CONTROL_PATH: .github/workflows/v3_wallet_custody_parity_materialize.yml
+      TARGET_BRANCH: v3/wallet-custody-parity-35aa4d2d
+    steps:
+      - name: Checkout materialization control
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fail-closed provenance preflight
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD^)" = "${BASE_SHA}"
+          test "$(git diff --name-only HEAD^ HEAD)" = "${CONTROL_PATH}"
+          test "$(git rev-parse "${BASE_SHA}^{tree}")" = "${BASE_TREE}"
+          test "$(git merge-base "${MAIN_SHA}" "${HISTORICAL_SHA}")" = "${MAIN_SHA}"
+          test "$(git rev-list --count "${MAIN_SHA}..${HISTORICAL_SHA}")" = "21"
+          test "$(git rev-parse "${HISTORICAL_SHA}:Cargo.lock")" = "${HISTORICAL_LOCK_BLOB}"
+          if git ls-remote --exit-code --heads origin "refs/heads/${TARGET_BRANCH}" >/dev/null 2>&1; then
+            echo "target branch already exists; refusing to overwrite"
+            exit 1
+          fi
+          git checkout --detach "${BASE_SHA}"
+          test "$(git rev-parse HEAD)" = "${BASE_SHA}"
+          test "$(git rev-parse HEAD^{tree})" = "${BASE_TREE}"
+
+      - name: Port reviewed custody range onto v3 planning base
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "PulseDAG CI"
+          git config user.email "actions@users.noreply.github.com"
+          while read -r commit; do
+            git cherry-pick "${commit}"
+          done < <(git rev-list --reverse "${MAIN_SHA}..${HISTORICAL_SHA}")
+          test "$(git rev-list --count "${BASE_SHA}..HEAD")" = "21"
+          test "$(git rev-parse HEAD:Cargo.lock)" = "${HISTORICAL_LOCK_BLOB}"
+
+      - name: Prove exact parity scope and v3 contract preservation
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected=$(cat <<'EOF'
+          .github/workflows/dependency-audit.yml
+          .github/workflows/lint.yml
+          .github/workflows/v2_4_x_wallet_custody_port.yml
+          Cargo.lock
+          configs/public-safe/public-safe.env.example
+          crates/pulsedag-rpc/Cargo.toml
+          crates/pulsedag-rpc/src/api.rs
+          crates/pulsedag-rpc/src/handlers/metrics.rs
+          crates/pulsedag-rpc/src/lib.rs
+          crates/pulsedag-rpc/src/routes.rs
+          crates/pulsedag-rpc/src/routes_public.rs
+          crates/pulsedag-rpc/tests/api_security_integration.rs
+          crates/pulsedag-rpc/tests/public_tx_relay.rs
+          crates/pulsedag-rpc/tests/task30_public_relay_bounds.rs
+          crates/pulsedag-wallet/Cargo.toml
+          crates/pulsedag-wallet/README.md
+          crates/pulsedag-wallet/src/bin/pulsedag-wallet.rs
+          crates/pulsedag-wallet/src/deterministic.rs
+          crates/pulsedag-wallet/src/keystore.rs
+          crates/pulsedag-wallet/src/keystore_crypto.rs
+          crates/pulsedag-wallet/src/keystore_persistence.rs
+          crates/pulsedag-wallet/src/keystore_rotation.rs
+          crates/pulsedag-wallet/src/keystore_rotation_fs.rs
+          crates/pulsedag-wallet/src/keystore_rotation_tests_compact.rs
+          crates/pulsedag-wallet/src/keystore_seed.rs
+          crates/pulsedag-wallet/src/lib.rs
+          crates/pulsedag-wallet/src/plan.rs
+          crates/pulsedag-wallet/src/secrets.rs
+          crates/pulsedag-wallet/src/session_clock.rs
+          crates/pulsedag-wallet/src/session_clock_tests.rs
+          crates/pulsedag-wallet/src/session_seed_tests.rs
+          crates/pulsedag-wallet/src/session_tests_v1.rs
+          crates/pulsedag-wallet/src/session_v1.rs
+          crates/pulsedag-wallet/src/signing.rs
+          crates/pulsedag-wallet/src/watch_only.rs
+          docs/PUBLIC_TX_RELAY_V1.md
+          docs/V2_4_0_PUBLIC_SAFE_RPC.md
+          EOF
+          )
+          actual="$(git diff --name-only "${BASE_SHA}" HEAD)"
+          test "${actual}" = "${expected}"
+          test -z "$(git diff --name-only "${BASE_SHA}" HEAD -- docs/ROADMAP_V3_0_0.md docs/ROADMAP_V2_5_0.md docs/ROADMAP_V2_6_0.md docs/MONETARY_POLICY_V3_0_0.md docs/GENESIS_V3_0_0.md docs/NETWORK_PARAMETERS_V3_0_0.md docs/V3_0_0_LAUNCH_MANIFEST.md docs/runbooks/V3_0_0_DUAL_NETWORK_LAUNCH.md)"
+          git diff --check "${BASE_SHA}" HEAD
+
+      - name: Validate v3 planning and pre-freeze contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m py_compile scripts/validate_v3_0_0_launch_plan.py scripts/validate_v3_0_0_network_freeze.py
+          python scripts/validate_v3_0_0_launch_plan.py
+          python scripts/validate_v3_0_0_network_freeze.py | tee /tmp/v3-freeze.txt
+          grep -F "launch_ready=false; state=PRE_FREEZE" /tmp/v3-freeze.txt
+
+      - name: Install validation toolchains
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.88.0 --profile minimal --component clippy --component rustfmt --no-self-update
+          rustup toolchain install stable --profile minimal --component clippy --component rustfmt --no-self-update
+          rustc +1.88.0 --version
+          rustc +stable --version
+
+      - name: Rust 1.88 custody compatibility
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo +1.88.0 metadata --locked --no-deps >/dev/null
+          cargo +1.88.0 check -p pulsedag-wallet --locked
+          cargo +1.88.0 test -p pulsedag-wallet --locked
+          cargo +1.88.0 clippy -p pulsedag-wallet --all-targets --no-deps --locked -- -D warnings
+          cargo +1.88.0 fmt --package pulsedag-wallet -- --check
+          cargo +1.88.0 check -p pulsedag-rpc --locked
+          cargo +1.88.0 test -p pulsedag-rpc --locked
+          cargo +1.88.0 fmt --package pulsedag-rpc -- --check
+
+      - name: Current stable custody and relay validation
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo +stable metadata --locked --no-deps >/dev/null
+          cargo +stable check -p pulsedag-wallet --locked
+          cargo +stable test -p pulsedag-wallet --locked
+          cargo +stable clippy -p pulsedag-wallet --all-targets --no-deps --locked -- -D warnings
+          cargo +stable fmt --package pulsedag-wallet -- --check
+          cargo +stable check -p pulsedag-rpc --locked
+          cargo +stable test -p pulsedag-rpc --locked
+          cargo +stable clippy -p pulsedag-rpc --all-targets --no-deps --locked -- -D warnings
+          cargo +stable fmt --package pulsedag-rpc -- --check
+
+      - name: Final fail-closed source invariants
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-list --count "${BASE_SHA}..HEAD")" = "21"
+          test "$(git rev-parse HEAD:Cargo.lock)" = "${HISTORICAL_LOCK_BLOB}"
+          test -z "$(git status --porcelain)"
+          python scripts/validate_v3_0_0_network_freeze.py | grep -F "launch_ready=false; state=PRE_FREEZE"
+
+      - name: Publish validated v3 custody-parity branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_sha="$(git rev-parse HEAD)"
+          source_tree="$(git rev-parse HEAD^{tree})"
+          lock_blob="$(git rev-parse HEAD:Cargo.lock)"
+          git push origin "HEAD:refs/heads/${TARGET_BRANCH}"
+          echo "source_sha=${source_sha}"
+          echo "source_tree=${source_tree}"
+          echo "cargo_lock_blob=${lock_blob}"
