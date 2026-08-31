@@ -56,8 +56,10 @@ jobs:
           path.write_text(text)
           PY
 
+          # Updating either direct Kaspa package causes Cargo to resolve the
+          # single pinned upstream workspace revision for both direct packages
+          # and their internal path dependencies.
           cargo update -p kaspa-hashes@0.15.0
-          cargo update -p kaspa-pow@0.15.0
 
           echo '=== exact supported upstream source ==='
           grep -n 'kaspa-\(hashes\|pow\)' crates/pulsedag-core/Cargo.toml
