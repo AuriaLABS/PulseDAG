@@ -45,6 +45,8 @@ def main() -> None:
         "PulseProgs / Verifiable Programs",
         "1,000,000 programmable transactions/operations",
         "30 accepted days of programmability-enabled exact-candidate burn-in evidence",
+        "Monetary/economic policy freeze",
+        "Freeze two independent public network identities",
         "1 September 2026",
         "30-day public-testnet clock before mainnet",
     )
@@ -61,7 +63,7 @@ def main() -> None:
         "168 contiguous hours",
         "Integrated v3 pre-launch network acceptance",
         "V2_5_WORKSTREAM_PASS",
-        "not** `GO_V3_DUAL_LAUNCH`" if False else "It is **not** `GO_V3_DUAL_LAUNCH`",
+        "It is **not** `GO_V3_DUAL_LAUNCH`",
     )
 
     require(
@@ -76,6 +78,53 @@ def main() -> None:
         "30-day programmability exact-candidate burn-in",
         "V2_6_WORKSTREAM_PASS",
         "It is **not** `GO_V3_DUAL_LAUNCH`",
+    )
+
+    require(
+        "docs/MONETARY_POLICY_V3_0_0.md",
+        "PRE-FREEZE / LAUNCH-BLOCKING UNTIL APPROVED",
+        "GENESIS_SUPPLY = 1_000_000_000",
+        "INITIAL_BLOCK_SUBSIDY = 50",
+        "SUBSIDY_HALVING_INTERVAL = 210_000",
+        "canonical consensus index",
+        "Coinbase maturity",
+        "development `genesis-treasury` allocation is not authorized",
+    )
+
+    require(
+        "docs/GENESIS_V3_0_0.md",
+        "NO PRODUCTION GENESIS EXISTS YET",
+        "exact timestamp",
+        "two clean independent executions",
+        "production generator MUST reject placeholder destinations such as `genesis-treasury`",
+        "mainnet genesis hash != testnet genesis hash",
+    )
+
+    require(
+        "docs/NETWORK_PARAMETERS_V3_0_0.md",
+        "PRE-FREEZE / LAUNCH-BLOCKING",
+        "Mainnet identity — final values TBD",
+        "Parallel-testnet identity — final values TBD",
+        "wallet signing/broadcast fails closed on network mismatch",
+        "`GO_V3_DUAL_LAUNCH` is invalid while any launch-required field remains `TBD`.",
+    )
+
+    require(
+        "docs/V3_0_0_LAUNCH_MANIFEST.md",
+        "Launch state: **PRE_FREEZE**",
+        "Monetary policy freeze",
+        "Mainnet genesis and network identity",
+        "Parallel-testnet genesis and network identity",
+        "Mandatory separation assertions",
+        "#781 final-decision reference",
+    )
+
+    require(
+        "docs/runbooks/V3_0_0_GENESIS_CEREMONY.md",
+        "PRE-FREEZE / DO NOT START PUBLIC NETWORKS",
+        "Any mismatch is a hard stop.",
+        "No difference, even one atomic unit, is acceptable.",
+        "Launch state` to `FROZEN`",
     )
 
     require(
@@ -177,6 +226,9 @@ def main() -> None:
         "CPU/NVIDIA/AMD PoW equivalence",
         "Contract/application/proof execution remains deterministic and resource bounded",
     )
+
+    if not (ROOT / "scripts/validate_v3_0_0_network_freeze.py").is_file():
+        fail("missing monetary/genesis/network freeze validator")
 
     print("PASS: integrated v2.5 + v2.6 -> v3.0.0 Q4 dual-network launch authority is internally consistent")
 
