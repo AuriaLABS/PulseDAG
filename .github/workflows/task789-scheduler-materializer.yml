@@ -6,6 +6,7 @@ on:
       - fix/v2.4-p2p-v2-header-hash-789-scheduler
     paths:
       - .github/workflows/task789-scheduler-materializer.yml
+      - .github/task789_scheduler_patch.py
 
 permissions:
   contents: write
