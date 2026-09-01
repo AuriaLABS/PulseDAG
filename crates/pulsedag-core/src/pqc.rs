@@ -147,11 +147,15 @@ pub fn decode_hybrid_signature_v1(envelope: &str) -> Result<HybridSignatureV1, P
 /// prefix so legacy and post-quantum authorization rules cannot be confused.
 pub fn address_from_hybrid_public_key_v1(envelope: &str) -> Result<Address, PulseError> {
     let keys = decode_hybrid_public_key_v1(envelope)?;
+    let ed25519_len = u32::try_from(keys.ed25519.len()).expect("fixed Ed25519 key length exceeds u32");
+    let ml_dsa_65_len =
+        u32::try_from(keys.ml_dsa_65.len()).expect("fixed ML-DSA-65 key length exceeds u32");
+
     let mut hasher = Sha3_256::new();
     hasher.update(PQ_ADDRESS_DOMAIN_V1);
-    hasher.update((keys.ed25519.len() as u32).to_le_bytes());
+    hasher.update(ed25519_len.to_le_bytes());
     hasher.update(&keys.ed25519);
-    hasher.update((keys.ml_dsa_65.len() as u32).to_le_bytes());
+    hasher.update(ml_dsa_65_len.to_le_bytes());
     hasher.update(&keys.ml_dsa_65);
     Ok(format!("pulseq1{}", hex::encode(hasher.finalize())))
 }
@@ -185,7 +189,7 @@ mod tests {
     fn post_quantum_address_uses_full_256_bit_commitment() {
         let encoded = encode_hybrid_public_key_v1(
             &[0x55; ED25519_PUBLIC_KEY_BYTES],
-            &vec![0x66; ML_DSA_65_PUBLIC_KEY_BYTES],
+            &[0x66; ML_DSA_65_PUBLIC_KEY_BYTES],
         )
         .unwrap();
         let address = address_from_hybrid_public_key_v1(&encoded).unwrap();
@@ -197,7 +201,7 @@ mod tests {
     fn uppercase_or_wrong_length_envelopes_fail_closed() {
         let encoded = encode_hybrid_public_key_v1(
             &[0xaa; ED25519_PUBLIC_KEY_BYTES],
-            &vec![0xbb; ML_DSA_65_PUBLIC_KEY_BYTES],
+            &[0xbb; ML_DSA_65_PUBLIC_KEY_BYTES],
         )
         .unwrap();
         let uppercase = encoded.replacen("aa", "AA", 1);
