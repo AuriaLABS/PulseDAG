@@ -1,0 +1,134 @@
+from pathlib import Path
+
+br = Path("apps/pulsedagd/src/block_request.rs")
+text = br.read_text()
+marker = "    pub fn next_requests(\n"
+if "pub fn requeue_request(&mut self, hash: String)" not in text:
+    insert = """    pub fn requeue_request(&mut self, hash: String) -> bool {
+        if self.inventory.len() >= self.max_queue_depth
+            || self.inventory.iter().any(|queued| queued == &hash)
+        {
+            return false;
+        }
+        self.queued.insert(hash.clone());
+        self.inventory.push_back(hash);
+        true
+    }
+
+"""
+    idx = text.index(marker, text.index("impl DependencyAwareFetchScheduler"))
+    text = text[:idx] + insert + text[idx:]
+
+test_marker = "    #[test]\n    fn dedupes_request_within_timeout()"
+if "fn generated_parent_can_be_requeued_after_dispatch_suppression()" not in text:
+    test = """    #[test]
+    fn generated_parent_can_be_requeued_after_dispatch_suppression() {
+        let mut scheduler = DependencyAwareFetchScheduler::with_limit(8);
+        assert_eq!(scheduler.queue_headers([header("child", &["parent"], 2)]), 1);
+
+        let first = scheduler.next_requests(&HashSet::new(), &HashSet::new(), 1);
+        assert_eq!(first.requests, vec!["parent"]);
+        assert_eq!(scheduler.queue_depth(), 1);
+
+        assert!(scheduler.requeue_request("parent".to_string()));
+        assert_eq!(scheduler.queue_depth(), 2);
+
+        let retry = scheduler.next_requests(&HashSet::new(), &HashSet::new(), 1);
+        assert_eq!(retry.requests, vec!["parent"]);
+    }
+
+"""
+    idx = text.index(test_marker)
+    text = text[:idx] + test + text[idx:]
+br.write_text(text)
+
+main = Path("apps/pulsedagd/src/main.rs")
+text = main.read_text()
+if 'event = "dependency_fetch_scheduler_rearmed"' not in text:
+    start = text.index("                            for child_hash in unblocked.ready {")
+    insert_at = text.index("                            if p2p.is_some() {", start)
+    pump = """                            if !priority_active && fetch_scheduler.queue_depth() > 0 {
+                                let (known, pending) = (
+                                    known_hashes_for_scheduler(&guard),
+                                    pending_hashes_for_scheduler(&block_requests),
+                                );
+                                let request_capacity =
+                                    block_requests.pending_capacity_remaining().min(8);
+                                if request_capacity > 0 {
+                                    let plan = fetch_scheduler.next_requests(
+                                        &known,
+                                        &pending,
+                                        request_capacity,
+                                    );
+                                    let mut issued_requests = 0u64;
+                                    let mut requeue_requests = Vec::new();
+                                    for request_hash in plan.requests {
+                                        if !block_requests.should_issue_getblock_for_peers(
+                                            &request_hash,
+                                            now_unix(),
+                                            active_peer_ids(&p2p),
+                                        ) {
+                                            requeue_requests.push(request_hash);
+                                            continue;
+                                        }
+                                        let request_sent = if let Some(ref p2p_handle) = p2p {
+                                            match p2p_handle.request_block(&request_hash) {
+                                                Ok(_) => true,
+                                                Err(e) => {
+                                                    warn!(
+                                                        error = %e,
+                                                        block_hash = %request_hash,
+                                                        "failed issuing scheduler rearm GetBlock request"
+                                                    );
+                                                    false
+                                                }
+                                            }
+                                        } else {
+                                            false
+                                        };
+                                        if request_sent {
+                                            issued_requests = issued_requests.saturating_add(1);
+                                        } else {
+                                            block_requests.resolve(&request_hash);
+                                            requeue_requests.push(request_hash);
+                                        }
+                                    }
+                                    let mut requeued = 0u64;
+                                    for request_hash in requeue_requests {
+                                        if fetch_scheduler.requeue_request(request_hash) {
+                                            requeued = requeued.saturating_add(1);
+                                        }
+                                    }
+                                    let remaining_queue = fetch_scheduler.queue_depth();
+                                    let mut rt = runtime.write().await;
+                                    rt.getblock_sent =
+                                        rt.getblock_sent.saturating_add(issued_requests);
+                                    rt.dependency_fetches_scheduled = rt
+                                        .dependency_fetches_scheduled
+                                        .saturating_add(issued_requests);
+                                    rt.pending_block_requests = block_requests.pending.len();
+                                    rt.inflight_block_requests = block_requests.pending.len();
+                                    rt.pending_block_request_hashes =
+                                        block_requests.pending_hashes();
+                                    rt.block_fetch_scheduler_queue_depth = remaining_queue;
+                                    rt.block_fetch_scheduler_inflight_by_peer =
+                                        block_requests.inflight_by_peer();
+                                    if issued_requests > 0 {
+                                        rt.sync_state = "requesting_blocks".to_string();
+                                    }
+                                    drop(rt);
+                                    if issued_requests > 0 || requeued > 0 {
+                                        info!(
+                                            event = "dependency_fetch_scheduler_rearmed",
+                                            issued_requests,
+                                            requeued,
+                                            remaining_queue,
+                                            "rearmed dependency fetch scheduler after accepted block freed capacity"
+                                        );
+                                    }
+                                }
+                            }
+
+"""
+    text = text[:insert_at] + pump + text[insert_at:]
+main.write_text(text)
