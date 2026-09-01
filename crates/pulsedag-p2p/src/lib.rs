@@ -14,10 +14,13 @@ use libp2p::ping;
 use libp2p::swarm::{NetworkBehaviour, SwarmEvent};
 use libp2p::{identity, Multiaddr, PeerId, SwarmBuilder};
 use pulsedag_core::{
+    compute_block_hash_v2,
     errors::PulseError,
     rank_sync_candidates,
-    types::{compute_block_hash, compute_merkle_root, Block, Hash as PulseHash, Transaction},
-    RankedSyncPeer, SyncPeerCandidate,
+    types::{
+        compute_block_hash, compute_merkle_root, Block, BlockHeader, Hash as PulseHash, Transaction,
+    },
+    RankedSyncPeer, SyncPeerCandidate, BLOCK_HEADER_VERSION_V1, BLOCK_HEADER_VERSION_V2,
 };
 use tokio::sync::mpsc;
 use tokio::time::{sleep, Duration};
@@ -4119,7 +4122,15 @@ fn admit_peer_inbound_message(
     false
 }
 
-fn validate_inbound_block_shape(block: &Block) -> Result<(), &'static str> {
+fn protocol_block_hash(header: &BlockHeader, chain_id: &str) -> Option<String> {
+    match header.version {
+        BLOCK_HEADER_VERSION_V1 => Some(compute_block_hash(header)),
+        BLOCK_HEADER_VERSION_V2 => compute_block_hash_v2(header, chain_id).ok(),
+        _ => None,
+    }
+}
+
+fn validate_inbound_block_shape(block: &Block, chain_id: &str) -> Result<(), &'static str> {
     if block.hash.is_empty() {
         return Err("empty_block_hash");
     }
@@ -4131,7 +4142,9 @@ fn validate_inbound_block_shape(block: &Block) -> Result<(), &'static str> {
     }
     let looks_canonical_hash =
         block.hash.len() == 64 && block.hash.chars().all(|ch| ch.is_ascii_hexdigit());
-    if looks_canonical_hash && compute_block_hash(&block.header) != block.hash {
+    if looks_canonical_hash
+        && protocol_block_hash(&block.header, chain_id).as_deref() != Some(block.hash.as_str())
+    {
         return Err("block_hash_mismatch");
     }
     let looks_canonical_merkle = block.header.merkle_root.len() == 64
@@ -4146,6 +4159,69 @@ fn validate_inbound_block_shape(block: &Block) -> Result<(), &'static str> {
         return Err("merkle_root_mismatch");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod protocol_block_hash_tests {
+    use super::*;
+
+    fn sample_header(version: u32) -> BlockHeader {
+        BlockHeader {
+            version,
+            parents: vec!["11".repeat(32)],
+            timestamp: 1_700_000_000,
+            difficulty: 42,
+            nonce: 7,
+            merkle_root: compute_merkle_root(&[]),
+            state_root: "22".repeat(32),
+            blue_score: 1,
+            height: 1,
+        }
+    }
+
+    #[test]
+    fn protocol_hash_dispatches_legacy_v1_and_chain_bound_v2() {
+        let chain_id = "pulsedag-private-v2.4.0";
+        let v1 = sample_header(BLOCK_HEADER_VERSION_V1);
+        assert_eq!(
+            protocol_block_hash(&v1, chain_id),
+            Some(compute_block_hash(&v1))
+        );
+
+        let v2 = sample_header(BLOCK_HEADER_VERSION_V2);
+        let expected_v2 = compute_block_hash_v2(&v2, chain_id).unwrap();
+        assert_eq!(
+            protocol_block_hash(&v2, chain_id).as_deref(),
+            Some(expected_v2.as_str())
+        );
+        assert_ne!(compute_block_hash(&v2), expected_v2);
+    }
+
+    #[test]
+    fn inbound_v2_block_shape_uses_chain_bound_hash() {
+        let chain_id = "pulsedag-private-v2.4.0";
+        let header = sample_header(BLOCK_HEADER_VERSION_V2);
+        let block = Block {
+            hash: compute_block_hash_v2(&header, chain_id).unwrap(),
+            header,
+            transactions: vec![],
+        };
+
+        assert_eq!(validate_inbound_block_shape(&block, chain_id), Ok(()));
+        assert_eq!(
+            validate_inbound_block_shape(&block, "pulsedag-other-chain"),
+            Err("block_hash_mismatch")
+        );
+    }
+
+    #[test]
+    fn unknown_header_version_fails_closed() {
+        let header = sample_header(99);
+        assert_eq!(
+            protocol_block_hash(&header, "pulsedag-private-v2.4.0"),
+            None
+        );
+    }
 }
 
 fn validate_block_announcement_hash(hash: &str) -> bool {
@@ -4389,7 +4465,7 @@ fn dispatch_network_message(
                 }
                 return;
             }
-            if let Err(reason) = validate_inbound_block_shape(&block) {
+            if let Err(reason) = validate_inbound_block_shape(&block, &chain_id) {
                 if let Ok(mut guard) = inner.lock() {
                     guard.blocks_received = guard.blocks_received.saturating_add(1);
                     guard.invalid_blocks_received = guard.invalid_blocks_received.saturating_add(1);
@@ -4638,7 +4714,10 @@ fn dispatch_network_message(
                     guard.headers_received.saturating_add(headers.len() as u64);
                 guard.last_message_kind = Some("headers".into());
                 for item in headers {
-                    if item.hash.is_empty() || compute_block_hash(&item.header) != item.hash {
+                    if item.hash.is_empty()
+                        || protocol_block_hash(&item.header, &chain_id).as_deref()
+                            != Some(item.hash.as_str())
+                    {
                         guard.invalid_blocks_received =
                             guard.invalid_blocks_received.saturating_add(1);
                         guard.last_drop_reason = Some("invalid_header_hash".into());
@@ -4981,7 +5060,7 @@ fn dispatch_network_message(
                 return;
             }
             if let Some(block) = block {
-                if let Err(reason) = validate_inbound_block_shape(&block) {
+                if let Err(reason) = validate_inbound_block_shape(&block, &chain_id) {
                     if let Ok(mut guard) = inner.lock() {
                         guard.blocks_received = guard.blocks_received.saturating_add(1);
                         guard.invalid_blocks_received =
