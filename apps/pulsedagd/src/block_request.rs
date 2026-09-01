@@ -1139,6 +1139,17 @@ impl DependencyAwareFetchScheduler {
         added
     }
 
+    pub fn requeue_request(&mut self, hash: String) -> bool {
+        if self.inventory.len() >= self.max_queue_depth
+            || self.inventory.iter().any(|queued| queued == &hash)
+        {
+            return false;
+        }
+        self.queued.insert(hash.clone());
+        self.inventory.push_back(hash);
+        true
+    }
+
     pub fn next_requests(
         &mut self,
         known_blocks: &HashSet<String>,
@@ -1220,6 +1231,29 @@ mod tests {
                 height,
             },
         }
+    }
+
+    #[test]
+    fn generated_parent_can_be_requeued_after_dispatch_suppression() {
+        let mut scheduler = DependencyAwareFetchScheduler::with_limit(8);
+        assert_eq!(
+            scheduler.queue_headers([HeaderFetchCandidate {
+                hash: "child".to_string(),
+                parents: vec!["parent".to_string()],
+                height: 2,
+            }]),
+            1
+        );
+
+        let first = scheduler.next_requests(&HashSet::new(), &HashSet::new(), 1);
+        assert_eq!(first.requests, vec!["parent"]);
+        assert_eq!(scheduler.queue_depth(), 1);
+
+        assert!(scheduler.requeue_request("parent".to_string()));
+        assert_eq!(scheduler.queue_depth(), 2);
+
+        let retry = scheduler.next_requests(&HashSet::new(), &HashSet::new(), 1);
+        assert_eq!(retry.requests, vec!["parent"]);
     }
 
     #[test]
