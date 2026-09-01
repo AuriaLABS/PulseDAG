@@ -433,11 +433,7 @@ mod tests {
 
     #[test]
     fn utxo_selection_has_stable_outpoint_tie_breaking() {
-        let candidates = vec![
-            utxo("z", 0, 5),
-            utxo("a", 2, 5),
-            utxo("a", 1, 5),
-        ];
+        let candidates = vec![utxo("z", 0, 5), utxo("a", 2, 5), utxo("a", 1, 5)];
 
         let (selected, total) = select_utxos(&candidates, 10).unwrap();
 
