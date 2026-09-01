@@ -325,6 +325,7 @@ mod tests {
             | NetworkMessage::NewBlockHash { chain_id, .. }
             | NetworkMessage::InvBlock { chain_id, .. }
             | NetworkMessage::GetHeaders { chain_id, .. }
+            | NetworkMessage::Headers { chain_id, .. }
             | NetworkMessage::GetTips { chain_id, .. }
             | NetworkMessage::Tips { chain_id, .. }
             | NetworkMessage::GetBlockHeaders { chain_id, .. }
@@ -480,7 +481,9 @@ mod tests {
         .expect("unsupported version still serializes for adversarial test input");
 
         let err = serde_json::from_slice::<NetworkMessage>(&encoded).unwrap_err();
-        assert!(err.to_string().contains("unsupported block header version 99"));
+        assert!(err
+            .to_string()
+            .contains("unsupported block header version 99"));
     }
 
     #[test]
