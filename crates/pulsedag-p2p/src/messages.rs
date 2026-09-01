@@ -8,9 +8,12 @@ pub mod selected_locator_v1;
 pub mod sync_carrier_v1;
 pub mod sync_wire_v2;
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
-use pulsedag_core::types::{Block, BlockHeader, Hash, Transaction};
+use pulsedag_core::{
+    types::{Block, BlockHeader, Hash, Transaction},
+    BLOCK_HEADER_VERSION_V1, BLOCK_HEADER_VERSION_V2,
+};
 
 pub use capability_carrier_v1::{
     decode_network_message_with_capabilities_v1, encode_network_message_with_capabilities_v1,
@@ -52,15 +55,67 @@ pub use sync_wire_v2::{
     ProtocolSyncWireError, ProtocolSyncWireV1,
 };
 
+fn supported_header_version(version: u32) -> bool {
+    matches!(version, BLOCK_HEADER_VERSION_V1 | BLOCK_HEADER_VERSION_V2)
+}
+
+fn deserialize_supported_block_header<'de, D>(deserializer: D) -> Result<BlockHeader, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let header = BlockHeader::deserialize(deserializer)?;
+    if supported_header_version(header.version) {
+        Ok(header)
+    } else {
+        Err(serde::de::Error::custom(format!(
+            "unsupported block header version {}",
+            header.version
+        )))
+    }
+}
+
+fn deserialize_supported_block<'de, D>(deserializer: D) -> Result<Block, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let block = Block::deserialize(deserializer)?;
+    if supported_header_version(block.header.version) {
+        Ok(block)
+    } else {
+        Err(serde::de::Error::custom(format!(
+            "unsupported block header version {}",
+            block.header.version
+        )))
+    }
+}
+
+fn deserialize_supported_optional_block<'de, D>(deserializer: D) -> Result<Option<Block>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let block = Option::<Block>::deserialize(deserializer)?;
+    if let Some(block) = &block {
+        if !supported_header_version(block.header.version) {
+            return Err(serde::de::Error::custom(format!(
+                "unsupported block header version {}",
+                block.header.version
+            )));
+        }
+    }
+    Ok(block)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HeaderInventory {
     pub hash: Hash,
+    #[serde(deserialize_with = "deserialize_supported_block_header")]
     pub header: BlockHeader,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BlockHeaderAnnouncement {
     pub hash: Hash,
+    #[serde(deserialize_with = "deserialize_supported_block_header")]
     pub header: BlockHeader,
 }
 
@@ -85,6 +140,7 @@ pub enum NetworkMessage {
     },
     NewBlock {
         chain_id: String,
+        #[serde(deserialize_with = "deserialize_supported_block")]
         block: Block,
     },
     BlockAnnounce {
@@ -142,6 +198,7 @@ pub enum NetworkMessage {
     },
     BlockData {
         chain_id: String,
+        #[serde(default, deserialize_with = "deserialize_supported_optional_block")]
         block: Option<Block>,
         #[serde(default)]
         request_id: Option<String>,
@@ -150,6 +207,7 @@ pub enum NetworkMessage {
     },
     Block {
         chain_id: String,
+        #[serde(deserialize_with = "deserialize_supported_block")]
         block: Block,
     },
     Reject {
@@ -267,7 +325,6 @@ mod tests {
             | NetworkMessage::NewBlockHash { chain_id, .. }
             | NetworkMessage::InvBlock { chain_id, .. }
             | NetworkMessage::GetHeaders { chain_id, .. }
-            | NetworkMessage::Headers { chain_id, .. }
             | NetworkMessage::GetTips { chain_id, .. }
             | NetworkMessage::Tips { chain_id, .. }
             | NetworkMessage::GetBlockHeaders { chain_id, .. }
@@ -410,6 +467,20 @@ mod tests {
 
         let unknown_variant = br#"{"type":"Unknown","chain_id":"testnet"}"#;
         assert!(serde_json::from_slice::<NetworkMessage>(unknown_variant).is_err());
+    }
+
+    #[test]
+    fn rejects_unsupported_block_header_version_before_hash_shape_checks() {
+        let mut block = sample_block("legacy-noncanonical-hash");
+        block.header.version = 99;
+        let encoded = serde_json::to_vec(&NetworkMessage::NewBlock {
+            chain_id: "testnet".into(),
+            block,
+        })
+        .expect("unsupported version still serializes for adversarial test input");
+
+        let err = serde_json::from_slice::<NetworkMessage>(&encoded).unwrap_err();
+        assert!(err.to_string().contains("unsupported block header version 99"));
     }
 
     #[test]
