@@ -155,12 +155,37 @@ pub fn reconcile_wallet_submission(
     }
 }
 
+/// Deterministically select UTXOs independent of RPC/storage iteration order.
+///
+/// Candidates are ordered by descending amount to minimize the greedy input
+/// count, then by outpoint for a stable tie-break. Duplicate outpoints and
+/// amount accumulation overflow fail closed instead of producing an ambiguous
+/// transaction plan.
 pub fn select_utxos(utxos: &[Utxo], target: u64) -> Result<(Vec<Utxo>, u64), PulseError> {
+    let mut candidates = utxos.to_vec();
+    candidates.sort_by(|left, right| {
+        right
+            .amount
+            .cmp(&left.amount)
+            .then_with(|| left.outpoint.txid.cmp(&right.outpoint.txid))
+            .then_with(|| left.outpoint.index.cmp(&right.outpoint.index))
+    });
+
+    for pair in candidates.windows(2) {
+        if pair[0].outpoint == pair[1].outpoint {
+            return Err(PulseError::InvalidTransaction(
+                "duplicate UTXO outpoint".into(),
+            ));
+        }
+    }
+
     let mut selected = Vec::new();
     let mut total = 0_u64;
-    for utxo in utxos {
-        selected.push(utxo.clone());
-        total = total.saturating_add(utxo.amount);
+    for utxo in candidates {
+        total = total.checked_add(utxo.amount).ok_or_else(|| {
+            PulseError::InvalidTransaction("selected UTXO amount overflow".into())
+        })?;
+        selected.push(utxo);
         if total >= target {
             return Ok((selected, total));
         }
@@ -380,6 +405,55 @@ mod tests {
                 WalletSubmissionState::Replaced
             );
         }
+    }
+
+    #[test]
+    fn utxo_selection_is_order_independent_and_prefers_fewer_inputs() {
+        let first = vec![
+            utxo("small-a", 0, 3),
+            utxo("large", 0, 8),
+            utxo("small-b", 0, 4),
+        ];
+        let second = vec![
+            utxo("small-b", 0, 4),
+            utxo("small-a", 0, 3),
+            utxo("large", 0, 8),
+        ];
+
+        let (selected_first, total_first) = select_utxos(&first, 7).unwrap();
+        let (selected_second, total_second) = select_utxos(&second, 7).unwrap();
+
+        assert_eq!(total_first, 8);
+        assert_eq!(total_second, 8);
+        assert_eq!(selected_first.len(), 1);
+        assert_eq!(selected_second.len(), 1);
+        assert_eq!(selected_first[0].outpoint, selected_second[0].outpoint);
+        assert_eq!(selected_first[0].outpoint.txid, "large");
+    }
+
+    #[test]
+    fn utxo_selection_has_stable_outpoint_tie_breaking() {
+        let candidates = vec![utxo("z", 0, 5), utxo("a", 2, 5), utxo("a", 1, 5)];
+
+        let (selected, total) = select_utxos(&candidates, 10).unwrap();
+
+        assert_eq!(total, 10);
+        assert_eq!(selected.len(), 2);
+        assert_eq!(selected[0].outpoint.txid, "a");
+        assert_eq!(selected[0].outpoint.index, 1);
+        assert_eq!(selected[1].outpoint.txid, "a");
+        assert_eq!(selected[1].outpoint.index, 2);
+    }
+
+    #[test]
+    fn utxo_selection_rejects_duplicate_outpoints() {
+        let duplicate = utxo("same", 7, 5);
+        let err = select_utxos(&[duplicate.clone(), duplicate], 5).unwrap_err();
+
+        assert!(matches!(
+            err,
+            PulseError::InvalidTransaction(message) if message == "duplicate UTXO outpoint"
+        ));
     }
 
     #[test]
