@@ -24,7 +24,14 @@ if "fn generated_parent_can_be_requeued_after_dispatch_suppression()" not in tex
     test = """    #[test]
     fn generated_parent_can_be_requeued_after_dispatch_suppression() {
         let mut scheduler = DependencyAwareFetchScheduler::with_limit(8);
-        assert_eq!(scheduler.queue_headers([header("child", &["parent"], 2)]), 1);
+        assert_eq!(
+            scheduler.queue_headers([HeaderFetchCandidate {
+                hash: "child".to_string(),
+                parents: vec!["parent".to_string()],
+                height: 2,
+            }]),
+            1
+        );
 
         let first = scheduler.next_requests(&HashSet::new(), &HashSet::new(), 1);
         assert_eq!(first.requests, vec!["parent"]);
