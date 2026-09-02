@@ -1,7 +1,8 @@
 use sha2::{Digest, Sha256};
 
 use crate::{
-    decode_hybrid_public_key_v1, decode_hybrid_signature_v1, errors::PulseError,
+    decode_hybrid_public_key_v1, decode_hybrid_signature_v1,
+    errors::PulseError,
     tx::{canonical_outpoint_bytes, canonical_tx_input_bytes, canonical_tx_output_bytes},
     types::Transaction,
 };
