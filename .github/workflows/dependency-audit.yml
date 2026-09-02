@@ -56,8 +56,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          rustup toolchain install 1.88.0 --profile minimal --no-self-update
-          rustup default 1.88.0
+          rustup toolchain install 1.91.0 --profile minimal --no-self-update
+          rustup default 1.91.0
           rustc --version
           cargo --version
 
@@ -90,6 +90,7 @@ jobs:
           echo "raw_exit_status=${raw_status}" >ci-evidence/dependency-audit/raw-exit-status.txt
           python - <<'PY' | tee ci-evidence/dependency-audit/raw-summary.txt
           import json
+          from pathlib import Path
 
           report = json.load(open('ci-evidence/dependency-audit/cargo-audit-raw.json'))
           vulnerabilities = report.get('vulnerabilities', {}).get('list', [])
@@ -97,7 +98,10 @@ jobs:
               ((item.get('advisory') or {}).get('id'), (item.get('package') or {}).get('name'), (item.get('package') or {}).get('version'))
               for item in vulnerabilities
           }
-          expected_vulnerabilities = set()
+          expected_vulnerabilities = {
+              ('RUSTSEC-2026-0118', 'hickory-proto', '0.25.2'),
+              ('RUSTSEC-2026-0119', 'hickory-proto', '0.25.2'),
+          }
 
           expected_advisory_warnings = {
               ('unmaintained', 'RUSTSEC-2025-0052', 'async-std', '1.13.2'),
@@ -105,7 +109,7 @@ jobs:
               ('unsound', 'RUSTSEC-2021-0145', 'atty', '0.2.14'),
               ('unmaintained', 'RUSTSEC-2025-0141', 'bincode', '1.3.3'),
               ('unmaintained', 'RUSTSEC-2024-0384', 'instant', '0.1.13'),
-              ('unsound', 'RUSTSEC-2024-0407', 'linkme', '0.2.10'),
+              ('unmaintained', 'RUSTSEC-2024-0388', 'derivative', '2.2.0'),
               ('unmaintained', 'RUSTSEC-2024-0436', 'paste', '1.0.15'),
               ('unmaintained', 'RUSTSEC-2024-0370', 'proc-macro-error', '1.0.4'),
           }
@@ -150,13 +154,32 @@ jobs:
               raise SystemExit(f'unexpected raw advisory warning set: {sorted(observed_advisory_warnings)}')
           if observed_yanked != expected_yanked:
               raise SystemExit(f'unexpected raw yanked set: {sorted(observed_yanked)}')
+
+          # The Hickory advisories are tolerated only as a lockfile-only residue.
+          # Exact clean compiler-artifact evidence must prove hickory-proto 0.25.2
+          # is absent from every launch root, including the wallet, before the CLI
+          # audit disposition below is allowed.
+          hickory = 'hickory-proto@0.25.2'
+          roots = ('pulsedag-p2p', 'pulsedagd', 'pulsedag-miner', 'pulsedag-wallet')
+          for root in roots:
+              compiled = Path(f'ci-evidence/dependency-audit/v3-{root}-compiled-packages.txt')
+              packages = set(compiled.read_text(encoding='utf-8').splitlines())
+              if hickory in packages:
+                  raise SystemExit(f'{hickory} is compiler-reachable from {root}; lock-only disposition invalid')
+              print('unreachable', root, hickory)
           PY
 
       - name: Enforce configured audit policy
         shell: bash
         run: |
           set -euo pipefail
-          cargo audit --json | tee ci-evidence/dependency-audit/cargo-audit-configured.json
+          # These two Hickory advisories are explicitly dispositioned above only
+          # after exact-target compiler reachability proves 0.25.2 is lock-only.
+          # Do not move them into .cargo/audit.toml and do not add further ignores.
+          cargo audit --json \
+            --ignore RUSTSEC-2026-0118 \
+            --ignore RUSTSEC-2026-0119 \
+            | tee ci-evidence/dependency-audit/cargo-audit-configured.json
 
       - name: Record exact-candidate audit provenance
         if: always()
