@@ -157,10 +157,10 @@ jobs:
 
           # The Hickory advisories are tolerated only as a lockfile-only residue.
           # Exact clean compiler-artifact evidence must prove hickory-proto 0.25.2
-          # is absent from every packaged node/miner/P2P root before the CLI
+          # is absent from every launch root, including the wallet, before the CLI
           # audit disposition below is allowed.
           hickory = 'hickory-proto@0.25.2'
-          roots = ('pulsedag-p2p', 'pulsedagd', 'pulsedag-miner')
+          roots = ('pulsedag-p2p', 'pulsedagd', 'pulsedag-miner', 'pulsedag-wallet')
           for root in roots:
               compiled = Path(f'ci-evidence/dependency-audit/v3-{root}-compiled-packages.txt')
               packages = set(compiled.read_text(encoding='utf-8').splitlines())
