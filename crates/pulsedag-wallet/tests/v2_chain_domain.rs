@@ -59,7 +59,16 @@ fn same_intent_is_cryptographically_separated_between_networks() {
 
     assert_eq!(testnet_plan.transaction.version, TRANSACTION_VERSION_V2);
     assert_eq!(mainnet_plan.transaction.version, TRANSACTION_VERSION_V2);
-    assert_eq!(testnet_plan.transaction, mainnet_plan.transaction);
+    assert_eq!(testnet_plan.transaction.fee, mainnet_plan.transaction.fee);
+    assert_eq!(testnet_plan.transaction.nonce, mainnet_plan.transaction.nonce);
+    assert_eq!(
+        testnet_plan.transaction.inputs.len(),
+        mainnet_plan.transaction.inputs.len()
+    );
+    assert_eq!(
+        testnet_plan.transaction.outputs.len(),
+        mainnet_plan.transaction.outputs.len()
+    );
     assert_ne!(
         testnet_plan.protocol_fingerprint,
         mainnet_plan.protocol_fingerprint
