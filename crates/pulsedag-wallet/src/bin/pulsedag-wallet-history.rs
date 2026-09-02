@@ -465,7 +465,11 @@ fn validate_activity_response(
     if data.count != data.activity.len() || data.count > data.limit {
         return Err(history_error("address activity response count mismatch"));
     }
-    if data.offset > data.total || data.offset.saturating_add(data.count) > data.total {
+    if data.count == 0 {
+        if data.offset < data.total {
+            return Err(history_error("address activity empty-page total/offset mismatch"));
+        }
+    } else if data.offset >= data.total || data.offset.saturating_add(data.count) > data.total {
         return Err(history_error("address activity total/offset mismatch"));
     }
     let expected_has_more = data.offset.saturating_add(data.count) < data.total;
@@ -702,6 +706,28 @@ mod tests {
             activity: vec![item("mempool", -5), item("confirmed", 8)],
         };
         assert!(validate_activity_response("pulse1sender", 2, 0, valid).is_ok());
+
+        let empty_beyond_end = AddressActivityData {
+            address: "pulse1sender".to_string(),
+            count: 0,
+            total: 3,
+            limit: 2,
+            offset: 10,
+            has_more: false,
+            activity: Vec::new(),
+        };
+        assert!(validate_activity_response("pulse1sender", 2, 10, empty_beyond_end).is_ok());
+
+        let bad_empty_page = AddressActivityData {
+            address: "pulse1sender".to_string(),
+            count: 0,
+            total: 3,
+            limit: 2,
+            offset: 1,
+            has_more: true,
+            activity: Vec::new(),
+        };
+        assert!(validate_activity_response("pulse1sender", 2, 1, bad_empty_page).is_err());
 
         let bad_state = AddressActivityData {
             address: "pulse1sender".to_string(),
