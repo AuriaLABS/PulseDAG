@@ -18,9 +18,13 @@ use pulsedag_wallet::{
     WalletNetworkContext, WalletNetworkIdentity, WalletNoncePolicy, WalletPlanSigner,
     WalletPlanSigningSessionExt, WalletReviewSummary, WalletSession, WalletSpendPolicy,
     WalletTransactionIntent, WalletTransactionPlan, WalletUnlockPolicy, WalletWatchOnly,
-    WalletWatchOnlyManifest, WalletWatchOnlyScope, WalletWatchOnlySessionExt,
+    WalletWatchOnlyBranch, WalletWatchOnlyManifest, WalletWatchOnlyScope,
+    WalletWatchOnlySessionExt,
 };
-use pulsedag_wallet_relay::{broadcast_signed, parse_signed_broadcast, RelayEnvelope};
+use pulsedag_wallet_relay::{
+    broadcast_signed, fetch_address_balance, fetch_address_utxos, parse_signed_broadcast,
+    AddressBalanceOutput, AddressUtxosOutput, RelayEnvelope,
+};
 use serde::{Deserialize, Serialize};
 
 const CLI_UNLOCK_TIMEOUT: Duration = Duration::from_secs(60);
@@ -37,6 +41,8 @@ enum Command {
     WatchExport(WatchExportArgs),
     WatchImport(WatchImportArgs),
     BackupVerify(BackupVerifyArgs),
+    Balance(ReadOnlyArgs),
+    Utxos(ReadOnlyArgs),
     TxPreview(TxPreviewArgs),
     TxSign(TxSignArgs),
     TxBroadcast(TxBroadcastArgs),
@@ -105,6 +111,14 @@ struct TxSignArgs {
 #[derive(Debug)]
 struct TxBroadcastArgs {
     signed: PathBuf,
+    relay: String,
+}
+
+#[derive(Debug)]
+struct ReadOnlyArgs {
+    manifest: PathBuf,
+    branch: WalletDerivationBranch,
+    index: u32,
     relay: String,
 }
 
@@ -267,7 +281,7 @@ fn branch_name(branch: WalletDerivationBranch) -> &'static str {
 
 fn expected_command_error() -> io::Error {
     invalid_input(
-        "expected command: restore, address, watch-export, watch-import, backup-verify, tx-preview, tx-sign, or tx-broadcast",
+        "expected command: restore, address, watch-export, watch-import, backup-verify, balance, utxos, tx-preview, tx-sign, or tx-broadcast",
     )
 }
 
@@ -316,6 +330,24 @@ fn parse_command_from(args: impl Iterator<Item = String>) -> CliResult<Command> 
             Ok(Command::BackupVerify(BackupVerifyArgs {
                 keystore: PathBuf::from(required(&flags, "keystore")?),
                 manifest: PathBuf::from(required(&flags, "manifest")?),
+            }))
+        }
+        "balance" => {
+            reject_unknown(&flags, &["manifest", "branch", "index", "relay"])?;
+            Ok(Command::Balance(ReadOnlyArgs {
+                manifest: PathBuf::from(required(&flags, "manifest")?),
+                branch: parse_branch(&required(&flags, "branch")?)?,
+                index: parse_u32("--index", &required(&flags, "index")?)?,
+                relay: required(&flags, "relay")?,
+            }))
+        }
+        "utxos" => {
+            reject_unknown(&flags, &["manifest", "branch", "index", "relay"])?;
+            Ok(Command::Utxos(ReadOnlyArgs {
+                manifest: PathBuf::from(required(&flags, "manifest")?),
+                branch: parse_branch(&required(&flags, "branch")?)?,
+                index: parse_u32("--index", &required(&flags, "index")?)?,
+                relay: required(&flags, "relay")?,
             }))
         }
         "tx-preview" => {
@@ -601,6 +633,34 @@ fn run_watch_import(args: WatchImportArgs) -> CliResult<WatchImportOutput> {
     })
 }
 
+fn selected_watch_target(args: &ReadOnlyArgs) -> CliResult<(WalletNetworkIdentity, String)> {
+    let manifest = read_manifest(&args.manifest)?;
+    let watch_only = WalletWatchOnly::import(manifest)?;
+    let expected_branch = match args.branch {
+        WalletDerivationBranch::Receive => WalletWatchOnlyBranch::Receive,
+        WalletDerivationBranch::Change => WalletWatchOnlyBranch::Change,
+    };
+    let address = watch_only
+        .entries()
+        .iter()
+        .find(|entry| entry.branch() == expected_branch && entry.index() == args.index)
+        .ok_or_else(|| invalid_input("selected watch-only address is not present in manifest"))?
+        .address()
+        .to_string();
+    let network = WalletNetworkIdentity::new(watch_only.network_profile(), watch_only.chain_id())?;
+    Ok((network, address))
+}
+
+async fn run_balance(args: ReadOnlyArgs) -> CliResult<AddressBalanceOutput> {
+    let (network, address) = selected_watch_target(&args)?;
+    Ok(fetch_address_balance(&args.relay, &network, &address).await?)
+}
+
+async fn run_utxos(args: ReadOnlyArgs) -> CliResult<AddressUtxosOutput> {
+    let (network, address) = selected_watch_target(&args)?;
+    Ok(fetch_address_utxos(&args.relay, &network, &address).await?)
+}
+
 fn run_backup_verify(
     args: BackupVerifyArgs,
     password: &SecretString,
@@ -700,6 +760,8 @@ async fn run() -> CliResult<()> {
             let password = read_password_from_stdin()?;
             write_json(&run_backup_verify(args, &password)?)
         }
+        Command::Balance(args) => write_json(&run_balance(args).await?),
+        Command::Utxos(args) => write_json(&run_utxos(args).await?),
         Command::TxPreview(args) => {
             let password = read_password_from_stdin()?;
             write_json(&run_tx_preview(args, &password)?)
@@ -883,6 +945,54 @@ mod tests {
             .unwrap(),
             Command::TxBroadcast(_)
         ));
+    }
+
+    #[test]
+    fn read_only_commands_require_manifest_address_selector_and_relay() {
+        assert!(matches!(
+            parse_command_from(args(&[
+                "balance",
+                "--manifest",
+                "watch.json",
+                "--branch",
+                "receive",
+                "--index",
+                "0",
+                "--relay",
+                "https://relay.example"
+            ]))
+            .unwrap(),
+            Command::Balance(_)
+        ));
+        assert!(matches!(
+            parse_command_from(args(&[
+                "utxos",
+                "--manifest",
+                "watch.json",
+                "--branch",
+                "change",
+                "--index",
+                "1",
+                "--relay",
+                "https://relay.example"
+            ]))
+            .unwrap(),
+            Command::Utxos(_)
+        ));
+        assert!(parse_command_from(args(&[
+            "balance",
+            "--manifest",
+            "watch.json",
+            "--branch",
+            "receive",
+            "--index",
+            "0",
+            "--relay",
+            "https://relay.example",
+            "--password",
+            "secret"
+        ]))
+        .is_err());
     }
 
     #[test]
