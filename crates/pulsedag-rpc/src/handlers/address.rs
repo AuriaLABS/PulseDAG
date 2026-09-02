@@ -1,9 +1,11 @@
+use std::collections::HashMap;
+
 use crate::{api::ApiResponse, api::RpcStateLike};
 use axum::{
     extract::{Path, Query, State},
     Json,
 };
-use pulsedag_core::types::Utxo;
+use pulsedag_core::types::{OutPoint, Utxo};
 
 #[derive(Debug, serde::Serialize)]
 pub struct AddressOutpointData {
@@ -94,6 +96,40 @@ fn sorted_address_utxos(chain: &pulsedag_core::ChainState, address: &str) -> Vec
             .then_with(|| a.outpoint.index.cmp(&b.outpoint.index))
     });
     utxos
+}
+
+/// Index transaction outputs that are still retained in the local DAG.
+///
+/// Confirmed transaction inputs cannot be resolved from the live UTXO set after
+/// those outputs have been spent. Address activity therefore uses retained block
+/// data for confirmed spends. Conflicting duplicate outpoint descriptions are
+/// marked ambiguous and are never attributed to an address.
+fn retained_transaction_outputs(
+    chain: &pulsedag_core::ChainState,
+) -> HashMap<OutPoint, Option<(String, u64)>> {
+    let mut outputs: HashMap<OutPoint, Option<(String, u64)>> = HashMap::new();
+    for block in chain.dag.blocks.values() {
+        for tx in &block.transactions {
+            for (index, output) in tx.outputs.iter().enumerate() {
+                let Ok(index) = u32::try_from(index) else {
+                    continue;
+                };
+                let outpoint = OutPoint {
+                    txid: tx.txid.clone(),
+                    index,
+                };
+                let value = (output.address.clone(), output.amount);
+                match outputs.get_mut(&outpoint) {
+                    None => {
+                        outputs.insert(outpoint, Some(value));
+                    }
+                    Some(existing) if existing.as_ref() == Some(&value) => {}
+                    Some(existing) => *existing = None,
+                }
+            }
+        }
+    }
+    outputs
 }
 
 pub async fn get_address<S: RpcStateLike>(
@@ -211,6 +247,7 @@ pub async fn get_address_activity<S: RpcStateLike>(
     let offset = query.offset.unwrap_or(0);
     let chain_handle = state.chain();
     let chain = chain_handle.read().await;
+    let retained_outputs = retained_transaction_outputs(&chain);
 
     let mut activity = Vec::new();
     for tx in chain.mempool.transactions.values() {
@@ -261,9 +298,13 @@ pub async fn get_address_activity<S: RpcStateLike>(
             let outgoing = tx
                 .inputs
                 .iter()
-                .filter_map(|input| chain.utxo.utxos.get(&input.previous_output))
-                .filter(|spent| spent.address == address)
-                .map(|spent| spent.amount)
+                .filter_map(|input| {
+                    retained_outputs
+                        .get(&input.previous_output)
+                        .and_then(Option::as_ref)
+                })
+                .filter(|(spent_address, _)| spent_address == &address)
+                .map(|(_, amount)| *amount)
                 .sum::<u64>();
             if incoming > 0 || outgoing > 0 {
                 let net = incoming as i64 - outgoing as i64;
@@ -490,5 +531,78 @@ mod tests {
         assert_eq!(first.activity[0].context, "mempool");
         assert!(first.activity[0].is_mempool);
         assert!(!first.activity[0].is_confirmed);
+    }
+
+    #[tokio::test]
+    async fn confirmed_outgoing_activity_survives_live_utxo_removal() {
+        let state = mk_state().await;
+        {
+            let mut chain = state.chain.write().await;
+            let spent = OutPoint {
+                txid: "funding".into(),
+                index: 0,
+            };
+            chain.mempool.transactions.clear();
+            chain.utxo.utxos.remove(&spent);
+            chain.utxo.address_index.remove("alice");
+
+            let funding = Transaction {
+                txid: "funding".into(),
+                version: 1,
+                inputs: Vec::new(),
+                outputs: vec![TxOutput {
+                    address: "alice".into(),
+                    amount: 50,
+                }],
+                fee: 0,
+                nonce: 0,
+            };
+            let spend = Transaction {
+                txid: "tx-confirmed-spend".into(),
+                version: 1,
+                inputs: vec![TxInput {
+                    previous_output: spent,
+                    public_key: "pk".into(),
+                    signature: "sig".into(),
+                }],
+                outputs: vec![TxOutput {
+                    address: "bob".into(),
+                    amount: 45,
+                }],
+                fee: 5,
+                nonce: 2,
+            };
+            let retained_block = chain
+                .dag
+                .blocks
+                .values_mut()
+                .next()
+                .expect("genesis block retained");
+            retained_block.transactions.push(funding);
+            retained_block.transactions.push(spend);
+        }
+
+        let axum::Json(resp) = get_address_activity(
+            State(state),
+            Path("alice".to_string()),
+            Query(super::AddressActivityQuery {
+                limit: Some(10),
+                offset: Some(0),
+            }),
+        )
+        .await;
+        let data = resp.data.expect("address activity");
+        let spend = data
+            .activity
+            .iter()
+            .find(|item| item.txid == "tx-confirmed-spend")
+            .expect("confirmed outgoing spend remains visible");
+        assert_eq!(spend.incoming, 0);
+        assert_eq!(spend.outgoing, 50);
+        assert_eq!(spend.net, -50);
+        assert_eq!(spend.direction, "outgoing");
+        assert_eq!(spend.context, "confirmed");
+        assert!(spend.is_confirmed);
+        assert!(!spend.is_mempool);
     }
 }
