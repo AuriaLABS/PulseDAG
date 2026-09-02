@@ -55,7 +55,9 @@ Supported recovery/read-only commands:
 - `address --keystore <path> --account <n> --branch <receive|change> --index <n>` derives one public address from an unlocked deterministic v2 keystore;
 - `watch-export --keystore <path> --account <n> --receive-count <n> --change-count <n>` emits the bounded public watch-only manifest;
 - `watch-import --manifest <path>` validates/imports a public watch-only manifest and reports public metadata only; it has no signing capability;
-- `backup-verify --keystore <path> --manifest <path>` verifies a public watch-only backup manifest against the authenticated deterministic seed and network identity.
+- `backup-verify --keystore <path> --manifest <path>` verifies a public watch-only backup manifest against the authenticated deterministic seed and network identity;
+- `balance --manifest <path> --branch <receive|change> --index <n> --relay <origin>` selects a public address from a validated watch-only manifest, verifies the relay network identity and explorer surface, then returns its confirmed balance metadata;
+- `utxos --manifest <path> --branch <receive|change> --index <n> --relay <origin>` performs the same fail-closed network/surface checks and returns the selected public address's validated UTXO set.
 
 Supported transaction commands:
 
@@ -63,7 +65,7 @@ Supported transaction commands:
 - `tx-sign --keystore <path> --plan <path> --account <n> --branch <receive|change> --index <n>` validates an imported unsigned plan, refuses non-deterministic/manual nonce policy, signs only through the bounded `WalletSession` deterministic child, and emits network/review metadata plus a signed relay envelope containing the final transaction;
 - `tx-broadcast --signed <path> --relay <origin>` reads that secret-free signed envelope, validates its canonical final txid and signature/public-key material, verifies the relay's public `network_profile`, `chain_id`, relay capability and relay version, then submits only the signed transaction to `POST /api/v1/tx/submit`.
 
-Secrets are never accepted as command-line options. `restore` reads three line-framed stdin values: wallet password, mnemonic, then an optional BIP-39 passphrase (blank or absent means none). `address`, `watch-export`, `backup-verify`, `tx-preview`, and `tx-sign` read one wallet-password line from stdin. `watch-import` and `tx-broadcast` consume no secret.
+Secrets are never accepted as command-line options. `restore` reads three line-framed stdin values: wallet password, mnemonic, then an optional BIP-39 passphrase (blank or absent means none). `address`, `watch-export`, `backup-verify`, `tx-preview`, and `tx-sign` read one wallet-password line from stdin. `watch-import`, `balance`, `utxos`, and `tx-broadcast` consume no secret.
 
 Local JSON inputs are bounded to 4 MiB before parsing. Transaction-plan import re-runs structural validation and the official CLI signs only `DeterministicPlanV1`; low-level `ExplicitCallerProvidedV1` remains available only as a compatibility/protocol-test API. UTXO snapshots must identify exactly the selected signer address and may not contain entries for another address.
 
@@ -71,9 +73,11 @@ The restore path persists only the encrypted deterministic seed envelope and ref
 
 `tx-preview`, `tx-sign`, and `tx-broadcast` form the supported review -> offline authorization -> online relay flow. Broadcast requires HTTPS for non-loopback relays; plain HTTP is accepted only for loopback development. Redirects are disabled and relay responses are bounded. The wallet verifies remote identity before submission and fails closed on network/chain, capability, version, malformed-response or transport mismatch.
 
+Read-only `balance` and `utxos` use the same transport hardening, derive the queried address from public watch-only material, require exact relay network/chain identity plus the advertised explorer capability and canonical endpoint, and never unlock custody material.
+
 This remote identity check is an operational v1 safety boundary, not cryptographic chain binding. PulseDAG v1 signing bytes still do not include `network_profile` or `chain_id`; protocol-level chain binding/replay/RBF/submission-identity semantics remain tracked by #821.
 
-There is still no live `balance`, `history`, automatic UTXO discovery, or pending-state persistence in this CLI.
+There is still no live `history` command or durable pending-state persistence in this CLI. `tx-preview` also continues to consume an explicit bounded UTXO snapshot rather than silently fetching spend inputs during signing preparation.
 
 ## Broadcast boundary
 
