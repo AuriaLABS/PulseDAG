@@ -2,8 +2,7 @@ use std::{
     collections::HashMap,
     env,
     error::Error,
-    fmt,
-    fs,
+    fmt, fs,
     io::{self, Write},
     net::IpAddr,
     path::{Path, PathBuf},
@@ -181,10 +180,7 @@ fn parse_args_from(args: impl Iterator<Item = String>) -> CliResult<HistoryArgs>
         .transpose()?
         .unwrap_or(DEFAULT_LIMIT);
     if limit == 0 || limit > MAX_LIMIT {
-        return Err(invalid_input(format!(
-            "--limit must be between 1 and {MAX_LIMIT}"
-        ))
-        .into());
+        return Err(invalid_input(format!("--limit must be between 1 and {MAX_LIMIT}")).into());
     }
     let offset = flags
         .get("offset")
@@ -222,9 +218,7 @@ fn read_manifest(path: &Path) -> CliResult<WalletWatchOnlyManifest> {
     Ok(manifest)
 }
 
-fn selected_watch_target(
-    args: &HistoryArgs,
-) -> CliResult<(WalletNetworkIdentity, String)> {
+fn selected_watch_target(args: &HistoryArgs) -> CliResult<(WalletNetworkIdentity, String)> {
     let watch_only = WalletWatchOnly::import(read_manifest(&args.manifest)?)?;
     let expected_branch = match args.branch {
         WalletDerivationBranch::Receive => WalletWatchOnlyBranch::Receive,
@@ -247,7 +241,9 @@ fn relay_base_url(raw: &str) -> Result<Url, HistoryClientError> {
         return Err(history_error("relay URL must not contain credentials"));
     }
     if url.query().is_some() || url.fragment().is_some() {
-        return Err(history_error("relay URL must not contain query or fragment"));
+        return Err(history_error(
+            "relay URL must not contain query or fragment",
+        ));
     }
     if !matches!(url.path(), "" | "/") {
         return Err(history_error("relay URL must be an origin without a path"));
@@ -550,14 +546,8 @@ async fn main() {
     let result = async {
         let args = parse_args()?;
         let (network, address) = selected_watch_target(&args)?;
-        let output = fetch_history(
-            &args.relay,
-            &network,
-            &address,
-            args.limit,
-            args.offset,
-        )
-        .await?;
+        let output =
+            fetch_history(&args.relay, &network, &address, args.limit, args.offset).await?;
         write_json(&output)
     }
     .await;
