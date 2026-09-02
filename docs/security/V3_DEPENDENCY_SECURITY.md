@@ -28,12 +28,34 @@ The remediation rule is fail-closed:
 - clean compiler-artifact reachability is captured for `pulsedag-p2p`, `pulsedagd` and `pulsedag-miner`;
 - optional `dns`, `mdns`, `quic` and `upnp` libp2p packages must not be compiler-reachable from the selected PulseDAG feature set.
 
-## Remaining launch blockers
+## #803 linkme remediation
 
-This remediation does **not** close #803. The following known reachable blockers remain visible and require separate supported remediation or exact-final-candidate reviewed disposition before `GO_V3_DUAL_LAUNCH`:
+`linkme 0.2.10` was reachable through the legacy chain `kaspa-core 0.15.0 -> intertrait 0.2.2 -> linkme 0.2.10`. PulseDAG does not patch the `linkme` leaf or carry a private `intertrait` fork for the active remediation.
 
-- `atty 0.2.14` — `RUSTSEC-2024-0375`, `RUSTSEC-2021-0145`;
-- `linkme 0.2.10` — `RUSTSEC-2024-0407`.
+The supported parent-stack migration moves the direct PoW dependencies to the official Rusty Kaspa `v2.0.1` source, pinned to exact upstream commit:
+
+`cfafeb4c093fa37a303f1b9f19c58f986b870ce3`
+
+The active direct dependencies are `kaspa-hashes 2.0.1` and `kaspa-pow 2.0.1` from `https://github.com/kaspanet/rusty-kaspa` at that exact revision. This upstream line removes the legacy `intertrait 0.2.2` dependency path, so `linkme 0.2.10` and `linkme-impl 0.2.10` no longer resolve.
+
+Because Rusty Kaspa 2.0.1 declares Rust 1.91.0 / edition 2024, the active v3 lint and dependency-security gates move to Rust 1.91.0. Historical frozen v2.4 workflows remain historical and are not reinterpreted by this migration.
+
+The linkme remediation rule is fail-closed:
+
+- `kaspa-hashes` and `kaspa-pow` must remain pinned to the reviewed official upstream revision above;
+- the resolved direct Kaspa packages must be version `2.0.1` from that upstream revision;
+- `intertrait 0.2.2` must be absent;
+- `linkme 0.2.10` must be absent;
+- existing `pulsedag-core` consensus/PoW tests must pass without changing PoW vectors or adapter logic;
+- `pulsedag-p2p`, `pulsedagd` and `pulsedag-miner` must compile against the same exact lock graph.
+
+The isolated supported migration probe passed all of those focused build/test checks before the candidate was committed.
+
+## Remaining launch blocker
+
+This remediation does **not** close #803. The known reachable blocker remaining from this dependency pair is:
+
+- `atty 0.2.14` — `RUSTSEC-2024-0375`, `RUSTSEC-2021-0145`.
 
 Other informational warnings remain visible and must be owned by the final v3 security matrix. No warning is hidden merely to obtain a green audit.
 

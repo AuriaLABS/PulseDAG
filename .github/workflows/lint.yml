@@ -12,7 +12,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: 1.88.0
+          toolchain: 1.91.0
           components: clippy, rustfmt
 
       - name: Cargo.lock hygiene check
@@ -27,7 +27,7 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Clippy
-        # Keep all warnings fatal while excluding the Rust-1.88 style-only
+        # Keep all warnings fatal while excluding the style-only
         # uninlined-format-args lint from blocking unrelated v3 work. The
         # repository contains legacy call sites that predate this lint policy;
         # semantic and correctness warnings remain denied.

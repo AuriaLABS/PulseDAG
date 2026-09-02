@@ -19,14 +19,26 @@ EXPECTED_LIBP2P_FEATURES = {
 }
 FORBIDDEN_FEATURES = {"dns", "mdns", "quic", "upnp"}
 
-# These historical v2.4 lock-only exceptions and the reachable lru blocker must
-# not survive in the active v3 dependency graph.
+EXPECTED_KASPA_GIT = "https://github.com/kaspanet/rusty-kaspa"
+EXPECTED_KASPA_REV = "cfafeb4c093fa37a303f1b9f19c58f986b870ce3"
+EXPECTED_KASPA_DIRECT = {"kaspa-hashes", "kaspa-pow"}
+EXPECTED_KASPA_VERSION = "2.0.1"
+
+# Historical v2.4 lock-only exceptions plus reachable #803 blockers already
+# remediated on the active v3 line must never return.
 FORBIDDEN_LOCKED = {
     ("ring", "0.16.20"),
     ("rustls-webpki", "0.101.7"),
     ("hickory-proto", "0.24.4"),
     ("h2", "0.3.27"),
     ("lru", "0.12.5"),
+    ("linkme", "0.2.10"),
+    ("intertrait", "0.2.2"),
+}
+
+REQUIRED_KASPA = {
+    ("kaspa-hashes", EXPECTED_KASPA_VERSION),
+    ("kaspa-pow", EXPECTED_KASPA_VERSION),
 }
 
 REQUIRED_PATCHED = {
@@ -45,11 +57,10 @@ FORBIDDEN_OLD_REACHABLE = {
 FORBIDDEN_COMPILED_NAMES = {"libp2p-dns", "libp2p-mdns", "libp2p-quic", "libp2p-upnp"}
 COMPILE_ROOTS = ("pulsedag-p2p", "pulsedagd", "pulsedag-miner")
 
-# #803 still treats these as unresolved launch blockers. This gate records that
-# they remain visible; it does not claim final v3 security readiness.
+# #803 still treats atty as an unresolved launch blocker. This gate records
+# that it remains visible; it does not claim final v3 security readiness.
 REQUIRED_VISIBLE_BLOCKERS = {
     ("atty", "0.2.14"),
-    ("linkme", "0.2.10"),
 }
 
 
@@ -85,6 +96,36 @@ def package_index(metadata: dict[str, Any]) -> dict[str, tuple[str, str]]:
         str(package["id"]): (str(package["name"]), str(package["version"]))
         for package in metadata["packages"]
     }
+
+
+def validate_kaspa_parent_stack(metadata: dict[str, Any]) -> None:
+    manifest = tomllib.loads((ROOT / "crates" / "pulsedag-core" / "Cargo.toml").read_text(encoding="utf-8"))
+    dependencies = manifest.get("dependencies", {})
+    for dependency in EXPECTED_KASPA_DIRECT:
+        value = dependencies.get(dependency)
+        if not isinstance(value, dict):
+            fail(f"{dependency} must remain an explicit pinned upstream git dependency")
+        if value.get("git") != EXPECTED_KASPA_GIT:
+            fail(f"{dependency} must use official rusty-kaspa upstream, found {value.get('git')!r}")
+        if value.get("rev") != EXPECTED_KASPA_REV:
+            fail(f"{dependency} must remain pinned to reviewed Kaspa v2.0.1 SHA {EXPECTED_KASPA_REV}")
+        if any(key in value for key in ("branch", "tag", "path")):
+            fail(f"{dependency} must use the exact reviewed rev without branch/tag/path overrides")
+
+    expected_source_prefix = f"git+{EXPECTED_KASPA_GIT}?rev={EXPECTED_KASPA_REV}#"
+    observed: dict[str, tuple[str, str]] = {}
+    for package in metadata["packages"]:
+        name = str(package["name"])
+        if name not in EXPECTED_KASPA_DIRECT:
+            continue
+        observed[name] = (str(package["version"]), str(package.get("source") or ""))
+
+    for dependency in EXPECTED_KASPA_DIRECT:
+        version, source = observed.get(dependency, ("", ""))
+        if version != EXPECTED_KASPA_VERSION:
+            fail(f"{dependency} must resolve to {EXPECTED_KASPA_VERSION}, found {version or 'nothing'}")
+        if not source.startswith(expected_source_prefix):
+            fail(f"{dependency} resolved from unexpected source {source!r}")
 
 
 def compile_clean(root: str, evidence_dir: Path, by_id: dict[str, tuple[str, str]]) -> set[tuple[str, str]]:
@@ -140,12 +181,17 @@ def main() -> None:
         fail(f"forbidden libp2p features selected: {sorted(features & FORBIDDEN_FEATURES)}")
 
     metadata = cargo_metadata()
+    validate_kaspa_parent_stack(metadata)
     by_id = package_index(metadata)
     locked = set(by_id.values())
 
     forbidden_present = sorted(FORBIDDEN_LOCKED & locked)
     if forbidden_present:
-        fail(f"forbidden vulnerable versions remain locked: {forbidden_present}")
+        fail(f"forbidden legacy/vulnerable versions remain locked: {forbidden_present}")
+
+    missing_kaspa = sorted(REQUIRED_KASPA - locked)
+    if missing_kaspa:
+        fail(f"required reviewed Kaspa parent-stack packages missing: {missing_kaspa}")
 
     missing_patched = sorted(REQUIRED_PATCHED - locked)
     if missing_patched:
@@ -170,7 +216,7 @@ def main() -> None:
         compiled_by_root[root] = compiled
         compiled_forbidden_versions = sorted(compiled & FORBIDDEN_LOCKED)
         if compiled_forbidden_versions:
-            fail(f"{root} compiles forbidden vulnerable versions: {compiled_forbidden_versions}")
+            fail(f"{root} compiles forbidden legacy/vulnerable versions: {compiled_forbidden_versions}")
         compiled_names = {name for name, _version in compiled}
         forbidden_names = sorted(compiled_names & FORBIDDEN_COMPILED_NAMES)
         if forbidden_names:
@@ -182,8 +228,12 @@ def main() -> None:
         "source_sha": candidate_sha,
         "libp2p_version": version,
         "libp2p_features": sorted(features),
-        "forbidden_vulnerable_locked": False,
+        "kaspa_version": EXPECTED_KASPA_VERSION,
+        "kaspa_upstream_rev": EXPECTED_KASPA_REV,
+        "forbidden_legacy_or_vulnerable_locked": False,
         "lru_0_12_5_present": ("lru", "0.12.5") in locked,
+        "linkme_0_2_10_present": ("linkme", "0.2.10") in locked,
+        "intertrait_0_2_2_present": ("intertrait", "0.2.2") in locked,
         "remaining_launch_blockers": [f"{name}@{ver}" for name, ver in sorted(REQUIRED_VISIBLE_BLOCKERS)],
         "compiled_counts": {root: len(compiled) for root, compiled in compiled_by_root.items()},
         "final_v3_launch_security_ready": False,
@@ -195,13 +245,20 @@ def main() -> None:
         "result=PASS",
         f"source_sha={candidate_sha}",
         f"libp2p_version={version}",
+        f"kaspa_version={EXPECTED_KASPA_VERSION}",
+        f"kaspa_upstream_rev={EXPECTED_KASPA_REV}",
         "lru_0_12_5_present=false",
+        "linkme_0_2_10_present=false",
+        "intertrait_0_2_2_present=false",
         "historical_v2_4_lock_only_vulnerable_versions_present=false",
-        "remaining_launch_blockers=atty@0.2.14,linkme@0.2.10",
+        "remaining_launch_blockers=atty@0.2.14",
         "final_v3_launch_security_ready=false",
         "",
     ]), encoding="utf-8")
-    print("PASS: v3 dependency remediation gate; lru 0.12.5 and historical lock-only vulnerabilities are absent")
+    print(
+        "PASS: v3 dependency remediation gate; lru 0.12.5, linkme 0.2.10, "
+        "intertrait 0.2.2 and historical lock-only vulnerabilities are absent"
+    )
 
 
 if __name__ == "__main__":
