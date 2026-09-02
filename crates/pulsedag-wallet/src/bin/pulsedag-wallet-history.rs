@@ -467,7 +467,9 @@ fn validate_activity_response(
     }
     if data.count == 0 {
         if data.offset < data.total {
-            return Err(history_error("address activity empty-page total/offset mismatch"));
+            return Err(history_error(
+                "address activity empty-page total/offset mismatch",
+            ));
         }
     } else if data.offset >= data.total || data.offset.saturating_add(data.count) > data.total {
         return Err(history_error("address activity total/offset mismatch"));
