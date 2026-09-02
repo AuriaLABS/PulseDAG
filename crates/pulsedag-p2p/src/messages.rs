@@ -55,9 +55,7 @@ pub use sync_wire_v2::{
     plan_protocol_sync_dispatch_v1, ProtocolSyncDispatchActionV1, ProtocolSyncDispatchPlanV1,
     ProtocolSyncWireError, ProtocolSyncWireV1,
 };
-pub use wire_limits_v1::{
-    P2P_WIRE_MAX_INVENTORY_ITEMS_V1, P2P_WIRE_MAX_REQUEST_ITEMS_V1,
-};
+pub use wire_limits_v1::{P2P_WIRE_MAX_INVENTORY_ITEMS_V1, P2P_WIRE_MAX_REQUEST_ITEMS_V1};
 
 fn supported_header_version(version: u32) -> bool {
     matches!(version, BLOCK_HEADER_VERSION_V1 | BLOCK_HEADER_VERSION_V2)
@@ -532,7 +530,9 @@ mod tests {
         };
         let encoded = serde_json::to_vec(&oversized_limit).unwrap();
         let err = serde_json::from_slice::<NetworkMessage>(&encoded).unwrap_err();
-        assert!(err.to_string().contains("GetHeaders.limit exceeds maximum 512"));
+        assert!(err
+            .to_string()
+            .contains("GetHeaders.limit exceeds maximum 512"));
 
         let oversized_request = NetworkMessage::GetBlockHeaders {
             chain_id: "testnet".into(),
