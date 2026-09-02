@@ -42,6 +42,7 @@ pub mod tx;
 pub mod tx_protocol;
 pub mod tx_rejection;
 pub mod tx_submission;
+pub mod tx_v3;
 pub mod types;
 pub mod validation;
 pub mod validation_v2;
@@ -80,6 +81,10 @@ pub use tx_rejection::{
     classify_transaction_version, classify_typed_transaction_error, TransactionRejectionClass,
 };
 pub use tx_submission::compute_submission_id_v2;
+pub use tx_v3::{
+    canonical_transaction_bytes_v3, canonical_unsigned_transaction_bytes_v3, compute_txid_v3,
+    signing_message_v3, TRANSACTION_VERSION_V3,
+};
 pub use types::*;
 
 pub use retarget::{
