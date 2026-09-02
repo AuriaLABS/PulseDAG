@@ -28,6 +28,7 @@ pub mod orphans;
 pub mod pow;
 pub mod pow_protocol;
 pub mod pow_v2;
+pub mod pqc;
 pub mod protocol;
 pub mod protocol_persistence;
 pub mod replay;
@@ -54,6 +55,12 @@ pub use accept::{
 pub use acceptance_v2::{commit_ghostdag_v1_metadata_for_activated_v2, ActivatedV2MetadataCommit};
 pub use errors::{
     InvalidStateRootClassification, InvalidStateRootDiagnostics, InvalidStateRootError, PulseError,
+};
+pub use pqc::{
+    address_from_hybrid_public_key_v1, decode_hybrid_public_key_v1,
+    decode_hybrid_signature_v1, encode_hybrid_public_key_v1, encode_hybrid_signature_v1,
+    HybridPublicKeyV1, HybridSignatureV1, ED25519_PUBLIC_KEY_BYTES, ED25519_SIGNATURE_BYTES,
+    ML_DSA_65_PUBLIC_KEY_BYTES, ML_DSA_65_SIGNATURE_BYTES, PQC_ENVELOPE_VERSION_V1,
 };
 pub use state::{
     ChainState, ConsensusMode, ContractRuntimeConfig, ContractRuntimeState, DagState, Mempool,
