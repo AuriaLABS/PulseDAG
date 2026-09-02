@@ -7,11 +7,7 @@ use serde::{Deserialize, Deserializer};
 
 use super::dag_sync_v2::MAX_SELECTED_CHAIN_LOCATOR_HASHES;
 use super::{BlockHeaderAnnouncement, HeaderInventory};
-
-/// Keep legacy/current inventory messages aligned with the live P2P status budget.
-pub const P2P_WIRE_MAX_INVENTORY_ITEMS_V1: usize = 512;
-/// Keep peer-addressed request fanout aligned with the live P2P request budget.
-pub const P2P_WIRE_MAX_REQUEST_ITEMS_V1: usize = 64;
+use crate::{MAX_INV_BLOCK_HASHES, MAX_INV_BLOCK_REQUEST_FANOUT};
 
 struct BoundedVecVisitor<T> {
     maximum: usize,
@@ -84,11 +80,7 @@ pub(super) fn deserialize_inventory_hashes<'de, D>(deserializer: D) -> Result<Ve
 where
     D: Deserializer<'de>,
 {
-    deserialize_bounded_vec(
-        deserializer,
-        P2P_WIRE_MAX_INVENTORY_ITEMS_V1,
-        "network inventory hashes",
-    )
+    deserialize_bounded_vec(deserializer, MAX_INV_BLOCK_HASHES, "network inventory hashes")
 }
 
 pub(super) fn deserialize_locator_hashes<'de, D>(deserializer: D) -> Result<Vec<Hash>, D::Error>
@@ -108,11 +100,7 @@ pub(super) fn deserialize_header_inventory<'de, D>(
 where
     D: Deserializer<'de>,
 {
-    deserialize_bounded_vec(
-        deserializer,
-        P2P_WIRE_MAX_INVENTORY_ITEMS_V1,
-        "Headers.headers",
-    )
+    deserialize_bounded_vec(deserializer, MAX_INV_BLOCK_HASHES, "Headers.headers")
 }
 
 pub(super) fn deserialize_request_hashes<'de, D>(deserializer: D) -> Result<Vec<Hash>, D::Error>
@@ -121,7 +109,7 @@ where
 {
     deserialize_bounded_vec(
         deserializer,
-        P2P_WIRE_MAX_REQUEST_ITEMS_V1,
+        MAX_INV_BLOCK_REQUEST_FANOUT,
         "GetBlockHeaders.hashes",
     )
 }
@@ -134,7 +122,7 @@ where
 {
     deserialize_bounded_vec(
         deserializer,
-        P2P_WIRE_MAX_REQUEST_ITEMS_V1,
+        MAX_INV_BLOCK_REQUEST_FANOUT,
         "BlockHeaders.headers",
     )
 }
@@ -144,10 +132,9 @@ where
     D: Deserializer<'de>,
 {
     let limit = usize::deserialize(deserializer)?;
-    if limit > P2P_WIRE_MAX_INVENTORY_ITEMS_V1 {
+    if limit > MAX_INV_BLOCK_HASHES {
         return Err(D::Error::custom(format!(
-            "GetHeaders.limit exceeds maximum {}",
-            P2P_WIRE_MAX_INVENTORY_ITEMS_V1
+            "GetHeaders.limit exceeds maximum {MAX_INV_BLOCK_HASHES}"
         )));
     }
     Ok(limit)
