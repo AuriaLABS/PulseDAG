@@ -5,8 +5,7 @@ use pulsedag_core::{
 };
 use pulsedag_wallet::protocol_v2::{prepare_wallet_v2_signing_plan, WalletV2PlanRequest};
 
-const PUBLIC_KEY: &str =
-    "ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c";
+const PUBLIC_KEY: &str = "ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c";
 
 fn identity(chain_id: &str, genesis: &str) -> ProtocolActivationIdentity {
     ProtocolActivationIdentity::activated_v2(chain_id, genesis, "ghostdag-order-v1")
@@ -29,7 +28,9 @@ fn funding_utxo() -> Utxo {
     }
 }
 
-fn prepare(identity: &ProtocolActivationIdentity) -> pulsedag_wallet::protocol_v2::WalletV2SigningPlan {
+fn prepare(
+    identity: &ProtocolActivationIdentity,
+) -> pulsedag_wallet::protocol_v2::WalletV2SigningPlan {
     let source = source_address();
     let available = [funding_utxo()];
     prepare_wallet_v2_signing_plan(
@@ -59,7 +60,10 @@ fn same_intent_is_cryptographically_separated_between_networks() {
     assert_eq!(testnet_plan.transaction.version, TRANSACTION_VERSION_V2);
     assert_eq!(mainnet_plan.transaction.version, TRANSACTION_VERSION_V2);
     assert_eq!(testnet_plan.transaction, mainnet_plan.transaction);
-    assert_ne!(testnet_plan.protocol_fingerprint, mainnet_plan.protocol_fingerprint);
+    assert_ne!(
+        testnet_plan.protocol_fingerprint,
+        mainnet_plan.protocol_fingerprint
+    );
     assert_ne!(testnet_plan.signing_message, mainnet_plan.signing_message);
 }
 
@@ -85,7 +89,10 @@ fn observed_identity_from_another_network_is_rejected_before_signing() {
     )
     .expect_err("cross-network identity must fail closed");
 
-    assert!(matches!(error, pulsedag_core::errors::PulseError::InvalidTransaction(_)));
+    assert!(matches!(
+        error,
+        pulsedag_core::errors::PulseError::InvalidTransaction(_)
+    ));
 }
 
 #[test]
