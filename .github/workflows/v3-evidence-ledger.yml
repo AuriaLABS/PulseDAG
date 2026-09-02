@@ -1,0 +1,33 @@
+name: v3 evidence ledger
+
+on:
+  pull_request:
+    paths:
+      - "scripts/release/validate_v3_evidence_ledger.py"
+      - "docs/release/V3_EVIDENCE_LEDGER.md"
+      - "docs/release/v3-evidence-ledger.json"
+      - ".github/workflows/v3-evidence-ledger.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "scripts/release/validate_v3_evidence_ledger.py"
+      - "docs/release/V3_EVIDENCE_LEDGER.md"
+      - "docs/release/v3-evidence-ledger.json"
+      - ".github/workflows/v3-evidence-ledger.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate ledger contract
+        run: |
+          set -euo pipefail
+          python3 scripts/release/validate_v3_evidence_ledger.py --self-test
+          if [[ -f docs/release/v3-evidence-ledger.json ]]; then
+            python3 scripts/release/validate_v3_evidence_ledger.py docs/release/v3-evidence-ledger.json
+          fi
