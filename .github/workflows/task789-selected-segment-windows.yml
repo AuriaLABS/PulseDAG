@@ -1,0 +1,103 @@
+name: Task 789 selected-segment Windows artifact
+
+on:
+  push:
+    branches:
+      - tmp/issue789-selected-segment-windows-f2e42eb
+
+permissions:
+  contents: read
+
+jobs:
+  windows-candidate:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout exact candidate source
+        uses: actions/checkout@v4
+        with:
+          ref: f2e42ebd70f35e596e4b98fdb0f1bad294b81acd
+          fetch-depth: 1
+
+      - name: Verify exact source identity
+        shell: pwsh
+        run: |
+          $expectedSha = 'f2e42ebd70f35e596e4b98fdb0f1bad294b81acd'
+          $expectedTree = '4e71725c1187297678b70317be5be2dd47d4c9ea'
+          $actualSha = (git rev-parse HEAD).Trim()
+          $actualTree = (git show -s --format=%T HEAD).Trim()
+          "SHA=$actualSha"
+          "Tree=$actualTree"
+          if ($actualSha -ne $expectedSha) { throw "Wrong source SHA: $actualSha" }
+          if ($actualTree -ne $expectedTree) { throw "Wrong source tree: $actualTree" }
+
+      - name: Rust 1.88.0
+        uses: dtolnay/rust-toolchain@1.88.0
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      - name: Validate lockfile
+        shell: pwsh
+        run: cargo metadata --locked --no-deps --format-version 1 | Out-Null
+
+      - name: Selected-segment regressions
+        shell: pwsh
+        run: cargo test -p pulsedagd selected_segment --locked -- --nocapture
+
+      - name: Check pulsedagd
+        shell: pwsh
+        run: cargo check -p pulsedagd --locked
+
+      - name: Build release node
+        shell: pwsh
+        run: cargo build -p pulsedagd --release --locked
+
+      - name: Stage diagnostic artifact
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $stage = Join-Path $env:GITHUB_WORKSPACE 'task789-selected-segment-windows-node'
+          New-Item -ItemType Directory -Force $stage | Out-Null
+
+          $exe = Join-Path $env:GITHUB_WORKSPACE 'target\release\pulsedagd.exe'
+          if (-not (Test-Path $exe)) { throw "Missing pulsedagd.exe at $exe" }
+          Copy-Item $exe (Join-Path $stage 'pulsedagd.exe') -Force
+
+          $stagedExe = Join-Path $stage 'pulsedagd.exe'
+          $exeHash = (Get-FileHash $stagedExe -Algorithm SHA256).Hash
+          $exeSize = (Get-Item $stagedExe).Length
+
+          $manifest = [ordered]@{
+            issue = 789
+            purpose = 'phase-c-third-candidate-selected-segment-continuation'
+            source_sha = 'f2e42ebd70f35e596e4b98fdb0f1bad294b81acd'
+            source_tree = '4e71725c1187297678b70317be5be2dd47d4c9ea'
+            base_source_sha = '665ba8f86d3ca3b1a062504f7fee850bbb926c0a'
+            previous_candidate_result = 'FAIL_AT_HEIGHT_64'
+            previous_fail_evidence_sha256 = '9DB7EBDE5C208BDFFB3700534AA7C0E0D17B9CBD8ABE5B78BA24ACD75B33DE17'
+            previous_heartbeat_sha256 = '89FA9B387EAE7E5DBB81C78A6486539633FC81CB1C336E5C895482119A3474E1'
+            previous_sync_snapshot_sha256 = '57D4F3B4FD72D0E1765F8543E76B8D327D3AE86A06420CAE61700FFA65323DB3'
+            previous_p2p_snapshot_sha256 = 'CE0CC8C37F97494F43769B3E434855C46C81589C524BE381A48BB5BF4B382A1E'
+            target = 'x86_64-pc-windows-msvc'
+            exe_sha256 = $exeHash
+            exe_size = $exeSize
+            release_artifact = $false
+            public_testnet_ready = $false
+            thirty_day_public_testnet_clock_started = $false
+          }
+
+          $manifestPath = Join-Path $stage 'manifest.json'
+          $manifest | ConvertTo-Json -Depth 10 | Set-Content $manifestPath -Encoding UTF8
+          "EXE_SHA256=$exeHash"
+          "EXE_SIZE=$exeSize"
+          Get-Content $manifestPath
+
+      - name: Upload diagnostic artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: task789-selected-segment-windows-node
+          path: task789-selected-segment-windows-node
+          if-no-files-found: error
+          retention-days: 14
