@@ -36,6 +36,13 @@ FORBIDDEN_LOCKED = {
     ("intertrait", "0.2.2"),
 }
 
+# Rusty Kaspa 2.0.1 currently leaves Hickory 0.25.2 represented in Cargo.lock.
+# The active disposition is valid only while clean compiler-artifact evidence
+# proves this exact package is absent from every packaged launch root.
+REQUIRED_LOCK_ONLY = {
+    ("hickory-proto", "0.25.2"),
+}
+
 REQUIRED_KASPA = {
     ("kaspa-hashes", EXPECTED_KASPA_VERSION),
     ("kaspa-pow", EXPECTED_KASPA_VERSION),
@@ -55,7 +62,7 @@ FORBIDDEN_OLD_REACHABLE = {
 # These optional transports can remain represented in Cargo.lock by libp2p,
 # but must not be compiler-reachable from PulseDAG's selected feature set.
 FORBIDDEN_COMPILED_NAMES = {"libp2p-dns", "libp2p-mdns", "libp2p-quic", "libp2p-upnp"}
-COMPILE_ROOTS = ("pulsedag-p2p", "pulsedagd", "pulsedag-miner")
+COMPILE_ROOTS = ("pulsedag-p2p", "pulsedagd", "pulsedag-miner", "pulsedag-wallet")
 
 # #803 still treats atty as an unresolved launch blocker. This gate records
 # that it remains visible; it does not claim final v3 security readiness.
@@ -189,6 +196,13 @@ def main() -> None:
     if forbidden_present:
         fail(f"forbidden legacy/vulnerable versions remain locked: {forbidden_present}")
 
+    missing_lock_only = sorted(REQUIRED_LOCK_ONLY - locked)
+    if missing_lock_only:
+        fail(
+            "reviewed lock-only vulnerability inventory drifted; review before changing disposition: "
+            f"{missing_lock_only}"
+        )
+
     missing_kaspa = sorted(REQUIRED_KASPA - locked)
     if missing_kaspa:
         fail(f"required reviewed Kaspa parent-stack packages missing: {missing_kaspa}")
@@ -217,6 +231,9 @@ def main() -> None:
         compiled_forbidden_versions = sorted(compiled & FORBIDDEN_LOCKED)
         if compiled_forbidden_versions:
             fail(f"{root} compiles forbidden legacy/vulnerable versions: {compiled_forbidden_versions}")
+        compiled_lock_only = sorted(compiled & REQUIRED_LOCK_ONLY)
+        if compiled_lock_only:
+            fail(f"{root} compiles lock-only vulnerability disposition: {compiled_lock_only}")
         compiled_names = {name for name, _version in compiled}
         forbidden_names = sorted(compiled_names & FORBIDDEN_COMPILED_NAMES)
         if forbidden_names:
@@ -231,6 +248,10 @@ def main() -> None:
         "kaspa_version": EXPECTED_KASPA_VERSION,
         "kaspa_upstream_rev": EXPECTED_KASPA_REV,
         "forbidden_legacy_or_vulnerable_locked": False,
+        "lock_only_vulnerability_disposition": [
+            f"{name}@{ver}" for name, ver in sorted(REQUIRED_LOCK_ONLY)
+        ],
+        "lock_only_vulnerabilities_compiled": False,
         "lru_0_12_5_present": ("lru", "0.12.5") in locked,
         "linkme_0_2_10_present": ("linkme", "0.2.10") in locked,
         "intertrait_0_2_2_present": ("intertrait", "0.2.2") in locked,
@@ -250,14 +271,16 @@ def main() -> None:
         "lru_0_12_5_present=false",
         "linkme_0_2_10_present=false",
         "intertrait_0_2_2_present=false",
+        "hickory_proto_0_25_2_lock_only=true",
+        "hickory_proto_0_25_2_compiled=false",
         "historical_v2_4_lock_only_vulnerable_versions_present=false",
         "remaining_launch_blockers=atty@0.2.14",
         "final_v3_launch_security_ready=false",
         "",
     ]), encoding="utf-8")
     print(
-        "PASS: v3 dependency remediation gate; lru 0.12.5, linkme 0.2.10, "
-        "intertrait 0.2.2 and historical lock-only vulnerabilities are absent"
+        "PASS: v3 dependency remediation gate; lru/linkme/intertrait are absent and "
+        "hickory-proto 0.25.2 remains lock-only across all launch compile roots"
     )
 
 
