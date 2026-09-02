@@ -1,6 +1,9 @@
 use std::{error::Error, fmt, net::IpAddr, time::Duration};
 
-use pulsedag_core::{compute_txid, types::Transaction};
+use pulsedag_core::{
+    compute_txid,
+    types::{Transaction, Utxo},
+};
 use pulsedag_wallet::{WalletNetworkIdentity, WalletReviewSummary};
 use reqwest::{redirect::Policy, Client, Response, Url};
 use serde::{Deserialize, Serialize};
@@ -10,6 +13,9 @@ const RELAY_RESPONSE_MAX_BYTES: usize = 1024 * 1024;
 const RELAY_VERSION: &str = "signed-transaction-relay-v1";
 const RELAY_CAPABILITY: &str = "signed_transaction_relay";
 const RELAY_SUBMIT_PATH: &str = "/api/v1/tx/submit";
+const EXPLORER_CAPABILITY: &str = "explorer_api";
+const ADDRESS_PATH: &str = "/address/:address";
+const ADDRESS_UTXOS_PATH: &str = "/address/:address/utxos";
 
 #[derive(Debug)]
 pub struct RelayClientError(String);
@@ -53,6 +59,25 @@ pub struct BroadcastOutput {
     pub rejection_message: Option<String>,
 }
 
+#[derive(Debug, Serialize)]
+pub struct AddressBalanceOutput {
+    pub network_profile: String,
+    pub chain_id: String,
+    pub address: String,
+    pub confirmed_balance: u64,
+    pub confirmed_utxo_count: usize,
+    pub largest_utxo: u64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AddressUtxosOutput {
+    pub network_profile: String,
+    pub chain_id: String,
+    pub address: String,
+    pub count: usize,
+    pub utxos: Vec<Utxo>,
+}
+
 #[derive(Debug, Deserialize)]
 struct ApiResponse<T> {
     ok: bool,
@@ -82,10 +107,27 @@ struct SubmitData {
     mempool_size: usize,
 }
 
+#[derive(Debug, Deserialize)]
+struct AddressBalanceData {
+    address: String,
+    confirmed_balance: u64,
+    confirmed_utxo_count: usize,
+    largest_utxo: u64,
+}
+
+#[derive(Debug, Deserialize)]
+struct AddressUtxosData {
+    address: String,
+    count: usize,
+    utxos: Vec<Utxo>,
+}
+
 #[derive(Debug, Clone)]
 struct RelayIdentity {
     network: WalletNetworkIdentity,
     version: String,
+    capabilities: Vec<String>,
+    core_endpoints: Vec<String>,
 }
 
 pub fn parse_signed_broadcast(bytes: &[u8]) -> Result<SignedBroadcastInput, RelayClientError> {
@@ -223,8 +265,8 @@ fn api_error_detail(error: Option<ApiError>) -> String {
         .unwrap_or_else(|| "missing API error detail".to_string())
 }
 
-fn validate_release_identity(
-    signed_network: &WalletNetworkIdentity,
+fn validate_remote_identity(
+    expected_network: &WalletNetworkIdentity,
     response: ApiResponse<ReleaseIdentityData>,
 ) -> Result<RelayIdentity, RelayClientError> {
     if !response.ok {
@@ -238,44 +280,72 @@ fn validate_release_identity(
         .ok_or_else(|| relay_error("relay identity response is missing data"))?;
     let observed = WalletNetworkIdentity::new(data.network_profile, data.chain_id)
         .map_err(|error| relay_error(format!("relay identity is invalid: {error}")))?;
-    signed_network
+    expected_network
         .ensure_matches(&observed)
         .map_err(|error| relay_error(format!("relay network mismatch: {error}")))?;
-    if data.signed_transaction_relay_version != RELAY_VERSION {
-        return Err(relay_error(format!(
-            "unsupported relay version: {}",
-            data.signed_transaction_relay_version
-        )));
-    }
-    if !data
-        .capabilities
-        .iter()
-        .any(|value| value == RELAY_CAPABILITY)
-    {
-        return Err(relay_error(
-            "relay identity is missing signed transaction capability",
-        ));
-    }
-    if !data
-        .core_endpoints
-        .iter()
-        .any(|value| value == RELAY_SUBMIT_PATH)
-    {
-        return Err(relay_error(
-            "relay identity does not advertise canonical submit endpoint",
-        ));
-    }
     Ok(RelayIdentity {
         network: observed,
         version: data.signed_transaction_relay_version,
+        capabilities: data.capabilities,
+        core_endpoints: data.core_endpoints,
     })
 }
 
-async fn fetch_identity(
+fn require_surface(
+    identity: &RelayIdentity,
+    capability: &str,
+    endpoint: &str,
+) -> Result<(), RelayClientError> {
+    if !identity
+        .capabilities
+        .iter()
+        .any(|value| value == capability)
+    {
+        return Err(relay_error(format!(
+            "relay identity is missing required capability: {capability}"
+        )));
+    }
+    if !identity
+        .core_endpoints
+        .iter()
+        .any(|value| value == endpoint)
+    {
+        return Err(relay_error(format!(
+            "relay identity does not advertise canonical endpoint: {endpoint}"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_release_identity(
+    signed_network: &WalletNetworkIdentity,
+    response: ApiResponse<ReleaseIdentityData>,
+) -> Result<RelayIdentity, RelayClientError> {
+    let identity = validate_remote_identity(signed_network, response)?;
+    if identity.version != RELAY_VERSION {
+        return Err(relay_error(format!(
+            "unsupported relay version: {}",
+            identity.version
+        )));
+    }
+    require_surface(&identity, RELAY_CAPABILITY, RELAY_SUBMIT_PATH)?;
+    Ok(identity)
+}
+
+fn validate_explorer_identity(
+    expected_network: &WalletNetworkIdentity,
+    response: ApiResponse<ReleaseIdentityData>,
+    endpoint: &str,
+) -> Result<RelayIdentity, RelayClientError> {
+    let identity = validate_remote_identity(expected_network, response)?;
+    require_surface(&identity, EXPLORER_CAPABILITY, endpoint)?;
+    Ok(identity)
+}
+
+async fn fetch_identity_response(
     client: &Client,
     base: &Url,
-    signed_network: &WalletNetworkIdentity,
-) -> Result<RelayIdentity, RelayClientError> {
+) -> Result<ApiResponse<ReleaseIdentityData>, RelayClientError> {
     let url = base
         .join("release")
         .map_err(|_| relay_error("failed to construct relay identity URL"))?;
@@ -291,9 +361,29 @@ async fn fetch_identity(
             status.as_u16()
         )));
     }
-    let parsed = serde_json::from_slice::<ApiResponse<ReleaseIdentityData>>(&body)
-        .map_err(|_| relay_error("relay identity response JSON is invalid"))?;
-    validate_release_identity(signed_network, parsed)
+    serde_json::from_slice::<ApiResponse<ReleaseIdentityData>>(&body)
+        .map_err(|_| relay_error("relay identity response JSON is invalid"))
+}
+
+async fn fetch_identity(
+    client: &Client,
+    base: &Url,
+    signed_network: &WalletNetworkIdentity,
+) -> Result<RelayIdentity, RelayClientError> {
+    validate_release_identity(signed_network, fetch_identity_response(client, base).await?)
+}
+
+async fn fetch_explorer_identity(
+    client: &Client,
+    base: &Url,
+    expected_network: &WalletNetworkIdentity,
+    endpoint: &str,
+) -> Result<RelayIdentity, RelayClientError> {
+    validate_explorer_identity(
+        expected_network,
+        fetch_identity_response(client, base).await?,
+        endpoint,
+    )
 }
 
 async fn submit_transaction(
@@ -360,6 +450,127 @@ async fn submit_transaction(
         relay_version: identity.version.clone(),
         rejection_code: None,
         rejection_message: None,
+    })
+}
+
+fn address_url(base: &Url, address: &str, include_utxos: bool) -> Result<Url, RelayClientError> {
+    if address.is_empty() || address.trim() != address {
+        return Err(relay_error("wallet address is invalid"));
+    }
+    let mut url = base.clone();
+    {
+        let mut segments = url
+            .path_segments_mut()
+            .map_err(|_| relay_error("relay URL cannot contain path segments"))?;
+        segments.pop_if_empty();
+        segments.push("address");
+        segments.push(address);
+        if include_utxos {
+            segments.push("utxos");
+        }
+    }
+    Ok(url)
+}
+
+pub async fn fetch_address_balance(
+    relay_url: &str,
+    expected_network: &WalletNetworkIdentity,
+    address: &str,
+) -> Result<AddressBalanceOutput, RelayClientError> {
+    expected_network
+        .validate()
+        .map_err(|error| relay_error(format!("wallet network is invalid: {error}")))?;
+    let base = relay_base_url(relay_url)?;
+    let client = build_client()?;
+    let identity = fetch_explorer_identity(&client, &base, expected_network, ADDRESS_PATH).await?;
+    let response = client
+        .get(address_url(&base, address, false)?)
+        .send()
+        .await
+        .map_err(|error| relay_error(format!("address balance transport failed: {error}")))?;
+    let (status, body) = bounded_body(response).await?;
+    if !status.is_success() {
+        return Err(relay_error(format!(
+            "address balance request returned HTTP {}",
+            status.as_u16()
+        )));
+    }
+    let parsed = serde_json::from_slice::<ApiResponse<AddressBalanceData>>(&body)
+        .map_err(|_| relay_error("address balance response JSON is invalid"))?;
+    if !parsed.ok {
+        return Err(relay_error(format!(
+            "address balance request failed: {}",
+            api_error_detail(parsed.error)
+        )));
+    }
+    let data = parsed
+        .data
+        .ok_or_else(|| relay_error("address balance response is missing data"))?;
+    if data.address != address {
+        return Err(relay_error("address balance response address mismatch"));
+    }
+    Ok(AddressBalanceOutput {
+        network_profile: identity.network.network_profile,
+        chain_id: identity.network.chain_id,
+        address: data.address,
+        confirmed_balance: data.confirmed_balance,
+        confirmed_utxo_count: data.confirmed_utxo_count,
+        largest_utxo: data.largest_utxo,
+    })
+}
+
+pub async fn fetch_address_utxos(
+    relay_url: &str,
+    expected_network: &WalletNetworkIdentity,
+    address: &str,
+) -> Result<AddressUtxosOutput, RelayClientError> {
+    expected_network
+        .validate()
+        .map_err(|error| relay_error(format!("wallet network is invalid: {error}")))?;
+    let base = relay_base_url(relay_url)?;
+    let client = build_client()?;
+    let identity =
+        fetch_explorer_identity(&client, &base, expected_network, ADDRESS_UTXOS_PATH).await?;
+    let response = client
+        .get(address_url(&base, address, true)?)
+        .send()
+        .await
+        .map_err(|error| relay_error(format!("address UTXO transport failed: {error}")))?;
+    let (status, body) = bounded_body(response).await?;
+    if !status.is_success() {
+        return Err(relay_error(format!(
+            "address UTXO request returned HTTP {}",
+            status.as_u16()
+        )));
+    }
+    let parsed = serde_json::from_slice::<ApiResponse<AddressUtxosData>>(&body)
+        .map_err(|_| relay_error("address UTXO response JSON is invalid"))?;
+    if !parsed.ok {
+        return Err(relay_error(format!(
+            "address UTXO request failed: {}",
+            api_error_detail(parsed.error)
+        )));
+    }
+    let data = parsed
+        .data
+        .ok_or_else(|| relay_error("address UTXO response is missing data"))?;
+    if data.address != address {
+        return Err(relay_error("address UTXO response address mismatch"));
+    }
+    if data.count != data.utxos.len() {
+        return Err(relay_error("address UTXO response count mismatch"));
+    }
+    if data.utxos.iter().any(|utxo| utxo.address != address) {
+        return Err(relay_error(
+            "address UTXO response contains a different address",
+        ));
+    }
+    Ok(AddressUtxosOutput {
+        network_profile: identity.network.network_profile,
+        chain_id: identity.network.chain_id,
+        address: data.address,
+        count: data.count,
+        utxos: data.utxos,
     })
 }
 
@@ -438,6 +649,24 @@ mod tests {
         }
     }
 
+    fn explorer_identity_response(
+        network_profile: &str,
+        chain_id: &str,
+        endpoint: &str,
+    ) -> ApiResponse<ReleaseIdentityData> {
+        ApiResponse {
+            ok: true,
+            data: Some(ReleaseIdentityData {
+                network_profile: network_profile.to_string(),
+                chain_id: chain_id.to_string(),
+                signed_transaction_relay_version: RELAY_VERSION.to_string(),
+                capabilities: vec![EXPLORER_CAPABILITY.to_string()],
+                core_endpoints: vec![endpoint.to_string()],
+            }),
+            error: None,
+        }
+    }
+
     #[test]
     fn signed_envelope_requires_canonical_final_txid() {
         let mut signed = signed_fixture();
@@ -477,6 +706,48 @@ mod tests {
             .capabilities
             .clear();
         assert!(validate_release_identity(&signed.network, missing_capability).is_err());
+    }
+
+    #[test]
+    fn explorer_identity_requires_exact_network_capability_and_endpoint() {
+        let network = WalletNetworkIdentity::new("testnet", "pulsedag-testnet").unwrap();
+        assert!(validate_explorer_identity(
+            &network,
+            explorer_identity_response("testnet", "pulsedag-testnet", ADDRESS_PATH),
+            ADDRESS_PATH,
+        )
+        .is_ok());
+        assert!(validate_explorer_identity(
+            &network,
+            explorer_identity_response("testnet", "other-chain", ADDRESS_PATH),
+            ADDRESS_PATH,
+        )
+        .is_err());
+        assert!(validate_explorer_identity(
+            &network,
+            explorer_identity_response("testnet", "pulsedag-testnet", ADDRESS_UTXOS_PATH),
+            ADDRESS_PATH,
+        )
+        .is_err());
+
+        let mut no_capability =
+            explorer_identity_response("testnet", "pulsedag-testnet", ADDRESS_PATH);
+        no_capability.data.as_mut().unwrap().capabilities.clear();
+        assert!(validate_explorer_identity(&network, no_capability, ADDRESS_PATH).is_err());
+    }
+
+    #[test]
+    fn address_url_encodes_address_as_single_path_segment() {
+        let base = relay_base_url("https://relay.example").unwrap();
+        let url = address_url(&base, "pulse/../release?x#y", true).unwrap();
+        let segments = url.path_segments().unwrap().collect::<Vec<_>>();
+        assert_eq!(
+            segments,
+            vec!["address", "pulse%2F..%2Frelease%3Fx%23y", "utxos"]
+        );
+        assert!(url.query().is_none());
+        assert!(url.fragment().is_none());
+        assert!(!url.as_str().contains("/release?"));
     }
 
     #[test]
