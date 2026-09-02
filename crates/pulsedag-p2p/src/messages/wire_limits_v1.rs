@@ -3,7 +3,7 @@ use std::marker::PhantomData;
 
 use pulsedag_core::types::Hash;
 use serde::de::{Error as _, IgnoredAny, SeqAccess, Visitor};
-use serde::{Deserialize, Deserializer};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use super::dag_sync_v2::MAX_SELECTED_CHAIN_LOCATOR_HASHES;
 use super::{BlockHeaderAnnouncement, HeaderInventory};
@@ -146,12 +146,23 @@ where
     Ok(limit)
 }
 
+pub(super) fn serialize_bounded_tips<S>(tips: &[Hash], serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    let mut bounded = tips.to_vec();
+    bounded.sort();
+    bounded.dedup();
+    bounded.truncate(MAX_INV_BLOCK_HASHES);
+    bounded.serialize(serializer)
+}
+
 #[cfg(test)]
 mod tests {
     use pulsedag_core::types::BlockHeader;
 
     use super::*;
-    use crate::messages::NetworkMessage;
+    use crate::messages::{NetworkMessage, TipInventoryStatus};
 
     fn header() -> BlockHeader {
         BlockHeader {
@@ -232,5 +243,44 @@ mod tests {
         })
         .unwrap_err();
         assert!(error.to_string().contains("BlockHeaders.headers"));
+    }
+
+    #[test]
+    fn outbound_tips_are_deterministically_capped_before_wire_decode() {
+        let mut tips = (0..MAX_INV_BLOCK_HASHES + 10)
+            .rev()
+            .map(|index| format!("tip-{index:04}"))
+            .collect::<Vec<_>>();
+        tips.push("tip-0000".into());
+        let inventory = TipInventoryStatus {
+            chain_id: "testnet".into(),
+            selected_tip: Some("selected".into()),
+            selected_height: Some(10),
+            selected_blue_score: Some(10),
+            ordered_dag_tip: Some("selected".into()),
+            state_root_digest: Some("state".into()),
+            observed_at_unix: 1,
+            inventory_generation: 1,
+        };
+        let encoded = serde_json::to_vec(&NetworkMessage::Tips {
+            chain_id: "testnet".into(),
+            tips,
+            inventory: Some(inventory.clone()),
+        })
+        .expect("tips serialize");
+        let decoded = serde_json::from_slice::<NetworkMessage>(&encoded).expect("bounded tips decode");
+        match decoded {
+            NetworkMessage::Tips {
+                tips,
+                inventory: Some(observed),
+                ..
+            } => {
+                assert_eq!(tips.len(), MAX_INV_BLOCK_HASHES);
+                assert_eq!(tips.first().map(String::as_str), Some("tip-0000"));
+                assert_eq!(tips.last().map(String::as_str), Some("tip-0511"));
+                assert_eq!(observed, inventory);
+            }
+            other => panic!("unexpected decoded message: {other:?}"),
+        }
     }
 }
