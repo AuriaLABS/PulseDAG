@@ -2,6 +2,7 @@ pub mod capability_carrier_v1;
 pub mod dag_sync_v2;
 pub mod frontier_reconcile_v1;
 pub mod frontier_response_v1;
+mod network_message_decode_v1;
 pub mod protocol_v2;
 pub mod recovery_progress_v1;
 pub mod selected_locator_v1;
@@ -133,7 +134,7 @@ pub struct TipInventoryStatus {
     pub inventory_generation: u64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type")]
 pub enum NetworkMessage {
     NewTransaction {
@@ -142,7 +143,6 @@ pub enum NetworkMessage {
     },
     NewBlock {
         chain_id: String,
-        #[serde(deserialize_with = "deserialize_supported_block")]
         block: Block,
     },
     BlockAnnounce {
@@ -155,68 +155,52 @@ pub enum NetworkMessage {
     },
     InvBlock {
         chain_id: String,
-        #[serde(deserialize_with = "wire_limits_v1::deserialize_inventory_hashes")]
         hashes: Vec<Hash>,
     },
     GetHeaders {
         chain_id: String,
-        #[serde(deserialize_with = "wire_limits_v1::deserialize_locator_hashes")]
         locator: Vec<Hash>,
         stop_hash: Option<Hash>,
-        #[serde(deserialize_with = "wire_limits_v1::deserialize_response_limit")]
         limit: usize,
     },
     Headers {
         chain_id: String,
-        #[serde(deserialize_with = "wire_limits_v1::deserialize_header_inventory")]
         headers: Vec<HeaderInventory>,
     },
     GetTips {
         chain_id: String,
-        #[serde(default)]
         inventory: Option<TipInventoryStatus>,
     },
     Tips {
         chain_id: String,
-        #[serde(deserialize_with = "wire_limits_v1::deserialize_inventory_hashes")]
+        #[serde(serialize_with = "wire_limits_v1::serialize_bounded_tips")]
         tips: Vec<Hash>,
-        #[serde(default)]
         inventory: Option<TipInventoryStatus>,
     },
     GetBlockHeaders {
         chain_id: String,
-        #[serde(deserialize_with = "wire_limits_v1::deserialize_request_hashes")]
         hashes: Vec<Hash>,
     },
     BlockHeaders {
         chain_id: String,
-        #[serde(deserialize_with = "wire_limits_v1::deserialize_block_header_announcements")]
         headers: Vec<BlockHeaderAnnouncement>,
     },
     GetBlock {
         chain_id: String,
         hash: Hash,
-        #[serde(default)]
         request_id: Option<String>,
-        #[serde(default)]
         requesting_peer_id: Option<String>,
-        #[serde(default)]
         requested_peer_id: Option<String>,
-        #[serde(default)]
         request_kind: Option<String>,
     },
     BlockData {
         chain_id: String,
-        #[serde(default, deserialize_with = "deserialize_supported_optional_block")]
         block: Option<Block>,
-        #[serde(default)]
         request_id: Option<String>,
-        #[serde(default)]
         request_hash: Option<Hash>,
     },
     Block {
         chain_id: String,
-        #[serde(deserialize_with = "deserialize_supported_block")]
         block: Block,
     },
     Reject {
