@@ -104,10 +104,7 @@ pub fn decode_hybrid_public_key_v1(envelope: &str) -> Result<HybridPublicKeyV1, 
     })
 }
 
-pub fn encode_hybrid_signature_v1(
-    ed25519: &[u8],
-    ml_dsa_65: &[u8],
-) -> Result<String, PulseError> {
+pub fn encode_hybrid_signature_v1(ed25519: &[u8], ml_dsa_65: &[u8]) -> Result<String, PulseError> {
     if ed25519.len() != ED25519_SIGNATURE_BYTES {
         return Err(invalid_pqc_field(
             "signature",
