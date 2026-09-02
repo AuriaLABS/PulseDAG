@@ -461,7 +461,8 @@ fn address_url(base: &Url, address: &str, include_utxos: bool) -> Result<Url, Re
     {
         let mut segments = url
             .path_segments_mut()
-            .map_err(|_| relay_error("relay URL is not a valid base URL"))?;
+            .map_err(|_| relay_error("relay URL cannot contain path segments"))?;
+        segments.pop_if_empty();
         segments.push("address");
         segments.push(address);
         if include_utxos {
