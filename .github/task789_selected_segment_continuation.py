@@ -1,0 +1,365 @@
+from pathlib import Path
+
+path = Path("apps/pulsedagd/src/main.rs")
+text = path.read_text()
+
+helper_anchor = '''    fn mark_applied(&mut self, hash: &str, now: u64) -> bool {
+        if self.contains_hash(hash) {
+            self.accepted_applied_hashes.insert(hash.to_string());
+            self.received_hashes.insert(hash.to_string());
+            self.updated_at_unix = now;
+            self.state = SelectedSegmentSessionState::Applying;
+            true
+        } else {
+            false
+        }
+    }
+}
+
+impl Default for SelectedSegmentLimits {
+'''
+helper_replacement = '''    fn mark_applied(&mut self, hash: &str, now: u64) -> bool {
+        if self.contains_hash(hash) {
+            self.accepted_applied_hashes.insert(hash.to_string());
+            self.received_hashes.insert(hash.to_string());
+            self.updated_at_unix = now;
+            self.state = SelectedSegmentSessionState::Applying;
+            true
+        } else {
+            false
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct SelectedSegmentAcceptedProgress {
+    applied: u64,
+    chunk_completed: bool,
+    continuation: Vec<String>,
+}
+
+fn apply_selected_segment_accepted_hashes(
+    session: &mut SelectedSegmentSession,
+    accepted_hashes: &[String],
+    now: u64,
+    continuation_limit: usize,
+) -> SelectedSegmentAcceptedProgress {
+    let mut applied = 0u64;
+    for hash in accepted_hashes {
+        if !session.accepted_applied_hashes.contains(hash) && session.mark_applied(hash, now) {
+            applied = applied.saturating_add(1);
+        }
+    }
+    let chunk_completed = applied > 0 && session.complete_current_chunk_if_applied();
+    let continuation = if chunk_completed {
+        session.continuation_hashes(continuation_limit)
+    } else {
+        Vec::new()
+    };
+    SelectedSegmentAcceptedProgress {
+        applied,
+        chunk_completed,
+        continuation,
+    }
+}
+
+impl Default for SelectedSegmentLimits {
+'''
+if helper_anchor not in text:
+    raise SystemExit("helper anchor not found")
+text = text.replace(helper_anchor, helper_replacement, 1)
+
+v2_anchor = '''                            info!(
+                                event = "peer_block_v2_processed",
+                                block_hash = %block.hash,
+                                accepted = accepted_count,
+                                staged = staged_count,
+                                duplicates = duplicate_count,
+                                rejected = rejected_count,
+                                pending_v2 = v2_pending_missing,
+                                staged_v2 = v2_staged,
+                                missing_parents = ?summary.missing_parents,
+                                "processed inbound p2p block through activated-v2 runtime"
+                            );
+'''
+
+v2_insert = '''                            let mut selected_segment_v2_completed = false;
+                            let mut selected_segment_v2_continuation = None;
+                            if let Some(session) = selected_segment_session.as_mut() {
+                                let progress = apply_selected_segment_accepted_hashes(
+                                    session,
+                                    &summary.accepted_hashes,
+                                    now_unix(),
+                                    MAX_INFLIGHT_BLOCK_REQUESTS,
+                                );
+                                if progress.applied > 0 {
+                                    let selected_tip = pulsedag_core::preferred_tip_hash(&guard)
+                                        .unwrap_or_else(|| guard.dag.genesis_hash.clone());
+                                    if guard.dag.blocks.contains_key(&session.remote_selected_tip)
+                                        && selected_tip == session.remote_selected_tip
+                                    {
+                                        session.state = SelectedSegmentSessionState::Complete;
+                                        selected_segment_v2_completed = true;
+                                    } else if progress.chunk_completed
+                                        && !progress.continuation.is_empty()
+                                    {
+                                        selected_segment_v2_continuation = Some((
+                                            session.session_id,
+                                            session.peer_id.clone(),
+                                            progress.continuation,
+                                        ));
+                                    }
+
+                                    let mut rt = runtime.write().await;
+                                    rt.selected_segment_blocks_applied_total = rt
+                                        .selected_segment_blocks_applied_total
+                                        .saturating_add(progress.applied);
+                                    rt.active_session_applied_blocks =
+                                        session.accepted_applied_hashes.len() as u64;
+                                    rt.active_session_remaining_blocks = session
+                                        .remote_selected_height
+                                        .saturating_sub(guard.dag.best_height);
+                                    if progress.chunk_completed {
+                                        rt.selected_segment_chunks_completed_total = rt
+                                            .selected_segment_chunks_completed_total
+                                            .saturating_add(1);
+                                    }
+                                    if selected_segment_v2_completed {
+                                        rt.sync_state = DagSyncStage::SelectedSegmentComplete
+                                            .as_str()
+                                            .to_string();
+                                        rt.active_session_remaining_blocks = 0;
+                                        rt.selected_segment_gap_blocks = 0;
+                                        rt.active_session_id = None;
+                                        rt.active_session_peer = None;
+                                        rt.active_session_remote_tip = None;
+                                        rt.active_session_remote_height = 0;
+                                        rt.active_session_common_ancestor = None;
+                                    } else {
+                                        if rt.active_session_remaining_blocks > 0 {
+                                            rt.selected_segment_gap_blocks =
+                                                rt.active_session_remaining_blocks;
+                                        }
+                                        rt.sync_state = DagSyncStage::ApplyingSelectedSegment
+                                            .as_str()
+                                            .to_string();
+                                    }
+                                }
+                            }
+
+                            if !selected_segment_v2_completed {
+                                if let Some((session_id, peer_id, candidates)) =
+                                    selected_segment_v2_continuation.take()
+                                {
+                                    let mut issued_hashes = Vec::new();
+                                    for hash in candidates {
+                                        if !block_requests.should_issue_getblock_for_peers(
+                                            &hash,
+                                            now_unix(),
+                                            active_peer_ids(&p2p),
+                                        ) {
+                                            continue;
+                                        }
+                                        let request_succeeded = if let Some(ref p2p_handle) = p2p {
+                                            match p2p_handle.request_block_from(&peer_id, &hash) {
+                                                Ok(_) => true,
+                                                Err(error) => {
+                                                    block_requests.resolve(&hash);
+                                                    warn!(
+                                                        error = %error,
+                                                        block_hash = %hash,
+                                                        session_id,
+                                                        peer = %peer_id,
+                                                        "failed issuing activated-v2 selected-segment continuation GetBlock request"
+                                                    );
+                                                    false
+                                                }
+                                            }
+                                        } else {
+                                            block_requests.resolve(&hash);
+                                            false
+                                        };
+                                        if request_succeeded {
+                                            issued_hashes.push(hash);
+                                        }
+                                    }
+
+                                    if !issued_hashes.is_empty() {
+                                        let issued_at = now_unix();
+                                        let mut chunk_started = false;
+                                        if let Some(session) = selected_segment_session
+                                            .as_mut()
+                                            .filter(|session| {
+                                                session.session_id == session_id
+                                                    && session.peer_id == peer_id
+                                            })
+                                        {
+                                            for hash in &issued_hashes {
+                                                session.requested_hashes.insert(hash.clone());
+                                            }
+                                            chunk_started =
+                                                session.start_chunk(issued_hashes.clone(), issued_at);
+                                        }
+                                        if chunk_started {
+                                            let issued_count = issued_hashes.len() as u64;
+                                            let mut rt = runtime.write().await;
+                                            rt.getblock_sent =
+                                                rt.getblock_sent.saturating_add(issued_count);
+                                            rt.peer_addressed_getblock_sent_total = rt
+                                                .peer_addressed_getblock_sent_total
+                                                .saturating_add(issued_count);
+                                            rt.selected_segment_block_requests_total = rt
+                                                .selected_segment_block_requests_total
+                                                .saturating_add(issued_count);
+                                            rt.active_session_requested_blocks = rt
+                                                .active_session_requested_blocks
+                                                .saturating_add(issued_count);
+                                            rt.final_quiescence_missing_segment_request_total = rt
+                                                .final_quiescence_missing_segment_request_total
+                                                .saturating_add(issued_count);
+                                            rt.pending_block_requests =
+                                                block_requests.pending.len();
+                                            rt.inflight_block_requests =
+                                                block_requests.pending.len();
+                                            rt.pending_block_request_hashes =
+                                                block_requests.pending_hashes();
+                                            rt.sync_state = DagSyncStage::RequestingSelectedBlocks
+                                                .as_str()
+                                                .to_string();
+                                            info!(
+                                                event = "selected_segment_v2_chunk_continued",
+                                                session_id,
+                                                peer = %peer_id,
+                                                issued_count,
+                                                "continued activated-v2 selected segment after accepted chunk"
+                                            );
+                                        } else {
+                                            for hash in &issued_hashes {
+                                                block_requests.resolve(hash);
+                                            }
+                                            warn!(
+                                                session_id,
+                                                peer = %peer_id,
+                                                issued_count = issued_hashes.len(),
+                                                "activated-v2 selected-segment continuation could not start chunk; rolled back request tracking"
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+
+                            if selected_segment_v2_completed {
+                                selected_segment_session = None;
+                                selected_segment_locator_state.lock().await.pending_locator = None;
+                                if let Some(ref p2p_handle) = p2p {
+                                    if let Err(error) = p2p_handle.request_tips() {
+                                        warn!(
+                                            error = %error,
+                                            "failed requesting DAG frontier tips after activated-v2 selected-segment completion"
+                                        );
+                                    } else {
+                                        let mut rt = runtime.write().await;
+                                        rt.sync_state = DagSyncStage::DagFrontierTips
+                                            .as_str()
+                                            .to_string();
+                                        info!(
+                                            event = "selected_segment_v2_frontier_reconcile_requested",
+                                            "activated-v2 selected segment complete; requested fresh tips"
+                                        );
+                                    }
+                                }
+                            }
+
+''' + v2_anchor
+
+if v2_anchor not in text:
+    raise SystemExit("v2 anchor not found")
+text = text.replace(v2_anchor, v2_insert, 1)
+
+test_anchor = '''    #[test]
+    fn lag_injection_evidence_requires_correlated_selected_segment_recovery() {
+'''
+
+test_insert = '''    #[test]
+    fn activated_v2_selected_segment_releases_global_64_cap_for_next_chunk() {
+        let mut headers = Vec::new();
+        let mut parent = "common".to_string();
+        for height in 1..=80 {
+            let hash = format!("selected-{height:03}");
+            headers.push(selected_test_header(&hash, &parent, height));
+            parent = hash;
+        }
+        let locator = vec!["common".to_string()];
+        let mut session = SelectedSegmentSession::new(
+            11,
+            "peer-a".to_string(),
+            "common".to_string(),
+            0,
+            &headers,
+            &locator,
+            20,
+            1_000,
+        )
+        .expect("session");
+        let limits = SelectedSegmentLimits {
+            headers_per_chunk: 128,
+            max_inflight_blocks_per_peer: 128,
+            max_segment_bytes: 4 * 1024 * 1024,
+        };
+        let candidates = selected_segment_request_candidates(
+            &headers,
+            limits,
+            &HashSet::from(["common".to_string()]),
+            &HashSet::new(),
+        );
+        session.missing_hashes = candidates.clone();
+
+        let first = candidates[..MAX_INFLIGHT_BLOCK_REQUESTS].to_vec();
+        let mut tracker = BlockRequestTracker::with_limits(
+            8,
+            2,
+            MAX_INFLIGHT_BLOCK_REQUESTS,
+            MAX_INFLIGHT_BLOCK_REQUESTS_PER_PEER,
+        );
+        for hash in &first {
+            assert!(tracker.should_issue_getblock_for_peers(
+                hash,
+                1,
+                ["peer-a".to_string()],
+            ));
+            session.requested_hashes.insert(hash.clone());
+        }
+        assert_eq!(tracker.pending.len(), MAX_INFLIGHT_BLOCK_REQUESTS);
+        assert!(session.start_chunk(first.clone(), 1_001));
+
+        for hash in &first {
+            tracker.resolve(hash);
+        }
+        let progress = apply_selected_segment_accepted_hashes(
+            &mut session,
+            &first,
+            2_000,
+            MAX_INFLIGHT_BLOCK_REQUESTS,
+        );
+        assert_eq!(progress.applied as usize, MAX_INFLIGHT_BLOCK_REQUESTS);
+        assert!(progress.chunk_completed);
+        assert_eq!(tracker.pending.len(), 0);
+        assert_eq!(progress.continuation.len(), 16);
+        assert_eq!(
+            progress.continuation.first(),
+            Some(&"selected-065".to_string())
+        );
+        assert!(tracker.should_issue_getblock_for_peers(
+            &progress.continuation[0],
+            3,
+            ["peer-a".to_string()],
+        ));
+    }
+
+''' + test_anchor
+
+if test_anchor not in text:
+    raise SystemExit("test anchor not found")
+text = text.replace(test_anchor, test_insert, 1)
+
+path.write_text(text)
