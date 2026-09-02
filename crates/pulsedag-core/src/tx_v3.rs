@@ -1,8 +1,8 @@
 use sha2::{Digest, Sha256};
 
 use crate::{
-    canonical_outpoint_bytes, canonical_tx_input_bytes, canonical_tx_output_bytes,
     decode_hybrid_public_key_v1, decode_hybrid_signature_v1, errors::PulseError,
+    tx::{canonical_outpoint_bytes, canonical_tx_input_bytes, canonical_tx_output_bytes},
     types::Transaction,
 };
 
@@ -134,8 +134,9 @@ mod tests {
     use super::*;
     use crate::{
         encode_hybrid_public_key_v1, encode_hybrid_signature_v1,
-        types::{OutPoint, Transaction, TxInput, TxOutput}, ED25519_PUBLIC_KEY_BYTES,
-        ED25519_SIGNATURE_BYTES, ML_DSA_65_PUBLIC_KEY_BYTES, ML_DSA_65_SIGNATURE_BYTES,
+        types::{OutPoint, Transaction, TxInput, TxOutput},
+        ED25519_PUBLIC_KEY_BYTES, ED25519_SIGNATURE_BYTES, ML_DSA_65_PUBLIC_KEY_BYTES,
+        ML_DSA_65_SIGNATURE_BYTES,
     };
 
     fn sample_v3_transaction() -> Transaction {
