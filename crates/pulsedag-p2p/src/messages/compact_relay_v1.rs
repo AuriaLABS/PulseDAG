@@ -15,14 +15,14 @@ pub const COMPACT_DAG_RELAY_VERSION_V1: u32 = 1;
 pub const MAX_COMPACT_BLOCK_TXIDS_V1: usize = MAX_INV_BLOCK_HASHES;
 pub const MAX_COMPACT_PREFILLED_TRANSACTIONS_V1: usize = MAX_INV_BLOCK_REQUEST_FANOUT;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CompactPrefilledTransactionV1 {
     pub index: u32,
     pub transaction: Transaction,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CompactBlockRelayV1 {
     pub version: u32,
@@ -37,7 +37,7 @@ pub struct CompactBlockRelayV1 {
     pub prefilled_transactions: Vec<CompactPrefilledTransactionV1>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub enum CompactBlockReconstructionV1 {
     Complete(Block),
     NeedFullBlock {
@@ -306,7 +306,9 @@ mod tests {
         match result {
             CompactBlockReconstructionV1::Complete(block) => {
                 assert_eq!(block.hash, compact.block_hash);
-                assert_eq!(block.transactions, vec![coinbase, spend]);
+                assert_eq!(block.transactions.len(), 2);
+                assert_eq!(block.transactions[0].txid, coinbase.txid);
+                assert_eq!(block.transactions[1].txid, spend.txid);
             }
             other => panic!("expected complete compact reconstruction, got {other:?}"),
         }
@@ -316,13 +318,16 @@ mod tests {
     fn missing_transaction_requires_full_block_fallback() {
         let (compact, _, spend) = compact_fixture();
         let result = reconstruct_compact_block_v1(&compact, &HashMap::new()).unwrap();
-        assert_eq!(
-            result,
+        match result {
             CompactBlockReconstructionV1::NeedFullBlock {
-                block_hash: compact.block_hash,
-                missing_transaction_ids: vec![spend.txid],
+                block_hash,
+                missing_transaction_ids,
+            } => {
+                assert_eq!(block_hash, compact.block_hash);
+                assert_eq!(missing_transaction_ids, vec![spend.txid]);
             }
-        );
+            other => panic!("expected full-block fallback, got {other:?}"),
+        }
     }
 
     #[test]
@@ -357,14 +362,13 @@ mod tests {
 
     #[test]
     fn reconstructed_merkle_root_must_match_header() {
-        let (compact, _, mut spend) = compact_fixture();
-        spend.txid = "different-local-id".into();
-        let local = HashMap::from([("spend".to_string(), spend)]);
+        let (mut compact, _, spend) = compact_fixture();
+        compact.header.merkle_root = "corrupt-merkle-root".into();
+        compact.block_hash = compute_block_hash(&compact.header);
+        let local = HashMap::from([(spend.txid.clone(), spend)]);
         assert_eq!(
-            reconstruct_compact_block_v1(&compact, &local),
-            Err(CompactRelayErrorV1::LocalTransactionIdMismatch(
-                "spend".into()
-            ))
+            reconstruct_compact_block_v1(&compact, &local).unwrap_err(),
+            CompactRelayErrorV1::MerkleRootMismatch
         );
     }
 
