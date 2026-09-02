@@ -25,7 +25,7 @@ The remediation rule is fail-closed:
 - `lru 0.12.5` must be absent from the resolved lock graph;
 - historical v2.4 lock-only vulnerable versions above must be absent;
 - PulseDAG's selected libp2p feature set remains explicit with default features disabled;
-- clean compiler-artifact reachability is captured for `pulsedag-p2p`, `pulsedagd` and `pulsedag-miner`;
+- clean compiler-artifact reachability is captured for `pulsedag-p2p`, `pulsedagd`, `pulsedag-miner` and `pulsedag-wallet`;
 - optional `dns`, `mdns`, `quic` and `upnp` libp2p packages must not be compiler-reachable from the selected PulseDAG feature set.
 
 ## #803 linkme remediation
@@ -47,17 +47,23 @@ The linkme remediation rule is fail-closed:
 - `intertrait 0.2.2` must be absent;
 - `linkme 0.2.10` must be absent;
 - existing `pulsedag-core` consensus/PoW tests must pass without changing PoW vectors or adapter logic;
-- `pulsedag-p2p`, `pulsedagd` and `pulsedag-miner` must compile against the same exact lock graph.
+- `pulsedag-p2p`, `pulsedagd`, `pulsedag-miner` and `pulsedag-wallet` must compile against the same exact lock graph.
 
-The isolated supported migration probe passed all of those focused build/test checks before the candidate was committed.
+## Hickory 0.25.2 lock-only disposition
 
-## Remaining launch blocker
+The Kaspa 2.0.1 lock graph currently contains `hickory-proto 0.25.2`, covered by `RUSTSEC-2026-0118` and `RUSTSEC-2026-0119`. These advisories are not hidden: the raw `cargo audit` report must contain exactly those vulnerability records and CI preserves the raw failing audit evidence.
 
-This remediation does **not** close #803. The known reachable blocker remaining from this dependency pair is:
+The temporary development disposition is valid only while clean compiler-artifact evidence proves `hickory-proto 0.25.2` is absent from **all** launch roots: `pulsedag-p2p`, `pulsedagd`, `pulsedag-miner` and `pulsedag-wallet`. If the package becomes compiler-reachable from any root, the gate fails closed. The CLI audit uses explicit per-run ignores only after that reachability proof; `.cargo/audit.toml` remains free of vulnerability ignores.
+
+This is not a final v3 launch disposition. The exact candidate security review in #803 must either remove this lock-only residue through a supported parent migration or explicitly renew the reviewed unreachable disposition for the final candidate.
+
+## Remaining launch blocker and warning inventory
+
+This remediation does **not** close #803. The known reachable blocker remaining from the inherited dependency pair is:
 
 - `atty 0.2.14` — `RUSTSEC-2024-0375`, `RUSTSEC-2021-0145`.
 
-Other informational warnings remain visible and must be owned by the final v3 security matrix. No warning is hidden merely to obtain a green audit.
+The Kaspa 2.0.1 graph also makes `derivative 2.2.0` (`RUSTSEC-2024-0388`, unmaintained) compiler-reachable. It remains visible in the raw warning inventory and requires owner/disposition in the final v3 security matrix. Other informational warnings likewise remain visible; no warning is hidden merely to obtain a green audit.
 
 ## Final launch boundary
 
