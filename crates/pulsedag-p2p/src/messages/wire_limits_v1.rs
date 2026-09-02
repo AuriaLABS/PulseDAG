@@ -9,6 +9,12 @@ use super::dag_sync_v2::MAX_SELECTED_CHAIN_LOCATOR_HASHES;
 use super::{BlockHeaderAnnouncement, HeaderInventory};
 use crate::{MAX_INV_BLOCK_HASHES, MAX_INV_BLOCK_REQUEST_FANOUT};
 
+/// Public wire view of the live inventory budget. The value is deliberately
+/// sourced from the runtime constant so decoder/runtime limits cannot drift.
+pub const P2P_WIRE_MAX_INVENTORY_ITEMS_V1: usize = MAX_INV_BLOCK_HASHES;
+/// Public wire view of the live request-fanout budget.
+pub const P2P_WIRE_MAX_REQUEST_ITEMS_V1: usize = MAX_INV_BLOCK_REQUEST_FANOUT;
+
 struct BoundedVecVisitor<T> {
     maximum: usize,
     field: &'static str,
@@ -138,4 +144,93 @@ where
         )));
     }
     Ok(limit)
+}
+
+#[cfg(test)]
+mod tests {
+    use pulsedag_core::types::BlockHeader;
+
+    use super::*;
+    use crate::messages::NetworkMessage;
+
+    fn header() -> BlockHeader {
+        BlockHeader {
+            version: 1,
+            parents: vec!["parent".into()],
+            timestamp: 1,
+            difficulty: 1,
+            nonce: 1,
+            merkle_root: "merkle".into(),
+            state_root: "state".into(),
+            blue_score: 1,
+            height: 1,
+        }
+    }
+
+    fn decode(message: &NetworkMessage) -> Result<NetworkMessage, serde_json::Error> {
+        let encoded = serde_json::to_vec(message).expect("wire fixture serializes");
+        serde_json::from_slice(&encoded)
+    }
+
+    #[test]
+    fn exact_wire_boundaries_are_accepted() {
+        assert!(decode(&NetworkMessage::GetHeaders {
+            chain_id: "testnet".into(),
+            locator: vec!["hash".into(); MAX_SELECTED_CHAIN_LOCATOR_HASHES],
+            stop_hash: None,
+            limit: MAX_INV_BLOCK_HASHES,
+        })
+        .is_ok());
+
+        assert!(decode(&NetworkMessage::GetBlockHeaders {
+            chain_id: "testnet".into(),
+            hashes: vec!["hash".into(); MAX_INV_BLOCK_REQUEST_FANOUT],
+        })
+        .is_ok());
+
+        let header_inventory = HeaderInventory {
+            hash: "header".into(),
+            header: header(),
+        };
+        assert!(decode(&NetworkMessage::Headers {
+            chain_id: "testnet".into(),
+            headers: vec![header_inventory; MAX_INV_BLOCK_HASHES],
+        })
+        .is_ok());
+
+        let announcement = BlockHeaderAnnouncement {
+            hash: "header".into(),
+            header: header(),
+        };
+        assert!(decode(&NetworkMessage::BlockHeaders {
+            chain_id: "testnet".into(),
+            headers: vec![announcement; MAX_INV_BLOCK_REQUEST_FANOUT],
+        })
+        .is_ok());
+    }
+
+    #[test]
+    fn oversized_response_vectors_are_rejected_during_decode() {
+        let header_inventory = HeaderInventory {
+            hash: "header".into(),
+            header: header(),
+        };
+        let error = decode(&NetworkMessage::Headers {
+            chain_id: "testnet".into(),
+            headers: vec![header_inventory; MAX_INV_BLOCK_HASHES + 1],
+        })
+        .unwrap_err();
+        assert!(error.to_string().contains("Headers.headers"));
+
+        let announcement = BlockHeaderAnnouncement {
+            hash: "header".into(),
+            header: header(),
+        };
+        let error = decode(&NetworkMessage::BlockHeaders {
+            chain_id: "testnet".into(),
+            headers: vec![announcement; MAX_INV_BLOCK_REQUEST_FANOUT + 1],
+        })
+        .unwrap_err();
+        assert!(error.to_string().contains("BlockHeaders.headers"));
+    }
 }
