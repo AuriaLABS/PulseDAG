@@ -1,7 +1,10 @@
 use std::fmt;
 use std::marker::PhantomData;
 
-use pulsedag_core::{types::Hash, BlockConsensusMetadataV1, ProtocolActivationIdentity};
+use pulsedag_core::{
+    types::Hash, BlockConsensusMetadataV1, ProtocolActivationIdentity,
+    GHOSTDAG_V1_MAX_MERGE_SET_BLOCKS,
+};
 use serde::de::{self, IgnoredAny, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{value::RawValue, Value};
@@ -144,10 +147,31 @@ impl From<SelectedChainLocatorDecodeV1> for SelectedChainLocatorV1 {
 }
 
 #[derive(Debug, Deserialize)]
+struct BlockConsensusMetadataDecodeV1 {
+    selected_parent: Option<Hash>,
+    blue_score: u64,
+    blue_work_decimal: String,
+    merge_set_blues: BoundedSyncVec<Hash, GHOSTDAG_V1_MAX_MERGE_SET_BLOCKS>,
+    merge_set_reds: BoundedSyncVec<Hash, GHOSTDAG_V1_MAX_MERGE_SET_BLOCKS>,
+}
+
+impl From<BlockConsensusMetadataDecodeV1> for BlockConsensusMetadataV1 {
+    fn from(value: BlockConsensusMetadataDecodeV1) -> Self {
+        Self {
+            selected_parent: value.selected_parent,
+            blue_score: value.blue_score,
+            blue_work_decimal: value.blue_work_decimal,
+            merge_set_blues: value.merge_set_blues.0,
+            merge_set_reds: value.merge_set_reds.0,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
 struct DagFrontierEntryDecodeV1 {
     hash: Hash,
     parents: BoundedSyncVec<Hash, MAX_DAG_FRONTIER_PARENTS>,
-    consensus: BlockConsensusMetadataV1,
+    consensus: BlockConsensusMetadataDecodeV1,
 }
 
 impl From<DagFrontierEntryDecodeV1> for DagFrontierEntryV1 {
@@ -155,7 +179,7 @@ impl From<DagFrontierEntryDecodeV1> for DagFrontierEntryV1 {
         Self {
             hash: value.hash,
             parents: value.parents.0,
-            consensus: value.consensus,
+            consensus: value.consensus.into(),
         }
     }
 }
@@ -581,6 +605,50 @@ mod tests {
             decode_network_message_with_protocol_sync_for_peer_v1(&encoded, "peer-v2").unwrap_err();
         assert!(matches!(error, ProtocolSyncCarrierErrorV1::Json(_)));
         assert!(format!("{error:?}").contains(&MAX_DAG_FRONTIER_PARENTS.to_string()));
+    }
+
+    #[test]
+    fn oversized_targeted_merge_set_blues_are_rejected_during_bounded_decode() {
+        let mut consensus =
+            serde_json::to_value(consensus_metadata()).expect("serialize consensus metadata");
+        consensus["merge_set_blues"] = Value::Array(
+            (0..=GHOSTDAG_V1_MAX_MERGE_SET_BLOCKS)
+                .map(|index| Value::String(format!("blue-{index}")))
+                .collect(),
+        );
+        let entry = serde_json::json!({
+            "hash": "frontier",
+            "parents": [],
+            "consensus": consensus,
+        });
+        let payload = frontier_payload(vec![entry]);
+        let encoded = encoded_with_payload_before_sync_type("dag_frontier", &payload, "peer-v2");
+        let error =
+            decode_network_message_with_protocol_sync_for_peer_v1(&encoded, "peer-v2").unwrap_err();
+        assert!(matches!(error, ProtocolSyncCarrierErrorV1::Json(_)));
+        assert!(format!("{error:?}").contains(&GHOSTDAG_V1_MAX_MERGE_SET_BLOCKS.to_string()));
+    }
+
+    #[test]
+    fn oversized_targeted_merge_set_reds_are_rejected_during_bounded_decode() {
+        let mut consensus =
+            serde_json::to_value(consensus_metadata()).expect("serialize consensus metadata");
+        consensus["merge_set_reds"] = Value::Array(
+            (0..=GHOSTDAG_V1_MAX_MERGE_SET_BLOCKS)
+                .map(|index| Value::String(format!("red-{index}")))
+                .collect(),
+        );
+        let entry = serde_json::json!({
+            "hash": "frontier",
+            "parents": [],
+            "consensus": consensus,
+        });
+        let payload = frontier_payload(vec![entry]);
+        let encoded = encoded_with_payload_before_sync_type("dag_frontier", &payload, "peer-v2");
+        let error =
+            decode_network_message_with_protocol_sync_for_peer_v1(&encoded, "peer-v2").unwrap_err();
+        assert!(matches!(error, ProtocolSyncCarrierErrorV1::Json(_)));
+        assert!(format!("{error:?}").contains(&GHOSTDAG_V1_MAX_MERGE_SET_BLOCKS.to_string()));
     }
 
     #[test]
