@@ -2,7 +2,7 @@ use std::fmt;
 use std::marker::PhantomData;
 
 use pulsedag_core::{types::Hash, BlockConsensusMetadataV1, ProtocolActivationIdentity};
-use serde::de::{self, DeserializeOwned, IgnoredAny, SeqAccess, Visitor};
+use serde::de::{self, IgnoredAny, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{value::RawValue, Value};
 
@@ -43,6 +43,7 @@ pub struct DecodedNetworkMessageWithProtocolSyncV1 {
     pub protocol_sync: Option<ProtocolSyncCarrierV1>,
 }
 
+#[derive(Debug)]
 struct BoundedSyncVec<T, const MAXIMUM: usize>(Vec<T>);
 
 struct BoundedSyncVecVisitor<T, const MAXIMUM: usize> {
@@ -200,12 +201,12 @@ struct ProtocolSyncTargetExtensionWireV1 {
     protocol_sync: Option<ProtocolSyncTargetV1>,
 }
 
-fn parse_sync_payload<T>(
-    raw: &RawValue,
+fn parse_sync_payload<'de, T>(
+    raw: &'de RawValue,
     field: &'static str,
 ) -> Result<T, ProtocolSyncCarrierErrorV1>
 where
-    T: DeserializeOwned,
+    T: Deserialize<'de>,
 {
     serde_json::from_str(raw.get()).map_err(|error| {
         ProtocolSyncCarrierErrorV1::Json(format!("protocol sync {field}: {error}"))
@@ -452,7 +453,7 @@ mod tests {
         let sync_type = serde_json::to_string(sync_type).expect("serialize sync type");
         let payload = serde_json::to_string(payload).expect("serialize sync payload");
         format!(
-            "{base},\"{PROTOCOL_SYNC_EXTENSION_FIELD_V1}\":{{\"target_peer_id\":{target},\"wire\":{{\"payload\":{payload},\"sync_type\":{sync_type}}}}}}}}"
+            "{base},\"{PROTOCOL_SYNC_EXTENSION_FIELD_V1}\":{{\"target_peer_id\":{target},\"wire\":{{\"payload\":{payload},\"sync_type\":{sync_type}}}}}}}"
         )
         .into_bytes()
     }
