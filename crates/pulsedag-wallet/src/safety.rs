@@ -166,9 +166,7 @@ pub fn validate_wallet_safety_acknowledgements(
             "wallet self-send requires explicit acknowledgement".into(),
         ));
     }
-    if snapshot.is_spend_all(selected_utxos, total_input, change)?
-        && !acknowledgements.spend_all
-    {
+    if snapshot.is_spend_all(selected_utxos, total_input, change)? && !acknowledgements.spend_all {
         return Err(PulseError::InvalidTransaction(
             "wallet spend-all requires explicit acknowledgement".into(),
         ));
@@ -277,11 +275,8 @@ mod tests {
 
     #[test]
     fn snapshot_metadata_tampering_fails_integrity_validation() {
-        let original = WalletFundingSnapshot::from_utxos(&[
-            utxo("a", 0, 4),
-            utxo("b", 0, 6),
-        ])
-        .unwrap();
+        let original =
+            WalletFundingSnapshot::from_utxos(&[utxo("a", 0, 4), utxo("b", 0, 6)]).unwrap();
 
         let mut count = original.clone();
         count.utxo_count += 1;
@@ -316,17 +311,12 @@ mod tests {
 
     #[test]
     fn spend_all_requires_exact_complete_snapshot_and_zero_change() {
-        let snapshot = WalletFundingSnapshot::from_utxos(&[
-            utxo("a", 0, 4),
-            utxo("b", 0, 6),
-        ])
-        .unwrap();
+        let snapshot =
+            WalletFundingSnapshot::from_utxos(&[utxo("a", 0, 4), utxo("b", 0, 6)]).unwrap();
         let all = vec![selected("b", 0, 6), selected("a", 0, 4)];
         assert!(snapshot.is_spend_all(&all, 10, 0).unwrap());
         assert!(!snapshot.is_spend_all(&all, 10, 1).unwrap());
-        assert!(!snapshot
-            .is_spend_all(&[selected("a", 0, 4)], 4, 0)
-            .unwrap());
+        assert!(!snapshot.is_spend_all(&[selected("a", 0, 4)], 4, 0).unwrap());
     }
 
     #[test]
