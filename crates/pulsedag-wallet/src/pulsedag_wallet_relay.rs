@@ -626,6 +626,15 @@ mod tests {
                 input_count: 1,
                 nonce: 7,
                 unsigned_template_txid: "44".repeat(32),
+                self_send: false,
+                spend_all: true,
+                self_send_acknowledged: false,
+                spend_all_acknowledged: true,
+                funding_utxo_count: 1,
+                funding_total_amount: 410,
+                funding_snapshot_commitment_hex:
+                    "60ddbcbc5857a0f66bf7aeaecce2edacc2a1f46f9d7d443c305a997d01d15aea"
+                        .to_string(),
             },
             final_txid: transaction.txid.clone(),
             relay: RelayEnvelope { transaction },
