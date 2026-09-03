@@ -164,9 +164,7 @@ pub enum NetworkMessage {
     },
     GetBlockHeaders {
         chain_id: String,
-        #[serde(
-            serialize_with = "wire_limits_v1::serialize_bounded_block_header_request_hashes"
-        )]
+        #[serde(serialize_with = "wire_limits_v1::serialize_bounded_block_header_request_hashes")]
         hashes: Vec<Hash>,
     },
     BlockHeaders {
