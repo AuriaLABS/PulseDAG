@@ -1,7 +1,17 @@
-use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use std::fmt;
+use std::marker::PhantomData;
 
-use super::{NetworkMessage, ProtocolSyncWireError, ProtocolSyncWireV1};
+use pulsedag_core::{types::Hash, BlockConsensusMetadataV1, ProtocolActivationIdentity};
+use serde::de::{self, DeserializeOwned, IgnoredAny, SeqAccess, Visitor};
+use serde::{Deserialize, Deserializer, Serialize};
+use serde_json::{value::RawValue, Value};
+
+use super::{
+    DagFrontierEntryV1, DagFrontierResponseV1, NetworkMessage, ProtocolCapabilityHandshakeV1,
+    ProtocolSyncWireError, ProtocolSyncWireV1, SelectedChainLocatorV1,
+    MAX_DAG_FRONTIER_ENTRIES, MAX_DAG_FRONTIER_PARENTS, MAX_DAG_FRONTIER_REQUIRED_CONTEXT,
+    MAX_SELECTED_CHAIN_LOCATOR_HASHES, MAX_SELECTED_CHAIN_SUFFIX_HASHES,
+};
 
 pub const PROTOCOL_SYNC_EXTENSION_FIELD_V1: &str = "pulsedag_protocol_sync_v1";
 
@@ -33,10 +43,149 @@ pub struct DecodedNetworkMessageWithProtocolSyncV1 {
     pub protocol_sync: Option<ProtocolSyncCarrierV1>,
 }
 
+struct BoundedSyncVec<T, const MAXIMUM: usize>(Vec<T>);
+
+struct BoundedSyncVecVisitor<T, const MAXIMUM: usize> {
+    marker: PhantomData<T>,
+}
+
+impl<'de, T, const MAXIMUM: usize> Visitor<'de> for BoundedSyncVecVisitor<T, MAXIMUM>
+where
+    T: Deserialize<'de>,
+{
+    type Value = BoundedSyncVec<T, MAXIMUM>;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "a sequence with at most {MAXIMUM} items")
+    }
+
+    fn visit_seq<A>(self, mut sequence: A) -> Result<Self::Value, A::Error>
+    where
+        A: SeqAccess<'de>,
+    {
+        let capacity = sequence.size_hint().unwrap_or(0).min(MAXIMUM);
+        let mut values = Vec::with_capacity(capacity);
+        while values.len() < MAXIMUM {
+            match sequence.next_element::<T>()? {
+                Some(value) => values.push(value),
+                None => return Ok(BoundedSyncVec(values)),
+            }
+        }
+
+        if sequence.next_element::<IgnoredAny>()?.is_some() {
+            return Err(de::Error::custom(format!(
+                "sequence exceeds maximum item count {MAXIMUM}"
+            )));
+        }
+        Ok(BoundedSyncVec(values))
+    }
+}
+
+impl<'de, T, const MAXIMUM: usize> Deserialize<'de> for BoundedSyncVec<T, MAXIMUM>
+where
+    T: Deserialize<'de>,
+{
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_seq(BoundedSyncVecVisitor::<T, MAXIMUM> {
+            marker: PhantomData,
+        })
+    }
+}
+
 #[derive(Debug, Deserialize)]
-struct ProtocolSyncExtensionWireV1 {
-    #[serde(default, rename = "pulsedag_protocol_sync_v1")]
-    protocol_sync: Option<ProtocolSyncCarrierV1>,
+struct ProtocolSyncExtensionRawV1<'a> {
+    #[serde(default, borrow, rename = "pulsedag_protocol_sync_v1")]
+    protocol_sync: Option<&'a RawValue>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ProtocolSyncCarrierRawV1<'a> {
+    target_peer_id: String,
+    #[serde(borrow)]
+    wire: &'a RawValue,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum ProtocolSyncKindV1 {
+    CapabilityHandshake,
+    SelectedChainLocator,
+    DagFrontier,
+}
+
+#[derive(Debug, Deserialize)]
+struct ProtocolSyncWireRawV1<'a> {
+    sync_type: ProtocolSyncKindV1,
+    #[serde(borrow)]
+    payload: &'a RawValue,
+}
+
+#[derive(Debug, Deserialize)]
+struct SelectedChainLocatorDecodeV1 {
+    contract_version: u32,
+    protocol_identity: ProtocolActivationIdentity,
+    selected_tip: Hash,
+    locator: BoundedSyncVec<Hash, MAX_SELECTED_CHAIN_LOCATOR_HASHES>,
+}
+
+impl From<SelectedChainLocatorDecodeV1> for SelectedChainLocatorV1 {
+    fn from(value: SelectedChainLocatorDecodeV1) -> Self {
+        Self {
+            contract_version: value.contract_version,
+            protocol_identity: value.protocol_identity,
+            selected_tip: value.selected_tip,
+            locator: value.locator.0,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct DagFrontierEntryDecodeV1 {
+    hash: Hash,
+    parents: BoundedSyncVec<Hash, MAX_DAG_FRONTIER_PARENTS>,
+    consensus: BlockConsensusMetadataV1,
+}
+
+impl From<DagFrontierEntryDecodeV1> for DagFrontierEntryV1 {
+    fn from(value: DagFrontierEntryDecodeV1) -> Self {
+        Self {
+            hash: value.hash,
+            parents: value.parents.0,
+            consensus: value.consensus,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct DagFrontierResponseDecodeV1 {
+    contract_version: u32,
+    protocol_identity: ProtocolActivationIdentity,
+    consensus_metadata_schema_version: u32,
+    ordering_version: String,
+    common_ancestor: Hash,
+    selected_tip: Hash,
+    selected_chain_suffix: BoundedSyncVec<Hash, MAX_SELECTED_CHAIN_SUFFIX_HASHES>,
+    required_context: BoundedSyncVec<Hash, MAX_DAG_FRONTIER_REQUIRED_CONTEXT>,
+    frontier: BoundedSyncVec<DagFrontierEntryDecodeV1, MAX_DAG_FRONTIER_ENTRIES>,
+}
+
+impl From<DagFrontierResponseDecodeV1> for DagFrontierResponseV1 {
+    fn from(value: DagFrontierResponseDecodeV1) -> Self {
+        Self {
+            contract_version: value.contract_version,
+            protocol_identity: value.protocol_identity,
+            consensus_metadata_schema_version: value.consensus_metadata_schema_version,
+            ordering_version: value.ordering_version,
+            common_ancestor: value.common_ancestor,
+            selected_tip: value.selected_tip,
+            selected_chain_suffix: value.selected_chain_suffix.0,
+            required_context: value.required_context.0,
+            frontier: value.frontier.0.into_iter().map(Into::into).collect(),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -49,6 +198,61 @@ struct ProtocolSyncTargetV1 {
 struct ProtocolSyncTargetExtensionWireV1 {
     #[serde(default, rename = "pulsedag_protocol_sync_v1")]
     protocol_sync: Option<ProtocolSyncTargetV1>,
+}
+
+fn parse_sync_payload<T>(raw: &RawValue, field: &'static str) -> Result<T, ProtocolSyncCarrierErrorV1>
+where
+    T: DeserializeOwned,
+{
+    serde_json::from_str(raw.get()).map_err(|error| {
+        ProtocolSyncCarrierErrorV1::Json(format!("protocol sync {field}: {error}"))
+    })
+}
+
+fn decode_protocol_sync_wire_v1(
+    raw: &RawValue,
+) -> Result<ProtocolSyncWireV1, ProtocolSyncCarrierErrorV1> {
+    let wire: ProtocolSyncWireRawV1<'_> = parse_sync_payload(raw, "wire")?;
+    match wire.sync_type {
+        ProtocolSyncKindV1::CapabilityHandshake => Ok(ProtocolSyncWireV1::CapabilityHandshake(
+            parse_sync_payload::<ProtocolCapabilityHandshakeV1>(wire.payload, "handshake payload")?,
+        )),
+        ProtocolSyncKindV1::SelectedChainLocator => {
+            let locator = parse_sync_payload::<SelectedChainLocatorDecodeV1>(
+                wire.payload,
+                "selected-chain locator payload",
+            )?;
+            Ok(ProtocolSyncWireV1::SelectedChainLocator(locator.into()))
+        }
+        ProtocolSyncKindV1::DagFrontier => {
+            let frontier = parse_sync_payload::<DagFrontierResponseDecodeV1>(
+                wire.payload,
+                "DAG frontier payload",
+            )?;
+            Ok(ProtocolSyncWireV1::DagFrontier(frontier.into()))
+        }
+    }
+}
+
+fn decode_protocol_sync_carrier_v1(
+    raw: &RawValue,
+) -> Result<ProtocolSyncCarrierV1, ProtocolSyncCarrierErrorV1> {
+    let carrier: ProtocolSyncCarrierRawV1<'_> = parse_sync_payload(raw, "carrier")?;
+    Ok(ProtocolSyncCarrierV1 {
+        target_peer_id: carrier.target_peer_id,
+        wire: decode_protocol_sync_wire_v1(carrier.wire)?,
+    })
+}
+
+fn decode_protocol_sync_extension_v1(
+    bytes: &[u8],
+) -> Result<Option<ProtocolSyncCarrierV1>, ProtocolSyncCarrierErrorV1> {
+    let extension: ProtocolSyncExtensionRawV1<'_> = serde_json::from_slice(bytes)
+        .map_err(|error| ProtocolSyncCarrierErrorV1::Json(error.to_string()))?;
+    extension
+        .protocol_sync
+        .map(decode_protocol_sync_carrier_v1)
+        .transpose()
 }
 
 fn validate_carrier_for_message(
@@ -85,12 +289,12 @@ pub fn attach_protocol_sync_carrier_v1(
     encoded_network_message: &[u8],
     carrier: &ProtocolSyncCarrierV1,
 ) -> Result<Vec<u8>, ProtocolSyncCarrierErrorV1> {
-    let mut value: Value = serde_json::from_slice(encoded_network_message)
-        .map_err(|error| ProtocolSyncCarrierErrorV1::Json(error.to_string()))?;
-    let message: NetworkMessage = serde_json::from_value(value.clone())
+    let message: NetworkMessage = serde_json::from_slice(encoded_network_message)
         .map_err(|error| ProtocolSyncCarrierErrorV1::Json(error.to_string()))?;
     validate_carrier_for_message(&message, carrier)?;
 
+    let mut value: Value = serde_json::from_slice(encoded_network_message)
+        .map_err(|error| ProtocolSyncCarrierErrorV1::Json(error.to_string()))?;
     let object = value
         .as_object_mut()
         .ok_or(ProtocolSyncCarrierErrorV1::InvalidJsonRoot)?;
@@ -120,22 +324,22 @@ pub fn encode_network_message_with_protocol_sync_v1(
 /// Decode a current/legacy network message and recover the optional targeted
 /// protocol-sync extension. Both passes are streaming Serde decodes: unrelated
 /// top-level fields are skipped instead of materialized into a complete JSON
-/// `Value`.
+/// `Value`, and the selected sync payload is decoded only after its raw tag is
+/// known with its live vector budgets applied during sequence consumption.
 pub fn decode_network_message_with_protocol_sync_v1(
     bytes: &[u8],
 ) -> Result<DecodedNetworkMessageWithProtocolSyncV1, ProtocolSyncCarrierErrorV1> {
     let message: NetworkMessage = serde_json::from_slice(bytes)
         .map_err(|error| ProtocolSyncCarrierErrorV1::Json(error.to_string()))?;
-    let extension: ProtocolSyncExtensionWireV1 = serde_json::from_slice(bytes)
-        .map_err(|error| ProtocolSyncCarrierErrorV1::Json(error.to_string()))?;
+    let protocol_sync = decode_protocol_sync_extension_v1(bytes)?;
 
-    if let Some(carrier) = extension.protocol_sync.as_ref() {
+    if let Some(carrier) = protocol_sync.as_ref() {
         validate_carrier_for_message(&message, carrier)?;
     }
 
     Ok(DecodedNetworkMessageWithProtocolSyncV1 {
         message,
-        protocol_sync: extension.protocol_sync,
+        protocol_sync,
     })
 }
 
@@ -158,9 +362,7 @@ pub fn decode_network_message_with_protocol_sync_for_peer_v1(
         .and_then(|target| target.target_peer_id)
     {
         Some(target_peer_id) if target_peer_id == local_peer_id => {
-            let extension: ProtocolSyncExtensionWireV1 = serde_json::from_slice(bytes)
-                .map_err(|error| ProtocolSyncCarrierErrorV1::Json(error.to_string()))?;
-            let carrier = extension.protocol_sync.ok_or_else(|| {
+            let carrier = decode_protocol_sync_extension_v1(bytes)?.ok_or_else(|| {
                 ProtocolSyncCarrierErrorV1::Json(
                     "protocol sync target present without full carrier".to_string(),
                 )
@@ -236,6 +438,46 @@ mod tests {
         }
     }
 
+    fn encoded_with_payload_before_sync_type(
+        sync_type: &str,
+        payload: &Value,
+        target_peer_id: &str,
+    ) -> Vec<u8> {
+        let mut base = serde_json::to_string(&tips()).expect("serialize base Tips");
+        assert_eq!(base.pop(), Some('}'));
+        let target = serde_json::to_string(target_peer_id).expect("serialize target");
+        let sync_type = serde_json::to_string(sync_type).expect("serialize sync type");
+        let payload = serde_json::to_string(payload).expect("serialize sync payload");
+        format!(
+            "{base},\"{PROTOCOL_SYNC_EXTENSION_FIELD_V1}\":{{\"target_peer_id\":{target},\"wire\":{{\"payload\":{payload},\"sync_type\":{sync_type}}}}}}}}"
+        )
+        .into_bytes()
+    }
+
+    fn consensus_metadata() -> BlockConsensusMetadataV1 {
+        BlockConsensusMetadataV1 {
+            selected_parent: None,
+            blue_score: 1,
+            blue_work_decimal: "1".to_string(),
+            merge_set_blues: Vec::new(),
+            merge_set_reds: Vec::new(),
+        }
+    }
+
+    fn frontier_payload(frontier: Vec<Value>) -> Value {
+        serde_json::json!({
+            "contract_version": P2P_DAG_SYNC_CONTRACT_VERSION,
+            "protocol_identity": identity(CHAIN_ID),
+            "consensus_metadata_schema_version": CONSENSUS_METADATA_SCHEMA_VERSION,
+            "ordering_version": GHOSTDAG_V1_ORDERING_VERSION,
+            "common_ancestor": "ancestor",
+            "selected_tip": "tip",
+            "selected_chain_suffix": ["ancestor", "tip"],
+            "required_context": [],
+            "frontier": frontier,
+        })
+    }
+
     #[test]
     fn no_sync_extension_preserves_legacy_bytes_exactly() {
         let message = tips();
@@ -267,6 +509,74 @@ mod tests {
         assert_eq!(decoded.protocol_sync, Some(expected.clone()));
         assert!(expected.is_targeted_to("peer-v2"));
         assert!(!expected.is_targeted_to("different-peer"));
+    }
+
+    #[test]
+    fn payload_before_sync_type_decodes_after_raw_tag_selection() {
+        let payload = match locator(CHAIN_ID) {
+            ProtocolSyncWireV1::SelectedChainLocator(locator) => {
+                serde_json::to_value(locator).expect("serialize locator")
+            }
+            other => panic!("unexpected sync wire: {other:?}"),
+        };
+        let encoded =
+            encoded_with_payload_before_sync_type("selected_chain_locator", &payload, "peer-v2");
+        let decoded =
+            decode_network_message_with_protocol_sync_for_peer_v1(&encoded, "peer-v2").unwrap();
+        assert_eq!(decoded.protocol_sync, Some(carrier(CHAIN_ID)));
+    }
+
+    #[test]
+    fn oversized_targeted_locator_is_rejected_during_bounded_decode() {
+        let mut payload = match locator(CHAIN_ID) {
+            ProtocolSyncWireV1::SelectedChainLocator(locator) => {
+                serde_json::to_value(locator).expect("serialize locator")
+            }
+            other => panic!("unexpected sync wire: {other:?}"),
+        };
+        payload["locator"] = Value::Array(
+            (0..=MAX_SELECTED_CHAIN_LOCATOR_HASHES)
+                .map(|index| Value::String(format!("hash-{index}")))
+                .collect(),
+        );
+        let encoded =
+            encoded_with_payload_before_sync_type("selected_chain_locator", &payload, "peer-v2");
+        let error = decode_network_message_with_protocol_sync_for_peer_v1(&encoded, "peer-v2")
+            .unwrap_err();
+        assert!(matches!(error, ProtocolSyncCarrierErrorV1::Json(_)));
+        assert!(format!("{error:?}").contains(&MAX_SELECTED_CHAIN_LOCATOR_HASHES.to_string()));
+    }
+
+    #[test]
+    fn oversized_targeted_frontier_is_rejected_during_bounded_decode() {
+        let entry = serde_json::json!({
+            "hash": "frontier",
+            "parents": [],
+            "consensus": consensus_metadata(),
+        });
+        let payload = frontier_payload(vec![entry; MAX_DAG_FRONTIER_ENTRIES + 1]);
+        let encoded = encoded_with_payload_before_sync_type("dag_frontier", &payload, "peer-v2");
+        let error = decode_network_message_with_protocol_sync_for_peer_v1(&encoded, "peer-v2")
+            .unwrap_err();
+        assert!(matches!(error, ProtocolSyncCarrierErrorV1::Json(_)));
+        assert!(format!("{error:?}").contains(&MAX_DAG_FRONTIER_ENTRIES.to_string()));
+    }
+
+    #[test]
+    fn oversized_targeted_frontier_parents_are_rejected_during_bounded_decode() {
+        let entry = serde_json::json!({
+            "hash": "frontier",
+            "parents": (0..=MAX_DAG_FRONTIER_PARENTS)
+                .map(|index| format!("parent-{index}"))
+                .collect::<Vec<_>>(),
+            "consensus": consensus_metadata(),
+        });
+        let payload = frontier_payload(vec![entry]);
+        let encoded = encoded_with_payload_before_sync_type("dag_frontier", &payload, "peer-v2");
+        let error = decode_network_message_with_protocol_sync_for_peer_v1(&encoded, "peer-v2")
+            .unwrap_err();
+        assert!(matches!(error, ProtocolSyncCarrierErrorV1::Json(_)));
+        assert!(format!("{error:?}").contains(&MAX_DAG_FRONTIER_PARENTS.to_string()));
     }
 
     #[test]
