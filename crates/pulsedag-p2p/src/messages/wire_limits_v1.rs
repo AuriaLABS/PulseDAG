@@ -6,7 +6,7 @@ use serde::de::{Error as _, IgnoredAny, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use super::dag_sync_v2::MAX_SELECTED_CHAIN_LOCATOR_HASHES;
-use super::{BlockHeaderAnnouncement, HeaderInventory};
+use super::HeaderInventory;
 use crate::{MAX_INV_BLOCK_HASHES, MAX_INV_BLOCK_REQUEST_FANOUT};
 
 /// Public wire view of the live inventory budget. The value is deliberately
@@ -82,14 +82,18 @@ where
     deserializer.deserialize_seq(BoundedVecVisitor::<T>::new(maximum, field))
 }
 
-pub(super) fn deserialize_inventory_hashes<'de, D>(deserializer: D) -> Result<Vec<Hash>, D::Error>
+fn deserialize_inventory_hashes<'de, D>(deserializer: D) -> Result<Vec<Hash>, D::Error>
 where
     D: Deserializer<'de>,
 {
-    deserialize_bounded_vec(deserializer, MAX_INV_BLOCK_HASHES, "network inventory hashes")
+    deserialize_bounded_vec(
+        deserializer,
+        MAX_INV_BLOCK_HASHES,
+        "network inventory hashes",
+    )
 }
 
-pub(super) fn deserialize_locator_hashes<'de, D>(deserializer: D) -> Result<Vec<Hash>, D::Error>
+fn deserialize_locator_hashes<'de, D>(deserializer: D) -> Result<Vec<Hash>, D::Error>
 where
     D: Deserializer<'de>,
 {
@@ -100,7 +104,7 @@ where
     )
 }
 
-pub(super) fn deserialize_header_inventory<'de, D>(
+fn deserialize_header_inventory<'de, D>(
     deserializer: D,
 ) -> Result<Vec<HeaderInventory>, D::Error>
 where
@@ -109,31 +113,7 @@ where
     deserialize_bounded_vec(deserializer, MAX_INV_BLOCK_HASHES, "Headers.headers")
 }
 
-pub(super) fn deserialize_request_hashes<'de, D>(deserializer: D) -> Result<Vec<Hash>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    deserialize_bounded_vec(
-        deserializer,
-        MAX_INV_BLOCK_REQUEST_FANOUT,
-        "GetBlockHeaders.hashes",
-    )
-}
-
-pub(super) fn deserialize_block_header_announcements<'de, D>(
-    deserializer: D,
-) -> Result<Vec<BlockHeaderAnnouncement>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    deserialize_bounded_vec(
-        deserializer,
-        MAX_INV_BLOCK_REQUEST_FANOUT,
-        "BlockHeaders.headers",
-    )
-}
-
-pub(super) fn deserialize_response_limit<'de, D>(deserializer: D) -> Result<usize, D::Error>
+fn deserialize_response_limit<'de, D>(deserializer: D) -> Result<usize, D::Error>
 where
     D: Deserializer<'de>,
 {
@@ -146,15 +126,50 @@ where
     Ok(limit)
 }
 
+pub(super) fn deserialize_optional_inventory_hashes<'de, D>(
+    deserializer: D,
+) -> Result<Option<Vec<Hash>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserialize_inventory_hashes(deserializer).map(Some)
+}
+
+pub(super) fn deserialize_optional_locator_hashes<'de, D>(
+    deserializer: D,
+) -> Result<Option<Vec<Hash>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserialize_locator_hashes(deserializer).map(Some)
+}
+
+pub(super) fn deserialize_optional_header_inventory<'de, D>(
+    deserializer: D,
+) -> Result<Option<Vec<HeaderInventory>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserialize_header_inventory(deserializer).map(Some)
+}
+
+pub(super) fn deserialize_optional_response_limit<'de, D>(
+    deserializer: D,
+) -> Result<Option<usize>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserialize_response_limit(deserializer).map(Some)
+}
+
+/// Keep outbound `Tips` serialization byte-shape compatible with the existing
+/// protocol. Resource limits in this slice are inbound admission limits; live
+/// sender-side budgets remain enforced by the runtime.
 pub(super) fn serialize_bounded_tips<S>(tips: &[Hash], serializer: S) -> Result<S::Ok, S::Error>
 where
     S: Serializer,
 {
-    let mut bounded = tips.to_vec();
-    bounded.sort();
-    bounded.dedup();
-    bounded.truncate(MAX_INV_BLOCK_HASHES);
-    bounded.serialize(serializer)
+    tips.serialize(serializer)
 }
 
 #[cfg(test)]
@@ -162,7 +177,7 @@ mod tests {
     use pulsedag_core::types::BlockHeader;
 
     use super::*;
-    use crate::messages::{NetworkMessage, TipInventoryStatus};
+    use crate::messages::{BlockHeaderAnnouncement, NetworkMessage};
 
     fn header() -> BlockHeader {
         BlockHeader {
@@ -246,41 +261,20 @@ mod tests {
     }
 
     #[test]
-    fn outbound_tips_are_deterministically_capped_before_wire_decode() {
-        let mut tips = (0..MAX_INV_BLOCK_HASHES + 10)
-            .rev()
-            .map(|index| format!("tip-{index:04}"))
-            .collect::<Vec<_>>();
-        tips.push("tip-0000".into());
-        let inventory = TipInventoryStatus {
+    fn outbound_tips_serialization_preserves_order_and_duplicates() {
+        let tips = vec!["tip-z".to_string(), "tip-a".to_string(), "tip-a".to_string()];
+        let value = serde_json::to_value(NetworkMessage::Tips {
             chain_id: "testnet".into(),
-            selected_tip: Some("selected".into()),
-            selected_height: Some(10),
-            selected_blue_score: Some(10),
-            ordered_dag_tip: Some("selected".into()),
-            state_root_digest: Some("state".into()),
-            observed_at_unix: 1,
-            inventory_generation: 1,
-        };
-        let encoded = serde_json::to_vec(&NetworkMessage::Tips {
-            chain_id: "testnet".into(),
-            tips,
-            inventory: Some(inventory.clone()),
+            tips: tips.clone(),
+            inventory: None,
         })
         .expect("tips serialize");
-        let decoded = serde_json::from_slice::<NetworkMessage>(&encoded).expect("bounded tips decode");
-        match decoded {
-            NetworkMessage::Tips {
-                tips,
-                inventory: Some(observed),
-                ..
-            } => {
-                assert_eq!(tips.len(), MAX_INV_BLOCK_HASHES);
-                assert_eq!(tips.first().map(String::as_str), Some("tip-0000"));
-                assert_eq!(tips.last().map(String::as_str), Some("tip-0511"));
-                assert_eq!(observed, inventory);
-            }
-            other => panic!("unexpected decoded message: {other:?}"),
-        }
+        let observed = value["tips"]
+            .as_array()
+            .expect("tips remain an array")
+            .iter()
+            .map(|value| value.as_str().expect("tip string").to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(observed, tips);
     }
 }
