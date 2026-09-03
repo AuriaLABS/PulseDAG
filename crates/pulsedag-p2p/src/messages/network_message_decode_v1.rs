@@ -7,8 +7,8 @@ use serde::{Deserialize, Deserializer};
 use serde_json::value::RawValue;
 
 use super::{
-    dag_sync_v2::MAX_SELECTED_CHAIN_LOCATOR_HASHES, BlockHeaderAnnouncement, HeaderInventory,
-    NetworkMessage, P2P_WIRE_MAX_INVENTORY_ITEMS_V1, P2P_WIRE_MAX_REQUEST_ITEMS_V1,
+    BlockHeaderAnnouncement, HeaderInventory, NetworkMessage, P2P_WIRE_MAX_INVENTORY_ITEMS_V1,
+    P2P_WIRE_MAX_REQUEST_ITEMS_V1,
 };
 
 #[derive(Debug, Clone, Copy, Deserialize)]
