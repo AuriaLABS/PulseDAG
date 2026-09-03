@@ -8,9 +8,9 @@ use serde_json::{value::RawValue, Value};
 
 use super::{
     DagFrontierEntryV1, DagFrontierResponseV1, NetworkMessage, ProtocolCapabilityHandshakeV1,
-    ProtocolSyncWireError, ProtocolSyncWireV1, SelectedChainLocatorV1,
-    MAX_DAG_FRONTIER_ENTRIES, MAX_DAG_FRONTIER_PARENTS, MAX_DAG_FRONTIER_REQUIRED_CONTEXT,
-    MAX_SELECTED_CHAIN_LOCATOR_HASHES, MAX_SELECTED_CHAIN_SUFFIX_HASHES,
+    ProtocolSyncWireError, ProtocolSyncWireV1, SelectedChainLocatorV1, MAX_DAG_FRONTIER_ENTRIES,
+    MAX_DAG_FRONTIER_PARENTS, MAX_DAG_FRONTIER_REQUIRED_CONTEXT, MAX_SELECTED_CHAIN_LOCATOR_HASHES,
+    MAX_SELECTED_CHAIN_SUFFIX_HASHES,
 };
 
 pub const PROTOCOL_SYNC_EXTENSION_FIELD_V1: &str = "pulsedag_protocol_sync_v1";
@@ -200,7 +200,10 @@ struct ProtocolSyncTargetExtensionWireV1 {
     protocol_sync: Option<ProtocolSyncTargetV1>,
 }
 
-fn parse_sync_payload<T>(raw: &RawValue, field: &'static str) -> Result<T, ProtocolSyncCarrierErrorV1>
+fn parse_sync_payload<T>(
+    raw: &RawValue,
+    field: &'static str,
+) -> Result<T, ProtocolSyncCarrierErrorV1>
 where
     T: DeserializeOwned,
 {
@@ -541,8 +544,8 @@ mod tests {
         );
         let encoded =
             encoded_with_payload_before_sync_type("selected_chain_locator", &payload, "peer-v2");
-        let error = decode_network_message_with_protocol_sync_for_peer_v1(&encoded, "peer-v2")
-            .unwrap_err();
+        let error =
+            decode_network_message_with_protocol_sync_for_peer_v1(&encoded, "peer-v2").unwrap_err();
         assert!(matches!(error, ProtocolSyncCarrierErrorV1::Json(_)));
         assert!(format!("{error:?}").contains(&MAX_SELECTED_CHAIN_LOCATOR_HASHES.to_string()));
     }
@@ -556,8 +559,8 @@ mod tests {
         });
         let payload = frontier_payload(vec![entry; MAX_DAG_FRONTIER_ENTRIES + 1]);
         let encoded = encoded_with_payload_before_sync_type("dag_frontier", &payload, "peer-v2");
-        let error = decode_network_message_with_protocol_sync_for_peer_v1(&encoded, "peer-v2")
-            .unwrap_err();
+        let error =
+            decode_network_message_with_protocol_sync_for_peer_v1(&encoded, "peer-v2").unwrap_err();
         assert!(matches!(error, ProtocolSyncCarrierErrorV1::Json(_)));
         assert!(format!("{error:?}").contains(&MAX_DAG_FRONTIER_ENTRIES.to_string()));
     }
@@ -573,8 +576,8 @@ mod tests {
         });
         let payload = frontier_payload(vec![entry]);
         let encoded = encoded_with_payload_before_sync_type("dag_frontier", &payload, "peer-v2");
-        let error = decode_network_message_with_protocol_sync_for_peer_v1(&encoded, "peer-v2")
-            .unwrap_err();
+        let error =
+            decode_network_message_with_protocol_sync_for_peer_v1(&encoded, "peer-v2").unwrap_err();
         assert!(matches!(error, ProtocolSyncCarrierErrorV1::Json(_)));
         assert!(format!("{error:?}").contains(&MAX_DAG_FRONTIER_PARENTS.to_string()));
     }
