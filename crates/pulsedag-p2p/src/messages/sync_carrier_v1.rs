@@ -5,13 +5,13 @@ use pulsedag_core::{
     types::Hash, BlockConsensusMetadataV1, ProtocolActivationIdentity,
     GHOSTDAG_V1_MAX_MERGE_SET_BLOCKS,
 };
-use serde::de::{self, IgnoredAny, SeqAccess, Visitor};
+use serde::de::{self, DeserializeSeed, IgnoredAny, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{value::RawValue, Value};
 
 use super::{
-    DagFrontierEntryV1, DagFrontierResponseV1, NetworkMessage, ProtocolCapabilityHandshakeV1,
-    ProtocolSyncWireError, ProtocolSyncWireV1, SelectedChainLocatorV1, MAX_DAG_FRONTIER_ENTRIES,
+    DagFrontierEntryV1, DagFrontierResponseV1, NetworkMessage, ProtocolSyncWireError,
+    ProtocolSyncWireV1, SelectedChainLocatorV1, MAX_DAG_FRONTIER_ENTRIES,
     MAX_DAG_FRONTIER_PARENTS, MAX_DAG_FRONTIER_REQUIRED_CONTEXT, MAX_SELECTED_CHAIN_LOCATOR_HASHES,
     MAX_SELECTED_CHAIN_SUFFIX_HASHES,
 };
@@ -99,6 +99,92 @@ where
     }
 }
 
+struct BoundedSyncVecSeed<T> {
+    maximum: usize,
+    marker: PhantomData<T>,
+}
+
+impl<T> BoundedSyncVecSeed<T> {
+    fn new(maximum: usize) -> Self {
+        Self {
+            maximum,
+            marker: PhantomData,
+        }
+    }
+}
+
+struct BoundedSyncVecDynamicVisitor<T> {
+    maximum: usize,
+    marker: PhantomData<T>,
+}
+
+impl<'de, T> Visitor<'de> for BoundedSyncVecDynamicVisitor<T>
+where
+    T: Deserialize<'de>,
+{
+    type Value = Vec<T>;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "a sequence with at most {} items",
+            self.maximum
+        )
+    }
+
+    fn visit_seq<A>(self, mut sequence: A) -> Result<Self::Value, A::Error>
+    where
+        A: SeqAccess<'de>,
+    {
+        let capacity = sequence.size_hint().unwrap_or(0).min(self.maximum);
+        let mut values = Vec::with_capacity(capacity);
+        while values.len() < self.maximum {
+            match sequence.next_element::<T>()? {
+                Some(value) => values.push(value),
+                None => return Ok(values),
+            }
+        }
+
+        if sequence.next_element::<IgnoredAny>()?.is_some() {
+            return Err(de::Error::custom(format!(
+                "sequence exceeds maximum item count {}",
+                self.maximum
+            )));
+        }
+        Ok(values)
+    }
+}
+
+impl<'de, T> DeserializeSeed<'de> for BoundedSyncVecSeed<T>
+where
+    T: Deserialize<'de>,
+{
+    type Value = Vec<T>;
+
+    fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_seq(BoundedSyncVecDynamicVisitor::<T> {
+            maximum: self.maximum,
+            marker: PhantomData,
+        })
+    }
+}
+
+fn decode_bounded_sync_vec_from_raw<'de, T>(
+    raw: &'de RawValue,
+    maximum: usize,
+) -> Result<Vec<T>, serde_json::Error>
+where
+    T: Deserialize<'de>,
+{
+    let mut deserializer = serde_json::Deserializer::from_str(raw.get());
+    let values = BoundedSyncVecSeed::<T>::new(maximum).deserialize(&mut deserializer)?;
+    deserializer.end()?;
+    Ok(values)
+}
+
 #[derive(Debug, Deserialize)]
 struct ProtocolSyncExtensionRawV1<'a> {
     #[serde(default, borrow, rename = "pulsedag_protocol_sync_v1")]
@@ -147,12 +233,52 @@ impl From<SelectedChainLocatorDecodeV1> for SelectedChainLocatorV1 {
 }
 
 #[derive(Debug, Deserialize)]
+struct BlockConsensusMetadataRawV1<'a> {
+    selected_parent: Option<Hash>,
+    blue_score: u64,
+    blue_work_decimal: String,
+    #[serde(borrow)]
+    merge_set_blues: &'a RawValue,
+    #[serde(borrow)]
+    merge_set_reds: &'a RawValue,
+}
+
+#[derive(Debug)]
 struct BlockConsensusMetadataDecodeV1 {
     selected_parent: Option<Hash>,
     blue_score: u64,
     blue_work_decimal: String,
-    merge_set_blues: BoundedSyncVec<Hash, GHOSTDAG_V1_MAX_MERGE_SET_BLOCKS>,
-    merge_set_reds: BoundedSyncVec<Hash, GHOSTDAG_V1_MAX_MERGE_SET_BLOCKS>,
+    merge_set_blues: Vec<Hash>,
+    merge_set_reds: Vec<Hash>,
+}
+
+impl<'de> Deserialize<'de> for BlockConsensusMetadataDecodeV1 {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let raw = BlockConsensusMetadataRawV1::deserialize(deserializer)?;
+        let merge_set_blues = decode_bounded_sync_vec_from_raw::<Hash>(
+            raw.merge_set_blues,
+            GHOSTDAG_V1_MAX_MERGE_SET_BLOCKS,
+        )
+        .map_err(de::Error::custom)?;
+        let remaining = GHOSTDAG_V1_MAX_MERGE_SET_BLOCKS - merge_set_blues.len();
+        let merge_set_reds = decode_bounded_sync_vec_from_raw::<Hash>(raw.merge_set_reds, remaining)
+            .map_err(|error| {
+                de::Error::custom(format!(
+                    "merge_set_reds exceeds remaining shared GHOSTDAG merge-set budget {remaining}: {error}"
+                ))
+            })?;
+
+        Ok(Self {
+            selected_parent: raw.selected_parent,
+            blue_score: raw.blue_score,
+            blue_work_decimal: raw.blue_work_decimal,
+            merge_set_blues,
+            merge_set_reds,
+        })
+    }
 }
 
 impl From<BlockConsensusMetadataDecodeV1> for BlockConsensusMetadataV1 {
@@ -161,8 +287,8 @@ impl From<BlockConsensusMetadataDecodeV1> for BlockConsensusMetadataV1 {
             selected_parent: value.selected_parent,
             blue_score: value.blue_score,
             blue_work_decimal: value.blue_work_decimal,
-            merge_set_blues: value.merge_set_blues.0,
-            merge_set_reds: value.merge_set_reds.0,
+            merge_set_blues: value.merge_set_blues,
+            merge_set_reds: value.merge_set_reds,
         }
     }
 }
@@ -242,9 +368,11 @@ fn decode_protocol_sync_wire_v1(
 ) -> Result<ProtocolSyncWireV1, ProtocolSyncCarrierErrorV1> {
     let wire: ProtocolSyncWireRawV1<'_> = parse_sync_payload(raw, "wire")?;
     match wire.sync_type {
-        ProtocolSyncKindV1::CapabilityHandshake => Ok(ProtocolSyncWireV1::CapabilityHandshake(
-            parse_sync_payload::<ProtocolCapabilityHandshakeV1>(wire.payload, "handshake payload")?,
-        )),
+        ProtocolSyncKindV1::CapabilityHandshake => {
+            Err(ProtocolSyncCarrierErrorV1::UnsupportedProtocolSyncKind {
+                kind: "CapabilityHandshake".to_string(),
+            })
+        }
         ProtocolSyncKindV1::SelectedChainLocator => {
             let locator = parse_sync_payload::<SelectedChainLocatorDecodeV1>(
                 wire.payload,
@@ -649,6 +777,48 @@ mod tests {
             decode_network_message_with_protocol_sync_for_peer_v1(&encoded, "peer-v2").unwrap_err();
         assert!(matches!(error, ProtocolSyncCarrierErrorV1::Json(_)));
         assert!(format!("{error:?}").contains(&GHOSTDAG_V1_MAX_MERGE_SET_BLOCKS.to_string()));
+    }
+
+    #[test]
+    fn combined_targeted_merge_sets_share_one_decode_budget() {
+        let mut consensus =
+            serde_json::to_value(consensus_metadata()).expect("serialize consensus metadata");
+        consensus["merge_set_blues"] = Value::Array(
+            (0..GHOSTDAG_V1_MAX_MERGE_SET_BLOCKS)
+                .map(|index| Value::String(format!("blue-{index}")))
+                .collect(),
+        );
+        consensus["merge_set_reds"] =
+            Value::Array(vec![Value::String("red-over-shared-budget".to_string())]);
+        let entry = serde_json::json!({
+            "hash": "frontier",
+            "parents": [],
+            "consensus": consensus,
+        });
+        let payload = frontier_payload(vec![entry]);
+        let encoded = encoded_with_payload_before_sync_type("dag_frontier", &payload, "peer-v2");
+        let error =
+            decode_network_message_with_protocol_sync_for_peer_v1(&encoded, "peer-v2").unwrap_err();
+        assert!(matches!(error, ProtocolSyncCarrierErrorV1::Json(_)));
+        assert!(format!("{error:?}").contains("remaining shared GHOSTDAG merge-set budget 0"));
+    }
+
+    #[test]
+    fn targeted_capability_handshake_is_rejected_before_payload_decode() {
+        let payload = serde_json::json!({
+            "invalid_handshake_payload": (0..=GHOSTDAG_V1_MAX_MERGE_SET_BLOCKS)
+                .map(|index| format!("padding-{index}"))
+                .collect::<Vec<_>>(),
+        });
+        let encoded =
+            encoded_with_payload_before_sync_type("capability_handshake", &payload, "peer-v2");
+        let error =
+            decode_network_message_with_protocol_sync_for_peer_v1(&encoded, "peer-v2").unwrap_err();
+        assert!(matches!(
+            error,
+            ProtocolSyncCarrierErrorV1::UnsupportedProtocolSyncKind { kind }
+                if kind == "CapabilityHandshake"
+        ));
     }
 
     #[test]
