@@ -13,13 +13,13 @@ use std::{
 
 use pulsedag_core::types::Utxo;
 use pulsedag_wallet::{
-    build_deterministic_transaction_plan, derive_wallet_key_from_seed, encrypt_wallet_seed,
-    wallet_seed_from_mnemonic, SecretString, WalletDerivationBranch, WalletKeystoreFile,
-    WalletNetworkContext, WalletNetworkIdentity, WalletNoncePolicy, WalletPlanSigner,
-    WalletPlanSigningSessionExt, WalletReviewSummary, WalletSession, WalletSpendPolicy,
-    WalletTransactionIntent, WalletTransactionPlan, WalletUnlockPolicy, WalletWatchOnly,
-    WalletWatchOnlyBranch, WalletWatchOnlyManifest, WalletWatchOnlyScope,
-    WalletWatchOnlySessionExt,
+    build_deterministic_transaction_plan, build_deterministic_transaction_plan_with_safety,
+    derive_wallet_key_from_seed, encrypt_wallet_seed, wallet_seed_from_mnemonic, SecretString,
+    WalletDerivationBranch, WalletKeystoreFile, WalletNetworkContext, WalletNetworkIdentity,
+    WalletNoncePolicy, WalletPlanSigner, WalletPlanSigningSessionExt, WalletReviewSummary,
+    WalletSafetyAcknowledgements, WalletSession, WalletSpendPolicy, WalletTransactionIntent,
+    WalletTransactionPlan, WalletUnlockPolicy, WalletWatchOnly, WalletWatchOnlyBranch,
+    WalletWatchOnlyManifest, WalletWatchOnlyScope, WalletWatchOnlySessionExt,
 };
 use pulsedag_wallet_relay::{
     broadcast_signed, fetch_address_balance, fetch_address_utxos, parse_signed_broadcast,
@@ -94,6 +94,8 @@ struct TxPreviewArgs {
     max_fee: u64,
     max_fee_bps: u32,
     max_inputs: usize,
+    ack_self_send: bool,
+    ack_spend_all: bool,
     account: u32,
     branch: WalletDerivationBranch,
     index: u32,
@@ -224,6 +226,14 @@ fn parse_usize(name: &str, value: &str) -> CliResult<usize> {
     value
         .parse::<usize>()
         .map_err(|_| invalid_input(format!("{name} must be a non-negative integer")).into())
+}
+
+fn parse_explicit_bool(name: &str, value: &str) -> CliResult<bool> {
+    match value {
+        "true" => Ok(true),
+        "false" => Ok(false),
+        _ => Err(invalid_input(format!("{name} must be true or false")).into()),
+    }
 }
 
 fn required(flags: &HashMap<String, String>, name: &str) -> CliResult<String> {
@@ -364,6 +374,8 @@ fn parse_command_from(args: impl Iterator<Item = String>) -> CliResult<Command> 
                     "max-fee",
                     "max-fee-bps",
                     "max-inputs",
+                    "ack-self-send",
+                    "ack-spend-all",
                     "account",
                     "branch",
                     "index",
@@ -380,6 +392,14 @@ fn parse_command_from(args: impl Iterator<Item = String>) -> CliResult<Command> 
                 max_fee: parse_u64("--max-fee", &required(&flags, "max-fee")?)?,
                 max_fee_bps: parse_u32("--max-fee-bps", &required(&flags, "max-fee-bps")?)?,
                 max_inputs: parse_usize("--max-inputs", &required(&flags, "max-inputs")?)?,
+                ack_self_send: parse_explicit_bool(
+                    "--ack-self-send",
+                    &required(&flags, "ack-self-send")?,
+                )?,
+                ack_spend_all: parse_explicit_bool(
+                    "--ack-spend-all",
+                    &required(&flags, "ack-spend-all")?,
+                )?,
                 account: parse_u32("--account", &required(&flags, "account")?)?,
                 branch: parse_branch(&required(&flags, "branch")?)?,
                 index: parse_u32("--index", &required(&flags, "index")?)?,
@@ -699,11 +719,14 @@ fn run_tx_preview(args: TxPreviewArgs, password: &SecretString) -> CliResult<TxP
     let available_utxos = load_address_utxos(&args.utxos_file, &signer_address)?;
     let intent = WalletTransactionIntent::new(&signer_address, args.to, args.amount, args.fee)?;
     let spend_policy = WalletSpendPolicy::new(args.max_fee, args.max_fee_bps, args.max_inputs)?;
-    let plan = build_deterministic_transaction_plan(
+    let safety_acknowledgements =
+        WalletSafetyAcknowledgements::new(args.ack_self_send, args.ack_spend_all);
+    let plan = build_deterministic_transaction_plan_with_safety(
         expected_network,
         spend_policy,
         intent,
         &available_utxos,
+        safety_acknowledgements,
     )?;
     let review = plan.review_summary()?;
     Ok(TxPreviewOutput { review, plan })
@@ -907,6 +930,10 @@ mod tests {
                 "1000",
                 "--max-inputs",
                 "8",
+                "--ack-self-send",
+                "true",
+                "--ack-spend-all",
+                "false",
                 "--account",
                 "0",
                 "--branch",
@@ -915,7 +942,11 @@ mod tests {
                 "0"
             ]))
             .unwrap(),
-            Command::TxPreview(_)
+            Command::TxPreview(TxPreviewArgs {
+                ack_self_send: true,
+                ack_spend_all: false,
+                ..
+            })
         ));
         assert!(matches!(
             parse_command_from(args(&[
@@ -945,6 +976,80 @@ mod tests {
             .unwrap(),
             Command::TxBroadcast(_)
         ));
+    }
+
+    #[test]
+    fn tx_preview_acknowledgements_are_strict_and_tx_sign_has_no_overrides() {
+        let preview = [
+            "tx-preview",
+            "--keystore",
+            "wallet.json",
+            "--utxos-file",
+            "utxos.json",
+            "--network-profile",
+            "public-testnet",
+            "--chain-id",
+            "pulsedag-public-testnet",
+            "--to",
+            "pulse1recipient",
+            "--amount",
+            "400",
+            "--fee",
+            "10",
+            "--max-fee",
+            "100",
+            "--max-fee-bps",
+            "1000",
+            "--max-inputs",
+            "8",
+            "--account",
+            "0",
+            "--branch",
+            "receive",
+            "--index",
+            "0",
+        ];
+
+        let mut missing = preview.to_vec();
+        missing.extend(["--ack-self-send", "false"]);
+        assert!(parse_command_from(args(&missing)).is_err());
+
+        let mut invalid = preview.to_vec();
+        invalid.extend([
+            "--ack-self-send",
+            "yes",
+            "--ack-spend-all",
+            "false",
+        ]);
+        assert!(parse_command_from(args(&invalid)).is_err());
+
+        let mut duplicate = preview.to_vec();
+        duplicate.extend([
+            "--ack-self-send",
+            "false",
+            "--ack-self-send",
+            "true",
+            "--ack-spend-all",
+            "false",
+        ]);
+        assert!(parse_command_from(args(&duplicate)).is_err());
+
+        assert!(parse_command_from(args(&[
+            "tx-sign",
+            "--keystore",
+            "wallet.json",
+            "--plan",
+            "plan.json",
+            "--account",
+            "0",
+            "--branch",
+            "receive",
+            "--index",
+            "0",
+            "--ack-spend-all",
+            "true"
+        ]))
+        .is_err());
     }
 
     #[test]
