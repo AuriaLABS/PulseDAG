@@ -4,7 +4,7 @@ use serde::{Deserialize, Deserializer};
 
 use super::{
     BlockHeaderAnnouncement, HeaderInventory, NetworkMessage, TipInventoryStatus,
-    P2P_WIRE_MAX_INVENTORY_ITEMS_V1, P2P_WIRE_MAX_REQUEST_ITEMS_V1,
+    P2P_WIRE_MAX_REQUEST_ITEMS_V1,
 };
 
 #[derive(Debug, Clone, Copy, Deserialize)]
@@ -218,6 +218,7 @@ impl<'de> Deserialize<'de> for NetworkMessage {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::messages::P2P_WIRE_MAX_INVENTORY_ITEMS_V1;
 
     #[test]
     fn field_order_and_unknown_extensions_preserve_legacy_decode() {
