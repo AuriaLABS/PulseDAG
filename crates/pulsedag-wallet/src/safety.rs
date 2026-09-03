@@ -1,6 +1,7 @@
-use std::collections::HashSet;
-
-use pulsedag_core::{errors::PulseError, types::Utxo};
+use pulsedag_core::{
+    errors::PulseError,
+    types::{OutPoint, Utxo},
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -33,13 +34,23 @@ impl WalletSafetyAcknowledgements {
     }
 }
 
-/// Compact, deterministic description of the complete UTXO set that was
-/// available when a transaction plan was built. The commitment is review and
-/// audit evidence; the count/amount fields let an offline signer distinguish a
-/// genuine spend-all plan from an ordinary zero-change selection.
+/// One canonical entry in the complete funding set that was reviewed while a
+/// transaction plan was built. Keeping the entries in the plan lets an offline
+/// signer recompute the snapshot summary instead of trusting mutable metadata.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct WalletFundingEntry {
+    pub outpoint: OutPoint,
+    pub amount: u64,
+}
+
+/// Deterministic, self-verifying description of the complete UTXO set that was
+/// available when a transaction plan was built. The entries are review metadata
+/// only: they are not added to transaction canonicalization or signing bytes.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct WalletFundingSnapshot {
+    pub entries: Vec<WalletFundingEntry>,
     pub utxo_count: usize,
     pub total_amount: u64,
     pub commitment_hex: String,
@@ -47,43 +58,81 @@ pub struct WalletFundingSnapshot {
 
 impl WalletFundingSnapshot {
     pub fn from_utxos(utxos: &[Utxo]) -> Result<Self, PulseError> {
-        let mut ordered = utxos.iter().collect::<Vec<_>>();
-        ordered.sort_by(|left, right| {
-            left.outpoint
-                .txid
-                .cmp(&right.outpoint.txid)
-                .then_with(|| left.outpoint.index.cmp(&right.outpoint.index))
-                .then_with(|| left.amount.cmp(&right.amount))
-        });
+        let entries = utxos
+            .iter()
+            .map(|utxo| WalletFundingEntry {
+                outpoint: utxo.outpoint.clone(),
+                amount: utxo.amount,
+            })
+            .collect::<Vec<_>>();
+        Self::from_entries(entries)
+    }
 
-        let mut seen = HashSet::with_capacity(ordered.len());
-        let mut total_amount = 0_u64;
-        let mut hasher = Sha256::new();
-        hasher.update(WALLET_FUNDING_SNAPSHOT_DOMAIN_V1.as_bytes());
-        hasher.update((ordered.len() as u64).to_be_bytes());
+    fn from_entries(mut entries: Vec<WalletFundingEntry>) -> Result<Self, PulseError> {
+        sort_entries(&mut entries);
+        validate_unique_outpoints(&entries)?;
+        let (total_amount, commitment_hex) = summarize_entries(&entries)?;
+        Ok(Self {
+            utxo_count: entries.len(),
+            entries,
+            total_amount,
+            commitment_hex,
+        })
+    }
 
-        for utxo in ordered {
-            if !seen.insert((utxo.outpoint.txid.as_str(), utxo.outpoint.index)) {
+    pub fn validate_integrity(&self) -> Result<(), PulseError> {
+        let mut canonical = self.entries.clone();
+        sort_entries(&mut canonical);
+        if canonical != self.entries {
+            return Err(PulseError::InvalidTransaction(
+                "wallet funding snapshot entries are not in canonical order".into(),
+            ));
+        }
+        validate_unique_outpoints(&canonical)?;
+        let (expected_total, expected_commitment) = summarize_entries(&canonical)?;
+        if self.utxo_count != canonical.len() {
+            return Err(PulseError::InvalidTransaction(
+                "wallet funding snapshot count does not match entries".into(),
+            ));
+        }
+        if self.total_amount != expected_total {
+            return Err(PulseError::InvalidTransaction(
+                "wallet funding snapshot total does not match entries".into(),
+            ));
+        }
+        if self.commitment_hex != expected_commitment {
+            return Err(PulseError::InvalidTransaction(
+                "wallet funding snapshot commitment does not match entries".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn validate_selection(
+        &self,
+        selected_utxos: &[SelectedUtxo],
+        total_input: u64,
+    ) -> Result<(), PulseError> {
+        self.validate_integrity()?;
+        let selected = canonical_selected_entries(selected_utxos)?;
+        let selected_total = selected.iter().try_fold(0_u64, |total, entry| {
+            total.checked_add(entry.amount).ok_or_else(|| {
+                PulseError::InvalidTransaction("wallet selected input amount overflow".into())
+            })
+        })?;
+        if selected_total != total_input {
+            return Err(PulseError::InvalidTransaction(
+                "wallet selected input total does not match plan".into(),
+            ));
+        }
+        for entry in &selected {
+            if !self.entries.iter().any(|funding| funding == entry) {
                 return Err(PulseError::InvalidTransaction(
-                    "duplicate UTXO outpoint in wallet funding snapshot".into(),
+                    "wallet plan selects an input absent from its funding snapshot".into(),
                 ));
             }
-            total_amount = total_amount.checked_add(utxo.amount).ok_or_else(|| {
-                PulseError::InvalidTransaction("wallet funding snapshot amount overflow".into())
-            })?;
-
-            let txid = utxo.outpoint.txid.as_bytes();
-            hasher.update((txid.len() as u64).to_be_bytes());
-            hasher.update(txid);
-            hasher.update(utxo.outpoint.index.to_be_bytes());
-            hasher.update(utxo.amount.to_be_bytes());
         }
-
-        Ok(Self {
-            utxo_count: utxos.len(),
-            total_amount,
-            commitment_hex: hex::encode(hasher.finalize()),
-        })
+        Ok(())
     }
 
     pub fn is_spend_all(
@@ -91,38 +140,13 @@ impl WalletFundingSnapshot {
         selected_utxos: &[SelectedUtxo],
         total_input: u64,
         change: u64,
-    ) -> bool {
-        change == 0
-            && selected_utxos.len() == self.utxo_count
-            && total_input == self.total_amount
-    }
-
-    pub fn validate_shape(
-        &self,
-        selected_utxos: &[SelectedUtxo],
-        total_input: u64,
-    ) -> Result<(), PulseError> {
-        if selected_utxos.len() > self.utxo_count {
-            return Err(PulseError::InvalidTransaction(
-                "wallet plan selects more UTXOs than its funding snapshot".into(),
-            ));
+    ) -> Result<bool, PulseError> {
+        self.validate_selection(selected_utxos, total_input)?;
+        if change != 0 || total_input != self.total_amount {
+            return Ok(false);
         }
-        if total_input > self.total_amount {
-            return Err(PulseError::InvalidTransaction(
-                "wallet plan input total exceeds its funding snapshot".into(),
-            ));
-        }
-        if self.commitment_hex.len() != 64
-            || !self
-                .commitment_hex
-                .bytes()
-                .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
-        {
-            return Err(PulseError::InvalidTransaction(
-                "wallet funding snapshot commitment is not canonical lowercase sha256 hex".into(),
-            ));
-        }
-        Ok(())
+        let selected = canonical_selected_entries(selected_utxos)?;
+        Ok(selected == self.entries)
     }
 }
 
@@ -135,14 +159,14 @@ pub fn validate_wallet_safety_acknowledgements(
     total_input: u64,
     change: u64,
 ) -> Result<(), PulseError> {
-    snapshot.validate_shape(selected_utxos, total_input)?;
+    snapshot.validate_selection(selected_utxos, total_input)?;
 
     if from == to && !acknowledgements.self_send {
         return Err(PulseError::InvalidTransaction(
             "wallet self-send requires explicit acknowledgement".into(),
         ));
     }
-    if snapshot.is_spend_all(selected_utxos, total_input, change)
+    if snapshot.is_spend_all(selected_utxos, total_input, change)?
         && !acknowledgements.spend_all
     {
         return Err(PulseError::InvalidTransaction(
@@ -152,10 +176,64 @@ pub fn validate_wallet_safety_acknowledgements(
     Ok(())
 }
 
+fn canonical_selected_entries(
+    selected_utxos: &[SelectedUtxo],
+) -> Result<Vec<WalletFundingEntry>, PulseError> {
+    let mut entries = selected_utxos
+        .iter()
+        .map(|selected| WalletFundingEntry {
+            outpoint: selected.outpoint.clone(),
+            amount: selected.amount,
+        })
+        .collect::<Vec<_>>();
+    sort_entries(&mut entries);
+    validate_unique_outpoints(&entries)?;
+    Ok(entries)
+}
+
+fn sort_entries(entries: &mut [WalletFundingEntry]) {
+    entries.sort_by(|left, right| {
+        left.outpoint
+            .txid
+            .cmp(&right.outpoint.txid)
+            .then_with(|| left.outpoint.index.cmp(&right.outpoint.index))
+            .then_with(|| left.amount.cmp(&right.amount))
+    });
+}
+
+fn validate_unique_outpoints(entries: &[WalletFundingEntry]) -> Result<(), PulseError> {
+    for pair in entries.windows(2) {
+        if pair[0].outpoint == pair[1].outpoint {
+            return Err(PulseError::InvalidTransaction(
+                "duplicate UTXO outpoint in wallet funding snapshot".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn summarize_entries(entries: &[WalletFundingEntry]) -> Result<(u64, String), PulseError> {
+    let mut total_amount = 0_u64;
+    let mut hasher = Sha256::new();
+    hasher.update(WALLET_FUNDING_SNAPSHOT_DOMAIN_V1.as_bytes());
+    hasher.update((entries.len() as u64).to_be_bytes());
+
+    for entry in entries {
+        total_amount = total_amount.checked_add(entry.amount).ok_or_else(|| {
+            PulseError::InvalidTransaction("wallet funding snapshot amount overflow".into())
+        })?;
+        let txid = entry.outpoint.txid.as_bytes();
+        hasher.update((txid.len() as u64).to_be_bytes());
+        hasher.update(txid);
+        hasher.update(entry.outpoint.index.to_be_bytes());
+        hasher.update(entry.amount.to_be_bytes());
+    }
+
+    Ok((total_amount, hex::encode(hasher.finalize())))
+}
+
 #[cfg(test)]
 mod tests {
-    use pulsedag_core::types::OutPoint;
-
     use super::*;
 
     fn utxo(txid: &str, index: u32, amount: u64) -> Utxo {
@@ -182,13 +260,13 @@ mod tests {
     }
 
     #[test]
-    fn funding_snapshot_is_order_independent() {
+    fn funding_snapshot_is_order_independent_and_self_verifying() {
         let first = vec![utxo("b", 0, 4), utxo("a", 1, 7)];
         let second = vec![utxo("a", 1, 7), utxo("b", 0, 4)];
-        assert_eq!(
-            WalletFundingSnapshot::from_utxos(&first).unwrap(),
-            WalletFundingSnapshot::from_utxos(&second).unwrap()
-        );
+        let first = WalletFundingSnapshot::from_utxos(&first).unwrap();
+        let second = WalletFundingSnapshot::from_utxos(&second).unwrap();
+        assert_eq!(first, second);
+        assert!(first.validate_integrity().is_ok());
     }
 
     #[test]
@@ -198,16 +276,57 @@ mod tests {
     }
 
     #[test]
-    fn spend_all_requires_complete_snapshot_and_zero_change() {
+    fn snapshot_metadata_tampering_fails_integrity_validation() {
+        let original = WalletFundingSnapshot::from_utxos(&[
+            utxo("a", 0, 4),
+            utxo("b", 0, 6),
+        ])
+        .unwrap();
+
+        let mut count = original.clone();
+        count.utxo_count += 1;
+        assert!(count.validate_integrity().is_err());
+
+        let mut total = original.clone();
+        total.total_amount += 1;
+        assert!(total.validate_integrity().is_err());
+
+        let mut commitment = original.clone();
+        commitment.commitment_hex = "00".repeat(32);
+        assert!(commitment.validate_integrity().is_err());
+
+        let mut entry = original;
+        entry.entries[0].amount += 1;
+        assert!(entry.validate_integrity().is_err());
+    }
+
+    #[test]
+    fn selection_must_belong_to_snapshot_and_match_total() {
+        let snapshot = WalletFundingSnapshot::from_utxos(&[utxo("a", 0, 4)]).unwrap();
+        assert!(snapshot
+            .validate_selection(&[selected("a", 0, 4)], 4)
+            .is_ok());
+        assert!(snapshot
+            .validate_selection(&[selected("outside", 0, 4)], 4)
+            .is_err());
+        assert!(snapshot
+            .validate_selection(&[selected("a", 0, 4)], 5)
+            .is_err());
+    }
+
+    #[test]
+    fn spend_all_requires_exact_complete_snapshot_and_zero_change() {
         let snapshot = WalletFundingSnapshot::from_utxos(&[
             utxo("a", 0, 4),
             utxo("b", 0, 6),
         ])
         .unwrap();
-        let all = vec![selected("a", 0, 4), selected("b", 0, 6)];
-        assert!(snapshot.is_spend_all(&all, 10, 0));
-        assert!(!snapshot.is_spend_all(&all, 10, 1));
-        assert!(!snapshot.is_spend_all(&all[..1], 4, 0));
+        let all = vec![selected("b", 0, 6), selected("a", 0, 4)];
+        assert!(snapshot.is_spend_all(&all, 10, 0).unwrap());
+        assert!(!snapshot.is_spend_all(&all, 10, 1).unwrap());
+        assert!(!snapshot
+            .is_spend_all(&[selected("a", 0, 4)], 4, 0)
+            .unwrap());
     }
 
     #[test]
