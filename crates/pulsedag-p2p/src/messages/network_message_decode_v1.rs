@@ -344,7 +344,7 @@ mod tests {
 
     #[test]
     fn field_order_and_unknown_extensions_preserve_legacy_decode() {
-        let wire = br#"{\"chain_id\":\"testnet\",\"pulsedag_protocol_capabilities_v1\":{\"ignored\":true},\"hashes\":[\"a\"],\"type\":\"InvBlock\"}"#;
+        let wire = br#"{"chain_id":"testnet","pulsedag_protocol_capabilities_v1":{"ignored":true},"hashes":["a"],"type":"InvBlock"}"#;
         let decoded = serde_json::from_slice::<NetworkMessage>(wire).expect("decode legacy wire");
         match decoded {
             NetworkMessage::InvBlock { chain_id, hashes } => {
@@ -359,7 +359,7 @@ mod tests {
     fn colliding_variant_fields_are_ignored_until_type_is_selected() {
         let attacker_values = serde_json::to_string(&vec!["x"; 2_048]).expect("serialize values");
         let wire = format!(
-            r#"{{\"transaction\":{{\"attacker\":{attacker_values}}},\"block\":{{\"header\":{{\"version\":999999}}}},\"hashes\":[\"a\"],\"chain_id\":\"testnet\",\"type\":\"InvBlock\"}}"#
+            r#"{{"transaction":{{"attacker":{attacker_values}}},"block":{{"header":{{"version":999999}}}},"hashes":["a"],"chain_id":"testnet","type":"InvBlock"}}"#
         );
         let decoded = serde_json::from_str::<NetworkMessage>(&wire).expect("decode InvBlock");
         match decoded {
@@ -375,7 +375,7 @@ mod tests {
     fn oversized_inventory_is_rejected_even_when_it_precedes_type() {
         let hashes = serde_json::to_string(&vec!["a"; P2P_WIRE_MAX_INVENTORY_ITEMS_V1 + 1])
             .expect("serialize hashes");
-        let wire = format!(r#"{{\"hashes\":{hashes},\"chain_id\":\"testnet\",\"type\":\"InvBlock\"}}"#);
+        let wire = format!(r#"{{"hashes":{hashes},"chain_id":"testnet","type":"InvBlock"}}"#);
         let error = serde_json::from_str::<NetworkMessage>(&wire).unwrap_err();
         assert!(error.to_string().contains("network inventory hashes"));
         assert!(error
@@ -387,7 +387,7 @@ mod tests {
     fn inventory_budget_stays_at_512_when_type_is_last() {
         let hashes = serde_json::to_string(&vec!["a"; P2P_WIRE_MAX_INVENTORY_ITEMS_V1])
             .expect("serialize hashes");
-        let wire = format!(r#"{{\"hashes\":{hashes},\"chain_id\":\"testnet\",\"type\":\"InvBlock\"}}"#);
+        let wire = format!(r#"{{"hashes":{hashes},"chain_id":"testnet","type":"InvBlock"}}"#);
         assert!(serde_json::from_str::<NetworkMessage>(&wire).is_ok());
     }
 
@@ -396,7 +396,7 @@ mod tests {
         let hashes = serde_json::to_string(&vec!["a"; P2P_WIRE_MAX_REQUEST_ITEMS_V1 + 1])
             .expect("serialize hashes");
         let wire =
-            format!(r#"{{\"hashes\":{hashes},\"chain_id\":\"testnet\",\"type\":\"GetBlockHeaders\"}}"#);
+            format!(r#"{{"hashes":{hashes},"chain_id":"testnet","type":"GetBlockHeaders"}}"#);
         let error = serde_json::from_str::<NetworkMessage>(&wire).unwrap_err();
         assert!(error.to_string().contains("GetBlockHeaders.hashes"));
         assert!(error
@@ -421,7 +421,7 @@ mod tests {
             .map(|index| serde_json::json!({"hash": format!("header-{index}"), "header": header.clone()}))
             .collect::<Vec<_>>();
         let headers = serde_json::to_string(&announcements).expect("serialize headers");
-        let wire = format!(r#"{{\"headers\":{headers},\"chain_id\":\"testnet\",\"type\":\"BlockHeaders\"}}"#);
+        let wire = format!(r#"{{"headers":{headers},"chain_id":"testnet","type":"BlockHeaders"}}"#);
         let error = serde_json::from_str::<NetworkMessage>(&wire).unwrap_err();
         assert!(error.to_string().contains("BlockHeaders.headers"));
         assert!(error
