@@ -6,7 +6,6 @@ use serde::de::{Error as _, IgnoredAny, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use super::dag_sync_v2::MAX_SELECTED_CHAIN_LOCATOR_HASHES;
-use super::HeaderInventory;
 use crate::{MAX_INV_BLOCK_HASHES, MAX_INV_BLOCK_REQUEST_FANOUT};
 
 /// Public wire view of the live inventory budget. The value is deliberately
@@ -166,7 +165,7 @@ mod tests {
     use pulsedag_core::types::BlockHeader;
 
     use super::*;
-    use crate::messages::{BlockHeaderAnnouncement, NetworkMessage};
+    use crate::messages::{BlockHeaderAnnouncement, HeaderInventory, NetworkMessage};
 
     fn header() -> BlockHeader {
         BlockHeader {
