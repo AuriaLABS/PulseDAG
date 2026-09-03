@@ -77,21 +77,6 @@ where
     }
 }
 
-fn deserialize_supported_block<'de, D>(deserializer: D) -> Result<Block, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let block = Block::deserialize(deserializer)?;
-    if supported_header_version(block.header.version) {
-        Ok(block)
-    } else {
-        Err(serde::de::Error::custom(format!(
-            "unsupported block header version {}",
-            block.header.version
-        )))
-    }
-}
-
 fn deserialize_supported_optional_block<'de, D>(deserializer: D) -> Result<Option<Block>, D::Error>
 where
     D: Deserializer<'de>,
