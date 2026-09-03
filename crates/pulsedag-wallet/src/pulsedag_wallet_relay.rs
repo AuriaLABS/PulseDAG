@@ -633,8 +633,7 @@ mod tests {
                 funding_utxo_count: 1,
                 funding_total_amount: 410,
                 funding_snapshot_commitment_hex:
-                    "60ddbcbc5857a0f66bf7aeaecce2edacc2a1f46f9d7d443c305a997d01d15aea"
-                        .to_string(),
+                    "60ddbcbc5857a0f66bf7aeaecce2edacc2a1f46f9d7d443c305a997d01d15aea".to_string(),
             },
             final_txid: transaction.txid.clone(),
             relay: RelayEnvelope { transaction },
