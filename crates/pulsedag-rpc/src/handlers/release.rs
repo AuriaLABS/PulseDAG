@@ -121,6 +121,8 @@ fn release_core_endpoints() -> Vec<String> {
         "/blocks".into(),
         "/txs".into(),
         "/address/:address".into(),
+        "/address/:address/summary".into(),
+        "/address/:address/activity".into(),
         "/address/:address/utxos".into(),
         "/api/v1/tx/submit".into(),
         "/mine".into(),
@@ -265,6 +267,8 @@ mod tests {
         let release = include_str!("release.rs");
         assert!(release.contains("\"keyless_node\""));
         assert!(release.contains("\"signed_transaction_relay\""));
+        assert!(release.contains("\"/address/:address/summary\""));
+        assert!(release.contains("\"/address/:address/activity\""));
         assert!(release.contains("\"/api/v1/tx/submit\""));
         assert!(!release.contains("\"/tx/build\""));
         assert!(!release.contains("\"/tx/submit\""));
