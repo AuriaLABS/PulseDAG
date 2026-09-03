@@ -1015,12 +1015,7 @@ mod tests {
         assert!(parse_command_from(args(&missing)).is_err());
 
         let mut invalid = preview.to_vec();
-        invalid.extend([
-            "--ack-self-send",
-            "yes",
-            "--ack-spend-all",
-            "false",
-        ]);
+        invalid.extend(["--ack-self-send", "yes", "--ack-spend-all", "false"]);
         assert!(parse_command_from(args(&invalid)).is_err());
 
         let mut duplicate = preview.to_vec();
