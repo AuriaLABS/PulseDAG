@@ -104,9 +104,7 @@ where
     )
 }
 
-fn deserialize_header_inventory<'de, D>(
-    deserializer: D,
-) -> Result<Vec<HeaderInventory>, D::Error>
+fn deserialize_header_inventory<'de, D>(deserializer: D) -> Result<Vec<HeaderInventory>, D::Error>
 where
     D: Deserializer<'de>,
 {
@@ -262,7 +260,11 @@ mod tests {
 
     #[test]
     fn outbound_tips_serialization_preserves_order_and_duplicates() {
-        let tips = vec!["tip-z".to_string(), "tip-a".to_string(), "tip-a".to_string()];
+        let tips = vec![
+            "tip-z".to_string(),
+            "tip-a".to_string(),
+            "tip-a".to_string(),
+        ];
         let value = serde_json::to_value(NetworkMessage::Tips {
             chain_id: "testnet".into(),
             tips: tips.clone(),
