@@ -7,8 +7,9 @@ use serde::{Deserialize, Deserializer};
 use serde_json::value::RawValue;
 
 use super::{
-    BlockHeaderAnnouncement, HeaderInventory, NetworkMessage, TipInventoryStatus,
-    P2P_WIRE_MAX_INVENTORY_ITEMS_V1, P2P_WIRE_MAX_REQUEST_ITEMS_V1,
+    dag_sync_v2::MAX_SELECTED_CHAIN_LOCATOR_HASHES, BlockHeaderAnnouncement, HeaderInventory,
+    NetworkMessage, TipInventoryStatus, P2P_WIRE_MAX_INVENTORY_ITEMS_V1,
+    P2P_WIRE_MAX_REQUEST_ITEMS_V1,
 };
 
 #[derive(Debug, Clone, Copy, Deserialize)]
@@ -84,10 +85,11 @@ where
 }
 
 /// Streaming wire shape used to preserve legacy field-order tolerance while
-/// applying allocation bounds before a complete attacker-controlled vector is
-/// materialized. The two fields shared by differently bounded variants are kept
-/// as borrowed raw JSON slices; after `type` is known, only that slice is parsed
-/// with the correct live budget (512 for inventory, 64 for request fanout).
+/// applying allocation bounds before attacker-controlled values are materialized.
+/// Every variant-specific field is retained as borrowed raw JSON until `type`
+/// selects the variant. This prevents extension fields whose names collide with
+/// another variant from forcing typed allocation or rejection.
+///
 /// Unknown top-level extension fields are consumed with Serde's streaming
 /// `IgnoredAny` path and never materialized as a complete `Value`.
 #[derive(Deserialize)]
@@ -95,52 +97,40 @@ struct NetworkMessageWire<'a> {
     #[serde(rename = "type")]
     tag: NetworkMessageTag,
     chain_id: String,
-    #[serde(default)]
-    transaction: Option<Transaction>,
-    #[serde(
-        default,
-        deserialize_with = "super::deserialize_supported_optional_block"
-    )]
-    block: Option<Block>,
-    #[serde(default)]
-    hash: Option<Hash>,
+    #[serde(default, borrow)]
+    transaction: Option<&'a RawValue>,
+    #[serde(default, borrow)]
+    block: Option<&'a RawValue>,
+    #[serde(default, borrow)]
+    hash: Option<&'a RawValue>,
     #[serde(default, borrow)]
     hashes: Option<&'a RawValue>,
-    #[serde(
-        default,
-        deserialize_with = "super::wire_limits_v1::deserialize_optional_locator_hashes"
-    )]
-    locator: Option<Vec<Hash>>,
-    #[serde(default)]
-    stop_hash: Option<Hash>,
-    #[serde(
-        default,
-        deserialize_with = "super::wire_limits_v1::deserialize_optional_response_limit"
-    )]
-    limit: Option<usize>,
+    #[serde(default, borrow)]
+    locator: Option<&'a RawValue>,
+    #[serde(default, borrow)]
+    stop_hash: Option<&'a RawValue>,
+    #[serde(default, borrow)]
+    limit: Option<&'a RawValue>,
     #[serde(default, borrow)]
     headers: Option<&'a RawValue>,
-    #[serde(default)]
-    inventory: Option<TipInventoryStatus>,
-    #[serde(
-        default,
-        deserialize_with = "super::wire_limits_v1::deserialize_optional_inventory_hashes"
-    )]
-    tips: Option<Vec<Hash>>,
-    #[serde(default)]
-    request_id: Option<String>,
-    #[serde(default)]
-    requesting_peer_id: Option<String>,
-    #[serde(default)]
-    requested_peer_id: Option<String>,
-    #[serde(default)]
-    request_kind: Option<String>,
-    #[serde(default)]
-    request_hash: Option<Hash>,
-    #[serde(default)]
-    reason: Option<String>,
-    #[serde(default)]
-    message: Option<String>,
+    #[serde(default, borrow)]
+    inventory: Option<&'a RawValue>,
+    #[serde(default, borrow)]
+    tips: Option<&'a RawValue>,
+    #[serde(default, borrow)]
+    request_id: Option<&'a RawValue>,
+    #[serde(default, borrow)]
+    requesting_peer_id: Option<&'a RawValue>,
+    #[serde(default, borrow)]
+    requested_peer_id: Option<&'a RawValue>,
+    #[serde(default, borrow)]
+    request_kind: Option<&'a RawValue>,
+    #[serde(default, borrow)]
+    request_hash: Option<&'a RawValue>,
+    #[serde(default, borrow)]
+    reason: Option<&'a RawValue>,
+    #[serde(default, borrow)]
+    message: Option<&'a RawValue>,
 }
 
 fn required_field<T, E>(value: Option<T>, field: &'static str) -> Result<T, E>
@@ -148,6 +138,29 @@ where
     E: de::Error,
 {
     value.ok_or_else(|| E::missing_field(field))
+}
+
+fn parse_optional_raw<T, E>(
+    raw: Option<&RawValue>,
+    field: &'static str,
+) -> Result<Option<T>, E>
+where
+    T: DeserializeOwned,
+    E: de::Error,
+{
+    match raw {
+        None => Ok(None),
+        Some(raw) => serde_json::from_str::<Option<T>>(raw.get())
+            .map_err(|error| E::custom(format!("{field}: {error}"))),
+    }
+}
+
+fn parse_required_raw<T, E>(raw: Option<&RawValue>, field: &'static str) -> Result<T, E>
+where
+    T: DeserializeOwned,
+    E: de::Error,
+{
+    required_field(parse_optional_raw::<T, E>(raw, field)?, field)
 }
 
 fn parse_bounded_raw_vec<T, E, const MAXIMUM: usize>(
@@ -164,6 +177,38 @@ where
         .map_err(|error| E::custom(format!("{field}: {error}")))
 }
 
+fn parse_response_limit<E>(raw: Option<&RawValue>) -> Result<usize, E>
+where
+    E: de::Error,
+{
+    let limit = parse_required_raw::<usize, E>(raw, "limit")?;
+    if limit > P2P_WIRE_MAX_INVENTORY_ITEMS_V1 {
+        return Err(E::custom(format!(
+            "GetHeaders.limit exceeds maximum {P2P_WIRE_MAX_INVENTORY_ITEMS_V1}"
+        )));
+    }
+    Ok(limit)
+}
+
+fn parse_optional_supported_block<E>(
+    raw: Option<&RawValue>,
+    field: &'static str,
+) -> Result<Option<Block>, E>
+where
+    E: de::Error,
+{
+    let block = parse_optional_raw::<Block, E>(raw, field)?;
+    if let Some(block) = &block {
+        if !super::supported_header_version(block.header.version) {
+            return Err(E::custom(format!(
+                "unsupported block header version {}",
+                block.header.version
+            )));
+        }
+    }
+    Ok(block)
+}
+
 impl NetworkMessageWire<'_> {
     fn into_message<E>(self) -> Result<NetworkMessage, E>
     where
@@ -172,19 +217,22 @@ impl NetworkMessageWire<'_> {
         match self.tag {
             NetworkMessageTag::NewTransaction => Ok(NetworkMessage::NewTransaction {
                 chain_id: self.chain_id,
-                transaction: required_field(self.transaction, "transaction")?,
+                transaction: parse_required_raw(self.transaction, "transaction")?,
             }),
             NetworkMessageTag::NewBlock => Ok(NetworkMessage::NewBlock {
                 chain_id: self.chain_id,
-                block: required_field(self.block, "block")?,
+                block: required_field(
+                    parse_optional_supported_block(self.block, "block")?,
+                    "block",
+                )?,
             }),
             NetworkMessageTag::BlockAnnounce => Ok(NetworkMessage::BlockAnnounce {
                 chain_id: self.chain_id,
-                hash: required_field(self.hash, "hash")?,
+                hash: parse_required_raw(self.hash, "hash")?,
             }),
             NetworkMessageTag::NewBlockHash => Ok(NetworkMessage::NewBlockHash {
                 chain_id: self.chain_id,
-                hash: required_field(self.hash, "hash")?,
+                hash: parse_required_raw(self.hash, "hash")?,
             }),
             NetworkMessageTag::InvBlock => Ok(NetworkMessage::InvBlock {
                 chain_id: self.chain_id,
@@ -195,9 +243,13 @@ impl NetworkMessageWire<'_> {
             }),
             NetworkMessageTag::GetHeaders => Ok(NetworkMessage::GetHeaders {
                 chain_id: self.chain_id,
-                locator: required_field(self.locator, "locator")?,
-                stop_hash: self.stop_hash,
-                limit: required_field(self.limit, "limit")?,
+                locator: parse_bounded_raw_vec::<
+                    Hash,
+                    E,
+                    { MAX_SELECTED_CHAIN_LOCATOR_HASHES },
+                >(self.locator, "GetHeaders.locator")?,
+                stop_hash: parse_optional_raw(self.stop_hash, "stop_hash")?,
+                limit: parse_response_limit(self.limit)?,
             }),
             NetworkMessageTag::Headers => Ok(NetworkMessage::Headers {
                 chain_id: self.chain_id,
@@ -209,12 +261,15 @@ impl NetworkMessageWire<'_> {
             }),
             NetworkMessageTag::GetTips => Ok(NetworkMessage::GetTips {
                 chain_id: self.chain_id,
-                inventory: self.inventory,
+                inventory: parse_optional_raw(self.inventory, "inventory")?,
             }),
             NetworkMessageTag::Tips => Ok(NetworkMessage::Tips {
                 chain_id: self.chain_id,
-                tips: required_field(self.tips, "tips")?,
-                inventory: self.inventory,
+                tips: parse_bounded_raw_vec::<Hash, E, { P2P_WIRE_MAX_INVENTORY_ITEMS_V1 }>(
+                    self.tips,
+                    "Tips.tips",
+                )?,
+                inventory: parse_optional_raw(self.inventory, "inventory")?,
             }),
             NetworkMessageTag::GetBlockHeaders => Ok(NetworkMessage::GetBlockHeaders {
                 chain_id: self.chain_id,
@@ -233,29 +288,35 @@ impl NetworkMessageWire<'_> {
             }),
             NetworkMessageTag::GetBlock => Ok(NetworkMessage::GetBlock {
                 chain_id: self.chain_id,
-                hash: required_field(self.hash, "hash")?,
-                request_id: self.request_id,
-                requesting_peer_id: self.requesting_peer_id,
-                requested_peer_id: self.requested_peer_id,
-                request_kind: self.request_kind,
+                hash: parse_required_raw(self.hash, "hash")?,
+                request_id: parse_optional_raw(self.request_id, "request_id")?,
+                requesting_peer_id: parse_optional_raw(
+                    self.requesting_peer_id,
+                    "requesting_peer_id",
+                )?,
+                requested_peer_id: parse_optional_raw(self.requested_peer_id, "requested_peer_id")?,
+                request_kind: parse_optional_raw(self.request_kind, "request_kind")?,
             }),
             NetworkMessageTag::BlockData => Ok(NetworkMessage::BlockData {
                 chain_id: self.chain_id,
-                block: self.block,
-                request_id: self.request_id,
-                request_hash: self.request_hash,
+                block: parse_optional_supported_block(self.block, "block")?,
+                request_id: parse_optional_raw(self.request_id, "request_id")?,
+                request_hash: parse_optional_raw(self.request_hash, "request_hash")?,
             }),
             NetworkMessageTag::Block => Ok(NetworkMessage::Block {
                 chain_id: self.chain_id,
-                block: required_field(self.block, "block")?,
+                block: required_field(
+                    parse_optional_supported_block(self.block, "block")?,
+                    "block",
+                )?,
             }),
             NetworkMessageTag::Reject => Ok(NetworkMessage::Reject {
                 chain_id: self.chain_id,
-                reason: required_field(self.reason, "reason")?,
+                reason: parse_required_raw(self.reason, "reason")?,
             }),
             NetworkMessageTag::Error => Ok(NetworkMessage::Error {
                 chain_id: self.chain_id,
-                message: required_field(self.message, "message")?,
+                message: parse_required_raw(self.message, "message")?,
             }),
         }
     }
@@ -278,6 +339,22 @@ mod tests {
     fn field_order_and_unknown_extensions_preserve_legacy_decode() {
         let wire = br#"{"chain_id":"testnet","pulsedag_protocol_capabilities_v1":{"ignored":true},"hashes":["a"],"type":"InvBlock"}"#;
         let decoded = serde_json::from_slice::<NetworkMessage>(wire).expect("decode legacy wire");
+        match decoded {
+            NetworkMessage::InvBlock { chain_id, hashes } => {
+                assert_eq!(chain_id, "testnet");
+                assert_eq!(hashes, vec!["a".to_string()]);
+            }
+            other => panic!("unexpected message: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn colliding_variant_fields_are_ignored_until_type_is_selected() {
+        let attacker_values = serde_json::to_string(&vec!["x"; 2_048]).expect("serialize values");
+        let wire = format!(
+            r#"{{"transaction":{{"attacker":{attacker_values}}},"block":{{"header":{{"version":999999}}}},"hashes":["a"],"chain_id":"testnet","type":"InvBlock"}}"#
+        );
+        let decoded = serde_json::from_str::<NetworkMessage>(&wire).expect("decode InvBlock");
         match decoded {
             NetworkMessage::InvBlock { chain_id, hashes } => {
                 assert_eq!(chain_id, "testnet");
