@@ -104,13 +104,6 @@ where
     )
 }
 
-fn deserialize_header_inventory<'de, D>(deserializer: D) -> Result<Vec<HeaderInventory>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    deserialize_bounded_vec(deserializer, MAX_INV_BLOCK_HASHES, "Headers.headers")
-}
-
 fn deserialize_response_limit<'de, D>(deserializer: D) -> Result<usize, D::Error>
 where
     D: Deserializer<'de>,
@@ -140,15 +133,6 @@ where
     D: Deserializer<'de>,
 {
     deserialize_locator_hashes(deserializer).map(Some)
-}
-
-pub(super) fn deserialize_optional_header_inventory<'de, D>(
-    deserializer: D,
-) -> Result<Option<Vec<HeaderInventory>>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    deserialize_header_inventory(deserializer).map(Some)
 }
 
 pub(super) fn deserialize_optional_response_limit<'de, D>(

@@ -33,6 +33,24 @@ pub struct DecodedNetworkMessageWithProtocolSyncV1 {
     pub protocol_sync: Option<ProtocolSyncCarrierV1>,
 }
 
+#[derive(Debug, Deserialize)]
+struct ProtocolSyncExtensionWireV1 {
+    #[serde(default, rename = "pulsedag_protocol_sync_v1")]
+    protocol_sync: Option<ProtocolSyncCarrierV1>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ProtocolSyncTargetV1 {
+    #[serde(default)]
+    target_peer_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ProtocolSyncTargetExtensionWireV1 {
+    #[serde(default, rename = "pulsedag_protocol_sync_v1")]
+    protocol_sync: Option<ProtocolSyncTargetV1>,
+}
+
 fn validate_carrier_for_message(
     message: &NetworkMessage,
     carrier: &ProtocolSyncCarrierV1,
@@ -100,70 +118,57 @@ pub fn encode_network_message_with_protocol_sync_v1(
 }
 
 /// Decode a current/legacy network message and recover the optional targeted
-/// protocol-sync extension. The base message remains independently decodable by
-/// older peers because the extension is an unknown top-level JSON field.
+/// protocol-sync extension. Both passes are streaming Serde decodes: unrelated
+/// top-level fields are skipped instead of materialized into a complete JSON
+/// `Value`.
 pub fn decode_network_message_with_protocol_sync_v1(
     bytes: &[u8],
 ) -> Result<DecodedNetworkMessageWithProtocolSyncV1, ProtocolSyncCarrierErrorV1> {
-    let value: Value = serde_json::from_slice(bytes)
+    let message: NetworkMessage = serde_json::from_slice(bytes)
         .map_err(|error| ProtocolSyncCarrierErrorV1::Json(error.to_string()))?;
-    let object = value
-        .as_object()
-        .ok_or(ProtocolSyncCarrierErrorV1::InvalidJsonRoot)?;
-    let carrier_value = object.get(PROTOCOL_SYNC_EXTENSION_FIELD_V1).cloned();
-    let message: NetworkMessage = serde_json::from_value(value)
+    let extension: ProtocolSyncExtensionWireV1 = serde_json::from_slice(bytes)
         .map_err(|error| ProtocolSyncCarrierErrorV1::Json(error.to_string()))?;
 
-    let protocol_sync = match carrier_value {
-        Some(value) => {
-            let carrier: ProtocolSyncCarrierV1 = serde_json::from_value(value)
-                .map_err(|error| ProtocolSyncCarrierErrorV1::Json(error.to_string()))?;
-            validate_carrier_for_message(&message, &carrier)?;
-            Some(carrier)
-        }
-        None => None,
-    };
+    if let Some(carrier) = extension.protocol_sync.as_ref() {
+        validate_carrier_for_message(&message, carrier)?;
+    }
 
     Ok(DecodedNetworkMessageWithProtocolSyncV1 {
         message,
-        protocol_sync,
+        protocol_sync: extension.protocol_sync,
     })
 }
 
 /// Decode the base legacy message for every peer, but only deserialize and
-/// validate the protocol-sync extension when it is explicitly addressed to
-/// `local_peer_id`. This is required for gossipsub fanout: a malformed v2
-/// payload targeted at another peer must not create a false decode penalty
-/// on bystanders that can still process the legacy `Tips` envelope.
+/// validate the complete protocol-sync extension when it is explicitly
+/// addressed to `local_peer_id`. The first extension pass reads only the target
+/// id and streams over the rest, preserving bystander behavior for malformed
+/// payloads addressed to another peer without materializing a JSON `Value`.
 pub fn decode_network_message_with_protocol_sync_for_peer_v1(
     bytes: &[u8],
     local_peer_id: &str,
 ) -> Result<DecodedNetworkMessageWithProtocolSyncV1, ProtocolSyncCarrierErrorV1> {
-    let value: Value = serde_json::from_slice(bytes)
+    let message: NetworkMessage = serde_json::from_slice(bytes)
         .map_err(|error| ProtocolSyncCarrierErrorV1::Json(error.to_string()))?;
-    let object = value
-        .as_object()
-        .ok_or(ProtocolSyncCarrierErrorV1::InvalidJsonRoot)?;
-    let carrier_value = object.get(PROTOCOL_SYNC_EXTENSION_FIELD_V1).cloned();
-    let message: NetworkMessage = serde_json::from_value(value)
+    let target_extension: ProtocolSyncTargetExtensionWireV1 = serde_json::from_slice(bytes)
         .map_err(|error| ProtocolSyncCarrierErrorV1::Json(error.to_string()))?;
 
-    let protocol_sync = match carrier_value {
-        Some(value) => {
-            let target = value
-                .as_object()
-                .and_then(|object| object.get("target_peer_id"))
-                .and_then(Value::as_str);
-            if target != Some(local_peer_id) {
-                None
-            } else {
-                let carrier: ProtocolSyncCarrierV1 = serde_json::from_value(value)
-                    .map_err(|error| ProtocolSyncCarrierErrorV1::Json(error.to_string()))?;
-                validate_carrier_for_message(&message, &carrier)?;
-                Some(carrier)
-            }
+    let protocol_sync = match target_extension
+        .protocol_sync
+        .and_then(|target| target.target_peer_id)
+    {
+        Some(target_peer_id) if target_peer_id == local_peer_id => {
+            let extension: ProtocolSyncExtensionWireV1 = serde_json::from_slice(bytes)
+                .map_err(|error| ProtocolSyncCarrierErrorV1::Json(error.to_string()))?;
+            let carrier = extension.protocol_sync.ok_or_else(|| {
+                ProtocolSyncCarrierErrorV1::Json(
+                    "protocol sync target present without full carrier".to_string(),
+                )
+            })?;
+            validate_carrier_for_message(&message, &carrier)?;
+            Some(carrier)
         }
-        None => None,
+        _ => None,
     };
 
     Ok(DecodedNetworkMessageWithProtocolSyncV1 {

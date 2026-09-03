@@ -1,3 +1,5 @@
+use serde::Deserialize;
+#[cfg(test)]
 use serde_json::Value;
 
 use super::protocol_v2::{
@@ -23,6 +25,12 @@ pub enum ProtocolCapabilityCarrierErrorV1 {
 pub struct DecodedNetworkMessageWithCapabilitiesV1 {
     pub message: NetworkMessage,
     pub capabilities: Option<ProtocolCapabilitiesV1>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CapabilityExtensionWireV1 {
+    #[serde(default, rename = "pulsedag_protocol_capabilities_v1")]
+    capabilities: Option<ProtocolCapabilitiesV1>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -203,35 +211,26 @@ pub fn encode_network_message_with_capabilities_v1(
 /// Decode a current/legacy `NetworkMessage` and, when present, extract the
 /// backward-compatible Task 27 capability extension.
 ///
-/// Capability data is validated independently from the legacy message. A wrong
-/// chain, malformed capability object, or extension attached to a non-tip
-/// carrier fails closed for v2 routing even though an older decoder would still
-/// be able to ignore the unknown field.
+/// Both passes are streaming Serde decodes. The base `NetworkMessage` applies
+/// its wire-vector allocation bounds, while the second pass deserializes only
+/// the named capability extension and skips every unrelated top-level field.
+/// This avoids materializing the complete attacker-controlled JSON object as a
+/// `serde_json::Value` on capability-enabled nodes.
 pub fn decode_network_message_with_capabilities_v1(
     bytes: &[u8],
 ) -> Result<DecodedNetworkMessageWithCapabilitiesV1, ProtocolCapabilityCarrierErrorV1> {
-    let value: Value = serde_json::from_slice(bytes)
+    let message: NetworkMessage = serde_json::from_slice(bytes)
         .map_err(|error| ProtocolCapabilityCarrierErrorV1::Json(error.to_string()))?;
-    let object = value
-        .as_object()
-        .ok_or(ProtocolCapabilityCarrierErrorV1::InvalidJsonRoot)?;
-    let capability_value = object.get(PROTOCOL_CAPABILITY_EXTENSION_FIELD_V1).cloned();
-    let message: NetworkMessage = serde_json::from_value(value)
+    let extension: CapabilityExtensionWireV1 = serde_json::from_slice(bytes)
         .map_err(|error| ProtocolCapabilityCarrierErrorV1::Json(error.to_string()))?;
 
-    let capabilities = match capability_value {
-        Some(value) => {
-            let capabilities: ProtocolCapabilitiesV1 = serde_json::from_value(value)
-                .map_err(|error| ProtocolCapabilityCarrierErrorV1::Json(error.to_string()))?;
-            validate_capabilities_for_message(&message, &capabilities)?;
-            Some(capabilities)
-        }
-        None => None,
-    };
+    if let Some(capabilities) = extension.capabilities.as_ref() {
+        validate_capabilities_for_message(&message, capabilities)?;
+    }
 
     Ok(DecodedNetworkMessageWithCapabilitiesV1 {
         message,
-        capabilities,
+        capabilities: extension.capabilities,
     })
 }
 
@@ -366,6 +365,30 @@ mod tests {
             decode_network_message_with_capabilities_v1(&encoded),
             Err(ProtocolCapabilityCarrierErrorV1::Json(_))
         ));
+    }
+
+    #[test]
+    fn large_unknown_extension_is_ignored_without_changing_capability_observation() {
+        let local = capabilities(CHAIN_ID);
+        let encoded =
+            encode_network_message_with_capabilities_v1(&get_tips(), Some(&local)).unwrap();
+        let mut value: Value = serde_json::from_slice(&encoded).unwrap();
+        value.as_object_mut().unwrap().insert(
+            "unrelated_large_extension".to_string(),
+            Value::String("x".repeat(256 * 1024)),
+        );
+        let wire = serde_json::to_vec(&value).unwrap();
+
+        let mut receiver = ProtocolCapabilityTransportV1::default();
+        receiver
+            .configure_local_capabilities(CHAIN_ID, local)
+            .unwrap();
+        let decoded = receiver.decode_from_peer("peer-v2", &wire).unwrap();
+        assert_eq!(decoded.message.kind(), "GetTips");
+        assert_eq!(
+            decoded.observation,
+            Some(ProtocolPeerSessionObservationV1::Compatible)
+        );
     }
 
     #[test]
