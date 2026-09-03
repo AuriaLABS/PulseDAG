@@ -466,19 +466,35 @@ mod tests {
 
     #[test]
     fn bounded_wire_vectors_reject_resource_amplifying_shapes() {
-        let inventory_at_limit = NetworkMessage::InvBlock { chain_id: "testnet".into(), hashes: vec!["hash".into(); P2P_WIRE_MAX_INVENTORY_ITEMS_V1] };
+        let inventory_at_limit = NetworkMessage::InvBlock {
+            chain_id: "testnet".into(),
+            hashes: vec!["hash".into(); P2P_WIRE_MAX_INVENTORY_ITEMS_V1],
+        };
         let encoded = serde_json::to_vec(&inventory_at_limit).unwrap();
         assert!(serde_json::from_slice::<NetworkMessage>(&encoded).is_ok());
 
-        let locator_at_limit = NetworkMessage::GetHeaders { chain_id: "testnet".into(), locator: vec!["hash".into(); MAX_SELECTED_CHAIN_LOCATOR_HASHES], stop_hash: None, limit: 1 };
+        let locator_at_limit = NetworkMessage::GetHeaders {
+            chain_id: "testnet".into(),
+            locator: vec!["hash".into(); MAX_SELECTED_CHAIN_LOCATOR_HASHES],
+            stop_hash: None,
+            limit: 1,
+        };
         let encoded = serde_json::to_vec(&locator_at_limit).unwrap();
         assert!(serde_json::from_slice::<NetworkMessage>(&encoded).is_ok());
 
-        let limit_at_max = NetworkMessage::GetHeaders { chain_id: "testnet".into(), locator: vec!["hash".into()], stop_hash: None, limit: P2P_WIRE_MAX_INVENTORY_ITEMS_V1 };
+        let limit_at_max = NetworkMessage::GetHeaders {
+            chain_id: "testnet".into(),
+            locator: vec!["hash".into()],
+            stop_hash: None,
+            limit: P2P_WIRE_MAX_INVENTORY_ITEMS_V1,
+        };
         let encoded = serde_json::to_vec(&limit_at_max).unwrap();
         assert!(serde_json::from_slice::<NetworkMessage>(&encoded).is_ok());
 
-        let request_at_limit = NetworkMessage::GetBlockHeaders { chain_id: "testnet".into(), hashes: vec!["hash".into(); P2P_WIRE_MAX_REQUEST_ITEMS_V1] };
+        let request_at_limit = NetworkMessage::GetBlockHeaders {
+            chain_id: "testnet".into(),
+            hashes: vec!["hash".into(); P2P_WIRE_MAX_REQUEST_ITEMS_V1],
+        };
         let encoded = serde_json::to_vec(&request_at_limit).unwrap();
         assert!(serde_json::from_slice::<NetworkMessage>(&encoded).is_ok());
         let oversized_inventory = NetworkMessage::InvBlock {
