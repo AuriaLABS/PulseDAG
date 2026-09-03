@@ -13,7 +13,7 @@ use std::{
 
 use pulsedag_core::types::Utxo;
 use pulsedag_wallet::{
-    build_deterministic_transaction_plan, build_deterministic_transaction_plan_with_safety,
+    build_deterministic_transaction_plan_with_safety,
     derive_wallet_key_from_seed, encrypt_wallet_seed, wallet_seed_from_mnemonic, SecretString,
     WalletDerivationBranch, WalletKeystoreFile, WalletNetworkContext, WalletNetworkIdentity,
     WalletNoncePolicy, WalletPlanSigner, WalletPlanSigningSessionExt, WalletReviewSummary,
@@ -1181,7 +1181,7 @@ mod tests {
             coinbase: false,
             height: 1,
         }];
-        let plan = build_deterministic_transaction_plan(network, policy, intent, &available)
+        let plan = pulsedag_wallet::build_deterministic_transaction_plan(network, policy, intent, &available)
             .expect("plan");
         fs::write(&path, serde_json::to_vec(&plan).unwrap()).unwrap();
         assert_eq!(
