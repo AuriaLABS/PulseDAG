@@ -1,15 +1,14 @@
 use std::fmt;
 use std::marker::PhantomData;
 
-use pulsedag_core::types::{Block, Hash, Transaction};
+use pulsedag_core::types::{Block, Hash};
 use serde::de::{self, DeserializeOwned, IgnoredAny, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer};
 use serde_json::value::RawValue;
 
 use super::{
     dag_sync_v2::MAX_SELECTED_CHAIN_LOCATOR_HASHES, BlockHeaderAnnouncement, HeaderInventory,
-    NetworkMessage, TipInventoryStatus, P2P_WIRE_MAX_INVENTORY_ITEMS_V1,
-    P2P_WIRE_MAX_REQUEST_ITEMS_V1,
+    NetworkMessage, P2P_WIRE_MAX_INVENTORY_ITEMS_V1, P2P_WIRE_MAX_REQUEST_ITEMS_V1,
 };
 
 #[derive(Debug, Clone, Copy, Deserialize)]
@@ -174,17 +173,37 @@ where
         .map_err(|error| E::custom(format!("{field}: {error}")))
 }
 
+fn parse_inventory_hashes<E>(raw: Option<&RawValue>) -> Result<Vec<Hash>, E>
+where
+    E: de::Error,
+{
+    let raw = required_field(raw, "network inventory hashes")?;
+    let mut deserializer = serde_json::Deserializer::from_str(raw.get());
+    let hashes = super::wire_limits_v1::deserialize_optional_inventory_hashes(&mut deserializer)
+        .map_err(|error| E::custom(format!("network inventory hashes: {error}")))?;
+    required_field(hashes, "network inventory hashes")
+}
+
+fn parse_locator_hashes<E>(raw: Option<&RawValue>) -> Result<Vec<Hash>, E>
+where
+    E: de::Error,
+{
+    let raw = required_field(raw, "GetHeaders.locator")?;
+    let mut deserializer = serde_json::Deserializer::from_str(raw.get());
+    let locator = super::wire_limits_v1::deserialize_optional_locator_hashes(&mut deserializer)
+        .map_err(|error| E::custom(format!("GetHeaders.locator: {error}")))?;
+    required_field(locator, "GetHeaders.locator")
+}
+
 fn parse_response_limit<E>(raw: Option<&RawValue>) -> Result<usize, E>
 where
     E: de::Error,
 {
-    let limit = parse_required_raw::<usize, E>(raw, "limit")?;
-    if limit > P2P_WIRE_MAX_INVENTORY_ITEMS_V1 {
-        return Err(E::custom(format!(
-            "GetHeaders.limit exceeds maximum {P2P_WIRE_MAX_INVENTORY_ITEMS_V1}"
-        )));
-    }
-    Ok(limit)
+    let raw = required_field(raw, "limit")?;
+    let mut deserializer = serde_json::Deserializer::from_str(raw.get());
+    let limit = super::wire_limits_v1::deserialize_optional_response_limit(&mut deserializer)
+        .map_err(|error| E::custom(format!("limit: {error}")))?;
+    required_field(limit, "limit")
 }
 
 fn parse_optional_supported_block<E>(
@@ -194,16 +213,14 @@ fn parse_optional_supported_block<E>(
 where
     E: de::Error,
 {
-    let block = parse_optional_raw::<Block, E>(raw, field)?;
-    if let Some(block) = &block {
-        if !super::supported_header_version(block.header.version) {
-            return Err(E::custom(format!(
-                "unsupported block header version {}",
-                block.header.version
-            )));
+    match raw {
+        None => Ok(None),
+        Some(raw) => {
+            let mut deserializer = serde_json::Deserializer::from_str(raw.get());
+            super::deserialize_supported_optional_block(&mut deserializer)
+                .map_err(|error| E::custom(format!("{field}: {error}")))
         }
     }
-    Ok(block)
 }
 
 impl NetworkMessageWire<'_> {
@@ -233,17 +250,11 @@ impl NetworkMessageWire<'_> {
             }),
             NetworkMessageTag::InvBlock => Ok(NetworkMessage::InvBlock {
                 chain_id: self.chain_id,
-                hashes: parse_bounded_raw_vec::<Hash, E, { P2P_WIRE_MAX_INVENTORY_ITEMS_V1 }>(
-                    self.hashes,
-                    "network inventory hashes",
-                )?,
+                hashes: parse_inventory_hashes(self.hashes)?,
             }),
             NetworkMessageTag::GetHeaders => Ok(NetworkMessage::GetHeaders {
                 chain_id: self.chain_id,
-                locator: parse_bounded_raw_vec::<Hash, E, { MAX_SELECTED_CHAIN_LOCATOR_HASHES }>(
-                    self.locator,
-                    "GetHeaders.locator",
-                )?,
+                locator: parse_locator_hashes(self.locator)?,
                 stop_hash: parse_optional_raw(self.stop_hash, "stop_hash")?,
                 limit: parse_response_limit(self.limit)?,
             }),
@@ -333,7 +344,7 @@ mod tests {
 
     #[test]
     fn field_order_and_unknown_extensions_preserve_legacy_decode() {
-        let wire = br#"{"chain_id":"testnet","pulsedag_protocol_capabilities_v1":{"ignored":true},"hashes":["a"],"type":"InvBlock"}"#;
+        let wire = br#"{\"chain_id\":\"testnet\",\"pulsedag_protocol_capabilities_v1\":{\"ignored\":true},\"hashes\":[\"a\"],\"type\":\"InvBlock\"}"#;
         let decoded = serde_json::from_slice::<NetworkMessage>(wire).expect("decode legacy wire");
         match decoded {
             NetworkMessage::InvBlock { chain_id, hashes } => {
@@ -348,7 +359,7 @@ mod tests {
     fn colliding_variant_fields_are_ignored_until_type_is_selected() {
         let attacker_values = serde_json::to_string(&vec!["x"; 2_048]).expect("serialize values");
         let wire = format!(
-            r#"{{"transaction":{{"attacker":{attacker_values}}},"block":{{"header":{{"version":999999}}}},"hashes":["a"],"chain_id":"testnet","type":"InvBlock"}}"#
+            r#"{{\"transaction\":{{\"attacker\":{attacker_values}}},\"block\":{{\"header\":{{\"version\":999999}}}},\"hashes\":[\"a\"],\"chain_id\":\"testnet\",\"type\":\"InvBlock\"}}"#
         );
         let decoded = serde_json::from_str::<NetworkMessage>(&wire).expect("decode InvBlock");
         match decoded {
@@ -364,7 +375,7 @@ mod tests {
     fn oversized_inventory_is_rejected_even_when_it_precedes_type() {
         let hashes = serde_json::to_string(&vec!["a"; P2P_WIRE_MAX_INVENTORY_ITEMS_V1 + 1])
             .expect("serialize hashes");
-        let wire = format!(r#"{{"hashes":{hashes},"chain_id":"testnet","type":"InvBlock"}}"#);
+        let wire = format!(r#"{{\"hashes\":{hashes},\"chain_id\":\"testnet\",\"type\":\"InvBlock\"}}"#);
         let error = serde_json::from_str::<NetworkMessage>(&wire).unwrap_err();
         assert!(error.to_string().contains("network inventory hashes"));
         assert!(error
@@ -376,7 +387,7 @@ mod tests {
     fn inventory_budget_stays_at_512_when_type_is_last() {
         let hashes = serde_json::to_string(&vec!["a"; P2P_WIRE_MAX_INVENTORY_ITEMS_V1])
             .expect("serialize hashes");
-        let wire = format!(r#"{{"hashes":{hashes},"chain_id":"testnet","type":"InvBlock"}}"#);
+        let wire = format!(r#"{{\"hashes\":{hashes},\"chain_id\":\"testnet\",\"type\":\"InvBlock\"}}"#);
         assert!(serde_json::from_str::<NetworkMessage>(&wire).is_ok());
     }
 
@@ -385,7 +396,7 @@ mod tests {
         let hashes = serde_json::to_string(&vec!["a"; P2P_WIRE_MAX_REQUEST_ITEMS_V1 + 1])
             .expect("serialize hashes");
         let wire =
-            format!(r#"{{"hashes":{hashes},"chain_id":"testnet","type":"GetBlockHeaders"}}"#);
+            format!(r#"{{\"hashes\":{hashes},\"chain_id\":\"testnet\",\"type\":\"GetBlockHeaders\"}}"#);
         let error = serde_json::from_str::<NetworkMessage>(&wire).unwrap_err();
         assert!(error.to_string().contains("GetBlockHeaders.hashes"));
         assert!(error
@@ -410,7 +421,7 @@ mod tests {
             .map(|index| serde_json::json!({"hash": format!("header-{index}"), "header": header.clone()}))
             .collect::<Vec<_>>();
         let headers = serde_json::to_string(&announcements).expect("serialize headers");
-        let wire = format!(r#"{{"headers":{headers},"chain_id":"testnet","type":"BlockHeaders"}}"#);
+        let wire = format!(r#"{{\"headers\":{headers},\"chain_id\":\"testnet\",\"type\":\"BlockHeaders\"}}"#);
         let error = serde_json::from_str::<NetworkMessage>(&wire).unwrap_err();
         assert!(error.to_string().contains("BlockHeaders.headers"));
         assert!(error
