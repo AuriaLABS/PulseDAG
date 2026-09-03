@@ -8,6 +8,7 @@ mod keystore_rotation;
 mod keystore_seed;
 mod plan;
 pub mod protocol_v2;
+mod safety;
 mod secrets;
 mod session_clock;
 mod session_v1;
@@ -41,10 +42,15 @@ pub use keystore_persistence::{
 pub use keystore_rotation::{rotate_keystore_password, WalletKeystoreRotationError};
 pub use keystore_seed::{decrypt_wallet_seed, encrypt_wallet_seed};
 pub use plan::{
-    build_deterministic_transaction_plan, build_transaction_plan, derive_wallet_plan_nonce_v1,
+    build_deterministic_transaction_plan, build_deterministic_transaction_plan_with_safety,
+    build_transaction_plan, build_transaction_plan_with_safety, derive_wallet_plan_nonce_v1,
     WalletNetworkIdentity, WalletNoncePolicy, WalletPlanError, WalletReviewSummary,
     WalletSigningPreparation, WalletSpendPolicy, WalletTransactionIntent, WalletTransactionPlan,
     WALLET_NONCE_DOMAIN_V1,
+};
+pub use safety::{
+    validate_wallet_safety_acknowledgements, WalletFundingEntry, WalletFundingSnapshot,
+    WalletSafetyAcknowledgements, WALLET_FUNDING_SNAPSHOT_DOMAIN_V1,
 };
 pub use secrets::{
     SecretString, WalletSecretKey, WalletSeed, ED25519_SECRET_KEY_BYTES, REDACTED_SECRET,
