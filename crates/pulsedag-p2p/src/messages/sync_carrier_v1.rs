@@ -11,8 +11,8 @@ use serde_json::{value::RawValue, Value};
 
 use super::{
     DagFrontierEntryV1, DagFrontierResponseV1, NetworkMessage, ProtocolSyncWireError,
-    ProtocolSyncWireV1, SelectedChainLocatorV1, MAX_DAG_FRONTIER_ENTRIES,
-    MAX_DAG_FRONTIER_PARENTS, MAX_DAG_FRONTIER_REQUIRED_CONTEXT, MAX_SELECTED_CHAIN_LOCATOR_HASHES,
+    ProtocolSyncWireV1, SelectedChainLocatorV1, MAX_DAG_FRONTIER_ENTRIES, MAX_DAG_FRONTIER_PARENTS,
+    MAX_DAG_FRONTIER_REQUIRED_CONTEXT, MAX_SELECTED_CHAIN_LOCATOR_HASHES,
     MAX_SELECTED_CHAIN_SUFFIX_HASHES,
 };
 
@@ -125,11 +125,7 @@ where
     type Value = Vec<T>;
 
     fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            formatter,
-            "a sequence with at most {} items",
-            self.maximum
-        )
+        write!(formatter, "a sequence with at most {} items", self.maximum)
     }
 
     fn visit_seq<A>(self, mut sequence: A) -> Result<Self::Value, A::Error>
