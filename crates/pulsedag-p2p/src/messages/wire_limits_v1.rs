@@ -160,14 +160,21 @@ where
     deserialize_response_limit(deserializer).map(Some)
 }
 
-/// Keep outbound `Tips` serialization byte-shape compatible with the existing
-/// protocol. Resource limits in this slice are inbound admission limits; live
-/// sender-side budgets remain enforced by the runtime.
+/// Preserve the existing byte shape for ordinary tip sets. If a live DAG has
+/// more tips than the receiver admits, sort only that oversized set and emit a
+/// deterministic prefix so same-version peers do not reject the whole response.
 pub(super) fn serialize_bounded_tips<S>(tips: &[Hash], serializer: S) -> Result<S::Ok, S::Error>
 where
     S: Serializer,
 {
-    tips.serialize(serializer)
+    if tips.len() <= MAX_INV_BLOCK_HASHES {
+        return tips.serialize(serializer);
+    }
+
+    let mut bounded = tips.to_vec();
+    bounded.sort();
+    bounded.truncate(MAX_INV_BLOCK_HASHES);
+    bounded.serialize(serializer)
 }
 
 #[cfg(test)]
@@ -259,7 +266,7 @@ mod tests {
     }
 
     #[test]
-    fn outbound_tips_serialization_preserves_order_and_duplicates() {
+    fn outbound_tips_serialization_preserves_order_and_duplicates_within_limit() {
         let tips = vec![
             "tip-z".to_string(),
             "tip-a".to_string(),
@@ -278,5 +285,35 @@ mod tests {
             .map(|value| value.as_str().expect("tip string").to_string())
             .collect::<Vec<_>>();
         assert_eq!(observed, tips);
+    }
+
+    #[test]
+    fn outbound_oversized_tips_are_deterministically_capped_and_decodable() {
+        let tips = (0..MAX_INV_BLOCK_HASHES + 3)
+            .rev()
+            .map(|idx| format!("tip-{idx:04}"))
+            .collect::<Vec<_>>();
+        let message = NetworkMessage::Tips {
+            chain_id: "testnet".into(),
+            tips,
+            inventory: None,
+        };
+
+        let encoded = serde_json::to_vec(&message).expect("oversized tips serialize");
+        let value: serde_json::Value = serde_json::from_slice(&encoded).expect("valid json");
+        let observed = value["tips"]
+            .as_array()
+            .expect("tips remain an array")
+            .iter()
+            .map(|value| value.as_str().expect("tip string").to_string())
+            .collect::<Vec<_>>();
+
+        assert_eq!(observed.len(), MAX_INV_BLOCK_HASHES);
+        assert_eq!(observed.first().map(String::as_str), Some("tip-0000"));
+        assert_eq!(
+            observed.last().map(String::as_str),
+            Some(format!("tip-{:04}", MAX_INV_BLOCK_HASHES - 1).as_str())
+        );
+        assert!(serde_json::from_slice::<NetworkMessage>(&encoded).is_ok());
     }
 }
