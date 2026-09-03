@@ -921,7 +921,10 @@ mod tests {
             serde_json::from_str(&json).expect("deserialize deterministic plan");
         assert_eq!(decoded.nonce_policy, WalletNoncePolicy::DeterministicPlanV1);
         assert_eq!(decoded.funding_snapshot, plan.funding_snapshot);
-        assert_eq!(decoded.safety_acknowledgements, plan.safety_acknowledgements);
+        assert_eq!(
+            decoded.safety_acknowledgements,
+            plan.safety_acknowledgements
+        );
         decoded.validate_structure().expect("validate round trip");
 
         decoded.transaction.nonce ^= 1;
