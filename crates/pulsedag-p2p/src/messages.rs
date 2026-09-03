@@ -164,6 +164,9 @@ pub enum NetworkMessage {
     },
     GetBlockHeaders {
         chain_id: String,
+        #[serde(
+            serialize_with = "wire_limits_v1::serialize_bounded_block_header_request_hashes"
+        )]
         hashes: Vec<Hash>,
     },
     BlockHeaders {
@@ -527,10 +530,11 @@ mod tests {
             .to_string()
             .contains("GetHeaders.limit exceeds maximum 512"));
 
-        let oversized_request = NetworkMessage::GetBlockHeaders {
-            chain_id: "testnet".into(),
-            hashes: vec!["hash".into(); P2P_WIRE_MAX_REQUEST_ITEMS_V1 + 1],
-        };
+        let oversized_request = serde_json::json!({
+            "type": "GetBlockHeaders",
+            "chain_id": "testnet",
+            "hashes": vec!["hash"; P2P_WIRE_MAX_REQUEST_ITEMS_V1 + 1],
+        });
         let encoded = serde_json::to_vec(&oversized_request).unwrap();
         let err = serde_json::from_slice::<NetworkMessage>(&encoded).unwrap_err();
         assert!(err.to_string().contains("GetBlockHeaders.hashes"));
