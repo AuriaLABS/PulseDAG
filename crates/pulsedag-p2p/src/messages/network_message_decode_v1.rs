@@ -188,11 +188,10 @@ impl NetworkMessageWire<'_> {
             }),
             NetworkMessageTag::InvBlock => Ok(NetworkMessage::InvBlock {
                 chain_id: self.chain_id,
-                hashes: parse_bounded_raw_vec::<
-                    Hash,
-                    E,
-                    { P2P_WIRE_MAX_INVENTORY_ITEMS_V1 },
-                >(self.hashes, "network inventory hashes")?,
+                hashes: parse_bounded_raw_vec::<Hash, E, { P2P_WIRE_MAX_INVENTORY_ITEMS_V1 }>(
+                    self.hashes,
+                    "network inventory hashes",
+                )?,
             }),
             NetworkMessageTag::GetHeaders => Ok(NetworkMessage::GetHeaders {
                 chain_id: self.chain_id,
@@ -290,9 +289,8 @@ mod tests {
 
     #[test]
     fn oversized_inventory_is_rejected_even_when_it_precedes_type() {
-        let hashes =
-            serde_json::to_string(&vec!["a"; P2P_WIRE_MAX_INVENTORY_ITEMS_V1 + 1])
-                .expect("serialize hashes");
+        let hashes = serde_json::to_string(&vec!["a"; P2P_WIRE_MAX_INVENTORY_ITEMS_V1 + 1])
+            .expect("serialize hashes");
         let wire = format!(r#"{{"hashes":{hashes},"chain_id":"testnet","type":"InvBlock"}}"#);
         let error = serde_json::from_str::<NetworkMessage>(&wire).unwrap_err();
         assert!(error.to_string().contains("network inventory hashes"));
@@ -313,9 +311,8 @@ mod tests {
     fn request_fanout_is_bounded_during_decode_when_type_is_last() {
         let hashes = serde_json::to_string(&vec!["a"; P2P_WIRE_MAX_REQUEST_ITEMS_V1 + 1])
             .expect("serialize hashes");
-        let wire = format!(
-            r#"{{"hashes":{hashes},"chain_id":"testnet","type":"GetBlockHeaders"}}"#
-        );
+        let wire =
+            format!(r#"{{"hashes":{hashes},"chain_id":"testnet","type":"GetBlockHeaders"}}"#);
         let error = serde_json::from_str::<NetworkMessage>(&wire).unwrap_err();
         assert!(error.to_string().contains("GetBlockHeaders.hashes"));
         assert!(error
@@ -340,9 +337,7 @@ mod tests {
             .map(|index| serde_json::json!({"hash": format!("header-{index}"), "header": header.clone()}))
             .collect::<Vec<_>>();
         let headers = serde_json::to_string(&announcements).expect("serialize headers");
-        let wire = format!(
-            r#"{{"headers":{headers},"chain_id":"testnet","type":"BlockHeaders"}}"#
-        );
+        let wire = format!(r#"{{"headers":{headers},"chain_id":"testnet","type":"BlockHeaders"}}"#);
         let error = serde_json::from_str::<NetworkMessage>(&wire).unwrap_err();
         assert!(error.to_string().contains("BlockHeaders.headers"));
         assert!(error
