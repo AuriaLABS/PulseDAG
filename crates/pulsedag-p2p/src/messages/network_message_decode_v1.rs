@@ -234,14 +234,9 @@ mod tests {
 
     #[test]
     fn oversized_vector_is_rejected_even_when_it_precedes_type() {
-        let hashes = serde_json::to_string(&vec![
-            "a";
-            P2P_WIRE_MAX_INVENTORY_ITEMS_V1 + 1
-        ])
-        .expect("serialize hashes");
-        let wire = format!(
-            r#"{{"hashes":{hashes},"chain_id":"testnet","type":"InvBlock"}}"#
-        );
+        let hashes = serde_json::to_string(&vec!["a"; P2P_WIRE_MAX_INVENTORY_ITEMS_V1 + 1])
+            .expect("serialize hashes");
+        let wire = format!(r#"{{"hashes":{hashes},"chain_id":"testnet","type":"InvBlock"}}"#);
         let error = serde_json::from_str::<NetworkMessage>(&wire).unwrap_err();
         assert!(error.to_string().contains("network inventory hashes"));
         assert!(error
