@@ -160,6 +160,19 @@ where
     bounded.serialize(serializer)
 }
 
+/// Keep outbound block-header requests inside the same live fanout budget the
+/// receiver enforces. Oversized calls retain the runtime's historical prefix
+/// semantics instead of publishing a same-version message that will be rejected.
+pub(super) fn serialize_bounded_block_header_request_hashes<S>(
+    hashes: &[Hash],
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    hashes[..hashes.len().min(MAX_INV_BLOCK_REQUEST_FANOUT)].serialize(serializer)
+}
+
 #[cfg(test)]
 mod tests {
     use pulsedag_core::types::BlockHeader;
@@ -296,6 +309,34 @@ mod tests {
         assert_eq!(
             observed.last().map(String::as_str),
             Some(format!("tip-{:04}", MAX_INV_BLOCK_HASHES - 1).as_str())
+        );
+        assert!(serde_json::from_slice::<NetworkMessage>(&encoded).is_ok());
+    }
+
+    #[test]
+    fn outbound_block_header_requests_are_capped_at_live_fanout_and_decodable() {
+        let hashes = (0..MAX_INV_BLOCK_REQUEST_FANOUT + 1)
+            .map(|idx| format!("hash-{idx:03}"))
+            .collect::<Vec<_>>();
+        let message = NetworkMessage::GetBlockHeaders {
+            chain_id: "testnet".into(),
+            hashes,
+        };
+
+        let encoded = serde_json::to_vec(&message).expect("block-header request serializes");
+        let value: serde_json::Value = serde_json::from_slice(&encoded).expect("valid json");
+        let observed = value["hashes"]
+            .as_array()
+            .expect("hashes remain an array")
+            .iter()
+            .map(|value| value.as_str().expect("hash string").to_string())
+            .collect::<Vec<_>>();
+
+        assert_eq!(observed.len(), MAX_INV_BLOCK_REQUEST_FANOUT);
+        assert_eq!(observed.first().map(String::as_str), Some("hash-000"));
+        assert_eq!(
+            observed.last().map(String::as_str),
+            Some(format!("hash-{:03}", MAX_INV_BLOCK_REQUEST_FANOUT - 1).as_str())
         );
         assert!(serde_json::from_slice::<NetworkMessage>(&encoded).is_ok());
     }
