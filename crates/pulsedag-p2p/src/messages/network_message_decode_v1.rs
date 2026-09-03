@@ -140,10 +140,7 @@ where
     value.ok_or_else(|| E::missing_field(field))
 }
 
-fn parse_optional_raw<T, E>(
-    raw: Option<&RawValue>,
-    field: &'static str,
-) -> Result<Option<T>, E>
+fn parse_optional_raw<T, E>(raw: Option<&RawValue>, field: &'static str) -> Result<Option<T>, E>
 where
     T: DeserializeOwned,
     E: de::Error,
@@ -243,11 +240,10 @@ impl NetworkMessageWire<'_> {
             }),
             NetworkMessageTag::GetHeaders => Ok(NetworkMessage::GetHeaders {
                 chain_id: self.chain_id,
-                locator: parse_bounded_raw_vec::<
-                    Hash,
-                    E,
-                    { MAX_SELECTED_CHAIN_LOCATOR_HASHES },
-                >(self.locator, "GetHeaders.locator")?,
+                locator: parse_bounded_raw_vec::<Hash, E, { MAX_SELECTED_CHAIN_LOCATOR_HASHES }>(
+                    self.locator,
+                    "GetHeaders.locator",
+                )?,
                 stop_hash: parse_optional_raw(self.stop_hash, "stop_hash")?,
                 limit: parse_response_limit(self.limit)?,
             }),
