@@ -13,10 +13,10 @@ use std::{
 
 use pulsedag_core::types::Utxo;
 use pulsedag_wallet::{
-    build_deterministic_transaction_plan_with_safety,
-    derive_wallet_key_from_seed, encrypt_wallet_seed, wallet_seed_from_mnemonic, SecretString,
-    WalletDerivationBranch, WalletKeystoreFile, WalletNetworkContext, WalletNetworkIdentity,
-    WalletNoncePolicy, WalletPlanSigner, WalletPlanSigningSessionExt, WalletReviewSummary,
+    build_deterministic_transaction_plan_with_safety, derive_wallet_key_from_seed,
+    encrypt_wallet_seed, wallet_seed_from_mnemonic, SecretString, WalletDerivationBranch,
+    WalletKeystoreFile, WalletNetworkContext, WalletNetworkIdentity, WalletNoncePolicy,
+    WalletPlanSigner, WalletPlanSigningSessionExt, WalletReviewSummary,
     WalletSafetyAcknowledgements, WalletSession, WalletSpendPolicy, WalletTransactionIntent,
     WalletTransactionPlan, WalletUnlockPolicy, WalletWatchOnly, WalletWatchOnlyBranch,
     WalletWatchOnlyManifest, WalletWatchOnlyScope, WalletWatchOnlySessionExt,
@@ -1181,8 +1181,10 @@ mod tests {
             coinbase: false,
             height: 1,
         }];
-        let plan = pulsedag_wallet::build_deterministic_transaction_plan(network, policy, intent, &available)
-            .expect("plan");
+        let plan = pulsedag_wallet::build_deterministic_transaction_plan(
+            network, policy, intent, &available,
+        )
+        .expect("plan");
         fs::write(&path, serde_json::to_vec(&plan).unwrap()).unwrap();
         assert_eq!(
             read_transaction_plan(&path)
