@@ -83,7 +83,7 @@ pub struct WalletPendingJournal {
 
 impl WalletPendingJournal {
     pub fn new(network: WalletNetworkIdentity) -> Result<Self, WalletPendingError> {
-        network.validate().map_err(WalletPendingError::Network)?;
+        network.validate().map_err(WalletPendingError::Plan)?;
         Ok(Self {
             format: WALLET_PENDING_JOURNAL_FORMAT.to_string(),
             version: WALLET_PENDING_JOURNAL_VERSION,
@@ -102,7 +102,7 @@ impl WalletPendingJournal {
         if self.version != WALLET_PENDING_JOURNAL_VERSION {
             return Err(WalletPendingError::UnsupportedVersion(self.version));
         }
-        self.network.validate().map_err(WalletPendingError::Network)?;
+        self.network.validate().map_err(WalletPendingError::Plan)?;
 
         for (index, entry) in self.entries.iter().enumerate() {
             entry.validate()?;
@@ -144,7 +144,7 @@ impl WalletPendingJournal {
         self.validate()?;
         self.network
             .ensure_matches(observed)
-            .map_err(WalletPendingError::Network)
+            .map_err(WalletPendingError::Plan)
     }
 
     /// Add one signed transaction reservation. Repeating the exact same
@@ -316,7 +316,7 @@ pub enum WalletPendingError {
         reason: &'static str,
     },
     UnsupportedVersion(u32),
-    Network(WalletPlanError),
+    Plan(WalletPlanError),
     DuplicateTransaction(String),
     DuplicateOutpoint,
     ConflictingReservations,
@@ -341,7 +341,7 @@ impl fmt::Display for WalletPendingError {
             Self::UnsupportedVersion(version) => {
                 write!(f, "unsupported wallet pending journal version: {version}")
             }
-            Self::Network(error) => write!(f, "wallet pending network validation failed: {error}"),
+            Self::Plan(error) => write!(f, "wallet pending validation failed: {error}"),
             Self::DuplicateTransaction(txid) => {
                 write!(f, "wallet pending journal contains duplicate txid: {txid}")
             }
@@ -374,7 +374,7 @@ impl fmt::Display for WalletPendingError {
 impl Error for WalletPendingError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
-            Self::Network(error) => Some(error),
+            Self::Plan(error) => Some(error),
             _ => None,
         }
     }
@@ -412,7 +412,7 @@ fn transition_allowed(current: WalletPendingState, next: WalletPendingState) -> 
 fn validate_wallet_address(value: &str) -> Result<(), WalletPendingError> {
     WalletTransactionIntent::new(value, value, 1, 0)
         .map(|_| ())
-        .map_err(WalletPendingError::Network)
+        .map_err(WalletPendingError::Plan)
 }
 
 fn validate_txid(value: &str) -> Result<(), WalletPendingError> {
