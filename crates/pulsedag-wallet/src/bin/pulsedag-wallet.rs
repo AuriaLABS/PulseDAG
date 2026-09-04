@@ -191,6 +191,7 @@ struct AddressUtxosResponse {
 #[derive(Debug, Deserialize)]
 struct AddressUtxosData {
     address: String,
+    count: usize,
     utxos: Vec<Utxo>,
 }
 
@@ -551,6 +552,9 @@ fn load_address_utxos(path: &Path, expected_address: &str) -> CliResult<Vec<Utxo
         .ok_or_else(|| invalid_input("UTXO API response is missing data"))?;
     if data.address != expected_address {
         return Err(invalid_input("UTXO response address does not match selected signer").into());
+    }
+    if data.count != data.utxos.len() {
+        return Err(invalid_input("UTXO response count does not match entries").into());
     }
     if data
         .utxos
@@ -1150,6 +1154,44 @@ mod tests {
                     "coinbase": false,
                     "height": 1
                 }]
+            },
+            "error": null,
+            "meta": {}
+        });
+        fs::write(&path, serde_json::to_vec(&response).unwrap()).unwrap();
+        assert!(load_address_utxos(&path, "pulse1sender").is_err());
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn address_utxo_parser_rejects_declared_count_mismatch() {
+        let dir = std::env::temp_dir().join(format!(
+            "pulsedag-wallet-cli-utxo-count-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("utxos.json");
+        let response = serde_json::json!({
+            "ok": true,
+            "data": {
+                "address": "pulse1sender",
+                "count": 1,
+                "utxos": [
+                    {
+                        "outpoint": {"txid": "11".repeat(32), "index": 0},
+                        "address": "pulse1sender",
+                        "amount": 410,
+                        "coinbase": false,
+                        "height": 1
+                    },
+                    {
+                        "outpoint": {"txid": "22".repeat(32), "index": 0},
+                        "address": "pulse1sender",
+                        "amount": 1,
+                        "coinbase": false,
+                        "height": 2
+                    }
+                ]
             },
             "error": null,
             "meta": {}
