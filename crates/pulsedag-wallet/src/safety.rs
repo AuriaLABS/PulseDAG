@@ -126,7 +126,11 @@ impl WalletFundingSnapshot {
             ));
         }
         for entry in &selected {
-            if !self.entries.iter().any(|funding| funding == entry) {
+            if self
+                .entries
+                .binary_search_by(|funding| compare_entries(funding, entry))
+                .is_err()
+            {
                 return Err(PulseError::InvalidTransaction(
                     "wallet plan selects an input absent from its funding snapshot".into(),
                 ));
@@ -189,14 +193,19 @@ fn canonical_selected_entries(
     Ok(entries)
 }
 
+fn compare_entries(
+    left: &WalletFundingEntry,
+    right: &WalletFundingEntry,
+) -> std::cmp::Ordering {
+    left.outpoint
+        .txid
+        .cmp(&right.outpoint.txid)
+        .then_with(|| left.outpoint.index.cmp(&right.outpoint.index))
+        .then_with(|| left.amount.cmp(&right.amount))
+}
+
 fn sort_entries(entries: &mut [WalletFundingEntry]) {
-    entries.sort_by(|left, right| {
-        left.outpoint
-            .txid
-            .cmp(&right.outpoint.txid)
-            .then_with(|| left.outpoint.index.cmp(&right.outpoint.index))
-            .then_with(|| left.amount.cmp(&right.amount))
-    });
+    entries.sort_by(compare_entries);
 }
 
 fn validate_unique_outpoints(entries: &[WalletFundingEntry]) -> Result<(), PulseError> {
