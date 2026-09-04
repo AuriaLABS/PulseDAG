@@ -2,11 +2,13 @@ pub mod capability_carrier_v1;
 pub mod dag_sync_v2;
 pub mod frontier_reconcile_v1;
 pub mod frontier_response_v1;
+mod network_message_decode_v1;
 pub mod protocol_v2;
 pub mod recovery_progress_v1;
 pub mod selected_locator_v1;
 pub mod sync_carrier_v1;
 pub mod sync_wire_v2;
+mod wire_limits_v1;
 
 use serde::{Deserialize, Deserializer, Serialize};
 
@@ -54,6 +56,7 @@ pub use sync_wire_v2::{
     plan_protocol_sync_dispatch_v1, ProtocolSyncDispatchActionV1, ProtocolSyncDispatchPlanV1,
     ProtocolSyncWireError, ProtocolSyncWireV1,
 };
+pub use wire_limits_v1::{P2P_WIRE_MAX_INVENTORY_ITEMS_V1, P2P_WIRE_MAX_REQUEST_ITEMS_V1};
 
 fn supported_header_version(version: u32) -> bool {
     matches!(version, BLOCK_HEADER_VERSION_V1 | BLOCK_HEADER_VERSION_V2)
@@ -70,21 +73,6 @@ where
         Err(serde::de::Error::custom(format!(
             "unsupported block header version {}",
             header.version
-        )))
-    }
-}
-
-fn deserialize_supported_block<'de, D>(deserializer: D) -> Result<Block, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let block = Block::deserialize(deserializer)?;
-    if supported_header_version(block.header.version) {
-        Ok(block)
-    } else {
-        Err(serde::de::Error::custom(format!(
-            "unsupported block header version {}",
-            block.header.version
         )))
     }
 }
@@ -131,7 +119,7 @@ pub struct TipInventoryStatus {
     pub inventory_generation: u64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type")]
 pub enum NetworkMessage {
     NewTransaction {
@@ -140,7 +128,6 @@ pub enum NetworkMessage {
     },
     NewBlock {
         chain_id: String,
-        #[serde(deserialize_with = "deserialize_supported_block")]
         block: Block,
     },
     BlockAnnounce {
@@ -167,17 +154,17 @@ pub enum NetworkMessage {
     },
     GetTips {
         chain_id: String,
-        #[serde(default)]
         inventory: Option<TipInventoryStatus>,
     },
     Tips {
         chain_id: String,
+        #[serde(serialize_with = "wire_limits_v1::serialize_bounded_tips")]
         tips: Vec<Hash>,
-        #[serde(default)]
         inventory: Option<TipInventoryStatus>,
     },
     GetBlockHeaders {
         chain_id: String,
+        #[serde(serialize_with = "wire_limits_v1::serialize_bounded_block_header_request_hashes")]
         hashes: Vec<Hash>,
     },
     BlockHeaders {
@@ -187,27 +174,19 @@ pub enum NetworkMessage {
     GetBlock {
         chain_id: String,
         hash: Hash,
-        #[serde(default)]
         request_id: Option<String>,
-        #[serde(default)]
         requesting_peer_id: Option<String>,
-        #[serde(default)]
         requested_peer_id: Option<String>,
-        #[serde(default)]
         request_kind: Option<String>,
     },
     BlockData {
         chain_id: String,
-        #[serde(default, deserialize_with = "deserialize_supported_optional_block")]
         block: Option<Block>,
-        #[serde(default)]
         request_id: Option<String>,
-        #[serde(default)]
         request_hash: Option<Hash>,
     },
     Block {
         chain_id: String,
-        #[serde(deserialize_with = "deserialize_supported_block")]
         block: Block,
     },
     Reject {
@@ -484,6 +463,79 @@ mod tests {
         assert!(err
             .to_string()
             .contains("unsupported block header version 99"));
+    }
+
+    #[test]
+    fn bounded_wire_vectors_reject_resource_amplifying_shapes() {
+        let inventory_at_limit = NetworkMessage::InvBlock {
+            chain_id: "testnet".into(),
+            hashes: vec!["hash".into(); P2P_WIRE_MAX_INVENTORY_ITEMS_V1],
+        };
+        let encoded = serde_json::to_vec(&inventory_at_limit).unwrap();
+        assert!(serde_json::from_slice::<NetworkMessage>(&encoded).is_ok());
+
+        let locator_at_limit = NetworkMessage::GetHeaders {
+            chain_id: "testnet".into(),
+            locator: vec!["hash".into(); MAX_SELECTED_CHAIN_LOCATOR_HASHES],
+            stop_hash: None,
+            limit: 1,
+        };
+        let encoded = serde_json::to_vec(&locator_at_limit).unwrap();
+        assert!(serde_json::from_slice::<NetworkMessage>(&encoded).is_ok());
+
+        let limit_at_max = NetworkMessage::GetHeaders {
+            chain_id: "testnet".into(),
+            locator: vec!["hash".into()],
+            stop_hash: None,
+            limit: P2P_WIRE_MAX_INVENTORY_ITEMS_V1,
+        };
+        let encoded = serde_json::to_vec(&limit_at_max).unwrap();
+        assert!(serde_json::from_slice::<NetworkMessage>(&encoded).is_ok());
+
+        let request_at_limit = NetworkMessage::GetBlockHeaders {
+            chain_id: "testnet".into(),
+            hashes: vec!["hash".into(); P2P_WIRE_MAX_REQUEST_ITEMS_V1],
+        };
+        let encoded = serde_json::to_vec(&request_at_limit).unwrap();
+        assert!(serde_json::from_slice::<NetworkMessage>(&encoded).is_ok());
+        let oversized_inventory = NetworkMessage::InvBlock {
+            chain_id: "testnet".into(),
+            hashes: vec!["hash".into(); P2P_WIRE_MAX_INVENTORY_ITEMS_V1 + 1],
+        };
+        let encoded = serde_json::to_vec(&oversized_inventory).unwrap();
+        let err = serde_json::from_slice::<NetworkMessage>(&encoded).unwrap_err();
+        assert!(err.to_string().contains("maximum item count 512"));
+
+        let oversized_locator = NetworkMessage::GetHeaders {
+            chain_id: "testnet".into(),
+            locator: vec!["hash".into(); MAX_SELECTED_CHAIN_LOCATOR_HASHES + 1],
+            stop_hash: None,
+            limit: 1,
+        };
+        let encoded = serde_json::to_vec(&oversized_locator).unwrap();
+        let err = serde_json::from_slice::<NetworkMessage>(&encoded).unwrap_err();
+        assert!(err.to_string().contains("GetHeaders.locator"));
+
+        let oversized_limit = NetworkMessage::GetHeaders {
+            chain_id: "testnet".into(),
+            locator: vec!["hash".into()],
+            stop_hash: None,
+            limit: P2P_WIRE_MAX_INVENTORY_ITEMS_V1 + 1,
+        };
+        let encoded = serde_json::to_vec(&oversized_limit).unwrap();
+        let err = serde_json::from_slice::<NetworkMessage>(&encoded).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("GetHeaders.limit exceeds maximum 512"));
+
+        let oversized_request = serde_json::json!({
+            "type": "GetBlockHeaders",
+            "chain_id": "testnet",
+            "hashes": vec!["hash"; P2P_WIRE_MAX_REQUEST_ITEMS_V1 + 1],
+        });
+        let encoded = serde_json::to_vec(&oversized_request).unwrap();
+        let err = serde_json::from_slice::<NetworkMessage>(&encoded).unwrap_err();
+        assert!(err.to_string().contains("GetBlockHeaders.hashes"));
     }
 
     #[test]
