@@ -1,0 +1,343 @@
+use std::fmt;
+use std::marker::PhantomData;
+
+use pulsedag_core::types::Hash;
+use serde::de::{Error as _, IgnoredAny, SeqAccess, Visitor};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+use super::dag_sync_v2::MAX_SELECTED_CHAIN_LOCATOR_HASHES;
+use crate::{MAX_INV_BLOCK_HASHES, MAX_INV_BLOCK_REQUEST_FANOUT};
+
+/// Public wire view of the live inventory budget. The value is deliberately
+/// sourced from the runtime constant so decoder/runtime limits cannot drift.
+pub const P2P_WIRE_MAX_INVENTORY_ITEMS_V1: usize = MAX_INV_BLOCK_HASHES;
+/// Public wire view of the live request-fanout budget.
+pub const P2P_WIRE_MAX_REQUEST_ITEMS_V1: usize = MAX_INV_BLOCK_REQUEST_FANOUT;
+
+struct BoundedVecVisitor<T> {
+    maximum: usize,
+    field: &'static str,
+    marker: PhantomData<T>,
+}
+
+impl<T> BoundedVecVisitor<T> {
+    fn new(maximum: usize, field: &'static str) -> Self {
+        Self {
+            maximum,
+            field,
+            marker: PhantomData,
+        }
+    }
+}
+
+impl<'de, T> Visitor<'de> for BoundedVecVisitor<T>
+where
+    T: Deserialize<'de>,
+{
+    type Value = Vec<T>;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "{} with at most {} items",
+            self.field, self.maximum
+        )
+    }
+
+    fn visit_seq<A>(self, mut sequence: A) -> Result<Self::Value, A::Error>
+    where
+        A: SeqAccess<'de>,
+    {
+        let capacity = sequence.size_hint().unwrap_or(0).min(self.maximum);
+        let mut values = Vec::with_capacity(capacity);
+
+        while values.len() < self.maximum {
+            match sequence.next_element::<T>()? {
+                Some(value) => values.push(value),
+                None => return Ok(values),
+            }
+        }
+
+        if sequence.next_element::<IgnoredAny>()?.is_some() {
+            return Err(A::Error::custom(format!(
+                "{} exceeds maximum item count {}",
+                self.field, self.maximum
+            )));
+        }
+
+        Ok(values)
+    }
+}
+
+fn deserialize_bounded_vec<'de, D, T>(
+    deserializer: D,
+    maximum: usize,
+    field: &'static str,
+) -> Result<Vec<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    deserializer.deserialize_seq(BoundedVecVisitor::<T>::new(maximum, field))
+}
+
+fn deserialize_inventory_hashes<'de, D>(deserializer: D) -> Result<Vec<Hash>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserialize_bounded_vec(
+        deserializer,
+        MAX_INV_BLOCK_HASHES,
+        "network inventory hashes",
+    )
+}
+
+fn deserialize_locator_hashes<'de, D>(deserializer: D) -> Result<Vec<Hash>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserialize_bounded_vec(
+        deserializer,
+        MAX_SELECTED_CHAIN_LOCATOR_HASHES,
+        "GetHeaders.locator",
+    )
+}
+
+fn deserialize_response_limit<'de, D>(deserializer: D) -> Result<usize, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let limit = usize::deserialize(deserializer)?;
+    if limit > MAX_INV_BLOCK_HASHES {
+        return Err(D::Error::custom(format!(
+            "GetHeaders.limit exceeds maximum {MAX_INV_BLOCK_HASHES}"
+        )));
+    }
+    Ok(limit)
+}
+
+pub(super) fn deserialize_optional_inventory_hashes<'de, D>(
+    deserializer: D,
+) -> Result<Option<Vec<Hash>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserialize_inventory_hashes(deserializer).map(Some)
+}
+
+pub(super) fn deserialize_optional_locator_hashes<'de, D>(
+    deserializer: D,
+) -> Result<Option<Vec<Hash>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserialize_locator_hashes(deserializer).map(Some)
+}
+
+pub(super) fn deserialize_optional_response_limit<'de, D>(
+    deserializer: D,
+) -> Result<Option<usize>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserialize_response_limit(deserializer).map(Some)
+}
+
+/// Preserve the existing byte shape for ordinary tip sets. If a live DAG has
+/// more tips than the receiver admits, sort only that oversized set and emit a
+/// deterministic prefix so same-version peers do not reject the whole response.
+pub(super) fn serialize_bounded_tips<S>(tips: &[Hash], serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    if tips.len() <= MAX_INV_BLOCK_HASHES {
+        return tips.serialize(serializer);
+    }
+
+    let mut bounded = tips.to_vec();
+    bounded.sort();
+    bounded.truncate(MAX_INV_BLOCK_HASHES);
+    bounded.serialize(serializer)
+}
+
+/// Keep outbound block-header requests inside the same live fanout budget the
+/// receiver enforces. Oversized calls retain the runtime's historical prefix
+/// semantics instead of publishing a same-version message that will be rejected.
+pub(super) fn serialize_bounded_block_header_request_hashes<S>(
+    hashes: &[Hash],
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    hashes[..hashes.len().min(MAX_INV_BLOCK_REQUEST_FANOUT)].serialize(serializer)
+}
+
+#[cfg(test)]
+mod tests {
+    use pulsedag_core::types::BlockHeader;
+
+    use super::*;
+    use crate::messages::{BlockHeaderAnnouncement, HeaderInventory, NetworkMessage};
+
+    fn header() -> BlockHeader {
+        BlockHeader {
+            version: 1,
+            parents: vec!["parent".into()],
+            timestamp: 1,
+            difficulty: 1,
+            nonce: 1,
+            merkle_root: "merkle".into(),
+            state_root: "state".into(),
+            blue_score: 1,
+            height: 1,
+        }
+    }
+
+    fn decode(message: &NetworkMessage) -> Result<NetworkMessage, serde_json::Error> {
+        let encoded = serde_json::to_vec(message).expect("wire fixture serializes");
+        serde_json::from_slice(&encoded)
+    }
+
+    #[test]
+    fn exact_wire_boundaries_are_accepted() {
+        assert!(decode(&NetworkMessage::GetHeaders {
+            chain_id: "testnet".into(),
+            locator: vec!["hash".into(); MAX_SELECTED_CHAIN_LOCATOR_HASHES],
+            stop_hash: None,
+            limit: MAX_INV_BLOCK_HASHES,
+        })
+        .is_ok());
+
+        assert!(decode(&NetworkMessage::GetBlockHeaders {
+            chain_id: "testnet".into(),
+            hashes: vec!["hash".into(); MAX_INV_BLOCK_REQUEST_FANOUT],
+        })
+        .is_ok());
+
+        let header_inventory = HeaderInventory {
+            hash: "header".into(),
+            header: header(),
+        };
+        assert!(decode(&NetworkMessage::Headers {
+            chain_id: "testnet".into(),
+            headers: vec![header_inventory; MAX_INV_BLOCK_HASHES],
+        })
+        .is_ok());
+
+        let announcement = BlockHeaderAnnouncement {
+            hash: "header".into(),
+            header: header(),
+        };
+        assert!(decode(&NetworkMessage::BlockHeaders {
+            chain_id: "testnet".into(),
+            headers: vec![announcement; MAX_INV_BLOCK_REQUEST_FANOUT],
+        })
+        .is_ok());
+    }
+
+    #[test]
+    fn oversized_response_vectors_are_rejected_during_decode() {
+        let header_inventory = HeaderInventory {
+            hash: "header".into(),
+            header: header(),
+        };
+        let error = decode(&NetworkMessage::Headers {
+            chain_id: "testnet".into(),
+            headers: vec![header_inventory; MAX_INV_BLOCK_HASHES + 1],
+        })
+        .unwrap_err();
+        assert!(error.to_string().contains("Headers.headers"));
+
+        let announcement = BlockHeaderAnnouncement {
+            hash: "header".into(),
+            header: header(),
+        };
+        let error = decode(&NetworkMessage::BlockHeaders {
+            chain_id: "testnet".into(),
+            headers: vec![announcement; MAX_INV_BLOCK_REQUEST_FANOUT + 1],
+        })
+        .unwrap_err();
+        assert!(error.to_string().contains("BlockHeaders.headers"));
+    }
+
+    #[test]
+    fn outbound_tips_serialization_preserves_order_and_duplicates_within_limit() {
+        let tips = vec![
+            "tip-z".to_string(),
+            "tip-a".to_string(),
+            "tip-a".to_string(),
+        ];
+        let value = serde_json::to_value(NetworkMessage::Tips {
+            chain_id: "testnet".into(),
+            tips: tips.clone(),
+            inventory: None,
+        })
+        .expect("tips serialize");
+        let observed = value["tips"]
+            .as_array()
+            .expect("tips remain an array")
+            .iter()
+            .map(|value| value.as_str().expect("tip string").to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(observed, tips);
+    }
+
+    #[test]
+    fn outbound_oversized_tips_are_deterministically_capped_and_decodable() {
+        let tips = (0..MAX_INV_BLOCK_HASHES + 3)
+            .rev()
+            .map(|idx| format!("tip-{idx:04}"))
+            .collect::<Vec<_>>();
+        let message = NetworkMessage::Tips {
+            chain_id: "testnet".into(),
+            tips,
+            inventory: None,
+        };
+
+        let encoded = serde_json::to_vec(&message).expect("oversized tips serialize");
+        let value: serde_json::Value = serde_json::from_slice(&encoded).expect("valid json");
+        let observed = value["tips"]
+            .as_array()
+            .expect("tips remain an array")
+            .iter()
+            .map(|value| value.as_str().expect("tip string").to_string())
+            .collect::<Vec<_>>();
+
+        assert_eq!(observed.len(), MAX_INV_BLOCK_HASHES);
+        assert_eq!(observed.first().map(String::as_str), Some("tip-0000"));
+        assert_eq!(
+            observed.last().map(String::as_str),
+            Some(format!("tip-{:04}", MAX_INV_BLOCK_HASHES - 1).as_str())
+        );
+        assert!(serde_json::from_slice::<NetworkMessage>(&encoded).is_ok());
+    }
+
+    #[test]
+    fn outbound_block_header_requests_are_capped_at_live_fanout_and_decodable() {
+        let hashes = (0..MAX_INV_BLOCK_REQUEST_FANOUT + 1)
+            .map(|idx| format!("hash-{idx:03}"))
+            .collect::<Vec<_>>();
+        let message = NetworkMessage::GetBlockHeaders {
+            chain_id: "testnet".into(),
+            hashes,
+        };
+
+        let encoded = serde_json::to_vec(&message).expect("block-header request serializes");
+        let value: serde_json::Value = serde_json::from_slice(&encoded).expect("valid json");
+        let observed = value["hashes"]
+            .as_array()
+            .expect("hashes remain an array")
+            .iter()
+            .map(|value| value.as_str().expect("hash string").to_string())
+            .collect::<Vec<_>>();
+
+        assert_eq!(observed.len(), MAX_INV_BLOCK_REQUEST_FANOUT);
+        assert_eq!(observed.first().map(String::as_str), Some("hash-000"));
+        assert_eq!(
+            observed.last().map(String::as_str),
+            Some(format!("hash-{:03}", MAX_INV_BLOCK_REQUEST_FANOUT - 1).as_str())
+        );
+        assert!(serde_json::from_slice::<NetworkMessage>(&encoded).is_ok());
+    }
+}
