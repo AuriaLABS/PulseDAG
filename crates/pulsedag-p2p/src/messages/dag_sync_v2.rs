@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 
 use pulsedag_core::{
     types::Hash, BlockConsensusMetadataV1, ProtocolActivationIdentity,
-    CONSENSUS_METADATA_SCHEMA_VERSION,
+    CONSENSUS_METADATA_SCHEMA_VERSION, GHOSTDAG_V1_MAX_MERGE_SET_BLOCKS,
 };
 use serde::{Deserialize, Serialize};
 
@@ -112,6 +112,11 @@ pub enum DagSyncContractError {
     InvalidBlueWork {
         hash: Hash,
     },
+    MergeSetTooLarge {
+        hash: Hash,
+        observed: usize,
+        maximum: usize,
+    },
     MergeSetBluesNotCanonical {
         hash: Hash,
     },
@@ -207,6 +212,18 @@ impl DagFrontierEntryV1 {
         if self.consensus.blue_work_decimal.parse::<u128>().is_err() {
             return Err(DagSyncContractError::InvalidBlueWork {
                 hash: self.hash.clone(),
+            });
+        }
+        let merge_set_len = self
+            .consensus
+            .merge_set_blues
+            .len()
+            .saturating_add(self.consensus.merge_set_reds.len());
+        if merge_set_len > GHOSTDAG_V1_MAX_MERGE_SET_BLOCKS {
+            return Err(DagSyncContractError::MergeSetTooLarge {
+                hash: self.hash.clone(),
+                observed: merge_set_len,
+                maximum: GHOSTDAG_V1_MAX_MERGE_SET_BLOCKS,
             });
         }
         if !is_strictly_sorted_unique(&self.consensus.merge_set_blues)
@@ -421,6 +438,34 @@ mod tests {
     #[test]
     fn complete_frontier_shape_is_accepted() {
         assert_eq!(valid_response().validate_shape(), Ok(()));
+    }
+
+    #[test]
+    fn frontier_merge_set_budget_is_shared_across_colors() {
+        let mut response = valid_response();
+        let blue_count = GHOSTDAG_V1_MAX_MERGE_SET_BLOCKS / 2;
+        let red_count = GHOSTDAG_V1_MAX_MERGE_SET_BLOCKS - blue_count;
+        response.frontier[0].consensus.merge_set_blues = (0..blue_count)
+            .map(|index| format!("blue-{index:04}"))
+            .collect();
+        response.frontier[0].consensus.merge_set_reds = (0..red_count)
+            .map(|index| format!("red-{index:04}"))
+            .collect();
+        assert_eq!(response.validate_shape(), Ok(()));
+
+        response.frontier[0]
+            .consensus
+            .merge_set_reds
+            .push(format!("red-{red_count:04}"));
+        assert!(matches!(
+            response.validate_shape(),
+            Err(DagSyncContractError::MergeSetTooLarge {
+                observed,
+                maximum,
+                ..
+            }) if observed == GHOSTDAG_V1_MAX_MERGE_SET_BLOCKS + 1
+                && maximum == GHOSTDAG_V1_MAX_MERGE_SET_BLOCKS
+        ));
     }
 
     #[test]
