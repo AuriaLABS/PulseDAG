@@ -1182,10 +1182,12 @@ mod tests {
 
     #[test]
     fn high_fee_warning_thresholds_must_not_exceed_hard_caps() {
-        assert!(WalletSpendPolicy::new_with_high_fee_thresholds(100, 1_000, 8, 101, 1_000)
-            .is_err());
-        assert!(WalletSpendPolicy::new_with_high_fee_thresholds(100, 1_000, 8, 100, 1_001)
-            .is_err());
+        assert!(
+            WalletSpendPolicy::new_with_high_fee_thresholds(100, 1_000, 8, 101, 1_000).is_err()
+        );
+        assert!(
+            WalletSpendPolicy::new_with_high_fee_thresholds(100, 1_000, 8, 100, 1_001).is_err()
+        );
     }
 
     #[test]
