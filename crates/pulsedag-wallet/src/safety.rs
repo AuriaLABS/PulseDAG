@@ -16,6 +16,7 @@ pub const WALLET_FUNDING_SNAPSHOT_DOMAIN_V1: &str = "PulseDAG:wallet-funding-sna
 pub struct WalletSafetyAcknowledgements {
     pub self_send: bool,
     pub spend_all: bool,
+    pub high_fee: bool,
 }
 
 impl WalletSafetyAcknowledgements {
@@ -23,13 +24,25 @@ impl WalletSafetyAcknowledgements {
         Self {
             self_send: false,
             spend_all: false,
+            high_fee: false,
         }
     }
 
+    /// Backward source-compatible constructor for the pre-high-fee API.
+    /// High-fee acknowledgement remains fail-closed unless explicitly supplied.
     pub const fn new(self_send: bool, spend_all: bool) -> Self {
         Self {
             self_send,
             spend_all,
+            high_fee: false,
+        }
+    }
+
+    pub const fn new_with_high_fee(self_send: bool, spend_all: bool, high_fee: bool) -> Self {
+        Self {
+            self_send,
+            spend_all,
+            high_fee,
         }
     }
 }
@@ -150,6 +163,8 @@ impl WalletFundingSnapshot {
     }
 }
 
+/// Preserve the pre-high-fee public validation helper for source compatibility.
+/// New transaction-plan validation uses the high-fee-aware variant below.
 pub fn validate_wallet_safety_acknowledgements(
     acknowledgements: WalletSafetyAcknowledgements,
     from: &str,
@@ -169,6 +184,33 @@ pub fn validate_wallet_safety_acknowledgements(
     if snapshot.is_spend_all(selected_utxos, total_input, change)? && !acknowledgements.spend_all {
         return Err(PulseError::InvalidTransaction(
             "wallet spend-all requires explicit acknowledgement".into(),
+        ));
+    }
+    Ok(())
+}
+
+pub fn validate_wallet_safety_acknowledgements_with_high_fee(
+    acknowledgements: WalletSafetyAcknowledgements,
+    from: &str,
+    to: &str,
+    snapshot: &WalletFundingSnapshot,
+    selected_utxos: &[SelectedUtxo],
+    total_input: u64,
+    change: u64,
+    high_fee: bool,
+) -> Result<(), PulseError> {
+    validate_wallet_safety_acknowledgements(
+        acknowledgements,
+        from,
+        to,
+        snapshot,
+        selected_utxos,
+        total_input,
+        change,
+    )?;
+    if high_fee && !acknowledgements.high_fee {
+        return Err(PulseError::InvalidTransaction(
+            "wallet high-fee transaction requires explicit acknowledgement".into(),
         ));
     }
     Ok(())
@@ -343,6 +385,46 @@ mod tests {
             &selected,
             10,
             0,
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn high_fee_requires_explicit_acknowledgement_only_when_flagged() {
+        let snapshot = WalletFundingSnapshot::from_utxos(&[utxo("a", 0, 10)]).unwrap();
+        let selected = vec![selected("a", 0, 10)];
+
+        assert!(validate_wallet_safety_acknowledgements_with_high_fee(
+            WalletSafetyAcknowledgements::none(),
+            "pulse1source",
+            "pulse1other",
+            &snapshot,
+            &selected,
+            10,
+            1,
+            true,
+        )
+        .is_err());
+        assert!(validate_wallet_safety_acknowledgements_with_high_fee(
+            WalletSafetyAcknowledgements::new_with_high_fee(false, false, true),
+            "pulse1source",
+            "pulse1other",
+            &snapshot,
+            &selected,
+            10,
+            1,
+            true,
+        )
+        .is_ok());
+        assert!(validate_wallet_safety_acknowledgements_with_high_fee(
+            WalletSafetyAcknowledgements::none(),
+            "pulse1source",
+            "pulse1other",
+            &snapshot,
+            &selected,
+            10,
+            1,
+            false,
         )
         .is_ok());
     }
