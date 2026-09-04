@@ -4,7 +4,7 @@ use pulsedag_core::{
     compute_txid,
     types::{Transaction, Utxo},
 };
-use pulsedag_wallet::{WalletNetworkIdentity, WalletReviewSummary};
+use pulsedag_wallet::WalletNetworkIdentity;
 use reqwest::{redirect::Policy, Client, Response, Url};
 use serde::{Deserialize, Serialize};
 
@@ -38,11 +38,62 @@ pub struct RelayEnvelope {
     pub transaction: Transaction,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SignedBroadcastReview {
+    pub network_profile: String,
+    pub chain_id: String,
+    pub from: String,
+    pub to: String,
+    pub amount: u64,
+    pub fee: u64,
+    pub change: u64,
+    pub total_input: u64,
+    pub input_count: usize,
+    pub nonce: u64,
+    pub unsigned_template_txid: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub self_send: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spend_all: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub self_send_acknowledged: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spend_all_acknowledged: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub funding_utxo_count: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub funding_total_amount: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub funding_snapshot_commitment_hex: Option<String>,
+}
+
+impl SignedBroadcastReview {
+    fn validate_safety_metadata_shape(&self) -> Result<(), RelayClientError> {
+        let present = [
+            self.self_send.is_some(),
+            self.spend_all.is_some(),
+            self.self_send_acknowledged.is_some(),
+            self.spend_all_acknowledged.is_some(),
+            self.funding_utxo_count.is_some(),
+            self.funding_total_amount.is_some(),
+            self.funding_snapshot_commitment_hex.is_some(),
+        ];
+        let present_count = present.iter().filter(|value| **value).count();
+        if present_count != 0 && present_count != present.len() {
+            return Err(relay_error(
+                "signed envelope review safety metadata must be either fully present or fully absent",
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SignedBroadcastInput {
     pub network: WalletNetworkIdentity,
-    pub review: WalletReviewSummary,
+    pub review: SignedBroadcastReview,
     pub final_txid: String,
     pub relay: RelayEnvelope,
 }
@@ -142,6 +193,7 @@ fn validate_signed_broadcast(input: &SignedBroadcastInput) -> Result<(), RelayCl
         .network
         .validate()
         .map_err(|error| relay_error(format!("signed envelope network is invalid: {error}")))?;
+    input.review.validate_safety_metadata_shape()?;
 
     if input.review.network_profile != input.network.network_profile
         || input.review.chain_id != input.network.chain_id
@@ -591,6 +643,16 @@ mod tests {
 
     use super::*;
 
+    const SAFETY_REVIEW_FIELDS: [&str; 7] = [
+        "self_send",
+        "spend_all",
+        "self_send_acknowledged",
+        "spend_all_acknowledged",
+        "funding_utxo_count",
+        "funding_total_amount",
+        "funding_snapshot_commitment_hex",
+    ];
+
     fn signed_fixture() -> SignedBroadcastInput {
         let network = WalletNetworkIdentity::new("testnet", "pulsedag-testnet").unwrap();
         let mut transaction = Transaction {
@@ -614,7 +676,7 @@ mod tests {
         transaction.txid = compute_txid(&transaction);
         SignedBroadcastInput {
             network,
-            review: WalletReviewSummary {
+            review: SignedBroadcastReview {
                 network_profile: "testnet".to_string(),
                 chain_id: "pulsedag-testnet".to_string(),
                 from: "pulse1sender".to_string(),
@@ -626,14 +688,16 @@ mod tests {
                 input_count: 1,
                 nonce: 7,
                 unsigned_template_txid: "44".repeat(32),
-                self_send: false,
-                spend_all: true,
-                self_send_acknowledged: false,
-                spend_all_acknowledged: true,
-                funding_utxo_count: 1,
-                funding_total_amount: 410,
-                funding_snapshot_commitment_hex:
-                    "60ddbcbc5857a0f66bf7aeaecce2edacc2a1f46f9d7d443c305a997d01d15aea".to_string(),
+                self_send: Some(false),
+                spend_all: Some(true),
+                self_send_acknowledged: Some(false),
+                spend_all_acknowledged: Some(true),
+                funding_utxo_count: Some(1),
+                funding_total_amount: Some(410),
+                funding_snapshot_commitment_hex: Some(
+                    "60ddbcbc5857a0f66bf7aeaecce2edacc2a1f46f9d7d443c305a997d01d15aea"
+                        .to_string(),
+                ),
             },
             final_txid: transaction.txid.clone(),
             relay: RelayEnvelope { transaction },
@@ -673,6 +737,37 @@ mod tests {
             }),
             error: None,
         }
+    }
+
+    #[test]
+    fn signed_envelope_parser_accepts_current_and_legacy_review_metadata() {
+        let current = serde_json::to_vec(&signed_fixture()).unwrap();
+        let parsed_current = parse_signed_broadcast(&current).unwrap();
+        assert_eq!(parsed_current.review.spend_all, Some(true));
+        assert_eq!(parsed_current.review.funding_utxo_count, Some(1));
+
+        let mut legacy = serde_json::to_value(signed_fixture()).unwrap();
+        let review = legacy
+            .get_mut("review")
+            .and_then(serde_json::Value::as_object_mut)
+            .unwrap();
+        for field in SAFETY_REVIEW_FIELDS {
+            review.remove(field);
+        }
+        let parsed_legacy = parse_signed_broadcast(&serde_json::to_vec(&legacy).unwrap()).unwrap();
+        assert!(parsed_legacy.review.self_send.is_none());
+        assert!(parsed_legacy.review.funding_snapshot_commitment_hex.is_none());
+    }
+
+    #[test]
+    fn signed_envelope_parser_rejects_partial_safety_review_metadata() {
+        let mut partial = serde_json::to_value(signed_fixture()).unwrap();
+        partial
+            .get_mut("review")
+            .and_then(serde_json::Value::as_object_mut)
+            .unwrap()
+            .remove("funding_snapshot_commitment_hex");
+        assert!(parse_signed_broadcast(&serde_json::to_vec(&partial).unwrap()).is_err());
     }
 
     #[test]
