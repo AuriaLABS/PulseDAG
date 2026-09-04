@@ -193,10 +193,7 @@ fn canonical_selected_entries(
     Ok(entries)
 }
 
-fn compare_entries(
-    left: &WalletFundingEntry,
-    right: &WalletFundingEntry,
-) -> std::cmp::Ordering {
+fn compare_entries(left: &WalletFundingEntry, right: &WalletFundingEntry) -> std::cmp::Ordering {
     left.outpoint
         .txid
         .cmp(&right.outpoint.txid)
