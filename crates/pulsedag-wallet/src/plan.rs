@@ -9,6 +9,9 @@ use pulsedag_core::{
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::safety::{
+    validate_wallet_safety_acknowledgements, WalletFundingSnapshot, WalletSafetyAcknowledgements,
+};
 use crate::{build_transaction, select_utxos, BuildTxResponse, SelectedUtxo};
 
 pub const WALLET_NONCE_DOMAIN_V1: &str = "PulseDAG:wallet-plan-nonce:v1";
@@ -181,6 +184,13 @@ pub struct WalletReviewSummary {
     pub input_count: usize,
     pub nonce: u64,
     pub unsigned_template_txid: String,
+    pub self_send: bool,
+    pub spend_all: bool,
+    pub self_send_acknowledged: bool,
+    pub spend_all_acknowledged: bool,
+    pub funding_utxo_count: usize,
+    pub funding_total_amount: u64,
+    pub funding_snapshot_commitment_hex: String,
 }
 
 /// Exact public-key-bound signing request. This structure contains no private
@@ -202,6 +212,12 @@ pub struct WalletTransactionPlan {
     pub intent: WalletTransactionIntent,
     pub spend_policy: WalletSpendPolicy,
     pub nonce_policy: WalletNoncePolicy,
+    /// Review-only evidence describing the complete funding set observed when
+    /// this plan was constructed. It is not part of transaction signing bytes.
+    pub funding_snapshot: WalletFundingSnapshot,
+    /// Explicit acknowledgement of dangerous transaction shapes. Signing
+    /// revalidates these persisted decisions rather than accepting fresh flags.
+    pub safety_acknowledgements: WalletSafetyAcknowledgements,
     pub transaction: Transaction,
     pub selected_utxos: Vec<SelectedUtxo>,
     pub total_input: u64,
@@ -254,6 +270,16 @@ impl WalletTransactionPlan {
         if self.total_input - target != self.change {
             return Err(invalid_plan("change", "does not match reviewed intent"));
         }
+
+        validate_wallet_safety_acknowledgements(
+            self.safety_acknowledgements,
+            &self.intent.from,
+            &self.intent.to,
+            &self.funding_snapshot,
+            &self.selected_utxos,
+            self.total_input,
+            self.change,
+        )?;
 
         if self.transaction.inputs.len() != self.selected_utxos.len() {
             return Err(invalid_plan(
@@ -335,6 +361,12 @@ impl WalletTransactionPlan {
 
     pub fn review_summary(&self) -> Result<WalletReviewSummary, WalletPlanError> {
         self.validate_structure()?;
+        let self_send = self.intent.from == self.intent.to;
+        let spend_all = self.funding_snapshot.is_spend_all(
+            &self.selected_utxos,
+            self.total_input,
+            self.change,
+        )?;
         Ok(WalletReviewSummary {
             network_profile: self.network.network_profile.clone(),
             chain_id: self.network.chain_id.clone(),
@@ -347,6 +379,13 @@ impl WalletTransactionPlan {
             input_count: self.selected_utxos.len(),
             nonce: self.transaction.nonce,
             unsigned_template_txid: self.transaction.txid.clone(),
+            self_send,
+            spend_all,
+            self_send_acknowledged: self.safety_acknowledgements.self_send,
+            spend_all_acknowledged: self.safety_acknowledgements.spend_all,
+            funding_utxo_count: self.funding_snapshot.utxo_count,
+            funding_total_amount: self.funding_snapshot.total_amount,
+            funding_snapshot_commitment_hex: self.funding_snapshot.commitment_hex.clone(),
         })
     }
 
@@ -540,9 +579,29 @@ pub fn build_deterministic_transaction_plan(
     intent: WalletTransactionIntent,
     available_utxos: &[Utxo],
 ) -> Result<WalletTransactionPlan, WalletPlanError> {
+    build_deterministic_transaction_plan_with_safety(
+        network,
+        spend_policy,
+        intent,
+        available_utxos,
+        WalletSafetyAcknowledgements::none(),
+    )
+}
+
+/// Build a deterministic wallet v1 plan while persisting explicit safety
+/// acknowledgements. The complete funding snapshot is derived before selection
+/// and is review metadata only; it does not alter nonce or transaction bytes.
+pub fn build_deterministic_transaction_plan_with_safety(
+    network: WalletNetworkIdentity,
+    spend_policy: WalletSpendPolicy,
+    intent: WalletTransactionIntent,
+    available_utxos: &[Utxo],
+    safety_acknowledgements: WalletSafetyAcknowledgements,
+) -> Result<WalletTransactionPlan, WalletPlanError> {
     network.validate()?;
     intent.validate()?;
     spend_policy.validate_intent(&intent)?;
+    WalletFundingSnapshot::from_utxos(available_utxos)?;
     let target = intent
         .amount
         .checked_add(intent.fee)
@@ -557,7 +616,14 @@ pub fn build_deterministic_transaction_plan(
         })
         .collect::<Vec<_>>();
     let nonce = derive_wallet_plan_nonce_v1(&intent, &selected_utxos)?;
-    let mut plan = build_transaction_plan(network, spend_policy, intent, available_utxos, nonce)?;
+    let mut plan = build_transaction_plan_with_safety(
+        network,
+        spend_policy,
+        intent,
+        available_utxos,
+        nonce,
+        safety_acknowledgements,
+    )?;
     plan.nonce_policy = WalletNoncePolicy::DeterministicPlanV1;
     plan.validate_structure()?;
     Ok(plan)
@@ -573,9 +639,29 @@ pub fn build_transaction_plan(
     available_utxos: &[Utxo],
     nonce: u64,
 ) -> Result<WalletTransactionPlan, WalletPlanError> {
+    build_transaction_plan_with_safety(
+        network,
+        spend_policy,
+        intent,
+        available_utxos,
+        nonce,
+        WalletSafetyAcknowledgements::none(),
+    )
+}
+
+/// Low-level explicit-nonce builder with persisted safety acknowledgements.
+pub fn build_transaction_plan_with_safety(
+    network: WalletNetworkIdentity,
+    spend_policy: WalletSpendPolicy,
+    intent: WalletTransactionIntent,
+    available_utxos: &[Utxo],
+    nonce: u64,
+    safety_acknowledgements: WalletSafetyAcknowledgements,
+) -> Result<WalletTransactionPlan, WalletPlanError> {
     network.validate()?;
     intent.validate()?;
     spend_policy.validate_intent(&intent)?;
+    let funding_snapshot = WalletFundingSnapshot::from_utxos(available_utxos)?;
     let built = build_transaction(
         &intent.from,
         &intent.to,
@@ -585,7 +671,14 @@ pub fn build_transaction_plan(
         nonce,
     )?;
     spend_policy.validate_input_count(built.selected_utxos.len())?;
-    let plan = plan_from_build(network, spend_policy, intent, built);
+    let plan = plan_from_build(
+        network,
+        spend_policy,
+        intent,
+        built,
+        funding_snapshot,
+        safety_acknowledgements,
+    );
     plan.validate_structure()?;
     Ok(plan)
 }
@@ -595,12 +688,16 @@ fn plan_from_build(
     spend_policy: WalletSpendPolicy,
     intent: WalletTransactionIntent,
     built: BuildTxResponse,
+    funding_snapshot: WalletFundingSnapshot,
+    safety_acknowledgements: WalletSafetyAcknowledgements,
 ) -> WalletTransactionPlan {
     WalletTransactionPlan {
         network,
         intent,
         spend_policy,
         nonce_policy: WalletNoncePolicy::ExplicitCallerProvidedV1,
+        funding_snapshot,
+        safety_acknowledgements,
         transaction: built.transaction,
         selected_utxos: built.selected_utxos,
         total_input: built.total_input,
@@ -684,6 +781,11 @@ mod tests {
             .expect("valid intent")
     }
 
+    fn self_send_intent(amount: u64, fee: u64) -> WalletTransactionIntent {
+        WalletTransactionIntent::new(sender_address(), sender_address(), amount, fee)
+            .expect("valid self-send intent")
+    }
+
     fn utxo(txid_byte: &str, amount: u64, height: u64) -> Utxo {
         Utxo {
             outpoint: OutPoint {
@@ -728,6 +830,10 @@ mod tests {
         assert_eq!(review.input_count, 1);
         assert_eq!(review.nonce, 42);
         assert_eq!(review.unsigned_template_txid, plan.transaction.txid);
+        assert!(!review.self_send);
+        assert!(!review.spend_all);
+        assert_eq!(review.funding_utxo_count, 1);
+        assert_eq!(review.funding_total_amount, 1_000);
         assert_eq!(
             plan.nonce_policy,
             WalletNoncePolicy::ExplicitCallerProvidedV1
@@ -814,11 +920,112 @@ mod tests {
         let mut decoded: WalletTransactionPlan =
             serde_json::from_str(&json).expect("deserialize deterministic plan");
         assert_eq!(decoded.nonce_policy, WalletNoncePolicy::DeterministicPlanV1);
+        assert_eq!(decoded.funding_snapshot, plan.funding_snapshot);
+        assert_eq!(
+            decoded.safety_acknowledgements,
+            plan.safety_acknowledgements
+        );
         decoded.validate_structure().expect("validate round trip");
 
         decoded.transaction.nonce ^= 1;
         decoded.transaction.txid = compute_txid(&decoded.transaction);
         assert!(decoded.validate_structure().is_err());
+    }
+
+    #[test]
+    fn self_send_requires_persisted_acknowledgement() {
+        let available = [utxo("11", 1_000, 10)];
+        assert!(build_transaction_plan(
+            identity("pulsedag-public-testnet"),
+            policy(),
+            self_send_intent(400, 10),
+            &available,
+            42,
+        )
+        .is_err());
+
+        let plan = build_transaction_plan_with_safety(
+            identity("pulsedag-public-testnet"),
+            policy(),
+            self_send_intent(400, 10),
+            &available,
+            42,
+            WalletSafetyAcknowledgements::new(true, false),
+        )
+        .expect("acknowledged self-send");
+        let review = plan.review_summary().expect("review self-send");
+        assert!(review.self_send);
+        assert!(review.self_send_acknowledged);
+        assert!(!review.spend_all);
+    }
+
+    #[test]
+    fn true_spend_all_requires_persisted_acknowledgement() {
+        let available = [utxo("11", 410, 10)];
+        assert!(build_transaction_plan(
+            identity("pulsedag-public-testnet"),
+            policy(),
+            intent(400, 10),
+            &available,
+            42,
+        )
+        .is_err());
+
+        let plan = build_transaction_plan_with_safety(
+            identity("pulsedag-public-testnet"),
+            policy(),
+            intent(400, 10),
+            &available,
+            42,
+            WalletSafetyAcknowledgements::new(false, true),
+        )
+        .expect("acknowledged spend-all");
+        let review = plan.review_summary().expect("review spend-all");
+        assert!(review.spend_all);
+        assert!(review.spend_all_acknowledged);
+        assert_eq!(plan.change, 0);
+    }
+
+    #[test]
+    fn zero_change_partial_snapshot_is_not_spend_all() {
+        let available = [utxo("11", 410, 10), utxo("22", 1, 11)];
+        let plan = build_transaction_plan(
+            identity("pulsedag-public-testnet"),
+            policy(),
+            intent(400, 10),
+            &available,
+            42,
+        )
+        .expect("partial zero-change plan");
+        assert_eq!(plan.change, 0);
+        assert_eq!(plan.selected_utxos.len(), 1);
+        assert!(!plan.review_summary().expect("review").spend_all);
+    }
+
+    #[test]
+    fn safety_and_snapshot_tampering_fail_before_signing() {
+        let available = [utxo("11", 1_000, 10)];
+        let mut self_send = build_transaction_plan_with_safety(
+            identity("pulsedag-public-testnet"),
+            policy(),
+            self_send_intent(400, 10),
+            &available,
+            42,
+            WalletSafetyAcknowledgements::new(true, false),
+        )
+        .expect("acknowledged self-send");
+        self_send.safety_acknowledgements.self_send = false;
+        assert!(self_send.validate_structure().is_err());
+        assert!(self_send
+            .prepare_signing(&identity("pulsedag-public-testnet"), &public_key())
+            .is_err());
+
+        let mut snapshot = sample_plan();
+        snapshot.funding_snapshot.total_amount += 1;
+        assert!(snapshot.validate_structure().is_err());
+        assert!(snapshot
+            .prepare_signing(&identity("pulsedag-public-testnet"), &public_key())
+            .is_err());
     }
 
     #[test]
