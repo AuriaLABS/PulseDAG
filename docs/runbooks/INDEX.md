@@ -4,6 +4,8 @@ This is the active operator entrypoint for v2.3.0. It does not authorize a publi
 
 ## Primary operations
 
+- `V3_0_0_DUAL_NETWORK_LAUNCH.md` — coordinated mainnet and parallel-testnet launch after exact-candidate GO.
+
 - `V2_3_0_PRIVATE_TESTNET_OPERATIONS.md` — bootstrap, external miner, lifecycle, upgrade, rollback, state protection, and evidence.
 - `V2_3_0_PRIVATE_TESTNET_REHEARSAL.md` — five-node rehearsal, restart, partition, rejoin, and GO/NO-GO evidence.
 - `V2_3_0_NETNS_REHEARSAL.md` — isolated Linux namespace rehearsal.
