@@ -163,8 +163,6 @@ impl WalletFundingSnapshot {
     }
 }
 
-/// Preserve the pre-high-fee public validation helper for source compatibility.
-/// New transaction-plan validation uses the high-fee-aware variant below.
 pub fn validate_wallet_safety_acknowledgements(
     acknowledgements: WalletSafetyAcknowledgements,
     from: &str,
@@ -189,25 +187,10 @@ pub fn validate_wallet_safety_acknowledgements(
     Ok(())
 }
 
-pub fn validate_wallet_safety_acknowledgements_with_high_fee(
+pub fn validate_wallet_high_fee_acknowledgement(
     acknowledgements: WalletSafetyAcknowledgements,
-    from: &str,
-    to: &str,
-    snapshot: &WalletFundingSnapshot,
-    selected_utxos: &[SelectedUtxo],
-    total_input: u64,
-    change: u64,
     high_fee: bool,
 ) -> Result<(), PulseError> {
-    validate_wallet_safety_acknowledgements(
-        acknowledgements,
-        from,
-        to,
-        snapshot,
-        selected_utxos,
-        total_input,
-        change,
-    )?;
     if high_fee && !acknowledgements.high_fee {
         return Err(PulseError::InvalidTransaction(
             "wallet high-fee transaction requires explicit acknowledgement".into(),
@@ -391,39 +374,18 @@ mod tests {
 
     #[test]
     fn high_fee_requires_explicit_acknowledgement_only_when_flagged() {
-        let snapshot = WalletFundingSnapshot::from_utxos(&[utxo("a", 0, 10)]).unwrap();
-        let selected = vec![selected("a", 0, 10)];
-
-        assert!(validate_wallet_safety_acknowledgements_with_high_fee(
+        assert!(validate_wallet_high_fee_acknowledgement(
             WalletSafetyAcknowledgements::none(),
-            "pulse1source",
-            "pulse1other",
-            &snapshot,
-            &selected,
-            10,
-            1,
             true,
         )
         .is_err());
-        assert!(validate_wallet_safety_acknowledgements_with_high_fee(
+        assert!(validate_wallet_high_fee_acknowledgement(
             WalletSafetyAcknowledgements::new_with_high_fee(false, false, true),
-            "pulse1source",
-            "pulse1other",
-            &snapshot,
-            &selected,
-            10,
-            1,
             true,
         )
         .is_ok());
-        assert!(validate_wallet_safety_acknowledgements_with_high_fee(
+        assert!(validate_wallet_high_fee_acknowledgement(
             WalletSafetyAcknowledgements::none(),
-            "pulse1source",
-            "pulse1other",
-            &snapshot,
-            &selected,
-            10,
-            1,
             false,
         )
         .is_ok());
