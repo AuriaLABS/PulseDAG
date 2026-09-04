@@ -16,6 +16,15 @@ const RELAY_SUBMIT_PATH: &str = "/api/v1/tx/submit";
 const EXPLORER_CAPABILITY: &str = "explorer_api";
 const ADDRESS_PATH: &str = "/address/:address";
 const ADDRESS_UTXOS_PATH: &str = "/address/:address/utxos";
+const SAFETY_REVIEW_FIELDS: [&str; 7] = [
+    "self_send",
+    "spend_all",
+    "self_send_acknowledged",
+    "spend_all_acknowledged",
+    "funding_utxo_count",
+    "funding_total_amount",
+    "funding_snapshot_commitment_hex",
+];
 
 #[derive(Debug)]
 pub struct RelayClientError(String);
@@ -181,7 +190,35 @@ struct RelayIdentity {
     core_endpoints: Vec<String>,
 }
 
+fn validate_raw_safety_metadata_shape(bytes: &[u8]) -> Result<(), RelayClientError> {
+    let value = serde_json::from_slice::<serde_json::Value>(bytes)
+        .map_err(|_| relay_error("signed transaction envelope JSON is invalid"))?;
+    let review = value
+        .get("review")
+        .and_then(serde_json::Value::as_object)
+        .ok_or_else(|| relay_error("signed transaction envelope JSON is invalid"))?;
+
+    let mut present_count = 0;
+    for field in SAFETY_REVIEW_FIELDS {
+        if let Some(value) = review.get(field) {
+            present_count += 1;
+            if value.is_null() {
+                return Err(relay_error(
+                    "signed envelope review safety metadata must not contain null values",
+                ));
+            }
+        }
+    }
+    if present_count != 0 && present_count != SAFETY_REVIEW_FIELDS.len() {
+        return Err(relay_error(
+            "signed envelope review safety metadata must be either fully present or fully absent",
+        ));
+    }
+    Ok(())
+}
+
 pub fn parse_signed_broadcast(bytes: &[u8]) -> Result<SignedBroadcastInput, RelayClientError> {
+    validate_raw_safety_metadata_shape(bytes)?;
     let input = serde_json::from_slice::<SignedBroadcastInput>(bytes)
         .map_err(|_| relay_error("signed transaction envelope JSON is invalid"))?;
     validate_signed_broadcast(&input)?;
@@ -643,16 +680,6 @@ mod tests {
 
     use super::*;
 
-    const SAFETY_REVIEW_FIELDS: [&str; 7] = [
-        "self_send",
-        "spend_all",
-        "self_send_acknowledged",
-        "spend_all_acknowledged",
-        "funding_utxo_count",
-        "funding_total_amount",
-        "funding_snapshot_commitment_hex",
-    ];
-
     fn signed_fixture() -> SignedBroadcastInput {
         let network = WalletNetworkIdentity::new("testnet", "pulsedag-testnet").unwrap();
         let mut transaction = Transaction {
@@ -770,6 +797,30 @@ mod tests {
             .unwrap()
             .remove("funding_snapshot_commitment_hex");
         assert!(parse_signed_broadcast(&serde_json::to_vec(&partial).unwrap()).is_err());
+    }
+
+    #[test]
+    fn signed_envelope_parser_rejects_null_safety_review_metadata() {
+        let mut one_null = serde_json::to_value(signed_fixture()).unwrap();
+        let review = one_null
+            .get_mut("review")
+            .and_then(serde_json::Value::as_object_mut)
+            .unwrap();
+        for field in SAFETY_REVIEW_FIELDS {
+            review.remove(field);
+        }
+        review.insert("self_send".to_string(), serde_json::Value::Null);
+        assert!(parse_signed_broadcast(&serde_json::to_vec(&one_null).unwrap()).is_err());
+
+        let mut all_null = serde_json::to_value(signed_fixture()).unwrap();
+        let review = all_null
+            .get_mut("review")
+            .and_then(serde_json::Value::as_object_mut)
+            .unwrap();
+        for field in SAFETY_REVIEW_FIELDS {
+            review.insert(field.to_string(), serde_json::Value::Null);
+        }
+        assert!(parse_signed_broadcast(&serde_json::to_vec(&all_null).unwrap()).is_err());
     }
 
     #[test]
