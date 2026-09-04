@@ -10,7 +10,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::safety::{
-    validate_wallet_safety_acknowledgements, WalletFundingSnapshot, WalletSafetyAcknowledgements,
+    validate_wallet_high_fee_acknowledgement, validate_wallet_safety_acknowledgements,
+    WalletFundingSnapshot, WalletSafetyAcknowledgements,
 };
 use crate::{build_transaction, select_utxos, BuildTxResponse, SelectedUtxo};
 
@@ -98,26 +99,49 @@ impl WalletTransactionIntent {
     }
 }
 
-/// Explicit authorization limits for a transaction plan. There is deliberately
-/// no default policy: a caller must choose limits before building a plan.
+/// Explicit authorization limits for a transaction plan. Hard caps remain
+/// fail-closed. Separate persisted warning thresholds determine when an otherwise
+/// permitted fee requires explicit human acknowledgement before signing.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct WalletSpendPolicy {
     pub max_fee: u64,
     pub max_fee_bps_of_amount: u32,
     pub max_inputs: usize,
+    pub high_fee_threshold: u64,
+    pub high_fee_bps_threshold: u32,
 }
 
 impl WalletSpendPolicy {
+    /// Backward source-compatible constructor. Warning thresholds equal the
+    /// hard caps, so existing callers do not gain a new acknowledgement step.
     pub fn new(
         max_fee: u64,
         max_fee_bps_of_amount: u32,
         max_inputs: usize,
     ) -> Result<Self, WalletPlanError> {
+        Self::new_with_high_fee_thresholds(
+            max_fee,
+            max_fee_bps_of_amount,
+            max_inputs,
+            max_fee,
+            max_fee_bps_of_amount,
+        )
+    }
+
+    pub fn new_with_high_fee_thresholds(
+        max_fee: u64,
+        max_fee_bps_of_amount: u32,
+        max_inputs: usize,
+        high_fee_threshold: u64,
+        high_fee_bps_threshold: u32,
+    ) -> Result<Self, WalletPlanError> {
         let value = Self {
             max_fee,
             max_fee_bps_of_amount,
             max_inputs,
+            high_fee_threshold,
+            high_fee_bps_threshold,
         };
         value.validate_configuration()?;
         Ok(value)
@@ -131,6 +155,18 @@ impl WalletSpendPolicy {
             return Err(policy_violation(
                 "max_fee_bps_of_amount",
                 "must not exceed 10000 basis points",
+            ));
+        }
+        if self.high_fee_threshold > self.max_fee {
+            return Err(policy_violation(
+                "high_fee_threshold",
+                "must not exceed the absolute hard fee limit",
+            ));
+        }
+        if self.high_fee_bps_threshold > self.max_fee_bps_of_amount {
+            return Err(policy_violation(
+                "high_fee_bps_threshold",
+                "must not exceed the hard fee-to-amount basis-point limit",
             ));
         }
         Ok(())
@@ -150,6 +186,14 @@ impl WalletSpendPolicy {
             ));
         }
         Ok(())
+    }
+
+    fn is_high_fee(&self, intent: &WalletTransactionIntent) -> Result<bool, WalletPlanError> {
+        self.validate_intent(intent)?;
+        let exceeds_absolute_warning = intent.fee > self.high_fee_threshold;
+        let fee_scaled = u128::from(intent.fee) * 10_000;
+        let warning_scaled = u128::from(intent.amount) * u128::from(self.high_fee_bps_threshold);
+        Ok(exceeds_absolute_warning || fee_scaled > warning_scaled)
     }
 
     fn validate_input_count(&self, count: usize) -> Result<(), WalletPlanError> {
@@ -191,6 +235,8 @@ pub struct WalletReviewSummary {
     pub funding_utxo_count: usize,
     pub funding_total_amount: u64,
     pub funding_snapshot_commitment_hex: String,
+    pub high_fee: bool,
+    pub high_fee_acknowledged: bool,
 }
 
 /// Exact public-key-bound signing request. This structure contains no private
@@ -229,6 +275,7 @@ impl WalletTransactionPlan {
         self.network.validate()?;
         self.intent.validate()?;
         self.spend_policy.validate_intent(&self.intent)?;
+        let high_fee = self.spend_policy.is_high_fee(&self.intent)?;
         self.spend_policy
             .validate_input_count(self.selected_utxos.len())?;
 
@@ -280,6 +327,7 @@ impl WalletTransactionPlan {
             self.total_input,
             self.change,
         )?;
+        validate_wallet_high_fee_acknowledgement(self.safety_acknowledgements, high_fee)?;
 
         if self.transaction.inputs.len() != self.selected_utxos.len() {
             return Err(invalid_plan(
@@ -367,6 +415,7 @@ impl WalletTransactionPlan {
             self.total_input,
             self.change,
         )?;
+        let high_fee = self.spend_policy.is_high_fee(&self.intent)?;
         Ok(WalletReviewSummary {
             network_profile: self.network.network_profile.clone(),
             chain_id: self.network.chain_id.clone(),
@@ -386,6 +435,8 @@ impl WalletTransactionPlan {
             funding_utxo_count: self.funding_snapshot.utxo_count,
             funding_total_amount: self.funding_snapshot.total_amount,
             funding_snapshot_commitment_hex: self.funding_snapshot.commitment_hex.clone(),
+            high_fee,
+            high_fee_acknowledged: self.safety_acknowledgements.high_fee,
         })
     }
 
@@ -797,6 +848,17 @@ mod tests {
         WalletSpendPolicy::new(100, 1_000, 8).expect("valid policy")
     }
 
+    fn high_fee_policy(absolute_warning: u64, bps_warning: u32) -> WalletSpendPolicy {
+        WalletSpendPolicy::new_with_high_fee_thresholds(
+            100,
+            1_000,
+            8,
+            absolute_warning,
+            bps_warning,
+        )
+        .expect("valid high-fee policy")
+    }
+
     fn public_key() -> String {
         "ab".repeat(32)
     }
@@ -869,6 +931,8 @@ mod tests {
         assert_eq!(review.unsigned_template_txid, plan.transaction.txid);
         assert!(!review.self_send);
         assert!(!review.spend_all);
+        assert!(!review.high_fee);
+        assert!(!review.high_fee_acknowledged);
         assert_eq!(review.funding_utxo_count, 1);
         assert_eq!(review.funding_total_amount, 1_000);
         assert_eq!(
@@ -991,6 +1055,18 @@ mod tests {
     }
 
     #[test]
+    fn old_unsigned_policy_without_warning_thresholds_fails_closed() {
+        let plan = deterministic_plan();
+        let mut value = serde_json::to_value(plan).expect("serialize plan value");
+        let policy = value["spend_policy"]
+            .as_object_mut()
+            .expect("serialized policy object");
+        policy.remove("high_fee_threshold");
+        policy.remove("high_fee_bps_threshold");
+        assert!(serde_json::from_value::<WalletTransactionPlan>(value).is_err());
+    }
+
+    #[test]
     fn malformed_plan_intent_and_destination_fail_before_signing() {
         let plan = deterministic_plan();
         let mut serialized = serde_json::to_value(&plan).expect("serialize plan value");
@@ -1060,6 +1136,111 @@ mod tests {
         assert!(review.spend_all);
         assert!(review.spend_all_acknowledged);
         assert_eq!(plan.change, 0);
+    }
+
+    #[test]
+    fn high_fee_requires_persisted_acknowledgement_and_review_recomputes_it() {
+        let available = [utxo("11", 1_000, 10)];
+        let high_policy = high_fee_policy(9, 1_000);
+        assert!(build_transaction_plan_with_safety(
+            identity("pulsedag-public-testnet"),
+            high_policy.clone(),
+            intent(400, 10),
+            &available,
+            42,
+            WalletSafetyAcknowledgements::none(),
+        )
+        .is_err());
+
+        let plan = build_transaction_plan_with_safety(
+            identity("pulsedag-public-testnet"),
+            high_policy,
+            intent(400, 10),
+            &available,
+            42,
+            WalletSafetyAcknowledgements::new_with_high_fee(false, false, true),
+        )
+        .expect("acknowledged high fee");
+        let review = plan.review_summary().expect("high-fee review");
+        assert!(review.high_fee);
+        assert!(review.high_fee_acknowledged);
+    }
+
+    #[test]
+    fn high_fee_absolute_and_ratio_thresholds_are_strictly_greater_than() {
+        let normal = intent(400, 10);
+        assert!(!high_fee_policy(10, 250)
+            .is_high_fee(&normal)
+            .expect("exact thresholds"));
+        assert!(high_fee_policy(9, 1_000)
+            .is_high_fee(&normal)
+            .expect("absolute warning"));
+        assert!(high_fee_policy(100, 200)
+            .is_high_fee(&normal)
+            .expect("ratio warning"));
+    }
+
+    #[test]
+    fn high_fee_warning_thresholds_must_not_exceed_hard_caps() {
+        assert!(WalletSpendPolicy::new_with_high_fee_thresholds(100, 1_000, 8, 101, 1_000)
+            .is_err());
+        assert!(WalletSpendPolicy::new_with_high_fee_thresholds(100, 1_000, 8, 100, 1_001)
+            .is_err());
+    }
+
+    #[test]
+    fn high_fee_acknowledgement_never_overrides_hard_caps() {
+        let available = [utxo("11", 1_000, 10)];
+        let ack = WalletSafetyAcknowledgements::new_with_high_fee(false, false, true);
+        let absolute = WalletSpendPolicy::new_with_high_fee_thresholds(9, 1_000, 8, 5, 500)
+            .expect("absolute hard-cap policy");
+        assert!(build_transaction_plan_with_safety(
+            identity("pulsedag-public-testnet"),
+            absolute,
+            intent(400, 10),
+            &available,
+            42,
+            ack,
+        )
+        .is_err());
+
+        let ratio = WalletSpendPolicy::new_with_high_fee_thresholds(100, 200, 8, 50, 100)
+            .expect("ratio hard-cap policy");
+        assert!(build_transaction_plan_with_safety(
+            identity("pulsedag-public-testnet"),
+            ratio,
+            intent(400, 10),
+            &available,
+            42,
+            ack,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn high_fee_tampering_fails_before_offline_signing() {
+        let available = [utxo("11", 1_000, 10)];
+        let mut plan = build_transaction_plan_with_safety(
+            identity("pulsedag-public-testnet"),
+            high_fee_policy(9, 1_000),
+            intent(400, 10),
+            &available,
+            42,
+            WalletSafetyAcknowledgements::new_with_high_fee(false, false, true),
+        )
+        .expect("acknowledged high-fee plan");
+        plan.safety_acknowledgements.high_fee = false;
+        assert!(plan.validate_structure().is_err());
+        assert!(plan
+            .prepare_signing(&identity("pulsedag-public-testnet"), &public_key())
+            .is_err());
+
+        let mut thresholds = sample_plan();
+        thresholds.spend_policy.high_fee_threshold = thresholds.spend_policy.max_fee + 1;
+        assert!(thresholds.validate_structure().is_err());
+        assert!(thresholds
+            .prepare_signing(&identity("pulsedag-public-testnet"), &public_key())
+            .is_err());
     }
 
     #[test]
