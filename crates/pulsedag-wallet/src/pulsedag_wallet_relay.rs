@@ -805,8 +805,7 @@ mod tests {
         for field in HIGH_FEE_REVIEW_FIELDS {
             review.remove(field);
         }
-        let parsed_old =
-            parse_signed_broadcast(&serde_json::to_vec(&old_safety).unwrap()).unwrap();
+        let parsed_old = parse_signed_broadcast(&serde_json::to_vec(&old_safety).unwrap()).unwrap();
         assert_eq!(parsed_old.review.spend_all, Some(true));
         assert!(parsed_old.review.high_fee.is_none());
         assert!(parsed_old.review.high_fee_acknowledged.is_none());
