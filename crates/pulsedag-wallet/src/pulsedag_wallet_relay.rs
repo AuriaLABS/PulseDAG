@@ -695,8 +695,7 @@ mod tests {
                 funding_utxo_count: Some(1),
                 funding_total_amount: Some(410),
                 funding_snapshot_commitment_hex: Some(
-                    "60ddbcbc5857a0f66bf7aeaecce2edacc2a1f46f9d7d443c305a997d01d15aea"
-                        .to_string(),
+                    "60ddbcbc5857a0f66bf7aeaecce2edacc2a1f46f9d7d443c305a997d01d15aea".to_string(),
                 ),
             },
             final_txid: transaction.txid.clone(),
@@ -756,7 +755,10 @@ mod tests {
         }
         let parsed_legacy = parse_signed_broadcast(&serde_json::to_vec(&legacy).unwrap()).unwrap();
         assert!(parsed_legacy.review.self_send.is_none());
-        assert!(parsed_legacy.review.funding_snapshot_commitment_hex.is_none());
+        assert!(parsed_legacy
+            .review
+            .funding_snapshot_commitment_hex
+            .is_none());
     }
 
     #[test]
