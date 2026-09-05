@@ -8,6 +8,8 @@ The wallet pending journal is local, versioned, secret-free, and bound to the ex
 
 All states except `confirmed` retain the selected-outpoint reservation. Generic `TX_REJECTED`, `submission_started`, `submission_outcome_unknown`, and retained-history absence are not release evidence.
 
+Relay rejection metadata is bounded before persistence so a remote error body cannot consume the journal budget indefinitely: `rejection_code` is capped at 128 bytes and `rejection_message` at 2048 bytes with UTF-8-safe truncation. Persisted journal validation rejects manipulated rejection metadata that exceeds those limits.
+
 The journal is reservation state, not permanent transaction history. `confirmed` is terminal and no longer reserves outpoints; once a genuinely new pending reservation is appended, older `confirmed` entries may be pruned. Active/reserving states are never removed by that maintenance step.
 
 ## Transaction flow
@@ -58,7 +60,7 @@ The command:
 - accepts only positive evidence for the exact final txid;
 - reacquires and revalidates the journal before persisting any state change.
 
-The public address-activity surface only labels retained DAG transactions `confirmed` when the core `transaction_is_confirmed` predicate says the txid is present in the authoritative selected/ordered state and was actually applied. Side-DAG membership alone and ordered-replay conflict losers are therefore not confirmation evidence and cannot release a wallet reservation. The explicit `authoritative_address_activity_v1` capability binds reconcile to this semantic contract during mixed-version rollout; the generic explorer capability alone is insufficient release evidence.
+The public address-activity surface only labels retained DAG transactions `confirmed` when the txid is present in the authoritative selected/ordered state and was actually applied. For read paths that classify many retained transactions, core builds that authoritative applied-txid set once per request via `authoritative_confirmed_transaction_ids`, rather than rescanning the selected/ordered chain for every matching transaction. The bulk set preserves the same confirmation semantics as `transaction_is_confirmed`, including exclusion of side-DAG-only transactions and ordered-replay conflict losers. The explicit `authoritative_address_activity_v1` capability binds reconcile to this semantic contract during mixed-version rollout; the generic explorer capability alone is insufficient release evidence.
 
 Positive mempool evidence may promote the record to `observed_mempool`. Positive authoritative confirmed evidence promotes it to `confirmed` and releases the reservation. `not_observed`, retained-history exhaustion, and page-budget exhaustion are reported but do not mutate state or release outpoints.
 
@@ -68,6 +70,6 @@ The reconcile JSON result includes `network_profile`, `chain_id`, `txid`, `from`
 
 The journal store uses an advisory cross-process lock, immutable generational snapshots, bounded payloads, SHA-256-bound commit markers, stale-generation detection, and fail-closed network validation. An orphan snapshot without a commit marker is ignored; a tampered committed snapshot fails digest validation.
 
-Regression coverage includes restart persistence, concurrent-open rejection, tamper detection, stale generation, cross-network rejection, pre-sign incompatible-reservation rejection, exact `signed` recovery after a failed result handoff, submission-started/unknown/accepted/rejected/mempool/confirmed transitions, retained-history absence, side-DAG/replay-loser non-confirmation, rejection of legacy unversioned activity as authoritative confirmation evidence, durable reconciliation across restart, confirmed release across restart, and pruning of older terminal `confirmed` entries when a genuinely new pending reservation is appended.
+Regression coverage includes restart persistence, concurrent-open rejection, tamper detection, stale generation, cross-network rejection, pre-sign incompatible-reservation rejection, exact `signed` recovery after a failed result handoff, submission-started/unknown/accepted/rejected/mempool/confirmed transitions, retained-history absence, side-DAG/replay-loser non-confirmation, bulk authoritative-confirmation classification for retained activity, rejection of legacy unversioned activity as authoritative confirmation evidence, bounded UTF-8-safe relay rejection metadata plus fail-closed oversized persisted metadata, durable reconciliation across restart, confirmed release across restart, and pruning of older terminal `confirmed` entries when a genuinely new pending reservation is appended.
 
 No reconciliation path automatically rebroadcasts a transaction. No private key, mnemonic, password, decrypted seed, signing session, acknowledgement override, or custody RPC is introduced by this flow.
