@@ -1,0 +1,367 @@
+name: TEMP CLI broadcast state
+
+on:
+  push:
+    branches:
+      - wallet/v3-pending-utxo-reconcile
+    paths:
+      - .github/workflows/temp-cli-broadcast-state.yml
+
+permissions:
+  contents: write
+
+jobs:
+  rewrite-and-verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout exact branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: wallet/v3-pending-utxo-reconcile
+
+      - name: Wire durable broadcast state machine
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git hash-object crates/pulsedag-wallet/src/bin/pulsedag-wallet.rs)" = "a51eda10805add1e027b38de69990058cd275656"
+          test "$(git hash-object crates/pulsedag-wallet/src/pending.rs)" = "7f22ca980a9161f09d6469c394f09f75dbb502b2"
+          test "$(git hash-object crates/pulsedag-wallet/src/pulsedag_wallet_relay.rs)" = "46b0acf121a4df142b6f159ff471c55a65691c2e"
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('crates/pulsedag-wallet/src/bin/pulsedag-wallet.rs')
+          text = path.read_text()
+
+          def replace_once(old: str, new: str) -> None:
+              global text
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'expected exactly one CLI replacement, found {count}')
+              text = text.replace(old, new, 1)
+
+          replace_once(
+              'use pulsedag_core::types::Utxo;\n',
+              'use pulsedag_core::types::{OutPoint, Utxo};\n',
+          )
+          replace_once(
+              '''    WalletKeystoreFile, WalletNetworkContext, WalletNetworkIdentity, WalletNoncePolicy,
+              WalletPendingJournalStore, WalletPlanSigner, WalletPlanSigningSessionExt, WalletReviewSummary,
+''',
+              '''    WalletKeystoreFile, WalletNetworkContext, WalletNetworkIdentity, WalletNoncePolicy,
+              WalletPendingJournal, WalletPendingJournalStore, WalletPendingState, WalletPlanSigner,
+              WalletPlanSigningSessionExt, WalletReviewSummary,
+''',
+          )
+          replace_once(
+              '''use pulsedag_wallet_relay::{
+              broadcast_signed, fetch_address_balance, fetch_address_utxos, parse_signed_broadcast,
+              AddressBalanceOutput, AddressUtxosOutput, RelayEnvelope,
+          };
+''',
+              '''use pulsedag_wallet_relay::{
+              fetch_address_balance, fetch_address_utxos, parse_signed_broadcast, prepare_broadcast,
+              submit_prepared, AddressBalanceOutput, AddressUtxosOutput, BroadcastOutput, RelayEnvelope,
+          };
+''',
+          )
+          replace_once(
+              '''struct TxBroadcastArgs {
+              signed: PathBuf,
+              relay: String,
+          }
+''',
+              '''struct TxBroadcastArgs {
+              signed: PathBuf,
+              pending_journal: PathBuf,
+              relay: String,
+          }
+''',
+          )
+          replace_once(
+              '''        "tx-broadcast" => {
+              reject_unknown(&flags, &["signed", "relay"])?;
+              Ok(Command::TxBroadcast(TxBroadcastArgs {
+                  signed: PathBuf::from(required(&flags, "signed")?),
+                  relay: required(&flags, "relay")?,
+              }))
+          }
+''',
+              '''        "tx-broadcast" => {
+              reject_unknown(&flags, &["signed", "pending-journal", "relay"])?;
+              Ok(Command::TxBroadcast(TxBroadcastArgs {
+                  signed: PathBuf::from(required(&flags, "signed")?),
+                  pending_journal: PathBuf::from(required(&flags, "pending-journal")?),
+                  relay: required(&flags, "relay")?,
+              }))
+          }
+''',
+          )
+
+          marker = '''fn write_json<T: Serialize>(value: &T) -> CliResult<()> {
+'''
+          helper = '''fn ensure_broadcast_reservation_binding(
+              journal: &WalletPendingJournal,
+              final_txid: &str,
+              from: &str,
+              input_outpoints: &[OutPoint],
+          ) -> CliResult<()> {
+              let entry = journal
+                  .entry(final_txid)
+                  .ok_or_else(|| invalid_input("signed transaction has no pending reservation"))?;
+              if entry.state != WalletPendingState::Signed {
+                  return Err(invalid_input(format!(
+                      "pending transaction is not in signed state: {}",
+                      entry.state.as_str()
+                  ))
+                  .into());
+              }
+              if entry.from != from {
+                  return Err(invalid_input("signed transaction sender does not match pending reservation").into());
+              }
+              if entry.selected_outpoints != input_outpoints {
+                  return Err(invalid_input("signed transaction inputs do not match pending reservation").into());
+              }
+              Ok(())
+          }
+
+          async fn run_tx_broadcast(args: TxBroadcastArgs) -> CliResult<BroadcastOutput> {
+              let bytes = read_bounded_json(&args.signed, "signed transaction envelope")?;
+              let signed = parse_signed_broadcast(&bytes)?;
+
+              // Preflight is intentionally complete before the durable submission boundary.
+              let prepared = prepare_broadcast(&args.relay, &signed).await?;
+              let input_outpoints = signed
+                  .relay
+                  .transaction
+                  .inputs
+                  .iter()
+                  .map(|input| input.previous_output.clone())
+                  .collect::<Vec<_>>();
+
+              let pending_store = WalletPendingJournalStore::try_acquire(&args.pending_journal)?;
+              let mut snapshot = pending_store.load_or_new(&signed.network)?;
+              ensure_broadcast_reservation_binding(
+                  &snapshot.journal,
+                  &signed.final_txid,
+                  &signed.review.from,
+                  &input_outpoints,
+              )?;
+              snapshot
+                  .journal
+                  .mark_submission_started(&signed.final_txid)?;
+              let report = pending_store.save_next(snapshot.generation, &snapshot.journal)?;
+              snapshot.generation = report.generation;
+
+              match submit_prepared(prepared).await {
+                  Ok(output) if output.accepted => {
+                      snapshot.journal.mark_relay_accepted(&signed.final_txid)?;
+                      pending_store.save_next(snapshot.generation, &snapshot.journal)?;
+                      Ok(output)
+                  }
+                  Ok(output) => {
+                      match (
+                          output.rejection_code.as_deref(),
+                          output.rejection_message.as_deref(),
+                      ) {
+                          (Some(code), Some(message)) => {
+                              snapshot.journal.mark_relay_rejected(
+                                  &signed.final_txid,
+                                  code,
+                                  message,
+                              )?;
+                              pending_store.save_next(snapshot.generation, &snapshot.journal)?;
+                              Ok(output)
+                          }
+                          _ => {
+                              snapshot
+                                  .journal
+                                  .mark_submission_outcome_unknown(&signed.final_txid)?;
+                              pending_store.save_next(snapshot.generation, &snapshot.journal)?;
+                              Err(invalid_input(
+                                  "relay rejection response is missing rejection detail",
+                              )
+                              .into())
+                          }
+                      }
+                  }
+                  Err(error) => {
+                      snapshot
+                          .journal
+                          .mark_submission_outcome_unknown(&signed.final_txid)?;
+                      pending_store.save_next(snapshot.generation, &snapshot.journal)?;
+                      Err(error.into())
+                  }
+              }
+          }
+
+          ''' + marker
+          replace_once(marker, helper)
+
+          replace_once(
+              '''        Command::TxBroadcast(args) => {
+              let bytes = read_bounded_json(&args.signed, "signed transaction envelope")?;
+              let signed = parse_signed_broadcast(&bytes)?;
+              write_json(&broadcast_signed(&args.relay, signed).await?)
+          }
+''',
+              '''        Command::TxBroadcast(args) => write_json(&run_tx_broadcast(args).await?),
+''',
+          )
+
+          replace_once(
+              '''        assert!(parse_command_from(args(&[
+              "tx-broadcast",
+              "--signed",
+              "signed.json",
+              "--relay",
+              "https://relay.example",
+              "--password",
+              "secret"
+          ]))
+''',
+              '''        assert!(parse_command_from(args(&[
+              "tx-broadcast",
+              "--signed",
+              "signed.json",
+              "--pending-journal",
+              "pending",
+              "--relay",
+              "https://relay.example",
+              "--password",
+              "secret"
+          ]))
+''',
+          )
+          replace_once(
+              '''            parse_command_from(args(&[
+                  "tx-broadcast",
+                  "--signed",
+                  "signed.json",
+                  "--relay",
+                  "https://relay.example"
+              ]))
+''',
+              '''            parse_command_from(args(&[
+                  "tx-broadcast",
+                  "--signed",
+                  "signed.json",
+                  "--pending-journal",
+                  "pending",
+                  "--relay",
+                  "https://relay.example"
+              ]))
+''',
+          )
+
+          marker = '''    #[test]
+              fn tx_preview_acknowledgements_are_strict_and_tx_sign_has_no_overrides() {
+'''
+          tests = '''    #[test]
+              fn tx_broadcast_requires_unique_pending_journal() {
+                  assert!(parse_command_from(args(&[
+                      "tx-broadcast",
+                      "--signed",
+                      "signed.json",
+                      "--relay",
+                      "https://relay.example"
+                  ]))
+                  .is_err());
+                  assert!(parse_command_from(args(&[
+                      "tx-broadcast",
+                      "--signed",
+                      "signed.json",
+                      "--pending-journal",
+                      "pending",
+                      "--pending-journal",
+                      "other-pending",
+                      "--relay",
+                      "https://relay.example"
+                  ]))
+                  .is_err());
+              }
+
+              #[test]
+              fn broadcast_reservation_binding_requires_exact_signed_entry() {
+                  let network = WalletNetworkIdentity::new(
+                      "public-testnet",
+                      "pulsedag-public-testnet",
+                  )
+                  .expect("network");
+                  let mut journal = WalletPendingJournal::new(network).expect("journal");
+                  let from = pulsedag_core::address_from_public_key(&"ab".repeat(32));
+                  let selected = [pulsedag_wallet::SelectedUtxo {
+                      outpoint: OutPoint {
+                          txid: "11".repeat(32),
+                          index: 0,
+                      },
+                      amount: 100,
+                  }];
+                  let final_txid = "aa".repeat(32);
+                  journal
+                      .reserve_signed(&final_txid, from.clone(), &selected)
+                      .expect("reserve");
+                  let outpoints = [selected[0].outpoint.clone()];
+                  assert!(ensure_broadcast_reservation_binding(
+                      &journal,
+                      &final_txid,
+                      &from,
+                      &outpoints,
+                  )
+                  .is_ok());
+                  assert!(ensure_broadcast_reservation_binding(
+                      &journal,
+                      &final_txid,
+                      "pulse1wrong",
+                      &outpoints,
+                  )
+                  .is_err());
+                  let wrong_outpoints = [OutPoint {
+                      txid: "22".repeat(32),
+                      index: 0,
+                  }];
+                  assert!(ensure_broadcast_reservation_binding(
+                      &journal,
+                      &final_txid,
+                      &from,
+                      &wrong_outpoints,
+                  )
+                  .is_err());
+                  journal
+                      .mark_submission_started(&final_txid)
+                      .expect("submission started");
+                  assert!(ensure_broadcast_reservation_binding(
+                      &journal,
+                      &final_txid,
+                      &from,
+                      &outpoints,
+                  )
+                  .is_err());
+              }
+
+          ''' + marker
+          replace_once(marker, tests)
+
+          path.write_text(text)
+          PY
+          cargo fmt --all
+          git diff --check
+
+      - name: Wallet tests
+        run: cargo test -p pulsedag-wallet
+
+      - name: Wallet clippy
+        run: cargo clippy -p pulsedag-wallet --all-targets -- -D warnings
+
+      - name: Publish broadcast CLI and clean workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm .github/workflows/temp-cli-broadcast-state.yml
+          git add -A
+          changed="$(git diff --cached --name-only | sort)"
+          expected="$(printf '%s\n' '.github/workflows/temp-cli-broadcast-state.yml' 'crates/pulsedag-wallet/src/bin/pulsedag-wallet.rs' | sort)"
+          test "$changed" = "$expected"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "wallet: persist broadcast submission outcomes"
+          git push origin HEAD:wallet/v3-pending-utxo-reconcile
