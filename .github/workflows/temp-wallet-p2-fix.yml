@@ -1,0 +1,65 @@
+name: temp wallet P2 confirmation and rejection bounds fix
+
+on:
+  push:
+    branches:
+      - wallet/v3-pending-utxo-reconcile
+    paths:
+      - '.github/workflows/temp-wallet-p2-fix.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  materialize:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: wallet/v3-pending-utxo-reconcile
+          fetch-depth: 1
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.91.0
+          components: clippy,rustfmt
+      - name: Guard exact inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git hash-object crates/pulsedag-core/src/validation.rs)" = "0eefb1a5c20bfdcda3ddc7f3643d05ce5e164fe1"
+          test "$(git hash-object crates/pulsedag-rpc/src/handlers/address.rs)" = "b404e7a5ba8b7401c735216dc174afc56ae3153f"
+          test "$(git hash-object crates/pulsedag-wallet/src/pending.rs)" = "96ddaca778ac126f26c92db91cf9a597fe1c31bb"
+          test "$(git hash-object .github/temp-wallet-p2-fix.py)" = "93e304dc38f62b63aa940f0a5cc6071814b56fdf"
+      - name: Apply guarded P2 fixes
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 .github/temp-wallet-p2-fix.py
+          cargo fmt --all
+          git diff --check
+          test "$(git diff --name-only)" = $'crates/pulsedag-core/src/validation.rs\ncrates/pulsedag-rpc/src/handlers/address.rs\ncrates/pulsedag-wallet/src/pending.rs'
+      - name: Run focused and package regression gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked -p pulsedag-rpc address_activity
+          cargo test --locked -p pulsedag-wallet relay_rejection_metadata_is_bounded_before_persistence
+          cargo test --locked -p pulsedag-core
+          cargo test --locked -p pulsedag-rpc
+          cargo test --locked -p pulsedag-wallet
+          cargo clippy --locked -p pulsedag-core -p pulsedag-rpc -p pulsedag-wallet --all-targets -- -D warnings
+          cargo fmt --all -- --check
+          git diff --check
+      - name: Publish fixes and remove temporaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm .github/temp-wallet-p2-fix.py
+          rm .github/workflows/temp-wallet-p2-fix.yml
+          git add crates/pulsedag-core/src/validation.rs crates/pulsedag-rpc/src/handlers/address.rs crates/pulsedag-wallet/src/pending.rs .github/temp-wallet-p2-fix.py .github/workflows/temp-wallet-p2-fix.yml
+          test "$(git diff --cached --name-only)" = $'.github/temp-wallet-p2-fix.py\n.github/workflows/temp-wallet-p2-fix.yml\ncrates/pulsedag-core/src/validation.rs\ncrates/pulsedag-rpc/src/handlers/address.rs\ncrates/pulsedag-wallet/src/pending.rs'
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'wallet: bound rejection metadata and precompute confirmations'
+          git push origin HEAD:wallet/v3-pending-utxo-reconcile
