@@ -11,6 +11,8 @@ use serde_json::{value::RawValue, Value};
 
 use super::NetworkMessage;
 
+pub mod live_session_v1;
+
 pub const FAST_SYNC_EXTENSION_FIELD_V1: &str = "pulsedag_fast_sync_v1";
 pub const P2P_FAST_SYNC_CONTRACT_VERSION: u32 = 1;
 pub const P2P_FAST_SYNC_TRANSPORT_MAX_BYTES_V1: usize = 60 * 1024;
