@@ -222,7 +222,9 @@ impl WalletPendingJournalStore {
 
         remove_uncommitted_target(&snapshot_path)?;
         if fs::symlink_metadata(&commit_path).is_ok() {
-            return Err(WalletPendingPersistenceError::AmbiguousGeneration(generation));
+            return Err(WalletPendingPersistenceError::AmbiguousGeneration(
+                generation,
+            ));
         }
 
         let mut snapshot = open_private_file(&snapshot_path, true)
@@ -253,9 +255,7 @@ impl WalletPendingJournalStore {
         drop(marker);
 
         if let Err(error) = sync_directory(&self.directory) {
-            return Err(WalletPendingPersistenceError::PublishedButDirectorySyncFailed(
-                error,
-            ));
+            return Err(WalletPendingPersistenceError::PublishedButDirectorySyncFailed(error));
         }
 
         let cleanup_complete = self.cleanup_old_generations(generation);
@@ -319,7 +319,8 @@ impl WalletPendingJournalStore {
             ));
         }
         ensure_size(metadata.len())?;
-        let mut file = File::open(&path).map_err(|error| io_error("open committed snapshot", error))?;
+        let mut file =
+            File::open(&path).map_err(|error| io_error("open committed snapshot", error))?;
         let mut payload = Vec::with_capacity(metadata.len() as usize);
         Read::by_ref(&mut file)
             .take(WALLET_PENDING_JOURNAL_MAX_BYTES + 1)
@@ -383,8 +384,8 @@ fn parse_commit_name(name: &str) -> Result<Option<CommitRef>, WalletPendingPersi
     let Some((generation, digest_hex)) = remainder.split_once('-') else {
         return Err(WalletPendingPersistenceError::InvalidCommitMarker);
     };
-    let generation = parse_generation(generation)
-        .ok_or(WalletPendingPersistenceError::InvalidCommitMarker)?;
+    let generation =
+        parse_generation(generation).ok_or(WalletPendingPersistenceError::InvalidCommitMarker)?;
     validate_digest(digest_hex).ok_or(WalletPendingPersistenceError::InvalidCommitMarker)?;
     Ok(Some(CommitRef {
         generation,
@@ -444,7 +445,10 @@ fn ensure_store_directory(path: &Path) -> Result<(), WalletPendingPersistenceErr
                 Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
                 Err(error) => return Err(io_error("create journal directory", error)),
             }
-            if let Some(parent) = path.parent().filter(|parent| !parent.as_os_str().is_empty()) {
+            if let Some(parent) = path
+                .parent()
+                .filter(|parent| !parent.as_os_str().is_empty())
+            {
                 sync_directory(parent).map_err(|error| io_error("sync journal parent", error))?;
             }
         }
@@ -663,8 +667,7 @@ mod tests {
             .expect("save");
 
         let orphan_digest = "00".repeat(32);
-        fs::write(store.snapshot_path(2, &orphan_digest), b"torn")
-            .expect("write orphan snapshot");
+        fs::write(store.snapshot_path(2, &orphan_digest), b"torn").expect("write orphan snapshot");
         let loaded = store.load_latest().expect("load latest").expect("snapshot");
         assert_eq!(loaded.generation, 1);
         let _ = fs::remove_dir_all(path);
