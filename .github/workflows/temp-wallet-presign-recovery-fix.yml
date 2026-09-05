@@ -28,7 +28,7 @@ jobs:
         run: |
           set -euo pipefail
           test "$(git hash-object crates/pulsedag-wallet/src/bin/pulsedag-wallet.rs)" = "7ebfb698b188086f297d23fd6f9db555b0fcdda0"
-          test "$(git hash-object .github/temp-wallet-presign-recovery-fix.py)" = "141d95f44d1a941a45b9dff891bbd6c79f2d121a"
+          test "$(git hash-object .github/temp-wallet-presign-recovery-fix.py)" = "2d014e6921ba7204a5fe6e9a9e683574befe575f"
       - name: Apply guarded pre-sign recovery fix
         shell: bash
         run: |
@@ -42,7 +42,6 @@ jobs:
         run: |
           set -euo pipefail
           cargo test --locked -p pulsedag-wallet --bin pulsedag-wallet tx_sign_precheck
-          cargo test --locked -p pulsedag-wallet --bin pulsedag-wallet tx_sign_recovery
           cargo test --locked -p pulsedag-wallet
           cargo clippy --locked -p pulsedag-wallet --all-targets -- -D warnings
           cargo fmt --all -- --check
