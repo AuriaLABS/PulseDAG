@@ -159,14 +159,22 @@ impl Storage {
         let manifest = &bundle.manifest;
 
         require_manifest_match("chain_id", &manifest.chain_id, &derived.chain_id)?;
-        require_manifest_match("genesis_hash", &manifest.genesis_hash, &derived.genesis_hash)?;
+        require_manifest_match(
+            "genesis_hash",
+            &manifest.genesis_hash,
+            &derived.genesis_hash,
+        )?;
         require_manifest_match(
             "protocol_fingerprint",
             &manifest.protocol_fingerprint,
             &derived.protocol_fingerprint,
         )?;
         require_manifest_match("best_height", &manifest.best_height, &derived.best_height)?;
-        require_manifest_match("selected_tip", &manifest.selected_tip, &derived.selected_tip)?;
+        require_manifest_match(
+            "selected_tip",
+            &manifest.selected_tip,
+            &derived.selected_tip,
+        )?;
         require_manifest_match(
             "state_commitment",
             &manifest.state_commitment,
@@ -262,9 +270,7 @@ mod tests {
             .into_owned()
     }
 
-    fn source_bundle(
-        storage: &Storage,
-    ) -> (FastSyncSnapshotBundleV1, ProtocolActivationIdentity) {
+    fn source_bundle(storage: &Storage) -> (FastSyncSnapshotBundleV1, ProtocolActivationIdentity) {
         let state = init_chain_state("pulsedag-testnet".to_string());
         let expected = ProtocolActivationIdentity::legacy_from_state(&state);
         storage
@@ -289,7 +295,10 @@ mod tests {
             bundle.manifest.manifest_version,
             FAST_SYNC_SNAPSHOT_MANIFEST_VERSION
         );
-        assert_eq!(bundle.manifest.storage_schema_version, STORAGE_SCHEMA_VERSION);
+        assert_eq!(
+            bundle.manifest.storage_schema_version,
+            STORAGE_SCHEMA_VERSION
+        );
         assert_eq!(bundle.manifest.chain_id, expected.chain_id);
         assert_eq!(bundle.manifest.genesis_hash, expected.genesis_hash);
         assert!(storage
