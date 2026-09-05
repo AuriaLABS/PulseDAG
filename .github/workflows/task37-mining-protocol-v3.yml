@@ -11,6 +11,7 @@ on:
       - crates/pulsedag-rpc/src/handlers/mining_submit_protocol.rs
       - crates/pulsedag-rpc/src/handlers/mining_template_protocol.rs
       - crates/pulsedag-rpc/src/handlers/mod.rs
+      - crates/pulsedag-rpc/tests/mining_protocol_v3_contract.rs
       - docs/MINING_PROTOCOL_V3.md
       - .github/workflows/task37-mining-protocol-v3.yml
   push:
@@ -23,6 +24,7 @@ on:
       - crates/pulsedag-rpc/src/handlers/mining_submit_protocol.rs
       - crates/pulsedag-rpc/src/handlers/mining_template_protocol.rs
       - crates/pulsedag-rpc/src/handlers/mod.rs
+      - crates/pulsedag-rpc/tests/mining_protocol_v3_contract.rs
       - docs/MINING_PROTOCOL_V3.md
       - .github/workflows/task37-mining-protocol-v3.yml
 
@@ -51,8 +53,11 @@ jobs:
       - name: Compile RPC v3 facade
         run: cargo check --locked -p pulsedag-rpc
 
-      - name: Mining Protocol v3 golden and compatibility tests
+      - name: Mining Protocol v3 golden unit tests
         run: cargo test --locked -p pulsedag-rpc task37_
+
+      - name: Mining Protocol v3 route contract
+        run: cargo test --locked -p pulsedag-rpc --test mining_protocol_v3_contract -- --test-threads=1
 
       - name: Retained Task 28/29 mining compatibility
         run: |
