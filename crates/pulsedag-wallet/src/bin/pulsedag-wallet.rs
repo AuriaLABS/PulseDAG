@@ -94,8 +94,11 @@ struct TxPreviewArgs {
     max_fee: u64,
     max_fee_bps: u32,
     max_inputs: usize,
+    high_fee_threshold: u64,
+    high_fee_bps_threshold: u32,
     ack_self_send: bool,
     ack_spend_all: bool,
+    ack_high_fee: bool,
     account: u32,
     branch: WalletDerivationBranch,
     index: u32,
@@ -375,8 +378,11 @@ fn parse_command_from(args: impl Iterator<Item = String>) -> CliResult<Command> 
                     "max-fee",
                     "max-fee-bps",
                     "max-inputs",
+                    "high-fee-threshold",
+                    "high-fee-bps-threshold",
                     "ack-self-send",
                     "ack-spend-all",
+                    "ack-high-fee",
                     "account",
                     "branch",
                     "index",
@@ -393,6 +399,14 @@ fn parse_command_from(args: impl Iterator<Item = String>) -> CliResult<Command> 
                 max_fee: parse_u64("--max-fee", &required(&flags, "max-fee")?)?,
                 max_fee_bps: parse_u32("--max-fee-bps", &required(&flags, "max-fee-bps")?)?,
                 max_inputs: parse_usize("--max-inputs", &required(&flags, "max-inputs")?)?,
+                high_fee_threshold: parse_u64(
+                    "--high-fee-threshold",
+                    &required(&flags, "high-fee-threshold")?,
+                )?,
+                high_fee_bps_threshold: parse_u32(
+                    "--high-fee-bps-threshold",
+                    &required(&flags, "high-fee-bps-threshold")?,
+                )?,
                 ack_self_send: parse_explicit_bool(
                     "--ack-self-send",
                     &required(&flags, "ack-self-send")?,
@@ -400,6 +414,10 @@ fn parse_command_from(args: impl Iterator<Item = String>) -> CliResult<Command> 
                 ack_spend_all: parse_explicit_bool(
                     "--ack-spend-all",
                     &required(&flags, "ack-spend-all")?,
+                )?,
+                ack_high_fee: parse_explicit_bool(
+                    "--ack-high-fee",
+                    &required(&flags, "ack-high-fee")?,
                 )?,
                 account: parse_u32("--account", &required(&flags, "account")?)?,
                 branch: parse_branch(&required(&flags, "branch")?)?,
@@ -722,9 +740,18 @@ fn run_tx_preview(args: TxPreviewArgs, password: &SecretString) -> CliResult<TxP
 
     let available_utxos = load_address_utxos(&args.utxos_file, &signer_address)?;
     let intent = WalletTransactionIntent::new(&signer_address, args.to, args.amount, args.fee)?;
-    let spend_policy = WalletSpendPolicy::new(args.max_fee, args.max_fee_bps, args.max_inputs)?;
-    let safety_acknowledgements =
-        WalletSafetyAcknowledgements::new(args.ack_self_send, args.ack_spend_all);
+    let spend_policy = WalletSpendPolicy::new_with_high_fee_thresholds(
+        args.max_fee,
+        args.max_fee_bps,
+        args.max_inputs,
+        args.high_fee_threshold,
+        args.high_fee_bps_threshold,
+    )?;
+    let safety_acknowledgements = WalletSafetyAcknowledgements::new_with_high_fee(
+        args.ack_self_send,
+        args.ack_spend_all,
+        args.ack_high_fee,
+    );
     let plan = build_deterministic_transaction_plan_with_safety(
         expected_network,
         spend_policy,
@@ -934,10 +961,16 @@ mod tests {
                 "1000",
                 "--max-inputs",
                 "8",
+                "--high-fee-threshold",
+                "50",
+                "--high-fee-bps-threshold",
+                "500",
                 "--ack-self-send",
                 "true",
                 "--ack-spend-all",
                 "false",
+                "--ack-high-fee",
+                "true",
                 "--account",
                 "0",
                 "--branch",
@@ -947,8 +980,11 @@ mod tests {
             ]))
             .unwrap(),
             Command::TxPreview(TxPreviewArgs {
+                high_fee_threshold: 50,
+                high_fee_bps_threshold: 500,
                 ack_self_send: true,
                 ack_spend_all: false,
+                ack_high_fee: true,
                 ..
             })
         ));
@@ -1006,6 +1042,16 @@ mod tests {
             "1000",
             "--max-inputs",
             "8",
+            "--high-fee-threshold",
+            "50",
+            "--high-fee-bps-threshold",
+            "500",
+            "--ack-self-send",
+            "false",
+            "--ack-spend-all",
+            "false",
+            "--ack-high-fee",
+            "false",
             "--account",
             "0",
             "--branch",
@@ -1013,42 +1059,89 @@ mod tests {
             "--index",
             "0",
         ];
+        assert!(matches!(
+            parse_command_from(args(&preview)).unwrap(),
+            Command::TxPreview(TxPreviewArgs {
+                high_fee_threshold: 50,
+                high_fee_bps_threshold: 500,
+                ack_high_fee: false,
+                ..
+            })
+        ));
 
-        let mut missing = preview.to_vec();
-        missing.extend(["--ack-self-send", "false"]);
-        assert!(parse_command_from(args(&missing)).is_err());
+        fn without_pair(values: &[&str], flag: &str) -> Vec<String> {
+            let mut out = Vec::new();
+            let mut index = 0;
+            while index < values.len() {
+                if values[index] == flag {
+                    index += 2;
+                } else {
+                    out.push(values[index].to_string());
+                    index += 1;
+                }
+            }
+            out
+        }
 
-        let mut invalid = preview.to_vec();
-        invalid.extend(["--ack-self-send", "yes", "--ack-spend-all", "false"]);
-        assert!(parse_command_from(args(&invalid)).is_err());
-
-        let mut duplicate = preview.to_vec();
-        duplicate.extend([
+        for flag in [
             "--ack-self-send",
-            "false",
-            "--ack-self-send",
-            "true",
             "--ack-spend-all",
-            "false",
-        ]);
-        assert!(parse_command_from(args(&duplicate)).is_err());
+            "--high-fee-threshold",
+            "--high-fee-bps-threshold",
+            "--ack-high-fee",
+        ] {
+            let missing = without_pair(&preview, flag);
+            assert!(parse_command_from(missing.into_iter()).is_err());
+        }
 
-        assert!(parse_command_from(args(&[
-            "tx-sign",
-            "--keystore",
-            "wallet.json",
-            "--plan",
-            "plan.json",
-            "--account",
-            "0",
-            "--branch",
-            "receive",
-            "--index",
-            "0",
-            "--ack-spend-all",
-            "true"
-        ]))
-        .is_err());
+        for (flag, invalid_value) in [
+            ("--ack-self-send", "yes"),
+            ("--ack-spend-all", "yes"),
+            ("--high-fee-threshold", "not-a-u64"),
+            ("--high-fee-bps-threshold", "not-a-u32"),
+            ("--ack-high-fee", "yes"),
+        ] {
+            let mut invalid = preview.to_vec();
+            let position = invalid.iter().position(|value| *value == flag).unwrap();
+            invalid[position + 1] = invalid_value;
+            assert!(parse_command_from(args(&invalid)).is_err());
+        }
+
+        for (flag, duplicate_value) in [
+            ("--ack-self-send", "true"),
+            ("--ack-spend-all", "true"),
+            ("--high-fee-threshold", "50"),
+            ("--high-fee-bps-threshold", "500"),
+            ("--ack-high-fee", "false"),
+        ] {
+            let mut duplicate = preview.to_vec();
+            duplicate.extend([flag, duplicate_value]);
+            assert!(parse_command_from(args(&duplicate)).is_err());
+        }
+
+        for (flag, value) in [
+            ("--ack-spend-all", "true"),
+            ("--ack-high-fee", "true"),
+            ("--high-fee-threshold", "50"),
+            ("--high-fee-bps-threshold", "500"),
+        ] {
+            let sign = [
+                "tx-sign",
+                "--keystore",
+                "wallet.json",
+                "--plan",
+                "plan.json",
+                "--account",
+                "0",
+                "--branch",
+                "receive",
+                "--index",
+                "0",
+                flag,
+                value,
+            ];
+            assert!(parse_command_from(args(&sign)).is_err());
+        }
     }
 
     #[test]
