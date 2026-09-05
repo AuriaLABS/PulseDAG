@@ -93,11 +93,45 @@ impl ProtocolCapabilityTransportV1 {
         self.fast_sync.configure_local(&expected, capabilities)
     }
 
+    pub fn note_fast_sync_inbound(
+        &mut self,
+        peer_id: &str,
+        wire: &FastSyncWireV1,
+    ) -> Result<(), FastSyncRuntimeSessionErrorV1> {
+        let expected = self
+            .session
+            .local_capabilities()
+            .ok_or(FastSyncRuntimeSessionErrorV1::LocalCapabilitiesMissing)?
+            .protocol_identity
+            .clone();
+        self.fast_sync.note_inbound(&expected, peer_id, wire)
+    }
+
+    pub fn validate_fast_sync_outbound(
+        &self,
+        peer_id: &str,
+        protocol_route_authorized: bool,
+        wire: &FastSyncWireV1,
+    ) -> Result<(), FastSyncRuntimeSessionErrorV1> {
+        let expected = self
+            .session
+            .local_capabilities()
+            .ok_or(FastSyncRuntimeSessionErrorV1::LocalCapabilitiesMissing)?
+            .protocol_identity
+            .clone();
+        self.fast_sync
+            .validate_outbound(&expected, peer_id, protocol_route_authorized, wire)
+    }
+
+    pub fn fast_sync_peer_authorized(&self, peer_id: &str) -> bool {
+        self.fast_sync.peer_session_authorized(peer_id)
+    }
+
     pub fn fast_sync_session_book(&self) -> &FastSyncRuntimeSessionBookV1 {
         &self.fast_sync
     }
 
-    pub fn fast_sync_session_book_mut(&mut self) -> &mut FastSyncRuntimeSessionBookV1 {
+    pub(crate) fn fast_sync_session_book_mut(&mut self) -> &mut FastSyncRuntimeSessionBookV1 {
         &mut self.fast_sync
     }
 
@@ -601,7 +635,6 @@ mod tests {
     #[test]
     fn transport_disconnect_and_protocol_reset_revoke_fast_sync_state() {
         let local = capabilities(CHAIN_ID);
-        let expected = local.protocol_identity.clone();
         let fast_sync = fast_sync_capabilities(&local);
         let mut transport = ProtocolCapabilityTransportV1::default();
         transport
@@ -611,37 +644,21 @@ mod tests {
             .configure_fast_sync_capabilities(fast_sync.clone())
             .unwrap();
         transport
-            .fast_sync_session_book_mut()
-            .note_inbound(
-                &expected,
-                "peer",
-                &FastSyncWireV1::Capabilities(fast_sync.clone()),
-            )
+            .note_fast_sync_inbound("peer", &FastSyncWireV1::Capabilities(fast_sync.clone()))
             .unwrap();
-        assert!(transport
-            .fast_sync_session_book()
-            .peer_session_authorized("peer"));
+        assert!(transport.fast_sync_peer_authorized("peer"));
 
         transport.peer_disconnected("peer");
-        assert!(!transport
-            .fast_sync_session_book()
-            .peer_session_authorized("peer"));
+        assert!(!transport.fast_sync_peer_authorized("peer"));
 
         transport
-            .fast_sync_session_book_mut()
-            .note_inbound(
-                &expected,
-                "peer",
-                &FastSyncWireV1::Capabilities(fast_sync),
-            )
+            .note_fast_sync_inbound("peer", &FastSyncWireV1::Capabilities(fast_sync))
             .unwrap();
         transport.reset_local_capabilities();
         assert!(transport
             .fast_sync_session_book()
             .local_capabilities()
             .is_none());
-        assert!(!transport
-            .fast_sync_session_book()
-            .peer_session_authorized("peer"));
+        assert!(!transport.fast_sync_peer_authorized("peer"));
     }
 }
