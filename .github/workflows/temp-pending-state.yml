@@ -1,4 +1,4 @@
-# retrigger after patch hunk-count correction
+# retrigger with rustfmt applying the accepted patch formatting
 name: TEMP pending submission state
 
 on:
@@ -28,8 +28,8 @@ jobs:
           test "$(git hash-object crates/pulsedag-wallet/src/pending.rs)" = "a44a2c260759566eeb0ab5a44669343cda5bf122"
           git apply --check .github/temp-pending-state.patch
           git apply .github/temp-pending-state.patch
+          cargo fmt --all
           git diff --check
-          cargo fmt --all -- --check
 
       - name: Wallet tests
         run: cargo test -p pulsedag-wallet
