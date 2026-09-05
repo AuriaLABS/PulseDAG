@@ -1,3 +1,4 @@
+# retrigger after patch hunk-count correction
 name: TEMP pending submission state
 
 on:
