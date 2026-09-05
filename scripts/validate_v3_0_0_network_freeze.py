@@ -81,8 +81,18 @@ def validate_manifest(manifest: dict[str, Any]) -> bool:
     identities_distinct = all(
         networks[0][field] != networks[1][field] for field in REQUIRED_NETWORK_FIELDS
     )
+
+    if manifest["decision"] == "GO_V3_DUAL_LAUNCH" and manifest["launch_state"] != "FROZEN":
+        fail("GO_V3_DUAL_LAUNCH requires launch_state=FROZEN")
+    if manifest["launch_state"] == "FROZEN" and has_tbd:
+        fail("frozen launch identities must not contain TBD values")
+    if manifest["decision"] == "GO_V3_DUAL_LAUNCH" and any(
+        assertions[key] != "PASS" for key in REQUIRED_ASSERTIONS
+    ):
+        fail("GO_V3_DUAL_LAUNCH requires all required assertions to be PASS")
     if manifest["launch_state"] == "FROZEN" and not identities_distinct:
         fail("frozen mainnet and parallel_testnet identities must be distinct")
+
     return (
         manifest["launch_state"] == "FROZEN"
         and manifest["decision"] == "GO_V3_DUAL_LAUNCH"
