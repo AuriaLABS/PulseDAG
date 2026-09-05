@@ -18,6 +18,7 @@ on:
       - 'crates/pulsedag-storage/Cargo.toml'
       - 'crates/pulsedag-p2p/src/messages.rs'
       - 'crates/pulsedag-p2p/src/messages/fast_sync_carrier_v1.rs'
+      - 'crates/pulsedag-p2p/src/messages/fast_sync_carrier_v1/live_session_v1.rs'
       - 'Cargo.toml'
       - 'Cargo.lock'
   workflow_dispatch:
@@ -72,3 +73,7 @@ jobs:
       - name: Bounded fast-sync P2P carrier regressions
         run: |
           cargo test --locked -p pulsedag-p2p fast_sync_carrier_v1::tests:: -- --nocapture
+
+      - name: Fast-sync serving and downloader session regressions
+        run: |
+          cargo test --locked -p pulsedag-p2p fast_sync_carrier_v1::live_session_v1::tests:: -- --nocapture
