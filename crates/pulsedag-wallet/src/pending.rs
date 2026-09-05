@@ -35,7 +35,7 @@ impl WalletPendingState {
     }
 
     pub const fn reserves_outpoints(self) -> bool {
-        !matches!(self, Self::RelayRejected | Self::Confirmed)
+        !matches!(self, Self::Confirmed)
     }
 }
 
@@ -227,7 +227,11 @@ impl WalletPendingJournal {
         &mut self,
         final_txid: &str,
     ) -> Result<(), WalletPendingError> {
-        self.transition(final_txid, WalletPendingState::SubmissionOutcomeUnknown, None)
+        self.transition(
+            final_txid,
+            WalletPendingState::SubmissionOutcomeUnknown,
+            None,
+        )
     }
 
     pub fn mark_relay_accepted(&mut self, final_txid: &str) -> Result<(), WalletPendingError> {
@@ -242,9 +246,10 @@ impl WalletPendingJournal {
         self.transition(final_txid, WalletPendingState::Confirmed, None)
     }
 
-    /// An explicit relay rejection is terminal/releasing only when there was no
-    /// earlier ambiguous/accepted submission observation. After an unknown
-    /// outcome a later rejection cannot prove that the earlier attempt failed.
+    /// A generic relay rejection is recorded for later reconciliation but is
+    /// not terminal spend evidence under the current public API, so selected
+    /// outpoints remain reserved. After an ambiguous/accepted observation a
+    /// later rejection cannot prove that an earlier submission failed.
     pub fn mark_relay_rejected(
         &mut self,
         final_txid: &str,
@@ -351,9 +356,10 @@ impl fmt::Display for WalletPendingError {
             Self::ConflictingReservations => {
                 f.write_str("wallet pending journal contains conflicting active UTXO reservations")
             }
-            Self::ReservedOutpoint { txid, index } => {
-                write!(f, "wallet UTXO is reserved by a pending transaction: {txid}:{index}")
-            }
+            Self::ReservedOutpoint { txid, index } => write!(
+                f,
+                "wallet UTXO is reserved by a pending transaction: {txid}:{index}"
+            ),
             Self::TransactionIdentityMismatch(txid) => write!(
                 f,
                 "wallet pending txid already exists with different reservation metadata: {txid}"
@@ -404,7 +410,10 @@ fn transition_allowed(current: WalletPendingState, next: WalletPendingState) -> 
             WalletPendingState::ObservedMempool | WalletPendingState::Confirmed
         ),
         WalletPendingState::ObservedMempool => matches!(next, WalletPendingState::Confirmed),
-        WalletPendingState::RelayRejected => matches!(next, WalletPendingState::Confirmed),
+        WalletPendingState::RelayRejected => matches!(
+            next,
+            WalletPendingState::ObservedMempool | WalletPendingState::Confirmed
+        ),
         WalletPendingState::Confirmed => false,
     }
 }
@@ -550,7 +559,7 @@ mod tests {
     }
 
     #[test]
-    fn explicit_rejection_before_ambiguous_submission_releases_reservation() {
+    fn generic_relay_rejection_keeps_reservation_until_stronger_evidence() {
         let mut journal = WalletPendingJournal::new(network("chain-a")).expect("journal");
         let selected = [selected("11", 0)];
         let txid = final_txid("aa");
@@ -558,13 +567,21 @@ mod tests {
             .reserve_signed(&txid, address(), &selected)
             .expect("reserve");
         journal
-            .mark_relay_rejected(&txid, "TX_REJECTED", "invalid transaction")
-            .expect("reject");
-        assert!(journal.reserved_outpoints().is_empty());
+            .mark_relay_rejected(&txid, "TX_REJECTED", "generic relay rejection")
+            .expect("reject observation");
+        assert_eq!(journal.reserved_outpoints().len(), 1);
         assert_eq!(
-            journal.entry(&txid).expect("entry").rejection_code.as_deref(),
+            journal
+                .entry(&txid)
+                .expect("entry")
+                .rejection_code
+                .as_deref(),
             Some("TX_REJECTED")
         );
+        journal.mark_observed_mempool(&txid).expect("mempool");
+        assert_eq!(journal.reserved_outpoints().len(), 1);
+        journal.mark_confirmed(&txid).expect("confirmed");
+        assert!(journal.reserved_outpoints().is_empty());
     }
 
     #[test]
@@ -585,7 +602,7 @@ mod tests {
     }
 
     #[test]
-    fn reserved_outpoint_check_ignores_only_released_terminal_records() {
+    fn reserved_outpoint_check_releases_only_after_confirmation() {
         let mut journal = WalletPendingJournal::new(network("chain-a")).expect("journal");
         let first = [selected("11", 0)];
         let txid = final_txid("aa");
@@ -594,8 +611,10 @@ mod tests {
             .expect("reserve");
         assert!(journal.ensure_selected_unreserved(&first).is_err());
         journal
-            .mark_relay_rejected(&txid, "TX_REJECTED", "deterministic rejection")
-            .expect("reject");
+            .mark_relay_rejected(&txid, "TX_REJECTED", "generic rejection")
+            .expect("reject observation");
+        assert!(journal.ensure_selected_unreserved(&first).is_err());
+        journal.mark_confirmed(&txid).expect("confirmed");
         assert!(journal.ensure_selected_unreserved(&first).is_ok());
     }
 }
