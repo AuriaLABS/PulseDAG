@@ -23,10 +23,8 @@ fn storage_error(message: impl Into<String>) -> PulseError {
 }
 
 fn resume_plan_key(transfer_id: &str) -> Vec<u8> {
-    format!(
-        "{FAST_SYNC_RESUME_KEY_PREFIX_V1}{transfer_id}{FAST_SYNC_RESUME_PLAN_SUFFIX_V1}"
-    )
-    .into_bytes()
+    format!("{FAST_SYNC_RESUME_KEY_PREFIX_V1}{transfer_id}{FAST_SYNC_RESUME_PLAN_SUFFIX_V1}")
+        .into_bytes()
 }
 
 fn resume_chunk_key(transfer_id: &str, chunk_index: u32) -> Vec<u8> {
@@ -100,7 +98,9 @@ impl Storage {
         plan.validate_for_expected(expected)?;
         let persisted = self
             .persisted_fast_sync_resume_plan_v1(&plan.transfer_id, expected)?
-            .ok_or_else(|| storage_error("fast-sync persisted resume session is not initialized"))?;
+            .ok_or_else(|| {
+                storage_error("fast-sync persisted resume session is not initialized")
+            })?;
         if &persisted != plan {
             return Err(storage_error(
                 "fast-sync persisted resume plan mismatch for existing transfer_id",
@@ -447,7 +447,10 @@ mod tests {
         let (bundle, expected) = source_bundle(&storage);
         let small_chunks = prepared_transfer(&storage, &bundle, &expected, 256);
         let larger_chunks = prepared_transfer(&storage, &bundle, &expected, 512);
-        assert_eq!(small_chunks.plan.transfer_id, larger_chunks.plan.transfer_id);
+        assert_eq!(
+            small_chunks.plan.transfer_id,
+            larger_chunks.plan.transfer_id
+        );
         assert_ne!(small_chunks.plan, larger_chunks.plan);
 
         storage
