@@ -5,7 +5,10 @@ use axum::{
     extract::{Path, Query, State},
     Json,
 };
-use pulsedag_core::types::{OutPoint, Utxo};
+use pulsedag_core::{
+    types::{OutPoint, Utxo},
+    validation::transaction_is_confirmed,
+};
 
 #[derive(Debug, serde::Serialize)]
 pub struct AddressOutpointData {
@@ -307,6 +310,9 @@ pub async fn get_address_activity<S: RpcStateLike>(
                 .map(|(_, amount)| *amount)
                 .sum::<u64>();
             if incoming > 0 || outgoing > 0 {
+                if !transaction_is_confirmed(&tx.txid, &chain) {
+                    continue;
+                }
                 let net = incoming as i64 - outgoing as i64;
                 let direction = if net > 0 {
                     "incoming"
@@ -604,5 +610,103 @@ mod tests {
         assert_eq!(spend.context, "confirmed");
         assert!(spend.is_confirmed);
         assert!(!spend.is_mempool);
+    }
+
+    fn record_noncanonical_activity_tx(chain: &mut ChainState, tx: Transaction, block_hash: &str) {
+        let genesis = chain.dag.genesis_hash.clone();
+        let mut block = chain
+            .dag
+            .blocks
+            .get(&genesis)
+            .expect("genesis block")
+            .clone();
+        block.hash = block_hash.to_string();
+        block.header.parents = vec![genesis];
+        block.header.height = 1;
+        block.header.timestamp = 1;
+        block.transactions = vec![tx];
+        chain.dag.blocks.insert(block_hash.to_string(), block);
+    }
+
+    fn retained_activity_tx(txid: &str) -> Transaction {
+        Transaction {
+            txid: txid.to_string(),
+            version: 1,
+            inputs: Vec::new(),
+            outputs: vec![TxOutput {
+                address: "alice".into(),
+                amount: 7,
+            }],
+            fee: 0,
+            nonce: 9,
+        }
+    }
+
+    #[tokio::test]
+    async fn side_dag_activity_is_not_reported_as_confirmed() {
+        let state = mk_state().await;
+        {
+            let mut chain = state.chain.write().await;
+            chain.mempool.transactions.clear();
+            let txid = "side-dag-wallet-activity";
+            record_noncanonical_activity_tx(
+                &mut chain,
+                retained_activity_tx(txid),
+                "side-dag-block",
+            );
+            assert!(!pulsedag_core::validation::transaction_is_confirmed(
+                txid, &chain
+            ));
+        }
+
+        let axum::Json(resp) = get_address_activity(
+            State(state),
+            Path("alice".to_string()),
+            Query(super::AddressActivityQuery {
+                limit: Some(10),
+                offset: Some(0),
+            }),
+        )
+        .await;
+        let data = resp.data.expect("activity");
+        assert!(data
+            .activity
+            .iter()
+            .all(|item| item.txid != "side-dag-wallet-activity"));
+    }
+
+    #[tokio::test]
+    async fn replay_conflict_loser_activity_is_not_reported_as_confirmed() {
+        let state = mk_state().await;
+        {
+            let mut chain = state.chain.write().await;
+            chain.mempool.transactions.clear();
+            chain.dag.consensus_mode = pulsedag_core::state::ConsensusMode::GhostdagDev;
+            let txid = "replay-loser-wallet-activity";
+            let block_hash = "replay-loser-wallet-block";
+            record_noncanonical_activity_tx(&mut chain, retained_activity_tx(txid), block_hash);
+            chain.dag.ordered_dag.push(block_hash.to_string());
+            chain.dag.ordered_dag_conflict_diagnostics.push(format!(
+                "ordered_pos=1 block={block_hash} tx={txid} skipped_conflict"
+            ));
+            assert!(!pulsedag_core::validation::transaction_is_confirmed(
+                txid, &chain
+            ));
+        }
+
+        let axum::Json(resp) = get_address_activity(
+            State(state),
+            Path("alice".to_string()),
+            Query(super::AddressActivityQuery {
+                limit: Some(10),
+                offset: Some(0),
+            }),
+        )
+        .await;
+        let data = resp.data.expect("activity");
+        assert!(data
+            .activity
+            .iter()
+            .all(|item| item.txid != "replay-loser-wallet-activity"));
     }
 }

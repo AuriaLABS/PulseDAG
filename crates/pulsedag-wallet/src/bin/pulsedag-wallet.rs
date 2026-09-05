@@ -11,19 +11,20 @@ use std::{
     time::Duration,
 };
 
-use pulsedag_core::types::Utxo;
+use pulsedag_core::types::{OutPoint, Utxo};
 use pulsedag_wallet::{
     build_deterministic_transaction_plan_with_safety, derive_wallet_key_from_seed,
     encrypt_wallet_seed, wallet_seed_from_mnemonic, SecretString, WalletDerivationBranch,
     WalletKeystoreFile, WalletNetworkContext, WalletNetworkIdentity, WalletNoncePolicy,
+    WalletPendingError, WalletPendingJournal, WalletPendingJournalStore, WalletPendingState,
     WalletPlanSigner, WalletPlanSigningSessionExt, WalletReviewSummary,
     WalletSafetyAcknowledgements, WalletSession, WalletSpendPolicy, WalletTransactionIntent,
     WalletTransactionPlan, WalletUnlockPolicy, WalletWatchOnly, WalletWatchOnlyBranch,
     WalletWatchOnlyManifest, WalletWatchOnlyScope, WalletWatchOnlySessionExt,
 };
 use pulsedag_wallet_relay::{
-    broadcast_signed, fetch_address_balance, fetch_address_utxos, parse_signed_broadcast,
-    AddressBalanceOutput, AddressUtxosOutput, RelayEnvelope,
+    fetch_address_balance, fetch_address_utxos, parse_signed_broadcast, prepare_broadcast,
+    submit_prepared, AddressBalanceOutput, AddressUtxosOutput, BroadcastOutput, RelayEnvelope,
 };
 use serde::{Deserialize, Serialize};
 
@@ -85,6 +86,7 @@ struct BackupVerifyArgs {
 #[derive(Debug)]
 struct TxPreviewArgs {
     keystore: PathBuf,
+    pending_journal: PathBuf,
     utxos_file: PathBuf,
     network_profile: String,
     chain_id: String,
@@ -107,6 +109,7 @@ struct TxPreviewArgs {
 #[derive(Debug)]
 struct TxSignArgs {
     keystore: PathBuf,
+    pending_journal: PathBuf,
     plan: PathBuf,
     account: u32,
     branch: WalletDerivationBranch,
@@ -116,6 +119,7 @@ struct TxSignArgs {
 #[derive(Debug)]
 struct TxBroadcastArgs {
     signed: PathBuf,
+    pending_journal: PathBuf,
     relay: String,
 }
 
@@ -369,6 +373,7 @@ fn parse_command_from(args: impl Iterator<Item = String>) -> CliResult<Command> 
                 &flags,
                 &[
                     "keystore",
+                    "pending-journal",
                     "utxos-file",
                     "network-profile",
                     "chain-id",
@@ -390,6 +395,7 @@ fn parse_command_from(args: impl Iterator<Item = String>) -> CliResult<Command> 
             )?;
             Ok(Command::TxPreview(TxPreviewArgs {
                 keystore: PathBuf::from(required(&flags, "keystore")?),
+                pending_journal: PathBuf::from(required(&flags, "pending-journal")?),
                 utxos_file: PathBuf::from(required(&flags, "utxos-file")?),
                 network_profile: required(&flags, "network-profile")?,
                 chain_id: required(&flags, "chain-id")?,
@@ -425,9 +431,20 @@ fn parse_command_from(args: impl Iterator<Item = String>) -> CliResult<Command> 
             }))
         }
         "tx-sign" => {
-            reject_unknown(&flags, &["keystore", "plan", "account", "branch", "index"])?;
+            reject_unknown(
+                &flags,
+                &[
+                    "keystore",
+                    "pending-journal",
+                    "plan",
+                    "account",
+                    "branch",
+                    "index",
+                ],
+            )?;
             Ok(Command::TxSign(TxSignArgs {
                 keystore: PathBuf::from(required(&flags, "keystore")?),
+                pending_journal: PathBuf::from(required(&flags, "pending-journal")?),
                 plan: PathBuf::from(required(&flags, "plan")?),
                 account: parse_u32("--account", &required(&flags, "account")?)?,
                 branch: parse_branch(&required(&flags, "branch")?)?,
@@ -435,9 +452,10 @@ fn parse_command_from(args: impl Iterator<Item = String>) -> CliResult<Command> 
             }))
         }
         "tx-broadcast" => {
-            reject_unknown(&flags, &["signed", "relay"])?;
+            reject_unknown(&flags, &["signed", "pending-journal", "relay"])?;
             Ok(Command::TxBroadcast(TxBroadcastArgs {
                 signed: PathBuf::from(required(&flags, "signed")?),
+                pending_journal: PathBuf::from(required(&flags, "pending-journal")?),
                 relay: required(&flags, "relay")?,
             }))
         }
@@ -759,14 +777,68 @@ fn run_tx_preview(args: TxPreviewArgs, password: &SecretString) -> CliResult<TxP
         &available_utxos,
         safety_acknowledgements,
     )?;
+    let pending_store = WalletPendingJournalStore::try_acquire(&args.pending_journal)?;
+    let snapshot = pending_store.load_or_new(&plan.network)?;
+    snapshot
+        .journal
+        .ensure_selected_unreserved(&plan.selected_utxos)?;
     let review = plan.review_summary()?;
     Ok(TxPreviewOutput { review, plan })
+}
+
+fn precheck_sign_reservation(
+    journal: &WalletPendingJournal,
+    from: &str,
+    selected_utxos: &[pulsedag_wallet::SelectedUtxo],
+) -> CliResult<Option<String>> {
+    journal.validate()?;
+    let selected_outpoints = selected_utxos
+        .iter()
+        .map(|selected| selected.outpoint.clone())
+        .collect::<Vec<_>>();
+
+    for selected in selected_utxos {
+        let Some(existing) = journal.entries.iter().find(|entry| {
+            entry.state.reserves_outpoints()
+                && entry
+                    .selected_outpoints
+                    .iter()
+                    .any(|reserved| reserved == &selected.outpoint)
+        }) else {
+            continue;
+        };
+
+        if existing.state == WalletPendingState::Signed
+            && existing.from == from
+            && existing.selected_outpoints == selected_outpoints
+        {
+            return Ok(Some(existing.final_txid.clone()));
+        }
+
+        return Err(WalletPendingError::ReservedOutpoint {
+            txid: selected.outpoint.txid.clone(),
+            index: selected.outpoint.index,
+        }
+        .into());
+    }
+
+    Ok(None)
 }
 
 fn run_tx_sign(args: TxSignArgs, password: &SecretString) -> CliResult<TxSignOutput> {
     let plan = read_transaction_plan(&args.plan)?;
     let keystore = WalletKeystoreFile::try_acquire(&args.keystore)?;
     let mut session = unlocked_session(&keystore, password)?;
+    let identity = session
+        .status()
+        .identity
+        .ok_or_else(|| invalid_input("wallet session did not expose authenticated identity"))?;
+    let keystore_network = WalletNetworkIdentity::new(identity.network_profile, identity.chain_id)?;
+    plan.verify_keystore_identity(&keystore_network)?;
+    let pending_store = WalletPendingJournalStore::try_acquire(&args.pending_journal)?;
+    let mut snapshot = pending_store.load_or_new(&plan.network)?;
+    let expected_recovery_txid =
+        precheck_sign_reservation(&snapshot.journal, &plan.intent.from, &plan.selected_utxos)?;
     let signed = session.sign_transaction_plan(
         &plan,
         WalletPlanSigner::DeterministicV2 {
@@ -777,6 +849,18 @@ fn run_tx_sign(args: TxSignArgs, password: &SecretString) -> CliResult<TxSignOut
     )?;
     session.lock();
     let final_txid = signed.transaction.txid.clone();
+    if let Some(expected_txid) = expected_recovery_txid {
+        if final_txid != expected_txid {
+            return Err(WalletPendingError::TransactionIdentityMismatch(expected_txid).into());
+        }
+    }
+    if snapshot.journal.reserve_signed(
+        &final_txid,
+        plan.intent.from.clone(),
+        &plan.selected_utxos,
+    )? {
+        pending_store.save_next(snapshot.generation, &snapshot.journal)?;
+    }
     Ok(TxSignOutput {
         network: signed.network,
         review: signed.review,
@@ -787,12 +871,122 @@ fn run_tx_sign(args: TxSignArgs, password: &SecretString) -> CliResult<TxSignOut
     })
 }
 
+fn ensure_broadcast_reservation_binding(
+    journal: &WalletPendingJournal,
+    final_txid: &str,
+    from: &str,
+    input_outpoints: &[OutPoint],
+) -> CliResult<()> {
+    let entry = journal
+        .entry(final_txid)
+        .ok_or_else(|| invalid_input("signed transaction has no pending reservation"))?;
+    if entry.state != WalletPendingState::Signed {
+        return Err(invalid_input(format!(
+            "pending transaction is not in signed state: {}",
+            entry.state.as_str()
+        ))
+        .into());
+    }
+    if entry.from != from {
+        return Err(
+            invalid_input("signed transaction sender does not match pending reservation").into(),
+        );
+    }
+    if entry.selected_outpoints != input_outpoints {
+        return Err(
+            invalid_input("signed transaction inputs do not match pending reservation").into(),
+        );
+    }
+    Ok(())
+}
+
+async fn run_tx_broadcast(args: TxBroadcastArgs) -> CliResult<BroadcastOutput> {
+    let bytes = read_bounded_json(&args.signed, "signed transaction envelope")?;
+    let signed = parse_signed_broadcast(&bytes)?;
+
+    // Complete all local/remote preflight before crossing the durable submit boundary.
+    let prepared = prepare_broadcast(&args.relay, &signed).await?;
+    let input_outpoints = signed
+        .relay
+        .transaction
+        .inputs
+        .iter()
+        .map(|input| input.previous_output.clone())
+        .collect::<Vec<_>>();
+
+    let pending_store = WalletPendingJournalStore::try_acquire(&args.pending_journal)?;
+    let mut snapshot = pending_store.load_or_new(&signed.network)?;
+    ensure_broadcast_reservation_binding(
+        &snapshot.journal,
+        &signed.final_txid,
+        &signed.review.from,
+        &input_outpoints,
+    )?;
+    snapshot
+        .journal
+        .mark_submission_started(&signed.final_txid)?;
+    let report = pending_store.save_next(snapshot.generation, &snapshot.journal)?;
+    snapshot.generation = report.generation;
+
+    match submit_prepared(prepared).await {
+        Ok(output) if output.accepted => {
+            snapshot.journal.mark_relay_accepted(&signed.final_txid)?;
+            pending_store.save_next(snapshot.generation, &snapshot.journal)?;
+            Ok(output)
+        }
+        Ok(output) => match (
+            output.rejection_code.as_deref(),
+            output.rejection_message.as_deref(),
+        ) {
+            (Some(code), Some(message)) => {
+                snapshot
+                    .journal
+                    .mark_relay_rejected(&signed.final_txid, code, message)?;
+                pending_store.save_next(snapshot.generation, &snapshot.journal)?;
+                Ok(output)
+            }
+            _ => {
+                snapshot
+                    .journal
+                    .mark_submission_outcome_unknown(&signed.final_txid)?;
+                pending_store.save_next(snapshot.generation, &snapshot.journal)?;
+                Err(invalid_input("relay rejection response is missing rejection detail").into())
+            }
+        },
+        Err(error) => {
+            snapshot
+                .journal
+                .mark_submission_outcome_unknown(&signed.final_txid)?;
+            pending_store.save_next(snapshot.generation, &snapshot.journal)?;
+            Err(error.into())
+        }
+    }
+}
+
 fn write_json<T: Serialize>(value: &T) -> CliResult<()> {
     let stdout = io::stdout();
     let mut out = stdout.lock();
     serde_json::to_writer(&mut out, value)?;
     out.write_all(b"\n")?;
     Ok(())
+}
+
+fn machine_readable_pending_error(error: &(dyn Error + 'static)) -> Option<String> {
+    match error.downcast_ref::<WalletPendingError>()? {
+        WalletPendingError::ReservedOutpoint { txid, index } => Some(
+            serde_json::json!({
+                "ok": false,
+                "error": {
+                    "code": "PENDING_UTXO_RESERVED",
+                    "message": "selected outpoint is reserved by a pending transaction",
+                    "txid": txid,
+                    "index": index,
+                }
+            })
+            .to_string(),
+        ),
+        _ => None,
+    }
 }
 
 async fn run() -> CliResult<()> {
@@ -824,18 +1018,18 @@ async fn run() -> CliResult<()> {
             let password = read_password_from_stdin()?;
             write_json(&run_tx_sign(args, &password)?)
         }
-        Command::TxBroadcast(args) => {
-            let bytes = read_bounded_json(&args.signed, "signed transaction envelope")?;
-            let signed = parse_signed_broadcast(&bytes)?;
-            write_json(&broadcast_signed(&args.relay, signed).await?)
-        }
+        Command::TxBroadcast(args) => write_json(&run_tx_broadcast(args).await?),
     }
 }
 
 #[tokio::main]
 async fn main() {
     if let Err(error) = run().await {
-        eprintln!("pulsedag-wallet: {error}");
+        if let Some(encoded) = machine_readable_pending_error(error.as_ref()) {
+            eprintln!("{encoded}");
+        } else {
+            eprintln!("pulsedag-wallet: {error}");
+        }
         std::process::exit(1);
     }
 }
@@ -854,6 +1048,28 @@ mod tests {
             .map(|value| (*value).to_string())
             .collect::<Vec<_>>()
             .into_iter()
+    }
+
+    #[test]
+    fn reserved_outpoint_error_is_machine_readable() {
+        let txid = "11".repeat(32);
+        let error = WalletPendingError::ReservedOutpoint {
+            txid: txid.clone(),
+            index: 7,
+        };
+        let encoded = machine_readable_pending_error(&error).expect("structured error");
+        let value: serde_json::Value = serde_json::from_str(&encoded).expect("valid JSON");
+        assert_eq!(value["ok"], false);
+        assert_eq!(value["error"]["code"], "PENDING_UTXO_RESERVED");
+        assert_eq!(
+            value["error"]["message"],
+            "selected outpoint is reserved by a pending transaction"
+        );
+        assert_eq!(value["error"]["txid"], txid);
+        assert_eq!(value["error"]["index"], 7);
+        assert!(
+            machine_readable_pending_error(&WalletPendingError::ConflictingReservations).is_none()
+        );
     }
 
     #[test]
@@ -912,6 +1128,8 @@ mod tests {
             "tx-sign",
             "--keystore",
             "wallet.json",
+            "--pending-journal",
+            "pending",
             "--plan",
             "plan.json",
             "--account",
@@ -928,6 +1146,8 @@ mod tests {
             "tx-broadcast",
             "--signed",
             "signed.json",
+            "--pending-journal",
+            "pending",
             "--relay",
             "https://relay.example",
             "--password",
@@ -943,6 +1163,8 @@ mod tests {
                 "tx-preview",
                 "--keystore",
                 "wallet.json",
+                "--pending-journal",
+                "pending",
                 "--utxos-file",
                 "utxos.json",
                 "--network-profile",
@@ -993,6 +1215,8 @@ mod tests {
                 "tx-sign",
                 "--keystore",
                 "wallet.json",
+                "--pending-journal",
+                "pending",
                 "--plan",
                 "plan.json",
                 "--account",
@@ -1010,6 +1234,8 @@ mod tests {
                 "tx-broadcast",
                 "--signed",
                 "signed.json",
+                "--pending-journal",
+                "pending",
                 "--relay",
                 "https://relay.example"
             ]))
@@ -1019,11 +1245,85 @@ mod tests {
     }
 
     #[test]
+    fn tx_broadcast_requires_unique_pending_journal() {
+        assert!(parse_command_from(args(&[
+            "tx-broadcast",
+            "--signed",
+            "signed.json",
+            "--relay",
+            "https://relay.example"
+        ]))
+        .is_err());
+        assert!(parse_command_from(args(&[
+            "tx-broadcast",
+            "--signed",
+            "signed.json",
+            "--pending-journal",
+            "pending",
+            "--pending-journal",
+            "other-pending",
+            "--relay",
+            "https://relay.example"
+        ]))
+        .is_err());
+    }
+
+    #[test]
+    fn broadcast_reservation_binding_requires_exact_signed_entry() {
+        let network = WalletNetworkIdentity::new("public-testnet", "pulsedag-public-testnet")
+            .expect("network");
+        let mut journal = WalletPendingJournal::new(network).expect("journal");
+        let from = pulsedag_core::address_from_public_key(&"ab".repeat(32));
+        let selected = [pulsedag_wallet::SelectedUtxo {
+            outpoint: OutPoint {
+                txid: "11".repeat(32),
+                index: 0,
+            },
+            amount: 100,
+        }];
+        let final_txid = "aa".repeat(32);
+        journal
+            .reserve_signed(&final_txid, from.clone(), &selected)
+            .expect("reserve");
+        let outpoints = [selected[0].outpoint.clone()];
+        assert!(
+            ensure_broadcast_reservation_binding(&journal, &final_txid, &from, &outpoints,).is_ok()
+        );
+        assert!(ensure_broadcast_reservation_binding(
+            &journal,
+            &final_txid,
+            "pulse1wrong",
+            &outpoints,
+        )
+        .is_err());
+        let wrong_outpoints = [OutPoint {
+            txid: "22".repeat(32),
+            index: 0,
+        }];
+        assert!(ensure_broadcast_reservation_binding(
+            &journal,
+            &final_txid,
+            &from,
+            &wrong_outpoints,
+        )
+        .is_err());
+        journal
+            .mark_submission_started(&final_txid)
+            .expect("submission started");
+        assert!(
+            ensure_broadcast_reservation_binding(&journal, &final_txid, &from, &outpoints,)
+                .is_err()
+        );
+    }
+
+    #[test]
     fn tx_preview_acknowledgements_are_strict_and_tx_sign_has_no_overrides() {
         let preview = [
             "tx-preview",
             "--keystore",
             "wallet.json",
+            "--pending-journal",
+            "pending",
             "--utxos-file",
             "utxos.json",
             "--network-profile",
@@ -1068,6 +1368,13 @@ mod tests {
                 ..
             })
         ));
+
+        let missing_pending = without_pair(&preview, "--pending-journal");
+        assert!(parse_command_from(missing_pending.into_iter()).is_err());
+
+        let mut duplicate_pending = preview.to_vec();
+        duplicate_pending.extend(["--pending-journal", "other-pending"]);
+        assert!(parse_command_from(args(&duplicate_pending)).is_err());
 
         fn without_pair(values: &[&str], flag: &str) -> Vec<String> {
             let mut out = Vec::new();
@@ -1129,6 +1436,8 @@ mod tests {
                 "tx-sign",
                 "--keystore",
                 "wallet.json",
+                "--pending-journal",
+                "pending",
                 "--plan",
                 "plan.json",
                 "--account",
@@ -1142,6 +1451,27 @@ mod tests {
             ];
             assert!(parse_command_from(args(&sign)).is_err());
         }
+
+        let sign = [
+            "tx-sign",
+            "--keystore",
+            "wallet.json",
+            "--pending-journal",
+            "pending",
+            "--plan",
+            "plan.json",
+            "--account",
+            "0",
+            "--branch",
+            "receive",
+            "--index",
+            "0",
+        ];
+        let missing_pending = without_pair(&sign, "--pending-journal");
+        assert!(parse_command_from(missing_pending.into_iter()).is_err());
+        let mut duplicate_pending = sign.to_vec();
+        duplicate_pending.extend(["--pending-journal", "other-pending"]);
+        assert!(parse_command_from(args(&duplicate_pending)).is_err());
     }
 
     #[test]
@@ -1340,5 +1670,48 @@ mod tests {
         fs::write(&path, serde_json::to_vec(&tampered).unwrap()).unwrap();
         assert!(read_transaction_plan(&path).is_err());
         let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn tx_sign_precheck_allows_exact_signed_candidate_and_rejects_incompatible_reservation() {
+        let network = WalletNetworkIdentity::new("public-testnet", "pulsedag-public-testnet")
+            .expect("network");
+        let from = pulsedag_core::address_from_public_key(&"ab".repeat(32));
+        let other_from = pulsedag_core::address_from_public_key(&"cd".repeat(32));
+        let selected = [pulsedag_wallet::SelectedUtxo {
+            outpoint: OutPoint {
+                txid: "11".repeat(32),
+                index: 3,
+            },
+            amount: 100,
+        }];
+        let original_txid = "aa".repeat(32);
+        let mut journal = WalletPendingJournal::new(network).expect("journal");
+        assert!(journal
+            .reserve_signed(&original_txid, from.clone(), &selected)
+            .expect("first reservation"));
+
+        assert_eq!(
+            precheck_sign_reservation(&journal, &from, &selected)
+                .expect("compatible signed recovery candidate"),
+            Some(original_txid.clone())
+        );
+        assert!(!journal
+            .reserve_signed(&original_txid, from.clone(), &selected)
+            .expect("exact recovery is idempotent"));
+
+        let conflict = precheck_sign_reservation(&journal, &other_from, &selected)
+            .expect_err("incompatible active reservation must fail before signing");
+        let encoded = machine_readable_pending_error(conflict.as_ref())
+            .expect("conflict remains machine-readable");
+        let value: serde_json::Value = serde_json::from_str(&encoded).expect("valid JSON");
+        assert_eq!(value["error"]["code"], "PENDING_UTXO_RESERVED");
+        assert_eq!(value["error"]["txid"], selected[0].outpoint.txid);
+        assert_eq!(value["error"]["index"], 3);
+
+        journal
+            .mark_submission_started(&original_txid)
+            .expect("submission started");
+        assert!(precheck_sign_reservation(&journal, &from, &selected).is_err());
     }
 }
