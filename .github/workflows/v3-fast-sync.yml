@@ -16,6 +16,8 @@ on:
       - 'crates/pulsedag-storage/src/root.rs'
       - 'crates/pulsedag-storage/src/lib.rs'
       - 'crates/pulsedag-storage/Cargo.toml'
+      - 'crates/pulsedag-p2p/src/messages.rs'
+      - 'crates/pulsedag-p2p/src/messages/fast_sync_carrier_v1.rs'
       - 'Cargo.toml'
       - 'Cargo.lock'
   workflow_dispatch:
@@ -66,3 +68,7 @@ jobs:
       - name: Chunked and resumable transfer regressions
         run: |
           cargo test --locked -p pulsedag-storage fast_sync_transfer::tests:: -- --nocapture
+
+      - name: Bounded fast-sync P2P carrier regressions
+        run: |
+          cargo test --locked -p pulsedag-p2p fast_sync_carrier_v1::tests:: -- --nocapture
