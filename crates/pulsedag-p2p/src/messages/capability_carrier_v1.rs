@@ -2,6 +2,8 @@ use serde::Deserialize;
 #[cfg(test)]
 use serde_json::Value;
 
+use super::fast_sync_carrier_v1::{FastSyncCapabilitiesV1, FastSyncWireV1};
+use super::fast_sync_runtime_v1::{FastSyncRuntimeSessionBookV1, FastSyncRuntimeSessionErrorV1};
 use super::protocol_v2::{
     ProtocolPeerSessionErrorV1, ProtocolPeerSessionObservationV1, ProtocolPeerSessionV1,
 };
@@ -58,6 +60,7 @@ pub struct DecodedProtocolCapabilityTransportV1 {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ProtocolCapabilityTransportV1 {
     session: ProtocolPeerSessionV1,
+    fast_sync: FastSyncRuntimeSessionBookV1,
 }
 
 impl ProtocolCapabilityTransportV1 {
@@ -68,11 +71,68 @@ impl ProtocolCapabilityTransportV1 {
     ) -> Result<(), ProtocolCapabilityTransportErrorV1> {
         self.session
             .configure_local_capabilities(expected_chain_id, capabilities)
-            .map_err(ProtocolCapabilityTransportErrorV1::Session)
+            .map_err(ProtocolCapabilityTransportErrorV1::Session)?;
+        self.fast_sync.reset_local();
+        Ok(())
     }
 
     pub fn local_capabilities(&self) -> Option<&ProtocolCapabilitiesV1> {
         self.session.local_capabilities()
+    }
+
+    pub fn configure_fast_sync_capabilities(
+        &mut self,
+        capabilities: FastSyncCapabilitiesV1,
+    ) -> Result<(), FastSyncRuntimeSessionErrorV1> {
+        let expected = self
+            .session
+            .local_capabilities()
+            .ok_or(FastSyncRuntimeSessionErrorV1::LocalCapabilitiesMissing)?
+            .protocol_identity
+            .clone();
+        self.fast_sync.configure_local(&expected, capabilities)
+    }
+
+    pub fn note_fast_sync_inbound(
+        &mut self,
+        peer_id: &str,
+        wire: &FastSyncWireV1,
+    ) -> Result<(), FastSyncRuntimeSessionErrorV1> {
+        let expected = self
+            .session
+            .local_capabilities()
+            .ok_or(FastSyncRuntimeSessionErrorV1::LocalCapabilitiesMissing)?
+            .protocol_identity
+            .clone();
+        self.fast_sync.note_inbound(&expected, peer_id, wire)
+    }
+
+    pub fn validate_fast_sync_outbound(
+        &self,
+        peer_id: &str,
+        protocol_route_authorized: bool,
+        wire: &FastSyncWireV1,
+    ) -> Result<(), FastSyncRuntimeSessionErrorV1> {
+        let expected = self
+            .session
+            .local_capabilities()
+            .ok_or(FastSyncRuntimeSessionErrorV1::LocalCapabilitiesMissing)?
+            .protocol_identity
+            .clone();
+        self.fast_sync
+            .validate_outbound(&expected, peer_id, protocol_route_authorized, wire)
+    }
+
+    pub fn fast_sync_peer_authorized(&self, peer_id: &str) -> bool {
+        self.fast_sync.peer_session_authorized(peer_id)
+    }
+
+    pub fn fast_sync_session_book(&self) -> &FastSyncRuntimeSessionBookV1 {
+        &self.fast_sync
+    }
+
+    pub(crate) fn fast_sync_session_book_mut(&mut self) -> &mut FastSyncRuntimeSessionBookV1 {
+        &mut self.fast_sync
     }
 
     /// Encode an existing legacy-decodable GetTips/Tips message and advertise
@@ -141,10 +201,12 @@ impl ProtocolCapabilityTransportV1 {
 
     pub fn peer_disconnected(&mut self, peer_id: &str) {
         self.session.peer_disconnected(peer_id);
+        self.fast_sync.peer_disconnected(peer_id);
     }
 
     pub fn reset_local_capabilities(&mut self) {
         self.session.reset_local_capabilities();
+        self.fast_sync.reset_local();
     }
 }
 
@@ -258,6 +320,22 @@ mod tests {
             supports_dag_frontier: true,
             supports_consensus_metadata: true,
             high_cadence_allowed: false,
+        }
+    }
+
+    fn fast_sync_capabilities(protocol: &ProtocolCapabilitiesV1) -> FastSyncCapabilitiesV1 {
+        FastSyncCapabilitiesV1 {
+            contract_version:
+                crate::messages::fast_sync_carrier_v1::P2P_FAST_SYNC_CONTRACT_VERSION,
+            chain_id: protocol.protocol_identity.chain_id.clone(),
+            genesis_hash: protocol.protocol_identity.genesis_hash.clone(),
+            protocol_fingerprint: protocol.protocol_identity.fingerprint().unwrap(),
+            manifest_version: 1,
+            protocol_snapshot_bundle_format_version: 2,
+            storage_schema_version: 1,
+            payload_encoding: "bincode-1.3-fast-sync-bundle-v1".to_string(),
+            max_chunk_bytes: 24 * 1024,
+            max_commitments_per_page: 256,
         }
     }
 
@@ -552,5 +630,35 @@ mod tests {
         transport.reset_local_capabilities();
         assert!(transport.local_capabilities().is_none());
         assert!(transport.eligible_v2_peers().is_empty());
+    }
+
+    #[test]
+    fn transport_disconnect_and_protocol_reset_revoke_fast_sync_state() {
+        let local = capabilities(CHAIN_ID);
+        let fast_sync = fast_sync_capabilities(&local);
+        let mut transport = ProtocolCapabilityTransportV1::default();
+        transport
+            .configure_local_capabilities(CHAIN_ID, local)
+            .unwrap();
+        transport
+            .configure_fast_sync_capabilities(fast_sync.clone())
+            .unwrap();
+        transport
+            .note_fast_sync_inbound("peer", &FastSyncWireV1::Capabilities(fast_sync.clone()))
+            .unwrap();
+        assert!(transport.fast_sync_peer_authorized("peer"));
+
+        transport.peer_disconnected("peer");
+        assert!(!transport.fast_sync_peer_authorized("peer"));
+
+        transport
+            .note_fast_sync_inbound("peer", &FastSyncWireV1::Capabilities(fast_sync))
+            .unwrap();
+        transport.reset_local_capabilities();
+        assert!(transport
+            .fast_sync_session_book()
+            .local_capabilities()
+            .is_none());
+        assert!(!transport.fast_sync_peer_authorized("peer"));
     }
 }
