@@ -4,28 +4,18 @@ Status: launch-candidate external miner contract for issue #1037. This document 
 
 ## Stable endpoints
 
-The endpoint paths remain compatible:
+The endpoint paths and request shapes remain compatible:
 
 - `POST /mining/template`
 - `POST /mining/submit`
 
-The template endpoint accepts the legacy request shape:
+The template request remains:
 
 ```json
 {"miner_address":"pulse1..."}
 ```
 
-It also accepts optional v3 bounded-notification fields:
-
-```json
-{
-  "miner_address":"pulse1...",
-  "after_work_sequence":42,
-  "wait_ms":1000
-}
-```
-
-`wait_ms` is capped at 2000 ms. A request whose `after_work_sequence` still matches current work waits only inside that bound and returns when the observed lifecycle changes or the bound expires.
+No new required request field is introduced, so existing CPU/GPU miner clients keep compiling and older JSON remains valid.
 
 ## Protocol identity
 
@@ -53,17 +43,17 @@ v3-submit-<SHA3-256("pulsedag:mining:v3:submit|" + template_id + "|" + block_has
 
 Golden vectors are frozen in `mining_submit_v3::tests::task37_protocol_identity_golden_vectors_are_frozen`.
 
-## New-work / invalidation contract
+## Bounded new-work notification / invalidation contract
 
-Every template response includes:
+Every template response is itself the latest bounded notification snapshot and includes:
 
 - `work_sequence`: monotonic process-local work revision;
 - `work_token`: SHA3-256 digest of network, height, selected tip, parents, target/difficulty, mempool fingerprint/count and programmable-fee-hook activation state;
 - `work_change_reasons`: explicit lifecycle causes such as height, selected tip, parent set, target/difficulty, mempool or programmable-fee-hook state changes;
-- `new_work_notification`: bounded long-poll parameters;
+- `new_work_notification`: polling guidance;
 - `invalidation`: the current selected tip, parent set, target/difficulty, height and token.
 
-The notification path is intentionally bounded: no unbounded subscriber queue is created by the RPC layer.
+The notification contract is deliberately pull-based and bounded. The node retains no per-miner subscriber queue: `max_outstanding_snapshots` is exactly `1`, and miners may poll according to `poll_after_ms`. This prevents reconnecting or slow miners from accumulating unbounded new-work notifications.
 
 ## Submit finality and deterministic reconciliation
 
@@ -78,13 +68,14 @@ The v3 `finality` field is one of exactly:
 
 The node checks chain membership for `block_hash` before any rebroadcast. If the block is already present, the response is `accepted_reconciled`. Within a process, completed submit responses are retained in a bounded reconciliation registry keyed by `submit_id`; replaying the same candidate returns the cached finality with `reconciled=true` and does not rebroadcast it. An `unknown_finality` replay therefore reconciles chain state first instead of blindly resubmitting.
 
+Because the external `template_id` embeds the lower-layer template ID after `v3:`, reconnect/restart does not require a transient map merely to recover template identity. Activated protocol bindings still obey the lower-layer Task 28 identity rules; a miner must refresh work when that lower layer explicitly requires a fresh binding.
+
 ## Resource bounds
 
 - maximum concurrent v3 submits: 64;
 - maximum cached job observations: 4096;
 - maximum cached submit reconciliation entries: 4096;
-- maximum long-poll wait: 2000 ms;
-- advertised notification history bound: 256.
+- maximum outstanding new-work notification snapshots per polling request: 1.
 
 When the submit concurrency bound is reached, the response is a deterministic `submit_overloaded` rejection and the miner may retry the same `submit_id`.
 
@@ -116,9 +107,9 @@ Focused tests are named with the `task37_` prefix and cover:
 - golden job/submit identity vectors;
 - finality-state freeze;
 - bounded reconciliation storage;
-- legacy template request compatibility;
+- retained legacy template request compatibility;
 - selected-tip / parent / target / mempool invalidation reasons;
 - deterministic work tokens;
-- strict long-poll bounds.
+- strict one-snapshot notification bounds.
 
 CI entry point: `.github/workflows/task37-mining-protocol-v3.yml`.
