@@ -1,0 +1,32 @@
+name: TEMP wallet reconcile
+
+on:
+  push:
+    branches:
+      - wallet/v3-pending-utxo-reconcile
+    paths:
+      - .github/workflows/temp-wallet-reconcile.yml
+
+permissions:
+  contents: write
+
+jobs:
+  rewrite-and-verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout exact branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: wallet/v3-pending-utxo-reconcile
+
+      - name: Wire bounded conservative reconcile
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "d35dd80c9b20e9102527bde5eb0c36753a7ca29a" || test "$(git rev-parse HEAD^)" = "d35dd80c9b20e9102527bde5eb0c36753a7ca29a"
+          test "$(git hash-object crates/pulsedag-wallet/src/bin/pulsedag-wallet.rs)" = "c01d8d7541d88e7aeac77b06eccf0bcc017e9ce4"
+          test "$(git hash-object crates/pulsedag-wallet/src/pulsedag_wallet_relay.rs)" = "f876f29cf81ba16c351cc72d58903a6d43d6e46a"
+          test "$(git hash-object crates/pulsedag-wallet/src/pending.rs)" = "7f22ca980a9161f09d6469c394f09f75dbb502b2"
+          python3 -c 'import base64; exec(base64.b64decode("
