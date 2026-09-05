@@ -1,0 +1,63 @@
+name: temp wallet pending idempotence fix
+
+on:
+  push:
+    branches:
+      - wallet/v3-pending-utxo-reconcile
+    paths:
+      - '.github/workflows/temp-wallet-pending-idempotence-fix.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  materialize:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: wallet/v3-pending-utxo-reconcile
+          fetch-depth: 1
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.91.0
+          components: clippy,rustfmt
+      - name: Guard exact pending source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git hash-object crates/pulsedag-wallet/src/pending.rs)" = "7f22ca980a9161f09d6469c394f09f75dbb502b2"
+      - name: Fix inactive reservation idempotence
+        shell: bash
+        env:
+          OLD_B64: ICAgICAgICBpZiBsZXQgU29tZShleGlzdGluZykgPSBzZWxmCiAgICAgICAgICAgIC5lbnRyaWVzCiAgICAgICAgICAgIC5pdGVyKCkKICAgICAgICAgICAgLmZpbmQofGVudHJ5fCBlbnRyeS5maW5hbF90eGlkID09IGZpbmFsX3R4aWQpCiAgICAgICAgewogICAgICAgICAgICBpZiBleGlzdGluZy5mcm9tID09IGZyb20gJiYgZXhpc3Rpbmcuc2VsZWN0ZWRfb3V0cG9pbnRzID09IHNlbGVjdGVkX291dHBvaW50cyB7CiAgICAgICAgICAgICAgICByZXR1cm4gT2soZmFsc2UpOwogICAgICAgICAgICB9CiAgICAgICAgICAgIHJldHVybiBFcnIoV2FsbGV0UGVuZGluZ0Vycm9yOjpUcmFuc2FjdGlvbklkZW50aXR5TWlzbWF0Y2goZmluYWxfdHhpZCkpOwogICAgICAgIH0KCiAgICAgICAgaWYgc2VsZi5lbnRyaWVzLml0ZXIoKS5hbnkofGVudHJ5fCB7CiAgICAgICAgICAgIGVudHJ5LnN0YXRlLnJlc2VydmVzX291dHBvaW50cygpCiAgICAgICAgICAgICAgICAmJiBlbnRyeS5zZWxlY3RlZF9vdXRwb2ludHMuaXRlcigpLmFueSh8cmVzZXJ2ZWR8IHsKICAgICAgICAgICAgICAgICAgICBzZWxlY3RlZF9vdXRwb2ludHMKICAgICAgICAgICAgICAgICAgICAgICAgLml0ZXIoKQogICAgICAgICAgICAgICAgICAgICAgICAuYW55KHxzZWxlY3RlZHwgc2VsZWN0ZWQgPT0gcmVzZXJ2ZWQpCiAgICAgICAgICAgICAgICB9KQogICAgICAgIH0pIHsKICAgICAgICAgICAgcmV0dXJuIEVycihXYWxsZXRQZW5kaW5nRXJyb3I6OkNvbmZsaWN0aW5nUmVzZXJ2YXRpb25zKTsKICAgICAgICB9Cg==
+          NEW_B64: ICAgICAgICBsZXQgZXhpc3Rpbmdfc3RhdGUgPSBpZiBsZXQgU29tZShleGlzdGluZykgPSBzZWxmCiAgICAgICAgICAgIC5lbnRyaWVzCiAgICAgICAgICAgIC5pdGVyKCkKICAgICAgICAgICAgLmZpbmQofGVudHJ5fCBlbnRyeS5maW5hbF90eGlkID09IGZpbmFsX3R4aWQpCiAgICAgICAgewogICAgICAgICAgICBpZiBleGlzdGluZy5mcm9tICE9IGZyb20gfHwgZXhpc3Rpbmcuc2VsZWN0ZWRfb3V0cG9pbnRzICE9IHNlbGVjdGVkX291dHBvaW50cyB7CiAgICAgICAgICAgICAgICByZXR1cm4gRXJyKFdhbGxldFBlbmRpbmdFcnJvcjo6VHJhbnNhY3Rpb25JZGVudGl0eU1pc21hdGNoKGZpbmFsX3R4aWQpKTsKICAgICAgICAgICAgfQogICAgICAgICAgICBTb21lKGV4aXN0aW5nLnN0YXRlKQogICAgICAgIH0gZWxzZSB7CiAgICAgICAgICAgIE5vbmUKICAgICAgICB9OwoKICAgICAgICBpZiBzZWxmLmVudHJpZXMuaXRlcigpLmFueSh8ZW50cnl8IHsKICAgICAgICAgICAgZW50cnkuZmluYWxfdHhpZCAhPSBmaW5hbF90eGlkCiAgICAgICAgICAgICAgICAmJiBlbnRyeS5zdGF0ZS5yZXNlcnZlc19vdXRwb2ludHMoKQogICAgICAgICAgICAgICAgJiYgZW50cnkuc2VsZWN0ZWRfb3V0cG9pbnRzLml0ZXIoKS5hbnkofHJlc2VydmVkfCB7CiAgICAgICAgICAgICAgICAgICAgc2VsZWN0ZWRfb3V0cG9pbnRzCiAgICAgICAgICAgICAgICAgICAgICAgIC5pdGVyKCkKICAgICAgICAgICAgICAgICAgICAgICAgLmFueSh8c2VsZWN0ZWR8IHNlbGVjdGVkID09IHJlc2VydmVkKQogICAgICAgICAgICAgICAgfSkKICAgICAgICB9KSB7CiAgICAgICAgICAgIHJldHVybiBFcnIoV2FsbGV0UGVuZGluZ0Vycm9yOjpDb25mbGljdGluZ1Jlc2VydmF0aW9ucyk7CiAgICAgICAgfQoKICAgICAgICBpZiBsZXQgU29tZShjdXJyZW50KSA9IGV4aXN0aW5nX3N0YXRlIHsKICAgICAgICAgICAgaWYgY3VycmVudC5yZXNlcnZlc19vdXRwb2ludHMoKSB7CiAgICAgICAgICAgICAgICByZXR1cm4gT2soZmFsc2UpOwogICAgICAgICAgICB9CiAgICAgICAgICAgIHJldHVybiBFcnIoV2FsbGV0UGVuZGluZ0Vycm9yOjpJbnZhbGlkVHJhbnNpdGlvbiB7CiAgICAgICAgICAgICAgICBjdXJyZW50LAogICAgICAgICAgICAgICAgbmV4dDogV2FsbGV0UGVuZGluZ1N0YXRlOjpTaWduZWQsCiAgICAgICAgICAgIH0pOwogICAgICAgIH0K
+          TEST_B64: ICAgICNbdGVzdF0KICAgIGZuIGNvbmZpcm1lZF9yZXNlcnZhdGlvbl9pc19ub3RfaWRlbXBvdGVudF9hbmRfY2Fubm90X2hpZGVfYWN0aXZlX2NvbmZsaWN0KCkgewogICAgICAgIGxldCBtdXQgam91cm5hbCA9IFdhbGxldFBlbmRpbmdKb3VybmFsOjpuZXcobmV0d29yaygiY2hhaW4tYSIpKS5leHBlY3QoImpvdXJuYWwiKTsKICAgICAgICBsZXQgZmlyc3QgPSBbc2VsZWN0ZWQoIjExIiwgMCldOwogICAgICAgIGxldCBjb25maXJtZWRfdHhpZCA9IGZpbmFsX3R4aWQoImFhIik7CiAgICAgICAgam91cm5hbAogICAgICAgICAgICAucmVzZXJ2ZV9zaWduZWQoJmNvbmZpcm1lZF90eGlkLCBhZGRyZXNzKCksICZmaXJzdCkKICAgICAgICAgICAgLmV4cGVjdCgicmVzZXJ2ZSIpOwogICAgICAgIGpvdXJuYWwKICAgICAgICAgICAgLm1hcmtfc3VibWlzc2lvbl9zdGFydGVkKCZjb25maXJtZWRfdHhpZCkKICAgICAgICAgICAgLmV4cGVjdCgic3VibWlzc2lvbiBzdGFydGVkIik7CiAgICAgICAgam91cm5hbAogICAgICAgICAgICAubWFya19jb25maXJtZWQoJmNvbmZpcm1lZF90eGlkKQogICAgICAgICAgICAuZXhwZWN0KCJjb25maXJtZWQiKTsKCiAgICAgICAgYXNzZXJ0IShtYXRjaGVzISgKICAgICAgICAgICAgam91cm5hbC5yZXNlcnZlX3NpZ25lZCgmY29uZmlybWVkX3R4aWQsIGFkZHJlc3MoKSwgJmZpcnN0KSwKICAgICAgICAgICAgRXJyKFdhbGxldFBlbmRpbmdFcnJvcjo6SW52YWxpZFRyYW5zaXRpb24gewogICAgICAgICAgICAgICAgY3VycmVudDogV2FsbGV0UGVuZGluZ1N0YXRlOjpDb25maXJtZWQsCiAgICAgICAgICAgICAgICBuZXh0OiBXYWxsZXRQZW5kaW5nU3RhdGU6OlNpZ25lZAogICAgICAgICAgICB9KQogICAgICAgICkpOwoKICAgICAgICBqb3VybmFsCiAgICAgICAgICAgIC5yZXNlcnZlX3NpZ25lZChmaW5hbF90eGlkKCJiYiIpLCBhZGRyZXNzKCksICZmaXJzdCkKICAgICAgICAgICAgLmV4cGVjdCgibmV3IGFjdGl2ZSByZXNlcnZhdGlvbiBhZnRlciBjb25maXJtYXRpb24iKTsKICAgICAgICBhc3NlcnQhKG1hdGNoZXMhKAogICAgICAgICAgICBqb3VybmFsLnJlc2VydmVfc2lnbmVkKCZjb25maXJtZWRfdHhpZCwgYWRkcmVzcygpLCAmZmlyc3QpLAogICAgICAgICAgICBFcnIoV2FsbGV0UGVuZGluZ0Vycm9yOjpDb25mbGljdGluZ1Jlc2VydmF0aW9ucykKICAgICAgICApKTsKICAgIH0KCg==
+        run: |
+          set -euo pipefail
+          python3 -c 'import base64, os, pathlib; p=pathlib.Path("crates/pulsedag-wallet/src/pending.rs"); t=p.read_text(); old=base64.b64decode(os.environ["OLD_B64"]).decode(); new=base64.b64decode(os.environ["NEW_B64"]).decode(); test=base64.b64decode(os.environ["TEST_B64"]).decode(); anchor="    #[test]\n    fn submission_started_is_reserved_serialized_and_cannot_begin_twice() {"; assert t.count(old)==1; assert t.count(anchor)==1; t=t.replace(old,new); t=t.replace(anchor,test+anchor); p.write_text(t)'
+          cargo fmt --all
+          git diff --check
+          test "$(git diff --name-only)" = "crates/pulsedag-wallet/src/pending.rs"
+      - name: Run focused gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked -p pulsedag-wallet --lib
+          cargo clippy --locked -p pulsedag-wallet --lib -- -D warnings -A clippy::uninlined-format-args
+          cargo fmt --all -- --check
+          git diff --check
+      - name: Publish source and remove materializer
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm .github/workflows/temp-wallet-pending-idempotence-fix.yml
+          git add crates/pulsedag-wallet/src/pending.rs .github/workflows/temp-wallet-pending-idempotence-fix.yml
+          staged="$(git diff --cached --name-only | sort)"
+          expected="$(printf '%s\n' '.github/workflows/temp-wallet-pending-idempotence-fix.yml' 'crates/pulsedag-wallet/src/pending.rs' | sort)"
+          test "$staged" = "$expected"
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git commit -m 'fix: reject inactive reservation idempotence'
+          git push origin HEAD:wallet/v3-pending-utxo-reconcile
