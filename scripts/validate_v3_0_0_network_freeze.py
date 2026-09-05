@@ -133,8 +133,6 @@ def main() -> int:
                 sample_path = Path(directory) / "manifest.md"
                 sample_path.write_text(f"```json\n{json.dumps(sample)}\n```\n", encoding="utf-8")
                 load_manifest(sample_path)
-        if args.manifest is None:
-            parser.error("provide a manifest path and/or --self-test")
         ready = validate_manifest(load_manifest(args.manifest))
     except (ManifestError, OSError, json.JSONDecodeError) as exc:
         print(f"v3 network freeze validation failed: {exc}", file=sys.stderr)
