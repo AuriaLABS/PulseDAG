@@ -56,10 +56,13 @@ jobs:
         run: cargo metadata --locked --format-version 1 >/dev/null
 
       - name: Domain-separated transfer digest regressions
-        run: cargo test --locked -p pulsedag-core snapshot_transfer::tests:: -- --nocapture
+        run: |
+          cargo test --locked -p pulsedag-core snapshot_transfer::tests:: -- --nocapture
 
       - name: Fast-sync manifest regressions
-        run: cargo test --locked -p pulsedag-storage fast_sync_manifest::tests:: -- --nocapture
+        run: |
+          cargo test --locked -p pulsedag-storage fast_sync_manifest::tests:: -- --nocapture
 
       - name: Chunked and resumable transfer regressions
-        run: cargo test --locked -p pulsedag-storage fast_sync_transfer::tests:: -- --nocapture
+        run: |
+          cargo test --locked -p pulsedag-storage fast_sync_transfer::tests:: -- --nocapture
