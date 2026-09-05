@@ -229,7 +229,9 @@ fn relay_base_url(raw: &str) -> Result<Url, ReconcileClientError> {
         ));
     }
     if !matches!(url.path(), "" | "/") {
-        return Err(reconcile_error("relay URL must be an origin without a path"));
+        return Err(reconcile_error(
+            "relay URL must be an origin without a path",
+        ));
     }
     let host = url
         .host_str()
@@ -266,7 +268,9 @@ fn build_client() -> Result<Client, ReconcileClientError> {
         .timeout(HTTP_TIMEOUT)
         .redirect(Policy::none())
         .build()
-        .map_err(|error| reconcile_error(format!("failed to initialize relay HTTP client: {error}")))
+        .map_err(|error| {
+            reconcile_error(format!("failed to initialize relay HTTP client: {error}"))
+        })
 }
 
 async fn bounded_body(
@@ -346,11 +350,10 @@ async fn fetch_release_identity(
     let url = base
         .join("release")
         .map_err(|_| reconcile_error("failed to construct relay identity URL"))?;
-    let response = client
-        .get(url)
-        .send()
-        .await
-        .map_err(|error| reconcile_error(format!("relay identity transport failed: {error}")))?;
+    let response =
+        client.get(url).send().await.map_err(|error| {
+            reconcile_error(format!("relay identity transport failed: {error}"))
+        })?;
     let (status, body) = bounded_body(response).await?;
     if !status.is_success() {
         return Err(reconcile_error(format!(
@@ -444,7 +447,9 @@ fn validate_activity_response(
     data: AddressActivityData,
 ) -> Result<AddressActivityData, ReconcileClientError> {
     if data.address != address {
-        return Err(reconcile_error("address activity response address mismatch"));
+        return Err(reconcile_error(
+            "address activity response address mismatch",
+        ));
     }
     if data.limit != requested_limit || data.offset != requested_offset {
         return Err(reconcile_error("address activity pagination mismatch"));
@@ -641,7 +646,8 @@ async fn run(args: ReconcileArgs) -> CliResult<ReconcileOutput> {
         .entry(&args.txid)
         .ok_or_else(|| invalid_input("pending transaction disappeared during reconciliation"))?
         .state;
-    let journal_updated = apply_observation(&mut snapshot.journal, &args.txid, evidence.observation)?;
+    let journal_updated =
+        apply_observation(&mut snapshot.journal, &args.txid, evidence.observation)?;
     if journal_updated {
         store.save_next(snapshot.generation, &snapshot.journal)?;
     }
@@ -884,45 +890,30 @@ mod tests {
             .reserve_signed(&txid, from_address(), &selected())
             .unwrap();
 
-        assert!(!apply_observation(
-            &mut journal,
-            &txid,
-            ReconcileObservation::NotObserved
-        )
-        .unwrap());
-        assert_eq!(journal.entry(&txid).unwrap().state, WalletPendingState::Signed);
+        assert!(
+            !apply_observation(&mut journal, &txid, ReconcileObservation::NotObserved).unwrap()
+        );
+        assert_eq!(
+            journal.entry(&txid).unwrap().state,
+            WalletPendingState::Signed
+        );
         assert!(journal.entry(&txid).unwrap().state.reserves_outpoints());
 
-        assert!(apply_observation(
-            &mut journal,
-            &txid,
-            ReconcileObservation::Mempool
-        )
-        .unwrap());
+        assert!(apply_observation(&mut journal, &txid, ReconcileObservation::Mempool).unwrap());
         assert_eq!(
             journal.entry(&txid).unwrap().state,
             WalletPendingState::ObservedMempool
         );
         assert!(journal.entry(&txid).unwrap().state.reserves_outpoints());
 
-        assert!(apply_observation(
-            &mut journal,
-            &txid,
-            ReconcileObservation::Confirmed
-        )
-        .unwrap());
+        assert!(apply_observation(&mut journal, &txid, ReconcileObservation::Confirmed).unwrap());
         assert_eq!(
             journal.entry(&txid).unwrap().state,
             WalletPendingState::Confirmed
         );
         assert!(!journal.entry(&txid).unwrap().state.reserves_outpoints());
 
-        assert!(!apply_observation(
-            &mut journal,
-            &txid,
-            ReconcileObservation::Mempool
-        )
-        .unwrap());
+        assert!(!apply_observation(&mut journal, &txid, ReconcileObservation::Mempool).unwrap());
         assert_eq!(
             journal.entry(&txid).unwrap().state,
             WalletPendingState::Confirmed
@@ -942,12 +933,10 @@ mod tests {
         rejected
             .mark_relay_rejected(&rejected_txid, "TX_REJECTED", "generic")
             .unwrap();
-        assert!(apply_observation(
-            &mut rejected,
-            &rejected_txid,
-            ReconcileObservation::Mempool
-        )
-        .unwrap());
+        assert!(
+            apply_observation(&mut rejected, &rejected_txid, ReconcileObservation::Mempool)
+                .unwrap()
+        );
         assert_eq!(
             rejected.entry(&rejected_txid).unwrap().state,
             WalletPendingState::ObservedMempool
@@ -962,12 +951,10 @@ mod tests {
         unknown
             .mark_submission_outcome_unknown(&unknown_txid)
             .unwrap();
-        assert!(apply_observation(
-            &mut unknown,
-            &unknown_txid,
-            ReconcileObservation::Confirmed
-        )
-        .unwrap());
+        assert!(
+            apply_observation(&mut unknown, &unknown_txid, ReconcileObservation::Confirmed)
+                .unwrap()
+        );
         assert_eq!(
             unknown.entry(&unknown_txid).unwrap().state,
             WalletPendingState::Confirmed
