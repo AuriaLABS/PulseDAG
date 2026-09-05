@@ -89,16 +89,23 @@ pub mod pow_mine_capture;
 
 pub mod pow_auto_run;
 
-// Task 28 keeps protocol-aware mining facades separate from the retained legacy handlers.
-// Template v2 is selected only by an explicit activated-v2 local protocol identity.
-#[path = "mining_submit_guard.rs"]
+// Task 37 keeps the external Mining Protocol v3 facade separate from the retained
+// Task 28/29 protocol-aware and legacy handlers. The public routes stay stable:
+// /mining/template and /mining/submit now add v3 work identity, bounded long-poll
+// notifications, deterministic submit reconciliation and resource bounds before
+// delegating consensus/PoW validation to the already-frozen lower layers.
+#[path = "mining_submit_v3.rs"]
 pub mod mining_submit;
+#[path = "mining_submit_guard.rs"]
+mod mining_submit_guard;
 #[path = "mining_submit.rs"]
 mod mining_submit_legacy;
 #[path = "mining_submit_protocol.rs"]
 mod mining_submit_protocol;
-#[path = "mining_template_protocol.rs"]
+#[path = "mining_template_v3.rs"]
 pub mod mining_template;
+#[path = "mining_template_protocol.rs"]
+mod mining_template_protocol;
 #[path = "mining_template.rs"]
 mod mining_template_legacy;
 pub mod mining_workers;
