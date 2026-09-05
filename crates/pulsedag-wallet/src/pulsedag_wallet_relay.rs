@@ -129,6 +129,14 @@ pub struct BroadcastOutput {
     pub rejection_message: Option<String>,
 }
 
+pub struct PreparedBroadcast {
+    client: Client,
+    submit_url: Url,
+    body: Vec<u8>,
+    final_txid: String,
+    identity: RelayIdentity,
+}
+
 #[derive(Debug, Serialize)]
 pub struct AddressBalanceOutput {
     pub network_profile: String,
@@ -496,18 +504,42 @@ async fn fetch_explorer_identity(
     )
 }
 
-async fn submit_transaction(
-    client: &Client,
-    base: &Url,
+pub async fn prepare_broadcast(
+    relay_url: &str,
     signed: &SignedBroadcastInput,
-    identity: &RelayIdentity,
-) -> Result<BroadcastOutput, RelayClientError> {
-    let url = base
-        .join("api/v1/tx/submit")
+) -> Result<PreparedBroadcast, RelayClientError> {
+    validate_signed_broadcast(signed)?;
+    let base = relay_base_url(relay_url)?;
+    let client = build_client()?;
+    let identity = fetch_identity(&client, &base, &signed.network).await?;
+    let submit_url = base
+        .join(RELAY_SUBMIT_PATH.trim_start_matches('/'))
         .map_err(|_| relay_error("failed to construct relay submit URL"))?;
+    let body = serde_json::to_vec(&signed.relay)
+        .map_err(|_| relay_error("failed to serialize signed relay envelope"))?;
+    Ok(PreparedBroadcast {
+        client,
+        submit_url,
+        body,
+        final_txid: signed.final_txid.clone(),
+        identity,
+    })
+}
+
+pub async fn submit_prepared(
+    prepared: PreparedBroadcast,
+) -> Result<BroadcastOutput, RelayClientError> {
+    let PreparedBroadcast {
+        client,
+        submit_url,
+        body,
+        final_txid,
+        identity,
+    } = prepared;
     let response = client
-        .post(url)
-        .json(&signed.relay)
+        .post(submit_url)
+        .header("content-type", "application/json")
+        .body(body)
         .send()
         .await
         .map_err(|error| relay_error(format!("relay submit transport failed: {error}")))?;
@@ -520,17 +552,16 @@ async fn submit_transaction(
     })?;
 
     if !parsed.ok {
-        let error = parsed.error.unwrap_or(ApiError {
-            code: format!("HTTP_{}", status.as_u16()),
-            message: "relay rejected transaction without an error body".to_string(),
-        });
+        let error = parsed
+            .error
+            .ok_or_else(|| relay_error("relay rejection response is missing error detail"))?;
         return Ok(BroadcastOutput {
             accepted: false,
-            txid: signed.final_txid.clone(),
+            txid: final_txid,
             mempool_size: None,
-            relay_network_profile: identity.network.network_profile.clone(),
-            relay_chain_id: identity.network.chain_id.clone(),
-            relay_version: identity.version.clone(),
+            relay_network_profile: identity.network.network_profile,
+            relay_chain_id: identity.network.chain_id,
+            relay_version: identity.version,
             rejection_code: Some(error.code),
             rejection_message: Some(error.message),
         });
@@ -541,13 +572,18 @@ async fn submit_transaction(
             status.as_u16()
         )));
     }
+    if parsed.error.is_some() {
+        return Err(relay_error(
+            "relay submit success response contains error detail",
+        ));
+    }
     let data = parsed
         .data
         .ok_or_else(|| relay_error("relay submit response is missing data"))?;
     if !data.accepted {
         return Err(relay_error("relay returned ok=true with accepted=false"));
     }
-    if data.txid != signed.final_txid {
+    if data.txid != final_txid {
         return Err(relay_error("relay accepted a different transaction id"));
     }
 
@@ -555,9 +591,9 @@ async fn submit_transaction(
         accepted: true,
         txid: data.txid,
         mempool_size: Some(data.mempool_size),
-        relay_network_profile: identity.network.network_profile.clone(),
-        relay_chain_id: identity.network.chain_id.clone(),
-        relay_version: identity.version.clone(),
+        relay_network_profile: identity.network.network_profile,
+        relay_chain_id: identity.network.chain_id,
+        relay_version: identity.version,
         rejection_code: None,
         rejection_message: None,
     })
@@ -688,11 +724,8 @@ pub async fn broadcast_signed(
     relay_url: &str,
     signed: SignedBroadcastInput,
 ) -> Result<BroadcastOutput, RelayClientError> {
-    validate_signed_broadcast(&signed)?;
-    let base = relay_base_url(relay_url)?;
-    let client = build_client()?;
-    let identity = fetch_identity(&client, &base, &signed.network).await?;
-    submit_transaction(&client, &base, &signed, &identity).await
+    let prepared = prepare_broadcast(relay_url, &signed).await?;
+    submit_prepared(prepared).await
 }
 
 #[cfg(test)]
