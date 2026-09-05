@@ -47,3 +47,5 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git commit -m "wallet: wire pending reservations into preview and sign"
           git push origin HEAD:wallet/v3-pending-utxo-reconcile
+
+# retry: corrected exact patch hunk count
