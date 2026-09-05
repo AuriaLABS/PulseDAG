@@ -145,7 +145,7 @@ index f209627..3b0f6f0 100644
              "--utxos-file",
              "utxos.json",
              "--network-profile",
-@@ -1069,6 +1115,12 @@ mod tests {
+@@ -1069,6 +1115,13 @@ mod tests {
              })
          ));
  
