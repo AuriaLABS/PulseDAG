@@ -8,6 +8,8 @@ The wallet pending journal is local, versioned, secret-free, and bound to the ex
 
 All states except `confirmed` retain the selected-outpoint reservation. Generic `TX_REJECTED`, `submission_started`, `submission_outcome_unknown`, and retained-history absence are not release evidence.
 
+The journal is reservation state, not permanent transaction history. `confirmed` is terminal and no longer reserves outpoints; once a genuinely new pending reservation is appended, older `confirmed` entries may be pruned. Active/reserving states are never removed by that maintenance step.
+
 ## Transaction flow
 
 1. `tx-preview` builds against the complete bounded UTXO snapshot so spend-all classification is unchanged, then checks the selected outpoints against the pending journal. Reserved inputs are not silently filtered before planning.
@@ -38,7 +40,7 @@ If `tx-preview` or `tx-sign` selects an outpoint already reserved by a different
 | `relay_rejected` | yes | Relay explicitly reported a generic rejection; current public evidence is not terminal release proof. |
 | `confirmed` | no | Exact txid is positively observed as canonically confirmed; selected outpoints may be released. |
 
-State changes are monotonic/conservative where public evidence permits. A later exact-txid mempool or confirmed observation can strengthen a rejected or unknown record. `confirmed` never downgrades.
+State changes are monotonic/conservative where public evidence permits. A later exact-txid mempool or confirmed observation can strengthen a rejected or unknown record. `confirmed` never downgrades while its terminal record remains in the pending journal. After a new reservation causes older `confirmed` records to be pruned, those pruned txids are no longer addressable through the pending-journal reconcile command; long-term transaction history is outside this journal's purpose.
 
 ## Reconciliation
 
@@ -50,12 +52,13 @@ The command:
 - releases the journal lock while performing HTTP reads;
 - requires HTTPS except for loopback development and disables redirects;
 - verifies `/release` against the stored `network_profile` and `chain_id`;
-- requires `explorer_api` and the canonical `/address/:address/activity` endpoint;
+- requires `explorer_api`, the semantic `authoritative_address_activity_v1` capability, and the canonical `/address/:address/activity` endpoint;
+- fails closed before using activity evidence if a relay exposes only the older generic `explorer_api` surface without `authoritative_address_activity_v1`;
 - scans a bounded number of retained activity pages and validates pagination, canonical txids, direction/amount coherence, and mempool/confirmed state coherence;
 - accepts only positive evidence for the exact final txid;
 - reacquires and revalidates the journal before persisting any state change.
 
-The public address-activity surface only labels retained DAG transactions `confirmed` when the core `transaction_is_confirmed` predicate says the txid is present in the authoritative selected/ordered state and was actually applied. Side-DAG membership alone and ordered-replay conflict losers are therefore not confirmation evidence and cannot release a wallet reservation.
+The public address-activity surface only labels retained DAG transactions `confirmed` when the core `transaction_is_confirmed` predicate says the txid is present in the authoritative selected/ordered state and was actually applied. Side-DAG membership alone and ordered-replay conflict losers are therefore not confirmation evidence and cannot release a wallet reservation. The explicit `authoritative_address_activity_v1` capability binds reconcile to this semantic contract during mixed-version rollout; the generic explorer capability alone is insufficient release evidence.
 
 Positive mempool evidence may promote the record to `observed_mempool`. Positive authoritative confirmed evidence promotes it to `confirmed` and releases the reservation. `not_observed`, retained-history exhaustion, and page-budget exhaustion are reported but do not mutate state or release outpoints.
 
@@ -65,6 +68,6 @@ The reconcile JSON result includes `network_profile`, `chain_id`, `txid`, `from`
 
 The journal store uses an advisory cross-process lock, immutable generational snapshots, bounded payloads, SHA-256-bound commit markers, stale-generation detection, and fail-closed network validation. An orphan snapshot without a commit marker is ignored; a tampered committed snapshot fails digest validation.
 
-Regression coverage includes restart persistence, concurrent-open rejection, tamper detection, stale generation, cross-network rejection, pre-sign incompatible-reservation rejection, exact `signed` recovery after a failed result handoff, submission-started/unknown/accepted/rejected/mempool/confirmed transitions, retained-history absence, side-DAG/replay-loser non-confirmation, durable reconciliation across restart, and confirmed release across restart.
+Regression coverage includes restart persistence, concurrent-open rejection, tamper detection, stale generation, cross-network rejection, pre-sign incompatible-reservation rejection, exact `signed` recovery after a failed result handoff, submission-started/unknown/accepted/rejected/mempool/confirmed transitions, retained-history absence, side-DAG/replay-loser non-confirmation, rejection of legacy unversioned activity as authoritative confirmation evidence, durable reconciliation across restart, confirmed release across restart, and pruning of older terminal `confirmed` entries when a genuinely new pending reservation is appended.
 
 No reconciliation path automatically rebroadcasts a transaction. No private key, mnemonic, password, decrypted seed, signing session, acknowledgement override, or custody RPC is introduced by this flow.
