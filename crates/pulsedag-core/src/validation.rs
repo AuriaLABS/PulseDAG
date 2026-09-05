@@ -136,6 +136,57 @@ fn ordered_block_skipped_transaction(txid: &str, block_hash: &str, state: &Chain
         .any(|entry| entry.contains(&marker))
 }
 
+fn ordered_replay_skipped_transactions(state: &ChainState) -> BTreeSet<(String, String)> {
+    state
+        .dag
+        .ordered_dag_conflict_diagnostics
+        .iter()
+        .filter_map(|entry| {
+            let (_, tail) = entry.split_once(" block=")?;
+            let (block_hash, tail) = tail.split_once(" tx=")?;
+            let (txid, _) = tail.split_once(" skipped_conflict")?;
+            if block_hash.is_empty() || txid.is_empty() {
+                None
+            } else {
+                Some((block_hash.to_string(), txid.to_string()))
+            }
+        })
+        .collect()
+}
+
+/// Build the canonical set of transaction ids that were actually applied to
+/// authoritative state. This is the bulk counterpart to
+/// `transaction_is_confirmed` for read paths that must classify many retained
+/// transactions without rescanning the selected/ordered chain for each txid.
+pub fn authoritative_confirmed_transaction_ids(state: &ChainState) -> BTreeSet<String> {
+    let ordered_replay = state.dag.consensus_mode.ghostdag_metadata_active()
+        || state.dag.ordering_version == crate::ordering_v2::GHOSTDAG_V1_ORDERING_VERSION;
+    let canonical_order = if ordered_replay {
+        &state.dag.ordered_dag
+    } else {
+        &state.dag.selected_chain
+    };
+    let skipped = if ordered_replay {
+        ordered_replay_skipped_transactions(state)
+    } else {
+        BTreeSet::new()
+    };
+
+    let mut confirmed = BTreeSet::new();
+    for block in canonical_order
+        .iter()
+        .filter_map(|hash| state.dag.blocks.get(hash))
+    {
+        for tx in &block.transactions {
+            if ordered_replay && skipped.contains(&(block.hash.clone(), tx.txid.clone())) {
+                continue;
+            }
+            confirmed.insert(tx.txid.clone());
+        }
+    }
+    confirmed
+}
+
 /// Return true only when this canonical transaction id is present in the
 /// authoritative state order and was actually applied by replay. Accepted
 /// side-DAG blocks and replay-skipped conflict losers are not confirmations.

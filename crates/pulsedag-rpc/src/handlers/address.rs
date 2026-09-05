@@ -7,7 +7,7 @@ use axum::{
 };
 use pulsedag_core::{
     types::{OutPoint, Utxo},
-    validation::transaction_is_confirmed,
+    validation::authoritative_confirmed_transaction_ids,
 };
 
 #[derive(Debug, serde::Serialize)]
@@ -251,6 +251,7 @@ pub async fn get_address_activity<S: RpcStateLike>(
     let chain_handle = state.chain();
     let chain = chain_handle.read().await;
     let retained_outputs = retained_transaction_outputs(&chain);
+    let authoritative_confirmed_txids = authoritative_confirmed_transaction_ids(&chain);
 
     let mut activity = Vec::new();
     for tx in chain.mempool.transactions.values() {
@@ -310,7 +311,7 @@ pub async fn get_address_activity<S: RpcStateLike>(
                 .map(|(_, amount)| *amount)
                 .sum::<u64>();
             if incoming > 0 || outgoing > 0 {
-                if !transaction_is_confirmed(&tx.txid, &chain) {
+                if !authoritative_confirmed_txids.contains(&tx.txid) {
                     continue;
                 }
                 let net = incoming as i64 - outgoing as i64;

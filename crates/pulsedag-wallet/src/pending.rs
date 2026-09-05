@@ -10,6 +10,8 @@ use crate::{
 
 pub const WALLET_PENDING_JOURNAL_FORMAT: &str = "pulsedag-wallet-pending-journal";
 pub const WALLET_PENDING_JOURNAL_VERSION: u32 = 1;
+const WALLET_PENDING_REJECTION_CODE_MAX_BYTES: usize = 128;
+const WALLET_PENDING_REJECTION_MESSAGE_MAX_BYTES: usize = 2048;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -59,8 +61,16 @@ impl WalletPendingTransaction {
         validate_selected_outpoints(&self.selected_outpoints)?;
         match self.state {
             WalletPendingState::RelayRejected => {
-                validate_text("rejection_code", self.rejection_code.as_deref())?;
-                validate_text("rejection_message", self.rejection_message.as_deref())?;
+                validate_text(
+                    "rejection_code",
+                    self.rejection_code.as_deref(),
+                    WALLET_PENDING_REJECTION_CODE_MAX_BYTES,
+                )?;
+                validate_text(
+                    "rejection_message",
+                    self.rejection_message.as_deref(),
+                    WALLET_PENDING_REJECTION_MESSAGE_MAX_BYTES,
+                )?;
             }
             _ if self.rejection_code.is_some() || self.rejection_message.is_some() => {
                 return Err(WalletPendingError::InvalidField {
@@ -296,10 +306,16 @@ impl WalletPendingJournal {
         code: impl Into<String>,
         message: impl Into<String>,
     ) -> Result<(), WalletPendingError> {
-        let code = code.into();
-        let message = message.into();
-        validate_text("rejection_code", Some(&code))?;
-        validate_text("rejection_message", Some(&message))?;
+        let code = bound_rejection_text(
+            "rejection_code",
+            code.into(),
+            WALLET_PENDING_REJECTION_CODE_MAX_BYTES,
+        )?;
+        let message = bound_rejection_text(
+            "rejection_message",
+            message.into(),
+            WALLET_PENDING_REJECTION_MESSAGE_MAX_BYTES,
+        )?;
         self.transition(
             final_txid,
             WalletPendingState::RelayRejected,
@@ -515,7 +531,7 @@ fn validate_txid_component(value: &str) -> Result<(), WalletPendingError> {
     Ok(())
 }
 
-fn validate_text(field: &'static str, value: Option<&str>) -> Result<(), WalletPendingError> {
+fn validate_text_shape(field: &'static str, value: Option<&str>) -> Result<(), WalletPendingError> {
     let value = value.ok_or(WalletPendingError::InvalidField {
         field,
         reason: "must be present",
@@ -527,6 +543,40 @@ fn validate_text(field: &'static str, value: Option<&str>) -> Result<(), WalletP
         });
     }
     Ok(())
+}
+
+fn validate_text(
+    field: &'static str,
+    value: Option<&str>,
+    max_bytes: usize,
+) -> Result<(), WalletPendingError> {
+    validate_text_shape(field, value)?;
+    if value.is_some_and(|text| text.len() > max_bytes) {
+        return Err(WalletPendingError::InvalidField {
+            field,
+            reason: "exceeds persisted byte limit",
+        });
+    }
+    Ok(())
+}
+
+fn bound_rejection_text(
+    field: &'static str,
+    mut value: String,
+    max_bytes: usize,
+) -> Result<String, WalletPendingError> {
+    validate_text_shape(field, Some(&value))?;
+    if value.len() > max_bytes {
+        let mut end = max_bytes;
+        while !value.is_char_boundary(end) {
+            end -= 1;
+        }
+        value.truncate(end);
+        let trimmed_len = value.trim_end().len();
+        value.truncate(trimmed_len);
+    }
+    validate_text(field, Some(&value), max_bytes)?;
+    Ok(value)
 }
 
 #[cfg(test)]
@@ -752,5 +802,56 @@ mod tests {
         assert!(journal.ensure_selected_unreserved(&first).is_err());
         journal.mark_confirmed(&txid).expect("confirmed");
         assert!(journal.ensure_selected_unreserved(&first).is_ok());
+    }
+
+    #[test]
+    fn relay_rejection_metadata_is_bounded_before_persistence() {
+        let mut journal = WalletPendingJournal::new(network("chain-a")).expect("journal");
+        let selected = [selected("11", 0)];
+        let txid = final_txid("aa");
+        journal
+            .reserve_signed(&txid, address(), &selected)
+            .expect("reserve");
+        journal
+            .mark_submission_started(&txid)
+            .expect("submission started");
+
+        let long_code = format!(
+            "CODE-{}",
+            "X".repeat(WALLET_PENDING_REJECTION_CODE_MAX_BYTES * 4)
+        );
+        let long_message = format!(
+            "relay rejected {}",
+            "界".repeat(WALLET_PENDING_REJECTION_MESSAGE_MAX_BYTES)
+        );
+        journal
+            .mark_relay_rejected(&txid, long_code.clone(), long_message.clone())
+            .expect("bounded rejection observation");
+
+        let entry = journal.entry(&txid).expect("entry");
+        let code = entry.rejection_code.as_deref().expect("code");
+        let message = entry.rejection_message.as_deref().expect("message");
+        assert!(code.len() <= WALLET_PENDING_REJECTION_CODE_MAX_BYTES);
+        assert!(message.len() <= WALLET_PENDING_REJECTION_MESSAGE_MAX_BYTES);
+        assert!(long_code.starts_with(code));
+        assert!(long_message.starts_with(message));
+        assert_eq!(entry.state, WalletPendingState::RelayRejected);
+        assert_eq!(journal.reserved_outpoints().len(), 1);
+        journal.validate().expect("bounded journal validates");
+
+        let mut oversized = journal.clone();
+        oversized
+            .entries
+            .iter_mut()
+            .find(|entry| entry.final_txid == txid)
+            .expect("oversized entry")
+            .rejection_message = Some("Z".repeat(WALLET_PENDING_REJECTION_MESSAGE_MAX_BYTES + 1));
+        assert!(matches!(
+            oversized.validate(),
+            Err(WalletPendingError::InvalidField {
+                field: "rejection_message",
+                reason: "exceeds persisted byte limit"
+            })
+        ));
     }
 }
