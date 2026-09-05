@@ -131,10 +131,6 @@ impl ProtocolCapabilityTransportV1 {
         &self.fast_sync
     }
 
-    pub(crate) fn fast_sync_session_book_mut(&mut self) -> &mut FastSyncRuntimeSessionBookV1 {
-        &mut self.fast_sync
-    }
-
     /// Encode an existing legacy-decodable GetTips/Tips message and advertise
     /// local v2 capabilities only after exact local activation identity has been
     /// configured. Before configuration this is byte-identical legacy JSON.
