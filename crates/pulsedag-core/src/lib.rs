@@ -35,6 +35,7 @@ pub mod replay;
 pub mod retarget;
 pub mod selection;
 pub mod selection_v2;
+pub mod snapshot_transfer;
 pub mod state;
 pub mod state_replay_v2;
 pub mod sync_pipeline;
@@ -97,6 +98,10 @@ pub use replay::{
     rebuild_state_from_blocks, rebuild_state_from_blocks_defensive,
     rebuild_state_from_snapshot_and_blocks, selection_digest, sort_blocks_for_deterministic_replay,
     state_digest, ReplayDefensiveReport,
+};
+
+pub use snapshot_transfer::{
+    snapshot_transfer_chunk_digest_v1, snapshot_transfer_payload_digest_v1,
 };
 
 pub use pow::{

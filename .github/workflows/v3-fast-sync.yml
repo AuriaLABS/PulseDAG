@@ -1,0 +1,79 @@
+name: v3 fast-sync verification
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/v3-fast-sync.yml'
+      - 'crates/pulsedag-core/src/lib.rs'
+      - 'crates/pulsedag-core/src/snapshot_transfer.rs'
+      - 'crates/pulsedag-core/src/replay.rs'
+      - 'crates/pulsedag-core/src/state.rs'
+      - 'crates/pulsedag-storage/src/fast_sync_manifest.rs'
+      - 'crates/pulsedag-storage/src/fast_sync_transfer.rs'
+      - 'crates/pulsedag-storage/src/protocol_bundle.rs'
+      - 'crates/pulsedag-storage/src/root.rs'
+      - 'crates/pulsedag-storage/src/lib.rs'
+      - 'crates/pulsedag-storage/Cargo.toml'
+      - 'crates/pulsedag-p2p/src/messages.rs'
+      - 'crates/pulsedag-p2p/src/messages/fast_sync_carrier_v1.rs'
+      - 'crates/pulsedag-p2p/src/messages/fast_sync_carrier_v1/live_session_v1.rs'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fast-sync-verification:
+    name: manifest transfer and fail-closed regressions
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 1
+
+      - name: Verify exact SHA and clean checkout
+        env:
+          CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          test -z "$(git status --porcelain)"
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.91.0
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Validate locked dependency graph
+        run: cargo metadata --locked --format-version 1 >/dev/null
+
+      - name: Domain-separated transfer digest regressions
+        run: |
+          cargo test --locked -p pulsedag-core snapshot_transfer::tests:: -- --nocapture
+
+      - name: Fast-sync manifest regressions
+        run: |
+          cargo test --locked -p pulsedag-storage fast_sync_manifest::tests:: -- --nocapture
+
+      - name: Chunked and resumable transfer regressions
+        run: |
+          cargo test --locked -p pulsedag-storage fast_sync_transfer::tests:: -- --nocapture
+
+      - name: Bounded fast-sync P2P carrier regressions
+        run: |
+          cargo test --locked -p pulsedag-p2p fast_sync_carrier_v1::tests:: -- --nocapture
+
+      - name: Fast-sync serving and downloader session regressions
+        run: |
+          cargo test --locked -p pulsedag-p2p fast_sync_carrier_v1::live_session_v1::tests:: -- --nocapture
