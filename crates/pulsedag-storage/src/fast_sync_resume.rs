@@ -218,7 +218,7 @@ impl Storage {
             .map_err(|error| storage_error(error.to_string()))?
         {
             plan.verify_chunk(chunk_index, &existing)?;
-            if existing.as_ref() != chunk {
+            if existing.as_slice() != chunk {
                 return Err(storage_error(format!(
                     "persisted fast-sync chunk {chunk_index} differs from the supplied verified bytes"
                 )));
@@ -240,7 +240,7 @@ impl Storage {
                 ))
             })?;
         plan.verify_chunk(chunk_index, &persisted)?;
-        if persisted.as_ref() != chunk {
+        if persisted.as_slice() != chunk {
             return Err(storage_error(format!(
                 "persisted fast-sync chunk {chunk_index} changed during synchronous write"
             )));
