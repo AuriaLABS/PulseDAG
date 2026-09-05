@@ -18,6 +18,7 @@ use serde::{Deserialize, Serialize};
 const RESPONSE_MAX_BYTES: usize = 1024 * 1024;
 const HTTP_TIMEOUT: Duration = Duration::from_secs(10);
 const EXPLORER_CAPABILITY: &str = "explorer_api";
+const AUTHORITATIVE_ACTIVITY_CAPABILITY: &str = "authoritative_address_activity_v1";
 const ACTIVITY_ENDPOINT: &str = "/address/:address/activity";
 const DEFAULT_PAGE_SIZE: usize = 100;
 const MAX_PAGE_SIZE: usize = 100;
@@ -329,6 +330,15 @@ fn validate_release_identity(
         return Err(reconcile_error(
             "relay identity is missing required capability: explorer_api",
         ));
+    }
+    if !data
+        .capabilities
+        .iter()
+        .any(|capability| capability == AUTHORITATIVE_ACTIVITY_CAPABILITY)
+    {
+        return Err(reconcile_error(format!(
+            "relay identity is missing required capability: {AUTHORITATIVE_ACTIVITY_CAPABILITY}"
+        )));
     }
     if !data
         .core_endpoints
@@ -791,19 +801,37 @@ mod tests {
             data: Some(ReleaseIdentityData {
                 network_profile: "testnet".to_string(),
                 chain_id: "pulsedag-testnet".to_string(),
-                capabilities: vec![EXPLORER_CAPABILITY.to_string()],
+                capabilities: vec![
+                    EXPLORER_CAPABILITY.to_string(),
+                    AUTHORITATIVE_ACTIVITY_CAPABILITY.to_string(),
+                ],
                 core_endpoints: vec![ACTIVITY_ENDPOINT.to_string()],
             }),
             error: None,
         };
         assert!(validate_release_identity(&network, valid).is_ok());
 
+        let legacy_unversioned_activity = ApiResponse {
+            ok: true,
+            data: Some(ReleaseIdentityData {
+                network_profile: "testnet".to_string(),
+                chain_id: "pulsedag-testnet".to_string(),
+                capabilities: vec![EXPLORER_CAPABILITY.to_string()],
+                core_endpoints: vec![ACTIVITY_ENDPOINT.to_string()],
+            }),
+            error: None,
+        };
+        assert!(validate_release_identity(&network, legacy_unversioned_activity).is_err());
+
         let wrong_network = ApiResponse {
             ok: true,
             data: Some(ReleaseIdentityData {
                 network_profile: "testnet".to_string(),
                 chain_id: "other-chain".to_string(),
-                capabilities: vec![EXPLORER_CAPABILITY.to_string()],
+                capabilities: vec![
+                    EXPLORER_CAPABILITY.to_string(),
+                    AUTHORITATIVE_ACTIVITY_CAPABILITY.to_string(),
+                ],
                 core_endpoints: vec![ACTIVITY_ENDPOINT.to_string()],
             }),
             error: None,
@@ -815,7 +843,10 @@ mod tests {
             data: Some(ReleaseIdentityData {
                 network_profile: "testnet".to_string(),
                 chain_id: "pulsedag-testnet".to_string(),
-                capabilities: vec![EXPLORER_CAPABILITY.to_string()],
+                capabilities: vec![
+                    EXPLORER_CAPABILITY.to_string(),
+                    AUTHORITATIVE_ACTIVITY_CAPABILITY.to_string(),
+                ],
                 core_endpoints: vec!["/address/:address".to_string()],
             }),
             error: None,

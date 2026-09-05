@@ -204,6 +204,8 @@ impl WalletPendingJournal {
             });
         }
 
+        self.entries
+            .retain(|entry| entry.state != WalletPendingState::Confirmed);
         self.entries.push(WalletPendingTransaction {
             final_txid,
             from,
@@ -599,6 +601,32 @@ mod tests {
             journal.reserve_signed(&confirmed_txid, address(), &first),
             Err(WalletPendingError::ConflictingReservations)
         ));
+    }
+
+    #[test]
+    fn new_reservation_prunes_only_older_confirmed_records() {
+        let mut journal = WalletPendingJournal::new(network("chain-a")).expect("journal");
+        let confirmed_txid = final_txid("aa");
+        journal
+            .reserve_signed(&confirmed_txid, address(), &[selected("11", 0)])
+            .expect("reserve confirmed candidate");
+        journal
+            .mark_submission_started(&confirmed_txid)
+            .expect("submission started");
+        journal.mark_confirmed(&confirmed_txid).expect("confirmed");
+
+        let active_txid = final_txid("bb");
+        journal
+            .reserve_signed(&active_txid, address(), &[selected("22", 0)])
+            .expect("append new reservation");
+
+        assert!(journal.entry(&confirmed_txid).is_none());
+        assert_eq!(
+            journal.entry(&active_txid).expect("active entry").state,
+            WalletPendingState::Signed
+        );
+        assert_eq!(journal.entries.len(), 1);
+        assert_eq!(journal.reserved_outpoints().len(), 1);
     }
 
     #[test]
