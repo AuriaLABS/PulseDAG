@@ -2,7 +2,7 @@ use std::{
     collections::BTreeMap,
     sync::{
         atomic::{AtomicUsize, Ordering},
-        Mutex, OnceLock,
+        Arc, Mutex, OnceLock, Weak,
     },
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -21,6 +21,7 @@ const MINING_V3_SUBMIT_PREFIX: &str = "v3-submit-";
 const MINING_V3_JOB_PREFIX: &str = "v3-job-";
 
 static MINING_V3_INFLIGHT_SUBMITS: AtomicUsize = AtomicUsize::new(0);
+static MINING_V3_NEXT_NODE_SCOPE: AtomicUsize = AtomicUsize::new(1);
 
 #[derive(Debug, Clone)]
 struct JobObservation {
@@ -34,8 +35,15 @@ struct CachedSubmit {
     inserted_at_ms: u64,
 }
 
+#[derive(Debug)]
+struct NodeScope {
+    id: usize,
+    storage: Weak<pulsedag_storage::Storage>,
+}
+
 #[derive(Debug, Default)]
 struct MiningV3Registry {
+    node_scopes: Vec<NodeScope>,
     jobs: BTreeMap<String, JobObservation>,
     submits: BTreeMap<String, CachedSubmit>,
 }
@@ -89,6 +97,32 @@ fn submit_id_for(external_template_id: Option<&str>, block_hash: &str) -> String
     )
 }
 
+fn node_scope_id<S: RpcStateLike>(state: &S) -> usize {
+    let storage = state.storage();
+    let mut registry = registry()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    registry
+        .node_scopes
+        .retain(|scope| scope.storage.strong_count() > 0);
+    if let Some(id) = registry.node_scopes.iter().find_map(|scope| {
+        let existing = scope.storage.upgrade()?;
+        Arc::ptr_eq(&existing, &storage).then_some(scope.id)
+    }) {
+        return id;
+    }
+    let id = MINING_V3_NEXT_NODE_SCOPE.fetch_add(1, Ordering::Relaxed);
+    registry.node_scopes.push(NodeScope {
+        id,
+        storage: Arc::downgrade(&storage),
+    });
+    id
+}
+
+fn scoped_registry_key(scope_id: usize, identity: &str) -> String {
+    format!("{scope_id:016x}:{identity}")
+}
+
 fn prune_oldest_jobs(registry: &mut MiningV3Registry) {
     while registry.jobs.len() > MINING_V3_MAX_RECONCILIATION_ENTRIES {
         let oldest = registry
@@ -117,12 +151,18 @@ fn prune_oldest_submits(registry: &mut MiningV3Registry) {
     }
 }
 
-pub(crate) fn register_v3_job(external_template_id: String, job_id: String, issued_at_ms: u64) {
+pub(crate) fn register_v3_job<S: RpcStateLike>(
+    state: &S,
+    external_template_id: String,
+    job_id: String,
+    issued_at_ms: u64,
+) {
+    let scope_id = node_scope_id(state);
     let mut registry = registry()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     registry.jobs.insert(
-        external_template_id,
+        scoped_registry_key(scope_id, &external_template_id),
         JobObservation {
             job_id,
             issued_at_ms,
@@ -131,21 +171,21 @@ pub(crate) fn register_v3_job(external_template_id: String, job_id: String, issu
     prune_oldest_jobs(&mut registry);
 }
 
-fn cached_submit(submit_id: &str) -> Option<Value> {
+fn cached_submit(scope_id: usize, submit_id: &str) -> Option<Value> {
     registry()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .submits
-        .get(submit_id)
+        .get(&scoped_registry_key(scope_id, submit_id))
         .map(|cached| cached.data.clone())
 }
 
-fn cache_submit(submit_id: String, data: Value) {
+fn cache_submit(scope_id: usize, submit_id: String, data: Value) {
     let mut registry = registry()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     registry.submits.insert(
-        submit_id,
+        scoped_registry_key(scope_id, &submit_id),
         CachedSubmit {
             data,
             inserted_at_ms: now_ms(),
@@ -154,13 +194,16 @@ fn cache_submit(submit_id: String, data: Value) {
     prune_oldest_submits(&mut registry);
 }
 
-fn job_observation(external_template_id: Option<&str>) -> Option<JobObservation> {
+fn job_observation(
+    scope_id: usize,
+    external_template_id: Option<&str>,
+) -> Option<JobObservation> {
     external_template_id.and_then(|template_id| {
         registry()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .jobs
-            .get(template_id)
+            .get(&scoped_registry_key(scope_id, template_id))
             .cloned()
     })
 }
@@ -337,7 +380,8 @@ pub async fn post_mining_submit<S: RpcStateLike>(
 ) -> Json<ApiResponse<Value>> {
     let external_template_id = req.template_id.clone();
     let submit_id = submit_id_for(external_template_id.as_deref(), &req.block.hash);
-    let job = job_observation(external_template_id.as_deref());
+    let scope_id = node_scope_id(&state);
+    let job = job_observation(scope_id, external_template_id.as_deref());
 
     if let Some(reconciled) = known_block_reconciliation(
         &state,
@@ -348,11 +392,11 @@ pub async fn post_mining_submit<S: RpcStateLike>(
     )
     .await
     {
-        cache_submit(submit_id.clone(), reconciled.clone());
+        cache_submit(scope_id, submit_id.clone(), reconciled.clone());
         return Json(ApiResponse::ok(reconciled));
     }
 
-    if let Some(mut cached) = cached_submit(&submit_id) {
+    if let Some(mut cached) = cached_submit(scope_id, &submit_id) {
         if let Some(object) = cached.as_object_mut() {
             object.insert("reconciled".to_string(), json!(true));
         }
@@ -406,7 +450,7 @@ pub async fn post_mining_submit<S: RpcStateLike>(
         }
     };
 
-    cache_submit(submit_id.clone(), value.clone());
+    cache_submit(scope_id, submit_id.clone(), value.clone());
     let _ = state.storage().append_runtime_event(
         "info",
         "external_mining_v3_submit",
@@ -456,6 +500,16 @@ mod tests {
             submit_id_for(Some("v3:v1-work-abc"), "block-123"),
             "v3-submit-555a479be74c0128d02c67fdacfa98f0c923e51739fb534510a0e12208e9e675"
         );
+    }
+
+    #[test]
+    fn task37_reconciliation_cache_keys_are_node_scoped_without_changing_submit_identity() {
+        let submit_id = submit_id_for(Some("v3:v1-work-abc"), "block-123");
+        let first = scoped_registry_key(1, &submit_id);
+        let second = scoped_registry_key(2, &submit_id);
+        assert_ne!(first, second);
+        assert!(first.ends_with(&submit_id));
+        assert!(second.ends_with(&submit_id));
     }
 
     #[test]

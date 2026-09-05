@@ -5,15 +5,15 @@ use axum::{extract::State, Json};
 use serde_json::{json, Value};
 use sha3::{Digest, Sha3_256};
 
-pub(crate) use super::mining_template_protocol::{
-    current_template_state, load_template, template_freshness_window, template_id_matches_lifecycle,
-};
 #[cfg(test)]
 pub use super::mining_template_protocol::post_mining_template;
 #[cfg(test)]
 pub(crate) use super::mining_template_protocol::store_template;
 #[cfg(test)]
 pub use super::mining_template_protocol::StoredMiningTemplate;
+pub(crate) use super::mining_template_protocol::{
+    current_template_state, load_template, template_freshness_window, template_id_matches_lifecycle,
+};
 #[cfg(not(test))]
 pub use post_mining_template_v3 as post_mining_template;
 
@@ -256,6 +256,7 @@ pub async fn post_mining_template_v3<S: RpcStateLike>(
         .unwrap_or("-")
         .to_string();
     super::mining_submit::register_v3_job(
+        &state,
         external_template_id.clone(),
         job_id.clone(),
         crate::api::unix_now_ms(),
