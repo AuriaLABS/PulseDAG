@@ -16,11 +16,11 @@ use pulsedag_wallet::{
     build_deterministic_transaction_plan_with_safety, derive_wallet_key_from_seed,
     encrypt_wallet_seed, wallet_seed_from_mnemonic, SecretString, WalletDerivationBranch,
     WalletKeystoreFile, WalletNetworkContext, WalletNetworkIdentity, WalletNoncePolicy,
-    WalletPendingJournal, WalletPendingJournalStore, WalletPendingState, WalletPlanSigner,
-    WalletPlanSigningSessionExt, WalletReviewSummary, WalletSafetyAcknowledgements, WalletSession,
-    WalletSpendPolicy, WalletTransactionIntent, WalletTransactionPlan, WalletUnlockPolicy,
-    WalletWatchOnly, WalletWatchOnlyBranch, WalletWatchOnlyManifest, WalletWatchOnlyScope,
-    WalletWatchOnlySessionExt,
+    WalletPendingError, WalletPendingJournal, WalletPendingJournalStore, WalletPendingState,
+    WalletPlanSigner, WalletPlanSigningSessionExt, WalletReviewSummary,
+    WalletSafetyAcknowledgements, WalletSession, WalletSpendPolicy, WalletTransactionIntent,
+    WalletTransactionPlan, WalletUnlockPolicy, WalletWatchOnly, WalletWatchOnlyBranch,
+    WalletWatchOnlyManifest, WalletWatchOnlyScope, WalletWatchOnlySessionExt,
 };
 use pulsedag_wallet_relay::{
     fetch_address_balance, fetch_address_utxos, parse_signed_broadcast, prepare_broadcast,
@@ -928,6 +928,24 @@ fn write_json<T: Serialize>(value: &T) -> CliResult<()> {
     Ok(())
 }
 
+fn machine_readable_pending_error(error: &(dyn Error + 'static)) -> Option<String> {
+    match error.downcast_ref::<WalletPendingError>()? {
+        WalletPendingError::ReservedOutpoint { txid, index } => Some(
+            serde_json::json!({
+                "ok": false,
+                "error": {
+                    "code": "PENDING_UTXO_RESERVED",
+                    "message": "selected outpoint is reserved by a pending transaction",
+                    "txid": txid,
+                    "index": index,
+                }
+            })
+            .to_string(),
+        ),
+        _ => None,
+    }
+}
+
 async fn run() -> CliResult<()> {
     match parse_command()? {
         Command::Restore(args) => {
@@ -964,7 +982,11 @@ async fn run() -> CliResult<()> {
 #[tokio::main]
 async fn main() {
     if let Err(error) = run().await {
-        eprintln!("pulsedag-wallet: {error}");
+        if let Some(encoded) = machine_readable_pending_error(error.as_ref()) {
+            eprintln!("{encoded}");
+        } else {
+            eprintln!("pulsedag-wallet: {error}");
+        }
         std::process::exit(1);
     }
 }
@@ -983,6 +1005,28 @@ mod tests {
             .map(|value| (*value).to_string())
             .collect::<Vec<_>>()
             .into_iter()
+    }
+
+    #[test]
+    fn reserved_outpoint_error_is_machine_readable() {
+        let txid = "11".repeat(32);
+        let error = WalletPendingError::ReservedOutpoint {
+            txid: txid.clone(),
+            index: 7,
+        };
+        let encoded = machine_readable_pending_error(&error).expect("structured error");
+        let value: serde_json::Value = serde_json::from_str(&encoded).expect("valid JSON");
+        assert_eq!(value["ok"], false);
+        assert_eq!(value["error"]["code"], "PENDING_UTXO_RESERVED");
+        assert_eq!(
+            value["error"]["message"],
+            "selected outpoint is reserved by a pending transaction"
+        );
+        assert_eq!(value["error"]["txid"], txid);
+        assert_eq!(value["error"]["index"], 7);
+        assert!(
+            machine_readable_pending_error(&WalletPendingError::ConflictingReservations).is_none()
+        );
     }
 
     #[test]
