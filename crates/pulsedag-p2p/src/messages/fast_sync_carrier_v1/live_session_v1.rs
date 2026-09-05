@@ -374,6 +374,7 @@ impl FastSyncDownloadSessionV1 {
         response: FastSyncWireV1,
     ) -> Result<(), FastSyncSessionErrorV1> {
         response.validate_for_chain(&self.expected.chain_id)?;
+        let response_kind = response.kind();
         match response {
             FastSyncWireV1::Capabilities(capabilities) => {
                 capabilities.validate_for_expected(&self.expected)?;
@@ -461,7 +462,7 @@ impl FastSyncDownloadSessionV1 {
             | FastSyncWireV1::GetCommitmentPage { .. }
             | FastSyncWireV1::GetChunks(_) => {
                 return Err(FastSyncSessionErrorV1::UnexpectedResponse {
-                    kind: response.kind(),
+                    kind: response_kind,
                 });
             }
         }
@@ -651,7 +652,7 @@ mod tests {
         let FastSyncWireV1::Chunk(mut chunk) = responses.remove(0) else {
             panic!("expected chunk response");
         };
-        chunk.data_hex.replace_range(0..2, "00");
+        chunk.data_hex.replace_range(0..2, "ff");
         assert!(downloader
             .accept_response(FastSyncWireV1::Chunk(chunk))
             .is_err());
