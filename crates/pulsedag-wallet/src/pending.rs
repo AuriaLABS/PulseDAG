@@ -169,19 +169,22 @@ impl WalletPendingJournal {
             .collect::<Vec<_>>();
         validate_selected_outpoints(&selected_outpoints)?;
 
-        if let Some(existing) = self
+        let existing_state = if let Some(existing) = self
             .entries
             .iter()
             .find(|entry| entry.final_txid == final_txid)
         {
-            if existing.from == from && existing.selected_outpoints == selected_outpoints {
-                return Ok(false);
+            if existing.from != from || existing.selected_outpoints != selected_outpoints {
+                return Err(WalletPendingError::TransactionIdentityMismatch(final_txid));
             }
-            return Err(WalletPendingError::TransactionIdentityMismatch(final_txid));
-        }
+            Some(existing.state)
+        } else {
+            None
+        };
 
         if self.entries.iter().any(|entry| {
-            entry.state.reserves_outpoints()
+            entry.final_txid != final_txid
+                && entry.state.reserves_outpoints()
                 && entry.selected_outpoints.iter().any(|reserved| {
                     selected_outpoints
                         .iter()
@@ -189,6 +192,16 @@ impl WalletPendingJournal {
                 })
         }) {
             return Err(WalletPendingError::ConflictingReservations);
+        }
+
+        if let Some(current) = existing_state {
+            if current.reserves_outpoints() {
+                return Ok(false);
+            }
+            return Err(WalletPendingError::InvalidTransition {
+                current,
+                next: WalletPendingState::Signed,
+            });
         }
 
         self.entries.push(WalletPendingTransaction {
@@ -554,6 +567,36 @@ mod tests {
             .expect("idempotent"));
         assert!(matches!(
             journal.reserve_signed(final_txid("bb"), address(), &first),
+            Err(WalletPendingError::ConflictingReservations)
+        ));
+    }
+
+    #[test]
+    fn confirmed_reservation_is_not_idempotent_and_cannot_hide_active_conflict() {
+        let mut journal = WalletPendingJournal::new(network("chain-a")).expect("journal");
+        let first = [selected("11", 0)];
+        let confirmed_txid = final_txid("aa");
+        journal
+            .reserve_signed(&confirmed_txid, address(), &first)
+            .expect("reserve");
+        journal
+            .mark_submission_started(&confirmed_txid)
+            .expect("submission started");
+        journal.mark_confirmed(&confirmed_txid).expect("confirmed");
+
+        assert!(matches!(
+            journal.reserve_signed(&confirmed_txid, address(), &first),
+            Err(WalletPendingError::InvalidTransition {
+                current: WalletPendingState::Confirmed,
+                next: WalletPendingState::Signed
+            })
+        ));
+
+        journal
+            .reserve_signed(final_txid("bb"), address(), &first)
+            .expect("new active reservation after confirmation");
+        assert!(matches!(
+            journal.reserve_signed(&confirmed_txid, address(), &first),
             Err(WalletPendingError::ConflictingReservations)
         ));
     }
