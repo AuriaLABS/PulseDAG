@@ -4,6 +4,7 @@ on:
   pull_request:
     branches:
       - main
+      - codex/1035-fast-sync-manifest
     paths:
       - '.github/workflows/v3-fast-sync.yml'
       - 'crates/pulsedag-core/src/lib.rs'
