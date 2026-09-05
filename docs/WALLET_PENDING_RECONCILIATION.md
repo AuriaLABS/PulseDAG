@@ -11,20 +11,20 @@ All states except `confirmed` retain the selected-outpoint reservation. Generic 
 ## Transaction flow
 
 1. `tx-preview` builds against the complete bounded UTXO snapshot so spend-all classification is unchanged, then checks the selected outpoints against the pending journal. Reserved inputs are not silently filtered before planning.
-2. `tx-sign` acquires the pending journal before signing, rejects a conflicting active reservation, holds the same lock through signing, then durably records the final txid, sender and exact selected outpoints before emitting the signed result.
+2. `tx-sign` acquires the pending journal before signing and holds that lock through deterministic signing. A different active pending tx using any selected outpoint is rejected. If the same deterministic plan already produced the same final txid and an exact `signed` reservation was durably saved before the prior invocation failed to return its envelope, rerunning `tx-sign` may recover that same signed envelope without creating a second reservation generation. Recovery is refused once that record has advanced past `signed`, and any sender/outpoint mismatch fails closed.
 3. `tx-broadcast` completes local and remote preflight first. It verifies the signed envelope, relay origin, `/release` network identity, relay capability/version and canonical submit surface, and prepares the exact request body before crossing the submission boundary.
 4. Immediately before the submit POST, `tx-broadcast` durably moves the exact journal record from `signed` to `submission_started`. That transition is intentionally non-idempotent, so a restart cannot blindly resubmit an already-started attempt.
 5. Explicit relay acceptance records `relay_accepted`. Explicit generic relay rejection records `relay_rejected` but retains the reservation. Any transport, response-read or malformed-response failure after submission begins records `submission_outcome_unknown` and retains the reservation.
 
 ## Machine-readable reserved-input conflict
 
-If `tx-preview` or `tx-sign` selects an outpoint already reserved by a pending transaction, the command exits non-zero and emits one JSON line to stderr:
+If `tx-preview` or `tx-sign` selects an outpoint already reserved by a different active pending transaction, the command exits non-zero and emits one JSON line to stderr:
 
 ```json
 {"ok":false,"error":{"code":"PENDING_UTXO_RESERVED","message":"selected outpoint is reserved by a pending transaction","txid":"<canonical-lowercase-32-byte-hex>","index":0}}
 ```
 
-`txid` and `index` identify the reserved outpoint. Other CLI failures retain the existing human-readable stderr format.
+`txid` and `index` identify the reserved outpoint. Exact `signed` recovery of the same deterministic final txid is not treated as a conflicting reservation. Other CLI failures retain the existing human-readable stderr format.
 
 ## Stable states
 
@@ -36,7 +36,7 @@ If `tx-preview` or `tx-sign` selects an outpoint already reserved by a pending t
 | `relay_accepted` | yes | Relay explicitly reported acceptance; confirmation is still pending. |
 | `observed_mempool` | yes | Exact txid is positively observed in public mempool activity. |
 | `relay_rejected` | yes | Relay explicitly reported a generic rejection; current public evidence is not terminal release proof. |
-| `confirmed` | no | Exact txid is positively observed as confirmed; selected outpoints may be released. |
+| `confirmed` | no | Exact txid is positively observed as canonically confirmed; selected outpoints may be released. |
 
 State changes are monotonic/conservative where public evidence permits. A later exact-txid mempool or confirmed observation can strengthen a rejected or unknown record. `confirmed` never downgrades.
 
@@ -55,7 +55,9 @@ The command:
 - accepts only positive evidence for the exact final txid;
 - reacquires and revalidates the journal before persisting any state change.
 
-Positive mempool evidence may promote the record to `observed_mempool`. Positive confirmed evidence promotes it to `confirmed` and releases the reservation. `not_observed`, retained-history exhaustion, and page-budget exhaustion are reported but do not mutate state or release outpoints.
+The public address-activity surface only labels retained DAG transactions `confirmed` when the core `transaction_is_confirmed` predicate says the txid is present in the authoritative selected/ordered state and was actually applied. Side-DAG membership alone and ordered-replay conflict losers are therefore not confirmation evidence and cannot release a wallet reservation.
+
+Positive mempool evidence may promote the record to `observed_mempool`. Positive authoritative confirmed evidence promotes it to `confirmed` and releases the reservation. `not_observed`, retained-history exhaustion, and page-budget exhaustion are reported but do not mutate state or release outpoints.
 
 The reconcile JSON result includes `network_profile`, `chain_id`, `txid`, `from`, `prior_state`, `state`, `evidence`, `pages_scanned`, `items_scanned`, `retained_history_exhausted`, `budget_exhausted`, `journal_updated`, and `reservation_retained`.
 
@@ -63,6 +65,6 @@ The reconcile JSON result includes `network_profile`, `chain_id`, `txid`, `from`
 
 The journal store uses an advisory cross-process lock, immutable generational snapshots, bounded payloads, SHA-256-bound commit markers, stale-generation detection, and fail-closed network validation. An orphan snapshot without a commit marker is ignored; a tampered committed snapshot fails digest validation.
 
-Regression coverage includes restart persistence, concurrent-open rejection, tamper detection, stale generation, cross-network rejection, reservation conflicts, submission-started/unknown/accepted/rejected/mempool/confirmed transitions, retained-history absence, durable reconciliation across restart, and confirmed release across restart.
+Regression coverage includes restart persistence, concurrent-open rejection, tamper detection, stale generation, cross-network rejection, reservation conflicts, exact `signed` recovery after a failed result handoff, submission-started/unknown/accepted/rejected/mempool/confirmed transitions, retained-history absence, side-DAG/replay-loser non-confirmation, durable reconciliation across restart, and confirmed release across restart.
 
 No reconciliation path automatically rebroadcasts a transaction. No private key, mnemonic, password, decrypted seed, signing session, acknowledgement override, or custody RPC is introduced by this flow.
