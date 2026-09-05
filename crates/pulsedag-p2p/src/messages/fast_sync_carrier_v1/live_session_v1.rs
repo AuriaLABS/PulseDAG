@@ -6,25 +6,36 @@ use pulsedag_core::{
 };
 
 use super::{
-    FastSyncCapabilitiesV1, FastSyncChunkRequestV1, FastSyncChunkV1,
-    FastSyncCommitmentPageV1, FastSyncTransferSummaryV1, FastSyncWireErrorV1, FastSyncWireV1,
+    FastSyncCapabilitiesV1, FastSyncChunkRequestV1, FastSyncChunkV1, FastSyncCommitmentPageV1,
+    FastSyncTransferSummaryV1, FastSyncWireErrorV1, FastSyncWireV1, P2P_FAST_SYNC_CONTRACT_VERSION,
     P2P_FAST_SYNC_MAX_CHUNKS_PER_REQUEST_V1, P2P_FAST_SYNC_MAX_COMMITMENTS_PER_PAGE_V1,
-    P2P_FAST_SYNC_CONTRACT_VERSION,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FastSyncSessionErrorV1 {
     Wire(FastSyncWireErrorV1),
-    UnexpectedRequest { kind: &'static str },
-    UnexpectedResponse { kind: &'static str },
+    UnexpectedRequest {
+        kind: &'static str,
+    },
+    UnexpectedResponse {
+        kind: &'static str,
+    },
     MissingCapabilities,
     MissingTransferSummary,
     TransferIdentity(String),
-    CommitmentSequence { expected_start: u32, observed_start: u32 },
+    CommitmentSequence {
+        expected_start: u32,
+        observed_start: u32,
+    },
     CommitmentSetMismatch,
-    ChunkConflict { chunk_index: u32 },
+    ChunkConflict {
+        chunk_index: u32,
+    },
     PayloadCommitmentMismatch,
-    PayloadLengthMismatch { expected: u64, observed: u64 },
+    PayloadLengthMismatch {
+        expected: u64,
+        observed: u64,
+    },
     ArithmeticOverflow,
 }
 
@@ -194,23 +205,18 @@ impl FastSyncServingSessionV1 {
                 chunk_request.validate_against_summary(&self.summary)?;
                 let mut responses = Vec::with_capacity(chunk_request.chunk_indices.len());
                 for chunk_index in &chunk_request.chunk_indices {
-                    let chunk = self
-                        .chunks
-                        .get(*chunk_index as usize)
-                        .ok_or_else(|| {
-                            transfer_identity_error(
-                                "fast-sync chunk request references unavailable serving material",
-                            )
-                        })?;
+                    let chunk = self.chunks.get(*chunk_index as usize).ok_or_else(|| {
+                        transfer_identity_error(
+                            "fast-sync chunk request references unavailable serving material",
+                        )
+                    })?;
                     let wire_chunk = FastSyncChunkV1::from_bytes(
                         self.summary.chain_id.clone(),
                         self.summary.transfer_id.clone(),
                         *chunk_index,
                         chunk,
                     )?;
-                    if wire_chunk.chunk_commitment
-                        != self.commitments[*chunk_index as usize]
-                    {
+                    if wire_chunk.chunk_commitment != self.commitments[*chunk_index as usize] {
                         return Err(FastSyncSessionErrorV1::CommitmentSetMismatch);
                     }
                     responses.push(FastSyncWireV1::Chunk(wire_chunk));
@@ -274,7 +280,10 @@ impl FastSyncDownloadSessionV1 {
     }
 
     pub fn progress(&self) -> FastSyncDownloadProgressV1 {
-        let chunk_count = self.summary.as_ref().map_or(0, |summary| summary.chunk_count);
+        let chunk_count = self
+            .summary
+            .as_ref()
+            .map_or(0, |summary| summary.chunk_count);
         FastSyncDownloadProgressV1 {
             capabilities_verified: self.capabilities.is_some(),
             summary_verified: self.summary.is_some(),
@@ -338,8 +347,8 @@ impl FastSyncDownloadSessionV1 {
                 .max_commitments_per_page
                 .min(P2P_FAST_SYNC_MAX_COMMITMENTS_PER_PAGE_V1 as u32)
                 .min(summary.chunk_count - start_index);
-            let limit = u16::try_from(limit)
-                .map_err(|_| FastSyncSessionErrorV1::ArithmeticOverflow)?;
+            let limit =
+                u16::try_from(limit).map_err(|_| FastSyncSessionErrorV1::ArithmeticOverflow)?;
             self.commitment_page_inflight = true;
             return Ok(Some(FastSyncWireV1::GetCommitmentPage {
                 chain_id: summary.chain_id.clone(),
@@ -521,11 +530,7 @@ mod tests {
         )
     }
 
-    fn fixture() -> (
-        Vec<u8>,
-        FastSyncServingSessionV1,
-        FastSyncDownloadSessionV1,
-    ) {
+    fn fixture() -> (Vec<u8>, FastSyncServingSessionV1, FastSyncDownloadSessionV1) {
         let chunk_size = 1024_usize;
         let payload = (0..(chunk_size * 5 + 17))
             .map(|index| (index % 251) as u8)
