@@ -1,0 +1,268 @@
+name: TEMP relay submit boundary
+
+on:
+  push:
+    branches:
+      - wallet/v3-pending-utxo-reconcile
+    paths:
+      - .github/workflows/temp-relay-submit-boundary.yml
+
+permissions:
+  contents: write
+
+jobs:
+  rewrite-and-verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout exact branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: wallet/v3-pending-utxo-reconcile
+
+      - name: Build exact preflight-submit boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git hash-object crates/pulsedag-wallet/src/pulsedag_wallet_relay.rs)" = "a8b6b2002d168238577a9ff80de83a2154340ad4"
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('crates/pulsedag-wallet/src/pulsedag_wallet_relay.rs')
+          text = path.read_text()
+
+          def replace_once(old: str, new: str) -> None:
+              global text
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'expected exactly one relay replacement, found {count}')
+              text = text.replace(old, new, 1)
+
+          old = '''#[derive(Debug, Serialize)]
+          pub struct BroadcastOutput {
+              pub accepted: bool,
+              pub txid: String,
+              pub mempool_size: Option<usize>,
+              pub relay_network_profile: String,
+              pub relay_chain_id: String,
+              pub relay_version: String,
+              pub rejection_code: Option<String>,
+              pub rejection_message: Option<String>,
+          }
+          '''
+          new = old + '''
+          pub struct PreparedBroadcast {
+              client: Client,
+              submit_url: Url,
+              body: Vec<u8>,
+              final_txid: String,
+              identity: RelayIdentity,
+          }
+          '''
+          replace_once(old, new)
+
+          old = '''async fn submit_transaction(
+              client: &Client,
+              base: &Url,
+              signed: &SignedBroadcastInput,
+              identity: &RelayIdentity,
+          ) -> Result<BroadcastOutput, RelayClientError> {
+              let url = base
+                  .join("api/v1/tx/submit")
+                  .map_err(|_| relay_error("failed to construct relay submit URL"))?;
+              let response = client
+                  .post(url)
+                  .json(&signed.relay)
+                  .send()
+                  .await
+                  .map_err(|error| relay_error(format!("relay submit transport failed: {error}")))?;
+              let (status, body) = bounded_body(response).await?;
+              let parsed = serde_json::from_slice::<ApiResponse<SubmitData>>(&body).map_err(|_| {
+                  relay_error(format!(
+                      "relay submit response JSON is invalid (HTTP {})",
+                      status.as_u16()
+                  ))
+              })?;
+
+              if !parsed.ok {
+                  let error = parsed.error.unwrap_or(ApiError {
+                      code: format!("HTTP_{}", status.as_u16()),
+                      message: "relay rejected transaction without an error body".to_string(),
+                  });
+                  return Ok(BroadcastOutput {
+                      accepted: false,
+                      txid: signed.final_txid.clone(),
+                      mempool_size: None,
+                      relay_network_profile: identity.network.network_profile.clone(),
+                      relay_chain_id: identity.network.chain_id.clone(),
+                      relay_version: identity.version.clone(),
+                      rejection_code: Some(error.code),
+                      rejection_message: Some(error.message),
+                  });
+              }
+              if !status.is_success() {
+                  return Err(relay_error(format!(
+                      "relay returned successful API payload with HTTP {}",
+                      status.as_u16()
+                  )));
+              }
+              let data = parsed
+                  .data
+                  .ok_or_else(|| relay_error("relay submit response is missing data"))?;
+              if !data.accepted {
+                  return Err(relay_error("relay returned ok=true with accepted=false"));
+              }
+              if data.txid != signed.final_txid {
+                  return Err(relay_error("relay accepted a different transaction id"));
+              }
+
+              Ok(BroadcastOutput {
+                  accepted: true,
+                  txid: data.txid,
+                  mempool_size: Some(data.mempool_size),
+                  relay_network_profile: identity.network.network_profile.clone(),
+                  relay_chain_id: identity.network.chain_id.clone(),
+                  relay_version: identity.version.clone(),
+                  rejection_code: None,
+                  rejection_message: None,
+              })
+          }
+          '''
+          new = '''pub async fn prepare_broadcast(
+              relay_url: &str,
+              signed: &SignedBroadcastInput,
+          ) -> Result<PreparedBroadcast, RelayClientError> {
+              validate_signed_broadcast(signed)?;
+              let base = relay_base_url(relay_url)?;
+              let client = build_client()?;
+              let identity = fetch_identity(&client, &base, &signed.network).await?;
+              let submit_url = base
+                  .join(RELAY_SUBMIT_PATH.trim_start_matches('/'))
+                  .map_err(|_| relay_error("failed to construct relay submit URL"))?;
+              let body = serde_json::to_vec(&signed.relay)
+                  .map_err(|_| relay_error("failed to serialize signed relay envelope"))?;
+              Ok(PreparedBroadcast {
+                  client,
+                  submit_url,
+                  body,
+                  final_txid: signed.final_txid.clone(),
+                  identity,
+              })
+          }
+
+          pub async fn submit_prepared(
+              prepared: PreparedBroadcast,
+          ) -> Result<BroadcastOutput, RelayClientError> {
+              let PreparedBroadcast {
+                  client,
+                  submit_url,
+                  body,
+                  final_txid,
+                  identity,
+              } = prepared;
+              let response = client
+                  .post(submit_url)
+                  .header("content-type", "application/json")
+                  .body(body)
+                  .send()
+                  .await
+                  .map_err(|error| relay_error(format!("relay submit transport failed: {error}")))?;
+              let (status, body) = bounded_body(response).await?;
+              let parsed = serde_json::from_slice::<ApiResponse<SubmitData>>(&body).map_err(|_| {
+                  relay_error(format!(
+                      "relay submit response JSON is invalid (HTTP {})",
+                      status.as_u16()
+                  ))
+              })?;
+
+              if !parsed.ok {
+                  let error = parsed
+                      .error
+                      .ok_or_else(|| relay_error("relay rejection response is missing error detail"))?;
+                  return Ok(BroadcastOutput {
+                      accepted: false,
+                      txid: final_txid,
+                      mempool_size: None,
+                      relay_network_profile: identity.network.network_profile,
+                      relay_chain_id: identity.network.chain_id,
+                      relay_version: identity.version,
+                      rejection_code: Some(error.code),
+                      rejection_message: Some(error.message),
+                  });
+              }
+              if !status.is_success() {
+                  return Err(relay_error(format!(
+                      "relay returned successful API payload with HTTP {}",
+                      status.as_u16()
+                  )));
+              }
+              if parsed.error.is_some() {
+                  return Err(relay_error("relay submit success response contains error detail"));
+              }
+              let data = parsed
+                  .data
+                  .ok_or_else(|| relay_error("relay submit response is missing data"))?;
+              if !data.accepted {
+                  return Err(relay_error("relay returned ok=true with accepted=false"));
+              }
+              if data.txid != final_txid {
+                  return Err(relay_error("relay accepted a different transaction id"));
+              }
+
+              Ok(BroadcastOutput {
+                  accepted: true,
+                  txid: data.txid,
+                  mempool_size: Some(data.mempool_size),
+                  relay_network_profile: identity.network.network_profile,
+                  relay_chain_id: identity.network.chain_id,
+                  relay_version: identity.version,
+                  rejection_code: None,
+                  rejection_message: None,
+              })
+          }
+          '''
+          replace_once(old, new)
+
+          old = '''pub async fn broadcast_signed(
+              relay_url: &str,
+              signed: SignedBroadcastInput,
+          ) -> Result<BroadcastOutput, RelayClientError> {
+              validate_signed_broadcast(&signed)?;
+              let base = relay_base_url(relay_url)?;
+              let client = build_client()?;
+              let identity = fetch_identity(&client, &base, &signed.network).await?;
+              submit_transaction(&client, &base, &signed, &identity).await
+          }
+          '''
+          new = '''pub async fn broadcast_signed(
+              relay_url: &str,
+              signed: SignedBroadcastInput,
+          ) -> Result<BroadcastOutput, RelayClientError> {
+              let prepared = prepare_broadcast(relay_url, &signed).await?;
+              submit_prepared(prepared).await
+          }
+          '''
+          replace_once(old, new)
+          path.write_text(text)
+          PY
+          cargo fmt --all
+          git diff --check
+
+      - name: Wallet tests
+        run: cargo test -p pulsedag-wallet
+
+      - name: Wallet clippy
+        run: cargo clippy -p pulsedag-wallet --all-targets -- -D warnings
+
+      - name: Publish relay boundary and clean workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm .github/workflows/temp-relay-submit-boundary.yml
+          git add -A
+          changed="$(git diff --cached --name-only | sort)"
+          expected="$(printf '%s\n' '.github/workflows/temp-relay-submit-boundary.yml' 'crates/pulsedag-wallet/src/pulsedag_wallet_relay.rs' | sort)"
+          test "$changed" = "$expected"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "wallet: split relay preflight from submit"
+          git push origin HEAD:wallet/v3-pending-utxo-reconcile
