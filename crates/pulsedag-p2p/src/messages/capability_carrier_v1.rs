@@ -325,8 +325,7 @@ mod tests {
 
     fn fast_sync_capabilities(protocol: &ProtocolCapabilitiesV1) -> FastSyncCapabilitiesV1 {
         FastSyncCapabilitiesV1 {
-            contract_version:
-                crate::messages::fast_sync_carrier_v1::P2P_FAST_SYNC_CONTRACT_VERSION,
+            contract_version: crate::messages::fast_sync_carrier_v1::P2P_FAST_SYNC_CONTRACT_VERSION,
             chain_id: protocol.protocol_identity.chain_id.clone(),
             genesis_hash: protocol.protocol_identity.genesis_hash.clone(),
             protocol_fingerprint: protocol.protocol_identity.fingerprint().unwrap(),
