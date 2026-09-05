@@ -14,6 +14,8 @@ pub use super::mining_template_protocol::post_mining_template;
 pub(crate) use super::mining_template_protocol::store_template;
 #[cfg(test)]
 pub use super::mining_template_protocol::StoredMiningTemplate;
+#[cfg(not(test))]
+pub use post_mining_template_v3 as post_mining_template;
 
 pub(crate) const MINING_PROTOCOL_VERSION: u32 = 3;
 const MINING_V3_NOTIFICATION_POLL_AFTER_MS: u64 = 250;
@@ -207,8 +209,7 @@ fn decorate_template_data(mut data: Value, observation: &WorkObservation) -> Res
     Ok(data)
 }
 
-#[cfg(not(test))]
-pub async fn post_mining_template<S: RpcStateLike>(
+pub async fn post_mining_template_v3<S: RpcStateLike>(
     State(state): State<S>,
     Json(req): Json<GetBlockTemplateRequest>,
 ) -> Json<ApiResponse<Value>> {
