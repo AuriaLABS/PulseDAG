@@ -98,9 +98,13 @@ pub struct FastSyncChunkV1 {
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(tag = "fast_sync_type", content = "payload", rename_all = "snake_case")]
 pub enum FastSyncWireV1 {
-    CapabilityProbe { chain_id: String },
+    CapabilityProbe {
+        chain_id: String,
+    },
     Capabilities(FastSyncCapabilitiesV1),
-    GetTransferSummary { chain_id: String },
+    GetTransferSummary {
+        chain_id: String,
+    },
     TransferSummary(FastSyncTransferSummaryV1),
     GetCommitmentPage {
         chain_id: String,
@@ -156,7 +160,10 @@ fn is_canonical_sha256_hex(value: &str) -> bool {
             .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
 }
 
-fn validate_contract_and_chain(contract_version: u32, chain_id: &str) -> Result<(), FastSyncWireErrorV1> {
+fn validate_contract_and_chain(
+    contract_version: u32,
+    chain_id: &str,
+) -> Result<(), FastSyncWireErrorV1> {
     if contract_version != P2P_FAST_SYNC_CONTRACT_VERSION {
         return Err(invalid_shape(format!(
             "fast-sync contract version {contract_version} does not match {}",
@@ -491,7 +498,9 @@ impl FastSyncChunkV1 {
         validate_contract_and_chain(P2P_FAST_SYNC_CONTRACT_VERSION, &chain_id)?;
         validate_transfer_id(&transfer_id, "transfer_id")?;
         if chunk_index >= P2P_FAST_SYNC_MAX_TRANSFER_CHUNKS_V1 {
-            return Err(invalid_shape("fast-sync chunk index exceeds transfer bound"));
+            return Err(invalid_shape(
+                "fast-sync chunk index exceeds transfer bound",
+            ));
         }
         if bytes.is_empty() || bytes.len() > P2P_FAST_SYNC_MAX_CHUNK_BYTES_V1 {
             return Err(invalid_shape(format!(
@@ -500,8 +509,7 @@ impl FastSyncChunkV1 {
                 P2P_FAST_SYNC_MAX_CHUNK_BYTES_V1
             )));
         }
-        let chunk_commitment =
-            snapshot_transfer_chunk_digest_v1(&transfer_id, chunk_index, bytes);
+        let chunk_commitment = snapshot_transfer_chunk_digest_v1(&transfer_id, chunk_index, bytes);
         Ok(Self {
             contract_version: P2P_FAST_SYNC_CONTRACT_VERSION,
             chain_id,
@@ -517,7 +525,9 @@ impl FastSyncChunkV1 {
         validate_transfer_id(&self.transfer_id, "transfer_id")?;
         validate_transfer_id(&self.chunk_commitment, "chunk_commitment")?;
         if self.chunk_index >= P2P_FAST_SYNC_MAX_TRANSFER_CHUNKS_V1 {
-            return Err(invalid_shape("fast-sync chunk index exceeds transfer bound"));
+            return Err(invalid_shape(
+                "fast-sync chunk index exceeds transfer bound",
+            ));
         }
         if self.data_hex.is_empty()
             || self.data_hex.len() > P2P_FAST_SYNC_MAX_CHUNK_BYTES_V1 * 2
@@ -561,11 +571,7 @@ impl FastSyncChunkV1 {
                 bytes.len()
             )));
         }
-        let actual = snapshot_transfer_chunk_digest_v1(
-            &self.transfer_id,
-            self.chunk_index,
-            &bytes,
-        );
+        let actual = snapshot_transfer_chunk_digest_v1(&self.transfer_id, self.chunk_index, &bytes);
         if actual != self.chunk_commitment {
             return Err(FastSyncWireErrorV1::ChunkCommitmentMismatch);
         }
@@ -846,9 +852,8 @@ fn parse_payload<'de, T>(raw: &'de RawValue, field: &str) -> Result<T, FastSyncC
 where
     T: Deserialize<'de>,
 {
-    serde_json::from_str(raw.get()).map_err(|error| {
-        FastSyncCarrierErrorV1::Json(format!("fast-sync {field}: {error}"))
-    })
+    serde_json::from_str(raw.get())
+        .map_err(|error| FastSyncCarrierErrorV1::Json(format!("fast-sync {field}: {error}")))
 }
 
 fn decode_chunk_payload(raw: &RawValue) -> Result<FastSyncChunkV1, FastSyncCarrierErrorV1> {
@@ -858,8 +863,9 @@ fn decode_chunk_payload(raw: &RawValue) -> Result<FastSyncChunkV1, FastSyncCarri
             "fast-sync chunk data_hex exceeds the pre-decode wire bound",
         )));
     }
-    let data_hex: String = serde_json::from_str(raw.data_hex.get())
-        .map_err(|error| FastSyncCarrierErrorV1::Json(format!("fast-sync chunk data_hex: {error}")))?;
+    let data_hex: String = serde_json::from_str(raw.data_hex.get()).map_err(|error| {
+        FastSyncCarrierErrorV1::Json(format!("fast-sync chunk data_hex: {error}"))
+    })?;
     Ok(FastSyncChunkV1 {
         contract_version: raw.contract_version,
         chain_id: raw.chain_id,
@@ -907,7 +913,8 @@ fn decode_wire(raw: &RawValue) -> Result<FastSyncWireV1, FastSyncCarrierErrorV1>
             FastSyncWireV1::CommitmentPage(payload.into())
         }
         FastSyncKindV1::GetChunks => {
-            let payload: FastSyncChunkRequestDecodeV1 = parse_payload(wire.payload, "chunk request")?;
+            let payload: FastSyncChunkRequestDecodeV1 =
+                parse_payload(wire.payload, "chunk request")?;
             FastSyncWireV1::GetChunks(payload.into())
         }
         FastSyncKindV1::Chunk => FastSyncWireV1::Chunk(decode_chunk_payload(wire.payload)?),
@@ -1016,7 +1023,11 @@ pub fn decode_network_message_with_fast_sync_v1(
     let present = ensure_extension_transport_bound(bytes)?;
     let message: NetworkMessage = serde_json::from_slice(bytes)
         .map_err(|error| FastSyncCarrierErrorV1::Json(error.to_string()))?;
-    let fast_sync = if present { decode_extension(bytes)? } else { None };
+    let fast_sync = if present {
+        decode_extension(bytes)?
+    } else {
+        None
+    };
     if let Some(carrier) = fast_sync.as_ref() {
         validate_carrier_for_message(&message, carrier)?;
     }
@@ -1139,7 +1150,10 @@ mod tests {
             .map(|index| (index % 251) as u8)
             .collect::<Vec<_>>();
         let transfer_id = snapshot_transfer_payload_digest_v1(&payload);
-        let chunks = payload.chunks(chunk_size).map(|chunk| chunk.to_vec()).collect::<Vec<_>>();
+        let chunks = payload
+            .chunks(chunk_size)
+            .map(|chunk| chunk.to_vec())
+            .collect::<Vec<_>>();
         let commitments = chunks
             .iter()
             .enumerate()
@@ -1199,7 +1213,8 @@ mod tests {
         )
         .unwrap();
         assert!(serde_json::from_slice::<NetworkMessage>(&encoded).is_ok());
-        let decoded = decode_network_message_with_fast_sync_for_peer_v1(&encoded, LOCAL_PEER).unwrap();
+        let decoded =
+            decode_network_message_with_fast_sync_for_peer_v1(&encoded, LOCAL_PEER).unwrap();
         assert!(matches!(
             decoded.fast_sync.map(|carrier| carrier.wire),
             Some(FastSyncWireV1::Capabilities(_))
@@ -1222,7 +1237,8 @@ mod tests {
             "{base},\"{FAST_SYNC_EXTENSION_FIELD_V1}\":{{\"target_peer_id\":\"{LOCAL_PEER}\",\"wire\":{{\"fast_sync_type\":\"commitment_page\",\"payload\":{payload}}}}}}}"
         )
         .into_bytes();
-        let bystander = decode_network_message_with_fast_sync_for_peer_v1(&encoded, "other-peer").unwrap();
+        let bystander =
+            decode_network_message_with_fast_sync_for_peer_v1(&encoded, "other-peer").unwrap();
         assert!(bystander.fast_sync.is_none());
         assert!(decode_network_message_with_fast_sync_for_peer_v1(&encoded, LOCAL_PEER).is_err());
     }
@@ -1289,7 +1305,8 @@ mod tests {
         let transfer_id = snapshot_transfer_payload_digest_v1(&bytes);
         let chunk = FastSyncChunkV1::from_bytes(CHAIN_ID, transfer_id, 0, &bytes).unwrap();
         let wire = FastSyncWireV1::Chunk(chunk);
-        let encoded = encode_network_message_with_fast_sync_v1(&tips(), Some(&carrier(wire))).unwrap();
+        let encoded =
+            encode_network_message_with_fast_sync_v1(&tips(), Some(&carrier(wire))).unwrap();
         assert!(encoded.len() <= P2P_FAST_SYNC_TRANSPORT_MAX_BYTES_V1);
     }
 
