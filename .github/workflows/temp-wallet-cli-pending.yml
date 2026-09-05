@@ -42,10 +42,10 @@ jobs:
           set -euo pipefail
           rm .github/temp-wallet-cli-pending.patch .github/workflows/temp-wallet-cli-pending.yml
           git add -A
-          test "$(git diff --cached --name-only)" = "crates/pulsedag-wallet/src/bin/pulsedag-wallet.rs"
+          test "$(git diff --cached --name-only 6553c2bbcb8f7771b0d4ebf27829cac465040741)" = "crates/pulsedag-wallet/src/bin/pulsedag-wallet.rs"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git commit -m "wallet: wire pending reservations into preview and sign"
           git push origin HEAD:wallet/v3-pending-utxo-reconcile
 
-# retry: corrected exact patch hunk count
+# retry: validate final tree delta against authoritative pre-applicator head
