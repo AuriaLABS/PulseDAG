@@ -10,6 +10,8 @@ const FAST_SYNC_RESUME_PLAN_SUFFIX_V1: &str = ":plan";
 const FAST_SYNC_RESUME_CHUNK_MARKER_V1: &str = ":chunk:";
 const MAX_FAST_SYNC_RESUME_PLAN_BYTES_V1: usize = 16 * 1024 * 1024;
 
+type FastSyncResumeScanV1 = (Vec<u32>, BTreeMap<u32, Vec<u8>>);
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FastSyncPersistedResumeStatusV1 {
     pub transfer_id: String,
@@ -156,7 +158,7 @@ impl Storage {
         plan: &FastSyncSnapshotTransferPlanV1,
         expected: &ProtocolActivationIdentity,
         collect: bool,
-    ) -> Result<(Vec<u32>, BTreeMap<u32, Vec<u8>>), PulseError> {
+    ) -> Result<FastSyncResumeScanV1, PulseError> {
         self.require_matching_fast_sync_resume_plan_v1(plan, expected)?;
         let maximum_chunk_len = usize::try_from(plan.chunk_size)
             .map_err(|_| storage_error("fast-sync resume chunk_size does not fit usize"))?;
@@ -322,6 +324,10 @@ mod tests {
     fn source_bundle(storage: &Storage) -> (FastSyncSnapshotBundleV1, ProtocolActivationIdentity) {
         let state = init_chain_state("pulsedag-testnet".to_string());
         let expected = ProtocolActivationIdentity::legacy_from_state(&state);
+        let persisted_blocks = state.dag.blocks.values().cloned().collect::<Vec<_>>();
+        storage
+            .persist_blocks_and_chain_state(&persisted_blocks, &state)
+            .unwrap();
         storage
             .persist_chain_state_with_protocol_record(&state)
             .unwrap();
