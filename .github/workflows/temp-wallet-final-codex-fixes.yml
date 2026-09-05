@@ -1,0 +1,65 @@
+name: temp wallet final codex fixes
+
+on:
+  push:
+    branches:
+      - wallet/v3-pending-utxo-reconcile
+    paths:
+      - '.github/workflows/temp-wallet-final-codex-fixes.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  materialize:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: wallet/v3-pending-utxo-reconcile
+          fetch-depth: 1
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.91.0
+          components: clippy,rustfmt
+      - name: Guard exact inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git hash-object crates/pulsedag-rpc/src/handlers/release.rs)" = "0c44db8db91212c8f48eb2f192e69567c509b082"
+          test "$(git hash-object crates/pulsedag-wallet/src/bin/pulsedag-wallet-reconcile.rs)" = "2a39f58027378113ae7f83356d39fded97b66404"
+          test "$(git hash-object crates/pulsedag-wallet/src/pending.rs)" = "426aa85bdc318fa326b4f2caa48cf820e367d6bc"
+          test "$(git hash-object .github/temp-wallet-final-codex-fixes.py)" = "59448e4f7c75031c327f7e431d7dbd23b8a1c097"
+      - name: Apply exact-head Codex fixes
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 .github/temp-wallet-final-codex-fixes.py
+          cargo fmt --all
+          git diff --check
+          test "$(git diff --name-only)" = $'crates/pulsedag-rpc/src/handlers/release.rs\ncrates/pulsedag-wallet/src/bin/pulsedag-wallet-reconcile.rs\ncrates/pulsedag-wallet/src/pending.rs'
+      - name: Run focused and package regression gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked -p pulsedag-wallet --lib new_reservation_prunes_only_older_confirmed_records
+          cargo test --locked -p pulsedag-wallet --bin pulsedag-wallet-reconcile identity_requires_exact_network_capability_and_activity_endpoint
+          cargo test --locked -p pulsedag-rpc release_metadata_reports_keyless_signed_relay_surface
+          cargo test --locked -p pulsedag-wallet
+          cargo test --locked -p pulsedag-rpc
+          cargo clippy --locked --workspace --all-targets -- -D warnings
+          cargo fmt --all -- --check
+          git diff --check
+      - name: Publish fixes and remove temporaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm .github/temp-wallet-final-codex-fixes.py
+          rm .github/workflows/temp-wallet-final-codex-fixes.yml
+          git add crates/pulsedag-rpc/src/handlers/release.rs crates/pulsedag-wallet/src/bin/pulsedag-wallet-reconcile.rs crates/pulsedag-wallet/src/pending.rs .github/temp-wallet-final-codex-fixes.py .github/workflows/temp-wallet-final-codex-fixes.yml
+          test "$(git diff --cached --name-only)" = $'.github/temp-wallet-final-codex-fixes.py\n.github/workflows/temp-wallet-final-codex-fixes.yml\ncrates/pulsedag-rpc/src/handlers/release.rs\ncrates/pulsedag-wallet/src/bin/pulsedag-wallet-reconcile.rs\ncrates/pulsedag-wallet/src/pending.rs'
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'wallet: gate authoritative reconcile and prune terminal entries'
+          git push origin HEAD:wallet/v3-pending-utxo-reconcile
