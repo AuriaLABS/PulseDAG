@@ -29,7 +29,7 @@ jobs:
           set -euo pipefail
           test "$(git hash-object crates/pulsedag-wallet/src/bin/pulsedag-wallet.rs)" = "4e9a3525c73d9b5961e581963e7349b9f80e647b"
           test "$(git hash-object crates/pulsedag-rpc/src/handlers/address.rs)" = "1c01e1f353a0d2f706e36d2ecbef088ee7d0bdc4"
-          test "$(git hash-object .github/temp-wallet-p1-fix.py)" = "8f129cf8a574df18876e4747e93d5eb02eebb6d7"
+          test "$(git hash-object .github/temp-wallet-p1-fix.py)" = "748c6b919372e43208b0605ba0317dee08b97fa3"
       - name: Apply guarded P1 fixes
         shell: bash
         run: |
