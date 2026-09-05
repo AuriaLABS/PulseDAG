@@ -7,6 +7,7 @@ mod keystore_persistence;
 mod keystore_rotation;
 mod keystore_seed;
 mod pending;
+mod pending_persistence;
 mod plan;
 pub mod protocol_v2;
 mod safety;
@@ -45,6 +46,10 @@ pub use keystore_seed::{decrypt_wallet_seed, encrypt_wallet_seed};
 pub use pending::{
     WalletPendingError, WalletPendingJournal, WalletPendingState, WalletPendingTransaction,
     WALLET_PENDING_JOURNAL_FORMAT, WALLET_PENDING_JOURNAL_VERSION,
+};
+pub use pending_persistence::{
+    WalletPendingJournalSnapshot, WalletPendingJournalStore, WalletPendingPersistenceError,
+    WalletPendingPersistenceReport, WALLET_PENDING_JOURNAL_MAX_BYTES,
 };
 pub use plan::{
     build_deterministic_transaction_plan, build_deterministic_transaction_plan_with_safety,
