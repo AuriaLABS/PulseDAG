@@ -1,0 +1,61 @@
+name: temp wallet reconcile durable regression materializer
+
+on:
+  push:
+    branches:
+      - wallet/v3-pending-utxo-reconcile
+    paths:
+      - '.github/workflows/temp-wallet-reconcile-durable-tests.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  materialize:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: wallet/v3-pending-utxo-reconcile
+          fetch-depth: 1
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.91.0
+          components: clippy,rustfmt
+      - name: Guard exact inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git hash-object crates/pulsedag-wallet/src/bin/pulsedag-wallet-reconcile.rs)" = "f8af1a203bbef5d6406c79db4baa3c539fe4b719"
+          test "$(git hash-object .github/temp-reconcile-durable-tests.inc)" = "cc2ed699b41e14239364c8686db06b4ceccf5665"
+      - name: Add durable reconcile regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -c 'import pathlib; p=pathlib.Path("crates/pulsedag-wallet/src/bin/pulsedag-wallet-reconcile.rs"); t=p.read_text(); a="    #[test]"+chr(10)+"    fn public_transport_is_https_or_loopback_only() {"; i=pathlib.Path(".github/temp-reconcile-durable-tests.inc").read_text(); assert t.count(a)==1; p.write_text(t.replace(a, i+a))'
+          cargo fmt --all
+          git diff --check
+          test "$(git diff --name-only)" = "crates/pulsedag-wallet/src/bin/pulsedag-wallet-reconcile.rs"
+      - name: Run targeted gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked -p pulsedag-wallet --bin pulsedag-wallet-reconcile
+          cargo clippy --locked -p pulsedag-wallet --bin pulsedag-wallet-reconcile -- -D warnings -A clippy::uninlined-format-args
+          cargo fmt --all -- --check
+          git diff --check
+      - name: Publish source and remove temporaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm .github/workflows/temp-wallet-reconcile-durable-tests.yml
+          rm .github/temp-reconcile-durable-tests.inc
+          git add crates/pulsedag-wallet/src/bin/pulsedag-wallet-reconcile.rs .github/workflows/temp-wallet-reconcile-durable-tests.yml .github/temp-reconcile-durable-tests.inc
+          staged="$(git diff --cached --name-only | sort)"
+          expected="$(printf '%s\n' '.github/temp-reconcile-durable-tests.inc' '.github/workflows/temp-wallet-reconcile-durable-tests.yml' 'crates/pulsedag-wallet/src/bin/pulsedag-wallet-reconcile.rs' | sort)"
+          test "$staged" = "$expected"
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git commit -m 'test: cover durable reconcile restart semantics'
+          git push origin HEAD:wallet/v3-pending-utxo-reconcile
