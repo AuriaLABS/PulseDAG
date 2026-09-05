@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import re
 import sys
@@ -14,7 +15,13 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_MANIFEST = ROOT / "docs" / "V3_0_0_LAUNCH_MANIFEST.md"
-REQUIRED_NETWORK_FIELDS = {"chain_id", "genesis_hash", "signing_domain", "bootnode_identity_digest"}
+DEFAULT_LEDGER = ROOT / "docs" / "release" / "v3-evidence-ledger.json"
+REQUIRED_CANDIDATE_FIELDS = {
+    "release", "source_sha", "tree_sha", "monetary_policy_digest", "config_digest",
+}
+REQUIRED_NETWORK_FIELDS = {
+    "chain_id", "genesis_hash", "signing_domain", "bootnode_identity_digest", "config_digest",
+}
 REQUIRED_ASSERTIONS = {
     "network_identity_separation",
     "genesis_reproducibility",
@@ -62,13 +69,19 @@ def validate_manifest(manifest: dict[str, Any]) -> bool:
     }:
         fail("decision is not a recognized v3 launch decision")
     candidate = manifest["exact_candidate"]
-    if not isinstance(candidate, dict) or candidate.get("release") != "v3.0.0":
+    if not isinstance(candidate, dict) or REQUIRED_CANDIDATE_FIELDS - candidate.keys():
+        fail("exact_candidate is missing required identity fields")
+    if candidate["release"] != "v3.0.0":
         fail("exact_candidate.release must be v3.0.0")
+    if any(not isinstance(candidate[field], str) for field in REQUIRED_CANDIDATE_FIELDS):
+        fail("exact_candidate identity fields must be strings")
     networks = []
     for name in ("mainnet", "parallel_testnet"):
         network = manifest[name]
         if not isinstance(network, dict) or REQUIRED_NETWORK_FIELDS - network.keys():
             fail(f"{name} is missing required identity fields")
+        if any(not isinstance(network[field], str) for field in REQUIRED_NETWORK_FIELDS):
+            fail(f"{name} identity fields must be strings")
         networks.append(network)
     assertions = manifest["assertions"]
     if not isinstance(assertions, dict) or REQUIRED_ASSERTIONS - assertions.keys():
@@ -102,6 +115,46 @@ def validate_manifest(manifest: dict[str, Any]) -> bool:
     )
 
 
+def validate_ledger_binding(manifest: dict[str, Any], path: Path) -> None:
+    if not path.is_file():
+        fail("GO_V3_DUAL_LAUNCH requires an evidence ledger")
+    validator_path = ROOT / "scripts" / "release" / "validate_v3_evidence_ledger.py"
+    spec = importlib.util.spec_from_file_location("v3_evidence_ledger_validator", validator_path)
+    if spec is None or spec.loader is None:
+        fail("unable to load evidence ledger validator")
+    validator = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(validator)
+    try:
+        ledger = json.loads(path.read_text(encoding="utf-8"))
+        validator.validate_ledger(ledger)
+    except (OSError, json.JSONDecodeError, validator.LedgerError) as exc:
+        fail(f"invalid evidence ledger: {exc}")
+
+    candidate = manifest["exact_candidate"]
+    ledger_candidate = ledger["candidate"]
+    if ledger_candidate["source_sha"] != candidate["source_sha"]:
+        fail("evidence ledger source_sha does not match the manifest")
+    if ledger_candidate["tree_sha"] != candidate["tree_sha"]:
+        fail("evidence ledger tree_sha does not match the manifest")
+    if (
+        ledger_candidate["protocol_identities"]["monetary_policy_digest"]
+        != candidate["monetary_policy_digest"]
+    ):
+        fail("evidence ledger monetary policy identity does not match the manifest")
+
+    for name in ("mainnet", "parallel_testnet"):
+        manifest_network = manifest[name]
+        ledger_network = ledger["networks"][name]
+        for field in REQUIRED_NETWORK_FIELDS:
+            if ledger_network[field] != manifest_network[field]:
+                fail(f"evidence ledger {name}.{field} does not match the manifest")
+
+    if candidate["config_digest"] not in {
+        config["sha256"] for config in ledger["configs"]
+    }:
+        fail("evidence ledger does not declare the manifest config identity")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("manifest", nargs="?", type=Path, default=DEFAULT_MANIFEST)
@@ -114,7 +167,13 @@ def main() -> int:
                 "manifest_version": 1,
                 "launch_state": "FROZEN",
                 "decision": "GO_V3_DUAL_LAUNCH",
-                "exact_candidate": {"release": "v3.0.0", "source_sha": "a", "tree_sha": "b"},
+                "exact_candidate": {
+                    "release": "v3.0.0",
+                    "source_sha": "a",
+                    "tree_sha": "b",
+                    "monetary_policy_digest": "policy",
+                    "config_digest": "config",
+                },
                 "mainnet": {field: f"main-{field}" for field in REQUIRED_NETWORK_FIELDS},
                 "parallel_testnet": {field: f"test-{field}" for field in REQUIRED_NETWORK_FIELDS},
                 "assertions": {key: "PASS" for key in REQUIRED_ASSERTIONS},
@@ -133,7 +192,10 @@ def main() -> int:
                 sample_path = Path(directory) / "manifest.md"
                 sample_path.write_text(f"```json\n{json.dumps(sample)}\n```\n", encoding="utf-8")
                 load_manifest(sample_path)
-        ready = validate_manifest(load_manifest(args.manifest))
+        manifest = load_manifest(args.manifest)
+        ready = validate_manifest(manifest)
+        if manifest["decision"] == "GO_V3_DUAL_LAUNCH":
+            validate_ledger_binding(manifest, DEFAULT_LEDGER)
     except (ManifestError, OSError, json.JSONDecodeError) as exc:
         print(f"v3 network freeze validation failed: {exc}", file=sys.stderr)
         return 1

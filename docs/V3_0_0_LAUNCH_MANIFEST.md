@@ -26,12 +26,14 @@ python3 scripts/validate_v3_0_0_network_freeze.py
   "mainnet": {
     "chain_id": "TBD",
     "genesis_hash": "TBD",
+    "config_digest": "TBD",
     "signing_domain": "TBD",
     "bootnode_identity_digest": "TBD"
   },
   "parallel_testnet": {
     "chain_id": "TBD",
     "genesis_hash": "TBD",
+    "config_digest": "TBD",
     "signing_domain": "TBD",
     "bootnode_identity_digest": "TBD"
   },
