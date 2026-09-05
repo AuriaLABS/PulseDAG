@@ -11,20 +11,20 @@ All states except `confirmed` retain the selected-outpoint reservation. Generic 
 ## Transaction flow
 
 1. `tx-preview` builds against the complete bounded UTXO snapshot so spend-all classification is unchanged, then checks the selected outpoints against the pending journal. Reserved inputs are not silently filtered before planning.
-2. `tx-sign` acquires the pending journal before signing and holds that lock through deterministic signing. A different active pending tx using any selected outpoint is rejected. If the same deterministic plan already produced the same final txid and an exact `signed` reservation was durably saved before the prior invocation failed to return its envelope, rerunning `tx-sign` may recover that same signed envelope without creating a second reservation generation. Recovery is refused once that record has advanced past `signed`, and any sender/outpoint mismatch fails closed.
+2. `tx-sign` acquires the pending journal before signing and holds that lock through deterministic signing and durable reservation. Before cryptographic signing it rejects any overlapping active reservation whose stored state/sender/outpoints are incompatible with exact recovery. A `signed` record with the same sender and exact selected outpoints may be treated only as a recovery candidate; the plan is then deterministically re-signed under the same lock and the resulting final txid must exactly match the stored txid. A mismatch fails closed, later states cannot be reopened, and an exact match re-emits the same signed envelope without creating a second reservation generation.
 3. `tx-broadcast` completes local and remote preflight first. It verifies the signed envelope, relay origin, `/release` network identity, relay capability/version and canonical submit surface, and prepares the exact request body before crossing the submission boundary.
 4. Immediately before the submit POST, `tx-broadcast` durably moves the exact journal record from `signed` to `submission_started`. That transition is intentionally non-idempotent, so a restart cannot blindly resubmit an already-started attempt.
 5. Explicit relay acceptance records `relay_accepted`. Explicit generic relay rejection records `relay_rejected` but retains the reservation. Any transport, response-read or malformed-response failure after submission begins records `submission_outcome_unknown` and retains the reservation.
 
 ## Machine-readable reserved-input conflict
 
-If `tx-preview` or `tx-sign` selects an outpoint already reserved by a different active pending transaction, the command exits non-zero and emits one JSON line to stderr:
+If `tx-preview` or `tx-sign` selects an outpoint already reserved by a different or otherwise incompatible active pending transaction, the command exits non-zero and emits one JSON line to stderr:
 
 ```json
 {"ok":false,"error":{"code":"PENDING_UTXO_RESERVED","message":"selected outpoint is reserved by a pending transaction","txid":"<canonical-lowercase-32-byte-hex>","index":0}}
 ```
 
-`txid` and `index` identify the reserved outpoint. Exact `signed` recovery of the same deterministic final txid is not treated as a conflicting reservation. Other CLI failures retain the existing human-readable stderr format.
+`txid` and `index` identify the reserved outpoint. An exact `signed` recovery candidate with the same sender/outpoints is not treated as a pre-sign conflict, but recovery succeeds only if deterministic re-signing reproduces the exact stored final txid. Other CLI failures retain the existing human-readable stderr format.
 
 ## Stable states
 
@@ -65,6 +65,6 @@ The reconcile JSON result includes `network_profile`, `chain_id`, `txid`, `from`
 
 The journal store uses an advisory cross-process lock, immutable generational snapshots, bounded payloads, SHA-256-bound commit markers, stale-generation detection, and fail-closed network validation. An orphan snapshot without a commit marker is ignored; a tampered committed snapshot fails digest validation.
 
-Regression coverage includes restart persistence, concurrent-open rejection, tamper detection, stale generation, cross-network rejection, reservation conflicts, exact `signed` recovery after a failed result handoff, submission-started/unknown/accepted/rejected/mempool/confirmed transitions, retained-history absence, side-DAG/replay-loser non-confirmation, durable reconciliation across restart, and confirmed release across restart.
+Regression coverage includes restart persistence, concurrent-open rejection, tamper detection, stale generation, cross-network rejection, pre-sign incompatible-reservation rejection, exact `signed` recovery after a failed result handoff, submission-started/unknown/accepted/rejected/mempool/confirmed transitions, retained-history absence, side-DAG/replay-loser non-confirmation, durable reconciliation across restart, and confirmed release across restart.
 
 No reconciliation path automatically rebroadcasts a transaction. No private key, mnemonic, password, decrypted seed, signing session, acknowledgement override, or custody RPC is introduced by this flow.
