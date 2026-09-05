@@ -2,7 +2,11 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use pulsedag_core::ProtocolActivationIdentity;
 
-use super::fast_sync_carrier_v1::{FastSyncCapabilitiesV1, FastSyncWireErrorV1, FastSyncWireV1};
+use super::fast_sync_carrier_v1::{
+    attach_fast_sync_carrier_v1, decode_network_message_with_fast_sync_for_peer_v1,
+    FastSyncCapabilitiesV1, FastSyncCarrierErrorV1, FastSyncCarrierV1, FastSyncWireErrorV1,
+    FastSyncWireV1,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FastSyncRuntimeSessionErrorV1 {
@@ -17,6 +21,24 @@ pub enum FastSyncRuntimeSessionErrorV1 {
 impl From<FastSyncWireErrorV1> for FastSyncRuntimeSessionErrorV1 {
     fn from(value: FastSyncWireErrorV1) -> Self {
         Self::Wire(value)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FastSyncRuntimeTransportErrorV1 {
+    Session(FastSyncRuntimeSessionErrorV1),
+    Carrier(FastSyncCarrierErrorV1),
+}
+
+impl From<FastSyncRuntimeSessionErrorV1> for FastSyncRuntimeTransportErrorV1 {
+    fn from(value: FastSyncRuntimeSessionErrorV1) -> Self {
+        Self::Session(value)
+    }
+}
+
+impl From<FastSyncCarrierErrorV1> for FastSyncRuntimeTransportErrorV1 {
+    fn from(value: FastSyncCarrierErrorV1) -> Self {
+        Self::Carrier(value)
     }
 }
 
@@ -165,12 +187,54 @@ impl FastSyncRuntimeSessionBookV1 {
     }
 }
 
+pub fn encode_authorized_fast_sync_tip_v1(
+    encoded_tips: &[u8],
+    expected: &ProtocolActivationIdentity,
+    sessions: &FastSyncRuntimeSessionBookV1,
+    peer_id: &str,
+    protocol_route_authorized: bool,
+    wire: &FastSyncWireV1,
+) -> Result<Vec<u8>, FastSyncRuntimeTransportErrorV1> {
+    sessions.validate_outbound(expected, peer_id, protocol_route_authorized, wire)?;
+    Ok(attach_fast_sync_carrier_v1(
+        encoded_tips,
+        &FastSyncCarrierV1 {
+            target_peer_id: peer_id.to_string(),
+            wire: wire.clone(),
+        },
+    )?)
+}
+
+pub fn decode_authorized_fast_sync_tip_v1(
+    bytes: &[u8],
+    source_peer: Option<&str>,
+    local_peer_id: &str,
+    expected: &ProtocolActivationIdentity,
+    sessions: &mut FastSyncRuntimeSessionBookV1,
+    protocol_route_authorized: bool,
+) -> Result<Option<(String, FastSyncWireV1)>, FastSyncRuntimeTransportErrorV1> {
+    let Some(peer_id) = source_peer else {
+        return Ok(None);
+    };
+    if !protocol_route_authorized {
+        return Ok(None);
+    }
+    let decoded = decode_network_message_with_fast_sync_for_peer_v1(bytes, local_peer_id)?;
+    let Some(carrier) = decoded.fast_sync else {
+        return Ok(None);
+    };
+    sessions.note_inbound(expected, peer_id, &carrier.wire)?;
+    Ok(Some((peer_id.to_string(), carrier.wire)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::messages::NetworkMessage;
     use pulsedag_core::GHOSTDAG_V1_ORDERING_VERSION;
 
     const CHAIN_ID: &str = "fast-sync-runtime-session-testnet";
+    const LOCAL_PEER: &str = "peer-fast-sync-local";
     const PEER: &str = "peer-fast-sync-runtime";
 
     fn identity() -> ProtocolActivationIdentity {
@@ -195,6 +259,15 @@ mod tests {
             max_chunk_bytes: 24 * 1024,
             max_commitments_per_page: 256,
         }
+    }
+
+    fn tips_bytes() -> Vec<u8> {
+        serde_json::to_vec(&NetworkMessage::Tips {
+            chain_id: CHAIN_ID.to_string(),
+            tips: Vec::new(),
+            inventory: None,
+        })
+        .unwrap()
     }
 
     fn summary_request() -> FastSyncWireV1 {
@@ -289,5 +362,93 @@ mod tests {
                 &FastSyncWireV1::Capabilities(forged),
             )
             .is_err());
+    }
+
+    #[test]
+    fn outbound_live_carrier_requires_protocol_route_before_encoding() {
+        let expected = identity();
+        let mut book = FastSyncRuntimeSessionBookV1::default();
+        book.configure_local(&expected, capabilities()).unwrap();
+        let probe = FastSyncWireV1::CapabilityProbe {
+            chain_id: CHAIN_ID.to_string(),
+        };
+
+        assert!(encode_authorized_fast_sync_tip_v1(
+            &tips_bytes(),
+            &expected,
+            &book,
+            PEER,
+            false,
+            &probe,
+        )
+        .is_err());
+        let encoded = encode_authorized_fast_sync_tip_v1(
+            &tips_bytes(),
+            &expected,
+            &book,
+            PEER,
+            true,
+            &probe,
+        )
+        .unwrap();
+        let decoded = decode_network_message_with_fast_sync_for_peer_v1(&encoded, PEER).unwrap();
+        assert_eq!(decoded.fast_sync.unwrap().wire, probe);
+    }
+
+    #[test]
+    fn inbound_live_capability_surface_is_checked_before_session_admission() {
+        let expected = identity();
+        let mut receiver = FastSyncRuntimeSessionBookV1::default();
+        receiver.configure_local(&expected, capabilities()).unwrap();
+        let mut incompatible = capabilities();
+        incompatible.manifest_version += 1;
+        let encoded = attach_fast_sync_carrier_v1(
+            &tips_bytes(),
+            &FastSyncCarrierV1 {
+                target_peer_id: LOCAL_PEER.to_string(),
+                wire: FastSyncWireV1::Capabilities(incompatible),
+            },
+        )
+        .unwrap();
+
+        assert!(decode_authorized_fast_sync_tip_v1(
+            &encoded,
+            Some(PEER),
+            LOCAL_PEER,
+            &expected,
+            &mut receiver,
+            true,
+        )
+        .is_err());
+        assert!(!receiver.peer_session_authorized(PEER));
+    }
+
+    #[test]
+    fn inbound_other_target_is_ignored_without_mutating_session_state() {
+        let expected = identity();
+        let mut receiver = FastSyncRuntimeSessionBookV1::default();
+        receiver.configure_local(&expected, capabilities()).unwrap();
+        let encoded = attach_fast_sync_carrier_v1(
+            &tips_bytes(),
+            &FastSyncCarrierV1 {
+                target_peer_id: "another-peer".to_string(),
+                wire: FastSyncWireV1::CapabilityProbe {
+                    chain_id: CHAIN_ID.to_string(),
+                },
+            },
+        )
+        .unwrap();
+
+        assert!(decode_authorized_fast_sync_tip_v1(
+            &encoded,
+            Some(PEER),
+            LOCAL_PEER,
+            &expected,
+            &mut receiver,
+            true,
+        )
+        .unwrap()
+        .is_none());
+        assert!(!receiver.peer_session_authorized(PEER));
     }
 }
