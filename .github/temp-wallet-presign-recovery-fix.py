@@ -142,92 +142,95 @@ new_run = r'''    let pending_store = WalletPendingJournalStore::try_acquire(&ar
 assert t.count(old_run) == 1
 t = t.replace(old_run, new_run)
 
-marker = r'''    #[test]
-    fn machine_readable_pending_reserved_error_is_stable() {
-'''
-assert t.count(marker) == 1
-
-tests = r'''    #[test]
-    fn tx_sign_precheck_rejects_different_active_reservation_before_signing() {
+old_test = r'''    #[test]
+    fn tx_sign_recovery_allows_exact_signed_record_and_rejects_other_active_tx() {
         let network = WalletNetworkIdentity::new("public-testnet", "pulsedag-public-testnet")
             .expect("network");
-        let mut journal = WalletPendingJournal::new(network).expect("journal");
-        let selected = pulsedag_wallet::SelectedUtxo {
+        let from = pulsedag_core::address_from_public_key(&"ab".repeat(32));
+        let selected = [pulsedag_wallet::SelectedUtxo {
             outpoint: OutPoint {
                 txid: "11".repeat(32),
-                index: 0,
+                index: 3,
             },
-            amount: 10,
-            address: "pdag1source".to_string(),
-        };
-        journal
-            .reserve_signed(
-                "22".repeat(32),
-                "pdag1source",
-                std::slice::from_ref(&selected),
-            )
-            .expect("reserve different tx");
-
-        let error = precheck_sign_reservation(
-            &journal,
-            "pdag1source",
-            std::slice::from_ref(&selected),
-        )
-        .expect_err("different active reservation must fail before signing");
-        let pending = error
-            .downcast_ref::<WalletPendingError>()
-            .expect("pending error");
-        assert!(matches!(
-            pending,
-            WalletPendingError::ReservedOutpoint { txid, index }
-                if txid == &"11".repeat(32) && *index == 0
-        ));
-    }
-
-    #[test]
-    fn tx_sign_precheck_allows_only_exact_signed_recovery_candidate() {
-        let network = WalletNetworkIdentity::new("public-testnet", "pulsedag-public-testnet")
-            .expect("network");
+            amount: 100,
+        }];
+        let original_txid = "aa".repeat(32);
         let mut journal = WalletPendingJournal::new(network).expect("journal");
-        let selected = pulsedag_wallet::SelectedUtxo {
-            outpoint: OutPoint {
-                txid: "33".repeat(32),
-                index: 1,
-            },
-            amount: 20,
-            address: "pdag1source".to_string(),
-        };
-        let final_txid = "44".repeat(32);
-        journal
-            .reserve_signed(
-                final_txid.clone(),
-                "pdag1source",
-                std::slice::from_ref(&selected),
-            )
-            .expect("reserve recovery tx");
+        assert!(journal
+            .reserve_signed(&original_txid, from.clone(), &selected)
+            .expect("first reservation"));
 
-        assert_eq!(
-            precheck_sign_reservation(
-                &journal,
-                "pdag1source",
-                std::slice::from_ref(&selected),
-            )
-            .expect("exact signed recovery candidate"),
-            Some(final_txid)
+        assert!(
+            ensure_sign_reservation_recovery(&journal, &original_txid, &from, &selected,).is_ok()
         );
+        assert!(!journal
+            .reserve_signed(&original_txid, from.clone(), &selected)
+            .expect("exact recovery is idempotent"));
+
+        let different_txid = "bb".repeat(32);
+        let conflict =
+            ensure_sign_reservation_recovery(&journal, &different_txid, &from, &selected)
+                .expect_err("different tx must conflict");
+        let encoded = machine_readable_pending_error(conflict.as_ref())
+            .expect("conflict remains machine-readable");
+        let value: serde_json::Value = serde_json::from_str(&encoded).expect("valid JSON");
+        assert_eq!(value["error"]["code"], "PENDING_UTXO_RESERVED");
+        assert_eq!(value["error"]["txid"], selected[0].outpoint.txid);
+        assert_eq!(value["error"]["index"], 3);
 
         journal
-            .mark_submission_started(&"44".repeat(32))
-            .expect("advance state");
-        assert!(precheck_sign_reservation(
-            &journal,
-            "pdag1source",
-            std::slice::from_ref(&selected),
-        )
-        .is_err());
+            .mark_submission_started(&original_txid)
+            .expect("submission started");
+        assert!(
+            ensure_sign_reservation_recovery(&journal, &original_txid, &from, &selected,).is_err()
+        );
     }
-
 '''
 
-t = t.replace(marker, tests + marker)
+new_test = r'''    #[test]
+    fn tx_sign_precheck_allows_exact_signed_candidate_and_rejects_incompatible_reservation() {
+        let network = WalletNetworkIdentity::new("public-testnet", "pulsedag-public-testnet")
+            .expect("network");
+        let from = pulsedag_core::address_from_public_key(&"ab".repeat(32));
+        let other_from = pulsedag_core::address_from_public_key(&"cd".repeat(32));
+        let selected = [pulsedag_wallet::SelectedUtxo {
+            outpoint: OutPoint {
+                txid: "11".repeat(32),
+                index: 3,
+            },
+            amount: 100,
+        }];
+        let original_txid = "aa".repeat(32);
+        let mut journal = WalletPendingJournal::new(network).expect("journal");
+        assert!(journal
+            .reserve_signed(&original_txid, from.clone(), &selected)
+            .expect("first reservation"));
+
+        assert_eq!(
+            precheck_sign_reservation(&journal, &from, &selected)
+                .expect("compatible signed recovery candidate"),
+            Some(original_txid.clone())
+        );
+        assert!(!journal
+            .reserve_signed(&original_txid, from.clone(), &selected)
+            .expect("exact recovery is idempotent"));
+
+        let conflict = precheck_sign_reservation(&journal, &other_from, &selected)
+            .expect_err("incompatible active reservation must fail before signing");
+        let encoded = machine_readable_pending_error(conflict.as_ref())
+            .expect("conflict remains machine-readable");
+        let value: serde_json::Value = serde_json::from_str(&encoded).expect("valid JSON");
+        assert_eq!(value["error"]["code"], "PENDING_UTXO_RESERVED");
+        assert_eq!(value["error"]["txid"], selected[0].outpoint.txid);
+        assert_eq!(value["error"]["index"], 3);
+
+        journal
+            .mark_submission_started(&original_txid)
+            .expect("submission started");
+        assert!(precheck_sign_reservation(&journal, &from, &selected).is_err());
+    }
+'''
+
+assert t.count(old_test) == 1
+t = t.replace(old_test, new_test)
 p.write_text(t)
