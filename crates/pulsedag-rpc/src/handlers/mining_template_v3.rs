@@ -1,14 +1,9 @@
-use std::{
-    sync::{Mutex, OnceLock},
-    time::{SystemTime, UNIX_EPOCH},
-};
+use std::sync::{Mutex, OnceLock};
 
 use crate::api::{ApiResponse, GetBlockTemplateRequest, RpcStateLike};
 use axum::{extract::State, Json};
-use serde::Deserialize;
 use serde_json::{json, Value};
 use sha3::{Digest, Sha3_256};
-use tokio::time::{sleep, Duration, Instant};
 
 pub(crate) use super::mining_template_protocol::{
     current_template_state, load_template, template_freshness_window,
@@ -16,18 +11,8 @@ pub(crate) use super::mining_template_protocol::{
 };
 
 pub(crate) const MINING_PROTOCOL_VERSION: u32 = 3;
-const MINING_V3_MAX_LONG_POLL_MS: u64 = 2_000;
-const MINING_V3_POLL_INTERVAL_MS: u64 = 50;
-const MINING_V3_NOTIFICATION_HISTORY_BOUND: usize = 256;
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct MiningTemplateV3Request {
-    pub miner_address: String,
-    #[serde(default)]
-    pub after_work_sequence: Option<u64>,
-    #[serde(default)]
-    pub wait_ms: Option<u64>,
-}
+const MINING_V3_NOTIFICATION_POLL_AFTER_MS: u64 = 250;
+const MINING_V3_MAX_OUTSTANDING_NOTIFICATION_SNAPSHOTS: usize = 1;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct WorkSnapshot {
@@ -59,13 +44,6 @@ struct WorkTracker {
 fn work_tracker() -> &'static Mutex<WorkTracker> {
     static TRACKER: OnceLock<Mutex<WorkTracker>> = OnceLock::new();
     TRACKER.get_or_init(|| Mutex::new(WorkTracker::default()))
-}
-
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_millis().min(u128::from(u64::MAX)) as u64)
-        .unwrap_or(0)
 }
 
 fn work_token(snapshot: &WorkSnapshot) -> String {
@@ -149,28 +127,6 @@ async fn snapshot_work<S: RpcStateLike>(state: &S) -> WorkSnapshot {
     }
 }
 
-async fn bounded_work_observation<S: RpcStateLike>(
-    state: &S,
-    after_work_sequence: Option<u64>,
-    wait_ms: Option<u64>,
-) -> WorkObservation {
-    let mut observation = observe_work(snapshot_work(state).await);
-    let wait_ms = wait_ms.unwrap_or(0).min(MINING_V3_MAX_LONG_POLL_MS);
-    if wait_ms == 0 || after_work_sequence != Some(observation.sequence) {
-        return observation;
-    }
-
-    let deadline = Instant::now() + Duration::from_millis(wait_ms);
-    while Instant::now() < deadline {
-        sleep(Duration::from_millis(MINING_V3_POLL_INTERVAL_MS)).await;
-        observation = observe_work(snapshot_work(state).await);
-        if after_work_sequence != Some(observation.sequence) {
-            break;
-        }
-    }
-    observation
-}
-
 fn decorate_template_data(mut data: Value, observation: &WorkObservation) -> Result<Value, String> {
     let object = data
         .as_object_mut()
@@ -196,12 +152,10 @@ fn decorate_template_data(mut data: Value, observation: &WorkObservation) -> Res
     object.insert(
         "new_work_notification".to_string(),
         json!({
-            "mode": "bounded_long_poll",
-            "after_field": "after_work_sequence",
-            "wait_field": "wait_ms",
-            "max_wait_ms": MINING_V3_MAX_LONG_POLL_MS,
-            "poll_interval_ms": MINING_V3_POLL_INTERVAL_MS,
-            "history_bound": MINING_V3_NOTIFICATION_HISTORY_BOUND
+            "mode": "bounded_poll",
+            "poll_after_ms": MINING_V3_NOTIFICATION_POLL_AFTER_MS,
+            "max_outstanding_snapshots": MINING_V3_MAX_OUTSTANDING_NOTIFICATION_SNAPSHOTS,
+            "semantics": "each template response carries only the latest work revision; no subscriber queue is retained"
         }),
     );
     object.insert(
@@ -230,7 +184,7 @@ fn decorate_template_data(mut data: Value, observation: &WorkObservation) -> Res
         json!({
             "max_inflight_submits": super::mining_submit::MINING_V3_MAX_INFLIGHT_SUBMITS,
             "max_reconciliation_entries": super::mining_submit::MINING_V3_MAX_RECONCILIATION_ENTRIES,
-            "max_long_poll_ms": MINING_V3_MAX_LONG_POLL_MS
+            "max_outstanding_notification_snapshots": MINING_V3_MAX_OUTSTANDING_NOTIFICATION_SNAPSHOTS
         }),
     );
     object.insert(
@@ -248,15 +202,12 @@ fn decorate_template_data(mut data: Value, observation: &WorkObservation) -> Res
 
 pub async fn post_mining_template<S: RpcStateLike>(
     State(state): State<S>,
-    Json(req): Json<MiningTemplateV3Request>,
+    Json(req): Json<GetBlockTemplateRequest>,
 ) -> Json<ApiResponse<Value>> {
-    let observation =
-        bounded_work_observation(&state, req.after_work_sequence, req.wait_ms).await;
+    let observation = observe_work(snapshot_work(&state).await);
     let response = super::mining_template_protocol::post_mining_template(
         State(state.clone()),
-        Json(GetBlockTemplateRequest {
-            miner_address: req.miner_address,
-        }),
+        Json(req),
     )
     .await;
     let ApiResponse {
@@ -297,7 +248,11 @@ pub async fn post_mining_template<S: RpcStateLike>(
         .and_then(Value::as_str)
         .unwrap_or("-")
         .to_string();
-    super::mining_submit::register_v3_job(external_template_id.clone(), job_id.clone(), now_ms());
+    super::mining_submit::register_v3_job(
+        external_template_id.clone(),
+        job_id.clone(),
+        crate::api::unix_now_ms(),
+    );
     let _ = state.storage().append_runtime_event(
         "info",
         "external_mining_v3_job_issued",
@@ -324,12 +279,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn task37_legacy_template_request_shape_remains_compatible() {
-        let request: MiningTemplateV3Request =
-            serde_json::from_value(json!({"miner_address": "pulse1miner"})).unwrap();
+    fn task37_legacy_template_request_type_remains_the_public_handler_input() {
+        let request = GetBlockTemplateRequest {
+            miner_address: "pulse1miner".to_string(),
+        };
         assert_eq!(request.miner_address, "pulse1miner");
-        assert_eq!(request.after_work_sequence, None);
-        assert_eq!(request.wait_ms, None);
     }
 
     #[test]
@@ -376,8 +330,8 @@ mod tests {
     }
 
     #[test]
-    fn task37_long_poll_is_strictly_bounded() {
-        assert_eq!(MINING_V3_MAX_LONG_POLL_MS, 2_000);
-        assert!(MINING_V3_NOTIFICATION_HISTORY_BOUND <= 256);
+    fn task37_new_work_notifications_are_strictly_bounded() {
+        assert_eq!(MINING_V3_MAX_OUTSTANDING_NOTIFICATION_SNAPSHOTS, 1);
+        assert!(MINING_V3_NOTIFICATION_POLL_AFTER_MS > 0);
     }
 }
