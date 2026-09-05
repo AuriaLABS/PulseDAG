@@ -720,14 +720,6 @@ pub async fn fetch_address_utxos(
     })
 }
 
-pub async fn broadcast_signed(
-    relay_url: &str,
-    signed: SignedBroadcastInput,
-) -> Result<BroadcastOutput, RelayClientError> {
-    let prepared = prepare_broadcast(relay_url, &signed).await?;
-    submit_prepared(prepared).await
-}
-
 #[cfg(test)]
 mod tests {
     use pulsedag_core::types::{OutPoint, TxInput, TxOutput};

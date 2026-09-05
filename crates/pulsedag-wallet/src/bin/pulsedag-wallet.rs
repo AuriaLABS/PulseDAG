@@ -11,19 +11,20 @@ use std::{
     time::Duration,
 };
 
-use pulsedag_core::types::Utxo;
+use pulsedag_core::types::{OutPoint, Utxo};
 use pulsedag_wallet::{
     build_deterministic_transaction_plan_with_safety, derive_wallet_key_from_seed,
     encrypt_wallet_seed, wallet_seed_from_mnemonic, SecretString, WalletDerivationBranch,
     WalletKeystoreFile, WalletNetworkContext, WalletNetworkIdentity, WalletNoncePolicy,
-    WalletPendingJournalStore, WalletPlanSigner, WalletPlanSigningSessionExt, WalletReviewSummary,
-    WalletSafetyAcknowledgements, WalletSession, WalletSpendPolicy, WalletTransactionIntent,
-    WalletTransactionPlan, WalletUnlockPolicy, WalletWatchOnly, WalletWatchOnlyBranch,
-    WalletWatchOnlyManifest, WalletWatchOnlyScope, WalletWatchOnlySessionExt,
+    WalletPendingJournal, WalletPendingJournalStore, WalletPendingState, WalletPlanSigner,
+    WalletPlanSigningSessionExt, WalletReviewSummary, WalletSafetyAcknowledgements, WalletSession,
+    WalletSpendPolicy, WalletTransactionIntent, WalletTransactionPlan, WalletUnlockPolicy,
+    WalletWatchOnly, WalletWatchOnlyBranch, WalletWatchOnlyManifest, WalletWatchOnlyScope,
+    WalletWatchOnlySessionExt,
 };
 use pulsedag_wallet_relay::{
-    broadcast_signed, fetch_address_balance, fetch_address_utxos, parse_signed_broadcast,
-    AddressBalanceOutput, AddressUtxosOutput, RelayEnvelope,
+    fetch_address_balance, fetch_address_utxos, parse_signed_broadcast, prepare_broadcast,
+    submit_prepared, AddressBalanceOutput, AddressUtxosOutput, BroadcastOutput, RelayEnvelope,
 };
 use serde::{Deserialize, Serialize};
 
@@ -118,6 +119,7 @@ struct TxSignArgs {
 #[derive(Debug)]
 struct TxBroadcastArgs {
     signed: PathBuf,
+    pending_journal: PathBuf,
     relay: String,
 }
 
@@ -450,9 +452,10 @@ fn parse_command_from(args: impl Iterator<Item = String>) -> CliResult<Command> 
             }))
         }
         "tx-broadcast" => {
-            reject_unknown(&flags, &["signed", "relay"])?;
+            reject_unknown(&flags, &["signed", "pending-journal", "relay"])?;
             Ok(Command::TxBroadcast(TxBroadcastArgs {
                 signed: PathBuf::from(required(&flags, "signed")?),
+                pending_journal: PathBuf::from(required(&flags, "pending-journal")?),
                 relay: required(&flags, "relay")?,
             }))
         }
@@ -825,6 +828,98 @@ fn run_tx_sign(args: TxSignArgs, password: &SecretString) -> CliResult<TxSignOut
     })
 }
 
+fn ensure_broadcast_reservation_binding(
+    journal: &WalletPendingJournal,
+    final_txid: &str,
+    from: &str,
+    input_outpoints: &[OutPoint],
+) -> CliResult<()> {
+    let entry = journal
+        .entry(final_txid)
+        .ok_or_else(|| invalid_input("signed transaction has no pending reservation"))?;
+    if entry.state != WalletPendingState::Signed {
+        return Err(invalid_input(format!(
+            "pending transaction is not in signed state: {}",
+            entry.state.as_str()
+        ))
+        .into());
+    }
+    if entry.from != from {
+        return Err(
+            invalid_input("signed transaction sender does not match pending reservation").into(),
+        );
+    }
+    if entry.selected_outpoints != input_outpoints {
+        return Err(
+            invalid_input("signed transaction inputs do not match pending reservation").into(),
+        );
+    }
+    Ok(())
+}
+
+async fn run_tx_broadcast(args: TxBroadcastArgs) -> CliResult<BroadcastOutput> {
+    let bytes = read_bounded_json(&args.signed, "signed transaction envelope")?;
+    let signed = parse_signed_broadcast(&bytes)?;
+
+    // Complete all local/remote preflight before crossing the durable submit boundary.
+    let prepared = prepare_broadcast(&args.relay, &signed).await?;
+    let input_outpoints = signed
+        .relay
+        .transaction
+        .inputs
+        .iter()
+        .map(|input| input.previous_output.clone())
+        .collect::<Vec<_>>();
+
+    let pending_store = WalletPendingJournalStore::try_acquire(&args.pending_journal)?;
+    let mut snapshot = pending_store.load_or_new(&signed.network)?;
+    ensure_broadcast_reservation_binding(
+        &snapshot.journal,
+        &signed.final_txid,
+        &signed.review.from,
+        &input_outpoints,
+    )?;
+    snapshot
+        .journal
+        .mark_submission_started(&signed.final_txid)?;
+    let report = pending_store.save_next(snapshot.generation, &snapshot.journal)?;
+    snapshot.generation = report.generation;
+
+    match submit_prepared(prepared).await {
+        Ok(output) if output.accepted => {
+            snapshot.journal.mark_relay_accepted(&signed.final_txid)?;
+            pending_store.save_next(snapshot.generation, &snapshot.journal)?;
+            Ok(output)
+        }
+        Ok(output) => match (
+            output.rejection_code.as_deref(),
+            output.rejection_message.as_deref(),
+        ) {
+            (Some(code), Some(message)) => {
+                snapshot
+                    .journal
+                    .mark_relay_rejected(&signed.final_txid, code, message)?;
+                pending_store.save_next(snapshot.generation, &snapshot.journal)?;
+                Ok(output)
+            }
+            _ => {
+                snapshot
+                    .journal
+                    .mark_submission_outcome_unknown(&signed.final_txid)?;
+                pending_store.save_next(snapshot.generation, &snapshot.journal)?;
+                Err(invalid_input("relay rejection response is missing rejection detail").into())
+            }
+        },
+        Err(error) => {
+            snapshot
+                .journal
+                .mark_submission_outcome_unknown(&signed.final_txid)?;
+            pending_store.save_next(snapshot.generation, &snapshot.journal)?;
+            Err(error.into())
+        }
+    }
+}
+
 fn write_json<T: Serialize>(value: &T) -> CliResult<()> {
     let stdout = io::stdout();
     let mut out = stdout.lock();
@@ -862,11 +957,7 @@ async fn run() -> CliResult<()> {
             let password = read_password_from_stdin()?;
             write_json(&run_tx_sign(args, &password)?)
         }
-        Command::TxBroadcast(args) => {
-            let bytes = read_bounded_json(&args.signed, "signed transaction envelope")?;
-            let signed = parse_signed_broadcast(&bytes)?;
-            write_json(&broadcast_signed(&args.relay, signed).await?)
-        }
+        Command::TxBroadcast(args) => write_json(&run_tx_broadcast(args).await?),
     }
 }
 
@@ -968,6 +1059,8 @@ mod tests {
             "tx-broadcast",
             "--signed",
             "signed.json",
+            "--pending-journal",
+            "pending",
             "--relay",
             "https://relay.example",
             "--password",
@@ -1054,12 +1147,86 @@ mod tests {
                 "tx-broadcast",
                 "--signed",
                 "signed.json",
+                "--pending-journal",
+                "pending",
                 "--relay",
                 "https://relay.example"
             ]))
             .unwrap(),
             Command::TxBroadcast(_)
         ));
+    }
+
+    #[test]
+    fn tx_broadcast_requires_unique_pending_journal() {
+        assert!(parse_command_from(args(&[
+            "tx-broadcast",
+            "--signed",
+            "signed.json",
+            "--relay",
+            "https://relay.example"
+        ]))
+        .is_err());
+        assert!(parse_command_from(args(&[
+            "tx-broadcast",
+            "--signed",
+            "signed.json",
+            "--pending-journal",
+            "pending",
+            "--pending-journal",
+            "other-pending",
+            "--relay",
+            "https://relay.example"
+        ]))
+        .is_err());
+    }
+
+    #[test]
+    fn broadcast_reservation_binding_requires_exact_signed_entry() {
+        let network = WalletNetworkIdentity::new("public-testnet", "pulsedag-public-testnet")
+            .expect("network");
+        let mut journal = WalletPendingJournal::new(network).expect("journal");
+        let from = pulsedag_core::address_from_public_key(&"ab".repeat(32));
+        let selected = [pulsedag_wallet::SelectedUtxo {
+            outpoint: OutPoint {
+                txid: "11".repeat(32),
+                index: 0,
+            },
+            amount: 100,
+        }];
+        let final_txid = "aa".repeat(32);
+        journal
+            .reserve_signed(&final_txid, from.clone(), &selected)
+            .expect("reserve");
+        let outpoints = [selected[0].outpoint.clone()];
+        assert!(
+            ensure_broadcast_reservation_binding(&journal, &final_txid, &from, &outpoints,).is_ok()
+        );
+        assert!(ensure_broadcast_reservation_binding(
+            &journal,
+            &final_txid,
+            "pulse1wrong",
+            &outpoints,
+        )
+        .is_err());
+        let wrong_outpoints = [OutPoint {
+            txid: "22".repeat(32),
+            index: 0,
+        }];
+        assert!(ensure_broadcast_reservation_binding(
+            &journal,
+            &final_txid,
+            &from,
+            &wrong_outpoints,
+        )
+        .is_err());
+        journal
+            .mark_submission_started(&final_txid)
+            .expect("submission started");
+        assert!(
+            ensure_broadcast_reservation_binding(&journal, &final_txid, &from, &outpoints,)
+                .is_err()
+        );
     }
 
     #[test]
