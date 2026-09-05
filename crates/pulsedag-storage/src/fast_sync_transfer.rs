@@ -49,7 +49,9 @@ fn is_sha256_hex(value: &str) -> bool {
 
 fn required_chunk_count(payload_len: u64, chunk_size: u32) -> Result<u32, PulseError> {
     if chunk_size == 0 {
-        return Err(storage_error("fast-sync transfer chunk_size must be non-zero"));
+        return Err(storage_error(
+            "fast-sync transfer chunk_size must be non-zero",
+        ));
     }
     let chunk_size = u64::from(chunk_size);
     let count = payload_len
@@ -82,12 +84,15 @@ impl FastSyncSnapshotTransferPlanV1 {
                 self.snapshot_manifest.manifest_version
             )));
         }
-        if self.snapshot_manifest.protocol_snapshot_bundle_format_version
+        if self
+            .snapshot_manifest
+            .protocol_snapshot_bundle_format_version
             != PROTOCOL_SNAPSHOT_BUNDLE_FORMAT_VERSION
         {
             return Err(storage_error(format!(
                 "fast-sync transfer protocol snapshot format {} is unsupported",
-                self.snapshot_manifest.protocol_snapshot_bundle_format_version
+                self.snapshot_manifest
+                    .protocol_snapshot_bundle_format_version
             )));
         }
         if self.snapshot_manifest.storage_schema_version != STORAGE_SCHEMA_VERSION {
@@ -115,7 +120,9 @@ impl FastSyncSnapshotTransferPlanV1 {
             ));
         }
         if self.payload_len == 0 {
-            return Err(storage_error("fast-sync transfer payload must be non-empty"));
+            return Err(storage_error(
+                "fast-sync transfer payload must be non-empty",
+            ));
         }
         if self.payload_len > MAX_FAST_SYNC_SNAPSHOT_TRANSFER_BYTES {
             return Err(storage_error(format!(
@@ -130,9 +137,7 @@ impl FastSyncSnapshotTransferPlanV1 {
         {
             return Err(storage_error(format!(
                 "fast-sync transfer chunk_size {} outside supported range {}..={}",
-                chunk_size,
-                MIN_FAST_SYNC_SNAPSHOT_CHUNK_BYTES,
-                MAX_FAST_SYNC_SNAPSHOT_CHUNK_BYTES
+                chunk_size, MIN_FAST_SYNC_SNAPSHOT_CHUNK_BYTES, MAX_FAST_SYNC_SNAPSHOT_CHUNK_BYTES
             )));
         }
         let required = required_chunk_count(self.payload_len, self.chunk_size)?;
@@ -151,7 +156,8 @@ impl FastSyncSnapshotTransferPlanV1 {
         if self.chunk_commitments.len() != self.chunk_count as usize {
             return Err(storage_error(format!(
                 "fast-sync transfer commitment count {} does not match chunk_count {}",
-                self.chunk_commitments.len(), self.chunk_count
+                self.chunk_commitments.len(),
+                self.chunk_count
             )));
         }
         if !is_sha256_hex(&self.transfer_id) {
@@ -255,19 +261,24 @@ impl Storage {
         bundle: &FastSyncSnapshotBundleV1,
         expected: &ProtocolActivationIdentity,
         chunk_size: usize,
-    ) -> Result<(PreparedFastSyncSnapshotTransferV1, SnapshotVerificationReport), PulseError> {
+    ) -> Result<
+        (
+            PreparedFastSyncSnapshotTransferV1,
+            SnapshotVerificationReport,
+        ),
+        PulseError,
+    > {
         let report = self.verify_fast_sync_snapshot_bundle_v1(bundle, expected)?;
         if !(MIN_FAST_SYNC_SNAPSHOT_CHUNK_BYTES..=MAX_FAST_SYNC_SNAPSHOT_CHUNK_BYTES)
             .contains(&chunk_size)
         {
             return Err(storage_error(format!(
                 "fast-sync chunk_size {} outside supported range {}..={}",
-                chunk_size,
-                MIN_FAST_SYNC_SNAPSHOT_CHUNK_BYTES,
-                MAX_FAST_SYNC_SNAPSHOT_CHUNK_BYTES
+                chunk_size, MIN_FAST_SYNC_SNAPSHOT_CHUNK_BYTES, MAX_FAST_SYNC_SNAPSHOT_CHUNK_BYTES
             )));
         }
-        let payload = bincode::serialize(bundle).map_err(|error| storage_error(error.to_string()))?;
+        let payload =
+            bincode::serialize(bundle).map_err(|error| storage_error(error.to_string()))?;
         let payload_len = u64::try_from(payload.len())
             .map_err(|_| storage_error("fast-sync payload length exceeds u64"))?;
         if payload_len == 0 || payload_len > MAX_FAST_SYNC_SNAPSHOT_TRANSFER_BYTES {
@@ -340,7 +351,8 @@ impl Storage {
         if payload.len() != capacity {
             return Err(storage_error(format!(
                 "fast-sync reassembled payload length {} does not match expected {}",
-                payload.len(), capacity
+                payload.len(),
+                capacity
             )));
         }
         let payload_commitment = snapshot_transfer_payload_digest_v1(&payload);
@@ -393,9 +405,7 @@ mod tests {
             .into_owned()
     }
 
-    fn source_bundle(
-        storage: &Storage,
-    ) -> (FastSyncSnapshotBundleV1, ProtocolActivationIdentity) {
+    fn source_bundle(storage: &Storage) -> (FastSyncSnapshotBundleV1, ProtocolActivationIdentity) {
         let state = init_chain_state("pulsedag-testnet".to_string());
         let expected = ProtocolActivationIdentity::legacy_from_state(&state);
         storage
