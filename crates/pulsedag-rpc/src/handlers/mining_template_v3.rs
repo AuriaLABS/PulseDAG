@@ -8,6 +8,12 @@ use sha3::{Digest, Sha3_256};
 pub(crate) use super::mining_template_protocol::{
     current_template_state, load_template, template_freshness_window, template_id_matches_lifecycle,
 };
+#[cfg(test)]
+pub use super::mining_template_protocol::post_mining_template;
+#[cfg(test)]
+pub(crate) use super::mining_template_protocol::store_template;
+#[cfg(test)]
+pub use super::mining_template_protocol::StoredMiningTemplate;
 
 pub(crate) const MINING_PROTOCOL_VERSION: u32 = 3;
 const MINING_V3_NOTIFICATION_POLL_AFTER_MS: u64 = 250;
@@ -201,6 +207,7 @@ fn decorate_template_data(mut data: Value, observation: &WorkObservation) -> Res
     Ok(data)
 }
 
+#[cfg(not(test))]
 pub async fn post_mining_template<S: RpcStateLike>(
     State(state): State<S>,
     Json(req): Json<GetBlockTemplateRequest>,
