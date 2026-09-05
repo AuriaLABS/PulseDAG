@@ -144,9 +144,11 @@ impl FastSyncRuntimeSessionBookV1 {
                 Ok(())
             }
             _ if self.peer_session_authorized(peer_id) => Ok(()),
-            _ => Err(FastSyncRuntimeSessionErrorV1::PeerCapabilitySessionMissing {
-                peer_id: peer_id.to_string(),
-            }),
+            _ => Err(
+                FastSyncRuntimeSessionErrorV1::PeerCapabilitySessionMissing {
+                    peer_id: peer_id.to_string(),
+                },
+            ),
         }
     }
 
@@ -180,9 +182,11 @@ impl FastSyncRuntimeSessionBookV1 {
                 ),
             ),
             _ if self.peer_session_authorized(peer_id) => Ok(()),
-            _ => Err(FastSyncRuntimeSessionErrorV1::PeerCapabilitySessionMissing {
-                peer_id: peer_id.to_string(),
-            }),
+            _ => Err(
+                FastSyncRuntimeSessionErrorV1::PeerCapabilitySessionMissing {
+                    peer_id: peer_id.to_string(),
+                },
+            ),
         }
     }
 }
@@ -355,12 +359,7 @@ mod tests {
         let mut forged = local;
         forged.payload_encoding = "other-encoding".to_string();
         assert!(book
-            .validate_outbound(
-                &expected,
-                PEER,
-                true,
-                &FastSyncWireV1::Capabilities(forged),
-            )
+            .validate_outbound(&expected, PEER, true, &FastSyncWireV1::Capabilities(forged),)
             .is_err());
     }
 
@@ -382,15 +381,9 @@ mod tests {
             &probe,
         )
         .is_err());
-        let encoded = encode_authorized_fast_sync_tip_v1(
-            &tips_bytes(),
-            &expected,
-            &book,
-            PEER,
-            true,
-            &probe,
-        )
-        .unwrap();
+        let encoded =
+            encode_authorized_fast_sync_tip_v1(&tips_bytes(), &expected, &book, PEER, true, &probe)
+                .unwrap();
         let decoded = decode_network_message_with_fast_sync_for_peer_v1(&encoded, PEER).unwrap();
         assert_eq!(decoded.fast_sync.unwrap().wire, probe);
     }
