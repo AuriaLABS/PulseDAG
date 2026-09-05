@@ -13,15 +13,11 @@ def patch_rpc() -> None:
     assert text.count(old_import) == 1
     text = text.replace(old_import, new_import)
 
-    activity_branch = (
+    dag_activity_branch = (
         "            if incoming > 0 || outgoing > 0 {\n"
         "                let net = incoming as i64 - outgoing as i64;\n"
     )
-    first = text.find(activity_branch)
-    assert first >= 0
-    second = text.find(activity_branch, first + len(activity_branch))
-    assert second >= 0
-    assert text.find(activity_branch, second + len(activity_branch)) < 0
+    assert text.count(dag_activity_branch) == 1
     confirmed_branch = (
         "            if incoming > 0 || outgoing > 0 {\n"
         "                if !transaction_is_confirmed(&tx.txid, &chain) {\n"
@@ -29,7 +25,7 @@ def patch_rpc() -> None:
         "                }\n"
         "                let net = incoming as i64 - outgoing as i64;\n"
     )
-    text = text[:second] + text[second:].replace(activity_branch, confirmed_branch, 1)
+    text = text.replace(dag_activity_branch, confirmed_branch, 1)
 
     tests = r'''
 
