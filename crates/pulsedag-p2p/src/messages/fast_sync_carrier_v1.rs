@@ -531,7 +531,7 @@ impl FastSyncChunkV1 {
         }
         if self.data_hex.is_empty()
             || self.data_hex.len() > P2P_FAST_SYNC_MAX_CHUNK_BYTES_V1 * 2
-            || self.data_hex.len() % 2 != 0
+            || !self.data_hex.len().is_multiple_of(2)
             || !self
                 .data_hex
                 .bytes()
@@ -1069,7 +1069,7 @@ pub fn decode_network_message_with_fast_sync_for_peer_v1(
 }
 
 fn decode_lower_hex(value: &str) -> Result<Vec<u8>, FastSyncWireErrorV1> {
-    if value.len() % 2 != 0 {
+    if !value.len().is_multiple_of(2) {
         return Err(invalid_shape("fast-sync hex payload has odd length"));
     }
     let mut bytes = Vec::with_capacity(value.len() / 2);
