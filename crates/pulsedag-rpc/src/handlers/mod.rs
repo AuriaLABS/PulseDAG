@@ -104,10 +104,10 @@ mod mining_submit_legacy;
 mod mining_submit_protocol;
 #[path = "mining_template_v3.rs"]
 pub mod mining_template;
-#[path = "mining_template_protocol.rs"]
-mod mining_template_protocol;
 #[path = "mining_template.rs"]
 mod mining_template_legacy;
+#[path = "mining_template_protocol.rs"]
+mod mining_template_protocol;
 pub mod mining_workers;
 
 pub mod mining_jobs;

@@ -492,10 +492,7 @@ mod tests {
             );
         }
         prune_oldest_submits(&mut registry);
-        assert_eq!(
-            registry.submits.len(),
-            MINING_V3_MAX_RECONCILIATION_ENTRIES
-        );
+        assert_eq!(registry.submits.len(), MINING_V3_MAX_RECONCILIATION_ENTRIES);
         assert!(!registry.submits.contains_key("submit-00000000"));
     }
 }

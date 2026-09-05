@@ -127,7 +127,10 @@ fn mine_with_canonical_cpu(mut block: Block, compact_target: u32) -> Block {
     let result = CpuMiningBackend
         .mine_header(block.header.clone(), 100_000, 2, compact_target)
         .expect("canonical CPU mining should not fail");
-    assert!(result.accepted, "test difficulty should mine deterministically");
+    assert!(
+        result.accepted,
+        "test difficulty should mine deterministically"
+    );
     block.header = result.header;
     block.hash = compute_block_hash(&block.header);
     block
@@ -145,7 +148,10 @@ async fn submit_block(state: &TestState, template_id: String, block: Block) -> V
         if response["data"]["reason_code"] != "submit_busy" {
             return response;
         }
-        assert!(attempt < 99, "bounded submit actor stayed busy after retries");
+        assert!(
+            attempt < 99,
+            "bounded submit actor stayed busy after retries"
+        );
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
     unreachable!("retry loop returns or panics before exhaustion")
@@ -234,7 +240,10 @@ async fn task37_multi_miner_work_has_distinct_stable_job_identity_and_bounded_no
             template["data"]["new_work_notification"]["max_outstanding_snapshots"],
             1
         );
-        assert_eq!(template["data"]["resource_limits"]["max_inflight_submits"], 64);
+        assert_eq!(
+            template["data"]["resource_limits"]["max_inflight_submits"],
+            64
+        );
     }
 
     let template_a_id = template_id(&template_a);

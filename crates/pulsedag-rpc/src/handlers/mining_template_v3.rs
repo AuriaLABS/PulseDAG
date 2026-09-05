@@ -6,8 +6,7 @@ use serde_json::{json, Value};
 use sha3::{Digest, Sha3_256};
 
 pub(crate) use super::mining_template_protocol::{
-    current_template_state, load_template, template_freshness_window,
-    template_id_matches_lifecycle,
+    current_template_state, load_template, template_freshness_window, template_id_matches_lifecycle,
 };
 
 pub(crate) const MINING_PROTOCOL_VERSION: u32 = 3;
@@ -136,11 +135,13 @@ fn decorate_template_data(mut data: Value, observation: &WorkObservation) -> Res
         .and_then(Value::as_str)
         .ok_or_else(|| "mining template response is missing template_id".to_string())?
         .to_string();
-    let external_template_id =
-        super::mining_submit::versioned_template_id(&internal_template_id);
+    let external_template_id = super::mining_submit::versioned_template_id(&internal_template_id);
     let job_id = super::mining_submit::job_id_for_template(&external_template_id);
 
-    object.insert("protocol_version".to_string(), json!(MINING_PROTOCOL_VERSION));
+    object.insert(
+        "protocol_version".to_string(),
+        json!(MINING_PROTOCOL_VERSION),
+    );
     object.insert("template_id".to_string(), json!(external_template_id));
     object.insert("job_id".to_string(), json!(job_id));
     object.insert("work_sequence".to_string(), json!(observation.sequence));
@@ -205,11 +206,9 @@ pub async fn post_mining_template<S: RpcStateLike>(
     Json(req): Json<GetBlockTemplateRequest>,
 ) -> Json<ApiResponse<Value>> {
     let observation = observe_work(snapshot_work(&state).await);
-    let response = super::mining_template_protocol::post_mining_template(
-        State(state.clone()),
-        Json(req),
-    )
-    .await;
+    let response =
+        super::mining_template_protocol::post_mining_template(State(state.clone()), Json(req))
+            .await;
     let ApiResponse {
         ok,
         data,
