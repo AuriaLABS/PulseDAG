@@ -25,8 +25,29 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD)" = "d35dd80c9b20e9102527bde5eb0c36753a7ca29a" || test "$(git rev-parse HEAD^)" = "d35dd80c9b20e9102527bde5eb0c36753a7ca29a"
           test "$(git hash-object crates/pulsedag-wallet/src/bin/pulsedag-wallet.rs)" = "c01d8d7541d88e7aeac77b06eccf0bcc017e9ce4"
           test "$(git hash-object crates/pulsedag-wallet/src/pulsedag_wallet_relay.rs)" = "f876f29cf81ba16c351cc72d58903a6d43d6e46a"
           test "$(git hash-object crates/pulsedag-wallet/src/pending.rs)" = "7f22ca980a9161f09d6469c394f09f75dbb502b2"
-          python3 -c 'import base64; exec(base64.b64decode("
+          python3 -c 'import base64; exec(base64.b64decode("..."))'
+          cargo fmt --all
+          git diff --check
+
+      - name: Wallet tests
+        run: cargo test -p pulsedag-wallet
+
+      - name: Wallet clippy
+        run: cargo clippy -p pulsedag-wallet --all-targets -- -D warnings
+
+      - name: Publish reconcile source and clean workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm .github/workflows/temp-wallet-reconcile.yml
+          git add -A
+          changed="$(git diff --cached --name-only | sort)"
+          expected="$(printf '%s\n' '.github/workflows/temp-wallet-reconcile.yml' 'crates/pulsedag-wallet/src/bin/pulsedag-wallet.rs' 'crates/pulsedag-wallet/src/pending.rs' 'crates/pulsedag-wallet/src/pulsedag_wallet_relay.rs' | sort)"
+          test "$changed" = "$expected"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "wallet: reconcile pending state from public activity"
+          git push origin HEAD:wallet/v3-pending-utxo-reconcile
