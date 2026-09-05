@@ -33,11 +33,11 @@ def fail(message: str) -> None:
 
 def load_manifest(path: Path) -> dict[str, Any]:
     text = path.read_text(encoding="utf-8")
-    match = re.search(r"```json\s*(\{.*?\})\s*```", text, re.DOTALL)
-    if not match:
-        fail("manifest must contain one fenced JSON object")
+    blocks = re.findall(r"```json\s*(.*?)\s*```", text, re.DOTALL)
+    if len(blocks) != 1:
+        fail("manifest must contain exactly one fenced JSON object")
     try:
-        value = json.loads(match.group(1))
+        value = json.loads(blocks[0])
     except json.JSONDecodeError as exc:
         fail(f"invalid manifest JSON: {exc}")
     if not isinstance(value, dict):
