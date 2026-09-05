@@ -194,10 +194,7 @@ fn cache_submit(scope_id: usize, submit_id: String, data: Value) {
     prune_oldest_submits(&mut registry);
 }
 
-fn job_observation(
-    scope_id: usize,
-    external_template_id: Option<&str>,
-) -> Option<JobObservation> {
+fn job_observation(scope_id: usize, external_template_id: Option<&str>) -> Option<JobObservation> {
     external_template_id.and_then(|template_id| {
         registry()
             .lock()
