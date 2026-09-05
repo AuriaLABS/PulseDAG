@@ -78,7 +78,7 @@ fn require_peer_id(peer_id: &str) -> Result<(), FastSyncRuntimeSessionErrorV1> {
     }
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct FastSyncRuntimeSessionBookV1 {
     local_capabilities: Option<FastSyncCapabilitiesV1>,
     remote_capabilities: BTreeMap<String, FastSyncCapabilitiesV1>,
@@ -96,6 +96,12 @@ impl FastSyncRuntimeSessionBookV1 {
         self.remote_capabilities.clear();
         self.capability_probe_seen.clear();
         Ok(())
+    }
+
+    pub fn reset_local(&mut self) {
+        self.local_capabilities = None;
+        self.remote_capabilities.clear();
+        self.capability_probe_seen.clear();
     }
 
     pub fn local_capabilities(&self) -> Option<&FastSyncCapabilitiesV1> {
