@@ -8887,10 +8887,10 @@ mod inventory_tests {
     }
 
     #[test]
-    fn oversized_inventory_is_capped() {
+    fn inventory_request_fanout_is_capped() {
         let inner = Arc::new(Mutex::new(InnerState::default()));
         let (inbound_tx, mut inbound_rx) = mpsc::unbounded_channel();
-        let hashes = (0..MAX_INV_BLOCK_HASHES + 10)
+        let hashes = (0..MAX_INV_BLOCK_REQUEST_FANOUT + 10)
             .map(|idx| format!("inv-{idx}"))
             .collect::<Vec<_>>();
         let wire = serde_json::to_vec(&NetworkMessage::InvBlock {
