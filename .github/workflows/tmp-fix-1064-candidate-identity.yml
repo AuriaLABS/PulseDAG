@@ -1,0 +1,127 @@
+name: Fix 1064 candidate identity reconciliation
+
+on:
+  push:
+    branches:
+      - codex/issue-1037-mining-protocol-v3
+    paths:
+      - .github/workflows/tmp-fix-1064-candidate-identity.yml
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out mining branch
+        uses: actions/checkout@v4
+        with:
+          ref: codex/issue-1037-mining-protocol-v3
+          fetch-depth: 0
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Apply fail-closed exact-candidate guard
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          p = Path('crates/pulsedag-rpc/src/handlers/mining_submit_v3.rs')
+          s = p.read_text()
+
+          def replace_once(old, new):
+              global s
+              count = s.count(old)
+              assert count == 1, f'replacement count={count}: {old[:100]!r}'
+              s = s.replace(old, new, 1)
+
+          replace_once(
+          '''struct CachedSubmit {\n    data: Value,\n    inserted_at_ms: u64,\n}''',
+          '''struct CachedSubmit {\n    data: Value,\n    candidate_fingerprint: String,\n    inserted_at_ms: u64,\n}''')
+
+          replace_once(
+          '''fn sha3_hex(domain: &str, material: &str) -> String {\n    let digest = Sha3_256::digest(format!("{domain}|{material}").as_bytes());\n    hex::encode(digest)\n}\n''',
+          '''fn sha3_hex(domain: &str, material: &str) -> String {\n    let digest = Sha3_256::digest(format!("{domain}|{material}").as_bytes());\n    hex::encode(digest)\n}\n\nfn candidate_fingerprint(\n    block: &pulsedag_core::types::Block,\n) -> Result<String, serde_json::Error> {\n    let encoded = serde_json::to_vec(block)?;\n    let mut hasher = Sha3_256::new();\n    hasher.update(b"pulsedag:mining:v3:candidate\\0");\n    hasher.update(encoded);\n    Ok(hex::encode(hasher.finalize()))\n}\n''')
+
+          replace_once(
+          '''fn cached_submit(scope_id: usize, submit_id: &str) -> Option<Value> {\n    registry()\n        .lock()\n        .unwrap_or_else(|poisoned| poisoned.into_inner())\n        .submits\n        .get(&scoped_registry_key(scope_id, submit_id))\n        .map(|cached| cached.data.clone())\n}\n\nfn cache_submit(scope_id: usize, submit_id: String, data: Value) {\n    let mut registry = registry()\n        .lock()\n        .unwrap_or_else(|poisoned| poisoned.into_inner());\n    registry.submits.insert(\n        scoped_registry_key(scope_id, &submit_id),\n        CachedSubmit {\n            data,\n            inserted_at_ms: now_ms(),\n        },\n    );\n    prune_oldest_submits(&mut registry);\n}\n''',
+          '''fn cached_submit(\n    scope_id: usize,\n    submit_id: &str,\n    candidate_fingerprint: &str,\n) -> Option<(Value, bool)> {\n    registry()\n        .lock()\n        .unwrap_or_else(|poisoned| poisoned.into_inner())\n        .submits\n        .get(&scoped_registry_key(scope_id, submit_id))\n        .map(|cached| {\n            (\n                cached.data.clone(),\n                cached.candidate_fingerprint == candidate_fingerprint,\n            )\n        })\n}\n\nfn cache_submit(\n    scope_id: usize,\n    submit_id: String,\n    candidate_fingerprint: String,\n    data: Value,\n) {\n    let mut registry = registry()\n        .lock()\n        .unwrap_or_else(|poisoned| poisoned.into_inner());\n    registry.submits.insert(\n        scoped_registry_key(scope_id, &submit_id),\n        CachedSubmit {\n            data,\n            candidate_fingerprint,\n            inserted_at_ms: now_ms(),\n        },\n    );\n    prune_oldest_submits(&mut registry);\n}\n''')
+
+          marker = '''async fn known_block_reconciliation<S: RpcStateLike>(\n'''
+          assert s.count(marker) == 1
+          mismatch_fn = '''fn candidate_identity_mismatch_data(\n    req: &SubmitMinedBlockRequest,\n    external_template_id: Option<&str>,\n    submit_id: &str,\n    job: Option<&JobObservation>,\n) -> Value {\n    decorate_submit_data(\n        json!({\n            "accepted": false,\n            "reason": "submit identity is already bound to different block material",\n            "block_hash": req.block.hash,\n            "block_id": Value::Null,\n            "height": req.block.header.height,\n            "pow_algorithm": pulsedag_core::selected_pow_name(),\n            "pow_accepted": false,\n            "pow_accepted_dev": false,\n            "target_u64": 0,\n            "target_hex": format!("{:064x}", 0_u64),\n            "pow_hash": Value::Null,\n            "invalid_pow": false,\n            "stale": false,\n            "duplicate": false,\n            "stale_template": false,\n            "reason_code": "candidate_identity_mismatch",\n            "selected_tip": Value::Null,\n            "adopted_orphans": 0,\n            "pow_hash_score_u64": 0,\n            "pow_rejection_code": Value::Null,\n            "pow_rejection_reason": "same submit_id/block_hash presented with different block material"\n        }),\n        external_template_id,\n        submit_id,\n        job,\n        true,\n    )\n}\n\n'''
+          s = s.replace(marker, mismatch_fn + marker, 1)
+
+          replace_once(
+          '''async fn known_block_reconciliation<S: RpcStateLike>(\n    state: &S,\n    req: &SubmitMinedBlockRequest,\n    external_template_id: Option<&str>,\n    submit_id: &str,\n    job: Option<&JobObservation>,\n) -> Option<Value> {\n    let chain_handle = state.chain();\n    let chain = chain_handle.read().await;\n    if !chain.dag.blocks.contains_key(&req.block.hash) {\n        return None;\n    }\n    let selected_tip = pulsedag_core::preferred_tip_hash(&chain);\n    drop(chain);''',
+          '''async fn known_block_reconciliation<S: RpcStateLike>(\n    state: &S,\n    req: &SubmitMinedBlockRequest,\n    external_template_id: Option<&str>,\n    submit_id: &str,\n    job: Option<&JobObservation>,\n    incoming_candidate_fingerprint: &str,\n) -> Option<Value> {\n    let chain_handle = state.chain();\n    let chain = chain_handle.read().await;\n    let stored_block = chain.dag.blocks.get(&req.block.hash)?;\n    let stored_candidate_fingerprint = match candidate_fingerprint(stored_block) {\n        Ok(fingerprint) => fingerprint,\n        Err(_) => {\n            drop(chain);\n            return Some(candidate_identity_mismatch_data(\n                req,\n                external_template_id,\n                submit_id,\n                job,\n            ));\n        }\n    };\n    if stored_candidate_fingerprint != incoming_candidate_fingerprint {\n        drop(chain);\n        return Some(candidate_identity_mismatch_data(\n            req,\n            external_template_id,\n            submit_id,\n            job,\n        ));\n    }\n    let selected_tip = pulsedag_core::preferred_tip_hash(&chain);\n    drop(chain);''')
+
+          replace_once(
+          '''    let scope_id = node_scope_id(&state);\n    let job = job_observation(scope_id, external_template_id.as_deref());\n\n    if let Some(reconciled) = known_block_reconciliation(''',
+          '''    let scope_id = node_scope_id(&state);\n    let job = job_observation(scope_id, external_template_id.as_deref());\n    let candidate_fingerprint = match candidate_fingerprint(&req.block) {\n        Ok(fingerprint) => fingerprint,\n        Err(error) => {\n            return Json(ApiResponse::err(\n                "MINING_PROTOCOL_V3_CANDIDATE_IDENTITY",\n                format!("cannot bind mining submit candidate identity: {error}"),\n            ));\n        }\n    };\n\n    if let Some(reconciled) = known_block_reconciliation(''')
+
+          replace_once(
+          '''        &submit_id,\n        job.as_ref(),\n    )\n    .await\n    {\n        cache_submit(scope_id, submit_id.clone(), reconciled.clone());\n        return Json(ApiResponse::ok(reconciled));\n    }\n\n    if let Some(mut cached) = cached_submit(scope_id, &submit_id) {\n        if let Some(object) = cached.as_object_mut() {\n            object.insert("reconciled".to_string(), json!(true));\n        }\n        return Json(ApiResponse::ok(cached));\n    }''',
+          '''        &submit_id,\n        job.as_ref(),\n        &candidate_fingerprint,\n    )\n    .await\n    {\n        return Json(ApiResponse::ok(reconciled));\n    }\n\n    if let Some((mut cached, exact_candidate)) =\n        cached_submit(scope_id, &submit_id, &candidate_fingerprint)\n    {\n        if !exact_candidate {\n            return Json(ApiResponse::ok(candidate_identity_mismatch_data(\n                &req,\n                external_template_id.as_deref(),\n                &submit_id,\n                job.as_ref(),\n            )));\n        }\n        if let Some(object) = cached.as_object_mut() {\n            object.insert("reconciled".to_string(), json!(true));\n        }\n        return Json(ApiResponse::ok(cached));\n    }''')
+
+          replace_once(
+          '''    cache_submit(scope_id, submit_id.clone(), value.clone());''',
+          '''    cache_submit(\n        scope_id,\n        submit_id.clone(),\n        candidate_fingerprint,\n        value.clone(),\n    );''')
+
+          # Update bounded-registry unit fixture for the new mandatory fingerprint field.
+          replace_once(
+          '''                CachedSubmit {\n                    data: json!({"index": index}),\n                    inserted_at_ms: index as u64,\n                },''',
+          '''                CachedSubmit {\n                    data: json!({"index": index}),\n                    candidate_fingerprint: format!("candidate-{index}"),\n                    inserted_at_ms: index as u64,\n                },''')
+
+          # Add a direct full-material fingerprint regression before finality tests.
+          unit_marker = '''    #[test]\n    fn task37_finality_states_are_frozen() {'''
+          assert s.count(unit_marker) == 1
+          unit_test = '''    #[test]\n    fn task37_candidate_fingerprint_binds_full_block_material() {\n        use pulsedag_core::types::{Block, BlockHeader, Transaction, TxOutput};\n\n        let block = Block {\n            hash: "same-declared-hash".to_string(),\n            header: BlockHeader {\n                version: 1,\n                parents: vec!["parent".to_string()],\n                timestamp: 1,\n                difficulty: 1,\n                nonce: 1,\n                merkle_root: "merkle".to_string(),\n                state_root: "state".to_string(),\n                blue_score: 1,\n                height: 2,\n            },\n            transactions: vec![Transaction {\n                txid: "txid".to_string(),\n                version: 1,\n                inputs: Vec::new(),\n                outputs: vec![TxOutput {\n                    address: "pulse1candidate".to_string(),\n                    amount: 7,\n                }],\n                fee: 0,\n                nonce: 1,\n            }],\n        };\n        let mut changed = block.clone();\n        changed.transactions[0].outputs[0].amount = 8;\n\n        assert_ne!(\n            candidate_fingerprint(&block).unwrap(),\n            candidate_fingerprint(&changed).unwrap()\n        );\n        assert_eq!(block.hash, changed.hash);\n    }\n\n'''
+          s = s.replace(unit_marker, unit_test + unit_marker, 1)
+          p.write_text(s)
+
+          # Route regression: a forged replay with the same declared block hash but mutated
+          # transaction payload must be rejected before known-block/cache reconciliation.
+          p = Path('crates/pulsedag-rpc/tests/mining_protocol_v3_contract.rs')
+          s = p.read_text()
+          old = '''    let submit_id = first["data"]["submit_id"].as_str().unwrap().to_string();\n    assert!(submit_id.starts_with("v3-submit-"));\n\n    // Reconnect/retry of the exact candidate must reconcile against chain state\n    // before any lower-layer submit/broadcast path can run again.\n    let replay = submit_block(&state, template_id(&template), block).await;'''
+          new = '''    let submit_id = first["data"]["submit_id"].as_str().unwrap().to_string();\n    assert!(submit_id.starts_with("v3-submit-"));\n\n    // A caller must not be able to reuse an accepted block hash / submit_id with\n    // different block material and inherit accepted reconciliation semantics.\n    let mut forged_replay = block.clone();\n    forged_replay.transactions[0].outputs[0].amount = forged_replay.transactions[0]\n        .outputs[0]\n        .amount\n        .saturating_add(1);\n    let mismatch = submit_block(&state, template_id(&template), forged_replay).await;\n    assert_eq!(mismatch["ok"], true);\n    assert_eq!(mismatch["data"]["accepted"], false);\n    assert_eq!(\n        mismatch["data"]["reason_code"],\n        "candidate_identity_mismatch"\n    );\n    assert_eq!(mismatch["data"]["finality"], "rejected");\n    assert_eq!(mismatch["data"]["submit_id"], submit_id);\n\n    // Reconnect/retry of the exact candidate must reconcile against chain state\n    // before any lower-layer submit/broadcast path can run again.\n    let replay = submit_block(&state, template_id(&template), block).await;'''
+          assert s.count(old) == 1, s.count(old)
+          p.write_text(s.replace(old, new, 1))
+
+          # Document the secondary exact-candidate binding without changing public submit_id.
+          p = Path('docs/MINING_PROTOCOL_V3.md')
+          s = p.read_text()
+          old = '''The node checks chain membership for `block_hash` before any rebroadcast. If the block is already present, the response is `accepted_reconciled`. Within a process, completed submit responses are retained in a bounded reconciliation registry keyed by `submit_id`; replaying the same candidate returns the cached finality with `reconciled=true` and does not rebroadcast it. An `unknown_finality` replay therefore reconciles chain state first instead of blindly resubmitting.'''
+          new = '''The node checks chain membership for `block_hash` before any rebroadcast. Reconciliation is additionally bound to a domain-separated SHA3-256 fingerprint of the **complete submitted block material**. A caller that reuses the same `submit_id` / declared `block_hash` with different header or transaction material is rejected fail-closed with `candidate_identity_mismatch`; it cannot inherit a cached or known-block accepted result. If the exact block is already present, the response is `accepted_reconciled`. Within a process, completed submit responses are retained in a bounded reconciliation registry keyed by `submit_id` plus the exact-candidate fingerprint; replaying the same candidate returns the cached finality with `reconciled=true` and does not rebroadcast it. An `unknown_finality` replay therefore reconciles chain state first instead of blindly resubmitting.'''
+          assert s.count(old) == 1, s.count(old)
+          p.write_text(s.replace(old, new, 1))
+          PY
+          cargo fmt --all
+          git diff --check
+          cargo fmt --all -- --check
+      - name: Run Mining Protocol v3 unit regressions
+        run: cargo test --locked -p pulsedag-rpc task37_
+      - name: Run Mining Protocol v3 route contract
+        run: cargo test --locked -p pulsedag-rpc --test mining_protocol_v3_contract -- --test-threads=1
+      - name: Run RPC clippy gate
+        run: cargo clippy --locked -p pulsedag-rpc --all-targets -- -D warnings
+      - name: Publish verified fix and self-clean
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git rm .github/workflows/tmp-fix-1064-candidate-identity.yml
+          git add crates/pulsedag-rpc/src/handlers/mining_submit_v3.rs crates/pulsedag-rpc/tests/mining_protocol_v3_contract.rs docs/MINING_PROTOCOL_V3.md
+          git diff --cached --check
+          git diff --cached --name-only | sort > /tmp/changed.txt
+          printf '%s\n' '.github/workflows/tmp-fix-1064-candidate-identity.yml' 'crates/pulsedag-rpc/src/handlers/mining_submit_v3.rs' 'crates/pulsedag-rpc/tests/mining_protocol_v3_contract.rs' 'docs/MINING_PROTOCOL_V3.md' | sort > /tmp/expected.txt
+          diff -u /tmp/expected.txt /tmp/changed.txt
+          git commit -m 'rpc: bind mining v3 reconciliation to exact candidate'
+          git push origin HEAD:codex/issue-1037-mining-protocol-v3
