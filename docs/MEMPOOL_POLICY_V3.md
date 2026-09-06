@@ -34,7 +34,7 @@ Fee rate is integer-only:
 
 `floor(fee * 1000 / canonical_signed_transaction_size_bytes)`
 
-The multiplication is performed in `u128`. Canonical size is derived from the already-frozen signed transaction serialization for the transaction version:
+The multiplication and retained fee-rate value use `u128`, so a valid `u64::MAX` fee cannot wrap or be rejected merely because the scaled rate exceeds `u64`. Canonical size is derived from the already-frozen signed transaction serialization for the transaction version:
 
 - v1: legacy canonical signed bytes,
 - v2: chain-bound canonical signed bytes,

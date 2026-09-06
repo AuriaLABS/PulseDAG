@@ -63,7 +63,10 @@ impl MempoolPolicyV3 {
         hex::encode(hasher.finalize())
     }
 
-    pub fn validate_identity(self, expected_fingerprint: &str) -> Result<(), MempoolPolicyRejectionV3> {
+    pub fn validate_identity(
+        self,
+        expected_fingerprint: &str,
+    ) -> Result<(), MempoolPolicyRejectionV3> {
         if self.version != MEMPOOL_POLICY_V3_VERSION || self.fingerprint() != expected_fingerprint {
             return Err(MempoolPolicyRejectionV3::PolicyIdentityMismatch);
         }
@@ -94,7 +97,7 @@ impl MempoolPolicyV3 {
         }
 
         let fee_rate = fee_rate_v3(tx, chain_id)?;
-        if fee_rate.fee_per_kb < self.min_relay_fee_rate_per_kb {
+        if fee_rate.fee_per_kb < u128::from(self.min_relay_fee_rate_per_kb) {
             return Err(MempoolPolicyRejectionV3::BelowMinimumRelayFeeRate.into());
         }
         Ok(fee_rate)
@@ -105,7 +108,7 @@ impl MempoolPolicyV3 {
 pub struct FeeRateV3 {
     pub fee: u64,
     pub canonical_size_bytes: u64,
-    pub fee_per_kb: u64,
+    pub fee_per_kb: u128,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -174,8 +177,6 @@ pub fn fee_rate_v3(
     debug_assert!(canonical_size_bytes > 0);
     let scaled_fee = u128::from(tx.fee) * u128::from(FEE_RATE_SCALE_BYTES_V3);
     let fee_per_kb = scaled_fee / u128::from(canonical_size_bytes);
-    let fee_per_kb = u64::try_from(fee_per_kb)
-        .map_err(|_| MempoolPolicyAssessmentErrorV3::CanonicalSizeOverflow)?;
     Ok(FeeRateV3 {
         fee: tx.fee,
         canonical_size_bytes,
@@ -223,11 +224,14 @@ mod tests {
         let a = fee_rate_v3(&tx, "ignored-by-v1").unwrap();
         let b = fee_rate_v3(&tx, "different-v1-domain-is-still-legacy").unwrap();
         assert_eq!(a, b);
-        assert_eq!(a.canonical_size_bytes, canonical_transaction_bytes(&tx).len() as u64);
+        assert_eq!(
+            a.canonical_size_bytes,
+            canonical_transaction_bytes(&tx).len() as u64
+        );
         assert_eq!(
             a.fee_per_kb,
-            ((u128::from(tx.fee) * u128::from(FEE_RATE_SCALE_BYTES_V3))
-                / u128::from(a.canonical_size_bytes)) as u64
+            (u128::from(tx.fee) * u128::from(FEE_RATE_SCALE_BYTES_V3))
+                / u128::from(a.canonical_size_bytes)
         );
     }
 
@@ -235,7 +239,10 @@ mod tests {
     fn maximum_fee_value_does_not_overflow_rate_math() {
         let tx = sample_v1_tx(u64::MAX);
         let rate = fee_rate_v3(&tx, "legacy").unwrap();
-        assert!(rate.fee_per_kb > 0);
+        let expected = (u128::from(u64::MAX) * u128::from(FEE_RATE_SCALE_BYTES_V3))
+            / u128::from(rate.canonical_size_bytes);
+        assert_eq!(rate.fee_per_kb, expected);
+        assert!(rate.fee_per_kb > u128::from(u64::MAX));
     }
 
     #[test]
@@ -280,7 +287,7 @@ mod tests {
         let tx = sample_v1_tx(10);
         let rate = fee_rate_v3(&tx, "legacy").unwrap();
         let policy = MempoolPolicyV3 {
-            min_relay_fee_rate_per_kb: rate.fee_per_kb.saturating_add(1),
+            min_relay_fee_rate_per_kb: u64::try_from(rate.fee_per_kb).unwrap().saturating_add(1),
             max_transaction_fee: tx.fee,
             ..MempoolPolicyV3::compatibility_default()
         };
