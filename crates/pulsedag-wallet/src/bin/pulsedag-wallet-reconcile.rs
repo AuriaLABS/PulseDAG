@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 const RESPONSE_MAX_BYTES: usize = 1024 * 1024;
 const HTTP_TIMEOUT: Duration = Duration::from_secs(10);
 const EXPLORER_CAPABILITY: &str = "explorer_api";
-const AUTHORITATIVE_ACTIVITY_CAPABILITY: &str = "authoritative_address_activity_v1";
+const AUTHORITATIVE_ACTIVITY_CAPABILITY: &str = "authoritative_address_activity_v2";
 const ACTIVITY_ENDPOINT: &str = "/address/:address/activity";
 const DEFAULT_PAGE_SIZE: usize = 100;
 const MAX_PAGE_SIZE: usize = 100;
@@ -822,6 +822,25 @@ mod tests {
             error: None,
         };
         assert!(validate_release_identity(&network, legacy_unversioned_activity).is_err());
+
+        let legacy_v1_activity = ApiResponse {
+            ok: true,
+            data: Some(ReleaseIdentityData {
+                network_profile: "testnet".to_string(),
+                chain_id: "pulsedag-testnet".to_string(),
+                capabilities: vec![
+                    EXPLORER_CAPABILITY.to_string(),
+                    "authoritative_address_activity_v1".to_string(),
+                ],
+                core_endpoints: vec![ACTIVITY_ENDPOINT.to_string()],
+            }),
+            error: None,
+        };
+        let error = validate_release_identity(&network, legacy_v1_activity)
+            .expect_err("v1 activity semantics must fail closed");
+        assert!(error
+            .to_string()
+            .contains("authoritative_address_activity_v2"));
 
         let wrong_network = ApiResponse {
             ok: true,

@@ -2,7 +2,8 @@ use crate::{api::ApiResponse, redaction::redact_if_sensitive_key_value};
 use axum::Json;
 
 const SIGNED_TRANSACTION_RELAY_VERSION: &str = "signed-transaction-relay-v1";
-const AUTHORITATIVE_ADDRESS_ACTIVITY_CAPABILITY: &str = "authoritative_address_activity_v1";
+const LEGACY_AUTHORITATIVE_ADDRESS_ACTIVITY_CAPABILITY: &str = "authoritative_address_activity_v1";
+const AUTHORITATIVE_ADDRESS_ACTIVITY_CAPABILITY: &str = "authoritative_address_activity_v2";
 
 #[derive(Debug, serde::Serialize)]
 pub struct ReleaseInfoData {
@@ -106,6 +107,7 @@ fn release_capabilities() -> Vec<String> {
         "external_miner_protocol".into(),
         "mempool".into(),
         "explorer_api".into(),
+        LEGACY_AUTHORITATIVE_ADDRESS_ACTIVITY_CAPABILITY.into(),
         AUTHORITATIVE_ADDRESS_ACTIVITY_CAPABILITY.into(),
         "sync_diagnostics".into(),
         "storage_snapshot_inspection".into(),
@@ -169,6 +171,7 @@ mod tests {
     use super::{
         default_public_network_identity, operator_stage, release_capabilities, repo_version,
         AUTHORITATIVE_ADDRESS_ACTIVITY_CAPABILITY,
+        LEGACY_AUTHORITATIVE_ADDRESS_ACTIVITY_CAPABILITY,
     };
 
     #[test]
@@ -276,7 +279,14 @@ mod tests {
         assert!(release.contains("\"/address/:address/activity\""));
         assert!(release_capabilities()
             .iter()
+            .any(|capability| capability == LEGACY_AUTHORITATIVE_ADDRESS_ACTIVITY_CAPABILITY));
+        assert!(release_capabilities()
+            .iter()
             .any(|capability| capability == AUTHORITATIVE_ADDRESS_ACTIVITY_CAPABILITY));
+        assert_eq!(
+            AUTHORITATIVE_ADDRESS_ACTIVITY_CAPABILITY,
+            "authoritative_address_activity_v2"
+        );
         assert!(release.contains("\"/api/v1/tx/submit\""));
         assert!(!release.contains("\"/tx/build\""));
         assert!(!release.contains("\"/tx/submit\""));
