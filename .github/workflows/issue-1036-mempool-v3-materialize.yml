@@ -1,0 +1,67 @@
+name: Issue 1036 mempool v3 foundation materializer
+
+on:
+  push:
+    branches:
+      - codex/issue-1036-mempool-policy-v3-foundation
+    paths:
+      - '.github/workflows/issue-1036-mempool-v3-materialize.yml'
+      - '.github/scripts/issue_1036_mempool_v3_export.py'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: issue-1036-mempool-v3-foundation
+  cancel-in-progress: false
+
+jobs:
+  materialize:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out branch
+        uses: actions/checkout@v4
+        with:
+          ref: codex/issue-1036-mempool-policy-v3-foundation
+          fetch-depth: 1
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.91.0
+          components: clippy,rustfmt
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Apply guarded crate export
+        run: python3 .github/scripts/issue_1036_mempool_v3_export.py
+
+      - name: Verify scope and formatting
+        run: |
+          set -euo pipefail
+          test "$(git diff --name-only)" = "crates/pulsedag-core/src/lib.rs"
+          git diff --check
+          cargo fmt --all -- --check
+
+      - name: Run focused policy tests
+        run: cargo test -p pulsedag-core mempool_v3 --lib
+
+      - name: Run core library tests
+        run: cargo test -p pulsedag-core --lib
+
+      - name: Run core Clippy
+        run: cargo clippy -p pulsedag-core --all-targets --all-features -- -D warnings -A clippy::uninlined-format-args
+
+      - name: Remove temporary materializer and publish verified foundation
+        run: |
+          set -euo pipefail
+          rm .github/scripts/issue_1036_mempool_v3_export.py
+          rm .github/workflows/issue-1036-mempool-v3-materialize.yml
+          git diff --check
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "core: export verified mempool v3 policy foundation"
+          git push origin HEAD:codex/issue-1036-mempool-policy-v3-foundation
