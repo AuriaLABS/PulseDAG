@@ -1,0 +1,34 @@
+name: Sync #1063 with current main
+
+on:
+  push:
+    branches:
+      - codex/1035-fast-sync-manifest
+    paths:
+      - '.github/workflows/sync-1063-current-main.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: codex/1035-fast-sync-manifest
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Merge current main and clean helper
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "kalekói"
+          git config user.email "hermida.prada@gmail.com"
+          git fetch origin main
+          git merge --no-edit origin/main
+          rm .github/workflows/sync-1063-current-main.yml
+          git add -A
+          git commit -m "ci: remove #1063 current-main sync helper"
+          git push origin HEAD:codex/1035-fast-sync-manifest
