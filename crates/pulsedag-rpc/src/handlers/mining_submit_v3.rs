@@ -32,6 +32,7 @@ struct JobObservation {
 #[derive(Debug, Clone)]
 struct CachedSubmit {
     data: Value,
+    candidate_fingerprint: String,
     inserted_at_ms: u64,
 }
 
@@ -63,6 +64,14 @@ fn now_ms() -> u64 {
 fn sha3_hex(domain: &str, material: &str) -> String {
     let digest = Sha3_256::digest(format!("{domain}|{material}").as_bytes());
     hex::encode(digest)
+}
+
+fn candidate_fingerprint(block: &pulsedag_core::types::Block) -> Result<String, serde_json::Error> {
+    let encoded = serde_json::to_vec(block)?;
+    let mut hasher = Sha3_256::new();
+    hasher.update(b"pulsedag:mining:v3:candidate\0");
+    hasher.update(encoded);
+    Ok(hex::encode(hasher.finalize()))
 }
 
 pub(crate) fn versioned_template_id(internal_template_id: &str) -> String {
@@ -171,16 +180,25 @@ pub(crate) fn register_v3_job<S: RpcStateLike>(
     prune_oldest_jobs(&mut registry);
 }
 
-fn cached_submit(scope_id: usize, submit_id: &str) -> Option<Value> {
+fn cached_submit(
+    scope_id: usize,
+    submit_id: &str,
+    candidate_fingerprint: &str,
+) -> Option<(Value, bool)> {
     registry()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .submits
         .get(&scoped_registry_key(scope_id, submit_id))
-        .map(|cached| cached.data.clone())
+        .map(|cached| {
+            (
+                cached.data.clone(),
+                cached.candidate_fingerprint == candidate_fingerprint,
+            )
+        })
 }
 
-fn cache_submit(scope_id: usize, submit_id: String, data: Value) {
+fn cache_submit(scope_id: usize, submit_id: String, candidate_fingerprint: String, data: Value) {
     let mut registry = registry()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -188,6 +206,7 @@ fn cache_submit(scope_id: usize, submit_id: String, data: Value) {
         scoped_registry_key(scope_id, &submit_id),
         CachedSubmit {
             data,
+            candidate_fingerprint,
             inserted_at_ms: now_ms(),
         },
     );
@@ -326,17 +345,74 @@ fn overload_data(
     )
 }
 
+fn candidate_identity_mismatch_data(
+    req: &SubmitMinedBlockRequest,
+    external_template_id: Option<&str>,
+    submit_id: &str,
+    job: Option<&JobObservation>,
+) -> Value {
+    decorate_submit_data(
+        json!({
+            "accepted": false,
+            "reason": "submit identity is already bound to different block material",
+            "block_hash": req.block.hash,
+            "block_id": Value::Null,
+            "height": req.block.header.height,
+            "pow_algorithm": pulsedag_core::selected_pow_name(),
+            "pow_accepted": false,
+            "pow_accepted_dev": false,
+            "target_u64": 0,
+            "target_hex": format!("{:064x}", 0_u64),
+            "pow_hash": Value::Null,
+            "invalid_pow": false,
+            "stale": false,
+            "duplicate": false,
+            "stale_template": false,
+            "reason_code": "candidate_identity_mismatch",
+            "selected_tip": Value::Null,
+            "adopted_orphans": 0,
+            "pow_hash_score_u64": 0,
+            "pow_rejection_code": Value::Null,
+            "pow_rejection_reason": "same submit_id/block_hash presented with different block material"
+        }),
+        external_template_id,
+        submit_id,
+        job,
+        true,
+    )
+}
+
 async fn known_block_reconciliation<S: RpcStateLike>(
     state: &S,
     req: &SubmitMinedBlockRequest,
     external_template_id: Option<&str>,
     submit_id: &str,
     job: Option<&JobObservation>,
+    incoming_candidate_fingerprint: &str,
 ) -> Option<Value> {
     let chain_handle = state.chain();
     let chain = chain_handle.read().await;
-    if !chain.dag.blocks.contains_key(&req.block.hash) {
-        return None;
+    let stored_block = chain.dag.blocks.get(&req.block.hash)?;
+    let stored_candidate_fingerprint = match candidate_fingerprint(stored_block) {
+        Ok(fingerprint) => fingerprint,
+        Err(_) => {
+            drop(chain);
+            return Some(candidate_identity_mismatch_data(
+                req,
+                external_template_id,
+                submit_id,
+                job,
+            ));
+        }
+    };
+    if stored_candidate_fingerprint != incoming_candidate_fingerprint {
+        drop(chain);
+        return Some(candidate_identity_mismatch_data(
+            req,
+            external_template_id,
+            submit_id,
+            job,
+        ));
     }
     let selected_tip = pulsedag_core::preferred_tip_hash(&chain);
     drop(chain);
@@ -379,6 +455,15 @@ pub async fn post_mining_submit<S: RpcStateLike>(
     let submit_id = submit_id_for(external_template_id.as_deref(), &req.block.hash);
     let scope_id = node_scope_id(&state);
     let job = job_observation(scope_id, external_template_id.as_deref());
+    let candidate_fingerprint = match candidate_fingerprint(&req.block) {
+        Ok(fingerprint) => fingerprint,
+        Err(error) => {
+            return Json(ApiResponse::err(
+                "MINING_PROTOCOL_V3_CANDIDATE_IDENTITY",
+                format!("cannot bind mining submit candidate identity: {error}"),
+            ));
+        }
+    };
 
     if let Some(reconciled) = known_block_reconciliation(
         &state,
@@ -386,14 +471,24 @@ pub async fn post_mining_submit<S: RpcStateLike>(
         external_template_id.as_deref(),
         &submit_id,
         job.as_ref(),
+        &candidate_fingerprint,
     )
     .await
     {
-        cache_submit(scope_id, submit_id.clone(), reconciled.clone());
         return Json(ApiResponse::ok(reconciled));
     }
 
-    if let Some(mut cached) = cached_submit(scope_id, &submit_id) {
+    if let Some((mut cached, exact_candidate)) =
+        cached_submit(scope_id, &submit_id, &candidate_fingerprint)
+    {
+        if !exact_candidate {
+            return Json(ApiResponse::ok(candidate_identity_mismatch_data(
+                &req,
+                external_template_id.as_deref(),
+                &submit_id,
+                job.as_ref(),
+            )));
+        }
         if let Some(object) = cached.as_object_mut() {
             object.insert("reconciled".to_string(), json!(true));
         }
@@ -447,7 +542,12 @@ pub async fn post_mining_submit<S: RpcStateLike>(
         }
     };
 
-    cache_submit(scope_id, submit_id.clone(), value.clone());
+    cache_submit(
+        scope_id,
+        submit_id.clone(),
+        candidate_fingerprint,
+        value.clone(),
+    );
     let _ = state.storage().append_runtime_event(
         "info",
         "external_mining_v3_submit",
@@ -510,6 +610,45 @@ mod tests {
     }
 
     #[test]
+    fn task37_candidate_fingerprint_binds_full_block_material() {
+        use pulsedag_core::types::{Block, BlockHeader, Transaction, TxOutput};
+
+        let block = Block {
+            hash: "same-declared-hash".to_string(),
+            header: BlockHeader {
+                version: 1,
+                parents: vec!["parent".to_string()],
+                timestamp: 1,
+                difficulty: 1,
+                nonce: 1,
+                merkle_root: "merkle".to_string(),
+                state_root: "state".to_string(),
+                blue_score: 1,
+                height: 2,
+            },
+            transactions: vec![Transaction {
+                txid: "txid".to_string(),
+                version: 1,
+                inputs: Vec::new(),
+                outputs: vec![TxOutput {
+                    address: "pulse1candidate".to_string(),
+                    amount: 7,
+                }],
+                fee: 0,
+                nonce: 1,
+            }],
+        };
+        let mut changed = block.clone();
+        changed.transactions[0].outputs[0].amount = 8;
+
+        assert_ne!(
+            candidate_fingerprint(&block).unwrap(),
+            candidate_fingerprint(&changed).unwrap()
+        );
+        assert_eq!(block.hash, changed.hash);
+    }
+
+    #[test]
     fn task37_finality_states_are_frozen() {
         assert_eq!(finality_for(&json!({"accepted": true})), "accepted");
         assert_eq!(
@@ -538,6 +677,7 @@ mod tests {
                 format!("submit-{index:08}"),
                 CachedSubmit {
                     data: json!({"index": index}),
+                    candidate_fingerprint: format!("candidate-{index}"),
                     inserted_at_ms: index as u64,
                 },
             );

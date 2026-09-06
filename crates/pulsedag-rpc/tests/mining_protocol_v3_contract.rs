@@ -202,6 +202,22 @@ async fn scenario_cpu_miner_contract_reconciles_reconnect_without_rebroadcast() 
     let submit_id = first["data"]["submit_id"].as_str().unwrap().to_string();
     assert!(submit_id.starts_with("v3-submit-"));
 
+    // A caller must not be able to reuse an accepted block hash / submit_id with
+    // different block material and inherit accepted reconciliation semantics.
+    let mut forged_replay = block.clone();
+    forged_replay.transactions[0].outputs[0].amount = forged_replay.transactions[0].outputs[0]
+        .amount
+        .saturating_add(1);
+    let mismatch = submit_block(&state, template_id(&template), forged_replay).await;
+    assert_eq!(mismatch["ok"], true);
+    assert_eq!(mismatch["data"]["accepted"], false);
+    assert_eq!(
+        mismatch["data"]["reason_code"],
+        "candidate_identity_mismatch"
+    );
+    assert_eq!(mismatch["data"]["finality"], "rejected");
+    assert_eq!(mismatch["data"]["submit_id"], submit_id);
+
     // Reconnect/retry of the exact candidate must reconcile against chain state
     // before any lower-layer submit/broadcast path can run again.
     let replay = submit_block(&state, template_id(&template), block).await;
