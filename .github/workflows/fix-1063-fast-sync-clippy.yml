@@ -1,0 +1,65 @@
+name: Materialize #1063 Rust 1.98 fast-sync Clippy fix
+
+on:
+  push:
+    branches:
+      - codex/1035-fast-sync-manifest
+
+permissions:
+  contents: write
+
+jobs:
+  patch-and-verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout exact branch
+        uses: actions/checkout@v4
+        with:
+          ref: codex/1035-fast-sync-manifest
+          fetch-depth: 0
+
+      - name: Patch only the diagnosed Clippy lint
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('crates/pulsedag-p2p/src/messages/fast_sync_carrier_v1.rs')
+          text = path.read_text()
+          old = '    for pair in input.chunks_exact(2) {\n'
+          new = '    for pair in input.as_chunks::<2>().0 {\n'
+          count = text.count(old)
+          if count != 1:
+              raise SystemExit(f'expected exactly one diagnosed chunks_exact occurrence, found {count}')
+          path.write_text(text.replace(old, new, 1))
+          PY
+          git diff --check
+          git diff -- crates/pulsedag-p2p/src/messages/fast_sync_carrier_v1.rs
+
+      - name: Verify format
+        run: cargo fmt --all -- --check
+
+      - name: Verify fast-sync P2P tests
+        run: cargo test -p pulsedag-p2p --lib fast_sync
+
+      - name: Verify workspace Clippy gate
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Publish source fix and remove helper
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm .github/workflows/fix-1063-fast-sync-clippy.yml
+          git add crates/pulsedag-p2p/src/messages/fast_sync_carrier_v1.rs .github/workflows/fix-1063-fast-sync-clippy.yml
+          git diff --cached --check
+          changed="$(git diff --cached --name-only)"
+          expected=$'.github/workflows/fix-1063-fast-sync-clippy.yml\ncrates/pulsedag-p2p/src/messages/fast_sync_carrier_v1.rs'
+          if [[ "$changed" != "$expected" ]]; then
+            echo "unexpected staged paths:" >&2
+            printf '%s\n' "$changed" >&2
+            exit 1
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'p2p: satisfy Rust 1.98 fast-sync hex lint'
+          git push origin HEAD:codex/1035-fast-sync-manifest
