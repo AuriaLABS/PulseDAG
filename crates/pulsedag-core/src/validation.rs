@@ -154,11 +154,16 @@ fn ordered_replay_skipped_transactions(state: &ChainState) -> BTreeSet<(String, 
         .collect()
 }
 
-/// Build the canonical set of transaction ids that were actually applied to
-/// authoritative state. This is the bulk counterpart to
-/// `transaction_is_confirmed` for read paths that must classify many retained
-/// transactions without rescanning the selected/ordered chain for each txid.
-pub fn authoritative_confirmed_transaction_ids(state: &ChainState) -> BTreeSet<String> {
+/// Build the canonical set of exact retained transaction occurrences that
+/// were actually applied to authoritative state. This is the bulk counterpart
+/// to `transaction_is_confirmed` for read paths that must classify many
+/// retained transactions without rescanning the selected/ordered chain for
+/// each txid. Binding the block hash prevents a replay-skipped duplicate txid
+/// in another retained DAG block from inheriting confirmation from the applied
+/// occurrence.
+pub fn authoritative_confirmed_transaction_occurrences(
+    state: &ChainState,
+) -> BTreeSet<(String, String)> {
     let ordered_replay = state.dag.consensus_mode.ghostdag_metadata_active()
         || state.dag.ordering_version == crate::ordering_v2::GHOSTDAG_V1_ORDERING_VERSION;
     let canonical_order = if ordered_replay {
@@ -178,10 +183,11 @@ pub fn authoritative_confirmed_transaction_ids(state: &ChainState) -> BTreeSet<S
         .filter_map(|hash| state.dag.blocks.get(hash))
     {
         for tx in &block.transactions {
-            if ordered_replay && skipped.contains(&(block.hash.clone(), tx.txid.clone())) {
+            let occurrence = (block.hash.clone(), tx.txid.clone());
+            if ordered_replay && skipped.contains(&occurrence) {
                 continue;
             }
-            confirmed.insert(tx.txid.clone());
+            confirmed.insert(occurrence);
         }
     }
     confirmed

@@ -7,7 +7,7 @@ use axum::{
 };
 use pulsedag_core::{
     types::{OutPoint, Utxo},
-    validation::authoritative_confirmed_transaction_ids,
+    validation::authoritative_confirmed_transaction_occurrences,
 };
 
 #[derive(Debug, serde::Serialize)]
@@ -251,7 +251,8 @@ pub async fn get_address_activity<S: RpcStateLike>(
     let chain_handle = state.chain();
     let chain = chain_handle.read().await;
     let retained_outputs = retained_transaction_outputs(&chain);
-    let authoritative_confirmed_txids = authoritative_confirmed_transaction_ids(&chain);
+    let authoritative_confirmed_occurrences =
+        authoritative_confirmed_transaction_occurrences(&chain);
 
     let mut activity = Vec::new();
     for tx in chain.mempool.transactions.values() {
@@ -311,7 +312,9 @@ pub async fn get_address_activity<S: RpcStateLike>(
                 .map(|(_, amount)| *amount)
                 .sum::<u64>();
             if incoming > 0 || outgoing > 0 {
-                if !authoritative_confirmed_txids.contains(&tx.txid) {
+                if !authoritative_confirmed_occurrences
+                    .contains(&(block.hash.clone(), tx.txid.clone()))
+                {
                     continue;
                 }
                 let net = incoming as i64 - outgoing as i64;
@@ -709,5 +712,52 @@ mod tests {
             .activity
             .iter()
             .all(|item| item.txid != "replay-loser-wallet-activity"));
+    }
+
+    #[tokio::test]
+    async fn duplicate_retained_txid_reports_only_applied_block_occurrence() {
+        let state = mk_state().await;
+        let txid = "duplicate-retained-wallet-activity";
+        let applied_block = "duplicate-applied-block";
+        let skipped_block = "duplicate-skipped-block";
+        {
+            let mut chain = state.chain.write().await;
+            chain.mempool.transactions.clear();
+            chain.dag.consensus_mode = pulsedag_core::state::ConsensusMode::GhostdagDev;
+            let tx = retained_activity_tx(txid);
+            record_noncanonical_activity_tx(&mut chain, tx.clone(), applied_block);
+            record_noncanonical_activity_tx(&mut chain, tx, skipped_block);
+            chain.dag.ordered_dag.push(applied_block.to_string());
+            chain.dag.ordered_dag.push(skipped_block.to_string());
+            chain.dag.ordered_dag_conflict_diagnostics.push(format!(
+                "ordered_pos=2 block={skipped_block} tx={txid} skipped_conflict"
+            ));
+            assert!(pulsedag_core::validation::transaction_is_confirmed(
+                txid, &chain
+            ));
+            let occurrences =
+                pulsedag_core::validation::authoritative_confirmed_transaction_occurrences(&chain);
+            assert!(occurrences.contains(&(applied_block.to_string(), txid.to_string())));
+            assert!(!occurrences.contains(&(skipped_block.to_string(), txid.to_string())));
+        }
+
+        let axum::Json(resp) = get_address_activity(
+            State(state),
+            Path("alice".to_string()),
+            Query(super::AddressActivityQuery {
+                limit: Some(10),
+                offset: Some(0),
+            }),
+        )
+        .await;
+        let data = resp.data.expect("activity");
+        let matches = data
+            .activity
+            .iter()
+            .filter(|item| item.txid == txid)
+            .collect::<Vec<_>>();
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].block_hash.as_deref(), Some(applied_block));
+        assert!(matches[0].is_confirmed);
     }
 }
