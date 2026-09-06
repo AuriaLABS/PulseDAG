@@ -30,8 +30,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          BASE="$(git rev-parse HEAD^)"
-          export BASE
           python3 - <<'PY'
           from pathlib import Path
 
@@ -43,33 +41,16 @@ jobs:
                   raise SystemExit(f"{path}: expected one replacement, found {count}")
               p.write_text(text.replace(old, new))
 
+          protocol = "crates/pulsedag-rpc/src/handlers/mining_template_protocol.rs"
           replace_once(
-              "crates/pulsedag-rpc/src/handlers/mining_template_protocol.rs",
-              '''            if let Err(error) = super::mining_submit::bind_template_protocol(
-                  data.template_id.clone(),
-                  identity,
-                  fingerprint,
-              ) {
-                  return Json(ApiResponse::err(
-                      "PROTOCOL_IDENTITY_ERROR",
-                      format!("cannot store mining template protocol binding: {error}"),
-                  ));
-              }
-              Some(data.into())''',
-              '''            if let Err(error) = super::mining_submit::bind_template_protocol(
-                  data.template_id.clone(),
-                  identity.clone(),
-                  fingerprint.clone(),
-              ) {
-                  return Json(ApiResponse::err(
-                      "PROTOCOL_IDENTITY_ERROR",
-                      format!("cannot store mining template protocol binding: {error}"),
-                  ));
-              }
-              let mut data: MiningTemplateData = data.into();
-              data.protocol_identity = Some(identity);
-              data.protocol_identity_fingerprint = Some(fingerprint);
-              Some(data)'''
+              protocol,
+              "                identity,\n                fingerprint,\n",
+              "                identity.clone(),\n                fingerprint.clone(),\n",
+          )
+          replace_once(
+              protocol,
+              "            Some(data.into())",
+              "            let mut data: MiningTemplateData = data.into();\n            data.protocol_identity = Some(identity);\n            data.protocol_identity_fingerprint = Some(fingerprint);\n            Some(data)",
           )
 
           replace_once(
@@ -243,19 +224,18 @@ jobs:
           rm .github/workflows/harden-1064-mining-identity.yml
 
           python3 - <<'PY'
-          import os
           import subprocess
           allowed = {
+              '.github/workflows/harden-1064-mining-identity.yml',
               'crates/pulsedag-rpc/src/handlers/mining_submit_v3.rs',
               'crates/pulsedag-rpc/src/handlers/mining_template_v3.rs',
               'crates/pulsedag-rpc/src/handlers/mining_template_protocol.rs',
               'crates/pulsedag-rpc/tests/mining_protocol_v3_contract.rs',
               'docs/MINING_PROTOCOL_V3.md',
           }
-          base = os.environ['BASE']
-          changed = set(subprocess.check_output(['git', 'diff', '--name-only', base], text=True).splitlines())
+          changed = set(subprocess.check_output(['git', 'diff', '--name-only'], text=True).splitlines())
           if changed != allowed:
-              raise SystemExit(f'unexpected final delta: {sorted(changed)}')
+              raise SystemExit(f'unexpected working-tree delta: {sorted(changed)}')
           PY
 
           git config user.name "kalekói"
