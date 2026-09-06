@@ -89,8 +89,8 @@ impl WalletTransactionIntent {
     }
 
     pub fn validate(&self) -> Result<(), WalletPlanError> {
-        validate_text("intent.from", &self.from)?;
-        validate_text("intent.to", &self.to)?;
+        validate_canonical_legacy_address("intent.from", &self.from)?;
+        validate_canonical_legacy_address("intent.to", &self.to)?;
         if self.amount == 0 {
             return Err(invalid_plan("intent.amount", "must be greater than zero"));
         }
@@ -734,6 +734,35 @@ fn validate_text(field: &'static str, value: &str) -> Result<(), WalletPlanError
     Ok(())
 }
 
+fn validate_canonical_legacy_address(
+    field: &'static str,
+    value: &str,
+) -> Result<(), WalletPlanError> {
+    validate_text(field, value)?;
+    let payload = value.strip_prefix("pulse1").ok_or_else(|| {
+        invalid_plan(
+            field,
+            "must use the active canonical pulse1 legacy address format",
+        )
+    })?;
+    if payload.len() != 40 {
+        return Err(invalid_plan(
+            field,
+            "must contain exactly 40 lowercase hexadecimal payload characters",
+        ));
+    }
+    if !payload
+        .bytes()
+        .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+    {
+        return Err(invalid_plan(
+            field,
+            "must contain only lowercase hexadecimal payload characters",
+        ));
+    }
+    Ok(())
+}
+
 fn validate_canonical_public_key(public_key_hex: &str) -> Result<(), WalletPlanError> {
     let decoded = hex::decode(public_key_hex).map_err(|_| WalletPlanError::InvalidPublicKey {
         reason: "must be hexadecimal",
@@ -776,8 +805,16 @@ mod tests {
         address_from_public_key(&public_key())
     }
 
+    fn recipient_address() -> String {
+        address_from_public_key(&"cd".repeat(32))
+    }
+
+    fn alternate_recipient_address() -> String {
+        address_from_public_key(&"ef".repeat(32))
+    }
+
     fn intent(amount: u64, fee: u64) -> WalletTransactionIntent {
-        WalletTransactionIntent::new(sender_address(), "pulse1recipient", amount, fee)
+        WalletTransactionIntent::new(sender_address(), recipient_address(), amount, fee)
             .expect("valid intent")
     }
 
@@ -841,8 +878,29 @@ mod tests {
     }
 
     #[test]
+    fn canonical_legacy_addresses_are_required_for_both_intent_sides() {
+        let sender = sender_address();
+        let recipient = recipient_address();
+        assert!(WalletTransactionIntent::new(&sender, &recipient, 1, 0).is_ok());
+
+        let malformed = [
+            format!(" {recipient}"),
+            format!("{recipient} "),
+            recipient.to_uppercase(),
+            format!("pulse1{}", "a".repeat(39)),
+            format!("pulse1{}", "a".repeat(41)),
+            format!("pulse1{}g", "a".repeat(39)),
+            format!("pulseq1{}", "a".repeat(40)),
+        ];
+        for address in malformed {
+            assert!(WalletTransactionIntent::new(&sender, &address, 1, 0).is_err());
+            assert!(WalletTransactionIntent::new(&address, &recipient, 1, 0).is_err());
+        }
+    }
+
+    #[test]
     fn deterministic_nonce_vector_is_frozen() {
-        let intent = WalletTransactionIntent::new("pulse1sender", "pulse1recipient", 400, 10)
+        let intent = WalletTransactionIntent::new(sender_address(), recipient_address(), 400, 10)
             .expect("vector intent");
         let selected = vec![SelectedUtxo {
             outpoint: OutPoint {
@@ -853,7 +911,7 @@ mod tests {
         }];
         assert_eq!(
             derive_wallet_plan_nonce_v1(&intent, &selected).expect("nonce vector"),
-            9_904_313_366_048_028_006
+            9_502_285_333_810_140_450
         );
     }
 
@@ -881,7 +939,7 @@ mod tests {
         let destination_change = build_deterministic_transaction_plan(
             identity("pulsedag-public-testnet"),
             policy(),
-            WalletTransactionIntent::new(sender_address(), "pulse1other", 400, 10)
+            WalletTransactionIntent::new(sender_address(), alternate_recipient_address(), 400, 10)
                 .expect("destination-change intent"),
             &available,
         )
@@ -930,6 +988,24 @@ mod tests {
         decoded.transaction.nonce ^= 1;
         decoded.transaction.txid = compute_txid(&decoded.transaction);
         assert!(decoded.validate_structure().is_err());
+    }
+
+    #[test]
+    fn malformed_plan_intent_and_destination_fail_before_signing() {
+        let plan = deterministic_plan();
+        let mut serialized = serde_json::to_value(&plan).expect("serialize plan value");
+        serialized["intent"]["to"] = serde_json::json!(format!("pulseq1{}", "a".repeat(40)));
+        let decoded: WalletTransactionPlan =
+            serde_json::from_value(serialized).expect("schema remains parseable");
+        assert!(decoded.validate_structure().is_err());
+
+        let mut tampered = sample_plan();
+        tampered.intent.to = format!("pulseq1{}", "b".repeat(40));
+        tampered.transaction.outputs[0].address = tampered.intent.to.clone();
+        tampered.transaction.txid = compute_txid(&tampered.transaction);
+        assert!(tampered
+            .prepare_signing(&identity("pulsedag-public-testnet"), &public_key())
+            .is_err());
     }
 
     #[test]
@@ -1171,7 +1247,7 @@ mod tests {
 
         let value = serde_json::json!({
             "from": sender_address(),
-            "to": "pulse1recipient",
+            "to": recipient_address(),
             "amount": 1,
             "fee": 0,
             "unexpected": true
