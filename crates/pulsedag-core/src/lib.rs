@@ -12,6 +12,7 @@ pub mod ghostdag_v1;
 pub mod header_v2;
 pub mod mempool;
 pub mod mempool_protocol;
+pub mod mempool_v3;
 pub mod mined_block_v2;
 pub mod mining;
 pub mod mining_protocol;
@@ -169,6 +170,13 @@ pub use mempool::{
     reconcile_mempool, MempoolPressureTier, MempoolReconcileResult,
 };
 pub use mempool_protocol::reconcile_mempool_for_protocol;
+pub use mempool_v3::{
+    admission_order_key_v3, canonical_transaction_size_for_mempool_v3, fee_rate_v3, FeeRateV3,
+    MempoolPolicyAssessmentErrorV3, MempoolPolicyRejectionV3, MempoolPolicyV3,
+    FEE_RATE_SCALE_BYTES_V3, MEMPOOL_POLICY_V3_COMPAT_MAX_TRANSACTIONS,
+    MEMPOOL_POLICY_V3_COMPAT_MAX_TRANSACTION_FEE, MEMPOOL_POLICY_V3_COMPAT_MIN_RELAY_FEE_RATE,
+    MEMPOOL_POLICY_V3_VERSION,
+};
 
 pub use ghostdag::{
     calculate_merge_set, classify_merge_set, classify_merge_set_with_k, MergeSetClassification,
