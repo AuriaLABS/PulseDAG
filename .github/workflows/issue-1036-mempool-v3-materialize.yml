@@ -38,10 +38,13 @@ jobs:
       - name: Apply guarded crate export
         run: python3 .github/scripts/issue_1036_mempool_v3_export.py
 
-      - name: Verify scope and formatting
+      - name: Format and verify scoped delta
         run: |
           set -euo pipefail
-          test "$(git diff --name-only)" = "crates/pulsedag-core/src/lib.rs"
+          cargo fmt --all
+          unexpected="$(git diff --name-only | grep -Ev '^(crates/pulsedag-core/src/lib.rs|crates/pulsedag-core/src/mempool_v3.rs)$' || true)"
+          test -z "$unexpected" || { echo "$unexpected"; exit 1; }
+          test -n "$(git diff --name-only)"
           git diff --check
           cargo fmt --all -- --check
 
