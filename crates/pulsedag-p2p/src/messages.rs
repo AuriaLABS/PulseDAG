@@ -93,7 +93,10 @@ where
     Ok(block)
 }
 
-fn serialize_bounded_inventory_hashes<S>(hashes: &[Hash], serializer: S) -> Result<S::Ok, S::Error>
+fn serialize_bounded_inventory_hashes<S>(
+    hashes: &[Hash],
+    serializer: S,
+) -> Result<S::Ok, S::Error>
 where
     S: serde::Serializer,
 {
@@ -450,10 +453,10 @@ mod tests {
 
     #[test]
     fn rejects_malformed_payloads_during_decode() {
-        let malformed_json = br#"{\"type\":\"GetBlock\",\"chain_id\":\"testnet\",\"hash\":42}"#;
+        let malformed_json = br#"{"type":"GetBlock","chain_id":"testnet","hash":42}"#;
         assert!(serde_json::from_slice::<NetworkMessage>(malformed_json).is_err());
 
-        let unknown_variant = br#"{\"type\":\"Unknown\",\"chain_id\":\"testnet\"}"#;
+        let unknown_variant = br#"{"type":"Unknown","chain_id":"testnet"}"#;
         assert!(serde_json::from_slice::<NetworkMessage>(unknown_variant).is_err());
     }
 
