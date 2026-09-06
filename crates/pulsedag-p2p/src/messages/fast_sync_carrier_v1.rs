@@ -1076,7 +1076,7 @@ fn decode_lower_hex(value: &str) -> Result<Vec<u8>, FastSyncWireErrorV1> {
     }
     let mut bytes = Vec::with_capacity(value.len() / 2);
     let input = value.as_bytes();
-    for pair in input.chunks_exact(2) {
+    for pair in input.as_chunks::<2>().0 {
         let high = lower_hex_nibble(pair[0])?;
         let low = lower_hex_nibble(pair[1])?;
         bytes.push((high << 4) | low);
