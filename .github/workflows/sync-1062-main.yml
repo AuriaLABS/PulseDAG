@@ -1,0 +1,29 @@
+name: Sync #1062 with current main
+on:
+  push:
+    branches: [wallet/v3-pending-utxo-reconcile]
+permissions:
+  contents: write
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: wallet/v3-pending-utxo-reconcile
+          fetch-depth: 0
+      - name: Merge current main and publish clean head
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'kalekoi'
+          git config user.email 'hermida.prada@gmail.com'
+          git fetch origin main
+          git merge --no-edit origin/main
+          rm .github/workflows/sync-1062-main.yml
+          git add .github/workflows/sync-1062-main.yml
+          if ! git diff --cached --quiet; then
+            git commit -m 'ci: remove #1062 sync helper'
+          fi
+          git diff --check
+          git push origin HEAD:wallet/v3-pending-utxo-reconcile
