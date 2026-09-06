@@ -106,6 +106,9 @@ mod mining_submit_protocol;
 pub mod mining_template;
 #[path = "mining_template.rs"]
 mod mining_template_legacy;
+// The retained lower layer intentionally exposes a compatibility re-export to
+// unit-test builds through the v3 facade; it is unused by the production facade.
+#[cfg_attr(not(test), allow(unused_imports))]
 #[path = "mining_template_protocol.rs"]
 pub(crate) mod mining_template_protocol;
 pub mod mining_workers;

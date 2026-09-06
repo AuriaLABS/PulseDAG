@@ -157,8 +157,18 @@ async fn submit_block(state: &TestState, template_id: String, block: Block) -> V
     unreachable!("retry loop returns or panics before exhaustion")
 }
 
+// The production submit actor is process-global and is spawned on the current
+// Tokio runtime. Keep all route scenarios under one runtime so its receiver is
+// alive for the whole contract suite; separate #[tokio::test] runtimes can leave
+// the OnceLock handle pointing at a receiver task that was torn down between tests.
 #[tokio::test]
-async fn task37_cpu_miner_contract_reconciles_reconnect_without_rebroadcast() {
+async fn task37_mining_protocol_v3_route_contracts_serially() {
+    scenario_cpu_miner_contract_reconciles_reconnect_without_rebroadcast().await;
+    scenario_stale_template_maps_to_frozen_stale_finality().await;
+    scenario_multi_miner_work_has_distinct_stable_job_identity_and_bounded_notifications().await;
+}
+
+async fn scenario_cpu_miner_contract_reconciles_reconnect_without_rebroadcast() {
     let state = test_state();
     let template = request_template(&state, "kaspa:qptask37miner").await;
     let data = &template["data"];
@@ -174,6 +184,7 @@ async fn task37_cpu_miner_contract_reconciles_reconnect_without_rebroadcast() {
     assert!(data["work_token"]
         .as_str()
         .is_some_and(|value| value.len() == 64));
+    assert_eq!(data["new_work_notification"]["poll_after_ms"], 250);
     assert_eq!(
         data["new_work_notification"]["max_outstanding_snapshots"],
         1
@@ -201,8 +212,7 @@ async fn task37_cpu_miner_contract_reconciles_reconnect_without_rebroadcast() {
     assert_eq!(replay["data"]["submit_id"], submit_id);
 }
 
-#[tokio::test]
-async fn task37_stale_template_maps_to_frozen_stale_finality() {
+async fn scenario_stale_template_maps_to_frozen_stale_finality() {
     let state = test_state();
     let template = request_template(&state, "kaspa:qptask37stale").await;
     let compact_target = template["data"]["compact_target"].as_u64().unwrap() as u32;
@@ -226,8 +236,7 @@ async fn task37_stale_template_maps_to_frozen_stale_finality() {
     assert_eq!(submit["data"]["finality"], "stale");
 }
 
-#[tokio::test]
-async fn task37_multi_miner_work_has_distinct_stable_job_identity_and_bounded_notifications() {
+async fn scenario_multi_miner_work_has_distinct_stable_job_identity_and_bounded_notifications() {
     let state = test_state();
     let miner_a = request_template(&state, "kaspa:qptask37minera");
     let miner_b = request_template(&state, "kaspa:qptask37minerb");
@@ -236,6 +245,10 @@ async fn task37_multi_miner_work_has_distinct_stable_job_identity_and_bounded_no
     for template in [&template_a, &template_b] {
         assert_eq!(template["ok"], true);
         assert_eq!(template["data"]["protocol_version"], 3);
+        assert_eq!(
+            template["data"]["new_work_notification"]["poll_after_ms"],
+            250
+        );
         assert_eq!(
             template["data"]["new_work_notification"]["max_outstanding_snapshots"],
             1

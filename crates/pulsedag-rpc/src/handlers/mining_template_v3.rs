@@ -340,6 +340,5 @@ mod tests {
     #[test]
     fn task37_new_work_notifications_are_strictly_bounded() {
         assert_eq!(MINING_V3_MAX_OUTSTANDING_NOTIFICATION_SNAPSHOTS, 1);
-        assert!(MINING_V3_NOTIFICATION_POLL_AFTER_MS > 0);
     }
 }
