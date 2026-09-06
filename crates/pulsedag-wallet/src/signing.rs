@@ -257,10 +257,14 @@ mod tests {
         (dir, file, anchor)
     }
 
+    fn recipient_address() -> String {
+        address_from_public_key(&"cd".repeat(32))
+    }
+
     fn transaction_plan(from: &str, chain_id: &str) -> WalletTransactionPlan {
         let network = WalletNetworkIdentity::new(NETWORK_PROFILE, chain_id).expect("network");
         let spend_policy = WalletSpendPolicy::new(100, 1_000, 8).expect("spend policy");
-        let intent = WalletTransactionIntent::new(from, "pulse1recipient", 400, 10)
+        let intent = WalletTransactionIntent::new(from, recipient_address(), 400, 10)
             .expect("transaction intent");
         let available = vec![Utxo {
             outpoint: OutPoint {

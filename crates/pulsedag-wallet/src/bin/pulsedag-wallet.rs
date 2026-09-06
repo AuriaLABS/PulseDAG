@@ -1207,12 +1207,17 @@ mod tests {
             std::env::temp_dir().join(format!("pulsedag-wallet-cli-plan-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
         let path = dir.join("plan.json");
-        let from = "pulse1sender";
+        let from = "pulse1271a413bd339c5709fdceaec41f14f11e9fbfb50";
         let network = WalletNetworkIdentity::new("public-testnet", "pulsedag-public-testnet")
             .expect("network");
         let policy = WalletSpendPolicy::new(100, 1_000, 8).expect("policy");
-        let intent =
-            WalletTransactionIntent::new(from, "pulse1recipient", 400, 10).expect("intent");
+        let intent = WalletTransactionIntent::new(
+            from,
+            "pulse13985dac9133f8144ae1ab001dd0a29dffdddb1bf",
+            400,
+            10,
+        )
+        .expect("intent");
         let available = vec![Utxo {
             outpoint: OutPoint {
                 txid: "11".repeat(32),
