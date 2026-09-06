@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use pulsedag_core::ProtocolActivationIdentity;
 
@@ -82,7 +82,6 @@ fn require_peer_id(peer_id: &str) -> Result<(), FastSyncRuntimeSessionErrorV1> {
 pub struct FastSyncRuntimeSessionBookV1 {
     local_capabilities: Option<FastSyncCapabilitiesV1>,
     remote_capabilities: BTreeMap<String, FastSyncCapabilitiesV1>,
-    capability_probe_seen: BTreeSet<String>,
 }
 
 impl FastSyncRuntimeSessionBookV1 {
@@ -94,14 +93,12 @@ impl FastSyncRuntimeSessionBookV1 {
         capabilities.validate_for_expected(expected)?;
         self.local_capabilities = Some(capabilities);
         self.remote_capabilities.clear();
-        self.capability_probe_seen.clear();
         Ok(())
     }
 
     pub fn reset_local(&mut self) {
         self.local_capabilities = None;
         self.remote_capabilities.clear();
-        self.capability_probe_seen.clear();
     }
 
     pub fn local_capabilities(&self) -> Option<&FastSyncCapabilitiesV1> {
@@ -113,14 +110,11 @@ impl FastSyncRuntimeSessionBookV1 {
     }
 
     pub fn peer_session_authorized(&self, peer_id: &str) -> bool {
-        self.local_capabilities.is_some()
-            && (self.capability_probe_seen.contains(peer_id)
-                || self.remote_capabilities.contains_key(peer_id))
+        self.local_capabilities.is_some() && self.remote_capabilities.contains_key(peer_id)
     }
 
     pub fn peer_disconnected(&mut self, peer_id: &str) {
         self.remote_capabilities.remove(peer_id);
-        self.capability_probe_seen.remove(peer_id);
     }
 
     pub fn note_inbound(
@@ -138,10 +132,7 @@ impl FastSyncRuntimeSessionBookV1 {
         local.validate_for_expected(expected)?;
 
         match wire {
-            FastSyncWireV1::CapabilityProbe { .. } => {
-                self.capability_probe_seen.insert(peer_id.to_string());
-                Ok(())
-            }
+            FastSyncWireV1::CapabilityProbe { .. } => Ok(()),
             FastSyncWireV1::Capabilities(remote) => {
                 remote.validate_for_expected(expected)?;
                 require_capability_surface(local, remote)?;
@@ -330,7 +321,7 @@ mod tests {
     }
 
     #[test]
-    fn inbound_probe_opens_server_side_session_but_protocol_route_is_still_required() {
+    fn inbound_probe_does_not_authorize_transfer_before_capability_surface() {
         let expected = identity();
         let mut book = FastSyncRuntimeSessionBookV1::default();
         book.configure_local(&expected, capabilities()).unwrap();
@@ -339,10 +330,24 @@ mod tests {
         };
         book.note_inbound(&expected, PEER, &probe).unwrap();
 
-        assert!(book.peer_session_authorized(PEER));
+        assert!(!book.peer_session_authorized(PEER));
+        assert!(book
+            .note_inbound(&expected, PEER, &summary_request())
+            .is_err());
         assert!(book
             .validate_outbound(&expected, PEER, false, &summary_request())
             .is_err());
+        assert!(book
+            .validate_outbound(&expected, PEER, true, &summary_request())
+            .is_err());
+
+        book.note_inbound(
+            &expected,
+            PEER,
+            &FastSyncWireV1::Capabilities(capabilities()),
+        )
+        .unwrap();
+        assert!(book.peer_session_authorized(PEER));
         book.validate_outbound(&expected, PEER, true, &summary_request())
             .unwrap();
     }
