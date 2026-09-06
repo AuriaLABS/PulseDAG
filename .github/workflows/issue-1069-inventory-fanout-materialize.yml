@@ -1,0 +1,63 @@
+name: Issue 1069 inventory fanout materializer
+
+on:
+  push:
+    branches:
+      - fix/issue-1069-inventory-fanout
+    paths:
+      - '.github/workflows/issue-1069-inventory-fanout-materialize.yml'
+      - '.github/scripts/issue_1069_inventory_fanout_fix.py'
+
+permissions:
+  contents: write
+
+jobs:
+  materialize:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out exact branch
+        uses: actions/checkout@v4
+        with:
+          ref: fix/issue-1069-inventory-fanout
+          fetch-depth: 1
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.91.0
+          components: clippy,rustfmt
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Apply guarded test-only patch
+        run: python3 .github/scripts/issue_1069_inventory_fanout_fix.py
+
+      - name: Verify exact delta
+        run: |
+          set -euo pipefail
+          test "$(git diff --name-only)" = "crates/pulsedag-p2p/src/lib.rs"
+          git diff --check
+          cargo fmt --all -- --check
+
+      - name: Run focused and crate tests
+        run: |
+          set -euo pipefail
+          cargo test -p pulsedag-p2p inventory_request_fanout_is_capped
+          cargo test -p pulsedag-p2p --lib
+
+      - name: Run P2P Clippy
+        run: cargo clippy -p pulsedag-p2p --all-targets --all-features -- -D warnings -A clippy::uninlined-format-args
+
+      - name: Remove temporary materializer and publish verified fix
+        run: |
+          set -euo pipefail
+          rm .github/scripts/issue_1069_inventory_fanout_fix.py
+          rm .github/workflows/issue-1069-inventory-fanout-materialize.yml
+          git diff --check
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "p2p: align inventory fanout regression with wire bound"
+          git push origin HEAD:fix/issue-1069-inventory-fanout
