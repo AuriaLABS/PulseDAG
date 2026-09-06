@@ -93,16 +93,6 @@ where
     Ok(block)
 }
 
-fn serialize_bounded_inventory_hashes<S>(
-    hashes: &[Hash],
-    serializer: S,
-) -> Result<S::Ok, S::Error>
-where
-    S: serde::Serializer,
-{
-    hashes[..hashes.len().min(P2P_WIRE_MAX_INVENTORY_ITEMS_V1)].serialize(serializer)
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HeaderInventory {
     pub hash: Hash,
@@ -150,7 +140,6 @@ pub enum NetworkMessage {
     },
     InvBlock {
         chain_id: String,
-        #[serde(serialize_with = "serialize_bounded_inventory_hashes")]
         hashes: Vec<Hash>,
     },
     GetHeaders {
@@ -509,26 +498,11 @@ mod tests {
         };
         let encoded = serde_json::to_vec(&request_at_limit).unwrap();
         assert!(serde_json::from_slice::<NetworkMessage>(&encoded).is_ok());
-
         let oversized_inventory = NetworkMessage::InvBlock {
             chain_id: "testnet".into(),
             hashes: vec!["hash".into(); P2P_WIRE_MAX_INVENTORY_ITEMS_V1 + 1],
         };
         let encoded = serde_json::to_vec(&oversized_inventory).unwrap();
-        let decoded = serde_json::from_slice::<NetworkMessage>(&encoded).unwrap();
-        match decoded {
-            NetworkMessage::InvBlock { hashes, .. } => {
-                assert_eq!(hashes.len(), P2P_WIRE_MAX_INVENTORY_ITEMS_V1);
-            }
-            other => panic!("unexpected decoded message: {other:?}"),
-        }
-
-        let adversarial_oversized_inventory = serde_json::json!({
-            "type": "InvBlock",
-            "chain_id": "testnet",
-            "hashes": vec!["hash"; P2P_WIRE_MAX_INVENTORY_ITEMS_V1 + 1],
-        });
-        let encoded = serde_json::to_vec(&adversarial_oversized_inventory).unwrap();
         let err = serde_json::from_slice::<NetworkMessage>(&encoded).unwrap_err();
         assert!(err.to_string().contains("maximum item count 512"));
 
