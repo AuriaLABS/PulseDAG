@@ -1,0 +1,29 @@
+name: Sync #1064 with current main
+on:
+  push:
+    branches: [codex/issue-1037-mining-protocol-v3]
+permissions:
+  contents: write
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: codex/issue-1037-mining-protocol-v3
+          fetch-depth: 0
+      - name: Merge current main and publish clean head
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'kalekoi'
+          git config user.email 'hermida.prada@gmail.com'
+          git fetch origin main
+          git merge --no-edit origin/main
+          rm .github/workflows/sync-1064-main.yml
+          git add .github/workflows/sync-1064-main.yml
+          if ! git diff --cached --quiet; then
+            git commit -m 'ci: remove #1064 sync helper'
+          fi
+          git diff --check
+          git push origin HEAD:codex/issue-1037-mining-protocol-v3
