@@ -1,0 +1,35 @@
+name: Sync #1065 with fast-sync root
+
+on:
+  push:
+    branches:
+      - codex/1035-fast-sync-runtime-adapter
+    paths:
+      - '.github/workflows/sync-1065-fast-sync-root.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: codex/1035-fast-sync-runtime-adapter
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Merge current fast-sync root and publish clean head
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin codex/1035-fast-sync-manifest
+          git merge --no-edit origin/codex/1035-fast-sync-manifest
+          rm .github/workflows/sync-1065-fast-sync-root.yml
+          git add -A
+          if ! git diff --cached --quiet; then
+            git commit -m "ci: remove #1065 sync helper"
+          fi
+          git push origin HEAD:codex/1035-fast-sync-runtime-adapter
