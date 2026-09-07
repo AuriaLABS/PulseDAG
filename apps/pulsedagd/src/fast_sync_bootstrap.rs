@@ -110,7 +110,6 @@ pub fn select_clean_bootstrap_source_peer(
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FastSyncBootstrapOutcome {
-    Idle,
     Progress,
     Imported(SnapshotVerificationReport),
 }
@@ -152,10 +151,6 @@ impl FastSyncBootstrapController {
             pending_request: None,
             imported: false,
         })
-    }
-
-    pub fn local_capabilities(&self) -> &FastSyncCapabilitiesV1 {
-        &self.local_capabilities
     }
 
     pub fn source_peer(&self) -> Option<&str> {
@@ -628,10 +623,6 @@ impl FastSyncDaemonRuntimeV1 {
                 .is_some_and(|controller| !controller.imported())
     }
 
-    pub fn fallback_to_normal_sync(&self) -> bool {
-        self.fallback_to_normal_sync
-    }
-
     fn discovery_expired(&self, now_unix: u64) -> bool {
         now_unix.saturating_sub(self.discovery_started_at_unix) >= FAST_SYNC_CLEAN_DISCOVERY_SECS
     }
@@ -761,7 +752,7 @@ impl FastSyncDaemonRuntimeV1 {
                     runtime,
                 }))
             }
-            Ok(FastSyncBootstrapOutcome::Idle | FastSyncBootstrapOutcome::Progress) => Ok(None),
+            Ok(FastSyncBootstrapOutcome::Progress) => Ok(None),
             Err(error) => {
                 if controller.source_peer() == Some(peer_id) {
                     controller.abandon_source();
