@@ -12,6 +12,7 @@ on:
       - 'crates/pulsedag-core/src/replay.rs'
       - 'crates/pulsedag-core/src/state.rs'
       - 'crates/pulsedag-storage/src/fast_sync_manifest.rs'
+      - 'crates/pulsedag-storage/src/fast_sync_resume.rs'
       - 'crates/pulsedag-storage/src/fast_sync_transfer.rs'
       - 'crates/pulsedag-storage/src/protocol_bundle.rs'
       - 'crates/pulsedag-storage/src/root.rs'
@@ -71,6 +72,10 @@ jobs:
       - name: Chunked and resumable transfer regressions
         run: |
           cargo test --locked -p pulsedag-storage fast_sync_transfer::tests:: -- --nocapture
+
+      - name: Crash-safe persisted resume regressions
+        run: |
+          cargo test --locked -p pulsedag-storage fast_sync_resume::tests:: -- --nocapture
 
       - name: Bounded fast-sync P2P carrier regressions
         run: |
