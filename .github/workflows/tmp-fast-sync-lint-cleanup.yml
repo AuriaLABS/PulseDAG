@@ -1,0 +1,55 @@
+name: temporary fast-sync lint cleanup
+
+on:
+  push:
+    branches:
+      - codex/1035-fast-sync-clean-bootstrap
+
+permissions:
+  contents: write
+
+jobs:
+  cleanup:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: codex/1035-fast-sync-clean-bootstrap
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.91.0
+          components: clippy,rustfmt
+      - name: Remove dead FastSync API surface
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('apps/pulsedagd/src/fast_sync_bootstrap.rs')
+          s = p.read_text()
+          replacements = [
+              ('    Idle,\n', ''),
+              ('    pub fn local_capabilities(&self) -> &FastSyncCapabilitiesV1 {\n        &self.local_capabilities\n    }\n\n', ''),
+              ('            Ok(FastSyncBootstrapOutcome::Idle | FastSyncBootstrapOutcome::Progress) => Ok(None),',
+               '            Ok(FastSyncBootstrapOutcome::Progress) => Ok(None),'),
+              ('    pub fn fallback_to_normal_sync(&self) -> bool {\n        self.fallback_to_normal_sync\n    }\n\n', ''),
+          ]
+          for old, new in replacements:
+              if old not in s:
+                  raise SystemExit(f'missing expected cleanup anchor: {old!r}')
+              s = s.replace(old, new, 1)
+          p.write_text(s)
+          PY
+          cargo fmt --all
+          git diff --check
+      - name: Verify daemon clippy
+        run: |
+          cargo clippy --locked -p pulsedagd --all-targets -- -D warnings -A clippy::uninlined-format-args
+      - name: Commit cleanup and remove helper
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git rm .github/workflows/tmp-fast-sync-lint-cleanup.yml
+          git add apps/pulsedagd/src/fast_sync_bootstrap.rs
+          git commit -m 'daemon: remove dead fast-sync bootstrap surface'
+          git push origin HEAD:codex/1035-fast-sync-clean-bootstrap
