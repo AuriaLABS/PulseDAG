@@ -13,6 +13,7 @@ on:
       - 'crates/pulsedag-core/src/replay.rs'
       - 'crates/pulsedag-core/src/state.rs'
       - 'crates/pulsedag-storage/src/fast_sync_manifest.rs'
+      - 'crates/pulsedag-storage/src/fast_sync_network_resume.rs'
       - 'crates/pulsedag-storage/src/fast_sync_resume.rs'
       - 'crates/pulsedag-storage/src/fast_sync_transfer.rs'
       - 'crates/pulsedag-storage/src/protocol_bundle.rs'
@@ -80,6 +81,10 @@ jobs:
       - name: Crash-safe persisted resume regressions
         run: |
           cargo test --locked -p pulsedag-storage fast_sync_resume::tests:: -- --nocapture
+
+      - name: Live-network durable resume regressions
+        run: |
+          cargo test --locked -p pulsedag-storage fast_sync_network_resume::tests:: -- --nocapture
 
       - name: Bounded fast-sync P2P carrier regressions
         run: |
