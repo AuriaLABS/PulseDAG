@@ -1,6 +1,6 @@
 name: v3 fast-sync verification
 
-# Network-resume coverage is exact-head because accepted chunks survive daemon restart.
+# FastSync state transfer is exact-head because accepted chunks and clean bootstrap imports survive daemon restart.
 on:
   pull_request:
     branches:
@@ -9,10 +9,12 @@ on:
     paths:
       - '.github/workflows/v3-fast-sync.yml'
       - 'apps/pulsedagd/src/main.rs'
+      - 'apps/pulsedagd/src/fast_sync_bootstrap.rs'
       - 'crates/pulsedag-core/src/lib.rs'
       - 'crates/pulsedag-core/src/snapshot_transfer.rs'
       - 'crates/pulsedag-core/src/replay.rs'
       - 'crates/pulsedag-core/src/state.rs'
+      - 'crates/pulsedag-storage/src/fast_sync_bootstrap_import.rs'
       - 'crates/pulsedag-storage/src/fast_sync_manifest.rs'
       - 'crates/pulsedag-storage/src/fast_sync_network_resume.rs'
       - 'crates/pulsedag-storage/src/fast_sync_resume.rs'
@@ -86,6 +88,14 @@ jobs:
       - name: Live-network durable resume regressions
         run: |
           cargo test --locked -p pulsedag-storage fast_sync_network_resume::tests:: -- --nocapture
+
+      - name: Atomic clean-bootstrap import regressions
+        run: |
+          cargo test --locked -p pulsedag-storage fast_sync_bootstrap_import::tests:: -- --nocapture
+
+      - name: Clean-node daemon bootstrap controller regressions
+        run: |
+          cargo test --locked -p pulsedagd fast_sync_bootstrap::tests:: -- --nocapture
 
       - name: Bounded fast-sync P2P carrier regressions
         run: |
