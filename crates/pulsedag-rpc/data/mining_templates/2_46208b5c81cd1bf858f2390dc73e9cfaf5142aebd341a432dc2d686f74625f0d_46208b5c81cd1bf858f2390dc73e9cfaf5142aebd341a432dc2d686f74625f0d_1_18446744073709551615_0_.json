@@ -1,0 +1,30 @@
+{
+  "protocol_version": 1,
+  "template_id": "2:46208b5c81cd1bf858f2390dc73e9cfaf5142aebd341a432dc2d686f74625f0d:46208b5c81cd1bf858f2390dc73e9cfaf5142aebd341a432dc2d686f74625f0d:1:18446744073709551615:0:",
+  "miner_address": "kaspa:qptestminer",
+  "selected_tip": "46208b5c81cd1bf858f2390dc73e9cfaf5142aebd341a432dc2d686f74625f0d",
+  "parent_hashes": [
+    "46208b5c81cd1bf858f2390dc73e9cfaf5142aebd341a432dc2d686f74625f0d"
+  ],
+  "height": 2,
+  "difficulty": 1,
+  "created_at_unix": 1783876132,
+  "target_u64": 18446744073709551615,
+  "mempool_fingerprint": "0:",
+  "mempool_tx_count": 0,
+  "expires_at_unix": 1783876162,
+  "template_txids": [
+    "a43ccba35bcc23056180e51c3ec5984a14981e027f0a5d297a98684c3e126a15"
+  ],
+  "merkle_root": "5faa5bad9007a19e64a1861a806c5d45f05e5e17972e2a1a095e11c812daf38d",
+  "template_selected_parent": "46208b5c81cd1bf858f2390dc73e9cfaf5142aebd341a432dc2d686f74625f0d",
+  "template_parent_count": 1,
+  "template_blue_score": 2,
+  "template_merge_set_size": 0,
+  "template_parallel_parents_enabled": false,
+  "template_parallel_parent_exclusion_reasons": [
+    "consensus_mode_not_ghostdag_dev",
+    "experimental_parallel_parents_flag_disabled"
+  ],
+  "duplicate_tx_filtered": 0
+}
