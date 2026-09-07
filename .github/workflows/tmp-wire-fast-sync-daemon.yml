@@ -27,9 +27,11 @@ jobs:
           cargo fmt --all
           git diff --check
       - name: Compile daemon integration
-        run: cargo check --locked -p pulsedagd
+        run: |
+          cargo check --locked -p pulsedagd
       - name: Run clean bootstrap daemon regressions
-        run: cargo test --locked -p pulsedagd fast_sync_bootstrap::tests:: -- --nocapture
+        run: |
+          cargo test --locked -p pulsedagd fast_sync_bootstrap::tests:: -- --nocapture
       - name: Commit wired candidate and remove helpers
         run: |
           git config user.name 'github-actions[bot]'
