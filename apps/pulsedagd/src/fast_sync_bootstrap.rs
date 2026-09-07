@@ -1,8 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use pulsedag_core::types::Block;
 use pulsedag_core::{
     errors::PulseError, snapshot_transfer::snapshot_transfer_commitment_set_digest_v1,
-    ProtocolActivationIdentity,
+    ActivatedV2P2pRuntime, ChainState, ProtocolActivationIdentity,
 };
 use pulsedag_p2p::messages::fast_sync_carrier_v1::{
     live_session_v1::FastSyncServingSessionV1, verify_fast_sync_commitment_pages_v1,
@@ -11,7 +12,7 @@ use pulsedag_p2p::messages::fast_sync_carrier_v1::{
     P2P_FAST_SYNC_MAX_CHUNKS_PER_REQUEST_V1, P2P_FAST_SYNC_MAX_CHUNK_BYTES_V1,
     P2P_FAST_SYNC_MAX_COMMITMENTS_PER_PAGE_V1,
 };
-use pulsedag_p2p::{P2pStatus, RemoteSelectedTipStatus};
+use pulsedag_p2p::{P2pHandle, P2pStatus, RemoteSelectedTipStatus};
 use pulsedag_storage::{
     FastSyncNetworkTransferPlanV1, SnapshotVerificationReport, Storage,
     FAST_SYNC_NETWORK_TRANSFER_PLAN_VERSION, FAST_SYNC_SNAPSHOT_MANIFEST_VERSION,
@@ -20,6 +21,8 @@ use pulsedag_storage::{
 };
 
 const FAST_SYNC_REQUEST_RETRY_SECS: u64 = 5;
+const FAST_SYNC_CAPABILITY_PROBE_RETRY_SECS: u64 = 5;
+const FAST_SYNC_CLEAN_DISCOVERY_SECS: u64 = 30;
 
 fn bootstrap_error(message: impl Into<String>) -> PulseError {
     PulseError::Internal(format!("fast-sync bootstrap: {}", message.into()))
@@ -157,6 +160,10 @@ impl FastSyncBootstrapController {
 
     pub fn source_peer(&self) -> Option<&str> {
         self.source_peer.as_deref()
+    }
+
+    pub fn has_peer_capabilities(&self, peer_id: &str) -> bool {
+        self.peer_capabilities.contains_key(peer_id)
     }
 
     pub fn imported(&self) -> bool {
@@ -565,6 +572,206 @@ pub fn serve_fast_sync_request_v1(
     }
 }
 
+pub fn fast_sync_clean_storage_candidate_v1(
+    expected: &ProtocolActivationIdentity,
+    persisted_blocks: &[Block],
+) -> bool {
+    persisted_blocks.is_empty()
+        || (persisted_blocks.len() == 1
+            && persisted_blocks[0].header.height == 0
+            && persisted_blocks[0].hash == expected.genesis_hash)
+}
+
+#[derive(Debug, Clone)]
+pub struct FastSyncImportedStateV1 {
+    pub report: SnapshotVerificationReport,
+    pub chain_state: ChainState,
+    pub runtime: ActivatedV2P2pRuntime,
+}
+
+pub struct FastSyncDaemonRuntimeV1 {
+    expected: ProtocolActivationIdentity,
+    local_capabilities: FastSyncCapabilitiesV1,
+    controller: Option<FastSyncBootstrapController>,
+    serving_sessions: BTreeMap<String, Option<FastSyncServingSessionV1>>,
+    discovery_started_at_unix: u64,
+    capability_probe_sent_at: BTreeMap<String, u64>,
+    fallback_to_normal_sync: bool,
+}
+
+impl FastSyncDaemonRuntimeV1 {
+    pub fn new(
+        expected: ProtocolActivationIdentity,
+        clean_bootstrap: bool,
+        now_unix: u64,
+    ) -> Result<Self, PulseError> {
+        let local_capabilities = local_fast_sync_capabilities_v1(&expected)?;
+        let controller = clean_bootstrap
+            .then(|| FastSyncBootstrapController::new(expected.clone()))
+            .transpose()?;
+        Ok(Self {
+            expected,
+            local_capabilities,
+            controller,
+            serving_sessions: BTreeMap::new(),
+            discovery_started_at_unix: now_unix,
+            capability_probe_sent_at: BTreeMap::new(),
+            fallback_to_normal_sync: false,
+        })
+    }
+
+    pub fn authority_active(&self) -> bool {
+        !self.fallback_to_normal_sync
+            && self
+                .controller
+                .as_ref()
+                .is_some_and(|controller| !controller.imported())
+    }
+
+    pub fn fallback_to_normal_sync(&self) -> bool {
+        self.fallback_to_normal_sync
+    }
+
+    fn discovery_expired(&self, now_unix: u64) -> bool {
+        now_unix.saturating_sub(self.discovery_started_at_unix) >= FAST_SYNC_CLEAN_DISCOVERY_SECS
+    }
+
+    fn probe_is_due(&self, peer_id: &str, now_unix: u64) -> bool {
+        self.capability_probe_sent_at
+            .get(peer_id)
+            .map(|sent_at| {
+                now_unix.saturating_sub(*sent_at) >= FAST_SYNC_CAPABILITY_PROBE_RETRY_SECS
+            })
+            .unwrap_or(true)
+    }
+
+    pub fn drive(
+        &mut self,
+        p2p: &dyn P2pHandle,
+        local_height: u64,
+        now_unix: u64,
+    ) -> Result<(), PulseError> {
+        if !self.authority_active() {
+            return Ok(());
+        }
+
+        let probe_candidates = p2p.protocol_sync_eligible_peers_v1()?;
+        let fast_sync_eligible_peers = p2p.fast_sync_eligible_peers_v1()?;
+        let peers_to_probe = {
+            let controller = self
+                .controller
+                .as_ref()
+                .ok_or_else(|| bootstrap_error("clean bootstrap controller disappeared"))?;
+            probe_candidates
+                .iter()
+                .filter(|peer_id| {
+                    !controller.has_peer_capabilities(peer_id)
+                        && self.probe_is_due(peer_id, now_unix)
+                })
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        for peer_id in peers_to_probe {
+            p2p.send_fast_sync_v1(
+                &peer_id,
+                &FastSyncWireV1::CapabilityProbe {
+                    chain_id: self.expected.chain_id.clone(),
+                },
+            )?;
+            self.capability_probe_sent_at.insert(peer_id, now_unix);
+        }
+
+        let status = p2p.status()?;
+        let source = {
+            let controller = self
+                .controller
+                .as_mut()
+                .ok_or_else(|| bootstrap_error("clean bootstrap controller disappeared"))?;
+            controller.maybe_select_source(&status, &fast_sync_eligible_peers, local_height)
+        };
+
+        if source.is_none()
+            && self
+                .controller
+                .as_ref()
+                .and_then(|controller| controller.source_peer())
+                .is_none()
+            && self.discovery_expired(now_unix)
+        {
+            self.fallback_to_normal_sync = true;
+            return Ok(());
+        }
+
+        let request = {
+            let controller = self
+                .controller
+                .as_mut()
+                .ok_or_else(|| bootstrap_error("clean bootstrap controller disappeared"))?;
+            let source_peer = controller.source_peer().map(str::to_string);
+            let request = controller.next_request(now_unix)?;
+            source_peer.zip(request)
+        };
+        if let Some((peer_id, wire)) = request {
+            p2p.send_fast_sync_v1(&peer_id, &wire)?;
+        }
+        Ok(())
+    }
+
+    pub fn handle_inbound(
+        &mut self,
+        p2p: &dyn P2pHandle,
+        storage: &Storage,
+        peer_id: &str,
+        wire: &FastSyncWireV1,
+    ) -> Result<Option<FastSyncImportedStateV1>, PulseError> {
+        if matches!(
+            wire,
+            FastSyncWireV1::CapabilityProbe { .. }
+                | FastSyncWireV1::GetTransferSummary { .. }
+                | FastSyncWireV1::GetCommitmentPage { .. }
+                | FastSyncWireV1::GetChunks(_)
+        ) {
+            let serving_session = self
+                .serving_sessions
+                .entry(peer_id.to_string())
+                .or_insert(None);
+            let responses = serve_fast_sync_request_v1(
+                storage,
+                &self.expected,
+                &self.local_capabilities,
+                serving_session,
+                wire,
+            )?;
+            for response in responses {
+                p2p.send_fast_sync_v1(peer_id, &response)?;
+            }
+            return Ok(None);
+        }
+
+        let Some(controller) = self.controller.as_mut() else {
+            return Ok(None);
+        };
+        match controller.accept_response(storage, peer_id, wire.clone()) {
+            Ok(FastSyncBootstrapOutcome::Imported(report)) => {
+                let (chain_state, runtime) =
+                    storage.load_activated_v2_p2p_runtime_snapshot(&self.expected)?;
+                Ok(Some(FastSyncImportedStateV1 {
+                    report,
+                    chain_state,
+                    runtime,
+                }))
+            }
+            Ok(FastSyncBootstrapOutcome::Idle | FastSyncBootstrapOutcome::Progress) => Ok(None),
+            Err(error) => {
+                if controller.source_peer() == Some(peer_id) {
+                    controller.abandon_source();
+                }
+                Err(error)
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -680,5 +887,51 @@ mod tests {
         assert!(serving.is_some());
         drop(storage);
         let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn clean_storage_candidate_accepts_empty_and_exact_genesis_only() {
+        let expected = identity();
+        let state = init_chain_state_v2(expected.chain_id.clone()).unwrap();
+        let genesis = state
+            .dag
+            .blocks
+            .get(&state.dag.genesis_hash)
+            .cloned()
+            .unwrap();
+        assert!(fast_sync_clean_storage_candidate_v1(&expected, &[]));
+        assert!(fast_sync_clean_storage_candidate_v1(
+            &expected,
+            std::slice::from_ref(&genesis)
+        ));
+
+        let mut non_genesis = genesis.clone();
+        non_genesis.header.height = 1;
+        assert!(!fast_sync_clean_storage_candidate_v1(
+            &expected,
+            std::slice::from_ref(&non_genesis)
+        ));
+        assert!(!fast_sync_clean_storage_candidate_v1(
+            &expected,
+            &[genesis.clone(), genesis]
+        ));
+    }
+
+    #[test]
+    fn daemon_runtime_authority_is_clean_node_only() {
+        let expected = identity();
+        let clean = FastSyncDaemonRuntimeV1::new(expected.clone(), true, 100).unwrap();
+        let existing = FastSyncDaemonRuntimeV1::new(expected, false, 100).unwrap();
+        assert!(clean.authority_active());
+        assert!(!existing.authority_active());
+    }
+
+    #[test]
+    fn clean_discovery_window_is_bounded_and_saturating() {
+        let expected = identity();
+        let runtime = FastSyncDaemonRuntimeV1::new(expected, true, 100).unwrap();
+        assert!(!runtime.discovery_expired(99));
+        assert!(!runtime.discovery_expired(129));
+        assert!(runtime.discovery_expired(130));
     }
 }
