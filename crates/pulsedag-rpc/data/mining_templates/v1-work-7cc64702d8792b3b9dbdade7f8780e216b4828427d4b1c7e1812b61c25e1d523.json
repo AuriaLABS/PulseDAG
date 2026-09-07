@@ -1,0 +1,31 @@
+{
+  "protocol_identity_fingerprint": "",
+  "protocol_version": 1,
+  "template_id": "v1-work-7cc64702d8792b3b9dbdade7f8780e216b4828427d4b1c7e1812b61c25e1d523",
+  "miner_address": "kaspa:qptask29miner-b",
+  "selected_tip": "123559958a096cd3900af7008878446131be831e759bf97ebf8618859cd7249e",
+  "parent_hashes": [
+    "123559958a096cd3900af7008878446131be831e759bf97ebf8618859cd7249e"
+  ],
+  "height": 1,
+  "difficulty": 545259519,
+  "created_at_unix": 1788763909,
+  "target_u64": 9223370937343148032,
+  "mempool_fingerprint": "0:",
+  "mempool_tx_count": 0,
+  "expires_at_unix": 1788763939,
+  "template_txids": [
+    "4b6b98321bb7528f5425f4f5001eff4d4c24327003ebf690f91c274ec17118ab"
+  ],
+  "merkle_root": "ab294dbadcb4bdda8cc41c57954abe559edbe284e922b4071685fbcebf2b4099",
+  "template_selected_parent": "123559958a096cd3900af7008878446131be831e759bf97ebf8618859cd7249e",
+  "template_parent_count": 1,
+  "template_blue_score": 1,
+  "template_merge_set_size": 0,
+  "template_parallel_parents_enabled": false,
+  "template_parallel_parent_exclusion_reasons": [
+    "consensus_mode_not_ghostdag_dev",
+    "experimental_parallel_parents_flag_disabled"
+  ],
+  "duplicate_tx_filtered": 0
+}

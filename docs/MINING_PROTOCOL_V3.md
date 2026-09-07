@@ -1,6 +1,6 @@
 # PulseDAG Mining Protocol v3
 
-Status: launch-candidate external miner contract for issue #1037. This document freezes the wire identity implemented by the RPC facade; it does not authorize mainnet launch. Launch authority remains #781 / #794.
+Status: external miner contract candidate for issue #1037. This document freezes the structural v3 wire/domain format implemented by the RPC facade; concrete mainnet/testnet identity values remain governed by #1049 and are not frozen here. It does not authorize mainnet launch. Launch authority remains #781 / #794.
 
 ## Stable endpoints
 
@@ -24,10 +24,10 @@ No new required request field is introduced, so existing CPU/GPU miner clients k
 The externally visible template identity is:
 
 ```text
-v3:<internal-template-id>
+v3:<protocol-identity-fingerprint>:<internal-template-id>
 ```
 
-The internal suffix is preserved byte-for-byte so the facade can recover the lower-layer durable template identity after reconnect/restart without a lossy lookup table.
+Newly issued legacy v3 work persists the exact protocol fingerprint in the durable lower-layer template record before it is returned to a miner; submit reloads that issued record instead of deriving identity from mutable tip/height state. Activated-v2 work reuses the fingerprint already embedded in its internal v2 template ID. A valid-looking substituted fingerprint therefore fails before reconciliation or lower-layer submission, while a correct issued fingerprint remains stable across chain advancement and reconnect/restart. Concrete Q4 mainnet/testnet identity values remain governed by #1049. The internal suffix is preserved byte-for-byte so the facade can recover the lower-layer durable template identity after reconnect/restart. The submit parser still accepts the earlier `v3:<internal-template-id>` development form for compatibility.
 
 `job_id` is stable for a template:
 
@@ -68,7 +68,7 @@ The v3 `finality` field is one of exactly:
 
 The node checks chain membership for `block_hash` before any rebroadcast. Reconciliation is additionally bound to a domain-separated SHA3-256 fingerprint of the **complete submitted block material**. A caller that reuses the same `submit_id` / declared `block_hash` with different header or transaction material is rejected fail-closed with `candidate_identity_mismatch`; it cannot inherit a cached or known-block accepted result. If the exact block is already present, the response is `accepted_reconciled`. Within a process, completed submit responses are retained in a bounded reconciliation registry keyed by `submit_id` plus the exact-candidate fingerprint; replaying the same candidate returns the cached finality with `reconciled=true` and does not rebroadcast it. An `unknown_finality` replay therefore reconciles chain state first instead of blindly resubmitting.
 
-Because the external `template_id` embeds the lower-layer template ID after `v3:`, reconnect/restart does not require a transient map merely to recover template identity. Activated protocol bindings still obey the lower-layer Task 28 identity rules; a miner must refresh work when that lower layer explicitly requires a fresh binding.
+Because the external `template_id` embeds the protocol fingerprint and then the lower-layer template ID after `v3:`, reconnect/restart does not require a transient map merely to recover template identity. Activated protocol bindings still obey the lower-layer Task 28 identity rules; a miner must refresh work when that lower layer explicitly requires a fresh binding.
 
 ## Resource bounds
 

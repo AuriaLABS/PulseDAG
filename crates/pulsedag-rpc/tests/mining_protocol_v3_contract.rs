@@ -175,9 +175,13 @@ async fn scenario_cpu_miner_contract_reconciles_reconnect_without_rebroadcast() 
 
     assert_eq!(template["ok"], true);
     assert_eq!(data["protocol_version"], 3);
+    let protocol_fingerprint = data["protocol_identity_fingerprint"]
+        .as_str()
+        .expect("v3 template must expose its exact protocol identity fingerprint");
+    assert_eq!(protocol_fingerprint.len(), 64);
     assert!(data["template_id"]
         .as_str()
-        .is_some_and(|value| value.starts_with("v3:")));
+        .is_some_and(|value| value.starts_with(&format!("v3:{protocol_fingerprint}:"))));
     assert!(data["job_id"]
         .as_str()
         .is_some_and(|value| value.starts_with("v3-job-")));
@@ -190,6 +194,26 @@ async fn scenario_cpu_miner_contract_reconciles_reconnect_without_rebroadcast() 
         1
     );
     assert_eq!(data["resource_limits"]["max_inflight_submits"], 64);
+
+    let original_template_id = template_id(&template);
+    let mut wrong_fingerprint = protocol_fingerprint.to_string();
+    let replacement = if wrong_fingerprint.starts_with('0') {
+        "1"
+    } else {
+        "0"
+    };
+    wrong_fingerprint.replace_range(0..1, replacement);
+    let substituted_template_id =
+        original_template_id.replacen(protocol_fingerprint, &wrong_fingerprint, 1);
+    let identity_mismatch =
+        submit_block(&state, substituted_template_id, template_block(&template)).await;
+    assert_eq!(identity_mismatch["ok"], true);
+    assert_eq!(identity_mismatch["data"]["accepted"], false);
+    assert_eq!(
+        identity_mismatch["data"]["reason_code"],
+        "protocol_identity_mismatch"
+    );
+    assert_eq!(identity_mismatch["data"]["finality"], "rejected");
 
     let compact_target = data["compact_target"].as_u64().unwrap() as u32;
     let block = mine_with_canonical_cpu(template_block(&template), compact_target);

@@ -74,18 +74,56 @@ fn candidate_fingerprint(block: &pulsedag_core::types::Block) -> Result<String, 
     Ok(hex::encode(hasher.finalize()))
 }
 
-pub(crate) fn versioned_template_id(internal_template_id: &str) -> String {
+pub(crate) fn versioned_template_id(
+    internal_template_id: &str,
+    protocol_fingerprint: &str,
+) -> String {
     if internal_template_id.starts_with(MINING_V3_TEMPLATE_PREFIX) {
         internal_template_id.to_string()
     } else {
-        format!("{MINING_V3_TEMPLATE_PREFIX}{internal_template_id}")
+        format!("{MINING_V3_TEMPLATE_PREFIX}{protocol_fingerprint}:{internal_template_id}")
     }
 }
 
+fn external_protocol_fingerprint(external_template_id: &str) -> Option<&str> {
+    let rest = external_template_id.strip_prefix(MINING_V3_TEMPLATE_PREFIX)?;
+    let (fingerprint, _) = rest.split_once(':')?;
+    (fingerprint.len() == 64 && fingerprint.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        .then_some(fingerprint)
+}
+
 fn internal_template_id(external_template_id: &str) -> &str {
-    external_template_id
-        .strip_prefix(MINING_V3_TEMPLATE_PREFIX)
-        .unwrap_or(external_template_id)
+    let Some(rest) = external_template_id.strip_prefix(MINING_V3_TEMPLATE_PREFIX) else {
+        return external_template_id;
+    };
+    match rest.split_once(':') {
+        Some((fingerprint, internal))
+            if fingerprint.len() == 64
+                && fingerprint.bytes().all(|byte| byte.is_ascii_hexdigit()) =>
+        {
+            internal
+        }
+        _ => rest,
+    }
+}
+
+fn issued_protocol_fingerprint(internal_template_id: &str) -> Result<String, String> {
+    if let Some((_, fingerprint)) = internal_template_id.rsplit_once(':') {
+        if internal_template_id.starts_with("v2:")
+            && fingerprint.len() == 64
+            && fingerprint.bytes().all(|byte| byte.is_ascii_hexdigit())
+        {
+            return Ok(fingerprint.to_string());
+        }
+    }
+    let stored = super::mining_template_protocol::load_template(internal_template_id)
+        .ok_or_else(|| "issued mining template record is unavailable".to_string())?;
+    let fingerprint = stored.protocol_identity_fingerprint;
+    if fingerprint.len() == 64 && fingerprint.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        Ok(fingerprint)
+    } else {
+        Err("issued mining template is missing its durable protocol fingerprint".to_string())
+    }
 }
 
 pub(crate) fn job_id_for_template(external_template_id: &str) -> String {
@@ -382,6 +420,45 @@ fn candidate_identity_mismatch_data(
     )
 }
 
+fn protocol_identity_mismatch_data(
+    req: &SubmitMinedBlockRequest,
+    external_template_id: Option<&str>,
+    submit_id: &str,
+    job: Option<&JobObservation>,
+    expected: &str,
+    claimed: &str,
+) -> Value {
+    decorate_submit_data(
+        json!({
+            "accepted": false,
+            "reason": "external mining template protocol identity does not match issued work",
+            "block_hash": req.block.hash,
+            "block_id": Value::Null,
+            "height": req.block.header.height,
+            "pow_algorithm": pulsedag_core::selected_pow_name(),
+            "pow_accepted": false,
+            "pow_accepted_dev": false,
+            "target_u64": 0,
+            "target_hex": format!("{:064x}", 0_u64),
+            "pow_hash": Value::Null,
+            "invalid_pow": false,
+            "stale": false,
+            "duplicate": false,
+            "stale_template": false,
+            "reason_code": "protocol_identity_mismatch",
+            "selected_tip": Value::Null,
+            "adopted_orphans": 0,
+            "pow_hash_score_u64": 0,
+            "pow_rejection_code": "protocol_identity_mismatch",
+            "pow_rejection_reason": format!("expected protocol fingerprint {expected}, got {claimed}")
+        }),
+        external_template_id,
+        submit_id,
+        job,
+        false,
+    )
+}
+
 async fn known_block_reconciliation<S: RpcStateLike>(
     state: &S,
     req: &SubmitMinedBlockRequest,
@@ -455,6 +532,34 @@ pub async fn post_mining_submit<S: RpcStateLike>(
     let submit_id = submit_id_for(external_template_id.as_deref(), &req.block.hash);
     let scope_id = node_scope_id(&state);
     let job = job_observation(scope_id, external_template_id.as_deref());
+    if let Some(claimed) = external_template_id
+        .as_deref()
+        .and_then(external_protocol_fingerprint)
+    {
+        let internal = external_template_id
+            .as_deref()
+            .map(internal_template_id)
+            .unwrap_or_default();
+        let expected = match issued_protocol_fingerprint(internal) {
+            Ok(expected) => expected,
+            Err(error) => {
+                return Json(ApiResponse::err(
+                    "MINING_PROTOCOL_V3_PROTOCOL_IDENTITY",
+                    format!("cannot resolve issued mining protocol identity: {error}"),
+                ));
+            }
+        };
+        if claimed != expected {
+            return Json(ApiResponse::ok(protocol_identity_mismatch_data(
+                &req,
+                external_template_id.as_deref(),
+                &submit_id,
+                job.as_ref(),
+                &expected,
+                claimed,
+            )));
+        }
+    }
     let candidate_fingerprint = match candidate_fingerprint(&req.block) {
         Ok(fingerprint) => fingerprint,
         Err(error) => {
@@ -581,21 +686,37 @@ mod tests {
     #[test]
     fn task37_versioned_template_ids_round_trip_without_losing_internal_identity() {
         let internal = "v1-work-abc";
-        let external = versioned_template_id(internal);
-        assert_eq!(external, "v3:v1-work-abc");
+        let fingerprint = "11".repeat(32);
+        let external = versioned_template_id(internal, &fingerprint);
+        assert_eq!(external, format!("v3:{fingerprint}:v1-work-abc"));
+        assert_eq!(
+            external_protocol_fingerprint(&external),
+            Some(fingerprint.as_str())
+        );
         assert_eq!(internal_template_id(&external), internal);
-        assert_eq!(versioned_template_id(&external), external);
+        assert_eq!(versioned_template_id(&external, &fingerprint), external);
+        assert_eq!(internal_template_id("v3:v1-work-abc"), internal);
     }
 
     #[test]
     fn task37_protocol_identity_golden_vectors_are_frozen() {
-        assert_eq!(
-            job_id_for_template("v3:v1-work-abc"),
-            "v3-job-dc75926e7d0f69e205aac68bae505b0cae953de4b7242880d91033169c394fd3"
+        let template_id = concat!(
+            "v3:",
+            "1111111111111111111111111111111111111111111111111111111111111111",
+            ":v1-work-abc"
         );
         assert_eq!(
-            submit_id_for(Some("v3:v1-work-abc"), "block-123"),
-            "v3-submit-555a479be74c0128d02c67fdacfa98f0c923e51739fb534510a0e12208e9e675"
+            job_id_for_template(template_id),
+            "v3-job-6f2746fc48959fd03d4b11c2cc24704ab522f2eac07a1bdc5dc2466926c41ae6"
+        );
+        assert_eq!(
+            submit_id_for(Some(template_id), "block-123"),
+            "v3-submit-48f2e0e1cbd16c5245b720cfc87d3959a36176be6345aad3a5b1f0561970536d"
+        );
+        let other = versioned_template_id("v1-work-abc", &"22".repeat(32));
+        assert_ne!(
+            job_id_for_template(template_id),
+            job_id_for_template(&other)
         );
     }
 

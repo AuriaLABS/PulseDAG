@@ -143,7 +143,17 @@ fn decorate_template_data(mut data: Value, observation: &WorkObservation) -> Res
         .and_then(Value::as_str)
         .ok_or_else(|| "mining template response is missing template_id".to_string())?
         .to_string();
-    let external_template_id = super::mining_submit::versioned_template_id(&internal_template_id);
+    let protocol_fingerprint = object
+        .get("protocol_identity_fingerprint")
+        .and_then(Value::as_str)
+        .filter(|fingerprint| {
+            fingerprint.len() == 64 && fingerprint.bytes().all(|byte| byte.is_ascii_hexdigit())
+        })
+        .ok_or_else(|| {
+            "mining template response is missing a valid protocol identity fingerprint".to_string()
+        })?;
+    let external_template_id =
+        super::mining_submit::versioned_template_id(&internal_template_id, protocol_fingerprint);
     let job_id = super::mining_submit::job_id_for_template(&external_template_id);
 
     object.insert(

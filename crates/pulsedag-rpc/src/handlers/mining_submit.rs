@@ -2249,6 +2249,7 @@ mod tests {
             preferred_tip_hash(&chain)
         };
         store_template(&StoredMiningTemplate {
+            protocol_identity_fingerprint: String::new(),
             protocol_version: 1,
             template_id: template_id.clone(),
             miner_address: "kaspa:qptestminer".to_string(),
