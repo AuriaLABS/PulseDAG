@@ -13,7 +13,7 @@ permissions:
 jobs:
   harden:
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
         with:
@@ -26,7 +26,7 @@ jobs:
         with:
           components: rustfmt, clippy
 
-      - name: Apply stable fail-closed mining identity binding
+      - name: Apply durable fail-closed mining identity binding
         shell: bash
         run: |
           set -euo pipefail
@@ -41,30 +41,103 @@ jobs:
                   raise SystemExit(f"{path}: expected one replacement, found {count}")
               p.write_text(text.replace(old, new))
 
-          # Legacy lower-layer templates already bind an identity internally. Promote
-          # that exact identity/fingerprint into the public protocol-aware response.
-          p = Path("crates/pulsedag-rpc/src/handlers/mining_template_protocol.rs")
+          # Add a backward-compatible protocol fingerprint field to every durable
+          # StoredMiningTemplate construction. Existing JSON records deserialize with
+          # an empty value; newly issued v3 work below must persist the exact value.
+          literal_count = 0
+          for p in Path("crates/pulsedag-rpc").rglob("*.rs"):
+              text = p.read_text()
+              count = text.count("StoredMiningTemplate {\n")
+              if not count:
+                  continue
+              literal_count += count
+              text = text.replace(
+                  "StoredMiningTemplate {\n",
+                  "StoredMiningTemplate {\n        protocol_identity_fingerprint: String::new(),\n",
+              )
+              p.write_text(text)
+          legacy = Path("crates/pulsedag-rpc/src/handlers/mining_template.rs")
+          text = legacy.read_text()
+          definition = "pub struct StoredMiningTemplate {\n        protocol_identity_fingerprint: String::new(),\n"
+          if text.count(definition) != 1:
+              raise SystemExit("StoredMiningTemplate definition anchor is not unique")
+          text = text.replace(
+              definition,
+              "pub struct StoredMiningTemplate {\n    #[serde(default)]\n    pub protocol_identity_fingerprint: String,\n",
+              1,
+          )
+          legacy.write_text(text)
+          if literal_count < 2:
+              raise SystemExit(f"unexpected StoredMiningTemplate occurrence count: {literal_count}")
+
+          protocol = "crates/pulsedag-rpc/src/handlers/mining_template_protocol.rs"
+          replace_once(
+              protocol,
+              '''#[cfg(test)]
+          pub(crate) use super::mining_template_legacy::store_template;
+          pub use super::mining_template_legacy::StoredMiningTemplate;
+          pub(crate) use super::mining_template_legacy::{
+              current_template_state, load_template, template_freshness_window,
+              template_id_matches_lifecycle, MINING_PROTOCOL_VERSION,
+          };''',
+              '''pub use super::mining_template_legacy::StoredMiningTemplate;
+          pub(crate) use super::mining_template_legacy::{
+              current_template_state, load_template, store_template, template_freshness_window,
+              template_id_matches_lifecycle, MINING_PROTOCOL_VERSION,
+          };'''
+          )
+
+          p = Path(protocol)
           text = p.read_text()
           start = text.index("async fn post_legacy_template")
           end = text.index("\npub async fn post_mining_template", start)
           segment = text[start:end]
-          old = """                identity,\n                fingerprint,\n"""
-          new = """                identity.clone(),\n                fingerprint.clone(),\n"""
-          if segment.count(old) != 1 or segment.count("            Some(data.into())") != 1:
-              raise SystemExit("post_legacy_template identity anchors are not unique")
-          segment = segment.replace(old, new)
+          old_bind = '''            if let Err(error) = super::mining_submit::bind_template_protocol(
+                          data.template_id.clone(),
+                          identity,
+                          fingerprint,
+                      ) {'''
+          new_bind = '''            let internal_template_id = data.template_id.clone();
+                      if let Err(error) = super::mining_submit::bind_template_protocol(
+                          internal_template_id.clone(),
+                          identity.clone(),
+                          fingerprint.clone(),
+                      ) {'''
+          if segment.count(old_bind) != 1 or segment.count("            Some(data.into())") != 1:
+              raise SystemExit("post_legacy_template durable binding anchors are not unique")
+          segment = segment.replace(old_bind, new_bind)
           segment = segment.replace(
               "            Some(data.into())",
-              "            let mut data: MiningTemplateData = data.into();\n"
-              "            data.protocol_identity = Some(identity);\n"
-              "            data.protocol_identity_fingerprint = Some(fingerprint);\n"
-              "            Some(data)",
+              '''            let mut stored = match load_template(&internal_template_id) {
+                          Some(stored) => stored,
+                          None => {
+                              return Json(ApiResponse::err(
+                                  "PROTOCOL_IDENTITY_ERROR",
+                                  "cannot reload issued mining template before protocol binding",
+                              ));
+                          }
+                      };
+                      stored.protocol_identity_fingerprint = fingerprint.clone();
+                      store_template(&stored);
+                      let durable = load_template(&internal_template_id).is_some_and(|stored| {
+                          stored.protocol_identity_fingerprint == fingerprint
+                      });
+                      if !durable {
+                          return Json(ApiResponse::err(
+                              "PROTOCOL_IDENTITY_ERROR",
+                              "issued mining template protocol fingerprint was not durably persisted",
+                          ));
+                      }
+                      let mut data: MiningTemplateData = data.into();
+                      data.protocol_identity = Some(identity);
+                      data.protocol_identity_fingerprint = Some(fingerprint);
+                      Some(data)'''
           )
           p.write_text(text[:start] + segment + text[end:])
 
-          submit_path = "crates/pulsedag-rpc/src/handlers/mining_submit_v3.rs"
+          submit = "crates/pulsedag-rpc/src/handlers/mining_submit_v3.rs"
           replace_once(
-              submit_path,
+              submit,
               '''pub(crate) fn versioned_template_id(internal_template_id: &str) -> String {
               if internal_template_id.starts_with(MINING_V3_TEMPLATE_PREFIX) {
                   internal_template_id.to_string()
@@ -112,10 +185,7 @@ jobs:
               }
           }
 
-          async fn expected_protocol_fingerprint<S: RpcStateLike>(
-              state: &S,
-              internal_template_id: &str,
-          ) -> Result<String, String> {
+          fn issued_protocol_fingerprint(internal_template_id: &str) -> Result<String, String> {
               if let Some((_, fingerprint)) = internal_template_id.rsplit_once(':') {
                   if internal_template_id.starts_with("v2:")
                       && fingerprint.len() == 64
@@ -124,10 +194,16 @@ jobs:
                       return Ok(fingerprint.to_string());
                   }
               }
-              let chain_handle = state.chain();
-              let chain = chain_handle.read().await;
-              pulsedag_core::ProtocolActivationIdentity::legacy_from_state(&chain)
-                  .fingerprint()
+              let stored = super::mining_template_protocol::load_template(internal_template_id)
+                  .ok_or_else(|| "issued mining template record is unavailable".to_string())?;
+              let fingerprint = stored.protocol_identity_fingerprint;
+              if fingerprint.len() == 64
+                  && fingerprint.bytes().all(|byte| byte.is_ascii_hexdigit())
+              {
+                  Ok(fingerprint)
+              } else {
+                  Err("issued mining template is missing its durable protocol fingerprint".to_string())
+              }
           }'''
           )
 
@@ -154,7 +230,7 @@ jobs:
           )
 
           replace_once(
-              submit_path,
+              submit,
               '''async fn known_block_reconciliation<S: RpcStateLike>(''',
               '''fn protocol_identity_mismatch_data(
               req: &SubmitMinedBlockRequest,
@@ -167,7 +243,7 @@ jobs:
               decorate_submit_data(
                   json!({
                       "accepted": false,
-                      "reason": "external mining template protocol identity does not match the issued work domain",
+                      "reason": "external mining template protocol identity does not match issued work",
                       "block_hash": req.block.hash,
                       "block_id": Value::Null,
                       "height": req.block.header.height,
@@ -199,7 +275,7 @@ jobs:
           )
 
           replace_once(
-              submit_path,
+              submit,
               '''    let job = job_observation(scope_id, external_template_id.as_deref());
               let candidate_fingerprint = match candidate_fingerprint(&req.block) {''',
               '''    let job = job_observation(scope_id, external_template_id.as_deref());
@@ -211,7 +287,7 @@ jobs:
                       .as_deref()
                       .map(internal_template_id)
                       .unwrap_or_default();
-                  let expected = match expected_protocol_fingerprint(&state, internal).await {
+                  let expected = match issued_protocol_fingerprint(internal) {
                       Ok(expected) => expected,
                       Err(error) => {
                           return Json(ApiResponse::err(
@@ -235,7 +311,7 @@ jobs:
           )
 
           replace_once(
-              submit_path,
+              submit,
               '''    fn task37_versioned_template_ids_round_trip_without_losing_internal_identity() {
                   let internal = "v1-work-abc";
                   let external = versioned_template_id(internal);
@@ -350,7 +426,7 @@ jobs:
               '''v3:<protocol-identity-fingerprint>:<internal-template-id>
           ```
 
-          Newly issued v3 work carries the exact protocol fingerprint returned by the lower-layer template. Submit checks it against the stable issued-work domain: legacy work derives the canonical legacy identity from chain ID/genesis/protocol versions/consensus mode/ordering, while Activated-v2 work reuses the fingerprint already embedded in its internal v2 template ID. A valid-looking substituted fingerprint therefore fails before reconciliation or lower-layer submission, without depending on mutable tip/height state or a transient lookup table. Concrete Q4 mainnet/testnet identity values remain governed by #1049. The internal suffix is preserved byte-for-byte so the facade can recover the lower-layer durable template identity after reconnect/restart. The submit parser still accepts the earlier `v3:<internal-template-id>` development form for compatibility.'''
+          Newly issued legacy v3 work persists the exact protocol fingerprint in the durable lower-layer template record before it is returned to a miner; submit reloads that issued record instead of deriving identity from mutable tip/height state. Activated-v2 work reuses the fingerprint already embedded in its internal v2 template ID. A valid-looking substituted fingerprint therefore fails before reconciliation or lower-layer submission, while a correct issued fingerprint remains stable across chain advancement and reconnect/restart. Concrete Q4 mainnet/testnet identity values remain governed by #1049. The internal suffix is preserved byte-for-byte so the facade can recover the lower-layer durable template identity after reconnect/restart. The submit parser still accepts the earlier `v3:<internal-template-id>` development form for compatibility.'''
           )
           replace_once(
               docs,
@@ -378,7 +454,9 @@ jobs:
               '.github/workflows/harden-1064-mining-identity.yml',
               '.github/workflows/harden-1064-mining-identity-v2.yml',
               '.github/workflows/harden-1064-mining-identity-v3.yml',
+              'crates/pulsedag-rpc/src/handlers/mining_submit.rs',
               'crates/pulsedag-rpc/src/handlers/mining_submit_v3.rs',
+              'crates/pulsedag-rpc/src/handlers/mining_template.rs',
               'crates/pulsedag-rpc/src/handlers/mining_template_v3.rs',
               'crates/pulsedag-rpc/src/handlers/mining_template_protocol.rs',
               'crates/pulsedag-rpc/tests/mining_protocol_v3_contract.rs',
@@ -392,5 +470,5 @@ jobs:
           git config user.name "kalekói"
           git config user.email "hermida.prada@gmail.com"
           git add -A
-          git commit -m "rpc: bind Mining Protocol v3 identity to stable protocol domain"
+          git commit -m "rpc: bind Mining Protocol v3 to durable issued identity"
           git push origin HEAD:codex/issue-1037-mining-protocol-v3
