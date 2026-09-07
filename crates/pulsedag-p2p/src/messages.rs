@@ -1,5 +1,6 @@
 pub mod capability_carrier_v1;
 pub mod dag_sync_v2;
+pub mod fast_sync_carrier_v1;
 pub mod frontier_reconcile_v1;
 pub mod frontier_response_v1;
 mod network_message_decode_v1;
