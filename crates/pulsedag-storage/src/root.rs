@@ -1,6 +1,7 @@
 include!("lib.rs");
 
 mod fast_sync_manifest;
+mod fast_sync_network_resume;
 mod fast_sync_resume;
 mod fast_sync_transfer;
 mod protocol_bundle;
@@ -11,6 +12,9 @@ mod protocol_startup_v2;
 
 pub use fast_sync_manifest::{
     FastSyncSnapshotBundleV1, FastSyncSnapshotManifestV1, FAST_SYNC_SNAPSHOT_MANIFEST_VERSION,
+};
+pub use fast_sync_network_resume::{
+    FastSyncNetworkTransferPlanV1, FAST_SYNC_NETWORK_TRANSFER_PLAN_VERSION,
 };
 pub use fast_sync_resume::FastSyncPersistedResumeStatusV1;
 pub use fast_sync_transfer::{
