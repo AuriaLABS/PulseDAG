@@ -1,0 +1,121 @@
+name: Repair #1064 durable identity materializer
+
+on:
+  push:
+    branches:
+      - codex/issue-1037-mining-protocol-v3
+    paths:
+      - '.github/workflows/harden-1064-mining-identity-v4.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: codex/issue-1037-mining-protocol-v3
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Narrow StoredMiningTemplate edits to real literals
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('.github/workflows/harden-1064-mining-identity-v3.yml')
+          text = path.read_text()
+
+          old = '''          # Add a backward-compatible protocol fingerprint field to every durable
+          # StoredMiningTemplate construction. Existing JSON records deserialize with
+          # an empty value; newly issued v3 work below must persist the exact value.
+          literal_count = 0
+          for p in Path("crates/pulsedag-rpc").rglob("*.rs"):
+              text = p.read_text()
+              count = text.count("StoredMiningTemplate {\\n")
+              if not count:
+                  continue
+              literal_count += count
+              text = text.replace(
+                  "StoredMiningTemplate {\\n",
+                  "StoredMiningTemplate {\\n        protocol_identity_fingerprint: String::new(),\\n",
+              )
+              p.write_text(text)
+          legacy = Path("crates/pulsedag-rpc/src/handlers/mining_template.rs")
+          text = legacy.read_text()
+          definition = "pub struct StoredMiningTemplate {\\n        protocol_identity_fingerprint: String::new(),\\n"
+          if text.count(definition) != 1:
+              raise SystemExit("StoredMiningTemplate definition anchor is not unique")
+          text = text.replace(
+              definition,
+              "pub struct StoredMiningTemplate {\\n    #[serde(default)]\\n    pub protocol_identity_fingerprint: String,\\n",
+              1,
+          )
+          legacy.write_text(text)
+          if literal_count < 2:
+              raise SystemExit(f"unexpected StoredMiningTemplate occurrence count: {literal_count}")
+          '''
+
+          new = '''          # Add the backward-compatible field to the type definition, then edit
+          # only real struct literals whose first field is protocol_version. This
+          # deliberately does not match a function return type `-> StoredMiningTemplate {`.
+          legacy = Path("crates/pulsedag-rpc/src/handlers/mining_template.rs")
+          text = legacy.read_text()
+          definition = "pub struct StoredMiningTemplate {\\n    #[serde(default = \\\"default_mining_protocol_version\\\")]\\n"
+          replacement = "pub struct StoredMiningTemplate {\\n    #[serde(default)]\\n    pub protocol_identity_fingerprint: String,\\n    #[serde(default = \\\"default_mining_protocol_version\\\")]\\n"
+          if text.count(definition) != 1:
+              raise SystemExit("StoredMiningTemplate definition anchor is not unique")
+          legacy.write_text(text.replace(definition, replacement, 1))
+
+          import re
+          literal_pattern = re.compile(r"(StoredMiningTemplate \\{\\n)([ \\t]+)(protocol_version:)")
+          literal_count = 0
+          for p in Path("crates/pulsedag-rpc").rglob("*.rs"):
+              source = p.read_text()
+              def add_field(match):
+                  indent = match.group(2)
+                  return match.group(1) + indent + "protocol_identity_fingerprint: String::new(),\\n" + indent + match.group(3)
+              source, count = literal_pattern.subn(add_field, source)
+              if count:
+                  literal_count += count
+                  p.write_text(source)
+          if literal_count < 2:
+              raise SystemExit(f"unexpected StoredMiningTemplate literal count: {literal_count}")
+          '''
+
+          if text.count(old) != 1:
+              raise SystemExit('v3 materializer literal block anchor is not unique')
+          text = text.replace(old, new)
+
+          text = text.replace(
+              '          rm .github/workflows/harden-1064-mining-identity-v3.yml\n',
+              '          rm .github/workflows/harden-1064-mining-identity-v3.yml\n          rm .github/workflows/harden-1064-mining-identity-v4.yml\n',
+              1,
+          )
+          text = text.replace(
+              "              '.github/workflows/harden-1064-mining-identity-v3.yml',\n",
+              "              '.github/workflows/harden-1064-mining-identity-v3.yml',\n              '.github/workflows/harden-1064-mining-identity-v4.yml',\n",
+              1,
+          )
+          old_guard = '''          changed = set(subprocess.check_output(['git', 'diff', '--name-only'], text=True).splitlines())
+          if changed != expected:
+              raise SystemExit(f'unexpected working-tree delta: {sorted(changed)}')'''
+          new_guard = '''          changed = set(subprocess.check_output(['git', 'diff', '--name-only'], text=True).splitlines())
+          optional = {'crates/pulsedag-rpc/src/handlers/mining_submit.rs'}
+          required = expected - optional
+          if not required.issubset(changed) or changed - expected:
+              raise SystemExit(f'unexpected working-tree delta: {sorted(changed)}')'''
+          if text.count(old_guard) != 1:
+              raise SystemExit('v3 exact-delta guard anchor is not unique')
+          text = text.replace(old_guard, new_guard)
+          path.write_text(text)
+          PY
+          git diff --check
+          git config user.name "kalekói"
+          git config user.email "hermida.prada@gmail.com"
+          git add .github/workflows/harden-1064-mining-identity-v3.yml
+          git commit -m "ci: target #1064 durable identity literals exactly"
+          git push origin HEAD:codex/issue-1037-mining-protocol-v3
