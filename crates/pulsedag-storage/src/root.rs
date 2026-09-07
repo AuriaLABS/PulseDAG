@@ -1,5 +1,6 @@
 include!("lib.rs");
 
+mod fast_sync_bootstrap_import;
 mod fast_sync_manifest;
 mod fast_sync_network_resume;
 mod fast_sync_resume;
