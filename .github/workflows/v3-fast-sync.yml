@@ -7,6 +7,7 @@ on:
       - codex/1035-fast-sync-manifest
     paths:
       - '.github/workflows/v3-fast-sync.yml'
+      - 'apps/pulsedagd/src/main.rs'
       - 'crates/pulsedag-core/src/lib.rs'
       - 'crates/pulsedag-core/src/snapshot_transfer.rs'
       - 'crates/pulsedag-core/src/replay.rs'
@@ -18,6 +19,8 @@ on:
       - 'crates/pulsedag-storage/src/root.rs'
       - 'crates/pulsedag-storage/src/lib.rs'
       - 'crates/pulsedag-storage/Cargo.toml'
+      - 'crates/pulsedag-p2p/src/lib.rs'
+      - 'crates/pulsedag-p2p/src/live_fast_sync_v1.rs'
       - 'crates/pulsedag-p2p/src/messages.rs'
       - 'crates/pulsedag-p2p/src/messages/fast_sync_carrier_v1.rs'
       - 'crates/pulsedag-p2p/src/messages/fast_sync_carrier_v1/live_session_v1.rs'
@@ -93,3 +96,7 @@ jobs:
       - name: Commitment-bound multi-source planner regressions
         run: |
           cargo test --locked -p pulsedag-p2p fast_sync_multisource_v1::tests:: -- --nocapture
+
+      - name: Live fast-sync Libp2p transport regressions
+        run: |
+          cargo test --locked -p pulsedag-p2p live_fast_sync_v1::tests:: -- --nocapture

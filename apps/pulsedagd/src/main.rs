@@ -5866,6 +5866,21 @@ async fn main() -> Result<()> {
                             );
                         }
                     },
+                    InboundEvent::FastSync { peer_id, wire } => {
+                        let kind = wire.kind();
+                        info!(
+                            peer = %peer_id,
+                            fast_sync_kind = kind,
+                            "received live fast-sync transport event; bootstrap orchestration is deferred"
+                        );
+                        let _ = storage.append_runtime_event(
+                            "info",
+                            "fast_sync_transport",
+                            &format!(
+                                "peer={peer_id} kind={kind} action=deferred_to_bootstrap_controller"
+                            ),
+                        );
+                    }
                     InboundEvent::PeerConnected(peer) => {
                         let peers_connected = p2p
                             .as_ref()
