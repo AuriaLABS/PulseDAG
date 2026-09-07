@@ -1,0 +1,64 @@
+name: temporary clean fast-sync bootstrap patch
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/tmp-fast-sync-clean-bootstrap-patch.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout writable PR branch
+        uses: actions/checkout@v4
+        with:
+          ref: codex/1035-fast-sync-clean-bootstrap
+          fetch-depth: 1
+
+      - name: Install Rust formatter
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.91.0
+          components: rustfmt
+
+      - name: Apply clean-bootstrap wiring prep
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          main = Path('apps/pulsedagd/src/main.rs')
+          text = main.read_text()
+          if 'mod fast_sync_bootstrap;\n' not in text:
+              text = text.replace('mod config;\n', 'mod config;\nmod fast_sync_bootstrap;\n', 1)
+          main.write_text(text)
+
+          controller = Path('apps/pulsedagd/src/fast_sync_bootstrap.rs')
+          text = controller.read_text()
+          text = text.replace(
+              'storage.import_complete_fast_sync_network_transfer_v1(\n                    plan,\n                    &chunks,\n                    &self.expected,\n                )?',
+              'storage.import_complete_fast_sync_bootstrap_v1(\n                    plan,\n                    &chunks,\n                    &self.expected,\n                )?\n                .0',
+          )
+          old = '''        storage\n            .persist_chain_state_with_protocol_record_for_identity(&state, &expected)\n            .unwrap();'''
+          new = '''        let genesis = state\n            .dag\n            .blocks\n            .get(&state.dag.genesis_hash)\n            .cloned()\n            .unwrap();\n        storage\n            .persist_activated_v2_p2p_blocks_and_runtime(\n                &[genesis],\n                &expected,\n                &state,\n                &pulsedag_core::ActivatedV2P2pRuntime::default(),\n            )\n            .unwrap();'''
+          if old not in text:
+              raise SystemExit('expected serving fixture anchor not found')
+          text = text.replace(old, new, 1)
+          controller.write_text(text)
+          PY
+          cargo fmt --all
+
+      - name: Commit patched candidate
+        run: |
+          set -euo pipefail
+          rm .github/workflows/tmp-fast-sync-clean-bootstrap-patch.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add apps/pulsedagd/src/main.rs apps/pulsedagd/src/fast_sync_bootstrap.rs crates/pulsedag-storage/src/fast_sync_bootstrap_import.rs crates/pulsedag-storage/src/root.rs .github/workflows/tmp-fast-sync-clean-bootstrap-patch.yml
+          git diff --cached --check
+          git commit -m 'daemon: activate clean fast-sync bootstrap controller module'
+          git push origin HEAD:codex/1035-fast-sync-clean-bootstrap
