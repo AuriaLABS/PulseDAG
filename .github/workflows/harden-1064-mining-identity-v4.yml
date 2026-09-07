@@ -1,4 +1,4 @@
-name: Repair #1064 durable identity materializer
+name: Apply #1064 durable mining identity hardening
 
 on:
   push:
@@ -11,27 +11,50 @@ permissions:
   contents: write
 
 jobs:
-  repair:
+  harden:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
         with:
           ref: codex/issue-1037-mining-protocol-v3
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Patch v3 materializer structurally
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Apply and verify durable issued-identity binding
         shell: bash
         run: |
           set -euo pipefail
           python3 .github/scripts/repair_1064_materializer.py
+          cargo fmt --all
           git diff --check
+          python3 - <<'PY'
+          import subprocess
+          changed = set(subprocess.check_output(['git', 'diff', '--name-only'], text=True).splitlines())
+          required = {
+              'crates/pulsedag-rpc/src/handlers/mining_submit_v3.rs',
+              'crates/pulsedag-rpc/src/handlers/mining_template.rs',
+              'crates/pulsedag-rpc/src/handlers/mining_template_v3.rs',
+              'crates/pulsedag-rpc/src/handlers/mining_template_protocol.rs',
+              'crates/pulsedag-rpc/tests/mining_protocol_v3_contract.rs',
+              'docs/MINING_PROTOCOL_V3.md',
+          }
+          allowed = required | {'crates/pulsedag-rpc/src/handlers/mining_submit.rs'}
+          if not required.issubset(changed) or changed - allowed:
+              raise SystemExit(f'unexpected production delta: {sorted(changed)}')
+          PY
+          cargo test --locked -p pulsedag-rpc task37_versioned_template_ids_round_trip_without_losing_internal_identity
+          cargo test --locked -p pulsedag-rpc task37_protocol_identity_golden_vectors_are_frozen
+          cargo test --locked -p pulsedag-rpc --test mining_protocol_v3_contract -- --test-threads=1
+          cargo test --locked -p pulsedag-rpc activated_identity_rejects_legacy_submit_preflight
+          cargo test --locked -p pulsedag-rpc activated_identity_builds_chain_bound_v2_rpc_template
+          cargo test --locked -p pulsedag-rpc --lib
+          cargo clippy --locked -p pulsedag-rpc --all-targets -- -D warnings
           rm .github/scripts/repair_1064_materializer.py
-          rm .github/workflows/harden-1064-mining-identity-v4.yml
-          rm .github/workflows/harden-1064-mining-identity-v5.yml
           git config user.name "kalekói"
           git config user.email "hermida.prada@gmail.com"
           git add -A
-          git commit -m "ci: target #1064 materializer structurally"
+          git commit -m "rpc: bind Mining Protocol v3 to durable issued identity"
           git push origin HEAD:codex/issue-1037-mining-protocol-v3
