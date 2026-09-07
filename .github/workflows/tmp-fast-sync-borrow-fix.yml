@@ -1,0 +1,88 @@
+name: temporary fast-sync borrow fix
+
+on:
+  push:
+    branches:
+      - codex/1035-fast-sync-clean-bootstrap
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: codex/1035-fast-sync-clean-bootstrap
+          fetch-depth: 0
+      - name: Apply exact borrow-checker fix
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('apps/pulsedagd/src/fast_sync_bootstrap.rs')
+          s = p.read_text()
+          old = '''        let summary = self
+              .summary
+              .as_ref()
+              .ok_or_else(|| bootstrap_error("summary disappeared"))?;'''
+          new = '''        let summary = self
+              .summary
+              .clone()
+              .ok_or_else(|| bootstrap_error("summary disappeared"))?;'''
+          assert s.count(old) == 1, s.count(old)
+          s = s.replace(old, new)
+
+          old = '''                let summary = self
+                    .summary
+                    .as_ref()
+                    .ok_or_else(|| bootstrap_error("commitment page arrived before summary"))?;
+                page.validate_against_summary(summary)
+                    .map_err(map_session_error)?;'''
+          new = '''                let summary = self
+                    .summary
+                    .clone()
+                    .ok_or_else(|| bootstrap_error("commitment page arrived before summary"))?;
+                page.validate_against_summary(&summary)
+                    .map_err(map_session_error)?;'''
+          assert s.count(old) == 1, s.count(old)
+          s = s.replace(old, new)
+          s = s.replace('verify_fast_sync_commitment_pages_v1(summary, &pages)', 'verify_fast_sync_commitment_pages_v1(&summary, &pages)', 1)
+          s = s.replace('let plan = self.build_plan(summary, commitments);', 'let plan = self.build_plan(&summary, commitments);', 1)
+
+          old = '''                let summary = self
+                    .summary
+                    .as_ref()
+                    .ok_or_else(|| bootstrap_error("chunk arrived before summary"))?;
+                let plan = self
+                    .plan
+                    .as_ref()
+                    .ok_or_else(|| bootstrap_error("chunk arrived before verified commitments"))?;'''
+          new = '''                let summary = self
+                    .summary
+                    .clone()
+                    .ok_or_else(|| bootstrap_error("chunk arrived before summary"))?;
+                let plan = self
+                    .plan
+                    .clone()
+                    .ok_or_else(|| bootstrap_error("chunk arrived before verified commitments"))?;'''
+          assert s.count(old) == 1, s.count(old)
+          s = s.replace(old, new)
+          s = s.replace('.decode_verified_bytes(summary, commitment)', '.decode_verified_bytes(&summary, commitment)', 1)
+          s = s.replace('                    plan,\n                    &self.expected,', '                    &plan,\n                    &self.expected,', 1)
+          s = s.replace('storage.load_fast_sync_network_resume_chunks_v1(plan, &self.expected)?', 'storage.load_fast_sync_network_resume_chunks_v1(&plan, &self.expected)?', 1)
+          s = s.replace('.import_complete_fast_sync_bootstrap_v1(plan, &chunks, &self.expected)?', '.import_complete_fast_sync_bootstrap_v1(&plan, &chunks, &self.expected)?', 1)
+          s = s.replace('storage.clear_fast_sync_network_resume_v1(plan, &self.expected)?', 'storage.clear_fast_sync_network_resume_v1(&plan, &self.expected)?', 1)
+          p.write_text(s)
+          PY
+          cargo fmt --all
+          git diff --check
+      - name: Commit fixed candidate and remove helper
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git rm .github/workflows/tmp-fast-sync-borrow-fix.yml
+          git add apps/pulsedagd/src/fast_sync_bootstrap.rs
+          git commit -m 'daemon: fix fast-sync controller borrow lifetimes'
+          git push origin HEAD:codex/1035-fast-sync-clean-bootstrap
