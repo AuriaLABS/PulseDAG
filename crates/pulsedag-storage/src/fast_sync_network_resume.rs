@@ -1,8 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use pulsedag_core::snapshot_transfer::snapshot_transfer_commitment_set_digest_v1;
 use pulsedag_core::{
-    errors::PulseError, snapshot_transfer_chunk_digest_v1,
-    snapshot_transfer_commitment_set_digest_v1, snapshot_transfer_payload_digest_v1,
+    errors::PulseError, snapshot_transfer_chunk_digest_v1, snapshot_transfer_payload_digest_v1,
     ProtocolActivationIdentity,
 };
 use rocksdb::{WriteBatch, WriteOptions};
@@ -107,7 +107,8 @@ fn serialize_plan(plan: &FastSyncNetworkTransferPlanV1) -> Result<Vec<u8>, Pulse
     if bytes.len() > MAX_FAST_SYNC_NETWORK_RESUME_PLAN_BYTES_V1 {
         return Err(storage_error(format!(
             "fast-sync network resume plan is {} bytes; maximum is {}",
-            bytes.len(), MAX_FAST_SYNC_NETWORK_RESUME_PLAN_BYTES_V1
+            bytes.len(),
+            MAX_FAST_SYNC_NETWORK_RESUME_PLAN_BYTES_V1
         )));
     }
     Ok(bytes)
@@ -117,7 +118,8 @@ fn deserialize_plan(bytes: &[u8]) -> Result<FastSyncNetworkTransferPlanV1, Pulse
     if bytes.len() > MAX_FAST_SYNC_NETWORK_RESUME_PLAN_BYTES_V1 {
         return Err(storage_error(format!(
             "persisted fast-sync network resume plan is {} bytes; maximum is {}",
-            bytes.len(), MAX_FAST_SYNC_NETWORK_RESUME_PLAN_BYTES_V1
+            bytes.len(),
+            MAX_FAST_SYNC_NETWORK_RESUME_PLAN_BYTES_V1
         )));
     }
     bincode::deserialize(bytes).map_err(|error| {
@@ -163,9 +165,7 @@ impl FastSyncNetworkTransferPlanV1 {
                 self.manifest_version
             )));
         }
-        if self.protocol_snapshot_bundle_format_version
-            != PROTOCOL_SNAPSHOT_BUNDLE_FORMAT_VERSION
-        {
+        if self.protocol_snapshot_bundle_format_version != PROTOCOL_SNAPSHOT_BUNDLE_FORMAT_VERSION {
             return Err(storage_error(format!(
                 "fast-sync network protocol snapshot format {} is unsupported",
                 self.protocol_snapshot_bundle_format_version
@@ -227,7 +227,8 @@ impl FastSyncNetworkTransferPlanV1 {
         if self.chunk_commitments.len() != self.chunk_count as usize {
             return Err(storage_error(format!(
                 "fast-sync network commitment count {} does not match chunk_count {}",
-                self.chunk_commitments.len(), self.chunk_count
+                self.chunk_commitments.len(),
+                self.chunk_count
             )));
         }
         if !is_sha256_hex(&self.transfer_id) {
@@ -638,7 +639,8 @@ impl Storage {
         if payload.len() != capacity {
             return Err(storage_error(format!(
                 "fast-sync network reassembled payload length {} does not match expected {}",
-                payload.len(), capacity
+                payload.len(),
+                capacity
             )));
         }
         let payload_commitment = snapshot_transfer_payload_digest_v1(&payload);
@@ -734,7 +736,9 @@ mod tests {
             .0
     }
 
-    fn network_plan(prepared: &PreparedFastSyncSnapshotTransferV1) -> FastSyncNetworkTransferPlanV1 {
+    fn network_plan(
+        prepared: &PreparedFastSyncSnapshotTransferV1,
+    ) -> FastSyncNetworkTransferPlanV1 {
         let transfer = &prepared.plan;
         let manifest = &transfer.snapshot_manifest;
         FastSyncNetworkTransferPlanV1 {
@@ -744,7 +748,8 @@ mod tests {
             genesis_hash: manifest.genesis_hash.clone(),
             protocol_fingerprint: manifest.protocol_fingerprint.clone(),
             manifest_version: manifest.manifest_version,
-            protocol_snapshot_bundle_format_version: manifest.protocol_snapshot_bundle_format_version,
+            protocol_snapshot_bundle_format_version: manifest
+                .protocol_snapshot_bundle_format_version,
             storage_schema_version: manifest.storage_schema_version,
             transfer_id: transfer.transfer_id.clone(),
             commitment_set_id: snapshot_transfer_commitment_set_digest_v1(
@@ -766,9 +771,7 @@ mod tests {
         }
     }
 
-    fn all_chunks(
-        prepared: &PreparedFastSyncSnapshotTransferV1,
-    ) -> BTreeMap<u32, Vec<u8>> {
+    fn all_chunks(prepared: &PreparedFastSyncSnapshotTransferV1) -> BTreeMap<u32, Vec<u8>> {
         (0..prepared.plan.chunk_count)
             .map(|index| (index, prepared.chunk(index).unwrap().to_vec()))
             .collect()
@@ -822,7 +825,9 @@ mod tests {
         assert_eq!(status.received_chunk_count, 2);
         assert!(!status.complete);
         assert!(!status.missing_chunk_indices.contains(&0));
-        assert!(!status.missing_chunk_indices.contains(&(plan.chunk_count - 1)));
+        assert!(!status
+            .missing_chunk_indices
+            .contains(&(plan.chunk_count - 1)));
         assert_eq!(
             status.missing_chunk_indices.len(),
             plan.chunk_count as usize - 2
