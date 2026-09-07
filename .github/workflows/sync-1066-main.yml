@@ -1,0 +1,32 @@
+name: Sync #1066 with main
+
+on:
+  push:
+    branches:
+      - codex/1035-fast-sync-persisted-resume
+    paths:
+      - '.github/workflows/sync-1066-main.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: codex/1035-fast-sync-persisted-resume
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Merge current main
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "kalekói"
+          git config user.email "hermida.prada@gmail.com"
+          git fetch origin main
+          git merge --no-edit origin/main
+          git diff --check
+          git push origin HEAD:codex/1035-fast-sync-persisted-resume
