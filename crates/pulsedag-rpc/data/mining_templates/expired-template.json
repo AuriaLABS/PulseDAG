@@ -1,0 +1,27 @@
+{
+  "protocol_version": 1,
+  "template_id": "expired-template",
+  "miner_address": "kaspa:qptestminer",
+  "selected_tip": "0828edfca48b1a43e407c4d9d7f63650552d9b86587f2565eba0c05977484047",
+  "parent_hashes": [
+    "0828edfca48b1a43e407c4d9d7f63650552d9b86587f2565eba0c05977484047"
+  ],
+  "height": 1,
+  "difficulty": 1,
+  "created_at_unix": 1,
+  "target_u64": 18446744073709551615,
+  "mempool_fingerprint": "0:",
+  "mempool_tx_count": 0,
+  "expires_at_unix": 1,
+  "template_txids": [
+    "9ceca9930a7577def3b96c02241c87aff7ebfe3ea8bbbe8e83170d2ab182244a"
+  ],
+  "merkle_root": "38bff35583bb8d160bf54e2eb806e85124682f20bba70fe0fd397ea53b7aa2f4",
+  "template_selected_parent": null,
+  "template_parent_count": 1,
+  "template_blue_score": 1,
+  "template_merge_set_size": 0,
+  "template_parallel_parents_enabled": false,
+  "template_parallel_parent_exclusion_reasons": [],
+  "duplicate_tx_filtered": 0
+}
