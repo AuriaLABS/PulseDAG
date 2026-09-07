@@ -1,0 +1,32 @@
+name: Sync #1064 with main
+
+on:
+  push:
+    branches:
+      - codex/issue-1037-mining-protocol-v3
+    paths:
+      - '.github/workflows/sync-1064-main.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: codex/issue-1037-mining-protocol-v3
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Merge current main
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "kalekói"
+          git config user.email "hermida.prada@gmail.com"
+          git fetch origin main
+          git merge --no-edit origin/main
+          git diff --check
+          git push origin HEAD:codex/issue-1037-mining-protocol-v3
