@@ -1,5 +1,6 @@
 name: v3 fast-sync verification
 
+# Network-resume coverage is exact-head because accepted chunks survive daemon restart.
 on:
   pull_request:
     branches:
