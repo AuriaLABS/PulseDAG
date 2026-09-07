@@ -10,7 +10,8 @@ old = """use pulsedag_core::{
 new = """use pulsedag_core::{
     errors::PulseError, snapshot_transfer::snapshot_transfer_commitment_set_digest_v1,
     ActivatedV2P2pRuntime, ChainState, ProtocolActivationIdentity,
-};"""
+};
+use pulsedag_core::types::Block;"""
 assert old in s
 s = s.replace(old, new, 1)
 
@@ -47,6 +48,16 @@ marker = "\n#[cfg(test)]\nmod tests {"
 assert s.count(marker) == 1
 coordinator = r'''
 
+pub fn fast_sync_clean_storage_candidate_v1(
+    expected: &ProtocolActivationIdentity,
+    persisted_blocks: &[Block],
+) -> bool {
+    persisted_blocks.is_empty()
+        || (persisted_blocks.len() == 1
+            && persisted_blocks[0].header.height == 0
+            && persisted_blocks[0].hash == expected.genesis_hash)
+}
+
 #[derive(Debug, Clone)]
 pub struct FastSyncImportedStateV1 {
     pub report: SnapshotVerificationReport,
@@ -58,7 +69,7 @@ pub struct FastSyncDaemonRuntimeV1 {
     expected: ProtocolActivationIdentity,
     local_capabilities: FastSyncCapabilitiesV1,
     controller: Option<FastSyncBootstrapController>,
-    serving_session: Option<FastSyncServingSessionV1>,
+    serving_sessions: BTreeMap<String, Option<FastSyncServingSessionV1>>,
     discovery_started_at_unix: u64,
     capability_probe_sent_at: BTreeMap<String, u64>,
     fallback_to_normal_sync: bool,
@@ -78,7 +89,7 @@ impl FastSyncDaemonRuntimeV1 {
             expected,
             local_capabilities,
             controller,
-            serving_session: None,
+            serving_sessions: BTreeMap::new(),
             discovery_started_at_unix: now_unix,
             capability_probe_sent_at: BTreeMap::new(),
             fallback_to_normal_sync: false,
@@ -121,13 +132,14 @@ impl FastSyncDaemonRuntimeV1 {
             return Ok(());
         }
 
-        let eligible_peers = p2p.fast_sync_eligible_peers_v1()?;
+        let probe_candidates = p2p.protocol_sync_eligible_peers_v1()?;
+        let fast_sync_eligible_peers = p2p.fast_sync_eligible_peers_v1()?;
         let peers_to_probe = {
             let controller = self
                 .controller
                 .as_ref()
                 .ok_or_else(|| bootstrap_error("clean bootstrap controller disappeared"))?;
-            eligible_peers
+            probe_candidates
                 .iter()
                 .filter(|peer_id| {
                     !controller.has_peer_capabilities(peer_id)
@@ -152,7 +164,7 @@ impl FastSyncDaemonRuntimeV1 {
                 .controller
                 .as_mut()
                 .ok_or_else(|| bootstrap_error("clean bootstrap controller disappeared"))?;
-            controller.maybe_select_source(&status, &eligible_peers, local_height)
+            controller.maybe_select_source(&status, &fast_sync_eligible_peers, local_height)
         };
 
         if source.is_none()
@@ -196,11 +208,15 @@ impl FastSyncDaemonRuntimeV1 {
                 | FastSyncWireV1::GetCommitmentPage { .. }
                 | FastSyncWireV1::GetChunks(_)
         ) {
+            let serving_session = self
+                .serving_sessions
+                .entry(peer_id.to_string())
+                .or_insert(None);
             let responses = serve_fast_sync_request_v1(
                 storage,
                 &self.expected,
                 &self.local_capabilities,
-                &mut self.serving_session,
+                serving_session,
                 wire,
             )?;
             for response in responses {
@@ -238,6 +254,29 @@ s = s.replace(marker, coordinator + marker, 1)
 test_insert = r'''
 
     #[test]
+    fn clean_storage_candidate_accepts_empty_and_exact_genesis_only() {
+        let expected = identity();
+        let state = init_chain_state_v2(expected.chain_id.clone()).unwrap();
+        let genesis = state.dag.blocks.get(&state.dag.genesis_hash).cloned().unwrap();
+        assert!(fast_sync_clean_storage_candidate_v1(&expected, &[]));
+        assert!(fast_sync_clean_storage_candidate_v1(
+            &expected,
+            std::slice::from_ref(&genesis)
+        ));
+
+        let mut non_genesis = genesis.clone();
+        non_genesis.header.height = 1;
+        assert!(!fast_sync_clean_storage_candidate_v1(
+            &expected,
+            std::slice::from_ref(&non_genesis)
+        ));
+        assert!(!fast_sync_clean_storage_candidate_v1(
+            &expected,
+            &[genesis.clone(), genesis]
+        ));
+    }
+
+    #[test]
     fn daemon_runtime_authority_is_clean_node_only() {
         let expected = identity();
         let clean = FastSyncDaemonRuntimeV1::new(expected.clone(), true, 100).unwrap();
@@ -268,8 +307,10 @@ anchor = """    let snapshot_exists = storage.snapshot_exists().unwrap_or(false)
     let mut chain_state = if startup_protocol.activated_v2() {"""
 replacement = """    let snapshot_exists = storage.snapshot_exists().unwrap_or(false);
     let persisted_blocks = storage.list_blocks().unwrap_or_default();
-    let clean_fast_sync_bootstrap =
-        startup_protocol.activated_v2() && !snapshot_exists && persisted_blocks.is_empty();
+    let clean_fast_sync_bootstrap = startup_protocol.activated_v2()
+        && startup_protocol.restore_identity.as_ref().is_some_and(|expected| {
+            fast_sync_bootstrap::fast_sync_clean_storage_candidate_v1(expected, &persisted_blocks)
+        });
     let mut chain_state = if startup_protocol.activated_v2() {"""
 assert anchor in m
 m = m.replace(anchor, replacement, 1)
