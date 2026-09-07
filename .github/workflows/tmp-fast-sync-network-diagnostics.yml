@@ -15,7 +15,7 @@ permissions:
 jobs:
   diagnostics:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 5
     steps:
       - name: Checkout exact candidate
         uses: actions/checkout@v4
@@ -32,22 +32,12 @@ jobs:
       - name: Format candidate copy
         run: cargo fmt --all
 
-      - name: Capture storage check
-        shell: bash
-        run: |
-          set +e
-          cargo check --locked -p pulsedag-storage > tmp-fast-sync-check.log 2>&1
-          printf '%s\n' "$?" > tmp-fast-sync-check.status
-          exit 0
-
-      - name: Upload diagnostics
+      - name: Upload formatted sources
         uses: actions/upload-artifact@v4
         with:
-          name: fast-sync-network-diagnostics
+          name: fast-sync-network-formatted
           path: |
             crates/pulsedag-storage/src/fast_sync_network_resume.rs
             crates/pulsedag-storage/src/root.rs
-            tmp-fast-sync-check.log
-            tmp-fast-sync-check.status
           if-no-files-found: error
           retention-days: 1
