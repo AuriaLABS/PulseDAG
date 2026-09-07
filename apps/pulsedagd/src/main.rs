@@ -3,6 +3,7 @@ mod app_state;
 mod block_protocol;
 mod block_request;
 mod config;
+mod fast_sync_bootstrap;
 mod startup_protocol;
 
 use std::{

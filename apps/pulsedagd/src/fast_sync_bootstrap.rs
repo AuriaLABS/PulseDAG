@@ -1,7 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use pulsedag_core::{errors::PulseError, snapshot_transfer::snapshot_transfer_commitment_set_digest_v1, ProtocolActivationIdentity};
-use pulsedag_p2p::{P2pStatus, RemoteSelectedTipStatus};
+use pulsedag_core::{
+    errors::PulseError, snapshot_transfer::snapshot_transfer_commitment_set_digest_v1,
+    ProtocolActivationIdentity,
+};
 use pulsedag_p2p::messages::fast_sync_carrier_v1::{
     live_session_v1::FastSyncServingSessionV1, verify_fast_sync_commitment_pages_v1,
     FastSyncCapabilitiesV1, FastSyncChunkRequestV1, FastSyncCommitmentPageV1,
@@ -9,6 +11,7 @@ use pulsedag_p2p::messages::fast_sync_carrier_v1::{
     P2P_FAST_SYNC_MAX_CHUNKS_PER_REQUEST_V1, P2P_FAST_SYNC_MAX_CHUNK_BYTES_V1,
     P2P_FAST_SYNC_MAX_COMMITMENTS_PER_PAGE_V1,
 };
+use pulsedag_p2p::{P2pStatus, RemoteSelectedTipStatus};
 use pulsedag_storage::{
     FastSyncNetworkTransferPlanV1, SnapshotVerificationReport, Storage,
     FAST_SYNC_NETWORK_TRANSFER_PLAN_VERSION, FAST_SYNC_SNAPSHOT_MANIFEST_VERSION,
@@ -165,11 +168,7 @@ impl FastSyncBootstrapController {
         peer_id: &str,
         capabilities: FastSyncCapabilitiesV1,
     ) -> Result<(), PulseError> {
-        compatible_remote_capabilities(
-            &self.local_capabilities,
-            &capabilities,
-            &self.expected,
-        )?;
+        compatible_remote_capabilities(&self.local_capabilities, &capabilities, &self.expected)?;
         if let Some(existing) = self.peer_capabilities.get(peer_id) {
             if existing != &capabilities {
                 return Err(bootstrap_error(format!(
@@ -192,11 +191,8 @@ impl FastSyncBootstrapController {
         if self.source_peer.is_some() || self.imported {
             return self.source_peer.clone();
         }
-        let peer = select_clean_bootstrap_source_peer(
-            status,
-            eligible_fast_sync_peers,
-            local_height,
-        )?;
+        let peer =
+            select_clean_bootstrap_source_peer(status, eligible_fast_sync_peers, local_height)?;
         if !self.peer_capabilities.contains_key(&peer) {
             return None;
         }
@@ -287,9 +283,7 @@ impl FastSyncBootstrapController {
             .take(P2P_FAST_SYNC_MAX_CHUNKS_PER_REQUEST_V1)
             .collect::<Vec<_>>();
         if indices.is_empty() {
-            if !self.missing_chunks.is_empty()
-                && !self.pending_is_fresh("chunks", now_unix)
-            {
+            if !self.missing_chunks.is_empty() && !self.pending_is_fresh("chunks", now_unix) {
                 self.inflight_chunks.clear();
                 self.clear_pending();
                 return self.next_request(now_unix);
@@ -371,11 +365,7 @@ impl FastSyncBootstrapController {
                 let remote = self.peer_capabilities.get(peer_id).ok_or_else(|| {
                     bootstrap_error("selected source has no negotiated capabilities")
                 })?;
-                compatible_remote_capabilities(
-                    &self.local_capabilities,
-                    remote,
-                    &self.expected,
-                )?;
+                compatible_remote_capabilities(&self.local_capabilities, remote, &self.expected)?;
                 if summary.manifest_version != remote.manifest_version
                     || summary.protocol_snapshot_bundle_format_version
                         != remote.protocol_snapshot_bundle_format_version
@@ -472,12 +462,11 @@ impl FastSyncBootstrapController {
                     return Ok(FastSyncBootstrapOutcome::Progress);
                 }
 
-                let chunks = storage.load_fast_sync_network_resume_chunks_v1(plan, &self.expected)?;
-                let report = storage.import_complete_fast_sync_network_transfer_v1(
-                    plan,
-                    &chunks,
-                    &self.expected,
-                )?;
+                let chunks =
+                    storage.load_fast_sync_network_resume_chunks_v1(plan, &self.expected)?;
+                let report = storage
+                    .import_complete_fast_sync_bootstrap_v1(plan, &chunks, &self.expected)?
+                    .0;
                 storage.clear_fast_sync_network_resume_v1(plan, &self.expected)?;
                 self.imported = true;
                 self.clear_pending();
@@ -503,25 +492,19 @@ pub fn build_fast_sync_serving_session_v1(
         .map_err(map_session_error)?;
     let (bundle, _) = storage.export_fast_sync_snapshot_bundle_v1(expected)?;
     let chunk_size = P2P_FAST_SYNC_MAX_CHUNK_BYTES_V1;
-    let (prepared, _) = storage.prepare_fast_sync_snapshot_transfer_v1(
-        &bundle,
-        expected,
-        chunk_size,
-    )?;
+    let (prepared, _) =
+        storage.prepare_fast_sync_snapshot_transfer_v1(&bundle, expected, chunk_size)?;
     let manifest = &prepared.plan.snapshot_manifest;
     let commitments = prepared.plan.chunk_commitments.clone();
-    let commitment_set_id = snapshot_transfer_commitment_set_digest_v1(
-        &prepared.plan.transfer_id,
-        &commitments,
-    );
+    let commitment_set_id =
+        snapshot_transfer_commitment_set_digest_v1(&prepared.plan.transfer_id, &commitments);
     let summary = FastSyncTransferSummaryV1 {
         contract_version: P2P_FAST_SYNC_CONTRACT_VERSION,
         chain_id: manifest.chain_id.clone(),
         genesis_hash: manifest.genesis_hash.clone(),
         protocol_fingerprint: manifest.protocol_fingerprint.clone(),
         manifest_version: manifest.manifest_version,
-        protocol_snapshot_bundle_format_version: manifest
-            .protocol_snapshot_bundle_format_version,
+        protocol_snapshot_bundle_format_version: manifest.protocol_snapshot_bundle_format_version,
         storage_schema_version: manifest.storage_schema_version,
         payload_encoding: prepared.plan.payload_encoding.clone(),
         transfer_id: prepared.plan.transfer_id.clone(),
@@ -542,14 +525,8 @@ pub fn build_fast_sync_serving_session_v1(
     for chunk_index in 0..prepared.plan.chunk_count {
         chunks.push(prepared.chunk(chunk_index)?.to_vec());
     }
-    FastSyncServingSessionV1::new(
-        expected.clone(),
-        capabilities,
-        summary,
-        commitments,
-        chunks,
-    )
-    .map_err(map_session_error)
+    FastSyncServingSessionV1::new(expected.clone(), capabilities, summary, commitments, chunks)
+        .map_err(map_session_error)
 }
 
 pub fn serve_fast_sync_request_v1(
@@ -563,15 +540,12 @@ pub fn serve_fast_sync_request_v1(
         .validate_for_chain(&expected.chain_id)
         .map_err(map_session_error)?;
     match request {
-        FastSyncWireV1::CapabilityProbe { .. } => Ok(vec![FastSyncWireV1::Capabilities(
-            capabilities.clone(),
-        )]),
+        FastSyncWireV1::CapabilityProbe { .. } => {
+            Ok(vec![FastSyncWireV1::Capabilities(capabilities.clone())])
+        }
         FastSyncWireV1::GetTransferSummary { .. } => {
-            let fresh = build_fast_sync_serving_session_v1(
-                storage,
-                expected,
-                capabilities.clone(),
-            )?;
+            let fresh =
+                build_fast_sync_serving_session_v1(storage, expected, capabilities.clone())?;
             let responses = fresh.handle_request(request).map_err(map_session_error)?;
             *serving_session = Some(fresh);
             Ok(responses)
@@ -647,7 +621,10 @@ mod tests {
             select_clean_bootstrap_source_peer(&status, &eligible, 0),
             Some("fast-a".to_string())
         );
-        assert_eq!(select_clean_bootstrap_source_peer(&status, &eligible, 220), None);
+        assert_eq!(
+            select_clean_bootstrap_source_peer(&status, &eligible, 220),
+            None
+        );
     }
 
     #[test]
@@ -658,7 +635,10 @@ mod tests {
         assert_eq!(caps.genesis_hash, expected.genesis_hash);
         assert_eq!(caps.storage_schema_version, STORAGE_SCHEMA_VERSION);
         assert_eq!(caps.manifest_version, FAST_SYNC_SNAPSHOT_MANIFEST_VERSION);
-        assert_eq!(caps.max_chunk_bytes as usize, P2P_FAST_SYNC_MAX_CHUNK_BYTES_V1);
+        assert_eq!(
+            caps.max_chunk_bytes as usize,
+            P2P_FAST_SYNC_MAX_CHUNK_BYTES_V1
+        );
     }
 
     #[test]
@@ -667,8 +647,19 @@ mod tests {
         let storage = Storage::open(&path).unwrap();
         let expected = identity();
         let state = init_chain_state_v2(expected.chain_id.clone()).unwrap();
+        let genesis = state
+            .dag
+            .blocks
+            .get(&state.dag.genesis_hash)
+            .cloned()
+            .unwrap();
         storage
-            .persist_chain_state_with_protocol_record_for_identity(&state, &expected)
+            .persist_activated_v2_p2p_blocks_and_runtime(
+                &[genesis],
+                &expected,
+                &state,
+                &pulsedag_core::ActivatedV2P2pRuntime::default(),
+            )
             .unwrap();
         let caps = local_fast_sync_capabilities_v1(&expected).unwrap();
         let mut serving = None;
@@ -682,7 +673,10 @@ mod tests {
             },
         )
         .unwrap();
-        assert!(matches!(responses.as_slice(), [FastSyncWireV1::TransferSummary(_)]));
+        assert!(matches!(
+            responses.as_slice(),
+            [FastSyncWireV1::TransferSummary(_)]
+        ));
         assert!(serving.is_some());
         drop(storage);
         let _ = std::fs::remove_dir_all(path);
