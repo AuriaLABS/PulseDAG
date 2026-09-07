@@ -245,7 +245,7 @@ impl FastSyncBootstrapController {
 
         let summary = self
             .summary
-            .as_ref()
+            .clone()
             .ok_or_else(|| bootstrap_error("summary disappeared"))?;
         if self.plan.is_none() {
             if self.pending_is_fresh("commitments", now_unix) {
@@ -393,9 +393,9 @@ impl FastSyncBootstrapController {
                 self.require_source_response(peer_id)?;
                 let summary = self
                     .summary
-                    .as_ref()
+                    .clone()
                     .ok_or_else(|| bootstrap_error("commitment page arrived before summary"))?;
-                page.validate_against_summary(summary)
+                page.validate_against_summary(&summary)
                     .map_err(map_session_error)?;
                 let expected_start = self
                     .commitment_pages
@@ -418,9 +418,9 @@ impl FastSyncBootstrapController {
                     .sum::<u32>();
                 if covered == summary.chunk_count {
                     let pages = self.commitment_pages.values().cloned().collect::<Vec<_>>();
-                    let commitments = verify_fast_sync_commitment_pages_v1(summary, &pages)
+                    let commitments = verify_fast_sync_commitment_pages_v1(&summary, &pages)
                         .map_err(map_session_error)?;
-                    let plan = self.build_plan(summary, commitments);
+                    let plan = self.build_plan(&summary, commitments);
                     plan.validate_for_expected(&self.expected)?;
                     let status = storage
                         .begin_fast_sync_network_persisted_resume_v1(&plan, &self.expected)?;
@@ -433,11 +433,11 @@ impl FastSyncBootstrapController {
                 self.require_source_response(peer_id)?;
                 let summary = self
                     .summary
-                    .as_ref()
+                    .clone()
                     .ok_or_else(|| bootstrap_error("chunk arrived before summary"))?;
                 let plan = self
                     .plan
-                    .as_ref()
+                    .clone()
                     .ok_or_else(|| bootstrap_error("chunk arrived before verified commitments"))?;
                 let commitment = plan
                     .chunk_commitments
@@ -445,10 +445,10 @@ impl FastSyncBootstrapController {
                     .ok_or_else(|| bootstrap_error("chunk index is outside verified plan"))?;
                 let chunk_index = chunk.chunk_index;
                 let verified = chunk
-                    .decode_verified_bytes(summary, commitment)
+                    .decode_verified_bytes(&summary, commitment)
                     .map_err(map_session_error)?;
                 storage.persist_fast_sync_network_resume_chunk_v1(
-                    plan,
+                    &plan,
                     &self.expected,
                     chunk_index,
                     &verified,
@@ -463,11 +463,11 @@ impl FastSyncBootstrapController {
                 }
 
                 let chunks =
-                    storage.load_fast_sync_network_resume_chunks_v1(plan, &self.expected)?;
+                    storage.load_fast_sync_network_resume_chunks_v1(&plan, &self.expected)?;
                 let report = storage
-                    .import_complete_fast_sync_bootstrap_v1(plan, &chunks, &self.expected)?
+                    .import_complete_fast_sync_bootstrap_v1(&plan, &chunks, &self.expected)?
                     .0;
-                storage.clear_fast_sync_network_resume_v1(plan, &self.expected)?;
+                storage.clear_fast_sync_network_resume_v1(&plan, &self.expected)?;
                 self.imported = true;
                 self.clear_pending();
                 Ok(FastSyncBootstrapOutcome::Imported(report))
