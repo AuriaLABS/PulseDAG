@@ -7,8 +7,8 @@ use rocksdb::WriteBatch;
 
 use super::{
     ActivatedV2P2pRuntimeRecordV1, FastSyncNetworkTransferPlanV1, SnapshotVerificationReport,
-    Storage, ACTIVATED_V2_P2P_RUNTIME_RECORD_FORMAT_VERSION,
-    ACTIVATED_V2_P2P_RUNTIME_STORAGE_KEY, PROTOCOL_ACTIVATION_STORAGE_KEY, ACCEPTED_BLOCKS_CF,
+    Storage, ACCEPTED_BLOCKS_CF, ACTIVATED_V2_P2P_RUNTIME_RECORD_FORMAT_VERSION,
+    ACTIVATED_V2_P2P_RUNTIME_STORAGE_KEY, PROTOCOL_ACTIVATION_STORAGE_KEY,
 };
 
 fn storage_error(message: impl Into<String>) -> PulseError {
@@ -120,14 +120,14 @@ impl Storage {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{
+        FastSyncNetworkTransferPlanV1, PreparedFastSyncSnapshotTransferV1,
+        FAST_SYNC_NETWORK_TRANSFER_PLAN_VERSION,
+    };
     use pulsedag_core::{
         genesis_v2::init_chain_state_v2,
         snapshot_transfer::snapshot_transfer_commitment_set_digest_v1,
         GHOSTDAG_V1_ORDERING_VERSION,
-    };
-    use crate::{
-        FastSyncNetworkTransferPlanV1, PreparedFastSyncSnapshotTransferV1,
-        FAST_SYNC_NETWORK_TRANSFER_PLAN_VERSION,
     };
 
     fn temp_db_path(test_name: &str) -> String {
@@ -235,7 +235,10 @@ mod tests {
         let (restarted_state, restarted_runtime) = target
             .load_activated_v2_p2p_runtime_snapshot(&expected)
             .unwrap();
-        assert_eq!(restarted_state.dag.best_height, imported_state.dag.best_height);
+        assert_eq!(
+            restarted_state.dag.best_height,
+            imported_state.dag.best_height
+        );
         assert_eq!(
             restarted_state.chain_state_generation,
             imported_state.chain_state_generation
@@ -269,12 +272,7 @@ mod tests {
             expected_v2.genesis_hash.clone(),
         );
         let chunks = (0..prepared.plan.chunk_count)
-            .map(|chunk_index| {
-                (
-                    chunk_index,
-                    prepared.chunk(chunk_index).unwrap().to_vec(),
-                )
-            })
+            .map(|chunk_index| (chunk_index, prepared.chunk(chunk_index).unwrap().to_vec()))
             .collect::<BTreeMap<_, _>>();
 
         assert!(target
