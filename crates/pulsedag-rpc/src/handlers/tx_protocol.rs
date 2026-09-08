@@ -4,9 +4,10 @@ use crate::{
 };
 use axum::{extract::State, Json};
 use pulsedag_core::{
-    accept_transaction, accept_transaction_for_protocol, accept_transaction_with_result,
-    accept_transaction_with_result_for_protocol, compute_submission_id_v2,
-    tx_protocol::resolve_transaction_validation_path, AcceptSource, ChainState,
+    accept_transaction_with_mempool_policy_v3,
+    accept_transaction_with_mempool_policy_v3_for_protocol, compute_submission_id_v2,
+    mempool_policy_rejection_code_from_reason_v3, mempool_policy_rejection_detail_v3,
+    tx_protocol::resolve_transaction_validation_path, AcceptSource, ChainState, MempoolPolicyV3,
     ProtocolActivationIdentity, PulseError, TransactionValidationPath, TxAcceptanceResult,
 };
 
@@ -22,32 +23,23 @@ fn rpc_protocol_identity<S: RpcStateLike>(
     super::mining_submit_protocol::rpc_protocol_identity(state)
 }
 
-fn accept_rpc_transaction(
-    transaction: pulsedag_core::types::Transaction,
-    chain: &mut ChainState,
-    identity: Option<&ProtocolActivationIdentity>,
-) -> Result<(), PulseError> {
-    match identity {
-        Some(identity) => {
-            accept_transaction_for_protocol(transaction, chain, AcceptSource::Rpc, identity)
-        }
-        None => accept_transaction(transaction, chain, AcceptSource::Rpc),
-    }
-}
-
 fn accept_rpc_transaction_with_result(
     transaction: pulsedag_core::types::Transaction,
     chain: &mut ChainState,
     identity: Option<&ProtocolActivationIdentity>,
 ) -> TxAcceptanceResult {
+    let policy = MempoolPolicyV3::compatibility_default();
     match identity {
-        Some(identity) => accept_transaction_with_result_for_protocol(
+        Some(identity) => accept_transaction_with_mempool_policy_v3_for_protocol(
             transaction,
             chain,
             AcceptSource::Rpc,
             identity,
+            policy,
         ),
-        None => accept_transaction_with_result(transaction, chain, AcceptSource::Rpc),
+        None => {
+            accept_transaction_with_mempool_policy_v3(transaction, chain, AcceptSource::Rpc, policy)
+        }
     }
 }
 
@@ -99,7 +91,17 @@ fn classified_rejection(
     result: &TxAcceptanceResult,
 ) -> ApiResponse<serde_json::Value> {
     let reason = rejection_reason(result);
-    match classify_rpc_transaction_acceptance(transaction, chain, identity, result) {
+    let classification = classify_rpc_transaction_acceptance(transaction, chain, identity, result);
+    if let Some(code) = mempool_policy_rejection_code_from_reason_v3(&reason) {
+        let detail = mempool_policy_rejection_detail_v3(&reason);
+        return match classification {
+            Some(classification) => {
+                ApiResponse::err_classified(code, detail, classification.as_str())
+            }
+            None => ApiResponse::err(code, detail),
+        };
+    }
+    match classification {
         Some(classification) => {
             ApiResponse::err_classified("TX_REJECTED", reason, classification.as_str())
         }
@@ -128,17 +130,23 @@ pub async fn post_tx_validate<S: RpcStateLike>(
     let mut simulated = chain.clone();
     drop(chain);
 
-    match accept_rpc_transaction(req.transaction, &mut simulated, identity.as_ref()) {
-        Ok(()) => Json(ApiResponse::ok(TxValidateData {
+    let result =
+        accept_rpc_transaction_with_result(req.transaction, &mut simulated, identity.as_ref());
+    if matches!(
+        result,
+        TxAcceptanceResult::Accepted | TxAcceptanceResult::Orphan
+    ) {
+        Json(ApiResponse::ok(TxValidateData {
             valid: true,
             txid,
             reason: None,
-        })),
-        Err(error) => Json(ApiResponse::ok(TxValidateData {
+        }))
+    } else {
+        Json(ApiResponse::ok(TxValidateData {
             valid: false,
             txid,
-            reason: Some(error.to_string()),
-        })),
+            reason: Some(rejection_reason(&result)),
+        }))
     }
 }
 
