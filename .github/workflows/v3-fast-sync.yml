@@ -23,6 +23,8 @@ on:
       - 'crates/pulsedag-storage/src/root.rs'
       - 'crates/pulsedag-storage/src/lib.rs'
       - 'crates/pulsedag-storage/Cargo.toml'
+      - 'crates/pulsedag-storage/tests/task789_pruned_v2_restart.rs'
+      - 'crates/pulsedag-storage/tests/v3_fast_sync_restore_rejoin.rs'
       - 'crates/pulsedag-p2p/src/lib.rs'
       - 'crates/pulsedag-p2p/src/live_fast_sync_v1.rs'
       - 'crates/pulsedag-p2p/src/messages.rs'
@@ -95,6 +97,11 @@ jobs:
       - name: Atomic clean-bootstrap import regressions
         run: |
           cargo test --locked -p pulsedag-storage fast_sync_bootstrap_import::tests:: -- --nocapture
+
+      - name: Restore/rejoin and post-bootstrap replay regressions
+        run: |
+          cargo test --locked -p pulsedag-storage --test v3_fast_sync_restore_rejoin -- --nocapture
+          cargo test --locked -p pulsedag-storage --test task789_pruned_v2_restart -- --nocapture
 
       - name: Clean-node daemon bootstrap controller regressions
         run: |
