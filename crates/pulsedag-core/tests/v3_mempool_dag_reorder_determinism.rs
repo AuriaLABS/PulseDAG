@@ -1,4 +1,6 @@
 use ed25519_dalek::{Signer, SigningKey};
+use pulsedag_core::retarget::expected_difficulty_for_parent;
+use pulsedag_core::validation::block_subsidy;
 use pulsedag_core::{
     accept_transaction_for_protocol, address_from_public_key, build_candidate_block_v2,
     build_coinbase_transaction_v2, canonical_mempool_txids, canonicalize_block_parents_v2,
@@ -9,8 +11,6 @@ use pulsedag_core::{
     Block, CandidateBlockV2Spec, ChainState, Hash, OutPoint, ProtocolActivationIdentity,
     Transaction, TxInput, TxOutput, GHOSTDAG_V1_ORDERING_VERSION, TRANSACTION_VERSION_V2,
 };
-use pulsedag_core::retarget::expected_difficulty_for_parent;
-use pulsedag_core::validation::block_subsidy;
 
 const CHAIN_ID: &str = "v3-mempool-dag-reorder";
 
@@ -155,9 +155,8 @@ fn equivalent_parent_arrival_orders_converge_to_identical_mempool() {
     let base = pulsedag_core::genesis::init_chain_state(CHAIN_ID.to_string());
     let identity = identity(&base);
     let signing_key = SigningKey::from_bytes(&[73; 32]);
-    let funding_address = address_from_public_key(&hex::encode(
-        signing_key.verifying_key().to_bytes(),
-    ));
+    let funding_address =
+        address_from_public_key(&hex::encode(signing_key.verifying_key().to_bytes()));
     let genesis = base.dag.genesis_hash.clone();
     let parent = finalized_block(&base, &identity, vec![genesis], 11, &funding_address);
 
@@ -219,7 +218,12 @@ fn equivalent_parent_arrival_orders_converge_to_identical_mempool() {
     ));
     assert!(reordered_runtime.pending_contains(&grandchild.hash));
 
-    let recovered = drive(child.clone(), &mut reordered, &mut reordered_runtime, &identity);
+    let recovered = drive(
+        child.clone(),
+        &mut reordered,
+        &mut reordered_runtime,
+        &identity,
+    );
     assert!(matches!(
         recovered.primary,
         ActivatedV2P2pRuntimeOutcome::Accepted { ref block_hash, .. }
