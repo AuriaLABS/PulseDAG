@@ -48,33 +48,22 @@ fn activated_v2_restart_preserves_mempool_first_seen_order_exactly() {
     // Deliberately populate the HashMap in a different order from the
     // authoritative first-seen ordering. The persisted first_seen map, not
     // HashMap iteration order, is the restart ordering authority.
-    state
-        .mempool
-        .transactions
-        .insert(tx_c.txid.clone(), tx_c);
-    state
-        .mempool
-        .transactions
-        .insert(tx_b.txid.clone(), tx_b);
-    state
-        .mempool
-        .transactions
-        .insert(tx_a.txid.clone(), tx_a);
+    state.mempool.transactions.insert(tx_c.txid.clone(), tx_c);
+    state.mempool.transactions.insert(tx_b.txid.clone(), tx_b);
+    state.mempool.transactions.insert(tx_a.txid.clone(), tx_a);
     state.mempool.first_seen.insert("tx-a".to_string(), 3);
     state.mempool.first_seen.insert("tx-c".to_string(), 7);
     state.mempool.first_seen.insert("tx-b".to_string(), 7);
     state.mempool.next_first_seen = 8;
 
-    let expected_order = vec![
-        "tx-a".to_string(),
-        "tx-b".to_string(),
-        "tx-c".to_string(),
-    ];
+    let expected_order = vec!["tx-a".to_string(), "tx-b".to_string(), "tx-c".to_string()];
     assert_eq!(canonical_mempool_txids(&state), expected_order);
 
     let storage = Storage::open(&path).unwrap();
+    let persisted_blocks = state.dag.blocks.values().cloned().collect::<Vec<_>>();
     storage
-        .persist_activated_v2_p2p_runtime_snapshot(
+        .persist_activated_v2_p2p_blocks_and_runtime(
+            &persisted_blocks,
             &identity,
             &state,
             &ActivatedV2P2pRuntime::default(),
@@ -91,7 +80,10 @@ fn activated_v2_restart_preserves_mempool_first_seen_order_exactly() {
     assert!(runtime.staging().is_empty());
     assert_eq!(canonical_mempool_txids(&restored), expected_order);
     assert_eq!(restored.mempool.first_seen, state.mempool.first_seen);
-    assert_eq!(restored.mempool.next_first_seen, state.mempool.next_first_seen);
+    assert_eq!(
+        restored.mempool.next_first_seen,
+        state.mempool.next_first_seen
+    );
     assert_eq!(restored.mempool.transactions.len(), 3);
 
     drop(storage);
