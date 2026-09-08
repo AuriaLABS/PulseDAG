@@ -1,14 +1,14 @@
 use std::collections::BTreeMap;
 
+use pulsedag_core::snapshot_transfer::snapshot_transfer_commitment_set_digest_v1;
 use pulsedag_core::{
     build_candidate_block_v2, build_coinbase_transaction_v2, canonicalize_block_parents_v2,
     commit_ghostdag_v1_metadata_for_activated_v2, compute_block_hash_v2, current_ts,
     drive_activated_v2_p2p_block_with_runtime_persistence, materialize_authoritative_state_v2,
-    rebuild_authoritative_state_v2, state_digest, validate_pow_for_protocol,
-    ActivatedV2P2pRuntime, ActivatedV2P2pRuntimePersistence, Block, CandidateBlockV2Spec,
-    ChainState, Hash, ProtocolActivationIdentity, GHOSTDAG_V1_ORDERING_VERSION,
+    rebuild_authoritative_state_v2, state_digest, validate_pow_for_protocol, ActivatedV2P2pRuntime,
+    ActivatedV2P2pRuntimePersistence, Block, CandidateBlockV2Spec, ChainState, Hash,
+    ProtocolActivationIdentity, GHOSTDAG_V1_ORDERING_VERSION,
 };
-use pulsedag_core::snapshot_transfer::snapshot_transfer_commitment_set_digest_v1;
 use pulsedag_storage::{
     FastSyncNetworkTransferPlanV1, Storage, FAST_SYNC_NETWORK_TRANSFER_PLAN_VERSION,
 };
@@ -217,7 +217,10 @@ fn fast_sync_import_restores_rejoins_and_replays_new_blocks_across_restarts() {
     .unwrap();
     assert!(source_runtime.pending_is_empty());
     assert!(source_runtime.staging().is_empty());
-    assert_eq!(source_state.dag.ordered_dag_tip.as_ref(), Some(&second.hash));
+    assert_eq!(
+        source_state.dag.ordered_dag_tip.as_ref(),
+        Some(&second.hash)
+    );
 
     let (bundle, source_report) = source
         .export_fast_sync_snapshot_bundle_v1(&identity)
@@ -240,7 +243,10 @@ fn fast_sync_import_restores_rejoins_and_replays_new_blocks_across_restarts() {
         .unwrap();
     assert!(import_report.restore_guarantees_explicit);
     assert_eq!(imported_state.dag.best_height, snapshot_height);
-    assert_eq!(imported_state.dag.ordered_dag_tip.as_ref(), Some(&second.hash));
+    assert_eq!(
+        imported_state.dag.ordered_dag_tip.as_ref(),
+        Some(&second.hash)
+    );
     assert_eq!(state_digest(&imported_state).unwrap(), snapshot_commitment);
     assert!(imported_runtime.pending_is_empty());
     assert!(imported_runtime.staging().is_empty());
@@ -273,8 +279,14 @@ fn fast_sync_import_restores_rejoins_and_replays_new_blocks_across_restarts() {
     let (mut rejoined_state, mut rejoined_runtime) = target
         .load_activated_v2_p2p_runtime_snapshot(&identity)
         .unwrap();
-    assert_eq!(state_digest(&rejoined_state).unwrap(), after_first_rejoin_digest);
-    assert_eq!(rejoined_state.dag.ordered_dag_tip.as_ref(), Some(&third.hash));
+    assert_eq!(
+        state_digest(&rejoined_state).unwrap(),
+        after_first_rejoin_digest
+    );
+    assert_eq!(
+        rejoined_state.dag.ordered_dag_tip.as_ref(),
+        Some(&third.hash)
+    );
     assert!(rejoined_runtime.pending_is_empty());
     assert!(rejoined_runtime.staging().is_empty());
 
@@ -288,7 +300,10 @@ fn fast_sync_import_restores_rejoins_and_replays_new_blocks_across_restarts() {
         |_| Ok(()),
     )
     .unwrap();
-    assert_eq!(rejoined_state.dag.ordered_dag_tip.as_ref(), Some(&fourth.hash));
+    assert_eq!(
+        rejoined_state.dag.ordered_dag_tip.as_ref(),
+        Some(&fourth.hash)
+    );
     assert_eq!(rejoined_state.dag.best_height, snapshot_height + 2);
     let final_digest = state_digest(&rejoined_state).unwrap();
     assert!(rejoined_runtime.pending_is_empty());
