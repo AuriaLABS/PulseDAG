@@ -221,9 +221,7 @@ fn nearest_rank_fee_rate_v3(sorted_fee_rates: &[u128], numerator: u128, denomina
         .saturating_mul(numerator)
         .saturating_add(denominator.saturating_sub(1))
         / denominator;
-    let index = rank
-        .saturating_sub(1)
-        .min(count.saturating_sub(1)) as usize;
+    let index = rank.saturating_sub(1).min(count.saturating_sub(1)) as usize;
     sorted_fee_rates[index]
 }
 
@@ -236,8 +234,7 @@ fn fee_estimate_pressure_bps_v3(used: u64, capacity: u64) -> u64 {
         };
     }
 
-    let scaled = u128::from(used)
-        .saturating_mul(u128::from(FEE_ESTIMATE_PRESSURE_SCALE_BPS_V3))
+    let scaled = u128::from(used).saturating_mul(u128::from(FEE_ESTIMATE_PRESSURE_SCALE_BPS_V3))
         / u128::from(capacity);
     u64::try_from(scaled.min(u128::from(FEE_ESTIMATE_PRESSURE_SCALE_BPS_V3)))
         .unwrap_or(FEE_ESTIMATE_PRESSURE_SCALE_BPS_V3)
@@ -268,8 +265,7 @@ pub fn estimate_mempool_fee_rates_v3(
         }
     };
 
-    let mempool_transactions =
-        u64::try_from(state.mempool.transactions.len()).unwrap_or(u64::MAX);
+    let mempool_transactions = u64::try_from(state.mempool.transactions.len()).unwrap_or(u64::MAX);
     let live_max_transactions = u64::try_from(state.mempool.max_transactions).unwrap_or(u64::MAX);
     let effective_max_transactions = policy.max_transactions.min(live_max_transactions);
 
@@ -299,7 +295,10 @@ pub fn admission_order_key_v3(first_seen: Option<u64>, txid: &str) -> (u64, Stri
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{genesis::init_chain_state, types::{Transaction, TxOutput}};
+    use crate::{
+        genesis::init_chain_state,
+        types::{Transaction, TxOutput},
+    };
 
     fn sample_v1_tx(fee: u64) -> Transaction {
         Transaction {
@@ -491,7 +490,10 @@ mod tests {
             estimator_v1_tx("tx-e5", 50, 5),
         ];
         for tx in &txs {
-            state.mempool.transactions.insert(tx.txid.clone(), tx.clone());
+            state
+                .mempool
+                .transactions
+                .insert(tx.txid.clone(), tx.clone());
         }
 
         let mut rates = txs
