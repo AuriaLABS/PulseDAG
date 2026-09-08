@@ -1,0 +1,35 @@
+name: temporary 1036 mempool restart evidence
+
+on:
+  push:
+    branches:
+      - codex/1036-mempool-restart-reorder-evidence
+    paths:
+      - .github/workflows/tmp-1036-mempool-restart-evidence.yml
+
+permissions:
+  contents: write
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: codex/1036-mempool-restart-reorder-evidence
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Verify restart determinism evidence
+        run: |
+          set -euo pipefail
+          cargo fmt --all -- --check
+          cargo test --locked -p pulsedag-storage --test v3_mempool_restart_determinism -- --nocapture
+          cargo clippy -p pulsedag-storage --test v3_mempool_restart_determinism -- -D warnings
+          rm .github/workflows/tmp-1036-mempool-restart-evidence.yml
+          git config user.name 'chatgpt-codex-connector[bot]'
+          git config user.email '199175422+chatgpt-codex-connector[bot]@users.noreply.github.com'
+          git add .github/workflows/tmp-1036-mempool-restart-evidence.yml
+          git commit -m 'ci: remove temporary mempool restart verifier'
+          git push origin HEAD:codex/1036-mempool-restart-reorder-evidence
