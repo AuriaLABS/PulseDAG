@@ -91,10 +91,17 @@ fn classified_rejection(
     result: &TxAcceptanceResult,
 ) -> ApiResponse<serde_json::Value> {
     let reason = rejection_reason(result);
+    let classification = classify_rpc_transaction_acceptance(transaction, chain, identity, result);
     if let Some(code) = mempool_policy_rejection_code_from_reason_v3(&reason) {
-        return ApiResponse::err(code, mempool_policy_rejection_detail_v3(&reason));
+        let detail = mempool_policy_rejection_detail_v3(&reason);
+        return match classification {
+            Some(classification) => {
+                ApiResponse::err_classified(code, detail, classification.as_str())
+            }
+            None => ApiResponse::err(code, detail),
+        };
     }
-    match classify_rpc_transaction_acceptance(transaction, chain, identity, result) {
+    match classification {
         Some(classification) => {
             ApiResponse::err_classified("TX_REJECTED", reason, classification.as_str())
         }
