@@ -73,7 +73,6 @@ Before #1036 can close, the project still needs at least:
 
 No launch GO is implied by this foundation.
 
-
 ## Live RPC admission bridge
 
 The compatibility policy is now evaluated by the protocol-aware RPC transaction
@@ -82,6 +81,11 @@ existing fee behavior and existing package-aware eviction engine. Explicit stric
 policies fail closed with stable `MEMPOOL_V3_*` codes. Existing capacity/backpressure
 and mempool-conflict rejections are translated to the same machine-readable policy
 namespace; replacement remains unauthorized and no RBF semantics are activated.
+
+RPC responses preserve the pre-existing typed `classification` field (for example
+`conflict` and `mempool_full`) alongside the v3 `MEMPOOL_V3_*` machine code, so
+existing clients keep their rejection category while newer clients can consume the
+versioned policy code.
 
 This bridge does not freeze production fee numbers, change consensus validation,
 replace package-aware eviction ordering, or complete restart/reorder/RBF/estimation
