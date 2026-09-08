@@ -23,6 +23,7 @@ use pulsedag_storage::{
 const FAST_SYNC_REQUEST_RETRY_SECS: u64 = 5;
 const FAST_SYNC_CAPABILITY_PROBE_RETRY_SECS: u64 = 5;
 const FAST_SYNC_CLEAN_DISCOVERY_SECS: u64 = 30;
+const FAST_SYNC_STANDBY_SUMMARY_RETRY_SECS: u64 = 30;
 
 fn bootstrap_error(message: impl Into<String>) -> PulseError {
     PulseError::Internal(format!("fast-sync bootstrap: {}", message.into()))
@@ -106,6 +107,15 @@ pub fn select_clean_bootstrap_source_peer(
             .then_with(|| left.peer_id.cmp(&right.peer_id))
     });
     candidates.first().map(|remote| remote.peer_id.clone())
+}
+
+fn summary_requires_pruning_handoff(
+    summary: &FastSyncTransferSummaryV1,
+    local_height: u64,
+) -> bool {
+    summary
+        .prune_boundary_height
+        .is_some_and(|boundary| boundary > local_height && boundary <= summary.best_height)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -591,6 +601,11 @@ pub struct FastSyncDaemonRuntimeV1 {
     serving_sessions: BTreeMap<String, Option<FastSyncServingSessionV1>>,
     discovery_started_at_unix: u64,
     capability_probe_sent_at: BTreeMap<String, u64>,
+    clean_bootstrap_authority: bool,
+    pruning_handoff_active: bool,
+    last_local_height: u64,
+    last_drive_at_unix: u64,
+    standby_retry_after_unix: u64,
     fallback_to_normal_sync: bool,
 }
 
@@ -601,9 +616,7 @@ impl FastSyncDaemonRuntimeV1 {
         now_unix: u64,
     ) -> Result<Self, PulseError> {
         let local_capabilities = local_fast_sync_capabilities_v1(&expected)?;
-        let controller = clean_bootstrap
-            .then(|| FastSyncBootstrapController::new(expected.clone()))
-            .transpose()?;
+        let controller = Some(FastSyncBootstrapController::new(expected.clone())?);
         Ok(Self {
             expected,
             local_capabilities,
@@ -611,12 +624,19 @@ impl FastSyncDaemonRuntimeV1 {
             serving_sessions: BTreeMap::new(),
             discovery_started_at_unix: now_unix,
             capability_probe_sent_at: BTreeMap::new(),
+            clean_bootstrap_authority: clean_bootstrap,
+            pruning_handoff_active: false,
+            last_local_height: 0,
+            last_drive_at_unix: now_unix,
+            standby_retry_after_unix: now_unix,
             fallback_to_normal_sync: false,
         })
     }
 
     pub fn authority_active(&self) -> bool {
-        !self.fallback_to_normal_sync
+        let downloader_authority = self.pruning_handoff_active
+            || (self.clean_bootstrap_authority && !self.fallback_to_normal_sync);
+        downloader_authority
             && self
                 .controller
                 .as_ref()
@@ -627,13 +647,40 @@ impl FastSyncDaemonRuntimeV1 {
         now_unix.saturating_sub(self.discovery_started_at_unix) >= FAST_SYNC_CLEAN_DISCOVERY_SECS
     }
 
+    fn standby_summary_probe_due(&self, now_unix: u64) -> bool {
+        now_unix >= self.standby_retry_after_unix
+    }
+
     fn probe_is_due(&self, peer_id: &str, now_unix: u64) -> bool {
+        let retry_secs = if self.authority_active() {
+            FAST_SYNC_CAPABILITY_PROBE_RETRY_SECS
+        } else {
+            FAST_SYNC_STANDBY_SUMMARY_RETRY_SECS
+        };
         self.capability_probe_sent_at
             .get(peer_id)
-            .map(|sent_at| {
-                now_unix.saturating_sub(*sent_at) >= FAST_SYNC_CAPABILITY_PROBE_RETRY_SECS
-            })
+            .map(|sent_at| now_unix.saturating_sub(*sent_at) >= retry_secs)
             .unwrap_or(true)
+    }
+
+    fn apply_pruning_handoff_summary(&mut self, summary: &FastSyncTransferSummaryV1) -> bool {
+        if self.authority_active() {
+            return false;
+        }
+        if summary_requires_pruning_handoff(summary, self.last_local_height) {
+            self.pruning_handoff_active = true;
+            self.fallback_to_normal_sync = false;
+            self.standby_retry_after_unix = self.last_drive_at_unix;
+            true
+        } else {
+            if let Some(controller) = self.controller.as_mut() {
+                controller.abandon_source();
+            }
+            self.standby_retry_after_unix = self
+                .last_drive_at_unix
+                .saturating_add(FAST_SYNC_STANDBY_SUMMARY_RETRY_SECS);
+            false
+        }
     }
 
     pub fn drive(
@@ -642,7 +689,13 @@ impl FastSyncDaemonRuntimeV1 {
         local_height: u64,
         now_unix: u64,
     ) -> Result<(), PulseError> {
-        if !self.authority_active() {
+        self.last_local_height = local_height;
+        self.last_drive_at_unix = now_unix;
+        if self
+            .controller
+            .as_ref()
+            .is_some_and(FastSyncBootstrapController::imported)
+        {
             return Ok(());
         }
 
@@ -652,7 +705,7 @@ impl FastSyncDaemonRuntimeV1 {
             let controller = self
                 .controller
                 .as_ref()
-                .ok_or_else(|| bootstrap_error("clean bootstrap controller disappeared"))?;
+                .ok_or_else(|| bootstrap_error("fast-sync controller disappeared"))?;
             probe_candidates
                 .iter()
                 .filter(|peer_id| {
@@ -672,16 +725,22 @@ impl FastSyncDaemonRuntimeV1 {
             self.capability_probe_sent_at.insert(peer_id, now_unix);
         }
 
+        let may_select_source = self.authority_active() || self.standby_summary_probe_due(now_unix);
         let status = p2p.status()?;
-        let source = {
+        let source = if may_select_source {
             let controller = self
                 .controller
                 .as_mut()
-                .ok_or_else(|| bootstrap_error("clean bootstrap controller disappeared"))?;
+                .ok_or_else(|| bootstrap_error("fast-sync controller disappeared"))?;
             controller.maybe_select_source(&status, &fast_sync_eligible_peers, local_height)
+        } else {
+            None
         };
 
-        if source.is_none()
+        if self.clean_bootstrap_authority
+            && !self.pruning_handoff_active
+            && !self.fallback_to_normal_sync
+            && source.is_none()
             && self
                 .controller
                 .as_ref()
@@ -690,17 +749,20 @@ impl FastSyncDaemonRuntimeV1 {
             && self.discovery_expired(now_unix)
         {
             self.fallback_to_normal_sync = true;
-            return Ok(());
         }
 
+        let authority_active = self.authority_active();
         let request = {
             let controller = self
                 .controller
                 .as_mut()
-                .ok_or_else(|| bootstrap_error("clean bootstrap controller disappeared"))?;
+                .ok_or_else(|| bootstrap_error("fast-sync controller disappeared"))?;
             let source_peer = controller.source_peer().map(str::to_string);
             let request = controller.next_request(now_unix)?;
-            source_peer.zip(request)
+            let allowed = request.filter(|wire| {
+                authority_active || matches!(wire, FastSyncWireV1::GetTransferSummary { .. })
+            });
+            source_peer.zip(allowed)
         };
         if let Some((peer_id, wire)) = request {
             p2p.send_fast_sync_v1(&peer_id, &wire)?;
@@ -739,10 +801,20 @@ impl FastSyncDaemonRuntimeV1 {
             return Ok(None);
         }
 
-        let Some(controller) = self.controller.as_mut() else {
-            return Ok(None);
+        let standby_summary = (!self.authority_active())
+            .then(|| match wire {
+                FastSyncWireV1::TransferSummary(summary) => Some(summary.clone()),
+                _ => None,
+            })
+            .flatten();
+        let outcome = {
+            let controller = self
+                .controller
+                .as_mut()
+                .ok_or_else(|| bootstrap_error("fast-sync controller disappeared"))?;
+            controller.accept_response(storage, peer_id, wire.clone())
         };
-        match controller.accept_response(storage, peer_id, wire.clone()) {
+        match outcome {
             Ok(FastSyncBootstrapOutcome::Imported(report)) => {
                 let (chain_state, runtime) =
                     storage.load_activated_v2_p2p_runtime_snapshot(&self.expected)?;
@@ -752,10 +824,27 @@ impl FastSyncDaemonRuntimeV1 {
                     runtime,
                 }))
             }
-            Ok(FastSyncBootstrapOutcome::Progress) => Ok(None),
+            Ok(FastSyncBootstrapOutcome::Progress) => {
+                if let Some(summary) = standby_summary.as_ref() {
+                    self.apply_pruning_handoff_summary(summary);
+                }
+                Ok(None)
+            }
             Err(error) => {
-                if controller.source_peer() == Some(peer_id) {
-                    controller.abandon_source();
+                let source_matches = self
+                    .controller
+                    .as_ref()
+                    .and_then(|controller| controller.source_peer())
+                    == Some(peer_id);
+                if source_matches {
+                    if let Some(controller) = self.controller.as_mut() {
+                        controller.abandon_source();
+                    }
+                }
+                if standby_summary.is_some() && !self.authority_active() {
+                    self.standby_retry_after_unix = self
+                        .last_drive_at_unix
+                        .saturating_add(FAST_SYNC_STANDBY_SUMMARY_RETRY_SECS);
                 }
                 Err(error)
             }
@@ -796,6 +885,33 @@ mod tests {
             connected: true,
             direct_request_capable: true,
             ..RemoteSelectedTipStatus::default()
+        }
+    }
+
+    fn transfer_summary(prune_boundary_height: Option<u64>) -> FastSyncTransferSummaryV1 {
+        let expected = identity();
+        FastSyncTransferSummaryV1 {
+            contract_version: P2P_FAST_SYNC_CONTRACT_VERSION,
+            chain_id: expected.chain_id.clone(),
+            genesis_hash: expected.genesis_hash.clone(),
+            protocol_fingerprint: expected.fingerprint().unwrap(),
+            manifest_version: FAST_SYNC_SNAPSHOT_MANIFEST_VERSION,
+            protocol_snapshot_bundle_format_version: PROTOCOL_SNAPSHOT_BUNDLE_FORMAT_VERSION,
+            storage_schema_version: STORAGE_SCHEMA_VERSION,
+            payload_encoding: FAST_SYNC_SNAPSHOT_PAYLOAD_ENCODING_V1.to_string(),
+            transfer_id: "11".repeat(32),
+            commitment_set_id: "22".repeat(32),
+            payload_len: 1,
+            chunk_size: 1,
+            chunk_count: 1,
+            best_height: 200,
+            selected_tip: "33".repeat(32),
+            state_commitment: "44".repeat(32),
+            prune_boundary_height,
+            snapshot_generation: 7,
+            accepted_storage_generation: 7,
+            delta_start_generation: 7,
+            delta_end_generation: 7,
         }
     }
 
@@ -909,12 +1025,82 @@ mod tests {
     }
 
     #[test]
-    fn daemon_runtime_authority_is_clean_node_only() {
+    fn daemon_runtime_existing_node_starts_in_fast_sync_standby() {
         let expected = identity();
         let clean = FastSyncDaemonRuntimeV1::new(expected.clone(), true, 100).unwrap();
         let existing = FastSyncDaemonRuntimeV1::new(expected, false, 100).unwrap();
         assert!(clean.authority_active());
         assert!(!existing.authority_active());
+        assert!(existing.controller.is_some());
+        assert!(!existing.pruning_handoff_active);
+    }
+
+    #[test]
+    fn pruning_handoff_requires_remote_boundary_strictly_above_local_height() {
+        assert!(!summary_requires_pruning_handoff(
+            &transfer_summary(None),
+            100
+        ));
+        assert!(!summary_requires_pruning_handoff(
+            &transfer_summary(Some(99)),
+            100
+        ));
+        assert!(!summary_requires_pruning_handoff(
+            &transfer_summary(Some(100)),
+            100
+        ));
+        assert!(summary_requires_pruning_handoff(
+            &transfer_summary(Some(101)),
+            100
+        ));
+        assert!(!summary_requires_pruning_handoff(
+            &transfer_summary(Some(201)),
+            100
+        ));
+    }
+
+    #[test]
+    fn existing_node_pruning_summary_activates_fast_sync_authority() {
+        let expected = identity();
+        let mut runtime = FastSyncDaemonRuntimeV1::new(expected, false, 100).unwrap();
+        runtime.last_local_height = 120;
+        runtime.last_drive_at_unix = 130;
+
+        assert!(runtime.apply_pruning_handoff_summary(&transfer_summary(Some(121))));
+        assert!(runtime.pruning_handoff_active);
+        assert!(runtime.authority_active());
+        assert_eq!(runtime.standby_retry_after_unix, 130);
+    }
+
+    #[test]
+    fn non_pruning_summary_keeps_normal_sync_authoritative_and_backs_off() {
+        let expected = identity();
+        let mut runtime = FastSyncDaemonRuntimeV1::new(expected, false, 100).unwrap();
+        runtime.last_local_height = 120;
+        runtime.last_drive_at_unix = 130;
+
+        assert!(!runtime.apply_pruning_handoff_summary(&transfer_summary(Some(120))));
+        assert!(!runtime.pruning_handoff_active);
+        assert!(!runtime.authority_active());
+        assert_eq!(
+            runtime.standby_retry_after_unix,
+            130 + FAST_SYNC_STANDBY_SUMMARY_RETRY_SECS
+        );
+    }
+
+    #[test]
+    fn clean_bootstrap_fallback_can_later_reenter_via_pruning_handoff() {
+        let expected = identity();
+        let mut runtime = FastSyncDaemonRuntimeV1::new(expected, true, 100).unwrap();
+        runtime.fallback_to_normal_sync = true;
+        runtime.last_local_height = 120;
+        runtime.last_drive_at_unix = 140;
+        assert!(!runtime.authority_active());
+
+        assert!(runtime.apply_pruning_handoff_summary(&transfer_summary(Some(121))));
+        assert!(runtime.pruning_handoff_active);
+        assert!(!runtime.fallback_to_normal_sync);
+        assert!(runtime.authority_active());
     }
 
     #[test]
