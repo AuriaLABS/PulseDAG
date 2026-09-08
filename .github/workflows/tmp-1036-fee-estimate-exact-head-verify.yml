@@ -16,10 +16,10 @@ jobs:
       - name: Checkout exact PR candidate
         uses: actions/checkout@v4
         with:
-          ref: ef7fff70c73a7d5032b181f1d348fc65a451bb7e
+          ref: 66018d609196f30618d956cdcad597b02819445c
           fetch-depth: 1
       - name: Verify exact candidate SHA
-        run: test "$(git rev-parse HEAD)" = "ef7fff70c73a7d5032b181f1d348fc65a451bb7e"
+        run: test "$(git rev-parse HEAD)" = "66018d609196f30618d956cdcad597b02819445c"
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
       - name: Format exact candidate
