@@ -801,10 +801,12 @@ impl FastSyncDaemonRuntimeV1 {
             return Ok(None);
         }
 
-        let standby_summary = (!self.authority_active()).then(|| match wire {
-            FastSyncWireV1::TransferSummary(summary) => Some(summary.clone()),
-            _ => None,
-        }).flatten();
+        let standby_summary = (!self.authority_active())
+            .then(|| match wire {
+                FastSyncWireV1::TransferSummary(summary) => Some(summary.clone()),
+                _ => None,
+            })
+            .flatten();
         let outcome = {
             let controller = self
                 .controller
@@ -1035,7 +1037,10 @@ mod tests {
 
     #[test]
     fn pruning_handoff_requires_remote_boundary_strictly_above_local_height() {
-        assert!(!summary_requires_pruning_handoff(&transfer_summary(None), 100));
+        assert!(!summary_requires_pruning_handoff(
+            &transfer_summary(None),
+            100
+        ));
         assert!(!summary_requires_pruning_handoff(
             &transfer_summary(Some(99)),
             100
