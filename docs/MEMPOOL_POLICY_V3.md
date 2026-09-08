@@ -87,6 +87,10 @@ RPC responses preserve the pre-existing typed `classification` field (for exampl
 existing clients keep their rejection category while newer clients can consume the
 versioned policy code.
 
+Exact-head validation for this bridge must run on top of the current `main` integration
+baseline so unrelated launch gates, including the fast-sync restore/rejoin regression,
+are present rather than silently skipped by an outdated branch base.
+
 This bridge does not freeze production fee numbers, change consensus validation,
 replace package-aware eviction ordering, or complete restart/reorder/RBF/estimation
 scope tracked by #1036.
