@@ -1,0 +1,30 @@
+name: temporary 1036 fee estimate exact-head verify
+
+on:
+  push:
+    branches:
+      - codex/1036-fee-estimate-exact-head-verify
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout exact PR candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ef7fff70c73a7d5032b181f1d348fc65a451bb7e
+          fetch-depth: 1
+      - name: Verify exact candidate SHA
+        run: test "$(git rev-parse HEAD)" = "ef7fff70c73a7d5032b181f1d348fc65a451bb7e"
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Format exact candidate
+        run: cargo fmt --all -- --check
+      - name: Fee estimator tests
+        run: cargo test --locked -p pulsedag-core mempool_v3::tests:: -- --nocapture
+      - name: Clippy exact core target
+        run: cargo clippy --locked -p pulsedag-core --all-targets -- -D warnings
