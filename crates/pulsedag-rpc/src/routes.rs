@@ -79,8 +79,8 @@ use crate::{
         topology::get_topology,
         transactions::get_confirmed_transactions,
         tx::{
-            get_mempool, get_tx, get_tx_lookup, get_txs, get_txs_activity, get_txs_page,
-            get_txs_recent, post_tx_build, post_tx_submit,
+            get_mempool, get_mempool_fee_estimate, get_tx, get_tx_lookup, get_txs,
+            get_txs_activity, get_txs_page, get_txs_recent, post_tx_build, post_tx_submit,
         },
         wallet::{post_wallet_new, post_wallet_sign, post_wallet_transfer},
     },
@@ -634,6 +634,7 @@ where
         .route("/txs/:txid/lookup", get(get_tx_lookup::<S>))
         .route("/transactions", get(get_confirmed_transactions::<S>))
         .route("/mempool", get(get_mempool::<S>))
+        .route("/mempool/fee-estimate", get(get_mempool_fee_estimate::<S>))
         .route("/txs/:txid", get(get_tx::<S>))
         .route("/search/:query", get(get_search::<S>))
         .route("/metrics", get(get_metrics::<S>))
@@ -680,6 +681,7 @@ where
         .route("/txs/:txid/lookup", get(get_tx_lookup::<S>))
         .route("/transactions", get(get_confirmed_transactions::<S>))
         .route("/mempool", get(get_mempool::<S>))
+        .route("/mempool/fee-estimate", get(get_mempool_fee_estimate::<S>))
         .route("/txs/:txid", get(get_tx::<S>))
         .route("/tx/build", post(post_tx_build::<S>))
         .route("/tx/submit", post(post_tx_submit::<S>))
