@@ -24,6 +24,7 @@ jobs:
       - name: Verify restart determinism evidence
         run: |
           set -euo pipefail
+          # Re-run against the fixture corrected to use the atomic production persistence boundary.
           cargo fmt --all
           cargo test --locked -p pulsedag-storage --test v3_mempool_restart_determinism -- --nocapture
           cargo clippy -p pulsedag-storage --test v3_mempool_restart_determinism -- -D warnings
