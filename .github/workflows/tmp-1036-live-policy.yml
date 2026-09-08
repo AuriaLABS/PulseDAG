@@ -1,0 +1,510 @@
+name: temporary 1036 live mempool policy materializer
+
+on:
+  push:
+    branches:
+      - codex/1036-mempool-v3-live-policy
+
+permissions:
+  contents: write
+
+jobs:
+  materialize:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: codex/1036-mempool-v3-live-policy
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.91.0
+          components: rustfmt, clippy
+      - name: Materialize narrow live policy slice
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > crates/pulsedag-core/src/mempool_admission_v3.rs <<'EOF'
+          use crate::{
+              accept::{
+                  accept_transaction_with_result, accept_transaction_with_result_for_protocol,
+                  AcceptSource, TxAcceptanceResult,
+              },
+              mempool_v3::{
+                  fee_rate_v3, MempoolPolicyRejectionV3, MempoolPolicyV3,
+                  MEMPOOL_POLICY_V3_VERSION,
+              },
+              protocol::ProtocolActivationIdentity,
+              state::ChainState,
+              types::Transaction,
+          };
+
+          const POLICY_REASON_SEPARATOR_V3: &str = ": ";
+
+          pub fn mempool_policy_rejection_reason_v3(
+              rejection: MempoolPolicyRejectionV3,
+              detail: impl AsRef<str>,
+          ) -> String {
+              format!(
+                  "{}{}{}",
+                  rejection.as_code(),
+                  POLICY_REASON_SEPARATOR_V3,
+                  detail.as_ref()
+              )
+          }
+
+          pub fn mempool_policy_rejection_code_from_reason_v3(reason: &str) -> Option<&str> {
+              let code = reason
+                  .split_once(POLICY_REASON_SEPARATOR_V3)
+                  .map(|(code, _)| code)
+                  .unwrap_or(reason);
+              match code {
+                  "MEMPOOL_V3_BELOW_MIN_RELAY_FEE_RATE"
+                  | "MEMPOOL_V3_ABOVE_MAX_TRANSACTION_FEE"
+                  | "MEMPOOL_V3_CAPACITY_BACKPRESSURE"
+                  | "MEMPOOL_V3_REPLACEMENT_NOT_AUTHORIZED"
+                  | "MEMPOOL_V3_POLICY_IDENTITY_MISMATCH" => Some(code),
+                  _ => None,
+              }
+          }
+
+          pub fn mempool_policy_rejection_detail_v3(reason: &str) -> &str {
+              reason
+                  .split_once(POLICY_REASON_SEPARATOR_V3)
+                  .map(|(_, detail)| detail)
+                  .unwrap_or(reason)
+          }
+
+          fn policy_rejected(
+              state: &mut ChainState,
+              rejection: MempoolPolicyRejectionV3,
+              detail: impl AsRef<str>,
+          ) -> TxAcceptanceResult {
+              state.mempool.counters.rejected_total =
+                  state.mempool.counters.rejected_total.saturating_add(1);
+              TxAcceptanceResult::Rejected(mempool_policy_rejection_reason_v3(rejection, detail))
+          }
+
+          fn preflight_policy_v3(
+              tx: &Transaction,
+              state: &mut ChainState,
+              policy: MempoolPolicyV3,
+          ) -> Result<(), TxAcceptanceResult> {
+              if policy.version != MEMPOOL_POLICY_V3_VERSION {
+                  return Err(policy_rejected(
+                      state,
+                      MempoolPolicyRejectionV3::PolicyIdentityMismatch,
+                      format!(
+                          "policy version {} does not match supported version {}",
+                          policy.version, MEMPOOL_POLICY_V3_VERSION
+                      ),
+                  ));
+              }
+
+              if tx.fee > policy.max_transaction_fee {
+                  return Err(policy_rejected(
+                      state,
+                      MempoolPolicyRejectionV3::AboveMaximumTransactionFee,
+                      format!(
+                          "transaction fee {} exceeds policy maximum {}",
+                          tx.fee, policy.max_transaction_fee
+                      ),
+                  ));
+              }
+
+              let fee_rate = match fee_rate_v3(tx, &state.chain_id) {
+                  Ok(rate) => rate,
+                  Err(error) => {
+                      state.mempool.counters.rejected_total =
+                          state.mempool.counters.rejected_total.saturating_add(1);
+                      return Err(TxAcceptanceResult::Invalid(format!(
+                          "mempool v3 canonical policy assessment failed: {error:?}"
+                      )));
+                  }
+              };
+              if fee_rate.fee_per_kb < u128::from(policy.min_relay_fee_rate_per_kb) {
+                  return Err(policy_rejected(
+                      state,
+                      MempoolPolicyRejectionV3::BelowMinimumRelayFeeRate,
+                      format!(
+                          "fee rate {} is below policy minimum {}",
+                          fee_rate.fee_per_kb, policy.min_relay_fee_rate_per_kb
+                      ),
+                  ));
+              }
+
+              // Preserve the existing package-aware eviction path when the policy
+              // limit matches or exceeds the live mempool cap. A stricter explicit
+              // policy is allowed to fail closed before the legacy cap is reached.
+              let live_cap = u64::try_from(state.mempool.max_transactions).unwrap_or(u64::MAX);
+              let current = u64::try_from(state.mempool.transactions.len()).unwrap_or(u64::MAX);
+              if policy.max_transactions < live_cap && current >= policy.max_transactions {
+                  state.mempool.counters.pressure_events_total = state
+                      .mempool
+                      .counters
+                      .pressure_events_total
+                      .saturating_add(1);
+                  return Err(policy_rejected(
+                      state,
+                      MempoolPolicyRejectionV3::CapacityBackpressure,
+                      format!(
+                          "policy transaction capacity reached (used={} max={})",
+                          current, policy.max_transactions
+                      ),
+                  ));
+              }
+
+              Ok(())
+          }
+
+          fn conflicts_with_live_mempool(tx: &Transaction, state: &ChainState) -> bool {
+              tx.inputs.iter().any(|input| {
+                  state
+                      .mempool
+                      .spent_outpoints
+                      .contains(&input.previous_output)
+              })
+          }
+
+          fn normalize_live_result_v3(
+              result: TxAcceptanceResult,
+              had_mempool_conflict: bool,
+          ) -> TxAcceptanceResult {
+              match result {
+                  TxAcceptanceResult::Invalid(reason)
+                      if had_mempool_conflict && reason == "double spend" =>
+                  {
+                      TxAcceptanceResult::Rejected(mempool_policy_rejection_reason_v3(
+                          MempoolPolicyRejectionV3::ReplacementNotAuthorized,
+                          "conflicting mempool spend; replacement semantics are not authorized",
+                      ))
+                  }
+                  TxAcceptanceResult::Rejected(reason)
+                      if reason.contains("mempool backpressure")
+                          || reason.contains("spent-outpoint capacity")
+                          || reason.contains("mempool pressure detected") =>
+                  {
+                      TxAcceptanceResult::Rejected(mempool_policy_rejection_reason_v3(
+                          MempoolPolicyRejectionV3::CapacityBackpressure,
+                          reason,
+                      ))
+                  }
+                  other => other,
+              }
+          }
+
+          pub fn accept_transaction_with_mempool_policy_v3(
+              tx: Transaction,
+              state: &mut ChainState,
+              source: AcceptSource,
+              policy: MempoolPolicyV3,
+          ) -> TxAcceptanceResult {
+              if let Err(result) = preflight_policy_v3(&tx, state, policy) {
+                  return result;
+              }
+              let had_mempool_conflict = conflicts_with_live_mempool(&tx, state);
+              normalize_live_result_v3(
+                  accept_transaction_with_result(tx, state, source),
+                  had_mempool_conflict,
+              )
+          }
+
+          pub fn accept_transaction_with_mempool_policy_v3_for_protocol(
+              tx: Transaction,
+              state: &mut ChainState,
+              source: AcceptSource,
+              identity: &ProtocolActivationIdentity,
+              policy: MempoolPolicyV3,
+          ) -> TxAcceptanceResult {
+              if let Err(result) = preflight_policy_v3(&tx, state, policy) {
+                  return result;
+              }
+              let had_mempool_conflict = conflicts_with_live_mempool(&tx, state);
+              normalize_live_result_v3(
+                  accept_transaction_with_result_for_protocol(tx, state, source, identity),
+                  had_mempool_conflict,
+              )
+          }
+
+          #[cfg(test)]
+          mod tests {
+              use super::*;
+              use crate::{genesis::init_chain_state, types::TxOutput, TRANSACTION_VERSION_V1};
+
+              fn sample_tx(fee: u64) -> Transaction {
+                  Transaction {
+                      txid: "live-policy-vector".to_string(),
+                      version: TRANSACTION_VERSION_V1,
+                      inputs: Vec::new(),
+                      outputs: vec![TxOutput {
+                          address: "pulse1livepolicy".to_string(),
+                          amount: 7,
+                      }],
+                      fee,
+                      nonce: 41,
+                  }
+              }
+
+              fn rejected_reason(result: TxAcceptanceResult) -> String {
+                  match result {
+                      TxAcceptanceResult::Rejected(reason) => reason,
+                      other => panic!("expected policy rejection, got {other:?}"),
+                  }
+              }
+
+              #[test]
+              fn stable_policy_reason_round_trips_machine_code_and_detail() {
+                  let reason = mempool_policy_rejection_reason_v3(
+                      MempoolPolicyRejectionV3::CapacityBackpressure,
+                      "bounded queue full",
+                  );
+                  assert_eq!(
+                      mempool_policy_rejection_code_from_reason_v3(&reason),
+                      Some("MEMPOOL_V3_CAPACITY_BACKPRESSURE")
+                  );
+                  assert_eq!(
+                      mempool_policy_rejection_detail_v3(&reason),
+                      "bounded queue full"
+                  );
+                  assert_eq!(mempool_policy_rejection_code_from_reason_v3("legacy"), None);
+              }
+
+              #[test]
+              fn explicit_fee_ceiling_rejects_before_mempool_mutation() {
+                  let mut state = init_chain_state("live-policy-max-fee".to_string());
+                  let policy = MempoolPolicyV3 {
+                      max_transaction_fee: 4,
+                      ..MempoolPolicyV3::compatibility_default()
+                  };
+                  let reason = rejected_reason(accept_transaction_with_mempool_policy_v3(
+                      sample_tx(5),
+                      &mut state,
+                      AcceptSource::Rpc,
+                      policy,
+                  ));
+                  assert_eq!(
+                      mempool_policy_rejection_code_from_reason_v3(&reason),
+                      Some("MEMPOOL_V3_ABOVE_MAX_TRANSACTION_FEE")
+                  );
+                  assert!(state.mempool.transactions.is_empty());
+                  assert!(state.mempool.orphan_transactions.is_empty());
+              }
+
+              #[test]
+              fn explicit_relay_floor_rejects_before_mempool_mutation() {
+                  let mut state = init_chain_state("live-policy-relay-floor".to_string());
+                  let policy = MempoolPolicyV3 {
+                      min_relay_fee_rate_per_kb: u64::MAX,
+                      ..MempoolPolicyV3::compatibility_default()
+                  };
+                  let reason = rejected_reason(accept_transaction_with_mempool_policy_v3(
+                      sample_tx(1),
+                      &mut state,
+                      AcceptSource::Rpc,
+                      policy,
+                  ));
+                  assert_eq!(
+                      mempool_policy_rejection_code_from_reason_v3(&reason),
+                      Some("MEMPOOL_V3_BELOW_MIN_RELAY_FEE_RATE")
+                  );
+                  assert!(state.mempool.transactions.is_empty());
+              }
+
+              #[test]
+              fn stricter_explicit_capacity_fails_closed_without_changing_live_cap() {
+                  let mut state = init_chain_state("live-policy-capacity".to_string());
+                  let original_cap = state.mempool.max_transactions;
+                  let policy = MempoolPolicyV3 {
+                      max_transactions: 0,
+                      ..MempoolPolicyV3::compatibility_default()
+                  };
+                  let reason = rejected_reason(accept_transaction_with_mempool_policy_v3(
+                      sample_tx(0),
+                      &mut state,
+                      AcceptSource::Rpc,
+                      policy,
+                  ));
+                  assert_eq!(
+                      mempool_policy_rejection_code_from_reason_v3(&reason),
+                      Some("MEMPOOL_V3_CAPACITY_BACKPRESSURE")
+                  );
+                  assert_eq!(state.mempool.max_transactions, original_cap);
+                  assert!(state.mempool.transactions.is_empty());
+              }
+
+              #[test]
+              fn unsupported_policy_version_fails_closed() {
+                  let mut state = init_chain_state("live-policy-version".to_string());
+                  let policy = MempoolPolicyV3 {
+                      version: MEMPOOL_POLICY_V3_VERSION + 1,
+                      ..MempoolPolicyV3::compatibility_default()
+                  };
+                  let reason = rejected_reason(accept_transaction_with_mempool_policy_v3(
+                      sample_tx(0),
+                      &mut state,
+                      AcceptSource::Rpc,
+                      policy,
+                  ));
+                  assert_eq!(
+                      mempool_policy_rejection_code_from_reason_v3(&reason),
+                      Some("MEMPOOL_V3_POLICY_IDENTITY_MISMATCH")
+                  );
+                  assert!(state.mempool.transactions.is_empty());
+              }
+          }
+          EOF
+
+          python - <<'PY'
+          from pathlib import Path
+
+          lib = Path('crates/pulsedag-core/src/lib.rs')
+          text = lib.read_text()
+          needle = 'pub mod mempool;\npub mod mempool_protocol;\npub mod mempool_v3;\n'
+          repl = 'pub mod mempool;\npub mod mempool_admission_v3;\npub mod mempool_protocol;\npub mod mempool_v3;\n'
+          assert text.count(needle) == 1
+          text = text.replace(needle, repl)
+          needle = 'pub use mempool_protocol::reconcile_mempool_for_protocol;\npub use mempool_v3::{\n'
+          repl = '''pub use mempool_admission_v3::{
+              accept_transaction_with_mempool_policy_v3,
+              accept_transaction_with_mempool_policy_v3_for_protocol,
+              mempool_policy_rejection_code_from_reason_v3, mempool_policy_rejection_detail_v3,
+              mempool_policy_rejection_reason_v3,
+          };
+          pub use mempool_protocol::reconcile_mempool_for_protocol;
+          pub use mempool_v3::{
+          '''
+          assert text.count(needle) == 1
+          text = text.replace(needle, repl)
+          lib.write_text(text)
+
+          rpc = Path('crates/pulsedag-rpc/src/handlers/tx_protocol.rs')
+          text = rpc.read_text()
+          old = '''use pulsedag_core::{
+              accept_transaction, accept_transaction_for_protocol, accept_transaction_with_result,
+              accept_transaction_with_result_for_protocol, compute_submission_id_v2,
+              tx_protocol::resolve_transaction_validation_path, AcceptSource, ChainState,
+              ProtocolActivationIdentity, PulseError, TransactionValidationPath, TxAcceptanceResult,
+          };
+          '''
+          new = '''use pulsedag_core::{
+              accept_transaction_with_mempool_policy_v3,
+              accept_transaction_with_mempool_policy_v3_for_protocol, compute_submission_id_v2,
+              mempool_policy_rejection_code_from_reason_v3, mempool_policy_rejection_detail_v3,
+              tx_protocol::resolve_transaction_validation_path, AcceptSource, ChainState, MempoolPolicyV3,
+              ProtocolActivationIdentity, PulseError, TransactionValidationPath, TxAcceptanceResult,
+          };
+          '''
+          assert text.count(old) == 1
+          text = text.replace(old, new)
+
+          start = text.index('fn accept_rpc_transaction(\n')
+          end = text.index('fn legacy_orphan_compatibility(\n')
+          replacement = '''fn accept_rpc_transaction_with_result(
+              transaction: pulsedag_core::types::Transaction,
+              chain: &mut ChainState,
+              identity: Option<&ProtocolActivationIdentity>,
+          ) -> TxAcceptanceResult {
+              let policy = MempoolPolicyV3::compatibility_default();
+              match identity {
+                  Some(identity) => accept_transaction_with_mempool_policy_v3_for_protocol(
+                      transaction,
+                      chain,
+                      AcceptSource::Rpc,
+                      identity,
+                      policy,
+                  ),
+                  None => accept_transaction_with_mempool_policy_v3(
+                      transaction,
+                      chain,
+                      AcceptSource::Rpc,
+                      policy,
+                  ),
+              }
+          }
+
+          '''
+          text = text[:start] + replacement + text[end:]
+
+          old = '''    let reason = rejection_reason(result);
+              match classify_rpc_transaction_acceptance(transaction, chain, identity, result) {
+          '''
+          new = '''    let reason = rejection_reason(result);
+              if let Some(code) = mempool_policy_rejection_code_from_reason_v3(&reason) {
+                  return ApiResponse::err(code, mempool_policy_rejection_detail_v3(&reason));
+              }
+              match classify_rpc_transaction_acceptance(transaction, chain, identity, result) {
+          '''
+          assert text.count(old) == 1
+          text = text.replace(old, new)
+
+          old = '''    match accept_rpc_transaction(req.transaction, &mut simulated, identity.as_ref()) {
+                  Ok(()) => Json(ApiResponse::ok(TxValidateData {
+                      valid: true,
+                      txid,
+                      reason: None,
+                  })),
+                  Err(error) => Json(ApiResponse::ok(TxValidateData {
+                      valid: false,
+                      txid,
+                      reason: Some(error.to_string()),
+                  })),
+              }
+          '''
+          new = '''    let result =
+                  accept_rpc_transaction_with_result(req.transaction, &mut simulated, identity.as_ref());
+              if matches!(
+                  result,
+                  TxAcceptanceResult::Accepted | TxAcceptanceResult::Orphan
+              ) {
+                  Json(ApiResponse::ok(TxValidateData {
+                      valid: true,
+                      txid,
+                      reason: None,
+                  }))
+              } else {
+                  Json(ApiResponse::ok(TxValidateData {
+                      valid: false,
+                      txid,
+                      reason: Some(rejection_reason(&result)),
+                  }))
+              }
+          '''
+          assert text.count(old) == 1
+          text = text.replace(old, new)
+          rpc.write_text(text)
+
+          doc = Path('docs/MEMPOOL_POLICY_V3.md')
+          text = doc.read_text()
+          addition = '''
+
+          ## Live RPC admission bridge
+
+          The compatibility policy is now evaluated by the protocol-aware RPC transaction
+          admission path before durable mempool mutation. Default numeric values preserve the
+          existing fee behavior and existing package-aware eviction engine. Explicit stricter
+          policies fail closed with stable `MEMPOOL_V3_*` codes. Existing capacity/backpressure
+          and mempool-conflict rejections are translated to the same machine-readable policy
+          namespace; replacement remains unauthorized and no RBF semantics are activated.
+
+          This bridge does not freeze production fee numbers, change consensus validation,
+          replace package-aware eviction ordering, or complete restart/reorder/RBF/estimation
+          scope tracked by #1036.
+          '''
+          if '## Live RPC admission bridge' not in text:
+              text += addition
+          doc.write_text(text)
+          PY
+
+          cargo fmt --all
+          cargo test --locked -p pulsedag-core mempool_admission_v3::tests:: -- --nocapture
+          cargo test --locked -p pulsedag-rpc tx_protocol::tests:: -- --nocapture
+          cargo clippy --locked -p pulsedag-core -p pulsedag-rpc --all-targets -- -D warnings
+          git diff --check
+
+          rm .github/workflows/tmp-1036-live-policy.yml
+          git config user.name "chatgpt-codex-connector[bot]"
+          git config user.email "199175422+chatgpt-codex-connector[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "mempool: wire v3 policy into RPC admission"
+          git push origin HEAD:codex/1036-mempool-v3-live-policy
