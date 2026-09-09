@@ -2,10 +2,10 @@ use ed25519_dalek::{Signer, SigningKey};
 use pulsedag_core::{
     accept_transaction_with_mempool_policy_v3,
     accept_transaction_with_mempool_policy_v3_for_protocol,
-    mempool_admission_v3::classify_mempool_conflicts_v3,
-    mempool_policy_rejection_code_from_reason_v3,
     genesis::init_chain_state,
     mempool::{canonical_mempool_txids, reconcile_mempool},
+    mempool_admission_v3::classify_mempool_conflicts_v3,
+    mempool_policy_rejection_code_from_reason_v3,
     tx::{address_from_public_key, compute_txid, signing_message},
     types::{OutPoint, Transaction, TxInput, TxOutput, Utxo},
     AcceptSource, MempoolPolicyV3, ProtocolActivationIdentity, TxAcceptanceResult,
@@ -150,12 +150,7 @@ fn conflict_package_vectors_are_identical_across_equivalent_state_and_reconcile(
         10,
         3,
     );
-    pulsedag_core::accept_transaction(
-        shared_child.clone(),
-        &mut state,
-        AcceptSource::Rpc,
-    )
-    .unwrap();
+    pulsedag_core::accept_transaction(shared_child.clone(), &mut state, AcceptSource::Rpc).unwrap();
 
     let incoming = signed_tx(
         &owner_key,
@@ -255,10 +250,22 @@ fn conflict_package_vectors_are_identical_across_equivalent_state_and_reconcile(
         rejected_code(protocol),
         Some("MEMPOOL_V3_REPLACEMENT_NOT_AUTHORIZED".to_string())
     );
-    assert_eq!(canonical_mempool_txids(&ordinary_state), ordinary_before_order);
-    assert_eq!(canonical_mempool_txids(&protocol_state), protocol_before_order);
-    assert_eq!(ordinary_state.mempool.first_seen, ordinary_before_first_seen);
-    assert_eq!(protocol_state.mempool.first_seen, protocol_before_first_seen);
+    assert_eq!(
+        canonical_mempool_txids(&ordinary_state),
+        ordinary_before_order
+    );
+    assert_eq!(
+        canonical_mempool_txids(&protocol_state),
+        protocol_before_order
+    );
+    assert_eq!(
+        ordinary_state.mempool.first_seen,
+        ordinary_before_first_seen
+    );
+    assert_eq!(
+        protocol_state.mempool.first_seen,
+        protocol_before_first_seen
+    );
     assert_eq!(
         ordinary_state.mempool.admission_height,
         ordinary_before_admission_height
