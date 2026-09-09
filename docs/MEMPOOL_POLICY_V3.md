@@ -4,7 +4,9 @@ Issue: #1036. Launch authority remains #781 / #794.
 
 ## Status
 
-This document records the first **non-activating** deterministic mempool-policy foundation. It does not complete #1036 and it does not freeze final mainnet numeric fee policy, RBF semantics, expiry, fee estimation, or wallet UX.
+This document records the deterministic mempool-policy foundation. It does not complete #1036 and it does not freeze final mainnet numeric fee policy, finite production expiry, or wallet UX.
+
+Replacement semantics for the currently frozen transaction protocol are explicit: **automatic RBF/replacement is disabled**. This is a final behavior for the current protocol, not a placeholder that may be activated by fee, fee rate, nonce, arrival order, submission identity, or the `replacement_enabled` policy field.
 
 ## Policy identity
 
@@ -52,7 +54,9 @@ The foundation reserves these machine-readable codes:
 - `MEMPOOL_V3_REPLACEMENT_NOT_AUTHORIZED`
 - `MEMPOOL_V3_POLICY_IDENTITY_MISMATCH`
 
-Conflicting transactions remain fail-closed even if a caller supplies a policy object with `replacement_enabled=true`. The non-RBF conflict-package classification is frozen below, but replacement is not authorized until fee-bump requirements, replacement-set eviction, descendant replacement semantics, restart behavior for an actual replacement, and transaction-protocol interaction are separately frozen.
+Conflicting transactions fail closed with `MEMPOOL_V3_REPLACEMENT_NOT_AUTHORIZED` because the frozen transaction protocol explicitly disables automatic RBF/replacement. A caller-supplied `replacement_enabled=true` does not override the transaction protocol and is not an activation switch.
+
+Any future protocol that introduces RBF must define a new explicit replacement contract and rerun affected transaction, mempool, wallet, P2P, restart, and launch evidence. Fee-bump rules and actual replacement eviction are therefore future-protocol work, not unresolved authorization rules for the current protocol.
 
 ## Deterministic ordering
 
@@ -67,44 +71,47 @@ The v3 admission layer uses one canonical read-only conflict classifier before l
 - `conflict_package_txids` is the direct set plus every live in-mempool descendant reachable recursively from any direct conflict;
 - the conflict package is unique and lexicographically sorted, including shared descendants and fan-in/fan-out graphs without duplicate entries;
 - unrelated ancestors or descendants are not added to the package;
-- an exact duplicate txid is excluded from replacement-conflict classification so the historical `Duplicate` precedence remains unchanged;
+- for retries that pass v3 policy preflight, an exact duplicate txid is excluded from replacement-conflict classification so legacy `Duplicate` handling remains unchanged after preflight;
 - equivalent in-memory states, states rebuilt by mempool reconciliation, and states restored through the persisted RocksDB chain-state boundary must produce the same direct-conflict vector, conflict-package vector, and canonical mempool order;
-- ordinary and protocol-aware v3 admission must reject the same true conflict with `MEMPOOL_V3_REPLACEMENT_NOT_AUTHORIZED` before mempool mutation, apart from intentional rejection accounting.
+- ordinary and protocol-aware v3 admission reject the same true conflict with `MEMPOOL_V3_REPLACEMENT_NOT_AUTHORIZED` before mempool mutation, apart from intentional rejection accounting.
 
-These rules classify conflicts only. They do **not** authorize fee bumping, conflict eviction, replacement-set mutation, descendant replacement, or RBF. `replacement_enabled=true` remains fail-closed under this contract.
+These rules classify conflicts deterministically and enforce the current protocol's no-RBF rule. They do not authorize fee bumping, conflict eviction, replacement-set mutation, or descendant replacement.
+
+## Frozen transaction-protocol replacement semantics
+
+The transaction protocol is authoritative over mempool policy:
+
+- an exact canonical txid retry that passes v3 policy preflight remains `Duplicate` and is idempotent;
+- a distinct transaction spending an already-reserved live mempool outpoint is a conflict and is rejected;
+- a higher absolute fee does not authorize replacement;
+- a higher canonical fee rate does not authorize replacement;
+- a different or larger nonce does not authorize replacement;
+- arrival/first-seen ordering does not authorize replacement;
+- retry/submission identity does not authorize replacement;
+- `replacement_enabled=true` does not authorize replacement;
+- ordinary and protocol-aware v3 admission apply the same rejection before mempool mutation;
+- read-only replacement assessment values are observations only and never an authorization bit.
+
+The valid signed regression in `mempool_no_rbf_protocol_v3.rs` constructs both a legacy compatibility vector and an activated-v2 chain-bound vector. In both cases the conflicting incoming transaction pays a strictly higher total fee and fee rate and uses a larger nonce, yet it still receives `MEMPOOL_V3_REPLACEMENT_NOT_AUTHORIZED`; the activated-v2 case is admitted with `ProtocolActivationIdentity::activated_v2`.
 
 ## Remaining #1036 work
 
 Before #1036 can close, the project still needs at least:
 
-- exact production minimum/maximum fee policy and fee estimation,
-- bounded expiry semantics without nondeterministic restart behavior,
-- explicit RBF/replacement semantics, including fee-bump and authorized replacement/eviction rules,
-- deterministic restart reconstruction and DAG-reordering reconciliation evidence,
-- wallet/RPC integration of stable reason codes,
-- integrated golden vectors for final production fee/replacement decisions beyond the frozen conflict/reconcile/restart and equivalent-state package-eviction vectors,
+- exact production minimum/maximum fee policy values and final fee-policy identity;
+- final bounded resource/expiry policy rather than compatibility-only limits;
+- wallet-facing integration of the stable fee/rejection behavior;
+- integrated golden vectors for the final production fee/resource decisions;
 - exact-candidate policy identity recorded in #781/#794 evidence.
 
 No launch GO is implied by this foundation.
 
 ## Live RPC admission bridge
 
-The compatibility policy is now evaluated by the protocol-aware RPC transaction
-admission path before durable mempool mutation. Default numeric values preserve the
-existing fee behavior and existing package-aware eviction engine. Explicit stricter
-policies fail closed with stable `MEMPOOL_V3_*` codes. Existing capacity/backpressure
-and mempool-conflict rejections are translated to the same machine-readable policy
-namespace; replacement remains unauthorized and no RBF semantics are activated.
+The compatibility policy is evaluated by the protocol-aware RPC transaction admission path before durable mempool mutation. Default numeric values preserve the existing fee behavior and existing package-aware eviction engine. Explicit stricter policies fail closed with stable `MEMPOOL_V3_*` codes. Existing capacity/backpressure and mempool-conflict rejections are translated to the same machine-readable policy namespace; replacement remains unauthorized under the frozen transaction protocol.
 
-RPC responses preserve the pre-existing typed `classification` field (for example
-`conflict` and `mempool_full`) alongside the v3 `MEMPOOL_V3_*` machine code, so
-existing clients keep their rejection category while newer clients can consume the
-versioned policy code.
+RPC responses preserve the pre-existing typed `classification` field (for example `conflict` and `mempool_full`) alongside the v3 `MEMPOOL_V3_*` machine code, so existing clients keep their rejection category while newer clients can consume the versioned policy code.
 
-Exact-head validation for this bridge must run on top of the current `main` integration
-baseline so unrelated launch gates, including the fast-sync restore/rejoin regression,
-are present rather than silently skipped by an outdated branch base.
+Exact-head validation for this bridge must run on top of the current `main` integration baseline so unrelated launch gates, including the fast-sync restore/rejoin regression, are present rather than silently skipped by an outdated branch base.
 
-This bridge does not freeze production fee numbers, change consensus validation,
-replace package-aware eviction ordering, or complete restart/reorder/RBF/estimation
-scope tracked by #1036.
+This bridge does not freeze production fee numbers, change consensus validation, or replace package-aware eviction ordering.
