@@ -13,6 +13,7 @@ pub mod header_v2;
 pub mod mempool;
 pub mod mempool_admission_v3;
 pub mod mempool_protocol;
+pub mod mempool_replacement_v3;
 pub mod mempool_v3;
 pub mod mined_block_v2;
 pub mod mining;
@@ -182,6 +183,10 @@ pub use mempool_admission_v3::{
     mempool_policy_rejection_reason_v3,
 };
 pub use mempool_protocol::reconcile_mempool_for_protocol;
+pub use mempool_replacement_v3::{
+    assess_mempool_replacement_v3, MempoolReplacementAssessmentV3,
+    MEMPOOL_REPLACEMENT_ASSESSMENT_V3_VERSION,
+};
 pub use mempool_v3::{
     admission_order_key_v3, canonical_transaction_size_for_mempool_v3, fee_rate_v3, FeeRateV3,
     MempoolPolicyAssessmentErrorV3, MempoolPolicyRejectionV3, MempoolPolicyV3,
