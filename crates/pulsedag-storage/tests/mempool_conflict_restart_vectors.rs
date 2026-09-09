@@ -25,6 +25,16 @@ const INCOMING_TXID: &str = "950f69aee6b186db267bfb62523115ae2875b7158afa18200a9
 const INCOMING_SIGNATURE: &str =
     "bca39388be24dc7eddedcfa45d1a22dac9fd4fbb1bd043719a6f03a377634e11a68e3c04aa97049c4a37409fd9ec4b21096351d0d16d0b10b721fc6ca847d309";
 
+struct FrozenTxSpec<'a> {
+    txid: &'a str,
+    public_key: &'a str,
+    signature: &'a str,
+    output_address: &'a str,
+    output_amount: u64,
+    fee: u64,
+    nonce: u64,
+}
+
 fn temp_db_path(name: &str) -> String {
     let unique = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -60,33 +70,24 @@ fn fund_address(state: &mut ChainState, txid: &str, address: &str, amount: u64) 
     outpoint
 }
 
-fn frozen_signed_tx(
-    txid: &str,
-    previous_outputs: Vec<OutPoint>,
-    public_key: &str,
-    signature: &str,
-    output_address: &str,
-    output_amount: u64,
-    fee: u64,
-    nonce: u64,
-) -> Transaction {
+fn frozen_signed_tx(previous_outputs: Vec<OutPoint>, spec: FrozenTxSpec<'_>) -> Transaction {
     Transaction {
-        txid: txid.to_string(),
+        txid: spec.txid.to_string(),
         version: 1,
         inputs: previous_outputs
             .into_iter()
             .map(|previous_output| TxInput {
                 previous_output,
-                public_key: public_key.to_string(),
-                signature: signature.to_string(),
+                public_key: spec.public_key.to_string(),
+                signature: spec.signature.to_string(),
             })
             .collect(),
         outputs: vec![TxOutput {
-            address: output_address.to_string(),
-            amount: output_amount,
+            address: spec.output_address.to_string(),
+            amount: spec.output_amount,
         }],
-        fee,
-        nonce,
+        fee: spec.fee,
+        nonce: spec.nonce,
     }
 }
 
@@ -113,31 +114,34 @@ fn conflict_package_golden_vectors_survive_real_restart_and_hashmap_reordering()
     let funding_b = fund_address(&mut state, "fund-restart-conflict-b", OWNER_ADDRESS, 80);
 
     let direct_a = frozen_signed_tx(
-        DIRECT_A_TXID,
         vec![funding_a.clone()],
-        OWNER_PUBLIC_KEY,
-        DIRECT_A_SIGNATURE,
-        CHILD_ADDRESS,
-        50,
-        10,
-        1,
+        FrozenTxSpec {
+            txid: DIRECT_A_TXID,
+            public_key: OWNER_PUBLIC_KEY,
+            signature: DIRECT_A_SIGNATURE,
+            output_address: CHILD_ADDRESS,
+            output_amount: 50,
+            fee: 10,
+            nonce: 1,
+        },
     );
     let direct_b = frozen_signed_tx(
-        DIRECT_B_TXID,
         vec![funding_b.clone()],
-        OWNER_PUBLIC_KEY,
-        DIRECT_B_SIGNATURE,
-        CHILD_ADDRESS,
-        70,
-        10,
-        2,
+        FrozenTxSpec {
+            txid: DIRECT_B_TXID,
+            public_key: OWNER_PUBLIC_KEY,
+            signature: DIRECT_B_SIGNATURE,
+            output_address: CHILD_ADDRESS,
+            output_amount: 70,
+            fee: 10,
+            nonce: 2,
+        },
     );
 
     pulsedag_core::accept_transaction(direct_a.clone(), &mut state, AcceptSource::Rpc).unwrap();
     pulsedag_core::accept_transaction(direct_b.clone(), &mut state, AcceptSource::Rpc).unwrap();
 
     let shared_child = frozen_signed_tx(
-        SHARED_CHILD_TXID,
         vec![
             OutPoint {
                 txid: direct_a.txid.clone(),
@@ -148,24 +152,29 @@ fn conflict_package_golden_vectors_survive_real_restart_and_hashmap_reordering()
                 index: 0,
             },
         ],
-        CHILD_PUBLIC_KEY,
-        SHARED_CHILD_SIGNATURE,
-        CHILD_ADDRESS,
-        110,
-        10,
-        3,
+        FrozenTxSpec {
+            txid: SHARED_CHILD_TXID,
+            public_key: CHILD_PUBLIC_KEY,
+            signature: SHARED_CHILD_SIGNATURE,
+            output_address: CHILD_ADDRESS,
+            output_amount: 110,
+            fee: 10,
+            nonce: 3,
+        },
     );
     pulsedag_core::accept_transaction(shared_child.clone(), &mut state, AcceptSource::Rpc).unwrap();
 
     let incoming = frozen_signed_tx(
-        INCOMING_TXID,
         vec![funding_a, funding_b],
-        OWNER_PUBLIC_KEY,
-        INCOMING_SIGNATURE,
-        OWNER_ADDRESS,
-        130,
-        10,
-        4,
+        FrozenTxSpec {
+            txid: INCOMING_TXID,
+            public_key: OWNER_PUBLIC_KEY,
+            signature: INCOMING_SIGNATURE,
+            output_address: OWNER_ADDRESS,
+            output_amount: 130,
+            fee: 10,
+            nonce: 4,
+        },
     );
 
     let expected_direct = sorted(vec![direct_a.txid.clone(), direct_b.txid.clone()]);
