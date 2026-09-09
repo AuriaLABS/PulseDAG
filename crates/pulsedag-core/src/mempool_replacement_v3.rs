@@ -69,19 +69,16 @@ pub fn assess_mempool_replacement_v3(
         };
         replacement_package_total_fee =
             replacement_package_total_fee.saturating_add(u128::from(existing.fee));
-        replacement_package_total_size_bytes = replacement_package_total_size_bytes.saturating_add(
-            u128::from(canonical_transaction_size_for_mempool_v3(
-                existing,
-                &state.chain_id,
-            )?),
-        );
+        replacement_package_total_size_bytes =
+            replacement_package_total_size_bytes.saturating_add(u128::from(
+                canonical_transaction_size_for_mempool_v3(existing, &state.chain_id)?,
+            ));
     }
 
     let replacement_package_fee_rate_per_kb = if replacement_package_total_size_bytes == 0 {
         0
     } else {
-        replacement_package_total_fee
-            .saturating_mul(u128::from(FEE_RATE_SCALE_BYTES_V3))
+        replacement_package_total_fee.saturating_mul(u128::from(FEE_RATE_SCALE_BYTES_V3))
             / replacement_package_total_size_bytes
     };
 
@@ -214,12 +211,7 @@ mod tests {
             }
         }
 
-        let incoming = tx(
-            "incoming",
-            vec![external_b, external_a],
-            1_000_000,
-            9,
-        );
+        let incoming = tx("incoming", vec![external_b, external_a], 1_000_000, 9);
         (state, incoming)
     }
 
