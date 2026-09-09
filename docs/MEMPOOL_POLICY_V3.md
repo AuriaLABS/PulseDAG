@@ -52,11 +52,26 @@ The foundation reserves these machine-readable codes:
 - `MEMPOOL_V3_REPLACEMENT_NOT_AUTHORIZED`
 - `MEMPOOL_V3_POLICY_IDENTITY_MISMATCH`
 
-Conflicting transactions remain fail-closed in this slice even if a future policy object sets a replacement flag. RBF/replacement is not authorized until its conflict graph, fee bump, descendant handling, restart behavior, and transaction-protocol interaction are separately frozen.
+Conflicting transactions remain fail-closed even if a caller supplies a policy object with `replacement_enabled=true`. The non-RBF conflict-package classification is frozen below, but replacement is not authorized until fee-bump requirements, replacement-set eviction, descendant replacement semantics, restart behavior for an actual replacement, and transaction-protocol interaction are separately frozen.
 
 ## Deterministic ordering
 
 The foundation preserves the existing first-seen ordering contract with txid as the deterministic tie-breaker. It does not silently switch template/admission order to fee priority.
+
+## Frozen non-RBF conflict-package contract
+
+The v3 admission layer uses one canonical read-only conflict classifier before legacy admission can mutate the mempool:
+
+- `direct_conflict_txids` are the unique live mempool txids that spend any `OutPoint` also spent by the incoming transaction;
+- direct conflicts are returned in lexicographic txid order, independent of `HashMap` or insertion order;
+- `conflict_package_txids` is the direct set plus every live in-mempool descendant reachable recursively from any direct conflict;
+- the conflict package is unique and lexicographically sorted, including shared descendants and fan-in/fan-out graphs without duplicate entries;
+- unrelated ancestors or descendants are not added to the package;
+- an exact duplicate txid is excluded from replacement-conflict classification so the historical `Duplicate` precedence remains unchanged;
+- equivalent in-memory states, states rebuilt by mempool reconciliation, and states restored through the persisted RocksDB chain-state boundary must produce the same direct-conflict vector, conflict-package vector, and canonical mempool order;
+- ordinary and protocol-aware v3 admission must reject the same true conflict with `MEMPOOL_V3_REPLACEMENT_NOT_AUTHORIZED` before mempool mutation, apart from intentional rejection accounting.
+
+These rules classify conflicts only. They do **not** authorize fee bumping, conflict eviction, replacement-set mutation, descendant replacement, or RBF. `replacement_enabled=true` remains fail-closed under this contract.
 
 ## Remaining #1036 work
 
@@ -64,11 +79,10 @@ Before #1036 can close, the project still needs at least:
 
 - exact production minimum/maximum fee policy and fee estimation,
 - bounded expiry semantics without nondeterministic restart behavior,
-- package/conflict graph rules,
-- explicit RBF/replacement semantics,
+- explicit RBF/replacement semantics, including fee-bump and authorized replacement/eviction rules,
 - deterministic restart reconstruction and DAG-reordering reconciliation evidence,
 - wallet/RPC integration of stable reason codes,
-- integrated golden vectors for equivalent mempool states and eviction decisions,
+- integrated golden vectors for final production fee/replacement decisions beyond the frozen conflict/reconcile/restart and equivalent-state package-eviction vectors,
 - exact-candidate policy identity recorded in #781/#794 evidence.
 
 No launch GO is implied by this foundation.
