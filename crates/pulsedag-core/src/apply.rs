@@ -76,6 +76,7 @@ pub fn apply_transaction(
 
     if state.mempool.transactions.remove(&tx.txid).is_some() {
         state.mempool.first_seen.remove(&tx.txid);
+        state.mempool.admission_height.remove(&tx.txid);
         state.mempool.counters.confirmed_removed_total = state
             .mempool
             .counters

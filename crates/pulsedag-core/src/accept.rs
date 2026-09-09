@@ -2,8 +2,8 @@ use crate::{
     apply::{apply_block, prepare_block_state},
     errors::PulseError,
     mempool::{
-        combined_pressure_tier, mempool_pressure_bps, reconcile_mempool, MEMPOOL_PRESSURE_HIGH_BPS,
-        MEMPOOL_PRESSURE_SATURATED_BPS,
+        combined_pressure_tier, mempool_pressure_bps, reconcile_mempool,
+        record_mempool_admission_height, MEMPOOL_PRESSURE_HIGH_BPS, MEMPOOL_PRESSURE_SATURATED_BPS,
     },
     mempool_protocol::reconcile_mempool_for_protocol,
     pow_validation_result, selected_pow_name,
@@ -766,6 +766,8 @@ fn accept_transaction_with_result_internal(
         let sorted_package = selected_package.into_iter().collect::<BTreeSet<_>>();
         for package_txid in sorted_package {
             if let Some(evicted) = state.mempool.transactions.remove(&package_txid) {
+                state.mempool.first_seen.remove(&package_txid);
+                state.mempool.admission_height.remove(&package_txid);
                 for input in &evicted.inputs {
                     state.mempool.spent_outpoints.remove(&input.previous_output);
                 }
@@ -788,6 +790,7 @@ fn accept_transaction_with_result_internal(
     let sequence = state.mempool.next_first_seen;
     state.mempool.next_first_seen = state.mempool.next_first_seen.saturating_add(1);
     state.mempool.first_seen.insert(tx.txid.clone(), sequence);
+    record_mempool_admission_height(&tx.txid, state);
     state.mempool.transactions.insert(tx.txid.clone(), tx);
     state.mempool.counters.accepted_total = state.mempool.counters.accepted_total.saturating_add(1);
     promote_ready_orphans(state, source, validation);

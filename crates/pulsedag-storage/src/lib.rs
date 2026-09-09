@@ -21,6 +21,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
 const CHAIN_STATE_KEY: &[u8] = b"chain_state";
+const MEMPOOL_ADMISSION_HEIGHT_V1_KEY: &[u8] = b"mempool_admission_height_v1";
 pub const STORAGE_SCHEMA_VERSION: u32 = 1;
 const STORAGE_SCHEMA_VERSION_KEY: &[u8] = b"storage_schema_version";
 const CHAIN_ID_KEY: &[u8] = b"chain_id";
@@ -1194,6 +1195,18 @@ impl Storage {
             bincode::serialize(state).map_err(|e| PulseError::StorageError(e.to_string()))?;
         let metadata = Self::snapshot_metadata_for_state(state, captured_at_unix);
         batch.put_cf(meta_cf, CHAIN_STATE_KEY, value);
+        let mut admission_height = BTreeMap::<Hash, u64>::new();
+        for (txid, height) in &state.mempool.admission_height {
+            if state.mempool.transactions.contains_key(txid) {
+                admission_height.insert(txid.clone(), *height);
+            }
+        }
+        batch.put_cf(
+            meta_cf,
+            MEMPOOL_ADMISSION_HEIGHT_V1_KEY,
+            bincode::serialize(&admission_height)
+                .map_err(|e| PulseError::StorageError(e.to_string()))?,
+        );
         batch.put_cf(
             meta_cf,
             STORAGE_SCHEMA_VERSION_KEY,
@@ -1218,17 +1231,33 @@ impl Storage {
             .db
             .cf_handle("meta")
             .ok_or_else(|| PulseError::StorageError("missing cf meta".into()))?;
-        match self
+        let Some(bytes) = self
             .db
-            .get_cf(cf, CHAIN_STATE_KEY)
+            .get_cf(&cf, CHAIN_STATE_KEY)
+            .map_err(|e| PulseError::StorageError(e.to_string()))?
+        else {
+            return Ok(None);
+        };
+        let mut state: ChainState = bincode::deserialize(&bytes)
+            .map_err(|e| PulseError::StorageError(e.to_string()))?;
+        state.mempool.admission_height.clear();
+        if let Some(sidecar) = self
+            .db
+            .get_cf(&cf, MEMPOOL_ADMISSION_HEIGHT_V1_KEY)
             .map_err(|e| PulseError::StorageError(e.to_string()))?
         {
-            Some(bytes) => Ok(Some(
-                bincode::deserialize(&bytes)
-                    .map_err(|e| PulseError::StorageError(e.to_string()))?,
-            )),
-            None => Ok(None),
+            let persisted: BTreeMap<Hash, u64> = bincode::deserialize(&sidecar).map_err(|e| {
+                PulseError::StorageError(format!(
+                    "mempool admission-height sidecar is corrupt: {e}"
+                ))
+            })?;
+            for (txid, height) in persisted {
+                if state.mempool.transactions.contains_key(&txid) {
+                    state.mempool.admission_height.insert(txid, height);
+                }
+            }
         }
+        Ok(Some(state))
     }
 
     pub fn load_or_init_genesis(&self, chain_id: String) -> Result<ChainState, PulseError> {
