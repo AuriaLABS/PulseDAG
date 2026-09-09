@@ -1,5 +1,10 @@
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
+
 use crate::{
-    errors::PulseError, state::ChainState, types::Transaction, validation::validate_transaction,
+    errors::PulseError,
+    state::ChainState,
+    types::{Hash, Transaction},
+    validation::validate_transaction,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -89,6 +94,122 @@ pub fn canonical_mempool_txids(state: &ChainState) -> Vec<String> {
     txids
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MempoolExpiryResult {
+    pub expired_txids: Vec<Hash>,
+    pub kept_txids: Vec<Hash>,
+}
+
+/// Canonical mempool logical clock. This deliberately follows accepted DAG
+/// progress rather than wall clock/process time.
+pub fn mempool_logical_clock(state: &ChainState) -> u64 {
+    state.dag.best_height
+}
+
+/// Record age only for a genuinely new live admission. Reconciliation must not
+/// synthesize this metadata for legacy entries: missing age is fail-safe retain.
+pub fn record_mempool_admission_height(txid: &str, state: &mut ChainState) {
+    let height = mempool_logical_clock(state);
+    state
+        .mempool
+        .admission_height
+        .insert(txid.to_string(), height);
+}
+
+fn mempool_tx_is_expired(
+    txid: &str,
+    state: &ChainState,
+    current_height: u64,
+    max_age_blocks: u64,
+) -> bool {
+    let Some(admission_height) = state.mempool.admission_height.get(txid).copied() else {
+        return false;
+    };
+    if admission_height > current_height {
+        return false;
+    }
+    let Some(deadline) = admission_height.checked_add(max_age_blocks) else {
+        return false;
+    };
+    current_height >= deadline
+}
+
+/// Caller-driven deterministic expiry foundation. No finite production TTL is
+/// configured here. Expiring a parent removes every in-mempool descendant so
+/// the resulting graph and indexes cannot retain dangling package members.
+pub fn prune_expired_mempool(
+    state: &mut ChainState,
+    current_height: u64,
+    max_age_blocks: u64,
+) -> MempoolExpiryResult {
+    let mut children = BTreeMap::<Hash, BTreeSet<Hash>>::new();
+    for tx in state.mempool.transactions.values() {
+        for input in &tx.inputs {
+            let parent_txid = &input.previous_output.txid;
+            if state.mempool.transactions.contains_key(parent_txid) {
+                children
+                    .entry(parent_txid.clone())
+                    .or_default()
+                    .insert(tx.txid.clone());
+            }
+        }
+    }
+
+    let expired_roots = state
+        .mempool
+        .transactions
+        .keys()
+        .filter(|txid| mempool_tx_is_expired(txid, state, current_height, max_age_blocks))
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    let mut expired = expired_roots.clone();
+    let mut pending = expired_roots.into_iter().collect::<VecDeque<_>>();
+    while let Some(txid) = pending.pop_front() {
+        if let Some(descendants) = children.get(&txid) {
+            for descendant in descendants {
+                if expired.insert(descendant.clone()) {
+                    pending.push_back(descendant.clone());
+                }
+            }
+        }
+    }
+
+    for txid in &expired {
+        state.mempool.transactions.remove(txid);
+        state.mempool.first_seen.remove(txid);
+        state.mempool.admission_height.remove(txid);
+    }
+
+    let live_txids = state
+        .mempool
+        .transactions
+        .keys()
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    state
+        .mempool
+        .first_seen
+        .retain(|txid, _| live_txids.contains(txid));
+    state
+        .mempool
+        .admission_height
+        .retain(|txid, _| live_txids.contains(txid));
+    state.mempool.spent_outpoints.clear();
+    for tx in state.mempool.transactions.values() {
+        for input in &tx.inputs {
+            state
+                .mempool
+                .spent_outpoints
+                .insert(input.previous_output.clone());
+        }
+    }
+
+    MempoolExpiryResult {
+        expired_txids: expired.into_iter().collect(),
+        kept_txids: canonical_mempool_txids(state),
+    }
+}
+
 fn simulate_mempool_accept(tx: &Transaction, state: &mut ChainState) -> Result<(), PulseError> {
     for input in &tx.inputs {
         if state
@@ -121,6 +242,8 @@ pub fn reconcile_mempool(state: &mut ChainState) -> MempoolReconcileResult {
         .saturating_add(1);
     if tx_count == 0 {
         state.mempool.spent_outpoints.clear();
+        state.mempool.first_seen.clear();
+        state.mempool.admission_height.clear();
         return MempoolReconcileResult {
             removed_txids: Vec::new(),
             kept_txids: Vec::new(),
@@ -179,6 +302,9 @@ pub fn reconcile_mempool(state: &mut ChainState) -> MempoolReconcileResult {
     let mut rebuilt_mempool = working.mempool;
     rebuilt_mempool
         .first_seen
+        .retain(|txid, _| rebuilt_mempool.transactions.contains_key(txid));
+    rebuilt_mempool
+        .admission_height
         .retain(|txid, _| rebuilt_mempool.transactions.contains_key(txid));
     rebuilt_mempool.counters = state.mempool.counters.clone();
     rebuilt_mempool.max_transactions = state.mempool.max_transactions;

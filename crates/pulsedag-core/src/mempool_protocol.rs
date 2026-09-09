@@ -62,6 +62,8 @@ pub fn reconcile_mempool_for_protocol(
         .saturating_add(1);
     if tx_count == 0 {
         state.mempool.spent_outpoints.clear();
+        state.mempool.first_seen.clear();
+        state.mempool.admission_height.clear();
         return Ok(MempoolReconcileResult {
             removed_txids: Vec::new(),
             kept_txids: Vec::new(),
@@ -120,6 +122,9 @@ pub fn reconcile_mempool_for_protocol(
     let mut rebuilt_mempool = working.mempool;
     rebuilt_mempool
         .first_seen
+        .retain(|txid, _| rebuilt_mempool.transactions.contains_key(txid));
+    rebuilt_mempool
+        .admission_height
         .retain(|txid, _| rebuilt_mempool.transactions.contains_key(txid));
     rebuilt_mempool.counters = state.mempool.counters.clone();
     rebuilt_mempool.max_transactions = state.mempool.max_transactions;

@@ -285,6 +285,7 @@ fn remove_promoted_transactions_from_mempool(
                 .is_some()
             {
                 state.mempool.first_seen.remove(&transaction.txid);
+                state.mempool.admission_height.remove(&transaction.txid);
                 state.mempool.counters.confirmed_removed_total = state
                     .mempool
                     .counters

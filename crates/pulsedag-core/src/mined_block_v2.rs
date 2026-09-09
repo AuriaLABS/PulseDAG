@@ -214,6 +214,10 @@ pub fn prepare_activated_v2_mined_block_state(
             .is_some()
         {
             materialized.mempool.first_seen.remove(&transaction.txid);
+            materialized
+                .mempool
+                .admission_height
+                .remove(&transaction.txid);
             materialized.mempool.counters.confirmed_removed_total = materialized
                 .mempool
                 .counters
