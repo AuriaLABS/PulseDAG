@@ -1,3 +1,5 @@
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
+
 use crate::{
     accept::{
         accept_transaction_with_result, accept_transaction_with_result_for_protocol, AcceptSource,
@@ -12,6 +14,12 @@ use crate::{
 };
 
 const POLICY_REASON_SEPARATOR_V3: &str = ": ";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MempoolConflictPackageV3 {
+    pub direct_conflict_txids: Vec<String>,
+    pub conflict_package_txids: Vec<String>,
+}
 
 pub fn mempool_policy_rejection_reason_v3(
     rejection: MempoolPolicyRejectionV3,
@@ -128,26 +136,85 @@ fn preflight_policy_v3(
     Ok(())
 }
 
-fn conflicts_with_live_mempool(tx: &Transaction, state: &ChainState) -> bool {
-    tx.inputs.iter().any(|input| {
-        state
-            .mempool
-            .spent_outpoints
-            .contains(&input.previous_output)
-    })
+/// Canonical read-only conflict graph for v3 admission.
+///
+/// Direct conflicts are live mempool transactions that spend at least one
+/// `OutPoint` also spent by the incoming transaction. The conflict package is
+/// the direct set plus every live in-mempool descendant reachable from it.
+/// Both vectors are unique and lexicographically sorted so equivalent mempool
+/// states produce identical classification independent of HashMap iteration.
+pub fn classify_mempool_conflicts_v3(
+    tx: &Transaction,
+    state: &ChainState,
+) -> MempoolConflictPackageV3 {
+    let direct_conflicts = state
+        .mempool
+        .transactions
+        .values()
+        .filter(|existing| {
+            existing.txid != tx.txid
+                && existing.inputs.iter().any(|existing_input| {
+                    tx.inputs.iter().any(|incoming_input| {
+                        incoming_input.previous_output == existing_input.previous_output
+                    })
+                })
+        })
+        .map(|existing| existing.txid.clone())
+        .collect::<BTreeSet<_>>();
+
+    let mut children = BTreeMap::<String, BTreeSet<String>>::new();
+    for existing in state.mempool.transactions.values() {
+        for input in &existing.inputs {
+            let parent_txid = &input.previous_output.txid;
+            if state.mempool.transactions.contains_key(parent_txid) {
+                children
+                    .entry(parent_txid.clone())
+                    .or_default()
+                    .insert(existing.txid.clone());
+            }
+        }
+    }
+
+    let mut conflict_package = direct_conflicts.clone();
+    let mut pending = direct_conflicts.iter().cloned().collect::<VecDeque<_>>();
+    while let Some(txid) = pending.pop_front() {
+        if let Some(descendants) = children.get(&txid) {
+            for descendant in descendants {
+                if conflict_package.insert(descendant.clone()) {
+                    pending.push_back(descendant.clone());
+                }
+            }
+        }
+    }
+
+    MempoolConflictPackageV3 {
+        direct_conflict_txids: direct_conflicts.into_iter().collect(),
+        conflict_package_txids: conflict_package.into_iter().collect(),
+    }
 }
 
-fn normalize_live_result_v3(
-    result: TxAcceptanceResult,
-    had_mempool_conflict: bool,
-) -> TxAcceptanceResult {
+fn reject_conflicting_mempool_package_v3(
+    tx: &Transaction,
+    state: &mut ChainState,
+) -> Option<TxAcceptanceResult> {
+    let conflicts = classify_mempool_conflicts_v3(tx, state);
+    if conflicts.direct_conflict_txids.is_empty() {
+        return None;
+    }
+
+    Some(policy_rejected(
+        state,
+        MempoolPolicyRejectionV3::ReplacementNotAuthorized,
+        format!(
+            "direct_conflicts=[{}] conflict_package=[{}]; replacement semantics are not authorized",
+            conflicts.direct_conflict_txids.join(","),
+            conflicts.conflict_package_txids.join(",")
+        ),
+    ))
+}
+
+fn normalize_live_result_v3(result: TxAcceptanceResult) -> TxAcceptanceResult {
     match result {
-        TxAcceptanceResult::Invalid(reason) if had_mempool_conflict && reason == "double spend" => {
-            TxAcceptanceResult::Rejected(mempool_policy_rejection_reason_v3(
-                MempoolPolicyRejectionV3::ReplacementNotAuthorized,
-                "conflicting mempool spend; replacement semantics are not authorized",
-            ))
-        }
         TxAcceptanceResult::Rejected(reason)
             if reason.contains("mempool backpressure")
                 || reason.contains("spent-outpoint capacity")
@@ -171,11 +238,10 @@ pub fn accept_transaction_with_mempool_policy_v3(
     if let Err(result) = preflight_policy_v3(&tx, state, policy) {
         return result;
     }
-    let had_mempool_conflict = conflicts_with_live_mempool(&tx, state);
-    normalize_live_result_v3(
-        accept_transaction_with_result(tx, state, source),
-        had_mempool_conflict,
-    )
+    if let Some(result) = reject_conflicting_mempool_package_v3(&tx, state) {
+        return result;
+    }
+    normalize_live_result_v3(accept_transaction_with_result(tx, state, source))
 }
 
 pub fn accept_transaction_with_mempool_policy_v3_for_protocol(
@@ -188,17 +254,23 @@ pub fn accept_transaction_with_mempool_policy_v3_for_protocol(
     if let Err(result) = preflight_policy_v3(&tx, state, policy) {
         return result;
     }
-    let had_mempool_conflict = conflicts_with_live_mempool(&tx, state);
-    normalize_live_result_v3(
-        accept_transaction_with_result_for_protocol(tx, state, source, identity),
-        had_mempool_conflict,
-    )
+    if let Some(result) = reject_conflicting_mempool_package_v3(&tx, state) {
+        return result;
+    }
+    normalize_live_result_v3(accept_transaction_with_result_for_protocol(
+        tx, state, source, identity,
+    ))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{genesis::init_chain_state, types::TxOutput, TRANSACTION_VERSION_V1};
+    use crate::{
+        genesis::init_chain_state,
+        mempool::canonical_mempool_txids,
+        types::{OutPoint, Transaction, TxInput, TxOutput},
+        TRANSACTION_VERSION_V1,
+    };
 
     fn sample_tx(fee: u64) -> Transaction {
         Transaction {
@@ -212,6 +284,193 @@ mod tests {
             fee,
             nonce: 41,
         }
+    }
+
+    fn test_tx(txid: &str, inputs: Vec<OutPoint>) -> Transaction {
+        Transaction {
+            txid: txid.to_string(),
+            version: TRANSACTION_VERSION_V1,
+            inputs: inputs
+                .into_iter()
+                .map(|previous_output| TxInput {
+                    previous_output,
+                    public_key: String::new(),
+                    signature: String::new(),
+                })
+                .collect(),
+            outputs: vec![TxOutput {
+                address: format!("pulse1-{txid}"),
+                amount: 1,
+            }],
+            fee: 0,
+            nonce: 0,
+        }
+    }
+
+    fn insert_live(
+        state: &mut ChainState,
+        transaction: Transaction,
+        first_seen: u64,
+        admission_height: u64,
+    ) {
+        let txid = transaction.txid.clone();
+        for input in &transaction.inputs {
+            state
+                .mempool
+                .spent_outpoints
+                .insert(input.previous_output.clone());
+        }
+        state.mempool.transactions.insert(txid.clone(), transaction);
+        state.mempool.first_seen.insert(txid.clone(), first_seen);
+        state
+            .mempool
+            .admission_height
+            .insert(txid, admission_height);
+        state.mempool.next_first_seen = state.mempool.next_first_seen.max(first_seen + 1);
+    }
+
+    fn conflict_fixture(reverse: bool) -> (ChainState, Transaction) {
+        let mut state = init_chain_state("mempool-v3-conflict-package".to_string());
+        let shared = OutPoint {
+            txid: "external-shared".to_string(),
+            index: 0,
+        };
+        let entries = vec![
+            (test_tx("direct-a", vec![shared.clone()]), 1_u64),
+            (test_tx("direct-b", vec![shared.clone()]), 2_u64),
+            (
+                test_tx(
+                    "child-a",
+                    vec![OutPoint {
+                        txid: "direct-a".to_string(),
+                        index: 0,
+                    }],
+                ),
+                3_u64,
+            ),
+            (
+                test_tx(
+                    "shared-child",
+                    vec![
+                        OutPoint {
+                            txid: "direct-a".to_string(),
+                            index: 0,
+                        },
+                        OutPoint {
+                            txid: "direct-b".to_string(),
+                            index: 0,
+                        },
+                    ],
+                ),
+                4_u64,
+            ),
+            (
+                test_tx(
+                    "grandchild",
+                    vec![OutPoint {
+                        txid: "shared-child".to_string(),
+                        index: 0,
+                    }],
+                ),
+                5_u64,
+            ),
+            (
+                test_tx(
+                    "unrelated-root",
+                    vec![OutPoint {
+                        txid: "external-unrelated".to_string(),
+                        index: 0,
+                    }],
+                ),
+                6_u64,
+            ),
+            (
+                test_tx(
+                    "unrelated-child",
+                    vec![OutPoint {
+                        txid: "unrelated-root".to_string(),
+                        index: 0,
+                    }],
+                ),
+                7_u64,
+            ),
+        ];
+
+        if reverse {
+            for (transaction, first_seen) in entries.into_iter().rev() {
+                insert_live(&mut state, transaction, first_seen, 10 + first_seen);
+            }
+        } else {
+            for (transaction, first_seen) in entries {
+                insert_live(&mut state, transaction, first_seen, 10 + first_seen);
+            }
+        }
+
+        let incoming = test_tx("incoming-conflict", vec![shared]);
+        (state, incoming)
+    }
+
+    fn serialized_transaction_map(
+        transactions: &std::collections::HashMap<String, Transaction>,
+    ) -> std::collections::BTreeMap<String, Vec<u8>> {
+        transactions
+            .iter()
+            .map(|(txid, tx)| {
+                (
+                    txid.clone(),
+                    bincode::serialize(tx).expect("transaction serializes"),
+                )
+            })
+            .collect()
+    }
+
+    fn assert_conflict_rejection_preserves_mempool(before: &ChainState, after: &ChainState) {
+        assert_eq!(
+            serialized_transaction_map(&after.mempool.transactions),
+            serialized_transaction_map(&before.mempool.transactions)
+        );
+        assert_eq!(
+            after.mempool.spent_outpoints,
+            before.mempool.spent_outpoints
+        );
+        assert_eq!(after.mempool.first_seen, before.mempool.first_seen);
+        assert_eq!(
+            after.mempool.admission_height,
+            before.mempool.admission_height
+        );
+        assert_eq!(
+            after.mempool.next_first_seen,
+            before.mempool.next_first_seen
+        );
+        assert_eq!(
+            serialized_transaction_map(&after.mempool.orphan_transactions),
+            serialized_transaction_map(&before.mempool.orphan_transactions)
+        );
+        assert_eq!(
+            after.mempool.orphan_missing_outpoints,
+            before.mempool.orphan_missing_outpoints
+        );
+        assert_eq!(
+            after.mempool.orphan_received_order,
+            before.mempool.orphan_received_order
+        );
+        assert_eq!(
+            after.mempool.next_orphan_order,
+            before.mempool.next_orphan_order
+        );
+        assert_eq!(
+            after.mempool.max_transactions,
+            before.mempool.max_transactions
+        );
+        assert_eq!(
+            after.mempool.max_spent_outpoints,
+            before.mempool.max_spent_outpoints
+        );
+        assert_eq!(after.mempool.max_orphans, before.mempool.max_orphans);
+        assert_eq!(
+            after.mempool.counters.rejected_total,
+            before.mempool.counters.rejected_total.saturating_add(1)
+        );
     }
 
     fn rejected_reason(result: TxAcceptanceResult) -> String {
@@ -319,5 +578,122 @@ mod tests {
             Some("MEMPOOL_V3_POLICY_IDENTITY_MISMATCH")
         );
         assert!(state.mempool.transactions.is_empty());
+    }
+
+    #[test]
+    fn conflict_classifier_is_canonical_and_descendant_closed() {
+        let (forward, incoming) = conflict_fixture(false);
+        let (reverse, _) = conflict_fixture(true);
+
+        let forward_classification = classify_mempool_conflicts_v3(&incoming, &forward);
+        let reverse_classification = classify_mempool_conflicts_v3(&incoming, &reverse);
+        assert_eq!(forward_classification, reverse_classification);
+        assert_eq!(
+            forward_classification.direct_conflict_txids,
+            vec!["direct-a".to_string(), "direct-b".to_string()]
+        );
+        assert_eq!(
+            forward_classification.conflict_package_txids,
+            vec![
+                "child-a".to_string(),
+                "direct-a".to_string(),
+                "direct-b".to_string(),
+                "grandchild".to_string(),
+                "shared-child".to_string(),
+            ]
+        );
+        assert!(!forward_classification
+            .conflict_package_txids
+            .contains(&"unrelated-root".to_string()));
+        assert!(!forward_classification
+            .conflict_package_txids
+            .contains(&"unrelated-child".to_string()));
+    }
+
+    #[test]
+    fn exact_duplicate_preserves_duplicate_precedence_over_conflict_classification() {
+        let mut state = init_chain_state("mempool-v3-duplicate-precedence".to_string());
+        let shared = OutPoint {
+            txid: "external-duplicate".to_string(),
+            index: 0,
+        };
+        let existing = test_tx("same-txid", vec![shared]);
+        insert_live(&mut state, existing.clone(), 0, 0);
+
+        let classification = classify_mempool_conflicts_v3(&existing, &state);
+        assert!(classification.direct_conflict_txids.is_empty());
+        assert!(classification.conflict_package_txids.is_empty());
+        assert_eq!(
+            accept_transaction_with_mempool_policy_v3(
+                existing,
+                &mut state,
+                AcceptSource::Rpc,
+                MempoolPolicyV3::compatibility_default(),
+            ),
+            TxAcceptanceResult::Duplicate
+        );
+    }
+
+    #[test]
+    fn conflict_rejection_is_pre_mutation_and_protocol_parity_even_when_replacement_enabled() {
+        let (initial, incoming) = conflict_fixture(false);
+        let policy = MempoolPolicyV3 {
+            replacement_enabled: true,
+            ..MempoolPolicyV3::compatibility_default()
+        };
+
+        let mut standard = initial.clone();
+        let standard_before = standard.clone();
+        let standard_reason = rejected_reason(accept_transaction_with_mempool_policy_v3(
+            incoming.clone(),
+            &mut standard,
+            AcceptSource::Rpc,
+            policy,
+        ));
+        assert_eq!(
+            mempool_policy_rejection_code_from_reason_v3(&standard_reason),
+            Some("MEMPOOL_V3_REPLACEMENT_NOT_AUTHORIZED")
+        );
+        assert_conflict_rejection_preserves_mempool(&standard_before, &standard);
+
+        let mut protocol = initial.clone();
+        let protocol_before = protocol.clone();
+        let identity = ProtocolActivationIdentity::legacy_from_state(&protocol);
+        let protocol_reason =
+            rejected_reason(accept_transaction_with_mempool_policy_v3_for_protocol(
+                incoming,
+                &mut protocol,
+                AcceptSource::Rpc,
+                &identity,
+                policy,
+            ));
+        assert_eq!(standard_reason, protocol_reason);
+        assert_conflict_rejection_preserves_mempool(&protocol_before, &protocol);
+        assert_eq!(
+            classify_mempool_conflicts_v3(
+                &test_tx(
+                    "incoming-conflict",
+                    vec![OutPoint {
+                        txid: "external-shared".to_string(),
+                        index: 0,
+                    }],
+                ),
+                &standard_before
+            ),
+            classify_mempool_conflicts_v3(
+                &test_tx(
+                    "incoming-conflict",
+                    vec![OutPoint {
+                        txid: "external-shared".to_string(),
+                        index: 0,
+                    }],
+                ),
+                &protocol_before
+            )
+        );
+        assert_eq!(
+            canonical_mempool_txids(&standard),
+            canonical_mempool_txids(&protocol)
+        );
     }
 }
