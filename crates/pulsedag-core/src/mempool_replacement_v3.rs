@@ -75,12 +75,10 @@ pub fn assess_mempool_replacement_v3(
             ));
     }
 
-    let replacement_package_fee_rate_per_kb = if replacement_package_total_size_bytes == 0 {
-        0
-    } else {
-        replacement_package_total_fee.saturating_mul(u128::from(FEE_RATE_SCALE_BYTES_V3))
-            / replacement_package_total_size_bytes
-    };
+    let replacement_package_fee_rate_per_kb = replacement_package_total_fee
+        .saturating_mul(u128::from(FEE_RATE_SCALE_BYTES_V3))
+        .checked_div(replacement_package_total_size_bytes)
+        .unwrap_or(0);
 
     let incoming_rate = fee_rate_v3(tx, &state.chain_id)?;
     let incoming_fee_u128 = u128::from(tx.fee);
