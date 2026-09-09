@@ -25,6 +25,7 @@ const SAFETY_REVIEW_FIELDS: [&str; 7] = [
     "funding_total_amount",
     "funding_snapshot_commitment_hex",
 ];
+const HIGH_FEE_REVIEW_FIELDS: [&str; 2] = ["high_fee", "high_fee_acknowledged"];
 
 #[derive(Debug)]
 pub struct RelayClientError(String);
@@ -75,11 +76,15 @@ pub struct SignedBroadcastReview {
     pub funding_total_amount: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub funding_snapshot_commitment_hex: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub high_fee: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub high_fee_acknowledged: Option<bool>,
 }
 
 impl SignedBroadcastReview {
     fn validate_safety_metadata_shape(&self) -> Result<(), RelayClientError> {
-        let present = [
+        let safety_present = [
             self.self_send.is_some(),
             self.spend_all.is_some(),
             self.self_send_acknowledged.is_some(),
@@ -88,13 +93,18 @@ impl SignedBroadcastReview {
             self.funding_total_amount.is_some(),
             self.funding_snapshot_commitment_hex.is_some(),
         ];
-        let present_count = present.iter().filter(|value| **value).count();
-        if present_count != 0 && present_count != present.len() {
-            return Err(relay_error(
-                "signed envelope review safety metadata must be either fully present or fully absent",
-            ));
+        let high_fee_present = [
+            self.high_fee.is_some(),
+            self.high_fee_acknowledged.is_some(),
+        ];
+        let safety_count = safety_present.iter().filter(|value| **value).count();
+        let high_fee_count = high_fee_present.iter().filter(|value| **value).count();
+        match (safety_count, high_fee_count) {
+            (0, 0) | (7, 0) | (7, 2) => Ok(()),
+            _ => Err(relay_error(
+                "signed envelope review safety metadata must use an accepted complete 0, 7, or 9 field shape",
+            )),
         }
-        Ok(())
     }
 }
 
@@ -117,6 +127,14 @@ pub struct BroadcastOutput {
     pub relay_version: String,
     pub rejection_code: Option<String>,
     pub rejection_message: Option<String>,
+}
+
+pub struct PreparedBroadcast {
+    client: Client,
+    submit_url: Url,
+    body: Vec<u8>,
+    final_txid: String,
+    identity: RelayIdentity,
 }
 
 #[derive(Debug, Serialize)]
@@ -198,10 +216,10 @@ fn validate_raw_safety_metadata_shape(bytes: &[u8]) -> Result<(), RelayClientErr
         .and_then(serde_json::Value::as_object)
         .ok_or_else(|| relay_error("signed transaction envelope JSON is invalid"))?;
 
-    let mut present_count = 0;
+    let mut safety_count = 0;
     for field in SAFETY_REVIEW_FIELDS {
         if let Some(value) = review.get(field) {
-            present_count += 1;
+            safety_count += 1;
             if value.is_null() {
                 return Err(relay_error(
                     "signed envelope review safety metadata must not contain null values",
@@ -209,12 +227,23 @@ fn validate_raw_safety_metadata_shape(bytes: &[u8]) -> Result<(), RelayClientErr
             }
         }
     }
-    if present_count != 0 && present_count != SAFETY_REVIEW_FIELDS.len() {
-        return Err(relay_error(
-            "signed envelope review safety metadata must be either fully present or fully absent",
-        ));
+    let mut high_fee_count = 0;
+    for field in HIGH_FEE_REVIEW_FIELDS {
+        if let Some(value) = review.get(field) {
+            high_fee_count += 1;
+            if value.is_null() {
+                return Err(relay_error(
+                    "signed envelope review safety metadata must not contain null values",
+                ));
+            }
+        }
     }
-    Ok(())
+    match (safety_count, high_fee_count) {
+        (0, 0) | (7, 0) | (7, 2) => Ok(()),
+        _ => Err(relay_error(
+            "signed envelope review safety metadata must use an accepted complete 0, 7, or 9 field shape",
+        )),
+    }
 }
 
 pub fn parse_signed_broadcast(bytes: &[u8]) -> Result<SignedBroadcastInput, RelayClientError> {
@@ -475,18 +504,42 @@ async fn fetch_explorer_identity(
     )
 }
 
-async fn submit_transaction(
-    client: &Client,
-    base: &Url,
+pub async fn prepare_broadcast(
+    relay_url: &str,
     signed: &SignedBroadcastInput,
-    identity: &RelayIdentity,
-) -> Result<BroadcastOutput, RelayClientError> {
-    let url = base
-        .join("api/v1/tx/submit")
+) -> Result<PreparedBroadcast, RelayClientError> {
+    validate_signed_broadcast(signed)?;
+    let base = relay_base_url(relay_url)?;
+    let client = build_client()?;
+    let identity = fetch_identity(&client, &base, &signed.network).await?;
+    let submit_url = base
+        .join(RELAY_SUBMIT_PATH.trim_start_matches('/'))
         .map_err(|_| relay_error("failed to construct relay submit URL"))?;
+    let body = serde_json::to_vec(&signed.relay)
+        .map_err(|_| relay_error("failed to serialize signed relay envelope"))?;
+    Ok(PreparedBroadcast {
+        client,
+        submit_url,
+        body,
+        final_txid: signed.final_txid.clone(),
+        identity,
+    })
+}
+
+pub async fn submit_prepared(
+    prepared: PreparedBroadcast,
+) -> Result<BroadcastOutput, RelayClientError> {
+    let PreparedBroadcast {
+        client,
+        submit_url,
+        body,
+        final_txid,
+        identity,
+    } = prepared;
     let response = client
-        .post(url)
-        .json(&signed.relay)
+        .post(submit_url)
+        .header("content-type", "application/json")
+        .body(body)
         .send()
         .await
         .map_err(|error| relay_error(format!("relay submit transport failed: {error}")))?;
@@ -499,17 +552,16 @@ async fn submit_transaction(
     })?;
 
     if !parsed.ok {
-        let error = parsed.error.unwrap_or(ApiError {
-            code: format!("HTTP_{}", status.as_u16()),
-            message: "relay rejected transaction without an error body".to_string(),
-        });
+        let error = parsed
+            .error
+            .ok_or_else(|| relay_error("relay rejection response is missing error detail"))?;
         return Ok(BroadcastOutput {
             accepted: false,
-            txid: signed.final_txid.clone(),
+            txid: final_txid,
             mempool_size: None,
-            relay_network_profile: identity.network.network_profile.clone(),
-            relay_chain_id: identity.network.chain_id.clone(),
-            relay_version: identity.version.clone(),
+            relay_network_profile: identity.network.network_profile,
+            relay_chain_id: identity.network.chain_id,
+            relay_version: identity.version,
             rejection_code: Some(error.code),
             rejection_message: Some(error.message),
         });
@@ -520,13 +572,18 @@ async fn submit_transaction(
             status.as_u16()
         )));
     }
+    if parsed.error.is_some() {
+        return Err(relay_error(
+            "relay submit success response contains error detail",
+        ));
+    }
     let data = parsed
         .data
         .ok_or_else(|| relay_error("relay submit response is missing data"))?;
     if !data.accepted {
         return Err(relay_error("relay returned ok=true with accepted=false"));
     }
-    if data.txid != signed.final_txid {
+    if data.txid != final_txid {
         return Err(relay_error("relay accepted a different transaction id"));
     }
 
@@ -534,9 +591,9 @@ async fn submit_transaction(
         accepted: true,
         txid: data.txid,
         mempool_size: Some(data.mempool_size),
-        relay_network_profile: identity.network.network_profile.clone(),
-        relay_chain_id: identity.network.chain_id.clone(),
-        relay_version: identity.version.clone(),
+        relay_network_profile: identity.network.network_profile,
+        relay_chain_id: identity.network.chain_id,
+        relay_version: identity.version,
         rejection_code: None,
         rejection_message: None,
     })
@@ -663,17 +720,6 @@ pub async fn fetch_address_utxos(
     })
 }
 
-pub async fn broadcast_signed(
-    relay_url: &str,
-    signed: SignedBroadcastInput,
-) -> Result<BroadcastOutput, RelayClientError> {
-    validate_signed_broadcast(&signed)?;
-    let base = relay_base_url(relay_url)?;
-    let client = build_client()?;
-    let identity = fetch_identity(&client, &base, &signed.network).await?;
-    submit_transaction(&client, &base, &signed, &identity).await
-}
-
 #[cfg(test)]
 mod tests {
     use pulsedag_core::types::{OutPoint, TxInput, TxOutput};
@@ -724,6 +770,8 @@ mod tests {
                 funding_snapshot_commitment_hex: Some(
                     "60ddbcbc5857a0f66bf7aeaecce2edacc2a1f46f9d7d443c305a997d01d15aea".to_string(),
                 ),
+                high_fee: Some(true),
+                high_fee_acknowledged: Some(true),
             },
             final_txid: transaction.txid.clone(),
             relay: RelayEnvelope { transaction },
@@ -766,13 +814,28 @@ mod tests {
     }
 
     #[test]
-    fn signed_envelope_parser_accepts_current_and_legacy_review_metadata() {
+    fn signed_envelope_parser_accepts_exact_0_7_and_9_field_safety_shapes() {
         let current = serde_json::to_vec(&signed_fixture()).unwrap();
         let parsed_current = parse_signed_broadcast(&current).unwrap();
         assert_eq!(parsed_current.review.spend_all, Some(true));
         assert_eq!(parsed_current.review.funding_utxo_count, Some(1));
+        assert_eq!(parsed_current.review.high_fee, Some(true));
+        assert_eq!(parsed_current.review.high_fee_acknowledged, Some(true));
 
-        let mut legacy = serde_json::to_value(signed_fixture()).unwrap();
+        let mut old_safety = serde_json::to_value(signed_fixture()).unwrap();
+        let review = old_safety
+            .get_mut("review")
+            .and_then(serde_json::Value::as_object_mut)
+            .unwrap();
+        for field in HIGH_FEE_REVIEW_FIELDS {
+            review.remove(field);
+        }
+        let parsed_old = parse_signed_broadcast(&serde_json::to_vec(&old_safety).unwrap()).unwrap();
+        assert_eq!(parsed_old.review.spend_all, Some(true));
+        assert!(parsed_old.review.high_fee.is_none());
+        assert!(parsed_old.review.high_fee_acknowledged.is_none());
+
+        let mut legacy = old_safety;
         let review = legacy
             .get_mut("review")
             .and_then(serde_json::Value::as_object_mut)
@@ -786,41 +849,55 @@ mod tests {
             .review
             .funding_snapshot_commitment_hex
             .is_none());
+        assert!(parsed_legacy.review.high_fee.is_none());
     }
 
     #[test]
-    fn signed_envelope_parser_rejects_partial_safety_review_metadata() {
-        let mut partial = serde_json::to_value(signed_fixture()).unwrap();
-        partial
+    fn signed_envelope_parser_rejects_partial_or_mixed_safety_review_metadata() {
+        let mut missing_old = serde_json::to_value(signed_fixture()).unwrap();
+        missing_old
             .get_mut("review")
             .and_then(serde_json::Value::as_object_mut)
             .unwrap()
             .remove("funding_snapshot_commitment_hex");
-        assert!(parse_signed_broadcast(&serde_json::to_vec(&partial).unwrap()).is_err());
-    }
+        assert!(parse_signed_broadcast(&serde_json::to_vec(&missing_old).unwrap()).is_err());
 
-    #[test]
-    fn signed_envelope_parser_rejects_null_safety_review_metadata() {
-        let mut one_null = serde_json::to_value(signed_fixture()).unwrap();
-        let review = one_null
+        let mut missing_high = serde_json::to_value(signed_fixture()).unwrap();
+        missing_high
+            .get_mut("review")
+            .and_then(serde_json::Value::as_object_mut)
+            .unwrap()
+            .remove("high_fee_acknowledged");
+        assert!(parse_signed_broadcast(&serde_json::to_vec(&missing_high).unwrap()).is_err());
+
+        let mut high_without_old = serde_json::to_value(signed_fixture()).unwrap();
+        let review = high_without_old
             .get_mut("review")
             .and_then(serde_json::Value::as_object_mut)
             .unwrap();
         for field in SAFETY_REVIEW_FIELDS {
             review.remove(field);
         }
-        review.insert("self_send".to_string(), serde_json::Value::Null);
-        assert!(parse_signed_broadcast(&serde_json::to_vec(&one_null).unwrap()).is_err());
+        assert!(parse_signed_broadcast(&serde_json::to_vec(&high_without_old).unwrap()).is_err());
+    }
 
-        let mut all_null = serde_json::to_value(signed_fixture()).unwrap();
-        let review = all_null
+    #[test]
+    fn signed_envelope_parser_rejects_null_safety_review_metadata() {
+        let mut old_null = serde_json::to_value(signed_fixture()).unwrap();
+        old_null
             .get_mut("review")
             .and_then(serde_json::Value::as_object_mut)
-            .unwrap();
-        for field in SAFETY_REVIEW_FIELDS {
-            review.insert(field.to_string(), serde_json::Value::Null);
-        }
-        assert!(parse_signed_broadcast(&serde_json::to_vec(&all_null).unwrap()).is_err());
+            .unwrap()
+            .insert("self_send".to_string(), serde_json::Value::Null);
+        assert!(parse_signed_broadcast(&serde_json::to_vec(&old_null).unwrap()).is_err());
+
+        let mut high_null = serde_json::to_value(signed_fixture()).unwrap();
+        high_null
+            .get_mut("review")
+            .and_then(serde_json::Value::as_object_mut)
+            .unwrap()
+            .insert("high_fee".to_string(), serde_json::Value::Null);
+        assert!(parse_signed_broadcast(&serde_json::to_vec(&high_null).unwrap()).is_err());
     }
 
     #[test]
