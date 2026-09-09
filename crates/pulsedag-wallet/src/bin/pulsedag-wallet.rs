@@ -22,8 +22,9 @@ use pulsedag_wallet::{
     WalletWatchOnlyManifest, WalletWatchOnlyScope, WalletWatchOnlySessionExt,
 };
 use pulsedag_wallet_relay::{
-    broadcast_signed, fetch_address_balance, fetch_address_utxos, parse_signed_broadcast,
-    AddressBalanceOutput, AddressUtxosOutput, RelayEnvelope,
+    broadcast_signed, fetch_address_balance, fetch_address_utxos, fetch_mempool_fee_estimate,
+    parse_signed_broadcast, AddressBalanceOutput, AddressUtxosOutput, MempoolFeeEstimateOutput,
+    RelayEnvelope,
 };
 use serde::{Deserialize, Serialize};
 
@@ -43,6 +44,7 @@ enum Command {
     BackupVerify(BackupVerifyArgs),
     Balance(ReadOnlyArgs),
     Utxos(ReadOnlyArgs),
+    FeeEstimate(NetworkReadOnlyArgs),
     TxPreview(TxPreviewArgs),
     TxSign(TxSignArgs),
     TxBroadcast(TxBroadcastArgs),
@@ -121,6 +123,12 @@ struct ReadOnlyArgs {
     manifest: PathBuf,
     branch: WalletDerivationBranch,
     index: u32,
+    relay: String,
+}
+
+#[derive(Debug)]
+struct NetworkReadOnlyArgs {
+    manifest: PathBuf,
     relay: String,
 }
 
@@ -292,7 +300,7 @@ fn branch_name(branch: WalletDerivationBranch) -> &'static str {
 
 fn expected_command_error() -> io::Error {
     invalid_input(
-        "expected command: restore, address, watch-export, watch-import, backup-verify, balance, utxos, tx-preview, tx-sign, or tx-broadcast",
+        "expected command: restore, address, watch-export, watch-import, backup-verify, balance, utxos, fee-estimate, tx-preview, tx-sign, or tx-broadcast",
     )
 }
 
@@ -358,6 +366,13 @@ fn parse_command_from(args: impl Iterator<Item = String>) -> CliResult<Command> 
                 manifest: PathBuf::from(required(&flags, "manifest")?),
                 branch: parse_branch(&required(&flags, "branch")?)?,
                 index: parse_u32("--index", &required(&flags, "index")?)?,
+                relay: required(&flags, "relay")?,
+            }))
+        }
+        "fee-estimate" => {
+            reject_unknown(&flags, &["manifest", "relay"])?;
+            Ok(Command::FeeEstimate(NetworkReadOnlyArgs {
+                manifest: PathBuf::from(required(&flags, "manifest")?),
                 relay: required(&flags, "relay")?,
             }))
         }
@@ -657,6 +672,15 @@ fn run_watch_import(args: WatchImportArgs) -> CliResult<WatchImportOutput> {
     })
 }
 
+fn watch_network(path: &Path) -> CliResult<WalletNetworkIdentity> {
+    let manifest = read_manifest(path)?;
+    let watch_only = WalletWatchOnly::import(manifest)?;
+    Ok(WalletNetworkIdentity::new(
+        watch_only.network_profile(),
+        watch_only.chain_id(),
+    )?)
+}
+
 fn selected_watch_target(args: &ReadOnlyArgs) -> CliResult<(WalletNetworkIdentity, String)> {
     let manifest = read_manifest(&args.manifest)?;
     let watch_only = WalletWatchOnly::import(manifest)?;
@@ -683,6 +707,11 @@ async fn run_balance(args: ReadOnlyArgs) -> CliResult<AddressBalanceOutput> {
 async fn run_utxos(args: ReadOnlyArgs) -> CliResult<AddressUtxosOutput> {
     let (network, address) = selected_watch_target(&args)?;
     Ok(fetch_address_utxos(&args.relay, &network, &address).await?)
+}
+
+async fn run_fee_estimate(args: NetworkReadOnlyArgs) -> CliResult<MempoolFeeEstimateOutput> {
+    let network = watch_network(&args.manifest)?;
+    Ok(fetch_mempool_fee_estimate(&args.relay, &network).await?)
 }
 
 fn run_backup_verify(
@@ -789,6 +818,7 @@ async fn run() -> CliResult<()> {
         }
         Command::Balance(args) => write_json(&run_balance(args).await?),
         Command::Utxos(args) => write_json(&run_utxos(args).await?),
+        Command::FeeEstimate(args) => write_json(&run_fee_estimate(args).await?),
         Command::TxPreview(args) => {
             let password = read_password_from_stdin()?;
             write_json(&run_tx_preview(args, &password)?)
@@ -901,6 +931,16 @@ mod tests {
             "tx-broadcast",
             "--signed",
             "signed.json",
+            "--relay",
+            "https://relay.example",
+            "--password",
+            "secret"
+        ]))
+        .is_err());
+        assert!(parse_command_from(args(&[
+            "fee-estimate",
+            "--manifest",
+            "watch.json",
             "--relay",
             "https://relay.example",
             "--password",
@@ -1082,6 +1122,17 @@ mod tests {
             ]))
             .unwrap(),
             Command::Utxos(_)
+        ));
+        assert!(matches!(
+            parse_command_from(args(&[
+                "fee-estimate",
+                "--manifest",
+                "watch.json",
+                "--relay",
+                "https://relay.example"
+            ]))
+            .unwrap(),
+            Command::FeeEstimate(_)
         ));
         assert!(parse_command_from(args(&[
             "balance",
