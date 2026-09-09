@@ -1,18 +1,41 @@
-# Mempool replacement v3 assessment foundation
+# Mempool replacement v3 no-RBF contract and assessment
 
 Issue: #1036. Launch authority remains #781 / #794.
 
 ## Status
 
-This document freezes a **read-only, non-activating** replacement assessment contract. It does not authorize RBF, does not change the live mempool mutation path, and does not change the `MempoolPolicyV3` identity or compatibility defaults.
+This document records two complementary pieces of the current transaction/mempool contract:
 
-The current compatibility vector remains `0 / u64::MAX / 4096 / false`, and every live mempool conflict continues to fail closed with `MEMPOOL_V3_REPLACEMENT_NOT_AUTHORIZED`, including when a caller constructs a policy object with `replacement_enabled=true`.
+1. automatic RBF/replacement is **disabled** for the frozen transaction protocol; and
+2. `MempoolReplacementAssessmentV3` is a deterministic, read-only observation surface for conflict-package facts.
+
+The assessment does not authorize mutation. For transactions that pass v3 policy preflight, the live mempool path rejects every true conflict with `MEMPOOL_V3_REPLACEMENT_NOT_AUTHORIZED`, including when a caller constructs a policy object with `replacement_enabled=true`.
+
+The compatibility vector remains `0 / u64::MAX / 4096 / false`.
 
 ## Transaction-protocol constraint
 
 The frozen transaction object contains `txid`, `version`, `inputs`, `outputs`, `fee`, and `nonce`. There is no transaction-level RBF opt-in/sequence field.
 
-The frozen v2 transaction protocol additionally requires that replacement must not be inferred from fee, fee rate, nonce, arrival time, retry/submission identity, or a distinct conflicting txid. Therefore this assessment exposes deterministic replacement facts only. It does not decide whether a transaction opted in to replacement and it cannot authorize mutation.
+The frozen v2 transaction protocol explicitly disables automatic RBF. Replacement must not be inferred from fee, fee rate, nonce, arrival time, retry/submission identity, or a distinct conflicting txid. A distinct transaction that spends an outpoint reserved by a live mempool transaction is therefore a conflict; after it passes v3 policy preflight, admission rejects that conflict.
+
+That rule is authoritative over mempool policy. `replacement_enabled=true` is not an activation switch for the current transaction protocol. An explicit stricter v3 policy may reject during preflight before either legacy `Duplicate` handling or conflict classification; this document does not override that production ordering.
+
+## Frozen no-RBF admission rule
+
+For transactions that pass v3 policy preflight under the current protocol:
+
+- an exact canonical txid retry keeps historical `Duplicate` handling after preflight;
+- a distinct conflicting txid is rejected with `MEMPOOL_V3_REPLACEMENT_NOT_AUTHORIZED`;
+- higher absolute fee does not replace the incumbent;
+- higher canonical fee rate does not replace the incumbent;
+- nonce does not grant replacement priority;
+- arrival/first-seen order does not grant replacement priority;
+- submission/retry identity does not grant replacement priority;
+- ordinary and protocol-aware v3 admission enforce the same post-preflight conflict rule before mempool mutation;
+- conflict rejection preserves the incumbent transaction/package and mempool metadata apart from intentional rejection accounting.
+
+The valid signed regression `mempool_no_rbf_protocol_v3.rs` uses compatibility-default v3 policy so the tested transactions pass preflight. It constructs an incoming conflict whose fee and canonical fee rate are both strictly greater than the incumbent package and whose nonce is larger. The read-only assessment observes those facts, but both `replacement_enabled=false` and `replacement_enabled=true` still reject the post-preflight conflict. The protocol-aware path produces the same result.
 
 ## Assessment identity
 
@@ -32,31 +55,32 @@ For one incoming transaction and one immutable chain state it reports:
 - `new_unconfirmed_parent_txids`: live mempool parents consumed by the incoming transaction that are outside the replacement package, unique and lexicographically sorted;
 - `depends_on_replacement_package`: whether the incoming transaction spends an output created by a transaction that the same replacement package would remove.
 
-These values are observations, not an eligibility or authorization bit.
+These values are observations, not eligibility or authorization bits.
 
 ## Determinism and safety rules
 
 - Assessment is mutation-free and takes `&ChainState`.
-- Equivalent mempool states with different internal `HashMap` insertion order must produce byte-for-byte equivalent assessment values.
+- Equivalent mempool states with different internal `HashMap` insertion order produce equivalent assessment values.
 - Conflict and replacement-package selection reuse the already-frozen canonical classifier; no independent conflict graph is introduced.
 - Package and incoming canonical sizes reuse the already-frozen v1/v2/v3 signed transaction encodings.
 - Fee arithmetic uses `u128` accumulation and integer division; no floating-point comparison is used.
 - New unconfirmed dependencies and dependencies on would-be-evicted package members are surfaced explicitly instead of silently accepted.
-- An exact duplicate remains governed by the historical `Duplicate` precedence because the canonical conflict classifier excludes the same txid.
+- For retries that pass v3 policy preflight, an exact duplicate remains governed by historical `Duplicate` handling after preflight because the canonical conflict classifier excludes the same txid.
 
-## What this foundation does not freeze
+## Future protocol work, not current activation scope
 
-This slice intentionally does **not** freeze or activate:
+A future protocol version may choose to introduce RBF, but doing so would require a separate protocol contract and new exact-candidate evidence covering at least:
 
-- any RBF opt-in mechanism;
-- a positive incremental relay-fee/bump constant;
-- a maximum replacement-package count/weight beyond existing mempool resource policy;
-- whether new unconfirmed parents are ultimately forbidden or bounded;
+- an explicit opt-in/eligibility signal;
+- fee-bump and incremental-relay rules;
+- replacement-package limits and descendant handling;
+- conflict-package eviction/mutation;
 - wallet replacement/reconciliation behavior;
-- P2P replacement propagation or anti-DoS rules;
-- actual conflict-package eviction/mutation;
-- restart persistence for a completed replacement event;
-- replacement-enabled policy identity/defaults;
-- final mainnet fee values.
+- P2P replacement propagation and anti-DoS behavior;
+- restart persistence and recovery for completed replacements;
+- a replacement-enabled policy identity/default;
+- affected transaction/signing, Task 30, and launch vectors.
 
-A later activation slice must explicitly resolve those items and rerun exact-candidate launch evidence. This foundation alone does not complete the `RBF/replacement semantics` checkbox in #1036 and does not imply #781/#794 GO.
+None of those future-RBF mechanisms are inferred or activated by the current assessment. They are not prerequisites for enforcing the current protocol's explicit no-RBF semantics.
+
+No #781/#794 launch GO is implied by this contract.
