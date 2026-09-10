@@ -15,7 +15,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 5
+          fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.91.0
@@ -24,15 +24,24 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD^^^^)" = "94aec76ac213eb5caf1d5d9b2aa00aa9c55df459"
+          BASE=94aec76ac213eb5caf1d5d9b2aa00aa9c55df459
+          test "$(git merge-base HEAD "$BASE")" = "$BASE"
+          unexpected="$(git diff --name-only "$BASE" HEAD | grep -Ev '^\.github/workflows/stage_fee_fix(_runner)?\.yml$' || true)"
+          test -z "$unexpected"
           python3 - <<'PY'
           from pathlib import Path
           source = Path('.github/workflows/stage_fee_fix.yml').read_text().splitlines()
           start = next(i for i, line in enumerate(source) if "python3 <<'PY'" in line)
           end = next(i for i in range(start + 1, len(source)) if source[i].strip() == 'PY')
           payload = []
-          for line in source[start + 1:end]:
-              payload.append(line[10:] if line.startswith('          ') else line)
+          in_triple = False
+          for raw in source[start + 1:end]:
+              line = raw if in_triple else (raw[10:] if raw.startswith('          ') else raw)
+              payload.append(line)
+              if line.count("'''") % 2 == 1:
+                  in_triple = not in_triple
+          if in_triple:
+              raise SystemExit('unterminated triple-quoted string while recovering staging payload')
           Path('/tmp/stage_fee_fix.py').write_text('\n'.join(payload) + '\n')
           PY
           python3 -m py_compile /tmp/stage_fee_fix.py
