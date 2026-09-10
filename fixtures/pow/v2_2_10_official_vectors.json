@@ -15,7 +15,7 @@
         "blue_score": 0,
         "height": 0
       },
-      "pre_pow_hash": "4c82e4fdbca58f80f4ce20e9df9e9c17f91fa54f39f5bc08d19f1d0d55ac6f65",
+      "pre_pow_hash": "365bb76db67b8339d418038e1db2001c4d9866571249978d324f166dd78a4f1f",
       "pow_hash": "9a3fee6769bdee0013a87b867df1e4d1f8775f3ef4efccc9d5d40452c0d104e5",
       "bits": 1,
       "difficulty": 1,
@@ -37,7 +37,7 @@
         "blue_score": 1,
         "height": 1
       },
-      "pre_pow_hash": "9593c6a8f4fdbca33bcf227f18eeed4ed8dcbcf1cd40c6508937ea3b3540ab1b",
+      "pre_pow_hash": "4437c1c239d16779fab0d4a03109504f7ccbddc494fc7db32662993b35cb5e1a",
       "pow_hash": "3574f4ae3c17028c7d6997b3fc0a634be1f902ccdb9df13a9cadddc887c7ccab",
       "bits": 8,
       "difficulty": 8,
