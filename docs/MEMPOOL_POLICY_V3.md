@@ -1,16 +1,18 @@
-# Mempool Policy v3 foundation
+# Mempool Policy v3
 
 Issue: #1036. Launch authority remains #781 / #794.
 
 ## Status
 
-This document records the deterministic mempool-policy foundation. It does not complete #1036 and it does not freeze final mainnet numeric fee policy, finite production expiry, or wallet UX.
+This document records the deterministic mempool-policy contract and the active production mempool/relay fee safety bounds. It does not complete #1036: the final production resource/eviction/expiry policy remains open.
 
 Replacement semantics for the currently frozen transaction protocol are explicit: **automatic RBF/replacement is disabled**. This is a final behavior for the current protocol, not a placeholder that may be activated by fee, fee rate, nonce, arrival order, submission identity, or the `replacement_enabled` policy field.
 
+The fee bounds in this document are mempool/relay policy, not consensus monetary validity. An otherwise-valid zero-fee transaction remains valid at the direct consensus transaction-validation layer even though the active public mempool/relay policy does not accept it.
+
 ## Policy identity
 
-The foundation policy has `version = 1` under the fingerprint domain `PulseDAG:mempool-policy:v3`.
+The policy has `version = 1` under the fingerprint domain `PulseDAG:mempool-policy:v3`.
 
 The fingerprint commits, in order, to:
 
@@ -20,7 +22,9 @@ The fingerprint commits, in order, to:
 4. maximum tracked transactions (`u64`, little-endian),
 5. replacement-enabled flag (`u8`, currently false).
 
-The compatibility-first vector is:
+### Compatibility vector
+
+The pre-freeze compatibility vector remains available for legacy/regression evidence and for tests that deliberately exercise custom policy values:
 
 - minimum relay fee rate: `0`,
 - maximum transaction fee: `u64::MAX`,
@@ -28,7 +32,37 @@ The compatibility-first vector is:
 - replacement enabled: `false`,
 - SHA-256 fingerprint: `5bda9d47ff368e28e0f9e258e6a9b41e7cb9642b7798b3f7e86769b975ad4efe`.
 
-These defaults intentionally avoid changing current admission behavior. A later exact-candidate freeze must explicitly choose and record any finite production fee bounds.
+`MempoolPolicyV3::default()` continues to equal `compatibility_default()` so old regression construction is not silently reinterpreted as production policy.
+
+### Active production fee-bound vector
+
+The canonical active mempool/relay constructor is `MempoolPolicyV3::production_default()`:
+
+- minimum relay fee rate: `1` atomic unit per 1000 canonical signed transaction bytes,
+- maximum transaction fee: `100000000` atomic units,
+- maximum transactions: `4096`,
+- replacement enabled: `false`,
+- SHA-256 fingerprint: `fc08725ab79ace07323f11d085c2c105ed5f5e6338b67555103d8cb273c732c8`.
+
+The minimum is the smallest non-zero integer relay floor under the existing integer fee-rate contract. The maximum is one coin under the v3 mainnet monetary policy's approved eight-decimal precision recorded by #1014. This is a relay/mempool safety ceiling intended to bound accidental or abusive high-fee submission; it is not a consensus supply, emission, burn, reward, or transaction-validity rule.
+
+The `4096` transaction field is intentionally unchanged in this fee-only freeze. It must not be cited as completing the separate `Resource limits, eviction and expiry` gate. A later approved change to any fingerprinted field, including capacity, creates a different policy fingerprint and invalidates evidence tied to the old identity.
+
+Wallet spend authorization remains independent. A wallet may impose tighter absolute-fee, fee-to-amount, input-count, or user-confirmation limits than the relay ceiling.
+
+## Fee-bound semantics
+
+The production relay boundary is exact:
+
+- fee rate below `1` atomic unit per 1000 canonical signed bytes is rejected with `MEMPOOL_V3_BELOW_MIN_RELAY_FEE_RATE` without inserting the transaction or reserving its spent outpoints; rejection counters may still increment as policy telemetry;
+- an absolute transaction fee of exactly `100000000` atomic units is within the maximum-fee bound;
+- a fee of `100000001` atomic units or higher is rejected with `MEMPOOL_V3_ABOVE_MAX_TRANSACTION_FEE` without inserting the transaction or reserving its spent outpoints; rejection counters may still increment as policy telemetry.
+
+Because fee rate uses integer floor division, a nominal fee of one atomic unit is not automatically sufficient for every transaction shape: the canonical signed size still determines whether the resulting integer fee rate reaches the relay floor.
+
+Consensus validation remains separate. The production fee policy does not alter transaction serialization, signatures, txids, input/output conservation, block validation, miner reward accounting, monetary emission, fee disposition, burn, genesis, or programmability economics.
+
+Inbound P2P transaction admission uses the same production policy constructor as RPC admission and fee estimation. Activated-v2 nodes route P2P admission through the protocol-aware wrapper with the startup-restored protocol identity; legacy-mode nodes use the non-protocol wrapper. This changes no P2P wire format or consensus transaction validity.
 
 ## Canonical fee rate
 
@@ -36,7 +70,7 @@ Fee rate is integer-only:
 
 `floor(fee * 1000 / canonical_signed_transaction_size_bytes)`
 
-The multiplication and retained fee-rate value use `u128`, so a valid `u64::MAX` fee cannot wrap or be rejected merely because the scaled rate exceeds `u64`. Canonical size is derived from the already-frozen signed transaction serialization for the transaction version:
+The multiplication and retained fee-rate value use `u128`, so a valid `u64::MAX` fee can still be assessed by compatibility/custom-policy tests without arithmetic wrap. Canonical size is derived from the already-frozen signed transaction serialization for the transaction version:
 
 - v1: legacy canonical signed bytes,
 - v2: chain-bound canonical signed bytes,
@@ -46,7 +80,7 @@ Unsupported transaction versions fail closed. This policy layer does not alter t
 
 ## Stable rejection codes
 
-The foundation reserves these machine-readable codes:
+The policy reserves these machine-readable codes:
 
 - `MEMPOOL_V3_BELOW_MIN_RELAY_FEE_RATE`
 - `MEMPOOL_V3_ABOVE_MAX_TRANSACTION_FEE`
@@ -60,7 +94,7 @@ Any future protocol that introduces RBF must define a new explicit replacement c
 
 ## Deterministic ordering
 
-The foundation preserves the existing first-seen ordering contract with txid as the deterministic tie-breaker. It does not silently switch template/admission order to fee priority.
+The policy preserves the existing first-seen ordering contract with txid as the deterministic tie-breaker. It does not silently switch template/admission order to fee priority.
 
 ## Frozen non-RBF conflict-package contract
 
@@ -94,24 +128,18 @@ The transaction protocol is authoritative over mempool policy:
 
 The valid signed regression in `mempool_no_rbf_protocol_v3.rs` constructs both a legacy compatibility vector and an activated-v2 chain-bound vector. In both cases the conflicting incoming transaction pays a strictly higher total fee and fee rate and uses a larger nonce, yet it still receives `MEMPOOL_V3_REPLACEMENT_NOT_AUTHORIZED`; the activated-v2 case is admitted with `ProtocolActivationIdentity::activated_v2`.
 
+## Live RPC admission and estimator binding
+
+The active production policy is evaluated by the protocol-aware RPC transaction admission path before durable mempool mutation. The same `production_default()` identity is exposed through `/policy` and supplied to the deterministic fee estimator, so wallet-visible bounds and estimator fingerprint cannot drift from live RPC admission by using separate literal policy construction.
+
+RPC responses preserve the typed `classification` field alongside the stable `MEMPOOL_V3_*` machine code. The fee-estimator remains observational and does not change admission ordering, package/conflict policy, or eviction behavior.
+
 ## Remaining #1036 work
 
 Before #1036 can close, the project still needs at least:
 
-- exact production minimum/maximum fee policy values and final fee-policy identity;
-- final bounded resource/expiry policy rather than compatibility-only limits;
-- wallet-facing integration of the stable fee/rejection behavior;
-- integrated golden vectors for the final production fee/resource decisions;
-- exact-candidate policy identity recorded in #781/#794 evidence.
+- final bounded production resource/eviction/expiry policy rather than compatibility-only capacity and caller-driven expiry primitives;
+- integrated golden vectors/evidence for the final production resource decision and resulting policy identity;
+- exact-candidate policy identity carried into the #781/#794 launch evidence bundle.
 
-No launch GO is implied by this foundation.
-
-## Live RPC admission bridge
-
-The compatibility policy is evaluated by the protocol-aware RPC transaction admission path before durable mempool mutation. Default numeric values preserve the existing fee behavior and existing package-aware eviction engine. Explicit stricter policies fail closed with stable `MEMPOOL_V3_*` codes. Existing capacity/backpressure and mempool-conflict rejections are translated to the same machine-readable policy namespace; replacement remains unauthorized under the frozen transaction protocol.
-
-RPC responses preserve the pre-existing typed `classification` field (for example `conflict` and `mempool_full`) alongside the v3 `MEMPOOL_V3_*` machine code, so existing clients keep their rejection category while newer clients can consume the versioned policy code.
-
-Exact-head validation for this bridge must run on top of the current `main` integration baseline so unrelated launch gates, including the fast-sync restore/rejoin regression, are present rather than silently skipped by an outdated branch base.
-
-This bridge does not freeze production fee numbers, change consensus validation, or replace package-aware eviction ordering.
+No #781/#794 launch GO is implied by this fee-bound freeze.

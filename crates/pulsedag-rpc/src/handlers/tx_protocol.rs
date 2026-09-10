@@ -62,7 +62,7 @@ impl From<MempoolFeeEstimateV3> for MempoolFeeEstimateData {
 pub async fn get_mempool_fee_estimate<S: RpcStateLike>(
     State(state): State<S>,
 ) -> Json<ApiResponse<MempoolFeeEstimateData>> {
-    let policy = MempoolPolicyV3::compatibility_default();
+    let policy = MempoolPolicyV3::production_default();
     let chain_handle = state.chain();
     let chain = chain_handle.read().await;
     match estimate_mempool_fee_rates_v3(&chain, policy) {
@@ -85,7 +85,7 @@ fn accept_rpc_transaction_with_result(
     chain: &mut ChainState,
     identity: Option<&ProtocolActivationIdentity>,
 ) -> TxAcceptanceResult {
-    let policy = MempoolPolicyV3::compatibility_default();
+    let policy = MempoolPolicyV3::production_default();
     match identity {
         Some(identity) => accept_transaction_with_mempool_policy_v3_for_protocol(
             transaction,
@@ -799,7 +799,7 @@ mod tests {
         assert!(response.ok);
         assert!(response.error.is_none());
         let data = response.data.expect("fee estimate response data");
-        let policy = MempoolPolicyV3::compatibility_default();
+        let policy = MempoolPolicyV3::production_default();
         assert_eq!(
             data.version,
             pulsedag_core::mempool_v3::MEMPOOL_FEE_ESTIMATE_V3_VERSION

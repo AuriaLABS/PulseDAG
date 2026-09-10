@@ -20,14 +20,21 @@ const MEMPOOL_POLICY_V3_FINGERPRINT_DOMAIN: &[u8] = b"PulseDAG:mempool-policy:v3
 pub const FEE_RATE_SCALE_BYTES_V3: u64 = 1_000;
 const FEE_ESTIMATE_PRESSURE_SCALE_BPS_V3: u64 = 10_000;
 
-/// Compatibility-first defaults for the foundation slice.
+/// Compatibility-first defaults retained for legacy/regression evidence.
 ///
-/// These values deliberately preserve current admission behavior: no positive
-/// relay-fee floor is introduced and no finite high-fee ceiling is imposed by
-/// this module. Final production numeric policy remains a launch-freeze item.
+/// These values deliberately preserve the pre-freeze admission behavior and
+/// must not be reinterpreted as the active production fee policy.
 pub const MEMPOOL_POLICY_V3_COMPAT_MIN_RELAY_FEE_RATE: u64 = 0;
 pub const MEMPOOL_POLICY_V3_COMPAT_MAX_TRANSACTION_FEE: u64 = u64::MAX;
 pub const MEMPOOL_POLICY_V3_COMPAT_MAX_TRANSACTIONS: u64 = 4_096;
+
+/// Active production fee safety bounds for the v3 mempool/relay policy.
+///
+/// These are policy-only values, not consensus transaction-validity rules.
+pub const MEMPOOL_POLICY_V3_PRODUCTION_MIN_RELAY_FEE_RATE_PER_KB: u64 = 1;
+pub const MEMPOOL_POLICY_V3_PRODUCTION_MAX_TRANSACTION_FEE: u64 = 100_000_000;
+pub const MEMPOOL_POLICY_V3_PRODUCTION_MAX_TRANSACTIONS: u64 =
+    MEMPOOL_POLICY_V3_COMPAT_MAX_TRANSACTIONS;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MempoolPolicyV3 {
@@ -51,6 +58,20 @@ impl MempoolPolicyV3 {
             min_relay_fee_rate_per_kb: MEMPOOL_POLICY_V3_COMPAT_MIN_RELAY_FEE_RATE,
             max_transaction_fee: MEMPOOL_POLICY_V3_COMPAT_MAX_TRANSACTION_FEE,
             max_transactions: MEMPOOL_POLICY_V3_COMPAT_MAX_TRANSACTIONS,
+            replacement_enabled: false,
+        }
+    }
+
+    /// Canonical active mempool/relay policy for the production fee-bound slice.
+    ///
+    /// Resource capacity remains at the existing 4096 compatibility value until
+    /// the separate resource/eviction/expiry gate is frozen.
+    pub const fn production_default() -> Self {
+        Self {
+            version: MEMPOOL_POLICY_V3_VERSION,
+            min_relay_fee_rate_per_kb: MEMPOOL_POLICY_V3_PRODUCTION_MIN_RELAY_FEE_RATE_PER_KB,
+            max_transaction_fee: MEMPOOL_POLICY_V3_PRODUCTION_MAX_TRANSACTION_FEE,
+            max_transactions: MEMPOOL_POLICY_V3_PRODUCTION_MAX_TRANSACTIONS,
             replacement_enabled: false,
         }
     }
@@ -336,6 +357,55 @@ mod tests {
             "5bda9d47ff368e28e0f9e258e6a9b41e7cb9642b7798b3f7e86769b975ad4efe"
         );
         assert_eq!(policy, MempoolPolicyV3::default());
+    }
+
+    #[test]
+    fn production_policy_fingerprint_is_golden() {
+        let policy = MempoolPolicyV3::production_default();
+        assert_eq!(policy.version, MEMPOOL_POLICY_V3_VERSION);
+        assert_eq!(
+            policy.min_relay_fee_rate_per_kb,
+            MEMPOOL_POLICY_V3_PRODUCTION_MIN_RELAY_FEE_RATE_PER_KB
+        );
+        assert_eq!(
+            policy.max_transaction_fee,
+            MEMPOOL_POLICY_V3_PRODUCTION_MAX_TRANSACTION_FEE
+        );
+        assert_eq!(
+            policy.max_transactions,
+            MEMPOOL_POLICY_V3_PRODUCTION_MAX_TRANSACTIONS
+        );
+        assert!(!policy.replacement_enabled);
+        assert_eq!(
+            policy.fingerprint(),
+            "fc08725ab79ace07323f11d085c2c105ed5f5e6338b67555103d8cb273c732c8"
+        );
+    }
+
+    #[test]
+    fn production_fee_bounds_are_exact() {
+        let policy = MempoolPolicyV3::production_default();
+
+        let zero_fee = sample_v1_tx(0);
+        assert!(matches!(
+            policy.assess_transaction(&zero_fee, "legacy", 0, false),
+            Err(MempoolPolicyAssessmentErrorV3::Policy(
+                MempoolPolicyRejectionV3::BelowMinimumRelayFeeRate
+            ))
+        ));
+
+        let exact_max = sample_v1_tx(MEMPOOL_POLICY_V3_PRODUCTION_MAX_TRANSACTION_FEE);
+        assert!(policy
+            .assess_transaction(&exact_max, "legacy", 0, false)
+            .is_ok());
+
+        let above_max = sample_v1_tx(MEMPOOL_POLICY_V3_PRODUCTION_MAX_TRANSACTION_FEE + 1);
+        assert!(matches!(
+            policy.assess_transaction(&above_max, "legacy", 0, false),
+            Err(MempoolPolicyAssessmentErrorV3::Policy(
+                MempoolPolicyRejectionV3::AboveMaximumTransactionFee
+            ))
+        ));
     }
 
     #[test]
