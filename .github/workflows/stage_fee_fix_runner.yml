@@ -1,0 +1,67 @@
+name: Run production fee correction staging
+
+on:
+  push:
+    branches:
+      - codex/1036-production-fee-postmerge-correction
+
+permissions:
+  contents: write
+
+jobs:
+  stage:
+    if: github.event.head_commit.message == 'chore: run production fee staging'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 3
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.91.0
+          components: clippy, rustfmt
+      - name: Recover guarded staging payload
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD^)" = "ad0de8607be2fa155ec131293579588f8f3e9c8f"
+          test "$(git rev-parse HEAD^^)" = "94aec76ac213eb5caf1d5d9b2aa00aa9c55df459"
+          python3 - <<'PY'
+          from pathlib import Path
+          source = Path('.github/workflows/stage_fee_fix.yml').read_text().splitlines()
+          start = next(i for i, line in enumerate(source) if "python3 <<'PY'" in line)
+          end = next(i for i in range(start + 1, len(source)) if source[i].strip() == 'PY')
+          payload = []
+          for line in source[start + 1:end]:
+              payload.append(line[10:] if line.startswith('          ') else line)
+          Path('/tmp/stage_fee_fix.py').write_text('\n'.join(payload) + '\n')
+          PY
+          python3 -m py_compile /tmp/stage_fee_fix.py
+          python3 /tmp/stage_fee_fix.py
+          cargo fmt --all
+          cargo fmt --all -- --check
+          git diff --check
+      - name: Focused regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked -p pulsedag-core production_reconcile_prunes_fee_bound_live_and_persisted_orphan
+          cargo test --locked -p pulsedag-rpc fee_bound_policy_rejections_are_not_classified_as_mempool_full
+          cargo test --locked -p pulsedagd inbound_p2p_applies_production_fee_bounds_before_insertion
+      - name: Compile touched crates
+        run: cargo check --locked -p pulsedag-core -p pulsedag-rpc -p pulsedagd
+      - name: Commit correction and remove staging workflows
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm .github/workflows/stage_fee_fix.yml .github/workflows/stage_fee_fix_runner.yml
+          git add -A
+          test -n "$(git diff --cached --name-only)"
+          if git diff --cached --name-only | grep -q '^\.github/workflows/stage_fee_fix'; then
+            echo 'temporary workflow still staged unexpectedly' >&2
+            exit 1
+          fi
+          git config user.name 'kalekoi-release-bot'
+          git config user.email '159061+kalekoi@users.noreply.github.com'
+          git commit -m 'core: correct production mempool fee enforcement gaps'
+          git push origin HEAD:codex/1036-production-fee-postmerge-correction
