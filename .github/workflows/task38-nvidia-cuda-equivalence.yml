@@ -1,0 +1,97 @@
+name: v3 launch Task 38 NVIDIA CUDA equivalence phase 2
+
+on:
+  pull_request:
+    paths:
+      - "apps/pulsedag-miner/cuda/**"
+      - "fixtures/pow/v2_2_10_official_vectors.json"
+      - "crates/pulsedag-core/tests/pow_v2_2_10_vectors.rs"
+      - ".github/workflows/task38-nvidia-cuda-equivalence.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "apps/pulsedag-miner/cuda/**"
+      - "fixtures/pow/v2_2_10_official_vectors.json"
+      - "crates/pulsedag-core/tests/pow_v2_2_10_vectors.rs"
+      - ".github/workflows/task38-nvidia-cuda-equivalence.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  canonical-vector-contract:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.91.0
+          components: rustfmt
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Record exact candidate
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          ACTUAL_SHA="$(git rev-parse HEAD)"
+          echo "task38_nvidia_candidate_sha=${ACTUAL_SHA}"
+          test "${ACTUAL_SHA}" = "${EXPECTED_SHA}"
+          test -z "$(git status --porcelain)"
+
+      - name: Format gate
+        run: cargo fmt --all -- --check
+
+      - name: Canonical pre-PoW and kHeavyHash vectors
+        run: cargo test --locked -p pulsedag-core --test pow_v2_2_10_vectors
+
+  nvidia-cuda-compile:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Record exact candidate
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          ACTUAL_SHA="$(git rev-parse HEAD)"
+          echo "task38_nvidia_cuda_candidate_sha=${ACTUAL_SHA}"
+          test "${ACTUAL_SHA}" = "${EXPECTED_SHA}"
+          test -z "$(git status --porcelain)"
+
+      - name: Compile CUDA kernel and execute shared-math golden vectors
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            -v "${PWD}:/work" \
+            -w /work \
+            nvidia/cuda:12.9.2-devel-ubuntu24.04 \
+            bash -lc '
+              set -euo pipefail
+              nvcc --version
+              nvcc -std=c++17 -O2 \
+                -DPULSEDAG_CUDA_HOST_SELF_TEST \
+                apps/pulsedag-miner/cuda/kheavyhash.cu \
+                -o /tmp/pulsedag-kheavyhash-selftest
+              /tmp/pulsedag-kheavyhash-selftest
+              nvcc -std=c++17 -O2 -arch=sm_60 \
+                -c apps/pulsedag-miner/cuda/kheavyhash.cu \
+                -o /tmp/pulsedag-kheavyhash.o
+              test -s /tmp/pulsedag-kheavyhash.o
+              echo "nvidia_cuda_kernel_compile=PASS"
+              echo "nvidia_cuda_hardware_execution=NOT_CLAIMED"
+            '
