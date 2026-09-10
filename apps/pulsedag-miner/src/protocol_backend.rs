@@ -340,11 +340,8 @@ mod tests {
     fn collect_partition(partition: ProtocolNoncePartition) -> Vec<u64> {
         let mut nonces = Vec::new();
         let mut iteration = 0u64;
-        loop {
-            match partition.nonce_at(iteration).unwrap() {
-                Some(nonce) => nonces.push(nonce),
-                None => break,
-            }
+        while let Some(nonce) = partition.nonce_at(iteration).unwrap() {
+            nonces.push(nonce);
             iteration = iteration.checked_add(1).unwrap();
         }
         nonces
