@@ -1,0 +1,60 @@
+name: v3 launch Task 38 GPU nonce partition phase 1
+
+on:
+  pull_request:
+    paths:
+      - "apps/pulsedag-miner/**"
+      - ".github/workflows/task38-gpu-nonce-partition.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "apps/pulsedag-miner/**"
+      - ".github/workflows/task38-gpu-nonce-partition.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  task38-gpu-nonce-partition:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.91.0
+          components: clippy, rustfmt
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Record exact candidate
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          ACTUAL_SHA="$(git rev-parse HEAD)"
+          echo "task38_candidate_sha=${ACTUAL_SHA}"
+          test "${ACTUAL_SHA}" = "${EXPECTED_SHA}"
+          test -z "$(git status --porcelain)"
+
+      - name: Format gate
+        run: cargo fmt --all -- --check
+
+      - name: Miner tests default backend
+        run: cargo test --locked -p pulsedag-miner
+
+      - name: Miner tests GPU feature
+        run: cargo test --locked -p pulsedag-miner --features gpu
+
+      - name: Miner clippy default backend
+        run: cargo clippy --locked -p pulsedag-miner --all-targets -- -D warnings -A clippy::uninlined-format-args
+
+      - name: Miner clippy GPU feature
+        run: cargo clippy --locked -p pulsedag-miner --all-targets --features gpu -- -D warnings -A clippy::uninlined-format-args
