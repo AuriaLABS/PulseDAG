@@ -6,8 +6,7 @@ use crate::{
         TxAcceptanceResult,
     },
     mempool_v3::{
-        fee_rate_v3, MempoolPolicyRejectionV3, MempoolPolicyV3,
-        MEMPOOL_POLICY_V3_PRODUCTION_MAX_TRANSACTION_FEE, MEMPOOL_POLICY_V3_VERSION,
+        fee_rate_v3, MempoolPolicyRejectionV3, MempoolPolicyV3, MEMPOOL_POLICY_V3_VERSION,
     },
     protocol::ProtocolActivationIdentity,
     state::ChainState,
@@ -503,7 +502,7 @@ mod tests {
         let mut state = init_chain_state("live-policy-max-fee".to_string());
         let policy = MempoolPolicyV3::production_default();
         let reason = rejected_reason(accept_transaction_with_mempool_policy_v3(
-            sample_tx(MEMPOOL_POLICY_V3_PRODUCTION_MAX_TRANSACTION_FEE.saturating_add(1)),
+            sample_tx(policy.max_transaction_fee.saturating_add(1)),
             &mut state,
             AcceptSource::Rpc,
             policy,
