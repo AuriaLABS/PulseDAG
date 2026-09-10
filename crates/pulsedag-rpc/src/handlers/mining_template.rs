@@ -26,6 +26,8 @@ use tracing::info;
 
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
 pub struct StoredMiningTemplate {
+    #[serde(default)]
+    pub protocol_identity_fingerprint: String,
     #[serde(default = "default_mining_protocol_version")]
     pub protocol_version: u32,
     pub template_id: String,
@@ -598,6 +600,7 @@ pub async fn post_mining_template<S: RpcStateLike>(
     let template_merge_set_size = merge_classification.diagnostics.merge_set_size;
 
     store_template(&StoredMiningTemplate {
+        protocol_identity_fingerprint: String::new(),
         protocol_version: MINING_PROTOCOL_VERSION,
         template_id: template_id.clone(),
         miner_address: req.miner_address.clone(),
@@ -880,6 +883,7 @@ mod tests {
         expires_at_unix: u64,
     ) -> StoredMiningTemplate {
         StoredMiningTemplate {
+            protocol_identity_fingerprint: String::new(),
             protocol_version: 1,
             template_id: template_id.to_string(),
             miner_address: "kaspa:qptask29fixture".to_string(),

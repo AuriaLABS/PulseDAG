@@ -13,11 +13,9 @@ use pulsedag_core::{
 use pulsedag_p2p::mode_connected_peers_are_real_network;
 use sha3::{Digest, Keccak256};
 
-#[cfg(test)]
-pub(crate) use super::mining_template_legacy::store_template;
 pub use super::mining_template_legacy::StoredMiningTemplate;
 pub(crate) use super::mining_template_legacy::{
-    current_template_state, load_template, template_freshness_window,
+    current_template_state, load_template, store_template, template_freshness_window,
     template_id_matches_lifecycle, MINING_PROTOCOL_VERSION,
 };
 
@@ -410,17 +408,40 @@ async fn post_legacy_template<S: RpcStateLike>(
     } = response.0;
     let data = match data {
         Some(data) => {
+            let internal_template_id = data.template_id.clone();
             if let Err(error) = super::mining_submit::bind_template_protocol(
-                data.template_id.clone(),
-                identity,
-                fingerprint,
+                internal_template_id.clone(),
+                identity.clone(),
+                fingerprint.clone(),
             ) {
                 return Json(ApiResponse::err(
                     "PROTOCOL_IDENTITY_ERROR",
                     format!("cannot store mining template protocol binding: {error}"),
                 ));
             }
-            Some(data.into())
+            let mut stored = match load_template(&internal_template_id) {
+                Some(stored) => stored,
+                None => {
+                    return Json(ApiResponse::err(
+                        "PROTOCOL_IDENTITY_ERROR",
+                        "cannot reload issued mining template before protocol binding",
+                    ));
+                }
+            };
+            stored.protocol_identity_fingerprint = fingerprint.clone();
+            store_template(&stored);
+            let durable = load_template(&internal_template_id)
+                .is_some_and(|stored| stored.protocol_identity_fingerprint == fingerprint);
+            if !durable {
+                return Json(ApiResponse::err(
+                    "PROTOCOL_IDENTITY_ERROR",
+                    "issued mining template protocol fingerprint was not durably persisted",
+                ));
+            }
+            let mut data: MiningTemplateData = data.into();
+            data.protocol_identity = Some(identity);
+            data.protocol_identity_fingerprint = Some(fingerprint);
+            Some(data)
         }
         None => None,
     };
