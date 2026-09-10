@@ -152,9 +152,16 @@ fn classified_rejection(
     result: &TxAcceptanceResult,
 ) -> ApiResponse<serde_json::Value> {
     let reason = rejection_reason(result);
-    let classification = classify_rpc_transaction_acceptance(transaction, chain, identity, result);
     if let Some(code) = mempool_policy_rejection_code_from_reason_v3(&reason) {
         let detail = mempool_policy_rejection_detail_v3(&reason);
+        if matches!(
+            code,
+            "MEMPOOL_V3_BELOW_MIN_RELAY_FEE_RATE" | "MEMPOOL_V3_ABOVE_MAX_TRANSACTION_FEE"
+        ) {
+            return ApiResponse::err(code, detail);
+        }
+        let classification =
+            classify_rpc_transaction_acceptance(transaction, chain, identity, result);
         return match classification {
             Some(classification) => {
                 ApiResponse::err_classified(code, detail, classification.as_str())
@@ -162,6 +169,7 @@ fn classified_rejection(
             None => ApiResponse::err(code, detail),
         };
     }
+    let classification = classify_rpc_transaction_acceptance(transaction, chain, identity, result);
     match classification {
         Some(classification) => {
             ApiResponse::err_classified("TX_REJECTED", reason, classification.as_str())
@@ -791,6 +799,29 @@ mod tests {
             .message
             .contains("task28 capability identity unavailable"));
         assert!(state.chain.read().await.mempool.transactions.is_empty());
+    }
+
+    #[test]
+    fn fee_bound_policy_rejections_are_not_classified_as_mempool_full() {
+        let chain = init_chain_state("fee-policy-classification".to_string());
+        let transaction = Transaction {
+            txid: "fee-policy-classification-vector".to_string(),
+            version: TRANSACTION_VERSION_V1,
+            inputs: Vec::new(),
+            outputs: Vec::new(),
+            fee: 0,
+            nonce: 0,
+        };
+        for code in [
+            "MEMPOOL_V3_BELOW_MIN_RELAY_FEE_RATE",
+            "MEMPOOL_V3_ABOVE_MAX_TRANSACTION_FEE",
+        ] {
+            let result = TxAcceptanceResult::Rejected(format!("{code}: policy bound"));
+            let response = classified_rejection(&transaction, &chain, None, &result);
+            let error = response.error.expect("fee-bound rejection");
+            assert_eq!(error.code, code);
+            assert!(error.classification.is_none());
+        }
     }
 
     #[tokio::test]

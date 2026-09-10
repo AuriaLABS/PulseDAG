@@ -180,7 +180,8 @@ pub use mempool_admission_v3::{
     accept_transaction_with_mempool_policy_v3,
     accept_transaction_with_mempool_policy_v3_for_protocol,
     mempool_policy_rejection_code_from_reason_v3, mempool_policy_rejection_detail_v3,
-    mempool_policy_rejection_reason_v3,
+    mempool_policy_rejection_reason_v3, reconcile_mempool_with_production_policy_v3,
+    reconcile_mempool_with_production_policy_v3_for_protocol,
 };
 pub use mempool_protocol::reconcile_mempool_for_protocol;
 pub use mempool_replacement_v3::{

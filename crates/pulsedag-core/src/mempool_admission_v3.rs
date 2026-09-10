@@ -2,7 +2,8 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use crate::{
     accept::{
-        accept_transaction_with_result, accept_transaction_with_result_for_protocol, AcceptSource,
+        accept_transaction_with_result_for_protocol_with_mempool_policy_context,
+        accept_transaction_with_result_with_mempool_policy_context, AcceptSource,
         TxAcceptanceResult,
     },
     mempool_v3::{
@@ -229,6 +230,115 @@ fn normalize_live_result_v3(result: TxAcceptanceResult) -> TxAcceptanceResult {
     }
 }
 
+fn persisted_transaction_passes_production_fee_policy_v3(
+    tx: &Transaction,
+    state: &ChainState,
+) -> bool {
+    MempoolPolicyV3::production_default()
+        .assess_transaction(tx, &state.chain_id, 0, false)
+        .is_ok()
+}
+
+fn prune_persisted_production_fee_policy_v3(state: &mut ChainState) -> Vec<String> {
+    let mut live_txids = state
+        .mempool
+        .transactions
+        .keys()
+        .cloned()
+        .collect::<Vec<_>>();
+    live_txids.sort();
+    let mut removed_live = Vec::new();
+    for txid in live_txids {
+        let rejected = state
+            .mempool
+            .transactions
+            .get(&txid)
+            .map(|tx| !persisted_transaction_passes_production_fee_policy_v3(tx, state))
+            .unwrap_or(false);
+        if !rejected {
+            continue;
+        }
+        if let Some(tx) = state.mempool.transactions.remove(&txid) {
+            for input in &tx.inputs {
+                state.mempool.spent_outpoints.remove(&input.previous_output);
+            }
+            state.mempool.first_seen.remove(&txid);
+            state.mempool.admission_height.remove(&txid);
+            state.mempool.counters.rejected_total =
+                state.mempool.counters.rejected_total.saturating_add(1);
+            removed_live.push(txid);
+        }
+    }
+    state.mempool.counters.reconcile_removed_total = state
+        .mempool
+        .counters
+        .reconcile_removed_total
+        .saturating_add(removed_live.len() as u64);
+
+    let mut orphan_txids = state
+        .mempool
+        .orphan_transactions
+        .keys()
+        .cloned()
+        .collect::<Vec<_>>();
+    orphan_txids.sort();
+    for txid in orphan_txids {
+        let rejected = state
+            .mempool
+            .orphan_transactions
+            .get(&txid)
+            .map(|tx| !persisted_transaction_passes_production_fee_policy_v3(tx, state))
+            .unwrap_or(false);
+        if !rejected {
+            continue;
+        }
+        if state.mempool.orphan_transactions.remove(&txid).is_some() {
+            state.mempool.orphan_missing_outpoints.remove(&txid);
+            state.mempool.orphan_received_order.remove(&txid);
+            state.mempool.counters.rejected_total =
+                state.mempool.counters.rejected_total.saturating_add(1);
+            state.mempool.counters.orphan_dropped_total = state
+                .mempool
+                .counters
+                .orphan_dropped_total
+                .saturating_add(1);
+        }
+    }
+    removed_live
+}
+
+fn combine_policy_and_consensus_removed_v3(
+    mut policy_removed: Vec<String>,
+    mut result: crate::mempool::MempoolReconcileResult,
+) -> crate::mempool::MempoolReconcileResult {
+    policy_removed.append(&mut result.removed_txids);
+    policy_removed.sort();
+    policy_removed.dedup();
+    result.removed_txids = policy_removed;
+    result
+}
+
+pub fn reconcile_mempool_with_production_policy_v3(
+    state: &mut ChainState,
+) -> crate::mempool::MempoolReconcileResult {
+    let policy_removed = prune_persisted_production_fee_policy_v3(state);
+    let result = crate::mempool::reconcile_mempool(state);
+    combine_policy_and_consensus_removed_v3(policy_removed, result)
+}
+
+pub fn reconcile_mempool_with_production_policy_v3_for_protocol(
+    state: &mut ChainState,
+    identity: &ProtocolActivationIdentity,
+) -> Result<crate::mempool::MempoolReconcileResult, crate::errors::PulseError> {
+    crate::tx_protocol::resolve_transaction_validation_path(identity, state)?;
+    let policy_removed = prune_persisted_production_fee_policy_v3(state);
+    let result = crate::mempool_protocol::reconcile_mempool_for_protocol(state, identity)?;
+    Ok(combine_policy_and_consensus_removed_v3(
+        policy_removed,
+        result,
+    ))
+}
+
 pub fn accept_transaction_with_mempool_policy_v3(
     tx: Transaction,
     state: &mut ChainState,
@@ -241,7 +351,9 @@ pub fn accept_transaction_with_mempool_policy_v3(
     if let Some(result) = reject_conflicting_mempool_package_v3(&tx, state) {
         return result;
     }
-    normalize_live_result_v3(accept_transaction_with_result(tx, state, source))
+    normalize_live_result_v3(accept_transaction_with_result_with_mempool_policy_context(
+        tx, state, source, policy,
+    ))
 }
 
 pub fn accept_transaction_with_mempool_policy_v3_for_protocol(
@@ -257,9 +369,11 @@ pub fn accept_transaction_with_mempool_policy_v3_for_protocol(
     if let Some(result) = reject_conflicting_mempool_package_v3(&tx, state) {
         return result;
     }
-    normalize_live_result_v3(accept_transaction_with_result_for_protocol(
-        tx, state, source, identity,
-    ))
+    normalize_live_result_v3(
+        accept_transaction_with_result_for_protocol_with_mempool_policy_context(
+            tx, state, source, identity, policy,
+        ),
+    )
 }
 
 #[cfg(test)]
@@ -495,6 +609,45 @@ mod tests {
             "bounded queue full"
         );
         assert_eq!(mempool_policy_rejection_code_from_reason_v3("legacy"), None);
+    }
+
+    #[test]
+    fn production_reconcile_prunes_fee_bound_live_and_persisted_orphan() {
+        let mut state = init_chain_state("production-reconcile-fee-bounds".to_string());
+        let mut live = sample_tx(0);
+        live.txid = "persisted-live-zero-fee".to_string();
+        state
+            .mempool
+            .transactions
+            .insert(live.txid.clone(), live.clone());
+        state.mempool.first_seen.insert(live.txid.clone(), 1);
+        state.mempool.admission_height.insert(live.txid.clone(), 1);
+
+        let mut orphan = sample_tx(
+            MempoolPolicyV3::production_default()
+                .max_transaction_fee
+                .saturating_add(1),
+        );
+        orphan.txid = "persisted-orphan-over-max".to_string();
+        state
+            .mempool
+            .orphan_transactions
+            .insert(orphan.txid.clone(), orphan.clone());
+        state
+            .mempool
+            .orphan_received_order
+            .insert(orphan.txid.clone(), 1);
+
+        let result = reconcile_mempool_with_production_policy_v3(&mut state);
+        assert!(result.removed_txids.contains(&live.txid));
+        assert!(!state.mempool.transactions.contains_key(&live.txid));
+        assert!(!state.mempool.first_seen.contains_key(&live.txid));
+        assert!(!state.mempool.admission_height.contains_key(&live.txid));
+        assert!(!state.mempool.orphan_transactions.contains_key(&orphan.txid));
+        assert!(!state
+            .mempool
+            .orphan_received_order
+            .contains_key(&orphan.txid));
     }
 
     #[test]
