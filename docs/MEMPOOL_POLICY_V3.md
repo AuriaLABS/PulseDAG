@@ -4,7 +4,7 @@ Issue: #1036. Launch authority remains #781 / #794.
 
 ## Status
 
-This document records the deterministic mempool-policy foundation. It does not complete #1036 and it does not freeze final mainnet numeric fee policy, finite production expiry, or wallet UX.
+This document records the deterministic mempool-policy contract as of the production fee-bound freeze. It does not complete #1036 and it does not freeze finite production expiry or wallet custody UX.
 
 Replacement semantics for the currently frozen transaction protocol are explicit: **automatic RBF/replacement is disabled**. This is a final behavior for the current protocol, not a placeholder that may be activated by fee, fee rate, nonce, arrival order, submission identity, or the `replacement_enabled` policy field.
 
@@ -20,7 +20,7 @@ The fingerprint commits, in order, to:
 4. maximum tracked transactions (`u64`, little-endian),
 5. replacement-enabled flag (`u8`, currently false).
 
-The compatibility-first vector is:
+The compatibility regression vector remains:
 
 - minimum relay fee rate: `0`,
 - maximum transaction fee: `u64::MAX`,
@@ -28,7 +28,15 @@ The compatibility-first vector is:
 - replacement enabled: `false`,
 - SHA-256 fingerprint: `5bda9d47ff368e28e0f9e258e6a9b41e7cb9642b7798b3f7e86769b975ad4efe`.
 
-These defaults intentionally avoid changing current admission behavior. A later exact-candidate freeze must explicitly choose and record any finite production fee bounds.
+The active production vector is:
+
+- minimum relay fee rate: `1`,
+- maximum transaction fee: `100000000`,
+- maximum transactions: `4096`,
+- replacement enabled: `false`,
+- SHA-256 fingerprint: `fc08725ab79ace07323f11d085c2c105ed5f5e6338b67555103d8cb273c732c8`.
+
+The compatibility vector is preserved only for legacy/regression evidence. The active production constructor now freezes the public mempool fee bounds at the smallest non-zero relay floor and a one-coin absolute safety ceiling under the approved v3 8-decimal precision recorded in #1014. Any later change to a fingerprinted field changes policy identity and must be treated as a new policy freeze.
 
 ## Canonical fee rate
 
@@ -98,20 +106,18 @@ The valid signed regression in `mempool_no_rbf_protocol_v3.rs` constructs both a
 
 Before #1036 can close, the project still needs at least:
 
-- exact production minimum/maximum fee policy values and final fee-policy identity;
 - final bounded resource/expiry policy rather than compatibility-only limits;
-- wallet-facing integration of the stable fee/rejection behavior;
-- integrated golden vectors for the final production fee/resource decisions;
+- integrated golden vectors for the remaining final production resource decisions;
 - exact-candidate policy identity recorded in #781/#794 evidence.
 
 No launch GO is implied by this foundation.
 
 ## Live RPC admission bridge
 
-The compatibility policy is evaluated by the protocol-aware RPC transaction admission path before durable mempool mutation. Default numeric values preserve the existing fee behavior and existing package-aware eviction engine. Explicit stricter policies fail closed with stable `MEMPOOL_V3_*` codes. Existing capacity/backpressure and mempool-conflict rejections are translated to the same machine-readable policy namespace; replacement remains unauthorized under the frozen transaction protocol.
+The active production policy is evaluated by the protocol-aware RPC transaction admission path before durable mempool mutation. The compatibility vector remains available for regression coverage only. The production numeric values freeze the public mempool relay floor at `1` atomic unit per 1000 canonical signed bytes and the accepted transaction-fee ceiling at `100000000` atomic units (exactly one coin at 8 decimals). Explicit stricter caller-supplied policies still fail closed with stable `MEMPOOL_V3_*` codes. Existing capacity/backpressure and mempool-conflict rejections are translated to the same machine-readable policy namespace; replacement remains unauthorized under the frozen transaction protocol.
 
 RPC responses preserve the pre-existing typed `classification` field (for example `conflict` and `mempool_full`) alongside the v3 `MEMPOOL_V3_*` machine code, so existing clients keep their rejection category while newer clients can consume the versioned policy code.
 
 Exact-head validation for this bridge must run on top of the current `main` integration baseline so unrelated launch gates, including the fast-sync restore/rejoin regression, are present rather than silently skipped by an outdated branch base.
 
-This bridge does not freeze production fee numbers, change consensus validation, or replace package-aware eviction ordering.
+This bridge does not change consensus validation, replace package-aware eviction ordering, or close the still-open `Resource limits, eviction and expiry` scope.

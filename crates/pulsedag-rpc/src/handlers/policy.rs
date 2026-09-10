@@ -47,7 +47,7 @@ pub async fn get_policy<S: RpcStateLike>(State(state): State<S>) -> Json<ApiResp
     let chain_handle = state.chain();
     let chain = chain_handle.read().await;
     let snapshot = pulsedag_core::dev_difficulty_snapshot(&chain);
-    let mempool_v3 = pulsedag_core::MempoolPolicyV3::compatibility_default().into();
+    let mempool_v3 = pulsedag_core::MempoolPolicyV3::production_default().into();
 
     Json(ApiResponse::ok(PolicyData {
         version: repo_version(),
@@ -90,7 +90,7 @@ mod tests {
 
     #[test]
     fn mempool_v3_policy_wire_view_is_identity_bound_and_lossless() {
-        let policy = pulsedag_core::MempoolPolicyV3::compatibility_default();
+        let policy = pulsedag_core::MempoolPolicyV3::production_default();
         let data = MempoolPolicyV3Data::from(policy);
 
         assert_eq!(data.version, pulsedag_core::MEMPOOL_POLICY_V3_VERSION);
