@@ -10,15 +10,15 @@ permissions:
 
 jobs:
   stage:
-    if: github.event.head_commit.message == 'chore: run resource freeze staging v2'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: dtolnay/rust-toolchain@1.91.0
+      - uses: dtolnay/rust-toolchain@stable
         with:
+          toolchain: 1.91.0
           components: rustfmt,clippy
       - name: Apply guarded resource and orphan expiry staging
         shell: bash
