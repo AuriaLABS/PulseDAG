@@ -1,5 +1,6 @@
 name: v3 fast-sync verification
 
+# FastSync state transfer is exact-head because accepted chunks and clean bootstrap imports survive daemon restart.
 on:
   pull_request:
     branches:
@@ -7,19 +8,29 @@ on:
       - codex/1035-fast-sync-manifest
     paths:
       - '.github/workflows/v3-fast-sync.yml'
+      - 'apps/pulsedagd/src/main.rs'
+      - 'apps/pulsedagd/src/fast_sync_bootstrap.rs'
       - 'crates/pulsedag-core/src/lib.rs'
       - 'crates/pulsedag-core/src/snapshot_transfer.rs'
       - 'crates/pulsedag-core/src/replay.rs'
       - 'crates/pulsedag-core/src/state.rs'
+      - 'crates/pulsedag-storage/src/fast_sync_bootstrap_import.rs'
       - 'crates/pulsedag-storage/src/fast_sync_manifest.rs'
+      - 'crates/pulsedag-storage/src/fast_sync_network_resume.rs'
+      - 'crates/pulsedag-storage/src/fast_sync_resume.rs'
       - 'crates/pulsedag-storage/src/fast_sync_transfer.rs'
       - 'crates/pulsedag-storage/src/protocol_bundle.rs'
       - 'crates/pulsedag-storage/src/root.rs'
       - 'crates/pulsedag-storage/src/lib.rs'
       - 'crates/pulsedag-storage/Cargo.toml'
+      - 'crates/pulsedag-storage/tests/task789_pruned_v2_restart.rs'
+      - 'crates/pulsedag-storage/tests/v3_fast_sync_restore_rejoin.rs'
+      - 'crates/pulsedag-p2p/src/lib.rs'
+      - 'crates/pulsedag-p2p/src/live_fast_sync_v1.rs'
       - 'crates/pulsedag-p2p/src/messages.rs'
       - 'crates/pulsedag-p2p/src/messages/fast_sync_carrier_v1.rs'
       - 'crates/pulsedag-p2p/src/messages/fast_sync_carrier_v1/live_session_v1.rs'
+      - 'crates/pulsedag-p2p/src/messages/fast_sync_carrier_v1/multi_source_v1.rs'
       - 'crates/pulsedag-p2p/src/messages/fast_sync_runtime_v1.rs'
       - 'Cargo.toml'
       - 'Cargo.lock'
@@ -60,6 +71,9 @@ jobs:
       - name: Validate locked dependency graph
         run: cargo metadata --locked --format-version 1 >/dev/null
 
+      - name: Compile live FastSync daemon integration
+        run: cargo check --locked -p pulsedagd
+
       - name: Domain-separated transfer digest regressions
         run: |
           cargo test --locked -p pulsedag-core snapshot_transfer::tests:: -- --nocapture
@@ -72,6 +86,27 @@ jobs:
         run: |
           cargo test --locked -p pulsedag-storage fast_sync_transfer::tests:: -- --nocapture
 
+      - name: Crash-safe persisted resume regressions
+        run: |
+          cargo test --locked -p pulsedag-storage fast_sync_resume::tests:: -- --nocapture
+
+      - name: Live-network durable resume regressions
+        run: |
+          cargo test --locked -p pulsedag-storage fast_sync_network_resume::tests:: -- --nocapture
+
+      - name: Atomic clean-bootstrap import regressions
+        run: |
+          cargo test --locked -p pulsedag-storage fast_sync_bootstrap_import::tests:: -- --nocapture
+
+      - name: Restore/rejoin and post-bootstrap replay regressions
+        run: |
+          cargo test --locked -p pulsedag-storage --test v3_fast_sync_restore_rejoin -- --nocapture
+          cargo test --locked -p pulsedag-storage --test task789_pruned_v2_restart -- --nocapture
+
+      - name: Clean-node daemon bootstrap controller regressions
+        run: |
+          cargo test --locked -p pulsedagd fast_sync_bootstrap::tests:: -- --nocapture
+
       - name: Bounded fast-sync P2P carrier regressions
         run: |
           cargo test --locked -p pulsedag-p2p fast_sync_carrier_v1::tests:: -- --nocapture
@@ -83,3 +118,11 @@ jobs:
       - name: Fast-sync runtime capability-session regressions
         run: |
           cargo test --locked -p pulsedag-p2p fast_sync_runtime_v1::tests:: -- --nocapture
+
+      - name: Commitment-bound multi-source planner regressions
+        run: |
+          cargo test --locked -p pulsedag-p2p fast_sync_multisource_v1::tests:: -- --nocapture
+
+      - name: Live fast-sync Libp2p transport regressions
+        run: |
+          cargo test --locked -p pulsedag-p2p live_fast_sync_v1::tests:: -- --nocapture

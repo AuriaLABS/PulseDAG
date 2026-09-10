@@ -2,6 +2,7 @@ use std::{error::Error, fmt, net::IpAddr, time::Duration};
 
 use pulsedag_core::{
     compute_txid,
+    mempool_v3::MEMPOOL_FEE_ESTIMATE_V3_VERSION,
     types::{Transaction, Utxo},
 };
 use pulsedag_wallet::WalletNetworkIdentity;
@@ -14,6 +15,8 @@ const RELAY_VERSION: &str = "signed-transaction-relay-v1";
 const RELAY_CAPABILITY: &str = "signed_transaction_relay";
 const RELAY_SUBMIT_PATH: &str = "/api/v1/tx/submit";
 const EXPLORER_CAPABILITY: &str = "explorer_api";
+const MEMPOOL_CAPABILITY: &str = "mempool";
+const MEMPOOL_FEE_ESTIMATE_PATH: &str = "/api/v1/mempool/fee-estimate";
 const ADDRESS_PATH: &str = "/address/:address";
 const ADDRESS_UTXOS_PATH: &str = "/address/:address/utxos";
 const SAFETY_REVIEW_FIELDS: [&str; 7] = [
@@ -117,6 +120,24 @@ pub struct BroadcastOutput {
     pub relay_version: String,
     pub rejection_code: Option<String>,
     pub rejection_message: Option<String>,
+    pub rejection_classification: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct MempoolFeeEstimateOutput {
+    pub network_profile: String,
+    pub chain_id: String,
+    pub version: u32,
+    pub policy_fingerprint: String,
+    pub min_relay_fee_rate_per_kb: String,
+    pub economy_fee_rate_per_kb: String,
+    pub standard_fee_rate_per_kb: String,
+    pub priority_fee_rate_per_kb: String,
+    pub observed_min_fee_rate_per_kb: Option<String>,
+    pub observed_max_fee_rate_per_kb: Option<String>,
+    pub mempool_transactions: u64,
+    pub effective_max_transactions: u64,
+    pub pressure_bps: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -149,6 +170,8 @@ struct ApiResponse<T> {
 struct ApiError {
     code: String,
     message: String,
+    #[serde(default)]
+    classification: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -165,6 +188,21 @@ struct SubmitData {
     accepted: bool,
     txid: String,
     mempool_size: usize,
+}
+
+#[derive(Debug, Deserialize)]
+struct MempoolFeeEstimateData {
+    version: u32,
+    policy_fingerprint: String,
+    min_relay_fee_rate_per_kb: String,
+    economy_fee_rate_per_kb: String,
+    standard_fee_rate_per_kb: String,
+    priority_fee_rate_per_kb: String,
+    observed_min_fee_rate_per_kb: Option<String>,
+    observed_max_fee_rate_per_kb: Option<String>,
+    mempool_transactions: u64,
+    effective_max_transactions: u64,
+    pressure_bps: u64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -431,6 +469,15 @@ fn validate_explorer_identity(
     Ok(identity)
 }
 
+fn validate_mempool_identity(
+    expected_network: &WalletNetworkIdentity,
+    response: ApiResponse<ReleaseIdentityData>,
+) -> Result<RelayIdentity, RelayClientError> {
+    let identity = validate_remote_identity(expected_network, response)?;
+    require_surface(&identity, MEMPOOL_CAPABILITY, MEMPOOL_FEE_ESTIMATE_PATH)?;
+    Ok(identity)
+}
+
 async fn fetch_identity_response(
     client: &Client,
     base: &Url,
@@ -475,6 +522,35 @@ async fn fetch_explorer_identity(
     )
 }
 
+async fn fetch_mempool_identity(
+    client: &Client,
+    base: &Url,
+    expected_network: &WalletNetworkIdentity,
+) -> Result<RelayIdentity, RelayClientError> {
+    validate_mempool_identity(
+        expected_network,
+        fetch_identity_response(client, base).await?,
+    )
+}
+
+fn rejected_broadcast_output(
+    signed: &SignedBroadcastInput,
+    identity: &RelayIdentity,
+    error: ApiError,
+) -> BroadcastOutput {
+    BroadcastOutput {
+        accepted: false,
+        txid: signed.final_txid.clone(),
+        mempool_size: None,
+        relay_network_profile: identity.network.network_profile.clone(),
+        relay_chain_id: identity.network.chain_id.clone(),
+        relay_version: identity.version.clone(),
+        rejection_code: Some(error.code),
+        rejection_message: Some(error.message),
+        rejection_classification: error.classification,
+    }
+}
+
 async fn submit_transaction(
     client: &Client,
     base: &Url,
@@ -502,17 +578,9 @@ async fn submit_transaction(
         let error = parsed.error.unwrap_or(ApiError {
             code: format!("HTTP_{}", status.as_u16()),
             message: "relay rejected transaction without an error body".to_string(),
+            classification: None,
         });
-        return Ok(BroadcastOutput {
-            accepted: false,
-            txid: signed.final_txid.clone(),
-            mempool_size: None,
-            relay_network_profile: identity.network.network_profile.clone(),
-            relay_chain_id: identity.network.chain_id.clone(),
-            relay_version: identity.version.clone(),
-            rejection_code: Some(error.code),
-            rejection_message: Some(error.message),
-        });
+        return Ok(rejected_broadcast_output(signed, identity, error));
     }
     if !status.is_success() {
         return Err(relay_error(format!(
@@ -539,6 +607,84 @@ async fn submit_transaction(
         relay_version: identity.version.clone(),
         rejection_code: None,
         rejection_message: None,
+        rejection_classification: None,
+    })
+}
+
+fn validate_decimal_u128(name: &str, value: &str) -> Result<(), RelayClientError> {
+    if value.is_empty() || value.parse::<u128>().is_err() {
+        return Err(relay_error(format!(
+            "mempool fee estimate {name} is not a valid unsigned decimal integer"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_mempool_fee_estimate_data(
+    data: &MempoolFeeEstimateData,
+) -> Result<(), RelayClientError> {
+    if data.version != MEMPOOL_FEE_ESTIMATE_V3_VERSION {
+        return Err(relay_error(format!(
+            "unsupported mempool fee estimate version: {}",
+            data.version
+        )));
+    }
+    if data.policy_fingerprint.len() != 64
+        || !data
+            .policy_fingerprint
+            .bytes()
+            .all(|value| value.is_ascii_digit() || (b'a'..=b'f').contains(&value))
+    {
+        return Err(relay_error(
+            "mempool fee estimate policy fingerprint is not canonical lowercase SHA-256 hex",
+        ));
+    }
+    validate_decimal_u128("min_relay_fee_rate_per_kb", &data.min_relay_fee_rate_per_kb)?;
+    validate_decimal_u128("economy_fee_rate_per_kb", &data.economy_fee_rate_per_kb)?;
+    validate_decimal_u128("standard_fee_rate_per_kb", &data.standard_fee_rate_per_kb)?;
+    validate_decimal_u128("priority_fee_rate_per_kb", &data.priority_fee_rate_per_kb)?;
+    if let Some(value) = data.observed_min_fee_rate_per_kb.as_deref() {
+        validate_decimal_u128("observed_min_fee_rate_per_kb", value)?;
+    }
+    if let Some(value) = data.observed_max_fee_rate_per_kb.as_deref() {
+        validate_decimal_u128("observed_max_fee_rate_per_kb", value)?;
+    }
+    if data.pressure_bps > 10_000 {
+        return Err(relay_error(
+            "mempool fee estimate pressure_bps exceeds 10000",
+        ));
+    }
+    Ok(())
+}
+
+fn mempool_fee_estimate_output(
+    identity: &RelayIdentity,
+    response: ApiResponse<MempoolFeeEstimateData>,
+) -> Result<MempoolFeeEstimateOutput, RelayClientError> {
+    if !response.ok {
+        return Err(relay_error(format!(
+            "mempool fee estimate request failed: {}",
+            api_error_detail(response.error)
+        )));
+    }
+    let data = response
+        .data
+        .ok_or_else(|| relay_error("mempool fee estimate response is missing data"))?;
+    validate_mempool_fee_estimate_data(&data)?;
+    Ok(MempoolFeeEstimateOutput {
+        network_profile: identity.network.network_profile.clone(),
+        chain_id: identity.network.chain_id.clone(),
+        version: data.version,
+        policy_fingerprint: data.policy_fingerprint,
+        min_relay_fee_rate_per_kb: data.min_relay_fee_rate_per_kb,
+        economy_fee_rate_per_kb: data.economy_fee_rate_per_kb,
+        standard_fee_rate_per_kb: data.standard_fee_rate_per_kb,
+        priority_fee_rate_per_kb: data.priority_fee_rate_per_kb,
+        observed_min_fee_rate_per_kb: data.observed_min_fee_rate_per_kb,
+        observed_max_fee_rate_per_kb: data.observed_max_fee_rate_per_kb,
+        mempool_transactions: data.mempool_transactions,
+        effective_max_transactions: data.effective_max_transactions,
+        pressure_bps: data.pressure_bps,
     })
 }
 
@@ -663,6 +809,35 @@ pub async fn fetch_address_utxos(
     })
 }
 
+pub async fn fetch_mempool_fee_estimate(
+    relay_url: &str,
+    expected_network: &WalletNetworkIdentity,
+) -> Result<MempoolFeeEstimateOutput, RelayClientError> {
+    expected_network
+        .validate()
+        .map_err(|error| relay_error(format!("wallet network is invalid: {error}")))?;
+    let base = relay_base_url(relay_url)?;
+    let client = build_client()?;
+    let identity = fetch_mempool_identity(&client, &base, expected_network).await?;
+    let url = base
+        .join(MEMPOOL_FEE_ESTIMATE_PATH)
+        .map_err(|_| relay_error("failed to construct mempool fee estimate URL"))?;
+    let response =
+        client.get(url).send().await.map_err(|error| {
+            relay_error(format!("mempool fee estimate transport failed: {error}"))
+        })?;
+    let (status, body) = bounded_body(response).await?;
+    if !status.is_success() {
+        return Err(relay_error(format!(
+            "mempool fee estimate request returned HTTP {}",
+            status.as_u16()
+        )));
+    }
+    let parsed = serde_json::from_slice::<ApiResponse<MempoolFeeEstimateData>>(&body)
+        .map_err(|_| relay_error("mempool fee estimate response JSON is invalid"))?;
+    mempool_fee_estimate_output(&identity, parsed)
+}
+
 pub async fn broadcast_signed(
     relay_url: &str,
     signed: SignedBroadcastInput,
@@ -762,6 +937,40 @@ mod tests {
                 core_endpoints: vec![endpoint.to_string()],
             }),
             error: None,
+        }
+    }
+
+    fn mempool_identity_response(
+        network_profile: &str,
+        chain_id: &str,
+    ) -> ApiResponse<ReleaseIdentityData> {
+        ApiResponse {
+            ok: true,
+            data: Some(ReleaseIdentityData {
+                network_profile: network_profile.to_string(),
+                chain_id: chain_id.to_string(),
+                signed_transaction_relay_version: RELAY_VERSION.to_string(),
+                capabilities: vec![MEMPOOL_CAPABILITY.to_string()],
+                core_endpoints: vec![MEMPOOL_FEE_ESTIMATE_PATH.to_string()],
+            }),
+            error: None,
+        }
+    }
+
+    fn fee_estimate_data() -> MempoolFeeEstimateData {
+        MempoolFeeEstimateData {
+            version: MEMPOOL_FEE_ESTIMATE_V3_VERSION,
+            policy_fingerprint: "5bda9d47ff368e28e0f9e258e6a9b41e7cb9642b7798b3f7e86769b975ad4efe"
+                .to_string(),
+            min_relay_fee_rate_per_kb: "0".to_string(),
+            economy_fee_rate_per_kb: u128::MAX.to_string(),
+            standard_fee_rate_per_kb: u128::MAX.to_string(),
+            priority_fee_rate_per_kb: u128::MAX.to_string(),
+            observed_min_fee_rate_per_kb: Some("1".to_string()),
+            observed_max_fee_rate_per_kb: Some(u128::MAX.to_string()),
+            mempool_transactions: 4,
+            effective_max_transactions: 4_096,
+            pressure_bps: 9,
         }
     }
 
@@ -890,6 +1099,103 @@ mod tests {
             explorer_identity_response("testnet", "pulsedag-testnet", ADDRESS_PATH);
         no_capability.data.as_mut().unwrap().capabilities.clear();
         assert!(validate_explorer_identity(&network, no_capability, ADDRESS_PATH).is_err());
+    }
+
+    #[test]
+    fn mempool_identity_requires_exact_network_capability_and_endpoint() {
+        let network = WalletNetworkIdentity::new("testnet", "pulsedag-testnet").unwrap();
+        assert!(validate_mempool_identity(
+            &network,
+            mempool_identity_response("testnet", "pulsedag-testnet"),
+        )
+        .is_ok());
+        assert!(validate_mempool_identity(
+            &network,
+            mempool_identity_response("testnet", "other-chain"),
+        )
+        .is_err());
+
+        let mut no_capability = mempool_identity_response("testnet", "pulsedag-testnet");
+        no_capability.data.as_mut().unwrap().capabilities.clear();
+        assert!(validate_mempool_identity(&network, no_capability).is_err());
+
+        let mut no_endpoint = mempool_identity_response("testnet", "pulsedag-testnet");
+        no_endpoint.data.as_mut().unwrap().core_endpoints.clear();
+        assert!(validate_mempool_identity(&network, no_endpoint).is_err());
+    }
+
+    #[test]
+    fn rejected_broadcast_preserves_machine_code_and_classification() {
+        let signed = signed_fixture();
+        let identity = validate_release_identity(
+            &signed.network,
+            identity_response("testnet", "pulsedag-testnet"),
+        )
+        .unwrap();
+        let output = rejected_broadcast_output(
+            &signed,
+            &identity,
+            ApiError {
+                code: "MEMPOOL_V3_BELOW_MIN_RELAY_FEE_RATE".to_string(),
+                message: "fee rate is below policy floor".to_string(),
+                classification: Some("mempool_policy".to_string()),
+            },
+        );
+        assert!(!output.accepted);
+        assert_eq!(
+            output.rejection_code.as_deref(),
+            Some("MEMPOOL_V3_BELOW_MIN_RELAY_FEE_RATE")
+        );
+        assert_eq!(
+            output.rejection_classification.as_deref(),
+            Some("mempool_policy")
+        );
+    }
+
+    #[test]
+    fn fee_estimate_preserves_full_decimal_range_and_policy_binding() {
+        let network = WalletNetworkIdentity::new("testnet", "pulsedag-testnet").unwrap();
+        let identity = validate_mempool_identity(
+            &network,
+            mempool_identity_response("testnet", "pulsedag-testnet"),
+        )
+        .unwrap();
+        let output = mempool_fee_estimate_output(
+            &identity,
+            ApiResponse {
+                ok: true,
+                data: Some(fee_estimate_data()),
+                error: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(output.version, MEMPOOL_FEE_ESTIMATE_V3_VERSION);
+        assert_eq!(output.priority_fee_rate_per_kb, u128::MAX.to_string());
+        assert_eq!(
+            output.observed_max_fee_rate_per_kb.as_deref(),
+            Some(u128::MAX.to_string().as_str())
+        );
+        assert_eq!(output.network_profile, "testnet");
+        assert_eq!(output.chain_id, "pulsedag-testnet");
+    }
+
+    #[test]
+    fn fee_estimate_rejects_malformed_or_unsupported_machine_values() {
+        let mut invalid_rate = fee_estimate_data();
+        invalid_rate.standard_fee_rate_per_kb = "1.25".to_string();
+        assert!(validate_mempool_fee_estimate_data(&invalid_rate).is_err());
+
+        let mut invalid_version = fee_estimate_data();
+        invalid_version.version = MEMPOOL_FEE_ESTIMATE_V3_VERSION + 1;
+        assert!(validate_mempool_fee_estimate_data(&invalid_version).is_err());
+
+        let mut invalid_fingerprint = fee_estimate_data();
+        invalid_fingerprint.policy_fingerprint = "AA".repeat(32);
+        assert!(validate_mempool_fee_estimate_data(&invalid_fingerprint).is_err());
+
+        let mut invalid_pressure = fee_estimate_data();
+        invalid_pressure.pressure_bps = 10_001;
+        assert!(validate_mempool_fee_estimate_data(&invalid_pressure).is_err());
     }
 
     #[test]

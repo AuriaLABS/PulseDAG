@@ -1,6 +1,8 @@
 pub mod capability_carrier_v1;
 pub mod dag_sync_v2;
 pub mod fast_sync_carrier_v1;
+#[path = "messages/fast_sync_carrier_v1/multi_source_v1.rs"]
+pub mod fast_sync_multisource_v1;
 pub mod fast_sync_runtime_v1;
 pub mod frontier_reconcile_v1;
 pub mod frontier_response_v1;
@@ -29,6 +31,11 @@ pub use dag_sync_v2::{
     MAX_DAG_FRONTIER_ENTRIES, MAX_DAG_FRONTIER_PARENTS, MAX_DAG_FRONTIER_REQUIRED_CONTEXT,
     MAX_SELECTED_CHAIN_LOCATOR_HASHES, MAX_SELECTED_CHAIN_SUFFIX_HASHES,
     P2P_DAG_SYNC_CONTRACT_VERSION,
+};
+use fast_sync_carrier_v1::{
+    verify_fast_sync_commitment_pages_v1, FastSyncCapabilitiesV1, FastSyncChunkRequestV1,
+    FastSyncChunkV1, FastSyncCommitmentPageV1, FastSyncTransferSummaryV1, FastSyncWireErrorV1,
+    P2P_FAST_SYNC_CONTRACT_VERSION, P2P_FAST_SYNC_MAX_CHUNKS_PER_REQUEST_V1,
 };
 pub use frontier_reconcile_v1::{
     plan_dag_frontier_reconciliation_v1, DagFrontierReconcileError, DagFrontierReconcilePlanV1,

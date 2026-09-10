@@ -1,3 +1,4 @@
+mod live_fast_sync_v1;
 mod live_protocol_sync_v1;
 pub mod messages;
 
@@ -25,11 +26,15 @@ use pulsedag_core::{
 use tokio::sync::mpsc;
 use tokio::time::{sleep, Duration};
 
+use crate::live_fast_sync_v1::{
+    authorized_fast_sync_from_tip, encode_fast_sync_for_transport, validate_fast_sync_send,
+};
 use crate::live_protocol_sync_v1::{
     authorized_protocol_sync_from_tip, encode_protocol_sync_for_transport,
     validate_protocol_sync_send,
 };
 use crate::messages::capability_carrier_v1::ProtocolCapabilityTransportV1;
+use crate::messages::fast_sync_carrier_v1::{FastSyncCapabilitiesV1, FastSyncWireV1};
 use crate::messages::{
     message_id_for_block, message_id_for_tx, topic_names, BlockHeaderAnnouncement, HeaderInventory,
     NetworkMessage, ProtocolCapabilitiesV1, ProtocolSyncWireV1, TipInventoryStatus,
@@ -729,6 +734,22 @@ pub trait P2pHandle: Send + Sync {
             "protocol-v2 sync transport is not supported by this p2p handle".into(),
         ))
     }
+    fn configure_fast_sync_capabilities_v1(
+        &self,
+        _capabilities: FastSyncCapabilitiesV1,
+    ) -> Result<(), PulseError> {
+        Err(PulseError::Internal(
+            "fast-sync capabilities are not supported by this p2p handle".into(),
+        ))
+    }
+    fn fast_sync_eligible_peers_v1(&self) -> Result<Vec<String>, PulseError> {
+        Ok(Vec::new())
+    }
+    fn send_fast_sync_v1(&self, _peer_id: &str, _wire: &FastSyncWireV1) -> Result<(), PulseError> {
+        Err(PulseError::Internal(
+            "fast-sync transport is not supported by this p2p handle".into(),
+        ))
+    }
     fn broadcast_transaction(&self, tx: &Transaction) -> Result<(), PulseError>;
     fn broadcast_block(&self, block: &Block) -> Result<(), PulseError>;
     fn update_tip_inventory(&self, _inventory: TipInventoryStatus) -> Result<(), PulseError> {
@@ -862,6 +883,10 @@ pub enum InboundEvent {
         peer_id: String,
         wire: ProtocolSyncWireV1,
     },
+    FastSync {
+        peer_id: String,
+        wire: FastSyncWireV1,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -893,6 +918,10 @@ enum OutboundMessage {
     ProtocolSync {
         peer_id: String,
         wire: ProtocolSyncWireV1,
+    },
+    FastSync {
+        peer_id: String,
+        wire: FastSyncWireV1,
     },
 }
 
@@ -1209,6 +1238,48 @@ impl P2pHandle for MemoryP2pHandle {
         inner.publish_attempts = inner.publish_attempts.saturating_add(1);
         inner.broadcasted_messages = inner.broadcasted_messages.saturating_add(1);
         inner.last_message_kind = Some(format!("protocol-sync:{}", wire.kind()));
+        Ok(())
+    }
+
+    fn configure_fast_sync_capabilities_v1(
+        &self,
+        capabilities: FastSyncCapabilitiesV1,
+    ) -> Result<(), PulseError> {
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| PulseError::Internal("p2p lock poisoned".into()))?;
+        inner
+            .protocol_capability_transport
+            .configure_fast_sync_capabilities(capabilities)
+            .map_err(|error| {
+                PulseError::Internal(format!("invalid fast-sync p2p capabilities: {error:?}"))
+            })
+    }
+
+    fn fast_sync_eligible_peers_v1(&self) -> Result<Vec<String>, PulseError> {
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|_| PulseError::Internal("p2p lock poisoned".into()))?;
+        let mut peers = inner.protocol_capability_transport.eligible_v2_peers();
+        peers.retain(|peer| {
+            inner
+                .protocol_capability_transport
+                .fast_sync_peer_authorized(peer)
+        });
+        Ok(peers)
+    }
+
+    fn send_fast_sync_v1(&self, peer_id: &str, wire: &FastSyncWireV1) -> Result<(), PulseError> {
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| PulseError::Internal("p2p lock poisoned".into()))?;
+        validate_fast_sync_send(&inner, peer_id, wire)?;
+        inner.publish_attempts = inner.publish_attempts.saturating_add(1);
+        inner.broadcasted_messages = inner.broadcasted_messages.saturating_add(1);
+        inner.last_message_kind = Some(format!("fast-sync:{}", wire.kind()));
         Ok(())
     }
 
@@ -2983,6 +3054,11 @@ fn enqueue_outbound_message(
                 .standard_txs
                 .push_back(OutboundMessage::ProtocolSync { peer_id, wire });
         }
+        OutboundMessage::FastSync { peer_id, wire } => {
+            queue
+                .standard_txs
+                .push_back(OutboundMessage::FastSync { peer_id, wire });
+        }
         OutboundMessage::Transaction(tx) => {
             if tx.fee >= TX_PRIORITY_FEE_THRESHOLD {
                 queue
@@ -3062,7 +3138,8 @@ fn pop_outbound_message(
             OutboundMessage::Transaction(_)
             | OutboundMessage::GetTips
             | OutboundMessage::Tips(_)
-            | OutboundMessage::ProtocolSync { .. } => {
+            | OutboundMessage::ProtocolSync { .. }
+            | OutboundMessage::FastSync { .. } => {
                 guard.queued_non_block_messages = guard.queued_non_block_messages.saturating_sub(1);
                 guard.dequeued_non_block_messages =
                     guard.dequeued_non_block_messages.saturating_add(1);
@@ -4880,6 +4957,39 @@ fn dispatch_network_message(
                     }
                 }
             }
+            match authorized_fast_sync_from_tip(bytes, source_peer, inner) {
+                Ok(Some((peer_id, wire))) => {
+                    if let Ok(mut guard) = inner.lock() {
+                        guard.last_message_kind =
+                            Some(format!("fast-sync-inbound:{}", wire.kind()));
+                    }
+                    let _ = inbound_tx.send(InboundEvent::FastSync { peer_id, wire });
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    if let Ok(mut guard) = inner.lock() {
+                        guard.inbound_decode_failed = guard.inbound_decode_failed.saturating_add(1);
+                        guard.last_drop_reason = Some("fast_sync_decode_failed".into());
+                        if let Some(peer) = source_peer {
+                            score_peer_message_outcome(
+                                &mut guard,
+                                peer,
+                                PeerMessageOutcome::Malformed,
+                                now_unix(),
+                            );
+                            record_peer_error(
+                                &mut guard,
+                                peer,
+                                "fast_sync_decode_failed",
+                                error,
+                                now_unix(),
+                            );
+                            refresh_connected_peers_from_health(&mut guard);
+                            persist_peer_state_if_configured(&guard);
+                        }
+                    }
+                }
+            }
         }
 
         NetworkMessage::GetBlockHeaders { chain_id, hashes } => {
@@ -5283,6 +5393,25 @@ async fn run_libp2p_runtime(
                             &protocol_sync,
                         );
                         (wire, topic_name, "protocol-sync-v1", message_id)
+                    }
+                    OutboundMessage::FastSync {
+                        peer_id,
+                        wire: fast_sync,
+                    } => {
+                        let topic_name = format!("{}-sync", cfg.chain_id);
+                        let payload_id = serde_json::to_string(&fast_sync)
+                            .unwrap_or_else(|_| fast_sync.kind().to_string());
+                        let message_id = format!(
+                            "sync:fast-sync-v1:{peer_id}:{}:{payload_id}",
+                            fast_sync.kind()
+                        );
+                        let wire = encode_fast_sync_for_transport(
+                            &inner,
+                            &cfg.chain_id,
+                            &peer_id,
+                            &fast_sync,
+                        );
+                        (wire, topic_name, "fast-sync-v1", message_id)
                     }
                     OutboundMessage::GetBlockHeaders(hashes) => {
                         let topic_name = format!("{}-sync", cfg.chain_id);
@@ -5869,6 +5998,25 @@ async fn run_libp2p_real_runtime(
                         );
                         (wire, topic_name, "protocol-sync-v1", message_id)
                     }
+                    OutboundMessage::FastSync {
+                        peer_id,
+                        wire: fast_sync,
+                    } => {
+                        let topic_name = format!("{}-sync", cfg.chain_id);
+                        let payload_id = serde_json::to_string(&fast_sync)
+                            .unwrap_or_else(|_| fast_sync.kind().to_string());
+                        let message_id = format!(
+                            "sync:fast-sync-v1:{peer_id}:{}:{payload_id}",
+                            fast_sync.kind()
+                        );
+                        let wire = encode_fast_sync_for_transport(
+                            &inner,
+                            &cfg.chain_id,
+                            &peer_id,
+                            &fast_sync,
+                        );
+                        (wire, topic_name, "fast-sync-v1", message_id)
+                    }
                     OutboundMessage::GetBlockHeaders(hashes) => {
                         let topic_name = format!("{}-sync", cfg.chain_id);
                         let message_id = format!("sync:get-block-headers:{}", hashes.join(","));
@@ -6197,6 +6345,53 @@ impl P2pHandle for Libp2pHandle {
                 wire: wire.clone(),
             },
             "protocol-sync-v1",
+        )
+    }
+
+    fn configure_fast_sync_capabilities_v1(
+        &self,
+        capabilities: FastSyncCapabilitiesV1,
+    ) -> Result<(), PulseError> {
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| PulseError::Internal("p2p lock poisoned".into()))?;
+        inner
+            .protocol_capability_transport
+            .configure_fast_sync_capabilities(capabilities)
+            .map_err(|error| {
+                PulseError::Internal(format!("invalid fast-sync p2p capabilities: {error:?}"))
+            })
+    }
+
+    fn fast_sync_eligible_peers_v1(&self) -> Result<Vec<String>, PulseError> {
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|_| PulseError::Internal("p2p lock poisoned".into()))?;
+        let mut peers = inner.protocol_capability_transport.eligible_v2_peers();
+        peers.retain(|peer| {
+            inner
+                .protocol_capability_transport
+                .fast_sync_peer_authorized(peer)
+        });
+        Ok(peers)
+    }
+
+    fn send_fast_sync_v1(&self, peer_id: &str, wire: &FastSyncWireV1) -> Result<(), PulseError> {
+        {
+            let inner = self
+                .inner
+                .lock()
+                .map_err(|_| PulseError::Internal("p2p lock poisoned".into()))?;
+            validate_fast_sync_send(&inner, peer_id, wire)?;
+        }
+        self.queue_sync_message(
+            OutboundMessage::FastSync {
+                peer_id: peer_id.to_string(),
+                wire: wire.clone(),
+            },
+            "fast-sync-v1",
         )
     }
 

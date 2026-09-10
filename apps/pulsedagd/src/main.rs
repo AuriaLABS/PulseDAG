@@ -3,6 +3,7 @@ mod app_state;
 mod block_protocol;
 mod block_request;
 mod config;
+mod fast_sync_bootstrap;
 mod startup_protocol;
 
 use std::{
@@ -1743,6 +1744,16 @@ async fn main() -> Result<()> {
 
     let snapshot_exists = storage.snapshot_exists().unwrap_or(false);
     let persisted_blocks = storage.list_blocks().unwrap_or_default();
+    let clean_fast_sync_bootstrap = startup_protocol.activated_v2()
+        && startup_protocol
+            .restore_identity
+            .as_ref()
+            .is_some_and(|expected| {
+                fast_sync_bootstrap::fast_sync_clean_storage_candidate_v1(
+                    expected,
+                    &persisted_blocks,
+                )
+            });
     let mut chain_state = if startup_protocol.activated_v2() {
         let expected = startup_protocol.restore_identity.as_ref().ok_or_else(|| {
             anyhow::anyhow!("activated-v2 startup selection is missing its protocol identity")
@@ -1919,6 +1930,16 @@ async fn main() -> Result<()> {
             stack
                 .handle
                 .configure_protocol_capabilities_v1(capabilities)?;
+        }
+        if startup_protocol.activated_v2() {
+            let expected = startup_protocol.restore_identity.as_ref().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "activated-v2 startup selection is missing fast-sync protocol identity"
+                )
+            })?;
+            stack.handle.configure_fast_sync_capabilities_v1(
+                fast_sync_bootstrap::local_fast_sync_capabilities_v1(expected)?,
+            )?;
         }
         if let Ok(status) = stack.handle.status() {
             info!(
@@ -2139,6 +2160,19 @@ async fn main() -> Result<()> {
     }));
     let task27_recovery_active = Arc::new(AtomicBool::new(false));
 
+    let fast_sync_daemon_runtime = if startup_protocol.activated_v2() {
+        let expected = startup_protocol.restore_identity.as_ref().ok_or_else(|| {
+            anyhow::anyhow!("activated-v2 startup selection is missing fast-sync identity")
+        })?;
+        Some(fast_sync_bootstrap::FastSyncDaemonRuntimeV1::new(
+            expected.clone(),
+            clean_fast_sync_bootstrap,
+            now_unix(),
+        )?)
+    } else {
+        None
+    };
+
     if let Some(mut rx) = inbound_rx {
         let chain = app_state.chain.clone();
         let storage = storage.clone();
@@ -2148,6 +2182,7 @@ async fn main() -> Result<()> {
         let task27_recovery_active = task27_recovery_active.clone();
         let max_orphan_count = cfg.max_orphan_count;
         tokio::spawn(async move {
+            let mut fast_sync_daemon_runtime = fast_sync_daemon_runtime;
             let mut activated_v2_p2p_runtime = startup_activated_v2_p2p_runtime;
             let mut block_requests = BlockRequestTracker::with_limits(
                 8,
@@ -2177,6 +2212,48 @@ async fn main() -> Result<()> {
                         Err(_) => None,
                     };
                 let now = now_unix();
+                if let (Some(p2p_handle), Some(fast_sync_runtime)) =
+                    (p2p.as_ref(), fast_sync_daemon_runtime.as_mut())
+                {
+                    let local_height = chain.read().await.dag.best_height;
+                    if let Err(error) =
+                        fast_sync_runtime.drive(p2p_handle.as_ref(), local_height, now)
+                    {
+                        warn!(error = %error, "clean fast-sync bootstrap drive failed closed");
+                    }
+
+                    if let Some(InboundEvent::FastSync { peer_id, wire }) = maybe_event.as_ref() {
+                        match fast_sync_runtime.handle_inbound(
+                            p2p_handle.as_ref(),
+                            &storage,
+                            peer_id,
+                            wire,
+                        ) {
+                            Ok(Some(imported)) => {
+                                let imported_height = imported.chain_state.dag.best_height;
+                                let recovery_confidence =
+                                    imported.report.recovery_confidence.clone();
+                                *chain.write().await = imported.chain_state;
+                                activated_v2_p2p_runtime = imported.runtime;
+                                info!(
+                                    imported_height,
+                                    recovery_confidence = %recovery_confidence,
+                                    "clean fast-sync bootstrap imported and activated live state"
+                                );
+                            }
+                            Ok(None) => {}
+                            Err(error) => {
+                                warn!(peer_id = %peer_id, error = %error, "fast-sync inbound failed closed");
+                            }
+                        }
+                        continue;
+                    }
+
+                    if fast_sync_runtime.authority_active() {
+                        continue;
+                    }
+                }
+
                 let timed_out = block_requests.drain_timeouts(now);
                 let timed_out_count = timed_out
                     .retryable
@@ -5866,6 +5943,21 @@ async fn main() -> Result<()> {
                             );
                         }
                     },
+                    InboundEvent::FastSync { peer_id, wire } => {
+                        let kind = wire.kind();
+                        info!(
+                            peer = %peer_id,
+                            fast_sync_kind = kind,
+                            "received live fast-sync transport event; bootstrap orchestration is deferred"
+                        );
+                        let _ = storage.append_runtime_event(
+                            "info",
+                            "fast_sync_transport",
+                            &format!(
+                                "peer={peer_id} kind={kind} action=deferred_to_bootstrap_controller"
+                            ),
+                        );
+                    }
                     InboundEvent::PeerConnected(peer) => {
                         let peers_connected = p2p
                             .as_ref()

@@ -2,6 +2,7 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     errors::PulseError,
+    state::ChainState,
     tx::{
         canonical_transaction_bytes, canonical_transaction_bytes_v2, TRANSACTION_VERSION_V1,
         TRANSACTION_VERSION_V2,
@@ -14,17 +15,24 @@ use crate::{
 ///
 /// This is policy metadata, not a consensus activation version.
 pub const MEMPOOL_POLICY_V3_VERSION: u32 = 1;
+pub const MEMPOOL_FEE_ESTIMATE_V3_VERSION: u32 = 1;
 const MEMPOOL_POLICY_V3_FINGERPRINT_DOMAIN: &[u8] = b"PulseDAG:mempool-policy:v3";
 pub const FEE_RATE_SCALE_BYTES_V3: u64 = 1_000;
+const FEE_ESTIMATE_PRESSURE_SCALE_BPS_V3: u64 = 10_000;
 
 /// Compatibility-first defaults for the foundation slice.
 ///
 /// These values deliberately preserve current admission behavior: no positive
 /// relay-fee floor is introduced and no finite high-fee ceiling is imposed by
-/// this module. Final production numeric policy remains a launch-freeze item.
+/// this module, even though the production numeric policy is now frozen
+/// separately below.
 pub const MEMPOOL_POLICY_V3_COMPAT_MIN_RELAY_FEE_RATE: u64 = 0;
 pub const MEMPOOL_POLICY_V3_COMPAT_MAX_TRANSACTION_FEE: u64 = u64::MAX;
 pub const MEMPOOL_POLICY_V3_COMPAT_MAX_TRANSACTIONS: u64 = 4_096;
+pub const MEMPOOL_POLICY_V3_PRODUCTION_MIN_RELAY_FEE_RATE: u64 = 1;
+pub const MEMPOOL_POLICY_V3_PRODUCTION_MAX_TRANSACTION_FEE: u64 = 100_000_000;
+pub const MEMPOOL_POLICY_V3_PRODUCTION_MAX_TRANSACTIONS: u64 =
+    MEMPOOL_POLICY_V3_COMPAT_MAX_TRANSACTIONS;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MempoolPolicyV3 {
@@ -48,6 +56,16 @@ impl MempoolPolicyV3 {
             min_relay_fee_rate_per_kb: MEMPOOL_POLICY_V3_COMPAT_MIN_RELAY_FEE_RATE,
             max_transaction_fee: MEMPOOL_POLICY_V3_COMPAT_MAX_TRANSACTION_FEE,
             max_transactions: MEMPOOL_POLICY_V3_COMPAT_MAX_TRANSACTIONS,
+            replacement_enabled: false,
+        }
+    }
+
+    pub const fn production_default() -> Self {
+        Self {
+            version: MEMPOOL_POLICY_V3_VERSION,
+            min_relay_fee_rate_per_kb: MEMPOOL_POLICY_V3_PRODUCTION_MIN_RELAY_FEE_RATE,
+            max_transaction_fee: MEMPOOL_POLICY_V3_PRODUCTION_MAX_TRANSACTION_FEE,
+            max_transactions: MEMPOOL_POLICY_V3_PRODUCTION_MAX_TRANSACTIONS,
             replacement_enabled: false,
         }
     }
@@ -109,6 +127,27 @@ pub struct FeeRateV3 {
     pub fee: u64,
     pub canonical_size_bytes: u64,
     pub fee_per_kb: u128,
+}
+
+/// Deterministic, observational fee-rate estimate for the current mempool.
+///
+/// This is not an admission guarantee. Package/conflict policy, capacity
+/// limits, and future replacement semantics remain independent admission
+/// conditions. The estimator intentionally reports canonical fee-rate
+/// quantiles without changing the live eviction path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MempoolFeeEstimateV3 {
+    pub version: u32,
+    pub policy_fingerprint: String,
+    pub min_relay_fee_rate_per_kb: u128,
+    pub economy_fee_rate_per_kb: u128,
+    pub standard_fee_rate_per_kb: u128,
+    pub priority_fee_rate_per_kb: u128,
+    pub observed_min_fee_rate_per_kb: Option<u128>,
+    pub observed_max_fee_rate_per_kb: Option<u128>,
+    pub mempool_transactions: u64,
+    pub effective_max_transactions: u64,
+    pub pressure_bps: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -184,6 +223,85 @@ pub fn fee_rate_v3(
     })
 }
 
+fn nearest_rank_fee_rate_v3(sorted_fee_rates: &[u128], numerator: u128, denominator: u128) -> u128 {
+    debug_assert!(numerator > 0);
+    debug_assert!(denominator > 0);
+    debug_assert!(numerator <= denominator);
+    if sorted_fee_rates.is_empty() {
+        return 0;
+    }
+
+    let count = sorted_fee_rates.len() as u128;
+    let rank = count
+        .saturating_mul(numerator)
+        .saturating_add(denominator.saturating_sub(1))
+        / denominator;
+    let index = rank.saturating_sub(1).min(count.saturating_sub(1)) as usize;
+    sorted_fee_rates[index]
+}
+
+fn fee_estimate_pressure_bps_v3(used: u64, capacity: u64) -> u64 {
+    if capacity == 0 {
+        return if used == 0 {
+            0
+        } else {
+            FEE_ESTIMATE_PRESSURE_SCALE_BPS_V3
+        };
+    }
+
+    let scaled = u128::from(used).saturating_mul(u128::from(FEE_ESTIMATE_PRESSURE_SCALE_BPS_V3))
+        / u128::from(capacity);
+    u64::try_from(scaled.min(u128::from(FEE_ESTIMATE_PRESSURE_SCALE_BPS_V3)))
+        .unwrap_or(FEE_ESTIMATE_PRESSURE_SCALE_BPS_V3)
+}
+
+pub fn estimate_mempool_fee_rates_v3(
+    state: &ChainState,
+    policy: MempoolPolicyV3,
+) -> Result<MempoolFeeEstimateV3, MempoolPolicyAssessmentErrorV3> {
+    if policy.version != MEMPOOL_POLICY_V3_VERSION {
+        return Err(MempoolPolicyRejectionV3::PolicyIdentityMismatch.into());
+    }
+
+    let mut fee_rates = state
+        .mempool
+        .transactions
+        .values()
+        .map(|tx| fee_rate_v3(tx, &state.chain_id).map(|rate| rate.fee_per_kb))
+        .collect::<Result<Vec<_>, _>>()?;
+    fee_rates.sort_unstable();
+
+    let relay_floor = u128::from(policy.min_relay_fee_rate_per_kb);
+    let quantile_or_floor = |numerator, denominator| {
+        if fee_rates.is_empty() {
+            relay_floor
+        } else {
+            nearest_rank_fee_rate_v3(&fee_rates, numerator, denominator).max(relay_floor)
+        }
+    };
+
+    let mempool_transactions = u64::try_from(state.mempool.transactions.len()).unwrap_or(u64::MAX);
+    let live_max_transactions = u64::try_from(state.mempool.max_transactions).unwrap_or(u64::MAX);
+    let effective_max_transactions = policy.max_transactions.min(live_max_transactions);
+
+    Ok(MempoolFeeEstimateV3 {
+        version: MEMPOOL_FEE_ESTIMATE_V3_VERSION,
+        policy_fingerprint: policy.fingerprint(),
+        min_relay_fee_rate_per_kb: relay_floor,
+        economy_fee_rate_per_kb: quantile_or_floor(1, 4),
+        standard_fee_rate_per_kb: quantile_or_floor(1, 2),
+        priority_fee_rate_per_kb: quantile_or_floor(9, 10),
+        observed_min_fee_rate_per_kb: fee_rates.first().copied(),
+        observed_max_fee_rate_per_kb: fee_rates.last().copied(),
+        mempool_transactions,
+        effective_max_transactions,
+        pressure_bps: fee_estimate_pressure_bps_v3(
+            mempool_transactions,
+            effective_max_transactions,
+        ),
+    })
+}
+
 /// Preserve the existing deterministic first-seen admission ordering contract.
 pub fn admission_order_key_v3(first_seen: Option<u64>, txid: &str) -> (u64, String) {
     (first_seen.unwrap_or(u64::MAX), txid.to_owned())
@@ -192,7 +310,10 @@ pub fn admission_order_key_v3(first_seen: Option<u64>, txid: &str) -> (u64, Stri
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{Transaction, TxOutput};
+    use crate::{
+        genesis::init_chain_state,
+        types::{Transaction, TxOutput},
+    };
 
     fn sample_v1_tx(fee: u64) -> Transaction {
         Transaction {
@@ -208,14 +329,46 @@ mod tests {
         }
     }
 
+    fn estimator_v1_tx(txid: &str, fee: u64, nonce: u64) -> Transaction {
+        Transaction {
+            txid: txid.into(),
+            version: TRANSACTION_VERSION_V1,
+            inputs: Vec::new(),
+            outputs: vec![TxOutput {
+                address: "pulse1estimatevector".into(),
+                amount: 7,
+            }],
+            fee,
+            nonce,
+        }
+    }
+
     #[test]
     fn compatibility_policy_fingerprint_is_golden() {
         let policy = MempoolPolicyV3::compatibility_default();
+        assert_eq!(policy.min_relay_fee_rate_per_kb, 0);
+        assert_eq!(policy.max_transaction_fee, u64::MAX);
+        assert_eq!(policy.max_transactions, 4_096);
+        assert!(!policy.replacement_enabled);
         assert_eq!(
             policy.fingerprint(),
             "5bda9d47ff368e28e0f9e258e6a9b41e7cb9642b7798b3f7e86769b975ad4efe"
         );
         assert_eq!(policy, MempoolPolicyV3::default());
+    }
+
+    #[test]
+    fn production_policy_fingerprint_is_golden() {
+        let policy = MempoolPolicyV3::production_default();
+        assert_eq!(policy.version, MEMPOOL_POLICY_V3_VERSION);
+        assert_eq!(policy.min_relay_fee_rate_per_kb, 1);
+        assert_eq!(policy.max_transaction_fee, 100_000_000);
+        assert_eq!(policy.max_transactions, 4_096);
+        assert!(!policy.replacement_enabled);
+        assert_eq!(
+            policy.fingerprint(),
+            "fc08725ab79ace07323f11d085c2c105ed5f5e6338b67555103d8cb273c732c8"
+        );
     }
 
     #[test]
@@ -284,30 +437,30 @@ mod tests {
 
     #[test]
     fn policy_bounds_are_deterministic_at_edges() {
-        let tx = sample_v1_tx(10);
-        let rate = fee_rate_v3(&tx, "legacy").unwrap();
-        let policy = MempoolPolicyV3 {
-            min_relay_fee_rate_per_kb: u64::try_from(rate.fee_per_kb).unwrap().saturating_add(1),
-            max_transaction_fee: tx.fee,
-            ..MempoolPolicyV3::compatibility_default()
-        };
+        let zero_fee_tx = sample_v1_tx(0);
+        let exact_max_fee_tx = sample_v1_tx(MEMPOOL_POLICY_V3_PRODUCTION_MAX_TRANSACTION_FEE);
+        let above_max_fee_tx =
+            sample_v1_tx(MEMPOOL_POLICY_V3_PRODUCTION_MAX_TRANSACTION_FEE.saturating_add(1));
+        let policy = MempoolPolicyV3::production_default();
         assert!(matches!(
-            policy.assess_transaction(&tx, "legacy", 0, false),
+            policy.assess_transaction(&zero_fee_tx, "legacy", 0, false),
             Err(MempoolPolicyAssessmentErrorV3::Policy(
                 MempoolPolicyRejectionV3::BelowMinimumRelayFeeRate
             ))
         ));
+        assert!(policy
+            .assess_transaction(&exact_max_fee_tx, "legacy", 0, false)
+            .is_ok());
 
-        let high_fee_tx = sample_v1_tx(11);
         assert!(matches!(
-            policy.assess_transaction(&high_fee_tx, "legacy", 0, false),
+            policy.assess_transaction(&above_max_fee_tx, "legacy", 0, false),
             Err(MempoolPolicyAssessmentErrorV3::Policy(
                 MempoolPolicyRejectionV3::AboveMaximumTransactionFee
             ))
         ));
 
         assert!(matches!(
-            policy.assess_transaction(&tx, "legacy", policy.max_transactions, false),
+            policy.assess_transaction(&exact_max_fee_tx, "legacy", policy.max_transactions, false),
             Err(MempoolPolicyAssessmentErrorV3::Policy(
                 MempoolPolicyRejectionV3::CapacityBackpressure
             ))
@@ -337,5 +490,140 @@ mod tests {
             policy.validate_identity("00"),
             Err(MempoolPolicyRejectionV3::PolicyIdentityMismatch)
         );
+    }
+
+    #[test]
+    fn empty_mempool_fee_estimate_collapses_to_relay_floor() {
+        let state = init_chain_state("estimate-empty".into());
+        let policy = MempoolPolicyV3 {
+            min_relay_fee_rate_per_kb: 123,
+            ..MempoolPolicyV3::compatibility_default()
+        };
+        let estimate = estimate_mempool_fee_rates_v3(&state, policy).unwrap();
+        assert_eq!(estimate.version, MEMPOOL_FEE_ESTIMATE_V3_VERSION);
+        assert_eq!(estimate.policy_fingerprint, policy.fingerprint());
+        assert_eq!(estimate.min_relay_fee_rate_per_kb, 123);
+        assert_eq!(estimate.economy_fee_rate_per_kb, 123);
+        assert_eq!(estimate.standard_fee_rate_per_kb, 123);
+        assert_eq!(estimate.priority_fee_rate_per_kb, 123);
+        assert_eq!(estimate.observed_min_fee_rate_per_kb, None);
+        assert_eq!(estimate.observed_max_fee_rate_per_kb, None);
+        assert_eq!(estimate.mempool_transactions, 0);
+        assert_eq!(estimate.pressure_bps, 0);
+    }
+
+    #[test]
+    fn fee_estimate_quantiles_are_nearest_rank_and_deterministic() {
+        let mut state = init_chain_state("estimate-quantiles".into());
+        let txs = [
+            estimator_v1_tx("tx-a1", 10, 1),
+            estimator_v1_tx("tx-b2", 20, 2),
+            estimator_v1_tx("tx-c3", 30, 3),
+            estimator_v1_tx("tx-d4", 40, 4),
+            estimator_v1_tx("tx-e5", 50, 5),
+        ];
+        for tx in &txs {
+            state
+                .mempool
+                .transactions
+                .insert(tx.txid.clone(), tx.clone());
+        }
+
+        let mut rates = txs
+            .iter()
+            .map(|tx| fee_rate_v3(tx, &state.chain_id).unwrap().fee_per_kb)
+            .collect::<Vec<_>>();
+        rates.sort_unstable();
+
+        let estimate =
+            estimate_mempool_fee_rates_v3(&state, MempoolPolicyV3::compatibility_default())
+                .unwrap();
+        assert_eq!(estimate.economy_fee_rate_per_kb, rates[1]);
+        assert_eq!(estimate.standard_fee_rate_per_kb, rates[2]);
+        assert_eq!(estimate.priority_fee_rate_per_kb, rates[4]);
+        assert_eq!(estimate.observed_min_fee_rate_per_kb, Some(rates[0]));
+        assert_eq!(estimate.observed_max_fee_rate_per_kb, Some(rates[4]));
+    }
+
+    #[test]
+    fn equivalent_mempool_insertion_orders_have_identical_fee_estimates() {
+        let txs = [
+            estimator_v1_tx("tx-a1", 10, 1),
+            estimator_v1_tx("tx-b2", 20, 2),
+            estimator_v1_tx("tx-c3", 30, 3),
+            estimator_v1_tx("tx-d4", 40, 4),
+        ];
+        let mut forward = init_chain_state("estimate-order".into());
+        let mut reverse = init_chain_state("estimate-order".into());
+        for tx in &txs {
+            forward
+                .mempool
+                .transactions
+                .insert(tx.txid.clone(), tx.clone());
+        }
+        for tx in txs.iter().rev() {
+            reverse
+                .mempool
+                .transactions
+                .insert(tx.txid.clone(), tx.clone());
+        }
+
+        let policy = MempoolPolicyV3::compatibility_default();
+        assert_eq!(
+            estimate_mempool_fee_rates_v3(&forward, policy).unwrap(),
+            estimate_mempool_fee_rates_v3(&reverse, policy).unwrap()
+        );
+    }
+
+    #[test]
+    fn relay_floor_clamps_all_estimate_tiers_without_hiding_observed_rates() {
+        let mut state = init_chain_state("estimate-floor".into());
+        let tx = estimator_v1_tx("tx-a1", 1, 1);
+        let observed = fee_rate_v3(&tx, &state.chain_id).unwrap().fee_per_kb;
+        state.mempool.transactions.insert(tx.txid.clone(), tx);
+        let floor = u64::try_from(observed).unwrap().saturating_add(1_000);
+        let policy = MempoolPolicyV3 {
+            min_relay_fee_rate_per_kb: floor,
+            ..MempoolPolicyV3::compatibility_default()
+        };
+
+        let estimate = estimate_mempool_fee_rates_v3(&state, policy).unwrap();
+        assert_eq!(estimate.economy_fee_rate_per_kb, u128::from(floor));
+        assert_eq!(estimate.standard_fee_rate_per_kb, u128::from(floor));
+        assert_eq!(estimate.priority_fee_rate_per_kb, u128::from(floor));
+        assert_eq!(estimate.observed_min_fee_rate_per_kb, Some(observed));
+        assert_eq!(estimate.observed_max_fee_rate_per_kb, Some(observed));
+    }
+
+    #[test]
+    fn fee_estimate_pressure_uses_stricter_effective_capacity_and_saturates() {
+        let mut state = init_chain_state("estimate-pressure".into());
+        for (txid, fee, nonce) in [("tx-a1", 1, 1), ("tx-b2", 2, 2), ("tx-c3", 3, 3)] {
+            let tx = estimator_v1_tx(txid, fee, nonce);
+            state.mempool.transactions.insert(tx.txid.clone(), tx);
+        }
+        let policy = MempoolPolicyV3 {
+            max_transactions: 2,
+            ..MempoolPolicyV3::compatibility_default()
+        };
+        let estimate = estimate_mempool_fee_rates_v3(&state, policy).unwrap();
+        assert_eq!(estimate.mempool_transactions, 3);
+        assert_eq!(estimate.effective_max_transactions, 2);
+        assert_eq!(estimate.pressure_bps, FEE_ESTIMATE_PRESSURE_SCALE_BPS_V3);
+    }
+
+    #[test]
+    fn fee_estimate_rejects_unsupported_policy_version() {
+        let state = init_chain_state("estimate-version".into());
+        let policy = MempoolPolicyV3 {
+            version: MEMPOOL_POLICY_V3_VERSION + 1,
+            ..MempoolPolicyV3::compatibility_default()
+        };
+        assert!(matches!(
+            estimate_mempool_fee_rates_v3(&state, policy),
+            Err(MempoolPolicyAssessmentErrorV3::Policy(
+                MempoolPolicyRejectionV3::PolicyIdentityMismatch
+            ))
+        ));
     }
 }
