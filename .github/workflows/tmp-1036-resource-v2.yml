@@ -74,6 +74,7 @@ jobs:
 
           rm -f .github/workflows/tmp-1036-resource-v2.yml
 
+          cargo fmt --all
           cargo fmt --all -- --check
           cargo check --locked -p pulsedag-core -p pulsedag-storage -p pulsedag-rpc
           cargo test --locked -p pulsedag-core mempool_resource_v1 --lib
