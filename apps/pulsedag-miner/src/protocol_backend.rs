@@ -179,8 +179,8 @@ pub fn protocol_nonce_partition(
         ));
     }
 
-    let lane =
-        u64::try_from(lane).map_err(|_| anyhow!("protocol nonce lane index does not fit in u64"))?;
+    let lane = u64::try_from(lane)
+        .map_err(|_| anyhow!("protocol nonce lane index does not fit in u64"))?;
     let stride = u64::try_from(active_lanes)
         .map_err(|_| anyhow!("protocol nonce lane count does not fit in u64"))?;
 
@@ -425,14 +425,10 @@ mod tests {
     fn nonce_partition_overflow_fails_closed_without_wrapping() {
         let addition_overflow =
             ProtocolNoncePartition::new(u64::MAX - 2, u64::MAX - 1, u64::MAX).unwrap();
-        assert_eq!(
-            addition_overflow.nonce_at(0).unwrap(),
-            Some(u64::MAX - 2)
-        );
+        assert_eq!(addition_overflow.nonce_at(0).unwrap(), Some(u64::MAX - 2));
         assert!(addition_overflow.nonce_at(1).is_err());
 
-        let multiplication_overflow =
-            ProtocolNoncePartition::new(0, u64::MAX, u64::MAX).unwrap();
+        let multiplication_overflow = ProtocolNoncePartition::new(0, u64::MAX, u64::MAX).unwrap();
         assert_eq!(multiplication_overflow.nonce_at(1).unwrap(), None);
         assert!(multiplication_overflow.nonce_at(2).is_err());
     }
