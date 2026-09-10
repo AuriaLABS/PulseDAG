@@ -1,0 +1,642 @@
+name: Stage production fee correction
+
+on:
+  push:
+    branches:
+      - codex/1036-production-fee-postmerge-correction
+
+permissions:
+  contents: write
+
+jobs:
+  stage:
+    if: github.event.head_commit.message == 'chore: stage production fee fix'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.91.0
+          components: clippy, rustfmt
+      - name: Verify exact base and apply narrow correction
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD^)" = "94aec76ac213eb5caf1d5d9b2aa00aa9c55df459"
+          python3 <<'PY'
+          from pathlib import Path
+
+          def read(path):
+              return Path(path).read_text()
+          def write(path, text):
+              Path(path).write_text(text)
+          def once(text, old, new, label):
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"{label}: expected 1 match, got {count}")
+              return text.replace(old, new, 1)
+
+          # --- core accept: carry v3 policy context through ready-orphan promotion only ---
+          p = 'crates/pulsedag-core/src/accept.rs'
+          s = read(p)
+          s = once(s,
+              '    mempool_protocol::reconcile_mempool_for_protocol,\n    pow_validation_result, selected_pow_name,',
+              '    mempool_protocol::reconcile_mempool_for_protocol,\n    mempool_v3::MempoolPolicyV3,\n    pow_validation_result, selected_pow_name,',
+              'accept import policy')
+          start = s.index('fn promote_ready_orphans(')
+          end = s.index('\nfn mempool_needs_reconcile', start)
+          new_promote = r'''fn promote_ready_orphans(
+    state: &mut ChainState,
+    source: AcceptSource,
+    validation: TransactionAdmissionValidation<'_>,
+    policy: Option<MempoolPolicyV3>,
+) {
+    loop {
+        let mut ready = state
+            .mempool
+            .orphan_transactions
+            .iter()
+            .filter_map(|(txid, tx)| {
+                if missing_transaction_inputs(tx, state).is_empty() {
+                    Some(txid.clone())
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+        if ready.is_empty() {
+            break;
+        }
+        ready.sort();
+
+        let mut promoted_any = false;
+        for txid in ready {
+            let Some(tx) = state.mempool.orphan_transactions.get(&txid).cloned() else {
+                continue;
+            };
+            remove_orphan_transaction(&txid, state);
+
+            if let Some(policy) = policy {
+                let result = match validation {
+                    TransactionAdmissionValidation::LegacyV1 => {
+                        crate::mempool_admission_v3::accept_transaction_with_mempool_policy_v3(
+                            tx,
+                            state,
+                            source,
+                            policy,
+                        )
+                    }
+                    TransactionAdmissionValidation::Protocol(identity) => {
+                        crate::mempool_admission_v3::accept_transaction_with_mempool_policy_v3_for_protocol(
+                            tx,
+                            state,
+                            source,
+                            identity,
+                            policy,
+                        )
+                    }
+                };
+                match result {
+                    TxAcceptanceResult::Accepted => {
+                        state.mempool.counters.orphan_promoted_total = state
+                            .mempool
+                            .counters
+                            .orphan_promoted_total
+                            .saturating_add(1);
+                        promoted_any = true;
+                    }
+                    TxAcceptanceResult::Orphan => {
+                        // The admission path has already parked the transaction again.
+                    }
+                    _ => {
+                        state.mempool.counters.orphan_dropped_total = state
+                            .mempool
+                            .counters
+                            .orphan_dropped_total
+                            .saturating_add(1);
+                    }
+                }
+                continue;
+            }
+
+            let result = match validation {
+                TransactionAdmissionValidation::LegacyV1 => {
+                    accept_transaction(tx.clone(), state, source)
+                }
+                TransactionAdmissionValidation::Protocol(identity) => {
+                    accept_transaction_for_protocol(tx.clone(), state, source, identity)
+                }
+            };
+            match result {
+                Ok(()) => {
+                    state.mempool.counters.orphan_promoted_total = state
+                        .mempool
+                        .counters
+                        .orphan_promoted_total
+                        .saturating_add(1);
+                    promoted_any = true;
+                }
+                Err(PulseError::UtxoNotFound) => {
+                    store_orphan_transaction(tx, state);
+                }
+                Err(_) => {
+                    state.mempool.counters.orphan_dropped_total = state
+                        .mempool
+                        .counters
+                        .orphan_dropped_total
+                        .saturating_add(1);
+                }
+            }
+        }
+        if !promoted_any {
+            break;
+        }
+    }
+}
+'''
+          s = s[:start] + new_promote + s[end:]
+
+          s = once(s,
+          '''    accept_transaction_with_result_internal(
+        tx,
+        state,
+        source,
+        TransactionAdmissionValidation::LegacyV1,
+    )
+}''',
+          '''    accept_transaction_with_result_internal(
+        tx,
+        state,
+        source,
+        TransactionAdmissionValidation::LegacyV1,
+        None,
+    )
+}''', 'legacy internal policy none')
+
+          s = once(s,
+          '''    accept_transaction_with_result_internal(
+        tx,
+        state,
+        source,
+        TransactionAdmissionValidation::Protocol(identity),
+    )
+}
+
+fn accept_transaction_with_result_internal(''',
+          '''    accept_transaction_with_result_internal(
+        tx,
+        state,
+        source,
+        TransactionAdmissionValidation::Protocol(identity),
+        None,
+    )
+}
+
+pub(crate) fn accept_transaction_with_result_with_mempool_policy_context(
+    tx: Transaction,
+    state: &mut ChainState,
+    source: AcceptSource,
+    policy: MempoolPolicyV3,
+) -> TxAcceptanceResult {
+    accept_transaction_with_result_internal(
+        tx,
+        state,
+        source,
+        TransactionAdmissionValidation::LegacyV1,
+        Some(policy),
+    )
+}
+
+pub(crate) fn accept_transaction_with_result_for_protocol_with_mempool_policy_context(
+    tx: Transaction,
+    state: &mut ChainState,
+    source: AcceptSource,
+    identity: &crate::protocol::ProtocolActivationIdentity,
+    policy: MempoolPolicyV3,
+) -> TxAcceptanceResult {
+    if let Err(err) = preflight_protocol_transaction(&tx, state, identity) {
+        state.mempool.counters.rejected_total =
+            state.mempool.counters.rejected_total.saturating_add(1);
+        return classify_tx_validation_error(err);
+    }
+    accept_transaction_with_result_internal(
+        tx,
+        state,
+        source,
+        TransactionAdmissionValidation::Protocol(identity),
+        Some(policy),
+    )
+}
+
+fn accept_transaction_with_result_internal(''', 'protocol internal plus policy helpers')
+          s = once(s,
+          '''    source: AcceptSource,
+    validation: TransactionAdmissionValidation<'_>,
+) -> TxAcceptanceResult {''',
+          '''    source: AcceptSource,
+    validation: TransactionAdmissionValidation<'_>,
+    promotion_policy: Option<MempoolPolicyV3>,
+) -> TxAcceptanceResult {''', 'internal signature policy')
+          s = once(s,
+              '    promote_ready_orphans(state, source, validation);\n    TxAcceptanceResult::Accepted',
+              '    promote_ready_orphans(state, source, validation, promotion_policy);\n    TxAcceptanceResult::Accepted',
+              'promotion policy propagation')
+          write(p, s)
+
+          # --- v3 admission: use policy-context acceptance and production restart filtering ---
+          p = 'crates/pulsedag-core/src/mempool_admission_v3.rs'
+          s = read(p)
+          s = once(s,
+          '''    accept::{
+        accept_transaction_with_result, accept_transaction_with_result_for_protocol, AcceptSource,
+        TxAcceptanceResult,
+    },''',
+          '''    accept::{
+        accept_transaction_with_result_for_protocol_with_mempool_policy_context,
+        accept_transaction_with_result_with_mempool_policy_context, AcceptSource,
+        TxAcceptanceResult,
+    },''', 'v3 context imports')
+          marker = 'pub fn accept_transaction_with_mempool_policy_v3(\n'
+          idx = s.index(marker)
+          reconcile_code = r'''fn persisted_transaction_passes_production_fee_policy_v3(
+    tx: &Transaction,
+    state: &ChainState,
+) -> bool {
+    MempoolPolicyV3::production_default()
+        .assess_transaction(tx, &state.chain_id, 0, false)
+        .is_ok()
+}
+
+fn prune_persisted_production_fee_policy_v3(state: &mut ChainState) -> Vec<String> {
+    let mut live_txids = state
+        .mempool
+        .transactions
+        .keys()
+        .cloned()
+        .collect::<Vec<_>>();
+    live_txids.sort();
+    let mut removed_live = Vec::new();
+    for txid in live_txids {
+        let rejected = state
+            .mempool
+            .transactions
+            .get(&txid)
+            .map(|tx| !persisted_transaction_passes_production_fee_policy_v3(tx, state))
+            .unwrap_or(false);
+        if !rejected {
+            continue;
+        }
+        if let Some(tx) = state.mempool.transactions.remove(&txid) {
+            for input in &tx.inputs {
+                state.mempool.spent_outpoints.remove(&input.previous_output);
+            }
+            state.mempool.first_seen.remove(&txid);
+            state.mempool.admission_height.remove(&txid);
+            state.mempool.counters.rejected_total =
+                state.mempool.counters.rejected_total.saturating_add(1);
+            removed_live.push(txid);
+        }
+    }
+    state.mempool.counters.reconcile_removed_total = state
+        .mempool
+        .counters
+        .reconcile_removed_total
+        .saturating_add(removed_live.len() as u64);
+
+    let mut orphan_txids = state
+        .mempool
+        .orphan_transactions
+        .keys()
+        .cloned()
+        .collect::<Vec<_>>();
+    orphan_txids.sort();
+    for txid in orphan_txids {
+        let rejected = state
+            .mempool
+            .orphan_transactions
+            .get(&txid)
+            .map(|tx| !persisted_transaction_passes_production_fee_policy_v3(tx, state))
+            .unwrap_or(false);
+        if !rejected {
+            continue;
+        }
+        if state.mempool.orphan_transactions.remove(&txid).is_some() {
+            state.mempool.orphan_missing_outpoints.remove(&txid);
+            state.mempool.orphan_received_order.remove(&txid);
+            state.mempool.counters.rejected_total =
+                state.mempool.counters.rejected_total.saturating_add(1);
+            state.mempool.counters.orphan_dropped_total = state
+                .mempool
+                .counters
+                .orphan_dropped_total
+                .saturating_add(1);
+        }
+    }
+    removed_live
+}
+
+fn combine_policy_and_consensus_removed_v3(
+    mut policy_removed: Vec<String>,
+    mut result: crate::mempool::MempoolReconcileResult,
+) -> crate::mempool::MempoolReconcileResult {
+    policy_removed.append(&mut result.removed_txids);
+    policy_removed.sort();
+    policy_removed.dedup();
+    result.removed_txids = policy_removed;
+    result
+}
+
+pub fn reconcile_mempool_with_production_policy_v3(
+    state: &mut ChainState,
+) -> crate::mempool::MempoolReconcileResult {
+    let policy_removed = prune_persisted_production_fee_policy_v3(state);
+    let result = crate::mempool::reconcile_mempool(state);
+    combine_policy_and_consensus_removed_v3(policy_removed, result)
+}
+
+pub fn reconcile_mempool_with_production_policy_v3_for_protocol(
+    state: &mut ChainState,
+    identity: &ProtocolActivationIdentity,
+) -> Result<crate::mempool::MempoolReconcileResult, crate::errors::PulseError> {
+    crate::tx_protocol::resolve_transaction_validation_path(identity, state)?;
+    let policy_removed = prune_persisted_production_fee_policy_v3(state);
+    let result = crate::mempool_protocol::reconcile_mempool_for_protocol(state, identity)?;
+    Ok(combine_policy_and_consensus_removed_v3(policy_removed, result))
+}
+
+'''
+          s = s[:idx] + reconcile_code + s[idx:]
+          s = once(s,
+              '    normalize_live_result_v3(accept_transaction_with_result(tx, state, source))',
+              '    normalize_live_result_v3(accept_transaction_with_result_with_mempool_policy_context(\n        tx, state, source, policy,\n    ))',
+              'legacy v3 policy context')
+          s = once(s,
+          '''    normalize_live_result_v3(accept_transaction_with_result_for_protocol(
+        tx, state, source, identity,
+    ))''',
+          '''    normalize_live_result_v3(
+        accept_transaction_with_result_for_protocol_with_mempool_policy_context(
+            tx, state, source, identity, policy,
+        ),
+    )''', 'protocol v3 policy context')
+          # Focused persisted-state regression using policy-invalid entries; consensus validity is irrelevant to policy pruning.
+          test_marker = '\n    #[test]\n    fn production_fee_ceiling_rejects_before_mempool_mutation()'
+          if test_marker not in s:
+              raise SystemExit('core test insertion marker missing')
+          test_code = r'''
+    #[test]
+    fn production_reconcile_prunes_fee_bound_live_and_persisted_orphan() {
+        let mut state = init_chain_state("production-reconcile-fee-bounds".to_string());
+        let mut live = sample_tx(0);
+        live.txid = "persisted-live-zero-fee".to_string();
+        state
+            .mempool
+            .transactions
+            .insert(live.txid.clone(), live.clone());
+        state.mempool.first_seen.insert(live.txid.clone(), 1);
+        state.mempool.admission_height.insert(live.txid.clone(), 1);
+
+        let mut orphan = sample_tx(
+            MempoolPolicyV3::production_default()
+                .max_transaction_fee
+                .saturating_add(1),
+        );
+        orphan.txid = "persisted-orphan-over-max".to_string();
+        state
+            .mempool
+            .orphan_transactions
+            .insert(orphan.txid.clone(), orphan.clone());
+        state.mempool.orphan_received_order.insert(orphan.txid.clone(), 1);
+
+        let result = reconcile_mempool_with_production_policy_v3(&mut state);
+        assert!(result.removed_txids.contains(&live.txid));
+        assert!(!state.mempool.transactions.contains_key(&live.txid));
+        assert!(!state.mempool.first_seen.contains_key(&live.txid));
+        assert!(!state.mempool.admission_height.contains_key(&live.txid));
+        assert!(!state.mempool.orphan_transactions.contains_key(&orphan.txid));
+        assert!(!state.mempool.orphan_received_order.contains_key(&orphan.txid));
+    }
+'''
+          s = s.replace(test_marker, test_code + test_marker, 1)
+          write(p, s)
+
+          # --- public exports for daemon startup ---
+          p = 'crates/pulsedag-core/src/lib.rs'
+          s = read(p)
+          s = once(s,
+          '''    mempool_policy_rejection_code_from_reason_v3, mempool_policy_rejection_detail_v3,
+    mempool_policy_rejection_reason_v3,
+};''',
+          '''    mempool_policy_rejection_code_from_reason_v3, mempool_policy_rejection_detail_v3,
+    mempool_policy_rejection_reason_v3, reconcile_mempool_with_production_policy_v3,
+    reconcile_mempool_with_production_policy_v3_for_protocol,
+};''', 'lib production reconcile exports')
+          write(p, s)
+
+          # --- daemon: startup/restore filtering and P2P parity ---
+          p = 'apps/pulsedagd/src/main.rs'
+          s = read(p)
+          s = once(s,
+          '''use pulsedag_core::accept::{
+    accept_transaction_with_result, AcceptSource, BlockAcceptanceResult, TxAcceptanceResult,
+};
+use pulsedag_core::reconcile_mempool;''',
+          '''use pulsedag_core::accept::{AcceptSource, BlockAcceptanceResult, TxAcceptanceResult};
+use pulsedag_core::{
+    reconcile_mempool_with_production_policy_v3,
+    reconcile_mempool_with_production_policy_v3_for_protocol,
+};''', 'daemon imports')
+          marker = 'const TASK27_LOCATOR_RESPONSE_TIMEOUT_SECS: u64 = 8;\n\n'
+          helper = r'''fn accept_inbound_p2p_transaction_with_result(
+    tx: pulsedag_core::types::Transaction,
+    state: &mut pulsedag_core::ChainState,
+    identity: Option<&pulsedag_core::ProtocolActivationIdentity>,
+) -> TxAcceptanceResult {
+    let policy = pulsedag_core::MempoolPolicyV3::production_default();
+    match identity {
+        Some(identity) => pulsedag_core::accept_transaction_with_mempool_policy_v3_for_protocol(
+            tx,
+            state,
+            AcceptSource::P2p,
+            identity,
+            policy,
+        ),
+        None => pulsedag_core::accept_transaction_with_mempool_policy_v3(
+            tx,
+            state,
+            AcceptSource::P2p,
+            policy,
+        ),
+    }
+}
+
+#[cfg(test)]
+mod production_p2p_fee_policy_tests {
+    use super::*;
+
+    fn tx_with_fee(fee: u64, nonce: u64) -> pulsedag_core::types::Transaction {
+        pulsedag_core::types::Transaction {
+            txid: format!("p2p-production-fee-{fee}-{nonce}"),
+            version: pulsedag_core::TRANSACTION_VERSION_V1,
+            inputs: Vec::new(),
+            outputs: Vec::new(),
+            fee,
+            nonce,
+        }
+    }
+
+    fn rejection_code(result: &TxAcceptanceResult) -> Option<&str> {
+        match result {
+            TxAcceptanceResult::Rejected(reason) => {
+                pulsedag_core::mempool_policy_rejection_code_from_reason_v3(reason)
+            }
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn inbound_p2p_applies_production_fee_bounds_before_insertion() {
+        let mut state =
+            pulsedag_core::genesis::init_chain_state("p2p-production-fee-policy".to_string());
+        let rejected_before = state.mempool.counters.rejected_total;
+        let zero_fee =
+            accept_inbound_p2p_transaction_with_result(tx_with_fee(0, 1), &mut state, None);
+        assert_eq!(
+            rejection_code(&zero_fee),
+            Some("MEMPOOL_V3_BELOW_MIN_RELAY_FEE_RATE")
+        );
+        let over_max = pulsedag_core::MempoolPolicyV3::production_default()
+            .max_transaction_fee
+            .checked_add(1)
+            .expect("production max leaves room for max+1 regression");
+        let excessive_fee =
+            accept_inbound_p2p_transaction_with_result(tx_with_fee(over_max, 2), &mut state, None);
+        assert_eq!(
+            rejection_code(&excessive_fee),
+            Some("MEMPOOL_V3_ABOVE_MAX_TRANSACTION_FEE")
+        );
+        assert!(state.mempool.transactions.is_empty());
+        assert!(state.mempool.spent_outpoints.is_empty());
+        assert_eq!(
+            state.mempool.counters.rejected_total,
+            rejected_before.saturating_add(2)
+        );
+    }
+}
+
+'''
+          if s.count(marker) != 1:
+              raise SystemExit(f'daemon helper marker count={s.count(marker)}')
+          s = s.replace(marker, marker + helper, 1)
+          target = 'let reconcile_result = reconcile_mempool(&mut chain_state);'
+          if s.count(target) != 2:
+              raise SystemExit(f'startup reconcile count={s.count(target)}')
+          s = s.replace(target,
+              'let reconcile_result = reconcile_mempool_with_production_policy_v3(&mut chain_state);',
+              1)
+          s = s.replace(target,
+              'let reconcile_result = reconcile_mempool_with_production_policy_v3_for_protocol(\n            &mut chain_state,\n            identity,\n        )?;',
+              1)
+          s = once(s,
+              '        let max_orphan_count = cfg.max_orphan_count;\n        tokio::spawn(async move {',
+              '        let max_orphan_count = cfg.max_orphan_count;\n        let p2p_protocol_identity = startup_activated_v2_identity.clone();\n        tokio::spawn(async move {',
+              'p2p identity capture')
+          s = once(s,
+          '''                        let acceptance =
+                            accept_transaction_with_result(tx, &mut guard, AcceptSource::P2p);''',
+          '''                        let acceptance = accept_inbound_p2p_transaction_with_result(
+                            tx,
+                            &mut guard,
+                            p2p_protocol_identity.as_ref(),
+                        );''', 'p2p admission route')
+          write(p, s)
+
+          # --- RPC: fee-policy rejection is not capacity/backpressure ---
+          p = 'crates/pulsedag-rpc/src/handlers/tx_protocol.rs'
+          s = read(p)
+          old = '''    let reason = rejection_reason(result);
+    let classification = classify_rpc_transaction_acceptance(transaction, chain, identity, result);
+    if let Some(code) = mempool_policy_rejection_code_from_reason_v3(&reason) {
+        let detail = mempool_policy_rejection_detail_v3(&reason);
+        return match classification {
+            Some(classification) => {
+                ApiResponse::err_classified(code, detail, classification.as_str())
+            }
+            None => ApiResponse::err(code, detail),
+        };
+    }
+    match classification {'''
+          new = '''    let reason = rejection_reason(result);
+    if let Some(code) = mempool_policy_rejection_code_from_reason_v3(&reason) {
+        let detail = mempool_policy_rejection_detail_v3(&reason);
+        if matches!(
+            code,
+            "MEMPOOL_V3_BELOW_MIN_RELAY_FEE_RATE" | "MEMPOOL_V3_ABOVE_MAX_TRANSACTION_FEE"
+        ) {
+            return ApiResponse::err(code, detail);
+        }
+        let classification =
+            classify_rpc_transaction_acceptance(transaction, chain, identity, result);
+        return match classification {
+            Some(classification) => {
+                ApiResponse::err_classified(code, detail, classification.as_str())
+            }
+            None => ApiResponse::err(code, detail),
+        };
+    }
+    let classification = classify_rpc_transaction_acceptance(transaction, chain, identity, result);
+    match classification {'''
+          s = once(s, old, new, 'rpc fee classification')
+          end_marker = '\n    #[tokio::test]\n    async fn mempool_fee_estimate_rpc_is_versioned_and_policy_bound()'
+          if end_marker not in s:
+              raise SystemExit('rpc test insertion marker missing')
+          rpc_test = r'''
+    #[test]
+    fn fee_bound_policy_rejections_are_not_classified_as_mempool_full() {
+        let chain = init_chain_state("fee-policy-classification".to_string());
+        let transaction = Transaction {
+            txid: "fee-policy-classification-vector".to_string(),
+            version: TRANSACTION_VERSION_V1,
+            inputs: Vec::new(),
+            outputs: Vec::new(),
+            fee: 0,
+            nonce: 0,
+        };
+        for code in [
+            "MEMPOOL_V3_BELOW_MIN_RELAY_FEE_RATE",
+            "MEMPOOL_V3_ABOVE_MAX_TRANSACTION_FEE",
+        ] {
+            let result = TxAcceptanceResult::Rejected(format!("{code}: policy bound"));
+            let response = classified_rejection(&transaction, &chain, None, &result);
+            let error = response.error.expect("fee-bound rejection");
+            assert_eq!(error.code, code);
+            assert!(error.classification.is_none());
+        }
+    }
+'''
+          s = s.replace(end_marker, rpc_test + end_marker, 1)
+          write(p, s)
+          PY
+          cargo fmt --all
+          cargo fmt --all -- --check
+          git diff --check
+      - name: Focused regressions
+        run: |
+          set -euo pipefail
+          cargo test --locked -p pulsedag-core production_reconcile_prunes_fee_bound_live_and_persisted_orphan
+          cargo test --locked -p pulsedag-rpc fee_bound_policy_rejections_are_not_classified_as_mempool_full
+          cargo test --locked -p pulsedagd inbound_p2p_applies_production_fee_bounds_before_insertion
+      - name: Compile touched crates
+        run: cargo check --locked -p pulsedag-core -p pulsedag-rpc -p pulsedagd
+      - name: Commit staged correction without temporary workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm .github/workflows/stage_fee_fix.yml
+          git add -A
+          git config user.name 'kalekoi-release-bot'
+          git config user.email '159061+kalekoi@users.noreply.github.com'
+          git commit -m 'core: correct production mempool fee enforcement gaps'
+          git push origin HEAD:codex/1036-production-fee-postmerge-correction
