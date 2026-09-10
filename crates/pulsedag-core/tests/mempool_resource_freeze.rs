@@ -154,8 +154,14 @@ fn restored_capacity_normalization_is_insertion_order_deterministic() {
         if reverse {
             entries.reverse();
         }
-        for (index, transaction) in entries.into_iter().enumerate() {
-            insert_live(&mut state, transaction, index as u64, Some(0));
+        for transaction in entries {
+            let first_seen = match transaction.txid.as_str() {
+                "a" => 0,
+                "b" => 1,
+                "c" => 2,
+                _ => unreachable!("fixed fixture txid"),
+            };
+            insert_live(&mut state, transaction, first_seen, Some(0));
         }
         state
     }
