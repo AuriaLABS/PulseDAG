@@ -24,10 +24,15 @@ const FEE_ESTIMATE_PRESSURE_SCALE_BPS_V3: u64 = 10_000;
 ///
 /// These values deliberately preserve current admission behavior: no positive
 /// relay-fee floor is introduced and no finite high-fee ceiling is imposed by
-/// this module. Final production numeric policy remains a launch-freeze item.
+/// this module, even though the production numeric policy is now frozen
+/// separately below.
 pub const MEMPOOL_POLICY_V3_COMPAT_MIN_RELAY_FEE_RATE: u64 = 0;
 pub const MEMPOOL_POLICY_V3_COMPAT_MAX_TRANSACTION_FEE: u64 = u64::MAX;
 pub const MEMPOOL_POLICY_V3_COMPAT_MAX_TRANSACTIONS: u64 = 4_096;
+pub const MEMPOOL_POLICY_V3_PRODUCTION_MIN_RELAY_FEE_RATE: u64 = 1;
+pub const MEMPOOL_POLICY_V3_PRODUCTION_MAX_TRANSACTION_FEE: u64 = 100_000_000;
+pub const MEMPOOL_POLICY_V3_PRODUCTION_MAX_TRANSACTIONS: u64 =
+    MEMPOOL_POLICY_V3_COMPAT_MAX_TRANSACTIONS;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MempoolPolicyV3 {
@@ -51,6 +56,16 @@ impl MempoolPolicyV3 {
             min_relay_fee_rate_per_kb: MEMPOOL_POLICY_V3_COMPAT_MIN_RELAY_FEE_RATE,
             max_transaction_fee: MEMPOOL_POLICY_V3_COMPAT_MAX_TRANSACTION_FEE,
             max_transactions: MEMPOOL_POLICY_V3_COMPAT_MAX_TRANSACTIONS,
+            replacement_enabled: false,
+        }
+    }
+
+    pub const fn production_default() -> Self {
+        Self {
+            version: MEMPOOL_POLICY_V3_VERSION,
+            min_relay_fee_rate_per_kb: MEMPOOL_POLICY_V3_PRODUCTION_MIN_RELAY_FEE_RATE,
+            max_transaction_fee: MEMPOOL_POLICY_V3_PRODUCTION_MAX_TRANSACTION_FEE,
+            max_transactions: MEMPOOL_POLICY_V3_PRODUCTION_MAX_TRANSACTIONS,
             replacement_enabled: false,
         }
     }
@@ -331,11 +346,29 @@ mod tests {
     #[test]
     fn compatibility_policy_fingerprint_is_golden() {
         let policy = MempoolPolicyV3::compatibility_default();
+        assert_eq!(policy.min_relay_fee_rate_per_kb, 0);
+        assert_eq!(policy.max_transaction_fee, u64::MAX);
+        assert_eq!(policy.max_transactions, 4_096);
+        assert!(!policy.replacement_enabled);
         assert_eq!(
             policy.fingerprint(),
             "5bda9d47ff368e28e0f9e258e6a9b41e7cb9642b7798b3f7e86769b975ad4efe"
         );
         assert_eq!(policy, MempoolPolicyV3::default());
+    }
+
+    #[test]
+    fn production_policy_fingerprint_is_golden() {
+        let policy = MempoolPolicyV3::production_default();
+        assert_eq!(policy.version, MEMPOOL_POLICY_V3_VERSION);
+        assert_eq!(policy.min_relay_fee_rate_per_kb, 1);
+        assert_eq!(policy.max_transaction_fee, 100_000_000);
+        assert_eq!(policy.max_transactions, 4_096);
+        assert!(!policy.replacement_enabled);
+        assert_eq!(
+            policy.fingerprint(),
+            "fc08725ab79ace07323f11d085c2c105ed5f5e6338b67555103d8cb273c732c8"
+        );
     }
 
     #[test]
@@ -404,30 +437,30 @@ mod tests {
 
     #[test]
     fn policy_bounds_are_deterministic_at_edges() {
-        let tx = sample_v1_tx(10);
-        let rate = fee_rate_v3(&tx, "legacy").unwrap();
-        let policy = MempoolPolicyV3 {
-            min_relay_fee_rate_per_kb: u64::try_from(rate.fee_per_kb).unwrap().saturating_add(1),
-            max_transaction_fee: tx.fee,
-            ..MempoolPolicyV3::compatibility_default()
-        };
+        let zero_fee_tx = sample_v1_tx(0);
+        let exact_max_fee_tx = sample_v1_tx(MEMPOOL_POLICY_V3_PRODUCTION_MAX_TRANSACTION_FEE);
+        let above_max_fee_tx =
+            sample_v1_tx(MEMPOOL_POLICY_V3_PRODUCTION_MAX_TRANSACTION_FEE.saturating_add(1));
+        let policy = MempoolPolicyV3::production_default();
         assert!(matches!(
-            policy.assess_transaction(&tx, "legacy", 0, false),
+            policy.assess_transaction(&zero_fee_tx, "legacy", 0, false),
             Err(MempoolPolicyAssessmentErrorV3::Policy(
                 MempoolPolicyRejectionV3::BelowMinimumRelayFeeRate
             ))
         ));
+        assert!(policy
+            .assess_transaction(&exact_max_fee_tx, "legacy", 0, false)
+            .is_ok());
 
-        let high_fee_tx = sample_v1_tx(11);
         assert!(matches!(
-            policy.assess_transaction(&high_fee_tx, "legacy", 0, false),
+            policy.assess_transaction(&above_max_fee_tx, "legacy", 0, false),
             Err(MempoolPolicyAssessmentErrorV3::Policy(
                 MempoolPolicyRejectionV3::AboveMaximumTransactionFee
             ))
         ));
 
         assert!(matches!(
-            policy.assess_transaction(&tx, "legacy", policy.max_transactions, false),
+            policy.assess_transaction(&exact_max_fee_tx, "legacy", policy.max_transactions, false),
             Err(MempoolPolicyAssessmentErrorV3::Policy(
                 MempoolPolicyRejectionV3::CapacityBackpressure
             ))

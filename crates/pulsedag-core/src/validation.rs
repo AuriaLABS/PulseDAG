@@ -961,9 +961,18 @@ mod tests {
     }
 
     #[test]
+    fn consensus_transaction_validation_still_accepts_zero_fee() {
+        let mut state = init_chain_state("test".to_string());
+        let (key, outpoint) = fund_signing_key(&mut state, 12, "fund-zero-fee", 0, 10);
+        let tx = signed_tx(&key, vec![outpoint], vec![output("receiver", 10)], 0, 1);
+
+        assert!(validate_transaction(&tx, &state).is_ok());
+    }
+
+    #[test]
     fn transaction_validation_missing_transaction_inputs_returns_exact_missing_outpoints() {
         let mut state = init_chain_state("test".to_string());
-        let (_key, present) = fund_signing_key(&mut state, 12, "fund-present", 0, 10);
+        let (_key, present) = fund_signing_key(&mut state, 13, "fund-present", 0, 10);
         let missing_a = OutPoint {
             txid: "missing-a".to_string(),
             index: 0,

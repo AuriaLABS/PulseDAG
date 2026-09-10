@@ -498,14 +498,11 @@ mod tests {
     }
 
     #[test]
-    fn explicit_fee_ceiling_rejects_before_mempool_mutation() {
+    fn production_fee_ceiling_rejects_before_mempool_mutation() {
         let mut state = init_chain_state("live-policy-max-fee".to_string());
-        let policy = MempoolPolicyV3 {
-            max_transaction_fee: 4,
-            ..MempoolPolicyV3::compatibility_default()
-        };
+        let policy = MempoolPolicyV3::production_default();
         let reason = rejected_reason(accept_transaction_with_mempool_policy_v3(
-            sample_tx(5),
+            sample_tx(policy.max_transaction_fee.saturating_add(1)),
             &mut state,
             AcceptSource::Rpc,
             policy,
@@ -519,14 +516,11 @@ mod tests {
     }
 
     #[test]
-    fn explicit_relay_floor_rejects_before_mempool_mutation() {
+    fn production_relay_floor_rejects_before_mempool_mutation() {
         let mut state = init_chain_state("live-policy-relay-floor".to_string());
-        let policy = MempoolPolicyV3 {
-            min_relay_fee_rate_per_kb: u64::MAX,
-            ..MempoolPolicyV3::compatibility_default()
-        };
+        let policy = MempoolPolicyV3::production_default();
         let reason = rejected_reason(accept_transaction_with_mempool_policy_v3(
-            sample_tx(1),
+            sample_tx(0),
             &mut state,
             AcceptSource::Rpc,
             policy,
