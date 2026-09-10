@@ -171,6 +171,15 @@ mod tests {
     }
 
     fn signed_v2_transaction(state: &mut ChainState, seed: u8, funding: &str) -> Transaction {
+        signed_v2_transaction_with_fee(state, seed, funding, 1)
+    }
+
+    fn signed_v2_transaction_with_fee(
+        state: &mut ChainState,
+        seed: u8,
+        funding: &str,
+        fee: u64,
+    ) -> Transaction {
         let signing_key = SigningKey::from_bytes(&[seed; 32]);
         let public_key = hex::encode(signing_key.verifying_key().to_bytes());
         let address = address_from_public_key(&public_key);
@@ -178,12 +187,16 @@ mod tests {
             txid: funding.to_string(),
             index: 0,
         };
+        let output_amount = 9u64;
+        let funding_amount = output_amount
+            .checked_add(fee)
+            .expect("test funding amount must fit in u64");
         state.utxo.utxos.insert(
             outpoint.clone(),
             Utxo {
                 outpoint: outpoint.clone(),
                 address: address.clone(),
-                amount: 10,
+                amount: funding_amount,
                 coinbase: false,
                 height: 0,
             },
@@ -205,9 +218,9 @@ mod tests {
             }],
             outputs: vec![TxOutput {
                 address: "pulse1recipient".to_string(),
-                amount: 9,
+                amount: output_amount,
             }],
-            fee: 1,
+            fee,
             nonce: u64::from(seed),
         };
         let message = signing_message_v2(&tx, &state.chain_id).unwrap();
@@ -217,18 +230,40 @@ mod tests {
     }
 
     #[test]
-    fn activated_v2_reconcile_keeps_valid_v2_transactions() {
+    fn activated_v2_production_reconcile_keeps_valid_v2_and_prunes_fee_outlier() {
         let mut state = init_chain_state("task28-mempool-protocol".to_string());
         let identity = identity(&state);
         let tx = signed_v2_transaction(&mut state, 7, "funding-a");
         accept_transaction_for_protocol(tx.clone(), &mut state, AcceptSource::Rpc, &identity)
             .unwrap();
 
-        let result = reconcile_mempool_for_protocol(&mut state, &identity).unwrap();
+        let excessive_fee = crate::MempoolPolicyV3::production_default()
+            .max_transaction_fee
+            .checked_add(1)
+            .expect("production max must leave room for max+1 regression");
+        let fee_outlier =
+            signed_v2_transaction_with_fee(&mut state, 8, "funding-b", excessive_fee);
+        crate::tx_protocol::validate_transaction_for_protocol(&fee_outlier, &state, &identity)
+            .expect("fee outlier must remain protocol-valid before production policy pruning");
+        state
+            .mempool
+            .transactions
+            .insert(fee_outlier.txid.clone(), fee_outlier.clone());
+        state
+            .mempool
+            .first_seen
+            .insert(fee_outlier.txid.clone(), 99);
+
+        let result =
+            crate::mempool_admission_v3::reconcile_mempool_with_production_policy_v3_for_protocol(
+                &mut state, &identity,
+            )
+            .unwrap();
 
         assert_eq!(result.kept_txids, vec![tx.txid.clone()]);
-        assert!(result.removed_txids.is_empty());
+        assert_eq!(result.removed_txids, vec![fee_outlier.txid.clone()]);
         assert!(state.mempool.transactions.contains_key(&tx.txid));
+        assert!(!state.mempool.transactions.contains_key(&fee_outlier.txid));
     }
 
     #[test]
