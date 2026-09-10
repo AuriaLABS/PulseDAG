@@ -1,0 +1,38 @@
+name: Dispatch exact-head pre-burn for PR 1090 7fb211b
+
+on:
+  push:
+    branches:
+      - ops/preburn-1090-dispatch-7fb211b
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  dispatch:
+    if: "github.event.head_commit.message == 'ops: dispatch preburn for 1090 7fb211b'"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: Verify immutable candidate ref
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin refs/heads/preburn/1090-7fb211b
+          test "$(git rev-parse FETCH_HEAD)" = "7fb211b3d17eb0c3c638be3b49cd077f44aa0da4"
+      - name: Dispatch pre-burn verification on exact candidate ref
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail-with-body --silent --show-error \
+            -X POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/workflows/pre-release-verification.yml/dispatches" \
+            -d '{"ref":"preburn/1090-7fb211b","inputs":{"release_tag":"v3.0.0-pr1090"}}'
