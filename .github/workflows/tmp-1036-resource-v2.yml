@@ -63,6 +63,7 @@ jobs:
 
           python3 - <<'PY'
           from pathlib import Path
+
           p = Path('crates/pulsedag-rpc/src/handlers/tx_protocol.rs')
           text = p.read_text()
           old = '''    let reason = rejection_reason(result);\n    if let Some(code) = mempool_policy_rejection_code_from_reason_v3(&reason) {'''
@@ -70,6 +71,25 @@ jobs:
           if text.count(old) != 1:
               raise SystemExit(f'classified_rejection guard mismatch: {text.count(old)}')
           p.write_text(text.replace(old, new, 1))
+
+          # Storage startup reconciliation expects every accepted DAG block
+          # referenced by CHAIN_STATE to have its durable block record. Mirror
+          # the pre-existing RocksDB fixtures in both new sidecar tests.
+          p = Path('crates/pulsedag-storage/tests/mempool_expiry_persistence.rs')
+          text = p.read_text()
+          anchor = '''    {\n        let storage = Storage::open(&path).unwrap();\n        storage.persist_chain_state(&state).unwrap();'''
+          replacement = '''    {\n        let storage = Storage::open(&path).unwrap();\n        for block in state.dag.blocks.values() {\n            storage.persist_block(block).unwrap();\n        }\n        storage.persist_chain_state(&state).unwrap();'''
+          count = text.count(anchor)
+          if count != 1:
+              raise SystemExit(f'orphan sidecar storage fixture guard mismatch: {count}')
+          text = text.replace(anchor, replacement, 1)
+
+          anchor = '''    let storage = Storage::open(&path).unwrap();\n    storage.persist_chain_state(&state).unwrap();\n    let meta_cf = storage.db.cf_handle("meta").unwrap();'''
+          replacement = '''    let storage = Storage::open(&path).unwrap();\n    for block in state.dag.blocks.values() {\n        storage.persist_block(block).unwrap();\n    }\n    storage.persist_chain_state(&state).unwrap();\n    let meta_cf = storage.db.cf_handle("meta").unwrap();'''
+          count = text.count(anchor)
+          if count != 1:
+              raise SystemExit(f'corrupt sidecar storage fixture guard mismatch: {count}')
+          p.write_text(text.replace(anchor, replacement, 1))
           PY
 
           rm -f .github/workflows/tmp-1036-resource-v2.yml
