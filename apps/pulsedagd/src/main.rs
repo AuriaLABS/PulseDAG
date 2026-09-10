@@ -33,10 +33,11 @@ use block_request::{
     HeaderFetchCandidate,
 };
 use config::Config;
-use pulsedag_core::accept::{
-    accept_transaction_with_result, AcceptSource, BlockAcceptanceResult, TxAcceptanceResult,
+use pulsedag_core::accept::{AcceptSource, BlockAcceptanceResult, TxAcceptanceResult};
+use pulsedag_core::{
+    reconcile_mempool_with_production_policy_v3,
+    reconcile_mempool_with_production_policy_v3_for_protocol,
 };
-use pulsedag_core::reconcile_mempool;
 use pulsedag_p2p::{
     build_p2p_stack, default_p2p_identity_path,
     messages::{
@@ -317,6 +318,83 @@ const SELECTED_SEGMENT_PRIORITY_GAP_BLOCKS: u64 = 64;
 const SELECTED_LOCATOR_PRIORITY_GRACE_SECS: u64 = 60;
 const TASK27_REJOIN_MAX_STAGNANT_CYCLES: u32 = 30;
 const TASK27_LOCATOR_RESPONSE_TIMEOUT_SECS: u64 = 8;
+
+fn accept_inbound_p2p_transaction_with_result(
+    tx: pulsedag_core::types::Transaction,
+    state: &mut pulsedag_core::ChainState,
+    identity: Option<&pulsedag_core::ProtocolActivationIdentity>,
+) -> TxAcceptanceResult {
+    let policy = pulsedag_core::MempoolPolicyV3::production_default();
+    match identity {
+        Some(identity) => pulsedag_core::accept_transaction_with_mempool_policy_v3_for_protocol(
+            tx,
+            state,
+            AcceptSource::P2p,
+            identity,
+            policy,
+        ),
+        None => pulsedag_core::accept_transaction_with_mempool_policy_v3(
+            tx,
+            state,
+            AcceptSource::P2p,
+            policy,
+        ),
+    }
+}
+
+#[cfg(test)]
+mod production_p2p_fee_policy_tests {
+    use super::*;
+
+    fn tx_with_fee(fee: u64, nonce: u64) -> pulsedag_core::types::Transaction {
+        pulsedag_core::types::Transaction {
+            txid: format!("p2p-production-fee-{fee}-{nonce}"),
+            version: pulsedag_core::TRANSACTION_VERSION_V1,
+            inputs: Vec::new(),
+            outputs: Vec::new(),
+            fee,
+            nonce,
+        }
+    }
+
+    fn rejection_code(result: &TxAcceptanceResult) -> Option<&str> {
+        match result {
+            TxAcceptanceResult::Rejected(reason) => {
+                pulsedag_core::mempool_policy_rejection_code_from_reason_v3(reason)
+            }
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn inbound_p2p_applies_production_fee_bounds_before_insertion() {
+        let mut state =
+            pulsedag_core::genesis::init_chain_state("p2p-production-fee-policy".to_string());
+        let rejected_before = state.mempool.counters.rejected_total;
+        let zero_fee =
+            accept_inbound_p2p_transaction_with_result(tx_with_fee(0, 1), &mut state, None);
+        assert_eq!(
+            rejection_code(&zero_fee),
+            Some("MEMPOOL_V3_BELOW_MIN_RELAY_FEE_RATE")
+        );
+        let over_max = pulsedag_core::MempoolPolicyV3::production_default()
+            .max_transaction_fee
+            .checked_add(1)
+            .expect("production max leaves room for max+1 regression");
+        let excessive_fee =
+            accept_inbound_p2p_transaction_with_result(tx_with_fee(over_max, 2), &mut state, None);
+        assert_eq!(
+            rejection_code(&excessive_fee),
+            Some("MEMPOOL_V3_ABOVE_MAX_TRANSACTION_FEE")
+        );
+        assert!(state.mempool.transactions.is_empty());
+        assert!(state.mempool.spent_outpoints.is_empty());
+        assert_eq!(
+            state.mempool.counters.rejected_total,
+            rejected_before.saturating_add(2)
+        );
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PendingTask27Locator {
@@ -1867,7 +1945,14 @@ async fn main() -> Result<()> {
     std::env::set_var("PULSEDAG_RPC_BIND", cfg.rpc_bind.clone());
     std::env::set_var("PULSEDAG_API_PROFILE", cfg.api_profile.as_env_value());
 
-    let reconcile_result = reconcile_mempool(&mut chain_state);
+    let reconcile_result = if startup_protocol.activated_v2() {
+        let identity = startup_protocol.restore_identity.as_ref().ok_or_else(|| {
+            anyhow::anyhow!("activated-v2 startup selection is missing its protocol identity")
+        })?;
+        reconcile_mempool_with_production_policy_v3_for_protocol(&mut chain_state, identity)?
+    } else {
+        reconcile_mempool_with_production_policy_v3(&mut chain_state)
+    };
     if !reconcile_result.removed_txids.is_empty() {
         warn!(
             removed_mempool_tx = reconcile_result.removed_txids.len(),
@@ -1993,7 +2078,8 @@ async fn main() -> Result<()> {
 
     if let Some(identity) = startup_activated_v2_identity.as_ref() {
         startup_consistency_issue_count = pulsedag_core::dag_consistency_issues(&chain_state).len();
-        let reconcile_result = reconcile_mempool(&mut chain_state);
+        let reconcile_result =
+            reconcile_mempool_with_production_policy_v3_for_protocol(&mut chain_state, identity)?;
         if !reconcile_result.removed_txids.is_empty() {
             warn!(
                 removed_mempool_tx = reconcile_result.removed_txids.len(),
@@ -2181,6 +2267,7 @@ async fn main() -> Result<()> {
         let selected_segment_locator_state = selected_segment_locator_state.clone();
         let task27_recovery_active = task27_recovery_active.clone();
         let max_orphan_count = cfg.max_orphan_count;
+        let p2p_protocol_identity = startup_activated_v2_identity.clone();
         tokio::spawn(async move {
             let mut fast_sync_daemon_runtime = fast_sync_daemon_runtime;
             let mut activated_v2_p2p_runtime = startup_activated_v2_p2p_runtime;
@@ -3304,8 +3391,11 @@ async fn main() -> Result<()> {
                             );
                             continue;
                         }
-                        let acceptance =
-                            accept_transaction_with_result(tx, &mut guard, AcceptSource::P2p);
+                        let acceptance = accept_inbound_p2p_transaction_with_result(
+                            tx,
+                            &mut guard,
+                            p2p_protocol_identity.as_ref(),
+                        );
                         match acceptance {
                             TxAcceptanceResult::Duplicate => {
                                 let mut rt = runtime.write().await;
