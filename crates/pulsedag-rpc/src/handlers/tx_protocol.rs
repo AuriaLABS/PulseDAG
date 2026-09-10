@@ -7,9 +7,12 @@ use pulsedag_core::mempool_v3::{estimate_mempool_fee_rates_v3, MempoolFeeEstimat
 use pulsedag_core::{
     accept_transaction_with_mempool_policy_v3,
     accept_transaction_with_mempool_policy_v3_for_protocol, compute_submission_id_v2,
-    mempool_policy_rejection_code_from_reason_v3, mempool_policy_rejection_detail_v3,
     tx_protocol::resolve_transaction_validation_path, AcceptSource, ChainState, MempoolPolicyV3,
     ProtocolActivationIdentity, PulseError, TransactionValidationPath, TxAcceptanceResult,
+};
+use pulsedag_core::{
+    mempool_policy_rejection_code_from_reason_v3, mempool_policy_rejection_detail_v3,
+    mempool_resource_rejection_code_from_reason_v1, mempool_resource_rejection_detail_v1,
 };
 
 pub use super::tx_legacy::{
@@ -152,6 +155,10 @@ fn classified_rejection(
     result: &TxAcceptanceResult,
 ) -> ApiResponse<serde_json::Value> {
     let reason = rejection_reason(result);
+    if let Some(code) = mempool_resource_rejection_code_from_reason_v1(&reason) {
+        let detail = mempool_resource_rejection_detail_v1(&reason);
+        return ApiResponse::err(code, detail);
+    }
     if let Some(code) = mempool_policy_rejection_code_from_reason_v3(&reason) {
         let detail = mempool_policy_rejection_detail_v3(&reason);
         if matches!(
