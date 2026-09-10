@@ -47,7 +47,7 @@ pub async fn get_policy<S: RpcStateLike>(State(state): State<S>) -> Json<ApiResp
     let chain_handle = state.chain();
     let chain = chain_handle.read().await;
     let snapshot = pulsedag_core::dev_difficulty_snapshot(&chain);
-    let mempool_v3 = pulsedag_core::MempoolPolicyV3::compatibility_default().into();
+    let mempool_v3 = pulsedag_core::MempoolPolicyV3::production_default().into();
 
     Json(ApiResponse::ok(PolicyData {
         version: repo_version(),
@@ -89,19 +89,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn mempool_v3_policy_wire_view_is_identity_bound_and_lossless() {
-        let policy = pulsedag_core::MempoolPolicyV3::compatibility_default();
+    fn active_mempool_v3_policy_wire_view_is_identity_bound_and_lossless() {
+        let policy = pulsedag_core::MempoolPolicyV3::production_default();
         let data = MempoolPolicyV3Data::from(policy);
 
         assert_eq!(data.version, pulsedag_core::MEMPOOL_POLICY_V3_VERSION);
         assert_eq!(data.fingerprint, policy.fingerprint());
         assert_eq!(
             data.min_relay_fee_rate_per_kb,
-            policy.min_relay_fee_rate_per_kb.to_string()
+            pulsedag_core::mempool_v3::MEMPOOL_POLICY_V3_PRODUCTION_MIN_RELAY_FEE_RATE_PER_KB
+                .to_string()
         );
         assert_eq!(
             data.max_transaction_fee,
-            policy.max_transaction_fee.to_string()
+            pulsedag_core::mempool_v3::MEMPOOL_POLICY_V3_PRODUCTION_MAX_TRANSACTION_FEE.to_string()
         );
         assert_eq!(data.max_transactions, policy.max_transactions);
         assert_eq!(data.replacement_enabled, policy.replacement_enabled);
