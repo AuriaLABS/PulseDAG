@@ -14,6 +14,7 @@ pub mod mempool;
 pub mod mempool_admission_v3;
 pub mod mempool_protocol;
 pub mod mempool_replacement_v3;
+pub mod mempool_resource_v1;
 pub mod mempool_v3;
 pub mod mined_block_v2;
 pub mod mining;
@@ -187,6 +188,16 @@ pub use mempool_protocol::reconcile_mempool_for_protocol;
 pub use mempool_replacement_v3::{
     assess_mempool_replacement_v3, MempoolReplacementAssessmentV3,
     MEMPOOL_REPLACEMENT_ASSESSMENT_V3_VERSION,
+};
+pub use mempool_resource_v1::{
+    canonical_transaction_size_for_resource_v1, mempool_resource_rejection_code_from_reason_v1,
+    mempool_resource_rejection_detail_v1, mempool_resource_rejection_reason_v1,
+    normalize_production_mempool_resources_v1, production_mempool_resource_invariants_v1,
+    MempoolResourceNormalizationV1, MempoolResourcePolicyV1, MempoolResourceRejectionV1,
+    MEMPOOL_RESOURCE_EXPIRY_BOUNDARY_V1, MEMPOOL_RESOURCE_LIVE_MAX_AGE_BLOCKS_V1,
+    MEMPOOL_RESOURCE_MAX_ORPHANS_V1, MEMPOOL_RESOURCE_MAX_SPENT_OUTPOINTS_V1,
+    MEMPOOL_RESOURCE_MAX_TRANSACTIONS_V1, MEMPOOL_RESOURCE_MAX_TRANSACTION_BYTES_V1,
+    MEMPOOL_RESOURCE_ORPHAN_MAX_AGE_BLOCKS_V1, MEMPOOL_RESOURCE_POLICY_V1_VERSION,
 };
 pub use mempool_v3::{
     admission_order_key_v3, canonical_transaction_size_for_mempool_v3, fee_rate_v3, FeeRateV3,

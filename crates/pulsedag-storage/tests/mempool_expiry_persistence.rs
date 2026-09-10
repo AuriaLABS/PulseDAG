@@ -1,4 +1,7 @@
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::{
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
+    sync::atomic::{AtomicU64, Ordering},
+};
 
 use pulsedag_core::{
     genesis::init_chain_state,
@@ -14,6 +17,8 @@ use serde::Serialize;
 
 const CHAIN_STATE_KEY: &[u8] = b"chain_state";
 const MEMPOOL_ADMISSION_HEIGHT_V1_KEY: &[u8] = b"mempool_admission_height_v1";
+const MEMPOOL_ORPHAN_ADMISSION_HEIGHT_V1_KEY: &[u8] = b"mempool_orphan_admission_height_v1";
+static TEMP_DB_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Serialize)]
 struct PreExpiryMempool<'a> {
@@ -109,12 +114,12 @@ fn pre_expiry_bytes(state: &ChainState) -> Vec<u8> {
 }
 
 fn temp_db_path(name: &str) -> String {
-    let unique = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
+    let sequence = TEMP_DB_COUNTER.fetch_add(1, Ordering::Relaxed);
     std::env::temp_dir()
-        .join(format!("pulsedag-expiry-{name}-{unique}"))
+        .join(format!(
+            "pulsedag-expiry-{name}-pid{}-{sequence}",
+            std::process::id()
+        ))
         .to_string_lossy()
         .into_owned()
 }
@@ -231,5 +236,111 @@ fn admission_height_sidecar_survives_real_restart_and_filters_stale_txids() {
     );
 
     drop(reopened);
+    let _ = std::fs::remove_dir_all(path);
+}
+
+#[test]
+fn orphan_admission_height_sidecar_survives_restart_and_filters_stale_txids() {
+    let path = temp_db_path("orphan-restart");
+    let mut state = init_chain_state("expiry-orphan-restart".to_string());
+    let orphan = dummy_tx("orphan-live");
+    state
+        .mempool
+        .orphan_transactions
+        .insert(orphan.txid.clone(), orphan);
+    state
+        .mempool
+        .orphan_admission_height
+        .insert("orphan-live".to_string(), 5);
+    state
+        .mempool
+        .orphan_admission_height
+        .insert("stale-orphan".to_string(), 1);
+
+    {
+        let storage = Storage::open(&path).unwrap();
+        for block in state.dag.blocks.values() {
+            storage.persist_block(block).unwrap();
+        }
+        storage.persist_chain_state(&state).unwrap();
+        let mut raw = BTreeMap::new();
+        raw.insert("orphan-live".to_string(), 5_u64);
+        raw.insert("stale-orphan".to_string(), 1_u64);
+        let meta_cf = storage.db.cf_handle("meta").unwrap();
+        storage
+            .db
+            .put_cf(
+                &meta_cf,
+                MEMPOOL_ORPHAN_ADMISSION_HEIGHT_V1_KEY,
+                bincode::serialize(&raw).unwrap(),
+            )
+            .unwrap();
+    }
+
+    let storage = Storage::open(&path).unwrap();
+    let loaded = storage.load_chain_state().unwrap().unwrap();
+    assert_eq!(
+        loaded.mempool.orphan_admission_height.get("orphan-live"),
+        Some(&5)
+    );
+    assert!(!loaded
+        .mempool
+        .orphan_admission_height
+        .contains_key("stale-orphan"));
+    assert_eq!(STORAGE_SCHEMA_VERSION, 1);
+    drop(storage);
+    let _ = std::fs::remove_dir_all(path);
+}
+
+#[test]
+fn corrupt_optional_age_sidecars_recover_valid_chain_state_and_surface_events() {
+    let path = temp_db_path("corrupt-sidecars");
+    let mut state = init_chain_state("expiry-corrupt-sidecars".to_string());
+    let live = dummy_tx("live");
+    state.mempool.transactions.insert(live.txid.clone(), live);
+    state.mempool.first_seen.insert("live".to_string(), 0);
+    state.mempool.admission_height.insert("live".to_string(), 7);
+    let orphan = dummy_tx("orphan");
+    state
+        .mempool
+        .orphan_transactions
+        .insert(orphan.txid.clone(), orphan);
+    state
+        .mempool
+        .orphan_admission_height
+        .insert("orphan".to_string(), 9);
+
+    let storage = Storage::open(&path).unwrap();
+    for block in state.dag.blocks.values() {
+        storage.persist_block(block).unwrap();
+    }
+    storage.persist_chain_state(&state).unwrap();
+    let meta_cf = storage.db.cf_handle("meta").unwrap();
+    storage
+        .db
+        .put_cf(&meta_cf, MEMPOOL_ADMISSION_HEIGHT_V1_KEY, b"corrupt")
+        .unwrap();
+    storage
+        .db
+        .put_cf(
+            &meta_cf,
+            MEMPOOL_ORPHAN_ADMISSION_HEIGHT_V1_KEY,
+            b"corrupt-orphan",
+        )
+        .unwrap();
+
+    let loaded = storage.load_chain_state().unwrap().unwrap();
+    assert!(loaded.mempool.transactions.contains_key("live"));
+    assert!(loaded.mempool.orphan_transactions.contains_key("orphan"));
+    assert!(loaded.mempool.admission_height.is_empty());
+    assert!(loaded.mempool.orphan_admission_height.is_empty());
+    let events = storage.list_runtime_events(20).unwrap();
+    assert!(events
+        .iter()
+        .any(|event| event.kind == "mempool_admission_height_sidecar_corrupt_recovered"));
+    assert!(events.iter().any(|event| {
+        event.kind == "mempool_orphan_admission_height_sidecar_corrupt_recovered"
+    }));
+    drop(storage);
     let _ = std::fs::remove_dir_all(path);
 }
