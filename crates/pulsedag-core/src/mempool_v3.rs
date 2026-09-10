@@ -24,7 +24,8 @@ const FEE_ESTIMATE_PRESSURE_SCALE_BPS_V3: u64 = 10_000;
 ///
 /// These values deliberately preserve current admission behavior: no positive
 /// relay-fee floor is introduced and no finite high-fee ceiling is imposed by
-/// this module. Final production numeric policy remains a launch-freeze item.
+/// this module, even though the production numeric policy is now frozen
+/// separately below.
 pub const MEMPOOL_POLICY_V3_COMPAT_MIN_RELAY_FEE_RATE: u64 = 0;
 pub const MEMPOOL_POLICY_V3_COMPAT_MAX_TRANSACTION_FEE: u64 = u64::MAX;
 pub const MEMPOOL_POLICY_V3_COMPAT_MAX_TRANSACTIONS: u64 = 4_096;
