@@ -1,6 +1,7 @@
 use crate::{
     errors::PulseError,
     mempool::MempoolReconcileResult,
+    mempool_resource_v1::normalize_production_mempool_resources_v1,
     protocol::ProtocolActivationIdentity,
     state::ChainState,
     tx_protocol::{resolve_transaction_validation_path, validate_transaction_for_protocol},
@@ -54,6 +55,7 @@ pub fn reconcile_mempool_for_protocol(
     // activation tuple fails closed.
     resolve_transaction_validation_path(identity, state)?;
 
+    let mut resource_removed = normalize_production_mempool_resources_v1(state).removed_live_txids;
     let tx_count = state.mempool.transactions.len();
     state.mempool.counters.reconcile_runs_total = state
         .mempool
@@ -64,8 +66,13 @@ pub fn reconcile_mempool_for_protocol(
         state.mempool.spent_outpoints.clear();
         state.mempool.first_seen.clear();
         state.mempool.admission_height.clear();
+        state.mempool.counters.reconcile_removed_total = state
+            .mempool
+            .counters
+            .reconcile_removed_total
+            .saturating_add(resource_removed.len() as u64);
         return Ok(MempoolReconcileResult {
-            removed_txids: Vec::new(),
+            removed_txids: resource_removed,
             kept_txids: Vec::new(),
         });
     }
@@ -136,14 +143,17 @@ pub fn reconcile_mempool_for_protocol(
         .max()
         .map(|sequence| sequence.saturating_add(1))
         .unwrap_or(0);
+    resource_removed.append(&mut removed_txids);
+    resource_removed.sort();
+    resource_removed.dedup();
     rebuilt_mempool.counters.reconcile_removed_total = rebuilt_mempool
         .counters
         .reconcile_removed_total
-        .saturating_add(removed_txids.len() as u64);
+        .saturating_add(resource_removed.len() as u64);
     state.mempool = rebuilt_mempool;
 
     Ok(MempoolReconcileResult {
-        removed_txids,
+        removed_txids: resource_removed,
         kept_txids,
     })
 }

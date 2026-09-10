@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use crate::{
     errors::PulseError,
+    mempool_resource_v1::normalize_production_mempool_resources_v1,
     state::ChainState,
     types::{Hash, Transaction},
     validation::validate_transaction,
@@ -234,6 +235,7 @@ fn simulate_mempool_accept(tx: &Transaction, state: &mut ChainState) -> Result<(
 }
 
 pub fn reconcile_mempool(state: &mut ChainState) -> MempoolReconcileResult {
+    let mut resource_removed = normalize_production_mempool_resources_v1(state).removed_live_txids;
     let tx_count = state.mempool.transactions.len();
     state.mempool.counters.reconcile_runs_total = state
         .mempool
@@ -244,8 +246,13 @@ pub fn reconcile_mempool(state: &mut ChainState) -> MempoolReconcileResult {
         state.mempool.spent_outpoints.clear();
         state.mempool.first_seen.clear();
         state.mempool.admission_height.clear();
+        state.mempool.counters.reconcile_removed_total = state
+            .mempool
+            .counters
+            .reconcile_removed_total
+            .saturating_add(resource_removed.len() as u64);
         return MempoolReconcileResult {
-            removed_txids: Vec::new(),
+            removed_txids: resource_removed,
             kept_txids: Vec::new(),
         };
     }
@@ -316,14 +323,17 @@ pub fn reconcile_mempool(state: &mut ChainState) -> MempoolReconcileResult {
         .max()
         .map(|sequence| sequence.saturating_add(1))
         .unwrap_or(0);
+    resource_removed.append(&mut removed_txids);
+    resource_removed.sort();
+    resource_removed.dedup();
     rebuilt_mempool.counters.reconcile_removed_total = rebuilt_mempool
         .counters
         .reconcile_removed_total
-        .saturating_add(removed_txids.len() as u64);
+        .saturating_add(resource_removed.len() as u64);
     state.mempool = rebuilt_mempool;
 
     MempoolReconcileResult {
-        removed_txids,
+        removed_txids: resource_removed,
         kept_txids,
     }
 }

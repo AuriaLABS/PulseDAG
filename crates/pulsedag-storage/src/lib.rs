@@ -22,6 +22,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 const CHAIN_STATE_KEY: &[u8] = b"chain_state";
 const MEMPOOL_ADMISSION_HEIGHT_V1_KEY: &[u8] = b"mempool_admission_height_v1";
+const MEMPOOL_ORPHAN_ADMISSION_HEIGHT_V1_KEY: &[u8] =
+    b"mempool_orphan_admission_height_v1";
 pub const STORAGE_SCHEMA_VERSION: u32 = 1;
 const STORAGE_SCHEMA_VERSION_KEY: &[u8] = b"storage_schema_version";
 const CHAIN_ID_KEY: &[u8] = b"chain_id";
@@ -40,6 +42,8 @@ pub static BLOCK_COMMIT_BATCH_FAILED_TOTAL: AtomicU64 = AtomicU64::new(0);
 pub static BLOCK_COMMIT_ROLLBACK_TOTAL: AtomicU64 = AtomicU64::new(0);
 pub static STARTUP_STORAGE_RECONCILIATION_TOTAL: AtomicU64 = AtomicU64::new(0);
 pub static STARTUP_STORAGE_RECONCILIATION_FAILED_TOTAL: AtomicU64 = AtomicU64::new(0);
+pub static MEMPOOL_ADMISSION_HEIGHT_SIDECAR_RECOVERY_TOTAL: AtomicU64 = AtomicU64::new(0);
+pub static MEMPOOL_ORPHAN_ADMISSION_HEIGHT_SIDECAR_RECOVERY_TOTAL: AtomicU64 = AtomicU64::new(0);
 pub static SNAPSHOT_VERIFICATION_GENERATION_CHANGED_TOTAL: AtomicU64 = AtomicU64::new(0);
 pub static SNAPSHOT_VERIFICATION_STABLE_FAILURE_TOTAL: AtomicU64 = AtomicU64::new(0);
 pub static SNAPSHOT_VERIFICATION_RETRY_TOTAL: AtomicU64 = AtomicU64::new(0);
@@ -1207,6 +1211,18 @@ impl Storage {
             bincode::serialize(&admission_height)
                 .map_err(|e| PulseError::StorageError(e.to_string()))?,
         );
+        let mut orphan_admission_height = BTreeMap::<Hash, u64>::new();
+        for (txid, height) in &state.mempool.orphan_admission_height {
+            if state.mempool.orphan_transactions.contains_key(txid) {
+                orphan_admission_height.insert(txid.clone(), *height);
+            }
+        }
+        batch.put_cf(
+            meta_cf,
+            MEMPOOL_ORPHAN_ADMISSION_HEIGHT_V1_KEY,
+            bincode::serialize(&orphan_admission_height)
+                .map_err(|e| PulseError::StorageError(e.to_string()))?,
+        );
         batch.put_cf(
             meta_cf,
             STORAGE_SCHEMA_VERSION_KEY,
@@ -1246,14 +1262,40 @@ impl Storage {
             .get_cf(&cf, MEMPOOL_ADMISSION_HEIGHT_V1_KEY)
             .map_err(|e| PulseError::StorageError(e.to_string()))?
         {
-            let persisted: BTreeMap<Hash, u64> = bincode::deserialize(&sidecar).map_err(|e| {
-                PulseError::StorageError(format!(
-                    "mempool admission-height sidecar is corrupt: {e}"
-                ))
-            })?;
-            for (txid, height) in persisted {
-                if state.mempool.transactions.contains_key(&txid) {
-                    state.mempool.admission_height.insert(txid, height);
+            match bincode::deserialize::<BTreeMap<Hash, u64>>(&sidecar) {
+                Ok(persisted) => {
+                    for (txid, height) in persisted {
+                        if state.mempool.transactions.contains_key(&txid) {
+                            state.mempool.admission_height.insert(txid, height);
+                        }
+                    }
+                }
+                Err(_) => {
+                    // Optional policy-age metadata must not invalidate an otherwise
+                    // valid positional chain state. Empty age is the legacy fail-safe
+                    // retain behavior frozen by #1081.
+                    MEMPOOL_ADMISSION_HEIGHT_SIDECAR_RECOVERY_TOTAL
+                        .fetch_add(1, Ordering::Relaxed);
+                }
+            }
+        }
+        state.mempool.orphan_admission_height.clear();
+        if let Some(sidecar) = self
+            .db
+            .get_cf(&cf, MEMPOOL_ORPHAN_ADMISSION_HEIGHT_V1_KEY)
+            .map_err(|e| PulseError::StorageError(e.to_string()))?
+        {
+            match bincode::deserialize::<BTreeMap<Hash, u64>>(&sidecar) {
+                Ok(persisted) => {
+                    for (txid, height) in persisted {
+                        if state.mempool.orphan_transactions.contains_key(&txid) {
+                            state.mempool.orphan_admission_height.insert(txid, height);
+                        }
+                    }
+                }
+                Err(_) => {
+                    MEMPOOL_ORPHAN_ADMISSION_HEIGHT_SIDECAR_RECOVERY_TOTAL
+                        .fetch_add(1, Ordering::Relaxed);
                 }
             }
         }

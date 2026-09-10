@@ -263,6 +263,8 @@ pub struct Mempool {
     pub next_first_seen: u64,
     #[serde(skip, default)]
     pub admission_height: HashMap<Hash, u64>,
+    #[serde(skip, default)]
+    pub orphan_admission_height: HashMap<Hash, u64>,
     #[serde(default)]
     pub orphan_transactions: HashMap<Hash, Transaction>,
     #[serde(default)]
@@ -289,6 +291,7 @@ impl Default for Mempool {
             first_seen: HashMap::new(),
             next_first_seen: 0,
             admission_height: HashMap::new(),
+            orphan_admission_height: HashMap::new(),
             orphan_transactions: HashMap::new(),
             orphan_missing_outpoints: HashMap::new(),
             orphan_received_order: HashMap::new(),

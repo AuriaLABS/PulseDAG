@@ -6,6 +6,10 @@ use crate::{
         accept_transaction_with_result_with_mempool_policy_context, AcceptSource,
         TxAcceptanceResult,
     },
+    mempool_resource_v1::{
+        assess_production_transaction_resources_v1, mempool_resource_rejection_reason_v1,
+        MempoolResourceAssessmentErrorV1,
+    },
     mempool_v3::{
         fee_rate_v3, MempoolPolicyRejectionV3, MempoolPolicyV3, MEMPOOL_POLICY_V3_VERSION,
     },
@@ -79,6 +83,32 @@ fn preflight_policy_v3(
                 policy.version, MEMPOOL_POLICY_V3_VERSION
             ),
         ));
+    }
+
+    if policy == MempoolPolicyV3::production_default() {
+        match assess_production_transaction_resources_v1(tx, state) {
+            Ok(_) => {}
+            Err(MempoolResourceAssessmentErrorV1::TransactionTooLarge {
+                canonical_size_bytes,
+                max_canonical_tx_bytes,
+            }) => {
+                state.mempool.counters.rejected_total =
+                    state.mempool.counters.rejected_total.saturating_add(1);
+                return Err(TxAcceptanceResult::Rejected(
+                    mempool_resource_rejection_reason_v1(
+                        canonical_size_bytes,
+                        max_canonical_tx_bytes,
+                    ),
+                ));
+            }
+            Err(MempoolResourceAssessmentErrorV1::CanonicalSize(error)) => {
+                state.mempool.counters.rejected_total =
+                    state.mempool.counters.rejected_total.saturating_add(1);
+                return Err(TxAcceptanceResult::Invalid(format!(
+                    "mempool resource canonical size assessment failed: {error}"
+                )));
+            }
+        }
     }
 
     if tx.fee > policy.max_transaction_fee {

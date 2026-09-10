@@ -369,23 +369,24 @@ fn prune_orphans(state: &mut ChainState) {
     if state.mempool.orphan_transactions.len() <= state.mempool.max_orphans {
         return;
     }
-    let mut by_age = state
+    let mut candidates = state
         .mempool
-        .orphan_received_order
-        .iter()
-        .map(|(txid, order)| (txid.clone(), *order))
+        .orphan_transactions
+        .values()
+        .map(|tx| (tx.fee, tx.txid.clone()))
         .collect::<Vec<_>>();
-    by_age.sort_by_key(|(_, order)| *order);
+    candidates.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| b.1.cmp(&a.1)));
 
     let overflow = state
         .mempool
         .orphan_transactions
         .len()
         .saturating_sub(state.mempool.max_orphans);
-    for (txid, _) in by_age.into_iter().take(overflow) {
+    for (_, txid) in candidates.into_iter().take(overflow) {
         let removed = state.mempool.orphan_transactions.remove(&txid).is_some();
         state.mempool.orphan_missing_outpoints.remove(&txid);
         state.mempool.orphan_received_order.remove(&txid);
+        state.mempool.orphan_admission_height.remove(&txid);
         if removed {
             state.mempool.counters.orphan_dropped_total = state
                 .mempool
@@ -413,7 +414,14 @@ fn store_orphan_transaction(tx: Transaction, state: &mut ChainState) {
     if !replaced {
         let order = state.mempool.next_orphan_order;
         state.mempool.next_orphan_order = state.mempool.next_orphan_order.saturating_add(1);
-        state.mempool.orphan_received_order.insert(txid, order);
+        state
+            .mempool
+            .orphan_received_order
+            .insert(txid.clone(), order);
+        state
+            .mempool
+            .orphan_admission_height
+            .insert(txid, state.dag.best_height);
         state.mempool.counters.orphaned_total =
             state.mempool.counters.orphaned_total.saturating_add(1);
     }
@@ -424,6 +432,7 @@ fn remove_orphan_transaction(txid: &str, state: &mut ChainState) {
     state.mempool.orphan_transactions.remove(txid);
     state.mempool.orphan_missing_outpoints.remove(txid);
     state.mempool.orphan_received_order.remove(txid);
+    state.mempool.orphan_admission_height.remove(txid);
 }
 
 #[derive(Clone, Copy)]
