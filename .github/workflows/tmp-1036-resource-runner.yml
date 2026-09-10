@@ -10,44 +10,46 @@ permissions:
 
 jobs:
   stage:
+    if: github.event.head_commit.message == 'chore: run resource freeze staging v2'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.91.0
         with:
           components: rustfmt,clippy
-      - name: Recover and execute guarded staging script
+      - name: Apply guarded resource and orphan expiry staging
         shell: bash
         run: |
           set -euo pipefail
-          python3 - <<'PY'
-          from pathlib import Path
-          source = Path('.github/workflows/tmp-1036-resource-implement.yml').read_text()
-          marker = "          python3 <<'PY'\n"
-          start = source.index(marker) + len(marker)
-          end = source.index("\n          PY\n", start)
-          body = source[start:end]
-          repaired = []
-          for line in body.splitlines():
-              repaired.append(line[10:] if line.startswith('          ') else line)
-          Path('/tmp/apply_1036.py').write_text('\n'.join(repaired) + '\n')
-          PY
-          python3 /tmp/apply_1036.py
-          rm -f .github/workflows/tmp-1036-resource-runner.yml
+          python3 scripts/stage_1036_resource_freeze.py
+          python3 scripts/stage_1036_orphan_expiry.py
 
+          rm -f .github/workflows/tmp-1036-resource-audit.yml
+          rm -f .github/workflows/tmp-1036-resource-implement.yml
+          rm -f .github/workflows/tmp-1036-resource-runner.yml
+          rm -f scripts/stage_1036_resource_freeze.py
+          rm -f scripts/stage_1036_orphan_expiry.py
+
+          cargo fmt --all
           cargo fmt --all -- --check
-          cargo check --locked -p pulsedag-core -p pulsedag-storage -p pulsedag-rpc
-          cargo test --locked -p pulsedag-core mempool_resource_v1 --lib
-          cargo test --locked -p pulsedag-core mempool_admission_v3 --lib
+          cargo check --locked -p pulsedag-core -p pulsedag-storage -p pulsedag-rpc -p pulsedag-p2p -p pulsedagd
+          cargo test --locked -p pulsedag-core --test mempool_resource_freeze
+          cargo test --locked -p pulsedag-core
           cargo test --locked -p pulsedag-storage --test mempool_expiry_persistence
-          cargo test --locked -p pulsedag-rpc policy --lib
+          cargo test --locked -p pulsedag-storage --test mempool_resource_recovery
+          cargo test --locked -p pulsedag-rpc oversized_resource_rejection_is_stable_and_not_transient_mempool_full --lib
+          cargo test --locked -p pulsedag-p2p production_canonical_tx_ceiling_fits_frozen_p2p_tx_wire_ceiling_v1_v2_v3 --lib
+          cargo clippy --locked -p pulsedag-core -p pulsedag-storage -p pulsedag-rpc -p pulsedag-p2p -p pulsedagd --all-targets -- -D warnings
           git diff --check
+
           test ! -e .github/workflows/tmp-1036-resource-audit.yml
           test ! -e .github/workflows/tmp-1036-resource-implement.yml
           test ! -e .github/workflows/tmp-1036-resource-runner.yml
+          test ! -e scripts/stage_1036_resource_freeze.py
+          test ! -e scripts/stage_1036_orphan_expiry.py
 
           git config user.name 'kalekoi'
           git config user.email 'hermida.prada@gmail.com'
