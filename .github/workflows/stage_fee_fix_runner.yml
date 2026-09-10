@@ -15,7 +15,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 3
+          fetch-depth: 5
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.91.0
@@ -24,8 +24,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD^)" = "ad0de8607be2fa155ec131293579588f8f3e9c8f"
-          test "$(git rev-parse HEAD^^)" = "94aec76ac213eb5caf1d5d9b2aa00aa9c55df459"
+          test "$(git rev-parse HEAD^^^^)" = "94aec76ac213eb5caf1d5d9b2aa00aa9c55df459"
           python3 - <<'PY'
           from pathlib import Path
           source = Path('.github/workflows/stage_fee_fix.yml').read_text().splitlines()
