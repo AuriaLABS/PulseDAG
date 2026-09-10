@@ -8,6 +8,7 @@ use pulsedag_core::{
     accept_transaction_with_mempool_policy_v3,
     accept_transaction_with_mempool_policy_v3_for_protocol, compute_submission_id_v2,
     mempool_policy_rejection_code_from_reason_v3, mempool_policy_rejection_detail_v3,
+    mempool_resource_rejection_code_from_reason_v1, mempool_resource_rejection_detail_v1,
     tx_protocol::resolve_transaction_validation_path, AcceptSource, ChainState, MempoolPolicyV3,
     ProtocolActivationIdentity, PulseError, TransactionValidationPath, TxAcceptanceResult,
 };
@@ -152,6 +153,9 @@ fn classified_rejection(
     result: &TxAcceptanceResult,
 ) -> ApiResponse<serde_json::Value> {
     let reason = rejection_reason(result);
+    if let Some(code) = mempool_resource_rejection_code_from_reason_v1(&reason) {
+        return ApiResponse::err(code, mempool_resource_rejection_detail_v1(&reason));
+    }
     if let Some(code) = mempool_policy_rejection_code_from_reason_v3(&reason) {
         let detail = mempool_policy_rejection_detail_v3(&reason);
         if matches!(
@@ -875,5 +879,30 @@ mod tests {
             json["observed_max_fee_rate_per_kb"],
             serde_json::Value::String(u128::MAX.to_string())
         );
+    }
+}
+
+#[cfg(test)]
+mod production_resource_rejection_tests {
+    use super::*;
+
+    #[test]
+    fn oversized_resource_rejection_is_stable_and_not_transient_mempool_full() {
+        let chain = pulsedag_core::genesis::init_chain_state("rpc-resource-code".to_string());
+        let transaction = pulsedag_core::types::Transaction {
+            txid: "oversized-rpc".to_string(),
+            version: pulsedag_core::TRANSACTION_VERSION_V1,
+            inputs: Vec::new(),
+            outputs: Vec::new(),
+            fee: 1,
+            nonce: 1,
+        };
+        let result = TxAcceptanceResult::Rejected(
+            pulsedag_core::mempool_resource_rejection_reason_v1(32_769, 32_768),
+        );
+        let response = classified_rejection(&transaction, &chain, None, &result);
+        let error = response.error.expect("resource rejection error");
+        assert_eq!(error.code, "MEMPOOL_RESOURCE_TX_TOO_LARGE");
+        assert!(error.classification.is_none());
     }
 }

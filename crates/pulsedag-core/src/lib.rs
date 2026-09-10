@@ -14,6 +14,7 @@ pub mod mempool;
 pub mod mempool_admission_v3;
 pub mod mempool_protocol;
 pub mod mempool_replacement_v3;
+pub mod mempool_resource_v1;
 pub mod mempool_v3;
 pub mod mined_block_v2;
 pub mod mining;
@@ -174,7 +175,8 @@ pub use apply::{
 
 pub use mempool::{
     canonical_mempool_txids, combined_pressure_tier, mempool_pressure_bps, pressure_tier_from_bps,
-    reconcile_mempool, MempoolPressureTier, MempoolReconcileResult,
+    prune_expired_mempool, reconcile_mempool, MempoolExpiryResult, MempoolPressureTier,
+    MempoolReconcileResult,
 };
 pub use mempool_admission_v3::{
     accept_transaction_with_mempool_policy_v3,
@@ -187,6 +189,16 @@ pub use mempool_protocol::reconcile_mempool_for_protocol;
 pub use mempool_replacement_v3::{
     assess_mempool_replacement_v3, MempoolReplacementAssessmentV3,
     MEMPOOL_REPLACEMENT_ASSESSMENT_V3_VERSION,
+};
+pub use mempool_resource_v1::{
+    assess_production_transaction_resources_v1, canonical_resource_survivors_v1,
+    mempool_resource_rejection_code_from_reason_v1, mempool_resource_rejection_detail_v1,
+    mempool_resource_rejection_reason_v1, normalize_production_mempool_resources_v1,
+    MempoolResourceAssessmentErrorV1, MempoolResourceNormalizationV1, MempoolResourcePolicyV1,
+    MEMPOOL_RESOURCE_POLICY_V1_VERSION, MEMPOOL_RESOURCE_TX_TOO_LARGE_CODE,
+    MEMPOOL_RESOURCE_V1_MAX_AGE_BLOCKS, MEMPOOL_RESOURCE_V1_MAX_CANONICAL_TX_BYTES,
+    MEMPOOL_RESOURCE_V1_MAX_ORPHANS, MEMPOOL_RESOURCE_V1_MAX_SPENT_OUTPOINTS,
+    MEMPOOL_RESOURCE_V1_MAX_TRANSACTIONS,
 };
 pub use mempool_v3::{
     admission_order_key_v3, canonical_transaction_size_for_mempool_v3, fee_rate_v3, FeeRateV3,
