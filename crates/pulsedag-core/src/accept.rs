@@ -6,6 +6,7 @@ use crate::{
         record_mempool_admission_height, MEMPOOL_PRESSURE_HIGH_BPS, MEMPOOL_PRESSURE_SATURATED_BPS,
     },
     mempool_protocol::reconcile_mempool_for_protocol,
+    mempool_v3::MempoolPolicyV3,
     pow_validation_result, selected_pow_name,
     state::ChainState,
     types::{Block, Transaction},
@@ -435,6 +436,7 @@ fn promote_ready_orphans(
     state: &mut ChainState,
     source: AcceptSource,
     validation: TransactionAdmissionValidation<'_>,
+    policy: Option<MempoolPolicyV3>,
 ) {
     loop {
         let mut ready = state
@@ -460,6 +462,50 @@ fn promote_ready_orphans(
                 continue;
             };
             remove_orphan_transaction(&txid, state);
+
+            if let Some(policy) = policy {
+                let result = match validation {
+                    TransactionAdmissionValidation::LegacyV1 => {
+                        crate::mempool_admission_v3::accept_transaction_with_mempool_policy_v3(
+                            tx,
+                            state,
+                            source,
+                            policy,
+                        )
+                    }
+                    TransactionAdmissionValidation::Protocol(identity) => {
+                        crate::mempool_admission_v3::accept_transaction_with_mempool_policy_v3_for_protocol(
+                            tx,
+                            state,
+                            source,
+                            identity,
+                            policy,
+                        )
+                    }
+                };
+                match result {
+                    TxAcceptanceResult::Accepted => {
+                        state.mempool.counters.orphan_promoted_total = state
+                            .mempool
+                            .counters
+                            .orphan_promoted_total
+                            .saturating_add(1);
+                        promoted_any = true;
+                    }
+                    TxAcceptanceResult::Orphan => {
+                        // The admission path has already parked the transaction again.
+                    }
+                    _ => {
+                        state.mempool.counters.orphan_dropped_total = state
+                            .mempool
+                            .counters
+                            .orphan_dropped_total
+                            .saturating_add(1);
+                    }
+                }
+                continue;
+            }
+
             let result = match validation {
                 TransactionAdmissionValidation::LegacyV1 => {
                     accept_transaction(tx.clone(), state, source)
@@ -478,7 +524,6 @@ fn promote_ready_orphans(
                     promoted_any = true;
                 }
                 Err(PulseError::UtxoNotFound) => {
-                    // Became unresolved again due to competing promotion; park back as orphan.
                     store_orphan_transaction(tx, state);
                 }
                 Err(_) => {
@@ -579,6 +624,7 @@ pub fn accept_transaction_with_result(
         state,
         source,
         TransactionAdmissionValidation::LegacyV1,
+        None,
     )
 }
 
@@ -599,6 +645,43 @@ pub fn accept_transaction_with_result_for_protocol(
         state,
         source,
         TransactionAdmissionValidation::Protocol(identity),
+        None,
+    )
+}
+
+pub(crate) fn accept_transaction_with_result_with_mempool_policy_context(
+    tx: Transaction,
+    state: &mut ChainState,
+    source: AcceptSource,
+    policy: MempoolPolicyV3,
+) -> TxAcceptanceResult {
+    accept_transaction_with_result_internal(
+        tx,
+        state,
+        source,
+        TransactionAdmissionValidation::LegacyV1,
+        Some(policy),
+    )
+}
+
+pub(crate) fn accept_transaction_with_result_for_protocol_with_mempool_policy_context(
+    tx: Transaction,
+    state: &mut ChainState,
+    source: AcceptSource,
+    identity: &crate::protocol::ProtocolActivationIdentity,
+    policy: MempoolPolicyV3,
+) -> TxAcceptanceResult {
+    if let Err(err) = preflight_protocol_transaction(&tx, state, identity) {
+        state.mempool.counters.rejected_total =
+            state.mempool.counters.rejected_total.saturating_add(1);
+        return classify_tx_validation_error(err);
+    }
+    accept_transaction_with_result_internal(
+        tx,
+        state,
+        source,
+        TransactionAdmissionValidation::Protocol(identity),
+        Some(policy),
     )
 }
 
@@ -607,6 +690,7 @@ fn accept_transaction_with_result_internal(
     state: &mut ChainState,
     source: AcceptSource,
     validation: TransactionAdmissionValidation<'_>,
+    promotion_policy: Option<MempoolPolicyV3>,
 ) -> TxAcceptanceResult {
     if mempool_needs_reconcile(state) {
         let reconcile_result = match validation {
@@ -793,7 +877,7 @@ fn accept_transaction_with_result_internal(
     record_mempool_admission_height(&tx.txid, state);
     state.mempool.transactions.insert(tx.txid.clone(), tx);
     state.mempool.counters.accepted_total = state.mempool.counters.accepted_total.saturating_add(1);
-    promote_ready_orphans(state, source, validation);
+    promote_ready_orphans(state, source, validation, promotion_policy);
     TxAcceptanceResult::Accepted
 }
 
