@@ -1,0 +1,57 @@
+name: tmp-1036-resource-runner
+
+on:
+  push:
+    branches:
+      - codex/1036-production-resource-expiry-freeze
+
+permissions:
+  contents: write
+
+jobs:
+  stage:
+    if: github.event.head_commit.message == 'ci: run production mempool resource freeze staging'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt,clippy
+      - name: Recover and execute guarded staging script
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          source = Path('.github/workflows/tmp-1036-resource-implement.yml').read_text()
+          marker = "          python3 <<'PY'\n"
+          start = source.index(marker) + len(marker)
+          end = source.index("\n          PY\n", start)
+          body = source[start:end]
+          repaired = []
+          for line in body.splitlines():
+              repaired.append(line[10:] if line.startswith('          ') else line)
+          Path('/tmp/apply_1036.py').write_text('\n'.join(repaired) + '\n')
+          PY
+          python3 /tmp/apply_1036.py
+          rm -f .github/workflows/tmp-1036-resource-runner.yml
+
+          cargo fmt --all -- --check
+          cargo check --locked -p pulsedag-core -p pulsedag-storage -p pulsedag-rpc
+          cargo test --locked -p pulsedag-core mempool_resource_v1 --lib
+          cargo test --locked -p pulsedag-core mempool_admission_v3 --lib
+          cargo test --locked -p pulsedag-storage --test mempool_expiry_persistence
+          cargo test --locked -p pulsedag-rpc policy --lib
+          git diff --check
+          test ! -e .github/workflows/tmp-1036-resource-audit.yml
+          test ! -e .github/workflows/tmp-1036-resource-implement.yml
+          test ! -e .github/workflows/tmp-1036-resource-runner.yml
+
+          git config user.name 'kalekoi'
+          git config user.email 'hermida.prada@gmail.com'
+          git add -A
+          git commit -m 'core: freeze production mempool resource and expiry policy'
+          git push --force-with-lease origin HEAD:codex/1036-production-resource-expiry-freeze
