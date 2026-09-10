@@ -35,7 +35,16 @@ jobs:
           repaired = []
           for line in body.splitlines():
               repaired.append(line[10:] if line.startswith('          ') else line)
-          Path('/tmp/apply_1036.py').write_text('\n'.join(repaired) + '\n')
+          script = '\n'.join(repaired) + '\n'
+
+          # #1090 changed classified_rejection to take tx/chain/identity/result.
+          # Drop only the obsolete replacement from the recovered materializer;
+          # the live signature is patched explicitly after materialization.
+          needle = "replace_once(\n    'crates/pulsedag-rpc/src/handlers/tx_protocol.rs',\n    '''fn classified_rejection(reason: String)"
+          obsolete_start = script.index(needle)
+          obsolete_end = script.index("\n\n# /policy exposes", obsolete_start)
+          script = script[:obsolete_start] + script[obsolete_end:]
+          Path('/tmp/apply_1036.py').write_text(script)
 
           # #1090's final tx_protocol import block is broader than the staging
           # anchor used by the original materializer. Split the two policy
@@ -51,6 +60,18 @@ jobs:
           PY
 
           python3 /tmp/apply_1036.py
+
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('crates/pulsedag-rpc/src/handlers/tx_protocol.rs')
+          text = p.read_text()
+          old = '''    let reason = rejection_reason(result);\n    if let Some(code) = mempool_policy_rejection_code_from_reason_v3(&reason) {'''
+          new = '''    let reason = rejection_reason(result);\n    if let Some(code) = mempool_resource_rejection_code_from_reason_v1(&reason) {\n        let detail = mempool_resource_rejection_detail_v1(&reason);\n        return ApiResponse::err(code, detail);\n    }\n    if let Some(code) = mempool_policy_rejection_code_from_reason_v3(&reason) {'''
+          if text.count(old) != 1:
+              raise SystemExit(f'classified_rejection guard mismatch: {text.count(old)}')
+          p.write_text(text.replace(old, new, 1))
+          PY
+
           rm -f .github/workflows/tmp-1036-resource-v2.yml
 
           cargo fmt --all -- --check
