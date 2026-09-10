@@ -1,0 +1,395 @@
+name: tmp-1036-resource-final-verify
+
+on:
+  push:
+    branches:
+      - ci/1036-resource-final-verify-a67c437
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      CANDIDATE_SHA: a67c437f66c81f4d90094ff837c1c36680ec2e84
+      CANDIDATE_TREE: 9fd3109211747b4368e5c21ee66a328720004ee3
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: a67c437f66c81f4d90094ff837c1c36680ec2e84
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt,clippy
+
+      - name: Assert exact candidate and formatting
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          test "$(git rev-parse HEAD^{tree})" = "$CANDIDATE_TREE"
+          cargo fmt --all -- --check
+          git diff --check
+          test -z "$(git status --porcelain)"
+
+      - name: Inject exact-gate regression harness
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > crates/pulsedag-core/tests/resource_policy_exact_gate.rs <<'RS'
+          use ed25519_dalek::{Signer, SigningKey};
+          use pulsedag_core::{
+              accept_transaction_with_mempool_policy_v3,
+              accept_transaction_with_mempool_policy_v3_for_protocol, address_from_public_key,
+              canonical_transaction_size_for_resource_v1, compute_txid, compute_txid_v2,
+              mempool_resource_rejection_code_from_reason_v1, signing_message, signing_message_v2,
+              validate_transaction_for_protocol, AcceptSource, MempoolPolicyV3,
+              ProtocolActivationIdentity, Transaction, TxAcceptanceResult, TxInput, TxOutput, Utxo,
+              OutPoint, TRANSACTION_VERSION_V1, TRANSACTION_VERSION_V2,
+          };
+          use pulsedag_core::ordering_v2::GHOSTDAG_V1_ORDERING_VERSION;
+          use pulsedag_core::validation::validate_transaction;
+
+          fn signing_key(seed: u8) -> SigningKey {
+              SigningKey::from_bytes(&[seed; 32])
+          }
+
+          fn fund(
+              state: &mut pulsedag_core::ChainState,
+              key: &SigningKey,
+              funding: &str,
+              amount: u64,
+          ) -> OutPoint {
+              let public_key = hex::encode(key.verifying_key().to_bytes());
+              let address = address_from_public_key(&public_key);
+              let outpoint = OutPoint {
+                  txid: funding.to_string(),
+                  index: 0,
+              };
+              state.utxo.utxos.insert(
+                  outpoint.clone(),
+                  Utxo {
+                      outpoint: outpoint.clone(),
+                      address: address.clone(),
+                      amount,
+                      coinbase: false,
+                      height: 0,
+                  },
+              );
+              state
+                  .utxo
+                  .address_index
+                  .entry(address)
+                  .or_default()
+                  .push(outpoint.clone());
+              outpoint
+          }
+
+          fn oversized_v1(state: &mut pulsedag_core::ChainState) -> Transaction {
+              let key = signing_key(71);
+              let public_key = hex::encode(key.verifying_key().to_bytes());
+              let outpoint = fund(state, &key, "resource-v1-funding", 10);
+              let mut tx = Transaction {
+                  txid: String::new(),
+                  version: TRANSACTION_VERSION_V1,
+                  inputs: vec![TxInput {
+                      previous_output: outpoint,
+                      public_key,
+                      signature: String::new(),
+                  }],
+                  outputs: vec![TxOutput {
+                      address: "r".repeat(70_000),
+                      amount: 9,
+                  }],
+                  fee: 1,
+                  nonce: 71,
+              };
+              let message = signing_message(&tx);
+              tx.inputs[0].signature = hex::encode(key.sign(&message).to_bytes());
+              tx.txid = compute_txid(&tx);
+              tx
+          }
+
+          fn activated_identity(state: &pulsedag_core::ChainState) -> ProtocolActivationIdentity {
+              ProtocolActivationIdentity::activated_v2(
+                  state.chain_id.clone(),
+                  state.dag.genesis_hash.clone(),
+                  GHOSTDAG_V1_ORDERING_VERSION,
+              )
+          }
+
+          fn oversized_v2(state: &mut pulsedag_core::ChainState) -> Transaction {
+              let key = signing_key(72);
+              let public_key = hex::encode(key.verifying_key().to_bytes());
+              let outpoint = fund(state, &key, "resource-v2-funding", 10);
+              let mut tx = Transaction {
+                  txid: String::new(),
+                  version: TRANSACTION_VERSION_V2,
+                  inputs: vec![TxInput {
+                      previous_output: outpoint,
+                      public_key,
+                      signature: String::new(),
+                  }],
+                  outputs: vec![TxOutput {
+                      address: "v".repeat(70_000),
+                      amount: 9,
+                  }],
+                  fee: 1,
+                  nonce: 72,
+              };
+              let message = signing_message_v2(&tx, &state.chain_id).unwrap();
+              tx.inputs[0].signature = hex::encode(key.sign(&message).to_bytes());
+              tx.txid = compute_txid_v2(&tx, &state.chain_id).unwrap();
+              tx
+          }
+
+          fn resource_code(result: &TxAcceptanceResult) -> Option<&str> {
+              match result {
+                  TxAcceptanceResult::Rejected(reason) => {
+                      mempool_resource_rejection_code_from_reason_v1(reason)
+                  }
+                  _ => None,
+              }
+          }
+
+          #[test]
+          fn consensus_valid_oversized_v1_is_resource_rejected_before_mempool_mutation() {
+              let mut state = pulsedag_core::genesis::init_chain_state("resource-exact-v1".into());
+              let tx = oversized_v1(&mut state);
+              validate_transaction(&tx, &state)
+                  .expect("oversized v1 fixture must remain consensus-valid");
+              assert!(
+                  canonical_transaction_size_for_resource_v1(&tx, &state.chain_id).unwrap()
+                      > 65_536
+              );
+              let before_rejected = state.mempool.counters.rejected_total;
+              let result = accept_transaction_with_mempool_policy_v3(
+                  tx,
+                  &mut state,
+                  AcceptSource::Rpc,
+                  MempoolPolicyV3::production_default(),
+              );
+              assert_eq!(
+                  resource_code(&result),
+                  Some("MEMPOOL_RESOURCE_V1_TRANSACTION_TOO_LARGE")
+              );
+              assert!(state.mempool.transactions.is_empty());
+              assert!(state.mempool.spent_outpoints.is_empty());
+              assert_eq!(
+                  state.mempool.counters.rejected_total,
+                  before_rejected.saturating_add(1)
+              );
+          }
+
+          #[test]
+          fn consensus_valid_oversized_v2_is_resource_rejected_before_protocol_mempool_mutation() {
+              let mut state = pulsedag_core::genesis::init_chain_state("resource-exact-v2".into());
+              let identity = activated_identity(&state);
+              let tx = oversized_v2(&mut state);
+              validate_transaction_for_protocol(&tx, &state, &identity)
+                  .expect("oversized v2 fixture must remain protocol-valid");
+              assert!(
+                  canonical_transaction_size_for_resource_v1(&tx, &state.chain_id).unwrap()
+                      > 65_536
+              );
+              let before_rejected = state.mempool.counters.rejected_total;
+              let result = accept_transaction_with_mempool_policy_v3_for_protocol(
+                  tx,
+                  &mut state,
+                  AcceptSource::P2p,
+                  &identity,
+                  MempoolPolicyV3::production_default(),
+              );
+              assert_eq!(
+                  resource_code(&result),
+                  Some("MEMPOOL_RESOURCE_V1_TRANSACTION_TOO_LARGE")
+              );
+              assert!(state.mempool.transactions.is_empty());
+              assert!(state.mempool.spent_outpoints.is_empty());
+              assert_eq!(
+                  state.mempool.counters.rejected_total,
+                  before_rejected.saturating_add(1)
+              );
+          }
+          RS
+
+          cat >> apps/pulsedagd/src/main.rs <<'RS'
+
+          #[cfg(test)]
+          mod production_p2p_resource_policy_tests {
+              use super::*;
+
+              fn oversized(version: u16, nonce: u64) -> pulsedag_core::types::Transaction {
+                  pulsedag_core::types::Transaction {
+                      txid: format!("p2p-resource-{version}-{nonce}"),
+                      version,
+                      inputs: Vec::new(),
+                      outputs: vec![pulsedag_core::types::TxOutput {
+                          address: "x".repeat(70_000),
+                          amount: 1,
+                      }],
+                      fee: 1,
+                      nonce,
+                  }
+              }
+
+              fn resource_code(result: &TxAcceptanceResult) -> Option<&str> {
+                  match result {
+                      TxAcceptanceResult::Rejected(reason) => {
+                          pulsedag_core::mempool_resource_rejection_code_from_reason_v1(reason)
+                      }
+                      _ => None,
+                  }
+              }
+
+              fn assert_resource_normalized(state: &pulsedag_core::ChainState, orphan: &str, height: u64) {
+                  let policy = pulsedag_core::MempoolResourcePolicyV1::production_default();
+                  assert_eq!(state.mempool.max_transactions, policy.max_transactions as usize);
+                  assert_eq!(state.mempool.max_spent_outpoints, policy.max_spent_outpoints as usize);
+                  assert_eq!(state.mempool.max_orphans, policy.max_orphans as usize);
+                  assert_eq!(state.mempool.orphan_admission_height.get(orphan), Some(&height));
+                  assert!(state.mempool.orphan_transactions.contains_key(orphan));
+              }
+
+              fn seed_restore_orphan(
+                  state: &mut pulsedag_core::ChainState,
+                  txid: &str,
+                  version: u16,
+                  height: u64,
+              ) {
+                  state.dag.best_height = height;
+                  state.mempool.max_transactions = 7;
+                  state.mempool.max_spent_outpoints = 9;
+                  state.mempool.max_orphans = 3;
+                  state.mempool.orphan_transactions.insert(
+                      txid.to_string(),
+                      pulsedag_core::types::Transaction {
+                          txid: txid.to_string(),
+                          version,
+                          inputs: Vec::new(),
+                          outputs: vec![pulsedag_core::types::TxOutput {
+                              address: "pulse1restore".to_string(),
+                              amount: 1,
+                          }],
+                          fee: 1,
+                          nonce: height,
+                      },
+                  );
+              }
+
+              #[test]
+              fn inbound_p2p_resource_limit_is_pre_mutation_for_legacy_and_activated_v2() {
+                  let mut legacy = pulsedag_core::genesis::init_chain_state("p2p-resource-v1".into());
+                  let legacy_result = accept_inbound_p2p_transaction_with_result(
+                      oversized(pulsedag_core::TRANSACTION_VERSION_V1, 1),
+                      &mut legacy,
+                      None,
+                  );
+                  assert_eq!(
+                      resource_code(&legacy_result),
+                      Some("MEMPOOL_RESOURCE_V1_TRANSACTION_TOO_LARGE")
+                  );
+                  assert!(legacy.mempool.transactions.is_empty());
+                  assert!(legacy.mempool.orphan_transactions.is_empty());
+                  assert!(legacy.mempool.spent_outpoints.is_empty());
+
+                  let mut activated = pulsedag_core::genesis::init_chain_state("p2p-resource-v2".into());
+                  let identity = pulsedag_core::ProtocolActivationIdentity::activated_v2(
+                      activated.chain_id.clone(),
+                      activated.dag.genesis_hash.clone(),
+                      pulsedag_core::ordering_v2::GHOSTDAG_V1_ORDERING_VERSION,
+                  );
+                  let activated_result = accept_inbound_p2p_transaction_with_result(
+                      oversized(pulsedag_core::TRANSACTION_VERSION_V2, 2),
+                      &mut activated,
+                      Some(&identity),
+                  );
+                  assert_eq!(
+                      resource_code(&activated_result),
+                      Some("MEMPOOL_RESOURCE_V1_TRANSACTION_TOO_LARGE")
+                  );
+                  assert!(activated.mempool.transactions.is_empty());
+                  assert!(activated.mempool.orphan_transactions.is_empty());
+                  assert!(activated.mempool.spent_outpoints.is_empty());
+              }
+
+              #[test]
+              fn startup_reconcile_paths_seed_restore_age_and_freeze_resource_caps() {
+                  let mut legacy = pulsedag_core::genesis::init_chain_state("startup-resource-v1".into());
+                  seed_restore_orphan(
+                      &mut legacy,
+                      "legacy-restored-orphan",
+                      pulsedag_core::TRANSACTION_VERSION_V1,
+                      77,
+                  );
+                  reconcile_mempool_with_production_policy_v3(&mut legacy);
+                  assert_resource_normalized(&legacy, "legacy-restored-orphan", 77);
+
+                  let mut activated = pulsedag_core::genesis::init_chain_state("startup-resource-v2".into());
+                  seed_restore_orphan(
+                      &mut activated,
+                      "activated-restored-orphan",
+                      pulsedag_core::TRANSACTION_VERSION_V2,
+                      88,
+                  );
+                  let identity = pulsedag_core::ProtocolActivationIdentity::activated_v2(
+                      activated.chain_id.clone(),
+                      activated.dag.genesis_hash.clone(),
+                      pulsedag_core::ordering_v2::GHOSTDAG_V1_ORDERING_VERSION,
+                  );
+                  reconcile_mempool_with_production_policy_v3_for_protocol(&mut activated, &identity)
+                      .expect("activated-v2 startup resource reconcile");
+                  assert_resource_normalized(&activated, "activated-restored-orphan", 88);
+              }
+          }
+          RS
+
+      - name: Directed oversize, P2P and startup resource gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked -p pulsedag-core --test resource_policy_exact_gate -- --nocapture
+          cargo test --locked -p pulsedagd production_p2p_resource_policy_tests -- --nocapture
+          cargo test --locked -p pulsedagd production_p2p_fee_policy_tests -- --nocapture
+
+      - name: Restore exact candidate after injected tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          git checkout -- apps/pulsedagd/src/main.rs
+          rm -f crates/pulsedag-core/tests/resource_policy_exact_gate.rs
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          test "$(git rev-parse HEAD^{tree})" = "$CANDIDATE_TREE"
+          test -z "$(git status --porcelain)"
+
+      - name: Existing exact-candidate regression gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked -p pulsedag-core mempool_resource_v1 --lib
+          cargo test --locked -p pulsedag-core --test mempool_package_eviction_equivalence
+          cargo test --locked -p pulsedag-core --test task30_stale_tx_admission
+          cargo test --locked -p pulsedag-storage --test mempool_expiry_persistence
+          cargo test --locked -p pulsedag-rpc policy --lib
+
+      - name: Full touched-domain suites
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked -p pulsedag-core
+          cargo test --locked -p pulsedag-storage
+          cargo check --locked -p pulsedag-rpc -p pulsedagd
+
+      - name: Clippy and final exact-tree check
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo clippy --locked -p pulsedag-core -p pulsedag-storage -p pulsedag-rpc -p pulsedagd --all-targets -- -D warnings -A clippy::uninlined-format-args
+          cargo fmt --all -- --check
+          git diff --check
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          test "$(git rev-parse HEAD^{tree})" = "$CANDIDATE_TREE"
+          test -z "$(git status --porcelain)"
