@@ -35,7 +35,7 @@ All unsupported versions, mismatched branches, malformed signer sets, unsatisfie
 
 `CovenantUtxoAttachmentV1` is deliberately separate from the historical `Utxo` structure. It carries only a version, a fixed 32-byte canonical commitment to the exact UTXO, and a `CovenantDescriptorV1`.
 
-The UTXO commitment is domain-separated by `PulseDAG:covenant-utxo:v1` and binds the existing outpoint txid/index, address, amount, coinbase flag, and creation height. Spend validation recomputes that commitment before covenant evaluation. Cross-UTXO substitution therefore fails before a covenant branch can authorize the spend.
+The UTXO commitment is domain-separated by `PulseDAG:covenant-utxo:v1` and binds the existing outpoint txid/index, address, amount, coinbase flag, and creation height. Spend validation recomputes that commitment before covenant evaluation. Cross-UTO substitution therefore fails before a covenant branch can authorize the spend.
 
 The attachment itself is independently domain-separated by `PulseDAG:covenant-utxo-attachment:v1` and commits the attachment version, UTXO commitment, covenant descriptor version/kind/program commitment, and witness budget. This keeps Covenant v1 replay-stable without adding fields to legacy transaction or UTXO serialization.
 
@@ -83,6 +83,10 @@ Changing proof system, proof-system version, verifier revision, or minimum accep
 - Sample state-transition commitment bound to the #1102 Contract v3 golden envelope: `7ac186b70e972ae732e0c88a1365fae7529ad2e345dd3f0396e6c7474d8b3fcd`.
 
 These supplement, not replace, the #1102 identity/envelope/signing/txid vectors.
+
+## Validation toolchain
+
+The Rust sources in this slice are normalized with `rustfmt` from Rust 1.91.0, matching the repository Lint workflow. This records toolchain alignment only; it does not alter any frozen encoding, commitment, resource, or execution semantics.
 
 ## Activation and persistence boundary
 
