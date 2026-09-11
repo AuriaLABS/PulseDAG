@@ -120,7 +120,7 @@ fi
 echo "== External standalone miner one-shot probe =="
 (
   cd "${ROOT_DIR}"
-  cargo run --quiet -p pulsedag-miner -- \
+  cargo run --quiet -p pulsedag-miner --bin pulsedag-miner -- \
     --node "${NODE_URL}" \
     --miner-address "${MINER_ADDRESS}" \
     --threads "${THREADS}" \
@@ -131,5 +131,5 @@ cat <<EOF
 Smoke completed.
 
 Suggested continuous loop command (external standalone miner, no pool semantics):
-cargo run -p pulsedag-miner -- --node ${NODE_URL} --miner-address ${MINER_ADDRESS} --threads ${THREADS} --max-tries ${MAX_TRIES} --loop --sleep-ms ${SLEEP_MS}
+cargo run -p pulsedag-miner --bin pulsedag-miner -- --node ${NODE_URL} --miner-address ${MINER_ADDRESS} --threads ${THREADS} --max-tries ${MAX_TRIES} --loop --sleep-ms ${SLEEP_MS}
 EOF
