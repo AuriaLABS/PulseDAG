@@ -9,7 +9,7 @@ use super::{
     PROTOCOL_SNAPSHOT_BUNDLE_FORMAT_VERSION, STORAGE_SCHEMA_VERSION,
 };
 
-pub const FAST_SYNC_SNAPSHOT_MANIFEST_VERSION: u32 = 1;
+pub const FAST_SYNC_SNAPSHOT_MANIFEST_VERSION: u32 = 2;
 
 /// Versioned, deterministic bootstrap contract carried beside the existing
 /// protocol-bound snapshot bundle.
@@ -17,7 +17,9 @@ pub const FAST_SYNC_SNAPSHOT_MANIFEST_VERSION: u32 = 1;
 /// The manifest intentionally commits only to deterministic protocol/storage
 /// identity and canonical state/DAG digests. Wall-clock export time is not part
 /// of the commitment surface, so equivalent state produces equivalent manifest
-/// commitments across nodes.
+/// commitments across nodes. Manifest v2 upgrades `state_commitment` to the
+/// integrated `PulseDAG:state-digest:v2` surface, which binds both UTXO and
+/// programmable `ChainState::contracts` state.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct FastSyncSnapshotManifestV1 {
