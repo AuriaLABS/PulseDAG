@@ -4,10 +4,11 @@ Status: consensus-facing freeze for the second inactive #1041 slice. Nothing in 
 
 ## Scope
 
-This slice builds on the Contract Transaction v3 foundation and freezes two additional deterministic boundaries owned by #1041:
+This slice builds on the Contract Transaction v3 foundation and freezes three additional deterministic boundaries owned by #1041:
 
-1. bounded UTXO Covenant v1 program/witness semantics for timelock, vault, multisig, escrow, atomic swap, and payment channel primitives; and
-2. a Contract State Transition v1 evidence object binding protocol identity, Contract Transaction v3 txid, prior/next state commitments, effect commitments, replay nonce, actual resource usage, and proof evidence metadata.
+1. bounded UTXO Covenant v1 program/witness semantics for timelock, vault, multisig, escrow, atomic swap, and payment channel primitives;
+2. a covenant-to-UTXO attachment/spend contract that binds those semantics to the exact legacy UTXO contents without modifying the legacy `Utxo` shape; and
+3. a Contract State Transition v1 evidence object binding protocol identity, Contract Transaction v3 txid, prior/next state commitments, effect commitments, replay nonce, actual resource usage, and proof evidence metadata.
 
 PulseScript/compiler/VM execution remains #1042 scope. No live transaction path, wallet format, address format, fee policy, storage schema, snapshot schema, or RPC is activated by this slice.
 
@@ -29,6 +30,14 @@ All programs are version 1, domain-separated by `PulseDAG:covenant-program:v1`, 
 - **Payment channel** — cooperative close by both roles; settlement signer may settle the exactly committed state/sequence during the settlement window; refund signer may refund at/after the refund height.
 
 All unsupported versions, mismatched branches, malformed signer sets, unsatisfied locks, invalid hashlocks, state mismatches, and budget overruns fail closed with stable integer rejection codes.
+
+## UTXO binding
+
+`CovenantUtxoAttachmentV1` is deliberately separate from the historical `Utxo` structure. It carries only a version, a fixed 32-byte canonical commitment to the exact UTXO, and a `CovenantDescriptorV1`.
+
+The UTXO commitment is domain-separated by `PulseDAG:covenant-utxo:v1` and binds the existing outpoint txid/index, address, amount, coinbase flag, and creation height. Spend validation recomputes that commitment before covenant evaluation. Cross-UTXO substitution therefore fails before a covenant branch can authorize the spend.
+
+The attachment itself is independently domain-separated by `PulseDAG:covenant-utxo-attachment:v1` and commits the attachment version, UTXO commitment, covenant descriptor version/kind/program commitment, and witness budget. This keeps Covenant v1 replay-stable without adding fields to legacy transaction or UTXO serialization.
 
 ## Deterministic covenant resource accounting
 
@@ -67,6 +76,8 @@ Changing proof system, proof-system version, verifier revision, or minimum accep
 ## Frozen vectors
 
 - Multisig program commitment (`2-of-3`, signer ids `01*32`, `02*32`, `03*32`): `eece867dffa1c1f3b124c224a326457604ce0571640fa821f63d4d649f7163fb`.
+- Sample UTXO commitment (txid `11*32`, index `7`, address `pulse1covenanttest`, amount `42000`, non-coinbase, height `123`): `d963255da4b2a57170093a53ae4fd332e679a5642dfae4dab0f3942b48dc3cd1`.
+- Sample timelock attachment commitment (signer `01*32`, height `200`, witness budget `4096`): `e2ea41ec14721200fd59643c6cecd3505172548a2c572756215e475a0bb85a9b`.
 - Empty write-set commitment: `e8181adc9a6964ee50c2afe73b5f6ca8c3945284b8016af8dac0e38383e11b1d`.
 - Empty event-set commitment: `f5e7cd6592dcb69450651ce5e9e63b59ba789243057f371ca760b3180aac1a78`.
 - Sample state-transition commitment bound to the #1102 Contract v3 golden envelope: `7ac186b70e972ae732e0c88a1365fae7529ad2e345dd3f0396e6c7474d8b3fcd`.
@@ -75,7 +86,7 @@ These supplement, not replace, the #1102 identity/envelope/signing/txid vectors.
 
 ## Activation and persistence boundary
 
-The evaluator and transition validator are pure inactive primitives. This slice deliberately does not:
+The evaluator, UTXO attachment validator, and transition validator are pure inactive primitives. This slice deliberately does not:
 
 - add covenant fields to the legacy `Transaction`, `TxInput`, `TxOutput`, or `Utxo` structs;
 - modify v1/v2 transaction bytes, signing messages, txids, or PQC v3 behavior;
