@@ -72,11 +72,49 @@ pub fn ordered_dag_digest(state: &ChainState) -> String {
     )
 }
 
-/// Digest of the canonical UTXO/state root.
+fn contract_runtime_state_digest_v1(state: &ChainState) -> String {
+    let contracts = &state.contracts;
+    let config = &contracts.config;
+    let mut hasher = Sha256::new();
+    hasher.update(b"PulseDAG:contract-runtime-state-digest:v1");
+    hasher.update([u8::from(config.enabled)]);
+
+    let vm_version = config.vm_version.as_bytes();
+    let vm_version_len =
+        u64::try_from(vm_version.len()).expect("contract vm version length exceeds u64::MAX");
+    hasher.update(vm_version_len.to_le_bytes());
+    hasher.update(vm_version);
+    hasher.update(config.max_gas_per_tx.to_le_bytes());
+    hasher.update(config.max_contract_size_bytes.to_le_bytes());
+    hasher.update(config.max_storage_key_bytes.to_le_bytes());
+    hasher.update(config.max_storage_value_bytes.to_le_bytes());
+    hasher.update(contracts.contract_count.to_le_bytes());
+    hasher.update(contracts.storage_slots.to_le_bytes());
+    hasher.update(contracts.receipt_count.to_le_bytes());
+    match contracts.last_receipt_id.as_deref() {
+        None => hasher.update([0]),
+        Some(receipt_id) => {
+            hasher.update([1]);
+            let receipt_id = receipt_id.as_bytes();
+            let receipt_id_len = u64::try_from(receipt_id.len())
+                .expect("contract receipt id length exceeds u64::MAX");
+            hasher.update(receipt_id_len.to_le_bytes());
+            hasher.update(receipt_id);
+        }
+    }
+    hex::encode(hasher.finalize())
+}
+
+/// Digest of the canonical integrated chain state used by snapshot/replay
+/// commitments. v2 binds both the deterministic UTXO root and the complete
+/// programmable `ChainState::contracts` surface.
 pub fn state_digest(state: &ChainState) -> Result<String, PulseError> {
     Ok(digest_parts(
-        "PulseDAG:state-digest:v1",
-        [state.utxo.compute_state_root()?],
+        "PulseDAG:state-digest:v2",
+        [
+            state.utxo.compute_state_root()?,
+            contract_runtime_state_digest_v1(state),
+        ],
     ))
 }
 
