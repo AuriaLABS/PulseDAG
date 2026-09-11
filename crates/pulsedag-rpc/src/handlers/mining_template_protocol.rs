@@ -469,7 +469,8 @@ pub async fn post_mining_template<S: RpcStateLike>(
 
     let path_and_legacy_identity = {
         let chain_handle = state.chain();
-        let chain = chain_handle.read().await;
+        let mut chain = chain_handle.write().await;
+        pulsedag_core::normalize_production_mempool_resources_v1(&mut chain);
         let path = match template_protocol_path(&chain, local_identity.as_ref()) {
             Ok(path) => path,
             Err(error) => {

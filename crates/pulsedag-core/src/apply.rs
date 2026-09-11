@@ -327,6 +327,7 @@ pub fn prepare_block_state(block: &Block, state: &ChainState) -> Result<ChainSta
 
     let mut working = state.clone();
     commit_block_to_state(block, &mut working)?;
+    crate::mempool_resource_v1::normalize_production_mempool_resources_v1(&mut working);
     Ok(working)
 }
 

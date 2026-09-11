@@ -22,6 +22,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 const CHAIN_STATE_KEY: &[u8] = b"chain_state";
 const MEMPOOL_ADMISSION_HEIGHT_V1_KEY: &[u8] = b"mempool_admission_height_v1";
+const MEMPOOL_ORPHAN_ADMISSION_HEIGHT_V1_KEY: &[u8] =
+    b"mempool_orphan_admission_height_v1";
 pub const STORAGE_SCHEMA_VERSION: u32 = 1;
 const STORAGE_SCHEMA_VERSION_KEY: &[u8] = b"storage_schema_version";
 const CHAIN_ID_KEY: &[u8] = b"chain_id";
@@ -1207,6 +1209,18 @@ impl Storage {
             bincode::serialize(&admission_height)
                 .map_err(|e| PulseError::StorageError(e.to_string()))?,
         );
+        let mut orphan_admission_height = BTreeMap::<Hash, u64>::new();
+        for (txid, height) in &state.mempool.orphan_admission_height {
+            if state.mempool.orphan_transactions.contains_key(txid) {
+                orphan_admission_height.insert(txid.clone(), *height);
+            }
+        }
+        batch.put_cf(
+            meta_cf,
+            MEMPOOL_ORPHAN_ADMISSION_HEIGHT_V1_KEY,
+            bincode::serialize(&orphan_admission_height)
+                .map_err(|e| PulseError::StorageError(e.to_string()))?,
+        );
         batch.put_cf(
             meta_cf,
             STORAGE_SCHEMA_VERSION_KEY,
@@ -1246,14 +1260,47 @@ impl Storage {
             .get_cf(&cf, MEMPOOL_ADMISSION_HEIGHT_V1_KEY)
             .map_err(|e| PulseError::StorageError(e.to_string()))?
         {
-            let persisted: BTreeMap<Hash, u64> = bincode::deserialize(&sidecar).map_err(|e| {
-                PulseError::StorageError(format!(
-                    "mempool admission-height sidecar is corrupt: {e}"
-                ))
-            })?;
-            for (txid, height) in persisted {
-                if state.mempool.transactions.contains_key(&txid) {
-                    state.mempool.admission_height.insert(txid, height);
+            match bincode::deserialize::<BTreeMap<Hash, u64>>(&sidecar) {
+                Ok(persisted) => {
+                    for (txid, height) in persisted {
+                        if state.mempool.transactions.contains_key(&txid) {
+                            state.mempool.admission_height.insert(txid, height);
+                        }
+                    }
+                }
+                Err(error) => {
+                    let _ = self.append_runtime_event(
+                        "warn",
+                        "mempool_admission_height_sidecar_corrupt_recovered",
+                        &format!(
+                            "ignored corrupt optional live admission-height sidecar: {error}"
+                        ),
+                    );
+                }
+            }
+        }
+        state.mempool.orphan_admission_height.clear();
+        if let Some(sidecar) = self
+            .db
+            .get_cf(&cf, MEMPOOL_ORPHAN_ADMISSION_HEIGHT_V1_KEY)
+            .map_err(|e| PulseError::StorageError(e.to_string()))?
+        {
+            match bincode::deserialize::<BTreeMap<Hash, u64>>(&sidecar) {
+                Ok(persisted) => {
+                    for (txid, height) in persisted {
+                        if state.mempool.orphan_transactions.contains_key(&txid) {
+                            state.mempool.orphan_admission_height.insert(txid, height);
+                        }
+                    }
+                }
+                Err(error) => {
+                    let _ = self.append_runtime_event(
+                        "warn",
+                        "mempool_orphan_admission_height_sidecar_corrupt_recovered",
+                        &format!(
+                            "ignored corrupt optional orphan admission-height sidecar: {error}"
+                        ),
+                    );
                 }
             }
         }

@@ -7,9 +7,12 @@ use pulsedag_core::mempool_v3::{estimate_mempool_fee_rates_v3, MempoolFeeEstimat
 use pulsedag_core::{
     accept_transaction_with_mempool_policy_v3,
     accept_transaction_with_mempool_policy_v3_for_protocol, compute_submission_id_v2,
-    mempool_policy_rejection_code_from_reason_v3, mempool_policy_rejection_detail_v3,
     tx_protocol::resolve_transaction_validation_path, AcceptSource, ChainState, MempoolPolicyV3,
     ProtocolActivationIdentity, PulseError, TransactionValidationPath, TxAcceptanceResult,
+};
+use pulsedag_core::{
+    mempool_policy_rejection_code_from_reason_v3, mempool_policy_rejection_detail_v3,
+    mempool_resource_rejection_code_from_reason_v1, mempool_resource_rejection_detail_v1,
 };
 
 pub use super::tx_legacy::{
@@ -152,6 +155,10 @@ fn classified_rejection(
     result: &TxAcceptanceResult,
 ) -> ApiResponse<serde_json::Value> {
     let reason = rejection_reason(result);
+    if let Some(code) = mempool_resource_rejection_code_from_reason_v1(&reason) {
+        let detail = mempool_resource_rejection_detail_v1(&reason);
+        return ApiResponse::err(code, detail);
+    }
     if let Some(code) = mempool_policy_rejection_code_from_reason_v3(&reason) {
         let detail = mempool_policy_rejection_detail_v3(&reason);
         if matches!(
@@ -695,7 +702,29 @@ mod tests {
     #[tokio::test]
     async fn v2_mempool_capacity_rejection_is_machine_readable() {
         let mut chain = init_chain_state("task28-rpc-v2-mempool-full".to_string());
-        chain.mempool.max_spent_outpoints = 0;
+        let policy = MempoolPolicyV3::production_default();
+        for index in 0..policy.max_transactions {
+            let txid = format!("v2-mempool-full-existing-{index:04}");
+            chain.mempool.transactions.insert(
+                txid.clone(),
+                Transaction {
+                    txid: txid.clone(),
+                    version: TRANSACTION_VERSION_V1,
+                    inputs: Vec::new(),
+                    outputs: vec![TxOutput {
+                        address: "pulse1task28rpcfull".to_string(),
+                        amount: 1,
+                    }],
+                    fee: policy.max_transaction_fee,
+                    nonce: index,
+                },
+            );
+            chain.mempool.first_seen.insert(txid.clone(), index);
+            chain
+                .mempool
+                .admission_height
+                .insert(txid, chain.dag.best_height);
+        }
         let key = signing_key(30);
         let outpoint = fund_key(&mut chain, "v2-mempool-full-funding", &key, 10);
         let transaction =
@@ -704,15 +733,14 @@ mod tests {
         let state = test_state(chain, Some(p2p), "task28-rpc-v2-mempool-full");
 
         let Json(response) =
-            post_tx_submit(State(state), Json(SubmitTxRequest { transaction })).await;
+            post_tx_submit(State(state.clone()), Json(SubmitTxRequest { transaction })).await;
         assert!(!response.ok);
+        let error = response.error.expect("mempool capacity rejection");
+        assert_eq!(error.code, "MEMPOOL_V3_CAPACITY_BACKPRESSURE");
+        assert_eq!(error.classification.as_deref(), Some("mempool_full"));
         assert_eq!(
-            response
-                .error
-                .expect("mempool capacity rejection")
-                .classification
-                .as_deref(),
-            Some("mempool_full")
+            state.chain.read().await.mempool.transactions.len(),
+            policy.max_transactions as usize
         );
     }
 

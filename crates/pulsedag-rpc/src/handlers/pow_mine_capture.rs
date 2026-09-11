@@ -30,6 +30,7 @@ pub async fn post_pow_mine_capture<S: RpcStateLike>(
 ) -> Json<ApiResponse<PowMineCaptureData>> {
     let chain_handle = state.chain();
     let mut chain = chain_handle.write().await;
+    pulsedag_core::normalize_production_mempool_resources_v1(&mut chain);
     let height = chain.dag.best_height + 1;
     let parents = chain.dag.tips.iter().cloned().collect::<Vec<_>>();
     let reward = 50;
