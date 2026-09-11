@@ -14,9 +14,11 @@ pub const MEMPOOL_RESOURCE_EXPIRY_BOUNDARY_V1: u32 = 1;
 pub const MEMPOOL_RESOURCE_MAX_TRANSACTIONS_V1: u64 = 4_096;
 pub const MEMPOOL_RESOURCE_MAX_SPENT_OUTPOINTS_V1: u64 = 8_192;
 pub const MEMPOOL_RESOURCE_MAX_ORPHANS_V1: u64 = 512;
-// Keep the canonical mempool ceiling no larger than the real P2P transaction
-// carrier ceiling (`MAX_TX_MESSAGE_BYTES = 64 * 1024`).
+// Canonical transaction bytes and the serialized P2P transaction envelope are
+// separate resource checks. The transport ceiling is deliberately not part of
+// `MempoolResourcePolicyV1` so the frozen policy fingerprint remains unchanged.
 pub const MEMPOOL_RESOURCE_MAX_TRANSACTION_BYTES_V1: u64 = 64 * 1_024;
+pub const MEMPOOL_RESOURCE_MAX_TRANSACTION_MESSAGE_BYTES_V1: u64 = 64 * 1_024;
 pub const MEMPOOL_RESOURCE_LIVE_MAX_AGE_BLOCKS_V1: u64 = 1_440;
 pub const MEMPOOL_RESOURCE_ORPHAN_MAX_AGE_BLOCKS_V1: u64 = 1_440;
 const MEMPOOL_RESOURCE_POLICY_V1_FINGERPRINT_DOMAIN: &[u8] = b"PulseDAG:mempool-resource-policy:v1";
@@ -128,6 +130,45 @@ pub fn canonical_transaction_size_for_resource_v1(
 ) -> Result<u64, String> {
     canonical_transaction_size_for_mempool_v3(tx, chain_id)
         .map_err(|error| format!("canonical resource-size assessment failed: {error:?}"))
+}
+
+#[derive(serde::Serialize)]
+#[serde(tag = "type")]
+enum TransactionCarrierMessageV1<'a> {
+    NewTransaction {
+        chain_id: &'a str,
+        transaction: &'a Transaction,
+    },
+}
+
+pub fn transaction_message_size_for_resource_v1(
+    tx: &Transaction,
+    chain_id: &str,
+) -> Result<u64, String> {
+    let bytes = serde_json::to_vec(&TransactionCarrierMessageV1::NewTransaction {
+        chain_id,
+        transaction: tx,
+    })
+    .map_err(|error| format!("transaction carrier serialization failed: {error}"))?;
+    u64::try_from(bytes.len()).map_err(|_| "transaction carrier size overflow".to_string())
+}
+
+pub(crate) fn apply_production_mempool_resource_caps_v1(state: &mut ChainState) {
+    let policy = MempoolResourcePolicyV1::production_default();
+    state.mempool.max_transactions = policy.max_transactions as usize;
+    state.mempool.max_spent_outpoints = policy.max_spent_outpoints as usize;
+    state.mempool.max_orphans = policy.max_orphans as usize;
+}
+
+fn transaction_fits_production_resource_v1(
+    tx: &Transaction,
+    chain_id: &str,
+    policy: MempoolResourcePolicyV1,
+) -> bool {
+    canonical_transaction_size_for_resource_v1(tx, chain_id)
+        .is_ok_and(|size| size <= policy.max_transaction_bytes)
+        && transaction_message_size_for_resource_v1(tx, chain_id)
+            .is_ok_and(|size| size <= MEMPOOL_RESOURCE_MAX_TRANSACTION_MESSAGE_BYTES_V1)
 }
 
 fn live_children(state: &ChainState) -> BTreeMap<Hash, BTreeSet<Hash>> {
@@ -243,9 +284,7 @@ pub fn normalize_production_mempool_resources_v1(
     let current_height = mempool_logical_clock(state);
     let mut out = MempoolResourceNormalizationV1::default();
 
-    state.mempool.max_transactions = policy.max_transactions as usize;
-    state.mempool.max_spent_outpoints = policy.max_spent_outpoints as usize;
-    state.mempool.max_orphans = policy.max_orphans as usize;
+    apply_production_mempool_resource_caps_v1(state);
 
     let mut live_txids = state
         .mempool
@@ -296,11 +335,7 @@ pub fn normalize_production_mempool_resources_v1(
             .mempool
             .transactions
             .get(&txid)
-            .map(|tx| {
-                canonical_transaction_size_for_resource_v1(tx, &state.chain_id)
-                    .map(|size| size > policy.max_transaction_bytes)
-                    .unwrap_or(true)
-            })
+            .map(|tx| !transaction_fits_production_resource_v1(tx, &state.chain_id, policy))
             .unwrap_or(false);
         if should_remove {
             oversized_roots.push(txid);
@@ -356,11 +391,7 @@ pub fn normalize_production_mempool_resources_v1(
             .mempool
             .orphan_transactions
             .get(&txid)
-            .map(|tx| {
-                canonical_transaction_size_for_resource_v1(tx, &state.chain_id)
-                    .map(|size| size > policy.max_transaction_bytes)
-                    .unwrap_or(true)
-            })
+            .map(|tx| !transaction_fits_production_resource_v1(tx, &state.chain_id, policy))
             .unwrap_or(false);
         if oversized {
             invalid_or_oversized_orphans.push(txid);
@@ -449,11 +480,12 @@ pub fn production_mempool_resource_invariants_v1(state: &ChainState) -> bool {
     {
         return false;
     }
-    if state.mempool.transactions.values().any(|tx| {
-        canonical_transaction_size_for_resource_v1(tx, &state.chain_id)
-            .map(|size| size > policy.max_transaction_bytes)
-            .unwrap_or(true)
-    }) {
+    if state
+        .mempool
+        .transactions
+        .values()
+        .any(|tx| !transaction_fits_production_resource_v1(tx, &state.chain_id, policy))
+    {
         return false;
     }
     let live = state.mempool.transactions.keys().collect::<BTreeSet<_>>();
@@ -647,6 +679,35 @@ mod tests {
         );
         assert!(state.mempool.transactions.is_empty());
         assert!(production_mempool_resource_invariants_v1(&state));
+    }
+
+    #[test]
+    fn normalization_removes_canonical_fit_but_unrelayable_live_and_orphan() {
+        let mut state = init_chain_state("resource-carrier-size".into());
+        let mut live = tx("live-carrier-oversize", 1, None, 1);
+        live.outputs[0].address = "\"".repeat(40_000);
+        let mut orphan = live.clone();
+        orphan.txid = "orphan-carrier-oversize".to_string();
+
+        let canonical = canonical_transaction_size_for_resource_v1(&live, &state.chain_id).unwrap();
+        let carrier = transaction_message_size_for_resource_v1(&live, &state.chain_id).unwrap();
+        assert!(canonical <= MEMPOOL_RESOURCE_MAX_TRANSACTION_BYTES_V1);
+        assert!(carrier > MEMPOOL_RESOURCE_MAX_TRANSACTION_MESSAGE_BYTES_V1);
+
+        insert_live(&mut state, live, Some(0));
+        insert_orphan(&mut state, orphan, Some(0));
+        let result = normalize_production_mempool_resources_v1(&mut state);
+
+        assert_eq!(
+            result.removed_live_txids,
+            vec!["live-carrier-oversize".to_string()]
+        );
+        assert_eq!(
+            result.removed_orphan_txids,
+            vec!["orphan-carrier-oversize".to_string()]
+        );
+        assert!(state.mempool.transactions.is_empty());
+        assert!(state.mempool.orphan_transactions.is_empty());
     }
 
     #[test]

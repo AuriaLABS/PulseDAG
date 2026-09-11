@@ -7,9 +7,10 @@ use crate::{
         TxAcceptanceResult,
     },
     mempool_resource_v1::{
-        canonical_transaction_size_for_resource_v1, mempool_resource_rejection_reason_v1,
-        normalize_production_mempool_resources_v1, MempoolResourcePolicyV1,
-        MempoolResourceRejectionV1,
+        apply_production_mempool_resource_caps_v1, canonical_transaction_size_for_resource_v1,
+        mempool_resource_rejection_reason_v1, normalize_production_mempool_resources_v1,
+        transaction_message_size_for_resource_v1, MempoolResourcePolicyV1,
+        MempoolResourceRejectionV1, MEMPOOL_RESOURCE_MAX_TRANSACTION_MESSAGE_BYTES_V1,
     },
     mempool_v3::{
         fee_rate_v3, MempoolPolicyRejectionV3, MempoolPolicyV3, MEMPOOL_POLICY_V3_VERSION,
@@ -98,7 +99,28 @@ fn preflight_policy_v3(
                 ),
             ));
         }
-        normalize_production_mempool_resources_v1(state);
+
+        let message_size = match transaction_message_size_for_resource_v1(tx, &state.chain_id) {
+            Ok(size) => size,
+            Err(error) => {
+                state.mempool.counters.rejected_total =
+                    state.mempool.counters.rejected_total.saturating_add(1);
+                return Err(TxAcceptanceResult::Invalid(error));
+            }
+        };
+        if message_size > MEMPOOL_RESOURCE_MAX_TRANSACTION_MESSAGE_BYTES_V1 {
+            state.mempool.counters.rejected_total =
+                state.mempool.counters.rejected_total.saturating_add(1);
+            return Err(TxAcceptanceResult::Rejected(
+                mempool_resource_rejection_reason_v1(
+                    MempoolResourceRejectionV1::TransactionTooLarge,
+                    format!(
+                        "serialized NewTransaction message size {} exceeds transport maximum {}",
+                        message_size, MEMPOOL_RESOURCE_MAX_TRANSACTION_MESSAGE_BYTES_V1
+                    ),
+                ),
+            ));
+        }
     }
 
     if policy.version != MEMPOOL_POLICY_V3_VERSION {
@@ -142,6 +164,10 @@ fn preflight_policy_v3(
                 fee_rate.fee_per_kb, policy.min_relay_fee_rate_per_kb
             ),
         ));
+    }
+
+    if policy == MempoolPolicyV3::production_default() {
+        apply_production_mempool_resource_caps_v1(state);
     }
 
     // Preserve the existing package-aware eviction path when the policy
