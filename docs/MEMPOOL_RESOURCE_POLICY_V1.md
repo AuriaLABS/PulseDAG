@@ -16,7 +16,7 @@
 | expiry boundary version | `1` |
 | fingerprint | `2fb3ff1fb784703fa197a362d1a42e9312a3b2ea6a1b3b9c9406ce1c2c588b3f` |
 
-The canonical-size limit is 64 KiB rather than the earlier 128 KiB planning ceiling because the real transaction P2P carrier already rejects messages larger than `MAX_TX_MESSAGE_BYTES = 64 * 1024`. The mempool limit therefore never advertises a looser transaction resource contract than relay transport.
+The 64 KiB canonical-size limit is distinct from the P2P carrier ceiling. Production admission must also require the actual serialized `NetworkMessage::NewTransaction` envelope to fit `MAX_TX_MESSAGE_BYTES = 64 * 1024`; a transaction that satisfies the canonical limit but cannot fit that carrier is not production-admissible. This transport guard does not change the frozen resource-policy fingerprint.
 
 ## Logical expiry clock
 
@@ -34,17 +34,17 @@ A missing age for an otherwise valid restored live/orphan transaction is seeded 
 
 ## Capacity and eviction
 
-Fresh and restored production state is normalized to the frozen live/spent/orphan caps. Existing live package-aware pressure semantics remain in place. Resource normalization removes descendants with any live victim and uses deterministic fee/txid tie-breaking when a restored state is already above a hard cap. Orphan overflow is also deterministic and independent of HashMap or arrival iteration.
+Restored production state is normalized to the frozen live/spent/orphan caps. Fresh production admission applies the frozen caps and incoming-transaction resource checks as bounded preflight work; it must not rescan or reserialize the entire existing live/orphan mempool for each submitted transaction. Existing live package-aware pressure semantics remain in place. Full resource normalization is reserved for explicit lifecycle boundaries such as startup/recovery, reconciliation, best-height progress, and mining/template reads. Resource normalization removes descendants with any live victim and uses deterministic fee/txid tie-breaking when a restored state is already above a hard cap. Orphan overflow is also deterministic and independent of HashMap or arrival iteration.
 
 All removals clean the associated live/orphan indexes and age metadata, and the spent-outpoint index is rebuilt from the retained live set.
 
 ## Oversize transactions
 
-Canonical transaction size is a mempool/relay resource rule, **not consensus validity**. Production admission rejects an oversized transaction before insertion with machine-readable code `MEMPOOL_RESOURCE_V1_TRANSACTION_TOO_LARGE`. RPC preserves that code and does not relabel it as `mempool_full`. Ordinary and activated-v2 admission share the same production wrapper.
+Canonical transaction size is a mempool/relay resource rule, **not consensus validity**. Production admission rejects before insertion when either the canonical transaction exceeds the frozen 64 KiB resource ceiling or the actual serialized P2P `NewTransaction` envelope exceeds the 64 KiB carrier ceiling, using machine-readable code `MEMPOOL_RESOURCE_V1_TRANSACTION_TOO_LARGE`. RPC preserves that code and does not relabel it as `mempool_full`. Ordinary and activated-v2 admission share the same production wrapper.
 
 ## Mining visibility
 
-Production normalization runs on startup reconciliation, production admission, best-height block progress, and immediately before mining/template mempool reads. Consequently expired or oversize entries cannot be selected into a new template after they become ineligible.
+Full production normalization runs on startup/recovery reconciliation, best-height block progress, and immediately before mining/template mempool reads. Fresh submissions receive bounded incoming-transaction resource preflight rather than a full-mempool normalization pass. Consequently expired or oversize entries are removed at explicit lifecycle boundaries and cannot be selected into a new template after they become ineligible.
 
 ## Fee-policy separation
 
