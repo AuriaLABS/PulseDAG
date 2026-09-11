@@ -5,6 +5,7 @@ pub mod consensus_metadata;
 pub mod consistency;
 pub mod contract_state_v1;
 pub mod contract_v3;
+pub mod covenant_utxo_v1;
 pub mod covenant_v1;
 pub mod errors;
 pub mod finality_v2;
