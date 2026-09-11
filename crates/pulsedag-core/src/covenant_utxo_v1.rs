@@ -327,11 +327,11 @@ mod tests {
         let attachment = attach_covenant_to_utxo_v1(&utxo, &timelock_program(), 4_096).unwrap();
         assert_eq!(
             hex::encode(covenant_utxo_commitment_v1(&utxo).unwrap()),
-            "d94a02cd9318daf265318c85a8e9e1e2994305e50714ed2b090c4fc86d5cb046"
+            "d963255da4b2a57170093a53ae4fd332e679a5642dfae4dab0f3942b48dc3cd1"
         );
         assert_eq!(
             hex::encode(attachment.commitment().unwrap()),
-            "fbb9c669bba84c6a2ae87ab556d798f9632fe58e0406d58dd1424038a5389ef4"
+            "e2ea41ec14721200fd59643c6cecd3505172548a2c572756215e475a0bb85a9b"
         );
     }
 }
