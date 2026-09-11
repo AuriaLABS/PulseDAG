@@ -2,10 +2,17 @@
 name = "pulsedag-miner"
 version.workspace = true
 edition = "2021"
+default-run = "pulsedag-miner"
 
 [features]
 default = []
 gpu = ["dep:libloading"]
+cuda = ["dep:libloading"]
+
+[[bin]]
+name = "pulsedag-cuda-probe"
+path = "src/bin/cuda_probe.rs"
+required-features = ["cuda"]
 
 [dependencies]
 anyhow = "1"

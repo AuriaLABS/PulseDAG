@@ -1,0 +1,78 @@
+name: v3 launch Task 38 NVIDIA CUDA runtime discovery phase 3
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - apps/pulsedag-miner/Cargo.toml
+      - apps/pulsedag-miner/src/cuda_runtime.rs
+      - apps/pulsedag-miner/src/bin/cuda_probe.rs
+      - .github/workflows/task38-nvidia-cuda-runtime-discovery.yml
+  push:
+    branches:
+      - main
+    paths:
+      - apps/pulsedag-miner/Cargo.toml
+      - apps/pulsedag-miner/src/cuda_runtime.rs
+      - apps/pulsedag-miner/src/bin/cuda_probe.rs
+      - .github/workflows/task38-nvidia-cuda-runtime-discovery.yml
+
+permissions:
+  contents: read
+
+jobs:
+  cuda-runtime-contract:
+    name: cuda-runtime-contract (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - windows-latest
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Verify exact SHA and clean checkout
+        shell: bash
+        env:
+          CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          test -z "$(git status --porcelain)"
+          echo "task38_cuda_runtime_candidate_sha=$CANDIDATE_SHA"
+
+      - name: Install Rust 1.91.0
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.91.0
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Workspace format contract
+        run: cargo fmt --all -- --check
+
+      - name: CUDA runtime selection unit tests
+        run: cargo test --locked -p pulsedag-miner --features cuda --bin pulsedag-cuda-probe
+
+      - name: CUDA runtime deterministic self-test
+        run: cargo run --locked -p pulsedag-miner --features cuda --bin pulsedag-cuda-probe -- --self-test
+
+      - name: CUDA runtime clippy
+        run: cargo clippy --locked -p pulsedag-miner --features cuda --bin pulsedag-cuda-probe -- -D warnings
+
+      - name: Record phase-3 scope
+        shell: bash
+        run: |
+          echo "nvidia_cuda_runtime_discovery_contract=PASS"
+          echo "nvidia_cuda_hardware_execution=NOT_CLAIMED"
+          echo "nvidia_cuda_mining_equivalence=NOT_CLAIMED"
+          echo "GPU_MINING_NVIDIA_PASS=NOT_CLAIMED"
