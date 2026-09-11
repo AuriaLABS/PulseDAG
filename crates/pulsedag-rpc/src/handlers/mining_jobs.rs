@@ -60,7 +60,8 @@ pub async fn post_claim_mining_job<S: RpcStateLike>(
 ) -> Json<ApiResponse<ClaimMiningJobData>> {
     let _ = cleanup_expired_jobs();
     let chain_handle = state.chain();
-    let chain = chain_handle.read().await;
+    let mut chain = chain_handle.write().await;
+    pulsedag_core::normalize_production_mempool_resources_v1(&mut chain);
     let height = chain.dag.best_height + 1;
     let mut parents = chain.dag.tips.iter().cloned().collect::<Vec<_>>();
     parents.sort();
