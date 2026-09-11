@@ -129,10 +129,7 @@ impl ProgrammabilityActivationIdentity {
         self.domain.validate()?;
         validate_chain_id(&self.chain_id)?;
         ensure_nonzero_commitment("genesis_hash", &self.genesis_hash)?;
-        ensure_nonzero_commitment(
-            "base_protocol_fingerprint",
-            &self.base_protocol_fingerprint,
-        )?;
+        ensure_nonzero_commitment("base_protocol_fingerprint", &self.base_protocol_fingerprint)?;
         Ok(())
     }
 
@@ -183,9 +180,7 @@ impl ProofCommitmentMetadataV1 {
                     });
                 }
                 if self.proof_commitment.iter().any(|byte| *byte != 0) {
-                    return Err(ContractV3Error::InvalidProofCommitment(
-                        self.proof_system,
-                    ));
+                    return Err(ContractV3Error::InvalidProofCommitment(self.proof_system));
                 }
             }
             PROOF_SYSTEM_EXTERNAL_COMMITMENT_V1 => {
@@ -196,9 +191,7 @@ impl ProofCommitmentMetadataV1 {
                     });
                 }
                 if self.proof_commitment.iter().all(|byte| *byte == 0) {
-                    return Err(ContractV3Error::InvalidProofCommitment(
-                        self.proof_system,
-                    ));
+                    return Err(ContractV3Error::InvalidProofCommitment(self.proof_system));
                 }
             }
             unknown => return Err(ContractV3Error::UnsupportedProofSystem(unknown)),
@@ -232,11 +225,7 @@ impl ResourceBudgetV1 {
             CONTRACT_V3_MAX_COMPUTE_UNITS,
         )?;
         ensure_resource_limit("read_bytes", self.read_bytes, CONTRACT_V3_MAX_READ_BYTES)?;
-        ensure_resource_limit(
-            "write_bytes",
-            self.write_bytes,
-            CONTRACT_V3_MAX_WRITE_BYTES,
-        )?;
+        ensure_resource_limit("write_bytes", self.write_bytes, CONTRACT_V3_MAX_WRITE_BYTES)?;
         ensure_resource_limit(
             "proof_bytes",
             u64::from(self.proof_bytes),
@@ -329,10 +318,7 @@ impl ContractTransactionV3Envelope {
         validate_namespace(&self.namespace)?;
         ensure_nonzero_commitment("payload_commitment", &self.payload_commitment)?;
         ensure_nonzero_commitment("state_commitment", &self.state_commitment)?;
-        ensure_nonzero_commitment(
-            "authorization_commitment",
-            &self.authorization_commitment,
-        )?;
+        ensure_nonzero_commitment("authorization_commitment", &self.authorization_commitment)?;
         self.proof.validate()?;
         self.resources.validate()?;
         if let Some(covenant) = &self.covenant {
@@ -437,7 +423,6 @@ pub fn canonical_contract_envelope_bytes_v3(
     out.extend_from_slice(&envelope.proof.proof_system.to_le_bytes());
     out.extend_from_slice(&envelope.proof.proof_system_version.to_le_bytes());
     out.extend_from_slice(&envelope.proof.proof_commitment);
-
     out.extend_from_slice(&envelope.resources.version.to_le_bytes());
     out.extend_from_slice(&envelope.resources.compute_units.to_le_bytes());
     out.extend_from_slice(&envelope.resources.read_bytes.to_le_bytes());
@@ -538,10 +523,7 @@ fn sha256_array(bytes: &[u8]) -> [u8; 32] {
     out
 }
 
-fn ensure_nonzero_commitment(
-    field: &'static str,
-    value: &[u8; 32],
-) -> Result<(), ContractV3Error> {
+fn ensure_nonzero_commitment(field: &'static str, value: &[u8; 32]) -> Result<(), ContractV3Error> {
     if value.iter().all(|byte| *byte == 0) {
         return Err(ContractV3Error::EmptyCommitment { field });
     }
@@ -657,7 +639,6 @@ mod tests {
             base_protocol_fingerprint: [0x22; 32],
         }
     }
-
     fn sample_envelope() -> ContractTransactionV3Envelope {
         ContractTransactionV3Envelope {
             version: CONTRACT_TRANSACTION_VERSION_V3,
@@ -736,7 +717,10 @@ mod tests {
         let testnet = sample_identity(ProgrammabilityDomain::Testnet);
         let application = sample_identity(ProgrammabilityDomain::Application(7));
 
-        assert_ne!(mainnet.fingerprint().unwrap(), testnet.fingerprint().unwrap());
+        assert_ne!(
+            mainnet.fingerprint().unwrap(),
+            testnet.fingerprint().unwrap()
+        );
         assert_ne!(
             mainnet.fingerprint().unwrap(),
             application.fingerprint().unwrap()
@@ -785,7 +769,8 @@ mod tests {
 
     #[test]
     fn unknown_domain_is_rejected_by_strict_serde() {
-        let mut value = serde_json::to_value(sample_identity(ProgrammabilityDomain::Testnet)).unwrap();
+        let mut value =
+            serde_json::to_value(sample_identity(ProgrammabilityDomain::Testnet)).unwrap();
         value["domain"] = json!("future_network");
 
         assert!(serde_json::from_value::<ProgrammabilityActivationIdentity>(value).is_err());
@@ -877,6 +862,9 @@ mod tests {
         let other_metadata =
             ContractV3CompatibilityMetadataV1::from_identity(&other_identity).unwrap();
 
-        assert_ne!(metadata.fingerprint().unwrap(), other_metadata.fingerprint().unwrap());
+        assert_ne!(
+            metadata.fingerprint().unwrap(),
+            other_metadata.fingerprint().unwrap()
+        );
     }
 }
