@@ -27,6 +27,22 @@ impl ProtocolPowWork {
             }
         }
     }
+
+    /// Re-verify one accelerator-produced hash through the canonical protocol
+    /// PoW path before the candidate may be considered for submit.
+    pub fn reverify_accelerator_hash(
+        &self,
+        nonce: u64,
+        accelerator_hash: [u8; 32],
+    ) -> Result<bool> {
+        let canonical = self.evaluate_nonce(nonce);
+        if canonical.final_hash.hash != accelerator_hash {
+            return Err(protocol_error(format!(
+                "accelerator hash mismatch for nonce {nonce}; refusing result before submit"
+            )));
+        }
+        Ok(canonical.comparison.accepted())
+    }
 }
 
 /// Resolve the exact PoW domain an external miner must use for one header.
@@ -200,6 +216,26 @@ mod tests {
         assert_eq!(first.material.pre_pow_bytes, second.material.pre_pow_bytes);
         assert_eq!(first.material.target, second.material.target);
         assert_ne!(first.final_hash.hash, second.final_hash.hash);
+    }
+
+    #[test]
+    fn accelerator_hash_requires_exact_canonical_match() {
+        let header = header(BLOCK_HEADER_VERSION_V2);
+        let identity = activated_identity("pulsedag-testnet-v2");
+        let work = build_protocol_pow_work(&header, header.difficulty, Some(&identity)).unwrap();
+        let nonce = 99;
+        let canonical = work.evaluate_nonce(nonce);
+
+        assert_eq!(
+            work.reverify_accelerator_hash(nonce, canonical.final_hash.hash)
+                .unwrap(),
+            canonical.comparison.accepted()
+        );
+
+        let mut tampered = canonical.final_hash.hash;
+        tampered[0] ^= 1;
+        let error = work.reverify_accelerator_hash(nonce, tampered).unwrap_err();
+        assert!(error.to_string().contains("accelerator hash mismatch"));
     }
 
     #[test]
