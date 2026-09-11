@@ -195,7 +195,8 @@ impl CovenantProgramV1 {
             }
             CovenantProgramBodyV1::Multisig(program) => {
                 validate_sorted_unique_signers(&program.signers)?;
-                if program.threshold == 0 || usize::from(program.threshold) > program.signers.len() {
+                if program.threshold == 0 || usize::from(program.threshold) > program.signers.len()
+                {
                     return Err(CovenantV1Error::InvalidThreshold {
                         threshold: program.threshold,
                         signer_count: program.signers.len(),
@@ -444,10 +445,7 @@ pub fn evaluate_covenant_v1(
                 });
             }
         }
-        (
-            CovenantProgramBodyV1::Escrow(program),
-            CovenantWitnessBranchV1::Escrow(resolution),
-        ) => {
+        (CovenantProgramBodyV1::Escrow(program), CovenantWitnessBranchV1::Escrow(resolution)) => {
             meter.signer_checks(2)?;
             match resolution {
                 EscrowResolutionV1::Cooperative => {
@@ -479,10 +477,7 @@ pub fn evaluate_covenant_v1(
                 return Err(CovenantV1Error::HashlockMismatch);
             }
         }
-        (
-            CovenantProgramBodyV1::AtomicSwap(program),
-            CovenantWitnessBranchV1::AtomicSwapRefund,
-        ) => {
+        (CovenantProgramBodyV1::AtomicSwap(program), CovenantWitnessBranchV1::AtomicSwapRefund) => {
             meter.signer_checks(1)?;
             require_signer(context, &program.refund_signer)?;
             meter.lock_checks(1)?;
@@ -980,15 +975,9 @@ mod tests {
             }),
         };
         for (resolution, signers) in [
-            (
-                EscrowResolutionV1::Cooperative,
-                vec![signer(1), signer(2)],
-            ),
+            (EscrowResolutionV1::Cooperative, vec![signer(1), signer(2)]),
             (EscrowResolutionV1::BuyerAward, vec![signer(1), signer(3)]),
-            (
-                EscrowResolutionV1::SellerAward,
-                vec![signer(2), signer(3)],
-            ),
+            (EscrowResolutionV1::SellerAward, vec![signer(2), signer(3)]),
         ] {
             assert!(evaluate_covenant_v1(
                 &descriptor(&program),

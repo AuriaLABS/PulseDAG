@@ -374,11 +374,7 @@ pub fn empty_event_set_commitment_v1() -> [u8; 32] {
     sha256_array(EMPTY_EVENT_SET_DOMAIN_V1)
 }
 
-fn ensure_budget(
-    field: &'static str,
-    actual: u64,
-    max: u64,
-) -> Result<(), ContractStateV1Error> {
+fn ensure_budget(field: &'static str, actual: u64, max: u64) -> Result<(), ContractStateV1Error> {
     if actual > max {
         return Err(ContractStateV1Error::ResourceBudgetExceeded { field, actual, max });
     }
@@ -509,7 +505,10 @@ mod tests {
         )
         .unwrap();
         assert_eq!(result.replay_nonce, 9);
-        assert_eq!(result.transition_commitment, transition.commitment().unwrap());
+        assert_eq!(
+            result.transition_commitment,
+            transition.commitment().unwrap()
+        );
     }
 
     #[test]
@@ -675,7 +674,10 @@ mod tests {
         let encoded = serde_json::to_vec(&transition).unwrap();
         let decoded: ContractStateTransitionV1 = serde_json::from_slice(&encoded).unwrap();
         assert_eq!(first, decoded.canonical_bytes().unwrap());
-        assert_eq!(transition.commitment().unwrap(), decoded.commitment().unwrap());
+        assert_eq!(
+            transition.commitment().unwrap(),
+            decoded.commitment().unwrap()
+        );
 
         let mut invalid = transition;
         invalid.version = 2;

@@ -164,10 +164,7 @@ fn covenant_kind_id(kind: CovenantKindV1) -> u16 {
     }
 }
 
-fn encode_len_prefixed(
-    out: &mut Vec<u8>,
-    bytes: &[u8],
-) -> Result<(), CovenantUtxoV1Error> {
+fn encode_len_prefixed(out: &mut Vec<u8>, bytes: &[u8]) -> Result<(), CovenantUtxoV1Error> {
     let len =
         u32::try_from(bytes.len()).map_err(|_| CovenantUtxoV1Error::CanonicalLengthOverflow)?;
     out.extend_from_slice(&len.to_le_bytes());
@@ -187,9 +184,9 @@ mod tests {
     use super::*;
     use crate::{
         covenant_v1::{
-            CovenantLockV1, CovenantProgramBodyV1, CovenantWitnessBranchV1,
+            CovenantLockV1, CovenantProgramBodyV1, CovenantWitnessBranchV1, TimelockCovenantV1,
             COVENANT_PROGRAM_VERSION_V1, COVENANT_SPEND_CONTEXT_VERSION_V1,
-            COVENANT_WITNESS_VERSION_V1, TimelockCovenantV1,
+            COVENANT_WITNESS_VERSION_V1,
         },
         types::OutPoint,
     };
@@ -242,14 +239,9 @@ mod tests {
         let utxo = sample_utxo();
         let program = timelock_program();
         let attachment = attach_covenant_to_utxo_v1(&utxo, &program, 4_096).unwrap();
-        let result = validate_covenanted_utxo_spend_v1(
-            &attachment,
-            &utxo,
-            &program,
-            &witness(),
-            &context(),
-        )
-        .unwrap();
+        let result =
+            validate_covenanted_utxo_spend_v1(&attachment, &utxo, &program, &witness(), &context())
+                .unwrap();
         assert_eq!(result.utxo_commitment, attachment.utxo_commitment);
         assert_eq!(result.program_commitment, program.commitment().unwrap());
     }
