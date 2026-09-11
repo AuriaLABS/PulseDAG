@@ -28,41 +28,11 @@ impl From<pulsedag_core::MempoolPolicyV3> for MempoolPolicyV3Data {
     }
 }
 
-#[derive(Debug, serde::Serialize, PartialEq, Eq)]
-pub struct MempoolResourcePolicyV1Data {
-    pub version: u32,
-    pub fingerprint: String,
-    pub max_transactions: u64,
-    pub max_spent_outpoints: u64,
-    pub max_orphans: u64,
-    pub max_transaction_bytes: u64,
-    pub live_max_age_blocks: u64,
-    pub orphan_max_age_blocks: u64,
-    pub expiry_boundary_version: u32,
-}
-
-impl From<pulsedag_core::MempoolResourcePolicyV1> for MempoolResourcePolicyV1Data {
-    fn from(policy: pulsedag_core::MempoolResourcePolicyV1) -> Self {
-        Self {
-            version: policy.version,
-            fingerprint: policy.fingerprint(),
-            max_transactions: policy.max_transactions,
-            max_spent_outpoints: policy.max_spent_outpoints,
-            max_orphans: policy.max_orphans,
-            max_transaction_bytes: policy.max_transaction_bytes,
-            live_max_age_blocks: policy.live_max_age_blocks,
-            orphan_max_age_blocks: policy.orphan_max_age_blocks,
-            expiry_boundary_version: policy.expiry_boundary_version,
-        }
-    }
-}
-
 #[derive(Debug, serde::Serialize)]
 pub struct PolicyData {
     pub version: String,
     pub stage: String,
     pub mempool_v3: MempoolPolicyV3Data,
-    pub mempool_resource_v1: MempoolResourcePolicyV1Data,
     pub mempool_policy: Vec<String>,
     pub transaction_rules: Vec<String>,
     pub block_rules: Vec<String>,
@@ -78,13 +48,11 @@ pub async fn get_policy<S: RpcStateLike>(State(state): State<S>) -> Json<ApiResp
     let chain = chain_handle.read().await;
     let snapshot = pulsedag_core::dev_difficulty_snapshot(&chain);
     let mempool_v3 = pulsedag_core::MempoolPolicyV3::production_default().into();
-    let mempool_resource_v1 = pulsedag_core::MempoolResourcePolicyV1::production_default().into();
 
     Json(ApiResponse::ok(PolicyData {
         version: repo_version(),
         stage: operator_stage(),
         mempool_v3,
-        mempool_resource_v1,
         mempool_policy: vec![
             "reject double spends".into(),
             "require structurally valid transactions".into(),
@@ -137,21 +105,6 @@ mod tests {
         );
         assert_eq!(data.max_transactions, policy.max_transactions);
         assert_eq!(data.replacement_enabled, policy.replacement_enabled);
-    }
-
-    #[test]
-    fn resource_policy_wire_view_is_separate_and_frozen() {
-        let policy = pulsedag_core::MempoolResourcePolicyV1::production_default();
-        let data = MempoolResourcePolicyV1Data::from(policy);
-        assert_eq!(data.version, 1);
-        assert_eq!(data.fingerprint, policy.fingerprint());
-        assert_eq!(data.max_transactions, 4_096);
-        assert_eq!(data.max_spent_outpoints, 8_192);
-        assert_eq!(data.max_orphans, 512);
-        assert_eq!(data.max_transaction_bytes, 65_536);
-        assert_eq!(data.live_max_age_blocks, 1_440);
-        assert_eq!(data.orphan_max_age_blocks, 1_440);
-        assert_eq!(data.expiry_boundary_version, 1);
     }
 
     #[test]

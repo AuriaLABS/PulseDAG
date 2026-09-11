@@ -7,9 +7,8 @@ use crate::{
         TxAcceptanceResult,
     },
     mempool_resource_v1::{
-        canonical_transaction_size_for_resource_v1, mempool_resource_rejection_reason_v1,
-        normalize_production_mempool_resources_v1, MempoolResourcePolicyV1,
-        MempoolResourceRejectionV1,
+        assess_production_transaction_resources_v1, mempool_resource_rejection_reason_v1,
+        MempoolResourceAssessmentErrorV1,
     },
     mempool_v3::{
         fee_rate_v3, MempoolPolicyRejectionV3, MempoolPolicyV3, MEMPOOL_POLICY_V3_VERSION,
@@ -75,32 +74,6 @@ fn preflight_policy_v3(
     state: &mut ChainState,
     policy: MempoolPolicyV3,
 ) -> Result<(), TxAcceptanceResult> {
-    if policy == MempoolPolicyV3::production_default() {
-        let resource = MempoolResourcePolicyV1::production_default();
-        let canonical_size = match canonical_transaction_size_for_resource_v1(tx, &state.chain_id) {
-            Ok(size) => size,
-            Err(error) => {
-                state.mempool.counters.rejected_total =
-                    state.mempool.counters.rejected_total.saturating_add(1);
-                return Err(TxAcceptanceResult::Invalid(error));
-            }
-        };
-        if canonical_size > resource.max_transaction_bytes {
-            state.mempool.counters.rejected_total =
-                state.mempool.counters.rejected_total.saturating_add(1);
-            return Err(TxAcceptanceResult::Rejected(
-                mempool_resource_rejection_reason_v1(
-                    MempoolResourceRejectionV1::TransactionTooLarge,
-                    format!(
-                        "canonical transaction size {} exceeds production maximum {}",
-                        canonical_size, resource.max_transaction_bytes
-                    ),
-                ),
-            ));
-        }
-        normalize_production_mempool_resources_v1(state);
-    }
-
     if policy.version != MEMPOOL_POLICY_V3_VERSION {
         return Err(policy_rejected(
             state,
@@ -110,6 +83,32 @@ fn preflight_policy_v3(
                 policy.version, MEMPOOL_POLICY_V3_VERSION
             ),
         ));
+    }
+
+    if policy == MempoolPolicyV3::production_default() {
+        match assess_production_transaction_resources_v1(tx, state) {
+            Ok(_) => {}
+            Err(MempoolResourceAssessmentErrorV1::TransactionTooLarge {
+                canonical_size_bytes,
+                max_canonical_tx_bytes,
+            }) => {
+                state.mempool.counters.rejected_total =
+                    state.mempool.counters.rejected_total.saturating_add(1);
+                return Err(TxAcceptanceResult::Rejected(
+                    mempool_resource_rejection_reason_v1(
+                        canonical_size_bytes,
+                        max_canonical_tx_bytes,
+                    ),
+                ));
+            }
+            Err(MempoolResourceAssessmentErrorV1::CanonicalSize(error)) => {
+                state.mempool.counters.rejected_total =
+                    state.mempool.counters.rejected_total.saturating_add(1);
+                return Err(TxAcceptanceResult::Invalid(format!(
+                    "mempool resource canonical size assessment failed: {error}"
+                )));
+            }
+        }
     }
 
     if tx.fee > policy.max_transaction_fee {
@@ -326,7 +325,6 @@ fn prune_persisted_production_fee_policy_v3(state: &mut ChainState) -> Vec<Strin
         if state.mempool.orphan_transactions.remove(&txid).is_some() {
             state.mempool.orphan_missing_outpoints.remove(&txid);
             state.mempool.orphan_received_order.remove(&txid);
-            state.mempool.orphan_admission_height.remove(&txid);
             state.mempool.counters.rejected_total =
                 state.mempool.counters.rejected_total.saturating_add(1);
             state.mempool.counters.orphan_dropped_total = state
@@ -353,10 +351,8 @@ fn combine_policy_and_consensus_removed_v3(
 pub fn reconcile_mempool_with_production_policy_v3(
     state: &mut ChainState,
 ) -> crate::mempool::MempoolReconcileResult {
-    let mut policy_removed = normalize_production_mempool_resources_v1(state).removed_live_txids;
-    policy_removed.extend(prune_persisted_production_fee_policy_v3(state));
+    let policy_removed = prune_persisted_production_fee_policy_v3(state);
     let result = crate::mempool::reconcile_mempool(state);
-    policy_removed.extend(normalize_production_mempool_resources_v1(state).removed_live_txids);
     combine_policy_and_consensus_removed_v3(policy_removed, result)
 }
 
@@ -365,10 +361,8 @@ pub fn reconcile_mempool_with_production_policy_v3_for_protocol(
     identity: &ProtocolActivationIdentity,
 ) -> Result<crate::mempool::MempoolReconcileResult, crate::errors::PulseError> {
     crate::tx_protocol::resolve_transaction_validation_path(identity, state)?;
-    let mut policy_removed = normalize_production_mempool_resources_v1(state).removed_live_txids;
-    policy_removed.extend(prune_persisted_production_fee_policy_v3(state));
+    let policy_removed = prune_persisted_production_fee_policy_v3(state);
     let result = crate::mempool_protocol::reconcile_mempool_for_protocol(state, identity)?;
-    policy_removed.extend(normalize_production_mempool_resources_v1(state).removed_live_txids);
     Ok(combine_policy_and_consensus_removed_v3(
         policy_removed,
         result,

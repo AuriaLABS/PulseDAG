@@ -42,6 +42,8 @@ pub static BLOCK_COMMIT_BATCH_FAILED_TOTAL: AtomicU64 = AtomicU64::new(0);
 pub static BLOCK_COMMIT_ROLLBACK_TOTAL: AtomicU64 = AtomicU64::new(0);
 pub static STARTUP_STORAGE_RECONCILIATION_TOTAL: AtomicU64 = AtomicU64::new(0);
 pub static STARTUP_STORAGE_RECONCILIATION_FAILED_TOTAL: AtomicU64 = AtomicU64::new(0);
+pub static MEMPOOL_ADMISSION_HEIGHT_SIDECAR_RECOVERY_TOTAL: AtomicU64 = AtomicU64::new(0);
+pub static MEMPOOL_ORPHAN_ADMISSION_HEIGHT_SIDECAR_RECOVERY_TOTAL: AtomicU64 = AtomicU64::new(0);
 pub static SNAPSHOT_VERIFICATION_GENERATION_CHANGED_TOTAL: AtomicU64 = AtomicU64::new(0);
 pub static SNAPSHOT_VERIFICATION_STABLE_FAILURE_TOTAL: AtomicU64 = AtomicU64::new(0);
 pub static SNAPSHOT_VERIFICATION_RETRY_TOTAL: AtomicU64 = AtomicU64::new(0);
@@ -1268,14 +1270,12 @@ impl Storage {
                         }
                     }
                 }
-                Err(error) => {
-                    let _ = self.append_runtime_event(
-                        "warn",
-                        "mempool_admission_height_sidecar_corrupt_recovered",
-                        &format!(
-                            "ignored corrupt optional live admission-height sidecar: {error}"
-                        ),
-                    );
+                Err(_) => {
+                    // Optional policy-age metadata must not invalidate an otherwise
+                    // valid positional chain state. Empty age is the legacy fail-safe
+                    // retain behavior frozen by #1081.
+                    MEMPOOL_ADMISSION_HEIGHT_SIDECAR_RECOVERY_TOTAL
+                        .fetch_add(1, Ordering::Relaxed);
                 }
             }
         }
@@ -1293,14 +1293,9 @@ impl Storage {
                         }
                     }
                 }
-                Err(error) => {
-                    let _ = self.append_runtime_event(
-                        "warn",
-                        "mempool_orphan_admission_height_sidecar_corrupt_recovered",
-                        &format!(
-                            "ignored corrupt optional orphan admission-height sidecar: {error}"
-                        ),
-                    );
+                Err(_) => {
+                    MEMPOOL_ORPHAN_ADMISSION_HEIGHT_SIDECAR_RECOVERY_TOTAL
+                        .fetch_add(1, Ordering::Relaxed);
                 }
             }
         }

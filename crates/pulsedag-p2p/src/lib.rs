@@ -7239,6 +7239,131 @@ mod tests {
     }
 
     #[test]
+    fn production_canonical_tx_ceiling_fits_frozen_p2p_tx_wire_ceiling_v1_v2_v3() {
+        use pulsedag_core::{
+            canonical_transaction_size_for_mempool_v3, encode_hybrid_public_key_v1,
+            encode_hybrid_signature_v1,
+            types::{OutPoint, TxInput, TxOutput},
+            ED25519_PUBLIC_KEY_BYTES, ED25519_SIGNATURE_BYTES,
+            MEMPOOL_RESOURCE_V1_MAX_CANONICAL_TX_BYTES, ML_DSA_65_PUBLIC_KEY_BYTES,
+            ML_DSA_65_SIGNATURE_BYTES, TRANSACTION_VERSION_V1, TRANSACTION_VERSION_V2,
+            TRANSACTION_VERSION_V3,
+        };
+
+        fn assert_wire_headroom(tx: &Transaction, chain_id: &str) {
+            let canonical = canonical_transaction_size_for_mempool_v3(tx, chain_id).unwrap();
+            assert!(canonical <= MEMPOOL_RESOURCE_V1_MAX_CANONICAL_TX_BYTES);
+            assert!(
+                canonical >= 30 * 1024,
+                "shape did not exercise near-boundary sizing"
+            );
+            let wire = serde_json::to_vec(&NetworkMessage::NewTransaction {
+                chain_id: chain_id.to_string(),
+                transaction: tx.clone(),
+            })
+            .unwrap();
+            assert!(
+                wire.len() <= MAX_TX_MESSAGE_BYTES,
+                "version {} canonical={} wire={} exceeds p2p ceiling={}",
+                tx.version,
+                canonical,
+                wire.len(),
+                MAX_TX_MESSAGE_BYTES
+            );
+        }
+
+        fn near_limit_outputs(version: u32, chain_id: &str) -> Transaction {
+            let mut tx = Transaction {
+                txid: "ab".repeat(32),
+                version,
+                inputs: Vec::new(),
+                outputs: Vec::new(),
+                fee: 10,
+                nonce: 7,
+            };
+            loop {
+                tx.outputs.push(TxOutput {
+                    address: "pulse1aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
+                    amount: 1,
+                });
+                if canonical_transaction_size_for_mempool_v3(&tx, chain_id).unwrap()
+                    > MEMPOOL_RESOURCE_V1_MAX_CANONICAL_TX_BYTES
+                {
+                    tx.outputs.pop();
+                    break;
+                }
+            }
+            tx
+        }
+
+        fn standard_input(index: u32) -> TxInput {
+            TxInput {
+                previous_output: OutPoint {
+                    txid: format!("{:064x}", u64::from(index) + 1),
+                    index,
+                },
+                public_key: "11".repeat(32),
+                signature: "22".repeat(64),
+            }
+        }
+
+        fn hybrid_input(index: u32) -> TxInput {
+            TxInput {
+                previous_output: OutPoint {
+                    txid: format!("{:064x}", u64::from(index) + 1),
+                    index,
+                },
+                public_key: encode_hybrid_public_key_v1(
+                    &[0x11; ED25519_PUBLIC_KEY_BYTES],
+                    &vec![0x22; ML_DSA_65_PUBLIC_KEY_BYTES],
+                )
+                .unwrap(),
+                signature: encode_hybrid_signature_v1(
+                    &[0x33; ED25519_SIGNATURE_BYTES],
+                    &vec![0x44; ML_DSA_65_SIGNATURE_BYTES],
+                )
+                .unwrap(),
+            }
+        }
+
+        fn near_limit_inputs(version: u32, chain_id: &str) -> Transaction {
+            let mut tx = Transaction {
+                txid: "cd".repeat(32),
+                version,
+                inputs: Vec::new(),
+                outputs: Vec::new(),
+                fee: 10,
+                nonce: 9,
+            };
+            loop {
+                let index = tx.inputs.len() as u32;
+                tx.inputs.push(if version == TRANSACTION_VERSION_V3 {
+                    hybrid_input(index)
+                } else {
+                    standard_input(index)
+                });
+                if canonical_transaction_size_for_mempool_v3(&tx, chain_id).unwrap()
+                    > MEMPOOL_RESOURCE_V1_MAX_CANONICAL_TX_BYTES
+                {
+                    tx.inputs.pop();
+                    break;
+                }
+            }
+            tx
+        }
+
+        let chain_id = "pulsedag-resource-wire-headroom";
+        for version in [
+            TRANSACTION_VERSION_V1,
+            TRANSACTION_VERSION_V2,
+            TRANSACTION_VERSION_V3,
+        ] {
+            assert_wire_headroom(&near_limit_outputs(version, chain_id), chain_id);
+            assert_wire_headroom(&near_limit_inputs(version, chain_id), chain_id);
+        }
+    }
+
+    #[test]
     fn oversized_inbound_tx_message_is_rejected() {
         let inner = Arc::new(Mutex::new(InnerState::default()));
         let (inbound_tx, mut inbound_rx) = mpsc::unbounded_channel();

@@ -121,3 +121,28 @@ RPC responses preserve the pre-existing typed `classification` field (for exampl
 Exact-head validation for this bridge must run on top of the current `main` integration baseline so unrelated launch gates, including the fast-sync restore/rejoin regression, are present rather than silently skipped by an outdated branch base.
 
 This bridge does not change consensus validation, replace package-aware eviction ordering, or close the still-open `Resource limits, eviction and expiry` scope.
+
+## Production resource, eviction and expiry contract
+
+Production mempool resources are versioned separately from `MempoolPolicyV3`, so freezing resource/expiry values does not change the already-frozen fee-policy identity. Resource policy v1 freezes:
+
+- live transaction ceiling: `4096`;
+- tracked spent-outpoint ceiling: `8192`;
+- orphan transaction ceiling: `512`;
+- canonical transaction size ceiling: `32768` bytes (`32 KiB`), measured by the same v1/v2/v3 canonical encoders used by mempool fee-rate accounting;
+- live transaction maximum age: `1440` accepted-height steps.
+- orphan transaction maximum age: the same `1440` accepted-height steps.
+
+Resource-policy fingerprint: `759a2820217e8b2d897634745b1fffad347f9f72f62348bb9effd5f1b79034cf` under `PulseDAG:mempool-resource-policy:v1`. The active fee-policy fingerprint remains `fc08725ab79ace07323f11d085c2c105ed5f5e6338b67555103d8cb273c732c8`.
+
+The `32 KiB` canonical ceiling is intentionally below the existing `64 KiB` full P2P `NewTransaction` carrier ceiling. Exact tests grow representative output-heavy and input-heavy v1/v2/v3 transaction shapes to the canonical boundary and require the complete serialized carrier to remain below the frozen transport ceiling. The P2P wire limit itself is unchanged.
+
+Expiry uses only the persisted canonical DAG logical clock (`dag.best_height`) and the #1081 boundary `current_height >= admission_height + max_age_blocks`. `1440` heights is nominally 24 hours at the frozen 60-second target interval, but it is a height policy, not a wall-clock timer. Missing legacy live age metadata, future admission heights and checked-add overflow retain fail-safe rather than inventing live age. Historical orphan entries have no old age field, so their missing orphan age is seeded once at the current best height and they can expire only after a full future 1440-height window.
+
+Fresh production RPC/P2P admission rejects transactions above the canonical-size ceiling before live/orphan mutation with stable code `MEMPOOL_RESOURCE_TX_TOO_LARGE`. Restored oversized live roots are removed with all live descendants; restored oversized orphans are dropped with their orphan metadata. Production orphan promotion re-enters the same production admission wrapper, so it cannot bypass the size ceiling.
+
+Every ordinary or protocol-aware mempool reconciliation applies the same production resource normalization after any protocol identity has been validated. Existing stricter runtime/test caps remain stricter; persisted limits above production are clamped. Expiry and over-capacity cleanup are deterministic and package-safe. The existing live incoming package scoring/replacement behavior is unchanged and RBF remains disabled.
+
+A corrupt optional `mempool_admission_height_v1` RocksDB sidecar no longer invalidates an otherwise valid `CHAIN_STATE_KEY`: loading records a recovery counter and leaves age metadata empty, preserving the legacy fail-safe retain rule. `STORAGE_SCHEMA_VERSION` remains `1`.
+
+This contract changes mempool relay/resource policy only. It does not change consensus transaction validity, monetary rules, signing/txid, P2P wire identity, mining consensus, or replacement/RBF semantics. #781/#794 launch authority remains separate.
