@@ -6,6 +6,8 @@ use pulsedag_core::types::BlockHeader;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
+#[cfg(feature = "cuda")]
+pub mod cuda_driver_launch;
 pub mod protocol_backend;
 pub mod protocol_pow;
 
