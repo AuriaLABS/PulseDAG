@@ -20,24 +20,25 @@ jobs:
         shell: python
         run: |
           from pathlib import Path
+
           path = Path("crates/pulsedag-core/src/covenant_v1.rs")
           text = path.read_text()
+
           enum_old = "    Multisig(MultisigParametersV1),"
           enum_new = "    Multisig(Box<MultisigParametersV1>),"
           assert text.count(enum_old) == 1, text.count(enum_old)
           text = text.replace(enum_old, enum_new, 1)
-          test_old = '''        let parameters = CovenantParametersV1::Multisig(MultisigParametersV1 {
-              spend_commitment: commitment(0x41),
-              threshold: 2,
-              participants: set(&[commitment(0x11), commitment(0x22), commitment(0x33)]),
-          });'''
-          test_new = '''        let parameters = CovenantParametersV1::Multisig(Box::new(MultisigParametersV1 {
-              spend_commitment: commitment(0x41),
-              threshold: 2,
-              participants: set(&[commitment(0x11), commitment(0x22), commitment(0x33)]),
-          }));'''
-          assert text.count(test_old) == 1, text.count(test_old)
-          text = text.replace(test_old, test_new, 1)
+
+          ctor_old = "CovenantParametersV1::Multisig(MultisigParametersV1 {"
+          ctor_new = "CovenantParametersV1::Multisig(Box::new(MultisigParametersV1 {"
+          assert text.count(ctor_old) == 1, text.count(ctor_old)
+          text = text.replace(ctor_old, ctor_new, 1)
+
+          start = text.index(ctor_new)
+          end_marker = "\n        });"
+          end = text.index(end_marker, start)
+          text = text[:end] + "\n        }));" + text[end + len(end_marker):]
+
           path.write_text(text)
       - name: Install Rust 1.91.0 rustfmt
         uses: dtolnay/rust-toolchain@stable
