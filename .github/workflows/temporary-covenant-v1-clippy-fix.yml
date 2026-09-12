@@ -1,0 +1,56 @@
+name: temporary covenant v1 clippy fix
+
+on:
+  push:
+    branches:
+      - codex/issue-1041-covenants-v1-semantics
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v4
+        with:
+          ref: codex/issue-1041-covenants-v1-semantics
+      - name: Apply large-enum-variant fix
+        shell: python
+        run: |
+          from pathlib import Path
+          path = Path("crates/pulsedag-core/src/covenant_v1.rs")
+          text = path.read_text()
+          enum_old = "    Multisig(MultisigParametersV1),"
+          enum_new = "    Multisig(Box<MultisigParametersV1>),"
+          assert text.count(enum_old) == 1, text.count(enum_old)
+          text = text.replace(enum_old, enum_new, 1)
+          test_old = '''        let parameters = CovenantParametersV1::Multisig(MultisigParametersV1 {
+              spend_commitment: commitment(0x41),
+              threshold: 2,
+              participants: set(&[commitment(0x11), commitment(0x22), commitment(0x33)]),
+          });'''
+          test_new = '''        let parameters = CovenantParametersV1::Multisig(Box::new(MultisigParametersV1 {
+              spend_commitment: commitment(0x41),
+              threshold: 2,
+              participants: set(&[commitment(0x11), commitment(0x22), commitment(0x33)]),
+          }));'''
+          assert text.count(test_old) == 1, text.count(test_old)
+          text = text.replace(test_old, test_new, 1)
+          path.write_text(text)
+      - name: Install Rust 1.91.0 rustfmt
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.91.0
+          components: rustfmt
+      - name: Apply rustfmt
+        run: cargo fmt --all
+      - name: Commit fix
+        run: |
+          git diff --check
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add crates/pulsedag-core/src/covenant_v1.rs
+          git commit -m "fix(core): box large covenant parameter variant"
+          git push origin HEAD:codex/issue-1041-covenants-v1-semantics
