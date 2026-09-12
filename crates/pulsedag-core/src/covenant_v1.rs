@@ -331,7 +331,10 @@ impl CovenantParametersV1 {
         match self {
             Self::Timelock(p) => {
                 ensure_nonzero("timelock spend", &p.spend_commitment)?;
-                ensure_nonzero("timelock authorization key", &p.authorization_key_commitment)?;
+                ensure_nonzero(
+                    "timelock authorization key",
+                    &p.authorization_key_commitment,
+                )?;
             }
             Self::Vault(p) => {
                 ensure_nonzero("vault normal spend", &p.normal_spend_commitment)?;
@@ -399,8 +402,14 @@ impl CovenantParametersV1 {
                 )?;
             }
             Self::PaymentChannel(p) => {
-                ensure_nonzero("payment-channel cooperative spend", &p.cooperative_spend_commitment)?;
-                ensure_nonzero("payment-channel unilateral spend", &p.unilateral_spend_commitment)?;
+                ensure_nonzero(
+                    "payment-channel cooperative spend",
+                    &p.cooperative_spend_commitment,
+                )?;
+                ensure_nonzero(
+                    "payment-channel unilateral spend",
+                    &p.unilateral_spend_commitment,
+                )?;
                 ensure_nonzero("payment-channel party A key", &p.party_a_key_commitment)?;
                 ensure_nonzero("payment-channel party B key", &p.party_b_key_commitment)?;
                 ensure_nonzero("payment-channel state", &p.state_commitment)?;
@@ -513,7 +522,10 @@ impl CovenantWitnessV1 {
                 preimage,
                 ..
             } => {
-                ensure_nonzero("atomic-swap authorization key", authorization_key_commitment)?;
+                ensure_nonzero(
+                    "atomic-swap authorization key",
+                    authorization_key_commitment,
+                )?;
                 preimage.validate()
             }
             Self::PaymentChannel {
@@ -539,7 +551,9 @@ pub struct CovenantExecutionContextV1 {
 impl CovenantExecutionContextV1 {
     pub fn validate(&self) -> Result<(), CovenantExecutionError> {
         if self.version != COVENANT_EXECUTION_SEMANTICS_VERSION_V1 {
-            return Err(CovenantExecutionError::UnsupportedExecutionVersion(self.version));
+            return Err(CovenantExecutionError::UnsupportedExecutionVersion(
+                self.version,
+            ));
         }
         ensure_nonzero("covenant execution spend", &self.spend_commitment)
     }
@@ -602,7 +616,9 @@ pub fn canonical_covenant_parameters_bytes_v1(
 pub fn covenant_parameters_commitment_v1(
     parameters: &CovenantParametersV1,
 ) -> Result<[u8; 32], CovenantExecutionError> {
-    Ok(sha256_array(&canonical_covenant_parameters_bytes_v1(parameters)?))
+    Ok(sha256_array(&canonical_covenant_parameters_bytes_v1(
+        parameters,
+    )?))
 }
 
 pub fn descriptor_for_covenant_parameters_v1(
@@ -784,7 +800,11 @@ fn evaluate_timelock(
             required: p.not_before_height,
         });
     }
-    require_authorization(authorization, &p.authorization_key_commitment, "timelock key")
+    require_authorization(
+        authorization,
+        &p.authorization_key_commitment,
+        "timelock key",
+    )
 }
 
 fn evaluate_vault(
@@ -806,7 +826,11 @@ fn evaluate_vault(
                     required: p.recovery_height,
                 });
             }
-            require_authorization(authorization, &p.recovery_key_commitment, "vault recovery key")
+            require_authorization(
+                authorization,
+                &p.recovery_key_commitment,
+                "vault recovery key",
+            )
         }
     }
 }
@@ -841,13 +865,27 @@ fn evaluate_escrow(
     let valid = match path {
         EscrowSpendPathV1::Release => {
             require_spend(&context.spend_commitment, &p.release_spend_commitment)?;
-            exact_pair(authorizations, &p.buyer_key_commitment, &p.seller_key_commitment)?
-                || exact_pair(authorizations, &p.seller_key_commitment, &p.arbiter_key_commitment)?
+            exact_pair(
+                authorizations,
+                &p.buyer_key_commitment,
+                &p.seller_key_commitment,
+            )? || exact_pair(
+                authorizations,
+                &p.seller_key_commitment,
+                &p.arbiter_key_commitment,
+            )?
         }
         EscrowSpendPathV1::Refund => {
             require_spend(&context.spend_commitment, &p.refund_spend_commitment)?;
-            exact_pair(authorizations, &p.buyer_key_commitment, &p.seller_key_commitment)?
-                || exact_pair(authorizations, &p.buyer_key_commitment, &p.arbiter_key_commitment)?
+            exact_pair(
+                authorizations,
+                &p.buyer_key_commitment,
+                &p.seller_key_commitment,
+            )? || exact_pair(
+                authorizations,
+                &p.buyer_key_commitment,
+                &p.arbiter_key_commitment,
+            )?
         }
     };
     if !valid {
@@ -872,7 +910,11 @@ fn evaluate_atomic_swap(
                     refund_height: p.refund_height,
                 });
             }
-            require_authorization(authorization, &p.claim_key_commitment, "atomic-swap claim key")?;
+            require_authorization(
+                authorization,
+                &p.claim_key_commitment,
+                "atomic-swap claim key",
+            )?;
             let bytes = preimage.to_vec()?;
             if bytes.is_empty() || sha256_array(&bytes) != p.secret_hash {
                 return Err(CovenantExecutionError::AtomicSwapPreimageMismatch);
@@ -886,7 +928,11 @@ fn evaluate_atomic_swap(
                     required: p.refund_height,
                 });
             }
-            require_authorization(authorization, &p.refund_key_commitment, "atomic-swap refund key")?;
+            require_authorization(
+                authorization,
+                &p.refund_key_commitment,
+                "atomic-swap refund key",
+            )?;
             if !preimage.is_empty()? {
                 return Err(CovenantExecutionError::UnexpectedAtomicSwapPreimage);
             }
@@ -915,7 +961,11 @@ fn evaluate_payment_channel(
     match path {
         PaymentChannelSpendPathV1::Cooperative => {
             require_spend(&context.spend_commitment, &p.cooperative_spend_commitment)?;
-            if !exact_pair(authorizations, &p.party_a_key_commitment, &p.party_b_key_commitment)? {
+            if !exact_pair(
+                authorizations,
+                &p.party_a_key_commitment,
+                &p.party_b_key_commitment,
+            )? {
                 return Err(CovenantExecutionError::InvalidPaymentChannelAuthorization);
             }
         }
@@ -1092,7 +1142,12 @@ mod tests {
             authorization_key_commitment: commitment(0x22),
         };
         assert!(matches!(
-            evaluate_covenant_v1(&descriptor, &parameters, &witness, &context(99, commitment(0x11))),
+            evaluate_covenant_v1(
+                &descriptor,
+                &parameters,
+                &witness,
+                &context(99, commitment(0x11))
+            ),
             Err(CovenantExecutionError::TimelockNotMature { .. })
         ));
         assert!(evaluate_covenant_v1(
