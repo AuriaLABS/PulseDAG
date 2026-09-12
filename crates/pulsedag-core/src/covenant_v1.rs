@@ -309,7 +309,7 @@ pub struct PaymentChannelParametersV1 {
 pub enum CovenantParametersV1 {
     Timelock(TimelockParametersV1),
     Vault(VaultParametersV1),
-    Multisig(MultisigParametersV1),
+    Multisig(Box<MultisigParametersV1>),
     Escrow(EscrowParametersV1),
     AtomicSwap(AtomicSwapParametersV1),
     PaymentChannel(PaymentChannelParametersV1),
@@ -1204,11 +1204,11 @@ mod tests {
 
     #[test]
     fn multisig_requires_threshold_of_committed_participants() {
-        let parameters = CovenantParametersV1::Multisig(MultisigParametersV1 {
+        let parameters = CovenantParametersV1::Multisig(Box::new(MultisigParametersV1 {
             spend_commitment: commitment(0x41),
             threshold: 2,
             participants: set(&[commitment(0x11), commitment(0x22), commitment(0x33)]),
-        });
+        }));
         let descriptor = descriptor_for_covenant_parameters_v1(&parameters, 1024).unwrap();
         let accepted = CovenantWitnessV1::Multisig {
             authorization_key_commitments: set(&[commitment(0x11), commitment(0x22)]),
