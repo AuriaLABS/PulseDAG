@@ -460,7 +460,7 @@ pub enum PaymentChannelSpendPathV1 {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum CovenantWitnessV1 {
     Timelock {
         authorization_key_commitment: [u8; 32],
