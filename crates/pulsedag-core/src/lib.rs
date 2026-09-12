@@ -4,6 +4,7 @@ pub mod apply;
 pub mod consensus_metadata;
 pub mod consistency;
 pub mod contract_v3;
+pub mod covenant_v1;
 pub mod errors;
 pub mod finality_v2;
 pub mod genesis;
