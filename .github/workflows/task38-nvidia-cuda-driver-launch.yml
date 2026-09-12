@@ -1,0 +1,151 @@
+name: v3 launch Task 38 NVIDIA CUDA Driver launch phase 5
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - apps/pulsedag-miner/Cargo.toml
+      - apps/pulsedag-miner/src/lib.rs
+      - apps/pulsedag-miner/src/protocol_pow.rs
+      - apps/pulsedag-miner/src/cuda_driver_launch.rs
+      - apps/pulsedag-miner/tests/cuda_driver_launch_contract.rs
+      - apps/pulsedag-miner/tests/support/mock_cuda_driver.cpp
+      - apps/pulsedag-miner/cuda/kheavyhash.cu
+      - apps/pulsedag-miner/cuda/kheavyhash_launch.cu
+      - .github/workflows/task38-nvidia-cuda-driver-launch.yml
+  push:
+    branches:
+      - main
+    paths:
+      - apps/pulsedag-miner/Cargo.toml
+      - apps/pulsedag-miner/src/lib.rs
+      - apps/pulsedag-miner/src/protocol_pow.rs
+      - apps/pulsedag-miner/src/cuda_driver_launch.rs
+      - apps/pulsedag-miner/tests/cuda_driver_launch_contract.rs
+      - apps/pulsedag-miner/tests/support/mock_cuda_driver.cpp
+      - apps/pulsedag-miner/cuda/kheavyhash.cu
+      - apps/pulsedag-miner/cuda/kheavyhash_launch.cu
+      - .github/workflows/task38-nvidia-cuda-driver-launch.yml
+
+permissions:
+  contents: read
+
+jobs:
+  cuda-driver-launch-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Verify exact SHA and clean checkout
+        shell: bash
+        env:
+          CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          test -z "$(git status --porcelain)"
+          echo "task38_cuda_driver_launch_candidate_sha=$CANDIDATE_SHA"
+
+      - name: Install Rust 1.91.0
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.91.0
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Workspace format contract
+        run: cargo fmt --all -- --check
+
+      - name: All-zero Xoshiro seed fails before CUDA runtime loading
+        env:
+          PULSEDAG_CUDA_DRIVER_LIBRARY: /definitely/not-present/libcuda-pulsedag.so
+        run: cargo test --locked -p pulsedag-miner --features cuda --lib all_zero_pre_pow_hash_fails_before_loading_cuda
+
+      - name: Build deterministic CUDA Driver API shim
+        shell: bash
+        run: |
+          set -euo pipefail
+          g++ -std=c++17 -O2 -fPIC -shared \
+            apps/pulsedag-miner/tests/support/mock_cuda_driver.cpp \
+            -o /tmp/libcuda-pulsedag-mock.so
+          test -s /tmp/libcuda-pulsedag-mock.so
+
+      - name: CUDA Driver launch matches canonical legacy and v2 PoW
+        env:
+          PULSEDAG_CUDA_DRIVER_LIBRARY: /tmp/libcuda-pulsedag-mock.so
+        run: cargo test --locked -p pulsedag-miner --features cuda --test cuda_driver_launch_contract
+
+      - name: Canonical accelerator re-verification regression
+        run: cargo test --locked -p pulsedag-miner accelerator_hash_requires_exact_canonical_match
+
+      - name: CUDA launch contract clippy
+        run: cargo clippy --locked -p pulsedag-miner --features cuda --test cuda_driver_launch_contract -- -D warnings
+
+      - name: Miner library clippy
+        run: cargo clippy --locked -p pulsedag-miner --features cuda --lib -- -D warnings
+
+      - name: Record software launch contract scope
+        shell: bash
+        run: |
+          echo "cuda_driver_api_host_orchestration=PASS"
+          echo "cuda_driver_matrix_launch_contract=PASS"
+          echo "cuda_driver_hash_launch_contract=PASS"
+          echo "cuda_driver_legacy_v1_canonical_reverification=PASS"
+          echo "cuda_driver_activated_v2_canonical_reverification=PASS"
+          echo "nvidia_cuda_hardware_execution=NOT_CLAIMED"
+          echo "GPU_MINING_NVIDIA_PASS=NOT_CLAIMED"
+
+  cuda-launch-ptx-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Verify exact SHA and clean checkout
+        shell: bash
+        env:
+          CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          test -z "$(git status --porcelain)"
+
+      - name: Compile launch wrapper, compare matrix generators, and emit PTX
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            -v "${PWD}:/work" \
+            -w /work \
+            nvidia/cuda:12.9.2-devel-ubuntu24.04 \
+            bash -lc '
+              set -euo pipefail
+              nvcc --version
+              nvcc -std=c++17 -O2 -arch=sm_60 \
+                -DPULSEDAG_CUDA_LAUNCH_SELF_TEST \
+                apps/pulsedag-miner/cuda/kheavyhash_launch.cu \
+                -o /tmp/pulsedag-kheavyhash-launch-selftest
+              /tmp/pulsedag-kheavyhash-launch-selftest
+              nvcc -std=c++17 -O2 -arch=sm_60 --ptx \
+                apps/pulsedag-miner/cuda/kheavyhash_launch.cu \
+                -o /tmp/pulsedag-kheavyhash-launch.ptx
+              test -s /tmp/pulsedag-kheavyhash-launch.ptx
+              grep -q "pulsedag_generate_matrix_kernel" /tmp/pulsedag-kheavyhash-launch.ptx
+              grep -q "pulsedag_kheavyhash_kernel" /tmp/pulsedag-kheavyhash-launch.ptx
+              echo "nvidia_cuda_launch_wrapper_compile=PASS"
+              echo "nvidia_cuda_matrix_generator_equivalence=PASS"
+              echo "nvidia_cuda_launch_ptx_symbols=PASS"
+              echo "nvidia_cuda_hardware_execution=NOT_CLAIMED"
+            '
