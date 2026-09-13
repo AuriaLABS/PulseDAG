@@ -156,31 +156,55 @@ jobs:
           cargo fmt --all -- --check
           git diff --check
 
-      - name: Verify merged contracts
+      - name: Report merged contracts
         shell: bash
         run: |
-          set -euo pipefail
-          grep -q authoritative_confirmed_transaction_occurrences crates/pulsedag-core/src/validation.rs
-          grep -q MEMPOOL_POLICY_V3_PRODUCTION_MAX_TRANSACTION_FEE crates/pulsedag-core/src/validation.rs
-          grep -q authoritative_address_activity_v1 crates/pulsedag-rpc/src/handlers/release.rs
-          grep -q authoritative_address_activity_v2 crates/pulsedag-rpc/src/handlers/release.rs
-          grep -q /api/v1/mempool/fee-estimate crates/pulsedag-rpc/src/handlers/release.rs
-          grep -q 'FeeEstimate(NetworkReadOnlyArgs)' crates/pulsedag-wallet/src/bin/pulsedag-wallet.rs
-          grep -q fetch_mempool_fee_estimate crates/pulsedag-wallet/src/bin/pulsedag-wallet.rs
-          grep -q pending_journal crates/pulsedag-wallet/src/bin/pulsedag-wallet.rs
-          grep -q prepare_broadcast crates/pulsedag-wallet/src/bin/pulsedag-wallet.rs
-          grep -q submit_prepared crates/pulsedag-wallet/src/bin/pulsedag-wallet.rs
-          grep -q PENDING_UTXO_RESERVED crates/pulsedag-wallet/src/bin/pulsedag-wallet.rs
-          ! grep -q broadcast_signed crates/pulsedag-wallet/src/bin/pulsedag-wallet.rs
-          grep -q MEMPOOL_FEE_ESTIMATE_V3_VERSION crates/pulsedag-wallet/src/pulsedag_wallet_relay.rs
-          grep -q 'pub struct MempoolFeeEstimateOutput' crates/pulsedag-wallet/src/pulsedag_wallet_relay.rs
-          grep -q 'async fn fetch_mempool_identity' crates/pulsedag-wallet/src/pulsedag_wallet_relay.rs
-          grep -q 'pub async fn fetch_mempool_fee_estimate' crates/pulsedag-wallet/src/pulsedag_wallet_relay.rs
-          grep -q 'pub async fn prepare_broadcast' crates/pulsedag-wallet/src/pulsedag_wallet_relay.rs
-          grep -q 'pub async fn submit_prepared' crates/pulsedag-wallet/src/pulsedag_wallet_relay.rs
-          grep -q rejection_classification crates/pulsedag-wallet/src/pulsedag_wallet_relay.rs
-          ! grep -q 'async fn submit_transaction' crates/pulsedag-wallet/src/pulsedag_wallet_relay.rs
-          ! grep -q 'pub async fn broadcast_signed' crates/pulsedag-wallet/src/pulsedag_wallet_relay.rs
+          set -uo pipefail
+          failures=0
+          present() {
+            label="$1"; pattern="$2"; file="$3"
+            if grep -Fq -- "$pattern" "$file"; then
+              echo "PASS: $label"
+            else
+              echo "FAIL: $label (missing '$pattern' in $file)"
+              failures=$((failures + 1))
+            fi
+          }
+          absent() {
+            label="$1"; pattern="$2"; file="$3"
+            if grep -Fq -- "$pattern" "$file"; then
+              echo "FAIL: $label (unexpected '$pattern' in $file)"
+              failures=$((failures + 1))
+            else
+              echo "PASS: $label"
+            fi
+          }
+
+          present core-authoritative-occurrence authoritative_confirmed_transaction_occurrences crates/pulsedag-core/src/validation.rs
+          present core-production-fee-bound MEMPOOL_POLICY_V3_PRODUCTION_MAX_TRANSACTION_FEE crates/pulsedag-core/src/validation.rs
+          present release-authoritative-v1 authoritative_address_activity_v1 crates/pulsedag-rpc/src/handlers/release.rs
+          present release-authoritative-v2 authoritative_address_activity_v2 crates/pulsedag-rpc/src/handlers/release.rs
+          present release-fee-estimate-route /api/v1/mempool/fee-estimate crates/pulsedag-rpc/src/handlers/release.rs
+          present cli-fee-estimate-command 'FeeEstimate(NetworkReadOnlyArgs)' crates/pulsedag-wallet/src/bin/pulsedag-wallet.rs
+          present cli-fee-estimate-fetch fetch_mempool_fee_estimate crates/pulsedag-wallet/src/bin/pulsedag-wallet.rs
+          present cli-pending-journal pending_journal crates/pulsedag-wallet/src/bin/pulsedag-wallet.rs
+          present cli-prepare-broadcast prepare_broadcast crates/pulsedag-wallet/src/bin/pulsedag-wallet.rs
+          present cli-submit-prepared submit_prepared crates/pulsedag-wallet/src/bin/pulsedag-wallet.rs
+          present cli-reservation-error PENDING_UTXO_RESERVED crates/pulsedag-wallet/src/bin/pulsedag-wallet.rs
+          absent cli-no-one-shot-broadcast broadcast_signed crates/pulsedag-wallet/src/bin/pulsedag-wallet.rs
+          present relay-fee-version MEMPOOL_FEE_ESTIMATE_V3_VERSION crates/pulsedag-wallet/src/pulsedag_wallet_relay.rs
+          present relay-fee-output 'pub struct MempoolFeeEstimateOutput' crates/pulsedag-wallet/src/pulsedag_wallet_relay.rs
+          present relay-mempool-identity 'async fn fetch_mempool_identity' crates/pulsedag-wallet/src/pulsedag_wallet_relay.rs
+          present relay-fee-fetch 'pub async fn fetch_mempool_fee_estimate' crates/pulsedag-wallet/src/pulsedag_wallet_relay.rs
+          present relay-prepare 'pub async fn prepare_broadcast' crates/pulsedag-wallet/src/pulsedag_wallet_relay.rs
+          present relay-submit 'pub async fn submit_prepared' crates/pulsedag-wallet/src/pulsedag_wallet_relay.rs
+          present relay-rejection-classification rejection_classification crates/pulsedag-wallet/src/pulsedag_wallet_relay.rs
+          absent relay-no-old-submit 'async fn submit_transaction' crates/pulsedag-wallet/src/pulsedag_wallet_relay.rs
+          absent relay-no-one-shot-wrapper 'pub async fn broadcast_signed' crates/pulsedag-wallet/src/pulsedag_wallet_relay.rs
+
+          echo "$failures" > .pr1062-contract-failures
+          echo "CONTRACT_FAILURES=$failures"
+          exit 0
 
       - name: Compile affected packages and all targets
         shell: bash
@@ -209,6 +233,7 @@ jobs:
           cp crates/pulsedag-rpc/src/handlers/release.rs .pr1062-artifact/crates/pulsedag-rpc/src/handlers/release.rs
           cp crates/pulsedag-wallet/src/bin/pulsedag-wallet.rs .pr1062-artifact/crates/pulsedag-wallet/src/bin/pulsedag-wallet.rs
           cp crates/pulsedag-wallet/src/pulsedag_wallet_relay.rs .pr1062-artifact/crates/pulsedag-wallet/src/pulsedag_wallet_relay.rs
+          cp .pr1062-contract-failures .pr1062-artifact/contract-failures
           sha256sum .pr1062-artifact/crates/pulsedag-core/src/validation.rs \
                     .pr1062-artifact/crates/pulsedag-rpc/src/handlers/release.rs \
                     .pr1062-artifact/crates/pulsedag-wallet/src/bin/pulsedag-wallet.rs \
@@ -228,3 +253,9 @@ jobs:
           path: .pr1062-artifact
           if-no-files-found: error
           retention-days: 1
+
+      - name: Enforce merged contract gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(cat .pr1062-contract-failures)" = "0"
