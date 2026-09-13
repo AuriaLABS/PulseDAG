@@ -7,7 +7,7 @@ on:
 
 jobs:
   merge-four-files:
-    runs-on: ubuntu-latest
+    runs-on: macos-latest
     timeout-minutes: 45
     steps:
       - name: Checkout helper branch with full history
@@ -83,7 +83,7 @@ jobs:
           cp crates/pulsedag-rpc/src/handlers/release.rs /tmp/pr1062-artifact/crates/pulsedag-rpc/src/handlers/release.rs
           cp crates/pulsedag-wallet/src/bin/pulsedag-wallet.rs /tmp/pr1062-artifact/crates/pulsedag-wallet/src/bin/pulsedag-wallet.rs
           cp crates/pulsedag-wallet/src/pulsedag_wallet_relay.rs /tmp/pr1062-artifact/crates/pulsedag-wallet/src/pulsedag_wallet_relay.rs
-          sha256sum \
+          shasum -a 256 \
             /tmp/pr1062-artifact/crates/pulsedag-core/src/validation.rs \
             /tmp/pr1062-artifact/crates/pulsedag-rpc/src/handlers/release.rs \
             /tmp/pr1062-artifact/crates/pulsedag-wallet/src/bin/pulsedag-wallet.rs \
@@ -93,7 +93,7 @@ jobs:
       - name: Upload merged four-file artifact
         uses: actions/upload-artifact@v4
         with:
-          name: pr1062-four-merged-files
+          name: pr1062-four-merged-files-macos
           path: /tmp/pr1062-artifact
           if-no-files-found: error
           retention-days: 1
