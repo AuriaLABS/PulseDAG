@@ -76,6 +76,12 @@ jobs:
       - name: Run 1000ms 500ms 250ms rehearsal matrix
         env:
           EVIDENCE_DIR: ${{ runner.temp }}/task39-cadence
+          PULSEDAG_MAX_PARALLEL_TIPS: "8"
+          PULSEDAG_MAX_MERGE_SET_SIZE: "64"
+          PULSEDAG_MAX_ORPHAN_COUNT: "2048"
+          PULSEDAG_MAX_PENDING_MISSING_PARENTS: "1024"
+          PULSEDAG_MAX_BLOCK_MASS: "2000000"
+          PULSEDAG_MAX_TEMPLATE_AGE_MS: "5000"
         run: |
           set -euo pipefail
           python3 scripts/private_testnet/task39_cadence_evidence.py \
