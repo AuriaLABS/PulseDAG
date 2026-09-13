@@ -4,6 +4,8 @@ on:
   pull_request:
     paths:
       - "scripts/release/validate_v3_evidence_ledger.py"
+      - "scripts/validate_v3_0_0_network_freeze.py"
+      - "docs/V3_0_0_LAUNCH_MANIFEST.md"
       - "docs/release/V3_EVIDENCE_LEDGER.md"
       - "docs/release/v3-evidence-ledger.json"
       - ".github/workflows/v3-evidence-ledger.yml"
@@ -12,6 +14,8 @@ on:
       - main
     paths:
       - "scripts/release/validate_v3_evidence_ledger.py"
+      - "scripts/validate_v3_0_0_network_freeze.py"
+      - "docs/V3_0_0_LAUNCH_MANIFEST.md"
       - "docs/release/V3_EVIDENCE_LEDGER.md"
       - "docs/release/v3-evidence-ledger.json"
       - ".github/workflows/v3-evidence-ledger.yml"
@@ -28,6 +32,8 @@ jobs:
         run: |
           set -euo pipefail
           python3 scripts/release/validate_v3_evidence_ledger.py --self-test
+          python3 scripts/validate_v3_0_0_network_freeze.py --self-test
+          python3 scripts/validate_v3_0_0_network_freeze.py
           if [[ -f docs/release/v3-evidence-ledger.json ]]; then
             python3 scripts/release/validate_v3_evidence_ledger.py docs/release/v3-evidence-ledger.json
           fi

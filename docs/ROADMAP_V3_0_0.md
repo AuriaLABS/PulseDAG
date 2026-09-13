@@ -1,6 +1,6 @@
 # PulseDAG v3.0.0 roadmap and gates
 
-v3.0.0 is the stable network target for the long-lived PulseDAG core. It must be earned through evidence from the v2.2.x hardening line, the v2.3.0 private-testnet readiness decision, private testnet operation, stable testnet burn-in, and release-candidate rehearsals.
+v3.0.0 is the definitive coordinated mainnet and parallel public-testnet release. It must be earned through the integrated v2.5.0 scale/resilience and v2.6.0 programmability workstreams, exact-candidate evidence, and the final launch decision.
 
 ## Target definition
 
@@ -8,12 +8,11 @@ v3.0.0 should represent a stable node core with documented consensus behavior, s
 
 ## Required gate sequence
 
-1. v2.2.14 foundation hardening documents and rehearses storage, replay, snapshot, mining-template, three-node, and burn-in evidence expectations.
-2. v2.3.0 makes the private-testnet readiness decision only after its required gates are satisfied.
-3. Private testnet operation completes the 14-day burn-in gate with no unresolved Sev-1 consensus, storage, replay, sync, or mining-template incidents.
-4. Stable testnet operation completes at least 30 days before smart contract implementation begins.
-5. v3 release candidates prove deterministic replay, snapshot restore, multi-node convergence, miner submit behavior, upgrade/rollback, monitoring, and operator runbook readiness.
-6. v3.0.0 is tagged only after release evidence shows every hard gate is satisfied or an explicit non-blocking waiver is recorded.
+1. v2.5.0 scale, resilience, GPU, mining, replay, upgrade, API, chaos, and burn-in gates complete.
+2. v2.6.0 programmability, contract, VM, fee, proof, asset, security, and replay gates complete.
+3. Wallet/custody, dependency/security, release, network-isolation, and production-operations gates complete on one exact candidate.
+4. Mainnet and the parallel public testnet receive independently frozen identities and reproducible genesis/configuration.
+5. v3.0.0 is tagged only after the exact-candidate evidence ledger and launch manifest support `GO_V3_DUAL_LAUNCH`.
 
 ## v3 hard gates
 
@@ -41,13 +40,16 @@ v2.3.0 is a readiness decision, not a public launch. It requires the evidence es
 
 ## Stable network target
 
-The stable network target for v3.0.0 requires more than a private testnet boot. It requires sustained stable-testnet behavior, incident discipline, documented recovery paths, and release-candidate artifacts that can be operated by maintainers without hidden local assumptions.
+The definitive network target requires more than a private testnet boot. It
+requires the integrated v2.5/v2.6 evidence, incident discipline, documented
+recovery paths, and exact release artifacts that can be operated without hidden
+local assumptions.
 
-A stable testnet must run for at least 30 days before smart contract implementation begins. The 30-day period should include normal block production, node restarts, snapshot/restore drills, miner submit validation, monitoring review, and incident review.
+Programmability evidence must include 30 accepted days on the exact integrated candidate before GO. This is an acceptance gate, not a prerequisite to begin programmability implementation and not a pre-mainnet public-testnet clock.
 
 ## Smart contract gate
 
-Smart contracts are post-stable-testnet work. Before the 30-day stable testnet gate completes, the project must not add:
+Programmability is part of the integrated v3.0.0 acceptance matrix and must pass before GO. It includes:
 
 - Smart contract VM/runtime execution.
 - Contract deployment transactions.
@@ -56,7 +58,8 @@ Smart contracts are post-stable-testnet work. Before the 30-day stable testnet g
 - Contract RPC/API surfaces.
 - Contract-specific consensus rules.
 
-Design notes may be written, but implementation must wait until the stable core has proven itself.
+- Covenants, Contract Transaction v3, PulseScript, bounded VM, parallel execution, applications, proofs, assets, state/events/RPC, and programmable fees.
+- Contract security/fuzzing/adversarial evidence and at least 1,000,000 programmable-operation deterministic replay.
 
 ## Miner and pool gate
 
@@ -66,7 +69,7 @@ Pool logic is not allowed in the miner. Share accounting, payout policy, pool me
 
 ## Explicitly out of scope for v3.0.0
 
-- Smart contracts before the 30-day stable testnet gate.
+- A standalone public-testnet launch before v3.0.0.
 - Embedding a miner inside the node.
 - Adding pool logic to the miner.
 - Public claims that exceed the documented consensus and network evidence.
