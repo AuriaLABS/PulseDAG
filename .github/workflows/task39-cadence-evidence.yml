@@ -1,0 +1,142 @@
+name: v3 Task39 cadence evidence
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - apps/pulsedagd/**
+      - apps/pulsedag-miner/**
+      - crates/pulsedag-core/**
+      - crates/pulsedag-p2p/**
+      - crates/pulsedag-rpc/**
+      - crates/pulsedag-storage/**
+      - scripts/private_testnet/task39_cadence_evidence.py
+      - .github/workflows/task39-cadence-evidence.yml
+  push:
+    branches:
+      - main
+    paths:
+      - apps/pulsedagd/**
+      - apps/pulsedag-miner/**
+      - crates/pulsedag-core/**
+      - crates/pulsedag-p2p/**
+      - crates/pulsedag-rpc/**
+      - crates/pulsedag-storage/**
+      - scripts/private_testnet/task39_cadence_evidence.py
+      - .github/workflows/task39-cadence-evidence.yml
+
+permissions:
+  contents: read
+
+jobs:
+  cadence-evidence:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Verify exact candidate and clean tree
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          test -z "$(git status --porcelain)"
+          echo "candidate_sha=$(git rev-parse HEAD)"
+          echo "candidate_tree=$(git rev-parse 'HEAD^{tree}')"
+
+      - name: Task39 harness syntax and self-test
+        run: |
+          set -euo pipefail
+          python3 -m py_compile scripts/private_testnet/task39_cadence_evidence.py
+          python3 scripts/private_testnet/task39_cadence_evidence.py --self-test
+          rm -rf scripts/private_testnet/__pycache__
+          test -z "$(git status --porcelain)"
+
+      - name: Existing fast-cadence guard regressions
+        run: |
+          set -euo pipefail
+          cargo test --locked -p pulsedagd config::tests::experimental_fast_cadence
+          cargo test --locked -p pulsedagd config::tests::target_block_interval
+
+      - name: Build release node and standalone miner
+        run: cargo build --locked --release -p pulsedagd -p pulsedag-miner
+
+      - name: Run 1000ms 500ms 250ms rehearsal matrix
+        env:
+          EVIDENCE_DIR: ${{ runner.temp }}/task39-cadence
+          PULSEDAG_MAX_PARALLEL_TIPS: "8"
+          PULSEDAG_MAX_MERGE_SET_SIZE: "64"
+          PULSEDAG_MAX_ORPHAN_COUNT: "2048"
+          PULSEDAG_MAX_PENDING_MISSING_PARENTS: "1024"
+          PULSEDAG_MAX_BLOCK_MASS: "2000000"
+          PULSEDAG_MAX_TEMPLATE_AGE_MS: "5000"
+        run: |
+          set -euo pipefail
+          python3 scripts/private_testnet/task39_cadence_evidence.py \
+            --candidate-sha "$CANDIDATE_SHA" \
+            --out-dir "$EVIDENCE_DIR" \
+            --duration-secs 10 \
+            --sample-ms 50 \
+            --max-tries 500000 \
+            --threads 1
+
+      - name: Enforce runtime result and evidence digests without premature completion claim
+        env:
+          EVIDENCE_DIR: ${{ runner.temp }}/task39-cadence
+        run: |
+          set -euo pipefail
+          jq -e --arg sha "$CANDIDATE_SHA" '
+            .candidate_sha == $sha and
+            .required_cadence_points_ms == [1000,500,250] and
+            .runtime_gate_result == "PASS" and
+            .completion_eligible == false and
+            .production_cadence_selected == false and
+            (.runs | length) == 3 and
+            ([.runs[].cadence_ms] == [1000,500,250]) and
+            (all(.runs[]; .runtime_gate_result == "PASS" and .completion_eligible == false)) and
+            (all(.runs[]; (.evidence_sha256 | test("^[0-9a-f]{64}$"))))
+          ' "$EVIDENCE_DIR/aggregate.json" >/dev/null
+          for cadence in 1000 500 250; do
+            evidence="$EVIDENCE_DIR/cadence-${cadence}ms/evidence.json"
+            jq -e --arg sha "$CANDIDATE_SHA" --argjson cadence "$cadence" '
+              .candidate_sha == $sha and
+              .configured_cadence_ms == $cadence and
+              .configured_experimental_limits.PULSEDAG_MAX_PARALLEL_TIPS == 8 and
+              .configured_experimental_limits.PULSEDAG_MAX_MERGE_SET_SIZE == 64 and
+              .configured_experimental_limits.PULSEDAG_MAX_ORPHAN_COUNT == 2048 and
+              .configured_experimental_limits.PULSEDAG_MAX_PENDING_MISSING_PARENTS == 1024 and
+              .configured_experimental_limits.PULSEDAG_MAX_BLOCK_MASS == 2000000 and
+              .configured_experimental_limits.PULSEDAG_MAX_TEMPLATE_AGE_MS == 5000 and
+              .experimental_only == true and
+              .runtime_gate_result == "PASS" and
+              .production_cadence_selected == false and
+              .coverage.completion_eligible == false and
+              (.coverage.missing_required_measurements | length) >= 1
+            ' "$evidence" >/dev/null
+            expected="$(jq -r --argjson cadence "$cadence" '.runs[] | select(.cadence_ms == $cadence) | .evidence_sha256' "$EVIDENCE_DIR/aggregate.json")"
+            actual="$(sha256sum "$evidence" | awk '{print $1}')"
+            test -n "$expected"
+            test "$expected" != "null"
+            test "$expected" = "$actual"
+          done
+
+      - name: Upload exact-candidate cadence evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: task39-cadence-${{ github.event.pull_request.head.sha || github.sha }}
+          path: ${{ runner.temp }}/task39-cadence
+          if-no-files-found: error
+          retention-days: 14
