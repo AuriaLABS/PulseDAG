@@ -122,8 +122,17 @@ jobs:
               .configured_experimental_limits.PULSEDAG_MAX_TEMPLATE_AGE_MS == 5000 and
               .runtime_observation.consensus_mode == "ghostdag_dev" and
               .runtime_observation.protocol_consensus_mode == "legacy" and
-              .runtime_observation.p2p_mode == "libp2p-real" and
-              .runtime_observation.p2p_mdns == false and
+              .runtime_observation.configured_p2p.mode == "libp2p-real" and
+              .runtime_observation.configured_p2p.mdns == false and
+              ([.runtime_observation.observed_p2p_mode_by_node[]] | all(. == "libp2p-real")) and
+              ([.runtime_observation.observed_p2p_mdns_by_node[]] | all(. == false)) and
+              ([.runtime_observation.observed_p2p_fresh_by_node[]] | all(. == true)) and
+              ([.runtime_observation.observed_connected_peers_are_real_network_by_node[]] | all(. == true)) and
+              .runtime_observation.full_mesh_verified == true and
+              ([.runtime_observation.mesh_peer_counts_after_startup[]] | all(. == 2)) and
+              ((.runtime_observation.connected_peer_ids_by_node.a | sort) == ([.runtime_observation.peer_ids_by_node.b, .runtime_observation.peer_ids_by_node.c] | sort)) and
+              ((.runtime_observation.connected_peer_ids_by_node.b | sort) == ([.runtime_observation.peer_ids_by_node.a, .runtime_observation.peer_ids_by_node.c] | sort)) and
+              ((.runtime_observation.connected_peer_ids_by_node.c | sort) == ([.runtime_observation.peer_ids_by_node.a, .runtime_observation.peer_ids_by_node.b] | sort)) and
               (.runtime_observation.peer_ids_by_node.a | length) > 0 and
               (.runtime_observation.peer_ids_by_node.b | length) > 0 and
               (.runtime_observation.peer_ids_by_node.c | length) > 0 and
