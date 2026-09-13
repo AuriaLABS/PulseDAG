@@ -1,1 +1,2 @@
 Trigger isolated PR #1062 rebase helper after workflow registration.
+Probe valid workflow.
