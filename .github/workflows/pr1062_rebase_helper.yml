@@ -98,38 +98,46 @@ jobs:
               1,
           )
 
-          # Preserve main's machine-readable rejection classification contract,
-          # but adapt it to the durable prepare/submit split so the helper no
-          # longer requires the complete SignedBroadcastInput after preflight.
-          old_rejection_block = '''        return Ok(BroadcastOutput {
-              accepted: false,
-              txid: final_txid,
-              mempool_size: None,
-              relay_network_profile: identity.network.network_profile,
-              relay_chain_id: identity.network.chain_id,
-              relay_version: identity.version,
-              rejection_code: Some(error.code),
-              rejection_message: Some(error.message),
-              rejection_classification: error.classification,
-          });
-          '''
-          if old_rejection_block not in durable_region:
-              raise SystemExit("#1062 durable rejection block changed unexpectedly")
-          durable_region = durable_region.replace(
-              old_rejection_block,
-              '''        return Ok(rejected_broadcast_output(
-              &final_txid,
-              &identity,
-              error,
-          ));
-          ''',
-              1,
+          # Replace only #1062's explicit valid-rejection output constructor.
+          # Missing/malformed rejection detail remains an error so the CLI can
+          # persist submission_outcome_unknown after submission has started.
+          rejection_pattern = (
+              r"        return Ok\(BroadcastOutput \{\n"
+              r"\s*accepted: false,\n"
+              r"\s*txid: final_txid,\n"
+              r"\s*mempool_size: None,\n"
+              r"\s*relay_network_profile: identity\.network\.network_profile,\n"
+              r"\s*relay_chain_id: identity\.network\.chain_id,\n"
+              r"\s*relay_version: identity\.version,\n"
+              r"\s*rejection_code: Some\(error\.code\),\n"
+              r"\s*rejection_message: Some\(error\.message\),\n"
+              r"\s*rejection_classification: error\.classification,\n"
+              r"\s*\}\);\n"
           )
+          rejection_replacement = (
+              "        return Ok(rejected_broadcast_output(\n"
+              "            &final_txid,\n"
+              "            &identity,\n"
+              "            error,\n"
+              "        ));\n"
+          )
+          durable_region, replaced_rejection = re.subn(
+              rejection_pattern,
+              rejection_replacement,
+              durable_region,
+              count=1,
+          )
+          if replaced_rejection != 1:
+              raise SystemExit(
+                  f"expected exactly one durable rejection constructor, got {replaced_rejection}"
+              )
 
           mempool_start = relay_main.index("async fn fetch_mempool_identity(")
           mempool_end = relay_main.index("fn rejected_broadcast_output(", mempool_start)
           mempool_identity_region = relay_main[mempool_start:mempool_end]
 
+          # Keep main's code/classification output contract, adapted from a full
+          # SignedBroadcastInput to the final txid retained by PreparedBroadcast.
           rejection_helper = '''fn rejected_broadcast_output(
               final_txid: &str,
               identity: &RelayIdentity,
@@ -200,9 +208,8 @@ jobs:
           if removed != 1:
               raise SystemExit(f"expected exactly one obsolete broadcast_signed wrapper, got {removed}")
 
-          # Main added one focused unit test for rejection classification. Keep
-          # that test and adapt only its helper argument from the full signed
-          # envelope to the stable final txid required by the durable helper.
+          # Preserve main's focused classification test, changing only the
+          # helper argument to the final txid used by the durable API.
           relay, adjusted_test = re.subn(
               r"(let output = rejected_broadcast_output\(\n\s*)&signed,(\n\s*&identity,)",
               r"\1&signed.final_txid,\2",
