@@ -7,7 +7,11 @@ on:
 
 jobs:
   diagnose-four-file-merge:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 10
     steps:
       - name: Checkout helper branch with full history
@@ -30,21 +34,20 @@ jobs:
           )
           for p in "${paths[@]}"; do
             echo "===== FILE $p ====="
-            git show "$SOURCE:$p" > /tmp/current
-            git show "$BASE:$p" > /tmp/base
-            git show "$MAIN:$p" > /tmp/other
+            git show "$SOURCE:$p" > current.tmp
+            git show "$BASE:$p" > base.tmp
+            git show "$MAIN:$p" > other.tmp
             set +e
-            git merge-file -L PR1062 -L MERGE_BASE -L MAIN /tmp/current /tmp/base /tmp/other
+            git merge-file -L PR1062 -L MERGE_BASE -L MAIN current.tmp base.tmp other.tmp
             rc=$?
             set -e
             echo "MERGE_RC=$rc"
-            if grep -q '^<<<<<<< ' /tmp/current; then
+            if grep -q '^<<<<<<< ' current.tmp; then
               awk '
-                /^<<<<<<< / {printing=1; before=8; for(i=NR-before;i<NR;i++) if (i>0 && lines[i] != "") print lines[i];}
+                /^<<<<<<< / {printing=1}
                 printing {print}
                 /^>>>>>>> / {printing=0; print "----- END CONFLICT -----"}
-                {lines[NR]=$0}
-              ' /tmp/current
+              ' current.tmp
             else
               echo "NO_CONFLICT_MARKERS"
             fi
