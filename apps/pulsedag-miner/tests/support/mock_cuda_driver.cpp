@@ -18,6 +18,13 @@ constexpr CUresult CUDA_ERROR_INVALID_VALUE = 1;
 constexpr CUresult CUDA_ERROR_OUT_OF_MEMORY = 2;
 constexpr std::uintptr_t MATRIX_FUNCTION = 1;
 constexpr std::uintptr_t HASH_FUNCTION = 2;
+constexpr std::uintptr_t SMOKE_FUNCTION = 3;
+constexpr std::uint64_t SMOKE_MAGIC = 0x50554c5345444147ULL;
+
+bool fail_requested(const char* name) {
+    const char* value = std::getenv(name);
+    return value != nullptr && value[0] != '\0' && std::strcmp(value, "0") != 0;
+}
 }
 
 extern "C" CUresult cuInit(unsigned int) {
@@ -49,7 +56,13 @@ extern "C" CUresult cuCtxCreate_v2(CUcontext* context, unsigned int, CUdevice de
 }
 
 extern "C" CUresult cuCtxDestroy_v2(CUcontext context) {
-    return context == nullptr ? CUDA_ERROR_INVALID_VALUE : CUDA_SUCCESS;
+    if (context == nullptr) {
+        return CUDA_ERROR_INVALID_VALUE;
+    }
+    if (fail_requested("PULSEDAG_TEST_CUDA_FAIL_CTX_DESTROY")) {
+        return CUDA_ERROR_INVALID_VALUE;
+    }
+    return CUDA_SUCCESS;
 }
 
 extern "C" CUresult cuModuleLoadData(CUmodule* module, const void* image) {
@@ -61,7 +74,13 @@ extern "C" CUresult cuModuleLoadData(CUmodule* module, const void* image) {
 }
 
 extern "C" CUresult cuModuleUnload(CUmodule module) {
-    return module == nullptr ? CUDA_ERROR_INVALID_VALUE : CUDA_SUCCESS;
+    if (module == nullptr) {
+        return CUDA_ERROR_INVALID_VALUE;
+    }
+    if (fail_requested("PULSEDAG_TEST_CUDA_FAIL_MODULE_UNLOAD")) {
+        return CUDA_ERROR_INVALID_VALUE;
+    }
+    return CUDA_SUCCESS;
 }
 
 extern "C" CUresult cuModuleGetFunction(
@@ -78,6 +97,10 @@ extern "C" CUresult cuModuleGetFunction(
     }
     if (std::strcmp(name, "pulsedag_kheavyhash_kernel") == 0) {
         *function = reinterpret_cast<CUfunction>(HASH_FUNCTION);
+        return CUDA_SUCCESS;
+    }
+    if (std::strcmp(name, "pulsedag_cuda_runtime_smoke_kernel") == 0) {
+        *function = reinterpret_cast<CUfunction>(SMOKE_FUNCTION);
         return CUDA_SUCCESS;
     }
     return CUDA_ERROR_INVALID_VALUE;
@@ -97,6 +120,9 @@ extern "C" CUresult cuMemAlloc_v2(CUdeviceptr* device_ptr, std::size_t bytes) {
 
 extern "C" CUresult cuMemFree_v2(CUdeviceptr device_ptr) {
     if (device_ptr == 0) {
+        return CUDA_ERROR_INVALID_VALUE;
+    }
+    if (fail_requested("PULSEDAG_TEST_CUDA_FAIL_MEM_FREE")) {
         return CUDA_ERROR_INVALID_VALUE;
     }
     std::free(reinterpret_cast<void*>(static_cast<std::uintptr_t>(device_ptr)));
@@ -185,6 +211,20 @@ extern "C" CUresult cuLaunchKernel(
                 nonces[index],
                 outputs + index * 32U);
         }
+        return CUDA_SUCCESS;
+    }
+
+    if (function_id == SMOKE_FUNCTION) {
+        const CUdeviceptr input_ptr = *reinterpret_cast<CUdeviceptr*>(kernel_params[0]);
+        const CUdeviceptr output_ptr = *reinterpret_cast<CUdeviceptr*>(kernel_params[1]);
+        if (input_ptr == 0 || output_ptr == 0) {
+            return CUDA_ERROR_INVALID_VALUE;
+        }
+        const auto* input = reinterpret_cast<const std::uint64_t*>(
+            static_cast<std::uintptr_t>(input_ptr));
+        auto* output = reinterpret_cast<std::uint64_t*>(
+            static_cast<std::uintptr_t>(output_ptr));
+        output[0] = input[0] ^ SMOKE_MAGIC;
         return CUDA_SUCCESS;
     }
 

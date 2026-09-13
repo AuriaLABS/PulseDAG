@@ -13,6 +13,10 @@ on:
       - apps/pulsedag-miner/tests/support/mock_cuda_driver.cpp
       - apps/pulsedag-miner/cuda/kheavyhash.cu
       - apps/pulsedag-miner/cuda/kheavyhash_launch.cu
+      - apps/pulsedag-miner/src/cuda_runtime.rs
+      - apps/pulsedag-miner/src/cuda_launch.rs
+      - apps/pulsedag-miner/src/bin/cuda_probe.rs
+      - apps/pulsedag-miner/cuda/runtime_smoke.cu
       - .github/workflows/task38-nvidia-cuda-driver-launch.yml
   push:
     branches:
@@ -26,6 +30,10 @@ on:
       - apps/pulsedag-miner/tests/support/mock_cuda_driver.cpp
       - apps/pulsedag-miner/cuda/kheavyhash.cu
       - apps/pulsedag-miner/cuda/kheavyhash_launch.cu
+      - apps/pulsedag-miner/src/cuda_runtime.rs
+      - apps/pulsedag-miner/src/cuda_launch.rs
+      - apps/pulsedag-miner/src/bin/cuda_probe.rs
+      - apps/pulsedag-miner/cuda/runtime_smoke.cu
       - .github/workflows/task38-nvidia-cuda-driver-launch.yml
 
 permissions:
@@ -78,6 +86,24 @@ jobs:
             -o /tmp/libcuda-pulsedag-mock.so
           test -s /tmp/libcuda-pulsedag-mock.so
 
+      - name: CUDA diagnostic allocation cleanup failure is fail-closed
+        env:
+          PULSEDAG_CUDA_DRIVER_LIBRARY: /tmp/libcuda-pulsedag-mock.so
+          PULSEDAG_TEST_CUDA_FAIL_MEM_FREE: "1"
+        run: cargo test --locked -p pulsedag-miner --features cuda --bin pulsedag-cuda-probe smoke_mem_free_failure_is_reported
+
+      - name: CUDA diagnostic module cleanup failure is fail-closed
+        env:
+          PULSEDAG_CUDA_DRIVER_LIBRARY: /tmp/libcuda-pulsedag-mock.so
+          PULSEDAG_TEST_CUDA_FAIL_MODULE_UNLOAD: "1"
+        run: cargo test --locked -p pulsedag-miner --features cuda --bin pulsedag-cuda-probe smoke_module_unload_failure_is_reported
+
+      - name: CUDA diagnostic context cleanup failure remains fail-closed
+        env:
+          PULSEDAG_CUDA_DRIVER_LIBRARY: /tmp/libcuda-pulsedag-mock.so
+          PULSEDAG_TEST_CUDA_FAIL_CTX_DESTROY: "1"
+        run: cargo test --locked -p pulsedag-miner --features cuda --bin pulsedag-cuda-probe smoke_context_destroy_failure_is_reported
+
       - name: CUDA Driver launch matches canonical legacy and v2 PoW
         env:
           PULSEDAG_CUDA_DRIVER_LIBRARY: /tmp/libcuda-pulsedag-mock.so
@@ -100,6 +126,7 @@ jobs:
           echo "cuda_driver_hash_launch_contract=PASS"
           echo "cuda_driver_legacy_v1_canonical_reverification=PASS"
           echo "cuda_driver_activated_v2_canonical_reverification=PASS"
+          echo "cuda_diagnostic_cleanup_fail_closed=PASS"
           echo "nvidia_cuda_hardware_execution=NOT_CLAIMED"
           echo "GPU_MINING_NVIDIA_PASS=NOT_CLAIMED"
 
@@ -148,4 +175,101 @@ jobs:
               echo "nvidia_cuda_matrix_generator_equivalence=PASS"
               echo "nvidia_cuda_launch_ptx_symbols=PASS"
               echo "nvidia_cuda_hardware_execution=NOT_CLAIMED"
+            '
+
+  driver-launch-contract:
+    name: driver-launch-contract (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - windows-latest
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Verify exact SHA and clean checkout
+        shell: bash
+        env:
+          CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          test -z "$(git status --porcelain)"
+          echo "task38_cuda_driver_launch_candidate_sha=$CANDIDATE_SHA"
+
+      - name: Install Rust 1.91.0
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.91.0
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Workspace format contract
+        run: cargo fmt --all -- --check
+
+      - name: CUDA Driver launch contract unit tests
+        run: cargo test --locked -p pulsedag-miner --features cuda --bin pulsedag-cuda-probe
+
+      - name: CUDA Driver launch deterministic self-test
+        run: cargo run --locked -p pulsedag-miner --features cuda --bin pulsedag-cuda-probe -- --self-test
+
+      - name: CUDA Driver launch contract clippy
+        run: cargo clippy --locked -p pulsedag-miner --features cuda --bin pulsedag-cuda-probe -- -D warnings
+
+      - name: Record software-only launch scope
+        shell: bash
+        run: |
+          echo "cuda_driver_context_module_memory_launch_path=COMPILES"
+          echo "cuda_driver_h2d_d2h_contract=COMPILES"
+          echo "nvidia_cuda_hardware_execution=NOT_CLAIMED"
+          echo "nvidia_cuda_kheavyhash_equivalence=NOT_CLAIMED"
+          echo "GPU_MINING_NVIDIA_PASS=NOT_CLAIMED"
+
+  ptx-module-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Verify exact SHA and clean checkout
+        shell: bash
+        env:
+          CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          test -z "$(git status --porcelain)"
+
+      - name: Compile smoke kernel to PTX and verify exported entry
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            -v "${PWD}:/work" \
+            -w /work \
+            nvidia/cuda:12.9.2-devel-ubuntu24.04 \
+            bash -lc '
+              set -euo pipefail
+              nvcc --version
+              nvcc -std=c++17 -O2 -ptx -arch=sm_60 \
+                apps/pulsedag-miner/cuda/runtime_smoke.cu \
+                -o /tmp/pulsedag-cuda-runtime-smoke.ptx
+              test -s /tmp/pulsedag-cuda-runtime-smoke.ptx
+              grep -q "pulsedag_cuda_runtime_smoke_kernel" \
+                /tmp/pulsedag-cuda-runtime-smoke.ptx
+              echo "cuda_smoke_ptx_module=PASS"
+              echo "cuda_driver_kernel_launch=NOT_EXECUTED_NO_GPU_RUNNER"
+              echo "GPU_MINING_NVIDIA_PASS=NOT_CLAIMED"
             '
