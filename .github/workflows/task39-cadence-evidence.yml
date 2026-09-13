@@ -36,7 +36,6 @@ jobs:
     timeout-minutes: 35
     env:
       CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-      EVIDENCE_DIR: ${{ runner.temp }}/task39-cadence
     steps:
       - name: Checkout exact candidate
         uses: actions/checkout@v4
@@ -75,6 +74,8 @@ jobs:
         run: cargo build --locked --release -p pulsedagd -p pulsedag-miner
 
       - name: Run 1000ms 500ms 250ms rehearsal matrix
+        env:
+          EVIDENCE_DIR: ${{ runner.temp }}/task39-cadence
         run: |
           set -euo pipefail
           python3 scripts/private_testnet/task39_cadence_evidence.py \
@@ -86,6 +87,8 @@ jobs:
             --threads 1
 
       - name: Enforce runtime result without premature completion claim
+        env:
+          EVIDENCE_DIR: ${{ runner.temp }}/task39-cadence
         run: |
           set -euo pipefail
           jq -e --arg sha "$CANDIDATE_SHA" '
