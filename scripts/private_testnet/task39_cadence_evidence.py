@@ -23,6 +23,7 @@ NODES = (
 )
 SCHEMA = "task39-cadence-evidence-v1"
 SUBMIT_FINALITY_UNKNOWN_CODE = "submit_finality_unknown"
+PLACEHOLDER_BLOCK_HASHES = {"", "-", "null", "none", "unknown", "n/a"}
 FIELD_RE = re.compile(r"([A-Za-z0-9_]+)=([^\s]+)")
 EFFECTIVE_CADENCE_RE = re.compile(r"active at ([0-9]+)ms")
 EXPERIMENTAL_LIMITS = {
@@ -97,6 +98,46 @@ def peer_id_from_status(data):
     if not isinstance(peer_id, str) or not peer_id.strip():
         return None
     return peer_id.strip()
+
+
+def real_block_hash(value):
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip()
+    if normalized.lower() in PLACEHOLDER_BLOCK_HASHES:
+        return None
+    return normalized
+
+
+def observed_p2p_status_ok(data):
+    return (
+        data.get("mode") == "libp2p-real"
+        and data.get("mdns") is False
+        and data.get("p2p_status_stale") is False
+        and data.get("p2p_status_degraded") is False
+        and data.get("connected_peers_are_real_network") is True
+        and isinstance(data.get("connected_peers"), list)
+    )
+
+
+def full_mesh_matches(p2p_by_node, peer_ids):
+    if set(p2p_by_node) != set(peer_ids) or len(peer_ids) != len(NODES):
+        return False
+    if any(not isinstance(peer_id, str) or not peer_id for peer_id in peer_ids.values()):
+        return False
+    if len(set(peer_ids.values())) != len(peer_ids):
+        return False
+    all_peer_ids = set(peer_ids.values())
+    for name, own_peer_id in peer_ids.items():
+        data = p2p_by_node.get(name)
+        if not isinstance(data, dict) or not observed_p2p_status_ok(data):
+            return False
+        connected = data.get("connected_peers")
+        if not isinstance(connected, list) or any(not isinstance(peer, str) for peer in connected):
+            return False
+        if set(connected) != all_peer_ids - {own_peer_id}:
+            return False
+    return True
 
 
 def effective_cadence_ms(readiness_data):
@@ -213,6 +254,7 @@ def miner_metrics(records, start_ns=None, end_ns=None):
     template_to_submit_ms = []
     final_outcomes = {}
     pending_unknown = set()
+    pending_unknown_unkeyed = set()
     reconciliation_reasons = defaultdict(int)
     metrics = {
         "templates": 0,
@@ -244,9 +286,9 @@ def miner_metrics(records, start_ns=None, end_ns=None):
 
         if "submit_reconciled:" in lower:
             fields = dict(FIELD_RE.findall(line))
-            block_hash = fields.get("block_hash")
+            block_hash = real_block_hash(fields.get("block_hash"))
             outcome = fields.get("outcome", "").lower()
-            if block_hash not in pending_unknown:
+            if block_hash is None or block_hash not in pending_unknown:
                 if within_window:
                     metrics["reconciled_unmatched"] += 1
                 continue
@@ -271,17 +313,21 @@ def miner_metrics(records, start_ns=None, end_ns=None):
         accepted = fields.get("accepted", "false").lower() == "true"
         rejected_field = fields.get("rejected", "false").lower() == "true"
         reason = fields.get("reason_code", "unknown")
-        block_hash = fields.get("block_hash", f"unknown-submit-{metrics['submits']}")
+        block_hash = real_block_hash(fields.get("block_hash"))
+        outcome_key = block_hash or f"submit-{metrics['submits']}"
         unknown_finality = reason == SUBMIT_FINALITY_UNKNOWN_CODE
         stale_submit = fields.get("stale_template", "false").lower() == "true"
 
         if accepted:
-            final_outcomes[block_hash] = "accepted"
+            final_outcomes[outcome_key] = "accepted"
         elif unknown_finality:
-            pending_unknown.add(block_hash)
+            if block_hash is not None:
+                pending_unknown.add(block_hash)
+            else:
+                pending_unknown_unkeyed.add(outcome_key)
             metrics["unknown_finality_initial"] += 1
         elif rejected_field:
-            final_outcomes[block_hash] = "rejected"
+            final_outcomes[outcome_key] = "rejected"
 
         metrics["stale_submit_results"] += int(stale_submit)
         metrics["stale"] += int(stale_submit)
@@ -291,7 +337,7 @@ def miner_metrics(records, start_ns=None, end_ns=None):
 
     metrics["accepted"] = sum(1 for outcome in final_outcomes.values() if outcome == "accepted")
     metrics["rejected"] = sum(1 for outcome in final_outcomes.values() if outcome == "rejected")
-    metrics["unknown_finality"] = len(pending_unknown)
+    metrics["unknown_finality"] = len(pending_unknown) + len(pending_unknown_unkeyed)
     metrics["reasons"] = dict(sorted(metrics["reasons"].items()))
     metrics["reconciliation_reasons"] = dict(sorted(reconciliation_reasons.items()))
     metrics["template_to_submit_ms"] = dist(template_to_submit_ms)
@@ -412,24 +458,32 @@ def wait_ready(procs, urls, expected_cadence_ms, seconds=90):
     raise RuntimeError(f"high-cadence readiness failed: {diagnostic}")
 
 
-def wait_mesh(urls, seconds=45):
+def wait_mesh(urls, peer_ids, seconds=45):
     deadline = time.monotonic() + seconds
     last = {}
     while time.monotonic() < deadline:
         current = {}
         for name, url in urls.items():
             try:
-                current[name] = status(url)
+                current[name] = p2p_status(url)
             except Exception:
                 pass
-        if len(current) == 3:
+        if len(current) == len(peer_ids):
             last = current
-            if all(int(data.get("peer_count") or 0) >= 1 for data in current.values()):
+            if full_mesh_matches(current, peer_ids):
                 return current
         time.sleep(0.5)
-    raise RuntimeError(
-        "peer mesh failed " + str({name: data.get("peer_count") for name, data in last.items()})
-    )
+    diagnostic = {
+        name: {
+            "mode": data.get("mode"),
+            "mdns": data.get("mdns"),
+            "stale": data.get("p2p_status_stale"),
+            "degraded": data.get("p2p_status_degraded"),
+            "connected_peers": data.get("connected_peers"),
+        }
+        for name, data in last.items()
+    }
+    raise RuntimeError(f"full peer mesh failed: {diagnostic}")
 
 
 def convergence(urls, samples, seconds=20):
@@ -539,7 +593,7 @@ def run(root, node, miner, out, sha, tree, cadence, duration, sample_ms, max_tri
     try:
         nodes, peer_ids, bootstraps = start_rehearsal_nodes(node, run_dir, cadence)
         start, readiness_start = wait_ready(nodes, urls, cadence)
-        mesh_state = wait_mesh(urls)
+        mesh_state = wait_mesh(urls, peer_ids)
         for name, _, _, _ in NODES:
             before_size[name] = size(run_dir / f"node-{name}" / "rocksdb")
         sample(urls, samples)
@@ -651,6 +705,12 @@ def run(root, node, miner, out, sha, tree, cadence, duration, sample_ms, max_tri
             name: effective_cadence_ms(data) for name, data in readiness_start.items()
         }
         poll_gaps = observed_poll_gaps_ms(samples)
+        expected_mesh = {
+            name: sorted(set(peer_ids.values()) - {peer_ids[name]}) for name in peer_ids
+        }
+        connected_mesh = {
+            name: sorted(data.get("connected_peers") or []) for name, data in mesh_state.items()
+        }
         manifest = {
             "schema": SCHEMA,
             "candidate_sha": sha,
@@ -666,12 +726,32 @@ def run(root, node, miner, out, sha, tree, cadence, duration, sample_ms, max_tri
                     "process environment plus pulsedagd config guard regressions; current RPC "
                     "does not export numeric max_* limits"
                 ),
-                "p2p_mode": "libp2p-real",
-                "p2p_mdns": False,
+                "configured_p2p": {"mode": "libp2p-real", "mdns": False},
+                "observed_p2p_mode_by_node": {
+                    name: data.get("mode") for name, data in mesh_state.items()
+                },
+                "observed_p2p_mdns_by_node": {
+                    name: data.get("mdns") for name, data in mesh_state.items()
+                },
+                "observed_p2p_fresh_by_node": {
+                    name: (
+                        data.get("p2p_status_stale") is False
+                        and data.get("p2p_status_degraded") is False
+                    )
+                    for name, data in mesh_state.items()
+                },
+                "observed_connected_peers_are_real_network_by_node": {
+                    name: data.get("connected_peers_are_real_network")
+                    for name, data in mesh_state.items()
+                },
                 "peer_ids_by_node": peer_ids,
                 "bootstrap_multiaddrs_by_node": bootstraps,
+                "connected_peer_ids_by_node": connected_mesh,
+                "full_mesh_expected_peer_ids_by_node": expected_mesh,
+                "full_mesh_verified": full_mesh_matches(mesh_state, peer_ids),
                 "mesh_peer_counts_after_startup": {
-                    name: int(data.get("peer_count") or 0) for name, data in mesh_state.items()
+                    name: len(data.get("connected_peers") or [])
+                    for name, data in mesh_state.items()
                 },
             },
             "experimental_only": True,
@@ -747,7 +827,8 @@ def run(root, node, miner, out, sha, tree, cadence, duration, sample_ms, max_tri
                 ),
                 "rejection_taxonomy_note": (
                     "submit_finality_unknown remains separate while pending; reconciled outcomes "
-                    "are folded into definitive accepted/rejected totals by block_hash"
+                    "are folded into definitive accepted/rejected totals by real block_hash; "
+                    "placeholder/hashless definitive outcomes use unique per-submit identities"
                 ),
                 "jain_accepted_block_fairness": jain(accepted.values()),
             },
@@ -836,6 +917,35 @@ def selftest():
     assert peer_id_from_status({"peer_id": "preferred", "local_peer_id": "fallback"}) == "preferred"
     assert peer_id_from_status({"local_peer_id": "fallback"}) == "fallback"
     assert peer_id_from_status({}) is None
+    assert real_block_hash("abc") == "abc"
+    assert real_block_hash("-") is None
+    assert real_block_hash(None) is None
+
+    peer_ids = {"a": "peer-a", "b": "peer-b", "c": "peer-c"}
+    good_p2p = {
+        "mode": "libp2p-real",
+        "mdns": False,
+        "p2p_status_stale": False,
+        "p2p_status_degraded": False,
+        "connected_peers_are_real_network": True,
+    }
+    full_mesh = {
+        "a": {**good_p2p, "connected_peers": ["peer-b", "peer-c"]},
+        "b": {**good_p2p, "connected_peers": ["peer-a", "peer-c"]},
+        "c": {**good_p2p, "connected_peers": ["peer-a", "peer-b"]},
+    }
+    assert observed_p2p_status_ok(full_mesh["a"])
+    assert full_mesh_matches(full_mesh, peer_ids)
+    chain_only = {
+        "a": {**good_p2p, "connected_peers": ["peer-b"]},
+        "b": {**good_p2p, "connected_peers": ["peer-a", "peer-c"]},
+        "c": {**good_p2p, "connected_peers": ["peer-b"]},
+    }
+    assert not full_mesh_matches(chain_only, peer_ids)
+    assert not observed_p2p_status_ok({**full_mesh["a"], "mdns": True})
+    assert not observed_p2p_status_ok({**full_mesh["a"], "mode": "memory-simulated"})
+    assert not observed_p2p_status_ok({**full_mesh["a"], "p2p_status_stale": True})
+    assert not observed_p2p_status_ok({**full_mesh["a"], "p2p_status_degraded": True})
 
     import tempfile
 
@@ -923,6 +1033,36 @@ def selftest():
     assert rejected["rejected"] == 1
     assert rejected["unknown_finality"] == 0
     assert rejected["stale"] == 1
+
+    hashless_rejected = miner_metrics(
+        [
+            (
+                base,
+                "submit_result: accepted=false rejected=true reason_code=stale_template_error "
+                "block_hash=- stale_template=true",
+            ),
+            (
+                base + 1,
+                "submit_result: accepted=false rejected=true reason_code=stale_template_error "
+                "block_hash=- stale_template=true",
+            ),
+        ]
+    )
+    assert hashless_rejected["submits"] == 2
+    assert hashless_rejected["rejected"] == 2
+    assert hashless_rejected["stale"] == 2
+
+    hashless_unknown = miner_metrics(
+        [
+            (
+                base,
+                "submit_result: accepted=false rejected=true "
+                "reason_code=submit_finality_unknown block_hash=- stale_template=false",
+            )
+        ]
+    )
+    assert hashless_unknown["unknown_finality"] == 1
+    assert hashless_unknown["rejected"] == 0
 
     windowed = miner_metrics(
         [
