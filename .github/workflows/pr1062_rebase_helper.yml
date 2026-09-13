@@ -80,26 +80,75 @@ jobs:
           src_start = relay_source.index("pub async fn prepare_broadcast(")
           src_end = relay_source.index("fn address_url(", src_start)
           durable_region = relay_source[src_start:src_end]
-          old_reject = "            rejection_message: Some(error.message),\n"
-          if old_reject not in durable_region:
+
+          old_reject_field = "            rejection_message: Some(error.message),\n"
+          if old_reject_field not in durable_region:
               raise SystemExit("#1062 rejection output shape changed unexpectedly")
           durable_region = durable_region.replace(
-              old_reject,
-              old_reject + "            rejection_classification: error.classification,\n",
+              old_reject_field,
+              old_reject_field + "            rejection_classification: error.classification,\n",
               1,
           )
-          old_accept = "        rejection_message: None,\n"
-          if old_accept not in durable_region:
+          old_accept_field = "        rejection_message: None,\n"
+          if old_accept_field not in durable_region:
               raise SystemExit("#1062 accepted output shape changed unexpectedly")
           durable_region = durable_region.replace(
-              old_accept,
-              old_accept + "        rejection_classification: None,\n",
+              old_accept_field,
+              old_accept_field + "        rejection_classification: None,\n",
+              1,
+          )
+
+          # Preserve main's machine-readable rejection classification contract,
+          # but adapt it to the durable prepare/submit split so the helper no
+          # longer requires the complete SignedBroadcastInput after preflight.
+          old_rejection_block = '''        return Ok(BroadcastOutput {
+              accepted: false,
+              txid: final_txid,
+              mempool_size: None,
+              relay_network_profile: identity.network.network_profile,
+              relay_chain_id: identity.network.chain_id,
+              relay_version: identity.version,
+              rejection_code: Some(error.code),
+              rejection_message: Some(error.message),
+              rejection_classification: error.classification,
+          });
+          '''
+          if old_rejection_block not in durable_region:
+              raise SystemExit("#1062 durable rejection block changed unexpectedly")
+          durable_region = durable_region.replace(
+              old_rejection_block,
+              '''        return Ok(rejected_broadcast_output(
+              &final_txid,
+              &identity,
+              error,
+          ));
+          ''',
               1,
           )
 
           mempool_start = relay_main.index("async fn fetch_mempool_identity(")
           mempool_end = relay_main.index("fn rejected_broadcast_output(", mempool_start)
           mempool_identity_region = relay_main[mempool_start:mempool_end]
+
+          rejection_helper = '''fn rejected_broadcast_output(
+              final_txid: &str,
+              identity: &RelayIdentity,
+              error: ApiError,
+          ) -> BroadcastOutput {
+              BroadcastOutput {
+                  accepted: false,
+                  txid: final_txid.to_string(),
+                  mempool_size: None,
+                  relay_network_profile: identity.network.network_profile.clone(),
+                  relay_chain_id: identity.network.chain_id.clone(),
+                  relay_version: identity.version.clone(),
+                  rejection_code: Some(error.code),
+                  rejection_message: Some(error.message),
+                  rejection_classification: error.classification,
+              }
+          }
+
+          '''
 
           relay = relay_path.read_text()
 
@@ -133,7 +182,13 @@ jobs:
           end = relay.find("fn validate_decimal_u128(", start)
           if end < 0:
               raise SystemExit("main fee-estimate validation region missing")
-          relay = relay[:start] + mempool_identity_region + durable_region + relay[end:]
+          relay = (
+              relay[:start]
+              + mempool_identity_region
+              + rejection_helper
+              + durable_region
+              + relay[end:]
+          )
 
           relay, removed = re.subn(
               r"\npub async fn broadcast_signed\(.*?\n\}\n",
@@ -144,6 +199,20 @@ jobs:
           )
           if removed != 1:
               raise SystemExit(f"expected exactly one obsolete broadcast_signed wrapper, got {removed}")
+
+          # Main added one focused unit test for rejection classification. Keep
+          # that test and adapt only its helper argument from the full signed
+          # envelope to the stable final txid required by the durable helper.
+          relay, adjusted_test = re.subn(
+              r"(let output = rejected_broadcast_output\(\n\s*)&signed,(\n\s*&identity,)",
+              r"\1&signed.final_txid,\2",
+              relay,
+              count=1,
+          )
+          if adjusted_test != 1:
+              raise SystemExit(
+                  f"expected exactly one main rejection-classification test call, got {adjusted_test}"
+              )
 
           relay_path.write_text(relay)
           PY
@@ -198,6 +267,7 @@ jobs:
           present relay-fee-fetch 'pub async fn fetch_mempool_fee_estimate' crates/pulsedag-wallet/src/pulsedag_wallet_relay.rs
           present relay-prepare 'pub async fn prepare_broadcast' crates/pulsedag-wallet/src/pulsedag_wallet_relay.rs
           present relay-submit 'pub async fn submit_prepared' crates/pulsedag-wallet/src/pulsedag_wallet_relay.rs
+          present relay-rejection-helper 'fn rejected_broadcast_output(' crates/pulsedag-wallet/src/pulsedag_wallet_relay.rs
           present relay-rejection-classification rejection_classification crates/pulsedag-wallet/src/pulsedag_wallet_relay.rs
           absent relay-no-old-submit 'async fn submit_transaction' crates/pulsedag-wallet/src/pulsedag_wallet_relay.rs
           absent relay-no-one-shot-wrapper 'pub async fn broadcast_signed' crates/pulsedag-wallet/src/pulsedag_wallet_relay.rs
