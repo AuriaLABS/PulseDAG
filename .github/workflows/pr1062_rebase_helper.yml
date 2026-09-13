@@ -6,19 +6,16 @@ on:
       - codex/pr1062-bootstrap-768a04b
 
 jobs:
-  merge-four-files:
-    runs-on: macos-latest
-    timeout-minutes: 45
+  diagnose-four-file-merge:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Checkout helper branch with full history
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Three-way union merge exact four conflict files
+      - name: Print exact three-way conflicts
         shell: bash
         run: |
           set -euo pipefail
@@ -31,69 +28,24 @@ jobs:
             crates/pulsedag-wallet/src/bin/pulsedag-wallet.rs
             crates/pulsedag-wallet/src/pulsedag_wallet_relay.rs
           )
-          git cat-file -e "$SOURCE^{commit}"
-          git cat-file -e "$BASE^{commit}"
-          git cat-file -e "$MAIN^{commit}"
           for p in "${paths[@]}"; do
+            echo "===== FILE $p ====="
             git show "$SOURCE:$p" > /tmp/current
             git show "$BASE:$p" > /tmp/base
             git show "$MAIN:$p" > /tmp/other
-            git merge-file --union /tmp/current /tmp/base /tmp/other || true
-            cp /tmp/current "$p"
+            set +e
+            git merge-file -L PR1062 -L MERGE_BASE -L MAIN /tmp/current /tmp/base /tmp/other
+            rc=$?
+            set -e
+            echo "MERGE_RC=$rc"
+            if grep -q '^<<<<<<< ' /tmp/current; then
+              awk '
+                /^<<<<<<< / {printing=1; before=8; for(i=NR-before;i<NR;i++) if (i>0 && lines[i] != "") print lines[i];}
+                printing {print}
+                /^>>>>>>> / {printing=0; print "----- END CONFLICT -----"}
+                {lines[NR]=$0}
+              ' /tmp/current
+            else
+              echo "NO_CONFLICT_MARKERS"
+            fi
           done
-          changed="$(git diff --name-only | sort)"
-          expected="$(printf '%s\n' "${paths[@]}" | sort)"
-          test "$changed" = "$expected"
-
-      - name: Format and whitespace validation
-        shell: bash
-        run: |
-          set -euo pipefail
-          cargo fmt --all
-          cargo fmt --all -- --check
-          git diff --check
-
-      - name: Compile affected packages
-        shell: bash
-        run: |
-          set -euo pipefail
-          cargo check -p pulsedag-core -p pulsedag-rpc -p pulsedag-wallet --all-targets
-
-      - name: Verify required merged contracts
-        shell: bash
-        run: |
-          set -euo pipefail
-          grep -q authoritative_confirmed_transaction_occurrences crates/pulsedag-core/src/validation.rs
-          grep -q authoritative_address_activity_v2 crates/pulsedag-rpc/src/handlers/release.rs
-          grep -q /api/v1/mempool/fee-estimate crates/pulsedag-rpc/src/handlers/release.rs
-          grep -q pending-journal crates/pulsedag-wallet/src/bin/pulsedag-wallet.rs
-          grep -q FeeEstimate crates/pulsedag-wallet/src/bin/pulsedag-wallet.rs
-          grep -q rejection_classification crates/pulsedag-wallet/src/pulsedag_wallet_relay.rs
-          grep -q fetch_mempool_fee_estimate crates/pulsedag-wallet/src/pulsedag_wallet_relay.rs
-
-      - name: Stage artifact tree
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p /tmp/pr1062-artifact/crates/pulsedag-core/src
-          mkdir -p /tmp/pr1062-artifact/crates/pulsedag-rpc/src/handlers
-          mkdir -p /tmp/pr1062-artifact/crates/pulsedag-wallet/src/bin
-          mkdir -p /tmp/pr1062-artifact/crates/pulsedag-wallet/src
-          cp crates/pulsedag-core/src/validation.rs /tmp/pr1062-artifact/crates/pulsedag-core/src/validation.rs
-          cp crates/pulsedag-rpc/src/handlers/release.rs /tmp/pr1062-artifact/crates/pulsedag-rpc/src/handlers/release.rs
-          cp crates/pulsedag-wallet/src/bin/pulsedag-wallet.rs /tmp/pr1062-artifact/crates/pulsedag-wallet/src/bin/pulsedag-wallet.rs
-          cp crates/pulsedag-wallet/src/pulsedag_wallet_relay.rs /tmp/pr1062-artifact/crates/pulsedag-wallet/src/pulsedag_wallet_relay.rs
-          shasum -a 256 \
-            /tmp/pr1062-artifact/crates/pulsedag-core/src/validation.rs \
-            /tmp/pr1062-artifact/crates/pulsedag-rpc/src/handlers/release.rs \
-            /tmp/pr1062-artifact/crates/pulsedag-wallet/src/bin/pulsedag-wallet.rs \
-            /tmp/pr1062-artifact/crates/pulsedag-wallet/src/pulsedag_wallet_relay.rs \
-            | tee /tmp/pr1062-artifact/SHA256SUMS
-
-      - name: Upload merged four-file artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: pr1062-four-merged-files-macos
-          path: /tmp/pr1062-artifact
-          if-no-files-found: error
-          retention-days: 1
