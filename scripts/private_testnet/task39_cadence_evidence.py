@@ -18,6 +18,14 @@ NODES = (('a', 'rehearsal-a', 'http://127.0.0.1:18080'), ('b', 'rehearsal-b', 'h
 SCHEMA = 'task39-cadence-evidence-v1'
 SUBMIT_FINALITY_UNKNOWN_CODE = 'submit_finality_unknown'
 FIELD_RE = re.compile('([A-Za-z0-9_]+)=([^\\s]+)')
+EXPERIMENTAL_LIMITS = {
+    'PULSEDAG_MAX_PARALLEL_TIPS': '8',
+    'PULSEDAG_MAX_MERGE_SET_SIZE': '64',
+    'PULSEDAG_MAX_ORPHAN_COUNT': '2048',
+    'PULSEDAG_MAX_PENDING_MISSING_PARENTS': '1024',
+    'PULSEDAG_MAX_BLOCK_MASS': '2000000',
+    'PULSEDAG_MAX_TEMPLATE_AGE_MS': '5000',
+}
 
 def dist(values):
     values = sorted((float(value) for value in values))
@@ -144,7 +152,15 @@ def wait_ready(procs, urls, expected_cadence_ms, seconds=90):
                 pass
         if len(current) == 3:
             last = current
-            if all((data.get('chain_id') == 'pulsedag-rehearsal' and data.get('high_cadence_allowed') is True and (data.get('rpc_response_stale') is False) and (int(data.get('target_block_interval_ms') or 0) == expected_cadence_ms) for data in current.values())):
+            if all((
+                data.get('chain_id') == 'pulsedag-rehearsal'
+                and data.get('high_cadence_allowed') is True
+                and data.get('rpc_response_stale') is False
+                and int(data.get('target_block_interval_ms') or 0) == expected_cadence_ms
+                and int(data.get('max_parallel_tips') or 0) == 8
+                and int(data.get('max_merge_set_size') or 0) == 64
+                and int(data.get('max_orphan_count') or 0) == 2048
+            ) for data in current.values()):
                 return current
         time.sleep(0.25)
     raise RuntimeError(f'high-cadence readiness failed: {last}')
@@ -207,12 +223,14 @@ def run(root, node, miner, out, sha, tree, cadence, duration, sample_ms, max_tri
         for name, profile, _ in NODES:
             db = run_dir / f'node-{name}' / 'rocksdb'
             db.parent.mkdir(parents=True)
-            before_size[name] = size(db)
             env = os.environ.copy()
+            env.update(EXPERIMENTAL_LIMITS)
             env.update({'PULSEDAG_CONFIG_PROFILE': profile, 'PULSEDAG_EXPERIMENTAL_GHOSTDAG_SELECTION': 'true', 'PULSEDAG_EXPERIMENTAL_FAST_CADENCE': 'true', 'PULSEDAG_TARGET_BLOCK_INTERVAL_MS': str(cadence), 'PULSEDAG_CONSENSUS_MODE': 'ghostdag_dev', 'PULSEDAG_PROTOCOL_CONSENSUS_MODE': 'ghostdag_v1', 'PULSEDAG_ROCKSDB_PATH': str(db), 'PULSEDAG_PUBLIC_TESTNET_READY': 'false', 'PULSEDAG_THIRTY_DAY_PUBLIC_TESTNET_CLOCK_STARTED': 'false'})
             nodes[name] = Proc([str(node)], env, run_dir / f'node-{name}.log')
         start = wait_ready(nodes, urls, cadence)
         wait_mesh(urls)
+        for name, _, _ in NODES:
+            before_size[name] = size(run_dir / f'node-{name}' / 'rocksdb')
         sample(urls, samples)
         sleep_ms = cadence * 3
         for index, (name, _, url) in enumerate(NODES):
@@ -258,9 +276,10 @@ def run(root, node, miner, out, sha, tree, cadence, duration, sample_ms, max_tri
             end_count = int(final[name].get('persisted_block_count') or 0)
             delta = max(0, end_count - begin_count)
             bytes_delta = max(0, after - before_size[name])
-            storage[name] = {'bytes_delta': bytes_delta, 'persisted_block_delta': delta, 'bytes_per_block_proxy': bytes_delta / delta if delta else None, 'proxy_note': 'filesystem-size delta while RocksDB is live; not exact write amplification'}
+            storage[name] = {'bytes_delta': bytes_delta, 'persisted_block_delta': delta, 'bytes_per_block_proxy': bytes_delta / delta if delta else None, 'proxy_note': 'filesystem-size delta from post-readiness baseline to final live RocksDB size; not exact write amplification'}
         missing = ['canonical_block_acceptance_and_state_apply_latency_distribution', 'selection_digest', 'ordered_dag_digest']
-        manifest = {'schema': SCHEMA, 'candidate_sha': sha, 'candidate_tree_sha': tree, 'configured_cadence_ms': cadence, 'experimental_only': True, 'production_cadence_selected': False, 'consensus_timestamp_precision_changed': False, 'consensus_target_semantics_changed': False, 'measurement': {'elapsed_monotonic_ms': (measured_end - measured_start) / 1000000.0, 'sample_interval_ms': sample_ms, 'selected_height_advance': blocks, 'per_node_start_height': start_heights, 'per_node_end_height': end_heights, 'observed_blocks_per_second': blocks / ((measured_end - measured_start) / 1000000000.0), 'rpc_status_latency_ms': dist([point['rpc_ms'] for point in samples])}, 'propagation_and_dag': {'sampled_selected_tip_convergence_latency_ms': dist(propagation(samples)), 'sampling_bound_ms': sample_ms, 'propagation_note': 'polling-derived upper-bound proxy; includes sequential RPC sampling skew', 'peak_parallel_tip_count_proxy': max([point['tips'] for point in samples] or [0]), 'dag_width_proxy_note': 'status tip_count proxy; not a full historical DAG-width integral', 'peak_orphan_count': max([point['orphans'] for point in samples] or [0]), 'orphan_nonzero_sample_fraction': (sum(1 for point in samples if point['orphans'] > 0) / len(samples) if samples else None), 'orphan_rate_note': 'sample occupancy proxy; not authoritative orphan-arrival rate', 'final_peer_counts': {name: int(data.get('peer_count') or 0) for name, data in final.items()}}, 'acceptance_state_apply_latency': {'available': False, 'reason': 'not exposed by current runtime/status surfaces; no synthetic value recorded'}, 'storage_db_amplification_proxy': storage, 'mining': {'per_miner': miner_data, 'accepted_by_miner': accepted, 'accepted_total': sum(accepted.values()), 'rejected_total': sum((int(data['rejected']) for data in miner_data.values())), 'stale_total': sum((int(data['stale']) for data in miner_data.values())), 'unknown_finality_total': sum((int(data['unknown_finality']) for data in miner_data.values())), 'rejection_taxonomy_note': 'submit_finality_unknown is excluded from definitive rejected counts to match Task29 finality semantics', 'jain_accepted_block_fairness': jain(accepted.values())}, 'sync_finality': {'final_sync_states': {name: data.get('sync_state') for name, data in final.items()}, 'final_converged': True}, 'canonical_end_state': {'selected_tip': next(iter(tips)) if len(tips) == 1 else None, 'ordered_dag_tip': next(iter(ordered)) if len(ordered) == 1 else None, 'ordered_dag_state_root': next(iter(roots)) if len(roots) == 1 else None, 'selection_digest': {'available': False, 'reason': 'not exposed by current rehearsal RPC'}, 'ordered_dag_digest': {'available': False, 'reason': 'not exposed by current rehearsal RPC'}}, 'coverage': {'completion_eligible': False, 'missing_required_measurements': missing}, 'runtime_gate_result': 'PASS', 'fail_reasons': []}
+        configured_limits = {key: int(value) for key, value in EXPERIMENTAL_LIMITS.items()}
+        manifest = {'schema': SCHEMA, 'candidate_sha': sha, 'candidate_tree_sha': tree, 'configured_cadence_ms': cadence, 'configured_experimental_limits': configured_limits, 'experimental_only': True, 'production_cadence_selected': False, 'consensus_timestamp_precision_changed': False, 'consensus_target_semantics_changed': False, 'measurement': {'elapsed_monotonic_ms': (measured_end - measured_start) / 1000000.0, 'sample_interval_ms': sample_ms, 'selected_height_advance': blocks, 'per_node_start_height': start_heights, 'per_node_end_height': end_heights, 'observed_blocks_per_second': blocks / ((measured_end - measured_start) / 1000000000.0), 'rpc_status_latency_ms': dist([point['rpc_ms'] for point in samples])}, 'propagation_and_dag': {'sampled_selected_tip_convergence_latency_ms': dist(propagation(samples)), 'sampling_bound_ms': sample_ms, 'propagation_note': 'polling-derived upper-bound proxy; includes sequential RPC sampling skew', 'peak_parallel_tip_count_proxy': max([point['tips'] for point in samples] or [0]), 'dag_width_proxy_note': 'status tip_count proxy; not a full historical DAG-width integral', 'peak_orphan_count': max([point['orphans'] for point in samples] or [0]), 'orphan_nonzero_sample_fraction': (sum(1 for point in samples if point['orphans'] > 0) / len(samples) if samples else None), 'orphan_rate_note': 'sample occupancy proxy; not authoritative orphan-arrival rate', 'final_peer_counts': {name: int(data.get('peer_count') or 0) for name, data in final.items()}}, 'acceptance_state_apply_latency': {'available': False, 'reason': 'not exposed by current runtime/status surfaces; no synthetic value recorded'}, 'storage_db_amplification_proxy': storage, 'mining': {'per_miner': miner_data, 'accepted_by_miner': accepted, 'accepted_total': sum(accepted.values()), 'rejected_total': sum((int(data['rejected']) for data in miner_data.values())), 'stale_total': sum((int(data['stale']) for data in miner_data.values())), 'unknown_finality_total': sum((int(data['unknown_finality']) for data in miner_data.values())), 'rejection_taxonomy_note': 'submit_finality_unknown is excluded from definitive rejected counts to match Task29 finality semantics', 'jain_accepted_block_fairness': jain(accepted.values())}, 'sync_finality': {'final_sync_states': {name: data.get('sync_state') for name, data in final.items()}, 'final_converged': True}, 'canonical_end_state': {'selected_tip': next(iter(tips)) if len(tips) == 1 else None, 'ordered_dag_tip': next(iter(ordered)) if len(ordered) == 1 else None, 'ordered_dag_state_root': next(iter(roots)) if len(roots) == 1 else None, 'selection_digest': {'available': False, 'reason': 'not exposed by current rehearsal RPC'}, 'ordered_dag_digest': {'available': False, 'reason': 'not exposed by current rehearsal RPC'}}, 'coverage': {'completion_eligible': False, 'missing_required_measurements': missing}, 'runtime_gate_result': 'PASS', 'fail_reasons': []}
     except Exception as exc:
         manifest = {'schema': SCHEMA, 'candidate_sha': sha, 'candidate_tree_sha': tree, 'configured_cadence_ms': cadence, 'experimental_only': True, 'production_cadence_selected': False, 'coverage': {'completion_eligible': False}, 'runtime_gate_result': 'FAIL', 'fail_reasons': [str(exc)]}
     finally:
@@ -279,6 +298,7 @@ def run(root, node, miner, out, sha, tree, cadence, duration, sample_ms, max_tri
 
 def selftest():
     assert CADENCES == (1000, 500, 250)
+    assert EXPERIMENTAL_LIMITS['PULSEDAG_MAX_PARALLEL_TIPS'] == '8'
     assert dist([1, 2, 3, 4])['p50'] == 2
     assert abs(jain([2, 2, 2]) - 1) < 1e-12
     import tempfile
