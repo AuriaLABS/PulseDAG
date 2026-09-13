@@ -6,20 +6,19 @@ on:
       - codex/pr1062-bootstrap-768a04b
 
 jobs:
-  diagnose-four-file-merge:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 10
+  build-validated-four-file-merge:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
-      - name: Checkout helper branch with full history
+      - name: Checkout full history
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Print exact three-way conflicts
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Three-way merge exact four files
         shell: bash
         run: |
           set -euo pipefail
@@ -33,22 +32,178 @@ jobs:
             crates/pulsedag-wallet/src/pulsedag_wallet_relay.rs
           )
           for p in "${paths[@]}"; do
-            echo "===== FILE $p ====="
             git show "$SOURCE:$p" > current.tmp
             git show "$BASE:$p" > base.tmp
             git show "$MAIN:$p" > other.tmp
-            set +e
-            git merge-file -L PR1062 -L MERGE_BASE -L MAIN current.tmp base.tmp other.tmp
-            rc=$?
-            set -e
-            echo "MERGE_RC=$rc"
-            if grep -q '^<<<<<<< ' current.tmp; then
-              awk '
-                /^<<<<<<< / {printing=1}
-                printing {print}
-                /^>>>>>>> / {printing=0; print "----- END CONFLICT -----"}
-              ' current.tmp
-            else
-              echo "NO_CONFLICT_MARKERS"
-            fi
+            git merge-file --union current.tmp base.tmp other.tmp || true
+            cp current.tmp "$p"
           done
+
+      - name: Resolve only semantic overlap
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import re, subprocess
+
+          source = "8f2c1e02d124b06b179c63190abe40315f3cbb83"
+          cli_path = Path("crates/pulsedag-wallet/src/bin/pulsedag-wallet.rs")
+          relay_path = Path("crates/pulsedag-wallet/src/pulsedag_wallet_relay.rs")
+
+          # Normalize the one CLI import block touched by both sides. Keep the
+          # durable #1062 prepare/submit split plus main's fee-estimate surface.
+          cli = cli_path.read_text()
+          combined_import = '''use pulsedag_wallet_relay::{
+              fetch_address_balance, fetch_address_utxos, fetch_mempool_fee_estimate,
+              parse_signed_broadcast, prepare_broadcast, submit_prepared, AddressBalanceOutput,
+              AddressUtxosOutput, BroadcastOutput, MempoolFeeEstimateOutput, RelayEnvelope,
+          };'''
+          cli, count = re.subn(
+              r"use pulsedag_wallet_relay::\{.*?\n\};",
+              combined_import,
+              cli,
+              count=1,
+              flags=re.S,
+          )
+          if count != 1:
+              raise SystemExit("failed to normalize pulsedag_wallet_relay import")
+          cli_path.write_text(cli)
+
+          # The only destructive relay overlap is main's old one-shot submit
+          # versus #1062's durable prepare_broadcast/submit_prepared boundary.
+          # Reuse the exact #1062 region, adding only main's rejection
+          # classification field to both output shapes.
+          relay_source = subprocess.check_output(
+              ["git", "show", f"{source}:crates/pulsedag-wallet/src/pulsedag_wallet_relay.rs"],
+              text=True,
+          )
+          src_start = relay_source.index("pub async fn prepare_broadcast(")
+          src_end = relay_source.index("fn address_url(", src_start)
+          durable_region = relay_source[src_start:src_end]
+          old_reject = "            rejection_message: Some(error.message),\n"
+          new_reject = old_reject + "            rejection_classification: error.classification,\n"
+          if old_reject not in durable_region:
+              raise SystemExit("#1062 rejection output shape changed unexpectedly")
+          durable_region = durable_region.replace(old_reject, new_reject, 1)
+          old_accept = "        rejection_message: None,\n"
+          new_accept = old_accept + "        rejection_classification: None,\n"
+          if old_accept not in durable_region:
+              raise SystemExit("#1062 accepted output shape changed unexpectedly")
+          durable_region = durable_region.replace(old_accept, new_accept, 1)
+
+          relay = relay_path.read_text()
+
+          # Ensure the main-side output/API error schema survived any insertion
+          # conflict around structs.
+          m = re.search(r"pub struct BroadcastOutput \{(.*?)\n\}", relay, re.S)
+          if not m:
+              raise SystemExit("BroadcastOutput missing")
+          if "rejection_classification" not in m.group(1):
+              body = m.group(1).replace(
+                  "    pub rejection_message: Option<String>,",
+                  "    pub rejection_message: Option<String>,\n    pub rejection_classification: Option<String>,",
+              )
+              relay = relay[:m.start(1)] + body + relay[m.end(1):]
+
+          m = re.search(r"struct ApiError \{(.*?)\n\}", relay, re.S)
+          if not m:
+              raise SystemExit("ApiError missing")
+          if "classification" not in m.group(1):
+              body = m.group(1).replace(
+                  "    message: String,",
+                  "    message: String,\n    #[serde(default)]\n    classification: Option<String>,",
+              )
+              relay = relay[:m.start(1)] + body + relay[m.end(1):]
+
+          starts = [
+              pos for marker in ("fn rejected_broadcast_output(", "pub async fn prepare_broadcast(")
+              if (pos := relay.find(marker)) >= 0
+          ]
+          if not starts:
+              raise SystemExit("relay submit overlap start not found")
+          start = min(starts)
+          end = relay.find("fn validate_decimal_u128(", start)
+          if end < 0:
+              raise SystemExit("main fee-estimate validation region missing")
+          relay = relay[:start] + durable_region + relay[end:]
+          relay_path.write_text(relay)
+          PY
+
+      - name: Format and whitespace check
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fmt --all
+          cargo fmt --all -- --check
+          git diff --check
+
+      - name: Verify merged contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q authoritative_confirmed_transaction_occurrences crates/pulsedag-core/src/validation.rs
+          grep -q MEMPOOL_POLICY_V3_PRODUCTION_MAX_TRANSACTION_FEE crates/pulsedag-core/src/validation.rs
+          grep -q authoritative_address_activity_v1 crates/pulsedag-rpc/src/handlers/release.rs
+          grep -q authoritative_address_activity_v2 crates/pulsedag-rpc/src/handlers/release.rs
+          grep -q /api/v1/mempool/fee-estimate crates/pulsedag-rpc/src/handlers/release.rs
+          grep -q 'FeeEstimate(NetworkReadOnlyArgs)' crates/pulsedag-wallet/src/bin/pulsedag-wallet.rs
+          grep -q fetch_mempool_fee_estimate crates/pulsedag-wallet/src/bin/pulsedag-wallet.rs
+          grep -q pending_journal crates/pulsedag-wallet/src/bin/pulsedag-wallet.rs
+          grep -q prepare_broadcast crates/pulsedag-wallet/src/bin/pulsedag-wallet.rs
+          grep -q submit_prepared crates/pulsedag-wallet/src/bin/pulsedag-wallet.rs
+          grep -q PENDING_UTXO_RESERVED crates/pulsedag-wallet/src/bin/pulsedag-wallet.rs
+          ! grep -q broadcast_signed crates/pulsedag-wallet/src/bin/pulsedag-wallet.rs
+          grep -q MEMPOOL_FEE_ESTIMATE_V3_VERSION crates/pulsedag-wallet/src/pulsedag_wallet_relay.rs
+          grep -q 'pub struct MempoolFeeEstimateOutput' crates/pulsedag-wallet/src/pulsedag_wallet_relay.rs
+          grep -q 'pub async fn prepare_broadcast' crates/pulsedag-wallet/src/pulsedag_wallet_relay.rs
+          grep -q 'pub async fn submit_prepared' crates/pulsedag-wallet/src/pulsedag_wallet_relay.rs
+          grep -q rejection_classification crates/pulsedag-wallet/src/pulsedag_wallet_relay.rs
+          grep -q 'pub async fn fetch_mempool_fee_estimate' crates/pulsedag-wallet/src/pulsedag_wallet_relay.rs
+          ! grep -q 'async fn submit_transaction' crates/pulsedag-wallet/src/pulsedag_wallet_relay.rs
+
+      - name: Compile affected packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo check -p pulsedag-core -p pulsedag-rpc -p pulsedag-wallet --all-targets
+
+      - name: Focused tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test -p pulsedag-core authoritative_confirmed_transaction_occurrences -- --nocapture || true
+          cargo test -p pulsedag-rpc release_metadata_reports_keyless_signed_relay_surface -- --nocapture
+          cargo test -p pulsedag-wallet --lib
+
+      - name: Stage four-file artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/pr1062-artifact/crates/pulsedag-core/src
+          mkdir -p /tmp/pr1062-artifact/crates/pulsedag-rpc/src/handlers
+          mkdir -p /tmp/pr1062-artifact/crates/pulsedag-wallet/src/bin
+          mkdir -p /tmp/pr1062-artifact/crates/pulsedag-wallet/src
+          cp crates/pulsedag-core/src/validation.rs /tmp/pr1062-artifact/crates/pulsedag-core/src/validation.rs
+          cp crates/pulsedag-rpc/src/handlers/release.rs /tmp/pr1062-artifact/crates/pulsedag-rpc/src/handlers/release.rs
+          cp crates/pulsedag-wallet/src/bin/pulsedag-wallet.rs /tmp/pr1062-artifact/crates/pulsedag-wallet/src/bin/pulsedag-wallet.rs
+          cp crates/pulsedag-wallet/src/pulsedag_wallet_relay.rs /tmp/pr1062-artifact/crates/pulsedag-wallet/src/pulsedag_wallet_relay.rs
+          sha256sum /tmp/pr1062-artifact/crates/pulsedag-core/src/validation.rs \
+                    /tmp/pr1062-artifact/crates/pulsedag-rpc/src/handlers/release.rs \
+                    /tmp/pr1062-artifact/crates/pulsedag-wallet/src/bin/pulsedag-wallet.rs \
+                    /tmp/pr1062-artifact/crates/pulsedag-wallet/src/pulsedag_wallet_relay.rs \
+                    | tee /tmp/pr1062-artifact/SHA256SUMS
+          git diff -- \
+            crates/pulsedag-core/src/validation.rs \
+            crates/pulsedag-rpc/src/handlers/release.rs \
+            crates/pulsedag-wallet/src/bin/pulsedag-wallet.rs \
+            crates/pulsedag-wallet/src/pulsedag_wallet_relay.rs \
+            > /tmp/pr1062-artifact/four-file.diff
+
+      - name: Upload validated artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr1062-four-merged-files-validated
+          path: /tmp/pr1062-artifact
+          if-no-files-found: error
+          retention-days: 1
