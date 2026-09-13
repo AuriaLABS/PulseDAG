@@ -7,7 +7,7 @@ on:
 
 jobs:
   build-validated-four-file-merge:
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     timeout-minutes: 45
     steps:
       - name: Checkout full history
@@ -39,7 +39,7 @@ jobs:
             cp current.tmp "$p"
           done
 
-      - name: Resolve only semantic overlap
+      - name: Resolve exact semantic overlaps
         shell: bash
         run: |
           set -euo pipefail
@@ -48,11 +48,12 @@ jobs:
           import re, subprocess
 
           source = "8f2c1e02d124b06b179c63190abe40315f3cbb83"
+          main = "768a04b76604adc9c2c3ca4489040b1d940e4f32"
           cli_path = Path("crates/pulsedag-wallet/src/bin/pulsedag-wallet.rs")
           relay_path = Path("crates/pulsedag-wallet/src/pulsedag_wallet_relay.rs")
+          relay_repo_path = "crates/pulsedag-wallet/src/pulsedag_wallet_relay.rs"
 
-          # Normalize the one CLI import block touched by both sides. Keep the
-          # durable #1062 prepare/submit split plus main's fee-estimate surface.
+          # Exact CLI diagnostic showed one conflict only: the relay import.
           cli = cli_path.read_text()
           combined_import = '''use pulsedag_wallet_relay::{
               fetch_address_balance, fetch_address_utxos, fetch_mempool_fee_estimate,
@@ -67,35 +68,48 @@ jobs:
               flags=re.S,
           )
           if count != 1:
-              raise SystemExit("failed to normalize pulsedag_wallet_relay import")
+              raise SystemExit("failed to normalize CLI relay import")
           cli_path.write_text(cli)
 
-          # The only destructive relay overlap is main's old one-shot submit
-          # versus #1062's durable prepare_broadcast/submit_prepared boundary.
-          # Reuse the exact #1062 region, adding only main's rejection
-          # classification field to both output shapes.
           relay_source = subprocess.check_output(
-              ["git", "show", f"{source}:crates/pulsedag-wallet/src/pulsedag_wallet_relay.rs"],
-              text=True,
+              ["git", "show", f"{source}:{relay_repo_path}"], text=True
           )
+          relay_main = subprocess.check_output(
+              ["git", "show", f"{main}:{relay_repo_path}"], text=True
+          )
+
+          # Preserve the exact #1062 durable preflight/submission boundary.
           src_start = relay_source.index("pub async fn prepare_broadcast(")
           src_end = relay_source.index("fn address_url(", src_start)
           durable_region = relay_source[src_start:src_end]
           old_reject = "            rejection_message: Some(error.message),\n"
-          new_reject = old_reject + "            rejection_classification: error.classification,\n"
           if old_reject not in durable_region:
               raise SystemExit("#1062 rejection output shape changed unexpectedly")
-          durable_region = durable_region.replace(old_reject, new_reject, 1)
+          durable_region = durable_region.replace(
+              old_reject,
+              old_reject + "            rejection_classification: error.classification,\n",
+              1,
+          )
           old_accept = "        rejection_message: None,\n"
-          new_accept = old_accept + "        rejection_classification: None,\n"
           if old_accept not in durable_region:
               raise SystemExit("#1062 accepted output shape changed unexpectedly")
-          durable_region = durable_region.replace(old_accept, new_accept, 1)
+          durable_region = durable_region.replace(
+              old_accept,
+              old_accept + "        rejection_classification: None,\n",
+              1,
+          )
+
+          # Exact conflict #1 also contains main's new mempool identity helper;
+          # preserve it verbatim, but discard main's superseded rejection helper
+          # and one-shot submit_transaction implementation.
+          mempool_start = relay_main.index("async fn fetch_mempool_identity(")
+          mempool_end = relay_main.index("fn rejected_broadcast_output(", mempool_start)
+          mempool_identity_region = relay_main[mempool_start:mempool_end]
 
           relay = relay_path.read_text()
 
-          # Ensure the main-side output/API error schema survived any insertion
-          # conflict around structs.
+          # Schema additions from main are orthogonal but ensure they exist even
+          # if an insertion conflict chose the #1062 side.
           m = re.search(r"pub struct BroadcastOutput \{(.*?)\n\}", relay, re.S)
           if not m:
               raise SystemExit("BroadcastOutput missing")
@@ -117,16 +131,31 @@ jobs:
               relay = relay[:m.start(1)] + body + relay[m.end(1):]
 
           starts = [
-              pos for marker in ("fn rejected_broadcast_output(", "pub async fn prepare_broadcast(")
+              pos for marker in ("pub async fn prepare_broadcast(", "fn rejected_broadcast_output(")
               if (pos := relay.find(marker)) >= 0
           ]
           if not starts:
-              raise SystemExit("relay submit overlap start not found")
+              raise SystemExit("relay submit conflict start not found")
           start = min(starts)
           end = relay.find("fn validate_decimal_u128(", start)
           if end < 0:
               raise SystemExit("main fee-estimate validation region missing")
-          relay = relay[:start] + durable_region + relay[end:]
+          relay = relay[:start] + mempool_identity_region + durable_region + relay[end:]
+
+          # Exact conflict #3 is main's fee-estimate API plus the obsolete
+          # broadcast_signed wrapper. Keep fee-estimate; remove only the wrapper,
+          # because its submit_transaction path is intentionally superseded by
+          # #1062's durable prepare/submit boundary.
+          relay, removed = re.subn(
+              r"\npub async fn broadcast_signed\(.*?\n\}\n",
+              "\n",
+              relay,
+              count=1,
+              flags=re.S,
+          )
+          if removed != 1:
+              raise SystemExit(f"expected exactly one obsolete broadcast_signed wrapper, got {removed}")
+
           relay_path.write_text(relay)
           PY
 
@@ -156,13 +185,15 @@ jobs:
           ! grep -q broadcast_signed crates/pulsedag-wallet/src/bin/pulsedag-wallet.rs
           grep -q MEMPOOL_FEE_ESTIMATE_V3_VERSION crates/pulsedag-wallet/src/pulsedag_wallet_relay.rs
           grep -q 'pub struct MempoolFeeEstimateOutput' crates/pulsedag-wallet/src/pulsedag_wallet_relay.rs
+          grep -q 'async fn fetch_mempool_identity' crates/pulsedag-wallet/src/pulsedag_wallet_relay.rs
+          grep -q 'pub async fn fetch_mempool_fee_estimate' crates/pulsedag-wallet/src/pulsedag_wallet_relay.rs
           grep -q 'pub async fn prepare_broadcast' crates/pulsedag-wallet/src/pulsedag_wallet_relay.rs
           grep -q 'pub async fn submit_prepared' crates/pulsedag-wallet/src/pulsedag_wallet_relay.rs
           grep -q rejection_classification crates/pulsedag-wallet/src/pulsedag_wallet_relay.rs
-          grep -q 'pub async fn fetch_mempool_fee_estimate' crates/pulsedag-wallet/src/pulsedag_wallet_relay.rs
           ! grep -q 'async fn submit_transaction' crates/pulsedag-wallet/src/pulsedag_wallet_relay.rs
+          ! grep -q 'pub async fn broadcast_signed' crates/pulsedag-wallet/src/pulsedag_wallet_relay.rs
 
-      - name: Compile affected packages
+      - name: Compile affected packages and all targets
         shell: bash
         run: |
           set -euo pipefail
@@ -172,9 +203,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo test -p pulsedag-core authoritative_confirmed_transaction_occurrences -- --nocapture || true
           cargo test -p pulsedag-rpc release_metadata_reports_keyless_signed_relay_surface -- --nocapture
           cargo test -p pulsedag-wallet --lib
+          cargo test -p pulsedag-wallet --bin pulsedag-wallet
 
       - name: Stage four-file artifact
         shell: bash
@@ -203,7 +234,7 @@ jobs:
       - name: Upload validated artifact
         uses: actions/upload-artifact@v4
         with:
-          name: pr1062-four-merged-files-validated
-          path: /tmp/pr1062-artifact
+          name: pr1062-four-merged-files-validated-windows
+          path: D:/a/_temp/pr1062-artifact
           if-no-files-found: error
           retention-days: 1
