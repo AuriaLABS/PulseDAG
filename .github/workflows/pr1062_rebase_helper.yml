@@ -7,7 +7,7 @@ on:
 
 jobs:
   build-validated-four-file-merge:
-    runs-on: windows-latest
+    runs-on: macos-latest
     timeout-minutes: 45
     steps:
       - name: Checkout full history
@@ -249,7 +249,7 @@ jobs:
       - name: Upload validated artifact
         uses: actions/upload-artifact@v4
         with:
-          name: pr1062-four-merged-files-validated-windows
+          name: pr1062-four-merged-files-validated
           path: .pr1062-artifact
           if-no-files-found: error
           retention-days: 1
