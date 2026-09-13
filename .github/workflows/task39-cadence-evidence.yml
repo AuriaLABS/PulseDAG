@@ -113,6 +113,12 @@ jobs:
             jq -e --arg sha "$CANDIDATE_SHA" --argjson cadence "$cadence" '
               .candidate_sha == $sha and
               .configured_cadence_ms == $cadence and
+              .configured_experimental_limits.PULSEDAG_MAX_PARALLEL_TIPS == 8 and
+              .configured_experimental_limits.PULSEDAG_MAX_MERGE_SET_SIZE == 64 and
+              .configured_experimental_limits.PULSEDAG_MAX_ORPHAN_COUNT == 2048 and
+              .configured_experimental_limits.PULSEDAG_MAX_PENDING_MISSING_PARENTS == 1024 and
+              .configured_experimental_limits.PULSEDAG_MAX_BLOCK_MASS == 2000000 and
+              .configured_experimental_limits.PULSEDAG_MAX_TEMPLATE_AGE_MS == 5000 and
               .experimental_only == true and
               .runtime_gate_result == "PASS" and
               .production_cadence_selected == false and
