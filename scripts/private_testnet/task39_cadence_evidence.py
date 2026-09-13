@@ -1,6 +1,7 @@
 """Experimental Task39 cadence evidence for 1000/500/250 ms rehearsal runs."""
 from __future__ import annotations
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -22,7 +23,6 @@ def dist(values):
     values = sorted((float(value) for value in values))
     if not values:
         return {'count': 0, 'min': None, 'max': None, 'mean': None, 'p50': None, 'p95': None, 'p99': None}
-
     def percentile(q):
         index = max(0, min(len(values) - 1, (len(values) * q + 99) // 100 - 1))
         return values[index]
@@ -54,15 +54,20 @@ def size(path):
                 pass
     return total
 
-class Proc:
+def sha256_file(path):
+    digest = hashlib.sha256()
+    with open(path, 'rb') as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b''):
+            digest.update(chunk)
+    return digest.hexdigest()
 
+class Proc:
     def __init__(self, cmd, env, log):
         self.records = []
         self.file = open(log, 'w', encoding='utf-8', buffering=1)
         self.process = subprocess.Popen(cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
         self.thread = threading.Thread(target=self._read, daemon=True)
         self.thread.start()
-
     def _read(self):
         assert self.process.stdout is not None
         for raw in self.process.stdout:
@@ -70,7 +75,6 @@ class Proc:
             line = raw.rstrip('\n')
             self.records.append((mono_ns, line))
             self.file.write(f'{mono_ns} {line}\n')
-
     def stop(self):
         if self.process.poll() is None:
             self.process.terminate()
@@ -256,7 +260,7 @@ def run(root, node, miner, out, sha, tree, cadence, duration, sample_ms, max_tri
             bytes_delta = max(0, after - before_size[name])
             storage[name] = {'bytes_delta': bytes_delta, 'persisted_block_delta': delta, 'bytes_per_block_proxy': bytes_delta / delta if delta else None, 'proxy_note': 'filesystem-size delta while RocksDB is live; not exact write amplification'}
         missing = ['canonical_block_acceptance_and_state_apply_latency_distribution', 'selection_digest', 'ordered_dag_digest']
-        manifest = {'schema': SCHEMA, 'candidate_sha': sha, 'candidate_tree_sha': tree, 'configured_cadence_ms': cadence, 'experimental_only': True, 'production_cadence_selected': False, 'consensus_timestamp_precision_changed': False, 'consensus_target_semantics_changed': False, 'measurement': {'elapsed_monotonic_ms': (measured_end - measured_start) / 1000000.0, 'sample_interval_ms': sample_ms, 'selected_height_advance': blocks, 'per_node_start_height': start_heights, 'per_node_end_height': end_heights, 'observed_blocks_per_second': blocks / ((measured_end - measured_start) / 1000000000.0), 'rpc_status_latency_ms': dist([point['rpc_ms'] for point in samples])}, 'propagation_and_dag': {'sampled_selected_tip_convergence_latency_ms': dist(propagation(samples)), 'sampling_bound_ms': sample_ms, 'propagation_note': 'polling-derived upper-bound proxy; includes sequential RPC sampling skew', 'peak_parallel_tip_count_proxy': max([point['tips'] for point in samples] or [0]), 'dag_width_proxy_note': 'status tip_count proxy; not a full historical DAG-width integral', 'peak_orphan_count': max([point['orphans'] for point in samples] or [0]), 'final_peer_counts': {name: int(data.get('peer_count') or 0) for name, data in final.items()}}, 'acceptance_state_apply_latency': {'available': False, 'reason': 'not exposed by current runtime/status surfaces; no synthetic value recorded'}, 'storage_db_amplification_proxy': storage, 'mining': {'per_miner': miner_data, 'accepted_by_miner': accepted, 'accepted_total': sum(accepted.values()), 'rejected_total': sum((int(data['rejected']) for data in miner_data.values())), 'stale_total': sum((int(data['stale']) for data in miner_data.values())), 'unknown_finality_total': sum((int(data['unknown_finality']) for data in miner_data.values())), 'rejection_taxonomy_note': 'submit_finality_unknown is excluded from definitive rejected counts to match Task29 finality semantics', 'jain_accepted_block_fairness': jain(accepted.values())}, 'sync_finality': {'final_sync_states': {name: data.get('sync_state') for name, data in final.items()}, 'final_converged': True}, 'canonical_end_state': {'selected_tip': next(iter(tips)) if len(tips) == 1 else None, 'ordered_dag_tip': next(iter(ordered)) if len(ordered) == 1 else None, 'ordered_dag_state_root': next(iter(roots)) if len(roots) == 1 else None, 'selection_digest': {'available': False, 'reason': 'not exposed by current rehearsal RPC'}, 'ordered_dag_digest': {'available': False, 'reason': 'not exposed by current rehearsal RPC'}}, 'coverage': {'completion_eligible': False, 'missing_required_measurements': missing}, 'runtime_gate_result': 'PASS', 'fail_reasons': []}
+        manifest = {'schema': SCHEMA, 'candidate_sha': sha, 'candidate_tree_sha': tree, 'configured_cadence_ms': cadence, 'experimental_only': True, 'production_cadence_selected': False, 'consensus_timestamp_precision_changed': False, 'consensus_target_semantics_changed': False, 'measurement': {'elapsed_monotonic_ms': (measured_end - measured_start) / 1000000.0, 'sample_interval_ms': sample_ms, 'selected_height_advance': blocks, 'per_node_start_height': start_heights, 'per_node_end_height': end_heights, 'observed_blocks_per_second': blocks / ((measured_end - measured_start) / 1000000000.0), 'rpc_status_latency_ms': dist([point['rpc_ms'] for point in samples])}, 'propagation_and_dag': {'sampled_selected_tip_convergence_latency_ms': dist(propagation(samples)), 'sampling_bound_ms': sample_ms, 'propagation_note': 'polling-derived upper-bound proxy; includes sequential RPC sampling skew', 'peak_parallel_tip_count_proxy': max([point['tips'] for point in samples] or [0]), 'dag_width_proxy_note': 'status tip_count proxy; not a full historical DAG-width integral', 'peak_orphan_count': max([point['orphans'] for point in samples] or [0]), 'orphan_nonzero_sample_fraction': (sum(1 for point in samples if point['orphans'] > 0) / len(samples) if samples else None), 'orphan_rate_note': 'sample occupancy proxy; not authoritative orphan-arrival rate', 'final_peer_counts': {name: int(data.get('peer_count') or 0) for name, data in final.items()}}, 'acceptance_state_apply_latency': {'available': False, 'reason': 'not exposed by current runtime/status surfaces; no synthetic value recorded'}, 'storage_db_amplification_proxy': storage, 'mining': {'per_miner': miner_data, 'accepted_by_miner': accepted, 'accepted_total': sum(accepted.values()), 'rejected_total': sum((int(data['rejected']) for data in miner_data.values())), 'stale_total': sum((int(data['stale']) for data in miner_data.values())), 'unknown_finality_total': sum((int(data['unknown_finality']) for data in miner_data.values())), 'rejection_taxonomy_note': 'submit_finality_unknown is excluded from definitive rejected counts to match Task29 finality semantics', 'jain_accepted_block_fairness': jain(accepted.values())}, 'sync_finality': {'final_sync_states': {name: data.get('sync_state') for name, data in final.items()}, 'final_converged': True}, 'canonical_end_state': {'selected_tip': next(iter(tips)) if len(tips) == 1 else None, 'ordered_dag_tip': next(iter(ordered)) if len(ordered) == 1 else None, 'ordered_dag_state_root': next(iter(roots)) if len(roots) == 1 else None, 'selection_digest': {'available': False, 'reason': 'not exposed by current rehearsal RPC'}, 'ordered_dag_digest': {'available': False, 'reason': 'not exposed by current rehearsal RPC'}}, 'coverage': {'completion_eligible': False, 'missing_required_measurements': missing}, 'runtime_gate_result': 'PASS', 'fail_reasons': []}
     except Exception as exc:
         manifest = {'schema': SCHEMA, 'candidate_sha': sha, 'candidate_tree_sha': tree, 'configured_cadence_ms': cadence, 'experimental_only': True, 'production_cadence_selected': False, 'coverage': {'completion_eligible': False}, 'runtime_gate_result': 'FAIL', 'fail_reasons': [str(exc)]}
     finally:
@@ -277,6 +281,14 @@ def selftest():
     assert CADENCES == (1000, 500, 250)
     assert dist([1, 2, 3, 4])['p50'] == 2
     assert abs(jain([2, 2, 2]) - 1) < 1e-12
+    import tempfile
+    with tempfile.NamedTemporaryFile('wb', delete=False) as fixture:
+        fixture.write(b'task39')
+        fixture_path = fixture.name
+    try:
+        assert sha256_file(fixture_path) == hashlib.sha256(b'task39').hexdigest()
+    finally:
+        os.unlink(fixture_path)
     base = time.monotonic_ns()
     accepted = miner_metrics([(base, 'template received: created_at=1'), (base + 1000000, 'submit_result: accepted=true rejected=false reason_code=accepted stale_template=false')])
     assert accepted['accepted'] == 1
@@ -324,7 +336,7 @@ def main():
     if not os.access(node, os.X_OK) or not os.access(miner, os.X_OK):
         raise SystemExit('release node/miner binaries are required')
     runs = [run(root, node, miner, out, sha, tree, cadence, args.duration_secs, args.sample_ms, args.max_tries, args.threads) for cadence in CADENCES]
-    aggregate = {'schema': SCHEMA, 'candidate_sha': sha, 'candidate_tree_sha': tree, 'required_cadence_points_ms': list(CADENCES), 'runtime_gate_result': 'PASS' if all((run['runtime_gate_result'] == 'PASS' for run in runs)) else 'FAIL', 'completion_eligible': all((run.get('coverage', {}).get('completion_eligible') for run in runs)), 'production_cadence_selected': False, 'runs': [{'cadence_ms': run['configured_cadence_ms'], 'runtime_gate_result': run['runtime_gate_result'], 'completion_eligible': run.get('coverage', {}).get('completion_eligible', False), 'evidence_path': f"cadence-{run['configured_cadence_ms']}ms/evidence.json"} for run in runs]}
+    aggregate = {'schema': SCHEMA, 'candidate_sha': sha, 'candidate_tree_sha': tree, 'required_cadence_points_ms': list(CADENCES), 'runtime_gate_result': 'PASS' if all((run['runtime_gate_result'] == 'PASS' for run in runs)) else 'FAIL', 'completion_eligible': all((run.get('coverage', {}).get('completion_eligible') for run in runs)), 'production_cadence_selected': False, 'runs': [{'cadence_ms': run['configured_cadence_ms'], 'runtime_gate_result': run['runtime_gate_result'], 'completion_eligible': run.get('coverage', {}).get('completion_eligible', False), 'evidence_path': f"cadence-{run['configured_cadence_ms']}ms/evidence.json", 'evidence_sha256': sha256_file(out / f"cadence-{run['configured_cadence_ms']}ms" / 'evidence.json')} for run in runs]}
     (out / 'aggregate.json').write_text(json.dumps(aggregate, indent=2, sort_keys=True) + '\n')
     print(json.dumps(aggregate, indent=2, sort_keys=True))
     return 0 if aggregate['runtime_gate_result'] == 'PASS' else 1
