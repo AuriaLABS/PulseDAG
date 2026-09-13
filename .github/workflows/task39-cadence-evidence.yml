@@ -86,7 +86,7 @@ jobs:
             --max-tries 500000 \
             --threads 1
 
-      - name: Enforce runtime result without premature completion claim
+      - name: Enforce runtime result and evidence digests without premature completion claim
         env:
           EVIDENCE_DIR: ${{ runner.temp }}/task39-cadence
         run: |
@@ -99,9 +99,11 @@ jobs:
             .production_cadence_selected == false and
             (.runs | length) == 3 and
             ([.runs[].cadence_ms] == [1000,500,250]) and
-            (all(.runs[]; .runtime_gate_result == "PASS" and .completion_eligible == false))
+            (all(.runs[]; .runtime_gate_result == "PASS" and .completion_eligible == false)) and
+            (all(.runs[]; (.evidence_sha256 | test("^[0-9a-f]{64}$"))))
           ' "$EVIDENCE_DIR/aggregate.json" >/dev/null
           for cadence in 1000 500 250; do
+            evidence="$EVIDENCE_DIR/cadence-${cadence}ms/evidence.json"
             jq -e --arg sha "$CANDIDATE_SHA" --argjson cadence "$cadence" '
               .candidate_sha == $sha and
               .configured_cadence_ms == $cadence and
@@ -110,7 +112,12 @@ jobs:
               .production_cadence_selected == false and
               .coverage.completion_eligible == false and
               (.coverage.missing_required_measurements | length) >= 1
-            ' "$EVIDENCE_DIR/cadence-${cadence}ms/evidence.json" >/dev/null
+            ' "$evidence" >/dev/null
+            expected="$(jq -r --argjson cadence "$cadence" '.runs[] | select(.cadence_ms == $cadence) | .evidence_sha256' "$EVIDENCE_DIR/aggregate.json")"
+            actual="$(sha256sum "$evidence" | awk '{print $1}')"
+            test -n "$expected"
+            test "$expected" != "null"
+            test "$expected" = "$actual"
           done
 
       - name: Upload exact-candidate cadence evidence
