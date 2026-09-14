@@ -10,9 +10,16 @@ The v2.4.0 repository contains the node and standalone external miner technical 
 
 ## Public-testnet security blockers
 
-Issue #1127 is the live authoritative RustSec/public-GO dependency record (historical #803). The current fail-closed disposition keeps reachable `atty 0.2.14`, `linkme 0.2.10` and `lru 0.12.5` visible as public-testnet blockers until removed through supported parent-stack upgrades or an explicitly reviewed public-GO disposition.
+Issue #1127 is the live authoritative RustSec/public-GO dependency record (historical #803). Work item for the current lock graph: #1139.
 
-A stable expected warning set is not security approval. Unsupported transitive leaf patches are not authorized.
+Historical public-testnet unsound set named `atty 0.2.14`, `linkme 0.2.10` and `lru 0.12.5`.
+
+On current `main` after parent upgrades:
+- `linkme 0.2.10` and `lru 0.12.5` are **absent from Cargo.lock**;
+- the remaining reachable unsound/unmaintained warning in the node/miner compile graph is `atty 0.2.14` via `hexplay 0.3.0` ← Kaspa `kaspa-txscript` / `workflow-log`;
+- `bincode 1.3.3` remains a first-party unmaintained runtime dep in storage + node.
+
+A stable expected warning set is not security approval. Unsupported transitive leaf patches for `atty` / `hexplay` are not authorized. Do not add advisory IDs to `.cargo/audit.toml`.
 
 ## Activation guardrails
 
@@ -43,4 +50,4 @@ The 24-hour private burn-in clock starts only after one unchanged final candidat
 
 Repository templates do not provision or prove real public infrastructure. Before public GO, operators must separately record and verify failure-domain separation, persistent P2P identities, firewall policy, NTP/time sync, storage/backup, DNS/TLS ownership, observability, incident escalation and recovery procedures.
 
-See `SECURITY.md`, `docs/runbooks/V2_4_0_PUBLIC_TESTNET_PREP.md`, #781, #794, #1127, historical #803 and #873.
+See `SECURITY.md`, `docs/runbooks/V2_4_0_PUBLIC_TESTNET_PREP.md`, #781, #794, #1127, #1139, historical #803 and #873.
