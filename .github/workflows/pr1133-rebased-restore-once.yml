@@ -1,0 +1,53 @@
+name: pr1133 rebased restore once
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  restore:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout rebased branch
+        uses: actions/checkout@v4
+        with:
+          ref: fix/audit-p1-fail-closed-1124-1126-rebased
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - name: Restore config.rs from #1133 head and patch main.rs
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin cba7d4a45560d310c98df58529f500efd7ad1220
+          git show cba7d4a45560d310c98df58529f500efd7ad1220:apps/pulsedagd/src/config.rs > apps/pulsedagd/src/config.rs
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('apps/pulsedagd/src/main.rs')
+          text = p.read_text()
+          old = '''            other => {
+                warn!(configured_mode = %other, "unknown P2P mode, using memory-simulated mode");
+                build_p2p_stack(P2pMode::Memory {
+                    chain_id: cfg.chain_id.clone(),
+                    peers: cfg.simulated_peers.clone(),
+                })?
+            }'''
+          new = '''            other => {
+                anyhow::bail!(
+                    "invalid P2P mode '{other}'. Supported values: libp2p-real, libp2p-dev, libp2p, libp2p-skeleton, memory, simulated"
+                );
+            }'''
+          if old not in text:
+              raise SystemExit('main.rs unknown-mode fallback not found; abort')
+          p.write_text(text.replace(old, new, 1))
+          PY
+          rm -f .github/workflows/pr1133-rebased-restore-once.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add apps/pulsedagd/src/config.rs apps/pulsedagd/src/main.rs .github/workflows/pr1133-rebased-restore-once.yml
+          git diff --cached --stat
+          git commit -m 'fix: restore fail-closed P2P/consensus/RPC bind on current main (#1124 #1125 #1126)'
+          git push origin HEAD:fix/audit-p1-fail-closed-1124-1126-rebased
