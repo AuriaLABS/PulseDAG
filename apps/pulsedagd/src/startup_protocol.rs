@@ -217,11 +217,15 @@ mod tests {
     }
 
     #[test]
-    fn default_compile_gate_rejects_contracts_env_without_feature() {
-        assert!(!contracts_compile_time_executable());
+    fn contracts_env_cannot_bypass_compile_gate() {
         std::env::set_var(CONTRACTS_ENABLED_ENV, "true");
-        let err = enforce_inactive_contracts_for_task31().unwrap_err();
-        assert!(err.to_string().contains("executable-contracts"));
+        let result = enforce_inactive_contracts_for_task31();
+        if contracts_compile_time_executable() {
+            result.expect("feature-on builds may accept the env flag");
+        } else {
+            let err = result.expect_err("feature-off builds must reject the env flag");
+            assert!(err.to_string().contains("executable-contracts"));
+        }
         std::env::remove_var(CONTRACTS_ENABLED_ENV);
         enforce_inactive_contracts_for_task31().unwrap();
     }
