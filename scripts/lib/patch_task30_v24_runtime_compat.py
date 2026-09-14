@@ -16,8 +16,18 @@ closed.
 
 from __future__ import annotations
 
+import shutil
 import sys
+import tomllib
 from pathlib import Path
+
+
+HELPER_DIRECT_PACKAGES = {
+    "ed25519-dalek": "2.2.0",
+    "hex": "0.4.3",
+    "serde_json": "1.0.149",
+    "wasm-bindgen": "0.2.100",
+}
 
 
 def replace_once(text: str, old: str, new: str, label: str) -> str:
@@ -28,6 +38,88 @@ def replace_once(text: str, old: str, new: str, label: str) -> str:
             f"expected=1 actual={count}"
         )
     return text.replace(old, new, 1)
+
+
+def load_lock_packages(path: Path) -> list[dict[str, object]]:
+    if not path.is_file():
+        raise SystemExit(f"Task30 helper lock file missing: {path}")
+    data = tomllib.loads(path.read_text(encoding="utf-8"))
+    packages = data.get("package")
+    if not isinstance(packages, list) or not packages:
+        raise SystemExit(f"Task30 helper lock file has no package entries: {path}")
+    return packages
+
+
+def lock_identity(package: dict[str, object]) -> tuple[str, str, str]:
+    name = package.get("name")
+    version = package.get("version")
+    source = package.get("source") or ""
+    if not isinstance(name, str) or not isinstance(version, str) or not isinstance(source, str):
+        raise SystemExit(f"Task30 helper lock contains malformed package entry: {package}")
+    return name, version, source
+
+
+def verify_helper_lock(candidate_lock: Path, helper_lock: Path) -> None:
+    candidate_packages = load_lock_packages(candidate_lock)
+    helper_packages = load_lock_packages(helper_lock)
+    candidate_index: dict[tuple[str, str, str], dict[str, object]] = {}
+    for package in candidate_packages:
+        identity = lock_identity(package)
+        if identity in candidate_index:
+            raise SystemExit(f"Task30 candidate lock contains duplicate identity: {identity}")
+        candidate_index[identity] = package
+
+    helper_roots = [
+        package
+        for package in helper_packages
+        if lock_identity(package) == ("task30-tx-helper", "0.1.0", "")
+    ]
+    if len(helper_roots) != 1:
+        raise SystemExit(
+            "Task30 helper lock must contain exactly one local task30-tx-helper 0.1.0 package; "
+            f"found={len(helper_roots)}"
+        )
+
+    for name, version in HELPER_DIRECT_PACKAGES.items():
+        matches = [
+            package
+            for package in helper_packages
+            if lock_identity(package)[0] == name and lock_identity(package)[1] == version
+        ]
+        if len(matches) != 1:
+            raise SystemExit(
+                f"Task30 helper lock expected exactly one {name} {version}; found={len(matches)}"
+            )
+
+    core_matches = [
+        package
+        for package in helper_packages
+        if lock_identity(package)[0] == "pulsedag-core" and lock_identity(package)[2] == ""
+    ]
+    if len(core_matches) != 1:
+        raise SystemExit(
+            "Task30 helper lock expected exactly one local pulsedag-core package; "
+            f"found={len(core_matches)}"
+        )
+
+    checked = 0
+    for package in helper_packages:
+        identity = lock_identity(package)
+        if identity == ("task30-tx-helper", "0.1.0", ""):
+            continue
+        candidate = candidate_index.get(identity)
+        if candidate is None:
+            raise SystemExit(
+                "Task30 helper lock drifted outside the exact candidate dependency graph: "
+                f"name={identity[0]} version={identity[1]} source={identity[2] or 'path'}"
+            )
+        if package.get("checksum") != candidate.get("checksum"):
+            raise SystemExit(
+                "Task30 helper lock checksum mismatch against exact candidate: "
+                f"name={identity[0]} version={identity[1]}"
+            )
+        checked += 1
+    print(f"Task30 helper lock verified against exact candidate: packages={checked}")
 
 
 def patch_relay(text: str) -> str:
@@ -55,6 +147,46 @@ task30_mine_until_block(){
   return 1
 }'''
     text = replace_once(text, old_post, new_post, "relay helper insertion")
+    text = replace_once(
+        text,
+        'PULSEDAG_MEMPOOL_MAX_TRANSACTIONS="$REHEARSAL_MEMPOOL_CAPACITY"',
+        "TASK30_OBSOLETE_MEMPOOL_CAPACITY_OVERRIDE_DISABLED=true",
+        "relay obsolete rehearsal mempool capacity override",
+    )
+    build_anchor = 'log "building release binaries"'
+    build_guard = r'''TASK30_HELPER_MANIFEST="${RUNNER_TEMP:?RUNNER_TEMP is required}/task30/tx-helper/Cargo.toml"
+cargo(){
+  local helper_build=0 expect_manifest=0 arg helper_lock lock_log metadata_out
+  if [[ "${1:-}" == "build" ]]; then
+    for arg in "$@"; do
+      if (( expect_manifest == 1 )); then
+        [[ "$arg" == "$TASK30_HELPER_MANIFEST" ]] && helper_build=1
+        expect_manifest=0
+        continue
+      fi
+      [[ "$arg" == "--manifest-path" ]] && expect_manifest=1
+    done
+  fi
+  if (( helper_build == 0 )); then
+    command cargo "$@"
+    return $?
+  fi
+  helper_lock="${TASK30_HELPER_MANIFEST%/Cargo.toml}/Cargo.lock"
+  lock_log="$OUT_DIR/tx/helper-lock-prepare.log"
+  metadata_out="$OUT_DIR/tx/helper-metadata.json"
+  cp "$ROOT_DIR/Cargo.lock" "$helper_lock" || return 1
+  if ! command cargo metadata --manifest-path "$TASK30_HELPER_MANIFEST" --format-version 1 >"$metadata_out" 2>"$lock_log"; then
+    tail -120 "$lock_log" >&2 || true
+    return 1
+  fi
+  if ! python3 "$ROOT_DIR/scripts/lib/patch_task30_v24_runtime_compat.py" verify-lock "$ROOT_DIR/Cargo.lock" "$helper_lock" >>"$lock_log" 2>&1; then
+    tail -120 "$lock_log" >&2 || true
+    return 1
+  fi
+  command cargo "$@" --locked
+}
+log "building release binaries"'''
+    text = replace_once(text, build_anchor, build_guard, "relay locked helper build guard")
     old_initial = r'''post_json "$(rpc_url 1)/wallet/new" '{}' "$OUT_DIR/tx/funding-wallet.json"
 post_json "$(rpc_url 1)/wallet/new" '{}' "$OUT_DIR/tx/funding2-wallet.json"
 post_json "$(rpc_url 1)/wallet/new" '{}' "$OUT_DIR/tx/funding3-wallet.json"
@@ -101,21 +233,58 @@ task30_build_signed 3 11 "$FROM" "$CONFLICT_TO" 2 1 conflict-submit-n3
 capture_node before_conflict
 post_json "$(rpc_url 3)/tx/submit" "$(cat "$OUT_DIR/tx/conflict-submit-n3-body.json")" "$OUT_DIR/tx/conflict-submit-n3.json" || true'''
     text = replace_once(text, old_conflict, new_conflict, "relay retired wallet RPC conflict flow")
+    old_conflict_assert = r'''if [[ "$conflict_code" == "TX_REJECTED" && "$conflict_msg" == *"double spend"* && "$conflict_publish_unchanged" == true ]]; then
+  jq -n --arg via n3 --arg taxonomy double_spend --slurpfile response "$OUT_DIR/tx/conflict-submit-n3.json" --argjson nodes "$conflict_nodes" '{submitted_via:$via,taxonomy:$taxonomy,response:$response[0],per_node:$nodes,publish_attempts_unchanged:true,propagation_observed:false,bounded:true}' > "$OUT_DIR/conflict_evidence.json"
+  touch "$OUT_DIR/conflicting_transaction_rejection.proof"
+else
+  fail "conflicting transaction was not rejected locally without propagation: code=$conflict_code message=$conflict_msg publish_unchanged=$conflict_publish_unchanged"
+fi'''
+    new_conflict_assert = r'''if [[ "$conflict_code" == "MEMPOOL_V3_REPLACEMENT_NOT_AUTHORIZED" && "$conflict_msg" == *"replacement semantics are not authorized"* && "$conflict_publish_unchanged" == true ]]; then
+  jq -n --arg via n3 --arg taxonomy replacement_not_authorized --slurpfile response "$OUT_DIR/tx/conflict-submit-n3.json" --argjson nodes "$conflict_nodes" '{submitted_via:$via,taxonomy:$taxonomy,response:$response[0],per_node:$nodes,publish_attempts_unchanged:true,propagation_observed:false,bounded:true}' > "$OUT_DIR/conflict_evidence.json"
+  touch "$OUT_DIR/conflicting_transaction_rejection.proof"
+else
+  fail "conflicting transaction was not rejected locally without propagation: code=$conflict_code message=$conflict_msg publish_unchanged=$conflict_publish_unchanged"
+fi'''
+    text = replace_once(text, old_conflict_assert, new_conflict_assert, "relay production conflict taxonomy")
     old_capacity = r'''post_json "$(rpc_url 1)/wallet/new" '{}' "$OUT_DIR/tx/recipient2-wallet.json"; TO2="$(jq -r '.data.address' "$OUT_DIR/tx/recipient2-wallet.json")"
 post_json "$(rpc_url 1)/wallet/transfer" "{\"from\":\"$FROM2\",\"to\":\"$TO2\",\"amount\":1,\"fee\":1,\"private_key\":\"$PRIV2\"}" "$OUT_DIR/tx/capacity-fill.json" || true
 post_json "$(rpc_url 1)/wallet/new" '{}' "$OUT_DIR/tx/recipient3-wallet.json"; TO3="$(jq -r '.data.address' "$OUT_DIR/tx/recipient3-wallet.json")"
 # A zero-fee candidate is strictly lower priority than the two resident fee-1
 # transactions, so the bounded mempool must reject it rather than evicting one.
 post_json "$(rpc_url 1)/wallet/transfer" "{\"from\":\"$FROM3\",\"to\":\"$TO3\",\"amount\":1,\"fee\":0,\"private_key\":\"$PRIV3\"}" "$OUT_DIR/tx/capacity-reject.json" || true'''
-    new_capacity = r'''TO2="$(task30_address 23)"
-task30_build_signed 1 12 "$FROM2" "$TO2" 1 1 capacity-fill
-post_json "$(rpc_url 1)/tx/submit" "$(cat "$OUT_DIR/tx/capacity-fill-body.json")" "$OUT_DIR/tx/capacity-fill.json" || true
-TO3="$(task30_address 24)"
-# A zero-fee candidate is strictly lower priority than the two resident fee-1
-# transactions, so the bounded mempool must reject it rather than evicting one.
-task30_build_signed 1 13 "$FROM3" "$TO3" 1 0 capacity-reject
-post_json "$(rpc_url 1)/tx/submit" "$(cat "$OUT_DIR/tx/capacity-reject-body.json")" "$OUT_DIR/tx/capacity-reject.json" || true'''
-    text = replace_once(text, old_capacity, new_capacity, "relay retired wallet RPC capacity flow")
+    new_capacity = r'''CAPACITY_REGRESSION="v2_mempool_capacity_rejection_is_machine_readable"
+CAPACITY_REGRESSION_LOG="$OUT_DIR/tx/capacity-regression.log"
+if (cd "$ROOT_DIR" && CARGO_TERM_COLOR=never CARGO_TARGET_DIR="$ROOT_DIR/target" cargo test --locked -p pulsedag-rpc "$CAPACITY_REGRESSION" -- --nocapture) >"$CAPACITY_REGRESSION_LOG" 2>&1; then
+  capacity_successes="$(grep -Ec "test .*${CAPACITY_REGRESSION} \.\.\. ok$" "$CAPACITY_REGRESSION_LOG" || true)"
+  if [[ "$capacity_successes" != 1 ]]; then
+    tail -120 "$CAPACITY_REGRESSION_LOG" >&2 || true
+    fail "exact-candidate RPC capacity regression match count was $capacity_successes, expected 1"
+    write_manifest FAIL
+    exit 1
+  fi
+  jq -n \
+    --arg evidence_source exact_candidate_rpc_regression \
+    --arg regression "$CAPACITY_REGRESSION" \
+    --arg code MEMPOOL_V3_CAPACITY_BACKPRESSURE \
+    --arg classification mempool_full \
+    '{evidence_source:$evidence_source,regression:$regression,expected_code:$code,expected_classification:$classification,private_rehearsal_capacity_override:false,runtime_capacity_probe:false,bounded:true,taxonomy:"mempool_capacity"}' \
+    > "$OUT_DIR/rejection_evidence.json"
+  touch "$OUT_DIR/capacity_rejection_taxonomy.proof"
+else
+  tail -120 "$CAPACITY_REGRESSION_LOG" >&2 || true
+  fail "exact-candidate RPC capacity regression failed: $CAPACITY_REGRESSION"
+  write_manifest FAIL
+  exit 1
+fi'''
+    text = replace_once(text, old_capacity, new_capacity, "relay canonical capacity regression")
+    old_capacity_assert = r'''cap_code="$(jq -r '.error.code // ""' "$OUT_DIR/tx/capacity-reject.json")"; cap_reason="$(jq -r '.error.message // ""' "$OUT_DIR/tx/capacity-reject.json")"
+if [[ "$cap_code" == "TX_REJECTED" && ( "$cap_reason" == *"backpressure active"* || "$cap_reason" == *"capacity exceeded"* || "$cap_reason" == *"mempool pressure"* ) ]]; then
+  jq -n --slurpfile response "$OUT_DIR/tx/capacity-reject.json" --arg code "$cap_code" --arg reason "$cap_reason" '{code:$code,reason:$reason,response:$response[0],bounded:true,private_rehearsal_capacity_override:true,candidate_fee:0,taxonomy:"mempool_capacity"}' > "$OUT_DIR/rejection_evidence.json"
+  touch "$OUT_DIR/capacity_rejection_taxonomy.proof"
+else
+  fail "capacity rejection did not return specific capacity taxonomy: code=$cap_code reason=$cap_reason"
+fi'''
+    text = replace_once(text, old_capacity_assert, "", "relay obsolete runtime capacity assertion")
     old_confirm = r'''post_json "$(rpc_url 1)/mine" "{\"miner_address\":\"$FROM\",\"pow_max_tries\":1000000}" "$OUT_DIR/tx/confirm-mine.json"'''
     text = replace_once(text, old_confirm, 'task30_mine_until_block 1 "$FROM" confirm-mine || { write_manifest FAIL; exit 1; }', "relay bounded confirmation mining")
     return text
@@ -183,8 +352,22 @@ def patch_prune(text: str) -> str:
 
 def emit_relay_helper(root: Path, target: Path) -> None:
     core = (root / "crates/pulsedag-core").resolve()
+    candidate_lock = (root / "Cargo.lock").resolve()
     if not (core / "Cargo.toml").is_file():
         raise SystemExit(f"Task30 relay helper missing candidate core manifest: {core}/Cargo.toml")
+    if not candidate_lock.is_file():
+        raise SystemExit(f"Task30 relay helper missing exact candidate lock: {candidate_lock}")
+    candidate_packages = load_lock_packages(candidate_lock)
+    for name, version in HELPER_DIRECT_PACKAGES.items():
+        matches = [
+            package
+            for package in candidate_packages
+            if lock_identity(package)[0] == name and lock_identity(package)[1] == version
+        ]
+        if len(matches) != 1:
+            raise SystemExit(
+                f"Task30 candidate lock expected exactly one {name} {version}; found={len(matches)}"
+            )
     target.mkdir(parents=True, exist_ok=True)
     (target / "src").mkdir(parents=True, exist_ok=True)
     cargo = f'''[package]
@@ -200,7 +383,7 @@ pulsedag-core = {{ path = "{core.as_posix()}" }}
 ed25519-dalek = "=2.2.0"
 hex = "=0.4.3"
 serde_json = "=1.0.149"
-wasm-bindgen = "=0.2.118"
+wasm-bindgen = "=0.2.100"
 '''
     main_rs = r'''use ed25519_dalek::{Signer, SigningKey};
 use pulsedag_core::{address_from_public_key, compute_txid, signing_message, Transaction};
@@ -272,17 +455,24 @@ fn main() {
 '''
     (target / "Cargo.toml").write_text(cargo, encoding="utf-8")
     (target / "src/main.rs").write_text(main_rs, encoding="utf-8")
+    shutil.copy2(candidate_lock, target / "Cargo.lock")
 
 
 def main() -> int:
     if len(sys.argv) != 4:
-        print(f"usage: {sys.argv[0]} relay|prune|relay-helper INPUT OUTPUT", file=sys.stderr)
+        print(
+            f"usage: {sys.argv[0]} relay|prune|relay-helper|verify-lock INPUT OUTPUT",
+            file=sys.stderr,
+        )
         return 64
     mode, input_name, output_name = sys.argv[1:]
     source = Path(input_name)
     target = Path(output_name)
     if mode == "relay-helper":
         emit_relay_helper(source.resolve(), target.resolve())
+        return 0
+    if mode == "verify-lock":
+        verify_helper_lock(source.resolve(), target.resolve())
         return 0
     text = source.read_text(encoding="utf-8")
     if mode == "relay":
